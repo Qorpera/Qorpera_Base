@@ -20,6 +20,7 @@ import { companyPort, createCompanyAppServer } from "@qorpera/pi-coding-agent/ap
 import { conceptionKickoff, listCompanies, registerCompany, scaffoldCompany } from "@qorpera/pi-coding-agent/company";
 import { app, BrowserWindow, shell as electronShell, ipcMain } from "electron";
 import electronUpdater from "electron-updater";
+import { ensureUserland, mergeTaskPrompt, type UserlandStatus } from "./userland-manager.ts";
 
 const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
 const DIRNAME = fileURLToPath(new URL(".", import.meta.url));
@@ -47,7 +48,11 @@ interface CompanyRuntime {
 	child: ChildProcessWithoutNullStreams;
 	backendPort: number;
 	backendClose?: () => void;
+	userland: UserlandStatus;
+	usingBaseFallback: boolean;
 }
+
+const BASE_USERLAND_DIR = join(DIRNAME, "userland");
 
 let window: BrowserWindow | undefined;
 let runtime: CompanyRuntime | undefined;
@@ -86,9 +91,36 @@ function startChild(root: string, sessionFile?: string): ChildProcessWithoutNull
 	return child;
 }
 
-async function openCompany(root: string): Promise<{ root: string; backendUrl: string; kickoff: boolean }> {
+interface ActiveCompany {
+	root: string;
+	backendUrl: string;
+	kickoff: boolean;
+	userland: UserlandStatus;
+	usingBaseFallback: boolean;
+	mergePrompt?: string;
+}
+
+function activeCompanyInfo(): ActiveCompany | undefined {
+	if (!runtime) return undefined;
+	const staged = runtime.userland.action === "staged" || runtime.userland.action === "already-staged";
+	return {
+		root: runtime.root,
+		backendUrl: `http://127.0.0.1:${runtime.backendPort}`,
+		kickoff: false,
+		userland: runtime.userland,
+		usingBaseFallback: runtime.usingBaseFallback,
+		mergePrompt: staged ? mergeTaskPrompt(runtime.userland) : undefined,
+	};
+}
+
+async function openCompany(root: string): Promise<void> {
 	await closeCompany();
 	registerCompany(root);
+
+	// The fork model (spec §9a): the company runs ITS OWN userland — forked
+	// from base on first open, fast-forwarded when untouched, staged for a
+	// controller merge when evolved. The kernel only loads it.
+	const userland = ensureUserland(root, BASE_USERLAND_DIR, shellVersion());
 
 	// Backend for surfaces/state/inbox — reused machinery, in-process.
 	const port = companyPort(root);
@@ -99,14 +131,28 @@ async function openCompany(root: string): Promise<{ root: string; backendUrl: st
 	});
 
 	const child = startChild(root);
-	runtime = { root, child, backendPort: port, backendClose };
+	runtime = { root, child, backendPort: port, backendClose, userland, usingBaseFallback: false };
 
 	// Never-conceived company: kick off the (autonomous) conception session.
 	const kickoff = conceptionKickoff(root);
 	if (kickoff) {
 		child.stdin.write(`${JSON.stringify({ type: "prompt", message: kickoff })}\n`);
 	}
-	return { root, backendUrl: `http://127.0.0.1:${port}`, kickoff: Boolean(kickoff) };
+	kickoffPending = Boolean(kickoff);
+
+	// Load the company's own app. If its evolved userland fails to boot, the
+	// kernel falls back to the base chrome — the company stays reachable.
+	await window?.loadFile(join(root, "userland", "index.html")).catch(async () => {
+		if (runtime) runtime.usingBaseFallback = true;
+		await window?.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+	});
+}
+
+let kickoffPending = false;
+
+function showHub(): void {
+	void closeCompany();
+	void window?.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 }
 
 /** Switch the chat to a trail session (or a fresh one) without touching the backend. */
@@ -129,10 +175,18 @@ function createWindow(): void {
 		},
 	});
 	window.setMenuBarVisibility(false);
-	void window.loadFile(join(DIRNAME, "renderer", "index.html"));
+	void window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 	window.webContents.setWindowOpenHandler(({ url }) => {
 		void electronShell.openExternal(url);
 		return { action: "deny" };
+	});
+	// A crashed evolved userland must not strand the company: fall back to
+	// the base chrome (kernel duty — last-good behavior).
+	window.webContents.on("render-process-gone", () => {
+		if (runtime && !runtime.usingBaseFallback) {
+			runtime.usingBaseFallback = true;
+			void window?.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+		}
 	});
 }
 
@@ -162,7 +216,13 @@ app.whenReady().then(() => {
 	});
 	ipcMain.handle("company:close", () => closeCompany());
 	ipcMain.handle("chat:open", (_event, sessionFile: string | null) => openChat(sessionFile));
-	ipcMain.handle("app:info", () => ({ version: shellVersion(), pendingCompany: pendingCompanyFromArgv() }));
+	ipcMain.handle("hub:show", () => showHub());
+	ipcMain.handle("app:info", () => {
+		const active = activeCompanyInfo();
+		if (active) active.kickoff = kickoffPending;
+		kickoffPending = false;
+		return { version: shellVersion(), pendingCompany: pendingCompanyFromArgv(), activeCompany: active };
+	});
 	ipcMain.handle("rpc:send", (_event, frame: unknown) => {
 		runtime?.child.stdin.write(`${JSON.stringify(frame)}\n`);
 	});
@@ -196,6 +256,16 @@ app.whenReady().then(() => {
 		window?.webContents.once("did-finish-load", () => {
 			console.log("SHELL_READY");
 			setTimeout(() => app.quit(), 1500);
+		});
+	}
+	// Fork-model smoke: open a company, prove its userland loads.
+	const smokeCompanyIndex = process.argv.indexOf("--smoke-company");
+	if (smokeCompanyIndex >= 0 && process.argv[smokeCompanyIndex + 1]) {
+		void openCompany(process.argv[smokeCompanyIndex + 1]).then(() => {
+			setTimeout(() => {
+				console.log(`USERLAND_LOADED ${window?.webContents.getURL()} action=${runtime?.userland.action}`);
+				app.quit();
+			}, 1500);
 		});
 	}
 });

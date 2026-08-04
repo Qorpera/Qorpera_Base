@@ -22,7 +22,7 @@ async function renderHub() {
 		b.className = "hubbtn";
 		b.textContent = company.name;
 		b.title = company.root;
-		b.onclick = () => openCompany(company.root, company.name);
+		b.onclick = () => openCompany(company.root);
 		box.appendChild(b);
 	}
 }
@@ -31,38 +31,53 @@ async function newCompanyPrompt() {
 	const dir = prompt("Directory for the new company (e.g. C:\\Companies\\my-co):");
 	if (!dir) return;
 	const root = await window.qorpera.newCompany(dir);
-	await openCompany(root, dir.split(/[\\/]/).pop());
+	await openCompany(root);
 }
 
 function backToHub() {
-	window.qorpera.closeCompany();
-	currentSession = null;
+	// The kernel closes the company and reloads the base hub chrome.
 	if (poller) clearInterval(poller);
-	$("conav").style.display = "none";
-	$("hubnav").style.display = "";
-	$("title").firstChild.textContent = "Qorpera Base";
-	$("subtitle").textContent = "the foundation";
-	$("messages").innerHTML = "";
-	show(null);
-	renderHub();
+	window.qorpera.showHub();
 }
 
 // ---- company ---------------------------------------------------------------
 
-async function openCompany(root, name) {
-	const opened = await window.qorpera.openCompany(root);
-	backendUrl = opened.backendUrl;
+async function openCompany(root) {
+	// The kernel forks/loads the company's own userland and reloads this
+	// window into it; this page's job ends here.
+	await window.qorpera.openCompany(root);
+}
+
+/** Boot into an already-open company (called after the kernel loads us). */
+async function enterCompany(active) {
+	backendUrl = active.backendUrl;
 	$("hubnav").style.display = "none";
 	$("conav").style.display = "";
-	$("title").firstChild.textContent = name || root;
+	$("title").firstChild.textContent = active.root.split(/[\\/]/).pop();
 	$("subtitle").textContent = "Controller — Qorpera Base";
 	$("messages").innerHTML = "";
-	if (opened.kickoff) {
+	if (active.usingBaseFallback) {
+		addMsg("log", "your evolved app failed to load — running the base chrome (kernel fallback)");
+	}
+	if (active.kickoff) {
 		addMsg("tool", "· conception started — the controller is studying the company…");
+	}
+	if (active.mergePrompt) {
+		const b = document.createElement("button");
+		b.id = "mergeBtn";
+		b.textContent = `Merge app update → v${active.userland.stagedVersion}`;
+		b.onclick = () => {
+			window.qorpera.rpcSend({ type: "prompt", message: active.mergePrompt });
+			addMsg("tool", "· merge task sent to the controller");
+			show("chat");
+			b.remove();
+		};
+		$("conav").insertBefore(b, $("conav").firstChild);
 	}
 	show("chat");
 	hydrateAgentState(false);
 	await refreshState();
+	$("title").firstChild.textContent = state.name || $("title").firstChild.textContent;
 	if (poller) clearInterval(poller);
 	poller = setInterval(refreshState, 2000);
 }
@@ -409,13 +424,15 @@ window.qorpera.onUpdateReady((version) => {
 	}
 	$("status").textContent = `v${version} downloaded — restart to apply`;
 });
-window.qorpera.onOpenCompany((root) => openCompany(root, root.split(/[\\/]/).pop()));
+window.qorpera.onOpenCompany((root) => openCompany(root));
 
 (async () => {
 	const info = await window.qorpera.appInfo();
 	$("subtitle").textContent = `the foundation · v${info.version}`;
-	if (info.pendingCompany) {
-		await openCompany(info.pendingCompany, info.pendingCompany.split(/[\\/]/).pop());
+	if (info.activeCompany) {
+		await enterCompany(info.activeCompany);
+	} else if (info.pendingCompany) {
+		await openCompany(info.pendingCompany);
 	} else {
 		await renderHub();
 	}

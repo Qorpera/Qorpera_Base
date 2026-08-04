@@ -78,6 +78,15 @@ automatically; keep working elsewhere while you wait. Never edit
 \`authority.toml\`, this file, or anything in \`inbox/\` other than your own
 \`msg-*.md\` items — the rest belongs to the human.
 
+\`userland/\` is your app's own code — this company's fork of the Qorpera
+Base chrome. Evolve it freely: change the UI, add views, commands, and
+behavior as the company needs. \`userland/.base/\` is the pristine base you
+forked from — leave it as merge reference. When a base update is staged at
+\`userland/.update/\`, merge it (yours / .base / .update, a 3-way merge):
+preserve your evolutions, adopt the update, verify the app loads. The
+kernel beneath you — authority enforcement, the trail, the updater — is not
+yours and not forkable; everything above it is.
+
 If your model id is newer than the stamps in the trail, you may understand
 things your predecessors did not. Re-derive their choices where it matters
 and redo the work. Steer the company to the better path; do not bulldoze it.

@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	newCompany: (dir) => ipcRenderer.invoke("company:new", dir),
 	closeCompany: () => ipcRenderer.invoke("company:close"),
 	openChat: (sessionFile) => ipcRenderer.invoke("chat:open", sessionFile),
+	showHub: () => ipcRenderer.invoke("hub:show"),
 	appInfo: () => ipcRenderer.invoke("app:info"),
 	updateCheck: () => ipcRenderer.invoke("update:check"),
 	updateInstall: () => ipcRenderer.invoke("update:install"),
