@@ -134,6 +134,14 @@ adapters are ours to write · (c) exists, with the four caveats above (c.2 is
 new information vs the audit) · (d) exists as audited, verified headless ·
 (e) exists as audited · (f) exists as audited.
 
+**Slice 3 update (2026-08-04):** seam (d) is now occupied without new code at
+the storage layer: sessions ARE the trail. `core/company.ts` scaffolds the
+spine (`qorpera company init`) and points project `sessionDir` at
+`<root>/trail/`, so every session's tree-shaped JSONL lands inside the
+company folder — no mirroring layer, no normalization gap. The kernel prompt
+is single-sourced in `KERNEL_PROMPT` and materialized as AGENTS.md +
+CLAUDE.md (seam f, spec §5.1). See `packages/coding-agent/docs/company.md`.
+
 **Slice 2 update (2026-08-04):** the authority gates now occupy seam (c) —
 `src/core/authority.ts`, mounted core-owned at the head of
 `_installAgentToolHooks` (ahead of extension handlers, resolving c.2) and in
