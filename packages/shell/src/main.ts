@@ -44,20 +44,12 @@ async function closeCompany(): Promise<void> {
 	runtime = undefined;
 }
 
-async function openCompany(root: string): Promise<{ root: string; backendUrl: string; kickoff: boolean }> {
-	await closeCompany();
-	registerCompany(root);
-
-	// Backend for surfaces/state/inbox — reused machinery, in-process.
-	const port = companyPort(root);
-	const server = createCompanyAppServer({ root, port });
-	const backendClose = await new Promise<(() => void) | undefined>((resolvePromise) => {
-		server.once("error", () => resolvePromise(undefined)); // already running: reuse it
-		server.listen(port, "127.0.0.1", () => resolvePromise(() => server.close()));
-	});
-
-	// The intelligence: the CLI's RPC mode as a child of Electron's own Node.
-	const child = spawn(process.execPath, [RPC_ENTRY, "--mode", "rpc"], {
+/** Spawn the intelligence: the CLI's RPC mode under Electron's own Node.
+ * With sessionFile, resumes that trail session; without, starts fresh. */
+function startChild(root: string, sessionFile?: string): ChildProcessWithoutNullStreams {
+	const args = [RPC_ENTRY, "--mode", "rpc"];
+	if (sessionFile) args.push("--session", join(root, "trail", sessionFile));
+	const child = spawn(process.execPath, args, {
 		cwd: root,
 		stdio: ["pipe", "pipe", "pipe"],
 		env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
@@ -72,15 +64,37 @@ async function openCompany(root: string): Promise<{ root: string; backendUrl: st
 	});
 	createInterface({ input: child.stderr }).on("line", (line) => send("rpc-log", line));
 	child.on("exit", (code) => send("rpc-exit", code));
+	return child;
+}
 
+async function openCompany(root: string): Promise<{ root: string; backendUrl: string; kickoff: boolean }> {
+	await closeCompany();
+	registerCompany(root);
+
+	// Backend for surfaces/state/inbox — reused machinery, in-process.
+	const port = companyPort(root);
+	const server = createCompanyAppServer({ root, port });
+	const backendClose = await new Promise<(() => void) | undefined>((resolvePromise) => {
+		server.once("error", () => resolvePromise(undefined)); // already running: reuse it
+		server.listen(port, "127.0.0.1", () => resolvePromise(() => server.close()));
+	});
+
+	const child = startChild(root);
 	runtime = { root, child, backendPort: port, backendClose };
 
-	// Never-conceived company: open with the conception interview.
+	// Never-conceived company: kick off the (autonomous) conception session.
 	const kickoff = conceptionKickoff(root);
 	if (kickoff) {
 		child.stdin.write(`${JSON.stringify({ type: "prompt", message: kickoff })}\n`);
 	}
 	return { root, backendUrl: `http://127.0.0.1:${port}`, kickoff: Boolean(kickoff) };
+}
+
+/** Switch the chat to a trail session (or a fresh one) without touching the backend. */
+function openChat(sessionFile: string | null): void {
+	if (!runtime) return;
+	runtime.child.kill();
+	runtime.child = startChild(runtime.root, sessionFile ?? undefined);
 }
 
 function createWindow(): void {
@@ -112,6 +126,7 @@ app.whenReady().then(() => {
 		return result.root;
 	});
 	ipcMain.handle("company:close", () => closeCompany());
+	ipcMain.handle("chat:open", (_event, sessionFile: string | null) => openChat(sessionFile));
 	ipcMain.handle("rpc:send", (_event, frame: unknown) => {
 		runtime?.child.stdin.write(`${JSON.stringify(frame)}\n`);
 	});

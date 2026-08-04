@@ -2,8 +2,9 @@
  * from the folder via the backend (surfaces/state/inbox) or the RPC pipe. */
 const $ = (id) => document.getElementById(id);
 let backendUrl = "";
-let state = { surfaces: [], inbox: [] };
+let state = { surfaces: [], inbox: [], sessions: [] };
 let currentSurface = null;
+let currentSession = null; // trail file of the open chat (null = fresh/unsaved)
 let assistantEl = null;
 let thinkingEl = null;
 let poller = null;
@@ -33,6 +34,7 @@ async function newCompanyPrompt() {
 
 function backToHub() {
 	window.qorpera.closeCompany();
+	currentSession = null;
 	if (poller) clearInterval(poller);
 	$("conav").style.display = "none";
 	$("hubnav").style.display = "";
@@ -74,7 +76,51 @@ async function refreshState() {
 	}
 }
 
+async function openSession(file) {
+	currentSession = file;
+	await window.qorpera.openChat(file);
+	$("messages").innerHTML = "";
+	show("chat");
+	renderCompanyNavSafe();
+	// Hydrate history; the response frame is handled in onRpcEvent.
+	setTimeout(() => window.qorpera.rpcSend({ type: "get_messages", id: "hydrate" }), 900);
+}
+
+async function newChat() {
+	currentSession = null;
+	await window.qorpera.openChat(null);
+	$("messages").innerHTML = "";
+	show("chat");
+	renderCompanyNavSafe();
+}
+
+function renderHistory(messages) {
+	$("messages").innerHTML = "";
+	for (const message of messages ?? []) {
+		if (message.role === "user") {
+			const text = (message.content ?? []).filter((p) => p.type === "text").map((p) => p.text).join("\n");
+			if (text) addMsg("user", text);
+		} else if (message.role === "assistant") {
+			for (const part of message.content ?? []) {
+				if (part.type === "text" && part.text) renderMarkdown(addMsg("assistant", ""), part.text);
+				if (part.type === "toolCall") addMsg("tool", `▸ ${part.name} ${summarizeArgs(part.arguments)}`);
+			}
+		}
+	}
+	$("messages").scrollTop = $("messages").scrollHeight;
+}
+
 function renderCompanyNav() {
+	const chats = $("sessions");
+	chats.innerHTML = "";
+	for (const session of state.sessions ?? []) {
+		const b = document.createElement("button");
+		b.textContent = session.title;
+		b.title = session.file;
+		if (currentSession === session.file) b.className = "active";
+		b.onclick = () => openSession(session.file);
+		chats.appendChild(b);
+	}
 	const nav = $("surfaces");
 	nav.innerHTML = state.surfaces.length ? "" : '<div class="empty" style="padding:6px">none built yet</div>';
 	for (const surface of state.surfaces) {
@@ -97,7 +143,6 @@ function show(view) {
 	$("view-chat").style.display = view === "chat" ? "flex" : "none";
 	$("view-surface").style.display = view === "surface" ? "block" : "none";
 	$("view-panel").style.display = view === "inbox" ? "block" : "none";
-	$("chatBtn").className = view === "chat" ? "active" : "";
 	$("inboxBtn").className = view === "inbox" ? "active" : "";
 	if (view === "inbox") renderInbox();
 	if (view !== "surface") currentSurface = null;
@@ -121,14 +166,16 @@ function showSurface(surface) {
 
 function renderInbox() {
 	const panel = $("view-panel");
-	panel.innerHTML = state.inbox.length ? "" : '<div class="empty">Inbox is empty</div>';
-	for (const gate of state.inbox) {
+	const items = [...state.inbox].sort((a, b) => (a.status === "pending" ? -1 : 1) - (b.status === "pending" ? -1 : 1));
+	panel.innerHTML = items.length ? "" : '<div class="empty">Inbox is empty</div>';
+	for (const item of items) {
 		const d = document.createElement("div");
 		d.className = "gate";
-		d.innerHTML = '<div class="t"></div><div class="s"></div>';
-		d.querySelector(".t").textContent = gate.title;
-		d.querySelector(".s").textContent = `${gate.file} — status: ${gate.status}`;
-		if (gate.status === "pending") {
+		d.innerHTML = '<div class="t"></div><div class="s"></div><div class="body"></div>';
+		d.querySelector(".t").textContent = item.title;
+		d.querySelector(".s").textContent = `${item.kind} · ${item.file}${item.status ? ` · ${item.status}` : ""}`;
+
+		if (item.kind === "gate" && item.status === "pending") {
 			for (const [label, action, cls] of [["Approve", "approved", "ok"], ["Deny", "denied", "no"]]) {
 				const b = document.createElement("button");
 				b.textContent = label;
@@ -137,13 +184,37 @@ function renderInbox() {
 					await fetch(`${backendUrl}/api/gate`, {
 						method: "POST",
 						headers: { "content-type": "application/json" },
-						body: JSON.stringify({ file: gate.file, action }),
+						body: JSON.stringify({ file: item.file, action }),
 					});
 					await refreshState();
 					renderInbox();
 				};
 				d.appendChild(b);
 			}
+		}
+
+		if (item.kind === "message" || item.kind === "note") {
+			// Controller↔founder item: render the body, offer a reply.
+			fetch(`${backendUrl}/api/inbox/${encodeURIComponent(item.file)}`)
+				.then((res) => res.text())
+				.then((body) => renderMarkdown(d.querySelector(".body"), body.replace(/^---[\s\S]*?---/, "")));
+			const reply = document.createElement("textarea");
+			reply.placeholder = "Respond to the controller…";
+			const sendBtn = document.createElement("button");
+			sendBtn.textContent = "Send response";
+			sendBtn.className = "ok";
+			sendBtn.onclick = async () => {
+				if (!reply.value.trim()) return;
+				await fetch(`${backendUrl}/api/inbox/respond`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ file: item.file, response: reply.value }),
+				});
+				await refreshState();
+				renderInbox();
+			};
+			d.appendChild(reply);
+			d.appendChild(sendBtn);
 		}
 		panel.appendChild(d);
 	}
@@ -220,7 +291,8 @@ window.qorpera.onRpcEvent((frame) => {
 			$("status").textContent = "working…";
 			break;
 		case "response":
-			if (frame.success === false) addMsg("log", `error: ${frame.error ?? frame.command}`);
+			if (frame.command === "get_messages" && frame.success) renderHistory(frame.data?.messages ?? frame.data);
+			else if (frame.success === false) addMsg("log", `error: ${frame.error ?? frame.command}`);
 			break;
 		default:
 			break;

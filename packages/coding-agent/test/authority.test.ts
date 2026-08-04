@@ -105,6 +105,27 @@ describe("classification and evaluation", () => {
 		expect(bashDecision.kind).toBe("block");
 	});
 
+	it("allows the agent to author inbox messages (msg-*.md) but never gates", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		expect(
+			evaluateToolCall(
+				authority,
+				"write",
+				{ path: join(root, "inbox", "msg-pricing-question.md"), content: "?" },
+				root,
+			).kind,
+		).toBe("allow");
+		// Gate files, non-msg names, and nested paths stay protected.
+		for (const path of [
+			join(root, "inbox", "gate-abc.md"),
+			join(root, "inbox", "notices.md"),
+			join(root, "inbox", "sub", "msg-x.md"),
+		]) {
+			expect(evaluateToolCall(authority, "write", { path, content: "x" }, root).kind).toBe("block");
+		}
+	});
+
 	it("honors [tools] overrides including none", () => {
 		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[tools]\ndanger = "irreversible"\nbash = "none"\n`);
 		const authority = discoverAuthority(root)!;

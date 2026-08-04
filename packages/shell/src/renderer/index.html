@@ -43,6 +43,9 @@
 	.gate button { width: auto; margin-right: 8px; padding: 5px 14px; border: 1px solid #2c3540; background: #1a2027; }
 	.gate button.ok { border-color: #2f6b3a; }
 	.gate button.no { border-color: #6b2f2f; }
+	.gate .body { margin: 8px 0; }
+	.gate textarea { width: 100%; background: #161b21; border: 1px solid #2c3540; border-radius: 6px; color: #e6e9ec; padding: 8px 10px; font: inherit; resize: vertical; min-height: 56px; margin-bottom: 8px; }
+	#sessions button { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	.empty { color: #7a8590; padding: 36px; text-align: center; }
 	.badge { background: #6b2f2f; border-radius: 10px; font-size: 11px; padding: 1px 7px; margin-left: 6px; }
 	#status { padding: 6px 16px; border-top: 1px solid #232a31; color: #7a8590; font-size: 11px; min-height: 25px; }
@@ -59,8 +62,10 @@
 	</div>
 	<div id="conav" style="display:none">
 		<h2>Company</h2>
-		<button id="chatBtn" onclick="show('chat')">Chat</button>
 		<button id="inboxBtn" onclick="show('inbox')">Inbox<span id="inboxBadge"></span></button>
+		<h2>Chats</h2>
+		<button onclick="newChat()">+ New chat</button>
+		<div id="sessions"></div>
 		<h2>Surfaces</h2>
 		<div id="surfaces"><div class="empty" style="padding:6px">none built yet</div></div>
 		<h2 style="margin-top:auto"></h2>

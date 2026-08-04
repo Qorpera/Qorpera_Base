@@ -55,6 +55,18 @@ Scaffolding is idempotent and never overwrites — a company's `company.md`
 is its identity, not ours to reset. Existing `.qorpera/settings.json` keys
 are merged around, and a pre-set `sessionDir` is respected.
 
+## Chats vs autonomous work (the communication split)
+
+Chat sessions are for work the founder brings. The controller's own
+autonomous work communicates through the inbox instead: it authors
+`inbox/msg-*.md` items — questions, proposals, plans, progress updates —
+and the founder responds inside the item (the shell renders a reply box; the
+response is appended as a `## Response` section the agent reads on its next
+wake). Conception runs this way: study, set up, post questions — never an
+interactive interrogation. The authority layer permits agent writes ONLY to
+`inbox/msg-*.md`; gate files and everything else in the inbox remain
+human-owned.
+
 Behavior notes:
 
 - The scaffolded `authority.toml` activates gates immediately: the folder

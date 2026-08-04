@@ -62,11 +62,21 @@ searchable history when you need to know why something is the way it is,
 and a smarter model than you will one day read it and redo your work
 better. Work in clean units so the record stays legible.
 
+How you and the founder communicate: chat sessions are for work the founder
+brings to you. Your own autonomous work communicates through \`inbox/\` —
+write \`inbox/msg-<slug>.md\` files for anything user-facing: questions,
+proposals, plans, progress updates, decisions you need. One item per file,
+a clear title, and enough context to answer without reading your session.
+The founder responds inside the item (a Response section appears below your
+text); read answers on your next wake. Never block waiting for a reply —
+post the item and continue other work.
+
 \`authority.toml\` defines which effects require the human — it binds the
 tools you build exactly as it binds you, and it is enforced in the harness,
-not by this text. Blocked effects file requests in \`inbox/\`; keep working
-elsewhere while you wait. Never edit \`authority.toml\`, this file, or
-anything in \`inbox/\` — those belong to the human.
+not by this text. Blocked effects file gate requests in \`inbox/\`
+automatically; keep working elsewhere while you wait. Never edit
+\`authority.toml\`, this file, or anything in \`inbox/\` other than your own
+\`msg-*.md\` items — the rest belongs to the human.
 
 If your model id is newer than the stamps in the trail, you may understand
 things your predecessors did not. Re-derive their choices where it matters
@@ -245,10 +255,12 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	return result;
 }
 
-const CONCEPTION_NEW = `This company folder was just created and company.md is still the template. Begin conception. Your primary source of understanding is data, not interview: start by asking which data sources, repositories, and services we should connect, then derive the scope of the company from what you can read. Use questions only for the gaps data cannot answer — intent, constraints, what I care about — one focused question at a time. Record my answers as dated evidence with provenance, never as fixed facts: numbers I give you (prices, budgets, forecasts) are early estimates you are expected to test and revise with analysis. Then perform the setup yourself: rewrite company.md as identity and intent only, keep working beliefs in app/substrates/ as revisable records, propose authority.toml adjustments and connections (I ratify those), and build the first state-of-the-company surface in app/.`;
+const CONCEPTION_SHARED = `Your primary source of understanding is data, not interview: derive the scope of the company from what you can read. This is an autonomous session — do NOT hold an interactive interview. For the gaps data cannot answer (intent, customers, constraints, which data sources and services to connect), post inbox/msg-*.md items — focused, answerable questions with your working assumption stated — then continue with everything that does not depend on the answers. Treat founder answers as dated evidence with provenance, never fixed facts: numbers (prices, budgets, forecasts) are early estimates you are expected to test and revise with analysis. Perform the setup yourself: rewrite company.md as identity and intent only (mark unconfirmed parts provisional), keep working beliefs in app/substrates/ as revisable records, propose authority.toml adjustments and connections through the inbox (the founder ratifies), and build the first state-of-the-company surface in app/. Finish by posting a msg item summarizing what you did and what awaits the founder.`;
+
+const CONCEPTION_NEW = `This company folder was just created and company.md is still the template. Begin conception. ${CONCEPTION_SHARED}`;
 
 const CONCEPTION_INTEGRATE = (repoName: string) =>
-	`This company folder was just created around an existing repository at work/${repoName}. Begin conception with study: read that repository enough to understand what exists (do not modify it yet). Your primary source of understanding is data, not interview — also ask which other data sources and services we should connect, and derive as much as you can from what you read. Use questions only for the gaps data cannot answer — intent, customers, constraints — one focused question at a time. Record my answers as dated evidence with provenance, never as fixed facts: numbers I give you (prices, budgets, forecasts) are early estimates you are expected to test and revise with analysis. Then perform the setup yourself: rewrite company.md as identity and intent only, keep working beliefs in app/substrates/ as revisable records, propose authority.toml adjustments and connections (I ratify those), and build the first state-of-the-company surface in app/.`;
+	`This company folder was just created around an existing repository at work/${repoName}. Begin conception with study: read that repository enough to understand what exists (do not modify it yet). ${CONCEPTION_SHARED}`;
 
 function printScaffoldReport(result: ScaffoldResult): void {
 	console.log(`Company spine at ${result.root}`);

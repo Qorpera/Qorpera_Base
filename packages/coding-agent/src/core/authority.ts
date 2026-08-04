@@ -185,10 +185,22 @@ function isUnderDir(target: string, root: string): boolean {
 	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
-/** Does this file path touch authority-protected territory? */
+/**
+ * Does this file path touch authority-protected territory?
+ *
+ * The inbox is the controller↔founder channel: the agent MAY author
+ * `msg-*.md` items (questions, proposals, plans, updates — the founder
+ * responds in the shell). Everything else in inbox/ stays gated — gate
+ * files especially, since writing those is self-approval.
+ */
 function isProtectedPath(authority: Authority, rawPath: string, cwd: string): boolean {
 	const resolved = resolve(isAbsolute(rawPath) ? rawPath : join(cwd, rawPath));
-	if (isUnderDir(resolved, join(authority.root, INBOX_DIR))) return true;
+	const inboxDirPath = join(authority.root, INBOX_DIR);
+	if (isUnderDir(resolved, inboxDirPath)) {
+		const isDirectChild = dirname(resolved) === resolve(inboxDirPath);
+		const isAgentMessage = /^msg-[a-z0-9][a-z0-9-]*\.md$/i.test(basename(resolved));
+		return !(isDirectChild && isAgentMessage);
+	}
 	if (dirname(resolved) === resolve(authority.root) && PROTECTED_ROOT_FILES.has(basename(resolved))) return true;
 	return false;
 }

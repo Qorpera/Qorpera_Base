@@ -55,6 +55,57 @@ describe("company app server", () => {
 		expect(traversal.status).toBe(403);
 	});
 
+	it("lists trail sessions and serves the controller↔founder message round-trip", async () => {
+		// A trail session appears in state with its first user message as title.
+		writeFileSync(
+			join(root, "trail", "2026-08-04T10-00-00-000Z_abc.jsonl"),
+			[
+				JSON.stringify({ type: "session", version: 3, id: "abc", timestamp: "t", cwd: root }),
+				JSON.stringify({
+					type: "message",
+					id: "1",
+					parentId: null,
+					message: { role: "user", content: [{ type: "text", text: "plan the pricing analysis" }] },
+				}),
+			].join("\n"),
+			"utf-8",
+		);
+		// An agent-authored inbox message awaits the founder.
+		writeFileSync(
+			join(root, "inbox", "msg-pricing.md"),
+			"# Pricing question\n\nWhich currency do customers pay in?\n",
+			"utf-8",
+		);
+
+		const state = (await (await fetch(`${base}/api/state`)).json()) as {
+			sessions: Array<{ file: string; title: string }>;
+			inbox: Array<{ file: string; kind: string; status: string }>;
+		};
+		expect(state.sessions[0].title).toBe("plan the pricing analysis");
+		const message = state.inbox.find((item) => item.file === "msg-pricing.md");
+		expect(message?.kind).toBe("message");
+		expect(message?.status).toBe("pending");
+
+		// Body is served; the founder's response lands in the file; status flips.
+		const body = await (await fetch(`${base}/api/inbox/msg-pricing.md`)).text();
+		expect(body).toContain("Which currency");
+		const respond = await fetch(`${base}/api/inbox/respond`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ file: "msg-pricing.md", response: "DKK primarily, EUR later." }),
+		});
+		expect(respond.status).toBe(200);
+		expect(readFileSync(join(root, "inbox", "msg-pricing.md"), "utf-8")).toContain("DKK primarily");
+		const after = (await (await fetch(`${base}/api/state`)).json()) as {
+			inbox: Array<{ file: string; status: string }>;
+		};
+		expect(after.inbox.find((item) => item.file === "msg-pricing.md")?.status).toBe("answered");
+
+		// Traversal-shaped names are refused.
+		const bad = await fetch(`${base}/api/inbox/..%2Fauthority.toml`);
+		expect(bad.status).toBe(400);
+	});
+
 	it("resolves gates from the inbox panel and approvals actually authorize", async () => {
 		const authority = discoverAuthority(root)!;
 		const first = evaluateToolCall(authority, "bash", { command: "rm -rf work" }, root);

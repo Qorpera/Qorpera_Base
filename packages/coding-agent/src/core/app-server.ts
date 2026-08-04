@@ -31,6 +31,7 @@ interface InboxItem {
 	file: string;
 	status: string;
 	title: string;
+	kind: "gate" | "message" | "note";
 }
 
 function companyName(root: string): string {
@@ -80,9 +81,17 @@ function readInbox(root: string): InboxItem[] {
 		if (!file.endsWith(".md") || file === "README.md") continue;
 		try {
 			const content = readFileSync(join(dir, file), "utf-8");
-			const status = content.match(/^status:\s*(\w+)/m)?.[1] ?? "";
 			const title = content.match(/^#\s+(.+)$/m)?.[1] ?? file;
-			items.push({ file, status, title });
+			if (file.startsWith("gate-")) {
+				const status = content.match(/^status:\s*(\w+)/m)?.[1] ?? "";
+				items.push({ file, status, title, kind: "gate" });
+			} else if (file.startsWith("msg-")) {
+				// Agent-authored item; answered once a Response section exists.
+				const status = /^##\s+Response/m.test(content) ? "answered" : "pending";
+				items.push({ file, status, title, kind: "message" });
+			} else {
+				items.push({ file, status: "", title, kind: "note" });
+			}
 		} catch {
 			// unreadable inbox entries are skipped
 		}
@@ -95,6 +104,66 @@ function surfaceVersion(root: string, entry: string): number {
 		return statSync(join(root, "app", "surfaces", entry)).mtimeMs;
 	} catch {
 		return 0;
+	}
+}
+
+interface SessionSummary {
+	file: string;
+	mtimeMs: number;
+	title: string;
+}
+
+/** Trail sessions ARE the chat list (spec §3). Title = first user message. */
+function listTrailSessions(root: string): SessionSummary[] {
+	const dir = join(root, "trail");
+	if (!existsSync(dir)) return [];
+	const sessions: SessionSummary[] = [];
+	for (const file of readdirSync(dir)) {
+		if (!file.endsWith(".jsonl")) continue;
+		try {
+			const path = join(dir, file);
+			const head = readFileSync(path, "utf-8").slice(0, 16_384);
+			let title = "";
+			for (const line of head.split("\n").slice(0, 40)) {
+				if (!line.trim()) continue;
+				try {
+					const entry = JSON.parse(line) as {
+						type?: string;
+						message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
+					};
+					if (entry.type === "message" && entry.message?.role === "user") {
+						const text = entry.message.content?.find((part) => part.type === "text")?.text ?? "";
+						title = text.replace(/\s+/g, " ").slice(0, 70);
+						break;
+					}
+				} catch {
+					// partial trailing line in the head window
+				}
+			}
+			sessions.push({ file, mtimeMs: statSync(path).mtimeMs, title: title || file.slice(0, 30) });
+		} catch {
+			// unreadable session files are skipped
+		}
+	}
+	return sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+const INBOX_FILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._ -]*\.md$/;
+
+/** Founder response: appended into the item; the agent reads it on next wake. */
+function respondToInboxItem(root: string, file: string, response: string): boolean {
+	if (!INBOX_FILE_PATTERN.test(file) || file === "README.md" || !response.trim()) return false;
+	const path = join(root, "inbox", file);
+	try {
+		const content = readFileSync(path, "utf-8");
+		writeFileSync(
+			path,
+			`${content.trimEnd()}\n\n## Response (founder, ${new Date().toISOString().slice(0, 16)}Z)\n\n${response.trim()}\n`,
+			"utf-8",
+		);
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -113,6 +182,7 @@ function stateFor(root: string): unknown {
 		name: companyName(root),
 		surfaces,
 		inbox: readInbox(root),
+		sessions: listTrailSessions(root),
 		trailSessions,
 	};
 }
@@ -286,6 +356,37 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 		}
 		if (url.pathname.startsWith("/surface/")) {
 			serveSurface(root, decodeURIComponent(url.pathname.slice("/surface/".length)), response);
+			return;
+		}
+		if (url.pathname.startsWith("/api/inbox/") && request.method === "GET") {
+			const file = decodeURIComponent(url.pathname.slice("/api/inbox/".length));
+			if (!INBOX_FILE_PATTERN.test(file)) {
+				response.writeHead(400).end("bad name");
+				return;
+			}
+			try {
+				response
+					.writeHead(200, { "content-type": "text/plain; charset=utf-8" })
+					.end(readFileSync(join(root, "inbox", file), "utf-8"));
+			} catch {
+				response.writeHead(404).end("not found");
+			}
+			return;
+		}
+		if (url.pathname === "/api/inbox/respond" && request.method === "POST") {
+			let body = "";
+			request.on("data", (chunk) => {
+				body += chunk;
+			});
+			request.on("end", () => {
+				try {
+					const { file, response: reply } = JSON.parse(body) as { file?: string; response?: string };
+					const ok = respondToInboxItem(root, file ?? "", reply ?? "");
+					response.writeHead(ok ? 200 : 400, { "content-type": "application/json" }).end(JSON.stringify({ ok }));
+				} catch {
+					response.writeHead(400).end("{}");
+				}
+			});
 			return;
 		}
 		if (url.pathname === "/api/gate" && request.method === "POST") {

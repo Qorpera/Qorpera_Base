@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	openCompany: (root) => ipcRenderer.invoke("company:open", root),
 	newCompany: (dir) => ipcRenderer.invoke("company:new", dir),
 	closeCompany: () => ipcRenderer.invoke("company:close"),
+	openChat: (sessionFile) => ipcRenderer.invoke("chat:open", sessionFile),
 	rpcSend: (frame) => ipcRenderer.invoke("rpc:send", frame),
 	onRpcEvent: (handler) => ipcRenderer.on("rpc-event", (_event, frame) => handler(frame)),
 	onRpcLog: (handler) => ipcRenderer.on("rpc-log", (_event, line) => handler(line)),
