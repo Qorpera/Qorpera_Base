@@ -11,6 +11,7 @@
  */
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -56,9 +57,12 @@ interface CompanyRuntime {
 	backendClose?: () => void;
 	userland: UserlandStatus;
 	usingBaseFallback: boolean;
+	backendToken: string;
 }
 
 const BASE_USERLAND_DIR = join(DIRNAME, "userland");
+/** Children we killed on purpose (session switch/close) — their exits are not news. */
+const intentionalKills = new WeakSet<ChildProcessWithoutNullStreams>();
 
 let window: BrowserWindow | undefined;
 let runtime: CompanyRuntime | undefined;
@@ -69,6 +73,7 @@ function send(channel: string, payload: unknown): void {
 
 async function closeCompany(): Promise<void> {
 	if (!runtime) return;
+	intentionalKills.add(runtime.child);
 	runtime.child.kill();
 	runtime.backendClose?.();
 	runtime = undefined;
@@ -96,13 +101,16 @@ function startChild(root: string, sessionFile?: string, autonomousName?: string)
 		}
 	});
 	createInterface({ input: child.stderr }).on("line", (line) => send("rpc-log", line));
-	child.on("exit", (code) => send("rpc-exit", code));
+	child.on("exit", (code) => {
+		if (!intentionalKills.has(child)) send("rpc-exit", code);
+	});
 	return child;
 }
 
 interface ActiveCompany {
 	root: string;
 	backendUrl: string;
+	backendToken: string;
 	kickoff: boolean;
 	userland: UserlandStatus;
 	usingBaseFallback: boolean;
@@ -115,6 +123,7 @@ function activeCompanyInfo(): ActiveCompany | undefined {
 	return {
 		root: runtime.root,
 		backendUrl: `http://127.0.0.1:${runtime.backendPort}`,
+		backendToken: runtime.backendToken,
 		kickoff: false,
 		userland: runtime.userland,
 		usingBaseFallback: runtime.usingBaseFallback,
@@ -131,9 +140,11 @@ async function openCompany(root: string): Promise<void> {
 	// controller merge when evolved. The kernel only loads it.
 	const userland = ensureUserland(root, BASE_USERLAND_DIR, shellVersion());
 
-	// Backend for surfaces/state/inbox — reused machinery, in-process.
+	// Backend for surfaces/state/inbox — reused machinery, in-process. The
+	// token guards mutating endpoints; only the renderer ever receives it.
 	const port = companyPort(root);
-	const server = createCompanyAppServer({ root, port });
+	const backendToken = randomUUID();
+	const server = createCompanyAppServer({ root, port, authToken: backendToken });
 	const backendClose = await new Promise<(() => void) | undefined>((resolvePromise) => {
 		server.once("error", () => resolvePromise(undefined)); // already running: reuse it
 		server.listen(port, "127.0.0.1", () => resolvePromise(() => server.close()));
@@ -142,7 +153,7 @@ async function openCompany(root: string): Promise<void> {
 	// Never-conceived company: the conception session is autonomous work.
 	const kickoff = conceptionKickoff(root);
 	const child = startChild(root, undefined, kickoff ? "conception" : undefined);
-	runtime = { root, child, backendPort: port, backendClose, userland, usingBaseFallback: false };
+	runtime = { root, child, backendPort: port, backendClose, userland, usingBaseFallback: false, backendToken };
 	if (kickoff) {
 		child.stdin.write(`${JSON.stringify({ type: "prompt", message: kickoff })}\n`);
 	}
@@ -166,6 +177,7 @@ function showHub(): void {
 /** Switch the chat to a trail session (or a fresh one) without touching the backend. */
 function openChat(sessionFile: string | null): void {
 	if (!runtime) return;
+	intentionalKills.add(runtime.child);
 	runtime.child.kill();
 	runtime.child = startChild(runtime.root, sessionFile ?? undefined);
 }

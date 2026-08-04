@@ -23,10 +23,21 @@ import { homedir } from "node:os";
 import { basename, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { marked } from "marked";
+import { parse as parseToml } from "smol-toml";
 
 export interface CompanyAppOptions {
 	root: string;
 	port?: number;
+	/**
+	 * Required on every MUTATING endpoint (gate resolution, inbox responses,
+	 * authority edits) via the x-qorpera-token header. The backend listens on
+	 * localhost, which the agent can reach with curl — without this token the
+	 * agent could approve its own gates. The Electron kernel holds the token
+	 * and hands it only to the renderer (file://, out of the agent's reach).
+	 * If omitted (standalone browser mode), one is generated and embedded in
+	 * the served chrome — a weaker posture, acceptable only for that mode.
+	 */
+	authToken?: string;
 }
 
 interface InboxItem {
@@ -278,7 +289,7 @@ function resolveGate(root: string, file: string, action: string): boolean {
 	}
 }
 
-const CHROME_HTML = (name: string) => `<!doctype html>
+const CHROME_HTML = (name: string, token: string) => `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -376,7 +387,7 @@ function showPanel(which, keep) {
 				for (const [label, action, cls] of [["Approve", "approved", "ok"], ["Deny", "denied", "no"]]) {
 					const b = document.createElement("button");
 					b.textContent = label; b.className = cls;
-					b.onclick = async () => { await fetch("/api/gate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: g.file, action }) }); refresh().then(() => showPanel("inbox", true)); };
+					b.onclick = async () => { await fetch("/api/gate", { method: "POST", headers: { "content-type": "application/json", "x-qorpera-token": "${token}" }, body: JSON.stringify({ file: g.file, action }) }); refresh().then(() => showPanel("inbox", true)); };
 					d.appendChild(b);
 				}
 			}
@@ -395,10 +406,16 @@ setInterval(refresh, 2000);
 
 export function createCompanyAppServer(options: CompanyAppOptions): Server {
 	const root = resolve(options.root);
+	const authToken =
+		options.authToken ?? createHash("sha256").update(`${root}${Date.now()}${Math.random()}`).digest("hex");
+	const embedTokenInChrome = options.authToken === undefined;
+	const authorized = (request: IncomingMessage): boolean => request.headers["x-qorpera-token"] === authToken;
 	return createServer((request: IncomingMessage, response: ServerResponse) => {
 		const url = new URL(request.url ?? "/", "http://localhost");
 		if (url.pathname === "/") {
-			response.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(CHROME_HTML(companyName(root)));
+			response
+				.writeHead(200, { "content-type": "text/html; charset=utf-8" })
+				.end(CHROME_HTML(companyName(root), embedTokenInChrome ? authToken : ""));
 			return;
 		}
 		if (url.pathname === "/api/state") {
@@ -424,7 +441,48 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			}
 			return;
 		}
+		if (url.pathname === "/api/authority" && request.method === "GET") {
+			try {
+				response
+					.writeHead(200, { "content-type": "text/plain; charset=utf-8" })
+					.end(readFileSync(join(root, "authority.toml"), "utf-8"));
+			} catch {
+				response.writeHead(404).end("no authority.toml");
+			}
+			return;
+		}
+		if (url.pathname === "/api/authority" && request.method === "POST") {
+			if (!authorized(request)) {
+				response.writeHead(401).end("token required");
+				return;
+			}
+			let body = "";
+			request.on("data", (chunk) => {
+				body += chunk;
+			});
+			request.on("end", () => {
+				try {
+					const { content } = JSON.parse(body) as { content?: string };
+					if (typeof content !== "string" || !content.trim()) {
+						response.writeHead(400).end("empty");
+						return;
+					}
+					parseToml(content); // reject unparseable TOML with a clear error
+					writeFileSync(join(root, "authority.toml"), content, "utf-8");
+					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+				} catch (error) {
+					response
+						.writeHead(400, { "content-type": "application/json" })
+						.end(JSON.stringify({ ok: false, error: String(error).slice(0, 200) }));
+				}
+			});
+			return;
+		}
 		if (url.pathname === "/api/inbox/respond" && request.method === "POST") {
+			if (!authorized(request)) {
+				response.writeHead(401).end("token required");
+				return;
+			}
 			let body = "";
 			request.on("data", (chunk) => {
 				body += chunk;
@@ -441,6 +499,10 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			return;
 		}
 		if (url.pathname === "/api/gate" && request.method === "POST") {
+			if (!authorized(request)) {
+				response.writeHead(401).end("token required");
+				return;
+			}
 			let body = "";
 			request.on("data", (chunk) => {
 				body += chunk;
@@ -529,9 +591,39 @@ function installLauncher(root: string): string | undefined {
 	return path;
 }
 
-/** `qorpera app [dir]` / `qorpera app install [dir]`. */
+/** Desktop launcher for the Base hub itself (the shell with no --company). */
+function installHubLauncher(): string | undefined {
+	const desktop = join(homedir(), "Desktop");
+	if (!existsSync(desktop) || process.platform !== "win32") return undefined;
+	const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
+	const path = join(desktop, "Qorpera Base.cmd");
+	writeFileSync(
+		path,
+		[
+			"@echo off",
+			`set "EXE=%LocalAppData%\\Programs\\Qorpera Base\\Qorpera Base.exe"`,
+			`if not exist "%EXE%" set "EXE=%LocalAppData%\\Programs\\qorpera-base\\Qorpera Base.exe"`,
+			`if exist "%EXE%" (`,
+			`\tstart "" "%EXE%"`,
+			"\texit /b",
+			")",
+			`cd /d "${repoRoot}"`,
+			`start "" node_modules\\electron\\dist\\electron.exe packages\\shell\\dist\\main.js`,
+			"",
+		].join("\r\n"),
+		"utf-8",
+	);
+	return path;
+}
+
+/** `qorpera app [dir]` / `qorpera app install [dir]` / `qorpera app install-hub`. */
 export async function handleAppCommand(args: string[]): Promise<boolean> {
 	if (args[0] !== "app") return false;
+	if (args[1] === "install-hub") {
+		const launcher = installHubLauncher();
+		console.log(launcher ? `Installed launcher: ${launcher}` : "Could not install (no Desktop or unsupported OS).");
+		return true;
+	}
 	const install = args[1] === "install";
 	const positional = args.slice(install ? 2 : 1).filter((arg) => !arg.startsWith("--"));
 	const root = resolve(positional[0] ?? process.cwd());

@@ -46,6 +46,11 @@
 	.gate .body { margin: 8px 0; }
 	.gate textarea { width: 100%; background: #161b21; border: 1px solid #2c3540; border-radius: 6px; color: #e6e9ec; padding: 8px 10px; font: inherit; resize: vertical; min-height: 56px; margin-bottom: 8px; }
 	#sessions button { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	h2.cat { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+	h2.cat .catBtn { width: auto; margin-left: auto; padding: 0 7px; font-size: 14px; color: #7a8590; border: 1px solid #2c3540; border-radius: 5px; background: none; cursor: pointer; }
+	h2.cat .catBtn:hover { color: #fff; background: #1a2027; }
+	#chatsCaret { font-size: 10px; color: #7a8590; }
+	.loading { display: flex; align-items: center; justify-content: center; height: 100%; color: #7a8590; }
 	.empty { color: #7a8590; padding: 36px; text-align: center; }
 	.badge { background: #6b2f2f; border-radius: 10px; font-size: 11px; padding: 1px 7px; margin-left: 6px; }
 	#status { padding: 6px 16px; border-top: 1px solid #232a31; color: #7a8590; font-size: 11px; min-height: 25px; }
@@ -65,7 +70,7 @@
 		<button class="hubbtn" onclick="integrateCompanyPrompt()">+ Integrate existing repo…</button>
 		<h2>Cloud</h2>
 		<button class="hubbtn" disabled title="Sync, community, and compliance — not built yet">Connect to Qorpera Cloud (soon)</button>
-		<h2 style="margin-top:auto"></h2>
+		<div style="flex:1"></div>
 		<button onclick="show('settings')" id="settingsBtnHub">Settings</button>
 		<button onclick="checkUpdates()" id="updateBtnHub">Check for updates</button>
 	</div>
@@ -73,12 +78,11 @@
 		<h2>Company</h2>
 		<button id="inboxBtn" onclick="show('inbox')">Inbox<span id="inboxBadge"></span></button>
 		<button id="activityBtn" onclick="show('activity')">Activity</button>
-		<h2>Chats</h2>
-		<button onclick="newChat()">+ New chat</button>
+		<h2 class="cat" onclick="toggleChats()">Chats<span id="chatsCaret">▾</span><button class="catBtn" onclick="event.stopPropagation(); newChat()" title="New chat">+</button></h2>
 		<div id="sessions"></div>
 		<h2>Surfaces</h2>
 		<div id="surfaces"><div class="empty" style="padding:6px">none built yet</div></div>
-		<h2 style="margin-top:auto"></h2>
+		<div style="flex:1"></div>
 		<button onclick="show('settings')" id="settingsBtn">Settings</button>
 	</div>
 </nav>

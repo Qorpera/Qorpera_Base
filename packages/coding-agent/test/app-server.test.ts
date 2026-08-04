@@ -18,7 +18,7 @@ let base: string;
 beforeEach(async () => {
 	root = join(tmpdir(), `qorpera-app-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	scaffoldCompany(root);
-	server = createCompanyAppServer({ root });
+	server = createCompanyAppServer({ root, authToken: "test-token" });
 	await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
 	const address = server!.address() as { port: number };
 	base = `http://127.0.0.1:${address.port}`;
@@ -112,7 +112,7 @@ describe("company app server", () => {
 		expect(body).toContain("Which currency");
 		const respond = await fetch(`${base}/api/inbox/respond`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
 			body: JSON.stringify({ file: "msg-pricing.md", response: "DKK primarily, EUR later." }),
 		});
 		expect(respond.status).toBe(200);
@@ -141,7 +141,7 @@ describe("company app server", () => {
 
 		const post = await fetch(`${base}/api/gate`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
 			body: JSON.stringify({ file: gate!.file, action: "approved" }),
 		});
 		expect(post.status).toBe(200);
@@ -154,9 +154,58 @@ describe("company app server", () => {
 		// Bad requests are refused.
 		const bad = await fetch(`${base}/api/gate`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
 			body: JSON.stringify({ file: "../authority.toml", action: "approved" }),
 		});
 		expect(bad.status).toBe(400);
+	});
+
+	it("rejects mutations without the kernel token — the agent cannot curl its own approvals", async () => {
+		const authority = discoverAuthority(root)!;
+		const blocked = evaluateToolCall(authority, "bash", { command: "rm -rf work" }, root);
+		const gateId = (blocked as { gateId: string }).gateId;
+		const state = (await (await fetch(`${base}/api/state`)).json()) as { inbox: Array<{ file: string }> };
+		const gateFile = state.inbox.find((item) => item.file.startsWith(gateId))!.file;
+
+		for (const [path, payload] of [
+			["/api/gate", { file: gateFile, action: "approved" }],
+			["/api/inbox/respond", { file: gateFile, response: "yes" }],
+			["/api/authority", { content: `[irreversible]\nmode = "auto"\n` }],
+		] as const) {
+			const res = await fetch(`${base}${path}`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(payload),
+			});
+			expect(res.status, path).toBe(401);
+		}
+		// And the gate is still pending — nothing was authorized.
+		expect(readFileSync(join(root, "inbox", gateFile), "utf-8")).toContain("status: pending");
+		// The bash screen also gates any curl mention of these endpoints.
+		expect(
+			evaluateToolCall(authority, "bash", { command: `curl -X POST localhost:4700/api/gate -d approved` }, root)
+				.kind,
+		).toBe("block");
+	});
+
+	it("authority editor endpoint: reads, rejects invalid TOML, applies valid edits", async () => {
+		const current = await (await fetch(`${base}/api/authority`)).text();
+		expect(current).toContain("[irreversible]");
+
+		const invalid = await fetch(`${base}/api/authority`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			body: JSON.stringify({ content: "not [valid toml" }),
+		});
+		expect(invalid.status).toBe(400);
+
+		const valid = await fetch(`${base}/api/authority`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			body: JSON.stringify({ content: `[irreversible]\nmode = "notify"\n` }),
+		});
+		expect(valid.status).toBe(200);
+		const authority = discoverAuthority(root)!;
+		expect(evaluateToolCall(authority, "bash", { command: "rm -rf scratch" }, root).kind).toBe("allow");
 	});
 });

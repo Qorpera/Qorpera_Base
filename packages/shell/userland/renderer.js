@@ -2,7 +2,20 @@
  * from the folder via the backend (surfaces/state/inbox) or the RPC pipe. */
 const $ = (id) => document.getElementById(id);
 let backendUrl = "";
+let backendToken = "";
 let state = { surfaces: [], inbox: [], sessions: [] };
+const sessionCache = {}; // session file -> rendered messages HTML
+let chatsCollapsed = false;
+
+function authHeaders(extra) {
+	return { "x-qorpera-token": backendToken, ...(extra ?? {}) };
+}
+
+function toggleChats() {
+	chatsCollapsed = !chatsCollapsed;
+	$("sessions").style.display = chatsCollapsed ? "none" : "";
+	$("chatsCaret").textContent = chatsCollapsed ? "▸" : "▾";
+}
 let currentSurface = null;
 let currentSession = null; // trail file of the open chat (null = fresh/unsaved)
 let assistantEl = null;
@@ -57,6 +70,7 @@ async function openCompany(root) {
 /** Boot into an already-open company (called after the kernel loads us). */
 async function enterCompany(active) {
 	backendUrl = active.backendUrl;
+	backendToken = active.backendToken ?? "";
 	$("hubnav").style.display = "none";
 	$("conav").style.display = "";
 	$("title").firstChild.textContent = active.root.split(/[\\/]/).pop();
@@ -131,16 +145,24 @@ function hydrateAgentState(withHistory) {
 	}, 900);
 }
 
+function cacheCurrentSession() {
+	if (currentSession) sessionCache[currentSession] = $("messages").innerHTML;
+}
+
 async function openSession(file) {
+	cacheCurrentSession();
 	currentSession = file;
 	await window.qorpera.openChat(file);
-	$("messages").innerHTML = "";
+	// Cached pages show instantly; fresh ones get a proper loading state.
+	// Either way the live child re-hydrates and replaces once ready.
+	$("messages").innerHTML = sessionCache[file] ?? '<div class="loading">loading session…</div>';
 	show("chat");
 	renderCompanyNavSafe();
 	hydrateAgentState(true);
 }
 
 async function newChat() {
+	cacheCurrentSession();
 	currentSession = null;
 	await window.qorpera.openChat(null);
 	$("messages").innerHTML = "";
@@ -263,7 +285,7 @@ function renderInbox() {
 				b.onclick = async () => {
 					await fetch(`${backendUrl}/api/gate`, {
 						method: "POST",
-						headers: { "content-type": "application/json" },
+						headers: authHeaders({ "content-type": "application/json" }),
 						body: JSON.stringify({ file: item.file, action }),
 					});
 					await refreshState();
@@ -287,7 +309,7 @@ function renderInbox() {
 				if (!reply.value.trim()) return;
 				await fetch(`${backendUrl}/api/inbox/respond`, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: authHeaders({ "content-type": "application/json" }),
 					body: JSON.stringify({ file: item.file, response: reply.value }),
 				});
 				await refreshState();
@@ -446,6 +468,35 @@ async function renderSettings() {
 		"Connections (model subscriptions)",
 		`${providers}<div class="sess-meta" style="margin-top:6px">To connect one, run <code>qorpera</code> in a terminal and use <code>/login</code> — a GUI flow is coming. Credentials live in ${info.agentDir}, never in company folders.</div>`,
 	);
+	// Authority editor — the human's file, edited from the human's interface.
+	if (backendUrl) {
+		const auth = section("Authority (gates)", `<span class="sess-meta">Human-owned. The controller can never edit this — you can.</span>`);
+		const editor = document.createElement("textarea");
+		editor.style.minHeight = "220px";
+		editor.style.fontFamily = "Consolas, monospace";
+		editor.value = "loading…";
+		fetch(`${backendUrl}/api/authority`).then((r) => r.text()).then((text) => {
+			editor.value = text;
+		});
+		const save = document.createElement("button");
+		save.textContent = "Save authority.toml";
+		save.className = "ok";
+		const note = document.createElement("div");
+		note.className = "sess-meta";
+		save.onclick = async () => {
+			const res = await fetch(`${backendUrl}/api/authority`, {
+				method: "POST",
+				headers: authHeaders({ "content-type": "application/json" }),
+				body: JSON.stringify({ content: editor.value }),
+			});
+			const result = await res.json().catch(() => ({ ok: false, error: "unexpected response" }));
+			note.textContent = result.ok ? "saved — gates apply immediately" : `rejected: ${result.error ?? "invalid TOML"}`;
+		};
+		auth.appendChild(editor);
+		auth.appendChild(save);
+		auth.appendChild(note);
+	}
+
 	section("Profile", `<span class="sess-meta">Founder profile and per-company preferences land here as the platform grows; your controller can extend this plane in its own userland.</span>`);
 	section("Cloud", `<span class="sess-meta">Sync, community, and compliance — not built yet.</span>`);
 }

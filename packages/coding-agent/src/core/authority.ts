@@ -229,6 +229,10 @@ const WRITEISH_BASH =
  * write-ish contexts — reading them is routine study. */
 function bashTouchesProtected(command: string): boolean {
 	if (/\binbox[/\\]/.test(command)) return true;
+	// The company backend's mutating endpoints (gate approval, inbox
+	// responses, authority edits) are for the HUMAN's UI — an agent curling
+	// them is attempting self-authorization regardless of the token guard.
+	if (/\/api\/(gate|authority|inbox\/respond)\b/.test(command)) return true;
 	const stripped = stripHarmlessRedirects(command);
 	if (!WRITEISH_BASH.test(stripped)) return false;
 	if (stripped.includes(AUTHORITY_FILE)) return true;
