@@ -333,9 +333,21 @@ function installLauncher(root: string): string | undefined {
 	if (process.platform === "win32") {
 		const path = join(desktop, `${name} Controller.cmd`);
 		// Backend console starts minimized; the app window is the app.
+		// NOTE: the if-block needs parentheses — `if ... start & exit /b`
+		// would run `exit /b` unconditionally (cmd grammar), killing the
+		// relaunched instance before it starts.
 		writeFileSync(
 			path,
-			`@echo off\r\nif not "%1"=="min" start /min "" "%~f0" min & exit /b\r\ntitle ${name} Controller\r\ncd /d "${root}"\r\nqorpera app "${root}"\r\n`,
+			[
+				"@echo off",
+				`if not "%1"=="min" (`,
+				`\tstart /min "" "%~f0" min`,
+				"\texit /b",
+				")",
+				`title ${name} Controller`,
+				`qorpera app "${root}"`,
+				"",
+			].join("\r\n"),
 			"utf-8",
 		);
 		return path;
@@ -362,16 +374,26 @@ export async function handleAppCommand(args: string[]): Promise<boolean> {
 		console.log(launcher ? `Installed launcher: ${launcher}` : "Could not find a Desktop folder to install to.");
 		return true;
 	}
-	const server = createCompanyAppServer({ root, port });
-	await new Promise<void>((resolvePromise, rejectPromise) => {
-		server.once("error", rejectPromise);
-		server.listen(port, "127.0.0.1", () => resolvePromise());
-	}).catch((error: Error) => {
-		console.error(`Could not start on port ${port}: ${error.message} (already running?)`);
-		process.exitCode = 1;
-	});
-	if (process.exitCode === 1) return true;
 	const url = `http://127.0.0.1:${port}/`;
+	const server = createCompanyAppServer({ root, port });
+	const started = await new Promise<boolean>((resolvePromise) => {
+		server.once("error", (error: NodeJS.ErrnoException) => {
+			if (error.code === "EADDRINUSE") {
+				// The company's backend is already running — just open the window.
+				console.log(`${companyName(root)} Controller already running at ${url}; opening its window.`);
+				resolvePromise(false);
+			} else {
+				console.error(`Could not start on port ${port}: ${error.message}`);
+				process.exitCode = 1;
+				resolvePromise(false);
+			}
+		});
+		server.listen(port, "127.0.0.1", () => resolvePromise(true));
+	});
+	if (!started) {
+		if (process.exitCode !== 1) openAppWindow(url);
+		return true;
+	}
 	console.log(`${companyName(root)} Controller running at ${url}  (Ctrl+C to stop)`);
 	openAppWindow(url);
 	await new Promise(() => {}); // serve until killed
