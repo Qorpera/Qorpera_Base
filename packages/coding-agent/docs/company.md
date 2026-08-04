@@ -1,6 +1,29 @@
 # Company folders
 
-`qorpera company init [dir]` scaffolds the Qorpera Base spine (spec §2) —
+## The forking hub (spec §6.1a)
+
+Base is the hub companies are spun up from. Three entry verbs, all ending in
+a conception dialogue where the human only says what the company is:
+
+- `qorpera new <dir>` — start a new company from zero. Scaffolds the spine
+  and launches the session with the conception interview; the agent performs
+  the setup itself (rewrites company.md, proposes authority/connections,
+  builds the first surface).
+- `qorpera new <dir> --from <repo>` — integrate an existing product/company:
+  the repo is cloned into `work/`, and conception begins with study before
+  the interview.
+- `qorpera fork <company-repo> [dir]` — fork an existing company (the folder
+  is the company and it is a git repo, so forking is cloning). Opens as an
+  ordinary wake — the company already knows itself.
+
+`--no-launch` on any of them scaffolds/clones without starting the session.
+The human's setup obligations are exactly three: say what the company is,
+ratify `authority.toml`, and connect subscriptions (`/login` in the session,
+or `codex login` for engine mode).
+
+## The spine
+
+`qorpera company init [dir]` is the bare scaffold plumbing (spec §2) —
 the folder IS the company, and it is a git repository (fork a company =
 clone it):
 

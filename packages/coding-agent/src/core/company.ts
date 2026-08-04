@@ -17,7 +17,7 @@
  * describes comes from enforcement (`authority.ts`), never from prompt tier.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -217,11 +217,107 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	return result;
 }
 
+const CONCEPTION_NEW = `This company folder was just created and company.md is still the template. Begin conception: interview me — who this company is, what it is trying to become, which constraints matter, what I care about. Then perform the setup yourself: rewrite company.md as the company's identity, propose authority.toml adjustments and the connections we need (I ratify those), and build the first state-of-the-company surface in app/. Ask me one focused question at a time.`;
+
+const CONCEPTION_INTEGRATE = (repoName: string) =>
+	`This company folder was just created around an existing repository at work/${repoName}. Begin conception with study: read that repository enough to understand what exists (do not modify it yet). Then interview me about what the code cannot say — intent, customers, constraints, what I care about. Then perform the setup yourself: rewrite company.md, propose authority.toml adjustments and connections (I ratify those), and build the first state-of-the-company surface in app/. Ask me one focused question at a time.`;
+
+function printScaffoldReport(result: ScaffoldResult): void {
+	console.log(`Company spine at ${result.root}`);
+	for (const entry of result.created) console.log(`  created ${entry}`);
+	for (const entry of result.skipped) console.log(`  kept    ${entry}`);
+	if (result.gitInitialized) console.log("  initialized git repository");
+}
+
+function launchSession(dir: string, initialMessage?: string): Promise<number> {
+	// Re-exec this CLI interactively inside the company folder; the kernel
+	// AGENTS.md and gates take over from there.
+	const cliPath = process.argv[1];
+	return new Promise((resolve) => {
+		const child = spawn(process.execPath, [cliPath, ...(initialMessage ? [initialMessage] : [])], {
+			cwd: dir,
+			stdio: "inherit",
+		});
+		child.on("exit", (code) => resolve(code ?? 0));
+		child.on("error", () => resolve(1));
+	});
+}
+
+function cloneInto(source: string, destination: string): boolean {
+	const clone = spawnSync("git", ["clone", source, destination], { stdio: "inherit", shell: false });
+	return clone.status === 0;
+}
+
 /**
- * Early CLI handler in the `handlePackageCommand` style:
- * `qorpera company init [dir]`. Returns true when it consumed the args.
+ * Early CLI handlers in the `handlePackageCommand` style. The forking-hub
+ * verbs (spec §6.1a): `new` starts or integrates a company, `fork` clones an
+ * existing one, `company init` remains the bare scaffold plumbing.
  */
 export async function handleCompanyCommand(args: string[]): Promise<boolean> {
+	if (args[0] === "new") {
+		const rest = args.slice(1);
+		const noLaunch = rest.includes("--no-launch");
+		const fromIndex = rest.indexOf("--from");
+		const from = fromIndex >= 0 ? rest[fromIndex + 1] : undefined;
+		const positional = rest.filter((arg, index) => !arg.startsWith("--") && index !== fromIndex + 1);
+		const dir = positional[0];
+		if (!dir || (fromIndex >= 0 && !from)) {
+			console.error("Usage: new <dir> [--from <repo-path-or-url>] [--no-launch]");
+			process.exitCode = 1;
+			return true;
+		}
+		const result = scaffoldCompany(dir);
+		printScaffoldReport(result);
+		let repoName: string | undefined;
+		if (from) {
+			repoName = basenameOf(from);
+			const destination = join(result.root, "work", repoName);
+			if (existsSync(destination)) {
+				console.log(`  kept    work/${repoName} (already present)`);
+			} else if (cloneInto(from, destination)) {
+				console.log(`  cloned  ${from} -> work/${repoName}`);
+			} else {
+				console.error(
+					`Could not clone ${from}. Point --from at a git repository (path or URL), or copy the files into work/ yourself and re-run.`,
+				);
+				process.exitCode = 1;
+				return true;
+			}
+		}
+		if (noLaunch) {
+			console.log("\nNext: run `qorpera` inside the folder to begin conception.");
+			return true;
+		}
+		console.log("\nStarting conception session…\n");
+		process.exitCode = await launchSession(result.root, repoName ? CONCEPTION_INTEGRATE(repoName) : CONCEPTION_NEW);
+		return true;
+	}
+
+	if (args[0] === "fork") {
+		const source = args[1];
+		if (!source) {
+			console.error("Usage: fork <company-repo-path-or-url> [dir]");
+			process.exitCode = 1;
+			return true;
+		}
+		const dir = args[2] ?? basenameOf(source);
+		if (existsSync(dir) && readdirSync(dir).length > 0) {
+			console.error(`Destination ${dir} exists and is not empty.`);
+			process.exitCode = 1;
+			return true;
+		}
+		if (!cloneInto(source, dir)) {
+			console.error(`Could not clone ${source}.`);
+			process.exitCode = 1;
+			return true;
+		}
+		console.log(`Forked company into ${resolve(dir)}`);
+		if (!args.includes("--no-launch")) {
+			process.exitCode = await launchSession(resolve(dir));
+		}
+		return true;
+	}
+
 	if (args[0] !== "company") return false;
 	const sub = args[1];
 	if (sub !== "init") {
@@ -231,12 +327,15 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 	}
 	const dir = args[2] ?? process.cwd();
 	const result = scaffoldCompany(dir);
-	console.log(`Company spine at ${result.root}`);
-	for (const entry of result.created) console.log(`  created ${entry}`);
-	for (const entry of result.skipped) console.log(`  kept    ${entry}`);
-	if (result.gitInitialized) console.log("  initialized git repository");
+	printScaffoldReport(result);
 	console.log(
 		"\nNext: open a chat here — the controller will interview you and rewrite company.md. Gates live in authority.toml; requests appear in inbox/.",
 	);
 	return true;
+}
+
+function basenameOf(source: string): string {
+	const cleaned = source.replace(/\.git$/, "").replace(/[/\\]+$/, "");
+	const segments = cleaned.split(/[/\\]/);
+	return segments[segments.length - 1] || "company";
 }

@@ -113,6 +113,51 @@ describe("scaffoldCompany", () => {
 	});
 });
 
+describe("forking hub verbs (no-launch paths)", () => {
+	it("qorpera new --from clones an existing repo into work/", async () => {
+		const { handleCompanyCommand } = await import("../src/core/company.ts");
+		// A tiny local git repo to integrate.
+		const product = join(root, "legacy-product");
+		mkdirSync(product, { recursive: true });
+		writeFileSync(join(product, "index.js"), "console.log('hi');\n", "utf-8");
+		const { spawnSync } = await import("node:child_process");
+		for (const cmd of [
+			["init"],
+			["add", "."],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", cmd, { cwd: product, stdio: "ignore" }).status).toBe(0);
+		}
+
+		const company = join(root, "integrated-co");
+		const handled = await handleCompanyCommand(["new", company, "--from", product, "--no-launch"]);
+		expect(handled).toBe(true);
+		expect(existsSync(join(company, "authority.toml"))).toBe(true);
+		expect(existsSync(join(company, "work", "legacy-product", "index.js"))).toBe(true);
+	});
+
+	it("qorpera fork clones a whole company folder", async () => {
+		const { handleCompanyCommand } = await import("../src/core/company.ts");
+		const original = join(root, "original-co");
+		scaffoldCompany(original);
+		const { spawnSync } = await import("node:child_process");
+		expect(spawnSync("git", ["add", "."], { cwd: original, stdio: "ignore" }).status).toBe(0);
+		expect(
+			spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "genesis"], {
+				cwd: original,
+				stdio: "ignore",
+			}).status,
+		).toBe(0);
+
+		const forked = join(root, "forked-co");
+		const handled = await handleCompanyCommand(["fork", original, forked, "--no-launch"]);
+		expect(handled).toBe(true);
+		expect(existsSync(join(forked, "AGENTS.md"))).toBe(true);
+		expect(existsSync(join(forked, "authority.toml"))).toBe(true);
+		expect(existsSync(join(forked, ".git"))).toBe(true);
+	});
+});
+
 describe("sessions are the trail", () => {
 	it("project settings route session storage into <root>/trail", async () => {
 		scaffoldCompany(root);
