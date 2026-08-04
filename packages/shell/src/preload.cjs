@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld("qorpera", {
 	showHub: () => ipcRenderer.invoke("hub:show"),
 	settingsInfo: () => ipcRenderer.invoke("settings:info"),
 	appInfo: () => ipcRenderer.invoke("app:info"),
+	setActiveApp: (app) => ipcRenderer.invoke("userland:set-active", app),
+	restoreVersion: (id) => ipcRenderer.invoke("userland:restore", id),
 	updateCheck: () => ipcRenderer.invoke("update:check"),
 	updateInstall: () => ipcRenderer.invoke("update:install"),
 	onUpdateStatus: (handler) => ipcRenderer.on("update-status", (_event, text) => handler(text)),

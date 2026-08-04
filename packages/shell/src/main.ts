@@ -27,7 +27,18 @@ import {
 } from "@qorpera/pi-coding-agent/company";
 import { app, BrowserWindow, shell as electronShell, ipcMain } from "electron";
 import electronUpdater from "electron-updater";
-import { ensureUserland, mergeTaskPrompt, type UserlandStatus } from "./userland-manager.ts";
+import {
+	ensureUserland,
+	getActiveApp,
+	isUnmodified,
+	listVersions,
+	mergeTaskPrompt,
+	restoreVersion,
+	setActiveApp,
+	snapshotIfChanged,
+	type UserlandStatus,
+	type UserlandVersion,
+} from "./userland-manager.ts";
 
 const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
 const DIRNAME = fileURLToPath(new URL(".", import.meta.url));
@@ -118,11 +129,15 @@ interface ActiveCompany {
 	userland: UserlandStatus;
 	usingBaseFallback: boolean;
 	mergePrompt?: string;
+	activeApp: "fork" | "base";
+	versions: UserlandVersion[];
+	evolved: boolean;
 }
 
 function activeCompanyInfo(): ActiveCompany | undefined {
 	if (!runtime) return undefined;
 	const staged = runtime.userland.action === "staged" || runtime.userland.action === "already-staged";
+	const userlandDir = join(runtime.root, "userland");
 	return {
 		root: runtime.root,
 		backendUrl: `http://127.0.0.1:${runtime.backendPort}`,
@@ -131,6 +146,9 @@ function activeCompanyInfo(): ActiveCompany | undefined {
 		userland: runtime.userland,
 		usingBaseFallback: runtime.usingBaseFallback,
 		mergePrompt: staged ? mergeTaskPrompt(runtime.userland) : undefined,
+		activeApp: getActiveApp(userlandDir),
+		versions: listVersions(userlandDir),
+		evolved: !isUnmodified(userlandDir),
 	};
 }
 
@@ -142,6 +160,9 @@ async function openCompany(root: string): Promise<void> {
 	// from base on first open, fast-forwarded when untouched, staged for a
 	// controller merge when evolved. The kernel only loads it.
 	const userland = ensureUserland(root, BASE_USERLAND_DIR, shellVersion());
+	// Any evolution since the last open is captured as a restorable version —
+	// the founder can always roll the app back from Settings → App.
+	snapshotIfChanged(join(root, "userland"));
 
 	// Backend for surfaces/state/inbox — reused machinery, in-process. The
 	// token guards mutating endpoints; only the renderer ever receives it.
@@ -162,8 +183,14 @@ async function openCompany(root: string): Promise<void> {
 	}
 	kickoffPending = Boolean(kickoff);
 
-	// Load the company's own app. If its evolved userland fails to boot, the
-	// kernel falls back to the base chrome — the company stays reachable.
+	// Load the company's own app — unless the founder switched this company to
+	// the pristine base app (Settings → App). If the evolved userland fails to
+	// boot, the kernel falls back to the base chrome — the company stays
+	// reachable either way.
+	if (getActiveApp(join(root, "userland")) === "base") {
+		await window?.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+		return;
+	}
 	await window?.loadFile(join(root, "userland", "index.html")).catch(async () => {
 		if (runtime) runtime.usingBaseFallback = true;
 		await window?.loadFile(join(BASE_USERLAND_DIR, "index.html"));
@@ -267,6 +294,33 @@ app.whenReady().then(() => {
 			providers,
 			agentDir: join(app.getPath("home"), ".qorpera", "agent"),
 		};
+	});
+	// Settings → App: switch this company between its evolved fork and the
+	// pristine base app, or roll the fork back to a saved version. Both
+	// reload the window into whichever app is now active.
+	ipcMain.handle("userland:set-active", async (_event, appChoice: "fork" | "base") => {
+		if (!runtime) return false;
+		setActiveApp(join(runtime.root, "userland"), appChoice === "base" ? "base" : "fork");
+		runtime.usingBaseFallback = false;
+		const dir = appChoice === "base" ? BASE_USERLAND_DIR : join(runtime.root, "userland");
+		await window?.loadFile(join(dir, "index.html")).catch(async () => {
+			if (runtime) runtime.usingBaseFallback = true;
+			await window?.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+		});
+		return true;
+	});
+	ipcMain.handle("userland:restore", async (_event, id: string) => {
+		if (!runtime || typeof id !== "string" || id.includes("/") || id.includes("\\") || id.includes(".."))
+			return false;
+		const ok = restoreVersion(join(runtime.root, "userland"), id);
+		if (ok && getActiveApp(join(runtime.root, "userland")) === "fork") {
+			runtime.usingBaseFallback = false;
+			await window?.loadFile(join(runtime.root, "userland", "index.html")).catch(async () => {
+				if (runtime) runtime.usingBaseFallback = true;
+				await window?.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+			});
+		}
+		return ok;
 	});
 	ipcMain.handle("app:info", () => {
 		const active = activeCompanyInfo();

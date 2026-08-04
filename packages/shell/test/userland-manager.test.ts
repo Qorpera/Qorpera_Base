@@ -3,7 +3,16 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ensureUserland, isUnmodified, mergeTaskPrompt } from "../src/userland-manager.ts";
+import {
+	ensureUserland,
+	getActiveApp,
+	isUnmodified,
+	listVersions,
+	mergeTaskPrompt,
+	restoreVersion,
+	setActiveApp,
+	snapshotIfChanged,
+} from "../src/userland-manager.ts";
 
 let root: string;
 let baseV1: string;
@@ -72,5 +81,61 @@ describe("userland fork model", () => {
 		const prompt = mergeTaskPrompt(status);
 		expect(prompt).toContain("3-way merge");
 		expect(prompt).toContain("v2.0.0");
+	});
+
+	it("versions: snapshots only on change, restores content, and rollback is itself reversible", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		// Pristine fork: nothing to snapshot (that state lives in .base already).
+		expect(snapshotIfChanged(userland())).toBeUndefined();
+		expect(listVersions(userland())).toEqual([]);
+
+		// First evolution → one snapshot; re-checking without change → none.
+		writeFileSync(join(userland(), "renderer.js"), "// evolution 1", "utf-8");
+		const v1 = snapshotIfChanged(userland())!;
+		expect(v1).toBeTruthy();
+		expect(snapshotIfChanged(userland())).toBeUndefined();
+
+		// Second evolution → second snapshot, newest first.
+		writeFileSync(join(userland(), "renderer.js"), "// evolution 2", "utf-8");
+		const v2 = snapshotIfChanged(userland(), "second")!;
+		const versions = listVersions(userland());
+		expect(versions.map((v) => v.id)).toEqual([v2, v1]);
+		expect(versions[0].label).toBe("second");
+
+		// Rollback to evolution 1 — reversible because evolution 2 is saved.
+		expect(restoreVersion(userland(), v1)).toBe(true);
+		expect(readFileSync(join(userland(), "renderer.js"), "utf-8")).toBe("// evolution 1");
+		expect(restoreVersion(userland(), v2)).toBe(true);
+		expect(readFileSync(join(userland(), "renderer.js"), "utf-8")).toBe("// evolution 2");
+
+		// Unsaved-at-restore work is captured as a pre-restore snapshot.
+		writeFileSync(join(userland(), "renderer.js"), "// evolution 3, never snapshotted", "utf-8");
+		expect(restoreVersion(userland(), v1)).toBe(true);
+		const pre = listVersions(userland()).find((v) => v.label === "pre-restore");
+		expect(pre).toBeTruthy();
+		expect(restoreVersion(userland(), pre!.id)).toBe(true);
+		expect(readFileSync(join(userland(), "renderer.js"), "utf-8")).toBe("// evolution 3, never snapshotted");
+
+		// Unknown id refused.
+		expect(restoreVersion(userland(), "nope")).toBe(false);
+	});
+
+	it("active app choice persists and survives a fast-forward; snapshots don't break hashing", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		expect(getActiveApp(userland())).toBe("fork");
+		setActiveApp(userland(), "base");
+		expect(getActiveApp(userland())).toBe("base");
+
+		// The choice is metadata, not an evolution — the fork still fast-forwards.
+		const status = ensureUserland(company(), baseV2, "2.0.0");
+		expect(status.action).toBe("fast-forwarded");
+		expect(getActiveApp(userland())).toBe("base");
+
+		// A .versions dir is invisible to modification detection.
+		writeFileSync(join(userland(), "renderer.js"), "// changed", "utf-8");
+		snapshotIfChanged(userland());
+		expect(isUnmodified(userland())).toBe(false);
+		writeFileSync(join(userland(), "renderer.js"), "// v2 improved", "utf-8");
+		expect(isUnmodified(userland())).toBe(true);
 	});
 });

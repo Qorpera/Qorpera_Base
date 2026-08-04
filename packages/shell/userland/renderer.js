@@ -442,14 +442,14 @@ let updateReadyVersion = null;
 
 function openSettings(tab) {
 	settingsTab = tab || "general";
-	$("settingsView").hidden = false;
+	$("settingsView").classList.add("open");
 	for (const b of document.querySelectorAll("#settingsView .stab")) {
 		b.classList.toggle("active", b.dataset.tab === settingsTab);
 	}
 	renderSettingsTab();
 }
 function closeSettings() {
-	$("settingsView").hidden = true;
+	$("settingsView").classList.remove("open");
 }
 
 function setHeading(content, text) {
@@ -502,6 +502,60 @@ async function renderSettingsTab() {
 			upd.onclick = () => checkUpdates();
 		}
 		setRow(content, "Updates", "foundation only — your app's userland merges separately", upd);
+		return;
+	}
+
+	if (settingsTab === "app") {
+		setHeading(content, "App — this company's fork");
+		const info = await window.qorpera.appInfo();
+		const co = info.activeCompany;
+		if (!co) {
+			content.insertAdjacentHTML("beforeend", '<div class="sess-meta">Open a company — its app is a fork of the base, managed here.</div>');
+			return;
+		}
+		setRow(
+			content,
+			`Fork of Qorpera Base v${co.userland.baseVersion}`,
+			co.evolved ? "evolved — the controller has changed this app" : "pristine — identical to the base",
+		);
+		if (co.userland.stagedVersion) {
+			setRow(content, `Base v${co.userland.stagedVersion} staged`, "waiting in userland/.update/ for the controller's merge session");
+		}
+		const sw = document.createElement("button");
+		sw.className = "save";
+		sw.style.marginTop = "0";
+		sw.textContent = co.activeApp === "base" ? "Run this company's app" : "Run the base app";
+		sw.onclick = () => window.qorpera.setActiveApp(co.activeApp === "base" ? "fork" : "base");
+		setRow(
+			content,
+			"Active app",
+			co.activeApp === "base"
+				? "running the pristine base app over this company (the fork is untouched)"
+				: "running the company's own fork",
+			sw,
+		);
+		setHeading(content, "Versions");
+		if (!co.versions.length) {
+			content.insertAdjacentHTML(
+				"beforeend",
+				'<div class="sess-meta">No saved versions yet — a version is saved automatically whenever the app has changed at open.</div>',
+			);
+			return;
+		}
+		for (const v of co.versions) {
+			const btn = document.createElement("button");
+			btn.className = "save";
+			btn.style.marginTop = "0";
+			btn.textContent = "Restore";
+			btn.onclick = async () => {
+				btn.disabled = true;
+				await window.qorpera.restoreVersion(v.id);
+				renderSettingsTab();
+			};
+			const [d, t] = v.savedAt.split("T");
+			const [hh, mm, ss] = (t || "").split("-");
+			setRow(content, v.label || "snapshot", `${d} ${hh || ""}:${mm || ""}:${ss || ""}`.trim(), btn);
+		}
 		return;
 	}
 
@@ -639,7 +693,7 @@ window.qorpera.onUpdateStatus((text) => {
 window.qorpera.onUpdateReady((version) => {
 	updateReadyVersion = version;
 	$("status").textContent = `v${version} downloaded — restart to apply (Settings → General)`;
-	if (!$("settingsView").hidden && settingsTab === "general") renderSettingsTab();
+	if ($("settingsView").classList.contains("open") && settingsTab === "general") renderSettingsTab();
 });
 window.qorpera.onOpenCompany((root) => openCompany(root));
 
