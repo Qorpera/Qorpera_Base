@@ -14,7 +14,7 @@
 
 - **Hard fork.** No upstream tracking, no merges, no PRs back (upstream
   auto-closes outside contributions; its harness-v2 redesign will diverge the
-  API anyway). The `origin` remote was removed at fork time.
+  API anyway). The `origin` remote was removed at fork time; the fork now lives at https://github.com/Qorpera/Qorpera_Base (dev, private) with releases at https://github.com/Qorpera/Qorpera_Base_Releases (public).
 - **Fixes are cherry-picked individually.** When an upstream fix is worth
   taking, cherry-pick the specific commit and record it in the table below
   with its upstream SHA.
