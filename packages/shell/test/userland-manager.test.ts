@@ -83,6 +83,20 @@ describe("userland fork model", () => {
 		expect(prompt).toContain("v2.0.0");
 	});
 
+	it("relabels instead of staging when the new base is byte-identical to the pristine copy", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		writeFileSync(join(userland(), "renderer.js"), "// evolved", "utf-8");
+		// Same content re-released under a new version (or a fork cut
+		// mid-release): no merge material exists — just relabel.
+		const status = ensureUserland(company(), baseV1, "1.0.1");
+		expect(status.action).toBe("current");
+		expect(status.baseVersion).toBe("1.0.1");
+		expect(existsSync(join(userland(), ".update"))).toBe(false);
+		expect(readFileSync(join(userland(), "renderer.js"), "utf-8")).toBe("// evolved");
+		// A REAL content change still stages.
+		expect(ensureUserland(company(), baseV2, "2.0.0").action).toBe("staged");
+	});
+
 	it("versions: snapshots only on change, restores content, and rollback is itself reversible", () => {
 		ensureUserland(company(), baseV1, "1.0.0");
 		// Pristine fork: nothing to snapshot (that state lives in .base already).

@@ -225,6 +225,18 @@ export function ensureUserland(companyRoot: string, baseDir: string, baseVersion
 		return { action: "fast-forwarded", baseVersion };
 	}
 
+	// New base byte-identical to the fork's pristine copy (a version-label-only
+	// release, or a fork cut mid-release): nothing to merge — relabel, and
+	// clear any staging a prior open created for this phantom delta.
+	if (
+		existsSync(join(userlandDir, PRISTINE_DIR)) &&
+		JSON.stringify(hashFiles(join(userlandDir, PRISTINE_DIR))) === JSON.stringify(hashFiles(baseDir))
+	) {
+		rmSync(join(userlandDir, UPDATE_DIR), { recursive: true, force: true });
+		writeManifest(userlandDir, { ...manifest, baseVersion, stagedVersion: undefined });
+		return { action: "current", baseVersion };
+	}
+
 	// Evolved fork: stage the update for a controller merge session.
 	if (manifest.stagedVersion === baseVersion) {
 		return { action: "already-staged", baseVersion: manifest.baseVersion, stagedVersion: baseVersion };
