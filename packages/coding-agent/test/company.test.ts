@@ -158,6 +158,37 @@ describe("forking hub verbs (no-launch paths)", () => {
 	});
 });
 
+describe("company registry", () => {
+	it("registers, dedupes, sorts by recency, and filters vanished companies", async () => {
+		const prevAgentDir = process.env.QORPERA_CODING_AGENT_DIR;
+		process.env.QORPERA_CODING_AGENT_DIR = join(root, "agent-home");
+		try {
+			const { listCompanies, registerCompany } = await import("../src/core/company.ts");
+			const companyA = join(root, "co-a");
+			const companyB = join(root, "co-b");
+			scaffoldCompany(companyA);
+			scaffoldCompany(companyB);
+
+			registerCompany(companyA);
+			registerCompany(companyB);
+			registerCompany(companyA); // re-open: dedupe + bump recency
+			let companies = listCompanies();
+			expect(companies.length).toBe(2);
+			expect(companies[0].root).toBe(companyA);
+			expect(companies[0].name).toBe("co-a");
+
+			// A registered dir that stops being a company disappears from the list.
+			rmSync(join(companyB, "authority.toml"));
+			companies = listCompanies();
+			expect(companies.length).toBe(1);
+			expect(companies[0].root).toBe(companyA);
+		} finally {
+			if (prevAgentDir === undefined) delete process.env.QORPERA_CODING_AGENT_DIR;
+			else process.env.QORPERA_CODING_AGENT_DIR = prevAgentDir;
+		}
+	});
+});
+
 describe("sessions are the trail", () => {
 	it("project settings route session storage into <root>/trail", async () => {
 		scaffoldCompany(root);

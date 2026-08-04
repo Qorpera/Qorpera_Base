@@ -20,6 +20,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { createInterface } from "node:readline";
+import { getAgentDir } from "../config.ts";
 
 /**
  * The kernel prompt (spec §5.2). L0 — companies and models may layer above
@@ -272,6 +274,7 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		}
 		const result = scaffoldCompany(dir);
 		printScaffoldReport(result);
+		registerCompany(result.root);
 		let repoName: string | undefined;
 		if (from) {
 			repoName = basenameOf(from);
@@ -316,6 +319,7 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 			return true;
 		}
 		console.log(`Forked company into ${resolve(dir)}`);
+		registerCompany(resolve(dir));
 		if (!args.includes("--no-launch")) {
 			process.exitCode = await launchSession(resolve(dir));
 		}
@@ -332,6 +336,7 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 	const dir = args[2] ?? process.cwd();
 	const result = scaffoldCompany(dir);
 	printScaffoldReport(result);
+	registerCompany(result.root);
 	console.log(
 		"\nNext: open a chat here — the controller will interview you and rewrite company.md. Gates live in authority.toml; requests appear in inbox/.",
 	);
@@ -342,4 +347,114 @@ function basenameOf(source: string): string {
 	const cleaned = source.replace(/\.git$/, "").replace(/[/\\]+$/, "");
 	const segments = cleaned.split(/[/\\]/);
 	return segments[segments.length - 1] || "company";
+}
+
+// ---- company registry (the hub's memory) ----------------------------------
+
+export interface CompanyRecord {
+	root: string;
+	name: string;
+	lastOpened: string;
+}
+
+function registryPath(): string {
+	return join(getAgentDir(), "companies.json");
+}
+
+/** Companies known to this machine; roots that stopped being companies are filtered out. */
+export function listCompanies(): CompanyRecord[] {
+	try {
+		const records = JSON.parse(readFileSync(registryPath(), "utf-8")) as CompanyRecord[];
+		if (!Array.isArray(records)) return [];
+		return records
+			.filter(
+				(record) => record && typeof record.root === "string" && existsSync(join(record.root, "authority.toml")),
+			)
+			.sort((a, b) => (b.lastOpened ?? "").localeCompare(a.lastOpened ?? ""));
+	} catch {
+		return [];
+	}
+}
+
+export function registerCompany(rootDir: string): void {
+	const root = resolve(rootDir);
+	const name = basenameOf(root);
+	const existing = listCompanies().filter((record) => resolve(record.root) !== root);
+	const records: CompanyRecord[] = [{ root, name, lastOpened: new Date().toISOString() }, ...existing];
+	try {
+		mkdirSync(getAgentDir(), { recursive: true });
+		writeFileSync(registryPath(), `${JSON.stringify(records, null, "\t")}\n`, "utf-8");
+	} catch {
+		// The registry is a convenience; failure to write it never blocks a session.
+	}
+}
+
+// ---- the hub ---------------------------------------------------------------
+
+function askLine(question: string): Promise<string> {
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	return new Promise((resolvePromise) => {
+		rl.question(question, (answer) => {
+			rl.close();
+			resolvePromise(answer.trim());
+		});
+	});
+}
+
+type HubChoice = { kind: "enter"; root: string } | { kind: "new" } | { kind: "integrate" } | { kind: "plain" };
+
+/**
+ * The forking hub (spec §6.1a): bare `qorpera` outside a company offers
+ * enter / new / integrate / plain-session. Returns undefined to continue
+ * normal startup (plain session), or an exit code when it ran a session.
+ */
+export async function runCompanyHub(
+	showSelector: (title: string, options: Array<{ label: string; value: HubChoice }>) => Promise<HubChoice | undefined>,
+): Promise<number | undefined> {
+	const companies = listCompanies();
+	const options: Array<{ label: string; value: HubChoice }> = [
+		...companies.map((company) => ({
+			label: `Enter ${company.name}  (${company.root})`,
+			value: { kind: "enter", root: company.root } as HubChoice,
+		})),
+		{ label: "New company…", value: { kind: "new" } },
+		{ label: "Integrate an existing repo into a new company…", value: { kind: "integrate" } },
+		{ label: "Plain session in this directory", value: { kind: "plain" } },
+	];
+	const choice = await showSelector("Qorpera — company hub", options);
+	if (choice === undefined) return 0; // esc/ctrl-c: quit
+	switch (choice.kind) {
+		case "plain":
+			return undefined;
+		case "enter": {
+			registerCompany(choice.root);
+			return await launchSession(choice.root);
+		}
+		case "new": {
+			const dir = await askLine("Directory for the new company (e.g. C:\\Companies\\my-co): ");
+			if (!dir) return 0;
+			const result = scaffoldCompany(dir);
+			printScaffoldReport(result);
+			registerCompany(result.root);
+			console.log("\nStarting conception session…\n");
+			return await launchSession(result.root, CONCEPTION_NEW);
+		}
+		case "integrate": {
+			const dir = await askLine("Directory for the new company (e.g. C:\\Companies\\my-co): ");
+			if (!dir) return 0;
+			const from = await askLine("Existing repo to integrate (path or git URL): ");
+			if (!from) return 0;
+			const result = scaffoldCompany(dir);
+			printScaffoldReport(result);
+			const repoName = basenameOf(from);
+			const destination = join(result.root, "work", repoName);
+			if (!existsSync(destination) && !cloneInto(from, destination)) {
+				console.error(`Could not clone ${from}. Copy the files into work/ yourself and re-run.`);
+				return 1;
+			}
+			registerCompany(result.root);
+			console.log("\nStarting conception session…\n");
+			return await launchSession(result.root, CONCEPTION_INTEGRATE(repoName));
+		}
+	}
 }

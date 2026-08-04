@@ -2,8 +2,15 @@
 
 ## The forking hub (spec §6.1a)
 
-Base is the hub companies are spun up from. Three entry verbs, all ending in
-a conception dialogue where the human only says what the company is:
+Base is the hub companies are spun up from. **Bare `qorpera` from any
+directory outside a company opens the hub**: enter one of your companies
+(remembered in `~/.qorpera/agent/companies.json`), start a new one,
+integrate an existing repo, or just open a plain session where you are.
+Inside a company folder, `qorpera` goes straight to the session. Any
+argument bypasses the hub, so `qorpera` keeps working as a general agent.
+
+The same flows exist as explicit verbs, all ending in a conception dialogue
+where the human only says what the company is:
 
 - `qorpera new <dir>` — start a new company from zero. Scaffolds the spine
   and launches the session with the conception interview; the agent performs

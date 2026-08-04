@@ -32,7 +32,8 @@ import {
 	createAgentSessionServices,
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
-import { handleCompanyCommand } from "./core/company.ts";
+import { discoverAuthority } from "./core/authority.ts";
+import { handleCompanyCommand, registerCompany, runCompanyHub } from "./core/company.ts";
 import { handleEngineCommand } from "./core/engine/cli.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
@@ -569,6 +570,24 @@ export async function main(args: string[], options?: MainOptions) {
 
 	if (await handleEngineCommand(args)) {
 		return;
+	}
+
+	// The forking hub (spec §6.1a): bare `qorpera` inside a company goes
+	// straight to the session (and remembers the company); outside one, offer
+	// enter / new / integrate / plain. Any argument bypasses the hub so
+	// qorpera keeps working as a general agent.
+	if (args.length === 0 && process.stdin.isTTY && process.stdout.isTTY) {
+		const authorityHere = discoverAuthority(cwd);
+		if (authorityHere) {
+			registerCompany(authorityHere.root);
+		} else {
+			const hubExit = await runCompanyHub((title, options) =>
+				showStartupSelector(bootstrapSettingsManager, title, options),
+			);
+			if (hubExit !== undefined) {
+				process.exit(hubExit);
+			}
+		}
 	}
 
 	if (await runCredentialPrintCommand(args)) {
