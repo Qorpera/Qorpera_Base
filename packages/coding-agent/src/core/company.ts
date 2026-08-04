@@ -298,7 +298,7 @@ function cloneInto(source: string, destination: string): boolean {
 }
 
 /** Clone an existing repo under work/ (the integrate flow). Returns false on failure. */
-function integrateRepo(root: string, from: string): boolean {
+export function integrateRepo(root: string, from: string): boolean {
 	const repoName = basenameOf(from);
 	const destination = join(root, "work", repoName);
 	if (existsSync(destination)) {

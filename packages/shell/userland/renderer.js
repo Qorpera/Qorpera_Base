@@ -34,10 +34,16 @@ async function newCompanyPrompt() {
 	await openCompany(root);
 }
 
-function backToHub() {
-	// The kernel closes the company and reloads the base hub chrome.
-	if (poller) clearInterval(poller);
-	window.qorpera.showHub();
+async function integrateCompanyPrompt() {
+	const dir = prompt("Directory for the new company (e.g. C:\\Companies\\my-co):");
+	if (!dir) return;
+	const from = prompt("Existing repo to integrate (path or git URL):");
+	if (!from) return;
+	const result = await window.qorpera.integrateCompany(dir, from);
+	if (!result.ok) {
+		alert("Could not clone the repo — check the path/URL. The company folder was created; you can copy files into work/ manually.");
+	}
+	await openCompany(result.root);
 }
 
 // ---- company ---------------------------------------------------------------
@@ -162,7 +168,8 @@ function renderHistory(messages) {
 function renderCompanyNav() {
 	const chats = $("sessions");
 	chats.innerHTML = "";
-	for (const session of state.sessions ?? []) {
+	// Chats = work the founder brings; autonomous sessions live in Activity.
+	for (const session of (state.sessions ?? []).filter((s) => s.kind !== "autonomous")) {
 		const b = document.createElement("button");
 		b.textContent = session.title;
 		b.title = session.file;
@@ -191,11 +198,12 @@ function show(view) {
 	currentView = view;
 	$("view-chat").style.display = view === "chat" ? "flex" : "none";
 	$("view-surface").style.display = view === "surface" ? "block" : "none";
-	$("view-panel").style.display = view === "inbox" || view === "activity" ? "block" : "none";
+	$("view-panel").style.display = view === "inbox" || view === "activity" || view === "settings" ? "block" : "none";
 	$("inboxBtn").className = view === "inbox" ? "active" : "";
 	$("activityBtn").className = view === "activity" ? "active" : "";
 	if (view === "inbox") renderInbox();
 	if (view === "activity") renderActivity();
+	if (view === "settings") renderSettings();
 	if (view !== "surface") currentSurface = null;
 	renderCompanyNavSafe();
 }
@@ -215,11 +223,13 @@ function showSurface(surface) {
 	renderCompanyNavSafe();
 }
 
-/** The controller's work, visible: every trail session, newest first. */
+/** The controller's own work: autonomous sessions only (chats live in the nav). */
 function renderActivity() {
 	const panel = $("view-panel");
-	const sessions = state.sessions ?? [];
-	panel.innerHTML = sessions.length ? "" : '<div class="empty">No sessions recorded yet</div>';
+	const sessions = (state.sessions ?? []).filter((s) => s.kind === "autonomous");
+	panel.innerHTML = sessions.length
+		? ""
+		: '<div class="empty">No autonomous controller sessions yet — conception, routines, and merges will appear here.</div>';
 	for (const session of sessions) {
 		const d = document.createElement("div");
 		d.className = "gate";
@@ -404,6 +414,40 @@ function summarizeArgs(args) {
 	if (typeof args.command === "string") return args.command.slice(0, 120);
 	if (typeof args.path === "string") return args.path;
 	return "";
+}
+
+/** Settings: foundation + connections. Company-specific settings are the
+ * controller's to add — this is the base plane it evolves from. */
+async function renderSettings() {
+	const panel = $("view-panel");
+	const info = await window.qorpera.settingsInfo();
+	panel.innerHTML = "";
+	const section = (title, bodyHtml) => {
+		const d = document.createElement("div");
+		d.className = "gate";
+		d.innerHTML = `<div class="t"></div><div class="body">${bodyHtml}</div>`;
+		d.querySelector(".t").textContent = title;
+		panel.appendChild(d);
+		return d;
+	};
+	const foundation = section(
+		"Foundation",
+		`Qorpera Base v${info.version} — ${info.packaged ? "installed (auto-updates from the release channel)" : "dev tree (updates by rebuilding the repo)"}`,
+	);
+	const updateBtn = document.createElement("button");
+	updateBtn.textContent = "Check for updates";
+	updateBtn.onclick = () => checkUpdates();
+	foundation.appendChild(updateBtn);
+
+	const providers = info.providers.length
+		? `<ul>${info.providers.map((p) => `<li>${p}</li>`).join("")}</ul>`
+		: "none connected yet";
+	section(
+		"Connections (model subscriptions)",
+		`${providers}<div class="sess-meta" style="margin-top:6px">To connect one, run <code>qorpera</code> in a terminal and use <code>/login</code> — a GUI flow is coming. Credentials live in ${info.agentDir}, never in company folders.</div>`,
+	);
+	section("Profile", `<span class="sess-meta">Founder profile and per-company preferences land here as the platform grows; your controller can extend this plane in its own userland.</span>`);
+	section("Cloud", `<span class="sess-meta">Sync, community, and compliance — not built yet.</span>`);
 }
 
 // ---- foundation updates -----------------------------------------------------

@@ -17,7 +17,13 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 // Deep imports from the coding agent (the foundation's own machinery).
 import { companyPort, createCompanyAppServer } from "@qorpera/pi-coding-agent/app-server";
-import { conceptionKickoff, listCompanies, registerCompany, scaffoldCompany } from "@qorpera/pi-coding-agent/company";
+import {
+	conceptionKickoff,
+	integrateRepo,
+	listCompanies,
+	registerCompany,
+	scaffoldCompany,
+} from "@qorpera/pi-coding-agent/company";
 import { app, BrowserWindow, shell as electronShell, ipcMain } from "electron";
 import electronUpdater from "electron-updater";
 import { ensureUserland, mergeTaskPrompt, type UserlandStatus } from "./userland-manager.ts";
@@ -69,10 +75,13 @@ async function closeCompany(): Promise<void> {
 }
 
 /** Spawn the intelligence: the CLI's RPC mode under Electron's own Node.
- * With sessionFile, resumes that trail session; without, starts fresh. */
-function startChild(root: string, sessionFile?: string): ChildProcessWithoutNullStreams {
+ * With sessionFile, resumes that trail session; without, starts fresh.
+ * Autonomous work is tagged with a session name so the trail (and the
+ * Activity view) can tell controller-initiated sessions from chats. */
+function startChild(root: string, sessionFile?: string, autonomousName?: string): ChildProcessWithoutNullStreams {
 	const args = [RPC_ENTRY, "--mode", "rpc"];
 	if (sessionFile) args.push("--session", join(root, "trail", sessionFile));
+	if (autonomousName) args.push("--name", `autonomous — ${autonomousName}`);
 	const child = spawn(process.execPath, args, {
 		cwd: root,
 		stdio: ["pipe", "pipe", "pipe"],
@@ -130,11 +139,10 @@ async function openCompany(root: string): Promise<void> {
 		server.listen(port, "127.0.0.1", () => resolvePromise(() => server.close()));
 	});
 
-	const child = startChild(root);
-	runtime = { root, child, backendPort: port, backendClose, userland, usingBaseFallback: false };
-
-	// Never-conceived company: kick off the (autonomous) conception session.
+	// Never-conceived company: the conception session is autonomous work.
 	const kickoff = conceptionKickoff(root);
+	const child = startChild(root, undefined, kickoff ? "conception" : undefined);
+	runtime = { root, child, backendPort: port, backendClose, userland, usingBaseFallback: false };
 	if (kickoff) {
 		child.stdin.write(`${JSON.stringify({ type: "prompt", message: kickoff })}\n`);
 	}
@@ -192,8 +200,10 @@ function createWindow(): void {
 
 // Single instance: relaunching (e.g. a company launcher) focuses the
 // existing window and routes its --company there instead of stacking
-// windows running different builds.
-if (!app.requestSingleInstanceLock()) {
+// windows running different builds. Smoke runs are headless test boots and
+// must not join or disturb a live instance.
+const IS_SMOKE = process.argv.some((arg) => arg.startsWith("--smoke"));
+if (!IS_SMOKE && !app.requestSingleInstanceLock()) {
 	app.quit();
 }
 app.on("second-instance", (_event, argv) => {
@@ -203,6 +213,10 @@ app.on("second-instance", (_event, argv) => {
 	const index = argv.indexOf("--company");
 	if (index >= 0 && argv[index + 1]) {
 		send("open-company", argv[index + 1]);
+	} else {
+		// Launching "Qorpera Base" itself means: take me to the hub — even if
+		// a controller is currently open in the window.
+		showHub();
 	}
 });
 
@@ -214,9 +228,31 @@ app.whenReady().then(() => {
 		registerCompany(result.root);
 		return result.root;
 	});
+	ipcMain.handle("company:integrate", (_event, dir: string, from: string) => {
+		const result = scaffoldCompany(dir);
+		registerCompany(result.root);
+		const ok = integrateRepo(result.root, from);
+		return { root: result.root, ok };
+	});
 	ipcMain.handle("company:close", () => closeCompany());
 	ipcMain.handle("chat:open", (_event, sessionFile: string | null) => openChat(sessionFile));
 	ipcMain.handle("hub:show", () => showHub());
+	ipcMain.handle("settings:info", () => {
+		// Connected providers: names only, never secrets. Kernel-level read.
+		let providers: string[] = [];
+		try {
+			const authPath = join(app.getPath("home"), ".qorpera", "agent", "auth.json");
+			providers = Object.keys(JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, unknown>);
+		} catch {
+			// no auth yet
+		}
+		return {
+			version: shellVersion(),
+			packaged: app.isPackaged,
+			providers,
+			agentDir: join(app.getPath("home"), ".qorpera", "agent"),
+		};
+	});
 	ipcMain.handle("app:info", () => {
 		const active = activeCompanyInfo();
 		if (active) active.kickoff = kickoffPending;

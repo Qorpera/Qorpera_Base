@@ -77,11 +77,32 @@ describe("company app server", () => {
 			"utf-8",
 		);
 
+		// An autonomous session (tagged at spawn via --name) is distinguished.
+		writeFileSync(
+			join(root, "trail", "2026-08-04T11-00-00-000Z_auto.jsonl"),
+			[
+				JSON.stringify({ type: "session", version: 3, id: "auto", timestamp: "t", cwd: root }),
+				JSON.stringify({ type: "session_info", id: "s1", parentId: null, name: "autonomous — conception" }),
+				JSON.stringify({
+					type: "message",
+					id: "1",
+					parentId: "s1",
+					message: { role: "user", content: [{ type: "text", text: "begin conception" }] },
+				}),
+			].join("\n"),
+			"utf-8",
+		);
+
 		const state = (await (await fetch(`${base}/api/state`)).json()) as {
-			sessions: Array<{ file: string; title: string }>;
+			sessions: Array<{ file: string; title: string; kind: string }>;
 			inbox: Array<{ file: string; kind: string; status: string }>;
 		};
-		expect(state.sessions[0].title).toBe("plan the pricing analysis");
+		const chat = state.sessions.find((s) => s.file.includes("_abc"));
+		const auto = state.sessions.find((s) => s.file.includes("_auto"));
+		expect(chat?.title).toBe("plan the pricing analysis");
+		expect(chat?.kind).toBe("chat");
+		expect(auto?.kind).toBe("autonomous");
+		expect(auto?.title).toBe("autonomous — conception");
 		const message = state.inbox.find((item) => item.file === "msg-pricing.md");
 		expect(message?.kind).toBe("message");
 		expect(message?.status).toBe("pending");

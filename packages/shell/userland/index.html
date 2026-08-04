@@ -62,7 +62,12 @@
 		<h2>Companies</h2>
 		<div id="companies"></div>
 		<button class="hubbtn" onclick="newCompanyPrompt()">+ New company…</button>
-		<button onclick="checkUpdates()" id="updateBtnHub" style="margin-top:8px">Check for updates</button>
+		<button class="hubbtn" onclick="integrateCompanyPrompt()">+ Integrate existing repo…</button>
+		<h2>Cloud</h2>
+		<button class="hubbtn" disabled title="Sync, community, and compliance — not built yet">Connect to Qorpera Cloud (soon)</button>
+		<h2 style="margin-top:auto"></h2>
+		<button onclick="show('settings')" id="settingsBtnHub">Settings</button>
+		<button onclick="checkUpdates()" id="updateBtnHub">Check for updates</button>
 	</div>
 	<div id="conav" style="display:none">
 		<h2>Company</h2>
@@ -74,8 +79,7 @@
 		<h2>Surfaces</h2>
 		<div id="surfaces"><div class="empty" style="padding:6px">none built yet</div></div>
 		<h2 style="margin-top:auto"></h2>
-		<button onclick="backToHub()">← All companies</button>
-		<button id="updateBtn" onclick="checkUpdates()">Check for updates</button>
+		<button onclick="show('settings')" id="settingsBtn">Settings</button>
 	</div>
 </nav>
 <main>

@@ -113,9 +113,12 @@ interface SessionSummary {
 	file: string;
 	mtimeMs: number;
 	title: string;
+	/** "autonomous" = controller-initiated work (tagged at spawn); "chat" = founder-brought. */
+	kind: "chat" | "autonomous";
 }
 
-/** Trail sessions ARE the chat list (spec §3). Title = first user message. */
+/** Trail sessions ARE the chat list (spec §3). Title = first user message;
+ * autonomous work is tagged with a session name at spawn time. */
 function listTrailSessions(root: string): SessionSummary[] {
 	const dir = join(root, "trail");
 	if (!existsSync(dir)) return [];
@@ -126,23 +129,34 @@ function listTrailSessions(root: string): SessionSummary[] {
 			const path = join(dir, file);
 			const head = readFileSync(path, "utf-8").slice(0, 16_384);
 			let title = "";
+			let name = "";
 			for (const line of head.split("\n").slice(0, 40)) {
 				if (!line.trim()) continue;
 				try {
 					const entry = JSON.parse(line) as {
 						type?: string;
+						name?: string;
 						message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
 					};
-					if (entry.type === "message" && entry.message?.role === "user") {
+					if (entry.type === "session_info" && typeof entry.name === "string" && !name) {
+						name = entry.name;
+					}
+					if (entry.type === "message" && entry.message?.role === "user" && !title) {
 						const text = entry.message.content?.find((part) => part.type === "text")?.text ?? "";
 						title = text.replace(/\s+/g, " ").slice(0, 70);
-						break;
 					}
+					if (name && title) break;
 				} catch {
 					// partial trailing line in the head window
 				}
 			}
-			sessions.push({ file, mtimeMs: statSync(path).mtimeMs, title: title || file.slice(0, 30) });
+			const kind = name.toLowerCase().startsWith("autonomous") ? "autonomous" : "chat";
+			sessions.push({
+				file,
+				mtimeMs: statSync(path).mtimeMs,
+				title: kind === "autonomous" ? name : title || file.slice(0, 30),
+				kind,
+			});
 		} catch {
 			// unreadable session files are skipped
 		}
