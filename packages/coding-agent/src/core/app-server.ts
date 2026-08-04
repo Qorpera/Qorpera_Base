@@ -314,8 +314,25 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
  */
 function openAppWindow(url: string): void {
 	if (process.platform === "win32") {
-		// msedge ships with Windows 11 and resolves via App Paths.
-		spawn("cmd", ["/c", "start", "", "msedge", `--app=${url}`], { stdio: "ignore", detached: true }).unref();
+		// Probe real install paths — App Paths lookup via `start msedge` is
+		// not reliable (Edge may be absent entirely, e.g. EU unbundling).
+		const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
+		const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+		const localAppData = process.env.LOCALAPPDATA ?? "";
+		const candidates = [
+			join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
+			join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
+			join(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
+			join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+			join(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
+		];
+		const browser = candidates.find((candidate) => existsSync(candidate));
+		if (browser) {
+			spawn(browser, [`--app=${url}`], { stdio: "ignore", detached: true }).unref();
+		} else {
+			// Default browser tab — still works, just less app-like.
+			spawn("cmd", ["/c", "start", "", url], { stdio: "ignore", detached: true }).unref();
+		}
 		return;
 	}
 	if (process.platform === "darwin") {
