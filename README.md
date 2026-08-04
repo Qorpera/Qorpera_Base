@@ -1,36 +1,34 @@
-<p align="center">
-  <a href="https://pi.dev">
-    <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
-  </a>
-</p>
-<p align="center">
-  <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
-  <a href="https://www.npmjs.com/package/@earendil-works/pi-coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@earendil-works/pi-coding-agent?style=flat-square" /></a>
-</p>
+# Qorpera Base
 
-> New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](CONTRIBUTING.md).
+**Qorpera Base is the open-source base of an agentic company-controller
+platform.** A company forks it; its AI builds the company's own controller from
+it — surfaces, substrates, routines, and tools that fit that company alone. The
+design spec lives in the Qorpera repositories
+(`artifacts/qorpera-base/spec-v0.md`); fork provenance and policy are in
+[FORK.md](FORK.md).
 
-# Pi Agent Harness
+Qorpera Base is a hard fork of the [PI coding agent](https://github.com/earendil-works/pi)
+by Mario Zechner (MIT) — forked 2026-08-04 at v0.83.0. The agent harness
+machinery documented below is PI's, and that documentation remains accurate;
+identity, scope (`@qorpera/*`), binary (`qorpera`), and config home
+(`~/.qorpera/`) are Qorpera's.
 
-This is the home of the Pi agent harness project including our self extensible coding agent.
+* **[@qorpera/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
+* **[@qorpera/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
+* **[@qorpera/pi-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)
 
-* **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
-* **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
-* **[@earendil-works/pi-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)
+---
 
-To learn more about Pi:
-
-* [Visit pi.dev](https://pi.dev), the project website with demos
-* [Read the documentation](https://pi.dev/docs/latest), but you can also ask the agent to explain itself
+## Upstream technical documentation (PI Agent Harness)
 
 ## All Packages
 
 | Package | Description |
 |---------|-------------|
-| **[@earendil-works/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
-| **[@earendil-works/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
-| **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
-| **[@earendil-works/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
+| **[@qorpera/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
+| **[@qorpera/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
+| **[@qorpera/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
+| **[@qorpera/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
 
 For Slack/chat automation and workflows see [earendil-works/pi-chat](https://github.com/earendil-works/pi-chat).
 
@@ -78,7 +76,7 @@ We treat npm dependency changes as reviewed code changes.
 
 - Direct external dependencies are pinned to exact versions. Internal workspace packages remain version-ranged.
 - `.npmrc` sets `save-exact=true` and `min-release-age=2` to avoid same-day dependency releases during npm resolution.
-- `package-lock.json` is the dependency ground truth. Pre-commit blocks accidental lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1` is set.
+- `package-lock.json` is the dependency ground truth. Pre-commit blocks accidental lockfile commits unless `QORPERA_ALLOW_LOCKFILE_CHANGE=1` is set.
 - `npm run check` verifies pinned direct deps, native TypeScript import compatibility, and the generated coding-agent shrinkwrap.
 - The published CLI package includes `packages/coding-agent/npm-shrinkwrap.json`, generated from the root lockfile, to pin transitive deps for npm users.
 - Release smoke tests use `npm run release:local` to build, pack, and create isolated npm and Bun installs outside the repo before tagging a release.
