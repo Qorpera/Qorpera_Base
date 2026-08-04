@@ -1,16 +1,18 @@
 /**
- * The per-company app — "[Company Name] Controller" (spec §7, v1).
+ * The per-company desktop app — "[Company Name] Controller" (spec §7, v1).
  *
- * Qorpera Base is the foundation; connecting it to a company folder yields
- * that company's own app: a local server whose chrome renders whatever the
- * controller has built in `app/` — nav from `app/manifest.json`, surfaces
- * served live, the inbox as an approve/deny queue, the trail as a session
- * list. It self-updates by construction: everything is read from the folder
- * on request and the chrome polls for changes, so a surface the controller
- * writes mid-session appears without any deploy step.
+ * Qorpera Base is the foundation every company's app is built on. Connecting
+ * it to a company folder yields that company's own desktop app: a chromeless
+ * app-mode window (Edge/Chrome `--app`, WebView2-class rendering — no
+ * Tauri/Electron toolchain, no dependencies beyond node:http) over a local
+ * backend that renders whatever the controller has built in `app/` — nav
+ * from `app/manifest.json`, surfaces served live, the inbox as an
+ * approve/deny queue. Self-updating by construction: everything is read from
+ * the folder on request and the window polls for changes, so a surface the
+ * controller writes mid-session appears with no deploy step.
  *
- * v1 is a browser app plus an installed launcher; the packaged desktop
- * shell is a later slice. No dependencies beyond node:http.
+ * Minimally viable on purpose. A packaged single-binary shell can replace
+ * the window later without changing anything a controller builds.
  */
 
 import { spawn } from "node:child_process";
@@ -306,12 +308,21 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 	});
 }
 
-function openBrowser(url: string): void {
+/**
+ * Open the app WINDOW — chromeless app mode, its own taskbar entry — falling
+ * back to the default browser only when no app-capable browser is found.
+ */
+function openAppWindow(url: string): void {
 	if (process.platform === "win32") {
-		spawn("cmd", ["/c", "start", "", url], { stdio: "ignore", detached: true }).unref();
-	} else {
-		spawn(process.platform === "darwin" ? "open" : "xdg-open", [url], { stdio: "ignore", detached: true }).unref();
+		// msedge ships with Windows 11 and resolves via App Paths.
+		spawn("cmd", ["/c", "start", "", "msedge", `--app=${url}`], { stdio: "ignore", detached: true }).unref();
+		return;
 	}
+	if (process.platform === "darwin") {
+		spawn("open", [url], { stdio: "ignore", detached: true }).unref();
+		return;
+	}
+	spawn("xdg-open", [url], { stdio: "ignore", detached: true }).unref();
 }
 
 /** Write a desktop launcher: "<Company> Controller". */
@@ -321,9 +332,10 @@ function installLauncher(root: string): string | undefined {
 	if (!existsSync(desktop)) return undefined;
 	if (process.platform === "win32") {
 		const path = join(desktop, `${name} Controller.cmd`);
+		// Backend console starts minimized; the app window is the app.
 		writeFileSync(
 			path,
-			`@echo off\r\ntitle ${name} Controller\r\ncd /d "${root}"\r\nqorpera app "${root}"\r\n`,
+			`@echo off\r\nif not "%1"=="min" start /min "" "%~f0" min & exit /b\r\ntitle ${name} Controller\r\ncd /d "${root}"\r\nqorpera app "${root}"\r\n`,
 			"utf-8",
 		);
 		return path;
@@ -361,7 +373,7 @@ export async function handleAppCommand(args: string[]): Promise<boolean> {
 	if (process.exitCode === 1) return true;
 	const url = `http://127.0.0.1:${port}/`;
 	console.log(`${companyName(root)} Controller running at ${url}  (Ctrl+C to stop)`);
-	openBrowser(url);
+	openAppWindow(url);
 	await new Promise(() => {}); // serve until killed
 	return true;
 }

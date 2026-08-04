@@ -257,15 +257,15 @@ function printScaffoldReport(result: ScaffoldResult): void {
 	if (result.gitInitialized) console.log("  initialized git repository");
 }
 
-function launchSession(dir: string, initialMessage?: string): Promise<number> {
-	// Re-exec this CLI interactively inside the company folder; the kernel
-	// AGENTS.md and gates take over from there.
-	const cliPath = process.argv[1];
+/**
+ * Re-exec this CLI interactively inside the company folder. Launched bare on
+ * purpose: main() detects the company, registers it, and auto-injects the
+ * conception kickoff when company.md is still the template — so kickoff
+ * logic lives in exactly one place (conceptionKickoff).
+ */
+function launchSession(dir: string): Promise<number> {
 	return new Promise((resolve) => {
-		const child = spawn(process.execPath, [cliPath, ...(initialMessage ? [initialMessage] : [])], {
-			cwd: dir,
-			stdio: "inherit",
-		});
+		const child = spawn(process.execPath, [process.argv[1]], { cwd: dir, stdio: "inherit" });
 		child.on("exit", (code) => resolve(code ?? 0));
 		child.on("error", () => resolve(1));
 	});
@@ -274,6 +274,24 @@ function launchSession(dir: string, initialMessage?: string): Promise<number> {
 function cloneInto(source: string, destination: string): boolean {
 	const clone = spawnSync("git", ["clone", source, destination], { stdio: "inherit", shell: false });
 	return clone.status === 0;
+}
+
+/** Clone an existing repo under work/ (the integrate flow). Returns false on failure. */
+function integrateRepo(root: string, from: string): boolean {
+	const repoName = basenameOf(from);
+	const destination = join(root, "work", repoName);
+	if (existsSync(destination)) {
+		console.log(`  kept    work/${repoName} (already present)`);
+		return true;
+	}
+	if (cloneInto(from, destination)) {
+		console.log(`  cloned  ${from} -> work/${repoName}`);
+		return true;
+	}
+	console.error(
+		`Could not clone ${from}. Point it at a git repository (path or URL), or copy the files into work/ yourself and re-run.`,
+	);
+	return false;
 }
 
 /**
@@ -297,28 +315,16 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		const result = scaffoldCompany(dir);
 		printScaffoldReport(result);
 		registerCompany(result.root);
-		let repoName: string | undefined;
-		if (from) {
-			repoName = basenameOf(from);
-			const destination = join(result.root, "work", repoName);
-			if (existsSync(destination)) {
-				console.log(`  kept    work/${repoName} (already present)`);
-			} else if (cloneInto(from, destination)) {
-				console.log(`  cloned  ${from} -> work/${repoName}`);
-			} else {
-				console.error(
-					`Could not clone ${from}. Point --from at a git repository (path or URL), or copy the files into work/ yourself and re-run.`,
-				);
-				process.exitCode = 1;
-				return true;
-			}
+		if (from && !integrateRepo(result.root, from)) {
+			process.exitCode = 1;
+			return true;
 		}
 		if (noLaunch) {
 			console.log("\nNext: run `qorpera` inside the folder to begin conception.");
 			return true;
 		}
 		console.log("\nStarting conception session…\n");
-		process.exitCode = await launchSession(result.root, repoName ? CONCEPTION_INTEGRATE(repoName) : CONCEPTION_NEW);
+		process.exitCode = await launchSession(result.root);
 		return true;
 	}
 
@@ -474,31 +480,19 @@ export async function runCompanyHub(
 			registerCompany(choice.root);
 			return await launchSession(choice.root);
 		}
-		case "new": {
-			const dir = await askLine("Directory for the new company (e.g. C:\\Companies\\my-co): ");
-			if (!dir) return 0;
-			const result = scaffoldCompany(dir);
-			printScaffoldReport(result);
-			registerCompany(result.root);
-			console.log("\nStarting conception session…\n");
-			return await launchSession(result.root, CONCEPTION_NEW);
-		}
+		case "new":
 		case "integrate": {
 			const dir = await askLine("Directory for the new company (e.g. C:\\Companies\\my-co): ");
 			if (!dir) return 0;
-			const from = await askLine("Existing repo to integrate (path or git URL): ");
-			if (!from) return 0;
+			const from =
+				choice.kind === "integrate" ? await askLine("Existing repo to integrate (path or git URL): ") : "";
+			if (choice.kind === "integrate" && !from) return 0;
 			const result = scaffoldCompany(dir);
 			printScaffoldReport(result);
-			const repoName = basenameOf(from);
-			const destination = join(result.root, "work", repoName);
-			if (!existsSync(destination) && !cloneInto(from, destination)) {
-				console.error(`Could not clone ${from}. Copy the files into work/ yourself and re-run.`);
-				return 1;
-			}
 			registerCompany(result.root);
+			if (from && !integrateRepo(result.root, from)) return 1;
 			console.log("\nStarting conception session…\n");
-			return await launchSession(result.root, CONCEPTION_INTEGRATE(repoName));
+			return await launchSession(result.root);
 		}
 	}
 }
