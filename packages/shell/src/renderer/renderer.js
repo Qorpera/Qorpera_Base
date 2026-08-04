@@ -176,13 +176,27 @@ $("input").addEventListener("keydown", (event) => {
 	}
 });
 
+/* Markdown for assistant prose. The source is HTML-escaped BEFORE parsing so
+ * raw HTML in model output renders as text — formatting without injection. */
+function renderMarkdown(el, source) {
+	const escaped = source.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+	el.innerHTML = window.marked.parse(escaped, { breaks: true });
+}
+
 window.qorpera.onRpcEvent((frame) => {
 	switch (frame.type) {
 		case "message_update": {
 			const delta = frame.assistantMessageEvent;
 			if (!delta) break;
-			if (delta.type === "text_start") assistantEl = addMsg("assistant", "");
-			if (delta.type === "text_delta" && assistantEl) assistantEl.textContent += delta.delta;
+			if (delta.type === "text_start") {
+				assistantEl = addMsg("assistant", "");
+				assistantEl.dataset.source = "";
+			}
+			if (delta.type === "text_delta" && assistantEl) {
+				assistantEl.dataset.source += delta.delta;
+				renderMarkdown(assistantEl, assistantEl.dataset.source);
+				$("messages").scrollTop = $("messages").scrollHeight;
+			}
 			if (delta.type === "thinking_start") thinkingEl = addMsg("thinking", "");
 			if (delta.type === "thinking_delta" && thinkingEl) thinkingEl.textContent += delta.delta;
 			if (delta.type === "thinking_end") thinkingEl = null;

@@ -47,7 +47,8 @@
 		"release:major": "node scripts/release.mjs major",
 		"release:fix-links": "node scripts/release-notes.mjs fix-github-releases",
 		"prepare": "husky",
-		"shell": "electron packages/shell/dist/main.js"
+		"shell": "electron packages/shell/dist/main.js",
+		"pack:shell": "node scripts/pack-shell.mjs"
 	},
 	"devDependencies": {
 		"@anthropic-ai/sandbox-runtime": "0.0.26",

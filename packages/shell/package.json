@@ -6,15 +6,19 @@
 	"description": "Qorpera Base shell — the minimal desktop app every company controller is built on.",
 	"main": "dist/main.js",
 	"scripts": {
-		"build": "tsgo -p tsconfig.build.json && shx cp -r src/renderer dist/renderer && shx cp src/preload.cjs dist/preload.cjs",
+		"build": "tsgo -p tsconfig.build.json && shx cp -r src/renderer dist/renderer && shx cp src/preload.cjs dist/preload.cjs && shx cp ../../node_modules/marked/lib/marked.umd.js dist/renderer/marked.umd.js",
 		"start": "electron dist/main.js",
 		"clean": "node -e \"import('node:fs/promises').then(fs=>fs.rm('dist',{recursive:true,force:true}))\""
 	},
 	"dependencies": {
-		"@qorpera/pi-coding-agent": "^0.83.0"
+		"@qorpera/pi-coding-agent": "^0.83.0",
+		"marked": "18.0.5",
+		"electron-updater": "6.8.9"
 	},
 	"devDependencies": {
 		"electron": "43.2.0",
-		"shx": "0.4.0"
-	}
+		"shx": "0.4.0",
+		"electron-builder": "26.15.3"
+	},
+	"productVersion": "0.1.0"
 }

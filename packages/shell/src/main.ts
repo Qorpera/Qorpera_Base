@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { companyPort, createCompanyAppServer } from "@qorpera/pi-coding-agent/app-server";
 import { conceptionKickoff, listCompanies, registerCompany, scaffoldCompany } from "@qorpera/pi-coding-agent/company";
 import { app, BrowserWindow, shell as electronShell, ipcMain } from "electron";
+import electronUpdater from "electron-updater";
 
 const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
 const DIRNAME = fileURLToPath(new URL(".", import.meta.url));
@@ -116,6 +117,17 @@ app.whenReady().then(() => {
 	});
 
 	createWindow();
+
+	// Foundation self-update: packaged builds check Qorpera_Base_Releases
+	// (public) via electron-updater; downloads apply on quit. The foundation
+	// is deliberately static, so this stays quiet almost always.
+	if (app.isPackaged) {
+		const { autoUpdater } = electronUpdater;
+		autoUpdater.on("update-downloaded", (info) => send("update-ready", info.version));
+		autoUpdater.checkForUpdatesAndNotify().catch((error: Error) => {
+			console.error(`update check failed: ${error.message}`);
+		});
+	}
 
 	// Headless smoke: prove the shell boots, then leave.
 	if (process.argv.includes("--smoke")) {
