@@ -23,6 +23,18 @@
 		"./client": {
 			"types": "./dist/client/index.d.ts",
 			"import": "./dist/client/index.js"
+		},
+		"./company": {
+			"types": "./dist/core/company.d.ts",
+			"import": "./dist/core/company.js"
+		},
+		"./app-server": {
+			"types": "./dist/core/app-server.d.ts",
+			"import": "./dist/core/app-server.js"
+		},
+		"./authority": {
+			"types": "./dist/core/authority.d.ts",
+			"import": "./dist/core/authority.js"
 		}
 	},
 	"files": [

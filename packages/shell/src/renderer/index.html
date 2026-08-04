@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Qorpera Base</title>
+<style>
+	:root { color-scheme: dark; }
+	* { box-sizing: border-box; margin: 0; }
+	body { display: flex; height: 100vh; font-family: 'Segoe UI', system-ui, sans-serif; background: #101418; color: #e6e9ec; font-size: 14px; }
+	nav { width: 250px; min-width: 250px; border-right: 1px solid #232a31; padding: 14px; display: flex; flex-direction: column; gap: 3px; overflow-y: auto; }
+	nav h1 { font-size: 14px; margin-bottom: 10px; }
+	nav h1 small { display: block; color: #7a8590; font-weight: 400; font-size: 11px; margin-top: 2px; }
+	nav h2 { font-size: 11px; text-transform: uppercase; color: #7a8590; margin: 12px 0 4px; }
+	nav button, .gate button { text-align: left; background: none; border: 0; color: #cdd4da; padding: 6px 9px; border-radius: 6px; cursor: pointer; font-size: 13px; width: 100%; }
+	nav button:hover { background: #1a2027; }
+	nav button.active { background: #24303b; color: #fff; }
+	main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+	#view-surface { flex: 1; border: 0; width: 100%; background: #fff; display: none; }
+	#view-panel { flex: 1; padding: 22px; overflow-y: auto; display: none; }
+	#view-chat { flex: 1; display: none; flex-direction: column; min-height: 0; }
+	#messages { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 10px; }
+	.msg { max-width: 860px; white-space: pre-wrap; line-height: 1.45; }
+	.msg.user { background: #24303b; border-radius: 10px; padding: 10px 14px; align-self: flex-end; }
+	.msg.tool { color: #7a8590; font-family: Consolas, monospace; font-size: 12px; }
+	.msg.thinking { color: #7a8590; font-style: italic; }
+	.msg.log { color: #6b4f2f; font-family: Consolas, monospace; font-size: 12px; }
+	#composer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #232a31; }
+	#composer textarea { flex: 1; background: #161b21; border: 1px solid #2c3540; border-radius: 8px; color: #e6e9ec; padding: 10px 12px; font: inherit; resize: none; height: 64px; }
+	#composer button { padding: 0 22px; border-radius: 8px; border: 1px solid #2c3540; background: #24303b; color: #fff; cursor: pointer; }
+	.gate { border: 1px solid #232a31; border-radius: 8px; padding: 13px 15px; margin-bottom: 10px; }
+	.gate .t { font-weight: 600; margin-bottom: 3px; }
+	.gate .s { font-size: 12px; color: #7a8590; margin-bottom: 8px; }
+	.gate button { width: auto; margin-right: 8px; padding: 5px 14px; border: 1px solid #2c3540; background: #1a2027; }
+	.gate button.ok { border-color: #2f6b3a; }
+	.gate button.no { border-color: #6b2f2f; }
+	.empty { color: #7a8590; padding: 36px; text-align: center; }
+	.badge { background: #6b2f2f; border-radius: 10px; font-size: 11px; padding: 1px 7px; margin-left: 6px; }
+	#status { padding: 6px 16px; border-top: 1px solid #232a31; color: #7a8590; font-size: 11px; min-height: 25px; }
+	.hubbtn { border: 1px solid #232a31 !important; margin-bottom: 6px; padding: 10px 12px !important; }
+</style>
+</head>
+<body>
+<nav>
+	<h1 id="title">Qorpera Base<small id="subtitle">the foundation</small></h1>
+	<div id="hubnav">
+		<h2>Companies</h2>
+		<div id="companies"></div>
+		<button class="hubbtn" onclick="newCompanyPrompt()">+ New company…</button>
+	</div>
+	<div id="conav" style="display:none">
+		<h2>Company</h2>
+		<button id="chatBtn" onclick="show('chat')">Chat</button>
+		<button id="inboxBtn" onclick="show('inbox')">Inbox<span id="inboxBadge"></span></button>
+		<h2>Surfaces</h2>
+		<div id="surfaces"><div class="empty" style="padding:6px">none built yet</div></div>
+		<h2 style="margin-top:auto"></h2>
+		<button onclick="backToHub()">← All companies</button>
+	</div>
+</nav>
+<main>
+	<div id="view-chat">
+		<div id="messages"></div>
+		<div id="composer">
+			<textarea id="input" placeholder="Steer the company… (Enter to send, Shift+Enter for newline)"></textarea>
+			<button onclick="sendPrompt()">Send</button>
+		</div>
+	</div>
+	<iframe id="view-surface"></iframe>
+	<div id="view-panel"></div>
+	<div id="status"></div>
+</main>
+<script src="./renderer.js"></script>
+</body>
+</html>

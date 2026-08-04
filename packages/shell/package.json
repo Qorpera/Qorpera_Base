@@ -1,0 +1,20 @@
+{
+	"name": "@qorpera/shell",
+	"version": "0.83.0",
+	"private": true,
+	"type": "module",
+	"description": "Qorpera Base shell — the minimal desktop app every company controller is built on.",
+	"main": "dist/main.js",
+	"scripts": {
+		"build": "tsgo -p tsconfig.build.json && shx cp -r src/renderer dist/renderer && shx cp src/preload.cjs dist/preload.cjs",
+		"start": "electron dist/main.js",
+		"clean": "node -e \"import('node:fs/promises').then(fs=>fs.rm('dist',{recursive:true,force:true}))\""
+	},
+	"dependencies": {
+		"@qorpera/pi-coding-agent": "^0.83.0"
+	},
+	"devDependencies": {
+		"electron": "43.2.0",
+		"shx": "0.4.0"
+	}
+}
