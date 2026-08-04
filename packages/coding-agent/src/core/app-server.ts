@@ -22,6 +22,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { homedir } from "node:os";
 import { basename, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { marked } from "marked";
 
 export interface CompanyAppOptions {
 	root: string;
@@ -188,7 +189,30 @@ function stateFor(root: string): unknown {
 	};
 }
 
-/** Serve a file strictly from inside app/surfaces (no traversal). */
+const SURFACE_DOC_STYLE = `<style>
+	:root { color-scheme: dark; }
+	body { max-width: 880px; margin: 0 auto; padding: 28px 32px; background: #101418; color: #e6e9ec;
+		font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; line-height: 1.55; }
+	h1, h2, h3 { margin: 18px 0 8px; } h1 { font-size: 20px; } h2 { font-size: 16px; } h3 { font-size: 14px; }
+	p, ul, ol { margin: 0 0 10px; } ul, ol { padding-left: 24px; }
+	code { background: #1a2027; border-radius: 4px; padding: 1px 5px; font-family: Consolas, monospace; font-size: 12.5px; }
+	pre { background: #161b21; border: 1px solid #232a31; border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+	pre code { background: none; padding: 0; }
+	table { border-collapse: collapse; margin: 0 0 10px; } td, th { border: 1px solid #2c3540; padding: 5px 10px; font-size: 13px; }
+	blockquote { border-left: 3px solid #2c3540; margin: 0 0 10px; padding-left: 12px; color: #aab3bb; }
+	a { color: #7ab4ff; }
+</style>`;
+
+function escapeHtmlText(source: string): string {
+	return source.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Serve a file strictly from inside app/surfaces (no traversal). Controllers
+ * write surfaces in whatever form fits — HTML is served as-is; markdown and
+ * plain text are rendered into a dark-styled document so prose surfaces are
+ * first-class, not raw bytes.
+ */
 function serveSurface(root: string, entry: string, response: ServerResponse): void {
 	const surfacesRoot = resolve(join(root, "app", "surfaces"));
 	const target = resolve(join(surfacesRoot, normalize(entry)));
@@ -198,6 +222,18 @@ function serveSurface(root: string, entry: string, response: ServerResponse): vo
 	}
 	try {
 		const content = readFileSync(target);
+		if (target.endsWith(".md") || target.endsWith(".txt")) {
+			const source = content.toString("utf-8");
+			const body = target.endsWith(".md")
+				? marked.parse(escapeHtmlText(source), { breaks: false, async: false })
+				: `<pre>${escapeHtmlText(source)}</pre>`;
+			response
+				.writeHead(200, { "content-type": "text/html; charset=utf-8" })
+				.end(
+					`<!doctype html><html><head><meta charset="utf-8">${SURFACE_DOC_STYLE}</head><body>${body}</body></html>`,
+				);
+			return;
+		}
 		const type = target.endsWith(".html")
 			? "text/html; charset=utf-8"
 			: target.endsWith(".js")

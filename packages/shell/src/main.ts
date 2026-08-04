@@ -136,6 +136,22 @@ function createWindow(): void {
 	});
 }
 
+// Single instance: relaunching (e.g. a company launcher) focuses the
+// existing window and routes its --company there instead of stacking
+// windows running different builds.
+if (!app.requestSingleInstanceLock()) {
+	app.quit();
+}
+app.on("second-instance", (_event, argv) => {
+	if (!window) return;
+	if (window.isMinimized()) window.restore();
+	window.focus();
+	const index = argv.indexOf("--company");
+	if (index >= 0 && argv[index + 1]) {
+		send("open-company", argv[index + 1]);
+	}
+});
+
 app.whenReady().then(() => {
 	ipcMain.handle("companies:list", () => listCompanies());
 	ipcMain.handle("company:open", (_event, root: string) => openCompany(root));
@@ -158,10 +174,21 @@ app.whenReady().then(() => {
 	// is deliberately static, so this stays quiet almost always.
 	if (app.isPackaged) {
 		const { autoUpdater } = electronUpdater;
+		autoUpdater.on("checking-for-update", () => send("update-status", "checking…"));
+		autoUpdater.on("update-available", (info) => send("update-status", `downloading ${info.version}…`));
+		autoUpdater.on("update-not-available", () => send("update-status", "up to date"));
+		autoUpdater.on("error", (error) => send("update-status", `update error: ${error.message.slice(0, 80)}`));
 		autoUpdater.on("update-downloaded", (info) => send("update-ready", info.version));
 		autoUpdater.checkForUpdatesAndNotify().catch((error: Error) => {
 			console.error(`update check failed: ${error.message}`);
 		});
+		ipcMain.handle("update:check", () => autoUpdater.checkForUpdatesAndNotify().catch(() => undefined));
+		ipcMain.handle("update:install", () => autoUpdater.quitAndInstall());
+	} else {
+		ipcMain.handle("update:check", () => {
+			send("update-status", "dev tree — rebuild the repo to update");
+		});
+		ipcMain.handle("update:install", () => {});
 	}
 
 	// Headless smoke: prove the shell boots, then leave.

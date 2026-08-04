@@ -391,6 +391,26 @@ function summarizeArgs(args) {
 	return "";
 }
 
+// ---- foundation updates -----------------------------------------------------
+
+function checkUpdates() {
+	$("status").textContent = "checking for updates…";
+	window.qorpera.updateCheck();
+}
+window.qorpera.onUpdateStatus((text) => {
+	$("status").textContent = text;
+});
+window.qorpera.onUpdateReady((version) => {
+	for (const id of ["updateBtn", "updateBtnHub"]) {
+		const b = $(id);
+		if (!b) continue;
+		b.textContent = `Restart to update → v${version}`;
+		b.onclick = () => window.qorpera.updateInstall();
+	}
+	$("status").textContent = `v${version} downloaded — restart to apply`;
+});
+window.qorpera.onOpenCompany((root) => openCompany(root, root.split(/[\\/]/).pop()));
+
 (async () => {
 	const info = await window.qorpera.appInfo();
 	$("subtitle").textContent = `the foundation · v${info.version}`;
