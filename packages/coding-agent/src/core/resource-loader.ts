@@ -8,6 +8,7 @@ import type { ResourceDiagnostic } from "./diagnostics.ts";
 export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
 
 import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.ts";
+import { discoverAuthority, filterExtensionPaths } from "./authority.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import {
 	clearExtensionCache,
@@ -552,10 +553,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 		});
 		const enabledExtensions = resolvedPaths.extensions.filter((r) => r.enabled).map((r) => r.path);
 		const cliEnabledExtensions = cliExtensionPaths.extensions.filter((r) => r.enabled).map((r) => r.path);
-		const extensionPaths = this.noExtensions
+		const mergedExtensionPaths = this.noExtensions
 			? cliEnabledExtensions
 			: this.mergePaths(cliEnabledExtensions, enabledExtensions);
-		const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);
+		const gate = this.applyAuthorityExtensionGate(mergedExtensionPaths);
+		const extensionsResult = await loadExtensionsCached(gate.allowed, this.cwd, this.eventBus);
+		extensionsResult.errors.push(...gate.blockedErrors);
 		if (!options.includeInlineFactories) {
 			return extensionsResult;
 		}
@@ -570,12 +573,47 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return resolvePath(path, this.cwd, { normalizeUnicodeSpaces: true });
 	}
 
+	/**
+	 * Authority gate for project-local extensions (spec §4, SEAMS.md c.3):
+	 * extensions are trusted code with full user permissions, so loading one
+	 * from inside the authority root is an [authority]-class effect requiring
+	 * durable per-content-hash approval. Applied at EVERY jiti load site,
+	 * including the pre-trust load — extension module code executes at load.
+	 * Without an authority.toml above cwd this is a no-op.
+	 */
+	private applyAuthorityExtensionGate(extensionPaths: string[]): {
+		allowed: string[];
+		blockedErrors: Array<{ path: string; error: string }>;
+	} {
+		const authority = discoverAuthority(this.cwd);
+		if (!authority) return { allowed: extensionPaths, blockedErrors: [] };
+		const resolvedToOriginal = new Map<string, string>();
+		const resolved = extensionPaths.map((path) => {
+			const resolvedPath = isLocalPath(path) ? this.resolveExtensionLoadPath(path) : path;
+			resolvedToOriginal.set(resolvedPath, path);
+			return resolvedPath;
+		});
+		const { allowed, blocked } = filterExtensionPaths(authority, resolved, this.agentDir);
+		return {
+			allowed: allowed.map((path) => resolvedToOriginal.get(path) ?? path),
+			blockedErrors: blocked.map((entry) => ({
+				path: resolvedToOriginal.get(entry.path) ?? entry.path,
+				error: entry.pending
+					? `Authority gate: project extension awaiting human approval (${entry.gateId} in inbox/)`
+					: `Authority gate: project extension load DENIED (${entry.gateId})`,
+			})),
+		};
+	}
+
 	private async loadFinalExtensionSet(
-		extensionPaths: string[],
+		rawExtensionPaths: string[],
 		preTrustExtensions: LoadExtensionsResult | undefined,
 	): Promise<LoadExtensionsResult> {
+		const finalGate = this.applyAuthorityExtensionGate(rawExtensionPaths);
+		const extensionPaths = finalGate.allowed;
 		if (!preTrustExtensions) {
 			const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);
+			extensionsResult.errors.push(...finalGate.blockedErrors);
 			const inlineExtensions = await this.loadExtensionFactories(extensionsResult.runtime);
 			extensionsResult.extensions.push(...inlineExtensions.extensions);
 			extensionsResult.errors.push(...inlineExtensions.errors);
@@ -614,9 +652,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 			.filter((extension): extension is Extension => extension !== undefined);
 		orderedExtensions.push(...inlineExtensions);
 
+		const knownErrorPaths = new Set(preTrustExtensions.errors.map((error) => error.path));
+		const newBlockedErrors = finalGate.blockedErrors.filter((error) => !knownErrorPaths.has(error.path));
 		const extensionsResult: LoadExtensionsResult = {
 			extensions: orderedExtensions,
-			errors: [...preTrustExtensions.errors, ...remainingExtensions.errors],
+			errors: [...preTrustExtensions.errors, ...remainingExtensions.errors, ...newBlockedErrors],
 			runtime: preTrustExtensions.runtime,
 		};
 		this.addExtensionConflictDiagnostics(extensionsResult);

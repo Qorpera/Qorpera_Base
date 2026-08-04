@@ -1,0 +1,249 @@
+/**
+ * Authority gates (Qorpera Base slice 2, spec §4).
+ *
+ * Unit coverage of the engine (config, classification, gate lifecycle) plus
+ * integration coverage of both mounts: the agent-session beforeToolCall hook
+ * and the resource loader's project-extension filter.
+ */
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getModel } from "@qorpera/pi-ai/compat";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	discoverAuthority,
+	evaluateToolCall,
+	filterExtensionPaths,
+	findGateRecords,
+	readAuthorityConfig,
+	requestHash,
+} from "../src/core/authority.ts";
+import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
+import { createAgentSession } from "../src/core/sdk.ts";
+import { SessionManager } from "../src/core/session-manager.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
+
+let root: string;
+
+beforeEach(() => {
+	root = join(tmpdir(), `qorpera-authority-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	mkdirSync(root, { recursive: true });
+});
+
+afterEach(() => {
+	if (root && existsSync(root)) {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+function writeAuthorityToml(content: string, dir = root): void {
+	writeFileSync(join(dir, "authority.toml"), content, "utf-8");
+}
+
+function approveGate(gateId: string, dir = root): void {
+	const inbox = join(dir, "inbox");
+	const file = readdirSync(inbox).find((name) => name.startsWith(gateId) && name.endsWith(".md"));
+	expect(file).toBeTruthy();
+	const path = join(inbox, file!);
+	writeFileSync(path, readFileSync(path, "utf-8").replace(/^status:.*$/m, "status: approved"), "utf-8");
+}
+
+describe("authority discovery and config", () => {
+	it("returns undefined without authority.toml (stock behavior)", () => {
+		expect(discoverAuthority(root)).toBeUndefined();
+	});
+
+	it("discovers authority.toml upward from a nested cwd", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
+		const nested = join(root, "work", "deep");
+		mkdirSync(nested, { recursive: true });
+		const authority = discoverAuthority(nested);
+		expect(authority?.root).toBe(root);
+	});
+
+	it("forces [authority] to gate even when configured auto, and fails closed on malformed toml", () => {
+		writeAuthorityToml(`[authority]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		expect(readAuthorityConfig(authority).classes.authority.mode).toBe("gate");
+
+		writeAuthorityToml("this is [not valid toml");
+		const config = readAuthorityConfig(authority);
+		for (const effectClass of ["money", "identity", "irreversible", "authority"] as const) {
+			expect(config.classes[effectClass].mode).toBe("gate");
+		}
+	});
+});
+
+describe("classification and evaluation", () => {
+	it("allows unclassified tools and auto-mode classes", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		expect(evaluateToolCall(authority, "read", { path: "notes.md" }, root).kind).toBe("allow");
+		expect(evaluateToolCall(authority, "bash", { command: "git reset --hard" }, root).kind).toBe("allow");
+	});
+
+	it("gates destructive bash via the pattern screen", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
+		const authority = discoverAuthority(root)!;
+		for (const command of ["rm -rf build", "git push --force origin master", "git reset --hard HEAD~3"]) {
+			const decision = evaluateToolCall(authority, "bash", { command }, root);
+			expect(decision.kind).toBe("block");
+		}
+		expect(evaluateToolCall(authority, "bash", { command: "git status" }, root).kind).toBe("allow");
+	});
+
+	it("classifies protected-file writes and inbox writes as authority (always gated)", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		for (const path of [join(root, "authority.toml"), join(root, "AGENTS.md"), join(root, "inbox", "gate-abc.md")]) {
+			const decision = evaluateToolCall(authority, "write", { path, content: "x" }, root);
+			expect(decision.kind).toBe("block");
+			expect((decision as { effectClass: string }).effectClass).toBe("authority");
+		}
+		// Self-approval via bash is caught too.
+		const bashDecision = evaluateToolCall(authority, "bash", { command: "echo approved >> inbox/gate-abc.md" }, root);
+		expect(bashDecision.kind).toBe("block");
+	});
+
+	it("honors [tools] overrides including none", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[tools]\ndanger = "irreversible"\nbash = "none"\n`);
+		const authority = discoverAuthority(root)!;
+		expect(evaluateToolCall(authority, "danger", { anything: 1 }, root).kind).toBe("block");
+		expect(evaluateToolCall(authority, "bash", { command: "rm -rf build" }, root).kind).toBe("allow");
+	});
+
+	it("notify mode proceeds and records a notice", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "notify"\n`);
+		const authority = discoverAuthority(root)!;
+		const decision = evaluateToolCall(authority, "bash", { command: "rm -rf build" }, root);
+		expect(decision.kind).toBe("allow");
+		expect(readFileSync(join(root, "inbox", "notices.md"), "utf-8")).toContain("[irreversible]");
+	});
+});
+
+describe("gate lifecycle", () => {
+	it("files a request, blocks while pending, allows once approved, then consumes the approval", () => {
+		writeAuthorityToml(`[tools]\ndanger = "irreversible"\n\n[irreversible]\nmode = "gate"\n`);
+		const authority = discoverAuthority(root)!;
+		const args = { target: "prod" };
+
+		const first = evaluateToolCall(authority, "danger", args, root);
+		expect(first.kind).toBe("block");
+		const gateId = (first as { gateId: string }).gateId;
+		expect(gateId).toBeTruthy();
+		expect(readdirSync(join(root, "inbox")).some((name) => name.startsWith("gate-"))).toBe(true);
+
+		const second = evaluateToolCall(authority, "danger", args, root);
+		expect(second.kind).toBe("block");
+		expect((second as { gateId: string }).gateId).toBe(gateId);
+
+		approveGate(gateId);
+		const third = evaluateToolCall(authority, "danger", args, root);
+		expect(third.kind).toBe("allow");
+
+		// Single use: the approval was consumed; the next call re-gates.
+		const fourth = evaluateToolCall(authority, "danger", args, root);
+		expect(fourth.kind).toBe("block");
+		const records = findGateRecords(authority, requestHash("danger", args));
+		expect(records.some((record) => record.status === "consumed")).toBe(true);
+		expect(records.some((record) => record.status === "pending")).toBe(true);
+	});
+
+	it("denied requests block without re-filing", () => {
+		writeAuthorityToml(`[tools]\ndanger = "irreversible"\n\n[irreversible]\nmode = "gate"\n`);
+		const authority = discoverAuthority(root)!;
+		const first = evaluateToolCall(authority, "danger", {}, root);
+		const gateId = (first as { gateId: string }).gateId;
+		const inbox = join(root, "inbox");
+		const file = readdirSync(inbox).find((name) => name.startsWith(gateId))!;
+		writeFileSync(
+			join(inbox, file),
+			readFileSync(join(inbox, file), "utf-8").replace(/^status:.*$/m, "status: denied"),
+			"utf-8",
+		);
+
+		const again = evaluateToolCall(authority, "danger", {}, root);
+		expect(again.kind).toBe("block");
+		expect((again as { reason: string }).reason).toContain("DENIED");
+		expect(readdirSync(inbox).filter((name) => name.startsWith("gate-")).length).toBe(1);
+	});
+});
+
+describe("agent-session mount", () => {
+	it("blocks gated tools through the installed beforeToolCall hook, ahead of extensions", async () => {
+		writeAuthorityToml(`[tools]\ndanger = "irreversible"\n\n[irreversible]\nmode = "gate"\n`);
+		const agentDir = join(root, "agent-home");
+		mkdirSync(agentDir, { recursive: true });
+		const settingsManager = SettingsManager.create(root, agentDir);
+		const sessionManager = SessionManager.inMemory();
+		const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager });
+		await resourceLoader.reload();
+
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const { session } = await createAgentSession({
+			cwd: root,
+			agentDir,
+			model,
+			settingsManager,
+			sessionManager,
+			resourceLoader,
+		});
+		try {
+			const hook = session.agent.beforeToolCall;
+			expect(hook).toBeTruthy();
+			const fakeContext = {
+				assistantMessage: {} as never,
+				toolCall: { type: "toolCall", id: "t1", name: "danger", arguments: { x: 1 } } as never,
+				args: { x: 1 },
+				context: {} as never,
+			};
+			const blocked = await hook!(fakeContext);
+			expect(blocked?.block).toBe(true);
+			expect(blocked?.reason).toContain("Authority gate");
+
+			const gateId = blocked!.reason!.match(/gate-[a-f0-9-]+/)![0];
+			approveGate(gateId);
+			const allowed = await hook!(fakeContext);
+			expect(allowed?.block).not.toBe(true);
+		} finally {
+			session.dispose();
+		}
+	});
+});
+
+describe("project extension gating", () => {
+	it("blocks unapproved project extensions, loads them after durable approval, re-gates on content change", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
+		const authority = discoverAuthority(root)!;
+		const agentDir = join(root, "agent-home");
+		const extensionDir = join(root, ".qorpera", "extensions");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(extensionDir, { recursive: true });
+		const extensionPath = join(extensionDir, "hello.ts");
+		writeFileSync(extensionPath, "export default () => {};", "utf-8");
+		const userExtension = join(agentDir, "extensions", "global.ts");
+		mkdirSync(join(agentDir, "extensions"), { recursive: true });
+		writeFileSync(userExtension, "export default () => {};", "utf-8");
+
+		// User-global extensions pass; project-local ones gate.
+		const first = filterExtensionPaths(authority, [extensionPath, userExtension], agentDir);
+		expect(first.allowed).toEqual([userExtension]);
+		expect(first.blocked.length).toBe(1);
+		const gateId = first.blocked[0].gateId;
+
+		// Pending: still blocked, no duplicate request.
+		const second = filterExtensionPaths(authority, [extensionPath], agentDir);
+		expect(second.blocked[0].gateId).toBe(gateId);
+
+		// Approval is durable per content hash: allowed repeatedly.
+		approveGate(gateId);
+		expect(filterExtensionPaths(authority, [extensionPath], agentDir).allowed).toEqual([extensionPath]);
+		expect(filterExtensionPaths(authority, [extensionPath], agentDir).allowed).toEqual([extensionPath]);
+
+		// Changed content = new hash = new gate.
+		writeFileSync(extensionPath, "export default () => { console.log('changed'); };", "utf-8");
+		const afterChange = filterExtensionPaths(authority, [extensionPath], agentDir);
+		expect(afterChange.blocked.length).toBe(1);
+		expect(afterChange.blocked[0].gateId).not.toBe(gateId);
+	});
+});

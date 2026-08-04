@@ -133,3 +133,13 @@ Status summary: (a) exists as audited · (b) interface-only, confirmed —
 adapters are ours to write · (c) exists, with the four caveats above (c.2 is
 new information vs the audit) · (d) exists as audited, verified headless ·
 (e) exists as audited · (f) exists as audited.
+
+**Slice 2 update (2026-08-04):** the authority gates now occupy seam (c) —
+`src/core/authority.ts`, mounted core-owned at the head of
+`_installAgentToolHooks` (ahead of extension handlers, resolving c.2) and in
+the resource loader's project-extension filter at every jiti load site
+including pre-trust (resolving c.3 for project-local code: durable
+per-content-hash approvals). c.4 (bash is one gate for arbitrary commands) is
+mitigated by a conservative destructive-pattern screen plus protected-path
+tokens; a full answer needs sandboxed execution environments (later).
+See `packages/coding-agent/docs/authority.md`.
