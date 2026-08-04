@@ -68,7 +68,10 @@ let window: BrowserWindow | undefined;
 let runtime: CompanyRuntime | undefined;
 
 function send(channel: string, payload: unknown): void {
-	window?.webContents.send(channel, payload);
+	// Child exit events can fire after the window is gone (closing the app
+	// kills the RPC child, whose exit handler then calls send) — guard.
+	if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
+	window.webContents.send(channel, payload);
 }
 
 async function closeCompany(): Promise<void> {

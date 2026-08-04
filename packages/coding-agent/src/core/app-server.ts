@@ -23,7 +23,8 @@ import { homedir } from "node:os";
 import { basename, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { marked } from "marked";
-import { parse as parseToml } from "smol-toml";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
 
 export interface CompanyAppOptions {
 	root: string;
@@ -439,6 +440,77 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			} catch {
 				response.writeHead(404).end("not found");
 			}
+			return;
+		}
+		if (url.pathname === "/api/authority/config" && request.method === "GET") {
+			// Structured view for the settings UI (toggles, not prose).
+			const authority = discoverAuthority(root);
+			if (!authority) {
+				response.writeHead(404).end("no authority.toml");
+				return;
+			}
+			const config = readAuthorityConfig(authority);
+			response.writeHead(200, { "content-type": "application/json" }).end(
+				JSON.stringify({
+					classes: {
+						money: config.classes.money,
+						identity: config.classes.identity,
+						irreversible: config.classes.irreversible,
+						products: config.classes.products,
+					},
+					productPaths: config.productPaths,
+				}),
+			);
+			return;
+		}
+		if (url.pathname === "/api/authority/config" && request.method === "POST") {
+			if (!authorized(request)) {
+				response.writeHead(401).end("token required");
+				return;
+			}
+			let body = "";
+			request.on("data", (chunk) => {
+				body += chunk;
+			});
+			request.on("end", () => {
+				try {
+					const update = JSON.parse(body) as {
+						classes?: Record<string, { mode?: string; limitUsd?: number }>;
+						productPaths?: string[];
+					};
+					// Surgical merge into the existing file so [tools] and any
+					// custom sections survive; comments do not (Advanced tab
+					// exists for comment-preserving edits).
+					const path = join(root, "authority.toml");
+					let existing: Record<string, unknown> = {};
+					try {
+						existing = parseToml(readFileSync(path, "utf-8")) as Record<string, unknown>;
+					} catch {
+						existing = {};
+					}
+					const modes = new Set(["auto", "notify", "gate"]);
+					for (const name of ["money", "identity", "irreversible", "products"]) {
+						const incoming = update.classes?.[name];
+						if (!incoming) continue;
+						const section = { ...((existing[name] as Record<string, unknown>) ?? {}) };
+						if (incoming.mode && modes.has(incoming.mode)) section.mode = incoming.mode;
+						if (name === "money" && typeof incoming.limitUsd === "number") section.limit_usd = incoming.limitUsd;
+						existing[name] = section;
+					}
+					if (Array.isArray(update.productPaths)) {
+						const products = { ...((existing.products as Record<string, unknown>) ?? {}) };
+						products.paths = update.productPaths.filter((p): p is string => typeof p === "string" && !!p.trim());
+						existing.products = products;
+					}
+					existing.authority = { ...((existing.authority as Record<string, unknown>) ?? {}), mode: "gate" };
+					writeFileSync(path, `${stringifyToml(existing)}\n`, "utf-8");
+					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+				} catch (error) {
+					response
+						.writeHead(400, { "content-type": "application/json" })
+						.end(JSON.stringify({ ok: false, error: String(error).slice(0, 200) }));
+				}
+			});
 			return;
 		}
 		if (url.pathname === "/api/authority" && request.method === "GET") {

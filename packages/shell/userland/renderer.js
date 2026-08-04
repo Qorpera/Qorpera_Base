@@ -73,8 +73,6 @@ async function enterCompany(active) {
 	backendToken = active.backendToken ?? "";
 	$("hubnav").style.display = "none";
 	$("conav").style.display = "";
-	$("title").firstChild.textContent = active.root.split(/[\\/]/).pop();
-	$("subtitle").textContent = "Controller — Qorpera Base";
 	$("messages").innerHTML = "";
 	if (active.usingBaseFallback) {
 		addMsg("log", "your evolved app failed to load — running the base chrome (kernel fallback)");
@@ -97,7 +95,7 @@ async function enterCompany(active) {
 	show("chat");
 	hydrateAgentState(false);
 	await refreshState();
-	$("title").firstChild.textContent = state.name || $("title").firstChild.textContent;
+	document.title = `${state.name || "Company"} Controller`;
 	if (poller) clearInterval(poller);
 	poller = setInterval(refreshState, 2000);
 }
@@ -220,12 +218,11 @@ function show(view) {
 	currentView = view;
 	$("view-chat").style.display = view === "chat" ? "flex" : "none";
 	$("view-surface").style.display = view === "surface" ? "block" : "none";
-	$("view-panel").style.display = view === "inbox" || view === "activity" || view === "settings" ? "block" : "none";
+	$("view-panel").style.display = view === "inbox" || view === "activity" ? "block" : "none";
 	$("inboxBtn").className = view === "inbox" ? "active" : "";
 	$("activityBtn").className = view === "activity" ? "active" : "";
 	if (view === "inbox") renderInbox();
 	if (view === "activity") renderActivity();
-	if (view === "settings") renderSettings();
 	if (view !== "surface") currentSurface = null;
 	renderCompanyNavSafe();
 }
@@ -438,49 +435,181 @@ function summarizeArgs(args) {
 	return "";
 }
 
-/** Settings: foundation + connections. Company-specific settings are the
- * controller's to add — this is the base plane it evolves from. */
-async function renderSettings() {
-	const panel = $("view-panel");
-	const info = await window.qorpera.settingsInfo();
-	panel.innerHTML = "";
-	const section = (title, bodyHtml) => {
-		const d = document.createElement("div");
-		d.className = "gate";
-		d.innerHTML = `<div class="t"></div><div class="body">${bodyHtml}</div>`;
-		d.querySelector(".t").textContent = title;
-		panel.appendChild(d);
-		return d;
-	};
-	const foundation = section(
-		"Foundation",
-		`Qorpera Base v${info.version} — ${info.packaged ? "installed (auto-updates from the release channel)" : "dev tree (updates by rebuilding the repo)"}`,
-	);
-	const updateBtn = document.createElement("button");
-	updateBtn.textContent = "Check for updates";
-	updateBtn.onclick = () => checkUpdates();
-	foundation.appendChild(updateBtn);
+// ---- the settings page (own sidebar of tabs, Codex-app shape) ---------------
 
-	const providers = info.providers.length
-		? `<ul>${info.providers.map((p) => `<li>${p}</li>`).join("")}</ul>`
-		: "none connected yet";
-	section(
-		"Connections (model subscriptions)",
-		`${providers}<div class="sess-meta" style="margin-top:6px">To connect one, run <code>qorpera</code> in a terminal and use <code>/login</code> — a GUI flow is coming. Credentials live in ${info.agentDir}, never in company folders.</div>`,
-	);
-	// Authority editor — the human's file, edited from the human's interface.
-	if (backendUrl) {
-		const auth = section("Authority (gates)", `<span class="sess-meta">Human-owned. The controller can never edit this — you can.</span>`);
+let settingsTab = "general";
+let updateReadyVersion = null;
+
+function openSettings(tab) {
+	settingsTab = tab || "general";
+	$("settingsView").hidden = false;
+	for (const b of document.querySelectorAll("#settingsView .stab")) {
+		b.classList.toggle("active", b.dataset.tab === settingsTab);
+	}
+	renderSettingsTab();
+}
+function closeSettings() {
+	$("settingsView").hidden = true;
+}
+
+function setHeading(content, text) {
+	const h = document.createElement("h1");
+	h.textContent = text;
+	content.appendChild(h);
+}
+function setRow(content, label, small, control) {
+	const row = document.createElement("div");
+	row.className = "setrow";
+	const lab = document.createElement("label");
+	lab.textContent = label;
+	if (small) {
+		const s = document.createElement("small");
+		s.textContent = small;
+		lab.appendChild(s);
+	}
+	row.appendChild(lab);
+	if (control) row.appendChild(control);
+	content.appendChild(row);
+	return row;
+}
+function modeSelect(value) {
+	const sel = document.createElement("select");
+	for (const mode of ["auto", "notify", "gate"]) {
+		const o = document.createElement("option");
+		o.value = mode;
+		o.textContent = mode;
+		if (mode === value) o.selected = true;
+		sel.appendChild(o);
+	}
+	return sel;
+}
+
+async function renderSettingsTab() {
+	const content = $("settingsContent");
+	content.innerHTML = "";
+
+	if (settingsTab === "general") {
+		const info = await window.qorpera.settingsInfo();
+		setHeading(content, "General");
+		setRow(content, `Qorpera Base v${info.version}`, info.packaged ? "installed — auto-updates from the release channel" : "dev tree — updates by rebuilding the repo");
+		const upd = document.createElement("button");
+		upd.className = "save";
+		if (updateReadyVersion) {
+			upd.textContent = `Restart to update → v${updateReadyVersion}`;
+			upd.onclick = () => window.qorpera.updateInstall();
+		} else {
+			upd.textContent = "Check for updates";
+			upd.onclick = () => checkUpdates();
+		}
+		setRow(content, "Updates", "foundation only — your app's userland merges separately", upd);
+		return;
+	}
+
+	if (settingsTab === "authority") {
+		setHeading(content, "Authority — the gates");
+		if (!backendUrl) {
+			content.insertAdjacentHTML("beforeend", '<div class="sess-meta">Open a company to edit its gates.</div>');
+			return;
+		}
+		const cfg = await (await fetch(`${backendUrl}/api/authority/config`)).json();
+		const note = document.createElement("div");
+		note.className = "sess-meta";
+
+		const money = modeSelect(cfg.classes.money.mode);
+		const limit = document.createElement("input");
+		limit.type = "number";
+		limit.value = cfg.classes.money.limitUsd ?? 50;
+		const moneyRow = setRow(content, "Money", "spending and financial commitments", money);
+		moneyRow.appendChild(limit);
+		moneyRow.appendChild(document.createTextNode("USD notify-limit"));
+
+		const identity = modeSelect(cfg.classes.identity.mode);
+		setRow(content, "Identity", "acting AS the company externally: sending, posting, signing", identity);
+		const irreversible = modeSelect(cfg.classes.irreversible.mode);
+		setRow(content, "Irreversible", "prod deploys, deletions, legal commitments", irreversible);
+		const products = modeSelect(cfg.classes.products.mode);
+		setRow(content, "Products", "modification of the software products below (reading is always free)", products);
+
+		const paths = document.createElement("textarea");
+		paths.style.minHeight = "70px";
+		paths.value = (cfg.productPaths ?? []).join("\n");
+		setRow(content, "Product paths", "one per line, relative to the company root");
+		content.appendChild(paths);
+
+		setRow(content, "Authority itself", "editing gates, kernel files, or the inbox — always gated, not configurable");
+
+		const save = document.createElement("button");
+		save.className = "save";
+		save.textContent = "Save gates";
+		save.onclick = async () => {
+			const res = await fetch(`${backendUrl}/api/authority/config`, {
+				method: "POST",
+				headers: authHeaders({ "content-type": "application/json" }),
+				body: JSON.stringify({
+					classes: {
+						money: { mode: money.value, limitUsd: Number(limit.value) || 50 },
+						identity: { mode: identity.value },
+						irreversible: { mode: irreversible.value },
+						products: { mode: products.value },
+					},
+					productPaths: paths.value.split("\n").map((p) => p.trim()).filter(Boolean),
+				}),
+			});
+			const result = await res.json().catch(() => ({ ok: false }));
+			note.textContent = result.ok ? "saved — gates apply immediately" : `rejected: ${result.error ?? "error"}`;
+		};
+		content.appendChild(save);
+		content.appendChild(note);
+		return;
+	}
+
+	if (settingsTab === "connections") {
+		const info = await window.qorpera.settingsInfo();
+		setHeading(content, "Connections");
+		if (info.providers.length) {
+			for (const p of info.providers) setRow(content, p, "model subscription — connected");
+		} else {
+			setRow(content, "No model subscriptions connected");
+		}
+		content.insertAdjacentHTML(
+			"beforeend",
+			`<div class="sess-meta" style="margin-top:12px">To connect one, run <code>qorpera</code> in a terminal and use <code>/login</code> — a GUI flow is coming. Credentials live in ${info.agentDir}, never in company folders.</div>`,
+		);
+		return;
+	}
+
+	if (settingsTab === "profile") {
+		setHeading(content, "Profile");
+		content.insertAdjacentHTML(
+			"beforeend",
+			'<div class="sess-meta">Founder profile and per-company preferences land here as the platform grows; your controller can extend this plane in its own userland.</div>',
+		);
+		return;
+	}
+
+	if (settingsTab === "cloud") {
+		setHeading(content, "Cloud");
+		content.insertAdjacentHTML(
+			"beforeend",
+			'<div class="sess-meta">Sync, community, and compliance — not built yet.</div>',
+		);
+		return;
+	}
+
+	if (settingsTab === "advanced") {
+		setHeading(content, "Advanced — raw authority.toml");
+		if (!backendUrl) {
+			content.insertAdjacentHTML("beforeend", '<div class="sess-meta">Open a company first.</div>');
+			return;
+		}
 		const editor = document.createElement("textarea");
-		editor.style.minHeight = "220px";
-		editor.style.fontFamily = "Consolas, monospace";
 		editor.value = "loading…";
 		fetch(`${backendUrl}/api/authority`).then((r) => r.text()).then((text) => {
 			editor.value = text;
 		});
 		const save = document.createElement("button");
+		save.className = "save";
 		save.textContent = "Save authority.toml";
-		save.className = "ok";
 		const note = document.createElement("div");
 		note.className = "sess-meta";
 		save.onclick = async () => {
@@ -492,13 +621,10 @@ async function renderSettings() {
 			const result = await res.json().catch(() => ({ ok: false, error: "unexpected response" }));
 			note.textContent = result.ok ? "saved — gates apply immediately" : `rejected: ${result.error ?? "invalid TOML"}`;
 		};
-		auth.appendChild(editor);
-		auth.appendChild(save);
-		auth.appendChild(note);
+		content.appendChild(editor);
+		content.appendChild(save);
+		content.appendChild(note);
 	}
-
-	section("Profile", `<span class="sess-meta">Founder profile and per-company preferences land here as the platform grows; your controller can extend this plane in its own userland.</span>`);
-	section("Cloud", `<span class="sess-meta">Sync, community, and compliance — not built yet.</span>`);
 }
 
 // ---- foundation updates -----------------------------------------------------
@@ -511,19 +637,15 @@ window.qorpera.onUpdateStatus((text) => {
 	$("status").textContent = text;
 });
 window.qorpera.onUpdateReady((version) => {
-	for (const id of ["updateBtn", "updateBtnHub"]) {
-		const b = $(id);
-		if (!b) continue;
-		b.textContent = `Restart to update → v${version}`;
-		b.onclick = () => window.qorpera.updateInstall();
-	}
-	$("status").textContent = `v${version} downloaded — restart to apply`;
+	updateReadyVersion = version;
+	$("status").textContent = `v${version} downloaded — restart to apply (Settings → General)`;
+	if (!$("settingsView").hidden && settingsTab === "general") renderSettingsTab();
 });
 window.qorpera.onOpenCompany((root) => openCompany(root));
 
 (async () => {
 	const info = await window.qorpera.appInfo();
-	$("subtitle").textContent = `the foundation · v${info.version}`;
+	$("hubVersion").textContent = `the foundation · v${info.version}`;
 	if (info.activeCompany) {
 		await enterCompany(info.activeCompany);
 	} else if (info.pendingCompany) {

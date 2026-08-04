@@ -188,6 +188,39 @@ describe("company app server", () => {
 		).toBe("block");
 	});
 
+	it("structured authority config: reads toggles, saves surgically, preserves [tools]", async () => {
+		// Seed a custom [tools] section the structured editor must not clobber.
+		writeFileSync(
+			join(root, "authority.toml"),
+			`[irreversible]\nmode = "gate"\n\n[products]\nmode = "gate"\npaths = ["work/old"]\n\n[tools]\ndeploy = "irreversible"\n`,
+			"utf-8",
+		);
+		const cfg = (await (await fetch(`${base}/api/authority/config`)).json()) as {
+			classes: Record<string, { mode: string }>;
+			productPaths: string[];
+		};
+		expect(cfg.classes.irreversible.mode).toBe("gate");
+		expect(cfg.productPaths).toEqual(["work/old"]);
+
+		const save = await fetch(`${base}/api/authority/config`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			body: JSON.stringify({
+				classes: { irreversible: { mode: "notify" }, money: { mode: "gate", limitUsd: 100 } },
+				productPaths: ["work/new-product"],
+			}),
+		});
+		expect(save.status).toBe(200);
+		const written = readFileSync(join(root, "authority.toml"), "utf-8");
+		expect(written).toContain('deploy = "irreversible"'); // [tools] survived
+		const authority = discoverAuthority(root)!;
+		const config = (await import("../src/core/authority.ts")).readAuthorityConfig(authority);
+		expect(config.classes.irreversible.mode).toBe("notify");
+		expect(config.classes.money.limitUsd).toBe(100);
+		expect(config.productPaths).toEqual(["work/new-product"]);
+		expect(config.classes.authority.mode).toBe("gate"); // never configurable
+	});
+
 	it("authority editor endpoint: reads, rejects invalid TOML, applies valid edits", async () => {
 		const current = await (await fetch(`${base}/api/authority`)).text();
 		expect(current).toContain("[irreversible]");
