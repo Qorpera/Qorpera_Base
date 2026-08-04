@@ -261,9 +261,9 @@ describe("NodeExecutionEnv", () => {
 
 	it("can replace rather than inherit the default shell environment", async () => {
 		const root = createTempDir();
-		const inheritedKey = "PI_NODE_ENV_INHERITED_TEST";
-		const configuredKey = "PI_NODE_ENV_CONFIGURED_TEST";
-		const explicitKey = "PI_NODE_ENV_EXPLICIT_TEST";
+		const inheritedKey = "QORPERA_NODE_ENV_INHERITED_TEST";
+		const configuredKey = "QORPERA_NODE_ENV_CONFIGURED_TEST";
+		const explicitKey = "QORPERA_NODE_ENV_EXPLICIT_TEST";
 		const previousInherited = process.env[inheritedKey];
 		process.env[inheritedKey] = "host";
 		try {

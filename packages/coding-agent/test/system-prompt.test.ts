@@ -46,17 +46,16 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("- write:");
 		});
 
-		test("instructs models to resolve pi docs and examples under absolute base paths", () => {
+		test("does not point models at harness documentation paths", () => {
 			const prompt = buildSystemPrompt({
 				contextFiles: [],
 				skills: [],
 				cwd: process.cwd(),
 			});
 
-			expect(prompt).toContain(
-				"- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
-			);
-			expect(prompt).toContain("environment variables (docs/environment-variables.md)");
+			expect(prompt).toContain("operating inside Qorpera Base");
+			expect(prompt).not.toContain("Pi documentation");
+			expect(prompt).not.toContain("docs/environment-variables.md");
 		});
 	});
 

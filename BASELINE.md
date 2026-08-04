@@ -57,6 +57,28 @@ on Linux, and the packages they live in (TUI interaction, self-update, server
 sockets) are not on the Qorpera Base critical path. Revisit (c) if any touched
 subsystem becomes load-bearing.
 
+## Post-rename verification (1B, 2026-08-04)
+
+After the identity rename (`@qorpera` scope, `qorpera` binary, `~/.qorpera`
+home, `QORPERA_*` env), the full no-keys suite was rerun. Result: identical to
+baseline for every package except pi-coding-agent, where 7 test files (44
+tests) newly failed — all asserting the old identity (hardcoded `.pi` project
+dirs in fixtures, the removed pi-docs prompt block, one 10s hook timeout under
+load). All 7 files were updated to the new identity and re-verified green
+(7 files, 119 tests passed). Deltas vs baseline:
+
+| Package | Baseline fails | Post-rename fails | Delta explanation |
+|---|---|---|---|
+| agent-core | 16 | 16 | unchanged (same Windows clusters) |
+| coding-agent | 51 | 51 after test updates | 7 identity-asserting files fixed; no new non-identity failures |
+| evals / server / tui | 1 / 28 / 5 | 1 / 28 / 5 | unchanged |
+
+`npm run build` and the full `npm run check` gauntlet pass post-rename. The
+CLI self-identifies as `qorpera` and creates `~/.qorpera/agent` on first run.
+One deliberate revert: `@earendil-works/gondolin` is a real npm registry
+package (micro-VM sandbox dependency of an example extension), not a workspace
+— it keeps its upstream scope.
+
 ## Run-condition notes
 
 - Node here is v24.15.0; upstream CI pins 22. The (c)-class TypeErrors should be

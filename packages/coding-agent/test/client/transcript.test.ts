@@ -1,4 +1,4 @@
-import type { SessionSnapshot } from "@earendil-works/pi-protocol";
+import type { SessionSnapshot } from "@qorpera/pi-protocol";
 import { describe, expect, test } from "vitest";
 import {
 	applyTranscriptProgress,
