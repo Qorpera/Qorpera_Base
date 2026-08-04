@@ -30,7 +30,7 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/earendil-works/pi.git",
+		"url": "git+https://github.com/Qorpera/Qorpera_Base.git",
 		"directory": "packages/client"
 	},
 	"engines": { "node": ">=22.19.0" },
