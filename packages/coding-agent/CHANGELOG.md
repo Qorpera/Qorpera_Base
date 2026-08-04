@@ -194,7 +194,7 @@
 - Added inherited `supportsGrammarTools` and `supportsStrictTools` compatibility flags, expanded `supportsStrictMode` coverage, and generated model capability metadata to gate constrained sampling.
 - Added inherited Kimi Code subscription OAuth login for the Kimi For Coding provider, including device authorization and automatic token refresh ([#6935](https://github.com/earendil-works/pi/pull/6935) by [@zaycruz](https://github.com/zaycruz)).
 - Added inherited OpenRouter OAuth PKCE login through `/login`, minting a user-controlled API key. See [OpenRouter](docs/providers.md#openrouter) ([#6927](https://github.com/earendil-works/pi/pull/6927) by [@rsaryev](https://github.com/rsaryev)).
-- Exposed `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL` to commands run by built-in and factory-created bash tools. See [Bash Tool Session Environment](docs/environment-variables.md#bash-tool-session-environment).
+- Exposed `QORPERA_SESSION_ID`, `QORPERA_SESSION_FILE`, `QORPERA_PROVIDER`, `QORPERA_MODEL`, and `QORPERA_REASONING_LEVEL` to commands run by built-in and factory-created bash tools. See [Bash Tool Session Environment](docs/environment-variables.md#bash-tool-session-environment).
 - Added streaming `bash_execution_update` events for direct RPC bash commands, correlated with request IDs. See [RPC bash events](docs/rpc.md#bash_execution_update) ([#6971](https://github.com/earendil-works/pi/pull/6971) by [@ananthakumaran](https://github.com/ananthakumaran)).
 
 ### Changed
@@ -206,11 +206,11 @@
 - Fixed inherited DNS lookup failures such as `getaddrinfo`, `ENOTFOUND`, and `EAI_AGAIN` to trigger automatic assistant retries ([#6946](https://github.com/earendil-works/pi/pull/6946) by [@christianklotz](https://github.com/christianklotz)).
 - Fixed inherited OpenRouter Anthropic cache breakpoints to advance through tool results and enabled cache control for `~anthropic/*-latest` aliases ([#6941](https://github.com/earendil-works/pi/pull/6941) by [@mteam88](https://github.com/mteam88)).
 - Fixed inherited OpenAI Codex WebSocket sessions to retry once without a missing previous-response continuation after `previous_response_not_found` errors ([#6955](https://github.com/earendil-works/pi/pull/6955) by [@davidbrai](https://github.com/davidbrai)).
-- Fixed TUI debug and crash logs to respect custom agent directories instead of always writing under `~/.pi/agent` ([#6958](https://github.com/earendil-works/pi/pull/6958) by [@davidbrai](https://github.com/davidbrai)).
+- Fixed TUI debug and crash logs to respect custom agent directories instead of always writing under `~/.qorpera/agent` ([#6958](https://github.com/earendil-works/pi/pull/6958) by [@davidbrai](https://github.com/davidbrai)).
 - Fixed slow Ctrl+G external-editor startup when the system temporary directory contains many entries ([#6903](https://github.com/earendil-works/pi/pull/6903) by [@christianklotz](https://github.com/christianklotz)).
 - Fixed startup resource display to preserve relative paths for sibling npm extensions loaded by a package ([#6964](https://github.com/earendil-works/pi/pull/6964) by [@davidbrai](https://github.com/davidbrai)).
 - Fixed compaction and branch-summary requests to use fresh routing session IDs with prompt caching disabled where supported ([#6618](https://github.com/earendil-works/pi/pull/6618) by [@tmustier](https://github.com/tmustier)).
-- Fixed explicit self-updates when `PI_SKIP_VERSION_CHECK` is set ([#6977](https://github.com/earendil-works/pi/issues/6977)).
+- Fixed explicit self-updates when `QORPERA_SKIP_VERSION_CHECK` is set ([#6977](https://github.com/earendil-works/pi/issues/6977)).
 - Fixed scoped model IDs containing brackets to resolve as literal exact matches before glob matching ([#6210](https://github.com/earendil-works/pi/issues/6210)).
 - Fixed inherited OpenAI and Anthropic provider retry waits to honor abort signals and configured delay limits ([#6980](https://github.com/earendil-works/pi/pull/6980) by [@petrroll](https://github.com/petrroll)).
 - Fixed fresh installs from preferring bundled model catalogs over newer remote catalogs because package file mtimes were newer ([#7016](https://github.com/earendil-works/pi/pull/7016) by [@davidbrai](https://github.com/davidbrai)).
@@ -559,7 +559,7 @@
 
 - Added `Ctrl+J` as a default newline keybinding alongside `Shift+Enter`.
 - Renamed the displayed `zai` provider label to ZAI Coding Plan (Global) for clarity ([#5965](https://github.com/earendil-works/pi/issues/5965)).
-- pi-ai's old global API (`stream`/`complete`/`completeSimple`, `getModel`/`getModels`/`getProviders`, `registerApiProvider`, `getEnvApiKey`, ...) moved off the `@earendil-works/pi-ai` root entrypoint to `@earendil-works/pi-ai/compat`. Extensions are not affected at runtime: the extension loader resolves the pi-ai root to the compat entrypoint (a strict superset), so existing extensions keep working unchanged. Extension sources that typecheck against pi-ai's published types should switch those imports to `@earendil-works/pi-ai/compat` (or migrate to the new `createModels()`/provider-factory API). The compat entrypoint and the loader alias will be removed in a future release with a migration guide.
+- pi-ai's old global API (`stream`/`complete`/`completeSimple`, `getModel`/`getModels`/`getProviders`, `registerApiProvider`, `getEnvApiKey`, ...) moved off the `@qorpera/pi-ai` root entrypoint to `@qorpera/pi-ai/compat`. Extensions are not affected at runtime: the extension loader resolves the pi-ai root to the compat entrypoint (a strict superset), so existing extensions keep working unchanged. Extension sources that typecheck against pi-ai's published types should switch those imports to `@qorpera/pi-ai/compat` (or migrate to the new `createModels()`/provider-factory API). The compat entrypoint and the loader alias will be removed in a future release with a migration guide.
 
 ### Fixed
 
@@ -577,7 +577,7 @@
 
 ### Removed
 
-- Removed inherited selective-provider `@earendil-works/pi-ai/base` and `@earendil-works/pi-agent-core/base` entrypoints; use the root packages with explicit `Models` provider factories instead.
+- Removed inherited selective-provider `@qorpera/pi-ai/base` and `@qorpera/pi-agent-core/base` entrypoints; use the root packages with explicit `Models` provider factories instead.
 
 ## [0.79.10] - 2026-06-22
 
@@ -628,14 +628,14 @@
 
 ### New Features
 
-- **Selective provider base entry points** - SDK users can pair `@earendil-works/pi-ai/base` and `@earendil-works/pi-agent-core/base` with explicit provider registration to keep bundled applications from including unused provider transports. See [`pi-ai` Base Entry Point](../ai/README.md#base-entry-point) and [`pi-agent-core` Base Entry Point](../agent/README.md#base-entry-point).
+- **Selective provider base entry points** - SDK users can pair `@qorpera/pi-ai/base` and `@qorpera/pi-agent-core/base` with explicit provider registration to keep bundled applications from including unused provider transports. See [`pi-ai` Base Entry Point](../ai/README.md#base-entry-point) and [`pi-agent-core` Base Entry Point](../agent/README.md#base-entry-point).
 - **Mistral prompt caching** - Mistral sessions now use provider-side prompt caching with session affinity and cached-token usage/cost accounting. See [API Keys](docs/providers.md#api-keys) and [Environment Variables](docs/usage.md#environment-variables).
 - **Post-compaction token estimates** - Compact results and compaction events now include estimated post-compaction token counts so clients can show the approximate context reduction. See [RPC compact](docs/rpc.md#compact) and [compaction events](docs/rpc.md#compaction_start--compaction_end).
 - **OpenRouter Fusion alias** - `openrouter/fusion` is available as a built-in OpenRouter model alias. See [API Keys](docs/providers.md#api-keys).
 
 ### Added
 
-- Added inherited `@earendil-works/pi-ai/base` and `@earendil-works/pi-agent-core/base` entry points for selective provider registration in bundled applications ([#5348](https://github.com/earendil-works/pi/pull/5348) by [@FredKSchott](https://github.com/FredKSchott)).
+- Added inherited `@qorpera/pi-ai/base` and `@qorpera/pi-agent-core/base` entry points for selective provider registration in bundled applications ([#5348](https://github.com/earendil-works/pi/pull/5348) by [@FredKSchott](https://github.com/FredKSchott)).
 - Added inherited Mistral prompt caching using the pi session ID as `prompt_cache_key`, including cached-token usage and cost accounting ([#5854](https://github.com/earendil-works/pi/issues/5854)).
 - Added estimated post-compaction token counts to compact results and compaction events ([#5877](https://github.com/earendil-works/pi/issues/5877)).
 - Added the inherited OpenRouter Fusion alias as `openrouter/fusion` ([#5866](https://github.com/earendil-works/pi/pull/5866) by [@dannote](https://github.com/dannote)).
@@ -755,12 +755,12 @@
 
 ### Added
 
-- Added an experimental first-time setup flow behind `PI_EXPERIMENTAL=1` that asks for a dark/light theme choice (preselecting the detected appearance) and opt-in analytics data sharing on first launch with the default agent directory; opting in stores a `trackingId` in `settings.json` ([#5587](https://github.com/earendil-works/pi/pull/5587) by [@vegarsti](https://github.com/vegarsti)).
+- Added an experimental first-time setup flow behind `QORPERA_EXPERIMENTAL=1` that asks for a dark/light theme choice (preselecting the detected appearance) and opt-in analytics data sharing on first launch with the default agent directory; opting in stores a `trackingId` in `settings.json` ([#5587](https://github.com/earendil-works/pi/pull/5587) by [@vegarsti](https://github.com/vegarsti)).
 - Added AWS data retention documentation links to inherited Amazon Bedrock unsupported data retention mode validation errors ([#5561](https://github.com/earendil-works/pi/pull/5561) by [@unexge](https://github.com/unexge)).
 
 ### Fixed
 
-- Fixed project trust detection to ignore global `~/.pi/agent` state when running from `$HOME`, and made `pi update` use only saved or explicit project trust without prompting ([#5619](https://github.com/earendil-works/pi/issues/5619)).
+- Fixed project trust detection to ignore global `~/.qorpera/agent` state when running from `$HOME`, and made `pi update` use only saved or explicit project trust without prompting ([#5619](https://github.com/earendil-works/pi/issues/5619)).
 - Fixed experimental first-time setup to skip forked sessions instead of rerunning the setup prompts ([#5627](https://github.com/earendil-works/pi/pull/5627) by [@vegarsti](https://github.com/vegarsti)).
 - Fixed inherited OpenAI-compatible context overflow detection for parenthesized `maximum context length (N)` errors ([#5677](https://github.com/earendil-works/pi/issues/5677)).
 - Fixed inherited OpenAI GPT-5.4/GPT-5.5 and OpenAI Codex GPT-5.4/GPT-5.4 mini/GPT-5.5 context window metadata to match current OpenAI limits ([#5644](https://github.com/earendil-works/pi/issues/5644)).
@@ -798,7 +798,7 @@
 - Added `ctx.isProjectTrusted()` for extensions to observe the effective project trust decision, including temporary trust decisions ([#5523](https://github.com/earendil-works/pi/issues/5523)).
 - Added a global `defaultProjectTrust` setting to choose whether unresolved project trust asks, always trusts, or never trusts by default.
 - Added extension autocomplete trigger character support for `ctx.ui.addAutocompleteProvider()` wrappers ([#4703](https://github.com/earendil-works/pi/issues/4703)).
-- Added Claude Fable 5 model support inherited from `@earendil-works/pi-ai` for the Anthropic and Amazon Bedrock providers, with adaptive thinking and `xhigh` effort support.
+- Added Claude Fable 5 model support inherited from `@qorpera/pi-ai` for the Anthropic and Amazon Bedrock providers, with adaptive thinking and `xhigh` effort support.
 
 ### Fixed
 
@@ -864,14 +864,14 @@
 
 - Added containerization documentation and a Gondolin extension example for routing built-in tools into a local micro-VM.
 - Added Ant Ling provider selection and setup documentation.
-- Added MiniMax-M3 model support inherited from `@earendil-works/pi-ai` for the `minimax` and `minimax-cn` direct providers ([#5313](https://github.com/earendil-works/pi/issues/5313)).
+- Added MiniMax-M3 model support inherited from `@qorpera/pi-ai` for the `minimax` and `minimax-cn` direct providers ([#5313](https://github.com/earendil-works/pi/issues/5313)).
 - Added NVIDIA NIM provider selection, setup documentation, and direct NIM request attribution headers.
 - Added `ctx.mode` to extension contexts so extensions can distinguish TUI, RPC, JSON, and print mode.
 - Added `ctx.getSystemPromptOptions()` for extension commands to inspect the current base system prompt inputs ([#5306](https://github.com/earendil-works/pi/pull/5306) by [@xl0](https://github.com/xl0)).
 
 ### Fixed
 
-- Fixed temporary extension package installs to use a private `~/.pi/agent/tmp/extensions` directory with `0700` permissions instead of `os.tmpdir()/pi-extensions`.
+- Fixed temporary extension package installs to use a private `~/.qorpera/agent/tmp/extensions` directory with `0700` permissions instead of `os.tmpdir()/pi-extensions`.
 - Fixed git package source handling to reject unsafe host/path components and keep managed clone paths inside install roots.
 - Fixed stored XSS in HTML session exports by sanitizing Markdown link and image URLs with a scheme allow-list after stripping control characters.
 - Fixed SDK embedding in bundled Node apps failing with `ENOENT` when `package.json` is not present next to the bundle entrypoint. The package metadata reader now gracefully handles missing `package.json` by using defaults, enabling `createAgentSession()` without requiring package-adjacent files at runtime ([#5226](https://github.com/earendil-works/pi/issues/5226)).
@@ -902,7 +902,7 @@
 - Added `--name` / `-n` to set the session display name at startup ([#5153](https://github.com/earendil-works/pi-mono/issues/5153)).
 - Added a resume command hint when exiting interactive sessions ([#5176](https://github.com/earendil-works/pi-mono/pull/5176) by [@yzhg1983](https://github.com/yzhg1983)).
 - Added OSC 8 `file://` hyperlinks to file paths shown in built-in file tool titles ([#5189](https://github.com/earendil-works/pi-mono/pull/5189) by [@mpazik](https://github.com/mpazik)).
-- Added custom Amazon Bedrock request header support inherited from `@earendil-works/pi-ai` ([#5178](https://github.com/earendil-works/pi-mono/pull/5178) by [@stephanmck](https://github.com/stephanmck)).
+- Added custom Amazon Bedrock request header support inherited from `@qorpera/pi-ai` ([#5178](https://github.com/earendil-works/pi-mono/pull/5178) by [@stephanmck](https://github.com/stephanmck)).
 
 ### Fixed
 
@@ -1015,7 +1015,7 @@
 - Fixed config pattern matching to resolve patterns from the correct base directory ([#4898](https://github.com/earendil-works/pi-mono/pull/4898) by [@haoqixu](https://github.com/haoqixu)).
 - Fixed theme pickers to list themes by their content name instead of file stem ([#4830](https://github.com/earendil-works/pi-mono/pull/4830) by [@Perlence](https://github.com/Perlence)).
 - Fixed OpenCode Zen/Go requests to send per-session OpenCode routing headers ([#4847](https://github.com/earendil-works/pi/issues/4847)).
-- Fixed Amazon Bedrock provider loading under strict package managers by inheriting the declared `@smithy/node-http-handler` dependency from `@earendil-works/pi-ai` ([#4842](https://github.com/earendil-works/pi/issues/4842)).
+- Fixed Amazon Bedrock provider loading under strict package managers by inheriting the declared `@smithy/node-http-handler` dependency from `@qorpera/pi-ai` ([#4842](https://github.com/earendil-works/pi/issues/4842)).
 - Fixed inherited Amazon Bedrock Claude requests to send the model output token cap by default, avoiding Bedrock's 4096-token default truncation ([#4848](https://github.com/earendil-works/pi/issues/4848)).
 - Fixed exported session HTML to escape quote characters in attribute values ([#4832](https://github.com/earendil-works/pi/issues/4832)).
 - Fixed GitHub Copilot device-code login to keep opening the verification URL in browser-capable environments while ignoring browser launch failures for headless use ([#4788](https://github.com/earendil-works/pi-mono/pull/4788) by [@vegarsti](https://github.com/vegarsti)).
@@ -1060,9 +1060,9 @@
 - Fixed HTML share/export sidebar clicks for shared tool entries to scroll to the rendered tool call ([#4664](https://github.com/earendil-works/pi-mono/pull/4664) by [@yzhg1983](https://github.com/yzhg1983)).
 - Fixed theme palettes to set explicit text colors and avoid terminal-default color drift.
 - Fixed truecolor detection to align terminal image rendering and interactive theme decisions.
-- Fixed loader indicator startup inherited from `@earendil-works/pi-tui` so initialization cannot run before frames are available.
-- Fixed OpenAI-compatible default output token requests inherited from `@earendil-works/pi-ai` to avoid reserving impossible context windows on servers such as vLLM ([#4675](https://github.com/earendil-works/pi/issues/4675)).
-- Fixed OpenAI prompt cache keys inherited from `@earendil-works/pi-ai` to stay within the 64-character provider limit ([#4720](https://github.com/earendil-works/pi/issues/4720)).
+- Fixed loader indicator startup inherited from `@qorpera/pi-tui` so initialization cannot run before frames are available.
+- Fixed OpenAI-compatible default output token requests inherited from `@qorpera/pi-ai` to avoid reserving impossible context windows on servers such as vLLM ([#4675](https://github.com/earendil-works/pi/issues/4675)).
+- Fixed OpenAI prompt cache keys inherited from `@qorpera/pi-ai` to stay within the 64-character provider limit ([#4720](https://github.com/earendil-works/pi/issues/4720)).
 - Fixed Windows npm-family package commands for fnm-managed Node.js installs that expose both extensionless Unix scripts and `.cmd` shims ([#4793](https://github.com/earendil-works/pi/issues/4793)).
 
 ## [0.75.3] - 2026-05-18
@@ -1076,7 +1076,7 @@
 ### Fixed
 
 - Fixed Bun-compiled release binaries failing to start when Bun's built-in undici shim lacks npm undici's `install` export ([#4661](https://github.com/earendil-works/pi-mono/pull/4661) by [@dmasiero](https://github.com/dmasiero)).
-- Fixed Xiaomi MiMo generated model metadata to replay assistant tool-call messages with `reasoning_content` for thinking-mode multi-turn requests, inherited from `@earendil-works/pi-ai` ([#4678](https://github.com/earendil-works/pi/issues/4678)).
+- Fixed Xiaomi MiMo generated model metadata to replay assistant tool-call messages with `reasoning_content` for thinking-mode multi-turn requests, inherited from `@qorpera/pi-ai` ([#4678](https://github.com/earendil-works/pi/issues/4678)).
 - Fixed Windows external editor handoff so vim/nvim can receive input after opening from the TUI ([#4612](https://github.com/earendil-works/pi/issues/4612)).
 - Fixed Windows npm self-updates to move loaded native dependency packages out of the active install before reinstalling pi ([#4157](https://github.com/earendil-works/pi/issues/4157)).
 - Fixed `pi update --self` detection for pnpm v11 global installs whose package path resolves through the pnpm store ([#4647](https://github.com/earendil-works/pi/issues/4647)).
@@ -1088,17 +1088,17 @@
 ### Fixed
 
 - Fixed config selectors to scale their visible row count to terminal height ([#4243](https://github.com/earendil-works/pi-mono/pull/4243) by [@samjonester](https://github.com/samjonester)).
-- Fixed Anthropic-compatible API-key requests to ignore unrelated `ANTHROPIC_AUTH_TOKEN` environment values, avoiding invalid bearer credentials for providers such as Xiaomi MiMo inherited from `@earendil-works/pi-ai` ([#4342](https://github.com/earendil-works/pi/issues/4342)).
-- Fixed Amazon Bedrock message conversion to skip unknown content blocks instead of failing the stream, inherited from `@earendil-works/pi-ai` ([#4223](https://github.com/earendil-works/pi/issues/4223)).
-- Fixed Azure OpenAI Responses and OpenAI Responses error formatting to prefix HTTP status codes onto `errorMessage`, so transient 5xx and 429 errors are correctly matched by the agent-level auto-retry classifier inherited from `@earendil-works/pi-ai` ([#4232](https://github.com/earendil-works/pi/issues/4232)).
-- Fixed OpenCode Go Kimi reasoning replay by normalizing streamed `reasoning` fields back to `reasoning_content` for OpenCode Go only, inherited from `@earendil-works/pi-ai` ([#4251](https://github.com/earendil-works/pi/issues/4251)).
-- Fixed Xiaomi MiMo model metadata to use the OpenAI-compatible endpoints and `openai-completions` API, restoring multi-turn thinking/tool-call sessions inherited from `@earendil-works/pi-ai` ([#4505](https://github.com/earendil-works/pi/issues/4505)).
+- Fixed Anthropic-compatible API-key requests to ignore unrelated `ANTHROPIC_AUTH_TOKEN` environment values, avoiding invalid bearer credentials for providers such as Xiaomi MiMo inherited from `@qorpera/pi-ai` ([#4342](https://github.com/earendil-works/pi/issues/4342)).
+- Fixed Amazon Bedrock message conversion to skip unknown content blocks instead of failing the stream, inherited from `@qorpera/pi-ai` ([#4223](https://github.com/earendil-works/pi/issues/4223)).
+- Fixed Azure OpenAI Responses and OpenAI Responses error formatting to prefix HTTP status codes onto `errorMessage`, so transient 5xx and 429 errors are correctly matched by the agent-level auto-retry classifier inherited from `@qorpera/pi-ai` ([#4232](https://github.com/earendil-works/pi/issues/4232)).
+- Fixed OpenCode Go Kimi reasoning replay by normalizing streamed `reasoning` fields back to `reasoning_content` for OpenCode Go only, inherited from `@qorpera/pi-ai` ([#4251](https://github.com/earendil-works/pi/issues/4251)).
+- Fixed Xiaomi MiMo model metadata to use the OpenAI-compatible endpoints and `openai-completions` API, restoring multi-turn thinking/tool-call sessions inherited from `@qorpera/pi-ai` ([#4505](https://github.com/earendil-works/pi/issues/4505)).
 - Fixed JSON parse failures for compressed fetch responses under Node 26.0 by installing undici fetch globals alongside pi's global dispatcher ([#4650](https://github.com/earendil-works/pi/issues/4650), [#4652](https://github.com/earendil-works/pi/issues/4652), [#4653](https://github.com/earendil-works/pi/issues/4653)).
 - Fixed npm-family package commands on Windows to avoid shell argument splitting when install prefixes contain spaces ([#4623](https://github.com/earendil-works/pi/issues/4623)).
 
 ### Removed
 
-- Removed non-working OpenAI Codex fast model variants inherited from `@earendil-works/pi-ai`.
+- Removed non-working OpenAI Codex fast model variants inherited from `@qorpera/pi-ai`.
 
 ## [0.75.0] - 2026-05-17
 
@@ -1110,24 +1110,24 @@
 
 - Fixed compaction summary calls to use custom agent stream functions, preserving proxy-backed LLM routing ([#4484](https://github.com/earendil-works/pi/issues/4484)).
 - Fixed system prompt and context file boundaries to use explicit XML tags instead of Markdown headings, reducing inconsistent boundary ingestion by models ([#4541](https://github.com/earendil-works/pi-mono/pull/4541) by [@herrnel](https://github.com/herrnel)).
-- Fixed OpenAI Codex generated model metadata to use the current upstream model list inherited from `@earendil-works/pi-ai` ([#4603](https://github.com/earendil-works/pi-mono/pull/4603) by [@mattiacerutti](https://github.com/mattiacerutti)).
-- Fixed GitHub Copilot GPT model thinking metadata inherited from `@earendil-works/pi-ai` to map unsupported minimal thinking to low ([#4622](https://github.com/earendil-works/pi-mono/pull/4622) by [@mattiacerutti](https://github.com/mattiacerutti)).
-- Fixed user-scoped npm pi packages to install under `~/.pi/agent/npm/` instead of npm's global package root, avoiding permission errors with system-managed Node installs ([#4587](https://github.com/earendil-works/pi/issues/4587)).
+- Fixed OpenAI Codex generated model metadata to use the current upstream model list inherited from `@qorpera/pi-ai` ([#4603](https://github.com/earendil-works/pi-mono/pull/4603) by [@mattiacerutti](https://github.com/mattiacerutti)).
+- Fixed GitHub Copilot GPT model thinking metadata inherited from `@qorpera/pi-ai` to map unsupported minimal thinking to low ([#4622](https://github.com/earendil-works/pi-mono/pull/4622) by [@mattiacerutti](https://github.com/mattiacerutti)).
+- Fixed user-scoped npm pi packages to install under `~/.qorpera/agent/npm/` instead of npm's global package root, avoiding permission errors with system-managed Node installs ([#4587](https://github.com/earendil-works/pi/issues/4587)).
 - Fixed Mistral requests failing after the global fetch proxy/timeout workaround by removing the custom fetch override and using undici 8 dispatcher support instead ([#4619](https://github.com/earendil-works/pi/issues/4619)).
-- Fixed default output token requests for models whose advertised output limit is effectively their full context window, avoiding impossible provider requests inherited from `@earendil-works/pi-ai` ([#4614](https://github.com/earendil-works/pi/issues/4614)).
+- Fixed default output token requests for models whose advertised output limit is effectively their full context window, avoiding impossible provider requests inherited from `@qorpera/pi-ai` ([#4614](https://github.com/earendil-works/pi/issues/4614)).
 
 ## [0.74.1] - 2026-05-16
 
 ### New Features
 
-- **Image generation support** - Added image generation APIs, generated image model metadata, and built-in OpenRouter image generation support inherited from `@earendil-works/pi-ai`.
+- **Image generation support** - Added image generation APIs, generated image model metadata, and built-in OpenRouter image generation support inherited from `@qorpera/pi-ai`.
 - **Together AI provider** - Added Together AI as a built-in provider with `/login` API-key auth, default model resolution, and setup docs. See [README.md#providers--models](README.md#providers--models) and [docs/providers.md](docs/providers.md).
 - **Windows ARM64 standalone binaries** - Added standalone release artifacts for Windows ARM64.
-- **Improved terminal and markdown rendering** - Added markdown list indentation, task-list checkbox rendering, large markdown robustness, and inline image placement fixes inherited from `@earendil-works/pi-tui`.
+- **Improved terminal and markdown rendering** - Added markdown list indentation, task-list checkbox rendering, large markdown robustness, and inline image placement fixes inherited from `@qorpera/pi-tui`.
 
 ### Added
 
-- Added image generation support from `@earendil-works/pi-ai`, including image generation APIs, image model metadata, and built-in OpenRouter image generation support ([#3887](https://github.com/earendil-works/pi-mono/pull/3887) by [@cristinaponcela](https://github.com/cristinaponcela)).
+- Added image generation support from `@qorpera/pi-ai`, including image generation APIs, image model metadata, and built-in OpenRouter image generation support ([#3887](https://github.com/earendil-works/pi-mono/pull/3887) by [@cristinaponcela](https://github.com/cristinaponcela)).
 - Added Together AI to built-in provider setup, `/login` API-key auth, and default model resolution ([#3624](https://github.com/earendil-works/pi-mono/pull/3624) by [@Nutlope](https://github.com/Nutlope)).
 - Added Windows ARM64 standalone binary release artifacts ([#4458](https://github.com/earendil-works/pi/pull/4458) by [@brianmichel](https://github.com/brianmichel)).
 
@@ -1151,8 +1151,8 @@
 - Fixed uncaught interactive-mode exceptions to restore the terminal before exiting ([#4426](https://github.com/earendil-works/pi-mono/pull/4426) by [@ofa1](https://github.com/ofa1)).
 - Fixed ANSI stripping to match `strip-ansi` behavior after dependency removal.
 - Fixed UUIDv7 sequence generation shared by session IDs after dependency removal.
-- Fixed OpenRouter cached-token usage accounting, Fireworks caching compatibility, and OpenAI Codex WebSocket proxy handling inherited from `@earendil-works/pi-ai`.
-- Fixed markdown list wrapping, task-list checkboxes, large markdown rendering, WezTerm Kitty keyboard escape handling, and short-viewport inline image placement inherited from `@earendil-works/pi-tui`.
+- Fixed OpenRouter cached-token usage accounting, Fireworks caching compatibility, and OpenAI Codex WebSocket proxy handling inherited from `@qorpera/pi-ai`.
+- Fixed markdown list wrapping, task-list checkboxes, large markdown rendering, WezTerm Kitty keyboard escape handling, and short-viewport inline image placement inherited from `@qorpera/pi-tui`.
 - Fixed theme sharing across package scopes so extensions do not crash with `Theme not initialized` ([#4333](https://github.com/earendil-works/pi/issues/4333)).
 - Fixed keybinding hints to show Option instead of Alt on macOS ([#4289](https://github.com/earendil-works/pi/issues/4289)).
 - Fixed the interactive update notification to render the changelog as an OSC 8 hyperlink when the terminal supports hyperlinks ([#4280](https://github.com/earendil-works/pi/issues/4280)).
@@ -1161,13 +1161,13 @@
 
 ### Changed
 
-- Updated repository links and package references for the move to `earendil-works/pi-mono` and `@earendil-works/*` package scopes.
+- Updated repository links and package references for the move to `earendil-works/pi-mono` and `@qorpera/*` package scopes.
 
 ## [0.73.1] - 2026-05-07
 
 ### New Features
 
-- **Self-update support for the npm scope migration**: `pi update --self` now supports the upcoming package rename from `@mariozechner/pi-coding-agent` to `@earendil-works/pi-coding-agent`. After the new package is published, existing global installs can update through the normal self-update flow; pi will uninstall the old global package and install the package name returned by the version check endpoint.
+- **Self-update support for the npm scope migration**: `pi update --self` now supports the upcoming package rename from `@mariozechner/pi-coding-agent` to `@qorpera/pi-coding-agent`. After the new package is published, existing global installs can update through the normal self-update flow; pi will uninstall the old global package and install the package name returned by the version check endpoint.
 - **Interactive OAuth login selection**: OAuth providers can now present multiple login choices in `/login`, enabling provider-specific interactive authentication flows. See [Providers](docs/providers.md).
 - **JSONC-style `models.json` parsing**: `models.json` now allows comments and trailing commas, making custom provider and model configuration easier to maintain. See [Providers](docs/providers.md) and [Custom Providers](docs/custom-provider.md).
 
@@ -1272,7 +1272,7 @@
 - Moonshot AI provider support with `MOONSHOT_API_KEY`, default model resolution, and `/login` display.
 - Mistral Medium 3.5 built-in model support. See [docs/providers.md#api-keys](docs/providers.md#api-keys). ([#4009](https://github.com/badlogic/pi-mono/pull/4009) by [@technocidal](https://github.com/technocidal)).
 - Extension APIs can replace finalized `message_end` messages, wrap custom editor factories via `ctx.ui.getEditorComponent()`, and observe thinking level changes. See [docs/extensions.md#message_start--message_update--message_end](docs/extensions.md#message_start--message_update--message_end), [docs/extensions.md#widgets-status-and-footer](docs/extensions.md#widgets-status-and-footer), and [docs/extensions.md#thinking_level_select](docs/extensions.md#thinking_level_select).
-- `PI_CODING_AGENT_SESSION_DIR` configures session storage from the environment. See [docs/usage.md#environment-variables](docs/usage.md#environment-variables).
+- `QORPERA_CODING_AGENT_SESSION_DIR` configures session storage from the environment. See [docs/usage.md#environment-variables](docs/usage.md#environment-variables).
 
 ### Added
 
@@ -1280,7 +1280,7 @@
 - Added Moonshot AI as a built-in provider with `MOONSHOT_API_KEY` setup, default model resolution, and `/login` display support.
 - Added Mistral Medium 3.5 built-in model support via `@mariozechner/pi-ai` ([#4009](https://github.com/badlogic/pi-mono/pull/4009) by [@technocidal](https://github.com/technocidal)).
 - Added routed OpenAI-compatible response model metadata in assistant messages, so providers such as OpenRouter can expose the concrete model used ([#3968](https://github.com/badlogic/pi-mono/pull/3968) by [@purrgrammer](https://github.com/purrgrammer)).
-- Added `PI_CODING_AGENT_SESSION_DIR` as an environment equivalent to `--session-dir` ([#4027](https://github.com/badlogic/pi-mono/issues/4027)).
+- Added `QORPERA_CODING_AGENT_SESSION_DIR` as an environment equivalent to `--session-dir` ([#4027](https://github.com/badlogic/pi-mono/issues/4027)).
 - Added `message_end` extension result support for replacing finalized messages, enabling extensions to override assistant usage cost ([#3982](https://github.com/badlogic/pi-mono/issues/3982)).
 - Added top-level `name` support to `pi.registerProvider()` so extension-registered providers can show a friendly name in `/login` ([#3956](https://github.com/badlogic/pi-mono/issues/3956)).
 - Added `ctx.ui.getEditorComponent()` so extensions can wrap the currently configured custom editor factory ([#3935](https://github.com/badlogic/pi-mono/issues/3935)).
@@ -1545,7 +1545,7 @@
 - Added `/clone` to duplicate the current active branch into a new session, while keeping `/fork` focused on forking from a previous user message ([#2962](https://github.com/badlogic/pi-mono/issues/2962))
 - Added `ctx.fork()` support for `position: "before" | "at"` so extensions and integrations can branch before a user message or duplicate the current point in the conversation; the interactive clone/fork UX builds on that runtime support ([#3431](https://github.com/badlogic/pi-mono/pull/3431) by [@mitsuhiko](https://github.com/mitsuhiko))
 - Added configurable keybinding ids for scoped model selector actions and tree filter actions, so those interactive shortcuts can be remapped in `keybindings.json` ([#3343](https://github.com/badlogic/pi-mono/pull/3343) by [@mpazik](https://github.com/mpazik))
-- Added `PI_OAUTH_CALLBACK_HOST` support for built-in OAuth login flows, allowing local callback servers used by `pi auth` to bind to a custom interface instead of hardcoded `127.0.0.1` ([#3409](https://github.com/badlogic/pi-mono/pull/3409) by [@Michaelliv](https://github.com/Michaelliv))
+- Added `QORPERA_OAUTH_CALLBACK_HOST` support for built-in OAuth login flows, allowing local callback servers used by `pi auth` to bind to a custom interface instead of hardcoded `127.0.0.1` ([#3409](https://github.com/badlogic/pi-mono/pull/3409) by [@Michaelliv](https://github.com/Michaelliv))
 - Added `reason` and `targetSessionFile` metadata to `session_shutdown` extension events, so extensions can distinguish quit, reload, new-session, resume, and fork teardown paths ([#2863](https://github.com/badlogic/pi-mono/issues/2863))
 
 ### Changed
@@ -1572,7 +1572,7 @@
 - Fixed `/compact` to reuse the session thinking level for compaction summaries instead of forcing `high`, avoiding invalid reasoning-effort errors on `github-copilot/claude-opus-4.7` sessions configured for `medium` thinking ([#3438](https://github.com/badlogic/pi-mono/issues/3438))
 - Fixed shared/exported plain-text tool output to preserve indentation instead of collapsing leading whitespace in the web share page ([#3440](https://github.com/badlogic/pi-mono/issues/3440))
 - Fixed exported share pages to use browser-safe `T` and `O` shortcuts with clickable header toggles for thinking and tool visibility instead of browser-reserved `Ctrl+T` / `Ctrl+O` bindings ([#3374](https://github.com/badlogic/pi-mono/pull/3374) by [@vekexasia](https://github.com/vekexasia))
-- Fixed skill resolution to dedupe symlinked aliases by canonical path, so `pi config` no longer shows duplicate skill entries when `~/.pi/agent/skills` points to `~/.agents/skills` ([#3417](https://github.com/badlogic/pi-mono/pull/3417) by [@rwachtler](https://github.com/rwachtler))
+- Fixed skill resolution to dedupe symlinked aliases by canonical path, so `pi config` no longer shows duplicate skill entries when `~/.qorpera/agent/skills` points to `~/.agents/skills` ([#3417](https://github.com/badlogic/pi-mono/pull/3417) by [@rwachtler](https://github.com/rwachtler))
 - Fixed OpenRouter request attribution to include Pi app headers (`HTTP-Referer: https://pi.dev`, `X-OpenRouter-Title: pi`, `X-OpenRouter-Categories: cli-agent`) when sessions are created through the coding-agent SDK and install telemetry is enabled ([#3414](https://github.com/badlogic/pi-mono/issues/3414))
 - Fixed custom-model `compat` schema/docs to support `cacheControlFormat: "anthropic"` for OpenAI-compatible providers that expose Anthropic-style prompt caching via `cache_control` markers ([#3392](https://github.com/badlogic/pi-mono/issues/3392))
 - Fixed Cloud Code Assist tool schemas to strip JSON Schema meta-declaration keys before provider translation, avoiding validation failures for tool-enabled sessions that use `$schema`, `$defs`, and related metadata ([#3412](https://github.com/badlogic/pi-mono/pull/3412) by [@vladlearns](https://github.com/vladlearns))
@@ -1607,7 +1607,7 @@
 - Fixed missing root exports for `RpcClient` and RPC protocol types from `@mariozechner/pi-coding-agent`, so ESM consumers can import them from the main package entrypoint ([#3275](https://github.com/badlogic/pi-mono/issues/3275))
 - Fixed OpenAI Codex service-tier cost accounting to trust the explicitly requested tier when the API echoes the default tier in responses, keeping session cost displays aligned with the selected tier ([#3307](https://github.com/badlogic/pi-mono/pull/3307) by [@markusylisiurunen](https://github.com/markusylisiurunen))
 - Fixed parallel tool-call finalization to convert `afterToolCall` hook throws into error tool results instead of aborting the remaining tool batch ([#3084](https://github.com/badlogic/pi-mono/issues/3084))
-- Fixed Bun binary asset path resolution to honor `PI_PACKAGE_DIR` for built-in themes, HTML export templates, and interactive bundled assets ([#3074](https://github.com/badlogic/pi-mono/issues/3074))
+- Fixed Bun binary asset path resolution to honor `QORPERA_PACKAGE_DIR` for built-in themes, HTML export templates, and interactive bundled assets ([#3074](https://github.com/badlogic/pi-mono/issues/3074))
 - Fixed user-message turn spacing in interactive mode by restoring an inter-message spacer before user turns (except the first user message), preventing assistant and user blocks from rendering flush together.
 - Fixed interactive `/import` handling to support quoted JSONL paths with spaces, route missing JSONL files through the non-fatal `SessionImportFileNotFoundError` path, and document the `importFromJsonl()` exceptions (`SessionImportFileNotFoundError`, `MissingSessionCwdError`).
 
@@ -1746,20 +1746,20 @@ What data is collected:
 How to disable it:
 - `/settings` → disable `Install telemetry`
 - `settings.json` → set `enableInstallTelemetry` to `false`
-- `PI_OFFLINE=1`
-- `PI_TELEMETRY=0`
+- `QORPERA_OFFLINE=1`
+- `QORPERA_TELEMETRY=0`
 
 ### New Features
 
 - Full `openRouterRouting` support in `models.json`, including fallbacks, parameter requirements, data collection, ZDR, ignore lists, quantizations, provider sorting, max price, and preferred throughput and latency constraints. See [docs/models.md](docs/models.md).
-- `PI_CODING_AGENT=true` environment variable set at startup so subprocesses can detect they are running inside the coding agent.
+- `QORPERA_CODING_AGENT=true` environment variable set at startup so subprocesses can detect they are running inside the coding agent.
 - Updated `antigravity-image-gen.ts` example extension to use User-Agent version `1.21.9` ([#2901](https://github.com/badlogic/pi-mono/pull/2901) by [@aadishv](https://github.com/aadishv))
 - Fixed `--list-models` silently swallowing `models.json` load errors; errors are now printed to stderr ([#3072](https://github.com/badlogic/pi-mono/issues/3072))
 - Fixed custom models for built-in providers (e.g. `openrouter`) being silently dropped from `--list-models` by inheriting `api`/`baseUrl` from built-in model definitions and no longer requiring `apiKey` for providers with existing auth ([#2921](https://github.com/badlogic/pi-mono/issues/2921) and [#3072](https://github.com/badlogic/pi-mono/issues/3072))
 ### Added
 
 - Added full `openRouterRouting` field support in `models.json`, including fallbacks, parameter requirements, data collection, ZDR, ignore lists, quantizations, provider sorting, max price, and preferred throughput and latency constraints ([#2904](https://github.com/badlogic/pi-mono/pull/2904) by [@zmberber](https://github.com/zmberber))
-- Set `PI_CODING_AGENT=true` environment variable at startup so sub-processes can detect they are running inside the coding agent ([#2868](https://github.com/badlogic/pi-mono/issues/2868))
+- Set `QORPERA_CODING_AGENT=true` environment variable at startup so sub-processes can detect they are running inside the coding agent ([#2868](https://github.com/badlogic/pi-mono/issues/2868))
 
 ### Fixed
 
@@ -1964,7 +1964,7 @@ await runtime.fork("entry-id");
 - Fixed repeated compactions dropping messages that were kept by an earlier compaction by re-summarizing from the previous kept boundary and recalculating `tokensBefore` from the rebuilt session context ([#2608](https://github.com/badlogic/pi-mono/issues/2608))
 - Fixed interactive compaction UI updates so `ctx.compact()` rebuilds the chat through unified compaction events, manual compaction no longer duplicates the summary block, and the `trigger-compact` example only fires when context usage crosses its threshold ([#2617](https://github.com/badlogic/pi-mono/issues/2617))
 - Fixed interactive compaction completion to append a synthetic compaction summary after rebuilding the chat so the latest compaction remains visible at the bottom
-- Fixed skill discovery to stop recursing once a directory contains `SKILL.md`, and to ignore root `*.md` files in `.agents/skills` while keeping root markdown skill files supported in `~/.pi/agent/skills`, `.pi/skills`, and package `skills/` directories ([#2603](https://github.com/badlogic/pi-mono/issues/2603))
+- Fixed skill discovery to stop recursing once a directory contains `SKILL.md`, and to ignore root `*.md` files in `.agents/skills` while keeping root markdown skill files supported in `~/.qorpera/agent/skills`, `.qorpera/skills`, and package `skills/` directories ([#2603](https://github.com/badlogic/pi-mono/issues/2603))
 - Fixed edit tool diff rendering for multi-edit operations with large unchanged gaps so distant edits collapse intermediate context instead of dumping the full unchanged middle block
 - Fixed edit tool error rendering to avoid repeating the same exact-match failure in both the preview and result blocks
 - Fixed auto-compaction overflow recovery for Ollama models when the backend returns explicit `prompt too long; exceeded max context length ...` errors instead of silently truncating input ([#2626](https://github.com/badlogic/pi-mono/issues/2626))
@@ -2002,7 +2002,7 @@ return streamSimple(model, messages, {
 - Added `sessionDir` setting support in global and project `settings.json` so session storage can be configured without passing `--session-dir` on every invocation ([#2598](https://github.com/badlogic/pi-mono/pull/2598) by [@smcllns](https://github.com/smcllns))
 - Added a startup onboarding hint in the interactive header telling users pi can explain its own features and documentation ([#2620](https://github.com/badlogic/pi-mono/pull/2620) by [@ferologics](https://github.com/ferologics))
 - Added `edit` tool multi-edit support so one call can update multiple separate, disjoint regions in the same file while matching all replacements against the original file content
-- Added support for `PI_TUI_WRITE_LOG` directory paths, creating a unique log file (`tui-<timestamp>-<pid>.log`) per instance for easier debugging of multiple pi sessions ([#2508](https://github.com/badlogic/pi-mono/pull/2508) by [@mrexodia](https://github.com/mrexodia))
+- Added support for `QORPERA_TUI_WRITE_LOG` directory paths, creating a unique log file (`tui-<timestamp>-<pid>.log`) per instance for easier debugging of multiple pi sessions ([#2508](https://github.com/badlogic/pi-mono/pull/2508) by [@mrexodia](https://github.com/mrexodia))
 
 ### Changed
 
@@ -2271,7 +2271,7 @@ Examples:
 - Fixed EXIF orientation not being applied during image convert and resize, causing JPEG and WebP images from phone cameras to display rotated or mirrored ([#2105](https://github.com/badlogic/pi-mono/pull/2105) by [@melihmucuk](https://github.com/melihmucuk))
 - Fixed the default coding-agent system prompt to include only the current date in ISO format, not the current time, so prompt prefixes stay cacheable across reloads and resumed sessions ([#2131](https://github.com/badlogic/pi-mono/issues/2131))
 - Fixed retry regex to match `server_error` and `internal_error` error types from providers, improving automatic retry coverage ([#2117](https://github.com/badlogic/pi-mono/pull/2117) by [@MadKangYu](https://github.com/MadKangYu))
-- Fixed example extensions to support `PI_CODING_AGENT_DIR` environment variable for custom agent directory paths ([#2009](https://github.com/badlogic/pi-mono/pull/2009) by [@smithbm2316](https://github.com/smithbm2316))
+- Fixed example extensions to support `QORPERA_CODING_AGENT_DIR` environment variable for custom agent directory paths ([#2009](https://github.com/badlogic/pi-mono/pull/2009) by [@smithbm2316](https://github.com/smithbm2316))
 - Fixed tool result images not being sent in `function_call_output` items for OpenAI Responses API providers, causing image data to be silently dropped in tool results ([#2104](https://github.com/badlogic/pi-mono/issues/2104))
 - Fixed assistant content being sent as structured content blocks instead of plain strings in the `openai-completions` provider, causing errors with some OpenAI-compatible backends ([#2008](https://github.com/badlogic/pi-mono/pull/2008) by [@geraldoaax](https://github.com/geraldoaax))
 - Fixed error details in OpenAI Responses `response.failed` handler to include status code, error code, and message instead of a generic failure ([#1956](https://github.com/badlogic/pi-mono/pull/1956) by [@drewburr](https://github.com/drewburr))
@@ -2328,7 +2328,7 @@ Examples:
 
 - Fixed RPC mode stdin/stdout framing to use strict LF-delimited JSONL instead of `readline`, so payloads containing `U+2028` or `U+2029` no longer corrupt command or event streams ([#1911](https://github.com/badlogic/pi-mono/issues/1911))
 - Fixed automatic overlay focus restoration in extension UIs to skip non-capturing overlays, and fixed overlay hide behavior to only reassign focus when the hidden overlay had focus ([#1916](https://github.com/badlogic/pi-mono/pull/1916) by [@nicobailon](https://github.com/nicobailon))
-- Fixed `pi config` misclassifying `~/.agents/skills` as project-scoped in non-git directories under `$HOME`, so toggling those skills no longer writes project overrides to `.pi/settings.json` ([#1915](https://github.com/badlogic/pi-mono/issues/1915))
+- Fixed `pi config` misclassifying `~/.agents/skills` as project-scoped in non-git directories under `$HOME`, so toggling those skills no longer writes project overrides to `.qorpera/settings.json` ([#1915](https://github.com/badlogic/pi-mono/issues/1915))
 
 ## [0.56.3] - 2026-03-06
 
@@ -2488,7 +2488,7 @@ Examples:
 
 ### New Features
 
-- Added offline startup mode via `--offline` (or `PI_OFFLINE`) to disable startup network operations, with startup network timeouts to avoid hangs in restricted or offline environments.
+- Added offline startup mode via `--offline` (or `QORPERA_OFFLINE`) to disable startup network operations, with startup network timeouts to avoid hangs in restricted or offline environments.
 - Added `gemini-3.1-pro-preview` model support to the `google-gemini-cli` provider ([#1599](https://github.com/badlogic/pi-mono/pull/1599) by [@audichuang](https://github.com/audichuang)).
 
 ### Fixed
@@ -2505,7 +2505,7 @@ Examples:
 
 ### Breaking Changes
 
-- Resource precedence for extensions, skills, prompts, themes, and slash-command name collisions is now project-first (`cwd/.pi`) before user-global (`~/.pi/agent`). If you relied on global resources overriding project resources with the same names, rename or reorder your resources.
+- Resource precedence for extensions, skills, prompts, themes, and slash-command name collisions is now project-first (`cwd/.pi`) before user-global (`~/.qorpera/agent`). If you relied on global resources overriding project resources with the same names, rename or reorder your resources.
 - Extension registration conflicts no longer unload the entire later extension. All extensions stay loaded, and conflicting command/tool/flag names are resolved by first registration in load order.
 
 ## [0.54.2] - 2026-02-23
@@ -2630,7 +2630,7 @@ Examples:
 
 ### Fixed
 
-- Fixed extension source parsing so dot-prefixed local paths (for example `.pi/extensions/foo.ts`) are treated as local paths instead of git URLs
+- Fixed extension source parsing so dot-prefixed local paths (for example `.qorpera/extensions/foo.ts`) are treated as local paths instead of git URLs
 - Fixed fd/rg download failing on Windows due to `unzip` not being available; now uses `tar` for both `.tar.gz` and `.zip` extraction, with proper error reporting ([#1348](https://github.com/badlogic/pi-mono/issues/1348))
 - Fixed RPC mode documentation incorrectly stating `ctx.hasUI` is `false`; it is `true` because dialog and fire-and-forget UI methods work via the RPC sub-protocol. Also documented missing unsupported/degraded methods (`pasteToEditor`, `getAllThemes`, `getTheme`, `setTheme`) ([#1411](https://github.com/badlogic/pi-mono/pull/1411) by [@aliou](https://github.com/aliou))
 - Fixed `rg` not available in bash tool by downloading it at startup alongside `fd` ([#1348](https://github.com/badlogic/pi-mono/issues/1348))
@@ -2867,7 +2867,7 @@ Examples:
 ### New Features
 
 - **Extension API switchSession**: Extensions can now programmatically switch sessions via `ctx.switchSession(sessionPath)`. See [docs/extensions.md](docs/extensions.md). ([#1187](https://github.com/badlogic/pi-mono/issues/1187))
-- **Clear on shrink setting**: New `terminal.clearOnShrink` setting keeps the editor and footer pinned to the bottom of the terminal when content shrinks. May cause some flicker due to redraws. Disabled by default. Enable via `/settings` or `PI_CLEAR_ON_SHRINK=1` env var.
+- **Clear on shrink setting**: New `terminal.clearOnShrink` setting keeps the editor and footer pinned to the bottom of the terminal when content shrinks. May cause some flicker due to redraws. Disabled by default. Enable via `/settings` or `QORPERA_CLEAR_ON_SHRINK=1` env var.
 
 ### Fixed
 
@@ -2894,13 +2894,13 @@ Examples:
   ```bash
   pkg install nodejs termux-api git
   npm install -g @mariozechner/pi-coding-agent
-  mkdir -p ~/.pi/agent
-  echo "You are running on Android in Termux." > ~/.pi/agent/AGENTS.md
+  mkdir -p ~/.qorpera/agent
+  echo "You are running on Android in Termux." > ~/.qorpera/agent/AGENTS.md
   ```
   Clipboard operations fall back gracefully when `termux-api` is unavailable. ([#1164](https://github.com/badlogic/pi-mono/issues/1164))
 - **Bash spawn hook**: Extensions can now intercept and modify bash commands before execution via `pi.setBashSpawnHook()`. Adjust the command string, working directory, or environment variables. See [docs/extensions.md](docs/extensions.md). ([#1160](https://github.com/badlogic/pi-mono/pull/1160) by [@mitsuhiko](https://github.com/mitsuhiko))
 - **Linux ARM64 musl support**: Pi now runs on Alpine Linux ARM64 (linux-arm64-musl) via updated clipboard dependency.
-- **Nix/Guix support**: `PI_PACKAGE_DIR` environment variable overrides the package path for content-addressed package managers where store paths tokenize poorly. See [README.md#environment-variables](README.md#environment-variables). ([#1153](https://github.com/badlogic/pi-mono/pull/1153) by [@odysseus0](https://github.com/odysseus0))
+- **Nix/Guix support**: `QORPERA_PACKAGE_DIR` environment variable overrides the package path for content-addressed package managers where store paths tokenize poorly. See [README.md#environment-variables](README.md#environment-variables). ([#1153](https://github.com/badlogic/pi-mono/pull/1153) by [@odysseus0](https://github.com/odysseus0))
 - **Named session filter**: `/resume` picker now supports filtering to show only named sessions via Ctrl+N. Configurable via `toggleSessionNamedFilter` keybinding. See [docs/keybindings.md](docs/keybindings.md). ([#1128](https://github.com/badlogic/pi-mono/pull/1128) by [@w-winter](https://github.com/w-winter))
 - **Typed tool call events**: Extension developers can narrow `ToolCallEvent` types using `isToolCallEventType()` for better TypeScript support. See [docs/extensions.md#tool-call-events](docs/extensions.md#tool-call-events). ([#1147](https://github.com/badlogic/pi-mono/pull/1147) by [@giuseppeg](https://github.com/giuseppeg))
 - **Extension UI Protocol**: Full RPC documentation and examples for extension dialogs and notifications, enabling headless clients to support interactive extensions. See [docs/rpc.md#extension-ui-protocol](docs/rpc.md#extension-ui-protocol). ([#1144](https://github.com/badlogic/pi-mono/pull/1144) by [@aliou](https://github.com/aliou))
@@ -2915,7 +2915,7 @@ Examples:
 - Added Extension UI Protocol documentation to RPC docs covering all request/response types for extension dialogs and notifications ([#1144](https://github.com/badlogic/pi-mono/pull/1144) by [@aliou](https://github.com/aliou))
 - Added `rpc-demo.ts` example extension exercising all RPC-supported extension UI methods ([#1144](https://github.com/badlogic/pi-mono/pull/1144) by [@aliou](https://github.com/aliou))
 - Added `rpc-extension-ui.ts` TUI example client demonstrating the extension UI protocol with interactive dialogs ([#1144](https://github.com/badlogic/pi-mono/pull/1144) by [@aliou](https://github.com/aliou))
-- Added `PI_PACKAGE_DIR` environment variable to override package path for content-addressed package managers (Nix, Guix) where store paths tokenize poorly ([#1153](https://github.com/badlogic/pi-mono/pull/1153) by [@odysseus0](https://github.com/odysseus0))
+- Added `QORPERA_PACKAGE_DIR` environment variable to override package path for content-addressed package managers (Nix, Guix) where store paths tokenize poorly ([#1153](https://github.com/badlogic/pi-mono/pull/1153) by [@odysseus0](https://github.com/odysseus0))
 - `/resume` session picker now supports named-only filter toggle (default Ctrl+N, configurable via `toggleSessionNamedFilter`) to show only named sessions ([#1128](https://github.com/badlogic/pi-mono/pull/1128) by [@w-winter](https://github.com/w-winter))
 
 ### Fixed
@@ -2934,7 +2934,7 @@ Examples:
 ### Added
 
 - Added `titlebar-spinner.ts` example extension that shows a braille spinner animation in the terminal title while the agent is working.
-- Added `PI_AI_ANTIGRAVITY_VERSION` environment variable documentation to help text ([#1129](https://github.com/badlogic/pi-mono/issues/1129))
+- Added `QORPERA_AI_ANTIGRAVITY_VERSION` environment variable documentation to help text ([#1129](https://github.com/badlogic/pi-mono/issues/1129))
 - Added `cacheRetention` stream option with provider-specific mappings for prompt cache controls, defaulting to short retention ([#1134](https://github.com/badlogic/pi-mono/issues/1134))
 
 ## [0.50.8] - 2026-02-01
@@ -3026,7 +3026,7 @@ Examples:
 ### New Features
 
 - **Hugging Face provider**: Access Hugging Face models via OpenAI-compatible Inference Router. Set `HF_TOKEN` environment variable. See [README.md#hugging-face](README.md#hugging-face).
-- **Extended prompt caching**: `PI_CACHE_RETENTION=long` enables 1-hour caching for Anthropic (vs 5min default) and 24-hour for OpenAI (vs in-memory default). Only applies to direct API calls. See [README.md#prompt-caching](README.md#prompt-caching).
+- **Extended prompt caching**: `QORPERA_CACHE_RETENTION=long` enables 1-hour caching for Anthropic (vs 5min default) and 24-hour for OpenAI (vs in-memory default). Only applies to direct API calls. See [README.md#prompt-caching](README.md#prompt-caching).
 - **Configurable autocomplete height**: `autocompleteMaxVisible` setting (3-20 items, default 5) controls dropdown size. Adjust via `/settings` or `settings.json`.
 - **Shell-style keybindings**: `alt+b`/`alt+f` for word navigation, `ctrl+d` for delete character forward. See [docs/keybindings.md](docs/keybindings.md).
 - **RPC `get_commands`**: Headless clients can now list available commands programmatically. See [docs/rpc.md](docs/rpc.md).
@@ -3034,7 +3034,7 @@ Examples:
 ### Added
 
 - Added Hugging Face provider support via OpenAI-compatible Inference Router ([#994](https://github.com/badlogic/pi-mono/issues/994))
-- Added `PI_CACHE_RETENTION` environment variable to control cache TTL for Anthropic (5m vs 1h) and OpenAI (in-memory vs 24h). Set to `long` for extended retention. ([#967](https://github.com/badlogic/pi-mono/issues/967))
+- Added `QORPERA_CACHE_RETENTION` environment variable to control cache TTL for Anthropic (5m vs 1h) and OpenAI (in-memory vs 24h). Set to `long` for extended retention. ([#967](https://github.com/badlogic/pi-mono/issues/967))
 - Added `autocompleteMaxVisible` setting for configurable autocomplete dropdown height (3-20 items, default 5) ([#972](https://github.com/badlogic/pi-mono/pull/972) by [@masonc15](https://github.com/masonc15))
 - Added `/files` command to list all file operations (read, write, edit) in the current session
 - Added shell-style keybindings: `alt+b`/`alt+f` for word navigation, `ctrl+d` for delete character forward (when editor has text) ([#1043](https://github.com/badlogic/pi-mono/issues/1043) by [@jasonish](https://github.com/jasonish))
@@ -3099,7 +3099,7 @@ There are multiple SDK breaking changes since v0.49.3. For the quickest migratio
 - Header values in `models.json` now resolve environment variables (if a header value matches an env var name, the env var value is used). This may change behavior if a literal header value accidentally matches an env var name. ([#909](https://github.com/badlogic/pi-mono/issues/909))
 - External packages (npm/git) are now configured via `packages` array in settings.json instead of `extensions`. Existing npm:/git: entries in `extensions` are auto-migrated. ([#645](https://github.com/badlogic/pi-mono/issues/645))
 - Resource loading now uses `ResourceLoader` only and settings.json uses arrays for extensions, skills, prompts, and themes ([#645](https://github.com/badlogic/pi-mono/issues/645))
-- Removed `discoverAuthStorage` and `discoverModels` from the SDK. `AuthStorage` and `ModelRegistry` now default to `~/.pi/agent` paths unless you pass an `agentDir` ([#645](https://github.com/badlogic/pi-mono/issues/645))
+- Removed `discoverAuthStorage` and `discoverModels` from the SDK. `AuthStorage` and `ModelRegistry` now default to `~/.qorpera/agent` paths unless you pass an `agentDir` ([#645](https://github.com/badlogic/pi-mono/issues/645))
 
 ### Added
 
@@ -3179,7 +3179,7 @@ There are multiple SDK breaking changes since v0.49.3. For the quickest migratio
 - `markdown.codeBlockIndent` setting to customize code block indentation in rendered output ([#855](https://github.com/badlogic/pi-mono/pull/855) by [@terrorobe](https://github.com/terrorobe))
 - Added `inline-bash.ts` example extension for expanding `!{command}` patterns in prompts ([#881](https://github.com/badlogic/pi-mono/pull/881) by [@scutifer](https://github.com/scutifer))
 - Added `antigravity-image-gen.ts` example extension for AI image generation via Google Antigravity ([#893](https://github.com/badlogic/pi-mono/pull/893) by [@ben-vargas](https://github.com/ben-vargas))
-- Added `PI_SHARE_VIEWER_URL` environment variable for custom share viewer URLs ([#889](https://github.com/badlogic/pi-mono/pull/889) by [@andresaraujo](https://github.com/andresaraujo))
+- Added `QORPERA_SHARE_VIEWER_URL` environment variable for custom share viewer URLs ([#889](https://github.com/badlogic/pi-mono/pull/889) by [@andresaraujo](https://github.com/andresaraujo))
 - Added Alt+Delete as hotkey for delete word forwards ([#878](https://github.com/badlogic/pi-mono/pull/878) by [@Perlence](https://github.com/Perlence))
 
 ### Changed
@@ -3189,7 +3189,7 @@ There are multiple SDK breaking changes since v0.49.3. For the quickest migratio
 
 ### Fixed
 
-- Fixed error messages showing hardcoded `~/.pi/agent/` paths instead of respecting `PI_CODING_AGENT_DIR` ([#887](https://github.com/badlogic/pi-mono/pull/887) by [@aliou](https://github.com/aliou))
+- Fixed error messages showing hardcoded `~/.qorpera/agent/` paths instead of respecting `QORPERA_CODING_AGENT_DIR` ([#887](https://github.com/badlogic/pi-mono/pull/887) by [@aliou](https://github.com/aliou))
 - Fixed `write` tool not displaying errors in the UI when execution fails ([#856](https://github.com/badlogic/pi-mono/issues/856))
 - Fixed HTML export using default theme instead of user's active theme ([#870](https://github.com/badlogic/pi-mono/pull/870) by [@scutifer](https://github.com/scutifer))
 - Show session name in the footer and terminal / tab title ([#876](https://github.com/badlogic/pi-mono/pull/876) by [@scutifer](https://github.com/scutifer))
@@ -3292,14 +3292,14 @@ There are multiple SDK breaking changes since v0.49.3. For the quickest migratio
 - Fixed string numbers in tool arguments not being coerced to numbers during validation ([#786](https://github.com/badlogic/pi-mono/pull/786) by [@dannote](https://github.com/dannote))
 - Fixed `--no-extensions` flag not preventing extension discovery ([#776](https://github.com/badlogic/pi-mono/issues/776))
 - Fixed extension messages rendering twice on startup when `pi.sendMessage({ display: true })` is called during `session_start` ([#765](https://github.com/badlogic/pi-mono/pull/765) by [@dannote](https://github.com/dannote))
-- Fixed `PI_CODING_AGENT_DIR` env var not expanding tilde (`~`) to home directory ([#778](https://github.com/badlogic/pi-mono/pull/778) by [@aliou](https://github.com/aliou))
+- Fixed `QORPERA_CODING_AGENT_DIR` env var not expanding tilde (`~`) to home directory ([#778](https://github.com/badlogic/pi-mono/pull/778) by [@aliou](https://github.com/aliou))
 - Fixed session picker hint text overflow ([#764](https://github.com/badlogic/pi-mono/issues/764))
 - Fixed Kitty keyboard protocol shifted symbol keys (e.g., `@`, `?`) not working in editor ([#779](https://github.com/badlogic/pi-mono/pull/779) by [@iamd3vil](https://github.com/iamd3vil))
 - Fixed Bedrock tool call IDs causing API errors from invalid characters ([#781](https://github.com/badlogic/pi-mono/pull/781) by [@pjtf93](https://github.com/pjtf93))
 
 ### Changed
 
-- Hardware cursor is now disabled by default for better terminal compatibility. Set `PI_HARDWARE_CURSOR=1` to enable (replaces `PI_NO_HARDWARE_CURSOR=1` which disabled it).
+- Hardware cursor is now disabled by default for better terminal compatibility. Set `QORPERA_HARDWARE_CURSOR=1` to enable (replaces `QORPERA_NO_HARDWARE_CURSOR=1` which disabled it).
 
 ## [0.47.0] - 2026-01-16
 
@@ -3601,7 +3601,7 @@ There are multiple SDK breaking changes since v0.49.3. For the quickest migratio
 
 - `--no-extensions` flag to disable extension discovery while still allowing explicit `-e` paths ([#524](https://github.com/badlogic/pi-mono/pull/524) by [@cv](https://github.com/cv))
 - SDK: `InteractiveMode`, `runPrintMode()`, `runRpcMode()` exported for building custom run modes. See `docs/sdk.md`.
-- `PI_SKIP_VERSION_CHECK` environment variable to disable new version notifications at startup ([#549](https://github.com/badlogic/pi-mono/pull/549) by [@aos](https://github.com/aos))
+- `QORPERA_SKIP_VERSION_CHECK` environment variable to disable new version notifications at startup ([#549](https://github.com/badlogic/pi-mono/pull/549) by [@aos](https://github.com/aos))
 - `thinkingBudgets` setting to customize token budgets per thinking level for token-based providers ([#529](https://github.com/badlogic/pi-mono/pull/529) by [@melihmucuk](https://github.com/melihmucuk))
 - Extension UI dialogs (`ctx.ui.select()`, `ctx.ui.confirm()`, `ctx.ui.input()`) now support a `timeout` option with live countdown display ([#522](https://github.com/badlogic/pi-mono/pull/522) by [@nicobailon](https://github.com/nicobailon))
 - Extensions can now provide custom editor components via `ctx.ui.setEditorComponent()`. See `examples/extensions/modal-editor.ts` and `docs/tui.md` Pattern 7.
@@ -3707,7 +3707,7 @@ There are multiple SDK breaking changes since v0.49.3. For the quickest migratio
 ### Fixed
 
 - Messages submitted during compaction are queued and delivered after compaction completes, preserving steering and follow-up behavior. Extension commands execute immediately during compaction. ([#476](https://github.com/badlogic/pi-mono/pull/476) by [@tmustier](https://github.com/tmustier))
-- Managed binaries (`fd`, `rg`) now stored in `~/.pi/agent/bin/` instead of `tools/`, eliminating false deprecation warnings ([#470](https://github.com/badlogic/pi-mono/pull/470) by [@mcinteerj](https://github.com/mcinteerj))
+- Managed binaries (`fd`, `rg`) now stored in `~/.qorpera/agent/bin/` instead of `tools/`, eliminating false deprecation warnings ([#470](https://github.com/badlogic/pi-mono/pull/470) by [@mcinteerj](https://github.com/mcinteerj))
 - Extensions defined in `settings.json` were not loaded ([#463](https://github.com/badlogic/pi-mono/pull/463) by [@melihmucuk](https://github.com/melihmucuk))
 - OAuth refresh no longer logs users out when multiple pi instances are running ([#466](https://github.com/badlogic/pi-mono/pull/466) by [@Cursivez](https://github.com/Cursivez))
 - Migration warnings now ignore `fd.exe` and `rg.exe` in `tools/` on Windows ([#458](https://github.com/badlogic/pi-mono/pull/458) by [@carlosgtrz](https://github.com/carlosgtrz))
@@ -3736,7 +3736,7 @@ Hooks and custom tools are now unified as **extensions**. Both were TypeScript m
 
 **Automatic migration:**
 
-- `commands/` directories are automatically renamed to `prompts/` on startup (both `~/.pi/agent/commands/` and `.pi/commands/`)
+- `commands/` directories are automatically renamed to `prompts/` on startup (both `~/.qorpera/agent/commands/` and `.qorpera/commands/`)
 
 **Manual migration required:**
 
@@ -3748,10 +3748,10 @@ Hooks and custom tools are now unified as **extensions**. Both were TypeScript m
 
 ```
 # Before
-~/.pi/agent/hooks/*.ts       →  ~/.pi/agent/extensions/*.ts
-~/.pi/agent/tools/*.ts       →  ~/.pi/agent/extensions/*.ts
-.pi/hooks/*.ts               →  .pi/extensions/*.ts
-.pi/tools/*.ts               →  .pi/extensions/*.ts
+~/.qorpera/agent/hooks/*.ts       →  ~/.qorpera/agent/extensions/*.ts
+~/.qorpera/agent/tools/*.ts       →  ~/.qorpera/agent/extensions/*.ts
+.qorpera/hooks/*.ts               →  .qorpera/extensions/*.ts
+.qorpera/tools/*.ts               →  .qorpera/extensions/*.ts
 ```
 
 **Extension discovery rules** (in `extensions/` directories):
@@ -3863,8 +3863,8 @@ pi --extension ./safety.ts -e ./todo.ts
 **Directory changes:**
 
 ```
-~/.pi/agent/commands/*.md    →  ~/.pi/agent/prompts/*.md
-.pi/commands/*.md            →  .pi/prompts/*.md
+~/.qorpera/agent/commands/*.md    →  ~/.qorpera/agent/prompts/*.md
+.qorpera/commands/*.md            →  .qorpera/prompts/*.md
 ```
 
 **SDK type renames:**
@@ -4002,7 +4002,7 @@ pi --extension ./safety.ts -e ./todo.ts
 ### Added
 
 - Clipboard image paste support via `Ctrl+V`. Images are saved to a temp file and attached to the message. Works on macOS, Windows, and Linux (X11). ([#419](https://github.com/badlogic/pi-mono/issues/419))
-- Configurable keybindings via `~/.pi/agent/keybindings.json`. All keyboard shortcuts (editor navigation, deletion, app actions like model cycling, etc.) can now be customized. Supports multiple bindings per action. ([#405](https://github.com/badlogic/pi-mono/pull/405) by [@hjanuschka](https://github.com/hjanuschka))
+- Configurable keybindings via `~/.qorpera/agent/keybindings.json`. All keyboard shortcuts (editor navigation, deletion, app actions like model cycling, etc.) can now be customized. Supports multiple bindings per action. ([#405](https://github.com/badlogic/pi-mono/pull/405) by [@hjanuschka](https://github.com/hjanuschka))
 - `/quit` and `/exit` slash commands to gracefully exit the application. Unlike double Ctrl+C, these properly await hook and custom tool cleanup handlers before exiting. ([#426](https://github.com/badlogic/pi-mono/pull/426) by [@ben-vargas](https://github.com/ben-vargas))
 
 ### Fixed
@@ -4244,8 +4244,8 @@ import {
   discoverModels,
 } from "@mariozechner/pi-coding-agent";
 
-const authStorage = discoverAuthStorage(); // ~/.pi/agent/auth.json
-const modelRegistry = discoverModels(authStorage); // + ~/.pi/agent/models.json
+const authStorage = discoverAuthStorage(); // ~/.qorpera/agent/auth.json
+const modelRegistry = discoverModels(authStorage); // + ~/.qorpera/agent/models.json
 
 // Get all models (built-in + custom)
 const allModels = modelRegistry.getAll();
@@ -4380,25 +4380,25 @@ Total color count increased from 46 to 50. See [docs/themes.md](docs/themes.md) 
 
 ### Fixed
 
-- **Sessions saved to wrong directory**: In v0.30.0, sessions were being saved to `~/.pi/agent/` instead of `~/.pi/agent/sessions/<encoded-cwd>/`, breaking `--resume` and `/resume`. Misplaced sessions are automatically migrated on startup. ([#320](https://github.com/badlogic/pi-mono/issues/320) by [@aliou](https://github.com/aliou))
+- **Sessions saved to wrong directory**: In v0.30.0, sessions were being saved to `~/.qorpera/agent/` instead of `~/.qorpera/agent/sessions/<encoded-cwd>/`, breaking `--resume` and `/resume`. Misplaced sessions are automatically migrated on startup. ([#320](https://github.com/badlogic/pi-mono/issues/320) by [@aliou](https://github.com/aliou))
 - **Custom system prompts missing context**: When using a custom system prompt string, project context files (AGENTS.md), skills, date/time, and working directory were not appended. ([#321](https://github.com/badlogic/pi-mono/issues/321))
 
 ## [0.30.0] - 2025-12-25
 
 ### Breaking Changes
 
-- **SessionManager API**: The second parameter of `create()`, `continueRecent()`, and `list()` changed from `agentDir` to `sessionDir`. When provided, it specifies the session directory directly (no cwd encoding). When omitted, uses default (`~/.pi/agent/sessions/<encoded-cwd>/`). `open()` no longer takes `agentDir`. ([#313](https://github.com/badlogic/pi-mono/pull/313))
+- **SessionManager API**: The second parameter of `create()`, `continueRecent()`, and `list()` changed from `agentDir` to `sessionDir`. When provided, it specifies the session directory directly (no cwd encoding). When omitted, uses default (`~/.qorpera/agent/sessions/<encoded-cwd>/`). `open()` no longer takes `agentDir`. ([#313](https://github.com/badlogic/pi-mono/pull/313))
 
 ### Added
 
-- **`--session-dir` flag**: Use a custom directory for sessions instead of the default `~/.pi/agent/sessions/<encoded-cwd>/`. Works with `-c` (continue) and `-r` (resume) flags. ([#313](https://github.com/badlogic/pi-mono/pull/313) by [@scutifer](https://github.com/scutifer))
+- **`--session-dir` flag**: Use a custom directory for sessions instead of the default `~/.qorpera/agent/sessions/<encoded-cwd>/`. Works with `-c` (continue) and `-r` (resume) flags. ([#313](https://github.com/badlogic/pi-mono/pull/313) by [@scutifer](https://github.com/scutifer))
 - **Reverse model cycling and model selector**: Shift+Ctrl+P cycles models backward, Ctrl+L opens model selector (retaining text in editor). ([#315](https://github.com/badlogic/pi-mono/pull/315) by [@mitsuhiko](https://github.com/mitsuhiko))
 
 ## [0.29.1] - 2025-12-25
 
 ### Added
 
-- **Automatic custom system prompt loading**: Pi now auto-loads `SYSTEM.md` files to replace the default system prompt. Project-local `.pi/SYSTEM.md` takes precedence over global `~/.pi/agent/SYSTEM.md`. CLI `--system-prompt` flag overrides both. ([#309](https://github.com/badlogic/pi-mono/issues/309))
+- **Automatic custom system prompt loading**: Pi now auto-loads `SYSTEM.md` files to replace the default system prompt. Project-local `.qorpera/SYSTEM.md` takes precedence over global `~/.qorpera/agent/SYSTEM.md`. CLI `--system-prompt` flag overrides both. ([#309](https://github.com/badlogic/pi-mono/issues/309))
 - **Unified `/settings` command**: New settings menu consolidating thinking level, theme, queue mode, auto-compact, show images, hide thinking, and collapse changelog. Replaces individual `/thinking`, `/queue`, `/theme`, `/autocompact`, and `/show-images` commands. ([#310](https://github.com/badlogic/pi-mono/issues/310))
 
 ### Fixed
@@ -4425,7 +4425,7 @@ Total color count increased from 46 to 50. See [docs/themes.md](docs/themes.md) 
 
 ### Changed
 
-- **Credential storage refactored**: API keys and OAuth tokens are now stored in `~/.pi/agent/auth.json` instead of `oauth.json` and `settings.json`. Existing credentials are automatically migrated on first run. ([#296](https://github.com/badlogic/pi-mono/issues/296))
+- **Credential storage refactored**: API keys and OAuth tokens are now stored in `~/.qorpera/agent/auth.json` instead of `oauth.json` and `settings.json`. Existing credentials are automatically migrated on first run. ([#296](https://github.com/badlogic/pi-mono/issues/296))
 
 - **SDK API changes** ([#296](https://github.com/badlogic/pi-mono/issues/296)):
 
@@ -4493,13 +4493,13 @@ Total color count increased from 46 to 50. See [docs/themes.md](docs/themes.md) 
 
 ### Fixed
 
-- **Symlinked skill directories**: Skills in symlinked directories (e.g., `~/.pi/agent/skills/my-skills -> /path/to/skills`) are now correctly discovered and loaded.
+- **Symlinked skill directories**: Skills in symlinked directories (e.g., `~/.qorpera/agent/skills/my-skills -> /path/to/skills`) are now correctly discovered and loaded.
 
 ## [0.27.3] - 2025-12-24
 
 ### Added
 
-- **API keys in settings.json**: Store API keys in `~/.pi/agent/settings.json` under the `apiKeys` field (e.g., `{ "apiKeys": { "anthropic": "sk-..." } }`). Settings keys take priority over environment variables. ([#295](https://github.com/badlogic/pi-mono/issues/295))
+- **API keys in settings.json**: Store API keys in `~/.qorpera/agent/settings.json` under the `apiKeys` field (e.g., `{ "apiKeys": { "anthropic": "sk-..." } }`). Settings keys take priority over environment variables. ([#295](https://github.com/badlogic/pi-mono/issues/295))
 
 ### Fixed
 
@@ -4520,7 +4520,7 @@ Total color count increased from 46 to 50. See [docs/themes.md](docs/themes.md) 
 
 ### Added
 
-- **Startup timing instrumentation**: Set `PI_TIMING=1` to see startup performance breakdown (interactive mode only).
+- **Startup timing instrumentation**: Set `QORPERA_TIMING=1` to see startup performance breakdown (interactive mode only).
 
 ## [0.27.0] - 2025-12-22
 
@@ -4550,7 +4550,7 @@ Total color count increased from 46 to 50. See [docs/themes.md](docs/themes.md) 
 
 - **SDK for programmatic usage**: New `createAgentSession()` factory with full control over model, tools, hooks, skills, session persistence, and settings. Philosophy: "omit to discover, provide to override". Includes 12 examples and comprehensive documentation. ([#272](https://github.com/badlogic/pi-mono/issues/272))
 
-- **Project-specific settings**: Settings now load from both `~/.pi/agent/settings.json` (global) and `<cwd>/.pi/settings.json` (project). Project settings override global with deep merge for nested objects. Project settings are read-only (for version control). ([#276](https://github.com/badlogic/pi-mono/pull/276))
+- **Project-specific settings**: Settings now load from both `~/.qorpera/agent/settings.json` (global) and `<cwd>/.qorpera/settings.json` (project). Project settings override global with deep merge for nested objects. Project settings are read-only (for version control). ([#276](https://github.com/badlogic/pi-mono/pull/276))
 
 - **SettingsManager static factories**: `SettingsManager.create(cwd?, agentDir?)` for file-based settings, `SettingsManager.inMemory(settings?)` for testing. Added `applyOverrides()` for programmatic overrides.
 
@@ -4654,7 +4654,7 @@ Total color count increased from 46 to 50. See [docs/themes.md](docs/themes.md) 
 
 - **OpenRouter models with colons in IDs**: Fixed parsing of OpenRouter model IDs that contain colons (e.g., `openrouter:meta-llama/llama-4-scout:free`). ([#242](https://github.com/badlogic/pi-mono/pull/242) by [@aliou](https://github.com/aliou))
 
-- **Global AGENTS.md loaded twice**: Fixed global AGENTS.md being loaded twice when present in both `~/.pi/agent/` and the current directory. ([#239](https://github.com/badlogic/pi-mono/pull/239) by [@aliou](https://github.com/aliou))
+- **Global AGENTS.md loaded twice**: Fixed global AGENTS.md being loaded twice when present in both `~/.qorpera/agent/` and the current directory. ([#239](https://github.com/badlogic/pi-mono/pull/239) by [@aliou](https://github.com/aliou))
 
 - **Kitty keyboard protocol on Linux**: Fixed keyboard input not working in Ghostty on Linux when Num Lock is enabled. The Kitty protocol includes Caps Lock and Num Lock state in modifier values, which broke key detection. Now correctly masks out lock key bits when matching keyboard shortcuts. ([#243](https://github.com/badlogic/pi-mono/issues/243))
 
@@ -4692,7 +4692,7 @@ Total color count increased from 46 to 50. See [docs/themes.md](docs/themes.md) 
 
 ### Breaking Changes
 
-- **Custom tools now require `index.ts` entry point**: Auto-discovered custom tools must be in a subdirectory with an `index.ts` file. The old pattern `~/.pi/agent/tools/mytool.ts` must become `~/.pi/agent/tools/mytool/index.ts`. This allows multi-file tools to import helper modules. Explicit paths via `--tool` or `settings.json` still work with any `.ts` file.
+- **Custom tools now require `index.ts` entry point**: Auto-discovered custom tools must be in a subdirectory with an `index.ts` file. The old pattern `~/.qorpera/agent/tools/mytool.ts` must become `~/.qorpera/agent/tools/mytool/index.ts`. This allows multi-file tools to import helper modules. Explicit paths via `--tool` or `settings.json` still work with any `.ts` file.
 
 - **Hook `tool_result` event restructured**: The `ToolResultEvent` now exposes full tool result data instead of just text. ([#233](https://github.com/badlogic/pi-mono/pull/233))
   - Removed: `result: string` field
@@ -4760,7 +4760,7 @@ Total color count increased from 46 to 50. See [docs/themes.md](docs/themes.md) 
 
 - Fixed TUI performance regression caused by Box component lacking render caching. Built-in tools now use Text directly (like v0.22.5), and Box has proper caching for custom tool rendering.
 
-- Fixed custom tools failing to load from `~/.pi/agent/tools/` when pi is installed globally. Module imports (`@sinclair/typebox`, `@mariozechner/pi-tui`, `@mariozechner/pi-ai`) are now resolved via aliases.
+- Fixed custom tools failing to load from `~/.qorpera/agent/tools/` when pi is installed globally. Module imports (`@sinclair/typebox`, `@mariozechner/pi-tui`, `@mariozechner/pi-ai`) are now resolved via aliases.
 
 ## [0.23.0] - 2025-12-17
 
@@ -4856,7 +4856,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Breaking Changes
 
-- **Pi skills now use `SKILL.md` convention**: Pi skills must now be named `SKILL.md` inside a directory, matching Codex CLI format. Previously any `*.md` file was treated as a skill. Migrate by renaming `~/.pi/agent/skills/foo.md` to `~/.pi/agent/skills/foo/SKILL.md`.
+- **Pi skills now use `SKILL.md` convention**: Pi skills must now be named `SKILL.md` inside a directory, matching Codex CLI format. Previously any `*.md` file was treated as a skill. Migrate by renaming `~/.qorpera/agent/skills/foo.md` to `~/.qorpera/agent/skills/foo/SKILL.md`.
 
 ### Added
 
@@ -4872,7 +4872,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- **Skills system**: Auto-discover and load instruction files on-demand. Supports Claude Code (`~/.claude/skills/*/SKILL.md`), Codex CLI (`~/.codex/skills/`), and Pi-native formats (`~/.pi/agent/skills/`, `.pi/skills/`). Skills are listed in system prompt with descriptions, agent loads them via read tool when needed. Supports `{baseDir}` placeholder. Disable with `--no-skills` or `skills.enabled: false` in settings. ([#169](https://github.com/badlogic/pi-mono/issues/169))
+- **Skills system**: Auto-discover and load instruction files on-demand. Supports Claude Code (`~/.claude/skills/*/SKILL.md`), Codex CLI (`~/.codex/skills/`), and Pi-native formats (`~/.qorpera/agent/skills/`, `.qorpera/skills/`). Skills are listed in system prompt with descriptions, agent loads them via read tool when needed. Supports `{baseDir}` placeholder. Disable with `--no-skills` or `skills.enabled: false` in settings. ([#169](https://github.com/badlogic/pi-mono/issues/169))
 
 - **Version flag**: Added `--version` / `-v` flag to display the current version and exit. ([#170](https://github.com/badlogic/pi-mono/pull/170))
 
@@ -4906,7 +4906,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- **Hooks system**: TypeScript modules that extend agent behavior by subscribing to lifecycle events. Hooks can intercept tool calls, prompt for confirmation, modify results, and inject messages from external sources. Auto-discovered from `~/.pi/agent/hooks/*.ts` and `.pi/hooks/*.ts`. Thanks to [@nicobailon](https://github.com/nicobailon) for the collaboration on the design and implementation. ([#145](https://github.com/badlogic/pi-mono/issues/145), supersedes [#158](https://github.com/badlogic/pi-mono/pull/158))
+- **Hooks system**: TypeScript modules that extend agent behavior by subscribing to lifecycle events. Hooks can intercept tool calls, prompt for confirmation, modify results, and inject messages from external sources. Auto-discovered from `~/.qorpera/agent/hooks/*.ts` and `.qorpera/hooks/*.ts`. Thanks to [@nicobailon](https://github.com/nicobailon) for the collaboration on the design and implementation. ([#145](https://github.com/badlogic/pi-mono/issues/145), supersedes [#158](https://github.com/badlogic/pi-mono/pull/158))
 
 - **`pi.send()` API**: Hooks can inject messages into the agent session from external sources (file watchers, webhooks, CI systems). If streaming, messages are queued; otherwise a new agent loop starts immediately.
 
@@ -4984,7 +4984,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 - **xhigh thinking level**: Added `xhigh` thinking level for OpenAI codex-max models. Cycle through thinking levels with Shift+Tab; `xhigh` appears only when using a codex-max model. ([#143](https://github.com/badlogic/pi-mono/issues/143))
 
-- **Collapse changelog setting**: Add `"collapseChangelog": true` to `~/.pi/agent/settings.json` to show a condensed "Updated to vX.Y.Z" message instead of the full changelog after updates. Use `/changelog` to view the full changelog. ([#148](https://github.com/badlogic/pi-mono/issues/148))
+- **Collapse changelog setting**: Add `"collapseChangelog": true` to `~/.qorpera/agent/settings.json` to show a condensed "Updated to vX.Y.Z" message instead of the full changelog after updates. Use `/changelog` to view the full changelog. ([#148](https://github.com/badlogic/pi-mono/issues/148))
 
 - **Bash mode**: Execute shell commands directly from the editor by prefixing with `!` (e.g., `!ls -la`). Output streams in real-time, is added to the LLM context, and persists in session history. Supports multiline commands, cancellation (Escape), truncation for large outputs, and preview/expand toggle (Ctrl+O). Also available in RPC mode via `{"type":"bash","command":"..."}`. ([#112](https://github.com/badlogic/pi-mono/pull/112), original implementation by [@markusylisiurunen](https://github.com/markusylisiurunen))
 
@@ -5004,7 +5004,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- **Flexible Windows shell configuration**: The bash tool now supports multiple shell sources beyond Git Bash. Resolution order: (1) custom `shellPath` in settings.json, (2) Git Bash in standard locations, (3) any bash.exe on PATH. This enables Cygwin, MSYS2, and other bash environments. Configure with `~/.pi/agent/settings.json`: `{"shellPath": "C:\\cygwin64\\bin\\bash.exe"}`.
+- **Flexible Windows shell configuration**: The bash tool now supports multiple shell sources beyond Git Bash. Resolution order: (1) custom `shellPath` in settings.json, (2) Git Bash in standard locations, (3) any bash.exe on PATH. This enables Cygwin, MSYS2, and other bash environments. Configure with `~/.qorpera/agent/settings.json`: `{"shellPath": "C:\\cygwin64\\bin\\bash.exe"}`.
 
 ### Fixed
 
@@ -5217,7 +5217,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- **File-based Slash Commands**: Create custom reusable prompts as `.txt` files in `~/.pi/slash-commands/`. Files become `/filename` commands with first-line descriptions. Supports `{{selection}}` placeholder for referencing selected/attached content.
+- **File-based Slash Commands**: Create custom reusable prompts as `.txt` files in `~/.qorpera/slash-commands/`. Files become `/filename` commands with first-line descriptions. Supports `{{selection}}` placeholder for referencing selected/attached content.
 - **`/branch` Command**: Create conversation branches from any previous user message. Opens a selector to pick a message, then creates a new session file starting from that point. Original message text is placed in the editor for modification.
 - **Unified Content References**: Both `@path` in messages and `--file path` CLI arguments now use the same attachment system with consistent MIME type detection.
 - **Drag & Drop Files**: Drop files onto the terminal to attach them to your message. Supports multiple files and both text and image content.
@@ -5279,7 +5279,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- Added thinking level persistence. Default level stored in `~/.pi/settings.json`, restored on startup. Per-session overrides saved in session files.
+- Added thinking level persistence. Default level stored in `~/.qorpera/settings.json`, restored on startup. Per-session overrides saved in session files.
 - Added model cycling shortcut: `Ctrl+I` cycles through available models (or scoped models with `-m` flag).
 - Added automatic retry with exponential backoff for transient API errors (network issues, 500s, overload).
 - Cumulative token usage now shown in footer (total tokens used across all messages in session).
@@ -5296,7 +5296,7 @@ _Dedicated to Peter's shoulder ([@steipete](https://twitter.com/steipete))_
 
 ### Added
 
-- Add custom model configuration via `~/.pi/models.json`
+- Add custom model configuration via `~/.qorpera/models.json`
 
 ## [0.10.0] - 2025-11-25
 

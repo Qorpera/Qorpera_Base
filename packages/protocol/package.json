@@ -1,5 +1,5 @@
 {
-	"name": "@earendil-works/pi-protocol",
+	"name": "@qorpera/pi-protocol",
 	"version": "0.83.0",
 	"description": "Transport-neutral CBOR protocol for remote pi sessions",
 	"type": "module",

@@ -6,8 +6,8 @@
  * and can be activated via CLI flag, /preset command, or Ctrl+Shift+U to cycle.
  *
  * Config files (merged, project takes precedence):
- * - ~/.pi/agent/presets.json (global)
- * - <cwd>/.pi/presets.json (project-local)
+ * - ~/.qorpera/agent/presets.json (global)
+ * - <cwd>/.qorpera/presets.json (project-local)
  *
  * Example presets.json:
  * ```json
@@ -40,10 +40,10 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CONFIG_DIR_NAME, DynamicBorder, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { Container, Key, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import type { Api, Model } from "@qorpera/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@qorpera/pi-coding-agent";
+import { CONFIG_DIR_NAME, DynamicBorder, getAgentDir } from "@qorpera/pi-coding-agent";
+import { Container, Key, type SelectItem, SelectList, Text } from "@qorpera/pi-tui";
 
 // Preset configuration
 interface Preset {

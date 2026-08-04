@@ -35,7 +35,7 @@
 
 ### Fixed
 
-- Fixed debug and crash logs to use the configured TUI log directory, including `PI_CODING_AGENT_DIR`, instead of always writing under `~/.pi/agent` ([#6958](https://github.com/earendil-works/pi/pull/6958) by [@davidbrai](https://github.com/davidbrai)).
+- Fixed debug and crash logs to use the configured TUI log directory, including `QORPERA_CODING_AGENT_DIR`, instead of always writing under `~/.qorpera/agent` ([#6958](https://github.com/earendil-works/pi/pull/6958) by [@davidbrai](https://github.com/davidbrai)).
 - Fixed narrow terminals crashing when the editor's bottom scroll indicator exceeded the terminal width ([#7015](https://github.com/earendil-works/pi/pull/7015) by [@christianklotz](https://github.com/christianklotz)).
 
 ## [0.81.1] - 2026-07-21
@@ -403,7 +403,7 @@
 
 ### Added
 
-- Added support for `PI_TUI_WRITE_LOG` directory paths, creating a unique log file (`tui-<timestamp>-<pid>.log`) per instance for easier debugging of multiple pi sessions ([#2508](https://github.com/badlogic/pi-mono/pull/2508) by [@mrexodia](https://github.com/mrexodia))
+- Added support for `QORPERA_TUI_WRITE_LOG` directory paths, creating a unique log file (`tui-<timestamp>-<pid>.log`) per instance for easier debugging of multiple pi sessions ([#2508](https://github.com/badlogic/pi-mono/pull/2508) by [@mrexodia](https://github.com/mrexodia))
 
 ### Fixed
 
@@ -648,12 +648,12 @@
 
 ### Added
 
-- Added `PI_DEBUG_REDRAW=1` env var for debugging full redraws (logs triggers to `~/.pi/agent/pi-debug.log`)
+- Added `QORPERA_DEBUG_REDRAW=1` env var for debugging full redraws (logs triggers to `~/.qorpera/agent/pi-debug.log`)
 
 ### Changed
 
 - Terminal height changes no longer trigger full redraws, reducing flicker on resize
-- `clearOnShrink` now defaults to `false` (use `PI_CLEAR_ON_SHRINK=1` or `setClearOnShrink(true)` to enable)
+- `clearOnShrink` now defaults to `false` (use `QORPERA_CLEAR_ON_SHRINK=1` or `setClearOnShrink(true)` to enable)
 
 ### Fixed
 
@@ -739,7 +739,7 @@
 ### Added
 
 - Added `fullRedraws` readonly property to TUI class for tracking full screen redraws
-- Added `PI_TUI_WRITE_LOG` environment variable to capture raw ANSI output for debugging
+- Added `QORPERA_TUI_WRITE_LOG` environment variable to capture raw ANSI output for debugging
 
 ### Fixed
 
@@ -794,7 +794,7 @@
 
 ### Changed
 
-- Hardware cursor is now disabled by default for better terminal compatibility. Set `PI_HARDWARE_CURSOR=1` to enable (replaces `PI_NO_HARDWARE_CURSOR=1` which disabled it).
+- Hardware cursor is now disabled by default for better terminal compatibility. Set `QORPERA_HARDWARE_CURSOR=1` to enable (replaces `QORPERA_NO_HARDWARE_CURSOR=1` which disabled it).
 
 ### Fixed
 

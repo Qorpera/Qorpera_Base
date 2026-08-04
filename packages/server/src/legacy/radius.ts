@@ -1,6 +1,6 @@
 import { hostname, platform } from "node:os";
-import type { OAuthCredential } from "@earendil-works/pi-ai";
-import { readStoredCredential } from "@earendil-works/pi-coding-agent";
+import type { OAuthCredential } from "@qorpera/pi-ai";
+import { readStoredCredential } from "@qorpera/pi-coding-agent";
 import { getServerDir, getSocketPath, VERSION } from "./config.ts";
 import { loadMachine, saveMachine } from "./storage.ts";
 import type { InstanceRecord, MachineRecord, RadiusRegistration } from "./types.ts";
@@ -105,11 +105,11 @@ function logRadiusRetry(scope: string, action: string, delayMs: number, failureC
 }
 
 export function getRadiusUrl(): string {
-	return process.env.PI_RADIUS_URL || DEFAULT_RADIUS_URL;
+	return process.env.QORPERA_RADIUS_URL || DEFAULT_RADIUS_URL;
 }
 
 export function getRadiusServerBaseUrl(): string {
-	const explicitUrl = process.env.PI_RADIUS_SERVER_URL;
+	const explicitUrl = process.env.QORPERA_RADIUS_SERVER_URL;
 	if (explicitUrl) {
 		return explicitUrl;
 	}
@@ -133,7 +133,7 @@ export function getRadiusAccessToken(): string {
 		return apiKey;
 	}
 
-	throw new Error("Radius credentials are required in ~/.pi/agent/auth.json or RADIUS_API_KEY");
+	throw new Error("Radius credentials are required in ~/.qorpera/agent/auth.json or RADIUS_API_KEY");
 }
 
 export function isRadiusEnabled(): boolean {

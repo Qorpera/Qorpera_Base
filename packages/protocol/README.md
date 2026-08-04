@@ -1,4 +1,4 @@
-# @earendil-works/pi-protocol
+# @qorpera/pi-protocol
 
 Runtime-neutral schemas, types, CBOR encoding, and byte-stream framing for the experimental pi protocol.
 
@@ -19,7 +19,7 @@ import {
   createServerMessageDecoder,
   encodeClientMessage,
   type ClientHello,
-} from "@earendil-works/pi-protocol";
+} from "@qorpera/pi-protocol";
 
 const hello: ClientHello = {
   type: "hello",

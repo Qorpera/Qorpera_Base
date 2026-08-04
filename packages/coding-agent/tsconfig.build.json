@@ -3,14 +3,14 @@
 	"compilerOptions": {
 		"outDir": "./dist",
 		"paths": {
-			"@earendil-works/pi-agent-core": ["../agent/dist/index.d.ts"],
-			"@earendil-works/pi-agent-core/*": ["../agent/dist/*.d.ts"],
-			"@earendil-works/pi-ai": ["../ai/dist/index.d.ts"],
-			"@earendil-works/pi-ai/*": ["../ai/dist/*.d.ts", "../ai/dist/providers/*.d.ts"],
-			"@earendil-works/pi-client": ["../client/dist/index.d.ts"],
-			"@earendil-works/pi-protocol": ["../protocol/dist/index.d.ts"],
-			"@earendil-works/pi-tui": ["../tui/dist/index.d.ts"],
-			"@earendil-works/pi-tui/*": ["../tui/dist/*.d.ts", "../tui/dist/components/*.d.ts"]
+			"@qorpera/pi-agent-core": ["../agent/dist/index.d.ts"],
+			"@qorpera/pi-agent-core/*": ["../agent/dist/*.d.ts"],
+			"@qorpera/pi-ai": ["../ai/dist/index.d.ts"],
+			"@qorpera/pi-ai/*": ["../ai/dist/*.d.ts", "../ai/dist/providers/*.d.ts"],
+			"@qorpera/pi-client": ["../client/dist/index.d.ts"],
+			"@qorpera/pi-protocol": ["../protocol/dist/index.d.ts"],
+			"@qorpera/pi-tui": ["../tui/dist/index.d.ts"],
+			"@qorpera/pi-tui/*": ["../tui/dist/*.d.ts", "../tui/dist/components/*.d.ts"]
 		},
 		"rootDir": "./src"
 	},
