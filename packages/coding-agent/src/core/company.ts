@@ -349,6 +349,28 @@ function basenameOf(source: string): string {
 	return segments[segments.length - 1] || "company";
 }
 
+/**
+ * If this company has never been conceived (company.md is still the
+ * template), return the kickoff message to auto-send on session start — the
+ * founder should never have to type "hello?" to make setup begin. Companies
+ * with a product already in work/ get the study-first variant.
+ */
+export function conceptionKickoff(root: string): string | undefined {
+	try {
+		const companyMd = readFileSync(join(root, "company.md"), "utf-8");
+		if (!companyMd.includes("This company does not exist yet")) return undefined;
+	} catch {
+		return undefined;
+	}
+	try {
+		const products = readdirSync(join(root, "work")).filter((name) => name !== ".gitkeep");
+		if (products.length > 0) return CONCEPTION_INTEGRATE(products[0]);
+	} catch {
+		// no work/ — fall through
+	}
+	return CONCEPTION_NEW;
+}
+
 // ---- company registry (the hub's memory) ----------------------------------
 
 export interface CompanyRecord {

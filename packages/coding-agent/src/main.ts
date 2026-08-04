@@ -33,7 +33,7 @@ import {
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { discoverAuthority } from "./core/authority.ts";
-import { handleCompanyCommand, registerCompany, runCompanyHub } from "./core/company.ts";
+import { conceptionKickoff, handleCompanyCommand, registerCompany, runCompanyHub } from "./core/company.ts";
 import { handleEngineCommand } from "./core/engine/cli.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
@@ -580,6 +580,12 @@ export async function main(args: string[], options?: MainOptions) {
 		const authorityHere = discoverAuthority(cwd);
 		if (authorityHere) {
 			registerCompany(authorityHere.root);
+			// Never-conceived company: open with the conception interview
+			// instead of waiting for the founder to say something first.
+			const kickoff = conceptionKickoff(authorityHere.root);
+			if (kickoff) {
+				args.push(kickoff);
+			}
 		} else {
 			const hubExit = await runCompanyHub((title, options) =>
 				showStartupSelector(bootstrapSettingsManager, title, options),

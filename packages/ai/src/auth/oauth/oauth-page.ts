@@ -1,4 +1,4 @@
-const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" aria-hidden="true"><path fill="#fff" fill-rule="evenodd" d="M165.29 165.29 H517.36 V400 H400 V517.36 H282.65 V634.72 H165.29 Z M282.65 282.65 V400 H400 V282.65 Z"/><path fill="#fff" d="M517.36 400 H634.72 V634.72 H517.36 Z"/></svg>`;
+const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" aria-hidden="true"><rect x="140" y="140" width="520" height="520" rx="96" fill="none" stroke="#fff" stroke-width="44"/><text x="400" y="530" font-family="'Segoe UI', Arial, sans-serif" font-size="340" font-weight="700" fill="#fff" text-anchor="middle">Q</text></svg>`;
 
 function escapeHtml(value: string): string {
 	return value
