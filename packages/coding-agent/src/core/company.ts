@@ -47,6 +47,15 @@ keep in good repair, not something you endlessly rework: when reality and
 its surfaces diverge — new work worth showing, a surface gone stale, a
 capability missing — fix it, and otherwise leave it be.
 
+Prefer derived understanding over asked understanding: read the data, the
+repositories, and the connected services first, and ask the founder to fill
+gaps and resolve uncertainty — not to dictate what you could measure.
+Founder answers are evidence, not constants: record them with their date
+and provenance, and treat every number in them (prices, budgets, forecasts)
+as a current best estimate to test and revise with analysis. \`company.md\`
+holds identity and intent only; working beliefs — pricing, plans, forecasts
+— live in \`app/substrates/\` where you can revise them as evidence arrives.
+
 Everything you think and do is recorded automatically: sessions land in
 \`trail/\` as append-only trees. You owe the record nothing — but it is
 searchable history when you need to know why something is the way it is,
@@ -200,8 +209,21 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	mkdirSync(root, { recursive: true });
 	const result: ScaffoldResult = { root, created: [], skipped: [], gitInitialized: false };
 
-	writeIfMissing(root, "AGENTS.md", KERNEL_PROMPT, result);
-	writeIfMissing(root, "CLAUDE.md", KERNEL_PROMPT, result);
+	// Kernel files are kernel-owned: refreshed to the current kernel text on
+	// every scaffold (that is how kernel upgrades reach existing companies).
+	// Everything else is never overwritten.
+	for (const kernelFile of ["AGENTS.md", "CLAUDE.md"]) {
+		const target = join(root, kernelFile);
+		if (!existsSync(target)) {
+			writeFileSync(target, KERNEL_PROMPT, "utf-8");
+			result.created.push(kernelFile);
+		} else if (readFileSync(target, "utf-8") !== KERNEL_PROMPT) {
+			writeFileSync(target, KERNEL_PROMPT, "utf-8");
+			result.created.push(`${kernelFile} (kernel refreshed)`);
+		} else {
+			result.skipped.push(kernelFile);
+		}
+	}
 	writeIfMissing(root, "company.md", COMPANY_MD_TEMPLATE, result);
 	writeIfMissing(root, "authority.toml", AUTHORITY_TOML_TEMPLATE, result);
 	writeIfMissing(root, join("connections", "README.md"), CONNECTIONS_README, result);
@@ -223,10 +245,10 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	return result;
 }
 
-const CONCEPTION_NEW = `This company folder was just created and company.md is still the template. Begin conception: interview me — who this company is, what it is trying to become, which constraints matter, what I care about. Then perform the setup yourself: rewrite company.md as the company's identity, propose authority.toml adjustments and the connections we need (I ratify those), and build the first state-of-the-company surface in app/. Ask me one focused question at a time.`;
+const CONCEPTION_NEW = `This company folder was just created and company.md is still the template. Begin conception. Your primary source of understanding is data, not interview: start by asking which data sources, repositories, and services we should connect, then derive the scope of the company from what you can read. Use questions only for the gaps data cannot answer — intent, constraints, what I care about — one focused question at a time. Record my answers as dated evidence with provenance, never as fixed facts: numbers I give you (prices, budgets, forecasts) are early estimates you are expected to test and revise with analysis. Then perform the setup yourself: rewrite company.md as identity and intent only, keep working beliefs in app/substrates/ as revisable records, propose authority.toml adjustments and connections (I ratify those), and build the first state-of-the-company surface in app/.`;
 
 const CONCEPTION_INTEGRATE = (repoName: string) =>
-	`This company folder was just created around an existing repository at work/${repoName}. Begin conception with study: read that repository enough to understand what exists (do not modify it yet). Then interview me about what the code cannot say — intent, customers, constraints, what I care about. Then perform the setup yourself: rewrite company.md, propose authority.toml adjustments and connections (I ratify those), and build the first state-of-the-company surface in app/. Ask me one focused question at a time.`;
+	`This company folder was just created around an existing repository at work/${repoName}. Begin conception with study: read that repository enough to understand what exists (do not modify it yet). Your primary source of understanding is data, not interview — also ask which other data sources and services we should connect, and derive as much as you can from what you read. Use questions only for the gaps data cannot answer — intent, customers, constraints — one focused question at a time. Record my answers as dated evidence with provenance, never as fixed facts: numbers I give you (prices, budgets, forecasts) are early estimates you are expected to test and revise with analysis. Then perform the setup yourself: rewrite company.md as identity and intent only, keep working beliefs in app/substrates/ as revisable records, propose authority.toml adjustments and connections (I ratify those), and build the first state-of-the-company surface in app/.`;
 
 function printScaffoldReport(result: ScaffoldResult): void {
 	console.log(`Company spine at ${result.root}`);

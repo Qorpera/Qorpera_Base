@@ -31,6 +31,7 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./core/agent-session-services.ts";
+import { handleAppCommand } from "./core/app-server.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { discoverAuthority } from "./core/authority.ts";
 import { conceptionKickoff, handleCompanyCommand, registerCompany, runCompanyHub } from "./core/company.ts";
@@ -569,6 +570,10 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (await handleEngineCommand(args)) {
+		return;
+	}
+
+	if (await handleAppCommand(args)) {
 		return;
 	}
 
