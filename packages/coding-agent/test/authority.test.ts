@@ -191,6 +191,32 @@ describe("products zone", () => {
 		).toBe("block");
 	});
 
+	it("does not gate inbox READS via bash — writes there still gate (live remodel regressions)", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		// The exact shapes that false-positived in the 2026-08-04 remodels:
+		for (const command of [
+			`cd C:/Companies/penthouse-poker; wc -l userland/index.html userland/renderer.js; cat inbox/README.md; ls inbox`,
+			`cd C:/Companies/penthouse-poker; wc -l userland/index.html userland/renderer.js; head -50 inbox/README.md; cat authority.toml`,
+			`cd C:/Companies/penthouse-poker; cat inbox/README.md`,
+			`cat inbox/gate-36f00442.md`,
+			`grep -l pending inbox/gate-abc.md`,
+		]) {
+			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("allow");
+		}
+		// Any write-ish touch of inbox/ stays gated — self-approval and
+		// message-authoring alike (bash has no msg-*.md carve-out).
+		for (const command of [
+			`sed -i "s/pending/approved/" inbox/gate-abc.md`,
+			`echo done >> inbox/msg-update.md`,
+			`cp /tmp/gate.md inbox/gate-abc.md`,
+			`rm inbox/gate-abc.md`,
+			`cat inbox/gate-abc.md && touch inbox/gate-abc.md`,
+		]) {
+			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("block");
+		}
+	});
+
 	it("zone checks rank above [tools] opt-outs", () => {
 		writeAuthorityToml(
 			`[products]\nmode = "gate"\npaths = ["work/my-product"]\n\n[tools]\nbash = "none"\nwrite = "none"\n`,

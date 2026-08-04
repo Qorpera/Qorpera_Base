@@ -224,17 +224,21 @@ function stripHarmlessRedirects(command: string): string {
 const WRITEISH_BASH =
 	/(>>?|\btee\b|\bmv\b|\bcp\b|\brm\b|\brmdir\b|\bdel\b|\bsed\s+-i\b|\btouch\b|\bln\b|\bchmod\b|\bset-content\b|\badd-content\b|\bout-file\b|\bgit\s+(commit|push|checkout|switch|restore|reset|rebase|merge|apply|cherry-pick|clean|rm|mv|stash|tag)\b|\bnpm\s+(install|uninstall|update|version|publish)\b)/i;
 
-/** Authority-class bash screens. Writing to inbox/ is gated in ANY context
- * (self-approval); the authority file and kernel files gate only in
- * write-ish contexts — reading them is routine study. */
+/** Authority-class bash screens. All protected territory — inbox/, the
+ * authority file, the kernel files — gates only in write-ish contexts:
+ * reading inbox items is routine (the kernel TELLS the agent to read
+ * founder responses; live remodels 2026-08-04 showed pure `cat`/`ls`/`wc`
+ * study commands gating on a bare inbox mention). Write-ish + inbox
+ * mention stays gated in full — bash never writes there, not even
+ * msg-*.md (the write tool's carve-out is the one sanctioned lane). */
 function bashTouchesProtected(command: string): boolean {
-	if (/\binbox[/\\]/.test(command)) return true;
 	// The company backend's mutating endpoints (gate approval, inbox
 	// responses, authority edits) are for the HUMAN's UI — an agent curling
 	// them is attempting self-authorization regardless of the token guard.
 	if (/\/api\/(gate|authority|inbox\/respond)\b/.test(command)) return true;
 	const stripped = stripHarmlessRedirects(command);
 	if (!WRITEISH_BASH.test(stripped)) return false;
+	if (/\binbox[/\\]/.test(stripped)) return true;
 	if (stripped.includes(AUTHORITY_FILE)) return true;
 	if (/\b(AGENTS|CLAUDE)\.md\b/i.test(stripped)) return true;
 	return false;
