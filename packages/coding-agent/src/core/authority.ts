@@ -199,18 +199,28 @@ function bashCommandFromArgs(args: unknown): string | undefined {
 	return typeof command === "string" ? command : undefined;
 }
 
+/**
+ * Redirects that are not writes: stderr/stdout to the null device and
+ * fd merges (`2>/dev/null`, `2>&1`). Stripped before the write-ish test —
+ * live conception audit 2026-08-04 showed them gating pure study commands.
+ */
+function stripHarmlessRedirects(command: string): string {
+	return command.replace(/\d?\s*>>?\s*(?:\/dev\/null|nul\b)/gi, " ").replace(/\d?\s*>&\s*\d/g, " ");
+}
+
 /** Shell fragments that indicate mutation (vs. reading/study). */
 const WRITEISH_BASH =
 	/(>>?|\btee\b|\bmv\b|\bcp\b|\brm\b|\brmdir\b|\bdel\b|\bsed\s+-i\b|\btouch\b|\bln\b|\bchmod\b|\bset-content\b|\badd-content\b|\bout-file\b|\bgit\s+(commit|push|checkout|switch|restore|reset|rebase|merge|apply|cherry-pick|clean|rm|mv|stash|tag)\b|\bnpm\s+(install|uninstall|update|version|publish)\b)/i;
 
-/** Tokens that make a bash command authority-class when they appear at all. */
+/** Authority-class bash screens. Writing to inbox/ is gated in ANY context
+ * (self-approval); the authority file and kernel files gate only in
+ * write-ish contexts — reading them is routine study. */
 function bashTouchesProtected(command: string): boolean {
-	if (command.includes(AUTHORITY_FILE)) return true;
 	if (/\binbox[/\\]/.test(command)) return true;
-	// Kernel files only in write-ish contexts; bare reads of AGENTS.md are routine.
-	if (WRITEISH_BASH.test(command) && /\b(AGENTS|CLAUDE)\.md\b/i.test(command)) {
-		return true;
-	}
+	const stripped = stripHarmlessRedirects(command);
+	if (!WRITEISH_BASH.test(stripped)) return false;
+	if (stripped.includes(AUTHORITY_FILE)) return true;
+	if (/\b(AGENTS|CLAUDE)\.md\b/i.test(stripped)) return true;
 	return false;
 }
 
@@ -235,7 +245,7 @@ function isUnderProduct(authority: Authority, config: AuthorityConfig, resolvedP
  */
 function bashTouchesProductWriteish(config: AuthorityConfig, command: string): boolean {
 	if (config.productPaths.length === 0) return false;
-	if (!WRITEISH_BASH.test(command)) return false;
+	if (!WRITEISH_BASH.test(stripHarmlessRedirects(command))) return false;
 	for (const productPath of config.productPaths) {
 		const forward = productPath.replace(/\\/g, "/");
 		const backward = forward.replace(/\//g, "\\");

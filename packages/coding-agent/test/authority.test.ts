@@ -148,6 +148,28 @@ describe("products zone", () => {
 		);
 	});
 
+	it("does not gate study commands with harmless redirects (live conception regressions)", () => {
+		writeAuthorityToml(`[products]\nmode = "gate"\npaths = ["work/my-product"]\n`);
+		const authority = discoverAuthority(root)!;
+		// The exact shapes that false-positived in the 2026-08-04 conception:
+		for (const command of [
+			`ls -la "work/my-product" && cat company.md 2>/dev/null; ls app inbox 2>/dev/null`,
+			`cd "work/my-product" && ls docs 2>/dev/null | head -50; git log --oneline -10 2>/dev/null | head`,
+			`cat authority.toml 2>/dev/null; ls trail 2>/dev/null`,
+			`git -C work/my-product status 2>&1`,
+		]) {
+			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("allow");
+		}
+		// Real writes still gate — including through a null-redirect decoy.
+		expect(evaluateToolCall(authority, "bash", { command: `echo x > authority.toml 2>/dev/null` }, root).kind).toBe(
+			"block",
+		);
+		expect(
+			evaluateToolCall(authority, "bash", { command: `cd work/my-product && git commit -m x 2>/dev/null` }, root)
+				.kind,
+		).toBe("block");
+	});
+
 	it("zone checks rank above [tools] opt-outs", () => {
 		writeAuthorityToml(
 			`[products]\nmode = "gate"\npaths = ["work/my-product"]\n\n[tools]\nbash = "none"\nwrite = "none"\n`,
