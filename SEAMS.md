@@ -134,6 +134,15 @@ adapters are ours to write · (c) exists, with the four caveats above (c.2 is
 new information vs the audit) · (d) exists as audited, verified headless ·
 (e) exists as audited · (f) exists as audited.
 
+**Slice 4 update (2026-08-04):** seam (b) is now occupied by
+`core/engine/codex-engine.ts` — engine mode drives the codex app-server
+(JSON-RPC/JSONL stdio, stable v2 subset) rather than implementing the
+unshipped `PiSessionBackend` interface: the adapter's real contracts are the
+trail (items → session-tree entries) and the authority bridge (approval
+requests → `evaluateToolCall`), both of which already exist. If/when the
+shell needs a uniform session interface across engines, wrap this class in
+that shape then. See `packages/coding-agent/docs/engine.md`.
+
 **Slice 3 update (2026-08-04):** seam (d) is now occupied without new code at
 the storage layer: sessions ARE the trail. `core/company.ts` scaffolds the
 spine (`qorpera company init`) and points project `sessionDir` at
