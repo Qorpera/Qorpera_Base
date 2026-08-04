@@ -29,7 +29,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 
-export type EffectClass = "money" | "identity" | "irreversible" | "authority";
+export type EffectClass = "money" | "identity" | "irreversible" | "authority" | "products";
 export type AuthorityMode = "auto" | "notify" | "gate";
 
 export interface AuthorityClassConfig {
@@ -41,6 +41,11 @@ export interface AuthorityConfig {
 	classes: Record<EffectClass, AuthorityClassConfig>;
 	/** Per-tool overrides from `[tools]`: tool name -> effect class or "none". */
 	tools: Record<string, EffectClass | "none">;
+	/**
+	 * Root-relative paths of software products the controller may read and
+	 * study freely but not modify without approval ([products] paths).
+	 */
+	productPaths: string[];
 }
 
 export interface Authority {
@@ -63,7 +68,9 @@ export interface GateRecord {
 	filePath: string;
 }
 
-const EFFECT_CLASSES: EffectClass[] = ["money", "identity", "irreversible", "authority"];
+const EFFECT_CLASSES: EffectClass[] = ["money", "identity", "irreversible", "authority", "products"];
+/** Path-arg zone checks apply only to tools that mutate the path. */
+const MUTATING_PATH_TOOLS = new Set(["write", "edit", "apply_patch", "multiedit"]);
 const AUTHORITY_FILE = "authority.toml";
 const INBOX_DIR = "inbox";
 /** Root-level files whose modification is an [authority]-class effect. */
@@ -115,8 +122,10 @@ export function readAuthorityConfig(authority: Authority): AuthorityConfig {
 			identity: { mode: "gate" },
 			irreversible: { mode: "gate" },
 			authority: { mode: "gate" },
+			products: { mode: "gate" },
 		},
 		tools: {},
+		productPaths: [],
 	};
 	let raw: Record<string, unknown>;
 	try {
@@ -125,7 +134,14 @@ export function readAuthorityConfig(authority: Authority): AuthorityConfig {
 		return fallback;
 	}
 
-	const config: AuthorityConfig = { classes: { ...fallback.classes }, tools: {} };
+	const config: AuthorityConfig = { classes: { ...fallback.classes }, tools: {}, productPaths: [] };
+	const productsSection = raw.products;
+	if (productsSection && typeof productsSection === "object") {
+		const paths = (productsSection as Record<string, unknown>).paths;
+		if (Array.isArray(paths)) {
+			config.productPaths = paths.filter((entry): entry is string => typeof entry === "string");
+		}
+	}
 	for (const effectClass of EFFECT_CLASSES) {
 		const section = raw[effectClass];
 		if (section && typeof section === "object") {
@@ -183,17 +199,50 @@ function bashCommandFromArgs(args: unknown): string | undefined {
 	return typeof command === "string" ? command : undefined;
 }
 
+/** Shell fragments that indicate mutation (vs. reading/study). */
+const WRITEISH_BASH =
+	/(>>?|\btee\b|\bmv\b|\bcp\b|\brm\b|\brmdir\b|\bdel\b|\bsed\s+-i\b|\btouch\b|\bln\b|\bchmod\b|\bset-content\b|\badd-content\b|\bout-file\b|\bgit\s+(commit|push|checkout|switch|restore|reset|rebase|merge|apply|cherry-pick|clean|rm|mv|stash|tag)\b|\bnpm\s+(install|uninstall|update|version|publish)\b)/i;
+
 /** Tokens that make a bash command authority-class when they appear at all. */
 function bashTouchesProtected(command: string): boolean {
 	if (command.includes(AUTHORITY_FILE)) return true;
 	if (/\binbox[/\\]/.test(command)) return true;
 	// Kernel files only in write-ish contexts; bare reads of AGENTS.md are routine.
-	if (
-		/(>>?|\btee\b|\bmv\b|\bcp\b|\brm\b|\bsed\s+-i|\bset-content\b|\bout-file\b)[^|;&]*\b(AGENTS|CLAUDE)\.md\b/i.test(
-			command,
-		)
-	) {
+	if (WRITEISH_BASH.test(command) && /\b(AGENTS|CLAUDE)\.md\b/i.test(command)) {
 		return true;
+	}
+	return false;
+}
+
+function resolveArgPath(rawPath: string, cwd: string): string {
+	return resolve(isAbsolute(rawPath) ? rawPath : join(cwd, rawPath));
+}
+
+/** Is this resolved path inside a [products]-declared zone? */
+function isUnderProduct(authority: Authority, config: AuthorityConfig, resolvedPath: string): boolean {
+	for (const productPath of config.productPaths) {
+		const productRoot = resolve(join(authority.root, productPath));
+		if (resolvedPath === productRoot || isUnderDir(resolvedPath, productRoot)) return true;
+	}
+	return false;
+}
+
+/**
+ * Product zone screen for shell commands: reading/study is free; a command
+ * that BOTH mentions a product path AND looks mutating gates as products.
+ * Heuristic by nature — precise enforcement rides on the path-arg tools and
+ * engine patch approvals.
+ */
+function bashTouchesProductWriteish(config: AuthorityConfig, command: string): boolean {
+	if (config.productPaths.length === 0) return false;
+	if (!WRITEISH_BASH.test(command)) return false;
+	for (const productPath of config.productPaths) {
+		const forward = productPath.replace(/\\/g, "/");
+		const backward = forward.replace(/\//g, "\\");
+		if (command.includes(forward) || command.includes(backward)) return true;
+		// Also match the zone's basename (`cd Qorpera_Desktop && git commit`).
+		const base = forward.split("/").filter(Boolean).pop();
+		if (base && command.includes(base)) return true;
 	}
 	return false;
 }
@@ -209,25 +258,32 @@ export function classifyToolCall(
 	args: unknown,
 	cwd: string,
 ): EffectClass | undefined {
-	const overrideRaw = config.tools[toolName];
-	if (overrideRaw === "none") return undefined;
-	const override: EffectClass | undefined = overrideRaw;
-
-	// Protected-path checks run even when an override names a class: an
-	// authority-touching effect is never less than authority-class.
+	// Zone checks rank ABOVE [tools] overrides (including "none"): opting a
+	// tool out of classification must not open the kernel files or product
+	// zones. Zones apply only to mutating tools — reading/study is free.
 	const pathArg = extractPathArg(args);
-	if (pathArg && isProtectedPath(authority, pathArg, cwd)) return "authority";
+	if (pathArg && MUTATING_PATH_TOOLS.has(toolName)) {
+		const resolved = resolveArgPath(pathArg, cwd);
+		if (isProtectedPath(authority, pathArg, cwd)) return "authority";
+		if (isUnderProduct(authority, config, resolved)) return "products";
+	}
+
+	const overrideRaw = config.tools[toolName];
+	const override: EffectClass | undefined = overrideRaw === "none" ? undefined : overrideRaw;
 
 	if (toolName === "bash") {
 		const command = bashCommandFromArgs(args);
 		if (command) {
 			if (bashTouchesProtected(command)) return "authority";
+			if (bashTouchesProductWriteish(config, command)) return "products";
+			if (overrideRaw === "none") return undefined;
 			if (override) return override;
 			if (DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(command))) return "irreversible";
 		}
 		return override;
 	}
 
+	if (overrideRaw === "none") return undefined;
 	return override;
 }
 

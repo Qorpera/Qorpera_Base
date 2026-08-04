@@ -47,6 +47,14 @@ file fails **closed** — every class gates.
   `mkfs`, …). False positives gate (recoverable); the screen errs that way
   on purpose.
 - **money / identity**: no built-in detections yet — assign via `[tools]`.
+- **products**: `[products] paths = ["work/my-product"]` declares software
+  products the controller may READ and study freely but not MODIFY without
+  approval. Precise for path-arg tools (`write`/`edit`/`apply_patch` — and
+  engine-mode patch approvals, which evaluate as `apply_patch` per file);
+  heuristic for `bash` (mutation-looking commands that mention a product
+  path or its basename gate; pure study commands pass). Zone checks rank
+  ABOVE `[tools]` opt-outs — `bash = "none"` cannot open a product zone or
+  the kernel files.
 
 ## Gate lifecycle
 

@@ -92,6 +92,10 @@ mode = "gate"      # editing this file, the kernel files, or inbox/.
                    # ALWAYS gated — the harness enforces this regardless of
                    # what this line says.
 
+# [products]       # software products the controller may READ and study
+# mode = "gate"    # freely but not MODIFY without approval. Root-relative.
+# paths = ["work/my-product"]
+
 # [tools]          # optional per-tool overrides, e.g.:
 # deploy = "irreversible"
 `;

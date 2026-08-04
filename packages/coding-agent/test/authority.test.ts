@@ -121,6 +121,61 @@ describe("classification and evaluation", () => {
 	});
 });
 
+describe("products zone", () => {
+	it("gates modification of product paths but leaves reading and study free", () => {
+		writeAuthorityToml(`[products]\nmode = "gate"\npaths = ["work/my-product"]\n\n[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		const productFile = join(root, "work", "my-product", "src", "main.ts");
+
+		// Mutating tools gate as products.
+		const write = evaluateToolCall(authority, "write", { path: productFile, content: "x" }, root);
+		expect(write.kind).toBe("block");
+		expect((write as { effectClass: string }).effectClass).toBe("products");
+		expect(evaluateToolCall(authority, "edit", { path: productFile }, root).kind).toBe("block");
+		expect(evaluateToolCall(authority, "apply_patch", { path: productFile }, root).kind).toBe("block");
+
+		// Reading is free — study is the whole point.
+		expect(evaluateToolCall(authority, "read", { path: productFile }, root).kind).toBe("allow");
+		expect(evaluateToolCall(authority, "grep", { path: join(root, "work", "my-product") }, root).kind).toBe("allow");
+
+		// Bash: study allowed, mutation gated (path or basename mention).
+		expect(evaluateToolCall(authority, "bash", { command: "grep -r foo work/my-product" }, root).kind).toBe("allow");
+		expect(
+			evaluateToolCall(authority, "bash", { command: "sed -i s/a/b/ work/my-product/src/main.ts" }, root).kind,
+		).toBe("block");
+		expect(evaluateToolCall(authority, "bash", { command: "cd work/my-product && git commit -m x" }, root).kind).toBe(
+			"block",
+		);
+	});
+
+	it("zone checks rank above [tools] opt-outs", () => {
+		writeAuthorityToml(
+			`[products]\nmode = "gate"\npaths = ["work/my-product"]\n\n[tools]\nbash = "none"\nwrite = "none"\n`,
+		);
+		const authority = discoverAuthority(root)!;
+		expect(
+			evaluateToolCall(authority, "write", { path: join(root, "work", "my-product", "a.ts"), content: "x" }, root)
+				.kind,
+		).toBe("block");
+		expect(evaluateToolCall(authority, "bash", { command: "rm -rf work/my-product/dist" }, root).kind).toBe("block");
+		// The opt-out still works outside the zone.
+		expect(evaluateToolCall(authority, "bash", { command: "rm -rf scratch" }, root).kind).toBe("allow");
+	});
+
+	it("notify mode on products proceeds with a notice", () => {
+		writeAuthorityToml(`[products]\nmode = "notify"\npaths = ["work/my-product"]\n`);
+		const authority = discoverAuthority(root)!;
+		const decision = evaluateToolCall(
+			authority,
+			"write",
+			{ path: join(root, "work", "my-product", "a.ts"), content: "x" },
+			root,
+		);
+		expect(decision.kind).toBe("allow");
+		expect(readFileSync(join(root, "inbox", "notices.md"), "utf-8")).toContain("[products]");
+	});
+});
+
 describe("gate lifecycle", () => {
 	it("files a request, blocks while pending, allows once approved, then consumes the approval", () => {
 		writeAuthorityToml(`[tools]\ndanger = "irreversible"\n\n[irreversible]\nmode = "gate"\n`);
