@@ -49,6 +49,9 @@
 	.empty { color: #7a8590; padding: 36px; text-align: center; }
 	.badge { background: #6b2f2f; border-radius: 10px; font-size: 11px; padding: 1px 7px; margin-left: 6px; }
 	#status { padding: 6px 16px; border-top: 1px solid #232a31; color: #7a8590; font-size: 11px; min-height: 25px; }
+	#chatbar { display: flex; gap: 8px; padding: 8px 16px; border-bottom: 1px solid #232a31; }
+	#chatbar select { background: #161b21; border: 1px solid #2c3540; border-radius: 6px; color: #cdd4da; padding: 4px 8px; font-size: 12px; max-width: 340px; }
+	.sess-meta { color: #7a8590; font-size: 11px; }
 	.hubbtn { border: 1px solid #232a31 !important; margin-bottom: 6px; padding: 10px 12px !important; }
 </style>
 </head>
@@ -63,6 +66,7 @@
 	<div id="conav" style="display:none">
 		<h2>Company</h2>
 		<button id="inboxBtn" onclick="show('inbox')">Inbox<span id="inboxBadge"></span></button>
+		<button id="activityBtn" onclick="show('activity')">Activity</button>
 		<h2>Chats</h2>
 		<button onclick="newChat()">+ New chat</button>
 		<div id="sessions"></div>
@@ -74,6 +78,10 @@
 </nav>
 <main>
 	<div id="view-chat">
+		<div id="chatbar">
+			<select id="modelSel" title="Model"></select>
+			<select id="effortSel" title="Thinking effort"></select>
+		</div>
 		<div id="messages"></div>
 		<div id="composer">
 			<textarea id="input" placeholder="Steer the company… (Enter to send, Shift+Enter for newline)"></textarea>

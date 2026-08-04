@@ -21,6 +21,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { basename, join, normalize, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface CompanyAppOptions {
 	root: string;
@@ -450,20 +451,23 @@ function installLauncher(root: string): string | undefined {
 	if (!existsSync(desktop)) return undefined;
 	if (process.platform === "win32") {
 		const path = join(desktop, `${name} Controller.cmd`);
-		// Backend console starts minimized; the app window is the app.
-		// NOTE: the if-block needs parentheses — `if ... start & exit /b`
-		// would run `exit /b` unconditionally (cmd grammar), killing the
-		// relaunched instance before it starts.
+		// The Controller IS the Base shell opened into this company: one
+		// foundation binary for every company, so Base updates reach all
+		// controllers at once. Prefer the installed app; fall back to the
+		// dev tree this CLI is running from.
+		const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 		writeFileSync(
 			path,
 			[
 				"@echo off",
-				`if not "%1"=="min" (`,
-				`\tstart /min "" "%~f0" min`,
+				`set "EXE=%LocalAppData%\\Programs\\Qorpera Base\\Qorpera Base.exe"`,
+				`if not exist "%EXE%" set "EXE=%LocalAppData%\\Programs\\qorpera-base\\Qorpera Base.exe"`,
+				`if exist "%EXE%" (`,
+				`\tstart "" "%EXE%" --company "${root}"`,
 				"\texit /b",
 				")",
-				`title ${name} Controller`,
-				`qorpera app "${root}"`,
+				`cd /d "${repoRoot}"`,
+				`start "" node_modules\\electron\\dist\\electron.exe packages\\shell\\dist\\main.js --company "${root}"`,
 				"",
 			].join("\r\n"),
 			"utf-8",

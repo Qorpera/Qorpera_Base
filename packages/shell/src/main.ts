@@ -11,6 +11,7 @@
  */
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -22,6 +23,24 @@ import electronUpdater from "electron-updater";
 
 const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
 const DIRNAME = fileURLToPath(new URL(".", import.meta.url));
+
+function shellVersion(): string {
+	try {
+		const pkg = JSON.parse(readFileSync(join(DIRNAME, "..", "package.json"), "utf-8")) as {
+			productVersion?: string;
+			version?: string;
+		};
+		return pkg.productVersion ?? pkg.version ?? "dev";
+	} catch {
+		return "dev";
+	}
+}
+
+/** `--company <root>`: per-company launchers open straight into their company. */
+function pendingCompanyFromArgv(): string | undefined {
+	const index = process.argv.indexOf("--company");
+	return index >= 0 ? process.argv[index + 1] : undefined;
+}
 
 interface CompanyRuntime {
 	root: string;
@@ -127,6 +146,7 @@ app.whenReady().then(() => {
 	});
 	ipcMain.handle("company:close", () => closeCompany());
 	ipcMain.handle("chat:open", (_event, sessionFile: string | null) => openChat(sessionFile));
+	ipcMain.handle("app:info", () => ({ version: shellVersion(), pendingCompany: pendingCompanyFromArgv() }));
 	ipcMain.handle("rpc:send", (_event, frame: unknown) => {
 		runtime?.child.stdin.write(`${JSON.stringify(frame)}\n`);
 	});

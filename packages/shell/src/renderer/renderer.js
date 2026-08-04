@@ -8,6 +8,8 @@ let currentSession = null; // trail file of the open chat (null = fresh/unsaved)
 let assistantEl = null;
 let thinkingEl = null;
 let poller = null;
+let currentModelKey = "";
+let currentEffort = "";
 
 // ---- hub -------------------------------------------------------------------
 
@@ -59,10 +61,32 @@ async function openCompany(root, name) {
 		addMsg("tool", "· conception started — the controller is studying the company…");
 	}
 	show("chat");
+	hydrateAgentState(false);
 	await refreshState();
 	if (poller) clearInterval(poller);
 	poller = setInterval(refreshState, 2000);
 }
+
+// ---- chatbar: model + effort ------------------------------------------------
+
+function fillSelect(el, options, currentValue) {
+	el.innerHTML = "";
+	for (const option of options) {
+		const node = document.createElement("option");
+		node.value = option.value;
+		node.textContent = option.label;
+		if (option.value === currentValue) node.selected = true;
+		el.appendChild(node);
+	}
+}
+
+$("modelSel").addEventListener("change", () => {
+	const [provider, modelId] = $("modelSel").value.split("::");
+	window.qorpera.rpcSend({ type: "set_model", provider, modelId });
+});
+$("effortSel").addEventListener("change", () => {
+	window.qorpera.rpcSend({ type: "set_thinking_level", level: $("effortSel").value });
+});
 
 async function refreshState() {
 	try {
@@ -76,14 +100,23 @@ async function refreshState() {
 	}
 }
 
+/** After (re)spawning the agent, ask for everything the chatbar needs. */
+function hydrateAgentState(withHistory) {
+	setTimeout(() => {
+		if (withHistory) window.qorpera.rpcSend({ type: "get_messages" });
+		window.qorpera.rpcSend({ type: "get_state" });
+		window.qorpera.rpcSend({ type: "get_available_models" });
+		window.qorpera.rpcSend({ type: "get_available_thinking_levels" });
+	}, 900);
+}
+
 async function openSession(file) {
 	currentSession = file;
 	await window.qorpera.openChat(file);
 	$("messages").innerHTML = "";
 	show("chat");
 	renderCompanyNavSafe();
-	// Hydrate history; the response frame is handled in onRpcEvent.
-	setTimeout(() => window.qorpera.rpcSend({ type: "get_messages", id: "hydrate" }), 900);
+	hydrateAgentState(true);
 }
 
 async function newChat() {
@@ -92,6 +125,7 @@ async function newChat() {
 	$("messages").innerHTML = "";
 	show("chat");
 	renderCompanyNavSafe();
+	hydrateAgentState(false);
 }
 
 function renderHistory(messages) {
@@ -142,9 +176,11 @@ function show(view) {
 	currentView = view;
 	$("view-chat").style.display = view === "chat" ? "flex" : "none";
 	$("view-surface").style.display = view === "surface" ? "block" : "none";
-	$("view-panel").style.display = view === "inbox" ? "block" : "none";
+	$("view-panel").style.display = view === "inbox" || view === "activity" ? "block" : "none";
 	$("inboxBtn").className = view === "inbox" ? "active" : "";
+	$("activityBtn").className = view === "activity" ? "active" : "";
 	if (view === "inbox") renderInbox();
+	if (view === "activity") renderActivity();
 	if (view !== "surface") currentSurface = null;
 	renderCompanyNavSafe();
 }
@@ -162,6 +198,25 @@ function showSurface(surface) {
 	show("surface");
 	currentSurface = surface.entry;
 	renderCompanyNavSafe();
+}
+
+/** The controller's work, visible: every trail session, newest first. */
+function renderActivity() {
+	const panel = $("view-panel");
+	const sessions = state.sessions ?? [];
+	panel.innerHTML = sessions.length ? "" : '<div class="empty">No sessions recorded yet</div>';
+	for (const session of sessions) {
+		const d = document.createElement("div");
+		d.className = "gate";
+		d.innerHTML = '<div class="t"></div><div class="s sess-meta"></div>';
+		d.querySelector(".t").textContent = session.title;
+		d.querySelector(".s").textContent = `${new Date(session.mtimeMs).toLocaleString()} · ${session.file}`;
+		const open = document.createElement("button");
+		open.textContent = "Open";
+		open.onclick = () => openSession(session.file);
+		d.appendChild(open);
+		panel.appendChild(d);
+	}
 }
 
 function renderInbox() {
@@ -292,7 +347,33 @@ window.qorpera.onRpcEvent((frame) => {
 			break;
 		case "response":
 			if (frame.command === "get_messages" && frame.success) renderHistory(frame.data?.messages ?? frame.data);
-			else if (frame.success === false) addMsg("log", `error: ${frame.error ?? frame.command}`);
+			else if (frame.command === "get_available_models" && frame.success) {
+				const models = frame.data?.models ?? frame.data ?? [];
+				fillSelect(
+					$("modelSel"),
+					models.map((m) => ({ value: `${m.provider}::${m.id}`, label: `${m.name ?? m.id} (${m.provider})` })),
+					currentModelKey,
+				);
+			} else if (frame.command === "get_available_thinking_levels" && frame.success) {
+				const levels = frame.data?.levels ?? [];
+				fillSelect(
+					$("effortSel"),
+					levels.map((level) => ({ value: level, label: `effort: ${level}` })),
+					currentEffort,
+				);
+			} else if (frame.command === "get_state" && frame.success) {
+				const model = frame.data?.model;
+				if (model?.id) {
+					currentModelKey = `${model.provider}::${model.id}`;
+					if ($("modelSel").options.length) $("modelSel").value = currentModelKey;
+				}
+				if (frame.data?.thinkingLevel) {
+					currentEffort = frame.data.thinkingLevel;
+					if ($("effortSel").options.length) $("effortSel").value = currentEffort;
+				}
+			} else if (frame.command === "set_model" && frame.success && frame.data?.id) {
+				currentModelKey = `${frame.data.provider}::${frame.data.id}`;
+			} else if (frame.success === false) addMsg("log", `error: ${frame.error ?? frame.command}`);
 			break;
 		default:
 			break;
@@ -310,4 +391,12 @@ function summarizeArgs(args) {
 	return "";
 }
 
-renderHub();
+(async () => {
+	const info = await window.qorpera.appInfo();
+	$("subtitle").textContent = `the foundation · v${info.version}`;
+	if (info.pendingCompany) {
+		await openCompany(info.pendingCompany, info.pendingCompany.split(/[\\/]/).pop());
+	} else {
+		await renderHub();
+	}
+})();
