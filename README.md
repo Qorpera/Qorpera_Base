@@ -4,7 +4,8 @@
 platform.** A company forks it; its AI builds the company's own controller from
 it — surfaces, substrates, routines, and tools that fit that company alone. The
 design spec lives in the Qorpera repositories
-(`artifacts/qorpera-base/spec-v0.md`); fork provenance and policy are in
+(`artifacts/qorpera-base/spec-v0.md`); the self-evolution and signature-rule
+design is in [EVOLUTION.md](EVOLUTION.md); fork provenance and policy are in
 [FORK.md](FORK.md).
 
 Qorpera Base is a hard fork of the [PI coding agent](https://github.com/earendil-works/pi)
