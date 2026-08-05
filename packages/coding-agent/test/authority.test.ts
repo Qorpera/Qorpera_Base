@@ -374,14 +374,47 @@ describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", 
 		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[products]\nmode = "gate"\npaths = ["work/my-product"]\n`);
 		const authority = discoverAuthority(root)!;
 		for (const command of [
-			// Path args outside the message still gate.
-			`git commit -m "x Qorpera-Trigger: t Qorpera-Rationale: r" inbox/gate-abc.md`,
+			// Worktree-writing verbs still screen on their inbox mentions.
+			`git checkout -- inbox/gate-abc.md`,
 			// Execution constructs inside a message stay visible to the screens.
 			`git commit -m "msg $(echo hacked >> inbox/gate-abc.md) Qorpera-Trigger: t Qorpera-Rationale: r"`,
 			// Commands inside a product zone still gate regardless of message.
 			`cd work/my-product && git commit -m "tidy Qorpera-Trigger: t Qorpera-Rationale: r"`,
 			// Destructive operations outside the message still gate.
 			`git commit -m "wip Qorpera-Trigger: t Qorpera-Rationale: r" && git push --force origin master`,
+		]) {
+			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("block");
+		}
+	});
+
+	it("does not gate staging/committing inbox, kernel, or product records (live close-out regression)", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[products]\nmode = "gate"\npaths = ["work/my-product"]\n`);
+		const authority = discoverAuthority(root)!;
+		const TRAILERS = "Qorpera-Trigger: t Qorpera-Rationale: r";
+		// The exact shapes that gated during the penthouse close-out:
+		for (const command of [
+			`git add inbox/msg-update.md inbox/gate-abc.md app/substrates/ops-notes.md && git commit -m "bookkeeping ${TRAILERS}"`,
+			`git add AGENTS.md CLAUDE.md && git commit -m "Kernel refresh ${TRAILERS}"`,
+			`git commit -m "record ${TRAILERS}" inbox/gate-abc.md`,
+			`git add work/my-product-notes.md && git commit -m "notes mention my-product ${TRAILERS}"`,
+		]) {
+			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("allow");
+		}
+	});
+
+	it("index-safe stripping never hides real effects", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
+		const authority = discoverAuthority(root)!;
+		const TRAILERS = "Qorpera-Trigger: t Qorpera-Rationale: r";
+		for (const command of [
+			// A following command on a NEW LINE is not swallowed by the strip.
+			`git add inbox/msg-a.md\nrm inbox/gate-b.md`,
+			// Execution constructs in path args stay visible.
+			`git add "$(echo pwned >> inbox/gate-abc.md)" && git commit -m "x ${TRAILERS}"`,
+			// Flags survive the strip: amend still hits the history screen.
+			`git commit --amend -m "x ${TRAILERS}"`,
+			// Compound with a worktree-writing verb still gates.
+			`git add inbox/msg-a.md && git checkout -- inbox/gate-b.md`,
 		]) {
 			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("block");
 		}

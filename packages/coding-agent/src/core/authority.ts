@@ -180,6 +180,27 @@ function stripMessageArgs(command: string): string {
 	);
 }
 
+/**
+ * Blank the path arguments of index-only git verbs (`git add`, `git commit`
+ * pathspecs) before the mention screens: staging or committing a file READS
+ * it into the index — it cannot modify inbox/, the kernel files, or product
+ * content, so a path mention there is bookkeeping, not an effect (observed
+ * live 2026-08-05: every wake that committed its own inbox records gated).
+ * Three properties preserved: flags stay visible (`--amend` must still hit
+ * the destructive screen), segments carrying execution constructs are never
+ * stripped (a substitution in an argument executes), and worktree-WRITING
+ * git verbs (checkout, restore, reset, rm, mv, clean, stash, apply) are
+ * untouched — their mentions still screen. Segments end at connectors AND
+ * newlines so a following command is never swallowed.
+ */
+function stripIndexSafeGitPaths(command: string): string {
+	return command.replace(/\b(git\s+(?:add|commit)\b)([^|;&\n\r]*)/gi, (match, verb: string, args: string) => {
+		if (/\$\(|`|\$\{/.test(args)) return match;
+		const flags = args.match(/\s--?[A-Za-z][\w-]*(?:=(?:"[^"]*"|'[^']*'|\S+))?/g) ?? [];
+		return verb + flags.join("");
+	});
+}
+
 /** Walk upward from startDir looking for authority.toml. */
 export function discoverAuthority(startDir: string): Authority | undefined {
 	let dir = resolve(startDir);
@@ -389,9 +410,11 @@ export function classifyToolCall(
 	if (toolName === "bash") {
 		const command = bashCommandFromArgs(args);
 		if (command) {
-			// All three screens see the command with message bodies blanked —
-			// mentions inside commit messages are data, not effects.
-			const screened = stripMessageArgs(command);
+			// All three screens see the command with message bodies and
+			// index-only git path args blanked — mentions there are data
+			// and bookkeeping, not effects. Message strip runs first so a
+			// blanked -m body can't hide constructs from the path strip.
+			const screened = stripIndexSafeGitPaths(stripMessageArgs(command));
 			if (bashTouchesProtected(screened)) return "authority";
 			if (bashTouchesProductWriteish(config, screened)) return "products";
 			if (overrideRaw === "none") return undefined;

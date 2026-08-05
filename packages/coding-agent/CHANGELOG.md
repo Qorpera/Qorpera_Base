@@ -113,6 +113,7 @@
 - Fixed concurrent in-memory credential mutations losing unrelated provider updates by serializing their read-modify-write sections.
 - Fixed gate files saved with a UTF-8 BOM (Notepad, PowerShell 5.1 `Set-Content -Encoding utf8`) being silently ignored, which hid founder approvals and re-filed duplicate requests.
 - Fixed bash screens gating on protected-path, product-zone, and destructive-pattern mentions inside `-m`/`--message` bodies — commit messages are data, not effects; bodies containing execution constructs stay visible to the screens, and the provenance check reads the raw command.
+- Fixed bash screens gating on `git add`/`git commit` path arguments naming inbox records, kernel files, or product basenames — index-only verbs read files, they cannot modify them; flags survive the strip so `--amend` still screens, execution constructs in arguments stay visible, and worktree-writing git verbs still gate on their mentions.
 
 ## [0.83.0] - 2026-07-29
 

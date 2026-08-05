@@ -98,11 +98,17 @@ screen the same way exotic destructive commands do.
 Because trailers legitimately reference inbox items, `-m`/`--message`
 bodies are blanked before the bash screens run (protected paths, product
 zones, destructive patterns) — a mention inside a commit message is data,
-not an effect. Bodies containing execution constructs (`$(…)`, backticks,
-`${…}`) are NOT blanked and stay visible to the screens; path arguments
-outside the message always do. The provenance check itself runs on the raw
-command. (Live conception 2026-08-05: every routine commit gated because
-its own trailer mentioned `inbox/msg-…`.)
+not an effect. The same applies to the path arguments of index-only git
+verbs (`git add`, `git commit` pathspecs): staging or committing a file
+reads it into the index and cannot modify it, so committing inbox records
+or the kernel files is bookkeeping, not an effect. Bodies or arguments
+containing execution constructs (`$(…)`, backticks, `${…}`) are NOT
+blanked; flags survive the strip (`--amend` still hits the history
+screen); worktree-writing git verbs (checkout, restore, reset, rm, mv,
+clean, stash, apply) still screen on their mentions; and the provenance
+check runs on the raw command. (Live 2026-08-05: every routine commit
+gated on its own trailer mentioning `inbox/msg-…`, then every close-out
+gated on staging its own gate records.)
 
 ## The signature rule (EVOLUTION.md §3)
 
