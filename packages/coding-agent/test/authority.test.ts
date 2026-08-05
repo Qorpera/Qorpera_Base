@@ -355,6 +355,38 @@ describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", 
 		);
 	});
 
+	it("does not gate on protected-path or destructive MENTIONS inside commit messages (live conception regression)", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[products]\nmode = "gate"\npaths = ["work/my-product"]\n`);
+		const authority = discoverAuthority(root)!;
+		// The exact shape that gated every routine commit during conception:
+		// trailers legitimately reference inbox items.
+		for (const command of [
+			`git add -A && git commit -m "Initial commit\n\nPosted the interview.\n\nQorpera-Trigger: founder answer in inbox/msg-conception-interview.md\nQorpera-Rationale: record the state"`,
+			`git commit -m "docs: note authority.toml semantics Qorpera-Trigger: t Qorpera-Rationale: r"`,
+			`git commit -m "removed a stray rm -rf from setup docs Qorpera-Trigger: t Qorpera-Rationale: r"`,
+			`git commit -m "finished my-product docs Qorpera-Trigger: t Qorpera-Rationale: r"`,
+		]) {
+			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("allow");
+		}
+	});
+
+	it("message stripping never hides real effects", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[products]\nmode = "gate"\npaths = ["work/my-product"]\n`);
+		const authority = discoverAuthority(root)!;
+		for (const command of [
+			// Path args outside the message still gate.
+			`git commit -m "x Qorpera-Trigger: t Qorpera-Rationale: r" inbox/gate-abc.md`,
+			// Execution constructs inside a message stay visible to the screens.
+			`git commit -m "msg $(echo hacked >> inbox/gate-abc.md) Qorpera-Trigger: t Qorpera-Rationale: r"`,
+			// Commands inside a product zone still gate regardless of message.
+			`cd work/my-product && git commit -m "tidy Qorpera-Trigger: t Qorpera-Rationale: r"`,
+			// Destructive operations outside the message still gate.
+			`git commit -m "wip Qorpera-Trigger: t Qorpera-Rationale: r" && git push --force origin master`,
+		]) {
+			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("block");
+		}
+	});
+
 	it("does not touch non-commit git commands", () => {
 		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
 		const authority = discoverAuthority(root)!;

@@ -95,6 +95,15 @@ filed** — it is a message-format requirement, not an approval. Matching is
 deliberately narrow (`git [-c/-C …] commit`); exotic invocations slip the
 screen the same way exotic destructive commands do.
 
+Because trailers legitimately reference inbox items, `-m`/`--message`
+bodies are blanked before the bash screens run (protected paths, product
+zones, destructive patterns) — a mention inside a commit message is data,
+not an effect. Bodies containing execution constructs (`$(…)`, backticks,
+`${…}`) are NOT blanked and stay visible to the screens; path arguments
+outside the message always do. The provenance check itself runs on the raw
+command. (Live conception 2026-08-05: every routine commit gated because
+its own trailer mentioned `inbox/msg-…`.)
+
 ## The signature rule (EVOLUTION.md §3)
 
 Codified behavior taking an outward effect **unattended** requires a standing

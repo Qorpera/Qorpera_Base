@@ -159,6 +159,27 @@ function commitMissingProvenance(command: string): boolean {
 	return !PROVENANCE_TRAILERS.every((trailer) => trailer.test(command));
 }
 
+/**
+ * Blank the bodies of `-m`/`--message` arguments before the bash screens: a
+ * commit message MENTIONING inbox/ or a product path is data, not a write —
+ * provenance trailers legitimately reference inbox items, which gated every
+ * routine commit (observed live, conception 2026-08-05). Bodies carrying
+ * shell execution constructs ($(…), backticks, ${…}) are NOT blanked — a
+ * substitution inside a quoted message still executes, so it stays visible
+ * to the screens. Unterminated or escaped-quote bodies fail to match and
+ * stay visible too. Err toward gating. The provenance check runs on the RAW
+ * command — the trailers live in the message.
+ */
+function stripMessageArgs(command: string): string {
+	return command.replace(
+		/(\s(?:-m|--message)(?:=|\s+))("([^"]*)"|'([^']*)'|((?!["'])\S+))/g,
+		(match, prefix: string, _body: string, doubleQuoted?: string, singleQuoted?: string, bare?: string) => {
+			const body = doubleQuoted ?? singleQuoted ?? bare ?? "";
+			return /\$\(|`|\$\{/.test(body) ? match : `${prefix}""`;
+		},
+	);
+}
+
 /** Walk upward from startDir looking for authority.toml. */
 export function discoverAuthority(startDir: string): Authority | undefined {
 	let dir = resolve(startDir);
@@ -368,11 +389,14 @@ export function classifyToolCall(
 	if (toolName === "bash") {
 		const command = bashCommandFromArgs(args);
 		if (command) {
-			if (bashTouchesProtected(command)) return "authority";
-			if (bashTouchesProductWriteish(config, command)) return "products";
+			// All three screens see the command with message bodies blanked —
+			// mentions inside commit messages are data, not effects.
+			const screened = stripMessageArgs(command);
+			if (bashTouchesProtected(screened)) return "authority";
+			if (bashTouchesProductWriteish(config, screened)) return "products";
 			if (overrideRaw === "none") return undefined;
 			if (override) return override;
-			if (DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(command))) return "irreversible";
+			if (DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(screened))) return "irreversible";
 		}
 		return override;
 	}
