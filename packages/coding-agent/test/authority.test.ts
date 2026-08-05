@@ -92,6 +92,28 @@ describe("classification and evaluation", () => {
 		expect(evaluateToolCall(authority, "bash", { command: "git status" }, root).kind).toBe("allow");
 	});
 
+	it("gates history rewrites — append-only from the agent's side (EVOLUTION.md §4 invariant 1)", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
+		const authority = discoverAuthority(root)!;
+		for (const command of [
+			`git commit --amend -m "x Qorpera-Trigger: t Qorpera-Rationale: r"`,
+			"git rebase -i HEAD~3",
+			"git filter-branch --force --all",
+			"git filter-repo --path work",
+			"git reflog expire --expire=now --all",
+			"git update-ref -d refs/heads/main",
+			"git gc --prune=now",
+		]) {
+			const decision = evaluateToolCall(authority, "bash", { command }, root);
+			expect(decision.kind, command).toBe("block");
+			expect((decision as { effectClass: string }).effectClass, command).toBe("irreversible");
+		}
+		// Ordinary history READS stay free.
+		for (const command of ["git reflog", "git log --oneline", "git gc"]) {
+			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("allow");
+		}
+	});
+
 	it("classifies protected-file writes and inbox writes as authority (always gated)", () => {
 		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
 		const authority = discoverAuthority(root)!;
@@ -290,6 +312,42 @@ describe("gate lifecycle", () => {
 		expect(again.kind).toBe("block");
 		expect((again as { reason: string }).reason).toContain("DENIED");
 		expect(readdirSync(inbox).filter((name) => name.startsWith("gate-")).length).toBe(1);
+	});
+});
+
+describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", () => {
+	const TRAILERS = "Qorpera-Trigger: founder request Qorpera-Rationale: keep the record legible";
+
+	it("rejects commits without trailers, files no gate, and allows once trailers are present", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+
+		const blocked = evaluateToolCall(authority, "bash", { command: `git commit -m "fix pricing"` }, root);
+		expect(blocked.kind).toBe("block");
+		expect((blocked as { reason: string }).reason).toContain("Qorpera-Trigger");
+		// A format requirement, not a gate: nothing filed in inbox/.
+		expect(existsSync(join(root, "inbox"))).toBe(false);
+
+		const allowed = evaluateToolCall(authority, "bash", { command: `git commit -m "fix pricing ${TRAILERS}"` }, root);
+		expect(allowed.kind).toBe("allow");
+	});
+
+	it("matches the inline -c author/committer convention", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		const convention = `git -c user.name="Controller" -c user.email="c@x.com" commit --author="Qorpera <j@x.com>"`;
+		expect(evaluateToolCall(authority, "bash", { command: `${convention} -m "msg"` }, root).kind).toBe("block");
+		expect(evaluateToolCall(authority, "bash", { command: `${convention} -m "msg ${TRAILERS}"` }, root).kind).toBe(
+			"allow",
+		);
+	});
+
+	it("does not touch non-commit git commands", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		for (const command of ["git status", "git log --grep=commit", "git merge feature", "git show HEAD"]) {
+			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("allow");
+		}
 	});
 });
 

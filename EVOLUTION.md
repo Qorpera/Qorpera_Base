@@ -79,11 +79,11 @@ fact for recovery, not a governance object.
 
 ## 4. The three invariants
 
-1. **History is append-only from the agent's side.** Largely **[exists]**:
-   the destructive screen already gates `git push --force` and
-   `git reset --hard`; extend the pattern list to cover remaining history
-   rewrites. Append-only history is memory the intelligence needs, not an
-   audit hedge — and it makes rollback a forward operation (§5).
+1. **History is append-only from the agent's side.** **[exists]** — the
+   destructive screen gates force-push, `reset --hard`, and (since §9.3)
+   amend, rebase, filter, reflog expiry, and ref deletion. Append-only
+   history is memory the intelligence needs, not an audit hedge — and it
+   makes rollback a forward operation (§5).
 2. **The agent cannot sign for itself.** **[exists]** as mechanism (agents
    cannot write `inbox/` approvals — authority class); this spec extends
    what requires a signature (§3). The signing policy is content: loosening
@@ -91,8 +91,9 @@ fact for recovery, not a governance object.
    `authority.toml`, human-ratified — the trust dial is one sentence in one
    file, moved at the rate models earn it.
 3. **Every agent-authored commit carries provenance** — trigger and
-   rationale as trailers, hook-enforced. The agent explaining itself to its
-   future self, not to a reviewer. **[delta]**
+   rationale as trailers, enforced at the tool boundary. The agent
+   explaining itself to its future self, not to a reviewer. **[exists]**
+   since §9.2.
 
 ## 5. Charter and rollback
 
@@ -179,8 +180,12 @@ and the controller can grow prevention itself when blast radius grows.
    entries. **Landed 2026-08-05** — `ToolCallContext` in `authority.ts`,
    wired at the agent-session mount; `qorpera_effect` trail entries; see
    `packages/coding-agent/docs/authority.md` §"The signature rule".
-2. Provenance trailer hook on agent commits.
+2. Provenance trailer hook on agent commits. **Landed 2026-08-05** —
+   enforced at the bash boundary (`Qorpera-Trigger:` / `Qorpera-Rationale:`
+   trailers; format rejection, no gate filed); taught in the kernel prompt.
 3. Add remaining history-rewrite patterns to the destructive screen.
+   **Landed 2026-08-05** — amend, rebase, filter-branch/filter-repo,
+   reflog expire, update-ref -d, gc --prune.
 
 ## 10. Ratified decisions
 

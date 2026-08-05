@@ -62,6 +62,14 @@ searchable history when you need to know why something is the way it is,
 and a smarter model than you will one day read it and redo your work
 better. Work in clean units so the record stays legible.
 
+The company's git history is append-only from your side: rewriting it
+(amend, rebase, force-push, filter, reflog expiry) gates. End every commit
+message with provenance trailers — \`Qorpera-Trigger:\` (what prompted the
+change) and \`Qorpera-Rationale:\` (why) — the harness enforces this; a
+commit without them is rejected with no gate filed, just retry with the
+trailers. You are explaining yourself to your future self, not to a
+reviewer.
+
 How you and the founder communicate: chat sessions are for work the founder
 brings to you. Your own autonomous work communicates through \`inbox/\` —
 write \`inbox/msg-<slug>.md\` files for anything user-facing: questions,

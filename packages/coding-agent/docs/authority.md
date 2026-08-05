@@ -45,7 +45,10 @@ file fails **closed** — every class gates.
 - **irreversible**: `bash` commands matching a conservative destructive
   screen (`rm -rf`, `git push --force`, `git reset --hard`, `DROP TABLE`,
   `mkfs`, …). False positives gate (recoverable); the screen errs that way
-  on purpose.
+  on purpose. Includes history rewrites (`commit --amend`, `rebase`,
+  `filter-branch`/`filter-repo`, `reflog expire`, `update-ref -d`,
+  `gc --prune`) — the company's history is append-only from the agent's
+  side (EVOLUTION.md §4 invariant 1).
 - **money / identity**: no built-in detections yet — assign via `[tools]`.
 - **products**: `[products] paths = ["work/my-product"]` declares software
   products the controller may READ and study freely but not MODIFY without
@@ -80,6 +83,17 @@ pre-trust load. Approvals here are **durable per content hash**: approving a
 file approves that exact code; any edit produces a new hash and a new
 request. User-global extensions (`~/.qorpera/agent/extensions`) are outside
 the company root's authority and load as before.
+
+## Provenance trailers (EVOLUTION.md §4 invariant 3)
+
+Every agent-authored commit ends its message with `Qorpera-Trigger:` (what
+prompted the change) and `Qorpera-Rationale:` (why). Enforced at the bash
+boundary before classification — every agent commit, pi-native or engine
+mode, crosses it; the founder's own commits in their own terminal never do.
+A commit without trailers is rejected with retry guidance and **no gate is
+filed** — it is a message-format requirement, not an approval. Matching is
+deliberately narrow (`git [-c/-C …] commit`); exotic invocations slip the
+screen the same way exotic destructive commands do.
 
 ## The signature rule (EVOLUTION.md §3)
 

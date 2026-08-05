@@ -130,7 +130,34 @@ const DESTRUCTIVE_BASH_PATTERNS: RegExp[] = [
 	/\bdel\s+\/[sfq]\b/i,
 	/\bshutdown\b/i,
 	/--no-preserve-root\b/,
+	// History rewrites — history is append-only from the agent's side
+	// (EVOLUTION.md §4 invariant 1). Force-push, reset --hard, and clean -f
+	// are already screened above.
+	/\bgit\b[^|;&]*\bcommit\b[^|;&]*--amend\b/i,
+	/\bgit\s+rebase\b/i,
+	/\bgit\s+filter-branch\b/i,
+	/\bgit[-\s]filter-repo\b/i,
+	/\bgit\s+reflog\s+(expire|delete)\b/i,
+	/\bgit\s+update-ref\b[^|;&]*(\s-d\b|--delete\b)/i,
+	/\bgit\s+gc\b[^|;&]*--prune/i,
 ];
+
+/**
+ * Provenance trailers (EVOLUTION.md §4 invariant 3): every agent-authored
+ * commit carries its trigger and rationale as trailers. Enforced here
+ * because every agent commit — pi-native or engine mode — crosses this
+ * boundary, while the founder's own commits in their own terminal never do.
+ * Matching is deliberately narrow (`git [-c/-C …] commit`); exotic
+ * invocations slip the screen the same way exotic destructive commands do —
+ * tripwire-grade, like the rest of the bash screens.
+ */
+const GIT_COMMIT_COMMAND = /\bgit(\s+(?:-c|-C)\s+(?:"[^"]*"|'[^']*'|\S+))*\s+commit\b/;
+const PROVENANCE_TRAILERS = [/Qorpera-Trigger:\s*\S/, /Qorpera-Rationale:\s*\S/];
+
+function commitMissingProvenance(command: string): boolean {
+	if (!GIT_COMMIT_COMMAND.test(command)) return false;
+	return !PROVENANCE_TRAILERS.every((trailer) => trailer.test(command));
+}
 
 /** Walk upward from startDir looking for authority.toml. */
 export function discoverAuthority(startDir: string): Authority | undefined {
@@ -574,6 +601,22 @@ export function evaluateToolCall(
 	cwd: string,
 	context?: ToolCallContext,
 ): AuthorityDecision {
+	// Provenance rule (EVOLUTION.md §4 invariant 3): checked before
+	// classification because a plain `git commit` is otherwise unclassified.
+	// This is a message-format requirement, not a gate — no request is filed;
+	// the agent retries with trailers.
+	if (toolName === "bash") {
+		const command = bashCommandFromArgs(args);
+		if (command && commitMissingProvenance(command)) {
+			return {
+				kind: "block",
+				effectClass: "authority",
+				reason:
+					"Provenance rule: every agent-authored commit ends its message with provenance trailers (EVOLUTION.md §4):\n\nQorpera-Trigger: <what prompted this change — founder request, routine, gate, observation>\nQorpera-Rationale: <why this change, one line>\n\nNo approval is needed — retry the commit with both trailers in the message.",
+			};
+		}
+	}
+
 	const config = readAuthorityConfig(authority);
 	const effectClass = classifyToolCall(authority, config, toolName, args, cwd);
 	if (!effectClass) return { kind: "allow" };
