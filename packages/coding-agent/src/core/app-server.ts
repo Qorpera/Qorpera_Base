@@ -696,11 +696,14 @@ function installLauncher(root: string): string | undefined {
 				`set "EXE=%LocalAppData%\\Programs\\Qorpera Base\\Qorpera Base.exe"`,
 				`if not exist "%EXE%" set "EXE=%LocalAppData%\\Programs\\qorpera-base\\Qorpera Base.exe"`,
 				`if exist "%EXE%" (`,
-				`\tstart "" "%EXE%" --company "${root}"`,
+				// --company=<root> (one token): Chromium's single-instance argv
+				// forwarding reorders switches away from their positional values,
+				// but a switch=value pair travels intact.
+				`\tstart "" "%EXE%" --company="${root}"`,
 				"\texit /b",
 				")",
 				`cd /d "${repoRoot}"`,
-				`start "" node_modules\\electron\\dist\\electron.exe packages\\shell\\dist\\main.js --company "${root}"`,
+				`start "" node_modules\\electron\\dist\\electron.exe packages\\shell\\dist\\main.js --company="${root}"`,
 				"",
 			].join("\r\n"),
 			"utf-8",

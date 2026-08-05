@@ -108,12 +108,47 @@ const intentionalKills = new WeakSet<ChildProcessWithoutNullStreams>();
 
 const slots = new Map<number, Slot>();
 
+/** A company root is a folder scaffolded as one — company.md is the anchor
+ * every scaffold writes. Anything else must never be registered or have a
+ * userland forked into it (a bad argv token once created a "company" named
+ * after a Chromium switch). */
+function isCompanyRoot(root: string): boolean {
+	try {
+		return existsSync(join(root, "company.md"));
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Extract the `--company` root from an argv. Trusts `--company=<root>` first;
+ * the positional form only if its value is not a switch. Chromium's
+ * single-instance forwarding REORDERS argv (switches first, plain args last)
+ * and appends its own switches — the observed result being `--company`
+ * followed by `--allow-file-access-from-files` while the real root sits at
+ * the tail. Recover it from there, gated on it actually being a company.
+ */
+function companyFromArgv(argv: string[]): string | undefined {
+	for (const arg of argv) {
+		if (arg.startsWith("--company=") && arg.length > "--company=".length) {
+			const value = arg.slice("--company=".length);
+			if (!value.startsWith("-")) return value;
+		}
+	}
+	const index = argv.indexOf("--company");
+	if (index < 0) return undefined;
+	const next = argv[index + 1];
+	if (next && !next.startsWith("-")) return next;
+	for (let tail = argv.length - 1; tail > 0; tail--) {
+		const candidate = argv[tail];
+		if (!candidate.startsWith("-") && isCompanyRoot(candidate)) return candidate;
+	}
+	return undefined;
+}
+
 /** `--company <root>` delivered to the first window's renderer exactly once —
  * later hub windows must not re-open the launcher's company. */
-let pendingCompany: string | undefined = (() => {
-	const index = process.argv.indexOf("--company");
-	return index >= 0 ? process.argv[index + 1] : undefined;
-})();
+let pendingCompany: string | undefined = companyFromArgv(process.argv);
 
 function slotOf(sender: WebContents): Slot | undefined {
 	const win = BrowserWindow.fromWebContents(sender);
@@ -313,6 +348,14 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 }
 
 async function openCompany(slot: Slot, root: string): Promise<void> {
+	// Refuse non-companies outright: opening is what registers a root and
+	// forks a userland into it, so an invalid path here would mint a fake
+	// company. The window stays on (or returns to) the hub instead.
+	if (!isCompanyRoot(root)) {
+		console.error(`refusing to open non-company root: ${root}`);
+		if (!slot.runtime) void slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+		return;
+	}
 	// A company never runs in two windows: two RPC children on one trail and
 	// two tokens against one backend both end badly. Route to the live one.
 	const existing = slotForCompany(root);
@@ -456,8 +499,7 @@ if (!IS_SMOKE && !app.requestSingleInstanceLock()) {
 	app.quit();
 }
 app.on("second-instance", (_event, argv) => {
-	const index = argv.indexOf("--company");
-	const root = index >= 0 ? argv[index + 1] : undefined;
+	const root = companyFromArgv(argv);
 	if (root) {
 		const existing = slotForCompany(root);
 		if (existing) focusWindow(existing.window);
