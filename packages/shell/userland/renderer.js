@@ -418,7 +418,9 @@ function renderInboxCard(item, settled) {
 			: item.status
 				? `<span class="${item.status === "denied" ? "dot-denied" : "dot-ok"}">●</span> ${item.status}`
 				: "note";
-	meta.innerHTML = `${dot} · ${timeAgo(item.mtimeMs)} · ${item.file}`;
+	// Mechanics live here, not in the title: tool + effect class for gates.
+	const tech = item.kind === "gate" && item.gateTool ? ` · ${item.gateTool}${item.gateClass ? ` (${item.gateClass})` : ""}` : "";
+	meta.innerHTML = `${dot} · ${timeAgo(item.mtimeMs)}${tech} · ${item.file}`;
 	titles.appendChild(title);
 	titles.appendChild(meta);
 	const kind = document.createElement("span");

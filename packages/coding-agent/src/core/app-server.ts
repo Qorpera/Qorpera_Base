@@ -51,8 +51,12 @@ interface InboxItem {
 	/** Gate items only: the agent's founder-facing outcome description, folded
 	 * in from the companion inbox/msg-<gateId>-intent.md (the msg carve-out is
 	 * the agent's one sanctioned inbox lane; the gate file itself is
-	 * kernel-written and protected). */
+	 * kernel-written and protected). The companion's # heading becomes the
+	 * card TITLE, so the founder reads an outcome, not "Gate request: bash". */
 	intent?: string;
+	/** Gate items only: the gated tool and effect class, for the meta line. */
+	gateTool?: string;
+	gateClass?: string;
 }
 
 function companyName(root: string): string {
@@ -109,12 +113,16 @@ function readInbox(root: string): InboxItem[] {
 	const names = readdirSync(dir);
 	// Companion intent files (msg-<gateId>-intent.md) fold INTO their gate's
 	// card instead of appearing as items of their own.
-	const intents = new Map<string, string>();
+	const intents = new Map<string, { title?: string; text: string }>();
 	for (const file of names) {
 		const gateId = file.match(/^msg-(gate-[a-z0-9-]+)-intent\.md$/i)?.[1];
 		if (!gateId) continue;
 		try {
-			intents.set(gateId.toLowerCase(), intentText(readFileSync(join(dir, file), "utf-8")));
+			const content = readFileSync(join(dir, file), "utf-8");
+			intents.set(gateId.toLowerCase(), {
+				title: content.match(/^#\s+(.+)$/m)?.[1]?.trim(),
+				text: intentText(content),
+			});
 		} catch {
 			// unreadable companions are ignored
 		}
@@ -129,8 +137,17 @@ function readInbox(root: string): InboxItem[] {
 			const title = content.match(/^#\s+(.+)$/m)?.[1] ?? file;
 			if (file.startsWith("gate-")) {
 				const status = content.match(/^status:\s*(\w+)/m)?.[1] ?? "";
-				const intent = intents.get(file.replace(/\.md$/i, "").toLowerCase());
-				items.push({ file, status, title, kind: "gate", mtimeMs, intent });
+				const companion = intents.get(file.replace(/\.md$/i, "").toLowerCase());
+				items.push({
+					file,
+					status,
+					title: companion?.title ?? title,
+					kind: "gate",
+					mtimeMs,
+					intent: companion?.text,
+					gateTool: content.match(/^tool:\s*(.+)$/m)?.[1]?.trim(),
+					gateClass: content.match(/^class:\s*(.+)$/m)?.[1]?.trim(),
+				});
 			} else if (file.startsWith("msg-")) {
 				// Agent-authored item; answered once a Response section exists.
 				const status = /^##\s+Response/m.test(content) ? "answered" : "pending";
