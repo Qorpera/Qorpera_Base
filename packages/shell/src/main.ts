@@ -498,15 +498,24 @@ app.whenReady().then(() => {
 		if (!slot?.runtime || typeof id !== "string" || id.includes("/") || id.includes("\\") || id.includes(".."))
 			return false;
 		const runtime = slot.runtime;
-		const ok = restoreVersion(join(runtime.root, "userland"), id);
-		if (ok && getActiveApp(join(runtime.root, "userland")) === "fork") {
+		// Restoring an old version rejoins the CURRENT base on demand: the
+		// restore stages it like an arriving update when the snapshot is
+		// behind. The live status follows so the merge button shows without
+		// a reopen (the reload below reboots the renderer off app:info).
+		const status = restoreVersion(join(runtime.root, "userland"), id, {
+			dir: BASE_USERLAND_DIR,
+			version: shellVersion(),
+		});
+		if (!status) return false;
+		runtime.userland = status;
+		if (getActiveApp(join(runtime.root, "userland")) === "fork") {
 			runtime.usingBaseFallback = false;
 			await slot.window.loadFile(join(runtime.root, "userland", "index.html")).catch(async () => {
 				runtime.usingBaseFallback = true;
 				await slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 			});
 		}
-		return ok;
+		return true;
 	});
 	// The merge button's backend: one merge session at a time, kernel-owned.
 	ipcMain.handle("userland:merge", (event) => {

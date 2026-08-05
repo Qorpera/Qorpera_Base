@@ -1,5 +1,5 @@
 /** Fork model semantics (spec §9a): fork, fast-forward, stage — never reset. */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -117,21 +117,75 @@ describe("userland fork model", () => {
 		expect(versions[0].label).toBe("second");
 
 		// Rollback to evolution 1 — reversible because evolution 2 is saved.
-		expect(restoreVersion(userland(), v1)).toBe(true);
+		expect(restoreVersion(userland(), v1)?.action).toBe("current");
 		expect(readFileSync(join(userland(), "renderer.js"), "utf-8")).toBe("// evolution 1");
-		expect(restoreVersion(userland(), v2)).toBe(true);
+		expect(restoreVersion(userland(), v2)?.action).toBe("current");
 		expect(readFileSync(join(userland(), "renderer.js"), "utf-8")).toBe("// evolution 2");
 
 		// Unsaved-at-restore work is captured as a pre-restore snapshot.
 		writeFileSync(join(userland(), "renderer.js"), "// evolution 3, never snapshotted", "utf-8");
-		expect(restoreVersion(userland(), v1)).toBe(true);
+		expect(restoreVersion(userland(), v1)).toBeTruthy();
 		const pre = listVersions(userland()).find((v) => v.label === "pre-restore");
 		expect(pre).toBeTruthy();
-		expect(restoreVersion(userland(), pre!.id)).toBe(true);
+		expect(restoreVersion(userland(), pre!.id)).toBeTruthy();
 		expect(readFileSync(join(userland(), "renderer.js"), "utf-8")).toBe("// evolution 3, never snapshotted");
 
 		// Unknown id refused.
-		expect(restoreVersion(userland(), "nope")).toBe(false);
+		expect(restoreVersion(userland(), "nope")).toBeUndefined();
+	});
+
+	it("snapshots carry their base version and pristine copy; restore rejoins the current base", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		writeFileSync(join(userland(), "renderer.js"), "// evolution on v1", "utf-8");
+		const snap = snapshotIfChanged(userland())!;
+		expect(listVersions(userland())[0].baseVersion).toBe("1.0.0");
+
+		// The controller completes a merge to base v2 (per the merge protocol).
+		ensureUserland(company(), baseV2, "2.0.0");
+		writeFileSync(join(userland(), "renderer.js"), "// evolution merged with v2", "utf-8");
+		rmSync(join(userland(), ".update"), { recursive: true, force: true });
+		rmSync(join(userland(), ".base"), { recursive: true, force: true });
+		cpSync(baseV2, join(userland(), ".base"), { recursive: true });
+		const manifestPath = join(userland(), "userland.json");
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+		manifest.baseVersion = "2.0.0";
+		delete manifest.stagedVersion;
+		writeFileSync(manifestPath, JSON.stringify(manifest, null, "\t"), "utf-8");
+
+		// Restoring the v1-era snapshot brings back ITS content and ITS pristine
+		// base, and stages the current base — exactly like an update arriving.
+		const status = restoreVersion(userland(), snap, { dir: baseV2, version: "2.0.0" })!;
+		expect(status.action).toBe("staged");
+		expect(status.baseVersion).toBe("1.0.0");
+		expect(status.stagedVersion).toBe("2.0.0");
+		expect(readFileSync(join(userland(), "renderer.js"), "utf-8")).toBe("// evolution on v1");
+		expect(readFileSync(join(userland(), ".base", "renderer.js"), "utf-8")).toBe("// v1");
+		expect(readFileSync(join(userland(), ".update", "renderer.js"), "utf-8")).toBe("// v2 improved");
+
+		// Restoring a snapshot already on the current base clears staging instead.
+		const latest = listVersions(userland()).find((v) => v.label === "pre-restore")!;
+		expect(latest.baseVersion).toBe("2.0.0");
+		const back = restoreVersion(userland(), latest.id, { dir: baseV2, version: "2.0.0" })!;
+		expect(back.action).toBe("current");
+		expect(back.baseVersion).toBe("2.0.0");
+		expect(existsSync(join(userland(), ".update"))).toBe(false);
+		expect(readFileSync(join(userland(), "renderer.js"), "utf-8")).toBe("// evolution merged with v2");
+	});
+
+	it("never writes outside userland/ — the base cannot conflict with the company file", () => {
+		writeFileSync(join(company(), "company.md"), "identity — never touched", "utf-8");
+		mkdirSync(join(company(), "trail"));
+		writeFileSync(join(company(), "trail", "session.jsonl"), "{}", "utf-8");
+
+		ensureUserland(company(), baseV1, "1.0.0");
+		writeFileSync(join(userland(), "renderer.js"), "// evolved", "utf-8");
+		const snap = snapshotIfChanged(userland())!;
+		ensureUserland(company(), baseV2, "2.0.0");
+		restoreVersion(userland(), snap, { dir: baseV2, version: "2.0.0" });
+
+		expect(readdirSync(company()).sort()).toEqual(["company.md", "trail", "userland"]);
+		expect(readFileSync(join(company(), "company.md"), "utf-8")).toBe("identity — never touched");
+		expect(readdirSync(join(company(), "trail"))).toEqual(["session.jsonl"]);
 	});
 
 	it("active app choice persists and survives a fast-forward; snapshots don't break hashing", () => {

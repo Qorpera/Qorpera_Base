@@ -15,6 +15,12 @@
  *    merge is a controller session, not kernel code.
  *
  * Pure filesystem logic — no Electron — so the semantics are unit-tested.
+ *
+ * INVARIANT (founder-ratified 2026-08-05): the Base never conflicts with the
+ * company file. Everything this module reads or writes lives under
+ * `<company>/userland/` — the fork, the pristine copy, staged updates,
+ * saved versions, the manifest. The rest of the company folder (company.md,
+ * app/, trail/, inbox/, work/) is invisible to fork/merge/version machinery.
  */
 
 import { createHash } from "node:crypto";
@@ -38,6 +44,8 @@ export interface UserlandVersion {
 	id: string;
 	savedAt: string;
 	label?: string;
+	/** Base version the fork was built on when this snapshot was taken. */
+	baseVersion?: string;
 }
 
 export interface UserlandStatus {
@@ -110,10 +118,32 @@ function copyContent(fromDir: string, toDir: string): void {
 	}
 }
 
+function sameContent(dirA: string, dirB: string): boolean {
+	return JSON.stringify(hashFiles(dirA)) === JSON.stringify(hashFiles(dirB));
+}
+
+interface VersionMeta {
+	label?: string;
+	baseVersion?: string;
+}
+
+function readVersionMeta(versionDir: string): VersionMeta | undefined {
+	try {
+		return JSON.parse(readFileSync(join(versionDir, "meta.json"), "utf-8")) as VersionMeta;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Snapshot the fork's current content into .versions/ if it changed since the
  * last snapshot (or since fork/fast-forward, whose state lives in .base
  * already). Returns the new version id, or undefined when nothing changed.
+ *
+ * A snapshot carries its own merge materials: `<id>/content/` is the fork,
+ * `<id>/base/` the pristine base it was built on, `meta.json` the base
+ * version — so restoring an old version restores ITS 3-way reference instead
+ * of inheriting whatever newer .base the live fork moved to.
  */
 export function snapshotIfChanged(userlandDir: string, label?: string): string | undefined {
 	const manifest = readManifest(userlandDir);
@@ -121,7 +151,13 @@ export function snapshotIfChanged(userlandDir: string, label?: string): string |
 	const hash = combinedHash(userlandDir);
 	if (manifest.lastSnapshotHash === hash) return undefined;
 	const id = new Date().toISOString().replace(/[:.]/g, "-") + (label ? `_${label}` : "");
-	copyContent(userlandDir, join(userlandDir, VERSIONS_DIR, id));
+	const versionDir = join(userlandDir, VERSIONS_DIR, id);
+	copyContent(userlandDir, join(versionDir, "content"));
+	if (existsSync(join(userlandDir, PRISTINE_DIR))) {
+		copyBase(join(userlandDir, PRISTINE_DIR), join(versionDir, "base"));
+	}
+	const meta: VersionMeta = { label, baseVersion: manifest.baseVersion };
+	writeFileSync(join(versionDir, "meta.json"), `${JSON.stringify(meta, null, "\t")}\n`, "utf-8");
 	writeManifest(userlandDir, { ...manifest, lastSnapshotHash: hash });
 	return id;
 }
@@ -133,28 +169,66 @@ export function listVersions(userlandDir: string): UserlandVersion[] {
 	return readdirSync(dir, { withFileTypes: true })
 		.filter((entry) => entry.isDirectory())
 		.map((entry) => {
+			const meta = readVersionMeta(join(dir, entry.name));
 			const [stamp, ...rest] = entry.name.split("_");
-			return { id: entry.name, savedAt: stamp, label: rest.join("_") || undefined };
+			return {
+				id: entry.name,
+				savedAt: stamp,
+				label: meta?.label ?? (rest.join("_") || undefined),
+				baseVersion: meta?.baseVersion,
+			};
 		})
 		.sort((a, b) => b.id.localeCompare(a.id));
 }
 
 /**
- * Roll the fork's content back to a saved version. The current state is
- * snapshotted first, so a rollback is itself reversible. Manifest metadata
- * (baseVersion, staging) is untouched — this restores content only.
+ * Roll the fork back to a saved version. The current state is snapshotted
+ * first, so a rollback is itself reversible. The snapshot's own pristine
+ * base (when recorded) comes back with it, and when `currentBase` is given
+ * the restored fork immediately rejoins the present: already-current →
+ * staging cleared; behind (or ahead) → the current base is staged for a
+ * controller merge, exactly like an update arriving. Returns the resulting
+ * status, or undefined for an unknown id.
  */
-export function restoreVersion(userlandDir: string, id: string): boolean {
+export function restoreVersion(
+	userlandDir: string,
+	id: string,
+	currentBase?: { dir: string; version: string },
+): UserlandStatus | undefined {
 	const snapshot = join(userlandDir, VERSIONS_DIR, id);
-	if (!existsSync(snapshot) || !readManifest(userlandDir)) return false;
+	if (!existsSync(snapshot) || !readManifest(userlandDir)) return undefined;
 	snapshotIfChanged(userlandDir, "pre-restore");
+
+	// Old snapshots are bare content dirs; new ones nest content/ + base/ + meta.
+	const contentDir = existsSync(join(snapshot, "content")) ? join(snapshot, "content") : snapshot;
 	for (const file of listFiles(userlandDir)) {
 		rmSync(join(userlandDir, file.split("/").join(sep)), { force: true });
 	}
-	copyContent(snapshot, userlandDir);
+	copyContent(contentDir, userlandDir);
+	if (existsSync(join(snapshot, "base"))) {
+		rmSync(join(userlandDir, PRISTINE_DIR), { recursive: true, force: true });
+		copyBase(join(snapshot, "base"), join(userlandDir, PRISTINE_DIR));
+	}
+
+	const meta = readVersionMeta(snapshot);
 	const manifest = readManifest(userlandDir)!;
-	writeManifest(userlandDir, { ...manifest, lastSnapshotHash: combinedHash(userlandDir) });
-	return true;
+	const baseVersion = meta?.baseVersion ?? manifest.baseVersion;
+	const next: UserlandManifest = { ...manifest, baseVersion, lastSnapshotHash: combinedHash(userlandDir) };
+
+	if (!currentBase) {
+		writeManifest(userlandDir, next);
+		return { action: "current", baseVersion };
+	}
+
+	const pristine = join(userlandDir, PRISTINE_DIR);
+	rmSync(join(userlandDir, UPDATE_DIR), { recursive: true, force: true });
+	if (baseVersion === currentBase.version || (existsSync(pristine) && sameContent(pristine, currentBase.dir))) {
+		writeManifest(userlandDir, { ...next, baseVersion: currentBase.version, stagedVersion: undefined });
+		return { action: "current", baseVersion: currentBase.version };
+	}
+	copyBase(currentBase.dir, join(userlandDir, UPDATE_DIR));
+	writeManifest(userlandDir, { ...next, stagedVersion: currentBase.version });
+	return { action: "staged", baseVersion, stagedVersion: currentBase.version };
 }
 
 export function getActiveApp(userlandDir: string): "fork" | "base" {
@@ -228,10 +302,7 @@ export function ensureUserland(companyRoot: string, baseDir: string, baseVersion
 	// New base byte-identical to the fork's pristine copy (a version-label-only
 	// release, or a fork cut mid-release): nothing to merge — relabel, and
 	// clear any staging a prior open created for this phantom delta.
-	if (
-		existsSync(join(userlandDir, PRISTINE_DIR)) &&
-		JSON.stringify(hashFiles(join(userlandDir, PRISTINE_DIR))) === JSON.stringify(hashFiles(baseDir))
-	) {
+	if (existsSync(join(userlandDir, PRISTINE_DIR)) && sameContent(join(userlandDir, PRISTINE_DIR), baseDir)) {
 		rmSync(join(userlandDir, UPDATE_DIR), { recursive: true, force: true });
 		writeManifest(userlandDir, { ...manifest, baseVersion, stagedVersion: undefined });
 		return { action: "current", baseVersion };

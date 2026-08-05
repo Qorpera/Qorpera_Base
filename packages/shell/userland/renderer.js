@@ -648,7 +648,11 @@ async function renderSettingsTab() {
 			co.evolved ? "evolved — the controller has changed this app" : "pristine — identical to the base",
 		);
 		if (co.userland.stagedVersion) {
-			setRow(content, `Base v${co.userland.stagedVersion} staged`, "waiting in userland/.update/ for the controller's merge session");
+			setRow(
+				content,
+				`Base v${co.userland.stagedVersion} staged`,
+				"waiting for the controller's merge session — the merge button lives on the chat view",
+			);
 		}
 		const sw = document.createElement("button");
 		sw.className = "save";
@@ -657,20 +661,17 @@ async function renderSettingsTab() {
 		sw.onclick = () => window.qorpera.setActiveApp(co.activeApp === "base" ? "fork" : "base");
 		setRow(
 			content,
-			"Active app",
+			"Base app",
 			co.activeApp === "base"
-				? "running the pristine base app over this company (the fork is untouched)"
-				: "running the company's own fork",
+				? `running the base app (always current — v${info.version}) over this company; the fork is untouched`
+				: `always installed, always current (v${info.version}) — switch any time without touching the fork`,
 			sw,
 		);
 		setHeading(content, "Versions");
-		if (!co.versions.length) {
-			content.insertAdjacentHTML(
-				"beforeend",
-				'<div class="sess-meta">No saved versions yet — a version is saved automatically whenever the app has changed at open.</div>',
-			);
-			return;
-		}
+		content.insertAdjacentHTML(
+			"beforeend",
+			'<div class="sess-meta">Saved automatically whenever the app has changed at open. Restore switches to any of them — the state before a rollback is itself saved, and a restored version that is behind rejoins the current base through a controller merge.</div>',
+		);
 		for (const v of co.versions) {
 			const btn = document.createElement("button");
 			btn.className = "save";
@@ -682,8 +683,10 @@ async function renderSettingsTab() {
 				renderSettingsTab();
 			};
 			const [d, t] = v.savedAt.split("T");
-			const [hh, mm, ss] = (t || "").split("-");
-			setRow(content, v.label || "snapshot", `${d} ${hh || ""}:${mm || ""}:${ss || ""}`.trim(), btn);
+			const [hh, mm] = (t || "").split("-");
+			const when = `${d} ${hh || ""}:${mm || ""}`.trim();
+			const name = v.label === "pre-restore" ? "before rollback" : v.label || "snapshot";
+			setRow(content, name, v.baseVersion ? `${when} · built on base v${v.baseVersion}` : when, btn);
 		}
 		return;
 	}
