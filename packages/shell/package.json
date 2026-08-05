@@ -6,7 +6,7 @@
 	"description": "Qorpera Base shell — the minimal desktop app every company controller is built on.",
 	"main": "dist/main.js",
 	"scripts": {
-		"build": "tsgo -p tsconfig.build.json && shx rm -rf dist/userland && shx cp -r userland dist/userland && shx cp ../../node_modules/marked/lib/marked.umd.js dist/userland/marked.umd.js && shx cp src/preload.cjs dist/preload.cjs",
+		"build": "tsgo -p tsconfig.build.json && shx rm -rf dist/userland dist/assets && shx cp -r userland dist/userland && shx cp -r assets dist/assets && shx cp ../../node_modules/marked/lib/marked.umd.js dist/userland/marked.umd.js && shx cp src/preload.cjs dist/preload.cjs",
 		"start": "electron dist/main.js",
 		"clean": "node -e \"import('node:fs/promises').then(fs=>fs.rm('dist',{recursive:true,force:true}))\"",
 		"test": "vitest run"
@@ -22,5 +22,5 @@
 		"electron-builder": "26.15.3",
 		"vitest": "4.1.9"
 	},
-	"productVersion": "0.13.1"
+	"productVersion": "0.14.0"
 }

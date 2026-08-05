@@ -38,6 +38,8 @@
 		--blue: #8fa8ff;
 		--danger: #ff5f38;
 		--danger-soft: #442821;
+		--warning: #d8a758;
+		--warning-soft: #3d3323;
 		--ok: #73d5b1;
 		--send-idle: #3f4241;
 		--send-active: #0161bc;
@@ -315,6 +317,7 @@
 	.avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--pane-strong); display: inline-flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; }
 	.profileText small { color: var(--text-soft); }
 	.navspacer { flex: 1; min-height: 12px; }
+	.hubver { color: var(--text-soft); font-size: 11px; padding: 0 9px 8px; }
 	/* display set via .open class — never on the bare id, or the hidden
 	   attribute loses to author CSS and Back can't close the page. */
 	#settingsView { position: fixed; top: var(--titlebar-height); right: 0; bottom: 0; left: 0; display: none; background: var(--chrome); z-index: 20; }
@@ -347,7 +350,7 @@
 <div id="shell">
 <nav>
 	<div id="hubnav">
-		<h1>Qorpera Base<small id="hubVersion"></small></h1>
+		<!-- No h1 here: the titlebar wordmark already says Qorpera Base. -->
 		<h2>Companies</h2>
 		<div id="companies"></div>
 		<button class="hubbtn" onclick="newCompanyPrompt()">+ New company…</button>
@@ -355,6 +358,7 @@
 		<h2>Cloud</h2>
 		<button class="hubbtn" disabled title="Sync, community, and compliance — not built yet">Connect to Qorpera Cloud (soon)</button>
 		<div class="navspacer"></div>
+		<div class="hubver" id="hubVersion"></div>
 		<button class="profileRow" onclick="openSettings('general')"><span class="avatar">F</span><span class="profileText">Founder<br><small>Settings</small></span></button>
 	</div>
 	<div id="conav" style="display:none">

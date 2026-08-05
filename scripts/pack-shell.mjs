@@ -122,6 +122,7 @@ writeFileSync(
 		'  - "**/*"',
 		"win:",
 		"  target: nsis",
+		'  icon: "dist/assets/qorpera.ico"',
 		"nsis:",
 		"  oneClick: true",
 		"  perMachine: false",

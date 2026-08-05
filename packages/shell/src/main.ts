@@ -16,8 +16,8 @@
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 // Deep imports from the coding agent (the foundation's own machinery).
@@ -29,7 +29,7 @@ import {
 	registerCompany,
 	scaffoldCompany,
 } from "@qorpera/pi-coding-agent/company";
-import { app, BrowserWindow, shell as electronShell, ipcMain, type WebContents } from "electron";
+import { app, BrowserWindow, dialog, shell as electronShell, ipcMain, type WebContents } from "electron";
 import electronUpdater from "electron-updater";
 import {
 	ensureUserland,
@@ -81,6 +81,28 @@ interface Slot {
 }
 
 const BASE_USERLAND_DIR = join(DIRNAME, "userland");
+
+// Window/taskbar icon: the Qorpera mark by default; a company can carry its
+// own at app/icon.(ico|png|jpg) — set from Settings → App, or by the
+// controller itself (app/ is its territory).
+const DEFAULT_ICON = join(DIRNAME, "assets", process.platform === "win32" ? "qorpera.ico" : "qorpera.png");
+const ICON_NAMES = ["icon.ico", "icon.png", "icon.jpg", "icon.jpeg"];
+
+function companyIcon(root: string): string {
+	for (const name of ICON_NAMES) {
+		const candidate = join(root, "app", name);
+		if (existsSync(candidate)) return candidate;
+	}
+	return DEFAULT_ICON;
+}
+
+function setWindowIcon(win: BrowserWindow, iconPath: string): void {
+	try {
+		win.setIcon(iconPath);
+	} catch {
+		// an unreadable/corrupt image must never take the window down
+	}
+}
 /** Children we killed on purpose (session switch/close) — their exits are not news. */
 const intentionalKills = new WeakSet<ChildProcessWithoutNullStreams>();
 
@@ -207,8 +229,11 @@ function startMergeChild(slot: Slot, runtime: CompanyRuntime): void {
 			return;
 		}
 		if (frame.type === "agent_start") started = true;
-		// Settled after real work: the merge session is over.
-		if (frame.type === "agent_settled" && started) {
+		// Any settle ends the run — including a prompt that failed before
+		// starting (never keeping a settled merge child alive beats a zombie
+		// that blocks userland:merge forever).
+		if (frame.type === "agent_settled") {
+			if (!started) console.error("merge session settled without starting (prompt failed?)");
 			intentionalKills.add(child);
 			child.kill();
 		}
@@ -218,8 +243,19 @@ function startMergeChild(slot: Slot, runtime: CompanyRuntime): void {
 		if (slot.runtime !== runtime) return; // company was closed meanwhile
 		runtime.mergeChild = undefined;
 		// Re-read the manifest: a finished merge reads back as "current".
-		runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
-		const ok = runtime.userland.action === "current" || runtime.userland.action === "fast-forwarded";
+		// Guarded twice: a throw here is an uncaught exception in main (fs can
+		// fail right after an agent rewrote userland/), and a MISSING manifest
+		// must not reach ensureUserland — its first-open branch would wipe the
+		// fork, .versions included.
+		let ok = false;
+		try {
+			if (existsSync(join(runtime.root, "userland", "userland.json"))) {
+				runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
+				ok = runtime.userland.action === "current" || runtime.userland.action === "fast-forwarded";
+			}
+		} catch (error) {
+			console.error(`post-merge userland refresh failed: ${(error as Error).message}`);
+		}
 		send(slot.window, "merge-done", { ok, action: runtime.userland.action });
 	});
 	child.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
@@ -323,6 +359,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 	// reachable either way.
 	const win = slot.window;
 	if (win.isDestroyed()) return;
+	setWindowIcon(win, companyIcon(root));
 	if (getActiveApp(join(root, "userland")) === "base") {
 		await win.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 		return;
@@ -335,6 +372,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 
 function showHub(slot: Slot): void {
 	void closeCompany(slot);
+	setWindowIcon(slot.window, DEFAULT_ICON);
 	void slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 }
 
@@ -356,6 +394,7 @@ function createWindow(): Slot {
 		// (a -webkit-app-region: drag header), the OS overlays min/max/close.
 		titleBarStyle: "hidden",
 		titleBarOverlay: { color: "#101010", symbolColor: "#e4e4e1", height: 40 },
+		icon: DEFAULT_ICON,
 		webPreferences: {
 			preload: join(DIRNAME, "preload.cjs"),
 			contextIsolation: true,
@@ -516,6 +555,30 @@ app.whenReady().then(() => {
 			});
 		}
 		return true;
+	});
+	// Settings → App: pick a window icon for this company (copied into app/,
+	// so it travels with the company folder and the controller can manage it).
+	ipcMain.handle("userland:set-icon", async (event) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime) return { ok: false };
+		const picked = await dialog.showOpenDialog(slot.window, {
+			title: "Choose the controller's window icon",
+			properties: ["openFile"],
+			filters: [{ name: "Images", extensions: ["ico", "png", "jpg", "jpeg"] }],
+		});
+		const source = picked.filePaths[0];
+		if (picked.canceled || !source) return { ok: false };
+		const ext = extname(source).toLowerCase().replace(".", "") || "png";
+		// One icon file only — remove other variants so precedence stays obvious.
+		for (const name of ICON_NAMES) {
+			rmSync(join(runtime.root, "app", name), { force: true });
+		}
+		const target = join(runtime.root, "app", `icon.${ext === "jpeg" ? "jpg" : ext}`);
+		mkdirSync(join(runtime.root, "app"), { recursive: true });
+		copyFileSync(source, target);
+		setWindowIcon(slot.window, target);
+		return { ok: true };
 	});
 	// The merge button's backend: one merge session at a time, kernel-owned.
 	ipcMain.handle("userland:merge", (event) => {

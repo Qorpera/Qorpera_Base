@@ -344,9 +344,18 @@ function showSurface(surface) {
 }
 
 /** The controller's own work: autonomous sessions only (chats live in the nav). */
-function renderActivity() {
+async function renderActivity() {
 	const panel = $("view-panel");
 	const sessions = (state.sessions ?? []).filter((s) => s.kind === "autonomous");
+	// Resuming a session that a live kernel-spawned child (the merge) is
+	// still writing would put two writers on one trail file — hold Open
+	// until it finishes.
+	let mergeRunning = false;
+	try {
+		mergeRunning = Boolean((await window.qorpera.appInfo())?.activeCompany?.mergeRunning);
+	} catch {
+		// bridge unavailable mid-reload: leave Open enabled
+	}
 	panel.innerHTML = sessions.length
 		? ""
 		: '<div class="empty">No autonomous controller sessions yet — conception, routines, and merges will appear here.</div>';
@@ -357,7 +366,9 @@ function renderActivity() {
 		d.querySelector(".t").textContent = session.title;
 		d.querySelector(".s").textContent = `${new Date(session.mtimeMs).toLocaleString()} · ${session.file}`;
 		const open = document.createElement("button");
-		open.textContent = "Open";
+		open.textContent = mergeRunning ? "Running…" : "Open";
+		open.disabled = mergeRunning;
+		if (mergeRunning) open.title = "An autonomous merge session is running — resume is held so two agents never write one trail file.";
 		open.onclick = () => openSession(session.file);
 		d.appendChild(open);
 		panel.appendChild(d);
@@ -390,7 +401,7 @@ function inboxAction(label, cls, handler) {
 }
 
 async function inboxBody(item) {
-	const key = `${item.file}::${item.status}`;
+	const key = `${item.file}::${item.status}::${item.mtimeMs ?? 0}`;
 	if (inboxBodyCache[key] !== undefined) return inboxBodyCache[key];
 	const res = await fetch(`${backendUrl}/api/inbox/${encodeURIComponent(item.file)}`);
 	const body = await res.text();
@@ -560,6 +571,11 @@ function renderInboxCard(item, settled) {
 
 function renderInbox() {
 	const panel = $("view-panel");
+	// Never stomp the founder's work: the 2s poll re-renders on any state
+	// change (trail mtimes tick constantly while agents work), which would
+	// destroy a reply mid-typing or collapse an expansion they're reading.
+	if (panel.contains(document.activeElement) && document.activeElement.tagName === "TEXTAREA") return;
+	if ([...panel.querySelectorAll("textarea")].some((t) => t.value.trim())) return;
 	panel.innerHTML = "<h1>Inbox</h1>";
 	if (!state.inbox.length) {
 		panel.insertAdjacentHTML("beforeend", '<div class="empty">Inbox is empty</div>');
@@ -876,6 +892,23 @@ async function renderSettingsTab() {
 				: `always installed, always current (v${info.version}) — switch any time without touching the fork`,
 			sw,
 		);
+		const iconBtn = document.createElement("button");
+		iconBtn.className = "save";
+		iconBtn.style.marginTop = "0";
+		iconBtn.textContent = "Choose image…";
+		const iconNote = document.createElement("span");
+		iconNote.className = "sess-meta";
+		iconBtn.onclick = async () => {
+			const result = await window.qorpera.chooseIcon();
+			iconNote.textContent = result?.ok ? "icon set" : "";
+		};
+		const iconRow = setRow(
+			content,
+			"Window icon",
+			"defaults to the Qorpera mark; stored in the company's app/ folder — your controller can manage it too",
+			iconBtn,
+		);
+		iconRow.appendChild(iconNote);
 		setHeading(content, "Versions");
 		content.insertAdjacentHTML(
 			"beforeend",
