@@ -293,6 +293,122 @@ describe("gate lifecycle", () => {
 	});
 });
 
+describe("the signature rule (behavior signatures, EVOLUTION.md §3)", () => {
+	function writeBehaviorFile(content = "export default () => {};"): string {
+		mkdirSync(join(root, "app", "tools"), { recursive: true });
+		const path = join(root, "app", "tools", "mailer.ts");
+		writeFileSync(path, content, "utf-8");
+		return path;
+	}
+
+	it("gates unattended outward effects from unsigned code; a signature is durable for that exact content", () => {
+		writeAuthorityToml(`[identity]\nmode = "auto"\n\n[tools]\nsend_update = "identity"\n`);
+		const authority = discoverAuthority(root)!;
+		const behaviorPath = writeBehaviorFile();
+		const context = { attended: false, behaviorPath };
+
+		const first = evaluateToolCall(authority, "send_update", { to: "list" }, root, context);
+		expect(first.kind).toBe("block");
+		expect((first as { reason: string }).reason).toContain("Signature rule");
+		const gateId = (first as { gateId: string }).gateId;
+		expect(gateId).toBeTruthy();
+
+		// Pending: still blocked, no duplicate request.
+		const second = evaluateToolCall(authority, "send_update", { to: "list" }, root, context);
+		expect((second as { gateId: string }).gateId).toBe(gateId);
+
+		// Signed: durable — repeated calls and DIFFERENT actions from the same
+		// content all pass (class mode auto governs from here).
+		approveGate(gateId);
+		const third = evaluateToolCall(authority, "send_update", { to: "list" }, root, context);
+		expect(third.kind).toBe("allow");
+		expect(third.behavior?.signed).toBe(true);
+		expect(evaluateToolCall(authority, "send_update", { to: "other" }, root, context).kind).toBe("allow");
+
+		// Edited code = new hash = new signature request.
+		writeBehaviorFile("export default () => { console.log('changed'); };");
+		const afterChange = evaluateToolCall(authority, "send_update", { to: "list" }, root, context);
+		expect(afterChange.kind).toBe("block");
+		expect((afterChange as { gateId: string }).gateId).not.toBe(gateId);
+	});
+
+	it("attended calls fall through to class modes — presence is the intent source", () => {
+		writeAuthorityToml(`[identity]\nmode = "auto"\n\n[tools]\nsend_update = "identity"\n`);
+		const authority = discoverAuthority(root)!;
+		const context = { attended: true, behaviorPath: writeBehaviorFile() };
+		expect(evaluateToolCall(authority, "send_update", { to: "list" }, root, context).kind).toBe("allow");
+	});
+
+	it("signature is necessary, not sufficient — per-action class gates still apply to signed code", () => {
+		writeAuthorityToml(`[identity]\nmode = "gate"\n\n[tools]\nsend_update = "identity"\n`);
+		const authority = discoverAuthority(root)!;
+		const context = { attended: false, behaviorPath: writeBehaviorFile() };
+
+		// Signature is checked first.
+		const first = evaluateToolCall(authority, "send_update", { to: "list" }, root, context);
+		expect((first as { reason: string }).reason).toContain("Signature rule");
+		approveGate((first as { gateId: string }).gateId);
+
+		// Signed code still hits the per-action identity gate.
+		const second = evaluateToolCall(authority, "send_update", { to: "list" }, root, context);
+		expect(second.kind).toBe("block");
+		expect((second as { reason: string }).reason).toContain("Authority gate [identity]");
+	});
+
+	it("inward classes do not require signatures", () => {
+		writeAuthorityToml(`[products]\nmode = "notify"\npaths = ["work/my-product"]\n`);
+		const authority = discoverAuthority(root)!;
+		const context = { attended: false, behaviorPath: writeBehaviorFile() };
+		const decision = evaluateToolCall(
+			authority,
+			"write",
+			{ path: join(root, "work", "my-product", "a.ts"), content: "x" },
+			root,
+			context,
+		);
+		expect(decision.kind).toBe("allow");
+		expect(readdirSync(join(root, "inbox")).every((name) => !name.startsWith("gate-"))).toBe(true);
+	});
+
+	it("code outside the company root is not subject to signatures", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		const outside = `${root}-outside`;
+		mkdirSync(outside, { recursive: true });
+		try {
+			const behaviorPath = join(outside, "global-tool.ts");
+			writeFileSync(behaviorPath, "export default () => {};", "utf-8");
+			const decision = evaluateToolCall(authority, "bash", { command: "rm -rf build" }, root, {
+				attended: false,
+				behaviorPath,
+			});
+			expect(decision.kind).toBe("allow");
+		} finally {
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	it("a declined signature blocks with revise guidance and does not re-file", () => {
+		writeAuthorityToml(`[identity]\nmode = "auto"\n\n[tools]\nsend_update = "identity"\n`);
+		const authority = discoverAuthority(root)!;
+		const context = { attended: false, behaviorPath: writeBehaviorFile() };
+		const first = evaluateToolCall(authority, "send_update", { to: "list" }, root, context);
+		const gateId = (first as { gateId: string }).gateId;
+		const inbox = join(root, "inbox");
+		const file = readdirSync(inbox).find((name) => name.startsWith(gateId))!;
+		writeFileSync(
+			join(inbox, file),
+			readFileSync(join(inbox, file), "utf-8").replace(/^status:.*$/m, "status: denied"),
+			"utf-8",
+		);
+
+		const again = evaluateToolCall(authority, "send_update", { to: "list" }, root, context);
+		expect(again.kind).toBe("block");
+		expect((again as { reason: string }).reason).toContain("DECLINED");
+		expect(readdirSync(inbox).filter((name) => name.startsWith("gate-")).length).toBe(1);
+	});
+});
+
 describe("agent-session mount", () => {
 	it("blocks gated tools through the installed beforeToolCall hook, ahead of extensions", async () => {
 		writeAuthorityToml(`[tools]\ndanger = "irreversible"\n\n[irreversible]\nmode = "gate"\n`);
@@ -324,6 +440,15 @@ describe("agent-session mount", () => {
 			const blocked = await hook!(fakeContext);
 			expect(blocked?.block).toBe(true);
 			expect(blocked?.reason).toContain("Authority gate");
+
+			// Classified effects are stamped into the trail (EVOLUTION.md §9.1).
+			const stamped = sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "qorpera_effect");
+			expect(stamped.length).toBe(1);
+			const stampData = (stamped[0] as { data: { effectClass: string; decision: string } }).data;
+			expect(stampData.effectClass).toBe("irreversible");
+			expect(stampData.decision).toBe("block");
 
 			const gateId = blocked!.reason!.match(/gate-[a-f0-9-]+/)![0];
 			approveGate(gateId);

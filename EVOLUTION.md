@@ -176,7 +176,9 @@ and the controller can grow prevention itself when blast radius grows.
 1. Extend the durable hash-approval check from extension loading to
    codified behavior producing unattended outward effects (one new input in
    `authority.ts`); stamp behavior hash + signature status on effect trail
-   entries.
+   entries. **Landed 2026-08-05** — `ToolCallContext` in `authority.ts`,
+   wired at the agent-session mount; `qorpera_effect` trail entries; see
+   `packages/coding-agent/docs/authority.md` §"The signature rule".
 2. Provenance trailer hook on agent commits.
 3. Add remaining history-rewrite patterns to the destructive screen.
 

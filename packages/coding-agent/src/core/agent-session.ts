@@ -476,7 +476,28 @@ export class AgentSession {
 			// unloaded the way an extension handler can (SEAMS.md c.2), and
 			// they bind agent-registered tools exactly like built-ins.
 			if (this._authority) {
-				const decision = evaluateToolCall(this._authority, toolCall.name, args, this._cwd);
+				// Signature-rule context (EVOLUTION.md §3/§9.1): attended =
+				// approval-capable UI is in front of a human (tui/rpc);
+				// behaviorPath identifies extension-registered tools by their
+				// source file — synthetic paths (<builtin:…>, <sdk:…>) and
+				// code outside the company root are ignored by authority.
+				const decision = evaluateToolCall(this._authority, toolCall.name, args, this._cwd, {
+					attended: this._extensionMode === "tui" || this._extensionMode === "rpc",
+					behaviorPath: this._toolDefinitions.get(toolCall.name)?.sourceInfo.path,
+				});
+				// Stamp classified effects into the trail: effect class,
+				// decision, and — when codified behavior acted — its content
+				// hash and signature status (EVOLUTION.md §9.1).
+				if (decision.effectClass || decision.behavior) {
+					this.sessionManager.appendCustomEntry("qorpera_effect", {
+						tool: toolCall.name,
+						toolCallId: toolCall.id,
+						effectClass: decision.effectClass,
+						decision: decision.kind,
+						gateId: decision.kind === "block" ? decision.gateId : undefined,
+						behavior: decision.behavior,
+					});
+				}
 				if (decision.kind === "block") {
 					return { block: true, reason: decision.reason };
 				}

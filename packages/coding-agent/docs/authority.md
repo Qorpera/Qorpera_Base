@@ -81,6 +81,35 @@ file approves that exact code; any edit produces a new hash and a new
 request. User-global extensions (`~/.qorpera/agent/extensions`) are outside
 the company root's authority and load as before.
 
+## The signature rule (EVOLUTION.md §3)
+
+Codified behavior taking an outward effect **unattended** requires a standing
+founder signature on that behavior's content hash. Implemented as a fifth
+input to `evaluateToolCall` (`ToolCallContext`): the agent-session mount
+passes `attended` (tui/rpc = a human with approval UI; print/json/SDK =
+unattended) and `behaviorPath` (the source file of an extension-registered
+tool; synthetic `<builtin:…>`/`<sdk:…>` paths and code outside the authority
+root are ignored — only company-authored code is subject).
+
+- Applies to the **outward** classes only (money, identity, irreversible);
+  [authority] and [products] keep their own semantics.
+- Checked before — and regardless of — class modes: `auto` trust in a class
+  covers the model acting under founder direction, not agent-authored code
+  acting with nobody present.
+- Necessary, not sufficient: signed code still hits per-action class gates
+  and limits.
+- Signatures are durable per content hash (`behavior_signature` requests,
+  same mechanism as extension-load approvals): approving signs exactly that
+  code; any edit is a new hash and a new request. The hash is computed from
+  the file as it is now — with hot-reload this tracks what executes next and
+  errs toward gating.
+- Attended calls fall through to the normal inline gates: presence is the
+  intent source there.
+
+Every classified effect is stamped into the trail as a `qorpera_effect`
+custom entry — tool, effect class, decision, and (when codified behavior
+acted) its content hash and signature status.
+
 ## What this is not
 
 Prompt-tier guidance. Enforcement is code at the tool-call boundary and the

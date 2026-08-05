@@ -55,9 +55,40 @@ export interface Authority {
 }
 
 export type AuthorityDecision =
-	| { kind: "allow" }
-	| { kind: "allow"; notified: true; effectClass: EffectClass }
-	| { kind: "block"; reason: string; effectClass: EffectClass; gateId?: string };
+	| { kind: "allow"; notified?: true; effectClass?: EffectClass; behavior?: BehaviorSignature }
+	| { kind: "block"; reason: string; effectClass: EffectClass; gateId?: string; behavior?: BehaviorSignature };
+
+/**
+ * Caller-supplied context for the signature rule (EVOLUTION.md §3).
+ * The "one new input" of EVOLUTION §9.1.
+ */
+export interface ToolCallContext {
+	/**
+	 * True when a founder is present with approval-capable UI (tui/rpc modes);
+	 * headless runs (print/json/SDK) are unattended.
+	 */
+	attended: boolean;
+	/**
+	 * Absolute source path of the code that registered the executing tool,
+	 * when the call originates from codified behavior (an extension-registered
+	 * tool) rather than the model improvising with built-ins. Synthetic paths
+	 * (`<builtin:…>`, `<sdk:…>`) and paths outside the authority root are
+	 * ignored — only company-authored code is subject to signatures.
+	 */
+	behaviorPath?: string;
+}
+
+/** Signature status of the codified behavior backing a tool call. */
+export interface BehaviorSignature {
+	/** Root-relative POSIX path of the acting code. */
+	path: string;
+	/** sha256 of the file content at evaluation time. */
+	contentHash: string;
+	/** A durable founder approval exists for exactly this content. */
+	signed: boolean;
+	gateId?: string;
+	gateStatus?: "pending" | "denied";
+}
 
 export type GateStatus = "pending" | "approved" | "denied" | "consumed";
 
@@ -69,6 +100,12 @@ export interface GateRecord {
 }
 
 const EFFECT_CLASSES: EffectClass[] = ["money", "identity", "irreversible", "authority", "products"];
+/**
+ * Classes whose effects touch the world outside the company folder — the
+ * signature rule applies to these. [authority] and [products] are spine/zone
+ * protection with their own (stricter or path-scoped) semantics.
+ */
+const OUTWARD_CLASSES: ReadonlySet<EffectClass> = new Set(["money", "identity", "irreversible"]);
 /** Path-arg zone checks apply only to tools that mutate the path. */
 const MUTATING_PATH_TOOLS = new Set(["write", "edit", "apply_patch", "multiedit"]);
 const AUTHORITY_FILE = "authority.toml";
@@ -445,24 +482,118 @@ function summarizeCall(toolName: string, args: unknown): string {
 }
 
 /**
+ * Resolve the signature status of the codified behavior behind a tool call.
+ * Returns undefined when the path is synthetic, unreadable, or outside the
+ * authority root (built-ins, SDK tools, user-global extensions — outside the
+ * company's signature regime, mirroring extension-load gating's carve-out).
+ *
+ * Signatures are durable per content hash: approved (or consumed) covers
+ * exactly that code, forever; any edit is a new hash and a new request. The
+ * hash is computed from the file as it is NOW — with jiti hot-reload this
+ * tracks what actually executes next; a stale in-memory registration from a
+ * since-edited file resolves to the new (unsigned) content, which errs
+ * toward gating.
+ */
+function resolveBehaviorSignature(
+	authority: Authority,
+	behaviorPath: string | undefined,
+): BehaviorSignature | undefined {
+	if (!behaviorPath) return undefined;
+	const resolved = resolve(behaviorPath);
+	if (!isUnderDir(resolved, authority.root)) return undefined;
+	let contentHash: string;
+	try {
+		contentHash = createHash("sha256").update(readFileSync(resolved)).digest("hex");
+	} catch {
+		return undefined;
+	}
+	const path = relative(authority.root, resolved).split(sep).join("/");
+	const records = findGateRecords(authority, requestHash("behavior_signature", { contentHash, path }));
+	const signedRecord = records.find((record) => record.status === "approved" || record.status === "consumed");
+	if (signedRecord) return { path, contentHash, signed: true, gateId: signedRecord.id };
+	const pending = records.find((record) => record.status === "pending");
+	if (pending) return { path, contentHash, signed: false, gateId: pending.id, gateStatus: "pending" };
+	const denied = records.find((record) => record.status === "denied");
+	if (denied) return { path, contentHash, signed: false, gateId: denied.id, gateStatus: "denied" };
+	return { path, contentHash, signed: false };
+}
+
+/** Block an unattended outward effect from unsigned codified behavior, filing the signature request if new. */
+function blockForUnsignedBehavior(
+	authority: Authority,
+	toolName: string,
+	args: unknown,
+	effectClass: EffectClass,
+	behavior: BehaviorSignature,
+): AuthorityDecision {
+	if (behavior.gateStatus === "pending") {
+		return {
+			kind: "block",
+			effectClass,
+			gateId: behavior.gateId,
+			behavior,
+			reason: `Signature rule [${effectClass}]: ${behavior.path} is not signed for unattended outward action; signature request ${behavior.gateId} is awaiting the founder in inbox/. Continue with other work; retry after it is approved.`,
+		};
+	}
+	if (behavior.gateStatus === "denied") {
+		return {
+			kind: "block",
+			effectClass,
+			gateId: behavior.gateId,
+			behavior,
+			reason: `Signature rule [${effectClass}]: the founder DECLINED to sign ${behavior.path} (request ${behavior.gateId}). Do not retry this action from this code; revise the code (a new version is a new signature request) or pursue another path.`,
+		};
+	}
+	const gateId = writeGateRequest(authority, {
+		toolName: "behavior_signature",
+		effectClass,
+		args: { contentHash: behavior.contentHash, path: behavior.path },
+		hash: requestHash("behavior_signature", { contentHash: behavior.contentHash, path: behavior.path }),
+		what: `sign ${behavior.path} (sha256 ${behavior.contentHash.slice(0, 12)}…) for unattended outward action — first triggered by: ${summarizeCall(toolName, args)}`,
+	});
+	const updated: BehaviorSignature = { ...behavior, gateId, gateStatus: "pending" };
+	return {
+		kind: "block",
+		effectClass,
+		gateId,
+		behavior: updated,
+		reason: `Signature rule [${effectClass}]: this action comes from company-authored code (${behavior.path}) running unattended, which requires a standing founder signature on that exact code. Signature request ${gateId} filed in inbox/ — once approved it is durable for this content (editing the file requires a new signature). NOW create inbox/msg-${gateId}-intent.md with your file-writing tool (NOT bash — bash writes into inbox/ are themselves gated): first line \`# <short outcome headline>\` naming what this code does for the company (never the mechanism), then 1-3 plain sentences for the founder covering what the code may do to the outside world once signed. Then continue with other work; retry after it is approved.`,
+	};
+}
+
+/**
  * The main enforcement decision for a tool call. Single-use approvals: an
- * approved gate is consumed by the first matching call.
+ * approved gate is consumed by the first matching call. Behavior signatures
+ * (EVOLUTION.md §3) are durable and are checked before — and regardless of —
+ * class modes.
  */
 export function evaluateToolCall(
 	authority: Authority,
 	toolName: string,
 	args: unknown,
 	cwd: string,
+	context?: ToolCallContext,
 ): AuthorityDecision {
 	const config = readAuthorityConfig(authority);
 	const effectClass = classifyToolCall(authority, config, toolName, args, cwd);
 	if (!effectClass) return { kind: "allow" };
 
+	// The signature rule: codified behavior taking an outward effect
+	// unattended requires a standing founder signature on that behavior's
+	// content hash. Checked regardless of class mode — auto-trust in a class
+	// covers the model acting under founder direction, not agent-authored
+	// code acting with nobody present. Attended calls fall through to the
+	// normal per-action gates (presence is the intent source there).
+	const behavior = resolveBehaviorSignature(authority, context?.behaviorPath);
+	if (behavior && !behavior.signed && !context?.attended && OUTWARD_CLASSES.has(effectClass)) {
+		return blockForUnsignedBehavior(authority, toolName, args, effectClass, behavior);
+	}
+
 	const mode = config.classes[effectClass].mode;
-	if (mode === "auto") return { kind: "allow" };
+	if (mode === "auto") return { kind: "allow", effectClass, behavior };
 	if (mode === "notify") {
 		appendNotice(authority, `[${effectClass}] ${summarizeCall(toolName, args)} (auto-proceeded, notify mode)`);
-		return { kind: "allow", notified: true, effectClass };
+		return { kind: "allow", notified: true, effectClass, behavior };
 	}
 
 	const hash = requestHash(toolName, args);
@@ -471,7 +602,7 @@ export function evaluateToolCall(
 	if (approved) {
 		setGateStatus(approved, "consumed");
 		appendNotice(authority, `[${effectClass}] ${approved.id} consumed: ${summarizeCall(toolName, args)}`);
-		return { kind: "allow", notified: true, effectClass };
+		return { kind: "allow", notified: true, effectClass, behavior };
 	}
 	const pending = records.find((record) => record.status === "pending");
 	if (pending) {
@@ -479,6 +610,7 @@ export function evaluateToolCall(
 			kind: "block",
 			effectClass,
 			gateId: pending.id,
+			behavior,
 			reason: `Authority gate [${effectClass}]: request ${pending.id} is awaiting human approval in inbox/. Continue with other work; retry after it is approved.`,
 		};
 	}
@@ -488,6 +620,7 @@ export function evaluateToolCall(
 			kind: "block",
 			effectClass,
 			gateId: denied.id,
+			behavior,
 			reason: `Authority gate [${effectClass}]: request ${denied.id} was DENIED by the human. Do not retry this action; pursue another path. (A human can still edit the gate file to approved.)`,
 		};
 	}
@@ -502,6 +635,7 @@ export function evaluateToolCall(
 		kind: "block",
 		effectClass,
 		gateId,
+		behavior,
 		reason: `Authority gate [${effectClass}]: this action requires human approval. Request ${gateId} filed in inbox/. NOW create inbox/msg-${gateId}-intent.md with your file-writing tool (NOT bash — bash writes into inbox/ are themselves gated): first line \`# <short outcome headline>\` naming what this achieves for the company (never the mechanism), then 1-3 plain sentences of context for the founder, no command syntax. Headline and text become the approval card; the exact command is shown separately. Then continue with other work; retry after it is approved.`,
 	};
 }
