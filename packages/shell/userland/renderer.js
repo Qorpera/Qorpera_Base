@@ -114,20 +114,39 @@ async function enterCompany(active) {
 // Custom menus, not <select>: the native popup ignores page styling entirely
 // and renders unreadable in the dark theme.
 
+/** The one chip menu allowed open at a time (closing it is idempotent). */
+let openChipMenu = null;
+
+function closeOpenChipMenu() {
+	if (!openChipMenu) return;
+	openChipMenu.menu.classList.remove("open");
+	openChipMenu.button.setAttribute("aria-expanded", "false");
+	openChipMenu = null;
+}
+document.addEventListener("click", (event) => {
+	if (openChipMenu && !openChipMenu.menu.contains(event.target) && !openChipMenu.button.contains(event.target)) {
+		closeOpenChipMenu();
+	}
+});
+document.addEventListener("keydown", (event) => {
+	if (event.key === "Escape") closeOpenChipMenu();
+});
+window.addEventListener("resize", closeOpenChipMenu);
+
 function createChipSelect(buttonId, menuId, onPick) {
 	const button = $(buttonId);
 	const menu = $(menuId);
+	// The menu must escape the composer shell (overflow:hidden + backdrop
+	// filter clip and distort it there) — it lives on <body> in a fixed layer.
+	document.body.appendChild(menu);
 	let value = "";
 	let options = [];
 	const renderLabel = () => {
 		const current = options.find((o) => o.value === value);
 		button.textContent = current ? current.label : "…";
 	};
-	const close = () => {
-		menu.classList.remove("open");
-		button.setAttribute("aria-expanded", "false");
-	};
 	const open = () => {
+		closeOpenChipMenu();
 		menu.innerHTML = "";
 		for (const option of options) {
 			const item = document.createElement("button");
@@ -136,22 +155,25 @@ function createChipSelect(buttonId, menuId, onPick) {
 			item.onclick = () => {
 				value = option.value;
 				renderLabel();
-				close();
+				closeOpenChipMenu();
 				onPick(option.value);
 			};
 			menu.appendChild(item);
 		}
+		// Anchor above the button, right-aligned, clamped to the viewport.
+		const rect = button.getBoundingClientRect();
+		menu.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
+		menu.style.bottom = `${window.innerHeight - rect.top + 8}px`;
 		menu.classList.add("open");
 		button.setAttribute("aria-expanded", "true");
+		openChipMenu = { menu, button };
 	};
-	button.onclick = (event) => {
-		event.stopPropagation();
-		if (menu.classList.contains("open")) close();
+	button.onclick = () => {
+		// The document listener sees this click too and closes anything open;
+		// toggling means: open unless THIS menu was the one just closed.
+		if (menu.classList.contains("open")) closeOpenChipMenu();
 		else open();
 	};
-	document.addEventListener("click", (event) => {
-		if (!menu.contains(event.target) && event.target !== button) close();
-	});
 	return {
 		setOptions(list, current) {
 			options = list;
