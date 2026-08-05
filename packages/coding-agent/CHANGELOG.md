@@ -10,6 +10,7 @@
 - Changed `ModelRuntime.setRuntimeApiKey()` to accept auth cancellation options rather than catalog refresh options. Call `refresh({ providers: [providerId], signal })` separately when remote freshness is required.
 - Required config-form extension OAuth `refreshToken(credentials, signal)` callbacks to accept and honor a concrete abort signal.
 - Replaced dynamic provider refresh context store access with the read-only `context.stored` snapshot and generation-checked `context.publish()` transaction.
+- Changed `AuthorityDecision` to a two-variant union whose `allow` arm carries optional `notified`, `effectClass`, and `behavior` fields, and added an optional `ToolCallContext` fifth parameter to `evaluateToolCall()`. Callers that discriminated on the old three-variant shape must switch on `kind` only. Agent-authored `git commit` commands crossing the authority boundary now require `Qorpera-Trigger:`/`Qorpera-Rationale:` trailers, and unattended outward effects from company-authored code require a standing founder signature (EVOLUTION.md §3/§4).
 
   **Providers built with `createProvider({ fetchModels })`:** no catalog-publication migration is required. Before and after, return the fetched models and register the resulting provider; `createProvider()` owns restoration, persistence, and in-memory publication.
 
@@ -81,6 +82,9 @@
 - Added a draggable transcript scrollbar to fullscreen mode with configurable `auto`, `always`, and `hidden` modes through `/settings`; `always` reserves the rightmost column.
 - Added page scrolling and marked-message navigation shortcuts to fullscreen mode.
 - Added an optional `scrollbarThumb` theme color for fullscreen scrollbar thumbs, falling back to `selectedBg`.
+- Added the behavior signature rule (EVOLUTION.md §3): codified behavior (extension-registered tools under the company root) taking money/identity/irreversible effects unattended requires a durable per-content-hash founder approval (`behavior_signature` gate requests); signatures are checked before and regardless of class modes, and signed code still hits per-action gates. Classified effects stamp `qorpera_effect` trail entries with effect class, decision, and behavior hash + signature status.
+- Added provenance trailer enforcement for agent-authored commits at the bash boundary: commits without `Qorpera-Trigger:`/`Qorpera-Rationale:` trailers are rejected with retry guidance and no gate filed; the kernel prompt teaches the convention.
+- Added history-rewrite patterns to the destructive bash screen (`commit --amend`, `rebase`, `filter-branch`/`filter-repo`, `reflog expire`/`delete`, `update-ref -d`, `gc --prune`) — company history is append-only from the agent's side.
 
 ### Fixed
 
@@ -107,6 +111,8 @@
 - Fixed stale pi.dev, Radius, llama.cpp, and extension catalog refreshes publishing after a newer provider refresh.
 - Fixed cancellation while waiting for file-backed credential or model-catalog locks, preventing cancelled mutations from running or committing later.
 - Fixed concurrent in-memory credential mutations losing unrelated provider updates by serializing their read-modify-write sections.
+- Fixed gate files saved with a UTF-8 BOM (Notepad, PowerShell 5.1 `Set-Content -Encoding utf8`) being silently ignored, which hid founder approvals and re-filed duplicate requests.
+- Fixed bash screens gating on protected-path, product-zone, and destructive-pattern mentions inside `-m`/`--message` bodies — commit messages are data, not effects; bodies containing execution constructs stay visible to the screens, and the provenance check reads the raw command.
 
 ## [0.83.0] - 2026-07-29
 
