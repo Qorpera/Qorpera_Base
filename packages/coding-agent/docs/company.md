@@ -77,6 +77,18 @@ Behavior notes:
   SDK should pass an absolute session dir rooted at `<company>/trail`.
 - Session files flush on the first assistant message (upstream behavior),
   so an abandoned prompt leaves no trail entry.
+- Headless wakes (print/json/SDK, no UI) resolve project trust to
+  UNTRUSTED by default — project extensions under `.qorpera/extensions/`
+  silently never load unless the company root is in
+  `~/.qorpera/agent/trust.json`. A controller cannot currently distinguish
+  "extension gated" from "extension silently untrusted"; trust the folder
+  before scheduling unattended wakes that rely on self-built tools.
+- Known transient (2026-08-05, tsx + node 24 on Windows): the CLI
+  intermittently dies with 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN,
+  surfaces as "exit 9"), sometimes mid-session. Work already performed
+  persists (filed gates, flushed trail); an identical retry has succeeded
+  every observed time. The scheduled runtime should carry retry-once
+  semantics for wakes.
 - There is no wizard: conception is a dialogue. The kernel (AGENTS.md)
   instructs the controller to interview the founder and rewrite
   `company.md`, then bootstrap its first surfaces in `app/`.

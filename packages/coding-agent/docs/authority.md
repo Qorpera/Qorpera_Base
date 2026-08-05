@@ -131,7 +131,18 @@ root are ignored — only company-authored code is subject).
 
 Every classified effect is stamped into the trail as a `qorpera_effect`
 custom entry — tool, effect class, decision, and (when codified behavior
-acted) its content hash and signature status.
+acted) its content hash and signature status. A blocked call from signed
+code stamps `signed: true` with a class-gate `gateId` — the
+necessary-not-sufficient layering is machine-verifiable from the trail.
+
+**Founder pre-signing works by design:** gate approvals are ordinary
+founder-owned inbox files matched by `hash:`, and `requestHash` is
+computable (sha256 of `tool\n` + canonical-JSON args; for signatures the
+args are `{contentHash, path}` with the root-relative POSIX path). A
+founder — or founder tooling — can author an `approved` gate file before
+the agent ever attempts the action. Live-verified 2026-08-05: pre-signed
+load + signature, per-action identity gate still fired, approve → consume
+→ pretend-send artifact.
 
 ## What this is not
 
