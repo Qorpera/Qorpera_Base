@@ -428,6 +428,15 @@ function renderInboxCard(item, settled) {
 	head.appendChild(kind);
 	card.appendChild(head);
 
+	// Gate with agent-supplied intent: the OUTCOME is the headline; the
+	// mechanical command stays inspectable behind Details.
+	if (item.intent) {
+		const intent = document.createElement("div");
+		intent.className = "card-intent";
+		intent.textContent = item.intent;
+		card.appendChild(intent);
+	}
+
 	const what = document.createElement("div"); // gate: the action itself
 	what.className = "card-what";
 	what.style.display = "none";
@@ -514,31 +523,31 @@ function renderInboxCard(item, settled) {
 		let substance = raw.replace(/^---[\s\S]*?---/, "").replace(/^\s*# .*$/m, "");
 		if (item.kind === "gate") {
 			const action = substance.match(/\*\*What:\*\*\s*(?:run\s*)?(.+)$/m)?.[1];
-			if (action) {
+			substance = substance.replace(/To resolve, edit[\s\S]*$/, "");
+			if (action && !item.intent) {
+				// No intent supplied (older agents): the command is the headline.
 				what.textContent = action.replace(/^`|`$/g, "");
 				what.style.display = "";
+				substance = substance.replace(/^\*\*What:\*\*.*$/m, "");
 			}
-			substance = substance.replace(/To resolve, edit[\s\S]*$/, "");
-			// The What line is already on the card; the rest is detail.
-			if (action) substance = substance.replace(/^\*\*What:\*\*.*$/m, "");
 		}
 		renderMarkdown(body, substance.trim());
-		if (body.scrollHeight > 140 || settled) {
+		// Fully hidden detail: settled cards, and gates that lead with intent
+		// (their body is the technical record). Otherwise clamp long bodies.
+		const hiddenDetail = settled || (item.kind === "gate" && Boolean(item.intent));
+		if (hiddenDetail) {
+			body.style.display = "none";
+			const toggle = inboxAction("Details", "ghost", () => {
+				const hidden = body.style.display === "none";
+				body.style.display = hidden ? "" : "none";
+				toggle.textContent = hidden ? "Hide" : "Details";
+			});
+			actions.appendChild(toggle);
+		} else if (body.scrollHeight > 140) {
 			body.classList.add("clamped");
-			if (settled) body.style.display = "none";
-			const toggle = inboxAction(settled ? "Details" : "Details ▾", "ghost", () => {
-				if (settled && body.style.display === "none") {
-					body.style.display = "";
-					body.classList.remove("clamped");
-					toggle.textContent = "Hide";
-					return;
-				}
+			const toggle = inboxAction("Details ▾", "ghost", () => {
 				const clamped = body.classList.toggle("clamped");
 				toggle.textContent = clamped ? "Details ▾" : "Hide ▴";
-				if (settled && clamped) {
-					body.style.display = "none";
-					toggle.textContent = "Details";
-				}
 			});
 			actions.appendChild(toggle);
 		}

@@ -48,6 +48,11 @@ interface InboxItem {
 	kind: "gate" | "message" | "note";
 	/** File modification time — newest-first ordering and card meta lines. */
 	mtimeMs: number;
+	/** Gate items only: the agent's founder-facing outcome description, folded
+	 * in from the companion inbox/msg-<gateId>-intent.md (the msg carve-out is
+	 * the agent's one sanctioned inbox lane; the gate file itself is
+	 * kernel-written and protected). */
+	intent?: string;
 }
 
 function companyName(root: string): string {
@@ -89,19 +94,43 @@ function readManifestSurfaces(root: string): Array<{ name: string; entry: string
 	}
 }
 
+/** Plain text of an intent companion: frontmatter/headings off, first chunk. */
+function intentText(content: string): string {
+	return content
+		.replace(/^---[\s\S]*?---/, "")
+		.replace(/^#+ .*$/gm, "")
+		.trim()
+		.slice(0, 600);
+}
+
 function readInbox(root: string): InboxItem[] {
 	const dir = join(root, "inbox");
 	if (!existsSync(dir)) return [];
+	const names = readdirSync(dir);
+	// Companion intent files (msg-<gateId>-intent.md) fold INTO their gate's
+	// card instead of appearing as items of their own.
+	const intents = new Map<string, string>();
+	for (const file of names) {
+		const gateId = file.match(/^msg-(gate-[a-z0-9-]+)-intent\.md$/i)?.[1];
+		if (!gateId) continue;
+		try {
+			intents.set(gateId.toLowerCase(), intentText(readFileSync(join(dir, file), "utf-8")));
+		} catch {
+			// unreadable companions are ignored
+		}
+	}
 	const items: InboxItem[] = [];
-	for (const file of readdirSync(dir)) {
+	for (const file of names) {
 		if (!file.endsWith(".md") || file === "README.md") continue;
+		if (/^msg-gate-[a-z0-9-]+-intent\.md$/i.test(file)) continue;
 		try {
 			const content = readFileSync(join(dir, file), "utf-8");
 			const mtimeMs = statSync(join(dir, file)).mtimeMs;
 			const title = content.match(/^#\s+(.+)$/m)?.[1] ?? file;
 			if (file.startsWith("gate-")) {
 				const status = content.match(/^status:\s*(\w+)/m)?.[1] ?? "";
-				items.push({ file, status, title, kind: "gate", mtimeMs });
+				const intent = intents.get(file.replace(/\.md$/i, "").toLowerCase());
+				items.push({ file, status, title, kind: "gate", mtimeMs, intent });
 			} else if (file.startsWith("msg-")) {
 				// Agent-authored item; answered once a Response section exists.
 				const status = /^##\s+Response/m.test(content) ? "answered" : "pending";

@@ -502,7 +502,7 @@ export function evaluateToolCall(
 		kind: "block",
 		effectClass,
 		gateId,
-		reason: `Authority gate [${effectClass}]: this action requires human approval. Request ${gateId} filed in inbox/. Continue with other work; retry after it is approved.`,
+		reason: `Authority gate [${effectClass}]: this action requires human approval. Request ${gateId} filed in inbox/. NOW write inbox/msg-${gateId}-intent.md: 1-3 plain sentences for the founder on the OUTCOME this action serves — what it achieves for the company, no command syntax (it becomes the headline of the approval card; the exact command is shown separately). Then continue with other work; retry after it is approved.`,
 	};
 }
 
