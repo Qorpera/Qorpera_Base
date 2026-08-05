@@ -82,15 +82,23 @@ async function enterCompany(active) {
 		addMsg("tool", "· conception started — the controller is studying the company…");
 	}
 	if (active.mergePrompt) {
+		// The merge runs as a kernel-spawned autonomous session — clicking
+		// never sends into the founder's chat, and a second click while one
+		// is running is refused by the kernel.
 		const b = document.createElement("button");
 		b.id = "mergeBtn";
-		b.textContent = `Merge app update → v${active.userland.stagedVersion}`;
-		b.onclick = () => {
-			window.qorpera.rpcSend({ type: "prompt", message: active.mergePrompt });
-			addMsg("tool", "· merge task sent to the controller");
-			show("chat");
-			b.remove();
+		const staged = active.userland.stagedVersion;
+		const markRunning = () => {
+			b.textContent = `Merging app update v${staged}…`;
+			b.disabled = true;
+			$("status").textContent = "userland merge running as an autonomous session…";
 		};
+		b.textContent = `Merge app update → v${staged}`;
+		b.onclick = async () => {
+			const result = await window.qorpera.mergeUserland();
+			if (result?.ok || result?.reason === "already-running") markRunning();
+		};
+		if (active.mergeRunning) markRunning();
 		$("conav").insertBefore(b, $("conav").firstChild);
 	}
 	show("chat");
@@ -300,6 +308,22 @@ function renderInbox() {
 		d.querySelector(".t").textContent = item.title;
 		d.querySelector(".s").textContent = `${item.kind} · ${item.file}${item.status ? ` · ${item.status}` : ""}`;
 
+		if (item.kind === "gate") {
+			// Show WHAT is being approved — the gate file carries the exact
+			// command/action; a bare "bash (irreversible)" title is not enough
+			// to decide on.
+			fetch(`${backendUrl}/api/inbox/${encodeURIComponent(item.file)}`)
+				.then((res) => res.text())
+				.then((body) => {
+					// Drop frontmatter, the duplicate title, and the edit-the-file
+					// footer — the card renders the substance (What/Arguments).
+					const substance = body
+						.replace(/^---[\s\S]*?---/, "")
+						.replace(/^\s*# .*$/m, "")
+						.replace(/To resolve, edit[\s\S]*$/, "");
+					renderMarkdown(d.querySelector(".body"), substance);
+				});
+		}
 		if (item.kind === "gate" && item.status === "pending") {
 			for (const [label, action, cls] of [["Approve", "approved", "ok"], ["Deny", "denied", "no"]]) {
 				const b = document.createElement("button");
@@ -801,6 +825,24 @@ window.qorpera.onUpdateReady((version) => {
 	if ($("settingsView").classList.contains("open") && settingsTab === "general") renderSettingsTab();
 });
 window.qorpera.onOpenCompany((root) => openCompany(root));
+window.qorpera.onMergeDone((result) => {
+	const b = document.getElementById("mergeBtn");
+	if (result?.ok) {
+		$("status").textContent = "userland merge finished — reload to run the updated app";
+		if (b) {
+			b.textContent = "App updated — reload";
+			b.disabled = false;
+			b.onclick = () => location.reload();
+		}
+	} else {
+		$("status").textContent = "merge session ended without completing — see Inbox and Activity";
+		if (b) {
+			b.textContent = "Merge incomplete — check Inbox";
+			b.disabled = false;
+			b.onclick = () => show("inbox");
+		}
+	}
+});
 
 (async () => {
 	const info = await window.qorpera.appInfo();

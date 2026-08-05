@@ -67,6 +67,8 @@ interface CompanyRuntime {
 	userland: UserlandStatus;
 	usingBaseFallback: boolean;
 	backendToken: string;
+	/** Live userland-merge session, if one is running (kernel-spawned, silent). */
+	mergeChild?: ChildProcessWithoutNullStreams;
 }
 
 /** One window = one slot: the hub while `runtime` is unset, a company
@@ -131,6 +133,10 @@ async function closeCompany(slot: Slot): Promise<void> {
 	if (!slot.runtime) return;
 	intentionalKills.add(slot.runtime.child);
 	slot.runtime.child.kill();
+	if (slot.runtime.mergeChild) {
+		intentionalKills.add(slot.runtime.mergeChild);
+		slot.runtime.mergeChild.kill();
+	}
 	slot.runtime.backendClose?.();
 	slot.runtime = undefined;
 }
@@ -169,6 +175,56 @@ function startChild(
 	return child;
 }
 
+/**
+ * Run the staged userland merge as its OWN autonomous session — never
+ * through the founder's chat child, so a reload can't re-send the task into
+ * a session that already ran it. Silent: events are consumed here (the
+ * agent's own settle ends the run), not forwarded to the chat pane. The
+ * result reaches the renderer as one `merge-done` event, and the open-time
+ * userland status is refreshed so the merge button reflects reality.
+ */
+function startMergeChild(slot: Slot, runtime: CompanyRuntime): void {
+	const prompt = mergeTaskPrompt(runtime.userland);
+	const args = [
+		RPC_ENTRY,
+		"--mode",
+		"rpc",
+		"--name",
+		`autonomous — userland merge v${runtime.userland.stagedVersion}`,
+	];
+	const child = spawn(process.execPath, args, {
+		cwd: runtime.root,
+		stdio: ["pipe", "pipe", "pipe"],
+		env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+	}) as ChildProcessWithoutNullStreams;
+	runtime.mergeChild = child;
+	let started = false;
+	createInterface({ input: child.stdout }).on("line", (line) => {
+		let frame: { type?: string };
+		try {
+			frame = JSON.parse(line) as { type?: string };
+		} catch {
+			return;
+		}
+		if (frame.type === "agent_start") started = true;
+		// Settled after real work: the merge session is over.
+		if (frame.type === "agent_settled" && started) {
+			intentionalKills.add(child);
+			child.kill();
+		}
+	});
+	createInterface({ input: child.stderr }).on("line", () => {});
+	child.on("exit", () => {
+		if (slot.runtime !== runtime) return; // company was closed meanwhile
+		runtime.mergeChild = undefined;
+		// Re-read the manifest: a finished merge reads back as "current".
+		runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
+		const ok = runtime.userland.action === "current" || runtime.userland.action === "fast-forwarded";
+		send(slot.window, "merge-done", { ok, action: runtime.userland.action });
+	});
+	child.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
+}
+
 /** Each open company owns its backend server and token. The hashed port can
  * collide — another company's hash, or an external `qorpera app` — so walk
  * forward until a bind succeeds: the renderer resolves everything relative
@@ -194,6 +250,7 @@ interface ActiveCompany {
 	userland: UserlandStatus;
 	usingBaseFallback: boolean;
 	mergePrompt?: string;
+	mergeRunning: boolean;
 	activeApp: "fork" | "base";
 	versions: UserlandVersion[];
 	evolved: boolean;
@@ -212,6 +269,7 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 		userland: runtime.userland,
 		usingBaseFallback: runtime.usingBaseFallback,
 		mergePrompt: staged ? mergeTaskPrompt(runtime.userland) : undefined,
+		mergeRunning: Boolean(runtime.mergeChild && runtime.mergeChild.exitCode === null),
 		activeApp: getActiveApp(userlandDir),
 		versions: listVersions(userlandDir),
 		evolved: !isUnmodified(userlandDir),
@@ -323,6 +381,15 @@ function createWindow(): Slot {
 		void electronShell.openExternal(url);
 		return { action: "deny" };
 	});
+	// Page loads are kernel-only. The window's history holds the hub and the
+	// base/fork chromes as ordinary pages, so mouse back/forward buttons (or
+	// any history walk) re-enter the same company through a DIFFERENT chrome —
+	// which reads as the app spontaneously changing shape. Swallow the mouse
+	// app-commands and drop history after every kernel-initiated load.
+	win.on("app-command", (event, command) => {
+		if (command === "browser-backward" || command === "browser-forward") event.preventDefault();
+	});
+	win.webContents.on("did-finish-load", () => win.webContents.navigationHistory.clear());
 	// A crashed evolved userland must not strand the company: fall back to
 	// the base chrome (kernel duty — last-good behavior).
 	win.webContents.on("render-process-gone", () => {
@@ -440,6 +507,17 @@ app.whenReady().then(() => {
 			});
 		}
 		return ok;
+	});
+	// The merge button's backend: one merge session at a time, kernel-owned.
+	ipcMain.handle("userland:merge", (event) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime) return { ok: false, reason: "no-company" };
+		const staged = runtime.userland.action === "staged" || runtime.userland.action === "already-staged";
+		if (!staged) return { ok: false, reason: "nothing-staged" };
+		if (runtime.mergeChild && runtime.mergeChild.exitCode === null) return { ok: false, reason: "already-running" };
+		startMergeChild(slot, runtime);
+		return { ok: true };
 	});
 	ipcMain.handle("app:info", (event) => {
 		const slot = slotOf(event.sender);
