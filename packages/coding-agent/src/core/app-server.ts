@@ -264,19 +264,67 @@ function stateFor(root: string): unknown {
 	};
 }
 
-const SURFACE_DOC_STYLE = `<style>
-	:root { color-scheme: dark; }
-	body { max-width: 880px; margin: 0 auto; padding: 28px 32px; background: #101418; color: #e6e9ec;
-		font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; line-height: 1.55; }
-	h1, h2, h3 { margin: 18px 0 8px; } h1 { font-size: 20px; } h2 { font-size: 16px; } h3 { font-size: 14px; }
-	p, ul, ol { margin: 0 0 10px; } ul, ol { padding-left: 24px; }
-	code { background: #1a2027; border-radius: 4px; padding: 1px 5px; font-family: Consolas, monospace; font-size: 12.5px; }
-	pre { background: #161b21; border: 1px solid #232a31; border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
-	pre code { background: none; padding: 0; }
-	table { border-collapse: collapse; margin: 0 0 10px; } td, th { border: 1px solid #2c3540; padding: 5px 10px; font-size: 13px; }
-	blockquote { border-left: 3px solid #2c3540; margin: 0 0 10px; padding-left: 12px; color: #aab3bb; }
-	a { color: #7ab4ff; }
-</style>`;
+/**
+ * The base surface design system. Values mirror the base userland tokens
+ * verbatim so surfaces blend into the chrome that embeds them. Served at
+ * /assets/surface.css and linked into rendered .md/.txt surfaces; HTML
+ * surfaces opt in with <link rel="stylesheet" href="/assets/surface.css">.
+ * A company override at app/surfaces/theme.css is served at /assets/theme.css
+ * and always linked AFTER the tokens — controllers (or the founder) restyle
+ * by redefining variables, not by forking the sheet.
+ */
+const SURFACE_TOKENS_CSS = `:root {
+	color-scheme: dark;
+	--bg: #2d2d2b; --chrome: #101010; --pane-strong: #3a3a38; --hover: #3f4241;
+	--text: #f9f9f7; --text-muted: #b8b8b3; --text-soft: #8f8f8a;
+	--border: #3d3d3b; --border-strong: #51514d;
+	--accent: #cc7d5e; --accent-soft: #3f2d28; --blue: #8fa8ff;
+	--danger: #ff5f38; --danger-soft: #442821;
+	--font-ui: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+	--font-mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+}
+body { max-width: 880px; margin: 0 auto; padding: 28px 32px; background: var(--bg); color: var(--text);
+	font-family: var(--font-ui); font-size: 14px; line-height: 1.55; }
+h1, h2, h3 { margin: 18px 0 8px; } h1 { font-size: 20px; } h2 { font-size: 16px; } h3 { font-size: 14px; }
+p, ul, ol { margin: 0 0 10px; } ul, ol { padding-left: 24px; }
+code { background: var(--pane-strong); border-radius: 4px; padding: 1px 5px; font-family: var(--font-mono); font-size: 12.5px; }
+pre { background: var(--chrome); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 0 0 10px; } td, th { border: 1px solid var(--border); padding: 5px 10px; font-size: 13px; }
+blockquote { border-left: 3px solid var(--border-strong); margin: 0 0 10px; padding-left: 12px; color: var(--text-muted); }
+a { color: var(--blue); }
+`;
+
+/**
+ * Read-only capability kit for HTML surfaces (window.qorpera): live state
+ * instead of frozen prose — surfaces as instruments, not reports.
+ * Deliberately has NO mutating powers: the backend's mutating endpoints
+ * require the kernel-held token (self-approval hole closed in 0.7.0) and
+ * surfaces must never carry it. An action bridge (invoke(prompt) starting a
+ * controller session) is planned and needs its own token design — never
+ * fake it here through founder-lane endpoints.
+ */
+const SURFACE_KIT_JS = `window.qorpera = {
+	/** Company state: name, surfaces, inbox summary, sessions. */
+	async getState() { return (await fetch("/api/state")).json(); },
+	/** Raw text of a substrate file (app/substrates/<name>). */
+	async readSubstrate(name) {
+		const r = await fetch("/api/substrate/" + encodeURIComponent(name));
+		if (!r.ok) throw new Error("substrate not found: " + name);
+		return r.text();
+	},
+	/** Raw text of an inbox item (msg-*.md / gate-*.md). */
+	async readInbox(file) {
+		const r = await fetch("/api/inbox/" + encodeURIComponent(file));
+		if (!r.ok) throw new Error("inbox item not found: " + file);
+		return r.text();
+	},
+	/** Run fn now and every ms milliseconds — live instruments. */
+	every(ms, fn) { fn(); return setInterval(fn, ms); },
+};
+`;
+
+const SURFACE_HEAD_LINKS = `<link rel="stylesheet" href="/assets/surface.css"><link rel="stylesheet" href="/assets/theme.css">`;
 
 function escapeHtmlText(source: string): string {
 	return source.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -305,7 +353,7 @@ function serveSurface(root: string, entry: string, response: ServerResponse): vo
 			response
 				.writeHead(200, { "content-type": "text/html; charset=utf-8" })
 				.end(
-					`<!doctype html><html><head><meta charset="utf-8">${SURFACE_DOC_STYLE}</head><body>${body}</body></html>`,
+					`<!doctype html><html><head><meta charset="utf-8">${SURFACE_HEAD_LINKS}</head><body>${body}</body></html>`,
 				);
 			return;
 		}
@@ -321,6 +369,24 @@ function serveSurface(root: string, entry: string, response: ServerResponse): vo
 		response.writeHead(200, { "content-type": type }).end(content);
 	} catch {
 		response.writeHead(404).end("surface not found");
+	}
+}
+
+/**
+ * Serve a substrate file read-only from inside app/substrates (no
+ * traversal) — the data side of surfaces-as-instruments.
+ */
+function serveSubstrate(root: string, entry: string, response: ServerResponse): void {
+	const substratesRoot = resolve(join(root, "app", "substrates"));
+	const target = resolve(join(substratesRoot, normalize(entry)));
+	if (target !== substratesRoot && !target.startsWith(substratesRoot + sep)) {
+		response.writeHead(403).end("outside substrates");
+		return;
+	}
+	try {
+		response.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end(readFileSync(target));
+	} catch {
+		response.writeHead(404).end("substrate not found");
 	}
 }
 
@@ -470,6 +536,31 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 		}
 		if (url.pathname === "/api/state") {
 			response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(stateFor(root)));
+			return;
+		}
+		if (url.pathname === "/assets/surface.css") {
+			response.writeHead(200, { "content-type": "text/css" }).end(SURFACE_TOKENS_CSS);
+			return;
+		}
+		if (url.pathname === "/assets/surface-kit.js") {
+			response.writeHead(200, { "content-type": "text/javascript" }).end(SURFACE_KIT_JS);
+			return;
+		}
+		if (url.pathname === "/assets/theme.css") {
+			// Company override point: served empty when absent so the link
+			// in every rendered surface is always safe. Read BEFORE writing
+			// headers — a throw after writeHead kills the server.
+			let theme = "";
+			try {
+				theme = readFileSync(join(root, "app", "surfaces", "theme.css"), "utf-8");
+			} catch {
+				// absent: serve empty
+			}
+			response.writeHead(200, { "content-type": "text/css" }).end(theme);
+			return;
+		}
+		if (url.pathname.startsWith("/api/substrate/") && request.method === "GET") {
+			serveSubstrate(root, decodeURIComponent(url.pathname.slice("/api/substrate/".length)), response);
 			return;
 		}
 		if (url.pathname.startsWith("/surface/")) {

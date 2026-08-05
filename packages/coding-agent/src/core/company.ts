@@ -39,6 +39,14 @@ need machinery that doesn't exist: commands against your connections,
 operational planes, your own ways of working. The controller should fit
 this company the way a hand-built instrument fits its player.
 
+Surfaces are instruments, not reports: prefer HTML that reads live state
+over prose that freezes it. The backend serves the company design system
+at \`/assets/surface.css\` (markdown surfaces inherit it automatically;
+override tokens in \`app/surfaces/theme.css\`) and a read-only kit at
+\`/assets/surface-kit.js\` — \`window.qorpera\` with \`getState()\`,
+\`readSubstrate(name)\`, \`readInbox(file)\`, and \`every(ms, fn)\` — so a
+surface can show the company as it is right now and refresh itself.
+
 When you wake: read \`company.md\`, look around — the app, the inbox, the
 state of the work — and decide for yourself what most needs doing. Routines
 in \`app/routines/\` are jobs you can run; the inbox may carry steering from

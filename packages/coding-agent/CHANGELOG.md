@@ -85,6 +85,7 @@
 - Added the behavior signature rule (EVOLUTION.md §3): codified behavior (extension-registered tools under the company root) taking money/identity/irreversible effects unattended requires a durable per-content-hash founder approval (`behavior_signature` gate requests); signatures are checked before and regardless of class modes, and signed code still hits per-action gates. Classified effects stamp `qorpera_effect` trail entries with effect class, decision, and behavior hash + signature status.
 - Added provenance trailer enforcement for agent-authored commits at the bash boundary: commits without `Qorpera-Trigger:`/`Qorpera-Rationale:` trailers are rejected with retry guidance and no gate filed; the kernel prompt teaches the convention.
 - Added history-rewrite patterns to the destructive bash screen (`commit --amend`, `rebase`, `filter-branch`/`filter-repo`, `reflog expire`/`delete`, `update-ref -d`, `gc --prune`) — company history is append-only from the agent's side.
+- Added the surface design system and read-only surface kit: the company app server now serves base design tokens at `/assets/surface.css` (rendered markdown/text surfaces link them instead of a hardcoded inline style; company override at `app/surfaces/theme.css` served as `/assets/theme.css`), a read-only `window.qorpera` kit at `/assets/surface-kit.js` (`getState`, `readSubstrate`, `readInbox`, `every`), and read-only substrate serving at `/api/substrate/<name>` with traversal protection. The kernel prompt now frames surfaces as instruments, not reports.
 
 ### Fixed
 

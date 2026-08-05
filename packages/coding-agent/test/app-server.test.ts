@@ -55,6 +55,38 @@ describe("company app server", () => {
 		expect(traversal.status).toBe(403);
 	});
 
+	it("serves the surface design system, read-only kit, theme override, and substrate reads", async () => {
+		// Tokens: every rendered markdown surface links the shared stylesheet
+		// (not an inline hardcoded style) plus the company theme override.
+		writeFileSync(join(root, "app", "surfaces", "notes.md"), "# Notes\ncontent", "utf-8");
+		const rendered = await (await fetch(`${base}/surface/notes.md`)).text();
+		expect(rendered).toContain('href="/assets/surface.css"');
+		expect(rendered).toContain('href="/assets/theme.css"');
+		expect(rendered).not.toContain("<style>");
+
+		const css = await fetch(`${base}/assets/surface.css`);
+		expect(css.headers.get("content-type")).toContain("text/css");
+		expect(await css.text()).toContain("--bg: #2d2d2b");
+
+		// Theme override: empty when absent, the company file when present.
+		expect(await (await fetch(`${base}/assets/theme.css`)).text()).toBe("");
+		writeFileSync(join(root, "app", "surfaces", "theme.css"), ":root { --accent: #35b8a5; }", "utf-8");
+		expect(await (await fetch(`${base}/assets/theme.css`)).text()).toContain("#35b8a5");
+
+		// The kit is read-only capability: state + substrate + inbox reads.
+		const kit = await (await fetch(`${base}/assets/surface-kit.js`)).text();
+		expect(kit).toContain("window.qorpera");
+		expect(kit).not.toContain("x-qorpera-token");
+
+		writeFileSync(join(root, "app", "substrates", "beliefs.md"), "price: 249 DKK (estimate)", "utf-8");
+		const substrate = await fetch(`${base}/api/substrate/beliefs.md`);
+		expect(await substrate.text()).toContain("249 DKK");
+
+		// Traversal out of app/substrates is refused.
+		const traversal = await fetch(`${base}/api/substrate/..%2F..%2Fauthority.toml`);
+		expect(traversal.status).toBe(403);
+	});
+
 	it("lists trail sessions and serves the controller↔founder message round-trip", async () => {
 		// A trail session appears in state with its first user message as title.
 		writeFileSync(

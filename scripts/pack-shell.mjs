@@ -59,6 +59,14 @@ writeFileSync(
 			type: "module",
 			main: "dist/main.js",
 			description: "Qorpera Base — the foundation every company controller is built on.",
+			// electron-builder prunes node_modules against this dependency
+			// list; without it the ENTIRE assembled closure (the agent
+			// runtime) is silently dropped from the installer — shipped
+			// hub-only apps until 0.15.0's repack caught it (2026-08-05).
+			dependencies: {
+				"@qorpera/pi-coding-agent": "*",
+				...(shellPkg.dependencies ?? {}),
+			},
 		},
 		null,
 		"\t",
@@ -147,5 +155,25 @@ if (builder.status !== 0) {
 	console.error("electron-builder failed");
 	process.exit(builder.status ?? 1);
 }
+
+// Structural assertion: the packed app must contain the agent runtime.
+// Guards against electron-builder pruning regressions — a hub-only app
+// passes every smoke that doesn't open a company.
+const packedRpcEntry = join(
+	outDir,
+	"win-unpacked",
+	"resources",
+	"app",
+	"node_modules",
+	"@qorpera",
+	"pi-coding-agent",
+	"dist",
+	"rpc-entry.js",
+);
+if (!existsSync(packedRpcEntry)) {
+	console.error(`PACK VERIFICATION FAILED: agent runtime missing from packed app (${packedRpcEntry})`);
+	process.exit(1);
+}
+console.log("pack verification: agent runtime present in packed app");
 console.log(`installer in ${outDir}`);
 for (const file of readdirSync(outDir)) console.log(`  ${file}`);
