@@ -304,7 +304,7 @@ describe("gate lifecycle", () => {
 		const file = readdirSync(inbox).find((name) => name.startsWith(gateId))!;
 		const path = join(inbox, file);
 		// A founder approving in Notepad or PowerShell 5.1 prepends a BOM.
-		writeFileSync(path, "\uFEFF" + readFileSync(path, "utf-8").replace(/^status:.*$/m, "status: approved"), "utf-8");
+		writeFileSync(path, `\uFEFF${readFileSync(path, "utf-8").replace(/^status:.*$/m, "status: approved")}`, "utf-8");
 		expect(evaluateToolCall(authority, "danger", { x: 1 }, root).kind).toBe("allow");
 	});
 
