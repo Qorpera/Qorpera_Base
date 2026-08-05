@@ -46,6 +46,8 @@ interface InboxItem {
 	status: string;
 	title: string;
 	kind: "gate" | "message" | "note";
+	/** File modification time — newest-first ordering and card meta lines. */
+	mtimeMs: number;
 }
 
 function companyName(root: string): string {
@@ -95,16 +97,17 @@ function readInbox(root: string): InboxItem[] {
 		if (!file.endsWith(".md") || file === "README.md") continue;
 		try {
 			const content = readFileSync(join(dir, file), "utf-8");
+			const mtimeMs = statSync(join(dir, file)).mtimeMs;
 			const title = content.match(/^#\s+(.+)$/m)?.[1] ?? file;
 			if (file.startsWith("gate-")) {
 				const status = content.match(/^status:\s*(\w+)/m)?.[1] ?? "";
-				items.push({ file, status, title, kind: "gate" });
+				items.push({ file, status, title, kind: "gate", mtimeMs });
 			} else if (file.startsWith("msg-")) {
 				// Agent-authored item; answered once a Response section exists.
 				const status = /^##\s+Response/m.test(content) ? "answered" : "pending";
-				items.push({ file, status, title, kind: "message" });
+				items.push({ file, status, title, kind: "message", mtimeMs });
 			} else {
-				items.push({ file, status: "", title, kind: "note" });
+				items.push({ file, status: "", title, kind: "note", mtimeMs });
 			}
 		} catch {
 			// unreadable inbox entries are skipped

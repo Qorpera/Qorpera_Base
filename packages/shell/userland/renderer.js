@@ -110,25 +110,70 @@ async function enterCompany(active) {
 	poller = setInterval(refreshState, 2000);
 }
 
-// ---- chatbar: model + effort ------------------------------------------------
+// ---- composer chips: model + effort ------------------------------------------
+// Custom menus, not <select>: the native popup ignores page styling entirely
+// and renders unreadable in the dark theme.
 
-function fillSelect(el, options, currentValue) {
-	el.innerHTML = "";
-	for (const option of options) {
-		const node = document.createElement("option");
-		node.value = option.value;
-		node.textContent = option.label;
-		if (option.value === currentValue) node.selected = true;
-		el.appendChild(node);
-	}
+function createChipSelect(buttonId, menuId, onPick) {
+	const button = $(buttonId);
+	const menu = $(menuId);
+	let value = "";
+	let options = [];
+	const renderLabel = () => {
+		const current = options.find((o) => o.value === value);
+		button.textContent = current ? current.label : "…";
+	};
+	const close = () => {
+		menu.classList.remove("open");
+		button.setAttribute("aria-expanded", "false");
+	};
+	const open = () => {
+		menu.innerHTML = "";
+		for (const option of options) {
+			const item = document.createElement("button");
+			item.className = option.value === value ? "selected" : "";
+			item.textContent = option.label;
+			item.onclick = () => {
+				value = option.value;
+				renderLabel();
+				close();
+				onPick(option.value);
+			};
+			menu.appendChild(item);
+		}
+		menu.classList.add("open");
+		button.setAttribute("aria-expanded", "true");
+	};
+	button.onclick = (event) => {
+		event.stopPropagation();
+		if (menu.classList.contains("open")) close();
+		else open();
+	};
+	document.addEventListener("click", (event) => {
+		if (!menu.contains(event.target) && event.target !== button) close();
+	});
+	return {
+		setOptions(list, current) {
+			options = list;
+			if (current !== undefined && current !== "") value = current;
+			renderLabel();
+		},
+		get value() {
+			return value;
+		},
+		set value(next) {
+			value = next;
+			renderLabel();
+		},
+	};
 }
 
-$("modelSel").addEventListener("change", () => {
-	const [provider, modelId] = $("modelSel").value.split("::");
+const modelChip = createChipSelect("modelBtn", "modelMenu", (picked) => {
+	const [provider, modelId] = picked.split("::");
 	window.qorpera.rpcSend({ type: "set_model", provider, modelId });
 });
-$("effortSel").addEventListener("change", () => {
-	window.qorpera.rpcSend({ type: "set_thinking_level", level: $("effortSel").value });
+const effortChip = createChipSelect("effortBtn", "effortMenu", (picked) => {
+	window.qorpera.rpcSend({ type: "set_thinking_level", level: picked });
 });
 
 async function refreshState() {
@@ -297,75 +342,208 @@ function renderActivity() {
 	}
 }
 
-function renderInbox() {
-	const panel = $("view-panel");
-	const items = [...state.inbox].sort((a, b) => (a.status === "pending" ? -1 : 1) - (b.status === "pending" ? -1 : 1));
-	panel.innerHTML = items.length ? "" : '<div class="empty">Inbox is empty</div>';
-	for (const item of items) {
-		const d = document.createElement("div");
-		d.className = "gate";
-		d.innerHTML = '<div class="t"></div><div class="s"></div><div class="body"></div>';
-		d.querySelector(".t").textContent = item.title;
-		d.querySelector(".s").textContent = `${item.kind} · ${item.file}${item.status ? ` · ${item.status}` : ""}`;
+// ---- inbox: decisions, questions, notifications ------------------------------
+// A gate is a DECISION (Approve/Deny, the exact action shown up front). A
+// message is a QUESTION or a NOTIFICATION — the founder can always Respond,
+// but a change that only needed telling is one click to Settle. Bodies are
+// clamped to a preview; Details expands.
 
-		if (item.kind === "gate") {
-			// Show WHAT is being approved — the gate file carries the exact
-			// command/action; a bare "bash (irreversible)" title is not enough
-			// to decide on.
-			fetch(`${backendUrl}/api/inbox/${encodeURIComponent(item.file)}`)
-				.then((res) => res.text())
-				.then((body) => {
-					// Drop frontmatter, the duplicate title, and the edit-the-file
-					// footer — the card renders the substance (What/Arguments).
-					const substance = body
-						.replace(/^---[\s\S]*?---/, "")
-						.replace(/^\s*# .*$/m, "")
-						.replace(/To resolve, edit[\s\S]*$/, "");
-					renderMarkdown(d.querySelector(".body"), substance);
+const inboxBodyCache = {}; // file -> raw markdown (refetched when status changes)
+
+function timeAgo(ms) {
+	if (!ms) return "";
+	const minutes = Math.round((Date.now() - ms) / 60000);
+	if (minutes < 1) return "just now";
+	if (minutes < 60) return `${minutes}m ago`;
+	if (minutes < 60 * 24) return `${Math.round(minutes / 60)}h ago`;
+	return `${Math.round(minutes / 1440)}d ago`;
+}
+
+function inboxAction(label, cls, handler) {
+	const b = document.createElement("button");
+	b.textContent = label;
+	b.className = cls;
+	b.onclick = handler;
+	return b;
+}
+
+async function inboxBody(item) {
+	const key = `${item.file}::${item.status}`;
+	if (inboxBodyCache[key] !== undefined) return inboxBodyCache[key];
+	const res = await fetch(`${backendUrl}/api/inbox/${encodeURIComponent(item.file)}`);
+	const body = await res.text();
+	inboxBodyCache[key] = body;
+	return body;
+}
+
+function renderInboxCard(item, settled) {
+	const card = document.createElement("div");
+	card.className = settled ? "card settled" : "card";
+
+	const head = document.createElement("div");
+	head.className = "card-head";
+	const titles = document.createElement("div");
+	titles.style.flex = "1";
+	titles.style.minWidth = "0";
+	const title = document.createElement("div");
+	title.className = "card-title";
+	title.textContent = item.title;
+	const meta = document.createElement("div");
+	meta.className = "card-meta";
+	const dot =
+		item.status === "pending"
+			? '<span class="dot-pending">●</span> needs you'
+			: item.status
+				? `<span class="${item.status === "denied" ? "dot-denied" : "dot-ok"}">●</span> ${item.status}`
+				: "note";
+	meta.innerHTML = `${dot} · ${timeAgo(item.mtimeMs)} · ${item.file}`;
+	titles.appendChild(title);
+	titles.appendChild(meta);
+	const kind = document.createElement("span");
+	kind.className = item.kind === "gate" ? "kchip gate" : "kchip";
+	kind.textContent = item.kind === "gate" ? "gate" : item.kind;
+	head.appendChild(titles);
+	head.appendChild(kind);
+	card.appendChild(head);
+
+	const what = document.createElement("div"); // gate: the action itself
+	what.className = "card-what";
+	what.style.display = "none";
+	card.appendChild(what);
+
+	const body = document.createElement("div");
+	body.className = "card-body";
+	card.appendChild(body);
+
+	const actions = document.createElement("div");
+	actions.className = "card-actions";
+	card.appendChild(actions);
+
+	const finish = async () => {
+		await refreshState();
+		renderInbox();
+	};
+
+	if (item.kind === "gate" && item.status === "pending") {
+		actions.appendChild(
+			inboxAction("Approve", "ok", async () => {
+				await fetch(`${backendUrl}/api/gate`, {
+					method: "POST",
+					headers: authHeaders({ "content-type": "application/json" }),
+					body: JSON.stringify({ file: item.file, action: "approved" }),
 				});
-		}
-		if (item.kind === "gate" && item.status === "pending") {
-			for (const [label, action, cls] of [["Approve", "approved", "ok"], ["Deny", "denied", "no"]]) {
-				const b = document.createElement("button");
-				b.textContent = label;
-				b.className = cls;
-				b.onclick = async () => {
-					await fetch(`${backendUrl}/api/gate`, {
-						method: "POST",
-						headers: authHeaders({ "content-type": "application/json" }),
-						body: JSON.stringify({ file: item.file, action }),
-					});
-					await refreshState();
-					renderInbox();
-				};
-				d.appendChild(b);
-			}
-		}
+				await finish();
+			}),
+		);
+		actions.appendChild(
+			inboxAction("Deny", "no", async () => {
+				await fetch(`${backendUrl}/api/gate`, {
+					method: "POST",
+					headers: authHeaders({ "content-type": "application/json" }),
+					body: JSON.stringify({ file: item.file, action: "denied" }),
+				});
+				await finish();
+			}),
+		);
+	}
 
-		if (item.kind === "message" || item.kind === "note") {
-			// Controller↔founder item: render the body, offer a reply.
-			fetch(`${backendUrl}/api/inbox/${encodeURIComponent(item.file)}`)
-				.then((res) => res.text())
-				.then((body) => renderMarkdown(d.querySelector(".body"), body.replace(/^---[\s\S]*?---/, "")));
-			const reply = document.createElement("textarea");
-			reply.placeholder = "Respond to the controller…";
-			const sendBtn = document.createElement("button");
-			sendBtn.textContent = "Send response";
-			sendBtn.className = "ok";
-			sendBtn.onclick = async () => {
-				if (!reply.value.trim()) return;
+	if (item.kind === "message" && item.status === "pending") {
+		// Settle: acknowledged, nothing to add — the controller reads the
+		// acknowledgement next wake, same lane as a written response.
+		actions.appendChild(
+			inboxAction("Settle", "ok", async () => {
 				await fetch(`${backendUrl}/api/inbox/respond`, {
 					method: "POST",
 					headers: authHeaders({ "content-type": "application/json" }),
-					body: JSON.stringify({ file: item.file, response: reply.value }),
+					body: JSON.stringify({ file: item.file, response: "Acknowledged — settled from the inbox." }),
 				});
-				await refreshState();
-				renderInbox();
-			};
-			d.appendChild(reply);
-			d.appendChild(sendBtn);
+				await finish();
+			}),
+		);
+		const reply = document.createElement("div");
+		reply.className = "card-reply";
+		reply.style.display = "none";
+		const text = document.createElement("textarea");
+		text.placeholder = "Respond to the controller…";
+		reply.appendChild(text);
+		reply.appendChild(
+			inboxAction("Send response", "ok", async () => {
+				if (!text.value.trim()) return;
+				await fetch(`${backendUrl}/api/inbox/respond`, {
+					method: "POST",
+					headers: authHeaders({ "content-type": "application/json" }),
+					body: JSON.stringify({ file: item.file, response: text.value }),
+				});
+				await finish();
+			}),
+		);
+		actions.appendChild(
+			inboxAction("Respond…", "ghost", () => {
+				reply.style.display = reply.style.display === "none" ? "" : "none";
+				if (reply.style.display === "") text.focus();
+			}),
+		);
+		card.insertBefore(reply, actions);
+	}
+
+	// Body: gates lead with the exact action; everything else gets a clamped
+	// preview with Details. Fetched once per file+status.
+	void inboxBody(item).then((raw) => {
+		let substance = raw.replace(/^---[\s\S]*?---/, "").replace(/^\s*# .*$/m, "");
+		if (item.kind === "gate") {
+			const action = substance.match(/\*\*What:\*\*\s*(?:run\s*)?(.+)$/m)?.[1];
+			if (action) {
+				what.textContent = action.replace(/^`|`$/g, "");
+				what.style.display = "";
+			}
+			substance = substance.replace(/To resolve, edit[\s\S]*$/, "");
+			// The What line is already on the card; the rest is detail.
+			if (action) substance = substance.replace(/^\*\*What:\*\*.*$/m, "");
 		}
-		panel.appendChild(d);
+		renderMarkdown(body, substance.trim());
+		if (body.scrollHeight > 140 || settled) {
+			body.classList.add("clamped");
+			if (settled) body.style.display = "none";
+			const toggle = inboxAction(settled ? "Details" : "Details ▾", "ghost", () => {
+				if (settled && body.style.display === "none") {
+					body.style.display = "";
+					body.classList.remove("clamped");
+					toggle.textContent = "Hide";
+					return;
+				}
+				const clamped = body.classList.toggle("clamped");
+				toggle.textContent = clamped ? "Details ▾" : "Hide ▴";
+				if (settled && clamped) {
+					body.style.display = "none";
+					toggle.textContent = "Details";
+				}
+			});
+			actions.appendChild(toggle);
+		}
+	});
+
+	return card;
+}
+
+function renderInbox() {
+	const panel = $("view-panel");
+	panel.innerHTML = "<h1>Inbox</h1>";
+	if (!state.inbox.length) {
+		panel.insertAdjacentHTML("beforeend", '<div class="empty">Inbox is empty</div>');
+		return;
+	}
+	const newestFirst = (a, b) => (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0);
+	const needsYou = state.inbox.filter((i) => i.status === "pending").sort(newestFirst);
+	const rest = state.inbox.filter((i) => i.status !== "pending").sort(newestFirst);
+	if (needsYou.length) {
+		panel.insertAdjacentHTML("beforeend", `<div class="inbox-section">Needs you · ${needsYou.length}</div>`);
+		for (const item of needsYou) panel.appendChild(renderInboxCard(item, false));
+	} else {
+		panel.insertAdjacentHTML("beforeend", '<div class="empty" style="padding:14px 0; text-align:left">Nothing needs you right now.</div>');
+	}
+	if (rest.length) {
+		panel.insertAdjacentHTML("beforeend", `<div class="inbox-section">Settled · ${rest.length}</div>`);
+		for (const item of rest) panel.appendChild(renderInboxCard(item, true));
 	}
 }
 
@@ -522,15 +700,13 @@ window.qorpera.onRpcEvent((frame) => {
 			if (frame.command === "get_messages" && frame.success) renderHistory(frame.data?.messages ?? frame.data);
 			else if (frame.command === "get_available_models" && frame.success) {
 				const models = frame.data?.models ?? frame.data ?? [];
-				fillSelect(
-					$("modelSel"),
+				modelChip.setOptions(
 					models.map((m) => ({ value: `${m.provider}::${m.id}`, label: `${m.name ?? m.id} (${m.provider})` })),
 					currentModelKey,
 				);
 			} else if (frame.command === "get_available_thinking_levels" && frame.success) {
 				const levels = frame.data?.levels ?? [];
-				fillSelect(
-					$("effortSel"),
+				effortChip.setOptions(
 					levels.map((level) => ({ value: level, label: `effort: ${level}` })),
 					currentEffort,
 				);
@@ -538,11 +714,11 @@ window.qorpera.onRpcEvent((frame) => {
 				const model = frame.data?.model;
 				if (model?.id) {
 					currentModelKey = `${model.provider}::${model.id}`;
-					if ($("modelSel").options.length) $("modelSel").value = currentModelKey;
+					modelChip.value = currentModelKey;
 				}
 				if (frame.data?.thinkingLevel) {
 					currentEffort = frame.data.thinkingLevel;
-					if ($("effortSel").options.length) $("effortSel").value = currentEffort;
+					effortChip.value = currentEffort;
 				}
 			} else if (frame.command === "set_model" && frame.success && frame.data?.id) {
 				currentModelKey = `${frame.data.provider}::${frame.data.id}`;

@@ -22,5 +22,5 @@
 		"electron-builder": "26.15.3",
 		"vitest": "4.1.9"
 	},
-	"productVersion": "0.11.0"
+	"productVersion": "0.12.0"
 }
