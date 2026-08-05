@@ -295,6 +295,19 @@ describe("gate lifecycle", () => {
 		expect(records.some((record) => record.status === "pending")).toBe(true);
 	});
 
+	it("honors gate files saved with a BOM (Windows editors — hit live 2026-08-05)", () => {
+		writeAuthorityToml(`[tools]\ndanger = "irreversible"\n\n[irreversible]\nmode = "gate"\n`);
+		const authority = discoverAuthority(root)!;
+		const first = evaluateToolCall(authority, "danger", { x: 1 }, root);
+		const gateId = (first as { gateId: string }).gateId;
+		const inbox = join(root, "inbox");
+		const file = readdirSync(inbox).find((name) => name.startsWith(gateId))!;
+		const path = join(inbox, file);
+		// A founder approving in Notepad or PowerShell 5.1 prepends a BOM.
+		writeFileSync(path, "\uFEFF" + readFileSync(path, "utf-8").replace(/^status:.*$/m, "status: approved"), "utf-8");
+		expect(evaluateToolCall(authority, "danger", { x: 1 }, root).kind).toBe("allow");
+	});
+
 	it("denied requests block without re-filing", () => {
 		writeAuthorityToml(`[tools]\ndanger = "irreversible"\n\n[irreversible]\nmode = "gate"\n`);
 		const authority = discoverAuthority(root)!;

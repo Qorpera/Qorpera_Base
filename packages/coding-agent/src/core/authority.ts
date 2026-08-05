@@ -409,7 +409,11 @@ function parseGateFile(filePath: string): GateRecord | undefined {
 	} catch {
 		return undefined;
 	}
-	const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+	// Founders resolve gates by editing status: in ANY editor — Windows
+	// tools (Notepad, PowerShell 5.1 Set-Content -Encoding utf8) prepend a
+	// BOM, which would silently hide the record and re-file the request
+	// (hit live, 2026-08-05). Strip it before anchoring the frontmatter.
+	const frontmatter = content.replace(/^\uFEFF/, "").match(/^---\r?\n([\s\S]*?)\r?\n---/);
 	if (!frontmatter) return undefined;
 	const fields = new Map<string, string>();
 	for (const line of frontmatter[1].split(/\r?\n/)) {
