@@ -16,7 +16,7 @@
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -293,7 +293,11 @@ function createWindow(): Slot {
 		width: 1360,
 		height: 860,
 		title: "Qorpera Base",
-		backgroundColor: "#101418",
+		backgroundColor: "#101010",
+		// Frameless, Desktop-style chrome: the userland draws the titlebar
+		// (a -webkit-app-region: drag header), the OS overlays min/max/close.
+		titleBarStyle: "hidden",
+		titleBarOverlay: { color: "#101010", symbolColor: "#e4e4e1", height: 40 },
 		webPreferences: {
 			preload: join(DIRNAME, "preload.cjs"),
 			contextIsolation: true,
@@ -303,6 +307,17 @@ function createWindow(): Slot {
 	const slot: Slot = { window: win, kickoffPending: false };
 	slots.set(win.id, slot);
 	win.setMenuBarVisibility(false);
+	// Kernel duty: the window must stay draggable in EVERY userland, including
+	// evolved forks that predate the frameless titlebar and draw no drag
+	// region of their own. A thin top strip guarantees that; userlands with a
+	// real titlebar simply overlap it.
+	win.webContents.on("did-finish-load", () => {
+		void win.webContents
+			.insertCSS(
+				"body::before{content:'';position:fixed;top:0;left:0;right:150px;height:12px;z-index:2147483647;-webkit-app-region:drag;}",
+			)
+			.catch(() => {});
+	});
 	void win.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 	win.webContents.setWindowOpenHandler(({ url }) => {
 		void electronShell.openExternal(url);
@@ -465,6 +480,27 @@ app.whenReady().then(() => {
 		ipcMain.handle("update:install", () => {});
 	}
 
+	// Visual smoke: capture the window to a PNG once it has settled — the
+	// cheap way to verify chrome work without a human at the keyboard.
+	// Composes with --smoke-company (captures after the company loads).
+	const shotIndex = process.argv.indexOf("--smoke-shot");
+	if (shotIndex >= 0 && process.argv[shotIndex + 1]) {
+		const target = process.argv[shotIndex + 1];
+		let timer: NodeJS.Timeout | undefined;
+		initial.window.webContents.on("did-finish-load", () => {
+			if (timer) clearTimeout(timer);
+			timer = setTimeout(async () => {
+				try {
+					const image = await initial.window.webContents.capturePage();
+					writeFileSync(target, image.toPNG());
+					console.log(`SHOT_SAVED ${target}`);
+				} catch (error) {
+					console.error(`SHOT_FAILED ${(error as Error).message}`);
+				}
+				app.quit();
+			}, 1600);
+		});
+	}
 	// Headless smoke: prove the shell boots, then leave.
 	if (process.argv.includes("--smoke")) {
 		initial.window.webContents.once("did-finish-load", () => {

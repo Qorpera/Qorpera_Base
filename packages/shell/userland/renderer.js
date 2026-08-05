@@ -74,6 +74,7 @@ async function enterCompany(active) {
 	$("hubnav").style.display = "none";
 	$("conav").style.display = "";
 	$("messages").innerHTML = "";
+	resetWorkGroup();
 	if (active.usingBaseFallback) {
 		addMsg("log", "your evolved app failed to load — running the base chrome (kernel fallback)");
 	}
@@ -96,6 +97,7 @@ async function enterCompany(active) {
 	hydrateAgentState(false);
 	await refreshState();
 	document.title = `${state.name || "Company"} Controller`;
+	$("wordmark").textContent = document.title;
 	if (poller) clearInterval(poller);
 	poller = setInterval(refreshState, 2000);
 }
@@ -154,6 +156,7 @@ async function openSession(file) {
 	// Cached pages show instantly; fresh ones get a proper loading state.
 	// Either way the live child re-hydrates and replaces once ready.
 	$("messages").innerHTML = sessionCache[file] ?? '<div class="loading">loading session…</div>';
+	resetWorkGroup();
 	show("chat");
 	renderCompanyNavSafe();
 	hydrateAgentState(true);
@@ -164,6 +167,7 @@ async function newChat() {
 	currentSession = null;
 	await window.qorpera.openChat(null);
 	$("messages").innerHTML = "";
+	resetWorkGroup();
 	show("chat");
 	renderCompanyNavSafe();
 	hydrateAgentState(false);
@@ -171,14 +175,36 @@ async function newChat() {
 
 function renderHistory(messages) {
 	$("messages").innerHTML = "";
+	resetWorkGroup();
+	// Consecutive tool calls fold into one collapsed "Worked" group, same as
+	// live streaming does (durations aren't recorded, so the label is count-only).
+	let group = null;
+	const groupLine = (text) => {
+		if (!group) {
+			group = makeWorkGroup(false);
+			$("messages").appendChild(group.el);
+		}
+		group.steps += 1;
+		group.summary.textContent = `Worked · ${group.steps} step${group.steps === 1 ? "" : "s"}`;
+		const div = document.createElement("div");
+		div.className = "msg tool";
+		div.textContent = text;
+		group.body.appendChild(div);
+	};
 	for (const message of messages ?? []) {
 		if (message.role === "user") {
 			const text = (message.content ?? []).filter((p) => p.type === "text").map((p) => p.text).join("\n");
-			if (text) addMsg("user", text);
+			if (text) {
+				group = null;
+				addMsg("user", text);
+			}
 		} else if (message.role === "assistant") {
 			for (const part of message.content ?? []) {
-				if (part.type === "text" && part.text) renderMarkdown(addMsg("assistant", ""), part.text);
-				if (part.type === "toolCall") addMsg("tool", `▸ ${part.name} ${summarizeArgs(part.arguments)}`);
+				if (part.type === "text" && part.text) {
+					group = null;
+					renderMarkdown(addMsg("assistant", ""), part.text);
+				}
+				if (part.type === "toolCall") groupLine(`✓ ${part.name} ${summarizeArgs(part.arguments)}`);
 			}
 		}
 	}
@@ -335,16 +361,84 @@ function sendPrompt() {
 	const text = input.value.trim();
 	if (!text) return;
 	input.value = "";
+	syncComposer();
 	addMsg("user", text);
 	window.qorpera.rpcSend({ type: "prompt", message: text });
 }
 
+/** Grow the textarea with its content and light the send button up. */
+function syncComposer() {
+	const input = $("input");
+	input.style.height = "auto";
+	input.style.height = `${Math.min(input.scrollHeight, 270)}px`;
+	$("sendBtn").dataset.active = input.value.trim() ? "true" : "false";
+}
+
+$("input").addEventListener("input", syncComposer);
 $("input").addEventListener("keydown", (event) => {
 	if (event.key === "Enter" && !event.shiftKey) {
 		event.preventDefault();
 		sendPrompt();
 	}
 });
+
+// ---- work groups: the agent's tool calls + thinking fold under a
+// ---- collapsible "Worked for …" row, like the Codex thread ------------------
+
+let workGroup = null; // { el, summary, body, start, steps }
+let pendingToolLines = []; // tool lines awaiting their execution_end
+
+function makeWorkGroup(open) {
+	const el = document.createElement("details");
+	el.className = "work";
+	el.open = open;
+	const summary = document.createElement("summary");
+	summary.textContent = "Working…";
+	const body = document.createElement("div");
+	body.className = "workbody";
+	el.appendChild(summary);
+	el.appendChild(body);
+	return { el, summary, body, start: Date.now(), steps: 0 };
+}
+
+function ensureWorkGroup() {
+	if (workGroup) return workGroup;
+	workGroup = makeWorkGroup(true);
+	$("messages").appendChild(workGroup.el);
+	$("messages").scrollTop = $("messages").scrollHeight;
+	return workGroup;
+}
+
+/** Append a tool/thinking line inside the current work group. */
+function workMsg(cls, text) {
+	const group = ensureWorkGroup();
+	const div = document.createElement("div");
+	div.className = `msg ${cls}`;
+	div.textContent = text;
+	group.body.appendChild(div);
+	$("messages").scrollTop = $("messages").scrollHeight;
+	return div;
+}
+
+function formatDuration(ms) {
+	const seconds = Math.max(1, Math.round(ms / 1000));
+	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+/** Stamp the summary with the elapsed time and collapse the group. */
+function closeWorkGroup() {
+	if (!workGroup) return;
+	workGroup.summary.textContent = `Worked for ${formatDuration(Date.now() - workGroup.start)} · ${workGroup.steps} step${workGroup.steps === 1 ? "" : "s"}`;
+	workGroup.el.open = false;
+	workGroup = null;
+	pendingToolLines = [];
+}
+
+/** Forget the group without touching the DOM (thread was replaced). */
+function resetWorkGroup() {
+	workGroup = null;
+	pendingToolLines = [];
+}
 
 /* Markdown for assistant prose. The source is HTML-escaped BEFORE parsing so
  * raw HTML in model output renders as text — formatting without injection. */
@@ -359,6 +453,8 @@ window.qorpera.onRpcEvent((frame) => {
 			const delta = frame.assistantMessageEvent;
 			if (!delta) break;
 			if (delta.type === "text_start") {
+				// The answer starts: fold the run's work away first.
+				closeWorkGroup();
 				assistantEl = addMsg("assistant", "");
 				assistantEl.dataset.source = "";
 			}
@@ -367,22 +463,31 @@ window.qorpera.onRpcEvent((frame) => {
 				renderMarkdown(assistantEl, assistantEl.dataset.source);
 				$("messages").scrollTop = $("messages").scrollHeight;
 			}
-			if (delta.type === "thinking_start") thinkingEl = addMsg("thinking", "");
+			if (delta.type === "thinking_start") thinkingEl = workMsg("thinking", "");
 			if (delta.type === "thinking_delta" && thinkingEl) thinkingEl.textContent += delta.delta;
 			if (delta.type === "thinking_end") thinkingEl = null;
 			if (delta.type === "text_end") assistantEl = null;
 			break;
 		}
-		case "tool_execution_start":
-			addMsg("tool", `▸ ${frame.toolName} ${summarizeArgs(frame.args)}`);
+		case "tool_execution_start": {
+			const group = ensureWorkGroup();
+			group.steps += 1;
+			const line = workMsg("tool", `▸ ${frame.toolName} ${summarizeArgs(frame.args)}`);
+			pendingToolLines.push({ toolName: frame.toolName, line });
 			break;
+		}
 		case "tool_execution_end": {
-			const error = frame.isError ? " ✗" : "";
-			addMsg("tool", `✓ ${frame.toolName}${error}`);
+			// Finish the matching in-flight line in place instead of adding a
+			// second row per call.
+			const index = pendingToolLines.findIndex((p) => p.toolName === frame.toolName);
+			const entry = index >= 0 ? pendingToolLines.splice(index, 1)[0] : null;
+			if (entry) entry.line.textContent = `${frame.isError ? "✗" : "✓"}${entry.line.textContent.slice(1)}`;
+			else workMsg("tool", `${frame.isError ? "✗" : "✓"} ${frame.toolName}`);
 			refreshState();
 			break;
 		}
 		case "agent_settled":
+			closeWorkGroup();
 			$("status").textContent = "idle";
 			refreshState();
 			break;

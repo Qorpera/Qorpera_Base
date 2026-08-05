@@ -4,83 +4,269 @@
 <meta charset="utf-8">
 <title>Qorpera Base</title>
 <style>
-	:root { color-scheme: dark; }
+	/* ---- design tokens (generalize everything against these) ----------------
+	 * Palette and type lifted from Qorpera Desktop's dark theme: near-black
+	 * chrome (titlebar + sidebar) framing one rounded warm-dark content sheet. */
+	@font-face {
+		font-family: "Source Sans 3";
+		font-style: normal;
+		font-weight: 200 900;
+		font-display: swap;
+		src: url("./fonts/source-sans-3-latin-normal.woff2") format("woff2");
+	}
+	@font-face {
+		font-family: "Source Sans 3";
+		font-style: italic;
+		font-weight: 200 900;
+		font-display: swap;
+		src: url("./fonts/source-sans-3-latin-italic.woff2") format("woff2");
+	}
+	:root {
+		color-scheme: dark;
+		--chrome: #101010;            /* titlebar + sidebar */
+		--bg: #2d2d2b;                /* the content sheet */
+		--pane: #2d2d2b;
+		--pane-strong: #3a3a38;
+		--hover: #3f4241;
+		--text: #f9f9f7;
+		--text-muted: #b8b8b3;
+		--text-soft: #8f8f8a;
+		--border: #3d3d3b;
+		--border-strong: #51514d;
+		--accent: #cc7d5e;
+		--accent-soft: #3f2d28;
+		--blue: #8fa8ff;
+		--danger: #ff5f38;
+		--danger-soft: #442821;
+		--ok: #73d5b1;
+		--send-idle: #3f4241;
+		--send-active: #0161bc;
+		--send-active-hover: #0057a8;
+		--titlebar-height: 40px;
+		--thread-width: 760px;
+		--font-sans: "Source Sans 3", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+		--font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+	}
 	* { box-sizing: border-box; margin: 0; }
-	body { display: flex; height: 100vh; font-family: 'Segoe UI', system-ui, sans-serif; background: #101418; color: #e6e9ec; font-size: 14px; }
-	nav { width: 250px; min-width: 250px; border-right: 1px solid #232a31; padding: 14px; display: flex; flex-direction: column; gap: 3px; overflow-y: auto; }
+	body {
+		display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+		font-family: var(--font-sans); font-size: 14px;
+		background: var(--chrome); color: var(--text);
+		text-rendering: optimizeLegibility; font-synthesis: none;
+	}
+	button, input, select, textarea { font: inherit; }
+	button {
+		min-height: 30px; border: 1px solid var(--border); border-radius: 6px;
+		background: var(--pane); color: var(--text); padding: 0 10px;
+		cursor: default; white-space: nowrap;
+	}
+	button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--pane-strong); }
+	button:disabled { opacity: 0.48; }
+	button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+		outline: 1px solid var(--border-strong); outline-offset: 1px;
+	}
+	input, select, textarea {
+		border: 1px solid var(--border); border-radius: 6px;
+		background: var(--bg); color: var(--text);
+	}
+	select { color-scheme: dark; }
+	code, pre { font-family: var(--font-mono); }
+	::-webkit-scrollbar { width: 14px; height: 14px; }
+	::-webkit-scrollbar-track { background: transparent; }
+	::-webkit-scrollbar-thumb {
+		border: 4px solid transparent; border-radius: 999px;
+		background: rgba(148, 152, 156, 0.42); background-clip: content-box;
+	}
+
+	/* ---- titlebar (frameless window; native overlay draws min/max/close) --- */
+	#titlebar {
+		display: grid; grid-template-columns: auto minmax(0, 1fr);
+		align-items: center; flex: 0 0 auto;
+		height: var(--titlebar-height); padding-left: 14px;
+		background: var(--chrome); user-select: none;
+		-webkit-app-region: drag;
+	}
+	#wordmark {
+		color: #b6b6ae; font-size: 12px; font-weight: 560;
+		letter-spacing: 0.02em; line-height: 1; white-space: nowrap;
+	}
+
+	/* ---- shell: sidebar + rounded content sheet ----------------------------- */
+	#shell { flex: 1; display: flex; min-height: 0; }
+	nav {
+		width: 250px; min-width: 250px; background: var(--chrome);
+		padding: 6px 14px 14px; display: flex; flex-direction: column;
+		overflow-y: auto; scrollbar-width: thin;
+		scrollbar-color: rgba(249, 249, 247, 0.075) transparent;
+	}
+	/* The nav panes must be flex columns or the spacer can't pin the
+	   profile/settings row to the bottom. */
+	#hubnav, #conav { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 3px; }
 	nav h1 { font-size: 14px; margin-bottom: 10px; }
-	nav h1 small { display: block; color: #7a8590; font-weight: 400; font-size: 11px; margin-top: 2px; }
-	nav h2 { font-size: 11px; text-transform: uppercase; color: #7a8590; margin: 12px 0 4px; }
-	nav button, .gate button { text-align: left; background: none; border: 0; color: #cdd4da; padding: 6px 9px; border-radius: 6px; cursor: pointer; font-size: 13px; width: 100%; }
-	nav button:hover { background: #1a2027; }
-	nav button.active { background: #24303b; color: #fff; }
-	main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-	#view-surface { flex: 1; border: 0; width: 100%; background: #101418; display: none; }
+	nav h1 small { display: block; color: var(--text-soft); font-weight: 400; font-size: 11px; margin-top: 2px; }
+	nav h2 {
+		font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+		color: var(--text-soft); font-weight: 560; margin: 12px 0 4px;
+	}
+	nav button, .gate button {
+		text-align: left; background: none; border: 0; color: var(--text-muted);
+		padding: 6px 9px; border-radius: 6px; cursor: pointer; font-size: 13px; width: 100%;
+	}
+	nav button:hover { background: rgba(249, 249, 247, 0.055); color: var(--text); }
+	nav button.active { background: rgba(249, 249, 247, 0.09); color: var(--text); }
+	main {
+		flex: 1; display: flex; flex-direction: column; min-width: 0;
+		background: var(--bg); border-radius: 14px 0 0 0; overflow: hidden;
+	}
+
+	#view-surface { flex: 1; border: 0; width: 100%; background: var(--bg); display: none; }
 	#view-panel { flex: 1; padding: 22px; overflow-y: auto; display: none; }
-	#view-chat { flex: 1; display: none; flex-direction: column; min-height: 0; }
-	#messages { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 10px; }
-	.msg { max-width: 860px; white-space: pre-wrap; line-height: 1.45; }
+
+	/* ---- chat thread --------------------------------------------------------- */
+	#view-chat { flex: 1; display: none; flex-direction: column; min-height: 0; position: relative; }
+	#messages {
+		flex: 1; overflow-y: auto;
+		padding: 24px max(18px, calc((100% - var(--thread-width)) / 2)) 170px;
+		display: flex; flex-direction: column; gap: 10px;
+	}
+	.msg { width: 100%; max-width: var(--thread-width); white-space: pre-wrap; line-height: 1.5; }
 	.msg.assistant { white-space: normal; }
 	.msg.assistant p { margin: 0 0 8px; }
 	.msg.assistant h1, .msg.assistant h2, .msg.assistant h3 { margin: 12px 0 6px; font-size: 15px; }
 	.msg.assistant ul, .msg.assistant ol { margin: 0 0 8px 22px; }
-	.msg.assistant code { background: #1a2027; border-radius: 4px; padding: 1px 5px; font-family: Consolas, monospace; font-size: 12.5px; }
-	.msg.assistant pre { background: #161b21; border: 1px solid #232a31; border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 0 0 8px; }
+	.msg.assistant code { background: rgba(249, 249, 247, 0.08); border-radius: 4px; padding: 1px 5px; font-family: var(--font-mono); font-size: 12.5px; }
+	.msg.assistant pre { background: #262625; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 0 0 8px; }
 	.msg.assistant pre code { background: none; padding: 0; }
 	.msg.assistant table { border-collapse: collapse; margin: 0 0 8px; }
-	.msg.assistant td, .msg.assistant th { border: 1px solid #2c3540; padding: 4px 9px; font-size: 13px; }
-	.msg.assistant blockquote { border-left: 3px solid #2c3540; margin: 0 0 8px; padding-left: 10px; color: #aab3bb; }
-	.msg.user { background: #24303b; border-radius: 10px; padding: 10px 14px; align-self: flex-end; }
-	.msg.tool { color: #7a8590; font-family: Consolas, monospace; font-size: 12px; }
-	.msg.thinking { color: #7a8590; font-style: italic; }
-	.msg.log { color: #6b4f2f; font-family: Consolas, monospace; font-size: 12px; }
-	#composer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #232a31; }
-	#composer textarea { flex: 1; background: #161b21; border: 1px solid #2c3540; border-radius: 8px; color: #e6e9ec; padding: 10px 12px; font: inherit; resize: none; height: 64px; }
-	#composer button { padding: 0 22px; border-radius: 8px; border: 1px solid #2c3540; background: #24303b; color: #fff; cursor: pointer; }
-	.gate { border: 1px solid #232a31; border-radius: 8px; padding: 13px 15px; margin-bottom: 10px; }
+	.msg.assistant td, .msg.assistant th { border: 1px solid var(--border-strong); padding: 4px 9px; font-size: 13px; }
+	.msg.assistant blockquote { border-left: 3px solid var(--border-strong); margin: 0 0 8px; padding-left: 10px; color: var(--text-muted); }
+	.msg.user { width: auto; max-width: 85%; align-self: flex-end; background: var(--pane-strong); border-radius: 14px; padding: 10px 14px; }
+	.msg.tool { color: var(--text-soft); font-family: var(--font-mono); font-size: 12px; }
+	.msg.thinking { color: var(--text-soft); font-style: italic; }
+	.msg.log { color: var(--danger); opacity: 0.75; font-family: var(--font-mono); font-size: 12px; }
+
+	/* Collapsible run group: tool calls + thinking fold under "Worked for…". */
+	details.work { width: 100%; max-width: var(--thread-width); }
+	details.work summary {
+		display: inline-flex; align-items: center; gap: 6px; list-style: none;
+		color: var(--text-muted); font-size: 13px; cursor: pointer; user-select: none;
+		padding: 2px 0; border-radius: 6px;
+	}
+	details.work summary::-webkit-details-marker { display: none; }
+	details.work summary::before { content: "▸"; font-size: 10px; color: var(--text-soft); transition: transform 120ms ease; }
+	details.work[open] summary::before { transform: rotate(90deg); }
+	details.work summary:hover { color: var(--text); }
+	details.work .workbody {
+		display: flex; flex-direction: column; gap: 5px;
+		border-left: 2px solid var(--border); margin: 6px 0 2px 3px; padding-left: 12px;
+	}
+	details.work .workbody .msg { max-width: 100%; }
+
+	/* ---- composer: the Codex shell (floats over the thread) ------------------ */
+	#composer-footer {
+		position: absolute; z-index: 2; left: 0; right: 0; bottom: 16px;
+		display: grid; justify-items: center; padding: 0 18px;
+		pointer-events: none;
+	}
+	.composer-shell {
+		pointer-events: auto;
+		position: relative; display: flex; flex-direction: column; gap: 8px;
+		width: min(var(--thread-width), 100%); min-height: 98px;
+		border: 1px solid transparent; border-radius: 20px;
+		background: rgba(61, 61, 59, 0.92);
+		-webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+		box-shadow: 0 18px 42px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.18);
+		padding: 15px 13px 8px; overflow: hidden;
+	}
+	.composer-shell:focus-within {
+		box-shadow:
+			0 18px 42px rgba(0, 0, 0, 0.22),
+			0 1px 2px rgba(0, 0, 0, 0.18),
+			0 0 0 1px rgba(249, 249, 247, 0.05) inset;
+	}
+	.composer-shell textarea {
+		width: 100%; min-height: 35px; max-height: 270px;
+		border: 0; border-radius: 0; background: transparent; color: var(--text);
+		padding: 0 4px; font-size: 14px; line-height: 1.45;
+		outline: 0; resize: none; overflow-y: auto;
+	}
+	.composer-shell textarea::placeholder { color: rgba(249, 249, 247, 0.36); }
+	.composer-strip {
+		display: flex; align-items: center; gap: 5px;
+		min-height: 32px; margin-top: auto; color: rgba(249, 249, 247, 0.62);
+	}
+	.composer-spacer { flex: 1 1 auto; min-width: 0; }
+	.composer-strip select {
+		appearance: none; -webkit-appearance: none; width: auto;
+		border: 0; border-radius: 8px; background: transparent; color: #c4c4be;
+		min-height: 26px; padding: 3px 8px; font-size: 12.5px; font-weight: 460;
+		max-width: 220px; white-space: nowrap; text-overflow: ellipsis;
+	}
+	.composer-strip select:hover { background: rgba(235, 232, 224, 0.049); color: #e6e6e3; }
+	.composer-send {
+		display: grid; place-items: center; width: 32px; height: 32px; min-height: 32px;
+		padding: 0; border: 0; border-radius: 999px; flex: 0 0 auto;
+		background: var(--send-idle); color: #ffffff; line-height: 0;
+		transition: background 120ms ease;
+	}
+	.composer-send:hover:not(:disabled) { border: 0; background: var(--send-idle); }
+	.composer-send[data-active="true"] { background: var(--send-active); }
+	.composer-send[data-active="true"]:hover:not(:disabled) { background: var(--send-active-hover); }
+	.composer-send svg { width: 17px; height: 17px; stroke-width: 1.9; }
+
+	/* ---- cards, inbox, status -------------------------------------------------- */
+	.gate {
+		border: 1px solid var(--border); border-radius: 10px;
+		background: rgba(249, 249, 247, 0.02); padding: 13px 15px; margin-bottom: 10px;
+	}
 	.gate .t { font-weight: 600; margin-bottom: 3px; }
-	.gate .s { font-size: 12px; color: #7a8590; margin-bottom: 8px; }
-	.gate button { width: auto; margin-right: 8px; padding: 5px 14px; border: 1px solid #2c3540; background: #1a2027; }
-	.gate button.ok { border-color: #2f6b3a; }
-	.gate button.no { border-color: #6b2f2f; }
+	.gate .s { font-size: 12px; color: var(--text-soft); margin-bottom: 8px; }
+	.gate button { width: auto; margin-right: 8px; padding: 5px 14px; border: 1px solid var(--border-strong); background: var(--pane); }
+	.gate button.ok { border-color: #3f5a4b; color: var(--ok); }
+	.gate button.no { border-color: #5d3f3c; color: #f0a9a0; }
 	.gate .body { margin: 8px 0; }
-	.gate textarea { width: 100%; background: #161b21; border: 1px solid #2c3540; border-radius: 6px; color: #e6e9ec; padding: 8px 10px; font: inherit; resize: vertical; min-height: 56px; margin-bottom: 8px; }
+	.gate textarea { width: 100%; padding: 8px 10px; resize: vertical; min-height: 56px; margin-bottom: 8px; }
 	#sessions button { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	h2.cat { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
-	h2.cat .catBtn { width: auto; margin-left: auto; padding: 0 7px; font-size: 14px; color: #7a8590; border: 1px solid #2c3540; border-radius: 5px; background: none; cursor: pointer; }
-	h2.cat .catBtn:hover { color: #fff; background: #1a2027; }
-	#chatsCaret { font-size: 10px; color: #7a8590; }
-	.loading { display: flex; align-items: center; justify-content: center; height: 100%; color: #7a8590; }
-	.profileRow { display: flex !important; align-items: center; gap: 10px; border-top: 1px solid #232a31 !important; border-radius: 0 !important; padding-top: 12px !important; }
-	.avatar { width: 30px; height: 30px; border-radius: 50%; background: #24303b; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; }
-	.profileText small { color: #7a8590; }
+	h2.cat .catBtn { width: auto; margin-left: auto; padding: 0 7px; font-size: 14px; color: var(--text-soft); border: 1px solid var(--border); border-radius: 5px; background: none; cursor: pointer; }
+	h2.cat .catBtn:hover { color: var(--text); background: rgba(249, 249, 247, 0.055); }
+	#chatsCaret { font-size: 10px; color: var(--text-soft); }
+	.loading { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-soft); }
+	.profileRow { display: flex !important; align-items: center; gap: 10px; border-top: 1px solid rgba(249, 249, 247, 0.08) !important; border-radius: 0 !important; padding-top: 12px !important; margin-top: 8px; flex: 0 0 auto; }
+	.avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--pane-strong); display: inline-flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; }
+	.profileText small { color: var(--text-soft); }
+	.navspacer { flex: 1; min-height: 12px; }
 	/* display set via .open class — never on the bare id, or the hidden
 	   attribute loses to author CSS and Back can't close the page. */
-	#settingsView { position: fixed; inset: 0; display: none; background: #101418; z-index: 20; }
+	#settingsView { position: fixed; top: var(--titlebar-height); right: 0; bottom: 0; left: 0; display: none; background: var(--chrome); z-index: 20; }
 	#settingsView.open { display: flex; }
-	#settingsView nav { width: 220px; min-width: 220px; }
-	#settingsView .stab.active { background: #24303b; color: #fff; }
-	#settingsContent { flex: 1; overflow-y: auto; padding: 28px 36px; max-width: 760px; }
-	.setrow { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid #1a2027; }
+	#settingsView nav { width: 220px; min-width: 220px; padding-top: 14px; }
+	#settingsView .stab.active { background: rgba(249, 249, 247, 0.09); color: var(--text); }
+	#settingsContent { flex: 1; overflow-y: auto; padding: 28px 36px; background: var(--bg); border-radius: 14px 0 0 0; }
+	#settingsContent > * { max-width: 700px; }
+	.setrow { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 	.setrow label { flex: 1; }
-	.setrow label small { display: block; color: #7a8590; font-size: 12px; margin-top: 2px; }
-	.setrow select, .setrow input[type=number] { background: #161b21; border: 1px solid #2c3540; border-radius: 6px; color: #e6e9ec; padding: 6px 10px; }
+	.setrow label small { display: block; color: var(--text-soft); font-size: 12px; margin-top: 2px; }
+	.setrow select, .setrow input[type=number] { width: auto; padding: 6px 10px; }
 	.setrow input[type=number] { width: 90px; }
-	#settingsContent h1 { font-size: 18px; margin-bottom: 14px; }
-	#settingsContent textarea { width: 100%; background: #161b21; border: 1px solid #2c3540; border-radius: 8px; color: #e6e9ec; padding: 10px 12px; font-family: Consolas, monospace; font-size: 12.5px; min-height: 240px; }
-	#settingsContent .save { margin-top: 14px; padding: 8px 20px; border-radius: 8px; border: 1px solid #2f6b3a; background: #1a2027; color: #fff; cursor: pointer; }
-	.empty { color: #7a8590; padding: 36px; text-align: center; }
-	.badge { background: #6b2f2f; border-radius: 10px; font-size: 11px; padding: 1px 7px; margin-left: 6px; }
-	#status { padding: 6px 16px; border-top: 1px solid #232a31; color: #7a8590; font-size: 11px; min-height: 25px; }
-	#chatbar { display: flex; gap: 8px; padding: 8px 16px; border-bottom: 1px solid #232a31; }
-	#chatbar select { background: #161b21; border: 1px solid #2c3540; border-radius: 6px; color: #cdd4da; padding: 4px 8px; font-size: 12px; max-width: 340px; }
-	.sess-meta { color: #7a8590; font-size: 11px; }
-	.hubbtn { border: 1px solid #232a31 !important; margin-bottom: 6px; padding: 10px 12px !important; }
+	#settingsContent h1 { font-size: 18px; margin: 14px 0; }
+	#settingsContent h1:first-child { margin-top: 0; }
+	#settingsContent textarea { width: 100%; border-radius: 8px; padding: 10px 12px; font-family: var(--font-mono); font-size: 12.5px; min-height: 240px; }
+	#settingsContent .save { margin-top: 14px; padding: 8px 20px; border-radius: 8px; border-color: #3f5a4b; }
+	.empty { color: var(--text-soft); padding: 36px; text-align: center; }
+	.badge { background: var(--danger-soft); color: #f0a9a0; border-radius: 10px; font-size: 11px; padding: 1px 7px; margin-left: 6px; }
+	#status { padding: 6px 16px; border-top: 1px solid var(--border); color: var(--text-soft); font-size: 11px; min-height: 25px; }
+	.sess-meta { color: var(--text-soft); font-size: 11px; }
+	.hubbtn { border: 1px solid var(--border) !important; margin-bottom: 6px; padding: 10px 12px !important; }
 </style>
 </head>
 <body>
+<header id="titlebar">
+	<span id="wordmark">Qorpera Base</span>
+	<div></div>
+</header>
+<div id="shell">
 <nav>
-	<h1 id="title" hidden>Qorpera Base<small id="subtitle">the foundation</small></h1>
 	<div id="hubnav">
 		<h1>Qorpera Base<small id="hubVersion"></small></h1>
 		<h2>Companies</h2>
@@ -89,7 +275,7 @@
 		<button class="hubbtn" onclick="integrateCompanyPrompt()">+ Integrate existing repo…</button>
 		<h2>Cloud</h2>
 		<button class="hubbtn" disabled title="Sync, community, and compliance — not built yet">Connect to Qorpera Cloud (soon)</button>
-		<div style="flex:1"></div>
+		<div class="navspacer"></div>
 		<button class="profileRow" onclick="openSettings('general')"><span class="avatar">F</span><span class="profileText">Founder<br><small>Settings</small></span></button>
 	</div>
 	<div id="conav" style="display:none">
@@ -100,26 +286,32 @@
 		<div id="sessions"></div>
 		<h2>Surfaces</h2>
 		<div id="surfaces"><div class="empty" style="padding:6px">none built yet</div></div>
-		<div style="flex:1"></div>
+		<div class="navspacer"></div>
 		<button class="profileRow" onclick="openSettings('general')"><span class="avatar">F</span><span class="profileText">Founder<br><small>Settings</small></span></button>
 	</div>
 </nav>
 <main>
 	<div id="view-chat">
-		<div id="chatbar">
-			<select id="modelSel" title="Model"></select>
-			<select id="effortSel" title="Thinking effort"></select>
-		</div>
 		<div id="messages"></div>
-		<div id="composer">
-			<textarea id="input" placeholder="Steer the company… (Enter to send, Shift+Enter for newline)"></textarea>
-			<button onclick="sendPrompt()">Send</button>
+		<div id="composer-footer">
+			<div class="composer-shell">
+				<textarea id="input" rows="1" placeholder="Steer the company… (Enter to send, Shift+Enter for newline)"></textarea>
+				<div class="composer-strip">
+					<span class="composer-spacer"></span>
+					<select id="modelSel" title="Model"></select>
+					<select id="effortSel" title="Thinking effort"></select>
+					<button id="sendBtn" class="composer-send" data-active="false" onclick="sendPrompt()" title="Send">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6.5 10.5L12 5l5.5 5.5"/></svg>
+					</button>
+				</div>
+			</div>
 		</div>
 	</div>
 	<iframe id="view-surface"></iframe>
 	<div id="view-panel"></div>
 	<div id="status"></div>
 </main>
+</div>
 <div id="settingsView">
 	<nav>
 		<button onclick="closeSettings()">← Back</button>
