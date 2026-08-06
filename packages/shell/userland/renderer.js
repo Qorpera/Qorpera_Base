@@ -200,13 +200,89 @@ function createChipSelect(buttonId, menuId, onPick) {
 	};
 }
 
-const modelChip = createChipSelect("modelBtn", "modelMenu", (picked) => {
-	const [provider, modelId] = picked.split("::");
-	window.qorpera.rpcSend({ type: "set_model", provider, modelId });
-});
-const effortChip = createChipSelect("effortBtn", "effortMenu", (picked) => {
-	window.qorpera.rpcSend({ type: "set_thinking_level", level: picked });
-});
+// ---- the model control: effort slider + model dropdown + speed toggle -------
+// One panel in the Desktop style. The slider drives set_thinking_level live,
+// the dropdown drives set_model, and the speed toggle is present but disabled
+// until the local runtime grows a fast lane.
+const modelCtl = (() => {
+	const button = $("modelCtlBtn");
+	const menu = $("modelCtlMenu");
+	// Same escape hatch as the chip menus: the composer shell would clip it.
+	document.body.appendChild(menu);
+	const slider = $("mcEffort");
+	const effortValue = $("mcEffortValue");
+	const drop = $("mcModelDrop");
+	const modelLabel = $("mcModelLabel");
+	const list = $("mcModelList");
+	let models = []; // { value: "provider::id", label, short }
+	let levels = [];
+	const EFFORT_LABELS = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra High" };
+	const effortLabel = (level) => EFFORT_LABELS[level] ?? level;
+	const chipLabel = () => {
+		const current = models.find((m) => m.value === currentModelKey);
+		const name = current ? current.short : "model";
+		return currentEffort ? `${name} · ${effortLabel(currentEffort)}` : name;
+	};
+	const sync = () => {
+		button.textContent = chipLabel();
+		slider.max = String(Math.max(levels.length - 1, 0));
+		const index = levels.indexOf(currentEffort);
+		if (index >= 0) slider.value = String(index);
+		effortValue.textContent = currentEffort ? effortLabel(currentEffort) : "…";
+		const current = models.find((m) => m.value === currentModelKey);
+		modelLabel.textContent = current ? current.label : "…";
+		list.innerHTML = "";
+		for (const model of models) {
+			const item = document.createElement("button");
+			item.type = "button";
+			item.className = model.value === currentModelKey ? "selected" : "";
+			item.textContent = model.label;
+			item.onclick = () => {
+				currentModelKey = model.value;
+				const [provider, modelId] = model.value.split("::");
+				window.qorpera.rpcSend({ type: "set_model", provider, modelId });
+				list.classList.remove("open");
+				sync();
+			};
+			list.appendChild(item);
+		}
+	};
+	slider.oninput = () => {
+		const level = levels[Number(slider.value)];
+		if (!level) return;
+		currentEffort = level;
+		effortValue.textContent = effortLabel(level);
+		button.textContent = chipLabel();
+		window.qorpera.rpcSend({ type: "set_thinking_level", level });
+	};
+	drop.onclick = () => list.classList.toggle("open");
+	button.onclick = () => {
+		if (menu.classList.contains("open")) {
+			closeOpenChipMenu();
+			return;
+		}
+		closeOpenChipMenu();
+		sync();
+		list.classList.remove("open");
+		const rect = button.getBoundingClientRect();
+		menu.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
+		menu.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+		menu.classList.add("open");
+		button.setAttribute("aria-expanded", "true");
+		openChipMenu = { menu, button };
+	};
+	return {
+		setModels(next) {
+			models = next;
+			sync();
+		},
+		setLevels(next) {
+			levels = next;
+			sync();
+		},
+		sync,
+	};
+})();
 
 // ---- session scope: company vs product (the scope selector) -----------------
 // The chip names what this session steers: the company itself, or one of the
@@ -237,9 +313,15 @@ function syncScopeChrome() {
 	}
 	scopeChip.setOptions(options, currentScope ?? "");
 	scopeChip.value = currentScope ?? "";
-	$("input").placeholder = currentScope
-		? `Work on ${scopeName(currentScope)}… (Enter to send, Shift+Enter for newline)`
-		: "Steer the company… (Enter to send, Shift+Enter for newline)";
+	// A docked sidechat speaks about its surface; otherwise the scope names
+	// what the session steers.
+	const sidechatOwner =
+		sidechatOpen && sidechatSurface ? (state.surfaces ?? []).find((s) => s.entry === sidechatSurface) : undefined;
+	$("input").placeholder = sidechatOwner
+		? `Ask about ${sidechatOwner.name}… (Enter to send, Shift+Enter for newline)`
+		: currentScope
+			? `Work on ${scopeName(currentScope)}… (Enter to send, Shift+Enter for newline)`
+			: "Steer the company… (Enter to send, Shift+Enter for newline)";
 }
 
 const scopeChip = createChipSelect("scopeBtn", "scopeMenu", async (picked) => {
@@ -507,7 +589,13 @@ function toggleSidechat(open) {
 
 function newSidechat() {
 	const surface = (state.surfaces ?? []).find((s) => s.entry === currentSurface);
-	if (surface) void attachSidechat(surface, true);
+	if (!surface) return;
+	void attachSidechat(surface, true).then(() => {
+		// A fresh chat over an already-empty thread looks like a no-op —
+		// say what happened and put the cursor where the founder types next.
+		$("status").textContent = `new chat on ${surface.name} — earlier conversations stay under Chats`;
+		$("input").focus();
+	});
 }
 
 /** The controller's own work: autonomous sessions only (chats live in the nav). */
@@ -869,6 +957,54 @@ function resetWorkGroup() {
 	pendingToolLines = [];
 }
 
+// ---- resizable panes: the sidebar and the sidechat -------------------------
+// Drag the seam; widths persist per machine (localStorage — chrome
+// preference, not company state). Pointer capture keeps the drag alive over
+// the surface iframe, which additionally has its pointer events parked so it
+// can never swallow the gesture.
+
+function makePaneResizer(handleId, cssVar, storageKey, opts) {
+	const handle = $(handleId);
+	if (!handle) return;
+	const apply = (px) => {
+		const clamped = Math.min(opts.max, Math.max(opts.min, px));
+		document.documentElement.style.setProperty(cssVar, `${clamped}px`);
+	};
+	const saved = Number(localStorage.getItem(storageKey));
+	if (saved) apply(saved);
+	handle.addEventListener("pointerdown", (event) => {
+		event.preventDefault();
+		handle.setPointerCapture(event.pointerId);
+		handle.dataset.dragging = "true";
+		$("view-surface").style.pointerEvents = "none";
+		const startX = event.clientX;
+		const startWidth = opts.el().getBoundingClientRect().width;
+		const move = (ev) => apply(startWidth + (ev.clientX - startX) * opts.direction);
+		const up = () => {
+			handle.removeEventListener("pointermove", move);
+			handle.removeEventListener("pointerup", up);
+			delete handle.dataset.dragging;
+			$("view-surface").style.pointerEvents = "";
+			localStorage.setItem(storageKey, String(Math.round(opts.el().getBoundingClientRect().width)));
+		};
+		handle.addEventListener("pointermove", move);
+		handle.addEventListener("pointerup", up);
+	});
+}
+
+makePaneResizer("navHandle", "--nav-width", "qorpera.navWidth", {
+	el: () => document.querySelector("#shell > nav"),
+	min: 190,
+	max: 420,
+	direction: 1,
+});
+makePaneResizer("sidechatHandle", "--sidechat-width", "qorpera.sidechatWidth", {
+	el: () => $("sidechat"),
+	min: 300,
+	max: 720,
+	direction: -1,
+});
+
 /* Markdown for assistant prose. The source is HTML-escaped BEFORE parsing so
  * raw HTML in model output renders as text — formatting without injection. */
 function renderMarkdown(el, source) {
@@ -927,28 +1063,23 @@ window.qorpera.onRpcEvent((frame) => {
 			if (frame.command === "get_messages" && frame.success) renderHistory(frame.data?.messages ?? frame.data);
 			else if (frame.command === "get_available_models" && frame.success) {
 				const models = frame.data?.models ?? frame.data ?? [];
-				modelChip.setOptions(
-					models.map((m) => ({ value: `${m.provider}::${m.id}`, label: `${m.name ?? m.id} (${m.provider})` })),
-					currentModelKey,
+				modelCtl.setModels(
+					models.map((m) => ({
+						value: `${m.provider}::${m.id}`,
+						label: `${m.name ?? m.id} (${m.provider})`,
+						short: m.name ?? m.id,
+					})),
 				);
 			} else if (frame.command === "get_available_thinking_levels" && frame.success) {
-				const levels = frame.data?.levels ?? [];
-				effortChip.setOptions(
-					levels.map((level) => ({ value: level, label: `effort: ${level}` })),
-					currentEffort,
-				);
+				modelCtl.setLevels(frame.data?.levels ?? []);
 			} else if (frame.command === "get_state" && frame.success) {
 				const model = frame.data?.model;
-				if (model?.id) {
-					currentModelKey = `${model.provider}::${model.id}`;
-					modelChip.value = currentModelKey;
-				}
-				if (frame.data?.thinkingLevel) {
-					currentEffort = frame.data.thinkingLevel;
-					effortChip.value = currentEffort;
-				}
+				if (model?.id) currentModelKey = `${model.provider}::${model.id}`;
+				if (frame.data?.thinkingLevel) currentEffort = frame.data.thinkingLevel;
+				modelCtl.sync();
 			} else if (frame.command === "set_model" && frame.success && frame.data?.id) {
 				currentModelKey = `${frame.data.provider}::${frame.data.id}`;
+				modelCtl.sync();
 			} else if (frame.success === false) addMsg("log", `error: ${frame.error ?? frame.command}`);
 			break;
 		default:

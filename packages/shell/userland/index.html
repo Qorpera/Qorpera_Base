@@ -96,11 +96,16 @@
 	/* ---- shell: sidebar + rounded content sheet ----------------------------- */
 	#shell { flex: 1; display: flex; min-height: 0; }
 	nav {
-		width: 250px; min-width: 250px; background: var(--chrome);
+		width: var(--nav-width, 250px); min-width: 0; flex: 0 0 auto; background: var(--chrome);
 		padding: 6px 14px 14px; display: flex; flex-direction: column;
 		overflow-y: auto; scrollbar-width: thin;
 		scrollbar-color: rgba(249, 249, 247, 0.075) transparent;
 	}
+	/* Drag handles between panes: invisible until hovered/dragged. */
+	.paneHandle { flex: 0 0 4px; cursor: col-resize; background: transparent; z-index: 6; }
+	.paneHandle:hover, .paneHandle[data-dragging] { background: rgba(249, 249, 247, 0.14); }
+	#view-surfacewrap > .paneHandle { display: none; }
+	#view-surfacewrap.chat-open > .paneHandle { display: block; }
 	/* The nav panes must be flex columns or the spacer can't pin the
 	   profile/settings row to the bottom. */
 	#hubnav, #conav { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 3px; }
@@ -129,7 +134,8 @@
 	#view-surfacewrap { flex: 1; display: none; min-height: 0; position: relative; }
 	#view-surface { flex: 1; border: 0; min-width: 0; background: var(--bg); }
 	#sidechat {
-		width: 420px; min-width: 340px; display: none; flex-direction: column;
+		width: var(--sidechat-width, 420px); min-width: 0; flex: 0 0 auto;
+		display: none; flex-direction: column;
 		min-height: 0; border-left: 1px solid var(--border); background: var(--bg);
 	}
 	#view-surfacewrap.chat-open #sidechat { display: flex; }
@@ -269,6 +275,35 @@
 	.stripchip .chipicon { width: 13px; height: 13px; margin-right: 1px; }
 	.chipmenu button.selected { color: var(--text); font-weight: 600; }
 	.chipmenu button.selected::after { content: "✓"; margin-left: auto; padding-left: 14px; font-size: 11px; font-weight: 400; color: var(--text-soft); }
+	/* ---- model control: effort slider + model dropdown + speed toggle -------
+	   Desktop-style single panel replacing the separate model/effort chips. */
+	.chipmenu.modelctl { min-width: 320px; padding: 12px 14px 14px; gap: 8px; }
+	.mc-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-soft); font-weight: 600; margin-top: 4px; }
+	.mc-head:first-child { margin-top: 0; }
+	.mc-row { display: flex; align-items: center; gap: 10px; min-height: 26px; }
+	.mc-row input[type="range"] { flex: 1; accent-color: var(--accent); height: 18px; margin: 0; }
+	.mc-value { min-width: 74px; text-align: right; font-size: 12.5px; color: var(--text); }
+	.chipmenu button.mc-drop {
+		width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+		border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 7px 10px;
+	}
+	.chipmenu button.mc-drop:hover { border: 1px solid var(--border-strong); background: var(--bg); }
+	.mc-drop::after { content: "▾"; font-size: 9px; color: var(--text-soft); }
+	.mc-list {
+		display: none; flex-direction: column; gap: 1px; max-height: 220px; overflow-y: auto;
+		border: 1px solid var(--border); border-radius: 8px; background: #333331; padding: 4px;
+	}
+	.mc-list.open { display: flex; }
+	.chipmenu button.mc-toggle {
+		position: relative; width: 36px; height: 20px; min-height: 20px; flex: 0 0 auto; padding: 0;
+		border: 1px solid var(--border-strong); border-radius: 999px; background: var(--pane-strong);
+	}
+	.mc-toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+		border-radius: 50%; background: var(--text-soft); transition: left 120ms ease, background 120ms ease; }
+	.chipmenu button.mc-toggle[aria-checked="true"] { background: var(--send-active); }
+	.mc-toggle[aria-checked="true"]::after { left: 18px; background: #ffffff; }
+	.chipmenu button.mc-toggle:disabled { opacity: 0.45; }
+	.mc-note { font-size: 11px; color: var(--text-soft); line-height: 1.4; }
 	.composer-send {
 		display: grid; place-items: center; width: 32px; height: 32px; min-height: 32px;
 		padding: 0; border: 0; border-radius: 999px; flex: 0 0 auto;
@@ -419,6 +454,7 @@
 		<button class="profileRow" onclick="openSettings('general')"><span class="avatar">F</span><span class="profileText">Founder<br><small>Settings</small></span></button>
 	</div>
 </nav>
+<div id="navHandle" class="paneHandle" title="Drag to resize the sidebar"></div>
 <main>
 	<div id="view-chat">
 		<div id="messages"></div>
@@ -432,12 +468,23 @@
 					</div>
 					<span class="composer-spacer"></span>
 					<div class="chipwrap">
-						<button id="modelBtn" class="stripchip" title="Model" aria-haspopup="menu" aria-expanded="false">…</button>
-						<div id="modelMenu" class="chipmenu"></div>
-					</div>
-					<div class="chipwrap">
-						<button id="effortBtn" class="stripchip" title="Thinking effort" aria-haspopup="menu" aria-expanded="false">…</button>
-						<div id="effortMenu" class="chipmenu"></div>
+						<button id="modelCtlBtn" class="stripchip" title="Model · effort · speed" aria-haspopup="menu" aria-expanded="false">…</button>
+						<div id="modelCtlMenu" class="chipmenu modelctl" role="menu" aria-label="Model control">
+							<div class="mc-head">Effort</div>
+							<div class="mc-row">
+								<input id="mcEffort" type="range" min="0" max="3" step="1" value="2" aria-label="Reasoning effort">
+								<span id="mcEffortValue" class="mc-value">…</span>
+							</div>
+							<div class="mc-head">Model</div>
+							<button id="mcModelDrop" class="mc-drop" type="button"><span id="mcModelLabel">…</span></button>
+							<div id="mcModelList" class="mc-list"></div>
+							<div class="mc-head">Speed</div>
+							<div class="mc-row">
+								<span style="flex:1">Fast responses</span>
+								<button id="mcSpeed" class="mc-toggle" type="button" role="switch" aria-checked="false" disabled title="The local runtime has no speed lane yet — this toggle activates when one lands."></button>
+							</div>
+							<div class="mc-note">Speed arrives with the runtime's fast lane — not wired yet.</div>
+						</div>
 					</div>
 					<button id="sendBtn" class="composer-send" data-active="false" onclick="sendPrompt()" title="Send">
 						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6.5 10.5L12 5l5.5 5.5"/></svg>
@@ -448,6 +495,7 @@
 	</div>
 	<div id="view-surfacewrap">
 		<iframe id="view-surface"></iframe>
+		<div id="sidechatHandle" class="paneHandle" title="Drag to resize the chat"></div>
 		<aside id="sidechat">
 			<div id="sidechat-head">
 				<span id="sidechat-title">Chat</span>
