@@ -520,6 +520,7 @@ export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStream
 	return stream(model, context, {
 		...base,
 		reasoningEffort,
+		serviceTier: options?.serviceTier,
 	} satisfies OpenAICodexResponsesOptions);
 };
 

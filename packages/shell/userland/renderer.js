@@ -27,6 +27,7 @@ let thinkingEl = null;
 let poller = null;
 let currentModelKey = "";
 let currentEffort = "";
+let currentSpeed = "standard";
 
 // ---- hub -------------------------------------------------------------------
 
@@ -202,8 +203,10 @@ function createChipSelect(buttonId, menuId, onPick) {
 
 // ---- the model control: effort slider + model dropdown + speed toggle -------
 // One panel in the Desktop style. The slider drives set_thinking_level live,
-// the dropdown drives set_model, and the speed toggle is present but disabled
-// until the local runtime grows a fast lane.
+// the dropdown drives set_model, and the speed toggle drives
+// set_response_speed — enabled exactly when the active model's API has a
+// priority lane (openai-codex-responses today), disabled with a note
+// otherwise.
 const modelCtl = (() => {
 	const button = $("modelCtlBtn");
 	const menu = $("modelCtlMenu");
@@ -214,29 +217,53 @@ const modelCtl = (() => {
 	const drop = $("mcModelDrop");
 	const modelLabel = $("mcModelLabel");
 	const list = $("mcModelList");
-	let models = []; // { value: "provider::id", label, short }
+	const speed = $("mcSpeed");
+	const note = menu.querySelector(".mc-note");
+	let models = []; // { value: "provider::id", name, fastCapable }
 	let levels = [];
 	const EFFORT_LABELS = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra High" };
 	const effortLabel = (level) => EFFORT_LABELS[level] ?? level;
+	const currentModel = () => models.find((m) => m.value === currentModelKey);
+	const fastOn = () => Boolean(currentModel()?.fastCapable) && currentSpeed === "fast";
 	const chipLabel = () => {
-		const current = models.find((m) => m.value === currentModelKey);
-		const name = current ? current.short : "model";
-		return currentEffort ? `${name} · ${effortLabel(currentEffort)}` : name;
+		const name = currentModel()?.name ?? "model";
+		const label = currentEffort ? `${name} · ${effortLabel(currentEffort)}` : name;
+		return fastOn() ? `⚡ ${label}` : label;
+	};
+	// The track is painted by hand: accent fill up to the knob, a faint dot
+	// per stop (the Desktop look — accent-color can't draw ticks).
+	const paintTrack = () => {
+		const max = Math.max(Number(slider.max), 1);
+		const fill = (Number(slider.value) / max) * 100;
+		const layers = [];
+		for (let i = 0; i <= max; i++) {
+			const at = 4 + (i / max) * 92;
+			layers.push(`radial-gradient(circle at ${at}% 50%, rgba(249, 249, 247, 0.38) 2.5px, transparent 3px)`);
+		}
+		layers.push(`linear-gradient(to right, var(--accent) ${fill}%, #4a4a47 ${fill}%)`);
+		slider.style.setProperty("--mc-track", layers.join(", "));
 	};
 	const sync = () => {
 		button.textContent = chipLabel();
 		slider.max = String(Math.max(levels.length - 1, 0));
 		const index = levels.indexOf(currentEffort);
 		if (index >= 0) slider.value = String(index);
+		paintTrack();
 		effortValue.textContent = currentEffort ? effortLabel(currentEffort) : "…";
-		const current = models.find((m) => m.value === currentModelKey);
-		modelLabel.textContent = current ? current.label : "…";
+		modelLabel.textContent = currentModel()?.name ?? "…";
+		const fastCapable = Boolean(currentModel()?.fastCapable);
+		speed.disabled = !fastCapable;
+		speed.setAttribute("aria-checked", fastOn() ? "true" : "false");
+		speed.title = fastCapable
+			? "Fast responses ride the priority lane"
+			: "This model's API has no priority lane — fast responses are available on OpenAI subscription models";
+		note.style.display = fastCapable ? "none" : "";
 		list.innerHTML = "";
 		for (const model of models) {
 			const item = document.createElement("button");
 			item.type = "button";
 			item.className = model.value === currentModelKey ? "selected" : "";
-			item.textContent = model.label;
+			item.textContent = model.name;
 			item.onclick = () => {
 				currentModelKey = model.value;
 				const [provider, modelId] = model.value.split("::");
@@ -253,7 +280,14 @@ const modelCtl = (() => {
 		currentEffort = level;
 		effortValue.textContent = effortLabel(level);
 		button.textContent = chipLabel();
+		paintTrack();
 		window.qorpera.rpcSend({ type: "set_thinking_level", level });
+	};
+	speed.onclick = () => {
+		if (speed.disabled) return;
+		currentSpeed = currentSpeed === "fast" ? "standard" : "fast";
+		window.qorpera.rpcSend({ type: "set_response_speed", speed: currentSpeed });
+		sync();
 	};
 	drop.onclick = () => list.classList.toggle("open");
 	button.onclick = () => {
@@ -1066,8 +1100,8 @@ window.qorpera.onRpcEvent((frame) => {
 				modelCtl.setModels(
 					models.map((m) => ({
 						value: `${m.provider}::${m.id}`,
-						label: `${m.name ?? m.id} (${m.provider})`,
-						short: m.name ?? m.id,
+						name: m.name ?? m.id,
+						fastCapable: m.api === "openai-codex-responses",
 					})),
 				);
 			} else if (frame.command === "get_available_thinking_levels" && frame.success) {
@@ -1076,6 +1110,7 @@ window.qorpera.onRpcEvent((frame) => {
 				const model = frame.data?.model;
 				if (model?.id) currentModelKey = `${model.provider}::${model.id}`;
 				if (frame.data?.thinkingLevel) currentEffort = frame.data.thinkingLevel;
+				if (frame.data?.responseSpeed) currentSpeed = frame.data.responseSpeed;
 				modelCtl.sync();
 			} else if (frame.command === "set_model" && frame.success && frame.data?.id) {
 				currentModelKey = `${frame.data.provider}::${frame.data.id}`;

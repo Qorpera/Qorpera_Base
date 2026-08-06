@@ -447,6 +447,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				const state: RpcSessionState = {
 					model: session.model,
 					thinkingLevel: session.thinkingLevel,
+					responseSpeed: session.responseSpeed,
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
 					steeringMode: session.steeringMode,
@@ -495,6 +496,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "set_thinking_level": {
 				session.setThinkingLevel(command.level);
 				return success(id, "set_thinking_level");
+			}
+
+			case "set_response_speed": {
+				session.setResponseSpeed(command.speed);
+				return success(id, "set_response_speed");
 			}
 
 			case "cycle_thinking_level": {

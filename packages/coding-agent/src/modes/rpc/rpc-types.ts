@@ -35,6 +35,7 @@ export type RpcCommand =
 
 	// Thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
+	| { id?: string; type: "set_response_speed"; speed: "standard" | "fast" }
 	| { id?: string; type: "cycle_thinking_level" }
 	| { id?: string; type: "get_available_thinking_levels" }
 
@@ -95,6 +96,7 @@ export interface RpcSlashCommand {
 export interface RpcSessionState {
 	model?: Model<any>;
 	thinkingLevel: ThinkingLevel;
+	responseSpeed: "standard" | "fast";
 	isStreaming: boolean;
 	isCompacting: boolean;
 	steeringMode: "all" | "one-at-a-time";
@@ -148,6 +150,7 @@ export type RpcResponse =
 
 	// Thinking
 	| { id?: string; type: "response"; command: "set_thinking_level"; success: true }
+	| { id?: string; type: "response"; command: "set_response_speed"; success: true }
 	| {
 			id?: string;
 			type: "response";

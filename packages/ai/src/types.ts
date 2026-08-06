@@ -316,6 +316,12 @@ export interface SimpleStreamOptions extends StreamOptions {
 	reasoning?: ThinkingLevel;
 	/** Custom token budgets for thinking levels (token-based providers only) */
 	thinkingBudgets?: ThinkingBudgets;
+	/**
+	 * Response service tier for APIs that price/route by it. Honored where the
+	 * API supports it (openai-codex-responses maps it to `service_tier`);
+	 * everywhere else it is ignored.
+	 */
+	serviceTier?: "default" | "flex" | "priority";
 }
 
 // Generic StreamFunction with typed options.

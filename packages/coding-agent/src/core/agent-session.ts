@@ -903,6 +903,15 @@ export class AgentSession {
 		return this.agent.state.thinkingLevel;
 	}
 
+	get responseSpeed(): "standard" | "fast" {
+		return this.agent.state.responseSpeed;
+	}
+
+	/** Fast maps to the priority service tier on APIs that support one; a no-op elsewhere. */
+	setResponseSpeed(speed: "standard" | "fast"): void {
+		this.agent.state.responseSpeed = speed === "fast" ? "fast" : "standard";
+	}
+
 	/** Whether the session is currently processing an agent run or post-run continuation. */
 	get isStreaming(): boolean {
 		return this._isAgentRunActive;

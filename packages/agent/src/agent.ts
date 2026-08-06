@@ -75,6 +75,7 @@ function createMutableAgentState(
 		systemPrompt: initialState?.systemPrompt ?? "",
 		model: initialState?.model ?? DEFAULT_MODEL,
 		thinkingLevel: initialState?.thinkingLevel ?? "off",
+		responseSpeed: initialState?.responseSpeed ?? "standard",
 		get tools() {
 			return tools;
 		},
@@ -444,6 +445,7 @@ export class Agent {
 		return {
 			model: this._state.model,
 			reasoning: this._state.thinkingLevel === "off" ? undefined : this._state.thinkingLevel,
+			serviceTier: this._state.responseSpeed === "fast" ? "priority" : undefined,
 			sessionId: this.sessionId,
 			onPayload: this.onPayload,
 			onResponse: this.onResponse,

@@ -294,6 +294,13 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
+ * Requested response speed. "fast" maps to the priority service tier on APIs
+ * that support one (see SimpleStreamOptions.serviceTier); elsewhere it is a
+ * no-op.
+ */
+export type ResponseSpeed = "standard" | "fast";
+
+/**
  * Extensible interface for custom app messages.
  * Apps can extend via declaration merging:
  *
@@ -331,6 +338,8 @@ export interface AgentState {
 	model: Model<any>;
 	/** Requested reasoning level for future turns. */
 	thinkingLevel: ThinkingLevel;
+	/** Requested response speed for future turns. */
+	responseSpeed: ResponseSpeed;
 	/** Available tools. Assigning a new array copies the top-level array. */
 	set tools(tools: AgentTool<any>[]);
 	get tools(): AgentTool<any>[];
