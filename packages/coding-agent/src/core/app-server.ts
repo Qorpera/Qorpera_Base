@@ -179,6 +179,8 @@ interface SessionSummary {
 	kind: "chat" | "autonomous";
 	/** Product scope the session was opened under (root-relative), if any. */
 	scope?: string;
+	/** Surface a sidechat session is docked to (app/surfaces entry), if any. */
+	surface?: string;
 }
 
 /** Trail sessions ARE the chat list (spec §3). Title = first user message;
@@ -207,7 +209,12 @@ function listTrailSessions(root: string): SessionSummary[] {
 					}
 					if (entry.type === "message" && entry.message?.role === "user" && !title) {
 						const text = entry.message.content?.find((part) => part.type === "text")?.text ?? "";
-						title = text.replace(/\s+/g, " ").slice(0, 70);
+						// Sidechat sessions open with a chrome-injected context block —
+						// plumbing, not the founder's words; titles come from the latter.
+						title = text
+							.replace(/^\[Sidechat context:[^\]]*\]\s*/, "")
+							.replace(/\s+/g, " ")
+							.slice(0, 70);
 					}
 					if (name && title) break;
 				} catch {
@@ -218,12 +225,17 @@ function listTrailSessions(root: string): SessionSummary[] {
 			// Scoped chats carry their scope in the session name (set at spawn:
 			// `scope — <root-relative path>`) — the chrome restores it on open.
 			const scope = kind === "chat" ? name.match(/^scope — (.+)$/)?.[1] : undefined;
+			// Sidechats carry the surface they were docked to (`surface — <entry>`,
+			// set by the chrome via set_session_name before the first prompt) so
+			// surface-anchored conversations stay attributable in the trail.
+			const surface = kind === "chat" ? name.match(/^surface — (.+)$/)?.[1] : undefined;
 			sessions.push({
 				file,
 				mtimeMs: statSync(path).mtimeMs,
 				title: kind === "autonomous" ? name : title || file.slice(0, 30),
 				kind,
 				scope,
+				surface,
 			});
 		} catch {
 			// unreadable session files are skipped

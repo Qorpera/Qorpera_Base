@@ -121,7 +121,41 @@
 		background: var(--bg); border-radius: 14px 0 0 0; overflow: hidden;
 	}
 
-	#view-surface { flex: 1; border: 0; width: 100%; background: var(--bg); display: none; }
+	/* ---- surface view: iframe + docked sidechat ------------------------------
+	   Every surface carries a sidechat — a chat panel docked beside it where the
+	   founder talks to the controller IN that surface's context. Chrome-level by
+	   design: the surface iframe never gains session-starting power; the dock
+	   hosts the one real chat machinery (#view-chat moves in and out). */
+	#view-surfacewrap { flex: 1; display: none; min-height: 0; position: relative; }
+	#view-surface { flex: 1; border: 0; min-width: 0; background: var(--bg); }
+	#sidechat {
+		width: 420px; min-width: 340px; display: none; flex-direction: column;
+		min-height: 0; border-left: 1px solid var(--border); background: var(--bg);
+	}
+	#view-surfacewrap.chat-open #sidechat { display: flex; }
+	#sidechat-head {
+		display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+		padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--border);
+		font-size: 12.5px; color: var(--text-muted);
+	}
+	#sidechat-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 560; }
+	#sidechat-head .catBtn { width: auto; padding: 0 7px; font-size: 13px; color: var(--text-soft); border: 1px solid var(--border); border-radius: 5px; background: none; cursor: pointer; min-height: 22px; }
+	#sidechat-head .catBtn:hover { color: var(--text); background: rgba(249, 249, 247, 0.055); }
+	/* Collapsed: a floating pill over the surface invites the conversation. */
+	#sidechatTab {
+		position: absolute; top: 12px; right: 14px; z-index: 3;
+		border: 1px solid var(--border); border-radius: 999px; padding: 4px 14px;
+		background: rgba(61, 61, 59, 0.92); color: var(--text-muted); font-size: 12.5px;
+		-webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+		box-shadow: 0 8px 22px rgba(0, 0, 0, 0.25); cursor: pointer;
+	}
+	#sidechatTab:hover { color: var(--text); border-color: var(--border-strong); }
+	#view-surfacewrap.chat-open #sidechatTab { display: none; }
+	/* The docked thread is narrow: tighten the chrome-sized paddings. */
+	#sidechat #messages { padding: 16px 12px 150px; }
+	#sidechat #composer-footer { padding: 0 10px; bottom: 10px; }
+	#sidechat .composer-shell { min-height: 86px; border-radius: 16px; padding: 12px 10px 6px; }
+	#sidechat .stripchip { max-width: 120px; }
 	#view-panel { flex: 1; padding: 22px; overflow-y: auto; display: none; }
 
 	/* ---- chat thread --------------------------------------------------------- */
@@ -313,11 +347,13 @@
 	.gate textarea { width: 100%; padding: 8px 10px; resize: vertical; min-height: 56px; margin-bottom: 8px; }
 	#sessions button { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	/* Scoped-chat tag in the sidebar: names the product the session steers. */
-	.scopetag {
+	.scopetag, .surfacetag {
 		margin-left: 6px; padding: 1px 6px; border-radius: 5px;
 		background: var(--accent-soft); color: var(--accent);
 		font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em;
 	}
+	/* Sidechat sessions carry the surface they were docked to. */
+	.surfacetag { background: rgba(143, 168, 255, 0.14); color: var(--blue); }
 	h2.cat { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
 	h2.cat .catBtn { width: auto; margin-left: auto; padding: 0 7px; font-size: 14px; color: var(--text-soft); border: 1px solid var(--border); border-radius: 5px; background: none; cursor: pointer; }
 	h2.cat .catBtn:hover { color: var(--text); background: rgba(249, 249, 247, 0.055); }
@@ -410,7 +446,18 @@
 			</div>
 		</div>
 	</div>
-	<iframe id="view-surface"></iframe>
+	<div id="view-surfacewrap">
+		<iframe id="view-surface"></iframe>
+		<aside id="sidechat">
+			<div id="sidechat-head">
+				<span id="sidechat-title">Chat</span>
+				<button class="catBtn" onclick="newSidechat()" title="New chat on this surface">+</button>
+				<button class="catBtn" onclick="toggleSidechat(false)" title="Collapse">›</button>
+			</div>
+			<!-- #view-chat docks here while the sidechat is open -->
+		</aside>
+		<button id="sidechatTab" onclick="toggleSidechat(true)" title="Talk to the controller about this surface">Chat</button>
+	</div>
 	<div id="view-panel"></div>
 	<div id="status"></div>
 </main>

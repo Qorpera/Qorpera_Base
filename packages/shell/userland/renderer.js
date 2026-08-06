@@ -19,6 +19,9 @@ function toggleChats() {
 let currentSurface = null;
 let currentSession = null; // trail file of the open chat (null = fresh/unsaved)
 let currentScope = null; // product scope of the open chat (null = the company)
+let sidechatOpen = false; // the surface view's docked chat panel
+let sidechatSurface = null; // surface entry the live session is attached to
+let sidechatPending = null; // surface awaiting its context preamble (fresh session)
 let assistantEl = null;
 let thinkingEl = null;
 let poller = null;
@@ -250,6 +253,8 @@ const scopeChip = createChipSelect("scopeBtn", "scopeMenu", async (picked) => {
 	}
 	currentSession = null;
 	currentScope = result.scope ?? null;
+	sidechatSurface = null;
+	sidechatPending = null;
 	$("messages").innerHTML = "";
 	resetWorkGroup();
 	show("chat");
@@ -293,6 +298,8 @@ async function openSession(file) {
 	if (!result?.ok) return;
 	currentSession = file;
 	currentScope = result.scope ?? null;
+	sidechatSurface = null;
+	sidechatPending = null;
 	// Cached pages show instantly; fresh ones get a proper loading state.
 	// Either way the live child re-hydrates and replaces once ready.
 	$("messages").innerHTML = sessionCache[file] ?? '<div class="loading">loading session…</div>';
@@ -311,6 +318,8 @@ async function newChat() {
 	if (!result?.ok) return;
 	currentSession = null;
 	currentScope = result.scope ?? null;
+	sidechatSurface = null;
+	sidechatPending = null;
 	$("messages").innerHTML = "";
 	resetWorkGroup();
 	show("chat");
@@ -339,7 +348,10 @@ function renderHistory(messages) {
 	};
 	for (const message of messages ?? []) {
 		if (message.role === "user") {
-			const text = (message.content ?? []).filter((p) => p.type === "text").map((p) => p.text).join("\n");
+			const raw = (message.content ?? []).filter((p) => p.type === "text").map((p) => p.text).join("\n");
+			// The sidechat context preamble is plumbing, not something the
+			// founder typed — show the message as they wrote it.
+			const text = raw.replace(/^\[Sidechat context:[^\]]*\]\s*/, "");
 			if (text) {
 				group = null;
 				addMsg("user", text);
@@ -371,6 +383,15 @@ function renderCompanyNav() {
 			tag.textContent = scopeName(session.scope);
 			b.appendChild(tag);
 		}
+		if (session.surface) {
+			// Sidechat sessions name the surface they were docked to.
+			const tag = document.createElement("span");
+			tag.className = "surfacetag";
+			const owner = (state.surfaces ?? []).find((s) => s.entry === session.surface);
+			tag.textContent = owner?.name ?? session.surface;
+			b.title = `${session.file} · sidechat on ${owner?.name ?? session.surface}`;
+			b.appendChild(tag);
+		}
 		if (currentSession === session.file) b.className = "active";
 		b.onclick = () => openSession(session.file);
 		chats.appendChild(b);
@@ -393,10 +414,25 @@ function renderCompanyNav() {
 // ---- views -----------------------------------------------------------------
 
 let currentView = null;
+
+/** The one chat machinery (#view-chat: thread + composer) lives either in
+ * <main> (the full Chat view) or inside the surface view's dock. Moving the
+ * DOM node keeps streaming, work groups, and the chips working unchanged. */
+function dockChat(docked) {
+	const chat = $("view-chat");
+	if (docked && chat.parentElement !== $("sidechat")) $("sidechat").appendChild(chat);
+	else if (!docked && chat.parentElement === $("sidechat")) {
+		document.querySelector("main").insertBefore(chat, $("view-surfacewrap"));
+	}
+}
+
 function show(view) {
 	currentView = view;
-	$("view-chat").style.display = view === "chat" ? "flex" : "none";
-	$("view-surface").style.display = view === "surface" ? "block" : "none";
+	const docked = view === "surface" && sidechatOpen;
+	dockChat(docked);
+	$("view-chat").style.display = view === "chat" || docked ? "flex" : "none";
+	$("view-surfacewrap").style.display = view === "surface" ? "flex" : "none";
+	$("view-surfacewrap").classList.toggle("chat-open", sidechatOpen);
 	$("view-panel").style.display = view === "inbox" || view === "activity" ? "block" : "none";
 	$("inboxBtn").className = view === "inbox" ? "active" : "";
 	$("activityBtn").className = view === "activity" ? "active" : "";
@@ -416,9 +452,62 @@ function renderCompanyNavSafe() {
 function showSurface(surface) {
 	currentSurface = surface.entry;
 	$("view-surface").src = `${backendUrl}/surface/${encodeURIComponent(surface.entry)}?v=${surface.version}`;
+	// An open sidechat follows the surface: switching surfaces re-attaches the
+	// dock to the new surface's conversation.
+	if (sidechatOpen && sidechatSurface !== surface.entry) void attachSidechat(surface);
+	$("sidechat-title").textContent = `Chat — ${surface.name}`;
 	show("surface");
-	currentSurface = surface.entry;
 	renderCompanyNavSafe();
+}
+
+// ---- the sidechat: a session docked to the surface the founder is viewing ----
+// Universal by construction: the chrome renders it for every surface, present
+// and future. The session is tagged `surface — <entry>` in the trail (the
+// scope convention's sibling) so surface-anchored conversations stay minable,
+// and a fresh one opens with a context preamble naming what the founder sees.
+
+function surfaceSessions(entry) {
+	// state.sessions arrive newest-first from the backend.
+	return (state.sessions ?? []).filter((s) => s.kind !== "autonomous" && s.surface === entry);
+}
+
+/** Attach the dock to this surface: resume its latest tagged session, or
+ * (fresh = true, or none yet) open a new one tagged to it. */
+async function attachSidechat(surface, fresh) {
+	const latest = fresh ? undefined : surfaceSessions(surface.entry)[0];
+	cacheCurrentSession();
+	const result = await window.qorpera.openChat(latest ? latest.file : null);
+	if (!result?.ok) return;
+	currentSession = latest ? latest.file : null;
+	currentScope = result.scope ?? null;
+	sidechatSurface = surface.entry;
+	sidechatPending = null;
+	if (latest) {
+		$("messages").innerHTML = sessionCache[latest.file] ?? '<div class="loading">loading session…</div>';
+	} else {
+		$("messages").innerHTML = "";
+		// Tag the trail session with its surface NOW, before any prompt — the
+		// append-only trail can't be retro-tagged.
+		window.qorpera.rpcSend({ type: "set_session_name", name: `surface — ${surface.entry}` });
+		sidechatPending = surface;
+	}
+	resetWorkGroup();
+	syncScopeChrome();
+	renderCompanyNavSafe();
+	hydrateAgentState(Boolean(latest));
+}
+
+function toggleSidechat(open) {
+	sidechatOpen = open;
+	const surface = (state.surfaces ?? []).find((s) => s.entry === currentSurface);
+	if (open && surface && sidechatSurface !== surface.entry) void attachSidechat(surface);
+	if (surface) $("sidechat-title").textContent = `Chat — ${surface.name}`;
+	show("surface");
+}
+
+function newSidechat() {
+	const surface = (state.surfaces ?? []).find((s) => s.entry === currentSurface);
+	if (surface) void attachSidechat(surface, true);
 }
 
 /** The controller's own work: autonomous sessions only (chats live in the nav). */
@@ -692,7 +781,18 @@ function sendPrompt() {
 	input.value = "";
 	syncComposer();
 	addMsg("user", text);
-	window.qorpera.rpcSend({ type: "prompt", message: text });
+	let message = text;
+	if (sidechatPending) {
+		// First prompt of a fresh sidechat: tell the controller what the founder
+		// is looking at. Square brackets are stripped from the interpolations so
+		// the block stays cleanly parseable (chrome and backend both strip it
+		// from display; see renderHistory / listTrailSessions).
+		const name = String(sidechatPending.name ?? sidechatPending.entry).replace(/[[\]]/g, ")");
+		const entry = String(sidechatPending.entry).replace(/[[\]]/g, ")");
+		message = `[Sidechat context: this chat is docked to the surface "${name}" — app/surfaces/${entry}. The founder is looking at it right now; orient from that file before answering.]\n\n${text}`;
+		sidechatPending = null;
+	}
+	window.qorpera.rpcSend({ type: "prompt", message });
 }
 
 /** Grow the textarea with its content and light the send button up. */
@@ -870,6 +970,7 @@ function summarizeArgs(args) {
 // ---- the settings page (own sidebar of tabs, Codex-app shape) ---------------
 
 let settingsTab = "general";
+let versionsView = "newest"; // newest | oldest | last-used | favorites
 let updateReadyVersion = null;
 
 function openSettings(tab) {
@@ -992,7 +1093,54 @@ async function renderSettingsTab() {
 			"beforeend",
 			'<div class="sess-meta">Saved automatically whenever the app has changed at open. Restore switches to any of them — the state before a rollback is itself saved, and a restored version that is behind rejoins the current base through a controller merge.</div>',
 		);
-		for (const v of co.versions) {
+		const sortRow = document.createElement("div");
+		sortRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:12px 0 2px;";
+		const sortLab = document.createElement("span");
+		sortLab.className = "sess-meta";
+		sortLab.textContent = "Show";
+		const sortSel = document.createElement("select");
+		sortSel.style.cssText = "width:auto;padding:5px 10px;";
+		for (const [value, text] of [
+			["newest", "Newest first"],
+			["oldest", "Oldest first"],
+			["last-used", "Last used"],
+			["favorites", "Favorites"],
+		]) {
+			const o = document.createElement("option");
+			o.value = value;
+			o.textContent = text;
+			if (value === versionsView) o.selected = true;
+			sortSel.appendChild(o);
+		}
+		sortSel.onchange = () => {
+			versionsView = sortSel.value;
+			renderSettingsTab();
+		};
+		sortRow.appendChild(sortLab);
+		sortRow.appendChild(sortSel);
+		content.appendChild(sortRow);
+
+		let versions = co.versions.slice(); // arrives newest first
+		if (versionsView === "favorites") versions = versions.filter((v) => v.favorite);
+		if (versionsView === "oldest") versions.reverse();
+		// Stable sort: restored versions first by recency, the rest stay newest-first.
+		if (versionsView === "last-used") versions.sort((a, b) => (b.lastUsedAt || "").localeCompare(a.lastUsedAt || ""));
+		if (!versions.length) {
+			const note = versionsView === "favorites" ? "No favorites yet — star a version to keep it handy." : "No saved versions yet.";
+			content.insertAdjacentHTML("beforeend", `<div class="sess-meta" style="margin-top:12px">${note}</div>`);
+		}
+		for (const v of versions) {
+			const actions = document.createElement("div");
+			actions.style.cssText = "display:flex;align-items:center;gap:8px;";
+			const star = document.createElement("button");
+			star.style.cssText = "width:auto;padding:5px 10px;";
+			star.textContent = v.favorite ? "★" : "☆";
+			star.title = v.favorite ? "Remove from favorites" : "Add to favorites";
+			star.onclick = async () => {
+				star.disabled = true;
+				await window.qorpera.favoriteVersion(v.id, !v.favorite);
+				renderSettingsTab();
+			};
 			const btn = document.createElement("button");
 			btn.className = "save";
 			btn.style.marginTop = "0";
@@ -1002,11 +1150,15 @@ async function renderSettingsTab() {
 				await window.qorpera.restoreVersion(v.id);
 				renderSettingsTab();
 			};
+			actions.appendChild(star);
+			actions.appendChild(btn);
 			const [d, t] = v.savedAt.split("T");
 			const [hh, mm] = (t || "").split("-");
 			const when = `${d} ${hh || ""}:${mm || ""}`.trim();
-			const name = v.label === "pre-restore" ? "before rollback" : v.label || "snapshot";
-			setRow(content, name, v.baseVersion ? `${when} · built on base v${v.baseVersion}` : when, btn);
+			const name = `v${v.seq}${v.label === "pre-restore" ? " · before rollback" : v.label ? ` · ${v.label}` : ""}`;
+			const facts = [v.description, when, v.baseVersion && `built on base v${v.baseVersion}`];
+			if (v.lastUsedAt) facts.push(`last used ${v.lastUsedAt.slice(0, 16).replace("T", " ")}`);
+			setRow(content, name, facts.filter(Boolean).join(" · "), actions);
 		}
 		return;
 	}

@@ -141,21 +141,51 @@ describe("company app server", () => {
 			"utf-8",
 		);
 
+		// A sidechat carries its surface in the session name, and its title comes
+		// from the founder's words — the chrome's context preamble is stripped.
+		writeFileSync(
+			join(root, "trail", "2026-08-04T13-00-00-000Z_sidechat.jsonl"),
+			[
+				JSON.stringify({ type: "session", version: 3, id: "sidechat", timestamp: "t", cwd: root }),
+				JSON.stringify({ type: "session_info", id: "s3", parentId: null, name: "surface — revenue.html" }),
+				JSON.stringify({
+					type: "message",
+					id: "1",
+					parentId: "s3",
+					message: {
+						role: "user",
+						content: [
+							{
+								type: "text",
+								text: '[Sidechat context: this chat is docked to the surface "Revenue" — app/surfaces/revenue.html. The founder is looking at it right now; orient from that file before answering.]\n\nwhy did July dip?',
+							},
+						],
+					},
+				}),
+			].join("\n"),
+			"utf-8",
+		);
+
 		const state = (await (await fetch(`${base}/api/state`)).json()) as {
-			sessions: Array<{ file: string; title: string; kind: string; scope?: string }>;
+			sessions: Array<{ file: string; title: string; kind: string; scope?: string; surface?: string }>;
 			inbox: Array<{ file: string; kind: string; status: string }>;
 		};
 		const chat = state.sessions.find((s) => s.file.includes("_abc"));
 		const auto = state.sessions.find((s) => s.file.includes("_auto"));
 		const scoped = state.sessions.find((s) => s.file.includes("_scoped"));
+		const sidechat = state.sessions.find((s) => s.file.includes("_sidechat"));
 		expect(chat?.title).toBe("plan the pricing analysis");
 		expect(chat?.kind).toBe("chat");
 		expect(chat?.scope).toBeUndefined();
+		expect(chat?.surface).toBeUndefined();
 		expect(auto?.kind).toBe("autonomous");
 		expect(auto?.title).toBe("autonomous — conception");
 		expect(scoped?.kind).toBe("chat");
 		expect(scoped?.scope).toBe("work/my-product");
 		expect(scoped?.title).toBe("fix the launcher");
+		expect(sidechat?.kind).toBe("chat");
+		expect(sidechat?.surface).toBe("revenue.html");
+		expect(sidechat?.title).toBe("why did July dip?");
 
 		// The declared product zones ride along for the chrome's scope selector.
 		writeFileSync(join(root, "authority.toml"), `[products]\nmode = "gate"\npaths = ["work/my-product"]\n`, "utf-8");
