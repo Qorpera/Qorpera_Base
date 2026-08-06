@@ -477,12 +477,16 @@ export class AgentSession {
 			// they bind agent-registered tools exactly like built-ins.
 			if (this._authority) {
 				// Signature-rule context (EVOLUTION.md §3/§9.1): attended =
-				// approval-capable UI is in front of a human (tui/rpc);
-				// behaviorPath identifies extension-registered tools by their
-				// source file — synthetic paths (<builtin:…>, <sdk:…>) and
-				// code outside the company root are ignored by authority.
+				// approval-capable UI is in front of a human (tui/rpc) and the
+				// session is not kernel-spawned autonomous work (the shell
+				// tags those with QORPERA_AUTONOMOUS — they run in rpc mode
+				// with nobody present, so they must never count as founder
+				// sessions). behaviorPath identifies extension-registered
+				// tools by their source file — synthetic paths (<builtin:…>,
+				// <sdk:…>) and code outside the company root are ignored.
 				const decision = evaluateToolCall(this._authority, toolCall.name, args, this._cwd, {
-					attended: this._extensionMode === "tui" || this._extensionMode === "rpc",
+					attended:
+						(this._extensionMode === "tui" || this._extensionMode === "rpc") && !process.env.QORPERA_AUTONOMOUS,
 					behaviorPath: this._toolDefinitions.get(toolCall.name)?.sourceInfo.path,
 				});
 				// Stamp classified effects into the trail: effect class,
@@ -495,7 +499,7 @@ export class AgentSession {
 						effectClass: decision.effectClass,
 						decision: decision.kind,
 						gateId: decision.kind === "block" ? decision.gateId : undefined,
-						scoped: decision.kind === "allow" && decision.scoped ? true : undefined,
+						attended: decision.kind === "allow" && decision.attended ? true : undefined,
 						behavior: decision.behavior,
 					});
 				}

@@ -51,42 +51,42 @@ file fails **closed** — every class gates.
   side (EVOLUTION.md §4 invariant 1).
 - **money / identity**: no built-in detections yet — assign via `[tools]`.
 - **products**: `[products] paths = ["work/my-product"]` declares software
-  products the controller may READ and study freely but not MODIFY without
-  approval. Precise for path-arg tools (`write`/`edit`/`apply_patch` — and
+  products the controller may READ and study freely but not MODIFY from an
+  agentic session without approval (founder sessions are trusted — next
+  section). Precise for path-arg tools (`write`/`edit`/`apply_patch` — and
   engine-mode patch approvals, which evaluate as `apply_patch` per file);
   heuristic for `bash` (mutation-looking commands that mention a product
   path or its basename gate; pure study commands pass). Zone checks rank
   ABOVE `[tools]` opt-outs — `bash = "none"` cannot open a product zone or
   the kernel files.
 
-## The scope grant (founder-scoped sessions)
+## Founder sessions vs agentic sessions (the [products] axis)
 
-A chat session the founder explicitly scopes to one product (the shell's
-scope selector) is pre-approved for THAT zone: the selection is the
-founder's `[products]` approval for the session, so per-write gates would
-be theater. There is deliberately no confirmation dialog (founder decision,
-2026-08-06 — it broke the flow it exists to serve); the accepted residual
-exposure — evolved userland invoking the IPC without a human click — is
-tripwire-grade, mitigated by the always-visible scope chip, the trail
-stamps, and the never-scoped autonomous lane.
+The `[products]` zone exists to stop the controller's AUTONOMOUS work from
+drifting into the software products. That is the whole distinction (founder
+decision, 2026-08-06):
 
-Mechanics: the kernel spawns the session's process with `QORPERA_SCOPE` set
-to the root-relative product path and cwd inside the product. The kernel is
-the ONLY writer of that variable; a value that does not match a declared
-`[products]` path grants nothing (the ratified `authority.toml` stays the
-source of truth). Inside a granted session:
+- **Founder sessions** — a human present in an approval-capable UI (the
+  shell's chat, the TUI, a terminal engine run) — are trusted in product
+  zones: the founder's direction is the authority, so products-class
+  effects allow and are stamped into the trail with `attended: true`.
+  Presence never covers destruction: a destructive command inside a zone
+  re-classifies as `[irreversible]`, and `[authority]` territory (kernel
+  files, `authority.toml`, `inbox/`) stays gated in every session.
+- **Agentic sessions** — kernel-spawned autonomous work (conception,
+  merges, wakes; marked `QORPERA_AUTONOMOUS` at spawn) and headless runs
+  (print/json/SDK) — keep the full gate: any product modification files a
+  request for the founder.
 
-- products-class effects that fall ENTIRELY inside the granted zone are
-  allowed and stamped into the trail with `scoped: true`;
-- a `bash` command that also mentions ANOTHER product gates as usual;
-- `[authority]` territory (kernel files, `authority.toml`, `inbox/`) and
-  every other class are untouched by the grant;
-- a destructive command inside the zone re-classifies as `[irreversible]` —
-  scope never grants history rewrites or force-pushes.
+The zones themselves are declared in `authority.toml` `[products] paths` —
+NOT a founder-facing settings surface. The controller cannot edit the file
+(always-gated `[authority]`), so when product zones should change it files
+a gate request; the founder can also use the Advanced raw editor.
 
-Autonomous work is never scoped: the kernel only sets the variable on
-founder-confirmed chat spawns, so the controller cannot scope itself into a
-product zone.
+The shell's scope selector is a context device, not a permission device:
+picking a product roots the session inside that product's directory and
+names the session `scope — <path>` for the trail, while the permission
+comes from founder presence alone.
 
 ## Gate lifecycle
 

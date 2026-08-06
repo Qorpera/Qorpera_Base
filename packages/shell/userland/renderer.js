@@ -1034,13 +1034,18 @@ async function renderSettingsTab() {
 		const irreversible = modeSelect(cfg.classes.irreversible.mode);
 		setRow(content, "Irreversible", "prod deploys, deletions, legal commitments", irreversible);
 		const products = modeSelect(cfg.classes.products.mode);
-		setRow(content, "Products", "modification of the software products below (reading is always free)", products);
-
-		const paths = document.createElement("textarea");
-		paths.style.minHeight = "70px";
-		paths.value = (cfg.productPaths ?? []).join("\n");
-		setRow(content, "Product paths", "one per line, relative to the company root");
-		content.appendChild(paths);
+		// Product zones are not founder-managed settings: they constrain the
+		// controller's AUTONOMOUS work (founder sessions are trusted — the
+		// steering is the authority). The declared zones are shown for
+		// awareness; changing them goes through the controller (it files a
+		// gate) or the Advanced raw editor.
+		const zones = (cfg.productPaths ?? []).join(", ") || "none declared";
+		setRow(
+			content,
+			"Products",
+			`autonomous modification of the declared products (${zones}) — founder sessions are trusted; reading is always free`,
+			products,
+		);
 
 		setRow(content, "Authority itself", "editing gates, kernel files, or the inbox — always gated, not configurable");
 
@@ -1051,6 +1056,9 @@ async function renderSettingsTab() {
 			const res = await fetch(`${backendUrl}/api/authority/config`, {
 				method: "POST",
 				headers: authHeaders({ "content-type": "application/json" }),
+				// No productPaths here: the zones themselves are not a settings
+				// surface (the backend preserves the existing list when the
+				// field is absent).
 				body: JSON.stringify({
 					classes: {
 						money: { mode: money.value, limitUsd: Number(limit.value) || 50 },
@@ -1058,7 +1066,6 @@ async function renderSettingsTab() {
 						irreversible: { mode: irreversible.value },
 						products: { mode: products.value },
 					},
-					productPaths: paths.value.split("\n").map((p) => p.trim()).filter(Boolean),
 				}),
 			});
 			const result = await res.json().catch(() => ({ ok: false }));

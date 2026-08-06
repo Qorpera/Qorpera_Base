@@ -267,91 +267,76 @@ describe("products zone", () => {
 	});
 });
 
-describe("scope grant (founder-scoped sessions)", () => {
-	const TWO_PRODUCTS = `[products]\nmode = "gate"\npaths = ["work/my-product", "work/other-product"]\n`;
+describe("founder sessions vs agentic sessions ([products] axis)", () => {
+	const TWO_PRODUCTS = `[products]
+mode = "gate"
+paths = ["work/my-product", "work/other-product"]
+`;
+	const ATTENDED = { attended: true };
 
-	afterEach(() => {
-		delete process.env.QORPERA_SCOPE;
-	});
-
-	it("pre-approves in-zone writes and stamps them scoped", () => {
+	it("allows product modification in an attended (founder) session, stamped attended", () => {
 		writeAuthorityToml(TWO_PRODUCTS);
-		process.env.QORPERA_SCOPE = "work/my-product";
 		const authority = discoverAuthority(root)!;
 		const decision = evaluateToolCall(
 			authority,
 			"write",
 			{ path: join(root, "work", "my-product", "src", "main.ts"), content: "x" },
 			root,
+			ATTENDED,
 		);
 		expect(decision.kind).toBe("allow");
-		expect((decision as { scoped?: true }).scoped).toBe(true);
+		expect((decision as { attended?: true }).attended).toBe(true);
 		expect((decision as { effectClass?: string }).effectClass).toBe("products");
-	});
-
-	it("normalizes separators and trailing slashes in the granted value", () => {
-		writeAuthorityToml(TWO_PRODUCTS);
-		process.env.QORPERA_SCOPE = "work\\my-product\\";
-		const authority = discoverAuthority(root)!;
-		const decision = evaluateToolCall(authority, "edit", { path: join(root, "work", "my-product", "a.ts") }, root);
-		expect(decision.kind).toBe("allow");
-	});
-
-	it("leaves the OTHER product gated", () => {
-		writeAuthorityToml(TWO_PRODUCTS);
-		process.env.QORPERA_SCOPE = "work/my-product";
-		const authority = discoverAuthority(root)!;
-		const decision = evaluateToolCall(
-			authority,
-			"write",
-			{ path: join(root, "work", "other-product", "a.ts"), content: "x" },
-			root,
-		);
-		expect(decision.kind).toBe("block");
-		expect((decision as { effectClass: string }).effectClass).toBe("products");
-	});
-
-	it("leaves [authority] territory gated — scope never opens the spine", () => {
-		writeAuthorityToml(TWO_PRODUCTS);
-		process.env.QORPERA_SCOPE = "work/my-product";
-		const authority = discoverAuthority(root)!;
-		expect(evaluateToolCall(authority, "write", { path: join(root, "AGENTS.md"), content: "x" }, root).kind).toBe(
-			"block",
-		);
+		// Any declared product, not just one: founder presence trusts the session.
 		expect(
-			evaluateToolCall(authority, "write", { path: join(root, "inbox", "gate-abc.md"), content: "x" }, root).kind,
-		).toBe("block");
-	});
-
-	it("allows in-zone bash mutation but gates commands that also mention another product", () => {
-		writeAuthorityToml(TWO_PRODUCTS);
-		process.env.QORPERA_SCOPE = "work/my-product";
-		const authority = discoverAuthority(root)!;
-		expect(
-			evaluateToolCall(authority, "bash", { command: "sed -i s/a/b/ work/my-product/src/main.ts" }, root).kind,
+			evaluateToolCall(authority, "edit", { path: join(root, "work", "other-product", "a.ts") }, root, ATTENDED)
+				.kind,
 		).toBe("allow");
 		expect(
-			evaluateToolCall(authority, "bash", { command: "cp work/my-product/a.ts work/other-product/a.ts" }, root).kind,
-		).toBe("block");
+			evaluateToolCall(authority, "bash", { command: "sed -i s/a/b/ work/my-product/src/main.ts" }, root, ATTENDED)
+				.kind,
+		).toBe("allow");
 	});
 
-	it("re-classifies destructive in-zone commands as irreversible", () => {
+	it("keeps the gate for agentic sessions (unattended context)", () => {
 		writeAuthorityToml(TWO_PRODUCTS);
-		process.env.QORPERA_SCOPE = "work/my-product";
 		const authority = discoverAuthority(root)!;
-		const decision = evaluateToolCall(authority, "bash", { command: "rm -rf work/my-product/dist" }, root);
-		expect(decision.kind).toBe("block");
-		expect((decision as { effectClass: string }).effectClass).toBe("irreversible");
+		for (const context of [undefined, { attended: false }]) {
+			const decision = evaluateToolCall(
+				authority,
+				"write",
+				{ path: join(root, "work", "my-product", "a.ts"), content: "x" },
+				root,
+				context,
+			);
+			expect(decision.kind).toBe("block");
+			expect((decision as { effectClass: string }).effectClass).toBe("products");
+		}
 	});
 
-	it("grants nothing for a value authority.toml does not declare", () => {
+	it("founder presence never opens [authority] territory", () => {
 		writeAuthorityToml(TWO_PRODUCTS);
-		process.env.QORPERA_SCOPE = "work/undeclared";
 		const authority = discoverAuthority(root)!;
 		expect(
-			evaluateToolCall(authority, "write", { path: join(root, "work", "my-product", "a.ts"), content: "x" }, root)
-				.kind,
+			evaluateToolCall(authority, "write", { path: join(root, "AGENTS.md"), content: "x" }, root, ATTENDED).kind,
 		).toBe("block");
+		expect(
+			evaluateToolCall(
+				authority,
+				"write",
+				{ path: join(root, "inbox", "gate-abc.md"), content: "x" },
+				root,
+				ATTENDED,
+			).kind,
+		).toBe("block");
+	});
+
+	it("re-classifies destructive in-zone commands as irreversible even when attended", () => {
+		writeAuthorityToml(TWO_PRODUCTS);
+		const authority = discoverAuthority(root)!;
+		const decision = evaluateToolCall(authority, "bash", { command: "rm -rf work/my-product/dist" }, root, ATTENDED);
+		expect(decision.kind).toBe("block");
+		expect((decision as { effectClass: string }).effectClass).toBe("irreversible");
 	});
 });
 

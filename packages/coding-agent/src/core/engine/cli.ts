@@ -39,6 +39,9 @@ export async function handleEngineCommand(args: string[]): Promise<boolean> {
 			cwd,
 			sessionManager,
 			authority,
+			// A terminal-run engine command is a founder session unless the
+			// kernel marked the process as autonomous work.
+			attended: process.stdout.isTTY === true && !process.env.QORPERA_AUTONOMOUS,
 			onEvent: (event) => {
 				if (event.type === "reasoning" && event.summary) console.error(`[thinking] ${event.summary}`);
 				if (event.type === "command") console.error(`[command:${event.status}] ${event.command}`);

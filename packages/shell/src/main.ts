@@ -226,12 +226,15 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		args.push("--session-dir", join(root, "trail"));
 		if (!sessionFile) args.push("--name", `scope — ${scope}`);
 	}
+	// QORPERA_AUTONOMOUS marks controller-initiated work: those sessions run
+	// in rpc mode with nobody present, so the authority layer must never
+	// treat them as founder sessions ([products] relaxes only when attended).
+	const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
+	if (autonomousName) env.QORPERA_AUTONOMOUS = "1";
 	const child = spawn(process.execPath, args, {
 		cwd: scope ? join(root, scope) : root,
 		stdio: ["pipe", "pipe", "pipe"],
-		env: scope
-			? { ...process.env, ELECTRON_RUN_AS_NODE: "1", QORPERA_SCOPE: scope }
-			: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+		env,
 	}) as ChildProcessWithoutNullStreams;
 	createInterface({ input: child.stdout }).on("line", (line) => {
 		if (!line.trim()) return;
@@ -268,7 +271,7 @@ function startMergeChild(slot: Slot, runtime: CompanyRuntime): void {
 	const child = spawn(process.execPath, args, {
 		cwd: runtime.root,
 		stdio: ["pipe", "pipe", "pipe"],
-		env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+		env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", QORPERA_AUTONOMOUS: "1" },
 	}) as ChildProcessWithoutNullStreams;
 	runtime.mergeChild = child;
 	let started = false;

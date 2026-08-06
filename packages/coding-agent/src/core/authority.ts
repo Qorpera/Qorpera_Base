@@ -55,7 +55,7 @@ export interface Authority {
 }
 
 export type AuthorityDecision =
-	| { kind: "allow"; notified?: true; effectClass?: EffectClass; scoped?: true; behavior?: BehaviorSignature }
+	| { kind: "allow"; notified?: true; effectClass?: EffectClass; attended?: true; behavior?: BehaviorSignature }
 	| { kind: "block"; reason: string; effectClass: EffectClass; gateId?: string; behavior?: BehaviorSignature };
 
 /**
@@ -64,8 +64,12 @@ export type AuthorityDecision =
  */
 export interface ToolCallContext {
 	/**
-	 * True when a founder is present with approval-capable UI (tui/rpc modes);
-	 * headless runs (print/json/SDK) are unattended.
+	 * True when a founder is present with approval-capable UI (tui/rpc modes)
+	 * AND the session is not controller-initiated: kernel-spawned autonomous
+	 * work (conception, merges, wakes) carries QORPERA_AUTONOMOUS and is never
+	 * attended even though it runs in rpc mode. Headless runs (print/json/SDK)
+	 * are unattended. Attended sessions are founder sessions: the founder's
+	 * direction is the authority for [products] work and outward effects.
 	 */
 	attended: boolean;
 	/**
@@ -366,73 +370,19 @@ function isUnderProduct(authority: Authority, config: AuthorityConfig, resolvedP
 /**
  * Product zone screen for shell commands: reading/study is free; a command
  * that BOTH mentions a product path AND looks mutating touches that zone.
- * Returns every declared product the command mentions — the scope grant needs
- * to know whether a command stays inside ONE zone. Heuristic by nature —
- * precise enforcement rides on the path-arg tools and engine patch approvals.
+ * Heuristic by nature — precise enforcement rides on the path-arg tools and
+ * engine patch approvals.
  */
-function bashMentionedProducts(config: AuthorityConfig, command: string): string[] {
-	if (config.productPaths.length === 0) return [];
-	if (!WRITEISH_BASH.test(stripHarmlessRedirects(command))) return [];
-	const mentioned: string[] = [];
+function bashTouchesProductWriteish(config: AuthorityConfig, command: string): boolean {
+	if (config.productPaths.length === 0) return false;
+	if (!WRITEISH_BASH.test(stripHarmlessRedirects(command))) return false;
 	for (const productPath of config.productPaths) {
 		const forward = productPath.replace(/\\/g, "/");
 		const backward = forward.replace(/\//g, "\\");
-		if (command.includes(forward) || command.includes(backward)) {
-			mentioned.push(productPath);
-			continue;
-		}
+		if (command.includes(forward) || command.includes(backward)) return true;
 		// Also match the zone's basename (`cd Qorpera_Desktop && git commit`).
 		const base = forward.split("/").filter(Boolean).pop();
-		if (base && command.includes(base)) mentioned.push(productPath);
-	}
-	return mentioned;
-}
-
-function bashTouchesProductWriteish(config: AuthorityConfig, command: string): boolean {
-	return bashMentionedProducts(config, command).length > 0;
-}
-
-/**
- * The session's product scope, when the founder opened it scoped (spec: the
- * scope selector). The kernel is the only writer of QORPERA_SCOPE — it sets
- * the variable on the RPC child exactly when the founder confirmed the scope
- * in a kernel-owned dialog, so its presence IS the founder's approval for the
- * [products] zone it names. A value that does not match a declared product
- * path grants nothing (the ratified authority.toml stays the source of truth).
- */
-export function grantedScope(config: AuthorityConfig): string | undefined {
-	const raw = process.env.QORPERA_SCOPE;
-	if (!raw) return undefined;
-	const canonical = (value: string) => value.replace(/\\/g, "/").replace(/\/+$/, "");
-	return config.productPaths.find((path) => canonical(path) === canonical(raw));
-}
-
-/**
- * Does this products-classified effect fall ENTIRELY inside the granted
- * scope's zone? Path-arg tools answer precisely; bash answers via the same
- * mention screen that classified it — a command that also mentions another
- * product is not within scope and gates as usual.
- */
-function effectWithinScope(
-	authority: Authority,
-	config: AuthorityConfig,
-	toolName: string,
-	args: unknown,
-	cwd: string,
-	scopePath: string,
-): boolean {
-	const pathArg = extractPathArg(args);
-	if (pathArg && MUTATING_PATH_TOOLS.has(toolName)) {
-		const scopeRoot = resolve(join(authority.root, scopePath));
-		const resolved = resolveArgPath(pathArg, cwd);
-		return resolved === scopeRoot || isUnderDir(resolved, scopeRoot);
-	}
-	if (toolName === "bash") {
-		const command = bashCommandFromArgs(args);
-		if (!command) return false;
-		const screened = stripIndexSafeGitPaths(stripMessageArgs(command));
-		const mentioned = bashMentionedProducts(config, screened);
-		return mentioned.length > 0 && mentioned.every((path) => path === scopePath);
+		if (base && command.includes(base)) return true;
 	}
 	return false;
 }
@@ -726,30 +676,28 @@ export function evaluateToolCall(
 	let effectClass = classifyToolCall(authority, config, toolName, args, cwd);
 	if (!effectClass) return { kind: "allow" };
 
-	// The scope grant (spec: the scope selector): a founder-scoped session is
-	// pre-approved for ITS product zone — the founder's scope selection is the
-	// approval, so per-write gates would be theater. Only the products class
-	// relaxes, and only inside the granted zone: kernel files and the inbox
-	// classified [authority] above, other products stay gated, and a
-	// destructive command re-classifies as [irreversible] so scope never
-	// grants history rewrites or force-pushes the founder didn't ask for.
-	if (effectClass === "products") {
-		const scope = grantedScope(config);
-		if (scope && effectWithinScope(authority, config, toolName, args, cwd, scope)) {
-			const command = toolName === "bash" ? bashCommandFromArgs(args) : undefined;
-			const screened = command ? stripIndexSafeGitPaths(stripMessageArgs(command)) : undefined;
-			if (screened && DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(screened))) {
-				effectClass = "irreversible";
-			} else {
-				// Still resolved for the trail stamp: a scoped allow from
-				// codified behavior records what code acted, same as any allow.
-				return {
-					kind: "allow",
-					effectClass: "products",
-					scoped: true,
-					behavior: resolveBehaviorSignature(authority, context?.behaviorPath),
-				};
-			}
+	// Founder sessions vs agentic controller sessions (founder decision,
+	// 2026-08-06): the [products] zone exists to stop the controller's
+	// AUTONOMOUS work drifting into the software products — a founder asking
+	// for product work in an attended session IS the authority, so the zone
+	// allows there. Only the products class relaxes: kernel files and the
+	// inbox classified [authority] above stay gated in every session, and a
+	// destructive command re-classifies as [irreversible] so founder presence
+	// never silently covers history rewrites or force-pushes.
+	if (effectClass === "products" && context?.attended) {
+		const command = toolName === "bash" ? bashCommandFromArgs(args) : undefined;
+		const screened = command ? stripIndexSafeGitPaths(stripMessageArgs(command)) : undefined;
+		if (screened && DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(screened))) {
+			effectClass = "irreversible";
+		} else {
+			// Still resolved for the trail stamp: an attended allow from
+			// codified behavior records what code acted, same as any allow.
+			return {
+				kind: "allow",
+				effectClass: "products",
+				attended: true,
+				behavior: resolveBehaviorSignature(authority, context?.behaviorPath),
+			};
 		}
 	}
 

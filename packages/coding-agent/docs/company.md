@@ -65,11 +65,13 @@ repo the company works ON), so scopes are per-company, never a flat project
 list.
 
 Picking a product opens a fresh session rooted INSIDE that product's
-directory, pre-approved for that zone and nothing else (see authority.md,
-"The scope grant") — the pick itself is the founder's approval; there is no
-confirmation dialog. Scoped sessions still record to the company `trail/`
-and are named `scope — <path>`, so the chat list shows the product tag and
-restores the scope when reopened.
+directory. The scope is a context device, not a permission device: any
+founder session may modify products (founder presence is the authority —
+see authority.md, "Founder sessions vs agentic sessions"), while the
+controller's autonomous work keeps the full `[products]` gate. Scoped
+sessions still record to the company `trail/` and are named
+`scope — <path>`, so the chat list shows the product tag and restores the
+scope when reopened.
 
 ## Chats vs autonomous work (the communication split)
 
