@@ -437,39 +437,22 @@ function showHub(slot: Slot): void {
 
 /** Switch the chat to a trail session (or a fresh one) without touching the backend.
  *
- * A requested product scope is validated against the ratified authority.toml
- * (an undeclared or missing zone grants nothing — the session opens unscoped
- * at the company root) and then confirmed in a KERNEL-owned native dialog.
- * The dialog is the authority boundary: the userland is agent-evolvable code,
- * so an IPC call alone must never mint a product-zone grant — that would be
- * the controller approving its own request. Founder cancels → nothing is
- * killed, the current chat stays. Returns the effective scope so the chrome
- * reflects what was actually granted. */
-async function openChat(
-	slot: Slot,
-	sessionFile: string | null,
-	scope?: string,
-): Promise<{ ok: boolean; scope?: string }> {
+ * A requested product scope is validated against the ratified authority.toml:
+ * an undeclared or missing zone grants nothing — the session opens unscoped
+ * at the company root. The chip click IS the grant (founder decision,
+ * 2026-08-06: no confirmation dialog — it broke the flow it exists to
+ * serve). The residual exposure — evolved userland code invoking this IPC
+ * without a human click — is accepted tripwire-grade: scope state is always
+ * visible on the chrome, every scoped effect is stamped in the trail, and
+ * autonomous spawns never carry a scope. Returns the effective scope so the
+ * chrome reflects what was actually granted. */
+function openChat(slot: Slot, sessionFile: string | null, scope?: string): { ok: boolean; scope?: string } {
 	if (!slot.runtime) return { ok: false };
 	const runtime = slot.runtime;
 	let effectiveScope: string | undefined;
 	if (typeof scope === "string" && scope.length > 0) {
 		const declared = listProductScopes(runtime.root).find((entry) => entry.path === scope && entry.exists);
-		if (declared) {
-			const choice = await dialog.showMessageBox(slot.window, {
-				type: "question",
-				buttons: [`Work on ${declared.name}`, "Cancel"],
-				defaultId: 0,
-				cancelId: 1,
-				title: "Product scope",
-				message: `Scope this session to ${declared.name}?`,
-				detail:
-					`The session runs inside ${declared.path}. Changes to this product are pre-approved for this session — ` +
-					`your selection here is the approval. Other products, the company spine, and destructive actions keep their gates.`,
-			});
-			if (choice.response !== 0) return { ok: false };
-			effectiveScope = declared.path;
-		}
+		if (declared) effectiveScope = declared.path;
 	}
 	intentionalKills.add(runtime.child);
 	runtime.child.kill();

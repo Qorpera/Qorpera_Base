@@ -66,11 +66,10 @@ list.
 
 Picking a product opens a fresh session rooted INSIDE that product's
 directory, pre-approved for that zone and nothing else (see authority.md,
-"The scope grant"). The kernel confirms the grant in a native dialog — that
-confirmation is the founder's approval, which agent-evolvable userland code
-cannot fake. Scoped sessions still record to the company `trail/` and are
-named `scope — <path>`, so the chat list shows the product tag and restores
-the scope (with a fresh confirmation) when reopened.
+"The scope grant") — the pick itself is the founder's approval; there is no
+confirmation dialog. Scoped sessions still record to the company `trail/`
+and are named `scope — <path>`, so the chat list shows the product tag and
+restores the scope when reopened.
 
 ## Chats vs autonomous work (the communication split)
 

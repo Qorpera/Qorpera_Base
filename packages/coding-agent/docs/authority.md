@@ -62,9 +62,13 @@ file fails **closed** — every class gates.
 ## The scope grant (founder-scoped sessions)
 
 A chat session the founder explicitly scopes to one product (the shell's
-scope selector) is pre-approved for THAT zone: the selection — confirmed in
-a kernel-owned native dialog, never in agent-evolvable UI — is the founder's
-`[products]` approval for the session, so per-write gates would be theater.
+scope selector) is pre-approved for THAT zone: the selection is the
+founder's `[products]` approval for the session, so per-write gates would
+be theater. There is deliberately no confirmation dialog (founder decision,
+2026-08-06 — it broke the flow it exists to serve); the accepted residual
+exposure — evolved userland invoking the IPC without a human click — is
+tripwire-grade, mitigated by the always-visible scope chip, the trail
+stamps, and the never-scoped autonomous lane.
 
 Mechanics: the kernel spawns the session's process with `QORPERA_SCOPE` set
 to the root-relative product path and cwd inside the product. The kernel is

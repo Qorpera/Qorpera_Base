@@ -225,7 +225,9 @@ const PRODUCT_ICON =
 	'<svg class="chipicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8.2v7.6l-9 4.7-9-4.7V8.2L12 3.5l9 4.7Z"/><path d="M3.3 8.2 12 12.7l8.7-4.5M12 12.7V20"/></svg>';
 
 function syncScopeChrome() {
-	const options = [{ value: "", label: state.name || "Company", icon: COMPANY_ICON }];
+	// The company entry names the controller — same identity as the window
+	// title ("<Name> Controller"), distinct from the bare product names below.
+	const options = [{ value: "", label: state.name ? `${state.name} Controller` : "Company", icon: COMPANY_ICON }];
 	for (const s of state.scopes ?? []) {
 		if (s.exists === false) continue; // a declared zone with no directory yet
 		options.push({ value: s.path, label: s.name || scopeName(s.path), icon: PRODUCT_ICON });
