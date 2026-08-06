@@ -204,12 +204,12 @@ async function closeCompany(slot: Slot): Promise<void> {
  * Autonomous work is tagged with a session name so the trail (and the
  * Activity view) can tell controller-initiated sessions from chats.
  *
- * A product scope (founder-selected, kernel-confirmed) roots the child INSIDE
- * the product and carries the grant as QORPERA_SCOPE — the authority layer
- * pre-approves that zone for this session and nothing else. The session file
- * still lands in the company trail (explicit --session-dir: a product dir has
- * no project settings pointing there), and a fresh scoped session is named
- * `scope — <path>` so the chat list can restore its scope on open. */
+ * A product scope is a context device: it roots the child INSIDE the product
+ * (permission comes from founder presence — authority.md, founder vs agentic
+ * sessions). The session file still lands in the company trail (explicit
+ * --session-dir: a product dir has no project settings pointing there), and
+ * a fresh scoped session is named `scope — <path>` so the chat list can
+ * restore its scope on open. */
 interface ChildOptions {
 	sessionFile?: string;
 	autonomousName?: string;
