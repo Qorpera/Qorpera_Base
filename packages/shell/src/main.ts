@@ -40,6 +40,7 @@ import {
 	mergeTaskPrompt,
 	restoreVersion,
 	setActiveApp,
+	setVersionFavorite,
 	snapshotIfChanged,
 	type UserlandStatus,
 	type UserlandVersion,
@@ -633,6 +634,13 @@ app.whenReady().then(() => {
 			});
 		}
 		return true;
+	});
+	// Settings → App: star a saved version. Metadata only — no reload needed.
+	ipcMain.handle("userland:favorite", (event, id: string, favorite: boolean) => {
+		const slot = slotOf(event.sender);
+		if (!slot?.runtime || typeof id !== "string" || id.includes("/") || id.includes("\\") || id.includes(".."))
+			return false;
+		return setVersionFavorite(join(slot.runtime.root, "userland"), id, Boolean(favorite));
 	});
 	// Settings → App: pick a window icon for this company (copied into app/,
 	// so it travels with the company folder and the controller can manage it).

@@ -46,6 +46,13 @@ export interface UserlandVersion {
 	label?: string;
 	/** Base version the fork was built on when this snapshot was taken. */
 	baseVersion?: string;
+	/** Monotonic version number (v1, v2, …); derived chronologically for legacy snapshots. */
+	seq: number;
+	/** What changed since the previous snapshot, generated at capture time. */
+	description?: string;
+	favorite?: boolean;
+	/** Stamped when this version is restored. */
+	lastUsedAt?: string;
 }
 
 export interface UserlandStatus {
@@ -125,6 +132,10 @@ function sameContent(dirA: string, dirB: string): boolean {
 interface VersionMeta {
 	label?: string;
 	baseVersion?: string;
+	seq?: number;
+	description?: string;
+	favorite?: boolean;
+	lastUsedAt?: string;
 }
 
 function readVersionMeta(versionDir: string): VersionMeta | undefined {
@@ -133,6 +144,37 @@ function readVersionMeta(versionDir: string): VersionMeta | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Merge fields into a snapshot's meta.json. Legacy snapshots are bare content
+ * dirs — writing meta.json there would leak it into the app on restore, so
+ * they are left alone (returns false).
+ */
+function updateVersionMeta(userlandDir: string, id: string, patch: Partial<VersionMeta>): boolean {
+	const versionDir = join(userlandDir, VERSIONS_DIR, id);
+	if (!existsSync(join(versionDir, "content"))) return false;
+	const meta = { ...readVersionMeta(versionDir), ...patch };
+	writeFileSync(join(versionDir, "meta.json"), `${JSON.stringify(meta, null, "\t")}\n`, "utf-8");
+	return true;
+}
+
+/** "changed renderer.js, index.html; added widgets.js" — capped per category. */
+function describeDelta(current: Record<string, string>, previous: Record<string, string>): string | undefined {
+	const changed: string[] = [];
+	const added: string[] = [];
+	for (const [file, hash] of Object.entries(current)) {
+		if (!(file in previous)) added.push(file);
+		else if (previous[file] !== hash) changed.push(file);
+	}
+	const removed = Object.keys(previous).filter((file) => !(file in current));
+	const list = (names: string[]) =>
+		names.length > 3 ? `${names.slice(0, 3).join(", ")} +${names.length - 3} more` : names.join(", ");
+	const parts: string[] = [];
+	if (changed.length) parts.push(`changed ${list(changed)}`);
+	if (added.length) parts.push(`added ${list(added)}`);
+	if (removed.length) parts.push(`removed ${list(removed)}`);
+	return parts.length ? parts.join("; ") : undefined;
 }
 
 /**
@@ -150,13 +192,30 @@ export function snapshotIfChanged(userlandDir: string, label?: string): string |
 	if (!manifest) return undefined;
 	const hash = combinedHash(userlandDir);
 	if (manifest.lastSnapshotHash === hash) return undefined;
+
+	// Version number and delta description come from the previous snapshot
+	// (or from the pristine base for the very first one).
+	const existing = listVersions(userlandDir);
+	const seq = existing.reduce((max, v) => Math.max(max, v.seq), 0) + 1;
+	const latest = existing[0];
+	const previousDir = latest
+		? existsSync(join(userlandDir, VERSIONS_DIR, latest.id, "content"))
+			? join(userlandDir, VERSIONS_DIR, latest.id, "content")
+			: join(userlandDir, VERSIONS_DIR, latest.id)
+		: existsSync(join(userlandDir, PRISTINE_DIR))
+			? join(userlandDir, PRISTINE_DIR)
+			: undefined;
+	const description = previousDir
+		? (describeDelta(hashFiles(userlandDir), hashFiles(previousDir)) ?? "same content as the previous version")
+		: "first capture of the evolved app";
+
 	const id = new Date().toISOString().replace(/[:.]/g, "-") + (label ? `_${label}` : "");
 	const versionDir = join(userlandDir, VERSIONS_DIR, id);
 	copyContent(userlandDir, join(versionDir, "content"));
 	if (existsSync(join(userlandDir, PRISTINE_DIR))) {
 		copyBase(join(userlandDir, PRISTINE_DIR), join(versionDir, "base"));
 	}
-	const meta: VersionMeta = { label, baseVersion: manifest.baseVersion };
+	const meta: VersionMeta = { label, baseVersion: manifest.baseVersion, seq, description };
 	writeFileSync(join(versionDir, "meta.json"), `${JSON.stringify(meta, null, "\t")}\n`, "utf-8");
 	writeManifest(userlandDir, { ...manifest, lastSnapshotHash: hash });
 	return id;
@@ -166,7 +225,7 @@ export function snapshotIfChanged(userlandDir: string, label?: string): string |
 export function listVersions(userlandDir: string): UserlandVersion[] {
 	const dir = join(userlandDir, VERSIONS_DIR);
 	if (!existsSync(dir)) return [];
-	return readdirSync(dir, { withFileTypes: true })
+	const entries = readdirSync(dir, { withFileTypes: true })
 		.filter((entry) => entry.isDirectory())
 		.map((entry) => {
 			const meta = readVersionMeta(join(dir, entry.name));
@@ -176,9 +235,28 @@ export function listVersions(userlandDir: string): UserlandVersion[] {
 				savedAt: stamp,
 				label: meta?.label ?? (rest.join("_") || undefined),
 				baseVersion: meta?.baseVersion,
+				seq: meta?.seq,
+				description: meta?.description,
+				favorite: meta?.favorite,
+				lastUsedAt: meta?.lastUsedAt,
 			};
 		})
-		.sort((a, b) => b.id.localeCompare(a.id));
+		.sort((a, b) => a.id.localeCompare(b.id));
+	// Legacy snapshots predate stored numbers — fill them in chronologically,
+	// keeping later stored seqs (computed as max+1 at capture) consistent.
+	let max = 0;
+	const numbered: UserlandVersion[] = entries.map((entry) => {
+		const seq = entry.seq ?? max + 1;
+		max = Math.max(max, seq);
+		return { ...entry, seq };
+	});
+	return numbered.sort((a, b) => b.id.localeCompare(a.id));
+}
+
+/** Mark or unmark a saved version as a favorite. */
+export function setVersionFavorite(userlandDir: string, id: string, favorite: boolean): boolean {
+	if (!existsSync(join(userlandDir, VERSIONS_DIR, id))) return false;
+	return updateVersionMeta(userlandDir, id, { favorite });
 }
 
 /**
@@ -198,6 +276,7 @@ export function restoreVersion(
 	const snapshot = join(userlandDir, VERSIONS_DIR, id);
 	if (!existsSync(snapshot) || !readManifest(userlandDir)) return undefined;
 	snapshotIfChanged(userlandDir, "pre-restore");
+	updateVersionMeta(userlandDir, id, { lastUsedAt: new Date().toISOString() });
 
 	// Old snapshots are bare content dirs; new ones nest content/ + base/ + meta.
 	const contentDir = existsSync(join(snapshot, "content")) ? join(snapshot, "content") : snapshot;

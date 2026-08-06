@@ -11,6 +11,7 @@ import {
 	mergeTaskPrompt,
 	restoreVersion,
 	setActiveApp,
+	setVersionFavorite,
 	snapshotIfChanged,
 } from "../src/userland-manager.ts";
 
@@ -132,6 +133,59 @@ describe("userland fork model", () => {
 
 		// Unknown id refused.
 		expect(restoreVersion(userland(), "nope")).toBeUndefined();
+	});
+
+	it("numbers versions, describes each delta, and tracks favorites and last use", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		writeFileSync(join(userland(), "renderer.js"), "// evolution 1", "utf-8");
+		const v1 = snapshotIfChanged(userland())!;
+		writeFileSync(join(userland(), "widgets.js"), "// net new", "utf-8");
+		const v2 = snapshotIfChanged(userland())!;
+
+		// Monotonic numbers, newest first; deltas vs the pristine base / previous version.
+		let versions = listVersions(userland());
+		expect(versions.map((v) => v.seq)).toEqual([2, 1]);
+		expect(versions[1].description).toBe("changed renderer.js");
+		expect(versions[0].description).toBe("added widgets.js");
+
+		// Favorites persist; unknown ids refused.
+		expect(setVersionFavorite(userland(), v1, true)).toBe(true);
+		expect(setVersionFavorite(userland(), "nope", true)).toBe(false);
+		versions = listVersions(userland());
+		expect(versions.find((v) => v.id === v1)?.favorite).toBe(true);
+		expect(versions.find((v) => v.id === v2)?.favorite).toBeFalsy();
+		expect(setVersionFavorite(userland(), v1, false)).toBe(true);
+		expect(listVersions(userland()).find((v) => v.id === v1)?.favorite).toBe(false);
+
+		// Restore stamps last use, and the pre-restore capture of unsaved work numbers on.
+		writeFileSync(join(userland(), "renderer.js"), "// evolution 3, never snapshotted", "utf-8");
+		expect(restoreVersion(userland(), v1)?.action).toBe("current");
+		versions = listVersions(userland());
+		expect(versions.find((v) => v.id === v1)?.lastUsedAt).toBeTruthy();
+		expect(versions.find((v) => v.id === v2)?.lastUsedAt).toBeFalsy();
+		expect(versions.find((v) => v.label === "pre-restore")?.seq).toBe(3);
+	});
+
+	it("legacy bare snapshots get chronological numbers and stay meta-free", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		// A pre-meta snapshot: bare content dir, no content/ nesting, no meta.json.
+		const legacyId = "2020-01-01T00-00-00-000Z";
+		mkdirSync(join(userland(), ".versions", legacyId), { recursive: true });
+		writeFileSync(join(userland(), ".versions", legacyId, "index.html"), "<html>old</html>", "utf-8");
+
+		writeFileSync(join(userland(), "renderer.js"), "// evolved", "utf-8");
+		const fresh = snapshotIfChanged(userland())!;
+		const versions = listVersions(userland());
+		expect(versions.map((v) => [v.id, v.seq])).toEqual([
+			[fresh, 2],
+			[legacyId, 1],
+		]);
+
+		// Writing meta into a bare dir would leak it into the app on restore — refused.
+		expect(setVersionFavorite(userland(), legacyId, true)).toBe(false);
+		restoreVersion(userland(), legacyId);
+		expect(existsSync(join(userland(), "meta.json"))).toBe(false);
+		expect(readFileSync(join(userland(), "index.html"), "utf-8")).toBe("<html>old</html>");
 	});
 
 	it("snapshots carry their base version and pristine copy; restore rejoins the current base", () => {

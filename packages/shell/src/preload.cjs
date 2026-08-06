@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	appInfo: () => ipcRenderer.invoke("app:info"),
 	setActiveApp: (app) => ipcRenderer.invoke("userland:set-active", app),
 	restoreVersion: (id) => ipcRenderer.invoke("userland:restore", id),
+	favoriteVersion: (id, favorite) => ipcRenderer.invoke("userland:favorite", id, favorite),
 	mergeUserland: () => ipcRenderer.invoke("userland:merge"),
 	chooseIcon: () => ipcRenderer.invoke("userland:set-icon"),
 	onMergeDone: (handler) => ipcRenderer.on("merge-done", (_event, result) => handler(result)),
