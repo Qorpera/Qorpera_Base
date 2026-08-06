@@ -28,6 +28,7 @@ let poller = null;
 let currentModelKey = "";
 let currentEffort = "";
 let currentSpeed = "standard";
+let speedAsserted = false; // one re-assert of the remembered speed per child spawn
 
 // ---- hub -------------------------------------------------------------------
 
@@ -219,6 +220,31 @@ const modelCtl = (() => {
 	const speed = $("mcSpeed");
 	let models = []; // { value: "provider::id", name, fastCapable }
 	let levels = [];
+	// The catalog barely changes between sessions (it moves when the founder
+	// connects or drops a provider), so the picker paints instantly from the
+	// last run's cache and the live child corrects it in the background —
+	// best-effort per machine, never a source of truth.
+	const CACHE_KEY = "qorpera.modelCatalog";
+	try {
+		const cached = JSON.parse(localStorage.getItem(CACHE_KEY) ?? "null");
+		if (Array.isArray(cached?.models) && cached.models.length) models = cached.models;
+		if (Array.isArray(cached?.levels) && cached.levels.length) levels = cached.levels;
+		if (!currentModelKey && typeof cached?.modelKey === "string") currentModelKey = cached.modelKey;
+		if (!currentEffort && typeof cached?.effort === "string") currentEffort = cached.effort;
+		if (cached?.speed === "fast" || cached?.speed === "standard") currentSpeed = cached.speed;
+	} catch {
+		// unreadable cache: start empty, the live child fills it in
+	}
+	const persist = () => {
+		try {
+			localStorage.setItem(
+				CACHE_KEY,
+				JSON.stringify({ models, levels, modelKey: currentModelKey, effort: currentEffort, speed: currentSpeed }),
+			);
+		} catch {
+			// storage unavailable — the cache is a nicety, never load-bearing
+		}
+	};
 	const EFFORT_LABELS = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra High" };
 	const effortLabel = (level) => EFFORT_LABELS[level] ?? level;
 	const currentModel = () => models.find((m) => m.value === currentModelKey);
@@ -255,6 +281,7 @@ const modelCtl = (() => {
 		slider.style.setProperty("--mc-track", layers.join(", "));
 	};
 	const sync = () => {
+		persist();
 		renderChip();
 		slider.max = String(Math.max(levels.length - 1, 0));
 		const index = levels.indexOf(currentEffort);
@@ -301,7 +328,10 @@ const modelCtl = (() => {
 		window.qorpera.rpcSend({ type: "set_response_speed", speed: currentSpeed });
 		sync();
 	};
-	drop.onclick = () => list.classList.toggle("open");
+	// An empty list is a dark sliver, not a menu — don't open until models exist.
+	drop.onclick = () => {
+		if (models.length) list.classList.toggle("open");
+	};
 	button.onclick = () => {
 		if (menu.classList.contains("open")) {
 			closeOpenChipMenu();
@@ -329,6 +359,9 @@ const modelCtl = (() => {
 		sync,
 	};
 })();
+// First paint from the cache — the live child's answers replace it within
+// moments of the spawn.
+modelCtl.sync();
 
 // ---- session scope: company vs product (the scope selector) -----------------
 // The chip names what this session steers: the company itself, or one of the
@@ -403,14 +436,20 @@ async function refreshState() {
 	}
 }
 
-/** After (re)spawning the agent, ask for everything the chatbar needs. */
+/** After (re)spawning the agent, ask for everything the chatbar needs.
+ * Immediately — the child's stdin is buffered, so it answers the moment it
+ * boots — and once more after startup as a belt for dropped early input
+ * (history is only asked once; a double render would flash). */
 function hydrateAgentState(withHistory) {
-	setTimeout(() => {
-		if (withHistory) window.qorpera.rpcSend({ type: "get_messages" });
+	speedAsserted = false;
+	if (withHistory) window.qorpera.rpcSend({ type: "get_messages" });
+	const askState = () => {
 		window.qorpera.rpcSend({ type: "get_state" });
 		window.qorpera.rpcSend({ type: "get_available_models" });
 		window.qorpera.rpcSend({ type: "get_available_thinking_levels" });
-	}, 900);
+	};
+	askState();
+	setTimeout(askState, 900);
 }
 
 function cacheCurrentSession() {
@@ -1122,7 +1161,17 @@ window.qorpera.onRpcEvent((frame) => {
 				const model = frame.data?.model;
 				if (model?.id) currentModelKey = `${model.provider}::${model.id}`;
 				if (frame.data?.thinkingLevel) currentEffort = frame.data.thinkingLevel;
-				if (frame.data?.responseSpeed) currentSpeed = frame.data.responseSpeed;
+				const reported = frame.data?.responseSpeed;
+				if (reported) {
+					// Speed is session-local in the runtime; the chrome carries the
+					// machine's preference across spawns and re-asserts it once.
+					if (!speedAsserted && currentSpeed === "fast" && reported === "standard") {
+						window.qorpera.rpcSend({ type: "set_response_speed", speed: "fast" });
+					} else {
+						currentSpeed = reported;
+					}
+					speedAsserted = true;
+				}
 				modelCtl.sync();
 			} else if (frame.command === "set_model" && frame.success && frame.data?.id) {
 				currentModelKey = `${frame.data.provider}::${frame.data.id}`;
