@@ -275,47 +275,45 @@
 	.stripchip .chipicon { width: 13px; height: 13px; margin-right: 1px; }
 	.chipmenu button.selected { color: var(--text); font-weight: 600; }
 	.chipmenu button.selected::after { content: "✓"; margin-left: auto; padding-left: 14px; font-size: 11px; font-weight: 400; color: var(--text-soft); }
-	/* ---- model control: effort slider + model dropdown + speed toggle -------
-	   Desktop-style single panel replacing the separate model/effort chips. */
-	.chipmenu.modelctl { min-width: 320px; padding: 12px 14px 14px; gap: 8px; }
-	.mc-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-soft); font-weight: 600; margin-top: 4px; }
-	.mc-head:first-child { margin-top: 0; }
-	.mc-row { display: flex; align-items: center; gap: 10px; min-height: 26px; }
-	/* Desktop-look slider: thick rounded track painted by JS (accent fill up
-	   to the knob + a faint dot per stop), big white knob. */
-	.mc-row input[type="range"] {
+	/* ---- model control: the Desktop shape — slider, model row, bolt ----------
+	   No headings, no boxes: the panel IS the three controls. Effort reads on
+	   the trigger chip (accent value), not beside the slider. */
+	.chipmenu.modelctl { min-width: 252px; padding: 14px 14px 8px; gap: 8px; }
+	.chipmenu.modelctl input[type="range"] {
 		-webkit-appearance: none; appearance: none;
-		flex: 1; height: 22px; margin: 0; background: transparent; outline: none;
+		width: 100%; height: 22px; margin: 0; background: transparent; outline: none;
 	}
-	.mc-row input[type="range"]::-webkit-slider-runnable-track {
+	.chipmenu.modelctl input[type="range"]::-webkit-slider-runnable-track {
 		height: 14px; border-radius: 999px; background: var(--mc-track, #4a4a47);
 	}
-	.mc-row input[type="range"]::-webkit-slider-thumb {
+	.chipmenu.modelctl input[type="range"]::-webkit-slider-thumb {
 		-webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%;
 		background: #ffffff; box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45); margin-top: -4px;
 	}
-	.mc-value { min-width: 74px; text-align: right; font-size: 12.5px; color: var(--text); }
-	.chipmenu button.mc-drop {
-		width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
-		border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 7px 10px;
+	.mc-bottom { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+	.chipmenu button.mc-model {
+		flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 7px;
+		background: transparent; border: 0; padding: 4px 2px; font-size: 13.5px; color: var(--text);
 	}
-	.chipmenu button.mc-drop:hover { border: 1px solid var(--border-strong); background: var(--bg); }
-	.mc-drop::after { content: "›"; font-size: 14px; line-height: 1; color: var(--text-soft); }
+	.chipmenu button.mc-model:hover { background: rgba(249, 249, 247, 0.06); border: 0; }
+	.mc-model #mcModelLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.mc-chev { color: var(--text-soft); font-size: 15px; line-height: 1; }
+	.chipmenu button.mc-bolt {
+		flex: 0 0 auto; width: 30px; height: 26px; display: grid; place-items: center;
+		background: transparent; border: 0; border-radius: 6px; color: var(--text-soft); opacity: 0.75;
+	}
+	.chipmenu button.mc-bolt:hover:not(:disabled) { background: rgba(249, 249, 247, 0.06); border: 0; opacity: 1; }
+	.chipmenu button.mc-bolt[aria-checked="true"] { color: var(--warning); opacity: 1; }
+	.chipmenu button.mc-bolt:disabled { opacity: 0.28; }
+	.mc-bolt svg { width: 15px; height: 15px; }
 	.mc-list {
 		display: none; flex-direction: column; gap: 1px; max-height: 220px; overflow-y: auto;
 		border: 1px solid var(--border); border-radius: 8px; background: #333331; padding: 4px;
 	}
 	.mc-list.open { display: flex; }
-	.chipmenu button.mc-toggle {
-		position: relative; width: 36px; height: 20px; min-height: 20px; flex: 0 0 auto; padding: 0;
-		border: 1px solid var(--border-strong); border-radius: 999px; background: var(--pane-strong);
-	}
-	.mc-toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
-		border-radius: 50%; background: var(--text-soft); transition: left 120ms ease, background 120ms ease; }
-	.chipmenu button.mc-toggle[aria-checked="true"] { background: var(--send-active); }
-	.mc-toggle[aria-checked="true"]::after { left: 18px; background: #ffffff; }
-	.chipmenu button.mc-toggle:disabled { opacity: 0.45; }
-	.mc-note { font-size: 11px; color: var(--text-soft); line-height: 1.4; }
+	/* The trigger chip: bolt when fast, model name, effort value in accent. */
+	.stripchip .mc-eff { color: var(--blue); font-weight: 600; margin-left: 5px; }
+	.stripchip .mc-chipbolt { width: 12px; height: 12px; margin-right: 4px; color: var(--warning); flex: 0 0 auto; }
 	.composer-send {
 		display: grid; place-items: center; width: 32px; height: 32px; min-height: 32px;
 		padding: 0; border: 0; border-radius: 999px; flex: 0 0 auto;
@@ -482,20 +480,14 @@
 					<div class="chipwrap">
 						<button id="modelCtlBtn" class="stripchip" title="Model · effort · speed" aria-haspopup="menu" aria-expanded="false">…</button>
 						<div id="modelCtlMenu" class="chipmenu modelctl" role="menu" aria-label="Model control">
-							<div class="mc-head">Effort</div>
-							<div class="mc-row">
-								<input id="mcEffort" type="range" min="0" max="3" step="1" value="2" aria-label="Reasoning effort">
-								<span id="mcEffortValue" class="mc-value">…</span>
+							<input id="mcEffort" type="range" min="0" max="3" step="1" value="2" aria-label="Reasoning effort">
+							<div class="mc-bottom">
+								<button id="mcModelDrop" class="mc-model" type="button"><span id="mcModelLabel">…</span><span class="mc-chev">›</span></button>
+								<button id="mcSpeed" class="mc-bolt" type="button" role="switch" aria-checked="false" title="Fast responses">
+									<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 3.5 14H10l-1 8L18.5 10H12l1-8z"/></svg>
+								</button>
 							</div>
-							<div class="mc-head">Model</div>
-							<button id="mcModelDrop" class="mc-drop" type="button"><span id="mcModelLabel">…</span></button>
 							<div id="mcModelList" class="mc-list"></div>
-							<div class="mc-head">Speed</div>
-							<div class="mc-row">
-								<span style="flex:1">Fast responses</span>
-								<button id="mcSpeed" class="mc-toggle" type="button" role="switch" aria-checked="false" disabled title="The local runtime has no speed lane yet — this toggle activates when one lands."></button>
-							</div>
-							<div class="mc-note">Speed arrives with the runtime's fast lane — not wired yet.</div>
 						</div>
 					</div>
 					<button id="sendBtn" class="composer-send" data-active="false" onclick="sendPrompt()" title="Send">

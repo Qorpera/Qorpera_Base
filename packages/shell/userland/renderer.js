@@ -213,22 +213,33 @@ const modelCtl = (() => {
 	// Same escape hatch as the chip menus: the composer shell would clip it.
 	document.body.appendChild(menu);
 	const slider = $("mcEffort");
-	const effortValue = $("mcEffortValue");
 	const drop = $("mcModelDrop");
 	const modelLabel = $("mcModelLabel");
 	const list = $("mcModelList");
 	const speed = $("mcSpeed");
-	const note = menu.querySelector(".mc-note");
 	let models = []; // { value: "provider::id", name, fastCapable }
 	let levels = [];
 	const EFFORT_LABELS = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra High" };
 	const effortLabel = (level) => EFFORT_LABELS[level] ?? level;
 	const currentModel = () => models.find((m) => m.value === currentModelKey);
 	const fastOn = () => Boolean(currentModel()?.fastCapable) && currentSpeed === "fast";
-	const chipLabel = () => {
-		const name = currentModel()?.name ?? "model";
-		const label = currentEffort ? `${name} · ${effortLabel(currentEffort)}` : name;
-		return fastOn() ? `⚡ ${label}` : label;
+	// The chip reads "⚡ <Model> <Effort>" — bolt only while fast, effort in
+	// the accent tone (the Desktop trigger). Built from DOM nodes, never HTML.
+	const renderChip = () => {
+		button.textContent = "";
+		if (fastOn()) {
+			button.insertAdjacentHTML(
+				"afterbegin",
+				'<svg class="mc-chipbolt" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 3.5 14H10l-1 8L18.5 10H12l1-8z"/></svg>',
+			);
+		}
+		button.appendChild(document.createTextNode(currentModel()?.name ?? "model"));
+		if (currentEffort) {
+			const eff = document.createElement("span");
+			eff.className = "mc-eff";
+			eff.textContent = effortLabel(currentEffort);
+			button.appendChild(eff);
+		}
 	};
 	// The track is painted by hand: accent fill up to the knob, a faint dot
 	// per stop (the Desktop look — accent-color can't draw ticks).
@@ -244,20 +255,21 @@ const modelCtl = (() => {
 		slider.style.setProperty("--mc-track", layers.join(", "));
 	};
 	const sync = () => {
-		button.textContent = chipLabel();
+		renderChip();
 		slider.max = String(Math.max(levels.length - 1, 0));
 		const index = levels.indexOf(currentEffort);
 		if (index >= 0) slider.value = String(index);
+		slider.title = currentEffort ? `Effort: ${effortLabel(currentEffort)}` : "Effort";
 		paintTrack();
-		effortValue.textContent = currentEffort ? effortLabel(currentEffort) : "…";
 		modelLabel.textContent = currentModel()?.name ?? "…";
 		const fastCapable = Boolean(currentModel()?.fastCapable);
 		speed.disabled = !fastCapable;
 		speed.setAttribute("aria-checked", fastOn() ? "true" : "false");
 		speed.title = fastCapable
-			? "Fast responses ride the priority lane"
-			: "This model's API has no priority lane — fast responses are available on OpenAI subscription models";
-		note.style.display = fastCapable ? "none" : "";
+			? fastOn()
+				? "Fast responses on (priority lane)"
+				: "Fast responses"
+			: "This model's API has no priority lane — fast responses ride OpenAI subscription models";
 		list.innerHTML = "";
 		for (const model of models) {
 			const item = document.createElement("button");
@@ -278,8 +290,8 @@ const modelCtl = (() => {
 		const level = levels[Number(slider.value)];
 		if (!level) return;
 		currentEffort = level;
-		effortValue.textContent = effortLabel(level);
-		button.textContent = chipLabel();
+		slider.title = `Effort: ${effortLabel(level)}`;
+		renderChip();
 		paintTrack();
 		window.qorpera.rpcSend({ type: "set_thinking_level", level });
 	};
