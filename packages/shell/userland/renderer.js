@@ -142,9 +142,15 @@ function createChipSelect(buttonId, menuId, onPick) {
 	document.body.appendChild(menu);
 	let value = "";
 	let options = [];
+	// Options may carry an `icon` (trusted chrome-authored SVG markup); labels
+	// are always text nodes — company/product names never parse as HTML.
+	const fillOption = (el, option) => {
+		el.textContent = "";
+		if (option?.icon) el.insertAdjacentHTML("afterbegin", option.icon);
+		el.appendChild(document.createTextNode(option ? option.label : "…"));
+	};
 	const renderLabel = () => {
-		const current = options.find((o) => o.value === value);
-		button.textContent = current ? current.label : "…";
+		fillOption(button, options.find((o) => o.value === value));
 	};
 	const open = () => {
 		closeOpenChipMenu();
@@ -152,7 +158,7 @@ function createChipSelect(buttonId, menuId, onPick) {
 		for (const option of options) {
 			const item = document.createElement("button");
 			item.className = option.value === value ? "selected" : "";
-			item.textContent = option.label;
+			fillOption(item, option);
 			item.onclick = () => {
 				value = option.value;
 				renderLabel();
@@ -211,11 +217,18 @@ function scopeName(path) {
 	return parts[parts.length - 1] || String(path);
 }
 
+// Entry icons: a building for the company, a package for a product — the two
+// are different kinds of thing and the menu should read that way at a glance.
+const COMPANY_ICON =
+	'<svg class="chipicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18M5 21V5.5L12 3l7 2.5V21M9.5 9h.01M14.5 9h.01M9.5 13h.01M14.5 13h.01M10 21v-3.5h4V21"/></svg>';
+const PRODUCT_ICON =
+	'<svg class="chipicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8.2v7.6l-9 4.7-9-4.7V8.2L12 3.5l9 4.7Z"/><path d="M3.3 8.2 12 12.7l8.7-4.5M12 12.7V20"/></svg>';
+
 function syncScopeChrome() {
-	const options = [{ value: "", label: state.name || "Company" }];
+	const options = [{ value: "", label: state.name || "Company", icon: COMPANY_ICON }];
 	for (const s of state.scopes ?? []) {
 		if (s.exists === false) continue; // a declared zone with no directory yet
-		options.push({ value: s.path, label: s.name || scopeName(s.path) });
+		options.push({ value: s.path, label: s.name || scopeName(s.path), icon: PRODUCT_ICON });
 	}
 	scopeChip.setOptions(options, currentScope ?? "");
 	scopeChip.value = currentScope ?? "";
