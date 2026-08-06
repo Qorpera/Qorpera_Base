@@ -59,6 +59,31 @@ file fails **closed** — every class gates.
   ABOVE `[tools]` opt-outs — `bash = "none"` cannot open a product zone or
   the kernel files.
 
+## The scope grant (founder-scoped sessions)
+
+A chat session the founder explicitly scopes to one product (the shell's
+scope selector) is pre-approved for THAT zone: the selection — confirmed in
+a kernel-owned native dialog, never in agent-evolvable UI — is the founder's
+`[products]` approval for the session, so per-write gates would be theater.
+
+Mechanics: the kernel spawns the session's process with `QORPERA_SCOPE` set
+to the root-relative product path and cwd inside the product. The kernel is
+the ONLY writer of that variable; a value that does not match a declared
+`[products]` path grants nothing (the ratified `authority.toml` stays the
+source of truth). Inside a granted session:
+
+- products-class effects that fall ENTIRELY inside the granted zone are
+  allowed and stamped into the trail with `scoped: true`;
+- a `bash` command that also mentions ANOTHER product gates as usual;
+- `[authority]` territory (kernel files, `authority.toml`, `inbox/`) and
+  every other class are untouched by the grant;
+- a destructive command inside the zone re-classifies as `[irreversible]` —
+  scope never grants history rewrites or force-pushes.
+
+Autonomous work is never scoped: the kernel only sets the variable on
+founder-confirmed chat spawns, so the controller cannot scope itself into a
+product zone.
+
 ## Gate lifecycle
 
 A gated call returns a block result naming the request file; the agent keeps

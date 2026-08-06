@@ -125,16 +125,44 @@ describe("company app server", () => {
 			"utf-8",
 		);
 
+		// A founder-scoped chat carries its product scope in the session name.
+		writeFileSync(
+			join(root, "trail", "2026-08-04T12-00-00-000Z_scoped.jsonl"),
+			[
+				JSON.stringify({ type: "session", version: 3, id: "scoped", timestamp: "t", cwd: root }),
+				JSON.stringify({ type: "session_info", id: "s2", parentId: null, name: "scope — work/my-product" }),
+				JSON.stringify({
+					type: "message",
+					id: "1",
+					parentId: "s2",
+					message: { role: "user", content: [{ type: "text", text: "fix the launcher" }] },
+				}),
+			].join("\n"),
+			"utf-8",
+		);
+
 		const state = (await (await fetch(`${base}/api/state`)).json()) as {
-			sessions: Array<{ file: string; title: string; kind: string }>;
+			sessions: Array<{ file: string; title: string; kind: string; scope?: string }>;
 			inbox: Array<{ file: string; kind: string; status: string }>;
 		};
 		const chat = state.sessions.find((s) => s.file.includes("_abc"));
 		const auto = state.sessions.find((s) => s.file.includes("_auto"));
+		const scoped = state.sessions.find((s) => s.file.includes("_scoped"));
 		expect(chat?.title).toBe("plan the pricing analysis");
 		expect(chat?.kind).toBe("chat");
+		expect(chat?.scope).toBeUndefined();
 		expect(auto?.kind).toBe("autonomous");
 		expect(auto?.title).toBe("autonomous — conception");
+		expect(scoped?.kind).toBe("chat");
+		expect(scoped?.scope).toBe("work/my-product");
+		expect(scoped?.title).toBe("fix the launcher");
+
+		// The declared product zones ride along for the chrome's scope selector.
+		writeFileSync(join(root, "authority.toml"), `[products]\nmode = "gate"\npaths = ["work/my-product"]\n`, "utf-8");
+		const withScopes = (await (await fetch(`${base}/api/state`)).json()) as {
+			scopes: Array<{ path: string; name: string; exists: boolean }>;
+		};
+		expect(withScopes.scopes).toEqual([{ path: "work/my-product", name: "my-product", exists: false }]);
 		const message = state.inbox.find((item) => item.file === "msg-pricing.md");
 		expect(message?.kind).toBe("message");
 		expect(message?.status).toBe("pending");

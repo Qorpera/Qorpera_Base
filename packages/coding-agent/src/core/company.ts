@@ -22,6 +22,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { getAgentDir } from "../config.ts";
+import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
 
 /**
  * The kernel prompt (spec §5.2). L0 — companies and models may layer above
@@ -434,6 +435,32 @@ export function conceptionKickoff(root: string): string | undefined {
 		// no work/ — fall through
 	}
 	return CONCEPTION_NEW;
+}
+
+// ---- session scopes (the scope selector's data) ----------------------------
+
+export interface ProductScope {
+	/** Root-relative path exactly as declared in authority.toml [products]. */
+	path: string;
+	/** Display name — the zone's basename. */
+	name: string;
+	/** Whether the directory currently exists in the company folder. */
+	exists: boolean;
+}
+
+/**
+ * The company's declared product zones, straight from the ratified
+ * authority.toml — the scope selector offers exactly these, so the founder
+ * can only scope a session to a product the authority file already names.
+ */
+export function listProductScopes(root: string): ProductScope[] {
+	const authority = discoverAuthority(root);
+	if (!authority) return [];
+	return readAuthorityConfig(authority).productPaths.map((path) => ({
+		path,
+		name: path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path,
+		exists: existsSync(resolve(join(root, path))),
+	}));
 }
 
 // ---- company registry (the hub's memory) ----------------------------------

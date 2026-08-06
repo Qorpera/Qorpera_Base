@@ -308,6 +308,12 @@
 	.gate .body { margin: 8px 0; }
 	.gate textarea { width: 100%; padding: 8px 10px; resize: vertical; min-height: 56px; margin-bottom: 8px; }
 	#sessions button { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	/* Scoped-chat tag in the sidebar: names the product the session steers. */
+	.scopetag {
+		margin-left: 6px; padding: 1px 6px; border-radius: 5px;
+		background: var(--accent-soft); color: var(--accent);
+		font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em;
+	}
 	h2.cat { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
 	h2.cat .catBtn { width: auto; margin-left: auto; padding: 0 7px; font-size: 14px; color: var(--text-soft); border: 1px solid var(--border); border-radius: 5px; background: none; cursor: pointer; }
 	h2.cat .catBtn:hover { color: var(--text); background: rgba(249, 249, 247, 0.055); }
@@ -380,6 +386,10 @@
 			<div class="composer-shell">
 				<textarea id="input" rows="1" placeholder="Steer the company… (Enter to send, Shift+Enter for newline)"></textarea>
 				<div class="composer-strip">
+					<div class="chipwrap">
+						<button id="scopeBtn" class="stripchip" title="Session scope — the company, or one of its products" aria-haspopup="menu" aria-expanded="false">…</button>
+						<div id="scopeMenu" class="chipmenu"></div>
+					</div>
 					<span class="composer-spacer"></span>
 					<div class="chipwrap">
 						<button id="modelBtn" class="stripchip" title="Model" aria-haspopup="menu" aria-expanded="false">…</button>

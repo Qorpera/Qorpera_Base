@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
-import { KERNEL_PROMPT, scaffoldCompany } from "../src/core/company.ts";
+import { KERNEL_PROMPT, listProductScopes, scaffoldCompany } from "../src/core/company.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
@@ -155,6 +155,30 @@ describe("forking hub verbs (no-launch paths)", () => {
 		expect(existsSync(join(forked, "AGENTS.md"))).toBe(true);
 		expect(existsSync(join(forked, "authority.toml"))).toBe(true);
 		expect(existsSync(join(forked, ".git"))).toBe(true);
+	});
+});
+
+describe("listProductScopes", () => {
+	it("returns the declared zones with names and existence, straight from authority.toml", () => {
+		scaffoldCompany(root);
+		mkdirSync(join(root, "work", "my-product"), { recursive: true });
+		writeFileSync(
+			join(root, "authority.toml"),
+			`[products]\nmode = "gate"\npaths = ["work/my-product", "work/ghost-product"]\n`,
+			"utf-8",
+		);
+		const scopes = listProductScopes(root);
+		expect(scopes).toEqual([
+			{ path: "work/my-product", name: "my-product", exists: true },
+			{ path: "work/ghost-product", name: "ghost-product", exists: false },
+		]);
+	});
+
+	it("returns nothing without an authority file or [products] section", () => {
+		mkdirSync(root, { recursive: true });
+		expect(listProductScopes(root)).toEqual([]);
+		writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "auto"\n`, "utf-8");
+		expect(listProductScopes(root)).toEqual([]);
 	});
 });
 

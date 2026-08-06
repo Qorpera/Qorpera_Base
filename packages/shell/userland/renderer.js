@@ -18,6 +18,7 @@ function toggleChats() {
 }
 let currentSurface = null;
 let currentSession = null; // trail file of the open chat (null = fresh/unsaved)
+let currentScope = null; // product scope of the open chat (null = the company)
 let assistantEl = null;
 let thinkingEl = null;
 let poller = null;
@@ -198,6 +199,50 @@ const effortChip = createChipSelect("effortBtn", "effortMenu", (picked) => {
 	window.qorpera.rpcSend({ type: "set_thinking_level", level: picked });
 });
 
+// ---- session scope: company vs product (the scope selector) -----------------
+// The chip names what this session steers: the company itself, or one of the
+// products authority.toml declares. Picking a product opens a FRESH session
+// rooted inside it — the kernel confirms the grant in a native dialog (that
+// confirmation IS the founder's [products] approval for the session), so a
+// cancel simply snaps the chip back.
+
+function scopeName(path) {
+	const parts = String(path).replace(/\\/g, "/").split("/").filter(Boolean);
+	return parts[parts.length - 1] || String(path);
+}
+
+function syncScopeChrome() {
+	const options = [{ value: "", label: state.name || "Company" }];
+	for (const s of state.scopes ?? []) {
+		if (s.exists === false) continue; // a declared zone with no directory yet
+		options.push({ value: s.path, label: s.name || scopeName(s.path) });
+	}
+	scopeChip.setOptions(options, currentScope ?? "");
+	scopeChip.value = currentScope ?? "";
+	$("input").placeholder = currentScope
+		? `Work on ${scopeName(currentScope)}… (Enter to send, Shift+Enter for newline)`
+		: "Steer the company… (Enter to send, Shift+Enter for newline)";
+}
+
+const scopeChip = createChipSelect("scopeBtn", "scopeMenu", async (picked) => {
+	const next = picked || null;
+	if (next === currentScope) return;
+	cacheCurrentSession();
+	const result = await window.qorpera.openChat(null, next ?? undefined);
+	if (!result?.ok) {
+		scopeChip.value = currentScope ?? "";
+		return;
+	}
+	currentSession = null;
+	currentScope = result.scope ?? null;
+	$("messages").innerHTML = "";
+	resetWorkGroup();
+	show("chat");
+	syncScopeChrome();
+	renderCompanyNavSafe();
+	hydrateAgentState(false);
+});
+
 async function refreshState() {
 	try {
 		const next = await (await fetch(`${backendUrl}/api/state`)).json();
@@ -226,24 +271,35 @@ function cacheCurrentSession() {
 
 async function openSession(file) {
 	cacheCurrentSession();
+	// A scoped session reopens under its own scope (recorded in the trail);
+	// the kernel re-confirms the grant. Cancel → stay exactly where we are.
+	const summary = (state.sessions ?? []).find((s) => s.file === file);
+	const result = await window.qorpera.openChat(file, summary?.scope);
+	if (!result?.ok) return;
 	currentSession = file;
-	await window.qorpera.openChat(file);
+	currentScope = result.scope ?? null;
 	// Cached pages show instantly; fresh ones get a proper loading state.
 	// Either way the live child re-hydrates and replaces once ready.
 	$("messages").innerHTML = sessionCache[file] ?? '<div class="loading">loading session…</div>';
 	resetWorkGroup();
 	show("chat");
+	syncScopeChrome();
 	renderCompanyNavSafe();
 	hydrateAgentState(true);
 }
 
 async function newChat() {
 	cacheCurrentSession();
+	// "+" keeps the current scope: a new chat while working on a product is
+	// usually more of that work (the kernel still confirms the grant).
+	const result = await window.qorpera.openChat(null, currentScope ?? undefined);
+	if (!result?.ok) return;
 	currentSession = null;
-	await window.qorpera.openChat(null);
+	currentScope = result.scope ?? null;
 	$("messages").innerHTML = "";
 	resetWorkGroup();
 	show("chat");
+	syncScopeChrome();
 	renderCompanyNavSafe();
 	hydrateAgentState(false);
 }
@@ -293,7 +349,13 @@ function renderCompanyNav() {
 	for (const session of (state.sessions ?? []).filter((s) => s.kind !== "autonomous")) {
 		const b = document.createElement("button");
 		b.textContent = session.title;
-		b.title = session.file;
+		b.title = session.scope ? `${session.file} · scoped to ${session.scope}` : session.file;
+		if (session.scope) {
+			const tag = document.createElement("span");
+			tag.className = "scopetag";
+			tag.textContent = scopeName(session.scope);
+			b.appendChild(tag);
+		}
 		if (currentSession === session.file) b.className = "active";
 		b.onclick = () => openSession(session.file);
 		chats.appendChild(b);
@@ -307,6 +369,7 @@ function renderCompanyNav() {
 		b.onclick = () => showSurface(surface);
 		nav.appendChild(b);
 	}
+	syncScopeChrome();
 	const pending = state.inbox.filter((g) => g.status === "pending").length;
 	$("inboxBadge").innerHTML = pending ? `<span class="badge">${pending}</span>` : "";
 	if (currentView === "inbox") renderInbox();

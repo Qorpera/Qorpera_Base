@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
+import { listProductScopes } from "./company.ts";
 
 export interface CompanyAppOptions {
 	root: string;
@@ -176,6 +177,8 @@ interface SessionSummary {
 	title: string;
 	/** "autonomous" = controller-initiated work (tagged at spawn); "chat" = founder-brought. */
 	kind: "chat" | "autonomous";
+	/** Product scope the session was opened under (root-relative), if any. */
+	scope?: string;
 }
 
 /** Trail sessions ARE the chat list (spec §3). Title = first user message;
@@ -212,11 +215,15 @@ function listTrailSessions(root: string): SessionSummary[] {
 				}
 			}
 			const kind = name.toLowerCase().startsWith("autonomous") ? "autonomous" : "chat";
+			// Scoped chats carry their scope in the session name (set at spawn:
+			// `scope — <root-relative path>`) — the chrome restores it on open.
+			const scope = kind === "chat" ? name.match(/^scope — (.+)$/)?.[1] : undefined;
 			sessions.push({
 				file,
 				mtimeMs: statSync(path).mtimeMs,
 				title: kind === "autonomous" ? name : title || file.slice(0, 30),
 				kind,
+				scope,
 			});
 		} catch {
 			// unreadable session files are skipped
@@ -255,12 +262,22 @@ function stateFor(root: string): unknown {
 	} catch {
 		// no trail yet
 	}
+	// Scopes for the chrome's scope selector: the declared product zones.
+	// Derived fresh from authority.toml each poll so a gate edit shows up
+	// without a reopen.
+	let scopes: Array<{ path: string; name: string; exists: boolean }> = [];
+	try {
+		scopes = listProductScopes(root);
+	} catch {
+		// a malformed authority file must not take company state down
+	}
 	return {
 		name: companyName(root),
 		surfaces,
 		inbox: readInbox(root),
 		sessions: listTrailSessions(root),
 		trailSessions,
+		scopes,
 	};
 }
 

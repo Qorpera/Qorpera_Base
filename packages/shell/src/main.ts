@@ -26,6 +26,7 @@ import {
 	conceptionKickoff,
 	integrateRepo,
 	listCompanies,
+	listProductScopes,
 	registerCompany,
 	scaffoldCompany,
 } from "@qorpera/pi-coding-agent/company";
@@ -201,21 +202,36 @@ async function closeCompany(slot: Slot): Promise<void> {
 /** Spawn the intelligence: the CLI's RPC mode under Electron's own Node.
  * With sessionFile, resumes that trail session; without, starts fresh.
  * Autonomous work is tagged with a session name so the trail (and the
- * Activity view) can tell controller-initiated sessions from chats. */
-function startChild(
-	slot: Slot,
-	root: string,
-	sessionFile?: string,
-	autonomousName?: string,
-): ChildProcessWithoutNullStreams {
+ * Activity view) can tell controller-initiated sessions from chats.
+ *
+ * A product scope (founder-selected, kernel-confirmed) roots the child INSIDE
+ * the product and carries the grant as QORPERA_SCOPE — the authority layer
+ * pre-approves that zone for this session and nothing else. The session file
+ * still lands in the company trail (explicit --session-dir: a product dir has
+ * no project settings pointing there), and a fresh scoped session is named
+ * `scope — <path>` so the chat list can restore its scope on open. */
+interface ChildOptions {
+	sessionFile?: string;
+	autonomousName?: string;
+	scope?: string;
+}
+
+function startChild(slot: Slot, root: string, options: ChildOptions = {}): ChildProcessWithoutNullStreams {
+	const { sessionFile, autonomousName, scope } = options;
 	const win = slot.window;
 	const args = [RPC_ENTRY, "--mode", "rpc"];
 	if (sessionFile) args.push("--session", join(root, "trail", sessionFile));
 	if (autonomousName) args.push("--name", `autonomous — ${autonomousName}`);
+	if (scope) {
+		args.push("--session-dir", join(root, "trail"));
+		if (!sessionFile) args.push("--name", `scope — ${scope}`);
+	}
 	const child = spawn(process.execPath, args, {
-		cwd: root,
+		cwd: scope ? join(root, scope) : root,
 		stdio: ["pipe", "pipe", "pipe"],
-		env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+		env: scope
+			? { ...process.env, ELECTRON_RUN_AS_NODE: "1", QORPERA_SCOPE: scope }
+			: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
 	}) as ChildProcessWithoutNullStreams;
 	createInterface({ input: child.stdout }).on("line", (line) => {
 		if (!line.trim()) return;
@@ -381,7 +397,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 
 	// Never-conceived company: the conception session is autonomous work.
 	const kickoff = conceptionKickoff(root);
-	const child = startChild(slot, root, undefined, kickoff ? "conception" : undefined);
+	const child = startChild(slot, root, kickoff ? { autonomousName: "conception" } : {});
 	slot.runtime = {
 		root,
 		child,
@@ -419,12 +435,46 @@ function showHub(slot: Slot): void {
 	void slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 }
 
-/** Switch the chat to a trail session (or a fresh one) without touching the backend. */
-function openChat(slot: Slot, sessionFile: string | null): void {
-	if (!slot.runtime) return;
-	intentionalKills.add(slot.runtime.child);
-	slot.runtime.child.kill();
-	slot.runtime.child = startChild(slot, slot.runtime.root, sessionFile ?? undefined);
+/** Switch the chat to a trail session (or a fresh one) without touching the backend.
+ *
+ * A requested product scope is validated against the ratified authority.toml
+ * (an undeclared or missing zone grants nothing — the session opens unscoped
+ * at the company root) and then confirmed in a KERNEL-owned native dialog.
+ * The dialog is the authority boundary: the userland is agent-evolvable code,
+ * so an IPC call alone must never mint a product-zone grant — that would be
+ * the controller approving its own request. Founder cancels → nothing is
+ * killed, the current chat stays. Returns the effective scope so the chrome
+ * reflects what was actually granted. */
+async function openChat(
+	slot: Slot,
+	sessionFile: string | null,
+	scope?: string,
+): Promise<{ ok: boolean; scope?: string }> {
+	if (!slot.runtime) return { ok: false };
+	const runtime = slot.runtime;
+	let effectiveScope: string | undefined;
+	if (typeof scope === "string" && scope.length > 0) {
+		const declared = listProductScopes(runtime.root).find((entry) => entry.path === scope && entry.exists);
+		if (declared) {
+			const choice = await dialog.showMessageBox(slot.window, {
+				type: "question",
+				buttons: [`Work on ${declared.name}`, "Cancel"],
+				defaultId: 0,
+				cancelId: 1,
+				title: "Product scope",
+				message: `Scope this session to ${declared.name}?`,
+				detail:
+					`The session runs inside ${declared.path}. Changes to this product are pre-approved for this session — ` +
+					`your selection here is the approval. Other products, the company spine, and destructive actions keep their gates.`,
+			});
+			if (choice.response !== 0) return { ok: false };
+			effectiveScope = declared.path;
+		}
+	}
+	intentionalKills.add(runtime.child);
+	runtime.child.kill();
+	runtime.child = startChild(slot, runtime.root, { sessionFile: sessionFile ?? undefined, scope: effectiveScope });
+	return { ok: true, scope: effectiveScope };
 }
 
 function createWindow(): Slot {
@@ -534,9 +584,9 @@ app.whenReady().then(() => {
 		const slot = slotOf(event.sender);
 		if (slot) return closeCompany(slot);
 	});
-	ipcMain.handle("chat:open", (event, sessionFile: string | null) => {
+	ipcMain.handle("chat:open", (event, sessionFile: string | null, scope?: string) => {
 		const slot = slotOf(event.sender);
-		if (slot) openChat(slot, sessionFile);
+		return slot ? openChat(slot, sessionFile, scope) : { ok: false };
 	});
 	ipcMain.handle("hub:show", (event) => {
 		const slot = slotOf(event.sender);

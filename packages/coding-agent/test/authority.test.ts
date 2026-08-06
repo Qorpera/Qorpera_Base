@@ -267,6 +267,94 @@ describe("products zone", () => {
 	});
 });
 
+describe("scope grant (founder-scoped sessions)", () => {
+	const TWO_PRODUCTS = `[products]\nmode = "gate"\npaths = ["work/my-product", "work/other-product"]\n`;
+
+	afterEach(() => {
+		delete process.env.QORPERA_SCOPE;
+	});
+
+	it("pre-approves in-zone writes and stamps them scoped", () => {
+		writeAuthorityToml(TWO_PRODUCTS);
+		process.env.QORPERA_SCOPE = "work/my-product";
+		const authority = discoverAuthority(root)!;
+		const decision = evaluateToolCall(
+			authority,
+			"write",
+			{ path: join(root, "work", "my-product", "src", "main.ts"), content: "x" },
+			root,
+		);
+		expect(decision.kind).toBe("allow");
+		expect((decision as { scoped?: true }).scoped).toBe(true);
+		expect((decision as { effectClass?: string }).effectClass).toBe("products");
+	});
+
+	it("normalizes separators and trailing slashes in the granted value", () => {
+		writeAuthorityToml(TWO_PRODUCTS);
+		process.env.QORPERA_SCOPE = "work\\my-product\\";
+		const authority = discoverAuthority(root)!;
+		const decision = evaluateToolCall(authority, "edit", { path: join(root, "work", "my-product", "a.ts") }, root);
+		expect(decision.kind).toBe("allow");
+	});
+
+	it("leaves the OTHER product gated", () => {
+		writeAuthorityToml(TWO_PRODUCTS);
+		process.env.QORPERA_SCOPE = "work/my-product";
+		const authority = discoverAuthority(root)!;
+		const decision = evaluateToolCall(
+			authority,
+			"write",
+			{ path: join(root, "work", "other-product", "a.ts"), content: "x" },
+			root,
+		);
+		expect(decision.kind).toBe("block");
+		expect((decision as { effectClass: string }).effectClass).toBe("products");
+	});
+
+	it("leaves [authority] territory gated — scope never opens the spine", () => {
+		writeAuthorityToml(TWO_PRODUCTS);
+		process.env.QORPERA_SCOPE = "work/my-product";
+		const authority = discoverAuthority(root)!;
+		expect(evaluateToolCall(authority, "write", { path: join(root, "AGENTS.md"), content: "x" }, root).kind).toBe(
+			"block",
+		);
+		expect(
+			evaluateToolCall(authority, "write", { path: join(root, "inbox", "gate-abc.md"), content: "x" }, root).kind,
+		).toBe("block");
+	});
+
+	it("allows in-zone bash mutation but gates commands that also mention another product", () => {
+		writeAuthorityToml(TWO_PRODUCTS);
+		process.env.QORPERA_SCOPE = "work/my-product";
+		const authority = discoverAuthority(root)!;
+		expect(
+			evaluateToolCall(authority, "bash", { command: "sed -i s/a/b/ work/my-product/src/main.ts" }, root).kind,
+		).toBe("allow");
+		expect(
+			evaluateToolCall(authority, "bash", { command: "cp work/my-product/a.ts work/other-product/a.ts" }, root).kind,
+		).toBe("block");
+	});
+
+	it("re-classifies destructive in-zone commands as irreversible", () => {
+		writeAuthorityToml(TWO_PRODUCTS);
+		process.env.QORPERA_SCOPE = "work/my-product";
+		const authority = discoverAuthority(root)!;
+		const decision = evaluateToolCall(authority, "bash", { command: "rm -rf work/my-product/dist" }, root);
+		expect(decision.kind).toBe("block");
+		expect((decision as { effectClass: string }).effectClass).toBe("irreversible");
+	});
+
+	it("grants nothing for a value authority.toml does not declare", () => {
+		writeAuthorityToml(TWO_PRODUCTS);
+		process.env.QORPERA_SCOPE = "work/undeclared";
+		const authority = discoverAuthority(root)!;
+		expect(
+			evaluateToolCall(authority, "write", { path: join(root, "work", "my-product", "a.ts"), content: "x" }, root)
+				.kind,
+		).toBe("block");
+	});
+});
+
 describe("gate lifecycle", () => {
 	it("files a request, blocks while pending, allows once approved, then consumes the approval", () => {
 		writeAuthorityToml(`[tools]\ndanger = "irreversible"\n\n[irreversible]\nmode = "gate"\n`);

@@ -55,6 +55,23 @@ Scaffolding is idempotent and never overwrites — a company's `company.md`
 is its identity, not ours to reset. Existing `.qorpera/settings.json` keys
 are merged around, and a pre-set `sessionDir` is respected.
 
+## Session scopes (company vs product)
+
+A chat session carries a *scope*: the company (default) or one of the
+products declared in `authority.toml` `[products] paths`. The shell's
+composer offers exactly those — a company and a product are different kinds
+of thing (a company has authority, a trail, an inbox, an app; a product is a
+repo the company works ON), so scopes are per-company, never a flat project
+list.
+
+Picking a product opens a fresh session rooted INSIDE that product's
+directory, pre-approved for that zone and nothing else (see authority.md,
+"The scope grant"). The kernel confirms the grant in a native dialog — that
+confirmation is the founder's approval, which agent-evolvable userland code
+cannot fake. Scoped sessions still record to the company `trail/` and are
+named `scope — <path>`, so the chat list shows the product tag and restores
+the scope (with a fresh confirmation) when reopened.
+
 ## Chats vs autonomous work (the communication split)
 
 Chat sessions are for work the founder brings. The controller's own

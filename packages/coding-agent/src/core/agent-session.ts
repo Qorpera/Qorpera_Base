@@ -495,6 +495,7 @@ export class AgentSession {
 						effectClass: decision.effectClass,
 						decision: decision.kind,
 						gateId: decision.kind === "block" ? decision.gateId : undefined,
+						scoped: decision.kind === "allow" && decision.scoped ? true : undefined,
 						behavior: decision.behavior,
 					});
 				}
