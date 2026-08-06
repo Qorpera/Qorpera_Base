@@ -98,6 +98,31 @@ describe("userland fork model", () => {
 		expect(ensureUserland(company(), baseV2, "2.0.0").action).toBe("staged");
 	});
 
+	it("follows base CONTENT under an unchanged version label (dev-tree rebuilds)", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		// Pristine fork + rebuilt base, same label → fast-forward.
+		const status = ensureUserland(company(), baseV2, "1.0.0");
+		expect(status.action).toBe("fast-forwarded");
+		expect(readFileSync(join(userland(), "index.html"), "utf-8")).toBe("<html>v2</html>");
+
+		// Evolved fork + another rebuild under the same label → staged.
+		writeFileSync(join(userland(), "renderer.js"), "// evolved", "utf-8");
+		const baseV3 = join(root, "base-v3");
+		mkdirSync(baseV3, { recursive: true });
+		writeFileSync(join(baseV3, "index.html"), "<html>v3</html>", "utf-8");
+		writeFileSync(join(baseV3, "renderer.js"), "// v3", "utf-8");
+		const staged = ensureUserland(company(), baseV3, "1.0.0");
+		expect(staged.action).toBe("staged");
+		expect(readFileSync(join(userland(), ".update", "index.html"), "utf-8")).toBe("<html>v3</html>");
+
+		// Yet another rebuild while staged → the staging refreshes.
+		writeFileSync(join(baseV3, "index.html"), "<html>v3b</html>", "utf-8");
+		expect(ensureUserland(company(), baseV3, "1.0.0").action).toBe("staged");
+		expect(readFileSync(join(userland(), ".update", "index.html"), "utf-8")).toBe("<html>v3b</html>");
+		// An unchanged staging is recognized, not re-copied.
+		expect(ensureUserland(company(), baseV3, "1.0.0").action).toBe("already-staged");
+	});
+
 	it("versions: snapshots only on change, restores content, and rollback is itself reversible", () => {
 		ensureUserland(company(), baseV1, "1.0.0");
 		// Pristine fork: nothing to snapshot (that state lives in .base already).

@@ -5,7 +5,10 @@
  * never forked and updates atomically. The USERLAND — the chrome the
  * company's app actually runs — is forked INTO the company folder
  * (`<company>/userland/`) on first open, where the controller may evolve it
- * freely: UI, behavior, features. Base updates never reset a fork:
+ * freely: UI, behavior, features. Base updates never reset a fork, and
+ * CONTENT decides what counts as an update — never the version label (a dev
+ * tree rebuilds under an unchanged productVersion; a release can bump the
+ * label without touching the userland):
  *
  *  - untouched fork (every file matches the fork-time hash manifest) →
  *    fast-forward to the new base silently;
@@ -354,8 +357,23 @@ export function ensureUserland(companyRoot: string, baseDir: string, baseVersion
 	}
 
 	const manifest = readManifest(userlandDir);
-	if (!manifest || manifest.baseVersion === baseVersion) {
-		return { action: "current", baseVersion: manifest?.baseVersion ?? baseVersion };
+	if (!manifest) {
+		return { action: "current", baseVersion };
+	}
+
+	// CONTENT decides, never the version label (founder direction 2026-08-06:
+	// product changes must reflect in the controller — a dev tree rebuilds
+	// base content under an unchanged productVersion, and a packaged release
+	// can bump the label without touching the userland). manifest.files is
+	// the base's content at fork/fast-forward time.
+	if (JSON.stringify(hashFiles(baseDir)) === JSON.stringify(manifest.files)) {
+		if (manifest.baseVersion !== baseVersion) {
+			// Label-only movement: relabel and clear any staging a prior open
+			// created for this phantom delta.
+			rmSync(join(userlandDir, UPDATE_DIR), { recursive: true, force: true });
+			writeManifest(userlandDir, { ...manifest, baseVersion, stagedVersion: undefined });
+		}
+		return { action: "current", baseVersion };
 	}
 
 	if (isUnmodified(userlandDir)) {
@@ -378,17 +396,14 @@ export function ensureUserland(companyRoot: string, baseDir: string, baseVersion
 		return { action: "fast-forwarded", baseVersion };
 	}
 
-	// New base byte-identical to the fork's pristine copy (a version-label-only
-	// release, or a fork cut mid-release): nothing to merge — relabel, and
-	// clear any staging a prior open created for this phantom delta.
-	if (existsSync(join(userlandDir, PRISTINE_DIR)) && sameContent(join(userlandDir, PRISTINE_DIR), baseDir)) {
-		rmSync(join(userlandDir, UPDATE_DIR), { recursive: true, force: true });
-		writeManifest(userlandDir, { ...manifest, baseVersion, stagedVersion: undefined });
-		return { action: "current", baseVersion };
-	}
-
-	// Evolved fork: stage the update for a controller merge session.
-	if (manifest.stagedVersion === baseVersion) {
+	// Evolved fork: stage the update for a controller merge session. Staging
+	// is current only if the staged CONTENT still matches the base — a dev
+	// tree can rebuild the base again while an earlier stage waits.
+	if (
+		manifest.stagedVersion === baseVersion &&
+		existsSync(join(userlandDir, UPDATE_DIR)) &&
+		sameContent(join(userlandDir, UPDATE_DIR), baseDir)
+	) {
 		return { action: "already-staged", baseVersion: manifest.baseVersion, stagedVersion: baseVersion };
 	}
 	rmSync(join(userlandDir, UPDATE_DIR), { recursive: true, force: true });

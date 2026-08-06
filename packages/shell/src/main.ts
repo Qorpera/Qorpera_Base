@@ -16,7 +16,7 @@
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -714,6 +714,47 @@ app.whenReady().then(() => {
 			sendAll("update-status", "dev tree — rebuild the repo to update");
 		});
 		ipcMain.handle("update:install", () => {});
+
+		// Dev-lane reflection (founder direction 2026-08-06): in a dev tree the
+		// build output IS the product changing, so the kernel watches dist and
+		// re-runs the open flow when it settles — fork maintenance (fast-forward
+		// is content-driven) and a window reload, no restart ritual. Kernel
+		// (main-process) changes still need a restart; this lane is the chrome.
+		if (!IS_SMOKE) {
+			let reloadTimer: NodeJS.Timeout | undefined;
+			try {
+				watch(DIRNAME, { recursive: true }, () => {
+					if (reloadTimer) clearTimeout(reloadTimer);
+					// A build writes many files; act once the burst settles.
+					reloadTimer = setTimeout(() => {
+						if (!existsSync(join(BASE_USERLAND_DIR, "index.html"))) return; // mid-copy
+						for (const slot of slots.values()) {
+							if (slot.window.isDestroyed()) continue;
+							const runtime = slot.runtime;
+							if (!runtime) {
+								void slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+								continue;
+							}
+							try {
+								runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
+							} catch (error) {
+								console.error(`dev reload: fork maintenance failed: ${(error as Error).message}`);
+							}
+							const useBase =
+								getActiveApp(join(runtime.root, "userland")) === "base" || runtime.usingBaseFallback;
+							const dir = useBase ? BASE_USERLAND_DIR : join(runtime.root, "userland");
+							void slot.window.loadFile(join(dir, "index.html")).catch(async () => {
+								runtime.usingBaseFallback = true;
+								await slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+							});
+						}
+					}, 600);
+				});
+			} catch (error) {
+				// A broken watcher must never take the shell down — dev nicety only.
+				console.error(`dev reload watcher unavailable: ${(error as Error).message}`);
+			}
+		}
 	}
 
 	// Visual smoke: capture the window to a PNG once it has settled — the

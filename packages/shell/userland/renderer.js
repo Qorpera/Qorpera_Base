@@ -108,7 +108,10 @@ async function enterCompany(active) {
 		$("conav").insertBefore(b, $("conav").firstChild);
 	}
 	show("chat");
-	hydrateAgentState(false);
+	// With history: the chat child survives window reloads (dev-lane rebuilds
+	// reload the chrome), so the live thread must come back with it. A fresh
+	// child answers with an empty history — harmless.
+	hydrateAgentState(true);
 	await refreshState();
 	document.title = `${state.name || "Company"} Controller`;
 	$("wordmark").textContent = document.title;
