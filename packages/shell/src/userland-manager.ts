@@ -396,6 +396,34 @@ export function ensureUserland(companyRoot: string, baseDir: string, baseVersion
 		return { action: "fast-forwarded", baseVersion };
 	}
 
+	// A finished merge must read back as "current", never as a new stage.
+	// Two completion signals, either sufficient:
+	//  - the pristine copy already matches the current base (the controller
+	//    replaced .base under the old merge instructions), or
+	//  - this exact stage's .update is gone (deleting it IS the controller's
+	//    "done" signal under the current instructions; label-gated so a newer
+	//    base arriving after the merge still stages normally).
+	// The kernel heals the bookkeeping itself — manifest upkeep used to be
+	// the merge session's job, and a merge that wrote `files: {}` re-staged
+	// the same update forever.
+	const pristineDir = join(userlandDir, PRISTINE_DIR);
+	const updateDir = join(userlandDir, UPDATE_DIR);
+	const merged =
+		(existsSync(pristineDir) && sameContent(pristineDir, baseDir)) ||
+		(manifest.stagedVersion === baseVersion && !existsSync(updateDir));
+	if (merged) {
+		rmSync(updateDir, { recursive: true, force: true });
+		rmSync(pristineDir, { recursive: true, force: true });
+		copyBase(baseDir, pristineDir);
+		writeManifest(userlandDir, {
+			...manifest,
+			baseVersion,
+			stagedVersion: undefined,
+			files: hashFiles(baseDir),
+		});
+		return { action: "current", baseVersion };
+	}
+
 	// Evolved fork: stage the update for a controller merge session. Staging
 	// is current only if the staged CONTENT still matches the base — a dev
 	// tree can rebuild the base again while an earlier stage waits.
@@ -417,7 +445,7 @@ export function mergeTaskPrompt(status: UserlandStatus): string {
 	return [
 		`A Qorpera Base userland update is staged: your app's fork is based on v${status.baseVersion}, and v${status.stagedVersion} is waiting in userland/.update/.`,
 		`Merge it: userland/ is your evolved app, userland/.base/ is the pristine v${status.baseVersion} you forked from, userland/.update/ is the new base — a classic 3-way merge (yours / base / theirs).`,
-		"Preserve your evolutions, adopt the update's improvements, and verify the app still works (the founder will reopen it). When done: replace userland/.base/ with a copy of the new base, delete userland/.update/, and update userland.json — set baseVersion to the new version, remove stagedVersion, and recompute nothing else (the files map only matters for fast-forward detection; set it to {} if unsure).",
+		"Preserve your evolutions, adopt the update's improvements, and verify the app still works (the founder will reopen it). When done, delete userland/.update/ — deleting it is the completion signal. Touch nothing else: the kernel refreshes userland/.base/ and userland.json itself once the update folder is gone.",
 		"Cleanup note: recursive deletes (`rm -r`) trip the irreversibility gates and stall on the founder. Delete with your write/delete tools or plain per-file `rm` of listed files instead — past merges that used `rm -r` left stale gate requests the founder then had to deny.",
 	].join("\n\n");
 }

@@ -217,6 +217,33 @@ details.work .workbody .msg { max-width: 100%; }
 	border-color: rgba(255, 255, 255, 0.09);
 	box-shadow: inset 0 1px rgba(255, 255, 255, 0.04), 0 18px 42px rgba(0, 0, 0, 0.4);
 }
+/* Image attachments: pasted/dropped thumbnails wait in a strip above the
+   textarea; sent images render inline in the message and open in a lightbox. */
+#attachStrip { display: none; flex-wrap: wrap; gap: 6px; }
+#attachStrip.has { display: flex; }
+.attach-thumb {
+	position: relative; width: 52px; height: 52px; flex: 0 0 auto;
+	border: 1px solid var(--border-strong); border-radius: var(--radius); overflow: hidden;
+}
+.attach-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-remove {
+	position: absolute; top: 3px; right: 3px; width: 16px; height: 16px; min-height: 16px;
+	padding: 0; border: 0; border-radius: 50%; display: grid; place-items: center;
+	background: rgba(0, 0, 0, 0.65); color: #ffffff; font-size: 11px; line-height: 1; cursor: pointer;
+}
+.attach-remove:hover:not(:disabled) { background: rgba(0, 0, 0, 0.85); border: 0; }
+.msg-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.msg-imgs:first-child { margin-top: 0; }
+.msg-imgs img {
+	max-width: min(220px, 100%); max-height: 220px; display: block; cursor: zoom-in;
+	border: 1px solid var(--border); border-radius: var(--radius);
+}
+.lightbox {
+	position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center;
+	background: rgba(0, 0, 0, 0.75); cursor: zoom-out;
+}
+.lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 12px; box-shadow: 0 24px 72px rgba(0, 0, 0, 0.9); }
+
 .composer-shell textarea {
 	width: 100%; min-height: 35px; max-height: 270px;
 	border: 0; border-radius: 0; background: transparent; color: var(--text);

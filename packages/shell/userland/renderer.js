@@ -518,13 +518,17 @@ function renderHistory(messages) {
 	};
 	for (const message of messages ?? []) {
 		if (message.role === "user") {
-			const raw = (message.content ?? []).filter((p) => p.type === "text").map((p) => p.text).join("\n");
+			const parts = message.content ?? [];
+			const raw = parts.filter((p) => p.type === "text").map((p) => p.text).join("\n");
 			// The sidechat context preamble is plumbing, not something the
 			// founder typed — show the message as they wrote it.
 			const text = raw.replace(/^\[Sidechat context:[^\]]*\]\s*/, "");
-			if (text) {
+			const imageUrls = parts
+				.filter((p) => p.type === "image" && p.data)
+				.map((p) => `data:${p.mimeType};base64,${p.data}`);
+			if (text || imageUrls.length) {
 				group = null;
-				addMsg("user", text);
+				appendMsgImages(addMsg("user", text), imageUrls);
 			}
 		} else if (message.role === "assistant") {
 			for (const part of message.content ?? []) {
@@ -950,13 +954,97 @@ function addMsg(cls, text) {
 	return div;
 }
 
+// ---- image attachments: paste or drop into the composer ----------------------
+let pendingImages = []; // { mimeType, dataUrl }
+
+function renderAttachStrip() {
+	const strip = $("attachStrip");
+	strip.innerHTML = "";
+	strip.classList.toggle("has", pendingImages.length > 0);
+	pendingImages.forEach((image, index) => {
+		const thumb = document.createElement("div");
+		thumb.className = "attach-thumb";
+		const img = document.createElement("img");
+		img.src = image.dataUrl;
+		img.alt = "attached image";
+		const remove = document.createElement("button");
+		remove.className = "attach-remove";
+		remove.title = "Remove";
+		remove.textContent = "×";
+		remove.onclick = () => {
+			pendingImages.splice(index, 1);
+			renderAttachStrip();
+			syncComposer();
+		};
+		thumb.appendChild(img);
+		thumb.appendChild(remove);
+		strip.appendChild(thumb);
+	});
+}
+
+function attachImageFile(file) {
+	if (!file || !file.type.startsWith("image/")) return;
+	const reader = new FileReader();
+	reader.onload = () => {
+		pendingImages.push({ mimeType: file.type, dataUrl: String(reader.result) });
+		renderAttachStrip();
+		syncComposer();
+	};
+	reader.readAsDataURL(file);
+}
+
+$("input").addEventListener("paste", (event) => {
+	const files = [...(event.clipboardData?.items ?? [])]
+		.filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+		.map((item) => item.getAsFile());
+	if (!files.length) return;
+	event.preventDefault();
+	files.forEach(attachImageFile);
+});
+// Dropping onto the composer attaches too — same lane as paste.
+{
+	const shell = document.querySelector(".composer-shell");
+	shell.addEventListener("dragover", (event) => event.preventDefault());
+	shell.addEventListener("drop", (event) => {
+		event.preventDefault();
+		[...(event.dataTransfer?.files ?? [])].forEach(attachImageFile);
+	});
+}
+
+/** Thumbnails inside a message; click opens the full image in a lightbox. */
+function appendMsgImages(div, dataUrls) {
+	if (!dataUrls.length) return;
+	const wrap = document.createElement("div");
+	wrap.className = "msg-imgs";
+	for (const url of dataUrls) {
+		const img = document.createElement("img");
+		img.src = url;
+		img.alt = "attached image";
+		img.onclick = () => {
+			const box = document.createElement("div");
+			box.className = "lightbox";
+			const full = document.createElement("img");
+			full.src = url;
+			box.appendChild(full);
+			box.onclick = () => box.remove();
+			document.body.appendChild(box);
+		};
+		wrap.appendChild(img);
+	}
+	div.appendChild(wrap);
+	$("messages").scrollTop = $("messages").scrollHeight;
+}
+
 function sendPrompt() {
 	const input = $("input");
 	const text = input.value.trim();
-	if (!text) return;
+	const images = pendingImages;
+	if (!text && !images.length) return;
 	input.value = "";
+	pendingImages = [];
+	renderAttachStrip();
 	syncComposer();
-	addMsg("user", text);
+	appendMsgImages(addMsg("user", text), images.map((image) => image.dataUrl));
 	let message = text;
 	if (sidechatPending) {
 		// First prompt of a fresh sidechat: tell the controller what the founder
@@ -968,7 +1056,15 @@ function sendPrompt() {
 		message = `[Sidechat context: this chat is docked to the surface "${name}" — app/surfaces/${entry}. The founder is looking at it right now; orient from that file before answering.]\n\n${text}`;
 		sidechatPending = null;
 	}
-	window.qorpera.rpcSend({ type: "prompt", message });
+	const frame = { type: "prompt", message };
+	if (images.length) {
+		frame.images = images.map((image) => ({
+			type: "image",
+			data: image.dataUrl.slice(image.dataUrl.indexOf(",") + 1),
+			mimeType: image.mimeType,
+		}));
+	}
+	window.qorpera.rpcSend(frame);
 }
 
 /** Grow the textarea with its content and light the send button up. */
@@ -976,7 +1072,7 @@ function syncComposer() {
 	const input = $("input");
 	input.style.height = "auto";
 	input.style.height = `${Math.min(input.scrollHeight, 270)}px`;
-	$("sendBtn").dataset.active = input.value.trim() ? "true" : "false";
+	$("sendBtn").dataset.active = input.value.trim() || pendingImages.length ? "true" : "false";
 }
 
 $("input").addEventListener("input", syncComposer);

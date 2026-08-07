@@ -1250,8 +1250,10 @@ export class AgentSession {
 			// Build messages array (custom message if any, then user message)
 			messages = [];
 
-			// Add user message
-			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
+			// Add user message. Image-only prompts omit the text part — an
+			// empty text block is rejected by providers.
+			const userContent: (TextContent | ImageContent)[] =
+				expandedText || !currentImages?.length ? [{ type: "text", text: expandedText }] : [];
 			if (currentImages) {
 				userContent.push(...currentImages);
 			}
@@ -1417,7 +1419,7 @@ export class AgentSession {
 	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
 		this._steeringMessages.push(text);
 		this._emitQueueUpdate();
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
+		const content: (TextContent | ImageContent)[] = text || !images?.length ? [{ type: "text", text }] : [];
 		if (images) {
 			content.push(...images);
 		}
@@ -1434,7 +1436,7 @@ export class AgentSession {
 	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
 		this._followUpMessages.push(text);
 		this._emitQueueUpdate();
-		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
+		const content: (TextContent | ImageContent)[] = text || !images?.length ? [{ type: "text", text }] : [];
 		if (images) {
 			content.push(...images);
 		}

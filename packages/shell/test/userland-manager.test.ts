@@ -123,6 +123,76 @@ describe("userland fork model", () => {
 		expect(ensureUserland(company(), baseV3, "1.0.0").action).toBe("already-staged");
 	});
 
+	it("a completed merge reads back as current — deleting .update is the done signal", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		writeFileSync(join(userland(), "renderer.js"), "// evolved", "utf-8");
+		const staged = ensureUserland(company(), baseV2, "2.0.0");
+		expect(staged.action).toBe("staged");
+		// The merge session merges content and deletes .update — nothing else.
+		// The prompt tells the controller exactly this contract.
+		expect(mergeTaskPrompt(staged)).toContain("delete userland/.update/");
+		writeFileSync(join(userland(), "renderer.js"), "// evolved, merged with v2", "utf-8");
+		rmSync(join(userland(), ".update"), { recursive: true, force: true });
+
+		const done = ensureUserland(company(), baseV2, "2.0.0");
+		expect(done.action).toBe("current");
+		expect(done.stagedVersion).toBeUndefined();
+		// The kernel refreshed the merge references itself.
+		expect(readFileSync(join(userland(), ".base", "renderer.js"), "utf-8")).toBe("// v2 improved");
+		expect(existsSync(join(userland(), ".update"))).toBe(false);
+		// The evolution survives, and the state is stable across reopens.
+		expect(readFileSync(join(userland(), "renderer.js"), "utf-8")).toBe("// evolved, merged with v2");
+		expect(ensureUserland(company(), baseV2, "2.0.0").action).toBe("current");
+	});
+
+	it("heals merges finished under the old instructions (files: {} in the manifest)", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		writeFileSync(join(userland(), "renderer.js"), "// evolved", "utf-8");
+		ensureUserland(company(), baseV2, "2.0.0");
+		// Old-protocol merge: replace .base, delete .update, rewrite the
+		// manifest with files: {} ("set it to {} if unsure").
+		writeFileSync(join(userland(), "renderer.js"), "// evolved, merged with v2", "utf-8");
+		rmSync(join(userland(), ".update"), { recursive: true, force: true });
+		rmSync(join(userland(), ".base"), { recursive: true, force: true });
+		cpSync(baseV2, join(userland(), ".base"), { recursive: true });
+		const manifestPath = join(userland(), "userland.json");
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+		manifest.baseVersion = "2.0.0";
+		manifest.files = {};
+		delete manifest.stagedVersion;
+		writeFileSync(manifestPath, JSON.stringify(manifest, null, "\t"), "utf-8");
+
+		// Before the heal this re-staged the same update forever.
+		const done = ensureUserland(company(), baseV2, "2.0.0");
+		expect(done.action).toBe("current");
+		expect(existsSync(join(userland(), ".update"))).toBe(false);
+		expect(ensureUserland(company(), baseV2, "2.0.0").action).toBe("current");
+
+		// A genuinely new base afterwards still stages normally.
+		const baseV3 = join(root, "base-v3");
+		mkdirSync(baseV3, { recursive: true });
+		writeFileSync(join(baseV3, "index.html"), "<html>v3</html>", "utf-8");
+		writeFileSync(join(baseV3, "renderer.js"), "// v3", "utf-8");
+		expect(ensureUserland(company(), baseV3, "3.0.0").action).toBe("staged");
+	});
+
+	it("a newer base arriving after the done signal still stages (label gate)", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		writeFileSync(join(userland(), "renderer.js"), "// evolved", "utf-8");
+		ensureUserland(company(), baseV2, "2.0.0");
+		rmSync(join(userland(), ".update"), { recursive: true, force: true });
+		// v3 ships before the app reopens: the v2 done signal must not
+		// swallow v3's changes.
+		const baseV3 = join(root, "base-v3");
+		mkdirSync(baseV3, { recursive: true });
+		writeFileSync(join(baseV3, "index.html"), "<html>v3</html>", "utf-8");
+		writeFileSync(join(baseV3, "renderer.js"), "// v3", "utf-8");
+		const status = ensureUserland(company(), baseV3, "3.0.0");
+		expect(status.action).toBe("staged");
+		expect(status.stagedVersion).toBe("3.0.0");
+		expect(readFileSync(join(userland(), ".update", "renderer.js"), "utf-8")).toBe("// v3");
+	});
+
 	it("versions: snapshots only on change, restores content, and rollback is itself reversible", () => {
 		ensureUserland(company(), baseV1, "1.0.0");
 		// Pristine fork: nothing to snapshot (that state lives in .base already).
