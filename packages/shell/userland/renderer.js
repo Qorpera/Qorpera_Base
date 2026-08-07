@@ -278,9 +278,9 @@ const modelCtl = (() => {
 		const layers = [];
 		for (let i = 0; i <= max; i++) {
 			const at = 4 + (i / max) * 92;
-			layers.push(`radial-gradient(circle at ${at}% 50%, rgba(249, 249, 247, 0.38) 2.5px, transparent 3px)`);
+			layers.push(`radial-gradient(circle at ${at}% 50%, rgba(255, 255, 255, 0.35) 2px, transparent 2.5px)`);
 		}
-		layers.push(`linear-gradient(to right, var(--accent) ${fill}%, #4a4a47 ${fill}%)`);
+		layers.push(`linear-gradient(to right, var(--primary) ${fill}%, rgba(255, 255, 255, 0.1) ${fill}%)`);
 		slider.style.setProperty("--mc-track", layers.join(", "));
 	};
 	const sync = () => {

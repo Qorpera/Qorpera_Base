@@ -66,7 +66,9 @@ describe("company app server", () => {
 
 		const css = await fetch(`${base}/assets/surface.css`);
 		expect(css.headers.get("content-type")).toContain("text/css");
-		expect(await css.text()).toContain("--bg: #2d2d2b");
+		const cssText = await css.text();
+		expect(cssText).toContain("--chrome: #0a0a0a");
+		expect(cssText).toContain(".q-card");
 
 		// Theme override: empty when absent, the company file when present.
 		expect(await (await fetch(`${base}/assets/theme.css`)).text()).toBe("");

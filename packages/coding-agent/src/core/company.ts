@@ -43,6 +43,8 @@ this company the way a hand-built instrument fits its player.
 Surfaces are instruments, not reports: prefer HTML that reads live state
 over prose that freezes it. The backend serves the company design system
 at \`/assets/surface.css\` (markdown surfaces inherit it automatically;
+HTML surfaces get layout classes too — \`.q-grid\`, \`.q-card\`, \`.q-stat\`,
+\`.q-badge\`, \`.q-row\` — so instruments compose without hand-rolled CSS;
 override tokens in \`app/surfaces/theme.css\`) and a read-only kit at
 \`/assets/surface-kit.js\` — \`window.qorpera\` with \`getState()\`,
 \`readSubstrate(name)\`, \`readInbox(file)\`, and \`every(ms, fn)\` — so a

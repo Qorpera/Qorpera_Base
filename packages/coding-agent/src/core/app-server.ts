@@ -302,26 +302,72 @@ function stateFor(root: string): unknown {
  * and always linked AFTER the tokens — controllers (or the founder) restyle
  * by redefining variables, not by forking the sheet.
  */
-const SURFACE_TOKENS_CSS = `:root {
+const SURFACE_TOKENS_CSS = `/* Tokens mirror the base userland (tokens.css) so surfaces blend into the
+ * chrome that embeds them. Token system and document metrics adapted from
+ * T3 Code <https://github.com/pingdotgg/t3code>, MIT, (c) 2026 T3 Tools Inc.
+ * Type is the system stack by design: surfaces ship no font files, so a
+ * webfont name here would silently fall back anyway. */
+:root {
 	color-scheme: dark;
-	--bg: #2d2d2b; --chrome: #101010; --pane-strong: #3a3a38; --hover: #3f4241;
-	--text: #f9f9f7; --text-muted: #b8b8b3; --text-soft: #8f8f8a;
-	--border: #3d3d3b; --border-strong: #51514d;
-	--accent: #cc7d5e; --accent-soft: #3f2d28; --blue: #8fa8ff;
-	--danger: #ff5f38; --danger-soft: #442821;
-	--font-ui: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
-	--font-mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+	--chrome: #0a0a0a;
+	--bg: color-mix(in srgb, var(--chrome) 96%, #ffffff);
+	--pane-strong: rgba(255, 255, 255, 0.05); --hover: rgba(255, 255, 255, 0.07);
+	--text: #f5f5f5; --text-muted: #a6a6a6; --text-soft: #7f7f7f;
+	--border: rgba(255, 255, 255, 0.07); --border-strong: rgba(255, 255, 255, 0.15);
+	--primary: oklch(0.588 0.217 264); --blue: oklch(0.74 0.13 264);
+	--accent: #cc7d5e; --accent-soft: rgba(204, 125, 94, 0.15);
+	--danger: #f26b5e; --danger-soft: rgba(242, 107, 94, 0.14);
+	--warning: #fbbf24; --warning-soft: rgba(245, 158, 11, 0.15);
+	--ok: #34d399; --ok-soft: rgba(16, 185, 129, 0.14);
+	--radius-sm: 6px; --radius: 10px; --radius-lg: 14px; --radius-pill: 999px;
+	--font-ui: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+	--font-mono: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, monospace;
 }
 body { max-width: 880px; margin: 0 auto; padding: 28px 32px; background: var(--bg); color: var(--text);
-	font-family: var(--font-ui); font-size: 14px; line-height: 1.55; }
-h1, h2, h3 { margin: 18px 0 8px; } h1 { font-size: 20px; } h2 { font-size: 16px; } h3 { font-size: 14px; }
-p, ul, ol { margin: 0 0 10px; } ul, ol { padding-left: 24px; }
-code { background: var(--pane-strong); border-radius: 4px; padding: 1px 5px; font-family: var(--font-mono); font-size: 12.5px; }
-pre { background: var(--chrome); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
-pre code { background: none; padding: 0; }
-table { border-collapse: collapse; margin: 0 0 10px; } td, th { border: 1px solid var(--border); padding: 5px 10px; font-size: 13px; }
-blockquote { border-left: 3px solid var(--border-strong); margin: 0 0 10px; padding-left: 12px; color: var(--text-muted); }
-a { color: var(--blue); }
+	font-family: var(--font-ui); font-size: 14px; line-height: 1.55;
+	background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+	background-repeat: repeat; background-size: 256px 256px; }
+h1, h2, h3 { margin: 20px 0 8px; font-weight: 600; line-height: 1.3; }
+h1 { font-size: 20px; } h2 { font-size: 16px; } h3 { font-size: 14px; }
+h1:first-child { margin-top: 0; }
+p, ul, ol { margin: 0 0 10px; } ul, ol { padding-left: 22px; } li + li { margin-top: 4px; }
+code { border: 1px solid var(--border); background: rgba(255, 255, 255, 0.04); border-radius: var(--radius-sm);
+	padding: 1px 5px; font-family: var(--font-mono); font-size: 12px; }
+pre { background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: 12px;
+	padding: 12px 14px; overflow-x: auto; scrollbar-width: thin; }
+pre code { border: 0; background: none; padding: 0; }
+table { border-collapse: collapse; margin: 0 0 10px; font-size: 12.5px; }
+td, th { border: 0; border-bottom: 1px solid color-mix(in srgb, var(--border-strong) 60%, transparent);
+	padding: 7px 12px; text-align: left; }
+th { font-weight: 600; white-space: nowrap; }
+blockquote { border-left: 2px solid var(--border-strong); margin: 0 0 10px; padding-left: 12px; color: var(--text-muted); }
+a { color: var(--blue); text-decoration: none; }
+a:hover { background-image: radial-gradient(circle, currentcolor 0.75px, transparent 1px);
+	background-position: left bottom; background-repeat: repeat-x; background-size: 4px 2px; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { border-radius: 3px; background: rgba(255, 255, 255, 0.08); }
+
+/* ---- kit classes: layout vocabulary for HTML surfaces ---------------------
+ * Additive only — element styles above keep working without them. */
+.q-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 12px 0; }
+.q-card { background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.q-card > :first-child { margin-top: 0; } .q-card > :last-child { margin-bottom: 0; }
+.q-title { font-size: 13px; font-weight: 600; margin: 0 0 4px; }
+.q-meta { font-size: 11.5px; color: var(--text-soft); }
+.q-stat { display: flex; flex-direction: column; gap: 2px; }
+.q-stat-value { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.2; }
+.q-stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-soft); font-weight: 600; }
+.q-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 600;
+	text-transform: uppercase; letter-spacing: 0.04em; border-radius: 5px; padding: 2px 6px;
+	background: rgba(255, 255, 255, 0.06); color: var(--text-muted); }
+.q-badge.ok { background: var(--ok-soft); color: var(--ok); }
+.q-badge.warn { background: var(--warning-soft); color: var(--warning); }
+.q-badge.danger { background: var(--danger-soft); color: var(--danger); }
+.q-badge.accent { background: var(--accent-soft); color: var(--accent); }
+.q-row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 8px; }
+.q-row:hover { background: rgba(255, 255, 255, 0.04); }
+.q-divider { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
 `;
 
 /**
