@@ -10,7 +10,7 @@
 - Changed `ModelRuntime.setRuntimeApiKey()` to accept auth cancellation options rather than catalog refresh options. Call `refresh({ providers: [providerId], signal })` separately when remote freshness is required.
 - Required config-form extension OAuth `refreshToken(credentials, signal)` callbacks to accept and honor a concrete abort signal.
 - Replaced dynamic provider refresh context store access with the read-only `context.stored` snapshot and generation-checked `context.publish()` transaction.
-- Replaced configurable `[products]` path gates and attended-session bypasses with the fixed `product_code` role boundary. Controllers are always read-only over product repositories and worktrees; product-workers can modify only a kernel-assigned worktree. This boundary cannot be approved away, while destructive product operations still re-classify `[irreversible]`.
+- Changed the `[products]` authority axis to founder-vs-agentic sessions: products-class effects ALLOW in attended sessions (a founder present in tui/rpc without the kernel's `QORPERA_AUTONOMOUS` mark) and are stamped `attended: true` in the trail; agentic and headless sessions keep the gate. Destructive in-zone commands still re-classify `[irreversible]`, and `[authority]` territory stays gated in every session. Kernel-spawned autonomous work must set `QORPERA_AUTONOMOUS` or it now counts as a founder session for the signature rule too.
 - Added the required `responseSpeed` field to `AgentState` (pi-agent-core); code constructing full state objects must include it ("standard" | "fast").
 - Changed `AuthorityDecision` to a two-variant union whose `allow` arm carries optional `notified`, `effectClass`, and `behavior` fields, and added an optional `ToolCallContext` fifth parameter to `evaluateToolCall()`. Callers that discriminated on the old three-variant shape must switch on `kind` only. Agent-authored `git commit` commands crossing the authority boundary now require `Qorpera-Trigger:`/`Qorpera-Rationale:` trailers, and unattended outward effects from company-authored code require a standing founder signature (EVOLUTION.md §3/§4).
 
@@ -75,8 +75,7 @@
 
 ### Added
 
-- Added the product-development department kit: `departments/<product>-development/` contains a controlling repository, isolated task worktrees, briefs, and synchronized pull-request read models. Product Chat creates a Git worktree and launches a product-worker there; Pull Requests is a built-in read-model page; Architecture is a disabled placeholder with no schema or storage contract.
-- Disabled automatic session compaction by default in company project settings and documented append-only trail retention; existing explicit compaction choices remain untouched.
+- Added session scopes: `listProductScopes()` on the company module, `scopes` (declared product zones, existence-checked) in the app server's `/api/state`, and `scope` on trail session summaries parsed from the `scope — <path>` session-name convention. The shell's composer grows a scope chip that roots a chat inside a product directory — a context device; permission comes from founder presence.
 - Added surface sidechats: a chat dockable beside every surface, tagged `surface — <entry>` in the trail and exposed as `surface` on session summaries, opening with a context preamble naming what the founder sees.
 - Added response speed end-to-end: `serviceTier` on `SimpleStreamOptions` (honored by the openai-codex-responses adapter as `service_tier`), `responseSpeed` on the agent state mapping "fast" to the priority tier, and rpc `set_response_speed` + `responseSpeed` in `get_state`. The shell's model control enables its speed toggle exactly when the active model's API has a priority lane.
 
