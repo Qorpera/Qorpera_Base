@@ -26,12 +26,15 @@ import {
 	watch,
 	writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
+import { connect } from "node:net";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 // Deep imports from the coding agent (the foundation's own machinery).
 import { companyPort, createCompanyAppServer } from "@qorpera/pi-coding-agent/app-server";
 import {
+	companyRuntimeLockPath,
 	conceptionKickoff,
 	createProductWorktree,
 	enforceCompanyKernelSettings,
@@ -46,21 +49,25 @@ import {
 import { app, BrowserWindow, dialog, shell as electronShell, ipcMain, type WebContents } from "electron";
 import electronUpdater from "electron-updater";
 import {
+	appendKernelObservation,
 	applyKernelWriteFrame,
 	bindTrailSession,
 	commitTrailAppend,
 	createKernelResponseSigner,
 	inboxMessagesPath,
+	type KernelIntentCapability,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
 	sandboxCommandArgs,
 	sandboxConfigDir,
 	sandboxRuntimeDir,
+	type TrailBinding,
 	writeSandboxProfile,
 } from "./agent-runtime.ts";
 import {
 	captureCompanyGitBaseline,
 	checkpointCompanyGit,
+	commitCompanyMaterialization,
 	finishPendingCompanyCheckpoint,
 	reconcilePendingCompanyCheckpoints,
 	savePendingCompanyCheckpoint,
@@ -82,6 +89,151 @@ import {
 const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
 const CODEX_ENTRY = fileURLToPath(import.meta.resolve("@openai/codex/bin/codex.js"));
 const DIRNAME = fileURLToPath(new URL(".", import.meta.url));
+const FOUNDATION_READ_PATHS = [dirname(process.execPath), resolve(DIRNAME, "..", "..", "..")];
+const MODEL_NETWORK_DOMAINS = [
+	"api.openai.com",
+	"chatgpt.com",
+	"api.anthropic.com",
+	"generativelanguage.googleapis.com",
+	"aiplatform.googleapis.com",
+	"api.groq.com",
+	"api.mistral.ai",
+	"api.x.ai",
+	"openrouter.ai",
+	"api.cerebras.ai",
+	"api.deepseek.com",
+	"api.z.ai",
+	"api.moonshot.ai",
+	"api.minimax.io",
+	"api-inference.huggingface.co",
+];
+const MODEL_AUTH_PROVIDERS = new Set([
+	"openai",
+	"openai-codex",
+	"anthropic",
+	"google",
+	"google-gemini-cli",
+	"google-antigravity",
+	"groq",
+	"mistral",
+	"xai",
+	"openrouter",
+	"cerebras",
+	"deepseek",
+	"zai",
+	"kimi-coding",
+	"minimax",
+	"huggingface",
+]);
+const SAFE_CHILD_ENV = new Set([
+	"PATH",
+	"PATHEXT",
+	"SystemRoot",
+	"WINDIR",
+	"COMSPEC",
+	"TEMP",
+	"TMP",
+	"TMPDIR",
+	"LANG",
+	"LC_ALL",
+	"NODE_EXTRA_CA_CERTS",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"ANTHROPIC_API_KEY",
+	"OPENAI_API_KEY",
+	"GOOGLE_API_KEY",
+	"GEMINI_API_KEY",
+	"GROQ_API_KEY",
+	"MISTRAL_API_KEY",
+	"XAI_API_KEY",
+	"OPENROUTER_API_KEY",
+	"CEREBRAS_API_KEY",
+	"DEEPSEEK_API_KEY",
+]);
+
+function prepareBrokeredAgentDir(configDir: string, companyRoot: string): string {
+	if (process.platform === "win32") {
+		const codexHome = join(app.getPath("home"), ".codex");
+		for (const relativePath of [
+			join(".sandbox", "setup_marker.json"),
+			join(".sandbox", "deny_read_acl_state.json"),
+			join(".sandbox-secrets", "sandbox_users.json"),
+		]) {
+			const source = join(codexHome, relativePath);
+			if (!existsSync(source)) {
+				throw new Error(
+					"The elevated Codex Windows sandbox is not provisioned. Qorpera refuses to start an unrestricted controller.",
+				);
+			}
+			const target = join(configDir, relativePath);
+			mkdirSync(dirname(target), { recursive: true });
+			if (!existsSync(target)) copyFileSync(source, target);
+		}
+	}
+	const agentDir = join(configDir, "agent");
+	mkdirSync(agentDir, { recursive: true });
+	const source = join(app.getPath("home"), ".qorpera", "agent", "auth.json");
+	let auth: Record<string, unknown> = {};
+	try {
+		const candidate = JSON.parse(readFileSync(source, "utf-8")) as Record<string, unknown>;
+		auth = Object.fromEntries(Object.entries(candidate).filter(([provider]) => MODEL_AUTH_PROVIDERS.has(provider)));
+	} catch {
+		// No model credentials are available yet. The child remains network- and credential-denied.
+	}
+	writeFileSync(join(agentDir, "auth.json"), `${JSON.stringify(auth, null, "\t")}\n`, "utf-8");
+	writeFileSync(
+		join(agentDir, "trust.json"),
+		`${JSON.stringify({ [resolve(companyRoot)]: true }, null, "\t")}\n`,
+		"utf-8",
+	);
+	return agentDir;
+}
+
+function brokeredChildEnvironment(): NodeJS.ProcessEnv {
+	return Object.fromEntries(Object.entries(process.env).filter(([key, value]) => SAFE_CHILD_ENV.has(key) && value));
+}
+
+let modelProxyPort: number | undefined;
+let closeModelProxy: (() => void) | undefined;
+
+async function startModelNetworkBroker(): Promise<void> {
+	const allowed = new Set(MODEL_NETWORK_DOMAINS);
+	const server = createServer((_request, response) => {
+		response.writeHead(403, { "content-type": "text/plain" });
+		response.end("Qorpera model broker requires an HTTPS CONNECT tunnel");
+	});
+	server.on("connect", (request, client, head) => {
+		let target: URL;
+		try {
+			target = new URL(`https://${request.url}`);
+		} catch {
+			client.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+			return;
+		}
+		const hostname = target.hostname.toLowerCase().replace(/\.$/, "");
+		const port = Number(target.port || "443");
+		if (!allowed.has(hostname) || port !== 443) {
+			client.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+			return;
+		}
+		const upstream = connect({ host: hostname, port }, () => {
+			client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+			if (head.length > 0) upstream.write(head);
+			upstream.pipe(client);
+			client.pipe(upstream);
+		});
+		upstream.on("error", () => client.destroy());
+		client.on("error", () => upstream.destroy());
+	});
+	await new Promise<void>((resolvePromise, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => resolvePromise());
+	});
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("model network broker did not bind a TCP port");
+	modelProxyPort = address.port;
+	closeModelProxy = () => server.close();
+}
 
 function shellVersion(): string {
 	try {
@@ -103,9 +255,14 @@ interface CompanyRuntime {
 	userland: UserlandStatus;
 	usingBaseFallback: boolean;
 	backendToken: string;
+	childOptions: ChildOptions;
 	productWorker?: { department: string; worktree: string };
 	/** Live userland-merge session, if one is running (kernel-spawned, silent). */
 	mergeChild?: ChildProcessWithoutNullStreams;
+	inventoryWatcher?: ReturnType<typeof watch>;
+	transitionQueue: Promise<void>;
+	closing: boolean;
+	runtimeLock: string;
 }
 
 /** One window = one slot: the hub while `runtime` is unset, a company
@@ -142,6 +299,12 @@ function setWindowIcon(win: BrowserWindow, iconPath: string): void {
 }
 /** Children we killed on purpose (session switch/close) — their exits are not news. */
 const intentionalKills = new WeakSet<ChildProcessWithoutNullStreams>();
+const childBindings = new WeakMap<ChildProcessWithoutNullStreams, TrailBinding>();
+const childIntentSigners = new WeakMap<
+	ChildProcessWithoutNullStreams,
+	(frame: Record<string, unknown>, attended: boolean) => KernelIntentCapability
+>();
+const childCheckpointCompletion = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 
 const slots = new Map<number, Slot>();
 
@@ -192,6 +355,16 @@ function slotOf(sender: WebContents): Slot | undefined {
 	return win ? slots.get(win.id) : undefined;
 }
 
+function isTrustedHubSender(sender: WebContents): boolean {
+	const slot = slotOf(sender);
+	if (!slot || slot.runtime) return false;
+	try {
+		return normalizedRoot(fileURLToPath(sender.getURL())) === normalizedRoot(join(BASE_USERLAND_DIR, "index.html"));
+	} catch {
+		return false;
+	}
+}
+
 /** Windows compares paths case-insensitively; launcher argv and the registry
  * may disagree on casing for the same folder. */
 function normalizedRoot(root: string): string {
@@ -225,14 +398,51 @@ function sendAll(channel: string, payload: unknown): void {
 
 async function closeCompany(slot: Slot): Promise<void> {
 	if (!slot.runtime) return;
-	intentionalKills.add(slot.runtime.child);
-	slot.runtime.child.kill();
-	if (slot.runtime.mergeChild) {
-		intentionalKills.add(slot.runtime.mergeChild);
-		slot.runtime.mergeChild.kill();
-	}
-	slot.runtime.backendClose?.();
+	const runtime = slot.runtime;
+	runtime.closing = true;
+	runtime.inventoryWatcher?.close();
+	await runtime.transitionQueue;
+	await stopChild(runtime.child);
+	if (runtime.mergeChild) await stopChild(runtime.mergeChild);
+	runtime.backendClose?.();
+	rmSync(runtime.runtimeLock, { force: true });
 	slot.runtime = undefined;
+}
+
+function claimCompanyRuntime(root: string): string {
+	const path = companyRuntimeLockPath(root);
+	mkdirSync(dirname(path), { recursive: true });
+	if (existsSync(path)) {
+		let owner = 0;
+		try {
+			owner = (JSON.parse(readFileSync(path, "utf-8")) as { pid?: number }).pid ?? 0;
+		} catch {
+			// Invalid records are stale only when no live owning process can be identified.
+		}
+		if (owner > 0) {
+			let ownerIsLive = false;
+			try {
+				process.kill(owner, 0);
+				ownerIsLive = true;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+					throw new Error("could not safely verify the existing company runtime owner", { cause: error });
+				}
+			}
+			if (ownerIsLive) throw new Error("another desktop kernel already owns this company runtime");
+		}
+		rmSync(path, { force: true });
+	}
+	writeFileSync(path, `${JSON.stringify({ version: 1, pid: process.pid, root: resolve(root) })}\n`, { flag: "wx" });
+	return path;
+}
+
+async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+	if (child.exitCode === null) {
+		intentionalKills.add(child);
+		child.kill();
+	}
+	await childCheckpointCompletion.get(child);
 }
 
 /** Spawn the intelligence: the CLI's RPC mode under Electron's own Node.
@@ -260,7 +470,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	const cwd = worktree ? join(root, worktree) : root;
 	const scope = {
 		actor,
-		attended: !autonomousName,
+		attended: false,
 		autonomousLabel: autonomousName ? `autonomous — ${autonomousName}` : undefined,
 		department: department?.path,
 		worktree,
@@ -268,6 +478,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	const userData = app.getPath("userData");
 	const configDir = sandboxConfigDir(userData, root, actor);
 	const runtimeDir = sandboxRuntimeDir(userData, root, actor);
+	const agentDir = prepareBrokeredAgentDir(configDir, root);
 	let gitBaseline = captureCompanyGitBaseline(root);
 	const binding = bindTrailSession(root, cwd, scope, sessionFile);
 	const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "controller")), "checkpoints");
@@ -278,26 +489,64 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		repository: product.repositoryPath,
 		worktrees: product.worktreesPath,
 	}));
-	writeSandboxProfile(configDir, runtimeDir, root, scope, protectedControllerPaths(root, products));
+	writeSandboxProfile(
+		configDir,
+		runtimeDir,
+		root,
+		scope,
+		protectedControllerPaths(root, products),
+		[
+			...FOUNDATION_READ_PATHS,
+			join(configDir, "config.toml"),
+			join(agentDir, "auth.json"),
+			join(agentDir, "trust.json"),
+		],
+		MODEL_NETWORK_DOMAINS,
+	);
 	const rpcArgs = [RPC_ENTRY, "--mode", "rpc", "--session", binding.path];
 	const args = sandboxCommandArgs(CODEX_ENTRY, runtimeDir, process.execPath, rpcArgs);
 	const kernelSigner = createKernelResponseSigner();
 	// QORPERA_AUTONOMOUS marks controller-initiated work: those sessions run
 	// in rpc mode with nobody present, so outward-effect signatures cannot
 	// treat them as founder sessions. Product roles remain separate either way.
-	const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
+	const env: NodeJS.ProcessEnv = brokeredChildEnvironment();
+	env.ELECTRON_RUN_AS_NODE = "1";
+	env.HOME = runtimeDir;
+	env.USERPROFILE = runtimeDir;
+	env.APPDATA = runtimeDir;
+	env.LOCALAPPDATA = runtimeDir;
+	env.XDG_CONFIG_HOME = runtimeDir;
+	if (process.platform === "win32") {
+		if (!modelProxyPort) throw new Error("model network broker is unavailable");
+		const proxy = `http://127.0.0.1:${modelProxyPort}`;
+		env.HTTP_PROXY = proxy;
+		env.HTTPS_PROXY = proxy;
+		env.ALL_PROXY = proxy;
+		env.NODE_USE_ENV_PROXY = "1";
+	}
 	if (autonomousName) env.QORPERA_AUTONOMOUS = "1";
 	delete env.QORPERA_ACTOR;
 	delete env.QORPERA_PRODUCT_DEPARTMENT;
 	delete env.QORPERA_PRODUCT_WORKTREE;
 	env.CODEX_HOME = configDir;
+	env.QORPERA_CODING_AGENT_DIR = agentDir;
 	env.QORPERA_TRAIL_BROKER_TOKEN = binding.token;
 	env.QORPERA_KERNEL_PUBLIC_KEY = kernelSigner.publicKey;
+	env.QORPERA_KERNEL_REQUIRED = "1";
 	const child = spawn(process.execPath, args, {
 		cwd: runtimeDir,
 		stdio: ["pipe", "pipe", "pipe"],
 		env,
 	}) as ChildProcessWithoutNullStreams;
+	childBindings.set(child, binding);
+	childIntentSigners.set(child, kernelSigner.signIntent);
+	let resolveCheckpoint: (() => void) | undefined;
+	childCheckpointCompletion.set(
+		child,
+		new Promise<void>((resolvePromise) => {
+			resolveCheckpoint = resolvePromise;
+		}),
+	);
 	createInterface({ input: child.stdout }).on("line", (line) => {
 		if (!line.trim()) return;
 		try {
@@ -334,11 +583,74 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		if (!silent && !intentionalKills.has(child)) send(win, "rpc-exit", code);
 	});
 	child.on("close", () => {
-		const result = checkpointCompanyGit(root, gitBaseline, binding.file);
-		finishPendingCompanyCheckpoint(checkpointState, result);
-		if (!result.success) savePendingCompanyCheckpoint(checkpointState, root, result.baseline, binding.file);
+		try {
+			const result = checkpointCompanyGit(root, gitBaseline, binding.file);
+			finishPendingCompanyCheckpoint(checkpointState, result);
+			if (!result.success) savePendingCompanyCheckpoint(checkpointState, root, result.baseline, binding.file);
+		} finally {
+			resolveCheckpoint?.();
+		}
 	});
 	return child;
+}
+
+function sendKernelPrompt(
+	child: ChildProcessWithoutNullStreams,
+	frame: { type: "prompt" | "steer" | "follow_up"; message: string; [key: string]: unknown },
+	attended: boolean,
+	origin: string,
+): boolean {
+	const binding = childBindings.get(child);
+	const signIntent = childIntentSigners.get(child);
+	if (!binding || !signIntent || child.exitCode !== null) return false;
+	const unsignedFrame = { ...frame };
+	delete unsignedFrame.kernelIntent;
+	appendKernelObservation(binding, {
+		frameType: frame.type,
+		message: frame.message,
+		attended,
+		origin,
+	});
+	const kernelIntent = signIntent(unsignedFrame, attended);
+	child.stdin.write(`${JSON.stringify({ ...unsignedFrame, kernelIntent })}\n`);
+	return true;
+}
+
+async function replaceRuntimeChild(slot: Slot, runtime: CompanyRuntime, options: ChildOptions): Promise<void> {
+	await stopChild(runtime.child);
+	if (slot.runtime !== runtime) return;
+	runtime.childOptions = { ...options };
+	runtime.child = startChild(slot, runtime.root, runtime.childOptions);
+	runtime.productWorker =
+		runtime.childOptions.department && runtime.childOptions.worktree
+			? { department: runtime.childOptions.department.path, worktree: runtime.childOptions.worktree }
+			: undefined;
+}
+
+function enqueueRuntimeTransition<T>(runtime: CompanyRuntime, transition: () => Promise<T>): Promise<T> {
+	const result = runtime.transitionQueue.then(transition, transition);
+	runtime.transitionQueue = result.then(
+		() => undefined,
+		() => undefined,
+	);
+	return result;
+}
+
+function restartForProductInventory(slot: Slot, runtime: CompanyRuntime): void {
+	void enqueueRuntimeTransition(runtime, async () => {
+		if (slot.runtime !== runtime || runtime.mergeChild) return;
+		const options = {
+			...runtime.childOptions,
+			sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
+		};
+		await stopChild(runtime.child);
+		if (slot.runtime !== runtime) return;
+		readProductProtectionInventory(runtime.root);
+		runtime.childOptions = options;
+		runtime.child = startChild(slot, runtime.root, options);
+	}).catch((error) => {
+		console.error(`product inventory transition stopped the controller: ${(error as Error).message}`);
+	});
 }
 
 function isInside(target: string, parent: string): boolean {
@@ -354,8 +666,14 @@ function isInside(target: string, parent: string): boolean {
  * result reaches the renderer as one `merge-done` event, and the open-time
  * userland status is refreshed so the merge button reflects reality.
  */
-function startMergeChild(slot: Slot, runtime: CompanyRuntime): void {
+async function startMergeChild(slot: Slot, runtime: CompanyRuntime): Promise<boolean> {
 	const prompt = mergeTaskPrompt(runtime.userland);
+	const resumeOptions = {
+		...runtime.childOptions,
+		sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
+	};
+	await stopChild(runtime.child);
+	if (slot.runtime !== runtime || runtime.closing) return false;
 	let started = false;
 	let child: ChildProcessWithoutNullStreams;
 	child = startChild(slot, runtime.root, {
@@ -374,8 +692,9 @@ function startMergeChild(slot: Slot, runtime: CompanyRuntime): void {
 		},
 	});
 	runtime.mergeChild = child;
-	child.on("exit", () => {
-		if (slot.runtime !== runtime) return; // company was closed meanwhile
+	child.on("close", async () => {
+		await childCheckpointCompletion.get(child);
+		if (slot.runtime !== runtime || runtime.closing) return; // company was closed meanwhile
 		runtime.mergeChild = undefined;
 		// Re-read the manifest: a finished merge reads back as "current".
 		// Guarded twice: a throw here is an uncaught exception in main (fs can
@@ -392,8 +711,16 @@ function startMergeChild(slot: Slot, runtime: CompanyRuntime): void {
 			console.error(`post-merge userland refresh failed: ${(error as Error).message}`);
 		}
 		send(slot.window, "merge-done", { ok, action: runtime.userland.action });
+		runtime.childOptions = resumeOptions;
+		runtime.child = startChild(slot, runtime.root, resumeOptions);
 	});
-	child.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
+	if (!sendKernelPrompt(child, { type: "prompt", message: prompt }, false, "kernel-userland-merge")) {
+		await stopChild(child);
+		if (runtime.mergeChild === child) runtime.mergeChild = undefined;
+		if (slot.runtime === runtime && !runtime.closing) runtime.child = startChild(slot, runtime.root, resumeOptions);
+		return false;
+	}
+	return true;
 }
 
 /** Each open company owns its backend server and token. The hashed port can
@@ -475,6 +802,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 	// Any evolution since the last open is captured as a restorable version —
 	// the founder can always roll the app back from Settings → App.
 	snapshotIfChanged(join(root, "userland"));
+	commitCompanyMaterialization(root, [join(".qorpera", "settings.json"), "userland"]);
 
 	// Backend for surfaces/state/inbox — reused machinery, in-process. The
 	// token guards mutating endpoints; only the renderer ever receives it.
@@ -483,18 +811,35 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 
 	// Never-conceived company: the conception session is autonomous work.
 	const kickoff = conceptionKickoff(root);
-	const child = startChild(slot, root, kickoff ? { autonomousName: "conception" } : {});
-	slot.runtime = {
+	const childOptions: ChildOptions = kickoff ? { autonomousName: "conception" } : {};
+	const runtimeLock = claimCompanyRuntime(root);
+	let child: ChildProcessWithoutNullStreams;
+	try {
+		child = startChild(slot, root, childOptions);
+	} catch (error) {
+		rmSync(runtimeLock, { force: true });
+		backend.close();
+		throw error;
+	}
+	const runtime: CompanyRuntime = {
 		root,
 		child,
+		childOptions,
 		backendPort: backend.port,
 		backendClose: backend.close,
 		userland,
 		usingBaseFallback: false,
 		backendToken,
+		transitionQueue: Promise.resolve(),
+		closing: false,
+		runtimeLock,
 	};
+	slot.runtime = runtime;
+	runtime.inventoryWatcher = watch(join(root, ".qorpera"), { persistent: false }, (_event, file) => {
+		if (file?.toString() === "products.json") restartForProductInventory(slot, runtime);
+	});
 	if (kickoff) {
-		child.stdin.write(`${JSON.stringify({ type: "prompt", message: kickoff })}\n`);
+		sendKernelPrompt(child, { type: "prompt", message: kickoff }, false, "kernel-conception");
 	}
 	slot.kickoffPending = Boolean(kickoff);
 
@@ -515,10 +860,10 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 	});
 }
 
-function showHub(slot: Slot): void {
-	void closeCompany(slot);
+async function showHub(slot: Slot): Promise<void> {
+	await closeCompany(slot);
 	setWindowIcon(slot.window, DEFAULT_ICON);
-	void slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+	await slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 }
 
 /** Switch chat sessions. Product chats run a product-worker in one validated worktree. */
@@ -559,14 +904,12 @@ async function openChat(
 			if (!worktree) return { ok: false, error: "could not create product worktree" };
 		}
 	}
-	intentionalKills.add(runtime.child);
-	runtime.child.kill();
-	runtime.child = startChild(slot, runtime.root, {
+	const options: ChildOptions = {
 		sessionFile: sessionFile ?? undefined,
 		department,
 		worktree,
-	});
-	runtime.productWorker = department && worktree ? { department: department.path, worktree } : undefined;
+	};
+	await replaceRuntimeChild(slot, runtime, options);
 	return { ok: true, department: department?.path, worktree };
 }
 
@@ -656,19 +999,45 @@ app.on("second-instance", (_event, argv) => {
 	else createWindow();
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+	await startModelNetworkBroker();
 	ipcMain.handle("companies:list", () => listCompanies());
 	ipcMain.handle("company:open", (event, root: string) => {
+		if (!isTrustedHubSender(event.sender)) return;
 		const slot = slotOf(event.sender);
 		if (slot) return openCompany(slot, root);
 	});
-	ipcMain.handle("company:new", (_event, dir: string) => {
-		const result = scaffoldCompany(dir);
+	ipcMain.handle("company:new", async (event, dir: string) => {
+		if (!isTrustedHubSender(event.sender) || typeof dir !== "string" || !dir.trim()) return;
+		const target = resolve(dir);
+		const confirmation = await dialog.showMessageBox(BrowserWindow.fromWebContents(event.sender)!, {
+			type: "warning",
+			buttons: ["Cancel", "Create company"],
+			defaultId: 0,
+			cancelId: 0,
+			message: "Create a company folder at this location?",
+			detail: target,
+		});
+		if (confirmation.response !== 1) return;
+		const result = scaffoldCompany(target);
 		registerCompany(result.root);
 		return result.root;
 	});
-	ipcMain.handle("company:integrate", (_event, dir: string, from: string) => {
-		const result = scaffoldCompany(dir);
+	ipcMain.handle("company:integrate", async (event, dir: string, from: string) => {
+		if (!isTrustedHubSender(event.sender) || typeof dir !== "string" || !dir.trim() || typeof from !== "string") {
+			return;
+		}
+		const target = resolve(dir);
+		const confirmation = await dialog.showMessageBox(BrowserWindow.fromWebContents(event.sender)!, {
+			type: "warning",
+			buttons: ["Cancel", "Create and integrate"],
+			defaultId: 0,
+			cancelId: 0,
+			message: "Create this company and integrate the product source?",
+			detail: `Company: ${target}\nSource: ${from}`,
+		});
+		if (confirmation.response !== 1) return;
+		const result = scaffoldCompany(target);
 		registerCompany(result.root);
 		const ok = integrateRepo(result.root, from);
 		return { root: result.root, ok };
@@ -679,11 +1048,16 @@ app.whenReady().then(() => {
 	});
 	ipcMain.handle("chat:open", (event, sessionFile: string | null, department?: string, worktree?: string) => {
 		const slot = slotOf(event.sender);
-		return slot ? openChat(slot, sessionFile, department, worktree) : { ok: false };
+		const runtime = slot?.runtime;
+		if (!slot || !runtime) return { ok: false };
+		return enqueueRuntimeTransition(runtime, () => {
+			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild) return Promise.resolve({ ok: false });
+			return openChat(slot, sessionFile, department, worktree);
+		});
 	});
 	ipcMain.handle("hub:show", (event) => {
 		const slot = slotOf(event.sender);
-		if (slot) showHub(slot);
+		if (slot) return showHub(slot);
 	});
 	ipcMain.handle("settings:info", () => {
 		// Connected providers: names only, never secrets. Kernel-level read.
@@ -773,15 +1147,18 @@ app.whenReady().then(() => {
 		return { ok: true };
 	});
 	// The merge button's backend: one merge session at a time, kernel-owned.
-	ipcMain.handle("userland:merge", (event) => {
+	ipcMain.handle("userland:merge", async (event) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, reason: "no-company" };
-		const staged = runtime.userland.action === "staged" || runtime.userland.action === "already-staged";
-		if (!staged) return { ok: false, reason: "nothing-staged" };
-		if (runtime.mergeChild && runtime.mergeChild.exitCode === null) return { ok: false, reason: "already-running" };
-		startMergeChild(slot, runtime);
-		return { ok: true };
+		return enqueueRuntimeTransition(runtime, async () => {
+			if (slot.runtime !== runtime || runtime.closing) return { ok: false, reason: "no-company" };
+			const staged = runtime.userland.action === "staged" || runtime.userland.action === "already-staged";
+			if (!staged) return { ok: false, reason: "nothing-staged" };
+			if (runtime.mergeChild && runtime.mergeChild.exitCode === null)
+				return { ok: false, reason: "already-running" };
+			return { ok: await startMergeChild(slot, runtime) };
+		});
 	});
 	ipcMain.handle("backend:authorized-post", async (event, path: string, body: unknown) => {
 		const slot = slotOf(event.sender);
@@ -828,50 +1205,57 @@ app.whenReady().then(() => {
 	ipcMain.handle("rpc:send", async (event, frame: unknown) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
-		if (!slot || !runtime) return { ok: false };
-		if (runtime.productWorker) {
-			if (!frame || typeof frame !== "object" || !("type" in frame) || typeof frame.type !== "string") {
-				return { ok: false };
-			}
-			const promptTypes = new Set(["prompt", "steer", "follow_up"]);
-			const safeControlTypes = new Set([
-				"abort",
-				"get_state",
-				"get_messages",
-				"set_model",
-				"cycle_model",
-				"get_available_models",
-				"get_available_thinking_levels",
-				"set_thinking_level",
-				"set_response_speed",
-				"cycle_thinking_level",
-				"set_steering_mode",
-				"set_follow_up_mode",
-				"set_auto_retry",
-				"abort_retry",
-				"get_session_stats",
-				"get_entries",
-				"get_tree",
-				"get_fork_messages",
-				"get_commands",
-				"set_session_name",
-			]);
-			if (promptTypes.has(frame.type)) {
-				const message = "message" in frame && typeof frame.message === "string" ? frame.message : "";
-				if (!message) return { ok: false };
-				const confirmation = await dialog.showMessageBox(slot.window, {
-					type: "warning",
-					buttons: ["Cancel", "Send to product worker"],
-					defaultId: 0,
-					cancelId: 0,
-					message: `Authorize this ${runtime.productWorker.department} instruction?`,
-					detail: `${message.slice(0, 4000)}\n\nAssigned worktree: ${runtime.productWorker.worktree}`,
-				});
-				if (confirmation.response !== 1) return { ok: false };
-			} else if (!safeControlTypes.has(frame.type)) {
-				return { ok: false };
-			}
+		if (!slot || !runtime || runtime.mergeChild) return { ok: false };
+		if (!frame || typeof frame !== "object" || !("type" in frame) || typeof frame.type !== "string") {
+			return { ok: false };
 		}
+		const promptTypes = new Set(["prompt", "steer", "follow_up"]);
+		const safeControlTypes = new Set([
+			"abort",
+			"get_state",
+			"get_messages",
+			"set_model",
+			"cycle_model",
+			"get_available_models",
+			"get_available_thinking_levels",
+			"set_thinking_level",
+			"set_response_speed",
+			"cycle_thinking_level",
+			"set_steering_mode",
+			"set_follow_up_mode",
+			"set_auto_retry",
+			"abort_retry",
+			"get_session_stats",
+			"get_entries",
+			"get_tree",
+			"get_fork_messages",
+			"get_commands",
+			"set_session_name",
+		]);
+		if (promptTypes.has(frame.type)) {
+			const message = "message" in frame && typeof frame.message === "string" ? frame.message : "";
+			if (!message) return { ok: false };
+			const target = runtime.productWorker ? runtime.productWorker.department : "company controller";
+			const assignment = runtime.productWorker ? `\n\nAssigned worktree: ${runtime.productWorker.worktree}` : "";
+			const confirmation = await dialog.showMessageBox(slot.window, {
+				type: "warning",
+				buttons: ["Cancel", "Send instruction"],
+				defaultId: 0,
+				cancelId: 0,
+				message: `Authorize this instruction to the ${target}?`,
+				detail: `${message.slice(0, 4000)}${assignment}`,
+			});
+			if (confirmation.response !== 1) return { ok: false };
+			return {
+				ok: sendKernelPrompt(
+					runtime.child,
+					frame as { type: "prompt" | "steer" | "follow_up"; message: string; [key: string]: unknown },
+					true,
+					"native-founder-confirmation",
+				),
+			};
+		}
+		if (!safeControlTypes.has(frame.type)) return { ok: false };
 		runtime.child.stdin.write(`${JSON.stringify(frame)}\n`);
 		return { ok: true };
 	});
@@ -1007,6 +1391,8 @@ app.whenReady().then(() => {
 		});
 	}
 });
+
+app.on("will-quit", () => closeModelProxy?.());
 
 app.on("window-all-closed", () => {
 	app.quit();

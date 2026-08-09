@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
 import {
+	companyRuntimeLockPath,
 	createProductWorktree,
 	enforceCompanyKernelSettings,
 	KERNEL_PROMPT,
@@ -96,6 +97,25 @@ describe("scaffoldCompany", () => {
 		}
 		const again = scaffoldCompany(root);
 		expect(again.gitInitialized).toBe(false);
+	});
+
+	it("commits the company spine when scaffolding into an existing Git history", () => {
+		mkdirSync(root, { recursive: true });
+		writeFileSync(join(root, "existing.md"), "seed\n");
+		for (const args of [
+			["init"],
+			["add", "existing.md"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", args, { cwd: root, stdio: "ignore" }).status).toBe(0);
+		}
+		scaffoldCompany(root);
+		expect(spawnSync("git", ["ls-files", "company.md"], { cwd: root, encoding: "utf-8" }).stdout.trim()).toBe(
+			"company.md",
+		);
+		expect(spawnSync("git", ["log", "-1", "--format=%B"], { cwd: root, encoding: "utf-8" }).stdout).toContain(
+			"Qorpera-Trigger: company scaffold migration",
+		);
 	});
 
 	it("activates authority gates: the scaffolded folder immediately protects its own spine", () => {
@@ -204,6 +224,21 @@ describe("forking hub verbs (no-launch paths)", () => {
 });
 
 describe("product-development departments", () => {
+	it("refuses registration while the desktop kernel owns the company runtime", () => {
+		const previous = process.env.QORPERA_CODING_AGENT_DIR;
+		process.env.QORPERA_CODING_AGENT_DIR = join(root, "agent-home");
+		try {
+			scaffoldCompany(root);
+			const lock = companyRuntimeLockPath(root);
+			mkdirSync(join(root, "agent-home", "runtime-locks"), { recursive: true });
+			writeFileSync(lock, `${JSON.stringify({ version: 1, pid: process.pid })}\n`);
+			expect(() => scaffoldProductDepartment(root, "Widget")).toThrow("desktop kernel is running");
+		} finally {
+			if (previous === undefined) delete process.env.QORPERA_CODING_AGENT_DIR;
+			else process.env.QORPERA_CODING_AGENT_DIR = previous;
+		}
+	});
+
 	it("materializes and discovers the standard department kit", () => {
 		scaffoldCompany(root);
 		const department = scaffoldProductDepartment(root, "My Product");

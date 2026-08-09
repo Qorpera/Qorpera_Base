@@ -27,7 +27,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { requestKernelGateConsumption } from "./kernel-broker.ts";
@@ -114,6 +114,7 @@ export interface GateRecord {
 	status: GateStatus;
 	hash: string;
 	filePath: string;
+	content: string;
 }
 
 const CONFIGURABLE_EFFECT_CLASSES: ConfigurableEffectClass[] = ["money", "identity", "irreversible", "authority"];
@@ -130,6 +131,7 @@ const INBOX_DIR = "inbox";
 /** Root-level files whose modification is an [authority]-class effect. */
 const PROTECTED_ROOT_FILES = new Set([AUTHORITY_FILE, "AGENTS.md", "CLAUDE.md"]);
 const PRODUCT_REGISTRY_PATH = join(".qorpera", "products.json");
+const GATE_FIELDS = ["id", "status", "class", "tool", "hash", "created"] as const;
 
 /**
  * Conservative screen for destructive shell commands. False positives gate
@@ -512,14 +514,26 @@ function parseGateFile(filePath: string): GateRecord | undefined {
 	const fields = new Map<string, string>();
 	for (const line of frontmatter[1].split(/\r?\n/)) {
 		const match = line.match(/^([a-zA-Z_]+):\s*(.*)$/);
-		if (match) fields.set(match[1], match[2].split("#")[0].trim());
+		if (!match || !GATE_FIELDS.includes(match[1] as (typeof GATE_FIELDS)[number]) || fields.has(match[1])) {
+			return undefined;
+		}
+		fields.set(match[1], match[2].split("#")[0].trim());
 	}
+	if (fields.size !== GATE_FIELDS.length || GATE_FIELDS.some((field) => !fields.has(field))) return undefined;
 	const id = fields.get("id");
 	const status = fields.get("status") as GateStatus | undefined;
 	const hash = fields.get("hash");
-	if (!id || !status || !hash) return undefined;
+	if (!id || !status || !hash || `${id}.md` !== basename(filePath)) return undefined;
+	if (!/^gate-[a-f0-9]{8}(?:-[2-9][0-9]*)?$/.test(id) || !/^[a-f0-9]{64}$/.test(hash)) return undefined;
 	if (!["pending", "approved", "denied", "consumed"].includes(status)) return undefined;
-	return { id, status, hash, filePath };
+	if (
+		!CONFIGURABLE_EFFECT_CLASSES.includes(fields.get("class") as ConfigurableEffectClass) &&
+		fields.get("class") !== "product_code"
+	) {
+		return undefined;
+	}
+	if (!fields.get("tool") || !fields.get("created")) return undefined;
+	return { id, status, hash, filePath, content: content.replace(/^\uFEFF/, "") };
 }
 
 export function findGateRecords(authority: Authority, hash: string): GateRecord[] {
@@ -535,8 +549,14 @@ export function findGateRecords(authority: Authority, hash: string): GateRecord[
 }
 
 function setGateStatus(record: GateRecord, status: GateStatus): void {
-	const content = readFileSync(record.filePath, "utf-8");
-	writeFileSync(record.filePath, content.replace(/^status:.*$/m, `status: ${status}`), "utf-8");
+	const lines = record.content.split(/\r?\n/);
+	const statusLines = lines.flatMap((line, index) => (/^status:\s*/.test(line) ? [index] : []));
+	if (statusLines.length !== 1) throw new Error("gate status transition requires exactly one canonical status field");
+	lines[statusLines[0]] = `status: ${status}`;
+	const content = `${lines.join("\n")}${record.content.endsWith("\n") ? "\n" : ""}`;
+	const temporary = `${record.filePath}.${process.pid}-${Date.now()}.tmp`;
+	writeFileSync(temporary, content, { encoding: "utf-8", flag: "wx" });
+	renameSync(temporary, record.filePath);
 }
 
 export interface GateRequestInput {
@@ -589,8 +609,15 @@ export function writeGateRequest(authority: Authority, input: GateRequestInput):
 				type: "qorpera_kernel_write",
 				token: brokerToken,
 				operation: "create_gate",
-				file: fileName,
-				content: body,
+				gate: {
+					id,
+					file: fileName,
+					effectClass: input.effectClass,
+					toolName: input.toolName,
+					hash: input.hash,
+					what: input.what,
+					args: input.args,
+				},
 			})}\n`,
 		);
 	} else {

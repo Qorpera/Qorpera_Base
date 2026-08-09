@@ -19,12 +19,11 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { getAgentDir } from "../config.ts";
-import { discoverAuthority } from "./authority.ts";
 import {
 	EMPTY_PROJECTION,
 	type ProjectionDocument,
@@ -207,6 +206,18 @@ product department UI reads these records; credentials never belong here.
 
 const PRODUCT_DEPARTMENT_KIND = "product-development";
 const PRODUCT_REGISTRY_PATH = join(".qorpera", "products.json");
+
+export function companyRuntimeLockPath(rootDir: string): string {
+	const normalized = process.platform === "win32" ? resolve(rootDir).toLowerCase() : resolve(rootDir);
+	const id = createHash("sha256").update(normalized).digest("hex");
+	return join(getAgentDir(), "runtime-locks", `${id}.json`);
+}
+
+function assertProductRegistrationOffline(root: string): void {
+	if (existsSync(companyRuntimeLockPath(root))) {
+		throw new Error("Product registration is blocked while the desktop kernel is running this company");
+	}
+}
 
 interface ProductDepartmentManifest {
 	version: 1;
@@ -596,6 +607,7 @@ export function readProductProtectionInventory(
 /** Materialize the standard product-development department without overwriting it. */
 export function scaffoldProductDepartment(rootDir: string, product: string): ProductDepartment {
 	const root = resolve(rootDir);
+	assertProductRegistrationOffline(root);
 	const id = `${productSlug(product)}-development`;
 	const path = join("departments", id);
 	const target = join(root, path);
@@ -683,11 +695,31 @@ export function createProductWorktree(rootDir: string, department: ProductDepart
 	return undefined;
 }
 
-function ensureCompanyGenesis(root: string): void {
+function ensureCompanyGenesis(root: string, createdPaths: string[]): void {
 	const head = spawnSync("git", ["-C", root, "rev-parse", "--verify", "HEAD"], { stdio: "ignore", shell: false });
-	if (head.status === 0) return;
-	const added = spawnSync("git", ["-C", root, "add", "--all"], { stdio: "ignore", shell: false });
+	const materializedPaths = [
+		...new Set(createdPaths.map((path) => path.replace(/ \([^)]*\)$/, "").replace(/\/$/, ""))),
+	].filter((path) => path && existsSync(join(root, path)));
+	if (head.status === 0 && materializedPaths.length === 0) return;
+	const added = spawnSync(
+		"git",
+		head.status === 0 ? ["-C", root, "add", "--", ...materializedPaths] : ["-C", root, "add", "--all"],
+		{ stdio: "ignore", shell: false },
+	);
 	if (added.status !== 0) throw new Error("Could not stage the company genesis snapshot");
+	if (head.status === 0) {
+		const changed = spawnSync("git", ["-C", root, "diff", "--cached", "--quiet", "--", ...materializedPaths], {
+			stdio: "ignore",
+			shell: false,
+		});
+		if (changed.status === 0) return;
+		if (changed.status !== 1) throw new Error("Could not inspect the company materialization snapshot");
+	}
+	const message =
+		head.status === 0
+			? "docs: materialize company spine\n\nQorpera-Trigger: company scaffold migration\nQorpera-Rationale: make kernel-owned company state cloneable before controller execution"
+			: "feat: create company genesis\n\nQorpera-Trigger: company scaffold\nQorpera-Rationale: make the complete company spine cloneable and recoverable";
+	const pathArgs = head.status === 0 ? ["--only", "--", ...materializedPaths] : [];
 	const committed = spawnSync(
 		"git",
 		[
@@ -699,7 +731,8 @@ function ensureCompanyGenesis(root: string): void {
 			"user.email=kernel@qorpera.local",
 			"commit",
 			"-m",
-			"feat: create company genesis\n\nQorpera-Trigger: company scaffold\nQorpera-Rationale: make the complete company spine cloneable and recoverable",
+			message,
+			...pathArgs,
 		],
 		{ encoding: "utf-8", shell: false },
 	);
@@ -752,7 +785,7 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 		const git = spawnSync("git", ["init"], { cwd: root, stdio: "ignore", shell: false });
 		result.gitInitialized = git.status === 0;
 	}
-	ensureCompanyGenesis(root);
+	ensureCompanyGenesis(root, result.created);
 
 	return result;
 }
@@ -778,10 +811,8 @@ function printScaffoldReport(result: ScaffoldResult): void {
  * logic lives in exactly one place (conceptionKickoff).
  */
 function launchSession(dir: string): Promise<number> {
-	console.error(
-		`Company created at ${resolve(dir)}. Company sessions require the Qorpera Base desktop kernel; direct CLI launch is refused.`,
-	);
-	return Promise.resolve(1);
+	console.log(`Company ready at ${resolve(dir)}. Open it in Qorpera Base desktop to start the kernel-owned session.`);
+	return Promise.resolve(0);
 }
 
 function cloneInto(source: string, destination: string): boolean {
@@ -839,10 +870,9 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 			return true;
 		}
 		if (noLaunch) {
-			console.log("\nNext: run `qorpera` inside the folder to begin conception.");
+			console.log("\nNext: open the company in Qorpera Base desktop.");
 			return true;
 		}
-		console.log("\nStarting conception session…\n");
 		process.exitCode = await launchSession(result.root);
 		return true;
 	}
@@ -876,29 +906,14 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 	if (args[0] !== "company") return false;
 	const sub = args[1];
 	if (sub === "product" && args[2] === "add") {
-		const product = args[3];
-		const fromIndex = args.indexOf("--from");
-		const from = fromIndex >= 0 ? args[fromIndex + 1] : undefined;
-		if (!product || (fromIndex >= 0 && !from)) {
-			console.error("Usage: company product add <product-name> [--from <repo-path-or-url>]");
-			process.exitCode = 1;
-			return true;
-		}
-		const root = discoverAuthority(process.cwd())?.root;
-		if (!root) {
-			console.error("Run this command inside a company folder.");
-			process.exitCode = 1;
-			return true;
-		}
-		const department = scaffoldProductDepartment(root, product);
-		if (from && !integrateRepo(root, from, product)) process.exitCode = 1;
-		else console.log(`Product department ready at ${department.path}`);
+		console.error(
+			"Product registration is a desktop-kernel transaction and cannot run from a live or standalone controller CLI.",
+		);
+		process.exitCode = 1;
 		return true;
 	}
 	if (sub !== "init") {
-		console.error(
-			`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir] | company product add <name> [--from <repo>]`,
-		);
+		console.error(`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir]`);
 		process.exitCode = 1;
 		return true;
 	}
@@ -907,7 +922,7 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 	printScaffoldReport(result);
 	registerCompany(result.root);
 	console.log(
-		"\nNext: open a chat here — the controller will interview you and rewrite company.md. Gates live in authority.toml; requests appear in inbox/.",
+		"\nNext: open the company in Qorpera Base desktop. Gates live in authority.toml; requests appear in inbox/.",
 	);
 	return true;
 }
@@ -1028,7 +1043,6 @@ export async function runCompanyHub(
 			printScaffoldReport(result);
 			registerCompany(result.root);
 			if (from && !integrateRepo(result.root, from)) return 1;
-			console.log("\nStarting conception session…\n");
 			return await launchSession(result.root);
 		}
 	}

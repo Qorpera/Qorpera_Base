@@ -1,4 +1,4 @@
-import { createPublicKey, randomUUID, verify } from "node:crypto";
+import { createHash, createPublicKey, randomUUID, verify } from "node:crypto";
 
 interface KernelGateResponse {
 	type: "qorpera_kernel_response";
@@ -16,11 +16,22 @@ interface PendingGateRequest {
 	timer: NodeJS.Timeout;
 }
 
+interface KernelIntentCapability {
+	nonce: string;
+	requestHash: string;
+	attended: boolean;
+	expiresAt: string;
+	signature: string;
+}
+
 const pendingGateRequests = new Map<string, PendingGateRequest>();
+const consumedIntentNonces = new Set<string>();
 const publicKeyDer = process.env.QORPERA_KERNEL_PUBLIC_KEY;
 const kernelPublicKey = publicKeyDer
 	? createPublicKey({ key: Buffer.from(publicKeyDer, "base64"), format: "der", type: "spki" })
 	: undefined;
+
+type KernelPublicKey = NonNullable<typeof kernelPublicKey>;
 
 function responsePayload(response: Omit<KernelGateResponse, "type" | "signature">): string {
 	return JSON.stringify({
@@ -29,6 +40,72 @@ function responsePayload(response: Omit<KernelGateResponse, "type" | "signature"
 		hash: response.hash,
 		granted: response.granted,
 	});
+}
+
+function intentPayload(intent: Omit<KernelIntentCapability, "signature">): string {
+	return JSON.stringify({
+		nonce: intent.nonce,
+		requestHash: intent.requestHash,
+		attended: intent.attended,
+		expiresAt: intent.expiresAt,
+	});
+}
+
+function verifyKernelIntent(
+	frame: Record<string, unknown>,
+	publicKey: KernelPublicKey,
+	consumedNonces: Set<string>,
+): boolean | undefined {
+	const candidate = frame.kernelIntent;
+	if (!candidate || typeof candidate !== "object") return undefined;
+	const intent = candidate as Partial<KernelIntentCapability>;
+	if (
+		typeof intent.nonce !== "string" ||
+		typeof intent.requestHash !== "string" ||
+		typeof intent.attended !== "boolean" ||
+		typeof intent.expiresAt !== "string" ||
+		typeof intent.signature !== "string" ||
+		consumedNonces.has(intent.nonce)
+	)
+		return undefined;
+	const expiresAt = Date.parse(intent.expiresAt);
+	if (!Number.isFinite(expiresAt) || expiresAt < Date.now() || expiresAt > Date.now() + 60_000) return undefined;
+	const unsignedFrame = { ...frame };
+	delete unsignedFrame.kernelIntent;
+	if (createHash("sha256").update(JSON.stringify(unsignedFrame)).digest("hex") !== intent.requestHash)
+		return undefined;
+	const valid = verify(
+		null,
+		Buffer.from(
+			intentPayload({
+				nonce: intent.nonce,
+				requestHash: intent.requestHash,
+				attended: intent.attended,
+				expiresAt: intent.expiresAt,
+			}),
+		),
+		publicKey,
+		Buffer.from(intent.signature, "base64"),
+	);
+	if (!valid) return undefined;
+	consumedNonces.add(intent.nonce);
+	return intent.attended;
+}
+
+export function verifyKernelIntentCapability(
+	frame: Record<string, unknown>,
+	publicKey: string,
+	consumedNonces: Set<string>,
+): boolean | undefined {
+	return verifyKernelIntent(
+		frame,
+		createPublicKey({ key: Buffer.from(publicKey, "base64"), format: "der", type: "spki" }),
+		consumedNonces,
+	);
+}
+
+export function consumeKernelIntent(frame: Record<string, unknown>): boolean | undefined {
+	return kernelPublicKey ? verifyKernelIntent(frame, kernelPublicKey, consumedIntentNonces) : undefined;
 }
 
 export function requestKernelGateConsumption(file: string, hash: string): Promise<boolean> {

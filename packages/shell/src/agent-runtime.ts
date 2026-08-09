@@ -7,6 +7,7 @@ import {
 	openSync,
 	readFileSync,
 	readSync,
+	renameSync,
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -40,6 +41,10 @@ interface SessionEntry {
 		previousHash: string | null;
 		hash: string;
 	};
+	provenance?: {
+		source: "kernel" | "child";
+		trust: "observed" | "assertion";
+	};
 	[key: string]: unknown;
 }
 
@@ -69,8 +74,16 @@ interface KernelWriteFrame {
 	type: "qorpera_kernel_write";
 	token: string;
 	operation: "create_gate" | "consume_gate" | "append_notice";
+	gate?: {
+		id: string;
+		file: string;
+		effectClass: string;
+		toolName: string;
+		hash: string;
+		what: string;
+		args: unknown;
+	};
 	file?: string;
-	content?: string;
 	message?: string;
 	status?: string;
 	requestId?: string;
@@ -89,9 +102,17 @@ export interface SignedKernelGateResponse extends KernelGateResponseBody {
 	signature: string;
 }
 
+export interface KernelIntentCapability {
+	nonce: string;
+	requestHash: string;
+	attended: boolean;
+	expiresAt: string;
+	signature: string;
+}
+
 const MAX_HEADER_BYTES = 64 * 1024;
 const MAX_TRAIL_ENTRY_BYTES = 16 * 1024 * 1024;
-const TRAIL_SESSION_VERSION = 4;
+const TRAIL_SESSION_VERSION = 5;
 const TRAIL_ENTRY_TYPES = new Set([
 	"message",
 	"thinking_level_change",
@@ -179,6 +200,17 @@ function validTrailEntry(entry: SessionEntry, ids: Set<string>): boolean {
 	}
 }
 
+function validProvenance(entry: SessionEntry): boolean {
+	return (
+		Boolean(entry.provenance) &&
+		(entry.provenance?.source === "kernel" || entry.provenance?.source === "child") &&
+		(entry.provenance?.trust === "observed" || entry.provenance?.trust === "assertion") &&
+		(entry.provenance.source === "kernel"
+			? entry.provenance.trust === "observed"
+			: entry.provenance.trust === "assertion")
+	);
+}
+
 function unsignedTrailEntry(entry: SessionEntry): SessionEntry {
 	const copy = { ...entry };
 	delete copy.kernel;
@@ -196,7 +228,9 @@ function loadTrailAudit(path: string): TrailBinding["audit"] {
 	const audit: TrailBinding["audit"] = { ids: new Set(), sequence: 0, lastHash: "" };
 	for (const line of lines) {
 		const entry = JSON.parse(line) as SessionEntry;
-		if (!validTrailEntry(entry, audit.ids)) throw new Error(`trail session contains an invalid event graph: ${path}`);
+		if (!validTrailEntry(entry, audit.ids) || !validProvenance(entry)) {
+			throw new Error(`trail session contains an invalid event graph or provenance: ${path}`);
+		}
 		const kernel = entry.kernel;
 		const expectedSequence = audit.sequence + 1;
 		const expectedPrevious = audit.lastHash || null;
@@ -262,7 +296,11 @@ export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): Tr
 	if (Buffer.byteLength(JSON.stringify(record), "utf-8") > MAX_TRAIL_ENTRY_BYTES) return undefined;
 	if (!validTrailEntry(record, binding.audit.ids)) return undefined;
 	const receivedAt = new Date().toISOString();
-	const stamped: SessionEntry = { ...unsignedTrailEntry(record), timestamp: receivedAt };
+	const stamped: SessionEntry = {
+		...unsignedTrailEntry(record),
+		timestamp: receivedAt,
+		provenance: { source: "child", trust: "assertion" },
+	};
 	stamped.kernel = {
 		sequence: binding.audit.sequence + 1,
 		receivedAt,
@@ -271,6 +309,136 @@ export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): Tr
 	};
 	stamped.kernel.hash = auditHash(stamped, binding.audit.lastHash);
 	return { type: "qorpera_trail_append", token: binding.token, entry: stamped };
+}
+
+function stampKernelEntry(binding: TrailBinding, entry: SessionEntry): TrailAppendFrame {
+	const receivedAt = new Date().toISOString();
+	const stamped: SessionEntry = {
+		...unsignedTrailEntry(entry),
+		timestamp: receivedAt,
+		provenance: { source: "kernel", trust: "observed" },
+	};
+	stamped.kernel = {
+		sequence: binding.audit.sequence + 1,
+		receivedAt,
+		previousHash: binding.audit.lastHash || null,
+		hash: "",
+	};
+	stamped.kernel.hash = auditHash(stamped, binding.audit.lastHash);
+	return { type: "qorpera_trail_append", token: binding.token, entry: stamped };
+}
+
+export function appendKernelObservation(
+	binding: TrailBinding,
+	input: { frameType: "prompt" | "steer" | "follow_up"; message: string; attended: boolean; origin: string },
+): void {
+	const append = stampKernelEntry(binding, {
+		type: "custom",
+		id: randomUUID(),
+		parentId: null,
+		timestamp: "",
+		customType: "qorpera_kernel_input",
+		data: input,
+	});
+	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+	commitTrailAppend(binding, append);
+}
+
+const GATE_EFFECT_CLASSES = new Set(["money", "identity", "irreversible", "authority", "product_code"]);
+const GATE_FIELDS = ["id", "status", "class", "tool", "hash", "created"] as const;
+
+interface ParsedGateDocument {
+	id: string;
+	status: "pending" | "approved" | "denied" | "consumed";
+	hash: string;
+	content: string;
+}
+
+function parseGateDocument(file: string, content: string): ParsedGateDocument | undefined {
+	const normalized = content.replace(/^\uFEFF/, "");
+	const frontmatter = normalized.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+	if (!frontmatter) return undefined;
+	const fields = new Map<string, string>();
+	for (const line of frontmatter[1].split(/\r?\n/)) {
+		const match = line.match(/^([a-zA-Z_]+):\s*(.*)$/);
+		if (!match || !GATE_FIELDS.includes(match[1] as (typeof GATE_FIELDS)[number]) || fields.has(match[1])) {
+			return undefined;
+		}
+		fields.set(match[1], match[2].split("#")[0].trim());
+	}
+	if (fields.size !== GATE_FIELDS.length || GATE_FIELDS.some((field) => !fields.has(field))) return undefined;
+	const id = fields.get("id")!;
+	const status = fields.get("status")!;
+	const hash = fields.get("hash")!;
+	if (`${id}.md` !== file || !/^gate-[a-f0-9]{8}(?:-[2-9][0-9]*)?$/.test(id)) return undefined;
+	if (!/^(pending|approved|denied|consumed)$/.test(status) || !/^[a-f0-9]{64}$/.test(hash)) return undefined;
+	if (!GATE_EFFECT_CLASSES.has(fields.get("class")!) || !fields.get("tool") || !fields.get("created"))
+		return undefined;
+	return { id, status: status as ParsedGateDocument["status"], hash, content: normalized };
+}
+
+function canonicalGateContent(gate: NonNullable<KernelWriteFrame["gate"]>): string | undefined {
+	if (
+		`${gate.id}.md` !== gate.file ||
+		!/^gate-[a-f0-9]{8}(?:-[2-9][0-9]*)?$/.test(gate.id) ||
+		!gate.id.startsWith(`gate-${gate.hash.slice(0, 8)}`) ||
+		!/^[a-f0-9]{64}$/.test(gate.hash) ||
+		!GATE_EFFECT_CLASSES.has(gate.effectClass) ||
+		!gate.toolName ||
+		gate.toolName.length > 128 ||
+		/[\r\n]/.test(gate.toolName) ||
+		typeof gate.what !== "string" ||
+		Buffer.byteLength(gate.what, "utf-8") > 4096
+	)
+		return undefined;
+	let serializedArgs: string;
+	try {
+		serializedArgs = JSON.stringify(gate.args, null, 2) ?? "null";
+	} catch {
+		return undefined;
+	}
+	if (Buffer.byteLength(serializedArgs, "utf-8") > 1024 * 1024) return undefined;
+	return [
+		"---",
+		`id: ${gate.id}`,
+		"status: pending   # change to: approved | denied",
+		`class: ${gate.effectClass}`,
+		`tool: ${gate.toolName}`,
+		`hash: ${gate.hash}`,
+		`created: ${new Date().toISOString()}`,
+		"---",
+		"",
+		`# Gate request: ${gate.toolName} (${gate.effectClass})`,
+		"",
+		`**What:** ${gate.what}`,
+		"",
+		"**Arguments:**",
+		"```json",
+		serializedArgs,
+		"```",
+		"",
+		"**If denied:** the agent will not perform this action and will pursue another path.",
+		"",
+		"To resolve, edit the `status:` line above to `approved` or `denied`.",
+		"",
+	].join("\n");
+}
+
+function transitionGate(
+	path: string,
+	file: string,
+	record: ParsedGateDocument,
+	status: ParsedGateDocument["status"],
+): void {
+	const lines = record.content.split(/\r?\n/);
+	const statusLines = lines.flatMap((line, index) => (/^status:\s*/.test(line) ? [index] : []));
+	if (statusLines.length !== 1) throw new Error("gate status transition requires exactly one canonical status field");
+	lines[statusLines[0]] = `status: ${status}`;
+	const next = `${lines.join("\n")}${record.content.endsWith("\n") ? "\n" : ""}`;
+	if (!parseGateDocument(file, next)) throw new Error("gate status transition produced an invalid record");
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	writeFileSync(temporary, next, { encoding: "utf-8", flag: "wx" });
+	renameSync(temporary, path);
 }
 
 export function commitTrailAppend(binding: TrailBinding, append: TrailAppendFrame): void {
@@ -299,12 +467,11 @@ export function applyKernelWriteFrame(
 	if (frame.token !== binding.token) return true;
 	const inbox = join(root, "inbox");
 	if (frame.operation === "create_gate") {
-		if (!frame.file || !/^gate-[a-z0-9-]+\.md$/i.test(frame.file)) return true;
-		if (typeof frame.content !== "string" || Buffer.byteLength(frame.content) > 1024 * 1024) return true;
-		const id = frame.content.match(/^id:\s*(gate-[a-z0-9-]+)$/m)?.[1];
-		if (`${id}.md` !== frame.file || !/^status:\s*pending\b/m.test(frame.content)) return true;
+		if (!frame.gate) return true;
+		const content = canonicalGateContent(frame.gate);
+		if (!content) return true;
 		try {
-			writeFileSync(join(inbox, frame.file), frame.content, { encoding: "utf-8", flag: "wx" });
+			writeFileSync(join(inbox, frame.gate.file), content, { encoding: "utf-8", flag: "wx" });
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 		}
@@ -320,16 +487,15 @@ export function applyKernelWriteFrame(
 		)
 			return true;
 		const path = join(inbox, frame.file);
-		let content = "";
+		let record: ParsedGateDocument | undefined;
 		try {
-			content = readFileSync(path, "utf-8");
+			record = parseGateDocument(frame.file, readFileSync(path, "utf-8"));
 		} catch {
 			onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted: false });
 			return true;
 		}
-		const granted =
-			/^status:\s*approved\b/m.test(content) && content.match(/^hash:\s*(\S+)\s*$/m)?.[1] === frame.hash;
-		if (granted) writeFileSync(path, content.replace(/^status:.*$/m, "status: consumed"), "utf-8");
+		const granted = Boolean(record && record.status === "approved" && record.hash === frame.hash);
+		if (granted && record) transitionGate(path, frame.file, record, "consumed");
 		onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted });
 		return true;
 	}
@@ -351,9 +517,23 @@ function kernelResponsePayload(response: KernelGateResponseBody): string {
 	});
 }
 
+function kernelIntentPayload(intent: Omit<KernelIntentCapability, "signature">): string {
+	return JSON.stringify({
+		nonce: intent.nonce,
+		requestHash: intent.requestHash,
+		attended: intent.attended,
+		expiresAt: intent.expiresAt,
+	});
+}
+
+function intentRequestHash(frame: Record<string, unknown>): string {
+	return createHash("sha256").update(JSON.stringify(frame)).digest("hex");
+}
+
 export function createKernelResponseSigner(): {
 	publicKey: string;
 	signResponse: (response: KernelGateResponseBody) => SignedKernelGateResponse;
+	signIntent: (frame: Record<string, unknown>, attended: boolean) => KernelIntentCapability;
 } {
 	const pair = generateKeyPairSync("ed25519");
 	const publicKey = pair.publicKey.export({ format: "der", type: "spki" }).toString("base64");
@@ -364,6 +544,18 @@ export function createKernelResponseSigner(): {
 			...response,
 			signature: sign(null, Buffer.from(kernelResponsePayload(response)), pair.privateKey).toString("base64"),
 		}),
+		signIntent: (frame, attended) => {
+			const intent = {
+				nonce: randomUUID(),
+				requestHash: intentRequestHash(frame),
+				attended,
+				expiresAt: new Date(Date.now() + 30_000).toISOString(),
+			};
+			return {
+				...intent,
+				signature: sign(null, Buffer.from(kernelIntentPayload(intent)), pair.privateKey).toString("base64"),
+			};
+		},
 	};
 }
 
@@ -377,17 +569,19 @@ export function writeSandboxProfile(
 	companyRoot: string,
 	scope: AgentScope,
 	protectedPaths: string[],
+	foundationReadPaths: string[],
+	allowedNetworkDomains: string[],
 ): string {
 	mkdirSync(configDir, { recursive: true });
 	mkdirSync(runtimeDir, { recursive: true });
 	const permissions = new Map<string, "read" | "write">([
-		[":root", "read"],
 		[":minimal", "read"],
 		[":tmpdir", "write"],
 		[":slash_tmp", "write"],
 		[resolve(runtimeDir), "write"],
 		[resolve(companyRoot), scope.actor === "controller" ? "write" : "read"],
 	]);
+	for (const path of foundationReadPaths) permissions.set(resolve(path), "read");
 	for (const path of protectedPaths) permissions.set(resolve(path), "read");
 	if (scope.actor === "product-worker") {
 		permissions.set(resolve(companyRoot, scope.worktree!), "write");
@@ -398,7 +592,9 @@ export function writeSandboxProfile(
 	const filesystem = [...permissions]
 		.map(([path, access]) => `${tomlString(path)} = ${tomlString(access)}`)
 		.join("\n");
-	const config = `default_permissions = "qorpera-agent"\n\n[permissions.qorpera-agent.filesystem]\n${filesystem}\n\n[permissions.qorpera-agent.network]\nenabled = true\n`;
+	const domains = allowedNetworkDomains.map((domain) => `${tomlString(domain)} = "allow"`).join("\n");
+	const windows = process.platform === "win32" ? '\n[windows]\nsandbox = "elevated"\n' : "";
+	const config = `default_permissions = "qorpera-agent"\n${windows}\n[features]\nnetwork_proxy = true\n\n[network]\nenabled = true\nmode = "limited"\nallow_upstream_proxy = false\nallow_local_binding = false\n\n[network.domains]\n${domains}\n\n[permissions.qorpera-agent.filesystem]\n${filesystem}\n\n[permissions.qorpera-agent.network]\nenabled = false\n`;
 	const configPath = join(configDir, "config.toml");
 	writeFileSync(configPath, config, "utf-8");
 	return configPath;
@@ -412,8 +608,8 @@ export function sandboxCommandArgs(codexEntry: string, runtimeDir: string, progr
 		"qorpera-agent",
 		"-C",
 		resolve(runtimeDir),
-		program,
 		"--",
+		program,
 		...args,
 	];
 }

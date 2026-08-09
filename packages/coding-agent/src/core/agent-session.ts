@@ -357,6 +357,8 @@ export class AgentSession {
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
+	/** Active only while an RPC prompt carries a verified, one-shot kernel human-intent capability. */
+	private _attendedIntentDepth = 0;
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
 	private _extensionAbortHandler?: () => void;
 	private _extensionShutdownHandler?: ShutdownHandler;
@@ -491,9 +493,9 @@ export class AgentSession {
 				// tools by their source file — synthetic paths (<builtin:…>,
 				// <sdk:…>) and code outside the company root are ignored.
 				let decision = evaluateToolCall(this._authority, toolCall.name, args, this._cwd, {
-					attended:
-						sessionAuthority?.attended ??
-						((this._extensionMode === "tui" || this._extensionMode === "rpc") && !process.env.QORPERA_AUTONOMOUS),
+					attended: sessionAuthority
+						? this._attendedIntentDepth > 0
+						: (this._extensionMode === "tui" || this._extensionMode === "rpc") && !process.env.QORPERA_AUTONOMOUS,
 					actor: sessionAuthority?.actor ?? "controller",
 					productWorktree: sessionAuthority?.worktree,
 					behaviorPath: this._toolDefinitions.get(toolCall.name)?.sourceInfo.path,
@@ -570,6 +572,15 @@ export class AgentSession {
 				usage: hookResult?.usage,
 			};
 		};
+	}
+
+	async withKernelIntent<T>(attended: boolean, action: () => Promise<T>): Promise<T> {
+		if (attended) this._attendedIntentDepth += 1;
+		try {
+			return await action();
+		} finally {
+			if (attended) this._attendedIntentDepth -= 1;
+		}
 	}
 
 	private _installAgentNextTurnRefresh(): void {

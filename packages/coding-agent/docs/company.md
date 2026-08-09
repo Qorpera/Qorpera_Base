@@ -2,30 +2,26 @@
 
 ## The forking hub (spec §6.1a)
 
-Base is the hub companies are spun up from. **Bare `qorpera` from any
-directory outside a company opens the hub**: enter one of your companies
-(remembered in `~/.qorpera/agent/companies.json`), start a new one,
-integrate an existing repo, or just open a plain session where you are.
-Inside a company folder, `qorpera` goes straight to the session. Any
-argument bypasses the hub, so `qorpera` keeps working as a general agent.
+Base desktop is the runtime hub companies are opened from. The CLI can list,
+register, scaffold, integrate, and clone company folders, but it never starts
+a company controller: controller authority exists only inside the desktop
+kernel. Bare `qorpera` outside a company still offers the CLI hub and prints
+the company path to open in Base desktop.
 
-The same flows exist as explicit verbs, all ending in a conception dialogue
-where the human only says what the company is:
+The same scaffold flows exist as explicit verbs:
 
-- `qorpera new <dir>` — start a new company from zero. Scaffolds the spine
-  and launches the session with the conception interview; the agent performs
-  the setup itself (rewrites company.md, proposes authority/connections,
-  builds the first surface).
+- `qorpera new <dir>` — scaffold and register a new company from zero. Open
+  it in Base desktop to let the kernel start autonomous conception.
 - `qorpera new <dir> --from <repo>` — integrate an existing product/company:
   a `<product>-development` department is created, the repo is cloned into
-  its `repository/`, and conception begins with study.
-- `qorpera company product add <name> [--from <repo>]` — add the standard
-  product-development department kit to an existing company.
+  its `repository/`. Open the company in Base desktop to begin study.
 - `qorpera fork <company-repo> [dir]` — fork an existing company (the folder
   is the company and it is a git repo, so forking is cloning). Opens as an
-  ordinary wake — the company already knows itself.
+  ordinary registered company — it already knows itself.
 
-`--no-launch` on any of them scaffolds/clones without starting the session.
+`--no-launch` remains accepted for scripting but company sessions are never
+launched by the CLI. Product registration is likewise a desktop-kernel
+transaction; `company product add` is refused outside that transaction.
 The human's setup obligations are exactly three: say what the company is,
 ratify `authority.toml`, and connect subscriptions (`/login` in the session,
 or `codex login` for engine mode).
@@ -138,6 +134,23 @@ interactive interrogation. The authority layer permits agent writes ONLY to
 `inbox/msg-*.md`; gate files and everything else in the inbox remain
 human-owned.
 
+## Kernel runtime boundary
+
+The desktop kernel, not the company renderer, creates controller and product
+workers. Each child receives a clean environment, a read-only projection of
+model credentials, and network access only through a kernel-owned broker for
+model-provider domains. Ambient Git, cloud, connector, and desktop credentials
+are absent. On Windows, Base requires the elevated offline sandbox account and
+fails closed when it is unavailable; the broker is the only permitted outbound
+path. Product registration is refused while a company runtime lock exists, so
+new protected roots cannot become visible under a stale sandbox profile.
+
+Mutable userland may request a prompt, but every prompt is confirmed in native
+kernel UI and delivered with a signed, expiring, single-use intent capability.
+The trail records that kernel-observed input separately. Events emitted by the
+child remain append-only and hash-chained, but are marked as child assertions;
+they cannot manufacture kernel-observed founder provenance.
+
 Behavior notes:
 
 - The scaffolded `authority.toml` activates gates immediately: the folder
@@ -152,18 +165,16 @@ Behavior notes:
   worktree instead.
 - Session files flush on the first assistant message (upstream behavior),
   so an abandoned prompt leaves no trail entry.
-- Headless wakes (print/json/SDK, no UI) resolve project trust to
-  UNTRUSTED by default — project extensions under `.qorpera/extensions/`
-  silently never load unless the company root is in
-  `~/.qorpera/agent/trust.json`. A controller cannot currently distinguish
-  "extension gated" from "extension silently untrusted"; trust the folder
-  before scheduling unattended wakes that rely on self-built tools.
+- Desktop controllers trust that company's project-local resources inside the
+  kernel sandbox. Global extensions and connector credentials are not copied
+  into the child; the company can build its own tools and routines without
+  inheriting ambient user authority.
 - Known transient (2026-08-05, tsx + node 24 on Windows): the CLI
   intermittently dies with 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN,
   surfaces as "exit 9"), sometimes mid-session. Work already performed
   persists (filed gates, flushed trail); an identical retry has succeeded
   every observed time. The scheduled runtime should carry retry-once
   semantics for wakes.
-- There is no wizard: conception is a dialogue. The kernel (AGENTS.md)
-  instructs the controller to interview the founder and rewrite
-  `company.md`, then bootstrap its first surfaces in `app/`.
+- There is no wizard: the desktop kernel starts autonomous conception. The
+  controller records questions in the inbox, rewrites `company.md`, and
+  bootstraps its first selectively published surfaces in `app/`.

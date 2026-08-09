@@ -19,7 +19,7 @@ import type {
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
-import { handleKernelBrokerResponse } from "../../core/kernel-broker.ts";
+import { consumeKernelIntent, handleKernelBrokerResponse } from "../../core/kernel-broker.ts";
 import {
 	flushRawStdout,
 	takeOverStdout,
@@ -386,6 +386,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	// Handle a single command
 	const handleCommand = async (command: RpcCommand): Promise<RpcResponse | undefined> => {
 		const id = command.id;
+		const kernelIntent = (): boolean | undefined => {
+			const attended = consumeKernelIntent(command as unknown as Record<string, unknown>);
+			if (process.env.QORPERA_KERNEL_REQUIRED === "1" && attended === undefined) return undefined;
+			return attended ?? false;
+		};
 
 		switch (command.type) {
 			// =================================================================
@@ -393,21 +398,27 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// =================================================================
 
 			case "prompt": {
+				const attended = kernelIntent();
+				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && attended === undefined) {
+					return error(id, "prompt", "missing, invalid, expired, or reused kernel intent capability");
+				}
 				// Start prompt handling immediately, but emit the authoritative response only after
 				// prompt preflight succeeds. Queued and immediately handled prompts also count as success.
 				let preflightSucceeded = false;
 				void session
-					.prompt(command.message, {
-						images: command.images,
-						streamingBehavior: command.streamingBehavior,
-						source: "rpc",
-						preflightResult: (didSucceed) => {
-							if (didSucceed) {
-								preflightSucceeded = true;
-								output(success(id, "prompt"));
-							}
-						},
-					})
+					.withKernelIntent(Boolean(attended), () =>
+						session.prompt(command.message, {
+							images: command.images,
+							streamingBehavior: command.streamingBehavior,
+							source: "rpc",
+							preflightResult: (didSucceed) => {
+								if (didSucceed) {
+									preflightSucceeded = true;
+									output(success(id, "prompt"));
+								}
+							},
+						}),
+					)
 					.catch((e) => {
 						if (!preflightSucceeded) {
 							output(error(id, "prompt", e.message));
@@ -417,12 +428,20 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "steer": {
-				await session.steer(command.message, command.images);
+				const attended = kernelIntent();
+				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && attended === undefined) {
+					return error(id, "steer", "missing, invalid, expired, or reused kernel intent capability");
+				}
+				await session.withKernelIntent(Boolean(attended), () => session.steer(command.message, command.images));
 				return success(id, "steer");
 			}
 
 			case "follow_up": {
-				await session.followUp(command.message, command.images);
+				const attended = kernelIntent();
+				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && attended === undefined) {
+					return error(id, "follow_up", "missing, invalid, expired, or reused kernel intent capability");
+				}
+				await session.withKernelIntent(Boolean(attended), () => session.followUp(command.message, command.images));
 				return success(id, "follow_up");
 			}
 

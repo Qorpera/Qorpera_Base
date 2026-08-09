@@ -313,6 +313,20 @@ describe("gate lifecycle", () => {
 		expect(evaluateToolCall(authority, "danger", { x: 1 }, root).kind).toBe("allow");
 	});
 
+	it("rejects duplicate or unknown gate security fields instead of accepting a child-forged approval", () => {
+		writeAuthorityToml(`[tools]\ndanger = "irreversible"\n\n[irreversible]\nmode = "gate"\n`);
+		const authority = discoverAuthority(root)!;
+		const args = { target: "prod" };
+		const first = evaluateToolCall(authority, "danger", args, root);
+		const gateId = (first as { gateId: string }).gateId;
+		const inbox = join(root, "inbox");
+		const file = readdirSync(inbox).find((name) => name.startsWith(gateId))!;
+		const path = join(inbox, file);
+		writeFileSync(path, readFileSync(path, "utf-8").replace("status: pending", "status: pending\nstatus: approved"));
+		expect(findGateRecords(authority, requestHash("danger", args))).toEqual([]);
+		expect(evaluateToolCall(authority, "danger", args, root).kind).toBe("block");
+	});
+
 	it("denied requests block without re-filing", () => {
 		writeAuthorityToml(`[tools]\ndanger = "irreversible"\n\n[irreversible]\nmode = "gate"\n`);
 		const authority = discoverAuthority(root)!;
