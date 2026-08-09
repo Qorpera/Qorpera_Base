@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	showHub: () => ipcRenderer.invoke("hub:show"),
 	settingsInfo: () => ipcRenderer.invoke("settings:info"),
 	appInfo: () => ipcRenderer.invoke("app:info"),
+	authorizedBackendPost: (path, body) => ipcRenderer.invoke("backend:authorized-post", path, body),
 	setActiveApp: (app) => ipcRenderer.invoke("userland:set-active", app),
 	restoreVersion: (id) => ipcRenderer.invoke("userland:restore", id),
 	favoriteVersion: (id, favorite) => ipcRenderer.invoke("userland:favorite", id, favorite),

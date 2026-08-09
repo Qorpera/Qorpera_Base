@@ -569,6 +569,12 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
+	if (discoverAuthority(cwd) && !process.env.QORPERA_TRAIL_BROKER_TOKEN) {
+		console.error("Company sessions require the Qorpera Base desktop kernel; direct CLI execution is refused.");
+		process.exitCode = 1;
+		return;
+	}
+
 	if (await handleEngineCommand(args)) {
 		return;
 	}

@@ -52,7 +52,7 @@ import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
-import { type Authority, discoverAuthority, evaluateToolCall } from "./authority.ts";
+import { type Authority, discoverAuthority, evaluateToolCall, finalizeAuthorityDecision } from "./authority.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
 	type CompactionResult,
@@ -385,6 +385,9 @@ export class AgentSession {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._authority = discoverAuthority(config.cwd);
+		if (this._authority && !this.sessionManager.getHeader()?.qorpera) {
+			throw new Error("Company sessions require a kernel-authenticated Qorpera Base session header");
+		}
 		this._modelRuntime = config.modelRuntime;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
@@ -487,7 +490,7 @@ export class AgentSession {
 				// sessions). behaviorPath identifies extension-registered
 				// tools by their source file — synthetic paths (<builtin:…>,
 				// <sdk:…>) and code outside the company root are ignored.
-				const decision = evaluateToolCall(this._authority, toolCall.name, args, this._cwd, {
+				let decision = evaluateToolCall(this._authority, toolCall.name, args, this._cwd, {
 					attended:
 						sessionAuthority?.attended ??
 						((this._extensionMode === "tui" || this._extensionMode === "rpc") && !process.env.QORPERA_AUTONOMOUS),
@@ -495,6 +498,7 @@ export class AgentSession {
 					productWorktree: sessionAuthority?.worktree,
 					behaviorPath: this._toolDefinitions.get(toolCall.name)?.sourceInfo.path,
 				});
+				decision = await finalizeAuthorityDecision(this._authority, decision, toolCall.name, args);
 				// Stamp classified effects into the trail: effect class,
 				// decision, and — when codified behavior acted — its content
 				// hash and signature status (EVOLUTION.md §9.1).
@@ -1835,6 +1839,7 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
+		if (this._authority) throw new Error("Compaction is disabled for company trails");
 		await this.abort();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
@@ -2004,6 +2009,7 @@ export class AgentSession {
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
 	 */
 	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
+		if (this._authority) return false;
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
 

@@ -9,7 +9,6 @@
  * session store.
  */
 
-import { join } from "node:path";
 import { discoverAuthority } from "../authority.ts";
 import { SessionManager } from "../session-manager.ts";
 import { CodexEngineSession } from "./codex-engine.ts";
@@ -30,8 +29,12 @@ export async function handleEngineCommand(args: string[]): Promise<boolean> {
 
 	const cwd = process.cwd();
 	const authority = discoverAuthority(cwd);
-	const sessionDir = authority ? join(authority.root, "trail") : undefined;
-	const sessionManager = SessionManager.create(cwd, sessionDir);
+	if (authority) {
+		console.error("Engine error: company engine sessions must be launched by the Qorpera Base desktop kernel");
+		process.exitCode = 1;
+		return true;
+	}
+	const sessionManager = SessionManager.create(cwd);
 	const sessionAuthority = sessionManager.getHeader()?.qorpera;
 
 	let session: CodexEngineSession | undefined;

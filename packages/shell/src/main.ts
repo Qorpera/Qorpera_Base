@@ -26,7 +26,7 @@ import {
 	watch,
 	writeFileSync,
 } from "node:fs";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 // Deep imports from the coding agent (the foundation's own machinery).
@@ -34,10 +34,12 @@ import { companyPort, createCompanyAppServer } from "@qorpera/pi-coding-agent/ap
 import {
 	conceptionKickoff,
 	createProductWorktree,
+	enforceCompanyKernelSettings,
 	integrateRepo,
 	listCompanies,
 	listProductDepartments,
 	type ProductDepartment,
+	readProductProtectionInventory,
 	registerCompany,
 	scaffoldCompany,
 } from "@qorpera/pi-coding-agent/company";
@@ -46,6 +48,8 @@ import electronUpdater from "electron-updater";
 import {
 	applyKernelWriteFrame,
 	bindTrailSession,
+	commitTrailAppend,
+	createKernelResponseSigner,
 	inboxMessagesPath,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
@@ -54,7 +58,13 @@ import {
 	sandboxRuntimeDir,
 	writeSandboxProfile,
 } from "./agent-runtime.ts";
-import { captureCompanyGitBaseline, checkpointCompanyGit } from "./company-checkpoint.ts";
+import {
+	captureCompanyGitBaseline,
+	checkpointCompanyGit,
+	finishPendingCompanyCheckpoint,
+	reconcilePendingCompanyCheckpoints,
+	savePendingCompanyCheckpoint,
+} from "./company-checkpoint.ts";
 import {
 	ensureUserland,
 	getActiveApp,
@@ -93,6 +103,7 @@ interface CompanyRuntime {
 	userland: UserlandStatus;
 	usingBaseFallback: boolean;
 	backendToken: string;
+	productWorker?: { department: string; worktree: string };
 	/** Live userland-merge session, if one is running (kernel-spawned, silent). */
 	mergeChild?: ChildProcessWithoutNullStreams;
 }
@@ -254,19 +265,23 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		department: department?.path,
 		worktree,
 	} as const;
-	const binding = bindTrailSession(root, cwd, scope, sessionFile);
 	const userData = app.getPath("userData");
 	const configDir = sandboxConfigDir(userData, root, actor);
 	const runtimeDir = sandboxRuntimeDir(userData, root, actor);
+	let gitBaseline = captureCompanyGitBaseline(root);
+	const binding = bindTrailSession(root, cwd, scope, sessionFile);
+	const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "controller")), "checkpoints");
+	const checkpointState = join(checkpointDir, `${binding.token}.json`);
+	savePendingCompanyCheckpoint(checkpointState, root, gitBaseline, binding.file);
 	inboxMessagesPath(root);
-	const products = listProductDepartments(root).map((product) => ({
+	const products = readProductProtectionInventory(root).map((product) => ({
 		repository: product.repositoryPath,
 		worktrees: product.worktreesPath,
 	}));
 	writeSandboxProfile(configDir, runtimeDir, root, scope, protectedControllerPaths(root, products));
-	let gitBaseline = actor === "controller" ? captureCompanyGitBaseline(root) : undefined;
 	const rpcArgs = [RPC_ENTRY, "--mode", "rpc", "--session", binding.path];
 	const args = sandboxCommandArgs(CODEX_ENTRY, runtimeDir, process.execPath, rpcArgs);
+	const kernelSigner = createKernelResponseSigner();
 	// QORPERA_AUTONOMOUS marks controller-initiated work: those sessions run
 	// in rpc mode with nobody present, so outward-effect signatures cannot
 	// treat them as founder sessions. Product roles remain separate either way.
@@ -277,6 +292,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	delete env.QORPERA_PRODUCT_WORKTREE;
 	env.CODEX_HOME = configDir;
 	env.QORPERA_TRAIL_BROKER_TOKEN = binding.token;
+	env.QORPERA_KERNEL_PUBLIC_KEY = kernelSigner.publicKey;
 	const child = spawn(process.execPath, args, {
 		cwd: runtimeDir,
 		stdio: ["pipe", "pipe", "pipe"],
@@ -286,15 +302,24 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		if (!line.trim()) return;
 		try {
 			const frame = JSON.parse(line) as unknown;
-			if (applyKernelWriteFrame(frame, binding, root)) return;
+			if (
+				applyKernelWriteFrame(frame, binding, root, (response) => {
+					child.stdin.write(`${JSON.stringify(kernelSigner.signResponse(response))}\n`);
+				})
+			)
+				return;
 			if ((frame as { type?: unknown }).type === "qorpera_trail_append") {
 				const append = parseTrailAppendFrame(frame, binding);
-				if (append) appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
-				else send(win, "rpc-log", "rejected invalid trail append frame");
+				if (append) {
+					appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+					commitTrailAppend(binding, append);
+				} else send(win, "rpc-log", "rejected invalid trail append frame");
 				return;
 			}
-			if ((frame as { type?: unknown }).type === "agent_settled" && gitBaseline) {
-				gitBaseline = checkpointCompanyGit(root, gitBaseline, binding.file);
+			if ((frame as { type?: unknown }).type === "agent_settled") {
+				const result = checkpointCompanyGit(root, gitBaseline, binding.file);
+				gitBaseline = result.baseline;
+				savePendingCompanyCheckpoint(checkpointState, root, gitBaseline, binding.file);
 			}
 			if (onRpcEvent) onRpcEvent(frame as { type?: string });
 			else if (!silent) send(win, "rpc-event", frame);
@@ -307,6 +332,11 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	});
 	child.on("exit", (code) => {
 		if (!silent && !intentionalKills.has(child)) send(win, "rpc-exit", code);
+	});
+	child.on("close", () => {
+		const result = checkpointCompanyGit(root, gitBaseline, binding.file);
+		finishPendingCompanyCheckpoint(checkpointState, result);
+		if (!result.success) savePendingCompanyCheckpoint(checkpointState, root, result.baseline, binding.file);
 	});
 	return child;
 }
@@ -386,7 +416,6 @@ async function listenBackend(root: string, authToken: string): Promise<{ port: n
 interface ActiveCompany {
 	root: string;
 	backendUrl: string;
-	backendToken: string;
 	kickoff: boolean;
 	userland: UserlandStatus;
 	usingBaseFallback: boolean;
@@ -405,7 +434,6 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 	return {
 		root: runtime.root,
 		backendUrl: `http://127.0.0.1:${runtime.backendPort}`,
-		backendToken: runtime.backendToken,
 		kickoff: false,
 		userland: runtime.userland,
 		usingBaseFallback: runtime.usingBaseFallback,
@@ -426,6 +454,10 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		if (!slot.runtime) void slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 		return;
 	}
+	readProductProtectionInventory(root);
+	enforceCompanyKernelSettings(root);
+	const checkpointDir = join(dirname(sandboxConfigDir(app.getPath("userData"), root, "controller")), "checkpoints");
+	reconcilePendingCompanyCheckpoints(checkpointDir, root);
 	// A company never runs in two windows: two RPC children on one trail and
 	// two tokens against one backend both end badly. Route to the live one.
 	const existing = slotForCompany(root);
@@ -490,12 +522,12 @@ function showHub(slot: Slot): void {
 }
 
 /** Switch chat sessions. Product chats run a product-worker in one validated worktree. */
-function openChat(
+async function openChat(
 	slot: Slot,
 	sessionFile: string | null,
 	departmentPath?: string,
 	worktreePath?: string,
-): { ok: boolean; department?: string; worktree?: string; error?: string } {
+): Promise<{ ok: boolean; department?: string; worktree?: string; error?: string }> {
 	if (!slot.runtime) return { ok: false };
 	const runtime = slot.runtime;
 	let department: ProductDepartment | undefined;
@@ -505,6 +537,16 @@ function openChat(
 			(entry) => entry.path === departmentPath && entry.repositoryExists,
 		);
 		if (!department) return { ok: false, error: "product department or repository is unavailable" };
+		const confirmation = await dialog.showMessageBox(slot.window, {
+			type: "warning",
+			buttons: ["Cancel", "Open product worker"],
+			defaultId: 0,
+			cancelId: 0,
+			message: `Open a product worker for ${department.name}?`,
+			detail:
+				"This trusted kernel action issues write access to one isolated task worktree. The company controller cannot issue this capability.",
+		});
+		if (confirmation.response !== 1) return { ok: false, error: "product worker authorization cancelled" };
 		if (worktreePath) {
 			const resolvedWorktree = resolve(runtime.root, worktreePath);
 			const worktreesRoot = resolve(runtime.root, department.worktreesPath);
@@ -524,6 +566,7 @@ function openChat(
 		department,
 		worktree,
 	});
+	runtime.productWorker = department && worktree ? { department: department.path, worktree } : undefined;
 	return { ok: true, department: department?.path, worktree };
 }
 
@@ -740,6 +783,37 @@ app.whenReady().then(() => {
 		startMergeChild(slot, runtime);
 		return { ok: true };
 	});
+	ipcMain.handle("backend:authorized-post", async (event, path: string, body: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime) return { ok: false, status: 404, text: "no company" };
+		const actions = new Map([
+			["/api/gate", "resolve an authority gate"],
+			["/api/inbox/respond", "send a founder inbox response"],
+			["/api/authority/config", "change company authority modes"],
+			["/api/authority", "replace the company authority policy"],
+		]);
+		const action = actions.get(path);
+		if (!action) return { ok: false, status: 400, text: "unsupported kernel action" };
+		const serialized = JSON.stringify(body);
+		if (typeof serialized !== "string") return { ok: false, status: 400, text: "invalid request" };
+		if (serialized.length > 1024 * 1024) return { ok: false, status: 413, text: "request too large" };
+		const confirmation = await dialog.showMessageBox(slot.window, {
+			type: "warning",
+			buttons: ["Cancel", "Authorize"],
+			defaultId: 0,
+			cancelId: 0,
+			message: `Authorize kernel action: ${action}?`,
+			detail: serialized.slice(0, 4000),
+		});
+		if (confirmation.response !== 1) return { ok: false, status: 403, text: "cancelled" };
+		const response = await fetch(`http://127.0.0.1:${runtime.backendPort}${path}`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-qorpera-token": runtime.backendToken },
+			body: serialized,
+		});
+		return { ok: response.ok, status: response.status, text: await response.text() };
+	});
 	ipcMain.handle("app:info", (event) => {
 		const slot = slotOf(event.sender);
 		const active = slot ? activeCompanyInfo(slot) : undefined;
@@ -751,8 +825,55 @@ app.whenReady().then(() => {
 		pendingCompany = undefined;
 		return { version: shellVersion(), pendingCompany: pending, activeCompany: active };
 	});
-	ipcMain.handle("rpc:send", (event, frame: unknown) => {
-		slotOf(event.sender)?.runtime?.child.stdin.write(`${JSON.stringify(frame)}\n`);
+	ipcMain.handle("rpc:send", async (event, frame: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime) return { ok: false };
+		if (runtime.productWorker) {
+			if (!frame || typeof frame !== "object" || !("type" in frame) || typeof frame.type !== "string") {
+				return { ok: false };
+			}
+			const promptTypes = new Set(["prompt", "steer", "follow_up"]);
+			const safeControlTypes = new Set([
+				"abort",
+				"get_state",
+				"get_messages",
+				"set_model",
+				"cycle_model",
+				"get_available_models",
+				"get_available_thinking_levels",
+				"set_thinking_level",
+				"set_response_speed",
+				"cycle_thinking_level",
+				"set_steering_mode",
+				"set_follow_up_mode",
+				"set_auto_retry",
+				"abort_retry",
+				"get_session_stats",
+				"get_entries",
+				"get_tree",
+				"get_fork_messages",
+				"get_commands",
+				"set_session_name",
+			]);
+			if (promptTypes.has(frame.type)) {
+				const message = "message" in frame && typeof frame.message === "string" ? frame.message : "";
+				if (!message) return { ok: false };
+				const confirmation = await dialog.showMessageBox(slot.window, {
+					type: "warning",
+					buttons: ["Cancel", "Send to product worker"],
+					defaultId: 0,
+					cancelId: 0,
+					message: `Authorize this ${runtime.productWorker.department} instruction?`,
+					detail: `${message.slice(0, 4000)}\n\nAssigned worktree: ${runtime.productWorker.worktree}`,
+				});
+				if (confirmation.response !== 1) return { ok: false };
+			} else if (!safeControlTypes.has(frame.type)) {
+				return { ok: false };
+			}
+		}
+		runtime.child.stdin.write(`${JSON.stringify(frame)}\n`);
+		return { ok: true };
 	});
 
 	const initial = createWindow();

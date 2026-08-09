@@ -30,7 +30,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { createInterface } from "node:readline";
 import { VERSION } from "../../config.ts";
-import { type Authority, evaluateToolCall } from "../authority.ts";
+import { type Authority, evaluateToolCall, finalizeAuthorityDecision } from "../authority.ts";
 import type { SessionManager } from "../session-manager.ts";
 
 interface JsonRpcMessage {
@@ -335,7 +335,7 @@ export class CodexEngineSession {
 					: typeof fromItem?.command === "string"
 						? (fromItem.command as string)
 						: "";
-			return { decision: this.decideCommand(command) };
+			return { decision: await this.decideCommand(command) };
 		});
 		this.requestHandlers.set("item/fileChange/requestApproval", async (params) => {
 			const record = (params ?? {}) as Record<string, unknown>;
@@ -343,21 +343,22 @@ export class CodexEngineSession {
 			const fromItem = this.itemsById.get(itemId);
 			const changes = Array.isArray(fromItem?.changes) ? (fromItem?.changes as Array<Record<string, unknown>>) : [];
 			const paths = changes.map((change) => String(change.path ?? "")).filter(Boolean);
-			return { decision: this.decidePatch(paths) };
+			return { decision: await this.decidePatch(paths) };
 		});
 	}
 
-	private decideCommand(command: string): "accept" | "decline" {
+	private async decideCommand(command: string): Promise<"accept" | "decline"> {
 		const { authority, cwd, sessionManager, onEvent } = this.options;
 		if (!authority) {
 			onEvent?.({ type: "gate", decision: "accept", command });
 			return "accept";
 		}
-		const decision = evaluateToolCall(authority, "bash", { command }, cwd, {
+		let decision = evaluateToolCall(authority, "bash", { command }, cwd, {
 			attended: Boolean(this.options.attended),
 			actor: this.options.actor,
 			productWorktree: this.options.productWorktree,
 		});
+		decision = await finalizeAuthorityDecision(authority, decision, "bash", { command });
 		if (decision.kind === "allow") {
 			onEvent?.({ type: "gate", decision: "accept", command });
 			return "accept";
@@ -373,15 +374,16 @@ export class CodexEngineSession {
 		return "decline";
 	}
 
-	private decidePatch(paths: string[]): "accept" | "decline" {
+	private async decidePatch(paths: string[]): Promise<"accept" | "decline"> {
 		const { authority, cwd, sessionManager, onEvent } = this.options;
 		if (!authority) return "accept";
 		for (const path of paths.length > 0 ? paths : [""]) {
-			const decision = evaluateToolCall(authority, "apply_patch", path ? { path } : {}, cwd, {
+			let decision = evaluateToolCall(authority, "apply_patch", path ? { path } : {}, cwd, {
 				attended: Boolean(this.options.attended),
 				actor: this.options.actor,
 				productWorktree: this.options.productWorktree,
 			});
+			decision = await finalizeAuthorityDecision(authority, decision, "apply_patch", path ? { path } : {});
 			if (decision.kind === "block") {
 				sessionManager.appendCustomEntry("qorpera_gate", {
 					engine: "codex",

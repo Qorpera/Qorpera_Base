@@ -1,17 +1,23 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	applyKernelWriteFrame,
 	bindTrailSession,
+	commitTrailAppend,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
 	sandboxCommandArgs,
 	writeSandboxProfile,
 } from "../src/agent-runtime.ts";
-import { captureCompanyGitBaseline, checkpointCompanyGit } from "../src/company-checkpoint.ts";
+import {
+	captureCompanyGitBaseline,
+	checkpointCompanyGit,
+	reconcilePendingCompanyCheckpoints,
+	savePendingCompanyCheckpoint,
+} from "../src/company-checkpoint.ts";
 
 let root: string;
 
@@ -51,9 +57,21 @@ describe("kernel-bound agent runtime", () => {
 		const binding = bindTrailSession(company, company, { actor: "controller", attended: true });
 		const entry = { type: "custom", id: "one", parentId: null, timestamp: new Date().toISOString(), customType: "x" };
 		expect(parseTrailAppendFrame({ type: "qorpera_trail_append", token: "wrong", entry }, binding)).toBeUndefined();
+		const append = parseTrailAppendFrame({ type: "qorpera_trail_append", token: binding.token, entry }, binding);
+		expect(append?.entry).toMatchObject({ type: "custom", id: "one", parentId: null, customType: "x" });
+		expect(append?.entry.kernel).toMatchObject({ sequence: 1, previousHash: null });
+		commitTrailAppend(binding, append!);
 		expect(
-			parseTrailAppendFrame({ type: "qorpera_trail_append", token: binding.token, entry }, binding)?.entry,
-		).toEqual(entry);
+			parseTrailAppendFrame({ type: "qorpera_trail_append", token: binding.token, entry }, binding),
+		).toBeUndefined();
+		appendFileSync(binding.path, `${JSON.stringify(append!.entry)}\n`);
+		expect(
+			bindTrailSession(company, company, { actor: "controller", attended: true }, binding.file).audit.sequence,
+		).toBe(1);
+		const unknown = { ...entry, id: "two", type: "fabricated_root_event" };
+		expect(
+			parseTrailAppendFrame({ type: "qorpera_trail_append", token: binding.token, entry: unknown }, binding),
+		).toBeUndefined();
 
 		const gateContent = "---\nid: gate-abcd\nstatus: pending\nhash: abcd\n---\n";
 		expect(
@@ -72,17 +90,24 @@ describe("kernel-bound agent runtime", () => {
 		const gatePath = join(company, "inbox", "gate-abcd.md");
 		expect(readFileSync(gatePath, "utf-8")).toContain("status: pending");
 		writeFileSync(gatePath, gateContent.replace("pending", "approved"), "utf-8");
+		let response: { granted: boolean } | undefined;
 		applyKernelWriteFrame(
 			{
 				type: "qorpera_kernel_write",
 				token: binding.token,
 				operation: "consume_gate",
 				file: "gate-abcd.md",
+				requestId: "request-1",
+				hash: "abcd",
 				status: "consumed",
 			},
 			binding,
 			company,
+			(value) => {
+				response = value;
+			},
 		);
+		expect(response).toMatchObject({ granted: true });
 		expect(readFileSync(gatePath, "utf-8")).toContain("status: consumed");
 	});
 
@@ -105,6 +130,7 @@ describe("kernel-bound agent runtime", () => {
 		expect(config).toContain(`${JSON.stringify(company)} = "write"`);
 		expect(config).toContain(`${JSON.stringify(join(company, repository))} = "read"`);
 		expect(config).toContain(`${JSON.stringify(join(company, "inbox", "messages"))} = "write"`);
+		expect(config).toContain(`${JSON.stringify(join(company, ".qorpera", "settings.json"))} = "read"`);
 
 		writeSandboxProfile(
 			configDir,
@@ -129,6 +155,7 @@ describe("kernel-bound agent runtime", () => {
 	it("checkpoints only clean-at-start controller paths with trail provenance", () => {
 		const company = join(root, "company");
 		writeFileSync(join(company, "company.md"), "seed\n", "utf-8");
+		writeFileSync(join(company, "founder.md"), "seed\n", "utf-8");
 		for (const args of [
 			["init"],
 			["add", "company.md"],
@@ -137,9 +164,12 @@ describe("kernel-bound agent runtime", () => {
 			expect(spawnSync("git", args, { cwd: company, stdio: "ignore" }).status).toBe(0);
 		}
 		writeFileSync(join(company, "preexisting.md"), "founder work\n", "utf-8");
+		writeFileSync(join(company, "founder.md"), "founder staged\n", "utf-8");
+		expect(spawnSync("git", ["add", "founder.md"], { cwd: company, stdio: "ignore" }).status).toBe(0);
 		const baseline = captureCompanyGitBaseline(company);
 		writeFileSync(join(company, "agent.md"), "controller work\n", "utf-8");
-		checkpointCompanyGit(company, baseline, "session.jsonl");
+		writeFileSync(join(company, "trail", "session.jsonl"), "trail\n", "utf-8");
+		expect(checkpointCompanyGit(company, baseline, "session.jsonl").success).toBe(true);
 		const log = spawnSync("git", ["log", "-1", "--format=%B"], { cwd: company, encoding: "utf-8" }).stdout;
 		expect(log).toContain("Qorpera-Trigger: trail/session.jsonl");
 		expect(log).toContain("Qorpera-Rationale:");
@@ -149,6 +179,34 @@ describe("kernel-bound agent runtime", () => {
 		expect(statSync(join(company, "preexisting.md")).isFile()).toBe(true);
 		expect(spawnSync("git", ["ls-files", "preexisting.md"], { cwd: company, encoding: "utf-8" }).stdout.trim()).toBe(
 			"",
+		);
+		expect(
+			spawnSync("git", ["ls-files", "trail/session.jsonl"], { cwd: company, encoding: "utf-8" }).stdout.trim(),
+		).toBe("trail/session.jsonl");
+		expect(
+			spawnSync("git", ["diff", "--cached", "--name-only"], { cwd: company, encoding: "utf-8" }).stdout,
+		).toContain("founder.md");
+	});
+
+	it("reconciles a durable checkpoint left by an interrupted agent", () => {
+		const company = join(root, "company");
+		writeFileSync(join(company, "company.md"), "seed\n", "utf-8");
+		for (const args of [
+			["init"],
+			["add", "company.md"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", args, { cwd: company, stdio: "ignore" }).status).toBe(0);
+		}
+		const baseline = captureCompanyGitBaseline(company);
+		const checkpointDir = join(root, "checkpoint-state");
+		const statePath = join(checkpointDir, "interrupted.json");
+		savePendingCompanyCheckpoint(statePath, company, baseline, "interrupted.jsonl");
+		writeFileSync(join(company, "recovered.md"), "preserve me\n", "utf-8");
+		reconcilePendingCompanyCheckpoints(checkpointDir, company);
+		expect(existsSync(statePath)).toBe(false);
+		expect(spawnSync("git", ["ls-files", "recovered.md"], { cwd: company, encoding: "utf-8" }).stdout.trim()).toBe(
+			"recovered.md",
 		);
 	});
 });

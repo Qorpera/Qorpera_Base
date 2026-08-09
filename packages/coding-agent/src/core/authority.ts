@@ -30,6 +30,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { requestKernelGateConsumption } from "./kernel-broker.ts";
 
 export type ConfigurableEffectClass = "money" | "identity" | "irreversible" | "authority";
 export type EffectClass = ConfigurableEffectClass | "product_code";
@@ -61,6 +62,7 @@ export type AuthorityDecision =
 			attended?: true;
 			actor?: CompanyActor;
 			behavior?: BehaviorSignature;
+			kernelGate?: { file: string; hash: string; id: string; effectClass: EffectClass };
 	  }
 	| { kind: "block"; reason: string; effectClass: EffectClass; gateId?: string; behavior?: BehaviorSignature };
 
@@ -533,19 +535,6 @@ export function findGateRecords(authority: Authority, hash: string): GateRecord[
 }
 
 function setGateStatus(record: GateRecord, status: GateStatus): void {
-	const brokerToken = process.env.QORPERA_TRAIL_BROKER_TOKEN;
-	if (brokerToken) {
-		process.stdout.write(
-			`${JSON.stringify({
-				type: "qorpera_kernel_write",
-				token: brokerToken,
-				operation: "consume_gate",
-				file: basename(record.filePath),
-				status,
-			})}\n`,
-		);
-		return;
-	}
 	const content = readFileSync(record.filePath, "utf-8");
 	writeFileSync(record.filePath, content.replace(/^status:.*$/m, `status: ${status}`), "utf-8");
 }
@@ -828,6 +817,15 @@ export function evaluateToolCall(
 	const records = findGateRecords(authority, hash);
 	const approved = records.find((record) => record.status === "approved");
 	if (approved) {
+		if (process.env.QORPERA_TRAIL_BROKER_TOKEN) {
+			return {
+				kind: "allow",
+				notified: true,
+				effectClass,
+				behavior,
+				kernelGate: { file: basename(approved.filePath), hash, id: approved.id, effectClass },
+			};
+		}
 		setGateStatus(approved, "consumed");
 		appendNotice(authority, `[${effectClass}] ${approved.id} consumed: ${summarizeCall(toolName, args)}`);
 		return { kind: "allow", notified: true, effectClass, behavior };
@@ -866,6 +864,30 @@ export function evaluateToolCall(
 		behavior,
 		reason: `Authority gate [${effectClass}]: this action requires human approval. Request ${gateId} filed in inbox/. NOW create inbox/messages/msg-${gateId}-intent.md with your file-writing tool (NOT bash — bash writes into inbox/ are themselves gated): first line \`# <short outcome headline>\` naming what this achieves for the company (never the mechanism), then 1-3 plain sentences of context for the founder, no command syntax. Headline and text become the approval card; the exact command is shown separately. Then continue with other work; retry after it is approved.`,
 	};
+}
+
+/** Complete a brokered single-use approval before the tool is allowed to execute. */
+export async function finalizeAuthorityDecision(
+	authority: Authority,
+	decision: AuthorityDecision,
+	toolName: string,
+	args: unknown,
+): Promise<AuthorityDecision> {
+	if (decision.kind !== "allow" || !decision.kernelGate) return decision;
+	const gate = decision.kernelGate;
+	const granted = await requestKernelGateConsumption(gate.file, gate.hash);
+	if (!granted) {
+		return {
+			kind: "block",
+			effectClass: gate.effectClass,
+			gateId: gate.id,
+			behavior: decision.behavior,
+			reason: `Authority gate [${gate.effectClass}]: ${gate.id} was already consumed or is no longer approved. Request a fresh approval before retrying.`,
+		};
+	}
+	appendNotice(authority, `[${gate.effectClass}] ${gate.id} consumed: ${summarizeCall(toolName, args)}`);
+	const { kernelGate: _kernelGate, ...finalized } = decision;
+	return finalized;
 }
 
 /**

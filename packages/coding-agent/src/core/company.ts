@@ -18,9 +18,9 @@
  * describes comes from enforcement (`authority.ts`), never from prompt tier.
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { getAgentDir } from "../config.ts";
@@ -219,29 +219,84 @@ interface ProductRegistry {
 	products: string[];
 }
 
-function readProductRegistry(root: string): ProductRegistry {
+const PRODUCT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-development$/;
+
+function parseProductRegistry(root: string, allowMissing: boolean): ProductRegistry {
+	const path = join(root, PRODUCT_REGISTRY_PATH);
+	if (!existsSync(path)) {
+		if (allowMissing) return { version: 1, products: [] };
+		throw new Error(`Company product inventory is missing: ${PRODUCT_REGISTRY_PATH}`);
+	}
 	try {
-		const registry = JSON.parse(readFileSync(join(root, PRODUCT_REGISTRY_PATH), "utf-8")) as Partial<ProductRegistry>;
+		const registry = JSON.parse(readFileSync(path, "utf-8")) as Partial<ProductRegistry>;
 		if (
 			registry.version === 1 &&
 			Array.isArray(registry.products) &&
-			registry.products.every((id) => typeof id === "string" && id.endsWith("-development"))
+			registry.products.every((id) => typeof id === "string" && PRODUCT_ID_PATTERN.test(id)) &&
+			new Set(registry.products).size === registry.products.length
 		) {
-			return { version: 1, products: [...new Set(registry.products)] };
+			return { version: 1, products: [...registry.products] };
 		}
-	} catch {
-		// Missing or malformed registries fail closed: no worker authority is issued.
+	} catch (error) {
+		throw new Error(
+			`Company product inventory is invalid: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
-	return { version: 1, products: [] };
+	throw new Error(`Company product inventory is invalid: ${PRODUCT_REGISTRY_PATH}`);
+}
+
+function readProductRegistry(root: string): ProductRegistry {
+	return parseProductRegistry(root, false);
 }
 
 function registerProductDepartment(root: string, id: string): void {
-	const registry = readProductRegistry(root);
+	const registry = parseProductRegistry(root, true);
 	if (registry.products.includes(id)) return;
 	registry.products.push(id);
 	registry.products.sort();
 	mkdirSync(join(root, ".qorpera"), { recursive: true });
 	writeFileSync(join(root, PRODUCT_REGISTRY_PATH), `${JSON.stringify(registry, null, "\t")}\n`, "utf-8");
+}
+
+function checkpointProductKit(root: string, id: string): void {
+	if (spawnSync("git", ["-C", root, "rev-parse", "--verify", "HEAD"], { stdio: "ignore", shell: false }).status !== 0)
+		return;
+	const paths = [
+		PRODUCT_REGISTRY_PATH,
+		join("app", "projection.json"),
+		join("departments", id, "department.json"),
+		join("departments", id, ".gitignore"),
+		join("departments", id, "briefs", ".gitkeep"),
+		join("departments", id, "pull-requests", "README.md"),
+	].filter((path) => existsSync(join(root, path)));
+	const added = spawnSync("git", ["-C", root, "add", "--", ...paths], { stdio: "ignore", shell: false });
+	if (added.status !== 0) throw new Error(`Could not stage product department ${id}`);
+	const changed = spawnSync("git", ["-C", root, "diff", "--cached", "--quiet", "--", ...paths], {
+		stdio: "ignore",
+		shell: false,
+	});
+	if (changed.status === 0) return;
+	const committed = spawnSync(
+		"git",
+		[
+			"-C",
+			root,
+			"-c",
+			"user.name=Qorpera Kernel",
+			"-c",
+			"user.email=kernel@qorpera.local",
+			"commit",
+			"--only",
+			"-m",
+			`feat: add ${id} product department\n\nQorpera-Trigger: founder product kit request\nQorpera-Rationale: preserve the registered product boundary and its UI projection`,
+			"--",
+			...paths,
+		],
+		{ encoding: "utf-8", shell: false },
+	);
+	if (committed.status !== 0) {
+		throw new Error(`Could not commit product department ${id}: ${committed.stderr || committed.stdout}`);
+	}
 }
 
 function productProjectionNodes(department: ProductDepartment): ProjectionNode[] {
@@ -404,50 +459,92 @@ function readdirIsEmpty(dir: string): boolean {
 }
 
 /** Merge company runtime defaults into project settings without clobbering. */
-function ensureProjectSettings(root: string, result: ScaffoldResult): void {
+function ensureProjectSettings(root: string, result: ScaffoldResult): boolean {
 	const settingsDir = join(root, ".qorpera");
 	const settingsPath = join(settingsDir, "settings.json");
 	let settings: Record<string, unknown> = {};
 	if (existsSync(settingsPath)) {
 		try {
-			settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
-		} catch {
-			result.skipped.push(".qorpera/settings.json (unreadable — left untouched)");
-			return;
+			const parsed = JSON.parse(readFileSync(settingsPath, "utf-8")) as unknown;
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				throw new Error("settings root must be an object");
+			}
+			settings = parsed as Record<string, unknown>;
+		} catch (error) {
+			throw new Error(
+				`Company settings are invalid and cannot be opened safely: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 	}
 	let changed = false;
-	if (settings.sessionDir === undefined) {
+	if (settings.sessionDir !== "./trail") {
 		settings.sessionDir = "./trail";
 		changed = true;
 	} else {
 		result.skipped.push(".qorpera/settings.json (sessionDir already set)");
 	}
-	if (settings.compaction === undefined) {
+	if (!settings.compaction || typeof settings.compaction !== "object" || Array.isArray(settings.compaction)) {
 		settings.compaction = { enabled: false };
 		changed = true;
-	} else if (
-		settings.compaction &&
-		typeof settings.compaction === "object" &&
-		(settings.compaction as Record<string, unknown>).enabled !== false
-	) {
+	} else if ((settings.compaction as Record<string, unknown>).enabled !== false) {
 		(settings.compaction as Record<string, unknown>).enabled = false;
 		changed = true;
 	} else {
 		result.skipped.push(".qorpera/settings.json (compaction already configured)");
 	}
-	if (!changed) return;
+	if (!changed) return false;
 	mkdirSync(settingsDir, { recursive: true });
 	writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8");
 	result.created.push(".qorpera/settings.json (trail retained; auto-compaction disabled)");
+	return true;
+}
+
+/** Reassert kernel-owned retention policy whenever an existing company opens. */
+export function enforceCompanyKernelSettings(rootDir: string): void {
+	const root = resolve(rootDir);
+	if (!ensureProjectSettings(root, { root, created: [], skipped: [], gitInitialized: false })) return;
+	if (spawnSync("git", ["-C", root, "rev-parse", "--verify", "HEAD"], { stdio: "ignore", shell: false }).status !== 0)
+		return;
+	const path = join(".qorpera", "settings.json");
+	if (spawnSync("git", ["-C", root, "add", "--", path], { stdio: "ignore", shell: false }).status !== 0) {
+		throw new Error("Could not stage kernel retention settings");
+	}
+	if (
+		spawnSync("git", ["-C", root, "diff", "--cached", "--quiet", "--", path], {
+			stdio: "ignore",
+			shell: false,
+		}).status === 0
+	)
+		return;
+	const committed = spawnSync(
+		"git",
+		[
+			"-C",
+			root,
+			"-c",
+			"user.name=Qorpera Kernel",
+			"-c",
+			"user.email=kernel@qorpera.local",
+			"commit",
+			"--only",
+			"-m",
+			"fix: enforce append-only company trails\n\nQorpera-Trigger: company open\nQorpera-Rationale: keep company session storage local and disable compaction",
+			"--",
+			path,
+		],
+		{ encoding: "utf-8", shell: false },
+	);
+	if (committed.status !== 0) {
+		throw new Error(`Could not commit kernel retention settings: ${committed.stderr || committed.stdout}`);
+	}
 }
 
 function productSlug(product: string): string {
 	const slug = product
 		.trim()
 		.toLowerCase()
-		.replace(/[^A-Za-z0-9._-]+/g, "-")
-		.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "");
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
 	return slug || "product";
 }
 
@@ -485,6 +582,17 @@ export function listProductDepartments(rootDir: string): ProductDepartment[] {
 		.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** Kernel protection inventory; never depends on agent-writable department manifests. */
+export function readProductProtectionInventory(
+	rootDir: string,
+): Array<{ id: string; repositoryPath: string; worktreesPath: string }> {
+	return readProductRegistry(resolve(rootDir)).products.map((id) => ({
+		id,
+		repositoryPath: join("departments", id, "repository"),
+		worktreesPath: join("departments", id, "worktrees"),
+	}));
+}
+
 /** Materialize the standard product-development department without overwriting it. */
 export function scaffoldProductDepartment(rootDir: string, product: string): ProductDepartment {
 	const root = resolve(rootDir);
@@ -500,6 +608,7 @@ export function scaffoldProductDepartment(rootDir: string, product: string): Pro
 	if (existing) {
 		installProductProjection(root, existing);
 		registerProductDepartment(root, id);
+		checkpointProductKit(root, id);
 		return existing;
 	}
 	const result: ScaffoldResult = { root, created: [], skipped: [], gitInitialized: false };
@@ -527,6 +636,7 @@ export function scaffoldProductDepartment(rootDir: string, product: string): Pro
 	const created = productDepartmentFromEntry(root, id)!;
 	installProductProjection(root, created);
 	registerProductDepartment(root, id);
+	checkpointProductKit(root, id);
 	return created;
 }
 
@@ -569,7 +679,33 @@ export function createProductWorktree(rootDir: string, department: ProductDepart
 		return { path, branch };
 	}
 	console.error(`Could not create product worktree branch: ${checkout.stderr || checkout.stdout || "git failed"}`);
+	rmSync(target, { recursive: true, force: true });
 	return undefined;
+}
+
+function ensureCompanyGenesis(root: string): void {
+	const head = spawnSync("git", ["-C", root, "rev-parse", "--verify", "HEAD"], { stdio: "ignore", shell: false });
+	if (head.status === 0) return;
+	const added = spawnSync("git", ["-C", root, "add", "--all"], { stdio: "ignore", shell: false });
+	if (added.status !== 0) throw new Error("Could not stage the company genesis snapshot");
+	const committed = spawnSync(
+		"git",
+		[
+			"-C",
+			root,
+			"-c",
+			"user.name=Qorpera Kernel",
+			"-c",
+			"user.email=kernel@qorpera.local",
+			"commit",
+			"-m",
+			"feat: create company genesis\n\nQorpera-Trigger: company scaffold\nQorpera-Rationale: make the complete company spine cloneable and recoverable",
+		],
+		{ encoding: "utf-8", shell: false },
+	);
+	if (committed.status !== 0) {
+		throw new Error(`Could not commit the company genesis snapshot: ${committed.stderr || committed.stdout}`);
+	}
 }
 
 /**
@@ -609,12 +745,14 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	ensureDir(root, join("app", "routines"), result);
 	ensureDir(root, join("app", "tools"), result);
 	ensureDir(root, "departments", result);
+	writeIfMissing(root, PRODUCT_REGISTRY_PATH, `${JSON.stringify({ version: 1, products: [] }, null, "\t")}\n`, result);
 	ensureProjectSettings(root, result);
 
 	if (!existsSync(join(root, ".git"))) {
 		const git = spawnSync("git", ["init"], { cwd: root, stdio: "ignore", shell: false });
 		result.gitInitialized = git.status === 0;
 	}
+	ensureCompanyGenesis(root);
 
 	return result;
 }
@@ -640,11 +778,10 @@ function printScaffoldReport(result: ScaffoldResult): void {
  * logic lives in exactly one place (conceptionKickoff).
  */
 function launchSession(dir: string): Promise<number> {
-	return new Promise((resolve) => {
-		const child = spawn(process.execPath, [process.argv[1]], { cwd: dir, stdio: "inherit" });
-		child.on("exit", (code) => resolve(code ?? 0));
-		child.on("error", () => resolve(1));
-	});
+	console.error(
+		`Company created at ${resolve(dir)}. Company sessions require the Qorpera Base desktop kernel; direct CLI launch is refused.`,
+	);
+	return Promise.resolve(1);
 }
 
 function cloneInto(source: string, destination: string): boolean {

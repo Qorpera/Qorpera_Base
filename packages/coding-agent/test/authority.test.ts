@@ -563,7 +563,22 @@ describe("agent-session mount", () => {
 		const agentDir = join(root, "agent-home");
 		mkdirSync(agentDir, { recursive: true });
 		const settingsManager = SettingsManager.create(root, agentDir);
-		const sessionManager = SessionManager.inMemory();
+		const trailDir = join(root, "trail");
+		const sessionPath = join(trailDir, "kernel-session.jsonl");
+		mkdirSync(trailDir, { recursive: true });
+		writeFileSync(
+			sessionPath,
+			`${JSON.stringify({
+				type: "session",
+				version: 4,
+				id: "kernel-session",
+				timestamp: new Date().toISOString(),
+				cwd: root,
+				qorpera: { actor: "controller", attended: true },
+			})}\n`,
+			"utf-8",
+		);
+		const sessionManager = SessionManager.open(sessionPath, trailDir, root);
 		const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager });
 		await resourceLoader.reload();
 

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import {
 	appendFileSync,
 	closeSync,
@@ -34,6 +34,12 @@ interface SessionEntry {
 	id: string;
 	parentId: string | null;
 	timestamp: string;
+	kernel?: {
+		sequence: number;
+		receivedAt: string;
+		previousHash: string | null;
+		hash: string;
+	};
 	[key: string]: unknown;
 }
 
@@ -50,6 +56,7 @@ export interface TrailBinding {
 	file: string;
 	token: string;
 	authority: QorperaSessionAuthority;
+	audit: { ids: Set<string>; sequence: number; lastHash: string };
 }
 
 export interface TrailAppendFrame {
@@ -66,11 +73,35 @@ interface KernelWriteFrame {
 	content?: string;
 	message?: string;
 	status?: string;
+	requestId?: string;
+	hash?: string;
+}
+
+export interface KernelGateResponseBody {
+	requestId: string;
+	file: string;
+	hash: string;
+	granted: boolean;
+}
+
+export interface SignedKernelGateResponse extends KernelGateResponseBody {
+	type: "qorpera_kernel_response";
+	signature: string;
 }
 
 const MAX_HEADER_BYTES = 64 * 1024;
 const MAX_TRAIL_ENTRY_BYTES = 16 * 1024 * 1024;
-const TRAIL_SESSION_VERSION = 3;
+const TRAIL_SESSION_VERSION = 4;
+const TRAIL_ENTRY_TYPES = new Set([
+	"message",
+	"thinking_level_change",
+	"model_change",
+	"branch_summary",
+	"custom",
+	"custom_message",
+	"label",
+	"session_info",
+]);
 
 function readHeader(path: string): SessionHeader {
 	const fd = openSync(path, "r");
@@ -112,11 +143,85 @@ function assertMatchingAuthority(actual: QorperaSessionAuthority | undefined, ex
 	}
 }
 
+function validTrailEntry(entry: SessionEntry, ids: Set<string>): boolean {
+	if (
+		!TRAIL_ENTRY_TYPES.has(entry.type) ||
+		typeof entry.id !== "string" ||
+		entry.id.length === 0 ||
+		entry.id.length > 128 ||
+		ids.has(entry.id) ||
+		(entry.parentId !== null && (typeof entry.parentId !== "string" || !ids.has(entry.parentId)))
+	)
+		return false;
+	switch (entry.type) {
+		case "message":
+			return Boolean(entry.message && typeof entry.message === "object");
+		case "thinking_level_change":
+			return typeof entry.thinkingLevel === "string";
+		case "model_change":
+			return typeof entry.provider === "string" && typeof entry.modelId === "string";
+		case "branch_summary":
+			return typeof entry.fromId === "string" && ids.has(entry.fromId) && typeof entry.summary === "string";
+		case "custom":
+			return typeof entry.customType === "string";
+		case "custom_message":
+			return (
+				typeof entry.customType === "string" &&
+				(typeof entry.content === "string" || Array.isArray(entry.content)) &&
+				typeof entry.display === "boolean"
+			);
+		case "label":
+			return typeof entry.targetId === "string" && ids.has(entry.targetId);
+		case "session_info":
+			return entry.name === undefined || typeof entry.name === "string";
+		default:
+			return false;
+	}
+}
+
+function unsignedTrailEntry(entry: SessionEntry): SessionEntry {
+	const copy = { ...entry };
+	delete copy.kernel;
+	return copy;
+}
+
+function auditHash(entry: SessionEntry, previousHash: string): string {
+	return createHash("sha256")
+		.update(`${previousHash}\n${JSON.stringify(unsignedTrailEntry(entry))}`)
+		.digest("hex");
+}
+
+function loadTrailAudit(path: string): TrailBinding["audit"] {
+	const lines = readFileSync(path, "utf-8").split(/\r?\n/).slice(1).filter(Boolean);
+	const audit: TrailBinding["audit"] = { ids: new Set(), sequence: 0, lastHash: "" };
+	for (const line of lines) {
+		const entry = JSON.parse(line) as SessionEntry;
+		if (!validTrailEntry(entry, audit.ids)) throw new Error(`trail session contains an invalid event graph: ${path}`);
+		const kernel = entry.kernel;
+		const expectedSequence = audit.sequence + 1;
+		const expectedPrevious = audit.lastHash || null;
+		if (
+			!kernel ||
+			kernel.sequence !== expectedSequence ||
+			kernel.previousHash !== expectedPrevious ||
+			kernel.receivedAt !== entry.timestamp ||
+			kernel.hash !== auditHash(entry, audit.lastHash)
+		) {
+			throw new Error(`trail session integrity metadata is invalid: ${path}`);
+		}
+		audit.ids.add(entry.id);
+		audit.sequence = kernel.sequence;
+		audit.lastHash = kernel.hash;
+	}
+	return audit;
+}
+
 export function bindTrailSession(root: string, cwd: string, scope: AgentScope, sessionFile?: string): TrailBinding {
 	const trailDir = join(root, "trail");
 	mkdirSync(trailDir, { recursive: true });
 	const authority = authorityForScope(scope);
 	let path: string;
+	let audit: TrailBinding["audit"] = { ids: new Set(), sequence: 0, lastHash: "" };
 	if (sessionFile) {
 		if (basename(sessionFile) !== sessionFile || !sessionFile.endsWith(".jsonl")) {
 			throw new Error("trail session must be a JSONL filename inside the company trail");
@@ -128,6 +233,7 @@ export function bindTrailSession(root: string, cwd: string, scope: AgentScope, s
 			throw new Error(`trail session schema ${header.version ?? 1} requires an explicit append-only migration`);
 		}
 		assertMatchingAuthority(header.qorpera, authority);
+		audit = loadTrailAudit(path);
 	} else {
 		const timestamp = new Date().toISOString();
 		const id = randomUUID();
@@ -143,7 +249,7 @@ export function bindTrailSession(root: string, cwd: string, scope: AgentScope, s
 		};
 		writeFileSync(path, `${JSON.stringify(header)}\n`, { flag: "wx" });
 	}
-	return { path, file: basename(path), token: randomUUID(), authority };
+	return { path, file: basename(path), token: randomUUID(), authority, audit };
 }
 
 export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): TrailAppendFrame | undefined {
@@ -152,15 +258,41 @@ export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): Tr
 	if (frame.type !== "qorpera_trail_append" || frame.token !== binding.token) return undefined;
 	const entry = frame.entry as unknown;
 	if (!entry || typeof entry !== "object") return undefined;
-	const record = entry as { type?: unknown; id?: unknown; timestamp?: unknown };
-	if (record.type === "session" || typeof record.id !== "string" || typeof record.timestamp !== "string") {
-		return undefined;
-	}
+	const record = entry as SessionEntry;
 	if (Buffer.byteLength(JSON.stringify(record), "utf-8") > MAX_TRAIL_ENTRY_BYTES) return undefined;
-	return { type: "qorpera_trail_append", token: binding.token, entry: entry as SessionEntry };
+	if (!validTrailEntry(record, binding.audit.ids)) return undefined;
+	const receivedAt = new Date().toISOString();
+	const stamped: SessionEntry = { ...unsignedTrailEntry(record), timestamp: receivedAt };
+	stamped.kernel = {
+		sequence: binding.audit.sequence + 1,
+		receivedAt,
+		previousHash: binding.audit.lastHash || null,
+		hash: "",
+	};
+	stamped.kernel.hash = auditHash(stamped, binding.audit.lastHash);
+	return { type: "qorpera_trail_append", token: binding.token, entry: stamped };
 }
 
-export function applyKernelWriteFrame(value: unknown, binding: TrailBinding, root: string): boolean {
+export function commitTrailAppend(binding: TrailBinding, append: TrailAppendFrame): void {
+	const kernel = append.entry.kernel;
+	if (
+		!kernel ||
+		kernel.sequence !== binding.audit.sequence + 1 ||
+		kernel.previousHash !== (binding.audit.lastHash || null)
+	) {
+		throw new Error("trail append integrity state changed before commit");
+	}
+	binding.audit.ids.add(append.entry.id);
+	binding.audit.sequence = kernel.sequence;
+	binding.audit.lastHash = kernel.hash;
+}
+
+export function applyKernelWriteFrame(
+	value: unknown,
+	binding: TrailBinding,
+	root: string,
+	onGateResponse?: (response: KernelGateResponseBody) => void,
+): boolean {
 	if (!value || typeof value !== "object") return false;
 	const frame = value as Partial<KernelWriteFrame>;
 	if (frame.type !== "qorpera_kernel_write") return false;
@@ -179,11 +311,26 @@ export function applyKernelWriteFrame(value: unknown, binding: TrailBinding, roo
 		return true;
 	}
 	if (frame.operation === "consume_gate") {
-		if (frame.status !== "consumed" || !frame.file || !/^gate-[a-z0-9-]+\.md$/i.test(frame.file)) return true;
+		if (
+			frame.status !== "consumed" ||
+			!frame.file ||
+			!/^gate-[a-z0-9-]+\.md$/i.test(frame.file) ||
+			typeof frame.requestId !== "string" ||
+			typeof frame.hash !== "string"
+		)
+			return true;
 		const path = join(inbox, frame.file);
-		const content = readFileSync(path, "utf-8");
-		if (!/^status:\s*approved\b/m.test(content)) return true;
-		writeFileSync(path, content.replace(/^status:.*$/m, "status: consumed"), "utf-8");
+		let content = "";
+		try {
+			content = readFileSync(path, "utf-8");
+		} catch {
+			onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted: false });
+			return true;
+		}
+		const granted =
+			/^status:\s*approved\b/m.test(content) && content.match(/^hash:\s*(\S+)\s*$/m)?.[1] === frame.hash;
+		if (granted) writeFileSync(path, content.replace(/^status:.*$/m, "status: consumed"), "utf-8");
+		onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted });
 		return true;
 	}
 	if (frame.operation === "append_notice") {
@@ -193,6 +340,31 @@ export function applyKernelWriteFrame(value: unknown, binding: TrailBinding, roo
 		appendFileSync(path, `${prefix}- ${new Date().toISOString()} ${frame.message.replace(/[\r\n]+/g, " ")}\n`);
 	}
 	return true;
+}
+
+function kernelResponsePayload(response: KernelGateResponseBody): string {
+	return JSON.stringify({
+		requestId: response.requestId,
+		file: response.file,
+		hash: response.hash,
+		granted: response.granted,
+	});
+}
+
+export function createKernelResponseSigner(): {
+	publicKey: string;
+	signResponse: (response: KernelGateResponseBody) => SignedKernelGateResponse;
+} {
+	const pair = generateKeyPairSync("ed25519");
+	const publicKey = pair.publicKey.export({ format: "der", type: "spki" }).toString("base64");
+	return {
+		publicKey,
+		signResponse: (response) => ({
+			type: "qorpera_kernel_response",
+			...response,
+			signature: sign(null, Buffer.from(kernelResponsePayload(response)), pair.privateKey).toString("base64"),
+		}),
+	};
 }
 
 function tomlString(value: string): string {
@@ -257,6 +429,7 @@ export function protectedControllerPaths(
 		join(root, "AGENTS.md"),
 		join(root, "CLAUDE.md"),
 		join(root, ".qorpera", "products.json"),
+		join(root, ".qorpera", "settings.json"),
 		join(root, "inbox"),
 		...productPaths.flatMap((product) => [join(root, product.repository), join(root, product.worktrees)]),
 	];

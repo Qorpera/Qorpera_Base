@@ -2,7 +2,6 @@
  * from the folder via the backend (surfaces/state/inbox) or the RPC pipe. */
 const $ = (id) => document.getElementById(id);
 let backendUrl = "";
-let backendToken = "";
 let state = {
 	projection: { schema: "qorpera.projection/v1", default: "q:chats", navigation: [], nodes: [], diagnostics: [] },
 	inbox: [],
@@ -11,8 +10,14 @@ let state = {
 };
 const sessionCache = {}; // session file -> rendered messages HTML
 
-function authHeaders(extra) {
-	return { "x-qorpera-token": backendToken, ...(extra ?? {}) };
+async function authorizedPost(path, body) {
+	const response = await window.qorpera.authorizedBackendPost(path, body);
+	return {
+		ok: Boolean(response?.ok),
+		status: response?.status ?? 500,
+		json: async () => JSON.parse(response?.text ?? "{}"),
+		text: async () => response?.text ?? "",
+	};
 }
 
 let currentNodeId = null;
@@ -76,7 +81,6 @@ async function openCompany(root) {
 /** Boot into an already-open company (called after the kernel loads us). */
 async function enterCompany(active) {
 	backendUrl = active.backendUrl;
-	backendToken = active.backendToken ?? "";
 	$("hubnav").style.display = "none";
 	$("conav").style.display = "";
 	$("messages").innerHTML = "";
@@ -1157,21 +1161,13 @@ function renderInboxCard(item, settled) {
 	if (item.kind === "gate" && item.status === "pending") {
 		actions.appendChild(
 			inboxAction("Approve", "ok", async () => {
-				await fetch(`${backendUrl}/api/gate`, {
-					method: "POST",
-					headers: authHeaders({ "content-type": "application/json" }),
-					body: JSON.stringify({ file: item.file, action: "approved" }),
-				});
+				await authorizedPost("/api/gate", { file: item.file, action: "approved" });
 				await finish();
 			}),
 		);
 		actions.appendChild(
 			inboxAction("Deny", "no", async () => {
-				await fetch(`${backendUrl}/api/gate`, {
-					method: "POST",
-					headers: authHeaders({ "content-type": "application/json" }),
-					body: JSON.stringify({ file: item.file, action: "denied" }),
-				});
+				await authorizedPost("/api/gate", { file: item.file, action: "denied" });
 				await finish();
 			}),
 		);
@@ -1182,10 +1178,9 @@ function renderInboxCard(item, settled) {
 		// acknowledgement next wake, same lane as a written response.
 		actions.appendChild(
 			inboxAction("Settle", "ok", async () => {
-				await fetch(`${backendUrl}/api/inbox/respond`, {
-					method: "POST",
-					headers: authHeaders({ "content-type": "application/json" }),
-					body: JSON.stringify({ file: item.file, response: "Acknowledged — settled from the inbox." }),
+				await authorizedPost("/api/inbox/respond", {
+					file: item.file,
+					response: "Acknowledged — settled from the inbox.",
 				});
 				await finish();
 			}),
@@ -1199,11 +1194,7 @@ function renderInboxCard(item, settled) {
 		reply.appendChild(
 			inboxAction("Send response", "ok", async () => {
 				if (!text.value.trim()) return;
-				await fetch(`${backendUrl}/api/inbox/respond`, {
-					method: "POST",
-					headers: authHeaders({ "content-type": "application/json" }),
-					body: JSON.stringify({ file: item.file, response: text.value }),
-				});
+				await authorizedPost("/api/inbox/respond", { file: item.file, response: text.value });
 				await finish();
 			}),
 		);
@@ -1900,16 +1891,12 @@ async function renderSettingsTab() {
 		save.className = "save";
 		save.textContent = "Save gates";
 		save.onclick = async () => {
-			const res = await fetch(`${backendUrl}/api/authority/config`, {
-				method: "POST",
-				headers: authHeaders({ "content-type": "application/json" }),
-				body: JSON.stringify({
-					classes: {
-						money: { mode: money.value, limitUsd: Number(limit.value) || 50 },
-						identity: { mode: identity.value },
-						irreversible: { mode: irreversible.value },
-					},
-				}),
+			const res = await authorizedPost("/api/authority/config", {
+				classes: {
+					money: { mode: money.value, limitUsd: Number(limit.value) || 50 },
+					identity: { mode: identity.value },
+					irreversible: { mode: irreversible.value },
+				},
 			});
 			const result = await res.json().catch(() => ({ ok: false }));
 			note.textContent = result.ok ? "saved — gates apply immediately" : `rejected: ${result.error ?? "error"}`;
@@ -1969,11 +1956,7 @@ async function renderSettingsTab() {
 		const note = document.createElement("div");
 		note.className = "sess-meta";
 		save.onclick = async () => {
-			const res = await fetch(`${backendUrl}/api/authority`, {
-				method: "POST",
-				headers: authHeaders({ "content-type": "application/json" }),
-				body: JSON.stringify({ content: editor.value }),
-			});
+			const res = await authorizedPost("/api/authority", { content: editor.value });
 			const result = await res.json().catch(() => ({ ok: false, error: "unexpected response" }));
 			note.textContent = result.ok ? "saved — gates apply immediately" : `rejected: ${result.error ?? "invalid TOML"}`;
 		};

@@ -19,6 +19,7 @@ import type {
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
+import { handleKernelBrokerResponse } from "../../core/kernel-broker.ts";
 import {
 	flushRawStdout,
 	takeOverStdout,
@@ -766,6 +767,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			await waitForRawStdoutBackpressure();
 			return;
 		}
+
+		if (handleKernelBrokerResponse(parsed)) return;
 
 		// Handle extension UI responses
 		if (

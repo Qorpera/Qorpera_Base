@@ -4,6 +4,7 @@
  * The spine, idempotency, gate activation on the scaffolded folder, and the
  * sessions-are-the-trail wiring (project sessionDir → ./trail).
  */
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,8 +12,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
 import {
 	createProductWorktree,
+	enforceCompanyKernelSettings,
 	KERNEL_PROMPT,
 	listProductDepartments,
+	readProductProtectionInventory,
 	scaffoldCompany,
 	scaffoldProductDepartment,
 } from "../src/core/company.ts";
@@ -70,6 +73,7 @@ describe("scaffoldCompany", () => {
 
 		expect(result.created.length).toBeGreaterThan(10);
 		expect(result.skipped.length).toBe(0);
+		expect(spawnSync("git", ["rev-parse", "--verify", "HEAD"], { cwd: root, stdio: "ignore" }).status).toBe(0);
 	});
 
 	it("is idempotent and never overwrites existing company files", () => {
@@ -115,7 +119,7 @@ describe("scaffoldCompany", () => {
 		expect(settings.sessionDir).toBe("./trail");
 		expect(settings.compaction).toEqual({ enabled: false });
 
-		// A pre-existing sessionDir is respected.
+		// The kernel always restores the company trail as the session store.
 		writeFileSync(
 			join(root, ".qorpera", "settings.json"),
 			JSON.stringify({ sessionDir: "/custom/elsewhere" }),
@@ -123,7 +127,7 @@ describe("scaffoldCompany", () => {
 		);
 		scaffoldCompany(root);
 		const after = JSON.parse(readFileSync(join(root, ".qorpera", "settings.json"), "utf-8"));
-		expect(after.sessionDir).toBe("/custom/elsewhere");
+		expect(after.sessionDir).toBe("./trail");
 	});
 
 	it("forces compaction off for existing companies", () => {
@@ -137,6 +141,12 @@ describe("scaffoldCompany", () => {
 		const settings = JSON.parse(readFileSync(join(root, ".qorpera", "settings.json"), "utf-8"));
 		expect(settings.compaction).toEqual({ enabled: false, keepRecentTokens: 1234 });
 	});
+
+	it("fails closed on malformed company settings", () => {
+		scaffoldCompany(root);
+		writeFileSync(join(root, ".qorpera", "settings.json"), "null\n", "utf-8");
+		expect(() => enforceCompanyKernelSettings(root)).toThrow("cannot be opened safely");
+	});
 });
 
 describe("forking hub verbs (no-launch paths)", () => {
@@ -146,7 +156,6 @@ describe("forking hub verbs (no-launch paths)", () => {
 		const product = join(root, "legacy-product");
 		mkdirSync(product, { recursive: true });
 		writeFileSync(join(product, "index.js"), "console.log('hi');\n", "utf-8");
-		const { spawnSync } = await import("node:child_process");
 		for (const cmd of [
 			["init"],
 			["add", "."],
@@ -183,14 +192,7 @@ describe("forking hub verbs (no-launch paths)", () => {
 		const { handleCompanyCommand } = await import("../src/core/company.ts");
 		const original = join(root, "original-co");
 		scaffoldCompany(original);
-		const { spawnSync } = await import("node:child_process");
-		expect(spawnSync("git", ["add", "."], { cwd: original, stdio: "ignore" }).status).toBe(0);
-		expect(
-			spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "genesis"], {
-				cwd: original,
-				stdio: "ignore",
-			}).status,
-		).toBe(0);
+		expect(spawnSync("git", ["rev-parse", "--verify", "HEAD"], { cwd: original, stdio: "ignore" }).status).toBe(0);
 
 		const forked = join(root, "forked-co");
 		const handled = await handleCompanyCommand(["fork", original, forked, "--no-launch"]);
@@ -257,12 +259,13 @@ describe("product-development departments", () => {
 	});
 
 	it("ignores arbitrary department folders without a product-development manifest", () => {
-		mkdirSync(root, { recursive: true });
+		scaffoldCompany(root);
 		mkdirSync(join(root, "departments", "sales"), { recursive: true });
 		expect(listProductDepartments(root)).toEqual([]);
 	});
 
 	it("does not issue worker authority for an unregistered product-shaped folder", () => {
+		scaffoldCompany(root);
 		mkdirSync(join(root, "departments", "forged-development", "repository", ".git"), { recursive: true });
 		writeFileSync(
 			join(root, "departments", "forged-development", "department.json"),
@@ -270,6 +273,37 @@ describe("product-development departments", () => {
 			"utf-8",
 		);
 		expect(listProductDepartments(root)).toEqual([]);
+	});
+
+	it("protects registered product paths without trusting the department manifest", () => {
+		scaffoldCompany(root);
+		const department = scaffoldProductDepartment(root, "Widget");
+		writeFileSync(join(root, department.path, "department.json"), "{}\n", "utf-8");
+		expect(readProductProtectionInventory(root)).toEqual([
+			{
+				id: "widget-development",
+				repositoryPath: join("departments", "widget-development", "repository"),
+				worktreesPath: join("departments", "widget-development", "worktrees"),
+			},
+		]);
+		writeFileSync(join(root, ".qorpera", "products.json"), "{}\n", "utf-8");
+		expect(() => readProductProtectionInventory(root)).toThrow("inventory is invalid");
+	});
+
+	it("uses Git-ref-safe product slugs and removes clones when branch creation fails", () => {
+		scaffoldCompany(root);
+		const department = scaffoldProductDepartment(root, "Foo..Bar");
+		expect(department.id).toBe("foo-bar-development");
+		spawnSync("git", ["init"], { cwd: join(root, department.repositoryPath), stdio: "ignore" });
+		writeFileSync(join(root, department.repositoryPath, "README.md"), "seed\n", "utf-8");
+		spawnSync("git", ["add", "README.md"], { cwd: join(root, department.repositoryPath), stdio: "ignore" });
+		spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"], {
+			cwd: join(root, department.repositoryPath),
+			stdio: "ignore",
+		});
+		const failed = createProductWorktree(root, { ...department, id: "bad..ref", repositoryExists: true });
+		expect(failed).toBeUndefined();
+		expect(readdirSync(join(root, department.worktreesPath))).toEqual([".gitkeep"]);
 	});
 
 	it("does not partially convert an existing agent-authored department", () => {
