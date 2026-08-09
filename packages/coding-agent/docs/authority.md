@@ -50,43 +50,30 @@ file fails **closed** — every class gates.
   `gc --prune`) — the company's history is append-only from the agent's
   side (EVOLUTION.md §4 invariant 1).
 - **money / identity**: no built-in detections yet — assign via `[tools]`.
-- **products**: `[products] paths = ["work/my-product"]` declares software
-  products the controller may READ and study freely but not MODIFY from an
-  agentic session without approval (founder sessions are trusted — next
-  section). Precise for path-arg tools (`write`/`edit`/`apply_patch` — and
-  engine-mode patch approvals, which evaluate as `apply_patch` per file);
-  heuristic for `bash` (mutation-looking commands that mention a product
-  path or its basename gate; pure study commands pass). Zone checks rank
-  ABOVE `[tools]` opt-outs — `bash = "none"` cannot open a product zone or
-  the kernel files.
+- **product_code**: mutations under
+  `departments/<product>-development/repository/` or a task directory under
+  `worktrees/`. This is a fixed role boundary, not an `authority.toml`
+  class. Controllers are read-only even when attended, and their denied
+  mutations create no approvable gate. Product-workers can mutate only the
+  exact worktree assigned by the kernel. Path-argument tools are precise;
+  `bash` uses conservative mutation and worktree-escape screens. Boundary
+  checks rank above `[tools]` opt-outs.
 
-## Founder sessions vs agentic sessions (the [products] axis)
+## Controller and product-worker roles
 
-The `[products]` zone exists to stop the controller's AUTONOMOUS work from
-drifting into the software products. That is the whole distinction (founder
-decision, 2026-08-06):
+Attendance expresses founder intent for ordinary outward effects; it never
+changes organizational role. A product department Chat creates a Git
+worktree, starts the runtime with actor `product-worker`, and records the
+department and worktree in the session name. The authority hook receives the
+same actor/worktree capability in pi-native and Codex engine modes.
 
-- **Founder sessions** — a human present in an approval-capable UI (the
-  shell's chat, the TUI, a terminal engine run) — are trusted in product
-  zones: the founder's direction is the authority, so products-class
-  effects allow and are stamped into the trail with `attended: true`.
-  Presence never covers destruction: a destructive command inside a zone
-  re-classifies as `[irreversible]`, and `[authority]` territory (kernel
-  files, `authority.toml`, `inbox/`) stays gated in every session.
-- **Agentic sessions** — kernel-spawned autonomous work (conception,
-  merges, wakes; marked `QORPERA_AUTONOMOUS` at spawn) and headless runs
-  (print/json/SDK) — keep the full gate: any product modification files a
-  request for the founder.
-
-The zones themselves are declared in `authority.toml` `[products] paths` —
-NOT a founder-facing settings surface. The controller cannot edit the file
-(always-gated `[authority]`), so when product zones should change it files
-a gate request; the founder can also use the Advanced raw editor.
-
-The shell's scope selector is a context device, not a permission device:
-picking a product roots the session inside that product's directory and
-names the session `scope — <path>` for the trail, while the permission
-comes from founder presence alone.
+- **controller** — reads product repositories, worktrees, PR records, and
+  trails; writes briefs and company operations; cannot modify product code.
+- **product-worker** — modifies only its assigned worktree, including normal
+  commits, pushes, and PR creation. Attempts to escape the worktree block
+  without an approval path.
+- Destructive commands and PR merge/close operations re-classify as
+  `[irreversible]`; ordinary irreversible policy still applies.
 
 ## Gate lifecycle
 
@@ -150,7 +137,7 @@ tool; synthetic `<builtin:…>`/`<sdk:…>` paths and code outside the authority
 root are ignored — only company-authored code is subject).
 
 - Applies to the **outward** classes only (money, identity, irreversible);
-  [authority] and [products] keep their own semantics.
+  [authority] and product_code keep their own semantics.
 - Checked before — and regardless of — class modes: `auto` trust in a class
   covers the model acting under founder direction, not agent-authored code
   acting with nobody present.

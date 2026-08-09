@@ -476,7 +476,9 @@ export class AgentSession {
 			// unloaded the way an extension handler can (SEAMS.md c.2), and
 			// they bind agent-registered tools exactly like built-ins.
 			if (this._authority) {
-				// Signature-rule context (EVOLUTION.md §3/§9.1): attended =
+				// Authority context: attended identifies founder intent for outward
+				// effects; actor + productWorktree carry the kernel-assigned product
+				// capability. Signature-rule context (EVOLUTION.md §3/§9.1): attended =
 				// approval-capable UI is in front of a human (tui/rpc) and the
 				// session is not kernel-spawned autonomous work (the shell
 				// tags those with QORPERA_AUTONOMOUS — they run in rpc mode
@@ -487,6 +489,8 @@ export class AgentSession {
 				const decision = evaluateToolCall(this._authority, toolCall.name, args, this._cwd, {
 					attended:
 						(this._extensionMode === "tui" || this._extensionMode === "rpc") && !process.env.QORPERA_AUTONOMOUS,
+					actor: process.env.QORPERA_ACTOR === "product-worker" ? "product-worker" : "controller",
+					productWorktree: process.env.QORPERA_PRODUCT_WORKTREE,
 					behaviorPath: this._toolDefinitions.get(toolCall.name)?.sourceInfo.path,
 				});
 				// Stamp classified effects into the trail: effect class,
@@ -500,6 +504,7 @@ export class AgentSession {
 						decision: decision.kind,
 						gateId: decision.kind === "block" ? decision.gateId : undefined,
 						attended: decision.kind === "allow" && decision.attended ? true : undefined,
+						actor: decision.kind === "allow" ? decision.actor : undefined,
 						behavior: decision.behavior,
 					});
 				}

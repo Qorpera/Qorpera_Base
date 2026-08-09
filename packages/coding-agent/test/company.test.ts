@@ -9,7 +9,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
-import { KERNEL_PROMPT, listProductScopes, scaffoldCompany } from "../src/core/company.ts";
+import {
+	createProductWorktree,
+	KERNEL_PROMPT,
+	listProductDepartments,
+	scaffoldCompany,
+	scaffoldProductDepartment,
+} from "../src/core/company.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
@@ -42,7 +48,7 @@ describe("scaffoldCompany", () => {
 			join("app", "substrates"),
 			join("app", "routines"),
 			join("app", "tools"),
-			"work",
+			"departments",
 		]) {
 			expect(existsSync(join(root, entry)), entry).toBe(true);
 		}
@@ -54,6 +60,8 @@ describe("scaffoldCompany", () => {
 
 		const manifest = JSON.parse(readFileSync(join(root, "app", "manifest.json"), "utf-8"));
 		expect(manifest).toEqual({ version: 1, surfaces: [], routines: [] });
+		const settings = JSON.parse(readFileSync(join(root, ".qorpera", "settings.json"), "utf-8"));
+		expect(settings.compaction).toEqual({ enabled: false });
 
 		expect(result.created.length).toBeGreaterThan(10);
 		expect(result.skipped.length).toBe(0);
@@ -100,6 +108,7 @@ describe("scaffoldCompany", () => {
 		const settings = JSON.parse(readFileSync(join(root, ".qorpera", "settings.json"), "utf-8"));
 		expect(settings.theme).toBe("dark");
 		expect(settings.sessionDir).toBe("./trail");
+		expect(settings.compaction).toEqual({ enabled: false });
 
 		// A pre-existing sessionDir is respected.
 		writeFileSync(
@@ -114,7 +123,7 @@ describe("scaffoldCompany", () => {
 });
 
 describe("forking hub verbs (no-launch paths)", () => {
-	it("qorpera new --from clones an existing repo into work/", async () => {
+	it("qorpera new --from creates a product department with a controlling clone", async () => {
 		const { handleCompanyCommand } = await import("../src/core/company.ts");
 		// A tiny local git repo to integrate.
 		const product = join(root, "legacy-product");
@@ -133,7 +142,17 @@ describe("forking hub verbs (no-launch paths)", () => {
 		const handled = await handleCompanyCommand(["new", company, "--from", product, "--no-launch"]);
 		expect(handled).toBe(true);
 		expect(existsSync(join(company, "authority.toml"))).toBe(true);
-		expect(existsSync(join(company, "work", "legacy-product", "index.js"))).toBe(true);
+		expect(existsSync(join(company, "departments", "legacy-product-development", "repository", "index.js"))).toBe(
+			true,
+		);
+		expect(existsSync(join(company, "departments", "legacy-product-development", "worktrees"))).toBe(true);
+		expect(existsSync(join(company, "departments", "legacy-product-development", "pull-requests", "README.md"))).toBe(
+			true,
+		);
+		const department = listProductDepartments(company)[0];
+		const worktree = createProductWorktree(company, department);
+		expect(worktree?.branch).toMatch(/^qorpera\/legacy-product-development\//);
+		expect(existsSync(join(company, worktree!.path, ".git"))).toBe(true);
 	});
 
 	it("qorpera fork clones a whole company folder", async () => {
@@ -158,27 +177,21 @@ describe("forking hub verbs (no-launch paths)", () => {
 	});
 });
 
-describe("listProductScopes", () => {
-	it("returns the declared zones with names and existence, straight from authority.toml", () => {
+describe("product-development departments", () => {
+	it("materializes and discovers the standard department kit", () => {
 		scaffoldCompany(root);
-		mkdirSync(join(root, "work", "my-product"), { recursive: true });
-		writeFileSync(
-			join(root, "authority.toml"),
-			`[products]\nmode = "gate"\npaths = ["work/my-product", "work/ghost-product"]\n`,
-			"utf-8",
-		);
-		const scopes = listProductScopes(root);
-		expect(scopes).toEqual([
-			{ path: "work/my-product", name: "my-product", exists: true },
-			{ path: "work/ghost-product", name: "ghost-product", exists: false },
-		]);
+		const department = scaffoldProductDepartment(root, "My Product");
+		expect(department.id).toBe("My-Product-development");
+		expect(department.repositoryExists).toBe(false);
+		expect(existsSync(join(root, department.path, "department.json"))).toBe(true);
+		expect(existsSync(join(root, department.worktreesPath))).toBe(true);
+		expect(listProductDepartments(root)).toEqual([department]);
 	});
 
-	it("returns nothing without an authority file or [products] section", () => {
+	it("ignores arbitrary department folders without a product-development manifest", () => {
 		mkdirSync(root, { recursive: true });
-		expect(listProductScopes(root)).toEqual([]);
-		writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "auto"\n`, "utf-8");
-		expect(listProductScopes(root)).toEqual([]);
+		mkdirSync(join(root, "departments", "sales"), { recursive: true });
+		expect(listProductDepartments(root)).toEqual([]);
 	});
 });
 

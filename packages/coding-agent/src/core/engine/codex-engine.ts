@@ -53,11 +53,12 @@ export interface CodexEngineOptions {
 	sessionManager: SessionManager;
 	authority?: Authority;
 	/**
-	 * Founder session vs agentic work: attended engine runs relax the
-	 * [products] zone exactly like attended pi-native sessions (the founder's
-	 * direction is the authority); unattended runs keep every gate.
+	 * Founder session vs agentic work: attendance supplies intent for outward
+	 * effects but never changes product-code roles.
 	 */
 	attended?: boolean;
+	actor?: "controller" | "product-worker";
+	productWorktree?: string;
 	binary?: CodexBinary;
 	model?: string;
 	/** Optional developer-tier reinforcement (append; never replaces base). */
@@ -354,6 +355,8 @@ export class CodexEngineSession {
 		}
 		const decision = evaluateToolCall(authority, "bash", { command }, cwd, {
 			attended: Boolean(this.options.attended),
+			actor: this.options.actor,
+			productWorktree: this.options.productWorktree,
 		});
 		if (decision.kind === "allow") {
 			onEvent?.({ type: "gate", decision: "accept", command });
@@ -376,6 +379,8 @@ export class CodexEngineSession {
 		for (const path of paths.length > 0 ? paths : [""]) {
 			const decision = evaluateToolCall(authority, "apply_patch", path ? { path } : {}, cwd, {
 				attended: Boolean(this.options.attended),
+				actor: this.options.actor,
+				productWorktree: this.options.productWorktree,
 			});
 			if (decision.kind === "block") {
 				sessionManager.appendCustomEntry("qorpera_gate", {

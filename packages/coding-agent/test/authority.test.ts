@@ -164,179 +164,110 @@ describe("classification and evaluation", () => {
 	});
 });
 
-describe("products zone", () => {
-	it("gates modification of product paths but leaves reading and study free", () => {
-		writeAuthorityToml(`[products]\nmode = "gate"\npaths = ["work/my-product"]\n\n[irreversible]\nmode = "auto"\n`);
-		const authority = discoverAuthority(root)!;
-		const productFile = join(root, "work", "my-product", "src", "main.ts");
+describe("product-development role boundary", () => {
+	let repository: string;
+	let worktree: string;
+	let otherWorktree: string;
+	let worker: { attended: boolean; actor: "product-worker"; productWorktree: string };
 
-		// Mutating tools gate as products.
-		const write = evaluateToolCall(authority, "write", { path: productFile, content: "x" }, root);
-		expect(write.kind).toBe("block");
-		expect((write as { effectClass: string }).effectClass).toBe("products");
-		expect(evaluateToolCall(authority, "edit", { path: productFile }, root).kind).toBe("block");
-		expect(evaluateToolCall(authority, "apply_patch", { path: productFile }, root).kind).toBe("block");
-
-		// Reading is free — study is the whole point.
-		expect(evaluateToolCall(authority, "read", { path: productFile }, root).kind).toBe("allow");
-		expect(evaluateToolCall(authority, "grep", { path: join(root, "work", "my-product") }, root).kind).toBe("allow");
-
-		// Bash: study allowed, mutation gated (path or basename mention).
-		expect(evaluateToolCall(authority, "bash", { command: "grep -r foo work/my-product" }, root).kind).toBe("allow");
-		expect(
-			evaluateToolCall(authority, "bash", { command: "sed -i s/a/b/ work/my-product/src/main.ts" }, root).kind,
-		).toBe("block");
-		expect(evaluateToolCall(authority, "bash", { command: "cd work/my-product && git commit -m x" }, root).kind).toBe(
-			"block",
-		);
+	beforeEach(() => {
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
+		repository = join(root, "departments", "widget-development", "repository");
+		worktree = join(root, "departments", "widget-development", "worktrees", "task-a");
+		otherWorktree = join(root, "departments", "widget-development", "worktrees", "task-b");
+		mkdirSync(join(repository, "src"), { recursive: true });
+		mkdirSync(join(worktree, "src"), { recursive: true });
+		mkdirSync(otherWorktree, { recursive: true });
+		worker = {
+			attended: true,
+			actor: "product-worker",
+			productWorktree: join("departments", "widget-development", "worktrees", "task-a"),
+		};
 	});
 
-	it("does not gate study commands with harmless redirects (live conception regressions)", () => {
-		writeAuthorityToml(`[products]\nmode = "gate"\npaths = ["work/my-product"]\n`);
+	it("keeps controllers read-only even when attended and creates no approvable gate", () => {
 		const authority = discoverAuthority(root)!;
-		// The exact shapes that false-positived in the 2026-08-04 conception:
-		for (const command of [
-			`ls -la "work/my-product" && cat company.md 2>/dev/null; ls app inbox 2>/dev/null`,
-			`cd "work/my-product" && ls docs 2>/dev/null | head -50; git log --oneline -10 2>/dev/null | head`,
-			`cat authority.toml 2>/dev/null; ls trail 2>/dev/null`,
-			`git -C work/my-product status 2>&1`,
-		]) {
-			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("allow");
-		}
-		// Real writes still gate — including through a null-redirect decoy.
-		expect(evaluateToolCall(authority, "bash", { command: `echo x > authority.toml 2>/dev/null` }, root).kind).toBe(
-			"block",
-		);
-		expect(
-			evaluateToolCall(authority, "bash", { command: `cd work/my-product && git commit -m x 2>/dev/null` }, root)
-				.kind,
-		).toBe("block");
-	});
-
-	it("does not gate inbox READS via bash — writes there still gate (live remodel regressions)", () => {
-		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
-		const authority = discoverAuthority(root)!;
-		// The exact shapes that false-positived in the 2026-08-04 remodels:
-		for (const command of [
-			`cd C:/Companies/penthouse-poker; wc -l userland/index.html userland/renderer.js; cat inbox/README.md; ls inbox`,
-			`cd C:/Companies/penthouse-poker; wc -l userland/index.html userland/renderer.js; head -50 inbox/README.md; cat authority.toml`,
-			`cd C:/Companies/penthouse-poker; cat inbox/README.md`,
-			`cat inbox/gate-36f00442.md`,
-			`grep -l pending inbox/gate-abc.md`,
-		]) {
-			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("allow");
-		}
-		// Any write-ish touch of inbox/ stays gated — self-approval and
-		// message-authoring alike (bash has no msg-*.md carve-out).
-		for (const command of [
-			`sed -i "s/pending/approved/" inbox/gate-abc.md`,
-			`echo done >> inbox/msg-update.md`,
-			`cp /tmp/gate.md inbox/gate-abc.md`,
-			`rm inbox/gate-abc.md`,
-			`cat inbox/gate-abc.md && touch inbox/gate-abc.md`,
-		]) {
-			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("block");
-		}
-	});
-
-	it("zone checks rank above [tools] opt-outs", () => {
-		writeAuthorityToml(
-			`[products]\nmode = "gate"\npaths = ["work/my-product"]\n\n[tools]\nbash = "none"\nwrite = "none"\n`,
-		);
-		const authority = discoverAuthority(root)!;
-		expect(
-			evaluateToolCall(authority, "write", { path: join(root, "work", "my-product", "a.ts"), content: "x" }, root)
-				.kind,
-		).toBe("block");
-		expect(evaluateToolCall(authority, "bash", { command: "rm -rf work/my-product/dist" }, root).kind).toBe("block");
-		// The opt-out still works outside the zone.
-		expect(evaluateToolCall(authority, "bash", { command: "rm -rf scratch" }, root).kind).toBe("allow");
-	});
-
-	it("notify mode on products proceeds with a notice", () => {
-		writeAuthorityToml(`[products]\nmode = "notify"\npaths = ["work/my-product"]\n`);
-		const authority = discoverAuthority(root)!;
-		const decision = evaluateToolCall(
-			authority,
-			"write",
-			{ path: join(root, "work", "my-product", "a.ts"), content: "x" },
-			root,
-		);
-		expect(decision.kind).toBe("allow");
-		expect(readFileSync(join(root, "inbox", "notices.md"), "utf-8")).toContain("[products]");
-	});
-});
-
-describe("founder sessions vs agentic sessions ([products] axis)", () => {
-	const TWO_PRODUCTS = `[products]
-mode = "gate"
-paths = ["work/my-product", "work/other-product"]
-`;
-	const ATTENDED = { attended: true };
-
-	it("allows product modification in an attended (founder) session, stamped attended", () => {
-		writeAuthorityToml(TWO_PRODUCTS);
-		const authority = discoverAuthority(root)!;
-		const decision = evaluateToolCall(
-			authority,
-			"write",
-			{ path: join(root, "work", "my-product", "src", "main.ts"), content: "x" },
-			root,
-			ATTENDED,
-		);
-		expect(decision.kind).toBe("allow");
-		expect((decision as { attended?: true }).attended).toBe(true);
-		expect((decision as { effectClass?: string }).effectClass).toBe("products");
-		// Any declared product, not just one: founder presence trusts the session.
-		expect(
-			evaluateToolCall(authority, "edit", { path: join(root, "work", "other-product", "a.ts") }, root, ATTENDED)
-				.kind,
-		).toBe("allow");
-		expect(
-			evaluateToolCall(authority, "bash", { command: "sed -i s/a/b/ work/my-product/src/main.ts" }, root, ATTENDED)
-				.kind,
-		).toBe("allow");
-	});
-
-	it("keeps the gate for agentic sessions (unattended context)", () => {
-		writeAuthorityToml(TWO_PRODUCTS);
-		const authority = discoverAuthority(root)!;
-		for (const context of [undefined, { attended: false }]) {
+		for (const context of [undefined, { attended: false }, { attended: true, actor: "controller" as const }]) {
 			const decision = evaluateToolCall(
 				authority,
 				"write",
-				{ path: join(root, "work", "my-product", "a.ts"), content: "x" },
+				{ path: join(repository, "src", "main.ts"), content: "x" },
 				root,
 				context,
 			);
 			expect(decision.kind).toBe("block");
-			expect((decision as { effectClass: string }).effectClass).toBe("products");
+			expect((decision as { effectClass: string }).effectClass).toBe("product_code");
+			expect((decision as { gateId?: string }).gateId).toBeUndefined();
 		}
+		expect(existsSync(join(root, "inbox"))).toBe(false);
 	});
 
-	it("founder presence never opens [authority] territory", () => {
-		writeAuthorityToml(TWO_PRODUCTS);
+	it("allows controllers to study repositories and worktrees", () => {
 		const authority = discoverAuthority(root)!;
-		expect(
-			evaluateToolCall(authority, "write", { path: join(root, "AGENTS.md"), content: "x" }, root, ATTENDED).kind,
-		).toBe("block");
-		expect(
-			evaluateToolCall(
-				authority,
-				"write",
-				{ path: join(root, "inbox", "gate-abc.md"), content: "x" },
-				root,
-				ATTENDED,
-			).kind,
-		).toBe("block");
+		expect(evaluateToolCall(authority, "read", { path: join(repository, "src", "main.ts") }, root).kind).toBe(
+			"allow",
+		);
+		expect(evaluateToolCall(authority, "bash", { command: "git status" }, repository).kind).toBe("allow");
 	});
 
-	it("re-classifies destructive in-zone commands as irreversible even when attended", () => {
-		writeAuthorityToml(TWO_PRODUCTS);
+	it("allows a product-worker to modify only its assigned worktree", () => {
 		const authority = discoverAuthority(root)!;
-		const decision = evaluateToolCall(authority, "bash", { command: "rm -rf work/my-product/dist" }, root, ATTENDED);
-		expect(decision.kind).toBe("block");
-		expect((decision as { effectClass: string }).effectClass).toBe("irreversible");
+		const own = evaluateToolCall(
+			authority,
+			"write",
+			{ path: join(worktree, "src", "main.ts"), content: "x" },
+			worktree,
+			worker,
+		);
+		expect(own.kind).toBe("allow");
+		expect((own as { actor?: string }).actor).toBe("product-worker");
+		expect(evaluateToolCall(authority, "bash", { command: "git push origin HEAD" }, worktree, worker).kind).toBe(
+			"allow",
+		);
+		for (const path of [
+			join(repository, "src", "main.ts"),
+			join(otherWorktree, "main.ts"),
+			join(root, "app", "x.ts"),
+		]) {
+			expect(evaluateToolCall(authority, "write", { path, content: "x" }, worktree, worker).kind).toBe("block");
+		}
+		expect(evaluateToolCall(authority, "bash", { command: "cd .. && touch escaped" }, worktree, worker).kind).toBe(
+			"block",
+		);
+	});
+
+	it("allows pull-request creation but gates destructive product integration", () => {
+		const authority = discoverAuthority(root)!;
+		expect(evaluateToolCall(authority, "bash", { command: "gh pr create --fill" }, worktree, worker).kind).toBe(
+			"allow",
+		);
+		const merge = evaluateToolCall(authority, "bash", { command: "gh pr merge 42 --squash" }, worktree, worker);
+		expect(merge.kind).toBe("block");
+		expect((merge as { effectClass: string }).effectClass).toBe("irreversible");
+	});
+
+	it("gates destructive worktree commands and ignores tool opt-outs at the role boundary", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[tools]\nbash = "none"\nwrite = "none"\n`);
+		const authority = discoverAuthority(root)!;
+		const destructive = evaluateToolCall(authority, "bash", { command: "rm -rf dist" }, worktree, worker);
+		expect(destructive.kind).toBe("block");
+		expect((destructive as { effectClass: string }).effectClass).toBe("irreversible");
+		expect(evaluateToolCall(authority, "write", { path: join(repository, "main.ts"), content: "x" }, root).kind).toBe(
+			"block",
+		);
+	});
+});
+
+describe("protected-path bash reads", () => {
+	it("allows inbox reads but gates writes", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		for (const command of ["cat inbox/gate-abc.md", "grep -l pending inbox/gate-abc.md", "cat authority.toml"]) {
+			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("allow");
+		}
+		for (const command of ["echo done >> inbox/msg-update.md", "rm inbox/gate-abc.md"]) {
+			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("block");
+		}
 	});
 });
 
@@ -429,7 +360,7 @@ describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", 
 	});
 
 	it("does not gate on protected-path or destructive MENTIONS inside commit messages (live conception regression)", () => {
-		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[products]\nmode = "gate"\npaths = ["work/my-product"]\n`);
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
 		const authority = discoverAuthority(root)!;
 		// The exact shape that gated every routine commit during conception:
 		// trailers legitimately reference inbox items.
@@ -444,7 +375,7 @@ describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", 
 	});
 
 	it("message stripping never hides real effects", () => {
-		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[products]\nmode = "gate"\npaths = ["work/my-product"]\n`);
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
 		const authority = discoverAuthority(root)!;
 		for (const command of [
 			// Worktree-writing verbs still screen on their inbox mentions.
@@ -452,7 +383,7 @@ describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", 
 			// Execution constructs inside a message stay visible to the screens.
 			`git commit -m "msg $(echo hacked >> inbox/gate-abc.md) Qorpera-Trigger: t Qorpera-Rationale: r"`,
 			// Commands inside a product zone still gate regardless of message.
-			`cd work/my-product && git commit -m "tidy Qorpera-Trigger: t Qorpera-Rationale: r"`,
+			`cd departments/widget-development/repository && git commit -m "tidy Qorpera-Trigger: t Qorpera-Rationale: r"`,
 			// Destructive operations outside the message still gate.
 			`git commit -m "wip Qorpera-Trigger: t Qorpera-Rationale: r" && git push --force origin master`,
 		]) {
@@ -461,7 +392,7 @@ describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", 
 	});
 
 	it("does not gate staging/committing inbox, kernel, or product records (live close-out regression)", () => {
-		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[products]\nmode = "gate"\npaths = ["work/my-product"]\n`);
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
 		const authority = discoverAuthority(root)!;
 		const TRAILERS = "Qorpera-Trigger: t Qorpera-Rationale: r";
 		// The exact shapes that gated during the penthouse close-out:
@@ -565,18 +496,25 @@ describe("the signature rule (behavior signatures, EVOLUTION.md §3)", () => {
 	});
 
 	it("inward classes do not require signatures", () => {
-		writeAuthorityToml(`[products]\nmode = "notify"\npaths = ["work/my-product"]\n`);
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
 		const authority = discoverAuthority(root)!;
-		const context = { attended: false, behaviorPath: writeBehaviorFile() };
+		const worktree = join(root, "departments", "widget-development", "worktrees", "task-a");
+		mkdirSync(worktree, { recursive: true });
+		const context = {
+			attended: false,
+			actor: "product-worker" as const,
+			productWorktree: join("departments", "widget-development", "worktrees", "task-a"),
+			behaviorPath: writeBehaviorFile(),
+		};
 		const decision = evaluateToolCall(
 			authority,
 			"write",
-			{ path: join(root, "work", "my-product", "a.ts"), content: "x" },
-			root,
+			{ path: join(worktree, "a.ts"), content: "x" },
+			worktree,
 			context,
 		);
 		expect(decision.kind).toBe("allow");
-		expect(readdirSync(join(root, "inbox")).every((name) => !name.startsWith("gate-"))).toBe(true);
+		expect(existsSync(join(root, "inbox"))).toBe(false);
 	});
 
 	it("code outside the company root is not subject to signatures", () => {

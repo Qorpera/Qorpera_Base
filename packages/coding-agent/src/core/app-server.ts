@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
-import { listProductScopes } from "./company.ts";
+import { listProductDepartments } from "./company.ts";
 
 export interface CompanyAppOptions {
 	root: string;
@@ -179,6 +179,10 @@ interface SessionSummary {
 	kind: "chat" | "autonomous";
 	/** Product scope the session was opened under (root-relative), if any. */
 	scope?: string;
+	/** Product-development department assigned to this chat. */
+	department?: string;
+	/** Exact product worktree assigned to this chat. */
+	worktree?: string;
 	/** Surface a sidechat session is docked to (app/surfaces entry), if any. */
 	surface?: string;
 }
@@ -222,9 +226,10 @@ function listTrailSessions(root: string): SessionSummary[] {
 				}
 			}
 			const kind = name.toLowerCase().startsWith("autonomous") ? "autonomous" : "chat";
-			// Scoped chats carry their scope in the session name (set at spawn:
-			// `scope — <root-relative path>`) — the chrome restores it on open.
+			// Legacy scoped chats retain their scope. Product chats name both the
+			// department and exact worktree so the role capability can be restored.
 			const scope = kind === "chat" ? name.match(/^scope — (.+)$/)?.[1] : undefined;
+			const product = kind === "chat" ? name.match(/^product — (.+?) — (.+)$/) : undefined;
 			// Sidechats carry the surface they were docked to (`surface — <entry>`,
 			// set by the chrome via set_session_name before the first prompt) so
 			// surface-anchored conversations stay attributable in the trail.
@@ -235,6 +240,8 @@ function listTrailSessions(root: string): SessionSummary[] {
 				title: kind === "autonomous" ? name : title || file.slice(0, 30),
 				kind,
 				scope,
+				department: product?.[1],
+				worktree: product?.[2],
 				surface,
 			});
 		} catch {
@@ -242,6 +249,48 @@ function listTrailSessions(root: string): SessionSummary[] {
 		}
 	}
 	return sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+interface PullRequestSummary {
+	file: string;
+	title: string;
+	status: string;
+	number?: number;
+	url?: string;
+	branch?: string;
+	updatedAt?: string;
+}
+
+function listPullRequestRecords(root: string, readModelPath: string): PullRequestSummary[] {
+	const dir = join(root, readModelPath);
+	try {
+		return readdirSync(dir)
+			.filter((file) => file.endsWith(".json"))
+			.flatMap((file) => {
+				try {
+					if (statSync(join(dir, file)).size > 256 * 1024) return [];
+					const record = JSON.parse(readFileSync(join(dir, file), "utf-8")) as Record<string, unknown>;
+					if (typeof record.title !== "string") return [];
+					const url = typeof record.url === "string" && /^https?:\/\//i.test(record.url) ? record.url : undefined;
+					return [
+						{
+							file,
+							title: record.title.slice(0, 300),
+							status: typeof record.status === "string" ? record.status.slice(0, 40) : "unknown",
+							number: typeof record.number === "number" ? record.number : undefined,
+							url,
+							branch: typeof record.branch === "string" ? record.branch.slice(0, 300) : undefined,
+							updatedAt: typeof record.updatedAt === "string" ? record.updatedAt.slice(0, 80) : undefined,
+						},
+					];
+				} catch {
+					return [];
+				}
+			})
+			.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+	} catch {
+		return [];
+	}
 }
 
 const INBOX_FILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._ -]*\.md$/;
@@ -274,14 +323,15 @@ function stateFor(root: string): unknown {
 	} catch {
 		// no trail yet
 	}
-	// Scopes for the chrome's scope selector: the declared product zones.
-	// Derived fresh from authority.toml each poll so a gate edit shows up
-	// without a reopen.
-	let scopes: Array<{ path: string; name: string; exists: boolean }> = [];
+	let departments: Array<ReturnType<typeof listProductDepartments>[number] & { pullRequests: PullRequestSummary[] }> =
+		[];
 	try {
-		scopes = listProductScopes(root);
+		departments = listProductDepartments(root).map((department) => ({
+			...department,
+			pullRequests: listPullRequestRecords(root, department.pullRequestsPath),
+		}));
 	} catch {
-		// a malformed authority file must not take company state down
+		// a malformed department record must not take company state down
 	}
 	return {
 		name: companyName(root),
@@ -289,7 +339,7 @@ function stateFor(root: string): unknown {
 		inbox: readInbox(root),
 		sessions: listTrailSessions(root),
 		trailSessions,
-		scopes,
+		departments,
 	};
 }
 
@@ -671,9 +721,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 						money: config.classes.money,
 						identity: config.classes.identity,
 						irreversible: config.classes.irreversible,
-						products: config.classes.products,
 					},
-					productPaths: config.productPaths,
 				}),
 			);
 			return;
@@ -691,7 +739,6 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 				try {
 					const update = JSON.parse(body) as {
 						classes?: Record<string, { mode?: string; limitUsd?: number }>;
-						productPaths?: string[];
 					};
 					// Surgical merge into the existing file so [tools] and any
 					// custom sections survive; comments do not (Advanced tab
@@ -704,18 +751,13 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 						existing = {};
 					}
 					const modes = new Set(["auto", "notify", "gate"]);
-					for (const name of ["money", "identity", "irreversible", "products"]) {
+					for (const name of ["money", "identity", "irreversible"]) {
 						const incoming = update.classes?.[name];
 						if (!incoming) continue;
 						const section = { ...((existing[name] as Record<string, unknown>) ?? {}) };
 						if (incoming.mode && modes.has(incoming.mode)) section.mode = incoming.mode;
 						if (name === "money" && typeof incoming.limitUsd === "number") section.limit_usd = incoming.limitUsd;
 						existing[name] = section;
-					}
-					if (Array.isArray(update.productPaths)) {
-						const products = { ...((existing.products as Record<string, unknown>) ?? {}) };
-						products.paths = update.productPaths.filter((p): p is string => typeof p === "string" && !!p.trim());
-						existing.products = products;
 					}
 					existing.authority = { ...((existing.authority as Record<string, unknown>) ?? {}), mode: "gate" };
 					writeFileSync(path, `${stringifyToml(existing)}\n`, "utf-8");

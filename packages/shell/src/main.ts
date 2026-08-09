@@ -17,16 +17,18 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
-import { extname, join, resolve } from "node:path";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 // Deep imports from the coding agent (the foundation's own machinery).
 import { companyPort, createCompanyAppServer } from "@qorpera/pi-coding-agent/app-server";
 import {
 	conceptionKickoff,
+	createProductWorktree,
 	integrateRepo,
 	listCompanies,
-	listProductScopes,
+	listProductDepartments,
+	type ProductDepartment,
 	registerCompany,
 	scaffoldCompany,
 } from "@qorpera/pi-coding-agent/company";
@@ -205,35 +207,41 @@ async function closeCompany(slot: Slot): Promise<void> {
  * Autonomous work is tagged with a session name so the trail (and the
  * Activity view) can tell controller-initiated sessions from chats.
  *
- * A product scope is a context device: it roots the child INSIDE the product
- * (permission comes from founder presence — authority.md, founder vs agentic
- * sessions). The session file still lands in the company trail (explicit
- * --session-dir: a product dir has no project settings pointing there), and
- * a fresh scoped session is named `scope — <path>` so the chat list can
- * restore its scope on open. */
+ * Product work is a role capability: product Chat roots a product-worker in
+ * one assigned worktree. The controller never receives that capability.
+ * Sessions still land in the company trail and name both department and
+ * worktree so they can be restored without losing provenance. */
 interface ChildOptions {
 	sessionFile?: string;
 	autonomousName?: string;
-	scope?: string;
+	department?: ProductDepartment;
+	worktree?: string;
 }
 
 function startChild(slot: Slot, root: string, options: ChildOptions = {}): ChildProcessWithoutNullStreams {
-	const { sessionFile, autonomousName, scope } = options;
+	const { sessionFile, autonomousName, department, worktree } = options;
 	const win = slot.window;
 	const args = [RPC_ENTRY, "--mode", "rpc"];
 	if (sessionFile) args.push("--session", join(root, "trail", sessionFile));
 	if (autonomousName) args.push("--name", `autonomous — ${autonomousName}`);
-	if (scope) {
+	if (department && worktree) {
 		args.push("--session-dir", join(root, "trail"));
-		if (!sessionFile) args.push("--name", `scope — ${scope}`);
+		if (!sessionFile) args.push("--name", `product — ${department.path} — ${worktree}`);
 	}
 	// QORPERA_AUTONOMOUS marks controller-initiated work: those sessions run
-	// in rpc mode with nobody present, so the authority layer must never
-	// treat them as founder sessions ([products] relaxes only when attended).
+	// in rpc mode with nobody present, so outward-effect signatures cannot
+	// treat them as founder sessions. Product roles remain separate either way.
 	const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
 	if (autonomousName) env.QORPERA_AUTONOMOUS = "1";
+	if (department && worktree) {
+		env.QORPERA_ACTOR = "product-worker";
+		env.QORPERA_PRODUCT_DEPARTMENT = department.path;
+		env.QORPERA_PRODUCT_WORKTREE = worktree;
+	} else {
+		env.QORPERA_ACTOR = "controller";
+	}
 	const child = spawn(process.execPath, args, {
-		cwd: scope ? join(root, scope) : root,
+		cwd: worktree ? join(root, worktree) : root,
 		stdio: ["pipe", "pipe", "pipe"],
 		env,
 	}) as ChildProcessWithoutNullStreams;
@@ -250,6 +258,11 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		if (!intentionalKills.has(child)) send(win, "rpc-exit", code);
 	});
 	return child;
+}
+
+function isInside(target: string, parent: string): boolean {
+	const rel = relative(parent, target);
+	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 /**
@@ -439,29 +452,42 @@ function showHub(slot: Slot): void {
 	void slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 }
 
-/** Switch the chat to a trail session (or a fresh one) without touching the backend.
- *
- * A requested product scope is validated against the ratified authority.toml:
- * an undeclared or missing zone grants nothing — the session opens unscoped
- * at the company root. The chip click IS the grant (founder decision,
- * 2026-08-06: no confirmation dialog — it broke the flow it exists to
- * serve). The residual exposure — evolved userland code invoking this IPC
- * without a human click — is accepted tripwire-grade: scope state is always
- * visible on the chrome, every scoped effect is stamped in the trail, and
- * autonomous spawns never carry a scope. Returns the effective scope so the
- * chrome reflects what was actually granted. */
-function openChat(slot: Slot, sessionFile: string | null, scope?: string): { ok: boolean; scope?: string } {
+/** Switch chat sessions. Product chats run a product-worker in one validated worktree. */
+function openChat(
+	slot: Slot,
+	sessionFile: string | null,
+	departmentPath?: string,
+	worktreePath?: string,
+): { ok: boolean; department?: string; worktree?: string; error?: string } {
 	if (!slot.runtime) return { ok: false };
 	const runtime = slot.runtime;
-	let effectiveScope: string | undefined;
-	if (typeof scope === "string" && scope.length > 0) {
-		const declared = listProductScopes(runtime.root).find((entry) => entry.path === scope && entry.exists);
-		if (declared) effectiveScope = declared.path;
+	let department: ProductDepartment | undefined;
+	let worktree: string | undefined;
+	if (typeof departmentPath === "string" && departmentPath.length > 0) {
+		department = listProductDepartments(runtime.root).find(
+			(entry) => entry.path === departmentPath && entry.repositoryExists,
+		);
+		if (!department) return { ok: false, error: "product department or repository is unavailable" };
+		if (worktreePath) {
+			const resolvedWorktree = resolve(runtime.root, worktreePath);
+			const worktreesRoot = resolve(runtime.root, department.worktreesPath);
+			if (!isInside(resolvedWorktree, worktreesRoot) || !existsSync(join(resolvedWorktree, ".git"))) {
+				return { ok: false, error: "worktree is outside the product department or no longer exists" };
+			}
+			worktree = relative(runtime.root, resolvedWorktree);
+		} else {
+			worktree = createProductWorktree(runtime.root, department)?.path;
+			if (!worktree) return { ok: false, error: "could not create product worktree" };
+		}
 	}
 	intentionalKills.add(runtime.child);
 	runtime.child.kill();
-	runtime.child = startChild(slot, runtime.root, { sessionFile: sessionFile ?? undefined, scope: effectiveScope });
-	return { ok: true, scope: effectiveScope };
+	runtime.child = startChild(slot, runtime.root, {
+		sessionFile: sessionFile ?? undefined,
+		department,
+		worktree,
+	});
+	return { ok: true, department: department?.path, worktree };
 }
 
 function createWindow(): Slot {
@@ -571,9 +597,9 @@ app.whenReady().then(() => {
 		const slot = slotOf(event.sender);
 		if (slot) return closeCompany(slot);
 	});
-	ipcMain.handle("chat:open", (event, sessionFile: string | null, scope?: string) => {
+	ipcMain.handle("chat:open", (event, sessionFile: string | null, department?: string, worktree?: string) => {
 		const slot = slotOf(event.sender);
-		return slot ? openChat(slot, sessionFile, scope) : { ok: false };
+		return slot ? openChat(slot, sessionFile, department, worktree) : { ok: false };
 	});
 	ipcMain.handle("hub:show", (event) => {
 		const slot = slotOf(event.sender);

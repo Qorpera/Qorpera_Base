@@ -3,7 +3,7 @@
 const $ = (id) => document.getElementById(id);
 let backendUrl = "";
 let backendToken = "";
-let state = { surfaces: [], inbox: [], sessions: [] };
+let state = { surfaces: [], inbox: [], sessions: [], departments: [] };
 const sessionCache = {}; // session file -> rendered messages HTML
 let chatsCollapsed = false;
 
@@ -18,7 +18,9 @@ function toggleChats() {
 }
 let currentSurface = null;
 let currentSession = null; // trail file of the open chat (null = fresh/unsaved)
-let currentScope = null; // product scope of the open chat (null = the company)
+let currentDepartment = null; // product department of the open chat (null = company controller)
+let currentWorktree = null; // kernel-assigned product worktree, when applicable
+let currentDepartmentPage = null; // { path, tab } for built-in department pages
 let sidechatOpen = false; // the surface view's docked chat panel
 let sidechatSurface = null; // surface entry the live session is attached to
 let sidechatPending = null; // surface awaiting its context preamble (fresh session)
@@ -60,7 +62,7 @@ async function integrateCompanyPrompt() {
 	if (!from) return;
 	const result = await window.qorpera.integrateCompany(dir, from);
 	if (!result.ok) {
-		alert("Could not clone the repo — check the path/URL. The company folder was created; you can copy files into work/ manually.");
+		alert("Could not clone the repo — check the path/URL. The company folder and product department were created.");
 	}
 	await openCompany(result.root);
 }
@@ -366,20 +368,14 @@ const modelCtl = (() => {
 // moments of the spawn.
 modelCtl.sync();
 
-// ---- session scope: company vs product (the scope selector) -----------------
-// The chip names what this session steers: the company itself, or one of the
-// products authority.toml declares. Picking a product opens a FRESH session
-// rooted inside it — the kernel confirms the grant in a native dialog (that
-// confirmation IS the founder's [products] approval for the session), so a
-// cancel simply snaps the chip back.
+// ---- company controller vs product-worker (the role selector) ---------------
 
-function scopeName(path) {
+function departmentName(path) {
 	const parts = String(path).replace(/\\/g, "/").split("/").filter(Boolean);
-	return parts[parts.length - 1] || String(path);
+	return (parts[parts.length - 1] || String(path)).replace(/-development$/, "");
 }
 
-// Entry icons: a building for the company, a package for a product — the two
-// are different kinds of thing and the menu should read that way at a glance.
+// A company controller and a product-worker are different organizational roles.
 const COMPANY_ICON =
 	'<svg class="chipicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18M5 21V5.5L12 3l7 2.5V21M9.5 9h.01M14.5 9h.01M9.5 13h.01M14.5 13h.01M10 21v-3.5h4V21"/></svg>';
 const PRODUCT_ICON =
@@ -389,34 +385,36 @@ function syncScopeChrome() {
 	// The company entry names the controller — same identity as the window
 	// title ("<Name> Controller"), distinct from the bare product names below.
 	const options = [{ value: "", label: state.name ? `${state.name} Controller` : "Company", icon: COMPANY_ICON }];
-	for (const s of state.scopes ?? []) {
-		if (s.exists === false) continue; // a declared zone with no directory yet
-		options.push({ value: s.path, label: s.name || scopeName(s.path), icon: PRODUCT_ICON });
+	for (const department of state.departments ?? []) {
+		if (!department.repositoryExists) continue;
+		options.push({ value: department.path, label: `${department.name} Development`, icon: PRODUCT_ICON });
 	}
-	scopeChip.setOptions(options, currentScope ?? "");
-	scopeChip.value = currentScope ?? "";
+	scopeChip.setOptions(options, currentDepartment ?? "");
+	scopeChip.value = currentDepartment ?? "";
 	// A docked sidechat speaks about its surface; otherwise the scope names
 	// what the session steers.
 	const sidechatOwner =
 		sidechatOpen && sidechatSurface ? (state.surfaces ?? []).find((s) => s.entry === sidechatSurface) : undefined;
 	$("input").placeholder = sidechatOwner
 		? `Ask about ${sidechatOwner.name}… (Enter to send, Shift+Enter for newline)`
-		: currentScope
-			? `Work on ${scopeName(currentScope)}… (Enter to send, Shift+Enter for newline)`
+		: currentDepartment
+			? `Work on ${departmentName(currentDepartment)}… (Enter to send, Shift+Enter for newline)`
 			: "Steer the company… (Enter to send, Shift+Enter for newline)";
 }
 
 const scopeChip = createChipSelect("scopeBtn", "scopeMenu", async (picked) => {
 	const next = picked || null;
-	if (next === currentScope) return;
+	if (next === currentDepartment) return;
 	cacheCurrentSession();
 	const result = await window.qorpera.openChat(null, next ?? undefined);
 	if (!result?.ok) {
-		scopeChip.value = currentScope ?? "";
+		scopeChip.value = currentDepartment ?? "";
 		return;
 	}
 	currentSession = null;
-	currentScope = result.scope ?? null;
+	currentDepartment = result.department ?? null;
+	currentWorktree = result.worktree ?? null;
+	currentDepartmentPage = null;
 	sidechatSurface = null;
 	sidechatPending = null;
 	$("messages").innerHTML = "";
@@ -461,13 +459,15 @@ function cacheCurrentSession() {
 
 async function openSession(file) {
 	cacheCurrentSession();
-	// A scoped session reopens under its own scope (recorded in the trail);
-	// the kernel re-confirms the grant. Cancel → stay exactly where we are.
+	// Product chats restore the exact department/worktree role capability
+	// recorded in their append-only session name.
 	const summary = (state.sessions ?? []).find((s) => s.file === file);
-	const result = await window.qorpera.openChat(file, summary?.scope);
+	const result = await window.qorpera.openChat(file, summary?.department, summary?.worktree);
 	if (!result?.ok) return;
 	currentSession = file;
-	currentScope = result.scope ?? null;
+	currentDepartment = result.department ?? null;
+	currentWorktree = result.worktree ?? null;
+	currentDepartmentPage = null;
 	sidechatSurface = null;
 	sidechatPending = null;
 	// Cached pages show instantly; fresh ones get a proper loading state.
@@ -482,12 +482,18 @@ async function openSession(file) {
 
 async function newChat() {
 	cacheCurrentSession();
-	// "+" keeps the current scope: a new chat while working on a product is
-	// usually more of that work (the kernel still confirms the grant).
-	const result = await window.qorpera.openChat(null, currentScope ?? undefined);
+	// "+" keeps an existing product worktree. The department Chat row starts
+	// a separate task in a fresh worktree.
+	const result = await window.qorpera.openChat(
+		null,
+		currentDepartment ?? undefined,
+		currentWorktree ?? undefined,
+	);
 	if (!result?.ok) return;
 	currentSession = null;
-	currentScope = result.scope ?? null;
+	currentDepartment = result.department ?? null;
+	currentWorktree = result.worktree ?? null;
+	currentDepartmentPage = null;
 	sidechatSurface = null;
 	sidechatPending = null;
 	$("messages").innerHTML = "";
@@ -550,11 +556,12 @@ function renderCompanyNav() {
 	for (const session of (state.sessions ?? []).filter((s) => s.kind !== "autonomous")) {
 		const b = document.createElement("button");
 		b.textContent = session.title;
-		b.title = session.scope ? `${session.file} · scoped to ${session.scope}` : session.file;
-		if (session.scope) {
+		b.title = session.department ? `${session.file} · ${session.department} · ${session.worktree}` : session.file;
+		if (session.department || session.scope) {
 			const tag = document.createElement("span");
 			tag.className = "scopetag";
-			tag.textContent = scopeName(session.scope);
+			const department = (state.departments ?? []).find((entry) => entry.path === session.department);
+			tag.textContent = department?.name ?? departmentName(session.department ?? session.scope);
 			b.appendChild(tag);
 		}
 		if (session.surface) {
@@ -570,6 +577,44 @@ function renderCompanyNav() {
 		b.onclick = () => openSession(session.file);
 		chats.appendChild(b);
 	}
+	const departments = $("departments");
+	departments.innerHTML = state.departments?.length
+		? ""
+		: '<div class="empty" style="padding:6px">none built yet</div>';
+	for (const department of state.departments ?? []) {
+		const group = document.createElement("div");
+		group.className = "department-group";
+		const title = document.createElement("div");
+		title.className = "department-title";
+		title.textContent = `${department.name} Development`;
+		group.appendChild(title);
+		for (const [tab, label] of [
+			["chat", "Chat"],
+			["pull-requests", "Pull Requests"],
+			["architecture", "Architecture"],
+		]) {
+			const row = document.createElement("button");
+			row.textContent = label;
+			if (tab === "architecture") {
+				row.disabled = true;
+				row.title = "Placeholder — the architecture model will be defined later";
+			} else if (tab === "chat") {
+				row.disabled = !department.repositoryExists;
+				row.title = department.repositoryExists
+					? "Start a product-worker in a fresh worktree"
+					: "Connect the product repository before starting product work";
+				row.onclick = () => openDepartmentChat(department);
+			} else {
+				row.classList.toggle(
+					"active",
+					currentDepartmentPage?.path === department.path && currentDepartmentPage?.tab === tab,
+				);
+				row.onclick = () => showPullRequests(department);
+			}
+			group.appendChild(row);
+		}
+		departments.appendChild(group);
+	}
 	const nav = $("surfaces");
 	nav.innerHTML = state.surfaces.length ? "" : '<div class="empty" style="padding:6px">none built yet</div>';
 	for (const surface of state.surfaces) {
@@ -583,6 +628,69 @@ function renderCompanyNav() {
 	const pending = state.inbox.filter((g) => g.status === "pending").length;
 	$("inboxBadge").innerHTML = pending ? `<span class="badge">${pending}</span>` : "";
 	if (currentView === "inbox") renderInbox();
+}
+
+async function openDepartmentChat(department) {
+	cacheCurrentSession();
+	const result = await window.qorpera.openChat(null, department.path);
+	if (!result?.ok) {
+		$("status").textContent = result?.error ?? "could not start product worktree";
+		return;
+	}
+	currentSession = null;
+	currentDepartment = result.department ?? null;
+	currentWorktree = result.worktree ?? null;
+	currentDepartmentPage = null;
+	sidechatSurface = null;
+	sidechatPending = null;
+	$("messages").innerHTML = "";
+	resetWorkGroup();
+	show("chat");
+	syncScopeChrome();
+	hydrateAgentState(false);
+}
+
+function showPullRequests(department) {
+	currentDepartmentPage = { path: department.path, tab: "pull-requests" };
+	const panel = $("view-panel");
+	panel.innerHTML = "";
+	const heading = document.createElement("h1");
+	heading.textContent = `${department.name} · Pull Requests`;
+	panel.appendChild(heading);
+	const records = department.pullRequests ?? [];
+	if (!records.length) {
+		const empty = document.createElement("div");
+		empty.className = "empty";
+		empty.textContent = "No synchronized pull-request records yet.";
+		panel.appendChild(empty);
+	} else {
+		for (const record of records) {
+			const card = document.createElement("div");
+			card.className = "card";
+			const head = document.createElement("div");
+			head.className = "card-head";
+			const title = document.createElement(record.url ? "a" : "div");
+			title.className = "card-title";
+			title.textContent = `${record.number ? `#${record.number} ` : ""}${record.title}`;
+			if (record.url) {
+				title.href = record.url;
+				title.target = "_blank";
+				title.rel = "noreferrer";
+			}
+			const status = document.createElement("span");
+			status.className = "kchip";
+			status.textContent = record.status;
+			head.appendChild(title);
+			head.appendChild(status);
+			card.appendChild(head);
+			const meta = document.createElement("div");
+			meta.className = "card-meta";
+			meta.textContent = [record.branch, record.updatedAt, record.file].filter(Boolean).join(" · ");
+			card.appendChild(meta);
+			panel.appendChild(card);
+		}
+	}
+	show("department");
 }
 
 // ---- views -----------------------------------------------------------------
@@ -607,11 +715,12 @@ function show(view) {
 	$("view-chat").style.display = view === "chat" || docked ? "flex" : "none";
 	$("view-surfacewrap").style.display = view === "surface" ? "flex" : "none";
 	$("view-surfacewrap").classList.toggle("chat-open", sidechatOpen);
-	$("view-panel").style.display = view === "inbox" || view === "activity" ? "block" : "none";
+	$("view-panel").style.display = view === "inbox" || view === "activity" || view === "department" ? "block" : "none";
 	$("inboxBtn").className = view === "inbox" ? "active" : "";
 	$("activityBtn").className = view === "activity" ? "active" : "";
 	if (view === "inbox") renderInbox();
 	if (view === "activity") renderActivity();
+	if (view !== "department") currentDepartmentPage = null;
 	if (view !== "surface") currentSurface = null;
 	renderCompanyNavSafe();
 }
@@ -653,7 +762,9 @@ async function attachSidechat(surface, fresh) {
 	const result = await window.qorpera.openChat(latest ? latest.file : null);
 	if (!result?.ok) return;
 	currentSession = latest ? latest.file : null;
-	currentScope = result.scope ?? null;
+	currentDepartment = null;
+	currentWorktree = null;
+	currentDepartmentPage = null;
 	sidechatSurface = surface.entry;
 	sidechatPending = null;
 	if (latest) {
@@ -1511,18 +1622,10 @@ async function renderSettingsTab() {
 		setRow(content, "Identity", "acting AS the company externally: sending, posting, signing", identity);
 		const irreversible = modeSelect(cfg.classes.irreversible.mode);
 		setRow(content, "Irreversible", "prod deploys, deletions, legal commitments", irreversible);
-		const products = modeSelect(cfg.classes.products.mode);
-		// Product zones are not founder-managed settings: they constrain the
-		// controller's AUTONOMOUS work (founder sessions are trusted — the
-		// steering is the authority). The declared zones are shown for
-		// awareness; changing them goes through the controller (it files a
-		// gate) or the Advanced raw editor.
-		const zones = (cfg.productPaths ?? []).join(", ") || "none declared";
 		setRow(
 			content,
-			"Products",
-			`autonomous modification of the declared products (${zones}) — founder sessions are trusted; reading is always free`,
-			products,
+			"Product code",
+			"controllers are always read-only; product-workers can modify only their assigned worktree — not configurable",
 		);
 
 		setRow(content, "Authority itself", "editing gates, kernel files, or the inbox — always gated, not configurable");
@@ -1534,15 +1637,11 @@ async function renderSettingsTab() {
 			const res = await fetch(`${backendUrl}/api/authority/config`, {
 				method: "POST",
 				headers: authHeaders({ "content-type": "application/json" }),
-				// No productPaths here: the zones themselves are not a settings
-				// surface (the backend preserves the existing list when the
-				// field is absent).
 				body: JSON.stringify({
 					classes: {
 						money: { mode: money.value, limitUsd: Number(limit.value) || 50 },
 						identity: { mode: identity.value },
 						irreversible: { mode: irreversible.value },
-						products: { mode: products.value },
 					},
 				}),
 			});

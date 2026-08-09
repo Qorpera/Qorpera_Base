@@ -17,8 +17,10 @@ where the human only says what the company is:
   the setup itself (rewrites company.md, proposes authority/connections,
   builds the first surface).
 - `qorpera new <dir> --from <repo>` — integrate an existing product/company:
-  the repo is cloned into `work/`, and conception begins with study before
-  the interview.
+  a `<product>-development` department is created, the repo is cloned into
+  its `repository/`, and conception begins with study.
+- `qorpera company product add <name> [--from <repo>]` — add the standard
+  product-development department kit to an existing company.
 - `qorpera fork <company-repo> [dir]` — fork an existing company (the folder
   is the company and it is a git repo, so forking is cloning). Opens as an
   ordinary wake — the company already knows itself.
@@ -44,34 +46,49 @@ clone it):
   connections/      # declared capabilities; references only, never secrets
   trail/            # sessions ARE the trail: project settings point
                     # sessionDir here, so every session's tree-shaped JSONL
-                    # lands inside the company folder. Append-only exhaust.
+                    # lands inside the company folder. Never compact/delete.
   inbox/            # gate requests + human steering
   app/              # THE CONTROLLER the agent builds: manifest.json,
                     # surfaces/, substrates/, routines/, tools/
-  work/             # everything else; earns its structure
+  departments/      # optional department kits; arbitrary other structures
+                    # remain agent-authored
 ```
 
 Scaffolding is idempotent and never overwrites — a company's `company.md`
 is its identity, not ours to reset. Existing `.qorpera/settings.json` keys
 are merged around, and a pre-set `sessionDir` is respected.
 
-## Session scopes (company vs product)
+## Product-development departments
 
-A chat session carries a *scope*: the company (default) or one of the
-products declared in `authority.toml` `[products] paths`. The shell's
-composer offers exactly those — a company and a product are different kinds
-of thing (a company has authority, a trail, an inbox, an app; a product is a
-repo the company works ON), so scopes are per-company, never a flat project
-list.
+Product development is a built-in optional department kit, not the
+company's universal ontology:
 
-Picking a product opens a fresh session rooted INSIDE that product's
-directory. The scope is a context device, not a permission device: any
-founder session may modify products (founder presence is the authority —
-see authority.md, "Founder sessions vs agentic sessions"), while the
-controller's autonomous work keeps the full `[products]` gate. Scoped
-sessions still record to the company `trail/` and are named
-`scope — <path>`, so the chat list shows the product tag and restores the
-scope when reopened.
+```
+departments/
+  <product>-development/
+    department.json   # kit identity and product display name
+    briefs/           # controller-owned direction
+    repository/       # controlling clone; controller read-only
+    worktrees/        # one isolated task worktree per product assignment
+    pull-requests/     # synchronized local PR read models
+```
+
+The company Git repository ignores `repository/` and `worktrees/`; each
+product repository owns its own history. The base product navigation has
+three rows: **Chat**, **Pull Requests**, and **Architecture**. Chat creates a
+fresh Git worktree and launches a `product-worker` rooted there. Pull
+Requests reads synchronized JSON records from `pull-requests/`. Architecture
+is intentionally a disabled placeholder: it defines no folder schema,
+ontology, search contract, or storage model yet.
+
+The controller can inspect every product artifact and write briefs, but it
+cannot modify product repositories or worktrees — not even in an attended
+session and not through a one-off approval. A product-worker can modify only
+its kernel-assigned worktree. New Chat from the department starts a new
+worktree; the ordinary new-chat action continues the currently assigned
+worktree. Product sessions remain in the company `trail/` and are named
+`product — <department> — <worktree>`, so the exact capability and provenance
+can be restored.
 
 ## Chats vs autonomous work (the communication split)
 
@@ -93,6 +110,10 @@ Behavior notes:
 - `sessionDir` is stored as `./trail`, which the CLI resolves at launch —
   start sessions at the company root (the normal case). Hosts embedding the
   SDK should pass an absolute session dir rooted at `<company>/trail`.
+- Company scaffolding sets `compaction.enabled` to `false` unless the company
+  already has an explicit choice. Base never rewrites, summarizes in place,
+  expires, or deletes trail records. Long work continues in a new session or
+  worktree instead.
 - Session files flush on the first assistant message (upstream behavior),
   so an abandoned prompt leaves no trail entry.
 - Headless wakes (print/json/SDK, no UI) resolve project trust to

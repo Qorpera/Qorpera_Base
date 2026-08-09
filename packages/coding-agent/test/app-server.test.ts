@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCompanyAppServer } from "../src/core/app-server.ts";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
-import { scaffoldCompany } from "../src/core/company.ts";
+import { scaffoldCompany, scaffoldProductDepartment } from "../src/core/company.ts";
 
 let root: string;
 let server: Server | undefined;
@@ -127,12 +127,19 @@ describe("company app server", () => {
 			"utf-8",
 		);
 
-		// A founder-scoped chat carries its product scope in the session name.
+		const department = scaffoldProductDepartment(root, "my-product");
+		const worktree = join(department.worktreesPath, "task-a");
+		// A product chat carries its department and worktree in the session name.
 		writeFileSync(
 			join(root, "trail", "2026-08-04T12-00-00-000Z_scoped.jsonl"),
 			[
 				JSON.stringify({ type: "session", version: 3, id: "scoped", timestamp: "t", cwd: root }),
-				JSON.stringify({ type: "session_info", id: "s2", parentId: null, name: "scope — work/my-product" }),
+				JSON.stringify({
+					type: "session_info",
+					id: "s2",
+					parentId: null,
+					name: `product — ${department.path} — ${worktree}`,
+				}),
 				JSON.stringify({
 					type: "message",
 					id: "1",
@@ -169,7 +176,14 @@ describe("company app server", () => {
 		);
 
 		const state = (await (await fetch(`${base}/api/state`)).json()) as {
-			sessions: Array<{ file: string; title: string; kind: string; scope?: string; surface?: string }>;
+			sessions: Array<{
+				file: string;
+				title: string;
+				kind: string;
+				department?: string;
+				worktree?: string;
+				surface?: string;
+			}>;
 			inbox: Array<{ file: string; kind: string; status: string }>;
 		};
 		const chat = state.sessions.find((s) => s.file.includes("_abc"));
@@ -178,23 +192,41 @@ describe("company app server", () => {
 		const sidechat = state.sessions.find((s) => s.file.includes("_sidechat"));
 		expect(chat?.title).toBe("plan the pricing analysis");
 		expect(chat?.kind).toBe("chat");
-		expect(chat?.scope).toBeUndefined();
+		expect(chat?.department).toBeUndefined();
 		expect(chat?.surface).toBeUndefined();
 		expect(auto?.kind).toBe("autonomous");
 		expect(auto?.title).toBe("autonomous — conception");
 		expect(scoped?.kind).toBe("chat");
-		expect(scoped?.scope).toBe("work/my-product");
+		expect(scoped?.department).toBe(department.path);
+		expect(scoped?.worktree).toBe(worktree);
 		expect(scoped?.title).toBe("fix the launcher");
 		expect(sidechat?.kind).toBe("chat");
 		expect(sidechat?.surface).toBe("revenue.html");
 		expect(sidechat?.title).toBe("why did July dip?");
 
-		// The declared product zones ride along for the chrome's scope selector.
-		writeFileSync(join(root, "authority.toml"), `[products]\nmode = "gate"\npaths = ["work/my-product"]\n`, "utf-8");
-		const withScopes = (await (await fetch(`${base}/api/state`)).json()) as {
-			scopes: Array<{ path: string; name: string; exists: boolean }>;
+		writeFileSync(
+			join(root, department.pullRequestsPath, "42.json"),
+			JSON.stringify({
+				number: 42,
+				title: "Fix the launcher",
+				status: "open",
+				branch: "qorpera/task-a",
+				url: "javascript:alert(1)",
+			}),
+			"utf-8",
+		);
+		const withDepartments = (await (await fetch(`${base}/api/state`)).json()) as {
+			departments: Array<{
+				path: string;
+				name: string;
+				pullRequests: Array<{ number: number; title: string; url?: string }>;
+			}>;
 		};
-		expect(withScopes.scopes).toEqual([{ path: "work/my-product", name: "my-product", exists: false }]);
+		expect(withDepartments.departments[0].path).toBe(department.path);
+		expect(withDepartments.departments[0].pullRequests).toEqual([
+			expect.objectContaining({ number: 42, title: "Fix the launcher" }),
+		]);
+		expect(withDepartments.departments[0].pullRequests[0]).not.toHaveProperty("url");
 		const message = state.inbox.find((item) => item.file === "msg-pricing.md");
 		expect(message?.kind).toBe("message");
 		expect(message?.status).toBe("pending");
@@ -284,22 +316,19 @@ describe("company app server", () => {
 		// Seed a custom [tools] section the structured editor must not clobber.
 		writeFileSync(
 			join(root, "authority.toml"),
-			`[irreversible]\nmode = "gate"\n\n[products]\nmode = "gate"\npaths = ["work/old"]\n\n[tools]\ndeploy = "irreversible"\n`,
+			`[irreversible]\nmode = "gate"\n\n[tools]\ndeploy = "irreversible"\n`,
 			"utf-8",
 		);
 		const cfg = (await (await fetch(`${base}/api/authority/config`)).json()) as {
 			classes: Record<string, { mode: string }>;
-			productPaths: string[];
 		};
 		expect(cfg.classes.irreversible.mode).toBe("gate");
-		expect(cfg.productPaths).toEqual(["work/old"]);
 
 		const save = await fetch(`${base}/api/authority/config`, {
 			method: "POST",
 			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
 			body: JSON.stringify({
 				classes: { irreversible: { mode: "notify" }, money: { mode: "gate", limitUsd: 100 } },
-				productPaths: ["work/new-product"],
 			}),
 		});
 		expect(save.status).toBe(200);
@@ -309,7 +338,6 @@ describe("company app server", () => {
 		const config = (await import("../src/core/authority.ts")).readAuthorityConfig(authority);
 		expect(config.classes.irreversible.mode).toBe("notify");
 		expect(config.classes.money.limitUsd).toBe(100);
-		expect(config.productPaths).toEqual(["work/new-product"]);
 		expect(config.classes.authority.mode).toBe("gate"); // never configurable
 	});
 

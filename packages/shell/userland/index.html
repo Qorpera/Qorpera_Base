@@ -31,6 +31,8 @@
 		<button id="activityBtn" onclick="show('activity')">Activity</button>
 		<h2 class="cat" onclick="toggleChats()">Chats<span id="chatsCaret">▾</span><button class="catBtn" onclick="event.stopPropagation(); newChat()" title="New chat">+</button></h2>
 		<div id="sessions"></div>
+		<h2>Departments</h2>
+		<div id="departments"><div class="empty" style="padding:6px">none built yet</div></div>
 		<h2>Surfaces</h2>
 		<div id="surfaces"><div class="empty" style="padding:6px">none built yet</div></div>
 		<div class="navspacer"></div>
@@ -47,7 +49,7 @@
 				<textarea id="input" rows="1" placeholder="Steer the company… (Enter to send, Shift+Enter for newline)"></textarea>
 				<div class="composer-strip">
 					<div class="chipwrap">
-						<button id="scopeBtn" class="stripchip" title="Session scope — the company, or one of its products" aria-haspopup="menu" aria-expanded="false">…</button>
+						<button id="scopeBtn" class="stripchip" title="Company controller or product-development department" aria-haspopup="menu" aria-expanded="false">…</button>
 						<div id="scopeMenu" class="chipmenu"></div>
 					</div>
 					<span class="composer-spacer"></span>

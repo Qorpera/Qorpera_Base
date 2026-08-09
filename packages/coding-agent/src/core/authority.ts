@@ -2,8 +2,10 @@
  * Authority gates — Qorpera Base's enforcement layer (spec §4).
  *
  * Full freedom in thought and construction; gates on effect. `authority.toml`
- * at the company root defines four effect classes (money, identity,
- * irreversible, authority) with modes auto | notify | gate. `[authority]` is
+ * at the company root defines four configurable effect classes (money,
+ * identity, irreversible, authority) with modes auto | notify | gate.
+ * Product code is a separate role boundary: controllers can only read it;
+ * product-workers can mutate only their assigned worktree. `[authority]` is
  * ALWAYS gated regardless of configuration — it covers changes to the
  * authority file itself, the kernel files (AGENTS.md / CLAUDE.md at the
  * root), and the inbox (so the agent cannot approve its own requests).
@@ -29,7 +31,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 
-export type EffectClass = "money" | "identity" | "irreversible" | "authority" | "products";
+export type ConfigurableEffectClass = "money" | "identity" | "irreversible" | "authority";
+export type EffectClass = ConfigurableEffectClass | "product_code";
+export type CompanyActor = "controller" | "product-worker";
 export type AuthorityMode = "auto" | "notify" | "gate";
 
 export interface AuthorityClassConfig {
@@ -38,14 +42,9 @@ export interface AuthorityClassConfig {
 }
 
 export interface AuthorityConfig {
-	classes: Record<EffectClass, AuthorityClassConfig>;
+	classes: Record<ConfigurableEffectClass, AuthorityClassConfig>;
 	/** Per-tool overrides from `[tools]`: tool name -> effect class or "none". */
-	tools: Record<string, EffectClass | "none">;
-	/**
-	 * Root-relative paths of software products the controller may read and
-	 * study freely but not modify without approval ([products] paths).
-	 */
-	productPaths: string[];
+	tools: Record<string, ConfigurableEffectClass | "none">;
 }
 
 export interface Authority {
@@ -55,7 +54,14 @@ export interface Authority {
 }
 
 export type AuthorityDecision =
-	| { kind: "allow"; notified?: true; effectClass?: EffectClass; attended?: true; behavior?: BehaviorSignature }
+	| {
+			kind: "allow";
+			notified?: true;
+			effectClass?: EffectClass;
+			attended?: true;
+			actor?: CompanyActor;
+			behavior?: BehaviorSignature;
+	  }
 	| { kind: "block"; reason: string; effectClass: EffectClass; gateId?: string; behavior?: BehaviorSignature };
 
 /**
@@ -69,9 +75,14 @@ export interface ToolCallContext {
 	 * work (conception, merges, wakes) carries QORPERA_AUTONOMOUS and is never
 	 * attended even though it runs in rpc mode. Headless runs (print/json/SDK)
 	 * are unattended. Attended sessions are founder sessions: the founder's
-	 * direction is the authority for [products] work and outward effects.
+	 * direction is the intent source for outward effects. Product-code writes
+	 * remain role-scoped regardless of attendance.
 	 */
 	attended: boolean;
+	/** Kernel-assigned organizational role. Missing means company controller. */
+	actor?: CompanyActor;
+	/** Root-relative worktree assigned by the product-development runtime. */
+	productWorktree?: string;
 	/**
 	 * Absolute source path of the code that registered the executing tool,
 	 * when the call originates from codified behavior (an extension-registered
@@ -103,11 +114,11 @@ export interface GateRecord {
 	filePath: string;
 }
 
-const EFFECT_CLASSES: EffectClass[] = ["money", "identity", "irreversible", "authority", "products"];
+const CONFIGURABLE_EFFECT_CLASSES: ConfigurableEffectClass[] = ["money", "identity", "irreversible", "authority"];
 /**
  * Classes whose effects touch the world outside the company folder — the
- * signature rule applies to these. [authority] and [products] are spine/zone
- * protection with their own (stricter or path-scoped) semantics.
+ * signature rule applies to these. [authority] and product_code are
+ * spine/role protection with their own stricter semantics.
  */
 const OUTWARD_CLASSES: ReadonlySet<EffectClass> = new Set(["money", "identity", "irreversible"]);
 /** Path-arg zone checks apply only to tools that mutate the path. */
@@ -232,10 +243,8 @@ export function readAuthorityConfig(authority: Authority): AuthorityConfig {
 			identity: { mode: "gate" },
 			irreversible: { mode: "gate" },
 			authority: { mode: "gate" },
-			products: { mode: "gate" },
 		},
 		tools: {},
-		productPaths: [],
 	};
 	let raw: Record<string, unknown>;
 	try {
@@ -244,15 +253,8 @@ export function readAuthorityConfig(authority: Authority): AuthorityConfig {
 		return fallback;
 	}
 
-	const config: AuthorityConfig = { classes: { ...fallback.classes }, tools: {}, productPaths: [] };
-	const productsSection = raw.products;
-	if (productsSection && typeof productsSection === "object") {
-		const paths = (productsSection as Record<string, unknown>).paths;
-		if (Array.isArray(paths)) {
-			config.productPaths = paths.filter((entry): entry is string => typeof entry === "string");
-		}
-	}
-	for (const effectClass of EFFECT_CLASSES) {
+	const config: AuthorityConfig = { classes: { ...fallback.classes }, tools: {} };
+	for (const effectClass of CONFIGURABLE_EFFECT_CLASSES) {
 		const section = raw[effectClass];
 		if (section && typeof section === "object") {
 			const mode = (section as Record<string, unknown>).mode;
@@ -273,8 +275,11 @@ export function readAuthorityConfig(authority: Authority): AuthorityConfig {
 	const tools = raw.tools;
 	if (tools && typeof tools === "object") {
 		for (const [name, value] of Object.entries(tools as Record<string, unknown>)) {
-			if (value === "none" || (typeof value === "string" && (EFFECT_CLASSES as string[]).includes(value))) {
-				config.tools[name] = value as EffectClass | "none";
+			if (
+				value === "none" ||
+				(typeof value === "string" && (CONFIGURABLE_EFFECT_CLASSES as string[]).includes(value))
+			) {
+				config.tools[name] = value as ConfigurableEffectClass | "none";
 			}
 		}
 	}
@@ -332,7 +337,7 @@ function stripHarmlessRedirects(command: string): string {
 
 /** Shell fragments that indicate mutation (vs. reading/study). */
 const WRITEISH_BASH =
-	/(>>?|\btee\b|\bmv\b|\bcp\b|\brm\b|\brmdir\b|\bdel\b|\bsed\s+-i\b|\btouch\b|\bln\b|\bchmod\b|\bset-content\b|\badd-content\b|\bout-file\b|\bgit\s+(commit|push|checkout|switch|restore|reset|rebase|merge|apply|cherry-pick|clean|rm|mv|stash|tag)\b|\bnpm\s+(install|uninstall|update|version|publish)\b)/i;
+	/(>>?|\btee\b|\bmv\b|\bcp\b|\brm\b|\brmdir\b|\bdel\b|\bsed\s+-i\b|\btouch\b|\bln\b|\bchmod\b|\bset-content\b|\badd-content\b|\bout-file\b|\bgit\s+(commit|push|checkout|switch|restore|reset|rebase|merge|apply|cherry-pick|clean|rm|mv|stash|tag)\b|\bgh\s+pr\s+(create|edit|close|merge|reopen|review)\b|\bnpm\s+(install|uninstall|update|version|publish)\b)/i;
 
 /** Authority-class bash screens. All protected territory — inbox/, the
  * authority file, the kernel files — gates only in write-ish contexts:
@@ -358,33 +363,66 @@ function resolveArgPath(rawPath: string, cwd: string): string {
 	return resolve(isAbsolute(rawPath) ? rawPath : join(cwd, rawPath));
 }
 
-/** Is this resolved path inside a [products]-declared zone? */
-function isUnderProduct(authority: Authority, config: AuthorityConfig, resolvedPath: string): boolean {
-	for (const productPath of config.productPaths) {
-		const productRoot = resolve(join(authority.root, productPath));
-		if (resolvedPath === productRoot || isUnderDir(resolvedPath, productRoot)) return true;
-	}
-	return false;
+function productCodeKind(authority: Authority, resolvedPath: string): "repository" | "worktree" | undefined {
+	const rel = relative(authority.root, resolvedPath);
+	if (!rel || rel.startsWith("..") || isAbsolute(rel)) return undefined;
+	const parts = rel.split(sep);
+	if (parts[0] !== "departments" || !parts[1]?.endsWith("-development")) return undefined;
+	if (parts[2] === "repository") return "repository";
+	if (parts[2] === "worktrees" && parts.length >= 4) return "worktree";
+	return undefined;
 }
 
-/**
- * Product zone screen for shell commands: reading/study is free; a command
- * that BOTH mentions a product path AND looks mutating touches that zone.
- * Heuristic by nature — precise enforcement rides on the path-arg tools and
- * engine patch approvals.
- */
-function bashTouchesProductWriteish(config: AuthorityConfig, command: string): boolean {
-	if (config.productPaths.length === 0) return false;
+/** Product-code shell screen: study is free; mutations from or naming code roots are classified. */
+function bashTouchesProductCode(authority: Authority, command: string, cwd: string): boolean {
 	if (!WRITEISH_BASH.test(stripHarmlessRedirects(command))) return false;
-	for (const productPath of config.productPaths) {
-		const forward = productPath.replace(/\\/g, "/");
-		const backward = forward.replace(/\//g, "\\");
-		if (command.includes(forward) || command.includes(backward)) return true;
-		// Also match the zone's basename (`cd Qorpera_Desktop && git commit`).
-		const base = forward.split("/").filter(Boolean).pop();
-		if (base && command.includes(base)) return true;
+	if (productCodeKind(authority, resolve(cwd))) return true;
+	if (/(?:departments[/\\])?[^/\\\s]+-development[/\\](?:repository|worktrees)(?:[/\\]|\b)/i.test(command)) {
+		return true;
 	}
-	return false;
+	const cwdRel = relative(authority.root, resolve(cwd)).split(sep);
+	return (
+		cwdRel[0] === "departments" &&
+		cwdRel[1]?.endsWith("-development") &&
+		/\b(?:repository|worktrees)[/\\]/i.test(command)
+	);
+}
+
+const WORKTREE_ESCAPE_BASH =
+	/\b(?:cd|pushd|set-location)\s+\.\.(?:[/\\]|\s|$)|\bgit\s+(?:-C|--git-dir|--work-tree|worktree)\b|\.\.[/\\].*(?:>|\b(?:mv|cp|rm|touch|tee)\b)/i;
+
+function assignedProductWorktree(authority: Authority, context: ToolCallContext | undefined): string | undefined {
+	if (context?.actor !== "product-worker" || !context.productWorktree) return undefined;
+	const worktree = resolve(join(authority.root, context.productWorktree));
+	return productCodeKind(authority, worktree) === "worktree" ? worktree : undefined;
+}
+
+function productWorkerMutationAllowed(
+	authority: Authority,
+	toolName: string,
+	args: unknown,
+	cwd: string,
+	context: ToolCallContext | undefined,
+): boolean {
+	const worktree = assignedProductWorktree(authority, context);
+	if (!worktree) return false;
+	const pathArg = extractPathArg(args);
+	if (pathArg && MUTATING_PATH_TOOLS.has(toolName)) {
+		const target = resolveArgPath(pathArg, cwd);
+		return target === worktree || isUnderDir(target, worktree);
+	}
+	if (toolName !== "bash") return false;
+	const command = bashCommandFromArgs(args);
+	if (!command || WORKTREE_ESCAPE_BASH.test(command)) return false;
+	const resolvedCwd = resolve(cwd);
+	return resolvedCwd === worktree || isUnderDir(resolvedCwd, worktree);
+}
+
+function isMutatingCall(toolName: string, args: unknown): boolean {
+	if (MUTATING_PATH_TOOLS.has(toolName)) return true;
+	if (toolName !== "bash") return false;
+	const command = bashCommandFromArgs(args);
+	return Boolean(command && WRITEISH_BASH.test(stripHarmlessRedirects(command)));
 }
 
 /**
@@ -398,18 +436,17 @@ export function classifyToolCall(
 	args: unknown,
 	cwd: string,
 ): EffectClass | undefined {
-	// Zone checks rank ABOVE [tools] overrides (including "none"): opting a
-	// tool out of classification must not open the kernel files or product
-	// zones. Zones apply only to mutating tools — reading/study is free.
+	// Protected boundaries rank ABOVE [tools] overrides (including "none").
+	// They apply only to mutating tools — reading/study is free.
 	const pathArg = extractPathArg(args);
 	if (pathArg && MUTATING_PATH_TOOLS.has(toolName)) {
 		const resolved = resolveArgPath(pathArg, cwd);
 		if (isProtectedPath(authority, pathArg, cwd)) return "authority";
-		if (isUnderProduct(authority, config, resolved)) return "products";
+		if (productCodeKind(authority, resolved)) return "product_code";
 	}
 
 	const overrideRaw = config.tools[toolName];
-	const override: EffectClass | undefined = overrideRaw === "none" ? undefined : overrideRaw;
+	const override: ConfigurableEffectClass | undefined = overrideRaw === "none" ? undefined : overrideRaw;
 
 	if (toolName === "bash") {
 		const command = bashCommandFromArgs(args);
@@ -420,7 +457,7 @@ export function classifyToolCall(
 			// blanked -m body can't hide constructs from the path strip.
 			const screened = stripIndexSafeGitPaths(stripMessageArgs(command));
 			if (bashTouchesProtected(screened)) return "authority";
-			if (bashTouchesProductWriteish(config, screened)) return "products";
+			if (bashTouchesProductCode(authority, screened, cwd)) return "product_code";
 			if (overrideRaw === "none") return undefined;
 			if (override) return override;
 			if (DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(screened))) return "irreversible";
@@ -671,31 +708,57 @@ export function evaluateToolCall(
 			};
 		}
 	}
+	if (
+		context?.actor === "product-worker" &&
+		isMutatingCall(toolName, args) &&
+		!productWorkerMutationAllowed(authority, toolName, args, cwd, context)
+	) {
+		return {
+			kind: "block",
+			effectClass: "product_code",
+			reason:
+				"Product-worker boundary: this actor may modify only its kernel-assigned worktree. Continue inside that worktree or return the task to the controller for reassignment; this boundary cannot be approved away.",
+		};
+	}
 
 	const config = readAuthorityConfig(authority);
 	let effectClass = classifyToolCall(authority, config, toolName, args, cwd);
 	if (!effectClass) return { kind: "allow" };
 
-	// Founder sessions vs agentic controller sessions (founder decision,
-	// 2026-08-06): the [products] zone exists to stop the controller's
-	// AUTONOMOUS work drifting into the software products — a founder asking
-	// for product work in an attended session IS the authority, so the zone
-	// allows there. Only the products class relaxes: kernel files and the
-	// inbox classified [authority] above stay gated in every session, and a
-	// destructive command re-classifies as [irreversible] so founder presence
-	// never silently covers history rewrites or force-pushes.
-	if (effectClass === "products" && context?.attended) {
+	// Product code is a role boundary, not an approval mode. A controller is
+	// read-only even when a founder is present; implementation happens in a
+	// kernel-assigned product-worker worktree. A product-worker's destructive
+	// commands still re-classify and hit the ordinary irreversible gate.
+	if (effectClass === "product_code") {
+		if (context?.actor !== "product-worker") {
+			return {
+				kind: "block",
+				effectClass,
+				reason:
+					"Product-development boundary: the company controller may read product code but cannot modify repositories or worktrees. Delegate the task through the product department's Chat; this boundary cannot be approved away.",
+			};
+		}
+		if (!productWorkerMutationAllowed(authority, toolName, args, cwd, context)) {
+			return {
+				kind: "block",
+				effectClass,
+				reason:
+					"Product-worker boundary: this mutation is outside the assigned worktree and cannot be approved away.",
+			};
+		}
 		const command = toolName === "bash" ? bashCommandFromArgs(args) : undefined;
 		const screened = command ? stripIndexSafeGitPaths(stripMessageArgs(command)) : undefined;
-		if (screened && DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(screened))) {
+		if (
+			screened &&
+			(DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(screened)) ||
+				/\bgh\s+pr\s+(?:merge|close)\b/i.test(screened))
+		) {
 			effectClass = "irreversible";
 		} else {
-			// Still resolved for the trail stamp: an attended allow from
-			// codified behavior records what code acted, same as any allow.
 			return {
 				kind: "allow",
-				effectClass: "products",
-				attended: true,
+				effectClass: "product_code",
+				actor: "product-worker",
 				behavior: resolveBehaviorSignature(authority, context?.behaviorPath),
 			};
 		}

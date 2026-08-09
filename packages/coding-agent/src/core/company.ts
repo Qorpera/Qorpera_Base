@@ -1,10 +1,10 @@
 /**
  * Company folder scaffold — the Qorpera Base spine (spec §2).
  *
- * The folder IS the company. Base defines seven spine entries plus the
- * materialized kernel files and never opines past that line: `app/` and
- * `work/` belong to the company's agent. Scaffolding is strictly idempotent
- * — existing files are never overwritten (a company's `company.md` is its
+ * The folder IS the company. Base defines the spine plus the product-
+ * development department kit and never opines past that line: `app/` and
+ * department-authored content belong to the company's agents. Scaffolding
+ * is strictly idempotent — existing files are never overwritten (a company's `company.md` is its
  * identity, not ours to reset). Sessions ARE the trail: the scaffold points
  * the project `sessionDir` at `./trail`, so every session's tree-shaped
  * JSONL record lands inside the company folder with no mirroring layer.
@@ -18,11 +18,12 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { getAgentDir } from "../config.ts";
-import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
+import { discoverAuthority } from "./authority.ts";
 
 /**
  * The kernel prompt (spec §5.2). L0 — companies and models may layer above
@@ -68,7 +69,9 @@ holds identity and intent only; working beliefs — pricing, plans, forecasts
 — live in \`app/substrates/\` where you can revise them as evidence arrives.
 
 Everything you think and do is recorded automatically: sessions land in
-\`trail/\` as append-only trees. You owe the record nothing — but it is
+\`trail/\` as append-only trees. Never compact, replace, expire, or delete
+that trail. When a session becomes too large, start a fresh session or, for
+product work, a fresh worktree. You owe the record nothing — but it is
 searchable history when you need to know why something is the way it is,
 and a smarter model than you will one day read it and redo your work
 better. Work in clean units so the record stays legible.
@@ -96,6 +99,15 @@ not by this text. Blocked effects file gate requests in \`inbox/\`
 automatically; keep working elsewhere while you wait. Never edit
 \`authority.toml\`, this file, or anything in \`inbox/\` other than your own
 \`msg-*.md\` items — the rest belongs to the human.
+
+Product code lives only inside \`departments/<product>-development/\`.
+As the company controller you may study product repositories, worktrees,
+pull requests, and their trails, but you cannot modify product code. Write
+briefs and delegate implementation through the department's Product Chat.
+That launches a product-worker in one assigned \`worktrees/<task>/\`
+directory. A product-worker changes only that worktree, tests and commits
+there, pushes its branch, and proposes integration through a pull request.
+Controller authority never turns into product-worker authority.
 
 \`userland/\` is your app's own code — this company's fork of the Qorpera
 Base chrome. Evolve it freely: change the UI, add views, commands, and
@@ -141,10 +153,6 @@ mode = "gate"      # editing this file, the kernel files, or inbox/.
                    # ALWAYS gated — the harness enforces this regardless of
                    # what this line says.
 
-# [products]       # software products the controller may READ and study
-# mode = "gate"    # freely but not MODIFY without approval. Root-relative.
-# paths = ["work/my-product"]
-
 # [tools]          # optional per-tool overrides, e.g.:
 # deploy = "irreversible"
 `;
@@ -172,6 +180,47 @@ const APP_MANIFEST_TEMPLATE = `{
 	"routines": []
 }
 `;
+
+const PRODUCT_DEPARTMENT_GITIGNORE = `# Product Git data belongs to the product repository, not the company repository.
+repository/
+worktrees/
+`;
+
+const PULL_REQUESTS_README = `# Pull Requests
+
+Local, synchronized pull-request read models for this product. Connectors or
+department routines may write one JSON record per pull request here. The
+product department UI reads these records; credentials never belong here.
+`;
+
+const PRODUCT_DEPARTMENT_KIND = "product-development";
+
+interface ProductDepartmentManifest {
+	version: 1;
+	kind: typeof PRODUCT_DEPARTMENT_KIND;
+	product: string;
+}
+
+export interface ProductDepartment {
+	/** Stable folder identifier, for example `qorpera-development`. */
+	id: string;
+	/** Product display name from the department manifest. */
+	name: string;
+	/** Root-relative department path. */
+	path: string;
+	/** Root-relative path of the controlling clone. */
+	repositoryPath: string;
+	/** Root-relative parent for task worktrees. */
+	worktreesPath: string;
+	/** Root-relative synchronized pull-request read model. */
+	pullRequestsPath: string;
+	repositoryExists: boolean;
+}
+
+export interface ProductWorktree {
+	path: string;
+	branch: string;
+}
 
 export interface ScaffoldResult {
 	root: string;
@@ -214,8 +263,8 @@ function readdirIsEmpty(dir: string): boolean {
 	}
 }
 
-/** Merge sessionDir into project settings without clobbering other keys. */
-function ensureProjectSessionDir(root: string, result: ScaffoldResult): void {
+/** Merge company runtime defaults into project settings without clobbering. */
+function ensureProjectSettings(root: string, result: ScaffoldResult): void {
 	const settingsDir = join(root, ".qorpera");
 	const settingsPath = join(settingsDir, "settings.json");
 	let settings: Record<string, unknown> = {};
@@ -227,14 +276,117 @@ function ensureProjectSessionDir(root: string, result: ScaffoldResult): void {
 			return;
 		}
 	}
-	if (settings.sessionDir !== undefined) {
+	let changed = false;
+	if (settings.sessionDir === undefined) {
+		settings.sessionDir = "./trail";
+		changed = true;
+	} else {
 		result.skipped.push(".qorpera/settings.json (sessionDir already set)");
-		return;
 	}
-	settings.sessionDir = "./trail";
+	if (settings.compaction === undefined) {
+		settings.compaction = { enabled: false };
+		changed = true;
+	} else if (
+		settings.compaction &&
+		typeof settings.compaction === "object" &&
+		(settings.compaction as Record<string, unknown>).enabled === undefined
+	) {
+		(settings.compaction as Record<string, unknown>).enabled = false;
+		changed = true;
+	} else {
+		result.skipped.push(".qorpera/settings.json (compaction already configured)");
+	}
+	if (!changed) return;
 	mkdirSync(settingsDir, { recursive: true });
 	writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8");
-	result.created.push(".qorpera/settings.json (sessionDir → ./trail)");
+	result.created.push(".qorpera/settings.json (trail retained; auto-compaction disabled)");
+}
+
+function productSlug(product: string): string {
+	const slug = product
+		.trim()
+		.replace(/[^A-Za-z0-9._-]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	return slug || "product";
+}
+
+function productDepartmentFromEntry(root: string, id: string): ProductDepartment | undefined {
+	if (!id.endsWith("-development") || id.includes("/") || id.includes("\\")) return undefined;
+	const path = join("departments", id);
+	try {
+		const manifest = JSON.parse(
+			readFileSync(join(root, path, "department.json"), "utf-8"),
+		) as Partial<ProductDepartmentManifest>;
+		if (manifest.version !== 1 || manifest.kind !== PRODUCT_DEPARTMENT_KIND || typeof manifest.product !== "string") {
+			return undefined;
+		}
+		const repositoryPath = join(path, "repository");
+		return {
+			id,
+			name: manifest.product,
+			path,
+			repositoryPath,
+			worktreesPath: join(path, "worktrees"),
+			pullRequestsPath: join(path, "pull-requests"),
+			repositoryExists: existsSync(join(root, repositoryPath, ".git")),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+/** Product-development departments are an optional Base kit, discovered from the folder. */
+export function listProductDepartments(rootDir: string): ProductDepartment[] {
+	const root = resolve(rootDir);
+	try {
+		return readdirSync(join(root, "departments"))
+			.map((id) => productDepartmentFromEntry(root, id))
+			.filter((entry): entry is ProductDepartment => entry !== undefined)
+			.sort((a, b) => a.name.localeCompare(b.name));
+	} catch {
+		return [];
+	}
+}
+
+/** Materialize the standard product-development department without overwriting it. */
+export function scaffoldProductDepartment(rootDir: string, product: string): ProductDepartment {
+	const root = resolve(rootDir);
+	const id = `${productSlug(product)}-development`;
+	const path = join("departments", id);
+	const result: ScaffoldResult = { root, created: [], skipped: [], gitInitialized: false };
+	const manifest: ProductDepartmentManifest = {
+		version: 1,
+		kind: PRODUCT_DEPARTMENT_KIND,
+		product: product.trim() || productSlug(product),
+	};
+	writeIfMissing(root, join(path, "department.json"), `${JSON.stringify(manifest, null, "\t")}\n`, result);
+	writeIfMissing(root, join(path, ".gitignore"), PRODUCT_DEPARTMENT_GITIGNORE, result);
+	ensureDir(root, join(path, "briefs"), result);
+	ensureDir(root, join(path, "worktrees"), result);
+	writeIfMissing(root, join(path, "pull-requests", "README.md"), PULL_REQUESTS_README, result);
+	mkdirSync(join(root, path, "repository"), { recursive: true });
+	return productDepartmentFromEntry(root, id)!;
+}
+
+/** Create one isolated product task branch/worktree from the controlling clone. */
+export function createProductWorktree(rootDir: string, department: ProductDepartment): ProductWorktree | undefined {
+	const root = resolve(rootDir);
+	if (!department.repositoryExists) return undefined;
+	const taskId = `${new Date()
+		.toISOString()
+		.replace(/[-:TZ.]/g, "")
+		.slice(0, 14)}-${randomUUID().slice(0, 8)}`;
+	const path = join(department.worktreesPath, taskId);
+	const branch = `qorpera/${department.id}/${taskId}`;
+	mkdirSync(join(root, department.worktreesPath), { recursive: true });
+	const result = spawnSync(
+		"git",
+		["-C", join(root, department.repositoryPath), "worktree", "add", "-b", branch, join(root, path)],
+		{ encoding: "utf-8", shell: false },
+	);
+	if (result.status === 0) return { path, branch };
+	console.error(`Could not create product worktree: ${result.stderr || result.stdout || "git failed"}`);
+	return undefined;
 }
 
 /**
@@ -272,8 +424,8 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	ensureDir(root, join("app", "substrates"), result);
 	ensureDir(root, join("app", "routines"), result);
 	ensureDir(root, join("app", "tools"), result);
-	ensureDir(root, "work", result);
-	ensureProjectSessionDir(root, result);
+	ensureDir(root, "departments", result);
+	ensureProjectSettings(root, result);
 
 	if (!existsSync(join(root, ".git"))) {
 		const git = spawnSync("git", ["init"], { cwd: root, stdio: "ignore", shell: false });
@@ -287,8 +439,8 @@ const CONCEPTION_SHARED = `Your primary source of understanding is data, not int
 
 const CONCEPTION_NEW = `This company folder was just created and company.md is still the template. Begin conception. ${CONCEPTION_SHARED}`;
 
-const CONCEPTION_INTEGRATE = (repoName: string) =>
-	`This company folder was just created around an existing repository at work/${repoName}. Begin conception with study: read that repository enough to understand what exists (do not modify it yet). ${CONCEPTION_SHARED}`;
+const CONCEPTION_INTEGRATE = (department: ProductDepartment) =>
+	`This company folder was just created around the ${department.name} product at ${department.repositoryPath}. Begin conception with study: read that repository enough to understand what exists. As controller, do not modify it; implementation belongs to a product-worker in ${department.worktreesPath}. ${CONCEPTION_SHARED}`;
 
 function printScaffoldReport(result: ScaffoldResult): void {
 	console.log(`Company spine at ${result.root}`);
@@ -316,20 +468,26 @@ function cloneInto(source: string, destination: string): boolean {
 	return clone.status === 0;
 }
 
-/** Clone an existing repo under work/ (the integrate flow). Returns false on failure. */
-export function integrateRepo(root: string, from: string): boolean {
-	const repoName = basenameOf(from);
-	const destination = join(root, "work", repoName);
+/** Clone an existing repo into its product-development department. */
+export function integrateRepo(root: string, from: string, product = basenameOf(from)): boolean {
+	const department = scaffoldProductDepartment(root, product);
+	const destination = join(root, department.repositoryPath);
 	if (existsSync(destination)) {
-		console.log(`  kept    work/${repoName} (already present)`);
-		return true;
+		try {
+			if (readdirSync(destination).length > 0) {
+				console.log(`  kept    ${department.repositoryPath} (already present)`);
+				return true;
+			}
+		} catch {
+			// cloneInto reports the useful error below
+		}
 	}
 	if (cloneInto(from, destination)) {
-		console.log(`  cloned  ${from} -> work/${repoName}`);
+		console.log(`  cloned  ${from} -> ${department.repositoryPath}`);
 		return true;
 	}
 	console.error(
-		`Could not clone ${from}. Point it at a git repository (path or URL), or copy the files into work/ yourself and re-run.`,
+		`Could not clone ${from}. Point it at a git repository (path or URL), or populate the product department repository and re-run.`,
 	);
 	return false;
 }
@@ -396,8 +554,30 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 
 	if (args[0] !== "company") return false;
 	const sub = args[1];
+	if (sub === "product" && args[2] === "add") {
+		const product = args[3];
+		const fromIndex = args.indexOf("--from");
+		const from = fromIndex >= 0 ? args[fromIndex + 1] : undefined;
+		if (!product || (fromIndex >= 0 && !from)) {
+			console.error("Usage: company product add <product-name> [--from <repo-path-or-url>]");
+			process.exitCode = 1;
+			return true;
+		}
+		const root = discoverAuthority(process.cwd())?.root;
+		if (!root) {
+			console.error("Run this command inside a company folder.");
+			process.exitCode = 1;
+			return true;
+		}
+		const department = scaffoldProductDepartment(root, product);
+		if (from && !integrateRepo(root, from, product)) process.exitCode = 1;
+		else console.log(`Product department ready at ${department.path}`);
+		return true;
+	}
 	if (sub !== "init") {
-		console.error(`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir]`);
+		console.error(
+			`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir] | company product add <name> [--from <repo>]`,
+		);
 		process.exitCode = 1;
 		return true;
 	}
@@ -421,7 +601,7 @@ function basenameOf(source: string): string {
  * If this company has never been conceived (company.md is still the
  * template), return the kickoff message to auto-send on session start — the
  * founder should never have to type "hello?" to make setup begin. Companies
- * with a product already in work/ get the study-first variant.
+ * with a product-development department get the study-first variant.
  */
 export function conceptionKickoff(root: string): string | undefined {
 	try {
@@ -430,39 +610,9 @@ export function conceptionKickoff(root: string): string | undefined {
 	} catch {
 		return undefined;
 	}
-	try {
-		const products = readdirSync(join(root, "work")).filter((name) => name !== ".gitkeep");
-		if (products.length > 0) return CONCEPTION_INTEGRATE(products[0]);
-	} catch {
-		// no work/ — fall through
-	}
+	const department = listProductDepartments(root).find((entry) => entry.repositoryExists);
+	if (department) return CONCEPTION_INTEGRATE(department);
 	return CONCEPTION_NEW;
-}
-
-// ---- session scopes (the scope selector's data) ----------------------------
-
-export interface ProductScope {
-	/** Root-relative path exactly as declared in authority.toml [products]. */
-	path: string;
-	/** Display name — the zone's basename. */
-	name: string;
-	/** Whether the directory currently exists in the company folder. */
-	exists: boolean;
-}
-
-/**
- * The company's declared product zones, straight from the ratified
- * authority.toml — the scope selector offers exactly these, so the founder
- * can only scope a session to a product the authority file already names.
- */
-export function listProductScopes(root: string): ProductScope[] {
-	const authority = discoverAuthority(root);
-	if (!authority) return [];
-	return readAuthorityConfig(authority).productPaths.map((path) => ({
-		path,
-		name: path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path,
-		exists: existsSync(resolve(join(root, path))),
-	}));
 }
 
 // ---- company registry (the hub's memory) ----------------------------------

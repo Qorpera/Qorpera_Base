@@ -1403,11 +1403,12 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("sends max_tokens for OpenCode completions models", async () => {
-		const cases = [getModel("opencode-go", "kimi-k2.6")!, getModel("opencode", "grok-build-0.1")!] as const;
+		const cases = [getModel("opencode-go", "kimi-k2.6")!, getModel("opencode", "kimi-k2.6")!] as const;
 
 		for (const model of cases) {
 			let payload: unknown;
-			expect(model.compat?.maxTokensField).toBe("max_tokens");
+			const compat = model.compat;
+			expect(compat && "maxTokensField" in compat ? compat.maxTokensField : undefined).toBe("max_tokens");
 
 			await streamSimple(
 				model,

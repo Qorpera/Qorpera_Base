@@ -23,7 +23,7 @@
  * company file. Everything this module reads or writes lives under
  * `<company>/userland/` — the fork, the pristine copy, staged updates,
  * saved versions, the manifest. The rest of the company folder (company.md,
- * app/, trail/, inbox/, work/) is invisible to fork/merge/version machinery.
+ * app/, trail/, inbox/, departments/) is invisible to fork/merge/version machinery.
  */
 
 import { createHash } from "node:crypto";

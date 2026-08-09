@@ -55,7 +55,8 @@ Decision matrix (rows = action source, columns = intent presence):
 
 |  | Founder present | Unattended |
 |---|---|---|
-| **Inward effects** (thought, `work/`, `app/`, trail) | free | free |
+| **Company inward effects** (thought, `app/`, department briefs, trail) | free | free |
+| **Product-code effects** | product-worker in assigned worktree only | product-worker in assigned worktree only |
 | **Improvised outward** (model ad-libs an action) | inline gate, as today | inbox gate, as today |
 | **Codified outward** (a routine/tool acts) | inline gate | **hash signed, else inbox gate** |
 
@@ -94,6 +95,12 @@ fact for recovery, not a governance object.
    rationale as trailers, enforced at the tool boundary. The agent
    explaining itself to its future self, not to a reviewer. **[exists]**
    since §9.2.
+4. **Product authority is delegated, never inferred from presence.** The
+   controller is read-only over product repositories and worktrees in every
+   mode. Product Chat creates an isolated worktree and assigns a
+   product-worker capability for that path only. This boundary has no
+   one-off approval path; destructive integration still uses the ordinary
+   irreversible gate.
 
 ## 5. Charter and rollback
 
@@ -104,7 +111,7 @@ files are gate-protected **[exists]**. Only the founder supplies intent;
 "better" is indexical and no capability level infers what the file is for.
 
 Rollback is always forward: `git revert` scoped to behavior paths (`app/`,
-`company.md`, kernel files). `trail/` and `work/` are state and never
+`company.md`, kernel files). `trail/` and product repositories/worktrees are state and never
 reverted. Caveat, accepted: carried-forward state written by newer behavior
 can be semantically stale for older behavior; schema checks can't catch
 this, so rollbacks log loudly (trail + inbox note) and degradation gets
