@@ -1,0 +1,455 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+	cacheSavingsUsd,
+	priceUsage,
+	type UsageCostSource,
+	type UsagePricing,
+	type UsageRateCatalog,
+	type UsageTokenTotals,
+} from "./usage-pricing.ts";
+
+export interface CompanyUsageWindow {
+	sinceDay: string;
+	untilDay: string;
+	timeZone: string;
+}
+
+export interface CompanyUsageProviderTotals {
+	provider: string;
+	costUsd: number;
+	totalTokens: number;
+	records: number;
+	costShare: number;
+	tokenShare: number;
+}
+
+export interface CompanyUsageModelTotals {
+	provider: string;
+	model: string;
+	costUsd: number;
+	totalTokens: number;
+	records: number;
+	costShare: number;
+}
+
+export interface CompanyUsageDailyProviderTotals {
+	provider: string;
+	costUsd: number;
+	totalTokens: number;
+}
+
+export interface CompanyUsageDailyTotals {
+	day: string;
+	costUsd: number;
+	totalTokens: number;
+	byProvider: CompanyUsageDailyProviderTotals[];
+}
+
+export interface CompanyUsageCoverage {
+	scannedSessions: number;
+	contributingSessions: number;
+	unreadableSessions: number;
+	malformedLines: number;
+	untimedRecords: number;
+}
+
+export interface CompanyUsageCostQuality {
+	providerReportedShare: number;
+	modelPricedShare: number;
+	unpricedShare: number;
+	cacheSavingsUsd: number;
+}
+
+export interface CompanyUsageSummary extends CompanyUsageWindow {
+	readAt: string;
+	costUsd: number;
+	uncachedInputTokens: number;
+	cachedInputTokens: number;
+	cacheCreationTokens: number;
+	outputTokens: number;
+	reasoningTokens: number;
+	totalTokens: number;
+	records: number;
+	sessions: number;
+	pricedRecords: number;
+	unpricedRecords: number;
+	costQuality: CompanyUsageCostQuality;
+	pricing: UsagePricing;
+	providers: CompanyUsageProviderTotals[];
+	models: CompanyUsageModelTotals[];
+	daily: CompanyUsageDailyTotals[];
+	coverage: CompanyUsageCoverage;
+}
+
+interface UsageNumbers extends UsageTokenTotals {
+	totalTokens: number;
+}
+
+interface UsageRecord extends UsageNumbers {
+	day: string;
+	provider: string;
+	model: string;
+	reportedCostUsd: number | null;
+}
+
+interface PricedUsageRecord extends UsageRecord {
+	costUsd: number;
+	costSource: UsageCostSource;
+}
+
+interface ModelIdentity {
+	provider: string;
+	model: string;
+}
+
+interface MutableTotals {
+	costUsd: number;
+	totalTokens: number;
+	records: number;
+}
+
+interface MutableDailyTotals extends MutableTotals {
+	byProvider: Map<string, MutableTotals>;
+}
+
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_WINDOW_DAYS = 366;
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+function finiteNonNegative(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function validDayValue(day: string): number | undefined {
+	if (!DAY_PATTERN.test(day)) return undefined;
+	const value = Date.parse(`${day}T00:00:00Z`);
+	if (!Number.isFinite(value) || new Date(value).toISOString().slice(0, 10) !== day) return undefined;
+	return value;
+}
+
+export function companyUsageWindowError(window: CompanyUsageWindow): string | undefined {
+	const since = validDayValue(window.sinceDay);
+	const until = validDayValue(window.untilDay);
+	if (since === undefined || until === undefined || until < since) return "invalid day range";
+	if ((until - since) / 86_400_000 + 1 > MAX_WINDOW_DAYS) return "usage window is too large";
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: window.timeZone }).format(0);
+	} catch {
+		return "invalid time zone";
+	}
+	return undefined;
+}
+
+function dayInTimeZone(timestamp: number, timeZone: string): string | undefined {
+	if (!Number.isFinite(timestamp)) return undefined;
+	try {
+		const parts = new Intl.DateTimeFormat("en-US", {
+			timeZone,
+			year: "numeric",
+			month: "2-digit",
+			day: "2-digit",
+		}).formatToParts(new Date(timestamp));
+		const values = new Map(parts.map((part) => [part.type, part.value]));
+		const year = values.get("year");
+		const month = values.get("month");
+		const day = values.get("day");
+		return year && month && day ? `${year}-${month}-${day}` : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function timestampOf(entry: Record<string, unknown>, payload?: Record<string, unknown>): number | undefined {
+	const entryTimestamp = entry.timestamp;
+	if (typeof entryTimestamp === "string") {
+		const parsed = Date.parse(entryTimestamp);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	const payloadTimestamp = payload?.timestamp;
+	if (typeof payloadTimestamp === "number" && Number.isFinite(payloadTimestamp)) return payloadTimestamp;
+	if (typeof payloadTimestamp === "string") {
+		const parsed = Date.parse(payloadTimestamp);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	return undefined;
+}
+
+function usageNumbers(value: unknown): UsageNumbers | undefined {
+	const usage = asRecord(value);
+	if (!usage) return undefined;
+	const uncachedInputTokens = finiteNonNegative(usage.input);
+	const outputTokens = finiteNonNegative(usage.output);
+	const cachedInputTokens = finiteNonNegative(usage.cacheRead);
+	const cacheCreationTokens = finiteNonNegative(usage.cacheWrite);
+	const reasoningTokens = Math.min(outputTokens, finiteNonNegative(usage.reasoning));
+	const componentTotal = uncachedInputTokens + outputTokens + cachedInputTokens + cacheCreationTokens;
+	const reportedTotal = finiteNonNegative(usage.totalTokens);
+	const totalTokens = componentTotal > 0 ? componentTotal : reportedTotal;
+	if (totalTokens === 0) return undefined;
+	return {
+		uncachedInputTokens,
+		cachedInputTokens,
+		cacheCreationTokens,
+		outputTokens,
+		reasoningTokens,
+		totalTokens,
+	};
+}
+
+function nonEmptyString(value: unknown, fallback: string): string {
+	return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function assistantIdentity(payload: Record<string, unknown>): ModelIdentity {
+	return {
+		provider: payload.api === "codex-app-server" ? "codex" : nonEmptyString(payload.provider, "unknown"),
+		model: nonEmptyString(payload.responseModel, nonEmptyString(payload.model, "Unknown model")),
+	};
+}
+
+function modelChangeIdentity(entry: Record<string, unknown>): ModelIdentity | undefined {
+	if (entry.type === "model_change") {
+		return {
+			provider: nonEmptyString(entry.provider, "unknown"),
+			model: nonEmptyString(entry.modelId, "Unknown model"),
+		};
+	}
+	if (entry.type !== "message") return undefined;
+	const payload = asRecord(entry.message);
+	return payload?.role === "assistant" ? assistantIdentity(payload) : undefined;
+}
+
+function explicitCostUsd(entry: Record<string, unknown>, payload?: Record<string, unknown>): number | null {
+	const value = entry.costUSD ?? payload?.costUSD;
+	return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function usageRecord(
+	entry: Record<string, unknown>,
+	timeZone: string,
+	activeModel: ModelIdentity | undefined,
+): UsageRecord | "untimed" | undefined {
+	let usage: UsageNumbers | undefined;
+	let payload: Record<string, unknown> | undefined;
+	let identity: ModelIdentity = activeModel ?? { provider: "qorpera", model: "Summaries" };
+
+	if (entry.type === "message") {
+		payload = asRecord(entry.message);
+		if (!payload) return undefined;
+		if (payload.role === "assistant") {
+			usage = usageNumbers(payload.usage);
+			identity = assistantIdentity(payload);
+		} else if (payload.role === "toolResult") {
+			usage = usageNumbers(payload.usage);
+			identity = { provider: "tools", model: nonEmptyString(payload.toolName, "Tool execution") };
+		} else {
+			return undefined;
+		}
+	} else if (entry.type === "compaction" || entry.type === "branch_summary") {
+		usage = usageNumbers(entry.usage);
+	} else {
+		return undefined;
+	}
+
+	if (!usage) return undefined;
+	const timestamp = timestampOf(entry, payload);
+	if (timestamp === undefined) return "untimed";
+	const day = dayInTimeZone(timestamp, timeZone);
+	if (!day) return "untimed";
+	return {
+		...usage,
+		day,
+		provider: identity.provider,
+		model: identity.model,
+		reportedCostUsd: explicitCostUsd(entry, payload),
+	};
+}
+
+function mutableTotals(): MutableTotals {
+	return { costUsd: 0, totalTokens: 0, records: 0 };
+}
+
+function addRecord(totals: MutableTotals, record: PricedUsageRecord): void {
+	totals.costUsd += record.costUsd;
+	totals.totalTokens += record.totalTokens;
+	totals.records += 1;
+}
+
+function addToMap(map: Map<string, MutableTotals>, key: string, record: PricedUsageRecord): void {
+	let totals = map.get(key);
+	if (!totals) {
+		totals = mutableTotals();
+		map.set(key, totals);
+	}
+	addRecord(totals, record);
+}
+
+/**
+ * Aggregate the active company's durable trail. Token counts and attribution
+ * come only from that trail; API-equivalent cost is reconstructed against the
+ * same LiteLLM rate shape used by T3 Code.
+ */
+export function readCompanyUsage(
+	root: string,
+	window: CompanyUsageWindow,
+	rateCatalog: UsageRateCatalog,
+): CompanyUsageSummary {
+	const windowError = companyUsageWindowError(window);
+	if (windowError) throw new Error(windowError);
+
+	const providerTotals = new Map<string, MutableTotals>();
+	const modelTotals = new Map<string, MutableTotals>();
+	const dailyTotals = new Map<string, MutableDailyTotals>();
+	let costUsd = 0;
+	let uncachedInputTokens = 0;
+	let cachedInputTokens = 0;
+	let cacheCreationTokens = 0;
+	let outputTokens = 0;
+	let reasoningTokens = 0;
+	let records = 0;
+	let pricedRecords = 0;
+	let unpricedRecords = 0;
+	let providerReportedRecords = 0;
+	let modelPricedRecords = 0;
+	let totalCacheSavingsUsd = 0;
+	let scannedSessions = 0;
+	let contributingSessions = 0;
+	let unreadableSessions = 0;
+	let malformedLines = 0;
+	let untimedRecords = 0;
+
+	const trailDir = join(root, "trail");
+	const files = existsSync(trailDir) ? readdirSync(trailDir).filter((file) => file.endsWith(".jsonl")) : [];
+	for (const file of files) {
+		scannedSessions += 1;
+		let content: string;
+		try {
+			content = readFileSync(join(trailDir, file), "utf-8");
+		} catch {
+			unreadableSessions += 1;
+			continue;
+		}
+		let contributed = false;
+		let activeModel: ModelIdentity | undefined;
+		const lines = content.split("\n");
+		for (const [lineIndex, line] of lines.entries()) {
+			if (!line.trim()) continue;
+			let entry: Record<string, unknown>;
+			try {
+				const parsed = JSON.parse(line) as unknown;
+				const record = asRecord(parsed);
+				if (!record) {
+					malformedLines += 1;
+					continue;
+				}
+				entry = record;
+			} catch {
+				// A live session can be observed between the write and newline of its
+				// newest record. Ignore that transient suffix instead of diagnosing it.
+				if (lineIndex === lines.length - 1 && !content.endsWith("\n")) continue;
+				malformedLines += 1;
+				continue;
+			}
+			const record = usageRecord(entry, window.timeZone, activeModel);
+			activeModel = modelChangeIdentity(entry) ?? activeModel;
+			if (record === "untimed") {
+				untimedRecords += 1;
+				continue;
+			}
+			if (!record || record.day < window.sinceDay || record.day > window.untilDay) continue;
+			const priced = priceUsage(rateCatalog.rates, record.model, record, record.reportedCostUsd);
+			const pricedRecord: PricedUsageRecord = { ...record, ...priced };
+
+			contributed = true;
+			costUsd += pricedRecord.costUsd;
+			uncachedInputTokens += pricedRecord.uncachedInputTokens;
+			cachedInputTokens += pricedRecord.cachedInputTokens;
+			cacheCreationTokens += pricedRecord.cacheCreationTokens;
+			outputTokens += pricedRecord.outputTokens;
+			reasoningTokens += pricedRecord.reasoningTokens;
+			totalCacheSavingsUsd += cacheSavingsUsd(rateCatalog.rates, pricedRecord.model, pricedRecord);
+			records += 1;
+			if (pricedRecord.costSource === "unpriced") unpricedRecords += 1;
+			else {
+				pricedRecords += 1;
+				if (pricedRecord.costSource === "providerReported") providerReportedRecords += 1;
+				else modelPricedRecords += 1;
+			}
+
+			addToMap(providerTotals, pricedRecord.provider, pricedRecord);
+			addToMap(modelTotals, `${pricedRecord.provider}\u0000${pricedRecord.model}`, pricedRecord);
+			let day = dailyTotals.get(pricedRecord.day);
+			if (!day) {
+				day = { ...mutableTotals(), byProvider: new Map<string, MutableTotals>() };
+				dailyTotals.set(pricedRecord.day, day);
+			}
+			addRecord(day, pricedRecord);
+			addToMap(day.byProvider, pricedRecord.provider, pricedRecord);
+		}
+		if (contributed) contributingSessions += 1;
+	}
+
+	const totalTokens = uncachedInputTokens + cachedInputTokens + cacheCreationTokens + outputTokens;
+	const providers = Array.from(providerTotals, ([provider, totals]) => ({
+		provider,
+		...totals,
+		costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
+		tokenShare: totalTokens === 0 ? 0 : totals.totalTokens / totalTokens,
+	})).sort((left, right) => right.costUsd - left.costUsd || right.totalTokens - left.totalTokens);
+	const models = Array.from(modelTotals, ([key, totals]) => {
+		const separator = key.indexOf("\u0000");
+		return {
+			provider: key.slice(0, separator),
+			model: key.slice(separator + 1),
+			...totals,
+			costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
+		};
+	}).sort((left, right) => right.costUsd - left.costUsd || right.totalTokens - left.totalTokens);
+	const daily = Array.from(dailyTotals, ([day, totals]) => ({
+		day,
+		costUsd: totals.costUsd,
+		totalTokens: totals.totalTokens,
+		byProvider: Array.from(totals.byProvider, ([provider, providerDay]) => ({
+			provider,
+			costUsd: providerDay.costUsd,
+			totalTokens: providerDay.totalTokens,
+		})).sort((left, right) => left.provider.localeCompare(right.provider)),
+	})).sort((left, right) => left.day.localeCompare(right.day));
+
+	return {
+		...window,
+		readAt: new Date().toISOString(),
+		costUsd,
+		uncachedInputTokens,
+		cachedInputTokens,
+		cacheCreationTokens,
+		outputTokens,
+		reasoningTokens,
+		totalTokens,
+		records,
+		sessions: contributingSessions,
+		pricedRecords,
+		unpricedRecords,
+		costQuality: {
+			providerReportedShare: records === 0 ? 0 : providerReportedRecords / records,
+			modelPricedShare: records === 0 ? 0 : modelPricedRecords / records,
+			unpricedShare: records === 0 ? 0 : unpricedRecords / records,
+			cacheSavingsUsd: totalCacheSavingsUsd,
+		},
+		pricing: rateCatalog.pricing,
+		providers,
+		models,
+		daily,
+		coverage: {
+			scannedSessions,
+			contributingSessions,
+			unreadableSessions,
+			malformedLines,
+			untimedRecords,
+		},
+	};
+}

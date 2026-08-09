@@ -608,10 +608,13 @@ function show(view) {
 	$("view-surfacewrap").style.display = view === "surface" ? "flex" : "none";
 	$("view-surfacewrap").classList.toggle("chat-open", sidechatOpen);
 	$("view-panel").style.display = view === "inbox" || view === "activity" ? "block" : "none";
+	$("view-usage").style.display = view === "usage" ? "block" : "none";
 	$("inboxBtn").className = view === "inbox" ? "active" : "";
 	$("activityBtn").className = view === "activity" ? "active" : "";
+	$("usageBtn").classList.toggle("active", view === "usage");
 	if (view === "inbox") renderInbox();
 	if (view === "activity") renderActivity();
+	if (view === "usage") window.qorperaUsage.open({ backendUrl, onBack: () => show("chat") });
 	if (view !== "surface") currentSurface = null;
 	renderCompanyNavSafe();
 }

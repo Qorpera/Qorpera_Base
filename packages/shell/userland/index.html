@@ -5,6 +5,7 @@
 <title>Qorpera Base</title>
 <link rel="stylesheet" href="./tokens.css">
 <link rel="stylesheet" href="./base.css">
+<link rel="stylesheet" href="./usage.css">
 </head>
 <body>
 <header id="titlebar">
@@ -34,6 +35,10 @@
 		<h2>Surfaces</h2>
 		<div id="surfaces"><div class="empty" style="padding:6px">none built yet</div></div>
 		<div class="navspacer"></div>
+		<button id="usageBtn" class="utilityNav" onclick="show('usage')">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V9M10 19V5M16 19v-7M22 19V2"/></svg>
+			<span>Usage</span>
+		</button>
 		<button class="profileRow" onclick="openSettings('general')"><span class="avatar">F</span><span class="profileText">Founder<br><small>Settings</small></span></button>
 	</div>
 </nav>
@@ -85,6 +90,7 @@
 		<button id="sidechatTab" onclick="toggleSidechat(true)" title="Talk to the controller about this surface">Chat</button>
 	</div>
 	<div id="view-panel"></div>
+	<div id="view-usage"></div>
 	<div id="status"></div>
 </main>
 </div>
@@ -103,6 +109,7 @@
 	<div id="settingsContent"></div>
 </div>
 <script src="./marked.umd.js"></script>
+<script src="./usage.js"></script>
 <script src="./renderer.js"></script>
 </body>
 </html>

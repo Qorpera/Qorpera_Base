@@ -26,6 +26,8 @@ import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
 import { listProductScopes } from "./company.ts";
+import { readUsageRateCatalog, type UsageRateCatalog } from "./usage-pricing.ts";
+import { companyUsageWindowError, readCompanyUsage } from "./usage-summary.ts";
 
 export interface CompanyAppOptions {
 	root: string;
@@ -40,6 +42,8 @@ export interface CompanyAppOptions {
 	 * the served chrome — a weaker posture, acceptable only for that mode.
 	 */
 	authToken?: string;
+	/** Optional pricing source override for deterministic embedding and tests. */
+	usageRateCatalog?: () => Promise<UsageRateCatalog>;
 }
 
 interface InboxItem {
@@ -597,11 +601,12 @@ setInterval(refresh, 2000);
 
 export function createCompanyAppServer(options: CompanyAppOptions): Server {
 	const root = resolve(options.root);
+	const usageRateCatalog = options.usageRateCatalog ?? readUsageRateCatalog;
 	const authToken =
 		options.authToken ?? createHash("sha256").update(`${root}${Date.now()}${Math.random()}`).digest("hex");
 	const embedTokenInChrome = options.authToken === undefined;
 	const authorized = (request: IncomingMessage): boolean => request.headers["x-qorpera-token"] === authToken;
-	return createServer((request: IncomingMessage, response: ServerResponse) => {
+	return createServer(async (request: IncomingMessage, response: ServerResponse) => {
 		const url = new URL(request.url ?? "/", "http://localhost");
 		if (url.pathname === "/") {
 			response
@@ -611,6 +616,29 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 		}
 		if (url.pathname === "/api/state") {
 			response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(stateFor(root)));
+			return;
+		}
+		if (url.pathname === "/api/usage" && request.method === "GET") {
+			const window = {
+				sinceDay: url.searchParams.get("sinceDay") ?? "",
+				untilDay: url.searchParams.get("untilDay") ?? "",
+				timeZone: url.searchParams.get("timeZone") ?? "",
+			};
+			const windowError = companyUsageWindowError(window);
+			if (windowError) {
+				response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: windowError }));
+				return;
+			}
+			try {
+				const rates = await usageRateCatalog();
+				response
+					.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+					.end(JSON.stringify(readCompanyUsage(root, window, rates)));
+			} catch (error) {
+				response
+					.writeHead(500, { "content-type": "application/json" })
+					.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+			}
 			return;
 		}
 		if (url.pathname === "/assets/surface.css") {

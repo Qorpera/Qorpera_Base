@@ -10,15 +10,42 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCompanyAppServer } from "../src/core/app-server.ts";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
 import { scaffoldCompany } from "../src/core/company.ts";
+import { LITELLM_RATES_URL, parseUsageRateTable, type UsageRateCatalog } from "../src/core/usage-pricing.ts";
 
 let root: string;
 let server: Server | undefined;
 let base: string;
 
+const TEST_USAGE_RATE_CATALOG: UsageRateCatalog = {
+	rates: parseUsageRateTable({
+		"openai/gpt-5.3-codex": {
+			input_cost_per_token: 0.000001,
+			output_cost_per_token: 0.000002,
+			cache_read_input_token_cost: 0.0000001,
+		},
+		"anthropic/claude-sonnet": {
+			input_cost_per_token: 0.000003,
+			output_cost_per_token: 0.000015,
+			cache_read_input_token_cost: 0.0000003,
+			cache_creation_input_token_cost: 0.00000375,
+		},
+	}),
+	pricing: {
+		status: "cached",
+		source: LITELLM_RATES_URL,
+		fetchedAt: "2026-08-09T00:00:00.000Z",
+		knownModels: 2,
+	},
+};
+
 beforeEach(async () => {
 	root = join(tmpdir(), `qorpera-app-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	scaffoldCompany(root);
-	server = createCompanyAppServer({ root, authToken: "test-token" });
+	server = createCompanyAppServer({
+		root,
+		authToken: "test-token",
+		usageRateCatalog: async () => TEST_USAGE_RATE_CATALOG,
+	});
 	await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
 	const address = server!.address() as { port: number };
 	base = `http://127.0.0.1:${address.port}`;
@@ -87,6 +114,120 @@ describe("company app server", () => {
 		// Traversal out of app/substrates is refused.
 		const traversal = await fetch(`${base}/api/substrate/..%2F..%2Fauthority.toml`);
 		expect(traversal.status).toBe(403);
+	});
+
+	it("reports active-company trail usage priced with T3-compatible model rates", async () => {
+		writeFileSync(
+			join(root, "trail", "2026-08-08T10-00-00-000Z_usage.jsonl"),
+			`${[
+				JSON.stringify({ type: "session", version: 3, id: "usage", timestamp: "2026-08-08T10:00:00Z", cwd: root }),
+				JSON.stringify({
+					type: "message",
+					id: "a",
+					parentId: null,
+					timestamp: "2026-08-08T12:00:00Z",
+					message: {
+						role: "assistant",
+						api: "codex-app-server",
+						provider: "openai",
+						model: "gpt-5.3-codex",
+						usage: {
+							input: 50,
+							output: 10,
+							cacheRead: 20,
+							cacheWrite: 0,
+							totalTokens: 80,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+					},
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "b",
+					parentId: "a",
+					timestamp: "2026-08-08T22:30:00Z",
+					message: {
+						role: "assistant",
+						api: "anthropic-messages",
+						provider: "anthropic",
+						model: "claude-sonnet",
+						usage: {
+							input: 100,
+							output: 20,
+							cacheRead: 40,
+							cacheWrite: 10,
+							reasoning: 5,
+							totalTokens: 170,
+							cost: { input: 0.004, output: 0.006, cacheRead: 0.001, cacheWrite: 0.001, total: 0.012 },
+						},
+					},
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "c",
+					parentId: "b",
+					timestamp: "2026-08-09T08:00:00Z",
+					message: {
+						role: "toolResult",
+						toolName: "image_generation",
+						usage: {
+							input: 0,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 1,
+							cost: { input: 0, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.02 },
+						},
+					},
+				}),
+				"not-json",
+			].join("\n")}\n`,
+			"utf-8",
+		);
+
+		const params = new URLSearchParams({
+			sinceDay: "2026-08-08",
+			untilDay: "2026-08-09",
+			timeZone: "Europe/Copenhagen",
+		});
+		const response = await fetch(`${base}/api/usage?${params}`);
+		expect(response.status).toBe(200);
+		const usage = (await response.json()) as {
+			costUsd: number;
+			totalTokens: number;
+			records: number;
+			sessions: number;
+			pricedRecords: number;
+			unpricedRecords: number;
+			reasoningTokens: number;
+			costQuality: { cacheSavingsUsd: number; modelPricedShare: number; unpricedShare: number };
+			pricing: { status: string; source: string; knownModels: number };
+			providers: Array<{ provider: string; totalTokens: number }>;
+			daily: Array<{ day: string; totalTokens: number }>;
+			coverage: { malformedLines: number };
+		};
+		expect(usage).toMatchObject({
+			totalTokens: 251,
+			records: 3,
+			sessions: 1,
+			pricedRecords: 2,
+			unpricedRecords: 1,
+			reasoningTokens: 5,
+			pricing: { status: "cached", source: LITELLM_RATES_URL, knownModels: 2 },
+			coverage: { malformedLines: 1 },
+		});
+		expect(usage.costUsd).toBeCloseTo(0.0007215, 10);
+		expect(usage.costQuality.cacheSavingsUsd).toBeCloseTo(0.000126, 10);
+		expect(usage.costQuality.modelPricedShare).toBeCloseTo(2 / 3, 10);
+		expect(usage.costQuality.unpricedShare).toBeCloseTo(1 / 3, 10);
+		expect(usage.providers.find((provider) => provider.provider === "codex")?.totalTokens).toBe(80);
+		expect(usage.daily).toEqual([
+			expect.objectContaining({ day: "2026-08-08", totalTokens: 80 }),
+			expect.objectContaining({ day: "2026-08-09", totalTokens: 171 }),
+		]);
+
+		const invalid = await fetch(`${base}/api/usage?sinceDay=2026-08-08&untilDay=2026-08-09&timeZone=not-a-zone`);
+		expect(invalid.status).toBe(400);
 	});
 
 	it("lists trail sessions and serves the controller↔founder message round-trip", async () => {
