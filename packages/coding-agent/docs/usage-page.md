@@ -14,10 +14,13 @@ deduplicates their results. Qorpera already has the company boundary it needs:
 each company's `trail/*.jsonl` files contain normalized usage returned by its
 model adapters.
 
-The integration therefore has two Qorpera-owned parts:
+The integration therefore has three Qorpera-owned parts:
 
 - `readCompanyUsage()` aggregates only the active company's trail. It never
-  reads provider home directories.
+  reads provider home directories. Unchanged trail files reuse a bounded,
+  in-memory normalized-record cache keyed by file size and modification time;
+  changed and deleted files invalidate that read model. The cache is not a
+  second durable usage store.
 - `readUsageRateCatalog()` downloads the public LiteLLM model-rate document
   used by T3 Code. The document is cached for 24 hours in
   `~/.qorpera/agent/usage-model-rates.json`; no trail or company data is sent
