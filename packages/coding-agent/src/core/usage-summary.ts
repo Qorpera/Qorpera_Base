@@ -1,5 +1,6 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import {
 	cacheSavingsUsd,
 	priceUsage,
@@ -48,6 +49,7 @@ export interface CompanyUsageDailyTotals {
 
 export interface CompanyUsageCoverage {
 	scannedSessions: number;
+	cachedSessions: number;
 	contributingSessions: number;
 	unreadableSessions: number;
 	malformedLines: number;
@@ -86,16 +88,34 @@ interface UsageNumbers extends UsageTokenTotals {
 	totalTokens: number;
 }
 
-interface UsageRecord extends UsageNumbers {
-	day: string;
+interface CachedUsageRecord extends UsageNumbers {
+	timestamp: number;
 	provider: string;
 	model: string;
 	reportedCostUsd: number | null;
 }
 
-interface PricedUsageRecord extends UsageRecord {
+interface PricedUsageRecord extends CachedUsageRecord {
+	day: string;
 	costUsd: number;
 	costSource: UsageCostSource;
+}
+
+interface CachedUsageFile {
+	size: number;
+	mtimeMs: number;
+	records: CachedUsageRecord[];
+	malformedLines: number;
+	untimedRecords: number;
+	minTimestamp: number;
+	maxTimestamp: number;
+}
+
+interface UsageFileCacheEntry {
+	size: number;
+	mtimeMs: number;
+	value?: CachedUsageFile;
+	pending?: Promise<CachedUsageFile>;
 }
 
 interface ModelIdentity {
@@ -115,6 +135,10 @@ interface MutableDailyTotals extends MutableTotals {
 
 const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_WINDOW_DAYS = 366;
+const MAX_CACHED_TRAIL_DIRECTORIES = 8;
+const EVENT_LOOP_YIELD_INTERVAL = 2_000;
+const MAX_TIME_ZONE_OFFSET_MS = 14 * 60 * 60 * 1_000;
+const usageFileCaches = new Map<string, Map<string, UsageFileCacheEntry>>();
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
@@ -144,15 +168,10 @@ export function companyUsageWindowError(window: CompanyUsageWindow): string | un
 	return undefined;
 }
 
-function dayInTimeZone(timestamp: number, timeZone: string): string | undefined {
+function dayInTimeZone(timestamp: number, formatter: Intl.DateTimeFormat): string | undefined {
 	if (!Number.isFinite(timestamp)) return undefined;
 	try {
-		const parts = new Intl.DateTimeFormat("en-US", {
-			timeZone,
-			year: "numeric",
-			month: "2-digit",
-			day: "2-digit",
-		}).formatToParts(new Date(timestamp));
+		const parts = formatter.formatToParts(new Date(timestamp));
 		const values = new Map(parts.map((part) => [part.type, part.value]));
 		const year = values.get("year");
 		const month = values.get("month");
@@ -230,9 +249,8 @@ function explicitCostUsd(entry: Record<string, unknown>, payload?: Record<string
 
 function usageRecord(
 	entry: Record<string, unknown>,
-	timeZone: string,
 	activeModel: ModelIdentity | undefined,
-): UsageRecord | "untimed" | undefined {
+): CachedUsageRecord | "untimed" | undefined {
 	let usage: UsageNumbers | undefined;
 	let payload: Record<string, unknown> | undefined;
 	let identity: ModelIdentity = activeModel ?? { provider: "qorpera", model: "Summaries" };
@@ -258,15 +276,105 @@ function usageRecord(
 	if (!usage) return undefined;
 	const timestamp = timestampOf(entry, payload);
 	if (timestamp === undefined) return "untimed";
-	const day = dayInTimeZone(timestamp, timeZone);
-	if (!day) return "untimed";
 	return {
 		...usage,
-		day,
+		timestamp,
 		provider: identity.provider,
 		model: identity.model,
 		reportedCostUsd: explicitCostUsd(entry, payload),
 	};
+}
+
+function trailCache(trailDir: string): Map<string, UsageFileCacheEntry> {
+	const existing = usageFileCaches.get(trailDir);
+	if (existing) {
+		usageFileCaches.delete(trailDir);
+		usageFileCaches.set(trailDir, existing);
+		return existing;
+	}
+
+	const created = new Map<string, UsageFileCacheEntry>();
+	usageFileCaches.set(trailDir, created);
+	while (usageFileCaches.size > MAX_CACHED_TRAIL_DIRECTORIES) {
+		const oldest = usageFileCaches.keys().next().value;
+		if (oldest === undefined) break;
+		usageFileCaches.delete(oldest);
+	}
+	return created;
+}
+
+async function parseUsageFile(path: string, size: number, mtimeMs: number): Promise<CachedUsageFile> {
+	const content = await readFile(path, "utf-8");
+	const records: CachedUsageRecord[] = [];
+	let malformedLines = 0;
+	let untimedRecords = 0;
+	let minTimestamp = Number.POSITIVE_INFINITY;
+	let maxTimestamp = Number.NEGATIVE_INFINITY;
+	let activeModel: ModelIdentity | undefined;
+	const lines = content.split("\n");
+	for (const [lineIndex, line] of lines.entries()) {
+		if (lineIndex > 0 && lineIndex % EVENT_LOOP_YIELD_INTERVAL === 0) await yieldToEventLoop();
+		if (!line.trim()) continue;
+		let entry: Record<string, unknown>;
+		try {
+			const parsed = JSON.parse(line) as unknown;
+			const record = asRecord(parsed);
+			if (!record) {
+				malformedLines += 1;
+				continue;
+			}
+			entry = record;
+		} catch {
+			// A live session can be observed between the write and newline of its
+			// newest record. Ignore that transient suffix instead of diagnosing it.
+			if (lineIndex === lines.length - 1 && !content.endsWith("\n")) continue;
+			malformedLines += 1;
+			continue;
+		}
+
+		const record = usageRecord(entry, activeModel);
+		activeModel = modelChangeIdentity(entry) ?? activeModel;
+		if (record === "untimed") {
+			untimedRecords += 1;
+			continue;
+		}
+		if (!record) continue;
+		records.push(record);
+		minTimestamp = Math.min(minTimestamp, record.timestamp);
+		maxTimestamp = Math.max(maxTimestamp, record.timestamp);
+	}
+
+	return { size, mtimeMs, records, malformedLines, untimedRecords, minTimestamp, maxTimestamp };
+}
+
+async function loadUsageFile(
+	cache: Map<string, UsageFileCacheEntry>,
+	file: string,
+	path: string,
+	size: number,
+	mtimeMs: number,
+): Promise<{ file: CachedUsageFile; cached: boolean }> {
+	const cached = cache.get(file);
+	if (cached?.size === size && cached.mtimeMs === mtimeMs) {
+		if (cached.value) return { file: cached.value, cached: true };
+		if (cached.pending) return { file: await cached.pending, cached: true };
+	}
+
+	const entry: UsageFileCacheEntry = { size, mtimeMs };
+	const pending = parseUsageFile(path, size, mtimeMs);
+	entry.pending = pending;
+	cache.set(file, entry);
+	try {
+		const value = await pending;
+		if (cache.get(file) === entry) {
+			entry.value = value;
+			entry.pending = undefined;
+		}
+		return { file: value, cached: false };
+	} catch (error) {
+		if (cache.get(file) === entry) cache.delete(file);
+		throw error;
+	}
 }
 
 function mutableTotals(): MutableTotals {
@@ -293,13 +401,21 @@ function addToMap(map: Map<string, MutableTotals>, key: string, record: PricedUs
  * come only from that trail; API-equivalent cost is reconstructed against the
  * same LiteLLM rate shape used by T3 Code.
  */
-export function readCompanyUsage(
+export async function readCompanyUsage(
 	root: string,
 	window: CompanyUsageWindow,
 	rateCatalog: UsageRateCatalog,
-): CompanyUsageSummary {
+): Promise<CompanyUsageSummary> {
 	const windowError = companyUsageWindowError(window);
 	if (windowError) throw new Error(windowError);
+	const dayFormatter = new Intl.DateTimeFormat("en-US", {
+		timeZone: window.timeZone,
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+	});
+	const earliestTimestamp = Date.parse(`${window.sinceDay}T00:00:00Z`) - MAX_TIME_ZONE_OFFSET_MS;
+	const latestTimestamp = Date.parse(`${window.untilDay}T00:00:00Z`) + 86_400_000 + MAX_TIME_ZONE_OFFSET_MS;
 
 	const providerTotals = new Map<string, MutableTotals>();
 	const modelTotals = new Map<string, MutableTotals>();
@@ -317,52 +433,62 @@ export function readCompanyUsage(
 	let modelPricedRecords = 0;
 	let totalCacheSavingsUsd = 0;
 	let scannedSessions = 0;
+	let cachedSessions = 0;
 	let contributingSessions = 0;
 	let unreadableSessions = 0;
 	let malformedLines = 0;
 	let untimedRecords = 0;
+	let visitedRecords = 0;
 
 	const trailDir = join(root, "trail");
-	const files = existsSync(trailDir) ? readdirSync(trailDir).filter((file) => file.endsWith(".jsonl")) : [];
+	let files: string[] = [];
+	try {
+		files = (await readdir(trailDir, { withFileTypes: true }))
+			.filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+			.map((entry) => entry.name)
+			.sort();
+	} catch (error) {
+		// A newly scaffolded company can be read before its trail directory is
+		// visible. Treat that state as an empty trail.
+		if (asRecord(error)?.code !== "ENOENT") throw error;
+	}
+	const cache = trailCache(trailDir);
+	const currentFiles = new Set(files);
+	for (const cachedFile of cache.keys()) {
+		if (!currentFiles.has(cachedFile)) cache.delete(cachedFile);
+	}
+
 	for (const file of files) {
 		scannedSessions += 1;
-		let content: string;
+		let usageFile: CachedUsageFile;
 		try {
-			content = readFileSync(join(trailDir, file), "utf-8");
+			const path = join(trailDir, file);
+			const metadata = await stat(path);
+			const loaded = await loadUsageFile(cache, file, path, metadata.size, metadata.mtimeMs);
+			usageFile = loaded.file;
+			if (loaded.cached) cachedSessions += 1;
 		} catch {
+			cache.delete(file);
 			unreadableSessions += 1;
 			continue;
 		}
+		malformedLines += usageFile.malformedLines;
+		untimedRecords += usageFile.untimedRecords;
+		if (usageFile.maxTimestamp < earliestTimestamp || usageFile.minTimestamp >= latestTimestamp) continue;
+
 		let contributed = false;
-		let activeModel: ModelIdentity | undefined;
-		const lines = content.split("\n");
-		for (const [lineIndex, line] of lines.entries()) {
-			if (!line.trim()) continue;
-			let entry: Record<string, unknown>;
-			try {
-				const parsed = JSON.parse(line) as unknown;
-				const record = asRecord(parsed);
-				if (!record) {
-					malformedLines += 1;
-					continue;
-				}
-				entry = record;
-			} catch {
-				// A live session can be observed between the write and newline of its
-				// newest record. Ignore that transient suffix instead of diagnosing it.
-				if (lineIndex === lines.length - 1 && !content.endsWith("\n")) continue;
-				malformedLines += 1;
-				continue;
-			}
-			const record = usageRecord(entry, window.timeZone, activeModel);
-			activeModel = modelChangeIdentity(entry) ?? activeModel;
-			if (record === "untimed") {
+		for (const record of usageFile.records) {
+			visitedRecords += 1;
+			if (visitedRecords % EVENT_LOOP_YIELD_INTERVAL === 0) await yieldToEventLoop();
+			if (record.timestamp < earliestTimestamp || record.timestamp >= latestTimestamp) continue;
+			const day = dayInTimeZone(record.timestamp, dayFormatter);
+			if (!day) {
 				untimedRecords += 1;
 				continue;
 			}
-			if (!record || record.day < window.sinceDay || record.day > window.untilDay) continue;
+			if (day < window.sinceDay || day > window.untilDay) continue;
 			const priced = priceUsage(rateCatalog.rates, record.model, record, record.reportedCostUsd);
-			const pricedRecord: PricedUsageRecord = { ...record, ...priced };
+			const pricedRecord: PricedUsageRecord = { ...record, day, ...priced };
 
 			contributed = true;
 			costUsd += pricedRecord.costUsd;
@@ -382,13 +508,13 @@ export function readCompanyUsage(
 
 			addToMap(providerTotals, pricedRecord.provider, pricedRecord);
 			addToMap(modelTotals, `${pricedRecord.provider}\u0000${pricedRecord.model}`, pricedRecord);
-			let day = dailyTotals.get(pricedRecord.day);
-			if (!day) {
-				day = { ...mutableTotals(), byProvider: new Map<string, MutableTotals>() };
-				dailyTotals.set(pricedRecord.day, day);
+			let daily = dailyTotals.get(pricedRecord.day);
+			if (!daily) {
+				daily = { ...mutableTotals(), byProvider: new Map<string, MutableTotals>() };
+				dailyTotals.set(pricedRecord.day, daily);
 			}
-			addRecord(day, pricedRecord);
-			addToMap(day.byProvider, pricedRecord.provider, pricedRecord);
+			addRecord(daily, pricedRecord);
+			addToMap(daily.byProvider, pricedRecord.provider, pricedRecord);
 		}
 		if (contributed) contributingSessions += 1;
 	}
@@ -446,6 +572,7 @@ export function readCompanyUsage(
 		daily,
 		coverage: {
 			scannedSessions,
+			cachedSessions,
 			contributingSessions,
 			unreadableSessions,
 			malformedLines,

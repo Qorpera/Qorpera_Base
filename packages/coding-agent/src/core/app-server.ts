@@ -633,7 +633,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 				const rates = await usageRateCatalog();
 				response
 					.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
-					.end(JSON.stringify(readCompanyUsage(root, window, rates)));
+					.end(JSON.stringify(await readCompanyUsage(root, window, rates)));
 			} catch (error) {
 				response
 					.writeHead(500, { "content-type": "application/json" })

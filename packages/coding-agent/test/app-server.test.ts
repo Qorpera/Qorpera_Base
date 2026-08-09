@@ -2,7 +2,7 @@
  * Per-company app server (spec §7 v1): state API, surface serving with
  * traversal protection, and gate resolution through the UI endpoint.
  */
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -204,7 +204,7 @@ describe("company app server", () => {
 			pricing: { status: string; source: string; knownModels: number };
 			providers: Array<{ provider: string; totalTokens: number }>;
 			daily: Array<{ day: string; totalTokens: number }>;
-			coverage: { malformedLines: number };
+			coverage: { cachedSessions: number; malformedLines: number };
 		};
 		expect(usage).toMatchObject({
 			totalTokens: 251,
@@ -225,6 +225,35 @@ describe("company app server", () => {
 			expect.objectContaining({ day: "2026-08-08", totalTokens: 80 }),
 			expect.objectContaining({ day: "2026-08-09", totalTokens: 171 }),
 		]);
+
+		const cached = (await (await fetch(`${base}/api/usage?${params}`)).json()) as {
+			coverage: { cachedSessions: number };
+		};
+		expect(cached.coverage.cachedSessions).toBe(1);
+
+		appendFileSync(
+			join(root, "trail", "2026-08-08T10-00-00-000Z_usage.jsonl"),
+			`${JSON.stringify({
+				type: "message",
+				id: "d",
+				parentId: "c",
+				timestamp: "2026-08-09T09:00:00Z",
+				message: {
+					role: "assistant",
+					api: "codex-app-server",
+					provider: "openai",
+					model: "gpt-5.3-codex",
+					usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 },
+				},
+			})}\n`,
+			"utf-8",
+		);
+		const invalidated = (await (await fetch(`${base}/api/usage?${params}`)).json()) as {
+			records: number;
+			coverage: { cachedSessions: number };
+		};
+		expect(invalidated.records).toBe(4);
+		expect(invalidated.coverage.cachedSessions).toBe(0);
 
 		const invalid = await fetch(`${base}/api/usage?sinceDay=2026-08-08&untilDay=2026-08-09&timeZone=not-a-zone`);
 		expect(invalid.status).toBe(400);
