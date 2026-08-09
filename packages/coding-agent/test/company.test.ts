@@ -4,7 +4,7 @@
  * The spine, idempotency, gate activation on the scaffolded folder, and the
  * sessions-are-the-trail wiring (project sessionDir → ./trail).
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -125,6 +125,18 @@ describe("scaffoldCompany", () => {
 		const after = JSON.parse(readFileSync(join(root, ".qorpera", "settings.json"), "utf-8"));
 		expect(after.sessionDir).toBe("/custom/elsewhere");
 	});
+
+	it("forces compaction off for existing companies", () => {
+		mkdirSync(join(root, ".qorpera"), { recursive: true });
+		writeFileSync(
+			join(root, ".qorpera", "settings.json"),
+			JSON.stringify({ compaction: { enabled: true, keepRecentTokens: 1234 } }),
+			"utf-8",
+		);
+		scaffoldCompany(root);
+		const settings = JSON.parse(readFileSync(join(root, ".qorpera", "settings.json"), "utf-8"));
+		expect(settings.compaction).toEqual({ enabled: false, keepRecentTokens: 1234 });
+	});
 });
 
 describe("forking hub verbs (no-launch paths)", () => {
@@ -158,6 +170,13 @@ describe("forking hub verbs (no-launch paths)", () => {
 		const worktree = createProductWorktree(company, department);
 		expect(worktree?.branch).toMatch(/^qorpera\/legacy-product-development\//);
 		expect(existsSync(join(company, worktree!.path, ".git"))).toBe(true);
+		expect(statSync(join(company, worktree!.path, ".git")).isDirectory()).toBe(true);
+		expect(
+			spawnSync("git", ["branch", "--list", worktree!.branch], {
+				cwd: join(company, department.repositoryPath),
+				encoding: "utf-8",
+			}).stdout.trim(),
+		).toBe("");
 	});
 
 	it("qorpera fork clones a whole company folder", async () => {
@@ -187,7 +206,7 @@ describe("product-development departments", () => {
 		scaffoldCompany(root);
 		const department = scaffoldProductDepartment(root, "My Product");
 		scaffoldProductDepartment(root, "My Product");
-		expect(department.id).toBe("My-Product-development");
+		expect(department.id).toBe("my-product-development");
 		expect(department.repositoryExists).toBe(false);
 		expect(existsSync(join(root, department.path, "department.json"))).toBe(true);
 		expect(existsSync(join(root, department.worktreesPath))).toBe(true);
@@ -220,15 +239,74 @@ describe("product-development departments", () => {
 	it("creates valid projection IDs for punctuation-prefixed product names", () => {
 		scaffoldCompany(root);
 		const department = scaffoldProductDepartment(root, "...Product...");
-		expect(department.id).toBe("Product-development");
+		expect(department.id).toBe("product-development");
 		const projection = JSON.parse(readFileSync(join(root, "app", "projection.json"), "utf-8"));
 		expect(projection.navigation).toEqual(["department:product-development"]);
+	});
+
+	it("uses one canonical department and projection namespace for case variants", () => {
+		scaffoldCompany(root);
+		const first = scaffoldProductDepartment(root, "Widget");
+		const second = scaffoldProductDepartment(root, "widget");
+		expect(second.id).toBe(first.id);
+		expect(readdirSync(join(root, "departments")).filter((id) => id.endsWith("-development"))).toEqual([
+			"widget-development",
+		]);
+		const projection = JSON.parse(readFileSync(join(root, "app", "projection.json"), "utf-8"));
+		expect(projection.navigation).toEqual(["department:widget-development"]);
 	});
 
 	it("ignores arbitrary department folders without a product-development manifest", () => {
 		mkdirSync(root, { recursive: true });
 		mkdirSync(join(root, "departments", "sales"), { recursive: true });
 		expect(listProductDepartments(root)).toEqual([]);
+	});
+
+	it("does not issue worker authority for an unregistered product-shaped folder", () => {
+		mkdirSync(join(root, "departments", "forged-development", "repository", ".git"), { recursive: true });
+		writeFileSync(
+			join(root, "departments", "forged-development", "department.json"),
+			JSON.stringify({ version: 1, kind: "product-development", product: "Forged" }),
+			"utf-8",
+		);
+		expect(listProductDepartments(root)).toEqual([]);
+	});
+
+	it("does not partially convert an existing agent-authored department", () => {
+		scaffoldCompany(root);
+		const departmentPath = join(root, "departments", "widget-development");
+		mkdirSync(departmentPath, { recursive: true });
+		writeFileSync(join(departmentPath, "department.json"), JSON.stringify({ kind: "agent-authored" }), "utf-8");
+
+		expect(() => scaffoldProductDepartment(root, "Widget")).toThrow("already exists");
+		expect(readdirSync(departmentPath)).toEqual(["department.json"]);
+	});
+
+	it("rejects incompatible product projection node ownership", () => {
+		scaffoldCompany(root);
+		writeFileSync(
+			join(root, "app", "projection.json"),
+			`${JSON.stringify(
+				{
+					schema: "qorpera.projection/v1",
+					navigation: [],
+					nodes: [
+						{
+							id: "department:widget-development",
+							kind: "department",
+							label: "Unrelated",
+							items: [],
+						},
+					],
+				},
+				null,
+				"\t",
+			)}\n`,
+			"utf-8",
+		);
+
+		expect(() => scaffoldProductDepartment(root, "Widget")).toThrow("incompatible content");
+		expect(existsSync(join(root, "departments", "widget-development"))).toBe(false);
 	});
 });
 

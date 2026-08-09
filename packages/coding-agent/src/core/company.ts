@@ -92,17 +92,17 @@ searchable history when you need to know why something is the way it is,
 and a smarter model than you will one day read it and redo your work
 better. Work in clean units so the record stays legible.
 
-The company's git history is append-only from your side: rewriting it
-(amend, rebase, force-push, filter, reflog expiry) gates. End every commit
-message with provenance trailers — \`Qorpera-Trigger:\` (what prompted the
-change) and \`Qorpera-Rationale:\` (why) — the harness enforces this; a
-commit without them is rejected with no gate filed, just retry with the
-trailers. You are explaining yourself to your future self, not to a
-reviewer.
+The company's git metadata is kernel-owned. At each settled controller turn,
+the kernel checkpoints the files that turn changed and attaches the trail
+session as provenance; never edit \`.git/\` or rewrite company history.
+Product workers are different: their assigned worktree is an isolated clone,
+so they commit there with \`Qorpera-Trigger:\` and \`Qorpera-Rationale:\`
+trailers before proposing the branch through a pull request. You are
+explaining yourself to your future self, not to a reviewer.
 
 How you and the founder communicate: chat sessions are for work the founder
-brings to you. Your own autonomous work communicates through \`inbox/\` —
-write \`inbox/msg-<slug>.md\` files for anything user-facing: questions,
+brings to you. Your own autonomous work communicates through \`inbox/messages/\` —
+write \`inbox/messages/msg-<slug>.md\` files for anything user-facing: questions,
 proposals, plans, progress updates, decisions you need. One item per file,
 a clear title, and enough context to answer without reading your session.
 The founder responds inside the item (a Response section appears below your
@@ -114,7 +114,7 @@ tools you build exactly as it binds you, and it is enforced in the harness,
 not by this text. Blocked effects file gate requests in \`inbox/\`
 automatically; keep working elsewhere while you wait. Never edit
 \`authority.toml\`, this file, or anything in \`inbox/\` other than your own
-\`msg-*.md\` items — the rest belongs to the human.
+\`inbox/messages/msg-*.md\` items — the rest belongs to the human.
 
 Product code lives only inside \`departments/<product>-development/\`.
 As the company controller you may study product repositories, worktrees,
@@ -187,6 +187,7 @@ Gate requests and human steering land here.
   line to \`approved\` or \`denied\`. Tool-call approvals are single-use;
   extension-load approvals are durable for the approved content hash.
 - \`notices.md\` — effects that proceeded under notify mode.
+- \`messages/msg-*.md\` — agent-authored questions, proposals, and updates.
 - Anything else you put here is steering the agent reads on its next wake.
 `;
 
@@ -205,11 +206,42 @@ product department UI reads these records; credentials never belong here.
 `;
 
 const PRODUCT_DEPARTMENT_KIND = "product-development";
+const PRODUCT_REGISTRY_PATH = join(".qorpera", "products.json");
 
 interface ProductDepartmentManifest {
 	version: 1;
 	kind: typeof PRODUCT_DEPARTMENT_KIND;
 	product: string;
+}
+
+interface ProductRegistry {
+	version: 1;
+	products: string[];
+}
+
+function readProductRegistry(root: string): ProductRegistry {
+	try {
+		const registry = JSON.parse(readFileSync(join(root, PRODUCT_REGISTRY_PATH), "utf-8")) as Partial<ProductRegistry>;
+		if (
+			registry.version === 1 &&
+			Array.isArray(registry.products) &&
+			registry.products.every((id) => typeof id === "string" && id.endsWith("-development"))
+		) {
+			return { version: 1, products: [...new Set(registry.products)] };
+		}
+	} catch {
+		// Missing or malformed registries fail closed: no worker authority is issued.
+	}
+	return { version: 1, products: [] };
+}
+
+function registerProductDepartment(root: string, id: string): void {
+	const registry = readProductRegistry(root);
+	if (registry.products.includes(id)) return;
+	registry.products.push(id);
+	registry.products.sort();
+	mkdirSync(join(root, ".qorpera"), { recursive: true });
+	writeFileSync(join(root, PRODUCT_REGISTRY_PATH), `${JSON.stringify(registry, null, "\t")}\n`, "utf-8");
 }
 
 function productProjectionNodes(department: ProductDepartment): ProjectionNode[] {
@@ -255,7 +287,7 @@ function productProjectionNodes(department: ProductDepartment): ProjectionNode[]
 }
 
 /** Install the product kit into the one company UI projection document. */
-function installProductProjection(root: string, department: ProductDepartment): void {
+function installProductProjection(root: string, department: ProductDepartment, write = true): void {
 	const projectionPath = join(root, "app", "projection.json");
 	let document: ProjectionDocument = {
 		schema: EMPTY_PROJECTION.schema,
@@ -279,11 +311,19 @@ function installProductProjection(root: string, department: ProductDepartment): 
 		};
 	}
 	const kitNodes = productProjectionNodes(department);
-	const existing = new Set(document.nodes.map((node) => node.id));
+	const existing = new Map(document.nodes.map((node) => [node.id, node]));
 	const departmentId = kitNodes[0].id;
 	let changed = false;
 	for (const node of kitNodes) {
-		if (existing.has(node.id)) continue;
+		const current = existing.get(node.id);
+		if (current) {
+			if (JSON.stringify(current) !== JSON.stringify(node)) {
+				throw new Error(
+					`Cannot install product UI: projection node ${node.id} is already owned by incompatible content`,
+				);
+			}
+			continue;
+		}
 		document.nodes.push(node);
 		changed = true;
 	}
@@ -291,6 +331,11 @@ function installProductProjection(root: string, department: ProductDepartment): 
 		document.navigation.push(departmentId);
 		changed = true;
 	}
+	const completed = parseProjectionDocument(document);
+	if (completed.diagnostics.length > 0) {
+		throw new Error(`Cannot install product UI into app/projection.json: ${completed.diagnostics.join("; ")}`);
+	}
+	if (!write) return;
 	if (!changed && existsSync(projectionPath)) return;
 	mkdirSync(join(root, "app"), { recursive: true });
 	writeFileSync(projectionPath, `${JSON.stringify(document, null, "\t")}\n`, "utf-8");
@@ -384,7 +429,7 @@ function ensureProjectSettings(root: string, result: ScaffoldResult): void {
 	} else if (
 		settings.compaction &&
 		typeof settings.compaction === "object" &&
-		(settings.compaction as Record<string, unknown>).enabled === undefined
+		(settings.compaction as Record<string, unknown>).enabled !== false
 	) {
 		(settings.compaction as Record<string, unknown>).enabled = false;
 		changed = true;
@@ -400,6 +445,7 @@ function ensureProjectSettings(root: string, result: ScaffoldResult): void {
 function productSlug(product: string): string {
 	const slug = product
 		.trim()
+		.toLowerCase()
 		.replace(/[^A-Za-z0-9._-]+/g, "-")
 		.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "");
 	return slug || "product";
@@ -433,14 +479,10 @@ function productDepartmentFromEntry(root: string, id: string): ProductDepartment
 /** Product-development departments are an optional Base kit, discovered from the folder. */
 export function listProductDepartments(rootDir: string): ProductDepartment[] {
 	const root = resolve(rootDir);
-	try {
-		return readdirSync(join(root, "departments"))
-			.map((id) => productDepartmentFromEntry(root, id))
-			.filter((entry): entry is ProductDepartment => entry !== undefined)
-			.sort((a, b) => a.name.localeCompare(b.name));
-	} catch {
-		return [];
-	}
+	return readProductRegistry(root)
+		.products.map((id) => productDepartmentFromEntry(root, id))
+		.filter((entry): entry is ProductDepartment => entry !== undefined)
+		.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Materialize the standard product-development department without overwriting it. */
@@ -448,24 +490,47 @@ export function scaffoldProductDepartment(rootDir: string, product: string): Pro
 	const root = resolve(rootDir);
 	const id = `${productSlug(product)}-development`;
 	const path = join("departments", id);
+	const target = join(root, path);
+	const existing = productDepartmentFromEntry(root, id);
+	if (existsSync(target) && !existing) {
+		throw new Error(
+			`Cannot create product department ${id}: ${path} already exists without a valid product-development manifest`,
+		);
+	}
+	if (existing) {
+		installProductProjection(root, existing);
+		registerProductDepartment(root, id);
+		return existing;
+	}
 	const result: ScaffoldResult = { root, created: [], skipped: [], gitInitialized: false };
 	const manifest: ProductDepartmentManifest = {
 		version: 1,
 		kind: PRODUCT_DEPARTMENT_KIND,
 		product: product.trim() || productSlug(product),
 	};
+	const department: ProductDepartment = {
+		id,
+		name: manifest.product,
+		path,
+		repositoryPath: join(path, "repository"),
+		worktreesPath: join(path, "worktrees"),
+		pullRequestsPath: join(path, "pull-requests"),
+		repositoryExists: false,
+	};
+	installProductProjection(root, department, false);
 	writeIfMissing(root, join(path, "department.json"), `${JSON.stringify(manifest, null, "\t")}\n`, result);
 	writeIfMissing(root, join(path, ".gitignore"), PRODUCT_DEPARTMENT_GITIGNORE, result);
 	ensureDir(root, join(path, "briefs"), result);
 	ensureDir(root, join(path, "worktrees"), result);
 	writeIfMissing(root, join(path, "pull-requests", "README.md"), PULL_REQUESTS_README, result);
 	mkdirSync(join(root, path, "repository"), { recursive: true });
-	const department = productDepartmentFromEntry(root, id)!;
-	installProductProjection(root, department);
-	return department;
+	const created = productDepartmentFromEntry(root, id)!;
+	installProductProjection(root, created);
+	registerProductDepartment(root, id);
+	return created;
 }
 
-/** Create one isolated product task branch/worktree from the controlling clone. */
+/** Create one isolated product task clone under the department's worktrees directory. */
 export function createProductWorktree(rootDir: string, department: ProductDepartment): ProductWorktree | undefined {
 	const root = resolve(rootDir);
 	if (!department.repositoryExists) return undefined;
@@ -476,13 +541,34 @@ export function createProductWorktree(rootDir: string, department: ProductDepart
 	const path = join(department.worktreesPath, taskId);
 	const branch = `qorpera/${department.id}/${taskId}`;
 	mkdirSync(join(root, department.worktreesPath), { recursive: true });
-	const result = spawnSync(
-		"git",
-		["-C", join(root, department.repositoryPath), "worktree", "add", "-b", branch, join(root, path)],
-		{ encoding: "utf-8", shell: false },
-	);
-	if (result.status === 0) return { path, branch };
-	console.error(`Could not create product worktree: ${result.stderr || result.stdout || "git failed"}`);
+	const repository = join(root, department.repositoryPath);
+	const target = join(root, path);
+	const clone = spawnSync("git", ["clone", "--no-hardlinks", repository, target], {
+		encoding: "utf-8",
+		shell: false,
+	});
+	if (clone.status !== 0) {
+		console.error(`Could not create product worktree: ${clone.stderr || clone.stdout || "git clone failed"}`);
+		return undefined;
+	}
+	const checkout = spawnSync("git", ["-C", target, "switch", "-c", branch], {
+		encoding: "utf-8",
+		shell: false,
+	});
+	if (checkout.status === 0) {
+		const remote = spawnSync("git", ["-C", repository, "remote", "get-url", "origin"], {
+			encoding: "utf-8",
+			shell: false,
+		});
+		if (remote.status === 0 && remote.stdout.trim()) {
+			spawnSync("git", ["-C", target, "remote", "set-url", "origin", remote.stdout.trim()], {
+				stdio: "ignore",
+				shell: false,
+			});
+		}
+		return { path, branch };
+	}
+	console.error(`Could not create product worktree branch: ${checkout.stderr || checkout.stdout || "git failed"}`);
 	return undefined;
 }
 
@@ -515,6 +601,7 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	writeIfMissing(root, "authority.toml", AUTHORITY_TOML_TEMPLATE, result);
 	writeIfMissing(root, join("connections", "README.md"), CONNECTIONS_README, result);
 	writeIfMissing(root, join("inbox", "README.md"), INBOX_README, result);
+	ensureDir(root, join("inbox", "messages"), result);
 	ensureDir(root, "trail", result);
 	writeIfMissing(root, join("app", "projection.json"), APP_PROJECTION_TEMPLATE, result);
 	ensureDir(root, join("app", "surfaces"), result);
@@ -532,7 +619,7 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	return result;
 }
 
-const CONCEPTION_SHARED = `Your primary source of understanding is data, not interview: derive the scope of the company from what you can read. This is an autonomous session — do NOT hold an interactive interview. For the gaps data cannot answer (intent, customers, constraints, which data sources and services to connect), post inbox/msg-*.md items — focused, answerable questions with your working assumption stated — then continue with everything that does not depend on the answers. Treat founder answers as dated evidence with provenance, never fixed facts: numbers (prices, budgets, forecasts) are early estimates you are expected to test and revise with analysis. Perform the setup yourself: rewrite company.md as identity and intent only (mark unconfirmed parts provisional), keep working beliefs in app/substrates/ as revisable records, propose authority.toml adjustments and connections through the inbox (the founder ratifies), and build the first state-of-the-company surface in app/. Finish by posting a msg item summarizing what you did and what awaits the founder.`;
+const CONCEPTION_SHARED = `Your primary source of understanding is data, not interview: derive the scope of the company from what you can read. This is an autonomous session — do NOT hold an interactive interview. For the gaps data cannot answer (intent, customers, constraints, which data sources and services to connect), post inbox/messages/msg-*.md items — focused, answerable questions with your working assumption stated — then continue with everything that does not depend on the answers. Treat founder answers as dated evidence with provenance, never fixed facts: numbers (prices, budgets, forecasts) are early estimates you are expected to test and revise with analysis. Perform the setup yourself: rewrite company.md as identity and intent only (mark unconfirmed parts provisional), keep working beliefs in app/substrates/ as revisable records, propose authority.toml adjustments and connections through the inbox (the founder ratifies), and build the first state-of-the-company surface in app/. Finish by posting a msg item summarizing what you did and what awaits the founder.`;
 
 const CONCEPTION_NEW = `This company folder was just created and company.md is still the template. Begin conception. ${CONCEPTION_SHARED}`;
 

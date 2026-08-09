@@ -16,7 +16,16 @@
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	watch,
+	writeFileSync,
+} from "node:fs";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -35,6 +44,18 @@ import {
 import { app, BrowserWindow, dialog, shell as electronShell, ipcMain, type WebContents } from "electron";
 import electronUpdater from "electron-updater";
 import {
+	applyKernelWriteFrame,
+	bindTrailSession,
+	inboxMessagesPath,
+	parseTrailAppendFrame,
+	protectedControllerPaths,
+	sandboxCommandArgs,
+	sandboxConfigDir,
+	sandboxRuntimeDir,
+	writeSandboxProfile,
+} from "./agent-runtime.ts";
+import { captureCompanyGitBaseline, checkpointCompanyGit } from "./company-checkpoint.ts";
+import {
 	ensureUserland,
 	getActiveApp,
 	isUnmodified,
@@ -49,6 +70,7 @@ import {
 } from "./userland-manager.ts";
 
 const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
+const CODEX_ENTRY = fileURLToPath(import.meta.resolve("@openai/codex/bin/codex.js"));
 const DIRNAME = fileURLToPath(new URL(".", import.meta.url));
 
 function shellVersion(): string {
@@ -216,46 +238,75 @@ interface ChildOptions {
 	autonomousName?: string;
 	department?: ProductDepartment;
 	worktree?: string;
+	silent?: boolean;
+	onRpcEvent?: (frame: { type?: string }) => void;
 }
 
 function startChild(slot: Slot, root: string, options: ChildOptions = {}): ChildProcessWithoutNullStreams {
-	const { sessionFile, autonomousName, department, worktree } = options;
+	const { sessionFile, autonomousName, department, worktree, silent, onRpcEvent } = options;
 	const win = slot.window;
-	const args = [RPC_ENTRY, "--mode", "rpc"];
-	if (sessionFile) args.push("--session", join(root, "trail", sessionFile));
-	if (autonomousName) args.push("--name", `autonomous — ${autonomousName}`);
-	if (department && worktree) {
-		args.push("--session-dir", join(root, "trail"));
-		if (!sessionFile) args.push("--name", `product — ${department.path} — ${worktree}`);
-	}
+	const actor = department && worktree ? "product-worker" : "controller";
+	const cwd = worktree ? join(root, worktree) : root;
+	const scope = {
+		actor,
+		attended: !autonomousName,
+		autonomousLabel: autonomousName ? `autonomous — ${autonomousName}` : undefined,
+		department: department?.path,
+		worktree,
+	} as const;
+	const binding = bindTrailSession(root, cwd, scope, sessionFile);
+	const userData = app.getPath("userData");
+	const configDir = sandboxConfigDir(userData, root, actor);
+	const runtimeDir = sandboxRuntimeDir(userData, root, actor);
+	inboxMessagesPath(root);
+	const products = listProductDepartments(root).map((product) => ({
+		repository: product.repositoryPath,
+		worktrees: product.worktreesPath,
+	}));
+	writeSandboxProfile(configDir, runtimeDir, root, scope, protectedControllerPaths(root, products));
+	let gitBaseline = actor === "controller" ? captureCompanyGitBaseline(root) : undefined;
+	const rpcArgs = [RPC_ENTRY, "--mode", "rpc", "--session", binding.path];
+	const args = sandboxCommandArgs(CODEX_ENTRY, runtimeDir, process.execPath, rpcArgs);
 	// QORPERA_AUTONOMOUS marks controller-initiated work: those sessions run
 	// in rpc mode with nobody present, so outward-effect signatures cannot
 	// treat them as founder sessions. Product roles remain separate either way.
 	const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
 	if (autonomousName) env.QORPERA_AUTONOMOUS = "1";
-	if (department && worktree) {
-		env.QORPERA_ACTOR = "product-worker";
-		env.QORPERA_PRODUCT_DEPARTMENT = department.path;
-		env.QORPERA_PRODUCT_WORKTREE = worktree;
-	} else {
-		env.QORPERA_ACTOR = "controller";
-	}
+	delete env.QORPERA_ACTOR;
+	delete env.QORPERA_PRODUCT_DEPARTMENT;
+	delete env.QORPERA_PRODUCT_WORKTREE;
+	env.CODEX_HOME = configDir;
+	env.QORPERA_TRAIL_BROKER_TOKEN = binding.token;
 	const child = spawn(process.execPath, args, {
-		cwd: worktree ? join(root, worktree) : root,
+		cwd: runtimeDir,
 		stdio: ["pipe", "pipe", "pipe"],
 		env,
 	}) as ChildProcessWithoutNullStreams;
 	createInterface({ input: child.stdout }).on("line", (line) => {
 		if (!line.trim()) return;
 		try {
-			send(win, "rpc-event", JSON.parse(line));
+			const frame = JSON.parse(line) as unknown;
+			if (applyKernelWriteFrame(frame, binding, root)) return;
+			if ((frame as { type?: unknown }).type === "qorpera_trail_append") {
+				const append = parseTrailAppendFrame(frame, binding);
+				if (append) appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+				else send(win, "rpc-log", "rejected invalid trail append frame");
+				return;
+			}
+			if ((frame as { type?: unknown }).type === "agent_settled" && gitBaseline) {
+				gitBaseline = checkpointCompanyGit(root, gitBaseline, binding.file);
+			}
+			if (onRpcEvent) onRpcEvent(frame as { type?: string });
+			else if (!silent) send(win, "rpc-event", frame);
 		} catch {
-			send(win, "rpc-log", line);
+			if (!silent) send(win, "rpc-log", line);
 		}
 	});
-	createInterface({ input: child.stderr }).on("line", (line) => send(win, "rpc-log", line));
+	createInterface({ input: child.stderr }).on("line", (line) => {
+		if (!silent) send(win, "rpc-log", line);
+	});
 	child.on("exit", (code) => {
-		if (!intentionalKills.has(child)) send(win, "rpc-exit", code);
+		if (!silent && !intentionalKills.has(child)) send(win, "rpc-exit", code);
 	});
 	return child;
 }
@@ -275,38 +326,24 @@ function isInside(target: string, parent: string): boolean {
  */
 function startMergeChild(slot: Slot, runtime: CompanyRuntime): void {
 	const prompt = mergeTaskPrompt(runtime.userland);
-	const args = [
-		RPC_ENTRY,
-		"--mode",
-		"rpc",
-		"--name",
-		`autonomous — userland merge v${runtime.userland.stagedVersion}`,
-	];
-	const child = spawn(process.execPath, args, {
-		cwd: runtime.root,
-		stdio: ["pipe", "pipe", "pipe"],
-		env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", QORPERA_AUTONOMOUS: "1" },
-	}) as ChildProcessWithoutNullStreams;
-	runtime.mergeChild = child;
 	let started = false;
-	createInterface({ input: child.stdout }).on("line", (line) => {
-		let frame: { type?: string };
-		try {
-			frame = JSON.parse(line) as { type?: string };
-		} catch {
-			return;
-		}
-		if (frame.type === "agent_start") started = true;
-		// Any settle ends the run — including a prompt that failed before
-		// starting (never keeping a settled merge child alive beats a zombie
-		// that blocks userland:merge forever).
-		if (frame.type === "agent_settled") {
-			if (!started) console.error("merge session settled without starting (prompt failed?)");
-			intentionalKills.add(child);
-			child.kill();
-		}
+	let child: ChildProcessWithoutNullStreams;
+	child = startChild(slot, runtime.root, {
+		autonomousName: `userland merge v${runtime.userland.stagedVersion}`,
+		silent: true,
+		onRpcEvent: (frame) => {
+			if (frame.type === "agent_start") started = true;
+			// Any settle ends the run — including a prompt that failed before
+			// starting (never keeping a settled merge child alive beats a zombie
+			// that blocks userland:merge forever).
+			if (frame.type === "agent_settled") {
+				if (!started) console.error("merge session settled without starting (prompt failed?)");
+				intentionalKills.add(child);
+				child.kill();
+			}
+		},
 	});
-	createInterface({ input: child.stderr }).on("line", () => {});
+	runtime.mergeChild = child;
 	child.on("exit", () => {
 		if (slot.runtime !== runtime) return; // company was closed meanwhile
 		runtime.mergeChild = undefined;

@@ -127,6 +127,7 @@ const AUTHORITY_FILE = "authority.toml";
 const INBOX_DIR = "inbox";
 /** Root-level files whose modification is an [authority]-class effect. */
 const PROTECTED_ROOT_FILES = new Set([AUTHORITY_FILE, "AGENTS.md", "CLAUDE.md"]);
+const PRODUCT_REGISTRY_PATH = join(".qorpera", "products.json");
 
 /**
  * Conservative screen for destructive shell commands. False positives gate
@@ -312,11 +313,13 @@ function isProtectedPath(authority: Authority, rawPath: string, cwd: string): bo
 	const resolved = resolve(isAbsolute(rawPath) ? rawPath : join(cwd, rawPath));
 	const inboxDirPath = join(authority.root, INBOX_DIR);
 	if (isUnderDir(resolved, inboxDirPath)) {
-		const isDirectChild = dirname(resolved) === resolve(inboxDirPath);
+		const messagesDir = resolve(inboxDirPath, "messages");
+		const isDirectChild = dirname(resolved) === messagesDir;
 		const isAgentMessage = /^msg-[a-z0-9][a-z0-9-]*\.md$/i.test(basename(resolved));
 		return !(isDirectChild && isAgentMessage);
 	}
 	if (dirname(resolved) === resolve(authority.root) && PROTECTED_ROOT_FILES.has(basename(resolved))) return true;
+	if (resolved === resolve(authority.root, PRODUCT_REGISTRY_PATH)) return true;
 	return false;
 }
 
@@ -355,6 +358,7 @@ function bashTouchesProtected(command: string): boolean {
 	if (!WRITEISH_BASH.test(stripped)) return false;
 	if (/\binbox[/\\]/.test(stripped)) return true;
 	if (stripped.includes(AUTHORITY_FILE)) return true;
+	if (/\.qorpera[/\\]products\.json/i.test(stripped)) return true;
 	if (/\b(AGENTS|CLAUDE)\.md\b/i.test(stripped)) return true;
 	return false;
 }
@@ -529,6 +533,19 @@ export function findGateRecords(authority: Authority, hash: string): GateRecord[
 }
 
 function setGateStatus(record: GateRecord, status: GateStatus): void {
+	const brokerToken = process.env.QORPERA_TRAIL_BROKER_TOKEN;
+	if (brokerToken) {
+		process.stdout.write(
+			`${JSON.stringify({
+				type: "qorpera_kernel_write",
+				token: brokerToken,
+				operation: "consume_gate",
+				file: basename(record.filePath),
+				status,
+			})}\n`,
+		);
+		return;
+	}
 	const content = readFileSync(record.filePath, "utf-8");
 	writeFileSync(record.filePath, content.replace(/^status:.*$/m, `status: ${status}`), "utf-8");
 }
@@ -576,11 +593,36 @@ export function writeGateRequest(authority: Authority, input: GateRequestInput):
 		"To resolve, edit the `status:` line above to `approved` or `denied`.",
 		"",
 	].join("\n");
-	writeFileSync(join(dir, fileName), body, "utf-8");
+	const brokerToken = process.env.QORPERA_TRAIL_BROKER_TOKEN;
+	if (brokerToken) {
+		process.stdout.write(
+			`${JSON.stringify({
+				type: "qorpera_kernel_write",
+				token: brokerToken,
+				operation: "create_gate",
+				file: fileName,
+				content: body,
+			})}\n`,
+		);
+	} else {
+		writeFileSync(join(dir, fileName), body, "utf-8");
+	}
 	return id;
 }
 
 function appendNotice(authority: Authority, message: string): void {
+	const brokerToken = process.env.QORPERA_TRAIL_BROKER_TOKEN;
+	if (brokerToken) {
+		process.stdout.write(
+			`${JSON.stringify({
+				type: "qorpera_kernel_write",
+				token: brokerToken,
+				operation: "append_notice",
+				message,
+			})}\n`,
+		);
+		return;
+	}
 	const dir = inboxDir(authority);
 	mkdirSync(dir, { recursive: true });
 	const noticePath = join(dir, "notices.md");
@@ -676,7 +718,7 @@ function blockForUnsignedBehavior(
 		effectClass,
 		gateId,
 		behavior: updated,
-		reason: `Signature rule [${effectClass}]: this action comes from company-authored code (${behavior.path}) running unattended, which requires a standing founder signature on that exact code. Signature request ${gateId} filed in inbox/ — once approved it is durable for this content (editing the file requires a new signature). NOW create inbox/msg-${gateId}-intent.md with your file-writing tool (NOT bash — bash writes into inbox/ are themselves gated): first line \`# <short outcome headline>\` naming what this code does for the company (never the mechanism), then 1-3 plain sentences for the founder covering what the code may do to the outside world once signed. Then continue with other work; retry after it is approved.`,
+		reason: `Signature rule [${effectClass}]: this action comes from company-authored code (${behavior.path}) running unattended, which requires a standing founder signature on that exact code. Signature request ${gateId} filed in inbox/ — once approved it is durable for this content (editing the file requires a new signature). NOW create inbox/messages/msg-${gateId}-intent.md with your file-writing tool (NOT bash — bash writes into inbox/ are themselves gated): first line \`# <short outcome headline>\` naming what this code does for the company (never the mechanism), then 1-3 plain sentences for the founder covering what the code may do to the outside world once signed. Then continue with other work; retry after it is approved.`,
 	};
 }
 
@@ -822,7 +864,7 @@ export function evaluateToolCall(
 		effectClass,
 		gateId,
 		behavior,
-		reason: `Authority gate [${effectClass}]: this action requires human approval. Request ${gateId} filed in inbox/. NOW create inbox/msg-${gateId}-intent.md with your file-writing tool (NOT bash — bash writes into inbox/ are themselves gated): first line \`# <short outcome headline>\` naming what this achieves for the company (never the mechanism), then 1-3 plain sentences of context for the founder, no command syntax. Headline and text become the approval card; the exact command is shown separately. Then continue with other work; retry after it is approved.`,
+		reason: `Authority gate [${effectClass}]: this action requires human approval. Request ${gateId} filed in inbox/. NOW create inbox/messages/msg-${gateId}-intent.md with your file-writing tool (NOT bash — bash writes into inbox/ are themselves gated): first line \`# <short outcome headline>\` naming what this achieves for the company (never the mechanism), then 1-3 plain sentences of context for the founder, no command syntax. Headline and text become the approval card; the exact command is shown separately. Then continue with other work; retry after it is approved.`,
 	};
 }
 

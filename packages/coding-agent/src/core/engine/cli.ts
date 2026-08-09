@@ -32,6 +32,7 @@ export async function handleEngineCommand(args: string[]): Promise<boolean> {
 	const authority = discoverAuthority(cwd);
 	const sessionDir = authority ? join(authority.root, "trail") : undefined;
 	const sessionManager = SessionManager.create(cwd, sessionDir);
+	const sessionAuthority = sessionManager.getHeader()?.qorpera;
 
 	let session: CodexEngineSession | undefined;
 	try {
@@ -41,9 +42,9 @@ export async function handleEngineCommand(args: string[]): Promise<boolean> {
 			authority,
 			// A terminal-run engine command is a founder session unless the
 			// kernel marked the process as autonomous work.
-			attended: process.stdout.isTTY === true && !process.env.QORPERA_AUTONOMOUS,
-			actor: process.env.QORPERA_ACTOR === "product-worker" ? "product-worker" : "controller",
-			productWorktree: process.env.QORPERA_PRODUCT_WORKTREE,
+			attended: sessionAuthority?.attended ?? (process.stdout.isTTY === true && !process.env.QORPERA_AUTONOMOUS),
+			actor: sessionAuthority?.actor ?? "controller",
+			productWorktree: sessionAuthority?.worktree,
 			onEvent: (event) => {
 				if (event.type === "reasoning" && event.summary) console.error(`[thinking] ${event.summary}`);
 				if (event.type === "command") console.error(`[command:${event.status}] ${event.command}`);

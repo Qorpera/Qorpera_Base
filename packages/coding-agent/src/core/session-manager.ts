@@ -36,6 +36,17 @@ export interface SessionHeader {
 	timestamp: string;
 	cwd: string;
 	parentSession?: string;
+	/** Kernel-authenticated role and scope. Only the trusted shell creates this header. */
+	qorpera?: QorperaSessionAuthority;
+}
+
+export interface QorperaSessionAuthority {
+	actor: "controller" | "product-worker";
+	attended: boolean;
+	autonomous?: boolean;
+	label?: string;
+	department?: string;
+	worktree?: string;
 }
 
 export interface NewSessionOptions {
@@ -978,6 +989,9 @@ export class SessionManager {
 
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
+		if (process.env.QORPERA_TRAIL_BROKER_TOKEN) {
+			throw new Error("Kernel-bound trail sessions are append-only and cannot be rewritten");
+		}
 		const fd = openSync(this.sessionFile, "w");
 		try {
 			for (const entry of this.fileEntries) {
@@ -1012,13 +1026,25 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
+	private _appendPersistedEntry(entry: SessionEntry): void {
+		const brokerToken = process.env.QORPERA_TRAIL_BROKER_TOKEN;
+		if (!brokerToken) {
+			appendFileSync(this.sessionFile!, `${JSON.stringify(entry)}\n`);
+			return;
+		}
+		if (!this.getHeader()?.qorpera) {
+			throw new Error("Kernel-bound trail writes require a trusted session header");
+		}
+		process.stdout.write(`${JSON.stringify({ type: "qorpera_trail_append", token: brokerToken, entry })}\n`);
+	}
+
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
 
 		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
 		if (!hasAssistant) {
 			if (this.flushed) {
-				appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+				this._appendPersistedEntry(entry);
 			} else {
 				// Mark as not flushed so when assistant arrives, all entries get written
 				this.flushed = false;
@@ -1037,7 +1063,7 @@ export class SessionManager {
 			}
 			this.flushed = true;
 		} else {
-			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			this._appendPersistedEntry(entry);
 		}
 	}
 

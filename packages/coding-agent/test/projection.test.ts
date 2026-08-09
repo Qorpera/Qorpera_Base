@@ -65,4 +65,16 @@ describe("company UI projection", () => {
 			]),
 		);
 	});
+
+	it("fails closed when the projection schema is unsupported", () => {
+		const projection = parseProjectionDocument({
+			schema: "qorpera.projection/v2",
+			navigation: ["department:finance"],
+			nodes: [{ id: "department:finance", kind: "department", label: "Finance", items: [] }],
+		});
+
+		expect(projection.navigation).toEqual([]);
+		expect(projection.nodes).toEqual([]);
+		expect(projection.diagnostics).toEqual([expect.stringContaining(PROJECTION_SCHEMA)]);
+	});
 });

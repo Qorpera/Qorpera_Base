@@ -142,14 +142,16 @@ function readInbox(root: string): InboxItem[] {
 	const dir = join(root, "inbox");
 	if (!existsSync(dir)) return [];
 	const names = readdirSync(dir);
+	const messagesDir = join(dir, "messages");
+	const messageNames = existsSync(messagesDir) ? readdirSync(messagesDir) : [];
 	// Companion intent files (msg-<gateId>-intent.md) fold INTO their gate's
 	// card instead of appearing as items of their own.
 	const intents = new Map<string, { title?: string; text: string }>();
-	for (const file of names) {
+	for (const file of messageNames) {
 		const gateId = file.match(/^msg-(gate-[a-z0-9-]+)-intent\.md$/i)?.[1];
 		if (!gateId) continue;
 		try {
-			const content = readFileSync(join(dir, file), "utf-8");
+			const content = readFileSync(join(messagesDir, file), "utf-8");
 			intents.set(gateId.toLowerCase(), {
 				title: content.match(/^#\s+(.+)$/m)?.[1]?.trim(),
 				text: intentText(content),
@@ -161,7 +163,6 @@ function readInbox(root: string): InboxItem[] {
 	const items: InboxItem[] = [];
 	for (const file of names) {
 		if (!file.endsWith(".md") || file === "README.md") continue;
-		if (/^msg-gate-[a-z0-9-]+-intent\.md$/i.test(file)) continue;
 		try {
 			const content = readFileSync(join(dir, file), "utf-8");
 			const mtimeMs = statSync(join(dir, file)).mtimeMs;
@@ -179,13 +180,21 @@ function readInbox(root: string): InboxItem[] {
 					gateTool: content.match(/^tool:\s*(.+)$/m)?.[1]?.trim(),
 					gateClass: content.match(/^class:\s*(.+)$/m)?.[1]?.trim(),
 				});
-			} else if (file.startsWith("msg-")) {
-				// Agent-authored item; answered once a Response section exists.
-				const status = /^##\s+Response/m.test(content) ? "answered" : "pending";
-				items.push({ file, status, title, kind: "message", mtimeMs });
 			} else {
 				items.push({ file, status: "", title, kind: "note", mtimeMs });
 			}
+		} catch {
+			// unreadable inbox entries are skipped
+		}
+	}
+	for (const file of messageNames) {
+		if (!/^msg-[a-z0-9][a-z0-9-]*\.md$/i.test(file) || /^msg-gate-[a-z0-9-]+-intent\.md$/i.test(file)) continue;
+		try {
+			const path = join(messagesDir, file);
+			const content = readFileSync(path, "utf-8");
+			const title = content.match(/^#\s+(.+)$/m)?.[1] ?? file;
+			const status = /^##\s+Response/m.test(content) ? "answered" : "pending";
+			items.push({ file: `messages/${file}`, status, title, kind: "message", mtimeMs: statSync(path).mtimeMs });
 		} catch {
 			// unreadable inbox entries are skipped
 		}
@@ -228,14 +237,24 @@ function listTrailSessions(root: string): SessionSummary[] {
 			const head = readFileSync(path, "utf-8").slice(0, 16_384);
 			let title = "";
 			let name = "";
+			let sessionAuthority:
+				| {
+						autonomous?: boolean;
+						label?: string;
+						department?: string;
+						worktree?: string;
+				  }
+				| undefined;
 			for (const line of head.split("\n").slice(0, 40)) {
 				if (!line.trim()) continue;
 				try {
 					const entry = JSON.parse(line) as {
 						type?: string;
 						name?: string;
+						qorpera?: typeof sessionAuthority;
 						message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
 					};
+					if (entry.type === "session" && entry.qorpera) sessionAuthority = entry.qorpera;
 					if (entry.type === "session_info" && typeof entry.name === "string" && !name) {
 						name = entry.name;
 					}
@@ -253,20 +272,17 @@ function listTrailSessions(root: string): SessionSummary[] {
 					// partial trailing line in the head window
 				}
 			}
-			const kind = name.toLowerCase().startsWith("autonomous") ? "autonomous" : "chat";
-			// Product chats name both the department and exact worktree so the role
-			// capability can be restored.
-			const product = kind === "chat" ? name.match(/^product — (.+?) — (.+)$/) : undefined;
+			const kind = sessionAuthority?.autonomous ? "autonomous" : "chat";
 			// Sidechats carry immutable projection page IDs so moving a surface file
 			// does not detach its conversations from the UI instrument.
 			const page = kind === "chat" ? name.match(/^page — (.+)$/)?.[1] : undefined;
 			sessions.push({
 				file,
 				mtimeMs: statSync(path).mtimeMs,
-				title: kind === "autonomous" ? name : title || file.slice(0, 30),
+				title: kind === "autonomous" ? (sessionAuthority?.label ?? name) : title || file.slice(0, 30),
 				kind,
-				department: product?.[1],
-				worktree: product?.[2],
+				department: sessionAuthority?.department,
+				worktree: sessionAuthority?.worktree,
 				page,
 			});
 		} catch {
@@ -318,11 +334,11 @@ function listPullRequestRecords(root: string, readModelPath: string): PullReques
 	}
 }
 
-const INBOX_FILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._ -]*\.md$/;
+const INBOX_FILE_PATTERN = /^(?:messages\/)?[A-Za-z0-9][A-Za-z0-9._ -]*\.md$/;
 
 /** Founder response: appended into the item; the agent reads it on next wake. */
 function respondToInboxItem(root: string, file: string, response: string): boolean {
-	if (!INBOX_FILE_PATTERN.test(file) || file === "README.md" || !response.trim()) return false;
+	if (!INBOX_FILE_PATTERN.test(file) || !file.startsWith("messages/msg-") || !response.trim()) return false;
 	const path = join(root, "inbox", file);
 	try {
 		const content = readFileSync(path, "utf-8");

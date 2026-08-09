@@ -173,7 +173,14 @@ export function parseProjectionDocument(value: unknown): ProjectionState {
 		return { schema: PROJECTION_SCHEMA, navigation: [], nodes: [], diagnostics: ["projection must be an object"] };
 	}
 	const raw = value as Record<string, unknown>;
-	if (raw.schema !== PROJECTION_SCHEMA) diagnostics.push(`schema must be ${PROJECTION_SCHEMA}`);
+	if (raw.schema !== PROJECTION_SCHEMA) {
+		return {
+			schema: PROJECTION_SCHEMA,
+			navigation: [],
+			nodes: [],
+			diagnostics: [`schema must be ${PROJECTION_SCHEMA}`],
+		};
+	}
 	let nodes: ProjectionNode[] = [];
 	if (Array.isArray(raw.nodes)) {
 		nodes = raw.nodes.flatMap((node, index) => {

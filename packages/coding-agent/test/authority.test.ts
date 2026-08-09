@@ -134,7 +134,7 @@ describe("classification and evaluation", () => {
 			evaluateToolCall(
 				authority,
 				"write",
-				{ path: join(root, "inbox", "msg-pricing-question.md"), content: "?" },
+				{ path: join(root, "inbox", "messages", "msg-pricing-question.md"), content: "?" },
 				root,
 			).kind,
 		).toBe("allow");
@@ -142,6 +142,7 @@ describe("classification and evaluation", () => {
 		for (const path of [
 			join(root, "inbox", "gate-abc.md"),
 			join(root, "inbox", "notices.md"),
+			join(root, "inbox", "msg-x.md"),
 			join(root, "inbox", "sub", "msg-x.md"),
 		]) {
 			expect(evaluateToolCall(authority, "write", { path, content: "x" }, root).kind).toBe("block");

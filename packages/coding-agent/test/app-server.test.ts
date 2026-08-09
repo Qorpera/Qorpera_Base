@@ -155,16 +155,23 @@ describe("company app server", () => {
 		);
 		// An agent-authored inbox message awaits the founder.
 		writeFileSync(
-			join(root, "inbox", "msg-pricing.md"),
+			join(root, "inbox", "messages", "msg-pricing.md"),
 			"# Pricing question\n\nWhich currency do customers pay in?\n",
 			"utf-8",
 		);
 
-		// An autonomous session (tagged at spawn via --name) is distinguished.
+		// An autonomous session is distinguished by its kernel-authenticated header.
 		writeFileSync(
 			join(root, "trail", "2026-08-04T11-00-00-000Z_auto.jsonl"),
 			[
-				JSON.stringify({ type: "session", version: 3, id: "auto", timestamp: "t", cwd: root }),
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "auto",
+					timestamp: "t",
+					cwd: root,
+					qorpera: { actor: "controller", attended: false, autonomous: true, label: "autonomous — conception" },
+				}),
 				JSON.stringify({ type: "session_info", id: "s1", parentId: null, name: "autonomous — conception" }),
 				JSON.stringify({
 					type: "message",
@@ -178,11 +185,18 @@ describe("company app server", () => {
 
 		const department = scaffoldProductDepartment(root, "my-product");
 		const worktree = join(department.worktreesPath, "task-a");
-		// A product chat carries its department and worktree in the session name.
+		// A product chat carries its department and worktree in the authenticated header.
 		writeFileSync(
 			join(root, "trail", "2026-08-04T12-00-00-000Z_scoped.jsonl"),
 			[
-				JSON.stringify({ type: "session", version: 3, id: "scoped", timestamp: "t", cwd: root }),
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "scoped",
+					timestamp: "t",
+					cwd: root,
+					qorpera: { actor: "product-worker", attended: true, department: department.path, worktree },
+				}),
 				JSON.stringify({
 					type: "session_info",
 					id: "s2",
@@ -276,24 +290,24 @@ describe("company app server", () => {
 			expect.objectContaining({ number: 42, title: "Fix the launcher" }),
 		]);
 		expect(withDepartments.departments[0].pullRequests[0]).not.toHaveProperty("url");
-		const message = state.inbox.find((item) => item.file === "msg-pricing.md");
+		const message = state.inbox.find((item) => item.file === "messages/msg-pricing.md");
 		expect(message?.kind).toBe("message");
 		expect(message?.status).toBe("pending");
 
 		// Body is served; the founder's response lands in the file; status flips.
-		const body = await (await fetch(`${base}/api/inbox/msg-pricing.md`)).text();
+		const body = await (await fetch(`${base}/api/inbox/messages%2Fmsg-pricing.md`)).text();
 		expect(body).toContain("Which currency");
 		const respond = await fetch(`${base}/api/inbox/respond`, {
 			method: "POST",
 			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
-			body: JSON.stringify({ file: "msg-pricing.md", response: "DKK primarily, EUR later." }),
+			body: JSON.stringify({ file: "messages/msg-pricing.md", response: "DKK primarily, EUR later." }),
 		});
 		expect(respond.status).toBe(200);
-		expect(readFileSync(join(root, "inbox", "msg-pricing.md"), "utf-8")).toContain("DKK primarily");
+		expect(readFileSync(join(root, "inbox", "messages", "msg-pricing.md"), "utf-8")).toContain("DKK primarily");
 		const after = (await (await fetch(`${base}/api/state`)).json()) as {
 			inbox: Array<{ file: string; status: string }>;
 		};
-		expect(after.inbox.find((item) => item.file === "msg-pricing.md")?.status).toBe("answered");
+		expect(after.inbox.find((item) => item.file === "messages/msg-pricing.md")?.status).toBe("answered");
 
 		// Traversal-shaped names are refused.
 		const bad = await fetch(`${base}/api/inbox/..%2Fauthority.toml`);
