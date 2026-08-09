@@ -34,18 +34,67 @@ describe("company app server", () => {
 		const chrome = await (await fetch(`${base}/`)).text();
 		expect(chrome).toContain("Controller — Qorpera Base");
 
-		let state = (await (await fetch(`${base}/api/state`)).json()) as { surfaces: unknown[]; trailSessions: number };
-		expect(state.surfaces).toEqual([]);
-
-		// The controller builds a surface + registers it: it appears with no restart.
-		writeFileSync(join(root, "app", "surfaces", "hello.html"), "<h1>live surface</h1>", "utf-8");
+		let state = (await (await fetch(`${base}/api/state`)).json()) as {
+			projection: {
+				navigation: string[];
+				nodes: Array<{ id: string; kind: string; label: string; view?: { version?: number } }>;
+			};
+			trailSessions: number;
+		};
+		expect(state.projection.navigation).toEqual(["q:main"]);
+		expect(state.projection.nodes.map((node) => node.id)).toEqual(
+			expect.arrayContaining(["q:main", "q:inbox", "q:activity", "q:chats"]),
+		);
+		expect(state).not.toHaveProperty("surfaces");
 		writeFileSync(
 			join(root, "app", "manifest.json"),
-			JSON.stringify({ version: 1, surfaces: [{ name: "Hello", entry: "hello.html" }], routines: [] }),
+			JSON.stringify({ surfaces: [{ name: "Obsolete", entry: "obsolete.html" }] }),
 			"utf-8",
 		);
-		state = (await (await fetch(`${base}/api/state`)).json()) as { surfaces: Array<{ name: string }> } as never;
-		expect((state.surfaces[0] as { name: string }).name).toBe("Hello");
+		state = (await (await fetch(`${base}/api/state`)).json()) as typeof state;
+		expect(state.projection.nodes.some((node) => node.label === "Obsolete")).toBe(false);
+
+		// The controller publishes a stable hierarchy: it appears with no restart.
+		writeFileSync(join(root, "app", "surfaces", "hello.html"), "<h1>live surface</h1>", "utf-8");
+		writeFileSync(
+			join(root, "app", "projection.json"),
+			JSON.stringify({
+				schema: "qorpera.projection/v1",
+				default: "page:main.hello",
+				navigation: ["department:published"],
+				nodes: [
+					{
+						id: "department:published",
+						kind: "department",
+						label: "Published",
+						items: ["category:published.examples"],
+					},
+					{
+						id: "category:published.examples",
+						kind: "category",
+						label: "Examples",
+						items: ["page:main.hello"],
+					},
+					{
+						id: "page:main.hello",
+						kind: "page",
+						label: "Hello",
+						view: { type: "surface", entry: "hello.html" },
+					},
+				],
+			}),
+			"utf-8",
+		);
+		state = (await (await fetch(`${base}/api/state`)).json()) as typeof state;
+		expect(state.projection.navigation).toEqual(["q:main", "department:published"]);
+		expect(state.projection.nodes).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "page:main.hello",
+					view: expect.objectContaining({ type: "surface", entry: "hello.html", version: expect.any(Number) }),
+				}),
+			]),
+		);
 
 		const surface = await fetch(`${base}/surface/hello.html`);
 		expect(await surface.text()).toContain("live surface");
@@ -150,13 +199,13 @@ describe("company app server", () => {
 			"utf-8",
 		);
 
-		// A sidechat carries its surface in the session name, and its title comes
+		// A sidechat carries its stable page ID in the session name, and its title comes
 		// from the founder's words — the chrome's context preamble is stripped.
 		writeFileSync(
 			join(root, "trail", "2026-08-04T13-00-00-000Z_sidechat.jsonl"),
 			[
 				JSON.stringify({ type: "session", version: 3, id: "sidechat", timestamp: "t", cwd: root }),
-				JSON.stringify({ type: "session_info", id: "s3", parentId: null, name: "surface — revenue.html" }),
+				JSON.stringify({ type: "session_info", id: "s3", parentId: null, name: "page — page:revenue.overview" }),
 				JSON.stringify({
 					type: "message",
 					id: "1",
@@ -182,7 +231,7 @@ describe("company app server", () => {
 				kind: string;
 				department?: string;
 				worktree?: string;
-				surface?: string;
+				page?: string;
 			}>;
 			inbox: Array<{ file: string; kind: string; status: string }>;
 		};
@@ -193,7 +242,7 @@ describe("company app server", () => {
 		expect(chat?.title).toBe("plan the pricing analysis");
 		expect(chat?.kind).toBe("chat");
 		expect(chat?.department).toBeUndefined();
-		expect(chat?.surface).toBeUndefined();
+		expect(chat?.page).toBeUndefined();
 		expect(auto?.kind).toBe("autonomous");
 		expect(auto?.title).toBe("autonomous — conception");
 		expect(scoped?.kind).toBe("chat");
@@ -201,7 +250,7 @@ describe("company app server", () => {
 		expect(scoped?.worktree).toBe(worktree);
 		expect(scoped?.title).toBe("fix the launcher");
 		expect(sidechat?.kind).toBe("chat");
-		expect(sidechat?.surface).toBe("revenue.html");
+		expect(sidechat?.page).toBe("page:revenue.overview");
 		expect(sidechat?.title).toBe("why did July dip?");
 
 		writeFileSync(

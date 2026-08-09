@@ -6,7 +6,7 @@
  * app-mode window (Edge/Chrome `--app`, WebView2-class rendering — no
  * Tauri/Electron toolchain, no dependencies beyond node:http) over a local
  * backend that renders whatever the controller has built in `app/` — nav
- * from `app/manifest.json`, surfaces served live, the inbox as an
+ * from `app/projection.json`, surfaces served live, the inbox as an
  * approve/deny queue. Self-updating by construction: everything is read from
  * the folder on request and the window polls for changes, so a surface the
  * controller writes mid-session appears with no deploy step.
@@ -26,6 +26,13 @@ import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
 import { listProductDepartments } from "./company.ts";
+import {
+	PLATFORM_PROJECTION_NODES,
+	PROJECTION_SCHEMA,
+	type ProjectionNode,
+	type ProjectionState,
+	parseProjectionDocument,
+} from "./projection.ts";
 
 export interface CompanyAppOptions {
 	root: string;
@@ -77,26 +84,49 @@ export function companyPort(root: string): number {
 	return 4600 + (digest.readUInt16BE(0) % 400);
 }
 
-function readManifestSurfaces(root: string): Array<{ name: string; entry: string }> {
+function safeSurfaceEntry(root: string, entry: string): boolean {
+	const surfacesRoot = resolve(join(root, "app", "surfaces"));
+	const target = resolve(join(surfacesRoot, normalize(entry)));
+	return target !== surfacesRoot && target.startsWith(surfacesRoot + sep);
+}
+
+function readProjection(root: string): ProjectionState {
+	const diagnostics: string[] = [];
+	let parsed: ProjectionState;
 	try {
-		const manifest = JSON.parse(readFileSync(join(root, "app", "manifest.json"), "utf-8")) as {
-			surfaces?: Array<{ name?: string; title?: string; id?: string; entry?: string; path?: string }>;
-		};
-		// Liberal reader: the controller owns its conventions inside app/, so
-		// accept the field spellings agents actually produce (observed live:
-		// {id,title,path} with a surfaces/ prefix) alongside {name,entry}.
-		return (manifest.surfaces ?? [])
-			.map((surface) => {
-				const rawEntry = surface.entry ?? surface.path;
-				if (typeof rawEntry !== "string") return undefined;
-				const entry = rawEntry.replace(/^\.?\/?(app\/)?surfaces\//, "");
-				const name = surface.name ?? surface.title ?? surface.id ?? entry;
-				return { name, entry };
-			})
-			.filter((surface): surface is { name: string; entry: string } => surface !== undefined);
+		parsed = parseProjectionDocument(JSON.parse(readFileSync(join(root, "app", "projection.json"), "utf-8")));
 	} catch {
-		return [];
+		parsed = {
+			schema: PROJECTION_SCHEMA,
+			default: "q:chats",
+			navigation: [],
+			nodes: [],
+			diagnostics: ["app/projection.json is missing or unreadable"],
+		};
 	}
+	diagnostics.push(...parsed.diagnostics);
+	const nodes: ProjectionNode[] = [...PLATFORM_PROJECTION_NODES, ...parsed.nodes].map((node) => {
+		if (node.kind !== "page" || node.view.type !== "surface") return node;
+		if (!safeSurfaceEntry(root, node.view.entry)) {
+			diagnostics.push(`surface page ${node.id} has an unsafe entry`);
+			return {
+				...node,
+				view: {
+					type: "builtin" as const,
+					id: "qorpera.placeholder" as const,
+					context: { title: node.label, message: "This page has an invalid surface entry." },
+				},
+			};
+		}
+		return { ...node, view: { ...node.view, version: surfaceVersion(root, node.view.entry) } };
+	});
+	return {
+		schema: PROJECTION_SCHEMA,
+		default: parsed.default ?? "q:chats",
+		navigation: ["q:main", ...parsed.navigation],
+		nodes,
+		diagnostics,
+	};
 }
 
 /** Plain text of an intent companion: frontmatter/headings off, first chunk. */
@@ -177,14 +207,12 @@ interface SessionSummary {
 	title: string;
 	/** "autonomous" = controller-initiated work (tagged at spawn); "chat" = founder-brought. */
 	kind: "chat" | "autonomous";
-	/** Product scope the session was opened under (root-relative), if any. */
-	scope?: string;
 	/** Product-development department assigned to this chat. */
 	department?: string;
 	/** Exact product worktree assigned to this chat. */
 	worktree?: string;
-	/** Surface a sidechat session is docked to (app/surfaces entry), if any. */
-	surface?: string;
+	/** Stable projection page ID a sidechat session is docked to, if any. */
+	page?: string;
 }
 
 /** Trail sessions ARE the chat list (spec §3). Title = first user message;
@@ -226,23 +254,20 @@ function listTrailSessions(root: string): SessionSummary[] {
 				}
 			}
 			const kind = name.toLowerCase().startsWith("autonomous") ? "autonomous" : "chat";
-			// Legacy scoped chats retain their scope. Product chats name both the
-			// department and exact worktree so the role capability can be restored.
-			const scope = kind === "chat" ? name.match(/^scope — (.+)$/)?.[1] : undefined;
+			// Product chats name both the department and exact worktree so the role
+			// capability can be restored.
 			const product = kind === "chat" ? name.match(/^product — (.+?) — (.+)$/) : undefined;
-			// Sidechats carry the surface they were docked to (`surface — <entry>`,
-			// set by the chrome via set_session_name before the first prompt) so
-			// surface-anchored conversations stay attributable in the trail.
-			const surface = kind === "chat" ? name.match(/^surface — (.+)$/)?.[1] : undefined;
+			// Sidechats carry immutable projection page IDs so moving a surface file
+			// does not detach its conversations from the UI instrument.
+			const page = kind === "chat" ? name.match(/^page — (.+)$/)?.[1] : undefined;
 			sessions.push({
 				file,
 				mtimeMs: statSync(path).mtimeMs,
 				title: kind === "autonomous" ? name : title || file.slice(0, 30),
 				kind,
-				scope,
 				department: product?.[1],
 				worktree: product?.[2],
-				surface,
+				page,
 			});
 		} catch {
 			// unreadable session files are skipped
@@ -313,10 +338,6 @@ function respondToInboxItem(root: string, file: string, response: string): boole
 }
 
 function stateFor(root: string): unknown {
-	const surfaces = readManifestSurfaces(root).map((surface) => ({
-		...surface,
-		version: surfaceVersion(root, surface.entry),
-	}));
 	let trailSessions = 0;
 	try {
 		trailSessions = readdirSync(join(root, "trail")).filter((name) => name.endsWith(".jsonl")).length;
@@ -335,7 +356,7 @@ function stateFor(root: string): unknown {
 	}
 	return {
 		name: companyName(root),
-		surfaces,
+		projection: readProjection(root),
 		inbox: readInbox(root),
 		sessions: listTrailSessions(root),
 		trailSessions,
@@ -430,7 +451,7 @@ a:hover { background-image: radial-gradient(circle, currentcolor 0.75px, transpa
  * fake it here through founder-lane endpoints.
  */
 const SURFACE_KIT_JS = `window.qorpera = {
-	/** Company state: name, surfaces, inbox summary, sessions. */
+	/** Company state: name, projection, inbox summary, sessions. */
 	async getState() { return (await fetch("/api/state")).json(); },
 	/** Raw text of a substrate file (app/substrates/<name>). */
 	async readSubstrate(name) {
@@ -562,19 +583,15 @@ const CHROME_HTML = (name: string, token: string) => `<!doctype html>
 <body>
 <nav>
 	<h1 id="title">${name}<small>Controller — Qorpera Base</small></h1>
-	<h2>Surfaces</h2>
-	<div id="surfaces"><div class="empty" style="padding:8px">none built yet</div></div>
-	<h2>Company</h2>
-	<button id="inboxBtn" onclick="showPanel('inbox')">Inbox<span id="inboxBadge"></span></button>
-	<button onclick="showPanel('trail')">Trail</button>
+	<div id="navigation"></div>
 </nav>
 <main>
 	<iframe id="frame" hidden></iframe>
 	<div id="panel"></div>
 </main>
 <script>
-let state = { surfaces: [], inbox: [], trailSessions: 0 };
-let current = null; // {kind:"surface", entry} | {kind:"panel", which}
+let state = { projection: { navigation: [], nodes: [], diagnostics: [] }, inbox: [], sessions: [], trailSessions: 0 };
+let current = null; // stable projection node ID
 async function refresh() {
 	try {
 		const next = await (await fetch("/api/state")).json();
@@ -584,35 +601,82 @@ async function refresh() {
 	} catch {}
 }
 function render() {
-	const nav = document.getElementById("surfaces");
+	const nav = document.getElementById("navigation");
 	nav.innerHTML = "";
-	if (!state.surfaces.length) nav.innerHTML = '<div class="empty" style="padding:8px">none built yet</div>';
-	for (const s of state.surfaces) {
-		const b = document.createElement("button");
-		b.textContent = s.name;
-		if (current && current.kind === "surface" && current.entry === s.entry) b.className = "active";
-		b.onclick = () => showSurface(s);
-		nav.appendChild(b);
+	if (current && !node(current)) current = null;
+	for (const departmentId of state.projection.navigation) {
+		const department = node(departmentId);
+		if (!department || department.kind !== "department") continue;
+		const heading = document.createElement("h2");
+		heading.textContent = department.label;
+		nav.appendChild(heading);
+		for (const childId of department.items) {
+			const child = node(childId);
+			if (!child) continue;
+			const button = document.createElement("button");
+			button.textContent = child.label;
+			if (current === child.id) button.className = "active";
+			button.onclick = () => openNode(child.id);
+			nav.appendChild(button);
+		}
 	}
-	const pending = state.inbox.filter((g) => g.status === "pending").length;
-	document.getElementById("inboxBadge").innerHTML = pending ? '<span class="badge">' + pending + "</span>" : "";
-	if (!current && state.surfaces.length) showSurface(state.surfaces[0]);
-	if (current && current.kind === "surface") {
-		const s = state.surfaces.find((x) => x.entry === current.entry);
-		if (s) { const src = "/surface/" + encodeURIComponent(s.entry) + "?v=" + s.version;
-			const f = document.getElementById("frame"); if (f.getAttribute("src") !== src) f.src = src; }
+	if (!current && state.projection.default) openNode(state.projection.default);
+	const target = node(current);
+	if (target && target.kind === "page" && target.view.type === "surface") {
+		const src = "/surface/" + encodeURIComponent(target.view.entry) + "?v=" + (target.view.version || 0);
+		const frame = document.getElementById("frame");
+		if (frame.getAttribute("src") !== src) frame.src = src;
 	}
-	if (current && current.kind === "panel") showPanel(current.which, true);
+	if (target && target.kind === "page" && target.view.type === "builtin") {
+		if (target.view.id === "qorpera.inbox") showPanel("inbox", true);
+		if (target.view.id === "qorpera.activity" || target.view.id === "qorpera.chats") showPanel("trail", true);
+	}
 }
-function showSurface(s) {
-	current = { kind: "surface", entry: s.entry };
+function node(id) { return state.projection.nodes.find((entry) => entry.id === id); }
+function openNode(id) {
+	const target = node(id);
+	if (!target) return;
+	current = id;
+	if (target.kind === "department" || target.kind === "category") return showCollection(target);
+	if (target.view.type === "surface") return showSurface(target);
+	if (target.view.id === "qorpera.inbox") return showPanel("inbox");
+	if (target.view.id === "qorpera.activity" || target.view.id === "qorpera.chats") return showPanel("trail");
+	const message = target.view.context && target.view.context.message || "This builtin is available in the desktop app.";
+	showMessage(target.label, message);
+}
+function showSurface(page) {
 	document.getElementById("panel").style.display = "none";
 	const f = document.getElementById("frame");
-	f.hidden = false; f.src = "/surface/" + encodeURIComponent(s.entry) + "?v=" + s.version;
+	f.hidden = false; f.src = "/surface/" + encodeURIComponent(page.view.entry) + "?v=" + (page.view.version || 0);
+	render();
+}
+function showCollection(collection) {
+	const p = document.getElementById("panel");
+	document.getElementById("frame").hidden = true;
+	p.style.display = "block";
+	p.innerHTML = "<h1></h1>";
+	p.querySelector("h1").textContent = collection.label;
+	for (const id of collection.items) {
+		const page = node(id);
+		if (!page || page.kind !== "page") continue;
+		const button = document.createElement("button");
+		button.className = "gate";
+		button.textContent = page.label;
+		button.onclick = () => openNode(page.id);
+		p.appendChild(button);
+	}
+	render();
+}
+function showMessage(title, message) {
+	const p = document.getElementById("panel");
+	document.getElementById("frame").hidden = true;
+	p.style.display = "block";
+	p.innerHTML = '<div class="gate"><div class="t"></div><div class="s"></div></div>';
+	p.querySelector(".t").textContent = title;
+	p.querySelector(".s").textContent = message;
 	render();
 }
 function showPanel(which, keep) {
-	current = { kind: "panel", which };
 	document.getElementById("frame").hidden = true;
 	const p = document.getElementById("panel");
 	p.style.display = "block";

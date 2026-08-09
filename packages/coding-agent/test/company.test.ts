@@ -43,7 +43,7 @@ describe("scaffoldCompany", () => {
 			join("connections", "README.md"),
 			join("inbox", "README.md"),
 			"trail",
-			join("app", "manifest.json"),
+			join("app", "projection.json"),
 			join("app", "surfaces"),
 			join("app", "substrates"),
 			join("app", "routines"),
@@ -58,8 +58,13 @@ describe("scaffoldCompany", () => {
 		expect(readFileSync(join(root, "CLAUDE.md"), "utf-8")).toBe(KERNEL_PROMPT);
 		expect(KERNEL_PROMPT).toContain("controller of the company rooted in this folder");
 
-		const manifest = JSON.parse(readFileSync(join(root, "app", "manifest.json"), "utf-8"));
-		expect(manifest).toEqual({ version: 1, surfaces: [], routines: [] });
+		const projection = JSON.parse(readFileSync(join(root, "app", "projection.json"), "utf-8"));
+		expect(projection).toEqual({
+			schema: "qorpera.projection/v1",
+			default: "q:chats",
+			navigation: [],
+			nodes: [],
+		});
 		const settings = JSON.parse(readFileSync(join(root, ".qorpera", "settings.json"), "utf-8"));
 		expect(settings.compaction).toEqual({ enabled: false });
 
@@ -181,11 +186,43 @@ describe("product-development departments", () => {
 	it("materializes and discovers the standard department kit", () => {
 		scaffoldCompany(root);
 		const department = scaffoldProductDepartment(root, "My Product");
+		scaffoldProductDepartment(root, "My Product");
 		expect(department.id).toBe("My-Product-development");
 		expect(department.repositoryExists).toBe(false);
 		expect(existsSync(join(root, department.path, "department.json"))).toBe(true);
 		expect(existsSync(join(root, department.worktreesPath))).toBe(true);
 		expect(listProductDepartments(root)).toEqual([department]);
+		const projection = JSON.parse(readFileSync(join(root, "app", "projection.json"), "utf-8"));
+		expect(projection.navigation).toEqual(["department:my-product-development"]);
+		expect(projection.nodes).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "department:my-product-development",
+					kind: "department",
+					items: [
+						"page:my-product-development.chat",
+						"page:my-product-development.pull-requests",
+						"page:my-product-development.architecture",
+					],
+				}),
+				expect.objectContaining({
+					id: "page:my-product-development.architecture",
+					view: expect.objectContaining({ id: "qorpera.placeholder" }),
+				}),
+			]),
+		);
+		expect(projection.navigation.filter((id: string) => id === "department:my-product-development")).toHaveLength(1);
+		expect(
+			projection.nodes.filter((node: { id: string }) => node.id.startsWith("page:my-product-development.")),
+		).toHaveLength(3);
+	});
+
+	it("creates valid projection IDs for punctuation-prefixed product names", () => {
+		scaffoldCompany(root);
+		const department = scaffoldProductDepartment(root, "...Product...");
+		expect(department.id).toBe("Product-development");
+		const projection = JSON.parse(readFileSync(join(root, "app", "projection.json"), "utf-8"));
+		expect(projection.navigation).toEqual(["department:product-development"]);
 	});
 
 	it("ignores arbitrary department folders without a product-development manifest", () => {

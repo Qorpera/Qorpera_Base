@@ -48,7 +48,7 @@ clone it):
                     # sessionDir here, so every session's tree-shaped JSONL
                     # lands inside the company folder. Never compact/delete.
   inbox/            # gate requests + human steering
-  app/              # THE CONTROLLER the agent builds: manifest.json,
+  app/              # THE CONTROLLER the agent builds: projection.json,
                     # surfaces/, substrates/, routines/, tools/
   departments/      # optional department kits; arbitrary other structures
                     # remain agent-authored
@@ -57,6 +57,40 @@ clone it):
 Scaffolding is idempotent and never overwrites — a company's `company.md`
 is its identity, not ours to reset. Existing `.qorpera/settings.json` keys
 are merged around, and a pre-set `sessionDir` is respected.
+
+## UI projection hierarchy
+
+`app/projection.json` is the only navigation publication contract. There is
+no compatibility reader for the former flat manifest. The agent remains free
+to arrange company data, code, schemas, routines, tools, and integrations in
+whatever form the company requires; the projection contains only the small
+subset deliberately exposed to the founder.
+
+The hierarchy is intentionally bounded:
+
+```
+Department
+  ├─ Page
+  └─ Category
+       └─ Page
+```
+
+- A **Department** groups related user-facing responsibilities.
+- A **Category** opens a generated collection page; its pages do not expand
+  into the sidebar.
+- A **Page** either hosts an agent-authored surface or a named Base builtin.
+- IDs are immutable and namespaced. Labels and surface file paths may move
+  without detaching routes or sidechat trails.
+- `q:` is reserved for the platform-owned Main department and its Inbox,
+  Activity, and Chats pages.
+- Navigation never scans or infers structure from the company folder.
+- Invalid references are shown as projection diagnostics rather than being
+  repaired by filesystem discovery.
+
+Department titles are static group labels with no collapse affordance.
+Right-clicking any department or row exposes a per-item height adjustment of
+±12px. Appearance settings control the optional page/category hue indicators.
+These are local presentation preferences and never change `projection.json`.
 
 ## Product-development departments
 
@@ -74,11 +108,13 @@ departments/
 ```
 
 The company Git repository ignores `repository/` and `worktrees/`; each
-product repository owns its own history. The base product navigation has
-three rows: **Chat**, **Pull Requests**, and **Architecture**. Chat creates a
-fresh Git worktree and launches a `product-worker` rooted there. Pull
-Requests reads synchronized JSON records from `pull-requests/`. Architecture
-is intentionally a disabled placeholder: it defines no folder schema,
+product repository owns its own history. Installing the product kit adds an
+ordinary projection Department with three Pages: **Chat**, **Pull Requests**,
+and **Architecture**. The renderer has no separate product-navigation path.
+Chat opens the product's chat collection; its explicit new-task action creates
+a fresh Git worktree and launches a `product-worker` rooted there. Pull
+Requests reads synchronized JSON records from `pull-requests/`.
+Architecture opens an inert placeholder; it defines no folder schema,
 ontology, search contract, or storage model yet.
 
 The controller can inspect every product artifact and write briefs, but it

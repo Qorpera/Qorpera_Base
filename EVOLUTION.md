@@ -78,7 +78,7 @@ signature status (the check needs the hash anyway). Safe boot: the platform
 bookmarks the last tree hash that started a session successfully — a trail
 fact for recovery, not a governance object.
 
-## 4. The three invariants
+## 4. The five invariants
 
 1. **History is append-only from the agent's side.** **[exists]** — the
    destructive screen gates force-push, `reset --hard`, and (since §9.3)
@@ -101,6 +101,11 @@ fact for recovery, not a governance object.
    product-worker capability for that path only. This boundary has no
    one-off approval path; destructive integration still uses the ordinary
    irreversible gate.
+5. **Navigation is a projection, never company ontology.** The agent owns
+   the free-form company folder. `app/projection.json` selectively publishes
+   a bounded Department → (Page or Category → Page) hierarchy with immutable
+   IDs. Base neither infers navigation from folders nor requires company data
+   to mirror the interface.
 
 ## 5. Charter and rollback
 
@@ -123,7 +128,8 @@ The platform is the browser for companies: company files are free-form;
 the platform renders any of them installable, viewable, log-in-able. The
 contract is the spine (identity `company.md` · charter surface
 `authority.toml` · activity `trail/` · intent pipe `inbox/` + chat ·
-controller `app/`). Trust-critical chrome — identity, charter editing, gate
+controller `app/`, with UI publication in `app/projection.json`).
+Trust-critical chrome — identity, charter editing, gate
 approvals — is platform-rendered, never model-mediated. Surfaces are
 model-built and shown at head (the founder sees the company as it is,
 mid-molt); safe-mode falls back to the §3 bookmark.

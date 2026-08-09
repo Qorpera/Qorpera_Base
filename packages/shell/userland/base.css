@@ -79,13 +79,37 @@ nav button, .gate button {
 }
 nav button:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
 nav button.active { background: rgba(255, 255, 255, 0.11); color: var(--text); }
-.department-group { margin-bottom: 5px; }
-.department-title {
-	padding: 6px 9px 3px; color: var(--text); font-size: 12.5px; font-weight: 600;
+.projection-department {
+	display: flex; flex-direction: column; margin: 5px 0 8px;
+	border: 1px solid var(--border-strong); background: rgba(255, 255, 255, 0.018);
+}
+.projection-department-title {
+	display: flex; align-items: center; min-height: var(--nav-item-height, 28px);
+	padding: 0 var(--nav-padding-x, 9px);
+	color: var(--text); font-size: var(--nav-font-size, 12.5px); font-weight: 650;
 	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.department-group button { padding-left: 20px; font-size: 12.5px; }
-.department-group button:disabled { cursor: default; opacity: 0.42; }
+nav .projection-row {
+	position: relative; display: flex; align-items: center; gap: 6px;
+	min-height: var(--nav-item-height, 30px);
+	padding: 0 var(--nav-padding-x, 10px) 0 18px;
+	border-radius: var(--nav-radius, 5px);
+	font-size: var(--nav-font-size, 12.5px);
+}
+nav .projection-row::before {
+	content: ""; position: absolute; inset: 5px auto 5px 0; width: var(--nav-hue-width, 2px);
+	background: linear-gradient(90deg, var(--nav-kind-hue, transparent), transparent); opacity: .82;
+}
+nav .projection-row.category::after { content: "folder"; margin-left: auto; color: var(--text-soft); font-size: 9px; letter-spacing: .05em; text-transform: uppercase; }
+nav .projection-row .badge { margin-left: auto; }
+.projection-diagnostics { min-height: 15px; color: var(--danger); font-size: 10px; padding: 0 5px; }
+#navContext {
+	position: fixed; z-index: 3000; display: none; width: 250px; padding: 12px;
+	border: 1px solid var(--border-strong); background: var(--popover); box-shadow: 0 16px 40px rgba(0, 0, 0, .5);
+}
+#navContext.open { display: grid; gap: 10px; }
+#navContext label { display: flex; justify-content: space-between; gap: 8px; color: var(--text-muted); font-size: 12px; }
+#navContext input { width: 100%; }
 main {
 	flex: 1; display: flex; flex-direction: column; min-width: 0;
 	background: var(--bg); border-radius: var(--radius-lg) 0 0 0; overflow: hidden;
@@ -132,6 +156,17 @@ main {
 #sidechat .composer-shell { min-height: 86px; border-radius: 16px; padding: 12px 10px 6px; }
 #sidechat .stripchip { max-width: 120px; }
 #view-panel { flex: 1; padding: 22px; overflow-y: auto; display: none; }
+.collection-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.collection-head h1 { margin: 0; }
+.collection-head button { width: auto; }
+.collection-description { max-width: 720px; margin: 8px 0 20px; color: var(--text-muted); line-height: 1.5; }
+.projection-card {
+	display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; min-height: 58px;
+	margin-top: 8px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 0;
+	background: rgba(255, 255, 255, .025); color: var(--text); text-align: left; white-space: normal;
+}
+.projection-card:hover:not(:disabled), .projection-card.active { border-color: var(--border-strong); background: var(--hover); }
+.projection-card span { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
 
 /* ---- chat thread --------------------------------------------------------- */
 #view-chat { flex: 1; display: none; flex-direction: column; min-height: 0; position: relative; }

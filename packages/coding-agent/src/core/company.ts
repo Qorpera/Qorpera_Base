@@ -4,8 +4,9 @@
  * The folder IS the company. Base defines the spine plus the product-
  * development department kit and never opines past that line: `app/` and
  * department-authored content belong to the company's agents. Scaffolding
- * is strictly idempotent — existing files are never overwritten (a company's `company.md` is its
- * identity, not ours to reset). Sessions ARE the trail: the scaffold points
+ * is strictly idempotent — existing files are never overwritten (a
+ * company's `company.md` is its identity, not ours to reset). Sessions ARE
+ * the trail: the scaffold points
  * the project `sessionDir` at `./trail`, so every session's tree-shaped
  * JSONL record lands inside the company folder with no mirroring layer.
  *
@@ -24,6 +25,12 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { getAgentDir } from "../config.ts";
 import { discoverAuthority } from "./authority.ts";
+import {
+	EMPTY_PROJECTION,
+	type ProjectionDocument,
+	type ProjectionNode,
+	parseProjectionDocument,
+} from "./projection.ts";
 
 /**
  * The kernel prompt (spec §5.2). L0 — companies and models may layer above
@@ -50,6 +57,15 @@ override tokens in \`app/surfaces/theme.css\`) and a read-only kit at
 \`/assets/surface-kit.js\` — \`window.qorpera\` with \`getState()\`,
 \`readSubstrate(name)\`, \`readInbox(file)\`, and \`every(ms, fn)\` — so a
 surface can show the company as it is right now and refresh itself.
+
+\`app/projection.json\` is the only navigation publication document. It is
+not your company model. Publish only the small part of the company the
+founder should navigate. Its stable nodes are departments, categories, and
+pages: a department contains pages or categories; a category contains pages
+only; a page either hosts a surface or a named Base builtin. Node IDs are
+immutable even when files or labels move. Do not derive navigation from the
+folder tree, place routines in the projection, or reorganize company data to
+fit the UI. Main is platform-owned and always present.
 
 When you wake: read \`company.md\`, look around — the app, the inbox, the
 state of the work — and decide for yourself what most needs doing. Routines
@@ -174,12 +190,7 @@ Gate requests and human steering land here.
 - Anything else you put here is steering the agent reads on its next wake.
 `;
 
-const APP_MANIFEST_TEMPLATE = `{
-	"version": 1,
-	"surfaces": [],
-	"routines": []
-}
-`;
+const APP_PROJECTION_TEMPLATE = `${JSON.stringify(EMPTY_PROJECTION, null, "\t")}\n`;
 
 const PRODUCT_DEPARTMENT_GITIGNORE = `# Product Git data belongs to the product repository, not the company repository.
 repository/
@@ -199,6 +210,90 @@ interface ProductDepartmentManifest {
 	version: 1;
 	kind: typeof PRODUCT_DEPARTMENT_KIND;
 	product: string;
+}
+
+function productProjectionNodes(department: ProductDepartment): ProjectionNode[] {
+	const namespace = department.id.toLowerCase();
+	const departmentId = `department:${namespace}`;
+	const context = { departmentId: department.id };
+	return [
+		{
+			id: departmentId,
+			kind: "department",
+			label: `${department.name} Development`,
+			items: [`page:${namespace}.chat`, `page:${namespace}.pull-requests`, `page:${namespace}.architecture`],
+		},
+		{
+			id: `page:${namespace}.chat`,
+			kind: "page",
+			label: "Chat",
+			description: "Start product work in a fresh isolated worktree.",
+			view: { type: "builtin", id: "qorpera.product-chat", context },
+		},
+		{
+			id: `page:${namespace}.pull-requests`,
+			kind: "page",
+			label: "Pull Requests",
+			description: "Review synchronized local pull-request records.",
+			view: { type: "builtin", id: "qorpera.pull-requests", context },
+		},
+		{
+			id: `page:${namespace}.architecture`,
+			kind: "page",
+			label: "Architecture",
+			description: "Reserved for the product's auditable architecture trail.",
+			view: {
+				type: "builtin",
+				id: "qorpera.placeholder",
+				context: {
+					title: `${department.name} Architecture`,
+					message: "The architecture model will be defined later.",
+				},
+			},
+		},
+	];
+}
+
+/** Install the product kit into the one company UI projection document. */
+function installProductProjection(root: string, department: ProductDepartment): void {
+	const projectionPath = join(root, "app", "projection.json");
+	let document: ProjectionDocument = {
+		schema: EMPTY_PROJECTION.schema,
+		default: EMPTY_PROJECTION.default,
+		navigation: [],
+		nodes: [],
+	};
+	if (existsSync(projectionPath)) {
+		const raw = JSON.parse(readFileSync(projectionPath, "utf-8")) as unknown;
+		const parsed = parseProjectionDocument(raw);
+		if (parsed.diagnostics.length > 0) {
+			throw new Error(
+				`Cannot install product UI into invalid app/projection.json: ${parsed.diagnostics.join("; ")}`,
+			);
+		}
+		document = {
+			schema: parsed.schema,
+			...(parsed.default ? { default: parsed.default } : {}),
+			navigation: parsed.navigation,
+			nodes: parsed.nodes,
+		};
+	}
+	const kitNodes = productProjectionNodes(department);
+	const existing = new Set(document.nodes.map((node) => node.id));
+	const departmentId = kitNodes[0].id;
+	let changed = false;
+	for (const node of kitNodes) {
+		if (existing.has(node.id)) continue;
+		document.nodes.push(node);
+		changed = true;
+	}
+	if (!document.navigation.includes(departmentId)) {
+		document.navigation.push(departmentId);
+		changed = true;
+	}
+	if (!changed && existsSync(projectionPath)) return;
+	mkdirSync(join(root, "app"), { recursive: true });
+	writeFileSync(projectionPath, `${JSON.stringify(document, null, "\t")}\n`, "utf-8");
 }
 
 export interface ProductDepartment {
@@ -306,7 +401,7 @@ function productSlug(product: string): string {
 	const slug = product
 		.trim()
 		.replace(/[^A-Za-z0-9._-]+/g, "-")
-		.replace(/^-+|-+$/g, "");
+		.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "");
 	return slug || "product";
 }
 
@@ -365,7 +460,9 @@ export function scaffoldProductDepartment(rootDir: string, product: string): Pro
 	ensureDir(root, join(path, "worktrees"), result);
 	writeIfMissing(root, join(path, "pull-requests", "README.md"), PULL_REQUESTS_README, result);
 	mkdirSync(join(root, path, "repository"), { recursive: true });
-	return productDepartmentFromEntry(root, id)!;
+	const department = productDepartmentFromEntry(root, id)!;
+	installProductProjection(root, department);
+	return department;
 }
 
 /** Create one isolated product task branch/worktree from the controlling clone. */
@@ -419,7 +516,7 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	writeIfMissing(root, join("connections", "README.md"), CONNECTIONS_README, result);
 	writeIfMissing(root, join("inbox", "README.md"), INBOX_README, result);
 	ensureDir(root, "trail", result);
-	writeIfMissing(root, join("app", "manifest.json"), APP_MANIFEST_TEMPLATE, result);
+	writeIfMissing(root, join("app", "projection.json"), APP_PROJECTION_TEMPLATE, result);
 	ensureDir(root, join("app", "surfaces"), result);
 	ensureDir(root, join("app", "substrates"), result);
 	ensureDir(root, join("app", "routines"), result);
