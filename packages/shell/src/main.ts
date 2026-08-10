@@ -66,6 +66,7 @@ import {
 	resolveCompanySecret,
 	suspendWakeSchedule,
 } from "@qorpera/pi-coding-agent/company-connections";
+import { FOUNDER_PUBLIC_FILE, founderPublicProjection } from "@qorpera/pi-coding-agent/founder-identity";
 import {
 	app,
 	BrowserWindow,
@@ -217,6 +218,10 @@ function prepareBrokeredAgentDir(configDir: string, companyRoot: string, credent
 		`${JSON.stringify({ [resolve(companyRoot)]: true }, null, "\t")}\n`,
 		"utf-8",
 	);
+	// The founder's PUBLIC key only: the child verifies policy provenance in
+	// the sandbox; signing stays with founder contexts (CLI + this kernel).
+	const founderProjection = founderPublicProjection();
+	if (founderProjection) writeFileSync(join(agentDir, FOUNDER_PUBLIC_FILE), founderProjection, "utf-8");
 	return agentDir;
 }
 
@@ -662,6 +667,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			join(configDir, "config.toml"),
 			join(agentDir, "auth.json"),
 			join(agentDir, "trust.json"),
+			join(agentDir, FOUNDER_PUBLIC_FILE),
 		]);
 		provisionSandbox({
 			codexEntry: CODEX_ENTRY,

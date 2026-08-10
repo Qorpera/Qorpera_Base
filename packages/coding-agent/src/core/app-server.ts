@@ -34,6 +34,7 @@ import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
 import { canonicalCompanyRoot, listProductDepartments } from "./company.ts";
+import { readFounderIdentity, signAuthorityPolicy } from "./founder-identity.ts";
 import {
 	PLATFORM_PROJECTION_NODES,
 	PROJECTION_SCHEMA,
@@ -176,6 +177,20 @@ function readPhysicalFileWithin(
 		return undefined;
 	} finally {
 		if (descriptor !== undefined) closeSync(descriptor);
+	}
+}
+
+/**
+ * Founder policy writes arrive through this token-gated, natively-reviewed
+ * server — that IS the founder acting, so a machine with a signing identity
+ * re-ratifies the policy it just wrote (manifesto §3.1). Without one,
+ * legacy semantics apply and nothing is signed.
+ */
+function ratifyPolicyIfFounder(root: string): void {
+	try {
+		if (readFounderIdentity()?.privateKeyPem) signAuthorityPolicy(root);
+	} catch (error) {
+		console.error(`policy ratification failed: ${(error as Error).message}`);
 	}
 }
 
@@ -1141,6 +1156,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 					}
 					existing.authority = { ...((existing.authority as Record<string, unknown>) ?? {}), mode: "gate" };
 					writeAtomicPhysicalFile(source.path, `${stringifyToml(existing)}\n`);
+					ratifyPolicyIfFounder(root);
 					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
 				} catch (error) {
 					response
@@ -1182,6 +1198,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 					const source = readCompanyFile(root, "authority.toml");
 					if (!source) throw new Error("authority policy is not a physical file");
 					writeAtomicPhysicalFile(source.path, content);
+					ratifyPolicyIfFounder(root);
 					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
 				} catch (error) {
 					response

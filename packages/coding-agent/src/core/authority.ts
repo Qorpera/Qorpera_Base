@@ -30,6 +30,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { AUTHORITY_SIGNATURE_PATH, verifyAuthorityPolicy } from "./founder-identity.ts";
 import { requestKernelGateConsumption, requestKernelGateTrust } from "./kernel-broker.ts";
 
 export type ConfigurableEffectClass = "money" | "identity" | "irreversible" | "authority";
@@ -272,6 +273,13 @@ export function readAuthorityConfig(authority: Authority): AuthorityConfig {
 		},
 		tools: {},
 	};
+	// Policy provenance (manifesto §3.1, invariant 15): once a founder
+	// identity exists in this context, only policy the LOCAL founder signed
+	// grants auto/notify modes — unsigned, tampered, or foreign-signed
+	// policy fails closed to everything-gated, exactly like malformed toml.
+	// Machines without a founder identity keep legacy semantics.
+	const provenance = verifyAuthorityPolicy(authority.root);
+	if (provenance !== "no-identity" && provenance !== "valid") return fallback;
 	let raw: Record<string, unknown>;
 	try {
 		raw = parseToml(readFileSync(authority.configPath, "utf-8")) as Record<string, unknown>;
@@ -345,6 +353,7 @@ function isProtectedPath(authority: Authority, rawPath: string, cwd: string): bo
 	}
 	if (dirname(resolved) === resolve(authority.root) && PROTECTED_ROOT_FILES.has(basename(resolved))) return true;
 	if (resolved === resolve(authority.root, PRODUCT_REGISTRY_PATH)) return true;
+	if (resolved === resolve(authority.root, AUTHORITY_SIGNATURE_PATH)) return true;
 	return false;
 }
 

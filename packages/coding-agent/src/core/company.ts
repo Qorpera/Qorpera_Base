@@ -53,6 +53,7 @@ import {
 	removeCompanySecret,
 	removeNetworkDestination,
 } from "./company-connections.ts";
+import { generateFounderIdentity, readFounderIdentity, signAuthorityPolicy } from "./founder-identity.ts";
 import {
 	EMPTY_PROJECTION,
 	type ProjectionDocument,
@@ -180,7 +181,12 @@ tools you build exactly as it binds you, and it is enforced in the harness,
 not by this text. Blocked effects file gate requests in \`inbox/\`
 automatically; keep working elsewhere while you wait. Never edit
 \`authority.toml\`, this file, or anything in \`inbox/\` other than your own
-\`inbox/messages/msg-*.md\` items — the rest belongs to the human.
+\`inbox/messages/msg-*.md\` items — the rest belongs to the human. Where
+the founder has a cryptographic identity, policy is founder-RATIFIED:
+only \`authority.toml\` content the founder signed grants its configured
+modes, and any unratified edit makes everything gate until the founder
+re-ratifies. Editing policy can therefore never widen your authority —
+propose changes through the inbox instead.
 
 Product code lives only inside \`departments/<product>-development/\`.
 As the company controller you may study product repositories, worktrees,
@@ -1927,6 +1933,12 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	ensureDir(root, "departments", result);
 	writeIfMissing(root, PRODUCT_REGISTRY_PATH, `${JSON.stringify({ version: 1, products: [] }, null, "\t")}\n`, result);
 	ensureProjectSettings(root, result);
+	// A freshly scaffolded policy is founder-authored by construction: ratify
+	// it when this machine has a signing identity. Existing policy is NEVER
+	// auto-signed — ratification of edits is an explicit founder act.
+	if (result.created.includes("authority.toml") && readFounderIdentity()?.privateKeyPem) {
+		signAuthorityPolicy(root);
+	}
 
 	if (!existsSync(join(root, ".git"))) {
 		const git = spawnSync("git", ["init"], { cwd: root, stdio: "ignore", shell: false });
@@ -2880,6 +2892,40 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		registerCompany(resolve(dir));
 		if (!args.includes("--no-launch")) {
 			process.exitCode = await launchSession(resolve(dir));
+		}
+		return true;
+	}
+
+	if (args[0] === "founder") {
+		const action = args[1];
+		try {
+			if (action === "init") {
+				const identity = generateFounderIdentity(args.slice(2).join(" ") || undefined);
+				console.log(`Founder identity created (${identity.createdAt}). The private key stays on this machine.`);
+				console.log("Ratify each company's policy with 'qorpera founder ratify' from its root.");
+			} else if (action === "status") {
+				const identity = readFounderIdentity();
+				if (!identity) console.log("No founder identity on this machine. Create one with 'qorpera founder init'.");
+				else {
+					console.log(
+						`Founder identity${identity.name ? ` (${identity.name})` : ""}, created ${identity.createdAt}.`,
+					);
+					console.log(
+						identity.privateKeyPem ? "Signing: available here." : "Signing: public key only in this context.",
+					);
+				}
+			} else if (action === "ratify") {
+				const root = companyRootFromCwd();
+				const record = signAuthorityPolicy(root);
+				console.log(`Ratified authority.toml (sha256 ${record.contentSha256.slice(0, 12)}…).`);
+				console.log("Policy now grants its configured modes; any edit needs re-ratification or everything gates.");
+			} else {
+				console.error("Usage: founder init [name] | status | ratify");
+				process.exitCode = 1;
+			}
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
 		}
 		return true;
 	}
