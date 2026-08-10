@@ -1172,6 +1172,18 @@ function renderInboxCard(item, settled) {
 			}),
 		);
 	}
+	if (
+		item.kind === "gate" &&
+		item.status === "consumed" &&
+		(item.gateTool === "behavior_signature" || item.gateTool === "extension_load")
+	) {
+		actions.appendChild(
+			inboxAction("Revoke trust", "no", async () => {
+				await authorizedPost("/api/gate", { file: item.file, action: "denied" });
+				await finish();
+			}),
+		);
+	}
 
 	if (item.kind === "message" && item.status === "pending") {
 		// Settle: acknowledged, nothing to add — the controller reads the

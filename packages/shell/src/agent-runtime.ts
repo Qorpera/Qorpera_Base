@@ -117,7 +117,7 @@ export interface TrailAppendFrame {
 interface KernelWriteFrame {
 	type: "qorpera_kernel_write";
 	token: string;
-	operation: "create_gate" | "consume_gate" | "append_notice" | "create_message";
+	operation: "create_gate" | "consume_gate" | "trust_gate" | "append_notice" | "create_message";
 	gate?: {
 		id: string;
 		file: string;
@@ -445,13 +445,33 @@ export function appendKernelMutationObservation(
 	commitTrailAppend(binding, append);
 }
 
+export function appendKernelProductStorageObservation(
+	binding: TrailBinding,
+	input: {
+		status: "hydration-required";
+		paths: Array<{ path: string; kind: "repository" | "worktree" }>;
+	},
+): void {
+	const append = stampKernelEntry(binding, {
+		type: "custom",
+		id: randomUUID(),
+		parentId: null,
+		timestamp: "",
+		customType: "qorpera_kernel_product_storage",
+		data: input,
+	});
+	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+	commitTrailAppend(binding, append);
+}
+
 function appendKernelGateObservation(
 	binding: TrailBinding,
 	input: {
 		requestId?: string;
 		file: string;
 		hash: string;
-		transition: "created" | "consumed" | "orphan-reset";
+		transition: "created" | "consumed" | "orphan-reset" | "trusted-use";
+		phase: "started" | "completed";
 	},
 ): void {
 	const append = stampKernelEntry(binding, {
@@ -473,6 +493,7 @@ interface ParsedGateDocument {
 	id: string;
 	status: "pending" | "approved" | "denied" | "consumed";
 	hash: string;
+	tool: string;
 	content: string;
 }
 
@@ -496,15 +517,32 @@ function parseGateDocument(file: string, content: string): ParsedGateDocument | 
 	if (!/^(pending|approved|denied|consumed)$/.test(status) || !/^[a-f0-9]{64}$/.test(hash)) return undefined;
 	if (!GATE_EFFECT_CLASSES.has(fields.get("class")!) || !fields.get("tool") || !fields.get("created"))
 		return undefined;
-	return { id, status: status as ParsedGateDocument["status"], hash, content: normalized };
+	return {
+		id,
+		status: status as ParsedGateDocument["status"],
+		hash,
+		tool: fields.get("tool")!,
+		content: normalized,
+	};
 }
 
 /** Exact canonical pending record the trusted kernel shows before a founder transition. */
-export function kernelGateReviewDocument(root: string, file: string): string | undefined {
+export function kernelGateReviewDocument(
+	root: string,
+	file: string,
+	action: "approved" | "denied" = "approved",
+): string | undefined {
 	if (!/^gate-[a-f0-9]{8}(?:-[2-9][0-9]*)?\.md$/.test(file)) return undefined;
 	try {
 		const record = parseGateDocument(file, readFileSync(join(root, "inbox", file), "utf-8"));
-		return record?.status === "pending" ? record.content : undefined;
+		if (record?.status === "pending") return record.content;
+		if (
+			action === "denied" &&
+			record?.status === "consumed" &&
+			(record.tool === "behavior_signature" || record.tool === "extension_load")
+		)
+			return record.content;
+		return undefined;
 	} catch {
 		return undefined;
 	}
@@ -612,6 +650,10 @@ export function applyKernelWriteFrame(
 	root: string,
 	onGateResponse?: (response: KernelGateResponseBody) => void,
 	consumeGateCapability?: (file: string, hash: string) => boolean,
+	durableGateTrust?: {
+		has: (file: string, hash: string) => boolean;
+		remember: (file: string, hash: string) => void;
+	},
 ): boolean {
 	if (!value || typeof value !== "object") return false;
 	const frame = value as Partial<KernelWriteFrame>;
@@ -634,6 +676,7 @@ export function applyKernelWriteFrame(
 				file: frame.gate.file,
 				hash: frame.gate.hash,
 				transition: "created",
+				phase: "completed",
 			});
 		}
 		return true;
@@ -670,7 +713,7 @@ export function applyKernelWriteFrame(
 		onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted });
 		return true;
 	}
-	if (frame.operation === "consume_gate") {
+	if (frame.operation === "consume_gate" || frame.operation === "trust_gate") {
 		if (
 			frame.status !== "consumed" ||
 			!frame.file ||
@@ -687,23 +730,66 @@ export function applyKernelWriteFrame(
 			onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted: false });
 			return true;
 		}
-		const matchesApprovedRecord = Boolean(record && record.status === "approved" && record.hash === frame.hash);
-		const granted = Boolean(matchesApprovedRecord && consumeGateCapability?.(frame.file, frame.hash));
+		const matchesHash = Boolean(record && record.hash === frame.hash);
+		const durableTool = Boolean(record && (record.tool === "behavior_signature" || record.tool === "extension_load"));
+		if (
+			frame.operation === "trust_gate" &&
+			matchesHash &&
+			durableTool &&
+			record?.status === "consumed" &&
+			durableGateTrust?.has(frame.file, frame.hash)
+		) {
+			appendKernelGateObservation(binding, {
+				requestId: frame.requestId,
+				file: frame.file,
+				hash: frame.hash,
+				transition: "trusted-use",
+				phase: "completed",
+			});
+			onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted: true });
+			return true;
+		}
+		const matchesApprovedRecord = Boolean(matchesHash && record?.status === "approved");
+		const capabilityGranted = Boolean(matchesApprovedRecord && consumeGateCapability?.(frame.file, frame.hash));
+		const granted = Boolean(
+			capabilityGranted && (frame.operation === "consume_gate" || (durableTool && durableGateTrust)),
+		);
 		if (granted && record) {
-			transitionGate(path, frame.file, record, "consumed");
 			appendKernelGateObservation(binding, {
 				requestId: frame.requestId,
 				file: frame.file,
 				hash: frame.hash,
 				transition: "consumed",
+				phase: "started",
 			});
-		} else if (matchesApprovedRecord && record) {
+			transitionGate(path, frame.file, record, "consumed");
+			if (frame.operation === "trust_gate") durableGateTrust?.remember(frame.file, frame.hash);
+			appendKernelGateObservation(binding, {
+				requestId: frame.requestId,
+				file: frame.file,
+				hash: frame.hash,
+				transition: "consumed",
+				phase: "completed",
+			});
+		} else if (
+			matchesHash &&
+			record &&
+			(record.status === "approved" || (frame.operation === "trust_gate" && record.status === "consumed"))
+		) {
+			appendKernelGateObservation(binding, {
+				requestId: frame.requestId,
+				file: frame.file,
+				hash: frame.hash,
+				transition: "orphan-reset",
+				phase: "started",
+			});
 			transitionGate(path, frame.file, record, "pending");
 			appendKernelGateObservation(binding, {
 				requestId: frame.requestId,
 				file: frame.file,
 				hash: frame.hash,
 				transition: "orphan-reset",
+				phase: "completed",
 			});
 		}
 		onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted });

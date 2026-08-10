@@ -44,12 +44,13 @@ import {
 	integrateRepoWithRuntimeLock,
 	listCompanies,
 	listProductDepartments,
-	materializeRegisteredProductStorage,
+	materializeClonedProductStorage,
 	type ProductDepartment,
 	type ProductWorktree,
 	planProductWorktree,
 	productDepartmentId,
 	readProductProtectionInventory,
+	readProductStorageExpectations,
 	readProductWorktreeAssignment,
 	registerCompany,
 	releaseCompanyRuntimeLock,
@@ -72,6 +73,7 @@ import {
 	appendKernelModelObservation,
 	appendKernelMutationObservation,
 	appendKernelObservation,
+	appendKernelProductStorageObservation,
 	applyKernelWriteFrame,
 	bindTrailSession,
 	commitTrailAppend,
@@ -101,6 +103,13 @@ import {
 	savePendingProductCheckpoint,
 	snapshotFounderGitState,
 } from "./company-checkpoint.ts";
+import {
+	hasCompanyGateTrust,
+	hasCompanyKernelState,
+	reconcileCompanyProductStorage,
+	rememberCompanyGateTrust,
+	revokeCompanyGateTrust,
+} from "./company-kernel-state.ts";
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
 import { isRendererRequestAllowed, lockDownRendererSession, lockDownRendererWebContents } from "./renderer-boundary.ts";
 import {
@@ -690,6 +699,10 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 						child.stdin.write(`${JSON.stringify(kernelSigner.signResponse(response))}\n`);
 					},
 					(file, hash) => childApprovedGates.get(child)?.delete(`${file}:${hash}`) === true,
+					{
+						has: (file, hash) => hasCompanyGateTrust(userData, root, file, hash),
+						remember: (file, hash) => rememberCompanyGateTrust(userData, root, file, hash),
+					},
 				)
 			)
 				return;
@@ -1009,9 +1022,25 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 	try {
 		validateCompanyKernelStorage(root);
 		assertUserlandStorage(join(root, "userland"));
-		materializeRegisteredProductStorage(root);
+		const userData = app.getPath("userData");
+		const hasLocalKernelState = hasCompanyKernelState(userData, root);
+		if (!hasLocalKernelState) materializeClonedProductStorage(root);
 		readProductProtectionInventory(root);
-		const checkpointDir = join(dirname(sandboxConfigDir(app.getPath("userData"), root, "controller")), "checkpoints");
+		const productStorage = reconcileCompanyProductStorage(
+			userData,
+			root,
+			readProductStorageExpectations(root),
+			!hasLocalKernelState,
+		);
+		if (productStorage.unhydrated.length > 0) {
+			await dialog.showMessageBox(slot.window, {
+				type: "warning",
+				buttons: ["Continue"],
+				message: "This company clone has product storage that is not hydrated on this machine.",
+				detail: productStorage.unhydrated.map((entry) => `${entry.kind}: ${entry.path}`).join("\n"),
+			});
+		}
+		const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "controller")), "checkpoints");
 		reconcilePendingCompanyCheckpoints(checkpointDir, root);
 		snapshotFounderGitState(root);
 		enforceCompanyKernelSettings(root);
@@ -1036,6 +1065,13 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		const kickoff = conceptionKickoff(root);
 		const childOptions: ChildOptions = kickoff ? { autonomousName: "conception" } : {};
 		const child = startChild(slot, root, childOptions);
+		const childBinding = childBindings.get(child);
+		if (childBinding && productStorage.unhydrated.length > 0) {
+			appendKernelProductStorageObservation(childBinding, {
+				status: "hydration-required",
+				paths: productStorage.unhydrated,
+			});
+		}
 		const runtime: CompanyRuntime = {
 			root,
 			child,
@@ -1140,6 +1176,12 @@ async function openChat(
 			if (!approved) return { ok: false, error: "product worktree authorization cancelled" };
 			const created = createProductWorktree(runtime.root, department, runtime.runtimeLock, plan);
 			if (!created) return { ok: false, error: "could not create product worktree" };
+			reconcileCompanyProductStorage(
+				app.getPath("userData"),
+				runtime.root,
+				readProductStorageExpectations(runtime.root),
+				false,
+			);
 			assignment = created;
 		}
 		worktree = assignment.path;
@@ -1407,6 +1449,12 @@ app.whenReady().then(async () => {
 					);
 				}
 				readProductProtectionInventory(runtime.root);
+				reconcileCompanyProductStorage(
+					app.getPath("userData"),
+					runtime.root,
+					readProductStorageExpectations(runtime.root),
+					false,
+				);
 				runtime.childOptions = options;
 				runtime.child = startChild(slot, runtime.root, options);
 				runtime.inventoryWatcher = watch(join(runtime.root, ".qorpera"), { persistent: false }, (_event, file) => {
@@ -1630,7 +1678,7 @@ app.whenReady().then(async () => {
 				) {
 					return { ok: false, status: 400, text: "invalid gate transition" };
 				}
-				gateDocument = kernelGateReviewDocument(runtime.root, record.file);
+				gateDocument = kernelGateReviewDocument(runtime.root, record.file, record.action);
 				if (!gateDocument) return { ok: false, status: 409, text: "gate is not canonically pending" };
 			}
 			const exactReview = gateDocument ? `${gateDocument}\nRequested transition:\n${serialized}` : serialized;
@@ -1655,7 +1703,14 @@ app.whenReady().then(async () => {
 				}
 				return { ok: false, status: 403, text: "cancelled" };
 			}
-			if (gateDocument && kernelGateReviewDocument(runtime.root, (body as { file: string }).file) !== gateDocument) {
+			if (
+				gateDocument &&
+				kernelGateReviewDocument(
+					runtime.root,
+					(body as { file: string }).file,
+					(body as { action: "approved" | "denied" }).action,
+				) !== gateDocument
+			) {
 				return { ok: false, status: 409, text: "gate changed after review" };
 			}
 			if (trailBinding) {
@@ -1691,6 +1746,18 @@ app.whenReady().then(async () => {
 				throw error;
 			}
 			if (!response.ok && gateCapability) gateCapability.approvals.delete(gateCapability.key);
+			if (
+				response.ok &&
+				gateDocument &&
+				path === "/api/gate" &&
+				(body as { action?: unknown }).action === "denied"
+			) {
+				const hash = gateDocument.match(/^hash:\s*([a-f0-9]{64})$/m)?.[1];
+				const file = (body as { file?: unknown }).file;
+				if (hash && typeof file === "string") {
+					revokeCompanyGateTrust(app.getPath("userData"), runtime.root, file, hash);
+				}
+			}
 			if (trailBinding) {
 				appendKernelMutationObservation(trailBinding, {
 					operation: path,

@@ -130,11 +130,18 @@ describe("kernel-bound agent runtime", () => {
 		writeFileSync(gatePath, readFileSync(gatePath, "utf-8").replace("pending", "approved"), "utf-8");
 		expect(kernelGateReviewDocument(company, gateFile)).toBeUndefined();
 		let response: { granted: boolean } | undefined;
+		let trusted = false;
+		const durableTrust = {
+			has: () => trusted,
+			remember: () => {
+				trusted = true;
+			},
+		};
 		applyKernelWriteFrame(
 			{
 				type: "qorpera_kernel_write",
 				token: binding.token,
-				operation: "consume_gate",
+				operation: "trust_gate",
 				file: gateFile,
 				requestId: "request-1",
 				hash,
@@ -146,16 +153,21 @@ describe("kernel-bound agent runtime", () => {
 				response = value;
 			},
 			() => true,
+			durableTrust,
 		);
 		expect(response).toMatchObject({ granted: true });
+		expect(trusted).toBe(true);
 		expect(readFileSync(gatePath, "utf-8")).toContain("status: consumed");
+		expect(kernelGateReviewDocument(company, gateFile, "denied")).toContain(`hash: ${hash}`);
 		expect(readFileSync(binding.path, "utf-8")).toContain('"transition":"consumed"');
+		expect(readFileSync(binding.path, "utf-8")).toContain('"phase":"started"');
+		expect(readFileSync(binding.path, "utf-8")).toContain('"phase":"completed"');
 		response = undefined;
 		applyKernelWriteFrame(
 			{
 				type: "qorpera_kernel_write",
 				token: binding.token,
-				operation: "consume_gate",
+				operation: "trust_gate",
 				file: gateFile,
 				requestId: "request-2",
 				hash,
@@ -166,15 +178,18 @@ describe("kernel-bound agent runtime", () => {
 			(value) => {
 				response = value;
 			},
+			undefined,
+			durableTrust,
 		);
-		expect(response).toMatchObject({ granted: false });
-		writeFileSync(gatePath, readFileSync(gatePath, "utf-8").replace("status: consumed", "status: approved"), "utf-8");
+		expect(response).toMatchObject({ granted: true });
+		expect(readFileSync(binding.path, "utf-8")).toContain('"transition":"trusted-use"');
+		trusted = false;
 		response = undefined;
 		applyKernelWriteFrame(
 			{
 				type: "qorpera_kernel_write",
 				token: binding.token,
-				operation: "consume_gate",
+				operation: "trust_gate",
 				file: gateFile,
 				requestId: "request-orphaned-approval",
 				hash,
@@ -185,6 +200,8 @@ describe("kernel-bound agent runtime", () => {
 			(value) => {
 				response = value;
 			},
+			undefined,
+			durableTrust,
 		);
 		expect(response).toMatchObject({ granted: false });
 		expect(readFileSync(gatePath, "utf-8")).toContain("status: pending");

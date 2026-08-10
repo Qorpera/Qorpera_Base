@@ -27,7 +27,6 @@ interface PendingGateRequest {
 }
 
 const pendingGateRequests = new Map<string, PendingGateRequest>();
-const trustedGateHashes = new Set<string>();
 const consumedIntentNonces = new Set<string>();
 const publicKeyDer = process.env.QORPERA_KERNEL_PUBLIC_KEY;
 const kernelPublicKey = publicKeyDer
@@ -187,7 +186,7 @@ export function consumeKernelIntent(frame: Record<string, unknown>): KernelInten
 	return kernelPublicKey ? verifyKernelIntent(frame, kernelPublicKey, consumedIntentNonces) : undefined;
 }
 
-export function requestKernelGateConsumption(file: string, hash: string): Promise<boolean> {
+function requestKernelGate(operation: "consume_gate" | "trust_gate", file: string, hash: string): Promise<boolean> {
 	const token = process.env.QORPERA_TRAIL_BROKER_TOKEN;
 	if (!token || !kernelPublicKey) return Promise.resolve(false);
 	const requestId = randomUUID();
@@ -201,7 +200,7 @@ export function requestKernelGateConsumption(file: string, hash: string): Promis
 			`${JSON.stringify({
 				type: "qorpera_kernel_write",
 				token,
-				operation: "consume_gate",
+				operation,
 				requestId,
 				file,
 				hash,
@@ -211,16 +210,13 @@ export function requestKernelGateConsumption(file: string, hash: string): Promis
 	});
 }
 
-export function hasKernelGateTrust(hash: string): boolean {
-	return trustedGateHashes.has(hash);
+export function requestKernelGateConsumption(file: string, hash: string): Promise<boolean> {
+	return requestKernelGate("consume_gate", file, hash);
 }
 
-/** Establish process-local durable trust through a kernel-consumed approval. */
-export async function requestKernelGateTrust(file: string, hash: string): Promise<boolean> {
-	if (trustedGateHashes.has(hash)) return true;
-	const granted = await requestKernelGateConsumption(file, hash);
-	if (granted) trustedGateHashes.add(hash);
-	return granted;
+/** Query or establish durable trust in the desktop kernel, never child memory. */
+export function requestKernelGateTrust(file: string, hash: string): Promise<boolean> {
+	return requestKernelGate("trust_gate", file, hash);
 }
 
 export function requestKernelMessageCreation(file: string, content: string): Promise<boolean> {

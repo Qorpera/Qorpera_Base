@@ -131,8 +131,15 @@ commits staged, working, untracked, and deleted founder state in that product
 repository; it also checkpoints any uncommitted worker result on settle/exit.
 Product repositories and worktrees remain outside company Git. Their
 registered roots are rematerialized from the product inventory when a company
-clone opens, and root-relative integration records allow the reviewed source
-to be integrated again without carrying machine-specific paths.
+clone opens. Destination, staging, and recovery paths stay root-relative;
+when an original local acquisition path does not exist on the new machine, a
+new exact founder review records a source rebind while preserving the old
+source and commit evidence.
+The desktop kernel records clone-local hydration outside company Git. A fresh
+clone may open with an explicit hydration-required warning, but disappearance
+of a repository or worktree previously observed on that machine fails closed.
+Founder-reviewed source rebinding and quarantined staging attempts preserve the
+recovery trail without deleting partial product data.
 New Chat from the department starts a new
 worktree; the ordinary new-chat action continues the currently assigned
 worktree. Product sessions remain in the company `trail/` and are named

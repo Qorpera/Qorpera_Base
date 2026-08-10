@@ -795,7 +795,12 @@ function resolveGate(root: string, file: string, action: string): boolean {
 	if (!source) return false;
 	try {
 		const content = source.content.toString("utf-8");
-		if (!/^status:/m.test(content)) return false;
+		const status = content.match(/^status:\s*(\w+)/m)?.[1];
+		const tool = content.match(/^tool:\s*(.+)$/m)?.[1]?.trim();
+		const pendingTransition = status === "pending";
+		const durableRevocation =
+			status === "consumed" && action === "denied" && (tool === "behavior_signature" || tool === "extension_load");
+		if (!pendingTransition && !durableRevocation) return false;
 		writeAtomicPhysicalFile(source.path, content.replace(/^status:.*$/m, `status: ${action}`));
 		return true;
 	} catch {
@@ -947,6 +952,11 @@ function showPanel(which, keep) {
 					b.onclick = async () => { await fetch("/api/gate", { method: "POST", headers: { "content-type": "application/json", "x-qorpera-token": "${token}" }, body: JSON.stringify({ file: g.file, action }) }); refresh().then(() => showPanel("inbox", true)); };
 					d.appendChild(b);
 				}
+			} else if (g.status === "consumed" && (g.gateTool === "behavior_signature" || g.gateTool === "extension_load")) {
+				const b = document.createElement("button");
+				b.textContent = "Revoke trust"; b.className = "no";
+				b.onclick = async () => { await fetch("/api/gate", { method: "POST", headers: { "content-type": "application/json", "x-qorpera-token": "${token}" }, body: JSON.stringify({ file: g.file, action: "denied" }) }); refresh().then(() => showPanel("inbox", true)); };
+				d.appendChild(b);
 			}
 			p.appendChild(d);
 		}

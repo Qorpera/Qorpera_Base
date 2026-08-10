@@ -31,7 +31,7 @@ import {
 	integrateRepo,
 	KERNEL_PROMPT,
 	listProductDepartments,
-	materializeRegisteredProductStorage,
+	materializeClonedProductStorage,
 	planProductWorktree,
 	readProductProtectionInventory,
 	readProductWorktreeAssignment,
@@ -410,7 +410,7 @@ describe("product-development departments", () => {
 		expect(spawnSync("git", ["clone", company, clone], { stdio: "ignore" }).status).toBe(0);
 		expect(existsSync(join(clone, "departments", "widget-development", "repository"))).toBe(false);
 
-		materializeRegisteredProductStorage(clone);
+		materializeClonedProductStorage(clone);
 		expect(readProductProtectionInventory(clone)).toHaveLength(1);
 		const transaction = JSON.parse(
 			readFileSync(join(clone, ".qorpera", "product-integrations", "widget-development.json"), "utf-8"),
@@ -419,6 +419,66 @@ describe("product-development departments", () => {
 		expect(isAbsolute(transaction.staging)).toBe(false);
 		expect(integrateRepo(clone, source, "Widget")).toBe(true);
 		expect(existsSync(join(clone, "departments", "widget-development", "repository", ".git"))).toBe(true);
+	});
+
+	it("supports an explicit source rebind when hydrating a cloned company", () => {
+		const company = join(root, "company");
+		const clone = join(root, "company-clone");
+		const source = join(root, "source");
+		const reboundSource = join(root, "rebound-source");
+		mkdirSync(source, { recursive: true });
+		writeFileSync(join(source, "README.md"), "source\n", "utf-8");
+		for (const args of [
+			["init"],
+			["add", "README.md"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", args, { cwd: source, stdio: "ignore" }).status).toBe(0);
+		}
+		expect(spawnSync("git", ["clone", source, reboundSource], { stdio: "ignore" }).status).toBe(0);
+		scaffoldCompany(company);
+		expect(integrateRepo(company, source, "Widget")).toBe(true);
+		expect(spawnSync("git", ["clone", company, clone], { stdio: "ignore" }).status).toBe(0);
+		materializeClonedProductStorage(clone);
+
+		expect(integrateRepo(clone, reboundSource, "Widget")).toBe(true);
+		const transaction = JSON.parse(
+			readFileSync(join(clone, ".qorpera", "product-integrations", "widget-development.json"), "utf-8"),
+		) as { source: string; sourceHistory: Array<{ source: string }> };
+		expect(transaction.source).toBe(reboundSource);
+		expect(transaction.sourceHistory).toEqual([expect.objectContaining({ source })]);
+	});
+
+	it("quarantines and retries an interrupted staging clone", () => {
+		const company = join(root, "company");
+		const source = join(root, "source");
+		mkdirSync(source, { recursive: true });
+		writeFileSync(join(source, "README.md"), "source\n", "utf-8");
+		for (const args of [
+			["init"],
+			["add", "README.md"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", args, { cwd: source, stdio: "ignore" }).status).toBe(0);
+		}
+		scaffoldCompany(company);
+		expect(integrateRepo(company, source, "Widget")).toBe(true);
+		const transactionPath = join(company, ".qorpera", "product-integrations", "widget-development.json");
+		const transaction = JSON.parse(readFileSync(transactionPath, "utf-8")) as Record<string, unknown>;
+		transaction.status = "pending";
+		transaction.staging = ".qorpera/.p/aaaaaaaaaaaa";
+		writeFileSync(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`, "utf-8");
+		rmSync(join(company, "departments", "widget-development", "repository"), { recursive: true });
+		mkdirSync(join(company, "departments", "widget-development", "repository"));
+		mkdirSync(join(company, ".qorpera", ".p", "aaaaaaaaaaaa"), { recursive: true });
+		writeFileSync(join(company, ".qorpera", ".p", "aaaaaaaaaaaa", "partial"), "incomplete", "utf-8");
+
+		expect(integrateRepo(company, source, "Widget")).toBe(true);
+		const recovered = JSON.parse(readFileSync(transactionPath, "utf-8")) as {
+			recoveries: Array<{ quarantined: string }>;
+		};
+		expect(recovered.recoveries).toHaveLength(1);
+		expect(existsSync(join(company, recovered.recoveries[0].quarantined))).toBe(true);
 	});
 
 	it("uses the same runtime lock identity through filesystem aliases", () => {

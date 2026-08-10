@@ -360,6 +360,35 @@ describe("company app server", () => {
 		expect(bad.status).toBe(400);
 	});
 
+	it("allows the founder UI to revoke only durable consumed trust", async () => {
+		const durableFile = "gate-aaaaaaaa.md";
+		writeFileSync(
+			join(root, "inbox", durableFile),
+			`---\nid: gate-aaaaaaaa\nstatus: consumed\nclass: authority\ntool: behavior_signature\nhash: ${"a".repeat(64)}\ncreated: 2026-08-10T00:00:00.000Z\n---\n`,
+			"utf-8",
+		);
+		const revoked = await fetch(`${base}/api/gate`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			body: JSON.stringify({ file: durableFile, action: "denied" }),
+		});
+		expect(revoked.status).toBe(200);
+		expect(readFileSync(join(root, "inbox", durableFile), "utf-8")).toContain("status: denied");
+
+		const actionFile = "gate-bbbbbbbb.md";
+		writeFileSync(
+			join(root, "inbox", actionFile),
+			`---\nid: gate-bbbbbbbb\nstatus: consumed\nclass: irreversible\ntool: bash\nhash: ${"b".repeat(64)}\ncreated: 2026-08-10T00:00:00.000Z\n---\n`,
+			"utf-8",
+		);
+		const rejected = await fetch(`${base}/api/gate`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			body: JSON.stringify({ file: actionFile, action: "denied" }),
+		});
+		expect(rejected.status).toBe(400);
+	});
+
 	it("rejects mutations without the kernel token — the agent cannot curl its own approvals", async () => {
 		const authority = discoverAuthority(root)!;
 		const blocked = evaluateToolCall(authority, "bash", { command: "rm -rf work" }, root);

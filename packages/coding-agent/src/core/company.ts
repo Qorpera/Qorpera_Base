@@ -201,8 +201,8 @@ Gate requests and human steering land here.
 
 - \`gate-*.md\` — a blocked effect awaiting native founder review in Base.
   Editing its \`status:\` line does not create an executable capability.
-  Tool-call approvals are single-use; extension-load trust is process-local
-  for the locally reviewed content hash.
+  Tool-call approvals are single-use; extension-load trust is stored by the
+  local desktop kernel for this company path and reviewed content hash.
 - \`notices.md\` — effects that proceeded under notify mode.
 - \`messages/msg-*.md\` — agent-authored questions, proposals, and updates.
 - Anything else you put here is steering the agent reads on its next wake.
@@ -1092,8 +1092,46 @@ export function readProductProtectionInventory(
 	});
 }
 
-/** Recreate derived empty product storage roots after cloning a company. */
-export function materializeRegisteredProductStorage(rootDir: string): void {
+export interface ProductStorageExpectation {
+	path: string;
+	kind: "repository" | "worktree";
+}
+
+/** Durable records whose machine-local Git storage must be hydrated. */
+export function readProductStorageExpectations(rootDir: string): ProductStorageExpectation[] {
+	const root = canonicalCompanyRoot(rootDir);
+	const expectations: ProductStorageExpectation[] = [];
+	for (const id of readProductRegistry(root).products) {
+		const integration = readProductIntegrationRecord(productIntegrationRecordPath(root, id));
+		if (integration?.status === "completed") {
+			expectations.push({ path: join("departments", id, "repository"), kind: "repository" });
+		}
+		const assignmentDir = join(root, PRODUCT_WORKTREE_ASSIGNMENTS_PATH, id);
+		if (!existsSync(assignmentDir)) continue;
+		canonicalDirectory(root, join(PRODUCT_WORKTREE_ASSIGNMENTS_PATH, id));
+		for (const entry of readdirSync(assignmentDir, { withFileTypes: true })) {
+			if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+			const path = join(assignmentDir, entry.name);
+			const record = JSON.parse(readFileSync(path, "utf-8")) as Partial<ProductWorktreeAssignment>;
+			const expectedParent = join("departments", id, "worktrees").replace(/\\/g, "/");
+			const worktreePath = record.path?.replace(/\\/g, "/");
+			if (
+				record.version !== 1 ||
+				record.departmentId !== id ||
+				typeof worktreePath !== "string" ||
+				!worktreePath.startsWith(`${expectedParent}/`) ||
+				worktreePath.slice(expectedParent.length + 1).includes("/")
+			) {
+				throw new Error(`Product worktree assignment is invalid: ${relative(root, path)}`);
+			}
+			expectations.push({ path: worktreePath, kind: "worktree" });
+		}
+	}
+	return expectations.sort((a, b) => `${a.kind}:${a.path}`.localeCompare(`${b.kind}:${b.path}`));
+}
+
+/** Recreate ignored storage roots only while binding a fresh local company clone. */
+export function materializeClonedProductStorage(rootDir: string): void {
 	const root = canonicalCompanyRoot(rootDir);
 	for (const id of readProductRegistry(root).products) {
 		canonicalDirectory(root, join("departments", id));
@@ -1580,13 +1618,26 @@ function cloneInto(source: string, destination: string): boolean {
 }
 
 interface ProductIntegrationRecord {
-	version: 2;
+	version: 3;
 	productId: string;
 	source: string;
+	portableSource?: string;
 	destination: string;
 	staging: string;
 	status: "pending" | "completed";
 	sourceHead?: string;
+	sourceHistory: Array<{
+		source: string;
+		portableSource?: string;
+		sourceHead?: string;
+		reboundAt: string;
+	}>;
+	recoveries: Array<{
+		staging: string;
+		quarantined: string;
+		recoveredAt: string;
+		reason: string;
+	}>;
 }
 
 function normalizedRepositorySource(source: string): string {
@@ -1594,6 +1645,15 @@ function normalizedRepositorySource(source: string): string {
 		return normalizedPath(realpathSync(resolve(source)));
 	} catch {
 		return source.trim();
+	}
+}
+
+function portableRepositorySource(source: string): string | undefined {
+	try {
+		const local = realpathSync(resolve(source));
+		return gitOutput(local, ["remote", "get-url", "origin"]);
+	} catch {
+		return source.trim() || undefined;
 	}
 }
 
@@ -1637,19 +1697,72 @@ function readProductIntegrationRecord(path: string): ProductIntegrationRecord | 
 	if (!existsSync(path)) return undefined;
 	const record = JSON.parse(readFileSync(path, "utf-8")) as Partial<ProductIntegrationRecord>;
 	if (
-		record.version !== 2 ||
+		record.version !== 3 ||
 		typeof record.productId !== "string" ||
 		typeof record.source !== "string" ||
+		(record.portableSource !== undefined && typeof record.portableSource !== "string") ||
 		typeof record.destination !== "string" ||
 		typeof record.staging !== "string" ||
 		isAbsolute(record.destination) ||
 		isAbsolute(record.staging) ||
 		(record.status !== "pending" && record.status !== "completed") ||
-		(record.sourceHead !== undefined && typeof record.sourceHead !== "string")
+		(record.sourceHead !== undefined && typeof record.sourceHead !== "string") ||
+		!Array.isArray(record.sourceHistory) ||
+		!record.sourceHistory.every(
+			(entry) =>
+				entry &&
+				typeof entry === "object" &&
+				typeof entry.source === "string" &&
+				(entry.portableSource === undefined || typeof entry.portableSource === "string") &&
+				(entry.sourceHead === undefined || typeof entry.sourceHead === "string") &&
+				typeof entry.reboundAt === "string",
+		) ||
+		!Array.isArray(record.recoveries) ||
+		!record.recoveries.every(
+			(entry) =>
+				entry &&
+				typeof entry === "object" &&
+				typeof entry.staging === "string" &&
+				!isAbsolute(entry.staging) &&
+				typeof entry.quarantined === "string" &&
+				!isAbsolute(entry.quarantined) &&
+				typeof entry.recoveredAt === "string" &&
+				typeof entry.reason === "string",
+		)
 	) {
 		throw new Error("Product integration transaction record is invalid");
 	}
 	return record as ProductIntegrationRecord;
+}
+
+function nextProductIntegrationStaging(root: string): { relativePath: string; path: string } {
+	const name = randomUUID().replace(/-/g, "").slice(0, 12);
+	return {
+		relativePath: join(".qorpera", ".p", name).replace(/\\/g, "/"),
+		path: join(productIntegrationStagingRoot(root), name),
+	};
+}
+
+function quarantineProductIntegrationAttempt(
+	root: string,
+	transactionPath: string,
+	transaction: ProductIntegrationRecord,
+	reason: string,
+): string {
+	const staging = resolve(root, transaction.staging);
+	const quarantineName = `${basename(staging)}.failed-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+	const quarantined = join(productIntegrationStagingRoot(root), quarantineName);
+	renameSync(staging, quarantined);
+	transaction.recoveries.push({
+		staging: transaction.staging,
+		quarantined: relative(root, quarantined).replace(/\\/g, "/"),
+		recoveredAt: new Date().toISOString(),
+		reason,
+	});
+	const next = nextProductIntegrationStaging(root);
+	transaction.staging = next.relativePath;
+	writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+	return next.path;
 }
 
 /** Clone an existing repo while its caller owns the company transaction lock. */
@@ -1671,12 +1784,37 @@ function integrateRepoUnlocked(
 		transactionStaging = resolve(root, transaction.staging);
 		if (
 			transaction.productId !== department.id ||
-			normalizedRepositorySource(transaction.source) !== normalizedRepositorySource(from) ||
 			transaction.destination.replace(/\\/g, "/") !== department.repositoryPath.replace(/\\/g, "/") ||
 			normalizedPath(dirname(transactionStaging)) !== normalizedPath(stagingRoot) ||
 			!/^[a-f0-9]{12}$/i.test(basename(transactionStaging))
 		) {
-			throw new Error("Existing product integration transaction does not match the founder-reviewed source");
+			throw new Error("Existing product integration transaction is not valid for this product department");
+		}
+		const sameSource = normalizedRepositorySource(transaction.source) === normalizedRepositorySource(from);
+		if (!sameSource) {
+			if (transaction.status !== "completed" || existsSync(join(destination, ".git"))) {
+				throw new Error("Existing product integration transaction does not match the founder-reviewed source");
+			}
+			transaction.sourceHistory.push({
+				source: transaction.source,
+				...(transaction.portableSource ? { portableSource: transaction.portableSource } : {}),
+				...(transaction.sourceHead ? { sourceHead: transaction.sourceHead } : {}),
+				reboundAt: new Date().toISOString(),
+			});
+			const next = nextProductIntegrationStaging(root);
+			transaction.source = from;
+			transaction.portableSource = portableRepositorySource(from);
+			transaction.staging = next.relativePath;
+			transaction.status = "pending";
+			delete transaction.sourceHead;
+			transactionStaging = next.path;
+			writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+		} else if (transaction.status === "completed" && !existsSync(join(destination, ".git"))) {
+			const next = nextProductIntegrationStaging(root);
+			transaction.staging = next.relativePath;
+			transaction.status = "pending";
+			transactionStaging = next.path;
+			writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
 		}
 	}
 	if (existsSync(join(destination, ".git"))) {
@@ -1704,20 +1842,31 @@ function integrateRepoUnlocked(
 
 	mkdirSync(dirname(transactionPath), { recursive: true });
 	if (!transaction) {
-		const stagingName = randomUUID().replace(/-/g, "").slice(0, 12);
+		const staging = nextProductIntegrationStaging(root);
 		transaction = {
-			version: 2,
+			version: 3,
 			productId: department.id,
 			source: from,
+			portableSource: portableRepositorySource(from),
 			destination: department.repositoryPath.replace(/\\/g, "/"),
-			staging: join(".qorpera", ".p", stagingName).replace(/\\/g, "/"),
+			staging: staging.relativePath,
 			status: "pending",
+			sourceHistory: [],
+			recoveries: [],
 		};
 		writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
-		transactionStaging = join(stagingRoot, stagingName);
+		transactionStaging = staging.path;
 	}
 
 	if (!transactionStaging) throw new Error("Product integration transaction has no staging identity");
+	if (existsSync(transactionStaging) && !stagedCloneMatchesSource(transactionStaging, from)) {
+		transactionStaging = quarantineProductIntegrationAttempt(
+			root,
+			transactionPath,
+			transaction,
+			"staging clone was incomplete or did not match the reviewed source",
+		);
+	}
 	if (!existsSync(transactionStaging)) {
 		if (!cloneInto(from, transactionStaging)) {
 			console.error(
@@ -1727,7 +1876,14 @@ function integrateRepoUnlocked(
 		}
 	}
 	if (!stagedCloneMatchesSource(transactionStaging, from)) {
-		throw new Error("Staged product repository is incomplete or does not match the founder-reviewed source");
+		quarantineProductIntegrationAttempt(
+			root,
+			transactionPath,
+			transaction,
+			"completed clone failed repository integrity validation",
+		);
+		console.error("Staged product repository failed validation; the attempt was preserved and a retry is ready.");
+		return false;
 	}
 	assertProductTransactionStorage(storage);
 	if (existsSync(destination)) rmSync(destination, { recursive: true });

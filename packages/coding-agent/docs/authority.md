@@ -99,9 +99,10 @@ transition. Editing the file alone never mints an executable capability.
 Project-local extensions are agent-authorable code that runs with full user
 permissions (`SEAMS.md` c.3) — so loading one from inside the authority root
 is an authority-class effect. Applied at every load site including the
-pre-trust load. Trust is **process-local per content hash**: native review
-establishes trust for that exact code in the live child; an edit or child
-restart requires trust to be established again. User-global extensions
+pre-trust load. Trust is **durable in the local desktop kernel** and scoped to
+the physical company path, extension path, and content hash. Child replacement
+does not lose it, copied Git files do not carry it, and the founder can revoke
+it from the consumed gate's inbox card. User-global extensions
 (`~/.qorpera/agent/extensions`) are outside
 the company root's authority and load as before.
 
@@ -148,10 +149,11 @@ root are ignored — only company-authored code is subject).
   acting with nobody present.
 - Necessary, not sufficient: signed code still hits per-action class gates
   and limits.
-- Signatures are process-local per content hash (`behavior_signature`
-  requests, the same mechanism as extension-load approvals): local native
-  review signs exactly that code for the live child; an edit or restart
-  requires trust again. The hash is computed from the file as it is now —
+- Signatures are durable per physical company path and content hash
+  (`behavior_signature` requests, the same mechanism as extension-load
+  approvals): local native review signs exactly that code across child
+  replacement, while copied gate files carry no authority. Revocation is a
+  native-reviewed transition from the consumed gate card. The hash is computed from the file as it is now —
   with hot-reload this tracks what executes next and errs toward gating.
 - Attended calls fall through to the normal inline gates: presence is the
   intent source there.

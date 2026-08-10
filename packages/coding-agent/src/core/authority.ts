@@ -14,8 +14,8 @@
  * `<root>/inbox/gate-*.md` and returns a block reason; the agent keeps
  * working elsewhere. Base resolves the request through exact native review.
  * Tool-call approvals are single-use (consumed on the next matching call);
- * extension and behavior trust is process-local and durable for the reviewed
- * content hash (new content = new hash = new gate).
+ * extension and behavior trust is durable in the desktop kernel for the
+ * reviewed company path and content hash (new content = new hash = new gate).
  *
  * Without an `authority.toml` anywhere above the working directory, every
  * decision is `allow` — Base behaves like the stock harness.
@@ -30,7 +30,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { hasKernelGateTrust, requestKernelGateConsumption, requestKernelGateTrust } from "./kernel-broker.ts";
+import { requestKernelGateConsumption, requestKernelGateTrust } from "./kernel-broker.ts";
 
 export type ConfigurableEffectClass = "money" | "identity" | "irreversible" | "authority";
 export type EffectClass = ConfigurableEffectClass | "product_code";
@@ -106,7 +106,7 @@ export interface BehaviorSignature {
 	signed: boolean;
 	gateId?: string;
 	gateStatus?: "pending" | "denied";
-	/** Approved file awaiting proof from the live local kernel. */
+	/** Durable approval awaiting proof from the live local desktop kernel. */
 	kernelTrust?: { file: string; hash: string };
 }
 
@@ -664,9 +664,9 @@ function summarizeCall(toolName: string, args: unknown): string {
  * authority root (built-ins, SDK tools, user-global extensions — outside the
  * company's signature regime, mirroring extension-load gating's carve-out).
  *
- * Signatures are process-local per content hash: a native-reviewed kernel
- * capability covers exactly that code for this child; any edit or child
- * restart requires trust to be established again. The
+ * Signatures are durable in the path-scoped desktop kernel: a native-reviewed
+ * capability covers exactly that company path and content hash across child
+ * replacement, while copied company files carry no authority. The
  * hash is computed from the file as it is NOW — with jiti hot-reload this
  * tracks what actually executes next; a stale in-memory registration from a
  * since-edited file resolves to the new (unsigned) content, which errs
@@ -688,9 +688,6 @@ function resolveBehaviorSignature(
 	const path = relative(authority.root, resolved).split(sep).join("/");
 	const hash = requestHash("behavior_signature", { contentHash, path });
 	const records = findGateRecords(authority, hash);
-	if (hasKernelGateTrust(hash)) {
-		return { path, contentHash, signed: true, gateId: records.find((record) => record.hash === hash)?.id };
-	}
 	const approved = records.find((record) => record.status === "approved");
 	if (approved) {
 		return {
@@ -705,6 +702,16 @@ function resolveBehaviorSignature(
 	if (pending) return { path, contentHash, signed: false, gateId: pending.id, gateStatus: "pending" };
 	const denied = records.find((record) => record.status === "denied");
 	if (denied) return { path, contentHash, signed: false, gateId: denied.id, gateStatus: "denied" };
+	const consumed = records.find((record) => record.status === "consumed");
+	if (consumed) {
+		return {
+			path,
+			contentHash,
+			signed: false,
+			gateId: consumed.id,
+			kernelTrust: { file: basename(consumed.filePath), hash: consumed.hash },
+		};
+	}
 	return { path, contentHash, signed: false };
 }
 
@@ -959,8 +966,9 @@ export async function finalizeAuthorityDecision(
  * Extension-load gating. Project-local extensions under the authority root
  * are agent-authorable code that runs with full user permissions (see
  * SEAMS.md c.3) — loading one is an [authority]-class effect. Approvals are
- * process-local per content hash: native review establishes live kernel trust
- * for that exact code; changed content or a new child requires fresh trust.
+ * durable per company path and content hash in the desktop kernel. Native
+ * review establishes trust for that exact code; changed content requires
+ * fresh trust and the founder may revoke existing trust from the inbox.
  */
 export async function filterExtensionPaths(
 	authority: Authority,
@@ -988,10 +996,6 @@ export async function filterExtensionPaths(
 			path: relative(authority.root, resolved).split(sep).join("/"),
 			contentHash,
 		});
-		if (hasKernelGateTrust(hash)) {
-			allowed.push(path);
-			continue;
-		}
 		const records = findGateRecords(authority, hash);
 		const approved = records.find((record) => record.status === "approved");
 		if (approved) {
@@ -1007,6 +1011,12 @@ export async function filterExtensionPaths(
 		}
 		if (denied) {
 			blocked.push({ path, gateId: denied.id, pending: false });
+			continue;
+		}
+		const consumed = records.find((record) => record.status === "consumed");
+		if (consumed) {
+			if (await requestKernelGateTrust(basename(consumed.filePath), consumed.hash)) allowed.push(path);
+			else blocked.push({ path, gateId: consumed.id, pending: true });
 			continue;
 		}
 		const gateId = writeGateRequest(authority, {
