@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type {
@@ -361,8 +362,8 @@ export class AgentSession {
 	private _extensionMode: ExtensionMode = "print";
 	/** Verified kernel intent associated with the input currently causing effects. */
 	private _activeKernelIntent?: KernelIntentCapability;
-	/** Intent received by the current RPC call, copied onto any queued user message it creates. */
-	private _incomingKernelIntent?: KernelIntentCapability;
+	/** Per-command intent copied onto any user message that async command creates. */
+	private readonly _incomingKernelIntent = new AsyncLocalStorage<KernelIntentCapability | undefined>();
 	private readonly _messageKernelIntents = new WeakMap<AgentMessage, KernelIntentCapability>();
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
 	private _extensionAbortHandler?: () => void;
@@ -392,8 +393,15 @@ export class AgentSession {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._authority = discoverAuthority(config.cwd);
-		if (this._authority && !this.sessionManager.getHeader()?.qorpera) {
-			throw new Error("Company sessions require a kernel-authenticated Qorpera Base session header");
+		if (
+			this._authority &&
+			(!this.sessionManager.getHeader()?.qorpera ||
+				process.env.QORPERA_KERNEL_REQUIRED !== "1" ||
+				!process.env.QORPERA_TRAIL_BROKER_TOKEN ||
+				!process.env.QORPERA_KERNEL_PUBLIC_KEY ||
+				!isModelBrokerInstalled())
+		) {
+			throw new Error("Company sessions require a live Qorpera Base desktop kernel binding");
 		}
 		this._modelRuntime = config.modelRuntime;
 		if (isModelBrokerInstalled()) {
@@ -592,16 +600,7 @@ export class AgentSession {
 	}
 
 	async withKernelIntent<T>(intent: KernelIntentCapability | undefined, action: () => Promise<T>): Promise<T> {
-		const previousIncoming = this._incomingKernelIntent;
-		const previousActive = this._activeKernelIntent;
-		this._incomingKernelIntent = intent;
-		this._activeKernelIntent = intent;
-		try {
-			return await action();
-		} finally {
-			this._incomingKernelIntent = previousIncoming;
-			this._activeKernelIntent = previousActive;
-		}
+		return await this._incomingKernelIntent.run(intent, action);
 	}
 
 	private _installAgentNextTurnRefresh(): void {
@@ -1307,7 +1306,8 @@ export class AgentSession {
 				content: userContent,
 				timestamp: Date.now(),
 			};
-			if (this._incomingKernelIntent) this._messageKernelIntents.set(userMessage, this._incomingKernelIntent);
+			const kernelIntent = this._incomingKernelIntent.getStore();
+			if (kernelIntent) this._messageKernelIntents.set(userMessage, kernelIntent);
 			messages.push(userMessage);
 
 			// Inject any pending "nextTurn" messages as context alongside the user message
@@ -1475,7 +1475,8 @@ export class AgentSession {
 			content,
 			timestamp: Date.now(),
 		};
-		if (this._incomingKernelIntent) this._messageKernelIntents.set(message, this._incomingKernelIntent);
+		const kernelIntent = this._incomingKernelIntent.getStore();
+		if (kernelIntent) this._messageKernelIntents.set(message, kernelIntent);
 		this.agent.steer(message);
 	}
 
@@ -1494,7 +1495,8 @@ export class AgentSession {
 			content,
 			timestamp: Date.now(),
 		};
-		if (this._incomingKernelIntent) this._messageKernelIntents.set(message, this._incomingKernelIntent);
+		const kernelIntent = this._incomingKernelIntent.getStore();
+		if (kernelIntent) this._messageKernelIntents.set(message, kernelIntent);
 		this.agent.followUp(message);
 	}
 

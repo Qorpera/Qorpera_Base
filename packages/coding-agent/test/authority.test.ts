@@ -18,6 +18,7 @@ import {
 	readAuthorityConfig,
 	requestHash,
 } from "../src/core/authority.ts";
+import { installModelBrokerFetch } from "../src/core/model-broker-client.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -573,6 +574,15 @@ describe("the signature rule (behavior signatures, EVOLUTION.md §3)", () => {
 
 describe("agent-session mount", () => {
 	it("blocks gated tools through the installed beforeToolCall hook, ahead of extensions", async () => {
+		const previousKernelRequired = process.env.QORPERA_KERNEL_REQUIRED;
+		const previousTrailToken = process.env.QORPERA_TRAIL_BROKER_TOKEN;
+		const previousKernelKey = process.env.QORPERA_KERNEL_PUBLIC_KEY;
+		const previousModelHandles = process.env.QORPERA_MODEL_BROKER_HANDLES;
+		process.env.QORPERA_KERNEL_REQUIRED = "1";
+		process.env.QORPERA_TRAIL_BROKER_TOKEN = "unit-kernel-token";
+		process.env.QORPERA_KERNEL_PUBLIC_KEY = "unit-kernel-key";
+		process.env.QORPERA_MODEL_BROKER_HANDLES = JSON.stringify({ anthropic: "unit-model-handle" });
+		installModelBrokerFetch();
 		writeAuthorityToml(`[tools]\ndanger = "irreversible"\n\n[irreversible]\nmode = "gate"\n`);
 		const agentDir = join(root, "agent-home");
 		mkdirSync(agentDir, { recursive: true });
@@ -584,7 +594,7 @@ describe("agent-session mount", () => {
 			sessionPath,
 			`${JSON.stringify({
 				type: "session",
-				version: 4,
+				version: 5,
 				id: "kernel-session",
 				timestamp: new Date().toISOString(),
 				cwd: root,
@@ -627,12 +637,20 @@ describe("agent-session mount", () => {
 			expect(stampData.effectClass).toBe("irreversible");
 			expect(stampData.decision).toBe("block");
 
+			// The child can request a gate but cannot materialize or approve it.
+			// Both actions are brokered by the desktop kernel.
 			const gateId = blocked!.reason!.match(/gate-[a-f0-9-]+/)![0];
-			approveGate(gateId);
-			const allowed = await hook!(fakeContext);
-			expect(allowed?.block).not.toBe(true);
+			expect(readdirSync(join(root, "inbox")).some((name) => name.startsWith(gateId))).toBe(false);
 		} finally {
 			session.dispose();
+			if (previousKernelRequired === undefined) delete process.env.QORPERA_KERNEL_REQUIRED;
+			else process.env.QORPERA_KERNEL_REQUIRED = previousKernelRequired;
+			if (previousTrailToken === undefined) delete process.env.QORPERA_TRAIL_BROKER_TOKEN;
+			else process.env.QORPERA_TRAIL_BROKER_TOKEN = previousTrailToken;
+			if (previousKernelKey === undefined) delete process.env.QORPERA_KERNEL_PUBLIC_KEY;
+			else process.env.QORPERA_KERNEL_PUBLIC_KEY = previousKernelKey;
+			if (previousModelHandles === undefined) delete process.env.QORPERA_MODEL_BROKER_HANDLES;
+			else process.env.QORPERA_MODEL_BROKER_HANDLES = previousModelHandles;
 		}
 	});
 });

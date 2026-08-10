@@ -54,6 +54,7 @@ import {
 	releaseCompanyRuntimeLock,
 	scaffoldCompany,
 	scaffoldProductDepartmentWithRuntimeLock,
+	validateCompanyKernelStorage,
 } from "@qorpera/pi-coding-agent/company";
 import {
 	app,
@@ -68,6 +69,7 @@ import {
 import electronUpdater from "electron-updater";
 import {
 	appendKernelModelObservation,
+	appendKernelMutationObservation,
 	appendKernelObservation,
 	applyKernelWriteFrame,
 	bindTrailSession,
@@ -101,6 +103,7 @@ import {
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
 import { isRendererRequestAllowed, lockDownRendererSession, lockDownRendererWebContents } from "./renderer-boundary.ts";
 import {
+	assertUserlandStorage,
 	ensureUserland,
 	getActiveApp,
 	isUnmodified,
@@ -149,9 +152,6 @@ const SAFE_CHILD_ENV = new Set([
 	"SystemRoot",
 	"WINDIR",
 	"COMSPEC",
-	"TEMP",
-	"TMP",
-	"TMPDIR",
 	"LANG",
 	"LC_ALL",
 	"NODE_EXTRA_CA_CERTS",
@@ -277,6 +277,7 @@ const childIntentSigners = new WeakMap<
 	(frame: Record<string, unknown>, attended: boolean) => KernelIntentCapability
 >();
 const childModelCapabilities = new WeakMap<ChildProcessWithoutNullStreams, BrokeredCredentials>();
+const childApprovedGates = new WeakMap<ChildProcessWithoutNullStreams, Set<string>>();
 const childCheckpointCompletion = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 
 const slots = new Map<number, Slot>();
@@ -550,9 +551,10 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		department: department?.path,
 		worktree,
 	} as const;
+	const binding = bindTrailSession(root, cwd, scope, sessionFile);
 	const userData = app.getPath("userData");
 	const configDir = sandboxConfigDir(userData, root, actor);
-	const runtimeDir = sandboxRuntimeDir(userData, root, actor);
+	const runtimeDir = sandboxRuntimeDir(userData, root, actor, binding.token);
 	if (!modelRequestBroker) throw new Error("kernel model-request broker is unavailable");
 	snapshotFounderGitState(root);
 	let gitBaseline = captureCompanyGitBaseline(root);
@@ -561,7 +563,6 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	if (productWorktreeRoot) reconcilePendingProductCheckpoints(checkpointDir, root, productWorktreeRoot);
 	if (productWorktreeRoot) snapshotFounderGitState(productWorktreeRoot, "product-worker");
 	let productGitBaseline = productWorktreeRoot ? captureCompanyGitBaseline(productWorktreeRoot) : undefined;
-	const binding = bindTrailSession(root, cwd, scope, sessionFile);
 	const checkpointState = join(checkpointDir, `${binding.token}.json`);
 	const productCheckpointState = join(checkpointDir, `${binding.token}.product.json`);
 	savePendingCompanyCheckpoint(checkpointState, root, gitBaseline, binding.file);
@@ -589,6 +590,9 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	env.USERPROFILE = runtimeDir;
 	env.APPDATA = runtimeDir;
 	env.LOCALAPPDATA = runtimeDir;
+	env.TEMP = runtimeDir;
+	env.TMP = runtimeDir;
+	env.TMPDIR = runtimeDir;
 	env.XDG_CONFIG_HOME = runtimeDir;
 	try {
 		agentDir = prepareBrokeredAgentDir(configDir, root, brokeredCredentials.credentials);
@@ -638,6 +642,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	childBindings.set(child, binding);
 	childIntentSigners.set(child, kernelSigner.signIntent);
 	childModelCapabilities.set(child, brokeredCredentials);
+	childApprovedGates.set(child, new Set());
 	let resolveCheckpoint: (() => void) | undefined;
 	childCheckpointCompletion.set(
 		child,
@@ -649,6 +654,26 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		if (!line.trim()) return;
 		try {
 			const frame = JSON.parse(line) as unknown;
+			const challenge = frame as {
+				type?: unknown;
+				token?: unknown;
+				nonce?: unknown;
+				sessionId?: unknown;
+			};
+			if (
+				challenge.type === "qorpera_kernel_challenge" &&
+				challenge.token === binding.token &&
+				challenge.sessionId === binding.sessionId &&
+				typeof challenge.nonce === "string" &&
+				/^[0-9a-f-]{36}$/i.test(challenge.nonce)
+			) {
+				child.stdin.write(
+					`${JSON.stringify(
+						kernelSigner.signBinding({ nonce: challenge.nonce, sessionId: binding.sessionId }),
+					)}\n`,
+				);
+				return;
+			}
 			if (
 				brokeredCredentials.handleFrame(frame, (response) => {
 					if (child.exitCode === null) child.stdin.write(`${JSON.stringify(response)}\n`);
@@ -656,9 +681,15 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			)
 				return;
 			if (
-				applyKernelWriteFrame(frame, binding, root, (response) => {
-					child.stdin.write(`${JSON.stringify(kernelSigner.signResponse(response))}\n`);
-				})
+				applyKernelWriteFrame(
+					frame,
+					binding,
+					root,
+					(response) => {
+						child.stdin.write(`${JSON.stringify(kernelSigner.signResponse(response))}\n`);
+					},
+					(file, hash) => childApprovedGates.get(child)?.delete(`${file}:${hash}`) === true,
+				)
 			)
 				return;
 			if ((frame as { type?: unknown }).type === "qorpera_trail_append") {
@@ -759,8 +790,7 @@ function sendKernelPrompt(
 		message: frame.message,
 		attended,
 		origin,
-		intentNonce: kernelIntent.nonce,
-		requestHash: kernelIntent.requestHash,
+		intent: kernelIntent,
 		images,
 	});
 	child.stdin.write(`${JSON.stringify({ ...unsignedFrame, kernelIntent })}\n`);
@@ -887,10 +917,10 @@ async function startMergeChild(slot: Slot, runtime: CompanyRuntime, reviewedProm
 	return true;
 }
 
-/** Each open company owns its backend server and token. The hashed port can
- * collide — another company's hash, or an external `qorpera app` — so walk
- * forward until a bind succeeds: the renderer resolves everything relative
- * to backendUrl, and only a server we own honors the token we minted. */
+/** Each open company owns its backend server and token. Hashed ports can
+ * collide, so walk forward until a bind succeeds: the renderer resolves
+ * everything relative to backendUrl, and only a server we own honors the
+ * token we minted. */
 async function listenBackend(root: string, authToken: string): Promise<{ port: number; close: () => void }> {
 	const base = companyPort(root);
 	for (let port = base; port < base + 10; port++) {
@@ -972,6 +1002,8 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 	const runtimeLock = claimCompanyRuntimeLock(root);
 	let pendingBackendClose: (() => void) | undefined;
 	try {
+		validateCompanyKernelStorage(root);
+		assertUserlandStorage(join(root, "userland"));
 		readProductProtectionInventory(root);
 		const checkpointDir = join(dirname(sandboxConfigDir(app.getPath("userData"), root, "controller")), "checkpoints");
 		reconcilePendingCompanyCheckpoints(checkpointDir, root);
@@ -1590,13 +1622,24 @@ app.whenReady().then(async () => {
 			gateDocument = kernelGateReviewDocument(runtime.root, record.file);
 			if (!gateDocument) return { ok: false, status: 409, text: "gate is not canonically pending" };
 		}
+		const exactReview = gateDocument ? `${gateDocument}\nRequested transition:\n${serialized}` : serialized;
+		const trailBinding = childBindings.get(runtime.child);
 		const approved = await confirmKernelReview(slot.window, {
 			title: "Authorize company mutation",
 			summary: `Authorize this exact kernel action: ${action}?`,
-			exactText: gateDocument ? `${gateDocument}\nRequested transition:\n${serialized}` : serialized,
+			exactText: exactReview,
 			metadata: `Endpoint: ${path}`,
 		});
-		if (!approved) return { ok: false, status: 403, text: "cancelled" };
+		if (!approved) {
+			if (trailBinding) {
+				appendKernelMutationObservation(trailBinding, {
+					operation: path,
+					exactReview,
+					approved: false,
+				});
+			}
+			return { ok: false, status: 403, text: "cancelled" };
+		}
 		if (gateDocument && kernelGateReviewDocument(runtime.root, (body as { file: string }).file) !== gateDocument) {
 			return { ok: false, status: 409, text: "gate changed after review" };
 		}
@@ -1605,6 +1648,19 @@ app.whenReady().then(async () => {
 			headers: { "content-type": "application/json", "x-qorpera-token": runtime.backendToken },
 			body: serialized,
 		});
+		if (response.ok && path === "/api/gate" && (body as { action?: unknown }).action === "approved") {
+			const hash = gateDocument?.match(/^hash:\s*([a-f0-9]{64})$/m)?.[1];
+			const file = (body as { file?: unknown }).file;
+			if (hash && typeof file === "string") childApprovedGates.get(runtime.child)?.add(`${file}:${hash}`);
+		}
+		if (trailBinding) {
+			appendKernelMutationObservation(trailBinding, {
+				operation: path,
+				exactReview,
+				approved: true,
+				resultStatus: response.status,
+			});
+		}
 		return { ok: response.ok, status: response.status, text: await response.text() };
 	});
 	ipcMain.handle("app:info", (event) => {

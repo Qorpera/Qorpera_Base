@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import {
 	parseTrailAppendFrame,
 	protectedControllerPaths,
 	sandboxCommandArgs,
+	sandboxRuntimeDir,
 	writeSandboxProfile,
 } from "../src/agent-runtime.ts";
 import {
@@ -79,8 +81,16 @@ describe("kernel-bound agent runtime", () => {
 			message: "founder instruction",
 			attended: true,
 			origin: "native-founder-confirmation",
-			intentNonce: "intent-1",
-			requestHash: "b".repeat(64),
+			intent: {
+				nonce: "11111111-1111-4111-8111-111111111111",
+				sessionId: binding.sessionId,
+				requestHash: "b".repeat(64),
+				attended: true,
+				issuedAt: "2026-08-10T00:00:00.000Z",
+				expiresAt: "2026-08-10T01:00:00.000Z",
+				budget: { maxCalls: 4, maxInputTokens: 1000, maxOutputTokens: 1000, maxCostUsd: 1 },
+				signature: "kernel-signature",
+			},
 			images: [],
 		});
 		expect(
@@ -135,6 +145,7 @@ describe("kernel-bound agent runtime", () => {
 			(value) => {
 				response = value;
 			},
+			() => true,
 		);
 		expect(response).toMatchObject({ granted: true });
 		expect(readFileSync(gatePath, "utf-8")).toContain("status: consumed");
@@ -156,6 +167,29 @@ describe("kernel-bound agent runtime", () => {
 			},
 		);
 		expect(response).toMatchObject({ granted: false });
+
+		const messageContent = "# Product question\n\nShould we ship this?\n";
+		const messageHash = createHash("sha256").update(messageContent).digest("hex");
+		response = undefined;
+		applyKernelWriteFrame(
+			{
+				type: "qorpera_kernel_write",
+				token: binding.token,
+				operation: "create_message",
+				file: "msg-product-question.md",
+				requestId: "request-message",
+				hash: messageHash,
+				content: messageContent,
+			},
+			binding,
+			company,
+			(value) => {
+				response = value;
+			},
+		);
+		expect(response).toMatchObject({ granted: true });
+		expect(readFileSync(join(company, "inbox", "messages", "msg-product-question.md"), "utf-8")).toBe(messageContent);
+		expect(readFileSync(binding.path, "utf-8")).toContain("qorpera_kernel_inbox_message");
 
 		const forged = readFileSync(gatePath, "utf-8").replace("status: consumed", "status: pending\nstatus: approved");
 		writeFileSync(gatePath, forged, "utf-8");
@@ -209,6 +243,10 @@ describe("kernel-bound agent runtime", () => {
 	});
 
 	it("generates controller and worker sandbox profiles with nested read-only boundaries", () => {
+		const previousProgramData = process.env.ProgramData;
+		if (process.platform === "win32" && !process.env.ProgramData && !process.env.PROGRAMDATA) {
+			process.env.ProgramData = join(root, "program-data");
+		}
 		const company = join(root, "company");
 		const configDir = join(root, "config");
 		const runtimeDir = join(root, "runtime");
@@ -231,7 +269,7 @@ describe("kernel-bound agent runtime", () => {
 		expect(config).toContain("[permissions.qorpera-agent.network]\nenabled = false");
 		expect(config).toContain(`${JSON.stringify(company)} = "write"`);
 		expect(config).toContain(`${JSON.stringify(join(company, repository))} = "read"`);
-		expect(config).toContain(`${JSON.stringify(join(company, "inbox", "messages"))} = "write"`);
+		expect(config).toContain(`${JSON.stringify(join(company, "inbox"))} = "read"`);
 		expect(config).toContain(`${JSON.stringify(join(company, ".qorpera"))} = "read"`);
 
 		writeSandboxProfile(
@@ -250,9 +288,27 @@ describe("kernel-bound agent runtime", () => {
 		config = readFileSync(join(configDir, "config.toml"), "utf-8");
 		expect(config).toContain(`${JSON.stringify(company)} = "read"`);
 		expect(config).toContain(`${JSON.stringify(join(company, worktree))} = "write"`);
+		expect(config).toContain(`${JSON.stringify(join(company, worktree, ".git"))} = "read"`);
 		expect(sandboxCommandArgs("codex.js", runtimeDir, "node", ["rpc.js", "--mode", "rpc"])).toEqual(
 			expect.arrayContaining(["-C", runtimeDir, "--", "node", "rpc.js", "--mode", "rpc"]),
 		);
+		const isolatedRuntime = sandboxRuntimeDir(
+			join(root, "user-data"),
+			company,
+			"product-worker",
+			"11111111-1111-4111-8111-111111111111",
+		);
+		expect(
+			sandboxRuntimeDir(join(root, "user-data"), company, "product-worker", "22222222-2222-4222-8222-222222222222"),
+		).not.toBe(isolatedRuntime);
+		if (process.platform === "win32") {
+			const programData = process.env.ProgramData ?? process.env.PROGRAMDATA;
+			if (!programData) throw new Error("Windows test requires ProgramData");
+			expect(isolatedRuntime.startsWith(join(programData, "Qorpera", "agent-sandbox-runtime"))).toBe(true);
+			expect(isolatedRuntime).not.toContain(join(root, "user-data"));
+		}
+		if (previousProgramData === undefined) delete process.env.ProgramData;
+		else process.env.ProgramData = previousProgramData;
 	});
 
 	it("checkpoints content changed by the session while preserving untouched baseline dirt", () => {
@@ -348,8 +404,15 @@ describe("kernel-bound agent runtime", () => {
 		snapshotFounderGitState(worktree, "product-worker");
 		const baseline = captureCompanyGitBaseline(worktree);
 		writeFileSync(join(worktree, "product.ts"), "export const value = 2;\n", "utf-8");
+		const escaped = join(root, "escaped-from-hook.txt");
+		writeFileSync(
+			join(worktree, ".git", "hooks", "pre-commit"),
+			`#!/bin/sh\nprintf escaped > "${escaped}"\n`,
+			"utf-8",
+		);
 
 		expect(checkpointProductWorktreeGit(worktree, baseline, "trail/product.jsonl").success).toBe(true);
+		expect(existsSync(escaped)).toBe(false);
 		expect(spawnSync("git", ["show", "HEAD~1:founder-notes.md"], { cwd: worktree, encoding: "utf-8" }).stdout).toBe(
 			"retain this\n",
 		);
@@ -359,6 +422,38 @@ describe("kernel-bound agent runtime", () => {
 		expect(spawnSync("git", ["log", "-1", "--format=%B"], { cwd: worktree, encoding: "utf-8" }).stdout).toContain(
 			"Qorpera-Trigger: trail/product.jsonl",
 		);
+	});
+
+	it("fails closed before repository-local filters can execute in a kernel Git process", () => {
+		const worktree = join(root, "filter-worktree");
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(worktree, "product.ts"), "export const value = 1;\n", "utf-8");
+		for (const args of [
+			["init"],
+			["add", "product.ts"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", args, { cwd: worktree, stdio: "ignore" }).status).toBe(0);
+		}
+		const escaped = join(root, "escaped-from-filter.txt");
+		expect(
+			spawnSync(
+				"git",
+				[
+					"config",
+					"--local",
+					"filter.hostile.clean",
+					`node -e require('fs').writeFileSync('${escaped}','escaped')`,
+				],
+				{
+					cwd: worktree,
+					stdio: "ignore",
+				},
+			).status,
+		).toBe(0);
+		writeFileSync(join(worktree, ".gitattributes"), "*.ts filter=hostile\n", "utf-8");
+		expect(() => captureCompanyGitBaseline(worktree)).toThrow("repository-local Git execution config");
+		expect(existsSync(escaped)).toBe(false);
 	});
 
 	it("reconciles a durable checkpoint left by an interrupted agent", () => {

@@ -12,6 +12,13 @@ interface KernelGateResponse {
 	signature: string;
 }
 
+interface KernelBindingResponse {
+	type: "qorpera_kernel_binding";
+	nonce: string;
+	sessionId: string;
+	signature: string;
+}
+
 interface PendingGateRequest {
 	file: string;
 	hash: string;
@@ -25,6 +32,10 @@ const publicKeyDer = process.env.QORPERA_KERNEL_PUBLIC_KEY;
 const kernelPublicKey = publicKeyDer
 	? createPublicKey({ key: Buffer.from(publicKeyDer, "base64"), format: "der", type: "spki" })
 	: undefined;
+let kernelBindingNonce: string | undefined;
+let kernelBindingSessionId: string | undefined;
+let kernelBindingEstablished = false;
+let kernelBindingTimer: NodeJS.Timeout | undefined;
 
 type KernelPublicKey = NonNullable<typeof kernelPublicKey>;
 
@@ -35,6 +46,34 @@ function responsePayload(response: Omit<KernelGateResponse, "type" | "signature"
 		hash: response.hash,
 		granted: response.granted,
 	});
+}
+
+function bindingPayload(response: Omit<KernelBindingResponse, "type" | "signature">): string {
+	return JSON.stringify({ nonce: response.nonce, sessionId: response.sessionId });
+}
+
+export function beginKernelBinding(sessionId: string): void {
+	if (process.env.QORPERA_KERNEL_REQUIRED !== "1" || kernelBindingEstablished || kernelBindingNonce) return;
+	const token = process.env.QORPERA_TRAIL_BROKER_TOKEN;
+	if (!token || !kernelPublicKey || !sessionId) return;
+	kernelBindingNonce = randomUUID();
+	kernelBindingSessionId = sessionId;
+	process.stdout.write(
+		`${JSON.stringify({
+			type: "qorpera_kernel_challenge",
+			token,
+			nonce: kernelBindingNonce,
+			sessionId,
+		})}\n`,
+	);
+	kernelBindingTimer = setTimeout(() => {
+		process.stderr.write("Qorpera Base kernel binding timed out\n");
+		process.exit(1);
+	}, 10_000);
+}
+
+export function isKernelBindingEstablished(): boolean {
+	return process.env.QORPERA_KERNEL_REQUIRED !== "1" || kernelBindingEstablished;
 }
 
 function intentPayload(intent: Omit<KernelIntentCapability, "signature">): string {
@@ -171,10 +210,60 @@ export function requestKernelGateConsumption(file: string, hash: string): Promis
 	});
 }
 
+export function requestKernelMessageCreation(file: string, content: string): Promise<boolean> {
+	const token = process.env.QORPERA_TRAIL_BROKER_TOKEN;
+	if (!token || !kernelPublicKey) return Promise.resolve(false);
+	const requestId = randomUUID();
+	const hash = createHash("sha256").update(content).digest("hex");
+	return new Promise((resolvePromise) => {
+		const timer = setTimeout(() => {
+			pendingGateRequests.delete(requestId);
+			resolvePromise(false);
+		}, 30_000);
+		pendingGateRequests.set(requestId, { file, hash, resolve: resolvePromise, timer });
+		process.stdout.write(
+			`${JSON.stringify({
+				type: "qorpera_kernel_write",
+				token,
+				operation: "create_message",
+				requestId,
+				file,
+				hash,
+				content,
+			})}\n`,
+		);
+	});
+}
+
 export function handleKernelBrokerResponse(value: unknown): boolean {
-	if (!value || typeof value !== "object" || !("type" in value) || value.type !== "qorpera_kernel_response") {
+	if (!value || typeof value !== "object" || !("type" in value)) {
 		return false;
 	}
+	if (value.type === "qorpera_kernel_binding") {
+		const response = value as Partial<KernelBindingResponse>;
+		if (
+			kernelPublicKey &&
+			typeof response.nonce === "string" &&
+			typeof response.sessionId === "string" &&
+			response.nonce === kernelBindingNonce &&
+			response.sessionId === kernelBindingSessionId &&
+			typeof response.signature === "string" &&
+			verify(
+				null,
+				Buffer.from(bindingPayload({ nonce: response.nonce, sessionId: response.sessionId })),
+				kernelPublicKey,
+				Buffer.from(response.signature, "base64"),
+			)
+		) {
+			kernelBindingEstablished = true;
+			kernelBindingNonce = undefined;
+			kernelBindingSessionId = undefined;
+			if (kernelBindingTimer) clearTimeout(kernelBindingTimer);
+			kernelBindingTimer = undefined;
+		}
+		return true;
+	}
+	if (value.type !== "qorpera_kernel_response") return false;
 	const response = value as Partial<KernelGateResponse>;
 	if (
 		!kernelPublicKey ||

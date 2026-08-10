@@ -38,12 +38,15 @@ interface ModelBudgetUsage extends ModelUsage {
 }
 
 interface ModelRequestObservation {
+	event: "request" | "intent";
 	intentNonce: string;
 	requestHash: string;
-	provider: string;
-	model: string;
-	requestSha256: string;
-	status: "started" | "completed" | "failed" | "aborted";
+	provider?: string;
+	model?: string;
+	requestSha256?: string;
+	status: "started" | "completed" | "failed" | "aborted" | ModelIntentTerminalStatus;
+	reservation?: ModelUsage;
+	usage?: ModelUsage & { calls?: number };
 }
 
 interface RequestReservation extends ModelUsage {}
@@ -95,6 +98,11 @@ export interface ModelRequestBroker {
 		observe?: BrokerSession["observe"],
 	) => BrokeredCredentials;
 	close: () => void;
+}
+
+export interface ModelRequestRuntime {
+	getModel: ModelRuntime["getModel"];
+	streamSimple: ModelRuntime["streamSimple"];
 }
 
 function exactObject(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
@@ -206,7 +214,7 @@ function requestOptions(value: unknown): Parameters<ModelRuntime["streamSimple"]
 		(value.cacheRetention !== undefined && !["none", "short", "long"].includes(String(value.cacheRetention))) ||
 		(value.reasoning !== undefined &&
 			!["minimal", "low", "medium", "high", "xhigh", "max"].includes(String(value.reasoning))) ||
-		(value.serviceTier !== undefined && !["default", "flex"].includes(String(value.serviceTier))) ||
+		(value.serviceTier !== undefined && !["default", "flex", "priority"].includes(String(value.serviceTier))) ||
 		(value.sessionId !== undefined && (typeof value.sessionId !== "string" || value.sessionId.length > 256))
 	)
 		return undefined;
@@ -236,7 +244,7 @@ function requestOptions(value: unknown): Parameters<ModelRuntime["streamSimple"]
 			? { reasoning: value.reasoning as "minimal" | "low" | "medium" | "high" | "xhigh" | "max" }
 			: {}),
 		...(thinkingBudgets ? { thinkingBudgets } : {}),
-		...(value.serviceTier ? { serviceTier: value.serviceTier as "default" | "flex" } : {}),
+		...(value.serviceTier ? { serviceTier: value.serviceTier as "default" | "flex" | "priority" } : {}),
 	};
 }
 
@@ -321,23 +329,30 @@ function costUpperBound(
 	model: NonNullable<ReturnType<ModelRuntime["getModel"]>>,
 	inputTokens: number,
 	outputTokens: number,
+	serviceTier: "default" | "flex" | "priority" | undefined,
 ): number {
 	const rates = [model.cost, ...(model.cost.tiers ?? [])];
 	const inputRate = Math.max(...rates.map((rate) => Math.max(rate.input, rate.cacheRead, rate.cacheWrite)));
 	const outputRate = Math.max(...rates.map((rate) => rate.output));
-	return (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000;
+	const multiplier =
+		serviceTier === "priority" ? (model.id === "gpt-5.5" ? 2.5 : 2) : serviceTier === "flex" ? 0.5 : 1;
+	return ((inputTokens * inputRate + outputTokens * outputRate) / 1_000_000) * multiplier;
 }
 
 export async function startModelRequestBroker(options: {
 	authPath: string;
 	modelsPath: string;
 	allowedProviders: ReadonlySet<string>;
+	/** Explicit transport seam for integration tests; production always uses the kernel-owned ModelRuntime. */
+	runtime?: ModelRequestRuntime;
 }): Promise<ModelRequestBroker> {
-	const runtime = await ModelRuntime.create({
-		authPath: options.authPath,
-		modelsPath: options.modelsPath,
-		allowModelNetwork: false,
-	});
+	const runtime =
+		options.runtime ??
+		(await ModelRuntime.create({
+			authPath: options.authPath,
+			modelsPath: options.modelsPath,
+			allowModelNetwork: false,
+		}));
 	const sessions = new Set<BrokerSession>();
 	const inFlight = new Map<string, InFlightRequest>();
 
@@ -345,6 +360,13 @@ export async function startModelRequestBroker(options: {
 		if (intent.status !== "active") return;
 		intent.status = status;
 		clearTimeout(intent.expiryTimer);
+		session.observe?.({
+			event: "intent",
+			intentNonce: intent.capability.nonce,
+			requestHash: intent.capability.requestHash,
+			status,
+			usage: { ...intent.usage },
+		});
 		for (const request of inFlight.values()) {
 			if (request.session === session && request.intent === intent) request.controller.abort();
 		}
@@ -397,7 +419,9 @@ export async function startModelRequestBroker(options: {
 		const requestedOutputTokens = parsedOptions.maxTokens ?? model.maxTokens;
 		const outputTokens = Math.min(requestedOutputTokens, model.maxTokens, outputRemaining);
 		const costUsd =
-			inputTokens === undefined ? Number.POSITIVE_INFINITY : costUpperBound(model, inputTokens, outputTokens);
+			inputTokens === undefined
+				? Number.POSITIVE_INFINITY
+				: costUpperBound(model, inputTokens, outputTokens, parsedOptions.serviceTier);
 		if (
 			intent.usage.calls >= intent.capability.budget.maxCalls ||
 			inputTokens === undefined ||
@@ -420,14 +444,18 @@ export async function startModelRequestBroker(options: {
 		const expiryTimer = setTimeout(() => revokeIntent(session, intent, "expired"), Math.max(1, expiresAt - now));
 		inFlight.set(frame.requestId, { controller, session, intent, reservation, expiryTimer });
 		session.observe?.({
+			event: "request",
 			intentNonce: frame.intent.nonce,
 			requestHash: frame.intent.requestHash,
 			provider,
 			model: model.id,
 			requestSha256: digest,
 			status: "started",
+			reservation: { ...reservation },
 		});
 		let terminalUsage: ModelUsage | undefined;
+		let terminalStatus: ModelRequestObservation["status"] | undefined;
+		let requestStatus: "completed" | "failed" | "aborted" = "failed";
 		try {
 			const stream = runtime.streamSimple(model, frame.context, {
 				...parsedOptions,
@@ -436,26 +464,22 @@ export async function startModelRequestBroker(options: {
 			});
 			for await (const event of stream) {
 				terminalUsage = usageFromEvent(event) ?? terminalUsage;
+				if (event.type === "done") terminalStatus = "completed";
+				if (event.type === "error") terminalStatus = event.reason === "aborted" ? "aborted" : "failed";
 				send({ type: "qorpera_model_event", requestId: frame.requestId, event });
 			}
-			session.observe?.({
-				intentNonce: frame.intent.nonce,
-				requestHash: frame.intent.requestHash,
-				provider,
-				model: model.id,
-				requestSha256: digest,
-				status: controller.signal.aborted ? "aborted" : "completed",
+			requestStatus = controller.signal.aborted
+				? "aborted"
+				: terminalStatus === "completed"
+					? "completed"
+					: "failed";
+			send({
+				type: "qorpera_model_end",
+				requestId: frame.requestId,
+				...(terminalStatus ? {} : { error: "kernel model execution ended without a terminal event" }),
 			});
-			send({ type: "qorpera_model_end", requestId: frame.requestId });
 		} catch {
-			session.observe?.({
-				intentNonce: frame.intent.nonce,
-				requestHash: frame.intent.requestHash,
-				provider,
-				model: model.id,
-				requestSha256: digest,
-				status: controller.signal.aborted ? "aborted" : "failed",
-			});
+			requestStatus = controller.signal.aborted ? "aborted" : "failed";
 			send({ type: "qorpera_model_end", requestId: frame.requestId, error: "kernel model execution failed" });
 		} finally {
 			clearTimeout(expiryTimer);
@@ -463,17 +487,37 @@ export async function startModelRequestBroker(options: {
 			intent.reserved.inputTokens -= reservation.inputTokens;
 			intent.reserved.outputTokens -= reservation.outputTokens;
 			intent.reserved.costUsd -= reservation.costUsd;
-			if (terminalUsage) {
-				intent.usage.inputTokens += terminalUsage.inputTokens;
-				intent.usage.outputTokens += terminalUsage.outputTokens;
-				intent.usage.costUsd += terminalUsage.costUsd;
-			}
+			const charged =
+				terminalStatus === "completed" && !controller.signal.aborted && terminalUsage ? terminalUsage : reservation;
+			intent.usage.inputTokens += charged.inputTokens;
+			intent.usage.outputTokens += charged.outputTokens;
+			intent.usage.costUsd += charged.costUsd;
+			session.observe?.({
+				event: "request",
+				intentNonce: frame.intent.nonce,
+				requestHash: frame.intent.requestHash,
+				provider,
+				model: model.id,
+				requestSha256: digest,
+				status: requestStatus,
+				reservation: { ...reservation },
+				usage: { ...charged },
+			});
 			if (
 				intent.usage.inputTokens > intent.capability.budget.maxInputTokens ||
 				intent.usage.outputTokens > intent.capability.budget.maxOutputTokens ||
 				intent.usage.costUsd > intent.capability.budget.maxCostUsd
 			) {
 				revokeIntent(session, intent, "budget_exhausted");
+			}
+			if (intent.status !== "active") {
+				session.observe?.({
+					event: "intent",
+					intentNonce: intent.capability.nonce,
+					requestHash: intent.capability.requestHash,
+					status: intent.status,
+					usage: { ...intent.usage },
+				});
 			}
 		}
 	};

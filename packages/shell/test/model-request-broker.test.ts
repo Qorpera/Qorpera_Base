@@ -24,6 +24,24 @@ const runtime = vi.hoisted(() => ({
 						else options.signal?.addEventListener("abort", abort, { once: true });
 					});
 				}
+				if (context.systemPrompt === "provider-error") {
+					yield {
+						type: "error",
+						reason: "error",
+						error: {
+							role: "assistant",
+							content: [],
+							usage: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: { total: 0 },
+							},
+						},
+					};
+					return;
+				}
 				yield {
 					type: "done",
 					reason: "stop",
@@ -87,6 +105,7 @@ function request(
 	capability: KernelIntentCapability,
 	requestId: string,
 	context: { systemPrompt?: string; messages: unknown[]; tools?: unknown[] } = { messages: [] },
+	options: Record<string, unknown> = { transport: "sse", maxTokens: 100 },
 ): object {
 	return {
 		type: "qorpera_model_request",
@@ -95,7 +114,7 @@ function request(
 		intent: capability,
 		model: { provider: "openai", id: "approved-model" },
 		context,
-		options: { transport: "sse", maxTokens: 100 },
+		options,
 	};
 }
 
@@ -297,6 +316,83 @@ describe("kernel model-request broker", () => {
 				}),
 			);
 		});
+		child.release();
+		broker.close();
+	});
+
+	it("accepts priority service and reserves its multiplied cost", async () => {
+		const broker = await startModelRequestBroker({
+			authPath: "auth.json",
+			modelsPath: "models.json",
+			allowedProviders: new Set(["openai"]),
+		});
+		const child = broker.registerChild("session-one", { openai: { type: "api_key", key: "secret" } }, []);
+		const capability = intent("14141414-1414-4414-8414-141414141414");
+		expect(child.authorizeIntent(capability)).toBe(true);
+		const send = vi.fn();
+		child.handleFrame(
+			request(
+				child.handles.openai,
+				capability,
+				"15151515-1515-4515-8515-151515151515",
+				{ messages: [] },
+				{ transport: "sse", maxTokens: 100, serviceTier: "priority" },
+			),
+			send,
+		);
+		await vi.waitFor(() => expect(runtime.streamSimple).toHaveBeenCalled());
+		expect(runtime.streamSimple.mock.calls.at(-1)?.[2]).toMatchObject({ serviceTier: "priority" });
+		child.release();
+		broker.close();
+	});
+
+	it("charges the full reservation when a provider reports a partial failure", async () => {
+		const observations: Array<{ status: string }> = [];
+		const broker = await startModelRequestBroker({
+			authPath: "auth.json",
+			modelsPath: "models.json",
+			allowedProviders: new Set(["openai"]),
+		});
+		const child = broker.registerChild("session-one", { openai: { type: "api_key", key: "secret" } }, [], (event) =>
+			observations.push(event),
+		);
+		const capability = intent("16161616-1616-4616-8616-161616161616", {
+			maxCalls: 4,
+			maxInputTokens: 100_000,
+			maxOutputTokens: 1_000,
+			maxCostUsd: 0.0008,
+		});
+		expect(child.authorizeIntent(capability)).toBe(true);
+		const send = vi.fn();
+		child.handleFrame(
+			request(
+				child.handles.openai,
+				capability,
+				"17171717-1717-4717-8717-171717171717",
+				{ systemPrompt: "provider-error", messages: [] },
+				{ transport: "sse", maxTokens: 100, serviceTier: "priority" },
+			),
+			send,
+		);
+		await vi.waitFor(() => expect(observations.at(-1)?.status).toBe("failed"));
+		child.handleFrame(
+			request(
+				child.handles.openai,
+				capability,
+				"18181818-1818-4818-8818-181818181818",
+				{ systemPrompt: "after charged failure", messages: [] },
+				{ transport: "sse", maxTokens: 100, serviceTier: "priority" },
+			),
+			send,
+		);
+		await vi.waitFor(() =>
+			expect(send).toHaveBeenCalledWith({
+				type: "qorpera_model_end",
+				requestId: "18181818-1818-4818-8818-181818181818",
+				error: "kernel model request denied",
+			}),
+		);
+		expect(runtime.streamSimple).toHaveBeenCalledOnce();
 		child.release();
 		broker.close();
 	});

@@ -27,8 +27,71 @@ interface PendingProductCheckpoint {
 	dirtyPaths: Array<{ path: string; hash: string }>;
 }
 
+function gitEnvironment(): NodeJS.ProcessEnv {
+	const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+	const env = { ...process.env };
+	for (const key of Object.keys(env)) {
+		if (key.toUpperCase().startsWith("GIT_")) delete env[key];
+	}
+	env.GIT_CONFIG_NOSYSTEM = "1";
+	env.GIT_CONFIG_GLOBAL = nullDevice;
+	env.GIT_ATTR_NOSYSTEM = "1";
+	env.GIT_TERMINAL_PROMPT = "0";
+	return env;
+}
+
+function localGitConfig(root: string, scope: "--local" | "--worktree", env: NodeJS.ProcessEnv): string[] {
+	const result = spawnSync("git", ["-C", root, "config", scope, "--no-includes", "--null", "--list"], {
+		encoding: "utf-8",
+		shell: false,
+		env,
+	});
+	if (result.status !== 0 || typeof result.stdout !== "string") {
+		throw new Error(`could not inspect ${scope.slice(2)} Git config without includes`);
+	}
+	return result.stdout
+		.split("\0")
+		.filter(Boolean)
+		.map((entry) => entry.split(/\r?\n/, 1)[0].toLowerCase());
+}
+
+function assertNoExternalLocalGitConfig(root: string, env: NodeJS.ProcessEnv): void {
+	const local = localGitConfig(root, "--local", env);
+	const keys = local.includes("extensions.worktreeconfig")
+		? [...local, ...localGitConfig(root, "--worktree", env)]
+		: local;
+	const unsafe = keys.find(
+		(key) => key.startsWith("include.") || key.startsWith("includeif.") || key.startsWith("filter."),
+	);
+	if (unsafe) {
+		throw new Error(`repository-local Git execution config is not permitted in kernel checkpoints: ${unsafe}`);
+	}
+}
+
 function git(root: string, args: string[]): ReturnType<typeof spawnSync> {
-	return spawnSync("git", ["-C", root, ...args], { encoding: "utf-8", shell: false });
+	const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+	const env = gitEnvironment();
+	assertNoExternalLocalGitConfig(root, env);
+	return spawnSync(
+		"git",
+		[
+			"--no-optional-locks",
+			"-c",
+			`core.hooksPath=${nullDevice}`,
+			"-c",
+			"core.fsmonitor=false",
+			"-c",
+			`core.attributesFile=${nullDevice}`,
+			"-c",
+			"credential.helper=",
+			"-c",
+			"commit.gpgSign=false",
+			"-C",
+			root,
+			...args,
+		],
+		{ encoding: "utf-8", shell: false, env },
+	);
 }
 
 function commitSnapshot(root: string, message: string): void {

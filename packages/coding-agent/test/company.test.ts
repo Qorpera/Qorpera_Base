@@ -27,6 +27,7 @@ import {
 	companyRuntimeLockPath,
 	createProductWorktree,
 	enforceCompanyKernelSettings,
+	integrateRepo,
 	KERNEL_PROMPT,
 	listProductDepartments,
 	planProductWorktree,
@@ -186,6 +187,17 @@ describe("scaffoldCompany", () => {
 		writeFileSync(join(root, ".qorpera", "settings.json"), "null\n", "utf-8");
 		expect(() => enforceCompanyKernelSettings(root)).toThrow("cannot be opened safely");
 	});
+
+	it("rejects linked kernel settings without modifying the external file", () => {
+		scaffoldCompany(root);
+		const outside = join(root, "outside-settings.json");
+		const settings = join(root, ".qorpera", "settings.json");
+		writeFileSync(outside, `${JSON.stringify({ founder: true })}\n`, "utf-8");
+		rmSync(settings);
+		linkSync(outside, settings);
+		expect(() => enforceCompanyKernelSettings(root)).toThrow("one physical in-company file");
+		expect(readFileSync(outside, "utf-8")).toBe(`${JSON.stringify({ founder: true })}\n`);
+	});
 });
 
 describe("forking hub verbs (no-launch paths)", () => {
@@ -280,6 +292,54 @@ describe("product-development departments", () => {
 			if (previous === undefined) delete process.env.QORPERA_CODING_AGENT_DIR;
 			else process.env.QORPERA_CODING_AGENT_DIR = previous;
 		}
+	});
+
+	it("heartbeats the atomic company lock while the main thread is synchronously blocked", () => {
+		scaffoldCompany(root);
+		const lock = claimCompanyRuntimeLock(root);
+		try {
+			const before = statSync(lock.path).mtimeMs;
+			const blocked = spawnSync(process.execPath, [
+				"-e",
+				"Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2500)",
+			]);
+			expect(blocked.status).toBe(0);
+			expect(statSync(lock.path).mtimeMs).toBeGreaterThan(before);
+			expect(() => claimCompanyRuntimeLock(root)).toThrow("already owned by another process");
+		} finally {
+			releaseCompanyRuntimeLock(lock);
+		}
+	});
+
+	it("keeps empty registered product storage cloneable", () => {
+		const company = join(root, "company");
+		const clone = join(root, "company-clone");
+		scaffoldCompany(company);
+		const department = scaffoldProductDepartment(company, "Widget");
+		expect(spawnSync("git", ["clone", company, clone], { stdio: "ignore" }).status).toBe(0);
+		expect(readProductProtectionInventory(clone)).toHaveLength(1);
+		expect(existsSync(join(clone, department.repositoryPath, ".gitkeep"))).toBe(true);
+		expect(existsSync(join(clone, department.worktreesPath, ".gitkeep"))).toBe(true);
+	});
+
+	it("fails closed when an existing product repository differs from the reviewed source", () => {
+		const company = join(root, "company");
+		const sourceA = join(root, "source-a");
+		const sourceB = join(root, "source-b");
+		for (const source of [sourceA, sourceB]) {
+			mkdirSync(source, { recursive: true });
+			writeFileSync(join(source, "README.md"), `${source}\n`, "utf-8");
+			for (const args of [
+				["init"],
+				["add", "README.md"],
+				["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+			]) {
+				expect(spawnSync("git", args, { cwd: source, stdio: "ignore" }).status).toBe(0);
+			}
+		}
+		scaffoldCompany(company);
+		expect(integrateRepo(company, sourceA, "Widget")).toBe(true);
+		expect(() => integrateRepo(company, sourceB, "Widget")).toThrow("does not match");
 	});
 
 	it("uses the same runtime lock identity through filesystem aliases", () => {

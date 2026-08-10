@@ -2,37 +2,34 @@
  * The per-company desktop app — "[Company Name] Controller" (spec §7, v1).
  *
  * Qorpera Base is the foundation every company's app is built on. Connecting
- * it to a company folder yields that company's own desktop app: a chromeless
- * app-mode window (Edge/Chrome `--app`, WebView2-class rendering — no
- * Tauri/Electron toolchain, no dependencies beyond node:http) over a local
- * backend that renders whatever the controller has built in `app/` — nav
+ * it to a company folder yields that company's own desktop app: an Electron
+ * window over a kernel-owned local backend that renders whatever the
+ * controller has built in `app/` — nav
  * from `app/projection.json`, surfaces served live, the inbox as an
  * approve/deny queue. Self-updating by construction: everything is read from
  * the folder on request and the window polls for changes, so a surface the
  * controller writes mid-session appears with no deploy step.
  *
- * Minimally viable on purpose. A packaged single-binary shell can replace
- * the window later without changing anything a controller builds.
+ * The server is not a standalone launcher. Only the desktop kernel may
+ * create it and retain its mutation credential.
  */
 
-import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	closeSync,
-	existsSync,
 	fstatSync,
+	fsyncSync,
 	lstatSync,
 	openSync,
 	readdirSync,
 	readSync,
 	realpathSync,
+	renameSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
@@ -56,12 +53,10 @@ export interface CompanyAppOptions {
 	 * Required on every MUTATING endpoint (gate resolution, inbox responses,
 	 * authority edits) via the x-qorpera-token header. The backend listens on
 	 * localhost, which the agent can reach with curl — without this token the
-	 * agent could approve its own gates. The Electron kernel holds the token
-	 * and hands it only to the renderer (file://, out of the agent's reach).
-	 * If omitted (standalone browser mode), one is generated and embedded in
-	 * the served chrome — a weaker posture, acceptable only for that mode.
+	 * agent could approve its own gates. The Electron kernel holds the token;
+	 * agent-authored same-origin surfaces never receive it.
 	 */
-	authToken?: string;
+	authToken: string;
 }
 
 interface InboxItem {
@@ -139,7 +134,7 @@ function readPhysicalFileWithin(
 
 		descriptor = openSync(target, "r");
 		const opened = fstatSync(descriptor);
-		if (!opened.isFile() || opened.size < 0 || opened.size > maxBytes) return undefined;
+		if (!opened.isFile() || opened.nlink !== 1 || opened.size < 0 || opened.size > maxBytes) return undefined;
 
 		const rootAfterOpen = realpathSync(requestedRoot);
 		const actual = realpathSync(target);
@@ -177,6 +172,31 @@ function readPhysicalFileWithin(
 		return undefined;
 	} finally {
 		if (descriptor !== undefined) closeSync(descriptor);
+	}
+}
+
+function writeAtomicPhysicalFile(path: string, content: string): void {
+	const entry = lstatSync(path);
+	if (
+		entry.isSymbolicLink() ||
+		!entry.isFile() ||
+		entry.nlink !== 1 ||
+		normalizedPath(realpathSync(path)) !== normalizedPath(path)
+	) {
+		throw new Error("kernel mutation target is not one physical file");
+	}
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	let descriptor: number | undefined;
+	try {
+		descriptor = openSync(temporary, "wx");
+		writeFileSync(descriptor, content, "utf-8");
+		fsyncSync(descriptor);
+		closeSync(descriptor);
+		descriptor = undefined;
+		renameSync(temporary, path);
+	} catch (error) {
+		if (descriptor !== undefined) closeSync(descriptor);
+		throw error;
 	}
 }
 
@@ -497,10 +517,9 @@ function respondToInboxItem(root: string, file: string, response: string): boole
 	if (!source) return false;
 	try {
 		const content = source.content.toString("utf-8");
-		writeFileSync(
+		writeAtomicPhysicalFile(
 			source.path,
 			`${content.trimEnd()}\n\n## Response (founder, ${new Date().toISOString().slice(0, 16)}Z)\n\n${response.trim()}\n`,
-			"utf-8",
 		);
 		return true;
 	} catch {
@@ -777,7 +796,7 @@ function resolveGate(root: string, file: string, action: string): boolean {
 	try {
 		const content = source.content.toString("utf-8");
 		if (!/^status:/m.test(content)) return false;
-		writeFileSync(source.path, content.replace(/^status:.*$/m, `status: ${action}`), "utf-8");
+		writeAtomicPhysicalFile(source.path, content.replace(/^status:.*$/m, `status: ${action}`));
 		return true;
 	} catch {
 		return false;
@@ -944,9 +963,8 @@ setInterval(refresh, 2000);
 
 export function createCompanyAppServer(options: CompanyAppOptions): Server {
 	const root = canonicalCompanyRoot(options.root);
-	const authToken =
-		options.authToken ?? createHash("sha256").update(`${root}${Date.now()}${Math.random()}`).digest("hex");
-	const embedTokenInChrome = options.authToken === undefined;
+	const authToken = options.authToken;
+	if (!authToken) throw new Error("company app server requires a desktop-kernel authorization token");
 	const authorized = (request: IncomingMessage): boolean => request.headers["x-qorpera-token"] === authToken;
 	return createServer((request: IncomingMessage, response: ServerResponse) => {
 		const url = new URL(request.url ?? "/", "http://localhost");
@@ -963,7 +981,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 		if (url.pathname === "/") {
 			response
 				.writeHead(200, { "content-type": "text/html; charset=utf-8" })
-				.end(CHROME_HTML(companyName(root), embedTokenInChrome ? authToken : ""));
+				.end(CHROME_HTML(companyName(root), ""));
 			return;
 		}
 		if (url.pathname === "/api/state") {
@@ -1074,7 +1092,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 						existing[name] = section;
 					}
 					existing.authority = { ...((existing.authority as Record<string, unknown>) ?? {}), mode: "gate" };
-					writeFileSync(source.path, `${stringifyToml(existing)}\n`, "utf-8");
+					writeAtomicPhysicalFile(source.path, `${stringifyToml(existing)}\n`);
 					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
 				} catch (error) {
 					response
@@ -1115,7 +1133,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 					parseToml(content); // reject unparseable TOML with a clear error
 					const source = readCompanyFile(root, "authority.toml");
 					if (!source) throw new Error("authority policy is not a physical file");
-					writeFileSync(source.path, content, "utf-8");
+					writeAtomicPhysicalFile(source.path, content);
 					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
 				} catch (error) {
 					response
@@ -1167,149 +1185,4 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 		}
 		response.writeHead(404).end("not found");
 	});
-}
-
-/**
- * Open the app WINDOW — chromeless app mode, its own taskbar entry — falling
- * back to the default browser only when no app-capable browser is found.
- */
-function openAppWindow(url: string): void {
-	if (process.platform === "win32") {
-		// Probe real install paths — App Paths lookup via `start msedge` is
-		// not reliable (Edge may be absent entirely, e.g. EU unbundling).
-		const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
-		const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
-		const localAppData = process.env.LOCALAPPDATA ?? "";
-		const candidates = [
-			join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
-			join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
-			join(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
-			join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
-			join(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
-		];
-		const browser = candidates.find((candidate) => existsSync(candidate));
-		if (browser) {
-			spawn(browser, [`--app=${url}`], { stdio: "ignore", detached: true }).unref();
-		} else {
-			// Default browser tab — still works, just less app-like.
-			spawn("cmd", ["/c", "start", "", url], { stdio: "ignore", detached: true }).unref();
-		}
-		return;
-	}
-	if (process.platform === "darwin") {
-		spawn("open", [url], { stdio: "ignore", detached: true }).unref();
-		return;
-	}
-	spawn("xdg-open", [url], { stdio: "ignore", detached: true }).unref();
-}
-
-/** Write a desktop launcher: "<Company> Controller". */
-function installLauncher(root: string): string | undefined {
-	const name = companyName(root);
-	const desktop = join(homedir(), "Desktop");
-	if (!existsSync(desktop)) return undefined;
-	if (process.platform === "win32") {
-		const path = join(desktop, `${name} Controller.cmd`);
-		// The Controller IS the Base shell opened into this company: one
-		// foundation binary for every company, so Base updates reach all
-		// controllers at once. Prefer the installed app; fall back to the
-		// dev tree this CLI is running from.
-		const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
-		writeFileSync(
-			path,
-			[
-				"@echo off",
-				`set "EXE=%LocalAppData%\\Programs\\Qorpera Base\\Qorpera Base.exe"`,
-				`if not exist "%EXE%" set "EXE=%LocalAppData%\\Programs\\qorpera-base\\Qorpera Base.exe"`,
-				`if exist "%EXE%" (`,
-				// --company=<root> (one token): Chromium's single-instance argv
-				// forwarding reorders switches away from their positional values,
-				// but a switch=value pair travels intact.
-				`\tstart "" "%EXE%" --company="${root}"`,
-				"\texit /b",
-				")",
-				`cd /d "${repoRoot}"`,
-				`start "" node_modules\\electron\\dist\\electron.exe packages\\shell\\dist\\main.js --company="${root}"`,
-				"",
-			].join("\r\n"),
-			"utf-8",
-		);
-		return path;
-	}
-	const path = join(desktop, `${name.replace(/\s+/g, "-")}-controller.sh`);
-	writeFileSync(path, `#!/bin/sh\ncd "${root}"\nexec qorpera app "${root}"\n`, { encoding: "utf-8", mode: 0o755 });
-	return path;
-}
-
-/** Desktop launcher for the Base hub itself (the shell with no --company). */
-function installHubLauncher(): string | undefined {
-	const desktop = join(homedir(), "Desktop");
-	if (!existsSync(desktop) || process.platform !== "win32") return undefined;
-	const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
-	const path = join(desktop, "Qorpera Base.cmd");
-	writeFileSync(
-		path,
-		[
-			"@echo off",
-			`set "EXE=%LocalAppData%\\Programs\\Qorpera Base\\Qorpera Base.exe"`,
-			`if not exist "%EXE%" set "EXE=%LocalAppData%\\Programs\\qorpera-base\\Qorpera Base.exe"`,
-			`if exist "%EXE%" (`,
-			`\tstart "" "%EXE%"`,
-			"\texit /b",
-			")",
-			`cd /d "${repoRoot}"`,
-			`start "" node_modules\\electron\\dist\\electron.exe packages\\shell\\dist\\main.js`,
-			"",
-		].join("\r\n"),
-		"utf-8",
-	);
-	return path;
-}
-
-/** `qorpera app [dir]` / `qorpera app install [dir]` / `qorpera app install-hub`. */
-export async function handleAppCommand(args: string[]): Promise<boolean> {
-	if (args[0] !== "app") return false;
-	if (args[1] === "install-hub") {
-		const launcher = installHubLauncher();
-		console.log(launcher ? `Installed launcher: ${launcher}` : "Could not install (no Desktop or unsupported OS).");
-		return true;
-	}
-	const install = args[1] === "install";
-	const positional = args.slice(install ? 2 : 1).filter((arg) => !arg.startsWith("--"));
-	const root = resolve(positional[0] ?? process.cwd());
-	if (!existsSync(join(root, "authority.toml"))) {
-		console.error(`${root} is not a company folder (no authority.toml).`);
-		process.exitCode = 1;
-		return true;
-	}
-	const port = companyPort(root);
-	if (install) {
-		const launcher = installLauncher(root);
-		console.log(launcher ? `Installed launcher: ${launcher}` : "Could not find a Desktop folder to install to.");
-		return true;
-	}
-	const url = `http://127.0.0.1:${port}/`;
-	const server = createCompanyAppServer({ root, port });
-	const started = await new Promise<boolean>((resolvePromise) => {
-		server.once("error", (error: NodeJS.ErrnoException) => {
-			if (error.code === "EADDRINUSE") {
-				// The company's backend is already running — just open the window.
-				console.log(`${companyName(root)} Controller already running at ${url}; opening its window.`);
-				resolvePromise(false);
-			} else {
-				console.error(`Could not start on port ${port}: ${error.message}`);
-				process.exitCode = 1;
-				resolvePromise(false);
-			}
-		});
-		server.listen(port, "127.0.0.1", () => resolvePromise(true));
-	});
-	if (!started) {
-		if (process.exitCode !== 1) openAppWindow(url);
-		return true;
-	}
-	console.log(`${companyName(root)} Controller running at ${url}  (Ctrl+C to stop)`);
-	openAppWindow(url);
-	await new Promise(() => {}); // serve until killed
-	return true;
 }

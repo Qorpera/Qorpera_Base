@@ -20,7 +20,12 @@ import type {
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
-import { consumeKernelIntent, handleKernelBrokerResponse } from "../../core/kernel-broker.ts";
+import {
+	beginKernelBinding,
+	consumeKernelIntent,
+	handleKernelBrokerResponse,
+	isKernelBindingEstablished,
+} from "../../core/kernel-broker.ts";
 import { endModelBrokerIntent, handleModelBrokerFrame, setModelBrokerWriter } from "../../core/model-broker-client.ts";
 import {
 	flushRawStdout,
@@ -397,6 +402,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	};
 
 	await rebindSession();
+	beginKernelBinding(session.sessionManager.getSessionId());
 	registerSignalHandlers();
 
 	// Handle a single command
@@ -802,6 +808,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		await shutdown();
 	}
 
+	const pendingKernelInputLines: string[] = [];
 	const handleInputLine = async (line: string) => {
 		let parsed: unknown;
 		try {
@@ -818,7 +825,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			return;
 		}
 
-		if (handleKernelBrokerResponse(parsed) || handleModelBrokerFrame(parsed)) return;
+		const wasKernelBound = isKernelBindingEstablished();
+		if (handleKernelBrokerResponse(parsed)) {
+			if (!wasKernelBound && isKernelBindingEstablished()) {
+				for (const pendingLine of pendingKernelInputLines.splice(0)) void handleInputLine(pendingLine);
+			}
+			return;
+		}
+		if (handleModelBrokerFrame(parsed)) return;
+		if (process.env.QORPERA_KERNEL_REQUIRED === "1" && !isKernelBindingEstablished()) {
+			pendingKernelInputLines.push(line);
+			return;
+		}
 
 		// Handle extension UI responses
 		if (

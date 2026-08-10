@@ -1,5 +1,5 @@
 /** Fork model semantics (spec §9a): fork, fast-forward, stage — never reset. */
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -60,6 +60,18 @@ describe("userland fork model", () => {
 		writeFileSync(join(userland(), "userland.json"), "not json", "utf-8");
 		expect(() => ensureUserland(company(), baseV1, "1.0.0")).toThrow("userland.json is invalid");
 		expect(readFileSync(join(userland(), "founder-app.js"), "utf-8")).toBe("// preserve me");
+	});
+
+	it("rejects linked metadata without overwriting the external file", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		const manifest = join(userland(), "userland.json");
+		const outside = join(root, "outside-userland.json");
+		const outsideContent = `${JSON.stringify({ founder: true })}\n`;
+		writeFileSync(outside, outsideContent, "utf-8");
+		rmSync(manifest);
+		linkSync(outside, manifest);
+		expect(() => setActiveApp(userland(), "base")).toThrow("one physical");
+		expect(readFileSync(outside, "utf-8")).toBe(outsideContent);
 	});
 
 	it("fast-forwards an untouched fork to a new base", () => {

@@ -21,19 +21,23 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+	closeSync,
 	existsSync,
+	fsyncSync,
 	lstatSync,
 	mkdirSync,
+	openSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import lockfile from "proper-lockfile";
+import { Worker } from "node:worker_threads";
 import { getAgentDir } from "../config.ts";
 import {
 	EMPTY_PROJECTION,
@@ -106,9 +110,10 @@ The company's git metadata is kernel-owned. At each settled controller turn,
 the kernel checkpoints the files that turn changed and attaches the trail
 session as provenance; never edit \`.git/\` or rewrite company history.
 Product workers are different: their assigned worktree is an isolated clone,
-so they commit there with \`Qorpera-Trigger:\` and \`Qorpera-Rationale:\`
-trailers before proposing the branch through a pull request. You are
-explaining yourself to your future self, not to a reviewer.
+so they change and test only there. The kernel owns that clone's Git metadata,
+checkpoints the settled change set with its trail provenance, and brokers any
+later push or pull-request effect. You are explaining yourself to your future
+self, not to a reviewer.
 
 How you and the founder communicate: chat sessions are for work the founder
 brings to you. Your own autonomous work communicates through \`inbox/messages/\` —
@@ -131,8 +136,9 @@ As the company controller you may study product repositories, worktrees,
 pull requests, and their trails, but you cannot modify product code. Write
 briefs and delegate implementation through the department's Product Chat.
 That launches a product-worker in one assigned \`worktrees/<task>/\`
-directory. A product-worker changes only that worktree, tests and commits
-there, pushes its branch, and proposes integration through a pull request.
+directory. A product-worker changes and tests only that worktree, while the
+kernel checkpoints and later proposes integration through a
+pull request.
 Controller authority never turns into product-worker authority.
 
 \`userland/\` is your app's own code — this company's fork of the Qorpera
@@ -204,8 +210,10 @@ Gate requests and human steering land here.
 const APP_PROJECTION_TEMPLATE = `${JSON.stringify(EMPTY_PROJECTION, null, "\t")}\n`;
 
 const PRODUCT_DEPARTMENT_GITIGNORE = `# Product Git data belongs to the product repository, not the company repository.
-repository/
-worktrees/
+repository/*
+!repository/.gitkeep
+worktrees/*
+!worktrees/.gitkeep
 `;
 
 const PULL_REQUESTS_README = `# Pull Requests
@@ -236,6 +244,58 @@ function canonicalDirectory(root: string, relativePath: string): string {
 		throw new Error(`Company storage must be a physical directory, not a link or junction: ${relativePath}`);
 	}
 	return actual;
+}
+
+export function assertPhysicalCompanyTree(rootDir: string, relativePath: string): string {
+	const root = canonicalCompanyRoot(rootDir);
+	const target = resolve(root, relativePath);
+	const rootRelative = relative(root, target);
+	if (!rootRelative || rootRelative.startsWith("..") || isAbsolute(rootRelative)) {
+		throw new Error(`Company storage escaped its root: ${relativePath}`);
+	}
+	const visit = (path: string): void => {
+		const entry = lstatSync(path);
+		if (
+			entry.isSymbolicLink() ||
+			normalizedPath(realpathSync(path)) !== normalizedPath(path) ||
+			(entry.isFile() && entry.nlink !== 1)
+		) {
+			throw new Error(`Company kernel storage must be one physical entry: ${relativePath}`);
+		}
+		if (entry.isDirectory()) {
+			for (const child of readdirSync(path)) visit(join(path, child));
+		}
+	};
+	visit(target);
+	return target;
+}
+
+export function validateCompanyKernelStorage(rootDir: string): void {
+	const root = canonicalCompanyRoot(rootDir);
+	for (const directory of [".qorpera", "trail", "inbox", join("inbox", "messages"), "app", "departments"]) {
+		canonicalDirectory(root, directory);
+	}
+	for (const tree of ["trail", "inbox"]) assertPhysicalCompanyTree(root, tree);
+	for (const file of [
+		"company.md",
+		"authority.toml",
+		"AGENTS.md",
+		"CLAUDE.md",
+		PRODUCT_REGISTRY_PATH,
+		join("app", "projection.json"),
+	]) {
+		storageIdentity(join(root, file), "file");
+	}
+	if (existsSync(join(root, ".qorpera", "settings.json"))) {
+		storageIdentity(join(root, ".qorpera", "settings.json"), "file");
+	}
+	for (const optionalTree of [
+		join(".qorpera", "product-worktrees"),
+		join(".qorpera", "product-integrations"),
+		join(".qorpera", ".p"),
+	]) {
+		if (existsSync(join(root, optionalTree))) assertPhysicalCompanyTree(root, optionalTree);
+	}
 }
 
 interface StorageIdentity {
@@ -336,29 +396,89 @@ interface CompanyLockRecord {
 }
 
 const ownedRuntimeLocks = new WeakSet<CompanyRuntimeLock>();
+const lockHeartbeats = new WeakMap<CompanyRuntimeLock, Worker>();
+const COMPANY_LOCK_STALE_MS = 30_000;
+const COMPANY_LOCK_HEARTBEAT_MS = 1_000;
+
+function writeAtomicText(path: string, content: string): void {
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	let descriptor: number | undefined;
+	try {
+		descriptor = openSync(temporary, "wx");
+		writeFileSync(descriptor, content, "utf-8");
+		fsyncSync(descriptor);
+		closeSync(descriptor);
+		descriptor = undefined;
+		renameSync(temporary, path);
+	} catch (error) {
+		if (descriptor !== undefined) closeSync(descriptor);
+		rmSync(temporary, { force: true });
+		throw error;
+	}
+}
+
+function startCompanyLockHeartbeat(path: string, token: string): Worker {
+	const extension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+	const worker = new Worker(new URL(`./company-lock-heartbeat${extension}`, import.meta.url), {
+		workerData: { path, token, intervalMs: COMPANY_LOCK_HEARTBEAT_MS },
+	});
+	worker.unref();
+	return worker;
+}
 
 function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): CompanyRuntimeLock {
 	const root = canonicalCompanyRoot(rootDir);
 	const path = companyRuntimeLockPath(root);
 	mkdirSync(dirname(path), { recursive: true });
-	let release: () => void;
-	try {
-		release = lockfile.lockSync(path, { realpath: false, stale: 30_000 });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
-			throw new Error("Company transaction is already owned by another process", { cause: error });
-		}
-		throw error;
-	}
 	const token = randomUUID();
 	const record: CompanyLockRecord = { version: 2, pid: process.pid, root, token, mode };
-	try {
-		writeFileSync(path, `${JSON.stringify(record)}\n`, "utf-8");
-		return { path, root, token, release };
-	} catch (error) {
-		release();
-		throw error;
+	for (let attempt = 0; attempt < 3; attempt++) {
+		let descriptor: number | undefined;
+		try {
+			descriptor = openSync(path, "wx");
+			writeFileSync(descriptor, `${JSON.stringify(record)}\n`, "utf-8");
+			fsyncSync(descriptor);
+			closeSync(descriptor);
+			descriptor = undefined;
+			const lock: CompanyRuntimeLock = {
+				path,
+				root,
+				token,
+				release: () => {
+					const heartbeat = lockHeartbeats.get(lock);
+					if (!heartbeat) return;
+					heartbeat.postMessage("stop");
+					void heartbeat.terminate();
+					lockHeartbeats.delete(lock);
+				},
+			};
+			lockHeartbeats.set(lock, startCompanyLockHeartbeat(path, token));
+			return lock;
+		} catch (error) {
+			if (descriptor !== undefined) closeSync(descriptor);
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+				rmSync(path, { force: true });
+				throw error;
+			}
+			let modifiedAt: number;
+			try {
+				modifiedAt = statSync(path).mtimeMs;
+			} catch (statError) {
+				if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
+				throw statError;
+			}
+			if (Date.now() - modifiedAt <= COMPANY_LOCK_STALE_MS) {
+				throw new Error("Company transaction is already owned by another process", { cause: error });
+			}
+			try {
+				renameSync(path, `${path}.stale-${Date.now()}-${randomUUID()}`);
+			} catch (renameError) {
+				if ((renameError as NodeJS.ErrnoException).code === "ENOENT") continue;
+				throw renameError;
+			}
+		}
 	}
+	throw new Error("Could not acquire the company transaction lock atomically");
 }
 
 export function claimCompanyRuntimeLock(rootDir: string): CompanyRuntimeLock {
@@ -452,13 +572,15 @@ function readProductRegistry(root: string): ProductRegistry {
 	return parseProductRegistry(root, false);
 }
 
-function registerProductDepartment(root: string, id: string): void {
+function registerProductDepartment(root: string, id: string, storage: ProductTransactionStorage): void {
 	const registry = parseProductRegistry(root, true);
 	if (registry.products.includes(id)) return;
 	registry.products.push(id);
 	registry.products.sort();
 	mkdirSync(join(root, ".qorpera"), { recursive: true });
-	writeFileSync(join(root, PRODUCT_REGISTRY_PATH), `${JSON.stringify(registry, null, "\t")}\n`, "utf-8");
+	const path = join(root, PRODUCT_REGISTRY_PATH);
+	writeAtomicText(path, `${JSON.stringify(registry, null, "\t")}\n`);
+	storage.productRegistry = storageIdentity(path, "file");
 }
 
 function checkpointProductKit(root: string, id: string): void {
@@ -471,7 +593,18 @@ function checkpointProductKit(root: string, id: string): void {
 		join("departments", id, ".gitignore"),
 		join("departments", id, "briefs", ".gitkeep"),
 		join("departments", id, "pull-requests", "README.md"),
-	].filter((path) => existsSync(join(root, path)));
+		join("departments", id, "repository", ".gitkeep"),
+		join("departments", id, "worktrees", ".gitkeep"),
+	].filter(
+		(path) =>
+			existsSync(join(root, path)) ||
+			spawnSync("git", ["-C", root, "ls-files", "--error-unmatch", "--", path], {
+				stdio: "ignore",
+				shell: false,
+			}).status === 0,
+	);
+	const integrationRecord = join(".qorpera", "product-integrations", `${id}.json`);
+	if (existsSync(join(root, integrationRecord))) paths.push(integrationRecord);
 	const added = spawnSync("git", ["-C", root, "add", "--", ...paths], { stdio: "ignore", shell: false });
 	if (added.status !== 0) throw new Error(`Could not stage product department ${id}`);
 	const changed = spawnSync("git", ["-C", root, "diff", "--cached", "--quiet", "--", ...paths], {
@@ -545,7 +678,12 @@ function productProjectionNodes(department: ProductDepartment): ProjectionNode[]
 }
 
 /** Install the product kit into the one company UI projection document. */
-function installProductProjection(root: string, department: ProductDepartment, write = true): void {
+function installProductProjection(
+	root: string,
+	department: ProductDepartment,
+	write = true,
+	storage?: ProductTransactionStorage,
+): void {
 	const projectionPath = join(root, "app", "projection.json");
 	let document: ProjectionDocument = {
 		schema: EMPTY_PROJECTION.schema,
@@ -595,8 +733,10 @@ function installProductProjection(root: string, department: ProductDepartment, w
 	}
 	if (!write) return;
 	if (!changed && existsSync(projectionPath)) return;
+	if (!storage) throw new Error("Product projection mutation requires bound transaction storage");
 	mkdirSync(join(root, "app"), { recursive: true });
-	writeFileSync(projectionPath, `${JSON.stringify(document, null, "\t")}\n`, "utf-8");
+	writeAtomicText(projectionPath, `${JSON.stringify(document, null, "\t")}\n`);
+	storage.projection = storageIdentity(projectionPath, "file");
 }
 
 export interface ProductDepartment {
@@ -685,9 +825,17 @@ function readdirIsEmpty(dir: string): boolean {
 function ensureProjectSettings(root: string, result: ScaffoldResult): boolean {
 	const settingsDir = join(root, ".qorpera");
 	const settingsPath = join(settingsDir, "settings.json");
+	if (existsSync(settingsDir)) canonicalDirectory(root, ".qorpera");
 	let settings: Record<string, unknown> = {};
 	if (existsSync(settingsPath)) {
 		try {
+			if (
+				normalizedPath(realpathSync(settingsPath)) !== normalizedPath(settingsPath) ||
+				!lstatSync(settingsPath).isFile() ||
+				lstatSync(settingsPath).nlink !== 1
+			) {
+				throw new Error("settings must be one physical in-company file");
+			}
 			const parsed = JSON.parse(readFileSync(settingsPath, "utf-8")) as unknown;
 			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
 				throw new Error("settings root must be an object");
@@ -723,7 +871,8 @@ function ensureProjectSettings(root: string, result: ScaffoldResult): boolean {
 	}
 	if (!changed) return false;
 	mkdirSync(settingsDir, { recursive: true });
-	writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8");
+	canonicalDirectory(root, ".qorpera");
+	writeAtomicText(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`);
 	result.created.push(".qorpera/settings.json (trail retained; auto-compaction disabled)");
 	return true;
 }
@@ -870,9 +1019,9 @@ function scaffoldProductDepartmentUnlocked(
 	}
 	if (existing) {
 		assertProductTransactionStorage(storage);
-		installProductProjection(root, existing);
+		installProductProjection(root, existing, true, storage);
 		assertProductTransactionStorage(storage);
-		registerProductDepartment(root, id);
+		registerProductDepartment(root, id, storage);
 		assertProductTransactionStorage(storage);
 		checkpointProductKit(root, id);
 		return existing;
@@ -898,13 +1047,13 @@ function scaffoldProductDepartmentUnlocked(
 	writeIfMissing(root, join(path, ".gitignore"), PRODUCT_DEPARTMENT_GITIGNORE, result);
 	ensureDir(root, join(path, "briefs"), result);
 	ensureDir(root, join(path, "worktrees"), result);
+	ensureDir(root, join(path, "repository"), result);
 	writeIfMissing(root, join(path, "pull-requests", "README.md"), PULL_REQUESTS_README, result);
-	mkdirSync(join(root, path, "repository"), { recursive: true });
 	const created = productDepartmentFromEntry(root, id)!;
 	assertProductTransactionStorage(storage);
-	installProductProjection(root, created);
+	installProductProjection(root, created, true, storage);
 	assertProductTransactionStorage(storage);
-	registerProductDepartment(root, id);
+	registerProductDepartment(root, id, storage);
 	assertProductTransactionStorage(storage);
 	checkpointProductKit(root, id);
 	return created;
@@ -1297,18 +1446,99 @@ function launchSession(dir: string): Promise<number> {
 	return Promise.resolve(0);
 }
 
-function cloneInto(source: string, destination: string): boolean {
+function cloneSourceAllowed(source: string): boolean {
 	try {
 		const parsed = new URL(source);
-		if ((parsed.protocol === "https:" || parsed.protocol === "http:") && (parsed.username || parsed.password)) {
-			console.error("Repository URLs with embedded credentials are not allowed; use a Git credential helper.");
+		if (
+			(parsed.protocol === "https:" || parsed.protocol === "http:") &&
+			(parsed.username || parsed.password || parsed.search || parsed.hash)
+		) {
+			console.error(
+				"Repository URLs with embedded credentials or query data are not allowed; use a Git credential helper.",
+			);
 			return false;
 		}
 	} catch {
 		// Local paths and SCP-style SSH remotes are not URL-userinfo credentials.
 	}
-	const clone = spawnSync("git", ["clone", source, destination], { stdio: "inherit", shell: false });
+	return true;
+}
+
+function cloneInto(source: string, destination: string): boolean {
+	if (!cloneSourceAllowed(source)) return false;
+	const clone = spawnSync("git", ["clone", "--no-hardlinks", source, destination], { stdio: "inherit", shell: false });
 	return clone.status === 0;
+}
+
+interface ProductIntegrationRecord {
+	version: 1;
+	productId: string;
+	source: string;
+	destination: string;
+	staging: string;
+	status: "pending" | "completed";
+	sourceHead?: string;
+}
+
+function normalizedRepositorySource(source: string): string {
+	try {
+		return normalizedPath(realpathSync(resolve(source)));
+	} catch {
+		return source.trim();
+	}
+}
+
+function repositoryMatchesSource(repository: string, source: string): boolean {
+	const topLevel = gitOutput(repository, ["rev-parse", "--show-toplevel"]);
+	const remote = gitOutput(repository, ["remote", "get-url", "origin"]);
+	if (!topLevel || !remote) return false;
+	return (
+		normalizedPath(topLevel) === normalizedPath(repository) &&
+		normalizedRepositorySource(remote) === normalizedRepositorySource(source)
+	);
+}
+
+function stagedCloneMatchesSource(repository: string, source: string): boolean {
+	if (!repositoryMatchesSource(repository, source)) return false;
+	const status = spawnSync("git", ["-C", repository, "status", "--porcelain=v1", "--untracked-files=all"], {
+		encoding: "utf-8",
+		shell: false,
+	});
+	return (
+		spawnSync("git", ["-C", repository, "rev-parse", "--verify", "HEAD"], { stdio: "ignore", shell: false })
+			.status === 0 &&
+		spawnSync("git", ["-C", repository, "fsck", "--no-dangling"], { stdio: "ignore", shell: false }).status === 0 &&
+		status.status === 0 &&
+		typeof status.stdout === "string" &&
+		status.stdout.trim() === ""
+	);
+}
+
+function productIntegrationRecordPath(root: string, productId: string): string {
+	return join(root, ".qorpera", "product-integrations", `${productId}.json`);
+}
+
+function productIntegrationStagingRoot(root: string): string {
+	const stagingRoot = join(root, ".qorpera", ".p");
+	mkdirSync(stagingRoot, { recursive: true });
+	return canonicalDirectory(root, join(".qorpera", ".p"));
+}
+
+function readProductIntegrationRecord(path: string): ProductIntegrationRecord | undefined {
+	if (!existsSync(path)) return undefined;
+	const record = JSON.parse(readFileSync(path, "utf-8")) as Partial<ProductIntegrationRecord>;
+	if (
+		record.version !== 1 ||
+		typeof record.productId !== "string" ||
+		typeof record.source !== "string" ||
+		typeof record.destination !== "string" ||
+		typeof record.staging !== "string" ||
+		(record.status !== "pending" && record.status !== "completed") ||
+		(record.sourceHead !== undefined && typeof record.sourceHead !== "string")
+	) {
+		throw new Error("Product integration transaction record is invalid");
+	}
+	return record as ProductIntegrationRecord;
 }
 
 /** Clone an existing repo while its caller owns the company transaction lock. */
@@ -1318,32 +1548,74 @@ function integrateRepoUnlocked(
 	product: string,
 	storage: ProductTransactionStorage,
 ): boolean {
+	if (!cloneSourceAllowed(from)) return false;
 	const department = scaffoldProductDepartmentUnlocked(root, product, storage);
 	assertProductTransactionStorage(storage);
 	const destination = join(root, department.repositoryPath);
-	if (existsSync(destination)) {
-		try {
-			if (readdirSync(destination).length > 0) {
-				console.log(`  kept    ${department.repositoryPath} (already present)`);
-				return true;
-			}
-		} catch {
-			// cloneInto reports the useful error below
+	if (existsSync(join(destination, ".git"))) {
+		if (!repositoryMatchesSource(destination, from)) {
+			throw new Error(`${department.repositoryPath} does not match the founder-reviewed repository source`);
 		}
+		console.log(`  kept    ${department.repositoryPath} (verified source)`);
+		return true;
 	}
 	assertProductTransactionStorage(storage);
 	canonicalDirectory(root, department.path);
-	canonicalDirectory(root, department.repositoryPath);
-	if (cloneInto(from, destination)) {
-		assertProductTransactionStorage(storage);
-		canonicalDirectory(root, department.repositoryPath);
-		console.log(`  cloned  ${from} -> ${department.repositoryPath}`);
-		return true;
+	const destinationEntries = existsSync(destination) ? readdirSync(destination) : [];
+	if (destinationEntries.some((entry) => entry !== ".gitkeep")) {
+		throw new Error(`${department.repositoryPath} contains an incomplete or unrelated repository`);
 	}
-	console.error(
-		`Could not clone ${from}. Point it at a git repository (path or URL), or populate the product department repository and re-run.`,
-	);
-	return false;
+
+	const transactionPath = productIntegrationRecordPath(root, department.id);
+	mkdirSync(dirname(transactionPath), { recursive: true });
+	const stagingRoot = productIntegrationStagingRoot(root);
+	let transaction = readProductIntegrationRecord(transactionPath);
+	if (transaction) {
+		if (
+			transaction.productId !== department.id ||
+			normalizedRepositorySource(transaction.source) !== normalizedRepositorySource(from) ||
+			normalizedPath(transaction.destination) !== normalizedPath(destination) ||
+			normalizedPath(dirname(resolve(transaction.staging))) !== normalizedPath(stagingRoot) ||
+			!/^[a-f0-9]{12}$/i.test(basename(transaction.staging))
+		) {
+			throw new Error("Existing product integration transaction does not match the founder-reviewed source");
+		}
+	} else {
+		transaction = {
+			version: 1,
+			productId: department.id,
+			source: from,
+			destination,
+			staging: join(stagingRoot, randomUUID().replace(/-/g, "").slice(0, 12)),
+			status: "pending",
+		};
+		writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+	}
+
+	if (!existsSync(transaction.staging)) {
+		if (!cloneInto(from, transaction.staging)) {
+			console.error(
+				`Could not clone ${from}. The recoverable transaction remains at ${transactionPath}; retry with the same source.`,
+			);
+			return false;
+		}
+	}
+	if (!stagedCloneMatchesSource(transaction.staging, from)) {
+		throw new Error("Staged product repository is incomplete or does not match the founder-reviewed source");
+	}
+	assertProductTransactionStorage(storage);
+	if (existsSync(destination)) rmSync(destination, { recursive: true });
+	renameSync(transaction.staging, destination);
+	canonicalDirectory(root, department.repositoryPath);
+	if (!repositoryMatchesSource(destination, from)) {
+		throw new Error("Promoted product repository changed identity during integration");
+	}
+	transaction.status = "completed";
+	transaction.sourceHead = gitOutput(destination, ["rev-parse", "HEAD"]);
+	writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+	checkpointProductKit(root, department.id);
+	console.log(`  cloned  ${from} -> ${department.repositoryPath}`);
+	return true;
 }
 
 /** Offline integration holds one transaction across registration and clone materialization. */

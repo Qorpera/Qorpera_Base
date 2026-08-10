@@ -4,23 +4,55 @@ import {
 	appendFileSync,
 	closeSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	openSync,
+	readdirSync,
 	readFileSync,
 	readSync,
+	realpathSync,
 	renameSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
 	classifyToolCall,
 	discoverAuthority,
 	readAuthorityConfig,
 	requestHash,
 } from "@qorpera/pi-coding-agent/authority";
-import type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
+import type { KernelIntentCapability, KernelModelIntentBudget, ModelIntentTerminalStatus } from "@qorpera/pi-protocol";
 
 export type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
+
+function normalizedPhysicalPath(path: string): string {
+	const resolved = resolve(path);
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function assertPhysicalCompanyTree(root: string, relativePath: string): string {
+	const canonicalRoot = realpathSync(resolve(root));
+	const target = resolve(canonicalRoot, relativePath);
+	const rootRelative = relative(canonicalRoot, target);
+	if (!rootRelative || rootRelative.startsWith("..") || isAbsolute(rootRelative)) {
+		throw new Error(`Company storage escaped its root: ${relativePath}`);
+	}
+	const visit = (path: string): void => {
+		const entry = lstatSync(path);
+		if (
+			entry.isSymbolicLink() ||
+			normalizedPhysicalPath(realpathSync(path)) !== normalizedPhysicalPath(path) ||
+			(entry.isFile() && entry.nlink !== 1)
+		) {
+			throw new Error(`Company kernel storage must be one physical entry: ${relativePath}`);
+		}
+		if (entry.isDirectory()) {
+			for (const child of readdirSync(path)) visit(join(path, child));
+		}
+	};
+	visit(target);
+	return target;
+}
 
 interface QorperaSessionAuthority {
 	actor: "controller" | "product-worker";
@@ -85,7 +117,7 @@ export interface TrailAppendFrame {
 interface KernelWriteFrame {
 	type: "qorpera_kernel_write";
 	token: string;
-	operation: "create_gate" | "consume_gate" | "append_notice";
+	operation: "create_gate" | "consume_gate" | "append_notice" | "create_message";
 	gate?: {
 		id: string;
 		file: string;
@@ -96,6 +128,7 @@ interface KernelWriteFrame {
 	};
 	file?: string;
 	message?: string;
+	content?: string;
 	status?: string;
 	requestId?: string;
 	hash?: string;
@@ -110,6 +143,13 @@ export interface KernelGateResponseBody {
 
 export interface SignedKernelGateResponse extends KernelGateResponseBody {
 	type: "qorpera_kernel_response";
+	signature: string;
+}
+
+export interface SignedKernelBindingResponse {
+	type: "qorpera_kernel_binding";
+	nonce: string;
+	sessionId: string;
 	signature: string;
 }
 
@@ -254,8 +294,7 @@ function loadTrailAudit(path: string): TrailBinding["audit"] {
 }
 
 export function bindTrailSession(root: string, cwd: string, scope: AgentScope, sessionFile?: string): TrailBinding {
-	const trailDir = join(root, "trail");
-	mkdirSync(trailDir, { recursive: true });
+	const trailDir = assertPhysicalCompanyTree(root, "trail");
 	const authority = authorityForScope(scope);
 	let path: string;
 	let sessionId: string;
@@ -266,6 +305,7 @@ export function bindTrailSession(root: string, cwd: string, scope: AgentScope, s
 		}
 		path = join(trailDir, sessionFile);
 		if (!existsSync(path)) throw new Error(`trail session does not exist: ${sessionFile}`);
+		assertPhysicalCompanyTree(root, join("trail", sessionFile));
 		const header = readHeader(path);
 		sessionId = header.id;
 		if (header.version !== TRAIL_SESSION_VERSION) {
@@ -341,8 +381,7 @@ export function appendKernelObservation(
 		message: string;
 		attended: boolean;
 		origin: string;
-		intentNonce: string;
-		requestHash: string;
+		intent: KernelIntentCapability;
 		images: Array<{ mimeType: string; sha256: string; bytes: number }>;
 	},
 ): void {
@@ -361,12 +400,15 @@ export function appendKernelObservation(
 export function appendKernelModelObservation(
 	binding: TrailBinding,
 	input: {
+		event: "request" | "intent";
 		intentNonce: string;
 		requestHash: string;
-		provider: string;
-		model: string;
-		requestSha256: string;
-		status: "started" | "completed" | "failed" | "aborted";
+		provider?: string;
+		model?: string;
+		requestSha256?: string;
+		status: "started" | "completed" | "failed" | "aborted" | ModelIntentTerminalStatus;
+		reservation?: { inputTokens: number; outputTokens: number; costUsd: number };
+		usage?: { inputTokens: number; outputTokens: number; costUsd: number; calls?: number };
 	},
 ): void {
 	const append = stampKernelEntry(binding, {
@@ -375,6 +417,27 @@ export function appendKernelModelObservation(
 		parentId: null,
 		timestamp: "",
 		customType: "qorpera_kernel_model_request",
+		data: input,
+	});
+	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+	commitTrailAppend(binding, append);
+}
+
+export function appendKernelMutationObservation(
+	binding: TrailBinding,
+	input: {
+		operation: string;
+		exactReview: string;
+		approved: boolean;
+		resultStatus?: number;
+	},
+): void {
+	const append = stampKernelEntry(binding, {
+		type: "custom",
+		id: randomUUID(),
+		parentId: null,
+		timestamp: "",
+		customType: "qorpera_kernel_founder_mutation",
 		data: input,
 	});
 	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
@@ -526,12 +589,13 @@ export function applyKernelWriteFrame(
 	binding: TrailBinding,
 	root: string,
 	onGateResponse?: (response: KernelGateResponseBody) => void,
+	consumeGateCapability?: (file: string, hash: string) => boolean,
 ): boolean {
 	if (!value || typeof value !== "object") return false;
 	const frame = value as Partial<KernelWriteFrame>;
 	if (frame.type !== "qorpera_kernel_write") return false;
 	if (frame.token !== binding.token) return true;
-	const inbox = join(root, "inbox");
+	const inbox = assertPhysicalCompanyTree(root, "inbox");
 	if (frame.operation === "create_gate") {
 		if (!frame.gate) return true;
 		const content = canonicalGateContent(root, binding, frame.gate);
@@ -541,6 +605,38 @@ export function applyKernelWriteFrame(
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 		}
+		return true;
+	}
+	if (frame.operation === "create_message") {
+		if (
+			typeof frame.requestId !== "string" ||
+			typeof frame.file !== "string" ||
+			!/^msg-[a-z0-9][a-z0-9-]{0,119}\.md$/i.test(frame.file) ||
+			typeof frame.content !== "string" ||
+			Buffer.byteLength(frame.content, "utf-8") > 64 * 1024 ||
+			typeof frame.hash !== "string" ||
+			createHash("sha256").update(frame.content).digest("hex") !== frame.hash
+		) {
+			return true;
+		}
+		let granted = false;
+		try {
+			writeFileSync(join(inbox, "messages", frame.file), frame.content, { encoding: "utf-8", flag: "wx" });
+			granted = true;
+			const append = stampKernelEntry(binding, {
+				type: "custom",
+				id: randomUUID(),
+				parentId: null,
+				timestamp: "",
+				customType: "qorpera_kernel_inbox_message",
+				data: { file: frame.file, hash: frame.hash, content: frame.content },
+			});
+			appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+			commitTrailAppend(binding, append);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
+		onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted });
 		return true;
 	}
 	if (frame.operation === "consume_gate") {
@@ -560,7 +656,12 @@ export function applyKernelWriteFrame(
 			onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted: false });
 			return true;
 		}
-		const granted = Boolean(record && record.status === "approved" && record.hash === frame.hash);
+		const granted = Boolean(
+			record &&
+				record.status === "approved" &&
+				record.hash === frame.hash &&
+				consumeGateCapability?.(frame.file, frame.hash),
+		);
 		if (granted && record) transitionGate(path, frame.file, record, "consumed");
 		onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted });
 		return true;
@@ -581,6 +682,10 @@ function kernelResponsePayload(response: KernelGateResponseBody): string {
 		hash: response.hash,
 		granted: response.granted,
 	});
+}
+
+function kernelBindingPayload(response: { nonce: string; sessionId: string }): string {
+	return JSON.stringify({ nonce: response.nonce, sessionId: response.sessionId });
 }
 
 function kernelIntentPayload(intent: Omit<KernelIntentCapability, "signature">): string {
@@ -637,6 +742,7 @@ export function createKernelResponseSigner(options: {
 }): {
 	publicKey: string;
 	signResponse: (response: KernelGateResponseBody) => SignedKernelGateResponse;
+	signBinding: (response: { nonce: string; sessionId: string }) => SignedKernelBindingResponse;
 	signIntent: (frame: Record<string, unknown>, attended: boolean) => KernelIntentCapability;
 } {
 	if (!options.sessionId) throw new Error("kernel intent signer requires a session id");
@@ -653,6 +759,11 @@ export function createKernelResponseSigner(options: {
 			type: "qorpera_kernel_response",
 			...response,
 			signature: sign(null, Buffer.from(kernelResponsePayload(response)), pair.privateKey).toString("base64"),
+		}),
+		signBinding: (response) => ({
+			type: "qorpera_kernel_binding",
+			...response,
+			signature: sign(null, Buffer.from(kernelBindingPayload(response)), pair.privateKey).toString("base64"),
 		}),
 		signIntent: (frame, attended) => {
 			const issuedAtMs = Date.now();
@@ -697,9 +808,9 @@ export function writeSandboxProfile(
 	for (const path of foundationReadPaths) permissions.set(resolve(path), "read");
 	for (const path of protectedPaths) permissions.set(resolve(path), "read");
 	if (scope.actor === "product-worker") {
-		permissions.set(resolve(companyRoot, scope.worktree!), "write");
-	} else {
-		permissions.set(resolve(companyRoot, "inbox", "messages"), "write");
+		const worktree = resolve(companyRoot, scope.worktree!);
+		permissions.set(worktree, "write");
+		permissions.set(join(worktree, ".git"), "read");
 	}
 
 	const filesystem = [...permissions]
@@ -822,19 +933,31 @@ export function protectedControllerPaths(
 }
 
 export function inboxMessagesPath(root: string): string {
-	const path = join(root, "inbox", "messages");
-	mkdirSync(path, { recursive: true });
-	return path;
+	return assertPhysicalCompanyTree(root, join("inbox", "messages"));
 }
 
 export function sandboxConfigDir(userData: string, root: string, actor: AgentScope["actor"]): string {
-	const resolvedRoot = resolve(root);
-	const safeRoot = createHash("sha256")
-		.update(process.platform === "win32" ? resolvedRoot.toLowerCase() : resolvedRoot)
-		.digest("hex");
-	return join(userData, "agent-sandbox", safeRoot, actor);
+	return join(userData, "agent-sandbox", sandboxRootId(root), actor);
 }
 
-export function sandboxRuntimeDir(userData: string, root: string, actor: AgentScope["actor"]): string {
-	return join(dirname(sandboxConfigDir(userData, root, actor)), "runtime", actor);
+export function sandboxRuntimeDir(
+	userData: string,
+	root: string,
+	actor: AgentScope["actor"],
+	capabilityId: string,
+): string {
+	if (!/^[0-9a-f-]{36}$/i.test(capabilityId)) throw new Error("sandbox runtime requires a capability identifier");
+	if (process.platform === "win32") {
+		const programData = process.env.ProgramData ?? process.env.PROGRAMDATA;
+		if (!programData) throw new Error("Qorpera sandbox runtime requires the Windows ProgramData directory");
+		return join(programData, "Qorpera", "agent-sandbox-runtime", sandboxRootId(root), actor, capabilityId);
+	}
+	return join(dirname(sandboxConfigDir(userData, root, actor)), "runtime", actor, capabilityId);
+}
+
+function sandboxRootId(root: string): string {
+	const resolvedRoot = resolve(root);
+	return createHash("sha256")
+		.update(process.platform === "win32" ? resolvedRoot.toLowerCase() : resolvedRoot)
+		.digest("hex");
 }
