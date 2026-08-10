@@ -104,6 +104,19 @@ describe("policy ratification and verification", () => {
 		scaffoldCompany(root);
 		expect(verifyAuthorityPolicy(root)).toBe("no-identity");
 	});
+
+	it("a corrupt identity file keeps enforcement ON — never fails open to legacy", () => {
+		generateFounderIdentity();
+		scaffoldCompany(root);
+		expect(verifyAuthorityPolicy(root)).toBe("valid");
+		// The key file is damaged: verification must degrade to all-gate
+		// ("invalid"), not to permissive no-identity semantics.
+		writeFileSync(join(join(base, "agent-a"), "founder-identity.json"), "not json at all", "utf-8");
+		expect(verifyAuthorityPolicy(root)).toBe("invalid");
+		const authority = discoverAuthority(root)!;
+		writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "auto"\n`, "utf-8");
+		expect(evaluateToolCall(authority, "bash", { command: "rm -rf build" }, root).kind).toBe("block");
+	});
 });
 
 describe("authority enforcement", () => {

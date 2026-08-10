@@ -320,6 +320,9 @@ const childIntentSigners = new WeakMap<
 >();
 const childModelCapabilities = new WeakMap<ChildProcessWithoutNullStreams, BrokeredCredentials>();
 const childHttpBrokers = new WeakMap<ChildProcessWithoutNullStreams, HttpRequestBroker>();
+/** True between a delivered kernel prompt and the next agent_settled — a
+ * founder turn in flight. Wakes must never preempt it. */
+const childBusy = new WeakMap<ChildProcessWithoutNullStreams, boolean>();
 const childApprovedGates = new WeakMap<ChildProcessWithoutNullStreams, Set<string>>();
 const childCheckpointCompletion = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 
@@ -788,6 +791,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				return;
 			}
 			if ((frame as { type?: unknown }).type === "agent_settled") {
+				childBusy.set(child, false);
 				brokeredCredentials.endTurn("completed");
 				httpBroker.endTurn();
 				const result = checkpointCompanyGit(root, gitBaseline, binding.file);
@@ -892,6 +896,7 @@ function sendKernelPrompt(
 		images,
 	});
 	child.stdin.write(`${JSON.stringify({ ...unsignedFrame, kernelIntent })}\n`);
+	childBusy.set(child, true);
 	return true;
 }
 
@@ -978,6 +983,8 @@ async function startWakeChild(
 	intervalMinutes?: number,
 ): Promise<boolean> {
 	if (runtime.mergeChild || runtime.wakeChild || runtime.closing) return false;
+	// Never preempt a founder turn in flight: the wake defers to the next tick.
+	if (childBusy.get(runtime.child)) return false;
 	const wakeId = randomUUID();
 	const resumeOptions = {
 		...runtime.childOptions,
@@ -1045,6 +1052,7 @@ function startWakeTicker(): void {
 		for (const slot of slots.values()) {
 			const runtime = slot.runtime;
 			if (!runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) continue;
+			if (childBusy.get(runtime.child)) continue;
 			try {
 				const schedule = readWakeSchedule(runtime.root);
 				const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);

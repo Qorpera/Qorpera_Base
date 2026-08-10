@@ -69,11 +69,20 @@ export function readFounderIdentity(): FounderIdentity | undefined {
 			const parsed = JSON.parse(readFileSync(path, "utf-8")) as FounderIdentity;
 			if (parsed.version === 1 && typeof parsed.publicKeyPem === "string" && parsed.publicKeyPem) return parsed;
 		} catch {
-			// An unreadable identity file must not silently disable enforcement:
-			// treat it as present-but-unusable by continuing to the next source.
+			// Unusable file — fall through; founderIdentityPresent() keeps
+			// enforcement on so corruption can never fail open.
 		}
 	}
 	return undefined;
+}
+
+/**
+ * Does ANY founder identity file exist in this context, readable or not?
+ * A present-but-corrupt identity must keep enforcement on: verification
+ * treats it as "invalid" (all-gate), never as "no-identity" (legacy).
+ */
+export function founderIdentityPresent(): boolean {
+	return existsSync(identityPath()) || existsSync(publicProjectionPath());
 }
 
 export function generateFounderIdentity(name?: string): FounderIdentity {
@@ -157,7 +166,7 @@ export function verifyGateApproval(
 	signature: string | undefined,
 ): PolicyProvenance {
 	const identity = readFounderIdentity();
-	if (!identity) return "no-identity";
+	if (!identity) return founderIdentityPresent() ? "invalid" : "no-identity";
 	if (!signature) return "unsigned";
 	try {
 		return verifyRaw(
@@ -182,7 +191,7 @@ export function verifyGateApproval(
  */
 export function verifyAuthorityPolicy(root: string): PolicyProvenance {
 	const identity = readFounderIdentity();
-	if (!identity) return "no-identity";
+	if (!identity) return founderIdentityPresent() ? "invalid" : "no-identity";
 	const sidecarPath = join(root, AUTHORITY_SIGNATURE_PATH);
 	if (!existsSync(sidecarPath)) return "unsigned";
 	try {
