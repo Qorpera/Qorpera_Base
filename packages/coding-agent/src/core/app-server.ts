@@ -41,6 +41,8 @@ import {
 	type ProjectionState,
 	parseProjectionDocument,
 } from "./projection.ts";
+import { readUsageRateCatalog, type UsageRateCatalog } from "./usage-pricing.ts";
+import { companyUsageWindowError, readCompanyUsage } from "./usage-summary.ts";
 
 export interface CompanyAppOptions {
 	root: string;
@@ -57,6 +59,8 @@ export interface CompanyAppOptions {
 	 * agent-authored same-origin surfaces never receive it.
 	 */
 	authToken: string;
+	/** Optional pricing source override for deterministic embedding and tests. */
+	usageRateCatalog?: () => Promise<UsageRateCatalog>;
 }
 
 interface InboxItem {
@@ -971,8 +975,28 @@ setInterval(refresh, 2000);
 </body>
 </html>`;
 
+async function serveCompanyUsage(
+	root: string,
+	window: { sinceDay: string; untilDay: string; timeZone: string },
+	usageRateCatalog: () => Promise<UsageRateCatalog>,
+	response: ServerResponse,
+): Promise<void> {
+	try {
+		const rates = await usageRateCatalog();
+		const summary = await readCompanyUsage(root, window, rates);
+		response
+			.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+			.end(JSON.stringify(summary));
+	} catch (error) {
+		response
+			.writeHead(500, { "content-type": "application/json" })
+			.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+	}
+}
+
 export function createCompanyAppServer(options: CompanyAppOptions): Server {
 	const root = canonicalCompanyRoot(options.root);
+	const usageRateCatalog = options.usageRateCatalog ?? readUsageRateCatalog;
 	const authToken = options.authToken;
 	if (!authToken) throw new Error("company app server requires a desktop-kernel authorization token");
 	const authorized = (request: IncomingMessage): boolean => request.headers["x-qorpera-token"] === authToken;
@@ -996,6 +1020,20 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 		}
 		if (url.pathname === "/api/state") {
 			response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(stateFor(root)));
+			return;
+		}
+		if (url.pathname === "/api/usage" && request.method === "GET") {
+			const window = {
+				sinceDay: url.searchParams.get("sinceDay") ?? "",
+				untilDay: url.searchParams.get("untilDay") ?? "",
+				timeZone: url.searchParams.get("timeZone") ?? "",
+			};
+			const windowError = companyUsageWindowError(window);
+			if (windowError) {
+				response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: windowError }));
+				return;
+			}
+			void serveCompanyUsage(root, window, usageRateCatalog, response);
 			return;
 		}
 		if (url.pathname === "/assets/surface.css") {

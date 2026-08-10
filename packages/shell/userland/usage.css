@@ -1,0 +1,202 @@
+/*
+ * Usage page presentation adapted from T3 Code's UsagePage and
+ * UsageProviderChart, MIT License, Copyright (c) 2026 T3 Tools Inc.
+ * The data adapter and DOM implementation are Qorpera-specific.
+ */
+
+#view-usage {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	display: none;
+}
+.usage-page {
+	display: flex;
+	flex-direction: column;
+	gap: 32px;
+	width: 100%;
+	max-width: 1152px;
+	margin: 0 auto;
+	padding: 24px;
+}
+.usage-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
+	flex-wrap: wrap;
+}
+.usage-heading { display: flex; align-items: flex-start; gap: 12px; }
+.usage-heading h1 { font-size: 24px; line-height: 1.25; font-weight: 600; }
+.usage-heading p { margin-top: 4px; color: var(--text-muted); font-size: 13px; }
+.usage-icon-button {
+	display: grid;
+	place-items: center;
+	width: 32px;
+	height: 32px;
+	min-height: 32px;
+	padding: 0;
+	border-radius: var(--radius-sm);
+	color: var(--text-muted);
+	background: transparent;
+}
+.usage-icon-button:hover:not(:disabled) { color: var(--text); background: transparent; }
+.usage-icon-button svg { width: 14px; height: 14px; }
+.usage-actions { display: flex; align-items: center; gap: 8px; }
+.usage-segmented {
+	display: inline-flex;
+	overflow: hidden;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+}
+.usage-segmented button {
+	min-height: 28px;
+	padding: 5px 12px;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+	color: var(--text-muted);
+	font-size: 12px;
+}
+.usage-segmented.compact button {
+	min-height: 24px;
+	padding: 4px 10px;
+	font-size: 10px;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+.usage-segmented button:hover:not(:disabled) { border: 0; color: var(--text); background: transparent; }
+.usage-segmented button.active { background: var(--pane-strong); color: var(--text); }
+
+.usage-notice {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	border: 1px solid var(--border);
+	padding: 9px 12px;
+	color: var(--text-muted);
+	font-size: 12px;
+	line-height: 1.45;
+}
+.usage-notice.error { color: var(--danger-muted); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
+.usage-loaded { display: flex; flex-direction: column; gap: 32px; }
+
+.usage-main-grid {
+	display: grid;
+	grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
+	gap: 24px;
+}
+.usage-summary { display: flex; flex-direction: column; gap: 20px; }
+.usage-headline { display: flex; flex-direction: column; gap: 4px; }
+.usage-kicker {
+	color: var(--text-muted);
+	font-size: 11px;
+	font-weight: 520;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+.usage-headline-value {
+	font-size: 36px;
+	line-height: 1.15;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+}
+.usage-detail { color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.usage-provider { display: flex; flex-direction: column; gap: 6px; }
+.usage-provider-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.usage-provider-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.usage-provider-name span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-provider-value { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usage-provider-mark {
+	width: 14px;
+	height: 14px;
+	border: 1px solid color-mix(in srgb, var(--provider-color) 70%, transparent);
+	border-radius: 50%;
+	box-shadow: inset 0 0 0 3px var(--bg);
+	background: var(--provider-color);
+	flex: 0 0 auto;
+}
+.usage-provider-bar { width: 100%; height: 4px; overflow: hidden; border-radius: var(--radius-pill); background: var(--pane-strong); }
+.usage-provider-bar > span { display: block; height: 100%; background: var(--provider-color); }
+
+.usage-chart-section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.usage-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.usage-section-head h2 { font-size: 13px; font-weight: 520; }
+.usage-chart-controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.usage-legend { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.usage-legend-item { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; }
+.usage-legend-item .usage-provider-mark { width: 12px; height: 12px; box-shadow: inset 0 0 0 2px var(--bg); }
+.usage-chart { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.usage-chart-body { display: flex; gap: 8px; min-width: 0; }
+.usage-axis { position: relative; width: 56px; height: 224px; flex: 0 0 56px; }
+.usage-axis span {
+	position: absolute;
+	right: 0;
+	transform: translateY(-50%);
+	color: var(--text-muted);
+	font-size: 10px;
+	font-variant-numeric: tabular-nums;
+}
+.usage-plot { position: relative; height: 224px; flex: 1; min-width: 0; }
+.usage-plot svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.usage-tooltip {
+	position: absolute;
+	top: 0;
+	z-index: 4;
+	min-width: 154px;
+	border: 1px solid var(--border);
+	background: color-mix(in srgb, var(--bg) 96%, transparent);
+	padding: 7px 8px;
+	font-size: 12px;
+	pointer-events: none;
+	box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+}
+.usage-tooltip-day { margin-bottom: 5px; color: var(--text-muted); }
+.usage-tooltip-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.usage-tooltip-row + .usage-tooltip-row { margin-top: 3px; }
+.usage-tooltip-name { display: flex; align-items: center; gap: 6px; color: var(--text-muted); }
+.usage-tooltip-total { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); }
+.usage-chart-dates { display: flex; justify-content: space-between; padding-left: 64px; color: var(--text-muted); font-size: 10px; text-transform: uppercase; }
+
+.usage-metrics {
+	display: grid;
+	grid-template-columns: repeat(5, minmax(0, 1fr));
+	gap: 1px;
+	border-top: 1px solid var(--border);
+	border-bottom: 1px solid var(--border);
+	background: var(--border);
+}
+.usage-metric { display: flex; flex-direction: column; gap: 2px; padding: 12px 16px; background: var(--bg); min-width: 0; }
+.usage-metric-label, .usage-metric-detail { color: var(--text-muted); font-size: 12px; }
+.usage-metric-value { font-size: 18px; font-variant-numeric: tabular-nums; }
+.usage-metric-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.usage-breakdown { display: flex; flex-direction: column; gap: 12px; }
+.usage-table-wrap { width: 100%; overflow-x: auto; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.usage-table th, .usage-table td { padding: 8px 0 8px 12px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.usage-table th:first-child, .usage-table td:first-child { padding-left: 0; }
+.usage-table th { color: var(--text-muted); font-size: 12px; font-weight: 400; text-align: left; white-space: nowrap; }
+.usage-table .number { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usage-table .muted { color: var(--text-muted); }
+.usage-model-name { display: flex; align-items: center; gap: 8px; min-width: 190px; }
+.usage-empty-row { padding: 24px !important; text-align: center !important; color: var(--text-muted); }
+
+.usage-skeleton { display: flex; flex-direction: column; gap: 32px; }
+.usage-skeleton-block { border-radius: 3px; background: var(--pane-strong); }
+.usage-skeleton-bars { display: flex; height: 224px; align-items: flex-end; gap: 6px; padding-left: 64px; }
+.usage-skeleton-bars span { flex: 1; background: var(--pane-strong); border-radius: 3px 3px 0 0; }
+.usage-skeleton .usage-provider-bar > span { width: 0; }
+
+@media (max-width: 980px) {
+	.usage-main-grid { grid-template-columns: 1fr; }
+	.usage-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.usage-metric:last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 640px) {
+	.usage-page { padding: 18px; gap: 24px; }
+	.usage-header { flex-direction: column; }
+	.usage-metrics { grid-template-columns: 1fr; }
+	.usage-metric:last-child { grid-column: auto; }
+	.usage-chart-dates { padding-left: 0; }
+}

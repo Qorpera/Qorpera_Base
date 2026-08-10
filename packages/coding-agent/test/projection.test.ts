@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { PROJECTION_SCHEMA, parseProjectionDocument } from "../src/core/projection.ts";
+import { PLATFORM_PROJECTION_NODES, PROJECTION_SCHEMA, parseProjectionDocument } from "../src/core/projection.ts";
 
 describe("company UI projection", () => {
+	it("publishes Usage as a reserved platform projection page", () => {
+		expect(PLATFORM_PROJECTION_NODES).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "q:usage",
+					kind: "page",
+					view: { type: "builtin", id: "qorpera.usage" },
+				}),
+			]),
+		);
+	});
+
 	it("accepts the bounded Department → Category → Page hierarchy with stable IDs", () => {
 		const projection = parseProjectionDocument({
 			schema: PROJECTION_SCHEMA,

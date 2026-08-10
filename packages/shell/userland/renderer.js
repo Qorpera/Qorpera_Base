@@ -846,6 +846,12 @@ async function openProjectionNode(id, updateRoute = true) {
 	} else if (node.view.id === "qorpera.chats") {
 		renderChats();
 		show("panel");
+	} else if (node.view.id === "qorpera.usage") {
+		window.qorperaUsage.open({
+			backendUrl,
+			onBack: () => void openProjectionNode("q:main"),
+		});
+		show("usage");
 	} else if (node.view.id === "qorpera.product-chat") {
 		const department = (state.departments ?? []).find((entry) => entry.id === context.departmentId);
 		renderProductChats(department, node);
@@ -954,6 +960,7 @@ function show(view) {
 	$("view-surfacewrap").style.display = view === "surface" ? "flex" : "none";
 	$("view-surfacewrap").classList.toggle("chat-open", sidechatOpen);
 	$("view-panel").style.display = view === "panel" ? "block" : "none";
+	$("view-usage").style.display = view === "usage" ? "block" : "none";
 	renderCompanyNavSafe();
 }
 function renderCompanyNavSafe() {

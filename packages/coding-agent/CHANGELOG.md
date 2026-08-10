@@ -75,6 +75,8 @@
 
 ### Added
 
+- Added an active-company trail-backed Usage API and T3 Code-derived Usage page with LiteLLM raw token pricing, cache savings, and provider, model, and daily breakdowns.
+
 - Added session scopes: `listProductScopes()` on the company module, `scopes` (declared product zones, existence-checked) in the app server's `/api/state`, and `scope` on trail session summaries parsed from the `scope — <path>` session-name convention. The shell's composer grows a scope chip that roots a chat inside a product directory — a context device; permission comes from founder presence.
 - Added surface sidechats: a chat dockable beside every surface, tagged `surface — <entry>` in the trail and exposed as `surface` on session summaries, opening with a context preamble naming what the founder sees.
 - Added response speed end-to-end: `serviceTier` on `SimpleStreamOptions` (honored by the openai-codex-responses adapter as `service_tier`), `responseSpeed` on the agent state mapping "fast" to the priority tier, and rpc `set_response_speed` + `responseSpeed` in `get_state`. The shell's model control enables its speed toggle exactly when the active model's API has a priority lane.
