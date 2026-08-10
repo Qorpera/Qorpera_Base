@@ -34,7 +34,7 @@ import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
 import { canonicalCompanyRoot, listProductDepartments } from "./company.ts";
-import { readFounderIdentity, signAuthorityPolicy } from "./founder-identity.ts";
+import { readFounderIdentity, signAuthorityPolicy, signGateApproval } from "./founder-identity.ts";
 import {
 	PLATFORM_PROJECTION_NODES,
 	PROJECTION_SCHEMA,
@@ -820,7 +820,18 @@ function resolveGate(root: string, file: string, action: string): boolean {
 		const durableRevocation =
 			status === "consumed" && action === "denied" && (tool === "behavior_signature" || tool === "extension_load");
 		if (!pendingTransition && !durableRevocation) return false;
-		writeAtomicPhysicalFile(source.path, content.replace(/^status:.*$/m, `status: ${action}`));
+		let updated = content.replace(/^status:.*$/m, `status: ${action}`).replace(/^approval:.*\r?\n?/m, "");
+		// Signed approvals (manifesto §3.2): with a founder identity, the
+		// approval carries the founder's signature over (id, hash) — without
+		// it, an approved status line is data the authority layer ignores.
+		if (action === "approved" && readFounderIdentity()?.privateKeyPem) {
+			const id = updated.match(/^id:\s*(\S+)/m)?.[1];
+			const hash = updated.match(/^hash:\s*([a-f0-9]{64})/m)?.[1];
+			if (id && hash) {
+				updated = updated.replace(/^hash:.*$/m, (line) => `${line}\napproval: ${signGateApproval(id, hash)}`);
+			}
+		}
+		writeAtomicPhysicalFile(source.path, updated);
 		return true;
 	} catch {
 		return false;

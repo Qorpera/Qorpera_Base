@@ -53,7 +53,12 @@ import {
 	removeCompanySecret,
 	removeNetworkDestination,
 } from "./company-connections.ts";
-import { generateFounderIdentity, readFounderIdentity, signAuthorityPolicy } from "./founder-identity.ts";
+import {
+	generateFounderIdentity,
+	readFounderIdentity,
+	signAuthorityPolicy,
+	signGateApproval,
+} from "./founder-identity.ts";
 import {
 	EMPTY_PROJECTION,
 	type ProjectionDocument,
@@ -2919,8 +2924,22 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 				const record = signAuthorityPolicy(root);
 				console.log(`Ratified authority.toml (sha256 ${record.contentSha256.slice(0, 12)}…).`);
 				console.log("Policy now grants its configured modes; any edit needs re-ratification or everything gates.");
+			} else if (action === "approve" && args[2]) {
+				const root = companyRootFromCwd();
+				const gateFile = join(root, "inbox", `${args[2]}.md`);
+				if (!existsSync(gateFile)) throw new Error(`No such gate request: ${args[2]}`);
+				const content = readFileSync(gateFile, "utf-8");
+				const hash = content.match(/^hash:\s*([a-f0-9]{64})/m)?.[1];
+				if (!hash) throw new Error(`${args[2]} carries no request hash`);
+				const signature = signGateApproval(args[2], hash);
+				const updated = content
+					.replace(/^approval:.*\r?\n?/m, "")
+					.replace(/^status:.*$/m, "status: approved")
+					.replace(/^hash:.*$/m, (line) => `${line}\napproval: ${signature}`);
+				writeFileSync(gateFile, updated, "utf-8");
+				console.log(`Approved ${args[2]} with your founder signature.`);
 			} else {
-				console.error("Usage: founder init [name] | status | ratify");
+				console.error("Usage: founder init [name] | status | ratify | approve <gate-id>");
 				process.exitCode = 1;
 			}
 		} catch (error) {

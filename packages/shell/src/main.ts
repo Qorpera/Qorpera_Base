@@ -126,7 +126,7 @@ import {
 	rememberCompanyGateTrust,
 	revokeCompanyGateTrust,
 } from "./company-kernel-state.ts";
-import { createHttpRequestBroker } from "./http-request-broker.ts";
+import { createHttpRequestBroker, type HttpRequestBroker } from "./http-request-broker.ts";
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
 import { isRendererRequestAllowed, lockDownRendererSession, lockDownRendererWebContents } from "./renderer-boundary.ts";
 import {
@@ -319,6 +319,7 @@ const childIntentSigners = new WeakMap<
 	(frame: Record<string, unknown>, attended: boolean) => KernelIntentCapability
 >();
 const childModelCapabilities = new WeakMap<ChildProcessWithoutNullStreams, BrokeredCredentials>();
+const childHttpBrokers = new WeakMap<ChildProcessWithoutNullStreams, HttpRequestBroker>();
 const childApprovedGates = new WeakMap<ChildProcessWithoutNullStreams, Set<string>>();
 const childCheckpointCompletion = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 
@@ -640,8 +641,10 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		(event) => appendKernelModelObservation(binding, event),
 	);
 	// Generic outbound HTTP (Build 3): destination capabilities and secret
-	// references are resolved kernel-side; every attempt is trail-observed.
+	// references are resolved kernel-side; every attempt is trail-observed
+	// and must ride a kernel-signed causal intent (parity with the model lane).
 	const httpBroker = createHttpRequestBroker({
+		sessionId: binding.sessionId,
 		allowedDestination: (url) => destinationAllowed(root, url),
 		resolveSecret: (name) => resolveCompanySecret(root, name),
 		observe: (event) => appendKernelHttpObservation(binding, event),
@@ -709,6 +712,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	childBindings.set(child, binding);
 	childIntentSigners.set(child, kernelSigner.signIntent);
 	childModelCapabilities.set(child, brokeredCredentials);
+	childHttpBrokers.set(child, httpBroker);
 	childApprovedGates.set(child, new Set());
 	let resolveCheckpoint: (() => void) | undefined;
 	childCheckpointCompletion.set(
@@ -862,6 +866,9 @@ function sendKernelPrompt(
 	const unsignedFrame = { ...frame };
 	const kernelIntent = signIntent(unsignedFrame, attended);
 	if (!childModelCapabilities.get(child)?.authorizeIntent(kernelIntent)) return false;
+	// The same intent authorizes the HTTP lane: both brokers track their own
+	// usage of the shared per-turn capability.
+	childHttpBrokers.get(child)?.authorizeIntent(kernelIntent);
 	const images = Array.isArray(unsignedFrame.images)
 		? unsignedFrame.images.flatMap((image) => {
 				if (!image || typeof image !== "object") return [];

@@ -30,7 +30,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { AUTHORITY_SIGNATURE_PATH, verifyAuthorityPolicy } from "./founder-identity.ts";
+import { AUTHORITY_SIGNATURE_PATH, verifyAuthorityPolicy, verifyGateApproval } from "./founder-identity.ts";
 import { requestKernelGateConsumption, requestKernelGateTrust } from "./kernel-broker.ts";
 
 export type ConfigurableEffectClass = "money" | "identity" | "irreversible" | "authority";
@@ -119,6 +119,8 @@ export interface GateRecord {
 	hash: string;
 	filePath: string;
 	content: string;
+	/** Founder signature over (id, hash), present once signed approvals are in use. */
+	approval?: string;
 }
 
 /**
@@ -154,6 +156,8 @@ const INBOX_DIR = "inbox";
 const PROTECTED_ROOT_FILES = new Set([AUTHORITY_FILE, "AGENTS.md", "CLAUDE.md"]);
 const PRODUCT_REGISTRY_PATH = join(".qorpera", "products.json");
 const GATE_FIELDS = ["id", "status", "class", "tool", "hash", "created"] as const;
+/** Founder-signature over (id, hash), written at approval time. */
+const OPTIONAL_GATE_FIELDS = ["approval"] as const;
 
 /**
  * Conservative screen for destructive shell commands. False positives gate
@@ -543,12 +547,17 @@ function parseGateFile(filePath: string): GateRecord | undefined {
 	const fields = new Map<string, string>();
 	for (const line of frontmatter[1].split(/\r?\n/)) {
 		const match = line.match(/^([a-zA-Z_]+):\s*(.*)$/);
-		if (!match || !GATE_FIELDS.includes(match[1] as (typeof GATE_FIELDS)[number]) || fields.has(match[1])) {
+		if (
+			!match ||
+			(!GATE_FIELDS.includes(match[1] as (typeof GATE_FIELDS)[number]) &&
+				!OPTIONAL_GATE_FIELDS.includes(match[1] as (typeof OPTIONAL_GATE_FIELDS)[number])) ||
+			fields.has(match[1])
+		) {
 			return undefined;
 		}
 		fields.set(match[1], match[2].split("#")[0].trim());
 	}
-	if (fields.size !== GATE_FIELDS.length || GATE_FIELDS.some((field) => !fields.has(field))) return undefined;
+	if (GATE_FIELDS.some((field) => !fields.has(field))) return undefined;
 	const id = fields.get("id");
 	const status = fields.get("status") as GateStatus | undefined;
 	const hash = fields.get("hash");
@@ -562,7 +571,28 @@ function parseGateFile(filePath: string): GateRecord | undefined {
 		return undefined;
 	}
 	if (!fields.get("tool") || !fields.get("created")) return undefined;
-	return { id, status, hash, filePath, content: content.replace(/^\uFEFF/, "") };
+	const approval = fields.get("approval");
+	return {
+		id,
+		status,
+		hash,
+		filePath,
+		content: content.replace(/^\uFEFF/, ""),
+		...(approval ? { approval } : {}),
+	};
+}
+
+/**
+ * Is this approved/consumed record a REAL founder approval? Without a
+ * founder identity, a status edit is the approval (legacy). With one, only
+ * records carrying the local founder's signature over (id, hash) count \u2014
+ * an unsigned or foreign-signed "approved" line is treated as still
+ * pending, never as authority (manifesto \u00A73.2: a founder response that is
+ * merely a file edit is data, not authority).
+ */
+function gateApprovalValid(record: GateRecord): boolean {
+	const provenance = verifyGateApproval(record.id, record.hash, record.approval);
+	return provenance === "no-identity" || provenance === "valid";
 }
 
 export function findGateRecords(authority: Authority, hash: string): GateRecord[] {
@@ -735,7 +765,7 @@ function resolveBehaviorSignature(
 	const path = relative(authority.root, resolved).split(sep).join("/");
 	const hash = requestHash("behavior_signature", { contentHash, path });
 	const records = findGateRecords(authority, hash);
-	const approved = records.find((record) => record.status === "approved");
+	const approved = records.find((record) => record.status === "approved" && gateApprovalValid(record));
 	if (approved) {
 		return {
 			path,
@@ -749,7 +779,7 @@ function resolveBehaviorSignature(
 	if (pending) return { path, contentHash, signed: false, gateId: pending.id, gateStatus: "pending" };
 	const denied = records.find((record) => record.status === "denied");
 	if (denied) return { path, contentHash, signed: false, gateId: denied.id, gateStatus: "denied" };
-	const consumed = records.find((record) => record.status === "consumed");
+	const consumed = records.find((record) => record.status === "consumed" && gateApprovalValid(record));
 	if (consumed) {
 		return {
 			path,
@@ -949,7 +979,7 @@ export function evaluateToolCall(
 
 	const hash = requestHash(toolName, args);
 	const records = findGateRecords(authority, hash);
-	const approved = records.find((record) => record.status === "approved");
+	const approved = records.find((record) => record.status === "approved" && gateApprovalValid(record));
 	if (approved) {
 		if (process.env.QORPERA_TRAIL_BROKER_TOKEN) {
 			return {
@@ -1078,7 +1108,7 @@ export async function filterExtensionPaths(
 			contentHash,
 		});
 		const records = findGateRecords(authority, hash);
-		const approved = records.find((record) => record.status === "approved");
+		const approved = records.find((record) => record.status === "approved" && gateApprovalValid(record));
 		if (approved) {
 			if (await requestKernelGateTrust(basename(approved.filePath), approved.hash)) allowed.push(path);
 			else blocked.push({ path, gateId: approved.id, pending: true });
@@ -1094,7 +1124,7 @@ export async function filterExtensionPaths(
 			blocked.push({ path, gateId: denied.id, pending: false });
 			continue;
 		}
-		const consumed = records.find((record) => record.status === "consumed");
+		const consumed = records.find((record) => record.status === "consumed" && gateApprovalValid(record));
 		if (consumed) {
 			if (await requestKernelGateTrust(basename(consumed.filePath), consumed.hash)) allowed.push(path);
 			else blocked.push({ path, gateId: consumed.id, pending: true });

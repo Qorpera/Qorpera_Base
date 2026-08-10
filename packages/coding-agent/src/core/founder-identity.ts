@@ -129,6 +129,50 @@ export function signAuthorityPolicy(root: string): AuthoritySignature {
 	return record;
 }
 
+function gateApprovalMessage(gateId: string, requestHash: string): Buffer {
+	return Buffer.from(`qorpera_gate_approval\n${gateId}\n${requestHash}`, "utf-8");
+}
+
+/**
+ * Sign a gate approval: the founder attests to exactly this request
+ * (id + request hash). The signature survives the approved→consumed
+ * status transition — it attests the approval, not the lifecycle.
+ */
+export function signGateApproval(gateId: string, requestHash: string): string {
+	const identity = readFounderIdentity();
+	if (!identity?.privateKeyPem) {
+		throw new Error("Signing a gate approval requires the founder identity ('qorpera founder init' first)");
+	}
+	return signRaw(null, gateApprovalMessage(gateId, requestHash), identity.privateKeyPem).toString("base64");
+}
+
+/**
+ * Approval provenance against THIS machine's founder identity.
+ * "no-identity": legacy semantics — a status edit is an approval.
+ * "valid"/"invalid": with an identity, only a signed approval counts.
+ */
+export function verifyGateApproval(
+	gateId: string,
+	requestHash: string,
+	signature: string | undefined,
+): PolicyProvenance {
+	const identity = readFounderIdentity();
+	if (!identity) return "no-identity";
+	if (!signature) return "unsigned";
+	try {
+		return verifyRaw(
+			null,
+			gateApprovalMessage(gateId, requestHash),
+			identity.publicKeyPem,
+			Buffer.from(signature, "base64"),
+		)
+			? "valid"
+			: "invalid";
+	} catch {
+		return "invalid";
+	}
+}
+
 /**
  * Verify policy provenance against THIS machine's founder identity.
  * "no-identity": no founder key in this context — legacy semantics apply.

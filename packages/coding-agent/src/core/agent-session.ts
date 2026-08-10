@@ -96,6 +96,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import { setHttpBrokerIntent } from "./http-broker-client.ts";
 import type { KernelIntentCapability } from "./kernel-broker.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { isModelBrokerInstalled, withModelBrokerTurn } from "./model-broker-client.ts";
@@ -667,6 +668,7 @@ export class AgentSession {
 	private async _emitAgentSettled(): Promise<void> {
 		this._isAgentRunActive = false;
 		this._activeKernelIntent = undefined;
+		setHttpBrokerIntent(undefined);
 		try {
 			await this._extensionRunner.emit({ type: "agent_settled" });
 			this._emit({ type: "agent_settled" });
@@ -684,6 +686,9 @@ export class AgentSession {
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
 			this._activeKernelIntent = this._messageKernelIntents.get(event.message);
+			// The HTTP lane rides the same verified causal intent as the model
+			// lane: outbound requests are authorized per turn, not ambiently.
+			setHttpBrokerIntent(this._activeKernelIntent);
 			this._overflowRecoveryAttempted = false;
 			const messageText = contentText(event.message.content, "");
 			if (messageText) {

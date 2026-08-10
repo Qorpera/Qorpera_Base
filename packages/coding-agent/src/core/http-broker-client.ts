@@ -12,6 +12,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { KernelIntentCapability } from "@qorpera/pi-protocol";
+import { isModelBrokerInstalled } from "./model-broker-client.ts";
 
 const MAX_HTTP_REQUEST_BYTES = 2 * 1024 * 1024;
 
@@ -40,9 +42,19 @@ interface PendingRequest {
 
 const pending = new Map<string, PendingRequest>();
 let writeFrame: ((frame: object) => void) | undefined;
+let activeIntent: KernelIntentCapability | undefined;
 
 export function setHttpBrokerWriter(writer: (frame: object) => void): void {
 	writeFrame = writer;
+}
+
+/**
+ * Scope the verified founder/kernel causal intent to the current turn —
+ * the same capability the model lane rides. Outbound requests without an
+ * active intent are refused under the kernel (parity with the model lane).
+ */
+export function setHttpBrokerIntent(intent: KernelIntentCapability | undefined): void {
+	activeIntent = intent;
 }
 
 export function isHttpBrokerAvailable(): boolean {
@@ -56,8 +68,12 @@ export function brokeredHttpRequest(request: HttpBrokerRequest, signal?: AbortSi
 			reject(new Error("http_request requires the kernel broker (company sessions under the desktop kernel)"));
 			return;
 		}
+		if (isModelBrokerInstalled() && !activeIntent) {
+			reject(new Error("kernel http request has no verified causal intent for this turn"));
+			return;
+		}
 		const requestId = randomUUID();
-		const frame = { type: "qorpera_http_request", requestId, ...request };
+		const frame = { type: "qorpera_http_request", requestId, ...request, intent: activeIntent };
 		let serialized: string;
 		try {
 			serialized = JSON.stringify(frame);

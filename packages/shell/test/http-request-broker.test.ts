@@ -13,7 +13,23 @@ interface SeenRequest {
 	body?: string;
 }
 
-function harness(options?: { maxRequestsPerTurn?: number; fetchImpl?: typeof fetch; failResolve?: boolean }) {
+const SESSION_ID = "session-1";
+
+function makeIntent(overrides?: Record<string, unknown>) {
+	return {
+		nonce: randomUUID(),
+		sessionId: SESSION_ID,
+		requestHash: "a".repeat(64),
+		attended: true,
+		issuedAt: new Date().toISOString(),
+		expiresAt: new Date(Date.now() + 60_000).toISOString(),
+		budget: { maxCalls: 64, maxInputTokens: 1_000_000, maxOutputTokens: 1_000_000, maxCostUsd: 100 },
+		signature: "kernel-signed",
+		...overrides,
+	};
+}
+
+function harness(options?: { maxRequestsPerIntent?: number; fetchImpl?: typeof fetch; failResolve?: boolean }) {
 	const seen: SeenRequest[] = [];
 	const sent: Array<Record<string, unknown>> = [];
 	const observed: HttpRequestObservation[] = [];
@@ -32,6 +48,7 @@ function harness(options?: { maxRequestsPerTurn?: number; fetchImpl?: typeof fet
 			});
 		});
 	const broker = createHttpRequestBroker({
+		sessionId: SESSION_ID,
 		allowedDestination: (url) => url.protocol === "https:" && url.host === "api.test.example",
 		resolveSecret: async (name) => {
 			if (options?.failResolve || name !== "token") throw new Error(`Unknown secret reference: secret://${name}`);
@@ -39,8 +56,10 @@ function harness(options?: { maxRequestsPerTurn?: number; fetchImpl?: typeof fet
 		},
 		observe: (event) => observed.push(event),
 		fetchImpl,
-		maxRequestsPerTurn: options?.maxRequestsPerTurn,
+		maxRequestsPerIntent: options?.maxRequestsPerIntent,
 	});
+	const intent = makeIntent();
+	expect(broker.authorizeIntent(intent as never)).toBe(true);
 	const send = (frame: object): void => {
 		sent.push(frame as Record<string, unknown>);
 	};
@@ -51,12 +70,13 @@ function harness(options?: { maxRequestsPerTurn?: number; fetchImpl?: typeof fet
 		url: "https://api.test.example/v1/send?key=secret://token",
 		headers: { authorization: "Bearer secret://token" },
 		body: '{"note":"secret://token"}',
+		intent,
 		...overrides,
 	});
 	const settle = async (): Promise<void> => {
 		await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
 	};
-	return { broker, send, sent, seen, observed, request, settle };
+	return { broker, send, sent, seen, observed, request, settle, intent };
 }
 
 describe("http request broker", () => {
@@ -99,8 +119,8 @@ describe("http request broker", () => {
 		expect(h.seen.length).toBe(0);
 	});
 
-	it("rejects invalid frames, replayed ids, and exhausted budgets", async () => {
-		const h = harness({ maxRequestsPerTurn: 1 });
+	it("rejects invalid frames, replayed ids, and exhausted intent budgets", async () => {
+		const h = harness({ maxRequestsPerIntent: 1 });
 		h.broker.handleFrame(h.request({ method: "TRACE" }), h.send);
 		await h.settle();
 		expect(String(h.sent[0].error)).toContain("invalid frame");
@@ -115,10 +135,32 @@ describe("http request broker", () => {
 		h.broker.handleFrame(h.request({}), h.send);
 		await h.settle();
 		expect(String(h.sent.at(-1)?.error)).toContain("budget");
+		// Turn end revokes the intent; a fresh kernel-authorized intent is
+		// required before the lane opens again.
 		h.broker.endTurn();
 		h.broker.handleFrame(h.request({}), h.send);
 		await h.settle();
+		expect(String(h.sent.at(-1)?.error)).toContain("no verified causal intent");
+		const fresh = makeIntent();
+		expect(h.broker.authorizeIntent(fresh as never)).toBe(true);
+		h.broker.handleFrame(h.request({ intent: fresh }), h.send);
+		await h.settle();
 		expect(h.sent.at(-1)?.status).toBe(200);
+	});
+
+	it("requires a kernel-registered intent: unregistered, tampered, or foreign-session intents are denied", async () => {
+		const h = harness();
+		h.broker.handleFrame(h.request({ intent: makeIntent() }), h.send);
+		await h.settle();
+		expect(String(h.sent.at(-1)?.error)).toContain("no verified causal intent");
+
+		// A registered intent echoed back with ANY field changed is no intent.
+		h.broker.handleFrame(h.request({ intent: { ...h.intent, attended: false } }), h.send);
+		await h.settle();
+		expect(String(h.sent.at(-1)?.error)).toContain("no verified causal intent");
+
+		expect(h.broker.authorizeIntent(makeIntent({ sessionId: "other-session" }) as never)).toBe(false);
+		expect(h.seen.length).toBe(0);
 	});
 
 	it("times out hung requests", async () => {

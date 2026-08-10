@@ -3,7 +3,7 @@
  * lifecycle, policy ratification and verification, public-only projection,
  * and the authority layer's fail-closed enforcement.
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -15,6 +15,7 @@ import {
 	generateFounderIdentity,
 	readFounderIdentity,
 	signAuthorityPolicy,
+	signGateApproval,
 	verifyAuthorityPolicy,
 } from "../src/core/founder-identity.ts";
 
@@ -125,5 +126,59 @@ describe("authority enforcement", () => {
 		writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "auto"\n`, "utf-8");
 		const authority = discoverAuthority(root)!;
 		expect(evaluateToolCall(authority, "bash", { command: "rm -rf build" }, root).kind).toBe("allow");
+	});
+});
+
+describe("signed gate approvals", () => {
+	function fileGateFor(command: string): { gateId: string; gatePath: string } {
+		const authority = discoverAuthority(root)!;
+		const blocked = evaluateToolCall(authority, "bash", { command }, root);
+		expect(blocked.kind).toBe("block");
+		const gateId = (blocked as { gateId: string }).gateId;
+		return { gateId, gatePath: join(root, "inbox", `${gateId}.md`) };
+	}
+
+	it("with a founder identity, a bare status edit is data — only a signed approval is authority", () => {
+		generateFounderIdentity();
+		scaffoldCompany(root);
+		writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "gate"\n`, "utf-8");
+		signAuthorityPolicy(root);
+		const command = "rm -rf build";
+		const { gateId, gatePath } = fileGateFor(command);
+		const authority = discoverAuthority(root)!;
+
+		// The legacy hand-edit: status flipped, no signature. Not authority.
+		writeFileSync(gatePath, readFileSync(gatePath, "utf-8").replace(/^status:.*$/m, "status: approved"), "utf-8");
+		expect(evaluateToolCall(authority, "bash", { command }, root).kind).toBe("block");
+
+		// A garbage signature is not authority either.
+		writeFileSync(
+			gatePath,
+			readFileSync(gatePath, "utf-8").replace(
+				/^hash:.*$/m,
+				(line) => `${line}\napproval: ${Buffer.from("forged").toString("base64")}`,
+			),
+			"utf-8",
+		);
+		expect(evaluateToolCall(authority, "bash", { command }, root).kind).toBe("block");
+
+		// The founder's real signature over (id, hash) is.
+		const content = readFileSync(gatePath, "utf-8").replace(/^approval:.*\r?\n?/m, "");
+		const hash = content.match(/^hash:\s*([a-f0-9]{64})/m)![1];
+		writeFileSync(
+			gatePath,
+			content.replace(/^hash:.*$/m, (line) => `${line}\napproval: ${signGateApproval(gateId, hash)}`),
+			"utf-8",
+		);
+		expect(evaluateToolCall(authority, "bash", { command }, root).kind).toBe("allow");
+	});
+
+	it("without a founder identity, status-edit approvals keep working (legacy)", () => {
+		scaffoldCompany(root);
+		writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "gate"\n`, "utf-8");
+		const command = "rm -rf build";
+		const { gatePath } = fileGateFor(command);
+		writeFileSync(gatePath, readFileSync(gatePath, "utf-8").replace(/^status:.*$/m, "status: approved"), "utf-8");
+		expect(evaluateToolCall(discoverAuthority(root)!, "bash", { command }, root).kind).toBe("allow");
 	});
 });

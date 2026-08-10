@@ -85,10 +85,10 @@ trail (`qorpera_kernel_http_request`).
   identity; such runs are confined identically but carry no signable
   content hash, so they can never take unattended outward effects — that
   is the designed degradation, not a gap.
-- The HTTP lane has no kernel-signed per-request intents yet (the model
-  lane does): enforcement is destination allowlisting, reference-only
-  secrets, replay-proof request ids, per-turn budgets, and trail
-  observation. Intent-signing parity is the planned refinement.
 - Binding destinations and secrets is terminal-only (`qorpera company
   destination|secret …`); a Settings → Connections form in base userland
   is a planned convenience, not a capability gap.
+- (Closed) The HTTP lane now rides the same kernel-signed causal intents
+  as the model lane: every outbound request must echo an intent the
+  kernel registered for the session, byte-identical and unexpired, with a
+  per-intent request budget; turn end revokes it.

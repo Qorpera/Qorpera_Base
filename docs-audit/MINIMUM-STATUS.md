@@ -18,9 +18,10 @@
 
 ## Standing refinements (stated, not blocking the minimum)
 
-- Kernel-signed per-request intents for the HTTP lane (parity with the model lane).
 - Settings → Connections / Wake UI in base userland (terminal lanes exist).
-- Founder key material in the OS keychain (currently mode-0600 files, same posture as auth.json); founder-signed GATE approvals (policy ratification is signed; per-gate approvals still rest on the machine-local kernel-trust lane).
+- Founder key material in the OS keychain (currently mode-0600 files, same posture as auth.json).
+- (Closed) HTTP intent parity: the HTTP lane rides the same kernel-signed causal intents as the model lane, with per-intent request budgets and turn-end revocation.
+- (Closed) Signed gate approvals: with a founder identity, an approved gate counts only when it carries the founder's ed25519 signature over (id, request-hash) — a bare status edit is data, not authority; `qorpera founder approve <gate-id>` and the kernel's review endpoint both sign.
 - Inbound events (webhooks) and MCP server surface — optional kernel modules by ratified decision.
 - Headless kernel operation (wakes while the shell is closed; founder-response and operation-completion wake causes become meaningful there).
 - macOS/Linux sandbox verification beyond the network probe.

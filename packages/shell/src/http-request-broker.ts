@@ -18,8 +18,10 @@
  */
 
 import { createHash } from "node:crypto";
+import type { KernelIntentCapability } from "@qorpera/pi-protocol";
 
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MAX_INTENT_LIFETIME_MS = 4 * 60 * 60 * 1000;
 const SECRET_REFERENCE = /secret:\/\/([a-z0-9][a-z0-9_-]{0,63})/gi;
 const ALLOWED_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]);
 const MAX_URL_BYTES = 8 * 1024;
@@ -55,9 +57,20 @@ interface HttpRequestFrame {
 	body?: string;
 	timeoutMs?: number;
 	behavior?: { path: string; contentHash: string };
+	/** The kernel-signed causal intent this request rides on (parity with the model lane). */
+	intent: KernelIntentCapability;
+}
+
+interface HttpIntentState {
+	capability: KernelIntentCapability;
+	requests: number;
+	status: "active" | "ended";
+	expiryTimer: NodeJS.Timeout;
 }
 
 export interface HttpRequestBroker {
+	/** Register a kernel-issued intent so the child can spend requests against it. */
+	authorizeIntent: (capability: KernelIntentCapability) => boolean;
 	/** Returns true when the frame belonged to this lane (handled or denied). */
 	handleFrame: (value: unknown, send: (frame: object) => void) => boolean;
 	endTurn: () => void;
@@ -79,11 +92,29 @@ function validBehavior(value: unknown): value is { path: string; contentHash: st
 	);
 }
 
+function validIntentShape(value: unknown): value is KernelIntentCapability {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const intent = value as Record<string, unknown>;
+	return (
+		typeof intent.nonce === "string" &&
+		REQUEST_ID_PATTERN.test(intent.nonce) &&
+		typeof intent.sessionId === "string" &&
+		typeof intent.requestHash === "string" &&
+		typeof intent.attended === "boolean" &&
+		typeof intent.issuedAt === "string" &&
+		typeof intent.expiresAt === "string" &&
+		typeof intent.signature === "string" &&
+		!!intent.budget &&
+		typeof intent.budget === "object"
+	);
+}
+
 function parsedFrame(value: unknown): HttpRequestFrame | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const frame = value as Record<string, unknown>;
 	if (
-		!exactKeys(frame, ["type", "requestId", "method", "url", "headers", "body", "timeoutMs", "behavior"]) ||
+		!exactKeys(frame, ["type", "requestId", "method", "url", "headers", "body", "timeoutMs", "behavior", "intent"]) ||
+		!validIntentShape(frame.intent) ||
 		frame.type !== "qorpera_http_request" ||
 		typeof frame.requestId !== "string" ||
 		!REQUEST_ID_PATTERN.test(frame.requestId) ||
@@ -139,18 +170,25 @@ function substituteReferences(text: string, resolved: Map<string, string>): stri
 }
 
 export function createHttpRequestBroker(options: {
+	sessionId: string;
 	allowedDestination: (url: URL) => boolean;
 	resolveSecret: (name: string) => Promise<string>;
 	observe?: (event: HttpRequestObservation) => void;
 	fetchImpl?: typeof fetch;
-	maxRequestsPerTurn?: number;
+	maxRequestsPerIntent?: number;
 }): HttpRequestBroker {
 	const fetchImpl = options.fetchImpl ?? fetch;
-	const maxRequestsPerTurn = options.maxRequestsPerTurn ?? DEFAULT_MAX_REQUESTS_PER_TURN;
+	const maxRequestsPerIntent = options.maxRequestsPerIntent ?? DEFAULT_MAX_REQUESTS_PER_TURN;
 	const seenRequestIds = new Set<string>();
 	const inFlight = new Map<string, AbortController>();
-	let turnRequests = 0;
+	const intents = new Map<string, HttpIntentState>();
 	let released = false;
+
+	const endIntent = (intent: HttpIntentState): void => {
+		if (intent.status !== "active") return;
+		intent.status = "ended";
+		clearTimeout(intent.expiryTimer);
+	};
 
 	const execute = async (frame: HttpRequestFrame, send: (frame: object) => void): Promise<void> => {
 		const method = frame.method.toUpperCase();
@@ -189,11 +227,32 @@ export function createHttpRequestBroker(options: {
 			return;
 		}
 		seenRequestIds.add(frame.requestId);
-		if (turnRequests >= maxRequestsPerTurn) {
-			deny(`kernel http request denied: per-turn request budget (${maxRequestsPerTurn}) exhausted`);
+		// The verified causal intent (parity with the model lane): the request
+		// must ride an intent the kernel registered for this session, echoed
+		// back byte-identical, unexpired, and within its request budget.
+		const intent = intents.get(frame.intent.nonce);
+		const now = Date.now();
+		const expiresAt = Date.parse(frame.intent.expiresAt);
+		if (
+			!intent ||
+			intent.status !== "active" ||
+			JSON.stringify(intent.capability) !== JSON.stringify(frame.intent) ||
+			frame.intent.sessionId !== options.sessionId ||
+			!Number.isFinite(expiresAt) ||
+			expiresAt <= now
+		) {
+			deny("kernel http request denied: no verified causal intent for this turn");
 			return;
 		}
-		turnRequests++;
+		const intentBudget = Math.min(
+			maxRequestsPerIntent,
+			Number.isInteger(intent.capability.budget.maxCalls) ? intent.capability.budget.maxCalls : maxRequestsPerIntent,
+		);
+		if (intent.requests >= intentBudget) {
+			deny(`kernel http request denied: intent request budget (${intentBudget}) exhausted`);
+			return;
+		}
+		intent.requests++;
 
 		const headerEntries = Object.entries(frame.headers ?? {}).filter(
 			([name]) => !STRIPPED_HEADERS.has(name.toLowerCase()),
@@ -269,6 +328,38 @@ export function createHttpRequestBroker(options: {
 	};
 
 	return {
+		authorizeIntent: (capability) => {
+			if (released || !validIntentShape(capability)) return false;
+			const now = Date.now();
+			const issuedAt = Date.parse(capability.issuedAt);
+			const expiresAt = Date.parse(capability.expiresAt);
+			if (
+				capability.sessionId !== options.sessionId ||
+				intents.has(capability.nonce) ||
+				!Number.isFinite(issuedAt) ||
+				!Number.isFinite(expiresAt) ||
+				issuedAt > now + 5_000 ||
+				expiresAt <= now ||
+				expiresAt <= issuedAt ||
+				expiresAt - issuedAt > MAX_INTENT_LIFETIME_MS
+			)
+				return false;
+			const state: HttpIntentState = {
+				capability: JSON.parse(JSON.stringify(capability)) as KernelIntentCapability,
+				requests: 0,
+				status: "active",
+				expiryTimer: setTimeout(
+					() => {
+						const registered = intents.get(capability.nonce);
+						if (registered) endIntent(registered);
+					},
+					Math.max(1, expiresAt - now),
+				),
+			};
+			state.expiryTimer.unref?.();
+			intents.set(capability.nonce, state);
+			return true;
+		},
 		handleFrame: (value, send) => {
 			if (!value || typeof value !== "object") return false;
 			if ((value as { type?: unknown }).type !== "qorpera_http_request") return false;
@@ -289,10 +380,13 @@ export function createHttpRequestBroker(options: {
 			return true;
 		},
 		endTurn: () => {
-			turnRequests = 0;
+			for (const intent of intents.values()) endIntent(intent);
+			intents.clear();
 		},
 		release: () => {
 			released = true;
+			for (const intent of intents.values()) endIntent(intent);
+			intents.clear();
 			for (const controller of inFlight.values()) controller.abort();
 			inFlight.clear();
 		},
