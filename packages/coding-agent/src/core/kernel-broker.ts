@@ -1,4 +1,7 @@
 import { createHash, createPublicKey, randomUUID, verify } from "node:crypto";
+import type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
+
+export type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
 
 interface KernelGateResponse {
 	type: "qorpera_kernel_response";
@@ -14,14 +17,6 @@ interface PendingGateRequest {
 	hash: string;
 	resolve: (granted: boolean) => void;
 	timer: NodeJS.Timeout;
-}
-
-export interface KernelIntentCapability {
-	nonce: string;
-	requestHash: string;
-	attended: boolean;
-	expiresAt: string;
-	signature: string;
 }
 
 const pendingGateRequests = new Map<string, PendingGateRequest>();
@@ -45,10 +40,37 @@ function responsePayload(response: Omit<KernelGateResponse, "type" | "signature"
 function intentPayload(intent: Omit<KernelIntentCapability, "signature">): string {
 	return JSON.stringify({
 		nonce: intent.nonce,
+		sessionId: intent.sessionId,
 		requestHash: intent.requestHash,
 		attended: intent.attended,
+		issuedAt: intent.issuedAt,
 		expiresAt: intent.expiresAt,
+		budget: {
+			maxCalls: intent.budget.maxCalls,
+			maxInputTokens: intent.budget.maxInputTokens,
+			maxOutputTokens: intent.budget.maxOutputTokens,
+			maxCostUsd: intent.budget.maxCostUsd,
+		},
 	});
+}
+
+const MAX_MODEL_INTENT_LIFETIME_MS = 4 * 60 * 60 * 1000;
+
+function validBudget(value: unknown): value is KernelModelIntentBudget {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const budget = value as Partial<KernelModelIntentBudget>;
+	return (
+		Object.keys(value).length === 4 &&
+		Number.isInteger(budget.maxCalls) &&
+		budget.maxCalls! > 0 &&
+		Number.isInteger(budget.maxInputTokens) &&
+		budget.maxInputTokens! > 0 &&
+		Number.isInteger(budget.maxOutputTokens) &&
+		budget.maxOutputTokens! > 0 &&
+		typeof budget.maxCostUsd === "number" &&
+		Number.isFinite(budget.maxCostUsd) &&
+		budget.maxCostUsd >= 0
+	);
 }
 
 function verifyKernelIntent(
@@ -61,15 +83,29 @@ function verifyKernelIntent(
 	const intent = candidate as Partial<KernelIntentCapability>;
 	if (
 		typeof intent.nonce !== "string" ||
+		typeof intent.sessionId !== "string" ||
+		intent.sessionId.length === 0 ||
 		typeof intent.requestHash !== "string" ||
 		typeof intent.attended !== "boolean" ||
+		typeof intent.issuedAt !== "string" ||
 		typeof intent.expiresAt !== "string" ||
+		!validBudget(intent.budget) ||
 		typeof intent.signature !== "string" ||
 		consumedNonces.has(intent.nonce)
 	)
 		return undefined;
+	const issuedAt = Date.parse(intent.issuedAt);
 	const expiresAt = Date.parse(intent.expiresAt);
-	if (!Number.isFinite(expiresAt) || expiresAt < Date.now() || expiresAt > Date.now() + 60_000) return undefined;
+	const now = Date.now();
+	if (
+		!Number.isFinite(issuedAt) ||
+		!Number.isFinite(expiresAt) ||
+		issuedAt > now + 5_000 ||
+		expiresAt <= now ||
+		expiresAt <= issuedAt ||
+		expiresAt - issuedAt > MAX_MODEL_INTENT_LIFETIME_MS
+	)
+		return undefined;
 	const unsignedFrame = { ...frame };
 	delete unsignedFrame.kernelIntent;
 	if (createHash("sha256").update(JSON.stringify(unsignedFrame)).digest("hex") !== intent.requestHash)
@@ -79,9 +115,12 @@ function verifyKernelIntent(
 		Buffer.from(
 			intentPayload({
 				nonce: intent.nonce,
+				sessionId: intent.sessionId,
 				requestHash: intent.requestHash,
 				attended: intent.attended,
+				issuedAt: intent.issuedAt,
 				expiresAt: intent.expiresAt,
+				budget: intent.budget,
 			}),
 		),
 		publicKey,

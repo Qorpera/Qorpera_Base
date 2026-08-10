@@ -132,12 +132,23 @@ function parseNode(value: unknown, index: number, diagnostics: string[]): Projec
 			diagnostics.push(`surface page ${raw.id} requires an entry`);
 			return undefined;
 		}
+		if (
+			view.version !== undefined &&
+			(typeof view.version !== "number" || !Number.isSafeInteger(view.version) || view.version < 0)
+		) {
+			diagnostics.push(`surface page ${raw.id} version must be a non-negative safe integer`);
+			return undefined;
+		}
 		return {
 			id: raw.id,
 			kind: "page",
 			label: label.slice(0, 120),
 			...(description ? { description } : {}),
-			view: { type: "surface", entry: view.entry },
+			view: {
+				type: "surface",
+				entry: view.entry,
+				...(typeof view.version === "number" ? { version: view.version } : {}),
+			},
 		};
 	}
 	if (view.type !== "builtin" || typeof view.id !== "string" || !BUILTIN_IDS.has(view.id)) {

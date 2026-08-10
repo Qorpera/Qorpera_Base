@@ -14,6 +14,7 @@
 	"dependencies": {
 		"@openai/codex": "0.147.0",
 		"@qorpera/pi-coding-agent": "^0.83.0",
+		"@qorpera/pi-protocol": "^0.83.0",
 		"marked": "18.0.5",
 		"electron-updater": "6.8.9"
 	},

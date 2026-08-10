@@ -39,7 +39,6 @@ const workspaceDirs = {
 	"@qorpera/pi-tui": "packages/tui",
 	"@qorpera/pi-protocol": "packages/protocol",
 	"@qorpera/pi-client": "packages/client",
-	"@qorpera/pi-server": "packages/server",
 	"@qorpera/pi-storage-sqlite-node": "packages/storage/sqlite-node",
 };
 

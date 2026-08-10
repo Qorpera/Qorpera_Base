@@ -183,7 +183,7 @@ function withTrustFileLock<T>(path: string, fn: () => T): T {
  */
 export function hasTrustRequiringProjectResources(cwd: string): boolean {
 	const homeDir = canonicalizePath(resolvePath(process.env.HOME || homedir()));
-	const userAgentsSkillsDir = join(homeDir, ".agents", "skills");
+	const userAgentsSkillsDir = canonicalizePath(join(homeDir, ".agents", "skills"));
 	let currentDir = canonicalizePath(resolvePath(cwd));
 
 	const configDir = join(currentDir, CONFIG_DIR_NAME);
@@ -192,10 +192,11 @@ export function hasTrustRequiringProjectResources(cwd: string): boolean {
 	}
 
 	while (true) {
-		const agentsSkillsDir = join(currentDir, ".agents", "skills");
+		const agentsSkillsDir = canonicalizePath(join(currentDir, ".agents", "skills"));
 		if (agentsSkillsDir !== userAgentsSkillsDir && existsSync(agentsSkillsDir)) {
 			return true;
 		}
+		if (currentDir === homeDir) return false;
 
 		const parentDir = dirname(currentDir);
 		if (parentDir === currentDir) {

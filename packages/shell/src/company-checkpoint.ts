@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export interface CompanyGitBaseline {
 	dirtyPaths: Map<string, string>;
@@ -16,6 +16,14 @@ interface PendingCompanyCheckpoint {
 	version: 2;
 	root: string;
 	trailFile: string;
+	dirtyPaths: Array<{ path: string; hash: string }>;
+}
+
+interface PendingProductCheckpoint {
+	version: 2;
+	companyRoot: string;
+	worktreeRoot: string;
+	companyTrailFile: string;
 	dirtyPaths: Array<{ path: string; hash: string }>;
 }
 
@@ -219,6 +227,26 @@ export function savePendingCompanyCheckpoint(
 	renameSync(temporary, path);
 }
 
+export function savePendingProductCheckpoint(
+	path: string,
+	companyRoot: string,
+	worktreeRoot: string,
+	baseline: CompanyGitBaseline,
+	companyTrailFile: string,
+): void {
+	const record: PendingProductCheckpoint = {
+		version: 2,
+		companyRoot: resolve(companyRoot),
+		worktreeRoot: resolve(worktreeRoot),
+		companyTrailFile: resolve(companyTrailFile),
+		dirtyPaths: [...baseline.dirtyPaths].map(([path, hash]) => ({ path, hash })),
+	};
+	mkdirSync(dirname(path), { recursive: true });
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	writeFileSync(temporary, `${JSON.stringify(record, null, "\t")}\n`, { encoding: "utf-8", flag: "wx" });
+	renameSync(temporary, path);
+}
+
 export function finishPendingCompanyCheckpoint(path: string, result: CompanyCheckpointResult): void {
 	if (result.success) rmSync(path, { force: true });
 }
@@ -226,7 +254,7 @@ export function finishPendingCompanyCheckpoint(path: string, result: CompanyChec
 export function reconcilePendingCompanyCheckpoints(dir: string, root: string): void {
 	if (!existsSync(dir)) return;
 	for (const name of readdirSync(dir)) {
-		if (!name.endsWith(".json")) continue;
+		if (!name.endsWith(".json") || name.endsWith(".product.json")) continue;
 		const path = join(dir, name);
 		try {
 			const record = JSON.parse(readFileSync(path, "utf-8")) as Partial<PendingCompanyCheckpoint>;
@@ -255,6 +283,68 @@ export function reconcilePendingCompanyCheckpoints(dir: string, root: string): v
 		} catch (error) {
 			throw new Error(
 				`Could not reconcile pending company checkpoint ${name}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+}
+
+/** Reconcile a failed product-worker checkpoint before that assigned clone is
+ * granted write access again. The record retains the exact company trail path
+ * that caused the worktree changes. */
+export function reconcilePendingProductCheckpoints(dir: string, companyRoot: string, worktreeRoot: string): void {
+	if (!existsSync(dir)) return;
+	const canonicalCompany = resolve(companyRoot);
+	const canonicalWorktree = resolve(worktreeRoot);
+	for (const name of readdirSync(dir)) {
+		if (!name.endsWith(".product.json")) continue;
+		const path = join(dir, name);
+		try {
+			const record = JSON.parse(readFileSync(path, "utf-8")) as Partial<PendingProductCheckpoint>;
+			if (
+				record.version !== 2 ||
+				typeof record.companyRoot !== "string" ||
+				typeof record.worktreeRoot !== "string" ||
+				typeof record.companyTrailFile !== "string" ||
+				!Array.isArray(record.dirtyPaths) ||
+				!record.dirtyPaths.every(
+					(entry) =>
+						typeof entry === "object" &&
+						entry !== null &&
+						typeof (entry as { path?: unknown }).path === "string" &&
+						typeof (entry as { hash?: unknown }).hash === "string",
+				)
+			) {
+				throw new Error("invalid pending product checkpoint record");
+			}
+			const trailRoot = resolve(canonicalCompany, "trail");
+			const trailRelative = relative(trailRoot, resolve(record.companyTrailFile));
+			if (
+				resolve(record.companyRoot) !== canonicalCompany ||
+				!trailRelative ||
+				trailRelative.startsWith("..") ||
+				isAbsolute(trailRelative) ||
+				!trailRelative.endsWith(".jsonl")
+			) {
+				throw new Error("pending product checkpoint provenance is outside the company trail");
+			}
+			if (resolve(record.worktreeRoot) !== canonicalWorktree) continue;
+			const result = checkpointProductWorktreeGit(
+				canonicalWorktree,
+				{ dirtyPaths: new Map(record.dirtyPaths.map((entry) => [entry.path, entry.hash])) },
+				record.companyTrailFile,
+			);
+			if (result.success) rmSync(path, { force: true });
+			else
+				savePendingProductCheckpoint(
+					path,
+					canonicalCompany,
+					canonicalWorktree,
+					result.baseline,
+					record.companyTrailFile,
+				);
+		} catch (error) {
+			throw new Error(
+				`Could not reconcile pending product checkpoint ${name}: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 	}

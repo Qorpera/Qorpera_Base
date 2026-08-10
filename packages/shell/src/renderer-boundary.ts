@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Session, WebContents } from "electron";
 
 function normalized(path: string): string {
 	const resolved = resolve(path);
@@ -36,4 +37,29 @@ export function isRendererRequestAllowed(
 	} catch {
 		return false;
 	}
+}
+
+/** Deny every ambient browser/OS capability not explicitly brokered by main. */
+export function lockDownRendererSession(
+	session: Pick<
+		Session,
+		| "setPermissionCheckHandler"
+		| "setPermissionRequestHandler"
+		| "setDevicePermissionHandler"
+		| "setDisplayMediaRequestHandler"
+		| "on"
+	>,
+): void {
+	session.setPermissionCheckHandler(() => false);
+	session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+	session.setDevicePermissionHandler(() => false);
+	session.setDisplayMediaRequestHandler((_request, callback) => callback({}));
+	session.on("will-download", (event, item) => {
+		event.preventDefault();
+		item.cancel();
+	});
+}
+
+export function lockDownRendererWebContents(contents: Pick<WebContents, "setWebRTCIPHandlingPolicy">): void {
+	contents.setWebRTCIPHandlingPolicy("disable_non_proxied_udp");
 }

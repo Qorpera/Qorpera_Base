@@ -12,6 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
+import type { KernelIntentCapability, ModelIntentTerminalStatus } from "@qorpera/pi-protocol";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type {
 	ExtensionUIContext,
@@ -20,7 +21,7 @@ import type {
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import { consumeKernelIntent, handleKernelBrokerResponse } from "../../core/kernel-broker.ts";
-import { handleModelBrokerFrame, setModelBrokerWriter } from "../../core/model-broker-client.ts";
+import { endModelBrokerIntent, handleModelBrokerFrame, setModelBrokerWriter } from "../../core/model-broker-client.ts";
 import {
 	flushRawStdout,
 	takeOverStdout,
@@ -63,6 +64,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		writeRawStdout(serializeJsonLine(obj));
 	};
 	setModelBrokerWriter(output);
+	const activeKernelIntents = new Map<string, KernelIntentCapability>();
+	const activateKernelIntent = (intent: KernelIntentCapability | undefined): void => {
+		if (intent) activeKernelIntents.set(intent.nonce, intent);
+	};
+	const endKernelIntent = (intent: KernelIntentCapability | undefined, status: ModelIntentTerminalStatus): void => {
+		if (!intent || !activeKernelIntents.delete(intent.nonce)) return;
+		endModelBrokerIntent(intent, status);
+	};
+	const endAllKernelIntents = (status: ModelIntentTerminalStatus): void => {
+		for (const intent of [...activeKernelIntents.values()]) endKernelIntent(intent, status);
+	};
 
 	const success = <T extends RpcCommand["type"]>(
 		id: string | undefined,
@@ -318,6 +330,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	});
 
 	const rebindSession = async (): Promise<void> => {
+		endAllKernelIntents("aborted");
 		session = runtimeHost.session;
 		await session.bindExtensions({
 			uiContext: createExtensionUIContext(),
@@ -358,6 +371,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		unsubscribe = session.subscribe((event) => {
 			output(toJsonEvent(event));
 			if (event.type === "agent_settled") {
+				endAllKernelIntents("completed");
 				void checkShutdownRequested();
 			}
 		});
@@ -404,6 +418,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && intent === undefined) {
 					return error(id, "prompt", "missing, invalid, expired, or reused kernel intent capability");
 				}
+				activateKernelIntent(intent);
 				// Start prompt handling immediately, but emit the authoritative response only after
 				// prompt preflight succeeds. Queued and immediately handled prompts also count as success.
 				let preflightSucceeded = false;
@@ -422,6 +437,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						}),
 					)
 					.catch((e) => {
+						endKernelIntent(intent, "failed");
 						if (!preflightSucceeded) {
 							output(error(id, "prompt", e.message));
 						}
@@ -434,7 +450,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && intent === undefined) {
 					return error(id, "steer", "missing, invalid, expired, or reused kernel intent capability");
 				}
-				await session.withKernelIntent(intent, () => session.steer(command.message, command.images));
+				activateKernelIntent(intent);
+				try {
+					await session.withKernelIntent(intent, () => session.steer(command.message, command.images));
+				} catch (cause) {
+					endKernelIntent(intent, "failed");
+					throw cause;
+				}
 				return success(id, "steer");
 			}
 
@@ -443,11 +465,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && intent === undefined) {
 					return error(id, "follow_up", "missing, invalid, expired, or reused kernel intent capability");
 				}
-				await session.withKernelIntent(intent, () => session.followUp(command.message, command.images));
+				activateKernelIntent(intent);
+				try {
+					await session.withKernelIntent(intent, () => session.followUp(command.message, command.images));
+				} catch (cause) {
+					endKernelIntent(intent, "failed");
+					throw cause;
+				}
 				return success(id, "follow_up");
 			}
 
 			case "abort": {
+				endAllKernelIntents("aborted");
 				await session.abort();
 				return success(id, "abort");
 			}

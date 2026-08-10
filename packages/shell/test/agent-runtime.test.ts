@@ -21,7 +21,9 @@ import {
 	checkpointProductWorktreeGit,
 	commitCompanyMaterialization,
 	reconcilePendingCompanyCheckpoints,
+	reconcilePendingProductCheckpoints,
 	savePendingCompanyCheckpoint,
+	savePendingProductCheckpoint,
 	snapshotFounderGitState,
 } from "../src/company-checkpoint.ts";
 
@@ -378,6 +380,36 @@ describe("kernel-bound agent runtime", () => {
 		expect(existsSync(statePath)).toBe(false);
 		expect(spawnSync("git", ["ls-files", "recovered.md"], { cwd: company, encoding: "utf-8" }).stdout.trim()).toBe(
 			"recovered.md",
+		);
+	});
+
+	it("reconciles interrupted product work against its exact company trail provenance", () => {
+		const company = join(root, "company");
+		const worktree = join(root, "product-worktree");
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(worktree, "product.ts"), "export const value = 1;\n", "utf-8");
+		for (const args of [
+			["init"],
+			["add", "product.ts"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", args, { cwd: worktree, stdio: "ignore" }).status).toBe(0);
+		}
+		const baseline = captureCompanyGitBaseline(worktree);
+		const checkpointDir = join(root, "checkpoint-state");
+		const statePath = join(checkpointDir, "interrupted.product.json");
+		const trailPath = join(root, "company", "trail", "product.jsonl");
+		writeFileSync(trailPath, "{}\n", "utf-8");
+		savePendingProductCheckpoint(statePath, company, worktree, baseline, trailPath);
+		writeFileSync(join(worktree, "product.ts"), "export const value = 2;\n", "utf-8");
+
+		reconcilePendingProductCheckpoints(checkpointDir, company, worktree);
+		expect(existsSync(statePath)).toBe(false);
+		expect(spawnSync("git", ["show", "HEAD:product.ts"], { cwd: worktree, encoding: "utf-8" }).stdout).toBe(
+			"export const value = 2;\n",
+		);
+		expect(spawnSync("git", ["log", "-1", "--format=%B"], { cwd: worktree, encoding: "utf-8" }).stdout).toContain(
+			`Qorpera-Trigger: ${trailPath}`,
 		);
 	});
 

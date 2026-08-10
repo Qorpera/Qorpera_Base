@@ -46,6 +46,7 @@ import {
 	listProductDepartments,
 	type ProductDepartment,
 	type ProductWorktree,
+	planProductWorktree,
 	productDepartmentId,
 	readProductProtectionInventory,
 	readProductWorktreeAssignment,
@@ -72,11 +73,13 @@ import {
 	bindTrailSession,
 	commitTrailAppend,
 	createKernelResponseSigner,
+	DEFAULT_MODEL_INTENT_BUDGET,
 	inboxMessagesPath,
 	type KernelIntentCapability,
 	kernelGateReviewDocument,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
+	provisionWindowsSandbox,
 	sandboxCommandArgs,
 	sandboxConfigDir,
 	sandboxRuntimeDir,
@@ -90,11 +93,13 @@ import {
 	commitCompanyMaterialization,
 	finishPendingCompanyCheckpoint,
 	reconcilePendingCompanyCheckpoints,
+	reconcilePendingProductCheckpoints,
 	savePendingCompanyCheckpoint,
+	savePendingProductCheckpoint,
 	snapshotFounderGitState,
 } from "./company-checkpoint.ts";
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
-import { isRendererRequestAllowed } from "./renderer-boundary.ts";
+import { isRendererRequestAllowed, lockDownRendererSession, lockDownRendererWebContents } from "./renderer-boundary.ts";
 import {
 	ensureUserland,
 	getActiveApp,
@@ -102,6 +107,7 @@ import {
 	listVersions,
 	mergeTaskPrompt,
 	restoreVersion,
+	reviewVersion,
 	setActiveApp,
 	setVersionFavorite,
 	snapshotIfChanged,
@@ -132,6 +138,7 @@ const MODEL_AUTH_PROVIDERS = new Set([
 	"huggingface",
 ]);
 const MAX_KERNEL_REVIEW_BYTES = 16 * 1024;
+const MODEL_BUDGET_REVIEW = `${DEFAULT_MODEL_INTENT_BUDGET.maxCalls} calls / ${DEFAULT_MODEL_INTENT_BUDGET.maxInputTokens} input tokens / ${DEFAULT_MODEL_INTENT_BUDGET.maxOutputTokens} output tokens / $${DEFAULT_MODEL_INTENT_BUDGET.maxCostUsd.toFixed(2)}`;
 const MAX_PROMPT_BYTES = 64 * 1024;
 const MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_PROMPT_IMAGES = 5;
@@ -150,6 +157,8 @@ const SAFE_CHILD_ENV = new Set([
 	"NODE_EXTRA_CA_CERTS",
 	"SSL_CERT_FILE",
 	"SSL_CERT_DIR",
+	"USERNAME",
+	"USERDOMAIN",
 ]);
 const MODEL_ENV_PROVIDERS = new Map([
 	["ANTHROPIC_API_KEY", "anthropic"],
@@ -165,24 +174,6 @@ const MODEL_ENV_PROVIDERS = new Map([
 ]);
 
 function prepareBrokeredAgentDir(configDir: string, companyRoot: string, credentials: Record<string, unknown>): string {
-	if (process.platform === "win32") {
-		const codexHome = join(app.getPath("home"), ".codex");
-		for (const relativePath of [
-			join(".sandbox", "setup_marker.json"),
-			join(".sandbox", "deny_read_acl_state.json"),
-			join(".sandbox-secrets", "sandbox_users.json"),
-		]) {
-			const source = join(codexHome, relativePath);
-			if (!existsSync(source)) {
-				throw new Error(
-					"The elevated Codex Windows sandbox is not provisioned. Qorpera refuses to start an unrestricted controller.",
-				);
-			}
-			const target = join(configDir, relativePath);
-			mkdirSync(dirname(target), { recursive: true });
-			if (!existsSync(target)) copyFileSync(source, target);
-		}
-	}
 	const agentDir = join(configDir, "agent");
 	mkdirSync(agentDir, { recursive: true });
 	writeFileSync(join(agentDir, "auth.json"), `${JSON.stringify(credentials, null, "\t")}\n`, "utf-8");
@@ -566,18 +557,24 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	snapshotFounderGitState(root);
 	let gitBaseline = captureCompanyGitBaseline(root);
 	const productWorktreeRoot = worktree ? realpathSync(cwd) : undefined;
+	const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "controller")), "checkpoints");
+	if (productWorktreeRoot) reconcilePendingProductCheckpoints(checkpointDir, root, productWorktreeRoot);
 	if (productWorktreeRoot) snapshotFounderGitState(productWorktreeRoot, "product-worker");
 	let productGitBaseline = productWorktreeRoot ? captureCompanyGitBaseline(productWorktreeRoot) : undefined;
 	const binding = bindTrailSession(root, cwd, scope, sessionFile);
-	const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "controller")), "checkpoints");
 	const checkpointState = join(checkpointDir, `${binding.token}.json`);
+	const productCheckpointState = join(checkpointDir, `${binding.token}.product.json`);
 	savePendingCompanyCheckpoint(checkpointState, root, gitBaseline, binding.file);
+	if (productWorktreeRoot && productGitBaseline) {
+		savePendingProductCheckpoint(productCheckpointState, root, productWorktreeRoot, productGitBaseline, binding.path);
+	}
 	inboxMessagesPath(root);
 	const products = readProductProtectionInventory(root).map((product) => ({
 		repository: product.repositoryPath,
 		worktrees: product.worktreesPath,
 	}));
 	const brokeredCredentials = modelRequestBroker.registerChild(
+		binding.sessionId,
 		sourceModelCredentials(),
 		ambientModelProviders(),
 		(event) => appendKernelModelObservation(binding, event),
@@ -586,6 +583,13 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	let args: string[];
 	let kernelSigner: ReturnType<typeof createKernelResponseSigner>;
 	let child: ChildProcessWithoutNullStreams;
+	const env: NodeJS.ProcessEnv = brokeredChildEnvironment();
+	env.ELECTRON_RUN_AS_NODE = "1";
+	env.HOME = runtimeDir;
+	env.USERPROFILE = runtimeDir;
+	env.APPDATA = runtimeDir;
+	env.LOCALAPPDATA = runtimeDir;
+	env.XDG_CONFIG_HOME = runtimeDir;
 	try {
 		agentDir = prepareBrokeredAgentDir(configDir, root, brokeredCredentials.credentials);
 		writeSandboxProfile(configDir, runtimeDir, root, scope, protectedControllerPaths(root, products), [
@@ -594,9 +598,16 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			join(agentDir, "auth.json"),
 			join(agentDir, "trust.json"),
 		]);
+		provisionWindowsSandbox({
+			codexEntry: CODEX_ENTRY,
+			configDir,
+			runtimeDir,
+			nodeExecutable: process.execPath,
+			env,
+		});
 		const rpcArgs = [RPC_ENTRY, "--mode", "rpc", "--session", binding.path];
 		args = sandboxCommandArgs(CODEX_ENTRY, runtimeDir, process.execPath, rpcArgs);
-		kernelSigner = createKernelResponseSigner();
+		kernelSigner = createKernelResponseSigner({ sessionId: binding.sessionId });
 	} catch (error) {
 		brokeredCredentials.release();
 		throw error;
@@ -604,13 +615,6 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	// QORPERA_AUTONOMOUS marks controller-initiated work: those sessions run
 	// in rpc mode with nobody present, so outward-effect signatures cannot
 	// treat them as founder sessions. Product roles remain separate either way.
-	const env: NodeJS.ProcessEnv = brokeredChildEnvironment();
-	env.ELECTRON_RUN_AS_NODE = "1";
-	env.HOME = runtimeDir;
-	env.USERPROFILE = runtimeDir;
-	env.APPDATA = runtimeDir;
-	env.LOCALAPPDATA = runtimeDir;
-	env.XDG_CONFIG_HOME = runtimeDir;
 	if (autonomousName) env.QORPERA_AUTONOMOUS = "1";
 	delete env.QORPERA_ACTOR;
 	delete env.QORPERA_PRODUCT_DEPARTMENT;
@@ -646,7 +650,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		try {
 			const frame = JSON.parse(line) as unknown;
 			if (
-				modelRequestBroker?.handleFrame(frame, (response) => {
+				brokeredCredentials.handleFrame(frame, (response) => {
 					if (child.exitCode === null) child.stdin.write(`${JSON.stringify(response)}\n`);
 				})
 			)
@@ -666,6 +670,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				return;
 			}
 			if ((frame as { type?: unknown }).type === "agent_settled") {
+				brokeredCredentials.endTurn("completed");
 				const result = checkpointCompanyGit(root, gitBaseline, binding.file);
 				gitBaseline = result.baseline;
 				savePendingCompanyCheckpoint(checkpointState, root, gitBaseline, binding.file);
@@ -676,6 +681,13 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 						binding.path,
 					);
 					productGitBaseline = productResult.baseline;
+					savePendingProductCheckpoint(
+						productCheckpointState,
+						root,
+						productWorktreeRoot,
+						productGitBaseline,
+						binding.path,
+					);
 				}
 			}
 			if (onRpcEvent) onRpcEvent(frame as { type?: string });
@@ -697,7 +709,17 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			finishPendingCompanyCheckpoint(checkpointState, result);
 			if (!result.success) savePendingCompanyCheckpoint(checkpointState, root, result.baseline, binding.file);
 			if (productWorktreeRoot && productGitBaseline) {
-				checkpointProductWorktreeGit(productWorktreeRoot, productGitBaseline, binding.path);
+				const productResult = checkpointProductWorktreeGit(productWorktreeRoot, productGitBaseline, binding.path);
+				finishPendingCompanyCheckpoint(productCheckpointState, productResult);
+				if (!productResult.success) {
+					savePendingProductCheckpoint(
+						productCheckpointState,
+						root,
+						productWorktreeRoot,
+						productResult.baseline,
+						binding.path,
+					);
+				}
 			}
 		} finally {
 			resolveCheckpoint?.();
@@ -717,7 +739,7 @@ function sendKernelPrompt(
 	if (!binding || !signIntent || child.exitCode !== null) return false;
 	const unsignedFrame = { ...frame };
 	const kernelIntent = signIntent(unsignedFrame, attended);
-	childModelCapabilities.get(child)?.authorizeIntent(kernelIntent);
+	if (!childModelCapabilities.get(child)?.authorizeIntent(kernelIntent)) return false;
 	const images = Array.isArray(unsignedFrame.images)
 		? unsignedFrame.images.flatMap((image) => {
 				if (!image || typeof image !== "object") return [];
@@ -795,14 +817,27 @@ function isInside(target: string, parent: string): boolean {
  * result reaches the renderer as one `merge-done` event, and the open-time
  * userland status is refreshed so the merge button reflects reality.
  */
-async function startMergeChild(slot: Slot, runtime: CompanyRuntime): Promise<boolean> {
-	const prompt = mergeTaskPrompt(runtime.userland);
+async function startMergeChild(slot: Slot, runtime: CompanyRuntime, reviewedPrompt: string): Promise<boolean> {
 	const resumeOptions = {
 		...runtime.childOptions,
 		sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
 	};
 	await stopChild(runtime.child);
 	if (slot.runtime !== runtime || runtime.closing) return false;
+	try {
+		runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
+	} catch (error) {
+		console.error(`pre-merge userland validation failed: ${(error as Error).message}`);
+		runtime.child = startChild(slot, runtime.root, resumeOptions);
+		return false;
+	}
+	if (
+		(runtime.userland.action !== "staged" && runtime.userland.action !== "already-staged") ||
+		mergeTaskPrompt(runtime.userland) !== reviewedPrompt
+	) {
+		runtime.child = startChild(slot, runtime.root, resumeOptions);
+		return false;
+	}
 	let started = false;
 	let child: ChildProcessWithoutNullStreams;
 	child = startChild(slot, runtime.root, {
@@ -843,7 +878,7 @@ async function startMergeChild(slot: Slot, runtime: CompanyRuntime): Promise<boo
 		runtime.childOptions = resumeOptions;
 		runtime.child = startChild(slot, runtime.root, resumeOptions);
 	});
-	if (!sendKernelPrompt(child, { type: "prompt", message: prompt }, false, "kernel-userland-merge")) {
+	if (!sendKernelPrompt(child, { type: "prompt", message: reviewedPrompt }, true, "native-userland-merge-review")) {
 		await stopChild(child);
 		if (runtime.mergeChild === child) runtime.mergeChild = undefined;
 		if (slot.runtime === runtime && !runtime.closing) runtime.child = startChild(slot, runtime.root, resumeOptions);
@@ -1041,7 +1076,31 @@ async function openChat(
 			if (!existingAssignment) return { ok: false, error: "product worktree has no valid kernel assignment" };
 			assignment = existingAssignment;
 		} else {
-			const created = createProductWorktree(runtime.root, department, runtime.runtimeLock);
+			const plan = planProductWorktree(runtime.root, department, runtime.runtimeLock);
+			if (!plan) return { ok: false, error: "could not plan product worktree" };
+			const worktreesRoot = realpathSync(resolve(runtime.root, department.worktreesPath));
+			const repository = realpathSync(resolve(runtime.root, department.repositoryPath));
+			const plannedTarget = resolve(realpathSync(runtime.root), plan.path);
+			if (
+				!isInside(plannedTarget, worktreesRoot) ||
+				normalizedRoot(dirname(plannedTarget)) !== normalizedRoot(worktreesRoot)
+			) {
+				return { ok: false, error: "planned product worktree escaped its assigned parent" };
+			}
+			const approved = await confirmKernelReview(slot.window, {
+				title: "Create and authorize product worktree",
+				summary: `Create this isolated clone and issue product-code write authority for ${department.name}?`,
+				exactText: plannedTarget,
+				metadata: [
+					`Department: ${department.path}`,
+					`Source repository: ${repository}`,
+					`Clone origin: ${plan.sourceRemote}`,
+					`Source commit: ${plan.sourceHead ?? "unborn repository"}`,
+					`Branch: ${plan.branch}`,
+				].join("\n"),
+			});
+			if (!approved) return { ok: false, error: "product worktree authorization cancelled" };
+			const created = createProductWorktree(runtime.root, department, runtime.runtimeLock, plan);
 			if (!created) return { ok: false, error: "could not create product worktree" };
 			assignment = created;
 		}
@@ -1058,20 +1117,22 @@ async function openChat(
 		) {
 			return { ok: false, error: "product worktree changed before authorization" };
 		}
-		const approved = await confirmKernelReview(slot.window, {
-			title: "Authorize product worker",
-			summary: `Issue product-code write authority for ${department.name}?`,
-			exactText: actualWorktree,
-			metadata: [
-				`Department: ${department.path}`,
-				`Source repository: ${actualRepository}`,
-				`Selected clone origin: ${assignment.sourceRemote}`,
-				`Source commit: ${assignment.sourceHead ?? "unborn repository"}`,
-				`Kernel assignment created: ${assignment.createdAt}`,
-				`Branch: ${branch}`,
-			].join("\n"),
-		});
-		if (!approved) return { ok: false, error: "product worker authorization cancelled" };
+		if (worktreePath) {
+			const approved = await confirmKernelReview(slot.window, {
+				title: "Authorize product worker",
+				summary: `Issue product-code write authority for ${department.name}?`,
+				exactText: actualWorktree,
+				metadata: [
+					`Department: ${department.path}`,
+					`Source repository: ${actualRepository}`,
+					`Selected clone origin: ${assignment.sourceRemote}`,
+					`Source commit: ${assignment.sourceHead ?? "unborn repository"}`,
+					`Kernel assignment created: ${assignment.createdAt}`,
+					`Branch: ${branch}`,
+				].join("\n"),
+			});
+			if (!approved) return { ok: false, error: "product worker authorization cancelled" };
+		}
 		if (!readProductWorktreeAssignment(runtime.root, department, worktree)) {
 			return { ok: false, error: "product worktree changed after authorization" };
 		}
@@ -1094,6 +1155,7 @@ function rendererRequestAllowed(slot: Slot, value: string): boolean {
 
 function createWindow(): Slot {
 	const rendererSession = electronSession.fromPartition(`qorpera-renderer-${randomUUID()}`, { cache: false });
+	lockDownRendererSession(rendererSession);
 	let slot: Slot;
 	const win = new BrowserWindow({
 		width: 1360,
@@ -1113,6 +1175,7 @@ function createWindow(): Slot {
 			session: rendererSession,
 		},
 	});
+	lockDownRendererWebContents(win.webContents);
 	slot = { window: win, rendererSession, kickoffPending: false };
 	rendererSession.webRequest.onBeforeRequest({ urls: ["<all_urls>"] }, (details, callback) => {
 		callback({ cancel: !rendererRequestAllowed(slot, details.url) });
@@ -1384,24 +1447,61 @@ app.whenReady().then(async () => {
 		if (!slot?.runtime || typeof id !== "string" || id.includes("/") || id.includes("\\") || id.includes(".."))
 			return false;
 		const runtime = slot.runtime;
-		// Restoring an old version rejoins the CURRENT base on demand: the
-		// restore stages it like an arriving update when the snapshot is
-		// behind. The live status follows so the merge button shows without
-		// a reopen (the reload below reboots the renderer off app:info).
-		const status = restoreVersion(join(runtime.root, "userland"), id, {
-			dir: BASE_USERLAND_DIR,
-			version: shellVersion(),
-		});
-		if (!status) return false;
-		runtime.userland = status;
-		if (getActiveApp(join(runtime.root, "userland")) === "fork") {
-			runtime.usingBaseFallback = false;
-			await slot.window.loadURL(companyUserlandUrl(runtime, "fork")).catch(async () => {
-				runtime.usingBaseFallback = true;
-				await slot.window.loadURL(companyUserlandUrl(runtime, "base"));
+		return enqueueRuntimeTransition(runtime, async () => {
+			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild) return false;
+			const userlandDir = join(runtime.root, "userland");
+			const reviewed = reviewVersion(userlandDir, id);
+			if (!reviewed) return false;
+			const reviewDocument = JSON.stringify(reviewed, null, "\t");
+			const approved = await confirmKernelReview(slot.window, {
+				title: "Restore company app version",
+				summary:
+					"Replace the live company userland with this exact saved version? The current state is snapshotted first.",
+				exactText: reviewDocument,
+				metadata: `Target: ${userlandDir}\nCurrent Base: ${shellVersion()}`,
 			});
-		}
-		return true;
+			if (!approved) return false;
+			const resumeOptions = {
+				...runtime.childOptions,
+				sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
+			};
+			await stopChild(runtime.child);
+			if (slot.runtime !== runtime || runtime.closing) return false;
+			const restart = (): void => {
+				runtime.childOptions = resumeOptions;
+				runtime.child = startChild(slot, runtime.root, resumeOptions);
+			};
+			if (JSON.stringify(reviewVersion(userlandDir, id), null, "\t") !== reviewDocument) {
+				restart();
+				return false;
+			}
+			let status: UserlandStatus | undefined;
+			try {
+				// Restoring an old version rejoins the CURRENT base on demand: the
+				// current base is staged when the snapshot is behind.
+				status = restoreVersion(userlandDir, id, {
+					dir: BASE_USERLAND_DIR,
+					version: shellVersion(),
+				});
+			} catch (error) {
+				restart();
+				throw error;
+			}
+			if (!status) {
+				restart();
+				return false;
+			}
+			runtime.userland = status;
+			restart();
+			if (getActiveApp(userlandDir) === "fork") {
+				runtime.usingBaseFallback = false;
+				await slot.window.loadURL(companyUserlandUrl(runtime, "fork")).catch(async () => {
+					runtime.usingBaseFallback = true;
+					await slot.window.loadURL(companyUserlandUrl(runtime, "base"));
+				});
+			}
+			return true;
+		});
 	});
 	// Settings → App: star a saved version. Metadata only — no reload needed.
 	ipcMain.handle("userland:favorite", (event, id: string, favorite: boolean) => {
@@ -1445,7 +1545,16 @@ app.whenReady().then(async () => {
 			if (!staged) return { ok: false, reason: "nothing-staged" };
 			if (runtime.mergeChild && runtime.mergeChild.exitCode === null)
 				return { ok: false, reason: "already-running" };
-			return { ok: await startMergeChild(slot, runtime) };
+			const prompt = mergeTaskPrompt(runtime.userland);
+			const approved = await confirmKernelReview(slot.window, {
+				title: "Authorize autonomous userland merge",
+				summary:
+					"Start this exact agent task with write access to company userland and the bounded model budget shown below?",
+				exactText: prompt,
+				metadata: `Target: ${join(runtime.root, "userland")}\nModel budget: ${MODEL_BUDGET_REVIEW}`,
+			});
+			if (!approved) return { ok: false, reason: "cancelled" };
+			return { ok: await startMergeChild(slot, runtime, prompt) };
 		});
 	});
 	ipcMain.handle("backend:authorized-post", async (event, path: string, body: unknown) => {
@@ -1551,6 +1660,7 @@ app.whenReady().then(async () => {
 				metadata: [
 					assignment,
 					reviewed.streamingBehavior ? `Streaming behavior: ${reviewed.streamingBehavior}` : undefined,
+					`Model budget: ${MODEL_BUDGET_REVIEW}`,
 				]
 					.filter(Boolean)
 					.join("\n"),
@@ -1567,6 +1677,7 @@ app.whenReady().then(async () => {
 			};
 		}
 		if (!safeControlTypes.has(frame.type)) return { ok: false };
+		if (frame.type === "abort") childModelCapabilities.get(runtime.child)?.endTurn("aborted");
 		runtime.child.stdin.write(`${JSON.stringify(frame)}\n`);
 		return { ok: true };
 	});

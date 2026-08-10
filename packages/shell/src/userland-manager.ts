@@ -58,6 +58,12 @@ export interface UserlandVersion {
 	lastUsedAt?: string;
 }
 
+export interface UserlandVersionReview {
+	version: UserlandVersion;
+	contentHash: string;
+	baseHash?: string;
+}
+
 export interface UserlandStatus {
 	action: "forked" | "current" | "fast-forwarded" | "staged" | "already-staged";
 	baseVersion: string;
@@ -256,6 +262,20 @@ export function listVersions(userlandDir: string): UserlandVersion[] {
 	return numbered.sort((a, b) => b.id.localeCompare(a.id));
 }
 
+/** Immutable founder-review description of one restorable snapshot. */
+export function reviewVersion(userlandDir: string, id: string): UserlandVersionReview | undefined {
+	const version = listVersions(userlandDir).find((entry) => entry.id === id);
+	if (!version) return undefined;
+	const snapshot = join(userlandDir, VERSIONS_DIR, id);
+	const contentDir = existsSync(join(snapshot, "content")) ? join(snapshot, "content") : snapshot;
+	const baseDir = join(snapshot, "base");
+	return {
+		version,
+		contentHash: combinedHash(contentDir),
+		...(existsSync(baseDir) ? { baseHash: combinedHash(baseDir) } : {}),
+	};
+}
+
 /** Mark or unmark a saved version as a favorite. */
 export function setVersionFavorite(userlandDir: string, id: string, favorite: boolean): boolean {
 	if (!existsSync(join(userlandDir, VERSIONS_DIR, id))) return false;
@@ -342,8 +362,12 @@ export function ensureUserland(companyRoot: string, baseDir: string, baseVersion
 	const userlandDir = join(companyRoot, "userland");
 
 	if (!existsSync(join(userlandDir, MANIFEST))) {
+		if (existsSync(userlandDir) && readdirSync(userlandDir).length > 0) {
+			throw new Error(
+				"Cannot initialize userland: existing content has no userland.json metadata; content was preserved for audit",
+			);
+		}
 		// First open: fork the base into the company, keep a pristine copy.
-		rmSync(userlandDir, { recursive: true, force: true });
 		copyBase(baseDir, userlandDir);
 		copyBase(baseDir, join(userlandDir, PRISTINE_DIR));
 		const files = hashFiles(userlandDir);
@@ -358,7 +382,7 @@ export function ensureUserland(companyRoot: string, baseDir: string, baseVersion
 
 	const manifest = readManifest(userlandDir);
 	if (!manifest) {
-		return { action: "current", baseVersion };
+		throw new Error("Cannot open userland: userland.json is invalid; content was preserved for audit");
 	}
 
 	// CONTENT decides, never the version label (founder direction 2026-08-06:

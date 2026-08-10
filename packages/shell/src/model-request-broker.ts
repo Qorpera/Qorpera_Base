@@ -1,9 +1,15 @@
 import { createHash } from "node:crypto";
 import { ModelRuntime } from "@qorpera/pi-coding-agent";
-import type { KernelIntentCapability } from "./agent-runtime.ts";
+import type {
+	KernelIntentCapability,
+	KernelModelIntentBudget,
+	ModelIntentEndFrame,
+	ModelIntentTerminalStatus,
+} from "@qorpera/pi-protocol";
 import { brokerCredentialProjection } from "./model-request-scope.ts";
 
 const MAX_REQUEST_BYTES = 64 * 1024 * 1024;
+const MAX_INTENT_LIFETIME_MS = 4 * 60 * 60 * 1000;
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface ModelRequestFrame {
@@ -21,38 +27,73 @@ interface ModelAbortFrame {
 	requestId: string;
 }
 
+interface ModelUsage {
+	inputTokens: number;
+	outputTokens: number;
+	costUsd: number;
+}
+
+interface ModelBudgetUsage extends ModelUsage {
+	calls: number;
+}
+
+interface ModelRequestObservation {
+	intentNonce: string;
+	requestHash: string;
+	provider: string;
+	model: string;
+	requestSha256: string;
+	status: "started" | "completed" | "failed" | "aborted";
+}
+
+interface RequestReservation extends ModelUsage {}
+
+interface IntentState {
+	capability: KernelIntentCapability;
+	status: "active" | ModelIntentTerminalStatus;
+	usage: ModelBudgetUsage;
+	reserved: ModelUsage;
+	requestDigests: Set<string>;
+	expiryTimer: NodeJS.Timeout;
+}
+
 interface BrokerSession {
+	sessionId: string;
 	handles: Map<string, string>;
-	intents: Map<string, KernelIntentCapability>;
-	observe?: (event: {
-		intentNonce: string;
-		requestHash: string;
-		provider: string;
-		model: string;
-		requestSha256: string;
-		status: "started" | "completed" | "failed" | "aborted";
-	}) => void;
+	intents: Map<string, IntentState>;
+	seenRequestIds: Set<string>;
+	observe?: (event: ModelRequestObservation) => void;
 }
 
 interface InFlightRequest {
 	controller: AbortController;
 	session: BrokerSession;
+	intent: IntentState;
+	reservation: RequestReservation;
+	expiryTimer: NodeJS.Timeout;
 }
 
 export interface BrokeredCredentials {
 	handles: Record<string, string>;
 	credentials: Record<string, unknown>;
-	authorizeIntent: (intent: KernelIntentCapability) => void;
+	authorizeIntent: (intent: KernelIntentCapability) => boolean;
+	handleFrame: (value: unknown, send: (frame: object) => void) => boolean;
+	endTurn: (status: "completed" | "aborted" | "failed") => void;
 	release: () => void;
 }
 
+/**
+ * The broker owns authority and provider execution. BrokeredCredentials is a
+ * transport-neutral channel: stdin/stdout, HTTPS, or WebSocket adapters only
+ * need to carry parsed frames and return parsed frames.
+ */
 export interface ModelRequestBroker {
 	registerChild: (
+		sessionId: string,
 		sourceCredentials: Record<string, unknown>,
 		ambientProviders: string[],
 		observe?: BrokerSession["observe"],
 	) => BrokeredCredentials;
-	handleFrame: (value: unknown, send: (frame: object) => void) => boolean;
 	close: () => void;
 }
 
@@ -65,15 +106,43 @@ function exactObject(value: unknown, keys: readonly string[]): value is Record<s
 	);
 }
 
+function validBudget(value: unknown): value is KernelModelIntentBudget {
+	if (!exactObject(value, ["maxCalls", "maxInputTokens", "maxOutputTokens", "maxCostUsd"])) return false;
+	return (
+		Number.isInteger(value.maxCalls) &&
+		(value.maxCalls as number) > 0 &&
+		Number.isInteger(value.maxInputTokens) &&
+		(value.maxInputTokens as number) > 0 &&
+		Number.isInteger(value.maxOutputTokens) &&
+		(value.maxOutputTokens as number) > 0 &&
+		typeof value.maxCostUsd === "number" &&
+		Number.isFinite(value.maxCostUsd) &&
+		value.maxCostUsd >= 0
+	);
+}
+
 function validIntent(value: unknown): value is KernelIntentCapability {
 	return (
-		exactObject(value, ["nonce", "requestHash", "attended", "expiresAt", "signature"]) &&
+		exactObject(value, [
+			"nonce",
+			"sessionId",
+			"requestHash",
+			"attended",
+			"issuedAt",
+			"expiresAt",
+			"budget",
+			"signature",
+		]) &&
 		typeof value.nonce === "string" &&
 		REQUEST_ID_PATTERN.test(value.nonce) &&
+		typeof value.sessionId === "string" &&
+		value.sessionId.length > 0 &&
 		typeof value.requestHash === "string" &&
 		/^[a-f0-9]{64}$/.test(value.requestHash) &&
 		typeof value.attended === "boolean" &&
+		typeof value.issuedAt === "string" &&
 		typeof value.expiresAt === "string" &&
+		validBudget(value.budget) &&
 		typeof value.signature === "string" &&
 		value.signature.length > 0
 	);
@@ -137,7 +206,7 @@ function requestOptions(value: unknown): Parameters<ModelRuntime["streamSimple"]
 		(value.cacheRetention !== undefined && !["none", "short", "long"].includes(String(value.cacheRetention))) ||
 		(value.reasoning !== undefined &&
 			!["minimal", "low", "medium", "high", "xhigh", "max"].includes(String(value.reasoning))) ||
-		(value.serviceTier !== undefined && !["default", "flex", "priority"].includes(String(value.serviceTier))) ||
+		(value.serviceTier !== undefined && !["default", "flex"].includes(String(value.serviceTier))) ||
 		(value.sessionId !== undefined && (typeof value.sessionId !== "string" || value.sessionId.length > 256))
 	)
 		return undefined;
@@ -167,12 +236,21 @@ function requestOptions(value: unknown): Parameters<ModelRuntime["streamSimple"]
 			? { reasoning: value.reasoning as "minimal" | "low" | "medium" | "high" | "xhigh" | "max" }
 			: {}),
 		...(thinkingBudgets ? { thinkingBudgets } : {}),
-		...(value.serviceTier ? { serviceTier: value.serviceTier as "default" | "flex" | "priority" } : {}),
+		...(value.serviceTier ? { serviceTier: value.serviceTier as "default" | "flex" } : {}),
 	};
+}
+
+function serializedBytes(value: unknown): number | undefined {
+	try {
+		return Buffer.byteLength(JSON.stringify(value), "utf-8");
+	} catch {
+		return undefined;
+	}
 }
 
 function parsedRequest(value: unknown): ModelRequestFrame | undefined {
 	if (!exactObject(value, ["type", "requestId", "handle", "intent", "model", "context", "options"])) return undefined;
+	const bytes = serializedBytes(value);
 	if (
 		value.type !== "qorpera_model_request" ||
 		typeof value.requestId !== "string" ||
@@ -186,11 +264,68 @@ function parsedRequest(value: unknown): ModelRequestFrame | undefined {
 		!Array.isArray(value.context.messages) ||
 		(value.context.systemPrompt !== undefined && typeof value.context.systemPrompt !== "string") ||
 		(value.context.tools !== undefined && !Array.isArray(value.context.tools)) ||
-		Buffer.byteLength(JSON.stringify(value), "utf-8") > MAX_REQUEST_BYTES ||
+		bytes === undefined ||
+		bytes > MAX_REQUEST_BYTES ||
 		!requestOptions(value.options)
 	)
 		return undefined;
 	return value as unknown as ModelRequestFrame;
+}
+
+function requestDigest(frame: ModelRequestFrame): string {
+	return createHash("sha256")
+		.update(
+			JSON.stringify({
+				handle: frame.handle,
+				intent: frame.intent,
+				model: frame.model,
+				context: frame.context,
+				options: frame.options,
+			}),
+		)
+		.digest("hex");
+}
+
+function usageFromEvent(value: unknown): ModelUsage | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const event = value as { type?: unknown; message?: unknown; error?: unknown };
+	if (event.type !== "done" && event.type !== "error") return undefined;
+	const message = event.type === "done" ? event.message : event.error;
+	if (!message || typeof message !== "object") return undefined;
+	const usage = (message as { usage?: unknown }).usage;
+	if (!usage || typeof usage !== "object") return undefined;
+	const record = usage as {
+		input?: unknown;
+		output?: unknown;
+		cacheRead?: unknown;
+		cacheWrite?: unknown;
+		cost?: unknown;
+	};
+	const cost = record.cost;
+	if (!cost || typeof cost !== "object") return undefined;
+	const totalCost = (cost as { total?: unknown }).total;
+	if (
+		![record.input, record.output, record.cacheRead, record.cacheWrite, totalCost].every(
+			(number) => typeof number === "number" && Number.isFinite(number) && number >= 0,
+		)
+	)
+		return undefined;
+	return {
+		inputTokens: (record.input as number) + (record.cacheRead as number) + (record.cacheWrite as number),
+		outputTokens: record.output as number,
+		costUsd: totalCost as number,
+	};
+}
+
+function costUpperBound(
+	model: NonNullable<ReturnType<ModelRuntime["getModel"]>>,
+	inputTokens: number,
+	outputTokens: number,
+): number {
+	const rates = [model.cost, ...(model.cost.tiers ?? [])];
+	const inputRate = Math.max(...rates.map((rate) => Math.max(rate.input, rate.cacheRead, rate.cacheWrite)));
+	const outputRate = Math.max(...rates.map((rate) => rate.output));
+	return (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000;
 }
 
 export async function startModelRequestBroker(options: {
@@ -204,47 +339,111 @@ export async function startModelRequestBroker(options: {
 		allowModelNetwork: false,
 	});
 	const sessions = new Set<BrokerSession>();
-	const handleSessions = new Map<string, BrokerSession>();
 	const inFlight = new Map<string, InFlightRequest>();
-	const sendRequest = async (frame: ModelRequestFrame, send: (frame: object) => void): Promise<void> => {
-		const session = handleSessions.get(frame.handle);
-		const provider = session?.handles.get(frame.handle);
-		const authorized = session?.intents.get(frame.intent.nonce);
+
+	const revokeIntent = (session: BrokerSession, intent: IntentState, status: ModelIntentTerminalStatus): void => {
+		if (intent.status !== "active") return;
+		intent.status = status;
+		clearTimeout(intent.expiryTimer);
+		for (const request of inFlight.values()) {
+			if (request.session === session && request.intent === intent) request.controller.abort();
+		}
+	};
+
+	const deny = (send: (frame: object) => void, requestId: string): void => {
+		send({ type: "qorpera_model_end", requestId, error: "kernel model request denied" });
+	};
+
+	const sendRequest = async (
+		session: BrokerSession,
+		frame: ModelRequestFrame,
+		send: (frame: object) => void,
+	): Promise<void> => {
+		const provider = session.handles.get(frame.handle);
+		const intent = session.intents.get(frame.intent.nonce);
 		const model = provider ? runtime.getModel(provider, frame.model.id) : undefined;
-		const options = requestOptions(frame.options);
+		const parsedOptions = requestOptions(frame.options);
+		const now = Date.now();
+		const issuedAt = Date.parse(frame.intent.issuedAt);
+		const expiresAt = Date.parse(frame.intent.expiresAt);
+		const digest = requestDigest(frame);
 		if (
-			!session ||
 			!provider ||
 			provider !== frame.model.provider ||
-			!authorized ||
-			JSON.stringify(authorized) !== JSON.stringify(frame.intent) ||
+			!intent ||
+			intent.status !== "active" ||
+			JSON.stringify(intent.capability) !== JSON.stringify(frame.intent) ||
+			frame.intent.sessionId !== session.sessionId ||
+			!Number.isFinite(issuedAt) ||
+			!Number.isFinite(expiresAt) ||
+			issuedAt > now + 5_000 ||
+			expiresAt <= now ||
+			expiresAt <= issuedAt ||
+			expiresAt - issuedAt > MAX_INTENT_LIFETIME_MS ||
 			!model ||
-			!options ||
-			inFlight.has(frame.requestId)
+			!parsedOptions ||
+			inFlight.has(frame.requestId) ||
+			session.seenRequestIds.has(frame.requestId) ||
+			intent.requestDigests.has(digest)
 		) {
-			send({ type: "qorpera_model_end", requestId: frame.requestId, error: "kernel model request denied" });
+			deny(send, frame.requestId);
 			return;
 		}
-		const requestSha256 = createHash("sha256").update(JSON.stringify(frame)).digest("hex");
+		session.seenRequestIds.add(frame.requestId);
+
+		const inputTokens = serializedBytes(frame.context);
+		const outputRemaining =
+			intent.capability.budget.maxOutputTokens - intent.usage.outputTokens - intent.reserved.outputTokens;
+		const requestedOutputTokens = parsedOptions.maxTokens ?? model.maxTokens;
+		const outputTokens = Math.min(requestedOutputTokens, model.maxTokens, outputRemaining);
+		const costUsd =
+			inputTokens === undefined ? Number.POSITIVE_INFINITY : costUpperBound(model, inputTokens, outputTokens);
+		if (
+			intent.usage.calls >= intent.capability.budget.maxCalls ||
+			inputTokens === undefined ||
+			inputTokens >
+				intent.capability.budget.maxInputTokens - intent.usage.inputTokens - intent.reserved.inputTokens ||
+			outputTokens < 1 ||
+			costUsd > intent.capability.budget.maxCostUsd - intent.usage.costUsd - intent.reserved.costUsd
+		) {
+			deny(send, frame.requestId);
+			return;
+		}
+
+		const reservation = { inputTokens, outputTokens, costUsd };
+		intent.usage.calls++;
+		intent.reserved.inputTokens += reservation.inputTokens;
+		intent.reserved.outputTokens += reservation.outputTokens;
+		intent.reserved.costUsd += reservation.costUsd;
+		intent.requestDigests.add(digest);
 		const controller = new AbortController();
-		inFlight.set(frame.requestId, { controller, session });
+		const expiryTimer = setTimeout(() => revokeIntent(session, intent, "expired"), Math.max(1, expiresAt - now));
+		inFlight.set(frame.requestId, { controller, session, intent, reservation, expiryTimer });
 		session.observe?.({
 			intentNonce: frame.intent.nonce,
 			requestHash: frame.intent.requestHash,
 			provider,
 			model: model.id,
-			requestSha256,
+			requestSha256: digest,
 			status: "started",
 		});
+		let terminalUsage: ModelUsage | undefined;
 		try {
-			const stream = runtime.streamSimple(model, frame.context, { ...options, signal: controller.signal });
-			for await (const event of stream) send({ type: "qorpera_model_event", requestId: frame.requestId, event });
+			const stream = runtime.streamSimple(model, frame.context, {
+				...parsedOptions,
+				maxTokens: outputTokens,
+				signal: controller.signal,
+			});
+			for await (const event of stream) {
+				terminalUsage = usageFromEvent(event) ?? terminalUsage;
+				send({ type: "qorpera_model_event", requestId: frame.requestId, event });
+			}
 			session.observe?.({
 				intentNonce: frame.intent.nonce,
 				requestHash: frame.intent.requestHash,
 				provider,
 				model: model.id,
-				requestSha256,
+				requestSha256: digest,
 				status: controller.signal.aborted ? "aborted" : "completed",
 			});
 			send({ type: "qorpera_model_end", requestId: frame.requestId });
@@ -254,53 +453,147 @@ export async function startModelRequestBroker(options: {
 				requestHash: frame.intent.requestHash,
 				provider,
 				model: model.id,
-				requestSha256,
+				requestSha256: digest,
 				status: controller.signal.aborted ? "aborted" : "failed",
 			});
 			send({ type: "qorpera_model_end", requestId: frame.requestId, error: "kernel model execution failed" });
 		} finally {
+			clearTimeout(expiryTimer);
 			inFlight.delete(frame.requestId);
+			intent.reserved.inputTokens -= reservation.inputTokens;
+			intent.reserved.outputTokens -= reservation.outputTokens;
+			intent.reserved.costUsd -= reservation.costUsd;
+			if (terminalUsage) {
+				intent.usage.inputTokens += terminalUsage.inputTokens;
+				intent.usage.outputTokens += terminalUsage.outputTokens;
+				intent.usage.costUsd += terminalUsage.costUsd;
+			}
+			if (
+				intent.usage.inputTokens > intent.capability.budget.maxInputTokens ||
+				intent.usage.outputTokens > intent.capability.budget.maxOutputTokens ||
+				intent.usage.costUsd > intent.capability.budget.maxCostUsd
+			) {
+				revokeIntent(session, intent, "budget_exhausted");
+			}
 		}
 	};
+
 	return {
-		registerChild: (sourceCredentials, ambientProviders, observe) => {
+		registerChild: (sessionId, sourceCredentials, ambientProviders, observe) => {
+			if (!sessionId) throw new Error("model broker child requires a session id");
 			const projection = brokerCredentialProjection(sourceCredentials, ambientProviders, options.allowedProviders);
-			const session: BrokerSession = { handles: projection.handles, intents: new Map(), observe };
+			const session: BrokerSession = {
+				sessionId,
+				handles: projection.handles,
+				intents: new Map(),
+				seenRequestIds: new Set(),
+				observe,
+			};
 			sessions.add(session);
-			for (const handle of session.handles.keys()) handleSessions.set(handle, session);
+			const handleFrame = (value: unknown, send: (frame: object) => void): boolean => {
+				if (!value || typeof value !== "object") return false;
+				const type = (value as { type?: unknown }).type;
+				if (type === "qorpera_model_request") {
+					const request = parsedRequest(value);
+					if (request) void sendRequest(session, request, send);
+					else {
+						const requestId = (value as { requestId?: unknown }).requestId;
+						if (typeof requestId === "string") deny(send, requestId);
+					}
+					return true;
+				}
+				if (type === "qorpera_model_abort") {
+					const abort = value as Partial<ModelAbortFrame>;
+					if (typeof abort.requestId === "string") {
+						const request = inFlight.get(abort.requestId);
+						if (request?.session === session) revokeIntent(session, request.intent, "aborted");
+					}
+					return true;
+				}
+				if (type === "qorpera_model_intent_end") {
+					const end = value as Partial<ModelIntentEndFrame>;
+					if (
+						end.sessionId === session.sessionId &&
+						typeof end.intentNonce === "string" &&
+						end.status &&
+						["completed", "aborted", "failed", "expired", "budget_exhausted"].includes(end.status)
+					) {
+						const intent = session.intents.get(end.intentNonce);
+						if (intent) revokeIntent(session, intent, end.status);
+					}
+					return true;
+				}
+				return false;
+			};
 			return {
 				handles: Object.fromEntries([...projection.handles].map(([handle, provider]) => [provider, handle])),
 				credentials: projection.credentials,
-				authorizeIntent: (intent) => session.intents.set(intent.nonce, { ...intent }),
+				authorizeIntent: (capability) => {
+					const issuedAt = Date.parse(capability.issuedAt);
+					const expiresAt = Date.parse(capability.expiresAt);
+					const now = Date.now();
+					if (
+						!validIntent(capability) ||
+						capability.sessionId !== session.sessionId ||
+						session.intents.has(capability.nonce) ||
+						!Number.isFinite(issuedAt) ||
+						!Number.isFinite(expiresAt) ||
+						issuedAt > now + 5_000 ||
+						expiresAt <= now ||
+						expiresAt <= issuedAt ||
+						expiresAt - issuedAt > MAX_INTENT_LIFETIME_MS
+					)
+						return false;
+					let intent: IntentState | undefined;
+					const expiryTimer = setTimeout(
+						() => {
+							if (intent) revokeIntent(session, intent, "expired");
+						},
+						Math.max(1, expiresAt - now),
+					);
+					intent = {
+						capability: { ...capability, budget: { ...capability.budget } },
+						status: "active" as const,
+						usage: { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
+						reserved: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+						requestDigests: new Set<string>(),
+						expiryTimer,
+					};
+					session.intents.set(capability.nonce, intent);
+					return true;
+				},
+				handleFrame,
+				endTurn: (status) => {
+					for (const intent of session.intents.values()) revokeIntent(session, intent, status);
+				},
 				release: () => {
+					for (const intent of session.intents.values()) revokeIntent(session, intent, "aborted");
 					for (const [requestId, request] of inFlight) {
 						if (request.session === session) {
 							request.controller.abort();
+							clearTimeout(request.expiryTimer);
 							inFlight.delete(requestId);
 						}
 					}
-					for (const handle of session.handles.keys()) handleSessions.delete(handle);
 					session.intents.clear();
+					session.seenRequestIds.clear();
 					sessions.delete(session);
 				},
 			};
 		},
-		handleFrame: (value, send) => {
-			const request = parsedRequest(value);
-			if (request) {
-				void sendRequest(request, send);
-				return true;
-			}
-			if (!exactObject(value, ["type", "requestId"]) || value.type !== "qorpera_model_abort") return false;
-			const abort = value as unknown as ModelAbortFrame;
-			if (typeof abort.requestId === "string") inFlight.get(abort.requestId)?.controller.abort();
-			return true;
-		},
 		close: () => {
-			for (const request of inFlight.values()) request.controller.abort();
+			for (const request of inFlight.values()) {
+				request.controller.abort();
+				clearTimeout(request.expiryTimer);
+			}
 			inFlight.clear();
-			handleSessions.clear();
-			for (const session of sessions) session.intents.clear();
+			for (const session of sessions) {
+				for (const intent of session.intents.values()) {
+					clearTimeout(intent.expiryTimer);
+					intent.status = "aborted";
+				}
+				session.intents.clear();
+			}
 			sessions.clear();
 		},
 	};

@@ -50,6 +50,18 @@ describe("userland fork model", () => {
 		expect(ensureUserland(company(), baseV1, "1.0.0").action).toBe("current");
 	});
 
+	it("fails closed without deleting pre-existing userland content or invalid metadata", () => {
+		mkdirSync(userland(), { recursive: true });
+		writeFileSync(join(userland(), "founder-app.js"), "// preserve me", "utf-8");
+		expect(() => ensureUserland(company(), baseV1, "1.0.0")).toThrow("content was preserved for audit");
+		expect(readFileSync(join(userland(), "founder-app.js"), "utf-8")).toBe("// preserve me");
+		expect(existsSync(join(userland(), "index.html"))).toBe(false);
+
+		writeFileSync(join(userland(), "userland.json"), "not json", "utf-8");
+		expect(() => ensureUserland(company(), baseV1, "1.0.0")).toThrow("userland.json is invalid");
+		expect(readFileSync(join(userland(), "founder-app.js"), "utf-8")).toBe("// preserve me");
+	});
+
 	it("fast-forwards an untouched fork to a new base", () => {
 		ensureUserland(company(), baseV1, "1.0.0");
 		const status = ensureUserland(company(), baseV2, "2.0.0");

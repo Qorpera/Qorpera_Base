@@ -1,7 +1,10 @@
+import { readdir, readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import type { AgentTool } from "@qorpera/pi-agent-core";
 import { Text } from "@qorpera/pi-tui";
 import { spawn } from "child_process";
+import ignore from "ignore";
+import { minimatch } from "minimatch";
 import path from "path";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
@@ -37,6 +40,72 @@ const findSchema = Type.Object({
 export type FindToolInput = Static<typeof findSchema>;
 
 const DEFAULT_LIMIT = 1000;
+
+interface ScopedIgnoreMatcher {
+	basePath: string;
+	matcher: ReturnType<typeof ignore>;
+}
+
+async function findWithPortableTraversal(
+	pattern: string,
+	searchPath: string,
+	limit: number,
+	signal?: AbortSignal,
+): Promise<string[]> {
+	if (pattern.includes("[") && !pattern.includes("]")) throw new Error(`Error parsing glob '${pattern}'`);
+	const results: string[] = [];
+	const nocase = process.platform === "win32";
+
+	const walk = async (absoluteDir: string, relativeDir: string, inherited: ScopedIgnoreMatcher[]): Promise<void> => {
+		if (signal?.aborted) throw new Error("Operation aborted");
+		const entries = (await readdir(absoluteDir, { withFileTypes: true })).sort((a, b) =>
+			a.name.localeCompare(b.name),
+		);
+		const nestedRepository = relativeDir !== "" && entries.some((entry) => entry.name === ".git");
+		const scopedMatchers = nestedRepository ? [] : [...inherited];
+		try {
+			const content = await readFile(path.join(absoluteDir, ".gitignore"), "utf8");
+			scopedMatchers.push({ basePath: relativeDir, matcher: ignore({ ignorecase: nocase }).add(content) });
+		} catch {
+			// No readable ignore file in this directory.
+		}
+
+		for (const entry of entries) {
+			if (signal?.aborted) throw new Error("Operation aborted");
+			if (entry.name === ".git" || entry.name === "node_modules") continue;
+			const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+			const isDirectory = entry.isDirectory();
+			let ignored = false;
+			for (const scoped of scopedMatchers) {
+				if (scoped.basePath && !relativePath.startsWith(`${scoped.basePath}/`)) continue;
+				const localPath = scoped.basePath ? relativePath.slice(scoped.basePath.length + 1) : relativePath;
+				const test = scoped.matcher.test(isDirectory ? `${localPath}/` : localPath);
+				if (test.rule) ignored = test.ignored;
+			}
+			if (ignored) continue;
+
+			const outputPath = isDirectory ? `${relativePath}/` : relativePath;
+			const matchPath = isDirectory ? relativePath : outputPath;
+			if (
+				minimatch(matchPath, pattern, {
+					dot: true,
+					matchBase: !pattern.includes("/"),
+					nocase,
+				})
+			) {
+				results.push(outputPath);
+				if (results.length >= limit) return;
+			}
+			if (isDirectory) {
+				await walk(path.join(absoluteDir, entry.name), relativePath, scopedMatchers);
+				if (results.length >= limit) return;
+			}
+		}
+	};
+
+	await walk(searchPath, "", []);
+	return results;
+}
 
 export interface FindToolDetails {
 	truncation?: TruncationResult;
@@ -223,7 +292,42 @@ export function createFindToolDefinition(
 							return;
 						}
 						if (!fdPath) {
-							settle(() => reject(new Error("fd is not available and could not be downloaded")));
+							if (!(await ops.exists(searchPath))) {
+								settle(() => reject(new Error(`Path not found: ${searchPath}`)));
+								return;
+							}
+							const results = await findWithPortableTraversal(pattern, searchPath, effectiveLimit, signal);
+							if (results.length === 0) {
+								settle(() =>
+									resolve({
+										content: [{ type: "text", text: "No files found matching pattern" }],
+										details: undefined,
+									}),
+								);
+								return;
+							}
+							const resultLimitReached = results.length >= effectiveLimit;
+							const truncation = truncateHead(results.join("\n"), { maxLines: Number.MAX_SAFE_INTEGER });
+							let resultOutput = truncation.content;
+							const details: FindToolDetails = {};
+							const notices: string[] = [];
+							if (resultLimitReached) {
+								notices.push(
+									`${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
+								);
+								details.resultLimitReached = effectiveLimit;
+							}
+							if (truncation.truncated) {
+								notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
+								details.truncation = truncation;
+							}
+							if (notices.length > 0) resultOutput += `\n\n[${notices.join(". ")}]`;
+							settle(() =>
+								resolve({
+									content: [{ type: "text", text: resultOutput }],
+									details: Object.keys(details).length > 0 ? details : undefined,
+								}),
+							);
 							return;
 						}
 
@@ -244,19 +348,13 @@ export function createFindToolDefinition(
 							current = parent;
 						}
 						if (!insideGitRepo) args.push("--no-require-git");
-						args.push("--max-results", String(effectiveLimit));
 
-						// fd --glob matches against the basename unless --full-path is set; in --full-path
-						// mode it matches against the absolute candidate path, so a path-containing
-						// pattern like 'src/**/*.spec.ts' needs a leading '**/' to match anything.
-						let effectivePattern = pattern;
-						if (pattern.includes("/")) {
-							args.push("--full-path");
-							if (!pattern.startsWith("/") && !pattern.startsWith("**/") && pattern !== "**") {
-								effectivePattern = `**/${pattern}`;
-							}
-						}
-						args.push("--", effectivePattern, searchPath);
+						// fd's Windows glob matcher does not treat `/` as the separator in full-path mode.
+						// For path-qualified patterns, let fd perform traversal/ignore handling and apply the
+						// documented portable glob to normalized relative paths in this process.
+						const filterRelativePaths = pattern.includes("/");
+						if (!filterRelativePaths) args.push("--max-results", String(effectiveLimit));
+						args.push("--", filterRelativePaths ? "*" : pattern, searchPath);
 
 						const child = spawn(fdPath, args, { stdio: ["ignore", "pipe", "pipe"] });
 						const rl = createInterface({ input: child.stdout });
@@ -278,7 +376,16 @@ export function createFindToolDefinition(
 						});
 
 						rl.on("line", (line) => {
+							if (filterRelativePaths) {
+								const relativePath = relativizeFindResultPath(line.replace(/\r$/, ""), searchPath).replace(
+									/\/$/,
+									"",
+								);
+								if (!minimatch(relativePath, pattern, { dot: true, nocase: process.platform === "win32" }))
+									return;
+							}
 							lines.push(line);
+							if (lines.length >= effectiveLimit) stopChild?.();
 						});
 
 						child.on("error", (error) => {

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import {
 	appendFileSync,
@@ -17,6 +18,9 @@ import {
 	readAuthorityConfig,
 	requestHash,
 } from "@qorpera/pi-coding-agent/authority";
+import type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
+
+export type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
 
 interface QorperaSessionAuthority {
 	actor: "controller" | "product-worker";
@@ -65,6 +69,7 @@ export interface AgentScope {
 export interface TrailBinding {
 	path: string;
 	file: string;
+	sessionId: string;
 	cwd: string;
 	token: string;
 	authority: QorperaSessionAuthority;
@@ -105,14 +110,6 @@ export interface KernelGateResponseBody {
 
 export interface SignedKernelGateResponse extends KernelGateResponseBody {
 	type: "qorpera_kernel_response";
-	signature: string;
-}
-
-export interface KernelIntentCapability {
-	nonce: string;
-	requestHash: string;
-	attended: boolean;
-	expiresAt: string;
 	signature: string;
 }
 
@@ -261,6 +258,7 @@ export function bindTrailSession(root: string, cwd: string, scope: AgentScope, s
 	mkdirSync(trailDir, { recursive: true });
 	const authority = authorityForScope(scope);
 	let path: string;
+	let sessionId: string;
 	let audit: TrailBinding["audit"] = { ids: new Set(), sequence: 0, lastHash: "" };
 	if (sessionFile) {
 		if (basename(sessionFile) !== sessionFile || !sessionFile.endsWith(".jsonl")) {
@@ -269,6 +267,7 @@ export function bindTrailSession(root: string, cwd: string, scope: AgentScope, s
 		path = join(trailDir, sessionFile);
 		if (!existsSync(path)) throw new Error(`trail session does not exist: ${sessionFile}`);
 		const header = readHeader(path);
+		sessionId = header.id;
 		if (header.version !== TRAIL_SESSION_VERSION) {
 			throw new Error(`trail session schema ${header.version ?? 1} requires an explicit append-only migration`);
 		}
@@ -277,6 +276,7 @@ export function bindTrailSession(root: string, cwd: string, scope: AgentScope, s
 	} else {
 		const timestamp = new Date().toISOString();
 		const id = randomUUID();
+		sessionId = id;
 		const fileTimestamp = timestamp.replace(/[:.]/g, "-");
 		path = join(trailDir, `${fileTimestamp}_${id}.jsonl`);
 		const header: SessionHeader = {
@@ -289,7 +289,7 @@ export function bindTrailSession(root: string, cwd: string, scope: AgentScope, s
 		};
 		writeFileSync(path, `${JSON.stringify(header)}\n`, { flag: "wx" });
 	}
-	return { path, file: basename(path), cwd: resolve(cwd), token: randomUUID(), authority, audit };
+	return { path, file: basename(path), sessionId, cwd: resolve(cwd), token: randomUUID(), authority, audit };
 }
 
 export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): TrailAppendFrame | undefined {
@@ -586,9 +586,17 @@ function kernelResponsePayload(response: KernelGateResponseBody): string {
 function kernelIntentPayload(intent: Omit<KernelIntentCapability, "signature">): string {
 	return JSON.stringify({
 		nonce: intent.nonce,
+		sessionId: intent.sessionId,
 		requestHash: intent.requestHash,
 		attended: intent.attended,
+		issuedAt: intent.issuedAt,
 		expiresAt: intent.expiresAt,
+		budget: {
+			maxCalls: intent.budget.maxCalls,
+			maxInputTokens: intent.budget.maxInputTokens,
+			maxOutputTokens: intent.budget.maxOutputTokens,
+			maxCostUsd: intent.budget.maxCostUsd,
+		},
 	});
 }
 
@@ -596,11 +604,47 @@ function intentRequestHash(frame: Record<string, unknown>): string {
 	return createHash("sha256").update(JSON.stringify(frame)).digest("hex");
 }
 
-export function createKernelResponseSigner(): {
+export const DEFAULT_MODEL_INTENT_BUDGET: Readonly<KernelModelIntentBudget> = Object.freeze({
+	maxCalls: 64,
+	maxInputTokens: 16_000_000,
+	maxOutputTokens: 1_000_000,
+	maxCostUsd: 100,
+});
+
+const DEFAULT_MODEL_INTENT_LIFETIME_MS = 30 * 60 * 1000;
+const MAX_MODEL_INTENT_LIFETIME_MS = 4 * 60 * 60 * 1000;
+
+function checkedModelIntentBudget(budget: KernelModelIntentBudget): KernelModelIntentBudget {
+	if (
+		!Number.isInteger(budget.maxCalls) ||
+		budget.maxCalls < 1 ||
+		!Number.isInteger(budget.maxInputTokens) ||
+		budget.maxInputTokens < 1 ||
+		!Number.isInteger(budget.maxOutputTokens) ||
+		budget.maxOutputTokens < 1 ||
+		!Number.isFinite(budget.maxCostUsd) ||
+		budget.maxCostUsd < 0
+	) {
+		throw new Error("kernel model intent budget is invalid");
+	}
+	return { ...budget };
+}
+
+export function createKernelResponseSigner(options: {
+	sessionId: string;
+	modelBudget?: KernelModelIntentBudget;
+	intentLifetimeMs?: number;
+}): {
 	publicKey: string;
 	signResponse: (response: KernelGateResponseBody) => SignedKernelGateResponse;
 	signIntent: (frame: Record<string, unknown>, attended: boolean) => KernelIntentCapability;
 } {
+	if (!options.sessionId) throw new Error("kernel intent signer requires a session id");
+	const budget = checkedModelIntentBudget(options.modelBudget ?? DEFAULT_MODEL_INTENT_BUDGET);
+	const lifetimeMs = options.intentLifetimeMs ?? DEFAULT_MODEL_INTENT_LIFETIME_MS;
+	if (!Number.isInteger(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > MAX_MODEL_INTENT_LIFETIME_MS) {
+		throw new Error("kernel model intent lifetime is invalid");
+	}
 	const pair = generateKeyPairSync("ed25519");
 	const publicKey = pair.publicKey.export({ format: "der", type: "spki" }).toString("base64");
 	return {
@@ -611,11 +655,15 @@ export function createKernelResponseSigner(): {
 			signature: sign(null, Buffer.from(kernelResponsePayload(response)), pair.privateKey).toString("base64"),
 		}),
 		signIntent: (frame, attended) => {
+			const issuedAtMs = Date.now();
 			const intent = {
 				nonce: randomUUID(),
+				sessionId: options.sessionId,
 				requestHash: intentRequestHash(frame),
 				attended,
-				expiresAt: new Date(Date.now() + 30_000).toISOString(),
+				issuedAt: new Date(issuedAtMs).toISOString(),
+				expiresAt: new Date(issuedAtMs + lifetimeMs).toISOString(),
+				budget: { ...budget },
 			};
 			return {
 				...intent,
@@ -676,6 +724,85 @@ export function sandboxCommandArgs(codexEntry: string, runtimeDir: string, progr
 		program,
 		...args,
 	];
+}
+
+/**
+ * Exercise the bundled Codex sandbox before an agent is started. On a clean
+ * Windows profile this invokes Codex's supported elevated setup path; on an
+ * existing profile Codex validates and refreshes its own ACL/firewall state.
+ * No sandbox marker, DPAPI secret, or ACL record is copied by Qorpera.
+ */
+export function provisionWindowsSandbox(options: {
+	codexEntry: string;
+	configDir: string;
+	runtimeDir: string;
+	nodeExecutable: string;
+	env: NodeJS.ProcessEnv;
+}): void {
+	if (process.platform !== "win32") return;
+	const env = {
+		...options.env,
+		CODEX_HOME: options.configDir,
+		ELECTRON_RUN_AS_NODE: "1",
+	};
+	const identity = spawnSync(
+		options.nodeExecutable,
+		sandboxCommandArgs(options.codexEntry, options.runtimeDir, options.nodeExecutable, [
+			"-e",
+			'console.log(require("node:os").userInfo().username)',
+		]),
+		{
+			cwd: options.runtimeDir,
+			env,
+			encoding: "utf-8",
+			maxBuffer: 1024 * 1024,
+			timeout: 10 * 60 * 1000,
+			windowsHide: true,
+		},
+	);
+	if (
+		identity.error ||
+		identity.status !== 0 ||
+		!identity.stdout.trim().toLowerCase().includes("codexsandboxoffline")
+	) {
+		const detail = [identity.error?.message, identity.stderr, identity.stdout]
+			.filter((value): value is string => Boolean(value?.trim()))
+			.join("\n")
+			.trim()
+			.slice(0, 4096);
+		throw new Error(
+			`Bundled Codex Windows sandbox provisioning failed; Qorpera will not start the controller.${detail ? `\n${detail}` : ""}`,
+		);
+	}
+
+	// Exercise the effective offline identity, not only Codex's setup marker.
+	// Any successful direct HTTPS request means network isolation is absent or
+	// stale, so the controller must not start.
+	const network = spawnSync(
+		options.nodeExecutable,
+		sandboxCommandArgs(options.codexEntry, options.runtimeDir, options.nodeExecutable, [
+			"-e",
+			'Promise.any([fetch("https://example.com/"),fetch("https://api.openai.com/")]).then(()=>process.exit(42),()=>process.exit(0))',
+		]),
+		{
+			cwd: options.runtimeDir,
+			env,
+			encoding: "utf-8",
+			maxBuffer: 1024 * 1024,
+			timeout: 30_000,
+			windowsHide: true,
+		},
+	);
+	if (network.error || network.status !== 0) {
+		const detail = [network.error?.message, network.stderr, network.stdout]
+			.filter((value): value is string => Boolean(value?.trim()))
+			.join("\n")
+			.trim()
+			.slice(0, 4096);
+		throw new Error(
+			`Bundled Codex Windows sandbox network isolation failed; Qorpera will not start the controller.${detail ? `\n${detail}` : ""}`,
+		);
+	}
 }
 
 export function protectedControllerPaths(

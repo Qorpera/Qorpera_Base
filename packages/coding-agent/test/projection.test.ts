@@ -24,7 +24,7 @@ describe("company UI projection", () => {
 					id: "page:finance.overview",
 					kind: "page",
 					label: "Overview",
-					view: { type: "surface", entry: "finance/overview.html" },
+					view: { type: "surface", entry: "finance/overview.html", version: 7 },
 				},
 				{
 					id: "page:finance.outlook",
@@ -38,6 +38,7 @@ describe("company UI projection", () => {
 		expect(projection.diagnostics).toEqual([]);
 		expect(projection.navigation).toEqual(["department:finance"]);
 		expect(projection.default).toBe("page:finance.overview");
+		expect(projection.nodes[2]).toMatchObject({ view: { version: 7 } });
 	});
 
 	it("rejects reserved IDs, missing references, and category nesting", () => {

@@ -2,8 +2,13 @@ import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
-import { isRendererRequestAllowed } from "../src/renderer-boundary.ts";
+import type { Session } from "electron";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	isRendererRequestAllowed,
+	lockDownRendererSession,
+	lockDownRendererWebContents,
+} from "../src/renderer-boundary.ts";
 
 const root = join(tmpdir(), `qorpera-renderer-boundary-${process.pid}`);
 
@@ -35,5 +40,58 @@ describe("renderer request boundary", () => {
 		expect(isRendererRequestAllowed(pathToFileURL(join(trusted, "index.html")).href, options)).toBe(true);
 		expect(isRendererRequestAllowed(pathToFileURL(outside).href, options)).toBe(false);
 		expect(isRendererRequestAllowed(pathToFileURL(join(trusted, "linked", "outside.txt")).href, options)).toBe(false);
+	});
+
+	it("default-denies renderer permissions, devices, capture, downloads, and direct WebRTC", () => {
+		let permissionCheck: (() => boolean) | undefined;
+		let permissionRequest: ((callback: (allowed: boolean) => void) => void) | undefined;
+		let devicePermission: (() => boolean) | undefined;
+		let displayRequest: ((callback: (streams: object) => void) => void) | undefined;
+		let download: ((event: { preventDefault: () => void }, item: { cancel: () => void }) => void) | undefined;
+		const fake = {
+			setPermissionCheckHandler: (handler: () => boolean) => {
+				permissionCheck = handler;
+			},
+			setPermissionRequestHandler: (
+				handler: (_contents: unknown, _permission: unknown, callback: (allowed: boolean) => void) => void,
+			) => {
+				permissionRequest = (callback) => handler(undefined, undefined, callback);
+			},
+			setDevicePermissionHandler: (handler: () => boolean) => {
+				devicePermission = handler;
+			},
+			setDisplayMediaRequestHandler: (handler: (_request: unknown, callback: (streams: object) => void) => void) => {
+				displayRequest = (callback) => handler(undefined, callback);
+			},
+			on: (_event: string, handler: typeof download) => {
+				download = handler;
+				return fake;
+			},
+		};
+		lockDownRendererSession(fake as unknown as Session);
+		expect(permissionCheck?.()).toBe(false);
+		let permissionAllowed = true;
+		permissionRequest?.((allowed) => {
+			permissionAllowed = allowed;
+		});
+		expect(permissionAllowed).toBe(false);
+		expect(devicePermission?.()).toBe(false);
+		let displayStreams: object | undefined;
+		displayRequest?.((streams) => {
+			displayStreams = streams;
+		});
+		expect(displayStreams).toEqual({});
+		let webRtcPolicy: string | undefined;
+		lockDownRendererWebContents({
+			setWebRTCIPHandlingPolicy: (policy) => {
+				webRtcPolicy = policy;
+			},
+		});
+		expect(webRtcPolicy).toBe("disable_non_proxied_udp");
+		const preventDefault = vi.fn();
+		const cancel = vi.fn();
+		download?.({ preventDefault }, { cancel });
+		expect(preventDefault).toHaveBeenCalledOnce();
+		expect(cancel).toHaveBeenCalledOnce();
 	});
 });

@@ -7,11 +7,15 @@ describe("kernel intent capabilities", () => {
 		const pair = generateKeyPairSync("ed25519");
 		const publicKey = pair.publicKey.export({ format: "der", type: "spki" }).toString("base64");
 		const unsignedFrame = { type: "prompt", message: "approved founder instruction" };
+		const issuedAt = new Date().toISOString();
 		const intent = {
 			nonce: "intent-one",
+			sessionId: "session-one",
 			requestHash: createHash("sha256").update(JSON.stringify(unsignedFrame)).digest("hex"),
 			attended: true,
+			issuedAt,
 			expiresAt: new Date(Date.now() + 30_000).toISOString(),
+			budget: { maxCalls: 4, maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostUsd: 1 },
 		};
 		const kernelIntent = {
 			...intent,

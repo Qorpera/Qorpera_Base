@@ -625,6 +625,16 @@ export interface ProductWorktree {
 	createdAt: string;
 }
 
+export interface ProductWorktreePlan {
+	taskId: string;
+	path: string;
+	branch: string;
+	departmentId: string;
+	repositoryPath: string;
+	sourceRemote: string;
+	sourceHead?: string;
+}
+
 interface ProductWorktreeAssignment extends ProductWorktree {
 	version: 1;
 }
@@ -960,25 +970,74 @@ function gitOutput(root: string, args: string[]): string | undefined {
 	return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : undefined;
 }
 
-/** Create one isolated product task clone under the department's worktrees directory. */
-export function createProductWorktree(
+/** Plan the exact founder-reviewed worktree without mutating product storage. */
+export function planProductWorktree(
 	rootDir: string,
 	department: ProductDepartment,
 	runtimeLock: CompanyRuntimeLock,
-): ProductWorktree | undefined {
+): ProductWorktreePlan | undefined {
 	const root = canonicalCompanyRoot(rootDir);
 	assertRuntimeLock(root, runtimeLock);
 	readProductProtectionInventory(root);
 	if (!department.repositoryExists) return undefined;
+	const registered = listProductDepartments(root).find(
+		(entry) =>
+			entry.id === department.id &&
+			entry.repositoryPath === department.repositoryPath &&
+			entry.worktreesPath === department.worktreesPath &&
+			entry.repositoryExists,
+	);
+	if (!registered) return undefined;
 	const taskId = `${new Date()
 		.toISOString()
 		.replace(/[-:TZ.]/g, "")
 		.slice(0, 14)}-${randomUUID().slice(0, 8)}`;
 	const path = join(department.worktreesPath, taskId);
-	const branch = `qorpera/${department.id}/${taskId}`;
+	const branch = `qorpera/${taskId}`;
+	const repository = canonicalDirectory(root, department.repositoryPath);
+	canonicalDirectory(root, department.worktreesPath);
+	const sourceRemote = gitOutput(repository, ["remote", "get-url", "origin"]) ?? repository;
+	const sourceHead = gitOutput(repository, ["rev-parse", "HEAD"]);
+	return {
+		taskId,
+		path,
+		branch,
+		departmentId: department.id,
+		repositoryPath: department.repositoryPath,
+		sourceRemote,
+		...(sourceHead ? { sourceHead } : {}),
+	};
+}
+
+/** Materialize one founder-reviewed product task clone under worktrees/. */
+export function createProductWorktree(
+	rootDir: string,
+	department: ProductDepartment,
+	runtimeLock: CompanyRuntimeLock,
+	plan: ProductWorktreePlan,
+): ProductWorktree | undefined {
+	const root = canonicalCompanyRoot(rootDir);
+	assertRuntimeLock(root, runtimeLock);
+	const currentPlan = planProductWorktree(root, department, runtimeLock);
+	if (
+		!currentPlan ||
+		plan.departmentId !== currentPlan.departmentId ||
+		plan.repositoryPath !== currentPlan.repositoryPath ||
+		plan.path !== join(department.worktreesPath, plan.taskId) ||
+		plan.branch !== `qorpera/${plan.taskId}` ||
+		plan.sourceRemote !== currentPlan.sourceRemote ||
+		plan.sourceHead !== currentPlan.sourceHead ||
+		!/^\d{14}-[a-f0-9]{8}$/i.test(plan.taskId)
+	) {
+		throw new Error("Product worktree plan changed after founder review");
+	}
+	const { taskId, path, branch } = plan;
 	const worktreesRoot = canonicalDirectory(root, department.worktreesPath);
 	const repository = canonicalDirectory(root, department.repositoryPath);
 	const target = join(root, path);
+	if (existsSync(target) || existsSync(worktreeAssignmentPath(root, department.id, taskId))) {
+		throw new Error("Founder-reviewed product worktree target is no longer available");
+	}
 	const clone = spawnSync("git", ["clone", "--no-hardlinks", repository, target], {
 		encoding: "utf-8",
 		shell: false,
@@ -1008,11 +1067,11 @@ export function createProductWorktree(
 			throw new Error("Kernel-created product worktree escaped its assigned parent");
 		}
 		const sourceRemote = gitOutput(target, ["remote", "get-url", "origin"]);
-		if (!sourceRemote) {
+		const sourceHead = gitOutput(target, ["rev-parse", "HEAD"]);
+		if (!sourceRemote || sourceRemote !== plan.sourceRemote || sourceHead !== plan.sourceHead) {
 			rmSync(target, { recursive: true, force: true });
-			throw new Error("Kernel-created product worktree has no verifiable origin");
+			throw new Error("Kernel-created product worktree source changed after founder review");
 		}
-		const sourceHead = gitOutput(repository, ["rev-parse", "HEAD"]);
 		const assignment: ProductWorktreeAssignment = {
 			version: 1,
 			path,
@@ -1020,7 +1079,7 @@ export function createProductWorktree(
 			departmentId: department.id,
 			repositoryPath: department.repositoryPath,
 			sourceRemote,
-			...(sourceHead ? { sourceHead } : {}),
+			...(plan.sourceHead ? { sourceHead: plan.sourceHead } : {}),
 			createdAt: new Date().toISOString(),
 		};
 		const assignmentDir = join(root, PRODUCT_WORKTREE_ASSIGNMENTS_PATH, department.id);

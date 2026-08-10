@@ -29,6 +29,7 @@ import {
 	enforceCompanyKernelSettings,
 	KERNEL_PROMPT,
 	listProductDepartments,
+	planProductWorktree,
 	readProductProtectionInventory,
 	readProductWorktreeAssignment,
 	releaseCompanyRuntimeLock,
@@ -217,11 +218,13 @@ describe("forking hub verbs (no-launch paths)", () => {
 		const runtimeLock = claimCompanyRuntimeLock(company);
 		let worktree: ReturnType<typeof createProductWorktree>;
 		try {
-			worktree = createProductWorktree(company, department, runtimeLock);
+			const plan = planProductWorktree(company, department, runtimeLock)!;
+			expect(existsSync(join(company, plan.path))).toBe(false);
+			worktree = createProductWorktree(company, department, runtimeLock, plan);
 		} finally {
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
-		expect(worktree?.branch).toMatch(/^qorpera\/legacy-product-development\//);
+		expect(worktree?.branch).toMatch(/^qorpera\/\d{14}-[a-f0-9]{8}$/);
 		expect(existsSync(join(company, worktree!.path, ".git"))).toBe(true);
 		expect(statSync(join(company, worktree!.path, ".git")).isDirectory()).toBe(true);
 		expect(
@@ -417,7 +420,7 @@ describe("product-development departments", () => {
 		expect(() => readProductProtectionInventory(root)).toThrow("must not be a link or junction");
 	});
 
-	it("uses Git-ref-safe product slugs and removes clones when branch creation fails", () => {
+	it("rejects a changed founder-reviewed worktree plan before creating a clone", () => {
 		scaffoldCompany(root);
 		const department = scaffoldProductDepartment(root, "Foo..Bar");
 		expect(department.id).toBe("foo-bar-development");
@@ -429,13 +432,14 @@ describe("product-development departments", () => {
 			stdio: "ignore",
 		});
 		const runtimeLock = claimCompanyRuntimeLock(root);
-		let failed: ReturnType<typeof createProductWorktree>;
 		try {
-			failed = createProductWorktree(root, { ...department, id: "bad..ref", repositoryExists: true }, runtimeLock);
+			const plan = planProductWorktree(root, department, runtimeLock)!;
+			expect(() =>
+				createProductWorktree(root, department, runtimeLock, { ...plan, branch: "qorpera/bad..ref" }),
+			).toThrow("changed after founder review");
 		} finally {
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
-		expect(failed).toBeUndefined();
 		expect(readdirSync(join(root, department.worktreesPath))).toEqual([".gitkeep"]);
 	});
 

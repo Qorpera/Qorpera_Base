@@ -10,7 +10,7 @@ import type {
 	ModelsSimpleStreamOptions,
 } from "@qorpera/pi-ai";
 import { createAssistantMessageEventStream } from "@qorpera/pi-ai";
-import type { KernelIntentCapability } from "./kernel-broker.ts";
+import type { KernelIntentCapability, ModelIntentTerminalStatus } from "@qorpera/pi-protocol";
 
 const MAX_MODEL_REQUEST_BYTES = 64 * 1024 * 1024;
 
@@ -104,6 +104,16 @@ export function isModelBrokerInstalled(): boolean {
 
 export function setModelBrokerWriter(writer: (frame: object) => void): void {
 	writeFrame = writer;
+}
+
+/** Notify any transport adapter that a verified turn capability is terminal. */
+export function endModelBrokerIntent(intent: KernelIntentCapability, status: ModelIntentTerminalStatus): void {
+	writeFrame?.({
+		type: "qorpera_model_intent_end",
+		sessionId: intent.sessionId,
+		intentNonce: intent.nonce,
+		status,
+	});
 }
 
 /** Scope a verified founder/kernel intent to the core agent's model stream call. */

@@ -261,19 +261,18 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	mkdirSync(TOOLS_DIR, { recursive: true });
 
 	const downloadUrl = `https://github.com/${config.repo}/releases/download/${config.tagPrefix}${version}/${assetName}`;
-	const archivePath = join(TOOLS_DIR, assetName);
+	const installNonce = `${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+	const archivePath = join(TOOLS_DIR, `${assetName}.${installNonce}.download`);
 	const binaryExt = plat === "win32" ? ".exe" : "";
 	const binaryPath = join(TOOLS_DIR, config.binaryName + binaryExt);
+	const binaryCandidatePath = join(TOOLS_DIR, `${config.binaryName}${binaryExt}.${installNonce}.install`);
 
 	// Download
 	await downloadFile(downloadUrl, archivePath);
 
 	// Extract into a unique temp directory. fd and rg downloads can run concurrently
 	// during startup, so sharing a fixed directory causes races.
-	const extractDir = join(
-		TOOLS_DIR,
-		`extract_tmp_${config.binaryName}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
-	);
+	const extractDir = join(TOOLS_DIR, `extract_tmp_${config.binaryName}_${installNonce}`);
 	mkdirSync(extractDir, { recursive: true });
 
 	try {
@@ -297,7 +296,14 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 		}
 
 		if (extractedBinary) {
-			renameSync(extractedBinary, binaryPath);
+			renameSync(extractedBinary, binaryCandidatePath);
+			if (!existsSync(binaryPath)) {
+				try {
+					renameSync(binaryCandidatePath, binaryPath);
+				} catch (error) {
+					if (!existsSync(binaryPath)) throw error;
+				}
+			}
 		} else {
 			throw new Error(`Binary not found in archive: expected ${binaryFileName} under ${extractDir}`);
 		}
@@ -309,6 +315,7 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	} finally {
 		// Cleanup
 		rmSync(archivePath, { force: true });
+		rmSync(binaryCandidatePath, { force: true });
 		rmSync(extractDir, { recursive: true, force: true });
 	}
 

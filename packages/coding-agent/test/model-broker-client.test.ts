@@ -29,11 +29,15 @@ describe("model broker client", () => {
 		const frames: object[] = [];
 		setModelBrokerWriter((frame) => frames.push(frame));
 		installModelBrokerFetch();
+		const issuedAt = new Date().toISOString();
 		const intent = {
 			nonce: "22222222-2222-4222-8222-222222222222",
+			sessionId: "session-one",
 			requestHash: "a".repeat(64),
 			attended: true,
-			expiresAt: "2026-08-10T12:00:00.000Z",
+			issuedAt,
+			expiresAt: new Date(Date.now() + 30_000).toISOString(),
+			budget: { maxCalls: 4, maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostUsd: 1 },
 			signature: "kernel-signature",
 		};
 

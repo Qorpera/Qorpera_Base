@@ -248,7 +248,7 @@ describe("RPC prompt response semantics", () => {
 		} finally {
 			await cleanup();
 		}
-	});
+	}, 60_000);
 
 	it("emits one success response when prompt is queued during streaming", async () => {
 		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 100 });

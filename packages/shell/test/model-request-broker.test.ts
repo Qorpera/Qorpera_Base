@@ -1,37 +1,53 @@
+import type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const runtime = vi.hoisted(() => ({
 	getModel: vi.fn((provider: string, id: string) =>
 		provider === "openai" && id === "approved-model"
-			? { provider, id, api: "openai-responses", baseUrl: "https://api.openai.com/v1" }
+			? {
+					provider,
+					id,
+					api: "openai-responses",
+					baseUrl: "https://api.openai.com/v1",
+					maxTokens: 100,
+					cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 1.25 },
+				}
 			: undefined,
 	),
-	streamSimple: vi.fn(() => ({
-		async *[Symbol.asyncIterator]() {
-			yield {
-				type: "done",
-				reason: "stop",
-				message: {
-					role: "assistant",
-					content: [{ type: "text", text: "ok" }],
-					api: "openai-responses",
-					provider: "openai",
-					model: "approved-model",
-					usage: {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-						totalTokens: 0,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	streamSimple: vi.fn(
+		(_model: unknown, context: { systemPrompt?: string }, options: { signal?: AbortSignal; maxTokens?: number }) => ({
+			async *[Symbol.asyncIterator]() {
+				if (context.systemPrompt === "wait") {
+					await new Promise<void>((_resolve, reject) => {
+						const abort = () => reject(new Error("aborted"));
+						if (options.signal?.aborted) abort();
+						else options.signal?.addEventListener("abort", abort, { once: true });
+					});
+				}
+				yield {
+					type: "done",
+					reason: "stop",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "ok" }],
+						api: "openai-responses",
+						provider: "openai",
+						model: "approved-model",
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: { input: 0.000001, output: 0.000002, cacheRead: 0, cacheWrite: 0, total: 0.000003 },
+						},
+						stopReason: "stop",
+						timestamp: 0,
 					},
-					stopReason: "stop",
-					timestamp: 0,
-				},
-			};
-		},
-	})),
-	close: vi.fn(),
+				};
+			},
+		}),
+	),
 }));
 
 vi.mock("@qorpera/pi-coding-agent", () => ({
@@ -40,6 +56,48 @@ vi.mock("@qorpera/pi-coding-agent", () => ({
 
 import { startModelRequestBroker } from "../src/model-request-broker.ts";
 import { brokerCredentialProjection } from "../src/model-request-scope.ts";
+
+const DEFAULT_BUDGET: KernelModelIntentBudget = {
+	maxCalls: 4,
+	maxInputTokens: 100_000,
+	maxOutputTokens: 1_000,
+	maxCostUsd: 1,
+};
+
+function intent(
+	nonce: string,
+	budget: KernelModelIntentBudget = DEFAULT_BUDGET,
+	lifetimeMs = 30_000,
+): KernelIntentCapability {
+	const issuedAtMs = Date.now();
+	return {
+		nonce,
+		sessionId: "session-one",
+		requestHash: "a".repeat(64),
+		attended: true,
+		issuedAt: new Date(issuedAtMs).toISOString(),
+		expiresAt: new Date(issuedAtMs + lifetimeMs).toISOString(),
+		budget,
+		signature: "kernel-signature",
+	};
+}
+
+function request(
+	handle: string,
+	capability: KernelIntentCapability,
+	requestId: string,
+	context: { systemPrompt?: string; messages: unknown[]; tools?: unknown[] } = { messages: [] },
+): object {
+	return {
+		type: "qorpera_model_request",
+		requestId,
+		handle,
+		intent: capability,
+		model: { provider: "openai", id: "approved-model" },
+		context,
+		options: { transport: "sse", maxTokens: 100 },
+	};
+}
 
 afterEach(() => {
 	vi.clearAllMocks();
@@ -70,53 +128,175 @@ describe("kernel model-request broker", () => {
 		expect(projection.credentials["openai-codex"]).toMatchObject({ type: "oauth" });
 	});
 
-	it("executes only a registered handle with an exact kernel-issued intent", async () => {
+	it("binds requests to one session and rejects semantic replay after completion", async () => {
 		const broker = await startModelRequestBroker({
 			authPath: "auth.json",
 			modelsPath: "models.json",
 			allowedProviders: new Set(["openai"]),
 		});
-		const child = broker.registerChild({ openai: { type: "api_key", key: "raw-secret" } }, []);
+		const child = broker.registerChild("session-one", { openai: { type: "api_key", key: "raw-secret" } }, []);
 		const handle = child.handles.openai;
-		const intent = {
-			nonce: "11111111-1111-4111-8111-111111111111",
-			requestHash: "a".repeat(64),
-			attended: true,
-			expiresAt: "2026-08-10T12:00:00.000Z",
-			signature: "kernel-signature",
-		};
-		child.authorizeIntent(intent);
+		const capability = intent("11111111-1111-4111-8111-111111111111");
+		expect(child.authorizeIntent(capability)).toBe(true);
 		const send = vi.fn();
-		const frame = {
-			type: "qorpera_model_request",
-			requestId: "22222222-2222-4222-8222-222222222222",
-			handle,
-			intent,
-			model: { provider: "openai", id: "approved-model" },
-			context: { messages: [] },
-			options: { transport: "sse" },
-		};
-		expect(broker.handleFrame(frame, send)).toBe(true);
-		await vi.waitFor(() =>
-			expect(send).toHaveBeenCalledWith({ type: "qorpera_model_end", requestId: frame.requestId }),
-		);
-		expect(runtime.streamSimple).toHaveBeenCalledOnce();
-		expect(JSON.stringify(frame)).not.toContain("raw-secret");
-
-		const forged = {
-			...frame,
-			requestId: "33333333-3333-4333-8333-333333333333",
-			intent: { ...intent, requestHash: "b".repeat(64) },
-		};
-		expect(broker.handleFrame(forged, send)).toBe(true);
+		const first = request(handle, capability, "22222222-2222-4222-8222-222222222222");
+		expect(child.handleFrame(first, send)).toBe(true);
 		await vi.waitFor(() =>
 			expect(send).toHaveBeenCalledWith({
 				type: "qorpera_model_end",
-				requestId: forged.requestId,
+				requestId: "22222222-2222-4222-8222-222222222222",
+			}),
+		);
+		const replay = request(handle, capability, "33333333-3333-4333-8333-333333333333");
+		expect(child.handleFrame(replay, send)).toBe(true);
+		await vi.waitFor(() =>
+			expect(send).toHaveBeenCalledWith({
+				type: "qorpera_model_end",
+				requestId: "33333333-3333-4333-8333-333333333333",
 				error: "kernel model request denied",
 			}),
 		);
 		expect(runtime.streamSimple).toHaveBeenCalledOnce();
+
+		const completedTurn = intent("12121212-1212-4212-8212-121212121212");
+		expect(child.authorizeIntent(completedTurn)).toBe(true);
+		child.endTurn("completed");
+		child.handleFrame(
+			request(child.handles.openai, completedTurn, "13131313-1313-4313-8313-131313131313", {
+				systemPrompt: "new call after turn completion",
+				messages: [],
+			}),
+			send,
+		);
+		await vi.waitFor(() =>
+			expect(send).toHaveBeenCalledWith(
+				expect.objectContaining({
+					requestId: "13131313-1313-4313-8313-131313131313",
+					error: "kernel model request denied",
+				}),
+			),
+		);
+		child.release();
+		broker.close();
+	});
+
+	it("rejects expired intents and revokes all requests when a turn is aborted", async () => {
+		const broker = await startModelRequestBroker({
+			authPath: "auth.json",
+			modelsPath: "models.json",
+			allowedProviders: new Set(["openai"]),
+		});
+		const child = broker.registerChild("session-one", { openai: { type: "api_key", key: "secret" } }, []);
+		const expired = intent("44444444-4444-4444-8444-444444444444", DEFAULT_BUDGET, 5);
+		expect(child.authorizeIntent(expired)).toBe(true);
+		await new Promise((resolve) => setTimeout(resolve, 15));
+		const send = vi.fn();
+		child.handleFrame(request(child.handles.openai, expired, "55555555-5555-4555-8555-555555555555"), send);
+		await vi.waitFor(() =>
+			expect(send).toHaveBeenCalledWith(expect.objectContaining({ error: "kernel model request denied" })),
+		);
+
+		const active = intent("66666666-6666-4666-8666-666666666666");
+		expect(child.authorizeIntent(active)).toBe(true);
+		const waiting = request(child.handles.openai, active, "77777777-7777-4777-8777-777777777777", {
+			systemPrompt: "wait",
+			messages: [],
+		});
+		child.handleFrame(waiting, send);
+		await vi.waitFor(() => expect(runtime.streamSimple).toHaveBeenCalled());
+		child.handleFrame({ type: "qorpera_model_abort", requestId: "77777777-7777-4777-8777-777777777777" }, send);
+		await vi.waitFor(() =>
+			expect(send).toHaveBeenCalledWith(
+				expect.objectContaining({
+					requestId: "77777777-7777-4777-8777-777777777777",
+					error: "kernel model execution failed",
+				}),
+			),
+		);
+		child.handleFrame(
+			request(child.handles.openai, active, "88888888-8888-4888-8888-888888888888", {
+				systemPrompt: "after abort",
+				messages: [],
+			}),
+			send,
+		);
+		await vi.waitFor(() =>
+			expect(send).toHaveBeenCalledWith(
+				expect.objectContaining({
+					requestId: "88888888-8888-4888-8888-888888888888",
+					error: "kernel model request denied",
+				}),
+			),
+		);
+		child.release();
+		broker.close();
+	});
+
+	it("enforces call, token, output, and cost budgets across a bounded tool loop", async () => {
+		const broker = await startModelRequestBroker({
+			authPath: "auth.json",
+			modelsPath: "models.json",
+			allowedProviders: new Set(["openai"]),
+		});
+		const child = broker.registerChild("session-one", { openai: { type: "api_key", key: "secret" } }, []);
+		const bounded = intent("99999999-9999-4999-8999-999999999999", {
+			maxCalls: 1,
+			maxInputTokens: 10_000,
+			maxOutputTokens: 7,
+			maxCostUsd: 1,
+		});
+		expect(child.authorizeIntent(bounded)).toBe(true);
+		const send = vi.fn();
+		child.handleFrame(request(child.handles.openai, bounded, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), send);
+		await vi.waitFor(() => expect(runtime.streamSimple).toHaveBeenCalled());
+		expect(runtime.streamSimple.mock.calls.at(-1)?.[2]).toMatchObject({ maxTokens: 7 });
+		child.handleFrame(
+			request(child.handles.openai, bounded, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", {
+				systemPrompt: "second call",
+				messages: [],
+			}),
+			send,
+		);
+		await vi.waitFor(() =>
+			expect(send).toHaveBeenCalledWith(
+				expect.objectContaining({
+					requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+					error: "kernel model request denied",
+				}),
+			),
+		);
+
+		const noTokens = intent("cccccccc-cccc-4ccc-8ccc-cccccccccccc", {
+			maxCalls: 2,
+			maxInputTokens: 1,
+			maxOutputTokens: 100,
+			maxCostUsd: 1,
+		});
+		expect(child.authorizeIntent(noTokens)).toBe(true);
+		child.handleFrame(request(child.handles.openai, noTokens, "dddddddd-dddd-4ddd-8ddd-dddddddddddd"), send);
+
+		const noCost = intent("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", {
+			maxCalls: 2,
+			maxInputTokens: 10_000,
+			maxOutputTokens: 100,
+			maxCostUsd: 0,
+		});
+		expect(child.authorizeIntent(noCost)).toBe(true);
+		child.handleFrame(request(child.handles.openai, noCost, "ffffffff-ffff-4fff-8fff-ffffffffffff"), send);
+		await vi.waitFor(() => {
+			expect(send).toHaveBeenCalledWith(
+				expect.objectContaining({
+					requestId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+					error: "kernel model request denied",
+				}),
+			);
+			expect(send).toHaveBeenCalledWith(
+				expect.objectContaining({
+					requestId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+					error: "kernel model request denied",
+				}),
+			);
+		});
 		child.release();
 		broker.close();
 	});
