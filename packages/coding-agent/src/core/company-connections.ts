@@ -51,11 +51,29 @@ export interface NetworkDestination {
 	boundAt: string;
 }
 
+/**
+ * The founder-bound wake schedule (Build 4 — durable autonomy). The kernel
+ * wakes the controller on this cadence; what the wake MEANS — which routine
+ * runs, what gets done — stays entirely the controller's decision. The
+ * minimum interval is a kernel-owned wake-rate ceiling: a malfunctioning
+ * controller cannot bound itself.
+ */
+export interface WakeSchedule {
+	intervalMinutes: number;
+	enabled: boolean;
+	/** Set by the kernel (e.g. repeated wake failures); cleared by re-binding. */
+	suspendedReason?: string;
+}
+
+export const MIN_WAKE_INTERVAL_MINUTES = 5;
+const MAX_WAKE_INTERVAL_MINUTES = 7 * 24 * 60;
+
 interface CompanyConnectionsState {
 	version: 1;
 	root: string;
 	destinations: NetworkDestination[];
 	secrets: Record<string, CompanySecret>;
+	wake?: WakeSchedule;
 }
 
 const FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
@@ -161,6 +179,42 @@ export function destinationAllowed(root: string, url: URL): boolean {
 	if (url.protocol !== "https:") return false;
 	const host = url.port ? `${url.hostname.toLowerCase()}:${url.port}` : url.hostname.toLowerCase();
 	return readState(root).destinations.some((destination) => destination.host === host);
+}
+
+export function readWakeSchedule(root: string): WakeSchedule | undefined {
+	return readState(root).wake;
+}
+
+export function bindWakeSchedule(root: string, intervalMinutes: number): WakeSchedule {
+	if (
+		!Number.isFinite(intervalMinutes) ||
+		intervalMinutes < MIN_WAKE_INTERVAL_MINUTES ||
+		intervalMinutes > MAX_WAKE_INTERVAL_MINUTES
+	) {
+		throw new Error(
+			`Wake interval must be between ${MIN_WAKE_INTERVAL_MINUTES} minutes and 7 days (kernel wake-rate ceiling)`,
+		);
+	}
+	const state = readState(root);
+	state.wake = { intervalMinutes: Math.round(intervalMinutes), enabled: true };
+	writeState(root, state);
+	return state.wake;
+}
+
+export function disableWakeSchedule(root: string): boolean {
+	const state = readState(root);
+	if (!state.wake?.enabled) return false;
+	state.wake = { ...state.wake, enabled: false };
+	writeState(root, state);
+	return true;
+}
+
+/** Kernel-side suspension (e.g. repeated wake failures). Re-binding clears it. */
+export function suspendWakeSchedule(root: string, reason: string): void {
+	const state = readState(root);
+	if (!state.wake) return;
+	state.wake = { ...state.wake, suspendedReason: reason };
+	writeState(root, state);
 }
 
 const REFRESH_MARGIN_MS = 60_000;

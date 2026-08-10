@@ -9,12 +9,17 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	bindCompanySecret,
 	bindNetworkDestination,
+	bindWakeSchedule,
 	companyConnectionsPath,
 	destinationAllowed,
+	disableWakeSchedule,
+	MIN_WAKE_INTERVAL_MINUTES,
 	readCompanyConnections,
+	readWakeSchedule,
 	removeCompanySecret,
 	removeNetworkDestination,
 	resolveCompanySecret,
+	suspendWakeSchedule,
 } from "../src/core/company-connections.ts";
 
 let root: string;
@@ -131,5 +136,26 @@ describe("secrets", () => {
 		});
 		const rejectingFetch: typeof fetch = async () => new Response("denied", { status: 400 });
 		await expect(resolveCompanySecret(root, "oauth", rejectingFetch)).rejects.toThrow(/refresh failed/);
+	});
+});
+
+describe("wake schedule", () => {
+	it("binds, reports, disables, and enforces the wake-rate ceiling", () => {
+		expect(readWakeSchedule(root)).toBeUndefined();
+		expect(() => bindWakeSchedule(root, MIN_WAKE_INTERVAL_MINUTES - 1)).toThrow(/ceiling/);
+		const schedule = bindWakeSchedule(root, 30);
+		expect(schedule).toEqual({ intervalMinutes: 30, enabled: true });
+		expect(readWakeSchedule(root)).toEqual(schedule);
+		expect(disableWakeSchedule(root)).toBe(true);
+		expect(readWakeSchedule(root)?.enabled).toBe(false);
+		expect(disableWakeSchedule(root)).toBe(false);
+	});
+
+	it("kernel suspension sticks until the founder re-binds", () => {
+		bindWakeSchedule(root, 30);
+		suspendWakeSchedule(root, "3 consecutive wake failures");
+		expect(readWakeSchedule(root)?.suspendedReason).toContain("failures");
+		// Re-binding is the founder's re-enable: suspension clears.
+		expect(bindWakeSchedule(root, 30).suspendedReason).toBeUndefined();
 	});
 });

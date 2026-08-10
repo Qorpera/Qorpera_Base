@@ -423,6 +423,29 @@ export function appendKernelModelObservation(
 	commitTrailAppend(binding, append);
 }
 
+export function appendKernelWakeObservation(
+	binding: TrailBinding,
+	input: {
+		/** Kernel-issued causal identity for this wake. */
+		wakeId: string;
+		cause: "schedule" | "founder_response";
+		intervalMinutes?: number;
+		/** Whole missed intervals coalesced into this wake (missed-wake policy). */
+		coalesced?: number;
+	},
+): void {
+	const append = stampKernelEntry(binding, {
+		type: "custom",
+		id: randomUUID(),
+		parentId: null,
+		timestamp: "",
+		customType: "qorpera_kernel_wake",
+		data: input,
+	});
+	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+	commitTrailAppend(binding, append);
+}
+
 export function appendKernelHttpObservation(
 	binding: TrailBinding,
 	input: {

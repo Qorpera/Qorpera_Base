@@ -43,9 +43,12 @@ import { getAgentDir } from "../config.ts";
 import {
 	bindCompanySecret,
 	bindNetworkDestination,
+	bindWakeSchedule,
 	type CompanySecret,
+	disableWakeSchedule,
 	type OAuth2Secret,
 	readCompanyConnections,
+	readWakeSchedule,
 	removeCompanySecret,
 	removeNetworkDestination,
 } from "./company-connections.ts";
@@ -94,7 +97,12 @@ fit the UI. Main is platform-owned and always present.
 When you wake: read \`company.md\`, look around — the app, the inbox, the
 state of the work — and decide for yourself what most needs doing. Routines
 in \`app/routines/\` are jobs you can run; the inbox may carry steering from
-the human; beyond that, use your judgment. Treat the app as something you
+the human; beyond that, use your judgment. The founder can bind a wake
+schedule (\`qorpera company wake set <minutes>\`): the kernel then wakes
+you on that cadence while the company is open, one wake at a time, with
+each wake's cause and any missed-interval coalescing recorded in your
+trail. A wake with nothing worth doing should settle without inventing
+work — repeated failed wakes suspend the schedule and notify the founder. Treat the app as something you
 keep in good repair, not something you endlessly rework: when reality and
 its surfaces diverge — new work worth showing, a surface gone stale, a
 capability missing — fix it, and otherwise leave it be.
@@ -2633,6 +2641,37 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 				for (const secretName of secretNames) console.log(`secret://${secretName}`);
 			} else {
 				console.error("Usage: company secret set <name> [--oauth2] (value/JSON on stdin) | remove <name> | list");
+				process.exitCode = 1;
+			}
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "wake") {
+		const action = args[2];
+		try {
+			const root = companyRootFromCwd();
+			if (action === "set" && args[3]) {
+				const schedule = bindWakeSchedule(root, Number(args[3]));
+				console.log(
+					`Scheduled wakes every ${schedule.intervalMinutes} minutes while the company is open in Qorpera Base. The controller decides what each wake does.`,
+				);
+			} else if (action === "off") {
+				console.log(disableWakeSchedule(root) ? "Scheduled wakes disabled." : "Scheduled wakes were not enabled.");
+			} else if (action === "status") {
+				const schedule = readWakeSchedule(root);
+				if (!schedule) console.log("No wake schedule bound.");
+				else if (schedule.suspendedReason) {
+					console.log(
+						`Suspended by the kernel: ${schedule.suspendedReason}. Re-enable with 'company wake set ${schedule.intervalMinutes}'.`,
+					);
+				} else {
+					console.log(schedule.enabled ? `Every ${schedule.intervalMinutes} minutes.` : "Disabled.");
+				}
+			} else {
+				console.error("Usage: company wake set <minutes> | off | status");
 				process.exitCode = 1;
 			}
 		} catch (error) {
