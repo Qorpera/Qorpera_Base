@@ -152,17 +152,15 @@ describe.skipIf(!RUN_WINDOWS_INTEGRATION)("bundled Codex Windows sandbox integra
 				nodeExecutable: process.execPath,
 				env,
 			});
-			const identityProbe = join(runtimeDir, "identity-probe.mjs");
-			writeFileSync(
-				identityProbe,
-				'import { userInfo } from "node:os"; console.log(userInfo().username);\n',
-				"utf-8",
-			);
-			const identity = spawnSync(
-				process.execPath,
-				sandboxCommandArgs(CODEX_ENTRY, runtimeDir, process.execPath, [identityProbe]),
-				{ cwd: runtimeDir, env, encoding: "utf-8", timeout: 120_000 },
-			);
+			const systemRoot = env.SystemRoot ?? env.SYSTEMROOT ?? env.WINDIR;
+			expect(systemRoot).toBeTruthy();
+			const whoami = join(systemRoot!, "System32", "whoami.exe");
+			const identity = spawnSync(process.execPath, sandboxCommandArgs(CODEX_ENTRY, runtimeDir, whoami, []), {
+				cwd: runtimeDir,
+				env,
+				encoding: "utf-8",
+				timeout: 120_000,
+			});
 			expect(identity.status, identity.stderr).toBe(0);
 			expect(identity.stdout.trim().toLowerCase()).toContain("codexsandboxoffline");
 

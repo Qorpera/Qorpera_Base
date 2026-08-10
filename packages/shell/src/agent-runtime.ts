@@ -856,12 +856,14 @@ export function provisionWindowsSandbox(options: {
 		CODEX_HOME: options.configDir,
 		ELECTRON_RUN_AS_NODE: "1",
 	};
+	const systemRoot = options.env.SystemRoot ?? options.env.SYSTEMROOT ?? options.env.WINDIR;
+	if (!systemRoot) {
+		throw new Error("Bundled Codex Windows sandbox provisioning failed: Windows system root is unavailable.");
+	}
+	const whoami = join(systemRoot, "System32", "whoami.exe");
 	const identity = spawnSync(
 		options.nodeExecutable,
-		sandboxCommandArgs(options.codexEntry, options.runtimeDir, options.nodeExecutable, [
-			"-e",
-			'console.log(require("node:os").userInfo().username)',
-		]),
+		sandboxCommandArgs(options.codexEntry, options.runtimeDir, whoami, []),
 		{
 			cwd: options.runtimeDir,
 			env,
