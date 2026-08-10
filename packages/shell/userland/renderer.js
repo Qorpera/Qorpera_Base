@@ -34,6 +34,43 @@ let currentModelKey = "";
 let currentEffort = "";
 let currentSpeed = "standard";
 let speedAsserted = false; // one re-assert of the remembered speed per child spawn
+let hiddenNavigation = new Set();
+let archivedNavigation = new Set(); // frontend preview only; durable archive remains unbound
+let focusedDepartmentId = null;
+let navContextTarget = null;
+let navContextTrigger = null;
+let navContextPoint = { x: 0, y: 0 };
+let archiveTarget = null;
+let toastTimeout = null;
+let departmentWizard = {
+	step: 1,
+	type: null,
+	name: "",
+	template: "blank",
+	repoMode: "local",
+	repoPath: "",
+	repoUrl: "",
+	clonePath: "",
+};
+
+const SIDEBAR_COLLAPSED_KEY = "qorpera.sidebar-collapsed";
+
+function applySidebarCollapsed(collapsed) {
+	document.body.classList.toggle("sidebar-collapsed", collapsed);
+	const button = $("toggleSidebarButton");
+	button.setAttribute("aria-expanded", String(!collapsed));
+	button.setAttribute("aria-label", collapsed ? "Show navigation panel" : "Hide navigation panel");
+	button.title = collapsed ? "Show navigation panel" : "Hide navigation panel";
+}
+
+function setupSidebarToggle() {
+	applySidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
+	$("toggleSidebarButton").onclick = () => {
+		const collapsed = !document.body.classList.contains("sidebar-collapsed");
+		localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+		applySidebarCollapsed(collapsed);
+	};
+}
 
 // ---- hub -------------------------------------------------------------------
 
@@ -81,6 +118,9 @@ async function openCompany(root) {
 /** Boot into an already-open company (called after the kernel loads us). */
 async function enterCompany(active) {
 	backendUrl = active.backendUrl;
+	hiddenNavigation = new Set(readStoredArray("nav-hidden"));
+	archivedNavigation = new Set();
+	focusedDepartmentId = null;
 	$("hubnav").style.display = "none";
 	$("conav").style.display = "";
 	$("messages").innerHTML = "";
@@ -601,91 +641,385 @@ function readStoredObject(name, fallback) {
 	}
 }
 
+function readStoredArray(name) {
+	try {
+		const parsed = JSON.parse(localStorage.getItem(navStorageKey(name)) ?? "null");
+		return Array.isArray(parsed) && parsed.every((value) => typeof value === "string") ? parsed : [];
+	} catch {
+		return [];
+	}
+}
+
+function storeNavigationSet(name, values) {
+	localStorage.setItem(navStorageKey(name), JSON.stringify([...values]));
+}
+
 function navAppearance() {
 	return {
-		pageHue: "#2563eb",
-		categoryHue: "#7c3aed",
+		pageHue: "#3b82f6",
+		categoryHue: "#8b5cf6",
 		showKinds: true,
 		...readStoredObject("nav-appearance", {}),
 	};
 }
 
-function applyNavMetrics(element, node) {
+function applyNavAppearance() {
+	const appearance = navAppearance();
+	document.documentElement.style.setProperty("--page-hue", appearance.pageHue);
+	document.documentElement.style.setProperty("--category-hue", appearance.categoryHue);
+	document.body.classList.toggle("hues-hidden", !appearance.showKinds);
+}
+
+function applyNavMetrics(element, node, focused = false) {
 	const heights = readStoredObject("nav-heights", {});
 	const offset = Math.max(-12, Math.min(12, Number(heights[node.id]) || 0));
-	element.style.setProperty("--nav-item-height", `${(node.kind === "department" ? 28 : 30) + offset}px`);
-	element.style.setProperty("--nav-font-size", `${12.5 + offset * 0.16}px`);
-	element.style.setProperty("--nav-padding-x", `${10 + Math.max(0, offset) * 0.2}px`);
-	element.style.setProperty("--nav-radius", `${5 + Math.max(0, offset) * 0.16}px`);
-	element.style.setProperty("--nav-hue-width", `${2 + Math.max(0, offset) * 0.12}px`);
+	const baseHeight = node.kind === "department" ? 27 : focused ? 58 : 30;
+	const scale = 1 + offset / 60;
+	element.style.setProperty("--nav-item-height", `${baseHeight + offset}px`);
+	element.style.setProperty(
+		"--nav-font-size",
+		`${(node.kind === "department" ? 13 : focused ? 13.5 : 12.5) * scale}px`,
+	);
+	element.style.setProperty("--nav-padding-inline", `${(node.kind === "department" ? 3 : 8) * scale}px`);
+	if (node.kind === "department") {
+		element.style.setProperty("--nav-padding-top", `${Math.max(0, 1 + offset * 0.08)}px`);
+		element.style.setProperty("--nav-padding-bottom", `${Math.max(2, 5 + offset * 0.22)}px`);
+	} else {
+		element.style.setProperty("--nav-padding-block", `${Math.max(1.5, (focused ? 9 : 4) + offset * 0.15)}px`);
+		element.style.setProperty("--nav-radius", `${(focused ? 7 : 5) * scale}px`);
+		element.style.setProperty("--nav-hue-width", `${54 * scale}px`);
+		element.style.setProperty("--nav-meta-size", `${9.5 * scale}px`);
+		element.style.setProperty("--nav-arrow-size", `${15 * scale}px`);
+	}
 	const appearance = navAppearance();
-	if (appearance.showKinds && (node.kind === "page" || node.kind === "category")) {
+	if (appearance.showKinds && node.kind !== "department") {
 		element.style.setProperty("--nav-kind-hue", node.kind === "page" ? appearance.pageHue : appearance.categoryHue);
 	}
-	element.addEventListener("contextmenu", (event) => openNavHeightEditor(event, node));
 }
 
-function openNavHeightEditor(event, node) {
+function navigationDepartments() {
+	return (state.projection?.navigation ?? [])
+		.map(projectionNode)
+		.filter((node) => node?.kind === "department");
+}
+
+function departmentForProjectionNode(id) {
+	return navigationDepartments().find((department) =>
+		department.items.some((childId) => {
+			if (childId === id) return true;
+			const child = projectionNode(childId);
+			return child?.kind === "category" && child.items.includes(id);
+		}),
+	);
+}
+
+function nodeIsVisible(id) {
+	return !hiddenNavigation.has(id) && !archivedNavigation.has(id);
+}
+
+function visibleCategoryPages(category) {
+	return category.items.map(projectionNode).filter((node) => node?.kind === "page" && nodeIsVisible(node.id));
+}
+
+function hiddenItemsForDepartment(department) {
+	const hidden = [];
+	for (const childId of department.items) {
+		const child = projectionNode(childId);
+		if (!child) continue;
+		if (hiddenNavigation.has(child.id)) {
+			hidden.push({ id: child.id, label: child.label, detail: child.kind === "category" ? "Category" : "Page" });
+		}
+		if (child.kind !== "category") continue;
+		for (const pageId of child.items) {
+			const page = projectionNode(pageId);
+			if (page?.kind === "page" && hiddenNavigation.has(page.id)) {
+				hidden.push({ id: page.id, label: page.label, detail: `${child.label} / Page` });
+			}
+		}
+	}
+	return hidden;
+}
+
+function placeFloatingMenu(menu) {
+	const margin = 8;
+	const bounds = menu.getBoundingClientRect();
+	menu.style.left = `${Math.max(margin, Math.min(navContextPoint.x, window.innerWidth - bounds.width - margin))}px`;
+	menu.style.top = `${Math.max(margin, Math.min(navContextPoint.y, window.innerHeight - bounds.height - margin))}px`;
+}
+
+function closeNavContext() {
+	$("navContext").hidden = true;
+	navContextTarget = null;
+}
+
+function closePanelContext() {
+	$("panelContextMenu").hidden = true;
+}
+
+function openNavContext(event, node, placement) {
 	event.preventDefault();
-	const menu = $("navContext");
-	menu.innerHTML = "";
-	const label = document.createElement("label");
-	label.textContent = `Adjust ${node.label} height`;
-	const value = document.createElement("span");
-	const slider = document.createElement("input");
-	slider.type = "range";
-	slider.min = "-12";
-	slider.max = "12";
-	slider.step = "1";
-	const heights = readStoredObject("nav-heights", {});
-	slider.value = String(Math.max(-12, Math.min(12, Number(heights[node.id]) || 0)));
-	const sync = () => {
-		value.textContent = `${Number(slider.value) >= 0 ? "+" : ""}${slider.value}px`;
-	};
-	slider.oninput = () => {
-		heights[node.id] = Number(slider.value);
-		localStorage.setItem(navStorageKey("nav-heights"), JSON.stringify(heights));
-		sync();
-		renderCompanyNavSafe();
-	};
-	sync();
-	label.appendChild(value);
-	menu.appendChild(label);
-	menu.appendChild(slider);
-	menu.style.left = `${Math.min(event.clientX, window.innerWidth - 270)}px`;
-	menu.style.top = `${Math.min(event.clientY, window.innerHeight - 110)}px`;
-	menu.classList.add("open");
+	event.stopPropagation();
+	closePanelContext();
+	navContextTarget = { node, placement };
+	navContextTrigger = event.currentTarget;
+	navContextPoint = { x: event.clientX, y: event.clientY };
+	$("contextTitle").textContent = `${node.kind} / ${node.label}`;
+	$("contextActions").hidden = false;
+	$("heightEditor").hidden = true;
+	const canAdjust = placement !== "collection";
+	$("adjustHeightButton").hidden = !canAdjust;
+	$("focusDepartmentItem").hidden = node.kind !== "department";
+	$("contextHeightSeparator").hidden = !canAdjust && node.kind !== "department";
+	$("focusDepartmentItem").querySelector("span").textContent = focusedDepartmentId === node.id ? "Exit focus" : "Focus department";
+	$("focusDepartmentItem").querySelector("small").textContent =
+		focusedDepartmentId === node.id ? "Restore the complete panel" : "Show only this department";
+	$("navContext").hidden = false;
+	placeFloatingMenu($("navContext"));
+	(canAdjust ? $("adjustHeightButton") : $("hideNavigationItem")).focus();
 }
 
-document.addEventListener("click", (event) => {
-	if (!$("navContext").contains(event.target)) $("navContext").classList.remove("open");
-});
-document.addEventListener("keydown", (event) => {
-	if (event.key === "Escape") $("navContext").classList.remove("open");
-});
+function updateHeightEditor() {
+	if (!navContextTarget) return;
+	const heights = readStoredObject("nav-heights", {});
+	const offset = Math.max(-12, Math.min(12, Number(heights[navContextTarget.node.id]) || 0));
+	$("heightSlider").value = String(offset);
+	$("heightValue").textContent = offset === 0 ? "Default" : `${offset > 0 ? "+" : ""}${offset} px`;
+}
+
+function setTargetHeight(value) {
+	if (!navContextTarget) return;
+	const heights = readStoredObject("nav-heights", {});
+	const offset = Math.max(-12, Math.min(12, Math.round(Number(value))));
+	if (offset === 0) delete heights[navContextTarget.node.id];
+	else heights[navContextTarget.node.id] = offset;
+	localStorage.setItem(navStorageKey("nav-heights"), JSON.stringify(heights));
+	renderCompanyNavSafe();
+	updateHeightEditor();
+}
+
+function showControllerToast(message) {
+	clearTimeout(toastTimeout);
+	$("controllerToast").textContent = message;
+	$("controllerToast").hidden = false;
+	toastTimeout = setTimeout(() => {
+		$("controllerToast").hidden = true;
+	}, 3400);
+}
+
+function currentInsideNode(node) {
+	if (currentNodeId === node.id) return true;
+	if (node.kind === "page") return false;
+	return node.items.some((id) => {
+		if (id === currentNodeId) return true;
+		const child = projectionNode(id);
+		return child?.kind === "category" && child.items.includes(currentNodeId);
+	});
+}
+
+function firstAvailableNavigationTarget() {
+	for (const department of navigationDepartments()) {
+		if (focusedDepartmentId && department.id !== focusedDepartmentId) continue;
+		if (!nodeIsVisible(department.id)) continue;
+		for (const childId of department.items) {
+			const child = projectionNode(childId);
+			if (child && nodeIsVisible(child.id)) return child;
+		}
+	}
+	return undefined;
+}
+
+function openNavigationFallback() {
+	const fallback = firstAvailableNavigationTarget();
+	if (fallback) void openProjectionNode(fallback.id);
+	else {
+		currentNodeId = null;
+		const panel = $("view-panel");
+		panel.innerHTML = '<section class="collection-view"><header class="collection-view-head"><div><div class="eyebrow">Company interface</div><h1>No active pages</h1><p>Unhide navigation items or add a department to continue.</p></div></header></section>';
+		show("panel");
+	}
+}
+
+function hideNavigationTarget() {
+	if (!navContextTarget) return;
+	const { node } = navContextTarget;
+	const containedCurrent = currentInsideNode(node);
+	hiddenNavigation.add(node.id);
+	storeNavigationSet("nav-hidden", hiddenNavigation);
+	if (node.kind === "department" && focusedDepartmentId === node.id) focusedDepartmentId = null;
+	closeNavContext();
+	renderCompanyNavSafe();
+	if (containedCurrent) openNavigationFallback();
+	else if (currentView === "panel" && projectionNode(currentNodeId)?.kind === "category") renderCollection(projectionNode(currentNodeId));
+	showControllerToast(
+		node.kind === "department"
+			? `${node.label} hidden. Right-click the navigation panel to show it again.`
+			: `${node.label} hidden. Use its department Show menu to restore it.`,
+	);
+}
+
+function restoreHiddenNode(node) {
+	hiddenNavigation.delete(node.id);
+	storeNavigationSet("nav-hidden", hiddenNavigation);
+	renderCompanyNavSafe();
+	if (currentView === "panel" && projectionNode(currentNodeId)?.kind === "category") renderCollection(projectionNode(currentNodeId));
+	showControllerToast(`${node.label} shown in the panel.`);
+}
+
+function toggleDepartmentFocus() {
+	if (navContextTarget?.node.kind !== "department") return;
+	const department = navContextTarget.node;
+	const enabling = focusedDepartmentId !== department.id;
+	focusedDepartmentId = enabling ? department.id : null;
+	closeNavContext();
+	renderCompanyNavSafe();
+	$("navigation").scrollTop = 0;
+	if (enabling) {
+		const target = department.items.map(projectionNode).find((node) => node && nodeIsVisible(node.id));
+		if (target) void openProjectionNode(target.id);
+		showControllerToast(`${department.label} focused. Reset Panel restores the complete view.`);
+	} else {
+		showControllerToast("Panel focus reset. Hidden items remain hidden.");
+	}
+}
+
+function openArchiveConfirmation() {
+	if (!navContextTarget) return;
+	archiveTarget = navContextTarget.node;
+	closeNavContext();
+	$("archiveType").textContent = `Archive ${archiveTarget.kind}`;
+	$("archiveTitle").textContent = `Archive ${archiveTarget.label}?`;
+	$("archiveDescription").textContent = `${archiveTarget.label} will be removed from active navigation. No company files will be deleted or moved.`;
+	$("archiveModal").hidden = false;
+	$("archiveConfirm").focus();
+}
+
+function closeArchiveConfirmation() {
+	$("archiveModal").hidden = true;
+	archiveTarget = null;
+	navContextTrigger?.focus();
+}
+
+function confirmArchivePreview() {
+	if (!archiveTarget) return;
+	const target = archiveTarget;
+	const containedCurrent = currentInsideNode(target);
+	archivedNavigation.add(target.id);
+	hiddenNavigation.delete(target.id);
+	storeNavigationSet("nav-hidden", hiddenNavigation);
+	if (target.kind === "department" && focusedDepartmentId === target.id) focusedDepartmentId = null;
+	$("archiveModal").hidden = true;
+	archiveTarget = null;
+	renderCompanyNavSafe();
+	if (containedCurrent) openNavigationFallback();
+	else if (currentView === "panel" && projectionNode(currentNodeId)?.kind === "category") renderCollection(projectionNode(currentNodeId));
+	showControllerToast(`${target.label} archived for this preview. Durable archive remains unbound.`);
+}
+
+function renderPanelHiddenDepartments() {
+	const list = $("panelHiddenDepartments");
+	list.replaceChildren();
+	for (const department of navigationDepartments()) {
+		if (!hiddenNavigation.has(department.id)) continue;
+		const button = document.createElement("button");
+		button.type = "button";
+		button.setAttribute("role", "menuitem");
+		button.innerHTML = "<span></span><small>Show</small>";
+		button.querySelector("span").textContent = department.label;
+		button.onclick = () => {
+			focusedDepartmentId = null;
+			closePanelContext();
+			restoreHiddenNode(department);
+		};
+		list.appendChild(button);
+	}
+}
+
+function openPanelContext(event) {
+	if (event.target.closest(".projection-department, .sidebar-create, .profileRow")) return;
+	event.preventDefault();
+	closeNavContext();
+	navContextPoint = { x: event.clientX, y: event.clientY };
+	renderPanelHiddenDepartments();
+	$("panelContextMenu").hidden = false;
+	placeFloatingMenu($("panelContextMenu"));
+	$("panelHiddenDepartments").querySelector("button")?.focus();
+}
 
 function renderCompanyNav() {
 	const nav = $("navigation");
 	nav.innerHTML = "";
-	for (const departmentId of state.projection?.navigation ?? []) {
-		const department = projectionNode(departmentId);
-		if (!department || department.kind !== "department") continue;
+	nav.classList.toggle("focus-mode", focusedDepartmentId !== null);
+	applyNavAppearance();
+	for (const department of navigationDepartments()) {
+		const focused = focusedDepartmentId === department.id;
+		if (focusedDepartmentId && !focused) continue;
+		if (!nodeIsVisible(department.id)) continue;
 		const group = document.createElement("section");
 		group.className = "projection-department";
+		group.oncontextmenu = (event) => {
+			if (!event.target.closest(".projection-row, .hidden-items-control")) openNavContext(event, department, "department");
+		};
 		const title = document.createElement("div");
 		title.className = "projection-department-title";
-		title.textContent = department.label;
+		const titleLabel = document.createElement("span");
+		titleLabel.className = "projection-department-label";
+		titleLabel.textContent = department.label;
+		title.appendChild(titleLabel);
+		const hiddenItems = hiddenItemsForDepartment(department);
+		if (hiddenItems.length) {
+			const control = document.createElement("div");
+			control.className = "hidden-items-control";
+			control.innerHTML = '<button class="show-hidden-button" type="button"></button><div class="hidden-items-popover" role="menu"></div>';
+			const button = control.querySelector("button");
+			button.textContent = `Show ${hiddenItems.length}`;
+			button.setAttribute("aria-label", `Show ${hiddenItems.length} hidden item${hiddenItems.length === 1 ? "" : "s"} in ${department.label}`);
+			for (const hidden of hiddenItems) {
+				const node = projectionNode(hidden.id);
+				if (!node) continue;
+				const restore = document.createElement("button");
+				restore.type = "button";
+				restore.className = "restore-hidden-item";
+				restore.setAttribute("role", "menuitem");
+				restore.innerHTML = "<span></span><small></small>";
+				restore.querySelector("span").textContent = hidden.label;
+				restore.querySelector("small").textContent = hidden.detail;
+				restore.onclick = (event) => {
+					event.stopPropagation();
+					restoreHiddenNode(node);
+				};
+				control.querySelector(".hidden-items-popover").appendChild(restore);
+			}
+			title.appendChild(control);
+		}
+		title.oncontextmenu = (event) => openNavContext(event, department, "department");
 		applyNavMetrics(title, department);
 		group.appendChild(title);
+		const items = document.createElement("div");
+		items.className = "projection-department-items";
+		items.dataset.emptyLabel = department.items.length ? "No visible items" : "Empty department";
 		for (const childId of department.items) {
 			const child = projectionNode(childId);
 			if (!child || (child.kind !== "page" && child.kind !== "category")) continue;
+			if (!nodeIsVisible(child.id)) continue;
 			const row = document.createElement("button");
-			row.className = `projection-row ${child.kind}`;
-			row.textContent = child.label;
+			const ownsCurrent = child.kind === "category" && child.items.includes(currentNodeId);
+			row.className = `projection-row ${child.kind}${focused ? " focus-row" : ""}`;
+			row.innerHTML = focused
+				? '<span class="projection-row-copy"><span class="projection-row-label"></span><small></small></span><span class="focus-arrow" aria-hidden="true">-&gt;</span>'
+				: '<span class="projection-row-label"></span>';
+			row.querySelector(".projection-row-label").textContent = child.label;
 			row.title = child.description ?? child.label;
-			row.classList.toggle("active", currentNodeId === child.id);
-			if (currentNodeId === child.id) row.setAttribute("aria-current", "page");
+			row.classList.toggle("active", currentNodeId === child.id || ownsCurrent);
+			if (currentNodeId === child.id || ownsCurrent) row.setAttribute("aria-current", "page");
+			if (focused) {
+				const visiblePages = child.kind === "category" ? visibleCategoryPages(child).length : 0;
+				row.querySelector("small").textContent =
+					child.kind === "category"
+						? `Category / ${visiblePages} page${visiblePages === 1 ? "" : "s"}`
+						: child.view.type === "builtin"
+							? "Built-in page"
+							: "Direct surface";
+			}
 			if (child.id === "q:inbox") {
 				const pending = state.inbox.filter((item) => item.status === "pending").length;
 				if (pending) {
@@ -695,16 +1029,20 @@ function renderCompanyNav() {
 					row.appendChild(badge);
 				}
 			}
-			applyNavMetrics(row, child);
+			applyNavMetrics(row, child, focused);
 			row.onclick = () => void openProjectionNode(child.id);
-			group.appendChild(row);
+			row.oncontextmenu = (event) => openNavContext(event, child, "row");
+			items.appendChild(row);
 		}
+		group.appendChild(items);
 		nav.appendChild(group);
 	}
 	const diagnostics = $("projectionDiagnostics");
 	const messages = state.projection?.diagnostics ?? [];
 	diagnostics.textContent = messages.length ? `${messages.length} projection issue${messages.length === 1 ? "" : "s"}` : "";
 	diagnostics.title = messages.join("\n");
+	$("resetPanelButton").disabled = focusedDepartmentId === null;
+	$("resetPanelButton").title = focusedDepartmentId ? "Exit department focus without changing hidden items" : "The panel is already in its default view";
 	syncScopeChrome();
 }
 
@@ -715,35 +1053,168 @@ function setProjectionRoute(id) {
 
 function renderCollection(node) {
 	const panel = $("view-panel");
-	panel.innerHTML = "";
-	const heading = document.createElement("h1");
-	heading.textContent = node.label;
-	panel.appendChild(heading);
-	if (node.description) {
-		const description = document.createElement("p");
-		description.className = "collection-description";
-		description.textContent = node.description;
-		panel.appendChild(description);
-	}
-	const pages = node.items.map(projectionNode).filter((item) => item?.kind === "page");
-	if (!pages.length) {
-		panel.insertAdjacentHTML("beforeend", '<div class="empty">No pages have been published here.</div>');
-		return;
-	}
-	for (const page of pages) {
-		const card = document.createElement("button");
-		card.className = "projection-card";
-		const label = document.createElement("strong");
-		label.textContent = page.label;
-		card.appendChild(label);
-		if (page.description) {
-			const description = document.createElement("span");
-			description.textContent = page.description;
-			card.appendChild(description);
+	panel.innerHTML = '<section class="collection-view"><header class="collection-view-head"><div><div class="eyebrow"></div><h1></h1><p></p></div></header><div class="collection-tools"><label class="collection-search"><input type="search" placeholder="Filter this category" aria-label="Filter pages"></label><span class="collection-count"></span></div><div class="collection-list"></div></section>';
+	const department = departmentForProjectionNode(node.id);
+	panel.querySelector(".eyebrow").textContent =
+		node.kind === "department" ? "Company / Department" : `${department?.label ?? "Company"} / Category`;
+	panel.querySelector("h1").textContent = node.label;
+	panel.querySelector(".collection-view-head p").textContent =
+		node.description ?? (node.kind === "department" ? "Direct pages published by this department." : "Published pages in this category.");
+	const input = panel.querySelector(".collection-search input");
+	const list = panel.querySelector(".collection-list");
+	const count = panel.querySelector(".collection-count");
+	const paint = () => {
+		const query = input.value.trim().toLowerCase();
+		const publishedPages =
+			node.kind === "category"
+				? visibleCategoryPages(node)
+				: node.items.map(projectionNode).filter((page) => page?.kind === "page" && nodeIsVisible(page.id));
+		const pages = publishedPages.filter((page) => `${page.label} ${page.description ?? ""}`.toLowerCase().includes(query));
+		list.replaceChildren();
+		count.textContent = `${pages.length} page${pages.length === 1 ? "" : "s"}`;
+		if (!pages.length) {
+			list.innerHTML = '<div class="collection-empty">No pages match this filter.</div>';
+			return;
 		}
-		card.onclick = () => void openProjectionNode(page.id);
-		panel.appendChild(card);
+		pages.forEach((page, index) => {
+			const row = document.createElement("article");
+			row.className = "collection-row";
+			row.tabIndex = 0;
+			row.innerHTML = '<span class="collection-index"></span><div class="collection-copy"><strong></strong><p></p></div><div class="collection-meta"><span>Published</span><span></span></div><span class="collection-arrow">-&gt;</span>';
+			row.querySelector(".collection-index").textContent = String(index + 1).padStart(2, "0");
+			row.querySelector("strong").textContent = page.label;
+			row.querySelector("p").textContent = page.description ?? "Open this company page.";
+			row.querySelector(".collection-meta span:last-child").textContent = page.view.type === "surface" ? "Surface" : "Built-in";
+			row.onclick = () => void openProjectionNode(page.id);
+			row.oncontextmenu = (event) => openNavContext(event, page, "collection");
+			row.onkeydown = (event) => {
+				if (event.key === "Enter" || event.key === " ") {
+					event.preventDefault();
+					void openProjectionNode(page.id);
+				}
+			};
+			list.appendChild(row);
+		});
+	};
+	input.oninput = paint;
+	paint();
+}
+
+function departmentStepIsValid() {
+	if (departmentWizard.step === 1) return departmentWizard.type !== null;
+	if (departmentWizard.step === 2) return departmentWizard.name.trim().length > 0;
+	if (departmentWizard.type === "interface") return departmentWizard.template.length > 0;
+	if (departmentWizard.repoMode === "local") return departmentWizard.repoPath.trim().length > 0;
+	return (
+		departmentWizard.repoUrl.trim().length > 0 &&
+		$("repoUrl").validity.valid &&
+		departmentWizard.clonePath.trim().length > 0
+	);
+}
+
+function updateDepartmentActions() {
+	$("departmentBack").hidden = departmentWizard.step === 1;
+	$("departmentNext").hidden = departmentWizard.step === 3;
+	$("departmentCreate").hidden = departmentWizard.step !== 3;
+	$("departmentNext").disabled = !departmentStepIsValid();
+	$("departmentCreate").disabled = !departmentStepIsValid();
+}
+
+function renderDepartmentWizard() {
+	$("departmentStepType").hidden = departmentWizard.step !== 1;
+	$("departmentStepName").hidden = departmentWizard.step !== 2;
+	$("departmentStepSetup").hidden = departmentWizard.step !== 3;
+	for (const step of document.querySelectorAll("[data-progress-step]")) {
+		const value = Number(step.dataset.progressStep);
+		step.classList.toggle("active", value === departmentWizard.step);
+		step.classList.toggle("complete", value < departmentWizard.step);
 	}
+	for (const [id, type] of [
+		["departmentTypeInterface", "interface"],
+		["departmentTypeProduct", "product"],
+	]) {
+		const button = $(id);
+		const selected = departmentWizard.type === type;
+		button.classList.toggle("selected", selected);
+		button.setAttribute("aria-pressed", String(selected));
+	}
+	$("departmentName").value = departmentWizard.name;
+	$("departmentNameHelp").textContent =
+		departmentWizard.type === "product"
+			? "Use the product name people expect to see in the controller."
+			: "Use the name people expect to see in the company interface.";
+	$("interfaceSetup").hidden = departmentWizard.type !== "interface";
+	$("productSetup").hidden = departmentWizard.type !== "product";
+	for (const button of document.querySelectorAll("[data-template]")) {
+		const selected = button.dataset.template === departmentWizard.template;
+		button.classList.toggle("selected", selected);
+		button.setAttribute("aria-pressed", String(selected));
+	}
+	$("localRepoMode").classList.toggle("active", departmentWizard.repoMode === "local");
+	$("localRepoMode").setAttribute("aria-pressed", String(departmentWizard.repoMode === "local"));
+	$("cloneRepoMode").classList.toggle("active", departmentWizard.repoMode === "clone");
+	$("cloneRepoMode").setAttribute("aria-pressed", String(departmentWizard.repoMode === "clone"));
+	$("localRepoFields").hidden = departmentWizard.repoMode !== "local";
+	$("cloneRepoFields").hidden = departmentWizard.repoMode !== "clone";
+	$("repoPath").value = departmentWizard.repoPath;
+	$("repoUrl").value = departmentWizard.repoUrl;
+	$("clonePath").value = departmentWizard.clonePath;
+	updateDepartmentActions();
+}
+
+function focusDepartmentStep() {
+	if (departmentWizard.step === 1) $("departmentTypeInterface").focus();
+	else if (departmentWizard.step === 2) $("departmentName").focus();
+	else if (departmentWizard.type === "interface") {
+		document.querySelector(`[data-template="${departmentWizard.template}"]`)?.focus();
+	} else if (departmentWizard.repoMode === "local") $("repoPath").focus();
+	else $("repoUrl").focus();
+}
+
+function openDepartmentModal() {
+	closeNavContext();
+	closePanelContext();
+	departmentWizard = {
+		step: 1,
+		type: null,
+		name: "",
+		template: "blank",
+		repoMode: "local",
+		repoPath: "",
+		repoUrl: "",
+		clonePath: "",
+	};
+	$("departmentModal").hidden = false;
+	renderDepartmentWizard();
+	requestAnimationFrame(focusDepartmentStep);
+}
+
+function closeDepartmentModal() {
+	$("departmentModal").hidden = true;
+	$("addDepartmentButton").focus();
+}
+
+function moveDepartmentStep(direction) {
+	if (direction > 0 && !departmentStepIsValid()) return;
+	departmentWizard.step = Math.max(1, Math.min(3, departmentWizard.step + direction));
+	renderDepartmentWizard();
+	requestAnimationFrame(focusDepartmentStep);
+}
+
+function finishDepartmentPreview() {
+	if (!departmentStepIsValid()) return;
+	const name = departmentWizard.name.trim();
+	const template = document.querySelector(`[data-template="${departmentWizard.template}"] strong`)?.textContent;
+	const setup =
+		departmentWizard.type === "interface"
+			? departmentWizard.template === "blank"
+				? "from scratch"
+				: `from the ${template} template`
+			: departmentWizard.repoMode === "local"
+				? "with a local repository"
+				: "with a repository clone";
+	closeDepartmentModal();
+	showControllerToast(`${name} is ready to create ${setup}. The frontend is complete; the company command remains unbound.`);
 }
 
 function renderChats() {
@@ -929,6 +1400,101 @@ function showPullRequests(department, page) {
 		}
 	}
 	show("panel");
+}
+
+function setupHierarchicalController() {
+	$("addDepartmentButton").onclick = openDepartmentModal;
+	$("resetPanelButton").onclick = () => {
+		focusedDepartmentId = null;
+		renderCompanyNavSafe();
+		$("navigation").scrollTop = 0;
+		showControllerToast("Panel reset. Manually hidden items remain hidden.");
+	};
+	$("conav").oncontextmenu = openPanelContext;
+
+	$("adjustHeightButton").onclick = () => {
+		$("contextActions").hidden = true;
+		$("heightEditor").hidden = false;
+		updateHeightEditor();
+		placeFloatingMenu($("navContext"));
+		$("heightSlider").focus();
+	};
+	$("focusDepartmentItem").onclick = toggleDepartmentFocus;
+	$("hideNavigationItem").onclick = hideNavigationTarget;
+	$("archiveNavigationItem").onclick = openArchiveConfirmation;
+	$("heightSlider").oninput = () => setTargetHeight($("heightSlider").value);
+	$("heightReset").onclick = () => setTargetHeight(0);
+	$("heightDone").onclick = closeNavContext;
+
+	$("archiveCancel").onclick = closeArchiveConfirmation;
+	$("archiveConfirm").onclick = confirmArchivePreview;
+	$("archiveModal").onpointerdown = (event) => {
+		if (event.target === $("archiveModal")) closeArchiveConfirmation();
+	};
+
+	$("departmentClose").onclick = closeDepartmentModal;
+	$("departmentCancel").onclick = closeDepartmentModal;
+	$("departmentBack").onclick = () => moveDepartmentStep(-1);
+	$("departmentTypeInterface").onclick = () => {
+		departmentWizard.type = "interface";
+		renderDepartmentWizard();
+	};
+	$("departmentTypeProduct").onclick = () => {
+		departmentWizard.type = "product";
+		renderDepartmentWizard();
+	};
+	$("departmentName").oninput = () => {
+		departmentWizard.name = $("departmentName").value;
+		updateDepartmentActions();
+	};
+	for (const button of document.querySelectorAll("[data-template]")) {
+		button.onclick = () => {
+			departmentWizard.template = button.dataset.template;
+			renderDepartmentWizard();
+		};
+	}
+	$("localRepoMode").onclick = () => {
+		departmentWizard.repoMode = "local";
+		renderDepartmentWizard();
+		$("repoPath").focus();
+	};
+	$("cloneRepoMode").onclick = () => {
+		departmentWizard.repoMode = "clone";
+		renderDepartmentWizard();
+		$("repoUrl").focus();
+	};
+	for (const [id, field] of [
+		["repoPath", "repoPath"],
+		["repoUrl", "repoUrl"],
+		["clonePath", "clonePath"],
+	]) {
+		$(id).oninput = () => {
+			departmentWizard[field] = $(id).value;
+			updateDepartmentActions();
+		};
+	}
+	$("browseRepo").onclick = () => showControllerToast("Repository browsing will bind to the trusted company command.");
+	$("browseClonePath").onclick = () => showControllerToast("Destination browsing will bind to the trusted company command.");
+	$("departmentForm").onsubmit = (event) => {
+		event.preventDefault();
+		if (departmentWizard.step < 3) moveDepartmentStep(1);
+		else finishDepartmentPreview();
+	};
+	$("departmentModal").onpointerdown = (event) => {
+		if (event.target === $("departmentModal")) closeDepartmentModal();
+	};
+
+	document.addEventListener("pointerdown", (event) => {
+		if (!$("navContext").hidden && !$("navContext").contains(event.target)) closeNavContext();
+		if (!$("panelContextMenu").hidden && !$("panelContextMenu").contains(event.target)) closePanelContext();
+	});
+	document.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape") return;
+		if (!$("archiveModal").hidden) closeArchiveConfirmation();
+		else if (!$("departmentModal").hidden) closeDepartmentModal();
+		else if (!$("navContext").hidden) closeNavContext();
+		else if (!$("panelContextMenu").hidden) closePanelContext();
+	});
 }
 
 // ---- views -----------------------------------------------------------------
@@ -1707,40 +2273,76 @@ async function renderSettingsTab() {
 	}
 
 	if (settingsTab === "appearance") {
-		setHeading(content, "Appearance");
+		const heading = document.createElement("header");
+		heading.className = "settings-heading";
+		heading.innerHTML = '<div class="eyebrow">Interface</div><h1>Appearance</h1><p>Control how the company structure is presented to you. These preferences affect the interface only.</p>';
+		content.appendChild(heading);
+		const group = document.createElement("section");
+		group.className = "settings-group";
+		group.innerHTML = '<header><h2>Navigation type indicators</h2><p>Use a restrained color wash to distinguish direct pages from categories.</p></header>';
+		content.appendChild(group);
 		const appearance = navAppearance();
 		const showKinds = document.createElement("input");
 		showKinds.type = "checkbox";
+		showKinds.setAttribute("aria-label", "Show navigation type hues");
 		showKinds.checked = appearance.showKinds;
 		const pageHue = document.createElement("input");
 		pageHue.type = "color";
+		pageHue.setAttribute("aria-label", "Page navigation hue");
 		pageHue.value = appearance.pageHue;
 		const categoryHue = document.createElement("input");
 		categoryHue.type = "color";
+		categoryHue.setAttribute("aria-label", "Category navigation hue");
 		categoryHue.value = appearance.categoryHue;
+		pageHue.className = "appearance-color";
+		categoryHue.className = "appearance-color";
+		const preview = document.createElement("div");
+		preview.className = "appearance-preview";
+		const pagePreview = document.createElement("div");
+		pagePreview.className = "preview-navigation-row";
+		pagePreview.textContent = "Cashflow Overview";
+		const categoryPreview = document.createElement("div");
+		categoryPreview.className = "preview-navigation-row";
+		categoryPreview.textContent = "Forecasting";
+		preview.appendChild(pagePreview);
+		preview.appendChild(categoryPreview);
 		const save = () => {
 			localStorage.setItem(
 				navStorageKey("nav-appearance"),
 				JSON.stringify({ showKinds: showKinds.checked, pageHue: pageHue.value, categoryHue: categoryHue.value }),
 			);
+			pageHue.disabled = !showKinds.checked;
+			categoryHue.disabled = !showKinds.checked;
+			preview.classList.toggle("hues-hidden", !showKinds.checked);
+			pagePreview.style.setProperty("--preview-hue", pageHue.value);
+			categoryPreview.style.setProperty("--preview-hue", categoryHue.value);
+			applyNavAppearance();
 			renderCompanyNavSafe();
 		};
 		showKinds.onchange = save;
 		pageHue.oninput = save;
 		categoryHue.oninput = save;
-		setRow(content, "Page and category indicators", "subtle left-edge hue in navigation", showKinds);
-		setRow(content, "Page hue", "direct pages and instruments", pageHue);
-		setRow(content, "Category hue", "collection pages", categoryHue);
+		setRow(group, "Show type hues", "Display the indicator at the left edge of each navigation row.", showKinds);
+		setRow(group, "Page hue", "Direct pages and surfaces", pageHue);
+		setRow(group, "Category hue", "Folders that open a list of pages", categoryHue);
+		group.appendChild(preview);
 		const reset = document.createElement("button");
-		reset.className = "save";
-		reset.textContent = "Reset navigation appearance";
+		reset.textContent = "Reset to defaults";
 		reset.onclick = () => {
 			localStorage.removeItem(navStorageKey("nav-appearance"));
-			localStorage.removeItem(navStorageKey("nav-heights"));
+			applyNavAppearance();
 			renderCompanyNavSafe();
 			renderSettingsTab();
 		};
-		setRow(content, "Navigation sizing", "right-click any department or row to adjust it by ±12px", reset);
+		const actions = document.createElement("div");
+		actions.className = "appearance-actions";
+		actions.appendChild(reset);
+		group.appendChild(actions);
+		const sizing = document.createElement("p");
+		sizing.className = "sess-meta";
+		sizing.textContent = "Right-click any department or navigation row to adjust its height by +/-12px.";
+		group.appendChild(sizing);
+		save();
 		return;
 	}
 
@@ -2011,6 +2613,10 @@ window.qorpera.onMergeDone((result) => {
 		}
 	}
 });
+
+setupHierarchicalController();
+setupSidebarToggle();
+applyNavAppearance();
 
 (async () => {
 	const info = await window.qorpera.appInfo();
