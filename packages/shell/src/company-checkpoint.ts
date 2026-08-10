@@ -43,15 +43,12 @@ function commitSnapshot(root: string, message: string): void {
  * write access. A staged version is committed first so a different working
  * version becomes a second recoverable snapshot instead of replacing it.
  */
-export function snapshotFounderGitState(root: string): void {
-	if (git(root, ["rev-parse", "--verify", "HEAD"]).status !== 0) {
-		throw new Error("founder state cannot be snapshotted before company genesis");
-	}
+export function snapshotFounderGitState(root: string, actor = "controller"): void {
 	const staged = git(root, ["diff", "--cached", "--quiet"]);
 	if (staged.status === 1) {
 		commitSnapshot(
 			root,
-			"docs: preserve founder staged state\n\nQorpera-Trigger: controller startup\nQorpera-Rationale: retain the founder index before any controller write can overlap it",
+			`docs: preserve founder staged state\n\nQorpera-Trigger: ${actor} startup\nQorpera-Rationale: retain the founder index before any agent write can overlap it`,
 		);
 	} else if (staged.status !== 0) {
 		throw new Error("could not inspect staged founder state");
@@ -69,7 +66,7 @@ export function snapshotFounderGitState(root: string): void {
 	}
 	commitSnapshot(
 		root,
-		"docs: preserve founder working state\n\nQorpera-Trigger: controller startup\nQorpera-Rationale: retain tracked, untracked, and deleted founder data before controller execution",
+		`docs: preserve founder working state\n\nQorpera-Trigger: ${actor} startup\nQorpera-Rationale: retain tracked, untracked, and deleted founder data before agent execution`,
 	);
 }
 
@@ -132,10 +129,10 @@ export function commitCompanyMaterialization(root: string, paths: string[]): voi
 	}
 }
 
-export function checkpointCompanyGit(
+function checkpointGit(
 	root: string,
 	baseline: CompanyGitBaseline,
-	trailFile: string,
+	options: { forcedPath?: string; name: string; email: string; title: string; trigger: string; rationale: string },
 ): CompanyCheckpointResult {
 	let current: Map<string, string>;
 	try {
@@ -144,9 +141,10 @@ export function checkpointCompanyGit(
 		console.error(error instanceof Error ? error.message : String(error));
 		return { baseline, success: false };
 	}
-	const trailPath = `trail/${trailFile}`;
 	const sessionPaths = [...new Set([...current.keys(), ...baseline.dirtyPaths.keys()])].filter(
-		(path) => baseline.dirtyPaths.get(path) !== current.get(path) || path.replace(/\\/g, "/") === trailPath,
+		(path) =>
+			baseline.dirtyPaths.get(path) !== current.get(path) ||
+			(options.forcedPath !== undefined && path.replace(/\\/g, "/") === options.forcedPath.replace(/\\/g, "/")),
 	);
 	if (sessionPaths.length === 0) return { baseline: { dirtyPaths: current }, success: true };
 	const staged = git(root, ["add", "--", ...sessionPaths]);
@@ -156,13 +154,13 @@ export function checkpointCompanyGit(
 	}
 	const committed = git(root, [
 		"-c",
-		"user.name=Qorpera Controller",
+		`user.name=${options.name}`,
 		"-c",
-		"user.email=controller@qorpera.local",
+		`user.email=${options.email}`,
 		"commit",
 		"--only",
 		"-m",
-		`docs: checkpoint controller session\n\nQorpera-Trigger: trail/${trailFile}\nQorpera-Rationale: preserve the settled controller change set`,
+		`${options.title}\n\nQorpera-Trigger: ${options.trigger}\nQorpera-Rationale: ${options.rationale}`,
 		"--",
 		...sessionPaths,
 	]);
@@ -172,6 +170,35 @@ export function checkpointCompanyGit(
 		return { baseline, success: false };
 	}
 	return { baseline: captureCompanyGitBaseline(root), success: true };
+}
+
+export function checkpointCompanyGit(
+	root: string,
+	baseline: CompanyGitBaseline,
+	trailFile: string,
+): CompanyCheckpointResult {
+	return checkpointGit(root, baseline, {
+		forcedPath: `trail/${trailFile}`,
+		name: "Qorpera Controller",
+		email: "controller@qorpera.local",
+		title: "docs: checkpoint controller session",
+		trigger: `trail/${trailFile}`,
+		rationale: "preserve the settled controller change set",
+	});
+}
+
+export function checkpointProductWorktreeGit(
+	root: string,
+	baseline: CompanyGitBaseline,
+	companyTrailFile: string,
+): CompanyCheckpointResult {
+	return checkpointGit(root, baseline, {
+		name: "Qorpera Product Worker",
+		email: "product-worker@qorpera.local",
+		title: "fix: checkpoint product-worker session",
+		trigger: companyTrailFile,
+		rationale: "preserve uncommitted product work with its company trail provenance",
+	});
 }
 
 export function savePendingCompanyCheckpoint(

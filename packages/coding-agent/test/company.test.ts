@@ -7,9 +7,11 @@
 import { spawnSync } from "node:child_process";
 import {
 	existsSync,
+	linkSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -20,6 +22,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
 import {
+	captureProductTransactionStorage,
 	claimCompanyRuntimeLock,
 	companyRuntimeLockPath,
 	createProductWorktree,
@@ -27,6 +30,7 @@ import {
 	KERNEL_PROMPT,
 	listProductDepartments,
 	readProductProtectionInventory,
+	readProductWorktreeAssignment,
 	releaseCompanyRuntimeLock,
 	scaffoldCompany,
 	scaffoldProductDepartment,
@@ -210,7 +214,13 @@ describe("forking hub verbs (no-launch paths)", () => {
 			true,
 		);
 		const department = listProductDepartments(company)[0];
-		const worktree = createProductWorktree(company, department);
+		const runtimeLock = claimCompanyRuntimeLock(company);
+		let worktree: ReturnType<typeof createProductWorktree>;
+		try {
+			worktree = createProductWorktree(company, department, runtimeLock);
+		} finally {
+			releaseCompanyRuntimeLock(runtimeLock);
+		}
 		expect(worktree?.branch).toMatch(/^qorpera\/legacy-product-development\//);
 		expect(existsSync(join(company, worktree!.path, ".git"))).toBe(true);
 		expect(statSync(join(company, worktree!.path, ".git")).isDirectory()).toBe(true);
@@ -220,6 +230,15 @@ describe("forking hub verbs (no-launch paths)", () => {
 				encoding: "utf-8",
 			}).stdout.trim(),
 		).toBe("");
+		expect(readProductWorktreeAssignment(company, department, worktree!.path)).toEqual(worktree);
+		expect(readProductWorktreeAssignment(company, department, join(worktree!.path, "nested"))).toBeUndefined();
+		expect(
+			spawnSync("git", ["remote", "set-url", "origin", "https://example.invalid/other.git"], {
+				cwd: join(company, worktree!.path),
+				stdio: "ignore",
+			}).status,
+		).toBe(0);
+		expect(readProductWorktreeAssignment(company, department, worktree!.path)).toBeUndefined();
 	});
 
 	it("qorpera fork clones a whole company folder", async () => {
@@ -246,13 +265,52 @@ describe("product-development departments", () => {
 			const lock = claimCompanyRuntimeLock(root);
 			expect(lock.path).toBe(companyRuntimeLockPath(root));
 			expect(() => scaffoldProductDepartment(root, "Widget")).toThrow("already owned by another process");
-			const department = scaffoldProductDepartmentWithRuntimeLock(root, "Widget", lock);
+			const department = scaffoldProductDepartmentWithRuntimeLock(
+				root,
+				"Widget",
+				lock,
+				captureProductTransactionStorage(root),
+			);
 			expect(department.id).toBe("widget-development");
 			releaseCompanyRuntimeLock(lock);
 		} finally {
 			if (previous === undefined) delete process.env.QORPERA_CODING_AGENT_DIR;
 			else process.env.QORPERA_CODING_AGENT_DIR = previous;
 		}
+	});
+
+	it("uses the same runtime lock identity through filesystem aliases", () => {
+		const company = join(root, "company");
+		const alias = join(root, "company-alias");
+		scaffoldCompany(company);
+		symlinkSync(company, alias, process.platform === "win32" ? "junction" : "dir");
+		expect(companyRuntimeLockPath(alias)).toBe(companyRuntimeLockPath(company));
+		const lock = claimCompanyRuntimeLock(company);
+		try {
+			expect(() => claimCompanyRuntimeLock(alias)).toThrow("already owned by another process");
+		} finally {
+			releaseCompanyRuntimeLock(lock);
+		}
+	});
+
+	it("rejects linked product transaction parents before writing the kit", () => {
+		scaffoldCompany(root);
+		const physicalDepartments = join(root, "departments-physical");
+		renameSync(join(root, "departments"), physicalDepartments);
+		symlinkSync(physicalDepartments, join(root, "departments"), process.platform === "win32" ? "junction" : "dir");
+
+		expect(() => scaffoldProductDepartment(root, "Widget")).toThrow("not a link or junction");
+		expect(existsSync(join(physicalDepartments, "widget-development"))).toBe(false);
+	});
+
+	it("rejects aliased kernel transaction files before writing the kit", () => {
+		scaffoldCompany(root);
+		const projection = join(root, "app", "projection.json");
+		rmSync(projection);
+		linkSync(join(root, "authority.toml"), projection);
+
+		expect(() => scaffoldProductDepartment(root, "Widget")).toThrow("must be one physical entry");
+		expect(existsSync(join(root, "departments", "widget-development"))).toBe(false);
 	});
 
 	it("tracks keep files created in pre-existing empty spine directories", () => {
@@ -370,7 +428,13 @@ describe("product-development departments", () => {
 			cwd: join(root, department.repositoryPath),
 			stdio: "ignore",
 		});
-		const failed = createProductWorktree(root, { ...department, id: "bad..ref", repositoryExists: true });
+		const runtimeLock = claimCompanyRuntimeLock(root);
+		let failed: ReturnType<typeof createProductWorktree>;
+		try {
+			failed = createProductWorktree(root, { ...department, id: "bad..ref", repositoryExists: true }, runtimeLock);
+		} finally {
+			releaseCompanyRuntimeLock(runtimeLock);
+		}
 		expect(failed).toBeUndefined();
 		expect(readdirSync(join(root, department.worktreesPath))).toEqual([".gitkeep"]);
 	});
@@ -463,8 +527,8 @@ describe("sessions are the trail", () => {
 			content: [{ type: "text", text: "hello trail" }],
 			timestamp: Date.now(),
 		} as never);
-		// The session file flushes on the first assistant message (upstream
-		// behavior: abandoned prompts don't litter the store).
+		// The kernel creates the session header immediately; assistant output
+		// then appends to the already-auditable trail.
 		sessionManager.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "recorded" }],

@@ -1,13 +1,5 @@
 import { randomUUID } from "node:crypto";
 
-const INFERENCE_PATHS = [
-	/\/v1\/messages$/,
-	/\/v1\/responses$/,
-	/\/codex\/responses$/,
-	/\/v1\/chat\/completions$/,
-	/\/(?:v1|v1beta)\/models\/[^/]+:(?:generateContent|streamGenerateContent)$/,
-];
-
 function codexPlaceholder(handle: string): string {
 	const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
 	return `${encode({ alg: "none", typ: "JWT" })}.${encode({
@@ -41,26 +33,4 @@ export function brokerCredentialProjection(
 				: { type: "api_key", key: handle };
 	}
 	return { credentials, handles };
-}
-
-export function isScopedInferenceTarget(
-	baseUrls: readonly string[],
-	target: URL,
-	allowedDomains: ReadonlySet<string>,
-): boolean {
-	if (target.protocol !== "https:" || (target.port && target.port !== "443")) return false;
-	if (!allowedDomains.has(target.hostname.toLowerCase().replace(/\.$/, ""))) return false;
-	if (!INFERENCE_PATHS.some((pattern) => pattern.test(target.pathname))) return false;
-	return baseUrls.some((base) => {
-		try {
-			const parsed = new URL(base);
-			const path = parsed.pathname.replace(/\/$/, "");
-			return (
-				parsed.origin === target.origin &&
-				(path === "" || target.pathname.startsWith(`${path}/`) || target.pathname === path)
-			);
-		} catch {
-			return false;
-		}
-	});
 }

@@ -358,6 +358,29 @@ export function appendKernelObservation(
 	commitTrailAppend(binding, append);
 }
 
+export function appendKernelModelObservation(
+	binding: TrailBinding,
+	input: {
+		intentNonce: string;
+		requestHash: string;
+		provider: string;
+		model: string;
+		requestSha256: string;
+		status: "started" | "completed" | "failed" | "aborted";
+	},
+): void {
+	const append = stampKernelEntry(binding, {
+		type: "custom",
+		id: randomUUID(),
+		parentId: null,
+		timestamp: "",
+		customType: "qorpera_kernel_model_request",
+		data: input,
+	});
+	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+	commitTrailAppend(binding, append);
+}
+
 const GATE_EFFECT_CLASSES = new Set(["money", "identity", "irreversible", "authority", "product_code"]);
 const GATE_FIELDS = ["id", "status", "class", "tool", "hash", "created"] as const;
 
@@ -665,8 +688,7 @@ export function protectedControllerPaths(
 		join(root, "authority.toml"),
 		join(root, "AGENTS.md"),
 		join(root, "CLAUDE.md"),
-		join(root, ".qorpera", "products.json"),
-		join(root, ".qorpera", "settings.json"),
+		join(root, ".qorpera"),
 		join(root, "inbox"),
 		...productPaths.flatMap((product) => [join(root, product.repository), join(root, product.worktrees)]),
 	];

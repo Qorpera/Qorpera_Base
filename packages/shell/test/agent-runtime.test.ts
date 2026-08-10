@@ -18,6 +18,7 @@ import {
 import {
 	captureCompanyGitBaseline,
 	checkpointCompanyGit,
+	checkpointProductWorktreeGit,
 	commitCompanyMaterialization,
 	reconcilePendingCompanyCheckpoints,
 	savePendingCompanyCheckpoint,
@@ -229,7 +230,7 @@ describe("kernel-bound agent runtime", () => {
 		expect(config).toContain(`${JSON.stringify(company)} = "write"`);
 		expect(config).toContain(`${JSON.stringify(join(company, repository))} = "read"`);
 		expect(config).toContain(`${JSON.stringify(join(company, "inbox", "messages"))} = "write"`);
-		expect(config).toContain(`${JSON.stringify(join(company, ".qorpera", "settings.json"))} = "read"`);
+		expect(config).toContain(`${JSON.stringify(join(company, ".qorpera"))} = "read"`);
 
 		writeSandboxProfile(
 			configDir,
@@ -328,6 +329,34 @@ describe("kernel-bound agent runtime", () => {
 			"founder untracked version\n",
 		);
 		expect(existsSync(join(company, "untracked.md"))).toBe(false);
+	});
+
+	it("snapshots founder product state before a worker and checkpoints its uncommitted result", () => {
+		const worktree = join(root, "product-worktree");
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(worktree, "product.ts"), "export const value = 1;\n", "utf-8");
+		for (const args of [
+			["init"],
+			["add", "product.ts"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", args, { cwd: worktree, stdio: "ignore" }).status).toBe(0);
+		}
+		writeFileSync(join(worktree, "founder-notes.md"), "retain this\n", "utf-8");
+		snapshotFounderGitState(worktree, "product-worker");
+		const baseline = captureCompanyGitBaseline(worktree);
+		writeFileSync(join(worktree, "product.ts"), "export const value = 2;\n", "utf-8");
+
+		expect(checkpointProductWorktreeGit(worktree, baseline, "trail/product.jsonl").success).toBe(true);
+		expect(spawnSync("git", ["show", "HEAD~1:founder-notes.md"], { cwd: worktree, encoding: "utf-8" }).stdout).toBe(
+			"retain this\n",
+		);
+		expect(spawnSync("git", ["show", "HEAD:product.ts"], { cwd: worktree, encoding: "utf-8" }).stdout).toBe(
+			"export const value = 2;\n",
+		);
+		expect(spawnSync("git", ["log", "-1", "--format=%B"], { cwd: worktree, encoding: "utf-8" }).stdout).toContain(
+			"Qorpera-Trigger: trail/product.jsonl",
+		);
 	});
 
 	it("reconciles a durable checkpoint left by an interrupted agent", () => {

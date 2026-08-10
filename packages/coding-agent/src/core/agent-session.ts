@@ -97,6 +97,7 @@ import {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { KernelIntentCapability } from "./kernel-broker.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import { isModelBrokerInstalled, withModelBrokerTurn } from "./model-broker-client.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
@@ -395,6 +396,11 @@ export class AgentSession {
 			throw new Error("Company sessions require a kernel-authenticated Qorpera Base session header");
 		}
 		this._modelRuntime = config.modelRuntime;
+		if (isModelBrokerInstalled()) {
+			const trustedStream = this.agent.streamFunction;
+			this.agent.streamFunction = (model, context, options) =>
+				withModelBrokerTurn(this._activeKernelIntent, () => trustedStream(model, context, options));
+		}
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;

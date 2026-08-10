@@ -1,39 +1,70 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { installModelBrokerFetch } from "../src/core/model-broker-client.ts";
+import type { Api, Model } from "@qorpera/pi-ai";
+import { fauxAssistantMessage } from "@qorpera/pi-ai";
+import { describe, expect, it, vi } from "vitest";
+import {
+	brokeredStreamSimple,
+	handleModelBrokerFrame,
+	installModelBrokerFetch,
+	setModelBrokerWriter,
+	withModelBrokerTurn,
+} from "../src/core/model-broker-client.ts";
 
-const originalFetch = globalThis.fetch;
-
-afterEach(() => {
-	globalThis.fetch = originalFetch;
-	delete process.env.QORPERA_MODEL_BROKER_URL;
-	delete process.env.QORPERA_MODEL_BROKER_TOKEN;
-	delete process.env.QORPERA_MODEL_BROKER_HANDLES;
-});
+const model: Model<Api> = {
+	id: "faux-1",
+	name: "Faux",
+	api: "faux",
+	provider: "faux",
+	baseUrl: "https://must-not-reach-child.example",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 1000,
+	maxTokens: 100,
+};
 
 describe("model broker client", () => {
-	it("rewrites authenticated HTTPS inference into one opaque local broker operation", async () => {
+	it("uses one intent-bound structured IPC request and disables child network", async () => {
 		const handle = "qorpera-model-11111111-1111-4111-8111-111111111111";
-		process.env.QORPERA_MODEL_BROKER_URL = "http://127.0.0.1:32123/inference";
-		process.env.QORPERA_MODEL_BROKER_TOKEN = "session-token";
-		process.env.QORPERA_MODEL_BROKER_HANDLES = JSON.stringify([handle]);
-		const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response("ok"));
-		globalThis.fetch = fetchMock;
+		process.env.QORPERA_MODEL_BROKER_HANDLES = JSON.stringify({ faux: handle });
+		const frames: object[] = [];
+		setModelBrokerWriter((frame) => frames.push(frame));
 		installModelBrokerFetch();
+		const intent = {
+			nonce: "22222222-2222-4222-8222-222222222222",
+			requestHash: "a".repeat(64),
+			attended: true,
+			expiresAt: "2026-08-10T12:00:00.000Z",
+			signature: "kernel-signature",
+		};
 
-		await fetch("https://api.openai.com/v1/responses", {
-			method: "POST",
-			headers: { authorization: `Bearer ${handle}`, "content-type": "application/json" },
-			body: "{}",
+		const stream = withModelBrokerTurn(intent, () => brokeredStreamSimple(model, { messages: [] }));
+		expect(stream).toBeDefined();
+		expect(frames).toHaveLength(1);
+		expect(frames[0]).toMatchObject({
+			type: "qorpera_model_request",
+			handle,
+			intent,
+			model: { provider: "faux", id: "faux-1" },
+			options: { transport: "sse" },
 		});
+		const serialized = JSON.stringify(frames[0]);
+		expect(serialized).not.toContain(model.baseUrl);
+		expect(serialized).not.toContain("authorization");
+		await expect(fetch("https://example.com/unbrokered")).rejects.toThrow(
+			"all child HTTP requests are disabled by the kernel",
+		);
 
-		expect(fetchMock).toHaveBeenCalledOnce();
-		const [url, init] = fetchMock.mock.calls[0];
-		expect(url).toBe("http://127.0.0.1:32123/inference");
-		const headers = new Headers(init?.headers);
-		expect(headers.get("x-qorpera-model-target")).toBe("https://api.openai.com/v1/responses");
-		expect(headers.get("x-qorpera-model-token")).toBe("session-token");
-		expect(headers.get("x-qorpera-model-handle")).toBe(handle);
-		await expect(fetch("http://example.com/unbrokered")).rejects.toThrow("all child HTTP requests are disabled");
-		expect(fetchMock).toHaveBeenCalledOnce();
+		const requestId = (frames[0] as { requestId: string }).requestId;
+		const result = fauxAssistantMessage("brokered");
+		expect(
+			handleModelBrokerFrame({
+				type: "qorpera_model_event",
+				requestId,
+				event: { type: "done", reason: "stop", message: result },
+			}),
+		).toBe(true);
+		expect(handleModelBrokerFrame({ type: "qorpera_model_end", requestId })).toBe(true);
+		await expect(stream!.result()).resolves.toEqual(result);
+		expect(vi.isMockFunction(globalThis.fetch)).toBe(false);
 	});
 });

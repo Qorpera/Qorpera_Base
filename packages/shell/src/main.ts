@@ -14,7 +14,7 @@
  * and backend; a company is never open in two windows at once.
  */
 
-import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	appendFileSync,
@@ -34,6 +34,8 @@ import { fileURLToPath } from "node:url";
 import { companyPort, createCompanyAppServer } from "@qorpera/pi-coding-agent/app-server";
 import {
 	type CompanyRuntimeLock,
+	canonicalCompanyRoot,
+	captureProductTransactionStorage,
 	claimCompanyRuntimeLock,
 	conceptionKickoff,
 	createProductWorktree,
@@ -43,16 +45,28 @@ import {
 	listCompanies,
 	listProductDepartments,
 	type ProductDepartment,
+	type ProductWorktree,
 	productDepartmentId,
 	readProductProtectionInventory,
+	readProductWorktreeAssignment,
 	registerCompany,
 	releaseCompanyRuntimeLock,
 	scaffoldCompany,
 	scaffoldProductDepartmentWithRuntimeLock,
 } from "@qorpera/pi-coding-agent/company";
-import { app, BrowserWindow, dialog, shell as electronShell, ipcMain, type WebContents } from "electron";
+import {
+	app,
+	BrowserWindow,
+	dialog,
+	session as electronSession,
+	shell as electronShell,
+	ipcMain,
+	type Session,
+	type WebContents,
+} from "electron";
 import electronUpdater from "electron-updater";
 import {
+	appendKernelModelObservation,
 	appendKernelObservation,
 	applyKernelWriteFrame,
 	bindTrailSession,
@@ -72,13 +86,15 @@ import {
 import {
 	captureCompanyGitBaseline,
 	checkpointCompanyGit,
+	checkpointProductWorktreeGit,
 	commitCompanyMaterialization,
 	finishPendingCompanyCheckpoint,
 	reconcilePendingCompanyCheckpoints,
 	savePendingCompanyCheckpoint,
 	snapshotFounderGitState,
 } from "./company-checkpoint.ts";
-import { type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
+import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
+import { isRendererRequestAllowed } from "./renderer-boundary.ts";
 import {
 	ensureUserland,
 	getActiveApp,
@@ -97,23 +113,6 @@ const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rp
 const CODEX_ENTRY = fileURLToPath(import.meta.resolve("@openai/codex/bin/codex.js"));
 const DIRNAME = fileURLToPath(new URL(".", import.meta.url));
 const FOUNDATION_READ_PATHS = [dirname(process.execPath), resolve(DIRNAME, "..", "..", "..")];
-const MODEL_NETWORK_DOMAINS = [
-	"api.openai.com",
-	"chatgpt.com",
-	"api.anthropic.com",
-	"generativelanguage.googleapis.com",
-	"aiplatform.googleapis.com",
-	"api.groq.com",
-	"api.mistral.ai",
-	"api.x.ai",
-	"openrouter.ai",
-	"api.cerebras.ai",
-	"api.deepseek.com",
-	"api.z.ai",
-	"api.moonshot.ai",
-	"api.minimax.io",
-	"api-inference.huggingface.co",
-];
 const MODEL_AUTH_PROVIDERS = new Set([
 	"openai",
 	"openai-codex",
@@ -251,6 +250,7 @@ interface CompanyRuntime {
  * controllers never share a child, a backend, or a kickoff flag. */
 interface Slot {
 	window: BrowserWindow;
+	rendererSession: Session;
 	runtime?: CompanyRuntime;
 	kickoffPending: boolean;
 }
@@ -285,6 +285,7 @@ const childIntentSigners = new WeakMap<
 	ChildProcessWithoutNullStreams,
 	(frame: Record<string, unknown>, attended: boolean) => KernelIntentCapability
 >();
+const childModelCapabilities = new WeakMap<ChildProcessWithoutNullStreams, BrokeredCredentials>();
 const childCheckpointCompletion = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 
 const slots = new Map<number, Slot>();
@@ -349,7 +350,12 @@ function isTrustedHubSender(sender: WebContents): boolean {
 /** Windows compares paths case-insensitively; launcher argv and the registry
  * may disagree on casing for the same folder. */
 function normalizedRoot(root: string): string {
-	const resolved = resolve(root);
+	let resolved: string;
+	try {
+		resolved = canonicalCompanyRoot(root);
+	} catch {
+		resolved = resolve(root);
+	}
 	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
@@ -512,6 +518,7 @@ async function closeCompany(slot: Slot): Promise<void> {
 	runtime.backendClose?.();
 	releaseCompanyRuntimeLock(runtime.runtimeLock);
 	slot.runtime = undefined;
+	await slot.rendererSession.clearStorageData();
 }
 
 async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
@@ -558,6 +565,9 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	if (!modelRequestBroker) throw new Error("kernel model-request broker is unavailable");
 	snapshotFounderGitState(root);
 	let gitBaseline = captureCompanyGitBaseline(root);
+	const productWorktreeRoot = worktree ? realpathSync(cwd) : undefined;
+	if (productWorktreeRoot) snapshotFounderGitState(productWorktreeRoot, "product-worker");
+	let productGitBaseline = productWorktreeRoot ? captureCompanyGitBaseline(productWorktreeRoot) : undefined;
 	const binding = bindTrailSession(root, cwd, scope, sessionFile);
 	const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "controller")), "checkpoints");
 	const checkpointState = join(checkpointDir, `${binding.token}.json`);
@@ -567,7 +577,11 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		repository: product.repositoryPath,
 		worktrees: product.worktreesPath,
 	}));
-	const brokeredCredentials = modelRequestBroker.registerChild(sourceModelCredentials(), ambientModelProviders());
+	const brokeredCredentials = modelRequestBroker.registerChild(
+		sourceModelCredentials(),
+		ambientModelProviders(),
+		(event) => appendKernelModelObservation(binding, event),
+	);
 	let agentDir: string;
 	let args: string[];
 	let kernelSigner: ReturnType<typeof createKernelResponseSigner>;
@@ -606,8 +620,6 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	env.QORPERA_TRAIL_BROKER_TOKEN = binding.token;
 	env.QORPERA_KERNEL_PUBLIC_KEY = kernelSigner.publicKey;
 	env.QORPERA_KERNEL_REQUIRED = "1";
-	env.QORPERA_MODEL_BROKER_URL = `http://127.0.0.1:${modelRequestBroker.port}/inference`;
-	env.QORPERA_MODEL_BROKER_TOKEN = brokeredCredentials.token;
 	env.QORPERA_MODEL_BROKER_HANDLES = JSON.stringify(brokeredCredentials.handles);
 	try {
 		child = spawn(process.execPath, args, {
@@ -621,6 +633,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	}
 	childBindings.set(child, binding);
 	childIntentSigners.set(child, kernelSigner.signIntent);
+	childModelCapabilities.set(child, brokeredCredentials);
 	let resolveCheckpoint: (() => void) | undefined;
 	childCheckpointCompletion.set(
 		child,
@@ -632,6 +645,12 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		if (!line.trim()) return;
 		try {
 			const frame = JSON.parse(line) as unknown;
+			if (
+				modelRequestBroker?.handleFrame(frame, (response) => {
+					if (child.exitCode === null) child.stdin.write(`${JSON.stringify(response)}\n`);
+				})
+			)
+				return;
 			if (
 				applyKernelWriteFrame(frame, binding, root, (response) => {
 					child.stdin.write(`${JSON.stringify(kernelSigner.signResponse(response))}\n`);
@@ -650,6 +669,14 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				const result = checkpointCompanyGit(root, gitBaseline, binding.file);
 				gitBaseline = result.baseline;
 				savePendingCompanyCheckpoint(checkpointState, root, gitBaseline, binding.file);
+				if (productWorktreeRoot && productGitBaseline) {
+					const productResult = checkpointProductWorktreeGit(
+						productWorktreeRoot,
+						productGitBaseline,
+						binding.path,
+					);
+					productGitBaseline = productResult.baseline;
+				}
 			}
 			if (onRpcEvent) onRpcEvent(frame as { type?: string });
 			else if (!silent) send(win, "rpc-event", frame);
@@ -669,6 +696,9 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			const result = checkpointCompanyGit(root, gitBaseline, binding.file);
 			finishPendingCompanyCheckpoint(checkpointState, result);
 			if (!result.success) savePendingCompanyCheckpoint(checkpointState, root, result.baseline, binding.file);
+			if (productWorktreeRoot && productGitBaseline) {
+				checkpointProductWorktreeGit(productWorktreeRoot, productGitBaseline, binding.path);
+			}
 		} finally {
 			resolveCheckpoint?.();
 		}
@@ -687,6 +717,7 @@ function sendKernelPrompt(
 	if (!binding || !signIntent || child.exitCode !== null) return false;
 	const unsignedFrame = { ...frame };
 	const kernelIntent = signIntent(unsignedFrame, attended);
+	childModelCapabilities.get(child)?.authorizeIntent(kernelIntent);
 	const images = Array.isArray(unsignedFrame.images)
 		? unsignedFrame.images.flatMap((image) => {
 				if (!image || typeof image !== "object") return [];
@@ -828,7 +859,12 @@ async function startMergeChild(slot: Slot, runtime: CompanyRuntime): Promise<boo
 async function listenBackend(root: string, authToken: string): Promise<{ port: number; close: () => void }> {
 	const base = companyPort(root);
 	for (let port = base; port < base + 10; port++) {
-		const server = createCompanyAppServer({ root, port, authToken });
+		const server = createCompanyAppServer({
+			root,
+			port,
+			authToken,
+			userland: { baseDir: BASE_USERLAND_DIR },
+		});
 		const listening = await new Promise<boolean>((resolvePromise) => {
 			server.once("error", () => resolvePromise(false));
 			server.listen(port, "127.0.0.1", () => resolvePromise(true));
@@ -836,6 +872,10 @@ async function listenBackend(root: string, authToken: string): Promise<{ port: n
 		if (listening) return { port, close: () => server.close() };
 	}
 	throw new Error(`no free backend port near ${base} for ${root}`);
+}
+
+function companyUserlandUrl(runtime: CompanyRuntime, choice: "fork" | "base"): string {
+	return `http://127.0.0.1:${runtime.backendPort}/userland/${choice}/index.html`;
 }
 
 interface ActiveCompany {
@@ -871,6 +911,13 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 }
 
 async function openCompany(slot: Slot, root: string): Promise<void> {
+	try {
+		root = canonicalCompanyRoot(root);
+	} catch {
+		console.error(`refusing to open unavailable company root: ${root}`);
+		if (!slot.runtime) void slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+		return;
+	}
 	// Refuse non-companies outright: opening is what registers a root and
 	// forks a userland into it, so an invalid path here would mint a fake
 	// company. The window stays on (or returns to) the hub instead.
@@ -947,12 +994,12 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		if (win.isDestroyed()) return;
 		setWindowIcon(win, companyIcon(root));
 		if (getActiveApp(join(root, "userland")) === "base") {
-			await win.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+			await win.loadURL(companyUserlandUrl(runtime, "base"));
 			return;
 		}
-		await win.loadFile(join(root, "userland", "index.html")).catch(async () => {
+		await win.loadURL(companyUserlandUrl(runtime, "fork")).catch(async () => {
 			if (slot.runtime) slot.runtime.usingBaseFallback = true;
-			await win.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+			await win.loadURL(companyUserlandUrl(runtime, "base"));
 		});
 	} catch (error) {
 		if (slot.runtime?.runtimeLock.token === runtimeLock.token) await closeCompany(slot);
@@ -988,33 +1035,18 @@ async function openChat(
 			(entry) => entry.path === departmentPath && entry.repositoryExists,
 		);
 		if (!department) return { ok: false, error: "product department or repository is unavailable" };
+		let assignment: ProductWorktree;
 		if (worktreePath) {
-			const resolvedWorktree = resolve(runtime.root, worktreePath);
-			const worktreesRoot = resolve(runtime.root, department.worktreesPath);
-			let actualWorktree: string;
-			try {
-				actualWorktree = realpathSync(resolvedWorktree);
-			} catch {
-				return { ok: false, error: "product worktree no longer exists" };
-			}
-			if (!isInside(actualWorktree, realpathSync(worktreesRoot)) || !existsSync(join(actualWorktree, ".git"))) {
-				return { ok: false, error: "worktree is outside the product department or no longer exists" };
-			}
-			worktree = relative(runtime.root, actualWorktree);
-			const branchResult = spawnSync("git", ["-C", actualWorktree, "branch", "--show-current"], {
-				encoding: "utf-8",
-				shell: false,
-			});
-			if (branchResult.status !== 0 || !branchResult.stdout.trim()) {
-				return { ok: false, error: "could not verify the selected product worktree branch" };
-			}
-			branch = branchResult.stdout.trim();
+			const existingAssignment = readProductWorktreeAssignment(runtime.root, department, worktreePath);
+			if (!existingAssignment) return { ok: false, error: "product worktree has no valid kernel assignment" };
+			assignment = existingAssignment;
 		} else {
-			const created = createProductWorktree(runtime.root, department);
+			const created = createProductWorktree(runtime.root, department, runtime.runtimeLock);
 			if (!created) return { ok: false, error: "could not create product worktree" };
-			worktree = created.path;
-			branch = created.branch;
+			assignment = created;
 		}
+		worktree = assignment.path;
+		branch = assignment.branch;
 		const assignedWorktree = resolve(runtime.root, worktree);
 		const expectedWorktree = resolve(realpathSync(runtime.root), worktree);
 		const actualWorktree = realpathSync(assignedWorktree);
@@ -1026,12 +1058,6 @@ async function openChat(
 		) {
 			return { ok: false, error: "product worktree changed before authorization" };
 		}
-		const sourceResult = spawnSync("git", ["-C", actualRepository, "remote", "get-url", "origin"], {
-			encoding: "utf-8",
-			shell: false,
-		});
-		const source =
-			sourceResult.status === 0 && sourceResult.stdout.trim() ? sourceResult.stdout.trim() : "local repository";
 		const approved = await confirmKernelReview(slot.window, {
 			title: "Authorize product worker",
 			summary: `Issue product-code write authority for ${department.name}?`,
@@ -1039,11 +1065,16 @@ async function openChat(
 			metadata: [
 				`Department: ${department.path}`,
 				`Source repository: ${actualRepository}`,
-				`Source remote: ${source}`,
+				`Selected clone origin: ${assignment.sourceRemote}`,
+				`Source commit: ${assignment.sourceHead ?? "unborn repository"}`,
+				`Kernel assignment created: ${assignment.createdAt}`,
 				`Branch: ${branch}`,
 			].join("\n"),
 		});
 		if (!approved) return { ok: false, error: "product worker authorization cancelled" };
+		if (!readProductWorktreeAssignment(runtime.root, department, worktree)) {
+			return { ok: false, error: "product worktree changed after authorization" };
+		}
 	}
 	const options: ChildOptions = {
 		sessionFile: sessionFile ?? undefined,
@@ -1054,7 +1085,16 @@ async function openChat(
 	return { ok: true, department: department?.path, worktree };
 }
 
+function rendererRequestAllowed(slot: Slot, value: string): boolean {
+	return isRendererRequestAllowed(value, {
+		backendOrigin: slot.runtime ? `http://127.0.0.1:${slot.runtime.backendPort}` : undefined,
+		trustedFileRoot: BASE_USERLAND_DIR,
+	});
+}
+
 function createWindow(): Slot {
+	const rendererSession = electronSession.fromPartition(`qorpera-renderer-${randomUUID()}`, { cache: false });
+	let slot: Slot;
 	const win = new BrowserWindow({
 		width: 1360,
 		height: 860,
@@ -1069,9 +1109,14 @@ function createWindow(): Slot {
 			preload: join(DIRNAME, "preload.cjs"),
 			contextIsolation: true,
 			nodeIntegration: false,
+			sandbox: true,
+			session: rendererSession,
 		},
 	});
-	const slot: Slot = { window: win, kickoffPending: false };
+	slot = { window: win, rendererSession, kickoffPending: false };
+	rendererSession.webRequest.onBeforeRequest({ urls: ["<all_urls>"] }, (details, callback) => {
+		callback({ cancel: !rendererRequestAllowed(slot, details.url) });
+	});
 	slots.set(win.id, slot);
 	win.setMenuBarVisibility(false);
 	// Kernel duty: the window must stay draggable in EVERY userland, including
@@ -1113,12 +1158,15 @@ function createWindow(): Slot {
 		if (command === "browser-backward" || command === "browser-forward") event.preventDefault();
 	});
 	win.webContents.on("did-finish-load", () => win.webContents.navigationHistory.clear());
+	win.webContents.on("will-navigate", (event, url) => {
+		if (!rendererRequestAllowed(slot, url)) event.preventDefault();
+	});
 	// A crashed evolved userland must not strand the company: fall back to
 	// the base chrome (kernel duty — last-good behavior).
 	win.webContents.on("render-process-gone", () => {
 		if (slot.runtime && !slot.runtime.usingBaseFallback) {
 			slot.runtime.usingBaseFallback = true;
-			void win.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+			void win.loadURL(companyUserlandUrl(slot.runtime, "base"));
 		}
 	});
 	// Closing a controller window is closing that company: kill its child
@@ -1160,7 +1208,6 @@ app.whenReady().then(async () => {
 		authPath: join(modelAgentDir, "auth.json"),
 		modelsPath: join(modelAgentDir, "models.json"),
 		allowedProviders: MODEL_AUTH_PROVIDERS,
-		allowedDomains: new Set(MODEL_NETWORK_DOMAINS),
 	});
 	ipcMain.handle("companies:list", () => listCompanies());
 	ipcMain.handle("company:open", (event, root: string) => {
@@ -1220,16 +1267,6 @@ app.whenReady().then(async () => {
 				return { ok: false, error: "company runtime is not available" };
 			}
 			const departmentId = productDepartmentId(product.trim());
-			const approved = await confirmKernelReview(slot.window, {
-				title: "Add product-development department",
-				summary: "Run this exact kernel product-registration transaction?",
-				exactText: product.trim(),
-				metadata: [
-					`Target: ${resolve(runtime.root, "departments", departmentId)}`,
-					`Source repository: ${from?.trim() || "none (department only)"}`,
-				].join("\n"),
-			});
-			if (!approved) return { ok: false, error: "cancelled" };
 			const options = {
 				...runtime.childOptions,
 				sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
@@ -1237,6 +1274,18 @@ app.whenReady().then(async () => {
 			runtime.inventoryWatcher?.close();
 			await stopChild(runtime.child);
 			try {
+				const storage = captureProductTransactionStorage(runtime.root);
+				const approved = await confirmKernelReview(slot.window, {
+					title: "Add product-development department",
+					summary: "Run this exact kernel product-registration transaction?",
+					exactText: product.trim(),
+					metadata: [
+						`Company: ${storage.root.path}`,
+						`Target: ${resolve(storage.departments.path, departmentId)}`,
+						`Source repository: ${from?.trim() || "none (department only)"}`,
+					].join("\n"),
+				});
+				if (!approved) throw new Error("cancelled");
 				let department: ProductDepartment;
 				if (from?.trim()) {
 					const integrated = integrateRepoWithRuntimeLock(
@@ -1244,11 +1293,17 @@ app.whenReady().then(async () => {
 						from.trim(),
 						product.trim(),
 						runtime.runtimeLock,
+						storage,
 					);
 					if (!integrated) throw new Error("could not clone the product source repository");
 					department = integrated;
 				} else {
-					department = scaffoldProductDepartmentWithRuntimeLock(runtime.root, product.trim(), runtime.runtimeLock);
+					department = scaffoldProductDepartmentWithRuntimeLock(
+						runtime.root,
+						product.trim(),
+						runtime.runtimeLock,
+						storage,
+					);
 				}
 				readProductProtectionInventory(runtime.root);
 				runtime.childOptions = options;
@@ -1318,10 +1373,9 @@ app.whenReady().then(async () => {
 		const runtime = slot.runtime;
 		setActiveApp(join(runtime.root, "userland"), appChoice === "base" ? "base" : "fork");
 		runtime.usingBaseFallback = false;
-		const dir = appChoice === "base" ? BASE_USERLAND_DIR : join(runtime.root, "userland");
-		await slot.window.loadFile(join(dir, "index.html")).catch(async () => {
+		await slot.window.loadURL(companyUserlandUrl(runtime, appChoice)).catch(async () => {
 			runtime.usingBaseFallback = true;
-			await slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+			await slot.window.loadURL(companyUserlandUrl(runtime, "base"));
 		});
 		return true;
 	});
@@ -1342,9 +1396,9 @@ app.whenReady().then(async () => {
 		runtime.userland = status;
 		if (getActiveApp(join(runtime.root, "userland")) === "fork") {
 			runtime.usingBaseFallback = false;
-			await slot.window.loadFile(join(runtime.root, "userland", "index.html")).catch(async () => {
+			await slot.window.loadURL(companyUserlandUrl(runtime, "fork")).catch(async () => {
 				runtime.usingBaseFallback = true;
-				await slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+				await slot.window.loadURL(companyUserlandUrl(runtime, "base"));
 			});
 		}
 		return true;
@@ -1582,11 +1636,12 @@ app.whenReady().then(async () => {
 							}
 							const useBase =
 								getActiveApp(join(runtime.root, "userland")) === "base" || runtime.usingBaseFallback;
-							const dir = useBase ? BASE_USERLAND_DIR : join(runtime.root, "userland");
-							void slot.window.loadFile(join(dir, "index.html")).catch(async () => {
-								runtime.usingBaseFallback = true;
-								await slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
-							});
+							void slot.window
+								.loadURL(companyUserlandUrl(runtime, useBase ? "base" : "fork"))
+								.catch(async () => {
+									runtime.usingBaseFallback = true;
+									await slot.window.loadURL(companyUserlandUrl(runtime, "base"));
+								});
 						}
 					}, 600);
 				});

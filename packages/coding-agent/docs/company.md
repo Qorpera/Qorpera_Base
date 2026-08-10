@@ -59,7 +59,7 @@ Scaffolding is idempotent and never overwrites — a company's `company.md`
 is its identity, not ours to reset. The two retention settings are kernel
 invariants: `.qorpera/settings.json` always uses `sessionDir: "./trail"`,
 `compaction.enabled: false`, and `transport: "sse"` so model operations stay
-inside the kernel HTTP broker; all unrelated settings keys are preserved.
+inside the kernel model executor; all unrelated settings keys are preserved.
 
 ## UI projection hierarchy
 
@@ -111,9 +111,12 @@ departments/
 ```
 
 The company Git repository ignores `repository/` and `worktrees/`; each
-product repository owns its own history. Installing the product kit adds an
-ordinary projection Department with three Pages: **Chat**, **Pull Requests**,
-and **Architecture**. The renderer has no separate product-navigation path.
+product repository owns its own history. Kernel-owned assignment records in
+`.qorpera/product-worktrees/` bind every authorized task to an immediate
+`worktrees/<task>/` clone, branch, source, and creation time. Installing the
+product kit adds an ordinary projection Department with three Pages: **Chat**,
+**Pull Requests**, and **Architecture**. The renderer has no separate
+product-navigation path.
 Chat opens the product's chat collection; its explicit new-task action creates
 a fresh Git worktree and launches a `product-worker` rooted there. Pull
 Requests reads synchronized JSON records from `pull-requests/`.
@@ -123,7 +126,10 @@ ontology, search contract, or storage model yet.
 The controller can inspect every product artifact and write briefs, but it
 cannot modify product repositories or worktrees — not even in an attended
 session and not through a one-off approval. A product-worker can modify only
-its kernel-assigned worktree. New Chat from the department starts a new
+its kernel-assigned worktree. Before a resumed worker starts, the kernel
+commits staged, working, untracked, and deleted founder state in that product
+repository; it also checkpoints any uncommitted worker result on settle/exit.
+New Chat from the department starts a new
 worktree; the ordinary new-chat action continues the currently assigned
 worktree. Product sessions remain in the company `trail/` and are named
 `product — <department> — <worktree>`, so the exact capability and provenance
@@ -145,12 +151,20 @@ human-owned.
 
 The desktop kernel, not the company renderer, creates controller and product
 workers. Each child receives a clean environment and opaque model-broker
-handles, never model, Git, cloud, connector, or desktop credentials. The
-kernel owns authentication and permits only scoped model-inference HTTP
-operations; it exposes neither blind CONNECT nor arbitrary provider account
-APIs. On Windows, Base requires the elevated offline sandbox account and
+handles, never model, Git, cloud, connector, or desktop credentials. Structured
+model context and streamed events use the existing kernel pipe; provider
+request construction, authentication, paid execution, and network remain in
+the desktop process. Every request must carry a kernel-issued causal intent
+and is recorded in the trail. There is no child loopback or CONNECT lane.
+On Windows, Base requires the elevated offline sandbox account and
 fails closed when it is unavailable. Product registration and company open
 use the same atomic transaction lock before either reads or mutates inventory.
+
+Company userland and surfaces are served from the kernel's local read origin
+inside a per-window renderer session. That session can reach only its exact
+backend origin; external fetches, WebSockets, beacons, remote subresources,
+and arbitrary `file://` reads are denied. External links require exact native
+review before the operating system opens them.
 
 Mutable userland may request a prompt, but a trusted kernel modal shows the
 full canonical text, image hashes, and exact product assignment before
@@ -170,12 +184,13 @@ Behavior notes:
 - Company scaffolding and every desktop open force `compaction.enabled` to
   `false`. Base never rewrites, summarizes in place, expires, or deletes trail
   records. Long work continues in a new session or worktree instead.
-- Session files flush on the first assistant message (upstream behavior),
-  so an abandoned prompt leaves no trail entry.
-- Desktop controllers trust that company's project-local resources inside the
-  kernel sandbox. Global extensions and connector credentials are not copied
-  into the child; the company can build its own tools and routines without
-  inheriting ambient user authority.
+- Session headers materialize immediately when the kernel binds a new session,
+  so even an abandoned prompt leaves an auditable session record.
+- In-process extensions are disabled in company-kernel children because they
+  would share the trusted model/control process. The company remains free to
+  build backend files, tools, routines, schemas, and integrations; executable
+  behavior runs as sandboxed subprocess work and crosses authority brokers for
+  outward effects instead of inheriting ambient process capabilities.
 - Known transient (2026-08-05, tsx + node 24 on Windows): the CLI
   intermittently dies with 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN,
   surfaces as "exit 9"), sometimes mid-session. Work already performed

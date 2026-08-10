@@ -2,7 +2,7 @@
  * Per-company app server (spec §7 v1): state API, surface serving with
  * traversal protection, and gate resolution through the UI endpoint.
  */
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -136,6 +136,19 @@ describe("company app server", () => {
 		// Traversal out of app/substrates is refused.
 		const traversal = await fetch(`${base}/api/substrate/..%2F..%2Fauthority.toml`);
 		expect(traversal.status).toBe(403);
+	});
+
+	it("refuses linked surface and substrate parents instead of reading host files", async () => {
+		const linkType = process.platform === "win32" ? "junction" : "dir";
+		symlinkSync(root, join(root, "app", "surfaces", "linked"), linkType);
+		symlinkSync(root, join(root, "app", "substrates", "linked"), linkType);
+
+		const surface = await fetch(`${base}/surface/linked%2Fauthority.toml`);
+		const substrate = await fetch(`${base}/api/substrate/linked%2Fauthority.toml`);
+		expect(surface.status).toBe(403);
+		expect(substrate.status).toBe(403);
+		expect(await surface.text()).not.toContain("[irreversible]");
+		expect(await substrate.text()).not.toContain("[irreversible]");
 	});
 
 	it("lists trail sessions and serves the controller↔founder message round-trip", async () => {

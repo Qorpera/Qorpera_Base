@@ -1,194 +1,307 @@
-import { randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createHash } from "node:crypto";
 import { ModelRuntime } from "@qorpera/pi-coding-agent";
-import { brokerCredentialProjection, isScopedInferenceTarget } from "./model-request-scope.ts";
+import type { KernelIntentCapability } from "./agent-runtime.ts";
+import { brokerCredentialProjection } from "./model-request-scope.ts";
 
 const MAX_REQUEST_BYTES = 64 * 1024 * 1024;
-const HOP_BY_HOP_HEADERS = new Set([
-	"connection",
-	"content-length",
-	"host",
-	"keep-alive",
-	"proxy-authenticate",
-	"proxy-authorization",
-	"te",
-	"trailer",
-	"transfer-encoding",
-	"upgrade",
-]);
+const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+interface ModelRequestFrame {
+	type: "qorpera_model_request";
+	requestId: string;
+	handle: string;
+	intent: KernelIntentCapability;
+	model: { provider: string; id: string };
+	context: Parameters<ModelRuntime["streamSimple"]>[1];
+	options: Record<string, unknown>;
+}
+
+interface ModelAbortFrame {
+	type: "qorpera_model_abort";
+	requestId: string;
+}
 
 interface BrokerSession {
 	handles: Map<string, string>;
+	intents: Map<string, KernelIntentCapability>;
+	observe?: (event: {
+		intentNonce: string;
+		requestHash: string;
+		provider: string;
+		model: string;
+		requestSha256: string;
+		status: "started" | "completed" | "failed" | "aborted";
+	}) => void;
+}
+
+interface InFlightRequest {
+	controller: AbortController;
+	session: BrokerSession;
 }
 
 export interface BrokeredCredentials {
-	token: string;
-	handles: string[];
+	handles: Record<string, string>;
 	credentials: Record<string, unknown>;
+	authorizeIntent: (intent: KernelIntentCapability) => void;
 	release: () => void;
 }
 
 export interface ModelRequestBroker {
-	port: number;
-	registerChild: (sourceCredentials: Record<string, unknown>, ambientProviders: string[]) => BrokeredCredentials;
+	registerChild: (
+		sourceCredentials: Record<string, unknown>,
+		ambientProviders: string[],
+		observe?: BrokerSession["observe"],
+	) => BrokeredCredentials;
+	handleFrame: (value: unknown, send: (frame: object) => void) => boolean;
 	close: () => void;
 }
 
-function readBody(request: IncomingMessage): Promise<Buffer> {
-	return new Promise((resolvePromise, reject) => {
-		const chunks: Buffer[] = [];
-		let bytes = 0;
-		request.on("data", (chunk: Buffer) => {
-			bytes += chunk.length;
-			if (bytes > MAX_REQUEST_BYTES) {
-				reject(new Error("model request exceeds 64 MiB"));
-				request.destroy();
-				return;
-			}
-			chunks.push(chunk);
-		});
-		request.on("end", () => resolvePromise(Buffer.concat(chunks)));
-		request.on("error", reject);
-	});
+function exactObject(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		!Array.isArray(value) &&
+		Object.keys(value).every((key) => keys.includes(key))
+	);
 }
 
-function sendError(response: ServerResponse, status: number, message: string): void {
-	if (response.headersSent) return;
-	response.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
-	response.end(message);
+function validIntent(value: unknown): value is KernelIntentCapability {
+	return (
+		exactObject(value, ["nonce", "requestHash", "attended", "expiresAt", "signature"]) &&
+		typeof value.nonce === "string" &&
+		REQUEST_ID_PATTERN.test(value.nonce) &&
+		typeof value.requestHash === "string" &&
+		/^[a-f0-9]{64}$/.test(value.requestHash) &&
+		typeof value.attended === "boolean" &&
+		typeof value.expiresAt === "string" &&
+		typeof value.signature === "string" &&
+		value.signature.length > 0
+	);
 }
 
-function codexAccountId(token: string): string | undefined {
+function finiteNumber(value: unknown, minimum: number, maximum: number): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= maximum
+		? value
+		: undefined;
+}
+
+function jsonRecord(value: unknown, maximumBytes: number): Record<string, unknown> | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	try {
-		const payload = token.split(".")[1];
-		if (!payload) return undefined;
-		const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as unknown;
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-		const auth = (parsed as Record<string, unknown>)["https://api.openai.com/auth"];
-		if (!auth || typeof auth !== "object" || Array.isArray(auth)) return undefined;
-		const accountId = (auth as Record<string, unknown>).chatgpt_account_id;
-		return typeof accountId === "string" && accountId.length > 0 ? accountId : undefined;
+		return Buffer.byteLength(JSON.stringify(value), "utf-8") <= maximumBytes
+			? (value as Record<string, unknown>)
+			: undefined;
 	} catch {
 		return undefined;
 	}
 }
 
-async function forwardModelRequest(
-	request: IncomingMessage,
-	response: ServerResponse,
-	runtime: ModelRuntime,
-	sessions: Map<string, BrokerSession>,
-	allowedDomains: ReadonlySet<string>,
-): Promise<void> {
-	if (request.method !== "POST") return sendError(response, 405, "model broker accepts POST inference only");
-	const token = request.headers["x-qorpera-model-token"];
-	const handle = request.headers["x-qorpera-model-handle"];
-	const targetValue = request.headers["x-qorpera-model-target"];
-	if (typeof token !== "string" || typeof handle !== "string" || typeof targetValue !== "string") {
-		return sendError(response, 401, "missing model broker capability");
-	}
-	const provider = sessions.get(token)?.handles.get(handle);
-	if (!provider) return sendError(response, 403, "invalid model broker capability");
-	let target: URL;
-	try {
-		target = new URL(targetValue);
-	} catch {
-		return sendError(response, 400, "invalid model target");
-	}
-	const auth = await runtime.getAuth(provider);
-	const baseUrls = auth
-		? [auth.auth.baseUrl, ...runtime.getModels(provider).map((model) => model.baseUrl)].filter(
-				(value): value is string => typeof value === "string",
-			)
-		: [];
-	if (!auth || !isScopedInferenceTarget(baseUrls, target, allowedDomains)) {
-		return sendError(response, 403, "model target is outside the provider inference scope");
-	}
-	let handleFound = false;
-	for (const [name, rawValue] of Object.entries(request.headers)) {
-		if (name.startsWith("x-qorpera-model-") || HOP_BY_HOP_HEADERS.has(name)) continue;
-		const values = Array.isArray(rawValue) ? rawValue : rawValue === undefined ? [] : [rawValue];
-		for (const value of values) {
-			if (value.includes(handle)) handleFound = true;
-		}
-	}
-	for (const [name, value] of target.searchParams) {
-		if (!value.includes(handle)) continue;
-		handleFound = true;
-		if (!auth.auth.apiKey) return sendError(response, 403, "provider query authentication is unavailable");
-		target.searchParams.set(name, value.replaceAll(handle, auth.auth.apiKey));
-	}
-	if (!handleFound) return sendError(response, 403, "model request is not bound to its opaque handle");
-	const headers = new Headers();
-	for (const [name, rawValue] of Object.entries(request.headers)) {
-		if (name.startsWith("x-qorpera-model-") || HOP_BY_HOP_HEADERS.has(name)) continue;
-		const values = Array.isArray(rawValue) ? rawValue : rawValue === undefined ? [] : [rawValue];
-		for (const value of values) {
-			if (value.includes(handle) && !auth.auth.apiKey) continue;
-			headers.append(name, auth.auth.apiKey ? value.replaceAll(handle, auth.auth.apiKey) : value);
-		}
-	}
-	for (const [name, value] of Object.entries(auth.auth.headers ?? {})) {
-		if (typeof value === "string") headers.set(name, value);
-	}
-	if (provider === "openai-codex" && auth.auth.apiKey) {
-		const accountId = codexAccountId(auth.auth.apiKey);
-		if (!accountId) return sendError(response, 403, "provider account identity is unavailable");
-		headers.set("chatgpt-account-id", accountId);
-	}
-	const body = await readBody(request);
-	const upstream = await fetch(target, { method: "POST", headers, body, redirect: "manual" });
-	const responseHeaders: Record<string, string> = {};
-	for (const [name, value] of upstream.headers) {
-		if (!HOP_BY_HOP_HEADERS.has(name.toLowerCase()) && name.toLowerCase() !== "set-cookie")
-			responseHeaders[name] = value;
-	}
-	response.writeHead(upstream.status, responseHeaders);
-	if (!upstream.body) {
-		response.end();
-		return;
-	}
-	for await (const chunk of upstream.body) response.write(chunk);
-	response.end();
+function requestOptions(value: unknown): Parameters<ModelRuntime["streamSimple"]>[2] | undefined {
+	if (
+		!exactObject(value, [
+			"temperature",
+			"samplingParams",
+			"maxTokens",
+			"transport",
+			"cacheRetention",
+			"sessionId",
+			"timeoutMs",
+			"websocketConnectTimeoutMs",
+			"maxRetries",
+			"maxRetryDelayMs",
+			"metadata",
+			"reasoning",
+			"thinkingBudgets",
+			"serviceTier",
+		])
+	)
+		return undefined;
+	const temperature = value.temperature === undefined ? undefined : finiteNumber(value.temperature, 0, 2);
+	const maxTokens = value.maxTokens === undefined ? undefined : finiteNumber(value.maxTokens, 1, 10_000_000);
+	const timeoutMs = value.timeoutMs === undefined ? undefined : finiteNumber(value.timeoutMs, 1, 2_147_483_647);
+	const websocketConnectTimeoutMs =
+		value.websocketConnectTimeoutMs === undefined
+			? undefined
+			: finiteNumber(value.websocketConnectTimeoutMs, 1, 2_147_483_647);
+	const maxRetries = value.maxRetries === undefined ? undefined : finiteNumber(value.maxRetries, 0, 20);
+	const maxRetryDelayMs =
+		value.maxRetryDelayMs === undefined ? undefined : finiteNumber(value.maxRetryDelayMs, 0, 3_600_000);
+	if (
+		(value.temperature !== undefined && temperature === undefined) ||
+		(value.maxTokens !== undefined && maxTokens === undefined) ||
+		(value.timeoutMs !== undefined && timeoutMs === undefined) ||
+		(value.websocketConnectTimeoutMs !== undefined && websocketConnectTimeoutMs === undefined) ||
+		(value.maxRetries !== undefined && maxRetries === undefined) ||
+		(value.maxRetryDelayMs !== undefined && maxRetryDelayMs === undefined) ||
+		value.transport !== "sse" ||
+		(value.cacheRetention !== undefined && !["none", "short", "long"].includes(String(value.cacheRetention))) ||
+		(value.reasoning !== undefined &&
+			!["minimal", "low", "medium", "high", "xhigh", "max"].includes(String(value.reasoning))) ||
+		(value.serviceTier !== undefined && !["default", "flex", "priority"].includes(String(value.serviceTier))) ||
+		(value.sessionId !== undefined && (typeof value.sessionId !== "string" || value.sessionId.length > 256))
+	)
+		return undefined;
+	const samplingParams = value.samplingParams === undefined ? undefined : jsonRecord(value.samplingParams, 64 * 1024);
+	const metadata = value.metadata === undefined ? undefined : jsonRecord(value.metadata, 64 * 1024);
+	const thinkingBudgets =
+		value.thinkingBudgets === undefined ? undefined : jsonRecord(value.thinkingBudgets, 64 * 1024);
+	if (
+		(value.samplingParams !== undefined && !samplingParams) ||
+		(value.metadata !== undefined && !metadata) ||
+		(value.thinkingBudgets !== undefined && !thinkingBudgets)
+	)
+		return undefined;
+	return {
+		...(temperature !== undefined ? { temperature } : {}),
+		...(samplingParams ? { samplingParams } : {}),
+		...(maxTokens !== undefined ? { maxTokens } : {}),
+		transport: "sse",
+		...(value.cacheRetention ? { cacheRetention: value.cacheRetention as "none" | "short" | "long" } : {}),
+		...(typeof value.sessionId === "string" ? { sessionId: value.sessionId } : {}),
+		...(timeoutMs !== undefined ? { timeoutMs } : {}),
+		...(websocketConnectTimeoutMs !== undefined ? { websocketConnectTimeoutMs } : {}),
+		...(maxRetries !== undefined ? { maxRetries } : {}),
+		...(maxRetryDelayMs !== undefined ? { maxRetryDelayMs } : {}),
+		...(metadata ? { metadata } : {}),
+		...(value.reasoning
+			? { reasoning: value.reasoning as "minimal" | "low" | "medium" | "high" | "xhigh" | "max" }
+			: {}),
+		...(thinkingBudgets ? { thinkingBudgets } : {}),
+		...(value.serviceTier ? { serviceTier: value.serviceTier as "default" | "flex" | "priority" } : {}),
+	};
+}
+
+function parsedRequest(value: unknown): ModelRequestFrame | undefined {
+	if (!exactObject(value, ["type", "requestId", "handle", "intent", "model", "context", "options"])) return undefined;
+	if (
+		value.type !== "qorpera_model_request" ||
+		typeof value.requestId !== "string" ||
+		!REQUEST_ID_PATTERN.test(value.requestId) ||
+		typeof value.handle !== "string" ||
+		!validIntent(value.intent) ||
+		!exactObject(value.model, ["provider", "id"]) ||
+		typeof value.model.provider !== "string" ||
+		typeof value.model.id !== "string" ||
+		!exactObject(value.context, ["systemPrompt", "messages", "tools"]) ||
+		!Array.isArray(value.context.messages) ||
+		(value.context.systemPrompt !== undefined && typeof value.context.systemPrompt !== "string") ||
+		(value.context.tools !== undefined && !Array.isArray(value.context.tools)) ||
+		Buffer.byteLength(JSON.stringify(value), "utf-8") > MAX_REQUEST_BYTES ||
+		!requestOptions(value.options)
+	)
+		return undefined;
+	return value as unknown as ModelRequestFrame;
 }
 
 export async function startModelRequestBroker(options: {
 	authPath: string;
 	modelsPath: string;
 	allowedProviders: ReadonlySet<string>;
-	allowedDomains: ReadonlySet<string>;
 }): Promise<ModelRequestBroker> {
 	const runtime = await ModelRuntime.create({
 		authPath: options.authPath,
 		modelsPath: options.modelsPath,
 		allowModelNetwork: false,
 	});
-	const sessions = new Map<string, BrokerSession>();
-	const server: Server = createServer((request, response) => {
-		void forwardModelRequest(request, response, runtime, sessions, options.allowedDomains).catch(() => {
-			sendError(response, 502, "model broker request failed");
+	const sessions = new Set<BrokerSession>();
+	const handleSessions = new Map<string, BrokerSession>();
+	const inFlight = new Map<string, InFlightRequest>();
+	const sendRequest = async (frame: ModelRequestFrame, send: (frame: object) => void): Promise<void> => {
+		const session = handleSessions.get(frame.handle);
+		const provider = session?.handles.get(frame.handle);
+		const authorized = session?.intents.get(frame.intent.nonce);
+		const model = provider ? runtime.getModel(provider, frame.model.id) : undefined;
+		const options = requestOptions(frame.options);
+		if (
+			!session ||
+			!provider ||
+			provider !== frame.model.provider ||
+			!authorized ||
+			JSON.stringify(authorized) !== JSON.stringify(frame.intent) ||
+			!model ||
+			!options ||
+			inFlight.has(frame.requestId)
+		) {
+			send({ type: "qorpera_model_end", requestId: frame.requestId, error: "kernel model request denied" });
+			return;
+		}
+		const requestSha256 = createHash("sha256").update(JSON.stringify(frame)).digest("hex");
+		const controller = new AbortController();
+		inFlight.set(frame.requestId, { controller, session });
+		session.observe?.({
+			intentNonce: frame.intent.nonce,
+			requestHash: frame.intent.requestHash,
+			provider,
+			model: model.id,
+			requestSha256,
+			status: "started",
 		});
-	});
-	server.on("connect", (_request, socket) => socket.end("HTTP/1.1 405 Method Not Allowed\r\n\r\n"));
-	await new Promise<void>((resolvePromise, reject) => {
-		server.once("error", reject);
-		server.listen(0, "127.0.0.1", resolvePromise);
-	});
-	const port = (server.address() as AddressInfo).port;
+		try {
+			const stream = runtime.streamSimple(model, frame.context, { ...options, signal: controller.signal });
+			for await (const event of stream) send({ type: "qorpera_model_event", requestId: frame.requestId, event });
+			session.observe?.({
+				intentNonce: frame.intent.nonce,
+				requestHash: frame.intent.requestHash,
+				provider,
+				model: model.id,
+				requestSha256,
+				status: controller.signal.aborted ? "aborted" : "completed",
+			});
+			send({ type: "qorpera_model_end", requestId: frame.requestId });
+		} catch {
+			session.observe?.({
+				intentNonce: frame.intent.nonce,
+				requestHash: frame.intent.requestHash,
+				provider,
+				model: model.id,
+				requestSha256,
+				status: controller.signal.aborted ? "aborted" : "failed",
+			});
+			send({ type: "qorpera_model_end", requestId: frame.requestId, error: "kernel model execution failed" });
+		} finally {
+			inFlight.delete(frame.requestId);
+		}
+	};
 	return {
-		port,
-		registerChild: (sourceCredentials, ambientProviders) => {
-			const token = randomUUID();
+		registerChild: (sourceCredentials, ambientProviders, observe) => {
 			const projection = brokerCredentialProjection(sourceCredentials, ambientProviders, options.allowedProviders);
-			sessions.set(token, { handles: projection.handles });
+			const session: BrokerSession = { handles: projection.handles, intents: new Map(), observe };
+			sessions.add(session);
+			for (const handle of session.handles.keys()) handleSessions.set(handle, session);
 			return {
-				token,
-				handles: [...projection.handles.keys()],
+				handles: Object.fromEntries([...projection.handles].map(([handle, provider]) => [provider, handle])),
 				credentials: projection.credentials,
-				release: () => sessions.delete(token),
+				authorizeIntent: (intent) => session.intents.set(intent.nonce, { ...intent }),
+				release: () => {
+					for (const [requestId, request] of inFlight) {
+						if (request.session === session) {
+							request.controller.abort();
+							inFlight.delete(requestId);
+						}
+					}
+					for (const handle of session.handles.keys()) handleSessions.delete(handle);
+					session.intents.clear();
+					sessions.delete(session);
+				},
 			};
 		},
-		close: () => server.close(),
+		handleFrame: (value, send) => {
+			const request = parsedRequest(value);
+			if (request) {
+				void sendRequest(request, send);
+				return true;
+			}
+			if (!exactObject(value, ["type", "requestId"]) || value.type !== "qorpera_model_abort") return false;
+			const abort = value as unknown as ModelAbortFrame;
+			if (typeof abort.requestId === "string") inFlight.get(abort.requestId)?.controller.abort();
+			return true;
+		},
+		close: () => {
+			for (const request of inFlight.values()) request.controller.abort();
+			inFlight.clear();
+			handleSessions.clear();
+			for (const session of sessions) session.intents.clear();
+			sessions.clear();
+		},
 	};
 }

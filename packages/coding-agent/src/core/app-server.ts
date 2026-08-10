@@ -17,15 +17,15 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { basename, join, normalize, resolve, sep } from "node:path";
+import { basename, extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
-import { listProductDepartments } from "./company.ts";
+import { canonicalCompanyRoot, listProductDepartments } from "./company.ts";
 import {
 	PLATFORM_PROJECTION_NODES,
 	PROJECTION_SCHEMA,
@@ -37,6 +37,10 @@ import {
 export interface CompanyAppOptions {
 	root: string;
 	port?: number;
+	/** Kernel-owned static roots. Company UI is served through the same local
+	 * origin as its read models so an agent-authored renderer never receives
+	 * ambient file:// or outbound-network authority. */
+	userland?: { baseDir: string };
 	/**
 	 * Required on every MUTATING endpoint (gate resolution, inbox responses,
 	 * authority edits) via the x-qorpera-token header. The backend listens on
@@ -69,7 +73,9 @@ interface InboxItem {
 
 function companyName(root: string): string {
 	try {
-		const md = readFileSync(join(root, "company.md"), "utf-8");
+		const path = companyFile(root, "company.md");
+		if (!path) throw new Error("company identity is not a physical file");
+		const md = readFileSync(path, "utf-8");
 		const heading = md.match(/^#\s+(.+)$/m)?.[1]?.trim();
 		if (heading && !/^Company$/i.test(heading)) return heading.replace(/\s*[—-]\s*Company$/i, "");
 	} catch {
@@ -80,21 +86,66 @@ function companyName(root: string): string {
 
 /** Stable per-company port so the installed launcher always finds its app. */
 export function companyPort(root: string): number {
-	const digest = createHash("sha256").update(resolve(root).toLowerCase()).digest();
+	const digest = createHash("sha256").update(canonicalCompanyRoot(root).toLowerCase()).digest();
 	return 4600 + (digest.readUInt16BE(0) % 400);
 }
 
+function normalizedPath(path: string): string {
+	const resolved = resolve(path);
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+/** Resolve one physical regular file without following a link at any level. */
+function physicalFileWithin(directory: string, entry: string): string | undefined {
+	try {
+		const root = realpathSync(resolve(directory));
+		if (!lstatSync(root).isDirectory()) return undefined;
+		const target = resolve(root, normalize(entry));
+		const rel = relative(root, target);
+		if (!rel || rel.startsWith("..") || isAbsolute(rel)) return undefined;
+		const actual = realpathSync(target);
+		if (normalizedPath(actual) !== normalizedPath(target) || !lstatSync(target).isFile()) return undefined;
+		return actual;
+	} catch {
+		return undefined;
+	}
+}
+
+function physicalDirectoryWithin(directory: string, entry = "."): string | undefined {
+	try {
+		const root = realpathSync(resolve(directory));
+		if (!lstatSync(root).isDirectory()) return undefined;
+		const target = resolve(root, normalize(entry));
+		const rel = relative(root, target);
+		if (rel && (rel.startsWith("..") || isAbsolute(rel))) return undefined;
+		const actual = realpathSync(target);
+		if (normalizedPath(actual) !== normalizedPath(target) || !lstatSync(target).isDirectory()) return undefined;
+		return actual;
+	} catch {
+		return undefined;
+	}
+}
+
+function companyFile(root: string, relativePath: string): string | undefined {
+	return physicalFileWithin(root, relativePath);
+}
+
+function companyFileWithin(root: string, directoryPath: string, entry: string): string | undefined {
+	const directory = physicalDirectoryWithin(root, directoryPath);
+	return directory ? physicalFileWithin(directory, entry) : undefined;
+}
+
 function safeSurfaceEntry(root: string, entry: string): boolean {
-	const surfacesRoot = resolve(join(root, "app", "surfaces"));
-	const target = resolve(join(surfacesRoot, normalize(entry)));
-	return target !== surfacesRoot && target.startsWith(surfacesRoot + sep);
+	return companyFileWithin(root, join("app", "surfaces"), entry) !== undefined;
 }
 
 function readProjection(root: string): ProjectionState {
 	const diagnostics: string[] = [];
 	let parsed: ProjectionState;
 	try {
-		parsed = parseProjectionDocument(JSON.parse(readFileSync(join(root, "app", "projection.json"), "utf-8")));
+		const path = companyFile(root, join("app", "projection.json"));
+		if (!path) throw new Error("projection is not a physical file");
+		parsed = parseProjectionDocument(JSON.parse(readFileSync(path, "utf-8")));
 	} catch {
 		parsed = {
 			schema: PROJECTION_SCHEMA,
@@ -139,11 +190,11 @@ function intentText(content: string): string {
 }
 
 function readInbox(root: string): InboxItem[] {
-	const dir = join(root, "inbox");
-	if (!existsSync(dir)) return [];
+	const dir = physicalDirectoryWithin(root, "inbox");
+	if (!dir) return [];
 	const names = readdirSync(dir);
-	const messagesDir = join(dir, "messages");
-	const messageNames = existsSync(messagesDir) ? readdirSync(messagesDir) : [];
+	const messagesDir = physicalDirectoryWithin(dir, "messages");
+	const messageNames = messagesDir ? readdirSync(messagesDir) : [];
 	// Companion intent files (msg-<gateId>-intent.md) fold INTO their gate's
 	// card instead of appearing as items of their own.
 	const intents = new Map<string, { title?: string; text: string }>();
@@ -151,7 +202,9 @@ function readInbox(root: string): InboxItem[] {
 		const gateId = file.match(/^msg-(gate-[a-z0-9-]+)-intent\.md$/i)?.[1];
 		if (!gateId) continue;
 		try {
-			const content = readFileSync(join(messagesDir, file), "utf-8");
+			const path = messagesDir ? physicalFileWithin(messagesDir, file) : undefined;
+			if (!path) continue;
+			const content = readFileSync(path, "utf-8");
 			intents.set(gateId.toLowerCase(), {
 				title: content.match(/^#\s+(.+)$/m)?.[1]?.trim(),
 				text: intentText(content),
@@ -164,8 +217,10 @@ function readInbox(root: string): InboxItem[] {
 	for (const file of names) {
 		if (!file.endsWith(".md") || file === "README.md") continue;
 		try {
-			const content = readFileSync(join(dir, file), "utf-8");
-			const mtimeMs = statSync(join(dir, file)).mtimeMs;
+			const path = physicalFileWithin(dir, file);
+			if (!path) continue;
+			const content = readFileSync(path, "utf-8");
+			const mtimeMs = statSync(path).mtimeMs;
 			const title = content.match(/^#\s+(.+)$/m)?.[1] ?? file;
 			if (file.startsWith("gate-")) {
 				const status = content.match(/^status:\s*(\w+)/m)?.[1] ?? "";
@@ -190,7 +245,8 @@ function readInbox(root: string): InboxItem[] {
 	for (const file of messageNames) {
 		if (!/^msg-[a-z0-9][a-z0-9-]*\.md$/i.test(file) || /^msg-gate-[a-z0-9-]+-intent\.md$/i.test(file)) continue;
 		try {
-			const path = join(messagesDir, file);
+			const path = messagesDir ? physicalFileWithin(messagesDir, file) : undefined;
+			if (!path) continue;
 			const content = readFileSync(path, "utf-8");
 			const title = content.match(/^#\s+(.+)$/m)?.[1] ?? file;
 			const status = /^##\s+Response/m.test(content) ? "answered" : "pending";
@@ -204,7 +260,8 @@ function readInbox(root: string): InboxItem[] {
 
 function surfaceVersion(root: string, entry: string): number {
 	try {
-		return statSync(join(root, "app", "surfaces", entry)).mtimeMs;
+		const path = companyFileWithin(root, join("app", "surfaces"), entry);
+		return path ? statSync(path).mtimeMs : 0;
 	} catch {
 		return 0;
 	}
@@ -227,13 +284,14 @@ interface SessionSummary {
 /** Trail sessions ARE the chat list (spec §3). Title = first user message;
  * autonomous work is tagged with a session name at spawn time. */
 function listTrailSessions(root: string): SessionSummary[] {
-	const dir = join(root, "trail");
-	if (!existsSync(dir)) return [];
+	const dir = physicalDirectoryWithin(root, "trail");
+	if (!dir) return [];
 	const sessions: SessionSummary[] = [];
 	for (const file of readdirSync(dir)) {
 		if (!file.endsWith(".jsonl")) continue;
 		try {
-			const path = join(dir, file);
+			const path = physicalFileWithin(dir, file);
+			if (!path) continue;
 			const head = readFileSync(path, "utf-8").slice(0, 16_384);
 			let title = "";
 			let name = "";
@@ -303,14 +361,16 @@ interface PullRequestSummary {
 }
 
 function listPullRequestRecords(root: string, readModelPath: string): PullRequestSummary[] {
-	const dir = join(root, readModelPath);
+	const dir = physicalDirectoryWithin(root, readModelPath);
+	if (!dir) return [];
 	try {
 		return readdirSync(dir)
 			.filter((file) => file.endsWith(".json"))
 			.flatMap((file) => {
 				try {
-					if (statSync(join(dir, file)).size > 256 * 1024) return [];
-					const record = JSON.parse(readFileSync(join(dir, file), "utf-8")) as Record<string, unknown>;
+					const path = physicalFileWithin(dir, file);
+					if (!path || statSync(path).size > 256 * 1024) return [];
+					const record = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
 					if (typeof record.title !== "string") return [];
 					const url = typeof record.url === "string" && /^https?:\/\//i.test(record.url) ? record.url : undefined;
 					return [
@@ -339,7 +399,8 @@ const INBOX_FILE_PATTERN = /^(?:messages\/)?[A-Za-z0-9][A-Za-z0-9._ -]*\.md$/;
 /** Founder response: appended into the item; the agent reads it on next wake. */
 function respondToInboxItem(root: string, file: string, response: string): boolean {
 	if (!INBOX_FILE_PATTERN.test(file) || !file.startsWith("messages/msg-") || !response.trim()) return false;
-	const path = join(root, "inbox", file);
+	const path = companyFile(root, join("inbox", file));
+	if (!path) return false;
 	try {
 		const content = readFileSync(path, "utf-8");
 		writeFileSync(
@@ -356,7 +417,8 @@ function respondToInboxItem(root: string, file: string, response: string): boole
 function stateFor(root: string): unknown {
 	let trailSessions = 0;
 	try {
-		trailSessions = readdirSync(join(root, "trail")).filter((name) => name.endsWith(".jsonl")).length;
+		const trail = physicalDirectoryWithin(root, "trail");
+		trailSessions = trail ? readdirSync(trail).filter((name) => name.endsWith(".jsonl")).length : 0;
 	} catch {
 		// no trail yet
 	}
@@ -499,9 +561,8 @@ function escapeHtmlText(source: string): string {
  * first-class, not raw bytes.
  */
 function serveSurface(root: string, entry: string, response: ServerResponse): void {
-	const surfacesRoot = resolve(join(root, "app", "surfaces"));
-	const target = resolve(join(surfacesRoot, normalize(entry)));
-	if (target !== surfacesRoot && !target.startsWith(surfacesRoot + sep)) {
+	const target = companyFileWithin(root, join("app", "surfaces"), entry);
+	if (!target) {
 		response.writeHead(403).end("outside surfaces");
 		return;
 	}
@@ -539,9 +600,8 @@ function serveSurface(root: string, entry: string, response: ServerResponse): vo
  * traversal) — the data side of surfaces-as-instruments.
  */
 function serveSubstrate(root: string, entry: string, response: ServerResponse): void {
-	const substratesRoot = resolve(join(root, "app", "substrates"));
-	const target = resolve(join(substratesRoot, normalize(entry)));
-	if (target !== substratesRoot && !target.startsWith(substratesRoot + sep)) {
+	const target = companyFileWithin(root, join("app", "substrates"), entry);
+	if (!target) {
 		response.writeHead(403).end("outside substrates");
 		return;
 	}
@@ -552,11 +612,74 @@ function serveSubstrate(root: string, entry: string, response: ServerResponse): 
 	}
 }
 
+function staticContentType(path: string): string {
+	switch (extname(path).toLowerCase()) {
+		case ".html":
+			return "text/html; charset=utf-8";
+		case ".js":
+		case ".mjs":
+			return "text/javascript; charset=utf-8";
+		case ".css":
+			return "text/css; charset=utf-8";
+		case ".json":
+			return "application/json; charset=utf-8";
+		case ".svg":
+			return "image/svg+xml";
+		case ".png":
+			return "image/png";
+		case ".jpg":
+		case ".jpeg":
+			return "image/jpeg";
+		case ".gif":
+			return "image/gif";
+		case ".webp":
+			return "image/webp";
+		case ".woff2":
+			return "font/woff2";
+		default:
+			return "application/octet-stream";
+	}
+}
+
+function serveUserland(directory: string, entry: string, response: ServerResponse): void {
+	const target = physicalFileWithin(directory, entry || "index.html");
+	serveUserlandTarget(target, response);
+}
+
+function serveCompanyUserland(root: string, entry: string, response: ServerResponse): void {
+	const target = companyFileWithin(root, "userland", entry || "index.html");
+	serveUserlandTarget(target, response);
+}
+
+function serveUserlandTarget(target: string | undefined, response: ServerResponse): void {
+	if (!target) {
+		response.writeHead(404).end("userland asset not found");
+		return;
+	}
+	response
+		.writeHead(200, {
+			"content-type": staticContentType(target),
+			"cache-control": "no-store",
+			"x-content-type-options": "nosniff",
+		})
+		.end(readFileSync(target));
+}
+
+function decodedPath(value: string, response: ServerResponse): string | undefined {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		response.writeHead(400).end("invalid path encoding");
+		return undefined;
+	}
+}
+
 /** The human resolves gates here — this is the approve/deny queue as UI. */
 function resolveGate(root: string, file: string, action: string): boolean {
 	if (!/^gate-[a-z0-9-]+\.md$/i.test(file)) return false;
 	if (action !== "approved" && action !== "denied") return false;
-	const path = join(root, "inbox", file);
+	const path = companyFile(root, join("inbox", file));
+	if (!path) return false;
 	try {
 		const content = readFileSync(path, "utf-8");
 		if (!/^status:/m.test(content)) return false;
@@ -726,13 +849,23 @@ setInterval(refresh, 2000);
 </html>`;
 
 export function createCompanyAppServer(options: CompanyAppOptions): Server {
-	const root = resolve(options.root);
+	const root = canonicalCompanyRoot(options.root);
 	const authToken =
 		options.authToken ?? createHash("sha256").update(`${root}${Date.now()}${Math.random()}`).digest("hex");
 	const embedTokenInChrome = options.authToken === undefined;
 	const authorized = (request: IncomingMessage): boolean => request.headers["x-qorpera-token"] === authToken;
 	return createServer((request: IncomingMessage, response: ServerResponse) => {
 		const url = new URL(request.url ?? "/", "http://localhost");
+		if (url.pathname.startsWith("/userland/base/") && options.userland) {
+			const entry = decodedPath(url.pathname.slice("/userland/base/".length), response);
+			if (entry !== undefined) serveUserland(options.userland.baseDir, entry, response);
+			return;
+		}
+		if (url.pathname.startsWith("/userland/fork/") && options.userland) {
+			const entry = decodedPath(url.pathname.slice("/userland/fork/".length), response);
+			if (entry !== undefined) serveCompanyUserland(root, entry, response);
+			return;
+		}
 		if (url.pathname === "/") {
 			response
 				.writeHead(200, { "content-type": "text/html; charset=utf-8" })
@@ -757,7 +890,8 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			// headers — a throw after writeHead kills the server.
 			let theme = "";
 			try {
-				theme = readFileSync(join(root, "app", "surfaces", "theme.css"), "utf-8");
+				const path = companyFileWithin(root, join("app", "surfaces"), "theme.css");
+				if (path) theme = readFileSync(path, "utf-8");
 			} catch {
 				// absent: serve empty
 			}
@@ -765,23 +899,26 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			return;
 		}
 		if (url.pathname.startsWith("/api/substrate/") && request.method === "GET") {
-			serveSubstrate(root, decodeURIComponent(url.pathname.slice("/api/substrate/".length)), response);
+			const entry = decodedPath(url.pathname.slice("/api/substrate/".length), response);
+			if (entry !== undefined) serveSubstrate(root, entry, response);
 			return;
 		}
 		if (url.pathname.startsWith("/surface/")) {
-			serveSurface(root, decodeURIComponent(url.pathname.slice("/surface/".length)), response);
+			const entry = decodedPath(url.pathname.slice("/surface/".length), response);
+			if (entry !== undefined) serveSurface(root, entry, response);
 			return;
 		}
 		if (url.pathname.startsWith("/api/inbox/") && request.method === "GET") {
-			const file = decodeURIComponent(url.pathname.slice("/api/inbox/".length));
+			const file = decodedPath(url.pathname.slice("/api/inbox/".length), response);
+			if (file === undefined) return;
 			if (!INBOX_FILE_PATTERN.test(file)) {
 				response.writeHead(400).end("bad name");
 				return;
 			}
 			try {
-				response
-					.writeHead(200, { "content-type": "text/plain; charset=utf-8" })
-					.end(readFileSync(join(root, "inbox", file), "utf-8"));
+				const path = companyFile(root, join("inbox", file));
+				if (!path) throw new Error("inbox item is not a physical file");
+				response.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end(readFileSync(path, "utf-8"));
 			} catch {
 				response.writeHead(404).end("not found");
 			}
@@ -823,7 +960,8 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 					// Surgical merge into the existing file so [tools] and any
 					// custom sections survive; comments do not (Advanced tab
 					// exists for comment-preserving edits).
-					const path = join(root, "authority.toml");
+					const path = companyFile(root, "authority.toml");
+					if (!path) throw new Error("authority policy is not a physical file");
 					let existing: Record<string, unknown> = {};
 					try {
 						existing = parseToml(readFileSync(path, "utf-8")) as Record<string, unknown>;
@@ -852,9 +990,9 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 		}
 		if (url.pathname === "/api/authority" && request.method === "GET") {
 			try {
-				response
-					.writeHead(200, { "content-type": "text/plain; charset=utf-8" })
-					.end(readFileSync(join(root, "authority.toml"), "utf-8"));
+				const path = companyFile(root, "authority.toml");
+				if (!path) throw new Error("authority policy is not a physical file");
+				response.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end(readFileSync(path, "utf-8"));
 			} catch {
 				response.writeHead(404).end("no authority.toml");
 			}
@@ -877,7 +1015,9 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 						return;
 					}
 					parseToml(content); // reject unparseable TOML with a clear error
-					writeFileSync(join(root, "authority.toml"), content, "utf-8");
+					const path = companyFile(root, "authority.toml");
+					if (!path) throw new Error("authority policy is not a physical file");
+					writeFileSync(path, content, "utf-8");
 					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
 				} catch (error) {
 					response

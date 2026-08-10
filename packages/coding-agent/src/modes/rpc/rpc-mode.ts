@@ -20,6 +20,7 @@ import type {
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import { consumeKernelIntent, handleKernelBrokerResponse } from "../../core/kernel-broker.ts";
+import { handleModelBrokerFrame, setModelBrokerWriter } from "../../core/model-broker-client.ts";
 import {
 	flushRawStdout,
 	takeOverStdout,
@@ -61,6 +62,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
 		writeRawStdout(serializeJsonLine(obj));
 	};
+	setModelBrokerWriter(output);
 
 	const success = <T extends RpcCommand["type"]>(
 		id: string | undefined,
@@ -787,7 +789,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			return;
 		}
 
-		if (handleKernelBrokerResponse(parsed)) return;
+		if (handleKernelBrokerResponse(parsed) || handleModelBrokerFrame(parsed)) return;
 
 		// Handle extension UI responses
 		if (
