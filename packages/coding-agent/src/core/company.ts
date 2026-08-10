@@ -36,7 +36,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
 import { getAgentDir } from "../config.ts";
@@ -45,6 +45,7 @@ import {
 	bindNetworkDestination,
 	bindWakeSchedule,
 	type CompanySecret,
+	companyConnectionsPath,
 	disableWakeSchedule,
 	type OAuth2Secret,
 	readCompanyConnections,
@@ -2113,6 +2114,330 @@ export function importCompany(exportDir: string, targetDir: string): ImportResul
 	return { root: canonicalCompanyRoot(target), manifest, head };
 }
 
+// ---- environment operations (build plan §7) --------------------------------
+//
+// Snapshot, restore, fork, trail playback, and erase — operations on the
+// company environment as a whole, built on the export substrate Build 1
+// proved. All of them prove the environment is not live (the runtime lock)
+// before acting; none of them interprets business content. Fork severs
+// authority structurally: credentials, gate trust, wake state, and
+// schedules live in machine-local stores keyed by the canonical root path,
+// so a fork at a new path starts with none of them, and its lineage is
+// recorded in the folder for the fork to understand its origin without
+// being able to impersonate it.
+
+function environmentStateId(root: string): string {
+	return createHash("sha256").update(normalizedPath(root)).digest("hex");
+}
+
+export function snapshotsDir(rootDir: string): string {
+	return join(getAgentDir(), "snapshots", environmentStateId(canonicalCompanyRoot(rootDir)));
+}
+
+export interface SnapshotRecord {
+	id: string;
+	path: string;
+	createdAt: string;
+	sourceHead: string | null;
+	contractVersion: number;
+}
+
+/** Point-in-time capture of the environment; quiesced via the export lane's runtime lock. */
+export function snapshotCompany(companyDir: string, label?: string): SnapshotRecord {
+	const root = canonicalCompanyRoot(companyDir);
+	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+	const slug = label
+		? `_${label
+				.toLowerCase()
+				.replace(/[^a-z0-9]+/g, "-")
+				.replace(/^-+|-+$/g, "")
+				.slice(0, 40)}`
+		: "";
+	const id = `${stamp}${slug}`;
+	const target = join(snapshotsDir(root), id);
+	const exported = exportCompany(root, target);
+	return {
+		id,
+		path: target,
+		createdAt: exported.manifest.exportedAt,
+		sourceHead: exported.manifest.sourceHead,
+		contractVersion: exported.manifest.contractVersion,
+	};
+}
+
+export function listSnapshots(companyDir: string): SnapshotRecord[] {
+	const directory = snapshotsDir(companyDir);
+	if (!existsSync(directory)) return [];
+	const records: SnapshotRecord[] = [];
+	for (const id of readdirSync(directory)) {
+		try {
+			const path = join(directory, id);
+			const manifest = parseExportManifest(path);
+			records.push({
+				id,
+				path,
+				createdAt: manifest.exportedAt,
+				sourceHead: manifest.sourceHead,
+				contractVersion: manifest.contractVersion,
+			});
+		} catch {
+			// Not a readable snapshot; never let one bad directory hide the rest.
+		}
+	}
+	return records.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * Restore the environment to a snapshot. A pre-restore safety snapshot is
+ * always taken first, so restore is itself forward-recoverable. The runtime
+ * lock is claimed and released as a liveness proof before the swap (holding
+ * it through the swap is impossible: the lock file lives under the .git
+ * being replaced).
+ */
+export function restoreCompany(companyDir: string, snapshotId: string): { root: string; safetySnapshot: string } {
+	const root = canonicalCompanyRoot(companyDir);
+	const source = join(snapshotsDir(root), snapshotId);
+	parseExportManifest(source);
+	const companySource = join(source, EXPORT_COMPANY_DIR);
+	if (!existsSync(companySource)) throw new Error(`Snapshot is missing its company payload: ${snapshotId}`);
+	const safety = snapshotCompany(root, "pre-restore");
+	releaseCompanyRuntimeLock(claimCompanyRuntimeLock(root));
+	for (const entry of readdirSync(root)) {
+		rmSync(join(root, entry), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+	}
+	cpSync(companySource, root, {
+		recursive: true,
+		filter: (path) => !normalizedPath(path).split(/[\\/]/).includes(RUNTIME_LOCK_DIR_SEGMENT),
+	});
+	validateCompanyKernelStorage(root);
+	return { root, safetySnapshot: safety.id };
+}
+
+export interface ForkLineage {
+	version: 1;
+	forkedFrom: { name: string; head: string | null; contractVersion: number };
+	forkedAt: string;
+}
+
+/**
+ * Fork the environment: the fork carries the files, Git history, and trail,
+ * a lineage record, and — structurally — no credentials, gate trust,
+ * schedules, or standing authority (all machine-local, keyed by root path).
+ */
+export function forkCompany(companyDir: string, targetDir: string): ImportResult & { lineage: ForkLineage } {
+	const root = canonicalCompanyRoot(companyDir);
+	const target = resolve(targetDir);
+	const staging = `${target}.fork-${randomUUID()}`;
+	try {
+		const exported = exportCompany(root, staging);
+		const imported = importCompany(staging, target);
+		const lineage: ForkLineage = {
+			version: 1,
+			forkedFrom: {
+				name: exported.manifest.companyName,
+				head: exported.manifest.sourceHead,
+				contractVersion: exported.manifest.contractVersion,
+			},
+			forkedAt: new Date().toISOString(),
+		};
+		writeFileSync(join(target, ".qorpera", "lineage.json"), `${JSON.stringify(lineage, null, "\t")}\n`, "utf-8");
+		spawnSync("git", ["-C", target, "add", "--", join(".qorpera", "lineage.json")], {
+			stdio: "ignore",
+			shell: false,
+		});
+		spawnSync(
+			"git",
+			[
+				"-C",
+				target,
+				"-c",
+				"user.name=Qorpera Kernel",
+				"-c",
+				"user.email=kernel@qorpera.local",
+				"commit",
+				"-m",
+				"chore: record fork lineage\n\nQorpera-Trigger: environment fork\nQorpera-Rationale: the fork may understand its origin without inheriting its authority",
+				"--only",
+				"--",
+				join(".qorpera", "lineage.json"),
+			],
+			{ stdio: "ignore", shell: false },
+		);
+		return { ...imported, lineage };
+	} finally {
+		rmSync(staging, { recursive: true, force: true });
+	}
+}
+
+/**
+ * Erase the company environment: the folder plus every machine-local record
+ * this foundation holds for it — connections (secrets, destinations, wake
+ * schedule) and snapshots. The registry self-heals (vanished roots are
+ * filtered on read). Desktop-kernel state under the shell's own data
+ * directory is keyed by the now-gone root path and becomes inert.
+ */
+export function eraseCompany(companyDir: string): { root: string; removed: string[] } {
+	const root = canonicalCompanyRoot(companyDir);
+	validateCompanyKernelStorage(root);
+	releaseCompanyRuntimeLock(claimCompanyRuntimeLock(root));
+	const removed: string[] = [];
+	const snapshots = snapshotsDir(root);
+	const connections = companyConnectionsPath(root);
+	rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+	removed.push(root);
+	if (existsSync(connections)) {
+		rmSync(connections, { force: true });
+		removed.push(connections);
+	}
+	if (existsSync(snapshots)) {
+		rmSync(snapshots, { recursive: true, force: true });
+		removed.push(snapshots);
+	}
+	return { root, removed };
+}
+
+// ---- trail playback (build plan §7: inspection, not re-execution) ----------
+
+export interface TrailVerification {
+	file: string;
+	status: "verified" | "unaudited" | "broken";
+	entries: number;
+	detail?: string;
+}
+
+/**
+ * Re-run the kernel hash chain over a trail session, outside the runtime,
+ * exactly as documented in docs/trail.md. "unaudited" marks sessions with
+ * no kernel envelopes (written outside the desktop kernel); any break in
+ * an audited chain is "broken".
+ */
+export function verifyTrailFile(path: string): TrailVerification {
+	const file = basename(path);
+	let lines: string[];
+	try {
+		lines = readFileSync(path, "utf-8")
+			.split(/\r?\n/)
+			.filter((line) => line.trim());
+	} catch (error) {
+		return { file, status: "broken", entries: 0, detail: (error as Error).message };
+	}
+	let header: { type?: unknown };
+	try {
+		header = JSON.parse(lines[0] ?? "") as { type?: unknown };
+	} catch {
+		return { file, status: "broken", entries: 0, detail: "unparseable session header" };
+	}
+	if (header.type !== "session") return { file, status: "broken", entries: 0, detail: "missing session header" };
+	let lastHash = "";
+	let sequence = 0;
+	let audited = false;
+	for (const [index, line] of lines.slice(1).entries()) {
+		let entry: Record<string, unknown>;
+		try {
+			entry = JSON.parse(line) as Record<string, unknown>;
+		} catch {
+			return { file, status: "broken", entries: index, detail: `unparseable entry at line ${index + 2}` };
+		}
+		const kernel = entry.kernel as { sequence?: unknown; previousHash?: unknown; hash?: unknown } | undefined;
+		if (!kernel) {
+			if (audited) return { file, status: "broken", entries: index, detail: `chain gap at line ${index + 2}` };
+			continue;
+		}
+		audited = true;
+		const unsigned = { ...entry };
+		delete unsigned.kernel;
+		const expectedHash = createHash("sha256")
+			.update(`${lastHash}\n${JSON.stringify(unsigned)}`)
+			.digest("hex");
+		if (
+			kernel.sequence !== sequence + 1 ||
+			kernel.previousHash !== (lastHash || null) ||
+			kernel.hash !== expectedHash
+		) {
+			return { file, status: "broken", entries: index, detail: `integrity break at line ${index + 2}` };
+		}
+		sequence = kernel.sequence as number;
+		lastHash = kernel.hash as string;
+	}
+	return { file, status: audited ? "verified" : "unaudited", entries: lines.length - 1 };
+}
+
+export interface TrailSessionSummary {
+	file: string;
+	id: string;
+	timestamp: string;
+	actor?: string;
+	label?: string;
+}
+
+export function listTrailFiles(companyDir: string): TrailSessionSummary[] {
+	const trailDir = join(canonicalCompanyRoot(companyDir), "trail");
+	if (!existsSync(trailDir)) return [];
+	const sessions: TrailSessionSummary[] = [];
+	for (const file of readdirSync(trailDir).filter((name) => name.endsWith(".jsonl"))) {
+		try {
+			const firstLine = readFileSync(join(trailDir, file), "utf-8").split(/\r?\n/, 1)[0];
+			const header = JSON.parse(firstLine) as {
+				type?: string;
+				id?: string;
+				timestamp?: string;
+				qorpera?: { actor?: string; label?: string };
+			};
+			if (header.type !== "session") continue;
+			sessions.push({
+				file,
+				id: header.id ?? "?",
+				timestamp: header.timestamp ?? "?",
+				actor: header.qorpera?.actor,
+				label: header.qorpera?.label,
+			});
+		} catch {
+			// Unreadable session files show up in verify, not list.
+		}
+	}
+	return sessions.sort((a, b) => a.file.localeCompare(b.file));
+}
+
+/** One human-readable line per entry — playback is inspection, never re-execution. */
+export function renderTrailFile(path: string): string[] {
+	const lines = readFileSync(path, "utf-8")
+		.split(/\r?\n/)
+		.filter((line) => line.trim());
+	const rendered: string[] = [];
+	const excerpt = (text: string): string => (text.length > 160 ? `${text.slice(0, 160)}…` : text);
+	for (const line of lines) {
+		let entry: Record<string, unknown>;
+		try {
+			entry = JSON.parse(line) as Record<string, unknown>;
+		} catch {
+			rendered.push("[unparseable line]");
+			continue;
+		}
+		if (entry.type === "session") {
+			const authority = entry.qorpera as { actor?: string; label?: string } | undefined;
+			rendered.push(
+				`session ${String(entry.id)} @ ${String(entry.timestamp)} (${authority?.actor ?? "?"}${authority?.label ? `, ${authority.label}` : ""})`,
+			);
+			continue;
+		}
+		const kernel = entry.kernel as { sequence?: number } | undefined;
+		const prefix = kernel ? `#${kernel.sequence} ` : "";
+		if (entry.type === "message") {
+			const message = entry.message as { role?: string; content?: Array<{ type?: string; text?: string }> };
+			const text = (message.content ?? [])
+				.map((part) => (part.type === "text" ? (part.text ?? "") : `[${part.type}]`))
+				.join(" ")
+				.trim();
+			rendered.push(`${prefix}${message.role}: ${excerpt(text || "(no text)")}`);
+		} else if (entry.type === "custom") {
+			rendered.push(`${prefix}${String(entry.customType)}: ${excerpt(JSON.stringify(entry.data ?? {}))}`);
+		} else {
+			rendered.push(`${prefix}${String(entry.type)}`);
+		}
+	}
+	return rendered;
+}
+
 interface ProductIntegrationRecord {
 	version: 4;
 	productId: string;
@@ -2649,6 +2974,120 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		}
 		return true;
 	}
+	if (sub === "snapshot") {
+		try {
+			const record = snapshotCompany(companyRootFromCwd(), args[2]);
+			console.log(
+				`Snapshot ${record.id} (head ${record.sourceHead ?? "none"}, contract v${record.contractVersion}).`,
+			);
+			console.log(`Stored outside the company at ${record.path} — plain files, inspectable without Qorpera.`);
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "snapshots") {
+		try {
+			const records = listSnapshots(companyRootFromCwd());
+			if (records.length === 0) console.log("No snapshots.");
+			for (const record of records) console.log(`${record.id}  head ${record.sourceHead ?? "none"}`);
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "restore") {
+		const snapshotId = args[2];
+		if (!snapshotId) {
+			console.error("Usage: company restore <snapshot-id> (see 'company snapshots'; company must not be open)");
+			process.exitCode = 1;
+			return true;
+		}
+		try {
+			const result = restoreCompany(companyRootFromCwd(), snapshotId);
+			console.log(`Restored ${result.root} to ${snapshotId}.`);
+			console.log(
+				`The replaced state was captured first as snapshot ${result.safetySnapshot} — restore is reversible.`,
+			);
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "fork") {
+		const dir = args[2];
+		if (!dir) {
+			console.error("Usage: company fork <target-dir> (run from the company root)");
+			process.exitCode = 1;
+			return true;
+		}
+		try {
+			const result = forkCompany(companyRootFromCwd(), dir);
+			console.log(`Forked into ${result.root} (lineage recorded, head ${result.head ?? "none"}).`);
+			console.log(
+				"The fork carries files, history, and trail — no credentials, schedules, signatures, or standing authority.",
+			);
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "erase") {
+		if (!args.includes("--force")) {
+			console.error(
+				"company erase permanently deletes the company folder, its secrets, destinations, wake schedule, and snapshots. Re-run with --force to proceed.",
+			);
+			process.exitCode = 1;
+			return true;
+		}
+		try {
+			const result = eraseCompany(companyRootFromCwd());
+			for (const path of result.removed) console.log(`removed ${path}`);
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "trail") {
+		const action = args[2];
+		try {
+			const root = companyRootFromCwd();
+			if (action === "list") {
+				const sessions = listTrailFiles(root);
+				if (sessions.length === 0) console.log("No trail sessions.");
+				for (const session of sessions) {
+					console.log(
+						`${session.file}  ${session.timestamp}  ${session.actor ?? "?"}${session.label ? `  (${session.label})` : ""}`,
+					);
+				}
+			} else if (action === "verify") {
+				const targets = args[3] ? [args[3]] : listTrailFiles(root).map((session) => session.file);
+				let broken = 0;
+				for (const file of targets) {
+					const result = verifyTrailFile(join(root, "trail", file));
+					if (result.status === "broken") broken++;
+					console.log(
+						`${result.status.padEnd(9)} ${result.file} (${result.entries} entries)${result.detail ? ` — ${result.detail}` : ""}`,
+					);
+				}
+				if (broken > 0) process.exitCode = 1;
+			} else if (action === "show" && args[3]) {
+				for (const line of renderTrailFile(join(root, "trail", args[3]))) console.log(line);
+			} else {
+				console.error("Usage: company trail list | verify [file] | show <file>");
+				process.exitCode = 1;
+			}
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
 	if (sub === "wake") {
 		const action = args[2];
 		try {
@@ -2721,7 +3160,7 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 	}
 	if (sub !== "init") {
 		console.error(
-			`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir] | export <target-dir> | import <export-dir> <target-dir> | destination add|remove|list | secret set|remove|list`,
+			`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir] | export | import | snapshot [label] | snapshots | restore <id> | fork <dir> | erase --force | trail list|verify|show | destination … | secret … | wake …`,
 		);
 		process.exitCode = 1;
 		return true;
