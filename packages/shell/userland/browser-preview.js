@@ -1,7 +1,9 @@
 /* Browser-only bridge for reviewing the production userland without Electron.
  * The real preload bridge always wins. Preview actions never write company data. */
 (() => {
-	if (window.qorpera) return;
+	// Electron must fail closed when its privileged preload bridge is missing.
+	// Only a regular browser may install the local review bridge below.
+	if (window.qorpera || /\bElectron\//.test(navigator.userAgent)) return;
 
 	const previewState = {
 		name: "Northstar Works",

@@ -876,6 +876,7 @@ function toggleDepartmentFocus() {
 	if (enabling) {
 		const target = department.items.map(projectionNode).find((node) => node && nodeIsVisible(node.id));
 		if (target) void openProjectionNode(target.id);
+		else openNavigationFallback();
 		showControllerToast(`${department.label} focused. Reset Panel restores the complete view.`);
 	} else {
 		showControllerToast("Panel focus reset. Hidden items remain hidden.");
