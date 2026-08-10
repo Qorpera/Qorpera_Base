@@ -22,6 +22,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	closeSync,
+	cpSync,
 	existsSync,
 	fsyncSync,
 	lstatSync,
@@ -1934,6 +1935,133 @@ function cloneInto(source: string, destination: string): boolean {
 	return clone.status === 0;
 }
 
+// ---- environment export / import (build plan §3; manifesto §10) ------------
+//
+// An export is the company folder as plain files — Git history, JSONL trail,
+// markdown — plus a manifest carrying the environment contract version, so it
+// is inspectable with no Qorpera installation and portable across Base
+// versions that share the contract. Secrets and standing authority never
+// appear in an export because they never live in the folder: credentials sit
+// in the machine auth store and durable gate trust in machine-local kernel
+// state keyed by the canonical root path, which is also why an imported
+// company starts with a fresh environment identity and no inherited trust.
+
+export const ENVIRONMENT_CONTRACT_VERSION = 1;
+export const EXPORT_MANIFEST_SCHEMA = "qorpera.export/v1";
+export const EXPORT_MANIFEST_FILE = "export-manifest.json";
+const EXPORT_COMPANY_DIR = "company";
+const RUNTIME_LOCK_DIR_SEGMENT = "qorpera-runtime-locks";
+
+export interface ExportManifest {
+	schema: typeof EXPORT_MANIFEST_SCHEMA;
+	contractVersion: number;
+	exportedAt: string;
+	companyName: string;
+	sourceHead: string | null;
+}
+
+export interface ExportResult {
+	target: string;
+	manifest: ExportManifest;
+}
+
+export interface ImportResult {
+	root: string;
+	manifest: ExportManifest;
+	head: string | null;
+}
+
+function gitHead(root: string): string | null {
+	const head = spawnSync("git", ["-C", root, "rev-parse", "--verify", "HEAD"], { encoding: "utf-8", shell: false });
+	return head.status === 0 ? head.stdout.trim() : null;
+}
+
+function assertEmptyDestination(target: string): void {
+	if (existsSync(target) && readdirSync(target).length > 0) {
+		throw new Error(`Destination ${target} exists and is not empty`);
+	}
+}
+
+function assertOutsideCompany(root: string, target: string): void {
+	const rootRelative = relative(root, target);
+	if (!rootRelative || (!rootRelative.startsWith("..") && !isAbsolute(rootRelative))) {
+		throw new Error("Export destination cannot be inside the company folder");
+	}
+}
+
+export function exportCompany(companyDir: string, targetDir: string): ExportResult {
+	const root = canonicalCompanyRoot(companyDir);
+	validateCompanyKernelStorage(root);
+	const target = resolve(targetDir);
+	assertOutsideCompany(root, target);
+	assertEmptyDestination(target);
+	// Exports are defined at checkpoint boundaries only: holding the runtime
+	// lock guarantees no live controller is mutating the environment mid-copy.
+	const lock = claimCompanyRuntimeLock(root);
+	try {
+		mkdirSync(target, { recursive: true });
+		cpSync(root, join(target, EXPORT_COMPANY_DIR), {
+			recursive: true,
+			filter: (source) => !normalizedPath(source).split(/[\\/]/).includes(RUNTIME_LOCK_DIR_SEGMENT),
+		});
+		const manifest: ExportManifest = {
+			schema: EXPORT_MANIFEST_SCHEMA,
+			contractVersion: ENVIRONMENT_CONTRACT_VERSION,
+			exportedAt: new Date().toISOString(),
+			companyName: basenameOf(root),
+			sourceHead: gitHead(root),
+		};
+		writeAtomicText(join(target, EXPORT_MANIFEST_FILE), `${JSON.stringify(manifest, null, "\t")}\n`);
+		return { target, manifest };
+	} finally {
+		releaseCompanyRuntimeLock(lock);
+	}
+}
+
+function parseExportManifest(exportDir: string): ExportManifest {
+	const manifestPath = join(exportDir, EXPORT_MANIFEST_FILE);
+	if (!existsSync(manifestPath)) {
+		throw new Error(`Not a company export: missing ${EXPORT_MANIFEST_FILE}`);
+	}
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as Partial<ExportManifest>;
+	if (manifest.schema !== EXPORT_MANIFEST_SCHEMA) {
+		throw new Error(`Unsupported export schema: ${String(manifest.schema)}`);
+	}
+	if (!Number.isSafeInteger(manifest.contractVersion) || (manifest.contractVersion as number) < 1) {
+		throw new Error("Export manifest carries no valid environment contract version");
+	}
+	if ((manifest.contractVersion as number) > ENVIRONMENT_CONTRACT_VERSION) {
+		throw new Error(
+			`This export requires environment contract v${manifest.contractVersion}; this Base supports v${ENVIRONMENT_CONTRACT_VERSION}`,
+		);
+	}
+	if (manifest.sourceHead !== null && typeof manifest.sourceHead !== "string") {
+		throw new Error("Export manifest carries an invalid source head");
+	}
+	return manifest as ExportManifest;
+}
+
+export function importCompany(exportDir: string, targetDir: string): ImportResult {
+	const source = resolve(exportDir);
+	const manifest = parseExportManifest(source);
+	const companySource = join(source, EXPORT_COMPANY_DIR);
+	if (!existsSync(companySource)) {
+		throw new Error(`Not a company export: missing ${EXPORT_COMPANY_DIR}/`);
+	}
+	const target = resolve(targetDir);
+	assertEmptyDestination(target);
+	cpSync(companySource, target, { recursive: true });
+	validateCompanyKernelStorage(target);
+	const head = gitHead(target);
+	if (manifest.sourceHead && head !== manifest.sourceHead) {
+		throw new Error(
+			`Imported history head ${head ?? "(none)"} does not match the export manifest ${manifest.sourceHead}`,
+		);
+	}
+	registerCompany(target);
+	return { root: canonicalCompanyRoot(target), manifest, head };
+}
+
 interface ProductIntegrationRecord {
 	version: 4;
 	productId: string;
@@ -2407,8 +2535,49 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		}
 		return true;
 	}
+	if (sub === "export") {
+		const target = args[2];
+		if (!target) {
+			console.error("Usage: company export <target-dir> (run from the company root; company must not be open)");
+			process.exitCode = 1;
+			return true;
+		}
+		try {
+			const result = exportCompany(process.cwd(), target);
+			console.log(
+				`Exported company to ${result.target} (contract v${result.manifest.contractVersion}, head ${result.manifest.sourceHead ?? "none"}).`,
+			);
+			console.log("The export is plain files — Git history, JSONL trail, markdown — inspectable without Qorpera.");
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "import") {
+		const source = args[2];
+		const dir = args[3];
+		if (!source || !dir) {
+			console.error("Usage: company import <export-dir> <target-dir>");
+			process.exitCode = 1;
+			return true;
+		}
+		try {
+			const result = importCompany(source, dir);
+			console.log(
+				`Imported company into ${result.root} (contract v${result.manifest.contractVersion}, head ${result.head ?? "none"}).`,
+			);
+			console.log("Fresh environment identity: no credentials, schedules, or standing authority were imported.");
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
 	if (sub !== "init") {
-		console.error(`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir]`);
+		console.error(
+			`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir] | export <target-dir> | import <export-dir> <target-dir>`,
+		);
 		process.exitCode = 1;
 		return true;
 	}

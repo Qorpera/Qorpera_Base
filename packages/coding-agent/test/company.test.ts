@@ -27,7 +27,11 @@ import {
 	claimCompanyRuntimeLock,
 	companyRuntimeLockPath,
 	createProductWorktree,
+	ENVIRONMENT_CONTRACT_VERSION,
+	EXPORT_MANIFEST_FILE,
 	enforceCompanyKernelSettings,
+	exportCompany,
+	importCompany,
 	integrateRepo,
 	KERNEL_PROMPT,
 	listProductDepartments,
@@ -1020,5 +1024,131 @@ describe("sessions are the trail", () => {
 			.filter((line) => line.trim());
 		expect(JSON.parse(lines[0]).type).toBe("session");
 		expect(lines.some((line) => line.includes("hello trail"))).toBe(true);
+	});
+});
+
+describe("environment export and import", () => {
+	let exportDir: string;
+	let importDir: string;
+	let prevAgentDir: string | undefined;
+
+	beforeEach(() => {
+		exportDir = `${root}-export`;
+		importDir = `${root}-import`;
+		prevAgentDir = process.env.QORPERA_CODING_AGENT_DIR;
+		process.env.QORPERA_CODING_AGENT_DIR = `${root}-agent-home`;
+	});
+
+	afterEach(() => {
+		if (prevAgentDir === undefined) delete process.env.QORPERA_CODING_AGENT_DIR;
+		else process.env.QORPERA_CODING_AGENT_DIR = prevAgentDir;
+		for (const dir of [exportDir, importDir, `${root}-agent-home`]) {
+			if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	function scaffoldWithTrail(): void {
+		scaffoldCompany(root);
+		const sessionManager = SessionManager.create(root, join(root, "trail"), { id: "export-smoke" });
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "hello export" }],
+			timestamp: Date.now(),
+		} as never);
+		sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "recorded" }],
+			api: "faux",
+			provider: "faux",
+			model: "faux-1",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		} as never);
+		const written = readdirSync(join(root, "trail")).filter((name) => name.endsWith(".jsonl"));
+		expect(written.length, "trail session file exists before export").toBe(1);
+	}
+
+	it("round-trips: export is independently inspectable and import reproduces the environment", () => {
+		scaffoldWithTrail();
+		writeFileSync(join(root, "departments", "notes.md"), "# Agent-owned state\n", "utf-8");
+
+		const exported = exportCompany(root, exportDir);
+		expect(exported.manifest.schema).toBe("qorpera.export/v1");
+		expect(exported.manifest.contractVersion).toBe(ENVIRONMENT_CONTRACT_VERSION);
+		expect(exported.manifest.sourceHead).toMatch(/^[0-9a-f]{40}$/);
+
+		// Independent inspection: plain fs reads against the export, no runtime.
+		const company = join(exportDir, "company");
+		expect(readFileSync(join(company, "company.md"), "utf-8")).toContain("company");
+		expect(readFileSync(join(company, "authority.toml"), "utf-8")).toContain("[");
+		expect(readFileSync(join(company, "departments", "notes.md"), "utf-8")).toContain("Agent-owned");
+		const trailFiles = readdirSync(join(company, "trail")).filter((name) => name.endsWith(".jsonl"));
+		expect(trailFiles.length).toBe(1);
+		const trailLines = readFileSync(join(company, "trail", trailFiles[0]), "utf-8")
+			.split("\n")
+			.filter((line) => line.trim());
+		expect(JSON.parse(trailLines[0]).type).toBe("session");
+		expect(trailLines.some((line) => line.includes("hello export"))).toBe(true);
+		// Machine-local runtime state never travels in an export.
+		expect(existsSync(join(company, ".git", "qorpera-runtime-locks"))).toBe(false);
+
+		const imported = importCompany(exportDir, importDir);
+		expect(imported.head).toBe(exported.manifest.sourceHead);
+		for (const entry of ["company.md", "authority.toml", "AGENTS.md", "trail", join("app", "projection.json")]) {
+			expect(existsSync(join(importDir, entry)), entry).toBe(true);
+		}
+		expect(readFileSync(join(importDir, "departments", "notes.md"), "utf-8")).toContain("Agent-owned");
+		const importedHead = spawnSync("git", ["-C", importDir, "rev-parse", "--verify", "HEAD"], {
+			encoding: "utf-8",
+		});
+		expect(importedHead.stdout.trim()).toBe(exported.manifest.sourceHead);
+		// Fresh environment identity: no runtime-lock state carried over.
+		expect(existsSync(join(importDir, ".git", "qorpera-runtime-locks"))).toBe(false);
+	});
+
+	it("refuses to export a live environment", () => {
+		scaffoldCompany(root);
+		const lock = claimCompanyRuntimeLock(root);
+		try {
+			expect(() => exportCompany(root, exportDir)).toThrow(/already owned/);
+		} finally {
+			releaseCompanyRuntimeLock(lock);
+		}
+	});
+
+	it("refuses a destination inside the company or a non-empty destination", () => {
+		scaffoldCompany(root);
+		expect(() => exportCompany(root, join(root, "backup"))).toThrow(/inside the company/);
+		mkdirSync(exportDir, { recursive: true });
+		writeFileSync(join(exportDir, "occupied.txt"), "x", "utf-8");
+		expect(() => exportCompany(root, exportDir)).toThrow(/not empty/);
+	});
+
+	it("refuses an export that requires a newer environment contract", () => {
+		scaffoldCompany(root);
+		exportCompany(root, exportDir);
+		const manifestPath = join(exportDir, EXPORT_MANIFEST_FILE);
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+		manifest.contractVersion = ENVIRONMENT_CONTRACT_VERSION + 1;
+		writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+		expect(() => importCompany(exportDir, importDir)).toThrow(/requires environment contract/);
+	});
+
+	it("refuses an import whose history head does not match the manifest", () => {
+		scaffoldCompany(root);
+		exportCompany(root, exportDir);
+		const manifestPath = join(exportDir, EXPORT_MANIFEST_FILE);
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+		manifest.sourceHead = "0".repeat(40);
+		writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+		expect(() => importCompany(exportDir, importDir)).toThrow(/does not match/);
 	});
 });
