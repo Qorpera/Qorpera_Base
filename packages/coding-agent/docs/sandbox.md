@@ -39,7 +39,14 @@ Company-authored programs run through `run_company_tool` as subprocesses of
 the controller child: they inherit its OS confinement, and additionally get
 a from-scratch clean environment (no QORPERA_* state, no broker handles),
 the company root as working directory, bounded output, and a hard timeout.
-Their content-hash identity is stamped into the trail on every run.
+Their content-hash identity is stamped into the trail on every run. A
+program may make its own outbound requests by printing
+`qorpera_program_http_request` frames on stdout and reading responses from
+stdin: the runner evaluates each as UNATTENDED codified behavior (so the
+signature rule applies at outward classes, with the program file as the
+acting behavior) and forwards it through the kernel lane with the
+program's identity attached — a founder-signed program acting outward
+with nobody present, end to end.
 
 ## Verification — fail closed
 
@@ -82,8 +89,6 @@ trail (`qorpera_kernel_http_request`).
   lane does): enforcement is destination allowlisting, reference-only
   secrets, replay-proof request ids, per-turn budgets, and trail
   observation. Intent-signing parity is the planned refinement.
-- Company programs run via `run_company_tool` cannot yet make brokered
-  requests themselves; outbound contact happens through the controller's
-  `http_request` tool calls. The program-side lane (which is what lets a
-  SIGNED program act outward unattended end-to-end) is the remaining
-  Build 3 work item.
+- Binding destinations and secrets is terminal-only (`qorpera company
+  destination|secret …`); a Settings → Connections form in base userland
+  is a planned convenience, not a capability gap.

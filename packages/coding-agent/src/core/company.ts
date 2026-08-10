@@ -123,7 +123,13 @@ directory, and it records the program's content-hash identity in the
 trail — which is what lets the founder sign a program once for unattended
 outward action (editing the program is a new identity and a new
 signature). Running company programs through \`bash\` works but carries no
-code identity, so bash-run code can never act outward unattended.
+code identity, so bash-run code can never act outward unattended. A
+program can make its own outbound requests: print a
+\`{"type":"qorpera_program_http_request","requestId":…,"method":…,"url":…}\`
+line on stdout and read the matching response line from stdin — each
+request is checked against your authority policy with the program as the
+acting behavior, so a signed program can reach its bound destinations
+with nobody present.
 
 Prefer derived understanding over asked understanding: read the data, the
 repositories, and the connected services first, and ask the founder to fill

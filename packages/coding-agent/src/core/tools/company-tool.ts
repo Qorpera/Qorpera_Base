@@ -21,12 +21,21 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { createInterface } from "node:readline";
 import type { AgentTool } from "@qorpera/pi-agent-core";
 import { Text } from "@qorpera/pi-tui";
 import { type Static, Type } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
-import { COMPANY_TOOL_NAME, discoverAuthority } from "../authority.ts";
+import {
+	type Authority,
+	COMPANY_TOOL_NAME,
+	discoverAuthority,
+	evaluateToolCall,
+	finalizeAuthorityDecision,
+	HTTP_TOOL_NAME,
+} from "../authority.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { brokeredHttpRequest, isHttpBrokerAvailable } from "../http-broker-client.ts";
 import { getTextOutput, renderToolPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -59,6 +68,93 @@ const DEFAULT_TIMEOUT_SECONDS = 120;
 const MAX_TIMEOUT_SECONDS = 600;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const TS_EXTENSIONS = new Set([".ts", ".mts", ".cts"]);
+
+/**
+ * The program-side HTTP lane (Build 3): a company program may print
+ * `{"type":"qorpera_program_http_request","requestId":…,"method":…,"url":…}`
+ * lines on stdout and read matching `qorpera_program_http_response` lines
+ * from stdin. The runner evaluates authority for each request as UNATTENDED
+ * codified behavior — the program file is the acting behavior, so the
+ * EVOLUTION §3 signature rule applies at outward classes — then forwards it
+ * through the kernel HTTP lane with the program's identity attached. This
+ * is what lets a founder-signed program act outward with nobody present.
+ */
+interface ProgramHttpFrame {
+	requestId: string;
+	method: string;
+	url: string;
+	headers?: Record<string, string>;
+	body?: string;
+	timeoutMs?: number;
+}
+
+function parsedProgramHttpFrame(line: string): ProgramHttpFrame | undefined {
+	if (!line.startsWith('{"type":"qorpera_program_http_request"')) return undefined;
+	try {
+		const frame = JSON.parse(line) as Partial<ProgramHttpFrame> & { type?: unknown };
+		if (
+			frame.type !== "qorpera_program_http_request" ||
+			typeof frame.requestId !== "string" ||
+			typeof frame.method !== "string" ||
+			typeof frame.url !== "string"
+		)
+			return undefined;
+		return frame as ProgramHttpFrame;
+	} catch {
+		return undefined;
+	}
+}
+
+async function serveProgramHttpFrame(
+	frame: ProgramHttpFrame,
+	authority: Authority,
+	cwd: string,
+	program: ResolvedProgram,
+	respond: (payload: object) => void,
+): Promise<void> {
+	const fail = (error: string): void =>
+		respond({ type: "qorpera_program_http_response", requestId: frame.requestId, error });
+	if (!isHttpBrokerAvailable()) {
+		fail("http lane requires the kernel broker (company sessions under the desktop kernel)");
+		return;
+	}
+	const spec = {
+		method: frame.method,
+		url: frame.url,
+		...(frame.headers ? { headers: frame.headers } : {}),
+		...(frame.body !== undefined ? { body: frame.body } : {}),
+		...(frame.timeoutMs !== undefined ? { timeoutMs: frame.timeoutMs } : {}),
+	};
+	// Program-initiated requests are never founder presence: attended=false
+	// regardless of who is watching the chat, so outward classes require the
+	// program's signature and class modes apply on top.
+	const decision = evaluateToolCall(authority, HTTP_TOOL_NAME, spec, cwd, {
+		attended: false,
+		behaviorPath: program.absolute,
+	});
+	const finalized = await finalizeAuthorityDecision(authority, decision, HTTP_TOOL_NAME, spec);
+	if (finalized.kind === "block") {
+		fail(finalized.reason);
+		return;
+	}
+	try {
+		const response = await brokeredHttpRequest({
+			...spec,
+			behavior: { path: program.rootRelative, contentHash: program.contentHash },
+		});
+		respond({
+			type: "qorpera_program_http_response",
+			requestId: frame.requestId,
+			status: response.status,
+			headers: response.headers,
+			body: response.body,
+			bodyBytes: response.bodyBytes,
+			...(response.bodyTruncated ? { bodyTruncated: true } : {}),
+		});
+	} catch (error) {
+		fail(error instanceof Error ? error.message : String(error));
+	}
+}
 
 /**
  * The complete environment a company program receives. Values come from the
@@ -172,7 +268,7 @@ export function createCompanyToolDefinition(
 					child = spawn(nodeBinary, [...tsLoaderArgs(program.absolute), program.absolute, ...(args ?? [])], {
 						cwd: authority.root,
 						env: cleanProgramEnvironment(),
-						stdio: ["ignore", "pipe", "pipe"],
+						stdio: ["pipe", "pipe", "pipe"],
 						shell: false,
 					});
 				} catch (error) {
@@ -194,7 +290,22 @@ export function createCompanyToolDefinition(
 					outputBytes += piece.length;
 					if (piece.length < chunk.length) truncated = true;
 				};
-				child.stdout?.on("data", collect);
+				// stdout is scanned line-wise: program HTTP frames are served
+				// through the authority + kernel lanes; everything else is
+				// ordinary output. stderr is ordinary output.
+				const respond = (payload: object): void => {
+					if (child.exitCode === null) child.stdin?.write(`${JSON.stringify(payload)}\n`);
+				};
+				if (child.stdout) {
+					createInterface({ input: child.stdout }).on("line", (line) => {
+						const frame = parsedProgramHttpFrame(line);
+						if (frame) {
+							void serveProgramHttpFrame(frame, authority, cwd, program, respond);
+							return;
+						}
+						collect(Buffer.from(`${line}\n`, "utf-8"));
+					});
+				}
 				child.stderr?.on("data", collect);
 
 				let timedOut = false;

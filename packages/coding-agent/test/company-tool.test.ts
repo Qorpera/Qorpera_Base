@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { COMPANY_TOOL_NAME, discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
 import { scaffoldCompany } from "../src/core/company.ts";
+import { handleHttpBrokerFrame, setHttpBrokerWriter } from "../src/core/http-broker-client.ts";
 import { createCompanyToolDefinition } from "../src/core/tools/company-tool.ts";
 
 let root: string;
@@ -175,5 +176,66 @@ describe("run_company_tool authority wiring (signature rule)", () => {
 		});
 		expect(decision.kind).toBe("block");
 		expect(decision.kind === "block" && decision.reason).toMatch(/Authority gate \[identity\]/);
+	});
+});
+
+const LANE_PROGRAM = `import { createInterface } from "node:readline";
+process.stdout.write('{"type":"qorpera_program_http_request","requestId":"r1","method":"GET","url":"https://api.test.example/data"}' + String.fromCharCode(10));
+createInterface({ input: process.stdin }).on("line", (line) => {
+	const message = JSON.parse(line);
+	if (message.error) console.log("LANE ERROR: " + message.error);
+	else console.log("LANE OK " + message.status + " " + message.body);
+	process.exit(0);
+});
+`;
+
+describe("program-side http lane", () => {
+	it("forwards program requests through the kernel lane with the program's identity attached", async () => {
+		const absolute = writeProgram(join("app", "tools", "reporter.mjs"), LANE_PROGRAM);
+		writeFileSync(join(root, "authority.toml"), `[tools]\nhttp_request = "none"\n`, "utf-8");
+		const captured: Array<Record<string, unknown>> = [];
+		setHttpBrokerWriter((frame) => {
+			const record = frame as Record<string, unknown>;
+			captured.push(record);
+			// Fake kernel: answer the child->kernel frame immediately.
+			handleHttpBrokerFrame({
+				type: "qorpera_http_response",
+				requestId: record.requestId,
+				status: 200,
+				headers: { "content-type": "text/plain" },
+				body: "kernel-data",
+				bodyBytes: 11,
+			});
+		});
+
+		const result = await run({ path: "app/tools/reporter.mjs" });
+		expect(result.content[0]?.text).toContain("LANE OK 200 kernel-data");
+		expect(captured.length).toBe(1);
+		const behavior = captured[0].behavior as { path: string; contentHash: string };
+		expect(behavior.path).toBe("app/tools/reporter.mjs");
+		expect(behavior.contentHash).toBe(createHash("sha256").update(readFileSync(absolute)).digest("hex"));
+	});
+
+	it("applies the signature rule to program requests: unsigned outward-classed code is refused with a filed request", async () => {
+		writeProgram(join("app", "tools", "reporter.mjs"), LANE_PROGRAM);
+		// notify mode: once the program is SIGNED this would auto-proceed with a
+		// notice — the per-request block below is purely the missing signature.
+		// (Completing the signed path needs the live desktop kernel's durable
+		// trust; that half is kernel-integration territory.)
+		writeFileSync(
+			join(root, "authority.toml"),
+			`[identity]\nmode = "notify"\n\n[tools]\nhttp_request = "identity"\n`,
+			"utf-8",
+		);
+		const captured: Array<Record<string, unknown>> = [];
+		setHttpBrokerWriter((frame) => captured.push(frame as Record<string, unknown>));
+
+		const result = await run({ path: "app/tools/reporter.mjs" });
+		expect(result.content[0]?.text).toContain("LANE ERROR");
+		expect(result.content[0]?.text).toContain("Signature rule [identity]");
+		expect(captured.length).toBe(0);
+		const gateFiles = readdirSync(join(root, "inbox")).filter((name) => name.startsWith("gate-"));
+		expect(gateFiles.length).toBe(1);
+		expect(readFileSync(join(root, "inbox", gateFiles[0]), "utf-8")).toContain("behavior_signature");
 	});
 });
