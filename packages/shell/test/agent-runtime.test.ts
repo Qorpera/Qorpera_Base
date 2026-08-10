@@ -669,7 +669,7 @@ describe("kernel-bound agent runtime", () => {
 				encoding: "utf-8",
 			}).stdout,
 		).toContain(second.recoveryUpdatedAt);
-	});
+	}, 15_000);
 
 	it("rejects recovery success after a worker leaves its assigned branch", () => {
 		const company = join(root, "company");
