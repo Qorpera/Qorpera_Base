@@ -138,14 +138,15 @@ can be restored.
 ## Chats vs autonomous work (the communication split)
 
 Chat sessions are for work the founder brings. The controller's own
-autonomous work communicates through the inbox instead: it authors
-`inbox/msg-*.md` items — questions, proposals, plans, progress updates —
+autonomous work communicates through the inbox instead: it requests creation
+of `inbox/messages/msg-*.md` items — questions, proposals, plans, progress updates —
 and the founder responds inside the item (the shell renders a reply box; the
 response is appended as a `## Response` section the agent reads on its next
 wake). Conception runs this way: study, set up, post questions — never an
-interactive interrogation. The authority layer permits agent writes ONLY to
-`inbox/msg-*.md`; gate files and everything else in the inbox remain
-human-owned.
+interactive interrogation. The kernel exclusively creates message IDs and
+appends founder responses while recording them in the trusted trail. Existing
+message files, response sections, gate files, and every other inbox path are
+read-only to children.
 
 ## Kernel runtime boundary
 

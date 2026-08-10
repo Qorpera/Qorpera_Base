@@ -656,13 +656,10 @@ export function applyKernelWriteFrame(
 			onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted: false });
 			return true;
 		}
-		const granted = Boolean(
-			record &&
-				record.status === "approved" &&
-				record.hash === frame.hash &&
-				consumeGateCapability?.(frame.file, frame.hash),
-		);
+		const matchesApprovedRecord = Boolean(record && record.status === "approved" && record.hash === frame.hash);
+		const granted = Boolean(matchesApprovedRecord && consumeGateCapability?.(frame.file, frame.hash));
 		if (granted && record) transitionGate(path, frame.file, record, "consumed");
+		else if (matchesApprovedRecord && record) transitionGate(path, frame.file, record, "pending");
 		onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted });
 		return true;
 	}

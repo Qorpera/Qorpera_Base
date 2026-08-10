@@ -199,9 +199,10 @@ const INBOX_README = `# Inbox
 
 Gate requests and human steering land here.
 
-- \`gate-*.md\` — a blocked effect awaiting a decision. Edit its \`status:\`
-  line to \`approved\` or \`denied\`. Tool-call approvals are single-use;
-  extension-load approvals are durable for the approved content hash.
+- \`gate-*.md\` — a blocked effect awaiting native founder review in Base.
+  Editing its \`status:\` line does not create an executable capability.
+  Tool-call approvals are single-use; extension-load approvals are durable
+  for the locally reviewed content hash.
 - \`notices.md\` — effects that proceeded under notify mode.
 - \`messages/msg-*.md\` — agent-authored questions, proposals, and updates.
 - Anything else you put here is steering the agent reads on its next wake.
@@ -210,10 +211,8 @@ Gate requests and human steering land here.
 const APP_PROJECTION_TEMPLATE = `${JSON.stringify(EMPTY_PROJECTION, null, "\t")}\n`;
 
 const PRODUCT_DEPARTMENT_GITIGNORE = `# Product Git data belongs to the product repository, not the company repository.
-repository/*
-!repository/.gitkeep
-worktrees/*
-!worktrees/.gitkeep
+repository/
+worktrees/
 `;
 
 const PULL_REQUESTS_README = `# Pull Requests
@@ -397,6 +396,7 @@ interface CompanyLockRecord {
 
 const ownedRuntimeLocks = new WeakSet<CompanyRuntimeLock>();
 const lockHeartbeats = new WeakMap<CompanyRuntimeLock, Worker>();
+const failedLockHeartbeats = new WeakSet<CompanyRuntimeLock>();
 const COMPANY_LOCK_STALE_MS = 30_000;
 const COMPANY_LOCK_HEARTBEAT_MS = 1_000;
 
@@ -426,6 +426,15 @@ function startCompanyLockHeartbeat(path: string, token: string): Worker {
 	return worker;
 }
 
+function lockOwnerProcessIsAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+	}
+}
+
 function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): CompanyRuntimeLock {
 	const root = canonicalCompanyRoot(rootDir);
 	const path = companyRuntimeLockPath(root);
@@ -447,12 +456,20 @@ function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): C
 				release: () => {
 					const heartbeat = lockHeartbeats.get(lock);
 					if (!heartbeat) return;
-					heartbeat.postMessage("stop");
-					void heartbeat.terminate();
 					lockHeartbeats.delete(lock);
+					try {
+						heartbeat.postMessage("stop");
+					} catch {}
+					void heartbeat.terminate();
 				},
 			};
-			lockHeartbeats.set(lock, startCompanyLockHeartbeat(path, token));
+			const heartbeat = startCompanyLockHeartbeat(path, token);
+			lockHeartbeats.set(lock, heartbeat);
+			const markHeartbeatFailure = (): void => {
+				if (lockHeartbeats.get(lock) === heartbeat) failedLockHeartbeats.add(lock);
+			};
+			heartbeat.once("error", markHeartbeatFailure);
+			heartbeat.once("exit", markHeartbeatFailure);
 			return lock;
 		} catch (error) {
 			if (descriptor !== undefined) closeSync(descriptor);
@@ -469,6 +486,26 @@ function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): C
 			}
 			if (Date.now() - modifiedAt <= COMPANY_LOCK_STALE_MS) {
 				throw new Error("Company transaction is already owned by another process", { cause: error });
+			}
+			let owner: Partial<CompanyLockRecord>;
+			try {
+				owner = JSON.parse(readFileSync(path, "utf-8")) as Partial<CompanyLockRecord>;
+			} catch (readError) {
+				throw new Error("Stale company transaction lock has invalid owner identity", { cause: readError });
+			}
+			if (
+				owner.version !== 2 ||
+				!Number.isSafeInteger(owner.pid) ||
+				owner.pid! <= 0 ||
+				typeof owner.token !== "string" ||
+				!/^[0-9a-f-]{36}$/i.test(owner.token) ||
+				(owner.mode !== "runtime" && owner.mode !== "product-registration") ||
+				normalizedPath(owner.root ?? "") !== normalizedPath(root)
+			) {
+				throw new Error("Stale company transaction lock has invalid owner identity");
+			}
+			if (lockOwnerProcessIsAlive(owner.pid!)) {
+				throw new Error("Company transaction is already owned by another live process", { cause: error });
 			}
 			try {
 				renameSync(path, `${path}.stale-${Date.now()}-${randomUUID()}`);
@@ -502,12 +539,17 @@ export function releaseCompanyRuntimeLock(lock: CompanyRuntimeLock): void {
 		throw error;
 	} finally {
 		ownedRuntimeLocks.delete(lock);
+		failedLockHeartbeats.delete(lock);
 	}
 }
 
 function assertRuntimeLock(root: string, lock: CompanyRuntimeLock): void {
 	const canonicalRoot = canonicalCompanyRoot(root);
-	if (!ownedRuntimeLocks.has(lock) || normalizedPath(lock.root) !== normalizedPath(canonicalRoot)) {
+	if (
+		!ownedRuntimeLocks.has(lock) ||
+		failedLockHeartbeats.has(lock) ||
+		normalizedPath(lock.root) !== normalizedPath(canonicalRoot)
+	) {
 		throw new Error("desktop product transaction has no kernel-owned runtime capability");
 	}
 	const path = companyRuntimeLockPath(canonicalRoot);
@@ -605,7 +647,13 @@ function checkpointProductKit(root: string, id: string): void {
 	);
 	const integrationRecord = join(".qorpera", "product-integrations", `${id}.json`);
 	if (existsSync(join(root, integrationRecord))) paths.push(integrationRecord);
-	const added = spawnSync("git", ["-C", root, "add", "--", ...paths], { stdio: "ignore", shell: false });
+	// The product storage roots are deliberately ignored once populated. Force
+	// their explicit placeholders into the company history without ever adding
+	// product repository or worktree content.
+	const added = spawnSync("git", ["-C", root, "add", "--force", "--", ...paths], {
+		stdio: "ignore",
+		shell: false,
+	});
 	if (added.status !== 0) throw new Error(`Could not stage product department ${id}`);
 	const changed = spawnSync("git", ["-C", root, "diff", "--cached", "--quiet", "--", ...paths], {
 		stdio: "ignore",
@@ -1552,22 +1600,7 @@ function integrateRepoUnlocked(
 	const department = scaffoldProductDepartmentUnlocked(root, product, storage);
 	assertProductTransactionStorage(storage);
 	const destination = join(root, department.repositoryPath);
-	if (existsSync(join(destination, ".git"))) {
-		if (!repositoryMatchesSource(destination, from)) {
-			throw new Error(`${department.repositoryPath} does not match the founder-reviewed repository source`);
-		}
-		console.log(`  kept    ${department.repositoryPath} (verified source)`);
-		return true;
-	}
-	assertProductTransactionStorage(storage);
-	canonicalDirectory(root, department.path);
-	const destinationEntries = existsSync(destination) ? readdirSync(destination) : [];
-	if (destinationEntries.some((entry) => entry !== ".gitkeep")) {
-		throw new Error(`${department.repositoryPath} contains an incomplete or unrelated repository`);
-	}
-
 	const transactionPath = productIntegrationRecordPath(root, department.id);
-	mkdirSync(dirname(transactionPath), { recursive: true });
 	const stagingRoot = productIntegrationStagingRoot(root);
 	let transaction = readProductIntegrationRecord(transactionPath);
 	if (transaction) {
@@ -1580,7 +1613,32 @@ function integrateRepoUnlocked(
 		) {
 			throw new Error("Existing product integration transaction does not match the founder-reviewed source");
 		}
-	} else {
+	}
+	if (existsSync(join(destination, ".git"))) {
+		if (!repositoryMatchesSource(destination, from)) {
+			throw new Error(`${department.repositoryPath} does not match the founder-reviewed repository source`);
+		}
+		if (transaction?.status === "pending") {
+			if (existsSync(transaction.staging)) {
+				throw new Error("Pending product integration has both staged and promoted repositories");
+			}
+			transaction.status = "completed";
+			transaction.sourceHead = gitOutput(destination, ["rev-parse", "HEAD"]);
+			writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+			checkpointProductKit(root, department.id);
+		}
+		console.log(`  kept    ${department.repositoryPath} (verified source)`);
+		return true;
+	}
+	assertProductTransactionStorage(storage);
+	canonicalDirectory(root, department.path);
+	const destinationEntries = existsSync(destination) ? readdirSync(destination) : [];
+	if (destinationEntries.some((entry) => entry !== ".gitkeep")) {
+		throw new Error(`${department.repositoryPath} contains an incomplete or unrelated repository`);
+	}
+
+	mkdirSync(dirname(transactionPath), { recursive: true });
+	if (!transaction) {
 		transaction = {
 			version: 1,
 			productId: department.id,

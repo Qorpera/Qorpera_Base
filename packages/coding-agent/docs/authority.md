@@ -69,9 +69,11 @@ same actor/worktree capability in pi-native and Codex engine modes.
 
 - **controller** — reads product repositories, worktrees, PR records, and
   trails; writes briefs and company operations; cannot modify product code.
-- **product-worker** — modifies only its assigned worktree, including normal
-  commits, pushes, and PR creation. Attempts to escape the worktree block
-  without an approval path.
+- **product-worker** — modifies only non-`.git` content in its assigned
+  worktree. It receives no direct network, credentials, repository-metadata,
+  commit, push, or PR capability. The kernel checkpoints content changes;
+  future push and PR operations require explicit kernel brokers.
+- Gates cannot widen the worktree, `.git`, network, or credential boundary.
 - Destructive commands and PR merge/close operations re-classify as
   `[irreversible]`; ordinary irreversible policy still applies.
 
@@ -79,14 +81,16 @@ same actor/worktree capability in pi-native and Codex engine modes.
 
 A gated call returns a block result naming the request file; the agent keeps
 working on other things (gates block effects, never the agent). The request
-lands at `<root>/inbox/gate-<hash8>.md` with `status: pending`. The human
-edits `status:` to `approved` or `denied`.
+lands at `<root>/inbox/gate-<hash8>.md` with `status: pending`. Base presents
+the canonical request in a native review and performs the approved or denied
+transition. Editing the file alone never mints an executable capability.
 
 - **Tool-call approvals are single-use**: the first matching call consumes
   the approval (status → `consumed`); an identical later call files a fresh
-  request.
-- **Denied** requests block without re-filing; a human can still flip a
-  denied file to `approved`.
+  request. If an approved file outlives the child-local capability that
+  accompanied it, a retry returns it to `pending` for fresh native review.
+- **Denied** requests block without re-filing; the founder can return one to
+  `pending` and review it again through Base.
 - Matching is by SHA-256 of tool name + canonical-JSON args — approval covers
   exactly the requested action.
 
@@ -157,19 +161,18 @@ acted) its content hash and signature status. A blocked call from signed
 code stamps `signed: true` with a class-gate `gateId` — the
 necessary-not-sufficient layering is machine-verifiable from the trail.
 
-**Founder pre-signing works by design:** gate approvals are ordinary
-founder-owned inbox files matched by `hash:`, and `requestHash` is
-computable (sha256 of `tool\n` + canonical-JSON args; for signatures the
-args are `{contentHash, path}` with the root-relative POSIX path). A
-founder — or founder tooling — can author an `approved` gate file before
-the agent ever attempts the action. Live-verified 2026-08-05: pre-signed
-load + signature, per-action identity gate still fired, approve → consume
-→ pretend-send artifact.
+**File-only pre-signing is intentionally insufficient.** `requestHash` is
+deterministic (sha256 of `tool\n` + canonical-JSON args; for signatures the
+args are `{contentHash, path}` with the root-relative POSIX path), but an
+approved file must be paired with a one-shot capability created by local
+native review. A copied or cloned approval therefore cannot authorize an
+effect on another machine or in a later child session.
 
 ## What this is not
 
 Prompt-tier guidance. Enforcement is code at the tool-call boundary and the
 extension loader; the kernel prompt only explains the rules. Known limits of
-v1: the bash screen is string-level (no shell parsing), `limit_usd` is parsed
-but not yet enforced (no money-moving tools exist in Base), and gates do not
-yet write trail entries (the trail lands in slice 3).
+v1: the bash screen is string-level (no shell parsing), and `limit_usd` is
+parsed but not yet enforced because Base has no money-moving tools. Native
+founder reviews, child effect assertions, gate transitions, and broker-observed
+model usage are recorded as distinct provenance events.

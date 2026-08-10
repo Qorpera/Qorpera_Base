@@ -817,6 +817,10 @@ function enqueueRuntimeTransition<T>(runtime: CompanyRuntime, transition: () => 
 	return result;
 }
 
+function isCurrentRuntimeChild(slot: Slot, runtime: CompanyRuntime, child: ChildProcessWithoutNullStreams): boolean {
+	return slot.runtime === runtime && !runtime.closing && runtime.child === child && child.exitCode === null;
+}
+
 function restartForProductInventory(slot: Slot, runtime: CompanyRuntime): void {
 	void enqueueRuntimeTransition(runtime, async () => {
 		if (slot.runtime !== runtime || runtime.mergeChild) return;
@@ -1593,75 +1597,84 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, status: 404, text: "no company" };
-		const actions = new Map([
-			["/api/gate", "resolve an authority gate"],
-			["/api/inbox/respond", "send a founder inbox response"],
-			["/api/authority/config", "change company authority modes"],
-			["/api/authority", "replace the company authority policy"],
-		]);
-		const action = actions.get(path);
-		if (!action) return { ok: false, status: 400, text: "unsupported kernel action" };
-		const serialized = JSON.stringify(body);
-		if (typeof serialized !== "string") return { ok: false, status: 400, text: "invalid request" };
-		if (Buffer.byteLength(serialized, "utf-8") > MAX_KERNEL_REVIEW_BYTES) {
-			return { ok: false, status: 413, text: "request exceeds the exact-review limit" };
-		}
-		let gateDocument: string | undefined;
-		if (path === "/api/gate") {
-			if (!body || typeof body !== "object" || Array.isArray(body)) {
-				return { ok: false, status: 400, text: "invalid gate transition" };
+		return enqueueRuntimeTransition(runtime, async () => {
+			if (runtime.mergeChild || !isCurrentRuntimeChild(slot, runtime, runtime.child)) {
+				return { ok: false, status: 409, text: "company session changed before review" };
 			}
-			const record = body as Record<string, unknown>;
-			if (
-				Object.keys(record).some((key) => key !== "file" && key !== "action") ||
-				typeof record.file !== "string" ||
-				(record.action !== "approved" && record.action !== "denied")
-			) {
-				return { ok: false, status: 400, text: "invalid gate transition" };
+			const reviewedChild = runtime.child;
+			const actions = new Map([
+				["/api/gate", "resolve an authority gate"],
+				["/api/inbox/respond", "send a founder inbox response"],
+				["/api/authority/config", "change company authority modes"],
+				["/api/authority", "replace the company authority policy"],
+			]);
+			const action = actions.get(path);
+			if (!action) return { ok: false, status: 400, text: "unsupported kernel action" };
+			const serialized = JSON.stringify(body);
+			if (typeof serialized !== "string") return { ok: false, status: 400, text: "invalid request" };
+			if (Buffer.byteLength(serialized, "utf-8") > MAX_KERNEL_REVIEW_BYTES) {
+				return { ok: false, status: 413, text: "request exceeds the exact-review limit" };
 			}
-			gateDocument = kernelGateReviewDocument(runtime.root, record.file);
-			if (!gateDocument) return { ok: false, status: 409, text: "gate is not canonically pending" };
-		}
-		const exactReview = gateDocument ? `${gateDocument}\nRequested transition:\n${serialized}` : serialized;
-		const trailBinding = childBindings.get(runtime.child);
-		const approved = await confirmKernelReview(slot.window, {
-			title: "Authorize company mutation",
-			summary: `Authorize this exact kernel action: ${action}?`,
-			exactText: exactReview,
-			metadata: `Endpoint: ${path}`,
-		});
-		if (!approved) {
+			let gateDocument: string | undefined;
+			if (path === "/api/gate") {
+				if (!body || typeof body !== "object" || Array.isArray(body)) {
+					return { ok: false, status: 400, text: "invalid gate transition" };
+				}
+				const record = body as Record<string, unknown>;
+				if (
+					Object.keys(record).some((key) => key !== "file" && key !== "action") ||
+					typeof record.file !== "string" ||
+					(record.action !== "approved" && record.action !== "denied")
+				) {
+					return { ok: false, status: 400, text: "invalid gate transition" };
+				}
+				gateDocument = kernelGateReviewDocument(runtime.root, record.file);
+				if (!gateDocument) return { ok: false, status: 409, text: "gate is not canonically pending" };
+			}
+			const exactReview = gateDocument ? `${gateDocument}\nRequested transition:\n${serialized}` : serialized;
+			const trailBinding = childBindings.get(reviewedChild);
+			const approved = await confirmKernelReview(slot.window, {
+				title: "Authorize company mutation",
+				summary: `Authorize this exact kernel action: ${action}?`,
+				exactText: exactReview,
+				metadata: `Endpoint: ${path}`,
+			});
+			if (!isCurrentRuntimeChild(slot, runtime, reviewedChild)) {
+				return { ok: false, status: 409, text: "company session changed during review" };
+			}
+			if (!approved) {
+				if (trailBinding) {
+					appendKernelMutationObservation(trailBinding, {
+						operation: path,
+						exactReview,
+						approved: false,
+					});
+				}
+				return { ok: false, status: 403, text: "cancelled" };
+			}
+			if (gateDocument && kernelGateReviewDocument(runtime.root, (body as { file: string }).file) !== gateDocument) {
+				return { ok: false, status: 409, text: "gate changed after review" };
+			}
+			const response = await fetch(`http://127.0.0.1:${runtime.backendPort}${path}`, {
+				method: "POST",
+				headers: { "content-type": "application/json", "x-qorpera-token": runtime.backendToken },
+				body: serialized,
+			});
+			if (response.ok && path === "/api/gate" && (body as { action?: unknown }).action === "approved") {
+				const hash = gateDocument?.match(/^hash:\s*([a-f0-9]{64})$/m)?.[1];
+				const file = (body as { file?: unknown }).file;
+				if (hash && typeof file === "string") childApprovedGates.get(reviewedChild)?.add(`${file}:${hash}`);
+			}
 			if (trailBinding) {
 				appendKernelMutationObservation(trailBinding, {
 					operation: path,
 					exactReview,
-					approved: false,
+					approved: true,
+					resultStatus: response.status,
 				});
 			}
-			return { ok: false, status: 403, text: "cancelled" };
-		}
-		if (gateDocument && kernelGateReviewDocument(runtime.root, (body as { file: string }).file) !== gateDocument) {
-			return { ok: false, status: 409, text: "gate changed after review" };
-		}
-		const response = await fetch(`http://127.0.0.1:${runtime.backendPort}${path}`, {
-			method: "POST",
-			headers: { "content-type": "application/json", "x-qorpera-token": runtime.backendToken },
-			body: serialized,
+			return { ok: response.ok, status: response.status, text: await response.text() };
 		});
-		if (response.ok && path === "/api/gate" && (body as { action?: unknown }).action === "approved") {
-			const hash = gateDocument?.match(/^hash:\s*([a-f0-9]{64})$/m)?.[1];
-			const file = (body as { file?: unknown }).file;
-			if (hash && typeof file === "string") childApprovedGates.get(runtime.child)?.add(`${file}:${hash}`);
-		}
-		if (trailBinding) {
-			appendKernelMutationObservation(trailBinding, {
-				operation: path,
-				exactReview,
-				approved: true,
-				resultStatus: response.status,
-			});
-		}
-		return { ok: response.ok, status: response.status, text: await response.text() };
 	});
 	ipcMain.handle("app:info", (event) => {
 		const slot = slotOf(event.sender);
@@ -1705,32 +1718,38 @@ app.whenReady().then(async () => {
 			"set_session_name",
 		]);
 		if (promptTypes.has(frame.type)) {
-			const reviewed = reviewedPromptFrame(frame as Record<string, unknown>);
-			if (!reviewed || (!reviewed.message && !reviewed.images?.length)) return { ok: false };
-			const target = runtime.productWorker ? runtime.productWorker.department : "company controller";
-			const assignment = runtime.productWorker ? `Assigned worktree: ${runtime.productWorker.worktree}` : undefined;
-			const approved = await confirmKernelReview(slot.window, {
-				title: "Authorize company instruction",
-				summary: `Send this exact ${reviewed.type} to the ${target}?`,
-				exactText: reviewed.message,
-				metadata: [
-					assignment,
-					reviewed.streamingBehavior ? `Streaming behavior: ${reviewed.streamingBehavior}` : undefined,
-					`Model budget: ${MODEL_BUDGET_REVIEW}`,
-				]
-					.filter(Boolean)
-					.join("\n"),
-				images: reviewed.images?.map((image) => ({
-					mimeType: image.mimeType,
-					data: image.data,
-					sha256: createHash("sha256").update(image.data, "base64").digest("hex"),
-					bytes: Buffer.byteLength(image.data, "base64"),
-				})),
+			return enqueueRuntimeTransition(runtime, async () => {
+				if (runtime.mergeChild || !isCurrentRuntimeChild(slot, runtime, runtime.child)) return { ok: false };
+				const reviewedChild = runtime.child;
+				const reviewed = reviewedPromptFrame(frame as Record<string, unknown>);
+				if (!reviewed || (!reviewed.message && !reviewed.images?.length)) return { ok: false };
+				const target = runtime.productWorker ? runtime.productWorker.department : "company controller";
+				const assignment = runtime.productWorker
+					? `Assigned worktree: ${runtime.productWorker.worktree}`
+					: undefined;
+				const approved = await confirmKernelReview(slot.window, {
+					title: "Authorize company instruction",
+					summary: `Send this exact ${reviewed.type} to the ${target}?`,
+					exactText: reviewed.message,
+					metadata: [
+						assignment,
+						reviewed.streamingBehavior ? `Streaming behavior: ${reviewed.streamingBehavior}` : undefined,
+						`Model budget: ${MODEL_BUDGET_REVIEW}`,
+					]
+						.filter(Boolean)
+						.join("\n"),
+					images: reviewed.images?.map((image) => ({
+						mimeType: image.mimeType,
+						data: image.data,
+						sha256: createHash("sha256").update(image.data, "base64").digest("hex"),
+						bytes: Buffer.byteLength(image.data, "base64"),
+					})),
+				});
+				if (!approved || !isCurrentRuntimeChild(slot, runtime, reviewedChild)) return { ok: false };
+				return {
+					ok: sendKernelPrompt(reviewedChild, reviewed, true, "native-founder-confirmation"),
+				};
 			});
-			if (!approved) return { ok: false };
-			return {
-				ok: sendKernelPrompt(runtime.child, reviewed, true, "native-founder-confirmation"),
-			};
 		}
 		if (!safeControlTypes.has(frame.type)) return { ok: false };
 		if (frame.type === "abort") childModelCapabilities.get(runtime.child)?.endTurn("aborted");

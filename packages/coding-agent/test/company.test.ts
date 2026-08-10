@@ -15,10 +15,11 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
 import {
@@ -311,6 +312,27 @@ describe("product-development departments", () => {
 		}
 	});
 
+	it("never steals an old lock timestamp while the recorded owner process is alive", () => {
+		scaffoldCompany(root);
+		const lockPath = companyRuntimeLockPath(root);
+		mkdirSync(dirname(lockPath), { recursive: true });
+		writeFileSync(
+			lockPath,
+			`${JSON.stringify({
+				version: 2,
+				pid: process.pid,
+				root,
+				token: "11111111-1111-4111-8111-111111111111",
+				mode: "runtime",
+			})}\n`,
+			"utf-8",
+		);
+		const old = new Date(Date.now() - 60_000);
+		utimesSync(lockPath, old, old);
+
+		expect(() => claimCompanyRuntimeLock(root)).toThrow("already owned by another live process");
+	});
+
 	it("keeps empty registered product storage cloneable", () => {
 		const company = join(root, "company");
 		const clone = join(root, "company-clone");
@@ -340,6 +362,34 @@ describe("product-development departments", () => {
 		scaffoldCompany(company);
 		expect(integrateRepo(company, sourceA, "Widget")).toBe(true);
 		expect(() => integrateRepo(company, sourceB, "Widget")).toThrow("does not match");
+	});
+
+	it("reconciles a pending product transaction after repository promotion", () => {
+		const company = join(root, "company");
+		const source = join(root, "source");
+		mkdirSync(source, { recursive: true });
+		writeFileSync(join(source, "README.md"), "source\n", "utf-8");
+		for (const args of [
+			["init"],
+			["add", "README.md"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", args, { cwd: source, stdio: "ignore" }).status).toBe(0);
+		}
+		scaffoldCompany(company);
+		expect(integrateRepo(company, source, "Widget")).toBe(true);
+		const transactionPath = join(company, ".qorpera", "product-integrations", "widget-development.json");
+		const interrupted = JSON.parse(readFileSync(transactionPath, "utf-8")) as Record<string, unknown>;
+		interrupted.status = "pending";
+		delete interrupted.sourceHead;
+		writeFileSync(transactionPath, `${JSON.stringify(interrupted, null, "\t")}\n`, "utf-8");
+
+		expect(integrateRepo(company, source, "Widget")).toBe(true);
+		expect(JSON.parse(readFileSync(transactionPath, "utf-8"))).toMatchObject({
+			status: "completed",
+			sourceHead: expect.stringMatching(/^[a-f0-9]{40,64}$/),
+		});
+		expect(spawnSync("git", ["status", "--porcelain"], { cwd: company, encoding: "utf-8" }).stdout).toBe("");
 	});
 
 	it("uses the same runtime lock identity through filesystem aliases", () => {

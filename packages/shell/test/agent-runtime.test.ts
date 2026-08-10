@@ -167,6 +167,26 @@ describe("kernel-bound agent runtime", () => {
 			},
 		);
 		expect(response).toMatchObject({ granted: false });
+		writeFileSync(gatePath, readFileSync(gatePath, "utf-8").replace("status: consumed", "status: approved"), "utf-8");
+		response = undefined;
+		applyKernelWriteFrame(
+			{
+				type: "qorpera_kernel_write",
+				token: binding.token,
+				operation: "consume_gate",
+				file: gateFile,
+				requestId: "request-orphaned-approval",
+				hash,
+				status: "consumed",
+			},
+			binding,
+			company,
+			(value) => {
+				response = value;
+			},
+		);
+		expect(response).toMatchObject({ granted: false });
+		expect(readFileSync(gatePath, "utf-8")).toContain("status: pending");
 
 		const messageContent = "# Product question\n\nShould we ship this?\n";
 		const messageHash = createHash("sha256").update(messageContent).digest("hex");
@@ -191,7 +211,7 @@ describe("kernel-bound agent runtime", () => {
 		expect(readFileSync(join(company, "inbox", "messages", "msg-product-question.md"), "utf-8")).toBe(messageContent);
 		expect(readFileSync(binding.path, "utf-8")).toContain("qorpera_kernel_inbox_message");
 
-		const forged = readFileSync(gatePath, "utf-8").replace("status: consumed", "status: pending\nstatus: approved");
+		const forged = readFileSync(gatePath, "utf-8").replace("status: pending", "status: pending\nstatus: approved");
 		writeFileSync(gatePath, forged, "utf-8");
 		response = undefined;
 		applyKernelWriteFrame(
