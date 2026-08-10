@@ -13,6 +13,7 @@ import {
 	kernelGateReviewDocument,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
+	reconcileKernelGateCreations,
 	sandboxCommandArgs,
 	sandboxRuntimeDir,
 	writeSandboxProfile,
@@ -28,6 +29,12 @@ import {
 	savePendingProductCheckpoint,
 	snapshotFounderGitState,
 } from "../src/company-checkpoint.ts";
+import {
+	advanceCompanyGateCreation,
+	beginCompanyGateCreation,
+	completeCompanyGateCreation,
+	listPendingCompanyGateCreations,
+} from "../src/company-kernel-state.ts";
 
 let root: string;
 
@@ -40,6 +47,68 @@ beforeEach(() => {
 afterEach(() => {
 	if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
 });
+
+function createProductCheckpointFixture(company: string): {
+	worktree: string;
+	trailPath: string;
+	assignmentPath: string;
+} {
+	const departmentId = "widget-development";
+	const taskId = "20260810000000-aaaaaaaa";
+	const relativeWorktree = `departments/${departmentId}/worktrees/${taskId}`;
+	const worktree = join(company, relativeWorktree);
+	mkdirSync(worktree, { recursive: true });
+	writeFileSync(join(worktree, "product.ts"), "export const value = 1;\n", "utf-8");
+	for (const args of [
+		["init"],
+		["add", "product.ts"],
+		["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+	]) {
+		expect(spawnSync("git", args, { cwd: worktree, stdio: "ignore" }).status).toBe(0);
+	}
+	expect(
+		spawnSync("git", ["remote", "add", "origin", "https://example.invalid/widget.git"], {
+			cwd: worktree,
+			stdio: "ignore",
+		}).status,
+	).toBe(0);
+	const branch = spawnSync("git", ["branch", "--show-current"], { cwd: worktree, encoding: "utf-8" }).stdout.trim();
+	const sourceHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf-8" }).stdout.trim();
+	const assignmentPath = join(company, ".qorpera", "product-worktrees", departmentId, `${taskId}.json`);
+	mkdirSync(join(assignmentPath, ".."), { recursive: true });
+	writeFileSync(
+		assignmentPath,
+		`${JSON.stringify(
+			{
+				version: 3,
+				path: relativeWorktree,
+				branch,
+				departmentId,
+				repositoryPath: `departments/${departmentId}/repository`,
+				sourceRemote: "https://example.invalid/widget.git",
+				sourceHead,
+				recoveryHead: sourceHead,
+				recoveryBundles: [],
+				sourceHistory: [],
+				createdAt: new Date().toISOString(),
+			},
+			null,
+			"\t",
+		)}\n`,
+		"utf-8",
+	);
+	const trailPath = join(company, "trail", "product.jsonl");
+	writeFileSync(trailPath, "{}\n", "utf-8");
+	writeFileSync(join(company, ".gitignore"), "departments/*-development/worktrees/\n", "utf-8");
+	for (const args of [
+		["init"],
+		["add", ".gitignore", ".qorpera", "trail/product.jsonl"],
+		["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "company seed"],
+	]) {
+		expect(spawnSync("git", args, { cwd: company, stdio: "ignore" }).status).toBe(0);
+	}
+	return { worktree, trailPath, assignmentPath };
+}
 
 describe("kernel-bound agent runtime", () => {
 	it("binds role and worktree scope into an immutable trail header", () => {
@@ -281,6 +350,94 @@ describe("kernel-bound agent runtime", () => {
 		expect(existsSync(join(company, "inbox", gateFile))).toBe(false);
 	});
 
+	it("reconciles a gate file created before its completed trail event", () => {
+		const company = join(root, "company");
+		const binding = bindTrailSession(company, company, { actor: "controller", attended: false });
+		const args = { path: "extensions/recover.ts", contentHash: "f".repeat(64) };
+		const hash = requestHash("behavior_signature", args);
+		const gateId = `gate-${hash.slice(0, 8)}`;
+		const gateFile = `${gateId}.md`;
+		applyKernelWriteFrame(
+			{
+				type: "qorpera_kernel_write",
+				token: binding.token,
+				operation: "create_gate",
+				gate: {
+					id: gateId,
+					file: gateFile,
+					effectClass: "authority",
+					toolName: "behavior_signature",
+					hash,
+					args,
+				},
+			},
+			binding,
+			company,
+		);
+		const interrupted = readFileSync(binding.path, "utf-8").split(/\r?\n/).filter(Boolean).slice(0, 2);
+		writeFileSync(binding.path, `${interrupted.join("\n")}\n`, "utf-8");
+		const recoveryBinding = bindTrailSession(company, company, { actor: "controller", attended: false });
+		const pending: {
+			file: string;
+			hash: string;
+			trailFile: string;
+			phase: "planned" | "started" | "finalizing-created" | "finalizing-aborted";
+		} = { file: gateFile, hash, trailFile: binding.file, phase: "started" };
+		let completed = 0;
+		reconcileKernelGateCreations(
+			recoveryBinding,
+			company,
+			[pending],
+			(_file, _hash, trailFile, phase) => {
+				pending.trailFile = trailFile;
+				pending.phase = phase;
+			},
+			() => {
+				completed++;
+			},
+		);
+		expect(completed).toBe(1);
+		expect(readFileSync(recoveryBinding.path, "utf-8")).toContain('"transition":"created","phase":"completed"');
+
+		const secondRecovery = bindTrailSession(company, company, { actor: "controller", attended: false });
+		reconcileKernelGateCreations(
+			secondRecovery,
+			company,
+			[pending],
+			(_file, _hash, trailFile, phase) => {
+				pending.trailFile = trailFile;
+				pending.phase = phase;
+			},
+			() => {
+				completed++;
+			},
+		);
+		expect(completed).toBe(2);
+		expect(readFileSync(secondRecovery.path, "utf-8")).not.toContain("qorpera_kernel_gate_transition");
+	});
+
+	it("reconciles a gate journal persisted before its started trail event", () => {
+		const company = join(root, "company");
+		const userData = join(root, "user-data");
+		const interrupted = bindTrailSession(company, company, { actor: "controller", attended: false });
+		const recovery = bindTrailSession(company, company, { actor: "controller", attended: false });
+		const file = "gate-aaaaaaaa.md";
+		const hash = "a".repeat(64);
+		beginCompanyGateCreation(userData, company, file, hash, interrupted.file);
+		reconcileKernelGateCreations(
+			recovery,
+			company,
+			listPendingCompanyGateCreations(userData, company),
+			(gateFile, gateHash, trailFile, phase) =>
+				advanceCompanyGateCreation(userData, company, gateFile, gateHash, trailFile, phase),
+			(gateFile, gateHash) => completeCompanyGateCreation(userData, company, gateFile, gateHash),
+		);
+		const trail = readFileSync(recovery.path, "utf-8");
+		expect(trail).toContain('"transition":"created","phase":"started"');
+		expect(trail).toContain('"transition":"creation-aborted","phase":"completed"');
+		expect(listPendingCompanyGateCreations(userData, company)).toEqual([]);
+	});
+
 	it("generates controller and worker sandbox profiles with nested read-only boundaries", () => {
 		const previousProgramData = process.env.ProgramData;
 		if (process.platform === "win32" && !process.env.ProgramData && !process.env.PROGRAMDATA) {
@@ -429,16 +586,8 @@ describe("kernel-bound agent runtime", () => {
 	});
 
 	it("snapshots founder product state before a worker and checkpoints its uncommitted result", () => {
-		const worktree = join(root, "product-worktree");
-		mkdirSync(worktree, { recursive: true });
-		writeFileSync(join(worktree, "product.ts"), "export const value = 1;\n", "utf-8");
-		for (const args of [
-			["init"],
-			["add", "product.ts"],
-			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
-		]) {
-			expect(spawnSync("git", args, { cwd: worktree, stdio: "ignore" }).status).toBe(0);
-		}
+		const company = join(root, "company");
+		const { worktree, trailPath, assignmentPath } = createProductCheckpointFixture(company);
 		writeFileSync(join(worktree, "founder-notes.md"), "retain this\n", "utf-8");
 		snapshotFounderGitState(worktree, "product-worker");
 		const baseline = captureCompanyGitBaseline(worktree);
@@ -450,7 +599,7 @@ describe("kernel-bound agent runtime", () => {
 			"utf-8",
 		);
 
-		expect(checkpointProductWorktreeGit(worktree, baseline, "trail/product.jsonl").success).toBe(true);
+		expect(checkpointProductWorktreeGit(company, worktree, baseline, trailPath).success).toBe(true);
 		expect(existsSync(escaped)).toBe(false);
 		expect(spawnSync("git", ["show", "HEAD~1:founder-notes.md"], { cwd: worktree, encoding: "utf-8" }).stdout).toBe(
 			"retain this\n",
@@ -459,8 +608,78 @@ describe("kernel-bound agent runtime", () => {
 			"export const value = 2;\n",
 		);
 		expect(spawnSync("git", ["log", "-1", "--format=%B"], { cwd: worktree, encoding: "utf-8" }).stdout).toContain(
-			"Qorpera-Trigger: trail/product.jsonl",
+			`Qorpera-Trigger: ${trailPath}`,
 		);
+		const assignment = JSON.parse(readFileSync(assignmentPath, "utf-8")) as {
+			recoveryHead: string;
+			recoveryBundles: Array<{ path: string; head: string; baseHead?: string }>;
+		};
+		expect(assignment.recoveryHead).toBe(
+			spawnSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf-8" }).stdout.trim(),
+		);
+		expect(assignment.recoveryBundles).toHaveLength(1);
+		const recoveryBundle = assignment.recoveryBundles[0].path;
+		expect(assignment.recoveryBundles[0]).toMatchObject({ head: assignment.recoveryHead });
+		expect(existsSync(join(company, recoveryBundle))).toBe(true);
+		expect(spawnSync("git", ["ls-files", recoveryBundle], { cwd: company, encoding: "utf-8" }).stdout.trim()).toBe(
+			recoveryBundle,
+		);
+	});
+
+	it("stores one full recovery bundle followed by content-addressed incremental bundles", () => {
+		const company = join(root, "company");
+		const { worktree, trailPath, assignmentPath } = createProductCheckpointFixture(company);
+		let baseline = captureCompanyGitBaseline(worktree);
+		writeFileSync(join(worktree, "product.ts"), "export const value = 2;\n", "utf-8");
+		expect(checkpointProductWorktreeGit(company, worktree, baseline, trailPath).success).toBe(true);
+		const first = JSON.parse(readFileSync(assignmentPath, "utf-8")) as {
+			recoveryHead: string;
+			recoveryBundles: Array<{ path: string; head: string; baseHead?: string }>;
+			recoveryUpdatedAt: string;
+		};
+		expect(first.recoveryBundles).toHaveLength(1);
+
+		baseline = captureCompanyGitBaseline(worktree);
+		writeFileSync(join(worktree, "product.ts"), "export const value = 3;\n", "utf-8");
+		expect(checkpointProductWorktreeGit(company, worktree, baseline, trailPath).success).toBe(true);
+		const second = JSON.parse(readFileSync(assignmentPath, "utf-8")) as typeof first;
+		expect(second.recoveryBundles).toHaveLength(2);
+		expect(second.recoveryBundles[1]).toMatchObject({ baseHead: first.recoveryHead, head: second.recoveryHead });
+		const incrementalHeader = readFileSync(join(company, second.recoveryBundles[1].path))
+			.subarray(0, 4096)
+			.toString("utf-8");
+		expect(incrementalHeader).toContain(`-${first.recoveryHead} `);
+		expect(
+			second.recoveryBundles.every((bundle) => /^[a-f0-9]{32}\.bundle$/.test(bundle.path.split("/").at(-1)!)),
+		).toBe(true);
+
+		const companyHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd: company, encoding: "utf-8" }).stdout.trim();
+		second.recoveryUpdatedAt = new Date(Date.now() + 1_000).toISOString();
+		writeFileSync(assignmentPath, `${JSON.stringify(second, null, "\t")}\n`, "utf-8");
+		expect(spawnSync("git", ["add", assignmentPath], { cwd: company, stdio: "ignore" }).status).toBe(0);
+		expect(
+			checkpointProductWorktreeGit(company, worktree, captureCompanyGitBaseline(worktree), trailPath).success,
+		).toBe(true);
+		expect(spawnSync("git", ["rev-parse", "HEAD"], { cwd: company, encoding: "utf-8" }).stdout.trim()).not.toBe(
+			companyHead,
+		);
+		expect(
+			spawnSync("git", ["show", "HEAD:.qorpera/product-worktrees/widget-development/20260810000000-aaaaaaaa.json"], {
+				cwd: company,
+				encoding: "utf-8",
+			}).stdout,
+		).toContain(second.recoveryUpdatedAt);
+	});
+
+	it("rejects recovery success after a worker leaves its assigned branch", () => {
+		const company = join(root, "company");
+		const { worktree, trailPath, assignmentPath } = createProductCheckpointFixture(company);
+		expect(spawnSync("git", ["switch", "-c", "unassigned"], { cwd: worktree, stdio: "ignore" }).status).toBe(0);
+		const baseline = captureCompanyGitBaseline(worktree);
+		writeFileSync(join(worktree, "product.ts"), "export const value = 4;\n", "utf-8");
+		expect(checkpointProductWorktreeGit(company, worktree, baseline, trailPath).success).toBe(false);
+		const assignment = JSON.parse(readFileSync(assignmentPath, "utf-8")) as { recoveryBundles: unknown[] };
+		expect(assignment.recoveryBundles).toEqual([]);
 	});
 
 	it("fails closed before repository-local filters can execute in a kernel Git process", () => {
@@ -519,25 +738,14 @@ describe("kernel-bound agent runtime", () => {
 
 	it("reconciles interrupted product work against its exact company trail provenance", () => {
 		const company = join(root, "company");
-		const worktree = join(root, "product-worktree");
-		mkdirSync(worktree, { recursive: true });
-		writeFileSync(join(worktree, "product.ts"), "export const value = 1;\n", "utf-8");
-		for (const args of [
-			["init"],
-			["add", "product.ts"],
-			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
-		]) {
-			expect(spawnSync("git", args, { cwd: worktree, stdio: "ignore" }).status).toBe(0);
-		}
+		const { worktree, trailPath } = createProductCheckpointFixture(company);
 		const baseline = captureCompanyGitBaseline(worktree);
 		const checkpointDir = join(root, "checkpoint-state");
 		const statePath = join(checkpointDir, "interrupted.product.json");
-		const trailPath = join(root, "company", "trail", "product.jsonl");
-		writeFileSync(trailPath, "{}\n", "utf-8");
 		savePendingProductCheckpoint(statePath, company, worktree, baseline, trailPath);
 		writeFileSync(join(worktree, "product.ts"), "export const value = 2;\n", "utf-8");
 
-		reconcilePendingProductCheckpoints(checkpointDir, company, worktree);
+		reconcilePendingProductCheckpoints(checkpointDir, company);
 		expect(existsSync(statePath)).toBe(false);
 		expect(spawnSync("git", ["show", "HEAD:product.ts"], { cwd: worktree, encoding: "utf-8" }).stdout).toBe(
 			"export const value = 2;\n",

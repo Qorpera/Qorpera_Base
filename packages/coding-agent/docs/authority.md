@@ -161,8 +161,14 @@ root are ignored — only company-authored code is subject).
 Every classified effect is stamped into the trail as a `qorpera_effect`
 custom entry — tool, effect class, decision, consumed gate ID, and (when
 codified behavior acted) its content hash and signature status. The kernel
-separately records each gate consumption or orphan reset in the hash-chained
-trail, so file state and child assertions are not the authority evidence.
+separately journals a gate creation plan before its first trail transition,
+advances the durable phase before every later transition, then records each
+creation completion, consumption, or orphan reset in the hash-chained trail.
+The journal is keyed by gate file rather than request hash, so repeated exact
+requests remain independent. An interrupted creation is reconciled
+idempotently across recovery trails from desktop kernel state before the next
+child receives access, so file state and child assertions are not the
+authority evidence.
 
 **File-only pre-signing is intentionally insufficient.** `requestHash` is
 deterministic (sha256 of `tool\n` + canonical-JSON args; for signatures the

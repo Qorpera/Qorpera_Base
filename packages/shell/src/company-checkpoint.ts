@@ -1,6 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export interface CompanyGitBaseline {
@@ -25,6 +35,27 @@ interface PendingProductCheckpoint {
 	worktreeRoot: string;
 	companyTrailFile: string;
 	dirtyPaths: Array<{ path: string; hash: string }>;
+}
+
+interface ProductWorktreeAssignment {
+	version: 3;
+	path: string;
+	branch: string;
+	departmentId: string;
+	repositoryPath: string;
+	sourceRemote: string;
+	sourceHead?: string;
+	recoveryHead?: string;
+	recoveryBundles: ProductRecoveryBundle[];
+	recoveryUpdatedAt?: string;
+	sourceHistory: Array<{ sourceRemote: string; reboundAt: string }>;
+	createdAt: string;
+}
+
+interface ProductRecoveryBundle {
+	path: string;
+	head: string;
+	baseHead?: string;
 }
 
 function gitEnvironment(): NodeJS.ProcessEnv {
@@ -258,18 +289,226 @@ export function checkpointCompanyGit(
 	});
 }
 
+function writeAtomicJson(path: string, value: unknown): void {
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	writeFileSync(temporary, `${JSON.stringify(value, null, "\t")}\n`, { encoding: "utf-8", flag: "wx" });
+	renameSync(temporary, path);
+}
+
+function physicalFile(path: string): boolean {
+	try {
+		const entry = lstatSync(path);
+		return (
+			entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1 && resolve(realpathSync(path)) === resolve(path)
+		);
+	} catch {
+		return false;
+	}
+}
+
+function gitText(root: string, args: string[]): string | undefined {
+	const result = git(root, args);
+	return result.status === 0 && typeof result.stdout === "string" && result.stdout.trim()
+		? result.stdout.trim()
+		: undefined;
+}
+
+function bundleContainsHead(root: string, bundle: string, branch: string, head: string): boolean {
+	return gitText(root, ["bundle", "list-heads", bundle, `refs/heads/${branch}`]) === `${head} refs/heads/${branch}`;
+}
+
+function pathMatchesHead(root: string, path: string): boolean {
+	const working = gitText(root, ["hash-object", "--no-filters", "--", path]);
+	const committed = gitText(root, ["rev-parse", `HEAD:${path.replace(/\\/g, "/")}`]);
+	return Boolean(working && committed && working === committed);
+}
+
+function validRecoveryChain(value: unknown, recoveryHead: unknown): value is ProductRecoveryBundle[] {
+	if (!Array.isArray(value)) return false;
+	let previousHead: string | undefined;
+	const paths = new Set<string>();
+	for (const entry of value) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+		const candidate = entry as Partial<ProductRecoveryBundle>;
+		const path = candidate.path?.replace(/\\/g, "/");
+		if (
+			typeof path !== "string" ||
+			!/^\.qorpera\/w\/[a-f0-9]{32}\.bundle$/.test(path) ||
+			paths.has(path) ||
+			typeof candidate.head !== "string" ||
+			!/^[a-f0-9]{40,64}$/i.test(candidate.head) ||
+			(candidate.baseHead !== undefined && !/^[a-f0-9]{40,64}$/i.test(candidate.baseHead)) ||
+			(candidate.baseHead ?? undefined) !== previousHead
+		)
+			return false;
+		paths.add(path);
+		previousHead = candidate.head;
+	}
+	return value.length === 0 ? true : typeof recoveryHead === "string" && previousHead === recoveryHead;
+}
+
+function commitProductRecoveryMetadata(company: string, trail: string, paths: string[]): void {
+	const uniquePaths = [...new Set(paths)];
+	const added = git(company, ["add", "--", ...uniquePaths]);
+	if (added.status !== 0) throw new Error("product recovery staging failed");
+	const committed = git(company, [
+		"-c",
+		"user.name=Qorpera Kernel",
+		"-c",
+		"user.email=kernel@qorpera.local",
+		"commit",
+		"--only",
+		"-m",
+		`docs: preserve product worktree recovery\n\nQorpera-Trigger: ${trail}\nQorpera-Rationale: keep active product commits portable with the company`,
+		"--",
+		...uniquePaths,
+	]);
+	if (committed.status !== 0) {
+		git(company, ["restore", "--staged", "--", ...uniquePaths]);
+		throw new Error(`product recovery commit failed: ${committed.stderr || committed.stdout || "git commit failed"}`);
+	}
+	if (!uniquePaths.every((path) => pathMatchesHead(company, path))) {
+		throw new Error("product recovery commit did not preserve the exact assignment and bundle blobs");
+	}
+}
+
+function persistProductWorktreeRecovery(companyRoot: string, worktreeRoot: string, companyTrailFile: string): void {
+	const company = resolve(realpathSync(companyRoot));
+	const worktree = resolve(realpathSync(worktreeRoot));
+	const trail = resolve(companyTrailFile);
+	const trailRelative = relative(resolve(company, "trail"), trail);
+	if (
+		!trailRelative ||
+		trailRelative.startsWith("..") ||
+		isAbsolute(trailRelative) ||
+		!trailRelative.endsWith(".jsonl")
+	) {
+		throw new Error("product recovery provenance is outside the company trail");
+	}
+	const worktreeRelative = relative(company, worktree).replace(/\\/g, "/");
+	const match = worktreeRelative.match(
+		/^departments\/([a-z0-9](?:[a-z0-9-]*[a-z0-9])?-development)\/worktrees\/([^/]+)$/,
+	);
+	if (!match) throw new Error("product recovery worktree is outside an assigned product department");
+	const departmentId = match[1];
+	const taskId = match[2];
+	const assignmentRelative = `.qorpera/product-worktrees/${departmentId}/${taskId}.json`;
+	const assignmentPath = join(company, assignmentRelative);
+	if (!physicalFile(assignmentPath)) throw new Error("product recovery assignment is not one physical file");
+	const assignment = JSON.parse(readFileSync(assignmentPath, "utf-8")) as Partial<ProductWorktreeAssignment>;
+	if (
+		assignment.version !== 3 ||
+		assignment.path?.replace(/\\/g, "/") !== worktreeRelative ||
+		assignment.departmentId !== departmentId ||
+		typeof assignment.branch !== "string" ||
+		!assignment.branch ||
+		typeof assignment.sourceRemote !== "string" ||
+		!Array.isArray(assignment.sourceHistory) ||
+		!validRecoveryChain(assignment.recoveryBundles, assignment.recoveryHead)
+	) {
+		throw new Error("product recovery assignment is invalid");
+	}
+	const branch = assignment.branch;
+	const headHash = gitText(worktree, ["rev-parse", "HEAD"]) ?? "";
+	if (!/^[a-f0-9]{40,64}$/i.test(headHash)) return;
+	const currentBranch = gitText(worktree, ["branch", "--show-current"]);
+	const branchHead = gitText(worktree, ["rev-parse", branch]);
+	if (currentBranch !== branch || branchHead !== headHash) {
+		throw new Error("product recovery checkpoint requires the exact assigned branch");
+	}
+	const existingChain = assignment.recoveryBundles;
+	const existingChainIsValid =
+		assignment.recoveryHead === headHash &&
+		existingChain.at(-1)?.head === headHash &&
+		existingChain.every((bundle) => {
+			const path = bundle.path.replace(/\\/g, "/");
+			const absolute = join(company, path);
+			return physicalFile(absolute) && bundleContainsHead(worktree, absolute, branch, bundle.head);
+		});
+	if (existingChainIsValid) {
+		const paths = [assignmentRelative, ...existingChain.map((bundle) => bundle.path.replace(/\\/g, "/"))];
+		if (paths.every((path) => pathMatchesHead(company, path))) return;
+		commitProductRecoveryMetadata(company, trail, paths);
+		return;
+	}
+	const previousHead = existingChain.at(-1)?.head;
+	if (previousHead && git(worktree, ["merge-base", "--is-ancestor", previousHead, headHash]).status !== 0) {
+		throw new Error("product recovery history diverged from its last portable checkpoint");
+	}
+	const bundleDirectory = join(company, ".qorpera", "w");
+	mkdirSync(bundleDirectory, { recursive: true });
+	const temporary = join(bundleDirectory, `${randomUUID()}.tmp`);
+	const bundled = git(worktree, [
+		"bundle",
+		"create",
+		temporary,
+		...(previousHead ? [`^${previousHead}`] : []),
+		branch,
+	]);
+	if (
+		bundled.status !== 0 ||
+		git(worktree, ["bundle", "verify", temporary]).status !== 0 ||
+		!bundleContainsHead(worktree, temporary, branch, headHash)
+	) {
+		rmSync(temporary, { force: true });
+		throw new Error(`product recovery bundle failed: ${bundled.stderr || bundled.stdout || "invalid bundle"}`);
+	}
+	const objectId = gitText(company, ["hash-object", "--no-filters", "--", temporary]);
+	if (!objectId) {
+		rmSync(temporary, { force: true });
+		throw new Error("product recovery bundle content identity failed");
+	}
+	const bundleRelative = `.qorpera/w/${objectId.slice(0, 32)}.bundle`;
+	const bundlePath = join(company, bundleRelative);
+	if (existsSync(bundlePath)) {
+		if (
+			!physicalFile(bundlePath) ||
+			gitText(company, ["hash-object", "--no-filters", "--", bundlePath]) !== objectId
+		) {
+			rmSync(temporary, { force: true });
+			throw new Error("product recovery bundle content address is occupied by different data");
+		}
+		rmSync(temporary, { force: true });
+	} else {
+		renameSync(temporary, bundlePath);
+	}
+	const bundleRecord: ProductRecoveryBundle = {
+		path: bundleRelative,
+		head: headHash,
+		...(previousHead ? { baseHead: previousHead } : {}),
+	};
+	const updated: ProductWorktreeAssignment = {
+		...(assignment as ProductWorktreeAssignment),
+		recoveryHead: headHash,
+		recoveryBundles: [...existingChain, bundleRecord],
+		recoveryUpdatedAt: new Date().toISOString(),
+	};
+	writeAtomicJson(assignmentPath, updated);
+	const paths = [assignmentRelative, bundleRelative];
+	commitProductRecoveryMetadata(company, trail, paths);
+}
+
 export function checkpointProductWorktreeGit(
+	companyRoot: string,
 	root: string,
 	baseline: CompanyGitBaseline,
 	companyTrailFile: string,
 ): CompanyCheckpointResult {
-	return checkpointGit(root, baseline, {
+	const result = checkpointGit(root, baseline, {
 		name: "Qorpera Product Worker",
 		email: "product-worker@qorpera.local",
 		title: "fix: checkpoint product-worker session",
 		trigger: companyTrailFile,
 		rationale: "preserve uncommitted product work with its company trail provenance",
 	});
+	if (!result.success) return result;
+	try {
+		persistProductWorktreeRecovery(companyRoot, root, companyTrailFile);
+		return result;
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error));
+		return { baseline: result.baseline, success: false };
+	}
 }
 
 export function savePendingCompanyCheckpoint(
@@ -354,10 +593,9 @@ export function reconcilePendingCompanyCheckpoints(dir: string, root: string): v
 /** Reconcile a failed product-worker checkpoint before that assigned clone is
  * granted write access again. The record retains the exact company trail path
  * that caused the worktree changes. */
-export function reconcilePendingProductCheckpoints(dir: string, companyRoot: string, worktreeRoot: string): void {
+export function reconcilePendingProductCheckpoints(dir: string, companyRoot: string): void {
 	if (!existsSync(dir)) return;
 	const canonicalCompany = resolve(companyRoot);
-	const canonicalWorktree = resolve(worktreeRoot);
 	for (const name of readdirSync(dir)) {
 		if (!name.endsWith(".product.json")) continue;
 		const path = join(dir, name);
@@ -390,8 +628,16 @@ export function reconcilePendingProductCheckpoints(dir: string, companyRoot: str
 			) {
 				throw new Error("pending product checkpoint provenance is outside the company trail");
 			}
-			if (resolve(record.worktreeRoot) !== canonicalWorktree) continue;
+			const canonicalWorktree = resolve(record.worktreeRoot);
+			const worktreeRelative = relative(canonicalCompany, canonicalWorktree);
+			if (!worktreeRelative || worktreeRelative.startsWith("..") || isAbsolute(worktreeRelative)) {
+				throw new Error("pending product checkpoint worktree is outside the company");
+			}
+			if (!existsSync(canonicalWorktree)) {
+				throw new Error("pending product checkpoint worktree is missing");
+			}
 			const result = checkpointProductWorktreeGit(
+				canonicalCompany,
 				canonicalWorktree,
 				{ dirtyPaths: new Map(record.dirtyPaths.map((entry) => [entry.path, entry.hash])) },
 				record.companyTrailFile,

@@ -470,7 +470,7 @@ function appendKernelGateObservation(
 		requestId?: string;
 		file: string;
 		hash: string;
-		transition: "created" | "consumed" | "orphan-reset" | "trusted-use";
+		transition: "created" | "creation-aborted" | "consumed" | "orphan-reset" | "trusted-use";
 		phase: "started" | "completed";
 	},
 ): void {
@@ -484,6 +484,96 @@ function appendKernelGateObservation(
 	});
 	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
 	commitTrailAppend(binding, append);
+}
+
+function trailHasGateTransition(
+	root: string,
+	trailFile: string,
+	file: string,
+	hash: string,
+	transition: "created" | "creation-aborted",
+	phase: "started" | "completed",
+): boolean {
+	const path = assertPhysicalCompanyTree(root, join("trail", trailFile));
+	loadTrailAudit(path);
+	for (const line of readFileSync(path, "utf-8").split(/\r?\n/).slice(1)) {
+		if (!line) continue;
+		const entry = JSON.parse(line) as SessionEntry;
+		if (entry.type !== "custom" || entry.customType !== "qorpera_kernel_gate_transition") continue;
+		const data = entry.data as Record<string, unknown> | undefined;
+		if (data?.file === file && data.hash === hash && data.transition === transition && data.phase === phase)
+			return true;
+	}
+	return false;
+}
+
+export function reconcileKernelGateCreations(
+	binding: TrailBinding,
+	root: string,
+	pending: Array<{
+		file: string;
+		hash: string;
+		trailFile: string;
+		phase: "planned" | "started" | "finalizing-created" | "finalizing-aborted";
+	}>,
+	advance: (
+		file: string,
+		hash: string,
+		trailFile: string,
+		phase: "planned" | "started" | "finalizing-created" | "finalizing-aborted",
+	) => void,
+	complete: (file: string, hash: string) => void,
+): void {
+	for (const creation of pending) {
+		let phase = creation.phase;
+		let trailFile = creation.trailFile;
+		if (phase === "planned") {
+			if (trailHasGateTransition(root, trailFile, creation.file, creation.hash, "created", "started")) {
+				phase = "started";
+				advance(creation.file, creation.hash, trailFile, phase);
+			} else {
+				trailFile = binding.file;
+				advance(creation.file, creation.hash, trailFile, "planned");
+				appendKernelGateObservation(binding, {
+					file: creation.file,
+					hash: creation.hash,
+					transition: "created",
+					phase: "started",
+				});
+				phase = "started";
+				advance(creation.file, creation.hash, trailFile, phase);
+			}
+		}
+		if (phase === "started") {
+			const path = join(root, "inbox", creation.file);
+			let transition: "created" | "creation-aborted" = "creation-aborted";
+			if (existsSync(path)) {
+				assertPhysicalCompanyTree(root, join("inbox", creation.file));
+				const record = parseGateDocument(creation.file, readFileSync(path, "utf-8"));
+				if (!record || record.hash !== creation.hash) {
+					throw new Error(`Pending kernel gate creation is not canonical: ${creation.file}`);
+				}
+				transition = "created";
+			}
+			phase = transition === "created" ? "finalizing-created" : "finalizing-aborted";
+			trailFile = binding.file;
+			advance(creation.file, creation.hash, trailFile, phase);
+		}
+		const transition = phase === "finalizing-created" ? "created" : "creation-aborted";
+		if (!trailHasGateTransition(root, trailFile, creation.file, creation.hash, transition, "completed")) {
+			if (trailFile !== binding.file) {
+				trailFile = binding.file;
+				advance(creation.file, creation.hash, trailFile, phase);
+			}
+			appendKernelGateObservation(binding, {
+				file: creation.file,
+				hash: creation.hash,
+				transition,
+				phase: "completed",
+			});
+		}
+		complete(creation.file, creation.hash);
+	}
 }
 
 const GATE_EFFECT_CLASSES = new Set(["money", "identity", "irreversible", "authority", "product_code"]);
@@ -654,6 +744,16 @@ export function applyKernelWriteFrame(
 		has: (file: string, hash: string) => boolean;
 		remember: (file: string, hash: string) => void;
 	},
+	gateCreation?: {
+		begin: (file: string, hash: string, trailFile: string) => void;
+		advance: (
+			file: string,
+			hash: string,
+			trailFile: string,
+			phase: "planned" | "started" | "finalizing-created" | "finalizing-aborted",
+		) => void;
+		complete: (file: string, hash: string) => void;
+	},
 ): boolean {
 	if (!value || typeof value !== "object") return false;
 	const frame = value as Partial<KernelWriteFrame>;
@@ -664,13 +764,29 @@ export function applyKernelWriteFrame(
 		if (!frame.gate) return true;
 		const content = canonicalGateContent(root, binding, frame.gate);
 		if (!content) return true;
+		const path = join(inbox, frame.gate.file);
+		if (existsSync(path)) return true;
+		gateCreation?.begin(frame.gate.file, frame.gate.hash, binding.file);
+		appendKernelGateObservation(binding, {
+			file: frame.gate.file,
+			hash: frame.gate.hash,
+			transition: "created",
+			phase: "started",
+		});
+		gateCreation?.advance(frame.gate.file, frame.gate.hash, binding.file, "started");
 		let created = false;
 		try {
-			writeFileSync(join(inbox, frame.gate.file), content, { encoding: "utf-8", flag: "wx" });
+			writeFileSync(path, content, { encoding: "utf-8", flag: "wx" });
 			created = true;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 		}
+		gateCreation?.advance(
+			frame.gate.file,
+			frame.gate.hash,
+			binding.file,
+			created ? "finalizing-created" : "finalizing-aborted",
+		);
 		if (created) {
 			appendKernelGateObservation(binding, {
 				file: frame.gate.file,
@@ -678,7 +794,15 @@ export function applyKernelWriteFrame(
 				transition: "created",
 				phase: "completed",
 			});
+		} else {
+			appendKernelGateObservation(binding, {
+				file: frame.gate.file,
+				hash: frame.gate.hash,
+				transition: "creation-aborted",
+				phase: "completed",
+			});
 		}
+		gateCreation?.complete(frame.gate.file, frame.gate.hash);
 		return true;
 	}
 	if (frame.operation === "create_message") {

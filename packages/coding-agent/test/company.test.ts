@@ -33,8 +33,10 @@ import {
 	listProductDepartments,
 	materializeClonedProductStorage,
 	planProductWorktree,
+	planProductWorktreeRecovery,
 	readProductProtectionInventory,
 	readProductWorktreeAssignment,
+	recoverProductWorktree,
 	releaseCompanyRuntimeLock,
 	scaffoldCompany,
 	scaffoldProductDepartment,
@@ -313,6 +315,18 @@ describe("product-development departments", () => {
 		}
 	});
 
+	it.runIf(process.platform === "win32")("establishes lock identity without PowerShell module state", () => {
+		scaffoldCompany(root);
+		const previous = process.env.PSModulePath;
+		delete process.env.PSModulePath;
+		try {
+			const lock = claimCompanyRuntimeLock(root);
+			releaseCompanyRuntimeLock(lock);
+		} finally {
+			if (previous !== undefined) process.env.PSModulePath = previous;
+		}
+	});
+
 	it("distinguishes a live lock owner from a reused process ID", () => {
 		scaffoldCompany(root);
 		const lockPath = companyRuntimeLockPath(root);
@@ -449,6 +463,53 @@ describe("product-development departments", () => {
 		expect(transaction.sourceHistory).toEqual([expect.objectContaining({ source })]);
 	});
 
+	it("rejects credential and query data in derived remotes across URL schemes", () => {
+		for (const [index, origin] of [
+			"https://user:secret@example.invalid/widget.git",
+			"ssh://git:secret@example.invalid/widget.git",
+			"git://example.invalid/widget.git?token=secret",
+		].entries()) {
+			const company = join(root, `company-${index}`);
+			const source = join(root, `source-${index}`);
+			mkdirSync(source, { recursive: true });
+			writeFileSync(join(source, "README.md"), "source\n", "utf-8");
+			for (const args of [
+				["init"],
+				["add", "README.md"],
+				["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+				["remote", "add", "origin", origin],
+			]) {
+				expect(spawnSync("git", args, { cwd: source, stdio: "ignore" }).status).toBe(0);
+			}
+			scaffoldCompany(company);
+			expect(() => integrateRepo(company, source, "Widget")).toThrow("cannot be persisted");
+			expect(existsSync(join(company, "departments", "widget-development"))).toBe(false);
+			expect(spawnSync("git", ["grep", "-F", origin], { cwd: company, stdio: "ignore" }).status).toBe(1);
+		}
+	});
+
+	it("preserves a legitimate SSH username without persisting a password", () => {
+		const company = join(root, "company");
+		const source = join(root, "source");
+		mkdirSync(source, { recursive: true });
+		writeFileSync(join(source, "README.md"), "source\n", "utf-8");
+		for (const args of [
+			["init"],
+			["add", "README.md"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+			["remote", "add", "origin", "ssh://git@example.invalid/widget.git"],
+		]) {
+			expect(spawnSync("git", args, { cwd: source, stdio: "ignore" }).status).toBe(0);
+		}
+		scaffoldCompany(company);
+		expect(integrateRepo(company, source, "Widget")).toBe(true);
+		expect(
+			JSON.parse(
+				readFileSync(join(company, ".qorpera", "product-integrations", "widget-development.json"), "utf-8"),
+			),
+		).toMatchObject({ portableSource: "ssh://git@example.invalid/widget.git" });
+	});
+
 	it("quarantines and retries an interrupted staging clone", () => {
 		const company = join(root, "company");
 		const source = join(root, "source");
@@ -466,19 +527,123 @@ describe("product-development departments", () => {
 		const transactionPath = join(company, ".qorpera", "product-integrations", "widget-development.json");
 		const transaction = JSON.parse(readFileSync(transactionPath, "utf-8")) as Record<string, unknown>;
 		transaction.status = "pending";
-		transaction.staging = ".qorpera/.p/aaaaaaaaaaaa";
+		transaction.staging = "aaaaaaaaaaaa";
+		delete transaction.sourceHead;
 		writeFileSync(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`, "utf-8");
 		rmSync(join(company, "departments", "widget-development", "repository"), { recursive: true });
 		mkdirSync(join(company, "departments", "widget-development", "repository"));
-		mkdirSync(join(company, ".qorpera", ".p", "aaaaaaaaaaaa"), { recursive: true });
-		writeFileSync(join(company, ".qorpera", ".p", "aaaaaaaaaaaa", "partial"), "incomplete", "utf-8");
+		const attempts = join(company, ".git", "qorpera-product-integrations", "widget-development", "attempts");
+		mkdirSync(join(attempts, "aaaaaaaaaaaa"), { recursive: true });
+		writeFileSync(join(attempts, "aaaaaaaaaaaa", "partial"), "incomplete", "utf-8");
 
 		expect(integrateRepo(company, source, "Widget")).toBe(true);
 		const recovered = JSON.parse(readFileSync(transactionPath, "utf-8")) as {
 			recoveries: Array<{ quarantined: string }>;
 		};
 		expect(recovered.recoveries).toHaveLength(1);
-		expect(existsSync(join(company, recovered.recoveries[0].quarantined))).toBe(true);
+		expect(
+			existsSync(
+				join(
+					company,
+					".git",
+					"qorpera-product-integrations",
+					"widget-development",
+					"quarantine",
+					recovered.recoveries[0].quarantined,
+				),
+			),
+		).toBe(true);
+		expect(spawnSync("git", ["ls-files", ".qorpera/.p"], { cwd: company, encoding: "utf-8" }).stdout).toBe("");
+	});
+
+	it("reconciles a quarantine move journaled before a crash", () => {
+		const company = join(root, "company");
+		const source = join(root, "source");
+		mkdirSync(source, { recursive: true });
+		writeFileSync(join(source, "README.md"), "source\n", "utf-8");
+		for (const args of [
+			["init"],
+			["add", "README.md"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", args, { cwd: source, stdio: "ignore" }).status).toBe(0);
+		}
+		scaffoldCompany(company);
+		expect(integrateRepo(company, source, "Widget")).toBe(true);
+		const transactionPath = join(company, ".qorpera", "product-integrations", "widget-development.json");
+		const transaction = JSON.parse(readFileSync(transactionPath, "utf-8")) as Record<string, unknown>;
+		transaction.status = "pending";
+		transaction.staging = "bbbbbbbbbbbb";
+		delete transaction.sourceHead;
+		transaction.recoveries = [
+			{
+				staging: "aaaaaaaaaaaa",
+				quarantined: "aaaaaaaaaaaa.failed-cccccccccccc",
+				startedAt: new Date().toISOString(),
+				reason: "simulated crash before rename",
+			},
+		];
+		writeFileSync(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`, "utf-8");
+		rmSync(join(company, "departments", "widget-development", "repository"), { recursive: true });
+		mkdirSync(join(company, "departments", "widget-development", "repository"));
+		const storage = join(company, ".git", "qorpera-product-integrations", "widget-development");
+		mkdirSync(join(storage, "attempts", "aaaaaaaaaaaa"), { recursive: true });
+		writeFileSync(join(storage, "attempts", "aaaaaaaaaaaa", "partial"), "preserve", "utf-8");
+
+		expect(integrateRepo(company, source, "Widget")).toBe(true);
+		const reconciled = JSON.parse(readFileSync(transactionPath, "utf-8")) as {
+			recoveries: Array<{ completedAt?: string; quarantined: string }>;
+		};
+		expect(reconciled.recoveries[0].completedAt).toEqual(expect.any(String));
+		expect(existsSync(join(storage, "quarantine", reconciled.recoveries[0].quarantined, "partial"))).toBe(true);
+	});
+
+	it("reconciles a portable quarantine journal when machine-local clone bytes are unavailable", () => {
+		const company = join(root, "company");
+		const clone = join(root, "company-clone");
+		const source = join(root, "source");
+		mkdirSync(source, { recursive: true });
+		writeFileSync(join(source, "README.md"), "source\n", "utf-8");
+		for (const args of [
+			["init"],
+			["add", "README.md"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", args, { cwd: source, stdio: "ignore" }).status).toBe(0);
+		}
+		scaffoldCompany(company);
+		expect(integrateRepo(company, source, "Widget")).toBe(true);
+		const transactionRelative = ".qorpera/product-integrations/widget-development.json";
+		const transactionPath = join(company, transactionRelative);
+		const transaction = JSON.parse(readFileSync(transactionPath, "utf-8")) as Record<string, unknown>;
+		transaction.status = "pending";
+		transaction.staging = "bbbbbbbbbbbb";
+		delete transaction.sourceHead;
+		transaction.recoveries = [
+			{
+				staging: "aaaaaaaaaaaa",
+				quarantined: "aaaaaaaaaaaa.failed-cccccccccccc",
+				startedAt: new Date().toISOString(),
+				reason: "portable crash journal",
+			},
+		];
+		writeFileSync(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`, "utf-8");
+		for (const args of [
+			["add", transactionRelative],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "journal"],
+		]) {
+			expect(spawnSync("git", args, { cwd: company, stdio: "ignore" }).status).toBe(0);
+		}
+		expect(spawnSync("git", ["clone", company, clone], { stdio: "ignore" }).status).toBe(0);
+		materializeClonedProductStorage(clone);
+		expect(integrateRepo(clone, source, "Widget")).toBe(true);
+		const recovered = JSON.parse(readFileSync(join(clone, transactionRelative), "utf-8")) as {
+			recoveries: Array<{ completedAt?: string; outcome?: string }>;
+		};
+		expect(recovered.recoveries[0]).toMatchObject({
+			completedAt: expect.any(String),
+			outcome: "source-storage-unavailable",
+		});
 	});
 
 	it("uses the same runtime lock identity through filesystem aliases", () => {
@@ -640,6 +805,104 @@ describe("product-development departments", () => {
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 		expect(readdirSync(join(root, department.worktreesPath))).toEqual([".gitkeep"]);
+	});
+
+	it("restores active product commits from the company-carried recovery bundle", () => {
+		const company = join(root, "company");
+		const source = join(root, "source");
+		mkdirSync(source, { recursive: true });
+		writeFileSync(join(source, "product.ts"), "export const value = 1;\n", "utf-8");
+		for (const args of [
+			["init"],
+			["add", "product.ts"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", args, { cwd: source, stdio: "ignore" }).status).toBe(0);
+		}
+		scaffoldCompany(company);
+		expect(integrateRepo(company, source, "Widget")).toBe(true);
+		const department = listProductDepartments(company)[0];
+		let worktree: NonNullable<ReturnType<typeof createProductWorktree>>;
+		let runtimeLock = claimCompanyRuntimeLock(company);
+		try {
+			const plan = planProductWorktree(company, department, runtimeLock)!;
+			worktree = createProductWorktree(company, department, runtimeLock, plan)!;
+		} finally {
+			releaseCompanyRuntimeLock(runtimeLock);
+		}
+		const worktreeRoot = join(company, worktree.path);
+		writeFileSync(join(worktreeRoot, "product.ts"), "export const value = 2;\n", "utf-8");
+		for (const args of [
+			["add", "product.ts"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "worker change"],
+		]) {
+			expect(spawnSync("git", args, { cwd: worktreeRoot, stdio: "ignore" }).status).toBe(0);
+		}
+		const firstRecoveryHead = spawnSync("git", ["rev-parse", "HEAD"], {
+			cwd: worktreeRoot,
+			encoding: "utf-8",
+		}).stdout.trim();
+		const taskId = worktree.path.replace(/\\/g, "/").split("/").at(-1)!;
+		mkdirSync(join(company, ".qorpera", "w"), { recursive: true });
+		const storeBundle = (name: string, revisions: string[]): string => {
+			const temporaryBundle = join(company, ".qorpera", "w", `${name}.tmp`);
+			expect(
+				spawnSync("git", ["bundle", "create", temporaryBundle, ...revisions], {
+					cwd: worktreeRoot,
+					stdio: "ignore",
+				}).status,
+			).toBe(0);
+			const bundleId = spawnSync("git", ["hash-object", "--no-filters", temporaryBundle], {
+				cwd: company,
+				encoding: "utf-8",
+			})
+				.stdout.trim()
+				.slice(0, 32);
+			const path = `.qorpera/w/${bundleId}.bundle`;
+			renameSync(temporaryBundle, join(company, path));
+			return path;
+		};
+		const fullBundle = storeBundle("full", [worktree.branch]);
+		writeFileSync(join(worktreeRoot, "product.ts"), "export const value = 3;\n", "utf-8");
+		for (const args of [
+			["add", "product.ts"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "second worker change"],
+		]) {
+			expect(spawnSync("git", args, { cwd: worktreeRoot, stdio: "ignore" }).status).toBe(0);
+		}
+		const recoveryHead = spawnSync("git", ["rev-parse", "HEAD"], {
+			cwd: worktreeRoot,
+			encoding: "utf-8",
+		}).stdout.trim();
+		const incrementalBundle = storeBundle("incremental", [`^${firstRecoveryHead}`, worktree.branch]);
+		const assignmentRelative = `.qorpera/product-worktrees/${department.id}/${taskId}.json`;
+		const assignmentPath = join(company, assignmentRelative);
+		const assignment = JSON.parse(readFileSync(assignmentPath, "utf-8")) as Record<string, unknown>;
+		assignment.recoveryHead = recoveryHead;
+		assignment.recoveryBundles = [
+			{ path: fullBundle, head: firstRecoveryHead },
+			{ path: incrementalBundle, head: recoveryHead, baseHead: firstRecoveryHead },
+		];
+		assignment.recoveryUpdatedAt = new Date().toISOString();
+		writeFileSync(assignmentPath, `${JSON.stringify(assignment, null, "\t")}\n`, "utf-8");
+		for (const args of [
+			["add", assignmentRelative, fullBundle, incrementalBundle],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "recovery"],
+		]) {
+			expect(spawnSync("git", args, { cwd: company, stdio: "ignore" }).status).toBe(0);
+		}
+		rmSync(worktreeRoot, { recursive: true });
+
+		runtimeLock = claimCompanyRuntimeLock(company);
+		try {
+			const recovery = planProductWorktreeRecovery(company, department, worktree.path, runtimeLock)!;
+			expect(recovery.recoveryHead).toBe(recoveryHead);
+			expect(recoverProductWorktree(company, department, runtimeLock, recovery)?.recoveryHead).toBe(recoveryHead);
+		} finally {
+			releaseCompanyRuntimeLock(runtimeLock);
+		}
+		expect(readFileSync(join(worktreeRoot, "product.ts"), "utf-8")).toBe("export const value = 3;\n");
+		expect(readProductWorktreeAssignment(company, department, worktree.path)?.recoveryHead).toBe(recoveryHead);
 	});
 
 	it("does not partially convert an existing agent-authored department", () => {

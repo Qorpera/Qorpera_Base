@@ -48,10 +48,12 @@ import {
 	type ProductDepartment,
 	type ProductWorktree,
 	planProductWorktree,
+	planProductWorktreeRecovery,
 	productDepartmentId,
 	readProductProtectionInventory,
 	readProductStorageExpectations,
 	readProductWorktreeAssignment,
+	recoverProductWorktree,
 	registerCompany,
 	releaseCompanyRuntimeLock,
 	scaffoldCompany,
@@ -85,6 +87,7 @@ import {
 	parseTrailAppendFrame,
 	protectedControllerPaths,
 	provisionWindowsSandbox,
+	reconcileKernelGateCreations,
 	sandboxCommandArgs,
 	sandboxConfigDir,
 	sandboxRuntimeDir,
@@ -104,8 +107,12 @@ import {
 	snapshotFounderGitState,
 } from "./company-checkpoint.ts";
 import {
+	advanceCompanyGateCreation,
+	beginCompanyGateCreation,
+	completeCompanyGateCreation,
 	hasCompanyGateTrust,
 	hasCompanyKernelState,
+	listPendingCompanyGateCreations,
 	reconcileCompanyProductStorage,
 	rememberCompanyGateTrust,
 	revokeCompanyGateTrust,
@@ -561,16 +568,23 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		department: department?.path,
 		worktree,
 	} as const;
-	const binding = bindTrailSession(root, cwd, scope, sessionFile);
 	const userData = app.getPath("userData");
+	const binding = bindTrailSession(root, cwd, scope, sessionFile);
+	reconcileKernelGateCreations(
+		binding,
+		root,
+		listPendingCompanyGateCreations(userData, root),
+		(file, hash, trailFile, phase) => advanceCompanyGateCreation(userData, root, file, hash, trailFile, phase),
+		(file, hash) => completeCompanyGateCreation(userData, root, file, hash),
+	);
 	const configDir = sandboxConfigDir(userData, root, actor);
 	const runtimeDir = sandboxRuntimeDir(userData, root, actor, binding.token);
 	if (!modelRequestBroker) throw new Error("kernel model-request broker is unavailable");
-	snapshotFounderGitState(root);
-	let gitBaseline = captureCompanyGitBaseline(root);
 	const productWorktreeRoot = worktree ? realpathSync(cwd) : undefined;
 	const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "controller")), "checkpoints");
-	if (productWorktreeRoot) reconcilePendingProductCheckpoints(checkpointDir, root, productWorktreeRoot);
+	reconcilePendingProductCheckpoints(checkpointDir, root);
+	snapshotFounderGitState(root);
+	let gitBaseline = captureCompanyGitBaseline(root);
 	if (productWorktreeRoot) snapshotFounderGitState(productWorktreeRoot, "product-worker");
 	let productGitBaseline = productWorktreeRoot ? captureCompanyGitBaseline(productWorktreeRoot) : undefined;
 	const checkpointState = join(checkpointDir, `${binding.token}.json`);
@@ -703,6 +717,12 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 						has: (file, hash) => hasCompanyGateTrust(userData, root, file, hash),
 						remember: (file, hash) => rememberCompanyGateTrust(userData, root, file, hash),
 					},
+					{
+						begin: (file, hash, trailFile) => beginCompanyGateCreation(userData, root, file, hash, trailFile),
+						advance: (file, hash, trailFile, phase) =>
+							advanceCompanyGateCreation(userData, root, file, hash, trailFile, phase),
+						complete: (file, hash) => completeCompanyGateCreation(userData, root, file, hash),
+					},
 				)
 			)
 				return;
@@ -721,6 +741,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				savePendingCompanyCheckpoint(checkpointState, root, gitBaseline, binding.file);
 				if (productWorktreeRoot && productGitBaseline) {
 					const productResult = checkpointProductWorktreeGit(
+						root,
 						productWorktreeRoot,
 						productGitBaseline,
 						binding.path,
@@ -754,7 +775,12 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			finishPendingCompanyCheckpoint(checkpointState, result);
 			if (!result.success) savePendingCompanyCheckpoint(checkpointState, root, result.baseline, binding.file);
 			if (productWorktreeRoot && productGitBaseline) {
-				const productResult = checkpointProductWorktreeGit(productWorktreeRoot, productGitBaseline, binding.path);
+				const productResult = checkpointProductWorktreeGit(
+					root,
+					productWorktreeRoot,
+					productGitBaseline,
+					binding.path,
+				);
 				finishPendingCompanyCheckpoint(productCheckpointState, productResult);
 				if (!productResult.success) {
 					savePendingProductCheckpoint(
@@ -1023,6 +1049,8 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		validateCompanyKernelStorage(root);
 		assertUserlandStorage(join(root, "userland"));
 		const userData = app.getPath("userData");
+		const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "controller")), "checkpoints");
+		reconcilePendingProductCheckpoints(checkpointDir, root);
 		const hasLocalKernelState = hasCompanyKernelState(userData, root);
 		if (!hasLocalKernelState) materializeClonedProductStorage(root);
 		readProductProtectionInventory(root);
@@ -1040,7 +1068,6 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 				detail: productStorage.unhydrated.map((entry) => `${entry.kind}: ${entry.path}`).join("\n"),
 			});
 		}
-		const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "controller")), "checkpoints");
 		reconcilePendingCompanyCheckpoints(checkpointDir, root);
 		snapshotFounderGitState(root);
 		enforceCompanyKernelSettings(root);
@@ -1069,7 +1096,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		if (childBinding && productStorage.unhydrated.length > 0) {
 			appendKernelProductStorageObservation(childBinding, {
 				status: "hydration-required",
-				paths: productStorage.unhydrated,
+				paths: productStorage.unhydrated.map(({ path, kind }) => ({ path, kind })),
 			});
 		}
 		const runtime: CompanyRuntime = {
@@ -1147,8 +1174,36 @@ async function openChat(
 		let assignment: ProductWorktree;
 		if (worktreePath) {
 			const existingAssignment = readProductWorktreeAssignment(runtime.root, department, worktreePath);
-			if (!existingAssignment) return { ok: false, error: "product worktree has no valid kernel assignment" };
-			assignment = existingAssignment;
+			if (existingAssignment) {
+				assignment = existingAssignment;
+			} else {
+				const recovery = planProductWorktreeRecovery(runtime.root, department, worktreePath, runtime.runtimeLock);
+				if (!recovery) return { ok: false, error: "product worktree has no valid recovery source" };
+				const approved = await confirmKernelReview(slot.window, {
+					title: "Restore product worktree",
+					summary: `Restore this assigned ${department.name} clone from its company-carried recovery record?`,
+					exactText: resolve(runtime.root, recovery.path),
+					metadata: [
+						`Department: ${department.path}`,
+						`Source repository: ${resolve(runtime.root, recovery.repositoryPath)}`,
+						`Current clone origin: ${recovery.repositoryRemote}`,
+						`Original source commit: ${recovery.sourceHead ?? "unborn repository"}`,
+						`Recovery commit: ${recovery.recoveryHead ?? "unborn repository"}`,
+						`Recovery bundles: ${recovery.recoveryBundles.length ? recovery.recoveryBundles.map((bundle) => bundle.path).join(", ") : "not required"}`,
+						`Branch: ${recovery.assignment.branch}`,
+					].join("\n"),
+				});
+				if (!approved) return { ok: false, error: "product worktree recovery cancelled" };
+				const restored = recoverProductWorktree(runtime.root, department, runtime.runtimeLock, recovery);
+				if (!restored) return { ok: false, error: "product worktree recovery failed" };
+				reconcileCompanyProductStorage(
+					app.getPath("userData"),
+					runtime.root,
+					readProductStorageExpectations(runtime.root),
+					false,
+				);
+				assignment = restored;
+			}
 		} else {
 			const plan = planProductWorktree(runtime.root, department, runtime.runtimeLock);
 			if (!plan) return { ok: false, error: "could not plan product worktree" };
