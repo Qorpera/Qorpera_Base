@@ -34,6 +34,7 @@ import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
 import { canonicalCompanyRoot, listProductDepartments } from "./company.ts";
+import { readFounderIdentity, signAuthorityPolicy, signGateApproval } from "./founder-identity.ts";
 import {
 	PLATFORM_PROJECTION_NODES,
 	PROJECTION_SCHEMA,
@@ -176,6 +177,20 @@ function readPhysicalFileWithin(
 		return undefined;
 	} finally {
 		if (descriptor !== undefined) closeSync(descriptor);
+	}
+}
+
+/**
+ * Founder policy writes arrive through this token-gated, natively-reviewed
+ * server — that IS the founder acting, so a machine with a signing identity
+ * re-ratifies the policy it just wrote (manifesto §3.1). Without one,
+ * legacy semantics apply and nothing is signed.
+ */
+function ratifyPolicyIfFounder(root: string): void {
+	try {
+		if (readFounderIdentity()?.privateKeyPem) signAuthorityPolicy(root);
+	} catch (error) {
+		console.error(`policy ratification failed: ${(error as Error).message}`);
 	}
 }
 
@@ -805,7 +820,18 @@ function resolveGate(root: string, file: string, action: string): boolean {
 		const durableRevocation =
 			status === "consumed" && action === "denied" && (tool === "behavior_signature" || tool === "extension_load");
 		if (!pendingTransition && !durableRevocation) return false;
-		writeAtomicPhysicalFile(source.path, content.replace(/^status:.*$/m, `status: ${action}`));
+		let updated = content.replace(/^status:.*$/m, `status: ${action}`).replace(/^approval:.*\r?\n?/m, "");
+		// Signed approvals (manifesto §3.2): with a founder identity, the
+		// approval carries the founder's signature over (id, hash) — without
+		// it, an approved status line is data the authority layer ignores.
+		if (action === "approved" && readFounderIdentity()?.privateKeyPem) {
+			const id = updated.match(/^id:\s*(\S+)/m)?.[1];
+			const hash = updated.match(/^hash:\s*([a-f0-9]{64})/m)?.[1];
+			if (id && hash) {
+				updated = updated.replace(/^hash:.*$/m, (line) => `${line}\napproval: ${signGateApproval(id, hash)}`);
+			}
+		}
+		writeAtomicPhysicalFile(source.path, updated);
 		return true;
 	} catch {
 		return false;
@@ -1141,6 +1167,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 					}
 					existing.authority = { ...((existing.authority as Record<string, unknown>) ?? {}), mode: "gate" };
 					writeAtomicPhysicalFile(source.path, `${stringifyToml(existing)}\n`);
+					ratifyPolicyIfFounder(root);
 					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
 				} catch (error) {
 					response
@@ -1182,6 +1209,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 					const source = readCompanyFile(root, "authority.toml");
 					if (!source) throw new Error("authority policy is not a physical file");
 					writeAtomicPhysicalFile(source.path, content);
+					ratifyPolicyIfFounder(root);
 					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
 				} catch (error) {
 					response

@@ -28,6 +28,14 @@
 			"types": "./dist/core/company.d.ts",
 			"import": "./dist/core/company.js"
 		},
+		"./company-connections": {
+			"types": "./dist/core/company-connections.d.ts",
+			"import": "./dist/core/company-connections.js"
+		},
+		"./founder-identity": {
+			"types": "./dist/core/founder-identity.d.ts",
+			"import": "./dist/core/founder-identity.js"
+		},
 		"./app-server": {
 			"types": "./dist/core/app-server.d.ts",
 			"import": "./dist/core/app-server.js"

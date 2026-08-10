@@ -467,6 +467,8 @@ describe("kernel-bound agent runtime", () => {
 		expect(config).toContain(`${JSON.stringify(join(company, repository))} = "read"`);
 		expect(config).toContain(`${JSON.stringify(join(company, "inbox"))} = "read"`);
 		expect(config).toContain(`${JSON.stringify(join(company, ".qorpera"))} = "read"`);
+		// The one sanctioned agent-writable inbox lane (msg-*.md items).
+		expect(config).toContain(`${JSON.stringify(join(company, "inbox", "messages"))} = "write"`);
 
 		writeSandboxProfile(
 			configDir,
@@ -485,6 +487,8 @@ describe("kernel-bound agent runtime", () => {
 		expect(config).toContain(`${JSON.stringify(company)} = "read"`);
 		expect(config).toContain(`${JSON.stringify(join(company, worktree))} = "write"`);
 		expect(config).toContain(`${JSON.stringify(join(company, worktree, ".git"))} = "read"`);
+		// Product-workers do not get the controller's inbox lane.
+		expect(config).not.toContain(`${JSON.stringify(join(company, "inbox", "messages"))} = "write"`);
 		expect(sandboxCommandArgs("codex.js", runtimeDir, "node", ["rpc.js", "--mode", "rpc"])).toEqual(
 			expect.arrayContaining(["-C", runtimeDir, "--", "node", "rpc.js", "--mode", "rpc"]),
 		);

@@ -22,6 +22,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	closeSync,
+	cpSync,
 	existsSync,
 	fsyncSync,
 	lstatSync,
@@ -35,10 +36,29 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
 import { getAgentDir } from "../config.ts";
+import {
+	bindCompanySecret,
+	bindNetworkDestination,
+	bindWakeSchedule,
+	type CompanySecret,
+	companyConnectionsPath,
+	disableWakeSchedule,
+	type OAuth2Secret,
+	readCompanyConnections,
+	readWakeSchedule,
+	removeCompanySecret,
+	removeNetworkDestination,
+} from "./company-connections.ts";
+import {
+	generateFounderIdentity,
+	readFounderIdentity,
+	signAuthorityPolicy,
+	signGateApproval,
+} from "./founder-identity.ts";
 import {
 	EMPTY_PROJECTION,
 	type ProjectionDocument,
@@ -84,10 +104,47 @@ fit the UI. Main is platform-owned and always present.
 When you wake: read \`company.md\`, look around — the app, the inbox, the
 state of the work — and decide for yourself what most needs doing. Routines
 in \`app/routines/\` are jobs you can run; the inbox may carry steering from
-the human; beyond that, use your judgment. Treat the app as something you
+the human; beyond that, use your judgment. The founder can bind a wake
+schedule (\`qorpera company wake set <minutes>\`): the kernel then wakes
+you on that cadence while the company is open, one wake at a time, with
+each wake's cause and any missed-interval coalescing recorded in your
+trail. A wake with nothing worth doing should settle without inventing
+work — repeated failed wakes suspend the schedule and notify the founder. Treat the app as something you
 keep in good repair, not something you endlessly rework: when reality and
 its surfaces diverge — new work worth showing, a surface gone stale, a
 capability missing — fix it, and otherwise leave it be.
+
+The outside world is reached through the \`http_request\` tool: HTTPS
+only, and only to destinations the founder has bound as network
+capabilities (\`qorpera company destination add <host>\`). Credentials are
+used by reference — put \`secret://<name>\` in a URL, header, or body and
+the kernel substitutes the real value outside your process; you never
+see raw secrets and must never ask the founder to paste them into chat
+(they bind them with \`qorpera company secret set <name>\`). How you store
+what comes back — files, databases, indexes — is entirely your design.
+
+You can also adopt existing tools: declare stdio MCP servers in
+\`connections/mcp.json\` and use them through \`use_mcp_tool\` (omit the
+tool name to list what a server offers). MCP servers run as sandboxed
+subprocesses — no network, no credentials — so they are for local
+capabilities; anything that needs the outside world goes through
+\`http_request\`.
+
+You can build your own capabilities as programs in the company folder
+(\`app/tools/\` by convention) and run them with the \`run_company_tool\`
+tool. That is the sanctioned lane for codified behavior: it runs the
+program in a clean environment with the company folder as working
+directory, and it records the program's content-hash identity in the
+trail — which is what lets the founder sign a program once for unattended
+outward action (editing the program is a new identity and a new
+signature). Running company programs through \`bash\` works but carries no
+code identity, so bash-run code can never act outward unattended. A
+program can make its own outbound requests: print a
+\`{"type":"qorpera_program_http_request","requestId":…,"method":…,"url":…}\`
+line on stdout and read the matching response line from stdin — each
+request is checked against your authority policy with the program as the
+acting behavior, so a signed program can reach its bound destinations
+with nobody present.
 
 Prefer derived understanding over asked understanding: read the data, the
 repositories, and the connected services first, and ask the founder to fill
@@ -129,7 +186,12 @@ tools you build exactly as it binds you, and it is enforced in the harness,
 not by this text. Blocked effects file gate requests in \`inbox/\`
 automatically; keep working elsewhere while you wait. Never edit
 \`authority.toml\`, this file, or anything in \`inbox/\` other than your own
-\`inbox/messages/msg-*.md\` items — the rest belongs to the human.
+\`inbox/messages/msg-*.md\` items — the rest belongs to the human. Where
+the founder has a cryptographic identity, policy is founder-RATIFIED:
+only \`authority.toml\` content the founder signed grants its configured
+modes, and any unratified edit makes everything gate until the founder
+re-ratifies. Editing policy can therefore never widen your authority —
+propose changes through the inbox instead.
 
 Product code lives only inside \`departments/<product>-development/\`.
 As the company controller you may study product repositories, worktrees,
@@ -192,7 +254,9 @@ mode = "gate"      # editing this file, the kernel files, or inbox/.
 const CONNECTIONS_README = `# Connections
 
 Declared capabilities: plugins, accounts, subscription lanes. References
-only — secrets live in the harness keychain, never in this folder.
+only — secret values live in the foundation's machine-local store outside
+this folder and are brokered by the kernel; they never appear here, in
+prompts, or in the trail.
 `;
 
 const INBOX_README = `# Inbox
@@ -1874,6 +1938,12 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	ensureDir(root, "departments", result);
 	writeIfMissing(root, PRODUCT_REGISTRY_PATH, `${JSON.stringify({ version: 1, products: [] }, null, "\t")}\n`, result);
 	ensureProjectSettings(root, result);
+	// A freshly scaffolded policy is founder-authored by construction: ratify
+	// it when this machine has a signing identity. Existing policy is NEVER
+	// auto-signed — ratification of edits is an explicit founder act.
+	if (result.created.includes("authority.toml") && readFounderIdentity()?.privateKeyPem) {
+		signAuthorityPolicy(root);
+	}
 
 	if (!existsSync(join(root, ".git"))) {
 		const git = spawnSync("git", ["init"], { cwd: root, stdio: "ignore", shell: false });
@@ -1932,6 +2002,457 @@ function cloneInto(source: string, destination: string): boolean {
 	if (!cloneSourceAllowed(source)) return false;
 	const clone = spawnSync("git", ["clone", "--no-hardlinks", source, destination], { stdio: "inherit", shell: false });
 	return clone.status === 0;
+}
+
+// ---- environment export / import (build plan §3; manifesto §10) ------------
+//
+// An export is the company folder as plain files — Git history, JSONL trail,
+// markdown — plus a manifest carrying the environment contract version, so it
+// is inspectable with no Qorpera installation and portable across Base
+// versions that share the contract. Secrets and standing authority never
+// appear in an export because they never live in the folder: credentials sit
+// in the machine auth store and durable gate trust in machine-local kernel
+// state keyed by the canonical root path, which is also why an imported
+// company starts with a fresh environment identity and no inherited trust.
+
+export const ENVIRONMENT_CONTRACT_VERSION = 1;
+export const EXPORT_MANIFEST_SCHEMA = "qorpera.export/v1";
+export const EXPORT_MANIFEST_FILE = "export-manifest.json";
+const EXPORT_COMPANY_DIR = "company";
+const RUNTIME_LOCK_DIR_SEGMENT = "qorpera-runtime-locks";
+
+export interface ExportManifest {
+	schema: typeof EXPORT_MANIFEST_SCHEMA;
+	contractVersion: number;
+	exportedAt: string;
+	companyName: string;
+	sourceHead: string | null;
+}
+
+export interface ExportResult {
+	target: string;
+	manifest: ExportManifest;
+}
+
+export interface ImportResult {
+	root: string;
+	manifest: ExportManifest;
+	head: string | null;
+}
+
+function gitHead(root: string): string | null {
+	const head = spawnSync("git", ["-C", root, "rev-parse", "--verify", "HEAD"], { encoding: "utf-8", shell: false });
+	return head.status === 0 ? head.stdout.trim() : null;
+}
+
+function assertEmptyDestination(target: string): void {
+	if (existsSync(target) && readdirSync(target).length > 0) {
+		throw new Error(`Destination ${target} exists and is not empty`);
+	}
+}
+
+function assertOutsideCompany(root: string, target: string): void {
+	const rootRelative = relative(root, target);
+	if (!rootRelative || (!rootRelative.startsWith("..") && !isAbsolute(rootRelative))) {
+		throw new Error("Export destination cannot be inside the company folder");
+	}
+}
+
+export function exportCompany(companyDir: string, targetDir: string): ExportResult {
+	const root = canonicalCompanyRoot(companyDir);
+	validateCompanyKernelStorage(root);
+	const target = resolve(targetDir);
+	assertOutsideCompany(root, target);
+	assertEmptyDestination(target);
+	// Exports are defined at checkpoint boundaries only: holding the runtime
+	// lock guarantees no live controller is mutating the environment mid-copy.
+	const lock = claimCompanyRuntimeLock(root);
+	try {
+		mkdirSync(target, { recursive: true });
+		cpSync(root, join(target, EXPORT_COMPANY_DIR), {
+			recursive: true,
+			filter: (source) => !normalizedPath(source).split(/[\\/]/).includes(RUNTIME_LOCK_DIR_SEGMENT),
+		});
+		const manifest: ExportManifest = {
+			schema: EXPORT_MANIFEST_SCHEMA,
+			contractVersion: ENVIRONMENT_CONTRACT_VERSION,
+			exportedAt: new Date().toISOString(),
+			companyName: basenameOf(root),
+			sourceHead: gitHead(root),
+		};
+		writeAtomicText(join(target, EXPORT_MANIFEST_FILE), `${JSON.stringify(manifest, null, "\t")}\n`);
+		return { target, manifest };
+	} finally {
+		releaseCompanyRuntimeLock(lock);
+	}
+}
+
+function parseExportManifest(exportDir: string): ExportManifest {
+	const manifestPath = join(exportDir, EXPORT_MANIFEST_FILE);
+	if (!existsSync(manifestPath)) {
+		throw new Error(`Not a company export: missing ${EXPORT_MANIFEST_FILE}`);
+	}
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as Partial<ExportManifest>;
+	if (manifest.schema !== EXPORT_MANIFEST_SCHEMA) {
+		throw new Error(`Unsupported export schema: ${String(manifest.schema)}`);
+	}
+	if (!Number.isSafeInteger(manifest.contractVersion) || (manifest.contractVersion as number) < 1) {
+		throw new Error("Export manifest carries no valid environment contract version");
+	}
+	if ((manifest.contractVersion as number) > ENVIRONMENT_CONTRACT_VERSION) {
+		throw new Error(
+			`This export requires environment contract v${manifest.contractVersion}; this Base supports v${ENVIRONMENT_CONTRACT_VERSION}`,
+		);
+	}
+	if (manifest.sourceHead !== null && typeof manifest.sourceHead !== "string") {
+		throw new Error("Export manifest carries an invalid source head");
+	}
+	return manifest as ExportManifest;
+}
+
+export function importCompany(exportDir: string, targetDir: string): ImportResult {
+	const source = resolve(exportDir);
+	const manifest = parseExportManifest(source);
+	const companySource = join(source, EXPORT_COMPANY_DIR);
+	if (!existsSync(companySource)) {
+		throw new Error(`Not a company export: missing ${EXPORT_COMPANY_DIR}/`);
+	}
+	const target = resolve(targetDir);
+	assertEmptyDestination(target);
+	cpSync(companySource, target, { recursive: true });
+	validateCompanyKernelStorage(target);
+	const head = gitHead(target);
+	if (manifest.sourceHead && head !== manifest.sourceHead) {
+		throw new Error(
+			`Imported history head ${head ?? "(none)"} does not match the export manifest ${manifest.sourceHead}`,
+		);
+	}
+	registerCompany(target);
+	return { root: canonicalCompanyRoot(target), manifest, head };
+}
+
+// ---- environment operations (build plan §7) --------------------------------
+//
+// Snapshot, restore, fork, trail playback, and erase — operations on the
+// company environment as a whole, built on the export substrate Build 1
+// proved. All of them prove the environment is not live (the runtime lock)
+// before acting; none of them interprets business content. Fork severs
+// authority structurally: credentials, gate trust, wake state, and
+// schedules live in machine-local stores keyed by the canonical root path,
+// so a fork at a new path starts with none of them, and its lineage is
+// recorded in the folder for the fork to understand its origin without
+// being able to impersonate it.
+
+function environmentStateId(root: string): string {
+	return createHash("sha256").update(normalizedPath(root)).digest("hex");
+}
+
+export function snapshotsDir(rootDir: string): string {
+	return join(getAgentDir(), "snapshots", environmentStateId(canonicalCompanyRoot(rootDir)));
+}
+
+export interface SnapshotRecord {
+	id: string;
+	path: string;
+	createdAt: string;
+	sourceHead: string | null;
+	contractVersion: number;
+}
+
+/** Point-in-time capture of the environment; quiesced via the export lane's runtime lock. */
+export function snapshotCompany(companyDir: string, label?: string): SnapshotRecord {
+	const root = canonicalCompanyRoot(companyDir);
+	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+	const slug = label
+		? `_${label
+				.toLowerCase()
+				.replace(/[^a-z0-9]+/g, "-")
+				.replace(/^-+|-+$/g, "")
+				.slice(0, 40)}`
+		: "";
+	const id = `${stamp}${slug}`;
+	const target = join(snapshotsDir(root), id);
+	const exported = exportCompany(root, target);
+	return {
+		id,
+		path: target,
+		createdAt: exported.manifest.exportedAt,
+		sourceHead: exported.manifest.sourceHead,
+		contractVersion: exported.manifest.contractVersion,
+	};
+}
+
+export function listSnapshots(companyDir: string): SnapshotRecord[] {
+	const directory = snapshotsDir(companyDir);
+	if (!existsSync(directory)) return [];
+	const records: SnapshotRecord[] = [];
+	for (const id of readdirSync(directory)) {
+		try {
+			const path = join(directory, id);
+			const manifest = parseExportManifest(path);
+			records.push({
+				id,
+				path,
+				createdAt: manifest.exportedAt,
+				sourceHead: manifest.sourceHead,
+				contractVersion: manifest.contractVersion,
+			});
+		} catch {
+			// Not a readable snapshot; never let one bad directory hide the rest.
+		}
+	}
+	return records.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * Restore the environment to a snapshot. A pre-restore safety snapshot is
+ * always taken first, so restore is itself forward-recoverable. The runtime
+ * lock is claimed and released as a liveness proof before the swap (holding
+ * it through the swap is impossible: the lock file lives under the .git
+ * being replaced).
+ */
+export function restoreCompany(companyDir: string, snapshotId: string): { root: string; safetySnapshot: string } {
+	const root = canonicalCompanyRoot(companyDir);
+	const source = join(snapshotsDir(root), snapshotId);
+	parseExportManifest(source);
+	const companySource = join(source, EXPORT_COMPANY_DIR);
+	if (!existsSync(companySource)) throw new Error(`Snapshot is missing its company payload: ${snapshotId}`);
+	const safety = snapshotCompany(root, "pre-restore");
+	releaseCompanyRuntimeLock(claimCompanyRuntimeLock(root));
+	for (const entry of readdirSync(root)) {
+		rmSync(join(root, entry), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+	}
+	cpSync(companySource, root, {
+		recursive: true,
+		filter: (path) => !normalizedPath(path).split(/[\\/]/).includes(RUNTIME_LOCK_DIR_SEGMENT),
+	});
+	validateCompanyKernelStorage(root);
+	return { root, safetySnapshot: safety.id };
+}
+
+export interface ForkLineage {
+	version: 1;
+	forkedFrom: { name: string; head: string | null; contractVersion: number };
+	forkedAt: string;
+}
+
+/**
+ * Fork the environment: the fork carries the files, Git history, and trail,
+ * a lineage record, and — structurally — no credentials, gate trust,
+ * schedules, or standing authority (all machine-local, keyed by root path).
+ */
+export function forkCompany(companyDir: string, targetDir: string): ImportResult & { lineage: ForkLineage } {
+	const root = canonicalCompanyRoot(companyDir);
+	const target = resolve(targetDir);
+	const staging = `${target}.fork-${randomUUID()}`;
+	try {
+		const exported = exportCompany(root, staging);
+		const imported = importCompany(staging, target);
+		const lineage: ForkLineage = {
+			version: 1,
+			forkedFrom: {
+				name: exported.manifest.companyName,
+				head: exported.manifest.sourceHead,
+				contractVersion: exported.manifest.contractVersion,
+			},
+			forkedAt: new Date().toISOString(),
+		};
+		writeFileSync(join(target, ".qorpera", "lineage.json"), `${JSON.stringify(lineage, null, "\t")}\n`, "utf-8");
+		spawnSync("git", ["-C", target, "add", "--", join(".qorpera", "lineage.json")], {
+			stdio: "ignore",
+			shell: false,
+		});
+		spawnSync(
+			"git",
+			[
+				"-C",
+				target,
+				"-c",
+				"user.name=Qorpera Kernel",
+				"-c",
+				"user.email=kernel@qorpera.local",
+				"commit",
+				"-m",
+				"chore: record fork lineage\n\nQorpera-Trigger: environment fork\nQorpera-Rationale: the fork may understand its origin without inheriting its authority",
+				"--only",
+				"--",
+				join(".qorpera", "lineage.json"),
+			],
+			{ stdio: "ignore", shell: false },
+		);
+		return { ...imported, lineage };
+	} finally {
+		rmSync(staging, { recursive: true, force: true });
+	}
+}
+
+/**
+ * Erase the company environment: the folder plus every machine-local record
+ * this foundation holds for it — connections (secrets, destinations, wake
+ * schedule) and snapshots. The registry self-heals (vanished roots are
+ * filtered on read). Desktop-kernel state under the shell's own data
+ * directory is keyed by the now-gone root path and becomes inert.
+ */
+export function eraseCompany(companyDir: string): { root: string; removed: string[] } {
+	const root = canonicalCompanyRoot(companyDir);
+	validateCompanyKernelStorage(root);
+	releaseCompanyRuntimeLock(claimCompanyRuntimeLock(root));
+	const removed: string[] = [];
+	const snapshots = snapshotsDir(root);
+	const connections = companyConnectionsPath(root);
+	rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+	removed.push(root);
+	if (existsSync(connections)) {
+		rmSync(connections, { force: true });
+		removed.push(connections);
+	}
+	if (existsSync(snapshots)) {
+		rmSync(snapshots, { recursive: true, force: true });
+		removed.push(snapshots);
+	}
+	return { root, removed };
+}
+
+// ---- trail playback (build plan §7: inspection, not re-execution) ----------
+
+export interface TrailVerification {
+	file: string;
+	status: "verified" | "unaudited" | "broken";
+	entries: number;
+	detail?: string;
+}
+
+/**
+ * Re-run the kernel hash chain over a trail session, outside the runtime,
+ * exactly as documented in docs/trail.md. "unaudited" marks sessions with
+ * no kernel envelopes (written outside the desktop kernel); any break in
+ * an audited chain is "broken".
+ */
+export function verifyTrailFile(path: string): TrailVerification {
+	const file = basename(path);
+	let lines: string[];
+	try {
+		lines = readFileSync(path, "utf-8")
+			.split(/\r?\n/)
+			.filter((line) => line.trim());
+	} catch (error) {
+		return { file, status: "broken", entries: 0, detail: (error as Error).message };
+	}
+	let header: { type?: unknown };
+	try {
+		header = JSON.parse(lines[0] ?? "") as { type?: unknown };
+	} catch {
+		return { file, status: "broken", entries: 0, detail: "unparseable session header" };
+	}
+	if (header.type !== "session") return { file, status: "broken", entries: 0, detail: "missing session header" };
+	let lastHash = "";
+	let sequence = 0;
+	let audited = false;
+	for (const [index, line] of lines.slice(1).entries()) {
+		let entry: Record<string, unknown>;
+		try {
+			entry = JSON.parse(line) as Record<string, unknown>;
+		} catch {
+			return { file, status: "broken", entries: index, detail: `unparseable entry at line ${index + 2}` };
+		}
+		const kernel = entry.kernel as { sequence?: unknown; previousHash?: unknown; hash?: unknown } | undefined;
+		if (!kernel) {
+			if (audited) return { file, status: "broken", entries: index, detail: `chain gap at line ${index + 2}` };
+			continue;
+		}
+		audited = true;
+		const unsigned = { ...entry };
+		delete unsigned.kernel;
+		const expectedHash = createHash("sha256")
+			.update(`${lastHash}\n${JSON.stringify(unsigned)}`)
+			.digest("hex");
+		if (
+			kernel.sequence !== sequence + 1 ||
+			kernel.previousHash !== (lastHash || null) ||
+			kernel.hash !== expectedHash
+		) {
+			return { file, status: "broken", entries: index, detail: `integrity break at line ${index + 2}` };
+		}
+		sequence = kernel.sequence as number;
+		lastHash = kernel.hash as string;
+	}
+	return { file, status: audited ? "verified" : "unaudited", entries: lines.length - 1 };
+}
+
+export interface TrailSessionSummary {
+	file: string;
+	id: string;
+	timestamp: string;
+	actor?: string;
+	label?: string;
+}
+
+export function listTrailFiles(companyDir: string): TrailSessionSummary[] {
+	const trailDir = join(canonicalCompanyRoot(companyDir), "trail");
+	if (!existsSync(trailDir)) return [];
+	const sessions: TrailSessionSummary[] = [];
+	for (const file of readdirSync(trailDir).filter((name) => name.endsWith(".jsonl"))) {
+		try {
+			const firstLine = readFileSync(join(trailDir, file), "utf-8").split(/\r?\n/, 1)[0];
+			const header = JSON.parse(firstLine) as {
+				type?: string;
+				id?: string;
+				timestamp?: string;
+				qorpera?: { actor?: string; label?: string };
+			};
+			if (header.type !== "session") continue;
+			sessions.push({
+				file,
+				id: header.id ?? "?",
+				timestamp: header.timestamp ?? "?",
+				actor: header.qorpera?.actor,
+				label: header.qorpera?.label,
+			});
+		} catch {
+			// Unreadable session files show up in verify, not list.
+		}
+	}
+	return sessions.sort((a, b) => a.file.localeCompare(b.file));
+}
+
+/** One human-readable line per entry — playback is inspection, never re-execution. */
+export function renderTrailFile(path: string): string[] {
+	const lines = readFileSync(path, "utf-8")
+		.split(/\r?\n/)
+		.filter((line) => line.trim());
+	const rendered: string[] = [];
+	const excerpt = (text: string): string => (text.length > 160 ? `${text.slice(0, 160)}…` : text);
+	for (const line of lines) {
+		let entry: Record<string, unknown>;
+		try {
+			entry = JSON.parse(line) as Record<string, unknown>;
+		} catch {
+			rendered.push("[unparseable line]");
+			continue;
+		}
+		if (entry.type === "session") {
+			const authority = entry.qorpera as { actor?: string; label?: string } | undefined;
+			rendered.push(
+				`session ${String(entry.id)} @ ${String(entry.timestamp)} (${authority?.actor ?? "?"}${authority?.label ? `, ${authority.label}` : ""})`,
+			);
+			continue;
+		}
+		const kernel = entry.kernel as { sequence?: number } | undefined;
+		const prefix = kernel ? `#${kernel.sequence} ` : "";
+		if (entry.type === "message") {
+			const message = entry.message as { role?: string; content?: Array<{ type?: string; text?: string }> };
+			const text = (message.content ?? [])
+				.map((part) => (part.type === "text" ? (part.text ?? "") : `[${part.type}]`))
+				.join(" ")
+				.trim();
+			rendered.push(`${prefix}${message.role}: ${excerpt(text || "(no text)")}`);
+		} else if (entry.type === "custom") {
+			rendered.push(`${prefix}${String(entry.customType)}: ${excerpt(JSON.stringify(entry.data ?? {}))}`);
+		} else {
+			rendered.push(`${prefix}${String(entry.type)}`);
+		}
+	}
+	return rendered;
 }
 
 interface ProductIntegrationRecord {
@@ -2380,6 +2901,54 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		return true;
 	}
 
+	if (args[0] === "founder") {
+		const action = args[1];
+		try {
+			if (action === "init") {
+				const identity = generateFounderIdentity(args.slice(2).join(" ") || undefined);
+				console.log(`Founder identity created (${identity.createdAt}). The private key stays on this machine.`);
+				console.log("Ratify each company's policy with 'qorpera founder ratify' from its root.");
+			} else if (action === "status") {
+				const identity = readFounderIdentity();
+				if (!identity) console.log("No founder identity on this machine. Create one with 'qorpera founder init'.");
+				else {
+					console.log(
+						`Founder identity${identity.name ? ` (${identity.name})` : ""}, created ${identity.createdAt}.`,
+					);
+					console.log(
+						identity.privateKeyPem ? "Signing: available here." : "Signing: public key only in this context.",
+					);
+				}
+			} else if (action === "ratify") {
+				const root = companyRootFromCwd();
+				const record = signAuthorityPolicy(root);
+				console.log(`Ratified authority.toml (sha256 ${record.contentSha256.slice(0, 12)}…).`);
+				console.log("Policy now grants its configured modes; any edit needs re-ratification or everything gates.");
+			} else if (action === "approve" && args[2]) {
+				const root = companyRootFromCwd();
+				const gateFile = join(root, "inbox", `${args[2]}.md`);
+				if (!existsSync(gateFile)) throw new Error(`No such gate request: ${args[2]}`);
+				const content = readFileSync(gateFile, "utf-8");
+				const hash = content.match(/^hash:\s*([a-f0-9]{64})/m)?.[1];
+				if (!hash) throw new Error(`${args[2]} carries no request hash`);
+				const signature = signGateApproval(args[2], hash);
+				const updated = content
+					.replace(/^approval:.*\r?\n?/m, "")
+					.replace(/^status:.*$/m, "status: approved")
+					.replace(/^hash:.*$/m, (line) => `${line}\napproval: ${signature}`);
+				writeFileSync(gateFile, updated, "utf-8");
+				console.log(`Approved ${args[2]} with your founder signature.`);
+			} else {
+				console.error("Usage: founder init [name] | status | ratify | approve <gate-id>");
+				process.exitCode = 1;
+			}
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+
 	if (args[0] !== "company") return false;
 	const sub = args[1];
 	if (sub === "product" && args[2] === "add") {
@@ -2407,8 +2976,257 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		}
 		return true;
 	}
+	if (sub === "destination") {
+		const action = args[2];
+		const host = args[3];
+		try {
+			const root = companyRootFromCwd();
+			if (action === "add" && host) {
+				bindNetworkDestination(root, host, args.slice(4).join(" ") || undefined);
+				console.log(
+					`Bound destination ${host.toLowerCase()} (HTTPS only). The controller can now reach it via http_request.`,
+				);
+			} else if (action === "remove" && host) {
+				console.log(
+					removeNetworkDestination(root, host) ? `Removed destination ${host}.` : `No such destination: ${host}`,
+				);
+			} else if (action === "list") {
+				const { destinations } = readCompanyConnections(root);
+				if (destinations.length === 0) console.log("No bound network destinations.");
+				for (const destination of destinations) {
+					console.log(
+						`${destination.host}${destination.note ? `  — ${destination.note}` : ""}  (bound ${destination.boundAt})`,
+					);
+				}
+			} else {
+				console.error("Usage: company destination add <host> [note] | remove <host> | list");
+				process.exitCode = 1;
+			}
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "secret") {
+		const action = args[2];
+		const name = args[3];
+		try {
+			const root = companyRootFromCwd();
+			if (action === "set" && name) {
+				const raw = (await readAllStdin()).trim();
+				if (!raw) throw new Error("Provide the secret on stdin (piped or typed then Ctrl+D/Ctrl+Z)");
+				const secret: CompanySecret = args.includes("--oauth2")
+					? { kind: "oauth2", ...(JSON.parse(raw) as Omit<OAuth2Secret, "kind">) }
+					: { kind: "static", value: raw };
+				bindCompanySecret(root, name, secret);
+				console.log(
+					`Bound secret://${name} (${secret.kind}). The value never enters company files, prompts, or the trail.`,
+				);
+			} else if (action === "remove" && name) {
+				console.log(removeCompanySecret(root, name) ? `Removed secret://${name}.` : `No such secret: ${name}`);
+			} else if (action === "list") {
+				const { secretNames } = readCompanyConnections(root);
+				if (secretNames.length === 0) console.log("No bound secrets.");
+				for (const secretName of secretNames) console.log(`secret://${secretName}`);
+			} else {
+				console.error("Usage: company secret set <name> [--oauth2] (value/JSON on stdin) | remove <name> | list");
+				process.exitCode = 1;
+			}
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "snapshot") {
+		try {
+			const record = snapshotCompany(companyRootFromCwd(), args[2]);
+			console.log(
+				`Snapshot ${record.id} (head ${record.sourceHead ?? "none"}, contract v${record.contractVersion}).`,
+			);
+			console.log(`Stored outside the company at ${record.path} — plain files, inspectable without Qorpera.`);
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "snapshots") {
+		try {
+			const records = listSnapshots(companyRootFromCwd());
+			if (records.length === 0) console.log("No snapshots.");
+			for (const record of records) console.log(`${record.id}  head ${record.sourceHead ?? "none"}`);
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "restore") {
+		const snapshotId = args[2];
+		if (!snapshotId) {
+			console.error("Usage: company restore <snapshot-id> (see 'company snapshots'; company must not be open)");
+			process.exitCode = 1;
+			return true;
+		}
+		try {
+			const result = restoreCompany(companyRootFromCwd(), snapshotId);
+			console.log(`Restored ${result.root} to ${snapshotId}.`);
+			console.log(
+				`The replaced state was captured first as snapshot ${result.safetySnapshot} — restore is reversible.`,
+			);
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "fork") {
+		const dir = args[2];
+		if (!dir) {
+			console.error("Usage: company fork <target-dir> (run from the company root)");
+			process.exitCode = 1;
+			return true;
+		}
+		try {
+			const result = forkCompany(companyRootFromCwd(), dir);
+			console.log(`Forked into ${result.root} (lineage recorded, head ${result.head ?? "none"}).`);
+			console.log(
+				"The fork carries files, history, and trail — no credentials, schedules, signatures, or standing authority.",
+			);
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "erase") {
+		if (!args.includes("--force")) {
+			console.error(
+				"company erase permanently deletes the company folder, its secrets, destinations, wake schedule, and snapshots. Re-run with --force to proceed.",
+			);
+			process.exitCode = 1;
+			return true;
+		}
+		try {
+			const result = eraseCompany(companyRootFromCwd());
+			for (const path of result.removed) console.log(`removed ${path}`);
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "trail") {
+		const action = args[2];
+		try {
+			const root = companyRootFromCwd();
+			if (action === "list") {
+				const sessions = listTrailFiles(root);
+				if (sessions.length === 0) console.log("No trail sessions.");
+				for (const session of sessions) {
+					console.log(
+						`${session.file}  ${session.timestamp}  ${session.actor ?? "?"}${session.label ? `  (${session.label})` : ""}`,
+					);
+				}
+			} else if (action === "verify") {
+				const targets = args[3] ? [args[3]] : listTrailFiles(root).map((session) => session.file);
+				let broken = 0;
+				for (const file of targets) {
+					const result = verifyTrailFile(join(root, "trail", file));
+					if (result.status === "broken") broken++;
+					console.log(
+						`${result.status.padEnd(9)} ${result.file} (${result.entries} entries)${result.detail ? ` — ${result.detail}` : ""}`,
+					);
+				}
+				if (broken > 0) process.exitCode = 1;
+			} else if (action === "show" && args[3]) {
+				for (const line of renderTrailFile(join(root, "trail", args[3]))) console.log(line);
+			} else {
+				console.error("Usage: company trail list | verify [file] | show <file>");
+				process.exitCode = 1;
+			}
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "wake") {
+		const action = args[2];
+		try {
+			const root = companyRootFromCwd();
+			if (action === "set" && args[3]) {
+				const schedule = bindWakeSchedule(root, Number(args[3]));
+				console.log(
+					`Scheduled wakes every ${schedule.intervalMinutes} minutes while the company is open in Qorpera Base. The controller decides what each wake does.`,
+				);
+			} else if (action === "off") {
+				console.log(disableWakeSchedule(root) ? "Scheduled wakes disabled." : "Scheduled wakes were not enabled.");
+			} else if (action === "status") {
+				const schedule = readWakeSchedule(root);
+				if (!schedule) console.log("No wake schedule bound.");
+				else if (schedule.suspendedReason) {
+					console.log(
+						`Suspended by the kernel: ${schedule.suspendedReason}. Re-enable with 'company wake set ${schedule.intervalMinutes}'.`,
+					);
+				} else {
+					console.log(schedule.enabled ? `Every ${schedule.intervalMinutes} minutes.` : "Disabled.");
+				}
+			} else {
+				console.error("Usage: company wake set <minutes> | off | status");
+				process.exitCode = 1;
+			}
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "export") {
+		const target = args[2];
+		if (!target) {
+			console.error("Usage: company export <target-dir> (run from the company root; company must not be open)");
+			process.exitCode = 1;
+			return true;
+		}
+		try {
+			const result = exportCompany(process.cwd(), target);
+			console.log(
+				`Exported company to ${result.target} (contract v${result.manifest.contractVersion}, head ${result.manifest.sourceHead ?? "none"}).`,
+			);
+			console.log("The export is plain files — Git history, JSONL trail, markdown — inspectable without Qorpera.");
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "import") {
+		const source = args[2];
+		const dir = args[3];
+		if (!source || !dir) {
+			console.error("Usage: company import <export-dir> <target-dir>");
+			process.exitCode = 1;
+			return true;
+		}
+		try {
+			const result = importCompany(source, dir);
+			console.log(
+				`Imported company into ${result.root} (contract v${result.manifest.contractVersion}, head ${result.head ?? "none"}).`,
+			);
+			console.log("Fresh environment identity: no credentials, schedules, or standing authority were imported.");
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
 	if (sub !== "init") {
-		console.error(`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir]`);
+		console.error(
+			`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir] | export | import | snapshot [label] | snapshots | restore <id> | fork <dir> | erase --force | trail list|verify|show | destination … | secret … | wake …`,
+		);
 		process.exitCode = 1;
 		return true;
 	}
@@ -2420,6 +3238,24 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		"\nNext: open the company in Qorpera Base desktop. Gates live in authority.toml; requests appear in inbox/.",
 	);
 	return true;
+}
+
+function companyRootFromCwd(): string {
+	const root = process.cwd();
+	if (!existsSync(join(root, "company.md"))) throw new Error("current directory is not a company root");
+	return root;
+}
+
+function readAllStdin(): Promise<string> {
+	return new Promise((resolvePromise, rejectPromise) => {
+		let data = "";
+		process.stdin.setEncoding("utf-8");
+		process.stdin.on("data", (chunk) => {
+			data += chunk;
+		});
+		process.stdin.once("end", () => resolvePromise(data));
+		process.stdin.once("error", rejectPromise);
+	});
 }
 
 function basenameOf(source: string): string {

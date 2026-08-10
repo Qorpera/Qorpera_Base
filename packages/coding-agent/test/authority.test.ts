@@ -129,6 +129,27 @@ describe("classification and evaluation", () => {
 		expect(bashDecision.kind).toBe("block");
 	});
 
+	it("blocks precise kernel-policy writes WITHOUT filing a gate (approvals could not execute)", () => {
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		// Kernel-owned policy files: the founder lane is named, no gate filed.
+		const policy = evaluateToolCall(authority, "write", { path: join(root, "authority.toml"), content: "x" }, root);
+		expect(policy.kind).toBe("block");
+		expect((policy as { reason: string }).reason).toContain("Kernel policy boundary");
+		expect((policy as { reason: string }).reason).toContain("inbox/messages/msg-");
+		// Inbox gate records: self-approval, no gate filed.
+		const gate = evaluateToolCall(
+			authority,
+			"write",
+			{ path: join(root, "inbox", "gate-abc.md"), content: "x" },
+			root,
+		);
+		expect(gate.kind).toBe("block");
+		expect((gate as { reason: string }).reason).toContain("self-approval");
+		// No gate was filed — the inbox was not even created for one.
+		expect(existsSync(join(root, "inbox"))).toBe(false);
+	});
+
 	it("allows the agent to author inbox messages (msg-*.md) but never gates", () => {
 		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
 		const authority = discoverAuthority(root)!;
@@ -149,6 +170,19 @@ describe("classification and evaluation", () => {
 		]) {
 			expect(evaluateToolCall(authority, "write", { path, content: "x" }, root).kind).toBe("block");
 		}
+	});
+
+	it("classifies http_request as identity by default, overridable including none", () => {
+		writeAuthorityToml(`[identity]\nmode = "gate"\n`);
+		const authority = discoverAuthority(root)!;
+		const gated = evaluateToolCall(authority, "http_request", { method: "GET", url: "https://x.example/" }, root);
+		expect(gated.kind).toBe("block");
+		expect((gated as { effectClass: string }).effectClass).toBe("identity");
+
+		writeAuthorityToml(`[identity]\nmode = "gate"\n\n[tools]\nhttp_request = "none"\n`);
+		expect(evaluateToolCall(authority, "http_request", { method: "GET", url: "https://x.example/" }, root).kind).toBe(
+			"allow",
+		);
 	});
 
 	it("honors [tools] overrides including none", () => {

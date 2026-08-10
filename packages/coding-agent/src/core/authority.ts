@@ -30,6 +30,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { AUTHORITY_SIGNATURE_PATH, verifyAuthorityPolicy, verifyGateApproval } from "./founder-identity.ts";
 import { requestKernelGateConsumption, requestKernelGateTrust } from "./kernel-broker.ts";
 
 export type ConfigurableEffectClass = "money" | "identity" | "irreversible" | "authority";
@@ -118,7 +119,27 @@ export interface GateRecord {
 	hash: string;
 	filePath: string;
 	content: string;
+	/** Founder signature over (id, hash), present once signed approvals are in use. */
+	approval?: string;
 }
+
+/**
+ * The company-tool runner (Build 2): executes company-authored programs as
+ * clean-environment subprocesses. For this tool the acting behavior is the
+ * PROGRAM being run, not the runner itself — behaviorPath derives from the
+ * call's path argument so the signature rule covers the program's content
+ * hash, and the behavior stamp lands in the trail even for auto-class runs.
+ */
+export const COMPANY_TOOL_NAME = "run_company_tool";
+
+/**
+ * The kernel HTTP lane (Build 3). Outbound contact defaults to the
+ * [identity] class — acting toward the outside world as the company —
+ * unless the founder overrides it in [tools] (including "none"). The
+ * destination allowlist and secret dereferencing are enforced kernel-side
+ * regardless of this classification.
+ */
+export const HTTP_TOOL_NAME = "http_request";
 
 const CONFIGURABLE_EFFECT_CLASSES: ConfigurableEffectClass[] = ["money", "identity", "irreversible", "authority"];
 /**
@@ -135,6 +156,8 @@ const INBOX_DIR = "inbox";
 const PROTECTED_ROOT_FILES = new Set([AUTHORITY_FILE, "AGENTS.md", "CLAUDE.md"]);
 const PRODUCT_REGISTRY_PATH = join(".qorpera", "products.json");
 const GATE_FIELDS = ["id", "status", "class", "tool", "hash", "created"] as const;
+/** Founder-signature over (id, hash), written at approval time. */
+const OPTIONAL_GATE_FIELDS = ["approval"] as const;
 
 /**
  * Conservative screen for destructive shell commands. False positives gate
@@ -254,6 +277,13 @@ export function readAuthorityConfig(authority: Authority): AuthorityConfig {
 		},
 		tools: {},
 	};
+	// Policy provenance (manifesto §3.1, invariant 15): once a founder
+	// identity exists in this context, only policy the LOCAL founder signed
+	// grants auto/notify modes — unsigned, tampered, or foreign-signed
+	// policy fails closed to everything-gated, exactly like malformed toml.
+	// Machines without a founder identity keep legacy semantics.
+	const provenance = verifyAuthorityPolicy(authority.root);
+	if (provenance !== "no-identity" && provenance !== "valid") return fallback;
 	let raw: Record<string, unknown>;
 	try {
 		raw = parseToml(readFileSync(authority.configPath, "utf-8")) as Record<string, unknown>;
@@ -327,6 +357,7 @@ function isProtectedPath(authority: Authority, rawPath: string, cwd: string): bo
 	}
 	if (dirname(resolved) === resolve(authority.root) && PROTECTED_ROOT_FILES.has(basename(resolved))) return true;
 	if (resolved === resolve(authority.root, PRODUCT_REGISTRY_PATH)) return true;
+	if (resolved === resolve(authority.root, AUTHORITY_SIGNATURE_PATH)) return true;
 	return false;
 }
 
@@ -477,6 +508,7 @@ export function classifyToolCall(
 	}
 
 	if (overrideRaw === "none") return undefined;
+	if (toolName === HTTP_TOOL_NAME) return override ?? "identity";
 	return override;
 }
 
@@ -515,12 +547,17 @@ function parseGateFile(filePath: string): GateRecord | undefined {
 	const fields = new Map<string, string>();
 	for (const line of frontmatter[1].split(/\r?\n/)) {
 		const match = line.match(/^([a-zA-Z_]+):\s*(.*)$/);
-		if (!match || !GATE_FIELDS.includes(match[1] as (typeof GATE_FIELDS)[number]) || fields.has(match[1])) {
+		if (
+			!match ||
+			(!GATE_FIELDS.includes(match[1] as (typeof GATE_FIELDS)[number]) &&
+				!OPTIONAL_GATE_FIELDS.includes(match[1] as (typeof OPTIONAL_GATE_FIELDS)[number])) ||
+			fields.has(match[1])
+		) {
 			return undefined;
 		}
 		fields.set(match[1], match[2].split("#")[0].trim());
 	}
-	if (fields.size !== GATE_FIELDS.length || GATE_FIELDS.some((field) => !fields.has(field))) return undefined;
+	if (GATE_FIELDS.some((field) => !fields.has(field))) return undefined;
 	const id = fields.get("id");
 	const status = fields.get("status") as GateStatus | undefined;
 	const hash = fields.get("hash");
@@ -534,7 +571,28 @@ function parseGateFile(filePath: string): GateRecord | undefined {
 		return undefined;
 	}
 	if (!fields.get("tool") || !fields.get("created")) return undefined;
-	return { id, status, hash, filePath, content: content.replace(/^\uFEFF/, "") };
+	const approval = fields.get("approval");
+	return {
+		id,
+		status,
+		hash,
+		filePath,
+		content: content.replace(/^\uFEFF/, ""),
+		...(approval ? { approval } : {}),
+	};
+}
+
+/**
+ * Is this approved/consumed record a REAL founder approval? Without a
+ * founder identity, a status edit is the approval (legacy). With one, only
+ * records carrying the local founder's signature over (id, hash) count \u2014
+ * an unsigned or foreign-signed "approved" line is treated as still
+ * pending, never as authority (manifesto \u00A73.2: a founder response that is
+ * merely a file edit is data, not authority).
+ */
+function gateApprovalValid(record: GateRecord): boolean {
+	const provenance = verifyGateApproval(record.id, record.hash, record.approval);
+	return provenance === "no-identity" || provenance === "valid";
 }
 
 export function findGateRecords(authority: Authority, hash: string): GateRecord[] {
@@ -672,6 +730,25 @@ function summarizeCall(toolName: string, args: unknown): string {
  * since-edited file resolves to the new (unsigned) content, which errs
  * toward gating.
  */
+/**
+ * The acting code behind a tool call. For the company-tool runner the
+ * behavior is the program named by the call's path argument (resolved
+ * against cwd); for everything else it is the source file that registered
+ * the tool, as supplied by the caller.
+ */
+function effectiveBehaviorPath(
+	toolName: string,
+	args: unknown,
+	cwd: string,
+	context: ToolCallContext | undefined,
+): string | undefined {
+	if (toolName === COMPANY_TOOL_NAME) {
+		const pathArg = extractPathArg(args);
+		return pathArg ? resolveArgPath(pathArg, cwd) : undefined;
+	}
+	return context?.behaviorPath;
+}
+
 function resolveBehaviorSignature(
 	authority: Authority,
 	behaviorPath: string | undefined,
@@ -688,7 +765,7 @@ function resolveBehaviorSignature(
 	const path = relative(authority.root, resolved).split(sep).join("/");
 	const hash = requestHash("behavior_signature", { contentHash, path });
 	const records = findGateRecords(authority, hash);
-	const approved = records.find((record) => record.status === "approved");
+	const approved = records.find((record) => record.status === "approved" && gateApprovalValid(record));
 	if (approved) {
 		return {
 			path,
@@ -702,7 +779,7 @@ function resolveBehaviorSignature(
 	if (pending) return { path, contentHash, signed: false, gateId: pending.id, gateStatus: "pending" };
 	const denied = records.find((record) => record.status === "denied");
 	if (denied) return { path, contentHash, signed: false, gateId: denied.id, gateStatus: "denied" };
-	const consumed = records.find((record) => record.status === "consumed");
+	const consumed = records.find((record) => record.status === "consumed" && gateApprovalValid(record));
 	if (consumed) {
 		return {
 			path,
@@ -799,9 +876,43 @@ export function evaluateToolCall(
 		};
 	}
 
+	// Kernel policy boundary (Build 2): when a mutating tool precisely
+	// targets kernel-owned territory, block WITHOUT filing a gate — the
+	// desktop kernel's sandbox mounts these paths read-only for the agent,
+	// so an approval could never execute. Filing one would be noise that
+	// looks actionable. The working lanes are named in the reason instead.
+	// (Bash mention-based screens stay on the ordinary gate path: the target
+	// is imprecise there.)
+	{
+		const pathArg = extractPathArg(args);
+		if (pathArg && MUTATING_PATH_TOOLS.has(toolName) && isProtectedPath(authority, pathArg, cwd)) {
+			const resolved = resolveArgPath(pathArg, cwd);
+			const isPolicyFile =
+				(dirname(resolved) === resolve(authority.root) && PROTECTED_ROOT_FILES.has(basename(resolved))) ||
+				resolved === resolve(authority.root, PRODUCT_REGISTRY_PATH);
+			return {
+				kind: "block",
+				effectClass: "authority",
+				reason: isPolicyFile
+					? `Kernel policy boundary: ${basename(resolved)} is founder-ratified and read-only to you at the OS layer — an approval could not execute, so none is filed. Propose the change instead: write inbox/messages/msg-<slug>.md describing the exact edit and why; the founder applies it from the app (Settings → Authority).`
+					: "Kernel policy boundary: inbox gate records and notices are kernel territory and read-only to you at the OS layer — writing them is self-approval and cannot be approved away. Author inbox/messages/msg-*.md items instead; that is your one sanctioned inbox lane.",
+			};
+		}
+	}
+
 	const config = readAuthorityConfig(authority);
 	let effectClass = classifyToolCall(authority, config, toolName, args, cwd);
-	if (!effectClass) return { kind: "allow" };
+	if (!effectClass) {
+		// Company-tool runs stamp behavior identity even when unclassified:
+		// the trail must attribute every execution of company-authored code.
+		if (toolName === COMPANY_TOOL_NAME) {
+			return {
+				kind: "allow",
+				behavior: resolveBehaviorSignature(authority, effectiveBehaviorPath(toolName, args, cwd, context)),
+			};
+		}
+		return { kind: "allow" };
+	}
 
 	// Product code is a role boundary, not an approval mode. A controller is
 	// read-only even when a founder is present; implementation happens in a
@@ -837,7 +948,7 @@ export function evaluateToolCall(
 				kind: "allow",
 				effectClass: "product_code",
 				actor: "product-worker",
-				behavior: resolveBehaviorSignature(authority, context?.behaviorPath),
+				behavior: resolveBehaviorSignature(authority, effectiveBehaviorPath(toolName, args, cwd, context)),
 			};
 		}
 	}
@@ -848,7 +959,7 @@ export function evaluateToolCall(
 	// covers the model acting under founder direction, not agent-authored
 	// code acting with nobody present. Attended calls fall through to the
 	// normal per-action gates (presence is the intent source there).
-	const behavior = resolveBehaviorSignature(authority, context?.behaviorPath);
+	const behavior = resolveBehaviorSignature(authority, effectiveBehaviorPath(toolName, args, cwd, context));
 	if (
 		behavior &&
 		!behavior.signed &&
@@ -868,7 +979,7 @@ export function evaluateToolCall(
 
 	const hash = requestHash(toolName, args);
 	const records = findGateRecords(authority, hash);
-	const approved = records.find((record) => record.status === "approved");
+	const approved = records.find((record) => record.status === "approved" && gateApprovalValid(record));
 	if (approved) {
 		if (process.env.QORPERA_TRAIL_BROKER_TOKEN) {
 			return {
@@ -997,7 +1108,7 @@ export async function filterExtensionPaths(
 			contentHash,
 		});
 		const records = findGateRecords(authority, hash);
-		const approved = records.find((record) => record.status === "approved");
+		const approved = records.find((record) => record.status === "approved" && gateApprovalValid(record));
 		if (approved) {
 			if (await requestKernelGateTrust(basename(approved.filePath), approved.hash)) allowed.push(path);
 			else blocked.push({ path, gateId: approved.id, pending: true });
@@ -1013,7 +1124,7 @@ export async function filterExtensionPaths(
 			blocked.push({ path, gateId: denied.id, pending: false });
 			continue;
 		}
-		const consumed = records.find((record) => record.status === "consumed");
+		const consumed = records.find((record) => record.status === "consumed" && gateApprovalValid(record));
 		if (consumed) {
 			if (await requestKernelGateTrust(basename(consumed.filePath), consumed.hash)) allowed.push(path);
 			else blocked.push({ path, gateId: consumed.id, pending: true });

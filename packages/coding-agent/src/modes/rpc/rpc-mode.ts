@@ -20,6 +20,7 @@ import type {
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
+import { handleHttpBrokerFrame, setHttpBrokerWriter } from "../../core/http-broker-client.ts";
 import {
 	beginKernelBinding,
 	consumeKernelIntent,
@@ -69,6 +70,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		writeRawStdout(serializeJsonLine(obj));
 	};
 	setModelBrokerWriter(output);
+	setHttpBrokerWriter(output);
 	const activeKernelIntents = new Map<string, KernelIntentCapability>();
 	const activateKernelIntent = (intent: KernelIntentCapability | undefined): void => {
 		if (intent) activeKernelIntents.set(intent.nonce, intent);
@@ -833,6 +835,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			return;
 		}
 		if (handleModelBrokerFrame(parsed)) return;
+		if (handleHttpBrokerFrame(parsed)) return;
 		if (process.env.QORPERA_KERNEL_REQUIRED === "1" && !isKernelBindingEstablished()) {
 			pendingKernelInputLines.push(line);
 			return;

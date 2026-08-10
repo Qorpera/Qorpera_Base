@@ -61,6 +61,13 @@ import {
 	validateCompanyKernelStorage,
 } from "@qorpera/pi-coding-agent/company";
 import {
+	destinationAllowed,
+	readWakeSchedule,
+	resolveCompanySecret,
+	suspendWakeSchedule,
+} from "@qorpera/pi-coding-agent/company-connections";
+import { FOUNDER_PUBLIC_FILE, founderPublicProjection } from "@qorpera/pi-coding-agent/founder-identity";
+import {
 	app,
 	BrowserWindow,
 	dialog,
@@ -72,10 +79,12 @@ import {
 } from "electron";
 import electronUpdater from "electron-updater";
 import {
+	appendKernelHttpObservation,
 	appendKernelModelObservation,
 	appendKernelMutationObservation,
 	appendKernelObservation,
 	appendKernelProductStorageObservation,
+	appendKernelWakeObservation,
 	applyKernelWriteFrame,
 	bindTrailSession,
 	commitTrailAppend,
@@ -86,7 +95,7 @@ import {
 	kernelGateReviewDocument,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
-	provisionWindowsSandbox,
+	provisionSandbox,
 	reconcileKernelGateCreations,
 	sandboxCommandArgs,
 	sandboxConfigDir,
@@ -117,6 +126,7 @@ import {
 	rememberCompanyGateTrust,
 	revokeCompanyGateTrust,
 } from "./company-kernel-state.ts";
+import { createHttpRequestBroker, type HttpRequestBroker } from "./http-request-broker.ts";
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
 import { isRendererRequestAllowed, lockDownRendererSession, lockDownRendererWebContents } from "./renderer-boundary.ts";
 import {
@@ -134,6 +144,15 @@ import {
 	type UserlandStatus,
 	type UserlandVersion,
 } from "./userland-manager.ts";
+import {
+	decideScheduledWake,
+	readWakeRunState,
+	recordWakeOutcome,
+	recordWakeStart,
+	WAKE_FAILURE_SUSPENSION_THRESHOLD,
+	wakeRunStatePath,
+	writeWakeRunState,
+} from "./wake-scheduler.ts";
 
 const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
 const CODEX_ENTRY = fileURLToPath(import.meta.resolve("@openai/codex/bin/codex.js"));
@@ -199,6 +218,10 @@ function prepareBrokeredAgentDir(configDir: string, companyRoot: string, credent
 		`${JSON.stringify({ [resolve(companyRoot)]: true }, null, "\t")}\n`,
 		"utf-8",
 	);
+	// The founder's PUBLIC key only: the child verifies policy provenance in
+	// the sandbox; signing stays with founder contexts (CLI + this kernel).
+	const founderProjection = founderPublicProjection();
+	if (founderProjection) writeFileSync(join(agentDir, FOUNDER_PUBLIC_FILE), founderProjection, "utf-8");
 	return agentDir;
 }
 
@@ -247,6 +270,8 @@ interface CompanyRuntime {
 	productWorker?: { department: string; worktree: string };
 	/** Live userland-merge session, if one is running (kernel-spawned, silent). */
 	mergeChild?: ChildProcessWithoutNullStreams;
+	/** Live wake session, if one is running (kernel-spawned, single-flight). */
+	wakeChild?: ChildProcessWithoutNullStreams;
 	inventoryWatcher?: ReturnType<typeof watch>;
 	transitionQueue: Promise<void>;
 	closing: boolean;
@@ -294,6 +319,10 @@ const childIntentSigners = new WeakMap<
 	(frame: Record<string, unknown>, attended: boolean) => KernelIntentCapability
 >();
 const childModelCapabilities = new WeakMap<ChildProcessWithoutNullStreams, BrokeredCredentials>();
+const childHttpBrokers = new WeakMap<ChildProcessWithoutNullStreams, HttpRequestBroker>();
+/** True between a delivered kernel prompt and the next agent_settled — a
+ * founder turn in flight. Wakes must never preempt it. */
+const childBusy = new WeakMap<ChildProcessWithoutNullStreams, boolean>();
 const childApprovedGates = new WeakMap<ChildProcessWithoutNullStreams, Set<string>>();
 const childCheckpointCompletion = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 
@@ -554,6 +583,8 @@ interface ChildOptions {
 	worktree?: string;
 	silent?: boolean;
 	onRpcEvent?: (frame: { type?: string }) => void;
+	/** Kernel-issued wake identity: stamped into the wake session's trail. */
+	wake?: { id: string; cause: "schedule" | "founder_response"; intervalMinutes?: number; coalesced?: number };
 }
 
 function startChild(slot: Slot, root: string, options: ChildOptions = {}): ChildProcessWithoutNullStreams {
@@ -570,6 +601,14 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	} as const;
 	const userData = app.getPath("userData");
 	const binding = bindTrailSession(root, cwd, scope, sessionFile);
+	if (options.wake) {
+		appendKernelWakeObservation(binding, {
+			wakeId: options.wake.id,
+			cause: options.wake.cause,
+			...(options.wake.intervalMinutes !== undefined ? { intervalMinutes: options.wake.intervalMinutes } : {}),
+			...(options.wake.coalesced ? { coalesced: options.wake.coalesced } : {}),
+		});
+	}
 	reconcileKernelGateCreations(
 		binding,
 		root,
@@ -604,6 +643,15 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		ambientModelProviders(),
 		(event) => appendKernelModelObservation(binding, event),
 	);
+	// Generic outbound HTTP (Build 3): destination capabilities and secret
+	// references are resolved kernel-side; every attempt is trail-observed
+	// and must ride a kernel-signed causal intent (parity with the model lane).
+	const httpBroker = createHttpRequestBroker({
+		sessionId: binding.sessionId,
+		allowedDestination: (url) => destinationAllowed(root, url),
+		resolveSecret: (name) => resolveCompanySecret(root, name),
+		observe: (event) => appendKernelHttpObservation(binding, event),
+	});
 	let agentDir: string;
 	let args: string[];
 	let kernelSigner: ReturnType<typeof createKernelResponseSigner>;
@@ -625,8 +673,9 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			join(configDir, "config.toml"),
 			join(agentDir, "auth.json"),
 			join(agentDir, "trust.json"),
+			join(agentDir, FOUNDER_PUBLIC_FILE),
 		]);
-		provisionWindowsSandbox({
+		provisionSandbox({
 			codexEntry: CODEX_ENTRY,
 			configDir,
 			runtimeDir,
@@ -666,6 +715,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	childBindings.set(child, binding);
 	childIntentSigners.set(child, kernelSigner.signIntent);
 	childModelCapabilities.set(child, brokeredCredentials);
+	childHttpBrokers.set(child, httpBroker);
 	childApprovedGates.set(child, new Set());
 	let resolveCheckpoint: (() => void) | undefined;
 	childCheckpointCompletion.set(
@@ -705,6 +755,12 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			)
 				return;
 			if (
+				httpBroker.handleFrame(frame, (response) => {
+					if (child.exitCode === null) child.stdin.write(`${JSON.stringify(response)}\n`);
+				})
+			)
+				return;
+			if (
 				applyKernelWriteFrame(
 					frame,
 					binding,
@@ -735,7 +791,9 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				return;
 			}
 			if ((frame as { type?: unknown }).type === "agent_settled") {
+				childBusy.set(child, false);
 				brokeredCredentials.endTurn("completed");
+				httpBroker.endTurn();
 				const result = checkpointCompanyGit(root, gitBaseline, binding.file);
 				gitBaseline = result.baseline;
 				savePendingCompanyCheckpoint(checkpointState, root, gitBaseline, binding.file);
@@ -770,6 +828,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	});
 	child.on("close", () => {
 		try {
+			httpBroker.release();
 			brokeredCredentials.release();
 			const result = checkpointCompanyGit(root, gitBaseline, binding.file);
 			finishPendingCompanyCheckpoint(checkpointState, result);
@@ -811,6 +870,9 @@ function sendKernelPrompt(
 	const unsignedFrame = { ...frame };
 	const kernelIntent = signIntent(unsignedFrame, attended);
 	if (!childModelCapabilities.get(child)?.authorizeIntent(kernelIntent)) return false;
+	// The same intent authorizes the HTTP lane: both brokers track their own
+	// usage of the shared per-turn capability.
+	childHttpBrokers.get(child)?.authorizeIntent(kernelIntent);
 	const images = Array.isArray(unsignedFrame.images)
 		? unsignedFrame.images.flatMap((image) => {
 				if (!image || typeof image !== "object") return [];
@@ -834,6 +896,7 @@ function sendKernelPrompt(
 		images,
 	});
 	child.stdin.write(`${JSON.stringify({ ...unsignedFrame, kernelIntent })}\n`);
+	childBusy.set(child, true);
 	return true;
 }
 
@@ -891,6 +954,120 @@ function isInside(target: string, parent: string): boolean {
  * result reaches the renderer as one `merge-done` event, and the open-time
  * userland status is refreshed so the merge button reflects reality.
  */
+function wakePrompt(cause: "schedule" | "founder_response", coalesced: number): string {
+	const missed =
+		coalesced > 0
+			? ` The kernel was closed or asleep for a while: ${coalesced} missed wake${coalesced === 1 ? "" : "s"} were coalesced into this one.`
+			: "";
+	if (cause === "founder_response") {
+		return `Wake: the founder responded in the inbox. Read the updated items and continue the affected work; post follow-up inbox items for anything that needs the founder again.${missed}`;
+	}
+	return `Scheduled wake.${missed} Read company.md, the inbox, and app/routines/, decide for yourself what most needs doing, and do it. Post inbox/messages items for anything that needs the founder; when nothing needs doing, settle without inventing work.`;
+}
+
+/**
+ * Run a wake as its OWN autonomous session, serialized against everything
+ * else (Build 4): the chat child is stopped first and resumed after — one
+ * environment writer at a time — and wakes are single-flight (never while
+ * a merge or another wake runs). The wake's causal identity is stamped
+ * into its trail session; its outcome feeds the failure streak, and at
+ * the threshold the kernel suspends the schedule and posts a
+ * founder-visible inbox item — escalation that does not depend on the
+ * controller.
+ */
+async function startWakeChild(
+	slot: Slot,
+	runtime: CompanyRuntime,
+	cause: "schedule" | "founder_response",
+	coalesced: number,
+	intervalMinutes?: number,
+): Promise<boolean> {
+	if (runtime.mergeChild || runtime.wakeChild || runtime.closing) return false;
+	// Never preempt a founder turn in flight: the wake defers to the next tick.
+	if (childBusy.get(runtime.child)) return false;
+	const wakeId = randomUUID();
+	const resumeOptions = {
+		...runtime.childOptions,
+		sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
+	};
+	await stopChild(runtime.child);
+	if (slot.runtime !== runtime || runtime.closing) return false;
+	let started = false;
+	let settledCleanly = false;
+	const child = startChild(slot, runtime.root, {
+		autonomousName: cause === "schedule" ? "wake — schedule" : "wake — founder response",
+		silent: true,
+		wake: { id: wakeId, cause, intervalMinutes, coalesced },
+		onRpcEvent: (frame) => {
+			if (frame.type === "agent_start") started = true;
+			if (frame.type === "agent_settled") {
+				settledCleanly = started;
+				intentionalKills.add(child);
+				child.kill();
+			}
+		},
+	});
+	runtime.wakeChild = child;
+	child.on("close", async () => {
+		await childCheckpointCompletion.get(child);
+		if (slot.runtime !== runtime || runtime.closing) return;
+		runtime.wakeChild = undefined;
+		try {
+			const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
+			const outcome = recordWakeOutcome(readWakeRunState(statePath), settledCleanly);
+			writeWakeRunState(statePath, outcome.state);
+			if (outcome.suspend) {
+				suspendWakeSchedule(runtime.root, `${WAKE_FAILURE_SUSPENSION_THRESHOLD} consecutive wake failures`);
+				writeFileSync(
+					join(inboxMessagesPath(runtime.root), `msg-wakes-suspended-${Date.now()}.md`),
+					`# Scheduled wakes suspended by the kernel\n\nThe last ${WAKE_FAILURE_SUSPENSION_THRESHOLD} scheduled wake sessions failed before settling, so the kernel suspended the schedule rather than keep spending. Review the recent autonomous sessions under Activity, then re-enable with \`qorpera company wake set <minutes>\`.\n`,
+					"utf-8",
+				);
+			}
+		} catch (error) {
+			console.error(`wake bookkeeping failed: ${(error as Error).message}`);
+		}
+		runtime.childOptions = resumeOptions;
+		runtime.child = startChild(slot, runtime.root, resumeOptions);
+	});
+	if (
+		!sendKernelPrompt(child, { type: "prompt", message: wakePrompt(cause, coalesced) }, false, `kernel-wake-${cause}`)
+	) {
+		await stopChild(child);
+		if (runtime.wakeChild === child) runtime.wakeChild = undefined;
+		if (slot.runtime === runtime && !runtime.closing) runtime.child = startChild(slot, runtime.root, resumeOptions);
+		return false;
+	}
+	return true;
+}
+
+/**
+ * The kernel's clock (Build 4): once a minute, fire due scheduled wakes for
+ * open companies. Wakes fire only while their company environment is open
+ * in the shell; time spent closed is covered by the coalescing missed-wake
+ * policy on the next open.
+ */
+function startWakeTicker(): void {
+	setInterval(() => {
+		for (const slot of slots.values()) {
+			const runtime = slot.runtime;
+			if (!runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) continue;
+			if (childBusy.get(runtime.child)) continue;
+			try {
+				const schedule = readWakeSchedule(runtime.root);
+				const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
+				const state = readWakeRunState(statePath);
+				const decision = decideScheduledWake(schedule, state, Date.now());
+				if (!decision.due) continue;
+				writeWakeRunState(statePath, recordWakeStart(state, Date.now()));
+				void startWakeChild(slot, runtime, "schedule", decision.coalesced, schedule?.intervalMinutes);
+			} catch (error) {
+				console.error(`wake tick failed for ${runtime.root}: ${(error as Error).message}`);
+			}
+		}
+	}, 60_000).unref();
+}
+
 async function startMergeChild(slot: Slot, runtime: CompanyRuntime, reviewedPrompt: string): Promise<boolean> {
 	const resumeOptions = {
 		...runtime.childOptions,
@@ -1407,6 +1584,7 @@ app.whenReady().then(async () => {
 		modelsPath: join(modelAgentDir, "models.json"),
 		allowedProviders: MODEL_AUTH_PROVIDERS,
 	});
+	startWakeTicker();
 	ipcMain.handle("companies:list", () => listCompanies());
 	ipcMain.handle("company:open", (event, root: string) => {
 		if (!isTrustedHubSender(event.sender)) return;
