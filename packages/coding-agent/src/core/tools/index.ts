@@ -56,6 +56,14 @@ export {
 	type LsToolOptions,
 } from "./ls.ts";
 export {
+	createMcpTool,
+	createMcpToolDefinition,
+	MCP_CONFIG_PATH,
+	MCP_TOOL_NAME,
+	type McpToolDetails,
+	type McpToolInput,
+} from "./mcp.ts";
+export {
 	createReadTool,
 	createReadToolDefinition,
 	type ReadOperations,
@@ -90,6 +98,7 @@ import { createFindTool, createFindToolDefinition, type FindToolOptions } from "
 import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { createHttpRequestTool, createHttpRequestToolDefinition } from "./http-request.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
+import { createMcpTool, createMcpToolDefinition } from "./mcp.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
 
@@ -104,7 +113,8 @@ export type ToolName =
 	| "find"
 	| "ls"
 	| "run_company_tool"
-	| "http_request";
+	| "http_request"
+	| "use_mcp_tool";
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
 	"bash",
@@ -115,6 +125,7 @@ export const allToolNames: Set<ToolName> = new Set([
 	"ls",
 	"run_company_tool",
 	"http_request",
+	"use_mcp_tool",
 ]);
 
 export interface ToolsOptions {
@@ -148,6 +159,8 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createCompanyToolDefinition(cwd, options?.run_company_tool);
 		case "http_request":
 			return createHttpRequestToolDefinition();
+		case "use_mcp_tool":
+			return createMcpToolDefinition(cwd);
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -173,6 +186,8 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createCompanyTool(cwd, options?.run_company_tool);
 		case "http_request":
 			return createHttpRequestTool();
+		case "use_mcp_tool":
+			return createMcpTool(cwd);
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -207,6 +222,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		ls: createLsToolDefinition(cwd, options?.ls),
 		run_company_tool: createCompanyToolDefinition(cwd, options?.run_company_tool),
 		http_request: createHttpRequestToolDefinition(),
+		use_mcp_tool: createMcpToolDefinition(cwd),
 	};
 }
 
@@ -239,5 +255,6 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		ls: createLsTool(cwd, options?.ls),
 		run_company_tool: createCompanyTool(cwd, options?.run_company_tool),
 		http_request: createHttpRequestTool(),
+		use_mcp_tool: createMcpTool(cwd),
 	};
 }

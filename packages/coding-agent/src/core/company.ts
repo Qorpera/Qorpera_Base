@@ -108,6 +108,13 @@ see raw secrets and must never ask the founder to paste them into chat
 (they bind them with \`qorpera company secret set <name>\`). How you store
 what comes back — files, databases, indexes — is entirely your design.
 
+You can also adopt existing tools: declare stdio MCP servers in
+\`connections/mcp.json\` and use them through \`use_mcp_tool\` (omit the
+tool name to list what a server offers). MCP servers run as sandboxed
+subprocesses — no network, no credentials — so they are for local
+capabilities; anything that needs the outside world goes through
+\`http_request\`.
+
 You can build your own capabilities as programs in the company folder
 (\`app/tools/\` by convention) and run them with the \`run_company_tool\`
 tool. That is the sanctioned lane for codified behavior: it runs the
