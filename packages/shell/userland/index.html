@@ -9,11 +9,12 @@
 </head>
 <body>
 <header id="titlebar">
+	<button class="product-mark" id="toggleSidebarButton" type="button" aria-label="Hide navigation panel" aria-controls="primaryNavigation" aria-expanded="true" title="Hide navigation panel"><i></i><i></i></button>
 	<span id="wordmark">Qorpera Base</span>
 	<div></div>
 </header>
 <div id="shell">
-<nav>
+<nav id="primaryNavigation">
 	<div id="hubnav">
 		<!-- No h1 here: the titlebar wordmark already says Qorpera Base. -->
 		<h2>Companies</h2>
@@ -27,7 +28,11 @@
 		<button class="profileRow" onclick="openSettings('general')"><span class="avatar">F</span><span class="profileText">Founder<br><small>Settings</small></span></button>
 	</div>
 	<div id="conav" style="display:none">
-		<div id="navigation"></div>
+		<div class="sidebar-create">
+			<button class="add-department" id="addDepartmentButton" type="button"><span aria-hidden="true">+</span> Add department</button>
+			<button class="reset-panel" id="resetPanelButton" type="button" disabled>Reset Panel</button>
+		</div>
+		<div id="navigation" class="sidebar-scroll" aria-label="Company navigation"></div>
 		<div id="projectionDiagnostics" class="projection-diagnostics"></div>
 		<div class="navspacer"></div>
 		<button class="profileRow" onclick="openSettings('general')"><span class="avatar">F</span><span class="profileText">Founder<br><small>Settings</small></span></button>
@@ -100,7 +105,144 @@
 	</nav>
 	<div id="settingsContent"></div>
 </div>
-<div id="navContext" role="dialog" aria-label="Adjust navigation item height"></div>
+<div class="nav-context-menu" id="navContext" role="menu" hidden>
+	<div class="context-title" id="contextTitle"></div>
+	<div class="context-actions" id="contextActions">
+		<button class="context-action" id="adjustHeightButton" type="button" role="menuitem">Adjust height</button>
+		<button class="context-action" id="focusDepartmentItem" type="button" role="menuitem"><span>Focus department</span><small>Show only this department</small></button>
+		<div class="context-separator" id="contextHeightSeparator"></div>
+		<button class="context-action" id="hideNavigationItem" type="button" role="menuitem"><span>Hide</span><small>Remove from this panel</small></button>
+		<button class="context-action danger" id="archiveNavigationItem" type="button" role="menuitem"><span>Archive</span><small>Move out of active use</small></button>
+	</div>
+	<div class="height-editor" id="heightEditor" hidden>
+		<div class="height-editor-head"><span>Height offset</span><output id="heightValue">Default</output></div>
+		<input id="heightSlider" type="range" min="-12" max="12" step="1" value="0" aria-label="Navigation item height offset in pixels">
+		<div class="height-scale" aria-hidden="true"><span>-12</span><span>Default</span><span>+12</span></div>
+		<div class="height-actions">
+			<button id="heightReset" type="button">Reset</button>
+			<button id="heightDone" type="button">Done</button>
+		</div>
+	</div>
+</div>
+
+<div class="nav-context-menu panel-context-menu" id="panelContextMenu" role="menu" hidden>
+	<div class="context-title">Navigation panel</div>
+	<div class="panel-hidden-heading">Hidden departments</div>
+	<div class="panel-hidden-list" id="panelHiddenDepartments"></div>
+</div>
+
+<div class="modal-backdrop" id="archiveModal" hidden>
+	<section class="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="archiveTitle" aria-describedby="archiveDescription">
+		<header>
+			<div class="eyebrow" id="archiveType">Archive</div>
+			<h2 id="archiveTitle">Archive item?</h2>
+		</header>
+		<p id="archiveDescription">This item will be removed from active navigation.</p>
+		<div class="confirm-note">Archive is a durable company action. This frontend flow does not delete, move, or modify company data.</div>
+		<footer>
+			<button class="secondary-button" id="archiveCancel" type="button">Cancel</button>
+			<button class="danger-button" id="archiveConfirm" type="button">Archive</button>
+		</footer>
+	</section>
+</div>
+
+<div class="modal-backdrop" id="departmentModal" hidden>
+	<form class="department-modal" id="departmentForm" role="dialog" aria-modal="true" aria-labelledby="departmentDialogTitle">
+		<header class="department-modal-head">
+			<div>
+				<div class="eyebrow">Company structure</div>
+				<h2 id="departmentDialogTitle">Add department</h2>
+			</div>
+			<button class="modal-close" id="departmentClose" type="button" aria-label="Close add department window">x</button>
+		</header>
+
+		<div class="wizard-progress" aria-label="Department creation progress">
+			<div class="active" data-progress-step="1"><span>01</span><strong>Type</strong></div>
+			<div data-progress-step="2"><span>02</span><strong>Name</strong></div>
+			<div data-progress-step="3"><span>03</span><strong>Setup</strong></div>
+		</div>
+
+		<div class="department-modal-body">
+			<section class="wizard-step" id="departmentStepType">
+				<header class="wizard-heading">
+					<h3>What kind of department is this?</h3>
+					<p>This changes the setup options shown next. It does not constrain how the department can evolve.</p>
+				</header>
+				<div class="department-type-grid">
+					<button class="choice-card" id="departmentTypeInterface" type="button" aria-pressed="false">
+						<span class="choice-index">01</span>
+						<strong>Company Interface</strong>
+						<small>Operating views for a function, team, or responsibility inside the company.</small>
+						<span class="choice-meta">Template library or scratch</span>
+					</button>
+					<button class="choice-card" id="departmentTypeProduct" type="button" aria-pressed="false">
+						<span class="choice-index">02</span>
+						<strong>Product Development</strong>
+						<small>A software product represented in the controller and connected to its source workspace.</small>
+						<span class="choice-meta">Local or cloned repository</span>
+					</button>
+				</div>
+			</section>
+
+			<section class="wizard-step" id="departmentStepName" hidden>
+				<header class="wizard-heading">
+					<h3>Name the department</h3>
+					<p id="departmentNameHelp">Use the name people expect to see in the company interface.</p>
+				</header>
+				<label class="wizard-field large-field">
+					<span>Department name</span>
+					<input id="departmentName" type="text" autocomplete="off" placeholder="e.g. Customer Operations" maxlength="64">
+					<small>This becomes the department title in the navigation.</small>
+				</label>
+			</section>
+
+			<section class="wizard-step" id="departmentStepSetup" hidden>
+				<div id="interfaceSetup">
+					<header class="wizard-heading">
+						<h3>Choose a starting point</h3>
+						<p>Select a kit from the department library or begin with an empty department.</p>
+					</header>
+					<div class="template-grid" id="templateGrid">
+						<button class="template-card selected" type="button" data-template="blank" aria-pressed="true"><span class="template-swatch blank"></span><strong>Start from scratch</strong><small>An empty department with no categories or pages.</small></button>
+						<button class="template-card" type="button" data-template="finance" aria-pressed="false"><span class="template-swatch finance"></span><strong>Financial Operations</strong><small>Cash position, commitments, forecasting, and reporting.</small></button>
+						<button class="template-card" type="button" data-template="support" aria-pressed="false"><span class="template-swatch support"></span><strong>Customer Support</strong><small>Inbox, issue handling, feedback, and service quality.</small></button>
+						<button class="template-card" type="button" data-template="people" aria-pressed="false"><span class="template-swatch people"></span><strong>People &amp; Culture</strong><small>Hiring, onboarding, policies, and team operations.</small></button>
+					</div>
+				</div>
+
+				<div id="productSetup" hidden>
+					<header class="wizard-heading">
+						<h3>Connect the product workspace</h3>
+						<p>Point the department to an existing local repository or clone one into a local path.</p>
+					</header>
+					<div class="repo-mode" aria-label="Repository connection method">
+						<button class="active" id="localRepoMode" type="button" aria-pressed="true"><strong>Use local repository</strong><small>Connect an existing folder</small></button>
+						<button id="cloneRepoMode" type="button" aria-pressed="false"><strong>Clone repository</strong><small>Clone into a local folder</small></button>
+					</div>
+					<div class="repo-fields" id="localRepoFields">
+						<label class="wizard-field"><span>Local repository path</span><div class="path-field"><input id="repoPath" type="text" placeholder="C:\Products\company-app"><button id="browseRepo" type="button">Browse</button></div></label>
+					</div>
+					<div class="repo-fields" id="cloneRepoFields" hidden>
+						<label class="wizard-field"><span>Repository URL</span><input id="repoUrl" type="url" placeholder="https://github.com/company/product.git"></label>
+						<label class="wizard-field"><span>Local destination</span><div class="path-field"><input id="clonePath" type="text" placeholder="C:\Products\product"><button id="browseClonePath" type="button">Browse</button></div></label>
+					</div>
+					<p class="frontend-note">Repository actions will bind to the trusted product-department command after the backend contract lands.</p>
+				</div>
+			</section>
+		</div>
+
+		<footer class="wizard-actions">
+			<button class="secondary-button" id="departmentBack" type="button" hidden>Back</button>
+			<span></span>
+			<button class="secondary-button" id="departmentCancel" type="button">Cancel</button>
+			<button class="primary-button" id="departmentNext" type="submit" disabled>Continue</button>
+			<button class="primary-button" id="departmentCreate" type="submit" hidden>Create department</button>
+		</footer>
+	</form>
+</div>
+
+<div class="controller-toast" id="controllerToast" role="status" hidden></div>
+<script src="./browser-preview.js"></script>
 <script src="./marked.umd.js"></script>
 <script src="./usage.js"></script>
 <script src="./renderer.js"></script>
