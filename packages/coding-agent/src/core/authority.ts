@@ -129,6 +129,15 @@ export interface GateRecord {
  */
 export const COMPANY_TOOL_NAME = "run_company_tool";
 
+/**
+ * The kernel HTTP lane (Build 3). Outbound contact defaults to the
+ * [identity] class — acting toward the outside world as the company —
+ * unless the founder overrides it in [tools] (including "none"). The
+ * destination allowlist and secret dereferencing are enforced kernel-side
+ * regardless of this classification.
+ */
+export const HTTP_TOOL_NAME = "http_request";
+
 const CONFIGURABLE_EFFECT_CLASSES: ConfigurableEffectClass[] = ["money", "identity", "irreversible", "authority"];
 /**
  * Classes whose effects touch the world outside the company folder — the
@@ -486,6 +495,7 @@ export function classifyToolCall(
 	}
 
 	if (overrideRaw === "none") return undefined;
+	if (toolName === HTTP_TOOL_NAME) return override ?? "identity";
 	return override;
 }
 

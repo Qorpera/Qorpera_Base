@@ -56,6 +56,14 @@ Before any agent starts, the kernel proves the sandbox is real
   refuses to start — an unenforced profile never silently degrades to
   "hope".
 
+Outbound HTTP (Build 3) travels the same trusted pipe: the child submits
+`qorpera_http_request` frames carrying opaque `secret://<name>` references;
+the kernel checks the destination against founder-bound network
+capabilities, dereferences references at the boundary (with kernel-mediated
+OAuth2 refresh), executes with a per-turn request budget and no
+auto-followed redirects, and records the unresolved request identity in the
+trail (`qorpera_kernel_http_request`).
+
 ## Stated gaps (current, honest)
 
 - macOS/Linux verification proves network isolation only; filesystem
@@ -70,3 +78,12 @@ Before any agent starts, the kernel proves the sandbox is real
   identity; such runs are confined identically but carry no signable
   content hash, so they can never take unattended outward effects — that
   is the designed degradation, not a gap.
+- The HTTP lane has no kernel-signed per-request intents yet (the model
+  lane does): enforcement is destination allowlisting, reference-only
+  secrets, replay-proof request ids, per-turn budgets, and trail
+  observation. Intent-signing parity is the planned refinement.
+- Company programs run via `run_company_tool` cannot yet make brokered
+  requests themselves; outbound contact happens through the controller's
+  `http_request` tool calls. The program-side lane (which is what lets a
+  SIGNED program act outward unattended end-to-end) is the remaining
+  Build 3 work item.

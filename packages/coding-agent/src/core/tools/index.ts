@@ -42,6 +42,12 @@ export {
 	type GrepToolOptions,
 } from "./grep.ts";
 export {
+	createHttpRequestTool,
+	createHttpRequestToolDefinition,
+	type HttpRequestToolDetails,
+	type HttpRequestToolInput,
+} from "./http-request.ts";
+export {
 	createLsTool,
 	createLsToolDefinition,
 	type LsOperations,
@@ -82,13 +88,23 @@ import { type CompanyToolOptions, createCompanyTool, createCompanyToolDefinition
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
 import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
+import { createHttpRequestTool, createHttpRequestToolDefinition } from "./http-request.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
-export type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls" | "run_company_tool";
+export type ToolName =
+	| "read"
+	| "bash"
+	| "edit"
+	| "write"
+	| "grep"
+	| "find"
+	| "ls"
+	| "run_company_tool"
+	| "http_request";
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
 	"bash",
@@ -98,6 +114,7 @@ export const allToolNames: Set<ToolName> = new Set([
 	"find",
 	"ls",
 	"run_company_tool",
+	"http_request",
 ]);
 
 export interface ToolsOptions {
@@ -129,6 +146,8 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createLsToolDefinition(cwd, options?.ls);
 		case "run_company_tool":
 			return createCompanyToolDefinition(cwd, options?.run_company_tool);
+		case "http_request":
+			return createHttpRequestToolDefinition();
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -152,6 +171,8 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createLsTool(cwd, options?.ls);
 		case "run_company_tool":
 			return createCompanyTool(cwd, options?.run_company_tool);
+		case "http_request":
+			return createHttpRequestTool();
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -185,6 +206,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		find: createFindToolDefinition(cwd, options?.find),
 		ls: createLsToolDefinition(cwd, options?.ls),
 		run_company_tool: createCompanyToolDefinition(cwd, options?.run_company_tool),
+		http_request: createHttpRequestToolDefinition(),
 	};
 }
 
@@ -216,5 +238,6 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		find: createFindTool(cwd, options?.find),
 		ls: createLsTool(cwd, options?.ls),
 		run_company_tool: createCompanyTool(cwd, options?.run_company_tool),
+		http_request: createHttpRequestTool(),
 	};
 }

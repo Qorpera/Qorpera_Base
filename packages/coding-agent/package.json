@@ -28,6 +28,10 @@
 			"types": "./dist/core/company.d.ts",
 			"import": "./dist/core/company.js"
 		},
+		"./company-connections": {
+			"types": "./dist/core/company-connections.d.ts",
+			"import": "./dist/core/company-connections.js"
+		},
 		"./app-server": {
 			"types": "./dist/core/app-server.d.ts",
 			"import": "./dist/core/app-server.js"

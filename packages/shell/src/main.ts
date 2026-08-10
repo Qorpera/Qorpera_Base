@@ -60,6 +60,7 @@ import {
 	scaffoldProductDepartmentWithRuntimeLock,
 	validateCompanyKernelStorage,
 } from "@qorpera/pi-coding-agent/company";
+import { destinationAllowed, resolveCompanySecret } from "@qorpera/pi-coding-agent/company-connections";
 import {
 	app,
 	BrowserWindow,
@@ -72,6 +73,7 @@ import {
 } from "electron";
 import electronUpdater from "electron-updater";
 import {
+	appendKernelHttpObservation,
 	appendKernelModelObservation,
 	appendKernelMutationObservation,
 	appendKernelObservation,
@@ -117,6 +119,7 @@ import {
 	rememberCompanyGateTrust,
 	revokeCompanyGateTrust,
 } from "./company-kernel-state.ts";
+import { createHttpRequestBroker } from "./http-request-broker.ts";
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
 import { isRendererRequestAllowed, lockDownRendererSession, lockDownRendererWebContents } from "./renderer-boundary.ts";
 import {
@@ -604,6 +607,13 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		ambientModelProviders(),
 		(event) => appendKernelModelObservation(binding, event),
 	);
+	// Generic outbound HTTP (Build 3): destination capabilities and secret
+	// references are resolved kernel-side; every attempt is trail-observed.
+	const httpBroker = createHttpRequestBroker({
+		allowedDestination: (url) => destinationAllowed(root, url),
+		resolveSecret: (name) => resolveCompanySecret(root, name),
+		observe: (event) => appendKernelHttpObservation(binding, event),
+	});
 	let agentDir: string;
 	let args: string[];
 	let kernelSigner: ReturnType<typeof createKernelResponseSigner>;
@@ -705,6 +715,12 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			)
 				return;
 			if (
+				httpBroker.handleFrame(frame, (response) => {
+					if (child.exitCode === null) child.stdin.write(`${JSON.stringify(response)}\n`);
+				})
+			)
+				return;
+			if (
 				applyKernelWriteFrame(
 					frame,
 					binding,
@@ -736,6 +752,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			}
 			if ((frame as { type?: unknown }).type === "agent_settled") {
 				brokeredCredentials.endTurn("completed");
+				httpBroker.endTurn();
 				const result = checkpointCompanyGit(root, gitBaseline, binding.file);
 				gitBaseline = result.baseline;
 				savePendingCompanyCheckpoint(checkpointState, root, gitBaseline, binding.file);
@@ -770,6 +787,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	});
 	child.on("close", () => {
 		try {
+			httpBroker.release();
 			brokeredCredentials.release();
 			const result = checkpointCompanyGit(root, gitBaseline, binding.file);
 			finishPendingCompanyCheckpoint(checkpointState, result);

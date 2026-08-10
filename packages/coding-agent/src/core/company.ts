@@ -41,6 +41,15 @@ import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
 import { getAgentDir } from "../config.ts";
 import {
+	bindCompanySecret,
+	bindNetworkDestination,
+	type CompanySecret,
+	type OAuth2Secret,
+	readCompanyConnections,
+	removeCompanySecret,
+	removeNetworkDestination,
+} from "./company-connections.ts";
+import {
 	EMPTY_PROJECTION,
 	type ProjectionDocument,
 	type ProjectionNode,
@@ -89,6 +98,15 @@ the human; beyond that, use your judgment. Treat the app as something you
 keep in good repair, not something you endlessly rework: when reality and
 its surfaces diverge — new work worth showing, a surface gone stale, a
 capability missing — fix it, and otherwise leave it be.
+
+The outside world is reached through the \`http_request\` tool: HTTPS
+only, and only to destinations the founder has bound as network
+capabilities (\`qorpera company destination add <host>\`). Credentials are
+used by reference — put \`secret://<name>\` in a URL, header, or body and
+the kernel substitutes the real value outside your process; you never
+see raw secrets and must never ask the founder to paste them into chat
+(they bind them with \`qorpera company secret set <name>\`). How you store
+what comes back — files, databases, indexes — is entirely your design.
 
 You can build your own capabilities as programs in the company folder
 (\`app/tools/\` by convention) and run them with the \`run_company_tool\`
@@ -2547,6 +2565,69 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		}
 		return true;
 	}
+	if (sub === "destination") {
+		const action = args[2];
+		const host = args[3];
+		try {
+			const root = companyRootFromCwd();
+			if (action === "add" && host) {
+				bindNetworkDestination(root, host, args.slice(4).join(" ") || undefined);
+				console.log(
+					`Bound destination ${host.toLowerCase()} (HTTPS only). The controller can now reach it via http_request.`,
+				);
+			} else if (action === "remove" && host) {
+				console.log(
+					removeNetworkDestination(root, host) ? `Removed destination ${host}.` : `No such destination: ${host}`,
+				);
+			} else if (action === "list") {
+				const { destinations } = readCompanyConnections(root);
+				if (destinations.length === 0) console.log("No bound network destinations.");
+				for (const destination of destinations) {
+					console.log(
+						`${destination.host}${destination.note ? `  — ${destination.note}` : ""}  (bound ${destination.boundAt})`,
+					);
+				}
+			} else {
+				console.error("Usage: company destination add <host> [note] | remove <host> | list");
+				process.exitCode = 1;
+			}
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "secret") {
+		const action = args[2];
+		const name = args[3];
+		try {
+			const root = companyRootFromCwd();
+			if (action === "set" && name) {
+				const raw = (await readAllStdin()).trim();
+				if (!raw) throw new Error("Provide the secret on stdin (piped or typed then Ctrl+D/Ctrl+Z)");
+				const secret: CompanySecret = args.includes("--oauth2")
+					? { kind: "oauth2", ...(JSON.parse(raw) as Omit<OAuth2Secret, "kind">) }
+					: { kind: "static", value: raw };
+				bindCompanySecret(root, name, secret);
+				console.log(
+					`Bound secret://${name} (${secret.kind}). The value never enters company files, prompts, or the trail.`,
+				);
+			} else if (action === "remove" && name) {
+				console.log(removeCompanySecret(root, name) ? `Removed secret://${name}.` : `No such secret: ${name}`);
+			} else if (action === "list") {
+				const { secretNames } = readCompanyConnections(root);
+				if (secretNames.length === 0) console.log("No bound secrets.");
+				for (const secretName of secretNames) console.log(`secret://${secretName}`);
+			} else {
+				console.error("Usage: company secret set <name> [--oauth2] (value/JSON on stdin) | remove <name> | list");
+				process.exitCode = 1;
+			}
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
 	if (sub === "export") {
 		const target = args[2];
 		if (!target) {
@@ -2588,7 +2669,7 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 	}
 	if (sub !== "init") {
 		console.error(
-			`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir] | export <target-dir> | import <export-dir> <target-dir>`,
+			`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir] | export <target-dir> | import <export-dir> <target-dir> | destination add|remove|list | secret set|remove|list`,
 		);
 		process.exitCode = 1;
 		return true;
@@ -2601,6 +2682,24 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		"\nNext: open the company in Qorpera Base desktop. Gates live in authority.toml; requests appear in inbox/.",
 	);
 	return true;
+}
+
+function companyRootFromCwd(): string {
+	const root = process.cwd();
+	if (!existsSync(join(root, "company.md"))) throw new Error("current directory is not a company root");
+	return root;
+}
+
+function readAllStdin(): Promise<string> {
+	return new Promise((resolvePromise, rejectPromise) => {
+		let data = "";
+		process.stdin.setEncoding("utf-8");
+		process.stdin.on("data", (chunk) => {
+			data += chunk;
+		});
+		process.stdin.once("end", () => resolvePromise(data));
+		process.stdin.once("error", rejectPromise);
+	});
 }
 
 function basenameOf(source: string): string {

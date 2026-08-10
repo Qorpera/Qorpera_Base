@@ -423,6 +423,34 @@ export function appendKernelModelObservation(
 	commitTrailAppend(binding, append);
 }
 
+export function appendKernelHttpObservation(
+	binding: TrailBinding,
+	input: {
+		requestId: string;
+		method: string;
+		host: string;
+		/** The URL exactly as the child sent it — secret references unresolved. */
+		url: string;
+		requestSha256: string;
+		behavior?: { path: string; contentHash: string };
+		status: "started" | "completed" | "failed" | "denied";
+		deniedReason?: string;
+		httpStatus?: number;
+		bodyBytes?: number;
+	},
+): void {
+	const append = stampKernelEntry(binding, {
+		type: "custom",
+		id: randomUUID(),
+		parentId: null,
+		timestamp: "",
+		customType: "qorpera_kernel_http_request",
+		data: input,
+	});
+	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+	commitTrailAppend(binding, append);
+}
+
 export function appendKernelMutationObservation(
 	binding: TrailBinding,
 	input: {

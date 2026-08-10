@@ -172,6 +172,19 @@ describe("classification and evaluation", () => {
 		}
 	});
 
+	it("classifies http_request as identity by default, overridable including none", () => {
+		writeAuthorityToml(`[identity]\nmode = "gate"\n`);
+		const authority = discoverAuthority(root)!;
+		const gated = evaluateToolCall(authority, "http_request", { method: "GET", url: "https://x.example/" }, root);
+		expect(gated.kind).toBe("block");
+		expect((gated as { effectClass: string }).effectClass).toBe("identity");
+
+		writeAuthorityToml(`[identity]\nmode = "gate"\n\n[tools]\nhttp_request = "none"\n`);
+		expect(evaluateToolCall(authority, "http_request", { method: "GET", url: "https://x.example/" }, root).kind).toBe(
+			"allow",
+		);
+	});
+
 	it("honors [tools] overrides including none", () => {
 		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[tools]\ndanger = "irreversible"\nbash = "none"\n`);
 		const authority = discoverAuthority(root)!;
