@@ -19,7 +19,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
 import {
@@ -31,6 +31,7 @@ import {
 	integrateRepo,
 	KERNEL_PROMPT,
 	listProductDepartments,
+	materializeRegisteredProductStorage,
 	planProductWorktree,
 	readProductProtectionInventory,
 	readProductWorktreeAssignment,
@@ -312,25 +313,24 @@ describe("product-development departments", () => {
 		}
 	});
 
-	it("never steals an old lock timestamp while the recorded owner process is alive", () => {
+	it("distinguishes a live lock owner from a reused process ID", () => {
 		scaffoldCompany(root);
 		const lockPath = companyRuntimeLockPath(root);
+		const original = claimCompanyRuntimeLock(root);
+		const liveRecord = JSON.parse(readFileSync(lockPath, "utf-8")) as Record<string, unknown>;
+		releaseCompanyRuntimeLock(original);
 		mkdirSync(dirname(lockPath), { recursive: true });
-		writeFileSync(
-			lockPath,
-			`${JSON.stringify({
-				version: 2,
-				pid: process.pid,
-				root,
-				token: "11111111-1111-4111-8111-111111111111",
-				mode: "runtime",
-			})}\n`,
-			"utf-8",
-		);
+		writeFileSync(lockPath, `${JSON.stringify(liveRecord)}\n`, "utf-8");
 		const old = new Date(Date.now() - 60_000);
 		utimesSync(lockPath, old, old);
 
 		expect(() => claimCompanyRuntimeLock(root)).toThrow("already owned by another live process");
+
+		liveRecord.processInstance = process.platform === "win32" ? "windows:1" : "linux:1";
+		writeFileSync(lockPath, `${JSON.stringify(liveRecord)}\n`, "utf-8");
+		utimesSync(lockPath, old, old);
+		const recovered = claimCompanyRuntimeLock(root);
+		releaseCompanyRuntimeLock(recovered);
 	});
 
 	it("keeps empty registered product storage cloneable", () => {
@@ -390,6 +390,35 @@ describe("product-development departments", () => {
 			sourceHead: expect.stringMatching(/^[a-f0-9]{40,64}$/),
 		});
 		expect(spawnSync("git", ["status", "--porcelain"], { cwd: company, encoding: "utf-8" }).stdout).toBe("");
+	});
+
+	it("materializes and re-integrates a registered product after cloning the company", () => {
+		const company = join(root, "company");
+		const clone = join(root, "company-clone");
+		const source = join(root, "source");
+		mkdirSync(source, { recursive: true });
+		writeFileSync(join(source, "README.md"), "source\n", "utf-8");
+		for (const args of [
+			["init"],
+			["add", "README.md"],
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
+		]) {
+			expect(spawnSync("git", args, { cwd: source, stdio: "ignore" }).status).toBe(0);
+		}
+		scaffoldCompany(company);
+		expect(integrateRepo(company, source, "Widget")).toBe(true);
+		expect(spawnSync("git", ["clone", company, clone], { stdio: "ignore" }).status).toBe(0);
+		expect(existsSync(join(clone, "departments", "widget-development", "repository"))).toBe(false);
+
+		materializeRegisteredProductStorage(clone);
+		expect(readProductProtectionInventory(clone)).toHaveLength(1);
+		const transaction = JSON.parse(
+			readFileSync(join(clone, ".qorpera", "product-integrations", "widget-development.json"), "utf-8"),
+		) as { destination: string; staging: string };
+		expect(isAbsolute(transaction.destination)).toBe(false);
+		expect(isAbsolute(transaction.staging)).toBe(false);
+		expect(integrateRepo(clone, source, "Widget")).toBe(true);
+		expect(existsSync(join(clone, "departments", "widget-development", "repository", ".git"))).toBe(true);
 	});
 
 	it("uses the same runtime lock identity through filesystem aliases", () => {

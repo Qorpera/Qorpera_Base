@@ -168,7 +168,7 @@ any model and any decade.*
 
 const AUTHORITY_TOML_TEMPLATE = `# Authority gates — human-owned. The agent reads this file, never writes it.
 # Modes: "auto" (proceed) | "notify" (proceed, record a notice) | "gate" (require approval).
-# Blocked effects file requests in inbox/; edit their status line to approve or deny.
+# Blocked effects file requests in inbox/; resolve them through Base's native review.
 
 [money]
 mode = "gate"
@@ -201,7 +201,7 @@ Gate requests and human steering land here.
 
 - \`gate-*.md\` — a blocked effect awaiting native founder review in Base.
   Editing its \`status:\` line does not create an executable capability.
-  Tool-call approvals are single-use; extension-load approvals are durable
+  Tool-call approvals are single-use; extension-load trust is process-local
   for the locally reviewed content hash.
 - \`notices.md\` — effects that proceeded under notify mode.
 - \`messages/msg-*.md\` — agent-authored questions, proposals, and updates.
@@ -383,12 +383,14 @@ export interface CompanyRuntimeLock {
 	path: string;
 	root: string;
 	token: string;
+	processInstance: string;
 	release: () => void;
 }
 
 interface CompanyLockRecord {
-	version: 2;
+	version: 3;
 	pid: number;
+	processInstance: string;
 	root: string;
 	token: string;
 	mode: "runtime" | "product-registration";
@@ -435,12 +437,46 @@ function lockOwnerProcessIsAlive(pid: number): boolean {
 	}
 }
 
+function processInstanceIdentity(pid: number): string | undefined {
+	if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+	if (process.platform === "win32") {
+		const result = spawnSync(
+			"powershell.exe",
+			[
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				`$p = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop; if ($null -eq $p) { exit 3 }; [Console]::Out.Write($p.CreationDate.ToUniversalTime().Ticks)`,
+			],
+			{ encoding: "utf-8", shell: false, timeout: 5_000, windowsHide: true },
+		);
+		const ticks = result.status === 0 ? result.stdout.trim() : "";
+		return /^\d{10,}$/.test(ticks) ? `windows:${ticks}` : undefined;
+	}
+	if (process.platform === "linux") {
+		try {
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+			const fields = stat
+				.slice(stat.lastIndexOf(")") + 2)
+				.trim()
+				.split(/\s+/);
+			const startTicks = fields[19];
+			return /^\d+$/.test(startTicks ?? "") ? `linux:${startTicks}` : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	return undefined;
+}
+
 function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): CompanyRuntimeLock {
 	const root = canonicalCompanyRoot(rootDir);
 	const path = companyRuntimeLockPath(root);
 	mkdirSync(dirname(path), { recursive: true });
 	const token = randomUUID();
-	const record: CompanyLockRecord = { version: 2, pid: process.pid, root, token, mode };
+	const processInstance = processInstanceIdentity(process.pid);
+	if (!processInstance) throw new Error("Could not establish the company lock process identity");
+	const record: CompanyLockRecord = { version: 3, pid: process.pid, processInstance, root, token, mode };
 	for (let attempt = 0; attempt < 3; attempt++) {
 		let descriptor: number | undefined;
 		try {
@@ -453,6 +489,7 @@ function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): C
 				path,
 				root,
 				token,
+				processInstance,
 				release: () => {
 					const heartbeat = lockHeartbeats.get(lock);
 					if (!heartbeat) return;
@@ -494,9 +531,11 @@ function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): C
 				throw new Error("Stale company transaction lock has invalid owner identity", { cause: readError });
 			}
 			if (
-				owner.version !== 2 ||
+				owner.version !== 3 ||
 				!Number.isSafeInteger(owner.pid) ||
 				owner.pid! <= 0 ||
+				typeof owner.processInstance !== "string" ||
+				!/^(?:windows|linux):\d+$/.test(owner.processInstance) ||
 				typeof owner.token !== "string" ||
 				!/^[0-9a-f-]{36}$/i.test(owner.token) ||
 				(owner.mode !== "runtime" && owner.mode !== "product-registration") ||
@@ -505,7 +544,13 @@ function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): C
 				throw new Error("Stale company transaction lock has invalid owner identity");
 			}
 			if (lockOwnerProcessIsAlive(owner.pid!)) {
-				throw new Error("Company transaction is already owned by another live process", { cause: error });
+				const liveInstance = processInstanceIdentity(owner.pid!);
+				if (!liveInstance) {
+					throw new Error("Could not validate the live company lock owner", { cause: error });
+				}
+				if (liveInstance === owner.processInstance) {
+					throw new Error("Company transaction is already owned by another live process", { cause: error });
+				}
 			}
 			try {
 				renameSync(path, `${path}.stale-${Date.now()}-${randomUUID()}`);
@@ -560,9 +605,10 @@ function assertRuntimeLock(root: string, lock: CompanyRuntimeLock): void {
 		throw new Error("desktop product transaction has no valid runtime lock", { cause: error });
 	}
 	if (
-		record.version !== 2 ||
+		record.version !== 3 ||
 		record.mode !== "runtime" ||
 		record.pid !== process.pid ||
+		record.processInstance !== lock.processInstance ||
 		record.token !== lock.token ||
 		normalizedPath(record.root ?? "") !== normalizedPath(canonicalRoot)
 	) {
@@ -1046,6 +1092,21 @@ export function readProductProtectionInventory(
 	});
 }
 
+/** Recreate derived empty product storage roots after cloning a company. */
+export function materializeRegisteredProductStorage(rootDir: string): void {
+	const root = canonicalCompanyRoot(rootDir);
+	for (const id of readProductRegistry(root).products) {
+		canonicalDirectory(root, join("departments", id));
+		for (const relativePath of [join("departments", id, "repository"), join("departments", id, "worktrees")]) {
+			const target = join(root, relativePath);
+			if (!existsSync(target)) mkdirSync(target);
+			canonicalDirectory(root, relativePath);
+			const keep = join(target, ".gitkeep");
+			if (readdirIsEmpty(target)) writeFileSync(keep, "", { encoding: "utf-8", flag: "wx" });
+		}
+	}
+}
+
 /** Materialize the standard product-development department while its caller owns the company transaction lock. */
 function scaffoldProductDepartmentUnlocked(
 	rootDir: string,
@@ -1519,7 +1580,7 @@ function cloneInto(source: string, destination: string): boolean {
 }
 
 interface ProductIntegrationRecord {
-	version: 1;
+	version: 2;
 	productId: string;
 	source: string;
 	destination: string;
@@ -1576,11 +1637,13 @@ function readProductIntegrationRecord(path: string): ProductIntegrationRecord | 
 	if (!existsSync(path)) return undefined;
 	const record = JSON.parse(readFileSync(path, "utf-8")) as Partial<ProductIntegrationRecord>;
 	if (
-		record.version !== 1 ||
+		record.version !== 2 ||
 		typeof record.productId !== "string" ||
 		typeof record.source !== "string" ||
 		typeof record.destination !== "string" ||
 		typeof record.staging !== "string" ||
+		isAbsolute(record.destination) ||
+		isAbsolute(record.staging) ||
 		(record.status !== "pending" && record.status !== "completed") ||
 		(record.sourceHead !== undefined && typeof record.sourceHead !== "string")
 	) {
@@ -1603,13 +1666,15 @@ function integrateRepoUnlocked(
 	const transactionPath = productIntegrationRecordPath(root, department.id);
 	const stagingRoot = productIntegrationStagingRoot(root);
 	let transaction = readProductIntegrationRecord(transactionPath);
+	let transactionStaging: string | undefined;
 	if (transaction) {
+		transactionStaging = resolve(root, transaction.staging);
 		if (
 			transaction.productId !== department.id ||
 			normalizedRepositorySource(transaction.source) !== normalizedRepositorySource(from) ||
-			normalizedPath(transaction.destination) !== normalizedPath(destination) ||
-			normalizedPath(dirname(resolve(transaction.staging))) !== normalizedPath(stagingRoot) ||
-			!/^[a-f0-9]{12}$/i.test(basename(transaction.staging))
+			transaction.destination.replace(/\\/g, "/") !== department.repositoryPath.replace(/\\/g, "/") ||
+			normalizedPath(dirname(transactionStaging)) !== normalizedPath(stagingRoot) ||
+			!/^[a-f0-9]{12}$/i.test(basename(transactionStaging))
 		) {
 			throw new Error("Existing product integration transaction does not match the founder-reviewed source");
 		}
@@ -1619,7 +1684,7 @@ function integrateRepoUnlocked(
 			throw new Error(`${department.repositoryPath} does not match the founder-reviewed repository source`);
 		}
 		if (transaction?.status === "pending") {
-			if (existsSync(transaction.staging)) {
+			if (transactionStaging && existsSync(transactionStaging)) {
 				throw new Error("Pending product integration has both staged and promoted repositories");
 			}
 			transaction.status = "completed";
@@ -1639,31 +1704,34 @@ function integrateRepoUnlocked(
 
 	mkdirSync(dirname(transactionPath), { recursive: true });
 	if (!transaction) {
+		const stagingName = randomUUID().replace(/-/g, "").slice(0, 12);
 		transaction = {
-			version: 1,
+			version: 2,
 			productId: department.id,
 			source: from,
-			destination,
-			staging: join(stagingRoot, randomUUID().replace(/-/g, "").slice(0, 12)),
+			destination: department.repositoryPath.replace(/\\/g, "/"),
+			staging: join(".qorpera", ".p", stagingName).replace(/\\/g, "/"),
 			status: "pending",
 		};
 		writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+		transactionStaging = join(stagingRoot, stagingName);
 	}
 
-	if (!existsSync(transaction.staging)) {
-		if (!cloneInto(from, transaction.staging)) {
+	if (!transactionStaging) throw new Error("Product integration transaction has no staging identity");
+	if (!existsSync(transactionStaging)) {
+		if (!cloneInto(from, transactionStaging)) {
 			console.error(
 				`Could not clone ${from}. The recoverable transaction remains at ${transactionPath}; retry with the same source.`,
 			);
 			return false;
 		}
 	}
-	if (!stagedCloneMatchesSource(transaction.staging, from)) {
+	if (!stagedCloneMatchesSource(transactionStaging, from)) {
 		throw new Error("Staged product repository is incomplete or does not match the founder-reviewed source");
 	}
 	assertProductTransactionStorage(storage);
 	if (existsSync(destination)) rmSync(destination, { recursive: true });
-	renameSync(transaction.staging, destination);
+	renameSync(transactionStaging, destination);
 	canonicalDirectory(root, department.repositoryPath);
 	if (!repositoryMatchesSource(destination, from)) {
 		throw new Error("Promoted product repository changed identity during integration");

@@ -27,6 +27,7 @@ interface PendingGateRequest {
 }
 
 const pendingGateRequests = new Map<string, PendingGateRequest>();
+const trustedGateHashes = new Set<string>();
 const consumedIntentNonces = new Set<string>();
 const publicKeyDer = process.env.QORPERA_KERNEL_PUBLIC_KEY;
 const kernelPublicKey = publicKeyDer
@@ -208,6 +209,18 @@ export function requestKernelGateConsumption(file: string, hash: string): Promis
 			})}\n`,
 		);
 	});
+}
+
+export function hasKernelGateTrust(hash: string): boolean {
+	return trustedGateHashes.has(hash);
+}
+
+/** Establish process-local durable trust through a kernel-consumed approval. */
+export async function requestKernelGateTrust(file: string, hash: string): Promise<boolean> {
+	if (trustedGateHashes.has(hash)) return true;
+	const granted = await requestKernelGateConsumption(file, hash);
+	if (granted) trustedGateHashes.add(hash);
+	return granted;
 }
 
 export function requestKernelMessageCreation(file: string, content: string): Promise<boolean> {

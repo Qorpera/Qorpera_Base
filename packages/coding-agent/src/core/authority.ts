@@ -12,10 +12,10 @@
  *
  * Gate mechanics are async by design: a blocked effect files a request at
  * `<root>/inbox/gate-*.md` and returns a block reason; the agent keeps
- * working elsewhere. A human resolves the request by editing its `status:`
- * line to `approved` or `denied`. Tool-call approvals are single-use
- * (consumed on the next matching call); extension-load approvals are durable
- * for the approved content hash (new content = new hash = new gate).
+ * working elsewhere. Base resolves the request through exact native review.
+ * Tool-call approvals are single-use (consumed on the next matching call);
+ * extension and behavior trust is process-local and durable for the reviewed
+ * content hash (new content = new hash = new gate).
  *
  * Without an `authority.toml` anywhere above the working directory, every
  * decision is `allow` — Base behaves like the stock harness.
@@ -30,7 +30,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { requestKernelGateConsumption } from "./kernel-broker.ts";
+import { hasKernelGateTrust, requestKernelGateConsumption, requestKernelGateTrust } from "./kernel-broker.ts";
 
 export type ConfigurableEffectClass = "money" | "identity" | "irreversible" | "authority";
 export type EffectClass = ConfigurableEffectClass | "product_code";
@@ -62,6 +62,7 @@ export type AuthorityDecision =
 			attended?: true;
 			actor?: CompanyActor;
 			behavior?: BehaviorSignature;
+			gateId?: string;
 			kernelGate?: { file: string; hash: string; id: string; effectClass: EffectClass };
 	  }
 	| { kind: "block"; reason: string; effectClass: EffectClass; gateId?: string; behavior?: BehaviorSignature };
@@ -105,6 +106,8 @@ export interface BehaviorSignature {
 	signed: boolean;
 	gateId?: string;
 	gateStatus?: "pending" | "denied";
+	/** Approved file awaiting proof from the live local kernel. */
+	kernelTrust?: { file: string; hash: string };
 }
 
 export type GateStatus = "pending" | "approved" | "denied" | "consumed";
@@ -505,10 +508,8 @@ function parseGateFile(filePath: string): GateRecord | undefined {
 	} catch {
 		return undefined;
 	}
-	// Founders resolve gates by editing status: in ANY editor — Windows
-	// tools (Notepad, PowerShell 5.1 Set-Content -Encoding utf8) prepend a
-	// BOM, which would silently hide the record and re-file the request
-	// (hit live, 2026-08-05). Strip it before anchoring the frontmatter.
+	// Strip a possible BOM before anchoring the canonical frontmatter. The
+	// file is evidence only; Base's native kernel review mints authority.
 	const frontmatter = content.replace(/^\uFEFF/, "").match(/^---\r?\n([\s\S]*?)\r?\n---/);
 	if (!frontmatter) return undefined;
 	const fields = new Map<string, string>();
@@ -581,7 +582,7 @@ export function writeGateRequest(authority: Authority, input: GateRequestInput):
 	const body = [
 		"---",
 		`id: ${id}`,
-		"status: pending   # change to: approved | denied",
+		"status: pending   # resolved by Qorpera Base native review",
 		`class: ${input.effectClass}`,
 		`tool: ${input.toolName}`,
 		`hash: ${input.hash}`,
@@ -599,7 +600,7 @@ export function writeGateRequest(authority: Authority, input: GateRequestInput):
 		"",
 		"**If denied:** the agent will not perform this action and will pursue another path.",
 		"",
-		"To resolve, edit the `status:` line above to `approved` or `denied`.",
+		"Resolve this request through Qorpera Base's native review UI.",
 		"",
 	].join("\n");
 	const brokerToken = process.env.QORPERA_TRAIL_BROKER_TOKEN;
@@ -663,8 +664,9 @@ function summarizeCall(toolName: string, args: unknown): string {
  * authority root (built-ins, SDK tools, user-global extensions — outside the
  * company's signature regime, mirroring extension-load gating's carve-out).
  *
- * Signatures are durable per content hash: approved (or consumed) covers
- * exactly that code, forever; any edit is a new hash and a new request. The
+ * Signatures are process-local per content hash: a native-reviewed kernel
+ * capability covers exactly that code for this child; any edit or child
+ * restart requires trust to be established again. The
  * hash is computed from the file as it is NOW — with jiti hot-reload this
  * tracks what actually executes next; a stale in-memory registration from a
  * since-edited file resolves to the new (unsigned) content, which errs
@@ -684,9 +686,21 @@ function resolveBehaviorSignature(
 		return undefined;
 	}
 	const path = relative(authority.root, resolved).split(sep).join("/");
-	const records = findGateRecords(authority, requestHash("behavior_signature", { contentHash, path }));
-	const signedRecord = records.find((record) => record.status === "approved" || record.status === "consumed");
-	if (signedRecord) return { path, contentHash, signed: true, gateId: signedRecord.id };
+	const hash = requestHash("behavior_signature", { contentHash, path });
+	const records = findGateRecords(authority, hash);
+	if (hasKernelGateTrust(hash)) {
+		return { path, contentHash, signed: true, gateId: records.find((record) => record.hash === hash)?.id };
+	}
+	const approved = records.find((record) => record.status === "approved");
+	if (approved) {
+		return {
+			path,
+			contentHash,
+			signed: false,
+			gateId: approved.id,
+			kernelTrust: { file: basename(approved.filePath), hash: approved.hash },
+		};
+	}
 	const pending = records.find((record) => record.status === "pending");
 	if (pending) return { path, contentHash, signed: false, gateId: pending.id, gateStatus: "pending" };
 	const denied = records.find((record) => record.status === "denied");
@@ -828,7 +842,13 @@ export function evaluateToolCall(
 	// code acting with nobody present. Attended calls fall through to the
 	// normal per-action gates (presence is the intent source there).
 	const behavior = resolveBehaviorSignature(authority, context?.behaviorPath);
-	if (behavior && !behavior.signed && !context?.attended && OUTWARD_CLASSES.has(effectClass)) {
+	if (
+		behavior &&
+		!behavior.signed &&
+		!behavior.kernelTrust &&
+		!context?.attended &&
+		OUTWARD_CLASSES.has(effectClass)
+	) {
 		return blockForUnsignedBehavior(authority, toolName, args, effectClass, behavior);
 	}
 
@@ -873,7 +893,7 @@ export function evaluateToolCall(
 			effectClass,
 			gateId: denied.id,
 			behavior,
-			reason: `Authority gate [${effectClass}]: request ${denied.id} was DENIED by the human. Do not retry this action; pursue another path. (A human can still edit the gate file to approved.)`,
+			reason: `Authority gate [${effectClass}]: request ${denied.id} was DENIED by the founder. Do not retry this action; pursue another path unless the founder reopens it for native review.`,
 		};
 	}
 	const gateId = writeGateRequest(authority, {
@@ -899,35 +919,54 @@ export async function finalizeAuthorityDecision(
 	toolName: string,
 	args: unknown,
 ): Promise<AuthorityDecision> {
-	if (decision.kind !== "allow" || !decision.kernelGate) return decision;
-	const gate = decision.kernelGate;
+	if (decision.kind !== "allow") return decision;
+	let finalized = decision;
+	if (finalized.behavior?.kernelTrust) {
+		const trust = finalized.behavior.kernelTrust;
+		const granted = await requestKernelGateTrust(trust.file, trust.hash);
+		if (!granted) {
+			return {
+				kind: "block",
+				effectClass: finalized.effectClass ?? "authority",
+				gateId: finalized.behavior.gateId,
+				behavior: { ...finalized.behavior, signed: false, kernelTrust: undefined },
+				reason: `Signature rule: ${finalized.behavior.path} has no live local kernel trust. Review its signature request again in Base.`,
+			};
+		}
+		finalized = {
+			...finalized,
+			behavior: { ...finalized.behavior, signed: true, kernelTrust: undefined },
+		};
+	}
+	if (!finalized.kernelGate) return finalized;
+	const gate = finalized.kernelGate;
 	const granted = await requestKernelGateConsumption(gate.file, gate.hash);
 	if (!granted) {
 		return {
 			kind: "block",
 			effectClass: gate.effectClass,
 			gateId: gate.id,
-			behavior: decision.behavior,
+			behavior: finalized.behavior,
 			reason: `Authority gate [${gate.effectClass}]: ${gate.id} was already consumed or is no longer approved. Request a fresh approval before retrying.`,
 		};
 	}
 	appendNotice(authority, `[${gate.effectClass}] ${gate.id} consumed: ${summarizeCall(toolName, args)}`);
-	const { kernelGate: _kernelGate, ...finalized } = decision;
-	return finalized;
+	const { kernelGate: _kernelGate, ...completed } = finalized;
+	return { ...completed, gateId: gate.id };
 }
 
 /**
  * Extension-load gating. Project-local extensions under the authority root
  * are agent-authorable code that runs with full user permissions (see
  * SEAMS.md c.3) — loading one is an [authority]-class effect. Approvals are
- * durable per content hash: approving a file approves that exact code;
- * changed content is a new request.
+ * process-local per content hash: native review establishes live kernel trust
+ * for that exact code; changed content or a new child requires fresh trust.
  */
-export function filterExtensionPaths(
+export async function filterExtensionPaths(
 	authority: Authority,
 	paths: string[],
 	agentDir: string,
-): { allowed: string[]; blocked: Array<{ path: string; gateId: string; pending: boolean }> } {
+): Promise<{ allowed: string[]; blocked: Array<{ path: string; gateId: string; pending: boolean }> }> {
 	const allowed: string[] = [];
 	const blocked: Array<{ path: string; gateId: string; pending: boolean }> = [];
 	for (const path of paths) {
@@ -949,10 +988,15 @@ export function filterExtensionPaths(
 			path: relative(authority.root, resolved).split(sep).join("/"),
 			contentHash,
 		});
-		const records = findGateRecords(authority, hash);
-		const approvedOrConsumed = records.find((record) => record.status === "approved" || record.status === "consumed");
-		if (approvedOrConsumed) {
+		if (hasKernelGateTrust(hash)) {
 			allowed.push(path);
+			continue;
+		}
+		const records = findGateRecords(authority, hash);
+		const approved = records.find((record) => record.status === "approved");
+		if (approved) {
+			if (await requestKernelGateTrust(basename(approved.filePath), approved.hash)) allowed.push(path);
+			else blocked.push({ path, gateId: approved.id, pending: true });
 			continue;
 		}
 		const pending = records.find((record) => record.status === "pending");

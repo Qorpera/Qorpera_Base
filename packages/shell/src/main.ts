@@ -44,6 +44,7 @@ import {
 	integrateRepoWithRuntimeLock,
 	listCompanies,
 	listProductDepartments,
+	materializeRegisteredProductStorage,
 	type ProductDepartment,
 	type ProductWorktree,
 	planProductWorktree,
@@ -1008,6 +1009,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 	try {
 		validateCompanyKernelStorage(root);
 		assertUserlandStorage(join(root, "userland"));
+		materializeRegisteredProductStorage(root);
 		readProductProtectionInventory(root);
 		const checkpointDir = join(dirname(sandboxConfigDir(app.getPath("userData"), root, "controller")), "checkpoints");
 		reconcilePendingCompanyCheckpoints(checkpointDir, root);
@@ -1648,6 +1650,7 @@ app.whenReady().then(async () => {
 						operation: path,
 						exactReview,
 						approved: false,
+						phase: "decision",
 					});
 				}
 				return { ok: false, status: 403, text: "cancelled" };
@@ -1655,21 +1658,45 @@ app.whenReady().then(async () => {
 			if (gateDocument && kernelGateReviewDocument(runtime.root, (body as { file: string }).file) !== gateDocument) {
 				return { ok: false, status: 409, text: "gate changed after review" };
 			}
-			const response = await fetch(`http://127.0.0.1:${runtime.backendPort}${path}`, {
-				method: "POST",
-				headers: { "content-type": "application/json", "x-qorpera-token": runtime.backendToken },
-				body: serialized,
-			});
-			if (response.ok && path === "/api/gate" && (body as { action?: unknown }).action === "approved") {
-				const hash = gateDocument?.match(/^hash:\s*([a-f0-9]{64})$/m)?.[1];
-				const file = (body as { file?: unknown }).file;
-				if (hash && typeof file === "string") childApprovedGates.get(reviewedChild)?.add(`${file}:${hash}`);
-			}
 			if (trailBinding) {
 				appendKernelMutationObservation(trailBinding, {
 					operation: path,
 					exactReview,
 					approved: true,
+					phase: "decision",
+				});
+			}
+			let gateCapability: { approvals: Set<string>; key: string } | undefined;
+			if (gateDocument && path === "/api/gate" && (body as { action?: unknown }).action === "approved") {
+				const hash = gateDocument?.match(/^hash:\s*([a-f0-9]{64})$/m)?.[1];
+				const file = (body as { file?: unknown }).file;
+				const approvals = childApprovedGates.get(reviewedChild);
+				if (!hash || typeof file !== "string" || !approvals) {
+					return { ok: false, status: 409, text: "gate capability target is unavailable" };
+				}
+				gateCapability = { approvals, key: `${file}:${hash}` };
+				// Mint before the backend transition so child stdout can never observe
+				// an approved file without its matching one-shot capability.
+				approvals.add(gateCapability.key);
+			}
+			let response: Response;
+			try {
+				response = await fetch(`http://127.0.0.1:${runtime.backendPort}${path}`, {
+					method: "POST",
+					headers: { "content-type": "application/json", "x-qorpera-token": runtime.backendToken },
+					body: serialized,
+				});
+			} catch (error) {
+				if (gateCapability) gateCapability.approvals.delete(gateCapability.key);
+				throw error;
+			}
+			if (!response.ok && gateCapability) gateCapability.approvals.delete(gateCapability.key);
+			if (trailBinding) {
+				appendKernelMutationObservation(trailBinding, {
+					operation: path,
+					exactReview,
+					approved: true,
+					phase: "result",
 					resultStatus: response.status,
 				});
 			}

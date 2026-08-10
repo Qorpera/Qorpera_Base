@@ -149,6 +149,7 @@ describe("kernel-bound agent runtime", () => {
 		);
 		expect(response).toMatchObject({ granted: true });
 		expect(readFileSync(gatePath, "utf-8")).toContain("status: consumed");
+		expect(readFileSync(binding.path, "utf-8")).toContain('"transition":"consumed"');
 		response = undefined;
 		applyKernelWriteFrame(
 			{
@@ -187,6 +188,7 @@ describe("kernel-bound agent runtime", () => {
 		);
 		expect(response).toMatchObject({ granted: false });
 		expect(readFileSync(gatePath, "utf-8")).toContain("status: pending");
+		expect(readFileSync(binding.path, "utf-8")).toContain('"transition":"orphan-reset"');
 
 		const messageContent = "# Product question\n\nShould we ship this?\n";
 		const messageHash = createHash("sha256").update(messageContent).digest("hex");

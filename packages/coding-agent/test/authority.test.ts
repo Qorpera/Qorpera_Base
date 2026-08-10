@@ -14,6 +14,7 @@ import {
 	discoverAuthority,
 	evaluateToolCall,
 	filterExtensionPaths,
+	finalizeAuthorityDecision,
 	findGateRecords,
 	readAuthorityConfig,
 	requestHash,
@@ -457,7 +458,7 @@ describe("the signature rule (behavior signatures, EVOLUTION.md §3)", () => {
 		return path;
 	}
 
-	it("gates unattended outward effects from unsigned code; a signature is durable for that exact content", () => {
+	it("does not trust a file-only behavior approval without the live kernel", async () => {
 		writeAuthorityToml(`[identity]\nmode = "auto"\n\n[tools]\nsend_update = "identity"\n`);
 		const authority = discoverAuthority(root)!;
 		const behaviorPath = writeBehaviorFile();
@@ -473,13 +474,14 @@ describe("the signature rule (behavior signatures, EVOLUTION.md §3)", () => {
 		const second = evaluateToolCall(authority, "send_update", { to: "list" }, root, context);
 		expect((second as { gateId: string }).gateId).toBe(gateId);
 
-		// Signed: durable — repeated calls and DIFFERENT actions from the same
-		// content all pass (class mode auto governs from here).
+		// A copied or hand-edited approval is only a provisional decision until
+		// the local kernel proves and consumes its matching capability.
 		approveGate(gateId);
-		const third = evaluateToolCall(authority, "send_update", { to: "list" }, root, context);
-		expect(third.kind).toBe("allow");
-		expect(third.behavior?.signed).toBe(true);
-		expect(evaluateToolCall(authority, "send_update", { to: "other" }, root, context).kind).toBe("allow");
+		const provisional = evaluateToolCall(authority, "send_update", { to: "list" }, root, context);
+		const third = await finalizeAuthorityDecision(authority, provisional, "send_update", { to: "list" });
+		expect(third.kind).toBe("block");
+		expect(third.behavior?.signed).toBe(false);
+		expect((third as { reason: string }).reason).toContain("no live local kernel trust");
 
 		// Edited code = new hash = new signature request.
 		writeBehaviorFile("export default () => { console.log('changed'); };");
@@ -495,7 +497,7 @@ describe("the signature rule (behavior signatures, EVOLUTION.md §3)", () => {
 		expect(evaluateToolCall(authority, "send_update", { to: "list" }, root, context).kind).toBe("allow");
 	});
 
-	it("signature is necessary, not sufficient — per-action class gates still apply to signed code", () => {
+	it("requires kernel trust even when behavior and per-action files are both approved", async () => {
 		writeAuthorityToml(`[identity]\nmode = "gate"\n\n[tools]\nsend_update = "identity"\n`);
 		const authority = discoverAuthority(root)!;
 		const context = { attended: false, behaviorPath: writeBehaviorFile() };
@@ -505,10 +507,19 @@ describe("the signature rule (behavior signatures, EVOLUTION.md §3)", () => {
 		expect((first as { reason: string }).reason).toContain("Signature rule");
 		approveGate((first as { gateId: string }).gateId);
 
-		// Signed code still hits the per-action identity gate.
 		const second = evaluateToolCall(authority, "send_update", { to: "list" }, root, context);
 		expect(second.kind).toBe("block");
 		expect((second as { reason: string }).reason).toContain("Authority gate [identity]");
+		approveGate((second as { gateId: string }).gateId);
+
+		const third = await finalizeAuthorityDecision(
+			authority,
+			evaluateToolCall(authority, "send_update", { to: "list" }, root, context),
+			"send_update",
+			{ to: "list" },
+		);
+		expect(third.kind).toBe("block");
+		expect((third as { reason: string }).reason).toContain("no live local kernel trust");
 	});
 
 	it("inward classes do not require signatures", () => {
@@ -656,7 +667,7 @@ describe("agent-session mount", () => {
 });
 
 describe("project extension gating", () => {
-	it("blocks unapproved project extensions, loads them after durable approval, re-gates on content change", () => {
+	it("blocks project extensions until approval is proven by the live kernel", async () => {
 		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
 		const authority = discoverAuthority(root)!;
 		const agentDir = join(root, "agent-home");
@@ -670,23 +681,22 @@ describe("project extension gating", () => {
 		writeFileSync(userExtension, "export default () => {};", "utf-8");
 
 		// User-global extensions pass; project-local ones gate.
-		const first = filterExtensionPaths(authority, [extensionPath, userExtension], agentDir);
+		const first = await filterExtensionPaths(authority, [extensionPath, userExtension], agentDir);
 		expect(first.allowed).toEqual([userExtension]);
 		expect(first.blocked.length).toBe(1);
 		const gateId = first.blocked[0].gateId;
 
 		// Pending: still blocked, no duplicate request.
-		const second = filterExtensionPaths(authority, [extensionPath], agentDir);
+		const second = await filterExtensionPaths(authority, [extensionPath], agentDir);
 		expect(second.blocked[0].gateId).toBe(gateId);
 
-		// Approval is durable per content hash: allowed repeatedly.
+		// File-only approval remains blocked without a signed kernel response.
 		approveGate(gateId);
-		expect(filterExtensionPaths(authority, [extensionPath], agentDir).allowed).toEqual([extensionPath]);
-		expect(filterExtensionPaths(authority, [extensionPath], agentDir).allowed).toEqual([extensionPath]);
+		expect((await filterExtensionPaths(authority, [extensionPath], agentDir)).blocked[0].gateId).toBe(gateId);
 
 		// Changed content = new hash = new gate.
 		writeFileSync(extensionPath, "export default () => { console.log('changed'); };", "utf-8");
-		const afterChange = filterExtensionPaths(authority, [extensionPath], agentDir);
+		const afterChange = await filterExtensionPaths(authority, [extensionPath], agentDir);
 		expect(afterChange.blocked.length).toBe(1);
 		expect(afterChange.blocked[0].gateId).not.toBe(gateId);
 	});

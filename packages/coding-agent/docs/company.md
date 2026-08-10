@@ -129,6 +129,10 @@ session and not through a one-off approval. A product-worker can modify only
 its kernel-assigned worktree. Before a resumed worker starts, the kernel
 commits staged, working, untracked, and deleted founder state in that product
 repository; it also checkpoints any uncommitted worker result on settle/exit.
+Product repositories and worktrees remain outside company Git. Their
+registered roots are rematerialized from the product inventory when a company
+clone opens, and root-relative integration records allow the reviewed source
+to be integrated again without carrying machine-specific paths.
 New Chat from the department starts a new
 worktree; the ordinary new-chat action continues the currently assigned
 worktree. Product sessions remain in the company `trail/` and are named

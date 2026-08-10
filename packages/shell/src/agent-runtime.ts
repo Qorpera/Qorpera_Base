@@ -429,6 +429,7 @@ export function appendKernelMutationObservation(
 		operation: string;
 		exactReview: string;
 		approved: boolean;
+		phase: "decision" | "result";
 		resultStatus?: number;
 	},
 ): void {
@@ -438,6 +439,27 @@ export function appendKernelMutationObservation(
 		parentId: null,
 		timestamp: "",
 		customType: "qorpera_kernel_founder_mutation",
+		data: input,
+	});
+	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+	commitTrailAppend(binding, append);
+}
+
+function appendKernelGateObservation(
+	binding: TrailBinding,
+	input: {
+		requestId?: string;
+		file: string;
+		hash: string;
+		transition: "created" | "consumed" | "orphan-reset";
+	},
+): void {
+	const append = stampKernelEntry(binding, {
+		type: "custom",
+		id: randomUUID(),
+		parentId: null,
+		timestamp: "",
+		customType: "qorpera_kernel_gate_transition",
 		data: input,
 	});
 	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
@@ -529,7 +551,7 @@ function canonicalGateContent(
 	return [
 		"---",
 		`id: ${gate.id}`,
-		"status: pending   # change to: approved | denied",
+		"status: pending   # resolved by Qorpera Base native review",
 		`class: ${effectClass}`,
 		`tool: ${gate.toolName}`,
 		`hash: ${gate.hash}`,
@@ -548,7 +570,7 @@ function canonicalGateContent(
 		"",
 		"**If denied:** the agent will not perform this action and will pursue another path.",
 		"",
-		"To resolve, edit the `status:` line above to `approved` or `denied`.",
+		"Resolve this request through Qorpera Base's native review UI.",
 		"",
 	].join("\n");
 }
@@ -600,10 +622,19 @@ export function applyKernelWriteFrame(
 		if (!frame.gate) return true;
 		const content = canonicalGateContent(root, binding, frame.gate);
 		if (!content) return true;
+		let created = false;
 		try {
 			writeFileSync(join(inbox, frame.gate.file), content, { encoding: "utf-8", flag: "wx" });
+			created = true;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
+		if (created) {
+			appendKernelGateObservation(binding, {
+				file: frame.gate.file,
+				hash: frame.gate.hash,
+				transition: "created",
+			});
 		}
 		return true;
 	}
@@ -658,8 +689,23 @@ export function applyKernelWriteFrame(
 		}
 		const matchesApprovedRecord = Boolean(record && record.status === "approved" && record.hash === frame.hash);
 		const granted = Boolean(matchesApprovedRecord && consumeGateCapability?.(frame.file, frame.hash));
-		if (granted && record) transitionGate(path, frame.file, record, "consumed");
-		else if (matchesApprovedRecord && record) transitionGate(path, frame.file, record, "pending");
+		if (granted && record) {
+			transitionGate(path, frame.file, record, "consumed");
+			appendKernelGateObservation(binding, {
+				requestId: frame.requestId,
+				file: frame.file,
+				hash: frame.hash,
+				transition: "consumed",
+			});
+		} else if (matchesApprovedRecord && record) {
+			transitionGate(path, frame.file, record, "pending");
+			appendKernelGateObservation(binding, {
+				requestId: frame.requestId,
+				file: frame.file,
+				hash: frame.hash,
+				transition: "orphan-reset",
+			});
+		}
 		onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted });
 		return true;
 	}

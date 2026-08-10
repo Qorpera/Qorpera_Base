@@ -528,7 +528,7 @@ export class AgentSession {
 						toolCallId: toolCall.id,
 						effectClass: decision.effectClass,
 						decision: decision.kind,
-						gateId: decision.kind === "block" ? decision.gateId : undefined,
+						gateId: decision.gateId,
 						attended: decision.kind === "allow" && decision.attended ? true : undefined,
 						actor: decision.kind === "allow" ? decision.actor : undefined,
 						behavior: decision.behavior,

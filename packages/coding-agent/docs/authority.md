@@ -99,9 +99,10 @@ transition. Editing the file alone never mints an executable capability.
 Project-local extensions are agent-authorable code that runs with full user
 permissions (`SEAMS.md` c.3) — so loading one from inside the authority root
 is an authority-class effect. Applied at every load site including the
-pre-trust load. Approvals here are **durable per content hash**: approving a
-file approves that exact code; any edit produces a new hash and a new
-request. User-global extensions (`~/.qorpera/agent/extensions`) are outside
+pre-trust load. Trust is **process-local per content hash**: native review
+establishes trust for that exact code in the live child; an edit or child
+restart requires trust to be established again. User-global extensions
+(`~/.qorpera/agent/extensions`) are outside
 the company root's authority and load as before.
 
 ## Provenance trailers (EVOLUTION.md §4 invariant 3)
@@ -147,19 +148,19 @@ root are ignored — only company-authored code is subject).
   acting with nobody present.
 - Necessary, not sufficient: signed code still hits per-action class gates
   and limits.
-- Signatures are durable per content hash (`behavior_signature` requests,
-  same mechanism as extension-load approvals): approving signs exactly that
-  code; any edit is a new hash and a new request. The hash is computed from
-  the file as it is now — with hot-reload this tracks what executes next and
-  errs toward gating.
+- Signatures are process-local per content hash (`behavior_signature`
+  requests, the same mechanism as extension-load approvals): local native
+  review signs exactly that code for the live child; an edit or restart
+  requires trust again. The hash is computed from the file as it is now —
+  with hot-reload this tracks what executes next and errs toward gating.
 - Attended calls fall through to the normal inline gates: presence is the
   intent source there.
 
 Every classified effect is stamped into the trail as a `qorpera_effect`
-custom entry — tool, effect class, decision, and (when codified behavior
-acted) its content hash and signature status. A blocked call from signed
-code stamps `signed: true` with a class-gate `gateId` — the
-necessary-not-sufficient layering is machine-verifiable from the trail.
+custom entry — tool, effect class, decision, consumed gate ID, and (when
+codified behavior acted) its content hash and signature status. The kernel
+separately records each gate consumption or orphan reset in the hash-chained
+trail, so file state and child assertions are not the authority evidence.
 
 **File-only pre-signing is intentionally insufficient.** `requestHash` is
 deterministic (sha256 of `tool\n` + canonical-JSON args; for signatures the
