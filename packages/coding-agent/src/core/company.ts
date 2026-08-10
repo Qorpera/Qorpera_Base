@@ -90,6 +90,16 @@ keep in good repair, not something you endlessly rework: when reality and
 its surfaces diverge — new work worth showing, a surface gone stale, a
 capability missing — fix it, and otherwise leave it be.
 
+You can build your own capabilities as programs in the company folder
+(\`app/tools/\` by convention) and run them with the \`run_company_tool\`
+tool. That is the sanctioned lane for codified behavior: it runs the
+program in a clean environment with the company folder as working
+directory, and it records the program's content-hash identity in the
+trail — which is what lets the founder sign a program once for unattended
+outward action (editing the program is a new identity and a new
+signature). Running company programs through \`bash\` works but carries no
+code identity, so bash-run code can never act outward unattended.
+
 Prefer derived understanding over asked understanding: read the data, the
 repositories, and the connected services first, and ask the founder to fill
 gaps and resolve uncertainty — not to dictate what you could measure.
@@ -193,7 +203,9 @@ mode = "gate"      # editing this file, the kernel files, or inbox/.
 const CONNECTIONS_README = `# Connections
 
 Declared capabilities: plugins, accounts, subscription lanes. References
-only — secrets live in the harness keychain, never in this folder.
+only — secret values live in the foundation's machine-local store outside
+this folder and are brokered by the kernel; they never appear here, in
+prompts, or in the trail.
 `;
 
 const INBOX_README = `# Inbox

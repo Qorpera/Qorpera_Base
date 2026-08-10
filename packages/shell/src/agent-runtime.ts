@@ -1060,6 +1060,14 @@ export function writeSandboxProfile(
 	]);
 	for (const path of foundationReadPaths) permissions.set(resolve(path), "read");
 	for (const path of protectedPaths) permissions.set(resolve(path), "read");
+	if (scope.actor === "controller") {
+		// The one sanctioned agent-writable inbox lane (authority.ts
+		// isProtectedPath): the controller authors inbox/messages/msg-*.md
+		// items. The OS grant is directory-level; which FILES inside are
+		// legitimate stays enforced at the tool boundary. Gate records and
+		// notices live at inbox/ root and remain read-only here.
+		permissions.set(join(resolve(companyRoot), "inbox", "messages"), "write");
+	}
 	if (scope.actor === "product-worker") {
 		const worktree = resolve(companyRoot, scope.worktree!);
 		permissions.set(worktree, "write");
@@ -1141,9 +1149,20 @@ export function provisionWindowsSandbox(options: {
 		);
 	}
 
-	// Exercise the effective offline identity, not only Codex's setup marker.
-	// Any successful direct HTTPS request means network isolation is absent or
-	// stale, so the controller must not start.
+	assertSandboxNetworkIsolation({ ...options, env });
+}
+
+/**
+ * Exercise the effective offline identity, not only the sandbox's setup
+ * marker. Any successful direct HTTPS request means network isolation is
+ * absent or stale, so the controller must not start.
+ */
+function assertSandboxNetworkIsolation(options: {
+	codexEntry: string;
+	runtimeDir: string;
+	nodeExecutable: string;
+	env: NodeJS.ProcessEnv;
+}): void {
 	const network = spawnSync(
 		options.nodeExecutable,
 		sandboxCommandArgs(options.codexEntry, options.runtimeDir, options.nodeExecutable, [
@@ -1152,7 +1171,7 @@ export function provisionWindowsSandbox(options: {
 		]),
 		{
 			cwd: options.runtimeDir,
-			env,
+			env: options.env,
 			encoding: "utf-8",
 			maxBuffer: 1024 * 1024,
 			timeout: 30_000,
@@ -1166,9 +1185,35 @@ export function provisionWindowsSandbox(options: {
 			.trim()
 			.slice(0, 4096);
 		throw new Error(
-			`Bundled Codex Windows sandbox network isolation failed; Qorpera will not start the controller.${detail ? `\n${detail}` : ""}`,
+			`Bundled Codex sandbox network isolation failed; Qorpera will not start the controller.${detail ? `\n${detail}` : ""}`,
 		);
 	}
+}
+
+/**
+ * Fail-closed sandbox verification on every platform (manifesto §7.2 —
+ * isolation strength is stated honestly or the controller does not start).
+ * Windows adds the Codex offline-identity check; every platform must prove
+ * network isolation is actually enforced before an agent runs. If the
+ * bundled sandbox no-ops on a platform, the probe's fetch succeeds and the
+ * kernel refuses to start rather than running an agent with an unenforced
+ * profile.
+ */
+export function provisionSandbox(options: {
+	codexEntry: string;
+	configDir: string;
+	runtimeDir: string;
+	nodeExecutable: string;
+	env: NodeJS.ProcessEnv;
+}): void {
+	if (process.platform === "win32") {
+		provisionWindowsSandbox(options);
+		return;
+	}
+	assertSandboxNetworkIsolation({
+		...options,
+		env: { ...options.env, CODEX_HOME: options.configDir, ELECTRON_RUN_AS_NODE: "1" },
+	});
 }
 
 export function protectedControllerPaths(

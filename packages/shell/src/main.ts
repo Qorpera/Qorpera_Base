@@ -86,7 +86,7 @@ import {
 	kernelGateReviewDocument,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
-	provisionWindowsSandbox,
+	provisionSandbox,
 	reconcileKernelGateCreations,
 	sandboxCommandArgs,
 	sandboxConfigDir,
@@ -626,7 +626,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			join(agentDir, "auth.json"),
 			join(agentDir, "trust.json"),
 		]);
-		provisionWindowsSandbox({
+		provisionSandbox({
 			codexEntry: CODEX_ENTRY,
 			configDir,
 			runtimeDir,

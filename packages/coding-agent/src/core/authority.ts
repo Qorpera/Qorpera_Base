@@ -120,6 +120,15 @@ export interface GateRecord {
 	content: string;
 }
 
+/**
+ * The company-tool runner (Build 2): executes company-authored programs as
+ * clean-environment subprocesses. For this tool the acting behavior is the
+ * PROGRAM being run, not the runner itself — behaviorPath derives from the
+ * call's path argument so the signature rule covers the program's content
+ * hash, and the behavior stamp lands in the trail even for auto-class runs.
+ */
+export const COMPANY_TOOL_NAME = "run_company_tool";
+
 const CONFIGURABLE_EFFECT_CLASSES: ConfigurableEffectClass[] = ["money", "identity", "irreversible", "authority"];
 /**
  * Classes whose effects touch the world outside the company folder — the
@@ -672,6 +681,25 @@ function summarizeCall(toolName: string, args: unknown): string {
  * since-edited file resolves to the new (unsigned) content, which errs
  * toward gating.
  */
+/**
+ * The acting code behind a tool call. For the company-tool runner the
+ * behavior is the program named by the call's path argument (resolved
+ * against cwd); for everything else it is the source file that registered
+ * the tool, as supplied by the caller.
+ */
+function effectiveBehaviorPath(
+	toolName: string,
+	args: unknown,
+	cwd: string,
+	context: ToolCallContext | undefined,
+): string | undefined {
+	if (toolName === COMPANY_TOOL_NAME) {
+		const pathArg = extractPathArg(args);
+		return pathArg ? resolveArgPath(pathArg, cwd) : undefined;
+	}
+	return context?.behaviorPath;
+}
+
 function resolveBehaviorSignature(
 	authority: Authority,
 	behaviorPath: string | undefined,
@@ -799,9 +827,43 @@ export function evaluateToolCall(
 		};
 	}
 
+	// Kernel policy boundary (Build 2): when a mutating tool precisely
+	// targets kernel-owned territory, block WITHOUT filing a gate — the
+	// desktop kernel's sandbox mounts these paths read-only for the agent,
+	// so an approval could never execute. Filing one would be noise that
+	// looks actionable. The working lanes are named in the reason instead.
+	// (Bash mention-based screens stay on the ordinary gate path: the target
+	// is imprecise there.)
+	{
+		const pathArg = extractPathArg(args);
+		if (pathArg && MUTATING_PATH_TOOLS.has(toolName) && isProtectedPath(authority, pathArg, cwd)) {
+			const resolved = resolveArgPath(pathArg, cwd);
+			const isPolicyFile =
+				(dirname(resolved) === resolve(authority.root) && PROTECTED_ROOT_FILES.has(basename(resolved))) ||
+				resolved === resolve(authority.root, PRODUCT_REGISTRY_PATH);
+			return {
+				kind: "block",
+				effectClass: "authority",
+				reason: isPolicyFile
+					? `Kernel policy boundary: ${basename(resolved)} is founder-ratified and read-only to you at the OS layer — an approval could not execute, so none is filed. Propose the change instead: write inbox/messages/msg-<slug>.md describing the exact edit and why; the founder applies it from the app (Settings → Authority).`
+					: "Kernel policy boundary: inbox gate records and notices are kernel territory and read-only to you at the OS layer — writing them is self-approval and cannot be approved away. Author inbox/messages/msg-*.md items instead; that is your one sanctioned inbox lane.",
+			};
+		}
+	}
+
 	const config = readAuthorityConfig(authority);
 	let effectClass = classifyToolCall(authority, config, toolName, args, cwd);
-	if (!effectClass) return { kind: "allow" };
+	if (!effectClass) {
+		// Company-tool runs stamp behavior identity even when unclassified:
+		// the trail must attribute every execution of company-authored code.
+		if (toolName === COMPANY_TOOL_NAME) {
+			return {
+				kind: "allow",
+				behavior: resolveBehaviorSignature(authority, effectiveBehaviorPath(toolName, args, cwd, context)),
+			};
+		}
+		return { kind: "allow" };
+	}
 
 	// Product code is a role boundary, not an approval mode. A controller is
 	// read-only even when a founder is present; implementation happens in a
@@ -837,7 +899,7 @@ export function evaluateToolCall(
 				kind: "allow",
 				effectClass: "product_code",
 				actor: "product-worker",
-				behavior: resolveBehaviorSignature(authority, context?.behaviorPath),
+				behavior: resolveBehaviorSignature(authority, effectiveBehaviorPath(toolName, args, cwd, context)),
 			};
 		}
 	}
@@ -848,7 +910,7 @@ export function evaluateToolCall(
 	// covers the model acting under founder direction, not agent-authored
 	// code acting with nobody present. Attended calls fall through to the
 	// normal per-action gates (presence is the intent source there).
-	const behavior = resolveBehaviorSignature(authority, context?.behaviorPath);
+	const behavior = resolveBehaviorSignature(authority, effectiveBehaviorPath(toolName, args, cwd, context));
 	if (
 		behavior &&
 		!behavior.signed &&
