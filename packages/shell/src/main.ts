@@ -14,37 +14,41 @@
  * and backend; a company is never open in two windows at once.
  */
 
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	appendFileSync,
 	copyFileSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	watch,
 	writeFileSync,
 } from "node:fs";
-import { createServer } from "node:http";
-import { connect } from "node:net";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 // Deep imports from the coding agent (the foundation's own machinery).
 import { companyPort, createCompanyAppServer } from "@qorpera/pi-coding-agent/app-server";
 import {
-	companyRuntimeLockPath,
+	type CompanyRuntimeLock,
+	claimCompanyRuntimeLock,
 	conceptionKickoff,
 	createProductWorktree,
 	enforceCompanyKernelSettings,
 	integrateRepo,
+	integrateRepoWithRuntimeLock,
 	listCompanies,
 	listProductDepartments,
 	type ProductDepartment,
+	productDepartmentId,
 	readProductProtectionInventory,
 	registerCompany,
+	releaseCompanyRuntimeLock,
 	scaffoldCompany,
+	scaffoldProductDepartmentWithRuntimeLock,
 } from "@qorpera/pi-coding-agent/company";
 import { app, BrowserWindow, dialog, shell as electronShell, ipcMain, type WebContents } from "electron";
 import electronUpdater from "electron-updater";
@@ -56,6 +60,7 @@ import {
 	createKernelResponseSigner,
 	inboxMessagesPath,
 	type KernelIntentCapability,
+	kernelGateReviewDocument,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
 	sandboxCommandArgs,
@@ -71,7 +76,9 @@ import {
 	finishPendingCompanyCheckpoint,
 	reconcilePendingCompanyCheckpoints,
 	savePendingCompanyCheckpoint,
+	snapshotFounderGitState,
 } from "./company-checkpoint.ts";
+import { type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
 import {
 	ensureUserland,
 	getActiveApp,
@@ -125,6 +132,11 @@ const MODEL_AUTH_PROVIDERS = new Set([
 	"minimax",
 	"huggingface",
 ]);
+const MAX_KERNEL_REVIEW_BYTES = 16 * 1024;
+const MAX_PROMPT_BYTES = 64 * 1024;
+const MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_PROMPT_IMAGES = 5;
+const REVIEW_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const SAFE_CHILD_ENV = new Set([
 	"PATH",
 	"PATHEXT",
@@ -139,19 +151,21 @@ const SAFE_CHILD_ENV = new Set([
 	"NODE_EXTRA_CA_CERTS",
 	"SSL_CERT_FILE",
 	"SSL_CERT_DIR",
-	"ANTHROPIC_API_KEY",
-	"OPENAI_API_KEY",
-	"GOOGLE_API_KEY",
-	"GEMINI_API_KEY",
-	"GROQ_API_KEY",
-	"MISTRAL_API_KEY",
-	"XAI_API_KEY",
-	"OPENROUTER_API_KEY",
-	"CEREBRAS_API_KEY",
-	"DEEPSEEK_API_KEY",
+]);
+const MODEL_ENV_PROVIDERS = new Map([
+	["ANTHROPIC_API_KEY", "anthropic"],
+	["OPENAI_API_KEY", "openai"],
+	["GOOGLE_API_KEY", "google"],
+	["GEMINI_API_KEY", "google"],
+	["GROQ_API_KEY", "groq"],
+	["MISTRAL_API_KEY", "mistral"],
+	["XAI_API_KEY", "xai"],
+	["OPENROUTER_API_KEY", "openrouter"],
+	["CEREBRAS_API_KEY", "cerebras"],
+	["DEEPSEEK_API_KEY", "deepseek"],
 ]);
 
-function prepareBrokeredAgentDir(configDir: string, companyRoot: string): string {
+function prepareBrokeredAgentDir(configDir: string, companyRoot: string, credentials: Record<string, unknown>): string {
 	if (process.platform === "win32") {
 		const codexHome = join(app.getPath("home"), ".codex");
 		for (const relativePath of [
@@ -172,15 +186,7 @@ function prepareBrokeredAgentDir(configDir: string, companyRoot: string): string
 	}
 	const agentDir = join(configDir, "agent");
 	mkdirSync(agentDir, { recursive: true });
-	const source = join(app.getPath("home"), ".qorpera", "agent", "auth.json");
-	let auth: Record<string, unknown> = {};
-	try {
-		const candidate = JSON.parse(readFileSync(source, "utf-8")) as Record<string, unknown>;
-		auth = Object.fromEntries(Object.entries(candidate).filter(([provider]) => MODEL_AUTH_PROVIDERS.has(provider)));
-	} catch {
-		// No model credentials are available yet. The child remains network- and credential-denied.
-	}
-	writeFileSync(join(agentDir, "auth.json"), `${JSON.stringify(auth, null, "\t")}\n`, "utf-8");
+	writeFileSync(join(agentDir, "auth.json"), `${JSON.stringify(credentials, null, "\t")}\n`, "utf-8");
 	writeFileSync(
 		join(agentDir, "trust.json"),
 		`${JSON.stringify({ [resolve(companyRoot)]: true }, null, "\t")}\n`,
@@ -193,47 +199,22 @@ function brokeredChildEnvironment(): NodeJS.ProcessEnv {
 	return Object.fromEntries(Object.entries(process.env).filter(([key, value]) => SAFE_CHILD_ENV.has(key) && value));
 }
 
-let modelProxyPort: number | undefined;
-let closeModelProxy: (() => void) | undefined;
-
-async function startModelNetworkBroker(): Promise<void> {
-	const allowed = new Set(MODEL_NETWORK_DOMAINS);
-	const server = createServer((_request, response) => {
-		response.writeHead(403, { "content-type": "text/plain" });
-		response.end("Qorpera model broker requires an HTTPS CONNECT tunnel");
-	});
-	server.on("connect", (request, client, head) => {
-		let target: URL;
-		try {
-			target = new URL(`https://${request.url}`);
-		} catch {
-			client.end("HTTP/1.1 400 Bad Request\r\n\r\n");
-			return;
-		}
-		const hostname = target.hostname.toLowerCase().replace(/\.$/, "");
-		const port = Number(target.port || "443");
-		if (!allowed.has(hostname) || port !== 443) {
-			client.end("HTTP/1.1 403 Forbidden\r\n\r\n");
-			return;
-		}
-		const upstream = connect({ host: hostname, port }, () => {
-			client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-			if (head.length > 0) upstream.write(head);
-			upstream.pipe(client);
-			client.pipe(upstream);
-		});
-		upstream.on("error", () => client.destroy());
-		client.on("error", () => upstream.destroy());
-	});
-	await new Promise<void>((resolvePromise, reject) => {
-		server.once("error", reject);
-		server.listen(0, "127.0.0.1", () => resolvePromise());
-	});
-	const address = server.address();
-	if (!address || typeof address === "string") throw new Error("model network broker did not bind a TCP port");
-	modelProxyPort = address.port;
-	closeModelProxy = () => server.close();
+function sourceModelCredentials(): Record<string, unknown> {
+	try {
+		return JSON.parse(readFileSync(join(app.getPath("home"), ".qorpera", "agent", "auth.json"), "utf-8")) as Record<
+			string,
+			unknown
+		>;
+	} catch {
+		return {};
+	}
 }
+
+function ambientModelProviders(): string[] {
+	return [...new Set([...MODEL_ENV_PROVIDERS].flatMap(([name, provider]) => (process.env[name] ? [provider] : [])))];
+}
+
+let modelRequestBroker: ModelRequestBroker | undefined;
 
 function shellVersion(): string {
 	try {
@@ -262,7 +243,7 @@ interface CompanyRuntime {
 	inventoryWatcher?: ReturnType<typeof watch>;
 	transitionQueue: Promise<void>;
 	closing: boolean;
-	runtimeLock: string;
+	runtimeLock: CompanyRuntimeLock;
 }
 
 /** One window = one slot: the hub while `runtime` is unset, a company
@@ -385,6 +366,130 @@ function focusWindow(win: BrowserWindow): void {
 	win.focus();
 }
 
+function escapeHtml(value: string): string {
+	return value.replace(/[&<>"']/g, (character) => {
+		switch (character) {
+			case "&":
+				return "&amp;";
+			case "<":
+				return "&lt;";
+			case ">":
+				return "&gt;";
+			case '"':
+				return "&quot;";
+			default:
+				return "&#39;";
+		}
+	});
+}
+
+interface KernelReviewImage {
+	mimeType: string;
+	data: string;
+	sha256: string;
+	bytes: number;
+}
+
+async function confirmKernelReview(
+	parent: BrowserWindow,
+	input: { title: string; summary: string; exactText: string; metadata?: string; images?: KernelReviewImage[] },
+): Promise<boolean> {
+	if (parent.isDestroyed()) return false;
+	const images = input.images ?? [];
+	const imageMarkup = images
+		.map(
+			(image) =>
+				`<figure><img src="data:${escapeHtml(image.mimeType)};base64,${image.data}" alt="Prompt attachment"><figcaption>${escapeHtml(image.mimeType)} · ${image.bytes} bytes · sha256 ${image.sha256}</figcaption></figure>`,
+		)
+		.join("");
+	const metadata = input.metadata ? `<pre class="metadata">${escapeHtml(input.metadata)}</pre>` : "";
+	const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>${escapeHtml(input.title)}</title><style>body{margin:0;background:#111;color:#eee;font:14px system-ui,sans-serif}main{padding:22px}.summary{font-weight:650;margin:0 0 14px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#1d1d1d;border:1px solid #444;border-radius:6px;padding:14px;max-height:38vh;overflow:auto}.metadata{max-height:16vh;color:#bbb}figure{margin:14px 0;border:1px solid #444;padding:10px;border-radius:6px}img{display:block;max-width:100%;max-height:36vh;margin:auto}figcaption{margin-top:8px;color:#bbb;overflow-wrap:anywhere}.actions{position:sticky;bottom:0;display:flex;justify-content:flex-end;gap:10px;padding-top:16px;background:#111}.button{color:#eee;text-decoration:none;border:1px solid #666;border-radius:5px;padding:9px 16px}.approve{background:#f2f2f2;color:#111}</style></head><body><main><p class="summary">${escapeHtml(input.summary)}</p>${metadata}<pre>${escapeHtml(input.exactText)}</pre>${imageMarkup}<div class="actions"><a class="button" href="qorpera-kernel-review://cancel">Cancel</a><a class="button approve" href="qorpera-kernel-review://approve">Authorize exact content</a></div></main></body></html>`;
+	const review = new BrowserWindow({
+		parent,
+		modal: true,
+		show: false,
+		width: 820,
+		height: 720,
+		title: input.title,
+		autoHideMenuBar: true,
+		webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+	});
+	review.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+	return new Promise<boolean>((resolvePromise) => {
+		let settled = false;
+		const settle = (approved: boolean) => {
+			if (settled) return;
+			settled = true;
+			resolvePromise(approved);
+			if (!review.isDestroyed()) review.close();
+		};
+		review.webContents.on("will-navigate", (event, url) => {
+			if (url === "qorpera-kernel-review://approve" || url === "qorpera-kernel-review://cancel") {
+				event.preventDefault();
+				settle(url.endsWith("//approve"));
+			}
+		});
+		review.once("closed", () => settle(false));
+		review.once("ready-to-show", () => review.show());
+		void review.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => settle(false));
+	});
+}
+
+interface ReviewedPromptFrame {
+	type: "prompt" | "steer" | "follow_up";
+	message: string;
+	images?: Array<{ type: "image"; data: string; mimeType: string }>;
+	streamingBehavior?: "steer" | "followUp";
+}
+
+function reviewedPromptFrame(value: Record<string, unknown>): ReviewedPromptFrame | undefined {
+	if (value.type !== "prompt" && value.type !== "steer" && value.type !== "follow_up") return undefined;
+	if (typeof value.message !== "string" || Buffer.byteLength(value.message, "utf-8") > MAX_PROMPT_BYTES) {
+		return undefined;
+	}
+	const allowed = new Set(["type", "message", "images", "streamingBehavior"]);
+	if (Object.keys(value).some((key) => !allowed.has(key))) return undefined;
+	if (
+		value.streamingBehavior !== undefined &&
+		(value.type !== "prompt" || (value.streamingBehavior !== "steer" && value.streamingBehavior !== "followUp"))
+	)
+		return undefined;
+	let images: ReviewedPromptFrame["images"];
+	if (value.images !== undefined) {
+		if (!Array.isArray(value.images) || value.images.length > MAX_PROMPT_IMAGES) return undefined;
+		images = [];
+		for (const image of value.images) {
+			if (!image || typeof image !== "object") return undefined;
+			if (Object.keys(image).some((key) => key !== "type" && key !== "data" && key !== "mimeType")) {
+				return undefined;
+			}
+			const candidate = image as { type?: unknown; data?: unknown; mimeType?: unknown };
+			if (
+				candidate.type !== "image" ||
+				typeof candidate.data !== "string" ||
+				typeof candidate.mimeType !== "string" ||
+				!REVIEW_IMAGE_TYPES.has(candidate.mimeType) ||
+				!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(candidate.data)
+			)
+				return undefined;
+			const decoded = Buffer.from(candidate.data, "base64");
+			if (
+				decoded.length === 0 ||
+				decoded.length > MAX_PROMPT_IMAGE_BYTES ||
+				decoded.toString("base64") !== candidate.data
+			)
+				return undefined;
+			images.push({ type: "image", data: candidate.data, mimeType: candidate.mimeType });
+		}
+	}
+	return {
+		type: value.type,
+		message: value.message,
+		...(images && images.length > 0 ? { images } : {}),
+		...(value.streamingBehavior ? { streamingBehavior: value.streamingBehavior } : {}),
+	};
+}
+
 function send(win: BrowserWindow, channel: string, payload: unknown): void {
 	// Child exit events can fire after the window is gone (closing a window
 	// kills its RPC child, whose exit handler then calls send) — guard.
@@ -405,36 +510,8 @@ async function closeCompany(slot: Slot): Promise<void> {
 	await stopChild(runtime.child);
 	if (runtime.mergeChild) await stopChild(runtime.mergeChild);
 	runtime.backendClose?.();
-	rmSync(runtime.runtimeLock, { force: true });
+	releaseCompanyRuntimeLock(runtime.runtimeLock);
 	slot.runtime = undefined;
-}
-
-function claimCompanyRuntime(root: string): string {
-	const path = companyRuntimeLockPath(root);
-	mkdirSync(dirname(path), { recursive: true });
-	if (existsSync(path)) {
-		let owner = 0;
-		try {
-			owner = (JSON.parse(readFileSync(path, "utf-8")) as { pid?: number }).pid ?? 0;
-		} catch {
-			// Invalid records are stale only when no live owning process can be identified.
-		}
-		if (owner > 0) {
-			let ownerIsLive = false;
-			try {
-				process.kill(owner, 0);
-				ownerIsLive = true;
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-					throw new Error("could not safely verify the existing company runtime owner", { cause: error });
-				}
-			}
-			if (ownerIsLive) throw new Error("another desktop kernel already owns this company runtime");
-		}
-		rmSync(path, { force: true });
-	}
-	writeFileSync(path, `${JSON.stringify({ version: 1, pid: process.pid, root: resolve(root) })}\n`, { flag: "wx" });
-	return path;
 }
 
 async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
@@ -478,7 +555,8 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	const userData = app.getPath("userData");
 	const configDir = sandboxConfigDir(userData, root, actor);
 	const runtimeDir = sandboxRuntimeDir(userData, root, actor);
-	const agentDir = prepareBrokeredAgentDir(configDir, root);
+	if (!modelRequestBroker) throw new Error("kernel model-request broker is unavailable");
+	snapshotFounderGitState(root);
 	let gitBaseline = captureCompanyGitBaseline(root);
 	const binding = bindTrailSession(root, cwd, scope, sessionFile);
 	const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "controller")), "checkpoints");
@@ -489,23 +567,26 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		repository: product.repositoryPath,
 		worktrees: product.worktreesPath,
 	}));
-	writeSandboxProfile(
-		configDir,
-		runtimeDir,
-		root,
-		scope,
-		protectedControllerPaths(root, products),
-		[
+	const brokeredCredentials = modelRequestBroker.registerChild(sourceModelCredentials(), ambientModelProviders());
+	let agentDir: string;
+	let args: string[];
+	let kernelSigner: ReturnType<typeof createKernelResponseSigner>;
+	let child: ChildProcessWithoutNullStreams;
+	try {
+		agentDir = prepareBrokeredAgentDir(configDir, root, brokeredCredentials.credentials);
+		writeSandboxProfile(configDir, runtimeDir, root, scope, protectedControllerPaths(root, products), [
 			...FOUNDATION_READ_PATHS,
 			join(configDir, "config.toml"),
 			join(agentDir, "auth.json"),
 			join(agentDir, "trust.json"),
-		],
-		MODEL_NETWORK_DOMAINS,
-	);
-	const rpcArgs = [RPC_ENTRY, "--mode", "rpc", "--session", binding.path];
-	const args = sandboxCommandArgs(CODEX_ENTRY, runtimeDir, process.execPath, rpcArgs);
-	const kernelSigner = createKernelResponseSigner();
+		]);
+		const rpcArgs = [RPC_ENTRY, "--mode", "rpc", "--session", binding.path];
+		args = sandboxCommandArgs(CODEX_ENTRY, runtimeDir, process.execPath, rpcArgs);
+		kernelSigner = createKernelResponseSigner();
+	} catch (error) {
+		brokeredCredentials.release();
+		throw error;
+	}
 	// QORPERA_AUTONOMOUS marks controller-initiated work: those sessions run
 	// in rpc mode with nobody present, so outward-effect signatures cannot
 	// treat them as founder sessions. Product roles remain separate either way.
@@ -516,14 +597,6 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	env.APPDATA = runtimeDir;
 	env.LOCALAPPDATA = runtimeDir;
 	env.XDG_CONFIG_HOME = runtimeDir;
-	if (process.platform === "win32") {
-		if (!modelProxyPort) throw new Error("model network broker is unavailable");
-		const proxy = `http://127.0.0.1:${modelProxyPort}`;
-		env.HTTP_PROXY = proxy;
-		env.HTTPS_PROXY = proxy;
-		env.ALL_PROXY = proxy;
-		env.NODE_USE_ENV_PROXY = "1";
-	}
 	if (autonomousName) env.QORPERA_AUTONOMOUS = "1";
 	delete env.QORPERA_ACTOR;
 	delete env.QORPERA_PRODUCT_DEPARTMENT;
@@ -533,11 +606,19 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	env.QORPERA_TRAIL_BROKER_TOKEN = binding.token;
 	env.QORPERA_KERNEL_PUBLIC_KEY = kernelSigner.publicKey;
 	env.QORPERA_KERNEL_REQUIRED = "1";
-	const child = spawn(process.execPath, args, {
-		cwd: runtimeDir,
-		stdio: ["pipe", "pipe", "pipe"],
-		env,
-	}) as ChildProcessWithoutNullStreams;
+	env.QORPERA_MODEL_BROKER_URL = `http://127.0.0.1:${modelRequestBroker.port}/inference`;
+	env.QORPERA_MODEL_BROKER_TOKEN = brokeredCredentials.token;
+	env.QORPERA_MODEL_BROKER_HANDLES = JSON.stringify(brokeredCredentials.handles);
+	try {
+		child = spawn(process.execPath, args, {
+			cwd: runtimeDir,
+			stdio: ["pipe", "pipe", "pipe"],
+			env,
+		}) as ChildProcessWithoutNullStreams;
+	} catch (error) {
+		brokeredCredentials.release();
+		throw error;
+	}
 	childBindings.set(child, binding);
 	childIntentSigners.set(child, kernelSigner.signIntent);
 	let resolveCheckpoint: (() => void) | undefined;
@@ -584,6 +665,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	});
 	child.on("close", () => {
 		try {
+			brokeredCredentials.release();
 			const result = checkpointCompanyGit(root, gitBaseline, binding.file);
 			finishPendingCompanyCheckpoint(checkpointState, result);
 			if (!result.success) savePendingCompanyCheckpoint(checkpointState, root, result.baseline, binding.file);
@@ -596,7 +678,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 
 function sendKernelPrompt(
 	child: ChildProcessWithoutNullStreams,
-	frame: { type: "prompt" | "steer" | "follow_up"; message: string; [key: string]: unknown },
+	frame: ReviewedPromptFrame,
 	attended: boolean,
 	origin: string,
 ): boolean {
@@ -604,14 +686,30 @@ function sendKernelPrompt(
 	const signIntent = childIntentSigners.get(child);
 	if (!binding || !signIntent || child.exitCode !== null) return false;
 	const unsignedFrame = { ...frame };
-	delete unsignedFrame.kernelIntent;
+	const kernelIntent = signIntent(unsignedFrame, attended);
+	const images = Array.isArray(unsignedFrame.images)
+		? unsignedFrame.images.flatMap((image) => {
+				if (!image || typeof image !== "object") return [];
+				const candidate = image as { data?: unknown; mimeType?: unknown };
+				if (typeof candidate.data !== "string" || typeof candidate.mimeType !== "string") return [];
+				return [
+					{
+						mimeType: candidate.mimeType,
+						sha256: createHash("sha256").update(candidate.data, "base64").digest("hex"),
+						bytes: Buffer.byteLength(candidate.data, "base64"),
+					},
+				];
+			})
+		: [];
 	appendKernelObservation(binding, {
 		frameType: frame.type,
 		message: frame.message,
 		attended,
 		origin,
+		intentNonce: kernelIntent.nonce,
+		requestHash: kernelIntent.requestHash,
+		images,
 	});
-	const kernelIntent = signIntent(unsignedFrame, attended);
 	child.stdin.write(`${JSON.stringify({ ...unsignedFrame, kernelIntent })}\n`);
 	return true;
 }
@@ -781,10 +879,6 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		if (!slot.runtime) void slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 		return;
 	}
-	readProductProtectionInventory(root);
-	enforceCompanyKernelSettings(root);
-	const checkpointDir = join(dirname(sandboxConfigDir(app.getPath("userData"), root, "controller")), "checkpoints");
-	reconcilePendingCompanyCheckpoints(checkpointDir, root);
 	// A company never runs in two windows: two RPC children on one trail and
 	// two tokens against one backend both end badly. Route to the live one.
 	const existing = slotForCompany(root);
@@ -793,71 +887,81 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		return;
 	}
 	await closeCompany(slot);
-	registerCompany(root);
-
-	// The fork model (spec §9a): the company runs ITS OWN userland — forked
-	// from base on first open, fast-forwarded when untouched, staged for a
-	// controller merge when evolved. The kernel only loads it.
-	const userland = ensureUserland(root, BASE_USERLAND_DIR, shellVersion());
-	// Any evolution since the last open is captured as a restorable version —
-	// the founder can always roll the app back from Settings → App.
-	snapshotIfChanged(join(root, "userland"));
-	commitCompanyMaterialization(root, [join(".qorpera", "settings.json"), "userland"]);
-
-	// Backend for surfaces/state/inbox — reused machinery, in-process. The
-	// token guards mutating endpoints; only the renderer ever receives it.
-	const backendToken = randomUUID();
-	const backend = await listenBackend(root, backendToken);
-
-	// Never-conceived company: the conception session is autonomous work.
-	const kickoff = conceptionKickoff(root);
-	const childOptions: ChildOptions = kickoff ? { autonomousName: "conception" } : {};
-	const runtimeLock = claimCompanyRuntime(root);
-	let child: ChildProcessWithoutNullStreams;
+	const runtimeLock = claimCompanyRuntimeLock(root);
+	let pendingBackendClose: (() => void) | undefined;
 	try {
-		child = startChild(slot, root, childOptions);
+		readProductProtectionInventory(root);
+		const checkpointDir = join(dirname(sandboxConfigDir(app.getPath("userData"), root, "controller")), "checkpoints");
+		reconcilePendingCompanyCheckpoints(checkpointDir, root);
+		snapshotFounderGitState(root);
+		enforceCompanyKernelSettings(root);
+		registerCompany(root);
+
+		// The fork model (spec §9a): the company runs ITS OWN userland — forked
+		// from base on first open, fast-forwarded when untouched, staged for a
+		// controller merge when evolved. The kernel only loads it.
+		const userland = ensureUserland(root, BASE_USERLAND_DIR, shellVersion());
+		// Any evolution since the last open is captured as a restorable version —
+		// the founder can always roll the app back from Settings → App.
+		snapshotIfChanged(join(root, "userland"));
+		commitCompanyMaterialization(root, [join(".qorpera", "settings.json"), "userland"]);
+
+		// Backend for surfaces/state/inbox — reused machinery, in-process. The
+		// token guards mutating endpoints; only the renderer ever receives it.
+		const backendToken = randomUUID();
+		const backend = await listenBackend(root, backendToken);
+		pendingBackendClose = backend.close;
+
+		// Never-conceived company: the conception session is autonomous work.
+		const kickoff = conceptionKickoff(root);
+		const childOptions: ChildOptions = kickoff ? { autonomousName: "conception" } : {};
+		const child = startChild(slot, root, childOptions);
+		const runtime: CompanyRuntime = {
+			root,
+			child,
+			childOptions,
+			backendPort: backend.port,
+			backendClose: backend.close,
+			userland,
+			usingBaseFallback: false,
+			backendToken,
+			transitionQueue: Promise.resolve(),
+			closing: false,
+			runtimeLock,
+		};
+		slot.runtime = runtime;
+		pendingBackendClose = undefined;
+		runtime.inventoryWatcher = watch(join(root, ".qorpera"), { persistent: false }, (_event, file) => {
+			if (file?.toString() === "products.json") restartForProductInventory(slot, runtime);
+		});
+		if (kickoff) {
+			sendKernelPrompt(child, { type: "prompt", message: kickoff }, false, "kernel-conception");
+		}
+		slot.kickoffPending = Boolean(kickoff);
+
+		// Load the company's own app — unless the founder switched this company to
+		// the pristine base app (Settings → App). If the evolved userland fails to
+		// boot, the kernel falls back to the base chrome — the company stays
+		// reachable either way.
+		const win = slot.window;
+		if (win.isDestroyed()) return;
+		setWindowIcon(win, companyIcon(root));
+		if (getActiveApp(join(root, "userland")) === "base") {
+			await win.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+			return;
+		}
+		await win.loadFile(join(root, "userland", "index.html")).catch(async () => {
+			if (slot.runtime) slot.runtime.usingBaseFallback = true;
+			await win.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+		});
 	} catch (error) {
-		rmSync(runtimeLock, { force: true });
-		backend.close();
+		if (slot.runtime?.runtimeLock.token === runtimeLock.token) await closeCompany(slot);
+		else {
+			pendingBackendClose?.();
+			releaseCompanyRuntimeLock(runtimeLock);
+		}
 		throw error;
 	}
-	const runtime: CompanyRuntime = {
-		root,
-		child,
-		childOptions,
-		backendPort: backend.port,
-		backendClose: backend.close,
-		userland,
-		usingBaseFallback: false,
-		backendToken,
-		transitionQueue: Promise.resolve(),
-		closing: false,
-		runtimeLock,
-	};
-	slot.runtime = runtime;
-	runtime.inventoryWatcher = watch(join(root, ".qorpera"), { persistent: false }, (_event, file) => {
-		if (file?.toString() === "products.json") restartForProductInventory(slot, runtime);
-	});
-	if (kickoff) {
-		sendKernelPrompt(child, { type: "prompt", message: kickoff }, false, "kernel-conception");
-	}
-	slot.kickoffPending = Boolean(kickoff);
-
-	// Load the company's own app — unless the founder switched this company to
-	// the pristine base app (Settings → App). If the evolved userland fails to
-	// boot, the kernel falls back to the base chrome — the company stays
-	// reachable either way.
-	const win = slot.window;
-	if (win.isDestroyed()) return;
-	setWindowIcon(win, companyIcon(root));
-	if (getActiveApp(join(root, "userland")) === "base") {
-		await win.loadFile(join(BASE_USERLAND_DIR, "index.html"));
-		return;
-	}
-	await win.loadFile(join(root, "userland", "index.html")).catch(async () => {
-		if (slot.runtime) slot.runtime.usingBaseFallback = true;
-		await win.loadFile(join(BASE_USERLAND_DIR, "index.html"));
-	});
 }
 
 async function showHub(slot: Slot): Promise<void> {
@@ -877,32 +981,69 @@ async function openChat(
 	const runtime = slot.runtime;
 	let department: ProductDepartment | undefined;
 	let worktree: string | undefined;
+	let branch: string | undefined;
 	if (typeof departmentPath === "string" && departmentPath.length > 0) {
+		readProductProtectionInventory(runtime.root);
 		department = listProductDepartments(runtime.root).find(
 			(entry) => entry.path === departmentPath && entry.repositoryExists,
 		);
 		if (!department) return { ok: false, error: "product department or repository is unavailable" };
-		const confirmation = await dialog.showMessageBox(slot.window, {
-			type: "warning",
-			buttons: ["Cancel", "Open product worker"],
-			defaultId: 0,
-			cancelId: 0,
-			message: `Open a product worker for ${department.name}?`,
-			detail:
-				"This trusted kernel action issues write access to one isolated task worktree. The company controller cannot issue this capability.",
-		});
-		if (confirmation.response !== 1) return { ok: false, error: "product worker authorization cancelled" };
 		if (worktreePath) {
 			const resolvedWorktree = resolve(runtime.root, worktreePath);
 			const worktreesRoot = resolve(runtime.root, department.worktreesPath);
-			if (!isInside(resolvedWorktree, worktreesRoot) || !existsSync(join(resolvedWorktree, ".git"))) {
+			let actualWorktree: string;
+			try {
+				actualWorktree = realpathSync(resolvedWorktree);
+			} catch {
+				return { ok: false, error: "product worktree no longer exists" };
+			}
+			if (!isInside(actualWorktree, realpathSync(worktreesRoot)) || !existsSync(join(actualWorktree, ".git"))) {
 				return { ok: false, error: "worktree is outside the product department or no longer exists" };
 			}
-			worktree = relative(runtime.root, resolvedWorktree);
+			worktree = relative(runtime.root, actualWorktree);
+			const branchResult = spawnSync("git", ["-C", actualWorktree, "branch", "--show-current"], {
+				encoding: "utf-8",
+				shell: false,
+			});
+			if (branchResult.status !== 0 || !branchResult.stdout.trim()) {
+				return { ok: false, error: "could not verify the selected product worktree branch" };
+			}
+			branch = branchResult.stdout.trim();
 		} else {
-			worktree = createProductWorktree(runtime.root, department)?.path;
-			if (!worktree) return { ok: false, error: "could not create product worktree" };
+			const created = createProductWorktree(runtime.root, department);
+			if (!created) return { ok: false, error: "could not create product worktree" };
+			worktree = created.path;
+			branch = created.branch;
 		}
+		const assignedWorktree = resolve(runtime.root, worktree);
+		const expectedWorktree = resolve(realpathSync(runtime.root), worktree);
+		const actualWorktree = realpathSync(assignedWorktree);
+		const actualWorktreesRoot = realpathSync(resolve(runtime.root, department.worktreesPath));
+		const actualRepository = realpathSync(resolve(runtime.root, department.repositoryPath));
+		if (
+			normalizedRoot(actualWorktree) !== normalizedRoot(expectedWorktree) ||
+			!isInside(actualWorktree, actualWorktreesRoot)
+		) {
+			return { ok: false, error: "product worktree changed before authorization" };
+		}
+		const sourceResult = spawnSync("git", ["-C", actualRepository, "remote", "get-url", "origin"], {
+			encoding: "utf-8",
+			shell: false,
+		});
+		const source =
+			sourceResult.status === 0 && sourceResult.stdout.trim() ? sourceResult.stdout.trim() : "local repository";
+		const approved = await confirmKernelReview(slot.window, {
+			title: "Authorize product worker",
+			summary: `Issue product-code write authority for ${department.name}?`,
+			exactText: actualWorktree,
+			metadata: [
+				`Department: ${department.path}`,
+				`Source repository: ${actualRepository}`,
+				`Source remote: ${source}`,
+				`Branch: ${branch}`,
+			].join("\n"),
+		});
+		if (!approved) return { ok: false, error: "product worker authorization cancelled" };
 	}
 	const options: ChildOptions = {
 		sessionFile: sessionFile ?? undefined,
@@ -946,7 +1087,21 @@ function createWindow(): Slot {
 	});
 	void win.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 	win.webContents.setWindowOpenHandler(({ url }) => {
-		void electronShell.openExternal(url);
+		let target: URL;
+		try {
+			target = new URL(url);
+		} catch {
+			return { action: "deny" };
+		}
+		if ((target.protocol === "https:" || target.protocol === "http:") && Buffer.byteLength(url) <= 8192) {
+			void confirmKernelReview(win, {
+				title: "Open external link",
+				summary: "Open this exact URL outside Qorpera Base?",
+				exactText: target.href,
+			}).then((approved) => {
+				if (approved) void electronShell.openExternal(target.href);
+			});
+		}
 		return { action: "deny" };
 	});
 	// Page loads are kernel-only. The window's history holds the hub and the
@@ -1000,7 +1155,13 @@ app.on("second-instance", (_event, argv) => {
 });
 
 app.whenReady().then(async () => {
-	await startModelNetworkBroker();
+	const modelAgentDir = join(app.getPath("home"), ".qorpera", "agent");
+	modelRequestBroker = await startModelRequestBroker({
+		authPath: join(modelAgentDir, "auth.json"),
+		modelsPath: join(modelAgentDir, "models.json"),
+		allowedProviders: MODEL_AUTH_PROVIDERS,
+		allowedDomains: new Set(MODEL_NETWORK_DOMAINS),
+	});
 	ipcMain.handle("companies:list", () => listCompanies());
 	ipcMain.handle("company:open", (event, root: string) => {
 		if (!isTrustedHubSender(event.sender)) return;
@@ -1041,6 +1202,79 @@ app.whenReady().then(async () => {
 		registerCompany(result.root);
 		const ok = integrateRepo(result.root, from);
 		return { root: result.root, ok };
+	});
+	ipcMain.handle("company:product-add", async (event, product: string, from?: string) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (
+			!slot ||
+			!runtime ||
+			typeof product !== "string" ||
+			!product.trim() ||
+			Buffer.byteLength(product, "utf-8") > 256 ||
+			(from !== undefined && (typeof from !== "string" || Buffer.byteLength(from, "utf-8") > 8192))
+		)
+			return { ok: false, error: "invalid product transaction" };
+		return enqueueRuntimeTransition(runtime, async () => {
+			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild) {
+				return { ok: false, error: "company runtime is not available" };
+			}
+			const departmentId = productDepartmentId(product.trim());
+			const approved = await confirmKernelReview(slot.window, {
+				title: "Add product-development department",
+				summary: "Run this exact kernel product-registration transaction?",
+				exactText: product.trim(),
+				metadata: [
+					`Target: ${resolve(runtime.root, "departments", departmentId)}`,
+					`Source repository: ${from?.trim() || "none (department only)"}`,
+				].join("\n"),
+			});
+			if (!approved) return { ok: false, error: "cancelled" };
+			const options = {
+				...runtime.childOptions,
+				sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
+			};
+			runtime.inventoryWatcher?.close();
+			await stopChild(runtime.child);
+			try {
+				let department: ProductDepartment;
+				if (from?.trim()) {
+					const integrated = integrateRepoWithRuntimeLock(
+						runtime.root,
+						from.trim(),
+						product.trim(),
+						runtime.runtimeLock,
+					);
+					if (!integrated) throw new Error("could not clone the product source repository");
+					department = integrated;
+				} else {
+					department = scaffoldProductDepartmentWithRuntimeLock(runtime.root, product.trim(), runtime.runtimeLock);
+				}
+				readProductProtectionInventory(runtime.root);
+				runtime.childOptions = options;
+				runtime.child = startChild(slot, runtime.root, options);
+				runtime.inventoryWatcher = watch(join(runtime.root, ".qorpera"), { persistent: false }, (_event, file) => {
+					if (file?.toString() === "products.json") restartForProductInventory(slot, runtime);
+				});
+				return { ok: true, department };
+			} catch (error) {
+				try {
+					readProductProtectionInventory(runtime.root);
+					runtime.childOptions = options;
+					runtime.child = startChild(slot, runtime.root, options);
+					runtime.inventoryWatcher = watch(
+						join(runtime.root, ".qorpera"),
+						{ persistent: false },
+						(_event, file) => {
+							if (file?.toString() === "products.json") restartForProductInventory(slot, runtime);
+						},
+					);
+				} catch (restartError) {
+					console.error(`product transaction left the controller stopped: ${(restartError as Error).message}`);
+				}
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		});
 	});
 	ipcMain.handle("company:close", (event) => {
 		const slot = slotOf(event.sender);
@@ -1174,16 +1408,35 @@ app.whenReady().then(async () => {
 		if (!action) return { ok: false, status: 400, text: "unsupported kernel action" };
 		const serialized = JSON.stringify(body);
 		if (typeof serialized !== "string") return { ok: false, status: 400, text: "invalid request" };
-		if (serialized.length > 1024 * 1024) return { ok: false, status: 413, text: "request too large" };
-		const confirmation = await dialog.showMessageBox(slot.window, {
-			type: "warning",
-			buttons: ["Cancel", "Authorize"],
-			defaultId: 0,
-			cancelId: 0,
-			message: `Authorize kernel action: ${action}?`,
-			detail: serialized.slice(0, 4000),
+		if (Buffer.byteLength(serialized, "utf-8") > MAX_KERNEL_REVIEW_BYTES) {
+			return { ok: false, status: 413, text: "request exceeds the exact-review limit" };
+		}
+		let gateDocument: string | undefined;
+		if (path === "/api/gate") {
+			if (!body || typeof body !== "object" || Array.isArray(body)) {
+				return { ok: false, status: 400, text: "invalid gate transition" };
+			}
+			const record = body as Record<string, unknown>;
+			if (
+				Object.keys(record).some((key) => key !== "file" && key !== "action") ||
+				typeof record.file !== "string" ||
+				(record.action !== "approved" && record.action !== "denied")
+			) {
+				return { ok: false, status: 400, text: "invalid gate transition" };
+			}
+			gateDocument = kernelGateReviewDocument(runtime.root, record.file);
+			if (!gateDocument) return { ok: false, status: 409, text: "gate is not canonically pending" };
+		}
+		const approved = await confirmKernelReview(slot.window, {
+			title: "Authorize company mutation",
+			summary: `Authorize this exact kernel action: ${action}?`,
+			exactText: gateDocument ? `${gateDocument}\nRequested transition:\n${serialized}` : serialized,
+			metadata: `Endpoint: ${path}`,
 		});
-		if (confirmation.response !== 1) return { ok: false, status: 403, text: "cancelled" };
+		if (!approved) return { ok: false, status: 403, text: "cancelled" };
+		if (gateDocument && kernelGateReviewDocument(runtime.root, (body as { file: string }).file) !== gateDocument) {
+			return { ok: false, status: 409, text: "gate changed after review" };
+		}
 		const response = await fetch(`http://127.0.0.1:${runtime.backendPort}${path}`, {
 			method: "POST",
 			headers: { "content-type": "application/json", "x-qorpera-token": runtime.backendToken },
@@ -1233,26 +1486,30 @@ app.whenReady().then(async () => {
 			"set_session_name",
 		]);
 		if (promptTypes.has(frame.type)) {
-			const message = "message" in frame && typeof frame.message === "string" ? frame.message : "";
-			if (!message) return { ok: false };
+			const reviewed = reviewedPromptFrame(frame as Record<string, unknown>);
+			if (!reviewed || (!reviewed.message && !reviewed.images?.length)) return { ok: false };
 			const target = runtime.productWorker ? runtime.productWorker.department : "company controller";
-			const assignment = runtime.productWorker ? `\n\nAssigned worktree: ${runtime.productWorker.worktree}` : "";
-			const confirmation = await dialog.showMessageBox(slot.window, {
-				type: "warning",
-				buttons: ["Cancel", "Send instruction"],
-				defaultId: 0,
-				cancelId: 0,
-				message: `Authorize this instruction to the ${target}?`,
-				detail: `${message.slice(0, 4000)}${assignment}`,
+			const assignment = runtime.productWorker ? `Assigned worktree: ${runtime.productWorker.worktree}` : undefined;
+			const approved = await confirmKernelReview(slot.window, {
+				title: "Authorize company instruction",
+				summary: `Send this exact ${reviewed.type} to the ${target}?`,
+				exactText: reviewed.message,
+				metadata: [
+					assignment,
+					reviewed.streamingBehavior ? `Streaming behavior: ${reviewed.streamingBehavior}` : undefined,
+				]
+					.filter(Boolean)
+					.join("\n"),
+				images: reviewed.images?.map((image) => ({
+					mimeType: image.mimeType,
+					data: image.data,
+					sha256: createHash("sha256").update(image.data, "base64").digest("hex"),
+					bytes: Buffer.byteLength(image.data, "base64"),
+				})),
 			});
-			if (confirmation.response !== 1) return { ok: false };
+			if (!approved) return { ok: false };
 			return {
-				ok: sendKernelPrompt(
-					runtime.child,
-					frame as { type: "prompt" | "steer" | "follow_up"; message: string; [key: string]: unknown },
-					true,
-					"native-founder-confirmation",
-				),
+				ok: sendKernelPrompt(runtime.child, reviewed, true, "native-founder-confirmation"),
 			};
 		}
 		if (!safeControlTypes.has(frame.type)) return { ok: false };
@@ -1267,16 +1524,31 @@ app.whenReady().then(async () => {
 	// is deliberately static, so this stays quiet almost always.
 	if (app.isPackaged) {
 		const { autoUpdater } = electronUpdater;
+		let downloadedVersion: string | undefined;
 		autoUpdater.on("checking-for-update", () => sendAll("update-status", "checking…"));
 		autoUpdater.on("update-available", (info) => sendAll("update-status", `downloading ${info.version}…`));
 		autoUpdater.on("update-not-available", () => sendAll("update-status", "up to date"));
 		autoUpdater.on("error", (error) => sendAll("update-status", `update error: ${error.message.slice(0, 80)}`));
-		autoUpdater.on("update-downloaded", (info) => sendAll("update-ready", info.version));
+		autoUpdater.on("update-downloaded", (info) => {
+			downloadedVersion = info.version;
+			sendAll("update-ready", info.version);
+		});
 		autoUpdater.checkForUpdatesAndNotify().catch((error: Error) => {
 			console.error(`update check failed: ${error.message}`);
 		});
 		ipcMain.handle("update:check", () => autoUpdater.checkForUpdatesAndNotify().catch(() => undefined));
-		ipcMain.handle("update:install", () => autoUpdater.quitAndInstall());
+		ipcMain.handle("update:install", async (event) => {
+			const slot = slotOf(event.sender);
+			if (!slot || !downloadedVersion) return false;
+			const approved = await confirmKernelReview(slot.window, {
+				title: "Install Qorpera Base update",
+				summary: "Quit every company controller and install this foundation update?",
+				exactText: downloadedVersion,
+			});
+			if (!approved) return false;
+			autoUpdater.quitAndInstall();
+			return true;
+		});
 	} else {
 		ipcMain.handle("update:check", () => {
 			sendAll("update-status", "dev tree — rebuild the repo to update");
@@ -1392,7 +1664,7 @@ app.whenReady().then(async () => {
 	}
 });
 
-app.on("will-quit", () => closeModelProxy?.());
+app.on("will-quit", () => modelRequestBroker?.close());
 
 app.on("window-all-closed", () => {
 	app.quit();

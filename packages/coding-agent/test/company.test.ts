@@ -5,20 +5,32 @@
  * sessions-are-the-trail wiring (project sessionDir → ./trail).
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
 import {
+	claimCompanyRuntimeLock,
 	companyRuntimeLockPath,
 	createProductWorktree,
 	enforceCompanyKernelSettings,
 	KERNEL_PROMPT,
 	listProductDepartments,
 	readProductProtectionInventory,
+	releaseCompanyRuntimeLock,
 	scaffoldCompany,
 	scaffoldProductDepartment,
+	scaffoldProductDepartmentWithRuntimeLock,
 } from "../src/core/company.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -71,6 +83,7 @@ describe("scaffoldCompany", () => {
 		});
 		const settings = JSON.parse(readFileSync(join(root, ".qorpera", "settings.json"), "utf-8"));
 		expect(settings.compaction).toEqual({ enabled: false });
+		expect(settings.transport).toBe("sse");
 
 		expect(result.created.length).toBeGreaterThan(10);
 		expect(result.skipped.length).toBe(0);
@@ -138,6 +151,7 @@ describe("scaffoldCompany", () => {
 		expect(settings.theme).toBe("dark");
 		expect(settings.sessionDir).toBe("./trail");
 		expect(settings.compaction).toEqual({ enabled: false });
+		expect(settings.transport).toBe("sse");
 
 		// The kernel always restores the company trail as the session store.
 		writeFileSync(
@@ -224,19 +238,29 @@ describe("forking hub verbs (no-launch paths)", () => {
 });
 
 describe("product-development departments", () => {
-	it("refuses registration while the desktop kernel owns the company runtime", () => {
+	it("serializes offline and desktop product registration under one atomic runtime lock", () => {
 		const previous = process.env.QORPERA_CODING_AGENT_DIR;
 		process.env.QORPERA_CODING_AGENT_DIR = join(root, "agent-home");
 		try {
 			scaffoldCompany(root);
-			const lock = companyRuntimeLockPath(root);
-			mkdirSync(join(root, "agent-home", "runtime-locks"), { recursive: true });
-			writeFileSync(lock, `${JSON.stringify({ version: 1, pid: process.pid })}\n`);
-			expect(() => scaffoldProductDepartment(root, "Widget")).toThrow("desktop kernel is running");
+			const lock = claimCompanyRuntimeLock(root);
+			expect(lock.path).toBe(companyRuntimeLockPath(root));
+			expect(() => scaffoldProductDepartment(root, "Widget")).toThrow("already owned by another process");
+			const department = scaffoldProductDepartmentWithRuntimeLock(root, "Widget", lock);
+			expect(department.id).toBe("widget-development");
+			releaseCompanyRuntimeLock(lock);
 		} finally {
 			if (previous === undefined) delete process.env.QORPERA_CODING_AGENT_DIR;
 			else process.env.QORPERA_CODING_AGENT_DIR = previous;
 		}
+	});
+
+	it("tracks keep files created in pre-existing empty spine directories", () => {
+		mkdirSync(join(root, "app", "tools"), { recursive: true });
+		scaffoldCompany(root);
+		expect(spawnSync("git", ["ls-files", "app/tools/.gitkeep"], { cwd: root, encoding: "utf-8" }).stdout.trim()).toBe(
+			"app/tools/.gitkeep",
+		);
 	});
 
 	it("materializes and discovers the standard department kit", () => {
@@ -323,6 +347,16 @@ describe("product-development departments", () => {
 		]);
 		writeFileSync(join(root, ".qorpera", "products.json"), "{}\n", "utf-8");
 		expect(() => readProductProtectionInventory(root)).toThrow("inventory is invalid");
+	});
+
+	it("rejects linked registered product storage before issuing a sandbox profile", () => {
+		scaffoldCompany(root);
+		const department = scaffoldProductDepartment(root, "Widget");
+		const outside = join(root, "linked-worktrees");
+		mkdirSync(outside, { recursive: true });
+		rmSync(join(root, department.worktreesPath), { recursive: true });
+		symlinkSync(outside, join(root, department.worktreesPath), process.platform === "win32" ? "junction" : "dir");
+		expect(() => readProductProtectionInventory(root)).toThrow("must not be a link or junction");
 	});
 
 	it("uses Git-ref-safe product slugs and removes clones when branch creation fails", () => {

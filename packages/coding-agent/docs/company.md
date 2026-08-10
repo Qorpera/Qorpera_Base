@@ -20,11 +20,16 @@ The same scaffold flows exist as explicit verbs:
   ordinary registered company — it already knows itself.
 
 `--no-launch` remains accepted for scripting but company sessions are never
-launched by the CLI. Product registration is likewise a desktop-kernel
-transaction; `company product add` is refused outside that transaction.
+launched by the CLI. An existing company can add a product through the
+desktop kernel's `addProduct(product, source?)` bridge, or while the desktop
+is closed with `qorpera company product add <product> [--from <repo>]`.
+Both paths hold the same cross-process transaction lock across inventory,
+folder, projection, repository, and Git changes.
 The human's setup obligations are exactly three: say what the company is,
-ratify `authority.toml`, and connect subscriptions (`/login` in the session,
-or `codex login` for engine mode).
+ratify `authority.toml`, and connect subscriptions through a foundation-owned
+login outside the mutable company controller (or `codex login` for engine
+mode). Controller children receive only revocable opaque handles and cannot
+create, refresh, or export the foundation's provider credentials.
 
 ## The spine
 
@@ -51,8 +56,10 @@ clone it):
 ```
 
 Scaffolding is idempotent and never overwrites — a company's `company.md`
-is its identity, not ours to reset. Existing `.qorpera/settings.json` keys
-are merged around, and a pre-set `sessionDir` is respected.
+is its identity, not ours to reset. The two retention settings are kernel
+invariants: `.qorpera/settings.json` always uses `sessionDir: "./trail"`,
+`compaction.enabled: false`, and `transport: "sse"` so model operations stay
+inside the kernel HTTP broker; all unrelated settings keys are preserved.
 
 ## UI projection hierarchy
 
@@ -137,19 +144,20 @@ human-owned.
 ## Kernel runtime boundary
 
 The desktop kernel, not the company renderer, creates controller and product
-workers. Each child receives a clean environment, a read-only projection of
-model credentials, and network access only through a kernel-owned broker for
-model-provider domains. Ambient Git, cloud, connector, and desktop credentials
-are absent. On Windows, Base requires the elevated offline sandbox account and
-fails closed when it is unavailable; the broker is the only permitted outbound
-path. Product registration is refused while a company runtime lock exists, so
-new protected roots cannot become visible under a stale sandbox profile.
+workers. Each child receives a clean environment and opaque model-broker
+handles, never model, Git, cloud, connector, or desktop credentials. The
+kernel owns authentication and permits only scoped model-inference HTTP
+operations; it exposes neither blind CONNECT nor arbitrary provider account
+APIs. On Windows, Base requires the elevated offline sandbox account and
+fails closed when it is unavailable. Product registration and company open
+use the same atomic transaction lock before either reads or mutates inventory.
 
-Mutable userland may request a prompt, but every prompt is confirmed in native
-kernel UI and delivered with a signed, expiring, single-use intent capability.
-The trail records that kernel-observed input separately. Events emitted by the
-child remain append-only and hash-chained, but are marked as child assertions;
-they cannot manufacture kernel-observed founder provenance.
+Mutable userland may request a prompt, but a trusted kernel modal shows the
+full canonical text, image hashes, and exact product assignment before
+approval. The reviewed frame is delivered with a signed, expiring, single-use
+intent capability. Queued turns retain that intent identifier, and the trail
+links later effect assertions to the kernel-observed input. Child events remain
+append-only and hash-chained but explicitly remain child assertions.
 
 Behavior notes:
 
@@ -159,10 +167,9 @@ Behavior notes:
 - `sessionDir` is stored as `./trail`, which the CLI resolves at launch —
   start sessions at the company root (the normal case). Hosts embedding the
   SDK should pass an absolute session dir rooted at `<company>/trail`.
-- Company scaffolding sets `compaction.enabled` to `false` unless the company
-  already has an explicit choice. Base never rewrites, summarizes in place,
-  expires, or deletes trail records. Long work continues in a new session or
-  worktree instead.
+- Company scaffolding and every desktop open force `compaction.enabled` to
+  `false`. Base never rewrites, summarizes in place, expires, or deletes trail
+  records. Long work continues in a new session or worktree instead.
 - Session files flush on the first assistant message (upstream behavior),
   so an abandoned prompt leaves no trail entry.
 - Desktop controllers trust that company's project-local resources inside the

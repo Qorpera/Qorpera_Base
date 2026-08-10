@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	openCompany: (root) => ipcRenderer.invoke("company:open", root),
 	newCompany: (dir) => ipcRenderer.invoke("company:new", dir),
 	integrateCompany: (dir, from) => ipcRenderer.invoke("company:integrate", dir, from),
+	addProduct: (product, from) => ipcRenderer.invoke("company:product-add", product, from),
 	closeCompany: () => ipcRenderer.invoke("company:close"),
 	openChat: (sessionFile, department, worktree) => ipcRenderer.invoke("chat:open", sessionFile, department, worktree),
 	showHub: () => ipcRenderer.invoke("hub:show"),

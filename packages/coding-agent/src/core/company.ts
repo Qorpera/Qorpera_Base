@@ -20,9 +20,10 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.ts";
 import {
 	EMPTY_PROJECTION,
@@ -208,14 +209,104 @@ const PRODUCT_DEPARTMENT_KIND = "product-development";
 const PRODUCT_REGISTRY_PATH = join(".qorpera", "products.json");
 
 export function companyRuntimeLockPath(rootDir: string): string {
-	const normalized = process.platform === "win32" ? resolve(rootDir).toLowerCase() : resolve(rootDir);
+	const root = resolve(rootDir);
+	const gitPath = spawnSync(
+		"git",
+		["-C", root, "rev-parse", "--path-format=absolute", "--git-path", "qorpera-runtime-locks"],
+		{ encoding: "utf-8", shell: false },
+	);
+	if (gitPath.status !== 0 || !gitPath.stdout.trim()) {
+		throw new Error("company transaction requires a valid Git repository");
+	}
+	const normalized = process.platform === "win32" ? root.toLowerCase() : root;
 	const id = createHash("sha256").update(normalized).digest("hex");
-	return join(getAgentDir(), "runtime-locks", `${id}.json`);
+	return join(gitPath.stdout.trim(), `${id}.json`);
 }
 
-function assertProductRegistrationOffline(root: string): void {
-	if (existsSync(companyRuntimeLockPath(root))) {
-		throw new Error("Product registration is blocked while the desktop kernel is running this company");
+export interface CompanyRuntimeLock {
+	path: string;
+	root: string;
+	token: string;
+	release: () => void;
+}
+
+interface CompanyLockRecord {
+	version: 2;
+	pid: number;
+	root: string;
+	token: string;
+	mode: "runtime" | "product-registration";
+}
+
+const ownedRuntimeLocks = new WeakSet<CompanyRuntimeLock>();
+
+function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): CompanyRuntimeLock {
+	const root = resolve(rootDir);
+	const path = companyRuntimeLockPath(root);
+	mkdirSync(dirname(path), { recursive: true });
+	let release: () => void;
+	try {
+		release = lockfile.lockSync(path, { realpath: false, stale: 30_000 });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
+			throw new Error("Company transaction is already owned by another process", { cause: error });
+		}
+		throw error;
+	}
+	const token = randomUUID();
+	const record: CompanyLockRecord = { version: 2, pid: process.pid, root, token, mode };
+	try {
+		writeFileSync(path, `${JSON.stringify(record)}\n`, "utf-8");
+		return { path, root, token, release };
+	} catch (error) {
+		release();
+		throw error;
+	}
+}
+
+export function claimCompanyRuntimeLock(rootDir: string): CompanyRuntimeLock {
+	const lock = acquireCompanyLock(rootDir, "runtime");
+	ownedRuntimeLocks.add(lock);
+	return lock;
+}
+
+export function releaseCompanyRuntimeLock(lock: CompanyRuntimeLock): void {
+	try {
+		const record = JSON.parse(readFileSync(lock.path, "utf-8")) as Partial<CompanyLockRecord>;
+		if (record.token !== lock.token || resolve(record.root ?? "") !== resolve(lock.root)) {
+			throw new Error("company transaction lock ownership changed before release");
+		}
+		rmSync(lock.path, { force: true });
+		lock.release();
+	} catch (error) {
+		try {
+			lock.release();
+		} catch {}
+		throw error;
+	} finally {
+		ownedRuntimeLocks.delete(lock);
+	}
+}
+
+function assertRuntimeLock(root: string, lock: CompanyRuntimeLock): void {
+	if (!ownedRuntimeLocks.has(lock) || resolve(lock.root) !== resolve(root)) {
+		throw new Error("desktop product transaction has no kernel-owned runtime capability");
+	}
+	const path = companyRuntimeLockPath(root);
+	let record: Partial<CompanyLockRecord>;
+	try {
+		record = JSON.parse(readFileSync(path, "utf-8")) as Partial<CompanyLockRecord>;
+	} catch (error) {
+		throw new Error("desktop product transaction has no valid runtime lock", { cause: error });
+	}
+	if (
+		record.version !== 2 ||
+		record.mode !== "runtime" ||
+		record.pid !== process.pid ||
+		record.token !== lock.token ||
+		resolve(record.root ?? "") !== resolve(root)
+	) {
+		throw new Error("desktop product transaction does not own the company runtime lock");
 	}
 }
 
@@ -458,6 +549,7 @@ function ensureDir(root: string, relPath: string, result: ScaffoldResult): void 
 	const keep = join(target, ".gitkeep");
 	if (!existsSync(keep) && readdirIsEmpty(target)) {
 		writeFileSync(keep, "", "utf-8");
+		result.created.push(join(relPath, ".gitkeep"));
 	}
 }
 
@@ -502,6 +594,12 @@ function ensureProjectSettings(root: string, result: ScaffoldResult): boolean {
 		changed = true;
 	} else {
 		result.skipped.push(".qorpera/settings.json (compaction already configured)");
+	}
+	if (settings.transport !== "sse") {
+		settings.transport = "sse";
+		changed = true;
+	} else {
+		result.skipped.push(".qorpera/settings.json (brokered SSE transport already set)");
 	}
 	if (!changed) return false;
 	mkdirSync(settingsDir, { recursive: true });
@@ -559,6 +657,11 @@ function productSlug(product: string): string {
 	return slug || "product";
 }
 
+/** Canonical folder identifier reviewed before any product-registration transaction. */
+export function productDepartmentId(product: string): string {
+	return `${productSlug(product)}-development`;
+}
+
 function productDepartmentFromEntry(root: string, id: string): ProductDepartment | undefined {
 	if (!id.endsWith("-development") || id.includes("/") || id.includes("\\")) return undefined;
 	const path = join("departments", id);
@@ -597,18 +700,34 @@ export function listProductDepartments(rootDir: string): ProductDepartment[] {
 export function readProductProtectionInventory(
 	rootDir: string,
 ): Array<{ id: string; repositoryPath: string; worktreesPath: string }> {
-	return readProductRegistry(resolve(rootDir)).products.map((id) => ({
-		id,
-		repositoryPath: join("departments", id, "repository"),
-		worktreesPath: join("departments", id, "worktrees"),
-	}));
+	const root = resolve(rootDir);
+	const actualRoot = realpathSync(root);
+	return readProductRegistry(root).products.map((id) => {
+		const repositoryPath = join("departments", id, "repository");
+		const worktreesPath = join("departments", id, "worktrees");
+		for (const path of [repositoryPath, worktreesPath]) {
+			const expected = resolve(root, path);
+			const expectedActual = resolve(actualRoot, path);
+			let actual: string;
+			try {
+				actual = realpathSync(expected);
+			} catch (error) {
+				throw new Error(`Registered product storage is unavailable: ${path}`, { cause: error });
+			}
+			const normalizedExpected = process.platform === "win32" ? expectedActual.toLowerCase() : expectedActual;
+			const normalizedActual = process.platform === "win32" ? actual.toLowerCase() : actual;
+			if (normalizedActual !== normalizedExpected) {
+				throw new Error(`Registered product storage must not be a link or junction: ${path}`);
+			}
+		}
+		return { id, repositoryPath, worktreesPath };
+	});
 }
 
-/** Materialize the standard product-development department without overwriting it. */
-export function scaffoldProductDepartment(rootDir: string, product: string): ProductDepartment {
+/** Materialize the standard product-development department while its caller owns the company transaction lock. */
+function scaffoldProductDepartmentUnlocked(rootDir: string, product: string): ProductDepartment {
 	const root = resolve(rootDir);
-	assertProductRegistrationOffline(root);
-	const id = `${productSlug(product)}-development`;
+	const id = productDepartmentId(product);
 	const path = join("departments", id);
 	const target = join(root, path);
 	const existing = productDepartmentFromEntry(root, id);
@@ -650,6 +769,27 @@ export function scaffoldProductDepartment(rootDir: string, product: string): Pro
 	registerProductDepartment(root, id);
 	checkpointProductKit(root, id);
 	return created;
+}
+
+/** Offline product registration. The lock is held across inventory, folder, projection, and Git mutation. */
+export function scaffoldProductDepartment(rootDir: string, product: string): ProductDepartment {
+	const lock = acquireCompanyLock(rootDir, "product-registration");
+	try {
+		return scaffoldProductDepartmentUnlocked(rootDir, product);
+	} finally {
+		releaseCompanyRuntimeLock(lock);
+	}
+}
+
+/** Desktop-kernel product registration under the already-held runtime transaction. */
+export function scaffoldProductDepartmentWithRuntimeLock(
+	rootDir: string,
+	product: string,
+	runtimeLock: CompanyRuntimeLock,
+): ProductDepartment {
+	const root = resolve(rootDir);
+	assertRuntimeLock(root, runtimeLock);
+	return scaffoldProductDepartmentUnlocked(root, product);
 }
 
 /** Create one isolated product task clone under the department's worktrees directory. */
@@ -816,13 +956,22 @@ function launchSession(dir: string): Promise<number> {
 }
 
 function cloneInto(source: string, destination: string): boolean {
+	try {
+		const parsed = new URL(source);
+		if ((parsed.protocol === "https:" || parsed.protocol === "http:") && (parsed.username || parsed.password)) {
+			console.error("Repository URLs with embedded credentials are not allowed; use a Git credential helper.");
+			return false;
+		}
+	} catch {
+		// Local paths and SCP-style SSH remotes are not URL-userinfo credentials.
+	}
 	const clone = spawnSync("git", ["clone", source, destination], { stdio: "inherit", shell: false });
 	return clone.status === 0;
 }
 
-/** Clone an existing repo into its product-development department. */
-export function integrateRepo(root: string, from: string, product = basenameOf(from)): boolean {
-	const department = scaffoldProductDepartment(root, product);
+/** Clone an existing repo while its caller owns the company transaction lock. */
+function integrateRepoUnlocked(root: string, from: string, product: string): boolean {
+	const department = scaffoldProductDepartmentUnlocked(root, product);
 	const destination = join(root, department.repositoryPath);
 	if (existsSync(destination)) {
 		try {
@@ -842,6 +991,29 @@ export function integrateRepo(root: string, from: string, product = basenameOf(f
 		`Could not clone ${from}. Point it at a git repository (path or URL), or populate the product department repository and re-run.`,
 	);
 	return false;
+}
+
+/** Offline integration holds one transaction across registration and clone materialization. */
+export function integrateRepo(root: string, from: string, product = basenameOf(from)): boolean {
+	const lock = acquireCompanyLock(root, "product-registration");
+	try {
+		return integrateRepoUnlocked(resolve(root), from, product);
+	} finally {
+		releaseCompanyRuntimeLock(lock);
+	}
+}
+
+/** Desktop-kernel integration under the already-held runtime transaction. */
+export function integrateRepoWithRuntimeLock(
+	root: string,
+	from: string,
+	product: string,
+	runtimeLock: CompanyRuntimeLock,
+): ProductDepartment | undefined {
+	const resolvedRoot = resolve(root);
+	assertRuntimeLock(resolvedRoot, runtimeLock);
+	if (!integrateRepoUnlocked(resolvedRoot, from, product)) return undefined;
+	return productDepartmentFromEntry(resolvedRoot, productDepartmentId(product));
 }
 
 /**
@@ -906,10 +1078,28 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 	if (args[0] !== "company") return false;
 	const sub = args[1];
 	if (sub === "product" && args[2] === "add") {
-		console.error(
-			"Product registration is a desktop-kernel transaction and cannot run from a live or standalone controller CLI.",
-		);
-		process.exitCode = 1;
+		const product = args[3];
+		const fromIndex = args.indexOf("--from");
+		const from = fromIndex >= 0 ? args[fromIndex + 1] : undefined;
+		if (!product || (fromIndex >= 0 && !from)) {
+			console.error("Usage: company product add <product> [--from <repo-path-or-url>]");
+			process.exitCode = 1;
+			return true;
+		}
+		try {
+			const root = process.cwd();
+			if (!existsSync(join(root, "company.md"))) throw new Error("current directory is not a company root");
+			if (from) {
+				if (!integrateRepo(root, from, product)) throw new Error("product source clone failed");
+			} else {
+				scaffoldProductDepartment(root, product);
+			}
+			console.log(`Added ${productDepartmentId(product)}. Open the company in Qorpera Base.`);
+			process.exitCode = 0;
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
 		return true;
 	}
 	if (sub !== "init") {

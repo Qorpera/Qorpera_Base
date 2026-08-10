@@ -615,7 +615,6 @@ export function writeGateRequest(authority: Authority, input: GateRequestInput):
 					effectClass: input.effectClass,
 					toolName: input.toolName,
 					hash: input.hash,
-					what: input.what,
 					args: input.args,
 				},
 			})}\n`,

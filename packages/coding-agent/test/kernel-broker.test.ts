@@ -19,7 +19,7 @@ describe("kernel intent capabilities", () => {
 		};
 		const frame = { ...unsignedFrame, kernelIntent };
 		const consumed = new Set<string>();
-		expect(verifyKernelIntentCapability(frame, publicKey, consumed)).toBe(true);
+		expect(verifyKernelIntentCapability(frame, publicKey, consumed)).toEqual(kernelIntent);
 		expect(verifyKernelIntentCapability(frame, publicKey, consumed)).toBeUndefined();
 		expect(
 			verifyKernelIntentCapability(

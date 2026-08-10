@@ -386,10 +386,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	// Handle a single command
 	const handleCommand = async (command: RpcCommand): Promise<RpcResponse | undefined> => {
 		const id = command.id;
-		const kernelIntent = (): boolean | undefined => {
-			const attended = consumeKernelIntent(command as unknown as Record<string, unknown>);
-			if (process.env.QORPERA_KERNEL_REQUIRED === "1" && attended === undefined) return undefined;
-			return attended ?? false;
+		const kernelIntent = () => {
+			const intent = consumeKernelIntent(command as unknown as Record<string, unknown>);
+			if (process.env.QORPERA_KERNEL_REQUIRED === "1" && intent === undefined) return undefined;
+			return intent;
 		};
 
 		switch (command.type) {
@@ -398,15 +398,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// =================================================================
 
 			case "prompt": {
-				const attended = kernelIntent();
-				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && attended === undefined) {
+				const intent = kernelIntent();
+				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && intent === undefined) {
 					return error(id, "prompt", "missing, invalid, expired, or reused kernel intent capability");
 				}
 				// Start prompt handling immediately, but emit the authoritative response only after
 				// prompt preflight succeeds. Queued and immediately handled prompts also count as success.
 				let preflightSucceeded = false;
 				void session
-					.withKernelIntent(Boolean(attended), () =>
+					.withKernelIntent(intent, () =>
 						session.prompt(command.message, {
 							images: command.images,
 							streamingBehavior: command.streamingBehavior,
@@ -428,20 +428,20 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "steer": {
-				const attended = kernelIntent();
-				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && attended === undefined) {
+				const intent = kernelIntent();
+				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && intent === undefined) {
 					return error(id, "steer", "missing, invalid, expired, or reused kernel intent capability");
 				}
-				await session.withKernelIntent(Boolean(attended), () => session.steer(command.message, command.images));
+				await session.withKernelIntent(intent, () => session.steer(command.message, command.images));
 				return success(id, "steer");
 			}
 
 			case "follow_up": {
-				const attended = kernelIntent();
-				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && attended === undefined) {
+				const intent = kernelIntent();
+				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && intent === undefined) {
 					return error(id, "follow_up", "missing, invalid, expired, or reused kernel intent capability");
 				}
-				await session.withKernelIntent(Boolean(attended), () => session.followUp(command.message, command.images));
+				await session.withKernelIntent(intent, () => session.followUp(command.message, command.images));
 				return success(id, "follow_up");
 			}
 

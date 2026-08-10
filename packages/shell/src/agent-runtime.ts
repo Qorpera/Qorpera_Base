@@ -11,6 +11,12 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import {
+	classifyToolCall,
+	discoverAuthority,
+	readAuthorityConfig,
+	requestHash,
+} from "@qorpera/pi-coding-agent/authority";
 
 interface QorperaSessionAuthority {
 	actor: "controller" | "product-worker";
@@ -59,6 +65,7 @@ export interface AgentScope {
 export interface TrailBinding {
 	path: string;
 	file: string;
+	cwd: string;
 	token: string;
 	authority: QorperaSessionAuthority;
 	audit: { ids: Set<string>; sequence: number; lastHash: string };
@@ -80,7 +87,6 @@ interface KernelWriteFrame {
 		effectClass: string;
 		toolName: string;
 		hash: string;
-		what: string;
 		args: unknown;
 	};
 	file?: string;
@@ -283,7 +289,7 @@ export function bindTrailSession(root: string, cwd: string, scope: AgentScope, s
 		};
 		writeFileSync(path, `${JSON.stringify(header)}\n`, { flag: "wx" });
 	}
-	return { path, file: basename(path), token: randomUUID(), authority, audit };
+	return { path, file: basename(path), cwd: resolve(cwd), token: randomUUID(), authority, audit };
 }
 
 export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): TrailAppendFrame | undefined {
@@ -330,7 +336,15 @@ function stampKernelEntry(binding: TrailBinding, entry: SessionEntry): TrailAppe
 
 export function appendKernelObservation(
 	binding: TrailBinding,
-	input: { frameType: "prompt" | "steer" | "follow_up"; message: string; attended: boolean; origin: string },
+	input: {
+		frameType: "prompt" | "steer" | "follow_up";
+		message: string;
+		attended: boolean;
+		origin: string;
+		intentNonce: string;
+		requestHash: string;
+		images: Array<{ mimeType: string; sha256: string; bytes: number }>;
+	},
 ): void {
 	const append = stampKernelEntry(binding, {
 		type: "custom",
@@ -377,18 +391,46 @@ function parseGateDocument(file: string, content: string): ParsedGateDocument | 
 	return { id, status: status as ParsedGateDocument["status"], hash, content: normalized };
 }
 
-function canonicalGateContent(gate: NonNullable<KernelWriteFrame["gate"]>): string | undefined {
+/** Exact canonical pending record the trusted kernel shows before a founder transition. */
+export function kernelGateReviewDocument(root: string, file: string): string | undefined {
+	if (!/^gate-[a-f0-9]{8}(?:-[2-9][0-9]*)?\.md$/.test(file)) return undefined;
+	try {
+		const record = parseGateDocument(file, readFileSync(join(root, "inbox", file), "utf-8"));
+		return record?.status === "pending" ? record.content : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function canonicalGateEffectClass(
+	root: string,
+	binding: TrailBinding,
+	gate: NonNullable<KernelWriteFrame["gate"]>,
+): string | undefined {
+	if (gate.toolName === "behavior_signature" || gate.toolName === "extension_load") return "authority";
+	const authority = discoverAuthority(binding.cwd);
+	if (!authority || resolve(authority.root) !== resolve(root)) return undefined;
+	return classifyToolCall(authority, readAuthorityConfig(authority), gate.toolName, gate.args, binding.cwd);
+}
+
+function canonicalGateContent(
+	root: string,
+	binding: TrailBinding,
+	gate: NonNullable<KernelWriteFrame["gate"]>,
+): string | undefined {
+	const effectClass = canonicalGateEffectClass(root, binding, gate);
 	if (
 		`${gate.id}.md` !== gate.file ||
 		!/^gate-[a-f0-9]{8}(?:-[2-9][0-9]*)?$/.test(gate.id) ||
 		!gate.id.startsWith(`gate-${gate.hash.slice(0, 8)}`) ||
 		!/^[a-f0-9]{64}$/.test(gate.hash) ||
-		!GATE_EFFECT_CLASSES.has(gate.effectClass) ||
+		!effectClass ||
+		!GATE_EFFECT_CLASSES.has(effectClass) ||
+		effectClass !== gate.effectClass ||
+		requestHash(gate.toolName, gate.args) !== gate.hash ||
 		!gate.toolName ||
 		gate.toolName.length > 128 ||
-		/[\r\n]/.test(gate.toolName) ||
-		typeof gate.what !== "string" ||
-		Buffer.byteLength(gate.what, "utf-8") > 4096
+		/[\r\n]/.test(gate.toolName)
 	)
 		return undefined;
 	let serializedArgs: string;
@@ -402,20 +444,21 @@ function canonicalGateContent(gate: NonNullable<KernelWriteFrame["gate"]>): stri
 		"---",
 		`id: ${gate.id}`,
 		"status: pending   # change to: approved | denied",
-		`class: ${gate.effectClass}`,
+		`class: ${effectClass}`,
 		`tool: ${gate.toolName}`,
 		`hash: ${gate.hash}`,
 		`created: ${new Date().toISOString()}`,
 		"---",
 		"",
-		`# Gate request: ${gate.toolName} (${gate.effectClass})`,
+		`# Gate request: ${gate.toolName} (${effectClass})`,
 		"",
-		`**What:** ${gate.what}`,
+		"**Exact tool:**",
 		"",
-		"**Arguments:**",
-		"```json",
-		serializedArgs,
-		"```",
+		`    ${gate.toolName}`,
+		"",
+		"**Exact arguments:**",
+		"",
+		...serializedArgs.split("\n").map((line) => `    ${line}`),
 		"",
 		"**If denied:** the agent will not perform this action and will pursue another path.",
 		"",
@@ -468,7 +511,7 @@ export function applyKernelWriteFrame(
 	const inbox = join(root, "inbox");
 	if (frame.operation === "create_gate") {
 		if (!frame.gate) return true;
-		const content = canonicalGateContent(frame.gate);
+		const content = canonicalGateContent(root, binding, frame.gate);
 		if (!content) return true;
 		try {
 			writeFileSync(join(inbox, frame.gate.file), content, { encoding: "utf-8", flag: "wx" });
@@ -570,7 +613,6 @@ export function writeSandboxProfile(
 	scope: AgentScope,
 	protectedPaths: string[],
 	foundationReadPaths: string[],
-	allowedNetworkDomains: string[],
 ): string {
 	mkdirSync(configDir, { recursive: true });
 	mkdirSync(runtimeDir, { recursive: true });
@@ -592,9 +634,8 @@ export function writeSandboxProfile(
 	const filesystem = [...permissions]
 		.map(([path, access]) => `${tomlString(path)} = ${tomlString(access)}`)
 		.join("\n");
-	const domains = allowedNetworkDomains.map((domain) => `${tomlString(domain)} = "allow"`).join("\n");
 	const windows = process.platform === "win32" ? '\n[windows]\nsandbox = "elevated"\n' : "";
-	const config = `default_permissions = "qorpera-agent"\n${windows}\n[features]\nnetwork_proxy = true\n\n[network]\nenabled = true\nmode = "limited"\nallow_upstream_proxy = false\nallow_local_binding = false\n\n[network.domains]\n${domains}\n\n[permissions.qorpera-agent.filesystem]\n${filesystem}\n\n[permissions.qorpera-agent.network]\nenabled = false\n`;
+	const config = `default_permissions = "qorpera-agent"\n${windows}\n[features]\nnetwork_proxy = false\n\n[network]\nenabled = false\n\n[permissions.qorpera-agent.filesystem]\n${filesystem}\n\n[permissions.qorpera-agent.network]\nenabled = false\n`;
 	const configPath = join(configDir, "config.toml");
 	writeFileSync(configPath, config, "utf-8");
 	return configPath;

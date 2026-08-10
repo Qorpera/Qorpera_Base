@@ -95,6 +95,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import type { KernelIntentCapability } from "./kernel-broker.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -357,8 +358,11 @@ export class AgentSession {
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
-	/** Active only while an RPC prompt carries a verified, one-shot kernel human-intent capability. */
-	private _attendedIntentDepth = 0;
+	/** Verified kernel intent associated with the input currently causing effects. */
+	private _activeKernelIntent?: KernelIntentCapability;
+	/** Intent received by the current RPC call, copied onto any queued user message it creates. */
+	private _incomingKernelIntent?: KernelIntentCapability;
+	private readonly _messageKernelIntents = new WeakMap<AgentMessage, KernelIntentCapability>();
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
 	private _extensionAbortHandler?: () => void;
 	private _extensionShutdownHandler?: ShutdownHandler;
@@ -494,7 +498,7 @@ export class AgentSession {
 				// <sdk:…>) and code outside the company root are ignored.
 				let decision = evaluateToolCall(this._authority, toolCall.name, args, this._cwd, {
 					attended: sessionAuthority
-						? this._attendedIntentDepth > 0
+						? this._activeKernelIntent?.attended === true
 						: (this._extensionMode === "tui" || this._extensionMode === "rpc") && !process.env.QORPERA_AUTONOMOUS,
 					actor: sessionAuthority?.actor ?? "controller",
 					productWorktree: sessionAuthority?.worktree,
@@ -514,6 +518,13 @@ export class AgentSession {
 						attended: decision.kind === "allow" && decision.attended ? true : undefined,
 						actor: decision.kind === "allow" ? decision.actor : undefined,
 						behavior: decision.behavior,
+						kernelIntent: this._activeKernelIntent
+							? {
+									nonce: this._activeKernelIntent.nonce,
+									requestHash: this._activeKernelIntent.requestHash,
+									attended: this._activeKernelIntent.attended,
+								}
+							: undefined,
 					});
 				}
 				if (decision.kind === "block") {
@@ -574,12 +585,16 @@ export class AgentSession {
 		};
 	}
 
-	async withKernelIntent<T>(attended: boolean, action: () => Promise<T>): Promise<T> {
-		if (attended) this._attendedIntentDepth += 1;
+	async withKernelIntent<T>(intent: KernelIntentCapability | undefined, action: () => Promise<T>): Promise<T> {
+		const previousIncoming = this._incomingKernelIntent;
+		const previousActive = this._activeKernelIntent;
+		this._incomingKernelIntent = intent;
+		this._activeKernelIntent = intent;
 		try {
 			return await action();
 		} finally {
-			if (attended) this._attendedIntentDepth -= 1;
+			this._incomingKernelIntent = previousIncoming;
+			this._activeKernelIntent = previousActive;
 		}
 	}
 
@@ -646,6 +661,7 @@ export class AgentSession {
 
 	private async _emitAgentSettled(): Promise<void> {
 		this._isAgentRunActive = false;
+		this._activeKernelIntent = undefined;
 		try {
 			await this._extensionRunner.emit({ type: "agent_settled" });
 			this._emit({ type: "agent_settled" });
@@ -662,6 +678,7 @@ export class AgentSession {
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
+			this._activeKernelIntent = this._messageKernelIntents.get(event.message);
 			this._overflowRecoveryAttempted = false;
 			const messageText = contentText(event.message.content, "");
 			if (messageText) {
@@ -1279,11 +1296,13 @@ export class AgentSession {
 			if (currentImages) {
 				userContent.push(...currentImages);
 			}
-			messages.push({
+			const userMessage: AgentMessage = {
 				role: "user",
 				content: userContent,
 				timestamp: Date.now(),
-			});
+			};
+			if (this._incomingKernelIntent) this._messageKernelIntents.set(userMessage, this._incomingKernelIntent);
+			messages.push(userMessage);
 
 			// Inject any pending "nextTurn" messages as context alongside the user message
 			for (const msg of this._pendingNextTurnMessages) {
@@ -1445,11 +1464,13 @@ export class AgentSession {
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.steer({
+		const message: AgentMessage = {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+		if (this._incomingKernelIntent) this._messageKernelIntents.set(message, this._incomingKernelIntent);
+		this.agent.steer(message);
 	}
 
 	/**
@@ -1462,11 +1483,13 @@ export class AgentSession {
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.followUp({
+		const message: AgentMessage = {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+		if (this._incomingKernelIntent) this._messageKernelIntents.set(message, this._incomingKernelIntent);
+		this.agent.followUp(message);
 	}
 
 	/**

@@ -16,7 +16,7 @@ interface PendingGateRequest {
 	timer: NodeJS.Timeout;
 }
 
-interface KernelIntentCapability {
+export interface KernelIntentCapability {
 	nonce: string;
 	requestHash: string;
 	attended: boolean;
@@ -55,7 +55,7 @@ function verifyKernelIntent(
 	frame: Record<string, unknown>,
 	publicKey: KernelPublicKey,
 	consumedNonces: Set<string>,
-): boolean | undefined {
+): KernelIntentCapability | undefined {
 	const candidate = frame.kernelIntent;
 	if (!candidate || typeof candidate !== "object") return undefined;
 	const intent = candidate as Partial<KernelIntentCapability>;
@@ -89,14 +89,14 @@ function verifyKernelIntent(
 	);
 	if (!valid) return undefined;
 	consumedNonces.add(intent.nonce);
-	return intent.attended;
+	return intent as KernelIntentCapability;
 }
 
 export function verifyKernelIntentCapability(
 	frame: Record<string, unknown>,
 	publicKey: string,
 	consumedNonces: Set<string>,
-): boolean | undefined {
+): KernelIntentCapability | undefined {
 	return verifyKernelIntent(
 		frame,
 		createPublicKey({ key: Buffer.from(publicKey, "base64"), format: "der", type: "spki" }),
@@ -104,7 +104,7 @@ export function verifyKernelIntentCapability(
 	);
 }
 
-export function consumeKernelIntent(frame: Record<string, unknown>): boolean | undefined {
+export function consumeKernelIntent(frame: Record<string, unknown>): KernelIntentCapability | undefined {
 	return kernelPublicKey ? verifyKernelIntent(frame, kernelPublicKey, consumedIntentNonces) : undefined;
 }
 

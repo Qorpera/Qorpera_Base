@@ -23,6 +23,56 @@ function git(root: string, args: string[]): ReturnType<typeof spawnSync> {
 	return spawnSync("git", ["-C", root, ...args], { encoding: "utf-8", shell: false });
 }
 
+function commitSnapshot(root: string, message: string): void {
+	const committed = git(root, [
+		"-c",
+		"user.name=Qorpera Founder Snapshot",
+		"-c",
+		"user.email=founder-snapshot@qorpera.local",
+		"commit",
+		"-m",
+		message,
+	]);
+	if (committed.status !== 0) {
+		throw new Error(`founder state snapshot failed: ${committed.stderr || committed.stdout || "git commit failed"}`);
+	}
+}
+
+/**
+ * Preserve every pre-controller Git state before granting company-folder
+ * write access. A staged version is committed first so a different working
+ * version becomes a second recoverable snapshot instead of replacing it.
+ */
+export function snapshotFounderGitState(root: string): void {
+	if (git(root, ["rev-parse", "--verify", "HEAD"]).status !== 0) {
+		throw new Error("founder state cannot be snapshotted before company genesis");
+	}
+	const staged = git(root, ["diff", "--cached", "--quiet"]);
+	if (staged.status === 1) {
+		commitSnapshot(
+			root,
+			"docs: preserve founder staged state\n\nQorpera-Trigger: controller startup\nQorpera-Rationale: retain the founder index before any controller write can overlap it",
+		);
+	} else if (staged.status !== 0) {
+		throw new Error("could not inspect staged founder state");
+	}
+	const status = git(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
+	if (status.status !== 0 || typeof status.stdout !== "string") {
+		throw new Error(
+			`could not inspect founder working state: ${status.stderr || status.stdout || "git status failed"}`,
+		);
+	}
+	if (!status.stdout.trim()) return;
+	const added = git(root, ["add", "--all"]);
+	if (added.status !== 0) {
+		throw new Error(`could not stage founder working state: ${added.stderr || added.stdout || "git add failed"}`);
+	}
+	commitSnapshot(
+		root,
+		"docs: preserve founder working state\n\nQorpera-Trigger: controller startup\nQorpera-Rationale: retain tracked, untracked, and deleted founder data before controller execution",
+	);
+}
+
 function pathIdentity(root: string, path: string, status: string): string {
 	const working = git(root, ["hash-object", "--no-filters", "--", path]);
 	const index = git(root, ["rev-parse", `:${path}`]);
@@ -95,7 +145,7 @@ export function checkpointCompanyGit(
 		return { baseline, success: false };
 	}
 	const trailPath = `trail/${trailFile}`;
-	const sessionPaths = [...current.keys()].filter(
+	const sessionPaths = [...new Set([...current.keys(), ...baseline.dirtyPaths.keys()])].filter(
 		(path) => baseline.dirtyPaths.get(path) !== current.get(path) || path.replace(/\\/g, "/") === trailPath,
 	);
 	if (sessionPaths.length === 0) return { baseline: { dirtyPaths: current }, success: true };

@@ -15,6 +15,7 @@
 			"@qorpera/pi-agent-sqlite-node": ["./packages/storage/sqlite-node/src/index.ts"],
 			"@qorpera/pi-coding-agent": ["./packages/coding-agent/src/index.ts"],
 			"@qorpera/pi-coding-agent/app-server": ["./packages/coding-agent/src/core/app-server.ts"],
+			"@qorpera/pi-coding-agent/authority": ["./packages/coding-agent/src/core/authority.ts"],
 			"@qorpera/pi-coding-agent/company": ["./packages/coding-agent/src/core/company.ts"],
 			"@qorpera/pi-coding-agent/hooks": ["./packages/coding-agent/src/core/hooks/index.ts"],
 			"@qorpera/pi-coding-agent/*": ["./packages/coding-agent/src/*"],
