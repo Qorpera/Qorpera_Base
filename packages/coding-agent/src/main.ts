@@ -31,7 +31,6 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./core/agent-session-services.ts";
-import { handleAppCommand } from "./core/app-server.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { discoverAuthority } from "./core/authority.ts";
 import { conceptionKickoff, handleCompanyCommand, registerCompany, runCompanyHub } from "./core/company.ts";
@@ -39,6 +38,7 @@ import { handleEngineCommand } from "./core/engine/cli.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
+import { isModelBrokerInstalled } from "./core/model-broker-client.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
@@ -569,11 +569,13 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
-	if (await handleEngineCommand(args)) {
+	if (discoverAuthority(cwd) && !process.env.QORPERA_TRAIL_BROKER_TOKEN) {
+		console.error("Company sessions require the Qorpera Base desktop kernel; direct CLI execution is refused.");
+		process.exitCode = 1;
 		return;
 	}
 
-	if (await handleAppCommand(args)) {
+	if (await handleEngineCommand(args)) {
 		return;
 	}
 
@@ -700,6 +702,21 @@ export async function main(args: string[], options?: MainOptions) {
 
 	const trustStore = new ProjectTrustStore(agentDir);
 	const sessionCwd = sessionManager.getCwd();
+	const sessionAuthority = discoverAuthority(sessionCwd);
+	if (
+		sessionAuthority &&
+		(appMode !== "rpc" ||
+			process.env.QORPERA_KERNEL_REQUIRED !== "1" ||
+			!process.env.QORPERA_TRAIL_BROKER_TOKEN ||
+			!process.env.QORPERA_KERNEL_PUBLIC_KEY ||
+			!isModelBrokerInstalled() ||
+			!sessionManager.getHeader()?.qorpera)
+	) {
+		console.error(
+			chalk.red("Company sessions require a live Qorpera Base desktop kernel binding after session resolution."),
+		);
+		process.exit(1);
+	}
 	const autoTrustOnReloadCwd =
 		parsed.projectTrustOverride === undefined && !hasTrustRequiringProjectResources(sessionCwd)
 			? sessionCwd

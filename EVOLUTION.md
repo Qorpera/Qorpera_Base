@@ -55,7 +55,8 @@ Decision matrix (rows = action source, columns = intent presence):
 
 |  | Founder present | Unattended |
 |---|---|---|
-| **Inward effects** (thought, `work/`, `app/`, trail) | free | free |
+| **Company inward effects** (thought, `app/`, department briefs, trail) | free | free |
+| **Product-code effects** | product-worker in assigned worktree only | product-worker in assigned worktree only |
 | **Improvised outward** (model ad-libs an action) | inline gate, as today | inbox gate, as today |
 | **Codified outward** (a routine/tool acts) | inline gate | **hash signed, else inbox gate** |
 
@@ -77,7 +78,7 @@ signature status (the check needs the hash anyway). Safe boot: the platform
 bookmarks the last tree hash that started a session successfully — a trail
 fact for recovery, not a governance object.
 
-## 4. The three invariants
+## 4. The five invariants
 
 1. **History is append-only from the agent's side.** **[exists]** — the
    destructive screen gates force-push, `reset --hard`, and (since §9.3)
@@ -94,6 +95,17 @@ fact for recovery, not a governance object.
    rationale as trailers, enforced at the tool boundary. The agent
    explaining itself to its future self, not to a reviewer. **[exists]**
    since §9.2.
+4. **Product authority is delegated, never inferred from presence.** The
+   controller is read-only over product repositories and worktrees in every
+   mode. Product Chat creates an isolated worktree and assigns a
+   product-worker capability for that path only. This boundary has no
+   one-off approval path; destructive integration still uses the ordinary
+   irreversible gate.
+5. **Navigation is a projection, never company ontology.** The agent owns
+   the free-form company folder. `app/projection.json` selectively publishes
+   a bounded Department → (Page or Category → Page) hierarchy with immutable
+   IDs. Base neither infers navigation from folders nor requires company data
+   to mirror the interface.
 
 ## 5. Charter and rollback
 
@@ -104,7 +116,7 @@ files are gate-protected **[exists]**. Only the founder supplies intent;
 "better" is indexical and no capability level infers what the file is for.
 
 Rollback is always forward: `git revert` scoped to behavior paths (`app/`,
-`company.md`, kernel files). `trail/` and `work/` are state and never
+`company.md`, kernel files). `trail/` and product repositories/worktrees are state and never
 reverted. Caveat, accepted: carried-forward state written by newer behavior
 can be semantically stale for older behavior; schema checks can't catch
 this, so rollbacks log loudly (trail + inbox note) and degradation gets
@@ -116,7 +128,8 @@ The platform is the browser for companies: company files are free-form;
 the platform renders any of them installable, viewable, log-in-able. The
 contract is the spine (identity `company.md` · charter surface
 `authority.toml` · activity `trail/` · intent pipe `inbox/` + chat ·
-controller `app/`). Trust-critical chrome — identity, charter editing, gate
+controller `app/`, with UI publication in `app/projection.json`).
+Trust-critical chrome — identity, charter editing, gate
 approvals — is platform-rendered, never model-mediated. Surfaces are
 model-built and shown at head (the founder sees the company as it is,
 mid-molt); safe-mode falls back to the §3 bookmark.

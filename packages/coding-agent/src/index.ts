@@ -237,6 +237,7 @@ export {
 	migrateSessionEntries,
 	type NewSessionOptions,
 	parseSessionEntries,
+	type QorperaSessionAuthority,
 	type SessionContext,
 	type SessionEntry,
 	type SessionEntryBase,

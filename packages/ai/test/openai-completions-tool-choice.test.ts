@@ -1402,28 +1402,32 @@ describe("openai-completions tool_choice", () => {
 		expect(params.reasoning_effort).toBeUndefined();
 	});
 
-	it("sends max_tokens for OpenCode Go completions models", async () => {
-		const model = getModel("opencode-go", "kimi-k2.6")!;
-		let payload: unknown;
-		expect(model.compat?.maxTokensField).toBe("max_tokens");
+	it("sends max_tokens for OpenCode completions models", async () => {
+		const cases = [getModel("opencode-go", "kimi-k2.6")!, getModel("opencode", "kimi-k2.6")!] as const;
 
-		await streamSimple(
-			model,
-			{
-				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
-			},
-			{
-				apiKey: "test",
-				maxTokens: 123,
-				onPayload: (params: unknown) => {
-					payload = params;
+		for (const model of cases) {
+			let payload: unknown;
+			const compat = model.compat;
+			expect(compat && "maxTokensField" in compat ? compat.maxTokensField : undefined).toBe("max_tokens");
+
+			await streamSimple(
+				model,
+				{
+					messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
 				},
-			},
-		).result();
+				{
+					apiKey: "test",
+					maxTokens: 123,
+					onPayload: (params: unknown) => {
+						payload = params;
+					},
+				},
+			).result();
 
-		const params = (payload ?? mockState.lastParams) as { max_tokens?: number; max_completion_tokens?: number };
-		expect(params.max_tokens).toBe(123);
-		expect(params.max_completion_tokens).toBeUndefined();
+			const params = (payload ?? mockState.lastParams) as { max_tokens?: number; max_completion_tokens?: number };
+			expect(params.max_tokens).toBe(123);
+			expect(params.max_completion_tokens).toBeUndefined();
+		}
 	});
 
 	it("sends max_tokens for Z.AI completions models", async () => {

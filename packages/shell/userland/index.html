@@ -27,18 +27,9 @@
 		<button class="profileRow" onclick="openSettings('general')"><span class="avatar">F</span><span class="profileText">Founder<br><small>Settings</small></span></button>
 	</div>
 	<div id="conav" style="display:none">
-		<h2>Company</h2>
-		<button id="inboxBtn" onclick="show('inbox')">Inbox<span id="inboxBadge"></span></button>
-		<button id="activityBtn" onclick="show('activity')">Activity</button>
-		<h2 class="cat" onclick="toggleChats()">Chats<span id="chatsCaret">▾</span><button class="catBtn" onclick="event.stopPropagation(); newChat()" title="New chat">+</button></h2>
-		<div id="sessions"></div>
-		<h2>Surfaces</h2>
-		<div id="surfaces"><div class="empty" style="padding:6px">none built yet</div></div>
+		<div id="navigation"></div>
+		<div id="projectionDiagnostics" class="projection-diagnostics"></div>
 		<div class="navspacer"></div>
-		<button id="usageBtn" class="utilityNav" onclick="show('usage')">
-			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V9M10 19V5M16 19v-7M22 19V2"/></svg>
-			<span>Usage</span>
-		</button>
 		<button class="profileRow" onclick="openSettings('general')"><span class="avatar">F</span><span class="profileText">Founder<br><small>Settings</small></span></button>
 	</div>
 </nav>
@@ -52,7 +43,7 @@
 				<textarea id="input" rows="1" placeholder="Steer the company… (Enter to send, Shift+Enter for newline)"></textarea>
 				<div class="composer-strip">
 					<div class="chipwrap">
-						<button id="scopeBtn" class="stripchip" title="Session scope — the company, or one of its products" aria-haspopup="menu" aria-expanded="false">…</button>
+						<button id="scopeBtn" class="stripchip" title="Company controller or product-development department" aria-haspopup="menu" aria-expanded="false">…</button>
 						<div id="scopeMenu" class="chipmenu"></div>
 					</div>
 					<span class="composer-spacer"></span>
@@ -99,6 +90,7 @@
 		<button onclick="closeSettings()">← Back</button>
 		<h1 style="margin:10px 0 4px">Settings</h1>
 		<button class="stab" data-tab="general" onclick="openSettings('general')">General</button>
+		<button class="stab" data-tab="appearance" onclick="openSettings('appearance')">Appearance</button>
 		<button class="stab" data-tab="app" onclick="openSettings('app')">App</button>
 		<button class="stab" data-tab="authority" onclick="openSettings('authority')">Authority</button>
 		<button class="stab" data-tab="connections" onclick="openSettings('connections')">Connections</button>
@@ -108,6 +100,7 @@
 	</nav>
 	<div id="settingsContent"></div>
 </div>
+<div id="navContext" role="dialog" aria-label="Adjust navigation item height"></div>
 <script src="./marked.umd.js"></script>
 <script src="./usage.js"></script>
 <script src="./renderer.js"></script>

@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type {
@@ -52,7 +53,7 @@ import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
-import { type Authority, discoverAuthority, evaluateToolCall } from "./authority.ts";
+import { type Authority, discoverAuthority, evaluateToolCall, finalizeAuthorityDecision } from "./authority.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
 	type CompactionResult,
@@ -95,7 +96,9 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import type { KernelIntentCapability } from "./kernel-broker.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import { isModelBrokerInstalled, withModelBrokerTurn } from "./model-broker-client.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
@@ -357,6 +360,11 @@ export class AgentSession {
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
+	/** Verified kernel intent associated with the input currently causing effects. */
+	private _activeKernelIntent?: KernelIntentCapability;
+	/** Per-command intent copied onto any user message that async command creates. */
+	private readonly _incomingKernelIntent = new AsyncLocalStorage<KernelIntentCapability | undefined>();
+	private readonly _messageKernelIntents = new WeakMap<AgentMessage, KernelIntentCapability>();
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
 	private _extensionAbortHandler?: () => void;
 	private _extensionShutdownHandler?: ShutdownHandler;
@@ -385,7 +393,22 @@ export class AgentSession {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._authority = discoverAuthority(config.cwd);
+		if (
+			this._authority &&
+			(!this.sessionManager.getHeader()?.qorpera ||
+				process.env.QORPERA_KERNEL_REQUIRED !== "1" ||
+				!process.env.QORPERA_TRAIL_BROKER_TOKEN ||
+				!process.env.QORPERA_KERNEL_PUBLIC_KEY ||
+				!isModelBrokerInstalled())
+		) {
+			throw new Error("Company sessions require a live Qorpera Base desktop kernel binding");
+		}
 		this._modelRuntime = config.modelRuntime;
+		if (isModelBrokerInstalled()) {
+			const trustedStream = this.agent.streamFunction;
+			this.agent.streamFunction = (model, context, options) =>
+				withModelBrokerTurn(this._activeKernelIntent, () => trustedStream(model, context, options));
+		}
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
@@ -476,7 +499,10 @@ export class AgentSession {
 			// unloaded the way an extension handler can (SEAMS.md c.2), and
 			// they bind agent-registered tools exactly like built-ins.
 			if (this._authority) {
-				// Signature-rule context (EVOLUTION.md §3/§9.1): attended =
+				const sessionAuthority = this.sessionManager.getHeader()?.qorpera;
+				// Authority context: attended identifies founder intent for outward
+				// effects; actor + productWorktree carry the kernel-assigned product
+				// capability. Signature-rule context (EVOLUTION.md §3/§9.1): attended =
 				// approval-capable UI is in front of a human (tui/rpc) and the
 				// session is not kernel-spawned autonomous work (the shell
 				// tags those with QORPERA_AUTONOMOUS — they run in rpc mode
@@ -484,11 +510,15 @@ export class AgentSession {
 				// sessions). behaviorPath identifies extension-registered
 				// tools by their source file — synthetic paths (<builtin:…>,
 				// <sdk:…>) and code outside the company root are ignored.
-				const decision = evaluateToolCall(this._authority, toolCall.name, args, this._cwd, {
-					attended:
-						(this._extensionMode === "tui" || this._extensionMode === "rpc") && !process.env.QORPERA_AUTONOMOUS,
+				let decision = evaluateToolCall(this._authority, toolCall.name, args, this._cwd, {
+					attended: sessionAuthority
+						? this._activeKernelIntent?.attended === true
+						: (this._extensionMode === "tui" || this._extensionMode === "rpc") && !process.env.QORPERA_AUTONOMOUS,
+					actor: sessionAuthority?.actor ?? "controller",
+					productWorktree: sessionAuthority?.worktree,
 					behaviorPath: this._toolDefinitions.get(toolCall.name)?.sourceInfo.path,
 				});
+				decision = await finalizeAuthorityDecision(this._authority, decision, toolCall.name, args);
 				// Stamp classified effects into the trail: effect class,
 				// decision, and — when codified behavior acted — its content
 				// hash and signature status (EVOLUTION.md §9.1).
@@ -498,9 +528,17 @@ export class AgentSession {
 						toolCallId: toolCall.id,
 						effectClass: decision.effectClass,
 						decision: decision.kind,
-						gateId: decision.kind === "block" ? decision.gateId : undefined,
+						gateId: decision.gateId,
 						attended: decision.kind === "allow" && decision.attended ? true : undefined,
+						actor: decision.kind === "allow" ? decision.actor : undefined,
 						behavior: decision.behavior,
+						kernelIntent: this._activeKernelIntent
+							? {
+									nonce: this._activeKernelIntent.nonce,
+									requestHash: this._activeKernelIntent.requestHash,
+									attended: this._activeKernelIntent.attended,
+								}
+							: undefined,
 					});
 				}
 				if (decision.kind === "block") {
@@ -559,6 +597,10 @@ export class AgentSession {
 				usage: hookResult?.usage,
 			};
 		};
+	}
+
+	async withKernelIntent<T>(intent: KernelIntentCapability | undefined, action: () => Promise<T>): Promise<T> {
+		return await this._incomingKernelIntent.run(intent, action);
 	}
 
 	private _installAgentNextTurnRefresh(): void {
@@ -624,6 +666,7 @@ export class AgentSession {
 
 	private async _emitAgentSettled(): Promise<void> {
 		this._isAgentRunActive = false;
+		this._activeKernelIntent = undefined;
 		try {
 			await this._extensionRunner.emit({ type: "agent_settled" });
 			this._emit({ type: "agent_settled" });
@@ -640,6 +683,7 @@ export class AgentSession {
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
+			this._activeKernelIntent = this._messageKernelIntents.get(event.message);
 			this._overflowRecoveryAttempted = false;
 			const messageText = contentText(event.message.content, "");
 			if (messageText) {
@@ -1257,11 +1301,14 @@ export class AgentSession {
 			if (currentImages) {
 				userContent.push(...currentImages);
 			}
-			messages.push({
+			const userMessage: AgentMessage = {
 				role: "user",
 				content: userContent,
 				timestamp: Date.now(),
-			});
+			};
+			const kernelIntent = this._incomingKernelIntent.getStore();
+			if (kernelIntent) this._messageKernelIntents.set(userMessage, kernelIntent);
+			messages.push(userMessage);
 
 			// Inject any pending "nextTurn" messages as context alongside the user message
 			for (const msg of this._pendingNextTurnMessages) {
@@ -1423,11 +1470,14 @@ export class AgentSession {
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.steer({
+		const message: AgentMessage = {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+		const kernelIntent = this._incomingKernelIntent.getStore();
+		if (kernelIntent) this._messageKernelIntents.set(message, kernelIntent);
+		this.agent.steer(message);
 	}
 
 	/**
@@ -1440,11 +1490,14 @@ export class AgentSession {
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.followUp({
+		const message: AgentMessage = {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+		const kernelIntent = this._incomingKernelIntent.getStore();
+		if (kernelIntent) this._messageKernelIntents.set(message, kernelIntent);
+		this.agent.followUp(message);
 	}
 
 	/**
@@ -1828,6 +1881,7 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
+		if (this._authority) throw new Error("Compaction is disabled for company trails");
 		await this.abort();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
@@ -1997,6 +2051,7 @@ export class AgentSession {
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
 	 */
 	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
+		if (this._authority) return false;
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
 

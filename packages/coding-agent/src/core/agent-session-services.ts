@@ -3,7 +3,7 @@ import type { ThinkingLevel } from "@qorpera/pi-agent-core";
 import type { Model } from "@qorpera/pi-ai";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
-import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import { createExtensionRuntime, type SessionStartEvent, type ToolDefinition } from "./extensions/index.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import {
 	DefaultResourceLoader,
@@ -145,15 +145,32 @@ export async function createAgentSessionServices(
 			signal: options.modelRuntimeSignal,
 		}));
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	const kernelBoundary = process.env.QORPERA_KERNEL_REQUIRED === "1";
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
+		...(kernelBoundary
+			? {
+					noExtensions: true,
+					additionalExtensionPaths: [],
+					extensionFactories: [],
+					extensionsOverride: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+				}
+			: {}),
 		cwd,
 		agentDir,
 		settingsManager,
 	});
 	await resourceLoader.reload(options.resourceLoaderReloadOptions);
 
-	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
+	const diagnostics: AgentSessionRuntimeDiagnostic[] = kernelBoundary
+		? [
+				{
+					type: "info",
+					message:
+						"In-process extensions are disabled inside the company kernel; agent-authored tools run as sandboxed routines instead.",
+				},
+			]
+		: [];
 	const extensionsResult = resourceLoader.getExtensions();
 	for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
 		try {

@@ -14,19 +14,24 @@ deduplicates their results. Qorpera already has the company boundary it needs:
 each company's `trail/*.jsonl` files contain normalized usage returned by its
 model adapters.
 
-The integration therefore has three Qorpera-owned parts:
+The integration therefore has four Qorpera-owned parts:
 
 - `readCompanyUsage()` aggregates only the active company's trail. It never
-  reads provider home directories. Unchanged trail files reuse a bounded,
-  in-memory normalized-record cache keyed by file size and modification time;
-  changed and deleted files invalidate that read model. The cache is not a
-  second durable usage store.
+  reads provider home directories. Trail directories and session files must
+  retain their physical identity while they are read; links fail closed.
+  Unchanged trail files reuse a bounded, in-memory normalized-record cache
+  keyed by physical file identity, size, and modification time. Changed and
+  deleted files invalidate that read model. The cache is not a second durable
+  usage store.
 - `readUsageRateCatalog()` downloads the public LiteLLM model-rate document
   used by T3 Code. The document is cached for 24 hours in
   `~/.qorpera/agent/usage-model-rates.json`; no trail or company data is sent
   with that request.
 - `GET /api/usage` exposes that aggregate to the company's static userland as a
   read-only endpoint.
+- `q:usage` exposes the DOM view as a reserved platform page in the projection
+  state alongside company-authored `app/projection.json` nodes; it is not a
+  flat manifest entry or a company-authored surface.
 
 The DOM implementation keeps the page layout, time-window selector, headline,
 provider shares, daily chart, metric strip, loading state, and model/day
@@ -36,6 +41,8 @@ contracts, or T3's provider-specific scanners to Qorpera.
 ## Semantics
 
 - Scope is the active company, not every Codex or Claude session on the device.
+- Product worktree sessions remain in the company's root `trail/`, so they are
+  included without scanning product repositories or provider-owned stores.
 - Providers and models are discovered from trail records instead of being a
   fixed Codex/Claude union.
 - Raw token cost uses T3 Code's arithmetic and LiteLLM fields: uncached input,

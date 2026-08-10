@@ -1,6 +1,8 @@
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import type { Stats } from "node:fs";
+import { type FileHandle, lstat, open, readdir, realpath, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
+import { canonicalCompanyRoot } from "./company.ts";
 import {
 	cacheSavingsUsd,
 	priceUsage,
@@ -101,9 +103,15 @@ interface PricedUsageRecord extends CachedUsageRecord {
 	costSource: UsageCostSource;
 }
 
-interface CachedUsageFile {
+interface UsageFileIdentity {
+	device: number;
+	inode: number;
+	birthtimeMs: number;
 	size: number;
 	mtimeMs: number;
+}
+
+interface CachedUsageFile extends UsageFileIdentity {
 	records: CachedUsageRecord[];
 	malformedLines: number;
 	untimedRecords: number;
@@ -111,9 +119,7 @@ interface CachedUsageFile {
 	maxTimestamp: number;
 }
 
-interface UsageFileCacheEntry {
-	size: number;
-	mtimeMs: number;
+interface UsageFileCacheEntry extends UsageFileIdentity {
 	value?: CachedUsageFile;
 	pending?: Promise<CachedUsageFile>;
 }
@@ -139,6 +145,8 @@ const MAX_CACHED_TRAIL_DIRECTORIES = 8;
 const EVENT_LOOP_YIELD_INTERVAL = 2_000;
 const MAX_TIME_ZONE_OFFSET_MS = 14 * 60 * 60 * 1_000;
 const usageFileCaches = new Map<string, Map<string, UsageFileCacheEntry>>();
+
+class CompanyUsageStorageError extends Error {}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
@@ -303,8 +311,7 @@ function trailCache(trailDir: string): Map<string, UsageFileCacheEntry> {
 	return created;
 }
 
-async function parseUsageFile(path: string, size: number, mtimeMs: number): Promise<CachedUsageFile> {
-	const content = await readFile(path, "utf-8");
+async function parseUsageContent(content: string, identity: UsageFileIdentity): Promise<CachedUsageFile> {
 	const records: CachedUsageRecord[] = [];
 	let malformedLines = 0;
 	let untimedRecords = 0;
@@ -344,36 +351,137 @@ async function parseUsageFile(path: string, size: number, mtimeMs: number): Prom
 		maxTimestamp = Math.max(maxTimestamp, record.timestamp);
 	}
 
-	return { size, mtimeMs, records, malformedLines, untimedRecords, minTimestamp, maxTimestamp };
+	return { ...identity, records, malformedLines, untimedRecords, minTimestamp, maxTimestamp };
+}
+
+function normalizedPath(path: string): string {
+	const resolved = resolve(path);
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function samePhysicalFile(left: Stats, right: Stats): boolean {
+	return left.dev === right.dev && left.ino === right.ino && left.birthtimeMs === right.birthtimeMs;
+}
+
+function sameFileVersion(left: Stats, right: Stats): boolean {
+	return left.size === right.size && left.mtimeMs === right.mtimeMs;
+}
+
+function identityOf(file: Stats): UsageFileIdentity {
+	return {
+		device: file.dev,
+		inode: file.ino,
+		birthtimeMs: file.birthtimeMs,
+		size: file.size,
+		mtimeMs: file.mtimeMs,
+	};
+}
+
+function sameIdentity(left: UsageFileIdentity, right: UsageFileIdentity): boolean {
+	return (
+		left.device === right.device &&
+		left.inode === right.inode &&
+		left.birthtimeMs === right.birthtimeMs &&
+		left.size === right.size &&
+		left.mtimeMs === right.mtimeMs
+	);
+}
+
+async function physicalTrailDirectory(root: string): Promise<string> {
+	const trailDir = join(canonicalCompanyRoot(root), "trail");
+	try {
+		const [actual, entry] = await Promise.all([realpath(trailDir), lstat(trailDir)]);
+		if (normalizedPath(actual) !== normalizedPath(trailDir) || entry.isSymbolicLink() || !entry.isDirectory()) {
+			throw new CompanyUsageStorageError("company trail must be one physical directory");
+		}
+		return actual;
+	} catch (error) {
+		if (error instanceof CompanyUsageStorageError) throw error;
+		throw new CompanyUsageStorageError("company trail is missing or unreadable");
+	}
+}
+
+async function readAndParseUsageFile(
+	handle: FileHandle,
+	path: string,
+	trailDir: string,
+	opened: Stats,
+	identity: UsageFileIdentity,
+): Promise<CachedUsageFile> {
+	try {
+		const content = await handle.readFile({ encoding: "utf-8" });
+		const [completed, current, actual, trailAfterRead] = await Promise.all([
+			handle.stat(),
+			stat(path),
+			realpath(path),
+			realpath(trailDir),
+		]);
+		if (
+			!samePhysicalFile(opened, completed) ||
+			!samePhysicalFile(opened, current) ||
+			completed.nlink !== 1 ||
+			current.nlink !== 1 ||
+			normalizedPath(actual) !== normalizedPath(path) ||
+			normalizedPath(trailAfterRead) !== normalizedPath(trailDir)
+		) {
+			throw new CompanyUsageStorageError("company trail changed identity while usage was read");
+		}
+		if (!sameFileVersion(opened, completed) || !sameFileVersion(opened, current)) {
+			throw new Error("usage trail session changed while it was read");
+		}
+		return await parseUsageContent(content, identity);
+	} finally {
+		await handle.close();
+	}
 }
 
 async function loadUsageFile(
 	cache: Map<string, UsageFileCacheEntry>,
 	file: string,
-	path: string,
-	size: number,
-	mtimeMs: number,
+	trailDir: string,
 ): Promise<{ file: CachedUsageFile; cached: boolean }> {
-	const cached = cache.get(file);
-	if (cached?.size === size && cached.mtimeMs === mtimeMs) {
-		if (cached.value) return { file: cached.value, cached: true };
-		if (cached.pending) return { file: await cached.pending, cached: true };
-	}
-
-	const entry: UsageFileCacheEntry = { size, mtimeMs };
-	const pending = parseUsageFile(path, size, mtimeMs);
-	entry.pending = pending;
-	cache.set(file, entry);
+	const path = join(trailDir, file);
+	const handle = await open(path, "r");
+	let handleOwner = true;
 	try {
-		const value = await pending;
-		if (cache.get(file) === entry) {
-			entry.value = value;
-			entry.pending = undefined;
+		const opened = await handle.stat();
+		const [current, actual, trailAfterOpen] = await Promise.all([stat(path), realpath(path), realpath(trailDir)]);
+		if (
+			!opened.isFile() ||
+			opened.nlink !== 1 ||
+			current.nlink !== 1 ||
+			!samePhysicalFile(opened, current) ||
+			normalizedPath(actual) !== normalizedPath(path) ||
+			normalizedPath(trailAfterOpen) !== normalizedPath(trailDir)
+		) {
+			throw new CompanyUsageStorageError("usage trail session must be one physical file");
 		}
-		return { file: value, cached: false };
-	} catch (error) {
-		if (cache.get(file) === entry) cache.delete(file);
-		throw error;
+		if (!sameFileVersion(opened, current)) throw new Error("usage trail session changed before it was read");
+		const identity = identityOf(opened);
+		const cached = cache.get(file);
+		if (cached && sameIdentity(cached, identity)) {
+			if (cached.value) return { file: cached.value, cached: true };
+			if (cached.pending) return { file: await cached.pending, cached: true };
+		}
+
+		const entry: UsageFileCacheEntry = { ...identity };
+		const pending = readAndParseUsageFile(handle, path, trailDir, opened, identity);
+		handleOwner = false;
+		entry.pending = pending;
+		cache.set(file, entry);
+		try {
+			const value = await pending;
+			if (cache.get(file) === entry) {
+				entry.value = value;
+				entry.pending = undefined;
+			}
+			return { file: value, cached: false };
+		} catch (error) {
+			if (cache.get(file) === entry) cache.delete(file);
+			throw error;
+		}
+	} finally {
+		if (handleOwner) await handle.close();
 	}
 }
 
@@ -440,18 +548,17 @@ export async function readCompanyUsage(
 	let untimedRecords = 0;
 	let visitedRecords = 0;
 
-	const trailDir = join(root, "trail");
-	let files: string[] = [];
-	try {
-		files = (await readdir(trailDir, { withFileTypes: true }))
-			.filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
-			.map((entry) => entry.name)
-			.sort();
-	} catch (error) {
-		// A newly scaffolded company can be read before its trail directory is
-		// visible. Treat that state as an empty trail.
-		if (asRecord(error)?.code !== "ENOENT") throw error;
+	const trailDir = await physicalTrailDirectory(root);
+	const trailEntries = await readdir(trailDir, { withFileTypes: true });
+	const files: string[] = [];
+	for (const entry of trailEntries) {
+		if (!entry.name.endsWith(".jsonl")) continue;
+		if (!entry.isFile()) {
+			throw new CompanyUsageStorageError("usage trail sessions must be physical files");
+		}
+		files.push(entry.name);
 	}
+	files.sort();
 	const cache = trailCache(trailDir);
 	const currentFiles = new Set(files);
 	for (const cachedFile of cache.keys()) {
@@ -462,13 +569,12 @@ export async function readCompanyUsage(
 		scannedSessions += 1;
 		let usageFile: CachedUsageFile;
 		try {
-			const path = join(trailDir, file);
-			const metadata = await stat(path);
-			const loaded = await loadUsageFile(cache, file, path, metadata.size, metadata.mtimeMs);
+			const loaded = await loadUsageFile(cache, file, trailDir);
 			usageFile = loaded.file;
 			if (loaded.cached) cachedSessions += 1;
-		} catch {
+		} catch (error) {
 			cache.delete(file);
+			if (error instanceof CompanyUsageStorageError) throw error;
 			unreadableSessions += 1;
 			continue;
 		}

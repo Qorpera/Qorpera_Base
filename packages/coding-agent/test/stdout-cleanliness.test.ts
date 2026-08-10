@@ -7,6 +7,7 @@ import { ENV_AGENT_DIR } from "../src/config.ts";
 import { allowNetwork } from "./test-network-env.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
+const tsxLoader = import.meta.resolve("tsx");
 
 const tempDirs: string[] = [];
 
@@ -59,7 +60,7 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 	);
 
 	return await new Promise((resolvePromise, reject) => {
-		const child = spawn(process.execPath, [cliPath, ...args], {
+		const child = spawn(process.execPath, ["--import", tsxLoader, cliPath, ...args], {
 			cwd: projectDir,
 			env: {
 				...process.env,

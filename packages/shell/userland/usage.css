@@ -4,15 +4,6 @@
  * The data adapter and DOM implementation are Qorpera-specific.
  */
 
-.utilityNav {
-	display: flex !important;
-	align-items: center;
-	gap: 9px;
-	flex: 0 0 auto;
-}
-.utilityNav svg { width: 15px; height: 15px; color: var(--text-soft); }
-.utilityNav.active svg, .utilityNav:hover svg { color: var(--text-muted); }
-
 #view-usage {
 	flex: 1;
 	min-height: 0;
