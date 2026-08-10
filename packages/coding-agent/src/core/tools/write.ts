@@ -1,11 +1,13 @@
 import type { AgentTool } from "@qorpera/pi-agent-core";
 import { Container, Text } from "@qorpera/pi-tui";
 import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
-import { dirname } from "path";
+import { dirname, join, relative, resolve } from "path";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
+import { discoverAuthority } from "../authority.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { requestKernelMessageCreation } from "../kernel-broker.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { normalizeDisplayText, renderToolPath, replaceTabs, str } from "./render-utils.ts";
@@ -199,6 +201,29 @@ export function createWriteToolDefinition(
 			_ctx?,
 		) {
 			const absolutePath = resolveToCwd(path, cwd);
+			const authority = discoverAuthority(cwd);
+			if (authority && process.env.QORPERA_KERNEL_REQUIRED === "1") {
+				const messagesRoot = resolve(authority.root, "inbox", "messages");
+				const messageFile = relative(messagesRoot, absolutePath).replace(/\\/g, "/");
+				if (
+					messageFile &&
+					!messageFile.includes("/") &&
+					/^msg-[a-z0-9][a-z0-9-]{0,119}\.md$/i.test(messageFile) &&
+					resolve(messagesRoot, messageFile) === resolve(absolutePath)
+				) {
+					const created = await requestKernelMessageCreation(messageFile, content);
+					if (!created) throw new Error("Kernel refused inbox message creation");
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Created append-only inbox message ${join("inbox", "messages", messageFile)}`,
+							},
+						],
+						details: undefined,
+					};
+				}
+			}
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(absolutePath, async () => {
 				// Do not reject from an abort event listener here: that would release the

@@ -2,18 +2,20 @@
  * Authority gates — Qorpera Base's enforcement layer (spec §4).
  *
  * Full freedom in thought and construction; gates on effect. `authority.toml`
- * at the company root defines four effect classes (money, identity,
- * irreversible, authority) with modes auto | notify | gate. `[authority]` is
+ * at the company root defines four configurable effect classes (money,
+ * identity, irreversible, authority) with modes auto | notify | gate.
+ * Product code is a separate role boundary: controllers can only read it;
+ * product-workers can mutate only their assigned worktree. `[authority]` is
  * ALWAYS gated regardless of configuration — it covers changes to the
  * authority file itself, the kernel files (AGENTS.md / CLAUDE.md at the
  * root), and the inbox (so the agent cannot approve its own requests).
  *
  * Gate mechanics are async by design: a blocked effect files a request at
  * `<root>/inbox/gate-*.md` and returns a block reason; the agent keeps
- * working elsewhere. A human resolves the request by editing its `status:`
- * line to `approved` or `denied`. Tool-call approvals are single-use
- * (consumed on the next matching call); extension-load approvals are durable
- * for the approved content hash (new content = new hash = new gate).
+ * working elsewhere. Base resolves the request through exact native review.
+ * Tool-call approvals are single-use (consumed on the next matching call);
+ * extension and behavior trust is durable in the desktop kernel for the
+ * reviewed company path and content hash (new content = new hash = new gate).
  *
  * Without an `authority.toml` anywhere above the working directory, every
  * decision is `allow` — Base behaves like the stock harness.
@@ -25,11 +27,14 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { requestKernelGateConsumption, requestKernelGateTrust } from "./kernel-broker.ts";
 
-export type EffectClass = "money" | "identity" | "irreversible" | "authority" | "products";
+export type ConfigurableEffectClass = "money" | "identity" | "irreversible" | "authority";
+export type EffectClass = ConfigurableEffectClass | "product_code";
+export type CompanyActor = "controller" | "product-worker";
 export type AuthorityMode = "auto" | "notify" | "gate";
 
 export interface AuthorityClassConfig {
@@ -38,14 +43,9 @@ export interface AuthorityClassConfig {
 }
 
 export interface AuthorityConfig {
-	classes: Record<EffectClass, AuthorityClassConfig>;
+	classes: Record<ConfigurableEffectClass, AuthorityClassConfig>;
 	/** Per-tool overrides from `[tools]`: tool name -> effect class or "none". */
-	tools: Record<string, EffectClass | "none">;
-	/**
-	 * Root-relative paths of software products the controller may read and
-	 * study freely but not modify without approval ([products] paths).
-	 */
-	productPaths: string[];
+	tools: Record<string, ConfigurableEffectClass | "none">;
 }
 
 export interface Authority {
@@ -55,7 +55,16 @@ export interface Authority {
 }
 
 export type AuthorityDecision =
-	| { kind: "allow"; notified?: true; effectClass?: EffectClass; attended?: true; behavior?: BehaviorSignature }
+	| {
+			kind: "allow";
+			notified?: true;
+			effectClass?: EffectClass;
+			attended?: true;
+			actor?: CompanyActor;
+			behavior?: BehaviorSignature;
+			gateId?: string;
+			kernelGate?: { file: string; hash: string; id: string; effectClass: EffectClass };
+	  }
 	| { kind: "block"; reason: string; effectClass: EffectClass; gateId?: string; behavior?: BehaviorSignature };
 
 /**
@@ -69,9 +78,14 @@ export interface ToolCallContext {
 	 * work (conception, merges, wakes) carries QORPERA_AUTONOMOUS and is never
 	 * attended even though it runs in rpc mode. Headless runs (print/json/SDK)
 	 * are unattended. Attended sessions are founder sessions: the founder's
-	 * direction is the authority for [products] work and outward effects.
+	 * direction is the intent source for outward effects. Product-code writes
+	 * remain role-scoped regardless of attendance.
 	 */
 	attended: boolean;
+	/** Kernel-assigned organizational role. Missing means company controller. */
+	actor?: CompanyActor;
+	/** Root-relative worktree assigned by the product-development runtime. */
+	productWorktree?: string;
 	/**
 	 * Absolute source path of the code that registered the executing tool,
 	 * when the call originates from codified behavior (an extension-registered
@@ -92,6 +106,8 @@ export interface BehaviorSignature {
 	signed: boolean;
 	gateId?: string;
 	gateStatus?: "pending" | "denied";
+	/** Durable approval awaiting proof from the live local desktop kernel. */
+	kernelTrust?: { file: string; hash: string };
 }
 
 export type GateStatus = "pending" | "approved" | "denied" | "consumed";
@@ -101,13 +117,14 @@ export interface GateRecord {
 	status: GateStatus;
 	hash: string;
 	filePath: string;
+	content: string;
 }
 
-const EFFECT_CLASSES: EffectClass[] = ["money", "identity", "irreversible", "authority", "products"];
+const CONFIGURABLE_EFFECT_CLASSES: ConfigurableEffectClass[] = ["money", "identity", "irreversible", "authority"];
 /**
  * Classes whose effects touch the world outside the company folder — the
- * signature rule applies to these. [authority] and [products] are spine/zone
- * protection with their own (stricter or path-scoped) semantics.
+ * signature rule applies to these. [authority] and product_code are
+ * spine/role protection with their own stricter semantics.
  */
 const OUTWARD_CLASSES: ReadonlySet<EffectClass> = new Set(["money", "identity", "irreversible"]);
 /** Path-arg zone checks apply only to tools that mutate the path. */
@@ -116,6 +133,8 @@ const AUTHORITY_FILE = "authority.toml";
 const INBOX_DIR = "inbox";
 /** Root-level files whose modification is an [authority]-class effect. */
 const PROTECTED_ROOT_FILES = new Set([AUTHORITY_FILE, "AGENTS.md", "CLAUDE.md"]);
+const PRODUCT_REGISTRY_PATH = join(".qorpera", "products.json");
+const GATE_FIELDS = ["id", "status", "class", "tool", "hash", "created"] as const;
 
 /**
  * Conservative screen for destructive shell commands. False positives gate
@@ -232,10 +251,8 @@ export function readAuthorityConfig(authority: Authority): AuthorityConfig {
 			identity: { mode: "gate" },
 			irreversible: { mode: "gate" },
 			authority: { mode: "gate" },
-			products: { mode: "gate" },
 		},
 		tools: {},
-		productPaths: [],
 	};
 	let raw: Record<string, unknown>;
 	try {
@@ -244,15 +261,8 @@ export function readAuthorityConfig(authority: Authority): AuthorityConfig {
 		return fallback;
 	}
 
-	const config: AuthorityConfig = { classes: { ...fallback.classes }, tools: {}, productPaths: [] };
-	const productsSection = raw.products;
-	if (productsSection && typeof productsSection === "object") {
-		const paths = (productsSection as Record<string, unknown>).paths;
-		if (Array.isArray(paths)) {
-			config.productPaths = paths.filter((entry): entry is string => typeof entry === "string");
-		}
-	}
-	for (const effectClass of EFFECT_CLASSES) {
+	const config: AuthorityConfig = { classes: { ...fallback.classes }, tools: {} };
+	for (const effectClass of CONFIGURABLE_EFFECT_CLASSES) {
 		const section = raw[effectClass];
 		if (section && typeof section === "object") {
 			const mode = (section as Record<string, unknown>).mode;
@@ -273,8 +283,11 @@ export function readAuthorityConfig(authority: Authority): AuthorityConfig {
 	const tools = raw.tools;
 	if (tools && typeof tools === "object") {
 		for (const [name, value] of Object.entries(tools as Record<string, unknown>)) {
-			if (value === "none" || (typeof value === "string" && (EFFECT_CLASSES as string[]).includes(value))) {
-				config.tools[name] = value as EffectClass | "none";
+			if (
+				value === "none" ||
+				(typeof value === "string" && (CONFIGURABLE_EFFECT_CLASSES as string[]).includes(value))
+			) {
+				config.tools[name] = value as ConfigurableEffectClass | "none";
 			}
 		}
 	}
@@ -307,11 +320,13 @@ function isProtectedPath(authority: Authority, rawPath: string, cwd: string): bo
 	const resolved = resolve(isAbsolute(rawPath) ? rawPath : join(cwd, rawPath));
 	const inboxDirPath = join(authority.root, INBOX_DIR);
 	if (isUnderDir(resolved, inboxDirPath)) {
-		const isDirectChild = dirname(resolved) === resolve(inboxDirPath);
+		const messagesDir = resolve(inboxDirPath, "messages");
+		const isDirectChild = dirname(resolved) === messagesDir;
 		const isAgentMessage = /^msg-[a-z0-9][a-z0-9-]*\.md$/i.test(basename(resolved));
 		return !(isDirectChild && isAgentMessage);
 	}
 	if (dirname(resolved) === resolve(authority.root) && PROTECTED_ROOT_FILES.has(basename(resolved))) return true;
+	if (resolved === resolve(authority.root, PRODUCT_REGISTRY_PATH)) return true;
 	return false;
 }
 
@@ -332,7 +347,7 @@ function stripHarmlessRedirects(command: string): string {
 
 /** Shell fragments that indicate mutation (vs. reading/study). */
 const WRITEISH_BASH =
-	/(>>?|\btee\b|\bmv\b|\bcp\b|\brm\b|\brmdir\b|\bdel\b|\bsed\s+-i\b|\btouch\b|\bln\b|\bchmod\b|\bset-content\b|\badd-content\b|\bout-file\b|\bgit\s+(commit|push|checkout|switch|restore|reset|rebase|merge|apply|cherry-pick|clean|rm|mv|stash|tag)\b|\bnpm\s+(install|uninstall|update|version|publish)\b)/i;
+	/(>>?|\btee\b|\bmv\b|\bcp\b|\brm\b|\brmdir\b|\bdel\b|\bsed\s+-i\b|\btouch\b|\bln\b|\bchmod\b|\bset-content\b|\badd-content\b|\bout-file\b|\bgit\s+(commit|push|checkout|switch|restore|reset|rebase|merge|apply|cherry-pick|clean|rm|mv|stash|tag)\b|\bgh\s+pr\s+(create|edit|close|merge|reopen|review)\b|\bnpm\s+(install|uninstall|update|version|publish)\b)/i;
 
 /** Authority-class bash screens. All protected territory — inbox/, the
  * authority file, the kernel files — gates only in write-ish contexts:
@@ -350,6 +365,7 @@ function bashTouchesProtected(command: string): boolean {
 	if (!WRITEISH_BASH.test(stripped)) return false;
 	if (/\binbox[/\\]/.test(stripped)) return true;
 	if (stripped.includes(AUTHORITY_FILE)) return true;
+	if (/\.qorpera[/\\]products\.json/i.test(stripped)) return true;
 	if (/\b(AGENTS|CLAUDE)\.md\b/i.test(stripped)) return true;
 	return false;
 }
@@ -358,33 +374,66 @@ function resolveArgPath(rawPath: string, cwd: string): string {
 	return resolve(isAbsolute(rawPath) ? rawPath : join(cwd, rawPath));
 }
 
-/** Is this resolved path inside a [products]-declared zone? */
-function isUnderProduct(authority: Authority, config: AuthorityConfig, resolvedPath: string): boolean {
-	for (const productPath of config.productPaths) {
-		const productRoot = resolve(join(authority.root, productPath));
-		if (resolvedPath === productRoot || isUnderDir(resolvedPath, productRoot)) return true;
-	}
-	return false;
+function productCodeKind(authority: Authority, resolvedPath: string): "repository" | "worktree" | undefined {
+	const rel = relative(authority.root, resolvedPath);
+	if (!rel || rel.startsWith("..") || isAbsolute(rel)) return undefined;
+	const parts = rel.split(sep);
+	if (parts[0] !== "departments" || !parts[1]?.endsWith("-development")) return undefined;
+	if (parts[2] === "repository") return "repository";
+	if (parts[2] === "worktrees" && parts.length >= 4) return "worktree";
+	return undefined;
 }
 
-/**
- * Product zone screen for shell commands: reading/study is free; a command
- * that BOTH mentions a product path AND looks mutating touches that zone.
- * Heuristic by nature — precise enforcement rides on the path-arg tools and
- * engine patch approvals.
- */
-function bashTouchesProductWriteish(config: AuthorityConfig, command: string): boolean {
-	if (config.productPaths.length === 0) return false;
+/** Product-code shell screen: study is free; mutations from or naming code roots are classified. */
+function bashTouchesProductCode(authority: Authority, command: string, cwd: string): boolean {
 	if (!WRITEISH_BASH.test(stripHarmlessRedirects(command))) return false;
-	for (const productPath of config.productPaths) {
-		const forward = productPath.replace(/\\/g, "/");
-		const backward = forward.replace(/\//g, "\\");
-		if (command.includes(forward) || command.includes(backward)) return true;
-		// Also match the zone's basename (`cd Qorpera_Desktop && git commit`).
-		const base = forward.split("/").filter(Boolean).pop();
-		if (base && command.includes(base)) return true;
+	if (productCodeKind(authority, resolve(cwd))) return true;
+	if (/(?:departments[/\\])?[^/\\\s]+-development[/\\](?:repository|worktrees)(?:[/\\]|\b)/i.test(command)) {
+		return true;
 	}
-	return false;
+	const cwdRel = relative(authority.root, resolve(cwd)).split(sep);
+	return (
+		cwdRel[0] === "departments" &&
+		cwdRel[1]?.endsWith("-development") &&
+		/\b(?:repository|worktrees)[/\\]/i.test(command)
+	);
+}
+
+const WORKTREE_ESCAPE_BASH =
+	/\b(?:cd|pushd|set-location)\s+\.\.(?:[/\\]|\s|$)|\bgit\s+(?:-C|--git-dir|--work-tree|worktree)\b|\.\.[/\\].*(?:>|\b(?:mv|cp|rm|touch|tee)\b)/i;
+
+function assignedProductWorktree(authority: Authority, context: ToolCallContext | undefined): string | undefined {
+	if (context?.actor !== "product-worker" || !context.productWorktree) return undefined;
+	const worktree = resolve(join(authority.root, context.productWorktree));
+	return productCodeKind(authority, worktree) === "worktree" ? worktree : undefined;
+}
+
+function productWorkerMutationAllowed(
+	authority: Authority,
+	toolName: string,
+	args: unknown,
+	cwd: string,
+	context: ToolCallContext | undefined,
+): boolean {
+	const worktree = assignedProductWorktree(authority, context);
+	if (!worktree) return false;
+	const pathArg = extractPathArg(args);
+	if (pathArg && MUTATING_PATH_TOOLS.has(toolName)) {
+		const target = resolveArgPath(pathArg, cwd);
+		return target === worktree || isUnderDir(target, worktree);
+	}
+	if (toolName !== "bash") return false;
+	const command = bashCommandFromArgs(args);
+	if (!command || WORKTREE_ESCAPE_BASH.test(command)) return false;
+	const resolvedCwd = resolve(cwd);
+	return resolvedCwd === worktree || isUnderDir(resolvedCwd, worktree);
+}
+
+function isMutatingCall(toolName: string, args: unknown): boolean {
+	if (MUTATING_PATH_TOOLS.has(toolName)) return true;
+	if (toolName !== "bash") return false;
+	const command = bashCommandFromArgs(args);
+	return Boolean(command && WRITEISH_BASH.test(stripHarmlessRedirects(command)));
 }
 
 /**
@@ -398,18 +447,17 @@ export function classifyToolCall(
 	args: unknown,
 	cwd: string,
 ): EffectClass | undefined {
-	// Zone checks rank ABOVE [tools] overrides (including "none"): opting a
-	// tool out of classification must not open the kernel files or product
-	// zones. Zones apply only to mutating tools — reading/study is free.
+	// Protected boundaries rank ABOVE [tools] overrides (including "none").
+	// They apply only to mutating tools — reading/study is free.
 	const pathArg = extractPathArg(args);
 	if (pathArg && MUTATING_PATH_TOOLS.has(toolName)) {
 		const resolved = resolveArgPath(pathArg, cwd);
 		if (isProtectedPath(authority, pathArg, cwd)) return "authority";
-		if (isUnderProduct(authority, config, resolved)) return "products";
+		if (productCodeKind(authority, resolved)) return "product_code";
 	}
 
 	const overrideRaw = config.tools[toolName];
-	const override: EffectClass | undefined = overrideRaw === "none" ? undefined : overrideRaw;
+	const override: ConfigurableEffectClass | undefined = overrideRaw === "none" ? undefined : overrideRaw;
 
 	if (toolName === "bash") {
 		const command = bashCommandFromArgs(args);
@@ -420,7 +468,7 @@ export function classifyToolCall(
 			// blanked -m body can't hide constructs from the path strip.
 			const screened = stripIndexSafeGitPaths(stripMessageArgs(command));
 			if (bashTouchesProtected(screened)) return "authority";
-			if (bashTouchesProductWriteish(config, screened)) return "products";
+			if (bashTouchesProductCode(authority, screened, cwd)) return "product_code";
 			if (overrideRaw === "none") return undefined;
 			if (override) return override;
 			if (DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(screened))) return "irreversible";
@@ -460,23 +508,33 @@ function parseGateFile(filePath: string): GateRecord | undefined {
 	} catch {
 		return undefined;
 	}
-	// Founders resolve gates by editing status: in ANY editor — Windows
-	// tools (Notepad, PowerShell 5.1 Set-Content -Encoding utf8) prepend a
-	// BOM, which would silently hide the record and re-file the request
-	// (hit live, 2026-08-05). Strip it before anchoring the frontmatter.
+	// Strip a possible BOM before anchoring the canonical frontmatter. The
+	// file is evidence only; Base's native kernel review mints authority.
 	const frontmatter = content.replace(/^\uFEFF/, "").match(/^---\r?\n([\s\S]*?)\r?\n---/);
 	if (!frontmatter) return undefined;
 	const fields = new Map<string, string>();
 	for (const line of frontmatter[1].split(/\r?\n/)) {
 		const match = line.match(/^([a-zA-Z_]+):\s*(.*)$/);
-		if (match) fields.set(match[1], match[2].split("#")[0].trim());
+		if (!match || !GATE_FIELDS.includes(match[1] as (typeof GATE_FIELDS)[number]) || fields.has(match[1])) {
+			return undefined;
+		}
+		fields.set(match[1], match[2].split("#")[0].trim());
 	}
+	if (fields.size !== GATE_FIELDS.length || GATE_FIELDS.some((field) => !fields.has(field))) return undefined;
 	const id = fields.get("id");
 	const status = fields.get("status") as GateStatus | undefined;
 	const hash = fields.get("hash");
-	if (!id || !status || !hash) return undefined;
+	if (!id || !status || !hash || `${id}.md` !== basename(filePath)) return undefined;
+	if (!/^gate-[a-f0-9]{8}(?:-[2-9][0-9]*)?$/.test(id) || !/^[a-f0-9]{64}$/.test(hash)) return undefined;
 	if (!["pending", "approved", "denied", "consumed"].includes(status)) return undefined;
-	return { id, status, hash, filePath };
+	if (
+		!CONFIGURABLE_EFFECT_CLASSES.includes(fields.get("class") as ConfigurableEffectClass) &&
+		fields.get("class") !== "product_code"
+	) {
+		return undefined;
+	}
+	if (!fields.get("tool") || !fields.get("created")) return undefined;
+	return { id, status, hash, filePath, content: content.replace(/^\uFEFF/, "") };
 }
 
 export function findGateRecords(authority: Authority, hash: string): GateRecord[] {
@@ -492,8 +550,14 @@ export function findGateRecords(authority: Authority, hash: string): GateRecord[
 }
 
 function setGateStatus(record: GateRecord, status: GateStatus): void {
-	const content = readFileSync(record.filePath, "utf-8");
-	writeFileSync(record.filePath, content.replace(/^status:.*$/m, `status: ${status}`), "utf-8");
+	const lines = record.content.split(/\r?\n/);
+	const statusLines = lines.flatMap((line, index) => (/^status:\s*/.test(line) ? [index] : []));
+	if (statusLines.length !== 1) throw new Error("gate status transition requires exactly one canonical status field");
+	lines[statusLines[0]] = `status: ${status}`;
+	const content = `${lines.join("\n")}${record.content.endsWith("\n") ? "\n" : ""}`;
+	const temporary = `${record.filePath}.${process.pid}-${Date.now()}.tmp`;
+	writeFileSync(temporary, content, { encoding: "utf-8", flag: "wx" });
+	renameSync(temporary, record.filePath);
 }
 
 export interface GateRequestInput {
@@ -518,7 +582,7 @@ export function writeGateRequest(authority: Authority, input: GateRequestInput):
 	const body = [
 		"---",
 		`id: ${id}`,
-		"status: pending   # change to: approved | denied",
+		"status: pending   # resolved by Qorpera Base native review",
 		`class: ${input.effectClass}`,
 		`tool: ${input.toolName}`,
 		`hash: ${input.hash}`,
@@ -536,14 +600,45 @@ export function writeGateRequest(authority: Authority, input: GateRequestInput):
 		"",
 		"**If denied:** the agent will not perform this action and will pursue another path.",
 		"",
-		"To resolve, edit the `status:` line above to `approved` or `denied`.",
+		"Resolve this request through Qorpera Base's native review UI.",
 		"",
 	].join("\n");
-	writeFileSync(join(dir, fileName), body, "utf-8");
+	const brokerToken = process.env.QORPERA_TRAIL_BROKER_TOKEN;
+	if (brokerToken) {
+		process.stdout.write(
+			`${JSON.stringify({
+				type: "qorpera_kernel_write",
+				token: brokerToken,
+				operation: "create_gate",
+				gate: {
+					id,
+					file: fileName,
+					effectClass: input.effectClass,
+					toolName: input.toolName,
+					hash: input.hash,
+					args: input.args,
+				},
+			})}\n`,
+		);
+	} else {
+		writeFileSync(join(dir, fileName), body, "utf-8");
+	}
 	return id;
 }
 
 function appendNotice(authority: Authority, message: string): void {
+	const brokerToken = process.env.QORPERA_TRAIL_BROKER_TOKEN;
+	if (brokerToken) {
+		process.stdout.write(
+			`${JSON.stringify({
+				type: "qorpera_kernel_write",
+				token: brokerToken,
+				operation: "append_notice",
+				message,
+			})}\n`,
+		);
+		return;
+	}
 	const dir = inboxDir(authority);
 	mkdirSync(dir, { recursive: true });
 	const noticePath = join(dir, "notices.md");
@@ -569,8 +664,9 @@ function summarizeCall(toolName: string, args: unknown): string {
  * authority root (built-ins, SDK tools, user-global extensions — outside the
  * company's signature regime, mirroring extension-load gating's carve-out).
  *
- * Signatures are durable per content hash: approved (or consumed) covers
- * exactly that code, forever; any edit is a new hash and a new request. The
+ * Signatures are durable in the path-scoped desktop kernel: a native-reviewed
+ * capability covers exactly that company path and content hash across child
+ * replacement, while copied company files carry no authority. The
  * hash is computed from the file as it is NOW — with jiti hot-reload this
  * tracks what actually executes next; a stale in-memory registration from a
  * since-edited file resolves to the new (unsigned) content, which errs
@@ -590,13 +686,32 @@ function resolveBehaviorSignature(
 		return undefined;
 	}
 	const path = relative(authority.root, resolved).split(sep).join("/");
-	const records = findGateRecords(authority, requestHash("behavior_signature", { contentHash, path }));
-	const signedRecord = records.find((record) => record.status === "approved" || record.status === "consumed");
-	if (signedRecord) return { path, contentHash, signed: true, gateId: signedRecord.id };
+	const hash = requestHash("behavior_signature", { contentHash, path });
+	const records = findGateRecords(authority, hash);
+	const approved = records.find((record) => record.status === "approved");
+	if (approved) {
+		return {
+			path,
+			contentHash,
+			signed: false,
+			gateId: approved.id,
+			kernelTrust: { file: basename(approved.filePath), hash: approved.hash },
+		};
+	}
 	const pending = records.find((record) => record.status === "pending");
 	if (pending) return { path, contentHash, signed: false, gateId: pending.id, gateStatus: "pending" };
 	const denied = records.find((record) => record.status === "denied");
 	if (denied) return { path, contentHash, signed: false, gateId: denied.id, gateStatus: "denied" };
+	const consumed = records.find((record) => record.status === "consumed");
+	if (consumed) {
+		return {
+			path,
+			contentHash,
+			signed: false,
+			gateId: consumed.id,
+			kernelTrust: { file: basename(consumed.filePath), hash: consumed.hash },
+		};
+	}
 	return { path, contentHash, signed: false };
 }
 
@@ -639,7 +754,7 @@ function blockForUnsignedBehavior(
 		effectClass,
 		gateId,
 		behavior: updated,
-		reason: `Signature rule [${effectClass}]: this action comes from company-authored code (${behavior.path}) running unattended, which requires a standing founder signature on that exact code. Signature request ${gateId} filed in inbox/ — once approved it is durable for this content (editing the file requires a new signature). NOW create inbox/msg-${gateId}-intent.md with your file-writing tool (NOT bash — bash writes into inbox/ are themselves gated): first line \`# <short outcome headline>\` naming what this code does for the company (never the mechanism), then 1-3 plain sentences for the founder covering what the code may do to the outside world once signed. Then continue with other work; retry after it is approved.`,
+		reason: `Signature rule [${effectClass}]: this action comes from company-authored code (${behavior.path}) running unattended, which requires a standing founder signature on that exact code. Signature request ${gateId} filed in inbox/ — once approved it is durable for this content (editing the file requires a new signature). NOW create inbox/messages/msg-${gateId}-intent.md with your file-writing tool (NOT bash — bash writes into inbox/ are themselves gated): first line \`# <short outcome headline>\` naming what this code does for the company (never the mechanism), then 1-3 plain sentences for the founder covering what the code may do to the outside world once signed. Then continue with other work; retry after it is approved.`,
 	};
 }
 
@@ -671,31 +786,57 @@ export function evaluateToolCall(
 			};
 		}
 	}
+	if (
+		context?.actor === "product-worker" &&
+		isMutatingCall(toolName, args) &&
+		!productWorkerMutationAllowed(authority, toolName, args, cwd, context)
+	) {
+		return {
+			kind: "block",
+			effectClass: "product_code",
+			reason:
+				"Product-worker boundary: this actor may modify only its kernel-assigned worktree. Continue inside that worktree or return the task to the controller for reassignment; this boundary cannot be approved away.",
+		};
+	}
 
 	const config = readAuthorityConfig(authority);
 	let effectClass = classifyToolCall(authority, config, toolName, args, cwd);
 	if (!effectClass) return { kind: "allow" };
 
-	// Founder sessions vs agentic controller sessions (founder decision,
-	// 2026-08-06): the [products] zone exists to stop the controller's
-	// AUTONOMOUS work drifting into the software products — a founder asking
-	// for product work in an attended session IS the authority, so the zone
-	// allows there. Only the products class relaxes: kernel files and the
-	// inbox classified [authority] above stay gated in every session, and a
-	// destructive command re-classifies as [irreversible] so founder presence
-	// never silently covers history rewrites or force-pushes.
-	if (effectClass === "products" && context?.attended) {
+	// Product code is a role boundary, not an approval mode. A controller is
+	// read-only even when a founder is present; implementation happens in a
+	// kernel-assigned product-worker worktree. A product-worker's destructive
+	// commands still re-classify and hit the ordinary irreversible gate.
+	if (effectClass === "product_code") {
+		if (context?.actor !== "product-worker") {
+			return {
+				kind: "block",
+				effectClass,
+				reason:
+					"Product-development boundary: the company controller may read product code but cannot modify repositories or worktrees. Delegate the task through the product department's Chat; this boundary cannot be approved away.",
+			};
+		}
+		if (!productWorkerMutationAllowed(authority, toolName, args, cwd, context)) {
+			return {
+				kind: "block",
+				effectClass,
+				reason:
+					"Product-worker boundary: this mutation is outside the assigned worktree and cannot be approved away.",
+			};
+		}
 		const command = toolName === "bash" ? bashCommandFromArgs(args) : undefined;
 		const screened = command ? stripIndexSafeGitPaths(stripMessageArgs(command)) : undefined;
-		if (screened && DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(screened))) {
+		if (
+			screened &&
+			(DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(screened)) ||
+				/\bgh\s+pr\s+(?:merge|close)\b/i.test(screened))
+		) {
 			effectClass = "irreversible";
 		} else {
-			// Still resolved for the trail stamp: an attended allow from
-			// codified behavior records what code acted, same as any allow.
 			return {
 				kind: "allow",
-				effectClass: "products",
-				attended: true,
+				effectClass: "product_code",
+				actor: "product-worker",
 				behavior: resolveBehaviorSignature(authority, context?.behaviorPath),
 			};
 		}
@@ -708,7 +849,13 @@ export function evaluateToolCall(
 	// code acting with nobody present. Attended calls fall through to the
 	// normal per-action gates (presence is the intent source there).
 	const behavior = resolveBehaviorSignature(authority, context?.behaviorPath);
-	if (behavior && !behavior.signed && !context?.attended && OUTWARD_CLASSES.has(effectClass)) {
+	if (
+		behavior &&
+		!behavior.signed &&
+		!behavior.kernelTrust &&
+		!context?.attended &&
+		OUTWARD_CLASSES.has(effectClass)
+	) {
 		return blockForUnsignedBehavior(authority, toolName, args, effectClass, behavior);
 	}
 
@@ -723,6 +870,15 @@ export function evaluateToolCall(
 	const records = findGateRecords(authority, hash);
 	const approved = records.find((record) => record.status === "approved");
 	if (approved) {
+		if (process.env.QORPERA_TRAIL_BROKER_TOKEN) {
+			return {
+				kind: "allow",
+				notified: true,
+				effectClass,
+				behavior,
+				kernelGate: { file: basename(approved.filePath), hash, id: approved.id, effectClass },
+			};
+		}
 		setGateStatus(approved, "consumed");
 		appendNotice(authority, `[${effectClass}] ${approved.id} consumed: ${summarizeCall(toolName, args)}`);
 		return { kind: "allow", notified: true, effectClass, behavior };
@@ -744,7 +900,7 @@ export function evaluateToolCall(
 			effectClass,
 			gateId: denied.id,
 			behavior,
-			reason: `Authority gate [${effectClass}]: request ${denied.id} was DENIED by the human. Do not retry this action; pursue another path. (A human can still edit the gate file to approved.)`,
+			reason: `Authority gate [${effectClass}]: request ${denied.id} was DENIED by the founder. Do not retry this action; pursue another path unless the founder reopens it for native review.`,
 		};
 	}
 	const gateId = writeGateRequest(authority, {
@@ -759,22 +915,66 @@ export function evaluateToolCall(
 		effectClass,
 		gateId,
 		behavior,
-		reason: `Authority gate [${effectClass}]: this action requires human approval. Request ${gateId} filed in inbox/. NOW create inbox/msg-${gateId}-intent.md with your file-writing tool (NOT bash — bash writes into inbox/ are themselves gated): first line \`# <short outcome headline>\` naming what this achieves for the company (never the mechanism), then 1-3 plain sentences of context for the founder, no command syntax. Headline and text become the approval card; the exact command is shown separately. Then continue with other work; retry after it is approved.`,
+		reason: `Authority gate [${effectClass}]: this action requires human approval. Request ${gateId} filed in inbox/. NOW create inbox/messages/msg-${gateId}-intent.md with your file-writing tool (NOT bash — bash writes into inbox/ are themselves gated): first line \`# <short outcome headline>\` naming what this achieves for the company (never the mechanism), then 1-3 plain sentences of context for the founder, no command syntax. Headline and text become the approval card; the exact command is shown separately. Then continue with other work; retry after it is approved.`,
 	};
+}
+
+/** Complete a brokered single-use approval before the tool is allowed to execute. */
+export async function finalizeAuthorityDecision(
+	authority: Authority,
+	decision: AuthorityDecision,
+	toolName: string,
+	args: unknown,
+): Promise<AuthorityDecision> {
+	if (decision.kind !== "allow") return decision;
+	let finalized = decision;
+	if (finalized.behavior?.kernelTrust) {
+		const trust = finalized.behavior.kernelTrust;
+		const granted = await requestKernelGateTrust(trust.file, trust.hash);
+		if (!granted) {
+			return {
+				kind: "block",
+				effectClass: finalized.effectClass ?? "authority",
+				gateId: finalized.behavior.gateId,
+				behavior: { ...finalized.behavior, signed: false, kernelTrust: undefined },
+				reason: `Signature rule: ${finalized.behavior.path} has no live local kernel trust. Review its signature request again in Base.`,
+			};
+		}
+		finalized = {
+			...finalized,
+			behavior: { ...finalized.behavior, signed: true, kernelTrust: undefined },
+		};
+	}
+	if (!finalized.kernelGate) return finalized;
+	const gate = finalized.kernelGate;
+	const granted = await requestKernelGateConsumption(gate.file, gate.hash);
+	if (!granted) {
+		return {
+			kind: "block",
+			effectClass: gate.effectClass,
+			gateId: gate.id,
+			behavior: finalized.behavior,
+			reason: `Authority gate [${gate.effectClass}]: ${gate.id} was already consumed or is no longer approved. Request a fresh approval before retrying.`,
+		};
+	}
+	appendNotice(authority, `[${gate.effectClass}] ${gate.id} consumed: ${summarizeCall(toolName, args)}`);
+	const { kernelGate: _kernelGate, ...completed } = finalized;
+	return { ...completed, gateId: gate.id };
 }
 
 /**
  * Extension-load gating. Project-local extensions under the authority root
  * are agent-authorable code that runs with full user permissions (see
  * SEAMS.md c.3) — loading one is an [authority]-class effect. Approvals are
- * durable per content hash: approving a file approves that exact code;
- * changed content is a new request.
+ * durable per company path and content hash in the desktop kernel. Native
+ * review establishes trust for that exact code; changed content requires
+ * fresh trust and the founder may revoke existing trust from the inbox.
  */
-export function filterExtensionPaths(
+export async function filterExtensionPaths(
 	authority: Authority,
 	paths: string[],
 	agentDir: string,
-): { allowed: string[]; blocked: Array<{ path: string; gateId: string; pending: boolean }> } {
+): Promise<{ allowed: string[]; blocked: Array<{ path: string; gateId: string; pending: boolean }> }> {
 	const allowed: string[] = [];
 	const blocked: Array<{ path: string; gateId: string; pending: boolean }> = [];
 	for (const path of paths) {
@@ -797,9 +997,10 @@ export function filterExtensionPaths(
 			contentHash,
 		});
 		const records = findGateRecords(authority, hash);
-		const approvedOrConsumed = records.find((record) => record.status === "approved" || record.status === "consumed");
-		if (approvedOrConsumed) {
-			allowed.push(path);
+		const approved = records.find((record) => record.status === "approved");
+		if (approved) {
+			if (await requestKernelGateTrust(basename(approved.filePath), approved.hash)) allowed.push(path);
+			else blocked.push({ path, gateId: approved.id, pending: true });
 			continue;
 		}
 		const pending = records.find((record) => record.status === "pending");
@@ -810,6 +1011,12 @@ export function filterExtensionPaths(
 		}
 		if (denied) {
 			blocked.push({ path, gateId: denied.id, pending: false });
+			continue;
+		}
+		const consumed = records.find((record) => record.status === "consumed");
+		if (consumed) {
+			if (await requestKernelGateTrust(basename(consumed.filePath), consumed.hash)) allowed.push(path);
+			else blocked.push({ path, gateId: consumed.id, pending: true });
 			continue;
 		}
 		const gateId = writeGateRequest(authority, {

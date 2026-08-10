@@ -11,7 +11,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-check-test:
+  windows-base:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Windows tools
+        run: choco install ripgrep fd -y --no-progress
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build
+        run: npm run build
+
+      - name: Check
+        run: npm run check
+
+      - name: Focused authority and sandbox integration
+        working-directory: packages/shell
+        env:
+          QORPERA_WINDOWS_SANDBOX_INTEGRATION: "1"
+        run: node ../../node_modules/vitest/dist/cli.js --run test/windows-sandbox.integration.test.ts test/model-request-broker.test.ts test/agent-runtime.test.ts test/renderer-boundary.test.ts test/userland-manager.test.ts
+
+      - name: Full isolated Windows suite
+        shell: bash
+        run: |
+          export TMPDIR="$(cygpath -u "$RUNNER_TEMP")"
+          ./test.sh
+
+  linux-informational:
+    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

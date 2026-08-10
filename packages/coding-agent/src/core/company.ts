@@ -1,11 +1,12 @@
 /**
  * Company folder scaffold — the Qorpera Base spine (spec §2).
  *
- * The folder IS the company. Base defines seven spine entries plus the
- * materialized kernel files and never opines past that line: `app/` and
- * `work/` belong to the company's agent. Scaffolding is strictly idempotent
- * — existing files are never overwritten (a company's `company.md` is its
- * identity, not ours to reset). Sessions ARE the trail: the scaffold points
+ * The folder IS the company. Base defines the spine plus the product-
+ * development department kit and never opines past that line: `app/` and
+ * department-authored content belong to the company's agents. Scaffolding
+ * is strictly idempotent — existing files are never overwritten (a
+ * company's `company.md` is its identity, not ours to reset). Sessions ARE
+ * the trail: the scaffold points
  * the project `sessionDir` at `./trail`, so every session's tree-shaped
  * JSONL record lands inside the company folder with no mirroring layer.
  *
@@ -17,12 +18,33 @@
  * describes comes from enforcement (`authority.ts`), never from prompt tier.
  */
 
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import {
+	closeSync,
+	existsSync,
+	fsyncSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { Worker } from "node:worker_threads";
 import { getAgentDir } from "../config.ts";
-import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
+import {
+	EMPTY_PROJECTION,
+	type ProjectionDocument,
+	type ProjectionNode,
+	parseProjectionDocument,
+} from "./projection.ts";
 
 /**
  * The kernel prompt (spec §5.2). L0 — companies and models may layer above
@@ -50,6 +72,15 @@ override tokens in \`app/surfaces/theme.css\`) and a read-only kit at
 \`readSubstrate(name)\`, \`readInbox(file)\`, and \`every(ms, fn)\` — so a
 surface can show the company as it is right now and refresh itself.
 
+\`app/projection.json\` is the only navigation publication document. It is
+not your company model. Publish only the small part of the company the
+founder should navigate. Its stable nodes are departments, categories, and
+pages: a department contains pages or categories; a category contains pages
+only; a page either hosts a surface or a named Base builtin. Node IDs are
+immutable even when files or labels move. Do not derive navigation from the
+folder tree, place routines in the projection, or reorganize company data to
+fit the UI. Main is platform-owned and always present.
+
 When you wake: read \`company.md\`, look around — the app, the inbox, the
 state of the work — and decide for yourself what most needs doing. Routines
 in \`app/routines/\` are jobs you can run; the inbox may carry steering from
@@ -68,22 +99,25 @@ holds identity and intent only; working beliefs — pricing, plans, forecasts
 — live in \`app/substrates/\` where you can revise them as evidence arrives.
 
 Everything you think and do is recorded automatically: sessions land in
-\`trail/\` as append-only trees. You owe the record nothing — but it is
+\`trail/\` as append-only trees. Never compact, replace, expire, or delete
+that trail. When a session becomes too large, start a fresh session or, for
+product work, a fresh worktree. You owe the record nothing — but it is
 searchable history when you need to know why something is the way it is,
 and a smarter model than you will one day read it and redo your work
 better. Work in clean units so the record stays legible.
 
-The company's git history is append-only from your side: rewriting it
-(amend, rebase, force-push, filter, reflog expiry) gates. End every commit
-message with provenance trailers — \`Qorpera-Trigger:\` (what prompted the
-change) and \`Qorpera-Rationale:\` (why) — the harness enforces this; a
-commit without them is rejected with no gate filed, just retry with the
-trailers. You are explaining yourself to your future self, not to a
-reviewer.
+The company's git metadata is kernel-owned. At each settled controller turn,
+the kernel checkpoints the files that turn changed and attaches the trail
+session as provenance; never edit \`.git/\` or rewrite company history.
+Product workers are different: their assigned worktree is an isolated clone,
+so they change and test only there. The kernel owns that clone's Git metadata,
+checkpoints the settled change set with its trail provenance, and brokers any
+later push or pull-request effect. You are explaining yourself to your future
+self, not to a reviewer.
 
 How you and the founder communicate: chat sessions are for work the founder
-brings to you. Your own autonomous work communicates through \`inbox/\` —
-write \`inbox/msg-<slug>.md\` files for anything user-facing: questions,
+brings to you. Your own autonomous work communicates through \`inbox/messages/\` —
+write \`inbox/messages/msg-<slug>.md\` files for anything user-facing: questions,
 proposals, plans, progress updates, decisions you need. One item per file,
 a clear title, and enough context to answer without reading your session.
 The founder responds inside the item (a Response section appears below your
@@ -95,7 +129,17 @@ tools you build exactly as it binds you, and it is enforced in the harness,
 not by this text. Blocked effects file gate requests in \`inbox/\`
 automatically; keep working elsewhere while you wait. Never edit
 \`authority.toml\`, this file, or anything in \`inbox/\` other than your own
-\`msg-*.md\` items — the rest belongs to the human.
+\`inbox/messages/msg-*.md\` items — the rest belongs to the human.
+
+Product code lives only inside \`departments/<product>-development/\`.
+As the company controller you may study product repositories, worktrees,
+pull requests, and their trails, but you cannot modify product code. Write
+briefs and delegate implementation through the department's Product Chat.
+That launches a product-worker in one assigned \`worktrees/<task>/\`
+directory. A product-worker changes and tests only that worktree, while the
+kernel checkpoints and later proposes integration through a
+pull request.
+Controller authority never turns into product-worker authority.
 
 \`userland/\` is your app's own code — this company's fork of the Qorpera
 Base chrome. Evolve it freely: change the UI, add views, commands, and
@@ -124,7 +168,7 @@ any model and any decade.*
 
 const AUTHORITY_TOML_TEMPLATE = `# Authority gates — human-owned. The agent reads this file, never writes it.
 # Modes: "auto" (proceed) | "notify" (proceed, record a notice) | "gate" (require approval).
-# Blocked effects file requests in inbox/; edit their status line to approve or deny.
+# Blocked effects file requests in inbox/; resolve them through Base's native review.
 
 [money]
 mode = "gate"
@@ -141,10 +185,6 @@ mode = "gate"      # editing this file, the kernel files, or inbox/.
                    # ALWAYS gated — the harness enforces this regardless of
                    # what this line says.
 
-# [products]       # software products the controller may READ and study
-# mode = "gate"    # freely but not MODIFY without approval. Root-relative.
-# paths = ["work/my-product"]
-
 # [tools]          # optional per-tool overrides, e.g.:
 # deploy = "irreversible"
 `;
@@ -159,19 +199,733 @@ const INBOX_README = `# Inbox
 
 Gate requests and human steering land here.
 
-- \`gate-*.md\` — a blocked effect awaiting a decision. Edit its \`status:\`
-  line to \`approved\` or \`denied\`. Tool-call approvals are single-use;
-  extension-load approvals are durable for the approved content hash.
+- \`gate-*.md\` — a blocked effect awaiting native founder review in Base.
+  Editing its \`status:\` line does not create an executable capability.
+  Tool-call approvals are single-use; extension-load trust is stored by the
+  local desktop kernel for this company path and reviewed content hash.
 - \`notices.md\` — effects that proceeded under notify mode.
+- \`messages/msg-*.md\` — agent-authored questions, proposals, and updates.
 - Anything else you put here is steering the agent reads on its next wake.
 `;
 
-const APP_MANIFEST_TEMPLATE = `{
-	"version": 1,
-	"surfaces": [],
-	"routines": []
-}
+const APP_PROJECTION_TEMPLATE = `${JSON.stringify(EMPTY_PROJECTION, null, "\t")}\n`;
+
+const PRODUCT_DEPARTMENT_GITIGNORE = `# Product Git data belongs to the product repository, not the company repository.
+repository/
+worktrees/
 `;
+
+const PULL_REQUESTS_README = `# Pull Requests
+
+Local, synchronized pull-request read models for this product. Connectors or
+department routines may write one JSON record per pull request here. The
+product department UI reads these records; credentials never belong here.
+`;
+
+const PRODUCT_DEPARTMENT_KIND = "product-development";
+const PRODUCT_REGISTRY_PATH = join(".qorpera", "products.json");
+const PRODUCT_WORKTREE_ASSIGNMENTS_PATH = join(".qorpera", "product-worktrees");
+
+function normalizedPath(path: string): string {
+	const resolved = resolve(path);
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+/** Resolve an existing company through aliases once, then use that physical identity everywhere. */
+export function canonicalCompanyRoot(rootDir: string): string {
+	return realpathSync(resolve(rootDir));
+}
+
+function canonicalDirectory(root: string, relativePath: string): string {
+	const target = resolve(root, relativePath);
+	const actual = realpathSync(target);
+	if (normalizedPath(actual) !== normalizedPath(target) || !lstatSync(target).isDirectory()) {
+		throw new Error(`Company storage must be a physical directory, not a link or junction: ${relativePath}`);
+	}
+	return actual;
+}
+
+export function assertPhysicalCompanyTree(rootDir: string, relativePath: string): string {
+	const root = canonicalCompanyRoot(rootDir);
+	const target = resolve(root, relativePath);
+	const rootRelative = relative(root, target);
+	if (!rootRelative || rootRelative.startsWith("..") || isAbsolute(rootRelative)) {
+		throw new Error(`Company storage escaped its root: ${relativePath}`);
+	}
+	const visit = (path: string): void => {
+		const entry = lstatSync(path);
+		if (
+			entry.isSymbolicLink() ||
+			normalizedPath(realpathSync(path)) !== normalizedPath(path) ||
+			(entry.isFile() && entry.nlink !== 1)
+		) {
+			throw new Error(`Company kernel storage must be one physical entry: ${relativePath}`);
+		}
+		if (entry.isDirectory()) {
+			for (const child of readdirSync(path)) visit(join(path, child));
+		}
+	};
+	visit(target);
+	return target;
+}
+
+export function validateCompanyKernelStorage(rootDir: string): void {
+	const root = canonicalCompanyRoot(rootDir);
+	for (const directory of [".qorpera", "trail", "inbox", join("inbox", "messages"), "app", "departments"]) {
+		canonicalDirectory(root, directory);
+	}
+	for (const tree of ["trail", "inbox"]) assertPhysicalCompanyTree(root, tree);
+	for (const file of [
+		"company.md",
+		"authority.toml",
+		"AGENTS.md",
+		"CLAUDE.md",
+		PRODUCT_REGISTRY_PATH,
+		join("app", "projection.json"),
+	]) {
+		storageIdentity(join(root, file), "file");
+	}
+	if (existsSync(join(root, ".qorpera", "settings.json"))) {
+		storageIdentity(join(root, ".qorpera", "settings.json"), "file");
+	}
+	for (const optionalTree of [
+		join(".qorpera", "product-worktrees"),
+		join(".qorpera", "product-integrations"),
+		join(".qorpera", "w"),
+	]) {
+		if (existsSync(join(root, optionalTree))) assertPhysicalCompanyTree(root, optionalTree);
+	}
+}
+
+interface StorageIdentity {
+	path: string;
+	device: string;
+	inode: string;
+	kind: "directory" | "file";
+}
+
+export interface ProductTransactionStorage {
+	root: StorageIdentity;
+	departments: StorageIdentity;
+	app: StorageIdentity;
+	qorpera: StorageIdentity;
+	projection: StorageIdentity;
+	productRegistry: StorageIdentity;
+}
+
+function storageIdentity(path: string, kind: StorageIdentity["kind"]): StorageIdentity {
+	const actual = realpathSync(path);
+	const entry = lstatSync(path);
+	if (
+		normalizedPath(actual) !== normalizedPath(path) ||
+		(kind === "directory" ? !entry.isDirectory() : !entry.isFile()) ||
+		(kind === "file" && entry.nlink !== 1)
+	) {
+		throw new Error(`Company transaction ${kind} must be one physical entry: ${path}`);
+	}
+	const stats = statSync(path, { bigint: true });
+	return { path, device: stats.dev.toString(), inode: stats.ino.toString(), kind };
+}
+
+/**
+ * Bind a product transaction to the canonical company roots before review.
+ * Rechecking the device/inode tuple prevents a reviewed directory from being
+ * replaced with a junction before a later transaction write.
+ */
+export function captureProductTransactionStorage(rootDir: string): ProductTransactionStorage {
+	const root = canonicalCompanyRoot(rootDir);
+	return {
+		root: storageIdentity(root, "directory"),
+		departments: storageIdentity(canonicalDirectory(root, "departments"), "directory"),
+		app: storageIdentity(canonicalDirectory(root, "app"), "directory"),
+		qorpera: storageIdentity(canonicalDirectory(root, ".qorpera"), "directory"),
+		projection: storageIdentity(join(root, "app", "projection.json"), "file"),
+		productRegistry: storageIdentity(join(root, PRODUCT_REGISTRY_PATH), "file"),
+	};
+}
+
+export function assertProductTransactionStorage(storage: ProductTransactionStorage): string {
+	for (const identity of [
+		storage.root,
+		storage.departments,
+		storage.app,
+		storage.qorpera,
+		storage.projection,
+		storage.productRegistry,
+	]) {
+		const actual = storageIdentity(identity.path, identity.kind);
+		if (
+			normalizedPath(actual.path) !== normalizedPath(identity.path) ||
+			actual.device !== identity.device ||
+			actual.inode !== identity.inode
+		) {
+			throw new Error(`Company transaction storage changed after review: ${identity.path}`);
+		}
+	}
+	return storage.root.path;
+}
+
+export function companyRuntimeLockPath(rootDir: string): string {
+	const root = canonicalCompanyRoot(rootDir);
+	const gitPath = spawnSync(
+		"git",
+		["-C", root, "rev-parse", "--path-format=absolute", "--git-path", "qorpera-runtime-locks"],
+		{ encoding: "utf-8", shell: false },
+	);
+	if (gitPath.status !== 0 || !gitPath.stdout.trim()) {
+		throw new Error("company transaction requires a valid Git repository");
+	}
+	const id = createHash("sha256").update(normalizedPath(root)).digest("hex");
+	return join(gitPath.stdout.trim(), `${id}.json`);
+}
+
+export interface CompanyRuntimeLock {
+	path: string;
+	root: string;
+	token: string;
+	processInstance: string;
+	release: () => void;
+}
+
+interface CompanyLockRecord {
+	version: 3;
+	pid: number;
+	processInstance: string;
+	root: string;
+	token: string;
+	mode: "runtime" | "product-registration";
+}
+
+const ownedRuntimeLocks = new WeakSet<CompanyRuntimeLock>();
+const lockHeartbeats = new WeakMap<CompanyRuntimeLock, Worker>();
+const failedLockHeartbeats = new WeakSet<CompanyRuntimeLock>();
+const COMPANY_LOCK_STALE_MS = 30_000;
+const COMPANY_LOCK_HEARTBEAT_MS = 1_000;
+
+function writeAtomicText(path: string, content: string): void {
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	let descriptor: number | undefined;
+	try {
+		descriptor = openSync(temporary, "wx");
+		writeFileSync(descriptor, content, "utf-8");
+		fsyncSync(descriptor);
+		closeSync(descriptor);
+		descriptor = undefined;
+		renameSync(temporary, path);
+	} catch (error) {
+		if (descriptor !== undefined) closeSync(descriptor);
+		rmSync(temporary, { force: true });
+		throw error;
+	}
+}
+
+function startCompanyLockHeartbeat(path: string, token: string): Worker {
+	const extension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+	const worker = new Worker(new URL(`./company-lock-heartbeat${extension}`, import.meta.url), {
+		workerData: { path, token, intervalMs: COMPANY_LOCK_HEARTBEAT_MS },
+	});
+	worker.unref();
+	return worker;
+}
+
+function lockOwnerProcessIsAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+	}
+}
+
+function processInstanceIdentity(pid: number): string | undefined {
+	if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+	if (process.platform === "win32") {
+		const result = spawnSync(
+			"powershell.exe",
+			[
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				`try { $p = [System.Diagnostics.Process]::GetProcessById(${pid}); [Console]::Out.Write($p.StartTime.ToUniversalTime().Ticks) } catch { exit 3 }`,
+			],
+			{ encoding: "utf-8", shell: false, timeout: 5_000, windowsHide: true },
+		);
+		const ticks = result.status === 0 ? result.stdout.trim() : "";
+		return /^\d{10,}$/.test(ticks) ? `windows:${ticks}` : undefined;
+	}
+	if (process.platform === "linux") {
+		try {
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+			const fields = stat
+				.slice(stat.lastIndexOf(")") + 2)
+				.trim()
+				.split(/\s+/);
+			const startTicks = fields[19];
+			return /^\d+$/.test(startTicks ?? "") ? `linux:${startTicks}` : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	return undefined;
+}
+
+function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): CompanyRuntimeLock {
+	const root = canonicalCompanyRoot(rootDir);
+	const path = companyRuntimeLockPath(root);
+	mkdirSync(dirname(path), { recursive: true });
+	const token = randomUUID();
+	const processInstance = processInstanceIdentity(process.pid);
+	if (!processInstance) throw new Error("Could not establish the company lock process identity");
+	const record: CompanyLockRecord = { version: 3, pid: process.pid, processInstance, root, token, mode };
+	for (let attempt = 0; attempt < 3; attempt++) {
+		let descriptor: number | undefined;
+		try {
+			descriptor = openSync(path, "wx");
+			writeFileSync(descriptor, `${JSON.stringify(record)}\n`, "utf-8");
+			fsyncSync(descriptor);
+			closeSync(descriptor);
+			descriptor = undefined;
+			const lock: CompanyRuntimeLock = {
+				path,
+				root,
+				token,
+				processInstance,
+				release: () => {
+					const heartbeat = lockHeartbeats.get(lock);
+					if (!heartbeat) return;
+					lockHeartbeats.delete(lock);
+					try {
+						heartbeat.postMessage("stop");
+					} catch {}
+					void heartbeat.terminate();
+				},
+			};
+			const heartbeat = startCompanyLockHeartbeat(path, token);
+			lockHeartbeats.set(lock, heartbeat);
+			const markHeartbeatFailure = (): void => {
+				if (lockHeartbeats.get(lock) === heartbeat) failedLockHeartbeats.add(lock);
+			};
+			heartbeat.once("error", markHeartbeatFailure);
+			heartbeat.once("exit", markHeartbeatFailure);
+			return lock;
+		} catch (error) {
+			if (descriptor !== undefined) closeSync(descriptor);
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+				rmSync(path, { force: true });
+				throw error;
+			}
+			let modifiedAt: number;
+			try {
+				modifiedAt = statSync(path).mtimeMs;
+			} catch (statError) {
+				if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
+				throw statError;
+			}
+			if (Date.now() - modifiedAt <= COMPANY_LOCK_STALE_MS) {
+				throw new Error("Company transaction is already owned by another process", { cause: error });
+			}
+			let owner: Partial<CompanyLockRecord>;
+			try {
+				owner = JSON.parse(readFileSync(path, "utf-8")) as Partial<CompanyLockRecord>;
+			} catch (readError) {
+				throw new Error("Stale company transaction lock has invalid owner identity", { cause: readError });
+			}
+			if (
+				owner.version !== 3 ||
+				!Number.isSafeInteger(owner.pid) ||
+				owner.pid! <= 0 ||
+				typeof owner.processInstance !== "string" ||
+				!/^(?:windows|linux):\d+$/.test(owner.processInstance) ||
+				typeof owner.token !== "string" ||
+				!/^[0-9a-f-]{36}$/i.test(owner.token) ||
+				(owner.mode !== "runtime" && owner.mode !== "product-registration") ||
+				normalizedPath(owner.root ?? "") !== normalizedPath(root)
+			) {
+				throw new Error("Stale company transaction lock has invalid owner identity");
+			}
+			if (lockOwnerProcessIsAlive(owner.pid!)) {
+				const liveInstance = processInstanceIdentity(owner.pid!);
+				if (!liveInstance) {
+					throw new Error("Could not validate the live company lock owner", { cause: error });
+				}
+				if (liveInstance === owner.processInstance) {
+					throw new Error("Company transaction is already owned by another live process", { cause: error });
+				}
+			}
+			try {
+				renameSync(path, `${path}.stale-${Date.now()}-${randomUUID()}`);
+			} catch (renameError) {
+				if ((renameError as NodeJS.ErrnoException).code === "ENOENT") continue;
+				throw renameError;
+			}
+		}
+	}
+	throw new Error("Could not acquire the company transaction lock atomically");
+}
+
+export function claimCompanyRuntimeLock(rootDir: string): CompanyRuntimeLock {
+	const lock = acquireCompanyLock(rootDir, "runtime");
+	ownedRuntimeLocks.add(lock);
+	return lock;
+}
+
+export function releaseCompanyRuntimeLock(lock: CompanyRuntimeLock): void {
+	try {
+		const record = JSON.parse(readFileSync(lock.path, "utf-8")) as Partial<CompanyLockRecord>;
+		if (record.token !== lock.token || normalizedPath(record.root ?? "") !== normalizedPath(lock.root)) {
+			throw new Error("company transaction lock ownership changed before release");
+		}
+		rmSync(lock.path, { force: true });
+		lock.release();
+	} catch (error) {
+		try {
+			lock.release();
+		} catch {}
+		throw error;
+	} finally {
+		ownedRuntimeLocks.delete(lock);
+		failedLockHeartbeats.delete(lock);
+	}
+}
+
+function assertRuntimeLock(root: string, lock: CompanyRuntimeLock): void {
+	const canonicalRoot = canonicalCompanyRoot(root);
+	if (
+		!ownedRuntimeLocks.has(lock) ||
+		failedLockHeartbeats.has(lock) ||
+		normalizedPath(lock.root) !== normalizedPath(canonicalRoot)
+	) {
+		throw new Error("desktop product transaction has no kernel-owned runtime capability");
+	}
+	const path = companyRuntimeLockPath(canonicalRoot);
+	let record: Partial<CompanyLockRecord>;
+	try {
+		record = JSON.parse(readFileSync(path, "utf-8")) as Partial<CompanyLockRecord>;
+	} catch (error) {
+		throw new Error("desktop product transaction has no valid runtime lock", { cause: error });
+	}
+	if (
+		record.version !== 3 ||
+		record.mode !== "runtime" ||
+		record.pid !== process.pid ||
+		record.processInstance !== lock.processInstance ||
+		record.token !== lock.token ||
+		normalizedPath(record.root ?? "") !== normalizedPath(canonicalRoot)
+	) {
+		throw new Error("desktop product transaction does not own the company runtime lock");
+	}
+}
+
+interface ProductDepartmentManifest {
+	version: 1;
+	kind: typeof PRODUCT_DEPARTMENT_KIND;
+	product: string;
+}
+
+interface ProductRegistry {
+	version: 1;
+	products: string[];
+}
+
+const PRODUCT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-development$/;
+
+function parseProductRegistry(root: string, allowMissing: boolean): ProductRegistry {
+	const path = join(root, PRODUCT_REGISTRY_PATH);
+	if (!existsSync(path)) {
+		if (allowMissing) return { version: 1, products: [] };
+		throw new Error(`Company product inventory is missing: ${PRODUCT_REGISTRY_PATH}`);
+	}
+	try {
+		if (normalizedPath(realpathSync(path)) !== normalizedPath(path) || !lstatSync(path).isFile()) {
+			throw new Error("product inventory must be a physical file");
+		}
+		const registry = JSON.parse(readFileSync(path, "utf-8")) as Partial<ProductRegistry>;
+		if (
+			registry.version === 1 &&
+			Array.isArray(registry.products) &&
+			registry.products.every((id) => typeof id === "string" && PRODUCT_ID_PATTERN.test(id)) &&
+			new Set(registry.products).size === registry.products.length
+		) {
+			return { version: 1, products: [...registry.products] };
+		}
+	} catch (error) {
+		throw new Error(
+			`Company product inventory is invalid: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	throw new Error(`Company product inventory is invalid: ${PRODUCT_REGISTRY_PATH}`);
+}
+
+function readProductRegistry(root: string): ProductRegistry {
+	return parseProductRegistry(root, false);
+}
+
+function registerProductDepartment(root: string, id: string, storage: ProductTransactionStorage): void {
+	const registry = parseProductRegistry(root, true);
+	if (registry.products.includes(id)) return;
+	registry.products.push(id);
+	registry.products.sort();
+	mkdirSync(join(root, ".qorpera"), { recursive: true });
+	const path = join(root, PRODUCT_REGISTRY_PATH);
+	writeAtomicText(path, `${JSON.stringify(registry, null, "\t")}\n`);
+	storage.productRegistry = storageIdentity(path, "file");
+}
+
+function checkpointProductKit(root: string, id: string): void {
+	if (spawnSync("git", ["-C", root, "rev-parse", "--verify", "HEAD"], { stdio: "ignore", shell: false }).status !== 0)
+		return;
+	const paths = [
+		PRODUCT_REGISTRY_PATH,
+		join("app", "projection.json"),
+		join("departments", id, "department.json"),
+		join("departments", id, ".gitignore"),
+		join("departments", id, "briefs", ".gitkeep"),
+		join("departments", id, "pull-requests", "README.md"),
+		join("departments", id, "repository", ".gitkeep"),
+		join("departments", id, "worktrees", ".gitkeep"),
+	].filter(
+		(path) =>
+			existsSync(join(root, path)) ||
+			spawnSync("git", ["-C", root, "ls-files", "--error-unmatch", "--", path], {
+				stdio: "ignore",
+				shell: false,
+			}).status === 0,
+	);
+	const integrationRecord = join(".qorpera", "product-integrations", `${id}.json`);
+	if (existsSync(join(root, integrationRecord))) paths.push(integrationRecord);
+	// The product storage roots are deliberately ignored once populated. Force
+	// their explicit placeholders into the company history without ever adding
+	// product repository or worktree content.
+	const added = spawnSync("git", ["-C", root, "add", "--force", "--", ...paths], {
+		stdio: "ignore",
+		shell: false,
+	});
+	if (added.status !== 0) throw new Error(`Could not stage product department ${id}`);
+	const changed = spawnSync("git", ["-C", root, "diff", "--cached", "--quiet", "--", ...paths], {
+		stdio: "ignore",
+		shell: false,
+	});
+	if (changed.status === 0) return;
+	const committed = spawnSync(
+		"git",
+		[
+			"-C",
+			root,
+			"-c",
+			"user.name=Qorpera Kernel",
+			"-c",
+			"user.email=kernel@qorpera.local",
+			"commit",
+			"--only",
+			"-m",
+			`feat: add ${id} product department\n\nQorpera-Trigger: founder product kit request\nQorpera-Rationale: preserve the registered product boundary and its UI projection`,
+			"--",
+			...paths,
+		],
+		{ encoding: "utf-8", shell: false },
+	);
+	if (committed.status !== 0) {
+		throw new Error(`Could not commit product department ${id}: ${committed.stderr || committed.stdout}`);
+	}
+}
+
+function checkpointProductIntegrationRecord(root: string, id: string, rationale: string): void {
+	const path = join(".qorpera", "product-integrations", `${id}.json`);
+	const added = spawnSync("git", ["-C", root, "add", "--", path], { encoding: "utf-8", shell: false });
+	if (added.status !== 0)
+		throw new Error(`Could not stage product integration journal: ${added.stderr || added.stdout}`);
+	const changed = spawnSync("git", ["-C", root, "diff", "--cached", "--quiet", "--", path], {
+		stdio: "ignore",
+		shell: false,
+	});
+	if (changed.status === 0) return;
+	if (changed.status !== 1) throw new Error("Could not inspect the product integration journal");
+	const committed = spawnSync(
+		"git",
+		[
+			"-C",
+			root,
+			"-c",
+			"user.name=Qorpera Kernel",
+			"-c",
+			"user.email=kernel@qorpera.local",
+			"commit",
+			"--only",
+			"-m",
+			`docs: journal ${id} product integration\n\nQorpera-Trigger: founder product integration\nQorpera-Rationale: ${rationale}`,
+			"--",
+			path,
+		],
+		{ encoding: "utf-8", shell: false },
+	);
+	if (committed.status !== 0) {
+		throw new Error(`Could not commit product integration journal: ${committed.stderr || committed.stdout}`);
+	}
+}
+
+function productProjectionNodes(department: ProductDepartment): ProjectionNode[] {
+	const namespace = department.id.toLowerCase();
+	const departmentId = `department:${namespace}`;
+	const context = { departmentId: department.id };
+	return [
+		{
+			id: departmentId,
+			kind: "department",
+			label: `${department.name} Development`,
+			items: [`page:${namespace}.chat`, `page:${namespace}.pull-requests`, `page:${namespace}.architecture`],
+		},
+		{
+			id: `page:${namespace}.chat`,
+			kind: "page",
+			label: "Chat",
+			description: "Start product work in a fresh isolated worktree.",
+			view: { type: "builtin", id: "qorpera.product-chat", context },
+		},
+		{
+			id: `page:${namespace}.pull-requests`,
+			kind: "page",
+			label: "Pull Requests",
+			description: "Review synchronized local pull-request records.",
+			view: { type: "builtin", id: "qorpera.pull-requests", context },
+		},
+		{
+			id: `page:${namespace}.architecture`,
+			kind: "page",
+			label: "Architecture",
+			description: "Reserved for the product's auditable architecture trail.",
+			view: {
+				type: "builtin",
+				id: "qorpera.placeholder",
+				context: {
+					title: `${department.name} Architecture`,
+					message: "The architecture model will be defined later.",
+				},
+			},
+		},
+	];
+}
+
+/** Install the product kit into the one company UI projection document. */
+function installProductProjection(
+	root: string,
+	department: ProductDepartment,
+	write = true,
+	storage?: ProductTransactionStorage,
+): void {
+	const projectionPath = join(root, "app", "projection.json");
+	let document: ProjectionDocument = {
+		schema: EMPTY_PROJECTION.schema,
+		default: EMPTY_PROJECTION.default,
+		navigation: [],
+		nodes: [],
+	};
+	if (existsSync(projectionPath)) {
+		const raw = JSON.parse(readFileSync(projectionPath, "utf-8")) as unknown;
+		const parsed = parseProjectionDocument(raw);
+		if (parsed.diagnostics.length > 0) {
+			throw new Error(
+				`Cannot install product UI into invalid app/projection.json: ${parsed.diagnostics.join("; ")}`,
+			);
+		}
+		document = {
+			schema: parsed.schema,
+			...(parsed.default ? { default: parsed.default } : {}),
+			navigation: parsed.navigation,
+			nodes: parsed.nodes,
+		};
+	}
+	const kitNodes = productProjectionNodes(department);
+	const existing = new Map(document.nodes.map((node) => [node.id, node]));
+	const departmentId = kitNodes[0].id;
+	let changed = false;
+	for (const node of kitNodes) {
+		const current = existing.get(node.id);
+		if (current) {
+			if (JSON.stringify(current) !== JSON.stringify(node)) {
+				throw new Error(
+					`Cannot install product UI: projection node ${node.id} is already owned by incompatible content`,
+				);
+			}
+			continue;
+		}
+		document.nodes.push(node);
+		changed = true;
+	}
+	if (!document.navigation.includes(departmentId)) {
+		document.navigation.push(departmentId);
+		changed = true;
+	}
+	const completed = parseProjectionDocument(document);
+	if (completed.diagnostics.length > 0) {
+		throw new Error(`Cannot install product UI into app/projection.json: ${completed.diagnostics.join("; ")}`);
+	}
+	if (!write) return;
+	if (!changed && existsSync(projectionPath)) return;
+	if (!storage) throw new Error("Product projection mutation requires bound transaction storage");
+	mkdirSync(join(root, "app"), { recursive: true });
+	writeAtomicText(projectionPath, `${JSON.stringify(document, null, "\t")}\n`);
+	storage.projection = storageIdentity(projectionPath, "file");
+}
+
+export interface ProductDepartment {
+	/** Stable folder identifier, for example `qorpera-development`. */
+	id: string;
+	/** Product display name from the department manifest. */
+	name: string;
+	/** Root-relative department path. */
+	path: string;
+	/** Root-relative path of the controlling clone. */
+	repositoryPath: string;
+	/** Root-relative parent for task worktrees. */
+	worktreesPath: string;
+	/** Root-relative synchronized pull-request read model. */
+	pullRequestsPath: string;
+	repositoryExists: boolean;
+}
+
+export interface ProductWorktree {
+	path: string;
+	branch: string;
+	departmentId: string;
+	repositoryPath: string;
+	sourceRemote: string;
+	sourceHead?: string;
+	recoveryHead?: string;
+	recoveryBundles: ProductRecoveryBundle[];
+	recoveryUpdatedAt?: string;
+	sourceHistory: Array<{ sourceRemote: string; reboundAt: string }>;
+	createdAt: string;
+}
+
+export interface ProductRecoveryBundle {
+	path: string;
+	head: string;
+	baseHead?: string;
+}
+
+export interface ProductWorktreePlan {
+	taskId: string;
+	path: string;
+	branch: string;
+	departmentId: string;
+	repositoryPath: string;
+	sourceRemote: string;
+	sourceHead?: string;
+}
+
+interface ProductWorktreeAssignment extends ProductWorktree {
+	version: 3;
+}
+
+export interface ProductWorktreeRecoveryPlan {
+	assignment: ProductWorktree;
+	path: string;
+	repositoryPath: string;
+	repositoryRemote: string;
+	sourceHead?: string;
+	recoveryHead?: string;
+	recoveryBundles: ProductRecoveryBundle[];
+}
 
 export interface ScaffoldResult {
 	root: string;
@@ -203,6 +957,7 @@ function ensureDir(root: string, relPath: string, result: ScaffoldResult): void 
 	const keep = join(target, ".gitkeep");
 	if (!existsSync(keep) && readdirIsEmpty(target)) {
 		writeFileSync(keep, "", "utf-8");
+		result.created.push(join(relPath, ".gitkeep"));
 	}
 }
 
@@ -214,27 +969,870 @@ function readdirIsEmpty(dir: string): boolean {
 	}
 }
 
-/** Merge sessionDir into project settings without clobbering other keys. */
-function ensureProjectSessionDir(root: string, result: ScaffoldResult): void {
+/** Merge company runtime defaults into project settings without clobbering. */
+function ensureProjectSettings(root: string, result: ScaffoldResult): boolean {
 	const settingsDir = join(root, ".qorpera");
 	const settingsPath = join(settingsDir, "settings.json");
+	if (existsSync(settingsDir)) canonicalDirectory(root, ".qorpera");
 	let settings: Record<string, unknown> = {};
 	if (existsSync(settingsPath)) {
 		try {
-			settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
-		} catch {
-			result.skipped.push(".qorpera/settings.json (unreadable — left untouched)");
-			return;
+			if (
+				normalizedPath(realpathSync(settingsPath)) !== normalizedPath(settingsPath) ||
+				!lstatSync(settingsPath).isFile() ||
+				lstatSync(settingsPath).nlink !== 1
+			) {
+				throw new Error("settings must be one physical in-company file");
+			}
+			const parsed = JSON.parse(readFileSync(settingsPath, "utf-8")) as unknown;
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				throw new Error("settings root must be an object");
+			}
+			settings = parsed as Record<string, unknown>;
+		} catch (error) {
+			throw new Error(
+				`Company settings are invalid and cannot be opened safely: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 	}
-	if (settings.sessionDir !== undefined) {
+	let changed = false;
+	if (settings.sessionDir !== "./trail") {
+		settings.sessionDir = "./trail";
+		changed = true;
+	} else {
 		result.skipped.push(".qorpera/settings.json (sessionDir already set)");
-		return;
 	}
-	settings.sessionDir = "./trail";
+	if (!settings.compaction || typeof settings.compaction !== "object" || Array.isArray(settings.compaction)) {
+		settings.compaction = { enabled: false };
+		changed = true;
+	} else if ((settings.compaction as Record<string, unknown>).enabled !== false) {
+		(settings.compaction as Record<string, unknown>).enabled = false;
+		changed = true;
+	} else {
+		result.skipped.push(".qorpera/settings.json (compaction already configured)");
+	}
+	if (settings.transport !== "sse") {
+		settings.transport = "sse";
+		changed = true;
+	} else {
+		result.skipped.push(".qorpera/settings.json (brokered SSE transport already set)");
+	}
+	if (!changed) return false;
 	mkdirSync(settingsDir, { recursive: true });
-	writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8");
-	result.created.push(".qorpera/settings.json (sessionDir → ./trail)");
+	canonicalDirectory(root, ".qorpera");
+	writeAtomicText(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`);
+	result.created.push(".qorpera/settings.json (trail retained; auto-compaction disabled)");
+	return true;
+}
+
+/** Reassert kernel-owned retention policy whenever an existing company opens. */
+export function enforceCompanyKernelSettings(rootDir: string): void {
+	const root = canonicalCompanyRoot(rootDir);
+	if (!ensureProjectSettings(root, { root, created: [], skipped: [], gitInitialized: false })) return;
+	if (spawnSync("git", ["-C", root, "rev-parse", "--verify", "HEAD"], { stdio: "ignore", shell: false }).status !== 0)
+		return;
+	const path = join(".qorpera", "settings.json");
+	if (spawnSync("git", ["-C", root, "add", "--", path], { stdio: "ignore", shell: false }).status !== 0) {
+		throw new Error("Could not stage kernel retention settings");
+	}
+	if (
+		spawnSync("git", ["-C", root, "diff", "--cached", "--quiet", "--", path], {
+			stdio: "ignore",
+			shell: false,
+		}).status === 0
+	)
+		return;
+	const committed = spawnSync(
+		"git",
+		[
+			"-C",
+			root,
+			"-c",
+			"user.name=Qorpera Kernel",
+			"-c",
+			"user.email=kernel@qorpera.local",
+			"commit",
+			"--only",
+			"-m",
+			"fix: enforce append-only company trails\n\nQorpera-Trigger: company open\nQorpera-Rationale: keep company session storage local and disable compaction",
+			"--",
+			path,
+		],
+		{ encoding: "utf-8", shell: false },
+	);
+	if (committed.status !== 0) {
+		throw new Error(`Could not commit kernel retention settings: ${committed.stderr || committed.stdout}`);
+	}
+}
+
+function productSlug(product: string): string {
+	const slug = product
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	return slug || "product";
+}
+
+/** Canonical folder identifier reviewed before any product-registration transaction. */
+export function productDepartmentId(product: string): string {
+	return `${productSlug(product)}-development`;
+}
+
+function productDepartmentFromEntry(root: string, id: string): ProductDepartment | undefined {
+	if (!id.endsWith("-development") || id.includes("/") || id.includes("\\")) return undefined;
+	const path = join("departments", id);
+	try {
+		canonicalDirectory(root, path);
+		const manifestPath = join(root, path, "department.json");
+		if (
+			normalizedPath(realpathSync(manifestPath)) !== normalizedPath(manifestPath) ||
+			!lstatSync(manifestPath).isFile()
+		)
+			return undefined;
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as Partial<ProductDepartmentManifest>;
+		if (manifest.version !== 1 || manifest.kind !== PRODUCT_DEPARTMENT_KIND || typeof manifest.product !== "string") {
+			return undefined;
+		}
+		const repositoryPath = join(path, "repository");
+		return {
+			id,
+			name: manifest.product,
+			path,
+			repositoryPath,
+			worktreesPath: join(path, "worktrees"),
+			pullRequestsPath: join(path, "pull-requests"),
+			repositoryExists: existsSync(join(root, repositoryPath, ".git")),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+/** Product-development departments are an optional Base kit, discovered from the folder. */
+export function listProductDepartments(rootDir: string): ProductDepartment[] {
+	const root = canonicalCompanyRoot(rootDir);
+	return readProductRegistry(root)
+		.products.map((id) => productDepartmentFromEntry(root, id))
+		.filter((entry): entry is ProductDepartment => entry !== undefined)
+		.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Kernel protection inventory; never depends on agent-writable department manifests. */
+export function readProductProtectionInventory(
+	rootDir: string,
+): Array<{ id: string; repositoryPath: string; worktreesPath: string }> {
+	const root = canonicalCompanyRoot(rootDir);
+	const actualRoot = root;
+	return readProductRegistry(root).products.map((id) => {
+		const repositoryPath = join("departments", id, "repository");
+		const worktreesPath = join("departments", id, "worktrees");
+		for (const path of [repositoryPath, worktreesPath]) {
+			const expected = resolve(root, path);
+			const expectedActual = resolve(actualRoot, path);
+			let actual: string;
+			try {
+				actual = realpathSync(expected);
+			} catch (error) {
+				throw new Error(`Registered product storage is unavailable: ${path}`, { cause: error });
+			}
+			const normalizedExpected = process.platform === "win32" ? expectedActual.toLowerCase() : expectedActual;
+			const normalizedActual = process.platform === "win32" ? actual.toLowerCase() : actual;
+			if (normalizedActual !== normalizedExpected) {
+				throw new Error(`Registered product storage must not be a link or junction: ${path}`);
+			}
+		}
+		return { id, repositoryPath, worktreesPath };
+	});
+}
+
+export interface ProductStorageExpectation {
+	path: string;
+	kind: "repository" | "worktree";
+	remote: string;
+	head?: string;
+	branch?: string;
+}
+
+/** Durable records whose machine-local Git storage must be hydrated. */
+export function readProductStorageExpectations(rootDir: string): ProductStorageExpectation[] {
+	const root = canonicalCompanyRoot(rootDir);
+	const expectations: ProductStorageExpectation[] = [];
+	for (const id of readProductRegistry(root).products) {
+		const department = productDepartmentFromEntry(root, id);
+		if (!department) throw new Error(`Registered product department is invalid: ${id}`);
+		const integration = readProductIntegrationRecord(productIntegrationRecordPath(root, id));
+		if (integration?.status === "completed") {
+			expectations.push({
+				path: join("departments", id, "repository"),
+				kind: "repository",
+				remote: integration.source,
+				...(integration.sourceHead ? { head: integration.sourceHead } : {}),
+			});
+		}
+		const assignmentDir = join(root, PRODUCT_WORKTREE_ASSIGNMENTS_PATH, id);
+		if (!existsSync(assignmentDir)) continue;
+		canonicalDirectory(root, join(PRODUCT_WORKTREE_ASSIGNMENTS_PATH, id));
+		for (const entry of readdirSync(assignmentDir, { withFileTypes: true })) {
+			if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+			const path = join(assignmentDir, entry.name);
+			const record = JSON.parse(readFileSync(path, "utf-8")) as Partial<ProductWorktreeAssignment>;
+			const expectedParent = join("departments", id, "worktrees").replace(/\\/g, "/");
+			const worktreePath = record.path?.replace(/\\/g, "/");
+			if (
+				record.version !== 3 ||
+				record.departmentId !== id ||
+				typeof worktreePath !== "string" ||
+				!worktreePath.startsWith(`${expectedParent}/`) ||
+				worktreePath.slice(expectedParent.length + 1).includes("/") ||
+				typeof record.sourceRemote !== "string" ||
+				!record.sourceRemote ||
+				!repositorySourceAllowed(record.sourceRemote) ||
+				typeof record.branch !== "string" ||
+				!record.branch ||
+				(record.recoveryHead !== undefined && typeof record.recoveryHead !== "string") ||
+				!validProductRecoveryChain(record.recoveryBundles, record.recoveryHead)
+			) {
+				throw new Error(`Product worktree assignment is invalid: ${relative(root, path)}`);
+			}
+			const parsed = readProductWorktreeRecord(root, department, worktreePath);
+			if (!parsed) throw new Error(`Product worktree assignment is invalid: ${relative(root, path)}`);
+			for (const record of parsed.assignment.recoveryBundles) {
+				const bundle = assertPhysicalCompanyTree(root, record.path);
+				if (!productRecoveryBundleMatches(root, bundle, record, parsed.assignment.branch)) {
+					throw new Error(`Product worktree recovery bundle is invalid: ${record.path}`);
+				}
+			}
+			expectations.push({
+				path: worktreePath,
+				kind: "worktree",
+				remote: parsed.assignment.sourceRemote,
+				...((parsed.assignment.recoveryHead ?? parsed.assignment.sourceHead)
+					? { head: parsed.assignment.recoveryHead ?? parsed.assignment.sourceHead }
+					: {}),
+				branch: parsed.assignment.branch,
+			});
+		}
+	}
+	return expectations.sort((a, b) => `${a.kind}:${a.path}`.localeCompare(`${b.kind}:${b.path}`));
+}
+
+/** Recreate ignored storage roots only while binding a fresh local company clone. */
+export function materializeClonedProductStorage(rootDir: string): void {
+	const root = canonicalCompanyRoot(rootDir);
+	for (const id of readProductRegistry(root).products) {
+		canonicalDirectory(root, join("departments", id));
+		for (const relativePath of [join("departments", id, "repository"), join("departments", id, "worktrees")]) {
+			const target = join(root, relativePath);
+			if (!existsSync(target)) mkdirSync(target);
+			canonicalDirectory(root, relativePath);
+			const keep = join(target, ".gitkeep");
+			if (readdirIsEmpty(target)) writeFileSync(keep, "", { encoding: "utf-8", flag: "wx" });
+		}
+	}
+}
+
+/** Materialize the standard product-development department while its caller owns the company transaction lock. */
+function scaffoldProductDepartmentUnlocked(
+	rootDir: string,
+	product: string,
+	storage: ProductTransactionStorage,
+): ProductDepartment {
+	const root = assertProductTransactionStorage(storage);
+	if (normalizedPath(root) !== normalizedPath(canonicalCompanyRoot(rootDir))) {
+		throw new Error("Product transaction storage does not belong to this company");
+	}
+	const id = productDepartmentId(product);
+	const path = join("departments", id);
+	const target = join(root, path);
+	const existing = productDepartmentFromEntry(root, id);
+	if (existsSync(target) && !existing) {
+		throw new Error(
+			`Cannot create product department ${id}: ${path} already exists without a valid product-development manifest`,
+		);
+	}
+	if (existing) {
+		assertProductTransactionStorage(storage);
+		installProductProjection(root, existing, true, storage);
+		assertProductTransactionStorage(storage);
+		registerProductDepartment(root, id, storage);
+		assertProductTransactionStorage(storage);
+		checkpointProductKit(root, id);
+		return existing;
+	}
+	const result: ScaffoldResult = { root, created: [], skipped: [], gitInitialized: false };
+	const manifest: ProductDepartmentManifest = {
+		version: 1,
+		kind: PRODUCT_DEPARTMENT_KIND,
+		product: product.trim() || productSlug(product),
+	};
+	const department: ProductDepartment = {
+		id,
+		name: manifest.product,
+		path,
+		repositoryPath: join(path, "repository"),
+		worktreesPath: join(path, "worktrees"),
+		pullRequestsPath: join(path, "pull-requests"),
+		repositoryExists: false,
+	};
+	installProductProjection(root, department, false);
+	assertProductTransactionStorage(storage);
+	writeIfMissing(root, join(path, "department.json"), `${JSON.stringify(manifest, null, "\t")}\n`, result);
+	writeIfMissing(root, join(path, ".gitignore"), PRODUCT_DEPARTMENT_GITIGNORE, result);
+	ensureDir(root, join(path, "briefs"), result);
+	ensureDir(root, join(path, "worktrees"), result);
+	ensureDir(root, join(path, "repository"), result);
+	writeIfMissing(root, join(path, "pull-requests", "README.md"), PULL_REQUESTS_README, result);
+	const created = productDepartmentFromEntry(root, id)!;
+	assertProductTransactionStorage(storage);
+	installProductProjection(root, created, true, storage);
+	assertProductTransactionStorage(storage);
+	registerProductDepartment(root, id, storage);
+	assertProductTransactionStorage(storage);
+	checkpointProductKit(root, id);
+	return created;
+}
+
+/** Offline product registration. The lock is held across inventory, folder, projection, and Git mutation. */
+export function scaffoldProductDepartment(rootDir: string, product: string): ProductDepartment {
+	const lock = acquireCompanyLock(rootDir, "product-registration");
+	try {
+		const storage = captureProductTransactionStorage(lock.root);
+		return scaffoldProductDepartmentUnlocked(lock.root, product, storage);
+	} finally {
+		releaseCompanyRuntimeLock(lock);
+	}
+}
+
+/** Desktop-kernel product registration under the already-held runtime transaction. */
+export function scaffoldProductDepartmentWithRuntimeLock(
+	rootDir: string,
+	product: string,
+	runtimeLock: CompanyRuntimeLock,
+	storage: ProductTransactionStorage,
+): ProductDepartment {
+	const root = canonicalCompanyRoot(rootDir);
+	assertRuntimeLock(root, runtimeLock);
+	return scaffoldProductDepartmentUnlocked(root, product, storage);
+}
+
+function worktreeAssignmentPath(root: string, departmentId: string, taskId: string): string {
+	return join(root, PRODUCT_WORKTREE_ASSIGNMENTS_PATH, departmentId, `${taskId}.json`);
+}
+
+function validProductRecoveryChain(value: unknown, recoveryHead: unknown): value is ProductRecoveryBundle[] {
+	if (!Array.isArray(value)) return false;
+	let previousHead: string | undefined;
+	const paths = new Set<string>();
+	for (const entry of value) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+		const candidate = entry as Partial<ProductRecoveryBundle>;
+		const path = candidate.path?.replace(/\\/g, "/");
+		if (
+			typeof path !== "string" ||
+			!/^\.qorpera\/w\/[a-f0-9]{32}\.bundle$/.test(path) ||
+			paths.has(path) ||
+			typeof candidate.head !== "string" ||
+			!/^[a-f0-9]{40,64}$/i.test(candidate.head) ||
+			(candidate.baseHead !== undefined && !/^[a-f0-9]{40,64}$/i.test(candidate.baseHead)) ||
+			(candidate.baseHead ?? undefined) !== previousHead
+		)
+			return false;
+		paths.add(path);
+		previousHead = candidate.head;
+	}
+	return value.length === 0 ? true : typeof recoveryHead === "string" && previousHead === recoveryHead;
+}
+
+function productRecoveryBundleMatches(
+	root: string,
+	bundle: string,
+	record: ProductRecoveryBundle,
+	branch: string,
+): boolean {
+	const objectId = gitOutput(root, ["hash-object", "--no-filters", bundle]);
+	if (!objectId || !record.path.endsWith(`/${objectId.slice(0, 32)}.bundle`)) return false;
+	return (
+		gitOutput(root, ["bundle", "list-heads", bundle, `refs/heads/${branch}`]) ===
+		`${record.head} refs/heads/${branch}`
+	);
+}
+
+function commitProductWorktreeAssignment(root: string, path: string, departmentId: string): void {
+	const relativePath = join(PRODUCT_WORKTREE_ASSIGNMENTS_PATH, departmentId, `${path}.json`);
+	const added = spawnSync("git", ["-C", root, "add", "--", relativePath], { encoding: "utf-8", shell: false });
+	if (added.status !== 0)
+		throw new Error(`Could not stage product worktree assignment: ${added.stderr || added.stdout}`);
+	const committed = spawnSync(
+		"git",
+		[
+			"-C",
+			root,
+			"-c",
+			"user.name=Qorpera Kernel",
+			"-c",
+			"user.email=kernel@qorpera.local",
+			"commit",
+			"--only",
+			"-m",
+			`docs: assign ${departmentId} worktree\n\nQorpera-Trigger: founder product-chat request\nQorpera-Rationale: bind product-code authority to one kernel-created clone`,
+			"--",
+			relativePath,
+		],
+		{ encoding: "utf-8", shell: false },
+	);
+	if (committed.status !== 0) {
+		throw new Error(`Could not commit product worktree assignment: ${committed.stderr || committed.stdout}`);
+	}
+}
+
+function gitOutput(root: string, args: string[]): string | undefined {
+	const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf-8", shell: false });
+	return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : undefined;
+}
+
+/** Plan the exact founder-reviewed worktree without mutating product storage. */
+export function planProductWorktree(
+	rootDir: string,
+	department: ProductDepartment,
+	runtimeLock: CompanyRuntimeLock,
+): ProductWorktreePlan | undefined {
+	const root = canonicalCompanyRoot(rootDir);
+	assertRuntimeLock(root, runtimeLock);
+	readProductProtectionInventory(root);
+	if (!department.repositoryExists) return undefined;
+	const registered = listProductDepartments(root).find(
+		(entry) =>
+			entry.id === department.id &&
+			entry.repositoryPath === department.repositoryPath &&
+			entry.worktreesPath === department.worktreesPath &&
+			entry.repositoryExists,
+	);
+	if (!registered) return undefined;
+	const taskId = `${new Date()
+		.toISOString()
+		.replace(/[-:TZ.]/g, "")
+		.slice(0, 14)}-${randomUUID().slice(0, 8)}`;
+	const path = join(department.worktreesPath, taskId);
+	const branch = `qorpera/${taskId}`;
+	const repository = canonicalDirectory(root, department.repositoryPath);
+	canonicalDirectory(root, department.worktreesPath);
+	const sourceRemote = gitOutput(repository, ["remote", "get-url", "origin"]) ?? repository;
+	if (!cloneSourceAllowed(sourceRemote)) {
+		throw new Error("Product worktree source cannot contain embedded credentials or query data");
+	}
+	const sourceHead = gitOutput(repository, ["rev-parse", "HEAD"]);
+	return {
+		taskId,
+		path,
+		branch,
+		departmentId: department.id,
+		repositoryPath: department.repositoryPath,
+		sourceRemote,
+		...(sourceHead ? { sourceHead } : {}),
+	};
+}
+
+/** Materialize one founder-reviewed product task clone under worktrees/. */
+export function createProductWorktree(
+	rootDir: string,
+	department: ProductDepartment,
+	runtimeLock: CompanyRuntimeLock,
+	plan: ProductWorktreePlan,
+): ProductWorktree | undefined {
+	const root = canonicalCompanyRoot(rootDir);
+	assertRuntimeLock(root, runtimeLock);
+	const currentPlan = planProductWorktree(root, department, runtimeLock);
+	if (
+		!currentPlan ||
+		plan.departmentId !== currentPlan.departmentId ||
+		plan.repositoryPath !== currentPlan.repositoryPath ||
+		plan.path !== join(department.worktreesPath, plan.taskId) ||
+		plan.branch !== `qorpera/${plan.taskId}` ||
+		plan.sourceRemote !== currentPlan.sourceRemote ||
+		plan.sourceHead !== currentPlan.sourceHead ||
+		!/^\d{14}-[a-f0-9]{8}$/i.test(plan.taskId)
+	) {
+		throw new Error("Product worktree plan changed after founder review");
+	}
+	const { taskId, path, branch } = plan;
+	const worktreesRoot = canonicalDirectory(root, department.worktreesPath);
+	const repository = canonicalDirectory(root, department.repositoryPath);
+	const target = join(root, path);
+	if (existsSync(target) || existsSync(worktreeAssignmentPath(root, department.id, taskId))) {
+		throw new Error("Founder-reviewed product worktree target is no longer available");
+	}
+	const clone = spawnSync("git", ["clone", "--no-hardlinks", repository, target], {
+		encoding: "utf-8",
+		shell: false,
+	});
+	if (clone.status !== 0) {
+		console.error(`Could not create product worktree: ${clone.stderr || clone.stdout || "git clone failed"}`);
+		return undefined;
+	}
+	const checkout = spawnSync("git", ["-C", target, "switch", "-c", branch], {
+		encoding: "utf-8",
+		shell: false,
+	});
+	if (checkout.status === 0) {
+		const remote = gitOutput(repository, ["remote", "get-url", "origin"]);
+		if (remote) {
+			spawnSync("git", ["-C", target, "remote", "set-url", "origin", remote], {
+				stdio: "ignore",
+				shell: false,
+			});
+		}
+		const actualTarget = realpathSync(target);
+		if (
+			normalizedPath(actualTarget) !== normalizedPath(resolve(worktreesRoot, taskId)) ||
+			normalizedPath(dirname(actualTarget)) !== normalizedPath(worktreesRoot)
+		) {
+			rmSync(target, { recursive: true, force: true });
+			throw new Error("Kernel-created product worktree escaped its assigned parent");
+		}
+		const sourceRemote = gitOutput(target, ["remote", "get-url", "origin"]);
+		const sourceHead = gitOutput(target, ["rev-parse", "HEAD"]);
+		if (!sourceRemote || sourceRemote !== plan.sourceRemote || sourceHead !== plan.sourceHead) {
+			rmSync(target, { recursive: true, force: true });
+			throw new Error("Kernel-created product worktree source changed after founder review");
+		}
+		const assignment: ProductWorktreeAssignment = {
+			version: 3,
+			path,
+			branch,
+			departmentId: department.id,
+			repositoryPath: department.repositoryPath,
+			sourceRemote,
+			...(plan.sourceHead ? { sourceHead: plan.sourceHead } : {}),
+			...(plan.sourceHead ? { recoveryHead: plan.sourceHead } : {}),
+			recoveryBundles: [],
+			sourceHistory: [],
+			createdAt: new Date().toISOString(),
+		};
+		const assignmentDir = join(root, PRODUCT_WORKTREE_ASSIGNMENTS_PATH, department.id);
+		mkdirSync(assignmentDir, { recursive: true });
+		canonicalDirectory(root, join(PRODUCT_WORKTREE_ASSIGNMENTS_PATH, department.id));
+		const assignmentPath = worktreeAssignmentPath(root, department.id, taskId);
+		try {
+			writeFileSync(assignmentPath, `${JSON.stringify(assignment, null, "\t")}\n`, {
+				encoding: "utf-8",
+				flag: "wx",
+			});
+			commitProductWorktreeAssignment(root, taskId, department.id);
+			return assignment;
+		} catch (error) {
+			rmSync(assignmentPath, { force: true });
+			rmSync(target, { recursive: true, force: true });
+			throw error;
+		}
+	}
+	console.error(`Could not create product worktree branch: ${checkout.stderr || checkout.stdout || "git failed"}`);
+	rmSync(target, { recursive: true, force: true });
+	return undefined;
+}
+
+function readProductWorktreeRecord(
+	rootDir: string,
+	department: ProductDepartment,
+	worktreePath: string,
+): { assignment: ProductWorktreeAssignment; assignmentPath: string; taskId: string } | undefined {
+	const root = canonicalCompanyRoot(rootDir);
+	const normalizedRelative = worktreePath.replace(/[\\/]+/g, "/");
+	const expectedParent = department.worktreesPath.replace(/\\/g, "/");
+	const taskId = normalizedRelative.slice(expectedParent.length + 1);
+	if (
+		!normalizedRelative.startsWith(`${expectedParent}/`) ||
+		!taskId ||
+		taskId.includes("/") ||
+		taskId === "." ||
+		taskId === ".."
+	)
+		return undefined;
+	let assignment: Partial<ProductWorktreeAssignment>;
+	let assignmentPath: string;
+	try {
+		assignmentPath = worktreeAssignmentPath(root, department.id, taskId);
+		if (
+			normalizedPath(realpathSync(assignmentPath)) !== normalizedPath(assignmentPath) ||
+			!lstatSync(assignmentPath).isFile()
+		) {
+			return undefined;
+		}
+		assignment = JSON.parse(readFileSync(assignmentPath, "utf-8")) as Partial<ProductWorktreeAssignment>;
+	} catch {
+		return undefined;
+	}
+	if (
+		assignment.version !== 3 ||
+		assignment.departmentId !== department.id ||
+		assignment.path?.replace(/\\/g, "/") !== normalizedRelative ||
+		assignment.repositoryPath !== department.repositoryPath ||
+		typeof assignment.branch !== "string" ||
+		!assignment.branch ||
+		typeof assignment.sourceRemote !== "string" ||
+		!assignment.sourceRemote ||
+		!repositorySourceAllowed(assignment.sourceRemote) ||
+		!Array.isArray(assignment.sourceHistory) ||
+		!assignment.sourceHistory.every(
+			(entry) =>
+				entry &&
+				typeof entry === "object" &&
+				typeof entry.sourceRemote === "string" &&
+				repositorySourceAllowed(entry.sourceRemote) &&
+				typeof entry.reboundAt === "string",
+		) ||
+		typeof assignment.createdAt !== "string" ||
+		(assignment.sourceHead !== undefined && typeof assignment.sourceHead !== "string") ||
+		(assignment.recoveryHead !== undefined && typeof assignment.recoveryHead !== "string") ||
+		(assignment.recoveryUpdatedAt !== undefined && typeof assignment.recoveryUpdatedAt !== "string") ||
+		!validProductRecoveryChain(assignment.recoveryBundles, assignment.recoveryHead)
+	)
+		return undefined;
+	return { assignment: assignment as ProductWorktreeAssignment, assignmentPath, taskId };
+}
+
+/** Verify an existing assignment against its immutable kernel record and clone identity. */
+export function readProductWorktreeAssignment(
+	rootDir: string,
+	department: ProductDepartment,
+	worktreePath: string,
+): ProductWorktree | undefined {
+	const root = canonicalCompanyRoot(rootDir);
+	const record = readProductWorktreeRecord(root, department, worktreePath);
+	if (!record) return undefined;
+	const { assignment, taskId } = record;
+	const worktreesRoot = canonicalDirectory(root, department.worktreesPath);
+	const target = resolve(root, worktreePath);
+	let actual: string;
+	try {
+		actual = realpathSync(target);
+	} catch {
+		return undefined;
+	}
+	const topLevel = gitOutput(actual, ["rev-parse", "--show-toplevel"]);
+	if (
+		normalizedPath(dirname(actual)) !== normalizedPath(worktreesRoot) ||
+		normalizedPath(actual) !== normalizedPath(resolve(worktreesRoot, taskId)) ||
+		!topLevel ||
+		normalizedPath(topLevel) !== normalizedPath(actual) ||
+		gitOutput(actual, ["branch", "--show-current"]) !== assignment.branch ||
+		gitOutput(actual, ["remote", "get-url", "origin"]) !== assignment.sourceRemote
+	)
+		return undefined;
+	if (
+		(assignment.recoveryHead ?? assignment.sourceHead) &&
+		spawnSync(
+			"git",
+			["-C", actual, "merge-base", "--is-ancestor", assignment.recoveryHead ?? assignment.sourceHead!, "HEAD"],
+			{
+				stdio: "ignore",
+				shell: false,
+			},
+		).status !== 0
+	)
+		return undefined;
+	return assignment as ProductWorktree;
+}
+
+/** Plan recovery of one clone from its kernel-tracked source and portable bundle. */
+export function planProductWorktreeRecovery(
+	rootDir: string,
+	department: ProductDepartment,
+	worktreePath: string,
+	runtimeLock: CompanyRuntimeLock,
+): ProductWorktreeRecoveryPlan | undefined {
+	const root = canonicalCompanyRoot(rootDir);
+	assertRuntimeLock(root, runtimeLock);
+	const record = readProductWorktreeRecord(root, department, worktreePath);
+	if (!record || existsSync(join(root, record.assignment.path))) return undefined;
+	const repository = canonicalDirectory(root, department.repositoryPath);
+	const repositoryRemote = gitOutput(repository, ["remote", "get-url", "origin"]);
+	if (!repositoryRemote) return undefined;
+	if (!cloneSourceAllowed(repositoryRemote)) {
+		throw new Error("Product recovery source cannot contain embedded credentials or query data");
+	}
+	if (
+		record.assignment.sourceHead &&
+		spawnSync("git", ["-C", repository, "merge-base", "--is-ancestor", record.assignment.sourceHead, "HEAD"], {
+			stdio: "ignore",
+			shell: false,
+		}).status !== 0
+	)
+		return undefined;
+	const recoveryBundles: ProductRecoveryBundle[] = [];
+	for (const bundleRecord of record.assignment.recoveryBundles) {
+		const bundle = assertPhysicalCompanyTree(root, bundleRecord.path);
+		if (!productRecoveryBundleMatches(root, bundle, bundleRecord, record.assignment.branch)) return undefined;
+		recoveryBundles.push({ ...bundleRecord, path: bundle });
+	}
+	if (
+		recoveryBundles.length === 0 &&
+		record.assignment.recoveryHead &&
+		spawnSync("git", ["-C", repository, "cat-file", "-e", `${record.assignment.recoveryHead}^{commit}`], {
+			stdio: "ignore",
+			shell: false,
+		}).status !== 0
+	) {
+		return undefined;
+	}
+	return {
+		assignment: record.assignment,
+		path: record.assignment.path,
+		repositoryPath: department.repositoryPath,
+		repositoryRemote,
+		...(record.assignment.sourceHead ? { sourceHead: record.assignment.sourceHead } : {}),
+		...(record.assignment.recoveryHead ? { recoveryHead: record.assignment.recoveryHead } : {}),
+		recoveryBundles,
+	};
+}
+
+/** Restore an assigned clone after exact native review of this immutable plan. */
+export function recoverProductWorktree(
+	rootDir: string,
+	department: ProductDepartment,
+	runtimeLock: CompanyRuntimeLock,
+	plan: ProductWorktreeRecoveryPlan,
+): ProductWorktree | undefined {
+	const root = canonicalCompanyRoot(rootDir);
+	assertRuntimeLock(root, runtimeLock);
+	const current = planProductWorktreeRecovery(root, department, plan.path, runtimeLock);
+	if (!current || JSON.stringify(current) !== JSON.stringify(plan)) {
+		throw new Error("Product worktree recovery plan changed after founder review");
+	}
+	const record = readProductWorktreeRecord(root, department, plan.path);
+	if (!record) throw new Error("Product worktree recovery assignment is invalid");
+	const repository = canonicalDirectory(root, department.repositoryPath);
+	const worktreesRoot = canonicalDirectory(root, department.worktreesPath);
+	const target = resolve(root, plan.path);
+	if (existsSync(target) || normalizedPath(dirname(target)) !== normalizedPath(worktreesRoot)) {
+		throw new Error("Product worktree recovery target is no longer available");
+	}
+	const preserveFailedClone = (): void => {
+		if (!existsSync(target)) return;
+		renameSync(target, `${target}.recovery-failed-${randomUUID().replace(/-/g, "").slice(0, 12)}`);
+	};
+	const clone = spawnSync("git", ["clone", "--no-hardlinks", repository, target], {
+		encoding: "utf-8",
+		shell: false,
+	});
+	if (clone.status !== 0) {
+		preserveFailedClone();
+		return undefined;
+	}
+	for (const bundle of plan.recoveryBundles) {
+		const verified = spawnSync("git", ["-C", target, "bundle", "verify", bundle.path], {
+			stdio: "ignore",
+			shell: false,
+		});
+		const fetched = spawnSync("git", ["-C", target, "fetch", bundle.path, plan.assignment.branch], {
+			encoding: "utf-8",
+			shell: false,
+		});
+		if (
+			verified.status !== 0 ||
+			fetched.status !== 0 ||
+			spawnSync("git", ["-C", target, "cat-file", "-e", `${bundle.head}^{commit}`], {
+				stdio: "ignore",
+				shell: false,
+			}).status !== 0
+		) {
+			preserveFailedClone();
+			return undefined;
+		}
+	}
+	const recoveryHead = plan.recoveryHead ?? plan.sourceHead;
+	const checkout = recoveryHead
+		? spawnSync("git", ["-C", target, "switch", "-C", plan.assignment.branch, recoveryHead], {
+				encoding: "utf-8",
+				shell: false,
+			})
+		: spawnSync("git", ["-C", target, "switch", "-c", plan.assignment.branch], {
+				encoding: "utf-8",
+				shell: false,
+			});
+	if (checkout.status !== 0) {
+		preserveFailedClone();
+		return undefined;
+	}
+	spawnSync("git", ["-C", target, "remote", "set-url", "origin", plan.repositoryRemote], {
+		stdio: "ignore",
+		shell: false,
+	});
+	if (
+		gitOutput(target, ["branch", "--show-current"]) !== plan.assignment.branch ||
+		gitOutput(target, ["remote", "get-url", "origin"]) !== plan.repositoryRemote ||
+		(recoveryHead && gitOutput(target, ["rev-parse", "HEAD"]) !== recoveryHead)
+	) {
+		preserveFailedClone();
+		return undefined;
+	}
+	const updated: ProductWorktreeAssignment = {
+		...record.assignment,
+		sourceRemote: plan.repositoryRemote,
+		sourceHistory:
+			record.assignment.sourceRemote === plan.repositoryRemote
+				? record.assignment.sourceHistory
+				: [
+						...record.assignment.sourceHistory,
+						{ sourceRemote: record.assignment.sourceRemote, reboundAt: new Date().toISOString() },
+					],
+	};
+	if (JSON.stringify(updated) === JSON.stringify(record.assignment)) return updated;
+	try {
+		writeAtomicText(record.assignmentPath, `${JSON.stringify(updated, null, "\t")}\n`);
+		commitProductWorktreeAssignment(root, record.taskId, department.id);
+		return updated;
+	} catch (error) {
+		writeAtomicText(record.assignmentPath, `${JSON.stringify(record.assignment, null, "\t")}\n`);
+		preserveFailedClone();
+		throw error;
+	}
+}
+
+function ensureCompanyGenesis(root: string, createdPaths: string[]): void {
+	const head = spawnSync("git", ["-C", root, "rev-parse", "--verify", "HEAD"], { stdio: "ignore", shell: false });
+	const materializedPaths = [
+		...new Set(createdPaths.map((path) => path.replace(/ \([^)]*\)$/, "").replace(/\/$/, ""))),
+	].filter((path) => path && existsSync(join(root, path)));
+	if (head.status === 0 && materializedPaths.length === 0) return;
+	const added = spawnSync(
+		"git",
+		head.status === 0 ? ["-C", root, "add", "--", ...materializedPaths] : ["-C", root, "add", "--all"],
+		{ stdio: "ignore", shell: false },
+	);
+	if (added.status !== 0) throw new Error("Could not stage the company genesis snapshot");
+	if (head.status === 0) {
+		const changed = spawnSync("git", ["-C", root, "diff", "--cached", "--quiet", "--", ...materializedPaths], {
+			stdio: "ignore",
+			shell: false,
+		});
+		if (changed.status === 0) return;
+		if (changed.status !== 1) throw new Error("Could not inspect the company materialization snapshot");
+	}
+	const message =
+		head.status === 0
+			? "docs: materialize company spine\n\nQorpera-Trigger: company scaffold migration\nQorpera-Rationale: make kernel-owned company state cloneable before controller execution"
+			: "feat: create company genesis\n\nQorpera-Trigger: company scaffold\nQorpera-Rationale: make the complete company spine cloneable and recoverable";
+	const pathArgs = head.status === 0 ? ["--only", "--", ...materializedPaths] : [];
+	const committed = spawnSync(
+		"git",
+		[
+			"-C",
+			root,
+			"-c",
+			"user.name=Qorpera Kernel",
+			"-c",
+			"user.email=kernel@qorpera.local",
+			"commit",
+			"-m",
+			message,
+			...pathArgs,
+		],
+		{ encoding: "utf-8", shell: false },
+	);
+	if (committed.status !== 0) {
+		throw new Error(`Could not commit the company genesis snapshot: ${committed.stderr || committed.stdout}`);
+	}
 }
 
 /**
@@ -266,29 +1864,32 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	writeIfMissing(root, "authority.toml", AUTHORITY_TOML_TEMPLATE, result);
 	writeIfMissing(root, join("connections", "README.md"), CONNECTIONS_README, result);
 	writeIfMissing(root, join("inbox", "README.md"), INBOX_README, result);
+	ensureDir(root, join("inbox", "messages"), result);
 	ensureDir(root, "trail", result);
-	writeIfMissing(root, join("app", "manifest.json"), APP_MANIFEST_TEMPLATE, result);
+	writeIfMissing(root, join("app", "projection.json"), APP_PROJECTION_TEMPLATE, result);
 	ensureDir(root, join("app", "surfaces"), result);
 	ensureDir(root, join("app", "substrates"), result);
 	ensureDir(root, join("app", "routines"), result);
 	ensureDir(root, join("app", "tools"), result);
-	ensureDir(root, "work", result);
-	ensureProjectSessionDir(root, result);
+	ensureDir(root, "departments", result);
+	writeIfMissing(root, PRODUCT_REGISTRY_PATH, `${JSON.stringify({ version: 1, products: [] }, null, "\t")}\n`, result);
+	ensureProjectSettings(root, result);
 
 	if (!existsSync(join(root, ".git"))) {
 		const git = spawnSync("git", ["init"], { cwd: root, stdio: "ignore", shell: false });
 		result.gitInitialized = git.status === 0;
 	}
+	ensureCompanyGenesis(root, result.created);
 
 	return result;
 }
 
-const CONCEPTION_SHARED = `Your primary source of understanding is data, not interview: derive the scope of the company from what you can read. This is an autonomous session — do NOT hold an interactive interview. For the gaps data cannot answer (intent, customers, constraints, which data sources and services to connect), post inbox/msg-*.md items — focused, answerable questions with your working assumption stated — then continue with everything that does not depend on the answers. Treat founder answers as dated evidence with provenance, never fixed facts: numbers (prices, budgets, forecasts) are early estimates you are expected to test and revise with analysis. Perform the setup yourself: rewrite company.md as identity and intent only (mark unconfirmed parts provisional), keep working beliefs in app/substrates/ as revisable records, propose authority.toml adjustments and connections through the inbox (the founder ratifies), and build the first state-of-the-company surface in app/. Finish by posting a msg item summarizing what you did and what awaits the founder.`;
+const CONCEPTION_SHARED = `Your primary source of understanding is data, not interview: derive the scope of the company from what you can read. This is an autonomous session — do NOT hold an interactive interview. For the gaps data cannot answer (intent, customers, constraints, which data sources and services to connect), post inbox/messages/msg-*.md items — focused, answerable questions with your working assumption stated — then continue with everything that does not depend on the answers. Treat founder answers as dated evidence with provenance, never fixed facts: numbers (prices, budgets, forecasts) are early estimates you are expected to test and revise with analysis. Perform the setup yourself: rewrite company.md as identity and intent only (mark unconfirmed parts provisional), keep working beliefs in app/substrates/ as revisable records, propose authority.toml adjustments and connections through the inbox (the founder ratifies), and build the first state-of-the-company surface in app/. Finish by posting a msg item summarizing what you did and what awaits the founder.`;
 
 const CONCEPTION_NEW = `This company folder was just created and company.md is still the template. Begin conception. ${CONCEPTION_SHARED}`;
 
-const CONCEPTION_INTEGRATE = (repoName: string) =>
-	`This company folder was just created around an existing repository at work/${repoName}. Begin conception with study: read that repository enough to understand what exists (do not modify it yet). ${CONCEPTION_SHARED}`;
+const CONCEPTION_INTEGRATE = (department: ProductDepartment) =>
+	`This company folder was just created around the ${department.name} product at ${department.repositoryPath}. Begin conception with study: read that repository enough to understand what exists. As controller, do not modify it; implementation belongs to a product-worker in ${department.worktreesPath}. ${CONCEPTION_SHARED}`;
 
 function printScaffoldReport(result: ScaffoldResult): void {
 	console.log(`Company spine at ${result.root}`);
@@ -304,34 +1905,420 @@ function printScaffoldReport(result: ScaffoldResult): void {
  * logic lives in exactly one place (conceptionKickoff).
  */
 function launchSession(dir: string): Promise<number> {
-	return new Promise((resolve) => {
-		const child = spawn(process.execPath, [process.argv[1]], { cwd: dir, stdio: "inherit" });
-		child.on("exit", (code) => resolve(code ?? 0));
-		child.on("error", () => resolve(1));
-	});
+	console.log(`Company ready at ${resolve(dir)}. Open it in Qorpera Base desktop to start the kernel-owned session.`);
+	return Promise.resolve(0);
+}
+
+function repositorySourceAllowed(source: string): boolean {
+	try {
+		const parsed = new URL(source);
+		const sshUsername = parsed.username && (parsed.protocol === "ssh:" || parsed.protocol === "git+ssh:");
+		if (parsed.password || parsed.search || parsed.hash || (parsed.username && !sshUsername)) return false;
+	} catch {
+		// Local paths and SCP-style SSH remotes are not URL-userinfo credentials.
+	}
+	return true;
+}
+
+function cloneSourceAllowed(source: string): boolean {
+	if (repositorySourceAllowed(source)) return true;
+	console.error(
+		"Repository URLs with embedded credentials or query data are not allowed; use a Git credential helper.",
+	);
+	return false;
 }
 
 function cloneInto(source: string, destination: string): boolean {
-	const clone = spawnSync("git", ["clone", source, destination], { stdio: "inherit", shell: false });
+	if (!cloneSourceAllowed(source)) return false;
+	const clone = spawnSync("git", ["clone", "--no-hardlinks", source, destination], { stdio: "inherit", shell: false });
 	return clone.status === 0;
 }
 
-/** Clone an existing repo under work/ (the integrate flow). Returns false on failure. */
-export function integrateRepo(root: string, from: string): boolean {
-	const repoName = basenameOf(from);
-	const destination = join(root, "work", repoName);
-	if (existsSync(destination)) {
-		console.log(`  kept    work/${repoName} (already present)`);
-		return true;
+interface ProductIntegrationRecord {
+	version: 4;
+	productId: string;
+	source: string;
+	portableSource?: string;
+	destination: string;
+	staging: string;
+	status: "pending" | "completed";
+	sourceHead?: string;
+	sourceHistory: Array<{
+		source: string;
+		portableSource?: string;
+		sourceHead?: string;
+		reboundAt: string;
+	}>;
+	recoveries: Array<{
+		staging: string;
+		quarantined: string;
+		startedAt: string;
+		completedAt?: string;
+		outcome?: "quarantined" | "source-storage-unavailable";
+		reason: string;
+	}>;
+}
+
+function normalizedRepositorySource(source: string): string {
+	try {
+		return normalizedPath(realpathSync(resolve(source)));
+	} catch {
+		return source.trim();
 	}
-	if (cloneInto(from, destination)) {
-		console.log(`  cloned  ${from} -> work/${repoName}`);
-		return true;
+}
+
+function portableRepositorySource(source: string): string | undefined {
+	let candidate: string | undefined;
+	try {
+		const local = realpathSync(resolve(source));
+		candidate = gitOutput(local, ["remote", "get-url", "origin"]);
+	} catch {
+		candidate = source.trim() || undefined;
 	}
-	console.error(
-		`Could not clone ${from}. Point it at a git repository (path or URL), or copy the files into work/ yourself and re-run.`,
+	if (candidate && !cloneSourceAllowed(candidate)) {
+		throw new Error("Repository origin cannot be persisted because it contains embedded credentials or query data");
+	}
+	return candidate;
+}
+
+function repositoryMatchesSource(repository: string, source: string): boolean {
+	const topLevel = gitOutput(repository, ["rev-parse", "--show-toplevel"]);
+	const remote = gitOutput(repository, ["remote", "get-url", "origin"]);
+	if (!topLevel || !remote) return false;
+	return (
+		normalizedPath(topLevel) === normalizedPath(repository) &&
+		normalizedRepositorySource(remote) === normalizedRepositorySource(source)
 	);
-	return false;
+}
+
+function stagedCloneMatchesSource(repository: string, source: string): boolean {
+	if (!repositoryMatchesSource(repository, source)) return false;
+	const status = spawnSync("git", ["-C", repository, "status", "--porcelain=v1", "--untracked-files=all"], {
+		encoding: "utf-8",
+		shell: false,
+	});
+	return (
+		spawnSync("git", ["-C", repository, "rev-parse", "--verify", "HEAD"], { stdio: "ignore", shell: false })
+			.status === 0 &&
+		spawnSync("git", ["-C", repository, "fsck", "--no-dangling"], { stdio: "ignore", shell: false }).status === 0 &&
+		status.status === 0 &&
+		typeof status.stdout === "string" &&
+		status.stdout.trim() === ""
+	);
+}
+
+function productIntegrationRecordPath(root: string, productId: string): string {
+	return join(root, ".qorpera", "product-integrations", `${productId}.json`);
+}
+
+function productIntegrationStorageRoot(root: string, productId: string): string {
+	const gitAdmin = canonicalDirectory(root, ".git");
+	const storageRoot = join(gitAdmin, "qorpera-product-integrations", productId);
+	mkdirSync(join(storageRoot, "attempts"), { recursive: true });
+	mkdirSync(join(storageRoot, "quarantine"), { recursive: true });
+	return storageRoot;
+}
+
+function readProductIntegrationRecord(path: string): ProductIntegrationRecord | undefined {
+	if (!existsSync(path)) return undefined;
+	const record = JSON.parse(readFileSync(path, "utf-8")) as Partial<ProductIntegrationRecord>;
+	if (
+		record.version !== 4 ||
+		typeof record.productId !== "string" ||
+		typeof record.source !== "string" ||
+		!repositorySourceAllowed(record.source) ||
+		(record.portableSource !== undefined &&
+			(typeof record.portableSource !== "string" || !repositorySourceAllowed(record.portableSource))) ||
+		typeof record.destination !== "string" ||
+		typeof record.staging !== "string" ||
+		isAbsolute(record.destination) ||
+		!/^[a-f0-9]{12}$/i.test(record.staging) ||
+		(record.status !== "pending" && record.status !== "completed") ||
+		(record.sourceHead !== undefined && typeof record.sourceHead !== "string") ||
+		!Array.isArray(record.sourceHistory) ||
+		!record.sourceHistory.every(
+			(entry) =>
+				entry &&
+				typeof entry === "object" &&
+				typeof entry.source === "string" &&
+				repositorySourceAllowed(entry.source) &&
+				(entry.portableSource === undefined || typeof entry.portableSource === "string") &&
+				(entry.portableSource === undefined || repositorySourceAllowed(entry.portableSource)) &&
+				(entry.sourceHead === undefined || typeof entry.sourceHead === "string") &&
+				typeof entry.reboundAt === "string",
+		) ||
+		!Array.isArray(record.recoveries) ||
+		!record.recoveries.every(
+			(entry) =>
+				entry &&
+				typeof entry === "object" &&
+				typeof entry.staging === "string" &&
+				/^[a-f0-9]{12}$/i.test(entry.staging) &&
+				typeof entry.quarantined === "string" &&
+				/^[a-f0-9]{12}\.failed-[a-f0-9]{12}$/i.test(entry.quarantined) &&
+				typeof entry.startedAt === "string" &&
+				(entry.completedAt === undefined || typeof entry.completedAt === "string") &&
+				(entry.outcome === undefined ||
+					entry.outcome === "quarantined" ||
+					entry.outcome === "source-storage-unavailable") &&
+				((entry.completedAt === undefined && entry.outcome === undefined) ||
+					(typeof entry.completedAt === "string" && entry.outcome !== undefined)) &&
+				typeof entry.reason === "string",
+		)
+	) {
+		throw new Error("Product integration transaction record is invalid");
+	}
+	return record as ProductIntegrationRecord;
+}
+
+function productIntegrationAttemptPath(root: string, productId: string, id: string): string {
+	return join(productIntegrationStorageRoot(root, productId), "attempts", id);
+}
+
+function productIntegrationQuarantinePath(root: string, productId: string, id: string): string {
+	return join(productIntegrationStorageRoot(root, productId), "quarantine", id);
+}
+
+function nextProductIntegrationStaging(root: string, productId: string): { id: string; path: string } {
+	const id = randomUUID().replace(/-/g, "").slice(0, 12);
+	return {
+		id,
+		path: productIntegrationAttemptPath(root, productId, id),
+	};
+}
+
+function reconcileProductIntegrationRecoveries(
+	root: string,
+	transactionPath: string,
+	transaction: ProductIntegrationRecord,
+): void {
+	let changed = false;
+	for (const recovery of transaction.recoveries) {
+		if (recovery.completedAt) continue;
+		const staging = productIntegrationAttemptPath(root, transaction.productId, recovery.staging);
+		const quarantined = productIntegrationQuarantinePath(root, transaction.productId, recovery.quarantined);
+		const stagingExists = existsSync(staging);
+		const quarantineExists = existsSync(quarantined);
+		if (stagingExists && quarantineExists) {
+			throw new Error("Incomplete product integration recovery cannot be reconciled without data loss");
+		}
+		if (stagingExists) {
+			renameSync(staging, quarantined);
+			recovery.outcome = "quarantined";
+		} else if (quarantineExists) {
+			recovery.outcome = "quarantined";
+		} else {
+			recovery.outcome = "source-storage-unavailable";
+		}
+		recovery.completedAt = new Date().toISOString();
+		changed = true;
+	}
+	if (changed) {
+		writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+		checkpointProductIntegrationRecord(
+			root,
+			transaction.productId,
+			"complete an interrupted quarantine move without discarding clone data",
+		);
+	}
+}
+
+function quarantineProductIntegrationAttempt(
+	root: string,
+	transactionPath: string,
+	transaction: ProductIntegrationRecord,
+	reason: string,
+): string {
+	const staging = productIntegrationAttemptPath(root, transaction.productId, transaction.staging);
+	const quarantineId = `${transaction.staging}.failed-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+	const quarantined = productIntegrationQuarantinePath(root, transaction.productId, quarantineId);
+	const recovery: ProductIntegrationRecord["recoveries"][number] = {
+		staging: transaction.staging,
+		quarantined: quarantineId,
+		startedAt: new Date().toISOString(),
+		reason,
+	};
+	transaction.recoveries.push(recovery);
+	const next = nextProductIntegrationStaging(root, transaction.productId);
+	transaction.staging = next.id;
+	writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+	checkpointProductIntegrationRecord(root, transaction.productId, "record a quarantine move before changing storage");
+	renameSync(staging, quarantined);
+	recovery.outcome = "quarantined";
+	recovery.completedAt = new Date().toISOString();
+	writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+	checkpointProductIntegrationRecord(
+		root,
+		transaction.productId,
+		"attest completion of the preserved quarantine move",
+	);
+	return next.path;
+}
+
+/** Clone an existing repo while its caller owns the company transaction lock. */
+function integrateRepoUnlocked(
+	root: string,
+	from: string,
+	product: string,
+	storage: ProductTransactionStorage,
+): boolean {
+	if (!cloneSourceAllowed(from)) return false;
+	const portableSource = portableRepositorySource(from);
+	const department = scaffoldProductDepartmentUnlocked(root, product, storage);
+	assertProductTransactionStorage(storage);
+	const destination = join(root, department.repositoryPath);
+	const transactionPath = productIntegrationRecordPath(root, department.id);
+	let transaction = readProductIntegrationRecord(transactionPath);
+	let transactionStaging: string | undefined;
+	if (transaction) {
+		reconcileProductIntegrationRecoveries(root, transactionPath, transaction);
+		transactionStaging = productIntegrationAttemptPath(root, department.id, transaction.staging);
+		if (
+			transaction.productId !== department.id ||
+			transaction.destination.replace(/\\/g, "/") !== department.repositoryPath.replace(/\\/g, "/")
+		) {
+			throw new Error("Existing product integration transaction is not valid for this product department");
+		}
+		const sameSource = normalizedRepositorySource(transaction.source) === normalizedRepositorySource(from);
+		if (!sameSource) {
+			if (transaction.status !== "completed" || existsSync(join(destination, ".git"))) {
+				throw new Error("Existing product integration transaction does not match the founder-reviewed source");
+			}
+			transaction.sourceHistory.push({
+				source: transaction.source,
+				...(transaction.portableSource ? { portableSource: transaction.portableSource } : {}),
+				...(transaction.sourceHead ? { sourceHead: transaction.sourceHead } : {}),
+				reboundAt: new Date().toISOString(),
+			});
+			const next = nextProductIntegrationStaging(root, department.id);
+			transaction.source = from;
+			transaction.portableSource = portableSource;
+			transaction.staging = next.id;
+			transaction.status = "pending";
+			delete transaction.sourceHead;
+			transactionStaging = next.path;
+			writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+			checkpointProductIntegrationRecord(
+				root,
+				department.id,
+				"preserve a founder-reviewed repository source rebind",
+			);
+		} else if (transaction.status === "completed" && !existsSync(join(destination, ".git"))) {
+			const next = nextProductIntegrationStaging(root, department.id);
+			transaction.staging = next.id;
+			transaction.status = "pending";
+			transactionStaging = next.path;
+			writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+			checkpointProductIntegrationRecord(root, department.id, "prepare clone hydration from the reviewed source");
+		}
+	}
+	if (existsSync(join(destination, ".git"))) {
+		if (!repositoryMatchesSource(destination, from)) {
+			throw new Error(`${department.repositoryPath} does not match the founder-reviewed repository source`);
+		}
+		if (transaction?.status === "pending") {
+			if (transactionStaging && existsSync(transactionStaging)) {
+				throw new Error("Pending product integration has both staged and promoted repositories");
+			}
+			transaction.status = "completed";
+			transaction.sourceHead = gitOutput(destination, ["rev-parse", "HEAD"]);
+			writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+			checkpointProductKit(root, department.id);
+		}
+		console.log(`  kept    ${department.repositoryPath} (verified source)`);
+		return true;
+	}
+	assertProductTransactionStorage(storage);
+	canonicalDirectory(root, department.path);
+	const destinationEntries = existsSync(destination) ? readdirSync(destination) : [];
+	if (destinationEntries.some((entry) => entry !== ".gitkeep")) {
+		throw new Error(`${department.repositoryPath} contains an incomplete or unrelated repository`);
+	}
+
+	mkdirSync(dirname(transactionPath), { recursive: true });
+	if (!transaction) {
+		const staging = nextProductIntegrationStaging(root, department.id);
+		transaction = {
+			version: 4,
+			productId: department.id,
+			source: from,
+			portableSource,
+			destination: department.repositoryPath.replace(/\\/g, "/"),
+			staging: staging.id,
+			status: "pending",
+			sourceHistory: [],
+			recoveries: [],
+		};
+		writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+		checkpointProductIntegrationRecord(root, department.id, "establish the recoverable clone transaction before I/O");
+		transactionStaging = staging.path;
+	}
+
+	if (!transactionStaging) throw new Error("Product integration transaction has no staging identity");
+	if (existsSync(transactionStaging) && !stagedCloneMatchesSource(transactionStaging, from)) {
+		transactionStaging = quarantineProductIntegrationAttempt(
+			root,
+			transactionPath,
+			transaction,
+			"staging clone was incomplete or did not match the reviewed source",
+		);
+	}
+	if (!existsSync(transactionStaging)) {
+		if (!cloneInto(from, transactionStaging)) {
+			console.error(
+				`Could not clone ${from}. The recoverable transaction remains at ${transactionPath}; retry with the same source.`,
+			);
+			return false;
+		}
+	}
+	if (!stagedCloneMatchesSource(transactionStaging, from)) {
+		quarantineProductIntegrationAttempt(
+			root,
+			transactionPath,
+			transaction,
+			"completed clone failed repository integrity validation",
+		);
+		console.error("Staged product repository failed validation; the attempt was preserved and a retry is ready.");
+		return false;
+	}
+	assertProductTransactionStorage(storage);
+	if (existsSync(destination)) rmSync(destination, { recursive: true });
+	renameSync(transactionStaging, destination);
+	canonicalDirectory(root, department.repositoryPath);
+	if (!repositoryMatchesSource(destination, from)) {
+		throw new Error("Promoted product repository changed identity during integration");
+	}
+	transaction.status = "completed";
+	transaction.sourceHead = gitOutput(destination, ["rev-parse", "HEAD"]);
+	writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+	checkpointProductKit(root, department.id);
+	console.log(`  cloned  ${from} -> ${department.repositoryPath}`);
+	return true;
+}
+
+/** Offline integration holds one transaction across registration and clone materialization. */
+export function integrateRepo(root: string, from: string, product = basenameOf(from)): boolean {
+	const lock = acquireCompanyLock(root, "product-registration");
+	try {
+		const storage = captureProductTransactionStorage(lock.root);
+		return integrateRepoUnlocked(lock.root, from, product, storage);
+	} finally {
+		releaseCompanyRuntimeLock(lock);
+	}
+}
+
+/** Desktop-kernel integration under the already-held runtime transaction. */
+export function integrateRepoWithRuntimeLock(
+	root: string,
+	from: string,
+	product: string,
+	runtimeLock: CompanyRuntimeLock,
+	storage: ProductTransactionStorage,
+): ProductDepartment | undefined {
+	const resolvedRoot = canonicalCompanyRoot(root);
+	assertRuntimeLock(resolvedRoot, runtimeLock);
+	if (!integrateRepoUnlocked(resolvedRoot, from, product, storage)) return undefined;
+	return productDepartmentFromEntry(resolvedRoot, productDepartmentId(product));
 }
 
 /**
@@ -360,10 +2347,9 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 			return true;
 		}
 		if (noLaunch) {
-			console.log("\nNext: run `qorpera` inside the folder to begin conception.");
+			console.log("\nNext: open the company in Qorpera Base desktop.");
 			return true;
 		}
-		console.log("\nStarting conception session…\n");
 		process.exitCode = await launchSession(result.root);
 		return true;
 	}
@@ -396,6 +2382,31 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 
 	if (args[0] !== "company") return false;
 	const sub = args[1];
+	if (sub === "product" && args[2] === "add") {
+		const product = args[3];
+		const fromIndex = args.indexOf("--from");
+		const from = fromIndex >= 0 ? args[fromIndex + 1] : undefined;
+		if (!product || (fromIndex >= 0 && !from)) {
+			console.error("Usage: company product add <product> [--from <repo-path-or-url>]");
+			process.exitCode = 1;
+			return true;
+		}
+		try {
+			const root = process.cwd();
+			if (!existsSync(join(root, "company.md"))) throw new Error("current directory is not a company root");
+			if (from) {
+				if (!integrateRepo(root, from, product)) throw new Error("product source clone failed");
+			} else {
+				scaffoldProductDepartment(root, product);
+			}
+			console.log(`Added ${productDepartmentId(product)}. Open the company in Qorpera Base.`);
+			process.exitCode = 0;
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
 	if (sub !== "init") {
 		console.error(`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir]`);
 		process.exitCode = 1;
@@ -406,7 +2417,7 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 	printScaffoldReport(result);
 	registerCompany(result.root);
 	console.log(
-		"\nNext: open a chat here — the controller will interview you and rewrite company.md. Gates live in authority.toml; requests appear in inbox/.",
+		"\nNext: open the company in Qorpera Base desktop. Gates live in authority.toml; requests appear in inbox/.",
 	);
 	return true;
 }
@@ -421,7 +2432,7 @@ function basenameOf(source: string): string {
  * If this company has never been conceived (company.md is still the
  * template), return the kickoff message to auto-send on session start — the
  * founder should never have to type "hello?" to make setup begin. Companies
- * with a product already in work/ get the study-first variant.
+ * with a product-development department get the study-first variant.
  */
 export function conceptionKickoff(root: string): string | undefined {
 	try {
@@ -430,39 +2441,9 @@ export function conceptionKickoff(root: string): string | undefined {
 	} catch {
 		return undefined;
 	}
-	try {
-		const products = readdirSync(join(root, "work")).filter((name) => name !== ".gitkeep");
-		if (products.length > 0) return CONCEPTION_INTEGRATE(products[0]);
-	} catch {
-		// no work/ — fall through
-	}
+	const department = listProductDepartments(root).find((entry) => entry.repositoryExists);
+	if (department) return CONCEPTION_INTEGRATE(department);
 	return CONCEPTION_NEW;
-}
-
-// ---- session scopes (the scope selector's data) ----------------------------
-
-export interface ProductScope {
-	/** Root-relative path exactly as declared in authority.toml [products]. */
-	path: string;
-	/** Display name — the zone's basename. */
-	name: string;
-	/** Whether the directory currently exists in the company folder. */
-	exists: boolean;
-}
-
-/**
- * The company's declared product zones, straight from the ratified
- * authority.toml — the scope selector offers exactly these, so the founder
- * can only scope a session to a product the authority file already names.
- */
-export function listProductScopes(root: string): ProductScope[] {
-	const authority = discoverAuthority(root);
-	if (!authority) return [];
-	return readAuthorityConfig(authority).productPaths.map((path) => ({
-		path,
-		name: path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path,
-		exists: existsSync(resolve(join(root, path))),
-	}));
 }
 
 // ---- company registry (the hub's memory) ----------------------------------
@@ -493,9 +2474,15 @@ export function listCompanies(): CompanyRecord[] {
 }
 
 export function registerCompany(rootDir: string): void {
-	const root = resolve(rootDir);
+	const root = canonicalCompanyRoot(rootDir);
 	const name = basenameOf(root);
-	const existing = listCompanies().filter((record) => resolve(record.root) !== root);
+	const existing = listCompanies().filter((record) => {
+		try {
+			return normalizedPath(canonicalCompanyRoot(record.root)) !== normalizedPath(root);
+		} catch {
+			return false;
+		}
+	});
 	const records: CompanyRecord[] = [{ root, name, lastOpened: new Date().toISOString() }, ...existing];
 	try {
 		mkdirSync(getAgentDir(), { recursive: true });
@@ -557,7 +2544,6 @@ export async function runCompanyHub(
 			printScaffoldReport(result);
 			registerCompany(result.root);
 			if (from && !integrateRepo(result.root, from)) return 1;
-			console.log("\nStarting conception session…\n");
 			return await launchSession(result.root);
 		}
 	}

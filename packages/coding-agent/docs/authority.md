@@ -50,56 +50,47 @@ file fails **closed** — every class gates.
   `gc --prune`) — the company's history is append-only from the agent's
   side (EVOLUTION.md §4 invariant 1).
 - **money / identity**: no built-in detections yet — assign via `[tools]`.
-- **products**: `[products] paths = ["work/my-product"]` declares software
-  products the controller may READ and study freely but not MODIFY from an
-  agentic session without approval (founder sessions are trusted — next
-  section). Precise for path-arg tools (`write`/`edit`/`apply_patch` — and
-  engine-mode patch approvals, which evaluate as `apply_patch` per file);
-  heuristic for `bash` (mutation-looking commands that mention a product
-  path or its basename gate; pure study commands pass). Zone checks rank
-  ABOVE `[tools]` opt-outs — `bash = "none"` cannot open a product zone or
-  the kernel files.
+- **product_code**: mutations under
+  `departments/<product>-development/repository/` or a task directory under
+  `worktrees/`. This is a fixed role boundary, not an `authority.toml`
+  class. Controllers are read-only even when attended, and their denied
+  mutations create no approvable gate. Product-workers can mutate only the
+  exact worktree assigned by the kernel. Path-argument tools are precise;
+  `bash` uses conservative mutation and worktree-escape screens. Boundary
+  checks rank above `[tools]` opt-outs.
 
-## Founder sessions vs agentic sessions (the [products] axis)
+## Controller and product-worker roles
 
-The `[products]` zone exists to stop the controller's AUTONOMOUS work from
-drifting into the software products. That is the whole distinction (founder
-decision, 2026-08-06):
+Attendance expresses founder intent for ordinary outward effects; it never
+changes organizational role. A product department Chat creates a Git
+worktree, starts the runtime with actor `product-worker`, and records the
+department and worktree in the session name. The authority hook receives the
+same actor/worktree capability in pi-native and Codex engine modes.
 
-- **Founder sessions** — a human present in an approval-capable UI (the
-  shell's chat, the TUI, a terminal engine run) — are trusted in product
-  zones: the founder's direction is the authority, so products-class
-  effects allow and are stamped into the trail with `attended: true`.
-  Presence never covers destruction: a destructive command inside a zone
-  re-classifies as `[irreversible]`, and `[authority]` territory (kernel
-  files, `authority.toml`, `inbox/`) stays gated in every session.
-- **Agentic sessions** — kernel-spawned autonomous work (conception,
-  merges, wakes; marked `QORPERA_AUTONOMOUS` at spawn) and headless runs
-  (print/json/SDK) — keep the full gate: any product modification files a
-  request for the founder.
-
-The zones themselves are declared in `authority.toml` `[products] paths` —
-NOT a founder-facing settings surface. The controller cannot edit the file
-(always-gated `[authority]`), so when product zones should change it files
-a gate request; the founder can also use the Advanced raw editor.
-
-The shell's scope selector is a context device, not a permission device:
-picking a product roots the session inside that product's directory and
-names the session `scope — <path>` for the trail, while the permission
-comes from founder presence alone.
+- **controller** — reads product repositories, worktrees, PR records, and
+  trails; writes briefs and company operations; cannot modify product code.
+- **product-worker** — modifies only non-`.git` content in its assigned
+  worktree. It receives no direct network, credentials, repository-metadata,
+  commit, push, or PR capability. The kernel checkpoints content changes;
+  future push and PR operations require explicit kernel brokers.
+- Gates cannot widen the worktree, `.git`, network, or credential boundary.
+- Destructive commands and PR merge/close operations re-classify as
+  `[irreversible]`; ordinary irreversible policy still applies.
 
 ## Gate lifecycle
 
 A gated call returns a block result naming the request file; the agent keeps
 working on other things (gates block effects, never the agent). The request
-lands at `<root>/inbox/gate-<hash8>.md` with `status: pending`. The human
-edits `status:` to `approved` or `denied`.
+lands at `<root>/inbox/gate-<hash8>.md` with `status: pending`. Base presents
+the canonical request in a native review and performs the approved or denied
+transition. Editing the file alone never mints an executable capability.
 
 - **Tool-call approvals are single-use**: the first matching call consumes
   the approval (status → `consumed`); an identical later call files a fresh
-  request.
-- **Denied** requests block without re-filing; a human can still flip a
-  denied file to `approved`.
+  request. If an approved file outlives the child-local capability that
+  accompanied it, a retry returns it to `pending` for fresh native review.
+- **Denied** requests block without re-filing; the founder can return one to
+  `pending` and review it again through Base.
 - Matching is by SHA-256 of tool name + canonical-JSON args — approval covers
   exactly the requested action.
 
@@ -108,9 +99,11 @@ edits `status:` to `approved` or `denied`.
 Project-local extensions are agent-authorable code that runs with full user
 permissions (`SEAMS.md` c.3) — so loading one from inside the authority root
 is an authority-class effect. Applied at every load site including the
-pre-trust load. Approvals here are **durable per content hash**: approving a
-file approves that exact code; any edit produces a new hash and a new
-request. User-global extensions (`~/.qorpera/agent/extensions`) are outside
+pre-trust load. Trust is **durable in the local desktop kernel** and scoped to
+the physical company path, extension path, and content hash. Child replacement
+does not lose it, copied Git files do not carry it, and the founder can revoke
+it from the consumed gate's inbox card. User-global extensions
+(`~/.qorpera/agent/extensions`) are outside
 the company root's authority and load as before.
 
 ## Provenance trailers (EVOLUTION.md §4 invariant 3)
@@ -150,39 +143,45 @@ tool; synthetic `<builtin:…>`/`<sdk:…>` paths and code outside the authority
 root are ignored — only company-authored code is subject).
 
 - Applies to the **outward** classes only (money, identity, irreversible);
-  [authority] and [products] keep their own semantics.
+  [authority] and product_code keep their own semantics.
 - Checked before — and regardless of — class modes: `auto` trust in a class
   covers the model acting under founder direction, not agent-authored code
   acting with nobody present.
 - Necessary, not sufficient: signed code still hits per-action class gates
   and limits.
-- Signatures are durable per content hash (`behavior_signature` requests,
-  same mechanism as extension-load approvals): approving signs exactly that
-  code; any edit is a new hash and a new request. The hash is computed from
-  the file as it is now — with hot-reload this tracks what executes next and
-  errs toward gating.
+- Signatures are durable per physical company path and content hash
+  (`behavior_signature` requests, the same mechanism as extension-load
+  approvals): local native review signs exactly that code across child
+  replacement, while copied gate files carry no authority. Revocation is a
+  native-reviewed transition from the consumed gate card. The hash is computed from the file as it is now —
+  with hot-reload this tracks what executes next and errs toward gating.
 - Attended calls fall through to the normal inline gates: presence is the
   intent source there.
 
 Every classified effect is stamped into the trail as a `qorpera_effect`
-custom entry — tool, effect class, decision, and (when codified behavior
-acted) its content hash and signature status. A blocked call from signed
-code stamps `signed: true` with a class-gate `gateId` — the
-necessary-not-sufficient layering is machine-verifiable from the trail.
+custom entry — tool, effect class, decision, consumed gate ID, and (when
+codified behavior acted) its content hash and signature status. The kernel
+separately journals a gate creation plan before its first trail transition,
+advances the durable phase before every later transition, then records each
+creation completion, consumption, or orphan reset in the hash-chained trail.
+The journal is keyed by gate file rather than request hash, so repeated exact
+requests remain independent. An interrupted creation is reconciled
+idempotently across recovery trails from desktop kernel state before the next
+child receives access, so file state and child assertions are not the
+authority evidence.
 
-**Founder pre-signing works by design:** gate approvals are ordinary
-founder-owned inbox files matched by `hash:`, and `requestHash` is
-computable (sha256 of `tool\n` + canonical-JSON args; for signatures the
-args are `{contentHash, path}` with the root-relative POSIX path). A
-founder — or founder tooling — can author an `approved` gate file before
-the agent ever attempts the action. Live-verified 2026-08-05: pre-signed
-load + signature, per-action identity gate still fired, approve → consume
-→ pretend-send artifact.
+**File-only pre-signing is intentionally insufficient.** `requestHash` is
+deterministic (sha256 of `tool\n` + canonical-JSON args; for signatures the
+args are `{contentHash, path}` with the root-relative POSIX path), but an
+approved file must be paired with a one-shot capability created by local
+native review. A copied or cloned approval therefore cannot authorize an
+effect on another machine or in a later child session.
 
 ## What this is not
 
 Prompt-tier guidance. Enforcement is code at the tool-call boundary and the
 extension loader; the kernel prompt only explains the rules. Known limits of
-v1: the bash screen is string-level (no shell parsing), `limit_usd` is parsed
-but not yet enforced (no money-moving tools exist in Base), and gates do not
-yet write trail entries (the trail lands in slice 3).
+v1: the bash screen is string-level (no shell parsing), and `limit_usd` is
+parsed but not yet enforced because Base has no money-moving tools. Native
+founder reviews, child effect assertions, gate transitions, and broker-observed
+model usage are recorded as distinct provenance events.

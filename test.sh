@@ -12,6 +12,26 @@ mkdir -p "$test_root/home/.config" "$test_root/tmp" "$test_root/cache/npm"
 # Mark the generated root so cleanup can verify ownership before deleting it.
 touch "$test_root/.pi-test-owned" "$test_root/npm-userconfig" "$test_root/npm-globalconfig"
 
+test_home="$test_root/home"
+test_tmp="$test_root/tmp"
+test_config="$test_root/home/.config"
+test_cache="$test_root/cache"
+test_npm_cache="$test_root/cache/npm"
+test_agent_dir="$test_root/home/.qorpera/agent"
+test_npm_userconfig="$test_root/npm-userconfig"
+test_npm_globalconfig="$test_root/npm-globalconfig"
+if [[ ${OS-} == "Windows_NT" ]] && command -v cygpath >/dev/null 2>&1; then
+	test_home="$(cygpath -w "$test_home")"
+	test_tmp="$(cygpath -w "$test_tmp")"
+	test_config="$(cygpath -w "$test_config")"
+	test_cache="$(cygpath -w "$test_cache")"
+	test_npm_cache="$(cygpath -w "$test_npm_cache")"
+	test_agent_dir="$(cygpath -w "$test_agent_dir")"
+	test_npm_userconfig="$(cygpath -w "$test_npm_userconfig")"
+	test_npm_globalconfig="$(cygpath -w "$test_npm_globalconfig")"
+fi
+readonly test_home test_tmp test_config test_cache test_npm_cache test_agent_dir test_npm_userconfig test_npm_globalconfig
+
 # Only remove the marked directory created above, never an unverified path.
 cleanup() {
 	local status=$?
@@ -40,13 +60,14 @@ trap cleanup EXIT
 test_env=(
 	"PATH=$PATH"
 	"PWD=$PWD"
-	"HOME=$test_root/home"
-	"USERPROFILE=$test_root/home"
-	"TMPDIR=$test_root/tmp"
-	"TMP=$test_root/tmp"
-	"TEMP=$test_root/tmp"
-	"XDG_CONFIG_HOME=$test_root/home/.config"
-	"XDG_CACHE_HOME=$test_root/cache"
+	"HOME=$test_home"
+	"USERPROFILE=$test_home"
+	"TMPDIR=$test_tmp"
+	"TMP=$test_tmp"
+	"TEMP=$test_tmp"
+	"XDG_CONFIG_HOME=$test_config"
+	"XDG_CACHE_HOME=$test_cache"
+	"QORPERA_CODING_AGENT_DIR=$test_agent_dir"
 	"LANG=C"
 	"LC_ALL=C"
 	"TZ=UTC"
@@ -56,9 +77,9 @@ test_env=(
 	"GIT_ASKPASS=$git_askpass"
 	"GIT_EDITOR=true"
 	"GIT_SEQUENCE_EDITOR=true"
-	"NPM_CONFIG_USERCONFIG=$test_root/npm-userconfig"
-	"NPM_CONFIG_GLOBALCONFIG=$test_root/npm-globalconfig"
-	"NPM_CONFIG_CACHE=$test_root/cache/npm"
+	"NPM_CONFIG_USERCONFIG=$test_npm_userconfig"
+	"NPM_CONFIG_GLOBALCONFIG=$test_npm_globalconfig"
+	"NPM_CONFIG_CACHE=$test_npm_cache"
 	"QORPERA_NO_LOCAL_LLM=1"
 	"AWS_EC2_METADATA_DISABLED=true"
 )

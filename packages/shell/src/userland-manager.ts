@@ -23,12 +23,26 @@
  * company file. Everything this module reads or writes lives under
  * `<company>/userland/` — the fork, the pristine copy, staged updates,
  * saved versions, the manifest. The rest of the company folder (company.md,
- * app/, trail/, inbox/, work/) is invisible to fork/merge/version machinery.
+ * app/, trail/, inbox/, departments/) is invisible to fork/merge/version machinery.
  */
 
-import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+	closeSync,
+	cpSync,
+	existsSync,
+	fsyncSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
 
 export interface UserlandManifest {
 	baseVersion: string;
@@ -58,6 +72,12 @@ export interface UserlandVersion {
 	lastUsedAt?: string;
 }
 
+export interface UserlandVersionReview {
+	version: UserlandVersion;
+	contentHash: string;
+	baseHash?: string;
+}
+
 export interface UserlandStatus {
 	action: "forked" | "current" | "fast-forwarded" | "staged" | "already-staged";
 	baseVersion: string;
@@ -69,7 +89,55 @@ const PRISTINE_DIR = ".base";
 const UPDATE_DIR = ".update";
 const VERSIONS_DIR = ".versions";
 
+function normalizedPath(path: string): string {
+	const resolved = resolve(path);
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function assertPhysicalEntry(path: string, kind?: "file" | "directory"): void {
+	const entry = lstatSync(path);
+	if (
+		entry.isSymbolicLink() ||
+		normalizedPath(realpathSync(path)) !== normalizedPath(path) ||
+		(kind === "file" && (!entry.isFile() || entry.nlink !== 1)) ||
+		(kind === "directory" && !entry.isDirectory())
+	) {
+		throw new Error(`Userland storage must be one physical ${kind ?? "entry"}: ${path}`);
+	}
+}
+
+function assertPhysicalTree(path: string): void {
+	const entry = lstatSync(path);
+	assertPhysicalEntry(path, entry.isDirectory() ? "directory" : "file");
+	if (!entry.isDirectory()) return;
+	for (const entry of readdirSync(path)) assertPhysicalTree(join(path, entry));
+}
+
+export function assertUserlandStorage(userlandDir: string): void {
+	if (existsSync(userlandDir)) assertPhysicalTree(userlandDir);
+}
+
+function writeAtomicFile(path: string, content: string): void {
+	assertPhysicalEntry(resolve(path, ".."), "directory");
+	if (existsSync(path)) assertPhysicalEntry(path, "file");
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	let descriptor: number | undefined;
+	try {
+		descriptor = openSync(temporary, "wx");
+		writeFileSync(descriptor, content, "utf-8");
+		fsyncSync(descriptor);
+		closeSync(descriptor);
+		descriptor = undefined;
+		renameSync(temporary, path);
+	} catch (error) {
+		if (descriptor !== undefined) closeSync(descriptor);
+		rmSync(temporary, { force: true });
+		throw error;
+	}
+}
+
 function listFiles(dir: string, base = dir): string[] {
+	assertPhysicalEntry(dir, "directory");
 	const files: string[] = [];
 	for (const name of readdirSync(dir, { withFileTypes: true })) {
 		if (
@@ -80,8 +148,12 @@ function listFiles(dir: string, base = dir): string[] {
 		)
 			continue;
 		const path = join(dir, name.name);
-		if (name.isDirectory()) files.push(...listFiles(path, base));
-		else files.push(relative(base, path).split(sep).join("/"));
+		assertPhysicalEntry(path);
+		if (lstatSync(path).isDirectory()) files.push(...listFiles(path, base));
+		else {
+			assertPhysicalEntry(path, "file");
+			files.push(relative(base, path).split(sep).join("/"));
+		}
 	}
 	return files.sort();
 }
@@ -98,19 +170,24 @@ function hashFiles(dir: string): Record<string, string> {
 
 function readManifest(userlandDir: string): UserlandManifest | undefined {
 	try {
-		return JSON.parse(readFileSync(join(userlandDir, MANIFEST), "utf-8")) as UserlandManifest;
+		const path = join(userlandDir, MANIFEST);
+		assertPhysicalEntry(path, "file");
+		return JSON.parse(readFileSync(path, "utf-8")) as UserlandManifest;
 	} catch {
 		return undefined;
 	}
 }
 
 function writeManifest(userlandDir: string, manifest: UserlandManifest): void {
-	writeFileSync(join(userlandDir, MANIFEST), `${JSON.stringify(manifest, null, "\t")}\n`, "utf-8");
+	writeAtomicFile(join(userlandDir, MANIFEST), `${JSON.stringify(manifest, null, "\t")}\n`);
 }
 
 function copyBase(baseDir: string, targetDir: string): void {
+	assertPhysicalTree(baseDir);
+	if (existsSync(targetDir)) assertPhysicalTree(targetDir);
 	mkdirSync(targetDir, { recursive: true });
 	cpSync(baseDir, targetDir, { recursive: true });
+	assertPhysicalTree(targetDir);
 }
 
 function combinedHash(dir: string): string {
@@ -143,7 +220,9 @@ interface VersionMeta {
 
 function readVersionMeta(versionDir: string): VersionMeta | undefined {
 	try {
-		return JSON.parse(readFileSync(join(versionDir, "meta.json"), "utf-8")) as VersionMeta;
+		const path = join(versionDir, "meta.json");
+		assertPhysicalEntry(path, "file");
+		return JSON.parse(readFileSync(path, "utf-8")) as VersionMeta;
 	} catch {
 		return undefined;
 	}
@@ -158,7 +237,7 @@ function updateVersionMeta(userlandDir: string, id: string, patch: Partial<Versi
 	const versionDir = join(userlandDir, VERSIONS_DIR, id);
 	if (!existsSync(join(versionDir, "content"))) return false;
 	const meta = { ...readVersionMeta(versionDir), ...patch };
-	writeFileSync(join(versionDir, "meta.json"), `${JSON.stringify(meta, null, "\t")}\n`, "utf-8");
+	writeAtomicFile(join(versionDir, "meta.json"), `${JSON.stringify(meta, null, "\t")}\n`);
 	return true;
 }
 
@@ -191,6 +270,7 @@ function describeDelta(current: Record<string, string>, previous: Record<string,
  * of inheriting whatever newer .base the live fork moved to.
  */
 export function snapshotIfChanged(userlandDir: string, label?: string): string | undefined {
+	assertUserlandStorage(userlandDir);
 	const manifest = readManifest(userlandDir);
 	if (!manifest) return undefined;
 	const hash = combinedHash(userlandDir);
@@ -219,13 +299,14 @@ export function snapshotIfChanged(userlandDir: string, label?: string): string |
 		copyBase(join(userlandDir, PRISTINE_DIR), join(versionDir, "base"));
 	}
 	const meta: VersionMeta = { label, baseVersion: manifest.baseVersion, seq, description };
-	writeFileSync(join(versionDir, "meta.json"), `${JSON.stringify(meta, null, "\t")}\n`, "utf-8");
+	writeAtomicFile(join(versionDir, "meta.json"), `${JSON.stringify(meta, null, "\t")}\n`);
 	writeManifest(userlandDir, { ...manifest, lastSnapshotHash: hash });
 	return id;
 }
 
 /** Saved versions, newest first (ids sort chronologically by construction). */
 export function listVersions(userlandDir: string): UserlandVersion[] {
+	assertUserlandStorage(userlandDir);
 	const dir = join(userlandDir, VERSIONS_DIR);
 	if (!existsSync(dir)) return [];
 	const entries = readdirSync(dir, { withFileTypes: true })
@@ -256,6 +337,20 @@ export function listVersions(userlandDir: string): UserlandVersion[] {
 	return numbered.sort((a, b) => b.id.localeCompare(a.id));
 }
 
+/** Immutable founder-review description of one restorable snapshot. */
+export function reviewVersion(userlandDir: string, id: string): UserlandVersionReview | undefined {
+	const version = listVersions(userlandDir).find((entry) => entry.id === id);
+	if (!version) return undefined;
+	const snapshot = join(userlandDir, VERSIONS_DIR, id);
+	const contentDir = existsSync(join(snapshot, "content")) ? join(snapshot, "content") : snapshot;
+	const baseDir = join(snapshot, "base");
+	return {
+		version,
+		contentHash: combinedHash(contentDir),
+		...(existsSync(baseDir) ? { baseHash: combinedHash(baseDir) } : {}),
+	};
+}
+
 /** Mark or unmark a saved version as a favorite. */
 export function setVersionFavorite(userlandDir: string, id: string, favorite: boolean): boolean {
 	if (!existsSync(join(userlandDir, VERSIONS_DIR, id))) return false;
@@ -276,6 +371,7 @@ export function restoreVersion(
 	id: string,
 	currentBase?: { dir: string; version: string },
 ): UserlandStatus | undefined {
+	assertUserlandStorage(userlandDir);
 	const snapshot = join(userlandDir, VERSIONS_DIR, id);
 	if (!existsSync(snapshot) || !readManifest(userlandDir)) return undefined;
 	snapshotIfChanged(userlandDir, "pre-restore");
@@ -318,6 +414,7 @@ export function getActiveApp(userlandDir: string): "fork" | "base" {
 }
 
 export function setActiveApp(userlandDir: string, app: "fork" | "base"): void {
+	assertUserlandStorage(userlandDir);
 	const manifest = readManifest(userlandDir);
 	if (manifest) writeManifest(userlandDir, { ...manifest, activeApp: app });
 }
@@ -340,10 +437,15 @@ export function isUnmodified(userlandDir: string): boolean {
  */
 export function ensureUserland(companyRoot: string, baseDir: string, baseVersion: string): UserlandStatus {
 	const userlandDir = join(companyRoot, "userland");
+	assertUserlandStorage(userlandDir);
 
 	if (!existsSync(join(userlandDir, MANIFEST))) {
+		if (existsSync(userlandDir) && readdirSync(userlandDir).length > 0) {
+			throw new Error(
+				"Cannot initialize userland: existing content has no userland.json metadata; content was preserved for audit",
+			);
+		}
 		// First open: fork the base into the company, keep a pristine copy.
-		rmSync(userlandDir, { recursive: true, force: true });
 		copyBase(baseDir, userlandDir);
 		copyBase(baseDir, join(userlandDir, PRISTINE_DIR));
 		const files = hashFiles(userlandDir);
@@ -358,7 +460,7 @@ export function ensureUserland(companyRoot: string, baseDir: string, baseVersion
 
 	const manifest = readManifest(userlandDir);
 	if (!manifest) {
-		return { action: "current", baseVersion };
+		throw new Error("Cannot open userland: userland.json is invalid; content was preserved for audit");
 	}
 
 	// CONTENT decides, never the version label (founder direction 2026-08-06:

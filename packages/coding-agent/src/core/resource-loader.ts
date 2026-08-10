@@ -556,7 +556,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const mergedExtensionPaths = this.noExtensions
 			? cliEnabledExtensions
 			: this.mergePaths(cliEnabledExtensions, enabledExtensions);
-		const gate = this.applyAuthorityExtensionGate(mergedExtensionPaths);
+		const gate = await this.applyAuthorityExtensionGate(mergedExtensionPaths);
 		const extensionsResult = await loadExtensionsCached(gate.allowed, this.cwd, this.eventBus);
 		extensionsResult.errors.push(...gate.blockedErrors);
 		if (!options.includeInlineFactories) {
@@ -581,10 +581,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 	 * including the pre-trust load — extension module code executes at load.
 	 * Without an authority.toml above cwd this is a no-op.
 	 */
-	private applyAuthorityExtensionGate(extensionPaths: string[]): {
+	private async applyAuthorityExtensionGate(extensionPaths: string[]): Promise<{
 		allowed: string[];
 		blockedErrors: Array<{ path: string; error: string }>;
-	} {
+	}> {
 		const authority = discoverAuthority(this.cwd);
 		if (!authority) return { allowed: extensionPaths, blockedErrors: [] };
 		const resolvedToOriginal = new Map<string, string>();
@@ -593,7 +593,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			resolvedToOriginal.set(resolvedPath, path);
 			return resolvedPath;
 		});
-		const { allowed, blocked } = filterExtensionPaths(authority, resolved, this.agentDir);
+		const { allowed, blocked } = await filterExtensionPaths(authority, resolved, this.agentDir);
 		return {
 			allowed: allowed.map((path) => resolvedToOriginal.get(path) ?? path),
 			blockedErrors: blocked.map((entry) => ({
@@ -609,7 +609,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		rawExtensionPaths: string[],
 		preTrustExtensions: LoadExtensionsResult | undefined,
 	): Promise<LoadExtensionsResult> {
-		const finalGate = this.applyAuthorityExtensionGate(rawExtensionPaths);
+		const finalGate = await this.applyAuthorityExtensionGate(rawExtensionPaths);
 		const extensionPaths = finalGate.allowed;
 		if (!preTrustExtensions) {
 			const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);

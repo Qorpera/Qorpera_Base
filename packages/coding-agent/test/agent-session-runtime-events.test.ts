@@ -112,6 +112,21 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		return { runtimeHost, faux };
 	}
 
+	it("does not execute in-process extensions inside the company kernel", async () => {
+		const previous = process.env.QORPERA_KERNEL_REQUIRED;
+		process.env.QORPERA_KERNEL_REQUIRED = "1";
+		let extensionExecuted = false;
+		try {
+			await createRuntimeHost(() => {
+				extensionExecuted = true;
+			});
+			expect(extensionExecuted).toBe(false);
+		} finally {
+			if (previous === undefined) delete process.env.QORPERA_KERNEL_REQUIRED;
+			else process.env.QORPERA_KERNEL_REQUIRED = previous;
+		}
+	});
+
 	it("emits session_before_switch and session_start for new and resume flows", async () => {
 		const events: RecordedSessionEvent[] = [];
 		const { runtimeHost } = await createRuntimeHost((pi) => {

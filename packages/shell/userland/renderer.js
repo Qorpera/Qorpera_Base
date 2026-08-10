@@ -2,26 +2,31 @@
  * from the folder via the backend (surfaces/state/inbox) or the RPC pipe. */
 const $ = (id) => document.getElementById(id);
 let backendUrl = "";
-let backendToken = "";
-let state = { surfaces: [], inbox: [], sessions: [] };
+let state = {
+	projection: { schema: "qorpera.projection/v1", default: "q:chats", navigation: [], nodes: [], diagnostics: [] },
+	inbox: [],
+	sessions: [],
+	departments: [],
+};
 const sessionCache = {}; // session file -> rendered messages HTML
-let chatsCollapsed = false;
 
-function authHeaders(extra) {
-	return { "x-qorpera-token": backendToken, ...(extra ?? {}) };
+async function authorizedPost(path, body) {
+	const response = await window.qorpera.authorizedBackendPost(path, body);
+	return {
+		ok: Boolean(response?.ok),
+		status: response?.status ?? 500,
+		json: async () => JSON.parse(response?.text ?? "{}"),
+		text: async () => response?.text ?? "",
+	};
 }
 
-function toggleChats() {
-	chatsCollapsed = !chatsCollapsed;
-	$("sessions").style.display = chatsCollapsed ? "none" : "";
-	$("chatsCaret").textContent = chatsCollapsed ? "▸" : "▾";
-}
-let currentSurface = null;
+let currentNodeId = null;
 let currentSession = null; // trail file of the open chat (null = fresh/unsaved)
-let currentScope = null; // product scope of the open chat (null = the company)
+let currentDepartment = null; // product department of the open chat (null = company controller)
+let currentWorktree = null; // kernel-assigned product worktree, when applicable
 let sidechatOpen = false; // the surface view's docked chat panel
-let sidechatSurface = null; // surface entry the live session is attached to
-let sidechatPending = null; // surface awaiting its context preamble (fresh session)
+let sidechatPageId = null; // stable page ID the live session is attached to
+let sidechatPending = null; // page awaiting its context preamble (fresh session)
 let assistantEl = null;
 let thinkingEl = null;
 let poller = null;
@@ -60,7 +65,7 @@ async function integrateCompanyPrompt() {
 	if (!from) return;
 	const result = await window.qorpera.integrateCompany(dir, from);
 	if (!result.ok) {
-		alert("Could not clone the repo — check the path/URL. The company folder was created; you can copy files into work/ manually.");
+		alert("Could not clone the repo — check the path/URL. The company folder and product department were created.");
 	}
 	await openCompany(result.root);
 }
@@ -76,7 +81,6 @@ async function openCompany(root) {
 /** Boot into an already-open company (called after the kernel loads us). */
 async function enterCompany(active) {
 	backendUrl = active.backendUrl;
-	backendToken = active.backendToken ?? "";
 	$("hubnav").style.display = "none";
 	$("conav").style.display = "";
 	$("messages").innerHTML = "";
@@ -366,58 +370,52 @@ const modelCtl = (() => {
 // moments of the spawn.
 modelCtl.sync();
 
-// ---- session scope: company vs product (the scope selector) -----------------
-// The chip names what this session steers: the company itself, or one of the
-// products authority.toml declares. Picking a product opens a FRESH session
-// rooted inside it — the kernel confirms the grant in a native dialog (that
-// confirmation IS the founder's [products] approval for the session), so a
-// cancel simply snaps the chip back.
+// ---- company controller vs product-worker (the role selector) ---------------
 
-function scopeName(path) {
+function departmentName(path) {
 	const parts = String(path).replace(/\\/g, "/").split("/").filter(Boolean);
-	return parts[parts.length - 1] || String(path);
+	return (parts[parts.length - 1] || String(path)).replace(/-development$/, "");
 }
 
-// Entry icons: a building for the company, a package for a product — the two
-// are different kinds of thing and the menu should read that way at a glance.
+// A company controller and a product-worker are different organizational roles.
 const COMPANY_ICON =
 	'<svg class="chipicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18M5 21V5.5L12 3l7 2.5V21M9.5 9h.01M14.5 9h.01M9.5 13h.01M14.5 13h.01M10 21v-3.5h4V21"/></svg>';
 const PRODUCT_ICON =
 	'<svg class="chipicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8.2v7.6l-9 4.7-9-4.7V8.2L12 3.5l9 4.7Z"/><path d="M3.3 8.2 12 12.7l8.7-4.5M12 12.7V20"/></svg>';
 
 function syncScopeChrome() {
-	// The company entry names the controller — same identity as the window
-	// title ("<Name> Controller"), distinct from the bare product names below.
 	const options = [{ value: "", label: state.name ? `${state.name} Controller` : "Company", icon: COMPANY_ICON }];
-	for (const s of state.scopes ?? []) {
-		if (s.exists === false) continue; // a declared zone with no directory yet
-		options.push({ value: s.path, label: s.name || scopeName(s.path), icon: PRODUCT_ICON });
+	if (currentDepartment) {
+		const department = (state.departments ?? []).find((entry) => entry.path === currentDepartment);
+		options.push({
+			value: currentDepartment,
+			label: `${department?.name ?? departmentName(currentDepartment)} Product Worker`,
+			icon: PRODUCT_ICON,
+		});
 	}
-	scopeChip.setOptions(options, currentScope ?? "");
-	scopeChip.value = currentScope ?? "";
-	// A docked sidechat speaks about its surface; otherwise the scope names
-	// what the session steers.
-	const sidechatOwner =
-		sidechatOpen && sidechatSurface ? (state.surfaces ?? []).find((s) => s.entry === sidechatSurface) : undefined;
+	scopeChip.setOptions(options, currentDepartment ?? "");
+	scopeChip.value = currentDepartment ?? "";
+	const sidechatOwner = sidechatOpen && sidechatPageId ? projectionNode(sidechatPageId) : undefined;
 	$("input").placeholder = sidechatOwner
-		? `Ask about ${sidechatOwner.name}… (Enter to send, Shift+Enter for newline)`
-		: currentScope
-			? `Work on ${scopeName(currentScope)}… (Enter to send, Shift+Enter for newline)`
+		? `Ask about ${sidechatOwner.label}… (Enter to send, Shift+Enter for newline)`
+		: currentDepartment
+			? `Work on ${departmentName(currentDepartment)}… (Enter to send, Shift+Enter for newline)`
 			: "Steer the company… (Enter to send, Shift+Enter for newline)";
 }
 
 const scopeChip = createChipSelect("scopeBtn", "scopeMenu", async (picked) => {
 	const next = picked || null;
-	if (next === currentScope) return;
+	if (next === currentDepartment) return;
 	cacheCurrentSession();
 	const result = await window.qorpera.openChat(null, next ?? undefined);
 	if (!result?.ok) {
-		scopeChip.value = currentScope ?? "";
+		scopeChip.value = currentDepartment ?? "";
 		return;
 	}
 	currentSession = null;
-	currentScope = result.scope ?? null;
-	sidechatSurface = null;
+	currentDepartment = result.department ?? null;
+	currentWorktree = result.worktree ?? null;
+	sidechatPageId = null;
 	sidechatPending = null;
 	$("messages").innerHTML = "";
 	resetWorkGroup();
@@ -433,6 +431,22 @@ async function refreshState() {
 		if (JSON.stringify(next) !== JSON.stringify(state)) {
 			state = next;
 			renderCompanyNav();
+			if (currentNodeId && !projectionNode(currentNodeId)) currentNodeId = null;
+			if (!currentNodeId) {
+				const routed = location.hash.match(/^#\/p\/(.+)$/)?.[1];
+				let routedId;
+				try {
+					routedId = routed ? decodeURIComponent(routed) : undefined;
+				} catch {
+					routedId = undefined;
+				}
+				const target = projectionNode(routedId) ? routedId : state.projection?.default;
+				if (target) void openProjectionNode(target);
+			} else if (currentView === "panel" || currentView === "surface") {
+				// Refresh the open read model without disturbing a live chat. A
+				// product Chat page is now inert until its explicit create action.
+				void openProjectionNode(currentNodeId, false);
+			}
 		}
 	} catch {
 		/* backend briefly unavailable */
@@ -459,16 +473,19 @@ function cacheCurrentSession() {
 	if (currentSession) sessionCache[currentSession] = $("messages").innerHTML;
 }
 
-async function openSession(file) {
+async function openSession(file, pageId = "q:chats") {
 	cacheCurrentSession();
-	// A scoped session reopens under its own scope (recorded in the trail);
-	// the kernel re-confirms the grant. Cancel → stay exactly where we are.
+	// Product chats restore the exact department/worktree role capability
+	// recorded in their append-only session name.
 	const summary = (state.sessions ?? []).find((s) => s.file === file);
-	const result = await window.qorpera.openChat(file, summary?.scope);
+	const result = await window.qorpera.openChat(file, summary?.department, summary?.worktree);
 	if (!result?.ok) return;
 	currentSession = file;
-	currentScope = result.scope ?? null;
-	sidechatSurface = null;
+	currentNodeId = pageId;
+	setProjectionRoute(pageId);
+	currentDepartment = result.department ?? null;
+	currentWorktree = result.worktree ?? null;
+	sidechatPageId = null;
 	sidechatPending = null;
 	// Cached pages show instantly; fresh ones get a proper loading state.
 	// Either way the live child re-hydrates and replaces once ready.
@@ -480,15 +497,39 @@ async function openSession(file) {
 	hydrateAgentState(true);
 }
 
-async function newChat() {
+async function newCompanyChat() {
 	cacheCurrentSession();
-	// "+" keeps the current scope: a new chat while working on a product is
-	// usually more of that work (the kernel still confirms the grant).
-	const result = await window.qorpera.openChat(null, currentScope ?? undefined);
+	const result = await window.qorpera.openChat(null);
 	if (!result?.ok) return;
 	currentSession = null;
-	currentScope = result.scope ?? null;
-	sidechatSurface = null;
+	currentDepartment = null;
+	currentWorktree = null;
+	currentNodeId = "q:chats";
+	setProjectionRoute("q:chats");
+	sidechatPageId = null;
+	sidechatPending = null;
+	$("messages").innerHTML = "";
+	resetWorkGroup();
+	show("chat");
+	syncScopeChrome();
+	renderCompanyNavSafe();
+	hydrateAgentState(false);
+}
+
+async function newChat() {
+	cacheCurrentSession();
+	// "+" keeps an existing product worktree. The department Chat row starts
+	// a separate task in a fresh worktree.
+	const result = await window.qorpera.openChat(
+		null,
+		currentDepartment ?? undefined,
+		currentWorktree ?? undefined,
+	);
+	if (!result?.ok) return;
+	currentSession = null;
+	currentDepartment = result.department ?? null;
+	currentWorktree = result.worktree ?? null;
+	sidechatPageId = null;
 	sidechatPending = null;
 	$("messages").innerHTML = "";
 	resetWorkGroup();
@@ -543,46 +584,351 @@ function renderHistory(messages) {
 	$("messages").scrollTop = $("messages").scrollHeight;
 }
 
+function projectionNode(id) {
+	return (state.projection?.nodes ?? []).find((node) => node.id === id);
+}
+
+function navStorageKey(name) {
+	return `qorpera:${backendUrl || "base"}:${name}`;
+}
+
+function readStoredObject(name, fallback) {
+	try {
+		const parsed = JSON.parse(localStorage.getItem(navStorageKey(name)) ?? "null");
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
+	} catch {
+		return fallback;
+	}
+}
+
+function navAppearance() {
+	return {
+		pageHue: "#2563eb",
+		categoryHue: "#7c3aed",
+		showKinds: true,
+		...readStoredObject("nav-appearance", {}),
+	};
+}
+
+function applyNavMetrics(element, node) {
+	const heights = readStoredObject("nav-heights", {});
+	const offset = Math.max(-12, Math.min(12, Number(heights[node.id]) || 0));
+	element.style.setProperty("--nav-item-height", `${(node.kind === "department" ? 28 : 30) + offset}px`);
+	element.style.setProperty("--nav-font-size", `${12.5 + offset * 0.16}px`);
+	element.style.setProperty("--nav-padding-x", `${10 + Math.max(0, offset) * 0.2}px`);
+	element.style.setProperty("--nav-radius", `${5 + Math.max(0, offset) * 0.16}px`);
+	element.style.setProperty("--nav-hue-width", `${2 + Math.max(0, offset) * 0.12}px`);
+	const appearance = navAppearance();
+	if (appearance.showKinds && (node.kind === "page" || node.kind === "category")) {
+		element.style.setProperty("--nav-kind-hue", node.kind === "page" ? appearance.pageHue : appearance.categoryHue);
+	}
+	element.addEventListener("contextmenu", (event) => openNavHeightEditor(event, node));
+}
+
+function openNavHeightEditor(event, node) {
+	event.preventDefault();
+	const menu = $("navContext");
+	menu.innerHTML = "";
+	const label = document.createElement("label");
+	label.textContent = `Adjust ${node.label} height`;
+	const value = document.createElement("span");
+	const slider = document.createElement("input");
+	slider.type = "range";
+	slider.min = "-12";
+	slider.max = "12";
+	slider.step = "1";
+	const heights = readStoredObject("nav-heights", {});
+	slider.value = String(Math.max(-12, Math.min(12, Number(heights[node.id]) || 0)));
+	const sync = () => {
+		value.textContent = `${Number(slider.value) >= 0 ? "+" : ""}${slider.value}px`;
+	};
+	slider.oninput = () => {
+		heights[node.id] = Number(slider.value);
+		localStorage.setItem(navStorageKey("nav-heights"), JSON.stringify(heights));
+		sync();
+		renderCompanyNavSafe();
+	};
+	sync();
+	label.appendChild(value);
+	menu.appendChild(label);
+	menu.appendChild(slider);
+	menu.style.left = `${Math.min(event.clientX, window.innerWidth - 270)}px`;
+	menu.style.top = `${Math.min(event.clientY, window.innerHeight - 110)}px`;
+	menu.classList.add("open");
+}
+
+document.addEventListener("click", (event) => {
+	if (!$("navContext").contains(event.target)) $("navContext").classList.remove("open");
+});
+document.addEventListener("keydown", (event) => {
+	if (event.key === "Escape") $("navContext").classList.remove("open");
+});
+
 function renderCompanyNav() {
-	const chats = $("sessions");
-	chats.innerHTML = "";
-	// Chats = work the founder brings; autonomous sessions live in Activity.
-	for (const session of (state.sessions ?? []).filter((s) => s.kind !== "autonomous")) {
-		const b = document.createElement("button");
-		b.textContent = session.title;
-		b.title = session.scope ? `${session.file} · scoped to ${session.scope}` : session.file;
-		if (session.scope) {
-			const tag = document.createElement("span");
-			tag.className = "scopetag";
-			tag.textContent = scopeName(session.scope);
-			b.appendChild(tag);
+	const nav = $("navigation");
+	nav.innerHTML = "";
+	for (const departmentId of state.projection?.navigation ?? []) {
+		const department = projectionNode(departmentId);
+		if (!department || department.kind !== "department") continue;
+		const group = document.createElement("section");
+		group.className = "projection-department";
+		const title = document.createElement("div");
+		title.className = "projection-department-title";
+		title.textContent = department.label;
+		applyNavMetrics(title, department);
+		group.appendChild(title);
+		for (const childId of department.items) {
+			const child = projectionNode(childId);
+			if (!child || (child.kind !== "page" && child.kind !== "category")) continue;
+			const row = document.createElement("button");
+			row.className = `projection-row ${child.kind}`;
+			row.textContent = child.label;
+			row.title = child.description ?? child.label;
+			row.classList.toggle("active", currentNodeId === child.id);
+			if (currentNodeId === child.id) row.setAttribute("aria-current", "page");
+			if (child.id === "q:inbox") {
+				const pending = state.inbox.filter((item) => item.status === "pending").length;
+				if (pending) {
+					const badge = document.createElement("span");
+					badge.className = "badge";
+					badge.textContent = String(pending);
+					row.appendChild(badge);
+				}
+			}
+			applyNavMetrics(row, child);
+			row.onclick = () => void openProjectionNode(child.id);
+			group.appendChild(row);
 		}
-		if (session.surface) {
-			// Sidechat sessions name the surface they were docked to.
-			const tag = document.createElement("span");
-			tag.className = "surfacetag";
-			const owner = (state.surfaces ?? []).find((s) => s.entry === session.surface);
-			tag.textContent = owner?.name ?? session.surface;
-			b.title = `${session.file} · sidechat on ${owner?.name ?? session.surface}`;
-			b.appendChild(tag);
-		}
-		if (currentSession === session.file) b.className = "active";
-		b.onclick = () => openSession(session.file);
-		chats.appendChild(b);
+		nav.appendChild(group);
 	}
-	const nav = $("surfaces");
-	nav.innerHTML = state.surfaces.length ? "" : '<div class="empty" style="padding:6px">none built yet</div>';
-	for (const surface of state.surfaces) {
-		const b = document.createElement("button");
-		b.textContent = surface.name;
-		if (currentSurface === surface.entry) b.className = "active";
-		b.onclick = () => showSurface(surface);
-		nav.appendChild(b);
-	}
+	const diagnostics = $("projectionDiagnostics");
+	const messages = state.projection?.diagnostics ?? [];
+	diagnostics.textContent = messages.length ? `${messages.length} projection issue${messages.length === 1 ? "" : "s"}` : "";
+	diagnostics.title = messages.join("\n");
 	syncScopeChrome();
-	const pending = state.inbox.filter((g) => g.status === "pending").length;
-	$("inboxBadge").innerHTML = pending ? `<span class="badge">${pending}</span>` : "";
-	if (currentView === "inbox") renderInbox();
+}
+
+function setProjectionRoute(id) {
+	const next = `#/p/${encodeURIComponent(id)}`;
+	if (location.hash !== next) history.replaceState(null, "", next);
+}
+
+function renderCollection(node) {
+	const panel = $("view-panel");
+	panel.innerHTML = "";
+	const heading = document.createElement("h1");
+	heading.textContent = node.label;
+	panel.appendChild(heading);
+	if (node.description) {
+		const description = document.createElement("p");
+		description.className = "collection-description";
+		description.textContent = node.description;
+		panel.appendChild(description);
+	}
+	const pages = node.items.map(projectionNode).filter((item) => item?.kind === "page");
+	if (!pages.length) {
+		panel.insertAdjacentHTML("beforeend", '<div class="empty">No pages have been published here.</div>');
+		return;
+	}
+	for (const page of pages) {
+		const card = document.createElement("button");
+		card.className = "projection-card";
+		const label = document.createElement("strong");
+		label.textContent = page.label;
+		card.appendChild(label);
+		if (page.description) {
+			const description = document.createElement("span");
+			description.textContent = page.description;
+			card.appendChild(description);
+		}
+		card.onclick = () => void openProjectionNode(page.id);
+		panel.appendChild(card);
+	}
+}
+
+function renderChats() {
+	const panel = $("view-panel");
+	panel.innerHTML = "";
+	const head = document.createElement("div");
+	head.className = "collection-head";
+	const heading = document.createElement("h1");
+	heading.textContent = "Chats";
+	const create = document.createElement("button");
+	create.textContent = "New company chat";
+	create.onclick = () => void newCompanyChat();
+	head.appendChild(heading);
+	head.appendChild(create);
+	panel.appendChild(head);
+	const sessions = (state.sessions ?? []).filter((session) => session.kind !== "autonomous");
+	if (!sessions.length) panel.insertAdjacentHTML("beforeend", '<div class="empty">No founder chats yet.</div>');
+	for (const session of sessions) {
+		const card = document.createElement("button");
+		card.className = "projection-card chat-card";
+		card.classList.toggle("active", currentSession === session.file);
+		const label = document.createElement("strong");
+		label.textContent = session.title;
+		const meta = document.createElement("span");
+		const page = session.page ? projectionNode(session.page) : undefined;
+		const department = session.department
+			? (state.departments ?? []).find((entry) => entry.path === session.department)
+			: undefined;
+		meta.textContent = [page?.label, department?.name, new Date(session.mtimeMs).toLocaleString()]
+			.filter(Boolean)
+			.join(" · ");
+		card.appendChild(label);
+		card.appendChild(meta);
+		card.onclick = () => openSession(session.file);
+		panel.appendChild(card);
+	}
+}
+
+function renderProductChats(department, page) {
+	const panel = $("view-panel");
+	panel.innerHTML = "";
+	const head = document.createElement("div");
+	head.className = "collection-head";
+	const heading = document.createElement("h1");
+	heading.textContent = page.label;
+	const create = document.createElement("button");
+	create.textContent = "New product worktree chat";
+	create.disabled = !department;
+	create.onclick = () => void openDepartmentChat(department, page.id);
+	head.appendChild(heading);
+	head.appendChild(create);
+	panel.appendChild(head);
+	if (!department) {
+		panel.insertAdjacentHTML("beforeend", '<div class="empty">Product department is unavailable.</div>');
+		return;
+	}
+	const sessions = (state.sessions ?? []).filter(
+		(session) => session.kind !== "autonomous" && session.department === department.path,
+	);
+	if (!sessions.length) {
+		panel.insertAdjacentHTML("beforeend", '<div class="empty">No product worktree chats yet.</div>');
+	}
+	for (const session of sessions) {
+		const card = document.createElement("button");
+		card.className = "projection-card chat-card";
+		card.classList.toggle("active", currentSession === session.file);
+		const label = document.createElement("strong");
+		label.textContent = session.title;
+		const meta = document.createElement("span");
+		meta.textContent = [session.worktree, new Date(session.mtimeMs).toLocaleString()].filter(Boolean).join(" · ");
+		card.appendChild(label);
+		card.appendChild(meta);
+		card.onclick = () => openSession(session.file, page.id);
+		panel.appendChild(card);
+	}
+}
+
+async function openProjectionNode(id, updateRoute = true) {
+	const node = projectionNode(id);
+	if (!node) return;
+	currentNodeId = id;
+	if (updateRoute) setProjectionRoute(id);
+	if (node.kind === "department" || node.kind === "category") {
+		renderCollection(node);
+		show("panel");
+		renderCompanyNavSafe();
+		return;
+	}
+	if (node.view.type === "surface") {
+		showSurface(node);
+		return;
+	}
+	const context = node.view.context ?? {};
+	if (node.view.id === "qorpera.inbox") {
+		renderInbox();
+		show("panel");
+	} else if (node.view.id === "qorpera.activity") {
+		await renderActivity();
+		show("panel");
+	} else if (node.view.id === "qorpera.chats") {
+		renderChats();
+		show("panel");
+	} else if (node.view.id === "qorpera.product-chat") {
+		const department = (state.departments ?? []).find((entry) => entry.id === context.departmentId);
+		renderProductChats(department, node);
+		show("panel");
+	} else if (node.view.id === "qorpera.pull-requests") {
+		const department = (state.departments ?? []).find((entry) => entry.id === context.departmentId);
+		showPullRequests(department, node);
+	} else {
+		const panel = $("view-panel");
+		panel.innerHTML = "";
+		const heading = document.createElement("h1");
+		heading.textContent = context.title || node.label;
+		const message = document.createElement("div");
+		message.className = "empty";
+		message.textContent = context.message || "This page is reserved for later.";
+		panel.appendChild(heading);
+		panel.appendChild(message);
+		show("panel");
+	}
+	renderCompanyNavSafe();
+}
+
+async function openDepartmentChat(department, pageId) {
+	cacheCurrentSession();
+	const result = await window.qorpera.openChat(null, department.path);
+	if (!result?.ok) {
+		$("status").textContent = result?.error ?? "could not start product worktree";
+		return;
+	}
+	currentSession = null;
+	currentDepartment = result.department ?? null;
+	currentWorktree = result.worktree ?? null;
+	currentNodeId = pageId;
+	setProjectionRoute(pageId);
+	sidechatPageId = null;
+	sidechatPending = null;
+	$("messages").innerHTML = "";
+	resetWorkGroup();
+	show("chat");
+	syncScopeChrome();
+	hydrateAgentState(false);
+}
+
+function showPullRequests(department, page) {
+	const panel = $("view-panel");
+	panel.innerHTML = "";
+	const heading = document.createElement("h1");
+	heading.textContent = page.label;
+	panel.appendChild(heading);
+	const records = department?.pullRequests ?? [];
+	if (!records.length) {
+		const empty = document.createElement("div");
+		empty.className = "empty";
+		empty.textContent = "No synchronized pull-request records yet.";
+		panel.appendChild(empty);
+	} else {
+		for (const record of records) {
+			const card = document.createElement("div");
+			card.className = "card";
+			const head = document.createElement("div");
+			head.className = "card-head";
+			const title = document.createElement(record.url ? "a" : "div");
+			title.className = "card-title";
+			title.textContent = `${record.number ? `#${record.number} ` : ""}${record.title}`;
+			if (record.url) {
+				title.href = record.url;
+				title.target = "_blank";
+				title.rel = "noreferrer";
+			}
+			const status = document.createElement("span");
+			status.className = "kchip";
+			status.textContent = record.status;
+			head.appendChild(title);
+			head.appendChild(status);
+			card.appendChild(head);
+			const meta = document.createElement("div");
+			meta.className = "card-meta";
+			meta.textContent = [record.branch, record.updatedAt, record.file].filter(Boolean).join(" · ");
+			card.appendChild(meta);
+			panel.appendChild(card);
+		}
+	}
+	show("panel");
 }
 
 // ---- views -----------------------------------------------------------------
@@ -607,12 +953,7 @@ function show(view) {
 	$("view-chat").style.display = view === "chat" || docked ? "flex" : "none";
 	$("view-surfacewrap").style.display = view === "surface" ? "flex" : "none";
 	$("view-surfacewrap").classList.toggle("chat-open", sidechatOpen);
-	$("view-panel").style.display = view === "inbox" || view === "activity" ? "block" : "none";
-	$("inboxBtn").className = view === "inbox" ? "active" : "";
-	$("activityBtn").className = view === "activity" ? "active" : "";
-	if (view === "inbox") renderInbox();
-	if (view === "activity") renderActivity();
-	if (view !== "surface") currentSurface = null;
+	$("view-panel").style.display = view === "panel" ? "block" : "none";
 	renderCompanyNavSafe();
 }
 function renderCompanyNavSafe() {
@@ -623,47 +964,47 @@ function renderCompanyNavSafe() {
 	}
 }
 
-function showSurface(surface) {
-	currentSurface = surface.entry;
-	$("view-surface").src = `${backendUrl}/surface/${encodeURIComponent(surface.entry)}?v=${surface.version}`;
-	// An open sidechat follows the surface: switching surfaces re-attaches the
-	// dock to the new surface's conversation.
-	if (sidechatOpen && sidechatSurface !== surface.entry) void attachSidechat(surface);
-	$("sidechat-title").textContent = `Chat — ${surface.name}`;
+function showSurface(page) {
+	currentNodeId = page.id;
+	const frame = $("view-surface");
+	const version = String(page.view.version ?? 0);
+	if (frame.dataset.pageId !== page.id || frame.dataset.version !== version) {
+		frame.src = `${backendUrl}/surface/${encodeURIComponent(page.view.entry)}?v=${version}`;
+		frame.dataset.pageId = page.id;
+		frame.dataset.version = version;
+	}
+	if (sidechatOpen && sidechatPageId !== page.id) void attachSidechat(page);
+	$("sidechat-title").textContent = `Chat — ${page.label}`;
 	show("surface");
 	renderCompanyNavSafe();
 }
 
-// ---- the sidechat: a session docked to the surface the founder is viewing ----
-// Universal by construction: the chrome renders it for every surface, present
-// and future. The session is tagged `surface — <entry>` in the trail (the
-// scope convention's sibling) so surface-anchored conversations stay minable,
-// and a fresh one opens with a context preamble naming what the founder sees.
+// ---- sidechat: a session docked to one stable projection page ----------------
 
-function surfaceSessions(entry) {
-	// state.sessions arrive newest-first from the backend.
-	return (state.sessions ?? []).filter((s) => s.kind !== "autonomous" && s.surface === entry);
+function pageSessions(pageId) {
+	return (state.sessions ?? []).filter((session) => session.kind !== "autonomous" && session.page === pageId);
 }
 
-/** Attach the dock to this surface: resume its latest tagged session, or
+/** Attach the dock to this page: resume its latest tagged session, or
  * (fresh = true, or none yet) open a new one tagged to it. */
-async function attachSidechat(surface, fresh) {
-	const latest = fresh ? undefined : surfaceSessions(surface.entry)[0];
+async function attachSidechat(page, fresh) {
+	const latest = fresh ? undefined : pageSessions(page.id)[0];
 	cacheCurrentSession();
 	const result = await window.qorpera.openChat(latest ? latest.file : null);
 	if (!result?.ok) return;
 	currentSession = latest ? latest.file : null;
-	currentScope = result.scope ?? null;
-	sidechatSurface = surface.entry;
+	currentDepartment = null;
+	currentWorktree = null;
+	sidechatPageId = page.id;
 	sidechatPending = null;
 	if (latest) {
 		$("messages").innerHTML = sessionCache[latest.file] ?? '<div class="loading">loading session…</div>';
 	} else {
 		$("messages").innerHTML = "";
-		// Tag the trail session with its surface NOW, before any prompt — the
+		// Tag the trail session with its stable page ID before any prompt — the
 		// append-only trail can't be retro-tagged.
-		window.qorpera.rpcSend({ type: "set_session_name", name: `surface — ${surface.entry}` });
-		sidechatPending = surface;
+		window.qorpera.rpcSend({ type: "set_session_name", name: `page — ${page.id}` });
+		sidechatPending = page;
 	}
 	resetWorkGroup();
 	syncScopeChrome();
@@ -673,19 +1014,21 @@ async function attachSidechat(surface, fresh) {
 
 function toggleSidechat(open) {
 	sidechatOpen = open;
-	const surface = (state.surfaces ?? []).find((s) => s.entry === currentSurface);
-	if (open && surface && sidechatSurface !== surface.entry) void attachSidechat(surface);
-	if (surface) $("sidechat-title").textContent = `Chat — ${surface.name}`;
+	const page = projectionNode(currentNodeId);
+	if (open && page?.kind === "page" && page.view.type === "surface" && sidechatPageId !== page.id) {
+		void attachSidechat(page);
+	}
+	if (page) $("sidechat-title").textContent = `Chat — ${page.label}`;
 	show("surface");
 }
 
 function newSidechat() {
-	const surface = (state.surfaces ?? []).find((s) => s.entry === currentSurface);
-	if (!surface) return;
-	void attachSidechat(surface, true).then(() => {
+	const page = projectionNode(currentNodeId);
+	if (!page || page.kind !== "page" || page.view.type !== "surface") return;
+	void attachSidechat(page, true).then(() => {
 		// A fresh chat over an already-empty thread looks like a no-op —
 		// say what happened and put the cursor where the founder types next.
-		$("status").textContent = `new chat on ${surface.name} — earlier conversations stay under Chats`;
+		$("status").textContent = `new chat on ${page.label} — earlier conversations stay under Chats`;
 		$("input").focus();
 	});
 }
@@ -716,7 +1059,7 @@ async function renderActivity() {
 		open.textContent = mergeRunning ? "Running…" : "Open";
 		open.disabled = mergeRunning;
 		if (mergeRunning) open.title = "An autonomous merge session is running — resume is held so two agents never write one trail file.";
-		open.onclick = () => openSession(session.file);
+		open.onclick = () => openSession(session.file, "q:activity");
 		d.appendChild(open);
 		panel.appendChild(d);
 	}
@@ -818,21 +1161,25 @@ function renderInboxCard(item, settled) {
 	if (item.kind === "gate" && item.status === "pending") {
 		actions.appendChild(
 			inboxAction("Approve", "ok", async () => {
-				await fetch(`${backendUrl}/api/gate`, {
-					method: "POST",
-					headers: authHeaders({ "content-type": "application/json" }),
-					body: JSON.stringify({ file: item.file, action: "approved" }),
-				});
+				await authorizedPost("/api/gate", { file: item.file, action: "approved" });
 				await finish();
 			}),
 		);
 		actions.appendChild(
 			inboxAction("Deny", "no", async () => {
-				await fetch(`${backendUrl}/api/gate`, {
-					method: "POST",
-					headers: authHeaders({ "content-type": "application/json" }),
-					body: JSON.stringify({ file: item.file, action: "denied" }),
-				});
+				await authorizedPost("/api/gate", { file: item.file, action: "denied" });
+				await finish();
+			}),
+		);
+	}
+	if (
+		item.kind === "gate" &&
+		item.status === "consumed" &&
+		(item.gateTool === "behavior_signature" || item.gateTool === "extension_load")
+	) {
+		actions.appendChild(
+			inboxAction("Revoke trust", "no", async () => {
+				await authorizedPost("/api/gate", { file: item.file, action: "denied" });
 				await finish();
 			}),
 		);
@@ -843,10 +1190,9 @@ function renderInboxCard(item, settled) {
 		// acknowledgement next wake, same lane as a written response.
 		actions.appendChild(
 			inboxAction("Settle", "ok", async () => {
-				await fetch(`${backendUrl}/api/inbox/respond`, {
-					method: "POST",
-					headers: authHeaders({ "content-type": "application/json" }),
-					body: JSON.stringify({ file: item.file, response: "Acknowledged — settled from the inbox." }),
+				await authorizedPost("/api/inbox/respond", {
+					file: item.file,
+					response: "Acknowledged — settled from the inbox.",
 				});
 				await finish();
 			}),
@@ -860,11 +1206,7 @@ function renderInboxCard(item, settled) {
 		reply.appendChild(
 			inboxAction("Send response", "ok", async () => {
 				if (!text.value.trim()) return;
-				await fetch(`${backendUrl}/api/inbox/respond`, {
-					method: "POST",
-					headers: authHeaders({ "content-type": "application/json" }),
-					body: JSON.stringify({ file: item.file, response: text.value }),
-				});
+				await authorizedPost("/api/inbox/respond", { file: item.file, response: text.value });
 				await finish();
 			}),
 		);
@@ -1051,8 +1393,8 @@ function sendPrompt() {
 		// is looking at. Square brackets are stripped from the interpolations so
 		// the block stays cleanly parseable (chrome and backend both strip it
 		// from display; see renderHistory / listTrailSessions).
-		const name = String(sidechatPending.name ?? sidechatPending.entry).replace(/[[\]]/g, ")");
-		const entry = String(sidechatPending.entry).replace(/[[\]]/g, ")");
+		const name = String(sidechatPending.label).replace(/[[\]]/g, ")");
+		const entry = String(sidechatPending.view.entry).replace(/[[\]]/g, ")");
 		message = `[Sidechat context: this chat is docked to the surface "${name}" — app/surfaces/${entry}. The founder is looking at it right now; orient from that file before answering.]\n\n${text}`;
 		sidechatPending = null;
 	}
@@ -1364,6 +1706,44 @@ async function renderSettingsTab() {
 		return;
 	}
 
+	if (settingsTab === "appearance") {
+		setHeading(content, "Appearance");
+		const appearance = navAppearance();
+		const showKinds = document.createElement("input");
+		showKinds.type = "checkbox";
+		showKinds.checked = appearance.showKinds;
+		const pageHue = document.createElement("input");
+		pageHue.type = "color";
+		pageHue.value = appearance.pageHue;
+		const categoryHue = document.createElement("input");
+		categoryHue.type = "color";
+		categoryHue.value = appearance.categoryHue;
+		const save = () => {
+			localStorage.setItem(
+				navStorageKey("nav-appearance"),
+				JSON.stringify({ showKinds: showKinds.checked, pageHue: pageHue.value, categoryHue: categoryHue.value }),
+			);
+			renderCompanyNavSafe();
+		};
+		showKinds.onchange = save;
+		pageHue.oninput = save;
+		categoryHue.oninput = save;
+		setRow(content, "Page and category indicators", "subtle left-edge hue in navigation", showKinds);
+		setRow(content, "Page hue", "direct pages and instruments", pageHue);
+		setRow(content, "Category hue", "collection pages", categoryHue);
+		const reset = document.createElement("button");
+		reset.className = "save";
+		reset.textContent = "Reset navigation appearance";
+		reset.onclick = () => {
+			localStorage.removeItem(navStorageKey("nav-appearance"));
+			localStorage.removeItem(navStorageKey("nav-heights"));
+			renderCompanyNavSafe();
+			renderSettingsTab();
+		};
+		setRow(content, "Navigation sizing", "right-click any department or row to adjust it by ±12px", reset);
+		return;
+	}
+
 	if (settingsTab === "app") {
 		setHeading(content, "App — this company's fork");
 		const info = await window.qorpera.appInfo();
@@ -1511,18 +1891,10 @@ async function renderSettingsTab() {
 		setRow(content, "Identity", "acting AS the company externally: sending, posting, signing", identity);
 		const irreversible = modeSelect(cfg.classes.irreversible.mode);
 		setRow(content, "Irreversible", "prod deploys, deletions, legal commitments", irreversible);
-		const products = modeSelect(cfg.classes.products.mode);
-		// Product zones are not founder-managed settings: they constrain the
-		// controller's AUTONOMOUS work (founder sessions are trusted — the
-		// steering is the authority). The declared zones are shown for
-		// awareness; changing them goes through the controller (it files a
-		// gate) or the Advanced raw editor.
-		const zones = (cfg.productPaths ?? []).join(", ") || "none declared";
 		setRow(
 			content,
-			"Products",
-			`autonomous modification of the declared products (${zones}) — founder sessions are trusted; reading is always free`,
-			products,
+			"Product code",
+			"controllers are always read-only; product-workers can modify only their assigned worktree — not configurable",
 		);
 
 		setRow(content, "Authority itself", "editing gates, kernel files, or the inbox — always gated, not configurable");
@@ -1531,20 +1903,12 @@ async function renderSettingsTab() {
 		save.className = "save";
 		save.textContent = "Save gates";
 		save.onclick = async () => {
-			const res = await fetch(`${backendUrl}/api/authority/config`, {
-				method: "POST",
-				headers: authHeaders({ "content-type": "application/json" }),
-				// No productPaths here: the zones themselves are not a settings
-				// surface (the backend preserves the existing list when the
-				// field is absent).
-				body: JSON.stringify({
-					classes: {
-						money: { mode: money.value, limitUsd: Number(limit.value) || 50 },
-						identity: { mode: identity.value },
-						irreversible: { mode: irreversible.value },
-						products: { mode: products.value },
-					},
-				}),
+			const res = await authorizedPost("/api/authority/config", {
+				classes: {
+					money: { mode: money.value, limitUsd: Number(limit.value) || 50 },
+					identity: { mode: identity.value },
+					irreversible: { mode: irreversible.value },
+				},
 			});
 			const result = await res.json().catch(() => ({ ok: false }));
 			note.textContent = result.ok ? "saved — gates apply immediately" : `rejected: ${result.error ?? "error"}`;
@@ -1604,11 +1968,7 @@ async function renderSettingsTab() {
 		const note = document.createElement("div");
 		note.className = "sess-meta";
 		save.onclick = async () => {
-			const res = await fetch(`${backendUrl}/api/authority`, {
-				method: "POST",
-				headers: authHeaders({ "content-type": "application/json" }),
-				body: JSON.stringify({ content: editor.value }),
-			});
+			const res = await authorizedPost("/api/authority", { content: editor.value });
 			const result = await res.json().catch(() => ({ ok: false, error: "unexpected response" }));
 			note.textContent = result.ok ? "saved — gates apply immediately" : `rejected: ${result.error ?? "invalid TOML"}`;
 		};

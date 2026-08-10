@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
+const tsxLoader = import.meta.resolve("tsx");
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -65,7 +66,7 @@ function readSessionInfoNames(sessionFile: string): string[] {
 
 async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
 	let stderr = "";
-	const child = spawn(process.execPath, [cliPath, ...args], {
+	const child = spawn(process.execPath, ["--import", tsxLoader, cliPath, ...args], {
 		cwd: dirs.projectDir,
 		env: {
 			...process.env,
@@ -82,7 +83,7 @@ async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
 	return new Promise((resolvePromise, reject) => {
 		const timeout = setTimeout(() => {
 			child.kill("SIGKILL");
-		}, 10_000);
+		}, 30_000);
 		child.on("error", (error) => {
 			clearTimeout(timeout);
 			reject(error);
@@ -118,7 +119,7 @@ describe("startup session name", () => {
 		expect(result.code).toBe(1);
 		expect(result.signal).toBeNull();
 		expect(readSessionInfoNames(dirs.sessionFile)).toEqual(["CLI Named Session"]);
-	});
+	}, 45_000);
 
 	it("rejects empty --name values without appending session metadata", async () => {
 		const dirs = setup();
@@ -131,5 +132,5 @@ describe("startup session name", () => {
 		expect(result.signal).toBeNull();
 		expect(result.stderr).toContain("--name requires a non-empty value");
 		expect(readSessionInfoNames(dirs.sessionFile)).toEqual([]);
-	});
+	}, 45_000);
 });

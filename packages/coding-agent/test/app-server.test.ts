@@ -2,14 +2,14 @@
  * Per-company app server (spec §7 v1): state API, surface serving with
  * traversal protection, and gate resolution through the UI endpoint.
  */
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCompanyAppServer } from "../src/core/app-server.ts";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
-import { scaffoldCompany } from "../src/core/company.ts";
+import { scaffoldCompany, scaffoldProductDepartment } from "../src/core/company.ts";
 
 let root: string;
 let server: Server | undefined;
@@ -34,18 +34,67 @@ describe("company app server", () => {
 		const chrome = await (await fetch(`${base}/`)).text();
 		expect(chrome).toContain("Controller — Qorpera Base");
 
-		let state = (await (await fetch(`${base}/api/state`)).json()) as { surfaces: unknown[]; trailSessions: number };
-		expect(state.surfaces).toEqual([]);
-
-		// The controller builds a surface + registers it: it appears with no restart.
-		writeFileSync(join(root, "app", "surfaces", "hello.html"), "<h1>live surface</h1>", "utf-8");
+		let state = (await (await fetch(`${base}/api/state`)).json()) as {
+			projection: {
+				navigation: string[];
+				nodes: Array<{ id: string; kind: string; label: string; view?: { version?: number } }>;
+			};
+			trailSessions: number;
+		};
+		expect(state.projection.navigation).toEqual(["q:main"]);
+		expect(state.projection.nodes.map((node) => node.id)).toEqual(
+			expect.arrayContaining(["q:main", "q:inbox", "q:activity", "q:chats"]),
+		);
+		expect(state).not.toHaveProperty("surfaces");
 		writeFileSync(
 			join(root, "app", "manifest.json"),
-			JSON.stringify({ version: 1, surfaces: [{ name: "Hello", entry: "hello.html" }], routines: [] }),
+			JSON.stringify({ surfaces: [{ name: "Obsolete", entry: "obsolete.html" }] }),
 			"utf-8",
 		);
-		state = (await (await fetch(`${base}/api/state`)).json()) as { surfaces: Array<{ name: string }> } as never;
-		expect((state.surfaces[0] as { name: string }).name).toBe("Hello");
+		state = (await (await fetch(`${base}/api/state`)).json()) as typeof state;
+		expect(state.projection.nodes.some((node) => node.label === "Obsolete")).toBe(false);
+
+		// The controller publishes a stable hierarchy: it appears with no restart.
+		writeFileSync(join(root, "app", "surfaces", "hello.html"), "<h1>live surface</h1>", "utf-8");
+		writeFileSync(
+			join(root, "app", "projection.json"),
+			JSON.stringify({
+				schema: "qorpera.projection/v1",
+				default: "page:main.hello",
+				navigation: ["department:published"],
+				nodes: [
+					{
+						id: "department:published",
+						kind: "department",
+						label: "Published",
+						items: ["category:published.examples"],
+					},
+					{
+						id: "category:published.examples",
+						kind: "category",
+						label: "Examples",
+						items: ["page:main.hello"],
+					},
+					{
+						id: "page:main.hello",
+						kind: "page",
+						label: "Hello",
+						view: { type: "surface", entry: "hello.html" },
+					},
+				],
+			}),
+			"utf-8",
+		);
+		state = (await (await fetch(`${base}/api/state`)).json()) as typeof state;
+		expect(state.projection.navigation).toEqual(["q:main", "department:published"]);
+		expect(state.projection.nodes).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "page:main.hello",
+					view: expect.objectContaining({ type: "surface", entry: "hello.html", version: expect.any(Number) }),
+				}),
+			]),
+		);
 
 		const surface = await fetch(`${base}/surface/hello.html`);
 		expect(await surface.text()).toContain("live surface");
@@ -89,6 +138,19 @@ describe("company app server", () => {
 		expect(traversal.status).toBe(403);
 	});
 
+	it("refuses linked surface and substrate parents instead of reading host files", async () => {
+		const linkType = process.platform === "win32" ? "junction" : "dir";
+		symlinkSync(root, join(root, "app", "surfaces", "linked"), linkType);
+		symlinkSync(root, join(root, "app", "substrates", "linked"), linkType);
+
+		const surface = await fetch(`${base}/surface/linked%2Fauthority.toml`);
+		const substrate = await fetch(`${base}/api/substrate/linked%2Fauthority.toml`);
+		expect(surface.status).toBe(403);
+		expect(substrate.status).toBe(403);
+		expect(await surface.text()).not.toContain("[irreversible]");
+		expect(await substrate.text()).not.toContain("[irreversible]");
+	});
+
 	it("lists trail sessions and serves the controller↔founder message round-trip", async () => {
 		// A trail session appears in state with its first user message as title.
 		writeFileSync(
@@ -106,16 +168,23 @@ describe("company app server", () => {
 		);
 		// An agent-authored inbox message awaits the founder.
 		writeFileSync(
-			join(root, "inbox", "msg-pricing.md"),
+			join(root, "inbox", "messages", "msg-pricing.md"),
 			"# Pricing question\n\nWhich currency do customers pay in?\n",
 			"utf-8",
 		);
 
-		// An autonomous session (tagged at spawn via --name) is distinguished.
+		// An autonomous session is distinguished by its kernel-authenticated header.
 		writeFileSync(
 			join(root, "trail", "2026-08-04T11-00-00-000Z_auto.jsonl"),
 			[
-				JSON.stringify({ type: "session", version: 3, id: "auto", timestamp: "t", cwd: root }),
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "auto",
+					timestamp: "t",
+					cwd: root,
+					qorpera: { actor: "controller", attended: false, autonomous: true, label: "autonomous — conception" },
+				}),
 				JSON.stringify({ type: "session_info", id: "s1", parentId: null, name: "autonomous — conception" }),
 				JSON.stringify({
 					type: "message",
@@ -127,12 +196,26 @@ describe("company app server", () => {
 			"utf-8",
 		);
 
-		// A founder-scoped chat carries its product scope in the session name.
+		const department = scaffoldProductDepartment(root, "my-product");
+		const worktree = join(department.worktreesPath, "task-a");
+		// A product chat carries its department and worktree in the authenticated header.
 		writeFileSync(
 			join(root, "trail", "2026-08-04T12-00-00-000Z_scoped.jsonl"),
 			[
-				JSON.stringify({ type: "session", version: 3, id: "scoped", timestamp: "t", cwd: root }),
-				JSON.stringify({ type: "session_info", id: "s2", parentId: null, name: "scope — work/my-product" }),
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "scoped",
+					timestamp: "t",
+					cwd: root,
+					qorpera: { actor: "product-worker", attended: true, department: department.path, worktree },
+				}),
+				JSON.stringify({
+					type: "session_info",
+					id: "s2",
+					parentId: null,
+					name: `product — ${department.path} — ${worktree}`,
+				}),
 				JSON.stringify({
 					type: "message",
 					id: "1",
@@ -143,13 +226,13 @@ describe("company app server", () => {
 			"utf-8",
 		);
 
-		// A sidechat carries its surface in the session name, and its title comes
+		// A sidechat carries its stable page ID in the session name, and its title comes
 		// from the founder's words — the chrome's context preamble is stripped.
 		writeFileSync(
 			join(root, "trail", "2026-08-04T13-00-00-000Z_sidechat.jsonl"),
 			[
 				JSON.stringify({ type: "session", version: 3, id: "sidechat", timestamp: "t", cwd: root }),
-				JSON.stringify({ type: "session_info", id: "s3", parentId: null, name: "surface — revenue.html" }),
+				JSON.stringify({ type: "session_info", id: "s3", parentId: null, name: "page — page:revenue.overview" }),
 				JSON.stringify({
 					type: "message",
 					id: "1",
@@ -169,7 +252,14 @@ describe("company app server", () => {
 		);
 
 		const state = (await (await fetch(`${base}/api/state`)).json()) as {
-			sessions: Array<{ file: string; title: string; kind: string; scope?: string; surface?: string }>;
+			sessions: Array<{
+				file: string;
+				title: string;
+				kind: string;
+				department?: string;
+				worktree?: string;
+				page?: string;
+			}>;
 			inbox: Array<{ file: string; kind: string; status: string }>;
 		};
 		const chat = state.sessions.find((s) => s.file.includes("_abc"));
@@ -178,41 +268,59 @@ describe("company app server", () => {
 		const sidechat = state.sessions.find((s) => s.file.includes("_sidechat"));
 		expect(chat?.title).toBe("plan the pricing analysis");
 		expect(chat?.kind).toBe("chat");
-		expect(chat?.scope).toBeUndefined();
-		expect(chat?.surface).toBeUndefined();
+		expect(chat?.department).toBeUndefined();
+		expect(chat?.page).toBeUndefined();
 		expect(auto?.kind).toBe("autonomous");
 		expect(auto?.title).toBe("autonomous — conception");
 		expect(scoped?.kind).toBe("chat");
-		expect(scoped?.scope).toBe("work/my-product");
+		expect(scoped?.department).toBe(department.path);
+		expect(scoped?.worktree).toBe(worktree);
 		expect(scoped?.title).toBe("fix the launcher");
 		expect(sidechat?.kind).toBe("chat");
-		expect(sidechat?.surface).toBe("revenue.html");
+		expect(sidechat?.page).toBe("page:revenue.overview");
 		expect(sidechat?.title).toBe("why did July dip?");
 
-		// The declared product zones ride along for the chrome's scope selector.
-		writeFileSync(join(root, "authority.toml"), `[products]\nmode = "gate"\npaths = ["work/my-product"]\n`, "utf-8");
-		const withScopes = (await (await fetch(`${base}/api/state`)).json()) as {
-			scopes: Array<{ path: string; name: string; exists: boolean }>;
+		writeFileSync(
+			join(root, department.pullRequestsPath, "42.json"),
+			JSON.stringify({
+				number: 42,
+				title: "Fix the launcher",
+				status: "open",
+				branch: "qorpera/task-a",
+				url: "javascript:alert(1)",
+			}),
+			"utf-8",
+		);
+		const withDepartments = (await (await fetch(`${base}/api/state`)).json()) as {
+			departments: Array<{
+				path: string;
+				name: string;
+				pullRequests: Array<{ number: number; title: string; url?: string }>;
+			}>;
 		};
-		expect(withScopes.scopes).toEqual([{ path: "work/my-product", name: "my-product", exists: false }]);
-		const message = state.inbox.find((item) => item.file === "msg-pricing.md");
+		expect(withDepartments.departments[0].path).toBe(department.path);
+		expect(withDepartments.departments[0].pullRequests).toEqual([
+			expect.objectContaining({ number: 42, title: "Fix the launcher" }),
+		]);
+		expect(withDepartments.departments[0].pullRequests[0]).not.toHaveProperty("url");
+		const message = state.inbox.find((item) => item.file === "messages/msg-pricing.md");
 		expect(message?.kind).toBe("message");
 		expect(message?.status).toBe("pending");
 
 		// Body is served; the founder's response lands in the file; status flips.
-		const body = await (await fetch(`${base}/api/inbox/msg-pricing.md`)).text();
+		const body = await (await fetch(`${base}/api/inbox/messages%2Fmsg-pricing.md`)).text();
 		expect(body).toContain("Which currency");
 		const respond = await fetch(`${base}/api/inbox/respond`, {
 			method: "POST",
 			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
-			body: JSON.stringify({ file: "msg-pricing.md", response: "DKK primarily, EUR later." }),
+			body: JSON.stringify({ file: "messages/msg-pricing.md", response: "DKK primarily, EUR later." }),
 		});
 		expect(respond.status).toBe(200);
-		expect(readFileSync(join(root, "inbox", "msg-pricing.md"), "utf-8")).toContain("DKK primarily");
+		expect(readFileSync(join(root, "inbox", "messages", "msg-pricing.md"), "utf-8")).toContain("DKK primarily");
 		const after = (await (await fetch(`${base}/api/state`)).json()) as {
 			inbox: Array<{ file: string; status: string }>;
 		};
-		expect(after.inbox.find((item) => item.file === "msg-pricing.md")?.status).toBe("answered");
+		expect(after.inbox.find((item) => item.file === "messages/msg-pricing.md")?.status).toBe("answered");
 
 		// Traversal-shaped names are refused.
 		const bad = await fetch(`${base}/api/inbox/..%2Fauthority.toml`);
@@ -252,6 +360,35 @@ describe("company app server", () => {
 		expect(bad.status).toBe(400);
 	});
 
+	it("allows the founder UI to revoke only durable consumed trust", async () => {
+		const durableFile = "gate-aaaaaaaa.md";
+		writeFileSync(
+			join(root, "inbox", durableFile),
+			`---\nid: gate-aaaaaaaa\nstatus: consumed\nclass: authority\ntool: behavior_signature\nhash: ${"a".repeat(64)}\ncreated: 2026-08-10T00:00:00.000Z\n---\n`,
+			"utf-8",
+		);
+		const revoked = await fetch(`${base}/api/gate`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			body: JSON.stringify({ file: durableFile, action: "denied" }),
+		});
+		expect(revoked.status).toBe(200);
+		expect(readFileSync(join(root, "inbox", durableFile), "utf-8")).toContain("status: denied");
+
+		const actionFile = "gate-bbbbbbbb.md";
+		writeFileSync(
+			join(root, "inbox", actionFile),
+			`---\nid: gate-bbbbbbbb\nstatus: consumed\nclass: irreversible\ntool: bash\nhash: ${"b".repeat(64)}\ncreated: 2026-08-10T00:00:00.000Z\n---\n`,
+			"utf-8",
+		);
+		const rejected = await fetch(`${base}/api/gate`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			body: JSON.stringify({ file: actionFile, action: "denied" }),
+		});
+		expect(rejected.status).toBe(400);
+	});
+
 	it("rejects mutations without the kernel token — the agent cannot curl its own approvals", async () => {
 		const authority = discoverAuthority(root)!;
 		const blocked = evaluateToolCall(authority, "bash", { command: "rm -rf work" }, root);
@@ -284,22 +421,19 @@ describe("company app server", () => {
 		// Seed a custom [tools] section the structured editor must not clobber.
 		writeFileSync(
 			join(root, "authority.toml"),
-			`[irreversible]\nmode = "gate"\n\n[products]\nmode = "gate"\npaths = ["work/old"]\n\n[tools]\ndeploy = "irreversible"\n`,
+			`[irreversible]\nmode = "gate"\n\n[tools]\ndeploy = "irreversible"\n`,
 			"utf-8",
 		);
 		const cfg = (await (await fetch(`${base}/api/authority/config`)).json()) as {
 			classes: Record<string, { mode: string }>;
-			productPaths: string[];
 		};
 		expect(cfg.classes.irreversible.mode).toBe("gate");
-		expect(cfg.productPaths).toEqual(["work/old"]);
 
 		const save = await fetch(`${base}/api/authority/config`, {
 			method: "POST",
 			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
 			body: JSON.stringify({
 				classes: { irreversible: { mode: "notify" }, money: { mode: "gate", limitUsd: 100 } },
-				productPaths: ["work/new-product"],
 			}),
 		});
 		expect(save.status).toBe(200);
@@ -309,7 +443,6 @@ describe("company app server", () => {
 		const config = (await import("../src/core/authority.ts")).readAuthorityConfig(authority);
 		expect(config.classes.irreversible.mode).toBe("notify");
 		expect(config.classes.money.limitUsd).toBe(100);
-		expect(config.productPaths).toEqual(["work/new-product"]);
 		expect(config.classes.authority.mode).toBe("gate"); // never configurable
 	});
 

@@ -2,44 +2,61 @@
  * The per-company desktop app — "[Company Name] Controller" (spec §7, v1).
  *
  * Qorpera Base is the foundation every company's app is built on. Connecting
- * it to a company folder yields that company's own desktop app: a chromeless
- * app-mode window (Edge/Chrome `--app`, WebView2-class rendering — no
- * Tauri/Electron toolchain, no dependencies beyond node:http) over a local
- * backend that renders whatever the controller has built in `app/` — nav
- * from `app/manifest.json`, surfaces served live, the inbox as an
+ * it to a company folder yields that company's own desktop app: an Electron
+ * window over a kernel-owned local backend that renders whatever the
+ * controller has built in `app/` — nav
+ * from `app/projection.json`, surfaces served live, the inbox as an
  * approve/deny queue. Self-updating by construction: everything is read from
  * the folder on request and the window polls for changes, so a surface the
  * controller writes mid-session appears with no deploy step.
  *
- * Minimally viable on purpose. A packaged single-binary shell can replace
- * the window later without changing anything a controller builds.
+ * The server is not a standalone launcher. Only the desktop kernel may
+ * create it and retain its mutation credential.
  */
 
-import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+	closeSync,
+	fstatSync,
+	fsyncSync,
+	lstatSync,
+	openSync,
+	readdirSync,
+	readSync,
+	realpathSync,
+	renameSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { homedir } from "node:os";
-import { basename, join, normalize, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { basename, extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
-import { listProductScopes } from "./company.ts";
+import { canonicalCompanyRoot, listProductDepartments } from "./company.ts";
+import {
+	PLATFORM_PROJECTION_NODES,
+	PROJECTION_SCHEMA,
+	type ProjectionNode,
+	type ProjectionState,
+	parseProjectionDocument,
+} from "./projection.ts";
 
 export interface CompanyAppOptions {
 	root: string;
 	port?: number;
+	/** Kernel-owned static roots. Company UI is served through the same local
+	 * origin as its read models so an agent-authored renderer never receives
+	 * ambient file:// or outbound-network authority. */
+	userland?: { baseDir: string };
 	/**
 	 * Required on every MUTATING endpoint (gate resolution, inbox responses,
 	 * authority edits) via the x-qorpera-token header. The backend listens on
 	 * localhost, which the agent can reach with curl — without this token the
-	 * agent could approve its own gates. The Electron kernel holds the token
-	 * and hands it only to the renderer (file://, out of the agent's reach).
-	 * If omitted (standalone browser mode), one is generated and embedded in
-	 * the served chrome — a weaker posture, acceptable only for that mode.
+	 * agent could approve its own gates. The Electron kernel holds the token;
+	 * agent-authored same-origin surfaces never receive it.
 	 */
-	authToken?: string;
+	authToken: string;
 }
 
 interface InboxItem {
@@ -62,7 +79,9 @@ interface InboxItem {
 
 function companyName(root: string): string {
 	try {
-		const md = readFileSync(join(root, "company.md"), "utf-8");
+		const file = readCompanyFile(root, "company.md");
+		if (!file) throw new Error("company identity is not a physical file");
+		const md = file.content.toString("utf-8");
 		const heading = md.match(/^#\s+(.+)$/m)?.[1]?.trim();
 		if (heading && !/^Company$/i.test(heading)) return heading.replace(/\s*[—-]\s*Company$/i, "");
 	} catch {
@@ -73,30 +92,207 @@ function companyName(root: string): string {
 
 /** Stable per-company port so the installed launcher always finds its app. */
 export function companyPort(root: string): number {
-	const digest = createHash("sha256").update(resolve(root).toLowerCase()).digest();
+	const digest = createHash("sha256").update(canonicalCompanyRoot(root).toLowerCase()).digest();
 	return 4600 + (digest.readUInt16BE(0) % 400);
 }
 
-function readManifestSurfaces(root: string): Array<{ name: string; entry: string }> {
+function normalizedPath(path: string): string {
+	const resolved = resolve(path);
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+interface PhysicalFile {
+	path: string;
+	content: Buffer;
+	mtimeMs: number;
+}
+
+const MAX_APP_FILE_BYTES = 64 * 1024 * 1024;
+
+function samePhysicalFile(left: ReturnType<typeof fstatSync>, right: ReturnType<typeof fstatSync>): boolean {
+	return (
+		left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs
+	);
+}
+
+/** Open, validate, and read one file through the same handle. A path is never
+ * reopened after validation, so a concurrent junction or symlink swap fails
+ * identity checks instead of redirecting a privileged read. */
+function readPhysicalFileWithin(
+	directory: string,
+	entry: string,
+	maxBytes = MAX_APP_FILE_BYTES,
+): PhysicalFile | undefined {
+	let descriptor: number | undefined;
 	try {
-		const manifest = JSON.parse(readFileSync(join(root, "app", "manifest.json"), "utf-8")) as {
-			surfaces?: Array<{ name?: string; title?: string; id?: string; entry?: string; path?: string }>;
-		};
-		// Liberal reader: the controller owns its conventions inside app/, so
-		// accept the field spellings agents actually produce (observed live:
-		// {id,title,path} with a surfaces/ prefix) alongside {name,entry}.
-		return (manifest.surfaces ?? [])
-			.map((surface) => {
-				const rawEntry = surface.entry ?? surface.path;
-				if (typeof rawEntry !== "string") return undefined;
-				const entry = rawEntry.replace(/^\.?\/?(app\/)?surfaces\//, "");
-				const name = surface.name ?? surface.title ?? surface.id ?? entry;
-				return { name, entry };
-			})
-			.filter((surface): surface is { name: string; entry: string } => surface !== undefined);
+		const requestedRoot = resolve(directory);
+		const rootBefore = realpathSync(requestedRoot);
+		if (!lstatSync(rootBefore).isDirectory()) return undefined;
+		const target = resolve(rootBefore, normalize(entry));
+		const rel = relative(rootBefore, target);
+		if (!rel || rel.startsWith("..") || isAbsolute(rel)) return undefined;
+
+		descriptor = openSync(target, "r");
+		const opened = fstatSync(descriptor);
+		if (!opened.isFile() || opened.nlink !== 1 || opened.size < 0 || opened.size > maxBytes) return undefined;
+
+		const rootAfterOpen = realpathSync(requestedRoot);
+		const actual = realpathSync(target);
+		const current = statSync(target);
+		if (
+			normalizedPath(rootAfterOpen) !== normalizedPath(rootBefore) ||
+			normalizedPath(actual) !== normalizedPath(target) ||
+			!samePhysicalFile(opened, current)
+		) {
+			return undefined;
+		}
+
+		const content = Buffer.alloc(opened.size);
+		let offset = 0;
+		while (offset < content.length) {
+			const count = readSync(descriptor, content, offset, content.length - offset, offset);
+			if (count === 0) return undefined;
+			offset += count;
+		}
+
+		const completed = fstatSync(descriptor);
+		const rootAfterRead = realpathSync(requestedRoot);
+		const actualAfterRead = realpathSync(target);
+		const currentAfterRead = statSync(target);
+		if (
+			!samePhysicalFile(opened, completed) ||
+			!samePhysicalFile(opened, currentAfterRead) ||
+			normalizedPath(rootAfterRead) !== normalizedPath(rootBefore) ||
+			normalizedPath(actualAfterRead) !== normalizedPath(target)
+		) {
+			return undefined;
+		}
+		return { path: actual, content, mtimeMs: opened.mtimeMs };
 	} catch {
-		return [];
+		return undefined;
+	} finally {
+		if (descriptor !== undefined) closeSync(descriptor);
 	}
+}
+
+function writeAtomicPhysicalFile(path: string, content: string): void {
+	const entry = lstatSync(path);
+	if (
+		entry.isSymbolicLink() ||
+		!entry.isFile() ||
+		entry.nlink !== 1 ||
+		normalizedPath(realpathSync(path)) !== normalizedPath(path)
+	) {
+		throw new Error("kernel mutation target is not one physical file");
+	}
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	let descriptor: number | undefined;
+	try {
+		descriptor = openSync(temporary, "wx");
+		writeFileSync(descriptor, content, "utf-8");
+		fsyncSync(descriptor);
+		closeSync(descriptor);
+		descriptor = undefined;
+		renameSync(temporary, path);
+	} catch (error) {
+		if (descriptor !== undefined) closeSync(descriptor);
+		throw error;
+	}
+}
+
+/** Resolve one physical regular file without following a link at any level. */
+function physicalFileWithin(directory: string, entry: string): string | undefined {
+	try {
+		const root = realpathSync(resolve(directory));
+		if (!lstatSync(root).isDirectory()) return undefined;
+		const target = resolve(root, normalize(entry));
+		const rel = relative(root, target);
+		if (!rel || rel.startsWith("..") || isAbsolute(rel)) return undefined;
+		const actual = realpathSync(target);
+		if (normalizedPath(actual) !== normalizedPath(target) || !lstatSync(target).isFile()) return undefined;
+		return actual;
+	} catch {
+		return undefined;
+	}
+}
+
+function physicalDirectoryWithin(directory: string, entry = "."): string | undefined {
+	try {
+		const root = realpathSync(resolve(directory));
+		if (!lstatSync(root).isDirectory()) return undefined;
+		const target = resolve(root, normalize(entry));
+		const rel = relative(root, target);
+		if (rel && (rel.startsWith("..") || isAbsolute(rel))) return undefined;
+		const actual = realpathSync(target);
+		if (normalizedPath(actual) !== normalizedPath(target) || !lstatSync(target).isDirectory()) return undefined;
+		return actual;
+	} catch {
+		return undefined;
+	}
+}
+
+function companyFileWithin(root: string, directoryPath: string, entry: string): string | undefined {
+	const directory = physicalDirectoryWithin(root, directoryPath);
+	return directory ? physicalFileWithin(directory, entry) : undefined;
+}
+
+function readCompanyFile(root: string, relativePath: string, maxBytes?: number): PhysicalFile | undefined {
+	return readPhysicalFileWithin(root, relativePath, maxBytes);
+}
+
+function readCompanyFileWithin(
+	root: string,
+	directoryPath: string,
+	entry: string,
+	maxBytes?: number,
+): PhysicalFile | undefined {
+	const directory = physicalDirectoryWithin(root, directoryPath);
+	return directory ? readPhysicalFileWithin(directory, entry, maxBytes) : undefined;
+}
+
+function safeSurfaceEntry(root: string, entry: string): boolean {
+	return companyFileWithin(root, join("app", "surfaces"), entry) !== undefined;
+}
+
+function readProjection(root: string): ProjectionState {
+	const diagnostics: string[] = [];
+	let parsed: ProjectionState;
+	try {
+		const file = readCompanyFile(root, join("app", "projection.json"));
+		if (!file) throw new Error("projection is not a physical file");
+		parsed = parseProjectionDocument(JSON.parse(file.content.toString("utf-8")));
+	} catch {
+		parsed = {
+			schema: PROJECTION_SCHEMA,
+			default: "q:chats",
+			navigation: [],
+			nodes: [],
+			diagnostics: ["app/projection.json is missing or unreadable"],
+		};
+	}
+	diagnostics.push(...parsed.diagnostics);
+	const nodes: ProjectionNode[] = [...PLATFORM_PROJECTION_NODES, ...parsed.nodes].map((node) => {
+		if (node.kind !== "page" || node.view.type !== "surface") return node;
+		if (!safeSurfaceEntry(root, node.view.entry)) {
+			diagnostics.push(`surface page ${node.id} has an unsafe entry`);
+			return {
+				...node,
+				view: {
+					type: "builtin" as const,
+					id: "qorpera.placeholder" as const,
+					context: { title: node.label, message: "This page has an invalid surface entry." },
+				},
+			};
+		}
+		return { ...node, view: { ...node.view, version: surfaceVersion(root, node.view.entry) } };
+	});
+	return {
+		schema: PROJECTION_SCHEMA,
+		default: parsed.default ?? "q:chats",
+		navigation: ["q:main", ...parsed.navigation],
+		nodes,
+		diagnostics,
+	};
 }
 
 /** Plain text of an intent companion: frontmatter/headings off, first chunk. */
@@ -109,17 +305,21 @@ function intentText(content: string): string {
 }
 
 function readInbox(root: string): InboxItem[] {
-	const dir = join(root, "inbox");
-	if (!existsSync(dir)) return [];
+	const dir = physicalDirectoryWithin(root, "inbox");
+	if (!dir) return [];
 	const names = readdirSync(dir);
+	const messagesDir = physicalDirectoryWithin(dir, "messages");
+	const messageNames = messagesDir ? readdirSync(messagesDir) : [];
 	// Companion intent files (msg-<gateId>-intent.md) fold INTO their gate's
 	// card instead of appearing as items of their own.
 	const intents = new Map<string, { title?: string; text: string }>();
-	for (const file of names) {
+	for (const file of messageNames) {
 		const gateId = file.match(/^msg-(gate-[a-z0-9-]+)-intent\.md$/i)?.[1];
 		if (!gateId) continue;
 		try {
-			const content = readFileSync(join(dir, file), "utf-8");
+			const source = messagesDir ? readPhysicalFileWithin(messagesDir, file) : undefined;
+			if (!source) continue;
+			const content = source.content.toString("utf-8");
 			intents.set(gateId.toLowerCase(), {
 				title: content.match(/^#\s+(.+)$/m)?.[1]?.trim(),
 				text: intentText(content),
@@ -131,10 +331,11 @@ function readInbox(root: string): InboxItem[] {
 	const items: InboxItem[] = [];
 	for (const file of names) {
 		if (!file.endsWith(".md") || file === "README.md") continue;
-		if (/^msg-gate-[a-z0-9-]+-intent\.md$/i.test(file)) continue;
 		try {
-			const content = readFileSync(join(dir, file), "utf-8");
-			const mtimeMs = statSync(join(dir, file)).mtimeMs;
+			const source = readPhysicalFileWithin(dir, file);
+			if (!source) continue;
+			const content = source.content.toString("utf-8");
+			const { mtimeMs } = source;
 			const title = content.match(/^#\s+(.+)$/m)?.[1] ?? file;
 			if (file.startsWith("gate-")) {
 				const status = content.match(/^status:\s*(\w+)/m)?.[1] ?? "";
@@ -149,13 +350,22 @@ function readInbox(root: string): InboxItem[] {
 					gateTool: content.match(/^tool:\s*(.+)$/m)?.[1]?.trim(),
 					gateClass: content.match(/^class:\s*(.+)$/m)?.[1]?.trim(),
 				});
-			} else if (file.startsWith("msg-")) {
-				// Agent-authored item; answered once a Response section exists.
-				const status = /^##\s+Response/m.test(content) ? "answered" : "pending";
-				items.push({ file, status, title, kind: "message", mtimeMs });
 			} else {
 				items.push({ file, status: "", title, kind: "note", mtimeMs });
 			}
+		} catch {
+			// unreadable inbox entries are skipped
+		}
+	}
+	for (const file of messageNames) {
+		if (!/^msg-[a-z0-9][a-z0-9-]*\.md$/i.test(file) || /^msg-gate-[a-z0-9-]+-intent\.md$/i.test(file)) continue;
+		try {
+			const source = messagesDir ? readPhysicalFileWithin(messagesDir, file) : undefined;
+			if (!source) continue;
+			const content = source.content.toString("utf-8");
+			const title = content.match(/^#\s+(.+)$/m)?.[1] ?? file;
+			const status = /^##\s+Response/m.test(content) ? "answered" : "pending";
+			items.push({ file: `messages/${file}`, status, title, kind: "message", mtimeMs: source.mtimeMs });
 		} catch {
 			// unreadable inbox entries are skipped
 		}
@@ -165,7 +375,7 @@ function readInbox(root: string): InboxItem[] {
 
 function surfaceVersion(root: string, entry: string): number {
 	try {
-		return statSync(join(root, "app", "surfaces", entry)).mtimeMs;
+		return readCompanyFileWithin(root, join("app", "surfaces"), entry)?.mtimeMs ?? 0;
 	} catch {
 		return 0;
 	}
@@ -177,33 +387,46 @@ interface SessionSummary {
 	title: string;
 	/** "autonomous" = controller-initiated work (tagged at spawn); "chat" = founder-brought. */
 	kind: "chat" | "autonomous";
-	/** Product scope the session was opened under (root-relative), if any. */
-	scope?: string;
-	/** Surface a sidechat session is docked to (app/surfaces entry), if any. */
-	surface?: string;
+	/** Product-development department assigned to this chat. */
+	department?: string;
+	/** Exact product worktree assigned to this chat. */
+	worktree?: string;
+	/** Stable projection page ID a sidechat session is docked to, if any. */
+	page?: string;
 }
 
 /** Trail sessions ARE the chat list (spec §3). Title = first user message;
  * autonomous work is tagged with a session name at spawn time. */
 function listTrailSessions(root: string): SessionSummary[] {
-	const dir = join(root, "trail");
-	if (!existsSync(dir)) return [];
+	const dir = physicalDirectoryWithin(root, "trail");
+	if (!dir) return [];
 	const sessions: SessionSummary[] = [];
 	for (const file of readdirSync(dir)) {
 		if (!file.endsWith(".jsonl")) continue;
 		try {
-			const path = join(dir, file);
-			const head = readFileSync(path, "utf-8").slice(0, 16_384);
+			const source = readPhysicalFileWithin(dir, file);
+			if (!source) continue;
+			const head = source.content.toString("utf-8", 0, 16_384);
 			let title = "";
 			let name = "";
+			let sessionAuthority:
+				| {
+						autonomous?: boolean;
+						label?: string;
+						department?: string;
+						worktree?: string;
+				  }
+				| undefined;
 			for (const line of head.split("\n").slice(0, 40)) {
 				if (!line.trim()) continue;
 				try {
 					const entry = JSON.parse(line) as {
 						type?: string;
 						name?: string;
+						qorpera?: typeof sessionAuthority;
 						message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
 					};
+					if (entry.type === "session" && entry.qorpera) sessionAuthority = entry.qorpera;
 					if (entry.type === "session_info" && typeof entry.name === "string" && !name) {
 						name = entry.name;
 					}
@@ -221,21 +444,18 @@ function listTrailSessions(root: string): SessionSummary[] {
 					// partial trailing line in the head window
 				}
 			}
-			const kind = name.toLowerCase().startsWith("autonomous") ? "autonomous" : "chat";
-			// Scoped chats carry their scope in the session name (set at spawn:
-			// `scope — <root-relative path>`) — the chrome restores it on open.
-			const scope = kind === "chat" ? name.match(/^scope — (.+)$/)?.[1] : undefined;
-			// Sidechats carry the surface they were docked to (`surface — <entry>`,
-			// set by the chrome via set_session_name before the first prompt) so
-			// surface-anchored conversations stay attributable in the trail.
-			const surface = kind === "chat" ? name.match(/^surface — (.+)$/)?.[1] : undefined;
+			const kind = sessionAuthority?.autonomous ? "autonomous" : "chat";
+			// Sidechats carry immutable projection page IDs so moving a surface file
+			// does not detach its conversations from the UI instrument.
+			const page = kind === "chat" ? name.match(/^page — (.+)$/)?.[1] : undefined;
 			sessions.push({
 				file,
-				mtimeMs: statSync(path).mtimeMs,
-				title: kind === "autonomous" ? name : title || file.slice(0, 30),
+				mtimeMs: source.mtimeMs,
+				title: kind === "autonomous" ? (sessionAuthority?.label ?? name) : title || file.slice(0, 30),
 				kind,
-				scope,
-				surface,
+				department: sessionAuthority?.department,
+				worktree: sessionAuthority?.worktree,
+				page,
 			});
 		} catch {
 			// unreadable session files are skipped
@@ -244,18 +464,62 @@ function listTrailSessions(root: string): SessionSummary[] {
 	return sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
-const INBOX_FILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._ -]*\.md$/;
+interface PullRequestSummary {
+	file: string;
+	title: string;
+	status: string;
+	number?: number;
+	url?: string;
+	branch?: string;
+	updatedAt?: string;
+}
+
+function listPullRequestRecords(root: string, readModelPath: string): PullRequestSummary[] {
+	const dir = physicalDirectoryWithin(root, readModelPath);
+	if (!dir) return [];
+	try {
+		return readdirSync(dir)
+			.filter((file) => file.endsWith(".json"))
+			.flatMap((file) => {
+				try {
+					const source = readPhysicalFileWithin(dir, file, 256 * 1024);
+					if (!source) return [];
+					const record = JSON.parse(source.content.toString("utf-8")) as Record<string, unknown>;
+					if (typeof record.title !== "string") return [];
+					const url = typeof record.url === "string" && /^https?:\/\//i.test(record.url) ? record.url : undefined;
+					return [
+						{
+							file,
+							title: record.title.slice(0, 300),
+							status: typeof record.status === "string" ? record.status.slice(0, 40) : "unknown",
+							number: typeof record.number === "number" ? record.number : undefined,
+							url,
+							branch: typeof record.branch === "string" ? record.branch.slice(0, 300) : undefined,
+							updatedAt: typeof record.updatedAt === "string" ? record.updatedAt.slice(0, 80) : undefined,
+						},
+					];
+				} catch {
+					return [];
+				}
+			})
+			.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+	} catch {
+		return [];
+	}
+}
+
+const INBOX_FILE_PATTERN = /^(?:messages\/)?[A-Za-z0-9][A-Za-z0-9._ -]*\.md$/;
 
 /** Founder response: appended into the item; the agent reads it on next wake. */
 function respondToInboxItem(root: string, file: string, response: string): boolean {
-	if (!INBOX_FILE_PATTERN.test(file) || file === "README.md" || !response.trim()) return false;
-	const path = join(root, "inbox", file);
+	if (!INBOX_FILE_PATTERN.test(file) || !file.startsWith("messages/msg-") || !response.trim()) return false;
+	const source = readCompanyFile(root, join("inbox", file));
+	if (!source) return false;
 	try {
-		const content = readFileSync(path, "utf-8");
-		writeFileSync(
-			path,
+		const content = source.content.toString("utf-8");
+		writeAtomicPhysicalFile(
+			source.path,
 			`${content.trimEnd()}\n\n## Response (founder, ${new Date().toISOString().slice(0, 16)}Z)\n\n${response.trim()}\n`,
-			"utf-8",
 		);
 		return true;
 	} catch {
@@ -264,32 +528,30 @@ function respondToInboxItem(root: string, file: string, response: string): boole
 }
 
 function stateFor(root: string): unknown {
-	const surfaces = readManifestSurfaces(root).map((surface) => ({
-		...surface,
-		version: surfaceVersion(root, surface.entry),
-	}));
 	let trailSessions = 0;
 	try {
-		trailSessions = readdirSync(join(root, "trail")).filter((name) => name.endsWith(".jsonl")).length;
+		const trail = physicalDirectoryWithin(root, "trail");
+		trailSessions = trail ? readdirSync(trail).filter((name) => name.endsWith(".jsonl")).length : 0;
 	} catch {
 		// no trail yet
 	}
-	// Scopes for the chrome's scope selector: the declared product zones.
-	// Derived fresh from authority.toml each poll so a gate edit shows up
-	// without a reopen.
-	let scopes: Array<{ path: string; name: string; exists: boolean }> = [];
+	let departments: Array<ReturnType<typeof listProductDepartments>[number] & { pullRequests: PullRequestSummary[] }> =
+		[];
 	try {
-		scopes = listProductScopes(root);
+		departments = listProductDepartments(root).map((department) => ({
+			...department,
+			pullRequests: listPullRequestRecords(root, department.pullRequestsPath),
+		}));
 	} catch {
-		// a malformed authority file must not take company state down
+		// a malformed department record must not take company state down
 	}
 	return {
 		name: companyName(root),
-		surfaces,
+		projection: readProjection(root),
 		inbox: readInbox(root),
 		sessions: listTrailSessions(root),
 		trailSessions,
-		scopes,
+		departments,
 	};
 }
 
@@ -380,7 +642,7 @@ a:hover { background-image: radial-gradient(circle, currentcolor 0.75px, transpa
  * fake it here through founder-lane endpoints.
  */
 const SURFACE_KIT_JS = `window.qorpera = {
-	/** Company state: name, surfaces, inbox summary, sessions. */
+	/** Company state: name, projection, inbox summary, sessions. */
 	async getState() { return (await fetch("/api/state")).json(); },
 	/** Raw text of a substrate file (app/substrates/<name>). */
 	async readSubstrate(name) {
@@ -412,17 +674,16 @@ function escapeHtmlText(source: string): string {
  * first-class, not raw bytes.
  */
 function serveSurface(root: string, entry: string, response: ServerResponse): void {
-	const surfacesRoot = resolve(join(root, "app", "surfaces"));
-	const target = resolve(join(surfacesRoot, normalize(entry)));
-	if (target !== surfacesRoot && !target.startsWith(surfacesRoot + sep)) {
+	const target = readCompanyFileWithin(root, join("app", "surfaces"), entry);
+	if (!target) {
 		response.writeHead(403).end("outside surfaces");
 		return;
 	}
 	try {
-		const content = readFileSync(target);
-		if (target.endsWith(".md") || target.endsWith(".txt")) {
+		const { content } = target;
+		if (target.path.endsWith(".md") || target.path.endsWith(".txt")) {
 			const source = content.toString("utf-8");
-			const body = target.endsWith(".md")
+			const body = target.path.endsWith(".md")
 				? marked.parse(escapeHtmlText(source), { breaks: false, async: false })
 				: `<pre>${escapeHtmlText(source)}</pre>`;
 			response
@@ -432,13 +693,13 @@ function serveSurface(root: string, entry: string, response: ServerResponse): vo
 				);
 			return;
 		}
-		const type = target.endsWith(".html")
+		const type = target.path.endsWith(".html")
 			? "text/html; charset=utf-8"
-			: target.endsWith(".js")
+			: target.path.endsWith(".js")
 				? "text/javascript"
-				: target.endsWith(".css")
+				: target.path.endsWith(".css")
 					? "text/css"
-					: target.endsWith(".json")
+					: target.path.endsWith(".json")
 						? "application/json"
 						: "text/plain; charset=utf-8";
 		response.writeHead(200, { "content-type": type }).end(content);
@@ -452,16 +713,77 @@ function serveSurface(root: string, entry: string, response: ServerResponse): vo
  * traversal) — the data side of surfaces-as-instruments.
  */
 function serveSubstrate(root: string, entry: string, response: ServerResponse): void {
-	const substratesRoot = resolve(join(root, "app", "substrates"));
-	const target = resolve(join(substratesRoot, normalize(entry)));
-	if (target !== substratesRoot && !target.startsWith(substratesRoot + sep)) {
+	const target = readCompanyFileWithin(root, join("app", "substrates"), entry);
+	if (!target) {
 		response.writeHead(403).end("outside substrates");
 		return;
 	}
 	try {
-		response.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end(readFileSync(target));
+		response.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end(target.content);
 	} catch {
 		response.writeHead(404).end("substrate not found");
+	}
+}
+
+function staticContentType(path: string): string {
+	switch (extname(path).toLowerCase()) {
+		case ".html":
+			return "text/html; charset=utf-8";
+		case ".js":
+		case ".mjs":
+			return "text/javascript; charset=utf-8";
+		case ".css":
+			return "text/css; charset=utf-8";
+		case ".json":
+			return "application/json; charset=utf-8";
+		case ".svg":
+			return "image/svg+xml";
+		case ".png":
+			return "image/png";
+		case ".jpg":
+		case ".jpeg":
+			return "image/jpeg";
+		case ".gif":
+			return "image/gif";
+		case ".webp":
+			return "image/webp";
+		case ".woff2":
+			return "font/woff2";
+		default:
+			return "application/octet-stream";
+	}
+}
+
+function serveUserland(directory: string, entry: string, response: ServerResponse): void {
+	const target = readPhysicalFileWithin(directory, entry || "index.html");
+	serveUserlandTarget(target, response);
+}
+
+function serveCompanyUserland(root: string, entry: string, response: ServerResponse): void {
+	const target = readCompanyFileWithin(root, "userland", entry || "index.html");
+	serveUserlandTarget(target, response);
+}
+
+function serveUserlandTarget(target: PhysicalFile | undefined, response: ServerResponse): void {
+	if (!target) {
+		response.writeHead(404).end("userland asset not found");
+		return;
+	}
+	response
+		.writeHead(200, {
+			"content-type": staticContentType(target.path),
+			"cache-control": "no-store",
+			"x-content-type-options": "nosniff",
+		})
+		.end(target.content);
+}
+
+function decodedPath(value: string, response: ServerResponse): string | undefined {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		response.writeHead(400).end("invalid path encoding");
+		return undefined;
 	}
 }
 
@@ -469,11 +791,17 @@ function serveSubstrate(root: string, entry: string, response: ServerResponse): 
 function resolveGate(root: string, file: string, action: string): boolean {
 	if (!/^gate-[a-z0-9-]+\.md$/i.test(file)) return false;
 	if (action !== "approved" && action !== "denied") return false;
-	const path = join(root, "inbox", file);
+	const source = readCompanyFile(root, join("inbox", file));
+	if (!source) return false;
 	try {
-		const content = readFileSync(path, "utf-8");
-		if (!/^status:/m.test(content)) return false;
-		writeFileSync(path, content.replace(/^status:.*$/m, `status: ${action}`), "utf-8");
+		const content = source.content.toString("utf-8");
+		const status = content.match(/^status:\s*(\w+)/m)?.[1];
+		const tool = content.match(/^tool:\s*(.+)$/m)?.[1]?.trim();
+		const pendingTransition = status === "pending";
+		const durableRevocation =
+			status === "consumed" && action === "denied" && (tool === "behavior_signature" || tool === "extension_load");
+		if (!pendingTransition && !durableRevocation) return false;
+		writeAtomicPhysicalFile(source.path, content.replace(/^status:.*$/m, `status: ${action}`));
 		return true;
 	} catch {
 		return false;
@@ -512,19 +840,15 @@ const CHROME_HTML = (name: string, token: string) => `<!doctype html>
 <body>
 <nav>
 	<h1 id="title">${name}<small>Controller — Qorpera Base</small></h1>
-	<h2>Surfaces</h2>
-	<div id="surfaces"><div class="empty" style="padding:8px">none built yet</div></div>
-	<h2>Company</h2>
-	<button id="inboxBtn" onclick="showPanel('inbox')">Inbox<span id="inboxBadge"></span></button>
-	<button onclick="showPanel('trail')">Trail</button>
+	<div id="navigation"></div>
 </nav>
 <main>
 	<iframe id="frame" hidden></iframe>
 	<div id="panel"></div>
 </main>
 <script>
-let state = { surfaces: [], inbox: [], trailSessions: 0 };
-let current = null; // {kind:"surface", entry} | {kind:"panel", which}
+let state = { projection: { navigation: [], nodes: [], diagnostics: [] }, inbox: [], sessions: [], trailSessions: 0 };
+let current = null; // stable projection node ID
 async function refresh() {
 	try {
 		const next = await (await fetch("/api/state")).json();
@@ -534,35 +858,82 @@ async function refresh() {
 	} catch {}
 }
 function render() {
-	const nav = document.getElementById("surfaces");
+	const nav = document.getElementById("navigation");
 	nav.innerHTML = "";
-	if (!state.surfaces.length) nav.innerHTML = '<div class="empty" style="padding:8px">none built yet</div>';
-	for (const s of state.surfaces) {
-		const b = document.createElement("button");
-		b.textContent = s.name;
-		if (current && current.kind === "surface" && current.entry === s.entry) b.className = "active";
-		b.onclick = () => showSurface(s);
-		nav.appendChild(b);
+	if (current && !node(current)) current = null;
+	for (const departmentId of state.projection.navigation) {
+		const department = node(departmentId);
+		if (!department || department.kind !== "department") continue;
+		const heading = document.createElement("h2");
+		heading.textContent = department.label;
+		nav.appendChild(heading);
+		for (const childId of department.items) {
+			const child = node(childId);
+			if (!child) continue;
+			const button = document.createElement("button");
+			button.textContent = child.label;
+			if (current === child.id) button.className = "active";
+			button.onclick = () => openNode(child.id);
+			nav.appendChild(button);
+		}
 	}
-	const pending = state.inbox.filter((g) => g.status === "pending").length;
-	document.getElementById("inboxBadge").innerHTML = pending ? '<span class="badge">' + pending + "</span>" : "";
-	if (!current && state.surfaces.length) showSurface(state.surfaces[0]);
-	if (current && current.kind === "surface") {
-		const s = state.surfaces.find((x) => x.entry === current.entry);
-		if (s) { const src = "/surface/" + encodeURIComponent(s.entry) + "?v=" + s.version;
-			const f = document.getElementById("frame"); if (f.getAttribute("src") !== src) f.src = src; }
+	if (!current && state.projection.default) openNode(state.projection.default);
+	const target = node(current);
+	if (target && target.kind === "page" && target.view.type === "surface") {
+		const src = "/surface/" + encodeURIComponent(target.view.entry) + "?v=" + (target.view.version || 0);
+		const frame = document.getElementById("frame");
+		if (frame.getAttribute("src") !== src) frame.src = src;
 	}
-	if (current && current.kind === "panel") showPanel(current.which, true);
+	if (target && target.kind === "page" && target.view.type === "builtin") {
+		if (target.view.id === "qorpera.inbox") showPanel("inbox", true);
+		if (target.view.id === "qorpera.activity" || target.view.id === "qorpera.chats") showPanel("trail", true);
+	}
 }
-function showSurface(s) {
-	current = { kind: "surface", entry: s.entry };
+function node(id) { return state.projection.nodes.find((entry) => entry.id === id); }
+function openNode(id) {
+	const target = node(id);
+	if (!target) return;
+	current = id;
+	if (target.kind === "department" || target.kind === "category") return showCollection(target);
+	if (target.view.type === "surface") return showSurface(target);
+	if (target.view.id === "qorpera.inbox") return showPanel("inbox");
+	if (target.view.id === "qorpera.activity" || target.view.id === "qorpera.chats") return showPanel("trail");
+	const message = target.view.context && target.view.context.message || "This builtin is available in the desktop app.";
+	showMessage(target.label, message);
+}
+function showSurface(page) {
 	document.getElementById("panel").style.display = "none";
 	const f = document.getElementById("frame");
-	f.hidden = false; f.src = "/surface/" + encodeURIComponent(s.entry) + "?v=" + s.version;
+	f.hidden = false; f.src = "/surface/" + encodeURIComponent(page.view.entry) + "?v=" + (page.view.version || 0);
+	render();
+}
+function showCollection(collection) {
+	const p = document.getElementById("panel");
+	document.getElementById("frame").hidden = true;
+	p.style.display = "block";
+	p.innerHTML = "<h1></h1>";
+	p.querySelector("h1").textContent = collection.label;
+	for (const id of collection.items) {
+		const page = node(id);
+		if (!page || page.kind !== "page") continue;
+		const button = document.createElement("button");
+		button.className = "gate";
+		button.textContent = page.label;
+		button.onclick = () => openNode(page.id);
+		p.appendChild(button);
+	}
+	render();
+}
+function showMessage(title, message) {
+	const p = document.getElementById("panel");
+	document.getElementById("frame").hidden = true;
+	p.style.display = "block";
+	p.innerHTML = '<div class="gate"><div class="t"></div><div class="s"></div></div>';
+	p.querySelector(".t").textContent = title;
+	p.querySelector(".s").textContent = message;
 	render();
 }
 function showPanel(which, keep) {
-	current = { kind: "panel", which };
 	document.getElementById("frame").hidden = true;
 	const p = document.getElementById("panel");
 	p.style.display = "block";
@@ -581,6 +952,11 @@ function showPanel(which, keep) {
 					b.onclick = async () => { await fetch("/api/gate", { method: "POST", headers: { "content-type": "application/json", "x-qorpera-token": "${token}" }, body: JSON.stringify({ file: g.file, action }) }); refresh().then(() => showPanel("inbox", true)); };
 					d.appendChild(b);
 				}
+			} else if (g.status === "consumed" && (g.gateTool === "behavior_signature" || g.gateTool === "extension_load")) {
+				const b = document.createElement("button");
+				b.textContent = "Revoke trust"; b.className = "no";
+				b.onclick = async () => { await fetch("/api/gate", { method: "POST", headers: { "content-type": "application/json", "x-qorpera-token": "${token}" }, body: JSON.stringify({ file: g.file, action: "denied" }) }); refresh().then(() => showPanel("inbox", true)); };
+				d.appendChild(b);
 			}
 			p.appendChild(d);
 		}
@@ -596,17 +972,26 @@ setInterval(refresh, 2000);
 </html>`;
 
 export function createCompanyAppServer(options: CompanyAppOptions): Server {
-	const root = resolve(options.root);
-	const authToken =
-		options.authToken ?? createHash("sha256").update(`${root}${Date.now()}${Math.random()}`).digest("hex");
-	const embedTokenInChrome = options.authToken === undefined;
+	const root = canonicalCompanyRoot(options.root);
+	const authToken = options.authToken;
+	if (!authToken) throw new Error("company app server requires a desktop-kernel authorization token");
 	const authorized = (request: IncomingMessage): boolean => request.headers["x-qorpera-token"] === authToken;
 	return createServer((request: IncomingMessage, response: ServerResponse) => {
 		const url = new URL(request.url ?? "/", "http://localhost");
+		if (url.pathname.startsWith("/userland/base/") && options.userland) {
+			const entry = decodedPath(url.pathname.slice("/userland/base/".length), response);
+			if (entry !== undefined) serveUserland(options.userland.baseDir, entry, response);
+			return;
+		}
+		if (url.pathname.startsWith("/userland/fork/") && options.userland) {
+			const entry = decodedPath(url.pathname.slice("/userland/fork/".length), response);
+			if (entry !== undefined) serveCompanyUserland(root, entry, response);
+			return;
+		}
 		if (url.pathname === "/") {
 			response
 				.writeHead(200, { "content-type": "text/html; charset=utf-8" })
-				.end(CHROME_HTML(companyName(root), embedTokenInChrome ? authToken : ""));
+				.end(CHROME_HTML(companyName(root), ""));
 			return;
 		}
 		if (url.pathname === "/api/state") {
@@ -627,7 +1012,8 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			// headers — a throw after writeHead kills the server.
 			let theme = "";
 			try {
-				theme = readFileSync(join(root, "app", "surfaces", "theme.css"), "utf-8");
+				const file = readCompanyFileWithin(root, join("app", "surfaces"), "theme.css");
+				if (file) theme = file.content.toString("utf-8");
 			} catch {
 				// absent: serve empty
 			}
@@ -635,23 +1021,28 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			return;
 		}
 		if (url.pathname.startsWith("/api/substrate/") && request.method === "GET") {
-			serveSubstrate(root, decodeURIComponent(url.pathname.slice("/api/substrate/".length)), response);
+			const entry = decodedPath(url.pathname.slice("/api/substrate/".length), response);
+			if (entry !== undefined) serveSubstrate(root, entry, response);
 			return;
 		}
 		if (url.pathname.startsWith("/surface/")) {
-			serveSurface(root, decodeURIComponent(url.pathname.slice("/surface/".length)), response);
+			const entry = decodedPath(url.pathname.slice("/surface/".length), response);
+			if (entry !== undefined) serveSurface(root, entry, response);
 			return;
 		}
 		if (url.pathname.startsWith("/api/inbox/") && request.method === "GET") {
-			const file = decodeURIComponent(url.pathname.slice("/api/inbox/".length));
+			const file = decodedPath(url.pathname.slice("/api/inbox/".length), response);
+			if (file === undefined) return;
 			if (!INBOX_FILE_PATTERN.test(file)) {
 				response.writeHead(400).end("bad name");
 				return;
 			}
 			try {
+				const source = readCompanyFile(root, join("inbox", file));
+				if (!source) throw new Error("inbox item is not a physical file");
 				response
 					.writeHead(200, { "content-type": "text/plain; charset=utf-8" })
-					.end(readFileSync(join(root, "inbox", file), "utf-8"));
+					.end(source.content.toString("utf-8"));
 			} catch {
 				response.writeHead(404).end("not found");
 			}
@@ -671,9 +1062,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 						money: config.classes.money,
 						identity: config.classes.identity,
 						irreversible: config.classes.irreversible,
-						products: config.classes.products,
 					},
-					productPaths: config.productPaths,
 				}),
 			);
 			return;
@@ -691,20 +1080,20 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 				try {
 					const update = JSON.parse(body) as {
 						classes?: Record<string, { mode?: string; limitUsd?: number }>;
-						productPaths?: string[];
 					};
 					// Surgical merge into the existing file so [tools] and any
 					// custom sections survive; comments do not (Advanced tab
 					// exists for comment-preserving edits).
-					const path = join(root, "authority.toml");
+					const source = readCompanyFile(root, "authority.toml");
+					if (!source) throw new Error("authority policy is not a physical file");
 					let existing: Record<string, unknown> = {};
 					try {
-						existing = parseToml(readFileSync(path, "utf-8")) as Record<string, unknown>;
+						existing = parseToml(source.content.toString("utf-8")) as Record<string, unknown>;
 					} catch {
 						existing = {};
 					}
 					const modes = new Set(["auto", "notify", "gate"]);
-					for (const name of ["money", "identity", "irreversible", "products"]) {
+					for (const name of ["money", "identity", "irreversible"]) {
 						const incoming = update.classes?.[name];
 						if (!incoming) continue;
 						const section = { ...((existing[name] as Record<string, unknown>) ?? {}) };
@@ -712,13 +1101,8 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 						if (name === "money" && typeof incoming.limitUsd === "number") section.limit_usd = incoming.limitUsd;
 						existing[name] = section;
 					}
-					if (Array.isArray(update.productPaths)) {
-						const products = { ...((existing.products as Record<string, unknown>) ?? {}) };
-						products.paths = update.productPaths.filter((p): p is string => typeof p === "string" && !!p.trim());
-						existing.products = products;
-					}
 					existing.authority = { ...((existing.authority as Record<string, unknown>) ?? {}), mode: "gate" };
-					writeFileSync(path, `${stringifyToml(existing)}\n`, "utf-8");
+					writeAtomicPhysicalFile(source.path, `${stringifyToml(existing)}\n`);
 					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
 				} catch (error) {
 					response
@@ -730,9 +1114,11 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 		}
 		if (url.pathname === "/api/authority" && request.method === "GET") {
 			try {
+				const source = readCompanyFile(root, "authority.toml");
+				if (!source) throw new Error("authority policy is not a physical file");
 				response
 					.writeHead(200, { "content-type": "text/plain; charset=utf-8" })
-					.end(readFileSync(join(root, "authority.toml"), "utf-8"));
+					.end(source.content.toString("utf-8"));
 			} catch {
 				response.writeHead(404).end("no authority.toml");
 			}
@@ -755,7 +1141,9 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 						return;
 					}
 					parseToml(content); // reject unparseable TOML with a clear error
-					writeFileSync(join(root, "authority.toml"), content, "utf-8");
+					const source = readCompanyFile(root, "authority.toml");
+					if (!source) throw new Error("authority policy is not a physical file");
+					writeAtomicPhysicalFile(source.path, content);
 					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
 				} catch (error) {
 					response
@@ -807,149 +1195,4 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 		}
 		response.writeHead(404).end("not found");
 	});
-}
-
-/**
- * Open the app WINDOW — chromeless app mode, its own taskbar entry — falling
- * back to the default browser only when no app-capable browser is found.
- */
-function openAppWindow(url: string): void {
-	if (process.platform === "win32") {
-		// Probe real install paths — App Paths lookup via `start msedge` is
-		// not reliable (Edge may be absent entirely, e.g. EU unbundling).
-		const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
-		const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
-		const localAppData = process.env.LOCALAPPDATA ?? "";
-		const candidates = [
-			join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
-			join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
-			join(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
-			join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
-			join(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
-		];
-		const browser = candidates.find((candidate) => existsSync(candidate));
-		if (browser) {
-			spawn(browser, [`--app=${url}`], { stdio: "ignore", detached: true }).unref();
-		} else {
-			// Default browser tab — still works, just less app-like.
-			spawn("cmd", ["/c", "start", "", url], { stdio: "ignore", detached: true }).unref();
-		}
-		return;
-	}
-	if (process.platform === "darwin") {
-		spawn("open", [url], { stdio: "ignore", detached: true }).unref();
-		return;
-	}
-	spawn("xdg-open", [url], { stdio: "ignore", detached: true }).unref();
-}
-
-/** Write a desktop launcher: "<Company> Controller". */
-function installLauncher(root: string): string | undefined {
-	const name = companyName(root);
-	const desktop = join(homedir(), "Desktop");
-	if (!existsSync(desktop)) return undefined;
-	if (process.platform === "win32") {
-		const path = join(desktop, `${name} Controller.cmd`);
-		// The Controller IS the Base shell opened into this company: one
-		// foundation binary for every company, so Base updates reach all
-		// controllers at once. Prefer the installed app; fall back to the
-		// dev tree this CLI is running from.
-		const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
-		writeFileSync(
-			path,
-			[
-				"@echo off",
-				`set "EXE=%LocalAppData%\\Programs\\Qorpera Base\\Qorpera Base.exe"`,
-				`if not exist "%EXE%" set "EXE=%LocalAppData%\\Programs\\qorpera-base\\Qorpera Base.exe"`,
-				`if exist "%EXE%" (`,
-				// --company=<root> (one token): Chromium's single-instance argv
-				// forwarding reorders switches away from their positional values,
-				// but a switch=value pair travels intact.
-				`\tstart "" "%EXE%" --company="${root}"`,
-				"\texit /b",
-				")",
-				`cd /d "${repoRoot}"`,
-				`start "" node_modules\\electron\\dist\\electron.exe packages\\shell\\dist\\main.js --company="${root}"`,
-				"",
-			].join("\r\n"),
-			"utf-8",
-		);
-		return path;
-	}
-	const path = join(desktop, `${name.replace(/\s+/g, "-")}-controller.sh`);
-	writeFileSync(path, `#!/bin/sh\ncd "${root}"\nexec qorpera app "${root}"\n`, { encoding: "utf-8", mode: 0o755 });
-	return path;
-}
-
-/** Desktop launcher for the Base hub itself (the shell with no --company). */
-function installHubLauncher(): string | undefined {
-	const desktop = join(homedir(), "Desktop");
-	if (!existsSync(desktop) || process.platform !== "win32") return undefined;
-	const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
-	const path = join(desktop, "Qorpera Base.cmd");
-	writeFileSync(
-		path,
-		[
-			"@echo off",
-			`set "EXE=%LocalAppData%\\Programs\\Qorpera Base\\Qorpera Base.exe"`,
-			`if not exist "%EXE%" set "EXE=%LocalAppData%\\Programs\\qorpera-base\\Qorpera Base.exe"`,
-			`if exist "%EXE%" (`,
-			`\tstart "" "%EXE%"`,
-			"\texit /b",
-			")",
-			`cd /d "${repoRoot}"`,
-			`start "" node_modules\\electron\\dist\\electron.exe packages\\shell\\dist\\main.js`,
-			"",
-		].join("\r\n"),
-		"utf-8",
-	);
-	return path;
-}
-
-/** `qorpera app [dir]` / `qorpera app install [dir]` / `qorpera app install-hub`. */
-export async function handleAppCommand(args: string[]): Promise<boolean> {
-	if (args[0] !== "app") return false;
-	if (args[1] === "install-hub") {
-		const launcher = installHubLauncher();
-		console.log(launcher ? `Installed launcher: ${launcher}` : "Could not install (no Desktop or unsupported OS).");
-		return true;
-	}
-	const install = args[1] === "install";
-	const positional = args.slice(install ? 2 : 1).filter((arg) => !arg.startsWith("--"));
-	const root = resolve(positional[0] ?? process.cwd());
-	if (!existsSync(join(root, "authority.toml"))) {
-		console.error(`${root} is not a company folder (no authority.toml).`);
-		process.exitCode = 1;
-		return true;
-	}
-	const port = companyPort(root);
-	if (install) {
-		const launcher = installLauncher(root);
-		console.log(launcher ? `Installed launcher: ${launcher}` : "Could not find a Desktop folder to install to.");
-		return true;
-	}
-	const url = `http://127.0.0.1:${port}/`;
-	const server = createCompanyAppServer({ root, port });
-	const started = await new Promise<boolean>((resolvePromise) => {
-		server.once("error", (error: NodeJS.ErrnoException) => {
-			if (error.code === "EADDRINUSE") {
-				// The company's backend is already running — just open the window.
-				console.log(`${companyName(root)} Controller already running at ${url}; opening its window.`);
-				resolvePromise(false);
-			} else {
-				console.error(`Could not start on port ${port}: ${error.message}`);
-				process.exitCode = 1;
-				resolvePromise(false);
-			}
-		});
-		server.listen(port, "127.0.0.1", () => resolvePromise(true));
-	});
-	if (!started) {
-		if (process.exitCode !== 1) openAppWindow(url);
-		return true;
-	}
-	console.log(`${companyName(root)} Controller running at ${url}  (Ctrl+C to stop)`);
-	openAppWindow(url);
-	await new Promise(() => {}); // serve until killed
-	return true;
 }

@@ -173,8 +173,9 @@ Project skill`,
 
 			mkdirSync(agentDir, { recursive: true });
 			mkdirSync(join(cwd, ".qorpera"), { recursive: true });
-			symlinkSync(sharedExtDir, join(agentDir, "extensions"), "dir");
-			symlinkSync(sharedExtDir, join(cwd, ".qorpera", "extensions"), "dir");
+			const directoryLinkType = process.platform === "win32" ? "junction" : "dir";
+			symlinkSync(sharedExtDir, join(agentDir, "extensions"), directoryLinkType);
+			symlinkSync(sharedExtDir, join(cwd, ".qorpera", "extensions"), directoryLinkType);
 
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 			await loader.reload();
