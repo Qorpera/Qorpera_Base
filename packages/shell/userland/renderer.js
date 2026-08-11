@@ -471,12 +471,21 @@ const scopeChip = createChipSelect("scopeBtn", "scopeMenu", async (picked) => {
 	hydrateAgentState(false);
 });
 
+/** The bottom profile row carries the company: its name and initials. */
+function renderProfileRow() {
+	const name = state.name || "Company";
+	const words = name.trim().split(/\s+/).filter(Boolean);
+	$("coProfileName").textContent = name;
+	$("coProfileAvatar").textContent = (words.slice(0, 2).map((word) => word[0]).join("") || "C").toUpperCase();
+}
+
 async function refreshState() {
 	try {
 		const next = await (await fetch(`${backendUrl}/api/state`)).json();
 		if (JSON.stringify(next) !== JSON.stringify(state)) {
 			state = next;
 			renderCompanyNav();
+			renderProfileRow();
 			if (currentNodeId && !projectionNode(currentNodeId)) currentNodeId = null;
 			if (!currentNodeId) {
 				const routed = location.hash.match(/^#\/p\/(.+)$/)?.[1];
@@ -1325,6 +1334,7 @@ async function openProjectionNode(id, updateRoute = true) {
 		renderChats();
 		show("panel");
 	} else if (node.view.id === "qorpera.usage") {
+		// Company-authored usage pages only — the platform's Usage lives in Settings.
 		window.qorperaUsage.open({
 			backendUrl,
 			onBack: () => void openProjectionNode("q:main"),
@@ -1533,7 +1543,10 @@ function show(view) {
 	$("view-surfacewrap").style.display = view === "surface" ? "flex" : "none";
 	$("view-surfacewrap").classList.toggle("chat-open", sidechatOpen);
 	$("view-panel").style.display = view === "panel" ? "block" : "none";
-	$("view-usage").style.display = view === "usage" ? "block" : "none";
+	// Leave the usage view alone while it is docked inside Settings.
+	if ($("view-usage").parentElement !== $("settingsContent")) {
+		$("view-usage").style.display = view === "usage" ? "block" : "none";
+	}
 	renderCompanyNavSafe();
 }
 function renderCompanyNavSafe() {
@@ -2222,7 +2235,7 @@ let versionsView = "newest"; // newest | oldest | last-used | favorites
 let updateReadyVersion = null;
 
 function openSettings(tab) {
-	settingsTab = tab || "general";
+	settingsTab = tab || "usage";
 	$("settingsView").classList.add("open");
 	for (const b of document.querySelectorAll("#settingsView .stab")) {
 		b.classList.toggle("active", b.dataset.tab === settingsTab);
@@ -2230,7 +2243,19 @@ function openSettings(tab) {
 	renderSettingsTab();
 }
 function closeSettings() {
+	undockUsage();
 	$("settingsView").classList.remove("open");
+}
+
+/** The one usage view (#view-usage) docks inside Settings for the Usage tab
+ * and returns to <main> for company-authored usage pages. Must run before
+ * settingsContent is cleared, or the node would be destroyed with it. */
+function undockUsage() {
+	const usage = $("view-usage");
+	if (usage.parentElement === $("settingsContent")) {
+		usage.style.display = "none";
+		document.querySelector("main").insertBefore(usage, $("status"));
+	}
 }
 
 function setHeading(content, text) {
@@ -2267,7 +2292,25 @@ function modeSelect(value) {
 
 async function renderSettingsTab() {
 	const content = $("settingsContent");
+	undockUsage();
 	content.innerHTML = "";
+
+	if (settingsTab === "usage") {
+		if (!backendUrl) {
+			setHeading(content, "Usage");
+			content.insertAdjacentHTML("beforeend", '<div class="sess-meta">Open a company — usage covers its trail sessions.</div>');
+			return;
+		}
+		const usage = $("view-usage");
+		content.appendChild(usage);
+		usage.style.display = "block";
+		window.qorperaUsage.open({
+			backendUrl,
+			embedded: true,
+			onBack: () => closeSettings(),
+		});
+		return;
+	}
 
 	if (settingsTab === "general") {
 		const info = await window.qorpera.settingsInfo();

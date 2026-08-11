@@ -19,6 +19,10 @@
 	margin: 0 auto;
 	padding: 24px;
 }
+/* Docked inside Settings: the settings chrome already pads and navigates. */
+.usage-page.embedded { padding: 0; }
+.usage-page.embedded #usageBack { display: none; }
+#settingsContent > #view-usage { max-width: 1152px; }
 .usage-header {
 	display: flex;
 	align-items: flex-start;

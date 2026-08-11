@@ -29,9 +29,11 @@ The integration therefore has four Qorpera-owned parts:
   with that request.
 - `GET /api/usage` exposes that aggregate to the company's static userland as a
   read-only endpoint.
-- `q:usage` exposes the DOM view as a reserved platform page in the projection
-  state alongside company-authored `app/projection.json` nodes; it is not a
-  flat manifest entry or a company-authored surface.
+- The chrome's Settings view hosts the DOM view as its first page. The
+  `qorpera.usage` builtin remains available to company-authored
+  `app/projection.json` pages, but the platform no longer reserves a `q:usage`
+  navigation node; it is not a flat manifest entry or a company-authored
+  surface.
 
 The DOM implementation keeps the page layout, time-window selector, headline,
 provider shares, daily chart, metric strip, loading state, and model/day
