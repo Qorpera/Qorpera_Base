@@ -112,7 +112,11 @@ async function integrateCompanyPrompt() {
 async function openCompany(root) {
 	// The kernel forks/loads the company's own userland and reloads this
 	// window into it; this page's job ends here.
-	await window.qorpera.openCompany(root);
+	try {
+		await window.qorpera.openCompany(root);
+	} catch (error) {
+		alert(`Could not open the company:\n${(error && error.message) || error}`);
+	}
 }
 
 /** Boot into an already-open company (called after the kernel loads us). */

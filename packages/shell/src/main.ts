@@ -1266,6 +1266,10 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 	const runtimeLock = claimCompanyRuntimeLock(root);
 	let pendingBackendClose: (() => void) | undefined;
 	try {
+		// The scaffold is how kernel upgrades reach existing companies: an
+		// idempotent spine fill (never overwriting company content) so a
+		// company conceived under an older kernel passes current validation.
+		scaffoldCompany(root);
 		validateCompanyKernelStorage(root);
 		assertUserlandStorage(join(root, "userland"));
 		const userData = app.getPath("userData");

@@ -46,6 +46,7 @@ import {
 	scaffoldCompany,
 	scaffoldProductDepartment,
 	scaffoldProductDepartmentWithRuntimeLock,
+	validateCompanyKernelStorage,
 } from "../src/core/company.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -206,6 +207,24 @@ describe("scaffoldCompany", () => {
 		linkSync(outside, settings);
 		expect(() => enforceCompanyKernelSettings(root)).toThrow("one physical in-company file");
 		expect(readFileSync(outside, "utf-8")).toBe(`${JSON.stringify({ founder: true })}\n`);
+	});
+});
+
+describe("kernel upgrades reach existing companies through the scaffold", () => {
+	it("re-scaffolding an old-kernel company fills the missing spine so current validation passes", () => {
+		scaffoldCompany(root);
+		// Strip the spine down to what an older kernel created: no
+		// inbox/messages, no departments, no product registry, no projection.
+		rmSync(join(root, "inbox", "messages"), { recursive: true, force: true });
+		rmSync(join(root, "departments"), { recursive: true, force: true });
+		rmSync(join(root, ".qorpera", "products.json"), { force: true });
+		rmSync(join(root, "app", "projection.json"), { force: true });
+		expect(() => validateCompanyKernelStorage(root)).toThrow();
+		// The desktop kernel scaffolds before validating at open; the refilled
+		// spine must satisfy the validator or every legacy company is a dead
+		// click in the hub.
+		scaffoldCompany(root);
+		expect(() => validateCompanyKernelStorage(root)).not.toThrow();
 	});
 });
 
