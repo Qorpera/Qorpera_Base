@@ -25,7 +25,7 @@
 		<button class="hubbtn" disabled title="Sync, community, and compliance — not built yet">Connect to Qorpera Cloud (soon)</button>
 		<div class="navspacer"></div>
 		<div class="hubver" id="hubVersion"></div>
-		<button class="profileRow" onclick="openSettings('general')"><span class="avatar">F</span><span class="profileText">Founder<br><small>Settings</small></span></button>
+		<button class="profileRow" onclick="openSettings('usage')" title="Settings"><span class="avatar">F</span><span class="profileName">Founder</span></button>
 	</div>
 	<div id="conav" style="display:none">
 		<div class="sidebar-create">
@@ -35,7 +35,7 @@
 		<div id="navigation" class="sidebar-scroll" aria-label="Company navigation"></div>
 		<div id="projectionDiagnostics" class="projection-diagnostics"></div>
 		<div class="navspacer"></div>
-		<button class="profileRow" onclick="openSettings('general')"><span class="avatar">F</span><span class="profileText">Founder<br><small>Settings</small></span></button>
+		<button class="profileRow" onclick="openSettings('usage')" title="Settings"><span class="avatar" id="coProfileAvatar">C</span><span class="profileName" id="coProfileName">Company</span></button>
 	</div>
 </nav>
 <div id="navHandle" class="paneHandle" title="Drag to resize the sidebar"></div>
@@ -94,6 +94,7 @@
 	<nav>
 		<button onclick="closeSettings()">← Back</button>
 		<h1 style="margin:10px 0 4px">Settings</h1>
+		<button class="stab" data-tab="usage" onclick="openSettings('usage')">Usage</button>
 		<button class="stab" data-tab="general" onclick="openSettings('general')">General</button>
 		<button class="stab" data-tab="appearance" onclick="openSettings('appearance')">Appearance</button>
 		<button class="stab" data-tab="app" onclick="openSettings('app')">App</button>

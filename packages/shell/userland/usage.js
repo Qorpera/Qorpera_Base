@@ -715,6 +715,9 @@
 			page.onBack = options.onBack;
 			if (changedCompany) page.summary = null;
 			if (!root().querySelector(".usage-page")) pageShell();
+			// Embedded (inside Settings): the host chrome owns navigation, so
+			// the page's own back arrow disappears and the padding collapses.
+			root().querySelector(".usage-page").classList.toggle("embedded", Boolean(options.embedded));
 			renderWindowControls();
 			if (page.summary) renderLoaded();
 			else loadUsage(false);

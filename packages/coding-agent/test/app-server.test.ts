@@ -70,8 +70,9 @@ describe("company app server", () => {
 		};
 		expect(state.projection.navigation).toEqual(["q:main"]);
 		expect(state.projection.nodes.map((node) => node.id)).toEqual(
-			expect.arrayContaining(["q:main", "q:inbox", "q:activity", "q:chats", "q:usage"]),
+			expect.arrayContaining(["q:main", "q:inbox", "q:activity", "q:chats"]),
 		);
+		expect(state.projection.nodes.map((node) => node.id)).not.toContain("q:usage");
 		expect(state).not.toHaveProperty("surfaces");
 		writeFileSync(
 			join(root, "app", "manifest.json"),

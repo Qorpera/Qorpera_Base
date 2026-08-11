@@ -2,16 +2,11 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM_PROJECTION_NODES, PROJECTION_SCHEMA, parseProjectionDocument } from "../src/core/projection.ts";
 
 describe("company UI projection", () => {
-	it("publishes Usage as a reserved platform projection page", () => {
-		expect(PLATFORM_PROJECTION_NODES).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					id: "q:usage",
-					kind: "page",
-					view: { type: "builtin", id: "qorpera.usage" },
-				}),
-			]),
-		);
+	it("keeps Usage out of the platform navigation — it lives in Settings", () => {
+		expect(PLATFORM_PROJECTION_NODES.map((node) => node.id)).not.toContain("q:usage");
+		const main = PLATFORM_PROJECTION_NODES.find((node) => node.id === "q:main");
+		expect(main?.kind).toBe("department");
+		expect(main && "items" in main ? main.items : []).not.toContain("q:usage");
 	});
 
 	it("accepts the bounded Department → Category → Page hierarchy with stable IDs", () => {

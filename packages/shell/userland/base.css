@@ -469,9 +469,10 @@ h2.cat .catBtn { width: auto; margin-left: auto; padding: 0 7px; font-size: 14px
 h2.cat .catBtn:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
 #chatsCaret { font-size: 10px; color: var(--text-soft); }
 .loading { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-soft); }
-.profileRow { display: flex !important; align-items: center; gap: 10px; border-top: 1px solid var(--border) !important; border-radius: 0 !important; padding-top: 12px !important; margin-top: 8px; flex: 0 0 auto; }
-.avatar { width: 30px; height: 30px; border-radius: 50%; background: rgba(255, 255, 255, 0.07); display: inline-flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; }
-.profileText small { color: var(--text-soft); }
+/* Bottom profile row, Codex-app shape: small initials avatar + one name line. */
+.profileRow { display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin-top: 8px; border-radius: 8px; flex: 0 0 auto; color: var(--text); font-size: 13px; min-width: 0; }
+.avatar { width: 24px; height: 24px; border-radius: 50%; background: rgba(255, 255, 255, 0.1); display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-size: 10px; letter-spacing: 0.02em; flex-shrink: 0; }
+.profileName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .navspacer { flex: 1; min-height: 12px; }
 .hubver { color: var(--text-soft); font-size: 11px; padding: 0 9px 8px; }
 /* display set via .open class — never on the bare id, or the hidden

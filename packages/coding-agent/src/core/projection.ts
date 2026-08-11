@@ -76,7 +76,7 @@ const BUILTIN_IDS: ReadonlySet<string> = new Set<ProjectionBuiltinId>([
 	"qorpera.pull-requests",
 	"qorpera.placeholder",
 ]);
-const PLATFORM_NODE_IDS: ReadonlySet<string> = new Set(["q:main", "q:inbox", "q:activity", "q:chats", "q:usage"]);
+const PLATFORM_NODE_IDS: ReadonlySet<string> = new Set(["q:main", "q:inbox", "q:activity", "q:chats"]);
 
 function strings(value: unknown, field: string, diagnostics: string[]): string[] {
 	if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
@@ -246,10 +246,11 @@ export const EMPTY_PROJECTION: ProjectionDocument = {
 	nodes: [],
 };
 
+/* Usage is chrome, not a department page: it lives in Settings. The
+ * qorpera.usage builtin stays valid for company-authored projections. */
 export const PLATFORM_PROJECTION_NODES: ProjectionNode[] = [
-	{ id: "q:main", kind: "department", label: "Main", items: ["q:inbox", "q:activity", "q:chats", "q:usage"] },
+	{ id: "q:main", kind: "department", label: "Main", items: ["q:inbox", "q:activity", "q:chats"] },
 	{ id: "q:inbox", kind: "page", label: "Inbox", view: { type: "builtin", id: "qorpera.inbox" } },
 	{ id: "q:activity", kind: "page", label: "Activity", view: { type: "builtin", id: "qorpera.activity" } },
 	{ id: "q:chats", kind: "page", label: "Chats", view: { type: "builtin", id: "qorpera.chats" } },
-	{ id: "q:usage", kind: "page", label: "Usage", view: { type: "builtin", id: "qorpera.usage" } },
 ];
