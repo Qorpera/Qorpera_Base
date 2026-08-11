@@ -1,11 +1,12 @@
 import chalk from "chalk";
-import { type SpawnSyncReturns, spawnSync } from "child_process";
+import type { SpawnSyncReturns } from "child_process";
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "fs";
 import { arch, platform } from "os";
 import { join } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { APP_NAME, getBinDir } from "../config.ts";
+import { spawnSync } from "./child-process.ts";
 
 const TOOLS_DIR = getBinDir();
 const NETWORK_TIMEOUT_MS = 10_000;

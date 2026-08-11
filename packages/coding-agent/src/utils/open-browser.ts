@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from "./child-process.ts";
 
 /**
  * Open a URL or file in the platform browser/default handler.

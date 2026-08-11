@@ -732,6 +732,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		child = spawn(process.execPath, args, {
 			cwd: runtimeDir,
 			stdio: ["pipe", "pipe", "pipe"],
+			windowsHide: true,
 			env,
 		}) as ChildProcessWithoutNullStreams;
 	} catch (error) {

@@ -17,7 +17,7 @@
  * inside the company, bounded output, and a hard timeout.
  */
 
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -26,6 +26,7 @@ import type { AgentTool } from "@qorpera/pi-agent-core";
 import { Text } from "@qorpera/pi-tui";
 import { type Static, Type } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
+import { spawn } from "../../utils/child-process.ts";
 import {
 	type Authority,
 	COMPANY_TOOL_NAME,

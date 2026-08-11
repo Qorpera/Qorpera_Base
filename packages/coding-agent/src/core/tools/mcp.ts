@@ -22,7 +22,7 @@
  * an optional kernel module, outside the minimum.
  */
 
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -30,6 +30,7 @@ import type { AgentTool } from "@qorpera/pi-agent-core";
 import { Text } from "@qorpera/pi-tui";
 import { type Static, Type } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
+import { spawn } from "../../utils/child-process.ts";
 import { discoverAuthority } from "../authority.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { brokeredHttpRequest } from "../http-broker-client.ts";

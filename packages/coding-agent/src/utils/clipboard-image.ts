@@ -97,6 +97,7 @@ function runCommand(
 	const result = spawnSync(command, args, {
 		timeout: timeoutMs,
 		maxBuffer: maxBufferBytes,
+		windowsHide: true,
 		env: options?.env,
 	});
 

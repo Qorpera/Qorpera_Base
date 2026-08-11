@@ -26,10 +26,11 @@
  * openai/codex app-server-protocol sources on 2026-08-04.
  */
 
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { createInterface } from "node:readline";
 import { VERSION } from "../../config.ts";
+import { spawn } from "../../utils/child-process.ts";
 import { type Authority, evaluateToolCall, finalizeAuthorityDecision } from "../authority.ts";
 import type { SessionManager } from "../session-manager.ts";
 

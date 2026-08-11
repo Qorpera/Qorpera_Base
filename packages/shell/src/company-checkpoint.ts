@@ -75,6 +75,7 @@ function localGitConfig(root: string, scope: "--local" | "--worktree", env: Node
 	const result = spawnSync("git", ["-C", root, "config", scope, "--no-includes", "--null", "--list"], {
 		encoding: "utf-8",
 		shell: false,
+		windowsHide: true,
 		env,
 	});
 	if (result.status !== 0 || typeof result.stdout !== "string") {
@@ -121,7 +122,7 @@ function git(root: string, args: string[]): ReturnType<typeof spawnSync> {
 			root,
 			...args,
 		],
-		{ encoding: "utf-8", shell: false, env },
+		{ encoding: "utf-8", shell: false, windowsHide: true, env },
 	);
 }
 

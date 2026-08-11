@@ -18,7 +18,6 @@
  * describes comes from enforcement (`authority.ts`), never from prompt tier.
  */
 
-import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	closeSync,
@@ -41,6 +40,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
 import { getAgentDir } from "../config.ts";
+import { spawnSync } from "../utils/child-process.ts";
 import {
 	bindCompanySecret,
 	bindNetworkDestination,

@@ -2,8 +2,7 @@
  * Shared command execution utilities for extensions and custom tools.
  */
 
-import { spawn } from "node:child_process";
-import { waitForChildProcess } from "../utils/child-process.ts";
+import { spawn, waitForChildProcess } from "../utils/child-process.ts";
 
 /**
  * Options for executing shell commands.

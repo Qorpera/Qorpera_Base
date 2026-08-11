@@ -15,6 +15,22 @@ import crossSpawn from "cross-spawn";
 
 const EXIT_STDIO_GRACE_MS = 100;
 
+/* windowsHide-by-default spawn/spawnSync. A console-subsystem child (git, rg,
+ * npm, a model CLI) spawned from a GUI-subsystem parent — the Electron shell,
+ * or the kernel's run-as-node agent child — allocates a visible console window
+ * on Windows, so every such call flashes a terminal at the founder. Routing
+ * through these wrappers sets CREATE_NO_WINDOW; an explicit windowsHide at a
+ * call site still wins. */
+export const spawn: typeof nodeSpawn = ((command: string, args?: unknown, options?: object) =>
+	Array.isArray(args)
+		? nodeSpawn(command, args, { windowsHide: true, ...options })
+		: nodeSpawn(command, { windowsHide: true, ...(args as object) })) as typeof nodeSpawn;
+
+export const spawnSync: typeof nodeSpawnSync = ((command: string, args?: unknown, options?: object) =>
+	Array.isArray(args)
+		? nodeSpawnSync(command, args, { windowsHide: true, ...options })
+		: nodeSpawnSync(command, { windowsHide: true, ...(args as object) })) as typeof nodeSpawnSync;
+
 export function spawnProcess(
 	command: string,
 	args: string[],
@@ -22,7 +38,8 @@ export function spawnProcess(
 ): ChildProcessByStdio<null, Readable, Readable>;
 export function spawnProcess(command: string, args: string[], options: SpawnOptions): ChildProcess;
 export function spawnProcess(command: string, args: string[], options: SpawnOptions): ChildProcess {
-	return process.platform === "win32" ? crossSpawn(command, args, options) : nodeSpawn(command, args, options);
+	const opts = { windowsHide: true, ...options };
+	return process.platform === "win32" ? crossSpawn(command, args, opts) : nodeSpawn(command, args, opts);
 }
 
 export function spawnProcessSync(
@@ -30,9 +47,8 @@ export function spawnProcessSync(
 	args: string[],
 	options: SpawnSyncOptionsWithStringEncoding,
 ): SpawnSyncReturns<string> {
-	return process.platform === "win32"
-		? crossSpawn.sync(command, args, options)
-		: nodeSpawnSync(command, args, options);
+	const opts = { windowsHide: true, ...options };
+	return process.platform === "win32" ? crossSpawn.sync(command, args, opts) : nodeSpawnSync(command, args, opts);
 }
 
 /**
