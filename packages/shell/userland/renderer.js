@@ -162,7 +162,9 @@ async function enterCompany(active) {
 	hydrateAgentState(true);
 	await refreshState();
 	document.title = `${state.name || "Company"} Controller`;
-	$("wordmark").textContent = document.title;
+	// The titlebar shows no company title next to the sidebar toggle; only
+	// the OS window title carries the "<name> Controller" label.
+	$("wordmark").hidden = true;
 	if (poller) clearInterval(poller);
 	poller = setInterval(refreshState, 2000);
 }
