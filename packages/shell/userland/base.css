@@ -46,19 +46,16 @@ code, pre { font-family: var(--font-mono); }
 	background: transparent; user-select: none;
 	-webkit-app-region: drag;
 }
-.product-mark {
-	display: grid; grid-template-columns: 1fr 1fr;
-	width: 28px; height: 17px; min-height: 17px; padding: 0;
-	border: 2px solid var(--text-muted); border-radius: 5px;
-	overflow: hidden; background: transparent; color: var(--text-muted);
+.sidebar-toggle {
+	display: flex; align-items: center; justify-content: center;
+	width: 32px; height: 32px; min-height: 32px; padding: 0;
+	border: 0; border-radius: 8px;
+	background: transparent; color: var(--text-muted);
 	cursor: pointer; -webkit-app-region: no-drag;
 }
-.product-mark:hover:not(:disabled), .product-mark:focus-visible {
-	border-color: var(--text); background: rgba(255, 255, 255, 0.06);
+.sidebar-toggle:hover, .sidebar-toggle:focus-visible {
+	background: rgba(255, 255, 255, 0.06); color: var(--text);
 }
-.product-mark i:first-child { border-right: 2px solid var(--text-muted); }
-.product-mark:hover i:first-child, .product-mark:focus-visible i:first-child { border-color: var(--text); }
-body.sidebar-collapsed .product-mark i:first-child { background: var(--accent); }
 #wordmark {
 	color: var(--text-muted); font-size: 12px; font-weight: 560;
 	letter-spacing: 0.02em; line-height: 1; white-space: nowrap;
