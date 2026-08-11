@@ -25,6 +25,10 @@ export interface HttpBrokerRequest {
 	timeoutMs?: number;
 	/** Acting company-authored code, when the request comes from codified behavior. */
 	behavior?: { path: string; contentHash: string };
+	/** File mode: stream the 2xx response into this company-relative path. */
+	saveTo?: string;
+	/** File mode: stream this company-relative file out as the request body. */
+	sendFile?: string;
 }
 
 export interface HttpBrokerResponse {
@@ -33,6 +37,9 @@ export interface HttpBrokerResponse {
 	body: string;
 	bodyBytes: number;
 	bodyTruncated?: boolean;
+	/** File mode: where the kernel streamed the response, with its digest. */
+	savedTo?: string;
+	sha256?: string;
 }
 
 interface PendingRequest {
@@ -119,6 +126,8 @@ export function handleHttpBrokerFrame(value: unknown): boolean {
 		body?: unknown;
 		bodyBytes?: unknown;
 		bodyTruncated?: unknown;
+		savedTo?: unknown;
+		sha256?: unknown;
 		error?: unknown;
 	};
 	if (frame.type !== "qorpera_http_response") return false;
@@ -144,6 +153,8 @@ export function handleHttpBrokerFrame(value: unknown): boolean {
 		body: frame.body,
 		bodyBytes: typeof frame.bodyBytes === "number" ? frame.bodyBytes : Buffer.byteLength(frame.body, "utf-8"),
 		...(frame.bodyTruncated === true ? { bodyTruncated: true } : {}),
+		...(typeof frame.savedTo === "string" ? { savedTo: frame.savedTo } : {}),
+		...(typeof frame.sha256 === "string" ? { sha256: frame.sha256 } : {}),
 	});
 	return true;
 }

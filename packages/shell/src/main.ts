@@ -646,10 +646,40 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	// Generic outbound HTTP (Build 3): destination capabilities and secret
 	// references are resolved kernel-side; every attempt is trail-observed
 	// and must ride a kernel-signed causal intent (parity with the model lane).
+	// File mode streams into/out of company territory only: escapes and
+	// kernel-protected paths (trail, policy, inbox, .git, userland, product
+	// code) are denied before any network contact.
+	const casedPath = (path: string): string =>
+		process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+	const kernelProtectedPaths = [...protectedControllerPaths(root, products), join(root, "userland")].map(casedPath);
+	const resolveCompanyPath = (relativePath: string, mode: "read" | "write"): string => {
+		const target = resolve(root, relativePath);
+		const rootRelative = relative(root, target);
+		if (!rootRelative || rootRelative.startsWith("..") || isAbsolute(rootRelative)) {
+			throw new Error(`${mode === "write" ? "saveTo" : "sendFile"} must stay inside the company folder`);
+		}
+		if (mode === "write") {
+			const normalized = casedPath(target);
+			for (const protectedPath of kernelProtectedPaths) {
+				if (
+					normalized === protectedPath ||
+					normalized.startsWith(`${protectedPath}\\`) ||
+					normalized.startsWith(`${protectedPath}/`)
+				) {
+					throw new Error(`saveTo cannot write into kernel-protected territory: ${relativePath}`);
+				}
+			}
+		}
+		return target;
+	};
 	const httpBroker = createHttpRequestBroker({
 		sessionId: binding.sessionId,
 		allowedDestination: (url) => destinationAllowed(root, url),
 		resolveSecret: (name) => resolveCompanySecret(root, name),
+		companyFile: {
+			resolveForWrite: (relativePath) => resolveCompanyPath(relativePath, "write"),
+			resolveForRead: (relativePath) => resolveCompanyPath(relativePath, "read"),
+		},
 		observe: (event) => appendKernelHttpObservation(binding, event),
 	});
 	let agentDir: string;

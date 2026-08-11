@@ -122,6 +122,11 @@ the kernel substitutes the real value outside your process; you never
 see raw secrets and must never ask the founder to paste them into chat
 (they bind them with \`qorpera company secret set <name>\`). How you store
 what comes back — files, databases, indexes — is entirely your design.
+For downloads, uploads, and anything binary or large, use file mode:
+\`saveToPath\` streams the response straight into a company file (bounded
+by disk, binary-safe; you get back only bytes and a sha256), and
+\`sendFilePath\` streams a company file out as the request body. Inline
+responses are for inspecting APIs, not for moving data.
 
 You can also adopt existing tools: declare stdio MCP servers in
 \`connections/mcp.json\` and use them through \`use_mcp_tool\` (omit the

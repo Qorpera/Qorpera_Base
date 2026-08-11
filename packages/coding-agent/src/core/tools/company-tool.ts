@@ -86,6 +86,9 @@ interface ProgramHttpFrame {
 	headers?: Record<string, string>;
 	body?: string;
 	timeoutMs?: number;
+	/** File mode (kernel-streamed): see http-broker-client. */
+	saveTo?: string;
+	sendFile?: string;
 }
 
 function parsedProgramHttpFrame(line: string): ProgramHttpFrame | undefined {
@@ -123,6 +126,8 @@ async function serveProgramHttpFrame(
 		url: frame.url,
 		...(frame.headers ? { headers: frame.headers } : {}),
 		...(frame.body !== undefined ? { body: frame.body } : {}),
+		...(frame.saveTo !== undefined ? { saveTo: frame.saveTo } : {}),
+		...(frame.sendFile !== undefined ? { sendFile: frame.sendFile } : {}),
 		...(frame.timeoutMs !== undefined ? { timeoutMs: frame.timeoutMs } : {}),
 	};
 	// Program-initiated requests are never founder presence: attended=false
@@ -150,6 +155,8 @@ async function serveProgramHttpFrame(
 			body: response.body,
 			bodyBytes: response.bodyBytes,
 			...(response.bodyTruncated ? { bodyTruncated: true } : {}),
+			...(response.savedTo ? { savedTo: response.savedTo } : {}),
+			...(response.sha256 ? { sha256: response.sha256 } : {}),
 		});
 	} catch (error) {
 		fail(error instanceof Error ? error.message : String(error));

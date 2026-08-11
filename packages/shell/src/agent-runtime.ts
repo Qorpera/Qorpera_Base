@@ -460,6 +460,9 @@ export function appendKernelHttpObservation(
 		deniedReason?: string;
 		httpStatus?: number;
 		bodyBytes?: number;
+		/** File mode: company-relative paths streamed into / out of. */
+		savedTo?: string;
+		sentFile?: string;
 	},
 ): void {
 	const append = stampKernelEntry(binding, {

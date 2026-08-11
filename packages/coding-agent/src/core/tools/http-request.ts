@@ -32,7 +32,20 @@ const httpRequestSchema = Type.Object({
 		}),
 	),
 	body: Type.Optional(Type.String({ description: "Request body; may carry secret://<name> references" })),
-	timeoutSeconds: Type.Optional(Type.Number({ description: "Seconds before the request is aborted (default 30)" })),
+	saveToPath: Type.Optional(
+		Type.String({
+			description:
+				"File mode: stream the response into this company-relative file (binary-safe, bounded by disk, not by the 8MB inline cap). Only metadata (bytes, sha256) comes back — use for downloads and large imports.",
+		}),
+	),
+	sendFilePath: Type.Optional(
+		Type.String({
+			description: "File mode: stream this company-relative file out as the request body (uploads; excludes body)",
+		}),
+	),
+	timeoutSeconds: Type.Optional(
+		Type.Number({ description: "Seconds before the request is aborted (default 30; file mode 600)" }),
+	),
 });
 
 export type HttpRequestToolInput = Static<typeof httpRequestSchema>;
@@ -41,6 +54,8 @@ export interface HttpRequestToolDetails {
 	status: number;
 	bodyBytes: number;
 	bodyTruncated?: boolean;
+	savedTo?: string;
+	sha256?: string;
 }
 
 export function createHttpRequestToolDefinition(): ToolDefinition<
@@ -54,7 +69,11 @@ export function createHttpRequestToolDefinition(): ToolDefinition<
 			"Make an outbound HTTPS request through the kernel. Destinations must be founder-bound network capabilities (the founder binds them with 'qorpera company destination add <host>'); use secret://<name> references for credentials — the kernel substitutes raw values at the trusted boundary, so they never enter your context or the trail. Responses come back inline (bounded); how you store provider data is yours to decide.",
 		promptSnippet: "Outbound HTTPS via the kernel with secret:// references",
 		parameters: httpRequestSchema,
-		async execute(_toolCallId, { method, url, headers, body, timeoutSeconds }: HttpRequestToolInput, signal) {
+		async execute(
+			_toolCallId,
+			{ method, url, headers, body, saveToPath, sendFilePath, timeoutSeconds }: HttpRequestToolInput,
+			signal,
+		) {
 			if (!isHttpBrokerAvailable()) {
 				throw new Error("http_request requires the kernel broker (company sessions under the desktop kernel)");
 			}
@@ -64,16 +83,23 @@ export function createHttpRequestToolDefinition(): ToolDefinition<
 					url,
 					...(headers ? { headers } : {}),
 					...(body !== undefined ? { body } : {}),
+					...(saveToPath !== undefined ? { saveTo: saveToPath } : {}),
+					...(sendFilePath !== undefined ? { sendFile: sendFilePath } : {}),
 					...(timeoutSeconds !== undefined ? { timeoutMs: Math.round(timeoutSeconds * 1000) } : {}),
 				},
 				signal,
 			);
 			const shown = truncateHead(response.body, { maxBytes: DEFAULT_MAX_BYTES });
-			const header = `HTTP ${response.status} ${method.toUpperCase()} ${url} (${response.bodyBytes} bytes${response.bodyTruncated ? ", body truncated by kernel at 8MB" : ""})`;
+			const saved = response.savedTo
+				? ` — saved to ${response.savedTo} (sha256 ${response.sha256?.slice(0, 12)}…)`
+				: "";
+			const header = `HTTP ${response.status} ${method.toUpperCase()} ${url} (${response.bodyBytes} bytes${response.bodyTruncated ? ", body truncated by kernel at 8MB" : ""})${saved}`;
 			const details: HttpRequestToolDetails = {
 				status: response.status,
 				bodyBytes: response.bodyBytes,
 				...(response.bodyTruncated ? { bodyTruncated: true } : {}),
+				...(response.savedTo ? { savedTo: response.savedTo } : {}),
+				...(response.sha256 ? { sha256: response.sha256 } : {}),
 			};
 			return {
 				content: [
