@@ -59,6 +59,7 @@ import {
 	signAuthorityPolicy,
 	signGateApproval,
 } from "./founder-identity.ts";
+import { runOAuthOnboarding } from "./oauth-onboarding.ts";
 import {
 	EMPTY_PROJECTION,
 	type ProjectionDocument,
@@ -3028,6 +3029,42 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 				console.log(
 					`Bound secret://${name} (${secret.kind}). The value never enters company files, prompts, or the trail.`,
 				);
+			} else if (action === "oauth" && name) {
+				const flag = (flagName: string): string | undefined => {
+					const index = args.indexOf(flagName);
+					return index >= 0 ? args[index + 1] : undefined;
+				};
+				const authUrl = flag("--auth-url");
+				const tokenUrl = flag("--token-url");
+				const clientId = flag("--client-id");
+				if (!authUrl || !tokenUrl || !clientId) {
+					throw new Error(
+						"Usage: company secret oauth <name> --auth-url <url> --token-url <url> --client-id <id> [--client-secret <secret>] [--scope <scope>]",
+					);
+				}
+				const result = await runOAuthOnboarding(
+					root,
+					name,
+					{
+						authUrl,
+						tokenUrl,
+						clientId,
+						clientSecret: flag("--client-secret"),
+						scope: flag("--scope"),
+					},
+					{
+						onAuthorizeUrl: (url) => {
+							console.log("Open this URL in your browser to authorize (waiting up to 5 minutes):");
+							console.log(url);
+							openInBrowser(url);
+						},
+					},
+				);
+				console.log(
+					result.kind === "oauth2"
+						? `Bound secret://${name} (oauth2${result.expiresAt ? `, refreshes automatically` : ""}). Tokens went straight to the kernel store — nothing to paste.`
+						: `Bound secret://${name} (static — the provider returned no refresh token, so it will not auto-refresh).`,
+				);
 			} else if (action === "remove" && name) {
 				console.log(removeCompanySecret(root, name) ? `Removed secret://${name}.` : `No such secret: ${name}`);
 			} else if (action === "list") {
@@ -3035,7 +3072,9 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 				if (secretNames.length === 0) console.log("No bound secrets.");
 				for (const secretName of secretNames) console.log(`secret://${secretName}`);
 			} else {
-				console.error("Usage: company secret set <name> [--oauth2] (value/JSON on stdin) | remove <name> | list");
+				console.error(
+					"Usage: company secret set <name> [--oauth2] (value/JSON on stdin) | oauth <name> --auth-url … --token-url … --client-id … | remove <name> | list",
+				);
 				process.exitCode = 1;
 			}
 		} catch (error) {
@@ -3249,6 +3288,17 @@ function companyRootFromCwd(): string {
 	const root = process.cwd();
 	if (!existsSync(join(root, "company.md"))) throw new Error("current directory is not a company root");
 	return root;
+}
+
+/** Best-effort: open the founder's browser at a URL; the URL is printed either way. */
+function openInBrowser(url: string): void {
+	const attempt =
+		process.platform === "win32"
+			? spawnSync("cmd", ["/c", "start", "", url], { stdio: "ignore", shell: false })
+			: process.platform === "darwin"
+				? spawnSync("open", [url], { stdio: "ignore", shell: false })
+				: spawnSync("xdg-open", [url], { stdio: "ignore", shell: false });
+	void attempt;
 }
 
 function readAllStdin(): Promise<string> {

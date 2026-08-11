@@ -144,6 +144,17 @@ export function removeNetworkDestination(root: string, host: string): boolean {
 	return true;
 }
 
+/** HTTPS everywhere; plain HTTP only to the local loopback (dev providers, tests). */
+function trustedTokenUrl(tokenUrl: string): boolean {
+	if (tokenUrl.startsWith("https://")) return true;
+	try {
+		const parsed = new URL(tokenUrl);
+		return parsed.protocol === "http:" && (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost");
+	} catch {
+		return false;
+	}
+}
+
 function validSecret(secret: CompanySecret): boolean {
 	if (secret.kind === "static") return typeof secret.value === "string" && secret.value.length > 0;
 	return (
@@ -152,7 +163,7 @@ function validSecret(secret: CompanySecret): boolean {
 		typeof secret.refreshToken === "string" &&
 		secret.refreshToken.length > 0 &&
 		typeof secret.tokenUrl === "string" &&
-		secret.tokenUrl.startsWith("https://")
+		trustedTokenUrl(secret.tokenUrl)
 	);
 }
 
