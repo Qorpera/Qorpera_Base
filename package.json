@@ -55,7 +55,8 @@
 		"release:fix-links": "node scripts/release-notes.mjs fix-github-releases",
 		"prepare": "husky",
 		"shell": "electron packages/shell/dist/main.js",
-		"pack:shell": "npm run build:offline && node scripts/pack-shell.mjs"
+		"pack:shell": "npm run build:offline && node scripts/pack-shell.mjs",
+		"publish:shell": "node scripts/publish-shell-release.mjs"
 	},
 	"devDependencies": {
 		"@anthropic-ai/sandbox-runtime": "0.0.26",

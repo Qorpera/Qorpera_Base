@@ -15,6 +15,9 @@
  * runtime; archives buy risk here, not value.
  *
  * Usage: node scripts/pack-shell.mjs [--no-build]   (installer lands in build/shell-dist)
+ *
+ * Publish with scripts/publish-shell-release.mjs — never `gh release upload`
+ * the space-named exe directly (GitHub renames it and auto-update 404s).
  */
 
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
