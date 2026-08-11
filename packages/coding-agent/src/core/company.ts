@@ -1915,6 +1915,98 @@ function ensureCompanyGenesis(root: string, createdPaths: string[]): void {
 }
 
 /**
+ * One-shot migration for companies conceived before the projection model
+ * (shipped after 0.16.0): their UI was driven by `app/manifest.json`
+ * surfaces, which the app no longer reads. Fold those entries into
+ * `app/projection.json` — surfaces keep rendering, files are untouched —
+ * and drop the legacy key so no dead configuration lingers.
+ *
+ * Conservative by rule: a controller-authored (non-empty) projection is
+ * never modified — the company already moved on, only the stale key is
+ * removed. An unparseable projection stops the migration entirely so the
+ * legacy configuration survives until someone can look.
+ */
+export function migrateLegacyManifestSurfaces(root: string): { pages: number } | undefined {
+	const manifestPath = join(root, "app", "manifest.json");
+	if (!existsSync(manifestPath)) return undefined;
+	let manifest: Record<string, unknown>;
+	try {
+		const parsed = JSON.parse(readFileSync(manifestPath, "utf-8")) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+		manifest = parsed as Record<string, unknown>;
+	} catch {
+		return undefined;
+	}
+	if (!Array.isArray(manifest.surfaces)) return undefined;
+	// The old liberal-reader mapping, verbatim: {name,entry} alongside the
+	// {id,title,path} spelling agents produced live.
+	const legacy = (manifest.surfaces as Array<Record<string, unknown>>)
+		.map((surface) => {
+			const rawEntry = surface?.entry ?? surface?.path;
+			if (typeof rawEntry !== "string" || !rawEntry.trim()) return undefined;
+			const entry = rawEntry.replace(/^\.?\/?(app\/)?surfaces\//, "");
+			const rawName = surface.name ?? surface.title ?? surface.id;
+			return { name: typeof rawName === "string" && rawName.trim() ? rawName : entry, entry };
+		})
+		.filter((surface): surface is { name: string; entry: string } => surface !== undefined);
+
+	const projectionPath = join(root, "app", "projection.json");
+	let projection: ProjectionDocument | undefined;
+	if (existsSync(projectionPath)) {
+		try {
+			const parsed = parseProjectionDocument(JSON.parse(readFileSync(projectionPath, "utf-8")));
+			projection = parsed.nodes.length === 0 && parsed.navigation.length === 0 ? { ...EMPTY_PROJECTION } : undefined;
+		} catch {
+			return undefined;
+		}
+	} else {
+		projection = { ...EMPTY_PROJECTION };
+	}
+
+	let pages = 0;
+	if (projection && legacy.length > 0) {
+		const usedIds = new Set<string>();
+		const pageNodes: ProjectionNode[] = legacy.map((surface) => {
+			const slug =
+				surface.entry
+					.toLowerCase()
+					.replace(/[^a-z0-9._-]+/g, "-")
+					.replace(/^[^a-z0-9]+/, "") || "surface";
+			let id = `page:surfaces.${slug}`;
+			for (let suffix = 2; usedIds.has(id); suffix++) id = `page:surfaces.${slug}-${suffix}`;
+			usedIds.add(id);
+			return {
+				id,
+				kind: "page",
+				label: surface.name.slice(0, 120),
+				view: { type: "surface", entry: surface.entry },
+			};
+		});
+		const document: ProjectionDocument = {
+			...projection,
+			navigation: ["department:surfaces"],
+			nodes: [
+				{
+					id: "department:surfaces",
+					kind: "department",
+					label: "Surfaces",
+					items: pageNodes.map((node) => node.id),
+				},
+				...pageNodes,
+			],
+		};
+		if (parseProjectionDocument(document).diagnostics.length > 0) return undefined;
+		writeFileSync(projectionPath, `${JSON.stringify(document, null, "\t")}\n`, "utf-8");
+		pages = pageNodes.length;
+	}
+
+	delete manifest.surfaces;
+	if (Object.keys(manifest).length === 0) rmSync(manifestPath, { force: true });
+	else writeFileSync(manifestPath, `${JSON.stringify(manifest, null, "\t")}\n`, "utf-8");
+	return { pages };
+}
+
+/**
  * Create the company spine at `dir` (idempotent; never overwrites).
  * The folder is a git repository (spec §2: fork a company = clone it);
  * `git init` runs only when no repository is present and git is available.

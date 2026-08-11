@@ -202,7 +202,11 @@ export function captureCompanyGitBaseline(root: string): CompanyGitBaseline {
 }
 
 export function commitCompanyMaterialization(root: string, paths: string[]): void {
-	const existingPaths = paths.filter((path) => existsSync(join(root, path)));
+	// A path must exist on disk — or be a tracked file a kernel migration
+	// just deleted, so the deletion lands in this commit, not a later turn's.
+	const existingPaths = paths.filter(
+		(path) => existsSync(join(root, path)) || git(root, ["ls-files", "--error-unmatch", "--", path]).status === 0,
+	);
 	if (existingPaths.length === 0) return;
 	const staged = git(root, ["add", "--", ...existingPaths]);
 	if (staged.status !== 0) {

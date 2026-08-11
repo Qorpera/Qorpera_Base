@@ -36,6 +36,7 @@ import {
 	KERNEL_PROMPT,
 	listProductDepartments,
 	materializeClonedProductStorage,
+	migrateLegacyManifestSurfaces,
 	planProductWorktree,
 	planProductWorktreeRecovery,
 	readProductProtectionInventory,
@@ -205,6 +206,121 @@ describe("scaffoldCompany", () => {
 		linkSync(outside, settings);
 		expect(() => enforceCompanyKernelSettings(root)).toThrow("one physical in-company file");
 		expect(readFileSync(outside, "utf-8")).toBe(`${JSON.stringify({ founder: true })}\n`);
+	});
+});
+
+describe("migrateLegacyManifestSurfaces (pre-projection companies)", () => {
+	const manifestPath = () => join(root, "app", "manifest.json");
+	const projectionPath = () => join(root, "app", "projection.json");
+	const readProjection = () => JSON.parse(readFileSync(projectionPath(), "utf-8"));
+
+	it("folds legacy manifest surfaces into the projection and drops the dead key", () => {
+		scaffoldCompany(root);
+		writeFileSync(join(root, "app", "surfaces", "revenue.html"), "<h1>rev</h1>", "utf-8");
+		writeFileSync(
+			manifestPath(),
+			JSON.stringify({
+				surfaces: [
+					{ name: "Revenue", entry: "revenue.html" },
+					// The {id,title,path} spelling agents produced live, prefix included.
+					{ id: "pipeline", title: "Pipeline", path: "app/surfaces/pipeline.md" },
+				],
+			}),
+			"utf-8",
+		);
+
+		expect(migrateLegacyManifestSurfaces(root)).toEqual({ pages: 2 });
+
+		const projection = readProjection();
+		expect(projection.navigation).toEqual(["department:surfaces"]);
+		expect(projection.nodes).toEqual([
+			{
+				id: "department:surfaces",
+				kind: "department",
+				label: "Surfaces",
+				items: ["page:surfaces.revenue.html", "page:surfaces.pipeline.md"],
+			},
+			{
+				id: "page:surfaces.revenue.html",
+				kind: "page",
+				label: "Revenue",
+				view: { type: "surface", entry: "revenue.html" },
+			},
+			{
+				id: "page:surfaces.pipeline.md",
+				kind: "page",
+				label: "Pipeline",
+				view: { type: "surface", entry: "pipeline.md" },
+			},
+		]);
+		// The dead key is gone; the surface files are untouched.
+		expect(existsSync(manifestPath())).toBe(false);
+		expect(readFileSync(join(root, "app", "surfaces", "revenue.html"), "utf-8")).toBe("<h1>rev</h1>");
+		// Idempotent: a second open changes nothing.
+		expect(migrateLegacyManifestSurfaces(root)).toBeUndefined();
+	});
+
+	it("keeps manifest keys that are not the legacy surfaces list", () => {
+		scaffoldCompany(root);
+		writeFileSync(
+			manifestPath(),
+			JSON.stringify({ theme: "dark", surfaces: [{ name: "One", entry: "one.html" }] }),
+			"utf-8",
+		);
+		expect(migrateLegacyManifestSurfaces(root)).toEqual({ pages: 1 });
+		expect(JSON.parse(readFileSync(manifestPath(), "utf-8"))).toEqual({ theme: "dark" });
+	});
+
+	it("never modifies a controller-authored projection; only strips the stale key", () => {
+		scaffoldCompany(root);
+		const authored = {
+			schema: "qorpera.projection/v1",
+			navigation: ["department:own"],
+			nodes: [
+				{ id: "department:own", kind: "department", label: "Own", items: ["page:own.home"] },
+				{ id: "page:own.home", kind: "page", label: "Home", view: { type: "surface", entry: "home.html" } },
+			],
+		};
+		writeFileSync(projectionPath(), JSON.stringify(authored), "utf-8");
+		writeFileSync(manifestPath(), JSON.stringify({ surfaces: [{ name: "Old", entry: "old.html" }] }), "utf-8");
+
+		expect(migrateLegacyManifestSurfaces(root)).toEqual({ pages: 0 });
+		expect(readProjection()).toEqual(authored);
+		expect(existsSync(manifestPath())).toBe(false);
+	});
+
+	it("touches nothing when the projection is unparseable", () => {
+		scaffoldCompany(root);
+		writeFileSync(projectionPath(), "{broken", "utf-8");
+		const manifest = JSON.stringify({ surfaces: [{ name: "Old", entry: "old.html" }] });
+		writeFileSync(manifestPath(), manifest, "utf-8");
+		expect(migrateLegacyManifestSurfaces(root)).toBeUndefined();
+		expect(readFileSync(manifestPath(), "utf-8")).toBe(manifest);
+	});
+
+	it("dedupes colliding entries and defaults labels to the entry", () => {
+		scaffoldCompany(root);
+		writeFileSync(
+			manifestPath(),
+			JSON.stringify({ surfaces: [{ path: "surfaces/Report Q3.html" }, { path: "./app/surfaces/Report Q3.html" }] }),
+			"utf-8",
+		);
+		expect(migrateLegacyManifestSurfaces(root)).toEqual({ pages: 2 });
+		const projection = readProjection();
+		expect(projection.nodes.map((node: { id: string }) => node.id)).toEqual([
+			"department:surfaces",
+			"page:surfaces.report-q3.html",
+			"page:surfaces.report-q3.html-2",
+		]);
+		expect(projection.nodes[1].label).toBe("Report Q3.html");
+	});
+
+	it("does nothing without a manifest or without a surfaces key", () => {
+		scaffoldCompany(root);
+		expect(migrateLegacyManifestSurfaces(root)).toBeUndefined();
+		writeFileSync(manifestPath(), JSON.stringify({ theme: "dark" }), "utf-8");
+		expect(migrateLegacyManifestSurfaces(root)).toBeUndefined();
+		expect(JSON.parse(readFileSync(manifestPath(), "utf-8"))).toEqual({ theme: "dark" });
 	});
 });
 

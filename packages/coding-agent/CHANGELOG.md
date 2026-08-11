@@ -75,6 +75,11 @@
 
 ### Added
 
+- Added company UI projections: `app/projection.json` is now the only navigation publication document (departments → categories → pages with surface or builtin views), replacing the flat `app/manifest.json` surface list. Companies conceived before the projection model are migrated at open by the desktop kernel — `migrateLegacyManifestSurfaces()` folds legacy manifest surfaces into a generated projection (surface files untouched, controller-authored projections never modified) and removes the dead key.
+- Added HTTP file mode to the kernel lane: `saveToPath` streams a 2xx response into a validated company file (binary-safe, metered SHA-256, bounded by a configurable byte limit instead of the 8MB inline cap) and `sendFilePath` streams a company file out as the request body. Path validation is physical — symlinks cannot route kernel I/O outside company territory or into protected paths.
+- Added OAuth authorization-code onboarding: `qorpera company secret oauth <name>` runs the RFC 6749 + PKCE (S256) flow in the founder's terminal with a loopback redirect; tokens land directly in the kernel secret store and refresh takes over from there.
+- Added remote MCP servers: `connections/mcp.json` accepts `{url, headers}` entries served over the brokered HTTP lane with streamable-HTTP JSON-RPC, negotiated `MCP-Protocol-Version` headers, and session-id tracking; header values may carry `secret://` references.
+- Added inbound webhooks as the first optional kernel module: `qorpera company webhook enable` binds a persisted loopback port and token, events persist as durable files under `inbox/events/`, and the kernel wakes the controller when idle — events arriving mid-turn are owed a wake once the turn settles.
 - Added an active-company trail-backed Usage API and T3 Code-derived Usage page with LiteLLM raw token pricing, cache savings, and provider, model, and daily breakdowns.
 
 - Added session scopes: `listProductScopes()` on the company module, `scopes` (declared product zones, existence-checked) in the app server's `/api/state`, and `scope` on trail session summaries parsed from the `scope — <path>` session-name convention. The shell's composer grows a scope chip that roots a chat inside a product directory — a context device; permission comes from founder presence.

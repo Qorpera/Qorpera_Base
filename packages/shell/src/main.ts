@@ -45,6 +45,7 @@ import {
 	listCompanies,
 	listProductDepartments,
 	materializeClonedProductStorage,
+	migrateLegacyManifestSurfaces,
 	type ProductDepartment,
 	type ProductWorktree,
 	planProductWorktree,
@@ -1290,6 +1291,9 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		reconcilePendingCompanyCheckpoints(checkpointDir, root);
 		snapshotFounderGitState(root);
 		enforceCompanyKernelSettings(root);
+		// Pre-projection companies: fold app/manifest.json surfaces into
+		// app/projection.json (files untouched) and drop the dead key.
+		migrateLegacyManifestSurfaces(root);
 		registerCompany(root);
 
 		// The fork model (spec §9a): the company runs ITS OWN userland — forked
@@ -1299,7 +1303,12 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		// Any evolution since the last open is captured as a restorable version —
 		// the founder can always roll the app back from Settings → App.
 		snapshotIfChanged(join(root, "userland"));
-		commitCompanyMaterialization(root, [join(".qorpera", "settings.json"), "userland"]);
+		commitCompanyMaterialization(root, [
+			join(".qorpera", "settings.json"),
+			"userland",
+			join("app", "manifest.json"),
+			join("app", "projection.json"),
+		]);
 
 		// Backend for surfaces/state/inbox — reused machinery, in-process. The
 		// token guards mutating endpoints; only the renderer ever receives it.
