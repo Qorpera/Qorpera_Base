@@ -105,6 +105,7 @@ describe("remote MCP over the kernel lane", () => {
 			"utf-8",
 		);
 		const capturedHeaders: Array<Record<string, string>> = [];
+		const capturedMethods: Array<string | undefined> = [];
 		setHttpBrokerWriter((frame) => {
 			const record = frame as { requestId: string; body?: string; headers?: Record<string, string> };
 			capturedHeaders.push(record.headers ?? {});
@@ -113,6 +114,7 @@ describe("remote MCP over the kernel lane", () => {
 				method?: string;
 				params?: { name?: string };
 			};
+			capturedMethods.push(message.method);
 			const reply = (result: unknown, headers?: Record<string, string>) =>
 				handleHttpBrokerFrame({
 					type: "qorpera_http_response",
@@ -145,10 +147,15 @@ describe("remote MCP over the kernel lane", () => {
 		expect(listed.content[0]?.text).toContain("search — Remote search");
 		const called = await run({ server: "remote", tool: "search", arguments: { q: "x" } });
 		expect(called.content[0]?.text).toContain("remote result");
-		// The session id from initialize rides every later call; the secret
-		// reference is passed through untouched for the kernel to resolve.
+		// The initialized notification must complete before normal operations start.
+		expect(capturedMethods).toEqual(["initialize", "notifications/initialized", "tools/list", "tools/call"]);
+		// The session id and negotiated protocol version from initialize ride
+		// every later call; the secret reference is passed through untouched
+		// for the kernel to resolve.
+		expect(capturedHeaders[0]?.["mcp-protocol-version"]).toBeUndefined();
 		const last = capturedHeaders.at(-1);
 		expect(last?.["mcp-session-id"]).toBe("session-42");
+		expect(last?.["mcp-protocol-version"]).toBe("2025-06-18");
 		expect(last?.authorization).toBe("Bearer secret://mcp-token");
 	});
 });

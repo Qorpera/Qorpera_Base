@@ -62,6 +62,7 @@ import {
 } from "@qorpera/pi-coding-agent/company";
 import {
 	destinationAllowed,
+	persistWebhookPort,
 	readWakeSchedule,
 	readWebhookBinding,
 	resolveCompanySecret,
@@ -116,6 +117,7 @@ import {
 	savePendingProductCheckpoint,
 	snapshotFounderGitState,
 } from "./company-checkpoint.ts";
+import { createCompanyFileResolver } from "./company-file-paths.ts";
 import {
 	advanceCompanyGateCreation,
 	beginCompanyGateCreation,
@@ -276,6 +278,8 @@ interface CompanyRuntime {
 	wakeChild?: ChildProcessWithoutNullStreams;
 	/** Closes the inbound webhook listener (optional kernel module). */
 	webhookClose?: () => void;
+	/** An inbound event arrived while the company was busy; the wake ticker owes it a wake. */
+	pendingInboundWake?: boolean;
 	inventoryWatcher?: ReturnType<typeof watch>;
 	transitionQueue: Promise<void>;
 	closing: boolean;
@@ -659,29 +663,10 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	// File mode streams into/out of company territory only: escapes and
 	// kernel-protected paths (trail, policy, inbox, .git, userland, product
 	// code) are denied before any network contact.
-	const casedPath = (path: string): string =>
-		process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
-	const kernelProtectedPaths = [...protectedControllerPaths(root, products), join(root, "userland")].map(casedPath);
-	const resolveCompanyPath = (relativePath: string, mode: "read" | "write"): string => {
-		const target = resolve(root, relativePath);
-		const rootRelative = relative(root, target);
-		if (!rootRelative || rootRelative.startsWith("..") || isAbsolute(rootRelative)) {
-			throw new Error(`${mode === "write" ? "saveTo" : "sendFile"} must stay inside the company folder`);
-		}
-		if (mode === "write") {
-			const normalized = casedPath(target);
-			for (const protectedPath of kernelProtectedPaths) {
-				if (
-					normalized === protectedPath ||
-					normalized.startsWith(`${protectedPath}\\`) ||
-					normalized.startsWith(`${protectedPath}/`)
-				) {
-					throw new Error(`saveTo cannot write into kernel-protected territory: ${relativePath}`);
-				}
-			}
-		}
-		return target;
-	};
+	const resolveCompanyPath = createCompanyFileResolver(root, [
+		...protectedControllerPaths(root, products),
+		join(root, "userland"),
+	]);
 	const httpBroker = createHttpRequestBroker({
 		sessionId: binding.sessionId,
 		allowedDestination: (url) => destinationAllowed(root, url),
@@ -1101,6 +1086,15 @@ function startWakeTicker(): void {
 			const runtime = slot.runtime;
 			if (!runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) continue;
 			if (childBusy.get(runtime.child)) continue;
+			// Inbound events that arrived mid-turn come first: their files are
+			// already durable, they just never got their wake.
+			if (runtime.pendingInboundWake) {
+				runtime.pendingInboundWake = false;
+				void startWakeChild(slot, runtime, "inbound_event", 0).then((started) => {
+					if (!started && slot.runtime === runtime && !runtime.closing) runtime.pendingInboundWake = true;
+				});
+				continue;
+			}
 			try {
 				const schedule = readWakeSchedule(runtime.root);
 				const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
@@ -1344,7 +1338,8 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		});
 		// Inbound webhooks (optional kernel module): local-loopback listener,
 		// events persisted to inbox/events/, a wake fired when the company is
-		// idle — events arriving mid-turn simply wait as files.
+		// idle — events arriving mid-turn wait as files, and the pending flag
+		// makes the wake ticker owe them a wake once the turn settles.
 		const webhookBinding = readWebhookBinding(root);
 		if (webhookBinding?.enabled) {
 			void startWebhookListener({
@@ -1353,12 +1348,27 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 				port: webhookBinding.port,
 				onEvent: () => {
 					const live = slot.runtime;
-					if (!live || live.closing || live.mergeChild || live.wakeChild || childBusy.get(live.child)) return;
-					void startWakeChild(slot, live, "inbound_event", 0);
+					if (!live || live.closing) return;
+					if (live.mergeChild || live.wakeChild || childBusy.get(live.child)) {
+						live.pendingInboundWake = true;
+						return;
+					}
+					void startWakeChild(slot, live, "inbound_event", 0).then((started) => {
+						if (!started && slot.runtime === live && !live.closing) live.pendingInboundWake = true;
+					});
 				},
 			})
 				.then((listener) => {
 					runtime.webhookClose = listener.close;
+					// Bindings enabled before ports were persisted get their
+					// OS-assigned port recorded, so the endpoint stops moving.
+					if (webhookBinding.port === undefined) {
+						try {
+							persistWebhookPort(root, listener.port);
+						} catch (error) {
+							console.error(`webhook port persistence failed: ${(error as Error).message}`);
+						}
+					}
 					console.log(`webhook listener for ${root} at http://127.0.0.1:${listener.port}/hook/…`);
 				})
 				.catch((error) => console.error(`webhook listener failed to start: ${(error as Error).message}`));

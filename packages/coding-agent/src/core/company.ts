@@ -36,6 +36,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
+import { type AddressInfo, createServer as createNetServer } from "node:net";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
@@ -2856,6 +2857,18 @@ export function integrateRepoWithRuntimeLock(
 	return productDepartmentFromEntry(resolvedRoot, productDepartmentId(product));
 }
 
+/** Ask the OS for a free loopback port, so a no-arg webhook enable still yields a stable persisted endpoint. */
+function pickFreeLoopbackPort(): Promise<number> {
+	return new Promise((resolvePort, rejectPort) => {
+		const probe = createNetServer();
+		probe.once("error", rejectPort);
+		probe.listen(0, "127.0.0.1", () => {
+			const { port } = probe.address() as AddressInfo;
+			probe.close(() => resolvePort(port));
+		});
+	});
+}
+
 /**
  * Early CLI handlers in the `handlePackageCommand` style. The forking-hub
  * verbs (spec §6.1a): `new` starts or integrates a company, `fork` clones an
@@ -3210,9 +3223,13 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		try {
 			const root = companyRootFromCwd();
 			if (action === "enable") {
-				const binding = enableWebhook(root, args[3] ? Number(args[3]) : undefined);
+				// The port is always concrete and persisted: a founder cannot
+				// point a tunnel or provider at an endpoint that moves.
+				const explicit = args[3] ? Number(args[3]) : undefined;
+				const port = explicit ?? readWebhookBinding(root)?.port ?? (await pickFreeLoopbackPort());
+				const binding = enableWebhook(root, port);
 				console.log(
-					`Inbound webhooks enabled. While the company is open, the kernel listens at http://127.0.0.1:${binding.port ?? "<ephemeral>"}/hook/${binding.token}`,
+					`Inbound webhooks enabled. While the company is open, the kernel listens at http://127.0.0.1:${binding.port}/hook/${binding.token}`,
 				);
 				console.log(
 					"Local loopback only — expose it through a tunnel or reverse proxy of your choosing if a provider must reach it. Events land in inbox/events/ and wake the controller when idle.",
@@ -3222,7 +3239,13 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 			} else if (action === "status") {
 				const binding = readWebhookBinding(root);
 				if (!binding?.enabled) console.log("Inbound webhooks are off (the optional kernel module default).");
-				else console.log(`Enabled: http://127.0.0.1:${binding.port ?? "<ephemeral>"}/hook/${binding.token}`);
+				else if (binding.port === undefined) {
+					// Enabled before ports were persisted: the kernel records one
+					// at the next company open; re-running enable fixes it now.
+					console.log(
+						`Enabled, but no port is persisted yet. Re-run 'company webhook enable' to fix one; token /hook/${binding.token}`,
+					);
+				} else console.log(`Enabled: http://127.0.0.1:${binding.port}/hook/${binding.token}`);
 			} else {
 				console.error("Usage: company webhook enable [port] | disable | status");
 				process.exitCode = 1;

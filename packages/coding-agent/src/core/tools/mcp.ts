@@ -246,6 +246,7 @@ interface McpServerConnection {
 class RemoteMcpConnection implements McpServerConnection {
 	private nextId = 1;
 	private sessionId: string | undefined;
+	private negotiatedVersion: string | undefined;
 	private readonly url: string;
 	private readonly extraHeaders: Record<string, string>;
 
@@ -256,12 +257,17 @@ class RemoteMcpConnection implements McpServerConnection {
 
 	static async open(url: string, headers: Record<string, string>): Promise<RemoteMcpConnection> {
 		const connection = new RemoteMcpConnection(url, headers);
-		await connection.request("initialize", {
+		const initialized = (await connection.request("initialize", {
 			protocolVersion: MCP_PROTOCOL_VERSION,
 			capabilities: {},
 			clientInfo: { name: "qorpera-base", version: "1" },
-		});
-		connection.notify("notifications/initialized");
+		})) as { protocolVersion?: unknown } | undefined;
+		// Streamable HTTP 2025-06-18: every request after initialization must
+		// carry the negotiated protocol version, and normal operations must not
+		// start until the initialized notification has reached the server.
+		connection.negotiatedVersion =
+			typeof initialized?.protocolVersion === "string" ? initialized.protocolVersion : MCP_PROTOCOL_VERSION;
+		await connection.post({ jsonrpc: "2.0", method: "notifications/initialized" });
 		return connection;
 	}
 
@@ -273,6 +279,7 @@ class RemoteMcpConnection implements McpServerConnection {
 				"content-type": "application/json",
 				accept: "application/json, text/event-stream",
 				...(this.sessionId ? { "mcp-session-id": this.sessionId } : {}),
+				...(this.negotiatedVersion ? { "mcp-protocol-version": this.negotiatedVersion } : {}),
 				...this.extraHeaders,
 			},
 			body: JSON.stringify(message),

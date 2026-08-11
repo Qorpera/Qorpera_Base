@@ -16,6 +16,7 @@ import {
 	disableWebhook,
 	enableWebhook,
 	MIN_WAKE_INTERVAL_MINUTES,
+	persistWebhookPort,
 	readCompanyConnections,
 	readWakeSchedule,
 	readWebhookBinding,
@@ -172,8 +173,21 @@ describe("webhook binding (optional kernel module)", () => {
 		expect(first.token.length).toBeGreaterThan(10);
 		expect(disableWebhook(root)).toBe(true);
 		expect(readWebhookBinding(root)?.enabled).toBe(false);
-		// Re-enabling keeps the token: bound provider URLs stay valid.
-		expect(enableWebhook(root).token).toBe(first.token);
+		// Re-enabling keeps the token AND the port: bound provider URLs stay valid.
+		const reEnabled = enableWebhook(root);
+		expect(reEnabled.token).toBe(first.token);
+		expect(reEnabled.port).toBe(4900);
 		expect(() => enableWebhook(root, 99_999_999)).toThrow(/Invalid webhook port/);
+	});
+
+	it("persists the port the kernel actually bound", () => {
+		enableWebhook(root);
+		expect(readWebhookBinding(root)?.port).toBeUndefined();
+		expect(persistWebhookPort(root, 51_234)?.port).toBe(51_234);
+		expect(readWebhookBinding(root)?.port).toBe(51_234);
+		// A disabled binding is left alone: nothing should listen for it.
+		disableWebhook(root);
+		expect(persistWebhookPort(root, 52_000)?.port).toBe(51_234);
+		expect(readWebhookBinding(root)?.port).toBe(51_234);
 	});
 });

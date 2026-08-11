@@ -268,6 +268,19 @@ export function disableWebhook(root: string): boolean {
 	return true;
 }
 
+/**
+ * Record the port the kernel actually bound. Bindings enabled before ports
+ * were persisted carry none; the first listener start writes its OS-assigned
+ * port back so the founder gets a stable tunnel/provider endpoint.
+ */
+export function persistWebhookPort(root: string, port: number): WebhookBinding | undefined {
+	const state = readState(root);
+	if (!state.webhook?.enabled) return state.webhook;
+	state.webhook = { ...state.webhook, port };
+	writeState(root, state);
+	return state.webhook;
+}
+
 const REFRESH_MARGIN_MS = 60_000;
 
 /**
