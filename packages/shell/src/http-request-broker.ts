@@ -169,6 +169,9 @@ function parsedFrame(value: unknown): HttpRequestFrame | undefined {
 		(frame.saveTo !== undefined && !filePathValid(frame.saveTo)) ||
 		(frame.sendFile !== undefined && !filePathValid(frame.sendFile)) ||
 		(frame.sendFile !== undefined && frame.body !== undefined) ||
+		(frame.sendFile !== undefined &&
+			typeof frame.method === "string" &&
+			["GET", "HEAD"].includes(frame.method.toUpperCase())) ||
 		(frame.timeoutMs !== undefined &&
 			(typeof frame.timeoutMs !== "number" || frame.timeoutMs < 1 || frame.timeoutMs > maxTimeout)) ||
 		(frame.behavior !== undefined && !validBehavior(frame.behavior))

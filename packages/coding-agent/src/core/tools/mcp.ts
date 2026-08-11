@@ -325,7 +325,8 @@ class RemoteMcpConnection implements McpServerConnection {
 }
 
 async function connect(root: string, name: string): Promise<McpServerConnection> {
-	const key = `${root} ${name}`;
+	// NUL separator (written as an escape: a raw NUL byte makes git treat this file as binary).
+	const key = `${root}\u0000${name}`;
 	const existing = connections.get(key);
 	if (existing) return existing;
 	const servers = readMcpConfig(root);

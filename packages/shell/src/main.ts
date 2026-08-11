@@ -1359,6 +1359,13 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 				},
 			})
 				.then((listener) => {
+					// The company may have closed while the listener was binding:
+					// closeCompany already ran, so nobody else will close this one —
+					// and leaking it would hold the persisted port against reopen.
+					if (slot.runtime !== runtime || runtime.closing) {
+						listener.close();
+						return;
+					}
 					runtime.webhookClose = listener.close;
 					// Bindings enabled before ports were persisted get their
 					// OS-assigned port recorded, so the endpoint stops moving.

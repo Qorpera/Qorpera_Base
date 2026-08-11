@@ -272,6 +272,16 @@ describe("file mode (fetch-to-file / upload-from-file)", () => {
 		expect(existsSync(join(h.root, "imports", "missing.bin"))).toBe(false);
 	});
 
+	it("rejects sendFile on body-less methods instead of silently dropping the upload", async () => {
+		const h = harness();
+		mkdirSync(join(h.root, "exports"), { recursive: true });
+		writeFileSync(join(h.root, "exports", "report.bin"), BINARY);
+		h.broker.handleFrame(h.request({ method: "GET", body: undefined, sendFile: "exports/report.bin" }), h.send);
+		await h.settle();
+		expect(h.sent[0].error).toBeDefined();
+		expect(h.seen.length).toBe(0);
+	});
+
 	it("streams a company file out as the request body", async () => {
 		const received: Buffer[] = [];
 		const uploadFetch: typeof fetch = async (_url, init) => {
