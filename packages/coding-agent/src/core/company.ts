@@ -36,6 +36,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
+import { type AddressInfo, createServer as createNetServer } from "node:net";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
@@ -47,9 +48,12 @@ import {
 	type CompanySecret,
 	companyConnectionsPath,
 	disableWakeSchedule,
+	disableWebhook,
+	enableWebhook,
 	type OAuth2Secret,
 	readCompanyConnections,
 	readWakeSchedule,
+	readWebhookBinding,
 	removeCompanySecret,
 	removeNetworkDestination,
 } from "./company-connections.ts";
@@ -59,6 +63,7 @@ import {
 	signAuthorityPolicy,
 	signGateApproval,
 } from "./founder-identity.ts";
+import { runOAuthOnboarding } from "./oauth-onboarding.ts";
 import {
 	EMPTY_PROJECTION,
 	type ProjectionDocument,
@@ -122,8 +127,18 @@ the kernel substitutes the real value outside your process; you never
 see raw secrets and must never ask the founder to paste them into chat
 (they bind them with \`qorpera company secret set <name>\`). How you store
 what comes back — files, databases, indexes — is entirely your design.
+For downloads, uploads, and anything binary or large, use file mode:
+\`saveToPath\` streams the response straight into a company file (bounded
+by disk, binary-safe; you get back only bytes and a sha256), and
+\`sendFilePath\` streams a company file out as the request body. Inline
+responses are for inspecting APIs, not for moving data.
 
-You can also adopt existing tools: declare stdio MCP servers in
+If the founder enables inbound webhooks (\`qorpera company webhook
+enable\`), external events arrive as durable kernel-authored files under
+\`inbox/events/\` and wake you when you are idle. Handle every
+unprocessed event, not just the newest — they are files, and they wait.
+
+You can also adopt existing tools: declare stdio or remote MCP servers in
 \`connections/mcp.json\` and use them through \`use_mcp_tool\` (omit the
 tool name to list what a server offers). MCP servers run as sandboxed
 subprocesses — no network, no credentials — so they are for local
@@ -2842,6 +2857,18 @@ export function integrateRepoWithRuntimeLock(
 	return productDepartmentFromEntry(resolvedRoot, productDepartmentId(product));
 }
 
+/** Ask the OS for a free loopback port, so a no-arg webhook enable still yields a stable persisted endpoint. */
+function pickFreeLoopbackPort(): Promise<number> {
+	return new Promise((resolvePort, rejectPort) => {
+		const probe = createNetServer();
+		probe.once("error", rejectPort);
+		probe.listen(0, "127.0.0.1", () => {
+			const { port } = probe.address() as AddressInfo;
+			probe.close(() => resolvePort(port));
+		});
+	});
+}
+
 /**
  * Early CLI handlers in the `handlePackageCommand` style. The forking-hub
  * verbs (spec §6.1a): `new` starts or integrates a company, `fork` clones an
@@ -3023,6 +3050,42 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 				console.log(
 					`Bound secret://${name} (${secret.kind}). The value never enters company files, prompts, or the trail.`,
 				);
+			} else if (action === "oauth" && name) {
+				const flag = (flagName: string): string | undefined => {
+					const index = args.indexOf(flagName);
+					return index >= 0 ? args[index + 1] : undefined;
+				};
+				const authUrl = flag("--auth-url");
+				const tokenUrl = flag("--token-url");
+				const clientId = flag("--client-id");
+				if (!authUrl || !tokenUrl || !clientId) {
+					throw new Error(
+						"Usage: company secret oauth <name> --auth-url <url> --token-url <url> --client-id <id> [--client-secret <secret>] [--scope <scope>]",
+					);
+				}
+				const result = await runOAuthOnboarding(
+					root,
+					name,
+					{
+						authUrl,
+						tokenUrl,
+						clientId,
+						clientSecret: flag("--client-secret"),
+						scope: flag("--scope"),
+					},
+					{
+						onAuthorizeUrl: (url) => {
+							console.log("Open this URL in your browser to authorize (waiting up to 5 minutes):");
+							console.log(url);
+							openInBrowser(url);
+						},
+					},
+				);
+				console.log(
+					result.kind === "oauth2"
+						? `Bound secret://${name} (oauth2${result.expiresAt ? `, refreshes automatically` : ""}). Tokens went straight to the kernel store — nothing to paste.`
+						: `Bound secret://${name} (static — the provider returned no refresh token, so it will not auto-refresh).`,
+				);
 			} else if (action === "remove" && name) {
 				console.log(removeCompanySecret(root, name) ? `Removed secret://${name}.` : `No such secret: ${name}`);
 			} else if (action === "list") {
@@ -3030,7 +3093,9 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 				if (secretNames.length === 0) console.log("No bound secrets.");
 				for (const secretName of secretNames) console.log(`secret://${secretName}`);
 			} else {
-				console.error("Usage: company secret set <name> [--oauth2] (value/JSON on stdin) | remove <name> | list");
+				console.error(
+					"Usage: company secret set <name> [--oauth2] (value/JSON on stdin) | oauth <name> --auth-url … --token-url … --client-id … | remove <name> | list",
+				);
 				process.exitCode = 1;
 			}
 		} catch (error) {
@@ -3153,6 +3218,44 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		}
 		return true;
 	}
+	if (sub === "webhook") {
+		const action = args[2];
+		try {
+			const root = companyRootFromCwd();
+			if (action === "enable") {
+				// The port is always concrete and persisted: a founder cannot
+				// point a tunnel or provider at an endpoint that moves.
+				const explicit = args[3] ? Number(args[3]) : undefined;
+				const port = explicit ?? readWebhookBinding(root)?.port ?? (await pickFreeLoopbackPort());
+				const binding = enableWebhook(root, port);
+				console.log(
+					`Inbound webhooks enabled. While the company is open, the kernel listens at http://127.0.0.1:${binding.port}/hook/${binding.token}`,
+				);
+				console.log(
+					"Local loopback only — expose it through a tunnel or reverse proxy of your choosing if a provider must reach it. Events land in inbox/events/ and wake the controller when idle.",
+				);
+			} else if (action === "disable") {
+				console.log(disableWebhook(root) ? "Inbound webhooks disabled." : "Inbound webhooks were not enabled.");
+			} else if (action === "status") {
+				const binding = readWebhookBinding(root);
+				if (!binding?.enabled) console.log("Inbound webhooks are off (the optional kernel module default).");
+				else if (binding.port === undefined) {
+					// Enabled before ports were persisted: the kernel records one
+					// at the next company open; re-running enable fixes it now.
+					console.log(
+						`Enabled, but no port is persisted yet. Re-run 'company webhook enable' to fix one; token /hook/${binding.token}`,
+					);
+				} else console.log(`Enabled: http://127.0.0.1:${binding.port}/hook/${binding.token}`);
+			} else {
+				console.error("Usage: company webhook enable [port] | disable | status");
+				process.exitCode = 1;
+			}
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
 	if (sub === "wake") {
 		const action = args[2];
 		try {
@@ -3244,6 +3347,17 @@ function companyRootFromCwd(): string {
 	const root = process.cwd();
 	if (!existsSync(join(root, "company.md"))) throw new Error("current directory is not a company root");
 	return root;
+}
+
+/** Best-effort: open the founder's browser at a URL; the URL is printed either way. */
+function openInBrowser(url: string): void {
+	const attempt =
+		process.platform === "win32"
+			? spawnSync("cmd", ["/c", "start", "", url], { stdio: "ignore", shell: false })
+			: process.platform === "darwin"
+				? spawnSync("open", [url], { stdio: "ignore", shell: false })
+				: spawnSync("xdg-open", [url], { stdio: "ignore", shell: false });
+	void attempt;
 }
 
 function readAllStdin(): Promise<string> {

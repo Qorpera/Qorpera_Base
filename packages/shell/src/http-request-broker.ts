@@ -10,14 +10,24 @@
  * URL, request hash, acting behavior, outcome — never a raw secret value
  * and never provider ontology.
  *
- * Deliberately coarser than the model lane (no kernel-signed per-request
- * intents yet): enforcement is destination allowlisting, reference-only
- * secrets, per-turn request budget, replay-proof request ids, bounded
- * sizes, no auto-followed redirects, and full trail observation. The
- * intent refinement is recorded as a stated gap in docs/sandbox.md.
+ * Enforcement: destination allowlisting, reference-only secrets,
+ * kernel-signed causal intents with per-intent request budgets,
+ * replay-proof request ids, bounded sizes, no auto-followed redirects,
+ * and full trail observation.
+ *
+ * Two body modes. Inline (default): bounded text request/response through
+ * the pipe — for inspecting APIs. File (saveTo/sendFile): the kernel
+ * streams the response into a validated company file (or a company file
+ * out as the request body) and only metadata crosses the pipe — bounded
+ * by disk, binary-safe, nothing through model context. The folder is
+ * primary; large payloads belong in it, not in the conversation.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream, mkdirSync, renameSync, rmSync } from "node:fs";
+import { dirname } from "node:path";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { KernelIntentCapability } from "@qorpera/pi-protocol";
 
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -30,7 +40,12 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_TIMEOUT_MS = 120_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
+/** File transfers get a longer leash than inline API calls. */
+const DEFAULT_FILE_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_FILE_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_MAX_REQUESTS_PER_TURN = 64;
+const DEFAULT_MAX_SAVE_BYTES = 1024 * 1024 * 1024;
+const MAX_FILE_PATH_BYTES = 1024;
 /** Hop-by-hop or kernel-owned headers the child may not set. */
 const STRIPPED_HEADERS = new Set(["host", "content-length", "connection", "transfer-encoding", "upgrade", "cookie2"]);
 
@@ -46,6 +61,10 @@ export interface HttpRequestObservation {
 	deniedReason?: string;
 	httpStatus?: number;
 	bodyBytes?: number;
+	/** Company-relative path the response streamed into (file mode). */
+	savedTo?: string;
+	/** Company-relative path streamed out as the request body (file mode). */
+	sentFile?: string;
 }
 
 interface HttpRequestFrame {
@@ -57,6 +76,10 @@ interface HttpRequestFrame {
 	body?: string;
 	timeoutMs?: number;
 	behavior?: { path: string; contentHash: string };
+	/** Stream the response body into this company-relative path (2xx only). */
+	saveTo?: string;
+	/** Stream this company-relative file out as the request body. */
+	sendFile?: string;
 	/** The kernel-signed causal intent this request rides on (parity with the model lane). */
 	intent: KernelIntentCapability;
 }
@@ -112,8 +135,27 @@ function validIntentShape(value: unknown): value is KernelIntentCapability {
 function parsedFrame(value: unknown): HttpRequestFrame | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const frame = value as Record<string, unknown>;
+	const filePathValid = (value: unknown): boolean =>
+		typeof value === "string" &&
+		value.length > 0 &&
+		Buffer.byteLength(value, "utf-8") <= MAX_FILE_PATH_BYTES &&
+		!value.toLowerCase().includes("secret://");
+	const fileMode = frame.saveTo !== undefined || frame.sendFile !== undefined;
+	const maxTimeout = fileMode ? MAX_FILE_TIMEOUT_MS : MAX_TIMEOUT_MS;
 	if (
-		!exactKeys(frame, ["type", "requestId", "method", "url", "headers", "body", "timeoutMs", "behavior", "intent"]) ||
+		!exactKeys(frame, [
+			"type",
+			"requestId",
+			"method",
+			"url",
+			"headers",
+			"body",
+			"timeoutMs",
+			"behavior",
+			"saveTo",
+			"sendFile",
+			"intent",
+		]) ||
 		!validIntentShape(frame.intent) ||
 		frame.type !== "qorpera_http_request" ||
 		typeof frame.requestId !== "string" ||
@@ -124,8 +166,14 @@ function parsedFrame(value: unknown): HttpRequestFrame | undefined {
 		Buffer.byteLength(frame.url, "utf-8") > MAX_URL_BYTES ||
 		(frame.body !== undefined &&
 			(typeof frame.body !== "string" || Buffer.byteLength(frame.body, "utf-8") > MAX_BODY_BYTES)) ||
+		(frame.saveTo !== undefined && !filePathValid(frame.saveTo)) ||
+		(frame.sendFile !== undefined && !filePathValid(frame.sendFile)) ||
+		(frame.sendFile !== undefined && frame.body !== undefined) ||
+		(frame.sendFile !== undefined &&
+			typeof frame.method === "string" &&
+			["GET", "HEAD"].includes(frame.method.toUpperCase())) ||
 		(frame.timeoutMs !== undefined &&
-			(typeof frame.timeoutMs !== "number" || frame.timeoutMs < 1 || frame.timeoutMs > MAX_TIMEOUT_MS)) ||
+			(typeof frame.timeoutMs !== "number" || frame.timeoutMs < 1 || frame.timeoutMs > maxTimeout)) ||
 		(frame.behavior !== undefined && !validBehavior(frame.behavior))
 	)
 		return undefined;
@@ -151,6 +199,8 @@ function frameDigest(frame: HttpRequestFrame): string {
 				headers: frame.headers ?? {},
 				body: frame.body ?? "",
 				behavior: frame.behavior ?? null,
+				saveTo: frame.saveTo ?? null,
+				sendFile: frame.sendFile ?? null,
 			}),
 		)
 		.digest("hex");
@@ -173,12 +223,23 @@ export function createHttpRequestBroker(options: {
 	sessionId: string;
 	allowedDestination: (url: URL) => boolean;
 	resolveSecret: (name: string) => Promise<string>;
+	/**
+	 * File-mode path validation, supplied by the kernel: resolve a
+	 * company-relative path to an absolute one, throwing on escape or
+	 * kernel-protected territory. Write covers saveTo; read covers sendFile.
+	 */
+	companyFile: {
+		resolveForWrite: (relativePath: string) => string;
+		resolveForRead: (relativePath: string) => string;
+	};
 	observe?: (event: HttpRequestObservation) => void;
 	fetchImpl?: typeof fetch;
 	maxRequestsPerIntent?: number;
+	maxSaveBytes?: number;
 }): HttpRequestBroker {
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const maxRequestsPerIntent = options.maxRequestsPerIntent ?? DEFAULT_MAX_REQUESTS_PER_TURN;
+	const maxSaveBytes = options.maxSaveBytes ?? DEFAULT_MAX_SAVE_BYTES;
 	const seenRequestIds = new Set<string>();
 	const inFlight = new Map<string, AbortController>();
 	const intents = new Map<string, HttpIntentState>();
@@ -276,23 +337,91 @@ export function createHttpRequestBroker(options: {
 			deny("kernel http request denied: substitution changed the destination");
 			return;
 		}
+		// File mode: the kernel validates paths against company territory —
+		// escapes and kernel-protected paths are denied before any contact.
+		let savePath: string | undefined;
+		let sendPath: string | undefined;
+		try {
+			if (frame.saveTo !== undefined) savePath = options.companyFile.resolveForWrite(frame.saveTo);
+			if (frame.sendFile !== undefined) sendPath = options.companyFile.resolveForRead(frame.sendFile);
+		} catch (error) {
+			deny(`kernel http request denied: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
 
 		const controller = new AbortController();
 		inFlight.set(frame.requestId, controller);
-		const timer = setTimeout(() => controller.abort(), frame.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+		const fileMode = savePath !== undefined || sendPath !== undefined;
+		const timeoutMs = frame.timeoutMs ?? (fileMode ? DEFAULT_FILE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+		const timer = setTimeout(() => controller.abort(), timeoutMs);
 		options.observe?.({ ...observed, host: rawUrl.host, status: "started" });
 		try {
+			const requestBody =
+				method === "GET" || method === "HEAD"
+					? undefined
+					: sendPath !== undefined
+						? (Readable.toWeb(createReadStream(sendPath)) as unknown as NonNullable<RequestInit["body"]>)
+						: frame.body !== undefined
+							? substituteReferences(frame.body, resolved)
+							: undefined;
 			const response = await fetchImpl(resolvedUrl, {
 				method,
 				headers: Object.fromEntries(
 					headerEntries.map(([name, headerValue]) => [name, substituteReferences(headerValue, resolved)]),
 				),
-				...(frame.body !== undefined && method !== "GET" && method !== "HEAD"
-					? { body: substituteReferences(frame.body, resolved) }
-					: {}),
+				...(requestBody !== undefined ? { body: requestBody } : {}),
+				...(sendPath !== undefined ? { duplex: "half" } : {}),
 				redirect: "manual",
 				signal: controller.signal,
-			});
+			} as RequestInit);
+			if (savePath !== undefined && response.status >= 200 && response.status < 300) {
+				// Stream to disk through a metering hash — nothing buffers, and
+				// only metadata crosses the pipe back to the child.
+				const temporary = `${savePath}.part-${randomUUID()}`;
+				const digest = createHash("sha256");
+				let written = 0;
+				try {
+					mkdirSync(dirname(savePath), { recursive: true });
+					const meter = new Transform({
+						transform(chunk: Buffer, _encoding, callback) {
+							written += chunk.length;
+							digest.update(chunk);
+							if (written > maxSaveBytes)
+								callback(new Error(`response exceeds the ${maxSaveBytes} byte save limit`));
+							else callback(null, chunk);
+						},
+					});
+					const source = response.body
+						? (Readable.fromWeb(response.body as never) as Readable)
+						: Readable.from([]);
+					await pipeline(source, meter, createWriteStream(temporary, { flags: "wx" }));
+					renameSync(temporary, savePath);
+				} catch (error) {
+					rmSync(temporary, { force: true });
+					throw error;
+				}
+				const sha256 = digest.digest("hex");
+				options.observe?.({
+					...observed,
+					host: rawUrl.host,
+					status: "completed",
+					httpStatus: response.status,
+					bodyBytes: written,
+					savedTo: frame.saveTo,
+					...(frame.sendFile ? { sentFile: frame.sendFile } : {}),
+				});
+				send({
+					type: "qorpera_http_response",
+					requestId: frame.requestId,
+					status: response.status,
+					headers: Object.fromEntries(response.headers.entries()),
+					body: "",
+					bodyBytes: written,
+					savedTo: frame.saveTo,
+					sha256,
+				});
+				return;
+			}
 			const raw = Buffer.from(await response.arrayBuffer());
 			const bodyTruncated = raw.length > MAX_RESPONSE_BODY_BYTES;
 			const body = raw.subarray(0, MAX_RESPONSE_BODY_BYTES).toString("utf-8");
@@ -302,6 +431,7 @@ export function createHttpRequestBroker(options: {
 				status: "completed",
 				httpStatus: response.status,
 				bodyBytes: raw.length,
+				...(frame.sendFile ? { sentFile: frame.sendFile } : {}),
 			});
 			send({
 				type: "qorpera_http_response",

@@ -74,6 +74,7 @@ interface CompanyConnectionsState {
 	destinations: NetworkDestination[];
 	secrets: Record<string, CompanySecret>;
 	wake?: WakeSchedule;
+	webhook?: WebhookBinding;
 }
 
 const FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
@@ -144,6 +145,17 @@ export function removeNetworkDestination(root: string, host: string): boolean {
 	return true;
 }
 
+/** HTTPS everywhere; plain HTTP only to the local loopback (dev providers, tests). */
+function trustedTokenUrl(tokenUrl: string): boolean {
+	if (tokenUrl.startsWith("https://")) return true;
+	try {
+		const parsed = new URL(tokenUrl);
+		return parsed.protocol === "http:" && (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost");
+	} catch {
+		return false;
+	}
+}
+
 function validSecret(secret: CompanySecret): boolean {
 	if (secret.kind === "static") return typeof secret.value === "string" && secret.value.length > 0;
 	return (
@@ -152,7 +164,7 @@ function validSecret(secret: CompanySecret): boolean {
 		typeof secret.refreshToken === "string" &&
 		secret.refreshToken.length > 0 &&
 		typeof secret.tokenUrl === "string" &&
-		secret.tokenUrl.startsWith("https://")
+		trustedTokenUrl(secret.tokenUrl)
 	);
 }
 
@@ -215,6 +227,58 @@ export function suspendWakeSchedule(root: string, reason: string): void {
 	if (!state.wake) return;
 	state.wake = { ...state.wake, suspendedReason: reason };
 	writeState(root, state);
+}
+
+/**
+ * Inbound webhooks — the first optional kernel module (manifesto §9):
+ * kernel-necessary when wanted, off by default, no ontology. The kernel
+ * listens on the local loopback only; public reachability is the
+ * founder's business (a tunnel or reverse proxy of their choosing).
+ */
+export interface WebhookBinding {
+	enabled: boolean;
+	/** Random path token: the only authentication the local listener has. */
+	token: string;
+	port?: number;
+}
+
+export function readWebhookBinding(root: string): WebhookBinding | undefined {
+	return readState(root).webhook;
+}
+
+export function enableWebhook(root: string, port?: number): WebhookBinding {
+	if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+		throw new Error(`Invalid webhook port: ${port}`);
+	}
+	const state = readState(root);
+	state.webhook = {
+		enabled: true,
+		token: state.webhook?.token ?? randomUUID(),
+		...(port !== undefined ? { port } : state.webhook?.port !== undefined ? { port: state.webhook.port } : {}),
+	};
+	writeState(root, state);
+	return state.webhook;
+}
+
+export function disableWebhook(root: string): boolean {
+	const state = readState(root);
+	if (!state.webhook?.enabled) return false;
+	state.webhook = { ...state.webhook, enabled: false };
+	writeState(root, state);
+	return true;
+}
+
+/**
+ * Record the port the kernel actually bound. Bindings enabled before ports
+ * were persisted carry none; the first listener start writes its OS-assigned
+ * port back so the founder gets a stable tunnel/provider endpoint.
+ */
+export function persistWebhookPort(root: string, port: number): WebhookBinding | undefined {
+	const state = readState(root);
+	if (!state.webhook?.enabled) return state.webhook;
+	state.webhook = { ...state.webhook, port };
+	writeState(root, state);
+	return state.webhook;
 }
 
 const REFRESH_MARGIN_MS = 60_000;

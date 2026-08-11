@@ -2,8 +2,11 @@
  * Kernel HTTP lane (Build 3): destination gating, kernel-side secret
  * dereferencing, budgets, replay protection, and trail observation.
  */
-import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative, resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { createHttpRequestBroker, type HttpRequestObservation } from "../src/http-request-broker.ts";
 
 interface SeenRequest {
@@ -29,7 +32,28 @@ function makeIntent(overrides?: Record<string, unknown>) {
 	};
 }
 
-function harness(options?: { maxRequestsPerIntent?: number; fetchImpl?: typeof fetch; failResolve?: boolean }) {
+const fileRoots: string[] = [];
+
+afterEach(() => {
+	for (const dir of fileRoots.splice(0)) {
+		if (existsSync(dir)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+	}
+});
+
+function fileRoot(): string {
+	const dir = join(tmpdir(), `qorpera-http-file-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	mkdirSync(dir, { recursive: true });
+	fileRoots.push(dir);
+	return dir;
+}
+
+function harness(options?: {
+	maxRequestsPerIntent?: number;
+	fetchImpl?: typeof fetch;
+	failResolve?: boolean;
+	root?: string;
+	maxSaveBytes?: number;
+}) {
 	const seen: SeenRequest[] = [];
 	const sent: Array<Record<string, unknown>> = [];
 	const observed: HttpRequestObservation[] = [];
@@ -47,6 +71,16 @@ function harness(options?: { maxRequestsPerIntent?: number; fetchImpl?: typeof f
 				headers: { "content-type": "application/json" },
 			});
 		});
+	const root = options?.root ?? fileRoot();
+	const resolveCompanyPath = (relativePath: string, mode: "read" | "write"): string => {
+		const target = resolve(root, relativePath);
+		const rootRelative = relative(root, target);
+		if (!rootRelative || rootRelative.startsWith("..")) throw new Error(`${mode} path escapes the company folder`);
+		if (mode === "write" && rootRelative.split(/[\\/]/)[0] === "trail") {
+			throw new Error("saveTo cannot write into kernel-protected territory");
+		}
+		return target;
+	};
 	const broker = createHttpRequestBroker({
 		sessionId: SESSION_ID,
 		allowedDestination: (url) => url.protocol === "https:" && url.host === "api.test.example",
@@ -54,9 +88,14 @@ function harness(options?: { maxRequestsPerIntent?: number; fetchImpl?: typeof f
 			if (options?.failResolve || name !== "token") throw new Error(`Unknown secret reference: secret://${name}`);
 			return "raw-secret-value";
 		},
+		companyFile: {
+			resolveForWrite: (relativePath) => resolveCompanyPath(relativePath, "write"),
+			resolveForRead: (relativePath) => resolveCompanyPath(relativePath, "read"),
+		},
 		observe: (event) => observed.push(event),
 		fetchImpl,
 		maxRequestsPerIntent: options?.maxRequestsPerIntent,
+		maxSaveBytes: options?.maxSaveBytes,
 	});
 	const intent = makeIntent();
 	expect(broker.authorizeIntent(intent as never)).toBe(true);
@@ -76,7 +115,7 @@ function harness(options?: { maxRequestsPerIntent?: number; fetchImpl?: typeof f
 	const settle = async (): Promise<void> => {
 		await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
 	};
-	return { broker, send, sent, seen, observed, request, settle, intent };
+	return { broker, send, sent, seen, observed, request, settle, intent, root };
 }
 
 describe("http request broker", () => {
@@ -179,5 +218,86 @@ describe("http request broker", () => {
 		const h = harness();
 		expect(h.broker.handleFrame({ type: "qorpera_model_request" }, h.send)).toBe(false);
 		expect(h.broker.handleFrame("noise", h.send)).toBe(false);
+	});
+});
+
+describe("file mode (fetch-to-file / upload-from-file)", () => {
+	const BINARY = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0xfe, 0x0a, 0x42, 0x69, 0x6e, 0x00]);
+
+	it("streams a 2xx response to a company file, returning only metadata", async () => {
+		const binaryFetch: typeof fetch = async () =>
+			new Response(new Uint8Array(BINARY), { status: 200, headers: { "content-type": "application/pdf" } });
+		const h = harness({ fetchImpl: binaryFetch });
+		h.broker.handleFrame(h.request({ method: "GET", body: undefined, saveTo: "imports/statement.pdf" }), h.send);
+		await h.settle();
+
+		const saved = readFileSync(join(h.root, "imports", "statement.pdf"));
+		expect(Buffer.compare(saved, BINARY)).toBe(0);
+		expect(h.sent[0].status).toBe(200);
+		expect(h.sent[0].body).toBe("");
+		expect(h.sent[0].bodyBytes).toBe(BINARY.length);
+		expect(h.sent[0].savedTo).toBe("imports/statement.pdf");
+		expect(h.sent[0].sha256).toBe(createHash("sha256").update(BINARY).digest("hex"));
+		expect(h.observed.at(-1)).toMatchObject({ status: "completed", savedTo: "imports/statement.pdf" });
+	});
+
+	it("denies protected and escaping save paths before any network contact", async () => {
+		const h = harness();
+		h.broker.handleFrame(h.request({ method: "GET", body: undefined, saveTo: "trail/evil.jsonl" }), h.send);
+		await h.settle();
+		expect(String(h.sent.at(-1)?.error)).toContain("protected");
+		h.broker.handleFrame(h.request({ method: "GET", body: undefined, saveTo: "../outside.bin" }), h.send);
+		await h.settle();
+		expect(String(h.sent.at(-1)?.error)).toContain("escapes");
+		expect(h.seen.length).toBe(0);
+	});
+
+	it("aborts saves that exceed the byte limit and leaves no partial file", async () => {
+		const bigFetch: typeof fetch = async () => new Response(new Uint8Array(Buffer.alloc(64, 0x41)), { status: 200 });
+		const h = harness({ fetchImpl: bigFetch, maxSaveBytes: 16 });
+		h.broker.handleFrame(h.request({ method: "GET", body: undefined, saveTo: "imports/too-big.bin" }), h.send);
+		await h.settle();
+		expect(String(h.sent[0].error)).toContain("save limit");
+		expect(existsSync(join(h.root, "imports", "too-big.bin"))).toBe(false);
+	});
+
+	it("returns non-2xx responses inline instead of saving them", async () => {
+		const failFetch: typeof fetch = async () => new Response("not found", { status: 404 });
+		const h = harness({ fetchImpl: failFetch });
+		h.broker.handleFrame(h.request({ method: "GET", body: undefined, saveTo: "imports/missing.bin" }), h.send);
+		await h.settle();
+		expect(h.sent[0].status).toBe(404);
+		expect(h.sent[0].body).toBe("not found");
+		expect(h.sent[0].savedTo).toBeUndefined();
+		expect(existsSync(join(h.root, "imports", "missing.bin"))).toBe(false);
+	});
+
+	it("rejects sendFile on body-less methods instead of silently dropping the upload", async () => {
+		const h = harness();
+		mkdirSync(join(h.root, "exports"), { recursive: true });
+		writeFileSync(join(h.root, "exports", "report.bin"), BINARY);
+		h.broker.handleFrame(h.request({ method: "GET", body: undefined, sendFile: "exports/report.bin" }), h.send);
+		await h.settle();
+		expect(h.sent[0].error).toBeDefined();
+		expect(h.seen.length).toBe(0);
+	});
+
+	it("streams a company file out as the request body", async () => {
+		const received: Buffer[] = [];
+		const uploadFetch: typeof fetch = async (_url, init) => {
+			if (init?.body) {
+				received.push(Buffer.from(await new Response(init.body as NonNullable<RequestInit["body"]>).arrayBuffer()));
+			}
+			return new Response(JSON.stringify({ uploaded: true }), { status: 201 });
+		};
+		const h = harness({ fetchImpl: uploadFetch });
+		mkdirSync(join(h.root, "exports"), { recursive: true });
+		const source = join(h.root, "exports", "report.bin");
+		writeFileSync(source, BINARY);
+		h.broker.handleFrame(h.request({ method: "PUT", body: undefined, sendFile: "exports/report.bin" }), h.send);
+		await h.settle();
+		expect(received.length).toBe(1);
+		expect(Buffer.compare(received[0], BINARY)).toBe(0);
+		expect(h.sent[0].status).toBe(201);
 	});
 });

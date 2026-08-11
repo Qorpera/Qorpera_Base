@@ -62,7 +62,9 @@ import {
 } from "@qorpera/pi-coding-agent/company";
 import {
 	destinationAllowed,
+	persistWebhookPort,
 	readWakeSchedule,
+	readWebhookBinding,
 	resolveCompanySecret,
 	suspendWakeSchedule,
 } from "@qorpera/pi-coding-agent/company-connections";
@@ -115,6 +117,7 @@ import {
 	savePendingProductCheckpoint,
 	snapshotFounderGitState,
 } from "./company-checkpoint.ts";
+import { createCompanyFileResolver } from "./company-file-paths.ts";
 import {
 	advanceCompanyGateCreation,
 	beginCompanyGateCreation,
@@ -153,6 +156,7 @@ import {
 	wakeRunStatePath,
 	writeWakeRunState,
 } from "./wake-scheduler.ts";
+import { startWebhookListener } from "./webhook-listener.ts";
 
 const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
 const CODEX_ENTRY = fileURLToPath(import.meta.resolve("@openai/codex/bin/codex.js"));
@@ -272,6 +276,10 @@ interface CompanyRuntime {
 	mergeChild?: ChildProcessWithoutNullStreams;
 	/** Live wake session, if one is running (kernel-spawned, single-flight). */
 	wakeChild?: ChildProcessWithoutNullStreams;
+	/** Closes the inbound webhook listener (optional kernel module). */
+	webhookClose?: () => void;
+	/** An inbound event arrived while the company was busy; the wake ticker owes it a wake. */
+	pendingInboundWake?: boolean;
 	inventoryWatcher?: ReturnType<typeof watch>;
 	transitionQueue: Promise<void>;
 	closing: boolean;
@@ -550,6 +558,7 @@ async function closeCompany(slot: Slot): Promise<void> {
 	const runtime = slot.runtime;
 	runtime.closing = true;
 	runtime.inventoryWatcher?.close();
+	runtime.webhookClose?.();
 	await runtime.transitionQueue;
 	await stopChild(runtime.child);
 	if (runtime.mergeChild) await stopChild(runtime.mergeChild);
@@ -584,7 +593,12 @@ interface ChildOptions {
 	silent?: boolean;
 	onRpcEvent?: (frame: { type?: string }) => void;
 	/** Kernel-issued wake identity: stamped into the wake session's trail. */
-	wake?: { id: string; cause: "schedule" | "founder_response"; intervalMinutes?: number; coalesced?: number };
+	wake?: {
+		id: string;
+		cause: "schedule" | "founder_response" | "inbound_event";
+		intervalMinutes?: number;
+		coalesced?: number;
+	};
 }
 
 function startChild(slot: Slot, root: string, options: ChildOptions = {}): ChildProcessWithoutNullStreams {
@@ -646,10 +660,21 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	// Generic outbound HTTP (Build 3): destination capabilities and secret
 	// references are resolved kernel-side; every attempt is trail-observed
 	// and must ride a kernel-signed causal intent (parity with the model lane).
+	// File mode streams into/out of company territory only: escapes and
+	// kernel-protected paths (trail, policy, inbox, .git, userland, product
+	// code) are denied before any network contact.
+	const resolveCompanyPath = createCompanyFileResolver(root, [
+		...protectedControllerPaths(root, products),
+		join(root, "userland"),
+	]);
 	const httpBroker = createHttpRequestBroker({
 		sessionId: binding.sessionId,
 		allowedDestination: (url) => destinationAllowed(root, url),
 		resolveSecret: (name) => resolveCompanySecret(root, name),
+		companyFile: {
+			resolveForWrite: (relativePath) => resolveCompanyPath(relativePath, "write"),
+			resolveForRead: (relativePath) => resolveCompanyPath(relativePath, "read"),
+		},
 		observe: (event) => appendKernelHttpObservation(binding, event),
 	});
 	let agentDir: string;
@@ -954,13 +979,16 @@ function isInside(target: string, parent: string): boolean {
  * result reaches the renderer as one `merge-done` event, and the open-time
  * userland status is refreshed so the merge button reflects reality.
  */
-function wakePrompt(cause: "schedule" | "founder_response", coalesced: number): string {
+function wakePrompt(cause: "schedule" | "founder_response" | "inbound_event", coalesced: number): string {
 	const missed =
 		coalesced > 0
 			? ` The kernel was closed or asleep for a while: ${coalesced} missed wake${coalesced === 1 ? "" : "s"} were coalesced into this one.`
 			: "";
 	if (cause === "founder_response") {
 		return `Wake: the founder responded in the inbox. Read the updated items and continue the affected work; post follow-up inbox items for anything that needs the founder again.${missed}`;
+	}
+	if (cause === "inbound_event") {
+		return `Wake: an external event arrived. Read the new files under inbox/events/, decide what they mean for the company, and act; events are durable, so handle every unprocessed one, not just the newest.${missed}`;
 	}
 	return `Scheduled wake.${missed} Read company.md, the inbox, and app/routines/, decide for yourself what most needs doing, and do it. Post inbox/messages items for anything that needs the founder; when nothing needs doing, settle without inventing work.`;
 }
@@ -978,7 +1006,7 @@ function wakePrompt(cause: "schedule" | "founder_response", coalesced: number): 
 async function startWakeChild(
 	slot: Slot,
 	runtime: CompanyRuntime,
-	cause: "schedule" | "founder_response",
+	cause: "schedule" | "founder_response" | "inbound_event",
 	coalesced: number,
 	intervalMinutes?: number,
 ): Promise<boolean> {
@@ -995,7 +1023,12 @@ async function startWakeChild(
 	let started = false;
 	let settledCleanly = false;
 	const child = startChild(slot, runtime.root, {
-		autonomousName: cause === "schedule" ? "wake — schedule" : "wake — founder response",
+		autonomousName:
+			cause === "schedule"
+				? "wake — schedule"
+				: cause === "inbound_event"
+					? "wake — inbound event"
+					: "wake — founder response",
 		silent: true,
 		wake: { id: wakeId, cause, intervalMinutes, coalesced },
 		onRpcEvent: (frame) => {
@@ -1053,6 +1086,15 @@ function startWakeTicker(): void {
 			const runtime = slot.runtime;
 			if (!runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) continue;
 			if (childBusy.get(runtime.child)) continue;
+			// Inbound events that arrived mid-turn come first: their files are
+			// already durable, they just never got their wake.
+			if (runtime.pendingInboundWake) {
+				runtime.pendingInboundWake = false;
+				void startWakeChild(slot, runtime, "inbound_event", 0).then((started) => {
+					if (!started && slot.runtime === runtime && !runtime.closing) runtime.pendingInboundWake = true;
+				});
+				continue;
+			}
 			try {
 				const schedule = readWakeSchedule(runtime.root);
 				const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
@@ -1294,6 +1336,50 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		runtime.inventoryWatcher = watch(join(root, ".qorpera"), { persistent: false }, (_event, file) => {
 			if (file?.toString() === "products.json") restartForProductInventory(slot, runtime);
 		});
+		// Inbound webhooks (optional kernel module): local-loopback listener,
+		// events persisted to inbox/events/, a wake fired when the company is
+		// idle — events arriving mid-turn wait as files, and the pending flag
+		// makes the wake ticker owe them a wake once the turn settles.
+		const webhookBinding = readWebhookBinding(root);
+		if (webhookBinding?.enabled) {
+			void startWebhookListener({
+				root,
+				token: webhookBinding.token,
+				port: webhookBinding.port,
+				onEvent: () => {
+					const live = slot.runtime;
+					if (!live || live.closing) return;
+					if (live.mergeChild || live.wakeChild || childBusy.get(live.child)) {
+						live.pendingInboundWake = true;
+						return;
+					}
+					void startWakeChild(slot, live, "inbound_event", 0).then((started) => {
+						if (!started && slot.runtime === live && !live.closing) live.pendingInboundWake = true;
+					});
+				},
+			})
+				.then((listener) => {
+					// The company may have closed while the listener was binding:
+					// closeCompany already ran, so nobody else will close this one —
+					// and leaking it would hold the persisted port against reopen.
+					if (slot.runtime !== runtime || runtime.closing) {
+						listener.close();
+						return;
+					}
+					runtime.webhookClose = listener.close;
+					// Bindings enabled before ports were persisted get their
+					// OS-assigned port recorded, so the endpoint stops moving.
+					if (webhookBinding.port === undefined) {
+						try {
+							persistWebhookPort(root, listener.port);
+						} catch (error) {
+							console.error(`webhook port persistence failed: ${(error as Error).message}`);
+						}
+					}
+					console.log(`webhook listener for ${root} at http://127.0.0.1:${listener.port}/hook/…`);
+				})
+				.catch((error) => console.error(`webhook listener failed to start: ${(error as Error).message}`));
+		}
 		if (kickoff) {
 			sendKernelPrompt(child, { type: "prompt", message: kickoff }, false, "kernel-conception");
 		}
