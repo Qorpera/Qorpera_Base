@@ -13,9 +13,12 @@ import {
 	companyConnectionsPath,
 	destinationAllowed,
 	disableWakeSchedule,
+	disableWebhook,
+	enableWebhook,
 	MIN_WAKE_INTERVAL_MINUTES,
 	readCompanyConnections,
 	readWakeSchedule,
+	readWebhookBinding,
 	removeCompanySecret,
 	removeNetworkDestination,
 	resolveCompanySecret,
@@ -157,5 +160,20 @@ describe("wake schedule", () => {
 		expect(readWakeSchedule(root)?.suspendedReason).toContain("failures");
 		// Re-binding is the founder's re-enable: suspension clears.
 		expect(bindWakeSchedule(root, 30).suspendedReason).toBeUndefined();
+	});
+});
+
+describe("webhook binding (optional kernel module)", () => {
+	it("is off by default; enable mints a stable token; disable keeps it for re-enable", () => {
+		expect(readWebhookBinding(root)).toBeUndefined();
+		const first = enableWebhook(root, 4900);
+		expect(first.enabled).toBe(true);
+		expect(first.port).toBe(4900);
+		expect(first.token.length).toBeGreaterThan(10);
+		expect(disableWebhook(root)).toBe(true);
+		expect(readWebhookBinding(root)?.enabled).toBe(false);
+		// Re-enabling keeps the token: bound provider URLs stay valid.
+		expect(enableWebhook(root).token).toBe(first.token);
+		expect(() => enableWebhook(root, 99_999_999)).toThrow(/Invalid webhook port/);
 	});
 });

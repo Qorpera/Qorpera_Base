@@ -47,9 +47,12 @@ import {
 	type CompanySecret,
 	companyConnectionsPath,
 	disableWakeSchedule,
+	disableWebhook,
+	enableWebhook,
 	type OAuth2Secret,
 	readCompanyConnections,
 	readWakeSchedule,
+	readWebhookBinding,
 	removeCompanySecret,
 	removeNetworkDestination,
 } from "./company-connections.ts";
@@ -129,7 +132,12 @@ by disk, binary-safe; you get back only bytes and a sha256), and
 \`sendFilePath\` streams a company file out as the request body. Inline
 responses are for inspecting APIs, not for moving data.
 
-You can also adopt existing tools: declare stdio MCP servers in
+If the founder enables inbound webhooks (\`qorpera company webhook
+enable\`), external events arrive as durable kernel-authored files under
+\`inbox/events/\` and wake you when you are idle. Handle every
+unprocessed event, not just the newest — they are files, and they wait.
+
+You can also adopt existing tools: declare stdio or remote MCP servers in
 \`connections/mcp.json\` and use them through \`use_mcp_tool\` (omit the
 tool name to list what a server offers). MCP servers run as sandboxed
 subprocesses — no network, no credentials — so they are for local
@@ -3189,6 +3197,34 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 				for (const line of renderTrailFile(join(root, "trail", args[3]))) console.log(line);
 			} else {
 				console.error("Usage: company trail list | verify [file] | show <file>");
+				process.exitCode = 1;
+			}
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+		return true;
+	}
+	if (sub === "webhook") {
+		const action = args[2];
+		try {
+			const root = companyRootFromCwd();
+			if (action === "enable") {
+				const binding = enableWebhook(root, args[3] ? Number(args[3]) : undefined);
+				console.log(
+					`Inbound webhooks enabled. While the company is open, the kernel listens at http://127.0.0.1:${binding.port ?? "<ephemeral>"}/hook/${binding.token}`,
+				);
+				console.log(
+					"Local loopback only — expose it through a tunnel or reverse proxy of your choosing if a provider must reach it. Events land in inbox/events/ and wake the controller when idle.",
+				);
+			} else if (action === "disable") {
+				console.log(disableWebhook(root) ? "Inbound webhooks disabled." : "Inbound webhooks were not enabled.");
+			} else if (action === "status") {
+				const binding = readWebhookBinding(root);
+				if (!binding?.enabled) console.log("Inbound webhooks are off (the optional kernel module default).");
+				else console.log(`Enabled: http://127.0.0.1:${binding.port ?? "<ephemeral>"}/hook/${binding.token}`);
+			} else {
+				console.error("Usage: company webhook enable [port] | disable | status");
 				process.exitCode = 1;
 			}
 		} catch (error) {

@@ -74,6 +74,7 @@ interface CompanyConnectionsState {
 	destinations: NetworkDestination[];
 	secrets: Record<string, CompanySecret>;
 	wake?: WakeSchedule;
+	webhook?: WebhookBinding;
 }
 
 const FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
@@ -226,6 +227,45 @@ export function suspendWakeSchedule(root: string, reason: string): void {
 	if (!state.wake) return;
 	state.wake = { ...state.wake, suspendedReason: reason };
 	writeState(root, state);
+}
+
+/**
+ * Inbound webhooks — the first optional kernel module (manifesto §9):
+ * kernel-necessary when wanted, off by default, no ontology. The kernel
+ * listens on the local loopback only; public reachability is the
+ * founder's business (a tunnel or reverse proxy of their choosing).
+ */
+export interface WebhookBinding {
+	enabled: boolean;
+	/** Random path token: the only authentication the local listener has. */
+	token: string;
+	port?: number;
+}
+
+export function readWebhookBinding(root: string): WebhookBinding | undefined {
+	return readState(root).webhook;
+}
+
+export function enableWebhook(root: string, port?: number): WebhookBinding {
+	if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+		throw new Error(`Invalid webhook port: ${port}`);
+	}
+	const state = readState(root);
+	state.webhook = {
+		enabled: true,
+		token: state.webhook?.token ?? randomUUID(),
+		...(port !== undefined ? { port } : state.webhook?.port !== undefined ? { port: state.webhook.port } : {}),
+	};
+	writeState(root, state);
+	return state.webhook;
+}
+
+export function disableWebhook(root: string): boolean {
+	const state = readState(root);
+	if (!state.webhook?.enabled) return false;
+	state.webhook = { ...state.webhook, enabled: false };
+	writeState(root, state);
+	return true;
 }
 
 const REFRESH_MARGIN_MS = 60_000;

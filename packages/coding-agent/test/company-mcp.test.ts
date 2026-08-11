@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { handleHttpBrokerFrame, setHttpBrokerWriter } from "../src/core/http-broker-client.ts";
 import { createMcpToolDefinition, disposeMcpConnections } from "../src/core/tools/mcp.ts";
 
 const FAUX_SERVER = `import { createInterface } from "node:readline";
@@ -89,5 +90,65 @@ describe("use_mcp_tool", () => {
 		await expect(run({ server: "faux" })).rejects.toThrow(/No MCP servers declared/);
 		declareFauxServer();
 		await expect(run({ server: "ghost" })).rejects.toThrow(/Unknown MCP server: ghost.*faux/);
+	});
+});
+
+describe("remote MCP over the kernel lane", () => {
+	it("initializes, tracks the session id, and calls tools through brokered HTTP", async () => {
+		writeFileSync(
+			join(root, "connections", "mcp.json"),
+			JSON.stringify({
+				servers: {
+					remote: { url: "https://mcp.test.example/rpc", headers: { authorization: "Bearer secret://mcp-token" } },
+				},
+			}),
+			"utf-8",
+		);
+		const capturedHeaders: Array<Record<string, string>> = [];
+		setHttpBrokerWriter((frame) => {
+			const record = frame as { requestId: string; body?: string; headers?: Record<string, string> };
+			capturedHeaders.push(record.headers ?? {});
+			const message = JSON.parse(record.body ?? "{}") as {
+				id?: number;
+				method?: string;
+				params?: { name?: string };
+			};
+			const reply = (result: unknown, headers?: Record<string, string>) =>
+				handleHttpBrokerFrame({
+					type: "qorpera_http_response",
+					requestId: record.requestId,
+					status: 200,
+					headers: { "content-type": "application/json", ...headers },
+					body: JSON.stringify({ jsonrpc: "2.0", id: message.id, result }),
+					bodyBytes: 1,
+				});
+			if (message.id === undefined) {
+				// Notification: acknowledge without a JSON-RPC body.
+				handleHttpBrokerFrame({
+					type: "qorpera_http_response",
+					requestId: record.requestId,
+					status: 202,
+					headers: {},
+					body: "",
+					bodyBytes: 0,
+				});
+			} else if (message.method === "initialize") {
+				reply({ protocolVersion: "2025-06-18", capabilities: { tools: {} } }, { "mcp-session-id": "session-42" });
+			} else if (message.method === "tools/list") {
+				reply({ tools: [{ name: "search", description: "Remote search" }] });
+			} else if (message.method === "tools/call" && message.params?.name === "search") {
+				reply({ content: [{ type: "text", text: "remote result" }] });
+			}
+		});
+
+		const listed = await run({ server: "remote" });
+		expect(listed.content[0]?.text).toContain("search — Remote search");
+		const called = await run({ server: "remote", tool: "search", arguments: { q: "x" } });
+		expect(called.content[0]?.text).toContain("remote result");
+		// The session id from initialize rides every later call; the secret
+		// reference is passed through untouched for the kernel to resolve.
+		const last = capturedHeaders.at(-1);
+		expect(last?.["mcp-session-id"]).toBe("session-42");
+		expect(last?.authorization).toBe("Bearer secret://mcp-token");
 	});
 });

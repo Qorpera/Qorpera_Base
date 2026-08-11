@@ -428,7 +428,7 @@ export function appendKernelWakeObservation(
 	input: {
 		/** Kernel-issued causal identity for this wake. */
 		wakeId: string;
-		cause: "schedule" | "founder_response";
+		cause: "schedule" | "founder_response" | "inbound_event";
 		intervalMinutes?: number;
 		/** Whole missed intervals coalesced into this wake (missed-wake policy). */
 		coalesced?: number;
