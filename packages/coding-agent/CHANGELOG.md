@@ -105,6 +105,7 @@
 
 ### Fixed
 
+- Fixed `pack:shell` shipping a stale shell build: `build:offline` never rebuilt the shell package, so an installer packed after shell-only changes carried whatever `packages/shell/dist` last held. The 0.18.1 and 0.18.2 installers shipped 0.18.0's shell (missing the session-list navigation, the silent-spawn fix, and the one-step update flow) while carrying fresh coding-agent code; 0.18.3 is the first installer with all of it.
 - Fixed visible console windows flashing on Windows when opening a chat or a company controller: the shell now invokes the bundled Codex CLI's native binary directly instead of its npm wrapper script, which re-spawned codex.exe without windowsHide into a console-less process tree.
 - Fixed founder chat sessions listing as raw trail filenames: session titles now fall back from the first user message to the kernel's observed first input, then a founder-given session name, then "New chat"; the title scan window grew from 16 KiB/40 lines to 256 KiB/400 lines and tolerates string-content messages.
 - Fixed the desktop hub silently failing to open companies conceived under older kernels: the kernel now re-scaffolds the company spine at open (idempotent, never overwriting company content) before storage validation, and hub open failures surface as a visible error instead of a dead click.
