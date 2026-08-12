@@ -452,8 +452,8 @@ describe("company app server", () => {
 			].join("\n"),
 			"utf-8",
 		);
-		// A chat opened and abandoned before any words lists as "New chat" —
-		// never as its trail filename.
+		// A chat opened and abandoned before any input is spawn residue — the
+		// file stays in the trail but the chat list must not pile up with it.
 		writeFileSync(
 			join(root, "trail", "2026-08-04T15-00-00-000Z_empty.jsonl"),
 			JSON.stringify({ type: "session", version: 3, id: "empty", timestamp: "t", cwd: root }),
@@ -491,7 +491,7 @@ describe("company app server", () => {
 		const kernelInput = state.sessions.find((s) => s.file.includes("_kernelinput"));
 		const empty = state.sessions.find((s) => s.file.includes("_empty"));
 		expect(kernelInput?.title).toBe("review the supplier contracts");
-		expect(empty?.title).toBe("New chat");
+		expect(empty).toBeUndefined();
 
 		writeFileSync(
 			join(root, department.pullRequestsPath, "42.json"),

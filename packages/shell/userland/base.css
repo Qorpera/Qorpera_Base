@@ -685,6 +685,31 @@ body.chunky-sessions .session-meta { display: flex; }
 	background: transparent; color: var(--text-soft); font-size: 11.5px; text-align: left;
 }
 .session-more:hover { background: var(--hover); color: var(--text-muted); border: 0; }
+/* The Chats heading is a button now (collapse toggle, same affordance as a
+   department title); the Pinned heading stays a plain label. */
+button.session-section-title {
+	display: flex; align-items: center; gap: 6px; width: 100%;
+	border: 0; border-radius: 6px; background: transparent; text-align: left; cursor: pointer;
+}
+button.session-section-title:hover { background: rgba(255, 255, 255, 0.04); border: 0; color: var(--text-muted); }
+button.session-section-title .dept-caret { margin-left: auto; }
+button.session-section-title:hover .dept-caret { opacity: 1; }
+.session-section.collapsed .dept-caret { opacity: 1; transform: rotate(-90deg); }
+.session-section.collapsed .session-pile { display: none; }
+
+/* ---- pins: the Pinned block under the Main rows (T3 shape) ---------------- */
+.pinned-section { margin: 0 0 16px; }
+.pin-unpin {
+	flex: 0 0 auto; display: grid; place-items: center;
+	width: 18px; height: 18px; border-radius: 4px;
+	color: var(--text-soft); opacity: 0.55;
+}
+.session-row:hover .pin-unpin, .pin-unpin:focus-visible { opacity: 1; }
+.pin-unpin:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.pin-unpin-glyph { width: 12px; height: 12px; }
+/* Pinned department cue in its title row. */
+.dept-pin { flex: 0 0 auto; display: grid; place-items: center; color: var(--text-soft); }
+.dept-pin-glyph { width: 11px; height: 11px; }
 /* Chunky everything: session rows grow via body.chunky-sessions; nav rows and
    department titles grow through the --nav-item-height/--nav-font-size vars
    that applyNavMetrics() computes from the density setting. */

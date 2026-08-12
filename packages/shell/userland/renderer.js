@@ -790,18 +790,35 @@ function openNavContext(event, node, placement) {
 	$("contextActions").hidden = false;
 	$("heightEditor").hidden = true;
 	$("iconEditor").hidden = true;
-	const canAdjust = placement !== "collection";
+	// Chats are trail sessions, not projection nodes: pinnable, but height /
+	// hide / archive act on projection ids and stay out of their menu.
+	const isChat = node.kind === "chat";
+	const canAdjust = placement !== "collection" && !isChat;
 	$("adjustHeightButton").hidden = !canAdjust;
 	$("focusDepartmentItem").hidden = node.kind !== "department";
 	$("renameDepartmentItem").hidden = node.kind !== "department";
 	$("changeIconItem").hidden = node.kind !== "department";
-	$("contextHeightSeparator").hidden = !canAdjust && node.kind !== "department";
+	$("contextHeightSeparator").hidden = (!canAdjust && node.kind !== "department") || isChat;
+	$("hideNavigationItem").hidden = isChat;
+	$("archiveNavigationItem").hidden = isChat;
 	$("focusDepartmentItem").querySelector("span").textContent = focusedDepartmentId === node.id ? "Exit focus" : "Focus department";
 	$("focusDepartmentItem").querySelector("small").textContent =
 		focusedDepartmentId === node.id ? "Restore the complete panel" : "Show only this department";
+	const pinned = isPinned(contextPinKey(navContextTarget));
+	$("pinNavigationItem").querySelector("span").textContent = pinned ? "Unpin" : "Pin";
+	$("pinNavigationItem").querySelector("small").textContent = pinned
+		? "Remove from Pinned"
+		: node.kind === "department"
+			? "Order this department first"
+			: "Keep at the top of the panel";
 	$("navContext").hidden = false;
 	placeFloatingMenu($("navContext"));
-	(canAdjust ? $("adjustHeightButton") : $("hideNavigationItem")).focus();
+	(canAdjust ? $("adjustHeightButton") : isChat ? $("pinNavigationItem") : $("hideNavigationItem")).focus();
+}
+
+/** Context menu for a chat row: a pseudo-node keyed by its trail file. */
+function openSessionContext(event, session) {
+	openNavContext(event, { kind: "chat", id: session.file, label: session.title }, "session");
 }
 
 /** Inline rename: the department title label becomes an input until
@@ -1053,6 +1070,7 @@ const NAV_GLYPHS = {
 	clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2.5"/>',
 	page: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
 	plus: '<path d="M12 5v14M5 12h14"/>',
+	pin: '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/>',
 };
 
 // Glyphs offered by the department icon picker (context menu → Change icon).
@@ -1132,6 +1150,41 @@ function toggleDepartmentCollapsed(id) {
 	renderCompanyNavSafe();
 }
 
+// The chat pile collapses like a department; it shares the nav-collapsed
+// store under a reserved id no projection document produces.
+const CHAT_PILE_ID = "chat-pile";
+
+// ---- pins: founder-chosen shortcuts at the top of the panel (T3 shape) -------
+// Pin state is panel presentation like collapse/hidden — stored per machine,
+// never in company documents. One ordered list carries every pin: `node:<id>`
+// entries are projection pages/categories (rendered in the Pinned section) or
+// departments (ordered first among departments); `chat:<file>` entries are
+// trail sessions lifted out of the chat pile.
+function pinnedNavigation() {
+	return readStoredArray("nav-pinned");
+}
+
+const chatPinKey = (file) => `chat:${file}`;
+const nodePinKey = (id) => `node:${id}`;
+
+function isPinned(key) {
+	return pinnedNavigation().includes(key);
+}
+
+function togglePinned(key) {
+	const pinned = pinnedNavigation();
+	const index = pinned.indexOf(key);
+	if (index >= 0) pinned.splice(index, 1);
+	else pinned.push(key);
+	localStorage.setItem(navStorageKey("nav-pinned"), JSON.stringify(pinned));
+	renderCompanyNavSafe();
+}
+
+/** The pin key a context-menu target answers to (chats key by trail file). */
+function contextPinKey(target) {
+	return target.node.kind === "chat" ? chatPinKey(target.node.id) : nodePinKey(target.node.id);
+}
+
 // The flat chat pile below the departments starts at five rows; "Show more"
 // grows it in fives (session-local, not persisted).
 let sessionPileLimit = 5;
@@ -1142,12 +1195,112 @@ function pileSessions() {
 		.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
+/** One chat row, shared by the pile and the Pinned section. */
+function sessionRow(session) {
+	const row = document.createElement("button");
+	row.type = "button";
+	row.className = "session-row";
+	row.classList.toggle("active", currentSession === session.file);
+	row.innerHTML = `${navGlyphSvg("bubble", "session-glyph")}<span class="session-copy"><span class="session-title"></span><small class="session-meta"><span class="session-scope"></span><span class="session-time"></span></small></span>`;
+	row.querySelector(".session-title").textContent = session.title;
+	const page = session.page ? projectionNode(session.page) : undefined;
+	row.querySelector(".session-scope").textContent = page?.label ?? session.worktree ?? "Company";
+	row.querySelector(".session-time").textContent = relativeSessionTime(session.mtimeMs);
+	row.title = session.title;
+	row.onclick = () => openSession(session.file, session.page);
+	row.oncontextmenu = (event) => openSessionContext(event, session);
+	return row;
+}
+
+/** The pin glyph on a pinned row: state cue and one-click unpin (T3 shape).
+ * A span with a button role — rows are <button>s and buttons can't nest. */
+function pinnedUnpinControl(key) {
+	const control = document.createElement("span");
+	control.className = "pin-unpin";
+	control.title = "Unpin";
+	control.setAttribute("role", "button");
+	control.setAttribute("aria-label", "Unpin");
+	control.tabIndex = 0;
+	control.innerHTML = navGlyphSvg("pin", "pin-unpin-glyph");
+	control.onclick = (event) => {
+		event.stopPropagation();
+		togglePinned(key);
+	};
+	control.onkeydown = (event) => {
+		if (event.key !== "Enter" && event.key !== " ") return;
+		event.preventDefault();
+		event.stopPropagation();
+		togglePinned(key);
+	};
+	return control;
+}
+
+/** The Pinned section: founder-chosen shortcuts right under the Main rows.
+ * T3 pins threads atop its sidebar; here pages, categories, and chats share
+ * one block in pin order. Rows read like the chat pile for coherence. */
+function renderPinnedSection(nav) {
+	if (focusedDepartmentId !== null) return;
+	const entries = [];
+	for (const key of pinnedNavigation()) {
+		if (key.startsWith("node:")) {
+			const node = projectionNode(key.slice(5));
+			// Departments pin by ordering first, not by a shortcut row; stale
+			// pins (removed nodes) and hidden/archived items stay out.
+			if (!node || node.kind === "department" || !nodeIsVisible(node.id)) continue;
+			entries.push({ key, node });
+		} else if (key.startsWith("chat:")) {
+			const session = (state.sessions ?? []).find(
+				(candidate) => candidate.kind !== "autonomous" && candidate.file === key.slice(5),
+			);
+			if (session) entries.push({ key, session });
+		}
+	}
+	if (!entries.length) return;
+	const section = document.createElement("section");
+	section.className = "session-section pinned-section";
+	const heading = document.createElement("div");
+	heading.className = "session-section-title";
+	heading.textContent = "Pinned";
+	section.appendChild(heading);
+	const pile = document.createElement("div");
+	pile.className = "session-pile";
+	for (const entry of entries) {
+		let row;
+		if (entry.node) {
+			row = document.createElement("button");
+			row.type = "button";
+			row.className = "session-row pinned-row";
+			row.classList.toggle("active", currentNodeId === entry.node.id);
+			row.innerHTML = `${navGlyphSvg(entry.node.kind === "category" ? "folder" : mainPageGlyphName(entry.node), "session-glyph")}<span class="session-copy"><span class="session-title"></span></span>`;
+			row.querySelector(".session-title").textContent = displayLabel(entry.node);
+			row.title = entry.node.description ?? displayLabel(entry.node);
+			row.onclick = () => void openProjectionNode(entry.node.id);
+			row.oncontextmenu = (event) => openNavContext(event, entry.node, "pinned");
+		} else {
+			row = sessionRow(entry.session);
+			row.classList.add("pinned-row");
+		}
+		row.appendChild(pinnedUnpinControl(entry.key));
+		pile.appendChild(row);
+	}
+	section.appendChild(pile);
+	nav.appendChild(section);
+}
+
 function renderCompanyNav() {
 	const nav = $("navigation");
 	nav.innerHTML = "";
 	nav.classList.toggle("focus-mode", focusedDepartmentId !== null);
 	applyNavAppearance();
-	for (const department of navigationDepartments()) {
+	// Pinned departments order first; Main stays structural at the very top.
+	const departments = navigationDepartments();
+	const orderedDepartments = [
+		...departments.filter((department) => department.id === "q:main"),
+		...departments.filter((department) => department.id !== "q:main" && isPinned(nodePinKey(department.id))),
+		...departments.filter((department) => department.id !== "q:main" && !isPinned(nodePinKey(department.id))),
+	];
+	let pinnedSectionPlaced = false;
+	for (const department of orderedDepartments) {
 		const focused = focusedDepartmentId === department.id;
 		if (focusedDepartmentId && !focused) continue;
 		if (!nodeIsVisible(department.id)) continue;
@@ -1203,6 +1356,15 @@ function renderCompanyNav() {
 				control.querySelector(".hidden-items-popover").appendChild(restore);
 			}
 			title.appendChild(control);
+		}
+		if (!isMainDepartment && isPinned(nodePinKey(department.id))) {
+			// The glyph is the in-title pin cue, T3-style: always visible while
+			// pinned so the founder can read WHY this department orders first.
+			const pinMark = document.createElement("span");
+			pinMark.className = "dept-pin";
+			pinMark.title = "Pinned — this department orders first";
+			pinMark.innerHTML = navGlyphSvg("pin", "dept-pin-glyph");
+			title.appendChild(pinMark);
 		}
 		title.appendChild(caret);
 		title.oncontextmenu = (event) => openNavContext(event, department, "department");
@@ -1272,31 +1434,39 @@ function renderCompanyNav() {
 		}
 		group.appendChild(items);
 		nav.appendChild(group);
+		if (isMainDepartment && !pinnedSectionPlaced) {
+			renderPinnedSection(nav);
+			pinnedSectionPlaced = true;
+		}
 	}
+	if (!pinnedSectionPlaced) renderPinnedSection(nav);
 	// The flat chat pile sits below every department (ChatGPT/Codex shape).
-	const sessions = pileSessions();
+	// Pinned chats live in the Pinned section above; the pile is the rest.
+	const sessions = pileSessions().filter((session) => !isPinned(chatPinKey(session.file)));
 	if (sessions.length && focusedDepartmentId === null) {
 		const section = document.createElement("section");
 		section.className = "session-section";
-		const heading = document.createElement("div");
+		const collapsed = collapsedNavigation().has(CHAT_PILE_ID);
+		section.classList.toggle("collapsed", collapsed);
+		// Same affordance as a department: click the title, the caret hints.
+		const heading = document.createElement("button");
+		heading.type = "button";
 		heading.className = "session-section-title";
-		heading.textContent = "Chats";
+		heading.setAttribute("aria-expanded", String(!collapsed));
+		const headingLabel = document.createElement("span");
+		headingLabel.textContent = "Chats";
+		heading.appendChild(headingLabel);
+		const caret = document.createElement("span");
+		caret.className = "dept-caret";
+		caret.setAttribute("aria-hidden", "true");
+		caret.textContent = "▾";
+		heading.appendChild(caret);
+		heading.onclick = () => toggleDepartmentCollapsed(CHAT_PILE_ID);
 		section.appendChild(heading);
 		const pile = document.createElement("div");
 		pile.className = "session-pile";
 		for (const session of sessions.slice(0, sessionPileLimit)) {
-			const row = document.createElement("button");
-			row.type = "button";
-			row.className = "session-row";
-			row.classList.toggle("active", currentSession === session.file);
-			row.innerHTML = `${navGlyphSvg("bubble", "session-glyph")}<span class="session-copy"><span class="session-title"></span><small class="session-meta"><span class="session-scope"></span><span class="session-time"></span></small></span>`;
-			row.querySelector(".session-title").textContent = session.title;
-			const page = session.page ? projectionNode(session.page) : undefined;
-			row.querySelector(".session-scope").textContent = page?.label ?? session.worktree ?? "Company";
-			row.querySelector(".session-time").textContent = relativeSessionTime(session.mtimeMs);
-			row.title = session.title;
-			row.onclick = () => openSession(session.file, session.page);
-			pile.appendChild(row);
+			pile.appendChild(sessionRow(session));
 		}
 		if (sessions.length > sessionPileLimit) {
 			const more = document.createElement("button");
@@ -1714,6 +1884,11 @@ function setupHierarchicalController() {
 	$("iconDone").onclick = closeNavContext;
 	$("hideNavigationItem").onclick = hideNavigationTarget;
 	$("archiveNavigationItem").onclick = openArchiveConfirmation;
+	$("pinNavigationItem").onclick = () => {
+		if (!navContextTarget) return;
+		togglePinned(contextPinKey(navContextTarget));
+		closeNavContext();
+	};
 	$("heightSlider").oninput = () => setTargetHeight($("heightSlider").value);
 	$("heightReset").onclick = () => setTargetHeight(0);
 	$("heightDone").onclick = closeNavContext;
