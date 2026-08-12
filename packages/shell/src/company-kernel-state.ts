@@ -52,6 +52,13 @@ function rootId(root: string): string {
 	return createHash("sha256").update(normalizedPath(root)).digest("hex");
 }
 
+/** Stable machine-local company identity: sha256 of the canonical root path.
+ * Ports, windows, and sessions all churn; this is the one company key that
+ * does not — renderer storage and its partition are keyed by it. */
+export function companyRootId(root: string): string {
+	return rootId(canonicalRoot(root));
+}
+
 function rootIdentity(root: string): string {
 	const entry = lstatSync(root, { bigint: true });
 	if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("Company kernel state requires a physical root");

@@ -7,6 +7,7 @@ import {
 	advanceCompanyGateCreation,
 	beginCompanyGateCreation,
 	companyKernelStatePath,
+	companyRootId,
 	completeCompanyGateCreation,
 	hasCompanyGateTrust,
 	hasCompanyKernelState,
@@ -29,6 +30,24 @@ describe("desktop company kernel state", () => {
 
 	afterEach(() => {
 		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("derives one stable company identity per canonical root", () => {
+		const company = join(root, "company");
+		const sibling = join(root, "sibling");
+		mkdirSync(company);
+		mkdirSync(sibling);
+		const id = companyRootId(company);
+		expect(id).toMatch(/^[0-9a-f]{64}$/);
+		// Deterministic, canonicalizing (trailing separators, Windows casing),
+		// and shared with the kernel-state location for the same root.
+		expect(companyRootId(join(company, "a", ".."))).toBe(id);
+		if (process.platform === "win32") expect(companyRootId(company.toUpperCase())).toBe(id);
+		expect(companyRootId(sibling)).not.toBe(id);
+		expect(companyKernelStatePath(userData, company)).toContain(id);
+		// A root that does not exist has no identity — callers canonicalize
+		// (and thereby validate) the root before ever asking for one.
+		expect(() => companyRootId(join(root, "missing"))).toThrow();
 	});
 
 	it("persists and revokes path-scoped gate trust outside company Git", () => {
