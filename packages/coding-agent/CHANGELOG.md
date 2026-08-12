@@ -75,6 +75,7 @@
 
 ### Added
 
+- Reworked the desktop company navigation to the ChatGPT/Codex session-list shape: departments collapse on title click, "New chat" leads the panel (replacing the Chats nav row), all founder chats pile in one Chats section below the departments with "Show more" paging in fives, departments can be renamed and given a different glyph from the row context menu (panel presentation only — the projection is untouched), and the appearance density setting gained three states (compact, chunky chats, chunky everything).
 - Restyled the desktop company navigation: departments render unboxed with derived identity glyphs and title-case labels, Main's pages sit free at the top of the panel, and chat sessions pile under the department they belong to (page-scoped via the projection, product worktree chats via their department binding, unscoped chats under Main) with an "All chats" overflow into the Chats page. A new Appearance toggle, "Chunky chat rows", switches the piles between one-line rows and two-line rows carrying scope and last activity. Collection pages drop their index chips, eyebrow, and status meta for a centered content-only layout.
 - Added company UI projections: `app/projection.json` is now the only navigation publication document (departments → categories → pages with surface or builtin views), replacing the flat `app/manifest.json` surface list. Companies conceived before the projection model are migrated at open by the desktop kernel — `migrateLegacyManifestSurfaces()` folds legacy manifest surfaces into a generated projection (surface files untouched, controller-authored projections never modified) and removes the dead key.
 - Added HTTP file mode to the kernel lane: `saveToPath` streams a 2xx response into a validated company file (binary-safe, metered SHA-256, bounded by a configurable byte limit instead of the 8MB inline cap) and `sendFilePath` streams a company file out as the request body. Path validation is physical — symlinks cannot route kernel I/O outside company territory or into protected paths.
@@ -103,6 +104,8 @@
 
 ### Fixed
 
+- Fixed visible console windows flashing on Windows when opening a chat or a company controller: the shell now invokes the bundled Codex CLI's native binary directly instead of its npm wrapper script, which re-spawned codex.exe without windowsHide into a console-less process tree.
+- Fixed founder chat sessions listing as raw trail filenames: session titles now fall back from the first user message to the kernel's observed first input, then a founder-given session name, then "New chat"; the title scan window grew from 16 KiB/40 lines to 256 KiB/400 lines and tolerates string-content messages.
 - Fixed the desktop hub silently failing to open companies conceived under older kernels: the kernel now re-scaffolds the company spine at open (idempotent, never overwriting company content) before storage validation, and hub open failures surface as a visible error instead of a dead click.
 - Fixed fullscreen shutdown leaking terminal capability-query replies into the parent shell prompt.
 - Fixed bare exact `--model` IDs shared by multiple providers choosing the first catalog entry instead of the sole authenticated provider or a clear ambiguity error ([#7327](https://github.com/earendil-works/pi/issues/7327)).

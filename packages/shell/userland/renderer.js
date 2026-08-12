@@ -670,13 +670,17 @@ function storeNavigationSet(name, values) {
 }
 
 function navAppearance() {
-	return {
+	const stored = readStoredObject("nav-appearance", {});
+	const appearance = {
 		pageHue: "#3b82f6",
 		categoryHue: "#8b5cf6",
 		showKinds: true,
-		chunkySessions: false,
-		...readStoredObject("nav-appearance", {}),
+		density: "compact", // "compact" | "chats" (chunky chat rows) | "all"
+		...stored,
 	};
+	// 0.18.0 stored a boolean; fold it into the density scale.
+	if (!stored.density && stored.chunkySessions) appearance.density = "chats";
+	return appearance;
 }
 
 function applyNavAppearance() {
@@ -684,18 +688,20 @@ function applyNavAppearance() {
 	document.documentElement.style.setProperty("--page-hue", appearance.pageHue);
 	document.documentElement.style.setProperty("--category-hue", appearance.categoryHue);
 	document.body.classList.toggle("hues-hidden", !appearance.showKinds);
-	document.body.classList.toggle("chunky-sessions", appearance.chunkySessions);
+	document.body.classList.toggle("chunky-sessions", appearance.density !== "compact");
+	document.body.classList.toggle("chunky-nav", appearance.density === "all");
 }
 
 function applyNavMetrics(element, node, focused = false) {
 	const heights = readStoredObject("nav-heights", {});
+	const chunkyNav = navAppearance().density === "all";
 	const offset = Math.max(-12, Math.min(12, Number(heights[node.id]) || 0));
-	const baseHeight = node.kind === "department" ? 27 : focused ? 58 : 30;
+	const baseHeight = node.kind === "department" ? (chunkyNav ? 32 : 27) : focused ? 58 : chunkyNav ? 40 : 30;
 	const scale = 1 + offset / 60;
 	element.style.setProperty("--nav-item-height", `${baseHeight + offset}px`);
 	element.style.setProperty(
 		"--nav-font-size",
-		`${(node.kind === "department" ? 13 : focused ? 13.5 : 12.5) * scale}px`,
+		`${(node.kind === "department" ? (chunkyNav ? 13.5 : 13) : focused ? 13.5 : chunkyNav ? 13 : 12.5) * scale}px`,
 	);
 	element.style.setProperty("--nav-padding-inline", `${(node.kind === "department" ? 3 : 8) * scale}px`);
 	if (node.kind === "department") {
@@ -780,12 +786,15 @@ function openNavContext(event, node, placement) {
 	navContextTarget = { node, placement };
 	navContextTrigger = event.currentTarget;
 	navContextPoint = { x: event.clientX, y: event.clientY };
-	$("contextTitle").textContent = `${node.kind} / ${node.label}`;
+	$("contextTitle").textContent = `${node.kind} / ${displayLabel(node)}`;
 	$("contextActions").hidden = false;
 	$("heightEditor").hidden = true;
+	$("iconEditor").hidden = true;
 	const canAdjust = placement !== "collection";
 	$("adjustHeightButton").hidden = !canAdjust;
 	$("focusDepartmentItem").hidden = node.kind !== "department";
+	$("renameDepartmentItem").hidden = node.kind !== "department";
+	$("changeIconItem").hidden = node.kind !== "department";
 	$("contextHeightSeparator").hidden = !canAdjust && node.kind !== "department";
 	$("focusDepartmentItem").querySelector("span").textContent = focusedDepartmentId === node.id ? "Exit focus" : "Focus department";
 	$("focusDepartmentItem").querySelector("small").textContent =
@@ -793,6 +802,69 @@ function openNavContext(event, node, placement) {
 	$("navContext").hidden = false;
 	placeFloatingMenu($("navContext"));
 	(canAdjust ? $("adjustHeightButton") : $("hideNavigationItem")).focus();
+}
+
+/** Inline rename: the department title label becomes an input until
+ * Enter/blur commits (empty restores the projection label) or Escape cancels.
+ * Presentation override only — the projection document is never modified. */
+function startDepartmentRename(department) {
+	closeNavContext();
+	const group = document.querySelector(
+		`.projection-department[data-department-id="${CSS.escape(department.id)}"]`,
+	);
+	const label = group?.querySelector(".projection-department-label");
+	if (!label) return;
+	const input = document.createElement("input");
+	input.className = "dept-rename-input";
+	input.type = "text";
+	input.maxLength = 64;
+	input.value = displayLabel(department);
+	input.setAttribute("aria-label", `Rename ${department.label}`);
+	let done = false;
+	const finish = (commit) => {
+		if (done) return;
+		done = true;
+		if (commit) {
+			const value = input.value.trim();
+			setNavOverride(department.id, { label: value === department.label ? null : value || null });
+		}
+		renderCompanyNavSafe();
+	};
+	input.onkeydown = (event) => {
+		if (event.key === "Enter") finish(true);
+		else if (event.key === "Escape") finish(false);
+	};
+	input.onblur = () => finish(true);
+	input.onclick = (event) => event.stopPropagation();
+	label.replaceWith(input);
+	input.focus();
+	input.select();
+}
+
+function openIconEditor() {
+	if (!navContextTarget) return;
+	const department = navContextTarget.node;
+	$("contextActions").hidden = true;
+	$("heightEditor").hidden = true;
+	$("iconEditor").hidden = false;
+	const grid = $("iconGrid");
+	grid.innerHTML = "";
+	const current = navOverrides()[department.id]?.icon;
+	for (const name of DEPARTMENT_ICON_CHOICES) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.innerHTML = navGlyphSvg(name, "dept-glyph");
+		button.title = name;
+		button.classList.toggle("selected", current === name);
+		button.onclick = () => {
+			setNavOverride(department.id, { icon: name });
+			renderCompanyNavSafe();
+			closeNavContext();
+		};
+		grid.appendChild(button);
+	}
+	placeFloatingMenu($("navContext"));
+	grid.querySelector("button")?.focus();
 }
 
 function updateHeightEditor() {
@@ -980,7 +1052,11 @@ const NAV_GLYPHS = {
 		'<path d="M21 13h-4.8l-1.6 2.4h-5.2L7.8 13H3"/><path d="M5.6 6.3 3 13v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4l-2.6-6.7A1.6 1.6 0 0 0 16.9 5H7.1a1.6 1.6 0 0 0-1.5 1.3z"/>',
 	clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2.5"/>',
 	page: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+	plus: '<path d="M12 5v14M5 12h14"/>',
 };
+
+// Glyphs offered by the department icon picker (context menu → Change icon).
+const DEPARTMENT_ICON_CHOICES = ["folder", "code", "chart", "bubble", "people", "mail", "inbox", "clock", "page"];
 
 function navGlyphSvg(name, className) {
 	const paths = NAV_GLYPHS[name] ?? NAV_GLYPHS.folder;
@@ -988,11 +1064,13 @@ function navGlyphSvg(name, className) {
 }
 
 function departmentGlyphName(department) {
+	const override = navOverrides()[department.id]?.icon;
+	if (override && NAV_GLYPHS[override]) return override;
 	const productLike = department.items.some((childId) => {
 		const child = projectionNode(childId);
 		return child?.kind === "page" && child.view?.context?.departmentId !== undefined;
 	});
-	const label = department.label.toLowerCase();
+	const label = displayLabel(department).toLowerCase();
 	if (productLike || /develop|engineer|product\b/.test(label)) return "code";
 	if (/financ|cash|revenue|budget|account/.test(label)) return "chart";
 	if (/support|customer|service|help/.test(label)) return "bubble";
@@ -1020,36 +1098,47 @@ function relativeSessionTime(mtimeMs) {
 	return new Date(mtimeMs).toLocaleDateString();
 }
 
-/** The product-department entry a nav department represents, via the
- * departmentId its product pages carry. */
-function departmentEntryFor(department) {
-	for (const childId of department.items) {
-		const child = projectionNode(childId);
-		const departmentId = child?.kind === "page" ? child.view?.context?.departmentId : undefined;
-		if (departmentId === undefined) continue;
-		const entry = (state.departments ?? []).find((candidate) => candidate.id === departmentId);
-		if (entry) return entry;
-	}
-	return undefined;
+// ---- local navigation overrides (rename / icon) and collapse state -----------
+// Panel presentation only, stored per machine like heights and hidden items —
+// the projection document itself is never modified from the frontend.
+function navOverrides() {
+	return readStoredObject("nav-overrides", {});
 }
 
-function sessionsForDepartmentPile(department) {
-	const pageIds = new Set();
-	for (const childId of department.items) {
-		const child = projectionNode(childId);
-		if (!child) continue;
-		if (child.kind === "page") pageIds.add(child.id);
-		if (child.kind === "category") for (const pageId of child.items) pageIds.add(pageId);
+function setNavOverride(id, patch) {
+	const overrides = navOverrides();
+	const next = { ...(overrides[id] ?? {}), ...patch };
+	for (const key of Object.keys(next)) {
+		if (next[key] === null || next[key] === undefined || next[key] === "") delete next[key];
 	}
-	const entry = departmentEntryFor(department);
-	const isMain = department.id === "q:main";
+	if (Object.keys(next).length === 0) delete overrides[id];
+	else overrides[id] = next;
+	localStorage.setItem(navStorageKey("nav-overrides"), JSON.stringify(overrides));
+}
+
+function displayLabel(node) {
+	return navOverrides()[node.id]?.label ?? node.label;
+}
+
+function collapsedNavigation() {
+	return new Set(readStoredArray("nav-collapsed"));
+}
+
+function toggleDepartmentCollapsed(id) {
+	const collapsed = collapsedNavigation();
+	if (collapsed.has(id)) collapsed.delete(id);
+	else collapsed.add(id);
+	storeNavigationSet("nav-collapsed", collapsed);
+	renderCompanyNavSafe();
+}
+
+// The flat chat pile below the departments starts at five rows; "Show more"
+// grows it in fives (session-local, not persisted).
+let sessionPileLimit = 5;
+
+function pileSessions() {
 	return (state.sessions ?? [])
-		.filter((session) => {
-			if (session.kind === "autonomous") return false;
-			if (session.page) return pageIds.has(session.page);
-			if (session.department) return entry ? session.department === entry.path : false;
-			return isMain; // unscoped founder chats pile under Main
-		})
+		.filter((session) => session.kind !== "autonomous")
 		.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
@@ -1064,18 +1153,31 @@ function renderCompanyNav() {
 		if (!nodeIsVisible(department.id)) continue;
 		const group = document.createElement("section");
 		group.className = "projection-department";
+		group.dataset.departmentId = department.id;
 		const isMainDepartment = department.id === "q:main";
 		if (isMainDepartment) group.classList.add("dept-main");
+		const collapsed = !isMainDepartment && !focused && collapsedNavigation().has(department.id);
+		group.classList.toggle("collapsed", collapsed);
 		group.oncontextmenu = (event) => {
 			if (!event.target.closest(".projection-row, .hidden-items-control")) openNavContext(event, department, "department");
 		};
 		const title = document.createElement("div");
 		title.className = "projection-department-title";
 		title.innerHTML = navGlyphSvg(departmentGlyphName(department), "dept-glyph");
+		title.setAttribute("role", "button");
+		title.setAttribute("aria-expanded", String(!collapsed));
+		title.onclick = (event) => {
+			if (event.target.closest(".hidden-items-control") || title.querySelector(".dept-rename-input")) return;
+			toggleDepartmentCollapsed(department.id);
+		};
 		const titleLabel = document.createElement("span");
 		titleLabel.className = "projection-department-label";
-		titleLabel.textContent = department.label;
+		titleLabel.textContent = displayLabel(department);
 		title.appendChild(titleLabel);
+		const caret = document.createElement("span");
+		caret.className = "dept-caret";
+		caret.setAttribute("aria-hidden", "true");
+		caret.textContent = "▾";
 		const hiddenItems = hiddenItemsForDepartment(department);
 		if (hiddenItems.length) {
 			const control = document.createElement("div");
@@ -1102,16 +1204,31 @@ function renderCompanyNav() {
 			}
 			title.appendChild(control);
 		}
+		title.appendChild(caret);
 		title.oncontextmenu = (event) => openNavContext(event, department, "department");
 		applyNavMetrics(title, department);
 		group.appendChild(title);
 		const items = document.createElement("div");
 		items.className = "projection-department-items";
 		items.dataset.emptyLabel = department.items.length ? "No visible items" : "Empty department";
+		if (isMainDepartment) {
+			// Codex-app shape: the panel leads with starting a conversation.
+			const newChat = document.createElement("button");
+			newChat.type = "button";
+			newChat.className = "projection-row page new-chat-row";
+			newChat.innerHTML = '<span class="projection-row-label"></span>';
+			newChat.querySelector(".projection-row-label").innerHTML = `${navGlyphSvg("plus", "nav-row-glyph")}New chat`;
+			newChat.title = "Start a new company chat";
+			newChat.onclick = () => void newCompanyChat();
+			items.appendChild(newChat);
+		}
 		for (const childId of department.items) {
 			const child = projectionNode(childId);
 			if (!child || (child.kind !== "page" && child.kind !== "category")) continue;
 			if (!nodeIsVisible(child.id)) continue;
+			// The chat archive lives in the pile below the departments now; the
+			// nav row it used to occupy became "New chat" above.
+			if (isMainDepartment && child.kind === "page" && child.view?.id === "qorpera.chats") continue;
 			const row = document.createElement("button");
 			const ownsCurrent = child.kind === "category" && child.items.includes(currentNodeId);
 			row.className = `projection-row ${child.kind}${focused ? " focus-row" : ""}`;
@@ -1154,38 +1271,46 @@ function renderCompanyNav() {
 			items.appendChild(row);
 		}
 		group.appendChild(items);
-		// Chats pile under the department they belong to: page-scoped sessions
-		// under the page's department, product worktree sessions under their
-		// product department, unscoped founder chats under Main.
-		const pileSessions = sessionsForDepartmentPile(department);
-		if (pileSessions.length) {
-			const pile = document.createElement("div");
-			pile.className = "session-pile";
-			for (const session of pileSessions.slice(0, 4)) {
-				const row = document.createElement("button");
-				row.type = "button";
-				row.className = "session-row";
-				row.classList.toggle("active", currentSession === session.file);
-				row.innerHTML = `${navGlyphSvg("bubble", "session-glyph")}<span class="session-copy"><span class="session-title"></span><small class="session-meta"><span class="session-scope"></span><span class="session-time"></span></small></span>`;
-				row.querySelector(".session-title").textContent = session.title;
-				const page = session.page ? projectionNode(session.page) : undefined;
-				row.querySelector(".session-scope").textContent = page?.label ?? session.worktree ?? "Company";
-				row.querySelector(".session-time").textContent = relativeSessionTime(session.mtimeMs);
-				row.title = session.title;
-				row.onclick = () => openSession(session.file, session.page);
-				pile.appendChild(row);
-			}
-			if (pileSessions.length > 4) {
-				const more = document.createElement("button");
-				more.type = "button";
-				more.className = "session-more";
-				more.textContent = `All chats (${pileSessions.length})`;
-				more.onclick = () => void openProjectionNode("q:chats");
-				pile.appendChild(more);
-			}
-			group.appendChild(pile);
-		}
 		nav.appendChild(group);
+	}
+	// The flat chat pile sits below every department (ChatGPT/Codex shape).
+	const sessions = pileSessions();
+	if (sessions.length && focusedDepartmentId === null) {
+		const section = document.createElement("section");
+		section.className = "session-section";
+		const heading = document.createElement("div");
+		heading.className = "session-section-title";
+		heading.textContent = "Chats";
+		section.appendChild(heading);
+		const pile = document.createElement("div");
+		pile.className = "session-pile";
+		for (const session of sessions.slice(0, sessionPileLimit)) {
+			const row = document.createElement("button");
+			row.type = "button";
+			row.className = "session-row";
+			row.classList.toggle("active", currentSession === session.file);
+			row.innerHTML = `${navGlyphSvg("bubble", "session-glyph")}<span class="session-copy"><span class="session-title"></span><small class="session-meta"><span class="session-scope"></span><span class="session-time"></span></small></span>`;
+			row.querySelector(".session-title").textContent = session.title;
+			const page = session.page ? projectionNode(session.page) : undefined;
+			row.querySelector(".session-scope").textContent = page?.label ?? session.worktree ?? "Company";
+			row.querySelector(".session-time").textContent = relativeSessionTime(session.mtimeMs);
+			row.title = session.title;
+			row.onclick = () => openSession(session.file, session.page);
+			pile.appendChild(row);
+		}
+		if (sessions.length > sessionPileLimit) {
+			const more = document.createElement("button");
+			more.type = "button";
+			more.className = "session-more";
+			more.textContent = "Show more";
+			more.onclick = () => {
+				sessionPileLimit += 5;
+				renderCompanyNavSafe();
+			};
+			pile.appendChild(more);
+		}
+		section.appendChild(pile);
+		nav.appendChild(section);
 	}
 	const diagnostics = $("projectionDiagnostics");
 	const messages = state.projection?.diagnostics ?? [];
@@ -1577,6 +1702,16 @@ function setupHierarchicalController() {
 		$("heightSlider").focus();
 	};
 	$("focusDepartmentItem").onclick = toggleDepartmentFocus;
+	$("renameDepartmentItem").onclick = () => {
+		if (navContextTarget) startDepartmentRename(navContextTarget.node);
+	};
+	$("changeIconItem").onclick = openIconEditor;
+	$("iconDefault").onclick = () => {
+		if (navContextTarget) setNavOverride(navContextTarget.node.id, { icon: null });
+		renderCompanyNavSafe();
+		closeNavContext();
+	};
+	$("iconDone").onclick = closeNavContext;
 	$("hideNavigationItem").onclick = hideNavigationTarget;
 	$("archiveNavigationItem").onclick = openArchiveConfirmation;
 	$("heightSlider").oninput = () => setTargetHeight($("heightSlider").value);
@@ -2497,10 +2632,19 @@ async function renderSettingsTab() {
 		categoryPreview.textContent = "Forecasting";
 		preview.appendChild(pagePreview);
 		preview.appendChild(categoryPreview);
-		const chunky = document.createElement("input");
-		chunky.type = "checkbox";
-		chunky.setAttribute("aria-label", "Chunky chat rows");
-		chunky.checked = appearance.chunkySessions;
+		const density = document.createElement("select");
+		density.setAttribute("aria-label", "Navigation row density");
+		for (const [value, label] of [
+			["compact", "Compact"],
+			["chats", "Chunky chats"],
+			["all", "Chunky everything"],
+		]) {
+			const option = document.createElement("option");
+			option.value = value;
+			option.textContent = label;
+			density.appendChild(option);
+		}
+		density.value = appearance.density;
 		const save = () => {
 			localStorage.setItem(
 				navStorageKey("nav-appearance"),
@@ -2508,7 +2652,7 @@ async function renderSettingsTab() {
 					showKinds: showKinds.checked,
 					pageHue: pageHue.value,
 					categoryHue: categoryHue.value,
-					chunkySessions: chunky.checked,
+					density: density.value,
 				}),
 			);
 			pageHue.disabled = !showKinds.checked;
@@ -2522,15 +2666,15 @@ async function renderSettingsTab() {
 		showKinds.onchange = save;
 		pageHue.oninput = save;
 		categoryHue.oninput = save;
-		chunky.onchange = save;
+		density.onchange = save;
 		setRow(group, "Show type hues", "Display the indicator at the left edge of each navigation row.", showKinds);
 		setRow(group, "Page hue", "Direct pages and surfaces", pageHue);
 		setRow(group, "Category hue", "Folders that open a list of pages", categoryHue);
 		setRow(
 			group,
-			"Chunky chat rows",
-			"Show the chats under each department as two-line rows with their scope and last activity.",
-			chunky,
+			"Row density",
+			"Chunky chats turns the chat list into two-line rows with scope and last activity; Chunky everything also enlarges the navigation rows.",
+			density,
 		);
 		group.appendChild(preview);
 		const reset = document.createElement("button");

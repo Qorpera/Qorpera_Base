@@ -111,9 +111,19 @@
 	<div class="context-actions" id="contextActions">
 		<button class="context-action" id="adjustHeightButton" type="button" role="menuitem">Adjust height</button>
 		<button class="context-action" id="focusDepartmentItem" type="button" role="menuitem"><span>Focus department</span><small>Show only this department</small></button>
+		<button class="context-action" id="renameDepartmentItem" type="button" role="menuitem"><span>Rename</span><small>Display name in this panel</small></button>
+		<button class="context-action" id="changeIconItem" type="button" role="menuitem"><span>Change icon</span><small>Pick the department glyph</small></button>
 		<div class="context-separator" id="contextHeightSeparator"></div>
 		<button class="context-action" id="hideNavigationItem" type="button" role="menuitem"><span>Hide</span><small>Remove from this panel</small></button>
 		<button class="context-action danger" id="archiveNavigationItem" type="button" role="menuitem"><span>Archive</span><small>Move out of active use</small></button>
+	</div>
+	<div class="height-editor icon-editor" id="iconEditor" hidden>
+		<div class="height-editor-head"><span>Department icon</span></div>
+		<div class="icon-grid" id="iconGrid"></div>
+		<div class="height-actions">
+			<button id="iconDefault" type="button">Default</button>
+			<button id="iconDone" type="button">Done</button>
+		</div>
 	</div>
 	<div class="height-editor" id="heightEditor" hidden>
 		<div class="height-editor-head"><span>Height offset</span><output id="heightValue">Default</output></div>

@@ -551,6 +551,22 @@ h2.cat .catBtn:hover { color: var(--text); background: rgba(255, 255, 255, 0.06)
 .projection-department-label {
 	flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Collapse affordance: click the title row; the caret only hints. */
+.projection-department-title:hover { background: rgba(255, 255, 255, 0.04); border-radius: 8px; cursor: pointer; }
+.dept-caret {
+	flex: 0 0 auto; color: var(--text-soft); font-size: 10px; line-height: 1;
+	opacity: 0; transition: transform 120ms ease, opacity 120ms ease;
+}
+.projection-department-title:hover .dept-caret { opacity: 1; }
+.projection-department.collapsed .dept-caret { opacity: 1; transform: rotate(-90deg); }
+.projection-department.collapsed .projection-department-items { display: none; }
+.dept-rename-input {
+	flex: 1; min-width: 0; padding: 2px 6px;
+	border: 1px solid var(--border-strong); border-radius: 6px;
+	background: rgba(255, 255, 255, 0.06); color: var(--text);
+	font: inherit; outline: none;
+}
+.dept-rename-input:focus { border-color: var(--accent); }
 /* Department identity glyph — derived from the department's shape, not data. */
 .dept-glyph { width: 15px; height: 15px; flex: 0 0 auto; color: var(--text-muted); }
 /* Row glyphs sit inline inside the ellipsized label span. */
@@ -635,6 +651,11 @@ nav .projection-row.focus-row.active { border-color: var(--accent); background: 
    Compact (default): one quiet line per chat. Chunky (Appearance toggle,
    body.chunky-sessions): two-line rows — title over scope + relative time —
    like the ChatGPT desktop session list. */
+.session-section { display: flex; flex-direction: column; margin-top: 4px; }
+.session-section-title {
+	padding: 0 8px 4px; color: var(--text-soft);
+	font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+}
 .session-pile { display: flex; flex-direction: column; gap: 1px; margin-top: 1px; }
 .session-row {
 	display: flex; align-items: center; gap: 7px; width: 100%;
@@ -664,6 +685,21 @@ body.chunky-sessions .session-meta { display: flex; }
 	background: transparent; color: var(--text-soft); font-size: 11.5px; text-align: left;
 }
 .session-more:hover { background: var(--hover); color: var(--text-muted); border: 0; }
+/* Chunky everything: session rows grow via body.chunky-sessions; nav rows and
+   department titles grow through the --nav-item-height/--nav-font-size vars
+   that applyNavMetrics() computes from the density setting. */
+body.chunky-nav .session-row { min-height: 50px; }
+body.chunky-nav .session-section-title { font-size: 11.5px; padding-bottom: 6px; }
+
+/* ---- department icon picker (context menu) ------------------------------- */
+.icon-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-top: 4px; }
+.icon-grid button {
+	display: grid; place-items: center; height: 34px; min-height: 34px; padding: 0;
+	border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text-muted);
+}
+.icon-grid button:hover { border-color: var(--border-strong); background: var(--hover); color: var(--text); }
+.icon-grid button.selected { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.icon-grid .dept-glyph { width: 16px; height: 16px; }
 #conav > .profileRow { margin: 0 12px; width: calc(100% - 24px); }
 
 /* ---- navigation menus and frontend-only lifecycle flows ----------------- */

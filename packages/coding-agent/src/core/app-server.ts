@@ -414,8 +414,20 @@ interface SessionSummary {
 	page?: string;
 }
 
-/** Trail sessions ARE the chat list (spec §3). Title = first user message;
- * autonomous work is tagged with a session name at spawn time. */
+/** Chat-title material: chrome-injected context blocks are plumbing, not the
+ * founder's words; whitespace collapses; one line, bounded. */
+function sessionTitleText(text: string): string {
+	return text
+		.replace(/^\[Sidechat context:[^\]]*\]\s*/, "")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, 70);
+}
+
+/** Trail sessions ARE the chat list (spec §3). Title = first user message,
+ * falling back to the kernel's observed first input, then the stored session
+ * name; sessions with no words yet list as "New chat". Autonomous work is
+ * tagged with a session name at spawn time. */
 function listTrailSessions(root: string): SessionSummary[] {
 	const dir = physicalDirectoryWithin(root, "trail");
 	if (!dir) return [];
@@ -425,8 +437,15 @@ function listTrailSessions(root: string): SessionSummary[] {
 		try {
 			const source = readPhysicalFileWithin(dir, file);
 			if (!source) continue;
-			const head = source.content.toString("utf-8", 0, 16_384);
+			// 256 KiB reaches past the kernel-input copy of a large first prompt
+			// and image parts that can sit ahead of the first user message entry.
+			const headBytes = 262_144;
+			const head = source.content.toString("utf-8", 0, headBytes);
+			const lines = head.split("\n");
+			// The window may cut the final line mid-entry; never parse the stub.
+			if (source.content.length > headBytes) lines.pop();
 			let title = "";
+			let kernelInput = "";
 			let name = "";
 			let sessionAuthority:
 				| {
@@ -436,41 +455,57 @@ function listTrailSessions(root: string): SessionSummary[] {
 						worktree?: string;
 				  }
 				| undefined;
-			for (const line of head.split("\n").slice(0, 40)) {
+			for (const line of lines.slice(0, 400)) {
 				if (!line.trim()) continue;
 				try {
 					const entry = JSON.parse(line) as {
 						type?: string;
+						customType?: string;
+						data?: { message?: unknown };
 						name?: string;
 						qorpera?: typeof sessionAuthority;
-						message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
+						message?: { role?: string; content?: string | Array<{ type?: string; text?: string }> };
 					};
 					if (entry.type === "session" && entry.qorpera) sessionAuthority = entry.qorpera;
 					if (entry.type === "session_info" && typeof entry.name === "string" && !name) {
 						name = entry.name;
 					}
+					// The kernel records the founder's exact first input before the
+					// child's own message entry lands — the cheapest title source.
+					if (
+						entry.type === "custom" &&
+						entry.customType === "qorpera_kernel_input" &&
+						!kernelInput &&
+						typeof entry.data?.message === "string"
+					) {
+						kernelInput = sessionTitleText(entry.data.message);
+					}
 					if (entry.type === "message" && entry.message?.role === "user" && !title) {
-						const text = entry.message.content?.find((part) => part.type === "text")?.text ?? "";
-						// Sidechat sessions open with a chrome-injected context block —
-						// plumbing, not the founder's words; titles come from the latter.
-						title = text
-							.replace(/^\[Sidechat context:[^\]]*\]\s*/, "")
-							.replace(/\s+/g, " ")
-							.slice(0, 70);
+						const content = entry.message.content;
+						const text =
+							typeof content === "string"
+								? content
+								: (content?.find((part) => part.type === "text")?.text ?? "");
+						title = sessionTitleText(text);
 					}
 					if (name && title) break;
 				} catch {
-					// partial trailing line in the head window
+					// unparseable line (foreign entry shape); keep scanning
 				}
 			}
 			const kind = sessionAuthority?.autonomous ? "autonomous" : "chat";
 			// Sidechats carry immutable projection page IDs so moving a surface file
 			// does not detach its conversations from the UI instrument.
 			const page = kind === "chat" ? name.match(/^page — (.+)$/)?.[1] : undefined;
+			// Page and product tags are plumbing; a founder-given name is title material.
+			const chatName = page || /^product — /.test(name) ? "" : name;
 			sessions.push({
 				file,
 				mtimeMs: source.mtimeMs,
-				title: kind === "autonomous" ? (sessionAuthority?.label ?? name) : title || file.slice(0, 30),
+				title:
+					kind === "autonomous"
+						? (sessionAuthority?.label ?? name)
+						: title || kernelInput || chatName || "New chat",
 				kind,
 				department: sessionAuthority?.department,
 				worktree: sessionAuthority?.worktree,

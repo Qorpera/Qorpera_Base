@@ -435,6 +435,31 @@ describe("company app server", () => {
 			"utf-8",
 		);
 
+		// A fresh founder chat holds only its header and the kernel's record of
+		// the founder's first input — that record titles it until the child's
+		// own message entry lands.
+		writeFileSync(
+			join(root, "trail", "2026-08-04T14-00-00-000Z_kernelinput.jsonl"),
+			[
+				JSON.stringify({ type: "session", version: 3, id: "ki", timestamp: "t", cwd: root }),
+				JSON.stringify({
+					type: "custom",
+					id: "c1",
+					parentId: null,
+					customType: "qorpera_kernel_input",
+					data: { message: "review the supplier contracts" },
+				}),
+			].join("\n"),
+			"utf-8",
+		);
+		// A chat opened and abandoned before any words lists as "New chat" —
+		// never as its trail filename.
+		writeFileSync(
+			join(root, "trail", "2026-08-04T15-00-00-000Z_empty.jsonl"),
+			JSON.stringify({ type: "session", version: 3, id: "empty", timestamp: "t", cwd: root }),
+			"utf-8",
+		);
+
 		const state = (await (await fetch(`${base}/api/state`)).json()) as {
 			sessions: Array<{
 				file: string;
@@ -463,6 +488,10 @@ describe("company app server", () => {
 		expect(sidechat?.kind).toBe("chat");
 		expect(sidechat?.page).toBe("page:revenue.overview");
 		expect(sidechat?.title).toBe("why did July dip?");
+		const kernelInput = state.sessions.find((s) => s.file.includes("_kernelinput"));
+		const empty = state.sessions.find((s) => s.file.includes("_empty"));
+		expect(kernelInput?.title).toBe("review the supplier contracts");
+		expect(empty?.title).toBe("New chat");
 
 		writeFileSync(
 			join(root, department.pullRequestsPath, "42.json"),

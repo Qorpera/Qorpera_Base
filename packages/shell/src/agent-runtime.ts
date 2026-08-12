@@ -1153,6 +1153,21 @@ export function sandboxCommandArgs(codexEntry: string, runtimeDir: string, progr
 }
 
 /**
+ * Spawn shape for a sandboxCommandArgs() invocation. A native codex.exe entry
+ * is executed directly (spawning it through the npm wrapper script would
+ * re-spawn the binary without windowsHide and flash a console window on
+ * Windows); a wrapper-script entry runs under the given node executable.
+ */
+export function codexSpawn(
+	codexEntry: string,
+	nodeExecutable: string,
+	sandboxArgs: string[],
+): { command: string; args: string[] } {
+	if (codexEntry.toLowerCase().endsWith(".exe")) return { command: codexEntry, args: sandboxArgs.slice(1) };
+	return { command: nodeExecutable, args: sandboxArgs };
+}
+
+/**
  * Exercise the bundled Codex sandbox before an agent is started. On a clean
  * Windows profile this invokes Codex's supported elevated setup path; on an
  * existing profile Codex validates and refreshes its own ACL/firewall state.
@@ -1176,18 +1191,19 @@ export function provisionWindowsSandbox(options: {
 		throw new Error("Bundled Codex Windows sandbox provisioning failed: Windows system root is unavailable.");
 	}
 	const whoami = join(systemRoot, "System32", "whoami.exe");
-	const identity = spawnSync(
+	const identityInvocation = codexSpawn(
+		options.codexEntry,
 		options.nodeExecutable,
 		sandboxCommandArgs(options.codexEntry, options.runtimeDir, whoami, []),
-		{
-			cwd: options.runtimeDir,
-			env,
-			encoding: "utf-8",
-			maxBuffer: 1024 * 1024,
-			timeout: 10 * 60 * 1000,
-			windowsHide: true,
-		},
 	);
+	const identity = spawnSync(identityInvocation.command, identityInvocation.args, {
+		cwd: options.runtimeDir,
+		env,
+		encoding: "utf-8",
+		maxBuffer: 1024 * 1024,
+		timeout: 10 * 60 * 1000,
+		windowsHide: true,
+	});
 	if (
 		identity.error ||
 		identity.status !== 0 ||
@@ -1217,21 +1233,22 @@ function assertSandboxNetworkIsolation(options: {
 	nodeExecutable: string;
 	env: NodeJS.ProcessEnv;
 }): void {
-	const network = spawnSync(
+	const networkInvocation = codexSpawn(
+		options.codexEntry,
 		options.nodeExecutable,
 		sandboxCommandArgs(options.codexEntry, options.runtimeDir, options.nodeExecutable, [
 			"-e",
 			'Promise.any([fetch("https://example.com/"),fetch("https://api.openai.com/")]).then(()=>process.exit(42),()=>process.exit(0))',
 		]),
-		{
-			cwd: options.runtimeDir,
-			env: options.env,
-			encoding: "utf-8",
-			maxBuffer: 1024 * 1024,
-			timeout: 30_000,
-			windowsHide: true,
-		},
 	);
+	const network = spawnSync(networkInvocation.command, networkInvocation.args, {
+		cwd: options.runtimeDir,
+		env: options.env,
+		encoding: "utf-8",
+		maxBuffer: 1024 * 1024,
+		timeout: 30_000,
+		windowsHide: true,
+	});
 	if (network.error || network.status !== 0) {
 		const detail = [network.error?.message, network.stderr, network.stdout]
 			.filter((value): value is string => Boolean(value?.trim()))

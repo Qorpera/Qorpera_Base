@@ -90,6 +90,7 @@ import {
 	appendKernelWakeObservation,
 	applyKernelWriteFrame,
 	bindTrailSession,
+	codexSpawn,
 	commitTrailAppend,
 	createKernelResponseSigner,
 	DEFAULT_MODEL_INTENT_BUDGET,
@@ -160,7 +161,31 @@ import {
 import { startWebhookListener } from "./webhook-listener.ts";
 
 const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
-const CODEX_ENTRY = fileURLToPath(import.meta.resolve("@openai/codex/bin/codex.js"));
+const CODEX_ENTRY = resolveCodexEntry();
+
+/**
+ * Where the bundled Codex CLI is invoked from. On Windows this is the native
+ * codex.exe itself: the npm wrapper script (bin/codex.js) re-spawns the
+ * binary without windowsHide, and because the shell's whole process tree is
+ * console-less, Windows allocates a visible console window for every sandbox
+ * probe and agent start (two flashes and one persistent window per open).
+ * Elsewhere the wrapper script stays the entry, run under electron-as-node.
+ * codexSpawn() (agent-runtime) picks the spawn shape from the extension.
+ */
+function resolveCodexEntry(): string {
+	const wrapper = fileURLToPath(import.meta.resolve("@openai/codex/bin/codex.js"));
+	if (process.platform !== "win32") return wrapper;
+	const platformPackage = process.arch === "arm64" ? "@openai/codex-win32-arm64" : "@openai/codex-win32-x64";
+	const targetTriple = process.arch === "arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc";
+	try {
+		const packageRoot = dirname(fileURLToPath(import.meta.resolve(`${platformPackage}/package.json`)));
+		const binary = join(packageRoot, "vendor", targetTriple, "bin", "codex.exe");
+		if (existsSync(binary)) return binary;
+	} catch {
+		// Fall through to the wrapper; provisioning fails loudly if that breaks too.
+	}
+	return wrapper;
+}
 const DIRNAME = fileURLToPath(new URL(".", import.meta.url));
 const FOUNDATION_READ_PATHS = [dirname(process.execPath), resolve(DIRNAME, "..", "..", "..")];
 const MODEL_AUTH_PROVIDERS = new Set([
@@ -679,7 +704,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		observe: (event) => appendKernelHttpObservation(binding, event),
 	});
 	let agentDir: string;
-	let args: string[];
+	let invocation: { command: string; args: string[] };
 	let kernelSigner: ReturnType<typeof createKernelResponseSigner>;
 	let child: ChildProcessWithoutNullStreams;
 	const env: NodeJS.ProcessEnv = brokeredChildEnvironment();
@@ -709,7 +734,11 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			env,
 		});
 		const rpcArgs = [RPC_ENTRY, "--mode", "rpc", "--session", binding.path];
-		args = sandboxCommandArgs(CODEX_ENTRY, runtimeDir, process.execPath, rpcArgs);
+		invocation = codexSpawn(
+			CODEX_ENTRY,
+			process.execPath,
+			sandboxCommandArgs(CODEX_ENTRY, runtimeDir, process.execPath, rpcArgs),
+		);
 		kernelSigner = createKernelResponseSigner({ sessionId: binding.sessionId });
 	} catch (error) {
 		brokeredCredentials.release();
@@ -729,7 +758,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	env.QORPERA_KERNEL_REQUIRED = "1";
 	env.QORPERA_MODEL_BROKER_HANDLES = JSON.stringify(brokeredCredentials.handles);
 	try {
-		child = spawn(process.execPath, args, {
+		child = spawn(invocation.command, invocation.args, {
 			cwd: runtimeDir,
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
