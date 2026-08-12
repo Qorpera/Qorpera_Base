@@ -106,6 +106,15 @@ describe("userland fork model", () => {
 		const prompt = mergeTaskPrompt(status);
 		expect(prompt).toContain("3-way merge");
 		expect(prompt).toContain("v2.0.0");
+		// The prompt must only reference tools the merge session actually has
+		// (read/bash/edit/write — there is no delete tool): the v0.18.1 merge
+		// session settled without working because the prompt pointed at
+		// "write/delete tools" while deletion in fact rides bash. Per-file rm
+		// is the sanctioned lane; -r/-f trip the irreversibility gates.
+		expect(prompt).not.toContain("write/delete tools");
+		expect(prompt).toContain("deletion goes through bash");
+		expect(prompt).toContain("`rm <path>`");
+		expect(prompt).toContain("rm -r");
 	});
 
 	it("auto-applies a base update when the fork never touched the changed files", () => {

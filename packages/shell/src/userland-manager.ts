@@ -600,6 +600,6 @@ export function mergeTaskPrompt(status: UserlandStatus): string {
 		`A Qorpera Base userland update is staged: your app's fork is based on v${status.baseVersion}, and v${status.stagedVersion} is waiting in userland/.update/.`,
 		`Merge it: userland/ is your evolved app, userland/.base/ is the pristine v${status.baseVersion} you forked from, userland/.update/ is the new base — a classic 3-way merge (yours / base / theirs).`,
 		"Preserve your evolutions, adopt the update's improvements, and verify the app still works (the founder will reopen it). When done, delete userland/.update/ — deleting it is the completion signal. Touch nothing else: the kernel refreshes userland/.base/ and userland.json itself once the update folder is gone.",
-		"Cleanup note: recursive deletes (`rm -r`) trip the irreversibility gates and stall on the founder. Delete with your write/delete tools or plain per-file `rm` of listed files instead — past merges that used `rm -r` left stale gate requests the founder then had to deny.",
+		"Cleanup note: there is no separate delete tool — deletion goes through bash. Recursive and force deletes (`rm -r`, `rm -f`) trip the irreversibility gates and stall on the founder — past merges that used them left stale gate requests the founder then had to deny. Remove the listed files one at a time with plain `rm <path>`, then `rmdir` each emptied directory.",
 	].join("\n\n");
 }

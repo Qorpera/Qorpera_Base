@@ -1095,6 +1095,45 @@ function tomlString(value: string): string {
 	return JSON.stringify(value);
 }
 
+/**
+ * The child environment allowlist (credential denial, docs/sandbox.md): no
+ * provider keys or founder state reach an agent child. Everything here is
+ * machine shape, not secrets. ProgramFiles / ProgramFiles(x86) are
+ * load-bearing on Windows: the coding agent's bash tool probes
+ * %ProgramFiles%\Git\bin\bash.exe first, and without them its PATH fallback
+ * finds the System32 WSL stub, which cannot run inside the offline sandbox —
+ * every bash call then fails and kernel-spawned sessions (userland merges,
+ * wakes) are left without a shell.
+ */
+export const SAFE_CHILD_ENV = new Set([
+	"PATH",
+	"PATHEXT",
+	"SystemRoot",
+	"WINDIR",
+	"COMSPEC",
+	"ProgramFiles",
+	"ProgramFiles(x86)",
+	"LANG",
+	"LC_ALL",
+	"NODE_EXTRA_CA_CERTS",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"USERNAME",
+	"USERDOMAIN",
+]);
+
+export function brokeredChildEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	// Windows environment names are case-insensitive and their casing depends
+	// on the launching shell ("Path" from Explorer, "PATH"/"PROGRAMFILES" from
+	// an MSYS terminal), so the allowlist must match case-insensitively there
+	// or load-bearing variables silently vanish from the child.
+	if (process.platform !== "win32") {
+		return Object.fromEntries(Object.entries(source).filter(([key, value]) => SAFE_CHILD_ENV.has(key) && value));
+	}
+	const allowed = new Set([...SAFE_CHILD_ENV].map((name) => name.toUpperCase()));
+	return Object.fromEntries(Object.entries(source).filter(([key, value]) => allowed.has(key.toUpperCase()) && value));
+}
+
 export function writeSandboxProfile(
 	configDir: string,
 	runtimeDir: string,

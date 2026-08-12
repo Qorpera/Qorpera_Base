@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	brokeredChildEnvironment,
 	provisionWindowsSandbox,
 	sandboxCommandArgs,
 	sandboxRuntimeDir,
@@ -327,6 +328,28 @@ describe.skipIf(!RUN_WINDOWS_INTEGRATION)("bundled Codex Windows sandbox integra
 				{ cwd: controllerRuntimeDir, env: controllerEnv, encoding: "utf-8", timeout: 120_000 },
 			);
 			expect({ status: controllerNetwork.status, stderr: controllerNetwork.stderr }).toMatchObject({ status: 0 });
+
+			// Userland-merge regression (shell 0.18.1, "Bash tool unavailable"):
+			// the coding agent's Windows shell discovery probes
+			// %ProgramFiles%\Git\bin\bash.exe, so the child environment must
+			// carry the ProgramFiles roots, and the sandbox must be able to
+			// execute Git Bash — otherwise kernel-spawned sessions (userland
+			// merges, wakes) run with a bash tool that fails on every call.
+			const childEnv = brokeredChildEnvironment();
+			// Plain-object lookup: the child's process.env is case-insensitive,
+			// but this returned snapshot is not.
+			const programFiles = Object.entries(childEnv).find(([key]) => key.toUpperCase() === "PROGRAMFILES")?.[1];
+			expect(programFiles, "SAFE_CHILD_ENV must carry ProgramFiles for shell discovery").toBeTruthy();
+			const gitBash = join(programFiles!, "Git", "bin", "bash.exe");
+			if (existsSync(gitBash)) {
+				const bashProbe = spawnSync(
+					process.execPath,
+					sandboxCommandArgs(CODEX_ENTRY, controllerRuntimeDir, gitBash, ["-c", "echo qorpera-bash-ok"]),
+					{ cwd: controllerRuntimeDir, env: controllerEnv, encoding: "utf-8", timeout: 120_000 },
+				);
+				expect({ status: bashProbe.status, stderr: bashProbe.stderr }).toMatchObject({ status: 0 });
+				expect(bashProbe.stdout).toContain("qorpera-bash-ok");
+			}
 		},
 		15 * 60 * 1000,
 	);

@@ -3,8 +3,8 @@
 **Status:** Reference for Build 2 (manifesto §7.2: isolation strength is
 stated honestly, per platform, or scoped down until it can be). The
 enforcement code is the authority: `packages/shell/src/agent-runtime.ts`
-(`writeSandboxProfile`, `provisionSandbox`, `protectedControllerPaths`),
-`packages/shell/src/main.ts` (child spawn, environment allowlist,
+(`writeSandboxProfile`, `provisionSandbox`, `protectedControllerPaths`,
+`brokeredChildEnvironment`), `packages/shell/src/main.ts` (child spawn,
 credential brokering), `packages/coding-agent/src/core/tools/company-tool.ts`
 (company-program execution).
 
@@ -26,8 +26,10 @@ with a generated filesystem permission map:
 
 Independent of the OS sandbox, on every platform:
 
-- **Credential denial** — the child environment is a 12-variable allowlist;
-  no provider keys reach it. Model credentials are opaque broker handles;
+- **Credential denial** — the child environment is a strict allowlist
+  (`SAFE_CHILD_ENV` in `agent-runtime.ts`: PATH shape, locale, TLS trust,
+  and the Windows `ProgramFiles` roots the bash tool's shell discovery
+  needs); no provider keys reach it. Model credentials are opaque broker handles;
   request construction, authentication, and network stay in the kernel
   process, gated by kernel-signed intents with per-intent budgets.
 - **Trail integrity** — the child cannot write the trail file; it submits

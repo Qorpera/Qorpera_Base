@@ -9,6 +9,7 @@ import {
 	appendKernelObservation,
 	applyKernelWriteFrame,
 	bindTrailSession,
+	brokeredChildEnvironment,
 	commitTrailAppend,
 	kernelGateReviewDocument,
 	parseTrailAppendFrame,
@@ -509,6 +510,56 @@ describe("kernel-bound agent runtime", () => {
 		}
 		if (previousProgramData === undefined) delete process.env.ProgramData;
 		else process.env.ProgramData = previousProgramData;
+	});
+
+	it("denies credentials to the child environment while keeping Windows shell discovery alive", () => {
+		const env = brokeredChildEnvironment({
+			PATH: "C:\\Windows\\System32",
+			PATHEXT: ".EXE;.CMD",
+			COMSPEC: "C:\\Windows\\System32\\cmd.exe",
+			SystemRoot: "C:\\Windows",
+			// getShellConfig (coding-agent) probes %ProgramFiles%\Git\bin\bash.exe
+			// first; stripping these regressed every kernel-spawned session to the
+			// unrunnable WSL stub — userland merges then settled with "Bash tool
+			// unavailable" (v0.18.1).
+			ProgramFiles: "C:\\Program Files",
+			"ProgramFiles(x86)": "C:\\Program Files (x86)",
+			ANTHROPIC_API_KEY: "secret",
+			OPENAI_API_KEY: "secret",
+			QORPERA_TRAIL_BROKER_TOKEN: "secret",
+			HOME: "C:\\Users\\founder",
+			USERPROFILE: "C:\\Users\\founder",
+			EMPTY: "",
+		});
+		expect(env.ProgramFiles).toBe("C:\\Program Files");
+		expect(env["ProgramFiles(x86)"]).toBe("C:\\Program Files (x86)");
+		expect(env.PATH).toBe("C:\\Windows\\System32");
+		expect(env.COMSPEC).toBeDefined();
+		expect(env.PATHEXT).toBeDefined();
+		expect(env.SystemRoot).toBeDefined();
+		expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+		expect(env.OPENAI_API_KEY).toBeUndefined();
+		expect(env.QORPERA_TRAIL_BROKER_TOKEN).toBeUndefined();
+		expect(env.HOME).toBeUndefined();
+		expect(env.USERPROFILE).toBeUndefined();
+		expect(env.EMPTY).toBeUndefined();
+	});
+
+	it.runIf(process.platform === "win32")("matches Windows environment names case-insensitively", () => {
+		// Windows environment casing depends on the launching shell: Explorer
+		// hands Electron "Path", an MSYS terminal hands it "PATH" and
+		// "PROGRAMFILES". Exact-match filtering silently dropped those, which is
+		// how kernel children lost shell discovery (v0.18.1 merge sessions).
+		const env = brokeredChildEnvironment({
+			Path: "C:\\Windows\\System32",
+			PROGRAMFILES: "C:\\Program Files",
+			"ProgramFiles(x86)": "C:\\Program Files (x86)",
+			ANTHROPIC_API_KEY: "secret",
+		});
+		expect(env.Path).toBe("C:\\Windows\\System32");
+		expect(env.PROGRAMFILES).toBe("C:\\Program Files");
+		expect(env["ProgramFiles(x86)"]).toBe("C:\\Program Files (x86)");
+		expect(env.ANTHROPIC_API_KEY).toBeUndefined();
 	});
 
 	it("checkpoints content changed by the session while preserving untouched baseline dirt", () => {

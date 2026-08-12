@@ -90,6 +90,7 @@ import {
 	appendKernelWakeObservation,
 	applyKernelWriteFrame,
 	bindTrailSession,
+	brokeredChildEnvironment,
 	codexSpawn,
 	commitTrailAppend,
 	createKernelResponseSigner,
@@ -212,20 +213,6 @@ const MAX_PROMPT_BYTES = 64 * 1024;
 const MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_PROMPT_IMAGES = 5;
 const REVIEW_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-const SAFE_CHILD_ENV = new Set([
-	"PATH",
-	"PATHEXT",
-	"SystemRoot",
-	"WINDIR",
-	"COMSPEC",
-	"LANG",
-	"LC_ALL",
-	"NODE_EXTRA_CA_CERTS",
-	"SSL_CERT_FILE",
-	"SSL_CERT_DIR",
-	"USERNAME",
-	"USERDOMAIN",
-]);
 const MODEL_ENV_PROVIDERS = new Map([
 	["ANTHROPIC_API_KEY", "anthropic"],
 	["OPENAI_API_KEY", "openai"],
@@ -253,10 +240,6 @@ function prepareBrokeredAgentDir(configDir: string, companyRoot: string, credent
 	const founderProjection = founderPublicProjection();
 	if (founderProjection) writeFileSync(join(agentDir, FOUNDER_PUBLIC_FILE), founderProjection, "utf-8");
 	return agentDir;
-}
-
-function brokeredChildEnvironment(): NodeJS.ProcessEnv {
-	return Object.fromEntries(Object.entries(process.env).filter(([key, value]) => SAFE_CHILD_ENV.has(key) && value));
 }
 
 function sourceModelCredentials(): Record<string, unknown> {
@@ -1194,9 +1177,9 @@ async function startMergeChild(slot: Slot, runtime: CompanyRuntime, reviewedProm
 			if (existsSync(join(runtime.root, "userland", "userland.json"))) {
 				runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
 				ok =
-				runtime.userland.action === "current" ||
-				runtime.userland.action === "fast-forwarded" ||
-				runtime.userland.action === "auto-merged";
+					runtime.userland.action === "current" ||
+					runtime.userland.action === "fast-forwarded" ||
+					runtime.userland.action === "auto-merged";
 			}
 		} catch (error) {
 			console.error(`post-merge userland refresh failed: ${(error as Error).message}`);
