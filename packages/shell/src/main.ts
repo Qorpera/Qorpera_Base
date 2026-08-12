@@ -1193,7 +1193,10 @@ async function startMergeChild(slot: Slot, runtime: CompanyRuntime, reviewedProm
 		try {
 			if (existsSync(join(runtime.root, "userland", "userland.json"))) {
 				runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
-				ok = runtime.userland.action === "current" || runtime.userland.action === "fast-forwarded";
+				ok =
+				runtime.userland.action === "current" ||
+				runtime.userland.action === "fast-forwarded" ||
+				runtime.userland.action === "auto-merged";
 			}
 		} catch (error) {
 			console.error(`post-merge userland refresh failed: ${(error as Error).message}`);

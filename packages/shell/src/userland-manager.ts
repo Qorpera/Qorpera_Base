@@ -12,10 +12,14 @@
  *
  *  - untouched fork (every file matches the fork-time hash manifest) →
  *    fast-forward to the new base silently;
- *  - evolved fork → the new base is STAGED at `userland/.update/` next to
- *    the pristine fork-time copy at `userland/.base/`, giving the
- *    controller classic 3-way merge materials (mine / base / theirs). The
- *    merge is a controller session, not kernel code.
+ *  - evolved fork, no per-file overlap (the base changed only files the
+ *    fork never touched) → the update AUTO-APPLIES file by file, silently —
+ *    one update step, no merge (founder direction 2026-08-12);
+ *  - evolved fork with real overlap (base and fork both changed a file) →
+ *    the new base is STAGED at `userland/.update/` next to the pristine
+ *    fork-time copy at `userland/.base/`, giving the controller classic
+ *    3-way merge materials (mine / base / theirs). The merge is a
+ *    controller session, not kernel code.
  *
  * Pure filesystem logic — no Electron — so the semantics are unit-tested.
  *
@@ -79,9 +83,11 @@ export interface UserlandVersionReview {
 }
 
 export interface UserlandStatus {
-	action: "forked" | "current" | "fast-forwarded" | "staged" | "already-staged";
+	action: "forked" | "current" | "fast-forwarded" | "auto-merged" | "staged" | "already-staged";
 	baseVersion: string;
 	stagedVersion?: string;
+	/** auto-merged only: base-updated files the fork had left untouched. */
+	appliedFiles?: string[];
 }
 
 const MANIFEST = "userland.json";
@@ -526,9 +532,55 @@ export function ensureUserland(companyRoot: string, baseDir: string, baseVersion
 		return { action: "current", baseVersion };
 	}
 
-	// Evolved fork: stage the update for a controller merge session. Staging
-	// is current only if the staged CONTENT still matches the base — a dev
-	// tree can rebuild the base again while an earlier stage waits.
+	// Evolved fork: per-file three-way over content hashes (founder direction
+	// 2026-08-12: ONE update step — the company's app configures itself on
+	// top of the base, so a base update must apply itself wherever the fork
+	// left the file alone; the agent merge is reserved for files BOTH sides
+	// touched). Ancestor = manifest.files (the base at fork/fast-forward
+	// time), mine = the fork today, theirs = the new base.
+	const mine = hashFiles(userlandDir);
+	const theirs = hashFiles(baseDir);
+	const ancestor = manifest.files;
+	const paths = [...new Set([...Object.keys(mine), ...Object.keys(theirs), ...Object.keys(ancestor)])].sort();
+	const conflicts = paths.filter((file) => {
+		const mineChanged = mine[file] !== ancestor[file];
+		const theirsChanged = theirs[file] !== ancestor[file];
+		return mineChanged && theirsChanged && mine[file] !== theirs[file];
+	});
+
+	if (conflicts.length === 0) {
+		// The whole update applies cleanly. Snapshot first so the founder can
+		// roll back the auto-application like any other change.
+		snapshotIfChanged(userlandDir, "pre-update");
+		const applied: string[] = [];
+		for (const file of paths) {
+			if (mine[file] !== ancestor[file]) continue; // the fork's own work stays
+			if (mine[file] === theirs[file]) continue; // already identical (or both absent)
+			const target = join(userlandDir, file.split("/").join(sep));
+			if (theirs[file] === undefined) {
+				rmSync(target, { force: true });
+			} else {
+				mkdirSync(join(target, ".."), { recursive: true });
+				cpSync(join(baseDir, file.split("/").join(sep)), target);
+			}
+			applied.push(file);
+		}
+		rmSync(join(userlandDir, UPDATE_DIR), { recursive: true, force: true });
+		rmSync(join(userlandDir, PRISTINE_DIR), { recursive: true, force: true });
+		copyBase(baseDir, join(userlandDir, PRISTINE_DIR));
+		writeManifest(userlandDir, {
+			...manifest,
+			baseVersion,
+			stagedVersion: undefined,
+			files: theirs,
+		});
+		return { action: "auto-merged", baseVersion, appliedFiles: applied };
+	}
+
+	// Both sides touched the same files: stage the update for a controller
+	// merge session. Staging is current only if the staged CONTENT still
+	// matches the base — a dev tree can rebuild the base again while an
+	// earlier stage waits.
 	if (
 		manifest.stagedVersion === baseVersion &&
 		existsSync(join(userlandDir, UPDATE_DIR)) &&

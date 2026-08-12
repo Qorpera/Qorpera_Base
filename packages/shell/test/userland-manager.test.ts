@@ -108,6 +108,63 @@ describe("userland fork model", () => {
 		expect(prompt).toContain("v2.0.0");
 	});
 
+	it("auto-applies a base update when the fork never touched the changed files", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		// The controller evolves renderer.js and adds its own file; the new
+		// base only changes index.html — no per-file overlap.
+		writeFileSync(join(userland(), "renderer.js"), "// my company's own chrome", "utf-8");
+		writeFileSync(join(userland(), "my-feature.js"), "// net-new capability", "utf-8");
+		const disjointBase = join(root, "base-v2-disjoint");
+		mkdirSync(disjointBase, { recursive: true });
+		writeFileSync(join(disjointBase, "index.html"), "<html>v2</html>", "utf-8");
+		writeFileSync(join(disjointBase, "renderer.js"), "// v1", "utf-8");
+		writeFileSync(join(disjointBase, "tokens.css"), ":root {}", "utf-8");
+
+		const status = ensureUserland(company(), disjointBase, "2.0.0");
+		expect(status.action).toBe("auto-merged");
+		expect(status.baseVersion).toBe("2.0.0");
+		expect(status.appliedFiles).toEqual(["index.html", "tokens.css"]);
+		// Base changes arrived; the fork's own work is untouched.
+		expect(readFileSync(join(userland(), "index.html"), "utf-8")).toBe("<html>v2</html>");
+		expect(readFileSync(join(userland(), "tokens.css"), "utf-8")).toBe(":root {}");
+		expect(readFileSync(join(userland(), "renderer.js"), "utf-8")).toBe("// my company's own chrome");
+		expect(readFileSync(join(userland(), "my-feature.js"), "utf-8")).toBe("// net-new capability");
+		// No merge material, references refreshed, stable across reopens.
+		expect(existsSync(join(userland(), ".update"))).toBe(false);
+		expect(readFileSync(join(userland(), ".base", "index.html"), "utf-8")).toBe("<html>v2</html>");
+		expect(ensureUserland(company(), disjointBase, "2.0.0").action).toBe("current");
+		// The pre-update state was snapshotted, so the founder can roll back.
+		expect(listVersions(userland()).some((v) => v.label === "pre-update")).toBe(true);
+	});
+
+	it("auto-applies base file deletions and additions the fork never touched", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		writeFileSync(join(userland(), "my-feature.js"), "// mine", "utf-8");
+		const prunedBase = join(root, "base-v2-pruned");
+		mkdirSync(prunedBase, { recursive: true });
+		// index.html deleted upstream, usage.css added, renderer untouched.
+		writeFileSync(join(prunedBase, "renderer.js"), "// v1", "utf-8");
+		writeFileSync(join(prunedBase, "usage.css"), "/* new */", "utf-8");
+
+		const status = ensureUserland(company(), prunedBase, "2.0.0");
+		expect(status.action).toBe("auto-merged");
+		expect(existsSync(join(userland(), "index.html"))).toBe(false);
+		expect(readFileSync(join(userland(), "usage.css"), "utf-8")).toBe("/* new */");
+		expect(readFileSync(join(userland(), "my-feature.js"), "utf-8")).toBe("// mine");
+	});
+
+	it("stages instead of auto-applying when the base deletes a file the fork evolved", () => {
+		ensureUserland(company(), baseV1, "1.0.0");
+		writeFileSync(join(userland(), "index.html"), "<html>evolved</html>", "utf-8");
+		const prunedBase = join(root, "base-v2-pruned");
+		mkdirSync(prunedBase, { recursive: true });
+		writeFileSync(join(prunedBase, "renderer.js"), "// v1", "utf-8"); // index.html deleted upstream
+
+		const status = ensureUserland(company(), prunedBase, "2.0.0");
+		expect(status.action).toBe("staged");
+		expect(readFileSync(join(userland(), "index.html"), "utf-8")).toBe("<html>evolved</html>");
+	});
+
 	it("relabels instead of staging when the new base is byte-identical to the pristine copy", () => {
 		ensureUserland(company(), baseV1, "1.0.0");
 		writeFileSync(join(userland(), "renderer.js"), "// evolved", "utf-8");
