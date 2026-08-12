@@ -157,6 +157,17 @@ Attribution:
 
 5. **If CI publish fails**: inspect the failed `publish-npm` job. The publish helper is idempotent and skips package versions already present on npm, so rerun the tag workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
 
+### Shell releases (Qorpera Base installer)
+
+Shell releases are separate from the npm lockstep flow: `npm run pack:shell` builds the installer from the CURRENT checkout; `npm run publish:shell -- --title "…" --notes-file …` publishes it to Qorpera/Qorpera_Base_Releases.
+
+**One release cutter at a time.** Parallel sessions each cutting a release race each other (it happened on 2026-08-12: 0.18.4 and 0.18.5 shipped 48 minutes apart from sessions unaware of each other). `publish-shell-release.mjs` enforces the lane — work WITH it:
+
+1. Land everything on master first. Bump `productVersion` in `packages/shell/package.json` in a commit ON master (pushed), then build with `npm run pack:shell` from exactly that commit. The publisher refuses a dirty tree or a HEAD that is not `origin/master`.
+2. The publisher atomically claims the version by pushing a `shell-v<version>` tag to the source repo before the release exists. If the claim fails, another session won that version: fetch, bump past whatever is now latest, rebuild, retry. Never delete another session's claim tag.
+3. Versions are monotonic against the releases repo, and a release younger than 30 minutes blocks a new cut — fold your changes into the next batch instead of leapfrogging the user's auto-updater. `--allow-rapid` is for hotfixing a broken release; `--allow-unsynced` is for emergencies where master itself is broken. Both are loud; neither is routine.
+4. Before deciding to cut at all, check whether a release just shipped or master has unreleased work from other sessions (`git fetch && git log --oneline shell-v<latest>..origin/master`): if several sessions are landing work, prefer one batched release that names all of it over one release per session.
+
 ## User Override
 
 If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.

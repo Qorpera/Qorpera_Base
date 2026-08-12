@@ -14,9 +14,18 @@
  * against latest.yml, create the release with those assets, then read the
  * release back and assert every browser_download_url basename matches.
  *
+ * Release coordination (see scripts/release-coordination.mjs): parallel agent
+ * sessions must not race each other into back-to-back releases. Publishing
+ * requires a clean checkout exactly at origin/master, atomically claims the
+ * version via a `shell-v<version>` tag on the source repo, requires the
+ * version to be newer than the latest published release, and blocks a cut
+ * while a release younger than the cooling window exists.
+ *
  * Usage:
  *   node scripts/publish-shell-release.mjs --title "Qorpera Base 0.18.0 — …" \
  *     (--notes "…" | --notes-file notes.md) [--dry-run]
+ *     [--allow-unsynced]  # emergencies: skip the origin/master freshness guard
+ *     [--allow-rapid]     # hotfix lane: ignore the release cooling window
  *
  * Run after pack-shell.mjs; reads build/shell-dist. Requires an authed `gh`.
  */
@@ -26,6 +35,12 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	checkReleaseSpacing,
+	checkSourceSynced,
+	checkVersionMonotonic,
+	claimDecision,
+} from "./release-coordination.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(repoRoot, "build", "shell-dist");
@@ -50,6 +65,8 @@ const title = argValue("--title");
 const notes = argValue("--notes");
 const notesFile = argValue("--notes-file");
 const dryRun = process.argv.includes("--dry-run");
+const allowUnsynced = process.argv.includes("--allow-unsynced");
+const allowRapid = process.argv.includes("--allow-rapid");
 
 if (!title) fail("--title is required");
 if (!notes && !notesFile) fail("one of --notes or --notes-file is required");
@@ -95,6 +112,51 @@ const productVersion = shellPkg.productVersion ?? "0.1.0";
 if (version !== productVersion) {
 	fail(`latest.yml is for ${version} but packages/shell says ${productVersion} — stale build/shell-dist?`);
 }
+
+// --- Release coordination (one cutter at a time) ------------------------------
+
+function git(args) {
+	const result = spawnSync("git", ["-C", repoRoot, ...args], { encoding: "utf8" });
+	if (result.error) fail(`git failed to spawn: ${result.error.message}`);
+	return result;
+}
+
+function gitOk(args) {
+	const result = git(args);
+	if (result.status !== 0) fail(`git ${args.join(" ")} failed:\n${result.stderr || result.stdout}`);
+	return result.stdout.trim();
+}
+
+gitOk(["fetch", "origin", "--quiet"]);
+const synced = checkSourceSynced({
+	head: gitOk(["rev-parse", "HEAD"]),
+	originMaster: gitOk(["rev-parse", "origin/master"]),
+	dirty: gitOk(["status", "--porcelain"]) !== "",
+	allowUnsynced,
+});
+if (!synced.ok) fail(synced.reason);
+if (synced.warning) console.warn(synced.warning);
+
+// Latest published release (404 = first release ever, anything else is real).
+let latestRelease;
+{
+	const result = spawnSync("gh", ["api", `repos/${releasesRepo}/releases/latest`], { encoding: "utf8" });
+	if (result.error) fail(`gh failed to spawn: ${result.error.message}`);
+	if (result.status === 0) {
+		const parsed = JSON.parse(result.stdout);
+		latestRelease = { tagName: parsed.tag_name, publishedAt: parsed.published_at };
+	} else if (!/Not Found|HTTP 404/i.test(result.stderr + result.stdout)) {
+		fail(`could not read the latest release from ${releasesRepo}:\n${result.stderr || result.stdout}`);
+	}
+}
+const monotonic = checkVersionMonotonic(version, latestRelease?.tagName);
+if (!monotonic.ok) fail(monotonic.reason);
+const spacing = checkReleaseSpacing({
+	publishedAtIso: latestRelease?.publishedAt,
+	nowMs: Date.now(),
+	allowRapid,
+});
+if (!spacing.ok) fail(spacing.reason);
 
 // --- Stage assets under their exact latest.yml names -------------------------
 
@@ -150,10 +212,37 @@ function gh(args) {
 }
 
 const tag = `v${version}`;
+const claimTag = `shell-v${version}`;
 if (dryRun) {
-	console.log(`dry run: would create ${tag} on ${releasesRepo} with assets:`);
+	console.log(`dry run: would claim ${claimTag} on the source repo, then create ${tag} on ${releasesRepo} with assets:`);
 	for (const asset of assets) console.log(`  ${basename(asset)}`);
 	process.exit(0);
+}
+
+// Claim the version on the SOURCE repo before the release exists. The remote
+// tag push is atomic — exactly one session wins a version. Claimed after the
+// asset checks (a local failure should not burn a version number) and before
+// release creation (the claim is what serializes concurrent cutters).
+{
+	const head = gitOk(["rev-parse", "HEAD"]);
+	const remoteRef = gitOk(["ls-remote", "origin", `refs/tags/${claimTag}`]);
+	const decision = claimDecision({ remoteSha: remoteRef ? remoteRef.split(/\s/)[0] : undefined, head });
+	if (decision.action === "conflict") fail(`${claimTag} ${decision.reason}`);
+	if (decision.action === "ours") {
+		console.log(`claim ${claimTag} already points at HEAD (our earlier attempt) — continuing`);
+	} else {
+		gitOk(["tag", "--force", claimTag, head]);
+		const push = git(["push", "origin", claimTag]);
+		if (push.status !== 0) {
+			// Lost the race inside the ls-remote → push window: report it as the
+			// coordination conflict it is, not a raw git error.
+			const raced = gitOk(["ls-remote", "origin", `refs/tags/${claimTag}`]);
+			const conflict = claimDecision({ remoteSha: raced ? raced.split(/\s/)[0] : undefined, head });
+			if (conflict.action === "conflict") fail(`${claimTag} ${conflict.reason}`);
+			fail(`could not push ${claimTag} to the source repo:\n${push.stderr || push.stdout}`);
+		}
+		console.log(`claimed ${claimTag} at ${head.slice(0, 9)} on the source repo`);
+	}
 }
 
 console.log(`creating ${tag} on ${releasesRepo}…`);
