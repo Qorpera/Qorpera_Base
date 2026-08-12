@@ -329,8 +329,34 @@ function createChipSelect(buttonId, menuId, onPick) {
 // One panel in the Desktop style. The slider drives set_thinking_level live,
 // the dropdown drives set_model, and the speed toggle drives
 // set_response_speed — enabled exactly when the active model's API has a
-// priority lane (openai-codex-responses today), disabled with a note
+// priority lane (the OpenAI responses APIs today), disabled with a note
 // otherwise.
+
+// The picker offers a curated slate, not the raw provider catalogs: the
+// Claude 5 pair plus the GPT-5.6 pair. Sol/Terra prefer the ChatGPT
+// subscription lane (openai-codex) and fall back to the API-key provider.
+// If none of the slate is available (unusual auth setup), fall back to the
+// full catalog rather than an empty picker.
+const CURATED_MODELS = [
+	["anthropic::claude-fable-5"],
+	["anthropic::claude-opus-5"],
+	["openai-codex::gpt-5.6-sol", "openai::gpt-5.6-sol"],
+	["openai-codex::gpt-5.6-terra", "openai::gpt-5.6-terra"],
+];
+function curateModels(models) {
+	const byValue = new Map(models.map((m) => [m.value, m]));
+	const picked = [];
+	for (const lanes of CURATED_MODELS) {
+		for (const value of lanes) {
+			const model = byValue.get(value);
+			if (model) {
+				picked.push(model);
+				break;
+			}
+		}
+	}
+	return picked.length ? picked : models;
+}
 const modelCtl = (() => {
 	const button = $("modelCtlBtn");
 	const menu = $("modelCtlMenu");
@@ -350,7 +376,9 @@ const modelCtl = (() => {
 	const CACHE_KEY = "qorpera.modelCatalog";
 	try {
 		const cached = JSON.parse(localStorage.getItem(CACHE_KEY) ?? "null");
-		if (Array.isArray(cached?.models) && cached.models.length) models = cached.models;
+		// Curate here too: caches written before the slate existed hold the
+		// full provider catalogs.
+		if (Array.isArray(cached?.models) && cached.models.length) models = curateModels(cached.models);
 		if (Array.isArray(cached?.levels) && cached.levels.length) levels = cached.levels;
 		if (!currentModelKey && typeof cached?.modelKey === "string") currentModelKey = cached.modelKey;
 		if (!currentEffort && typeof cached?.effort === "string") currentEffort = cached.effort;
@@ -368,7 +396,7 @@ const modelCtl = (() => {
 			// storage unavailable — the cache is a nicety, never load-bearing
 		}
 	};
-	const EFFORT_LABELS = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra High" };
+	const EFFORT_LABELS = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra High", max: "Max" };
 	const effortLabel = (level) => EFFORT_LABELS[level] ?? level;
 	const currentModel = () => models.find((m) => m.value === currentModelKey);
 	const fastOn = () => Boolean(currentModel()?.fastCapable) && currentSpeed === "fast";
@@ -419,7 +447,7 @@ const modelCtl = (() => {
 			? fastOn()
 				? "Fast responses on (priority lane)"
 				: "Fast responses"
-			: "This model's API has no priority lane — fast responses ride OpenAI subscription models";
+			: "This model's API has no priority lane — fast responses ride the GPT-5.6 models";
 		list.innerHTML = "";
 		for (const model of models) {
 			const item = document.createElement("button");
@@ -2696,13 +2724,26 @@ window.qorpera.onRpcEvent((frame) => {
 			if (frame.command === "get_messages" && frame.success) renderHistory(frame.data?.messages ?? frame.data);
 			else if (frame.command === "get_available_models" && frame.success) {
 				const models = frame.data?.models ?? frame.data ?? [];
-				modelCtl.setModels(
+				const offered = curateModels(
 					models.map((m) => ({
 						value: `${m.provider}::${m.id}`,
 						name: m.name ?? m.id,
-						fastCapable: m.api === "openai-codex-responses",
+						// Both OpenAI responses lanes take service_tier: "priority";
+						// Anthropic has no priority lane, so fast stays disabled there.
+						fastCapable: m.api === "openai-codex-responses" || m.api === "openai-responses",
 					})),
 				);
+				modelCtl.setModels(offered);
+				// A session restored on a model we no longer offer would leave the
+				// chip naming nothing in the list — move it onto the same model's
+				// offered lane when one exists, otherwise the slate's head.
+				if (currentModelKey && !offered.some((m) => m.value === currentModelKey) && offered.length) {
+					const currentId = currentModelKey.split("::")[1];
+					const target = offered.find((m) => m.value.split("::")[1] === currentId) ?? offered[0];
+					const [provider, modelId] = target.value.split("::");
+					currentModelKey = target.value;
+					window.qorpera.rpcSend({ type: "set_model", provider, modelId });
+				}
 			} else if (frame.command === "get_available_thinking_levels" && frame.success) {
 				modelCtl.setLevels(frame.data?.levels ?? []);
 			} else if (frame.command === "get_state" && frame.success) {
@@ -2723,6 +2764,11 @@ window.qorpera.onRpcEvent((frame) => {
 				modelCtl.sync();
 			} else if (frame.command === "set_model" && frame.success && frame.data?.id) {
 				currentModelKey = `${frame.data.provider}::${frame.data.id}`;
+				// The child re-clamps the thinking level to the new model's range,
+				// and the range itself differs per model — refetch both so the
+				// slider's stops and knob match what the session will actually run.
+				window.qorpera.rpcSend({ type: "get_available_thinking_levels" });
+				window.qorpera.rpcSend({ type: "get_state" });
 				modelCtl.sync();
 			} else if (frame.success === false) addMsg("log", `error: ${frame.error ?? frame.command}`);
 			break;
