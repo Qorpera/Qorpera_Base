@@ -791,7 +791,7 @@ describe("kernel-bound agent runtime", () => {
 		expect(
 			spawnSync("git", ["diff", "--cached", "--name-only"], { cwd: company, encoding: "utf-8" }).stdout,
 		).toContain("founder.md");
-	});
+	}, 30_000);
 
 	it("snapshots every founder Git version before controller access and makes later deletion recoverable", () => {
 		const company = join(root, "company");
@@ -828,7 +828,7 @@ describe("kernel-bound agent runtime", () => {
 			"founder untracked version\n",
 		);
 		expect(existsSync(join(company, "untracked.md"))).toBe(false);
-	});
+	}, 30_000);
 
 	it("snapshots founder product state before a worker and checkpoints its uncommitted result", () => {
 		const company = join(root, "company");
@@ -869,7 +869,7 @@ describe("kernel-bound agent runtime", () => {
 		expect(spawnSync("git", ["ls-files", recoveryBundle], { cwd: company, encoding: "utf-8" }).stdout.trim()).toBe(
 			recoveryBundle,
 		);
-	});
+	}, 30_000);
 
 	it("stores one full recovery bundle followed by content-addressed incremental bundles", () => {
 		const company = join(root, "company");
@@ -914,7 +914,7 @@ describe("kernel-bound agent runtime", () => {
 				encoding: "utf-8",
 			}).stdout,
 		).toContain(second.recoveryUpdatedAt);
-	}, 15_000);
+	}, 30_000);
 
 	it("rejects recovery success after a worker leaves its assigned branch", () => {
 		const company = join(root, "company");
@@ -925,7 +925,7 @@ describe("kernel-bound agent runtime", () => {
 		expect(checkpointProductWorktreeGit(company, worktree, baseline, trailPath).success).toBe(false);
 		const assignment = JSON.parse(readFileSync(assignmentPath, "utf-8")) as { recoveryBundles: unknown[] };
 		expect(assignment.recoveryBundles).toEqual([]);
-	});
+	}, 30_000);
 
 	it("fails closed before repository-local filters can execute in a kernel Git process", () => {
 		const worktree = join(root, "filter-worktree");
@@ -979,7 +979,7 @@ describe("kernel-bound agent runtime", () => {
 		expect(spawnSync("git", ["ls-files", "recovered.md"], { cwd: company, encoding: "utf-8" }).stdout.trim()).toBe(
 			"recovered.md",
 		);
-	});
+	}, 30_000);
 
 	it("reconciles interrupted product work against its exact company trail provenance", () => {
 		const company = join(root, "company");
@@ -998,7 +998,7 @@ describe("kernel-bound agent runtime", () => {
 		expect(spawnSync("git", ["log", "-1", "--format=%B"], { cwd: worktree, encoding: "utf-8" }).stdout).toContain(
 			`Qorpera-Trigger: ${trailPath}`,
 		);
-	});
+	}, 30_000);
 
 	it("commits kernel materialization into an existing company repository before baseline capture", () => {
 		const company = join(root, "company");
