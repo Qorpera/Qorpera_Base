@@ -214,6 +214,12 @@ export class FileSettingsStorage implements SettingsStorage {
 					typeof error === "object" && error !== null && "code" in error
 						? String((error as { code?: unknown }).code)
 						: undefined;
+				// Lock creation denied outright (not contended): a read-only
+				// settings store (e.g. inside the kernel's sandbox). Proceed
+				// lock-free; a write surfaces its own permission error.
+				if (code === "EPERM" || code === "EACCES" || code === "EROFS") {
+					return () => {};
+				}
 				if (code !== "ELOCKED" || attempt === maxAttempts) {
 					throw error;
 				}

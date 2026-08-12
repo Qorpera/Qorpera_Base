@@ -133,9 +133,25 @@ function writeTrustFile(path: string, data: TrustFile): void {
 	writeFileSync(path, `${JSON.stringify(sorted, null, 2)}\n`, "utf-8");
 }
 
+function errorCode(error: unknown): string | undefined {
+	return typeof error === "object" && error !== null && "code" in error
+		? String((error as { code?: unknown }).code)
+		: undefined;
+}
+
+/** Lock creation denied outright (not contended): the store lives on media we
+ * may only read — e.g. the kernel's Windows sandbox grants the agent read-only
+ * access to its pre-written trust.json, so `mkdir trust.json.lock` is EPERM.
+ * That is a deployment shape, not a race to wait out. */
+const LOCK_FORBIDDEN_CODES = new Set(["EPERM", "EACCES", "EROFS"]);
+
 function acquireTrustLockSync(path: string): () => void {
 	const trustDir = dirname(path);
-	mkdirSync(trustDir, { recursive: true });
+	try {
+		mkdirSync(trustDir, { recursive: true });
+	} catch (error) {
+		if (!LOCK_FORBIDDEN_CODES.has(errorCode(error) ?? "")) throw error;
+	}
 	const maxAttempts = 10;
 	const delayMs = 20;
 	let lastError: unknown;
@@ -144,10 +160,14 @@ function acquireTrustLockSync(path: string): () => void {
 		try {
 			return lockfile.lockSync(trustDir, { realpath: false, lockfilePath: `${path}.lock` });
 		} catch (error) {
-			const code =
-				typeof error === "object" && error !== null && "code" in error
-					? String((error as { code?: unknown }).code)
-					: undefined;
+			const code = errorCode(error);
+			// Read-only store: proceed lock-free. Reads stay correct (nobody
+			// else can be mid-write on media we cannot write), and a write
+			// attempt surfaces its own EPERM from writeTrustFile instead of
+			// crashing every agent at boot.
+			if (LOCK_FORBIDDEN_CODES.has(code ?? "")) {
+				return () => {};
+			}
 			if (code !== "ELOCKED" || attempt === maxAttempts) {
 				throw error;
 			}
