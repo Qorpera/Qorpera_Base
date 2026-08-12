@@ -258,7 +258,7 @@ function expectationKey(expectation: ProductStorageExpectation): string {
 }
 
 function gitOutput(root: string, args: string[]): string | undefined {
-	const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf-8", shell: false });
+	const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf-8", shell: false, windowsHide: true });
 	return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : undefined;
 }
 
@@ -302,6 +302,7 @@ function storageFingerprint(
 			spawnSync("git", ["-C", target, "merge-base", "--is-ancestor", expectation.head, "HEAD"], {
 				stdio: "ignore",
 				shell: false,
+				windowsHide: true,
 			}).status !== 0
 		)
 			return undefined;
@@ -357,6 +358,7 @@ export function reconcileCompanyProductStorage(
 					{
 						stdio: "ignore",
 						shell: false,
+						windowsHide: true,
 					},
 				).status !== 0
 			) {
