@@ -150,11 +150,11 @@ main {
 .collection-head button { width: auto; }
 .collection-description { max-width: 720px; margin: 8px 0 20px; color: var(--text-muted); line-height: 1.5; }
 .projection-card {
-	display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; min-height: 58px;
-	margin-top: 8px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 0;
-	background: rgba(255, 255, 255, .025); color: var(--text); text-align: left; white-space: normal;
+	display: flex; flex-direction: column; align-items: flex-start; gap: 3px; width: 100%; min-height: 54px;
+	margin-top: 2px; padding: 10px 14px; border: 0; border-radius: 12px;
+	background: transparent; color: var(--text); text-align: left; white-space: normal;
 }
-.projection-card:hover:not(:disabled), .projection-card.active { border-color: var(--border-strong); background: var(--hover); }
+.projection-card:hover:not(:disabled), .projection-card.active { border-color: transparent; background: var(--hover); }
 .projection-card span { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
 
 /* ---- chat thread --------------------------------------------------------- */
@@ -471,6 +471,9 @@ h2.cat .catBtn:hover { color: var(--text); background: rgba(255, 255, 255, 0.06)
 .avatar { width: 24px; height: 24px; border-radius: 50%; background: rgba(255, 255, 255, 0.1); display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-size: 10px; letter-spacing: 0.02em; flex-shrink: 0; }
 .profileName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .navspacer { flex: 1; min-height: 12px; }
+/* In the company nav the scroll area itself flexes — the spacer must not
+   steal half the column from it. */
+#conav .navspacer { flex: 0 0 12px; }
 .hubver { color: var(--text-soft); font-size: 11px; padding: 0 9px 8px; }
 /* display set via .open class — never on the bare id, or the hidden
    attribute loses to author CSS and Back can't close the page. */
@@ -506,21 +509,22 @@ h2.cat .catBtn:hover { color: var(--text); background: rgba(255, 255, 255, 0.06)
 	padding: 5px 10px 4px 12px;
 }
 .sidebar-create button {
-	display: flex; align-items: center; width: 100%; min-height: 31px;
-	padding: 4px 8px; border: 1px dashed var(--border-strong); border-radius: 5px;
-	background: rgba(255, 255, 255, 0.018); color: var(--text-muted);
-	font-size: 11.5px; font-weight: 580; text-align: left;
+	display: flex; align-items: center; width: 100%; min-height: 30px;
+	padding: 4px 8px; border: 0; border-radius: 8px;
+	background: transparent; color: var(--text-muted);
+	font-size: 13px; font-weight: 500; text-align: left;
 }
 .sidebar-create .add-department { gap: 8px; }
 .add-department span {
 	display: grid; place-items: center; width: 15px; height: 15px; flex: 0 0 auto;
-	border: 1px solid currentColor; border-radius: 3px; font-size: 13px; line-height: 1;
+	border: 0; border-radius: 3px; font-size: 14px; line-height: 1;
 }
-.sidebar-create .reset-panel { width: auto; border-style: solid; font-size: 10px; white-space: nowrap; }
+.sidebar-create .reset-panel { width: auto; border-style: none; font-size: 10px; white-space: nowrap; }
 .sidebar-create button:hover:not(:disabled) {
-	border-color: var(--accent); background: var(--accent-soft); color: var(--text);
+	border-color: transparent; background: var(--hover); color: var(--text);
 }
-.sidebar-create button:disabled { opacity: 0.34; }
+/* Disabled = nothing to reset: drop it from view instead of graying a box. */
+.sidebar-create button:disabled { opacity: 0; pointer-events: none; }
 
 #navigation.sidebar-scroll {
 	flex: 1; min-height: 0; overflow-y: auto; padding: 5px 10px 14px 12px;
@@ -529,44 +533,56 @@ h2.cat .catBtn:hover { color: var(--text); background: rgba(255, 255, 255, 0.06)
 #navigation.sidebar-scroll::-webkit-scrollbar { width: 5px; }
 #navigation.sidebar-scroll::-webkit-scrollbar-thumb { border-radius: 3px; background: rgba(255, 255, 255, 0.1); }
 .projection-department {
-	display: flex; flex-direction: column; margin-bottom: 8px; padding: 6px;
-	border: 1px solid rgba(255, 255, 255, 0.48); border-radius: 3px;
-	background: rgba(0, 0, 0, 0.12);
+	display: flex; flex-direction: column; margin-bottom: 16px; padding: 0;
+	border: 0; border-radius: 0;
+	background: transparent;
 }
+/* The Main department renders free: no header, its pages sit at the top of
+   the panel like the fixed rows in the Codex app (renderer adds .dept-main). */
+.projection-department.dept-main { margin-bottom: 20px; }
+.projection-department.dept-main .projection-department-title { display: none; }
 .projection-department-title {
-	position: relative; display: flex; align-items: center;
+	position: relative; display: flex; align-items: center; gap: 8px;
 	height: var(--nav-item-height, 27px); min-height: var(--nav-item-height, 27px);
-	padding: var(--nav-padding-top, 1px) var(--nav-padding-inline, 3px) var(--nav-padding-bottom, 5px);
-	color: var(--text); font-size: var(--nav-font-size, 13px); font-weight: 690;
-	letter-spacing: 0.01em; line-height: 1.1; cursor: context-menu;
+	padding: var(--nav-padding-top, 1px) var(--nav-padding-inline, 8px) var(--nav-padding-bottom, 4px);
+	color: var(--text); font-size: var(--nav-font-size, 13px); font-weight: 650;
+	letter-spacing: 0; line-height: 1.1; cursor: context-menu;
 }
 .projection-department-label {
 	flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.projection-department-items { display: grid; gap: 4px; }
+/* Department identity glyph — derived from the department's shape, not data. */
+.dept-glyph { width: 15px; height: 15px; flex: 0 0 auto; color: var(--text-muted); }
+/* Row glyphs sit inline inside the ellipsized label span. */
+.nav-row-glyph {
+	display: inline-block; width: 15px; height: 15px; margin-right: 8px;
+	vertical-align: -3px; color: var(--text-soft);
+}
+.projection-department-items { display: grid; gap: 1px; }
 .projection-department-items:empty::after {
-	content: attr(data-empty-label); padding: 4px 7px 5px;
-	border: 1px dashed var(--border); border-radius: 4px;
-	color: var(--text-soft); font-size: 9.5px;
+	content: attr(data-empty-label); padding: 4px 8px 5px;
+	border: 0; border-radius: 4px;
+	color: var(--text-soft); font-size: 11px; font-style: italic;
 }
 nav .projection-row {
 	position: relative; isolation: isolate; overflow: hidden;
 	display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
 	width: 100%; height: var(--nav-item-height, 30px); min-height: var(--nav-item-height, 30px);
 	padding: var(--nav-padding-block, 4px) var(--nav-padding-inline, 8px);
-	border: 1px solid rgba(255, 255, 255, 0.28); border-radius: var(--nav-radius, 5px);
-	background: rgba(255, 255, 255, 0.015); color: var(--text-muted); text-align: left;
+	border: 0; border-radius: 8px;
+	background: transparent; color: var(--text-muted); text-align: left;
 }
+/* The optional type hue survives as a quiet left tick (Appearance toggles it). */
 nav .projection-row::before {
-	content: ""; position: absolute; z-index: 0; inset: 0 auto 0 0;
-	width: var(--nav-hue-width, 54px); pointer-events: none;
-	background: linear-gradient(90deg, color-mix(in srgb, var(--nav-kind-hue, transparent) 22%, transparent), transparent);
+	content: ""; position: absolute; z-index: 0; inset: 7px auto 7px 0;
+	width: 2px; border-radius: 2px; pointer-events: none;
+	background: color-mix(in srgb, var(--nav-kind-hue, transparent) 55%, transparent);
 }
 nav .projection-row > * { position: relative; z-index: 1; }
-nav .projection-row:hover { border-color: var(--border-strong); background: var(--hover); color: var(--text); }
+nav .projection-row:hover { border-color: transparent; background: var(--hover); color: var(--text); }
 nav .projection-row.active {
-	border-color: var(--accent); background: var(--accent-soft); color: var(--text);
-	box-shadow: inset 2px 0 0 var(--accent);
+	border-color: transparent; background: rgba(255, 255, 255, 0.1); color: var(--text);
+	box-shadow: none;
 }
 .projection-row-label {
 	overflow: hidden; font-size: var(--nav-font-size, 12.5px); font-weight: 540;
@@ -614,6 +630,40 @@ nav .projection-row.focus-row.active { border-color: var(--accent); background: 
 .restore-hidden-item span { overflow: hidden; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .restore-hidden-item small { color: var(--text-soft); font-size: 8.5px; }
 .projection-diagnostics { min-height: 15px; color: var(--danger); font-size: 10px; padding: 0 17px 2px; }
+
+/* ---- session pile: chats sit under their department (Codex-app shape) ----
+   Compact (default): one quiet line per chat. Chunky (Appearance toggle,
+   body.chunky-sessions): two-line rows — title over scope + relative time —
+   like the ChatGPT desktop session list. */
+.session-pile { display: flex; flex-direction: column; gap: 1px; margin-top: 1px; }
+.session-row {
+	display: flex; align-items: center; gap: 7px; width: 100%;
+	min-height: 28px; padding: 4px 8px;
+	border: 0; border-radius: 8px; background: transparent;
+	color: var(--text-soft); font-size: 12.5px; text-align: left; cursor: pointer;
+}
+.session-row:hover { background: var(--hover); color: var(--text); border: 0; }
+.session-row.active { background: rgba(255, 255, 255, 0.1); color: var(--text); }
+.session-glyph { width: 13px; height: 13px; flex: 0 0 auto; opacity: 0.65; }
+.session-copy { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-meta {
+	display: none; align-items: center; gap: 6px;
+	color: var(--text-soft); font-size: 11px; line-height: 1.2;
+}
+.session-scope { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-time { margin-left: auto; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+body.chunky-sessions .session-row { min-height: 46px; padding: 6px 8px; align-items: flex-start; }
+body.chunky-sessions .session-glyph { margin-top: 3px; }
+body.chunky-sessions .session-title { color: var(--text-muted); font-weight: 540; }
+body.chunky-sessions .session-row:hover .session-title,
+body.chunky-sessions .session-row.active .session-title { color: var(--text); }
+body.chunky-sessions .session-meta { display: flex; }
+.session-more {
+	width: 100%; min-height: 26px; padding: 3px 8px 3px 28px; border: 0; border-radius: 8px;
+	background: transparent; color: var(--text-soft); font-size: 11.5px; text-align: left;
+}
+.session-more:hover { background: var(--hover); color: var(--text-muted); border: 0; }
 #conav > .profileRow { margin: 0 12px; width: calc(100% - 24px); }
 
 /* ---- navigation menus and frontend-only lifecycle flows ----------------- */
@@ -665,38 +715,40 @@ nav .projection-row.focus-row.active { border-color: var(--accent); background: 
 .panel-hidden-list button span { overflow: hidden; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .panel-hidden-list button small { color: var(--accent); font-size: 8.5px; font-weight: 680; text-transform: uppercase; }
 
-/* ---- generated category collections ------------------------------------- */
-.collection-view { min-height: 100%; padding: 28px clamp(24px, 4vw, 56px) 48px; }
-.collection-view-head { display: flex; align-items: flex-start; gap: 20px; padding-bottom: 15px; border-bottom: 1px solid var(--border-strong); }
+/* ---- generated category collections (freed: content only, centered) ------ */
+.collection-view { min-height: 100%; max-width: 820px; margin: 0 auto; padding: 40px clamp(24px, 4vw, 56px) 48px; }
+.collection-view-head { display: flex; align-items: flex-start; gap: 20px; padding-bottom: 0; border-bottom: 0; }
 .collection-view-head > div { flex: 1; min-width: 0; }
+.collection-view .eyebrow { display: none; }
 .eyebrow { margin-bottom: 4px; color: var(--accent); font-size: 9.5px; font-weight: 720; letter-spacing: 0.1em; text-transform: uppercase; }
-.collection-view-head h1 { margin: 0; font-size: clamp(26px, 3.3vw, 42px); font-weight: 630; line-height: 1.04; letter-spacing: -0.025em; }
-.collection-view-head p { max-width: 680px; margin: 8px 0 0; color: var(--text-muted); font-size: 13px; line-height: 1.45; }
-.collection-tools { display: flex; align-items: center; gap: 14px; margin: 18px 0; }
+.collection-view-head h1 { margin: 0; font-size: 24px; font-weight: 650; line-height: 1.2; letter-spacing: -0.015em; }
+.collection-view-head p { max-width: 680px; margin: 6px 0 0; color: var(--text-muted); font-size: 13.5px; line-height: 1.5; }
+.collection-tools { display: flex; align-items: center; gap: 14px; margin: 20px 0 10px; }
 .collection-search {
-	display: flex; align-items: center; width: min(390px, 100%); height: 31px;
-	border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: rgba(0, 0, 0, 0.18);
+	display: flex; align-items: center; width: min(390px, 100%); height: 34px;
+	border: 1px solid var(--border); border-radius: var(--radius-pill); background: rgba(255, 255, 255, 0.03);
 }
+.collection-search:focus-within { border-color: var(--border-strong); }
 .collection-search::before {
-	content: ""; width: 10px; height: 10px; margin-left: 9px;
-	border: 1.5px solid var(--text-muted); border-radius: 50%;
+	content: ""; width: 10px; height: 10px; margin-left: 13px;
+	border: 1.5px solid var(--text-soft); border-radius: 50%;
 }
-.collection-search input { width: 100%; min-width: 0; height: 100%; padding: 0 8px; border: 0; background: transparent; outline: 0; }
-.collection-count { margin-left: auto; color: var(--text-soft); font-size: 10.5px; }
-.collection-list { border-top: 1px solid var(--border-strong); }
+.collection-search input { width: 100%; min-width: 0; height: 100%; padding: 0 10px; border: 0; background: transparent; outline: 0; }
+.collection-count { margin-left: auto; color: var(--text-soft); font-size: 11px; }
+.collection-list { border-top: 0; }
 .collection-row {
-	display: grid; grid-template-columns: 34px minmax(0, 1fr) auto 22px;
-	align-items: center; gap: 13px; min-height: 74px; padding: 10px 4px;
-	border-bottom: 1px solid var(--border-strong); cursor: pointer;
+	display: grid; grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center; gap: 13px; min-height: 60px; padding: 10px 14px; margin: 0 -14px;
+	border-bottom: 0; border-radius: 12px; cursor: pointer;
 }
 .collection-row:hover { background: var(--hover); }
-.collection-index { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text-muted); font-size: 9.5px; font-weight: 700; }
+.collection-index { display: none; }
 .collection-copy { min-width: 0; }
-.collection-copy strong { display: block; margin-bottom: 2px; font-size: 14px; font-weight: 620; }
-.collection-copy p { overflow: hidden; margin: 0; color: var(--text-muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
-.collection-meta { display: grid; justify-items: end; gap: 2px; color: var(--text-soft); font-size: 9.5px; }
-.collection-meta span:first-child { color: var(--ok); font-weight: 650; }
-.collection-arrow { color: var(--text-muted); font-size: 17px; }
+.collection-copy strong { display: block; margin-bottom: 3px; font-size: 14.5px; font-weight: 600; }
+.collection-copy p { overflow: hidden; margin: 0; color: var(--text-muted); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.collection-meta { display: none; }
+.collection-meta span:first-child { color: var(--text-soft); font-weight: 400; }
+.collection-arrow { display: none; }
 .collection-empty { padding: 34px 0; color: var(--text-muted); }
 
 /* ---- settings appearance preview ---------------------------------------- */
@@ -710,12 +762,12 @@ nav .projection-row.focus-row.active { border-color: var(--accent); background: 
 .preview-navigation-row {
 	position: relative; isolation: isolate; overflow: hidden; display: flex; align-items: center;
 	max-width: 290px; min-height: 30px; padding: 4px 8px;
-	border: 1px solid rgba(255, 255, 255, 0.28); border-radius: 5px;
-	background: rgba(255, 255, 255, 0.015); color: var(--text-muted); font-size: 12.5px;
+	border: 0; border-radius: 8px;
+	background: rgba(255, 255, 255, 0.03); color: var(--text-muted); font-size: 12.5px;
 }
 .preview-navigation-row::before {
-	content: ""; position: absolute; z-index: -1; inset: 0 auto 0 0; width: 54px;
-	background: linear-gradient(90deg, color-mix(in srgb, var(--preview-hue) 22%, transparent), transparent);
+	content: ""; position: absolute; z-index: -1; inset: 7px auto 7px 0; width: 2px; border-radius: 2px;
+	background: color-mix(in srgb, var(--preview-hue) 55%, transparent);
 }
 .appearance-preview.hues-hidden .preview-navigation-row::before,
 .hues-hidden nav .projection-row::before { display: none; }

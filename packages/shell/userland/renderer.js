@@ -674,6 +674,7 @@ function navAppearance() {
 		pageHue: "#3b82f6",
 		categoryHue: "#8b5cf6",
 		showKinds: true,
+		chunkySessions: false,
 		...readStoredObject("nav-appearance", {}),
 	};
 }
@@ -683,6 +684,7 @@ function applyNavAppearance() {
 	document.documentElement.style.setProperty("--page-hue", appearance.pageHue);
 	document.documentElement.style.setProperty("--category-hue", appearance.categoryHue);
 	document.body.classList.toggle("hues-hidden", !appearance.showKinds);
+	document.body.classList.toggle("chunky-sessions", appearance.chunkySessions);
 }
 
 function applyNavMetrics(element, node, focused = false) {
@@ -961,6 +963,96 @@ function openPanelContext(event) {
 	$("panelHiddenDepartments").querySelector("button")?.focus();
 }
 
+// ---- department identity glyphs ---------------------------------------------
+// The projection schema carries no icon field, so the glyph derives from the
+// department's shape: product departments (their pages bind a departmentId)
+// get the code glyph; interface departments match on the founder's own words;
+// everything else is a folder.
+const NAV_GLYPHS = {
+	code: '<path d="M8 7 3.5 12 8 17M16 7l4.5 5-4.5 5"/>',
+	chart: '<path d="M4 4v16h16M8.5 14.5v2.5M12.5 11v6M16.5 8v9"/>',
+	bubble: '<path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.6 8.6 0 0 1-3.6-.8L3 21l1.8-5A8.5 8.5 0 1 1 21 11.5z"/>',
+	people:
+		'<circle cx="9" cy="8" r="3.4"/><path d="M2.8 20a6.2 6.2 0 0 1 12.4 0M15.5 5a3.4 3.4 0 0 1 0 6.4M21.2 20a6.2 6.2 0 0 0-4.4-5.9"/>',
+	mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 7 8.5 6 8.5-6"/>',
+	folder: '<path d="M3 7a2 2 0 0 1 2-2h4.2l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+	inbox:
+		'<path d="M21 13h-4.8l-1.6 2.4h-5.2L7.8 13H3"/><path d="M5.6 6.3 3 13v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4l-2.6-6.7A1.6 1.6 0 0 0 16.9 5H7.1a1.6 1.6 0 0 0-1.5 1.3z"/>',
+	clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2.5"/>',
+	page: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+};
+
+function navGlyphSvg(name, className) {
+	const paths = NAV_GLYPHS[name] ?? NAV_GLYPHS.folder;
+	return `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+}
+
+function departmentGlyphName(department) {
+	const productLike = department.items.some((childId) => {
+		const child = projectionNode(childId);
+		return child?.kind === "page" && child.view?.context?.departmentId !== undefined;
+	});
+	const label = department.label.toLowerCase();
+	if (productLike || /develop|engineer|product\b/.test(label)) return "code";
+	if (/financ|cash|revenue|budget|account/.test(label)) return "chart";
+	if (/support|customer|service|help/.test(label)) return "bubble";
+	if (/people|culture|talent|hiring|\bhr\b/.test(label)) return "people";
+	if (/mail|comms|communic|marketing/.test(label)) return "mail";
+	return "folder";
+}
+
+function mainPageGlyphName(node) {
+	if (node.view?.id === "qorpera.inbox") return "inbox";
+	if (node.view?.id === "qorpera.activity") return "clock";
+	if (node.view?.id === "qorpera.chats") return "bubble";
+	return "page";
+}
+
+// ---- session pile: chats sit under the department they belong to -------------
+function relativeSessionTime(mtimeMs) {
+	const minutes = Math.round((Date.now() - mtimeMs) / 60000);
+	if (minutes < 1) return "now";
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.round(minutes / 60);
+	if (hours < 24) return `${hours}h`;
+	const days = Math.round(hours / 24);
+	if (days < 30) return `${days}d`;
+	return new Date(mtimeMs).toLocaleDateString();
+}
+
+/** The product-department entry a nav department represents, via the
+ * departmentId its product pages carry. */
+function departmentEntryFor(department) {
+	for (const childId of department.items) {
+		const child = projectionNode(childId);
+		const departmentId = child?.kind === "page" ? child.view?.context?.departmentId : undefined;
+		if (departmentId === undefined) continue;
+		const entry = (state.departments ?? []).find((candidate) => candidate.id === departmentId);
+		if (entry) return entry;
+	}
+	return undefined;
+}
+
+function sessionsForDepartmentPile(department) {
+	const pageIds = new Set();
+	for (const childId of department.items) {
+		const child = projectionNode(childId);
+		if (!child) continue;
+		if (child.kind === "page") pageIds.add(child.id);
+		if (child.kind === "category") for (const pageId of child.items) pageIds.add(pageId);
+	}
+	const entry = departmentEntryFor(department);
+	const isMain = department.id === "q:main";
+	return (state.sessions ?? [])
+		.filter((session) => {
+			if (session.kind === "autonomous") return false;
+			if (session.page) return pageIds.has(session.page);
+			if (session.department) return entry ? session.department === entry.path : false;
+			return isMain; // unscoped founder chats pile under Main
+		})
+		.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
 function renderCompanyNav() {
 	const nav = $("navigation");
 	nav.innerHTML = "";
@@ -972,11 +1064,14 @@ function renderCompanyNav() {
 		if (!nodeIsVisible(department.id)) continue;
 		const group = document.createElement("section");
 		group.className = "projection-department";
+		const isMainDepartment = department.id === "q:main";
+		if (isMainDepartment) group.classList.add("dept-main");
 		group.oncontextmenu = (event) => {
 			if (!event.target.closest(".projection-row, .hidden-items-control")) openNavContext(event, department, "department");
 		};
 		const title = document.createElement("div");
 		title.className = "projection-department-title";
+		title.innerHTML = navGlyphSvg(departmentGlyphName(department), "dept-glyph");
 		const titleLabel = document.createElement("span");
 		titleLabel.className = "projection-department-label";
 		titleLabel.textContent = department.label;
@@ -1024,6 +1119,14 @@ function renderCompanyNav() {
 				? '<span class="projection-row-copy"><span class="projection-row-label"></span><small></small></span><span class="focus-arrow" aria-hidden="true">-&gt;</span>'
 				: '<span class="projection-row-label"></span>';
 			row.querySelector(".projection-row-label").textContent = child.label;
+			// Main's free rows carry their own glyphs (Codex-app shape) since
+			// the department header that would anchor them is not rendered.
+			if (isMainDepartment && !focused) {
+				row.querySelector(".projection-row-label").insertAdjacentHTML(
+					"afterbegin",
+					navGlyphSvg(mainPageGlyphName(child), "nav-row-glyph"),
+				);
+			}
 			row.title = child.description ?? child.label;
 			row.classList.toggle("active", currentNodeId === child.id || ownsCurrent);
 			if (currentNodeId === child.id || ownsCurrent) row.setAttribute("aria-current", "page");
@@ -1051,6 +1154,37 @@ function renderCompanyNav() {
 			items.appendChild(row);
 		}
 		group.appendChild(items);
+		// Chats pile under the department they belong to: page-scoped sessions
+		// under the page's department, product worktree sessions under their
+		// product department, unscoped founder chats under Main.
+		const pileSessions = sessionsForDepartmentPile(department);
+		if (pileSessions.length) {
+			const pile = document.createElement("div");
+			pile.className = "session-pile";
+			for (const session of pileSessions.slice(0, 4)) {
+				const row = document.createElement("button");
+				row.type = "button";
+				row.className = "session-row";
+				row.classList.toggle("active", currentSession === session.file);
+				row.innerHTML = `${navGlyphSvg("bubble", "session-glyph")}<span class="session-copy"><span class="session-title"></span><small class="session-meta"><span class="session-scope"></span><span class="session-time"></span></small></span>`;
+				row.querySelector(".session-title").textContent = session.title;
+				const page = session.page ? projectionNode(session.page) : undefined;
+				row.querySelector(".session-scope").textContent = page?.label ?? session.worktree ?? "Company";
+				row.querySelector(".session-time").textContent = relativeSessionTime(session.mtimeMs);
+				row.title = session.title;
+				row.onclick = () => openSession(session.file, session.page);
+				pile.appendChild(row);
+			}
+			if (pileSessions.length > 4) {
+				const more = document.createElement("button");
+				more.type = "button";
+				more.className = "session-more";
+				more.textContent = `All chats (${pileSessions.length})`;
+				more.onclick = () => void openProjectionNode("q:chats");
+				pile.appendChild(more);
+			}
+			group.appendChild(pile);
+		}
 		nav.appendChild(group);
 	}
 	const diagnostics = $("projectionDiagnostics");
@@ -2363,10 +2497,19 @@ async function renderSettingsTab() {
 		categoryPreview.textContent = "Forecasting";
 		preview.appendChild(pagePreview);
 		preview.appendChild(categoryPreview);
+		const chunky = document.createElement("input");
+		chunky.type = "checkbox";
+		chunky.setAttribute("aria-label", "Chunky chat rows");
+		chunky.checked = appearance.chunkySessions;
 		const save = () => {
 			localStorage.setItem(
 				navStorageKey("nav-appearance"),
-				JSON.stringify({ showKinds: showKinds.checked, pageHue: pageHue.value, categoryHue: categoryHue.value }),
+				JSON.stringify({
+					showKinds: showKinds.checked,
+					pageHue: pageHue.value,
+					categoryHue: categoryHue.value,
+					chunkySessions: chunky.checked,
+				}),
 			);
 			pageHue.disabled = !showKinds.checked;
 			categoryHue.disabled = !showKinds.checked;
@@ -2379,9 +2522,16 @@ async function renderSettingsTab() {
 		showKinds.onchange = save;
 		pageHue.oninput = save;
 		categoryHue.oninput = save;
+		chunky.onchange = save;
 		setRow(group, "Show type hues", "Display the indicator at the left edge of each navigation row.", showKinds);
 		setRow(group, "Page hue", "Direct pages and surfaces", pageHue);
 		setRow(group, "Category hue", "Folders that open a list of pages", categoryHue);
+		setRow(
+			group,
+			"Chunky chat rows",
+			"Show the chats under each department as two-line rows with their scope and last activity.",
+			chunky,
+		);
 		group.appendChild(preview);
 		const reset = document.createElement("button");
 		reset.textContent = "Reset to defaults";

@@ -10,10 +10,10 @@
 		projection: {
 			schema: "qorpera.projection/v1",
 			default: "category:finance-outlook",
-			navigation: ["department:main", "department:financials", "department:support", "department:product"],
+			navigation: ["q:main", "department:financials", "department:support", "department:product"],
 			nodes: [
 				{
-					id: "department:main",
+					id: "q:main",
 					kind: "department",
 					label: "Main",
 					items: ["q:inbox", "q:activity", "q:chats"],
@@ -173,14 +173,27 @@
 					kind: "page",
 					label: "Pull Requests",
 					description: "Current product changes awaiting review.",
-					view: { type: "builtin", id: "qorpera.preview", context: { message: "Pull request overview preview." } },
+					view: {
+						type: "builtin",
+						id: "qorpera.preview",
+						context: { message: "Pull request overview preview.", departmentId: "dept-product" },
+					},
 				},
 			],
 			diagnostics: [],
 		},
 		inbox: [],
-		sessions: [],
-		departments: [],
+		// Enough sessions that the review build shows the pile under each
+		// department: page-scoped, product worktree, and unscoped chats.
+		sessions: [
+			{ file: "trail/founder-1.jsonl", title: "Kickoff — company goals and constraints", mtimeMs: Date.now() - 16 * 60000, kind: "chat" },
+			{ file: "trail/founder-2.jsonl", title: "Q3 numbers walkthrough", mtimeMs: Date.now() - 14 * 3600000, kind: "chat", page: "page:q3-report" },
+			{ file: "trail/founder-3.jsonl", title: "Runway: downside scenario", mtimeMs: Date.now() - 15 * 3600000, kind: "chat", page: "page:runway" },
+			{ file: "trail/founder-4.jsonl", title: "Ticket backlog triage", mtimeMs: Date.now() - 2 * 86400000, kind: "chat", page: "page:tickets" },
+			{ file: "trail/founder-5.jsonl", title: "Fix the release pipeline", mtimeMs: Date.now() - 3 * 86400000, kind: "chat", department: "C:/Products/qorpera-base", worktree: "release-fix" },
+			{ file: "trail/founder-6.jsonl", title: "Pricing page copy review", mtimeMs: Date.now() - 4 * 86400000, kind: "chat", page: "page:pricing" },
+		],
+		departments: [{ id: "dept-product", path: "C:/Products/qorpera-base", name: "Qorpera Base Development" }],
 	};
 
 	const activeCompany = {
