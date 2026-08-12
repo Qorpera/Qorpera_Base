@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import {
 	appendFileSync,
@@ -1286,6 +1286,48 @@ export function codexSpawn(
 ): { command: string; args: string[] } {
 	if (codexEntry.toLowerCase().endsWith(".exe")) return { command: codexEntry, args: sandboxArgs.slice(1) };
 	return { command: nodeExecutable, args: sandboxArgs };
+}
+
+interface KillableChild {
+	pid?: number;
+	exitCode: number | null;
+	kill: (signal?: NodeJS.Signals | number) => boolean;
+}
+
+/**
+ * Kill an agent child and its whole process tree. The direct child is
+ * codex.exe ("sandbox" subcommand) wrapping the actual agent process, and on
+ * Windows ChildProcess.kill() terminates only the direct child — the wrapped
+ * subtree survives (observed: codex.exe trees outliving the shell). taskkill
+ * /T walks and kills the tree while the parent chain is still intact.
+ */
+export function killChildTree(child: KillableChild): void {
+	if (child.exitCode !== null) return;
+	if (process.platform === "win32" && child.pid) {
+		spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on(
+			"error",
+			() => child.kill(),
+		);
+		return;
+	}
+	child.kill();
+}
+
+/**
+ * Synchronous variant for app quit: quit does not wait for async teardown,
+ * so the reap must complete before the event loop dies or the tree leaks.
+ */
+export function killChildTreeSync(child: KillableChild): void {
+	if (child.exitCode !== null) return;
+	if (process.platform === "win32" && child.pid) {
+		const result = spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+			stdio: "ignore",
+			windowsHide: true,
+			timeout: 10_000,
+		});
+		if (!result.error) return;
+	}
+	child.kill();
 }
 
 /**

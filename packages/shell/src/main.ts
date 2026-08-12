@@ -98,6 +98,8 @@ import {
 	inboxMessagesPath,
 	type KernelIntentCapability,
 	kernelGateReviewDocument,
+	killChildTree,
+	killChildTreeSync,
 	latestResumableTrailSession,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
@@ -332,6 +334,9 @@ function setWindowIcon(win: BrowserWindow, iconPath: string): void {
 }
 /** Children we killed on purpose (session switch/close) — their exits are not news. */
 const intentionalKills = new WeakSet<ChildProcessWithoutNullStreams>();
+/** Every agent child still running, across all slots — quit reaps these
+ * synchronously because window-close teardown is async and quit won't wait. */
+const liveChildren = new Set<ChildProcessWithoutNullStreams>();
 const childBindings = new WeakMap<ChildProcessWithoutNullStreams, TrailBinding>();
 const childIntentSigners = new WeakMap<
 	ChildProcessWithoutNullStreams,
@@ -572,6 +577,7 @@ async function closeCompany(slot: Slot): Promise<void> {
 	runtime.webhookClose?.();
 	await runtime.transitionQueue;
 	await stopChild(runtime.child);
+	if (runtime.wakeChild) await stopChild(runtime.wakeChild);
 	if (runtime.mergeChild) await stopChild(runtime.mergeChild);
 	runtime.backendClose?.();
 	releaseCompanyRuntimeLock(runtime.runtimeLock);
@@ -582,7 +588,7 @@ async function closeCompany(slot: Slot): Promise<void> {
 async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
 	if (child.exitCode === null) {
 		intentionalKills.add(child);
-		child.kill();
+		killChildTree(child);
 	}
 	await childCheckpointCompletion.get(child);
 }
@@ -753,6 +759,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		brokeredCredentials.release();
 		throw error;
 	}
+	liveChildren.add(child);
 	childBindings.set(child, binding);
 	childIntentSigners.set(child, kernelSigner.signIntent);
 	childModelCapabilities.set(child, brokeredCredentials);
@@ -868,6 +875,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		if (!silent && !intentionalKills.has(child)) send(win, "rpc-exit", code);
 	});
 	child.on("close", () => {
+		liveChildren.delete(child);
 		try {
 			httpBroker.release();
 			brokeredCredentials.release();
@@ -1052,7 +1060,7 @@ async function startWakeChild(
 			if (frame.type === "agent_settled") {
 				settledCleanly = started;
 				intentionalKills.add(child);
-				child.kill();
+				killChildTree(child);
 			}
 		},
 	});
@@ -1160,7 +1168,7 @@ async function startMergeChild(slot: Slot, runtime: CompanyRuntime, reviewedProm
 			if (frame.type === "agent_settled") {
 				if (!started) console.error("merge session settled without starting (prompt failed?)");
 				intentionalKills.add(child);
-				child.kill();
+				killChildTree(child);
 			}
 		},
 	});
@@ -2362,7 +2370,19 @@ app.whenReady().then(async () => {
 	}
 });
 
-app.on("will-quit", () => modelRequestBroker?.close());
+app.on("will-quit", () => {
+	modelRequestBroker?.close();
+	// Window-close teardown (closeCompany) is async — it awaits the transition
+	// queue before it kills anything — and quit does not wait for it, so any
+	// agent tree still alive here would outlive the shell (observed on Windows:
+	// codex.exe children surviving app quit). Reap synchronously; the pending
+	// checkpoint files are reconciled on next open, same as after a crash.
+	for (const child of liveChildren) {
+		intentionalKills.add(child);
+		killChildTreeSync(child);
+	}
+	liveChildren.clear();
+});
 
 app.on("window-all-closed", () => {
 	app.quit();
