@@ -856,7 +856,7 @@ function decodedPath(value: string, response: ServerResponse): string | undefine
 }
 
 /** The human resolves gates here — this is the approve/deny queue as UI. */
-function resolveGate(root: string, file: string, action: string): boolean {
+export function resolveGate(root: string, file: string, action: string): boolean {
 	if (!/^gate-[a-z0-9-]+\.md$/i.test(file)) return false;
 	if (action !== "approved" && action !== "denied") return false;
 	const source = readCompanyFile(root, join("inbox", file));
