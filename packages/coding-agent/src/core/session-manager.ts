@@ -26,6 +26,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
+import { writeRawStdout } from "./output-guard.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -1035,7 +1036,10 @@ export class SessionManager {
 		if (!this.getHeader()?.qorpera) {
 			throw new Error("Kernel-bound trail writes require a trusted session header");
 		}
-		process.stdout.write(`${JSON.stringify({ type: "qorpera_trail_append", token: brokerToken, entry })}\n`);
+		// Through the output guard's raw writer: in rpc mode a plain
+		// process.stdout.write is redirected to stderr and the kernel's trail
+		// broker would never see the frame.
+		writeRawStdout(`${JSON.stringify({ type: "qorpera_trail_append", token: brokerToken, entry })}\n`);
 	}
 
 	_persist(entry: SessionEntry): void {

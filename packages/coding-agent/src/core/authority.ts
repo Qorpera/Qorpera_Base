@@ -32,6 +32,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { parse as parseToml } from "smol-toml";
 import { AUTHORITY_SIGNATURE_PATH, verifyAuthorityPolicy, verifyGateApproval } from "./founder-identity.ts";
 import { requestKernelGateConsumption, requestKernelGateTrust } from "./kernel-broker.ts";
+import { writeRawStdout } from "./output-guard.ts";
 
 export type ConfigurableEffectClass = "money" | "identity" | "irreversible" | "authority";
 export type EffectClass = ConfigurableEffectClass | "product_code";
@@ -663,7 +664,8 @@ export function writeGateRequest(authority: Authority, input: GateRequestInput):
 	].join("\n");
 	const brokerToken = process.env.QORPERA_TRAIL_BROKER_TOKEN;
 	if (brokerToken) {
-		process.stdout.write(
+		// Raw writer: the rpc output guard redirects plain stdout to stderr.
+		writeRawStdout(
 			`${JSON.stringify({
 				type: "qorpera_kernel_write",
 				token: brokerToken,
@@ -687,7 +689,7 @@ export function writeGateRequest(authority: Authority, input: GateRequestInput):
 function appendNotice(authority: Authority, message: string): void {
 	const brokerToken = process.env.QORPERA_TRAIL_BROKER_TOKEN;
 	if (brokerToken) {
-		process.stdout.write(
+		writeRawStdout(
 			`${JSON.stringify({
 				type: "qorpera_kernel_write",
 				token: brokerToken,
