@@ -632,6 +632,10 @@ export function reconcileKernelGateCreations(
 
 const GATE_EFFECT_CLASSES = new Set(["money", "identity", "irreversible", "authority", "product_code"]);
 const GATE_FIELDS = ["id", "status", "class", "tool", "hash", "created"] as const;
+// Written by founder-context approval (signGateApproval); the child-side
+// authority parser owns its semantics — the kernel must tolerate it, or a
+// founder-identity machine's approved records stop parsing here entirely.
+const OPTIONAL_GATE_FIELDS = ["approval"] as const;
 
 interface ParsedGateDocument {
 	id: string;
@@ -648,12 +652,17 @@ function parseGateDocument(file: string, content: string): ParsedGateDocument | 
 	const fields = new Map<string, string>();
 	for (const line of frontmatter[1].split(/\r?\n/)) {
 		const match = line.match(/^([a-zA-Z_]+):\s*(.*)$/);
-		if (!match || !GATE_FIELDS.includes(match[1] as (typeof GATE_FIELDS)[number]) || fields.has(match[1])) {
+		if (
+			!match ||
+			(!GATE_FIELDS.includes(match[1] as (typeof GATE_FIELDS)[number]) &&
+				!OPTIONAL_GATE_FIELDS.includes(match[1] as (typeof OPTIONAL_GATE_FIELDS)[number])) ||
+			fields.has(match[1])
+		) {
 			return undefined;
 		}
 		fields.set(match[1], match[2].split("#")[0].trim());
 	}
-	if (fields.size !== GATE_FIELDS.length || GATE_FIELDS.some((field) => !fields.has(field))) return undefined;
+	if (GATE_FIELDS.some((field) => !fields.has(field))) return undefined;
 	const id = fields.get("id")!;
 	const status = fields.get("status")!;
 	const hash = fields.get("hash")!;

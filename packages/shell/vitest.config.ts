@@ -7,6 +7,12 @@ export default defineConfig({
 			"@qorpera/pi-coding-agent/authority": fileURLToPath(
 				new URL("../coding-agent/src/core/authority.ts", import.meta.url),
 			),
+			"@qorpera/pi-coding-agent/app-server": fileURLToPath(
+				new URL("../coding-agent/src/core/app-server.ts", import.meta.url),
+			),
+			"@qorpera/pi-coding-agent/founder-identity": fileURLToPath(
+				new URL("../coding-agent/src/core/founder-identity.ts", import.meta.url),
+			),
 		},
 	},
 });

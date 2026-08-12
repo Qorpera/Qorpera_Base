@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveGate } from "@qorpera/pi-coding-agent/app-server";
 import { requestHash } from "@qorpera/pi-coding-agent/authority";
+import { generateFounderIdentity } from "@qorpera/pi-coding-agent/founder-identity";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	appendKernelObservation,
@@ -320,6 +322,127 @@ describe("kernel-bound agent runtime", () => {
 			},
 		);
 		expect(response).toMatchObject({ granted: false });
+	});
+
+	it("consumes and durably trusts gates approved with a founder signature", () => {
+		// Regression (persistence audit 2026-08-12, P0-2): with a founder
+		// identity, resolveGate appends an `approval:` signature line. The
+		// kernel parser rejected that field, so every signed approval read as
+		// record-not-found and no gate could ever be consumed or trusted.
+		const previousAgentDir = process.env.QORPERA_CODING_AGENT_DIR;
+		process.env.QORPERA_CODING_AGENT_DIR = join(root, "agent-dir");
+		try {
+			generateFounderIdentity("Test Founder");
+			const company = join(root, "company");
+			const binding = bindTrailSession(company, company, { actor: "controller", attended: true });
+			const createGate = (contentHash: string): { file: string; hash: string; path: string } => {
+				const args = { path: "extensions/signed.ts", contentHash };
+				const hash = requestHash("behavior_signature", args);
+				const gateId = `gate-${hash.slice(0, 8)}`;
+				const gateFile = `${gateId}.md`;
+				applyKernelWriteFrame(
+					{
+						type: "qorpera_kernel_write",
+						token: binding.token,
+						operation: "create_gate",
+						gate: {
+							id: gateId,
+							file: gateFile,
+							effectClass: "authority",
+							toolName: "behavior_signature",
+							hash,
+							args,
+						},
+					},
+					binding,
+					company,
+				);
+				expect(resolveGate(company, gateFile, "approved")).toBe(true);
+				const approved = readFileSync(join(company, "inbox", gateFile), "utf-8");
+				expect(approved).toContain("status: approved");
+				expect(approved).toMatch(/^approval: \S+$/m);
+				return { file: gateFile, hash, path: join(company, "inbox", gateFile) };
+			};
+
+			const consumable = createGate("a".repeat(64));
+			let response: { granted: boolean } | undefined;
+			applyKernelWriteFrame(
+				{
+					type: "qorpera_kernel_write",
+					token: binding.token,
+					operation: "consume_gate",
+					file: consumable.file,
+					requestId: "signed-consume",
+					hash: consumable.hash,
+					status: "consumed",
+				},
+				binding,
+				company,
+				(value) => {
+					response = value;
+				},
+				() => true,
+			);
+			expect(response).toMatchObject({ granted: true });
+			const consumed = readFileSync(consumable.path, "utf-8");
+			expect(consumed).toContain("status: consumed");
+			// The signature attests the approval, not the lifecycle — it survives.
+			expect(consumed).toMatch(/^approval: \S+$/m);
+
+			const durable = createGate("b".repeat(64));
+			let trusted = false;
+			const durableTrust = {
+				has: () => trusted,
+				remember: () => {
+					trusted = true;
+				},
+			};
+			response = undefined;
+			applyKernelWriteFrame(
+				{
+					type: "qorpera_kernel_write",
+					token: binding.token,
+					operation: "trust_gate",
+					file: durable.file,
+					requestId: "signed-trust",
+					hash: durable.hash,
+					status: "consumed",
+				},
+				binding,
+				company,
+				(value) => {
+					response = value;
+				},
+				() => true,
+				durableTrust,
+			);
+			expect(response).toMatchObject({ granted: true });
+			expect(trusted).toBe(true);
+			response = undefined;
+			applyKernelWriteFrame(
+				{
+					type: "qorpera_kernel_write",
+					token: binding.token,
+					operation: "trust_gate",
+					file: durable.file,
+					requestId: "signed-trusted-use",
+					hash: durable.hash,
+					status: "consumed",
+				},
+				binding,
+				company,
+				(value) => {
+					response = value;
+				},
+				undefined,
+				durableTrust,
+			);
+			expect(response).toMatchObject({ granted: true });
+			expect(readFileSync(binding.path, "utf-8")).toContain('"transition":"trusted-use"');
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.QORPERA_CODING_AGENT_DIR;
+			else process.env.QORPERA_CODING_AGENT_DIR = previousAgentDir;
+		}
 	});
 
 	it("rejects child gate descriptions whose displayed semantics do not match the canonical hash", () => {
