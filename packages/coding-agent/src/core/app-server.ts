@@ -426,8 +426,10 @@ function sessionTitleText(text: string): string {
 
 /** Trail sessions ARE the chat list (spec §3). Title = first user message,
  * falling back to the kernel's observed first input, then the stored session
- * name; sessions with no words yet list as "New chat". Autonomous work is
- * tagged with a session name at spawn time. */
+ * name. A chat the founder never spoke into — opened and abandoned before any
+ * input — is spawn residue, not history: it is skipped entirely, so panels
+ * never pile up with contentless "New chat" rows. Autonomous work is tagged
+ * with a session name at spawn time and always listed. */
 function listTrailSessions(root: string): SessionSummary[] {
 	const dir = physicalDirectoryWithin(root, "trail");
 	if (!dir) return [];
@@ -447,6 +449,10 @@ function listTrailSessions(root: string): SessionSummary[] {
 			let title = "";
 			let kernelInput = "";
 			let name = "";
+			// Words are title material; a user message ENTRY (even an image-only
+			// one) is proof of content — tracked apart so wordless-but-real chats
+			// still list.
+			let sawUserMessage = false;
 			let sessionAuthority:
 				| {
 						autonomous?: boolean;
@@ -480,13 +486,16 @@ function listTrailSessions(root: string): SessionSummary[] {
 					) {
 						kernelInput = sessionTitleText(entry.data.message);
 					}
-					if (entry.type === "message" && entry.message?.role === "user" && !title) {
-						const content = entry.message.content;
-						const text =
-							typeof content === "string"
-								? content
-								: (content?.find((part) => part.type === "text")?.text ?? "");
-						title = sessionTitleText(text);
+					if (entry.type === "message" && entry.message?.role === "user") {
+						sawUserMessage = true;
+						if (!title) {
+							const content = entry.message.content;
+							const text =
+								typeof content === "string"
+									? content
+									: (content?.find((part) => part.type === "text")?.text ?? "");
+							title = sessionTitleText(text);
+						}
 					}
 					if (name && title) break;
 				} catch {
@@ -499,6 +508,11 @@ function listTrailSessions(root: string): SessionSummary[] {
 			const page = kind === "chat" ? name.match(/^page — (.+)$/)?.[1] : undefined;
 			// Page and product tags are plumbing; a founder-given name is title material.
 			const chatName = page || /^product — /.test(name) ? "" : name;
+			// Every openChat spawn writes a trail file before the founder types;
+			// scope switches and app opens leave these behind by the dozen. No
+			// user message, no kernel input, no founder-given name → nothing to
+			// resume, nothing to list.
+			if (kind === "chat" && !sawUserMessage && !kernelInput && !chatName) continue;
 			sessions.push({
 				file,
 				mtimeMs: source.mtimeMs,
