@@ -129,6 +129,9 @@ async function enterCompany(active) {
 	$("conav").style.display = "";
 	$("messages").innerHTML = "";
 	resetWorkGroup();
+	// The kernel resumes the newest founder session across restarts; adopt its
+	// trail file so the chat pile marks it active and caching keys line up.
+	currentSession = active.sessionFile ?? null;
 	if (active.usingBaseFallback) {
 		addMsg("log", "your evolved app failed to load — running the base chrome (kernel fallback)");
 	}

@@ -12,6 +12,7 @@ import {
 	readSync,
 	realpathSync,
 	renameSync,
+	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -330,6 +331,78 @@ export function bindTrailSession(root: string, cwd: string, scope: AgentScope, s
 		writeFileSync(path, `${JSON.stringify(header)}\n`, { flag: "wx" });
 	}
 	return { path, file: basename(path), sessionId, cwd: resolve(cwd), token: randomUUID(), authority, audit };
+}
+
+/** Newest founder chat the controller scope can resume: current schema,
+ * kernel-authored authority header, no autonomous label, no product
+ * assignment. Returns the bare trail filename, or undefined for none. */
+export function latestResumableTrailSession(root: string): string | undefined {
+	const trailDir = join(root, "trail");
+	if (!existsSync(trailDir)) return undefined;
+	const files = readdirSync(trailDir)
+		.filter((file) => file.endsWith(".jsonl"))
+		.sort()
+		.reverse();
+	for (const file of files) {
+		try {
+			const header = readHeader(join(trailDir, file));
+			if (header.version !== TRAIL_SESSION_VERSION) continue;
+			const authority = header.qorpera;
+			if (!authority || authority.autonomous || authority.label) continue;
+			if (authority.actor !== "controller" || authority.department || authority.worktree) continue;
+			return file;
+		} catch {
+			// unreadable header — not resumable
+		}
+	}
+	return undefined;
+}
+
+/** Entry types that make a session part of the company's memory. Everything
+ * else (header, model/thinking selection, a session name) is plumbing a
+ * window open writes before anyone speaks. */
+const TRAIL_CONTENT_TYPES = new Set(["message", "custom", "custom_message", "label", "branch_summary"]);
+
+/**
+ * Remove founder chat trail files that never carried any content — the
+ * husk a window open used to mint per spawn. Kernel-side hygiene at company
+ * open: autonomous sessions are controller work history and always stay,
+ * and any file with a single content entry (or anything unparseable) stays.
+ * Returns the number of files removed.
+ */
+export function pruneEmptyTrailSessions(root: string): number {
+	const trailDir = join(root, "trail");
+	if (!existsSync(trailDir)) return 0;
+	let removed = 0;
+	for (const file of readdirSync(trailDir)) {
+		if (!file.endsWith(".jsonl")) continue;
+		const path = join(trailDir, file);
+		try {
+			const entry = lstatSync(path);
+			if (!entry.isFile() || entry.nlink !== 1 || entry.size > 256 * 1024) continue;
+			const lines = readFileSync(path, "utf-8")
+				.split("\n")
+				.filter((line) => line.trim());
+			if (lines.length === 0) continue;
+			const header = JSON.parse(lines[0]) as SessionHeader;
+			if (header.type !== "session") continue;
+			if (header.qorpera?.autonomous || header.qorpera?.label) continue;
+			let hasContent = false;
+			for (const line of lines.slice(1)) {
+				const parsed = JSON.parse(line) as { type?: string };
+				if (typeof parsed.type !== "string" || TRAIL_CONTENT_TYPES.has(parsed.type)) {
+					hasContent = true;
+					break;
+				}
+			}
+			if (hasContent) continue;
+			rmSync(path);
+			removed++;
+		} catch {
+			// unparseable content is content we do not understand — keep it
+		}
+	}
+	return removed;
 }
 
 export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): TrailAppendFrame | undefined {

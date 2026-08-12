@@ -12,8 +12,10 @@ import {
 	brokeredChildEnvironment,
 	commitTrailAppend,
 	kernelGateReviewDocument,
+	latestResumableTrailSession,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
+	pruneEmptyTrailSessions,
 	reconcileKernelGateCreations,
 	sandboxCommandArgs,
 	sandboxRuntimeDir,
@@ -112,6 +114,71 @@ function createProductCheckpointFixture(company: string): {
 }
 
 describe("kernel-bound agent runtime", () => {
+	it("resumes the newest founder chat and prunes contentless sessions at open", () => {
+		const company = join(root, "company");
+		// A real conversation the founder should return to — appended through
+		// the kernel lane so the audit chain stays valid for resume.
+		const spoken = bindTrailSession(company, company, { actor: "controller", attended: true });
+		const spokenEntry = {
+			type: "message",
+			id: "m1",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: { role: "user", content: [{ type: "text", text: "hello" }] },
+		};
+		const spokenAppend = parseTrailAppendFrame(
+			{ type: "qorpera_trail_append", token: spoken.token, entry: spokenEntry },
+			spoken,
+		);
+		commitTrailAppend(spoken, spokenAppend!);
+		appendFileSync(spoken.path, `${JSON.stringify(spokenAppend!.entry)}\n`);
+		// Husks later opens minted: header-only and model-selection-only.
+		const husk = join(company, "trail", "2099-01-01T00-00-00-000Z_husk.jsonl");
+		writeFileSync(
+			husk,
+			`${JSON.stringify({ type: "session", version: 5, id: "husk", timestamp: "t", cwd: company, qorpera: { actor: "controller", attended: true } })}\n${JSON.stringify({ type: "model_change", id: "mc", parentId: "husk", provider: "p", modelId: "m" })}\n`,
+			"utf-8",
+		);
+		// Product-scoped husk: never resumable as the company chat, still swept.
+		const productHusk = join(company, "trail", "2099-01-02T00-00-00-000Z_product.jsonl");
+		writeFileSync(
+			productHusk,
+			`${JSON.stringify({ type: "session", version: 5, id: "ph", timestamp: "t", cwd: company, qorpera: { actor: "product-worker", attended: true, department: "d", worktree: "w" } })}\n`,
+			"utf-8",
+		);
+		// Autonomous work history stays even when empty, and never resumes as chat.
+		const autonomous = join(company, "trail", "2099-01-03T00-00-00-000Z_auto.jsonl");
+		writeFileSync(
+			autonomous,
+			`${JSON.stringify({ type: "session", version: 5, id: "auto", timestamp: "t", cwd: company, qorpera: { actor: "controller", attended: false, autonomous: true, label: "autonomous — wake" } })}\n`,
+			"utf-8",
+		);
+		// Old-schema sessions need an explicit migration; never auto-resumed.
+		const legacy = join(company, "trail", "2099-01-04T00-00-00-000Z_legacy.jsonl");
+		writeFileSync(
+			legacy,
+			`${JSON.stringify({ type: "session", version: 3, id: "old", timestamp: "t", cwd: company, qorpera: { actor: "controller", attended: true } })}\n${JSON.stringify({ type: "message", id: "m2", parentId: null, message: { role: "user", content: [] } })}\n`,
+			"utf-8",
+		);
+
+		// Before the sweep the newest resumable file is the controller husk.
+		expect(latestResumableTrailSession(company)).toBe("2099-01-01T00-00-00-000Z_husk.jsonl");
+		expect(pruneEmptyTrailSessions(company)).toBe(2); // controller husk + product husk
+		expect(existsSync(husk)).toBe(false);
+		expect(existsSync(productHusk)).toBe(false);
+		expect(existsSync(autonomous)).toBe(true);
+		expect(existsSync(legacy)).toBe(true);
+		expect(existsSync(spoken.path)).toBe(true);
+		// After the sweep the founder's real conversation is what resumes, and
+		// resuming it actually binds.
+		expect(latestResumableTrailSession(company)).toBe(spoken.file);
+		expect(bindTrailSession(company, company, { actor: "controller", attended: true }, spoken.file).file).toBe(
+			spoken.file,
+		);
+		// Idempotent: nothing left to sweep.
+		expect(pruneEmptyTrailSessions(company)).toBe(0);
+	});
+
 	it("binds role and worktree scope into an immutable trail header", () => {
 		const company = join(root, "company");
 		const binding = bindTrailSession(company, company, { actor: "controller", attended: true });

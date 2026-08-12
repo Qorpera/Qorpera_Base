@@ -98,9 +98,11 @@ import {
 	inboxMessagesPath,
 	type KernelIntentCapability,
 	kernelGateReviewDocument,
+	latestResumableTrailSession,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
 	provisionSandbox,
+	pruneEmptyTrailSessions,
 	reconcileKernelGateCreations,
 	sandboxCommandArgs,
 	sandboxConfigDir,
@@ -1234,6 +1236,9 @@ interface ActiveCompany {
 	activeApp: "fork" | "base";
 	versions: UserlandVersion[];
 	evolved: boolean;
+	/** Trail file the live founder child is bound to (resumed or fresh), so
+	 * the chrome can mark the session active and cache under the right key. */
+	sessionFile?: string;
 }
 
 function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
@@ -1252,6 +1257,7 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 		activeApp: getActiveApp(userlandDir),
 		versions: listVersions(userlandDir),
 		evolved: !isUnmodified(userlandDir),
+		sessionFile: childBindings.get(runtime.child)?.file,
 	};
 }
 
@@ -1338,8 +1344,24 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 
 		// Never-conceived company: the conception session is autonomous work.
 		const kickoff = conceptionKickoff(root);
-		const childOptions: ChildOptions = kickoff ? { autonomousName: "conception" } : {};
-		const child = startChild(slot, root, childOptions);
+		// Founder continuity across restarts: sweep the contentless trail files
+		// earlier opens minted (they carry no memory), then reopen the newest
+		// controller-scope chat instead of creating a fresh session per open.
+		const swept = pruneEmptyTrailSessions(root);
+		if (swept > 0) console.log(`pruned ${swept} contentless trail session${swept === 1 ? "" : "s"}`);
+		const childOptions: ChildOptions = kickoff
+			? { autonomousName: "conception" }
+			: { sessionFile: latestResumableTrailSession(root) };
+		let child: ReturnType<typeof startChild>;
+		try {
+			child = startChild(slot, root, childOptions);
+		} catch (error) {
+			// A malformed newest session must never block the company: fall fresh.
+			if (!childOptions.sessionFile) throw error;
+			console.error(`could not resume ${childOptions.sessionFile}: ${(error as Error).message}`);
+			childOptions.sessionFile = undefined;
+			child = startChild(slot, root, childOptions);
+		}
 		const childBinding = childBindings.get(child);
 		if (childBinding && productStorage.unhydrated.length > 0) {
 			appendKernelProductStorageObservation(childBinding, {
