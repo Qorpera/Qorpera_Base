@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, randomUUID, verify } from "node:crypto";
 import type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
+import { writeRawStdout } from "./output-guard.ts";
 
 export type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
 
@@ -58,7 +59,10 @@ export function beginKernelBinding(sessionId: string): void {
 	if (!token || !kernelPublicKey || !sessionId) return;
 	kernelBindingNonce = randomUUID();
 	kernelBindingSessionId = sessionId;
-	process.stdout.write(
+	// Kernel frames must reach the kernel's stdout parser. In rpc mode the
+	// output guard redirects plain process.stdout.write to stderr, so every
+	// kernel-lane frame goes through the guarded raw-stdout writer instead.
+	writeRawStdout(
 		`${JSON.stringify({
 			type: "qorpera_kernel_challenge",
 			token,
@@ -196,7 +200,7 @@ function requestKernelGate(operation: "consume_gate" | "trust_gate", file: strin
 			resolvePromise(false);
 		}, 30_000);
 		pendingGateRequests.set(requestId, { file, hash, resolve: resolvePromise, timer });
-		process.stdout.write(
+		writeRawStdout(
 			`${JSON.stringify({
 				type: "qorpera_kernel_write",
 				token,
@@ -230,7 +234,7 @@ export function requestKernelMessageCreation(file: string, content: string): Pro
 			resolvePromise(false);
 		}, 30_000);
 		pendingGateRequests.set(requestId, { file, hash, resolve: resolvePromise, timer });
-		process.stdout.write(
+		writeRawStdout(
 			`${JSON.stringify({
 				type: "qorpera_kernel_write",
 				token,

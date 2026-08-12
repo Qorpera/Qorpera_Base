@@ -81,6 +81,13 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 					typeof error === "object" && error !== null && "code" in error
 						? String((error as { code?: unknown }).code)
 						: undefined;
+				// Lock creation denied outright (not contended): a read-only
+				// store — e.g. the kernel's sandbox pre-writes auth.json and
+				// denies `mkdir auth.json.lock`. Proceed lock-free: reads stay
+				// correct, and a write surfaces its own permission error.
+				if (code === "EPERM" || code === "EACCES" || code === "EROFS") {
+					return () => {};
+				}
 				if (code !== "ELOCKED" || attempt === maxAttempts) {
 					throw error;
 				}
@@ -137,6 +144,10 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 					typeof error === "object" && error !== null && "code" in error
 						? String((error as { code?: unknown }).code)
 						: undefined;
+				// Read-only store: same lock-free fallback as the sync path.
+				if (code === "EPERM" || code === "EACCES" || code === "EROFS") {
+					return async () => {};
+				}
 				if (code !== "ELOCKED" || attempt === maxRetries) throw error;
 				const delayMs = Math.min(Math.round((Math.random() + 1) * 100 * 2 ** attempt), 10000);
 				if (signal) await sleep(delayMs, undefined, { signal });
