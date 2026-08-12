@@ -2,6 +2,11 @@
  * from the folder via the backend (surfaces/state/inbox) or the RPC pipe. */
 const $ = (id) => document.getElementById(id);
 let backendUrl = "";
+// Stable company identity from the kernel (appInfo). Storage is keyed by
+// this, never by backendUrl: the backend port is hash-derived from a small
+// space and walks forward on bind collisions, so a port-keyed pref bucket
+// can silently change between opens.
+let companyId = "";
 let state = {
 	projection: { schema: "qorpera.projection/v1", default: "q:chats", navigation: [], nodes: [], diagnostics: [] },
 	inbox: [],
@@ -188,6 +193,10 @@ async function openCompany(root) {
 /** Boot into an already-open company (called after the kernel loads us). */
 async function enterCompany(active) {
 	backendUrl = active.backendUrl;
+	companyId = active.id || "";
+	// Appearance was applied at boot from the pre-company bucket; re-apply now
+	// that this company's stored appearance is addressable.
+	applyNavAppearance();
 	hiddenNavigation = new Set(readStoredArray("nav-hidden"));
 	archivedNavigation = new Set();
 	focusedDepartmentId = null;
@@ -742,7 +751,7 @@ function projectionNode(id) {
 }
 
 function navStorageKey(name) {
-	return `qorpera:${backendUrl || "base"}:${name}`;
+	return `qorpera:${companyId || "base"}:${name}`;
 }
 
 function readStoredObject(name, fallback) {

@@ -8,12 +8,28 @@ import {
 	isRendererRequestAllowed,
 	lockDownRendererSession,
 	lockDownRendererWebContents,
+	rendererPartitionForCompany,
 } from "../src/renderer-boundary.ts";
 
 const root = join(tmpdir(), `qorpera-renderer-boundary-${process.pid}`);
 
 afterEach(() => {
 	if (existsSync(root)) rmSync(root, { recursive: true, force: true });
+});
+
+describe("renderer partition naming", () => {
+	it("derives a durable persist partition from a company root id", () => {
+		const id = "ab".repeat(32);
+		expect(rendererPartitionForCompany(id)).toBe(`persist:qorpera-company-${id}`);
+	});
+
+	it("refuses anything that is not a company root hash", () => {
+		// Port-derived origins and other ad-hoc keys must never name a
+		// partition — they churn, and a churned partition is lost storage.
+		for (const bad of ["", "base", "http://127.0.0.1:4700", "AB".repeat(32), "ab".repeat(31)]) {
+			expect(() => rendererPartitionForCompany(bad)).toThrow("company root id");
+		}
+	});
 });
 
 describe("renderer request boundary", () => {

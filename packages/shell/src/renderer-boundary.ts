@@ -13,6 +13,16 @@ function insideOrEqual(target: string, parent: string): boolean {
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** Durable per-company renderer partition. Companies never share a partition,
+ * so one company's (agent-authored) chrome can never read another's storage —
+ * the isolation wipe-on-close used to provide — while a company's own prefs
+ * survive close, switch, and restart. Hub windows use an ephemeral partition
+ * until a company claims them. */
+export function rendererPartitionForCompany(companyId: string): string {
+	if (!/^[0-9a-f]{64}$/.test(companyId)) throw new Error("renderer partition requires a company root id");
+	return `persist:qorpera-company-${companyId}`;
+}
+
 /** Exact renderer network/file boundary, independent of agent-authored UI code. */
 export function isRendererRequestAllowed(
 	value: string,

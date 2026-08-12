@@ -128,6 +128,7 @@ import { createCompanyFileResolver } from "./company-file-paths.ts";
 import {
 	advanceCompanyGateCreation,
 	beginCompanyGateCreation,
+	companyRootId,
 	completeCompanyGateCreation,
 	hasCompanyGateTrust,
 	hasCompanyKernelState,
@@ -138,7 +139,12 @@ import {
 } from "./company-kernel-state.ts";
 import { createHttpRequestBroker, type HttpRequestBroker } from "./http-request-broker.ts";
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
-import { isRendererRequestAllowed, lockDownRendererSession, lockDownRendererWebContents } from "./renderer-boundary.ts";
+import {
+	isRendererRequestAllowed,
+	lockDownRendererSession,
+	lockDownRendererWebContents,
+	rendererPartitionForCompany,
+} from "./renderer-boundary.ts";
 import {
 	assertUserlandStorage,
 	ensureUserland,
@@ -277,6 +283,8 @@ function shellVersion(): string {
 
 interface CompanyRuntime {
 	root: string;
+	/** Stable company identity (companyRootId) — keys renderer storage. */
+	storageId: string;
 	child: ChildProcessWithoutNullStreams;
 	backendPort: number;
 	backendClose?: () => void;
@@ -305,6 +313,10 @@ interface CompanyRuntime {
 interface Slot {
 	window: BrowserWindow;
 	rendererSession: Session;
+	/** The window's session partition. A WebContents can never change session,
+	 * so when a slot must move to a different company partition, openCompany
+	 * replaces the window and updates this alongside it. */
+	partition: string;
 	runtime?: CompanyRuntime;
 	kickoffPending: boolean;
 }
@@ -582,7 +594,10 @@ async function closeCompany(slot: Slot): Promise<void> {
 	runtime.backendClose?.();
 	releaseCompanyRuntimeLock(runtime.runtimeLock);
 	slot.runtime = undefined;
-	await slot.rendererSession.clearStorageData();
+	// Renderer storage survives on purpose: each company runs in its own
+	// persist: partition, so cross-company isolation is the partition boundary
+	// (what the old wipe-on-close provided), while a company's own prefs —
+	// nav state, pane widths, the model catalog cache — come back on reopen.
 }
 
 async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
@@ -1235,6 +1250,9 @@ function companyUserlandUrl(runtime: CompanyRuntime, choice: "fork" | "base"): s
 
 interface ActiveCompany {
 	root: string;
+	/** Stable company identity — the renderer keys its localStorage by this,
+	 * never by the (port-derived, collision-walked) backendUrl. */
+	id: string;
 	backendUrl: string;
 	kickoff: boolean;
 	userland: UserlandStatus;
@@ -1256,6 +1274,7 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 	const userlandDir = join(runtime.root, "userland");
 	return {
 		root: runtime.root,
+		id: runtime.storageId,
 		backendUrl: `http://127.0.0.1:${runtime.backendPort}`,
 		kickoff: false,
 		userland: runtime.userland,
@@ -1292,6 +1311,11 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		focusWindow(existing.window);
 		return;
 	}
+	// Stable company identity: keys the durable renderer partition here and
+	// the renderer's own storage keys (via appInfo). Ports and windows churn;
+	// this hash does not.
+	const storageId = companyRootId(root);
+	const partition = rendererPartitionForCompany(storageId);
 	await closeCompany(slot);
 	const runtimeLock = claimCompanyRuntimeLock(root);
 	let pendingBackendClose: (() => void) | undefined;
@@ -1379,6 +1403,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		}
 		const runtime: CompanyRuntime = {
 			root,
+			storageId,
 			child,
 			childOptions,
 			backendPort: backend.port,
@@ -1448,17 +1473,27 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		// the pristine base app (Settings → App). If the evolved userland fails to
 		// boot, the kernel falls back to the base chrome — the company stays
 		// reachable either way.
-		const win = slot.window;
-		if (win.isDestroyed()) return;
-		setWindowIcon(win, companyIcon(root));
-		if (getActiveApp(join(root, "userland")) === "base") {
-			await win.loadURL(companyUserlandUrl(runtime, "base"));
-			return;
+		if (slot.window.isDestroyed()) return;
+		// A window that last showed the hub (throwaway partition) or another
+		// company cannot host this company's durable partition — swap in a
+		// replacement window, committed only once the chrome has loaded.
+		const swap = slot.partition === partition ? undefined : beginRendererWindowSwap(slot, partition);
+		const win = swap?.window ?? slot.window;
+		try {
+			setWindowIcon(win, companyIcon(root));
+			if (getActiveApp(join(root, "userland")) === "base") {
+				await win.loadURL(companyUserlandUrl(runtime, "base"));
+			} else {
+				await win.loadURL(companyUserlandUrl(runtime, "fork")).catch(async () => {
+					if (slot.runtime) slot.runtime.usingBaseFallback = true;
+					await win.loadURL(companyUserlandUrl(runtime, "base"));
+				});
+			}
+			swap?.commit();
+		} catch (loadError) {
+			swap?.abort();
+			throw loadError;
 		}
-		await win.loadURL(companyUserlandUrl(runtime, "fork")).catch(async () => {
-			if (slot.runtime) slot.runtime.usingBaseFallback = true;
-			await win.loadURL(companyUserlandUrl(runtime, "base"));
-		});
 	} catch (error) {
 		if (slot.runtime?.runtimeLock.token === runtimeLock.token) await closeCompany(slot);
 		else {
@@ -1610,13 +1645,59 @@ function rendererRequestAllowed(slot: Slot, value: string): boolean {
 	});
 }
 
-function createWindow(): Slot {
-	const rendererSession = electronSession.fromPartition(`qorpera-renderer-${randomUUID()}`, { cache: false });
+/** Sessions are per-partition singletons, and a company's persist: partition
+ * outlives any one window — so each session is locked down and given its
+ * request boundary exactly once, and the boundary resolves the requesting
+ * window's slot per request instead of closing over one slot forever. */
+const configuredRendererSessions = new WeakSet<Session>();
+const slotsByWebContentsId = new Map<number, Slot>();
+
+function rendererSessionFor(partition: string): Session {
+	const rendererSession = electronSession.fromPartition(partition, { cache: false });
+	if (configuredRendererSessions.has(rendererSession)) return rendererSession;
+	configuredRendererSessions.add(rendererSession);
 	lockDownRendererSession(rendererSession);
-	let slot: Slot;
+	rendererSession.webRequest.onBeforeRequest({ urls: ["<all_urls>"] }, (details, callback) => {
+		const owner = details.webContentsId === undefined ? undefined : slotsByWebContentsId.get(details.webContentsId);
+		// Requests the session cannot attribute to a live renderer window
+		// (file: navigations carry no webContentsId) get the strictest policy
+		// that keeps the kernel chrome bootable: trusted base files, no network.
+		const allowed = owner
+			? rendererRequestAllowed(owner, details.url)
+			: isRendererRequestAllowed(details.url, { trustedFileRoot: BASE_USERLAND_DIR });
+		callback({ cancel: !allowed });
+	});
+	return rendererSession;
+}
+
+/** Hub windows get a throwaway in-memory partition; a window created FOR a
+ * company boots straight onto that company's durable partition, so opening
+ * it needs no window swap. */
+function initialRendererPartition(companyRoot?: string): string {
+	if (companyRoot) {
+		try {
+			return rendererPartitionForCompany(companyRootId(companyRoot));
+		} catch {
+			// Not an existing root — openCompany will refuse it; boot as a hub.
+		}
+	}
+	return `qorpera-renderer-${randomUUID()}`;
+}
+
+/** Build one renderer window on the given partition and wire every kernel
+ * duty to it. `forSlot` resolves the owning slot lazily: a fresh slot is
+ * built around its first window, and a swap window joins an existing slot
+ * that keeps pointing at the old window until the swap commits. */
+function createRendererWindow(
+	partition: string,
+	forSlot: () => Slot,
+	options: { bounds?: Electron.Rectangle; show?: boolean } = {},
+): { window: BrowserWindow; rendererSession: Session } {
+	const rendererSession = rendererSessionFor(partition);
 	const win = new BrowserWindow({
 		width: 1360,
 		height: 860,
+		show: options.show ?? true,
 		title: "Qorpera Base",
 		backgroundColor: "#101010",
 		// Frameless, Desktop-style chrome: the userland draws the titlebar
@@ -1633,11 +1714,8 @@ function createWindow(): Slot {
 		},
 	});
 	lockDownRendererWebContents(win.webContents);
-	slot = { window: win, rendererSession, kickoffPending: false };
-	rendererSession.webRequest.onBeforeRequest({ urls: ["<all_urls>"] }, (details, callback) => {
-		callback({ cancel: !rendererRequestAllowed(slot, details.url) });
-	});
-	slots.set(win.id, slot);
+	const contentsId = win.webContents.id;
+	if (options.bounds) win.setBounds(options.bounds);
 	win.setMenuBarVisibility(false);
 	// Kernel duty: the window must stay draggable in EVERY userland, including
 	// evolved forks that predate the frameless titlebar and draw no drag
@@ -1650,7 +1728,6 @@ function createWindow(): Slot {
 			)
 			.catch(() => {});
 	});
-	void win.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 	win.webContents.setWindowOpenHandler(({ url }) => {
 		let target: URL;
 		try {
@@ -1679,23 +1756,80 @@ function createWindow(): Slot {
 	});
 	win.webContents.on("did-finish-load", () => win.webContents.navigationHistory.clear());
 	win.webContents.on("will-navigate", (event, url) => {
-		if (!rendererRequestAllowed(slot, url)) event.preventDefault();
+		if (!rendererRequestAllowed(forSlot(), url)) event.preventDefault();
 	});
 	// A crashed evolved userland must not strand the company: fall back to
-	// the base chrome (kernel duty — last-good behavior).
+	// the base chrome (kernel duty — last-good behavior). Guarded to the
+	// slot's CURRENT window: an uncommitted swap window's crash is handled by
+	// its pending loadURL rejecting instead.
 	win.webContents.on("render-process-gone", () => {
-		if (slot.runtime && !slot.runtime.usingBaseFallback) {
+		const slot = forSlot();
+		if (slot.window === win && slot.runtime && !slot.runtime.usingBaseFallback) {
 			slot.runtime.usingBaseFallback = true;
 			void win.loadURL(companyUserlandUrl(slot.runtime, "base"));
 		}
 	});
 	// Closing a controller window is closing that company: kill its child
-	// and backend; other windows are untouched.
+	// and backend; other windows are untouched. A window retired by a swap
+	// is no longer the slot's window — its company must stay running.
 	win.on("closed", () => {
 		slots.delete(win.id);
-		void closeCompany(slot);
+		slotsByWebContentsId.delete(contentsId);
+		const slot = forSlot();
+		if (slot.window === win) void closeCompany(slot);
 	});
+	return { window: win, rendererSession };
+}
+
+/** Both maps a renderer window answers to: IPC (by window id) and the
+ * session request boundary (by webContents id). */
+function registerRendererWindow(win: BrowserWindow, slot: Slot): void {
+	slots.set(win.id, slot);
+	slotsByWebContentsId.set(win.webContents.id, slot);
+}
+
+function createWindow(companyRoot?: string): Slot {
+	let slot: Slot;
+	const partition = initialRendererPartition(companyRoot);
+	const { window, rendererSession } = createRendererWindow(partition, () => slot);
+	slot = { window, rendererSession, partition, kickoffPending: false };
+	registerRendererWindow(window, slot);
+	void window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 	return slot;
+}
+
+interface RendererWindowSwap {
+	window: BrowserWindow;
+	commit: () => void;
+	abort: () => void;
+}
+
+/** A WebContents can never change its session, so moving a slot onto a
+ * different company partition means replacing the window itself. The slot is
+ * the stable identity: the replacement joins the lookup maps immediately
+ * (IPC from its booting renderer must resolve), but the slot keeps pointing
+ * at the old window until the new chrome actually loads — an aborted swap
+ * leaves the old window (and whatever it shows) untouched. */
+function beginRendererWindowSwap(slot: Slot, partition: string): RendererWindowSwap {
+	const previous = slot.window;
+	const bounds = previous.getBounds();
+	const maximized = previous.isMaximized();
+	const { window, rendererSession } = createRendererWindow(partition, () => slot, { bounds, show: false });
+	registerRendererWindow(window, slot);
+	return {
+		window,
+		commit: () => {
+			slot.window = window;
+			slot.rendererSession = rendererSession;
+			slot.partition = partition;
+			if (maximized) window.maximize();
+			window.show();
+			if (!previous.isDestroyed()) previous.destroy();
+		},
+		abort: () => {
+			if (!window.isDestroyed()) window.destroy();
+		},
+	};
 }
 
 // Single instance: relaunching (e.g. a company launcher) routes into the
@@ -1712,7 +1846,7 @@ app.on("second-instance", (_event, argv) => {
 	if (root) {
 		const existing = slotForCompany(root);
 		if (existing) focusWindow(existing.window);
-		else void openCompany(createWindow(), root);
+		else void openCompany(createWindow(root), root);
 		return;
 	}
 	// Launching "Qorpera Base" itself means: take me to the hub — in its own
@@ -2222,7 +2356,12 @@ app.whenReady().then(async () => {
 		return { ok: true };
 	});
 
-	const initial = createWindow();
+	// A window that already knows its company (launcher argv, company smoke)
+	// boots directly onto that company's durable partition — the open then
+	// happens in place, with no window swap.
+	const smokeCompanyIndex = process.argv.indexOf("--smoke-company");
+	const smokeCompanyRoot = smokeCompanyIndex >= 0 ? process.argv[smokeCompanyIndex + 1] : undefined;
+	const initial = createWindow(pendingCompany ?? smokeCompanyRoot);
 
 	// Foundation self-update: packaged builds check Qorpera_Base_Releases
 	// (public) via electron-updater; downloads apply on quit. The foundation
@@ -2332,9 +2471,8 @@ app.whenReady().then(async () => {
 		});
 	}
 	// Fork-model smoke: open a company, prove its userland loads.
-	const smokeCompanyIndex = process.argv.indexOf("--smoke-company");
-	if (smokeCompanyIndex >= 0 && process.argv[smokeCompanyIndex + 1]) {
-		void openCompany(initial, process.argv[smokeCompanyIndex + 1]).then(() => {
+	if (smokeCompanyRoot) {
+		void openCompany(initial, smokeCompanyRoot).then(() => {
 			setTimeout(() => {
 				console.log(
 					`USERLAND_LOADED ${initial.window.webContents.getURL()} action=${initial.runtime?.userland.action}`,
