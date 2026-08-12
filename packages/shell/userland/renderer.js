@@ -74,37 +74,103 @@ function setupSidebarToggle() {
 
 // ---- hub -------------------------------------------------------------------
 
+/** The hub is a full-screen launcher in <main> (#view-hub) — no sidebar,
+ * no empty sheet. body.hub gates its visibility and hides the nav chrome. */
 async function renderHub() {
+	document.body.classList.add("hub");
+	document.title = "Qorpera Base";
 	const companies = await window.qorpera.listCompanies();
-	const box = $("companies");
-	box.innerHTML = companies.length ? "" : '<div class="empty" style="padding:6px">no companies yet</div>';
+	const grid = $("hubCompanies");
+	grid.innerHTML = "";
 	for (const company of companies) {
-		const b = document.createElement("button");
-		b.className = "hubbtn";
-		b.textContent = company.name;
-		b.title = company.root;
-		b.onclick = () => openCompany(company.root);
-		box.appendChild(b);
+		const card = document.createElement("button");
+		card.className = "hub-card";
+		card.type = "button";
+		card.title = company.root;
+		const mono = document.createElement("span");
+		mono.className = "monogram";
+		mono.textContent = (company.name || "?").slice(0, 1).toUpperCase();
+		const label = document.createElement("strong");
+		label.textContent = company.name;
+		const path = document.createElement("small");
+		path.textContent = company.root;
+		card.append(mono, label, path);
+		card.onclick = () => openCompany(company.root);
+		grid.appendChild(card);
 	}
+	const create = document.createElement("button");
+	create.className = "hub-card create";
+	create.type = "button";
+	create.innerHTML =
+		'<span class="plus">+</span><strong>New company controller</strong><small>Name it — the controller does the rest</small>';
+	create.onclick = openCompanyModal;
+	grid.appendChild(create);
 }
 
-async function newCompanyPrompt() {
-	const dir = prompt("Directory for the new company (e.g. C:\\Companies\\my-co):");
-	if (!dir) return;
-	const root = await window.qorpera.newCompany(dir);
-	await openCompany(root);
+// ---- founding a company: name in, controller out -----------------------------
+// The founder names the company; the machine derives the folder (the registry
+// convention: C:\Companies\<slug>). Electron has no window.prompt() — it
+// throws — so the flow lives in an in-chrome modal (#companyModal).
+
+const COMPANIES_HOME = "C:\\Companies";
+
+function companySlug(name) {
+	return String(name)
+		.toLowerCase()
+		.replace(/['’]/g, "")
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
 }
 
-async function integrateCompanyPrompt() {
-	const dir = prompt("Directory for the new company (e.g. C:\\Companies\\my-co):");
-	if (!dir) return;
-	const from = prompt("Existing repo to integrate (path or git URL):");
-	if (!from) return;
-	const result = await window.qorpera.integrateCompany(dir, from);
-	if (!result.ok) {
-		alert("Could not clone the repo — check the path/URL. The company folder and product department were created.");
-	}
-	await openCompany(result.root);
+function companyRootFor(name) {
+	const slug = companySlug(name);
+	return slug ? `${COMPANIES_HOME}\\${slug}` : "";
+}
+
+function openCompanyModal() {
+	$("companyName").value = "";
+	$("companyPathPreview").textContent = "Lives under C:\\Companies";
+	$("companyCreate").disabled = true;
+	$("companyModal").hidden = false;
+	$("companyName").focus();
+}
+
+function closeCompanyModal() {
+	$("companyModal").hidden = true;
+}
+
+function setupCompanyModal() {
+	const input = $("companyName");
+	input.addEventListener("input", () => {
+		const root = companyRootFor(input.value.trim());
+		$("companyPathPreview").textContent = root ? `Will live at ${root}` : "Lives under C:\\Companies";
+		$("companyCreate").disabled = !root;
+	});
+	input.addEventListener("keydown", (event) => {
+		if (event.key === "Escape") closeCompanyModal();
+	});
+	$("companyCancel").onclick = closeCompanyModal;
+	$("companyModal").addEventListener("click", (event) => {
+		if (event.target === $("companyModal")) closeCompanyModal();
+	});
+	$("companyForm").addEventListener("submit", async (event) => {
+		event.preventDefault();
+		const root = companyRootFor(input.value.trim());
+		if (!root) return;
+		const button = $("companyCreate");
+		button.disabled = true;
+		button.textContent = "Creating…";
+		try {
+			const created = await window.qorpera.newCompany(root);
+			closeCompanyModal();
+			await openCompany(created);
+		} catch (error) {
+			alert(`Could not create the company:\n${(error && error.message) || error}`);
+		} finally {
+			button.textContent = "Create controller";
+			button.disabled = false;
+		}
+	});
 }
 
 // ---- company ---------------------------------------------------------------
@@ -125,6 +191,7 @@ async function enterCompany(active) {
 	hiddenNavigation = new Set(readStoredArray("nav-hidden"));
 	archivedNavigation = new Set();
 	focusedDepartmentId = null;
+	document.body.classList.remove("hub");
 	$("hubnav").style.display = "none";
 	$("conav").style.display = "";
 	$("messages").innerHTML = "";
@@ -3145,6 +3212,7 @@ window.qorpera.onMergeDone((result) => {
 
 setupHierarchicalController();
 setupSidebarToggle();
+setupCompanyModal();
 applyNavAppearance();
 
 (async () => {

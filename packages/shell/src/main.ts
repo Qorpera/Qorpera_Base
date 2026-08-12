@@ -1730,17 +1730,10 @@ app.whenReady().then(async () => {
 	});
 	ipcMain.handle("company:new", async (event, dir: string) => {
 		if (!isTrustedHubSender(event.sender) || typeof dir !== "string" || !dir.trim()) return;
-		const target = resolve(dir);
-		const confirmation = await dialog.showMessageBox(BrowserWindow.fromWebContents(event.sender)!, {
-			type: "warning",
-			buttons: ["Cancel", "Create company"],
-			defaultId: 0,
-			cancelId: 0,
-			message: "Create a company folder at this location?",
-			detail: target,
-		});
-		if (confirmation.response !== 1) return;
-		const result = scaffoldCompany(target);
+		// The founding modal already shows the derived path — clicking Create IS
+		// the decision; a second native confirmation was pure friction (founder
+		// direction 2026-08-12).
+		const result = scaffoldCompany(resolve(dir));
 		registerCompany(result.root);
 		return result.root;
 	});

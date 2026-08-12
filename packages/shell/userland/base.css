@@ -923,3 +923,48 @@ body.chunky-nav .session-section-title { font-size: 11.5px; padding-bottom: 6px;
 	.collection-meta { display: none; }
 	.department-modal-body { min-height: 0; padding: 20px 16px; }
 }
+
+/* ---- hub: full-screen company launcher (no sidebar at the hub) ------------ */
+body.hub #primaryNavigation, body.hub #navHandle, body.hub .sidebar-toggle { display: none; }
+body.hub main { border-radius: 0; }
+body.hub #view-chat, body.hub #view-surfacewrap, body.hub #view-panel, body.hub #view-usage { display: none !important; }
+#view-hub { display: none; }
+body.hub #view-hub { display: flex; flex: 1; min-height: 0; overflow-y: auto; }
+.hub-inner {
+	width: min(880px, 100% - 96px); margin: 0 auto; padding: 72px 0 40px;
+	display: flex; flex-direction: column; gap: 26px;
+}
+.hub-hero h1 { margin: 4px 0 0; font-size: 30px; font-weight: 650; letter-spacing: -0.02em; }
+.hub-hero p { max-width: 560px; margin: 8px 0 0; color: var(--text-muted); font-size: 13.5px; line-height: 1.5; }
+.hub-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.hub-card {
+	display: flex; flex-direction: column; align-items: flex-start; gap: 9px;
+	min-height: 132px; padding: 16px; text-align: left; white-space: normal;
+	border: 1px solid var(--border-strong); border-radius: var(--radius);
+	background: rgba(255, 255, 255, 0.02);
+}
+.hub-card:hover { border-color: var(--accent); background: var(--accent-soft); }
+.hub-card .monogram {
+	display: grid; place-items: center; width: 34px; height: 34px; border-radius: 8px;
+	background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 14px;
+}
+.hub-card strong { font-size: 15px; font-weight: 630; }
+.hub-card small {
+	max-width: 100%; color: var(--text-soft); font-size: 10.5px; font-family: var(--font-mono);
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hub-card.create { justify-content: center; align-items: center; border-style: dashed; background: transparent; color: var(--text-muted); gap: 6px; }
+.hub-card.create:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+.hub-card.create .plus { font-size: 22px; line-height: 1; }
+.hub-card.create small { font-family: var(--font-sans); }
+.hub-foot {
+	display: flex; align-items: center; gap: 14px; margin-top: 12px; padding-top: 14px;
+	border-top: 1px solid var(--border); color: var(--text-soft); font-size: 11px;
+}
+.hub-foot .spacer { flex: 1; }
+.hub-foot .hubver { padding: 0; }
+.hub-foot .profileRow { margin-top: 0; width: auto; }
+
+/* ---- company modal: founding flow (window.prompt is unsupported) ---------- */
+.company-modal .wizard-field { margin-top: 6px; }
+.company-modal footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }

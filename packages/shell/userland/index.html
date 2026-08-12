@@ -15,18 +15,9 @@
 </header>
 <div id="shell">
 <nav id="primaryNavigation">
-	<div id="hubnav">
-		<!-- No h1 here: the titlebar wordmark already says Qorpera Base. -->
-		<h2>Companies</h2>
-		<div id="companies"></div>
-		<button class="hubbtn" onclick="newCompanyPrompt()">+ New company…</button>
-		<button class="hubbtn" onclick="integrateCompanyPrompt()">+ Integrate existing repo…</button>
-		<h2>Cloud</h2>
-		<button class="hubbtn" disabled title="Sync, community, and compliance — not built yet">Connect to Qorpera Cloud (soon)</button>
-		<div class="navspacer"></div>
-		<div class="hubver" id="hubVersion"></div>
-		<button class="profileRow" onclick="openSettings('usage')" title="Settings"><span class="avatar">F</span><span class="profileName">Founder</span></button>
-	</div>
+	<!-- The hub has no sidebar: it renders full-screen in <main> (#view-hub).
+	     This stub stays because enterCompany() addresses it by id. -->
+	<div id="hubnav" style="display:none"></div>
 	<div id="conav" style="display:none">
 		<div class="sidebar-create">
 			<button class="add-department" id="addDepartmentButton" type="button"><span aria-hidden="true">+</span> Add department</button>
@@ -40,6 +31,22 @@
 </nav>
 <div id="navHandle" class="paneHandle" title="Drag to resize the sidebar"></div>
 <main>
+	<div id="view-hub">
+		<div class="hub-inner">
+			<div class="hub-hero">
+				<div class="eyebrow">Qorpera Base</div>
+				<h1>Your companies</h1>
+				<p>Every company runs under its own controller. Open one, or found a new company and its controller together.</p>
+			</div>
+			<div id="hubCompanies" class="hub-grid"></div>
+			<div class="hub-foot">
+				<span class="hubver" id="hubVersion"></span>
+				<span class="spacer"></span>
+				<span title="Sync, community, and compliance — not built yet">Qorpera Cloud — soon</span>
+				<button class="profileRow" onclick="openSettings('usage')" title="Settings"><span class="avatar">F</span><span class="profileName">Founder</span></button>
+			</div>
+		</div>
+	</div>
 	<div id="view-chat">
 		<div id="messages"></div>
 		<div id="composer-footer">
@@ -249,6 +256,25 @@
 			<button class="secondary-button" id="departmentCancel" type="button">Cancel</button>
 			<button class="primary-button" id="departmentNext" type="submit" disabled>Continue</button>
 			<button class="primary-button" id="departmentCreate" type="submit" hidden>Create department</button>
+		</footer>
+	</form>
+</div>
+
+<div class="modal-backdrop" id="companyModal" hidden>
+	<form class="confirm-modal company-modal" id="companyForm" role="dialog" aria-modal="true" aria-labelledby="companyModalTitle">
+		<header>
+			<div class="eyebrow">Qorpera Base</div>
+			<h2 id="companyModalTitle">New company controller</h2>
+		</header>
+		<p>Name the company. Its controller is founded with it and starts by studying the company with you.</p>
+		<label class="wizard-field">
+			<span>Company name</span>
+			<input id="companyName" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. Northwind Robotics" maxlength="64">
+			<small id="companyPathPreview">Lives under C:\Companies</small>
+		</label>
+		<footer>
+			<button class="secondary-button" id="companyCancel" type="button">Cancel</button>
+			<button class="primary-button" id="companyCreate" type="submit" disabled>Create controller</button>
 		</footer>
 	</form>
 </div>
