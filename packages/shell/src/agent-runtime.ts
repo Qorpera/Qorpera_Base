@@ -296,6 +296,73 @@ function loadTrailAudit(path: string): TrailBinding["audit"] {
 	return audit;
 }
 
+/**
+ * The explicit append-only migration that bindTrailSession's schema check
+ * demands: rewrite a pre-v5 founder chat in place as schema 5, stamping the
+ * requesting scope's authority into the header and the kernel provenance and
+ * hash chain onto every entry — exactly the stamps parseTrailAppendFrame
+ * gives live appends, with each entry's original timestamp kept as its
+ * receivedAt (history is being adopted, not re-authored). The original bytes
+ * are preserved beside the file as `<file>.v<N>.bak` (not a .jsonl, so
+ * session lists ignore it). Returns true if a migration happened, false if
+ * the file is already current. Throws — migrating nothing — if any entry
+ * cannot satisfy the v5 validator; a legacy file either adopts whole or
+ * stays untouched.
+ */
+export function migrateLegacyTrailSession(root: string, sessionFile: string, scope: AgentScope): boolean {
+	const trailDir = assertPhysicalCompanyTree(root, "trail");
+	if (basename(sessionFile) !== sessionFile || !sessionFile.endsWith(".jsonl")) {
+		throw new Error("trail session must be a JSONL filename inside the company trail");
+	}
+	const path = join(trailDir, sessionFile);
+	if (!existsSync(path)) throw new Error(`trail session does not exist: ${sessionFile}`);
+	assertPhysicalCompanyTree(root, join("trail", sessionFile));
+	const header = readHeader(path);
+	if (header.version === TRAIL_SESSION_VERSION) return false;
+	const original = readFileSync(path, "utf-8");
+	const entryLines = original.split(/\r?\n/).slice(1).filter(Boolean);
+	const authority = authorityForScope(scope);
+	const audit: TrailBinding["audit"] = { ids: new Set(), sequence: 0, lastHash: "" };
+	const migrated: string[] = [
+		JSON.stringify({
+			type: "session",
+			version: TRAIL_SESSION_VERSION,
+			id: header.id,
+			timestamp: header.timestamp,
+			cwd: header.cwd,
+			qorpera: authority,
+		} satisfies SessionHeader),
+	];
+	for (const line of entryLines) {
+		const entry = JSON.parse(line) as SessionEntry;
+		if (!validTrailEntry(entry, audit.ids) || typeof entry.timestamp !== "string") {
+			throw new Error(
+				`legacy trail session holds an entry schema ${TRAIL_SESSION_VERSION} cannot adopt (${entry.type ?? "untyped"}): ${sessionFile}`,
+			);
+		}
+		const stamped: SessionEntry = {
+			...unsignedTrailEntry(entry),
+			provenance: { source: "child", trust: "assertion" },
+		};
+		stamped.kernel = {
+			sequence: audit.sequence + 1,
+			receivedAt: entry.timestamp,
+			previousHash: audit.lastHash || null,
+			hash: "",
+		};
+		stamped.kernel.hash = auditHash(stamped, audit.lastHash);
+		audit.ids.add(stamped.id);
+		audit.sequence = stamped.kernel.sequence;
+		audit.lastHash = stamped.kernel.hash;
+		migrated.push(JSON.stringify(stamped));
+	}
+	writeFileSync(`${path}.v${header.version ?? 1}.bak`, original, "utf-8");
+	const staging = `${path}.migrating`;
+	writeFileSync(staging, `${migrated.join("\n")}\n`, "utf-8");
+	renameSync(staging, path);
+	return true;
+}
+
 export function bindTrailSession(root: string, cwd: string, scope: AgentScope, sessionFile?: string): TrailBinding {
 	const trailDir = assertPhysicalCompanyTree(root, "trail");
 	const authority = authorityForScope(scope);

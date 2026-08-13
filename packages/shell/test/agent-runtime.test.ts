@@ -15,6 +15,7 @@ import {
 	commitTrailAppend,
 	kernelGateReviewDocument,
 	latestResumableTrailSession,
+	migrateLegacyTrailSession,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
 	pruneEmptyTrailSessions,
@@ -179,6 +180,77 @@ describe("kernel-bound agent runtime", () => {
 		);
 		// Idempotent: nothing left to sweep.
 		expect(pruneEmptyTrailSessions(company)).toBe(0);
+	});
+
+	it("migrates a legacy founder chat whole and binds it for live appends", () => {
+		const company = join(root, "company");
+		const scope = { actor: "controller", attended: false } as const;
+		// A pre-v5 chat exactly as the pivot-era kernel wrote them: no
+		// authority header, no provenance, no kernel hash chain.
+		const file = "2026-08-04T05-49-07-753Z_legacy.jsonl";
+		const entries = [
+			{ type: "session", version: 3, id: "s1", timestamp: "2026-08-04T05:49:07.753Z", cwd: company },
+			{
+				type: "model_change",
+				id: "e1",
+				parentId: null,
+				timestamp: "2026-08-04T05:49:08.000Z",
+				provider: "anthropic",
+				modelId: "claude-opus-4-8",
+			},
+			{
+				type: "message",
+				id: "e2",
+				parentId: "e1",
+				timestamp: "2026-08-04T05:49:09.000Z",
+				message: { role: "user", content: [{ type: "text", text: "hello" }] },
+			},
+		];
+		writeFileSync(join(company, "trail", file), `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`, "utf-8");
+		// Refused before migration — the schema check bug that made every
+		// pre-pivot history row a dead click (v0.18.7).
+		expect(() => bindTrailSession(company, company, scope, file)).toThrow(/explicit append-only migration/);
+
+		expect(migrateLegacyTrailSession(company, file, scope)).toBe(true);
+		// Idempotent: a current file is left alone.
+		expect(migrateLegacyTrailSession(company, file, scope)).toBe(false);
+		// The original bytes survive beside the file, invisible to .jsonl lists.
+		expect(existsSync(join(company, "trail", `${file}.v3.bak`))).toBe(true);
+
+		// The migrated file binds, replays its audit chain, and accepts a live
+		// append on top of the adopted history.
+		const binding = bindTrailSession(company, company, scope, file);
+		expect(binding.audit.sequence).toBe(2);
+		const append = parseTrailAppendFrame(
+			{
+				type: "qorpera_trail_append",
+				token: binding.token,
+				entry: {
+					type: "message",
+					id: "e3",
+					parentId: "e2",
+					timestamp: new Date().toISOString(),
+					message: { role: "assistant", content: [{ type: "text", text: "welcome back" }] },
+				},
+			},
+			binding,
+		);
+		expect(append).toBeDefined();
+		commitTrailAppend(binding, append!);
+		appendFileSync(binding.path, `${JSON.stringify(append!.entry)}\n`);
+		// The extended chain still verifies end to end.
+		expect(bindTrailSession(company, company, scope, file).audit.sequence).toBe(3);
+
+		// A legacy file holding an entry v5 cannot adopt migrates nothing.
+		const poisoned = "2026-08-04T06-00-00-000Z_poisoned.jsonl";
+		writeFileSync(
+			join(company, "trail", poisoned),
+			`${JSON.stringify({ type: "session", version: 3, id: "s2", timestamp: "t", cwd: company })}\n${JSON.stringify({ type: "mystery_event", id: "x1", parentId: null, timestamp: "t" })}\n`,
+			"utf-8",
+		);
+		const before = readFileSync(join(company, "trail", poisoned), "utf-8");
+		expect(() => migrateLegacyTrailSession(company, poisoned, scope)).toThrow(/cannot adopt/);
+		expect(readFileSync(join(company, "trail", poisoned), "utf-8")).toBe(before);
 	});
 
 	it("binds role and worktree scope into an immutable trail header", () => {

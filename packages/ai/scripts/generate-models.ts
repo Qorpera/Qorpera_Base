@@ -850,6 +850,12 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.provider === "groq" && model.id === "qwen/qwen3-32b") {
 		mergeThinkingLevelMap(model, { minimal: null, low: null, medium: null, high: "default" });
 	}
+	if (model.provider === "openai-codex" && model.reasoning) {
+		// The Codex backend always reasons — there is no effort "none" on this
+		// lane, so an unmapped "off" must not fall through as available (it
+		// painted a dead "Off" stop on the desktop effort slider).
+		mergeThinkingLevelMap(model, { off: null });
+	}
 	if (model.provider === "openai-codex" && supportsOpenAiXhigh(model.id)) {
 		mergeThinkingLevelMap(model, { minimal: "low" });
 	}

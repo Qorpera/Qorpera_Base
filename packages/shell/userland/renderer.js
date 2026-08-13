@@ -640,8 +640,16 @@ async function openSession(file, pageId = "q:chats") {
 	// Product chats restore the exact department/worktree role capability
 	// recorded in their append-only session name.
 	const summary = (state.sessions ?? []).find((s) => s.file === file);
-	const result = await window.qorpera.openChat(file, summary?.department, summary?.worktree);
-	if (!result?.ok) return;
+	const result = await window.qorpera.openChat(file, summary?.department, summary?.worktree).catch((error) => ({
+		ok: false,
+		error: String(error?.message ?? error),
+	}));
+	if (!result?.ok) {
+		// A dead click teaches the founder nothing — say why the chat
+		// wouldn't open (legacy-migration refusals land here too).
+		showControllerToast(result?.error ? `could not open this chat: ${result.error}` : "could not open this chat");
+		return;
+	}
 	currentSession = file;
 	currentNodeId = pageId;
 	setProjectionRoute(pageId);

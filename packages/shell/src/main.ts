@@ -101,6 +101,7 @@ import {
 	killChildTree,
 	killChildTreeSync,
 	latestResumableTrailSession,
+	migrateLegacyTrailSession,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
 	provisionSandbox,
@@ -988,10 +989,22 @@ function sendKernelPrompt(
 }
 
 async function replaceRuntimeChild(slot: Slot, runtime: CompanyRuntime, options: ChildOptions): Promise<void> {
+	const previousOptions = runtime.childOptions;
 	await stopChild(runtime.child);
 	if (slot.runtime !== runtime) return;
-	runtime.childOptions = { ...options };
-	runtime.child = startChild(slot, runtime.root, runtime.childOptions);
+	try {
+		runtime.childOptions = { ...options };
+		runtime.child = startChild(slot, runtime.root, runtime.childOptions);
+	} catch (error) {
+		// The old child is already dead — a failed swap must not leave the
+		// company without an agent (a legacy-session bind failure did exactly
+		// that: every later composer send talked to a corpse).
+		if (slot.runtime === runtime && !runtime.closing) {
+			runtime.childOptions = previousOptions;
+			runtime.child = startChild(slot, runtime.root, previousOptions);
+		}
+		throw error;
+	}
 	runtime.productWorker =
 		runtime.childOptions.department && runtime.childOptions.worktree
 			? { department: runtime.childOptions.department.path, worktree: runtime.childOptions.worktree }
@@ -1657,7 +1670,22 @@ async function openChat(
 		department,
 		worktree,
 	};
-	await replaceRuntimeChild(slot, runtime, options);
+	try {
+		// Pre-pivot chats carry old-schema trail headers the bind refuses;
+		// a founder explicitly opening one IS the sanctioned migration moment.
+		if (options.sessionFile) {
+			migrateLegacyTrailSession(runtime.root, options.sessionFile, {
+				actor: department && worktree ? "product-worker" : "controller",
+				attended: false,
+				department: department?.path,
+				worktree,
+			});
+		}
+		await replaceRuntimeChild(slot, runtime, options);
+	} catch (error) {
+		console.error(`chat open failed: ${(error as Error).message}`);
+		return { ok: false, error: (error as Error).message };
+	}
 	return { ok: true, department: department?.path, worktree };
 }
 

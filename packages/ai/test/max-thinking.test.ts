@@ -36,15 +36,9 @@ describe("max thinking level", () => {
 			const model = getModel("openai-codex", modelId);
 			expect(model).toBeDefined();
 			expect(model?.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
-			expect(getSupportedThinkingLevels(model!)).toEqual([
-				"off",
-				"minimal",
-				"low",
-				"medium",
-				"high",
-				"xhigh",
-				"max",
-			]);
+			// No "off": the Codex backend always reasons (the fallthrough that
+			// once offered it painted a dead slider stop on the desktop).
+			expect(getSupportedThinkingLevels(model!)).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"]);
 		},
 	);
 
