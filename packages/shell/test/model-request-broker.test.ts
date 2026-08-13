@@ -346,7 +346,11 @@ describe("kernel model-request broker", () => {
 		broker.close();
 	});
 
-	it("charges the full reservation when a provider reports a partial failure", async () => {
+	it("charges only observed usage on provider failure — a failed call cannot drain the budget", async () => {
+		// The old contract charged the full worst-case reservation on failure:
+		// one dead call at 128k reserved output billed $13 of budget for zero
+		// work, and a handful of transient failures exhausted an intent
+		// entirely (observed 2026-08-13 on the founder's first prompt).
 		const observations: Array<{ status: string }> = [];
 		const broker = await startModelRequestBroker({
 			authPath: "auth.json",
@@ -385,14 +389,21 @@ describe("kernel model-request broker", () => {
 			),
 			send,
 		);
+		// The failure charged its observed usage (zero here), so the follow-up
+		// request rides the same intent instead of being denied.
 		await vi.waitFor(() =>
 			expect(send).toHaveBeenCalledWith({
 				type: "qorpera_model_end",
 				requestId: "18181818-1818-4818-8818-181818181818",
+			}),
+		);
+		expect(send).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				requestId: "18181818-1818-4818-8818-181818181818",
 				error: "kernel model request denied",
 			}),
 		);
-		expect(runtime.streamSimple).toHaveBeenCalledOnce();
+		expect(runtime.streamSimple).toHaveBeenCalledTimes(2);
 		child.release();
 		broker.close();
 	});

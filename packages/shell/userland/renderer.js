@@ -40,6 +40,8 @@ let currentEffort = "";
 let currentSpeed = "standard";
 let speedAsserted = false; // one re-assert of the remembered speed per child spawn
 let modelMoveAsserted = false; // one off-slate model migration per child spawn
+let agentWorking = false; // a run is streaming; the composer shows Stop
+let pendingRewind = null; // { text } awaiting get_fork_messages for edit-and-resend
 let hiddenNavigation = new Set();
 let archivedNavigation = new Set(); // frontend preview only; durable archive remains unbound
 let focusedDepartmentId = null;
@@ -752,7 +754,7 @@ function renderHistory(messages) {
 				.map((p) => `data:${p.mimeType};base64,${p.data}`);
 			if (text || imageUrls.length) {
 				group = null;
-				appendMsgImages(addMsg("user", text), imageUrls);
+				appendMsgImages(decorateUserMsg(addMsg("user", text), text), imageUrls);
 			}
 		} else if (message.role === "assistant") {
 			for (const part of message.content ?? []) {
@@ -2544,6 +2546,40 @@ function appendMsgImages(div, dataUrls) {
 	$("messages").scrollTop = $("messages").scrollHeight;
 }
 
+/** The Stop square next to Send: aborts the streaming run in place. */
+function stopAgent() {
+	window.qorpera.rpcSend({ type: "abort" });
+}
+
+/**
+ * Edit & resend: rewind the session to just before a sent user message (pi's
+ * fork), put its text back in the composer for editing, and re-render the
+ * rewound thread. Matching is by exact text against the forkable user
+ * messages (last occurrence wins), which holds for any thread the founder can
+ * see; a collision between identical resent messages rewinds to the newest.
+ */
+function rewindUserMessage(text) {
+	if (agentWorking) {
+		showControllerToast("stop the run first, then rewind");
+		return;
+	}
+	pendingRewind = { text };
+	window.qorpera.rpcSend({ type: "get_fork_messages" });
+}
+
+/** Attach the rewind affordance to a rendered user message row. */
+function decorateUserMsg(el, text) {
+	if (!text) return el;
+	const btn = document.createElement("button");
+	btn.type = "button";
+	btn.className = "msg-rewind";
+	btn.title = "Edit & resend from here";
+	btn.textContent = "↺";
+	btn.onclick = () => rewindUserMessage(text);
+	el.appendChild(btn);
+	return el;
+}
+
 function sendPrompt() {
 	const input = $("input");
 	const text = input.value.trim();
@@ -2553,7 +2589,7 @@ function sendPrompt() {
 	pendingImages = [];
 	renderAttachStrip();
 	syncComposer();
-	appendMsgImages(addMsg("user", text), images.map((image) => image.dataUrl));
+	appendMsgImages(decorateUserMsg(addMsg("user", text), text), images.map((image) => image.dataUrl));
 	let message = text;
 	if (sidechatPending) {
 		// First prompt of a fresh sidechat: tell the controller what the founder
@@ -2747,11 +2783,29 @@ window.qorpera.onRpcEvent((frame) => {
 		case "agent_settled":
 			closeWorkGroup();
 			$("status").textContent = "idle";
+			agentWorking = false;
+			$("stopBtn").hidden = true;
 			refreshState();
 			break;
 		case "agent_start":
 			$("status").textContent = "working…";
+			agentWorking = true;
+			$("stopBtn").hidden = false;
 			break;
+		case "message_end": {
+			// A turn that errored or was stopped otherwise renders NOTHING — the
+			// founder saw blank panes while the real reason (an OAuth refresh
+			// failure) sat unread in the trail. Say what happened, in the thread.
+			const ended = frame.message;
+			if (ended?.role === "assistant" && ended.stopReason === "error") {
+				closeWorkGroup();
+				addMsg("log", `⚠ model call failed: ${ended.errorMessage ?? "unknown error"}`);
+			} else if (ended?.role === "assistant" && ended.stopReason === "aborted") {
+				closeWorkGroup();
+				addMsg("log", "stopped");
+			}
+			break;
+		}
 		case "response":
 			if (frame.command === "get_messages" && frame.success) renderHistory(frame.data?.messages ?? frame.data);
 			else if (frame.command === "get_available_models" && frame.success) {
@@ -2779,6 +2833,26 @@ window.qorpera.onRpcEvent((frame) => {
 					const [provider, modelId] = target.value.split("::");
 					currentModelKey = target.value;
 					window.qorpera.rpcSend({ type: "set_model", provider, modelId });
+				}
+			} else if (frame.command === "get_fork_messages" && frame.success) {
+				if (pendingRewind) {
+					const wanted = pendingRewind.text.trim();
+					pendingRewind = null;
+					const candidates = (frame.data?.messages ?? []).filter((m) => (m.text ?? "").trim() === wanted);
+					const target = candidates[candidates.length - 1];
+					if (target) window.qorpera.rpcSend({ type: "fork", entryId: target.entryId });
+					else showControllerToast("could not find that message to rewind");
+				}
+			} else if (frame.command === "fork" && frame.success) {
+				if (!frame.data?.cancelled) {
+					// The session is rebound to the branch point: re-render the
+					// rewound thread and hand the founder their words back to edit.
+					if (typeof frame.data?.text === "string") {
+						$("input").value = frame.data.text;
+						syncComposer();
+						$("input").focus();
+					}
+					hydrateAgentState(true);
 				}
 			} else if (frame.command === "get_available_thinking_levels" && frame.success) {
 				modelCtl.setLevels(frame.data?.levels ?? []);

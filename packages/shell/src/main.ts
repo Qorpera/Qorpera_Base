@@ -94,7 +94,6 @@ import {
 	codexSpawn,
 	commitTrailAppend,
 	createKernelResponseSigner,
-	DEFAULT_MODEL_INTENT_BUDGET,
 	inboxMessagesPath,
 	type KernelIntentCapability,
 	kernelGateReviewDocument,
@@ -220,7 +219,6 @@ const MODEL_AUTH_PROVIDERS = new Set([
 	"huggingface",
 ]);
 const MAX_KERNEL_REVIEW_BYTES = 16 * 1024;
-const MODEL_BUDGET_REVIEW = `${DEFAULT_MODEL_INTENT_BUDGET.maxCalls} calls / ${DEFAULT_MODEL_INTENT_BUDGET.maxInputTokens} input tokens / ${DEFAULT_MODEL_INTENT_BUDGET.maxOutputTokens} output tokens / $${DEFAULT_MODEL_INTENT_BUDGET.maxCostUsd.toFixed(2)}`;
 const MAX_PROMPT_BYTES = 64 * 1024;
 const MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_PROMPT_IMAGES = 5;
@@ -2199,10 +2197,9 @@ app.whenReady().then(async () => {
 			const prompt = mergeTaskPrompt(runtime.userland);
 			const approved = await confirmKernelReview(slot.window, {
 				title: "Authorize autonomous userland merge",
-				summary:
-					"Start this exact agent task with write access to company userland and the bounded model budget shown below?",
+				summary: "Start this exact agent task with write access to company userland?",
 				exactText: prompt,
-				metadata: `Target: ${join(runtime.root, "userland")}\nModel budget: ${MODEL_BUDGET_REVIEW}`,
+				metadata: `Target: ${join(runtime.root, "userland")}`,
 			});
 			if (!approved) return { ok: false, reason: "cancelled" };
 			return { ok: await startMergeChild(slot, runtime, prompt) };
@@ -2382,31 +2379,16 @@ app.whenReady().then(async () => {
 				const reviewedChild = runtime.child;
 				const reviewed = reviewedPromptFrame(frame as Record<string, unknown>);
 				if (!reviewed || (!reviewed.message && !reviewed.images?.length)) return { ok: false };
-				const target = runtime.productWorker ? runtime.productWorker.department : "company controller";
-				const assignment = runtime.productWorker
-					? `Assigned worktree: ${runtime.productWorker.worktree}`
-					: undefined;
-				const approved = await confirmKernelReview(slot.window, {
-					title: "Authorize company instruction",
-					summary: `Send this exact ${reviewed.type} to the ${target}?`,
-					exactText: reviewed.message,
-					metadata: [
-						assignment,
-						reviewed.streamingBehavior ? `Streaming behavior: ${reviewed.streamingBehavior}` : undefined,
-						`Model budget: ${MODEL_BUDGET_REVIEW}`,
-					]
-						.filter(Boolean)
-						.join("\n"),
-					images: reviewed.images?.map((image) => ({
-						mimeType: image.mimeType,
-						data: image.data,
-						sha256: createHash("sha256").update(image.data, "base64").digest("hex"),
-						bytes: Buffer.byteLength(image.data, "base64"),
-					})),
-				});
-				if (!approved || !isCurrentRuntimeChild(slot, runtime, reviewedChild)) return { ok: false };
+				// Founder call (2026-08-13): typing in the composer IS the founder
+				// acting — a native dialog re-confirming their own words was pure
+				// friction and is gone. The kernel still observes the exact input
+				// (attended, with origin) into the trail; the tradeoff accepted is
+				// that "attended" now trusts the local renderer rather than an
+				// OS-level dialog, the same posture as the founder's other local
+				// coding tools.
+				if (!isCurrentRuntimeChild(slot, runtime, reviewedChild)) return { ok: false };
 				return {
-					ok: sendKernelPrompt(reviewedChild, reviewed, true, "native-founder-confirmation"),
+					ok: sendKernelPrompt(reviewedChild, reviewed, true, "composer-attended"),
 				};
 			});
 		}

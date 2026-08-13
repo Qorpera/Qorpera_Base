@@ -487,8 +487,11 @@ export async function startModelRequestBroker(options: {
 			intent.reserved.inputTokens -= reservation.inputTokens;
 			intent.reserved.outputTokens -= reservation.outputTokens;
 			intent.reserved.costUsd -= reservation.costUsd;
-			const charged =
-				terminalStatus === "completed" && !controller.signal.aborted && terminalUsage ? terminalUsage : reservation;
+			// Charge what actually happened, never the worst-case reservation: a
+			// failed or aborted call charges its observed usage (usually zero) —
+			// the old reservation-charging meant a handful of transient failures
+			// silently exhausted an intent's entire budget.
+			const charged = terminalUsage ?? { inputTokens: 0, outputTokens: 0, costUsd: 0 };
 			intent.usage.inputTokens += charged.inputTokens;
 			intent.usage.outputTokens += charged.outputTokens;
 			intent.usage.costUsd += charged.costUsd;

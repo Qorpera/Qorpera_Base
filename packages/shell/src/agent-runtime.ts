@@ -1167,11 +1167,18 @@ function intentRequestHash(frame: Record<string, unknown>): string {
 	return createHash("sha256").update(JSON.stringify(frame)).digest("hex");
 }
 
+/** Founder call (2026-08-13): the controller runs at full permission on the
+ * founder's own machine — no call, token, or dollar ceilings on their work
+ * (the codex full-access posture). The signed-intent structure is unchanged:
+ * every model call still rides a kernel-signed intent and every request and
+ * its usage still land in the trail — the ceilings simply no longer bite.
+ * Bounded budgets remain one option away via createKernelResponseSigner's
+ * modelBudget parameter for lanes that want them. */
 export const DEFAULT_MODEL_INTENT_BUDGET: Readonly<KernelModelIntentBudget> = Object.freeze({
-	maxCalls: 64,
-	maxInputTokens: 16_000_000,
-	maxOutputTokens: 1_000_000,
-	maxCostUsd: 100,
+	maxCalls: Number.MAX_SAFE_INTEGER,
+	maxInputTokens: Number.MAX_SAFE_INTEGER,
+	maxOutputTokens: Number.MAX_SAFE_INTEGER,
+	maxCostUsd: Number.MAX_SAFE_INTEGER,
 });
 
 const DEFAULT_MODEL_INTENT_LIFETIME_MS = 30 * 60 * 1000;
