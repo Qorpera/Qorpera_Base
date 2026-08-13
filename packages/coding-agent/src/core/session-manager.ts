@@ -343,6 +343,38 @@ function buildEntryIndex(entries: SessionEntry[], byId?: Map<string, SessionEntr
 	return index;
 }
 
+/**
+ * The active leaf when none is explicitly tracked. Kernel observations
+ * (rootless `custom` entries the desktop kernel appends into the trail —
+ * model/HTTP/wake records) are audit metadata, never conversation nodes:
+ * naively adopting "the last entry" as the leaf after one of them landed
+ * silently rerooted the conversation and orphaned the entire history,
+ * user messages included (observed 2026-08-13: a founder's only message
+ * unreachable, chat pane blank, agent running without context). Prefer the
+ * newest entry whose lineage carries real conversation; fall back to the
+ * newest non-observation entry for message-less sessions.
+ */
+function defaultSessionLeaf(entries: SessionEntry[], index: Map<string, SessionEntry>): SessionEntry | undefined {
+	const isKernelObservation = (entry: SessionEntry): boolean =>
+		entry.type === "custom" && typeof entry.customType === "string" && entry.customType.startsWith("qorpera_kernel_");
+	const hasMessageLineage = (entry: SessionEntry): boolean => {
+		let current: SessionEntry | undefined = entry;
+		while (current) {
+			if (current.type === "message") return true;
+			current = current.parentId ? index.get(current.parentId) : undefined;
+		}
+		return false;
+	};
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (!isKernelObservation(entry) && hasMessageLineage(entry)) return entry;
+	}
+	for (let i = entries.length - 1; i >= 0; i--) {
+		if (!isKernelObservation(entries[i])) return entries[i];
+	}
+	return undefined;
+}
+
 function buildSessionPath(
 	entries: SessionEntry[],
 	leafId?: string | null,
@@ -356,7 +388,7 @@ function buildSessionPath(
 	if (leafId) {
 		leaf = index.get(leafId);
 	}
-	leaf ??= entries[entries.length - 1];
+	leaf ??= defaultSessionLeaf(entries, index);
 	if (!leaf) {
 		return [];
 	}

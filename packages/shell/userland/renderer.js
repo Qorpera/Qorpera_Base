@@ -39,6 +39,7 @@ let currentModelKey = "";
 let currentEffort = "";
 let currentSpeed = "standard";
 let speedAsserted = false; // one re-assert of the remembered speed per child spawn
+let modelMoveAsserted = false; // one off-slate model migration per child spawn
 let hiddenNavigation = new Set();
 let archivedNavigation = new Set(); // frontend preview only; durable archive remains unbound
 let focusedDepartmentId = null;
@@ -621,6 +622,7 @@ async function refreshState() {
  * (history is only asked once; a double render would flash). */
 function hydrateAgentState(withHistory) {
 	speedAsserted = false;
+	modelMoveAsserted = false;
 	if (withHistory) window.qorpera.rpcSend({ type: "get_messages" });
 	const askState = () => {
 		window.qorpera.rpcSend({ type: "get_state" });
@@ -636,6 +638,17 @@ function cacheCurrentSession() {
 }
 
 async function openSession(file, pageId = "q:chats") {
+	// Re-clicking the chat that is already live must only bring its view back —
+	// the old path restarted the agent child, aborting any in-flight run
+	// (navigate away, click back, and the streaming answer died mid-thought).
+	if (file && file === currentSession) {
+		currentNodeId = pageId;
+		setProjectionRoute(pageId);
+		show("chat");
+		syncScopeChrome();
+		renderCompanyNavSafe();
+		return;
+	}
 	cacheCurrentSession();
 	// Product chats restore the exact department/worktree role capability
 	// recorded in their append-only session name.
@@ -1315,7 +1328,9 @@ function sessionRow(session) {
 	const row = document.createElement("button");
 	row.type = "button";
 	row.className = "session-row";
-	row.classList.toggle("active", currentSession === session.file);
+	// Lit only while the chat is actually in front — a chat row staying
+	// highlighted while the founder reads another page misstates where they are.
+	row.classList.toggle("active", currentSession === session.file && currentView === "chat");
 	row.innerHTML = `${navGlyphSvg("bubble", "session-glyph")}<span class="session-copy"><span class="session-title"></span><small class="session-meta"><span class="session-scope"></span><span class="session-time"></span></small></span>`;
 	row.querySelector(".session-title").textContent = session.title;
 	const page = session.page ? projectionNode(session.page) : undefined;
@@ -2754,7 +2769,11 @@ window.qorpera.onRpcEvent((frame) => {
 				// A session restored on a model we no longer offer would leave the
 				// chip naming nothing in the list — move it onto the same model's
 				// offered lane when one exists, otherwise the slate's head.
-				if (currentModelKey && !offered.some((m) => m.value === currentModelKey) && offered.length) {
+				// Once per spawn: hydrate asks twice (immediate + the dropped-input
+				// belt), and each unguarded answer re-sent set_model — duplicate
+				// model_change trail entries and aborted in-flight runs.
+				if (currentModelKey && !offered.some((m) => m.value === currentModelKey) && offered.length && !modelMoveAsserted) {
+					modelMoveAsserted = true;
 					const currentId = currentModelKey.split("::")[1];
 					const target = offered.find((m) => m.value.split("::")[1] === currentId) ?? offered[0];
 					const [provider, modelId] = target.value.split("::");
