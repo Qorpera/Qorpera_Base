@@ -109,6 +109,7 @@ import {
 	sandboxCommandArgs,
 	sandboxConfigDir,
 	sandboxRuntimeDir,
+	shareWindowsSandboxState,
 	type TrailBinding,
 	writeSandboxProfile,
 } from "./agent-runtime.ts";
@@ -608,6 +609,21 @@ async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
 	await childCheckpointCompletion.get(child);
 }
 
+/** Write a frame to a child's stdin, tolerating a dead child. The child can
+ * die between a frame being produced and the write landing; an unguarded
+ * write then throws EPIPE (or emits it asynchronously on the stream, which
+ * the per-child stdin "error" handler absorbs). A false return means the
+ * child is gone and the frame was dropped. */
+function writeChildFrame(child: ChildProcessWithoutNullStreams, payload: string): boolean {
+	if (child.exitCode !== null || child.signalCode !== null || !child.stdin.writable) return false;
+	try {
+		child.stdin.write(payload);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** Spawn the intelligence: the CLI's RPC mode under Electron's own Node.
  * With sessionFile, resumes that trail session; without, starts fresh.
  * Autonomous work is tagged with a session name so the trail (and the
@@ -725,6 +741,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	env.XDG_CONFIG_HOME = runtimeDir;
 	try {
 		agentDir = prepareBrokeredAgentDir(configDir, root, brokeredCredentials.credentials);
+		shareWindowsSandboxState(userData, configDir);
 		writeSandboxProfile(configDir, runtimeDir, root, scope, protectedControllerPaths(root, products), [
 			...FOUNDATION_READ_PATHS,
 			join(configDir, "config.toml"),
@@ -775,6 +792,11 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		throw error;
 	}
 	liveChildren.add(child);
+	// stdin write failures land asynchronously as an "error" event; without a
+	// listener they become an uncaughtException that takes down the app.
+	child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+		if (!silent) send(win, "rpc-log", `child stdin ${error.code ?? error.message}: frame dropped`);
+	});
 	childBindings.set(child, binding);
 	childIntentSigners.set(child, kernelSigner.signIntent);
 	childModelCapabilities.set(child, brokeredCredentials);
@@ -804,7 +826,8 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				typeof challenge.nonce === "string" &&
 				/^[0-9a-f-]{36}$/i.test(challenge.nonce)
 			) {
-				child.stdin.write(
+				writeChildFrame(
+					child,
 					`${JSON.stringify(
 						kernelSigner.signBinding({ nonce: challenge.nonce, sessionId: binding.sessionId }),
 					)}\n`,
@@ -813,13 +836,13 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			}
 			if (
 				brokeredCredentials.handleFrame(frame, (response) => {
-					if (child.exitCode === null) child.stdin.write(`${JSON.stringify(response)}\n`);
+					writeChildFrame(child, `${JSON.stringify(response)}\n`);
 				})
 			)
 				return;
 			if (
 				httpBroker.handleFrame(frame, (response) => {
-					if (child.exitCode === null) child.stdin.write(`${JSON.stringify(response)}\n`);
+					writeChildFrame(child, `${JSON.stringify(response)}\n`);
 				})
 			)
 				return;
@@ -829,7 +852,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 					binding,
 					root,
 					(response) => {
-						child.stdin.write(`${JSON.stringify(kernelSigner.signResponse(response))}\n`);
+						writeChildFrame(child, `${JSON.stringify(kernelSigner.signResponse(response))}\n`);
 					},
 					(file, hash) => childApprovedGates.get(child)?.delete(`${file}:${hash}`) === true,
 					{
@@ -959,7 +982,7 @@ function sendKernelPrompt(
 		intent: kernelIntent,
 		images,
 	});
-	child.stdin.write(`${JSON.stringify({ ...unsignedFrame, kernelIntent })}\n`);
+	if (!writeChildFrame(child, `${JSON.stringify({ ...unsignedFrame, kernelIntent })}\n`)) return false;
 	childBusy.set(child, true);
 	return true;
 }
@@ -1838,6 +1861,15 @@ function beginRendererWindowSwap(slot: Slot, partition: string): RendererWindowS
 // gets a NEW window next to the others. Smoke runs are headless test boots
 // and must not join or disturb a live instance.
 const IS_SMOKE = process.argv.some((arg) => arg.startsWith("--smoke"));
+
+// Electron's default uncaughtException behavior is a blocking native "Error"
+// dialog — under headless smokes and autonomous kernels there is nobody to
+// dismiss it, so the process hangs forever at 0% CPU while its servers go
+// unserviced. Log and keep running instead (the same outcome as a founder
+// dismissing the dialog, minus the founder).
+process.on("uncaughtException", (error) => {
+	console.error(`uncaught exception: ${error.stack ?? String(error)}`);
+});
 if (!IS_SMOKE && !app.requestSingleInstanceLock()) {
 	app.quit();
 }
@@ -2352,8 +2384,7 @@ app.whenReady().then(async () => {
 		}
 		if (!safeControlTypes.has(frame.type)) return { ok: false };
 		if (frame.type === "abort") childModelCapabilities.get(runtime.child)?.endTurn("aborted");
-		runtime.child.stdin.write(`${JSON.stringify(frame)}\n`);
-		return { ok: true };
+		return { ok: writeChildFrame(runtime.child, `${JSON.stringify(frame)}\n`) };
 	});
 
 	// A window that already knows its company (launcher argv, company smoke)
@@ -2470,6 +2501,13 @@ app.whenReady().then(async () => {
 			setTimeout(() => app.quit(), 1500);
 		});
 	}
+	// A smoke run must never hang: an openCompany failure (sandbox
+	// provisioning, company lock, …) would otherwise become an unhandled
+	// rejection that leaves the process alive with no exit path.
+	const failSmoke = (error: Error): void => {
+		console.error(`SMOKE_FAILED ${error.message}`);
+		app.exit(1);
+	};
 	// Fork-model smoke: open a company, prove its userland loads.
 	if (smokeCompanyRoot) {
 		void openCompany(initial, smokeCompanyRoot).then(() => {
@@ -2479,32 +2517,34 @@ app.whenReady().then(async () => {
 				);
 				app.quit();
 			}, 1500);
-		});
+		}, failSmoke);
 	}
 	// Multi-window smoke: two companies, two live controllers side by side.
 	const smokeMultiIndex = process.argv.indexOf("--smoke-multi");
 	if (smokeMultiIndex >= 0 && process.argv[smokeMultiIndex + 1] && process.argv[smokeMultiIndex + 2]) {
 		const rootA = process.argv[smokeMultiIndex + 1];
 		const rootB = process.argv[smokeMultiIndex + 2];
-		void openCompany(initial, rootA).then(async () => {
-			const second = createWindow();
-			await openCompany(second, rootB);
-			// Re-opening an already-open company must route, not double-run.
-			const third = createWindow();
-			await openCompany(third, rootA);
-			setTimeout(() => {
-				for (const slot of slots.values()) {
-					const runtime = slot.runtime;
-					console.log(
-						runtime
-							? `WINDOW company=${runtime.root} port=${runtime.backendPort} url=${slot.window.webContents.getURL()}`
-							: `WINDOW hub url=${slot.window.webContents.getURL()}`,
-					);
-				}
-				console.log("MULTI_OK");
-				app.quit();
-			}, 1500);
-		});
+		void openCompany(initial, rootA)
+			.then(async () => {
+				const second = createWindow();
+				await openCompany(second, rootB);
+				// Re-opening an already-open company must route, not double-run.
+				const third = createWindow();
+				await openCompany(third, rootA);
+				setTimeout(() => {
+					for (const slot of slots.values()) {
+						const runtime = slot.runtime;
+						console.log(
+							runtime
+								? `WINDOW company=${runtime.root} port=${runtime.backendPort} url=${slot.window.webContents.getURL()}`
+								: `WINDOW hub url=${slot.window.webContents.getURL()}`,
+						);
+					}
+					console.log("MULTI_OK");
+					app.quit();
+				}, 1500);
+			})
+			.catch(failSmoke);
 	}
 });
 

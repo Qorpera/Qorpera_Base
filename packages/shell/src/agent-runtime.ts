@@ -13,6 +13,8 @@ import {
 	realpathSync,
 	renameSync,
 	rmSync,
+	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -1331,10 +1333,62 @@ export function killChildTreeSync(child: KillableChild): void {
 }
 
 /**
+ * The Codex Windows sandbox accounts (CodexSandboxOffline/Online) are
+ * machine-global, but Codex stores their credentials and setup marker per
+ * CODEX_HOME — and Qorpera mints a CODEX_HOME per company × actor. Left
+ * alone, every config dir that provisions runs the elevated setup, resets
+ * the global accounts' passwords, and thereby invalidates the secret every
+ * OTHER config dir stored: with two companies on one machine the founder is
+ * asked to approve the same elevation forever (observed: 100+ UAC prompts).
+ *
+ * Junction the state that describes those global accounts (.sandbox marker,
+ * ACL record, logs; .sandbox-secrets DPAPI blobs) into one per-Windows-user
+ * store, so a single approved setup satisfies every company and actor.
+ * Nothing leaves Codex's control — the same files, one location. Existing
+ * per-dir state is migrated newest-first so at most one further elevation
+ * is requested after this ships.
+ */
+export function shareWindowsSandboxState(userData: string, configDir: string): void {
+	if (process.platform !== "win32") return;
+	// dirname(userData) is the per-user roaming AppData root, so dev
+	// (…\Electron) and packaged (…\Qorpera Base) shells converge on one store.
+	const sharedRoot = join(dirname(userData), "Qorpera", "agent-sandbox-shared");
+	mkdirSync(configDir, { recursive: true });
+	for (const name of [".sandbox", ".sandbox-secrets"]) {
+		const shared = join(sharedRoot, name);
+		mkdirSync(shared, { recursive: true });
+		const local = join(configDir, name);
+		let existing: ReturnType<typeof lstatSync> | undefined;
+		try {
+			existing = lstatSync(local);
+		} catch {
+			existing = undefined;
+		}
+		if (existing?.isSymbolicLink()) continue;
+		if (existing) {
+			for (const entry of readdirSync(local)) {
+				const source = join(local, entry);
+				const target = join(shared, entry);
+				try {
+					if (existsSync(target) && statSync(target).mtimeMs >= statSync(source).mtimeMs) continue;
+					rmSync(target, { recursive: true, force: true });
+					renameSync(source, target);
+				} catch {
+					// A file the migration cannot move (locked log, permission) only
+					// costs one more elevated setup — never block the controller.
+				}
+			}
+			rmSync(local, { recursive: true, force: true });
+		}
+		symlinkSync(shared, local, "junction");
+	}
+}
+
+/**
  * Exercise the bundled Codex sandbox before an agent is started. On a clean
  * Windows profile this invokes Codex's supported elevated setup path; on an
- * existing profile Codex validates and refreshes its own ACL/firewall state.
- * No sandbox marker, DPAPI secret, or ACL record is copied by Qorpera.
+ * existing profile Codex validates and refreshes its own ACL/firewall state
+ * against the shared per-user store (shareWindowsSandboxState above).
  */
 export function provisionWindowsSandbox(options: {
 	codexEntry: string;
