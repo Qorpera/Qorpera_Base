@@ -409,6 +409,9 @@ export type SessionCategory = "conversation" | "product" | "conception" | "merge
 interface SessionSummary {
 	file: string;
 	mtimeMs: number;
+	/** Stable run start from the append-only session header. Unlike the file
+	 * mtime, inspecting a trail cannot move this historical timestamp. */
+	startedAtMs?: number;
 	title: string;
 	/** "autonomous" = controller-initiated work (tagged at spawn); "chat" = founder-brought. */
 	kind: "chat" | "autonomous";
@@ -430,9 +433,18 @@ interface SessionSummary {
 	modelId?: string;
 	/** End-to-end elapsed time, from the session header to the terminal entry. */
 	durationMs?: number;
+	finishedAtMs?: number;
 	/** Kernel-accounted aggregate usage for the intent. */
 	calls?: number;
 	costUsd?: number;
+	/** Founder-facing failure explanation and recovery guidance. */
+	failureCause?: string;
+	failureGuidance?: string;
+	failureDetail?: string;
+	/** What completed before a failed or incomplete run stopped. */
+	partialChangeSummary?: string;
+	changedFiles?: string[];
+	completedSteps?: number;
 }
 
 /** Chat-title material: chrome-injected context blocks are plumbing, not the
@@ -447,11 +459,106 @@ function sessionTitleText(text: string): string {
 
 interface AutonomousRunSummary {
 	outcome: "running" | "succeeded" | "failed" | "incomplete";
+	startedAtMs?: number;
 	modelProvider?: string;
 	modelId?: string;
 	durationMs?: number;
+	finishedAtMs?: number;
 	calls?: number;
 	costUsd?: number;
+	failureCause?: string;
+	failureGuidance?: string;
+	failureDetail?: string;
+	partialChangeSummary?: string;
+	changedFiles?: string[];
+	completedSteps?: number;
+}
+
+interface TrailToolCall {
+	name: string;
+	arguments?: Record<string, unknown>;
+}
+
+function conciseFailureDetail(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	return (
+		value
+			.split(/; stack=|\n\s+at /, 1)[0]
+			?.trim()
+			.slice(0, 320) || undefined
+	);
+}
+
+function runFailureGuidance(
+	errorMessage: string | undefined,
+	intentStatus: string | undefined,
+): { cause: string; guidance: string; detail?: string } {
+	const detail = conciseFailureDetail(errorMessage);
+	const raw = detail?.toLowerCase() ?? "";
+	if (/oauth|invalid_grant|refresh token|sign-in|unauthori[sz]ed|\b401\b|\b403\b/.test(raw)) {
+		return {
+			cause: "The model connection needs attention.",
+			guidance: "Reconnect that model account or choose another model, then retry the run.",
+			detail,
+		};
+	}
+	if (/insufficient_quota|quota|billing|credit balance/.test(raw)) {
+		return {
+			cause: "The model account cannot accept more work.",
+			guidance: "Check its quota or billing, or choose another model, then retry the run.",
+			detail,
+		};
+	}
+	if (/context|prompt is too long|input.*too (?:large|long)|maximum.*tokens/.test(raw)) {
+		return {
+			cause: "The run was too large for this model.",
+			guidance: "Retry with a shorter request, start a fresh chat, or choose a model with more context.",
+			detail,
+		};
+	}
+	if (
+		/connection refused|connect error|disconnect|reset before headers|transport failure|socket hang up|timed? out|timeout|overloaded|rate.?limit|\b429\b|\b502\b|\b503\b|\b529\b/.test(
+			raw,
+		)
+	) {
+		return {
+			cause: "The model service could not be reached.",
+			guidance: "Retry now. If it happens again, choose another model or check the model connection in Settings.",
+			detail,
+		};
+	}
+	if (/terminated|aborted|stopped/.test(raw) || intentStatus === "aborted") {
+		return {
+			cause: "The controller stopped before it finished.",
+			guidance: "Review the partial work below, then retry the run.",
+			detail,
+		};
+	}
+	return {
+		cause: "The model could not complete this run.",
+		guidance: "Review the partial work below, then retry. If it repeats, choose another model.",
+		detail,
+	};
+}
+
+function changedPath(tool: TrailToolCall): string | undefined {
+	if (!/^(?:write|edit|apply_patch|patch|notebook_edit)$/i.test(tool.name)) return undefined;
+	const value = tool.arguments?.path ?? tool.arguments?.filePath ?? tool.arguments?.file_path;
+	return typeof value === "string" && value.trim() ? value.trim().replace(/\\/g, "/") : undefined;
+}
+
+function partialChangeSummary(completedSteps: number, changedFiles: string[], uncertainShellChanges: boolean): string {
+	if (changedFiles.length) {
+		const names = changedFiles.slice(0, 5).join(", ");
+		const remainder = changedFiles.length > 5 ? ` and ${changedFiles.length - 5} more` : "";
+		const shellNote = uncertainShellChanges ? " Other completed shell steps may also have changed files." : "";
+		return `Changed ${changedFiles.length} file${changedFiles.length === 1 ? "" : "s"}: ${names}${remainder}.${shellNote}`;
+	}
+	if (completedSteps === 0) return "No completed steps were recorded before the run stopped.";
+	if (uncertainShellChanges) {
+		return `Completed ${completedSteps} step${completedSteps === 1 ? "" : "s"} before stopping. Shell work may have changed files; review the work log before retrying.`;
+	}
+	return `Completed ${completedSteps} read-only step${completedSteps === 1 ? "" : "s"}. No file changes were recorded.`;
 }
 
 /** Read enough of a trail to classify an autonomous run without reparsing a
@@ -475,16 +582,21 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 
 	let startedAt: number | undefined;
 	let terminalAt: number | undefined;
-	let lastObservedAt = mtimeMs;
+	let lastObservedAt = 0;
 	let modelProvider: string | undefined;
 	let modelId: string | undefined;
 	let lastAssistantStopReason: string | undefined;
+	const assistantErrors: string[] = [];
 	let lastRequestStatus: string | undefined;
 	let intentStatus: string | undefined;
 	let calls: number | undefined;
 	let requestCostUsd = 0;
 	let sawRequestCost = false;
 	let intentCostUsd: number | undefined;
+	const toolCalls = new Map<string, TrailToolCall>();
+	const changedFiles = new Set<string>();
+	let completedSteps = 0;
+	let uncertainShellChanges = false;
 
 	for (const line of lines) {
 		if (!line.trim()) continue;
@@ -495,7 +607,22 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 				provider?: string;
 				modelId?: string;
 				customType?: string;
-				message?: { role?: string; provider?: string; model?: string; stopReason?: string };
+				message?: {
+					role?: string;
+					provider?: string;
+					model?: string;
+					stopReason?: string;
+					errorMessage?: string;
+					toolCallId?: string;
+					toolName?: string;
+					isError?: boolean;
+					content?: Array<{
+						type?: string;
+						id?: string;
+						name?: string;
+						arguments?: Record<string, unknown>;
+					}>;
+				};
 				data?: {
 					event?: string;
 					status?: string;
@@ -518,6 +645,25 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 					lastAssistantStopReason = entry.message.stopReason;
 					if (entry.message.stopReason !== "toolUse" && Number.isFinite(observedAt)) terminalAt = observedAt;
 				}
+				if (entry.message.stopReason === "error" && typeof entry.message.errorMessage === "string") {
+					assistantErrors.push(entry.message.errorMessage);
+				}
+				for (const part of entry.message.content ?? []) {
+					if (part.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") {
+						toolCalls.set(part.id, { name: part.name, arguments: part.arguments });
+					}
+				}
+			}
+			if (entry.type === "message" && entry.message?.role === "toolResult" && entry.message.isError === false) {
+				completedSteps += 1;
+				const tool =
+					(typeof entry.message.toolCallId === "string" ? toolCalls.get(entry.message.toolCallId) : undefined) ??
+					(typeof entry.message.toolName === "string" ? { name: entry.message.toolName } : undefined);
+				if (tool) {
+					const path = changedPath(tool);
+					if (path) changedFiles.add(path);
+					if (/^(?:bash|shell|shell_command)$/i.test(tool.name)) uncertainShellChanges = true;
+				}
 			}
 			if (entry.type !== "custom" || entry.customType !== "qorpera_kernel_model_request") continue;
 			if (typeof entry.data?.provider === "string") modelProvider = entry.data.provider;
@@ -537,7 +683,12 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 				if (typeof intentCalls === "number" && Number.isFinite(intentCalls) && intentCalls >= 0)
 					calls = intentCalls;
 				if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) intentCostUsd = cost;
-				if ((entry.data.status === "completed" || entry.data.status === "failed") && Number.isFinite(observedAt)) {
+				if (
+					(entry.data.status === "completed" ||
+						entry.data.status === "failed" ||
+						entry.data.status === "aborted") &&
+					Number.isFinite(observedAt)
+				) {
 					terminalAt = observedAt;
 				}
 			}
@@ -549,6 +700,7 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 	let outcome: AutonomousRunSummary["outcome"];
 	if (
 		intentStatus === "failed" ||
+		intentStatus === "aborted" ||
 		lastAssistantStopReason === "error" ||
 		lastAssistantStopReason === "aborted" ||
 		(intentStatus === "completed" && lastAssistantStopReason === undefined && lastRequestStatus === "failed")
@@ -557,16 +709,37 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 	} else if (intentStatus === "completed" && lastAssistantStopReason === "stop") {
 		outcome = "succeeded";
 	} else {
-		outcome = Date.now() - lastObservedAt < 30 * 60_000 ? "running" : "incomplete";
+		outcome = Date.now() - (lastObservedAt || mtimeMs) < 30 * 60_000 ? "running" : "incomplete";
 	}
+	const usefulError =
+		assistantErrors.find((message) => !/kernel model request denied|^terminated$/i.test(message.trim())) ??
+		assistantErrors[0];
+	const failure = outcome === "failed" ? runFailureGuidance(usefulError, intentStatus) : undefined;
+	const files = [...changedFiles].sort();
 
 	return {
 		outcome,
+		startedAtMs: startedAt,
 		modelProvider,
 		modelId,
 		durationMs: startedAt !== undefined && terminalAt !== undefined ? Math.max(0, terminalAt - startedAt) : undefined,
+		finishedAtMs: terminalAt,
 		calls,
 		costUsd: intentCostUsd ?? (sawRequestCost ? requestCostUsd : undefined),
+		...(failure
+			? {
+					failureCause: failure.cause,
+					failureGuidance: failure.guidance,
+					failureDetail: failure.detail,
+				}
+			: {}),
+		...(outcome === "failed" || outcome === "incomplete"
+			? {
+					partialChangeSummary: partialChangeSummary(completedSteps, files, uncertainShellChanges),
+					changedFiles: files,
+					completedSteps,
+				}
+			: {}),
 	};
 }
 
@@ -699,7 +872,11 @@ function listTrailSessions(root: string): SessionSummary[] {
 			// unreadable session files are skipped
 		}
 	}
-	return sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
+	return sessions.sort(
+		(a, b) =>
+			(b.kind === "autonomous" ? (b.startedAtMs ?? b.mtimeMs) : b.mtimeMs) -
+			(a.kind === "autonomous" ? (a.startedAtMs ?? a.mtimeMs) : a.mtimeMs),
+	);
 }
 
 interface PullRequestSummary {

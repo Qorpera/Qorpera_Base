@@ -217,6 +217,18 @@ main {
 .msg.tool { color: var(--text-soft); font-family: var(--font-mono); font-size: 12px; }
 .msg.thinking { color: var(--text-soft); font-style: italic; }
 .msg.log { color: var(--danger); opacity: 0.75; font-family: var(--font-mono); font-size: 12px; }
+.model-failure-card {
+	display: grid; gap: 8px; width: 100%; max-width: var(--thread-width); padding: 14px 15px;
+	border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border)); border-radius: 12px;
+	background: color-mix(in srgb, var(--danger-soft) 55%, transparent); color: var(--text);
+}
+.model-failure-card > strong { color: var(--danger-muted); font-size: 14px; font-weight: 650; }
+.model-failure-card p { margin: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+.model-failure-card .model-failure-partial { color: var(--text); }
+.model-failure-actions { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+.model-failure-actions details { color: var(--text-soft); font-size: 11px; }
+.model-failure-actions summary { cursor: pointer; }
+.model-failure-actions code { display: block; max-width: 520px; margin-top: 7px; overflow-wrap: anywhere; white-space: normal; }
 
 /* Collapsible run group: tool calls + thinking fold under "Worked for…". */
 details.work { width: 100%; max-width: var(--thread-width); }
@@ -1047,6 +1059,7 @@ body.hub-opening .hub-card:not(.loading) { opacity: 0.4; pointer-events: none; t
 .scheduled-job-copy strong { overflow: hidden; font-size: 14px; font-weight: 610; text-overflow: ellipsis; white-space: nowrap; }
 .scheduled-job-copy > span { margin-top: 3px; color: var(--text-muted); font-size: 12px; }
 .scheduled-job-copy small { overflow: hidden; margin-top: 5px; color: var(--text-soft); font-size: 11px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.scheduled-job-copy small.scheduled-job-failure-cause { color: var(--danger-muted); }
 .scheduled-job-arrow { margin-top: 1px; color: var(--text-soft); font-size: 21px; line-height: 1; }
 .scheduled-job-detail {
 	position: sticky; top: 0; display: flex; flex-direction: column; align-self: start;
@@ -1082,11 +1095,32 @@ body.hub-opening .hub-card:not(.loading) { opacity: 0.4; pointer-events: none; t
 .scheduled-job-recent p { margin: 0; color: var(--text-soft); font-size: 10.5px; }
 .scheduled-job-run { display: flex; justify-content: space-between; gap: 12px; width: 100%; padding: 8px 4px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); text-align: left; }
 .scheduled-job-run:hover { color: var(--accent); }
-.scheduled-job-run strong { font-size: 10.5px; }
+.scheduled-job-run strong { overflow: hidden; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .scheduled-job-run span { color: var(--text-soft); font-size: 9.5px; text-align: right; }
 .scheduled-job-error { margin: 10px 0; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--danger) 42%, transparent); border-radius: 8px; color: var(--danger-muted); font-size: 10.5px; }
 .scheduled-job-form > footer { display: flex; align-items: center; gap: 8px; padding-top: 14px; border-top: 1px solid var(--border); }
 .scheduled-job-form > footer span { flex: 1; }
+.trail-failure-cause { margin: -3px 0 10px; color: var(--danger-muted); font-size: 11.5px; line-height: 1.4; }
+.run-inspection-body { overflow-y: auto; padding: 18px; }
+.run-inspection-body h2 { margin: 0; font-size: 18px; font-weight: 620; }
+.run-inspection-note { margin: 6px 0 18px; color: var(--text-soft); font-size: 10.5px; line-height: 1.45; }
+.run-failure-summary {
+	display: grid; gap: 7px; margin: 0 0 16px; padding: 12px;
+	border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border)); border-radius: 10px;
+	background: color-mix(in srgb, var(--danger-soft) 50%, transparent);
+}
+.run-failure-summary > strong { color: var(--danger-muted); font-size: 12px; }
+.run-failure-summary p { margin: 0; color: var(--text-muted); font-size: 10.5px; line-height: 1.45; }
+.run-failure-summary details, .run-instructions { color: var(--text-soft); font-size: 10px; }
+.run-failure-summary details code { display: block; margin-top: 6px; overflow-wrap: anywhere; white-space: normal; }
+.run-failure-summary button { justify-self: start; width: auto; margin-top: 2px; }
+.job-last-failure { margin: 0 0 20px; }
+.run-partial-summary { margin: 18px 0; }
+.run-partial-summary h3 { margin: 0 0 6px; font-size: 12px; font-weight: 650; }
+.run-partial-summary p, .run-instructions p { margin: 0; color: var(--text-muted); font-size: 10.5px; line-height: 1.5; }
+.run-instructions { padding-top: 13px; border-top: 1px solid var(--border); }
+.run-instructions summary { cursor: pointer; font-weight: 620; }
+.run-instructions p { margin-top: 8px; white-space: pre-wrap; }
 
 @media (max-width: 980px) {
 	.activity-layout.has-detail { grid-template-columns: 1fr; }

@@ -7,14 +7,13 @@
 
 ## Company shape exercised
 
-- Four departments: Product & AI Research, Engineering & Reliability,
-  Growth & Customer Success, and Operations & Finance.
-- Five company substrates projected into five controller surfaces, including
-  the executive dashboard and department dashboards.
-- Company plans, backlogs, routines, inbox escalation, append-only trails,
-  model brokering, autonomous checkpoints, and scheduled-job run history.
-- Successful scheduled runs on GPT-5.6 Sol plus intentionally retained failed
-  runs, so the Activity page exposes both success and recovery states.
+- Four teams: Product & AI, Engineering, Growth & Customers, and Operations.
+- An Executive page that should tell the founder what matters now, why, and
+  what to do next.
+- Company plans, team work, decisions, scheduled jobs, and a complete history
+  of what the controller tried.
+- Both successful and failed scheduled runs, so Activity can be tested as a
+  real recovery tool rather than a success-only demo.
 
 ## Issue ledger
 
@@ -26,7 +25,7 @@
 | QMC-004 | Founder/inbound wakes could contaminate a scheduled job's failure streak. | Fixed | Scheduled outcome bookkeeping is keyed to the named scheduled job only. |
 | QMC-005 | A failed wake prompt send could restart the controller twice and count a false failure. | Fixed | Prompt-send failure now has one teardown/restart path and no scheduled outcome without a sent prompt. |
 | QMC-006 | Python validation produced `__pycache__`/bytecode that autonomous checkpoints committed. | Fixed for future checkpoints | Checkpoint path selection excludes `__pycache__`, `.pyc`, and `.pyo`. Historical company commit `fabf873` is retained; history was not rewritten. |
-| QMC-007 | While one autonomous run was live, every historical autonomous row said `Running…`. | Fixed | The live row says `Running…`; other temporarily locked rows say `Unavailable` with an exact explanation. Job details also show `Runtime busy` instead of offering a doomed run-now action. |
+| QMC-007 | While one autonomous run was live, every historical autonomous row said `Running…`. | Fixed | Only the exact live trail is marked live. Every autonomous row now remains inspectable through the read-only run panel, including while another run owns the controller. |
 | QMC-008 | The Windows sandbox account could not run Git in the founder-owned company (`dubious ownership`). | Fixed | Child Git config now marks only the exact authorized company/worktree as safe at command scope, disables inherited Git config/prompts, and passes a real `CodexSandboxOffline` `git status` check. |
 | QMC-009 | A Mini Company workflow command parsed the Windows trail path as a POSIX basename, then hit a shell-quoting error while recovering. | Fixed in company tool | `record_workflow_attempt.py` now derives its start time directly from `QORPERA_SESSION_FILE` across Windows/POSIX paths when `--started-at` is omitted. The failed run remains recorded as `Execution`, preserving honest reliability history. |
 | QMC-010 | Scheduled wakes require the company runtime to remain open; closing Base provides no headless scheduler. | Outstanding, disclosed | The editor states that jobs run while the company is open and missed intervals coalesce on reopen. A durable headless/service scheduler is a separate architecture change. |
@@ -42,6 +41,60 @@
 | QMC-020 | Closing Base during a scheduled run left its persisted start without a terminal outcome or failure-streak update. | Fixed | Run state now records the active trail; the next attempted run reconciles an unfinished predecessor as failed, clears the active marker, and applies normal suspension policy. |
 | QMC-021 | A stale installed `0.18.11` instance needed to discover the new release through the production updater path. | Verified | The installed app downloaded `0.18.12` and displayed “restart to apply”; the exact unpacked release reported `v0.18.12` and “up to date.” |
 | QMC-022 | The released manual “Run now” path, duplicate-run guard, and interrupted-run marker needed end-to-end verification. | Verified | The confirmation showed the exact company, title, schedule, and prompt; authorization started one GPT-5.6 Sol child, disabled duplicate execution, persisted `activeTrailFile`, cleared it on completion, restored the founder child, and projected the completed run immediately. |
+| QMC-023 | The founder could not tell what the company did from the Executive or Product surfaces. | Fixed in the Mini Company; platform gap remains | Reworked the canonical state and both surfaces so they state the product, target customer, painful workflow, current stage, next 30-day outcome, proven evidence, assumptions, financial boundary, and decisions/blockers. A new company still has no required founder-overview contract or onboarding check. |
+| QMC-024 | A terminated controller turn checkpointed four new substrate schemas before updating their consuming surfaces, leaving blank Executive panels and hidden canonical fields. | Repaired in the Mini Company; platform guard outstanding | Partial checkpoint `8390e9c` changed executive, product, operations, and pipeline state. `af20dd9` repaired `executive.html` and `product.html`. The kernel still lacks a transaction/publish boundary for coupled substrate-and-surface changes. |
+| QMC-025 | The company validator passed structurally valid state while the published surfaces were semantically broken. | Outstanding | `validate_controller.py` checks JSON, projection, entry existence, and static substrate references, but not field contracts or rendered section coverage. The blank panels were discoverable only through the real controller UI. |
+| QMC-026 | Founder runs failed with upstream connection refusal, `kernel model request denied`, and later `terminated`, without a retry control, partial-change summary, or recovery guidance. | Fixed in source | Failed turns now keep the first useful cause, explain what to do next, show what completed before the stop, identify known changed files, and offer Retry. Restored conversations show one recovery card per failed turn instead of repeating later generic symptoms. |
+| QMC-027 | A due scheduled wake can take the controller while the founder is composing a repair, blocking send with only a transient `controller is busy` toast. | Outstanding | The draft is preserved, but the controller still does not name the active job or offer `Run when free`. A founder must leave chat, find Activity, and manage the recurring job manually. |
+| QMC-028 | The failed scheduled wake reverted an already approved authority gate back to `pending`. | Outstanding | Checkpoint `d2a2fee` changed `inbox/gate-4ee5598e.md` from `approved` to `pending`, reopening a resolved cleanup request. I denied the redundant request after validating with `python -B` to avoid another cache-producing cycle. |
+| QMC-029 | The Inbox mixed an implementation-cleanup gate with two overlapping, obsolete founder requests, obscuring the actual business decision. | Mitigated in the Mini Company; UX gap remains | Denied the repeated cache gate and settled both completed foundation notices. The Inbox now says nothing needs the founder, but it has no priority, deduplication, supersession, or stale-request model. |
+| QMC-030 | Opening an incomplete scheduled run could produce an empty main view. | Fixed and UI-verified | Autonomous rows now open a populated read-only run inspector, never a chat composer. The tested failed conception run showed cause, next action, start time, status, duration, model, job, technical detail, and partial-work summary. |
+| QMC-031 | Activity exposed failure status but not the actionable failure cause. | Fixed and UI-verified | Failed Activity rows now state the useful cause inline. Run details add recovery guidance and the full technical error; scheduled-job details link directly to the failed run and can retry a named job as a new run. |
+| QMC-032 | Opening an incomplete run mutated its historical trail and changed the displayed run timestamp. | Fixed and UI-verified | Inspection no longer resumes the autonomous session. Activity uses the session-header start time. The tested trail kept SHA-256 `FC74628120527877894ED4751DDA5805F8391B5EFB8BE3026EA9FA44087D3332`, length 9,767, and its original modification time before and after inspection. |
+| QMC-033 | The Add Department wizard creates organization structure but does not guide a founder through creating a company. | Outstanding | The three-step flow covers type, name, and setup. Company Interface offers scratch, Financial Operations, Customer Support, or People & Culture; it does not establish mission, customer, product hypothesis, milestones, authority, or a founder home. |
+| QMC-034 | Opening a founder conversation in the patched development controller fell back to the base shell and left the controller unavailable. | Recovered; UX cause outstanding | The main view said `your evolved app failed to load — running the base chrome (kernel fallback)`. The draft was preserved, but the toast incorrectly said autonomous work was busy. A clean restart recovered the company, its GPT-5.6 Sol controller, and the one active 10-minute job. The fallback still needs a specific cause and guided reconnect action. |
+| QMC-035 | The founder controller could create new surface files but could not overwrite the two published surface files. | Outstanding | `write`, `edit`, append, and atomic replacement of `executive.html` / `product.html` returned `EPERM` even though the files were not read-only and the sandbox ACL had Modify. The controller recovered by creating `*-founder.html` files and switching the projection, but a simple wording change took 31 steps and left the old pages in place. |
+
+## Founder-only operating pass
+
+The test assumes the founder only has the controller. They should not need to
+know where files live or how the app is built.
+
+The company in plain language:
+
+> Qorpera's Mini Company tells a small-business founder what needs attention
+> next, why it matters, and what to do about it — all in one place.
+
+- **Who it is for:** founders of small software companies who are still
+  juggling product, engineering, customers, and money themselves.
+- **The problem:** they have to chase updates across several tools before they
+  can decide what to do next.
+- **What the company is building:** one clear home that shows the most
+  important issue, the reason it matters, and the next safe action.
+- **Where it is now:** the internal controller works, but there is no customer
+  proof yet: 0 researched companies, 0 interviews, 0 design partners, and
+  USD 0 revenue.
+- **Next milestone:** research 10 matching companies and prepare an outreach
+  plan. Do not contact anyone until the founder approves it.
+- **Spending rule:** this is still a test company. No external spending is
+  approved.
+
+Founder work completed through the controller:
+
+- Set the target customer, geography, spending limit, and no-contact rule.
+- Rewrote and published plain-language Executive and Product pages through the
+  GPT-5.6 Sol founder controller; checkpoint `a582507` contains the new pages
+  and projection update.
+- Repaired the Executive and Product pages after an interrupted run left them
+  incomplete.
+- Checked that all five company data files and controller pages still load.
+- Cleared old Inbox requests that no longer needed a decision.
+- Paused the 10-minute job during repair, then resumed it unchanged.
+
+The next business task is still blocked: the controller has no approved public
+research connection, so it cannot build the 10-company list with source links.
+The Executive page says this, but does not yet provide a direct way to connect
+the missing research tool.
 
 ## Monitored runs
 
@@ -124,6 +177,15 @@ model should not replace the company folder as Base's source of truth.
 ## Verification
 
 - `npm run check` passes across 1,070 checked files with no warnings or infos.
+- The focused app-server regression passes: 11 tests, including stable run
+  time, actionable connection failure, completed-step count, changed-file
+  summary, and failed outcome for an aborted autonomous run.
+- The patched Activity page shows failure causes inline and opens a populated
+  read-only run inspector. The inspected trail's SHA-256, byte length, and
+  modification time were identical before and after opening it.
+- The founder controller published the plain-language Executive and Product
+  pages, preserved the underlying company data files, and passed controller,
+  page-content, unique-ID, live-data-reference, and JavaScript checks.
 - Scheduled-job, wake-scheduler, app-server, controller-model, and checkpoint
   regressions pass (42 focused tests).
 - New sandbox Git environment test passes (2 assertions groups).

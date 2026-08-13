@@ -425,14 +425,51 @@ describe("company app server", () => {
 				}),
 				JSON.stringify({
 					type: "message",
+					timestamp: "2026-08-04T11:30:02.000Z",
+					message: {
+						role: "assistant",
+						provider: "anthropic",
+						model: "claude-opus-4-8",
+						stopReason: "toolUse",
+						content: [
+							{
+								type: "toolCall",
+								id: "edit-1",
+								name: "edit",
+								arguments: { path: "app/substrates/reliability.json" },
+							},
+						],
+					},
+				}),
+				JSON.stringify({
+					type: "message",
+					timestamp: "2026-08-04T11:30:02.500Z",
+					message: { role: "toolResult", toolCallId: "edit-1", toolName: "edit", isError: false },
+				}),
+				JSON.stringify({
+					type: "message",
 					timestamp: "2026-08-04T11:30:03.000Z",
-					message: { role: "assistant", provider: "anthropic", model: "claude-opus-4-8", stopReason: "error" },
+					message: {
+						role: "assistant",
+						provider: "anthropic",
+						model: "claude-opus-4-8",
+						stopReason: "error",
+						errorMessage: "transport failure: Connection refused",
+					},
 				}),
 				JSON.stringify({
 					type: "custom",
 					timestamp: "2026-08-04T11:30:04.000Z",
 					customType: "qorpera_kernel_model_request",
-					data: { event: "intent", status: "completed", usage: { calls: 1, costUsd: 0 } },
+					data: { event: "intent", status: "aborted", usage: { calls: 1, costUsd: 0 } },
+				}),
+				// Simulates the old inspection path appending child startup metadata.
+				// The historical start and finish must remain the original run times.
+				JSON.stringify({
+					type: "model_change",
+					timestamp: "2026-08-04T12:30:00.000Z",
+					provider: "anthropic",
+					modelId: "claude-opus-4-8",
 				}),
 			].join("\n"),
 			"utf-8",
@@ -552,6 +589,13 @@ describe("company app server", () => {
 				durationMs?: number;
 				calls?: number;
 				costUsd?: number;
+				startedAtMs?: number;
+				finishedAtMs?: number;
+				failureCause?: string;
+				failureGuidance?: string;
+				partialChangeSummary?: string;
+				changedFiles?: string[];
+				completedSteps?: number;
 			}>;
 			inbox: Array<{ file: string; kind: string; status: string }>;
 		};
@@ -589,9 +633,17 @@ describe("company app server", () => {
 			modelProvider: "anthropic",
 			modelId: "claude-opus-4-8",
 			durationMs: 4_000,
+			startedAtMs: Date.parse("2026-08-04T11:30:00.000Z"),
+			finishedAtMs: Date.parse("2026-08-04T11:30:04.000Z"),
 			calls: 1,
 			costUsd: 0,
+			failureCause: "The model service could not be reached.",
+			failureGuidance:
+				"Retry now. If it happens again, choose another model or check the model connection in Settings.",
+			changedFiles: ["app/substrates/reliability.json"],
+			completedSteps: 1,
 		});
+		expect(failed?.partialChangeSummary).toContain("Changed 1 file: app/substrates/reliability.json");
 		expect(legacyWake).toMatchObject({
 			title: "Company orchestration",
 			category: "wake",

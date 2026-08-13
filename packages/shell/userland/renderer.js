@@ -47,6 +47,9 @@ let modelCatalogHydrated = false;
 let agentWorking = false; // a run is streaming; the composer shows Stop
 let agentExited = false;
 let pendingRewind = null; // { text } awaiting get_fork_messages for edit-and-resend
+let lastSubmittedPrompt = null; // { text, images } â€” retained so a failed model call can be retried
+let activeRunProgress = null; // completed steps and known file changes for the current founder turn
+let turnFailureCard = null;
 let hiddenNavigation = new Set();
 let archivedNavigation = new Set(); // frontend preview only; durable archive remains unbound
 let focusedDepartmentId = null;
@@ -64,7 +67,7 @@ let departmentWizard = {
 	repoPath: "",
 	repoUrl: "",
 };
-let scheduledJobPanel = null; // { mode: "view"|"create", id?, draft, dirty, error?, pending? }
+let scheduledJobPanel = null; // { mode: "view"|"create"|"run", id?, file?, draft?, dirty, error?, pending? }
 
 const SIDEBAR_COLLAPSED_KEY = "qorpera.sidebar-collapsed";
 
@@ -783,6 +786,12 @@ async function newChat() {
 function renderHistory(messages) {
 	$("messages").innerHTML = "";
 	resetWorkGroup();
+	lastSubmittedPrompt = null;
+	turnFailureCard = null;
+	let historyProgress = createRunProgress();
+	let historyPrompt = null;
+	let historyFailureShown = false;
+	const historyToolCalls = new Map();
 	// Consecutive tool calls fold into one collapsed "Worked" group, same as
 	// live streaming does (durations aren't recorded, so the label is count-only).
 	let group = null;
@@ -811,6 +820,14 @@ function renderHistory(messages) {
 			if (text || imageUrls.length) {
 				group = null;
 				appendMsgImages(decorateUserMsg(addMsg("user", text), text), imageUrls);
+				historyPrompt = {
+					text,
+					images: imageUrls.map((dataUrl, index) => ({ mimeType: parts.filter((p) => p.type === "image" && p.data)[index]?.mimeType, dataUrl })),
+				};
+				lastSubmittedPrompt = historyPrompt;
+				historyProgress = createRunProgress();
+				historyFailureShown = false;
+				historyToolCalls.clear();
 			}
 		} else if (message.role === "assistant") {
 			for (const part of message.content ?? []) {
@@ -818,10 +835,22 @@ function renderHistory(messages) {
 					group = null;
 					renderMarkdown(addMsg("assistant", ""), part.text);
 				}
-				if (part.type === "toolCall") groupLine(`✓ ${part.name} ${summarizeArgs(part.arguments)}`);
+				if (part.type === "toolCall") {
+					groupLine(`✓ ${part.name} ${summarizeArgs(part.arguments)}`);
+					if (part.id) historyToolCalls.set(part.id, { name: part.name, args: part.arguments });
+				}
 			}
+			if (message.stopReason === "error" && !historyFailureShown) {
+				group = null;
+				addModelFailureCard(message.errorMessage, historyProgress, historyPrompt);
+				historyFailureShown = true;
+			}
+		} else if (message.role === "toolResult" && message.isError === false) {
+			const tool = historyToolCalls.get(message.toolCallId) ?? { name: message.toolName, args: undefined };
+			recordCompletedTool(historyProgress, tool.name, tool.args);
 		}
 	}
+	activeRunProgress = historyProgress;
 	$("messages").scrollTop = $("messages").scrollHeight;
 }
 
@@ -2398,8 +2427,150 @@ async function scheduledJobRequest(request, fallback) {
 	}
 }
 
+function sessionRunTime(session) {
+	return session.kind === "autonomous" ? (session.startedAtMs ?? session.mtimeMs) : session.mtimeMs;
+}
+
+function openRunInspection(session) {
+	scheduledJobPanel = { mode: "run", file: session.file, dirty: false, error: "", pending: false };
+	void renderActivity(true);
+}
+
+function runFailureCause(session, outcome) {
+	if (session.failureCause) return session.failureCause;
+	if (outcome === "incomplete") return "This run stopped without a final result.";
+	return "The run did not finish successfully.";
+}
+
+function runFailureGuidance(session, outcome) {
+	if (session.failureGuidance) return session.failureGuidance;
+	if (outcome === "incomplete") return "Review the partial work, then retry the job.";
+	return "Review the partial work below, then retry. If it repeats, choose another model.";
+}
+
+function renderRunInspection(shell, jobs, sessions, autonomousRunning, autonomousTrailFile) {
+	const run = sessions.find((session) => session.file === scheduledJobPanel.file);
+	if (!run) {
+		scheduledJobPanel = null;
+		return;
+	}
+	const outcome = displayedTrailOutcome(run, autonomousTrailFile);
+	const job = jobs.find((candidate) => candidate.id === run.scheduledJobId);
+	const aside = document.createElement("aside");
+	aside.className = "scheduled-job-detail run-inspection";
+	const header = document.createElement("header");
+	const heading = document.createElement("div");
+	const eyebrow = document.createElement("span");
+	eyebrow.textContent = "Run details";
+	const status = document.createElement("strong");
+	status.textContent = TRAIL_OUTCOME_LABELS[outcome] ?? outcome ?? "Run";
+	heading.append(eyebrow, status);
+	const headerActions = document.createElement("div");
+	if (job && outcome !== "running") {
+		const retry = document.createElement("button");
+		retry.type = "button";
+		retry.textContent = scheduledJobPanel.pending ? "Starting…" : autonomousRunning ? "Runtime busy" : "Retry now";
+		retry.disabled = autonomousRunning || scheduledJobPanel.pending;
+		retry.onclick = async () => {
+			scheduledJobPanel.pending = true;
+			scheduledJobPanel.error = "";
+			const result = await scheduledJobRequest(
+				() => window.qorpera.runScheduledJob(job.id),
+				"Could not retry the job.",
+			);
+			scheduledJobPanel.pending = false;
+			scheduledJobPanel.error = result?.ok ? "" : result?.error ?? "Could not retry the job.";
+			void renderActivity(true);
+		};
+		headerActions.appendChild(retry);
+	}
+	const close = document.createElement("button");
+	close.className = "scheduled-job-close";
+	close.type = "button";
+	close.setAttribute("aria-label", "Close run details");
+	close.textContent = "×";
+	close.onclick = () => {
+		scheduledJobPanel = job
+			? { mode: "view", id: job.id, draft: scheduledJobDraft(job), dirty: false }
+			: null;
+		void renderActivity();
+	};
+	headerActions.appendChild(close);
+	header.append(heading, headerActions);
+	aside.appendChild(header);
+
+	const body = document.createElement("section");
+	body.className = "run-inspection-body";
+	const title = document.createElement("h2");
+	title.textContent = run.title;
+	const note = document.createElement("p");
+	note.className = "run-inspection-note";
+	note.textContent = "Read-only inspection. Opening this panel does not resume or change the historical run.";
+	body.append(title, note);
+	if (outcome === "failed" || outcome === "incomplete") {
+		const failure = document.createElement("section");
+		failure.className = "run-failure-summary";
+		const cause = document.createElement("strong");
+		cause.textContent = runFailureCause(run, outcome);
+		const guidance = document.createElement("p");
+		guidance.textContent = runFailureGuidance(run, outcome);
+		failure.append(cause, guidance);
+		if (run.failureDetail) {
+			const detail = document.createElement("details");
+			const detailTitle = document.createElement("summary");
+			detailTitle.textContent = "Technical detail";
+			const detailText = document.createElement("code");
+			detailText.textContent = run.failureDetail;
+			detail.append(detailTitle, detailText);
+			failure.appendChild(detail);
+		}
+		body.appendChild(failure);
+	}
+	const facts = document.createElement("section");
+	facts.className = "scheduled-job-facts";
+	facts.append(
+		scheduledJobFact("Started", new Date(sessionRunTime(run)).toLocaleString()),
+		scheduledJobFact("Status", TRAIL_OUTCOME_LABELS[outcome] ?? outcome),
+		scheduledJobFact("Duration", Number.isFinite(run.durationMs) ? formatDuration(run.durationMs) : "No final duration"),
+		scheduledJobFact("Model", run.modelId ? (modelCtl.nameFor(`${run.modelProvider}::${run.modelId}`) ?? run.modelId) : "Not recorded"),
+		scheduledJobFact("Model calls", Number.isFinite(run.calls) ? String(run.calls) : "Not recorded"),
+		scheduledJobFact("Job", job?.title ?? run.scheduledJobTitle ?? "Autonomous work"),
+	);
+	body.appendChild(facts);
+	const partial = document.createElement("section");
+	partial.className = "run-partial-summary";
+	const partialTitle = document.createElement("h3");
+	partialTitle.textContent = "Work completed before it stopped";
+	const partialText = document.createElement("p");
+	partialText.textContent = run.partialChangeSummary ?? "No partial-work summary was recorded for this run.";
+	partial.append(partialTitle, partialText);
+	body.appendChild(partial);
+	if (job?.prompt) {
+		const instructions = document.createElement("details");
+	instructions.className = "run-instructions";
+		const instructionsTitle = document.createElement("summary");
+		instructionsTitle.textContent = "Job instructions";
+		const instructionsText = document.createElement("p");
+		instructionsText.textContent = job.prompt;
+		instructions.append(instructionsTitle, instructionsText);
+		body.appendChild(instructions);
+	}
+	if (scheduledJobPanel.error) {
+		const error = document.createElement("div");
+		error.className = "scheduled-job-error";
+		error.textContent = scheduledJobPanel.error;
+		body.appendChild(error);
+	}
+	aside.appendChild(body);
+	shell.appendChild(aside);
+}
+
 function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, autonomousTrailFile) {
 	if (!scheduledJobPanel) return;
+	if (scheduledJobPanel.mode === "run") {
+		renderRunInspection(shell, jobs, sessions, autonomousRunning, autonomousTrailFile);
+		return;
+	}
 	const job = scheduledJobPanel.mode === "view" ? jobs.find((candidate) => candidate.id === scheduledJobPanel.id) : null;
 	if (scheduledJobPanel.mode === "view" && !job) {
 		scheduledJobPanel = null;
@@ -2511,6 +2682,10 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 	form.appendChild(scheduledJobField("Active", enabled, "Paused jobs keep their definition and run history."));
 
 	if (job) {
+		const runs = sessions.filter((session) => session.scheduledJobId === job.id).slice(0, 5);
+		const lastFailedRun =
+			runs.find((run) => run.file === job.lastTrailFile && displayedTrailOutcome(run, autonomousTrailFile) === "failed") ??
+			runs.find((run) => displayedTrailOutcome(run, autonomousTrailFile) === "failed");
 		const facts = document.createElement("section");
 		facts.className = "scheduled-job-facts";
 		facts.append(
@@ -2528,7 +2703,20 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 		);
 		if (job.suspendedReason) facts.appendChild(scheduledJobFact("Suspended", job.suspendedReason));
 		form.appendChild(facts);
-		const runs = sessions.filter((session) => session.scheduledJobId === job.id).slice(0, 5);
+		if (job.lastOutcome === "failed" && lastFailedRun) {
+			const failure = document.createElement("section");
+			failure.className = "run-failure-summary job-last-failure";
+			const cause = document.createElement("strong");
+			cause.textContent = runFailureCause(lastFailedRun, "failed");
+			const guidance = document.createElement("p");
+			guidance.textContent = runFailureGuidance(lastFailedRun, "failed");
+			const inspect = document.createElement("button");
+			inspect.type = "button";
+			inspect.textContent = "Inspect failed run";
+			inspect.onclick = () => openRunInspection(lastFailedRun);
+			failure.append(cause, guidance, inspect);
+			form.appendChild(failure);
+		}
 		const recent = document.createElement("section");
 		recent.className = "scheduled-job-recent";
 		const recentHeading = document.createElement("h3");
@@ -2543,23 +2731,19 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 			const row = document.createElement("button");
 			row.type = "button";
 			row.className = "scheduled-job-run";
-			const holdOpen = autonomousRunning && run.kind === "autonomous";
 			const runTitle = document.createElement("strong");
 			const outcome = displayedTrailOutcome(run, autonomousTrailFile);
-			runTitle.textContent = TRAIL_OUTCOME_LABELS[outcome] ?? outcome ?? "Run";
+			runTitle.textContent =
+				outcome === "failed" || outcome === "incomplete"
+					? `${TRAIL_OUTCOME_LABELS[outcome]} — ${runFailureCause(run, outcome)}`
+					: TRAIL_OUTCOME_LABELS[outcome] ?? outcome ?? "Run";
 			const runMeta = document.createElement("span");
-			runMeta.textContent = [new Date(run.mtimeMs).toLocaleString(), Number.isFinite(run.durationMs) ? formatDuration(run.durationMs) : ""]
+			runMeta.textContent = [new Date(sessionRunTime(run)).toLocaleString(), Number.isFinite(run.durationMs) ? formatDuration(run.durationMs) : ""]
 				.filter(Boolean)
 				.join(" · ");
 			row.append(runTitle, runMeta);
-			row.disabled = holdOpen;
-			if (holdOpen) {
-				row.title =
-					outcome === "running"
-						? "This scheduled run is still running."
-						: "Another autonomous run is active, so this trail cannot be resumed yet.";
-			}
-			row.onclick = () => openSession(run.file, "q:activity");
+			row.title = "Inspect this run without resuming it";
+			row.onclick = () => openRunInspection(run);
 			recent.appendChild(row);
 		}
 		form.appendChild(recent);
@@ -2654,9 +2838,8 @@ async function renderActivity(force = false) {
 	const panel = $("view-panel");
 	if (!force && scheduledJobPanel?.dirty && panel.querySelector(".scheduled-job-detail")?.contains(document.activeElement)) return;
 	const sessions = state.sessions ?? [];
-	// Resuming a session that a live kernel-spawned child (the merge) is
-	// still writing would put two writers on one trail file — hold Open
-	// until it finishes.
+	// Autonomous trails are inspected read-only in Activity. They are never
+	// rebound to the chat child, including while another run is active.
 	let autonomousRunning = false;
 	let autonomousTrailFile = "";
 	let jobs = [];
@@ -2702,6 +2885,9 @@ async function renderActivity(force = false) {
 		main.appendChild(empty);
 	}
 	for (const job of jobs) {
+		const lastRun =
+			sessions.find((session) => session.file === job.lastTrailFile) ??
+			sessions.find((session) => session.scheduledJobId === job.id);
 		const row = document.createElement("button");
 		row.type = "button";
 		row.className = `scheduled-job-row${job.enabled && !job.suspendedReason ? "" : " paused"}`;
@@ -2715,7 +2901,12 @@ async function renderActivity(force = false) {
 		const schedule = document.createElement("span");
 		schedule.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)}`;
 		const prompt = document.createElement("small");
-		prompt.textContent = job.prompt;
+		if (job.lastOutcome === "failed" && lastRun) {
+			prompt.className = "scheduled-job-failure-cause";
+			prompt.textContent = `Last run failed: ${runFailureCause(lastRun, "failed")}`;
+		} else {
+			prompt.textContent = job.prompt;
+		}
 		copy.append(name, schedule, prompt);
 		const arrow = document.createElement("span");
 		arrow.className = "scheduled-job-arrow";
@@ -2758,22 +2949,23 @@ async function renderActivity(force = false) {
 			badge.textContent = section.badge;
 			titleEl.prepend(badge);
 			d.querySelector(".s").textContent =
-				`${new Date(session.mtimeMs).toLocaleString()} · ${session.file}` +
+				`${new Date(sessionRunTime(session)).toLocaleString()} · ${session.file}` +
 				(session.department ? ` · ${departmentName(session.department)}` : "");
-			const holdOpen = autonomousRunning && session.kind === "autonomous";
 			const outcome = displayedTrailOutcome(session, autonomousTrailFile);
 			const sessionRunning = outcome === "running";
 			const runMeta = trailRunMeta(session, outcome);
 			if (runMeta) d.appendChild(runMeta);
-			const open = document.createElement("button");
-			open.textContent = sessionRunning ? "Running…" : holdOpen ? "Unavailable" : "Open";
-			open.disabled = holdOpen;
-			if (holdOpen) {
-				open.title = sessionRunning
-					? "This autonomous run is still running."
-					: "Another autonomous run is active, so this trail cannot be resumed yet.";
+			if (session.kind === "autonomous" && (outcome === "failed" || outcome === "incomplete")) {
+				const cause = document.createElement("div");
+				cause.className = "trail-failure-cause";
+				cause.textContent = runFailureCause(session, outcome);
+				d.appendChild(cause);
 			}
-			open.onclick = () => openSession(session.file, "q:activity");
+			const open = document.createElement("button");
+			open.textContent = session.kind === "autonomous" ? (sessionRunning ? "Inspect live" : "Inspect") : "Open";
+			open.title = session.kind === "autonomous" ? "Inspect without resuming or changing this run" : "Open this conversation";
+			open.onclick = () =>
+				session.kind === "autonomous" ? openRunInspection(session) : openSession(session.file, "q:activity");
 			d.appendChild(open);
 			main.appendChild(d);
 		}
@@ -3157,12 +3349,19 @@ async function sendPrompt() {
 			mimeType: image.mimeType,
 		}));
 	}
+	activeRunProgress = createRunProgress();
+	turnFailureCard = null;
 	const result = await window.qorpera.rpcSend(frame);
 	if (!result?.ok) {
+		activeRunProgress = null;
 		showControllerToast("controller is busy with autonomous work — your draft was preserved");
 		return;
 	}
 	input.value = "";
+	lastSubmittedPrompt = {
+		text,
+		images: images.map((image) => ({ mimeType: image.mimeType, dataUrl: image.dataUrl })),
+	};
 	pendingImages = [];
 	if (sidechatPending === sidechatContext) sidechatPending = null;
 	renderAttachStrip();
@@ -3170,12 +3369,141 @@ async function sendPrompt() {
 	appendMsgImages(decorateUserMsg(addMsg("user", text), text), images.map((image) => image.dataUrl));
 }
 
-function modelFailureMessage(value) {
-	const raw = String(value ?? "unknown error");
-	if (/anthropic/i.test(raw) && /oauth refresh failed|invalid_grant|refresh token/i.test(raw)) {
-		return "Anthropic sign-in expired. Choose another model or reconnect Anthropic with qorpera → /login.";
+function modelFailureInfo(value) {
+	const detail = String(value ?? "unknown error").split(/; stack=|\n\s+at /, 1)[0].trim().slice(0, 320);
+	const raw = detail.toLowerCase();
+	if (/oauth|invalid_grant|refresh token|sign-in|unauthori[sz]ed|\b401\b|\b403\b/.test(raw)) {
+		return {
+			cause: "The model connection needs attention.",
+			guidance: "Reconnect that model account or choose another model, then retry.",
+			detail,
+		};
 	}
-	return raw.split(/; stack=|\n\s+at /, 1)[0].slice(0, 320);
+	if (/insufficient_quota|quota|billing|credit balance/.test(raw)) {
+		return {
+			cause: "The model account cannot accept more work.",
+			guidance: "Check its quota or billing, or choose another model, then retry.",
+			detail,
+		};
+	}
+	if (/context|prompt is too long|input.*too (?:large|long)|maximum.*tokens/.test(raw)) {
+		return {
+			cause: "The request was too large for this model.",
+			guidance: "Shorten the request, start a fresh chat, or choose a model with more context.",
+			detail,
+		};
+	}
+	if (
+		/connection refused|connect error|disconnect|reset before headers|transport failure|socket hang up|timed? out|timeout|overloaded|rate.?limit|\b429\b|\b502\b|\b503\b|\b529\b/.test(
+			raw,
+		)
+	) {
+		return {
+			cause: "The model service could not be reached.",
+			guidance: "Retry now. If it happens again, choose another model or check the model connection in Settings.",
+			detail,
+		};
+	}
+	if (/terminated|aborted|stopped/.test(raw)) {
+		return {
+			cause: "The controller stopped before it finished.",
+			guidance: "Review the partial work below, then retry.",
+			detail,
+		};
+	}
+	return {
+		cause: "The model could not complete this request.",
+		guidance: "Review the partial work below, then retry. If it repeats, choose another model.",
+		detail,
+	};
+}
+
+function createRunProgress() {
+	return { completedSteps: 0, changedFiles: new Set(), uncertainShellChanges: false };
+}
+
+function mutationPath(toolName, args) {
+	if (!/^(?:write|edit|apply_patch|patch|notebook_edit)$/i.test(String(toolName ?? ""))) return "";
+	const value = args?.path ?? args?.filePath ?? args?.file_path;
+	return typeof value === "string" ? value.trim().replace(/\\/g, "/") : "";
+}
+
+function recordCompletedTool(progress, toolName, args) {
+	if (!progress) return;
+	progress.completedSteps += 1;
+	const path = mutationPath(toolName, args);
+	if (path) progress.changedFiles.add(path);
+	if (/^(?:bash|shell|shell_command)$/i.test(String(toolName ?? ""))) progress.uncertainShellChanges = true;
+}
+
+function runProgressSummary(progress) {
+	const completed = progress?.completedSteps ?? 0;
+	const files = [...(progress?.changedFiles ?? [])].sort();
+	if (files.length) {
+		const visible = files.slice(0, 5).join(", ");
+		const remainder = files.length > 5 ? ` and ${files.length - 5} more` : "";
+		const shellNote = progress.uncertainShellChanges ? " Other shell steps may also have changed files." : "";
+		return `Changed ${files.length} file${files.length === 1 ? "" : "s"}: ${visible}${remainder}.${shellNote}`;
+	}
+	if (!completed) return "No completed steps were reported before the model stopped.";
+	if (progress?.uncertainShellChanges) {
+		return `Completed ${completed} step${completed === 1 ? "" : "s"}. Shell work may have changed files; review the work log before retrying.`;
+	}
+	return `Completed ${completed} read-only step${completed === 1 ? "" : "s"}. No file changes were reported.`;
+}
+
+async function retryPrompt(prompt = lastSubmittedPrompt) {
+	if (!prompt?.text && !prompt?.images?.length) {
+		showControllerToast("there is no failed request to retry");
+		return;
+	}
+	if (agentWorking) {
+		showControllerToast("wait for the current run to finish before retrying");
+		return;
+	}
+	if (agentExited) {
+		showControllerToast("controller stopped — start a new chat, then retry the request");
+		return;
+	}
+	$("input").value = prompt.text;
+	pendingImages = (prompt.images ?? []).map((image) => ({ ...image }));
+	renderAttachStrip();
+	syncComposer();
+	await sendPrompt();
+}
+
+function addModelFailureCard(errorMessage, progress = activeRunProgress, prompt = lastSubmittedPrompt) {
+	const info = modelFailureInfo(errorMessage);
+	const card = document.createElement("article");
+	card.className = "model-failure-card";
+	const heading = document.createElement("strong");
+	heading.textContent = info.cause;
+	const partial = document.createElement("p");
+	partial.className = "model-failure-partial";
+	partial.textContent = `Partial work: ${runProgressSummary(progress)}`;
+	const guidance = document.createElement("p");
+	guidance.textContent = info.guidance;
+	const actions = document.createElement("div");
+	actions.className = "model-failure-actions";
+	const retry = document.createElement("button");
+	retry.type = "button";
+	retry.className = "primary-button";
+	retry.textContent = "Retry";
+	retry.onclick = () => void retryPrompt(prompt);
+	actions.appendChild(retry);
+	if (info.detail && info.detail !== info.cause) {
+		const details = document.createElement("details");
+		const summary = document.createElement("summary");
+		summary.textContent = "Technical detail";
+		const text = document.createElement("code");
+		text.textContent = info.detail;
+		details.append(summary, text);
+		actions.appendChild(details);
+	}
+	card.append(heading, partial, guidance, actions);
+	$("messages").appendChild(card);
+	$("messages").scrollTop = $("messages").scrollHeight;
+	return card;
 }
 
 /** Grow the textarea with its content and light the send button up. */
@@ -3333,7 +3661,7 @@ window.qorpera.onRpcEvent((frame) => {
 			const group = ensureWorkGroup();
 			group.steps += 1;
 			const line = workMsg("tool", `▸ ${frame.toolName} ${summarizeArgs(frame.args)}`);
-			pendingToolLines.push({ toolName: frame.toolName, line });
+			pendingToolLines.push({ toolName: frame.toolName, args: frame.args, line });
 			break;
 		}
 		case "tool_execution_end": {
@@ -3343,6 +3671,7 @@ window.qorpera.onRpcEvent((frame) => {
 			const entry = index >= 0 ? pendingToolLines.splice(index, 1)[0] : null;
 			if (entry) entry.line.textContent = `${frame.isError ? "✗" : "✓"}${entry.line.textContent.slice(1)}`;
 			else workMsg("tool", `${frame.isError ? "✗" : "✓"} ${frame.toolName}`);
+			if (!frame.isError) recordCompletedTool(activeRunProgress, frame.toolName, entry?.args);
 			refreshState();
 			break;
 		}
@@ -3357,6 +3686,7 @@ window.qorpera.onRpcEvent((frame) => {
 			$("status").textContent = "working…";
 			agentExited = false;
 			agentWorking = true;
+			if (!activeRunProgress) activeRunProgress = createRunProgress();
 			$("stopBtn").hidden = false;
 			break;
 		case "message_end": {
@@ -3366,7 +3696,7 @@ window.qorpera.onRpcEvent((frame) => {
 			const ended = frame.message;
 			if (ended?.role === "assistant" && ended.stopReason === "error") {
 				closeWorkGroup();
-				addMsg("log", `⚠ model call failed: ${modelFailureMessage(ended.errorMessage)}`);
+				if (!turnFailureCard) turnFailureCard = addModelFailureCard(ended.errorMessage);
 			} else if (ended?.role === "assistant" && ended.stopReason === "aborted") {
 				closeWorkGroup();
 				addMsg("log", "stopped");

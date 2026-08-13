@@ -115,6 +115,7 @@
 
 ### Fixed
 
+- Fixed company-controller failure recovery: Activity now shows the useful model failure cause, historical autonomous runs open in a read-only inspector with stable start times, and failed turns include retry guidance plus a conservative summary of work completed before they stopped.
 - Fixed scheduled-company autonomy lifecycle and observability: interrupted runs reconcile as failures, run-state persistence is atomic and company-isolated, suspension clears only on explicit resume, deleted jobs drop stale state, autonomous writes serialize with product/userland operations, and stale incomplete trails no longer render as live.
 - Fixed controller model preference leaking between companies and Windows sandbox Git rejecting the exact founder-owned company as dubious ownership; preferences now use per-company kernel state and each child receives only its authorized root/worktree as command-scoped `safe.directory` entries.
 - Fixed failed model calls charging their full worst-case reservation against the intent budget: a 1-second OAuth failure billed 128k output tokens / $13 of budget for zero work, so a handful of transient failures silently exhausted an intent. Failures and aborts now charge only observed usage.
