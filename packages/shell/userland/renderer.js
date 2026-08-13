@@ -103,7 +103,25 @@ async function renderHub() {
 		const path = document.createElement("small");
 		path.textContent = company.root;
 		card.append(mono, label, path);
-		card.onclick = () => openCompany(company.root);
+		card.onclick = () => {
+			// The click must visibly land: opening provisions the sandbox and
+			// forks userland, which takes seconds — spin the card, quiet the rest.
+			if (document.body.classList.contains("hub-opening")) return;
+			document.body.classList.add("hub-opening");
+			card.classList.add("loading");
+			const spinner = document.createElement("span");
+			spinner.className = "hub-spinner";
+			card.appendChild(spinner);
+			openCompany(company.root).then((opened) => {
+				// Success reloads this window into the company; reaching here
+				// means the open failed — hand the hub back.
+				if (!opened) {
+					document.body.classList.remove("hub-opening");
+					card.classList.remove("loading");
+					spinner.remove();
+				}
+			});
+		};
 		grid.appendChild(card);
 	}
 	const create = document.createElement("button");
@@ -185,11 +203,14 @@ function setupCompanyModal() {
 
 async function openCompany(root) {
 	// The kernel forks/loads the company's own userland and reloads this
-	// window into it; this page's job ends here.
+	// window into it; this page's job ends here. Returns false on failure so
+	// the hub can hand control back (clear spinners, re-enable cards).
 	try {
 		await window.qorpera.openCompany(root);
+		return true;
 	} catch (error) {
 		alert(`Could not open the company:\n${(error && error.message) || error}`);
+		return false;
 	}
 }
 
@@ -1872,8 +1893,12 @@ function renderProductChats(department, page) {
 async function openProjectionNode(id, updateRoute = true) {
 	const node = projectionNode(id);
 	if (!node) return;
+	const pageChanged = currentNodeId !== id;
 	currentNodeId = id;
 	if (updateRoute) setProjectionRoute(id);
+	// Between-pages micro animation: panel→panel navigations never pass
+	// through show()'s view-change gate, so retrigger here on a page change.
+	if (pageChanged) animatePageEnter($("view-panel"));
 	if (node.kind === "department" || node.kind === "category") {
 		renderCollection(node);
 		show("panel");
@@ -2111,7 +2136,16 @@ function dockChat(docked) {
 	}
 }
 
+/** Retrigger the between-pages micro animation on a freshly shown container. */
+function animatePageEnter(el) {
+	if (!el) return;
+	el.classList.remove("page-enter");
+	void el.offsetWidth; // reflow so the animation restarts
+	el.classList.add("page-enter");
+}
+
 function show(view) {
+	const entering = view !== currentView;
 	currentView = view;
 	const docked = view === "surface" && sidechatOpen;
 	dockChat(docked);
@@ -2119,6 +2153,11 @@ function show(view) {
 	$("view-surfacewrap").style.display = view === "surface" ? "flex" : "none";
 	$("view-surfacewrap").classList.toggle("chat-open", sidechatOpen);
 	$("view-panel").style.display = view === "panel" ? "block" : "none";
+	if (entering) {
+		animatePageEnter(
+			view === "chat" ? $("view-chat") : view === "surface" ? $("view-surfacewrap") : view === "panel" ? $("view-panel") : null,
+		);
+	}
 	// Leave the usage view alone while it is docked inside Settings.
 	if ($("view-usage").parentElement !== $("settingsContent")) {
 		$("view-usage").style.display = view === "usage" ? "block" : "none";
@@ -2203,9 +2242,22 @@ function newSidechat() {
 }
 
 /** The controller's own work: autonomous sessions only (chats live in the nav). */
+/** The trail categorizes what it is a trail OF — user-led conversations are
+ * different from the kernel's own work (founder call 2026-08-13). Section
+ * order tells the story: the founder's words first, then scoped product
+ * work, then each autonomous lane. */
+const TRAIL_SECTIONS = [
+	{ category: "conversation", heading: "Founder conversations", badge: "conversation" },
+	{ category: "product", heading: "Product work", badge: "product" },
+	{ category: "conception", heading: "Conception", badge: "conception" },
+	{ category: "merge", heading: "Userland merges", badge: "merge" },
+	{ category: "wake", heading: "Wakes & routines", badge: "wake" },
+	{ category: "autonomous", heading: "Other autonomous work", badge: "autonomous" },
+];
+
 async function renderActivity() {
 	const panel = $("view-panel");
-	const sessions = (state.sessions ?? []).filter((s) => s.kind === "autonomous");
+	const sessions = state.sessions ?? [];
 	// Resuming a session that a live kernel-spawned child (the merge) is
 	// still writing would put two writers on one trail file — hold Open
 	// until it finishes.
@@ -2217,20 +2269,41 @@ async function renderActivity() {
 	}
 	panel.innerHTML = sessions.length
 		? ""
-		: '<div class="empty">No autonomous controller sessions yet — conception, routines, and merges will appear here.</div>';
-	for (const session of sessions) {
-		const d = document.createElement("div");
-		d.className = "gate";
-		d.innerHTML = '<div class="t"></div><div class="s sess-meta"></div>';
-		d.querySelector(".t").textContent = session.title;
-		d.querySelector(".s").textContent = `${new Date(session.mtimeMs).toLocaleString()} · ${session.file}`;
-		const open = document.createElement("button");
-		open.textContent = mergeRunning ? "Running…" : "Open";
-		open.disabled = mergeRunning;
-		if (mergeRunning) open.title = "An autonomous merge session is running — resume is held so two agents never write one trail file.";
-		open.onclick = () => openSession(session.file, "q:activity");
-		d.appendChild(open);
-		panel.appendChild(d);
+		: '<div class="empty">No trail yet — conversations, product work, conception, routines, and merges will appear here.</div>';
+	for (const section of TRAIL_SECTIONS) {
+		// Sessions listed before categories existed fall back by kind.
+		const rows = sessions.filter(
+			(s) => (s.category ?? (s.kind === "autonomous" ? "autonomous" : "conversation")) === section.category,
+		);
+		if (!rows.length) continue;
+		const head = document.createElement("h2");
+		head.className = "trail-section";
+		head.textContent = section.heading;
+		panel.appendChild(head);
+		for (const session of rows) {
+			const d = document.createElement("div");
+			d.className = "gate";
+			d.innerHTML = '<div class="t"></div><div class="s sess-meta"></div>';
+			const titleEl = d.querySelector(".t");
+			titleEl.textContent = session.title;
+			const badge = document.createElement("span");
+			badge.className = `trail-badge trail-badge-${section.badge}`;
+			badge.textContent = section.badge;
+			titleEl.prepend(badge);
+			d.querySelector(".s").textContent =
+				`${new Date(session.mtimeMs).toLocaleString()} · ${session.file}` +
+				(session.department ? ` · ${departmentName(session.department)}` : "");
+			const holdOpen = mergeRunning && session.kind === "autonomous";
+			const open = document.createElement("button");
+			open.textContent = holdOpen ? "Running…" : "Open";
+			open.disabled = holdOpen;
+			if (holdOpen)
+				open.title =
+					"An autonomous merge session is running — resume is held so two agents never write one trail file.";
+			open.onclick = () => openSession(session.file, "q:activity");
+			d.appendChild(open);
+			panel.appendChild(d);
+		}
 	}
 }
 

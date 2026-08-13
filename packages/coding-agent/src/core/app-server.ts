@@ -400,12 +400,19 @@ function surfaceVersion(root: string, entry: string): number {
 	}
 }
 
+/** What a trail session is a trail OF — founder-led conversation, scoped
+ * product work, or one of the kernel's autonomous lanes. Derived from the
+ * kernel-authored authority header, so the categorization is trustworthy. */
+export type SessionCategory = "conversation" | "product" | "conception" | "merge" | "wake" | "autonomous";
+
 interface SessionSummary {
 	file: string;
 	mtimeMs: number;
 	title: string;
 	/** "autonomous" = controller-initiated work (tagged at spawn); "chat" = founder-brought. */
 	kind: "chat" | "autonomous";
+	/** Fine-grained trail category (user-led conversations are different). */
+	category: SessionCategory;
 	/** Product-development department assigned to this chat. */
 	department?: string;
 	/** Exact product worktree assigned to this chat. */
@@ -503,6 +510,18 @@ function listTrailSessions(root: string): SessionSummary[] {
 				}
 			}
 			const kind = sessionAuthority?.autonomous ? "autonomous" : "chat";
+			const label = (sessionAuthority?.label ?? "").toLowerCase();
+			const category: SessionCategory = sessionAuthority?.autonomous
+				? label.includes("conception")
+					? "conception"
+					: label.includes("merge")
+						? "merge"
+						: label.includes("wake")
+							? "wake"
+							: "autonomous"
+				: sessionAuthority?.department || sessionAuthority?.worktree
+					? "product"
+					: "conversation";
 			// Sidechats carry immutable projection page IDs so moving a surface file
 			// does not detach its conversations from the UI instrument.
 			const page = kind === "chat" ? name.match(/^page — (.+)$/)?.[1] : undefined;
@@ -521,6 +540,7 @@ function listTrailSessions(root: string): SessionSummary[] {
 						? (sessionAuthority?.label ?? name)
 						: title || kernelInput || chatName || "New chat",
 				kind,
+				category,
 				department: sessionAuthority?.department,
 				worktree: sessionAuthority?.worktree,
 				page,

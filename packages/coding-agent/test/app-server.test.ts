@@ -465,6 +465,7 @@ describe("company app server", () => {
 				file: string;
 				title: string;
 				kind: string;
+				category?: string;
 				department?: string;
 				worktree?: string;
 				page?: string;
@@ -479,9 +480,14 @@ describe("company app server", () => {
 		expect(chat?.kind).toBe("chat");
 		expect(chat?.department).toBeUndefined();
 		expect(chat?.page).toBeUndefined();
+		// The trail categorizes what each session is a trail OF: user-led
+		// conversations are different from kernel lanes and product work.
+		expect(chat?.category).toBe("conversation");
 		expect(auto?.kind).toBe("autonomous");
 		expect(auto?.title).toBe("autonomous — conception");
+		expect(auto?.category).toBe("conception");
 		expect(scoped?.kind).toBe("chat");
+		expect(scoped?.category).toBe("product");
 		expect(scoped?.department).toBe(department.path);
 		expect(scoped?.worktree).toBe(worktree);
 		expect(scoped?.title).toBe("fix the launcher");
