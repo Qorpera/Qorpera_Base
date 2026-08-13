@@ -693,9 +693,9 @@ async function openSession(file, pageId = "q:chats") {
 	currentWorktree = result.worktree ?? null;
 	sidechatPageId = null;
 	sidechatPending = null;
-	// Cached pages show instantly; fresh ones get a proper loading state.
+	// Cached pages show instantly; fresh ones get the text-line skeleton.
 	// Either way the live child re-hydrates and replaces once ready.
-	$("messages").innerHTML = sessionCache[file] ?? '<div class="loading">loading session…</div>';
+	$("messages").innerHTML = sessionCache[file] ?? pageSkeletonMarkup();
 	resetWorkGroup();
 	show("chat");
 	syncScopeChrome();
@@ -1894,11 +1894,15 @@ async function openProjectionNode(id, updateRoute = true) {
 	const node = projectionNode(id);
 	if (!node) return;
 	const pageChanged = currentNodeId !== id;
+	// Remember the page being left so returning to it insta-loads.
+	if (pageChanged) cacheCurrentPanelPage();
 	currentNodeId = id;
 	if (updateRoute) setProjectionRoute(id);
-	// Between-pages micro animation: panel→panel navigations never pass
-	// through show()'s view-change gate, so retrigger here on a page change.
-	if (pageChanged) animatePageEnter($("view-panel"));
+	if (pageChanged && node.view?.type !== "surface") {
+		// Visited pages restore instantly; fresh ones show the text skeleton
+		// until their renderer replaces it (sync renderers do so same-frame).
+		$("view-panel").innerHTML = pageCache.get(id) ?? pageSkeletonMarkup();
+	}
 	if (node.kind === "department" || node.kind === "category") {
 		renderCollection(node);
 		show("panel");
@@ -2136,16 +2140,27 @@ function dockChat(docked) {
 	}
 }
 
-/** Retrigger the between-pages micro animation on a freshly shown container. */
-function animatePageEnter(el) {
-	if (!el) return;
-	el.classList.remove("page-enter");
-	void el.offsetWidth; // reflow so the animation restarts
-	el.classList.add("page-enter");
+/** The between-pages loading state: a text-line skeleton, as if a text
+ * page's contents are arriving. Widths vary so it reads as prose. */
+function pageSkeletonMarkup() {
+	const lines = ["92%", "100%", "97%", "88%", "63%", "", "96%", "90%", "99%", "42%"];
+	return `<div class="page-skeleton"><div class="sk-line sk-title"></div>${lines
+		.map((width) => (width ? `<div class="sk-line" style="width:${width}"></div>` : '<div class="sk-gap"></div>'))
+		.join("")}</div>`;
+}
+
+/** Session-scoped page cache: a page the founder already visited restores
+ * instantly on return (its renderer then refreshes it in place from live
+ * state); only never-visited pages show the loading skeleton. */
+const pageCache = new Map(); // projection node id -> #view-panel innerHTML
+
+function cacheCurrentPanelPage() {
+	if (currentView === "panel" && currentNodeId && !$("view-panel").querySelector(".page-skeleton")) {
+		pageCache.set(currentNodeId, $("view-panel").innerHTML);
+	}
 }
 
 function show(view) {
-	const entering = view !== currentView;
 	currentView = view;
 	const docked = view === "surface" && sidechatOpen;
 	dockChat(docked);
@@ -2153,11 +2168,6 @@ function show(view) {
 	$("view-surfacewrap").style.display = view === "surface" ? "flex" : "none";
 	$("view-surfacewrap").classList.toggle("chat-open", sidechatOpen);
 	$("view-panel").style.display = view === "panel" ? "block" : "none";
-	if (entering) {
-		animatePageEnter(
-			view === "chat" ? $("view-chat") : view === "surface" ? $("view-surfacewrap") : view === "panel" ? $("view-panel") : null,
-		);
-	}
 	// Leave the usage view alone while it is docked inside Settings.
 	if ($("view-usage").parentElement !== $("settingsContent")) {
 		$("view-usage").style.display = view === "usage" ? "block" : "none";
@@ -2173,10 +2183,23 @@ function renderCompanyNavSafe() {
 }
 
 function showSurface(page) {
+	if (currentNodeId !== page.id) cacheCurrentPanelPage();
 	currentNodeId = page.id;
 	const frame = $("view-surface");
 	const version = String(page.view.version ?? 0);
 	if (frame.dataset.pageId !== page.id || frame.dataset.version !== version) {
+		// A fresh surface load gets the text skeleton over the iframe until its
+		// document arrives; revisits keep the loaded iframe and skip it.
+		let overlay = document.getElementById("surfaceSkeleton");
+		if (!overlay) {
+			overlay = document.createElement("div");
+			overlay.id = "surfaceSkeleton";
+			overlay.className = "surface-skeleton";
+			frame.parentElement.appendChild(overlay);
+		}
+		overlay.innerHTML = pageSkeletonMarkup();
+		overlay.hidden = false;
+		frame.addEventListener("load", () => { overlay.hidden = true; }, { once: true });
 		frame.src = `${backendUrl}/surface/${encodeURIComponent(page.view.entry)}?v=${version}`;
 		frame.dataset.pageId = page.id;
 		frame.dataset.version = version;
