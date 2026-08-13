@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-13
 **Company:** `C:\Companies\qorperas-mini-company`
-**Base installer under test:** shell `0.18.12` release candidate
+**Base installer under test:** shell `0.18.12`, published release
 **Schedule:** `Company orchestration`, active every 10 minutes
 
 ## Company shape exercised
@@ -40,6 +40,8 @@
 | QMC-018 | Wake state writes were non-atomic, accepted malformed fields, and survived job deletion. | Fixed | Run state now uses atomic replace, validates every persisted field, and is removed with its job. |
 | QMC-019 | The installed `0.18.11` runtime could not consume the new named-job contract under live test. | Resolved by release | Testing moved to the exact unpacked release candidate; its process and child command line were verified before resuming the schedule. |
 | QMC-020 | Closing Base during a scheduled run left its persisted start without a terminal outcome or failure-streak update. | Fixed | Run state now records the active trail; the next attempted run reconciles an unfinished predecessor as failed, clears the active marker, and applies normal suspension policy. |
+| QMC-021 | A stale installed `0.18.11` instance needed to discover the new release through the production updater path. | Verified | The installed app downloaded `0.18.12` and displayed “restart to apply”; the exact unpacked release reported `v0.18.12` and “up to date.” |
+| QMC-022 | The released manual “Run now” path, duplicate-run guard, and interrupted-run marker needed end-to-end verification. | Verified | The confirmation showed the exact company, title, schedule, and prompt; authorization started one GPT-5.6 Sol child, disabled duplicate execution, persisted `activeTrailFile`, cleared it on completion, restored the founder child, and projected the completed run immediately. |
 
 ## Monitored runs
 
@@ -94,6 +96,17 @@ No-op discipline trail:
 - Persisted the no-op trail as the job's latest completed run with a zero
   failure streak; eligible reliability remains 3 successes from 4 attempts.
 
+Published-release manual-run trail:
+`trail/2026-08-13T20-25-51-104Z_c6652a9c-d381-4778-af1a-c82b4df2bf9a.jsonl`
+
+- Started through Activity’s released “Run now” control after an exact-content
+  authorization and ran on GPT-5.6 Sol.
+- Persisted the new active-trail marker while running and cleared it on the
+  terminal outcome; duplicate run-now execution stayed disabled.
+- Recorded a 30.891-second non-eligible no-op with zero human interventions,
+  passed controller validation, checkpointed the company, and restored the
+  founder controller.
+
 ## Architecture comparison
 
 | Concern | Qorpera Base | Retired Qorpera Desktop | T3 Code reference |
@@ -117,5 +130,9 @@ model should not replace the company folder as Base's source of truth.
 - Actual sandbox command succeeds as `CodexSandboxOffline` against the Mini
   Company repository.
 - Controller validation passes with 5 substrates and `app/projection.json`.
-- The exact unpacked release candidate resumed the 10-minute job, persisted a
+- The exact unpacked published release resumed the 10-minute job, persisted a
   completed outcome, and returned to the founder controller process.
+- Published `v0.18.12` from `3e8d7748e`; source claim `shell-v0.18.12` points to
+  the same commit and all updater asset names were read back from GitHub.
+- The downloaded published installer matches the locally signed build byte for
+  byte by SHA-512.
