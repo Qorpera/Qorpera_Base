@@ -36,9 +36,10 @@ describe("max thinking level", () => {
 			const model = getModel("openai-codex", modelId);
 			expect(model).toBeDefined();
 			expect(model?.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
-			// No "off": the Codex backend always reasons (the fallthrough that
-			// once offered it painted a dead slider stop on the desktop).
-			expect(getSupportedThinkingLevels(model!)).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"]);
+			// No "off" (the lane always reasons) and no "minimal" (it was a
+			// low-alias, not a real backend level) — dead/duplicate slider
+			// stops both.
+			expect(getSupportedThinkingLevels(model!)).toEqual(["low", "medium", "high", "xhigh", "max"]);
 		},
 	);
 

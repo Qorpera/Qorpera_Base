@@ -853,11 +853,11 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.provider === "openai-codex" && model.reasoning) {
 		// The Codex backend always reasons — there is no effort "none" on this
 		// lane, so an unmapped "off" must not fall through as available (it
-		// painted a dead "Off" stop on the desktop effort slider).
-		mergeThinkingLevelMap(model, { off: null });
-	}
-	if (model.provider === "openai-codex" && supportsOpenAiXhigh(model.id)) {
-		mergeThinkingLevelMap(model, { minimal: "low" });
+		// painted a dead "Off" stop on the desktop effort slider). "minimal"
+		// isn't a backend level either; it briefly survived as a low-alias
+		// slider stop, which read as a distinct effort that didn't exist —
+		// founder call 2026-08-13: the slate shows only real levels.
+		mergeThinkingLevelMap(model, { off: null, minimal: null });
 	}
 	if (
 		(model.provider === "moonshotai" || model.provider === "moonshotai-cn") &&

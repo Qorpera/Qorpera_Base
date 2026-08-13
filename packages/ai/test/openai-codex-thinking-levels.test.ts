@@ -24,11 +24,10 @@ describe("OpenAI Codex thinking levels", () => {
 		}
 	});
 
-	it("keeps the deliberate minimal→low alias on xhigh-capable codex models", () => {
+	it("offers only real backend levels — no minimal alias stop", () => {
+		// "minimal" was a low-alias slider stop; the founder ruled the slate
+		// shows only levels the backend actually distinguishes (2026-08-13).
 		const sol = getModel("openai-codex", "gpt-5.6-sol");
-		const levels = getSupportedThinkingLevels(sol!);
-		expect(levels).toContain("minimal");
-		expect(levels).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"]);
-		expect(sol?.thinkingLevelMap?.minimal).toBe("low");
+		expect(getSupportedThinkingLevels(sol!)).toEqual(["low", "medium", "high", "xhigh", "max"]);
 	});
 });
