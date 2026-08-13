@@ -82,6 +82,18 @@ Release-candidate trail:
   interventions; measured reliability is now 3 successes from 4 eligible
   attempts, with the earlier failure retained.
 
+No-op discipline trail:
+`trail/2026-08-13T20-12-53-445Z_cd740491-fa94-4468-85cd-c73d0de2543d.jsonl`
+
+- Fired exactly once on the next scheduler tick and used GPT-5.6 Sol.
+- Found no useful work that was both unblocked and within the company's
+  standing authority, so it did not invent a task.
+- Recorded a 34.155-second non-eligible no-op with zero human interventions,
+  passed controller validation, checkpointed the company, and restored the
+  founder controller.
+- Persisted the no-op trail as the job's latest completed run with a zero
+  failure streak; eligible reliability remains 3 successes from 4 attempts.
+
 ## Architecture comparison
 
 | Concern | Qorpera Base | Retired Qorpera Desktop | T3 Code reference |
