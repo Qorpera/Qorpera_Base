@@ -32,6 +32,11 @@ Independent of the OS sandbox, on every platform:
   needs); no provider keys reach it. Model credentials are opaque broker handles;
   request construction, authentication, and network stay in the kernel
   process, gated by kernel-signed intents with per-intent budgets.
+- **Git ownership isolation** — the Windows sandbox account receives
+  command-scope `safe.directory` entries only for the exact company and
+  assigned product worktree it can already access. System/global Git config
+  and terminal credential prompts stay disabled, so controllers can inspect
+  their repository without trusting arbitrary machine paths.
 - **Trail integrity** — the child cannot write the trail file; it submits
   entries the kernel validates, stamps into a hash chain, and appends.
 - **Tool-boundary authority** — `authority.toml` gates classified effects

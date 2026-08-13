@@ -36,11 +36,16 @@ let assistantEl = null;
 let thinkingEl = null;
 let poller = null;
 let currentModelKey = "";
+let preferredModelKey = "";
 let currentEffort = "";
 let currentSpeed = "standard";
 let speedAsserted = false; // one re-assert of the remembered speed per child spawn
 let modelMoveAsserted = false; // one off-slate model migration per child spawn
+let modelPreferencePending = false;
+let modelStateHydrated = false;
+let modelCatalogHydrated = false;
 let agentWorking = false; // a run is streaming; the composer shows Stop
+let agentExited = false;
 let pendingRewind = null; // { text } awaiting get_fork_messages for edit-and-resend
 let hiddenNavigation = new Set();
 let archivedNavigation = new Set(); // frontend preview only; durable archive remains unbound
@@ -58,8 +63,8 @@ let departmentWizard = {
 	repoMode: "local",
 	repoPath: "",
 	repoUrl: "",
-	clonePath: "",
 };
+let scheduledJobPanel = null; // { mode: "view"|"create", id?, draft, dirty, error?, pending? }
 
 const SIDEBAR_COLLAPSED_KEY = "qorpera.sidebar-collapsed";
 
@@ -413,7 +418,10 @@ const modelCtl = (() => {
 		// full provider catalogs.
 		if (Array.isArray(cached?.models) && cached.models.length) models = curateModels(cached.models);
 		if (Array.isArray(cached?.levels) && cached.levels.length) levels = cached.levels;
-		if (!currentModelKey && typeof cached?.modelKey === "string") currentModelKey = cached.modelKey;
+		if (!currentModelKey && typeof cached?.modelKey === "string") {
+			currentModelKey = cached.modelKey;
+			preferredModelKey = cached.modelKey;
+		}
 		if (!currentEffort && typeof cached?.effort === "string") currentEffort = cached.effort;
 		if (cached?.speed === "fast" || cached?.speed === "standard") currentSpeed = cached.speed;
 	} catch {
@@ -423,7 +431,13 @@ const modelCtl = (() => {
 		try {
 			localStorage.setItem(
 				CACHE_KEY,
-				JSON.stringify({ models, levels, modelKey: currentModelKey, effort: currentEffort, speed: currentSpeed }),
+				JSON.stringify({
+					models,
+					levels,
+					modelKey: preferredModelKey || currentModelKey,
+					effort: currentEffort,
+					speed: currentSpeed,
+				}),
 			);
 		} catch {
 			// storage unavailable — the cache is a nicety, never load-bearing
@@ -489,6 +503,7 @@ const modelCtl = (() => {
 			item.textContent = model.name;
 			item.onclick = () => {
 				currentModelKey = model.value;
+				preferredModelKey = model.value;
 				const [provider, modelId] = model.value.split("::");
 				window.qorpera.rpcSend({ type: "set_model", provider, modelId });
 				list.classList.remove("open");
@@ -540,9 +555,24 @@ const modelCtl = (() => {
 			levels = next;
 			sync();
 		},
+		hasModel(value) {
+			return models.some((model) => model.value === value);
+		},
+		nameFor(value) {
+			return models.find((model) => model.value === value)?.name;
+		},
 		sync,
 	};
 })();
+function reassertPreferredModel() {
+	if (!modelPreferencePending || !modelStateHydrated || !modelCatalogHydrated) return;
+	modelPreferencePending = false;
+	if (!preferredModelKey || !modelCtl.hasModel(preferredModelKey) || currentModelKey === preferredModelKey) return;
+	currentModelKey = preferredModelKey;
+	const [provider, modelId] = preferredModelKey.split("::");
+	window.qorpera.rpcSend({ type: "set_model", provider, modelId });
+	modelCtl.sync();
+}
 // First paint from the cache — the live child's answers replace it within
 // moments of the spawn.
 modelCtl.sync();
@@ -646,6 +676,11 @@ async function refreshState() {
 function hydrateAgentState(withHistory) {
 	speedAsserted = false;
 	modelMoveAsserted = false;
+	modelPreferencePending = !withHistory && Boolean(preferredModelKey);
+	modelStateHydrated = false;
+	modelCatalogHydrated = false;
+	agentExited = false;
+	$("stopBtn").hidden = true;
 	if (withHistory) window.qorpera.rpcSend({ type: "get_messages" });
 	const askState = () => {
 		window.qorpera.rpcSend({ type: "get_state" });
@@ -1703,11 +1738,7 @@ function departmentStepIsValid() {
 	if (departmentWizard.step === 2) return departmentWizard.name.trim().length > 0;
 	if (departmentWizard.type === "interface") return departmentWizard.template.length > 0;
 	if (departmentWizard.repoMode === "local") return departmentWizard.repoPath.trim().length > 0;
-	return (
-		departmentWizard.repoUrl.trim().length > 0 &&
-		$("repoUrl").validity.valid &&
-		departmentWizard.clonePath.trim().length > 0
-	);
+	return departmentWizard.repoUrl.trim().length > 0 && $("repoUrl").validity.valid;
 }
 
 function updateDepartmentActions() {
@@ -1756,7 +1787,6 @@ function renderDepartmentWizard() {
 	$("cloneRepoFields").hidden = departmentWizard.repoMode !== "clone";
 	$("repoPath").value = departmentWizard.repoPath;
 	$("repoUrl").value = departmentWizard.repoUrl;
-	$("clonePath").value = departmentWizard.clonePath;
 	updateDepartmentActions();
 }
 
@@ -1780,7 +1810,6 @@ function openDepartmentModal() {
 		repoMode: "local",
 		repoPath: "",
 		repoUrl: "",
-		clonePath: "",
 	};
 	$("departmentModal").hidden = false;
 	renderDepartmentWizard();
@@ -1799,18 +1828,34 @@ function moveDepartmentStep(direction) {
 	requestAnimationFrame(focusDepartmentStep);
 }
 
-function finishDepartmentPreview() {
+async function finishDepartmentCreation() {
 	if (!departmentStepIsValid()) return;
 	const name = departmentWizard.name.trim();
+	if (departmentWizard.type === "product") {
+		const source =
+			departmentWizard.repoMode === "local" ? departmentWizard.repoPath.trim() : departmentWizard.repoUrl.trim();
+		const create = $("departmentCreate");
+		create.disabled = true;
+		create.textContent = "Creating…";
+		try {
+			const result = await window.qorpera.addProduct(name, source);
+			if (!result?.ok) {
+				if (result?.error !== "cancelled") showControllerToast(result?.error ?? "Product department was not created.");
+				return;
+			}
+			closeDepartmentModal();
+			await refreshState();
+			showControllerToast(`${name} product-development department created.`);
+		} catch (error) {
+			showControllerToast(error instanceof Error ? error.message : "Product department could not be created.");
+		} finally {
+			create.textContent = "Create department";
+			updateDepartmentActions();
+		}
+		return;
+	}
 	const template = document.querySelector(`[data-template="${departmentWizard.template}"] strong`)?.textContent;
-	const setup =
-		departmentWizard.type === "interface"
-			? departmentWizard.template === "blank"
-				? "from scratch"
-				: `from the ${template} template`
-			: departmentWizard.repoMode === "local"
-				? "with a local repository"
-				: "with a repository clone";
+	const setup = departmentWizard.template === "blank" ? "from scratch" : `from the ${template} template`;
 	closeDepartmentModal();
 	showControllerToast(`${name} is ready to create ${setup}. The frontend is complete; the company command remains unbound.`);
 }
@@ -1893,6 +1938,7 @@ function renderProductChats(department, page) {
 async function openProjectionNode(id, updateRoute = true) {
 	const node = projectionNode(id);
 	if (!node) return;
+	$("view-panel").classList.toggle("activity-panel", node.view?.id === "qorpera.activity");
 	const pageChanged = currentNodeId !== id;
 	// Remember the page being left so returning to it insta-loads.
 	if (pageChanged) cacheCurrentPanelPage();
@@ -2094,19 +2140,23 @@ function setupHierarchicalController() {
 	for (const [id, field] of [
 		["repoPath", "repoPath"],
 		["repoUrl", "repoUrl"],
-		["clonePath", "clonePath"],
 	]) {
 		$(id).oninput = () => {
 			departmentWizard[field] = $(id).value;
 			updateDepartmentActions();
 		};
 	}
-	$("browseRepo").onclick = () => showControllerToast("Repository browsing will bind to the trusted company command.");
-	$("browseClonePath").onclick = () => showControllerToast("Destination browsing will bind to the trusted company command.");
+	$("browseRepo").onclick = async () => {
+		const result = await window.qorpera.chooseProductSource();
+		if (!result?.ok || !result.path) return;
+		departmentWizard.repoPath = result.path;
+		$("repoPath").value = result.path;
+		updateDepartmentActions();
+	};
 	$("departmentForm").onsubmit = (event) => {
 		event.preventDefault();
 		if (departmentWizard.step < 3) moveDepartmentStep(1);
-		else finishDepartmentPreview();
+		else void finishDepartmentCreation();
 	};
 	$("departmentModal").onpointerdown = (event) => {
 		if (event.target === $("departmentModal")) closeDepartmentModal();
@@ -2278,21 +2328,415 @@ const TRAIL_SECTIONS = [
 	{ category: "autonomous", heading: "Other autonomous work", badge: "autonomous" },
 ];
 
-async function renderActivity() {
+const TRAIL_OUTCOME_LABELS = {
+	running: "Running",
+	succeeded: "Completed",
+	failed: "Failed",
+	incomplete: "Incomplete",
+};
+
+function scheduledJobScheduleLabel(job) {
+	const minutes = Number(job.intervalMinutes);
+	if (minutes === 60) return "Hourly";
+	if (minutes % 1440 === 0) return `Every ${minutes / 1440} day${minutes === 1440 ? "" : "s"}`;
+	if (minutes % 60 === 0) return `Every ${minutes / 60} hour${minutes === 60 ? "" : "s"}`;
+	return `Every ${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+function scheduledJobNextLabel(job) {
+	if (job.running) return "Running now";
+	if (job.suspendedReason) return "Suspended";
+	if (!job.enabled) return "Paused";
+	const next = Date.parse(job.nextRunAt);
+	if (!Number.isFinite(next) || next <= Date.now()) return "Due now";
+	const minutes = Math.ceil((next - Date.now()) / 60000);
+	if (minutes < 60) return `Next run in ${minutes}m`;
+	const hours = Math.ceil(minutes / 60);
+	if (hours < 24) return `Next run in ${hours}h`;
+	return `Next run in ${Math.ceil(hours / 24)}d`;
+}
+
+function scheduledJobDraft(job) {
+	return {
+		title: job?.title ?? "",
+		prompt: job?.prompt ?? "",
+		intervalMinutes: job?.intervalMinutes ?? 10,
+		enabled: job?.enabled ?? true,
+	};
+}
+
+function scheduledJobField(labelText, control, helpText) {
+	const label = document.createElement("label");
+	label.className = "scheduled-job-field";
+	const title = document.createElement("span");
+	title.textContent = labelText;
+	label.append(title, control);
+	if (helpText) {
+		const help = document.createElement("small");
+		help.textContent = helpText;
+		label.appendChild(help);
+	}
+	return label;
+}
+
+function scheduledJobFact(label, value) {
+	const row = document.createElement("div");
+	row.className = "scheduled-job-fact";
+	const name = document.createElement("span");
+	name.textContent = label;
+	const text = document.createElement("strong");
+	text.textContent = value || "—";
+	row.append(name, text);
+	return row;
+}
+
+async function scheduledJobRequest(request, fallback) {
+	try {
+		return await request();
+	} catch (error) {
+		return { ok: false, error: error instanceof Error ? error.message : fallback };
+	}
+}
+
+function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, autonomousTrailFile) {
+	if (!scheduledJobPanel) return;
+	const job = scheduledJobPanel.mode === "view" ? jobs.find((candidate) => candidate.id === scheduledJobPanel.id) : null;
+	if (scheduledJobPanel.mode === "view" && !job) {
+		scheduledJobPanel = null;
+		return;
+	}
+	const aside = document.createElement("aside");
+	aside.className = "scheduled-job-detail";
+	const header = document.createElement("header");
+	const heading = document.createElement("div");
+	const eyebrow = document.createElement("span");
+	eyebrow.textContent = scheduledJobPanel.mode === "create" ? "New scheduled job" : "Scheduled job details";
+	const status = document.createElement("strong");
+	status.textContent = scheduledJobPanel.mode === "create" ? "Draft" : scheduledJobNextLabel(job);
+	heading.append(eyebrow, status);
+	const headerActions = document.createElement("div");
+	if (job) {
+		const run = document.createElement("button");
+		run.type = "button";
+		run.textContent = job.running ? "Running…" : autonomousRunning ? "Runtime busy" : "Run now";
+		run.disabled = autonomousRunning || scheduledJobPanel.pending;
+		if (autonomousRunning && !job.running) {
+			run.title = "Another scheduled job or autonomous merge is running.";
+		}
+		run.onclick = async () => {
+			scheduledJobPanel.pending = true;
+			scheduledJobPanel.error = "";
+			run.disabled = true;
+			const result = await scheduledJobRequest(
+				() => window.qorpera.runScheduledJob(job.id),
+				"Could not start the job.",
+			);
+			scheduledJobPanel.pending = false;
+			scheduledJobPanel.error = result?.ok ? "" : result?.error ?? "Could not start the job.";
+			if (result?.ok) scheduledJobPanel.dirty = false;
+			void renderActivity(true);
+		};
+		headerActions.appendChild(run);
+		const toggle = document.createElement("button");
+		toggle.type = "button";
+		toggle.textContent = job.enabled && !job.suspendedReason ? "Pause" : "Resume";
+		toggle.disabled = job.running || scheduledJobPanel.pending;
+		toggle.onclick = async () => {
+			scheduledJobPanel.pending = true;
+			const result = await scheduledJobRequest(
+				() => window.qorpera.updateScheduledJob(job.id, { enabled: !(job.enabled && !job.suspendedReason) }),
+				"Could not update the job.",
+			);
+			scheduledJobPanel.pending = false;
+			scheduledJobPanel.error = result?.ok ? "" : result?.error ?? "Could not update the job.";
+			if (result?.ok) {
+				scheduledJobPanel.draft.enabled = result.job.enabled;
+				scheduledJobPanel.dirty = false;
+			}
+			void renderActivity(true);
+		};
+		headerActions.appendChild(toggle);
+	}
+	const close = document.createElement("button");
+	close.className = "scheduled-job-close";
+	close.type = "button";
+	close.setAttribute("aria-label", "Collapse scheduled job details");
+	close.textContent = "×";
+	close.onclick = () => {
+		scheduledJobPanel = null;
+		void renderActivity();
+	};
+	headerActions.appendChild(close);
+	header.append(heading, headerActions);
+	aside.appendChild(header);
+
+	const form = document.createElement("form");
+	form.className = "scheduled-job-form";
+	const title = document.createElement("input");
+	title.type = "text";
+	title.placeholder = "Scheduled job title";
+	title.maxLength = 160;
+	title.value = scheduledJobPanel.draft.title;
+	title.oninput = () => {
+		scheduledJobPanel.draft.title = title.value;
+		scheduledJobPanel.dirty = true;
+	};
+	form.appendChild(scheduledJobField("Title", title));
+	const prompt = document.createElement("textarea");
+	prompt.placeholder = "Describe what the company controller should do";
+	prompt.value = scheduledJobPanel.draft.prompt;
+	prompt.oninput = () => {
+		scheduledJobPanel.draft.prompt = prompt.value;
+		scheduledJobPanel.dirty = true;
+	};
+	form.appendChild(scheduledJobField("Instructions", prompt, "The controller receives these full instructions at every run."));
+	const interval = document.createElement("input");
+	interval.type = "number";
+	interval.min = "5";
+	interval.max = String(7 * 24 * 60);
+	interval.step = "1";
+	interval.value = String(scheduledJobPanel.draft.intervalMinutes);
+	interval.oninput = () => {
+		scheduledJobPanel.draft.intervalMinutes = Number(interval.value);
+		scheduledJobPanel.dirty = true;
+	};
+	form.appendChild(scheduledJobField("Repeat every (minutes)", interval, "5 minutes minimum; jobs run while this company is open."));
+	const enabled = document.createElement("input");
+	enabled.type = "checkbox";
+	enabled.checked = scheduledJobPanel.draft.enabled;
+	enabled.onchange = () => {
+		scheduledJobPanel.draft.enabled = enabled.checked;
+		scheduledJobPanel.dirty = true;
+	};
+	form.appendChild(scheduledJobField("Active", enabled, "Paused jobs keep their definition and run history."));
+
+	if (job) {
+		const facts = document.createElement("section");
+		facts.className = "scheduled-job-facts";
+		facts.append(
+			scheduledJobFact("Schedule", scheduledJobScheduleLabel(job)),
+			scheduledJobFact("Next run", job.nextRunAt ? new Date(job.nextRunAt).toLocaleString() : "Paused"),
+			scheduledJobFact("Last ran", job.lastRunAt ? new Date(job.lastRunAt).toLocaleString() : "Never"),
+			scheduledJobFact(
+				"Last completed outcome",
+				TRAIL_OUTCOME_LABELS[job.lastOutcome] ?? (job.running ? "Running" : "No run yet"),
+			),
+			scheduledJobFact("Failure streak", String(job.failureStreak ?? 0)),
+			scheduledJobFact("Created", new Date(job.createdAt).toLocaleString()),
+			scheduledJobFact("Updated", new Date(job.updatedAt).toLocaleString()),
+			scheduledJobFact("Job ID", job.id),
+		);
+		if (job.suspendedReason) facts.appendChild(scheduledJobFact("Suspended", job.suspendedReason));
+		form.appendChild(facts);
+		const runs = sessions.filter((session) => session.scheduledJobId === job.id).slice(0, 5);
+		const recent = document.createElement("section");
+		recent.className = "scheduled-job-recent";
+		const recentHeading = document.createElement("h3");
+		recentHeading.textContent = "Recent runs";
+		recent.appendChild(recentHeading);
+		if (!runs.length) {
+			const empty = document.createElement("p");
+			empty.textContent = "No runs recorded yet.";
+			recent.appendChild(empty);
+		}
+		for (const run of runs) {
+			const row = document.createElement("button");
+			row.type = "button";
+			row.className = "scheduled-job-run";
+			const holdOpen = autonomousRunning && run.kind === "autonomous";
+			const runTitle = document.createElement("strong");
+			const outcome = displayedTrailOutcome(run, autonomousTrailFile);
+			runTitle.textContent = TRAIL_OUTCOME_LABELS[outcome] ?? outcome ?? "Run";
+			const runMeta = document.createElement("span");
+			runMeta.textContent = [new Date(run.mtimeMs).toLocaleString(), Number.isFinite(run.durationMs) ? formatDuration(run.durationMs) : ""]
+				.filter(Boolean)
+				.join(" · ");
+			row.append(runTitle, runMeta);
+			row.disabled = holdOpen;
+			if (holdOpen) {
+				row.title =
+					outcome === "running"
+						? "This scheduled run is still running."
+						: "Another autonomous run is active, so this trail cannot be resumed yet.";
+			}
+			row.onclick = () => openSession(run.file, "q:activity");
+			recent.appendChild(row);
+		}
+		form.appendChild(recent);
+	}
+	if (scheduledJobPanel.error) {
+		const error = document.createElement("div");
+		error.className = "scheduled-job-error";
+		error.textContent = scheduledJobPanel.error;
+		form.appendChild(error);
+	}
+	const actions = document.createElement("footer");
+	if (job) {
+		const remove = document.createElement("button");
+		remove.type = "button";
+		remove.className = "danger-button";
+		remove.textContent = "Delete";
+		remove.disabled = job.running || scheduledJobPanel.pending;
+		remove.onclick = async () => {
+			const result = await scheduledJobRequest(
+				() => window.qorpera.deleteScheduledJob(job.id),
+				"Could not delete the job.",
+			);
+			if (result?.ok) scheduledJobPanel = null;
+			else scheduledJobPanel.error = result?.error ?? "Could not delete the job.";
+			void renderActivity(true);
+		};
+		actions.appendChild(remove);
+	}
+	const spacer = document.createElement("span");
+	actions.appendChild(spacer);
+	const save = document.createElement("button");
+	save.type = "submit";
+	save.className = "primary-button";
+	save.textContent = scheduledJobPanel.mode === "create" ? "Create scheduled job" : "Save changes";
+	save.disabled = scheduledJobPanel.pending;
+	actions.appendChild(save);
+	form.appendChild(actions);
+	form.onsubmit = async (event) => {
+		event.preventDefault();
+		scheduledJobPanel.pending = true;
+		scheduledJobPanel.error = "";
+		save.disabled = true;
+		const draft = {
+			title: scheduledJobPanel.draft.title,
+			prompt: scheduledJobPanel.draft.prompt,
+			intervalMinutes: Number(scheduledJobPanel.draft.intervalMinutes),
+			enabled: Boolean(scheduledJobPanel.draft.enabled),
+		};
+		const result = await scheduledJobRequest(
+			() =>
+				job ? window.qorpera.updateScheduledJob(job.id, draft) : window.qorpera.createScheduledJob(draft),
+			"Could not save the scheduled job.",
+		);
+		scheduledJobPanel.pending = false;
+		if (result?.ok) {
+			scheduledJobPanel = { mode: "view", id: result.job.id, draft: scheduledJobDraft(result.job), dirty: false };
+		} else {
+			scheduledJobPanel.error = result?.error ?? "Could not save the scheduled job.";
+		}
+		void renderActivity(true);
+	};
+	aside.appendChild(form);
+	shell.appendChild(aside);
+}
+
+function displayedTrailOutcome(session, autonomousTrailFile) {
+	if (session.file === autonomousTrailFile) return "running";
+	return session.outcome === "running" ? "incomplete" : session.outcome;
+}
+
+function trailRunMeta(session, displayedOutcome) {
+	if (!displayedOutcome) return null;
+	const row = document.createElement("div");
+	row.className = "trail-run-meta";
+	const outcome = document.createElement("span");
+	outcome.className = `trail-outcome trail-outcome-${displayedOutcome}`;
+	outcome.textContent = TRAIL_OUTCOME_LABELS[displayedOutcome] ?? displayedOutcome;
+	row.appendChild(outcome);
+	const facts = [];
+	if (session.modelId) {
+		const key = session.modelProvider ? `${session.modelProvider}::${session.modelId}` : "";
+		facts.push(modelCtl.nameFor(key) ?? session.modelId);
+	}
+	if (Number.isFinite(session.durationMs)) facts.push(formatDuration(session.durationMs));
+	if (Number.isFinite(session.calls)) facts.push(`${session.calls} call${session.calls === 1 ? "" : "s"}`);
+	if (Number.isFinite(session.costUsd)) facts.push(`$${session.costUsd.toFixed(4)}`);
+	if (facts.length) row.appendChild(document.createTextNode(` · ${facts.join(" · ")}`));
+	return row;
+}
+
+async function renderActivity(force = false) {
 	const panel = $("view-panel");
+	if (!force && scheduledJobPanel?.dirty && panel.querySelector(".scheduled-job-detail")?.contains(document.activeElement)) return;
 	const sessions = state.sessions ?? [];
 	// Resuming a session that a live kernel-spawned child (the merge) is
 	// still writing would put two writers on one trail file — hold Open
 	// until it finishes.
-	let mergeRunning = false;
+	let autonomousRunning = false;
+	let autonomousTrailFile = "";
+	let jobs = [];
 	try {
-		mergeRunning = Boolean((await window.qorpera.appInfo())?.activeCompany?.mergeRunning);
+		const active = (await window.qorpera.appInfo())?.activeCompany;
+		autonomousRunning = Boolean(active?.mergeRunning || active?.wakeRunning);
+		autonomousTrailFile = active?.autonomousTrailFile ?? "";
+		jobs = active?.scheduledJobs ?? [];
 	} catch {
 		// bridge unavailable mid-reload: leave Open enabled
 	}
-	panel.innerHTML = sessions.length
-		? ""
-		: '<div class="empty">No trail yet — conversations, product work, conception, routines, and merges will appear here.</div>';
+	panel.innerHTML = "";
+	const shell = document.createElement("div");
+	shell.className = `activity-layout${scheduledJobPanel ? " has-detail" : ""}`;
+	const main = document.createElement("section");
+	main.className = "activity-main";
+	const pageHeader = document.createElement("header");
+	pageHeader.className = "activity-head";
+	const pageCopy = document.createElement("div");
+	const title = document.createElement("h1");
+	title.textContent = "Activity";
+	const subtitle = document.createElement("p");
+	subtitle.textContent = "Scheduled controller work and the company’s complete operating trail.";
+	pageCopy.append(title, subtitle);
+	const create = document.createElement("button");
+	create.type = "button";
+	create.className = "primary-button";
+	create.textContent = "Create scheduled job";
+	create.onclick = () => {
+		scheduledJobPanel = { mode: "create", draft: scheduledJobDraft(), dirty: false };
+		void renderActivity();
+	};
+	pageHeader.append(pageCopy, create);
+	main.appendChild(pageHeader);
+	const jobsHead = document.createElement("h2");
+	jobsHead.className = "trail-section scheduled-jobs-heading";
+	jobsHead.textContent = `Scheduled jobs · ${jobs.length}`;
+	main.appendChild(jobsHead);
+	if (!jobs.length) {
+		const empty = document.createElement("div");
+		empty.className = "scheduled-jobs-empty";
+		empty.textContent = "No scheduled jobs. Create one to give the controller recurring work.";
+		main.appendChild(empty);
+	}
+	for (const job of jobs) {
+		const row = document.createElement("button");
+		row.type = "button";
+		row.className = `scheduled-job-row${job.enabled && !job.suspendedReason ? "" : " paused"}`;
+		if (scheduledJobPanel?.id === job.id) row.classList.add("selected");
+		const indicator = document.createElement("span");
+		indicator.className = `scheduled-job-indicator${job.running ? " running" : job.enabled && !job.suspendedReason ? " active" : ""}`;
+		const copy = document.createElement("span");
+		copy.className = "scheduled-job-copy";
+		const name = document.createElement("strong");
+		name.textContent = job.title;
+		const schedule = document.createElement("span");
+		schedule.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)}`;
+		const prompt = document.createElement("small");
+		prompt.textContent = job.prompt;
+		copy.append(name, schedule, prompt);
+		const arrow = document.createElement("span");
+		arrow.className = "scheduled-job-arrow";
+		arrow.textContent = "›";
+		row.append(indicator, copy, arrow);
+		row.onclick = () => {
+			scheduledJobPanel = { mode: "view", id: job.id, draft: scheduledJobDraft(job), dirty: false };
+			void renderActivity();
+		};
+		main.appendChild(row);
+	}
+	const historyHead = document.createElement("h2");
+	historyHead.className = "trail-section activity-history-heading";
+	historyHead.textContent = "Run history";
+	main.appendChild(historyHead);
+	if (!sessions.length) {
+		main.insertAdjacentHTML(
+			"beforeend",
+			'<div class="empty">No trail yet — conversations, product work, conception, routines, and merges will appear here.</div>',
+		);
+	}
 	for (const section of TRAIL_SECTIONS) {
 		// Sessions listed before categories existed fall back by kind.
 		const rows = sessions.filter(
@@ -2302,7 +2746,7 @@ async function renderActivity() {
 		const head = document.createElement("h2");
 		head.className = "trail-section";
 		head.textContent = section.heading;
-		panel.appendChild(head);
+		main.appendChild(head);
 		for (const session of rows) {
 			const d = document.createElement("div");
 			d.className = "gate";
@@ -2316,18 +2760,27 @@ async function renderActivity() {
 			d.querySelector(".s").textContent =
 				`${new Date(session.mtimeMs).toLocaleString()} · ${session.file}` +
 				(session.department ? ` · ${departmentName(session.department)}` : "");
-			const holdOpen = mergeRunning && session.kind === "autonomous";
+			const holdOpen = autonomousRunning && session.kind === "autonomous";
+			const outcome = displayedTrailOutcome(session, autonomousTrailFile);
+			const sessionRunning = outcome === "running";
+			const runMeta = trailRunMeta(session, outcome);
+			if (runMeta) d.appendChild(runMeta);
 			const open = document.createElement("button");
-			open.textContent = holdOpen ? "Running…" : "Open";
+			open.textContent = sessionRunning ? "Running…" : holdOpen ? "Unavailable" : "Open";
 			open.disabled = holdOpen;
-			if (holdOpen)
-				open.title =
-					"An autonomous merge session is running — resume is held so two agents never write one trail file.";
+			if (holdOpen) {
+				open.title = sessionRunning
+					? "This autonomous run is still running."
+					: "Another autonomous run is active, so this trail cannot be resumed yet.";
+			}
 			open.onclick = () => openSession(session.file, "q:activity");
 			d.appendChild(open);
-			panel.appendChild(d);
+			main.appendChild(d);
 		}
 	}
+	shell.appendChild(main);
+	renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, autonomousTrailFile);
+	panel.appendChild(shell);
 }
 
 // ---- inbox: decisions, questions, notifications ------------------------------
@@ -2676,17 +3129,17 @@ function decorateUserMsg(el, text) {
 	return el;
 }
 
-function sendPrompt() {
+async function sendPrompt() {
 	const input = $("input");
 	const text = input.value.trim();
 	const images = pendingImages;
 	if (!text && !images.length) return;
-	input.value = "";
-	pendingImages = [];
-	renderAttachStrip();
-	syncComposer();
-	appendMsgImages(decorateUserMsg(addMsg("user", text), text), images.map((image) => image.dataUrl));
+	if (agentExited) {
+		showControllerToast("controller stopped — start a new chat to reconnect");
+		return;
+	}
 	let message = text;
+	const sidechatContext = sidechatPending;
 	if (sidechatPending) {
 		// First prompt of a fresh sidechat: tell the controller what the founder
 		// is looking at. Square brackets are stripped from the interpolations so
@@ -2695,7 +3148,6 @@ function sendPrompt() {
 		const name = String(sidechatPending.label).replace(/[[\]]/g, ")");
 		const entry = String(sidechatPending.view.entry).replace(/[[\]]/g, ")");
 		message = `[Sidechat context: this chat is docked to the surface "${name}" — app/surfaces/${entry}. The founder is looking at it right now; orient from that file before answering.]\n\n${text}`;
-		sidechatPending = null;
 	}
 	const frame = { type: "prompt", message };
 	if (images.length) {
@@ -2705,7 +3157,25 @@ function sendPrompt() {
 			mimeType: image.mimeType,
 		}));
 	}
-	window.qorpera.rpcSend(frame);
+	const result = await window.qorpera.rpcSend(frame);
+	if (!result?.ok) {
+		showControllerToast("controller is busy with autonomous work — your draft was preserved");
+		return;
+	}
+	input.value = "";
+	pendingImages = [];
+	if (sidechatPending === sidechatContext) sidechatPending = null;
+	renderAttachStrip();
+	syncComposer();
+	appendMsgImages(decorateUserMsg(addMsg("user", text), text), images.map((image) => image.dataUrl));
+}
+
+function modelFailureMessage(value) {
+	const raw = String(value ?? "unknown error");
+	if (/anthropic/i.test(raw) && /oauth refresh failed|invalid_grant|refresh token/i.test(raw)) {
+		return "Anthropic sign-in expired. Choose another model or reconnect Anthropic with qorpera → /login.";
+	}
+	return raw.split(/; stack=|\n\s+at /, 1)[0].slice(0, 320);
 }
 
 /** Grow the textarea with its content and light the send button up. */
@@ -2885,6 +3355,7 @@ window.qorpera.onRpcEvent((frame) => {
 			break;
 		case "agent_start":
 			$("status").textContent = "working…";
+			agentExited = false;
 			agentWorking = true;
 			$("stopBtn").hidden = false;
 			break;
@@ -2895,7 +3366,7 @@ window.qorpera.onRpcEvent((frame) => {
 			const ended = frame.message;
 			if (ended?.role === "assistant" && ended.stopReason === "error") {
 				closeWorkGroup();
-				addMsg("log", `⚠ model call failed: ${ended.errorMessage ?? "unknown error"}`);
+				addMsg("log", `⚠ model call failed: ${modelFailureMessage(ended.errorMessage)}`);
 			} else if (ended?.role === "assistant" && ended.stopReason === "aborted") {
 				closeWorkGroup();
 				addMsg("log", "stopped");
@@ -2916,6 +3387,7 @@ window.qorpera.onRpcEvent((frame) => {
 					})),
 				);
 				modelCtl.setModels(offered);
+				modelCatalogHydrated = true;
 				// A session restored on a model we no longer offer would leave the
 				// chip naming nothing in the list — move it onto the same model's
 				// offered lane when one exists, otherwise the slate's head.
@@ -2928,8 +3400,10 @@ window.qorpera.onRpcEvent((frame) => {
 					const target = offered.find((m) => m.value.split("::")[1] === currentId) ?? offered[0];
 					const [provider, modelId] = target.value.split("::");
 					currentModelKey = target.value;
+					preferredModelKey = target.value;
 					window.qorpera.rpcSend({ type: "set_model", provider, modelId });
 				}
+				reassertPreferredModel();
 			} else if (frame.command === "get_fork_messages" && frame.success) {
 				if (pendingRewind) {
 					const wanted = pendingRewind.text.trim();
@@ -2955,6 +3429,7 @@ window.qorpera.onRpcEvent((frame) => {
 			} else if (frame.command === "get_state" && frame.success) {
 				const model = frame.data?.model;
 				if (model?.id) currentModelKey = `${model.provider}::${model.id}`;
+				modelStateHydrated = true;
 				if (frame.data?.thinkingLevel) currentEffort = frame.data.thinkingLevel;
 				const reported = frame.data?.responseSpeed;
 				if (reported) {
@@ -2968,8 +3443,10 @@ window.qorpera.onRpcEvent((frame) => {
 					speedAsserted = true;
 				}
 				modelCtl.sync();
+				reassertPreferredModel();
 			} else if (frame.command === "set_model" && frame.success && frame.data?.id) {
 				currentModelKey = `${frame.data.provider}::${frame.data.id}`;
+				preferredModelKey = currentModelKey;
 				// The child re-clamps the thinking level to the new model's range,
 				// and the range itself differs per model — refetch both so the
 				// slider's stops and knob match what the session will actually run.
@@ -2985,7 +3462,14 @@ window.qorpera.onRpcEvent((frame) => {
 window.qorpera.onRpcLog((line) => {
 	$("status").textContent = line.slice(0, 160);
 });
-window.qorpera.onRpcExit((code) => addMsg("log", `agent exited (${code})`));
+window.qorpera.onRpcExit((code) => {
+	agentExited = true;
+	agentWorking = false;
+	closeWorkGroup();
+	$("status").textContent = "controller stopped";
+	$("stopBtn").hidden = true;
+	addMsg("log", `agent exited (${code}). Start a new chat to reconnect.`);
+});
 
 function summarizeArgs(args) {
 	if (!args) return "";

@@ -34,6 +34,7 @@ import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
 import { canonicalCompanyRoot, listProductDepartments } from "./company.ts";
+import { DEFAULT_SCHEDULED_JOB_ID, DEFAULT_SCHEDULED_JOB_TITLE } from "./company-connections.ts";
 import { readFounderIdentity, signAuthorityPolicy, signGateApproval } from "./founder-identity.ts";
 import {
 	PLATFORM_PROJECTION_NODES,
@@ -419,6 +420,19 @@ interface SessionSummary {
 	worktree?: string;
 	/** Stable projection page ID a sidechat session is docked to, if any. */
 	page?: string;
+	/** Named scheduled-job identity parsed from the kernel-authenticated session label. */
+	scheduledJobId?: string;
+	scheduledJobTitle?: string;
+	/** Autonomous-run health derived from kernel-observed trail entries. */
+	outcome?: "running" | "succeeded" | "failed" | "incomplete";
+	/** Last model recorded for the run. */
+	modelProvider?: string;
+	modelId?: string;
+	/** End-to-end elapsed time, from the session header to the terminal entry. */
+	durationMs?: number;
+	/** Kernel-accounted aggregate usage for the intent. */
+	calls?: number;
+	costUsd?: number;
 }
 
 /** Chat-title material: chrome-injected context blocks are plumbing, not the
@@ -429,6 +443,131 @@ function sessionTitleText(text: string): string {
 		.replace(/\s+/g, " ")
 		.trim()
 		.slice(0, 70);
+}
+
+interface AutonomousRunSummary {
+	outcome: "running" | "succeeded" | "failed" | "incomplete";
+	modelProvider?: string;
+	modelId?: string;
+	durationMs?: number;
+	calls?: number;
+	costUsd?: number;
+}
+
+/** Read enough of a trail to classify an autonomous run without reparsing a
+ * potentially 64 MiB history file on every two-second state poll. The head
+ * carries the authenticated session/model declarations; the tail carries the
+ * terminal assistant and kernel intent-accounting entries. */
+function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSummary {
+	const headBytes = 262_144;
+	const tailBytes = 524_288;
+	const headEnd = Math.min(content.length, headBytes);
+	const headLines = content.toString("utf-8", 0, headEnd).split("\n");
+	if (content.length > headEnd) headLines.pop();
+	const lines = [...headLines];
+	if (content.length > headEnd) {
+		const tailStart = Math.max(headEnd, content.length - tailBytes);
+		const tailLines = content.toString("utf-8", tailStart).split("\n");
+		// tailStart can split a UTF-8 sequence or JSON entry; discard that stub.
+		tailLines.shift();
+		lines.push(...tailLines);
+	}
+
+	let startedAt: number | undefined;
+	let terminalAt: number | undefined;
+	let lastObservedAt = mtimeMs;
+	let modelProvider: string | undefined;
+	let modelId: string | undefined;
+	let lastAssistantStopReason: string | undefined;
+	let lastRequestStatus: string | undefined;
+	let intentStatus: string | undefined;
+	let calls: number | undefined;
+	let requestCostUsd = 0;
+	let sawRequestCost = false;
+	let intentCostUsd: number | undefined;
+
+	for (const line of lines) {
+		if (!line.trim()) continue;
+		try {
+			const entry = JSON.parse(line) as {
+				type?: string;
+				timestamp?: string;
+				provider?: string;
+				modelId?: string;
+				customType?: string;
+				message?: { role?: string; provider?: string; model?: string; stopReason?: string };
+				data?: {
+					event?: string;
+					status?: string;
+					provider?: string;
+					model?: string;
+					usage?: { calls?: number; costUsd?: number };
+				};
+			};
+			const observedAt = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
+			if (Number.isFinite(observedAt)) lastObservedAt = Math.max(lastObservedAt, observedAt);
+			if (entry.type === "session" && startedAt === undefined && Number.isFinite(observedAt)) startedAt = observedAt;
+			if (entry.type === "model_change") {
+				if (typeof entry.provider === "string") modelProvider = entry.provider;
+				if (typeof entry.modelId === "string") modelId = entry.modelId;
+			}
+			if (entry.type === "message" && entry.message?.role === "assistant") {
+				if (typeof entry.message.provider === "string") modelProvider = entry.message.provider;
+				if (typeof entry.message.model === "string") modelId = entry.message.model;
+				if (typeof entry.message.stopReason === "string") {
+					lastAssistantStopReason = entry.message.stopReason;
+					if (entry.message.stopReason !== "toolUse" && Number.isFinite(observedAt)) terminalAt = observedAt;
+				}
+			}
+			if (entry.type !== "custom" || entry.customType !== "qorpera_kernel_model_request") continue;
+			if (typeof entry.data?.provider === "string") modelProvider = entry.data.provider;
+			if (typeof entry.data?.model === "string") modelId = entry.data.model;
+			if (entry.data?.event === "request") {
+				lastRequestStatus = entry.data.status;
+				const cost = entry.data.usage?.costUsd;
+				if (entry.data.status === "completed" && typeof cost === "number" && Number.isFinite(cost) && cost >= 0) {
+					requestCostUsd += cost;
+					sawRequestCost = true;
+				}
+			}
+			if (entry.data?.event === "intent") {
+				intentStatus = entry.data.status;
+				const intentCalls = entry.data.usage?.calls;
+				const cost = entry.data.usage?.costUsd;
+				if (typeof intentCalls === "number" && Number.isFinite(intentCalls) && intentCalls >= 0)
+					calls = intentCalls;
+				if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) intentCostUsd = cost;
+				if ((entry.data.status === "completed" || entry.data.status === "failed") && Number.isFinite(observedAt)) {
+					terminalAt = observedAt;
+				}
+			}
+		} catch {
+			// Foreign or partial trail entries do not prevent classification.
+		}
+	}
+
+	let outcome: AutonomousRunSummary["outcome"];
+	if (
+		intentStatus === "failed" ||
+		lastAssistantStopReason === "error" ||
+		lastAssistantStopReason === "aborted" ||
+		(intentStatus === "completed" && lastAssistantStopReason === undefined && lastRequestStatus === "failed")
+	) {
+		outcome = "failed";
+	} else if (intentStatus === "completed" && lastAssistantStopReason === "stop") {
+		outcome = "succeeded";
+	} else {
+		outcome = Date.now() - lastObservedAt < 30 * 60_000 ? "running" : "incomplete";
+	}
+
+	return {
+		outcome,
+		modelProvider,
+		modelId,
+		durationMs: startedAt !== undefined && terminalAt !== undefined ? Math.max(0, terminalAt - startedAt) : undefined,
+		calls,
+		costUsd: intentCostUsd ?? (sawRequestCost ? requestCostUsd : undefined),
+	};
 }
 
 /** Trail sessions ARE the chat list (spec §3). Title = first user message,
@@ -511,6 +650,13 @@ function listTrailSessions(root: string): SessionSummary[] {
 			}
 			const kind = sessionAuthority?.autonomous ? "autonomous" : "chat";
 			const label = (sessionAuthority?.label ?? "").toLowerCase();
+			const scheduledJob = sessionAuthority?.autonomous
+				? (sessionAuthority.label ?? "").match(/^autonomous — wake — scheduled-job:([a-z0-9-]+) — (.+)$/i)
+				: undefined;
+			const legacyScheduledJob = label === "autonomous — wake — schedule";
+			const scheduledJobId = scheduledJob?.[1] ?? (legacyScheduledJob ? DEFAULT_SCHEDULED_JOB_ID : undefined);
+			const scheduledJobTitle =
+				scheduledJob?.[2]?.trim() ?? (legacyScheduledJob ? DEFAULT_SCHEDULED_JOB_TITLE : undefined);
 			const category: SessionCategory = sessionAuthority?.autonomous
 				? label.includes("conception")
 					? "conception"
@@ -532,18 +678,22 @@ function listTrailSessions(root: string): SessionSummary[] {
 			// user message, no kernel input, no founder-given name → nothing to
 			// resume, nothing to list.
 			if (kind === "chat" && !sawUserMessage && !kernelInput && !chatName) continue;
+			const run = kind === "autonomous" ? autonomousRunSummary(source.content, source.mtimeMs) : undefined;
 			sessions.push({
 				file,
 				mtimeMs: source.mtimeMs,
 				title:
 					kind === "autonomous"
-						? (sessionAuthority?.label ?? name)
+						? (scheduledJobTitle ?? sessionAuthority?.label ?? name)
 						: title || kernelInput || chatName || "New chat",
 				kind,
 				category,
 				department: sessionAuthority?.department,
 				worktree: sessionAuthority?.worktree,
 				page,
+				scheduledJobId,
+				scheduledJobTitle,
+				...run,
 			});
 		} catch {
 			// unreadable session files are skipped

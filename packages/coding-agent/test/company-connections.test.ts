@@ -11,6 +11,9 @@ import {
 	bindNetworkDestination,
 	bindWakeSchedule,
 	companyConnectionsPath,
+	createScheduledJob,
+	DEFAULT_SCHEDULED_JOB_ID,
+	deleteScheduledJob,
 	destinationAllowed,
 	disableWakeSchedule,
 	disableWebhook,
@@ -18,12 +21,15 @@ import {
 	MIN_WAKE_INTERVAL_MINUTES,
 	persistWebhookPort,
 	readCompanyConnections,
+	readScheduledJobs,
 	readWakeSchedule,
 	readWebhookBinding,
 	removeCompanySecret,
 	removeNetworkDestination,
 	resolveCompanySecret,
+	suspendScheduledJob,
 	suspendWakeSchedule,
+	updateScheduledJob,
 } from "../src/core/company-connections.ts";
 
 let root: string;
@@ -161,6 +167,50 @@ describe("wake schedule", () => {
 		expect(readWakeSchedule(root)?.suspendedReason).toContain("failures");
 		// Re-binding is the founder's re-enable: suspension clears.
 		expect(bindWakeSchedule(root, 30).suspendedReason).toBeUndefined();
+	});
+
+	it("migrates the founder-bound wake into a named scheduled job", () => {
+		bindWakeSchedule(root, 10);
+		const jobs = readScheduledJobs(root);
+		expect(jobs).toHaveLength(1);
+		expect(jobs[0]).toMatchObject({
+			id: DEFAULT_SCHEDULED_JOB_ID,
+			title: "Company orchestration",
+			intervalMinutes: 10,
+			enabled: true,
+		});
+		expect(jobs[0].prompt).toContain("company.md");
+		expect(readWakeSchedule(root)).toEqual({ intervalMinutes: 10, enabled: true });
+	});
+
+	it("creates, edits, pauses, resumes, and deletes independent scheduled jobs", () => {
+		const job = createScheduledJob(root, {
+			title: "Reliability sweep",
+			prompt: "Inspect the reliability dashboard and repair the highest-impact issue.",
+			intervalMinutes: 15,
+		});
+		expect(readScheduledJobs(root)).toEqual([job]);
+		const paused = updateScheduledJob(root, job.id, { enabled: false, intervalMinutes: 30 });
+		expect(paused).toMatchObject({ enabled: false, intervalMinutes: 30 });
+		const resumed = updateScheduledJob(root, job.id, { enabled: true, title: "Reliability review" });
+		expect(resumed).toMatchObject({ enabled: true, title: "Reliability review" });
+		expect(() => createScheduledJob(root, { title: "Too fast", prompt: "Run", intervalMinutes: 1 })).toThrow(
+			/ceiling/,
+		);
+		expect(deleteScheduledJob(root, job.id)).toBe(true);
+		expect(deleteScheduledJob(root, job.id)).toBe(false);
+		expect(readScheduledJobs(root)).toEqual([]);
+	});
+
+	it("keeps a kernel suspension until the founder explicitly resumes the job", () => {
+		const job = createScheduledJob(root, {
+			title: "Reliability sweep",
+			prompt: "Inspect reliability.",
+			intervalMinutes: 15,
+		});
+		suspendScheduledJob(root, job.id, "3 consecutive wake failures");
+		expect(updateScheduledJob(root, job.id, { title: "Reliability review" }).suspendedReason).toContain("failures");
+		expect(updateScheduledJob(root, job.id, { enabled: true }).suspendedReason).toBeUndefined();
 	});
 });
 

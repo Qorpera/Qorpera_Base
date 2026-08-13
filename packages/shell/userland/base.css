@@ -391,6 +391,7 @@ details.work .workbody .msg { max-width: 100%; }
 	background: var(--send-idle); color: #ffffff; line-height: 0;
 	transition: background 120ms ease;
 }
+.composer-send[hidden] { display: none; }
 .composer-send:hover:not(:disabled) { border: 0; background: var(--send-idle); }
 .composer-send[data-active="true"] { background: var(--send-active); }
 .composer-send[data-active="true"]:hover:not(:disabled) { background: var(--send-active-hover); }
@@ -1008,6 +1009,89 @@ body.hub-opening .hub-card:not(.loading) { opacity: 0.4; pointer-events: none; t
 .trail-badge-merge { background: rgba(230, 180, 80, 0.14); color: #e0b45a; }
 .trail-badge-conception { background: rgba(180, 140, 230, 0.14); color: #b48ce6; }
 .trail-badge-wake { background: rgba(110, 180, 230, 0.14); color: #6eb4e6; }
+.trail-run-meta { margin: -2px 0 9px; color: var(--text-soft); font-size: 11px; }
+.trail-outcome { font-weight: 650; }
+.trail-outcome-running { color: var(--blue); }
+.trail-outcome-succeeded { color: var(--ok); }
+.trail-outcome-failed { color: var(--danger-muted); }
+.trail-outcome-incomplete { color: var(--warning); }
+
+/* Activity is the operating inbox for recurring jobs and their trail. The
+   right detail panel follows the Desktop/Codex/T3 split-surface pattern while
+   keeping definitions and execution behind the kernel bridge. */
+#view-panel.activity-panel { padding: 28px; }
+.activity-layout { display: grid; grid-template-columns: minmax(0, 760px); justify-content: center; min-height: 100%; }
+.activity-layout.has-detail { grid-template-columns: minmax(420px, 720px) minmax(360px, 500px); gap: 22px; max-width: 1240px; margin: 0 auto; }
+.activity-main { min-width: 0; }
+.activity-head { display: flex; align-items: flex-start; gap: 22px; margin-bottom: 28px; }
+.activity-head > div { flex: 1; min-width: 0; }
+.activity-head h1 { margin: 0 !important; font-size: 28px !important; font-weight: 560; letter-spacing: -0.02em; }
+.activity-head p { margin: 7px 0 0; color: var(--text-muted); font-size: 13px; line-height: 1.45; }
+.activity-head .primary-button { flex: 0 0 auto; margin-top: 2px; }
+.scheduled-jobs-heading { margin-top: 0; }
+.activity-history-heading { margin-top: 34px; }
+.scheduled-jobs-empty { padding: 18px; border: 1px dashed var(--border-strong); border-radius: 12px; color: var(--text-soft); font-size: 12px; text-align: center; }
+.scheduled-job-row {
+	display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 12px;
+	width: 100%; min-height: 80px; padding: 13px 14px; margin: 0 0 3px;
+	border: 1px solid transparent; border-radius: 13px; background: transparent; color: var(--text); text-align: left;
+}
+.scheduled-job-row:hover, .scheduled-job-row.selected { border-color: var(--border); background: var(--hover); }
+.scheduled-job-row.selected { border-color: color-mix(in srgb, var(--accent) 36%, var(--border)); }
+.scheduled-job-row.paused { opacity: 0.58; }
+.scheduled-job-row.paused:hover, .scheduled-job-row.paused.selected { opacity: 1; }
+.scheduled-job-indicator { width: 10px; height: 10px; margin-top: 6px; border: 1.5px solid var(--text-soft); border-radius: 50%; }
+.scheduled-job-indicator.active { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 24%, transparent); }
+.scheduled-job-indicator.running { border-color: var(--blue); background: var(--blue); box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 15%, transparent); }
+.scheduled-job-copy { display: grid; min-width: 0; }
+.scheduled-job-copy strong { overflow: hidden; font-size: 14px; font-weight: 610; text-overflow: ellipsis; white-space: nowrap; }
+.scheduled-job-copy > span { margin-top: 3px; color: var(--text-muted); font-size: 12px; }
+.scheduled-job-copy small { overflow: hidden; margin-top: 5px; color: var(--text-soft); font-size: 11px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.scheduled-job-arrow { margin-top: 1px; color: var(--text-soft); font-size: 21px; line-height: 1; }
+.scheduled-job-detail {
+	position: sticky; top: 0; display: flex; flex-direction: column; align-self: start;
+	max-height: calc(100vh - var(--titlebar-height) - 56px); overflow: hidden;
+	border: 1px solid var(--border-strong); border-radius: 16px; background: var(--popover); box-shadow: 0 18px 54px rgba(0, 0, 0, 0.28);
+}
+.scheduled-job-detail > header { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border); }
+.scheduled-job-detail > header > div:first-child { display: grid; flex: 1; min-width: 0; }
+.scheduled-job-detail > header > div:first-child span { color: var(--text-soft); font-size: 9px; font-weight: 680; letter-spacing: 0.08em; text-transform: uppercase; }
+.scheduled-job-detail > header > div:first-child strong { overflow: hidden; margin-top: 2px; font-size: 12px; font-weight: 590; text-overflow: ellipsis; white-space: nowrap; }
+.scheduled-job-detail > header > div:last-child { display: flex; align-items: center; gap: 6px; }
+.scheduled-job-detail > header button { width: auto; min-height: 29px; padding: 4px 9px; border: 1px solid var(--border-strong); border-radius: 7px; background: transparent; color: var(--text-muted); font-size: 10.5px; }
+.scheduled-job-detail > header button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.scheduled-job-detail > header .scheduled-job-close { width: 29px; padding: 0; font-size: 16px; }
+.scheduled-job-form { overflow-y: auto; padding: 18px; }
+.scheduled-job-field { display: grid; gap: 7px; margin-bottom: 17px; color: var(--text-muted); font-size: 10.5px; font-weight: 640; }
+.scheduled-job-field input[type="text"], .scheduled-job-field input[type="number"], .scheduled-job-field textarea {
+	width: 100%; padding: 9px 10px; border: 1px solid var(--border-strong); border-radius: 9px;
+	background: rgba(0, 0, 0, 0.22); color: var(--text); font: 12px/1.45 var(--font-sans); outline: 0;
+}
+.scheduled-job-field input:focus, .scheduled-job-field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent); }
+.scheduled-job-field textarea { min-height: 160px; resize: vertical; }
+.scheduled-job-field input[type="number"] { width: 126px; }
+.scheduled-job-field input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+.scheduled-job-field small { color: var(--text-soft); font-size: 9.5px; font-weight: 400; line-height: 1.4; }
+.scheduled-job-facts { overflow: hidden; margin: 20px 0; border: 1px solid var(--border); border-radius: 11px; }
+.scheduled-job-fact { display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 12px; padding: 9px 11px; font-size: 10.5px; }
+.scheduled-job-fact + .scheduled-job-fact { border-top: 1px solid var(--border); }
+.scheduled-job-fact span { color: var(--text-soft); }
+.scheduled-job-fact strong { overflow-wrap: anywhere; color: var(--text-muted); font-weight: 540; text-align: right; }
+.scheduled-job-recent { margin: 20px 0; }
+.scheduled-job-recent h3 { margin: 0 0 7px; font-size: 12px; font-weight: 650; }
+.scheduled-job-recent p { margin: 0; color: var(--text-soft); font-size: 10.5px; }
+.scheduled-job-run { display: flex; justify-content: space-between; gap: 12px; width: 100%; padding: 8px 4px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); text-align: left; }
+.scheduled-job-run:hover { color: var(--accent); }
+.scheduled-job-run strong { font-size: 10.5px; }
+.scheduled-job-run span { color: var(--text-soft); font-size: 9.5px; text-align: right; }
+.scheduled-job-error { margin: 10px 0; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--danger) 42%, transparent); border-radius: 8px; color: var(--danger-muted); font-size: 10.5px; }
+.scheduled-job-form > footer { display: flex; align-items: center; gap: 8px; padding-top: 14px; border-top: 1px solid var(--border); }
+.scheduled-job-form > footer span { flex: 1; }
+
+@media (max-width: 980px) {
+	.activity-layout.has-detail { grid-template-columns: 1fr; }
+	.scheduled-job-detail { position: relative; max-height: none; }
+}
 .hub-card.create:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
 .hub-card.create .plus { font-size: 22px; line-height: 1; }
 .hub-card.create small { font-family: var(--font-sans); }

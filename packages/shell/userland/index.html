@@ -235,7 +235,7 @@
 				<div id="productSetup" hidden>
 					<header class="wizard-heading">
 						<h3>Connect the product workspace</h3>
-						<p>Point the department to an existing local repository or clone one into a local path.</p>
+						<p>Connect an existing local Git repository or clone a remote repository into company-managed storage.</p>
 					</header>
 					<div class="repo-mode" aria-label="Repository connection method">
 						<button class="active" id="localRepoMode" type="button" aria-pressed="true"><strong>Use local repository</strong><small>Connect an existing folder</small></button>
@@ -246,9 +246,8 @@
 					</div>
 					<div class="repo-fields" id="cloneRepoFields" hidden>
 						<label class="wizard-field"><span>Repository URL</span><input id="repoUrl" type="url" placeholder="https://github.com/company/product.git"></label>
-						<label class="wizard-field"><span>Local destination</span><div class="path-field"><input id="clonePath" type="text" placeholder="C:\Products\product"><button id="browseClonePath" type="button">Browse</button></div></label>
 					</div>
-					<p class="frontend-note">Repository actions will bind to the trusted product-department command after the backend contract lands.</p>
+					<p class="frontend-note">The kernel reviews the exact department and source before copying or cloning it.</p>
 				</div>
 			</section>
 		</div>

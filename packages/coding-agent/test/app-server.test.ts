@@ -365,7 +365,7 @@ describe("company app server", () => {
 					type: "session",
 					version: 3,
 					id: "auto",
-					timestamp: "t",
+					timestamp: "2026-08-04T11:00:00.000Z",
 					cwd: root,
 					qorpera: { actor: "controller", attended: false, autonomous: true, label: "autonomous — conception" },
 				}),
@@ -376,7 +376,82 @@ describe("company app server", () => {
 					parentId: "s1",
 					message: { role: "user", content: [{ type: "text", text: "begin conception" }] },
 				}),
+				JSON.stringify({
+					type: "model_change",
+					timestamp: "2026-08-04T11:00:01.000Z",
+					provider: "openai-codex",
+					modelId: "gpt-5.6-sol",
+				}),
+				JSON.stringify({
+					type: "message",
+					timestamp: "2026-08-04T11:00:05.000Z",
+					message: {
+						role: "assistant",
+						provider: "openai-codex",
+						model: "gpt-5.6-sol",
+						stopReason: "stop",
+					},
+				}),
+				JSON.stringify({
+					type: "custom",
+					timestamp: "2026-08-04T11:00:06.000Z",
+					customType: "qorpera_kernel_model_request",
+					data: { event: "intent", status: "completed", usage: { calls: 3, costUsd: 0.25 } },
+				}),
 			].join("\n"),
+			"utf-8",
+		);
+		writeFileSync(
+			join(root, "trail", "2026-08-04T11-30-00-000Z_failed.jsonl"),
+			[
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "failed",
+					timestamp: "2026-08-04T11:30:00.000Z",
+					cwd: root,
+					qorpera: {
+						actor: "controller",
+						attended: false,
+						autonomous: true,
+						label: "autonomous — wake — scheduled-job:job-42 — Reliability sweep",
+					},
+				}),
+				JSON.stringify({
+					type: "model_change",
+					timestamp: "2026-08-04T11:30:01.000Z",
+					provider: "anthropic",
+					modelId: "claude-opus-4-8",
+				}),
+				JSON.stringify({
+					type: "message",
+					timestamp: "2026-08-04T11:30:03.000Z",
+					message: { role: "assistant", provider: "anthropic", model: "claude-opus-4-8", stopReason: "error" },
+				}),
+				JSON.stringify({
+					type: "custom",
+					timestamp: "2026-08-04T11:30:04.000Z",
+					customType: "qorpera_kernel_model_request",
+					data: { event: "intent", status: "completed", usage: { calls: 1, costUsd: 0 } },
+				}),
+			].join("\n"),
+			"utf-8",
+		);
+		writeFileSync(
+			join(root, "trail", "2026-08-04T11-45-00-000Z_legacy-wake.jsonl"),
+			JSON.stringify({
+				type: "session",
+				version: 3,
+				id: "legacy-wake",
+				timestamp: "2026-08-04T11:45:00.000Z",
+				cwd: root,
+				qorpera: {
+					actor: "controller",
+					attended: false,
+					autonomous: true,
+					label: "autonomous — wake — schedule",
+				},
+			}),
 			"utf-8",
 		);
 
@@ -469,11 +544,21 @@ describe("company app server", () => {
 				department?: string;
 				worktree?: string;
 				page?: string;
+				scheduledJobId?: string;
+				scheduledJobTitle?: string;
+				outcome?: string;
+				modelProvider?: string;
+				modelId?: string;
+				durationMs?: number;
+				calls?: number;
+				costUsd?: number;
 			}>;
 			inbox: Array<{ file: string; kind: string; status: string }>;
 		};
 		const chat = state.sessions.find((s) => s.file.includes("_abc"));
 		const auto = state.sessions.find((s) => s.file.includes("_auto"));
+		const failed = state.sessions.find((s) => s.file.includes("_failed"));
+		const legacyWake = state.sessions.find((s) => s.file.includes("_legacy-wake"));
 		const scoped = state.sessions.find((s) => s.file.includes("_scoped"));
 		const sidechat = state.sessions.find((s) => s.file.includes("_sidechat"));
 		expect(chat?.title).toBe("plan the pricing analysis");
@@ -486,6 +571,33 @@ describe("company app server", () => {
 		expect(auto?.kind).toBe("autonomous");
 		expect(auto?.title).toBe("autonomous — conception");
 		expect(auto?.category).toBe("conception");
+		expect(auto).toMatchObject({
+			outcome: "succeeded",
+			modelProvider: "openai-codex",
+			modelId: "gpt-5.6-sol",
+			durationMs: 6_000,
+			calls: 3,
+			costUsd: 0.25,
+		});
+		expect(failed).toMatchObject({
+			kind: "autonomous",
+			category: "wake",
+			title: "Reliability sweep",
+			scheduledJobId: "job-42",
+			scheduledJobTitle: "Reliability sweep",
+			outcome: "failed",
+			modelProvider: "anthropic",
+			modelId: "claude-opus-4-8",
+			durationMs: 4_000,
+			calls: 1,
+			costUsd: 0,
+		});
+		expect(legacyWake).toMatchObject({
+			title: "Company orchestration",
+			category: "wake",
+			scheduledJobId: "company-orchestration",
+			scheduledJobTitle: "Company orchestration",
+		});
 		expect(scoped?.kind).toBe("chat");
 		expect(scoped?.category).toBe("product");
 		expect(scoped?.department).toBe(department.path);

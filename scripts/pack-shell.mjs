@@ -57,6 +57,7 @@ writeFileSync(
 			name: "qorpera-base",
 			productName: "Qorpera Base",
 			version: productVersion,
+			author: "Qorpera",
 			private: true,
 			type: "module",
 			main: "dist/main.js",
@@ -77,12 +78,16 @@ writeFileSync(
 
 // 2. Production dependency closure, walked from the shell + coding agent.
 const copied = new Set();
-const missing = [];
-const queue = ["@qorpera/pi-coding-agent", ...Object.keys(shellPkg.dependencies ?? {})];
+const missing = new Set();
+const required = new Set();
+const queue = ["@qorpera/pi-coding-agent", ...Object.keys(shellPkg.dependencies ?? {})].map((name) => ({
+	name,
+	required: true,
+}));
 while (queue.length > 0) {
-	const name = queue.shift();
+	const { name, required: isRequired } = queue.shift();
+	if (isRequired) required.add(name);
 	if (copied.has(name) || name === "electron") continue;
-	copied.add(name);
 
 	let pkgDir;
 	const target = join(appDir, "node_modules", ...name.split("/"));
@@ -100,19 +105,29 @@ while (queue.length > 0) {
 	} else {
 		pkgDir = join(rootModules, ...name.split("/"));
 		if (!existsSync(pkgDir)) {
-			missing.push(name);
+			missing.add(name);
 			continue;
 		}
 		cpSync(pkgDir, target, { recursive: true, dereference: true });
 	}
+	copied.add(name);
 
 	const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
-	for (const dep of Object.keys({ ...pkg.dependencies, ...pkg.optionalDependencies })) {
-		if (!copied.has(dep)) queue.push(dep);
+	for (const dep of Object.keys(pkg.dependencies ?? {})) {
+		if (!copied.has(dep)) queue.push({ name: dep, required: true });
+	}
+	for (const dep of Object.keys(pkg.optionalDependencies ?? {})) {
+		if (!copied.has(dep)) queue.push({ name: dep, required: false });
 	}
 }
-if (missing.length > 0) {
-	console.warn(`optional/missing deps skipped: ${missing.join(", ")}`);
+const missingRequired = [...missing].filter((name) => required.has(name));
+if (missingRequired.length > 0) {
+	console.error(`required dependencies missing: ${missingRequired.join(", ")}`);
+	process.exit(1);
+}
+const missingOptional = [...missing].filter((name) => !required.has(name));
+if (missingOptional.length > 0) {
+	console.warn(`optional dependencies skipped: ${missingOptional.join(", ")}`);
 }
 console.log(`assembled ${copied.size} packages into ${appDir}`);
 
@@ -149,16 +164,16 @@ if (process.argv.includes("--no-build")) {
 	process.exit(0);
 }
 const builder = spawnSync(
-	process.platform === "win32" ? "npx.cmd" : "npx",
-	["electron-builder", "--config", "electron-builder.yml", "--win", "--publish", "never"],
-	{ cwd: appDir, stdio: "inherit", shell: process.platform === "win32" },
+	process.execPath,
+	[join(rootModules, "electron-builder", "cli.js"), "--config", "electron-builder.yml", "--win", "--publish", "never"],
+	{ cwd: appDir, stdio: "inherit", shell: false },
 );
 if (builder.status !== 0) {
 	console.error("electron-builder failed");
 	process.exit(builder.status ?? 1);
 }
 
-// Structural assertion: the packed app must contain the agent runtime.
+// Structural assertion: the packed app must contain the agent and Codex runtimes.
 // Guards against electron-builder pruning regressions — a hub-only app
 // passes every smoke that doesn't open a company.
 const packedRpcEntry = join(
@@ -172,10 +187,37 @@ const packedRpcEntry = join(
 	"dist",
 	"rpc-entry.js",
 );
-if (!existsSync(packedRpcEntry)) {
-	console.error(`PACK VERIFICATION FAILED: agent runtime missing from packed app (${packedRpcEntry})`);
+const packedCodexEntry = join(
+	outDir,
+	"win-unpacked",
+	"resources",
+	"app",
+	"node_modules",
+	"@openai",
+	"codex",
+	"bin",
+	"codex.js",
+);
+const codexPlatform = process.arch === "arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc";
+const packedCodexExecutable = join(
+	outDir,
+	"win-unpacked",
+	"resources",
+	"app",
+	"node_modules",
+	"@openai",
+	`codex-win32-${process.arch}`,
+	"vendor",
+	codexPlatform,
+	"bin",
+	"codex.exe",
+);
+const packedRuntimeFiles = [packedRpcEntry, packedCodexEntry, packedCodexExecutable];
+const missingPackedRuntimeFiles = packedRuntimeFiles.filter((path) => !existsSync(path));
+if (missingPackedRuntimeFiles.length > 0) {
+	console.error(`PACK VERIFICATION FAILED: runtime files missing:\n${missingPackedRuntimeFiles.join("\n")}`);
 	process.exit(1);
 }
-console.log("pack verification: agent runtime present in packed app");
+console.log("pack verification: agent and Codex runtimes present in packed app");
 console.log(`installer in ${outDir}`);
 for (const file of readdirSync(outDir)) console.log(`  ${file}`);

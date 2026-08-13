@@ -68,11 +68,49 @@ export interface WakeSchedule {
 export const MIN_WAKE_INTERVAL_MINUTES = 5;
 const MAX_WAKE_INTERVAL_MINUTES = 7 * 24 * 60;
 
+/**
+ * A founder-bound unit of recurring controller work. Definitions stay in the
+ * machine-local connection store because enabling unattended work is standing
+ * authority; the resulting runs and artifacts still land in the company trail.
+ */
+export interface ScheduledJob {
+	id: string;
+	title: string;
+	prompt: string;
+	intervalMinutes: number;
+	enabled: boolean;
+	createdAt: string;
+	updatedAt: string;
+	/** Set by the kernel after repeated failures; cleared when the job is re-enabled. */
+	suspendedReason?: string;
+}
+
+export interface ScheduledJobInput {
+	title: string;
+	prompt: string;
+	intervalMinutes: number;
+	enabled?: boolean;
+}
+
+export interface ScheduledJobUpdate {
+	title?: string;
+	prompt?: string;
+	intervalMinutes?: number;
+	enabled?: boolean;
+}
+
+export const DEFAULT_SCHEDULED_JOB_ID = "company-orchestration";
+export const DEFAULT_SCHEDULED_JOB_TITLE = "Company orchestration";
+export const DEFAULT_SCHEDULED_JOB_PROMPT =
+	"Read company.md, the inbox, and app/routines/. Decide what most needs doing and do it. Post inbox/messages items for anything that needs the founder; when nothing needs doing, settle without inventing work.";
+
 interface CompanyConnectionsState {
 	version: 1;
 	root: string;
 	destinations: NetworkDestination[];
 	secrets: Record<string, CompanySecret>;
+	scheduledJobs?: ScheduledJob[];
+	/** Pre-named-job schedule, migrated on first scheduled-job read. */
 	wake?: WakeSchedule;
 	webhook?: WebhookBinding;
 }
@@ -194,38 +232,165 @@ export function destinationAllowed(root: string, url: URL): boolean {
 }
 
 export function readWakeSchedule(root: string): WakeSchedule | undefined {
-	return readState(root).wake;
+	const job = readScheduledJobs(root).find((candidate) => candidate.id === DEFAULT_SCHEDULED_JOB_ID);
+	return job
+		? {
+				intervalMinutes: job.intervalMinutes,
+				enabled: job.enabled,
+				...(job.suspendedReason ? { suspendedReason: job.suspendedReason } : {}),
+			}
+		: undefined;
 }
 
 export function bindWakeSchedule(root: string, intervalMinutes: number): WakeSchedule {
-	if (
-		!Number.isFinite(intervalMinutes) ||
-		intervalMinutes < MIN_WAKE_INTERVAL_MINUTES ||
-		intervalMinutes > MAX_WAKE_INTERVAL_MINUTES
-	) {
-		throw new Error(
-			`Wake interval must be between ${MIN_WAKE_INTERVAL_MINUTES} minutes and 7 days (kernel wake-rate ceiling)`,
-		);
-	}
 	const state = readState(root);
-	state.wake = { intervalMinutes: Math.round(intervalMinutes), enabled: true };
+	const jobs = migrateScheduledJobs(state);
+	const normalizedInterval = validScheduledJobInterval(intervalMinutes);
+	const now = new Date().toISOString();
+	const current = jobs.find((job) => job.id === DEFAULT_SCHEDULED_JOB_ID);
+	const job: ScheduledJob = current
+		? { ...current, intervalMinutes: normalizedInterval, enabled: true, updatedAt: now, suspendedReason: undefined }
+		: {
+				id: DEFAULT_SCHEDULED_JOB_ID,
+				title: DEFAULT_SCHEDULED_JOB_TITLE,
+				prompt: DEFAULT_SCHEDULED_JOB_PROMPT,
+				intervalMinutes: normalizedInterval,
+				enabled: true,
+				createdAt: now,
+				updatedAt: now,
+			};
+	state.scheduledJobs = [...jobs.filter((candidate) => candidate.id !== job.id), job];
+	delete state.wake;
 	writeState(root, state);
-	return state.wake;
+	return { intervalMinutes: job.intervalMinutes, enabled: job.enabled };
 }
 
 export function disableWakeSchedule(root: string): boolean {
 	const state = readState(root);
-	if (!state.wake?.enabled) return false;
-	state.wake = { ...state.wake, enabled: false };
+	const jobs = migrateScheduledJobs(state);
+	const index = jobs.findIndex((job) => job.id === DEFAULT_SCHEDULED_JOB_ID);
+	if (index < 0 || !jobs[index].enabled) return false;
+	jobs[index] = { ...jobs[index], enabled: false, updatedAt: new Date().toISOString() };
+	state.scheduledJobs = jobs;
+	delete state.wake;
 	writeState(root, state);
 	return true;
 }
 
 /** Kernel-side suspension (e.g. repeated wake failures). Re-binding clears it. */
 export function suspendWakeSchedule(root: string, reason: string): void {
+	suspendScheduledJob(root, DEFAULT_SCHEDULED_JOB_ID, reason);
+}
+
+function validScheduledJobInterval(value: number): number {
+	if (!Number.isFinite(value) || value < MIN_WAKE_INTERVAL_MINUTES || value > MAX_WAKE_INTERVAL_MINUTES) {
+		throw new Error(
+			`Wake interval must be between ${MIN_WAKE_INTERVAL_MINUTES} minutes and 7 days (kernel wake-rate ceiling)`,
+		);
+	}
+	return Math.round(value);
+}
+
+function validScheduledJobText(value: string, field: "title" | "prompt", maxBytes: number): string {
+	const normalized = value.trim();
+	if (!normalized || Buffer.byteLength(normalized, "utf-8") > maxBytes) {
+		throw new Error(`Scheduled job ${field} must be between 1 and ${maxBytes} UTF-8 bytes`);
+	}
+	return normalized;
+}
+
+function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
+	if (state.scheduledJobs) return [...state.scheduledJobs];
+	if (!state.wake) return [];
+	const now = new Date().toISOString();
+	return [
+		{
+			id: DEFAULT_SCHEDULED_JOB_ID,
+			title: DEFAULT_SCHEDULED_JOB_TITLE,
+			prompt: DEFAULT_SCHEDULED_JOB_PROMPT,
+			intervalMinutes: state.wake.intervalMinutes,
+			enabled: state.wake.enabled,
+			createdAt: now,
+			updatedAt: now,
+			...(state.wake.suspendedReason ? { suspendedReason: state.wake.suspendedReason } : {}),
+		},
+	];
+}
+
+export function readScheduledJobs(root: string): ScheduledJob[] {
 	const state = readState(root);
-	if (!state.wake) return;
-	state.wake = { ...state.wake, suspendedReason: reason };
+	const jobs = migrateScheduledJobs(state);
+	if (!state.scheduledJobs && state.wake) {
+		state.scheduledJobs = jobs;
+		delete state.wake;
+		writeState(root, state);
+	}
+	return jobs;
+}
+
+export function createScheduledJob(root: string, input: ScheduledJobInput): ScheduledJob {
+	const state = readState(root);
+	const jobs = migrateScheduledJobs(state);
+	const now = new Date().toISOString();
+	const job: ScheduledJob = {
+		id: randomUUID(),
+		title: validScheduledJobText(input.title, "title", 160),
+		prompt: validScheduledJobText(input.prompt, "prompt", 32 * 1024),
+		intervalMinutes: validScheduledJobInterval(input.intervalMinutes),
+		enabled: input.enabled ?? true,
+		createdAt: now,
+		updatedAt: now,
+	};
+	state.scheduledJobs = [...jobs, job];
+	delete state.wake;
+	writeState(root, state);
+	return job;
+}
+
+export function updateScheduledJob(root: string, id: string, update: ScheduledJobUpdate): ScheduledJob {
+	const state = readState(root);
+	const jobs = migrateScheduledJobs(state);
+	const index = jobs.findIndex((job) => job.id === id);
+	if (index < 0) throw new Error(`Unknown scheduled job: ${id}`);
+	const current = jobs[index];
+	const enabled = update.enabled ?? current.enabled;
+	const next: ScheduledJob = {
+		...current,
+		...(update.title !== undefined ? { title: validScheduledJobText(update.title, "title", 160) } : {}),
+		...(update.prompt !== undefined ? { prompt: validScheduledJobText(update.prompt, "prompt", 32 * 1024) } : {}),
+		...(update.intervalMinutes !== undefined
+			? { intervalMinutes: validScheduledJobInterval(update.intervalMinutes) }
+			: {}),
+		enabled,
+		updatedAt: new Date().toISOString(),
+		...(update.enabled === true ? { suspendedReason: undefined } : {}),
+	};
+	jobs[index] = next;
+	state.scheduledJobs = jobs;
+	delete state.wake;
+	writeState(root, state);
+	return next;
+}
+
+export function deleteScheduledJob(root: string, id: string): boolean {
+	const state = readState(root);
+	const jobs = migrateScheduledJobs(state);
+	const remaining = jobs.filter((job) => job.id !== id);
+	if (remaining.length === jobs.length) return false;
+	state.scheduledJobs = remaining;
+	delete state.wake;
+	writeState(root, state);
+	return true;
+}
+
+export function suspendScheduledJob(root: string, id: string, reason: string): void {
+	const state = readState(root);
+	const jobs = migrateScheduledJobs(state);
+	const index = jobs.findIndex((job) => job.id === id);
+	if (index < 0) return;
+	jobs[index] = { ...jobs[index], suspendedReason: reason, updatedAt: new Date().toISOString() };
+	state.scheduledJobs = jobs;
+	delete state.wake;
 	writeState(root, state);
 }
 

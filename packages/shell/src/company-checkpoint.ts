@@ -141,6 +141,18 @@ function commitSnapshot(root: string, message: string): void {
 	}
 }
 
+const CHECKPOINT_PATHS = [
+	".",
+	":(exclude,glob)**/__pycache__/**",
+	":(exclude,glob)**/*.pyc",
+	":(exclude,glob)**/*.pyo",
+];
+
+function transientCheckpointPath(path: string): boolean {
+	const normalized = path.replace(/\\/g, "/");
+	return normalized.split("/").includes("__pycache__") || /\.py[co]$/i.test(normalized);
+}
+
 /**
  * Preserve every pre-controller Git state before granting company-folder
  * write access. A staged version is committed first so a different working
@@ -163,10 +175,13 @@ export function snapshotFounderGitState(root: string, actor = "controller"): voi
 		);
 	}
 	if (!status.stdout.trim()) return;
-	const added = git(root, ["add", "--all"]);
+	const added = git(root, ["add", "--all", "--", ...CHECKPOINT_PATHS]);
 	if (added.status !== 0) {
 		throw new Error(`could not stage founder working state: ${added.stderr || added.stdout || "git add failed"}`);
 	}
+	const checkpointable = git(root, ["diff", "--cached", "--quiet"]);
+	if (checkpointable.status === 0) return;
+	if (checkpointable.status !== 1) throw new Error("could not inspect checkpointable founder working state");
 	commitSnapshot(
 		root,
 		`docs: preserve founder working state\n\nQorpera-Trigger: ${actor} startup\nQorpera-Rationale: retain tracked, untracked, and deleted founder data before agent execution`,
@@ -250,8 +265,9 @@ function checkpointGit(
 	}
 	const sessionPaths = [...new Set([...current.keys(), ...baseline.dirtyPaths.keys()])].filter(
 		(path) =>
-			baseline.dirtyPaths.get(path) !== current.get(path) ||
-			(options.forcedPath !== undefined && path.replace(/\\/g, "/") === options.forcedPath.replace(/\\/g, "/")),
+			!transientCheckpointPath(path) &&
+			(baseline.dirtyPaths.get(path) !== current.get(path) ||
+				(options.forcedPath !== undefined && path.replace(/\\/g, "/") === options.forcedPath.replace(/\\/g, "/"))),
 	);
 	if (sessionPaths.length === 0) return { baseline: { dirtyPaths: current }, success: true };
 	const staged = git(root, ["add", "--", ...sessionPaths]);

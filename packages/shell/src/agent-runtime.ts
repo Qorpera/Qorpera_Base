@@ -1292,6 +1292,36 @@ export function brokeredChildEnvironment(source: NodeJS.ProcessEnv = process.env
 	return Object.fromEntries(Object.entries(source).filter(([key, value]) => allowed.has(key.toUpperCase()) && value));
 }
 
+/**
+ * Git sees the Windows sandbox account as a different owner from the founder
+ * and otherwise refuses even read-only commands with "dubious ownership".
+ * Supply protected command-scope config for only the repositories this child
+ * is already authorized to access. This avoids a machine-global wildcard,
+ * ignores inherited Git config, and keeps credential prompts disabled.
+ */
+export function sandboxGitEnvironment(safeDirectories: string[]): Record<string, string> {
+	const normalized = [
+		...new Set(
+			safeDirectories.map((path) => {
+				const directory = resolve(path);
+				return process.platform === "win32" ? directory.replaceAll("\\", "/") : directory;
+			}),
+		),
+	];
+	const env: Record<string, string> = {
+		GIT_ATTR_NOSYSTEM: "1",
+		GIT_CONFIG_COUNT: String(normalized.length),
+		GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+		GIT_CONFIG_NOSYSTEM: "1",
+		GIT_TERMINAL_PROMPT: "0",
+	};
+	for (const [index, directory] of normalized.entries()) {
+		env[`GIT_CONFIG_KEY_${index}`] = "safe.directory";
+		env[`GIT_CONFIG_VALUE_${index}`] = directory;
+	}
+	return env;
+}
+
 export function writeSandboxProfile(
 	configDir: string,
 	runtimeDir: string,

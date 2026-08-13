@@ -62,12 +62,16 @@ import {
 	validateCompanyKernelStorage,
 } from "@qorpera/pi-coding-agent/company";
 import {
+	createScheduledJob,
+	deleteScheduledJob,
 	destinationAllowed,
 	persistWebhookPort,
-	readWakeSchedule,
+	readScheduledJobs,
 	readWebhookBinding,
 	resolveCompanySecret,
-	suspendWakeSchedule,
+	type ScheduledJob,
+	suspendScheduledJob,
+	updateScheduledJob,
 } from "@qorpera/pi-coding-agent/company-connections";
 import { FOUNDER_PUBLIC_FILE, founderPublicProjection } from "@qorpera/pi-coding-agent/founder-identity";
 import {
@@ -108,6 +112,7 @@ import {
 	reconcileKernelGateCreations,
 	sandboxCommandArgs,
 	sandboxConfigDir,
+	sandboxGitEnvironment,
 	sandboxRuntimeDir,
 	shareWindowsSandboxState,
 	type TrailBinding,
@@ -138,6 +143,13 @@ import {
 	rememberCompanyGateTrust,
 	revokeCompanyGateTrust,
 } from "./company-kernel-state.ts";
+import {
+	type ControllerModelSelection,
+	controllerLaunchOptions,
+	controllerModelArgs,
+	modelSelectionFromRpcFrame,
+	writeControllerModelPreference,
+} from "./controller-model.ts";
 import { createHttpRequestBroker, type HttpRequestBroker } from "./http-request-broker.ts";
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
 import {
@@ -166,7 +178,11 @@ import {
 	readWakeRunState,
 	recordWakeOutcome,
 	recordWakeStart,
+	removeScheduledJobRunState,
+	scheduledJobRunInterrupted,
+	scheduledJobRunState,
 	WAKE_FAILURE_SUSPENSION_THRESHOLD,
+	wakeFrameFailed,
 	wakeRunStatePath,
 	writeWakeRunState,
 } from "./wake-scheduler.ts";
@@ -297,6 +313,8 @@ interface CompanyRuntime {
 	mergeChild?: ChildProcessWithoutNullStreams;
 	/** Live wake session, if one is running (kernel-spawned, single-flight). */
 	wakeChild?: ChildProcessWithoutNullStreams;
+	/** Named scheduled job currently owning wakeChild; absent for event wakes. */
+	wakeJobId?: string;
 	/** Closes the inbound webhook listener (optional kernel module). */
 	webhookClose?: () => void;
 	/** An inbound event arrived while the company was busy; the wake ticker owes it a wake. */
@@ -638,7 +656,9 @@ interface ChildOptions {
 	department?: ProductDepartment;
 	worktree?: string;
 	silent?: boolean;
-	onRpcEvent?: (frame: { type?: string }) => void;
+	onRpcEvent?: (frame: Record<string, unknown>) => void;
+	/** Last model confirmed by this child, inherited by replacement and autonomous children. */
+	model?: ControllerModelSelection;
 	/** Kernel-issued wake identity: stamped into the wake session's trail. */
 	wake?: {
 		id: string;
@@ -729,6 +749,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	let kernelSigner: ReturnType<typeof createKernelResponseSigner>;
 	let child: ChildProcessWithoutNullStreams;
 	const env: NodeJS.ProcessEnv = brokeredChildEnvironment();
+	Object.assign(env, sandboxGitEnvironment([root, ...(productWorktreeRoot ? [productWorktreeRoot] : [])]));
 	env.ELECTRON_RUN_AS_NODE = "1";
 	env.HOME = runtimeDir;
 	env.USERPROFILE = runtimeDir;
@@ -755,7 +776,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			nodeExecutable: process.execPath,
 			env,
 		});
-		const rpcArgs = [RPC_ENTRY, "--mode", "rpc", "--session", binding.path];
+		const rpcArgs = [RPC_ENTRY, "--mode", "rpc", "--session", binding.path, ...controllerModelArgs(options.model)];
 		invocation = codexSpawn(
 			CODEX_ENTRY,
 			process.execPath,
@@ -812,6 +833,11 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		if (!line.trim()) return;
 		try {
 			const frame = JSON.parse(line) as unknown;
+			const confirmedModel = modelSelectionFromRpcFrame(frame);
+			if (confirmedModel) {
+				options.model = confirmedModel;
+				writeControllerModelPreference(app.getPath("userData"), root, confirmedModel);
+			}
 			const challenge = frame as {
 				type?: unknown;
 				token?: unknown;
@@ -899,7 +925,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 					);
 				}
 			}
-			if (onRpcEvent) onRpcEvent(frame as { type?: string });
+			if (onRpcEvent) onRpcEvent(frame as Record<string, unknown>);
 			else if (!silent) send(win, "rpc-event", frame);
 		} catch {
 			if (!silent) send(win, "rpc-log", line);
@@ -1024,7 +1050,7 @@ function isCurrentRuntimeChild(slot: Slot, runtime: CompanyRuntime, child: Child
 
 function restartForProductInventory(slot: Slot, runtime: CompanyRuntime): void {
 	void enqueueRuntimeTransition(runtime, async () => {
-		if (slot.runtime !== runtime || runtime.mergeChild) return;
+		if (slot.runtime !== runtime || runtime.mergeChild || runtime.wakeChild) return;
 		const options = {
 			...runtime.childOptions,
 			sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
@@ -1052,7 +1078,11 @@ function isInside(target: string, parent: string): boolean {
  * result reaches the renderer as one `merge-done` event, and the open-time
  * userland status is refreshed so the merge button reflects reality.
  */
-function wakePrompt(cause: "schedule" | "founder_response" | "inbound_event", coalesced: number): string {
+function wakePrompt(
+	cause: "schedule" | "founder_response" | "inbound_event",
+	coalesced: number,
+	job?: ScheduledJob,
+): string {
 	const missed =
 		coalesced > 0
 			? ` The kernel was closed or asleep for a while: ${coalesced} missed wake${coalesced === 1 ? "" : "s"} were coalesced into this one.`
@@ -1063,7 +1093,31 @@ function wakePrompt(cause: "schedule" | "founder_response" | "inbound_event", co
 	if (cause === "inbound_event") {
 		return `Wake: an external event arrived. Read the new files under inbox/events/, decide what they mean for the company, and act; events are durable, so handle every unprocessed one, not just the newest.${missed}`;
 	}
-	return `Scheduled wake.${missed} Read company.md, the inbox, and app/routines/, decide for yourself what most needs doing, and do it. Post inbox/messages items for anything that needs the founder; when nothing needs doing, settle without inventing work.`;
+	return `Scheduled job: ${job?.title ?? "Company orchestration"}.${missed}\n\n${job?.prompt ?? "Read company.md, the inbox, and app/routines/, decide for yourself what most needs doing, and do it. Post inbox/messages items for anything that needs the founder; when nothing needs doing, settle without inventing work."}`;
+}
+
+function persistScheduledJobOutcome(
+	runtime: CompanyRuntime,
+	job: ScheduledJob,
+	success: boolean,
+	trailFile?: string,
+): { suspend: boolean } {
+	const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
+	const outcome = recordWakeOutcome(readWakeRunState(statePath), job.id, success, Date.now(), trailFile);
+	writeWakeRunState(statePath, outcome.state);
+	if (outcome.suspend) {
+		suspendScheduledJob(
+			runtime.root,
+			job.id,
+			`${WAKE_FAILURE_SUSPENSION_THRESHOLD} consecutive scheduled-job failures`,
+		);
+		writeFileSync(
+			join(inboxMessagesPath(runtime.root), `msg-scheduled-job-suspended-${Date.now()}.md`),
+			`# Scheduled job suspended by the kernel\n\n**${job.title}** ended unsuccessfully ${WAKE_FAILURE_SUSPENSION_THRESHOLD} consecutive times, so the kernel suspended this job rather than keep spending. Review its recent runs under Activity, then re-enable it from the scheduled-job details panel.\n`,
+			"utf-8",
+		);
+	}
+	return { suspend: outcome.suspend };
 }
 
 /**
@@ -1081,11 +1135,20 @@ async function startWakeChild(
 	runtime: CompanyRuntime,
 	cause: "schedule" | "founder_response" | "inbound_event",
 	coalesced: number,
-	intervalMinutes?: number,
+	job?: ScheduledJob,
+	manual = false,
 ): Promise<boolean> {
 	if (runtime.mergeChild || runtime.wakeChild || runtime.closing) return false;
 	// Never preempt a founder turn in flight: the wake defers to the next tick.
 	if (childBusy.get(runtime.child)) return false;
+	if (job) {
+		const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
+		const previous = scheduledJobRunState(readWakeRunState(statePath), job.id);
+		if (scheduledJobRunInterrupted(previous)) {
+			const outcome = persistScheduledJobOutcome(runtime, job, false, previous.activeTrailFile);
+			if (outcome.suspend) return false;
+		}
+	}
 	const wakeId = randomUUID();
 	const resumeOptions = {
 		...runtime.childOptions,
@@ -1095,54 +1158,82 @@ async function startWakeChild(
 	if (slot.runtime !== runtime || runtime.closing) return false;
 	let started = false;
 	let settledCleanly = false;
-	const child = startChild(slot, runtime.root, {
-		autonomousName:
-			cause === "schedule"
-				? "wake — schedule"
-				: cause === "inbound_event"
-					? "wake — inbound event"
-					: "wake — founder response",
-		silent: true,
-		wake: { id: wakeId, cause, intervalMinutes, coalesced },
-		onRpcEvent: (frame) => {
-			if (frame.type === "agent_start") started = true;
-			if (frame.type === "agent_settled") {
-				settledCleanly = started;
-				intentionalKills.add(child);
-				killChildTree(child);
+	let failed = false;
+	let promptSent = false;
+	let child: ChildProcessWithoutNullStreams;
+	try {
+		child = startChild(slot, runtime.root, {
+			autonomousName:
+				cause === "schedule" && job
+					? `wake — scheduled-job:${job.id} — ${job.title}`
+					: cause === "inbound_event"
+						? "wake — inbound event"
+						: cause === "founder_response"
+							? "wake — founder response"
+							: "wake — schedule",
+			silent: true,
+			model: resumeOptions.model,
+			wake: { id: wakeId, cause, intervalMinutes: job?.intervalMinutes, coalesced },
+			onRpcEvent: (frame) => {
+				if (frame.type === "agent_start") started = true;
+				if (wakeFrameFailed(frame)) failed = true;
+				if (frame.type === "agent_settled") {
+					settledCleanly = started && !failed;
+					intentionalKills.add(child);
+					killChildTree(child);
+				}
+			},
+		});
+	} catch (error) {
+		console.error(`wake child failed to start: ${(error as Error).message}`);
+		if (slot.runtime === runtime && !runtime.closing) {
+			try {
+				runtime.childOptions = resumeOptions;
+				runtime.child = startChild(slot, runtime.root, resumeOptions);
+			} catch (restartError) {
+				console.error(`wake startup left the controller stopped: ${(restartError as Error).message}`);
 			}
-		},
-	});
+		}
+		return false;
+	}
 	runtime.wakeChild = child;
+	runtime.wakeJobId = job?.id;
+	const trailFile = childBindings.get(child)?.file;
 	child.on("close", async () => {
 		await childCheckpointCompletion.get(child);
 		if (slot.runtime !== runtime || runtime.closing) return;
 		runtime.wakeChild = undefined;
+		runtime.wakeJobId = undefined;
 		try {
-			const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
-			const outcome = recordWakeOutcome(readWakeRunState(statePath), settledCleanly);
-			writeWakeRunState(statePath, outcome.state);
-			if (outcome.suspend) {
-				suspendWakeSchedule(runtime.root, `${WAKE_FAILURE_SUSPENSION_THRESHOLD} consecutive wake failures`);
-				writeFileSync(
-					join(inboxMessagesPath(runtime.root), `msg-wakes-suspended-${Date.now()}.md`),
-					`# Scheduled wakes suspended by the kernel\n\nThe last ${WAKE_FAILURE_SUSPENSION_THRESHOLD} scheduled wake sessions failed before settling, so the kernel suspended the schedule rather than keep spending. Review the recent autonomous sessions under Activity, then re-enable with \`qorpera company wake set <minutes>\`.\n`,
-					"utf-8",
-				);
+			if (job && promptSent) {
+				persistScheduledJobOutcome(runtime, job, settledCleanly, trailFile);
 			}
 		} catch (error) {
 			console.error(`wake bookkeeping failed: ${(error as Error).message}`);
 		}
-		runtime.childOptions = resumeOptions;
-		runtime.child = startChild(slot, runtime.root, resumeOptions);
+		try {
+			runtime.childOptions = resumeOptions;
+			runtime.child = startChild(slot, runtime.root, resumeOptions);
+		} catch (error) {
+			console.error(`wake completion left the controller stopped: ${(error as Error).message}`);
+		}
 	});
 	if (
-		!sendKernelPrompt(child, { type: "prompt", message: wakePrompt(cause, coalesced) }, false, `kernel-wake-${cause}`)
+		!sendKernelPrompt(
+			child,
+			{ type: "prompt", message: wakePrompt(cause, coalesced, job) },
+			false,
+			`kernel-wake-${cause}`,
+		)
 	) {
 		await stopChild(child);
-		if (runtime.wakeChild === child) runtime.wakeChild = undefined;
-		if (slot.runtime === runtime && !runtime.closing) runtime.child = startChild(slot, runtime.root, resumeOptions);
 		return false;
+	}
+	promptSent = true;
+	if (job) {
+		const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
+		writeWakeRunState(statePath, recordWakeStart(readWakeRunState(statePath), job.id, Date.now(), trailFile));
+		if (manual) console.log(`scheduled job run started manually: ${job.title}`);
 	}
 	return true;
 }
@@ -1163,19 +1254,30 @@ function startWakeTicker(): void {
 			// already durable, they just never got their wake.
 			if (runtime.pendingInboundWake) {
 				runtime.pendingInboundWake = false;
-				void startWakeChild(slot, runtime, "inbound_event", 0).then((started) => {
-					if (!started && slot.runtime === runtime && !runtime.closing) runtime.pendingInboundWake = true;
-				});
+				void startWakeChild(slot, runtime, "inbound_event", 0)
+					.then((started) => {
+						if (!started && slot.runtime === runtime && !runtime.closing) runtime.pendingInboundWake = true;
+					})
+					.catch((error) => {
+						console.error(`inbound wake failed for ${runtime.root}: ${(error as Error).message}`);
+						if (slot.runtime === runtime && !runtime.closing) runtime.pendingInboundWake = true;
+					});
 				continue;
 			}
 			try {
-				const schedule = readWakeSchedule(runtime.root);
+				const jobs = readScheduledJobs(runtime.root);
 				const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
 				const state = readWakeRunState(statePath);
-				const decision = decideScheduledWake(schedule, state, Date.now());
-				if (!decision.due) continue;
-				writeWakeRunState(statePath, recordWakeStart(state, Date.now()));
-				void startWakeChild(slot, runtime, "schedule", decision.coalesced, schedule?.intervalMinutes);
+				const due = jobs
+					.map((job) => ({
+						job,
+						decision: decideScheduledWake(job, scheduledJobRunState(state, job.id), Date.now()),
+					}))
+					.find((candidate) => candidate.decision.due);
+				if (!due) continue;
+				void startWakeChild(slot, runtime, "schedule", due.decision.coalesced, due.job).catch((error) => {
+					console.error(`scheduled wake failed for ${runtime.root}: ${(error as Error).message}`);
+				});
 			} catch (error) {
 				console.error(`wake tick failed for ${runtime.root}: ${(error as Error).message}`);
 			}
@@ -1184,6 +1286,7 @@ function startWakeTicker(): void {
 }
 
 async function startMergeChild(slot: Slot, runtime: CompanyRuntime, reviewedPrompt: string): Promise<boolean> {
+	if (runtime.wakeChild || runtime.closing) return false;
 	const resumeOptions = {
 		...runtime.childOptions,
 		sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
@@ -1209,6 +1312,7 @@ async function startMergeChild(slot: Slot, runtime: CompanyRuntime, reviewedProm
 	child = startChild(slot, runtime.root, {
 		autonomousName: `userland merge v${runtime.userland.stagedVersion}`,
 		silent: true,
+		model: resumeOptions.model,
 		onRpcEvent: (frame) => {
 			if (frame.type === "agent_start") started = true;
 			// Any settle ends the run — including a prompt that failed before
@@ -1293,6 +1397,20 @@ interface ActiveCompany {
 	usingBaseFallback: boolean;
 	mergePrompt?: string;
 	mergeRunning: boolean;
+	wakeRunning: boolean;
+	/** Exact autonomous trail currently owned by the kernel, if any. */
+	autonomousTrailFile?: string;
+	scheduledJobs: Array<
+		ScheduledJob & {
+			lastRunAt?: string;
+			lastFinishedAt?: string;
+			lastOutcome?: "succeeded" | "failed";
+			lastTrailFile?: string;
+			nextRunAt?: string;
+			failureStreak: number;
+			running: boolean;
+		}
+	>;
 	activeApp: "fork" | "base";
 	versions: UserlandVersion[];
 	evolved: boolean;
@@ -1306,6 +1424,32 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 	if (!runtime) return undefined;
 	const staged = runtime.userland.action === "staged" || runtime.userland.action === "already-staged";
 	const userlandDir = join(runtime.root, "userland");
+	const autonomousChild =
+		runtime.wakeChild?.exitCode === null
+			? runtime.wakeChild
+			: runtime.mergeChild?.exitCode === null
+				? runtime.mergeChild
+				: undefined;
+	const runState = readWakeRunState(wakeRunStatePath(app.getPath("userData"), runtime.root));
+	const now = Date.now();
+	const scheduledJobs = readScheduledJobs(runtime.root).map((job) => {
+		const jobState = scheduledJobRunState(runState, job.id);
+		const lastRunMs = jobState.lastWakeAt ? Date.parse(jobState.lastWakeAt) : Number.NaN;
+		const nextRunAt =
+			job.enabled && !job.suspendedReason
+				? new Date(Number.isFinite(lastRunMs) ? lastRunMs + job.intervalMinutes * 60_000 : now).toISOString()
+				: undefined;
+		return {
+			...job,
+			lastRunAt: jobState.lastWakeAt,
+			lastFinishedAt: jobState.lastFinishedAt,
+			lastOutcome: jobState.lastOutcome,
+			lastTrailFile: jobState.lastTrailFile,
+			nextRunAt,
+			failureStreak: jobState.failureStreak,
+			running: runtime.wakeJobId === job.id && Boolean(runtime.wakeChild && runtime.wakeChild.exitCode === null),
+		};
+	});
 	return {
 		root: runtime.root,
 		id: runtime.storageId,
@@ -1315,6 +1459,9 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 		usingBaseFallback: runtime.usingBaseFallback,
 		mergePrompt: staged ? mergeTaskPrompt(runtime.userland) : undefined,
 		mergeRunning: Boolean(runtime.mergeChild && runtime.mergeChild.exitCode === null),
+		wakeRunning: Boolean(runtime.wakeChild && runtime.wakeChild.exitCode === null),
+		autonomousTrailFile: autonomousChild ? childBindings.get(autonomousChild)?.file : undefined,
+		scheduledJobs,
 		activeApp: getActiveApp(userlandDir),
 		versions: listVersions(userlandDir),
 		evolved: !isUnmodified(userlandDir),
@@ -1415,9 +1562,16 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		// controller-scope chat instead of creating a fresh session per open.
 		const swept = pruneEmptyTrailSessions(root);
 		if (swept > 0) console.log(`pruned ${swept} contentless trail session${swept === 1 ? "" : "s"}`);
-		const childOptions: ChildOptions = kickoff
-			? { autonomousName: "conception" }
-			: { sessionFile: latestResumableTrailSession(root) };
+		// A resumed trail records the model that session last used, but the
+		// founder's confirmed preference is newer authority. Pass it on every
+		// controller launch so reopening an old chat cannot silently move the
+		// controller, and the scheduled jobs it spawns, back to a stale model.
+		const childOptions: ChildOptions = controllerLaunchOptions(
+			app.getPath("userData"),
+			root,
+			kickoff,
+			latestResumableTrailSession(root),
+		);
 		let child: ReturnType<typeof startChild>;
 		try {
 			child = startChild(slot, root, childOptions);
@@ -1667,6 +1821,7 @@ async function openChat(
 		sessionFile: sessionFile ?? undefined,
 		department,
 		worktree,
+		model: runtime.childOptions.model,
 	};
 	try {
 		// Pre-pivot chats carry old-schema trail headers the bind refuses;
@@ -1969,7 +2124,7 @@ app.whenReady().then(async () => {
 		)
 			return { ok: false, error: "invalid product transaction" };
 		return enqueueRuntimeTransition(runtime, async () => {
-			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild) {
+			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) {
 				return { ok: false, error: "company runtime is not available" };
 			}
 			const departmentId = productDepartmentId(product.trim());
@@ -2043,6 +2198,152 @@ app.whenReady().then(async () => {
 			}
 		});
 	});
+	ipcMain.handle("company:product-source-choose", async (event) => {
+		const slot = slotOf(event.sender);
+		if (!slot?.runtime) return { ok: false };
+		const picked = await dialog.showOpenDialog(slot.window, {
+			title: "Choose a local product repository",
+			properties: ["openDirectory"],
+		});
+		const path = picked.filePaths[0];
+		return picked.canceled || !path ? { ok: false } : { ok: true, path };
+	});
+	ipcMain.handle("company:scheduled-job-create", async (event, value: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || !value || typeof value !== "object" || Array.isArray(value)) {
+			return { ok: false, error: "invalid scheduled job" };
+		}
+		const input = value as Record<string, unknown>;
+		if (
+			typeof input.title !== "string" ||
+			typeof input.prompt !== "string" ||
+			typeof input.intervalMinutes !== "number" ||
+			(input.enabled !== undefined && typeof input.enabled !== "boolean") ||
+			Object.keys(input).some((key) => !["title", "prompt", "intervalMinutes", "enabled"].includes(key))
+		) {
+			return { ok: false, error: "invalid scheduled job" };
+		}
+		const approved = await confirmKernelReview(slot.window, {
+			title: "Create scheduled job",
+			summary: "Bind this recurring controller work to the open company?",
+			exactText: input.prompt,
+			metadata: [
+				`Company: ${runtime.root}`,
+				`Title: ${input.title}`,
+				`Schedule: every ${input.intervalMinutes} minutes`,
+				`Status: ${input.enabled === false ? "paused" : "active"}`,
+			].join("\n"),
+		});
+		if (!approved) return { ok: false, error: "cancelled" };
+		try {
+			return {
+				ok: true,
+				job: createScheduledJob(runtime.root, {
+					title: input.title,
+					prompt: input.prompt,
+					intervalMinutes: input.intervalMinutes,
+					...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+				}),
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("company:scheduled-job-update", async (event, id: unknown, value: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof id !== "string" || !value || typeof value !== "object" || Array.isArray(value)) {
+			return { ok: false, error: "invalid scheduled-job update" };
+		}
+		const input = value as Record<string, unknown>;
+		if (
+			(input.title !== undefined && typeof input.title !== "string") ||
+			(input.prompt !== undefined && typeof input.prompt !== "string") ||
+			(input.intervalMinutes !== undefined && typeof input.intervalMinutes !== "number") ||
+			(input.enabled !== undefined && typeof input.enabled !== "boolean") ||
+			Object.keys(input).some((key) => !["title", "prompt", "intervalMinutes", "enabled"].includes(key))
+		) {
+			return { ok: false, error: "invalid scheduled-job update" };
+		}
+		const current = readScheduledJobs(runtime.root).find((job) => job.id === id);
+		if (!current) return { ok: false, error: "scheduled job not found" };
+		const approved = await confirmKernelReview(slot.window, {
+			title: "Update scheduled job",
+			summary: "Apply these recurring-work settings to the open company?",
+			exactText: typeof input.prompt === "string" ? input.prompt : current.prompt,
+			metadata: [
+				`Company: ${runtime.root}`,
+				`Title: ${typeof input.title === "string" ? input.title : current.title}`,
+				`Schedule: every ${typeof input.intervalMinutes === "number" ? input.intervalMinutes : current.intervalMinutes} minutes`,
+				`Status: ${(typeof input.enabled === "boolean" ? input.enabled : current.enabled) ? "active" : "paused"}`,
+			].join("\n"),
+		});
+		if (!approved) return { ok: false, error: "cancelled" };
+		try {
+			return {
+				ok: true,
+				job: updateScheduledJob(runtime.root, id, {
+					...(typeof input.title === "string" ? { title: input.title } : {}),
+					...(typeof input.prompt === "string" ? { prompt: input.prompt } : {}),
+					...(typeof input.intervalMinutes === "number" ? { intervalMinutes: input.intervalMinutes } : {}),
+					...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+				}),
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("company:scheduled-job-delete", async (event, id: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof id !== "string") return { ok: false, error: "invalid scheduled job" };
+		const job = readScheduledJobs(runtime.root).find((candidate) => candidate.id === id);
+		if (!job) return { ok: false, error: "scheduled job not found" };
+		if (runtime.wakeJobId === id) return { ok: false, error: "scheduled job is running" };
+		const confirmation = await dialog.showMessageBox(slot.window, {
+			type: "warning",
+			buttons: ["Cancel", "Delete scheduled job"],
+			defaultId: 0,
+			cancelId: 0,
+			message: `Delete “${job.title}”?`,
+			detail:
+				"Its trail runs remain in the company. The recurring definition and local run state will stop being shown.",
+		});
+		if (confirmation.response !== 1) return { ok: false, error: "cancelled" };
+		const deleted = deleteScheduledJob(runtime.root, id);
+		if (deleted) {
+			const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
+			writeWakeRunState(statePath, removeScheduledJobRunState(readWakeRunState(statePath), id));
+		}
+		return { ok: deleted };
+	});
+	ipcMain.handle("company:scheduled-job-run", (event, id: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof id !== "string") return { ok: false, error: "invalid scheduled job" };
+		return enqueueRuntimeTransition(runtime, async () => {
+			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) {
+				return { ok: false, error: "company runtime is busy" };
+			}
+			const job = readScheduledJobs(runtime.root).find((candidate) => candidate.id === id);
+			if (!job) return { ok: false, error: "scheduled job not found" };
+			const approved = await confirmKernelReview(slot.window, {
+				title: "Run scheduled job now",
+				summary: "Start this controller job immediately?",
+				exactText: job.prompt,
+				metadata: [
+					`Company: ${runtime.root}`,
+					`Title: ${job.title}`,
+					`Usual schedule: every ${job.intervalMinutes} minutes`,
+				].join("\n"),
+			});
+			if (!approved) return { ok: false, error: "cancelled" };
+			return (await startWakeChild(slot, runtime, "schedule", 0, job, true))
+				? { ok: true }
+				: { ok: false, error: "company runtime is busy" };
+		});
+	});
 	ipcMain.handle("company:close", (event) => {
 		const slot = slotOf(event.sender);
 		if (slot) return closeCompany(slot);
@@ -2052,7 +2353,9 @@ app.whenReady().then(async () => {
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false };
 		return enqueueRuntimeTransition(runtime, () => {
-			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild) return Promise.resolve({ ok: false });
+			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) {
+				return Promise.resolve({ ok: false });
+			}
 			return openChat(slot, sessionFile, department, worktree);
 		});
 	});
@@ -2097,7 +2400,7 @@ app.whenReady().then(async () => {
 			return false;
 		const runtime = slot.runtime;
 		return enqueueRuntimeTransition(runtime, async () => {
-			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild) return false;
+			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) return false;
 			const userlandDir = join(runtime.root, "userland");
 			const reviewed = reviewVersion(userlandDir, id);
 			if (!reviewed) return false;
@@ -2190,6 +2493,7 @@ app.whenReady().then(async () => {
 		if (!slot || !runtime) return { ok: false, reason: "no-company" };
 		return enqueueRuntimeTransition(runtime, async () => {
 			if (slot.runtime !== runtime || runtime.closing) return { ok: false, reason: "no-company" };
+			if (runtime.wakeChild) return { ok: false, reason: "wake-running" };
 			const staged = runtime.userland.action === "staged" || runtime.userland.action === "already-staged";
 			if (!staged) return { ok: false, reason: "nothing-staged" };
 			if (runtime.mergeChild && runtime.mergeChild.exitCode === null)
@@ -2346,7 +2650,7 @@ app.whenReady().then(async () => {
 	ipcMain.handle("rpc:send", async (event, frame: unknown) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
-		if (!slot || !runtime || runtime.mergeChild) return { ok: false };
+		if (!slot || !runtime || runtime.mergeChild || runtime.wakeChild) return { ok: false };
 		if (!frame || typeof frame !== "object" || !("type" in frame) || typeof frame.type !== "string") {
 			return { ok: false };
 		}
