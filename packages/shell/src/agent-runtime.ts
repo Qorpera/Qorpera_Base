@@ -528,6 +528,19 @@ function stampKernelEntry(binding: TrailBinding, entry: SessionEntry): TrailAppe
 	return { type: "qorpera_trail_append", token: binding.token, entry: stamped };
 }
 
+function appendKernelCustomObservation(binding: TrailBinding, customType: string, data: unknown): void {
+	const append = stampKernelEntry(binding, {
+		type: "custom",
+		id: randomUUID(),
+		parentId: null,
+		timestamp: "",
+		customType,
+		data,
+	});
+	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+	commitTrailAppend(binding, append);
+}
+
 export function appendKernelObservation(
 	binding: TrailBinding,
 	input: {
@@ -539,16 +552,7 @@ export function appendKernelObservation(
 		images: Array<{ mimeType: string; sha256: string; bytes: number }>;
 	},
 ): void {
-	const append = stampKernelEntry(binding, {
-		type: "custom",
-		id: randomUUID(),
-		parentId: null,
-		timestamp: "",
-		customType: "qorpera_kernel_input",
-		data: input,
-	});
-	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
-	commitTrailAppend(binding, append);
+	appendKernelCustomObservation(binding, "qorpera_kernel_input", input);
 }
 
 export function appendKernelModelObservation(
@@ -565,16 +569,7 @@ export function appendKernelModelObservation(
 		usage?: { inputTokens: number; outputTokens: number; costUsd: number; calls?: number };
 	},
 ): void {
-	const append = stampKernelEntry(binding, {
-		type: "custom",
-		id: randomUUID(),
-		parentId: null,
-		timestamp: "",
-		customType: "qorpera_kernel_model_request",
-		data: input,
-	});
-	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
-	commitTrailAppend(binding, append);
+	appendKernelCustomObservation(binding, "qorpera_kernel_model_request", input);
 }
 
 export function appendKernelWakeObservation(
@@ -588,16 +583,7 @@ export function appendKernelWakeObservation(
 		coalesced?: number;
 	},
 ): void {
-	const append = stampKernelEntry(binding, {
-		type: "custom",
-		id: randomUUID(),
-		parentId: null,
-		timestamp: "",
-		customType: "qorpera_kernel_wake",
-		data: input,
-	});
-	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
-	commitTrailAppend(binding, append);
+	appendKernelCustomObservation(binding, "qorpera_kernel_wake", input);
 }
 
 /** Durable end-of-session marker, appended by the kernel when it releases a
@@ -611,16 +597,7 @@ export function appendKernelSessionEndObservation(
 		settled: boolean;
 	},
 ): void {
-	const append = stampKernelEntry(binding, {
-		type: "custom",
-		id: randomUUID(),
-		parentId: null,
-		timestamp: "",
-		customType: "qorpera_kernel_session_end",
-		data: input,
-	});
-	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
-	commitTrailAppend(binding, append);
+	appendKernelCustomObservation(binding, "qorpera_kernel_session_end", input);
 }
 
 export function appendKernelHttpObservation(
@@ -642,16 +619,7 @@ export function appendKernelHttpObservation(
 		sentFile?: string;
 	},
 ): void {
-	const append = stampKernelEntry(binding, {
-		type: "custom",
-		id: randomUUID(),
-		parentId: null,
-		timestamp: "",
-		customType: "qorpera_kernel_http_request",
-		data: input,
-	});
-	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
-	commitTrailAppend(binding, append);
+	appendKernelCustomObservation(binding, "qorpera_kernel_http_request", input);
 }
 
 export function appendKernelMutationObservation(
@@ -664,16 +632,7 @@ export function appendKernelMutationObservation(
 		resultStatus?: number;
 	},
 ): void {
-	const append = stampKernelEntry(binding, {
-		type: "custom",
-		id: randomUUID(),
-		parentId: null,
-		timestamp: "",
-		customType: "qorpera_kernel_founder_mutation",
-		data: input,
-	});
-	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
-	commitTrailAppend(binding, append);
+	appendKernelCustomObservation(binding, "qorpera_kernel_founder_mutation", input);
 }
 
 export function appendKernelProductStorageObservation(
@@ -683,16 +642,7 @@ export function appendKernelProductStorageObservation(
 		paths: Array<{ path: string; kind: "repository" | "worktree" }>;
 	},
 ): void {
-	const append = stampKernelEntry(binding, {
-		type: "custom",
-		id: randomUUID(),
-		parentId: null,
-		timestamp: "",
-		customType: "qorpera_kernel_product_storage",
-		data: input,
-	});
-	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
-	commitTrailAppend(binding, append);
+	appendKernelCustomObservation(binding, "qorpera_kernel_product_storage", input);
 }
 
 function appendKernelGateObservation(
@@ -705,16 +655,7 @@ function appendKernelGateObservation(
 		phase: "started" | "completed";
 	},
 ): void {
-	const append = stampKernelEntry(binding, {
-		type: "custom",
-		id: randomUUID(),
-		parentId: null,
-		timestamp: "",
-		customType: "qorpera_kernel_gate_transition",
-		data: input,
-	});
-	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
-	commitTrailAppend(binding, append);
+	appendKernelCustomObservation(binding, "qorpera_kernel_gate_transition", input);
 }
 
 function trailHasGateTransition(
@@ -1061,16 +1002,11 @@ export function applyKernelWriteFrame(
 		try {
 			writeFileSync(join(inbox, "messages", frame.file), frame.content, { encoding: "utf-8", flag: "wx" });
 			granted = true;
-			const append = stampKernelEntry(binding, {
-				type: "custom",
-				id: randomUUID(),
-				parentId: null,
-				timestamp: "",
-				customType: "qorpera_kernel_inbox_message",
-				data: { file: frame.file, hash: frame.hash, content: frame.content },
+			appendKernelCustomObservation(binding, "qorpera_kernel_inbox_message", {
+				file: frame.file,
+				hash: frame.hash,
+				content: frame.content,
 			});
-			appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
-			commitTrailAppend(binding, append);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 		}
