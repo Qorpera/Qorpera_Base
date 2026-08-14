@@ -24,7 +24,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 		if (message.params.name === "echo") {
 			reply(message.id, { content: [{ type: "text", text: "echo: " + (message.params.arguments?.text ?? "") }] });
 		} else if (message.params.name === "host_env") {
-			reply(message.id, { content: [{ type: "text", text: process.env.QORPERA_MCP_HOST_ACCESS_TEST ?? "missing" }] });
+			reply(message.id, { content: [{ type: "text", text: [process.env.QORPERA_MCP_HOST_ACCESS_TEST ?? "missing", process.env.QORPERA_TRAIL_BROKER_TOKEN ?? "trail-missing", process.env.QORPERA_MODEL_BROKER_HANDLES ?? "handles-missing"].join("|") }] });
 		} else {
 			reply(message.id, { content: [{ type: "text", text: "no such tool" }], isError: true });
 		}
@@ -81,16 +81,24 @@ describe("use_mcp_tool", () => {
 		expect(result.details?.isError).toBeUndefined();
 	});
 
-	it("gives local servers the controller's complete host environment", async () => {
-		const previous = process.env.QORPERA_MCP_HOST_ACCESS_TEST;
+	it("gives local servers the host environment without controller broker capabilities", async () => {
+		const previousHostAccess = process.env.QORPERA_MCP_HOST_ACCESS_TEST;
+		const previousTrailToken = process.env.QORPERA_TRAIL_BROKER_TOKEN;
+		const previousModelHandles = process.env.QORPERA_MODEL_BROKER_HANDLES;
 		process.env.QORPERA_MCP_HOST_ACCESS_TEST = "available";
+		process.env.QORPERA_TRAIL_BROKER_TOKEN = "controller-secret";
+		process.env.QORPERA_MODEL_BROKER_HANDLES = "controller-handles";
 		try {
 			declareFauxServer();
 			const result = await run({ server: "faux", tool: "host_env" });
-			expect(result.content[0]?.text).toContain("available");
+			expect(result.content[0]?.text).toContain("available|trail-missing|handles-missing");
 		} finally {
-			if (previous === undefined) delete process.env.QORPERA_MCP_HOST_ACCESS_TEST;
-			else process.env.QORPERA_MCP_HOST_ACCESS_TEST = previous;
+			if (previousHostAccess === undefined) delete process.env.QORPERA_MCP_HOST_ACCESS_TEST;
+			else process.env.QORPERA_MCP_HOST_ACCESS_TEST = previousHostAccess;
+			if (previousTrailToken === undefined) delete process.env.QORPERA_TRAIL_BROKER_TOKEN;
+			else process.env.QORPERA_TRAIL_BROKER_TOKEN = previousTrailToken;
+			if (previousModelHandles === undefined) delete process.env.QORPERA_MODEL_BROKER_HANDLES;
+			else process.env.QORPERA_MODEL_BROKER_HANDLES = previousModelHandles;
 		}
 	});
 

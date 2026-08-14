@@ -42,6 +42,7 @@ export const MCP_CONFIG_PATH = join("connections", "mcp.json");
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 const CALL_TIMEOUT_MS = 60_000;
 const SPAWN_TIMEOUT_MS = 30_000;
+const CONTROLLER_ONLY_ENV = new Set(["QORPERA_MODEL_BROKER_HANDLES", "QORPERA_TRAIL_BROKER_TOKEN"]);
 
 interface McpServerConfig {
 	/** Local stdio server: spawned with the controller's host access. */
@@ -90,7 +91,7 @@ function readMcpConfig(root: string): Record<string, McpServerConfig> {
 function serverEnvironment(declared: Record<string, string> | undefined): Record<string, string> {
 	const env: Record<string, string> = {};
 	for (const [name, value] of Object.entries(process.env)) {
-		if (value !== undefined) env[name] = value;
+		if (value !== undefined && !CONTROLLER_ONLY_ENV.has(name)) env[name] = value;
 	}
 	env.ELECTRON_RUN_AS_NODE = "1";
 	// Declared values override the inherited host environment. Avoid writing
@@ -381,7 +382,7 @@ export function createMcpToolDefinition(cwd: string): ToolDefinition<typeof mcpS
 	return {
 		name: MCP_TOOL_NAME,
 		label: "mcp",
-		description: `Use a tool from an external MCP server the company has declared in ${MCP_CONFIG_PATH}. Omit "tool" to list a server's tools first. Local servers inherit the controller's full host environment and permissions; remote servers use the kernel's brokered HTTP lane.`,
+		description: `Use a tool from an external MCP server the company has declared in ${MCP_CONFIG_PATH}. Omit "tool" to list a server's tools first. Local servers inherit the user's host environment and permissions, excluding Qorpera's internal broker capabilities; remote servers use the kernel's brokered HTTP lane.`,
 		promptSnippet: "Call tools on company-declared MCP servers",
 		parameters: mcpSchema,
 		async execute(_toolCallId, { server, tool, arguments: toolArguments }: McpToolInput) {
