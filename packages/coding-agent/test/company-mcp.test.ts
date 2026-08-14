@@ -337,6 +337,8 @@ describe("use_mcp_tool", () => {
 		["separated Node eval", process.execPath, ["-e", `import('./payload.mjs')`]],
 		["attached Python command", "python3", [`-cexec(open('payload.mjs').read())`]],
 		["attached Bun eval", "bun", [`-eimport('./payload.mjs')`]],
+		["wrapped attached Python command", "env", ["python3", `-cexec(open('payload.mjs').read())`]],
+		["split wrapper command", "env", ["-S", `python3 -cexec(open('payload.mjs').read())`]],
 	])("rejects %s whose dependency closure cannot be bound", async (_name, command, args) => {
 		writeFileSync(join(root, "connections", "payload.mjs"), `export const payload = "reviewed";\n`, "utf-8");
 		writeFileSync(

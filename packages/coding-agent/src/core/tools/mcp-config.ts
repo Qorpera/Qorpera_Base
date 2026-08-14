@@ -205,8 +205,11 @@ const INLINE_PROGRAM_ARGUMENTS = new Map<string, RegExp>([
 	["cmd.exe", /^\/(?:c|k)[\s\S]*$/i],
 	["deno", /^eval$/i],
 	["deno.exe", /^eval$/i],
+	["env", /^(?:-S[\s\S]*|--split-string(?:=[\s\S]*)?)$/i],
+	["env.exe", /^(?:-S[\s\S]*|--split-string(?:=[\s\S]*)?)$/i],
 	["node", /^(?:-e[\s\S]*|-p[\s\S]*|--eval(?:=[\s\S]*)?|--print(?:=[\s\S]*)?)$/i],
 	["node.exe", /^(?:-e[\s\S]*|-p[\s\S]*|--eval(?:=[\s\S]*)?|--print(?:=[\s\S]*)?)$/i],
+	["nodejs", /^(?:-e[\s\S]*|-p[\s\S]*|--eval(?:=[\s\S]*)?|--print(?:=[\s\S]*)?)$/i],
 	["powershell", /^(?:-c|-command|-commandwithargs|-ec|-encodedcommand)$/i],
 	["powershell.exe", /^(?:-c|-command|-commandwithargs|-ec|-encodedcommand)$/i],
 	["pwsh", /^(?:-c|-command|-commandwithargs|-ec|-encodedcommand)$/i],
@@ -217,6 +220,22 @@ const INLINE_PROGRAM_ARGUMENTS = new Map<string, RegExp>([
 	["python3.exe", /^-c[\s\S]*$/i],
 	["sh", /^-c[\s\S]*$/i],
 ]);
+
+function inlineProgramArgumentPattern(executable: string): RegExp | undefined {
+	const name = executable.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() ?? "";
+	if (/^python(?:3(?:\.\d+)*)?(?:\.exe)?$/.test(name)) return /^-c[\s\S]*$/i;
+	return INLINE_PROGRAM_ARGUMENTS.get(name);
+}
+
+function hasInlineInterpreterProgram(command: string, resolvedCommand: string | undefined, args: string[]): boolean {
+	const directPattern = inlineProgramArgumentPattern(command) ?? inlineProgramArgumentPattern(resolvedCommand ?? "");
+	if (directPattern && args.some((argument) => directPattern.test(argument))) return true;
+	for (let index = 0; index < args.length; index += 1) {
+		const nestedPattern = inlineProgramArgumentPattern(args[index]);
+		if (nestedPattern && args.slice(index + 1).some((argument) => nestedPattern.test(argument))) return true;
+	}
+	return false;
+}
 
 function decodeStaticJavaScriptLiteral(raw: string, template: boolean): string | undefined {
 	let value = "";
@@ -707,10 +726,7 @@ function localExecutionIdentity(root: string, config: McpServerConfig): object |
 	if (!config.command) return undefined;
 	const executable = resolveExecutable(root, config);
 	const resolvedExecutable = "resolved" in executable ? executable.resolved : undefined;
-	const executableName =
-		(resolvedExecutable ?? config.command).replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() ?? "";
-	const inlineProgramArgument = INLINE_PROGRAM_ARGUMENTS.get(executableName);
-	if (inlineProgramArgument && (config.args ?? []).some((argument) => inlineProgramArgument.test(argument))) {
+	if (hasInlineInterpreterProgram(config.command, resolvedExecutable, config.args ?? [])) {
 		throw new Error(
 			`Local host program dependency closure cannot be proven for ${config.command}; inline interpreter programs are not allowed, use a reviewed script file`,
 		);
