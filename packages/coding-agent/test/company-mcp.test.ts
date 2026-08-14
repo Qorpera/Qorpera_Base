@@ -337,6 +337,8 @@ describe("use_mcp_tool", () => {
 		["separated Node eval", process.execPath, ["-e", `import('./payload.mjs')`]],
 		["attached Python command", "python3", [`-cexec(open('payload.mjs').read())`]],
 		["attached Bun eval", "bun", [`-eimport('./payload.mjs')`]],
+		["Ruby eval", "ruby", ["-e", `eval(File.read('payload.rb'))`]],
+		["versioned Perl eval", "perl5.40", ["-E", `eval do { local $/; open my $fh, '<', 'payload.pl'; <$fh> }`]],
 		["wrapped attached Python command", "env", ["python3", `-cexec(open('payload.mjs').read())`]],
 		["split wrapper command", "env", ["-S", `python3 -cexec(open('payload.mjs').read())`]],
 		["abbreviated split wrapper command", "env", [`--s=python3 -cexec(open('payload.mjs').read())`]],

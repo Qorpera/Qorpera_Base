@@ -224,7 +224,14 @@ const INLINE_PROGRAM_ARGUMENTS = new Map<string, RegExp>([
 function inlineProgramArgumentPattern(executable: string): RegExp | undefined {
 	const name = executable.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() ?? "";
 	if (/^python(?:3(?:\.\d+)*)?(?:\.exe)?$/.test(name)) return /^-c[\s\S]*$/i;
+	if (/^(?:ruby|perl)(?:\d+(?:\.\d+)*)?(?:\.exe)?$/.test(name)) {
+		return name.startsWith("ruby") ? /^-e[\s\S]*$/i : /^-(?:e|E)[\s\S]*$/;
+	}
 	return INLINE_PROGRAM_ARGUMENTS.get(name);
+}
+
+function isScriptInterpreter(executable: string): boolean {
+	return SCRIPT_INTERPRETERS.has(executable) || /^(?:ruby|perl)(?:\d+(?:\.\d+)*)?(?:\.exe)?$/.test(executable);
 }
 
 function hasInlineInterpreterProgram(command: string, resolvedCommand: string | undefined, args: string[]): boolean {
@@ -509,7 +516,7 @@ function childProcessInputIdentities(root: string, source: string, path: string)
 			}
 		}
 		const executableName = command.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() ?? "";
-		if (!usesCurrentNode && !SCRIPT_INTERPRETERS.has(executableName)) continue;
+		if (!usesCurrentNode && !isScriptInterpreter(executableName)) continue;
 		if (!expressions[1] || expressions[1].trim().startsWith("{")) continue;
 		const arguments_ = staticStringArray(expressions[1]);
 		if (!arguments_) {
