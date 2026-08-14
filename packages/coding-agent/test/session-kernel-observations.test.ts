@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildSessionContext, type SessionEntry } from "../src/core/session-manager.ts";
+import { buildSessionContext, type SessionEntry, SessionManager } from "../src/core/session-manager.ts";
 
 /** Shorthand entries mirroring the real damaged trail of 2026-08-13: a
  * founder chat whose only message got orphaned after rootless kernel
@@ -51,6 +54,46 @@ describe("session leaf selection with kernel observations", () => {
 			entry({ type: "thinking_level_change", id: "t1", parentId: "m2", thinkingLevel: "medium" }),
 		];
 		expect(contextTexts(buildSessionContext(entries).messages)).toContain("the founder's only message");
+	});
+
+	it("restores the message-bearing leaf when opening a persisted session", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "qorpera-session-resume-"));
+		const sessionFile = join(tempDir, "session.jsonl");
+		try {
+			const entries: SessionEntry[] = [
+				entry({
+					type: "model_change",
+					id: "m1",
+					parentId: null,
+					provider: "anthropic",
+					modelId: "claude-opus-4-8",
+				}),
+				entry({
+					type: "message",
+					id: "u1",
+					parentId: "m1",
+					message: { role: "user", content: [{ type: "text", text: "persist this conversation" }] },
+				}),
+				entry({ type: "custom", id: "k1", parentId: null, customType: "qorpera_kernel_model_request", data: {} }),
+				entry({ type: "model_change", id: "m2", parentId: "k1", provider: "anthropic", modelId: "claude-fable-5" }),
+				entry({ type: "thinking_level_change", id: "t1", parentId: "m2", thinkingLevel: "medium" }),
+			];
+			const header = {
+				type: "session",
+				version: 3,
+				id: "persisted-session",
+				timestamp: "2026-08-13T04:06:44.103Z",
+				cwd: tempDir,
+			};
+			writeFileSync(sessionFile, `${[header, ...entries].map((row) => JSON.stringify(row)).join("\n")}\n`);
+
+			const session = SessionManager.open(sessionFile, tempDir);
+
+			expect(session.getLeafId()).toBe("u1");
+			expect(contextTexts(session.buildSessionContext().messages)).toContain("persist this conversation");
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("keeps last-entry semantics for message-less sessions", () => {

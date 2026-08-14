@@ -677,7 +677,13 @@ interface ChildOptions {
 
 function startChild(slot: Slot, root: string, options: ChildOptions = {}): ChildProcessWithoutNullStreams {
 	const { sessionFile, autonomousName, department, worktree, silent, onRpcEvent } = options;
-	const win = slot.window;
+	// Resolve the window at SEND time, never at spawn time: opening a company
+	// swaps the slot's window onto the durable partition AFTER the boot child
+	// is started, and a captured reference then streams every child frame —
+	// responses, history, exits — into the destroyed pre-swap window. That was
+	// the "sessions never load on first open" bug: the child was alive and
+	// answering, to a window that no longer existed.
+	const win = () => slot.window;
 	const actor = department && worktree ? "product-worker" : "controller";
 	const cwd = worktree ? join(root, worktree) : root;
 	const scope = {
@@ -824,7 +830,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	// stdin write failures land asynchronously as an "error" event; without a
 	// listener they become an uncaughtException that takes down the app.
 	child.stdin.on("error", (error: NodeJS.ErrnoException) => {
-		if (!silent) send(win, "rpc-log", `child stdin ${error.code ?? error.message}: frame dropped`);
+		if (!silent) send(win(), "rpc-log", `child stdin ${error.code ?? error.message}: frame dropped`);
 	});
 	childBindings.set(child, binding);
 	childIntentSigners.set(child, kernelSigner.signIntent);
@@ -907,7 +913,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				if (append) {
 					appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
 					commitTrailAppend(binding, append);
-				} else send(win, "rpc-log", "rejected invalid trail append frame");
+				} else send(win(), "rpc-log", "rejected invalid trail append frame");
 				return;
 			}
 			if ((frame as { type?: unknown }).type === "agent_settled") {
@@ -935,16 +941,16 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				}
 			}
 			if (onRpcEvent) onRpcEvent(frame as Record<string, unknown>);
-			else if (!silent) send(win, "rpc-event", frame);
+			else if (!silent) send(win(), "rpc-event", frame);
 		} catch {
-			if (!silent) send(win, "rpc-log", line);
+			if (!silent) send(win(), "rpc-log", line);
 		}
 	});
 	createInterface({ input: child.stderr }).on("line", (line) => {
-		if (!silent) send(win, "rpc-log", line);
+		if (!silent) send(win(), "rpc-log", line);
 	});
 	child.on("exit", (code) => {
-		if (!silent && !intentionalKills.has(child)) send(win, "rpc-exit", code);
+		if (!silent && !intentionalKills.has(child)) send(win(), "rpc-exit", code);
 	});
 	child.on("close", () => {
 		liveChildren.delete(child);

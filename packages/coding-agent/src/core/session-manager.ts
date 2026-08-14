@@ -1007,7 +1007,6 @@ export class SessionManager {
 		for (const entry of this.fileEntries) {
 			if (entry.type === "session") continue;
 			this.byId.set(entry.id, entry);
-			this.leafId = entry.id;
 			if (entry.type === "label") {
 				if (entry.label) {
 					this.labelsById.set(entry.targetId, entry.label);
@@ -1018,6 +1017,17 @@ export class SessionManager {
 				}
 			}
 		}
+		// The load-time leaf goes through the same discipline as
+		// defaultSessionLeaf — NEVER the raw last entry. Kernel observations
+		// are rootless audit metadata; adopting one as the leaf grafts every
+		// later append onto a parentless node and orphans the entire
+		// conversation, which is exactly how resumed sessions came back with
+		// zero messages while all their entries sat intact in the file. A
+		// lineage-less stub (a model/thinking change grafted onto such a node
+		// by an earlier resume) must not win either: prefer the newest entry
+		// whose ancestry actually reaches the conversation.
+		const loaded = this.fileEntries.filter((entry) => entry.type !== "session");
+		this.leafId = defaultSessionLeaf(loaded, this.byId)?.id ?? null;
 	}
 
 	private _rewriteFile(): void {
