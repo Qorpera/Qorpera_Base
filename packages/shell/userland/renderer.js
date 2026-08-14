@@ -73,6 +73,9 @@ let navContextTrigger = null;
 let navContextPoint = { x: 0, y: 0 };
 let archiveTarget = null;
 let toastTimeout = null;
+let foundationUpdateVersion = "";
+let companyUpdateVersion = "";
+let companyUpdateRunning = false;
 let departmentWizard = {
 	step: 1,
 	type: null,
@@ -108,6 +111,9 @@ function setupSidebarToggle() {
 /** The hub is a full-screen launcher in <main> (#view-hub) — no sidebar,
  * no empty sheet. body.hub gates its visibility and hides the nav chrome. */
 async function renderHub() {
+	companyUpdateVersion = "";
+	companyUpdateRunning = false;
+	renderUpdateButton();
 	document.body.classList.add("hub");
 	document.title = "Qorpera Base";
 	const companies = await window.qorpera.listCompanies();
@@ -261,26 +267,9 @@ async function enterCompany(active) {
 	if (active.kickoff) {
 		addMsg("tool", "· conception started — the controller is studying the company…");
 	}
-	if (active.mergePrompt) {
-		// The merge runs as a kernel-spawned autonomous session — clicking
-		// never sends into the founder's chat, and a second click while one
-		// is running is refused by the kernel.
-		const b = document.createElement("button");
-		b.id = "mergeBtn";
-		const staged = active.userland.stagedVersion;
-		const markRunning = () => {
-			b.textContent = `Merging app update v${staged}…`;
-			b.disabled = true;
-			$("status").textContent = "userland merge running as an autonomous session…";
-		};
-		b.textContent = `Merge app update → v${staged}`;
-		b.onclick = async () => {
-			const result = await window.qorpera.mergeUserland();
-			if (result?.ok || result?.reason === "already-running") markRunning();
-		};
-		if (active.mergeRunning) markRunning();
-		$("conav").insertBefore(b, $("conav").firstChild);
-	}
+	companyUpdateVersion = active.mergePrompt ? (active.userland.stagedVersion ?? "") : "";
+	companyUpdateRunning = Boolean(active.mergeRunning);
+	renderUpdateButton();
 	show("chat");
 	// With history: the chat child survives window reloads (dev-lane rebuilds
 	// reload the chrome), so the live thread must come back with it. A fresh
@@ -4077,7 +4066,7 @@ $("input").addEventListener("keydown", (event) => {
 // ---- work groups: the agent's tool calls + thinking fold under a
 // ---- collapsible "Worked for …" row, like the Codex thread ------------------
 
-let workGroup = null; // { el, summary, body, start, steps }
+let workGroup = null; // { el, summary, body, start, steps, timer }
 let pendingToolLines = []; // tool lines awaiting their execution_end
 
 function makeWorkGroup(open) {
@@ -4085,12 +4074,26 @@ function makeWorkGroup(open) {
 	el.className = "work";
 	el.open = open;
 	const summary = document.createElement("summary");
-	summary.textContent = "Working…";
 	const body = document.createElement("div");
 	body.className = "workbody";
 	el.appendChild(summary);
 	el.appendChild(body);
-	return { el, summary, body, start: Date.now(), steps: 0 };
+	const group = { el, summary, body, start: Date.now(), steps: 0, timer: null };
+	if (open) {
+		const spinner = document.createElement("span");
+		spinner.className = "work-spinner";
+		spinner.setAttribute("aria-hidden", "true");
+		const label = document.createElement("span");
+		const update = () => {
+			label.textContent = `Working for ${formatDuration(Date.now() - group.start, true)}`;
+		};
+		update();
+		group.timer = setInterval(update, 1000);
+		summary.append(spinner, label);
+	} else {
+		summary.textContent = "Worked";
+	}
+	return group;
 }
 
 function ensureWorkGroup() {
@@ -4112,14 +4115,15 @@ function workMsg(cls, text) {
 	return div;
 }
 
-function formatDuration(ms) {
-	const seconds = Math.max(1, Math.round(ms / 1000));
+function formatDuration(ms, allowZero = false) {
+	const seconds = allowZero ? Math.max(0, Math.floor(ms / 1000)) : Math.max(1, Math.round(ms / 1000));
 	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 /** Stamp the summary with the elapsed time and collapse the group. */
 function closeWorkGroup() {
 	if (!workGroup) return;
+	clearInterval(workGroup.timer);
 	workGroup.summary.textContent = `Worked for ${formatDuration(Date.now() - workGroup.start)} · ${workGroup.steps} step${workGroup.steps === 1 ? "" : "s"}`;
 	workGroup.el.open = false;
 	workGroup = null;
@@ -4128,6 +4132,7 @@ function closeWorkGroup() {
 
 /** Forget the group without touching the DOM (thread was replaced). */
 function resetWorkGroup() {
+	if (workGroup) clearInterval(workGroup.timer);
 	workGroup = null;
 	pendingToolLines = [];
 }
@@ -4226,8 +4231,14 @@ window.qorpera.onRpcEvent((frame) => {
 				renderMarkdown(assistantEl, assistantEl.dataset.source);
 				$("messages").scrollTop = $("messages").scrollHeight;
 			}
-			if (delta.type === "thinking_start") thinkingEl = workMsg("thinking", "");
-			if (delta.type === "thinking_delta" && thinkingEl) thinkingEl.textContent += delta.delta;
+			if (delta.type === "thinking_start") {
+				thinkingEl = workMsg("thinking assistant", "");
+				thinkingEl.dataset.source = "";
+			}
+			if (delta.type === "thinking_delta" && thinkingEl) {
+				thinkingEl.dataset.source += delta.delta;
+				renderMarkdown(thinkingEl, thinkingEl.dataset.source);
+			}
 			if (delta.type === "thinking_end") thinkingEl = null;
 			if (delta.type === "text_end") assistantEl = null;
 			break;
@@ -4390,12 +4401,13 @@ function summarizeArgs(args) {
 
 // ---- the settings page (own sidebar of tabs, Codex-app shape) ---------------
 
-let settingsTab = "general";
-let versionsView = "newest"; // newest | oldest | last-used | favorites
-let updateReadyVersion = null;
+const SETTINGS_TABS = new Set(["connections", "usage", "appearance", "authority", "cloud"]);
+let settingsTab = "connections";
+let connectingConnection = null;
+const connectionMessages = new Map();
 
 function openSettings(tab) {
-	settingsTab = tab || "usage";
+	settingsTab = SETTINGS_TABS.has(tab) ? tab : "connections";
 	$("settingsView").classList.add("open");
 	for (const b of document.querySelectorAll("#settingsView .stab")) {
 		b.classList.toggle("active", b.dataset.tab === settingsTab);
@@ -4450,6 +4462,146 @@ function modeSelect(value) {
 	return sel;
 }
 
+const CONNECTION_LOGOS = {
+	github:
+		'<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0C17.7 5 18.7 5.4 18.7 5.4c.7 1.7.3 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.2c0 .3.2.7.8.6A12 12 0 0 0 12 .3Z"/></svg>',
+	"openai-codex":
+		'<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 4.3a6 6 0 0 1 5.7 4.1 6 6 0 0 1 3.7 9.8 6 6 0 0 1-7.2 8.6 6 6 0 0 1-9.9-3.2 6 6 0 0 1-1.9-10.3A6 6 0 0 1 16 4.3Z"/><path d="m10.3 8.2 5.8 3.3v9.1l-5.8 3.3M21.7 8.4l-5.7 3.3-7.9 4.5M25.3 18.3l-5.7-3.4-7.9 4.6"/></svg>',
+	anthropic:
+		'<svg viewBox="0 0 32 32" aria-hidden="true"><path fill="currentColor" d="M3.5 25 12.3 6.7h3.2L24.4 25h-4.2l-2-4.5H9.4L7.3 25H3.5Zm7.4-8h5.8l-2.9-6.6-2.9 6.6ZM25.2 7h3.3v18h-3.3z"/></svg>',
+};
+
+function connectionLogo(connectionId) {
+	const logo = document.createElement("span");
+	logo.className = `connection-logo ${connectionId}`;
+	logo.innerHTML = CONNECTION_LOGOS[connectionId] ?? navGlyphSvg("grid", "connection-fallback-logo");
+	return logo;
+}
+
+async function chatToConnect() {
+	closeSettings();
+	if (!backendUrl) {
+		showControllerToast("open a company to connect a service through chat");
+		return;
+	}
+	await newCompanyChat();
+	$("input").value = "Connect ";
+	syncComposer();
+	$("input").focus();
+}
+
+async function toggleConnection(connectionId) {
+	if (connectingConnection === connectionId) {
+		connectionMessages.set(connectionId, "Cancelling…");
+		window.qorpera.cancelConnection(connectionId);
+		void renderSettingsTab();
+		return;
+	}
+	if (connectingConnection) return;
+	connectingConnection = connectionId;
+	connectionMessages.set(connectionId, "Opening sign-in in your browser…");
+	void renderSettingsTab();
+	try {
+		const result = await window.qorpera.connectAccount(connectionId);
+		if (result?.ok) connectionMessages.set(connectionId, result.message ?? "Connected.");
+		else if (result?.cancelled) connectionMessages.set(connectionId, "Connection cancelled.");
+		else connectionMessages.set(connectionId, result?.error ?? "Connection failed.");
+	} catch (error) {
+		connectionMessages.set(connectionId, error instanceof Error ? error.message : "Connection failed.");
+	} finally {
+		connectingConnection = null;
+		if ($("settingsView").classList.contains("open") && settingsTab === "connections") {
+			void renderSettingsTab();
+		}
+	}
+}
+
+function renderConnectionGroup(content, title, description, connections) {
+	const group = document.createElement("section");
+	group.className = "settings-group";
+	const header = document.createElement("header");
+	const heading = document.createElement("h2");
+	heading.textContent = title;
+	const detail = document.createElement("p");
+	detail.textContent = description;
+	header.append(heading, detail);
+	group.appendChild(header);
+	const list = document.createElement("div");
+	list.className = "connection-list";
+	for (const connection of connections) {
+		const card = document.createElement("article");
+		card.className = "connection-card";
+		card.appendChild(connectionLogo(connection.id));
+		const copy = document.createElement("div");
+		copy.className = "connection-copy";
+		const name = document.createElement("strong");
+		name.textContent = connection.name;
+		const detail = document.createElement("small");
+		detail.textContent = connectionMessages.get(connection.id) ?? connection.description;
+		copy.append(name, detail);
+		card.appendChild(copy);
+		if (connection.connected) {
+			const account = document.createElement("div");
+			account.className = "connection-account";
+			const state = document.createElement("span");
+			state.className = "connection-connected";
+			state.textContent = "Connected";
+			const accountName = document.createElement("small");
+			accountName.textContent = connection.accountName;
+			account.append(state, accountName);
+			card.appendChild(account);
+		} else {
+			const action = document.createElement("button");
+			action.type = "button";
+			action.className = "connection-action";
+			const busy = connectingConnection === connection.id;
+			action.dataset.busy = String(busy);
+			action.textContent = busy ? "Cancel" : "Connect";
+			action.disabled = Boolean(connectingConnection && !busy);
+			action.onclick = () => void toggleConnection(connection.id);
+			card.appendChild(action);
+		}
+		list.appendChild(card);
+	}
+	group.appendChild(list);
+	content.appendChild(group);
+}
+
+function renderConnections(content, connections) {
+	const heading = document.createElement("header");
+	heading.className = "settings-heading";
+	heading.innerHTML =
+		'<div class="eyebrow">Accounts & services</div><h1>Connections</h1><p>Connect the accounts Qorpera can use directly, or start a chat to add another service to your company.</p>';
+	content.appendChild(heading);
+
+	const chat = document.createElement("button");
+	chat.type = "button";
+	chat.className = "connection-chat";
+	chat.innerHTML =
+		'<span class="connection-chat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.6 8.6 0 0 1-3.6-.8L3 21l1.8-5A8.5 8.5 0 1 1 21 11.5z"/><path d="M8 12h8M12 8v8"/></svg></span><span class="connection-chat-copy"><strong>Chat to connect to anything</strong><small>Tell the controller what you want to connect and it will guide the setup.</small></span><span class="connection-chat-arrow" aria-hidden="true">→</span>';
+	chat.onclick = () => void chatToConnect();
+	content.appendChild(chat);
+
+	const services = connections.filter((connection) => connection.group === "services");
+	if (services.length) {
+		renderConnectionGroup(
+			content,
+			"Services",
+			"Accounts the active company can use for external work.",
+			services,
+		);
+	}
+	const models = connections.filter((connection) => connection.group === "models");
+	if (models.length) {
+		renderConnectionGroup(
+			content,
+			"Model accounts",
+			"Accounts supported by the model picker are always shown here, whether connected or not.",
+			models,
+		);
+	}
+}
+
 async function renderSettingsTab() {
 	const content = $("settingsContent");
 	undockUsage();
@@ -4472,29 +4624,6 @@ async function renderSettingsTab() {
 			embedded: true,
 			onBack: () => closeSettings(),
 		});
-		return;
-	}
-
-	if (settingsTab === "general") {
-		const info = await window.qorpera.settingsInfo();
-		setHeading(content, "General");
-		setRow(
-			content,
-			`Qorpera Base v${info.version}`,
-			info.packaged
-				? "installed — auto-updates from the release channel"
-				: "dev tree — updates by rebuilding the repo",
-		);
-		const upd = document.createElement("button");
-		upd.className = "save";
-		if (updateReadyVersion) {
-			upd.textContent = `Restart to update → v${updateReadyVersion}`;
-			upd.onclick = () => window.qorpera.updateInstall();
-		} else {
-			upd.textContent = "Check for updates";
-			upd.onclick = () => checkUpdates();
-		}
-		setRow(content, "Updates", "foundation only — your app's userland merges separately", upd);
 		return;
 	}
 
@@ -4599,137 +4728,6 @@ async function renderSettingsTab() {
 		return;
 	}
 
-	if (settingsTab === "app") {
-		setHeading(content, "App — this company's fork");
-		const info = await window.qorpera.appInfo();
-		const co = info.activeCompany;
-		if (!co) {
-			content.insertAdjacentHTML(
-				"beforeend",
-				'<div class="sess-meta">Open a company — its app is a fork of the base, managed here.</div>',
-			);
-			return;
-		}
-		setRow(
-			content,
-			`Fork of Qorpera Base v${co.userland.baseVersion}`,
-			co.evolved ? "evolved — the controller has changed this app" : "pristine — identical to the base",
-		);
-		if (co.userland.stagedVersion) {
-			setRow(
-				content,
-				`Base v${co.userland.stagedVersion} staged`,
-				"waiting for the controller's merge session — the merge button lives on the chat view",
-			);
-		}
-		const sw = document.createElement("button");
-		sw.className = "save";
-		sw.style.marginTop = "0";
-		sw.textContent = co.activeApp === "base" ? "Run this company's app" : "Run the base app";
-		sw.onclick = () => window.qorpera.setActiveApp(co.activeApp === "base" ? "fork" : "base");
-		setRow(
-			content,
-			"Base app",
-			co.activeApp === "base"
-				? `running the base app (always current — v${info.version}) over this company; the fork is untouched`
-				: `always installed, always current (v${info.version}) — switch any time without touching the fork`,
-			sw,
-		);
-		const iconBtn = document.createElement("button");
-		iconBtn.className = "save";
-		iconBtn.style.marginTop = "0";
-		iconBtn.textContent = "Choose image…";
-		const iconNote = document.createElement("span");
-		iconNote.className = "sess-meta";
-		iconBtn.onclick = async () => {
-			const result = await window.qorpera.chooseIcon();
-			iconNote.textContent = result?.ok ? "icon set" : "";
-		};
-		const iconRow = setRow(
-			content,
-			"Window icon",
-			"defaults to the Qorpera mark; stored in the company's app/ folder — your controller can manage it too",
-			iconBtn,
-		);
-		iconRow.appendChild(iconNote);
-		setHeading(content, "Versions");
-		content.insertAdjacentHTML(
-			"beforeend",
-			'<div class="sess-meta">Saved automatically whenever the app has changed at open. Restore switches to any of them — the state before a rollback is itself saved, and a restored version that is behind rejoins the current base through a controller merge.</div>',
-		);
-		const sortRow = document.createElement("div");
-		sortRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:12px 0 2px;";
-		const sortLab = document.createElement("span");
-		sortLab.className = "sess-meta";
-		sortLab.textContent = "Show";
-		const sortSel = document.createElement("select");
-		sortSel.style.cssText = "width:auto;padding:5px 10px;";
-		for (const [value, text] of [
-			["newest", "Newest first"],
-			["oldest", "Oldest first"],
-			["last-used", "Last used"],
-			["favorites", "Favorites"],
-		]) {
-			const o = document.createElement("option");
-			o.value = value;
-			o.textContent = text;
-			if (value === versionsView) o.selected = true;
-			sortSel.appendChild(o);
-		}
-		sortSel.onchange = () => {
-			versionsView = sortSel.value;
-			renderSettingsTab();
-		};
-		sortRow.appendChild(sortLab);
-		sortRow.appendChild(sortSel);
-		content.appendChild(sortRow);
-
-		let versions = co.versions.slice(); // arrives newest first
-		if (versionsView === "favorites") versions = versions.filter((v) => v.favorite);
-		if (versionsView === "oldest") versions.reverse();
-		// Stable sort: restored versions first by recency, the rest stay newest-first.
-		if (versionsView === "last-used") versions.sort((a, b) => (b.lastUsedAt || "").localeCompare(a.lastUsedAt || ""));
-		if (!versions.length) {
-			const note =
-				versionsView === "favorites"
-					? "No favorites yet — star a version to keep it handy."
-					: "No saved versions yet.";
-			content.insertAdjacentHTML("beforeend", `<div class="sess-meta" style="margin-top:12px">${note}</div>`);
-		}
-		for (const v of versions) {
-			const actions = document.createElement("div");
-			actions.style.cssText = "display:flex;align-items:center;gap:8px;";
-			const star = document.createElement("button");
-			star.style.cssText = "width:auto;padding:5px 10px;";
-			star.textContent = v.favorite ? "★" : "☆";
-			star.title = v.favorite ? "Remove from favorites" : "Add to favorites";
-			star.onclick = async () => {
-				star.disabled = true;
-				await window.qorpera.favoriteVersion(v.id, !v.favorite);
-				renderSettingsTab();
-			};
-			const btn = document.createElement("button");
-			btn.className = "save";
-			btn.style.marginTop = "0";
-			btn.textContent = "Restore";
-			btn.onclick = async () => {
-				btn.disabled = true;
-				await window.qorpera.restoreVersion(v.id);
-				renderSettingsTab();
-			};
-			actions.appendChild(star);
-			actions.appendChild(btn);
-			const [d, t] = v.savedAt.split("T");
-			const [hh, mm] = (t || "").split("-");
-			const when = `${d} ${hh || ""}:${mm || ""}`.trim();
-			const name = `v${v.seq}${v.label === "pre-restore" ? " · before rollback" : v.label ? ` · ${v.label}` : ""}`;
-			const facts = [v.description, when, v.baseVersion && `built on base v${v.baseVersion}`];
-			if (v.lastUsedAt) facts.push(`last used ${v.lastUsedAt.slice(0, 16).replace("T", " ")}`);
-			setRow(content, name, facts.filter(Boolean).join(" · "), actions);
-		}
-		return;
-	}
-
 	if (settingsTab === "authority") {
 		setHeading(content, "Authority — the gates");
 		if (!backendUrl) {
@@ -4781,25 +4779,7 @@ async function renderSettingsTab() {
 
 	if (settingsTab === "connections") {
 		const info = await window.qorpera.settingsInfo();
-		setHeading(content, "Connections");
-		if (info.providers.length) {
-			for (const p of info.providers) setRow(content, p, "model subscription — connected");
-		} else {
-			setRow(content, "No model subscriptions connected");
-		}
-		content.insertAdjacentHTML(
-			"beforeend",
-			`<div class="sess-meta" style="margin-top:12px">To connect one, run <code>qorpera</code> in a terminal and use <code>/login</code> — a GUI flow is coming. Credentials live in ${info.agentDir}, never in company folders.</div>`,
-		);
-		return;
-	}
-
-	if (settingsTab === "profile") {
-		setHeading(content, "Profile");
-		content.insertAdjacentHTML(
-			"beforeend",
-			'<div class="sess-meta">Founder profile and per-company preferences land here as the platform grows; your controller can extend this plane in its own userland.</div>',
-		);
+		renderConnections(content, info.connections ?? []);
 		return;
 	}
 
@@ -4812,70 +4792,72 @@ async function renderSettingsTab() {
 		return;
 	}
 
-	if (settingsTab === "advanced") {
-		setHeading(content, "Advanced — raw authority.toml");
-		if (!backendUrl) {
-			content.insertAdjacentHTML("beforeend", '<div class="sess-meta">Open a company first.</div>');
-			return;
-		}
-		const editor = document.createElement("textarea");
-		editor.value = "loading…";
-		fetch(`${backendUrl}/api/authority`)
-			.then((r) => r.text())
-			.then((text) => {
-				editor.value = text;
-			});
-		const save = document.createElement("button");
-		save.className = "save";
-		save.textContent = "Save authority.toml";
-		const note = document.createElement("div");
-		note.className = "sess-meta";
-		save.onclick = async () => {
-			const res = await authorizedPost("/api/authority", {
-				content: editor.value,
-			});
-			const result = await res.json().catch(() => ({ ok: false, error: "unexpected response" }));
-			note.textContent = result.ok
-				? "saved — gates apply immediately"
-				: `rejected: ${result.error ?? "invalid TOML"}`;
-		};
-		content.appendChild(editor);
-		content.appendChild(save);
-		content.appendChild(note);
-	}
 }
 
 // ---- foundation updates -----------------------------------------------------
 
-function checkUpdates() {
-	$("status").textContent = "checking for updates…";
-	window.qorpera.updateCheck();
+function renderUpdateButton() {
+	const button = $("updateButton");
+	const label = button.querySelector("span");
+	if (foundationUpdateVersion) {
+		button.hidden = false;
+		button.disabled = false;
+		label.textContent = `Update v${foundationUpdateVersion}`;
+		button.title = `Restart and install Qorpera Base v${foundationUpdateVersion}`;
+		button.onclick = async () => {
+			button.disabled = true;
+			const installed = await window.qorpera.updateInstall();
+			if (!installed) button.disabled = false;
+		};
+		return;
+	}
+	if (companyUpdateVersion) {
+		button.hidden = false;
+		button.disabled = companyUpdateRunning;
+		label.textContent = `${companyUpdateRunning ? "Updating" : "Update"} v${companyUpdateVersion}`;
+		button.title = `Update this company's app to v${companyUpdateVersion}`;
+		button.onclick = async () => {
+			companyUpdateRunning = true;
+			renderUpdateButton();
+			$("status").textContent = "updating the company app…";
+			const result = await window.qorpera.mergeUserland();
+			if (!result?.ok && result?.reason !== "already-running") {
+				companyUpdateRunning = false;
+				$("status").textContent = result?.error ?? "company app update could not start";
+				renderUpdateButton();
+			}
+		};
+		return;
+	}
+	button.hidden = true;
+	button.disabled = false;
+	button.onclick = null;
 }
+
 window.qorpera.onUpdateStatus((text) => {
 	$("status").textContent = text;
 });
 window.qorpera.onUpdateReady((version) => {
-	updateReadyVersion = version;
-	$("status").textContent = `v${version} downloaded — restart to apply (Settings → General)`;
-	if ($("settingsView").classList.contains("open") && settingsTab === "general") renderSettingsTab();
+	foundationUpdateVersion = version;
+	renderUpdateButton();
+	$("status").textContent = `v${version} downloaded — ready to install`;
+});
+window.qorpera.onConnectionStatus((event) => {
+	if (!event?.connectionId || !event.message) return;
+	connectionMessages.set(event.connectionId, event.message);
+	if ($("settingsView").classList.contains("open") && settingsTab === "connections") {
+		void renderSettingsTab();
+	}
 });
 window.qorpera.onOpenCompany((root) => openCompany(root));
 window.qorpera.onMergeDone((result) => {
-	const b = document.getElementById("mergeBtn");
 	if (result?.ok) {
-		$("status").textContent = "userland merge finished — reload to run the updated app";
-		if (b) {
-			b.textContent = "App updated — reload";
-			b.disabled = false;
-			b.onclick = () => location.reload();
-		}
+		$("status").textContent = "company app updated — reloading…";
+		location.reload();
 	} else {
-		$("status").textContent = "merge session ended without completing — see Inbox and Activity";
-		if (b) {
-			b.textContent = "Merge incomplete — check Inbox";
-			b.disabled = false;
-			b.onclick = () => show("inbox");
-		}
+		companyUpdateRunning = false;
+		$("status").textContent = "company app update did not complete — see Inbox and Activity";
+		renderUpdateButton();
 	}
 });
 
