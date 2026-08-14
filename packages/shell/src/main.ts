@@ -657,6 +657,12 @@ interface ChildOptions {
 	department?: ProductDepartment;
 	worktree?: string;
 	silent?: boolean;
+	/** Kernel-stamped grouping identity ("job:<id>", "merge", a workflow run
+	 * id) — how the Agents view clusters related sessions. */
+	group?: string;
+	/** Trail filename of the session that caused this spawn; the parent link
+	 * for subagent trees. Kernel-stamped, never child-claimed. */
+	parentSession?: string;
 	onRpcEvent?: (frame: Record<string, unknown>) => void;
 	/** Last model confirmed by this child, inherited by replacement and autonomous children. */
 	model?: ControllerModelSelection;
@@ -680,6 +686,8 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		autonomousLabel: autonomousName ? `autonomous — ${autonomousName}` : undefined,
 		department: department?.path,
 		worktree,
+		group: options.group,
+		parentSession: options.parentSession,
 	} as const;
 	const userData = app.getPath("userData");
 	const binding = bindTrailSession(root, cwd, scope, sessionFile);
@@ -1202,6 +1210,7 @@ async function startWakeChild(
 						: cause === "founder_response"
 							? "wake — founder response"
 							: "wake — schedule",
+			group: job ? `job:${job.id}` : `wake:${cause}`,
 			silent: true,
 			model: resumeOptions.model,
 			wake: { id: wakeId, cause, intervalMinutes: job?.intervalMinutes, coalesced },
@@ -1351,6 +1360,7 @@ async function startMergeChild(slot: Slot, runtime: CompanyRuntime, reviewedProm
 	let child: ChildProcessWithoutNullStreams;
 	child = startChild(slot, runtime.root, {
 		autonomousName: `userland merge v${runtime.userland.stagedVersion}`,
+		group: "merge",
 		silent: true,
 		model: resumeOptions.model,
 		onRpcEvent: (frame) => {

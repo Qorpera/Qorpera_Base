@@ -3090,7 +3090,9 @@ async function renderActivity(force = false) {
 			titleEl.prepend(badge);
 			d.querySelector(".s").textContent =
 				`${new Date(sessionRunTime(session)).toLocaleString()} · ${session.file}` +
-				(session.department ? ` · ${departmentName(session.department)}` : "");
+				(session.department ? ` · ${departmentName(session.department)}` : "") +
+				(session.group ? ` · ${session.group}` : "") +
+				(session.parentSession ? ` · child of ${session.parentSession}` : "");
 			const outcome = displayedTrailOutcome(session, autonomousTrailFile);
 			const sessionRunning = outcome === "running";
 			const runMeta = trailRunMeta(session, outcome);

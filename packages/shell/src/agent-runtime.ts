@@ -64,6 +64,14 @@ interface QorperaSessionAuthority {
 	label?: string;
 	department?: string;
 	worktree?: string;
+	/** Kernel-stamped grouping identity ("job:<id>", "merge", a future
+	 * workflow run id): how the Agents view clusters related sessions
+	 * without parsing free-text labels. */
+	group?: string;
+	/** Trail filename of the session that caused this spawn — the parent
+	 * link for future subagent trees. The kernel stamps it; children can
+	 * never claim a parent themselves. */
+	parentSession?: string;
 }
 
 interface SessionHeader {
@@ -99,6 +107,8 @@ export interface AgentScope {
 	autonomousLabel?: string;
 	department?: string;
 	worktree?: string;
+	group?: string;
+	parentSession?: string;
 }
 
 export interface TrailBinding {
@@ -198,6 +208,8 @@ function authorityForScope(scope: AgentScope): QorperaSessionAuthority {
 		label: scope.autonomousLabel,
 		department: scope.department,
 		worktree: scope.worktree,
+		group: scope.group,
+		parentSession: scope.parentSession,
 	};
 }
 

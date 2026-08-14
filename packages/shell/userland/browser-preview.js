@@ -192,6 +192,7 @@
 				mtimeMs: Date.now() - 22 * 60000,
 				kind: "autonomous",
 				category: "wake",
+				group: "job:preview-reliability",
 				scheduledJobId: "preview-reliability",
 				scheduledJobTitle: "Reliability sweep",
 				outcome: "succeeded",
