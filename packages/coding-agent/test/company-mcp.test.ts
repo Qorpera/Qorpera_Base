@@ -3,7 +3,7 @@
  * list, call, server-reported errors, and configuration errors.
  * Implementation discipline: faux servers, no real credentials.
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -339,6 +339,7 @@ describe("use_mcp_tool", () => {
 		["attached Bun eval", "bun", [`-eimport('./payload.mjs')`]],
 		["wrapped attached Python command", "env", ["python3", `-cexec(open('payload.mjs').read())`]],
 		["split wrapper command", "env", ["-S", `python3 -cexec(open('payload.mjs').read())`]],
+		["abbreviated split wrapper command", "env", [`--s=python3 -cexec(open('payload.mjs').read())`]],
 	])("rejects %s whose dependency closure cannot be bound", async (_name, command, args) => {
 		writeFileSync(join(root, "connections", "payload.mjs"), `export const payload = "reviewed";\n`, "utf-8");
 		writeFileSync(
@@ -346,6 +347,20 @@ describe("use_mcp_tool", () => {
 			JSON.stringify({
 				servers: { faux: { command, args } },
 			}),
+			"utf-8",
+		);
+		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(
+			/inline interpreter programs are not allowed/,
+		);
+	});
+
+	it("checks the resolved interpreter when its configured name identifies another launcher", async () => {
+		if (process.platform === "win32") return;
+		const launcher = join(root, "env");
+		symlinkSync(process.execPath, launcher);
+		writeFileSync(
+			join(root, "connections", "mcp.json"),
+			JSON.stringify({ servers: { faux: { command: launcher, args: ["-e", `import('./payload.mjs')`] } } }),
 			"utf-8",
 		);
 		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(

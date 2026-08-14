@@ -205,8 +205,8 @@ const INLINE_PROGRAM_ARGUMENTS = new Map<string, RegExp>([
 	["cmd.exe", /^\/(?:c|k)[\s\S]*$/i],
 	["deno", /^eval$/i],
 	["deno.exe", /^eval$/i],
-	["env", /^(?:-S[\s\S]*|--split-string(?:=[\s\S]*)?)$/i],
-	["env.exe", /^(?:-S[\s\S]*|--split-string(?:=[\s\S]*)?)$/i],
+	["env", /^(?:-S[\s\S]*|--s[\s\S]*)$/i],
+	["env.exe", /^(?:-S[\s\S]*|--s[\s\S]*)$/i],
 	["node", /^(?:-e[\s\S]*|-p[\s\S]*|--eval(?:=[\s\S]*)?|--print(?:=[\s\S]*)?)$/i],
 	["node.exe", /^(?:-e[\s\S]*|-p[\s\S]*|--eval(?:=[\s\S]*)?|--print(?:=[\s\S]*)?)$/i],
 	["nodejs", /^(?:-e[\s\S]*|-p[\s\S]*|--eval(?:=[\s\S]*)?|--print(?:=[\s\S]*)?)$/i],
@@ -228,8 +228,10 @@ function inlineProgramArgumentPattern(executable: string): RegExp | undefined {
 }
 
 function hasInlineInterpreterProgram(command: string, resolvedCommand: string | undefined, args: string[]): boolean {
-	const directPattern = inlineProgramArgumentPattern(command) ?? inlineProgramArgumentPattern(resolvedCommand ?? "");
-	if (directPattern && args.some((argument) => directPattern.test(argument))) return true;
+	for (const executable of [command, resolvedCommand]) {
+		const directPattern = inlineProgramArgumentPattern(executable ?? "");
+		if (directPattern && args.some((argument) => directPattern.test(argument))) return true;
+	}
 	for (let index = 0; index < args.length; index += 1) {
 		const nestedPattern = inlineProgramArgumentPattern(args[index]);
 		if (nestedPattern && args.slice(index + 1).some((argument) => nestedPattern.test(argument))) return true;
