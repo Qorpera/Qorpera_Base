@@ -163,6 +163,7 @@ const LITERAL_FILE_READ_CALL = new RegExp(
 );
 const ALIASED_FILE_READ_IMPORT = new RegExp(`\\b(?:${FILE_READ_METHOD_NAMES.join("|")})\\s+as\\s+\\w+`);
 const STRING_LITERAL = /(["'])([^"'\\\r\n]*)\1/g;
+const NO_SUBSTITUTION_TEMPLATE_LITERAL = /`([^`\\$]*)`/g;
 
 function runtimePathIdentity(path: string): object {
 	let resolved: string;
@@ -230,19 +231,21 @@ function runtimeInputIdentities(root: string, source: string, path: string, spec
 		inputs.push(runtimePathIdentity(resolve(root, match[3])));
 	}
 	if (usesChildProcess) {
-		STRING_LITERAL.lastIndex = 0;
-		for (let match = STRING_LITERAL.exec(source); match; match = STRING_LITERAL.exec(source)) {
-			const value = match[2];
-			if (
-				value &&
-				!value.includes("\u0000") &&
-				(isAbsolute(value) ||
-					value.startsWith(".") ||
-					value.includes("/") ||
-					value.includes("\\") ||
-					extname(value))
-			) {
-				inputs.push(runtimePathIdentity(resolve(root, value)));
+		for (const pattern of [STRING_LITERAL, NO_SUBSTITUTION_TEMPLATE_LITERAL]) {
+			pattern.lastIndex = 0;
+			for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
+				const value = match[2] ?? match[1];
+				if (
+					value &&
+					!value.includes("\u0000") &&
+					(isAbsolute(value) ||
+						value.startsWith(".") ||
+						value.includes("/") ||
+						value.includes("\\") ||
+						extname(value))
+				) {
+					inputs.push(runtimePathIdentity(resolve(root, value)));
+				}
 			}
 		}
 	}
