@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { createWriteStream, type WriteStream } from "node:fs";
+import { closeSync, createWriteStream, openSync, type WriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { finished as waitForStream } from "node:stream/promises";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "./truncate.ts";
 
 export interface OutputAccumulatorOptions {
@@ -53,6 +54,7 @@ export class OutputAccumulator {
 
 	private tempFilePath: string | undefined;
 	private tempFileStream: WriteStream | undefined;
+	private tempFileUnavailable = false;
 
 	constructor(options: OutputAccumulatorOptions = {}) {
 		this.maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
@@ -124,21 +126,17 @@ export class OutputAccumulator {
 		}
 
 		const stream = this.tempFileStream;
-		this.tempFileStream = undefined;
-
-		await new Promise<void>((resolve, reject) => {
-			const onError = (error: Error) => {
-				stream.off("finish", onFinish);
-				reject(error);
-			};
-			const onFinish = () => {
-				stream.off("error", onError);
-				resolve();
-			};
-			stream.once("error", onError);
-			stream.once("finish", onFinish);
-			stream.end();
-		});
+		stream.end();
+		try {
+			await waitForStream(stream);
+		} catch {
+			// Full output is an optional diagnostic artifact. Losing it must not
+			// turn a valid bounded tool result into a process-level failure.
+			this.tempFilePath = undefined;
+			this.tempFileUnavailable = true;
+		} finally {
+			this.tempFileStream = undefined;
+		}
 	}
 
 	getLastLineBytes(): number {
@@ -209,13 +207,34 @@ export class OutputAccumulator {
 	}
 
 	private ensureTempFile(): void {
-		if (this.tempFilePath) {
+		if (this.tempFilePath || this.tempFileUnavailable) {
 			return;
 		}
-		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix);
-		this.tempFileStream = createWriteStream(this.tempFilePath);
+		const path = defaultTempFilePath(this.tempFilePrefix);
+		let descriptor: number;
+		try {
+			// Open synchronously so a denied temp path is a recoverable condition,
+			// not an asynchronous unhandled WriteStream "error" event.
+			descriptor = openSync(path, "wx");
+		} catch {
+			this.tempFileUnavailable = true;
+			return;
+		}
+		let stream: WriteStream;
+		try {
+			stream = createWriteStream(path, { fd: descriptor, autoClose: true });
+		} catch {
+			closeSync(descriptor);
+			this.tempFileUnavailable = true;
+			return;
+		}
+		// Attach immediately. Later disk errors are observed by closeTempFile;
+		// this listener prevents EventEmitter from terminating the agent first.
+		stream.on("error", () => {});
+		this.tempFilePath = path;
+		this.tempFileStream = stream;
 		for (const chunk of this.rawChunks) {
-			this.tempFileStream.write(chunk);
+			stream.write(chunk);
 		}
 		this.rawChunks = [];
 	}

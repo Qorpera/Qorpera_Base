@@ -48,6 +48,7 @@ let modelStateHydrated = false;
 let modelCatalogHydrated = false;
 let agentWorking = false; // a run is streaming; the composer shows Stop
 let agentExited = false;
+let runtimeReconnecting = false;
 let pendingRewind = null; // { text } awaiting get_fork_messages for edit-and-resend
 let lastSubmittedPrompt = null; // { text, images } â€” retained so a failed model call can be retried
 let activeRunProgress = null; // completed steps and known file changes for the current founder turn
@@ -685,6 +686,7 @@ function hydrateAgentState(withHistory) {
 	modelStateHydrated = false;
 	modelCatalogHydrated = false;
 	agentExited = false;
+	runtimeReconnecting = false;
 	$("stopBtn").hidden = true;
 	if (withHistory) window.qorpera.rpcSend({ type: "get_messages" });
 	const askState = () => {
@@ -704,7 +706,7 @@ async function openSession(file, pageId = "q:chats") {
 	// Re-clicking the chat that is already live must only bring its view back —
 	// the old path restarted the agent child, aborting any in-flight run
 	// (navigate away, click back, and the streaming answer died mid-thought).
-	if (file && file === currentSession) {
+	if (file && file === currentSession && !agentExited) {
 		currentNodeId = pageId;
 		setProjectionRoute(pageId);
 		show("chat");
@@ -3495,7 +3497,11 @@ async function sendPrompt() {
 	const result = await window.qorpera.rpcSend(frame);
 	if (!result?.ok) {
 		activeRunProgress = null;
-		showControllerToast("controller is busy with autonomous work — your draft was preserved");
+		showControllerToast(
+			runtimeReconnecting
+				? "controller is reconnecting — your draft was preserved"
+				: "controller is busy with autonomous work — your draft was preserved",
+		);
 		return;
 	}
 	input.value = "";
@@ -3778,6 +3784,24 @@ function renderMarkdown(el, source) {
 
 window.qorpera.onRpcEvent((frame) => {
 	switch (frame.type) {
+		case "runtime_reconnecting":
+			runtimeReconnecting = true;
+			agentExited = false;
+			agentWorking = false;
+			closeWorkGroup();
+			$("status").textContent = "reconnecting...";
+			$("stopBtn").hidden = true;
+			break;
+		case "runtime_reconnected":
+			runtimeReconnecting = false;
+			agentExited = false;
+			agentWorking = false;
+			$("status").textContent = "idle";
+			hydrateAgentState(true);
+			break;
+		case "runtime_reconnect_failed":
+			runtimeReconnecting = false;
+			break;
 		case "message_update": {
 			const delta = frame.assistantMessageEvent;
 			if (!delta) break;
@@ -3934,12 +3958,13 @@ window.qorpera.onRpcLog((line) => {
 	$("status").textContent = line.slice(0, 160);
 });
 window.qorpera.onRpcExit((code) => {
+	runtimeReconnecting = false;
 	agentExited = true;
 	agentWorking = false;
 	closeWorkGroup();
 	$("status").textContent = "controller stopped";
 	$("stopBtn").hidden = true;
-	addMsg("log", `agent exited (${code}). Start a new chat to reconnect.`);
+	addMsg("log", `agent runtime stopped (${code}). Reopen this chat to retry the same saved session.`);
 });
 
 function summarizeArgs(args) {
