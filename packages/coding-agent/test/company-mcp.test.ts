@@ -322,6 +322,17 @@ describe("use_mcp_tool", () => {
 		expect(mcpServerConfigurationFingerprint(root, "faux")).not.toBe(before);
 	});
 
+	it("rejects computed child-process script paths", async () => {
+		declareFauxServer();
+		writeFileSync(join(root, "payload.mjs"), `console.log("reviewed");\n`, "utf-8");
+		writeFileSync(
+			join(root, "connections", "faux-server.mjs"),
+			`import { spawnSync } from "node:child_process";\nconst script = "payload" + ".mjs";\nif (false) spawnSync(process.execPath, [script]);\n${FAUX_SERVER}`,
+			"utf-8",
+		);
+		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(/interpreter arguments must be static/);
+	});
+
 	it("does not bind unrelated company files to a local server", () => {
 		declareFauxServer();
 		const before = mcpServerConfigurationFingerprint(root, "faux");

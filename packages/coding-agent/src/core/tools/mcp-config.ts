@@ -167,6 +167,27 @@ const STATIC_LITERAL_PATTERNS = [
 	{ pattern: /"((?:\\[\s\S]|[^"\\\r\n])*)"/g, template: false },
 	{ pattern: /`((?:\\[\s\S]|[^`])*)`/g, template: true },
 ] as const;
+const CHILD_PROCESS_CALL = /\b(exec|execFile|execFileSync|execSync|fork|spawn|spawnSync)\s*\(/g;
+const SCRIPT_INTERPRETERS = new Set([
+	"bash",
+	"bun",
+	"bun.exe",
+	"cmd",
+	"cmd.exe",
+	"deno",
+	"deno.exe",
+	"node",
+	"node.exe",
+	"powershell",
+	"powershell.exe",
+	"pwsh",
+	"pwsh.exe",
+	"python",
+	"python.exe",
+	"python3",
+	"python3.exe",
+	"sh",
+]);
 
 function decodeStaticJavaScriptLiteral(raw: string, template: boolean): string | undefined {
 	let value = "";
@@ -217,6 +238,202 @@ function decodeStaticJavaScriptLiteral(raw: string, template: boolean): string |
 		value += escaped;
 	}
 	return value;
+}
+
+function staticStringExpression(expression: string): string | undefined {
+	let value = "";
+	let index = 0;
+	while (index < expression.length) {
+		while (/\s/.test(expression[index] ?? "")) index += 1;
+		const quote = expression[index];
+		if (quote !== '"' && quote !== "'" && quote !== "`") return undefined;
+		const start = index + 1;
+		index = start;
+		while (index < expression.length) {
+			if (expression[index] === "\\") {
+				index += 2;
+				continue;
+			}
+			if (expression[index] === quote) break;
+			index += 1;
+		}
+		if (index >= expression.length) return undefined;
+		const decoded = decodeStaticJavaScriptLiteral(expression.slice(start, index), quote === "`");
+		if (decoded === undefined) return undefined;
+		value += decoded;
+		index += 1;
+		while (/\s/.test(expression[index] ?? "")) index += 1;
+		if (index === expression.length) return value;
+		if (expression[index] !== "+") return undefined;
+		index += 1;
+	}
+	return undefined;
+}
+
+function findCallEnd(source: string, start: number): number | undefined {
+	let depth = 1;
+	let quote: string | undefined;
+	for (let index = start; index < source.length; index += 1) {
+		const character = source[index];
+		if (quote) {
+			if (character === "\\") {
+				index += 1;
+				continue;
+			}
+			if (character === quote) quote = undefined;
+			continue;
+		}
+		if (character === '"' || character === "'" || character === "`") {
+			quote = character;
+			continue;
+		}
+		if (character === "/" && source[index + 1] === "/") {
+			index = source.indexOf("\n", index + 2);
+			if (index < 0) return undefined;
+			continue;
+		}
+		if (character === "/" && source[index + 1] === "*") {
+			index = source.indexOf("*/", index + 2);
+			if (index < 0) return undefined;
+			index += 1;
+			continue;
+		}
+		if (character === "(") depth += 1;
+		if (character === ")") {
+			depth -= 1;
+			if (depth === 0) return index;
+		}
+	}
+	return undefined;
+}
+
+function splitTopLevelExpressions(source: string): string[] | undefined {
+	const expressions: string[] = [];
+	let start = 0;
+	let round = 0;
+	let square = 0;
+	let curly = 0;
+	let quote: string | undefined;
+	for (let index = 0; index < source.length; index += 1) {
+		const character = source[index];
+		if (quote) {
+			if (character === "\\") {
+				index += 1;
+				continue;
+			}
+			if (character === quote) quote = undefined;
+			continue;
+		}
+		if (character === '"' || character === "'" || character === "`") {
+			quote = character;
+			continue;
+		}
+		if (character === "(") round += 1;
+		else if (character === ")") round -= 1;
+		else if (character === "[") square += 1;
+		else if (character === "]") square -= 1;
+		else if (character === "{") curly += 1;
+		else if (character === "}") curly -= 1;
+		else if (character === "," && round === 0 && square === 0 && curly === 0) {
+			expressions.push(source.slice(start, index).trim());
+			start = index + 1;
+		}
+		if (round < 0 || square < 0 || curly < 0) return undefined;
+	}
+	if (quote || round !== 0 || square !== 0 || curly !== 0) return undefined;
+	const last = source.slice(start).trim();
+	if (last || expressions.length > 0) expressions.push(last);
+	return expressions;
+}
+
+function staticStringArray(expression: string): string[] | undefined {
+	const trimmed = expression.trim();
+	if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return undefined;
+	const entries = splitTopLevelExpressions(trimmed.slice(1, -1));
+	if (!entries) return undefined;
+	const values: string[] = [];
+	for (const entry of entries) {
+		if (!entry) continue;
+		const value = staticStringExpression(entry);
+		if (value === undefined) return undefined;
+		values.push(value);
+	}
+	return values;
+}
+
+function isPathLike(value: string): boolean {
+	return (
+		isAbsolute(value) ||
+		value.startsWith(".") ||
+		value.includes("/") ||
+		value.includes("\\") ||
+		Boolean(extname(value))
+	);
+}
+
+function childProcessInputIdentities(root: string, source: string, path: string): object[] {
+	const inputs: object[] = [];
+	CHILD_PROCESS_CALL.lastIndex = 0;
+	for (let match = CHILD_PROCESS_CALL.exec(source); match; match = CHILD_PROCESS_CALL.exec(source)) {
+		const end = findCallEnd(source, CHILD_PROCESS_CALL.lastIndex);
+		if (end === undefined) {
+			throw new Error(
+				`Local host program runtime input closure cannot be proven for ${path}; malformed child-process call`,
+			);
+		}
+		const expressions = splitTopLevelExpressions(source.slice(CHILD_PROCESS_CALL.lastIndex, end));
+		if (!expressions || !expressions[0]) {
+			throw new Error(
+				`Local host program runtime input closure cannot be proven for ${path}; malformed child-process arguments`,
+			);
+		}
+		const method = match[1];
+		if (method === "exec" || method === "execSync") {
+			const command = staticStringExpression(expressions[0]);
+			if (command === undefined || /[$`%]/.test(command)) {
+				throw new Error(
+					`Local host program runtime input closure cannot be proven for ${path}; shell commands must be static and cannot use runtime expansion`,
+				);
+			}
+			for (const token of command.match(/"[^"]*"|'[^']*'|[^\s|&;<>]+/g) ?? []) {
+				const value = token.replace(/^["']|["']$/g, "");
+				if (isPathLike(value)) inputs.push(runtimePathIdentity(resolve(root, value)));
+			}
+			continue;
+		}
+		if (method === "fork") {
+			const script = staticStringExpression(expressions[0]);
+			if (script === undefined) {
+				throw new Error(
+					`Local host program runtime input closure cannot be proven for ${path}; child-process script paths must be static`,
+				);
+			}
+			inputs.push(runtimePathIdentity(resolve(root, script)));
+			continue;
+		}
+		const usesCurrentNode = expressions[0].replace(/\s/g, "") === "process.execPath";
+		const command = usesCurrentNode ? process.execPath : staticStringExpression(expressions[0]);
+		if (command === undefined) {
+			if (FILE_READ_METHOD.test(expressions[0])) continue;
+			throw new Error(
+				`Local host program runtime input closure cannot be proven for ${path}; child-process executables must be static`,
+			);
+		}
+		if (isPathLike(command)) inputs.push(runtimePathIdentity(resolve(root, command)));
+		const executableName = command.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() ?? "";
+		if (!usesCurrentNode && !SCRIPT_INTERPRETERS.has(executableName)) continue;
+		if (!expressions[1] || expressions[1].trim().startsWith("{")) continue;
+		const arguments_ = staticStringArray(expressions[1]);
+		if (!arguments_) {
+			throw new Error(
+				`Local host program runtime input closure cannot be proven for ${path}; interpreter arguments must be static`,
+			);
+		}
+		for (const value of arguments_) {
+			if (isPathLike(value)) inputs.push(runtimePathIdentity(resolve(root, value)));
+		}
+	}
+	return inputs;
 }
 
 function runtimePathIdentity(path: string): object {
@@ -285,6 +502,7 @@ function runtimeInputIdentities(root: string, source: string, path: string, spec
 		inputs.push(runtimePathIdentity(resolve(root, match[3])));
 	}
 	if (usesChildProcess) {
+		inputs.push(...childProcessInputIdentities(root, source, path));
 		for (const { pattern, template } of STATIC_LITERAL_PATTERNS) {
 			pattern.lastIndex = 0;
 			for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
@@ -294,15 +512,7 @@ function runtimeInputIdentities(root: string, source: string, path: string, spec
 						`Local host program runtime input closure cannot be proven for ${path}; child-process strings must be statically decodable`,
 					);
 				}
-				if (
-					value &&
-					!value.includes("\u0000") &&
-					(isAbsolute(value) ||
-						value.startsWith(".") ||
-						value.includes("/") ||
-						value.includes("\\") ||
-						extname(value))
-				) {
+				if (value && !value.includes("\u0000") && isPathLike(value)) {
 					inputs.push(runtimePathIdentity(resolve(root, value)));
 				}
 			}
