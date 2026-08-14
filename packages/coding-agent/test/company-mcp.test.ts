@@ -349,6 +349,16 @@ describe("use_mcp_tool", () => {
 			`import { spawnSync } from "node:child_process";\nif (false) spawnSync("exec $(cat command)", { shell: true });`,
 			/shell commands cannot use runtime expansion/,
 		],
+		[
+			"computed child-process namespace properties",
+			`import * as childProcess from "node:child_process";\nconst runChild = childProcess["sp" + "awnSync"];\nif (false) runChild(process.env.CMD);`,
+			/child-process namespace properties cannot be computed/,
+		],
+		[
+			"shell expansion through spawn arguments",
+			`import { spawnSync } from "node:child_process";\nif (false) spawnSync("printf", ["$(cat command)"], { shell: true });`,
+			/shell commands cannot use runtime expansion/,
+		],
 	])("rejects %s", async (_name, source, expected) => {
 		declareFauxServer();
 		writeFileSync(join(root, "payload.txt"), "reviewed\n", "utf-8");

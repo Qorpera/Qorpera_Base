@@ -172,6 +172,8 @@ const CHILD_PROCESS_METHODS = "exec|execFile|execFileSync|execSync|fork|spawn|sp
 const ALIASED_CHILD_PROCESS_IMPORT = new RegExp(
 	`\\b(?:${CHILD_PROCESS_METHODS})\\s+(?:as\\s+\\w+|:\\s*\\w+)|=\\s*(?:\\w+\\.)?(?:${CHILD_PROCESS_METHODS})\\b(?!\\s*\\()|\\[\\s*["'](?:${CHILD_PROCESS_METHODS})["']\\s*\\]`,
 );
+const CHILD_PROCESS_NAMESPACE =
+	/(?:import\s*\*\s*as\s*|(?:const|let|var)\s+)([$A-Z_a-z][$\w]*)\s*(?:from\s*|=\s*require\s*\(\s*)["'](?:node:)?child_process["']/g;
 const BOUND_EXECUTABLE_READ =
 	/^\s*(?:JSON\s*\.\s*parse\s*\(\s*)?readFileSync\s*\(\s*["'][^"'\\\r\n]*["'](?:\s*,\s*["'][^"'\\\r\n]*["'])?\s*\)\s*\)?(?:\s*(?:\.\s*[$\w]+|\[\s*(?:["'][^"']+["']|\d+)\s*\]))*\s*$/;
 const SHELL_ENABLED = /(?:\bshell\b|["']shell["'])\s*:\s*true\b/;
@@ -398,6 +400,15 @@ function childProcessInputIdentities(root: string, source: string, path: string)
 			`Local host program runtime input closure cannot be proven for ${path}; child-process APIs cannot be aliased or accessed indirectly`,
 		);
 	}
+	CHILD_PROCESS_NAMESPACE.lastIndex = 0;
+	for (let match = CHILD_PROCESS_NAMESPACE.exec(source); match; match = CHILD_PROCESS_NAMESPACE.exec(source)) {
+		const binding = match[1].replace(/[$]/g, "\\$&");
+		if (new RegExp(`\\b${binding}\\s*\\[`).test(source)) {
+			throw new Error(
+				`Local host program runtime input closure cannot be proven for ${path}; child-process namespace properties cannot be computed`,
+			);
+		}
+	}
 	const inputs: object[] = [];
 	CHILD_PROCESS_CALL.lastIndex = 0;
 	for (let match = CHILD_PROCESS_CALL.exec(source); match; match = CHILD_PROCESS_CALL.exec(source)) {
@@ -446,10 +457,14 @@ function childProcessInputIdentities(root: string, source: string, path: string)
 		const optionsIndex = expressions[1]?.trim().startsWith("{") ? 1 : 2;
 		if (expressions[optionsIndex] && SHELL_ENABLED.test(expressions[optionsIndex])) {
 			inputs.push(...shellCommandInputIdentities(root, command, path));
-			if (optionsIndex === 2 && !staticStringArray(expressions[1])) {
-				throw new Error(
-					`Local host program runtime input closure cannot be proven for ${path}; shell-enabled child-process arguments must be static`,
-				);
+			if (optionsIndex === 2) {
+				const shellArguments = staticStringArray(expressions[1]);
+				if (!shellArguments) {
+					throw new Error(
+						`Local host program runtime input closure cannot be proven for ${path}; shell-enabled child-process arguments must be static`,
+					);
+				}
+				for (const value of shellArguments) inputs.push(...shellCommandInputIdentities(root, value, path));
 			}
 		}
 		const executableName = command.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() ?? "";
