@@ -142,6 +142,15 @@ export const COMPANY_TOOL_NAME = "run_company_tool";
  */
 export const HTTP_TOOL_NAME = "http_request";
 
+/**
+ * The MCP gateway can spawn agent-configured host processes and invoke
+ * arbitrary external capabilities whose effect cannot be inferred from the
+ * gateway's generic arguments. It therefore defaults to the always-gated
+ * [authority] class until the founder explicitly classifies or disables it
+ * through [tools].
+ */
+export const MCP_TOOL_NAME = "use_mcp_tool";
+
 const CONFIGURABLE_EFFECT_CLASSES: ConfigurableEffectClass[] = ["money", "identity", "irreversible", "authority"];
 /**
  * Classes whose effects touch the world outside the company folder — the
@@ -509,6 +518,7 @@ export function classifyToolCall(
 	}
 
 	if (overrideRaw === "none") return undefined;
+	if (toolName === MCP_TOOL_NAME) return override ?? "authority";
 	if (toolName === HTTP_TOOL_NAME) return override ?? "identity";
 	return override;
 }

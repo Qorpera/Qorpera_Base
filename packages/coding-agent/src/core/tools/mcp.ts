@@ -30,14 +30,14 @@ import { Text } from "@qorpera/pi-tui";
 import { type Static, Type } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { spawn } from "../../utils/child-process.ts";
-import { discoverAuthority } from "../authority.ts";
+import { discoverAuthority, MCP_TOOL_NAME } from "../authority.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { brokeredHttpRequest } from "../http-broker-client.ts";
 import { getTextOutput, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, truncateHead } from "./truncate.ts";
 
-export const MCP_TOOL_NAME = "use_mcp_tool";
+export { MCP_TOOL_NAME } from "../authority.ts";
 export const MCP_CONFIG_PATH = join("connections", "mcp.json");
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 const CALL_TIMEOUT_MS = 60_000;

@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { discoverAuthority, evaluateToolCall, MCP_TOOL_NAME } from "../src/core/authority.ts";
 import { handleHttpBrokerFrame, setHttpBrokerWriter } from "../src/core/http-broker-client.ts";
 import { createMcpToolDefinition, disposeMcpConnections } from "../src/core/tools/mcp.ts";
 
@@ -67,6 +68,13 @@ async function run(input: { server: string; tool?: string; arguments?: Record<st
 }
 
 describe("use_mcp_tool", () => {
+	it("defaults to the always-gated authority class before execution", () => {
+		const authority = discoverAuthority(root)!;
+		const decision = evaluateToolCall(authority, MCP_TOOL_NAME, { server: "faux", tool: "external_effect" }, root);
+		expect(decision.kind).toBe("block");
+		expect((decision as { effectClass: string }).effectClass).toBe("authority");
+	});
+
 	it("lists a declared server's tools", async () => {
 		declareFauxServer();
 		const result = await run({ server: "faux" });

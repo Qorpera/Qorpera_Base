@@ -16,6 +16,7 @@ import {
 	filterExtensionPaths,
 	finalizeAuthorityDecision,
 	findGateRecords,
+	MCP_TOOL_NAME,
 	readAuthorityConfig,
 	requestHash,
 } from "../src/core/authority.ts";
@@ -181,6 +182,29 @@ describe("classification and evaluation", () => {
 
 		writeAuthorityToml(`[identity]\nmode = "gate"\n\n[tools]\nhttp_request = "none"\n`);
 		expect(evaluateToolCall(authority, "http_request", { method: "GET", url: "https://x.example/" }, root).kind).toBe(
+			"allow",
+		);
+	});
+
+	it("gates the host-capable MCP gateway until the founder explicitly classifies it", () => {
+		writeAuthorityToml(`[identity]\nmode = "auto"\n\n[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		for (const args of [
+			{ server: "github" },
+			{ server: "github", tool: "create_issue", arguments: { title: "External effect" } },
+		]) {
+			const gated = evaluateToolCall(authority, MCP_TOOL_NAME, args, root);
+			expect(gated.kind).toBe("block");
+			expect((gated as { effectClass: string }).effectClass).toBe("authority");
+		}
+
+		writeAuthorityToml(`[identity]\nmode = "gate"\n\n[tools]\n${MCP_TOOL_NAME} = "identity"\n`);
+		const classified = evaluateToolCall(authority, MCP_TOOL_NAME, { server: "github", tool: "create_issue" }, root);
+		expect(classified.kind).toBe("block");
+		expect((classified as { effectClass: string }).effectClass).toBe("identity");
+
+		writeAuthorityToml(`[tools]\n${MCP_TOOL_NAME} = "none"\n`);
+		expect(evaluateToolCall(authority, MCP_TOOL_NAME, { server: "github", tool: "create_issue" }, root).kind).toBe(
 			"allow",
 		);
 	});
