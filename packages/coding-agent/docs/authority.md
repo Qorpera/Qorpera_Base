@@ -42,6 +42,9 @@ file fails **closed** — every class gates.
   `CLAUDE.md`, or anything under `inbox/` (the agent cannot approve its own
   requests) — checked for `write`/`edit` path args and screened in `bash`
   command strings; also loading project-local extensions (below).
+  Unclassified host-capable `bash` commands and `use_mcp_tool` calls default
+  here because arbitrary executables can conceal any protected effect. The
+  founder may explicitly assign a narrower class or `none` in `[tools]`.
 - **irreversible**: `bash` commands matching a conservative destructive
   screen (`rm -rf`, `git push --force`, `git reset --hard`, `DROP TABLE`,
   `mkfs`, …). False positives gate (recoverable); the screen errs that way
@@ -49,7 +52,9 @@ file fails **closed** — every class gates.
   `filter-branch`/`filter-repo`, `reflog expire`, `update-ref -d`,
   `gc --prune`) — the company's history is append-only from the agent's
   side (EVOLUTION.md §4 invariant 1).
-- **money / identity**: no built-in detections yet — assign via `[tools]`.
+- **identity**: `http_request` defaults here; other tools may be assigned via
+  `[tools]`.
+- **money**: no built-in detections yet — assign via `[tools]`.
 - **product_code**: mutations under
   `departments/<product>-development/repository/` or a task directory under
   `worktrees/`. This is a fixed role boundary, not an `authority.toml`
@@ -181,7 +186,8 @@ effect on another machine or in a later child session.
 
 Prompt-tier guidance. Enforcement is code at the tool-call boundary and the
 extension loader; the kernel prompt only explains the rules. Known limits of
-v1: the bash screen is string-level (no shell parsing), and `limit_usd` is
-parsed but not yet enforced because Base has no money-moving tools. Native
+v1: specific bash classifications are string-level (no shell parsing), so any
+unmatched host command fails closed to `[authority]`, and `limit_usd` is parsed
+but not yet enforced because Base has no money-moving tools. Native
 founder reviews, child effect assertions, gate transitions, and broker-observed
 model usage are recorded as distinct provenance events.

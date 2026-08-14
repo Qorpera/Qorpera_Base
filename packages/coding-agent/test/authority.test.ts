@@ -92,6 +92,22 @@ describe("classification and evaluation", () => {
 			const decision = evaluateToolCall(authority, "bash", { command }, root);
 			expect(decision.kind).toBe("block");
 		}
+	});
+
+	it("gates unclassified host-capable bash unless the founder opts it out", () => {
+		writeAuthorityToml(`[identity]\nmode = "auto"\n\n[irreversible]\nmode = "auto"\n`);
+		const authority = discoverAuthority(root)!;
+		for (const command of [
+			"gh issue create --title external",
+			"curl -X POST https://example.test/",
+			`python -c "print('arbitrary host code')"`,
+		]) {
+			const decision = evaluateToolCall(authority, "bash", { command }, root);
+			expect(decision.kind, command).toBe("block");
+			expect((decision as { effectClass: string }).effectClass, command).toBe("authority");
+		}
+
+		writeAuthorityToml(`[tools]\nbash = "none"\n`);
 		expect(evaluateToolCall(authority, "bash", { command: "git status" }, root).kind).toBe("allow");
 	});
 
@@ -111,7 +127,9 @@ describe("classification and evaluation", () => {
 			expect(decision.kind, command).toBe("block");
 			expect((decision as { effectClass: string }).effectClass, command).toBe("irreversible");
 		}
-		// Ordinary history READS stay free.
+		// A founder may explicitly opt the general host shell out while the
+		// provenance and protected-boundary rules remain enforced above it.
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[tools]\nbash = "none"\n`);
 		for (const command of ["git reflog", "git log --oneline", "git gc"]) {
 			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("allow");
 		}
@@ -250,7 +268,7 @@ describe("product-development role boundary", () => {
 	let worker: { attended: boolean; actor: "product-worker"; productWorktree: string };
 
 	beforeEach(() => {
-		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[tools]\nbash = "none"\n`);
 		repository = join(root, "departments", "widget-development", "repository");
 		worktree = join(root, "departments", "widget-development", "worktrees", "task-a");
 		otherWorktree = join(root, "departments", "widget-development", "worktrees", "task-b");
@@ -339,7 +357,7 @@ describe("product-development role boundary", () => {
 
 describe("protected-path bash reads", () => {
 	it("allows inbox reads but gates writes", () => {
-		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n\n[tools]\nbash = "none"\n`);
 		const authority = discoverAuthority(root)!;
 		for (const command of ["cat inbox/gate-abc.md", "grep -l pending inbox/gate-abc.md", "cat authority.toml"]) {
 			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("allow");
@@ -429,7 +447,7 @@ describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", 
 	const TRAILERS = "Qorpera-Trigger: founder request Qorpera-Rationale: keep the record legible";
 
 	it("rejects commits without trailers, files no gate, and allows once trailers are present", () => {
-		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n\n[tools]\nbash = "none"\n`);
 		const authority = discoverAuthority(root)!;
 
 		const blocked = evaluateToolCall(authority, "bash", { command: `git commit -m "fix pricing"` }, root);
@@ -443,7 +461,7 @@ describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", 
 	});
 
 	it("matches the inline -c author/committer convention", () => {
-		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n\n[tools]\nbash = "none"\n`);
 		const authority = discoverAuthority(root)!;
 		const convention = `git -c user.name="Controller" -c user.email="c@x.com" commit --author="Qorpera <j@x.com>"`;
 		expect(evaluateToolCall(authority, "bash", { command: `${convention} -m "msg"` }, root).kind).toBe("block");
@@ -453,7 +471,7 @@ describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", 
 	});
 
 	it("does not gate on protected-path or destructive MENTIONS inside commit messages (live conception regression)", () => {
-		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[tools]\nbash = "none"\n`);
 		const authority = discoverAuthority(root)!;
 		// The exact shape that gated every routine commit during conception:
 		// trailers legitimately reference inbox items.
@@ -485,7 +503,7 @@ describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", 
 	});
 
 	it("does not gate staging/committing inbox, kernel, or product records (live close-out regression)", () => {
-		writeAuthorityToml(`[irreversible]\nmode = "gate"\n`);
+		writeAuthorityToml(`[irreversible]\nmode = "gate"\n\n[tools]\nbash = "none"\n`);
 		const authority = discoverAuthority(root)!;
 		const TRAILERS = "Qorpera-Trigger: t Qorpera-Rationale: r";
 		// The exact shapes that gated during the penthouse close-out:
@@ -518,7 +536,7 @@ describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", 
 	});
 
 	it("does not touch non-commit git commands", () => {
-		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
+		writeAuthorityToml(`[irreversible]\nmode = "auto"\n\n[tools]\nbash = "none"\n`);
 		const authority = discoverAuthority(root)!;
 		for (const command of ["git status", "git log --grep=commit", "git merge feature", "git show HEAD"]) {
 			expect(evaluateToolCall(authority, "bash", { command }, root).kind, command).toBe("allow");

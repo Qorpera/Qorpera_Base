@@ -516,7 +516,11 @@ export function classifyToolCall(
 			if (override) return override;
 			if (DESTRUCTIVE_BASH_PATTERNS.some((pattern) => pattern.test(screened))) return "irreversible";
 		}
-		return override;
+		// A host shell can hide any external effect behind an otherwise unknown
+		// executable or interpreter. Keep the specific screens above for richer
+		// classes, but fail closed for every unclassified command until the
+		// founder explicitly assigns bash a narrower class or opts it out.
+		return override ?? "authority";
 	}
 
 	if (overrideRaw === "none") return undefined;

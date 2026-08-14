@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { delimiter, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const MCP_CONFIG_PATH = join("connections", "mcp.json");
 const CONTROLLER_ONLY_ENV = new Set(["QORPERA_MODEL_BROKER_HANDLES", "QORPERA_TRAIL_BROKER_TOKEN"]);
@@ -116,6 +118,66 @@ function fileLikeArgument(arg: string): string | undefined {
 	return candidate;
 }
 
+const MODULE_SOURCE_EXTENSIONS = new Set([".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
+const STATIC_MODULE_SPECIFIER = /(?:^|[;\n\r])\s*(?:import|export)\s+(?:[^"'();]*?\s+from\s+)?["']([^"']+)["']/g;
+const CALLED_MODULE_SPECIFIER = /\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g;
+
+function moduleSpecifiers(source: string): string[] {
+	const specifiers = new Set<string>();
+	for (const pattern of [STATIC_MODULE_SPECIFIER, CALLED_MODULE_SPECIFIER]) {
+		pattern.lastIndex = 0;
+		for (let match = pattern.exec(source); match; match = pattern.exec(source)) specifiers.add(match[1]);
+	}
+	return [...specifiers].sort();
+}
+
+function resolveModuleSpecifier(importer: string, specifier: string): string | undefined {
+	try {
+		const configured = specifier.startsWith("file:")
+			? fileURLToPath(specifier)
+			: specifier.startsWith(".") || isAbsolute(specifier)
+				? resolve(dirname(importer), specifier)
+				: undefined;
+		if (configured && statSync(configured).isFile()) return configured;
+		const resolved = createRequire(importer).resolve(specifier);
+		return statSync(resolved).isFile() ? resolved : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function transitiveModuleIdentity(root: string, entry: string): object[] {
+	const identities: object[] = [];
+	const visited = new Set<string>();
+	const visit = (path: string): void => {
+		let resolved: string;
+		try {
+			resolved = realpathSync.native(path);
+		} catch {
+			return;
+		}
+		if (visited.has(resolved)) return;
+		visited.add(resolved);
+		const agentControlled = isUnderRoot(path, root) || isUnderRoot(resolved, root);
+		const stats = statSync(resolved);
+		identities.push({
+			path,
+			resolved,
+			...(agentControlled
+				? { sha256: fileSha256(resolved) }
+				: { stat: { size: stats.size, modifiedMs: stats.mtimeMs, changedMs: stats.ctimeMs } }),
+		});
+		if (!agentControlled || !MODULE_SOURCE_EXTENSIONS.has(extname(resolved).toLowerCase())) return;
+		for (const specifier of moduleSpecifiers(readFileSync(resolved, "utf-8"))) {
+			const dependency = resolveModuleSpecifier(resolved, specifier);
+			if (dependency) visit(dependency);
+			else identities.push({ importer: resolved, specifier, state: "unresolved" });
+		}
+	};
+	visit(entry);
+	return identities.sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)));
+}
+
 function argumentFileIdentity(root: string, arg: string): object | undefined {
 	const rawPath = fileLikeArgument(arg);
 	if (!rawPath) return undefined;
@@ -123,7 +185,13 @@ function argumentFileIdentity(root: string, arg: string): object | undefined {
 	try {
 		if (!statSync(candidate).isFile()) return { argument: arg, path: candidate, state: "not-file" };
 		const resolved = realpathSync.native(candidate);
-		return { argument: arg, path: candidate, resolved, sha256: fileSha256(resolved) };
+		return {
+			argument: arg,
+			path: candidate,
+			resolved,
+			sha256: fileSha256(resolved),
+			dependencies: transitiveModuleIdentity(root, resolved),
+		};
 	} catch {
 		return { argument: arg, path: candidate, state: "missing" };
 	}
