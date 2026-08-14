@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	onOpenCompany: (handler) => ipcRenderer.on("open-company", (_event, root) => handler(root)),
 	rpcSend: (frame) => ipcRenderer.invoke("rpc:send", frame),
 	onRpcEvent: (handler) => ipcRenderer.on("rpc-event", (_event, frame) => handler(frame)),
+	onWakeActivity: (handler) => ipcRenderer.on("wake-activity", (_event, info) => handler(info)),
 	onRpcLog: (handler) => ipcRenderer.on("rpc-log", (_event, line) => handler(line)),
 	onRpcExit: (handler) => ipcRenderer.on("rpc-exit", (_event, code) => handler(code)),
 });

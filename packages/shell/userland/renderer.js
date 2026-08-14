@@ -1283,6 +1283,7 @@ const NAV_GLYPHS = {
 	inbox:
 		'<path d="M21 13h-4.8l-1.6 2.4h-5.2L7.8 13H3"/><path d="M5.6 6.3 3 13v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4l-2.6-6.7A1.6 1.6 0 0 0 16.9 5H7.1a1.6 1.6 0 0 0-1.5 1.3z"/>',
 	clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2.5"/>',
+	grid: '<rect x="3.5" y="3.5" width="7.2" height="7.2" rx="1.8"/><rect x="13.3" y="3.5" width="7.2" height="7.2" rx="1.8"/><rect x="3.5" y="13.3" width="7.2" height="7.2" rx="1.8"/><rect x="13.3" y="13.3" width="7.2" height="7.2" rx="1.8"/>',
 	page: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
 	plus: '<path d="M12 5v14M5 12h14"/>',
 	pin: '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/>',
@@ -1314,7 +1315,7 @@ function departmentGlyphName(department) {
 
 function mainPageGlyphName(node) {
 	if (node.view?.id === "qorpera.inbox") return "inbox";
-	if (node.view?.id === "qorpera.activity") return "clock";
+	if (node.view?.id === "qorpera.activity") return "grid";
 	if (node.view?.id === "qorpera.chats") return "bubble";
 	return "page";
 }
@@ -2834,6 +2835,173 @@ function trailRunMeta(session, displayedOutcome) {
 	return row;
 }
 
+// ---- Agents page tiles -------------------------------------------------------
+// Live wake status, pushed by the kernel while a silent wake child works; the
+// grid re-renders (throttled) so the controller tile narrates in plain words.
+let wakeActivity = null;
+let wakeActivityTimer = 0;
+window.qorpera?.onWakeActivity?.((info) => {
+	wakeActivity = info;
+	if (!document.querySelector("#view-panel .activity-layout")) return;
+	if (wakeActivityTimer) return;
+	wakeActivityTimer = setTimeout(() => {
+		wakeActivityTimer = 0;
+		void renderActivity();
+	}, 900);
+});
+
+function wakeDoingLine() {
+	const info = wakeActivity;
+	if (!info || Date.now() - info.at > 10 * 60_000) return "Working…";
+	if (info.kind === "start") return "Waking up…";
+	if (info.kind === "thinking") return "Thinking…";
+	if (info.kind === "writing") return "Writing its findings…";
+	if (info.kind === "settled") return "Finishing up…";
+	if (info.kind === "tool") {
+		const [tool = "", target = ""] = (info.detail ?? "").split(" · ");
+		const short = target ? target.split(/[\\/]/).pop() : "";
+		if (/^read$/i.test(tool)) return short ? `Reading ${short}` : "Reading company files";
+		if (/^(write|edit|edit-diff|apply_patch)$/i.test(tool)) return short ? `Editing ${short}` : "Editing company files";
+		if (/^(grep|find|ls)$/i.test(tool)) return "Searching the company";
+		if (/^bash$/i.test(tool)) return "Running a command";
+		if (/^http-request$/i.test(tool)) return "Reaching out to the web";
+		return short ? `Using ${tool} on ${short}` : `Using ${tool}`;
+	}
+	return "Working…";
+}
+
+const AGENT_ICONS = {
+	expand: '<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>',
+	pause: '<rect x="7" y="5" width="3.4" height="14" rx="1.4"/><rect x="13.6" y="5" width="3.4" height="14" rx="1.4"/>',
+	resume: '<path d="M7 5.3v13.4c0 1 1.1 1.7 2 1.1l10.4-6.7c.8-.5.8-1.7 0-2.2L9 4.2c-.9-.6-2 .1-2 1.1z"/>',
+};
+
+function agentIconButton(label, svgPaths, onClick) {
+	const btn = document.createElement("button");
+	btn.type = "button";
+	btn.className = "agent-icon-button";
+	btn.title = label;
+	btn.setAttribute("aria-label", label);
+	btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${svgPaths}</svg>`;
+	btn.onclick = (event) => {
+		event.stopPropagation();
+		onClick();
+	};
+	return btn;
+}
+
+function agentTileActions(...buttons) {
+	const acts = document.createElement("span");
+	acts.className = "agent-tile-acts";
+	for (const button of buttons) if (button) acts.appendChild(button);
+	return acts;
+}
+
+function controllerTile(sessions, jobs, autonomousRunning, autonomousTrailFile) {
+	const tile = document.createElement("div");
+	const working = autonomousRunning && Boolean(autonomousTrailFile);
+	tile.className = `agent-tile agent-tile-wide${working ? " running" : ""}`;
+	const top = document.createElement("div");
+	top.className = "agent-tile-top";
+	const status = document.createElement("span");
+	status.className = working ? "agent-spin" : "agent-dot scheduled";
+	const name = document.createElement("strong");
+	name.className = "agent-tile-name";
+	name.textContent = "Controller";
+	top.append(status, name);
+	const liveSession = working ? sessions.find((session) => session.file === autonomousTrailFile) : undefined;
+	if (liveSession) {
+		top.appendChild(
+			agentTileActions(agentIconButton("Inspect live", AGENT_ICONS.expand, () => openRunInspection(liveSession))),
+		);
+	}
+	tile.appendChild(top);
+	const doing = document.createElement("p");
+	doing.className = "agent-tile-doing";
+	if (working) doing.textContent = wakeDoingLine();
+	else if (!jobs.length) doing.textContent = "Resting. No schedules yet — create one to give it recurring work.";
+	else {
+		const nextJob = jobs
+			.filter((job) => job.enabled && !job.suspendedReason && Number.isFinite(Date.parse(job.nextRunAt)))
+			.sort((a, b) => Date.parse(a.nextRunAt) - Date.parse(b.nextRunAt))[0];
+		doing.textContent = nextJob
+			? `Resting. ${scheduledJobNextLabel(nextJob)} — ${nextJob.title}.`
+			: "Resting. All schedules are paused.";
+	}
+	tile.appendChild(doing);
+	const meta = document.createElement("div");
+	meta.className = "agent-tile-meta";
+	meta.textContent = working
+		? (liveSession?.title ?? "autonomous run")
+		: `${jobs.filter((job) => job.enabled && !job.suspendedReason).length} of ${jobs.length} schedule${jobs.length === 1 ? "" : "s"} active`;
+	tile.appendChild(meta);
+	return tile;
+}
+
+function scheduledJobTile(job, sessions) {
+	const lastRun =
+		sessions.find((session) => session.file === job.lastTrailFile) ??
+		sessions.find((session) => session.scheduledJobId === job.id);
+	const active = job.enabled && !job.suspendedReason;
+	const openDetails = () => {
+		scheduledJobPanel = { mode: "view", id: job.id, draft: scheduledJobDraft(job), dirty: false };
+		void renderActivity();
+	};
+	const tile = document.createElement("div");
+	tile.className = `agent-tile${active ? "" : " paused"}${job.running ? " running" : ""}`;
+	if (scheduledJobPanel?.id === job.id) tile.classList.add("selected");
+	tile.tabIndex = 0;
+	tile.setAttribute("role", "button");
+	tile.onclick = openDetails;
+	tile.onkeydown = (event) => {
+		if (event.key === "Enter" || event.key === " ") {
+			event.preventDefault();
+			openDetails();
+		}
+	};
+	const top = document.createElement("div");
+	top.className = "agent-tile-top";
+	const status = document.createElement("span");
+	status.className = job.running ? "agent-spin" : active ? "agent-dot scheduled" : "agent-dot";
+	const name = document.createElement("strong");
+	name.className = "agent-tile-name";
+	name.textContent = job.title;
+	top.append(status, name);
+	top.appendChild(
+		agentTileActions(
+			agentIconButton(
+				active ? "Pause" : job.suspendedReason ? "Re-enable" : "Resume",
+				active ? AGENT_ICONS.pause : AGENT_ICONS.resume,
+				async () => {
+					await scheduledJobRequest(
+						() => window.qorpera.updateScheduledJob(job.id, { enabled: !active }),
+						"Could not update the job.",
+					);
+					void renderActivity(true);
+				},
+			),
+			agentIconButton("Details", AGENT_ICONS.expand, openDetails),
+		),
+	);
+	tile.appendChild(top);
+	const doing = document.createElement("p");
+	doing.className = "agent-tile-doing";
+	if (job.running) doing.textContent = "Running now.";
+	else if (job.suspendedReason) {
+		doing.classList.add("failure");
+		doing.textContent = `Suspended by the kernel: ${job.suspendedReason}.`;
+	} else if (job.lastOutcome === "failed" && lastRun) {
+		doing.classList.add("failure");
+		doing.textContent = `Last run failed: ${runFailureCause(lastRun, "failed")}`;
+	} else doing.textContent = job.prompt;
+	tile.appendChild(doing);
+	const meta = document.createElement("div");
+	meta.className = "agent-tile-meta";
+	meta.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)}`;
+	tile.appendChild(meta);
+	return tile;
+}
+
 async function renderActivity(force = false) {
 	const panel = $("view-panel");
 	if (!force && scheduledJobPanel?.dirty && panel.querySelector(".scheduled-job-detail")?.contains(document.activeElement)) return;
@@ -2860,9 +3028,9 @@ async function renderActivity(force = false) {
 	pageHeader.className = "activity-head";
 	const pageCopy = document.createElement("div");
 	const title = document.createElement("h1");
-	title.textContent = "Activity";
+	title.textContent = "Agents";
 	const subtitle = document.createElement("p");
-	subtitle.textContent = "Scheduled controller work and the company’s complete operating trail.";
+	subtitle.textContent = "Every agent working for the company — live, scheduled, and past.";
 	pageCopy.append(title, subtitle);
 	const create = document.createElement("button");
 	create.type = "button";
@@ -2874,53 +3042,25 @@ async function renderActivity(force = false) {
 	};
 	pageHeader.append(pageCopy, create);
 	main.appendChild(pageHeader);
+	main.appendChild(controllerTile(sessions, jobs, autonomousRunning, autonomousTrailFile));
 	const jobsHead = document.createElement("h2");
 	jobsHead.className = "trail-section scheduled-jobs-heading";
-	jobsHead.textContent = `Scheduled jobs · ${jobs.length}`;
+	jobsHead.textContent = `Scheduled · ${jobs.length}`;
 	main.appendChild(jobsHead);
 	if (!jobs.length) {
 		const empty = document.createElement("div");
 		empty.className = "scheduled-jobs-empty";
 		empty.textContent = "No scheduled jobs. Create one to give the controller recurring work.";
 		main.appendChild(empty);
-	}
-	for (const job of jobs) {
-		const lastRun =
-			sessions.find((session) => session.file === job.lastTrailFile) ??
-			sessions.find((session) => session.scheduledJobId === job.id);
-		const row = document.createElement("button");
-		row.type = "button";
-		row.className = `scheduled-job-row${job.enabled && !job.suspendedReason ? "" : " paused"}`;
-		if (scheduledJobPanel?.id === job.id) row.classList.add("selected");
-		const indicator = document.createElement("span");
-		indicator.className = `scheduled-job-indicator${job.running ? " running" : job.enabled && !job.suspendedReason ? " active" : ""}`;
-		const copy = document.createElement("span");
-		copy.className = "scheduled-job-copy";
-		const name = document.createElement("strong");
-		name.textContent = job.title;
-		const schedule = document.createElement("span");
-		schedule.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)}`;
-		const prompt = document.createElement("small");
-		if (job.lastOutcome === "failed" && lastRun) {
-			prompt.className = "scheduled-job-failure-cause";
-			prompt.textContent = `Last run failed: ${runFailureCause(lastRun, "failed")}`;
-		} else {
-			prompt.textContent = job.prompt;
-		}
-		copy.append(name, schedule, prompt);
-		const arrow = document.createElement("span");
-		arrow.className = "scheduled-job-arrow";
-		arrow.textContent = "›";
-		row.append(indicator, copy, arrow);
-		row.onclick = () => {
-			scheduledJobPanel = { mode: "view", id: job.id, draft: scheduledJobDraft(job), dirty: false };
-			void renderActivity();
-		};
-		main.appendChild(row);
+	} else {
+		const jobGrid = document.createElement("div");
+		jobGrid.className = "agents-grid";
+		for (const job of jobs) jobGrid.appendChild(scheduledJobTile(job, sessions));
+		main.appendChild(jobGrid);
 	}
 	const historyHead = document.createElement("h2");
 	historyHead.className = "trail-section activity-history-heading";
-	historyHead.textContent = "Run history";
+	historyHead.textContent = "History";
 	main.appendChild(historyHead);
 	if (!sessions.length) {
 		main.insertAdjacentHTML(
