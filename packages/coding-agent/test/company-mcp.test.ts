@@ -333,12 +333,16 @@ describe("use_mcp_tool", () => {
 		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(/interpreter arguments must be static/);
 	});
 
-	it("rejects inline interpreter programs whose dependency closure cannot be bound", async () => {
+	it.each([
+		["separated Node eval", process.execPath, ["-e", `import('./payload.mjs')`]],
+		["attached Python command", "python3", [`-cexec(open('payload.mjs').read())`]],
+		["attached Bun eval", "bun", [`-eimport('./payload.mjs')`]],
+	])("rejects %s whose dependency closure cannot be bound", async (_name, command, args) => {
 		writeFileSync(join(root, "connections", "payload.mjs"), `export const payload = "reviewed";\n`, "utf-8");
 		writeFileSync(
 			join(root, "connections", "mcp.json"),
 			JSON.stringify({
-				servers: { faux: { command: process.execPath, args: ["-e", `import('./payload.mjs')`] } },
+				servers: { faux: { command, args } },
 			}),
 			"utf-8",
 		);
