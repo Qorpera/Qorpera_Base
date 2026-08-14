@@ -112,7 +112,7 @@ describe("codex engine adapter", () => {
 		expect(assistant?.message?.usage?.input).toBe(11);
 	});
 
-	it("routes approvals through authority gates: destructive command declined, gate filed", async () => {
+	it("routes all host-shell approvals through authority gates", async () => {
 		const company = join(root, "acme");
 		scaffoldCompany(company);
 		const { finalText, sessionManager, out } = await runEngineTurn(
@@ -123,14 +123,15 @@ describe("codex engine adapter", () => {
 
 		const approvals = out.filter((entry) => entry.kind === "commandApproval");
 		expect(approvals).toEqual([
-			{ kind: "commandApproval", command: "git status", decision: "accept" },
+			{ kind: "commandApproval", command: "git status", decision: "decline" },
 			{ kind: "commandApproval", command: "rm -rf work", decision: "decline" },
 		]);
-		expect(finalText).toContain("decisions: accept,decline");
+		expect(finalText).toContain("decisions: decline,decline");
 
-		// The gate request landed in the company inbox and the trail recorded it.
+		// Both the default host-shell gate and the destructive gate landed in
+		// the company inbox, and the trail recorded the declined effects.
 		const gateFiles = readdirSync(join(company, "inbox")).filter((name) => name.startsWith("gate-"));
-		expect(gateFiles.length).toBe(1);
+		expect(gateFiles.length).toBe(2);
 		const entries = sessionManager.getEntries() as unknown as Array<Record<string, unknown>>;
 		expect(entries.some((entry) => entry.type === "custom" && entry.customType === "qorpera_gate")).toBe(true);
 
