@@ -63,6 +63,73 @@ export interface CompanyAppOptions {
 	authToken: string;
 	/** Optional pricing source override for deterministic embedding and tests. */
 	usageRateCatalog?: () => Promise<UsageRateCatalog>;
+	/** Kernel-owned session lifecycle projection. Provider processes are
+	 * temporary attachments; this durable read model is what UI surfaces
+	 * observe. */
+	sessionRuntime?: SessionRuntimeSource;
+}
+
+export type SessionRuntimeStatus =
+	| "starting"
+	| "idle"
+	| "running"
+	| "finishing"
+	| "reconnecting"
+	| "detached"
+	| "settled"
+	| "interrupted";
+
+export type SessionRuntimeActivity =
+	| { kind: "starting" }
+	| { kind: "thinking" }
+	| { kind: "writing" }
+	| { kind: "tool"; tool: string; subject?: string };
+
+export interface SessionRuntimeView {
+	trailFile: string;
+	sessionId: string;
+	actor: "controller" | "product-worker";
+	autonomous: boolean;
+	label?: string;
+	department?: string;
+	worktree?: string;
+	group?: string;
+	parentSession?: string;
+	status: SessionRuntimeStatus;
+	live: boolean;
+	kernelInstanceId: string;
+	executorId: string;
+	attachmentSequence?: number;
+	updatedAt: string;
+	turnStartedAt?: string;
+	turnInterrupted?: boolean;
+	activity?: SessionRuntimeActivity;
+	reconnectAttempt?: number;
+	exit?: {
+		code: number | null;
+		signal: string | null;
+		busy: boolean;
+		expected: boolean;
+	};
+}
+
+export interface SessionRuntimeSnapshot {
+	revision: number;
+	generatedAt: string;
+	sessions: SessionRuntimeView[];
+}
+
+export interface SessionRuntimeUpdate {
+	event?: { kind: string; at: string };
+	snapshot: SessionRuntimeSnapshot;
+	session?: SessionRuntimeView;
+}
+
+export interface SessionRuntimeSource {
+	snapshot: () => SessionRuntimeSnapshot;
+	subscribe: (listener: (update: SessionRuntimeUpdate) => void) => () => void;
+	/** False means the canonical replay rejected this trail's complete chain. */
+	isTrailVisible?: (trailFile: string) => boolean;
 }
 
 interface InboxItem {
@@ -300,11 +367,17 @@ function readProjection(root: string): ProjectionState {
 				view: {
 					type: "builtin" as const,
 					id: "qorpera.placeholder" as const,
-					context: { title: node.label, message: "This page has an invalid surface entry." },
+					context: {
+						title: node.label,
+						message: "This page has an invalid surface entry.",
+					},
 				},
 			};
 		}
-		return { ...node, view: { ...node.view, version: surfaceVersion(root, node.view.entry) } };
+		return {
+			...node,
+			view: { ...node.view, version: surfaceVersion(root, node.view.entry) },
+		};
 	});
 	return {
 		schema: PROJECTION_SCHEMA,
@@ -385,7 +458,13 @@ function readInbox(root: string): InboxItem[] {
 			const content = source.content.toString("utf-8");
 			const title = content.match(/^#\s+(.+)$/m)?.[1] ?? file;
 			const status = /^##\s+Response/m.test(content) ? "answered" : "pending";
-			items.push({ file: `messages/${file}`, status, title, kind: "message", mtimeMs: source.mtimeMs });
+			items.push({
+				file: `messages/${file}`,
+				status,
+				title,
+				kind: "message",
+				mtimeMs: source.mtimeMs,
+			});
 		} catch {
 			// unreadable inbox entries are skipped
 		}
@@ -449,6 +528,9 @@ interface SessionSummary {
 	partialChangeSummary?: string;
 	changedFiles?: string[];
 	completedSteps?: number;
+	/** Canonical current lifecycle, when this historical session has a
+	 * projected runtime attachment. */
+	runtime?: SessionRuntimeView;
 }
 
 /** Chat-title material: chrome-injected context blocks are plumbing, not the
@@ -662,7 +744,10 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 				}
 				for (const part of entry.message.content ?? []) {
 					if (part.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") {
-						toolCalls.set(part.id, { name: part.name, arguments: part.arguments });
+						toolCalls.set(part.id, {
+							name: part.name,
+							arguments: part.arguments,
+						});
 					}
 				}
 			}
@@ -773,22 +858,24 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
  * input — is spawn residue, not history: it is skipped entirely, so panels
  * never pile up with contentless "New chat" rows. Autonomous work is tagged
  * with a session name at spawn time and always listed. */
-function listTrailSessions(root: string): SessionSummary[] {
+function sortTrailSessions(sessions: SessionSummary[]): SessionSummary[] {
+	return sessions.sort(
+		(a, b) =>
+			(b.kind === "autonomous" ? (b.startedAtMs ?? b.mtimeMs) : b.mtimeMs) -
+			(a.kind === "autonomous" ? (a.startedAtMs ?? a.mtimeMs) : a.mtimeMs),
+	);
+}
+
+function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): SessionSummary[] {
 	const dir = physicalDirectoryWithin(root, "trail");
 	if (!dir) return [];
 	const sessions: SessionSummary[] = [];
-	for (const file of readdirSync(dir)) {
+	for (const file of onlyFiles ?? readdirSync(dir)) {
 		if (!file.endsWith(".jsonl")) continue;
 		try {
 			const source = readPhysicalFileWithin(dir, file);
 			if (!source) continue;
-			// 256 KiB reaches past the kernel-input copy of a large first prompt
-			// and image parts that can sit ahead of the first user message entry.
-			const headBytes = 262_144;
-			const head = source.content.toString("utf-8", 0, headBytes);
-			const lines = head.split("\n");
-			// The window may cut the final line mid-entry; never parse the stub.
-			if (source.content.length > headBytes) lines.pop();
+			const lines = source.content.toString("utf-8").split("\n");
 			let title = "";
 			let kernelInput = "";
 			let name = "";
@@ -806,7 +893,8 @@ function listTrailSessions(root: string): SessionSummary[] {
 						parentSession?: string;
 				  }
 				| undefined;
-			for (const line of lines.slice(0, 400)) {
+			let titleEntries = 0;
+			for (const line of lines) {
 				if (!line.trim()) continue;
 				try {
 					const entry = JSON.parse(line) as {
@@ -815,8 +903,16 @@ function listTrailSessions(root: string): SessionSummary[] {
 						data?: { message?: unknown };
 						name?: string;
 						qorpera?: typeof sessionAuthority;
-						message?: { role?: string; content?: string | Array<{ type?: string; text?: string }> };
+						message?: {
+							role?: string;
+							content?: string | Array<{ type?: string; text?: string }>;
+						};
 					};
+					// Runtime attachments are transport history, not title material.
+					// Do not let a long-lived, idle conversation's reconnects crowd its
+					// eventual first founder message out of the bounded title scan.
+					if (entry.type === "custom" && entry.customType === "qorpera_kernel_session_runtime") continue;
+					titleEntries += 1;
 					if (entry.type === "session" && entry.qorpera) sessionAuthority = entry.qorpera;
 					if (entry.type === "session_info" && typeof entry.name === "string" && !name) {
 						name = entry.name;
@@ -846,6 +942,7 @@ function listTrailSessions(root: string): SessionSummary[] {
 				} catch {
 					// unparseable line (foreign entry shape); keep scanning
 				}
+				if (titleEntries >= 400) break;
 			}
 			const kind = sessionAuthority?.autonomous ? "autonomous" : "chat";
 			const label = (sessionAuthority?.label ?? "").toLowerCase();
@@ -906,11 +1003,58 @@ function listTrailSessions(root: string): SessionSummary[] {
 			// unreadable session files are skipped
 		}
 	}
-	return sessions.sort(
-		(a, b) =>
-			(b.kind === "autonomous" ? (b.startedAtMs ?? b.mtimeMs) : b.mtimeMs) -
-			(a.kind === "autonomous" ? (a.startedAtMs ?? a.mtimeMs) : a.mtimeMs),
-	);
+	return sortTrailSessions(sessions);
+}
+
+/** The session catalog is a derived read model, not a second source of truth.
+ * Polling state may stat trail files cheaply, but it reparses a trail only
+ * when that file set actually changes. */
+function createTrailSessionReadModel(
+	root: string,
+	isTrailVisible?: (trailFile: string) => boolean,
+): () => SessionSummary[] {
+	const cached = new Map<string, { fingerprint: string; session?: SessionSummary }>();
+	return () => {
+		const dir = physicalDirectoryWithin(root, "trail");
+		if (!dir) {
+			cached.clear();
+			return [];
+		}
+		const present = new Set(
+			readdirSync(dir).filter((file) => file.endsWith(".jsonl") && isTrailVisible?.(file) !== false),
+		);
+		for (const file of present) {
+			let fingerprint: string;
+			let mtimeMs: number | undefined;
+			try {
+				const stat = statSync(join(dir, file), { bigint: true });
+				fingerprint = `${stat.size}:${stat.mtimeNs}`;
+				mtimeMs = Number(stat.mtimeNs / 1_000_000n);
+			} catch {
+				fingerprint = "unreadable";
+			}
+			const previous = cached.get(file);
+			if (previous?.fingerprint === fingerprint) continue;
+			if (previous?.session?.kind === "chat" && mtimeMs !== undefined) {
+				// A chat's identity/title/scope are established before its first
+				// founder turn. Later appends only move it in recency order, so a
+				// growing persistent conversation never needs whole-file reparsing.
+				cached.set(file, {
+					fingerprint,
+					session: { ...previous.session, mtimeMs },
+				});
+				continue;
+			}
+			cached.set(file, {
+				fingerprint,
+				session: listTrailSessions(root, new Set([file]))[0],
+			});
+		}
+		for (const file of cached.keys()) {
+			if (!present.has(file)) cached.delete(file);
+		}
+		return sortTrailSessions([...cached.values()].flatMap((entry) => (entry.session ? [{ ...entry.session }] : [])));
+	};
 }
 
 interface PullRequestSummary {
@@ -976,7 +1120,7 @@ function respondToInboxItem(root: string, file: string, response: string): boole
 	}
 }
 
-function stateFor(root: string): unknown {
+function stateFor(root: string, runtime?: SessionRuntimeSnapshot, sessions?: SessionSummary[]): unknown {
 	let trailSessions = 0;
 	try {
 		const trail = physicalDirectoryWithin(root, "trail");
@@ -984,8 +1128,11 @@ function stateFor(root: string): unknown {
 	} catch {
 		// no trail yet
 	}
-	let departments: Array<ReturnType<typeof listProductDepartments>[number] & { pullRequests: PullRequestSummary[] }> =
-		[];
+	let departments: Array<
+		ReturnType<typeof listProductDepartments>[number] & {
+			pullRequests: PullRequestSummary[];
+		}
+	> = [];
 	try {
 		departments = listProductDepartments(root).map((department) => ({
 			...department,
@@ -994,14 +1141,24 @@ function stateFor(root: string): unknown {
 	} catch {
 		// a malformed department record must not take company state down
 	}
+	const projectedSessions = sessions ?? listTrailSessions(root);
+	const runtimeByTrail = new Map((runtime?.sessions ?? []).map((session) => [session.trailFile, session]));
 	return {
 		name: companyName(root),
 		projection: readProjection(root),
 		inbox: readInbox(root),
-		sessions: listTrailSessions(root),
+		sessions: projectedSessions.map((session) => ({
+			...session,
+			runtime: runtimeByTrail.get(session.file),
+		})),
+		runtime: runtime ?? { revision: 0, generatedAt: "", sessions: [] },
 		trailSessions,
 		departments,
 	};
+}
+
+function writeServerEvent(response: ServerResponse, event: string, data: unknown): void {
+	response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 /**
@@ -1441,17 +1598,23 @@ async function serveCompanyUsage(
 		const rates = await usageRateCatalog();
 		const summary = await readCompanyUsage(root, window, rates);
 		response
-			.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+			.writeHead(200, {
+				"content-type": "application/json",
+				"cache-control": "no-store",
+			})
 			.end(JSON.stringify(summary));
 	} catch (error) {
-		response
-			.writeHead(500, { "content-type": "application/json" })
-			.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+		response.writeHead(500, { "content-type": "application/json" }).end(
+			JSON.stringify({
+				error: error instanceof Error ? error.message : String(error),
+			}),
+		);
 	}
 }
 
 export function createCompanyAppServer(options: CompanyAppOptions): Server {
 	const root = canonicalCompanyRoot(options.root);
+	const trailSessions = createTrailSessionReadModel(root, options.sessionRuntime?.isTrailVisible);
 	const usageRateCatalog = options.usageRateCatalog ?? readUsageRateCatalog;
 	const authToken = options.authToken;
 	if (!authToken) throw new Error("company app server requires a desktop-kernel authorization token");
@@ -1475,7 +1638,48 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			return;
 		}
 		if (url.pathname === "/api/state") {
-			response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(stateFor(root)));
+			response
+				.writeHead(200, {
+					"content-type": "application/json",
+					"cache-control": "no-store",
+				})
+				.end(JSON.stringify(stateFor(root, options.sessionRuntime?.snapshot(), trailSessions())));
+			return;
+		}
+		if (url.pathname === "/api/runtime" && request.method === "GET") {
+			if (!options.sessionRuntime) {
+				response
+					.writeHead(404, { "content-type": "application/json" })
+					.end(JSON.stringify({ error: "unavailable" }));
+				return;
+			}
+			response.writeHead(200, {
+				"content-type": "text/event-stream; charset=utf-8",
+				"cache-control": "no-cache, no-transform",
+				connection: "keep-alive",
+			});
+			writeServerEvent(response, "snapshot", options.sessionRuntime.snapshot());
+			const unsubscribe = options.sessionRuntime.subscribe((update) => {
+				// Stream only the event discriminator plus the canonical read model.
+				// Provider diagnostics stay in the protected trail and never become
+				// ambient same-origin userland data.
+				if (update.event?.kind === "activity" && update.session) {
+					writeServerEvent(response, "runtime", {
+						event: { kind: update.event.kind, at: update.event.at },
+						revision: update.snapshot.revision,
+						generatedAt: update.snapshot.generatedAt,
+						session: update.session,
+					});
+					return;
+				}
+				writeServerEvent(response, "runtime", {
+					...(update.event ? { event: { kind: update.event.kind, at: update.event.at } } : {}),
+					snapshot: update.snapshot,
+				});
+			});
+			// The response owns an SSE subscription. The request body is already
+			// complete for GET and is not a reliable lifetime signal for the stream.
+			response.once("close", unsubscribe);
 			return;
 		}
 		if (url.pathname === "/api/usage" && request.method === "GET") {
@@ -1590,12 +1794,17 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 					for (const name of ["money", "identity", "irreversible"]) {
 						const incoming = update.classes?.[name];
 						if (!incoming) continue;
-						const section = { ...((existing[name] as Record<string, unknown>) ?? {}) };
+						const section = {
+							...((existing[name] as Record<string, unknown>) ?? {}),
+						};
 						if (incoming.mode && modes.has(incoming.mode)) section.mode = incoming.mode;
 						if (name === "money" && typeof incoming.limitUsd === "number") section.limit_usd = incoming.limitUsd;
 						existing[name] = section;
 					}
-					existing.authority = { ...((existing.authority as Record<string, unknown>) ?? {}), mode: "gate" };
+					existing.authority = {
+						...((existing.authority as Record<string, unknown>) ?? {}),
+						mode: "gate",
+					};
 					writeAtomicPhysicalFile(source.path, `${stringifyToml(existing)}\n`);
 					ratifyPolicyIfFounder(root);
 					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
@@ -1660,7 +1869,10 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			});
 			request.on("end", () => {
 				try {
-					const { file, response: reply } = JSON.parse(body) as { file?: string; response?: string };
+					const { file, response: reply } = JSON.parse(body) as {
+						file?: string;
+						response?: string;
+					};
 					const ok = respondToInboxItem(root, file ?? "", reply ?? "");
 					response.writeHead(ok ? 200 : 400, { "content-type": "application/json" }).end(JSON.stringify({ ok }));
 				} catch {
@@ -1680,7 +1892,10 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			});
 			request.on("end", () => {
 				try {
-					const { file, action } = JSON.parse(body) as { file?: string; action?: string };
+					const { file, action } = JSON.parse(body) as {
+						file?: string;
+						action?: string;
+					};
 					const ok = resolveGate(root, file ?? "", action ?? "");
 					response.writeHead(ok ? 200 : 400, { "content-type": "application/json" }).end(JSON.stringify({ ok }));
 				} catch {

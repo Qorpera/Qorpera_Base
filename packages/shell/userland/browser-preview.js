@@ -208,10 +208,20 @@
 			{ file: "trail/founder-6.jsonl", title: "Pricing page copy review", mtimeMs: Date.now() - 4 * 86400000, kind: "chat", page: "page:pricing" },
 		],
 		departments: [{ id: "dept-product", path: "C:/Products/qorpera-base", name: "Qorpera Base Development" }],
+		runtime: { revision: 0, generatedAt: new Date().toISOString(), sessions: [] },
+	};
+	window.EventSource = class PreviewEventSource {
+		addEventListener(type, handler) {
+			if (type === "snapshot") {
+				queueMicrotask(() => handler({ data: JSON.stringify(previewState.runtime) }));
+			}
+		}
+		close() {}
 	};
 
 	const activeCompany = {
 		backendUrl: "https://qorpera.preview",
+		sessionFile: "trail/founder-1.jsonl",
 		usingBaseFallback: false,
 		kickoff: false,
 		mergeRunning: false,
@@ -306,10 +316,14 @@
 		runScheduledJob: async () => ({ ok: false, error: "browser preview" }),
 		openCompany: async () => {},
 		authorizedBackendPost: async () => ({ ok: true, status: 200, text: '{"ok":true}' }),
-		openChat: async () => ({ ok: true, department: null, worktree: null }),
+		openChat: async (sessionFile) => ({
+			ok: true,
+			sessionFile: sessionFile ?? `trail/preview-${Date.now()}.jsonl`,
+			department: null,
+			worktree: null,
+		}),
 		rpcSend: noop,
 		onRpcEvent: noop,
-		onWakeActivity: noop,
 		onRpcLog: noop,
 		onRpcExit: noop,
 		settingsInfo: async () => ({

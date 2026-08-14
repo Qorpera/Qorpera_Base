@@ -93,6 +93,7 @@ import {
 	appendKernelProductStorageObservation,
 	appendKernelRuntimeExitObservation,
 	appendKernelSessionEndObservation,
+	appendKernelSessionInfo,
 	appendKernelWakeObservation,
 	applyKernelWriteFrame,
 	bindTrailSession,
@@ -136,6 +137,7 @@ import { createCompanyFileResolver } from "./company-file-paths.ts";
 import {
 	advanceCompanyGateCreation,
 	beginCompanyGateCreation,
+	companyKernelStatePath,
 	companyRootId,
 	completeCompanyGateCreation,
 	hasCompanyGateTrust,
@@ -160,6 +162,11 @@ import {
 	lockDownRendererWebContents,
 	rendererPartitionForCompany,
 } from "./renderer-boundary.ts";
+import {
+	SessionControlPlane,
+	type SessionRuntimeActivity,
+	type SessionRuntimeEventInput,
+} from "./session-control-plane.ts";
 import {
 	assertUserlandStorage,
 	ensureUserland,
@@ -301,6 +308,9 @@ function shellVersion(): string {
 
 interface CompanyRuntime {
 	root: string;
+	/** Durable lifecycle source for every attended and autonomous session in
+	 * this company. Child processes attach to it; they do not define it. */
+	sessions: SessionControlPlane;
 	/** Stable company identity (companyRootId) — keys renderer storage. */
 	storageId: string;
 	child: ChildProcessWithoutNullStreams;
@@ -322,11 +332,13 @@ interface CompanyRuntime {
 	/** An inbound event arrived while the company was busy; the wake ticker owes it a wake. */
 	pendingInboundWake?: boolean;
 	inventoryWatcher?: ReturnType<typeof watch>;
+	pendingInventoryRestart: boolean;
 	transitionQueue: Promise<void>;
 	/** Bounded crash-loop state for the replaceable attended RPC process. */
 	runtimeReconnectAttempts: number;
 	lastUnexpectedRuntimeExitAt?: number;
 	closing: boolean;
+	closePromise?: Promise<void>;
 	runtimeLock: CompanyRuntimeLock;
 }
 
@@ -342,6 +354,7 @@ interface Slot {
 	partition: string;
 	runtime?: CompanyRuntime;
 	kickoffPending: boolean;
+	openGeneration: number;
 }
 
 const BASE_USERLAND_DIR = join(DIRNAME, "userland");
@@ -384,6 +397,47 @@ const childHttpBrokers = new WeakMap<ChildProcessWithoutNullStreams, HttpRequest
 const childBusy = new WeakMap<ChildProcessWithoutNullStreams, boolean>();
 const childApprovedGates = new WeakMap<ChildProcessWithoutNullStreams, Set<string>>();
 const childCheckpointCompletion = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
+const childExecutorIds = new WeakMap<ChildProcessWithoutNullStreams, string>();
+const childAttachmentSequences = new WeakMap<ChildProcessWithoutNullStreams, number>();
+const childSessionPlanes = new WeakMap<ChildProcessWithoutNullStreams, SessionControlPlane>();
+const childRuntimeReady = new WeakSet<ChildProcessWithoutNullStreams>();
+
+const KERNEL_INSTANCE_ID = randomUUID();
+const sessionControlPlanes = new Map<string, SessionControlPlane>();
+
+function recordSessionRuntime(
+	sessions: SessionControlPlane,
+	binding: TrailBinding,
+	event: SessionRuntimeEventInput,
+): boolean {
+	try {
+		sessions.record(binding, event);
+		return true;
+	} catch (error) {
+		console.error(`session runtime observation failed: ${(error as Error).message}`);
+		try {
+			sessions.observePersistenceFailure(binding, event.executorId);
+		} catch (projectionError) {
+			console.error(`session runtime degraded-state projection failed: ${(projectionError as Error).message}`);
+		}
+		return false;
+	}
+}
+
+function observeSessionActivity(
+	sessions: SessionControlPlane,
+	binding: TrailBinding,
+	executorId: string,
+	activity: SessionRuntimeActivity,
+): void {
+	try {
+		sessions.observeActivity(binding, executorId, activity);
+	} catch (error) {
+		// Activity narration is deliberately ephemeral. Losing one beat must not
+		// stop intelligence; the next lifecycle fact remains durable authority.
+		console.error(`session activity observation failed: ${(error as Error).message}`);
+	}
+}
 
 const slots = new Map<number, Slot>();
 
@@ -495,7 +549,13 @@ interface KernelReviewImage {
 
 async function confirmKernelReview(
 	parent: BrowserWindow,
-	input: { title: string; summary: string; exactText: string; metadata?: string; images?: KernelReviewImage[] },
+	input: {
+		title: string;
+		summary: string;
+		exactText: string;
+		metadata?: string;
+		images?: KernelReviewImage[];
+	},
 ): Promise<boolean> {
 	if (parent.isDestroyed()) return false;
 	const images = input.images ?? [];
@@ -515,7 +575,11 @@ async function confirmKernelReview(
 		height: 720,
 		title: input.title,
 		autoHideMenuBar: true,
-		webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+		webPreferences: {
+			contextIsolation: true,
+			nodeIntegration: false,
+			sandbox: true,
+		},
 	});
 	review.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
 	return new Promise<boolean>((resolvePromise) => {
@@ -566,7 +630,11 @@ function reviewedPromptFrame(value: Record<string, unknown>): ReviewedPromptFram
 			if (Object.keys(image).some((key) => key !== "type" && key !== "data" && key !== "mimeType")) {
 				return undefined;
 			}
-			const candidate = image as { type?: unknown; data?: unknown; mimeType?: unknown };
+			const candidate = image as {
+				type?: unknown;
+				data?: unknown;
+				mimeType?: unknown;
+			};
 			if (
 				candidate.type !== "image" ||
 				typeof candidate.data !== "string" ||
@@ -582,7 +650,11 @@ function reviewedPromptFrame(value: Record<string, unknown>): ReviewedPromptFram
 				decoded.toString("base64") !== candidate.data
 			)
 				return undefined;
-			images.push({ type: "image", data: candidate.data, mimeType: candidate.mimeType });
+			images.push({
+				type: "image",
+				data: candidate.data,
+				mimeType: candidate.mimeType,
+			});
 		}
 	}
 	return {
@@ -607,16 +679,29 @@ function sendAll(channel: string, payload: unknown): void {
 async function closeCompany(slot: Slot): Promise<void> {
 	if (!slot.runtime) return;
 	const runtime = slot.runtime;
+	if (runtime.closePromise) {
+		await runtime.closePromise;
+		return;
+	}
 	runtime.closing = true;
-	runtime.inventoryWatcher?.close();
-	runtime.webhookClose?.();
-	await runtime.transitionQueue;
-	await stopChild(runtime.child);
-	if (runtime.wakeChild) await stopChild(runtime.wakeChild);
-	if (runtime.mergeChild) await stopChild(runtime.mergeChild);
-	runtime.backendClose?.();
-	releaseCompanyRuntimeLock(runtime.runtimeLock);
-	slot.runtime = undefined;
+	runtime.closePromise = (async () => {
+		try {
+			runtime.inventoryWatcher?.close();
+			runtime.webhookClose?.();
+			await runtime.transitionQueue;
+			await stopChild(runtime.child);
+			if (runtime.wakeChild) await stopChild(runtime.wakeChild);
+			if (runtime.mergeChild) await stopChild(runtime.mergeChild);
+			runtime.backendClose?.();
+			releaseCompanyRuntimeLock(runtime.runtimeLock);
+		} finally {
+			if (sessionControlPlanes.get(normalizedRoot(runtime.root)) === runtime.sessions) {
+				sessionControlPlanes.delete(normalizedRoot(runtime.root));
+			}
+			if (slot.runtime === runtime) slot.runtime = undefined;
+		}
+	})();
+	await runtime.closePromise;
 	// Renderer storage survives on purpose: each company runs in its own
 	// persist: partition, so cross-company isolation is the partition boundary
 	// (what the old wipe-on-close provided), while a company's own prefs —
@@ -657,6 +742,9 @@ function writeChildFrame(child: ChildProcessWithoutNullStreams, payload: string)
  * worktree so they can be restored without losing provenance. */
 interface ChildOptions {
 	sessionFile?: string;
+	/** Initial display identity for a freshly attached session. Passed at
+	 * process startup so attachment and naming cannot target different children. */
+	sessionName?: string;
 	autonomousName?: string;
 	department?: ProductDepartment;
 	worktree?: string;
@@ -680,7 +768,9 @@ interface ChildOptions {
 }
 
 function startChild(slot: Slot, root: string, options: ChildOptions = {}): ChildProcessWithoutNullStreams {
-	const { sessionFile, autonomousName, department, worktree, silent, onRpcEvent } = options;
+	const { sessionFile, sessionName, autonomousName, department, worktree, silent, onRpcEvent } = options;
+	const sessions = sessionControlPlanes.get(normalizedRoot(root));
+	if (!sessions) throw new Error(`session control plane is unavailable for ${root}`);
 	// Resolve the window at SEND time, never at spawn time: opening a company
 	// swaps the slot's window onto the durable partition AFTER the boot child
 	// is started, and a captured reference then streams every child frame —
@@ -700,7 +790,14 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		parentSession: options.parentSession,
 	} as const;
 	const userData = app.getPath("userData");
-	const binding = bindTrailSession(root, cwd, scope, sessionFile);
+	const binding = bindTrailSession(
+		root,
+		cwd,
+		scope,
+		sessionFile,
+		sessionFile ? sessions.auditForTrail(sessionFile) : undefined,
+	);
+	if (sessionName) appendKernelSessionInfo(binding, sessionName);
 	if (options.wake) {
 		appendKernelWakeObservation(binding, {
 			wakeId: options.wake.id,
@@ -767,6 +864,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	let invocation: { command: string; args: string[] };
 	let kernelSigner: ReturnType<typeof createKernelResponseSigner>;
 	let child: ChildProcessWithoutNullStreams;
+	const executorId = randomUUID();
 	const env: NodeJS.ProcessEnv = brokeredChildEnvironment();
 	Object.assign(env, sandboxGitEnvironment([root, ...(productWorktreeRoot ? [productWorktreeRoot] : [])]));
 	env.ELECTRON_RUN_AS_NODE = "1";
@@ -803,6 +901,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		);
 		kernelSigner = createKernelResponseSigner({ sessionId: binding.sessionId });
 	} catch (error) {
+		httpBroker.release();
 		brokeredCredentials.release();
 		throw error;
 	}
@@ -819,6 +918,24 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	env.QORPERA_KERNEL_PUBLIC_KEY = kernelSigner.publicKey;
 	env.QORPERA_KERNEL_REQUIRED = "1";
 	env.QORPERA_MODEL_BROKER_HANDLES = JSON.stringify(brokeredCredentials.handles);
+	// A provider may not exist outside the canonical control plane. If the
+	// durable attach fact cannot be written, fail before granting a process any
+	// authority or model credentials.
+	if (
+		!recordSessionRuntime(sessions, binding, {
+			kind: "executor_started",
+			executorId,
+		})
+	) {
+		httpBroker.release();
+		brokeredCredentials.release();
+		throw new Error("could not durably attach the agent runtime");
+	}
+	const attachmentSequence = sessions
+		.snapshot()
+		.sessions.find(
+			(session) => session.trailFile === binding.file && session.executorId === executorId,
+		)?.attachmentSequence;
 	try {
 		child = spawn(invocation.command, invocation.args, {
 			cwd: runtimeDir,
@@ -827,6 +944,24 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			env,
 		}) as ChildProcessWithoutNullStreams;
 	} catch (error) {
+		recordSessionRuntime(sessions, binding, {
+			kind: "executor_exited",
+			executorId,
+			expected: false,
+			code: null,
+			signal: null,
+			busy: false,
+			detail: (error as Error).message,
+		});
+		// No ChildProcess exists to emit an async exit or drive reconnect. Close
+		// the durable state explicitly instead of leaving a reconnecting phantom.
+		recordSessionRuntime(sessions, binding, {
+			kind: "reconnect_failed",
+			executorId,
+			attempt: 1,
+			detail: (error as Error).message,
+		});
+		httpBroker.release();
 		brokeredCredentials.release();
 		throw error;
 	}
@@ -837,6 +972,9 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		if (!silent) send(win(), "rpc-log", `child stdin ${error.code ?? error.message}: frame dropped`);
 	});
 	childBindings.set(child, binding);
+	childExecutorIds.set(child, executorId);
+	if (attachmentSequence !== undefined) childAttachmentSequences.set(child, attachmentSequence);
+	childSessionPlanes.set(child, sessions);
 	childIntentSigners.set(child, kernelSigner.signIntent);
 	childModelCapabilities.set(child, brokeredCredentials);
 	childHttpBrokers.set(child, httpBroker);
@@ -873,9 +1011,25 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				writeChildFrame(
 					child,
 					`${JSON.stringify(
-						kernelSigner.signBinding({ nonce: challenge.nonce, sessionId: binding.sessionId }),
+						kernelSigner.signBinding({
+							nonce: challenge.nonce,
+							sessionId: binding.sessionId,
+						}),
 					)}\n`,
 				);
+				if (!childRuntimeReady.has(child)) {
+					if (
+						!recordSessionRuntime(sessions, binding, {
+							kind: "executor_ready",
+							executorId,
+						})
+					) {
+						intentionalKills.add(child);
+						child.kill();
+						return;
+					}
+					childRuntimeReady.add(child);
+				}
 				return;
 			}
 			if (
@@ -920,32 +1074,72 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				} else send(win(), "rpc-log", "rejected invalid trail append frame");
 				return;
 			}
+			const activity = sessionActivityFromFrame(frame as Record<string, unknown>);
+			if (activity) observeSessionActivity(sessions, binding, executorId, activity);
 			if ((frame as { type?: unknown }).type === "agent_settled") {
+				if (
+					!recordSessionRuntime(sessions, binding, {
+						kind: "turn_settled",
+						executorId,
+					})
+				) {
+					intentionalKills.add(child);
+					child.kill();
+					return;
+				}
 				childBusy.set(child, false);
+				const currentRuntime = slot.runtime;
+				if (currentRuntime?.child === child && currentRuntime.pendingInventoryRestart && !currentRuntime.closing) {
+					currentRuntime.pendingInventoryRestart = false;
+					restartForProductInventory(slot, currentRuntime);
+				}
 				brokeredCredentials.endTurn("completed");
 				httpBroker.endTurn();
-				const result = checkpointCompanyGit(root, gitBaseline, binding.file);
-				gitBaseline = result.baseline;
-				savePendingCompanyCheckpoint(checkpointState, root, gitBaseline, binding.file);
-				if (productWorktreeRoot && productGitBaseline) {
-					const productResult = checkpointProductWorktreeGit(
-						root,
-						productWorktreeRoot,
-						productGitBaseline,
-						binding.path,
-					);
-					productGitBaseline = productResult.baseline;
-					savePendingProductCheckpoint(
-						productCheckpointState,
-						root,
-						productWorktreeRoot,
-						productGitBaseline,
-						binding.path,
-					);
+				try {
+					const result = checkpointCompanyGit(root, gitBaseline, binding.file);
+					gitBaseline = result.baseline;
+					savePendingCompanyCheckpoint(checkpointState, root, gitBaseline, binding.file);
+					if (productWorktreeRoot && productGitBaseline) {
+						const productResult = checkpointProductWorktreeGit(
+							root,
+							productWorktreeRoot,
+							productGitBaseline,
+							binding.path,
+						);
+						productGitBaseline = productResult.baseline;
+						savePendingProductCheckpoint(
+							productCheckpointState,
+							root,
+							productWorktreeRoot,
+							productGitBaseline,
+							binding.path,
+						);
+					}
+				} catch (error) {
+					// The turn did settle. Keep the lifecycle callback moving so an
+					// autonomous child cannot become a finishing zombie; close-time
+					// reconciliation retries the checkpoint from its saved baseline.
+					console.error(`session checkpoint failed: ${(error as Error).message}`);
 				}
 			}
 			if (onRpcEvent) onRpcEvent(frame as Record<string, unknown>);
-			else if (!silent) send(win(), "rpc-event", frame);
+			else if (
+				!silent &&
+				frame &&
+				typeof frame === "object" &&
+				!Array.isArray(frame) &&
+				slot.runtime &&
+				isCurrentRuntimeChild(slot, slot.runtime, child)
+			) {
+				send(win(), "rpc-event", {
+					...(frame as Record<string, unknown>),
+					_qorperaRuntime: {
+						trailFile: binding.file,
+						executorId,
+						attachmentSequence: childAttachmentSequences.get(child),
+					},
+				});
+			}
 		} catch {
 			if (!silent) send(win(), "rpc-log", line);
 		}
@@ -960,25 +1154,48 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		}
 		if (!silent) send(win(), "rpc-log", line);
 	});
-	child.on("exit", (code, signal) => {
-		if (silent || intentionalKills.has(child)) return;
-		const detail = stderrTail.join("\n").slice(-4096);
-		try {
-			appendKernelRuntimeExitObservation(binding, {
-				code,
-				signal,
-				busy: childBusy.get(child) ?? false,
-				stderr: detail,
-			});
-		} catch (error) {
-			console.error(`runtime-exit observation failed: ${(error as Error).message}`);
+	let exitHandled = false;
+	const handleRuntimeExit = (code: number | null, signal: NodeJS.Signals | null, immediateDetail = ""): void => {
+		if (exitHandled) return;
+		exitHandled = true;
+		const detail = [stderrTail.join("\n"), immediateDetail].filter(Boolean).join("\n").slice(-4096);
+		const expected = intentionalKills.has(child);
+		const busy = childBusy.get(child) ?? false;
+		recordSessionRuntime(sessions, binding, {
+			kind: "executor_exited",
+			executorId,
+			expected,
+			code,
+			signal,
+			busy,
+			...(detail ? { detail } : {}),
+		});
+		if (!expected) {
+			try {
+				appendKernelRuntimeExitObservation(binding, {
+					code,
+					signal,
+					busy,
+					stderr: detail,
+				});
+			} catch (error) {
+				console.error(`runtime-exit observation failed: ${(error as Error).message}`);
+			}
 		}
+		if (silent || expected) return;
 		const runtime = slot.runtime;
 		if (runtime && runtime.root === root && runtime.child === child && !runtime.closing && !autonomousName) {
 			scheduleRuntimeReconnect(slot, runtime, child, binding.file, options.model, code, detail);
 			return;
 		}
 		send(win(), "rpc-exit", code);
+	};
+	// spawn() reports command/setup failures asynchronously. Without this
+	// listener they are process-level uncaught errors and the saved session is
+	// left falsely attached to an executor that never existed.
+	child.on("error", (error) => handleRuntimeExit(null, null, error.message));
+	child.on("exit", (code, signal) => {
+		handleRuntimeExit(code, signal);
 	});
 	child.on("close", () => {
 		liveChildren.delete(child);
@@ -992,11 +1209,14 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			// while forcing a git checkpoint on every no-op chat replace.
 			if (autonomousName) {
 				try {
-					appendKernelSessionEndObservation(binding, { settled: !(childBusy.get(child) ?? false) });
+					appendKernelSessionEndObservation(binding, {
+						settled: !(childBusy.get(child) ?? false),
+					});
 				} catch (error) {
 					console.error(`session-end observation failed: ${(error as Error).message}`);
 				}
 			}
+			sessions.rememberAudit(binding);
 			httpBroker.release();
 			brokeredCredentials.release();
 			const result = checkpointCompanyGit(root, gitBaseline, binding.file);
@@ -1020,6 +1240,10 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 					);
 				}
 			}
+		} catch (error) {
+			// Child close is an ownership handoff signal. Bookkeeping failure must
+			// never abort later wake/merge listeners that clear that ownership.
+			console.error(`session close checkpoint failed: ${(error as Error).message}`);
 		} finally {
 			resolveCheckpoint?.();
 		}
@@ -1064,8 +1288,33 @@ function sendKernelPrompt(
 		intent: kernelIntent,
 		images,
 	});
-	if (!writeChildFrame(child, `${JSON.stringify({ ...unsignedFrame, kernelIntent })}\n`)) return false;
+	const sessions = childSessionPlanes.get(child);
+	const executorId = childExecutorIds.get(child);
+	if (
+		!sessions ||
+		!executorId ||
+		!recordSessionRuntime(sessions, binding, {
+			kind: "turn_started",
+			executorId,
+			origin,
+		})
+	) {
+		childModelCapabilities.get(child)?.endTurn("aborted");
+		childHttpBrokers.get(child)?.endTurn();
+		return false;
+	}
 	childBusy.set(child, true);
+	if (!writeChildFrame(child, `${JSON.stringify({ ...unsignedFrame, kernelIntent })}\n`)) {
+		recordSessionRuntime(sessions, binding, {
+			kind: "turn_interrupted",
+			executorId,
+			origin: "prompt-dispatch-failed",
+		});
+		// A runtime whose stdin rejected a reviewed prompt is not a usable
+		// attachment. Its unexpected exit drives the ordinary reconnect lane.
+		killChildTree(child);
+		return false;
+	}
 	return true;
 }
 
@@ -1076,19 +1325,26 @@ async function replaceRuntimeChild(slot: Slot, runtime: CompanyRuntime, options:
 	try {
 		runtime.childOptions = { ...options };
 		runtime.child = startChild(slot, runtime.root, runtime.childOptions);
+		// startChild durably stamps the creation-time name before spawning. It is
+		// therefore safe—and necessary—to keep reconnects from appending it again.
+		delete runtime.childOptions.sessionName;
+		runtime.runtimeReconnectAttempts = 0;
+		runtime.lastUnexpectedRuntimeExitAt = undefined;
 	} catch (error) {
 		// The old child is already dead — a failed swap must not leave the
 		// company without an agent (a legacy-session bind failure did exactly
 		// that: every later composer send talked to a corpse).
 		if (slot.runtime === runtime && !runtime.closing) {
-			runtime.childOptions = previousOptions;
-			runtime.child = startChild(slot, runtime.root, previousOptions);
+			await restoreAttendedChild(slot, runtime, previousOptions, "chat-swap controller restore failed");
 		}
 		throw error;
 	}
 	runtime.productWorker =
 		runtime.childOptions.department && runtime.childOptions.worktree
-			? { department: runtime.childOptions.department.path, worktree: runtime.childOptions.worktree }
+			? {
+					department: runtime.childOptions.department.path,
+					worktree: runtime.childOptions.worktree,
+				}
 			: undefined;
 }
 
@@ -1110,6 +1366,9 @@ function scheduleRuntimeReconnect(
 	code: number | null,
 	detail: string,
 ): void {
+	const binding = childBindings.get(exitedChild);
+	const sessions = childSessionPlanes.get(exitedChild);
+	const executorId = childExecutorIds.get(exitedChild);
 	const now = Date.now();
 	if (!runtime.lastUnexpectedRuntimeExitAt || now - runtime.lastUnexpectedRuntimeExitAt > 30_000) {
 		runtime.runtimeReconnectAttempts = 0;
@@ -1118,12 +1377,35 @@ function scheduleRuntimeReconnect(
 	runtime.runtimeReconnectAttempts += 1;
 	const attempt = runtime.runtimeReconnectAttempts;
 	if (attempt > 3) {
-		send(slot.window, "rpc-event", { type: "runtime_reconnect_failed", code, detail });
+		if (binding && sessions && executorId) {
+			recordSessionRuntime(sessions, binding, {
+				kind: "reconnect_failed",
+				executorId,
+				attempt,
+				...(detail ? { detail } : {}),
+			});
+		}
 		send(slot.window, "rpc-exit", code);
 		return;
 	}
 
-	send(slot.window, "rpc-event", { type: "runtime_reconnecting", code, attempt });
+	if (binding && sessions && executorId) {
+		if (
+			!recordSessionRuntime(sessions, binding, {
+				kind: "reconnect_scheduled",
+				executorId,
+				attempt,
+				code,
+				...(detail ? { detail } : {}),
+			})
+		) {
+			send(slot.window, "rpc-exit", code);
+			return;
+		}
+	} else {
+		send(slot.window, "rpc-exit", code);
+		return;
+	}
 	void enqueueRuntimeTransition(runtime, async () => {
 		await childCheckpointCompletion.get(exitedChild);
 		await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, [250, 750, 2_000][attempt - 1]));
@@ -1135,7 +1417,6 @@ function scheduleRuntimeReconnect(
 		};
 		runtime.childOptions = resumeOptions;
 		runtime.child = startChild(slot, runtime.root, resumeOptions);
-		send(slot.window, "rpc-event", { type: "runtime_reconnected", attempt });
 	}).catch((error) => {
 		console.error(`controller runtime reconnect failed: ${(error as Error).message}`);
 		if (slot.runtime !== runtime || runtime.closing || runtime.child !== exitedChild) return;
@@ -1158,15 +1439,22 @@ function isCurrentRuntimeChild(slot: Slot, runtime: CompanyRuntime, child: Child
 function restartForProductInventory(slot: Slot, runtime: CompanyRuntime): void {
 	void enqueueRuntimeTransition(runtime, async () => {
 		if (slot.runtime !== runtime || runtime.mergeChild || runtime.wakeChild) return;
+		if (childBusy.get(runtime.child)) {
+			runtime.pendingInventoryRestart = true;
+			return;
+		}
+		runtime.pendingInventoryRestart = false;
 		const options = {
 			...runtime.childOptions,
 			sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
 		};
 		await stopChild(runtime.child);
 		if (slot.runtime !== runtime) return;
-		readProductProtectionInventory(runtime.root);
-		runtime.childOptions = options;
-		runtime.child = startChild(slot, runtime.root, options);
+		try {
+			readProductProtectionInventory(runtime.root);
+		} finally {
+			await restoreAttendedChild(slot, runtime, options, "product-inventory controller restore failed");
+		}
 	}).catch((error) => {
 		console.error(`product inventory transition stopped the controller: ${(error as Error).message}`);
 	});
@@ -1203,24 +1491,23 @@ function wakePrompt(
 	return `Scheduled job: ${job?.title ?? "Company orchestration"}.${missed}\n\n${job?.prompt ?? "Read company.md, the inbox, and app/routines/, decide for yourself what most needs doing, and do it. Post inbox/messages items for anything that needs the founder; when nothing needs doing, settle without inventing work."}`;
 }
 
-/** Compress a silent wake child's RPC frames into status beats for the
- * Agents page. Deltas are dropped — only phase changes and tool starts are
- * worth a renderer round-trip — and the fields stay structured (tool and
- * target separately) so the renderer never parses a composed string. Purely
- * observational: the wake child stays silent on the rpc-event lane and is
- * never rebound to the chat pane. */
-function wakeActivitySummary(
-	frame: Record<string, unknown>,
-): { kind: string; tool?: string; target?: string } | undefined {
-	if (frame.type === "agent_start") return { kind: "start" };
-	if (frame.type === "agent_settled") return { kind: "settled" };
+/** Reduce provider-specific stream frames to a small session activity
+ * vocabulary. Content deltas stay on the attached chat's RPC stream; these
+ * ephemeral phase changes render identically in every live observer. */
+function sessionActivityFromFrame(frame: Record<string, unknown>): SessionRuntimeActivity | undefined {
 	if (frame.type === "tool_execution_start") {
 		const name = typeof frame.toolName === "string" ? frame.toolName : "tool";
 		const args = (frame.args ?? {}) as Record<string, unknown>;
-		const target = [args.path, args.filePath, args.file_path, args.pattern, args.url, args.command].find(
+		// Expose only file-like subjects. Commands, search text, and URLs may
+		// contain credentials or private input and belong in the live RPC stream.
+		const target = [args.path, args.filePath, args.file_path].find(
 			(value) => typeof value === "string" && value.trim(),
 		) as string | undefined;
-		return { kind: "tool", tool: name, ...(target ? { target: target.slice(0, 120) } : {}) };
+		return {
+			kind: "tool",
+			tool: name,
+			...(target ? { subject: target.slice(0, 120) } : {}),
+		};
 	}
 	if (frame.type === "message_update") {
 		const delta = (frame as { assistantMessageEvent?: { type?: string } }).assistantMessageEvent;
@@ -1264,7 +1551,7 @@ function persistScheduledJobOutcome(
  * founder-visible inbox item — escalation that does not depend on the
  * controller.
  */
-async function startWakeChild(
+async function startWakeChildExclusive(
 	slot: Slot,
 	runtime: CompanyRuntime,
 	cause: "schedule" | "founder_response" | "inbound_event",
@@ -1294,7 +1581,6 @@ async function startWakeChild(
 	let settledCleanly = false;
 	let failed = false;
 	let promptSent = false;
-	let lastActivityKey = "";
 	let child: ChildProcessWithoutNullStreams;
 	try {
 		child = startChild(slot, runtime.root, {
@@ -1309,22 +1595,15 @@ async function startWakeChild(
 			group: job ? `job:${job.id}` : `wake:${cause}`,
 			silent: true,
 			model: resumeOptions.model,
-			wake: { id: wakeId, cause, intervalMinutes: job?.intervalMinutes, coalesced },
+			wake: {
+				id: wakeId,
+				cause,
+				intervalMinutes: job?.intervalMinutes,
+				coalesced,
+			},
 			onRpcEvent: (frame) => {
 				if (frame.type === "agent_start") started = true;
 				if (wakeFrameFailed(frame)) failed = true;
-				const activity = wakeActivitySummary(frame);
-				const activityKey = activity ? `${activity.kind}|${activity.tool ?? ""}|${activity.target ?? ""}` : "";
-				if (activity && activityKey !== lastActivityKey) {
-					// Consecutive identical beats are dropped kernel-side: the
-					// renderer only ever shows the latest one.
-					lastActivityKey = activityKey;
-					send(slot.window, "wake-activity", {
-						trailFile: childBindings.get(child)?.file,
-						at: Date.now(),
-						...activity,
-					});
-				}
 				if (frame.type === "agent_settled") {
 					settledCleanly = started && !failed;
 					intentionalKills.add(child);
@@ -1335,36 +1614,28 @@ async function startWakeChild(
 	} catch (error) {
 		console.error(`wake child failed to start: ${(error as Error).message}`);
 		if (slot.runtime === runtime && !runtime.closing) {
-			try {
-				runtime.childOptions = resumeOptions;
-				runtime.child = startChild(slot, runtime.root, resumeOptions);
-			} catch (restartError) {
-				console.error(`wake startup left the controller stopped: ${(restartError as Error).message}`);
-			}
+			await restoreAttendedChild(slot, runtime, resumeOptions, "wake-start controller restore failed");
 		}
 		return false;
 	}
 	runtime.wakeChild = child;
 	runtime.wakeJobId = job?.id;
 	const trailFile = childBindings.get(child)?.file;
-	child.on("close", async () => {
-		await childCheckpointCompletion.get(child);
-		if (slot.runtime !== runtime || runtime.closing) return;
-		runtime.wakeChild = undefined;
-		runtime.wakeJobId = undefined;
-		try {
-			if (job && promptSent) {
-				persistScheduledJobOutcome(runtime, job, settledCleanly, trailFile);
+	child.on("close", () => {
+		void enqueueRuntimeTransition(runtime, async () => {
+			await childCheckpointCompletion.get(child);
+			if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild !== child) return;
+			runtime.wakeChild = undefined;
+			runtime.wakeJobId = undefined;
+			try {
+				if (job && promptSent) {
+					persistScheduledJobOutcome(runtime, job, settledCleanly, trailFile);
+				}
+			} catch (error) {
+				console.error(`wake bookkeeping failed: ${(error as Error).message}`);
 			}
-		} catch (error) {
-			console.error(`wake bookkeeping failed: ${(error as Error).message}`);
-		}
-		try {
-			runtime.childOptions = resumeOptions;
-			runtime.child = startChild(slot, runtime.root, resumeOptions);
-		} catch (error) {
-			console.error(`wake completion left the controller stopped: ${(error as Error).message}`);
-		}
+			await restoreAttendedChild(slot, runtime, resumeOptions, "post-wake controller restore failed");
+		}).catch((error) => console.error(`wake ownership transition failed: ${(error as Error).message}`));
 	});
 	if (
 		!sendKernelPrompt(
@@ -1384,6 +1655,19 @@ async function startWakeChild(
 		if (manual) console.log(`scheduled job run started manually: ${job.title}`);
 	}
 	return true;
+}
+
+function startWakeChild(
+	slot: Slot,
+	runtime: CompanyRuntime,
+	cause: "schedule" | "founder_response" | "inbound_event",
+	coalesced: number,
+	job?: ScheduledJob,
+	manual = false,
+): Promise<boolean> {
+	return enqueueRuntimeTransition(runtime, () =>
+		startWakeChildExclusive(slot, runtime, cause, coalesced, job, manual),
+	);
 }
 
 /**
@@ -1433,8 +1717,31 @@ function startWakeTicker(): void {
 	}, 60_000).unref();
 }
 
-async function startMergeChild(slot: Slot, runtime: CompanyRuntime, reviewedPrompt: string): Promise<boolean> {
-	if (runtime.wakeChild || runtime.closing) return false;
+async function restoreAttendedChild(
+	slot: Slot,
+	runtime: CompanyRuntime,
+	options: ChildOptions,
+	context: string,
+): Promise<boolean> {
+	for (const delay of [0, 250, 750, 2_000]) {
+		if (delay) await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, delay));
+		if (slot.runtime !== runtime || runtime.closing) return false;
+		try {
+			runtime.childOptions = options;
+			runtime.child = startChild(slot, runtime.root, options);
+			runtime.runtimeReconnectAttempts = 0;
+			runtime.lastUnexpectedRuntimeExitAt = undefined;
+			return true;
+		} catch (error) {
+			console.error(`${context}: ${(error as Error).message}`);
+		}
+	}
+	send(slot.window, "rpc-exit", null);
+	return false;
+}
+
+async function startMergeChildExclusive(slot: Slot, runtime: CompanyRuntime, reviewedPrompt: string): Promise<boolean> {
+	if (runtime.mergeChild || runtime.wakeChild || runtime.closing || childBusy.get(runtime.child)) return false;
 	const resumeOptions = {
 		...runtime.childOptions,
 		sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
@@ -1445,65 +1752,74 @@ async function startMergeChild(slot: Slot, runtime: CompanyRuntime, reviewedProm
 		runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
 	} catch (error) {
 		console.error(`pre-merge userland validation failed: ${(error as Error).message}`);
-		runtime.child = startChild(slot, runtime.root, resumeOptions);
+		await restoreAttendedChild(slot, runtime, resumeOptions, "pre-merge controller restore failed");
 		return false;
 	}
 	if (
 		(runtime.userland.action !== "staged" && runtime.userland.action !== "already-staged") ||
 		mergeTaskPrompt(runtime.userland) !== reviewedPrompt
 	) {
-		runtime.child = startChild(slot, runtime.root, resumeOptions);
+		await restoreAttendedChild(slot, runtime, resumeOptions, "stale-merge controller restore failed");
 		return false;
 	}
 	let started = false;
 	let child: ChildProcessWithoutNullStreams;
-	child = startChild(slot, runtime.root, {
-		autonomousName: `userland merge v${runtime.userland.stagedVersion}`,
-		group: "merge",
-		silent: true,
-		model: resumeOptions.model,
-		onRpcEvent: (frame) => {
-			if (frame.type === "agent_start") started = true;
-			// Any settle ends the run — including a prompt that failed before
-			// starting (never keeping a settled merge child alive beats a zombie
-			// that blocks userland:merge forever).
-			if (frame.type === "agent_settled") {
-				if (!started) console.error("merge session settled without starting (prompt failed?)");
-				intentionalKills.add(child);
-				killChildTree(child);
-			}
-		},
-	});
+	try {
+		child = startChild(slot, runtime.root, {
+			autonomousName: `userland merge v${runtime.userland.stagedVersion}`,
+			group: "merge",
+			silent: true,
+			model: resumeOptions.model,
+			onRpcEvent: (frame) => {
+				if (frame.type === "agent_start") started = true;
+				// Any settle ends the run — including a prompt that failed before
+				// starting (never keeping a settled merge child alive beats a zombie
+				// that blocks userland:merge forever).
+				if (frame.type === "agent_settled") {
+					if (!started) console.error("merge session settled without starting (prompt failed?)");
+					intentionalKills.add(child);
+					killChildTree(child);
+				}
+			},
+		});
+	} catch (error) {
+		console.error(`merge runtime startup failed: ${(error as Error).message}`);
+		await restoreAttendedChild(slot, runtime, resumeOptions, "merge-start controller restore failed");
+		return false;
+	}
 	runtime.mergeChild = child;
-	child.on("close", async () => {
-		await childCheckpointCompletion.get(child);
-		if (slot.runtime !== runtime || runtime.closing) return; // company was closed meanwhile
-		runtime.mergeChild = undefined;
-		// Re-read the manifest: a finished merge reads back as "current".
-		// Guarded twice: a throw here is an uncaught exception in main (fs can
-		// fail right after an agent rewrote userland/), and a MISSING manifest
-		// must not reach ensureUserland — its first-open branch would wipe the
-		// fork, .versions included.
-		let ok = false;
-		try {
-			if (existsSync(join(runtime.root, "userland", "userland.json"))) {
-				runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
-				ok =
-					runtime.userland.action === "current" ||
-					runtime.userland.action === "fast-forwarded" ||
-					runtime.userland.action === "auto-merged";
+	child.on("close", () => {
+		void enqueueRuntimeTransition(runtime, async () => {
+			await childCheckpointCompletion.get(child);
+			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild !== child) return;
+			runtime.mergeChild = undefined;
+			// Re-read the manifest: a finished merge reads back as "current".
+			// Guarded twice: a throw here is an uncaught exception in main (fs can
+			// fail right after an agent rewrote userland/), and a MISSING manifest
+			// must not reach ensureUserland — its first-open branch would wipe the
+			// fork, .versions included.
+			let ok = false;
+			try {
+				if (existsSync(join(runtime.root, "userland", "userland.json"))) {
+					runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
+					ok =
+						runtime.userland.action === "current" ||
+						runtime.userland.action === "fast-forwarded" ||
+						runtime.userland.action === "auto-merged";
+				}
+			} catch (error) {
+				console.error(`post-merge userland refresh failed: ${(error as Error).message}`);
 			}
-		} catch (error) {
-			console.error(`post-merge userland refresh failed: ${(error as Error).message}`);
-		}
-		send(slot.window, "merge-done", { ok, action: runtime.userland.action });
-		runtime.childOptions = resumeOptions;
-		runtime.child = startChild(slot, runtime.root, resumeOptions);
+			send(slot.window, "merge-done", { ok, action: runtime.userland.action });
+			await restoreAttendedChild(slot, runtime, resumeOptions, "post-merge controller restore failed");
+		}).catch((error) => console.error(`merge ownership transition failed: ${(error as Error).message}`));
 	});
 	if (!sendKernelPrompt(child, { type: "prompt", message: reviewedPrompt }, true, "native-userland-merge-review")) {
 		await stopChild(child);
 		if (runtime.mergeChild === child) runtime.mergeChild = undefined;
-		if (slot.runtime === runtime && !runtime.closing) runtime.child = startChild(slot, runtime.root, resumeOptions);
+		if (slot.runtime === runtime && !runtime.closing) {
+			await restoreAttendedChild(slot, runtime, resumeOptions, "failed-merge controller restore failed");
+		}
 		return false;
 	}
 	return true;
@@ -1513,20 +1829,36 @@ async function startMergeChild(slot: Slot, runtime: CompanyRuntime, reviewedProm
  * collide, so walk forward until a bind succeeds: the renderer resolves
  * everything relative to backendUrl, and only a server we own honors the
  * token we minted. */
-async function listenBackend(root: string, authToken: string): Promise<{ port: number; close: () => void }> {
+async function listenBackend(
+	root: string,
+	authToken: string,
+	sessions: SessionControlPlane,
+): Promise<{ port: number; close: () => void }> {
 	const base = companyPort(root);
 	for (let port = base; port < base + 10; port++) {
-		const server = createCompanyAppServer({
+		const serverOptions: Parameters<typeof createCompanyAppServer>[0] & {
+			sessionRuntime: SessionControlPlane;
+		} = {
 			root,
 			port,
 			authToken,
 			userland: { baseDir: BASE_USERLAND_DIR },
-		});
+			sessionRuntime: sessions,
+		};
+		const server = createCompanyAppServer(serverOptions);
 		const listening = await new Promise<boolean>((resolvePromise) => {
 			server.once("error", () => resolvePromise(false));
 			server.listen(port, "127.0.0.1", () => resolvePromise(true));
 		});
-		if (listening) return { port, close: () => server.close() };
+		if (listening) {
+			return {
+				port,
+				close: () => {
+					server.close();
+					server.closeAllConnections();
+				},
+			};
+		}
 	}
 	throw new Error(`no free backend port near ${base} for ${root}`);
 }
@@ -1618,6 +1950,8 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 	};
 }
 
+class CompanyOpenCancelledError extends Error {}
+
 async function openCompany(slot: Slot, root: string): Promise<void> {
 	try {
 		root = canonicalCompanyRoot(root);
@@ -1646,9 +1980,17 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 	// this hash does not.
 	const storageId = companyRootId(root);
 	const partition = rendererPartitionForCompany(storageId);
+	const openingWindow = slot.window;
+	const openGeneration = ++slot.openGeneration;
+	const openingCancelled = (): boolean =>
+		slot.openGeneration !== openGeneration || openingWindow.isDestroyed() || slot.window !== openingWindow;
 	await closeCompany(slot);
+	if (openingCancelled()) return;
 	const runtimeLock = claimCompanyRuntimeLock(root);
 	let pendingBackendClose: (() => void) | undefined;
+	let pendingSessions: SessionControlPlane | undefined;
+	let pendingChild: ChildProcessWithoutNullStreams | undefined;
+	let installedRuntime: CompanyRuntime | undefined;
 	try {
 		// The scaffold is how kernel upgrades reach existing companies: an
 		// idempotent spine fill (never overwriting company content) so a
@@ -1669,12 +2011,13 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 			!hasLocalKernelState,
 		);
 		if (productStorage.unhydrated.length > 0) {
-			await dialog.showMessageBox(slot.window, {
+			await dialog.showMessageBox(openingWindow, {
 				type: "warning",
 				buttons: ["Continue"],
 				message: "This company clone has product storage that is not hydrated on this machine.",
 				detail: productStorage.unhydrated.map((entry) => `${entry.kind}: ${entry.path}`).join("\n"),
 			});
+			if (openingCancelled()) throw new CompanyOpenCancelledError();
 		}
 		reconcilePendingCompanyCheckpoints(checkpointDir, root);
 		snapshotFounderGitState(root);
@@ -1700,16 +2043,24 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 
 		// Backend for surfaces/state/inbox — reused machinery, in-process. The
 		// token guards mutating endpoints; only the renderer ever receives it.
-		const backendToken = randomUUID();
-		const backend = await listenBackend(root, backendToken);
-		pendingBackendClose = backend.close;
-
 		// Founder continuity across restarts: sweep the contentless trail files
-		// earlier opens minted (they carry no memory), then reopen the newest
-		// controller-scope chat instead of creating a fresh session per open.
+		// earlier opens minted (they carry no memory), then reopen the founder
+		// chat most recently attached by the kernel instead of creating a fresh
+		// session per open.
 		const swept = pruneEmptyTrailSessions(root);
 		if (swept > 0) console.log(`pruned ${swept} contentless trail session${swept === 1 ? "" : "s"}`);
-		const resumable = latestResumableTrailSession(root);
+		// Reconstruct the company-owned session state before any new executor
+		// attaches. The backend and every child share this one projection.
+		const sessionCachePath = join(dirname(companyKernelStatePath(app.getPath("userData"), root)), "sessions-v2.json");
+		const sessions = await SessionControlPlane.create(root, KERNEL_INSTANCE_ID, sessionCachePath);
+		if (openingCancelled()) throw new CompanyOpenCancelledError();
+		pendingSessions = sessions;
+		sessionControlPlanes.set(normalizedRoot(root), sessions);
+		const backendToken = randomUUID();
+		const backend = await listenBackend(root, backendToken, sessions);
+		pendingBackendClose = backend.close;
+		if (openingCancelled()) throw new CompanyOpenCancelledError();
+		const resumable = sessions.latestAttendedControllerTrailFile() ?? latestResumableTrailSession(root);
 		// Conception claims only the TRUE first boot — a company with no founder
 		// chats yet. Once the founder has any resumable session, opening the
 		// company must resume it: booting an unconceived-but-lived-in company
@@ -1723,25 +2074,21 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		// controller launch so reopening an old chat cannot silently move the
 		// controller, and the scheduled jobs it spawns, back to a stale model.
 		const childOptions: ChildOptions = controllerLaunchOptions(app.getPath("userData"), root, kickoff, resumable);
-		let child: ReturnType<typeof startChild>;
-		try {
-			child = startChild(slot, root, childOptions);
-		} catch (error) {
-			// A malformed newest session must never block the company: fall fresh.
-			if (!childOptions.sessionFile) throw error;
-			console.error(`could not resume ${childOptions.sessionFile}: ${(error as Error).message}`);
-			childOptions.sessionFile = undefined;
-			child = startChild(slot, root, childOptions);
-		}
+		const child = startChild(slot, root, childOptions);
+		pendingChild = child;
 		const childBinding = childBindings.get(child);
 		if (childBinding && productStorage.unhydrated.length > 0) {
 			appendKernelProductStorageObservation(childBinding, {
 				status: "hydration-required",
-				paths: productStorage.unhydrated.map(({ path, kind }) => ({ path, kind })),
+				paths: productStorage.unhydrated.map(({ path, kind }) => ({
+					path,
+					kind,
+				})),
 			});
 		}
 		const runtime: CompanyRuntime = {
 			root,
+			sessions,
 			storageId,
 			child,
 			childOptions,
@@ -1752,11 +2099,15 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 			backendToken,
 			transitionQueue: Promise.resolve(),
 			runtimeReconnectAttempts: 0,
+			pendingInventoryRestart: false,
 			closing: false,
 			runtimeLock,
 		};
+		installedRuntime = runtime;
 		slot.runtime = runtime;
+		pendingChild = undefined;
 		pendingBackendClose = undefined;
+		pendingSessions = undefined;
 		runtime.inventoryWatcher = watch(join(root, ".qorpera"), { persistent: false }, (_event, file) => {
 			if (file?.toString() === "products.json") restartForProductInventory(slot, runtime);
 		});
@@ -1813,7 +2164,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		// the pristine base app (Settings → App). If the evolved userland fails to
 		// boot, the kernel falls back to the base chrome — the company stays
 		// reachable either way.
-		if (slot.window.isDestroyed()) return;
+		if (openingCancelled()) throw new CompanyOpenCancelledError();
 		// A window that last showed the hub (throwaway partition) or another
 		// company cannot host this company's durable partition — swap in a
 		// replacement window, committed only once the chrome has loaded.
@@ -1829,17 +2180,29 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 					await win.loadURL(companyUserlandUrl(runtime, "base"));
 				});
 			}
+			if (slot.openGeneration !== openGeneration || slot.runtime !== runtime) {
+				swap?.abort();
+				if (slot.runtime === runtime) await closeCompany(slot);
+				return;
+			}
 			swap?.commit();
 		} catch (loadError) {
 			swap?.abort();
 			throw loadError;
 		}
 	} catch (error) {
-		if (slot.runtime?.runtimeLock.token === runtimeLock.token) await closeCompany(slot);
-		else {
+		if (installedRuntime) {
+			if (slot.runtime === installedRuntime) await closeCompany(slot);
+			else await installedRuntime.closePromise;
+		} else {
+			if (pendingChild) await stopChild(pendingChild);
 			pendingBackendClose?.();
+			if (pendingSessions && sessionControlPlanes.get(normalizedRoot(root)) === pendingSessions) {
+				sessionControlPlanes.delete(normalizedRoot(root));
+			}
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
+		if (error instanceof CompanyOpenCancelledError) return;
 		throw error;
 	}
 }
@@ -1856,7 +2219,14 @@ async function openChat(
 	sessionFile: string | null,
 	departmentPath?: string,
 	worktreePath?: string,
-): Promise<{ ok: boolean; department?: string; worktree?: string; error?: string }> {
+	sessionName?: string,
+): Promise<{
+	ok: boolean;
+	sessionFile?: string;
+	department?: string;
+	worktree?: string;
+	error?: string;
+}> {
 	if (!slot.runtime) return { ok: false };
 	const runtime = slot.runtime;
 	let department: ProductDepartment | undefined;
@@ -1867,7 +2237,11 @@ async function openChat(
 		department = listProductDepartments(runtime.root).find(
 			(entry) => entry.path === departmentPath && entry.repositoryExists,
 		);
-		if (!department) return { ok: false, error: "product department or repository is unavailable" };
+		if (!department)
+			return {
+				ok: false,
+				error: "product department or repository is unavailable",
+			};
 		let assignment: ProductWorktree;
 		if (worktreePath) {
 			const existingAssignment = readProductWorktreeAssignment(runtime.root, department, worktreePath);
@@ -1875,7 +2249,11 @@ async function openChat(
 				assignment = existingAssignment;
 			} else {
 				const recovery = planProductWorktreeRecovery(runtime.root, department, worktreePath, runtime.runtimeLock);
-				if (!recovery) return { ok: false, error: "product worktree has no valid recovery source" };
+				if (!recovery)
+					return {
+						ok: false,
+						error: "product worktree has no valid recovery source",
+					};
 				const approved = await confirmKernelReview(slot.window, {
 					title: "Restore product worktree",
 					summary: `Restore this assigned ${department.name} clone from its company-carried recovery record?`,
@@ -1911,7 +2289,10 @@ async function openChat(
 				!isInside(plannedTarget, worktreesRoot) ||
 				normalizedRoot(dirname(plannedTarget)) !== normalizedRoot(worktreesRoot)
 			) {
-				return { ok: false, error: "planned product worktree escaped its assigned parent" };
+				return {
+					ok: false,
+					error: "planned product worktree escaped its assigned parent",
+				};
 			}
 			const approved = await confirmKernelReview(slot.window, {
 				title: "Create and authorize product worktree",
@@ -1947,7 +2328,10 @@ async function openChat(
 			normalizedRoot(actualWorktree) !== normalizedRoot(expectedWorktree) ||
 			!isInside(actualWorktree, actualWorktreesRoot)
 		) {
-			return { ok: false, error: "product worktree changed before authorization" };
+			return {
+				ok: false,
+				error: "product worktree changed before authorization",
+			};
 		}
 		if (worktreePath) {
 			const approved = await confirmKernelReview(slot.window, {
@@ -1966,11 +2350,15 @@ async function openChat(
 			if (!approved) return { ok: false, error: "product worker authorization cancelled" };
 		}
 		if (!readProductWorktreeAssignment(runtime.root, department, worktree)) {
-			return { ok: false, error: "product worktree changed after authorization" };
+			return {
+				ok: false,
+				error: "product worktree changed after authorization",
+			};
 		}
 	}
 	const options: ChildOptions = {
 		sessionFile: sessionFile ?? undefined,
+		sessionName,
 		department,
 		worktree,
 		model: runtime.childOptions.model,
@@ -1991,7 +2379,12 @@ async function openChat(
 		console.error(`chat open failed: ${(error as Error).message}`);
 		return { ok: false, error: (error as Error).message };
 	}
-	return { ok: true, department: department?.path, worktree };
+	return {
+		ok: true,
+		sessionFile: childBindings.get(runtime.child)?.file,
+		department: department?.path,
+		worktree,
+	};
 }
 
 function rendererRequestAllowed(slot: Slot, value: string): boolean {
@@ -2009,7 +2402,9 @@ const configuredRendererSessions = new WeakSet<Session>();
 const slotsByWebContentsId = new Map<number, Slot>();
 
 function rendererSessionFor(partition: string): Session {
-	const rendererSession = electronSession.fromPartition(partition, { cache: false });
+	const rendererSession = electronSession.fromPartition(partition, {
+		cache: false,
+	});
 	if (configuredRendererSessions.has(rendererSession)) return rendererSession;
 	configuredRendererSessions.add(rendererSession);
 	lockDownRendererSession(rendererSession);
@@ -2020,7 +2415,9 @@ function rendererSessionFor(partition: string): Session {
 		// that keeps the kernel chrome bootable: trusted base files, no network.
 		const allowed = owner
 			? rendererRequestAllowed(owner, details.url)
-			: isRendererRequestAllowed(details.url, { trustedFileRoot: BASE_USERLAND_DIR });
+			: isRendererRequestAllowed(details.url, {
+					trustedFileRoot: BASE_USERLAND_DIR,
+				});
 		callback({ cancel: !allowed });
 	});
 	return rendererSession;
@@ -2132,7 +2529,10 @@ function createRendererWindow(
 		slots.delete(win.id);
 		slotsByWebContentsId.delete(contentsId);
 		const slot = forSlot();
-		if (slot.window === win) void closeCompany(slot);
+		if (slot.window === win) {
+			slot.openGeneration += 1;
+			void closeCompany(slot);
+		}
 	});
 	return { window: win, rendererSession };
 }
@@ -2148,7 +2548,7 @@ function createWindow(companyRoot?: string): Slot {
 	let slot: Slot;
 	const partition = initialRendererPartition(companyRoot);
 	const { window, rendererSession } = createRendererWindow(partition, () => slot);
-	slot = { window, rendererSession, partition, kickoffPending: false };
+	slot = { window, rendererSession, partition, kickoffPending: false, openGeneration: 0 };
 	registerRendererWindow(window, slot);
 	void window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
 	return slot;
@@ -2276,7 +2676,13 @@ app.whenReady().then(async () => {
 		)
 			return { ok: false, error: "invalid product transaction" };
 		return enqueueRuntimeTransition(runtime, async () => {
-			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) {
+			if (
+				slot.runtime !== runtime ||
+				runtime.closing ||
+				runtime.mergeChild ||
+				runtime.wakeChild ||
+				childBusy.get(runtime.child)
+			) {
 				return { ok: false, error: "company runtime is not available" };
 			}
 			const departmentId = productDepartmentId(product.trim());
@@ -2284,22 +2690,26 @@ app.whenReady().then(async () => {
 				...runtime.childOptions,
 				sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
 			};
+			const storage = captureProductTransactionStorage(runtime.root);
+			const approved = await confirmKernelReview(slot.window, {
+				title: "Add product-development department",
+				summary: "Run this exact kernel product-registration transaction?",
+				exactText: product.trim(),
+				metadata: [
+					`Company: ${storage.root.path}`,
+					`Target: ${resolve(storage.departments.path, departmentId)}`,
+					`Source repository: ${from?.trim() || "none (department only)"}`,
+				].join("\n"),
+			});
+			if (!approved || slot.runtime !== runtime || runtime.closing) {
+				return { ok: false, error: approved ? "company runtime changed" : "cancelled" };
+			}
 			runtime.inventoryWatcher?.close();
+			runtime.inventoryWatcher = undefined;
 			await stopChild(runtime.child);
+			let department: ProductDepartment | undefined;
+			let failure: Error | undefined;
 			try {
-				const storage = captureProductTransactionStorage(runtime.root);
-				const approved = await confirmKernelReview(slot.window, {
-					title: "Add product-development department",
-					summary: "Run this exact kernel product-registration transaction?",
-					exactText: product.trim(),
-					metadata: [
-						`Company: ${storage.root.path}`,
-						`Target: ${resolve(storage.departments.path, departmentId)}`,
-						`Source repository: ${from?.trim() || "none (department only)"}`,
-					].join("\n"),
-				});
-				if (!approved) throw new Error("cancelled");
-				let department: ProductDepartment;
 				if (from?.trim()) {
 					const integrated = integrateRepoWithRuntimeLock(
 						runtime.root,
@@ -2325,29 +2735,33 @@ app.whenReady().then(async () => {
 					readProductStorageExpectations(runtime.root),
 					false,
 				);
-				runtime.childOptions = options;
-				runtime.child = startChild(slot, runtime.root, options);
-				runtime.inventoryWatcher = watch(join(runtime.root, ".qorpera"), { persistent: false }, (_event, file) => {
-					if (file?.toString() === "products.json") restartForProductInventory(slot, runtime);
-				});
-				return { ok: true, department };
 			} catch (error) {
+				failure = error instanceof Error ? error : new Error(String(error));
 				try {
 					readProductProtectionInventory(runtime.root);
-					runtime.childOptions = options;
-					runtime.child = startChild(slot, runtime.root, options);
-					runtime.inventoryWatcher = watch(
-						join(runtime.root, ".qorpera"),
-						{ persistent: false },
-						(_event, file) => {
-							if (file?.toString() === "products.json") restartForProductInventory(slot, runtime);
-						},
-					);
 				} catch (restartError) {
-					console.error(`product transaction left the controller stopped: ${(restartError as Error).message}`);
+					console.error(`product transaction cleanup failed: ${(restartError as Error).message}`);
 				}
-				return { ok: false, error: error instanceof Error ? error.message : String(error) };
 			}
+			let watcher: ReturnType<typeof watch> | undefined;
+			try {
+				watcher = watch(join(runtime.root, ".qorpera"), { persistent: false }, (_event, file) => {
+					if (file?.toString() === "products.json") restartForProductInventory(slot, runtime);
+				});
+			} catch (error) {
+				failure ??= error instanceof Error ? error : new Error(String(error));
+			}
+			const restored = await restoreAttendedChild(
+				slot,
+				runtime,
+				options,
+				"product-transaction controller restore failed",
+			);
+			if (restored && watcher) runtime.inventoryWatcher = watcher;
+			else watcher?.close();
+			if (!restored) failure ??= new Error("the controller runtime could not be restored");
+			if (!watcher) failure ??= new Error("the product inventory watcher could not be restored");
+			return failure ? { ok: false, error: failure.message } : { ok: true, department: department! };
 		});
 	});
 	ipcMain.handle("company:product-source-choose", async (event) => {
@@ -2399,7 +2813,10 @@ app.whenReady().then(async () => {
 				}),
 			};
 		} catch (error) {
-			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			return {
+				ok: false,
+				error: error instanceof Error ? error.message : String(error),
+			};
 		}
 	});
 	ipcMain.handle("company:scheduled-job-update", async (event, id: unknown, value: unknown) => {
@@ -2443,7 +2860,10 @@ app.whenReady().then(async () => {
 				}),
 			};
 		} catch (error) {
-			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			return {
+				ok: false,
+				error: error instanceof Error ? error.message : String(error),
+			};
 		}
 	});
 	ipcMain.handle("company:scheduled-job-delete", async (event, id: unknown) => {
@@ -2491,7 +2911,7 @@ app.whenReady().then(async () => {
 				].join("\n"),
 			});
 			if (!approved) return { ok: false, error: "cancelled" };
-			return (await startWakeChild(slot, runtime, "schedule", 0, job, true))
+			return (await startWakeChildExclusive(slot, runtime, "schedule", 0, job, true))
 				? { ok: true }
 				: { ok: false, error: "company runtime is busy" };
 		});
@@ -2500,23 +2920,44 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		if (slot) return closeCompany(slot);
 	});
-	ipcMain.handle("chat:open", (event, sessionFile: string | null, department?: string, worktree?: string) => {
-		const slot = slotOf(event.sender);
-		const runtime = slot?.runtime;
-		if (!slot || !runtime) return { ok: false };
-		return enqueueRuntimeTransition(runtime, () => {
-			if (slot.runtime !== runtime || runtime.closing) return Promise.resolve({ ok: false });
-			// A dead click during autonomous work must say so — the founder is
-			// otherwise left staring at a pane that "won't load".
-			if (runtime.mergeChild || runtime.wakeChild) {
-				return Promise.resolve({
-					ok: false,
-					error: "autonomous work is running — watch it under Agents, or try again once it settles",
-				});
+	ipcMain.handle(
+		"chat:open",
+		(event, sessionFile: string | null, department?: string, worktree?: string, sessionName?: unknown) => {
+			const slot = slotOf(event.sender);
+			const runtime = slot?.runtime;
+			if (!slot || !runtime) return { ok: false };
+			if (
+				sessionName !== undefined &&
+				(typeof sessionName !== "string" ||
+					!sessionName.trim() ||
+					Buffer.byteLength(sessionName, "utf-8") > 512 ||
+					/[\r\n]/.test(sessionName))
+			) {
+				return { ok: false, error: "invalid session name" };
 			}
-			return openChat(slot, sessionFile, department, worktree);
-		});
-	});
+			if (sessionName !== undefined && sessionFile !== null) {
+				return { ok: false, error: "only a fresh session can receive an initial name" };
+			}
+			return enqueueRuntimeTransition(runtime, () => {
+				if (slot.runtime !== runtime || runtime.closing) return Promise.resolve({ ok: false });
+				if (childBusy.get(runtime.child)) {
+					return Promise.resolve({
+						ok: false,
+						error: "the controller is still working — stop it before switching conversations",
+					});
+				}
+				// A dead click during autonomous work must say so — the founder is
+				// otherwise left staring at a pane that "won't load".
+				if (runtime.mergeChild || runtime.wakeChild) {
+					return Promise.resolve({
+						ok: false,
+						error: "autonomous work is running — watch it under Agents, or try again once it settles",
+					});
+				}
+				return openChat(slot, sessionFile, department, worktree, sessionName);
+			});
+		},
+	);
 	ipcMain.handle("hub:show", (event) => {
 		const slot = slotOf(event.sender);
 		if (slot) return showHub(slot);
@@ -2558,7 +2999,14 @@ app.whenReady().then(async () => {
 			return false;
 		const runtime = slot.runtime;
 		return enqueueRuntimeTransition(runtime, async () => {
-			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) return false;
+			if (
+				slot.runtime !== runtime ||
+				runtime.closing ||
+				runtime.mergeChild ||
+				runtime.wakeChild ||
+				childBusy.get(runtime.child)
+			)
+				return false;
 			const userlandDir = join(runtime.root, "userland");
 			const reviewed = reviewVersion(userlandDir, id);
 			if (!reviewed) return false;
@@ -2577,32 +3025,27 @@ app.whenReady().then(async () => {
 			};
 			await stopChild(runtime.child);
 			if (slot.runtime !== runtime || runtime.closing) return false;
-			const restart = (): void => {
-				runtime.childOptions = resumeOptions;
-				runtime.child = startChild(slot, runtime.root, resumeOptions);
-			};
-			if (JSON.stringify(reviewVersion(userlandDir, id), null, "\t") !== reviewDocument) {
-				restart();
-				return false;
-			}
 			let status: UserlandStatus | undefined;
+			let controllerRestored = false;
 			try {
-				// Restoring an old version rejoins the CURRENT base on demand: the
-				// current base is staged when the snapshot is behind.
-				status = restoreVersion(userlandDir, id, {
-					dir: BASE_USERLAND_DIR,
-					version: shellVersion(),
-				});
-			} catch (error) {
-				restart();
-				throw error;
+				if (JSON.stringify(reviewVersion(userlandDir, id), null, "\t") === reviewDocument) {
+					// Restoring an old version rejoins the CURRENT base on demand: the
+					// current base is staged when the snapshot is behind.
+					status = restoreVersion(userlandDir, id, {
+						dir: BASE_USERLAND_DIR,
+						version: shellVersion(),
+					});
+					if (status) runtime.userland = status;
+				}
+			} finally {
+				controllerRestored = await restoreAttendedChild(
+					slot,
+					runtime,
+					resumeOptions,
+					"userland-restore controller restore failed",
+				);
 			}
-			if (!status) {
-				restart();
-				return false;
-			}
-			runtime.userland = status;
-			restart();
+			if (!status || !controllerRestored) return false;
 			if (getActiveApp(userlandDir) === "fork") {
 				runtime.usingBaseFallback = false;
 				await slot.window.loadURL(companyUserlandUrl(runtime, "fork")).catch(async () => {
@@ -2664,7 +3107,7 @@ app.whenReady().then(async () => {
 				metadata: `Target: ${join(runtime.root, "userland")}`,
 			});
 			if (!approved) return { ok: false, reason: "cancelled" };
-			return { ok: await startMergeChild(slot, runtime, prompt) };
+			return { ok: await startMergeChildExclusive(slot, runtime, prompt) };
 		});
 	});
 	ipcMain.handle("backend:authorized-post", async (event, path: string, body: unknown) => {
@@ -2673,7 +3116,11 @@ app.whenReady().then(async () => {
 		if (!slot || !runtime) return { ok: false, status: 404, text: "no company" };
 		return enqueueRuntimeTransition(runtime, async () => {
 			if (runtime.mergeChild || !isCurrentRuntimeChild(slot, runtime, runtime.child)) {
-				return { ok: false, status: 409, text: "company session changed before review" };
+				return {
+					ok: false,
+					status: 409,
+					text: "company session changed before review",
+				};
 			}
 			const reviewedChild = runtime.child;
 			const actions = new Map([
@@ -2687,7 +3134,11 @@ app.whenReady().then(async () => {
 			const serialized = JSON.stringify(body);
 			if (typeof serialized !== "string") return { ok: false, status: 400, text: "invalid request" };
 			if (Buffer.byteLength(serialized, "utf-8") > MAX_KERNEL_REVIEW_BYTES) {
-				return { ok: false, status: 413, text: "request exceeds the exact-review limit" };
+				return {
+					ok: false,
+					status: 413,
+					text: "request exceeds the exact-review limit",
+				};
 			}
 			let gateDocument: string | undefined;
 			if (path === "/api/gate") {
@@ -2703,7 +3154,12 @@ app.whenReady().then(async () => {
 					return { ok: false, status: 400, text: "invalid gate transition" };
 				}
 				gateDocument = kernelGateReviewDocument(runtime.root, record.file, record.action);
-				if (!gateDocument) return { ok: false, status: 409, text: "gate is not canonically pending" };
+				if (!gateDocument)
+					return {
+						ok: false,
+						status: 409,
+						text: "gate is not canonically pending",
+					};
 			}
 			const exactReview = gateDocument ? `${gateDocument}\nRequested transition:\n${serialized}` : serialized;
 			const trailBinding = childBindings.get(reviewedChild);
@@ -2714,7 +3170,11 @@ app.whenReady().then(async () => {
 				metadata: `Endpoint: ${path}`,
 			});
 			if (!isCurrentRuntimeChild(slot, runtime, reviewedChild)) {
-				return { ok: false, status: 409, text: "company session changed during review" };
+				return {
+					ok: false,
+					status: 409,
+					text: "company session changed during review",
+				};
 			}
 			if (!approved) {
 				if (trailBinding) {
@@ -2751,7 +3211,11 @@ app.whenReady().then(async () => {
 				const file = (body as { file?: unknown }).file;
 				const approvals = childApprovedGates.get(reviewedChild);
 				if (!hash || typeof file !== "string" || !approvals) {
-					return { ok: false, status: 409, text: "gate capability target is unavailable" };
+					return {
+						ok: false,
+						status: 409,
+						text: "gate capability target is unavailable",
+					};
 				}
 				gateCapability = { approvals, key: `${file}:${hash}` };
 				// Mint before the backend transition so child stdout can never observe
@@ -2762,7 +3226,10 @@ app.whenReady().then(async () => {
 			try {
 				response = await fetch(`http://127.0.0.1:${runtime.backendPort}${path}`, {
 					method: "POST",
-					headers: { "content-type": "application/json", "x-qorpera-token": runtime.backendToken },
+					headers: {
+						"content-type": "application/json",
+						"x-qorpera-token": runtime.backendToken,
+					},
 					body: serialized,
 				});
 			} catch (error) {
@@ -2791,7 +3258,11 @@ app.whenReady().then(async () => {
 					resultStatus: response.status,
 				});
 			}
-			return { ok: response.ok, status: response.status, text: await response.text() };
+			return {
+				ok: response.ok,
+				status: response.status,
+				text: await response.text(),
+			};
 		});
 	});
 	ipcMain.handle("app:info", (event) => {
@@ -2803,15 +3274,24 @@ app.whenReady().then(async () => {
 		}
 		const pending = pendingCompany;
 		pendingCompany = undefined;
-		return { version: shellVersion(), pendingCompany: pending, activeCompany: active };
+		return {
+			version: shellVersion(),
+			pendingCompany: pending,
+			activeCompany: active,
+		};
 	});
-	ipcMain.handle("rpc:send", async (event, frame: unknown) => {
+	ipcMain.handle("rpc:send", async (event, frame: unknown, expectedTrailFile: unknown) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime || runtime.mergeChild || runtime.wakeChild) return { ok: false };
 		if (!frame || typeof frame !== "object" || !("type" in frame) || typeof frame.type !== "string") {
 			return { ok: false };
 		}
+		if (typeof expectedTrailFile !== "string" || !expectedTrailFile) {
+			return { ok: false, error: "session attachment required" };
+		}
+		const attachedTo = (child: ChildProcessWithoutNullStreams): boolean =>
+			childBindings.get(child)?.file === expectedTrailFile;
 		const promptTypes = new Set(["prompt", "steer", "follow_up"]);
 		const safeControlTypes = new Set([
 			"abort",
@@ -2839,6 +3319,9 @@ app.whenReady().then(async () => {
 			return enqueueRuntimeTransition(runtime, async () => {
 				if (runtime.mergeChild || !isCurrentRuntimeChild(slot, runtime, runtime.child)) return { ok: false };
 				const reviewedChild = runtime.child;
+				if (!attachedTo(reviewedChild)) {
+					return { ok: false, error: "session changed before command" };
+				}
 				const reviewed = reviewedPromptFrame(frame as Record<string, unknown>);
 				if (!reviewed || (!reviewed.message && !reviewed.images?.length)) return { ok: false };
 				// Founder call (2026-08-13): typing in the composer IS the founder
@@ -2848,15 +3331,21 @@ app.whenReady().then(async () => {
 				// that "attended" now trusts the local renderer rather than an
 				// OS-level dialog, the same posture as the founder's other local
 				// coding tools.
-				if (!isCurrentRuntimeChild(slot, runtime, reviewedChild)) return { ok: false };
+				if (!isCurrentRuntimeChild(slot, runtime, reviewedChild) || !attachedTo(reviewedChild)) {
+					return { ok: false, error: "session changed before command" };
+				}
 				return {
 					ok: sendKernelPrompt(reviewedChild, reviewed, true, "composer-attended"),
 				};
 			});
 		}
 		if (!safeControlTypes.has(frame.type)) return { ok: false };
-		if (frame.type === "abort") childModelCapabilities.get(runtime.child)?.endTurn("aborted");
-		return { ok: writeChildFrame(runtime.child, `${JSON.stringify(frame)}\n`) };
+		const targetChild = runtime.child;
+		if (!isCurrentRuntimeChild(slot, runtime, targetChild) || !attachedTo(targetChild)) {
+			return { ok: false, error: "session changed before command" };
+		}
+		if (frame.type === "abort") childModelCapabilities.get(targetChild)?.endTurn("aborted");
+		return { ok: writeChildFrame(targetChild, `${JSON.stringify(frame)}\n`) };
 	});
 
 	// A window that already knows its company (launcher argv, company smoke)

@@ -281,29 +281,46 @@ function auditHash(entry: SessionEntry, previousHash: string): string {
 		.digest("hex");
 }
 
+export interface TrailAuditState {
+	ids: Set<string>;
+	sequence: number;
+	lastHash: string;
+}
+
+export function createTrailAuditState(): TrailAuditState {
+	return { ids: new Set(), sequence: 0, lastHash: "" };
+}
+
+/** Verify one physical append against the trail graph, provenance, sequence,
+ * and hash chain, then advance the supplied cursor. Replay and live binding
+ * share this exact integrity boundary. */
+export function advanceTrailAuditState(audit: TrailAuditState, value: unknown, path: string): void {
+	const entry = value as SessionEntry;
+	if (!validTrailEntry(entry, audit.ids) || !validProvenance(entry)) {
+		throw new Error(`trail session contains an invalid event graph or provenance: ${path}`);
+	}
+	const kernel = entry.kernel;
+	const expectedSequence = audit.sequence + 1;
+	const expectedPrevious = audit.lastHash || null;
+	if (
+		!kernel ||
+		kernel.sequence !== expectedSequence ||
+		kernel.previousHash !== expectedPrevious ||
+		kernel.receivedAt !== entry.timestamp ||
+		kernel.hash !== auditHash(entry, audit.lastHash)
+	) {
+		throw new Error(`trail session integrity metadata is invalid: ${path}`);
+	}
+	audit.ids.add(entry.id);
+	audit.sequence = kernel.sequence;
+	audit.lastHash = kernel.hash;
+}
+
 function loadTrailAudit(path: string): TrailBinding["audit"] {
 	const lines = readFileSync(path, "utf-8").split(/\r?\n/).slice(1).filter(Boolean);
-	const audit: TrailBinding["audit"] = { ids: new Set(), sequence: 0, lastHash: "" };
+	const audit = createTrailAuditState();
 	for (const line of lines) {
-		const entry = JSON.parse(line) as SessionEntry;
-		if (!validTrailEntry(entry, audit.ids) || !validProvenance(entry)) {
-			throw new Error(`trail session contains an invalid event graph or provenance: ${path}`);
-		}
-		const kernel = entry.kernel;
-		const expectedSequence = audit.sequence + 1;
-		const expectedPrevious = audit.lastHash || null;
-		if (
-			!kernel ||
-			kernel.sequence !== expectedSequence ||
-			kernel.previousHash !== expectedPrevious ||
-			kernel.receivedAt !== entry.timestamp ||
-			kernel.hash !== auditHash(entry, audit.lastHash)
-		) {
-			throw new Error(`trail session integrity metadata is invalid: ${path}`);
-		}
-		audit.ids.add(entry.id);
-		audit.sequence = kernel.sequence;
-		audit.lastHash = kernel.hash;
+		advanceTrailAuditState(audit, JSON.parse(line), path);
 	}
 	return audit;
 }
@@ -375,7 +392,13 @@ export function migrateLegacyTrailSession(root: string, sessionFile: string, sco
 	return true;
 }
 
-export function bindTrailSession(root: string, cwd: string, scope: AgentScope, sessionFile?: string): TrailBinding {
+export function bindTrailSession(
+	root: string,
+	cwd: string,
+	scope: AgentScope,
+	sessionFile?: string,
+	auditHint?: TrailAuditState,
+): TrailBinding {
 	const trailDir = assertPhysicalCompanyTree(root, "trail");
 	const authority = authorityForScope(scope);
 	let path: string;
@@ -394,7 +417,9 @@ export function bindTrailSession(root: string, cwd: string, scope: AgentScope, s
 			throw new Error(`trail session schema ${header.version ?? 1} requires an explicit append-only migration`);
 		}
 		assertMatchingAuthority(header.qorpera, authority);
-		audit = loadTrailAudit(path);
+		audit = auditHint
+			? { ids: new Set(auditHint.ids), sequence: auditHint.sequence, lastHash: auditHint.lastHash }
+			: loadTrailAudit(path);
 	} else {
 		const timestamp = new Date().toISOString();
 		const id = randomUUID();
@@ -426,11 +451,15 @@ export function latestResumableTrailSession(root: string): string | undefined {
 		.reverse();
 	for (const file of files) {
 		try {
-			const header = readHeader(join(trailDir, file));
+			const path = join(trailDir, file);
+			const header = readHeader(path);
 			if (header.version !== TRAIL_SESSION_VERSION) continue;
 			const authority = header.qorpera;
 			if (!authority || authority.autonomous || authority.label) continue;
 			if (authority.actor !== "controller" || authority.department || authority.worktree) continue;
+			// A torn newest trail must not hold the whole company hostage. Only a
+			// session whose complete append chain is bindable can be selected.
+			loadTrailAudit(path);
 			return file;
 		} catch {
 			// unreadable header — not resumable
@@ -470,7 +499,11 @@ export function pruneEmptyTrailSessions(root: string): number {
 			if (header.qorpera?.autonomous || header.qorpera?.label) continue;
 			let hasContent = false;
 			for (const line of lines.slice(1)) {
-				const parsed = JSON.parse(line) as { type?: string };
+				const parsed = JSON.parse(line) as { type?: string; customType?: string };
+				// Kernel runtime facts describe the temporary executor attached to
+				// a session; they are not company memory by themselves. Treating
+				// them as content would make every no-op window-open chat permanent.
+				if (parsed.type === "custom" && parsed.customType === "qorpera_kernel_session_runtime") continue;
 				if (typeof parsed.type !== "string" || TRAIL_CONTENT_TYPES.has(parsed.type)) {
 					hasContent = true;
 					break;
@@ -536,6 +569,24 @@ function appendKernelCustomObservation(binding: TrailBinding, customType: string
 		timestamp: "",
 		customType,
 		data,
+	});
+	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+	commitTrailAppend(binding, append);
+}
+
+/** Establish a fresh session's display identity before any replaceable agent
+ * process receives authority. This is ordinary session metadata rather than a
+ * runtime observation, but it is kernel-stamped so attachment and naming are
+ * one durable operation. */
+export function appendKernelSessionInfo(binding: TrailBinding, name: string): void {
+	const sanitizedName = name.replace(/[\r\n]+/g, " ").trim();
+	if (!sanitizedName) throw new Error("session name cannot be empty");
+	const append = stampKernelEntry(binding, {
+		type: "session_info",
+		id: randomUUID(),
+		parentId: null,
+		timestamp: "",
+		name: sanitizedName,
 	});
 	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
 	commitTrailAppend(binding, append);
@@ -613,6 +664,21 @@ export function appendKernelRuntimeExitObservation(
 	},
 ): void {
 	appendKernelCustomObservation(binding, "qorpera_kernel_runtime_exit", input);
+}
+
+/** Canonical lifecycle event consumed by the kernel session projector. The
+ * trail is the event log; the projected runtime state is always rebuildable
+ * from these observations after a renderer or kernel restart. */
+export function appendKernelSessionRuntimeObservation(
+	binding: TrailBinding,
+	input: {
+		kind: string;
+		at: string;
+		kernelInstanceId: string;
+		executorId: string;
+	},
+): void {
+	appendKernelCustomObservation(binding, "qorpera_kernel_session_runtime", input);
 }
 
 export function appendKernelHttpObservation(
