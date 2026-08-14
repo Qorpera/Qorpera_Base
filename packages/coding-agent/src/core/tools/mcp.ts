@@ -22,70 +22,32 @@
  */
 
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { AgentTool } from "@qorpera/pi-agent-core";
 import { Text } from "@qorpera/pi-tui";
 import { type Static, Type } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { spawn } from "../../utils/child-process.ts";
-import { discoverAuthority, MCP_TOOL_NAME } from "../authority.ts";
+import { consumeMcpExecutionBinding, discoverAuthority, MCP_TOOL_NAME } from "../authority.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { brokeredHttpRequest } from "../http-broker-client.ts";
+import { MCP_CONFIG_PATH, type McpServerConfig, resolveMcpServerConfig } from "./mcp-config.ts";
 import { getTextOutput, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, truncateHead } from "./truncate.ts";
 
 export { MCP_TOOL_NAME } from "../authority.ts";
-export const MCP_CONFIG_PATH = join("connections", "mcp.json");
+export { MCP_CONFIG_PATH } from "./mcp-config.ts";
+
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 const CALL_TIMEOUT_MS = 60_000;
 const SPAWN_TIMEOUT_MS = 30_000;
 const CONTROLLER_ONLY_ENV = new Set(["QORPERA_MODEL_BROKER_HANDLES", "QORPERA_TRAIL_BROKER_TOKEN"]);
 
-interface McpServerConfig {
-	/** Local stdio server: spawned with the controller's host access. */
-	command?: string;
-	args?: string[];
-	env?: Record<string, string>;
-	/**
-	 * Remote server: MCP streamable-HTTP over the kernel lane. Rides the
-	 * founder's destination capabilities and causal intents; header values
-	 * may carry secret://<name> references, dereferenced kernel-side.
-	 */
-	url?: string;
-	headers?: Record<string, string>;
-}
-
 interface McpToolInfo {
 	name: string;
 	description?: string;
 	inputSchema?: unknown;
-}
-
-function readMcpConfig(root: string): Record<string, McpServerConfig> {
-	const path = join(root, MCP_CONFIG_PATH);
-	if (!existsSync(path)) {
-		throw new Error(
-			`No MCP servers declared. Create ${MCP_CONFIG_PATH} with {"servers": {"<name>": {"command": …, "args": […]}}}`,
-		);
-	}
-	const parsed = JSON.parse(readFileSync(path, "utf-8")) as { servers?: Record<string, McpServerConfig> };
-	if (!parsed.servers || typeof parsed.servers !== "object") {
-		throw new Error(`${MCP_CONFIG_PATH} must carry a "servers" object`);
-	}
-	for (const [name, server] of Object.entries(parsed.servers)) {
-		const hasCommand = typeof server?.command === "string" && server.command.length > 0;
-		const hasUrl = typeof server?.url === "string" && server.url.startsWith("https://");
-		if (!server || hasCommand === hasUrl) {
-			throw new Error(`MCP server ${name} needs exactly one of "command" (local stdio) or an https "url" (remote)`);
-		}
-		if (server.args !== undefined && !Array.isArray(server.args)) {
-			throw new Error(`MCP server ${name}: "args" must be an array`);
-		}
-	}
-	return parsed.servers;
 }
 
 function serverEnvironment(declared: Record<string, string> | undefined): Record<string, string> {
@@ -205,7 +167,7 @@ class McpConnection {
 }
 
 /** Session-lifetime pool: servers spawn lazily on first use, die with the process. */
-const connections = new Map<string, Promise<McpServerConnection>>();
+const connections = new Map<string, { configurationHash: string; connection: Promise<McpServerConnection> }>();
 
 /** What both transports provide to the tool. */
 interface McpServerConnection {
@@ -304,35 +266,44 @@ class RemoteMcpConnection implements McpServerConnection {
 	}
 }
 
-async function connect(root: string, name: string): Promise<McpServerConnection> {
+async function connect(root: string, name: string, expectedConfigurationHash: string): Promise<McpServerConnection> {
 	// NUL separator (written as an escape: a raw NUL byte makes git treat this file as binary).
 	const key = `${root}\u0000${name}`;
+	const { config, configurationHash } = resolveMcpServerConfig(root, name);
+	if (configurationHash !== expectedConfigurationHash) {
+		throw new Error(
+			`MCP server ${name} configuration changed after authority approval; retry the call to review the current configuration`,
+		);
+	}
 	const existing = connections.get(key);
-	if (existing) return existing;
-	const servers = readMcpConfig(root);
-	const config = servers[name];
-	if (!config) {
-		throw new Error(`Unknown MCP server: ${name}. Declared servers: ${Object.keys(servers).join(", ") || "(none)"}`);
+	if (existing?.configurationHash === configurationHash) return existing.connection;
+	if (existing) {
+		connections.delete(key);
+		try {
+			await (await existing.connection).dispose();
+		} catch {
+			// A connection that failed to start has nothing to dispose.
+		}
 	}
 	const pending: Promise<McpServerConnection> = (
 		config.url ? RemoteMcpConnection.open(config.url, config.headers ?? {}) : McpConnection.open(root, name, config)
 	).catch((error) => {
-		connections.delete(key);
+		if (connections.get(key)?.connection === pending) connections.delete(key);
 		throw error;
 	});
-	connections.set(key, pending);
+	connections.set(key, { configurationHash, connection: pending });
 	return pending;
 }
 
 process.once("exit", () => {
-	for (const pending of connections.values()) {
-		void pending.then((connection) => connection.dispose()).catch(() => {});
+	for (const entry of connections.values()) {
+		void entry.connection.then((connection) => connection.dispose()).catch(() => {});
 	}
 });
 
 /** Kill all pooled server connections (session teardown and tests). */
 export async function disposeMcpConnections(): Promise<void> {
-	const all = [...connections.values()];
+	const all = [...connections.values()].map((entry) => entry.connection);
 	connections.clear();
 	for (const pending of all) {
 		try {
@@ -385,10 +356,15 @@ export function createMcpToolDefinition(cwd: string): ToolDefinition<typeof mcpS
 		description: `Use a tool from an external MCP server the company has declared in ${MCP_CONFIG_PATH}. Omit "tool" to list a server's tools first. Local servers inherit the user's host environment and permissions, excluding Qorpera's internal broker capabilities; remote servers use the kernel's brokered HTTP lane.`,
 		promptSnippet: "Call tools on company-declared MCP servers",
 		parameters: mcpSchema,
-		async execute(_toolCallId, { server, tool, arguments: toolArguments }: McpToolInput) {
+		async execute(_toolCallId, input: McpToolInput) {
+			const { server, tool, arguments: toolArguments } = input;
 			const authority = discoverAuthority(cwd);
 			if (!authority) throw new Error("use_mcp_tool requires a company folder (no authority root found)");
-			const connection = await connect(authority.root, server);
+			const expectedConfigurationHash = consumeMcpExecutionBinding(authority, input);
+			if (!expectedConfigurationHash) {
+				throw new Error("use_mcp_tool requires a fresh authority evaluation before execution");
+			}
+			const connection = await connect(authority.root, server, expectedConfigurationHash);
 			if (!tool) {
 				const result = await connection.request("tools/list", {});
 				return {

@@ -33,6 +33,7 @@ import { parse as parseToml } from "smol-toml";
 import { AUTHORITY_SIGNATURE_PATH, verifyAuthorityPolicy, verifyGateApproval } from "./founder-identity.ts";
 import { requestKernelGateConsumption, requestKernelGateTrust } from "./kernel-broker.ts";
 import { writeRawStdout } from "./output-guard.ts";
+import { mcpServerConfigurationFingerprint } from "./tools/mcp-config.ts";
 
 export type ConfigurableEffectClass = "money" | "identity" | "irreversible" | "authority";
 export type EffectClass = ConfigurableEffectClass | "product_code";
@@ -65,6 +66,7 @@ export type AuthorityDecision =
 			actor?: CompanyActor;
 			behavior?: BehaviorSignature;
 			gateId?: string;
+			mcpConfigurationHash?: string;
 			kernelGate?: { file: string; hash: string; id: string; effectClass: EffectClass };
 	  }
 	| { kind: "block"; reason: string; effectClass: EffectClass; gateId?: string; behavior?: BehaviorSignature };
@@ -534,6 +536,44 @@ function canonicalJson(value: unknown): string {
 	return JSON.stringify(value) ?? "null";
 }
 
+const MCP_BINDING_TTL_MS = 60_000;
+const mcpExecutionBindings = new Map<string, Array<{ configurationHash: string; expiresAt: number }>>();
+
+function mcpServerName(args: unknown): string {
+	if (!args || typeof args !== "object" || Array.isArray(args)) return "";
+	const server = (args as Record<string, unknown>).server;
+	return typeof server === "string" ? server : "";
+}
+
+function mcpGateArgs(args: unknown, configurationHash: string | undefined): unknown {
+	if (!configurationHash) return args;
+	const record = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
+	return { ...record, serverConfigurationSha256: configurationHash };
+}
+
+function mcpBindingKey(authority: Authority, args: unknown): string {
+	return `${resolve(authority.root)}\u0000${requestHash(MCP_TOOL_NAME, args)}`;
+}
+
+function registerMcpExecutionBinding(authority: Authority, args: unknown, configurationHash: string): void {
+	const key = mcpBindingKey(authority, args);
+	const now = Date.now();
+	const queue = (mcpExecutionBindings.get(key) ?? []).filter((entry) => entry.expiresAt > now);
+	queue.push({ configurationHash, expiresAt: now + MCP_BINDING_TTL_MS });
+	mcpExecutionBindings.set(key, queue);
+}
+
+/** Consume the authority hook's one-shot binding immediately before MCP execution. */
+export function consumeMcpExecutionBinding(authority: Authority, args: unknown): string | undefined {
+	const key = mcpBindingKey(authority, args);
+	const now = Date.now();
+	const queue = (mcpExecutionBindings.get(key) ?? []).filter((entry) => entry.expiresAt > now);
+	const binding = queue.shift();
+	if (queue.length > 0) mcpExecutionBindings.set(key, queue);
+	else mcpExecutionBindings.delete(key);
+	return binding?.configurationHash;
+}
+
 export function requestHash(toolName: string, args: unknown): string {
 	return createHash("sha256")
 		.update(`${toolName}\n${canonicalJson(args)}`)
@@ -913,6 +953,9 @@ export function evaluateToolCall(
 	}
 
 	const config = readAuthorityConfig(authority);
+	const mcpConfigurationHash =
+		toolName === MCP_TOOL_NAME ? mcpServerConfigurationFingerprint(authority.root, mcpServerName(args)) : undefined;
+	const gatedArgs = mcpGateArgs(args, mcpConfigurationHash);
 	let effectClass = classifyToolCall(authority, config, toolName, args, cwd);
 	if (!effectClass) {
 		// Company-tool runs stamp behavior identity even when unclassified:
@@ -923,7 +966,7 @@ export function evaluateToolCall(
 				behavior: resolveBehaviorSignature(authority, effectiveBehaviorPath(toolName, args, cwd, context)),
 			};
 		}
-		return { kind: "allow" };
+		return { kind: "allow", ...(mcpConfigurationHash ? { mcpConfigurationHash } : {}) };
 	}
 
 	// Product code is a role boundary, not an approval mode. A controller is
@@ -983,13 +1026,21 @@ export function evaluateToolCall(
 	}
 
 	const mode = config.classes[effectClass].mode;
-	if (mode === "auto") return { kind: "allow", effectClass, behavior };
+	if (mode === "auto") {
+		return { kind: "allow", effectClass, behavior, ...(mcpConfigurationHash ? { mcpConfigurationHash } : {}) };
+	}
 	if (mode === "notify") {
 		appendNotice(authority, `[${effectClass}] ${summarizeCall(toolName, args)} (auto-proceeded, notify mode)`);
-		return { kind: "allow", notified: true, effectClass, behavior };
+		return {
+			kind: "allow",
+			notified: true,
+			effectClass,
+			behavior,
+			...(mcpConfigurationHash ? { mcpConfigurationHash } : {}),
+		};
 	}
 
-	const hash = requestHash(toolName, args);
+	const hash = requestHash(toolName, gatedArgs);
 	const records = findGateRecords(authority, hash);
 	const approved = records.find((record) => record.status === "approved" && gateApprovalValid(record));
 	if (approved) {
@@ -999,12 +1050,19 @@ export function evaluateToolCall(
 				notified: true,
 				effectClass,
 				behavior,
+				...(mcpConfigurationHash ? { mcpConfigurationHash } : {}),
 				kernelGate: { file: basename(approved.filePath), hash, id: approved.id, effectClass },
 			};
 		}
 		setGateStatus(approved, "consumed");
 		appendNotice(authority, `[${effectClass}] ${approved.id} consumed: ${summarizeCall(toolName, args)}`);
-		return { kind: "allow", notified: true, effectClass, behavior };
+		return {
+			kind: "allow",
+			notified: true,
+			effectClass,
+			behavior,
+			...(mcpConfigurationHash ? { mcpConfigurationHash } : {}),
+		};
 	}
 	const pending = records.find((record) => record.status === "pending");
 	if (pending) {
@@ -1029,7 +1087,7 @@ export function evaluateToolCall(
 	const gateId = writeGateRequest(authority, {
 		toolName,
 		effectClass,
-		args,
+		args: gatedArgs,
 		hash,
 		what: summarizeCall(toolName, args),
 	});
@@ -1051,6 +1109,17 @@ export async function finalizeAuthorityDecision(
 ): Promise<AuthorityDecision> {
 	if (decision.kind !== "allow") return decision;
 	let finalized = decision;
+	if (toolName === MCP_TOOL_NAME) {
+		const currentHash = mcpServerConfigurationFingerprint(authority.root, mcpServerName(args));
+		if (!finalized.mcpConfigurationHash || finalized.mcpConfigurationHash !== currentHash) {
+			return {
+				kind: "block",
+				effectClass: finalized.effectClass ?? "authority",
+				reason:
+					"MCP authority binding: the selected server configuration changed after policy evaluation. Retry the call so the current configuration is reviewed before any server starts.",
+			};
+		}
+	}
 	if (finalized.behavior?.kernelTrust) {
 		const trust = finalized.behavior.kernelTrust;
 		const granted = await requestKernelGateTrust(trust.file, trust.hash);
@@ -1068,7 +1137,12 @@ export async function finalizeAuthorityDecision(
 			behavior: { ...finalized.behavior, signed: true, kernelTrust: undefined },
 		};
 	}
-	if (!finalized.kernelGate) return finalized;
+	if (!finalized.kernelGate) {
+		if (toolName === MCP_TOOL_NAME && finalized.mcpConfigurationHash) {
+			registerMcpExecutionBinding(authority, args, finalized.mcpConfigurationHash);
+		}
+		return finalized;
+	}
 	const gate = finalized.kernelGate;
 	const granted = await requestKernelGateConsumption(gate.file, gate.hash);
 	if (!granted) {
@@ -1082,6 +1156,9 @@ export async function finalizeAuthorityDecision(
 	}
 	appendNotice(authority, `[${gate.effectClass}] ${gate.id} consumed: ${summarizeCall(toolName, args)}`);
 	const { kernelGate: _kernelGate, ...completed } = finalized;
+	if (toolName === MCP_TOOL_NAME && completed.mcpConfigurationHash) {
+		registerMcpExecutionBinding(authority, args, completed.mcpConfigurationHash);
+	}
 	return { ...completed, gateId: gate.id };
 }
 

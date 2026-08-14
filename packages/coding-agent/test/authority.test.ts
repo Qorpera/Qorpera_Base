@@ -198,6 +198,24 @@ describe("classification and evaluation", () => {
 			expect((gated as { effectClass: string }).effectClass).toBe("authority");
 		}
 
+		mkdirSync(join(root, "connections"), { recursive: true });
+		const boundArgs = { server: "local", tool: "external_effect" };
+		writeFileSync(
+			join(root, "connections", "mcp.json"),
+			JSON.stringify({ servers: { local: { command: "first-command" } } }),
+			"utf-8",
+		);
+		const firstConfiguration = evaluateToolCall(authority, MCP_TOOL_NAME, boundArgs, root);
+		writeFileSync(
+			join(root, "connections", "mcp.json"),
+			JSON.stringify({ servers: { local: { command: "different-command" } } }),
+			"utf-8",
+		);
+		const changedConfiguration = evaluateToolCall(authority, MCP_TOOL_NAME, boundArgs, root);
+		expect((changedConfiguration as { gateId: string }).gateId).not.toBe(
+			(firstConfiguration as { gateId: string }).gateId,
+		);
+
 		writeAuthorityToml(`[identity]\nmode = "gate"\n\n[tools]\n${MCP_TOOL_NAME} = "identity"\n`);
 		const classified = evaluateToolCall(authority, MCP_TOOL_NAME, { server: "github", tool: "create_issue" }, root);
 		expect(classified.kind).toBe("block");

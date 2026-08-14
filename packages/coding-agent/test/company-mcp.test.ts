@@ -7,7 +7,12 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { discoverAuthority, evaluateToolCall, MCP_TOOL_NAME } from "../src/core/authority.ts";
+import {
+	discoverAuthority,
+	evaluateToolCall,
+	finalizeAuthorityDecision,
+	MCP_TOOL_NAME,
+} from "../src/core/authority.ts";
 import { handleHttpBrokerFrame, setHttpBrokerWriter } from "../src/core/http-broker-client.ts";
 import { createMcpToolDefinition, disposeMcpConnections } from "../src/core/tools/mcp.ts";
 
@@ -38,7 +43,11 @@ let root: string;
 beforeEach(() => {
 	root = join(tmpdir(), `qorpera-mcp-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(join(root, "connections"), { recursive: true });
-	writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "auto"\n`, "utf-8");
+	writeFileSync(
+		join(root, "authority.toml"),
+		`[irreversible]\nmode = "auto"\n\n[tools]\nuse_mcp_tool = "none"\n`,
+		"utf-8",
+	);
 });
 
 afterEach(async () => {
@@ -59,6 +68,14 @@ function declareFauxServer(): void {
 }
 
 async function run(input: { server: string; tool?: string; arguments?: Record<string, unknown> }) {
+	const authority = discoverAuthority(root)!;
+	const decision = await finalizeAuthorityDecision(
+		authority,
+		evaluateToolCall(authority, MCP_TOOL_NAME, input, root),
+		MCP_TOOL_NAME,
+		input,
+	);
+	if (decision.kind === "block") throw new Error(decision.reason);
 	const definition = createMcpToolDefinition(root);
 	const execute = definition.execute as unknown as (toolCallId: string, args: unknown) => Promise<unknown>;
 	return (await execute("test-call", input)) as {
@@ -69,10 +86,48 @@ async function run(input: { server: string; tool?: string; arguments?: Record<st
 
 describe("use_mcp_tool", () => {
 	it("defaults to the always-gated authority class before execution", () => {
+		writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "auto"\n`, "utf-8");
 		const authority = discoverAuthority(root)!;
 		const decision = evaluateToolCall(authority, MCP_TOOL_NAME, { server: "faux", tool: "external_effect" }, root);
 		expect(decision.kind).toBe("block");
 		expect((decision as { effectClass: string }).effectClass).toBe("authority");
+	});
+
+	it("rejects a server configuration changed after authority evaluation", async () => {
+		declareFauxServer();
+		const input = { server: "faux", tool: "echo", arguments: { text: "bound" } };
+		const authority = discoverAuthority(root)!;
+		const evaluated = evaluateToolCall(authority, MCP_TOOL_NAME, input, root);
+		writeFileSync(
+			join(root, "connections", "mcp.json"),
+			JSON.stringify({ servers: { faux: { command: process.execPath, args: ["different-server.mjs"] } } }),
+			"utf-8",
+		);
+		const decision = await finalizeAuthorityDecision(authority, evaluated, MCP_TOOL_NAME, input);
+		expect(decision.kind).toBe("block");
+		expect((decision as { reason: string }).reason).toContain("configuration changed after policy evaluation");
+	});
+
+	it("rejects a server configuration changed after authority finalization", async () => {
+		declareFauxServer();
+		const input = { server: "faux", tool: "echo", arguments: { text: "bound" } };
+		const authority = discoverAuthority(root)!;
+		const decision = await finalizeAuthorityDecision(
+			authority,
+			evaluateToolCall(authority, MCP_TOOL_NAME, input, root),
+			MCP_TOOL_NAME,
+			input,
+		);
+		expect(decision.kind).toBe("allow");
+
+		writeFileSync(
+			join(root, "connections", "mcp.json"),
+			JSON.stringify({ servers: { faux: { command: process.execPath, args: ["different-server.mjs"] } } }),
+			"utf-8",
+		);
+		const definition = createMcpToolDefinition(root);
+		const execute = definition.execute as unknown as (toolCallId: string, args: unknown) => Promise<unknown>;
+		await expect(execute("changed-config", input)).rejects.toThrow(/configuration changed after authority approval/);
 	});
 
 	it("lists a declared server's tools", async () => {
