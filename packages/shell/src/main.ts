@@ -30,6 +30,7 @@ import {
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { ModelRuntime } from "@qorpera/pi-coding-agent";
 // Deep imports from the coding agent (the foundation's own machinery).
 import { companyPort, createCompanyAppServer } from "@qorpera/pi-coding-agent/app-server";
 import {
@@ -62,10 +63,13 @@ import {
 	validateCompanyKernelStorage,
 } from "@qorpera/pi-coding-agent/company";
 import {
+	bindCompanySecret,
+	bindNetworkDestination,
 	createScheduledJob,
 	deleteScheduledJob,
 	destinationAllowed,
 	persistWebhookPort,
+	readCompanyConnections,
 	readScheduledJobs,
 	readWebhookBinding,
 	resolveCompanySecret,
@@ -77,6 +81,7 @@ import { FOUNDER_PUBLIC_FILE, founderPublicProjection } from "@qorpera/pi-coding
 import {
 	app,
 	BrowserWindow,
+	clipboard,
 	dialog,
 	session as electronSession,
 	shell as electronShell,
@@ -154,6 +159,7 @@ import {
 	modelSelectionFromRpcFrame,
 	writeControllerModelPreference,
 } from "./controller-model.ts";
+import { connectGitHubCli, readGitHubCliStatus } from "./github-connection.ts";
 import { createHttpRequestBroker, type HttpRequestBroker } from "./http-request-broker.ts";
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
 import {
@@ -243,6 +249,30 @@ const MODEL_AUTH_PROVIDERS = new Set([
 	"minimax",
 	"huggingface",
 ]);
+const MODEL_CONNECTIONS = [
+	{
+		id: "openai-codex",
+		name: "OpenAI",
+		description: "ChatGPT Plus, Pro, Business, or Enterprise",
+		credentialProviders: ["openai-codex", "openai"],
+		ambientProviders: ["openai"],
+		accountFallback: "ChatGPT account",
+	},
+	{
+		id: "anthropic",
+		name: "Anthropic",
+		description: "Claude Pro or Max",
+		credentialProviders: ["anthropic"],
+		ambientProviders: ["anthropic"],
+		accountFallback: "Claude account",
+	},
+] as const;
+const MODEL_CONNECTION_IDS = new Set<string>(MODEL_CONNECTIONS.map((connection) => connection.id));
+const GITHUB_CONNECTION_DESTINATIONS = [
+	["api.github.com", "GitHub API"],
+	["uploads.github.com", "GitHub release uploads"],
+	["raw.githubusercontent.com", "GitHub raw content"],
+] as const;
 const MAX_KERNEL_REVIEW_BYTES = 16 * 1024;
 const MAX_PROMPT_BYTES = 64 * 1024;
 const MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -292,7 +322,133 @@ function ambientModelProviders(): string[] {
 	return [...new Set([...MODEL_ENV_PROVIDERS].flatMap(([name, provider]) => (process.env[name] ? [provider] : [])))];
 }
 
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function tokenAccountName(credential: Record<string, unknown>): string | undefined {
+	if (typeof credential.access !== "string") return undefined;
+	const tokenParts = credential.access.split(".");
+	if (tokenParts.length !== 3 || !tokenParts[1]) return undefined;
+	try {
+		const claims = recordValue(JSON.parse(Buffer.from(tokenParts[1], "base64url").toString("utf-8")));
+		if (!claims) return undefined;
+		for (const field of ["email", "name", "preferred_username"]) {
+			const value = claims[field];
+			if (typeof value === "string" && value.trim()) return value.trim();
+		}
+	} catch {
+		// Opaque access tokens have no displayable account metadata.
+	}
+	return undefined;
+}
+
+function connectionAccountName(
+	connection: (typeof MODEL_CONNECTIONS)[number],
+	credential: Record<string, unknown> | undefined,
+	sourceProvider: string | undefined,
+): string {
+	if (!credential) return `${connection.name} API key`;
+	if (credential.type === "api_key") return `${connection.name} API key`;
+	for (const field of ["email", "accountName", "account_name", "name"]) {
+		const value = credential[field];
+		if (typeof value === "string" && value.trim()) return value.trim();
+	}
+	const tokenName = tokenAccountName(credential);
+	if (tokenName) return tokenName;
+	const accountId = credential.accountId;
+	if (typeof accountId === "string" && accountId.trim()) {
+		return `${connection.accountFallback} · ${accountId.slice(-8)}`;
+	}
+	if (sourceProvider && sourceProvider !== connection.id) return `${connection.name} API key`;
+	return connection.accountFallback;
+}
+
+interface SettingsConnectionInfo {
+	id: string;
+	name: string;
+	description: string;
+	connected: boolean;
+	accountName: string;
+	group: "services" | "models";
+}
+
+function modelConnectionInfo(): SettingsConnectionInfo[] {
+	const credentials = sourceModelCredentials();
+	const ambient = new Set(ambientModelProviders());
+	return MODEL_CONNECTIONS.map((connection) => {
+		const sourceProvider = connection.credentialProviders.find(
+			(providerId) => recordValue(credentials[providerId]) !== undefined,
+		);
+		const credential = sourceProvider ? recordValue(credentials[sourceProvider]) : undefined;
+		const ambientConnected = connection.ambientProviders.some((providerId) => ambient.has(providerId));
+		const connected = credential !== undefined || ambientConnected;
+		return {
+			id: connection.id,
+			name: connection.name,
+			description: connection.description,
+			connected,
+			accountName: connected ? connectionAccountName(connection, credential, sourceProvider) : "",
+			group: "models",
+		};
+	});
+}
+
+async function githubConnectionInfo(root: string | undefined): Promise<SettingsConnectionInfo> {
+	const status = await readGitHubCliStatus();
+	let companyBound = false;
+	if (root) {
+		try {
+			const connections = readCompanyConnections(root);
+			companyBound =
+				connections.secretNames.includes("github") &&
+				connections.destinations.some((destination) => destination.host === "api.github.com");
+		} catch {
+			// An invalid company connection store is reported when the founder tries to reconnect it.
+		}
+	}
+	const connected = root ? companyBound : status.connected;
+	const description = !status.available
+		? "Repositories and pull requests — GitHub CLI required"
+		: root && status.connected && !companyBound
+			? `Allow this company to use ${status.accountName}`
+			: "Repositories, pull requests, issues, and releases";
+	return {
+		id: "github",
+		name: "GitHub",
+		description,
+		connected,
+		accountName: connected ? status.accountName || "GitHub account" : "",
+		group: "services",
+	};
+}
+
+interface ConnectionLogin {
+	connectionId: string;
+	controller: AbortController;
+}
+
+const connectionLogins = new Map<number, ConnectionLogin>();
+
+function waitForConnectionCallback(signal?: AbortSignal): Promise<string> {
+	return new Promise<string>((_resolve, reject) => {
+		const cancel = () => reject(new Error("Login cancelled"));
+		if (signal?.aborted) {
+			cancel();
+			return;
+		}
+		signal?.addEventListener("abort", cancel, { once: true });
+	});
+}
+
+function connectionError(error: unknown): { ok: false; cancelled?: true; error?: string } {
+	const message = error instanceof Error ? error.message : String(error);
+	if (/cancelled|aborted/i.test(message)) return { ok: false, cancelled: true };
+	return { ok: false, error: message.slice(0, 240) };
+}
+
 let modelRequestBroker: ModelRequestBroker | undefined;
+let downloadedUpdateVersion: string | undefined;
 
 function shellVersion(): string {
 	try {
@@ -1355,6 +1511,165 @@ function enqueueRuntimeTransition<T>(runtime: CompanyRuntime, transition: () => 
 		() => undefined,
 	);
 	return result;
+}
+
+async function refreshSlotModelCredentials(slot: Slot): Promise<boolean> {
+	const runtime = slot.runtime;
+	if (!runtime) return true;
+	return enqueueRuntimeTransition(runtime, async () => {
+		if (
+			slot.runtime !== runtime ||
+			runtime.closing ||
+			runtime.mergeChild ||
+			runtime.wakeChild ||
+			childBusy.get(runtime.child)
+		) {
+			return false;
+		}
+		await replaceRuntimeChild(slot, runtime, {
+			...runtime.childOptions,
+			sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
+		});
+		return true;
+	});
+}
+
+async function connectModelAccount(
+	sender: WebContents,
+	providerId: string,
+): Promise<{
+	ok: boolean;
+	cancelled?: true;
+	error?: string;
+	message?: string;
+}> {
+	const slot = slotOf(sender);
+	if (!slot || !MODEL_CONNECTION_IDS.has(providerId)) return { ok: false, error: "unsupported model account" };
+	if (connectionLogins.has(sender.id)) return { ok: false, error: "another account connection is in progress" };
+	const controller = new AbortController();
+	connectionLogins.set(sender.id, { connectionId: providerId, controller });
+	const report = (message: string): void => {
+		send(slot.window, "connection-status", { connectionId: providerId, message });
+	};
+	try {
+		const modelAgentDir = join(app.getPath("home"), ".qorpera", "agent");
+		const runtime = await ModelRuntime.create({
+			authPath: join(modelAgentDir, "auth.json"),
+			modelsPath: join(modelAgentDir, "models.json"),
+			allowModelNetwork: false,
+			signal: controller.signal,
+		});
+		const provider = runtime.getProvider(providerId);
+		if (!provider?.auth.oauth) return { ok: false, error: "this account does not support browser sign-in" };
+		report("Waiting for provider sign-in…");
+		await runtime.login(providerId, "oauth", {
+			signal: controller.signal,
+			prompt: (prompt) => {
+				if (prompt.type === "select") {
+					const first = prompt.options[0];
+					if (!first) return Promise.reject(new Error("No sign-in method is available"));
+					return Promise.resolve(first.id);
+				}
+				if (prompt.type === "manual_code") {
+					return waitForConnectionCallback(prompt.signal ?? controller.signal);
+				}
+				return Promise.reject(new Error("This sign-in flow requires an unsupported prompt"));
+			},
+			notify: (event) => {
+				if (event.type === "auth_url") {
+					report("Finish signing in in your browser…");
+					void electronShell.openExternal(event.url).catch((error: Error) => {
+						report(`Could not open sign-in: ${error.message}`);
+						controller.abort();
+					});
+				} else if (event.type === "device_code") {
+					clipboard.writeText(event.userCode);
+					report(`Code ${event.userCode} copied. Paste it in your browser…`);
+					void electronShell.openExternal(event.verificationUri).catch((error: Error) => {
+						report(`Could not open sign-in: ${error.message}`);
+						controller.abort();
+					});
+				} else {
+					report(event.message);
+				}
+			},
+		});
+		report("Connected. Refreshing the active controller…");
+		const refreshed = await refreshSlotModelCredentials(slot);
+		const message = !slot.runtime
+			? "Connected."
+			: refreshed
+				? "Connected. The active controller is ready to use it."
+				: "Connected. It will be available when the current controller turn finishes.";
+		report(message);
+		return { ok: true, message };
+	} catch (error) {
+		const result = connectionError(error);
+		const connected = modelConnectionInfo().find((connection) => connection.id === providerId)?.connected;
+		if (connected && !result.cancelled) {
+			const refreshed = await refreshSlotModelCredentials(slot).catch(() => false);
+			const message = !slot.runtime
+				? "Connected."
+				: refreshed
+					? "Connected. The active controller is ready to use it."
+					: "Connected. It will be available when the current controller turn finishes.";
+			report(message);
+			return { ok: true, message };
+		}
+		report(result.cancelled ? "Connection cancelled." : (result.error ?? "Connection failed."));
+		return result;
+	} finally {
+		connectionLogins.delete(sender.id);
+	}
+}
+
+async function connectGitHubAccount(sender: WebContents): Promise<{
+	ok: boolean;
+	cancelled?: true;
+	error?: string;
+	message?: string;
+}> {
+	const slot = slotOf(sender);
+	if (!slot) return { ok: false, error: "GitHub can only be connected from a Qorpera window" };
+	if (connectionLogins.has(sender.id)) return { ok: false, error: "another account connection is in progress" };
+	const controller = new AbortController();
+	connectionLogins.set(sender.id, { connectionId: "github", controller });
+	const report = (message: string): void => {
+		send(slot.window, "connection-status", { connectionId: "github", message });
+	};
+	try {
+		const account = await connectGitHubCli({ signal: controller.signal, report });
+		const companyRoot = slot.runtime?.root;
+		if (companyRoot) {
+			const approved = await confirmKernelReview(slot.window, {
+				title: "Connect GitHub",
+				summary: "Allow this company controller to use the selected GitHub account?",
+				exactText: [
+					`Account: ${account.accountName}`,
+					`Scopes: ${account.scopes.join(", ") || "GitHub CLI defaults"}`,
+					"Credential: secret://github (kernel-held; never shown to the controller)",
+					`Destinations: ${GITHUB_CONNECTION_DESTINATIONS.map(([host]) => host).join(", ")}`,
+				].join("\n"),
+			});
+			if (!approved) return { ok: false, cancelled: true };
+			if (slot.runtime?.root !== companyRoot) return { ok: false, error: "the active company changed" };
+			bindCompanySecret(companyRoot, "github", { kind: "static", value: account.token });
+			for (const [host, note] of GITHUB_CONNECTION_DESTINATIONS) {
+				bindNetworkDestination(companyRoot, host, note);
+			}
+		}
+		const message = companyRoot
+			? `Connected ${account.accountName} to this company.`
+			: `Connected ${account.accountName}. Open a company to grant it access.`;
+		report(message);
+		return { ok: true, message };
+	} catch (error) {
+		const result = connectionError(error);
+		report(result.cancelled ? "Connection cancelled." : (result.error ?? "Connection failed."));
+		return result;
+	} finally {
+		connectionLogins.delete(sender.id);
+	}
 }
 
 function scheduleRuntimeReconnect(
@@ -2480,6 +2795,7 @@ function createRendererWindow(
 				"body::before{content:'';position:fixed;top:0;left:0;right:150px;height:12px;z-index:2147483647;-webkit-app-region:drag;}",
 			)
 			.catch(() => {});
+		if (downloadedUpdateVersion) send(win, "update-ready", downloadedUpdateVersion);
 	});
 	win.webContents.setWindowOpenHandler(({ url }) => {
 		let target: URL;
@@ -2526,6 +2842,8 @@ function createRendererWindow(
 	// and backend; other windows are untouched. A window retired by a swap
 	// is no longer the slot's window — its company must stay running.
 	win.on("closed", () => {
+		connectionLogins.get(contentsId)?.controller.abort();
+		connectionLogins.delete(contentsId);
 		slots.delete(win.id);
 		slotsByWebContentsId.delete(contentsId);
 		const slot = forSlot();
@@ -2962,25 +3280,24 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		if (slot) return showHub(slot);
 	});
-	ipcMain.handle("settings:info", () => {
-		// Connected providers: names only, never secrets. Kernel-level read.
-		let providers: string[] = [];
-		try {
-			const authPath = join(app.getPath("home"), ".qorpera", "agent", "auth.json");
-			providers = Object.keys(JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, unknown>);
-		} catch {
-			// no auth yet
-		}
-		return {
-			version: shellVersion(),
-			packaged: app.isPackaged,
-			providers,
-			agentDir: join(app.getPath("home"), ".qorpera", "agent"),
-		};
+	ipcMain.handle("settings:info", async (event) => {
+		const slot = slotOf(event.sender);
+		return { connections: [await githubConnectionInfo(slot?.runtime?.root), ...modelConnectionInfo()] };
 	});
-	// Settings → App: switch this company between its evolved fork and the
-	// pristine base app, or roll the fork back to a saved version. Both
-	// reload the window into whichever app is now active.
+	ipcMain.handle("connection:connect", (event, connectionId: unknown) => {
+		if (typeof connectionId !== "string") return { ok: false, error: "invalid connection" };
+		return connectionId === "github"
+			? connectGitHubAccount(event.sender)
+			: connectModelAccount(event.sender, connectionId);
+	});
+	ipcMain.handle("connection:cancel", (event, connectionId: unknown) => {
+		const login = connectionLogins.get(event.sender.id);
+		if (!login || login.connectionId !== connectionId) return false;
+		login.controller.abort();
+		return true;
+	});
+	// Kernel userland controls remain available to evolved company apps even
+	// though the base settings UI no longer exposes fork/version management.
 	ipcMain.handle("userland:set-active", async (event, appChoice: "fork" | "base") => {
 		const slot = slotOf(event.sender);
 		if (!slot?.runtime) return false;
@@ -3056,14 +3373,14 @@ app.whenReady().then(async () => {
 			return true;
 		});
 	});
-	// Settings → App: star a saved version. Metadata only — no reload needed.
+	// Evolved userlands can still star saved versions. Metadata only — no reload needed.
 	ipcMain.handle("userland:favorite", (event, id: string, favorite: boolean) => {
 		const slot = slotOf(event.sender);
 		if (!slot?.runtime || typeof id !== "string" || id.includes("/") || id.includes("\\") || id.includes(".."))
 			return false;
 		return setVersionFavorite(join(slot.runtime.root, "userland"), id, Boolean(favorite));
 	});
-	// Settings → App: pick a window icon for this company (copied into app/,
+	// Evolved userlands can still pick a company window icon (copied into app/,
 	// so it travels with the company folder and the controller can manage it).
 	ipcMain.handle("userland:set-icon", async (event) => {
 		const slot = slotOf(event.sender);
@@ -3087,7 +3404,7 @@ app.whenReady().then(async () => {
 		setWindowIcon(slot.window, target);
 		return { ok: true };
 	});
-	// The merge button's backend: one merge session at a time, kernel-owned.
+	// The titlebar update control starts at most one kernel-owned company app update.
 	ipcMain.handle("userland:merge", async (event) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
@@ -3360,35 +3677,30 @@ app.whenReady().then(async () => {
 	// is deliberately static, so this stays quiet almost always.
 	if (app.isPackaged) {
 		const { autoUpdater } = electronUpdater;
-		let downloadedVersion: string | undefined;
 		autoUpdater.on("checking-for-update", () => sendAll("update-status", "checking…"));
 		autoUpdater.on("update-available", (info) => sendAll("update-status", `downloading ${info.version}…`));
 		autoUpdater.on("update-not-available", () => sendAll("update-status", "up to date"));
 		autoUpdater.on("error", (error) => sendAll("update-status", `update error: ${error.message.slice(0, 80)}`));
 		autoUpdater.on("update-downloaded", (info) => {
-			downloadedVersion = info.version;
+			downloadedUpdateVersion = info.version;
 			sendAll("update-ready", info.version);
 		});
 		autoUpdater.checkForUpdatesAndNotify().catch((error: Error) => {
 			console.error(`update check failed: ${error.message}`);
 		});
-		ipcMain.handle("update:check", () => autoUpdater.checkForUpdatesAndNotify().catch(() => undefined));
 		ipcMain.handle("update:install", async (event) => {
 			const slot = slotOf(event.sender);
-			if (!slot || !downloadedVersion) return false;
+			if (!slot || !downloadedUpdateVersion) return false;
 			const approved = await confirmKernelReview(slot.window, {
 				title: "Install Qorpera Base update",
 				summary: "Quit every company controller and install this foundation update?",
-				exactText: downloadedVersion,
+				exactText: downloadedUpdateVersion,
 			});
 			if (!approved) return false;
 			autoUpdater.quitAndInstall();
 			return true;
 		});
 	} else {
-		ipcMain.handle("update:check", () => {
-			sendAll("update-status", "dev tree — rebuild the repo to update");
-		});
 		ipcMain.handle("update:install", () => {});
 
 		// Dev-lane reflection (founder direction 2026-08-06): in a dev tree the

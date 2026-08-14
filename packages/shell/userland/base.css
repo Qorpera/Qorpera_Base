@@ -40,7 +40,7 @@ code, pre { font-family: var(--font-mono); }
 
 /* ---- titlebar (frameless window; native overlay draws min/max/close) --- */
 #titlebar {
-	display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 9px;
+	display: grid; grid-template-columns: auto auto auto minmax(0, 1fr); gap: 9px;
 	align-items: center; flex: 0 0 auto;
 	height: var(--titlebar-height); padding-left: 14px;
 	background: transparent; user-select: none;
@@ -55,6 +55,19 @@ code, pre { font-family: var(--font-mono); }
 }
 .sidebar-toggle:hover, .sidebar-toggle:focus-visible {
 	background: rgba(255, 255, 255, 0.06); color: var(--text);
+}
+.titlebar-update {
+	display: inline-flex; align-items: center; gap: 6px;
+	width: auto; height: 28px; min-height: 28px; padding: 0 10px;
+	border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--border)); border-radius: 8px;
+	background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--text);
+	font-size: 11.5px; font-weight: 620; cursor: pointer; -webkit-app-region: no-drag;
+}
+.titlebar-update[hidden] { display: none; }
+.titlebar-update svg { width: 14px; height: 14px; color: var(--accent); }
+.titlebar-update:hover:not(:disabled), .titlebar-update:focus-visible {
+	border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+	background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 #wordmark {
 	color: var(--text-muted); font-size: 12px; font-weight: 560;
@@ -864,6 +877,57 @@ body.chunky-nav .session-section-title { font-size: 11.5px; padding-bottom: 6px;
 .appearance-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
 .appearance-actions button { width: auto; min-height: 28px; padding: 4px 9px; border: 1px solid var(--border-strong); border-radius: 5px; color: var(--text-muted); font-size: 10.5px; }
 .appearance-color { width: 38px; height: 28px; padding: 2px; }
+
+/* ---- settings connections ------------------------------------------------ */
+.connection-chat {
+	display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 13px;
+	width: 100%; min-height: 76px; margin-top: 22px; padding: 14px 16px;
+	border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 13px;
+	background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--text); text-align: left;
+}
+.connection-chat:hover:not(:disabled) {
+	border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+	background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+.connection-chat-icon {
+	display: grid; place-items: center; width: 38px; height: 38px;
+	border-radius: 11px; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent);
+}
+.connection-chat-icon svg { width: 20px; height: 20px; }
+.connection-chat-copy { display: grid; gap: 3px; min-width: 0; }
+.connection-chat-copy strong { font-size: 13.5px; font-weight: 630; }
+.connection-chat-copy small { overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.connection-chat-arrow { color: var(--text-soft); font-size: 17px; }
+.connection-list { overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
+.connection-card {
+	display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 14px;
+	min-height: 82px; padding: 15px 16px; background: rgba(255, 255, 255, 0.018);
+}
+.connection-card + .connection-card { border-top: 1px solid var(--border); }
+.connection-logo {
+	display: grid; place-items: center; width: 42px; height: 42px; overflow: hidden;
+	border: 1px solid var(--border-strong); border-radius: 11px; background: #f2f2ef; color: #111111;
+}
+.connection-logo svg { width: 27px; height: 27px; }
+.connection-logo.anthropic svg { width: 26px; height: 26px; }
+.connection-copy { display: grid; gap: 3px; min-width: 0; }
+.connection-copy strong { font-size: 13.5px; font-weight: 620; }
+.connection-copy small { color: var(--text-muted); font-size: 11px; line-height: 1.4; }
+.connection-action {
+	min-width: 82px; min-height: 32px; border-color: var(--border-strong);
+	background: rgba(255, 255, 255, 0.055); font-size: 11.5px; font-weight: 620; text-align: center;
+}
+.connection-action[data-busy="true"] { color: var(--text-muted); }
+.connection-account { display: grid; justify-items: end; gap: 4px; max-width: 220px; text-align: right; }
+.connection-connected { display: inline-flex; align-items: center; gap: 6px; color: var(--ok); font-size: 11.5px; font-weight: 620; }
+.connection-connected::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent); }
+.connection-account small { overflow: hidden; max-width: 100%; color: var(--text-muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 760px) {
+	.connection-card { grid-template-columns: 42px minmax(0, 1fr); }
+	.connection-card > :last-child { grid-column: 2; justify-self: start; justify-items: start; text-align: left; }
+	.connection-chat-copy small { white-space: normal; }
+}
 
 /* ---- add/archive modal surfaces ----------------------------------------- */
 .modal-backdrop {
