@@ -130,6 +130,24 @@ describe("use_mcp_tool", () => {
 		await expect(execute("changed-config", input)).rejects.toThrow(/configuration changed after authority approval/);
 	});
 
+	it("rejects local server code changed after authority finalization", async () => {
+		declareFauxServer();
+		const input = { server: "faux", tool: "echo", arguments: { text: "bound" } };
+		const authority = discoverAuthority(root)!;
+		const decision = await finalizeAuthorityDecision(
+			authority,
+			evaluateToolCall(authority, MCP_TOOL_NAME, input, root),
+			MCP_TOOL_NAME,
+			input,
+		);
+		expect(decision.kind).toBe("allow");
+
+		writeFileSync(join(root, "connections", "faux-server.mjs"), `${FAUX_SERVER}\n// changed after review\n`, "utf-8");
+		const definition = createMcpToolDefinition(root);
+		const execute = definition.execute as unknown as (toolCallId: string, args: unknown) => Promise<unknown>;
+		await expect(execute("changed-code", input)).rejects.toThrow(/configuration changed after authority approval/);
+	});
+
 	it("lists a declared server's tools", async () => {
 		declareFauxServer();
 		const result = await run({ server: "faux" });

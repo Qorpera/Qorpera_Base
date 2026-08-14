@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { delimiter, extname, isAbsolute, join, relative, resolve } from "node:path";
 
 export const MCP_CONFIG_PATH = join("connections", "mcp.json");
 
@@ -27,6 +27,96 @@ function canonicalJson(value: unknown): string {
 
 function sha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
+}
+
+function fileSha256(path: string): string {
+	return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function isUnderRoot(path: string, root: string): boolean {
+	const rel = relative(resolve(root), path);
+	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function environmentValue(declared: Record<string, string> | undefined, name: string): string | undefined {
+	for (const [key, value] of Object.entries(declared ?? {})) {
+		if (key.toLowerCase() === name.toLowerCase()) return value;
+	}
+	for (const [key, value] of Object.entries(process.env)) {
+		if (key.toLowerCase() === name.toLowerCase()) return value;
+	}
+	return undefined;
+}
+
+function resolveExecutable(root: string, config: McpServerConfig) {
+	const command = config.command!;
+	const direct = isAbsolute(command) || /[/\\]/.test(command);
+	const extensions =
+		process.platform === "win32" && !extname(command)
+			? (environmentValue(config.env, "PATHEXT") ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
+			: [""];
+	const bases = direct
+		? [resolve(root, command)]
+		: (environmentValue(config.env, "PATH") ?? "")
+				.split(delimiter)
+				.map((entry) => resolve(root, entry.replace(/^"|"$/g, ""), command));
+	for (const base of bases) {
+		for (const extension of extensions) {
+			const candidate = `${base}${extension}`;
+			try {
+				if (!statSync(candidate).isFile()) continue;
+				const resolved = realpathSync.native(candidate);
+				const stats = statSync(resolved);
+				const agentControlled = isUnderRoot(candidate, root) || isUnderRoot(resolved, root);
+				return {
+					configured: command,
+					resolved,
+					stat: {
+						device: stats.dev,
+						inode: stats.ino,
+						size: stats.size,
+						modifiedMs: stats.mtimeMs,
+						changedMs: stats.ctimeMs,
+					},
+					...(agentControlled ? { sha256: fileSha256(resolved) } : {}),
+				};
+			} catch {
+				// Try the next executable candidate.
+			}
+		}
+	}
+	return { configured: command };
+}
+
+function fileLikeArgument(arg: string): string | undefined {
+	if (!arg || (arg.startsWith("-") && !arg.includes("="))) return undefined;
+	const candidate = arg.startsWith("-") ? arg.slice(arg.indexOf("=") + 1) : arg;
+	if (!candidate || candidate.includes("\u0000")) return undefined;
+	return candidate;
+}
+
+function argumentFileIdentity(root: string, arg: string): object | undefined {
+	const rawPath = fileLikeArgument(arg);
+	if (!rawPath) return undefined;
+	const candidate = resolve(root, rawPath);
+	try {
+		if (!statSync(candidate).isFile()) return { argument: arg, path: candidate, state: "not-file" };
+		const resolved = realpathSync.native(candidate);
+		return { argument: arg, path: candidate, resolved, sha256: fileSha256(resolved) };
+	} catch {
+		return { argument: arg, path: candidate, state: "missing" };
+	}
+}
+
+function localExecutionIdentity(root: string, config: McpServerConfig): object | undefined {
+	if (!config.command) return undefined;
+	return {
+		executable: resolveExecutable(root, config),
+		files: (config.args ?? []).flatMap((arg) => {
+			const identity = argumentFileIdentity(root, arg);
+			return identity ? [identity] : [];
+		}),
+	};
 }
 
 export function readMcpConfig(root: string): Record<string, McpServerConfig> {
@@ -62,7 +152,10 @@ export function resolveMcpServerConfig(
 	if (!config) {
 		throw new Error(`Unknown MCP server: ${name}. Declared servers: ${Object.keys(servers).join(", ") || "(none)"}`);
 	}
-	return { config, configurationHash: sha256(canonicalJson(config)) };
+	return {
+		config,
+		configurationHash: sha256(canonicalJson({ config, localExecution: localExecutionIdentity(root, config) })),
+	};
 }
 
 /**
