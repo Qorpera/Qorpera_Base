@@ -40,56 +40,6 @@ function fileSha256(path: string): string {
 	return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-const RUNTIME_STATE_EXCLUSIONS = new Set([".git", ".qorpera", "inbox", "node_modules", "trail"]);
-
-/**
- * Bind mutable company-controlled runtime inputs, not only source imports.
- * Kernel/trail/git state and installed dependency trees are excluded because
- * they change independently of a reviewed launch; statically imported code
- * from those dependency trees is still covered by transitiveModuleIdentity.
- */
-function companyRuntimeStateIdentity(root: string): object[] {
-	const identities: object[] = [];
-	const visitedDirectories = new Set<string>();
-	const visit = (logicalDirectory: string): void => {
-		let physicalDirectory: string;
-		try {
-			physicalDirectory = realpathSync.native(logicalDirectory);
-		} catch {
-			return;
-		}
-		if (visitedDirectories.has(physicalDirectory) || !isUnderRoot(physicalDirectory, root)) return;
-		visitedDirectories.add(physicalDirectory);
-		for (const entry of readdirSync(logicalDirectory, { withFileTypes: true }).sort((a, b) =>
-			a.name.localeCompare(b.name),
-		)) {
-			if (RUNTIME_STATE_EXCLUSIONS.has(entry.name)) continue;
-			const logicalPath = join(logicalDirectory, entry.name);
-			let resolved: string;
-			let stats: ReturnType<typeof statSync>;
-			try {
-				resolved = realpathSync.native(logicalPath);
-				stats = statSync(resolved);
-			} catch {
-				identities.push({ path: relative(root, logicalPath), state: "missing" });
-				continue;
-			}
-			if (stats.isDirectory()) {
-				if (isUnderRoot(resolved, root)) visit(logicalPath);
-				else identities.push({ path: relative(root, logicalPath), resolved, state: "external-directory" });
-				continue;
-			}
-			if (!stats.isFile()) {
-				identities.push({ path: relative(root, logicalPath), resolved, state: "not-file" });
-				continue;
-			}
-			identities.push({ path: relative(root, logicalPath), resolved, sha256: fileSha256(resolved) });
-		}
-	};
-	visit(root);
-	return identities;
-}
-
 function isUnderRoot(path: string, root: string): boolean {
 	const rel = relative(resolve(root), path);
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -180,6 +130,105 @@ const CALLED_MODULE_SPECIFIER = /\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*
 const ALTERNATE_MODULE_LOADERS = new Set(["module", "node:module", "node:vm", "vm"]);
 const DYNAMIC_CODE_CONSTRUCT =
 	/\b(?:eval|Function|AsyncFunction|GeneratorFunction|WebAssembly|globalThis)\b|\.constructor\b|\bprocess\s*\.\s*getBuiltinModule\b|\bmodule\s*\[/;
+const FILE_SYSTEM_MODULES = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises"]);
+const FILE_READ_METHOD_NAMES = [
+	"access",
+	"accessSync",
+	"createReadStream",
+	"exists",
+	"existsSync",
+	"lstat",
+	"lstatSync",
+	"open",
+	"openAsBlob",
+	"openSync",
+	"opendir",
+	"opendirSync",
+	"readFile",
+	"readFileSync",
+	"readdir",
+	"readdirSync",
+	"readlink",
+	"readlinkSync",
+	"realpath",
+	"realpathSync",
+	"stat",
+	"statSync",
+] as const;
+const FILE_READ_METHOD = new RegExp(`\\b(?:${FILE_READ_METHOD_NAMES.join("|")})\\b`);
+const LITERAL_FILE_READ_CALL = new RegExp(
+	`\\b(${FILE_READ_METHOD_NAMES.join("|")})\\s*\\(\\s*(["'])([^"'\\\\\\r\\n]*)\\2`,
+	"g",
+);
+
+function runtimePathIdentity(path: string): object {
+	let resolved: string;
+	let stats: ReturnType<typeof statSync>;
+	try {
+		resolved = realpathSync.native(path);
+		stats = statSync(resolved);
+	} catch {
+		return { path, state: "missing" };
+	}
+	if (stats.isFile()) return { path, resolved, sha256: fileSha256(resolved) };
+	if (!stats.isDirectory()) return { path, resolved, state: "not-file-or-directory" };
+	const files: object[] = [];
+	const visited = new Set<string>();
+	const visit = (logicalDirectory: string): void => {
+		const physicalDirectory = realpathSync.native(logicalDirectory);
+		if (visited.has(physicalDirectory)) return;
+		visited.add(physicalDirectory);
+		for (const entry of readdirSync(logicalDirectory, { withFileTypes: true }).sort((a, b) =>
+			a.name.localeCompare(b.name),
+		)) {
+			const logicalPath = join(logicalDirectory, entry.name);
+			let physicalPath: string;
+			let entryStats: ReturnType<typeof statSync>;
+			try {
+				physicalPath = realpathSync.native(logicalPath);
+				entryStats = statSync(physicalPath);
+			} catch {
+				files.push({ path: relative(path, logicalPath), state: "missing" });
+				continue;
+			}
+			if (entryStats.isDirectory()) {
+				visit(logicalPath);
+				continue;
+			}
+			files.push({
+				path: relative(path, logicalPath),
+				resolved: physicalPath,
+				...(entryStats.isFile() ? { sha256: fileSha256(physicalPath) } : { state: "not-file" }),
+			});
+		}
+	};
+	visit(path);
+	return { path, resolved, files };
+}
+
+/**
+ * Bind only runtime files that reviewed source can reach through literal
+ * node:fs reads. Dynamic paths fail closed: without an immutable filesystem
+ * snapshot they cannot be tied to the approval that launches host code.
+ */
+function runtimeInputIdentities(root: string, source: string, path: string, specifiers: string[]): object[] {
+	if (!specifiers.some((specifier) => FILE_SYSTEM_MODULES.has(specifier))) return [];
+	const inputs: object[] = [];
+	LITERAL_FILE_READ_CALL.lastIndex = 0;
+	for (let match = LITERAL_FILE_READ_CALL.exec(source); match; match = LITERAL_FILE_READ_CALL.exec(source)) {
+		inputs.push({ method: match[1], ...runtimePathIdentity(resolve(root, match[3])) });
+	}
+	const unverifiedSource = source
+		.replace(STATIC_MODULE_SPECIFIER, "")
+		.replace(CALLED_MODULE_SPECIFIER, "")
+		.replace(LITERAL_FILE_READ_CALL, "");
+	if (FILE_READ_METHOD.test(unverifiedSource)) {
+		throw new Error(
+			`Local host program runtime input closure cannot be proven for ${path}; node:fs reads must use literal paths`,
+		);
+	}
+	return inputs.sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)));
+}
 
 function moduleSpecifiers(source: string, path: string): string[] {
 	const specifiers = new Set<string>();
@@ -244,7 +293,11 @@ function transitiveModuleIdentity(root: string, entry: string): object[] {
 				: { stat: { size: stats.size, modifiedMs: stats.mtimeMs, changedMs: stats.ctimeMs } }),
 		});
 		if (!agentControlled || !MODULE_SOURCE_EXTENSIONS.has(extname(resolved).toLowerCase())) return;
-		for (const specifier of moduleSpecifiers(readFileSync(resolved, "utf-8"), resolved)) {
+		const source = readFileSync(resolved, "utf-8");
+		const specifiers = moduleSpecifiers(source, resolved);
+		const runtimeInputs = runtimeInputIdentities(root, source, resolved, specifiers);
+		if (runtimeInputs.length > 0) identities.push({ importer: resolved, runtimeInputs });
+		for (const specifier of specifiers) {
 			const dependency = resolveModuleSpecifier(resolved, specifier);
 			if (dependency) visit(dependency);
 			else identities.push({ importer: resolved, specifier, state: "unresolved" });
@@ -289,7 +342,6 @@ function localExecutionIdentity(root: string, config: McpServerConfig): object |
 			const identity = argumentFileIdentity(root, arg);
 			return identity ? [identity] : [];
 		}),
-		companyRuntimeState: companyRuntimeStateIdentity(root),
 	};
 }
 
@@ -308,7 +360,6 @@ export function companyProgramExecutionFingerprint(root: string, cwd: string, ra
 			resolved,
 			insideCompany: isUnderRoot(candidate, root) && isUnderRoot(resolved, root),
 			dependencies: transitiveModuleIdentity(root, resolved),
-			companyRuntimeState: companyRuntimeStateIdentity(root),
 		}),
 	);
 }

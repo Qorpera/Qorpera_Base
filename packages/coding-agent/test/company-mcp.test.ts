@@ -15,7 +15,7 @@ import {
 } from "../src/core/authority.ts";
 import { handleHttpBrokerFrame, setHttpBrokerWriter } from "../src/core/http-broker-client.ts";
 import { createMcpToolDefinition, disposeMcpConnections } from "../src/core/tools/mcp.ts";
-import { createMcpServerEnvironment } from "../src/core/tools/mcp-config.ts";
+import { createMcpServerEnvironment, mcpServerConfigurationFingerprint } from "../src/core/tools/mcp-config.ts";
 
 const FAUX_SERVER = `import { createInterface } from "node:readline";
 const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n");
@@ -217,12 +217,14 @@ describe("use_mcp_tool", () => {
 		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(/dependency closure cannot be proven/);
 	});
 
-	it("binds mutable company runtime inputs read by local server code", async () => {
+	it("binds literal runtime inputs inside dependency trees", async () => {
 		declareFauxServer();
-		writeFileSync(join(root, "payload.json"), JSON.stringify({ command: "reviewed" }), "utf-8");
+		mkdirSync(join(root, "node_modules", "pkg"), { recursive: true });
+		const payloadPath = join(root, "node_modules", "pkg", "payload.json");
+		writeFileSync(payloadPath, JSON.stringify({ command: "reviewed" }), "utf-8");
 		writeFileSync(
 			join(root, "connections", "faux-server.mjs"),
-			`import { readFileSync } from "node:fs";\nimport { spawnSync } from "node:child_process";\nif (false) spawnSync(JSON.parse(readFileSync("payload.json", "utf-8")).command);\n${FAUX_SERVER}`,
+			`import { readFileSync } from "node:fs";\nimport { spawnSync } from "node:child_process";\nif (false) spawnSync(JSON.parse(readFileSync("node_modules/pkg/payload.json", "utf-8")).command);\n${FAUX_SERVER}`,
 			"utf-8",
 		);
 		const input = { server: "faux", tool: "echo", arguments: { text: "bound" } };
@@ -235,12 +237,30 @@ describe("use_mcp_tool", () => {
 		);
 		expect(decision.kind).toBe("allow");
 
-		writeFileSync(join(root, "payload.json"), JSON.stringify({ command: "changed" }), "utf-8");
+		writeFileSync(payloadPath, JSON.stringify({ command: "changed" }), "utf-8");
 		const definition = createMcpToolDefinition(root);
 		const execute = definition.execute as unknown as (toolCallId: string, args: unknown) => Promise<unknown>;
 		await expect(execute("changed-runtime-input", input)).rejects.toThrow(
 			/configuration changed after authority approval/,
 		);
+	});
+
+	it("rejects dynamic runtime file inputs", async () => {
+		declareFauxServer();
+		writeFileSync(join(root, "payload.json"), JSON.stringify({ command: "dynamic" }), "utf-8");
+		writeFileSync(
+			join(root, "connections", "faux-server.mjs"),
+			`import { readFileSync } from "node:fs";\nconst input = "payload.json";\nreadFileSync(input);\n${FAUX_SERVER}`,
+			"utf-8",
+		);
+		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(/runtime input closure cannot be proven/);
+	});
+
+	it("does not bind unrelated company files to a local server", () => {
+		declareFauxServer();
+		const before = mcpServerConfigurationFingerprint(root, "faux");
+		writeFileSync(join(root, "unrelated.txt"), "ordinary company edit\n", "utf-8");
+		expect(mcpServerConfigurationFingerprint(root, "faux")).toBe(before);
 	});
 
 	it("lists a declared server's tools", async () => {

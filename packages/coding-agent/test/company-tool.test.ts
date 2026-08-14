@@ -196,6 +196,17 @@ describe("run_company_tool authority wiring (signature rule)", () => {
 		await expect(execute("changed-runtime-input", input)).rejects.toThrow(/changed after authority approval/);
 	});
 
+	it("rejects dynamic runtime file inputs", () => {
+		writeFileSync(join(root, "payload.json"), JSON.stringify({ command: "dynamic" }), "utf-8");
+		const absolute = writeProgram(
+			join("app", "tools", "dynamic-input.mjs"),
+			`import { readFileSync } from "node:fs";\nconst input = "payload.json";\nreadFileSync(input);\n`,
+		);
+		expect(() => companyProgramExecutionFingerprint(root, root, absolute)).toThrow(
+			/runtime input closure cannot be proven/,
+		);
+	});
+
 	it("unattended outward classification triggers the signature rule on the PROGRAM's content", () => {
 		writeProgram(join("app", "tools", "outreach.mjs"), "console.log('send');\n");
 		writeFileSync(

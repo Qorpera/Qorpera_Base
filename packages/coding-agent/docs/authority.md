@@ -101,12 +101,13 @@ transition. Editing the file alone never mints an executable capability.
   exactly the requested action. For `run_company_tool`, the match also binds
   the resolved program and its provable local dependency closure; for local
   MCP it binds the selected configuration, spawn environment, executable,
-  script arguments, and their provable local dependency closure. Both also
-  bind mutable company-controlled runtime files outside reserved kernel,
-  trail, Git, and installed-dependency directories, then revalidate
-  immediately before spawn. Non-literal or alternate JavaScript module
-  loaders fail closed because their dependency closure cannot be reviewed
-  reliably.
+  script arguments, and their provable local dependency closure. Literal
+  runtime file reads reachable from that code are bound as well, including
+  files inside installed-dependency trees, without tying unrelated company
+  state to the launch. Both paths revalidate immediately before spawn.
+  Non-literal runtime paths and non-literal or alternate JavaScript module
+  loaders fail closed because their input/dependency closure cannot be
+  reviewed reliably.
 
 Codex engine sessions with authority run inside Codex's read-only sandbox
 with `untrusted` approvals forced on. Reads can proceed directly, but command
