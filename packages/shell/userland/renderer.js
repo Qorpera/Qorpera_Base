@@ -4077,7 +4077,7 @@ $("input").addEventListener("keydown", (event) => {
 // ---- work groups: the agent's tool calls + thinking fold under a
 // ---- collapsible "Worked for …" row, like the Codex thread ------------------
 
-let workGroup = null; // { el, summary, body, start, steps }
+let workGroup = null; // { el, summary, body, start, steps, timer }
 let pendingToolLines = []; // tool lines awaiting their execution_end
 
 function makeWorkGroup(open) {
@@ -4085,12 +4085,26 @@ function makeWorkGroup(open) {
 	el.className = "work";
 	el.open = open;
 	const summary = document.createElement("summary");
-	summary.textContent = "Working…";
 	const body = document.createElement("div");
 	body.className = "workbody";
 	el.appendChild(summary);
 	el.appendChild(body);
-	return { el, summary, body, start: Date.now(), steps: 0 };
+	const group = { el, summary, body, start: Date.now(), steps: 0, timer: null };
+	if (open) {
+		const spinner = document.createElement("span");
+		spinner.className = "work-spinner";
+		spinner.setAttribute("aria-hidden", "true");
+		const label = document.createElement("span");
+		const update = () => {
+			label.textContent = `Working for ${formatDuration(Date.now() - group.start, true)}`;
+		};
+		update();
+		group.timer = setInterval(update, 1000);
+		summary.append(spinner, label);
+	} else {
+		summary.textContent = "Worked";
+	}
+	return group;
 }
 
 function ensureWorkGroup() {
@@ -4112,14 +4126,15 @@ function workMsg(cls, text) {
 	return div;
 }
 
-function formatDuration(ms) {
-	const seconds = Math.max(1, Math.round(ms / 1000));
+function formatDuration(ms, allowZero = false) {
+	const seconds = allowZero ? Math.max(0, Math.floor(ms / 1000)) : Math.max(1, Math.round(ms / 1000));
 	return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 /** Stamp the summary with the elapsed time and collapse the group. */
 function closeWorkGroup() {
 	if (!workGroup) return;
+	clearInterval(workGroup.timer);
 	workGroup.summary.textContent = `Worked for ${formatDuration(Date.now() - workGroup.start)} · ${workGroup.steps} step${workGroup.steps === 1 ? "" : "s"}`;
 	workGroup.el.open = false;
 	workGroup = null;
@@ -4128,6 +4143,7 @@ function closeWorkGroup() {
 
 /** Forget the group without touching the DOM (thread was replaced). */
 function resetWorkGroup() {
+	if (workGroup) clearInterval(workGroup.timer);
 	workGroup = null;
 	pendingToolLines = [];
 }
@@ -4226,8 +4242,14 @@ window.qorpera.onRpcEvent((frame) => {
 				renderMarkdown(assistantEl, assistantEl.dataset.source);
 				$("messages").scrollTop = $("messages").scrollHeight;
 			}
-			if (delta.type === "thinking_start") thinkingEl = workMsg("thinking", "");
-			if (delta.type === "thinking_delta" && thinkingEl) thinkingEl.textContent += delta.delta;
+			if (delta.type === "thinking_start") {
+				thinkingEl = workMsg("thinking assistant", "");
+				thinkingEl.dataset.source = "";
+			}
+			if (delta.type === "thinking_delta" && thinkingEl) {
+				thinkingEl.dataset.source += delta.delta;
+				renderMarkdown(thinkingEl, thinkingEl.dataset.source);
+			}
 			if (delta.type === "thinking_end") thinkingEl = null;
 			if (delta.type === "text_end") assistantEl = null;
 			break;
