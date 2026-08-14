@@ -303,6 +303,8 @@
 	};
 
 	const noop = () => {};
+	let previewGitHubConnected = false;
+	let previewAnthropicConnected = false;
 	window.qorpera = {
 		appInfo: async () => ({ version: "preview", activeCompany }),
 		listCompanies: async () => [],
@@ -327,19 +329,47 @@
 		onRpcLog: noop,
 		onRpcExit: noop,
 		settingsInfo: async () => ({
-			version: "preview",
-			packaged: false,
-			providers: ["Browser preview"],
-			agentDir: "No credentials are used in browser preview",
+			connections: [
+				{
+					id: "github",
+					name: "GitHub",
+					description: "Repositories, pull requests, issues, and releases",
+					connected: previewGitHubConnected,
+					accountName: previewGitHubConnected ? "Qorpera" : "",
+					group: "services",
+				},
+				{
+					id: "openai-codex",
+					name: "OpenAI",
+					description: "ChatGPT Plus, Pro, Business, or Enterprise",
+					connected: true,
+					accountName: "jonas@northstar.example",
+					group: "models",
+				},
+				{
+					id: "anthropic",
+					name: "Anthropic",
+					description: "Claude Pro or Max",
+					connected: previewAnthropicConnected,
+					accountName: previewAnthropicConnected ? "Claude account" : "",
+					group: "models",
+				},
+			],
 		}),
+		connectAccount: async (connectionId) => {
+			if (connectionId === "github") previewGitHubConnected = true;
+			if (connectionId === "anthropic") previewAnthropicConnected = true;
+			return { ok: true, message: "Connected." };
+		},
+		cancelConnection: noop,
 		updateInstall: noop,
 		setActiveApp: noop,
 		chooseIcon: async () => ({ ok: false }),
 		favoriteVersion: async () => {},
 		restoreVersion: async () => {},
-		updateCheck: noop,
 		onUpdateStatus: noop,
 		onUpdateReady: noop,
+		onConnectionStatus: noop,
 		onOpenCompany: noop,
 		onMergeDone: noop,
 		mergeUserland: async () => ({ ok: false }),
