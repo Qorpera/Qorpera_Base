@@ -426,6 +426,10 @@ interface SessionSummary {
 	/** Named scheduled-job identity parsed from the kernel-authenticated session label. */
 	scheduledJobId?: string;
 	scheduledJobTitle?: string;
+	/** Kernel-stamped grouping identity ("job:<id>", "merge", a workflow run id). */
+	group?: string;
+	/** Trail filename of the session that caused this spawn (subagent parent link). */
+	parentSession?: string;
 	/** Autonomous-run health derived from kernel-observed trail entries. */
 	outcome?: "running" | "succeeded" | "failed" | "incomplete";
 	/** Last model recorded for the run. */
@@ -792,6 +796,8 @@ function listTrailSessions(root: string): SessionSummary[] {
 						label?: string;
 						department?: string;
 						worktree?: string;
+						group?: string;
+						parentSession?: string;
 				  }
 				| undefined;
 			for (const line of lines.slice(0, 400)) {
@@ -841,7 +847,13 @@ function listTrailSessions(root: string): SessionSummary[] {
 				? (sessionAuthority.label ?? "").match(/^autonomous — wake — scheduled-job:([a-z0-9-]+) — (.+)$/i)
 				: undefined;
 			const legacyScheduledJob = label === "autonomous — wake — schedule";
-			const scheduledJobId = scheduledJob?.[1] ?? (legacyScheduledJob ? DEFAULT_SCHEDULED_JOB_ID : undefined);
+			// The kernel-stamped group is the structured identity; the label regex
+			// remains as the fallback for trails written before stamping existed.
+			const stampedJobId = sessionAuthority?.group?.startsWith("job:")
+				? sessionAuthority.group.slice("job:".length)
+				: undefined;
+			const scheduledJobId =
+				stampedJobId ?? scheduledJob?.[1] ?? (legacyScheduledJob ? DEFAULT_SCHEDULED_JOB_ID : undefined);
 			const scheduledJobTitle =
 				scheduledJob?.[2]?.trim() ?? (legacyScheduledJob ? DEFAULT_SCHEDULED_JOB_TITLE : undefined);
 			const category: SessionCategory = sessionAuthority?.autonomous
@@ -880,6 +892,8 @@ function listTrailSessions(root: string): SessionSummary[] {
 				page,
 				scheduledJobId,
 				scheduledJobTitle,
+				group: sessionAuthority?.group,
+				parentSession: sessionAuthority?.parentSession,
 				...run,
 			});
 		} catch {
