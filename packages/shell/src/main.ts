@@ -1620,23 +1620,25 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		const backend = await listenBackend(root, backendToken);
 		pendingBackendClose = backend.close;
 
-		// Never-conceived company: the conception session is autonomous work.
-		const kickoff = conceptionKickoff(root);
 		// Founder continuity across restarts: sweep the contentless trail files
 		// earlier opens minted (they carry no memory), then reopen the newest
 		// controller-scope chat instead of creating a fresh session per open.
 		const swept = pruneEmptyTrailSessions(root);
 		if (swept > 0) console.log(`pruned ${swept} contentless trail session${swept === 1 ? "" : "s"}`);
+		const resumable = latestResumableTrailSession(root);
+		// Conception claims only the TRUE first boot — a company with no founder
+		// chats yet. Once the founder has any resumable session, opening the
+		// company must resume it: booting an unconceived-but-lived-in company
+		// into conception held the founder's history hostage behind an
+		// autonomous run that opening a chat would kill mid-thought — and since
+		// the interrupted conception never wrote company.md, every open
+		// re-spawned it and re-burned its tokens.
+		const kickoff = resumable ? undefined : conceptionKickoff(root);
 		// A resumed trail records the model that session last used, but the
 		// founder's confirmed preference is newer authority. Pass it on every
 		// controller launch so reopening an old chat cannot silently move the
 		// controller, and the scheduled jobs it spawns, back to a stale model.
-		const childOptions: ChildOptions = controllerLaunchOptions(
-			app.getPath("userData"),
-			root,
-			kickoff,
-			latestResumableTrailSession(root),
-		);
+		const childOptions: ChildOptions = controllerLaunchOptions(app.getPath("userData"), root, kickoff, resumable);
 		let child: ReturnType<typeof startChild>;
 		try {
 			child = startChild(slot, root, childOptions);
@@ -2418,8 +2420,14 @@ app.whenReady().then(async () => {
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false };
 		return enqueueRuntimeTransition(runtime, () => {
-			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) {
-				return Promise.resolve({ ok: false });
+			if (slot.runtime !== runtime || runtime.closing) return Promise.resolve({ ok: false });
+			// A dead click during autonomous work must say so — the founder is
+			// otherwise left staring at a pane that "won't load".
+			if (runtime.mergeChild || runtime.wakeChild) {
+				return Promise.resolve({
+					ok: false,
+					error: "autonomous work is running — watch it under Agents, or try again once it settles",
+				});
 			}
 			return openChat(slot, sessionFile, department, worktree);
 		});
