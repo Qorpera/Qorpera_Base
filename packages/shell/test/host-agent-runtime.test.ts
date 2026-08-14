@@ -11,6 +11,7 @@ describe("host-capable agent runtime", () => {
 			GH_TOKEN: "github-credential",
 			AWS_PROFILE: "production",
 			CUSTOM_HOST_CAPABILITY: "available",
+			QORPERA_AUTONOMOUS: "1",
 		};
 		const invocation = createHostAgentProcess({
 			nodeExecutable: "Qorpera Base.exe",
@@ -26,9 +27,16 @@ describe("host-capable agent runtime", () => {
 			cwd: "C:\\Companies\\Acme",
 		});
 		expect(invocation.env).toMatchObject({
-			...environment,
+			PATH: environment.PATH,
+			HOME: environment.HOME,
+			USERPROFILE: environment.USERPROFILE,
+			APPDATA: environment.APPDATA,
+			GH_TOKEN: environment.GH_TOKEN,
+			AWS_PROFILE: environment.AWS_PROFILE,
+			CUSTOM_HOST_CAPABILITY: environment.CUSTOM_HOST_CAPABILITY,
 			ELECTRON_RUN_AS_NODE: "1",
 		});
+		expect(invocation.env.QORPERA_AUTONOMOUS).toBeUndefined();
 		expect(invocation.env).not.toBe(environment);
 	});
 });

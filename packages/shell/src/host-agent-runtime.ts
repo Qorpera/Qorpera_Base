@@ -20,13 +20,16 @@ export interface HostAgentProcess {
  * browser handoffs exactly as they do from the user's terminal.
  */
 export function createHostAgentProcess(options: HostAgentProcessOptions): HostAgentProcess {
+	const env = { ...(options.environment ?? process.env) };
+	// Runtime role markers belong to the child being created, not the process
+	// that happened to launch Base. startChild adds this marker back only for
+	// controller-initiated work.
+	delete env.QORPERA_AUTONOMOUS;
+	env.ELECTRON_RUN_AS_NODE = "1";
 	return {
 		command: options.nodeExecutable,
 		args: [options.rpcEntry, ...options.args],
 		cwd: options.cwd,
-		env: {
-			...(options.environment ?? process.env),
-			ELECTRON_RUN_AS_NODE: "1",
-		},
+		env,
 	};
 }
