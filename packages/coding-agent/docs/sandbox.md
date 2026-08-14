@@ -1,101 +1,82 @@
-# Isolation — what is enforced, by what, on which platform
+# Host access and runtime boundaries
 
-**Status:** Reference for Build 2 (manifesto §7.2: isolation strength is
-stated honestly, per platform, or scoped down until it can be). The
-enforcement code is the authority: `packages/shell/src/agent-runtime.ts`
-(`writeSandboxProfile`, `provisionSandbox`, `protectedControllerPaths`,
-`brokeredChildEnvironment`), `packages/shell/src/main.ts` (child spawn,
-credential brokering), `packages/coding-agent/src/core/tools/company-tool.ts`
-(company-program execution).
+**Status:** Company controllers and product workers launched by Qorpera Base
+run directly as the signed-in desktop user. They are not placed in the Codex
+offline sandbox.
 
-## The layers
+## Agent process capabilities
 
-Company sessions run only under the desktop kernel (the CLI refuses them
-otherwise). The kernel spawns the controller as a child process inside the
-bundled Codex sandbox (`codex sandbox --permission-profile qorpera-agent`),
-with a generated filesystem permission map:
+The desktop kernel starts the RPC child with Electron's bundled Node runtime,
+the role's company or product-worktree directory as its working directory, and
+a copy of the complete host environment. The child therefore has everything
+an ordinary process launched from the user's terminal has:
 
-- company root: **write** for the controller, **read** for product-workers
-- `.git/`, `trail/`, `authority.toml`, `AGENTS.md`, `CLAUDE.md`,
-  `.qorpera/`, `inbox/`, and every product repository/worktree root: **read**
-- `inbox/messages/`: **write** for the controller — the one sanctioned
-  agent-writable inbox lane (which files inside are legitimate stays
-  enforced at the tool boundary: `msg-*.md` direct children only)
-- a product-worker's single assigned worktree: **write** (its `.git`: read)
-- network: **disabled** (`network_proxy = false`, `[network] enabled = false`)
+- filesystem access granted to the signed-in user, including paths outside
+  the company folder;
+- direct network access;
+- installed applications, shells, and CLIs on `PATH`;
+- the user's home, application-data directories, Git configuration,
+  credential helpers, keychains, cloud profiles, and environment credentials;
+- normal OS browser handoffs, including CLI login flows such as
+  `gh auth login --web`.
 
-Independent of the OS sandbox, on every platform:
+This grants the agent the user's capabilities, not automatic administrator or
+root privileges. It can invoke the operating system's normal elevation flow
+when a command supports one, and the user remains responsible for approving
+that OS prompt.
 
-- **Credential denial** — the child environment is a strict allowlist
-  (`SAFE_CHILD_ENV` in `agent-runtime.ts`: PATH shape, locale, TLS trust,
-  and the Windows `ProgramFiles` roots the bash tool's shell discovery
-  needs); no provider keys reach it. Model credentials are opaque broker handles;
-  request construction, authentication, and network stay in the kernel
-  process, gated by kernel-signed intents with per-intent budgets.
-- **Git ownership isolation** — the Windows sandbox account receives
-  command-scope `safe.directory` entries only for the exact company and
-  assigned product worktree it can already access. System/global Git config
-  and terminal credential prompts stay disabled, so controllers can inspect
-  their repository without trusting arbitrary machine paths.
-- **Trail integrity** — the child cannot write the trail file; it submits
-  entries the kernel validates, stamps into a hash chain, and appends.
-- **Tool-boundary authority** — `authority.toml` gates classified effects
-  before execution, inside the child, in core-owned hooks.
+The desktop retains a separate Qorpera agent-data directory for the RPC
+session's internal model configuration. Paid model requests still use opaque
+broker handles so request construction, usage accounting, and trail records
+remain kernel-owned. This internal directory does not replace `HOME`,
+`USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, temporary directories, Git config,
+or `CODEX_HOME` for host tools.
 
-Company-authored programs run through `run_company_tool` as subprocesses of
-the controller child: they inherit its OS confinement, and additionally get
-a from-scratch clean environment (no QORPERA_* state, no broker handles),
-the company root as working directory, bounded output, and a hard timeout.
-Their content-hash identity is stamped into the trail on every run. A
-program may make its own outbound requests by printing
-`qorpera_program_http_request` frames on stdout and reading responses from
-stdin: the runner evaluates each as UNATTENDED codified behavior (so the
-signature rule applies at outward classes, with the program file as the
-acting behavior) and forwards it through the kernel lane with the
-program's identity attached — a founder-signed program acting outward
-with nobody present, end to end.
+Local stdio MCP servers inherit the same host environment and permissions.
+`run_company_tool` intentionally removes ambient credential variables and
+kernel tokens so identified unattended programs do not receive secrets merely
+by being launched; that clean environment is not an OS security boundary.
+When direct host access or inherited credentials are needed, the controller
+can run the command through its ordinary shell tool.
 
-## Verification — fail closed
+## Policy and observability
 
-Before any agent starts, the kernel proves the sandbox is real
-(`provisionSandbox`):
+Full host access does not remove Qorpera's higher-level controls:
 
-- **Windows**: runs `whoami.exe` inside the sandbox and requires the Codex
-  offline sandbox identity, then attempts direct HTTPS from inside the
-  sandbox and refuses to start the controller if any request succeeds.
-- **macOS / Linux**: attempts the same direct HTTPS probe inside the
-  sandbox and refuses to start if it succeeds. There is no identity check
-  on these platforms; the probe is the proof that the profile is enforced
-  at all. If the bundled sandbox no-ops, the probe succeeds and the kernel
-  refuses to start — an unenforced profile never silently degrades to
-  "hope".
+- `authority.toml` still classifies tool effects and can allow, notify, or
+  gate them;
+- attended prompts and autonomous wakes still receive signed causal intents;
+- model and brokered HTTP operations remain kernel-observed;
+- session events still append to the company trail;
+- kernel-owned checkpointing still preserves founder and agent work.
 
-Outbound HTTP (Build 3) travels the same trusted pipe: the child submits
-`qorpera_http_request` frames carrying opaque `secret://<name>` references;
-the kernel checks the destination against founder-bound network
-capabilities, dereferences references at the boundary (with kernel-mediated
-OAuth2 refresh), executes with a per-turn request budget and no
-auto-followed redirects, and records the unresolved request identity in the
-trail (`qorpera_kernel_http_request`).
+These controls govern Qorpera's built-in tool paths. They are not an OS
+sandbox and must not be described as one: a host-capable process, a child
+program, or a sufficiently indirect command can exercise whatever access the
+signed-in user has.
 
-## Stated gaps (current, honest)
+The `http_request` tool remains available as an auditable lane for bound HTTPS
+destinations and `secret://` references. It is optional rather than the only
+way for a controller to reach the network.
 
-- macOS/Linux verification proves network isolation only; filesystem
-  confinement on those platforms rests on the Codex sandbox's own
-  enforcement without an independent probe.
-- The network probe tests direct HTTPS; a sandbox that blocked HTTPS but
-  leaked other protocols would pass it.
-- Secret values at rest are a plaintext mode-0600 file in the machine-local
-  agent directory, outside the company folder and outside every sandbox
-  path grant — but not OS-keychain-protected. Hardening is Build 3.
-- `bash` inside the controller can run company code without behavior
-  identity; such runs are confined identically but carry no signable
-  content hash, so they can never take unattended outward effects — that
-  is the designed degradation, not a gap.
-- Binding destinations and secrets is terminal-only (`qorpera company
-  destination|secret …`); a Settings → Connections form in base userland
-  is a planned convenience, not a capability gap.
-- (Closed) The HTTP lane now rides the same kernel-signed causal intents
-  as the model lane: every outbound request must echo an intent the
-  kernel registered for the session, byte-identical and unexpired, with a
-  per-intent request budget; turn end revokes it.
+## Renderer boundary
+
+The company controller process and the company renderer are separate trust
+domains. Granting host access to the controller does not grant it to mutable
+company HTML or JavaScript. Electron renderer sessions remain sandboxed with
+Node integration disabled, external network requests denied, and only their
+exact loopback backend origin allowed. External links still cross a native
+review before the OS opens them.
+
+## Security posture
+
+A company controller can now do the same damage as any other local process
+running under the user's account. Treat company prompts, files, MCP servers,
+and tool code as trusted. For untrusted companies or unattended work that
+needs containment, run Qorpera Base under a dedicated OS account, VM, or
+container with only the required files and credentials.
+
+The legacy sandbox-profile and provisioning helpers remain in
+`packages/shell/src/agent-runtime.ts` for compatibility and integration
+coverage, but the desktop launch path in `packages/shell/src/main.ts` does not
+invoke them.

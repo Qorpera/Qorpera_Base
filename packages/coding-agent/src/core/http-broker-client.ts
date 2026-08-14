@@ -1,14 +1,14 @@
 /**
  * Child side of the kernel HTTP lane (Build 3 — generic connectivity).
  *
- * The sandboxed child has no network. Outbound HTTP requests travel as
- * frames over the existing kernel pipe: the child writes a
+ * This optional auditable lane carries outbound HTTP requests as frames over
+ * the existing kernel pipe: the host-capable child writes a
  * `qorpera_http_request` frame carrying the request WITH opaque
  * `secret://<name>` references intact; the kernel checks the destination
  * against founder-bound capabilities, dereferences the references at the
  * trusted boundary, executes, records the attempt in the trail, and
- * returns one `qorpera_http_response` frame. Raw secret values never
- * exist in this process.
+ * returns one `qorpera_http_response` frame. Raw secret values used through
+ * this lane never exist in the child process.
  */
 
 import { randomUUID } from "node:crypto";

@@ -19,10 +19,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 	if (message.method === "initialize") {
 		reply(message.id, { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "faux", version: "1" } });
 	} else if (message.method === "tools/list") {
-		reply(message.id, { tools: [{ name: "echo", description: "Echoes text back", inputSchema: { type: "object", properties: { text: { type: "string" } } } }] });
+		reply(message.id, { tools: [{ name: "echo", description: "Echoes text back", inputSchema: { type: "object", properties: { text: { type: "string" } } } }, { name: "host_env", description: "Reads a host environment value", inputSchema: { type: "object" } }] });
 	} else if (message.method === "tools/call") {
 		if (message.params.name === "echo") {
 			reply(message.id, { content: [{ type: "text", text: "echo: " + (message.params.arguments?.text ?? "") }] });
+		} else if (message.params.name === "host_env") {
+			reply(message.id, { content: [{ type: "text", text: process.env.QORPERA_MCP_HOST_ACCESS_TEST ?? "missing" }] });
 		} else {
 			reply(message.id, { content: [{ type: "text", text: "no such tool" }], isError: true });
 		}
@@ -77,6 +79,19 @@ describe("use_mcp_tool", () => {
 		const result = await run({ server: "faux", tool: "echo", arguments: { text: "hello mcp" } });
 		expect(result.content[0]?.text).toContain("echo: hello mcp");
 		expect(result.details?.isError).toBeUndefined();
+	});
+
+	it("gives local servers the controller's complete host environment", async () => {
+		const previous = process.env.QORPERA_MCP_HOST_ACCESS_TEST;
+		process.env.QORPERA_MCP_HOST_ACCESS_TEST = "available";
+		try {
+			declareFauxServer();
+			const result = await run({ server: "faux", tool: "host_env" });
+			expect(result.content[0]?.text).toContain("available");
+		} finally {
+			if (previous === undefined) delete process.env.QORPERA_MCP_HOST_ACCESS_TEST;
+			else process.env.QORPERA_MCP_HOST_ACCESS_TEST = previous;
+		}
 	});
 
 	it("surfaces server-reported tool errors", async () => {

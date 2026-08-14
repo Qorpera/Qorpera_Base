@@ -26,10 +26,10 @@ is closed with `qorpera company product add <product> [--from <repo>]`.
 Both paths hold the same cross-process transaction lock across inventory,
 folder, projection, repository, and Git changes.
 The human's setup obligations are exactly three: say what the company is,
-ratify `authority.toml`, and connect subscriptions through a foundation-owned
-login outside the mutable company controller (or `codex login` for engine
-mode). Controller children receive only revocable opaque handles and cannot
-create, refresh, or export the foundation's provider credentials.
+ratify `authority.toml`, and connect the subscriptions the controller should
+use. Model-provider execution still receives revocable opaque broker handles;
+the host-capable controller can also run normal installed CLI login flows and
+use the signed-in user's existing credential helpers when doing machine work.
 
 ## The spine
 
@@ -105,7 +105,7 @@ departments/
   <product>-development/
     department.json   # kit identity and product display name
     briefs/           # controller-owned direction
-    repository/       # controlling clone; controller read-only
+    repository/       # controlling clone; controller policy-read-only
     worktrees/        # one isolated task worktree per product assignment
     pull-requests/     # synchronized local PR read models
 ```
@@ -175,22 +175,22 @@ and the founder responds inside the item (the shell renders a reply box; the
 response is appended as a `## Response` section the agent reads on its next
 wake). Conception runs this way: study, set up, post questions — never an
 interactive interrogation. The kernel exclusively creates message IDs and
-appends founder responses while recording them in the trusted trail. Existing
-message files, response sections, gate files, and every other inbox path are
-read-only to children.
+appends founder responses while recording them in the trail. Qorpera's
+built-in tool policy treats existing message files, response sections, gate
+files, and every other inbox path as read-only; full host commands can bypass
+that policy and are therefore visible capability, not a security boundary.
 
 ## Kernel runtime boundary
 
 The desktop kernel, not the company renderer, creates controller and product
-workers. Each child receives a clean environment and opaque model-broker
-handles, never model, Git, cloud, connector, or desktop credentials. Structured
-model context and streamed events use the existing kernel pipe; provider
-request construction, authentication, paid execution, and network remain in
-the desktop process. Every request must carry a kernel-issued causal intent
-and is recorded in the trail. There is no child loopback or CONNECT lane.
-On Windows, Base requires the elevated offline sandbox account and
-fails closed when it is unavailable. Product registration and company open
-use the same atomic transaction lock before either reads or mutates inventory.
+workers. Each child runs directly as the signed-in desktop user with the full
+host environment, filesystem permissions, network, installed CLIs, credential
+helpers, and browser handoffs. Structured model context and streamed events
+use the existing kernel pipe; paid model request construction, authentication,
+and usage accounting remain in the desktop process behind opaque handles.
+Every request must carry a kernel-issued causal intent and is recorded in the
+trail. Product registration and company open use the same atomic transaction
+lock before either reads or mutates inventory.
 
 Company userland and surfaces are served from the kernel's local read origin
 inside a per-window renderer session. That session can reach only its exact
@@ -220,9 +220,10 @@ Behavior notes:
   so even an abandoned prompt leaves an auditable session record.
 - In-process extensions are disabled in company-kernel children because they
   would share the trusted model/control process. The company remains free to
-  build backend files, tools, routines, schemas, and integrations; executable
-  behavior runs as sandboxed subprocess work and crosses authority brokers for
-  outward effects instead of inheriting ambient process capabilities.
+  build backend files, tools, routines, schemas, and integrations. Controller
+  shell commands and local MCP servers inherit host capabilities;
+  `run_company_tool` uses a clean environment for identified unattended code,
+  while retaining the signed-in user's OS permissions.
 - Known transient (2026-08-05, tsx + node 24 on Windows): the CLI
   intermittently dies with 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN,
   surfaces as "exit 9"), sometimes mid-session. Work already performed

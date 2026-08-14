@@ -12,11 +12,14 @@
  * then enforced.
  *
  * Key handling: the private key lives in the foundation's machine-local
- * agent directory (mode 0600, outside every company folder and sandbox
- * grant) and is used only by founder-context code — the CLI and the
- * desktop kernel. The child/sandbox side sees only the projected PUBLIC
- * key (`founder-public.json`), enough to verify, never to sign. The
- * signature sidecar travels with exports and forks as data: a fork
+ * agent directory (mode 0600, outside every company folder) and is used by
+ * founder-context code — the CLI and the desktop kernel. The controller's
+ * normal identity API sees only the projected PUBLIC key
+ * (`founder-public.json`), enough to verify, never to sign. A host-capable
+ * controller still runs as the same OS user and could deliberately locate
+ * the foundation file, so this separation protects the ordinary Qorpera
+ * flow rather than forming an OS confidentiality boundary. The signature
+ * sidecar travels with exports and forks as data: a fork
  * verified against a DIFFERENT local founder key simply fails closed to
  * all-gate until the new founder ratifies — severed authority, again
  * structurally.
@@ -61,7 +64,7 @@ function publicProjectionPath(): string {
 	return join(getAgentDir(), FOUNDER_PUBLIC_FILE);
 }
 
-/** The founder identity visible in this context — full in founder contexts, public-only in the sandbox. */
+/** The founder identity visible through this context's configured agent directory. */
 export function readFounderIdentity(): FounderIdentity | undefined {
 	for (const path of [identityPath(), publicProjectionPath()]) {
 		if (!existsSync(path)) continue;
@@ -102,7 +105,7 @@ export function generateFounderIdentity(name?: string): FounderIdentity {
 	return identity;
 }
 
-/** The public-only projection content for a sandboxed child's agent dir. */
+/** The public-only projection content for a controller's agent directory. */
 export function founderPublicProjection(): string | undefined {
 	const identity = readFounderIdentity();
 	if (!identity) return undefined;

@@ -97,8 +97,6 @@ import {
 	appendKernelWakeObservation,
 	applyKernelWriteFrame,
 	bindTrailSession,
-	brokeredChildEnvironment,
-	codexSpawn,
 	commitTrailAppend,
 	createKernelResponseSigner,
 	inboxMessagesPath,
@@ -110,16 +108,10 @@ import {
 	migrateLegacyTrailSession,
 	parseTrailAppendFrame,
 	protectedControllerPaths,
-	provisionSandbox,
 	pruneEmptyTrailSessions,
 	reconcileKernelGateCreations,
-	sandboxCommandArgs,
 	sandboxConfigDir,
-	sandboxGitEnvironment,
-	sandboxRuntimeDir,
-	shareWindowsSandboxState,
 	type TrailBinding,
-	writeSandboxProfile,
 } from "./agent-runtime.ts";
 import {
 	captureCompanyGitBaseline,
@@ -154,6 +146,7 @@ import {
 	modelSelectionFromRpcFrame,
 	writeControllerModelPreference,
 } from "./controller-model.ts";
+import { createHostAgentProcess } from "./host-agent-runtime.ts";
 import { createHttpRequestBroker, type HttpRequestBroker } from "./http-request-broker.ts";
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
 import {
@@ -198,33 +191,7 @@ import {
 import { startWebhookListener } from "./webhook-listener.ts";
 
 const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
-const CODEX_ENTRY = resolveCodexEntry();
-
-/**
- * Where the bundled Codex CLI is invoked from. On Windows this is the native
- * codex.exe itself: the npm wrapper script (bin/codex.js) re-spawns the
- * binary without windowsHide, and because the shell's whole process tree is
- * console-less, Windows allocates a visible console window for every sandbox
- * probe and agent start (two flashes and one persistent window per open).
- * Elsewhere the wrapper script stays the entry, run under electron-as-node.
- * codexSpawn() (agent-runtime) picks the spawn shape from the extension.
- */
-function resolveCodexEntry(): string {
-	const wrapper = fileURLToPath(import.meta.resolve("@openai/codex/bin/codex.js"));
-	if (process.platform !== "win32") return wrapper;
-	const platformPackage = process.arch === "arm64" ? "@openai/codex-win32-arm64" : "@openai/codex-win32-x64";
-	const targetTriple = process.arch === "arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc";
-	try {
-		const packageRoot = dirname(fileURLToPath(import.meta.resolve(`${platformPackage}/package.json`)));
-		const binary = join(packageRoot, "vendor", targetTriple, "bin", "codex.exe");
-		if (existsSync(binary)) return binary;
-	} catch {
-		// Fall through to the wrapper; provisioning fails loudly if that breaks too.
-	}
-	return wrapper;
-}
 const DIRNAME = fileURLToPath(new URL(".", import.meta.url));
-const FOUNDATION_READ_PATHS = [dirname(process.execPath), resolve(DIRNAME, "..", "..", "..")];
 const MODEL_AUTH_PROVIDERS = new Set([
 	"openai",
 	"openai-codex",
@@ -270,8 +237,8 @@ function prepareBrokeredAgentDir(configDir: string, companyRoot: string, credent
 		`${JSON.stringify({ [resolve(companyRoot)]: true }, null, "\t")}\n`,
 		"utf-8",
 	);
-	// The founder's PUBLIC key only: the child verifies policy provenance in
-	// the sandbox; signing stays with founder contexts (CLI + this kernel).
+	// The founder's PUBLIC key only: the child verifies policy provenance;
+	// signing stays with founder contexts (CLI + this kernel).
 	const founderProjection = founderPublicProjection();
 	if (founderProjection) writeFileSync(join(agentDir, FOUNDER_PUBLIC_FILE), founderProjection, "utf-8");
 	return agentDir;
@@ -814,7 +781,6 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		(file, hash) => completeCompanyGateCreation(userData, root, file, hash),
 	);
 	const configDir = sandboxConfigDir(userData, root, actor);
-	const runtimeDir = sandboxRuntimeDir(userData, root, actor, binding.token);
 	if (!modelRequestBroker) throw new Error("kernel model-request broker is unavailable");
 	const productWorktreeRoot = worktree ? realpathSync(cwd) : undefined;
 	const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "controller")), "checkpoints");
@@ -861,44 +827,18 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		observe: (event) => appendKernelHttpObservation(binding, event),
 	});
 	let agentDir: string;
-	let invocation: { command: string; args: string[] };
 	let kernelSigner: ReturnType<typeof createKernelResponseSigner>;
 	let child: ChildProcessWithoutNullStreams;
 	const executorId = randomUUID();
-	const env: NodeJS.ProcessEnv = brokeredChildEnvironment();
-	Object.assign(env, sandboxGitEnvironment([root, ...(productWorktreeRoot ? [productWorktreeRoot] : [])]));
-	env.ELECTRON_RUN_AS_NODE = "1";
-	env.HOME = runtimeDir;
-	env.USERPROFILE = runtimeDir;
-	env.APPDATA = runtimeDir;
-	env.LOCALAPPDATA = runtimeDir;
-	env.TEMP = runtimeDir;
-	env.TMP = runtimeDir;
-	env.TMPDIR = runtimeDir;
-	env.XDG_CONFIG_HOME = runtimeDir;
+	const invocation = createHostAgentProcess({
+		nodeExecutable: process.execPath,
+		rpcEntry: RPC_ENTRY,
+		args: ["--mode", "rpc", "--session", binding.path, ...controllerModelArgs(options.model)],
+		cwd,
+	});
+	const env = invocation.env;
 	try {
 		agentDir = prepareBrokeredAgentDir(configDir, root, brokeredCredentials.credentials);
-		shareWindowsSandboxState(userData, configDir);
-		writeSandboxProfile(configDir, runtimeDir, root, scope, protectedControllerPaths(root, products), [
-			...FOUNDATION_READ_PATHS,
-			join(configDir, "config.toml"),
-			join(agentDir, "auth.json"),
-			join(agentDir, "trust.json"),
-			join(agentDir, FOUNDER_PUBLIC_FILE),
-		]);
-		provisionSandbox({
-			codexEntry: CODEX_ENTRY,
-			configDir,
-			runtimeDir,
-			nodeExecutable: process.execPath,
-			env,
-		});
-		const rpcArgs = [RPC_ENTRY, "--mode", "rpc", "--session", binding.path, ...controllerModelArgs(options.model)];
-		invocation = codexSpawn(
-			CODEX_ENTRY,
-			process.execPath,
-			sandboxCommandArgs(CODEX_ENTRY, runtimeDir, process.execPath, rpcArgs),
-		);
 		kernelSigner = createKernelResponseSigner({ sessionId: binding.sessionId });
 	} catch (error) {
 		httpBroker.release();
@@ -912,7 +852,6 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	delete env.QORPERA_ACTOR;
 	delete env.QORPERA_PRODUCT_DEPARTMENT;
 	delete env.QORPERA_PRODUCT_WORKTREE;
-	env.CODEX_HOME = configDir;
 	env.QORPERA_CODING_AGENT_DIR = agentDir;
 	env.QORPERA_TRAIL_BROKER_TOKEN = binding.token;
 	env.QORPERA_KERNEL_PUBLIC_KEY = kernelSigner.publicKey;
@@ -938,7 +877,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		)?.attachmentSequence;
 	try {
 		child = spawn(invocation.command, invocation.args, {
-			cwd: runtimeDir,
+			cwd: invocation.cwd,
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
 			env,
@@ -3462,8 +3401,8 @@ app.whenReady().then(async () => {
 			setTimeout(() => app.quit(), 1500);
 		});
 	}
-	// A smoke run must never hang: an openCompany failure (sandbox
-	// provisioning, company lock, …) would otherwise become an unhandled
+	// A smoke run must never hang: an openCompany failure (runtime startup,
+	// company lock, …) would otherwise become an unhandled
 	// rejection that leaves the process alive with no exit path.
 	const failSmoke = (error: Error): void => {
 		console.error(`SMOKE_FAILED ${error.message}`);

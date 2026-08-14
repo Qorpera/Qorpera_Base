@@ -1,5 +1,5 @@
 /**
- * The company-tool runner (Build 2 — sandboxed company-authored capabilities).
+ * The company-tool runner (Build 2 — identified company-authored capabilities).
  *
  * Runs a company-authored program as a clean-environment subprocess. This is
  * the sanctioned lane for executing company code: unlike `bash`, the call
@@ -8,13 +8,14 @@
  * EVOLUTION §3 signature rule covers the program's content hash and every
  * run stamps `qorpera_effect.behavior` into the trail.
  *
- * Isolation model (stated honestly, manifesto §7.2): the subprocess inherits
- * the OS confinement of the controller child that spawns it — under the
- * desktop kernel that is the Codex sandbox profile (company-scope writes,
- * protected paths read-only, no network). What THIS code enforces on every
- * platform: a clean environment (allowlist below — no ambient credentials,
- * no QORPERA_* kernel state), the program resolving to a physical file
- * inside the company, bounded output, and a hard timeout.
+ * Runtime model: the subprocess inherits the host permissions of the
+ * controller child that spawns it, while this runner gives it a clean
+ * environment (allowlist below — no ambient credential variables or
+ * QORPERA_* kernel state), requires a physical program file inside the
+ * company, bounds output, and applies a hard timeout. The clean environment
+ * is not an OS security boundary; programs can use host resources available
+ * to the signed-in user. Use bash when the task explicitly needs the full
+ * inherited environment rather than this identified unattended lane.
  */
 
 import type { ChildProcess } from "node:child_process";
@@ -166,8 +167,8 @@ async function serveProgramHttpFrame(
 
 /**
  * The complete environment a company program receives. Values come from the
- * controller's own (already sandbox-scoped) environment; nothing else —
- * no model keys, no QORPERA_* kernel state, no broker tokens.
+ * controller's host environment; nothing else — no inherited model keys,
+ * QORPERA_* kernel state, or broker tokens.
  */
 const CLEAN_ENV_ALLOWLIST = [
 	"PATH",
@@ -253,7 +254,7 @@ export function createCompanyToolDefinition(
 		name: COMPANY_TOOL_NAME,
 		label: "run company tool",
 		description:
-			"Run a company-authored program (e.g. under app/tools/) as a clean-environment subprocess with the program's identity recorded in the trail. This is the sanctioned lane for codified company behavior: programs run here carry a content-hash identity that the founder can sign for unattended outward action (bash carries no such identity). The program runs with the company folder as working directory, no inherited credentials, bounded output, and a timeout.",
+			"Run a company-authored program (e.g. under app/tools/) as a clean-environment subprocess with the program's identity recorded in the trail. This is the sanctioned lane for codified company behavior: programs run here carry a content-hash identity that the founder can sign for unattended outward action (bash carries no such identity). The program runs with the company folder as working directory and the controller's host permissions, but without inherited credential variables or kernel tokens, with bounded output and a timeout.",
 		promptSnippet: "Run a company-authored program with recorded code identity",
 		parameters: companyToolSchema,
 		async execute(_toolCallId, { path, args, timeoutSeconds }: CompanyToolInput, signal?: AbortSignal) {

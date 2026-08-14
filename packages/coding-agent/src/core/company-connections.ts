@@ -7,13 +7,15 @@
  * clones carry no credentials or standing external capability (manifesto
  * §7.1, §10). Secrets are referenced from company content as opaque
  * `secret://<name>` tokens; only the kernel dereferences them, at the
- * trusted boundary (http-request-broker). Raw values never enter model
- * context, the sandbox, company files, or the trail.
+ * brokered boundary (http-request-broker). Raw values used through that lane
+ * never enter model context, company files, or the trail. A host-capable
+ * controller runs as the same OS user and could deliberately locate this
+ * machine-local file, so it is not an OS-level vault.
  *
  * The OAuth2 shape is RFC 6749's refresh-token grant — generic protocol,
  * not provider ontology. Refresh happens kernel-side at dereference time
- * and writes the rotated tokens back here; sandboxed code never touches
- * the vault (build plan §5).
+ * and writes the rotated tokens back here; the controller-facing broker API
+ * never returns the stored refresh credential (build plan §5).
  */
 
 import { createHash, randomUUID } from "node:crypto";

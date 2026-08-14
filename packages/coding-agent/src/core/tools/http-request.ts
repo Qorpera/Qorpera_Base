@@ -1,8 +1,9 @@
 /**
  * Outbound HTTP through the kernel (Build 3 — generic connectivity).
  *
- * The child has no network; this tool submits the request over the kernel
- * pipe. Secrets are used by reference: put `secret://<name>` in the URL,
+ * The host-capable child can choose this kernel-brokered lane when it needs
+ * destination binding, secret references, and trail observation. Secrets are
+ * used by reference: put `secret://<name>` in the URL,
  * a header value, or the body, and the kernel substitutes the raw value
  * at the trusted boundary — the value never enters this process, the
  * model's context, or the trail. Destinations must be founder-bound

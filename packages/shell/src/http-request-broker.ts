@@ -1,7 +1,7 @@
 /**
  * Kernel side of the generic outbound HTTP lane (Build 3).
  *
- * The trusted boundary of manifesto §7.1/§8: the sandboxed child submits
+ * The trusted boundary of manifesto §7.1/§8: the host-capable child submits
  * requests carrying opaque `secret://<name>` references; this broker
  * checks the destination against founder-bound network capabilities,
  * dereferences the references kernel-side, executes the request, and

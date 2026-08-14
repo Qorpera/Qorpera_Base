@@ -7,11 +7,10 @@
  *
  *   { "servers": { "<name>": { "command": "node", "args": ["path.js"], "env": {"K":"V"} } } }
  *
- * Servers are spawned as subprocesses of the controller child, so under
- * the desktop kernel they inherit the sandbox: no network, no
- * credentials, company-scope filesystem. That makes stdio MCP servers a
- * lane for LOCAL capabilities; servers that need the outside world go
- * through the kernel HTTP lane instead. The transport is MCP's stdio
+ * Local servers are ordinary subprocesses of the host-capable controller:
+ * they inherit the signed-in user's environment, filesystem access, network,
+ * and credential helpers. Remote servers may instead use the kernel HTTP
+ * lane with bound destinations and secret references. The transport is MCP's stdio
  * framing — newline-delimited JSON-RPC 2.0 — hand-rolled here so Base
  * carries no MCP SDK dependency (MCP is interoperability at the edges,
  * not an internal company model).
@@ -44,27 +43,8 @@ const MCP_PROTOCOL_VERSION = "2025-06-18";
 const CALL_TIMEOUT_MS = 60_000;
 const SPAWN_TIMEOUT_MS = 30_000;
 
-const CLEAN_ENV_ALLOWLIST = [
-	"PATH",
-	"HOME",
-	"USERPROFILE",
-	"APPDATA",
-	"LOCALAPPDATA",
-	"TEMP",
-	"TMP",
-	"TMPDIR",
-	"SystemRoot",
-	"SYSTEMROOT",
-	"WINDIR",
-	"COMSPEC",
-	"PATHEXT",
-	"LANG",
-	"LC_ALL",
-	"TZ",
-] as const;
-
 interface McpServerConfig {
-	/** Local stdio server: spawned as a sandboxed subprocess. */
+	/** Local stdio server: spawned with the controller's host access. */
 	command?: string;
 	args?: string[];
 	env?: Record<string, string>;
@@ -109,14 +89,12 @@ function readMcpConfig(root: string): Record<string, McpServerConfig> {
 
 function serverEnvironment(declared: Record<string, string> | undefined): Record<string, string> {
 	const env: Record<string, string> = {};
-	for (const name of CLEAN_ENV_ALLOWLIST) {
-		const value = process.env[name];
+	for (const [name, value] of Object.entries(process.env)) {
 		if (value !== undefined) env[name] = value;
 	}
 	env.ELECTRON_RUN_AS_NODE = "1";
-	// Declared env is company-authored configuration, not a credential lane:
-	// raw secrets should not be written here (they belong in the kernel
-	// store, reached via the HTTP lane). Values are passed through as-is.
+	// Declared values override the inherited host environment. Avoid writing
+	// raw secrets here when a secret:// reference over remote MCP is suitable.
 	for (const [name, value] of Object.entries(declared ?? {})) {
 		if (typeof value === "string") env[name] = value;
 	}
@@ -403,7 +381,7 @@ export function createMcpToolDefinition(cwd: string): ToolDefinition<typeof mcpS
 	return {
 		name: MCP_TOOL_NAME,
 		label: "mcp",
-		description: `Use a tool from an external MCP server the company has declared in ${MCP_CONFIG_PATH}. Omit "tool" to list a server's tools first. Servers run as sandboxed subprocesses (no network, no credentials) — they are for local capabilities; outside contact goes through http_request.`,
+		description: `Use a tool from an external MCP server the company has declared in ${MCP_CONFIG_PATH}. Omit "tool" to list a server's tools first. Local servers inherit the controller's full host environment and permissions; remote servers use the kernel's brokered HTTP lane.`,
 		promptSnippet: "Call tools on company-declared MCP servers",
 		parameters: mcpSchema,
 		async execute(_toolCallId, { server, tool, arguments: toolArguments }: McpToolInput) {
