@@ -333,6 +333,20 @@ describe("use_mcp_tool", () => {
 		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(/interpreter arguments must be static/);
 	});
 
+	it("rejects inline interpreter programs whose dependency closure cannot be bound", async () => {
+		writeFileSync(join(root, "connections", "payload.mjs"), `export const payload = "reviewed";\n`, "utf-8");
+		writeFileSync(
+			join(root, "connections", "mcp.json"),
+			JSON.stringify({
+				servers: { faux: { command: process.execPath, args: ["-e", `import('./payload.mjs')`] } },
+			}),
+			"utf-8",
+		);
+		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(
+			/inline interpreter programs are not allowed/,
+		);
+	});
+
 	it.each([
 		[
 			"aliased child-process APIs",
@@ -353,6 +367,11 @@ describe("use_mcp_tool", () => {
 			"computed child-process namespace properties",
 			`import * as childProcess from "node:child_process";\nconst runChild = childProcess["sp" + "awnSync"];\nif (false) runChild(process.env.CMD);`,
 			/child-process namespace properties cannot be computed/,
+		],
+		[
+			"destructured child-process aliases without whitespace",
+			`import * as childProcess from "node:child_process";\nconst { spawnSync:runChild } = childProcess;\nif (false) runChild(process.env.CMD);`,
+			/child-process APIs cannot be aliased/,
 		],
 		[
 			"shell expansion through spawn arguments",

@@ -170,7 +170,7 @@ const STATIC_LITERAL_PATTERNS = [
 const CHILD_PROCESS_CALL = /\b(exec|execFile|execFileSync|execSync|fork|spawn|spawnSync)\s*\(/g;
 const CHILD_PROCESS_METHODS = "exec|execFile|execFileSync|execSync|fork|spawn|spawnSync";
 const ALIASED_CHILD_PROCESS_IMPORT = new RegExp(
-	`\\b(?:${CHILD_PROCESS_METHODS})\\s+(?:as\\s+\\w+|:\\s*\\w+)|=\\s*(?:\\w+\\.)?(?:${CHILD_PROCESS_METHODS})\\b(?!\\s*\\()|\\[\\s*["'](?:${CHILD_PROCESS_METHODS})["']\\s*\\]`,
+	`\\b(?:${CHILD_PROCESS_METHODS})(?:\\s+as\\s+[$\\w]+|\\s*:\\s*[$\\w]+)|=\\s*(?:[$\\w]+\\.)?(?:${CHILD_PROCESS_METHODS})\\b(?!\\s*\\()|\\[\\s*["'](?:${CHILD_PROCESS_METHODS})["']\\s*\\]`,
 );
 const CHILD_PROCESS_NAMESPACE =
 	/(?:import\s*\*\s*as\s*|(?:const|let|var)\s+)([$A-Z_a-z][$\w]*)\s*(?:from\s*|=\s*require\s*\(\s*)["'](?:node:)?child_process["']/g;
@@ -196,6 +196,26 @@ const SCRIPT_INTERPRETERS = new Set([
 	"python3",
 	"python3.exe",
 	"sh",
+]);
+const INLINE_PROGRAM_ARGUMENTS = new Map<string, RegExp>([
+	["bash", /^-c$/i],
+	["bun", /^(?:-e|--eval(?:=.*)?)$/i],
+	["bun.exe", /^(?:-e|--eval(?:=.*)?)$/i],
+	["cmd", /^\/(?:c|k)$/i],
+	["cmd.exe", /^\/(?:c|k)$/i],
+	["deno", /^eval$/i],
+	["deno.exe", /^eval$/i],
+	["node", /^(?:-e|-p|--eval(?:=.*)?|--print(?:=.*)?)$/i],
+	["node.exe", /^(?:-e|-p|--eval(?:=.*)?|--print(?:=.*)?)$/i],
+	["powershell", /^(?:-c|-command|-commandwithargs|-ec|-encodedcommand)$/i],
+	["powershell.exe", /^(?:-c|-command|-commandwithargs|-ec|-encodedcommand)$/i],
+	["pwsh", /^(?:-c|-command|-commandwithargs|-ec|-encodedcommand)$/i],
+	["pwsh.exe", /^(?:-c|-command|-commandwithargs|-ec|-encodedcommand)$/i],
+	["python", /^-c$/i],
+	["python.exe", /^-c$/i],
+	["python3", /^-c$/i],
+	["python3.exe", /^-c$/i],
+	["sh", /^-c$/i],
 ]);
 
 function decodeStaticJavaScriptLiteral(raw: string, template: boolean): string | undefined {
@@ -403,7 +423,7 @@ function childProcessInputIdentities(root: string, source: string, path: string)
 	CHILD_PROCESS_NAMESPACE.lastIndex = 0;
 	for (let match = CHILD_PROCESS_NAMESPACE.exec(source); match; match = CHILD_PROCESS_NAMESPACE.exec(source)) {
 		const binding = match[1].replace(/[$]/g, "\\$&");
-		if (new RegExp(`\\b${binding}\\s*\\[`).test(source)) {
+		if (new RegExp(`(?:^|[^$\\w])${binding}\\s*\\[`).test(source)) {
 			throw new Error(
 				`Local host program runtime input closure cannot be proven for ${path}; child-process namespace properties cannot be computed`,
 			);
@@ -687,6 +707,14 @@ function localExecutionIdentity(root: string, config: McpServerConfig): object |
 	if (!config.command) return undefined;
 	const executable = resolveExecutable(root, config);
 	const resolvedExecutable = "resolved" in executable ? executable.resolved : undefined;
+	const executableName =
+		(resolvedExecutable ?? config.command).replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() ?? "";
+	const inlineProgramArgument = INLINE_PROGRAM_ARGUMENTS.get(executableName);
+	if (inlineProgramArgument && (config.args ?? []).some((argument) => inlineProgramArgument.test(argument))) {
+		throw new Error(
+			`Local host program dependency closure cannot be proven for ${config.command}; inline interpreter programs are not allowed, use a reviewed script file`,
+		);
+	}
 	return {
 		executable: {
 			...executable,
