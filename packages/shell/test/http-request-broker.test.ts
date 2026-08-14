@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHttpRequestBroker, type HttpRequestObservation } from "../src/http-request-broker.ts";
 
 interface SeenRequest {
@@ -256,7 +256,7 @@ describe("file mode (fetch-to-file / upload-from-file)", () => {
 		const bigFetch: typeof fetch = async () => new Response(new Uint8Array(Buffer.alloc(64, 0x41)), { status: 200 });
 		const h = harness({ fetchImpl: bigFetch, maxSaveBytes: 16 });
 		h.broker.handleFrame(h.request({ method: "GET", body: undefined, saveTo: "imports/too-big.bin" }), h.send);
-		await h.settle();
+		await vi.waitFor(() => expect(h.sent[0]).toBeDefined());
 		expect(String(h.sent[0].error)).toContain("save limit");
 		expect(existsSync(join(h.root, "imports", "too-big.bin"))).toBe(false);
 	});
