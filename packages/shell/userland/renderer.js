@@ -1,5 +1,7 @@
 /* Renderer chrome. Static by design — everything company-specific arrives
- * from the folder via the backend (surfaces/state/inbox) or the RPC pipe. */
+ * from the folder via the backend (surfaces/state/inbox) or the RPC pipe,
+ * plus one read-only kernel status lane (wake-activity beats, scoped by
+ * trail file) that narrates the live autonomous run on the Agents page. */
 const $ = (id) => document.getElementById(id);
 let backendUrl = "";
 // Stable company identity from the kernel (appInfo). Storage is keyed by
@@ -1284,6 +1286,9 @@ const NAV_GLYPHS = {
 		'<path d="M21 13h-4.8l-1.6 2.4h-5.2L7.8 13H3"/><path d="M5.6 6.3 3 13v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4l-2.6-6.7A1.6 1.6 0 0 0 16.9 5H7.1a1.6 1.6 0 0 0-1.5 1.3z"/>',
 	clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2.5"/>',
 	grid: '<rect x="3.5" y="3.5" width="7.2" height="7.2" rx="1.8"/><rect x="13.3" y="3.5" width="7.2" height="7.2" rx="1.8"/><rect x="3.5" y="13.3" width="7.2" height="7.2" rx="1.8"/><rect x="13.3" y="13.3" width="7.2" height="7.2" rx="1.8"/>',
+	expand: '<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>',
+	pause: '<rect x="7" y="5" width="3.4" height="14" rx="1.4"/><rect x="13.6" y="5" width="3.4" height="14" rx="1.4"/>',
+	resume: '<path d="M7 5.3v13.4c0 1 1.1 1.7 2 1.1l10.4-6.7c.8-.5.8-1.7 0-2.2L9 4.2c-.9-.6-2 .1-2 1.1z"/>',
 	page: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
 	plus: '<path d="M12 5v14M5 12h14"/>',
 	pin: '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/>',
@@ -2836,30 +2841,34 @@ function trailRunMeta(session, displayedOutcome) {
 }
 
 // ---- Agents page tiles -------------------------------------------------------
-// Live wake status, pushed by the kernel while a silent wake child works; the
-// grid re-renders (throttled) so the controller tile narrates in plain words.
+// Live wake status, pushed by the kernel while a silent wake child works. A
+// beat only ever updates the controller tile's narration in place — never a
+// re-render, because a deferred render could repaint over a view the founder
+// has since navigated to. State flips reach the page via the normal renders.
 let wakeActivity = null;
-let wakeActivityTimer = 0;
 window.qorpera?.onWakeActivity?.((info) => {
 	wakeActivity = info;
-	if (!document.querySelector("#view-panel .activity-layout")) return;
-	if (wakeActivityTimer) return;
-	wakeActivityTimer = setTimeout(() => {
-		wakeActivityTimer = 0;
-		void renderActivity();
-	}, 900);
+	const hero = document.querySelector("#view-panel .activity-layout .agent-tile-wide.running");
+	if (hero && hero.dataset.trail && hero.dataset.trail === info.trailFile) {
+		const doing = hero.querySelector(".agent-tile-doing");
+		if (doing) doing.textContent = wakeDoingLine(hero.dataset.trail);
+	}
 });
 
-function wakeDoingLine() {
+function wakeDoingLine(liveTrailFile) {
 	const info = wakeActivity;
-	if (!info || Date.now() - info.at > 10 * 60_000) return "Working…";
+	// Narrate only the run that is actually live: a beat from a previous wake
+	// (or another company once windows multiplex) must never be attributed to
+	// the current session — merges, which emit no beats, fall through too.
+	if (!info || !liveTrailFile || info.trailFile !== liveTrailFile) return "Working…";
+	if (Date.now() - info.at > 10 * 60_000) return "Working…";
 	if (info.kind === "start") return "Waking up…";
 	if (info.kind === "thinking") return "Thinking…";
 	if (info.kind === "writing") return "Writing its findings…";
 	if (info.kind === "settled") return "Finishing up…";
 	if (info.kind === "tool") {
-		const [tool = "", target = ""] = (info.detail ?? "").split(" · ");
-		const short = target ? target.split(/[\\/]/).pop() : "";
+		const tool = info.tool ?? "";
+		const short = info.target ? info.target.split(/[\\/]/).pop() : "";
 		if (/^read$/i.test(tool)) return short ? `Reading ${short}` : "Reading company files";
 		if (/^(write|edit|edit-diff|apply_patch)$/i.test(tool)) return short ? `Editing ${short}` : "Editing company files";
 		if (/^(grep|find|ls)$/i.test(tool)) return "Searching the company";
@@ -2870,19 +2879,13 @@ function wakeDoingLine() {
 	return "Working…";
 }
 
-const AGENT_ICONS = {
-	expand: '<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>',
-	pause: '<rect x="7" y="5" width="3.4" height="14" rx="1.4"/><rect x="13.6" y="5" width="3.4" height="14" rx="1.4"/>',
-	resume: '<path d="M7 5.3v13.4c0 1 1.1 1.7 2 1.1l10.4-6.7c.8-.5.8-1.7 0-2.2L9 4.2c-.9-.6-2 .1-2 1.1z"/>',
-};
-
-function agentIconButton(label, svgPaths, onClick) {
+function agentIconButton(label, glyph, onClick) {
 	const btn = document.createElement("button");
 	btn.type = "button";
 	btn.className = "agent-icon-button";
 	btn.title = label;
 	btn.setAttribute("aria-label", label);
-	btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${svgPaths}</svg>`;
+	btn.innerHTML = navGlyphSvg(glyph, "agent-icon-glyph");
 	btn.onclick = (event) => {
 		event.stopPropagation();
 		onClick();
@@ -2897,28 +2900,46 @@ function agentTileActions(...buttons) {
 	return acts;
 }
 
-function controllerTile(sessions, jobs, autonomousRunning, autonomousTrailFile) {
+/** One anatomy for every tile: header (status glyph · name · actions), a
+ * plain-language doing line, a small meta line. Callers fill the parts. */
+function agentTile({ statusClass, name, actions, wide }) {
 	const tile = document.createElement("div");
-	const working = autonomousRunning && Boolean(autonomousTrailFile);
-	tile.className = `agent-tile agent-tile-wide${working ? " running" : ""}`;
+	tile.className = `agent-tile${wide ? " agent-tile-wide" : ""}`;
 	const top = document.createElement("div");
 	top.className = "agent-tile-top";
 	const status = document.createElement("span");
-	status.className = working ? "agent-spin" : "agent-dot scheduled";
-	const name = document.createElement("strong");
-	name.className = "agent-tile-name";
-	name.textContent = "Controller";
-	top.append(status, name);
-	const liveSession = working ? sessions.find((session) => session.file === autonomousTrailFile) : undefined;
-	if (liveSession) {
-		top.appendChild(
-			agentTileActions(agentIconButton("Inspect live", AGENT_ICONS.expand, () => openRunInspection(liveSession))),
-		);
-	}
-	tile.appendChild(top);
+	status.className = statusClass;
+	const title = document.createElement("strong");
+	title.className = "agent-tile-name";
+	title.textContent = name;
+	top.append(status, title);
+	if (actions?.length) top.appendChild(agentTileActions(...actions));
 	const doing = document.createElement("p");
 	doing.className = "agent-tile-doing";
-	if (working) doing.textContent = wakeDoingLine();
+	const meta = document.createElement("div");
+	meta.className = "agent-tile-meta";
+	tile.append(top, doing, meta);
+	return { tile, doing, meta };
+}
+
+function controllerTile(sessions, jobs, autonomousRunning, autonomousTrailFile) {
+	const working = autonomousRunning && Boolean(autonomousTrailFile);
+	const liveSession = working ? sessions.find((session) => session.file === autonomousTrailFile) : undefined;
+	const { tile, doing, meta } = agentTile({
+		statusClass: working ? "agent-spin" : "agent-dot scheduled",
+		name: "Controller",
+		wide: true,
+		actions: liveSession
+			? [agentIconButton("Inspect live", "expand", () => openRunInspection(liveSession))]
+			: [],
+	});
+	if (working) {
+		tile.classList.add("running");
+		// The live-status beat handler updates this tile in place; the trail
+		// identity scopes narration to exactly this run.
+		tile.dataset.trail = autonomousTrailFile;
+	}
+	if (working) doing.textContent = wakeDoingLine(autonomousTrailFile);
 	else if (!jobs.length) doing.textContent = "Resting. No schedules yet — create one to give it recurring work.";
 	else {
 		const nextJob = jobs
@@ -2928,13 +2949,9 @@ function controllerTile(sessions, jobs, autonomousRunning, autonomousTrailFile) 
 			? `Resting. ${scheduledJobNextLabel(nextJob)} — ${nextJob.title}.`
 			: "Resting. All schedules are paused.";
 	}
-	tile.appendChild(doing);
-	const meta = document.createElement("div");
-	meta.className = "agent-tile-meta";
 	meta.textContent = working
 		? (liveSession?.title ?? "autonomous run")
 		: `${jobs.filter((job) => job.enabled && !job.suspendedReason).length} of ${jobs.length} schedule${jobs.length === 1 ? "" : "s"} active`;
-	tile.appendChild(meta);
 	return tile;
 }
 
@@ -2943,49 +2960,37 @@ function scheduledJobTile(job, sessions) {
 		sessions.find((session) => session.file === job.lastTrailFile) ??
 		sessions.find((session) => session.scheduledJobId === job.id);
 	const active = job.enabled && !job.suspendedReason;
-	const openDetails = () => {
-		scheduledJobPanel = { mode: "view", id: job.id, draft: scheduledJobDraft(job), dirty: false };
-		void renderActivity();
+	const openDetails = (error = "") => {
+		scheduledJobPanel = { mode: "view", id: job.id, draft: scheduledJobDraft(job), dirty: false, error };
+		void renderActivity(true);
 	};
-	const tile = document.createElement("div");
-	tile.className = `agent-tile${active ? "" : " paused"}${job.running ? " running" : ""}`;
-	if (scheduledJobPanel?.id === job.id) tile.classList.add("selected");
-	tile.tabIndex = 0;
-	tile.setAttribute("role", "button");
-	tile.onclick = openDetails;
-	tile.onkeydown = (event) => {
-		if (event.key === "Enter" || event.key === " ") {
-			event.preventDefault();
-			openDetails();
-		}
-	};
-	const top = document.createElement("div");
-	top.className = "agent-tile-top";
-	const status = document.createElement("span");
-	status.className = job.running ? "agent-spin" : active ? "agent-dot scheduled" : "agent-dot";
-	const name = document.createElement("strong");
-	name.className = "agent-tile-name";
-	name.textContent = job.title;
-	top.append(status, name);
-	top.appendChild(
-		agentTileActions(
+	const { tile, doing, meta } = agentTile({
+		statusClass: job.running ? "agent-spin" : active ? "agent-dot scheduled" : "agent-dot",
+		name: job.title,
+		actions: [
 			agentIconButton(
 				active ? "Pause" : job.suspendedReason ? "Re-enable" : "Resume",
-				active ? AGENT_ICONS.pause : AGENT_ICONS.resume,
+				active ? "pause" : "resume",
 				async () => {
-					await scheduledJobRequest(
+					const result = await scheduledJobRequest(
 						() => window.qorpera.updateScheduledJob(job.id, { enabled: !active }),
 						"Could not update the job.",
 					);
-					void renderActivity(true);
+					// A declined kernel review or a failed write must not be a
+					// silent no-op: surface it in the job's detail panel.
+					if (result?.ok) void renderActivity(true);
+					else openDetails(result?.error ?? "Could not update the job.");
 				},
 			),
-			agentIconButton("Details", AGENT_ICONS.expand, openDetails),
-		),
-	);
-	tile.appendChild(top);
-	const doing = document.createElement("p");
-	doing.className = "agent-tile-doing";
+			agentIconButton("Details", "expand", () => openDetails()),
+		],
+	});
+	if (!active) tile.classList.add("paused");
+	if (job.running) tile.classList.add("running");
+	if (scheduledJobPanel?.id === job.id) tile.classList.add("selected");
+	// The tile itself is a mouse convenience; the keyboard path is the real
+	// Details button, so no role/keydown shims wrap the nested controls.
+	tile.onclick = () => openDetails();
 	if (job.running) doing.textContent = "Running now.";
 	else if (job.suspendedReason) {
 		doing.classList.add("failure");
@@ -2994,11 +2999,7 @@ function scheduledJobTile(job, sessions) {
 		doing.classList.add("failure");
 		doing.textContent = `Last run failed: ${runFailureCause(lastRun, "failed")}`;
 	} else doing.textContent = job.prompt;
-	tile.appendChild(doing);
-	const meta = document.createElement("div");
-	meta.className = "agent-tile-meta";
 	meta.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)}`;
-	tile.appendChild(meta);
 	return tile;
 }
 
@@ -3090,9 +3091,7 @@ async function renderActivity(force = false) {
 			titleEl.prepend(badge);
 			d.querySelector(".s").textContent =
 				`${new Date(sessionRunTime(session)).toLocaleString()} · ${session.file}` +
-				(session.department ? ` · ${departmentName(session.department)}` : "") +
-				(session.group ? ` · ${session.group}` : "") +
-				(session.parentSession ? ` · child of ${session.parentSession}` : "");
+				(session.department ? ` · ${departmentName(session.department)}` : "");
 			const outcome = displayedTrailOutcome(session, autonomousTrailFile);
 			const sessionRunning = outcome === "running";
 			const runMeta = trailRunMeta(session, outcome);

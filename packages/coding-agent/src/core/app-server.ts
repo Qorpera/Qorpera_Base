@@ -640,6 +640,12 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 			const observedAt = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
 			if (Number.isFinite(observedAt)) lastObservedAt = Math.max(lastObservedAt, observedAt);
 			if (entry.type === "session" && startedAt === undefined && Number.isFinite(observedAt)) startedAt = observedAt;
+			// A message after an end marker means the trail was resumed: the
+			// release is history, not this run's terminal state.
+			if (entry.type === "message" && sessionEnded) {
+				sessionEnded = false;
+				sessionEndAt = undefined;
+			}
 			if (entry.type === "model_change") {
 				if (typeof entry.provider === "string") modelProvider = entry.provider;
 				if (typeof entry.modelId === "string") modelId = entry.modelId;

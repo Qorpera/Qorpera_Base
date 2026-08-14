@@ -1,5 +1,6 @@
 // Preload bridge — the renderer's entire capability surface. CJS on purpose
-// (sandboxed preload); kept tiny: companies, one RPC pipe, nothing else.
+// (sandboxed preload); kept tiny: companies, one RPC pipe, and one read-only
+// kernel status lane (wake-activity beats for the Agents page), nothing else.
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("qorpera", {

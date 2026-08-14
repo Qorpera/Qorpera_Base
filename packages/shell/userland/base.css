@@ -1043,24 +1043,6 @@ body.hub-opening .hub-card:not(.loading) { opacity: 0.4; pointer-events: none; t
 .scheduled-jobs-heading { margin-top: 0; }
 .activity-history-heading { margin-top: 34px; }
 .scheduled-jobs-empty { padding: 18px; border: 1px dashed var(--border-strong); border-radius: 12px; color: var(--text-soft); font-size: 12px; text-align: center; }
-.scheduled-job-row {
-	display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 12px;
-	width: 100%; min-height: 80px; padding: 13px 14px; margin: 0 0 3px;
-	border: 1px solid transparent; border-radius: 13px; background: transparent; color: var(--text); text-align: left;
-}
-.scheduled-job-row:hover, .scheduled-job-row.selected { border-color: var(--border); background: var(--hover); }
-.scheduled-job-row.selected { border-color: color-mix(in srgb, var(--accent) 36%, var(--border)); }
-.scheduled-job-row.paused { opacity: 0.58; }
-.scheduled-job-row.paused:hover, .scheduled-job-row.paused.selected { opacity: 1; }
-.scheduled-job-indicator { width: 10px; height: 10px; margin-top: 6px; border: 1.5px solid var(--text-soft); border-radius: 50%; }
-.scheduled-job-indicator.active { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 24%, transparent); }
-.scheduled-job-indicator.running { border-color: var(--blue); background: var(--blue); box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 15%, transparent); }
-.scheduled-job-copy { display: grid; min-width: 0; }
-.scheduled-job-copy strong { overflow: hidden; font-size: 14px; font-weight: 610; text-overflow: ellipsis; white-space: nowrap; }
-.scheduled-job-copy > span { margin-top: 3px; color: var(--text-muted); font-size: 12px; }
-.scheduled-job-copy small { overflow: hidden; margin-top: 5px; color: var(--text-soft); font-size: 11px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
-.scheduled-job-copy small.scheduled-job-failure-cause { color: var(--danger-muted); }
-.scheduled-job-arrow { margin-top: 1px; color: var(--text-soft); font-size: 21px; line-height: 1; }
 .scheduled-job-detail {
 	position: sticky; top: 0; display: flex; flex-direction: column; align-self: start;
 	max-height: calc(100vh - var(--titlebar-height) - 56px); overflow: hidden;
@@ -1128,6 +1110,9 @@ body.hub-opening .hub-card:not(.loading) { opacity: 0.4; pointer-events: none; t
 }
 .agent-tile:hover, .agent-tile:focus-visible { border-color: var(--border-strong); background: var(--hover); }
 .agent-tile.selected { border-color: color-mix(in srgb, var(--accent) 36%, var(--border)); }
+/* Running is stated by border tint as well as the spinner, so the state
+   survives prefers-reduced-motion with no animation at all. */
+.agent-tile.running { border-color: color-mix(in srgb, var(--accent) 32%, var(--border)); }
 .agent-tile.paused { border-style: dashed; opacity: 0.62; }
 .agent-tile.paused:hover, .agent-tile.paused:focus-within { opacity: 1; }
 .agent-tile-wide { aspect-ratio: auto; min-height: 116px; margin-bottom: 6px; }
@@ -1152,12 +1137,13 @@ body.hub-opening .hub-card:not(.loading) { opacity: 0.4; pointer-events: none; t
 .agent-spin {
 	width: 13px; height: 13px; flex: 0 0 auto; border-radius: 50%;
 	border: 2px solid var(--border-strong); border-top-color: var(--accent);
-	animation: agent-spin 0.9s linear infinite;
+	animation: spin 0.9s linear infinite;
 }
-@keyframes agent-spin { to { transform: rotate(360deg); } }
 .agent-dot { width: 10px; height: 10px; flex: 0 0 auto; border: 1.5px solid var(--text-soft); border-radius: 50%; }
 .agent-dot.scheduled { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 24%, transparent); }
-@media (prefers-reduced-motion: reduce) { .agent-spin { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+	.agent-spin { border-color: var(--accent); animation: none; }
+}
 .job-last-failure { margin: 0 0 20px; }
 .run-partial-summary { margin: 18px 0; }
 .run-partial-summary h3 { margin: 0 0 6px; font-size: 12px; font-weight: 650; }
