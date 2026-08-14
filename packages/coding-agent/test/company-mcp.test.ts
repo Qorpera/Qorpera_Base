@@ -15,6 +15,7 @@ import {
 } from "../src/core/authority.ts";
 import { handleHttpBrokerFrame, setHttpBrokerWriter } from "../src/core/http-broker-client.ts";
 import { createMcpToolDefinition, disposeMcpConnections } from "../src/core/tools/mcp.ts";
+import { createMcpServerEnvironment } from "../src/core/tools/mcp-config.ts";
 
 const FAUX_SERVER = `import { createInterface } from "node:readline";
 const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n");
@@ -201,6 +202,19 @@ describe("use_mcp_tool", () => {
 			if (previousModelHandles === undefined) delete process.env.QORPERA_MODEL_BROKER_HANDLES;
 			else process.env.QORPERA_MODEL_BROKER_HANDLES = previousModelHandles;
 		}
+	});
+
+	it("withholds controller broker capabilities regardless of environment-name casing", () => {
+		const environment = createMcpServerEnvironment({
+			Qorpera_Trail_Broker_Token: "controller-secret",
+			qorpera_model_broker_handles: "controller-handles",
+			QORPERA_MCP_DECLARED_TEST: "available",
+		});
+		expect(Object.keys(environment).some((name) => name.toUpperCase() === "QORPERA_TRAIL_BROKER_TOKEN")).toBe(false);
+		expect(Object.keys(environment).some((name) => name.toUpperCase() === "QORPERA_MODEL_BROKER_HANDLES")).toBe(
+			false,
+		);
+		expect(environment.QORPERA_MCP_DECLARED_TEST).toBe("available");
 	});
 
 	it("surfaces server-reported tool errors", async () => {

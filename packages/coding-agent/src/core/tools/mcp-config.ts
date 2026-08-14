@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url";
 export const MCP_CONFIG_PATH = join("connections", "mcp.json");
 const CONTROLLER_ONLY_ENV = new Set(["QORPERA_MODEL_BROKER_HANDLES", "QORPERA_TRAIL_BROKER_TOKEN"]);
 
+function isControllerOnlyEnvironmentName(name: string): boolean {
+	return CONTROLLER_ONLY_ENV.has(name.toUpperCase());
+}
+
 export interface McpServerConfig {
 	/** Local stdio server: spawned with the controller's host access. */
 	command?: string;
@@ -53,13 +57,15 @@ function setEnvironmentValue(environment: Record<string, string>, name: string, 
 export function createMcpServerEnvironment(declared: Record<string, string> | undefined): Record<string, string> {
 	const environment: Record<string, string> = {};
 	for (const [name, value] of Object.entries(process.env)) {
-		if (value !== undefined && !CONTROLLER_ONLY_ENV.has(name)) setEnvironmentValue(environment, name, value);
+		if (value !== undefined && !isControllerOnlyEnvironmentName(name)) setEnvironmentValue(environment, name, value);
 	}
 	setEnvironmentValue(environment, "ELECTRON_RUN_AS_NODE", "1");
 	// Declared values override the inherited host environment. Avoid writing
 	// raw secrets here when a secret:// reference over remote MCP is suitable.
 	for (const [name, value] of Object.entries(declared ?? {})) {
-		if (typeof value === "string") setEnvironmentValue(environment, name, value);
+		if (typeof value === "string" && !isControllerOnlyEnvironmentName(name)) {
+			setEnvironmentValue(environment, name, value);
+		}
 	}
 	return environment;
 }
