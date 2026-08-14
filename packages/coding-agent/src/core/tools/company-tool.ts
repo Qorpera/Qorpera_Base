@@ -5,7 +5,7 @@
  * the sanctioned lane for executing company code: unlike `bash`, the call
  * carries the PROGRAM's identity — the authority layer derives behaviorPath
  * from the path argument (authority.ts effectiveBehaviorPath), so the
- * EVOLUTION §3 signature rule covers the program's content hash and every
+ * EVOLUTION §3 signature rule covers the program's code/dependency identity and every
  * run stamps `qorpera_effect.behavior` into the trail.
  *
  * Runtime model: the subprocess inherits the host permissions of the
@@ -31,6 +31,7 @@ import { spawn } from "../../utils/child-process.ts";
 import {
 	type Authority,
 	COMPANY_TOOL_NAME,
+	consumeCompanyExecutionBinding,
 	discoverAuthority,
 	evaluateToolCall,
 	finalizeAuthorityDecision,
@@ -38,6 +39,7 @@ import {
 } from "../authority.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { brokeredHttpRequest, isHttpBrokerAvailable } from "../http-broker-client.ts";
+import { companyProgramExecutionFingerprint } from "./mcp-config.ts";
 import { getTextOutput, renderToolPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -57,7 +59,7 @@ export type CompanyToolInput = Static<typeof companyToolSchema>;
 export interface CompanyToolDetails {
 	/** Company-root-relative POSIX path of the executed program. */
 	behaviorPath: string;
-	/** sha256 of the program file at execution time — the acting code identity. */
+	/** sha256 of the program and its provable dependency closure at execution time. */
 	contentHash: string;
 	exitCode: number | null;
 	durationMs: number;
@@ -138,6 +140,7 @@ async function serveProgramHttpFrame(
 	const decision = evaluateToolCall(authority, HTTP_TOOL_NAME, spec, cwd, {
 		attended: false,
 		behaviorPath: program.absolute,
+		behaviorHash: program.executionHash,
 	});
 	const finalized = await finalizeAuthorityDecision(authority, decision, HTTP_TOOL_NAME, spec);
 	if (finalized.kind === "block") {
@@ -147,7 +150,7 @@ async function serveProgramHttpFrame(
 	try {
 		const response = await brokeredHttpRequest({
 			...spec,
-			behavior: { path: program.rootRelative, contentHash: program.contentHash },
+			behavior: { path: program.rootRelative, contentHash: program.executionHash ?? program.contentHash },
 		});
 		respond({
 			type: "qorpera_program_http_response",
@@ -220,6 +223,7 @@ interface ResolvedProgram {
 	absolute: string;
 	rootRelative: string;
 	contentHash: string;
+	executionHash?: string;
 }
 
 /** Resolve and admit the program: a physical file inside the company folder. */
@@ -254,15 +258,27 @@ export function createCompanyToolDefinition(
 		name: COMPANY_TOOL_NAME,
 		label: "run company tool",
 		description:
-			"Run a company-authored program (e.g. under app/tools/) as a clean-environment subprocess with the program's identity recorded in the trail. This is the sanctioned lane for codified company behavior: programs run here carry a content-hash identity that the founder can sign for unattended outward action (bash carries no such identity). The program runs with the company folder as working directory and the controller's host permissions, but without inherited credential variables or kernel tokens, with bounded output and a timeout.",
+			"Run a company-authored program (e.g. under app/tools/) as a clean-environment subprocess with its code/dependency identity recorded in the trail. This is the sanctioned lane for codified company behavior: programs run here carry an identity that the founder can sign for unattended outward action (bash carries no such identity). The program runs with the company folder as working directory and the controller's host permissions, but without inherited credential variables or kernel tokens, with bounded output and a timeout.",
 		promptSnippet: "Run a company-authored program with recorded code identity",
 		parameters: companyToolSchema,
-		async execute(_toolCallId, { path, args, timeoutSeconds }: CompanyToolInput, signal?: AbortSignal) {
+		async execute(_toolCallId, input: CompanyToolInput, signal?: AbortSignal) {
+			const { path, args, timeoutSeconds } = input;
 			const authority = discoverAuthority(cwd);
 			if (!authority) {
 				throw new Error("run_company_tool requires a company folder (no authority root found)");
 			}
-			const program = resolveProgram(path, cwd, authority.root);
+			const expectedProgramHash = consumeCompanyExecutionBinding(authority, input);
+			if (!expectedProgramHash) {
+				throw new Error("run_company_tool requires a fresh authority evaluation before execution");
+			}
+			const admittedProgram = resolveProgram(path, cwd, authority.root);
+			const currentProgramHash = companyProgramExecutionFingerprint(authority.root, cwd, path);
+			if (currentProgramHash !== expectedProgramHash) {
+				throw new Error(
+					"Company program changed after authority approval; retry the call to review the current program and dependencies",
+				);
+			}
+			const program: ResolvedProgram = { ...admittedProgram, executionHash: currentProgramHash };
 			const timeoutMs = Math.min(Math.max(timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS, 1), MAX_TIMEOUT_SECONDS) * 1000;
 			const nodeBinary = options?.nodeBinary ?? process.execPath;
 			const started = Date.now();
@@ -341,7 +357,7 @@ export function createCompanyToolDefinition(
 					const output = Buffer.concat(chunks).toString("utf-8");
 					const details: CompanyToolDetails = {
 						behaviorPath: program.rootRelative,
-						contentHash: program.contentHash,
+						contentHash: program.executionHash ?? program.contentHash,
 						exitCode,
 						durationMs,
 						...(timedOut ? { timedOut: true as const } : {}),
@@ -353,7 +369,7 @@ export function createCompanyToolDefinition(
 						: interrupted
 							? "interrupted"
 							: `exit ${exitCode}`;
-					const header = `${program.rootRelative} (sha256 ${program.contentHash.slice(0, 12)}…) — ${status}, ${durationMs}ms`;
+					const header = `${program.rootRelative} (sha256 ${(program.executionHash ?? program.contentHash).slice(0, 12)}…) — ${status}, ${durationMs}ms`;
 					const body = output.trim()
 						? `\n${output}${truncated ? "\n[output truncated at 1MB]" : ""}`
 						: "\n(no output)";

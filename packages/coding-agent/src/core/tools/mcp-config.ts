@@ -127,6 +127,9 @@ function fileLikeArgument(arg: string): string | undefined {
 const MODULE_SOURCE_EXTENSIONS = new Set([".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
 const STATIC_MODULE_SPECIFIER = /(?:^|[;\n\r])\s*(?:import|export)\s+(?:[^"'();]*?\s+from\s+)?["']([^"']+)["']/g;
 const CALLED_MODULE_SPECIFIER = /\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g;
+const ALTERNATE_MODULE_LOADERS = new Set(["module", "node:module", "node:vm", "vm"]);
+const DYNAMIC_CODE_CONSTRUCT =
+	/\b(?:eval|Function|AsyncFunction|GeneratorFunction|WebAssembly|globalThis)\b|\.constructor\b|\bprocess\s*\.\s*getBuiltinModule\b|\bmodule\s*\[/;
 
 function moduleSpecifiers(source: string, path: string): string[] {
 	const specifiers = new Set<string>();
@@ -140,7 +143,15 @@ function moduleSpecifiers(source: string, path: string): string[] {
 		.replace(/\bimport\s*\.\s*meta\b/g, "");
 	if (/\b(?:import|require)\b/.test(unverifiedSource)) {
 		throw new Error(
-			`MCP local server dependency closure cannot be proven for ${path}; use only literal import, export-from, and require references`,
+			`Local host program dependency closure cannot be proven for ${path}; use only literal import, export-from, and require references`,
+		);
+	}
+	if (
+		DYNAMIC_CODE_CONSTRUCT.test(unverifiedSource) ||
+		[...specifiers].some((value) => ALTERNATE_MODULE_LOADERS.has(value))
+	) {
+		throw new Error(
+			`Local host program dependency closure cannot be proven for ${path}; dynamic code and alternate module loaders are not allowed`,
 		);
 	}
 	return [...specifiers].sort();
@@ -215,13 +226,39 @@ function argumentFileIdentity(root: string, arg: string): object | undefined {
 
 function localExecutionIdentity(root: string, config: McpServerConfig): object | undefined {
 	if (!config.command) return undefined;
+	const executable = resolveExecutable(root, config);
+	const resolvedExecutable = "resolved" in executable ? executable.resolved : undefined;
 	return {
-		executable: resolveExecutable(root, config),
+		executable: {
+			...executable,
+			...(resolvedExecutable && isUnderRoot(resolvedExecutable, root)
+				? { dependencies: transitiveModuleIdentity(root, resolvedExecutable) }
+				: {}),
+		},
 		files: (config.args ?? []).flatMap((arg) => {
 			const identity = argumentFileIdentity(root, arg);
 			return identity ? [identity] : [];
 		}),
 	};
+}
+
+/** Identity bound to one company-program execution across approval and spawn. */
+export function companyProgramExecutionFingerprint(root: string, cwd: string, rawPath: string): string {
+	const candidate = resolve(cwd, rawPath);
+	let resolved: string;
+	try {
+		resolved = realpathSync.native(candidate);
+	} catch {
+		return sha256(canonicalJson({ path: candidate, state: "missing" }));
+	}
+	return sha256(
+		canonicalJson({
+			path: candidate,
+			resolved,
+			insideCompany: isUnderRoot(candidate, root) && isUnderRoot(resolved, root),
+			dependencies: transitiveModuleIdentity(root, resolved),
+		}),
+	);
 }
 
 export function readMcpConfig(root: string): Record<string, McpServerConfig> {

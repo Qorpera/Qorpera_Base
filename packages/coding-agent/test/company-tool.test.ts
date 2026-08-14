@@ -3,21 +3,27 @@
  * company-authored programs with behavior identity, and its wiring into the
  * signature rule (EVOLUTION.md §3) via the authority layer.
  */
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { COMPANY_TOOL_NAME, discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
+import {
+	COMPANY_TOOL_NAME,
+	discoverAuthority,
+	evaluateToolCall,
+	finalizeAuthorityDecision,
+} from "../src/core/authority.ts";
 import { scaffoldCompany } from "../src/core/company.ts";
 import { handleHttpBrokerFrame, setHttpBrokerWriter } from "../src/core/http-broker-client.ts";
 import { createCompanyToolDefinition } from "../src/core/tools/company-tool.ts";
+import { companyProgramExecutionFingerprint } from "../src/core/tools/mcp-config.ts";
 
 let root: string;
 
 beforeEach(() => {
 	root = join(tmpdir(), `qorpera-company-tool-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	scaffoldCompany(root);
+	writeFileSync(join(root, "authority.toml"), `[tools]\n${COMPANY_TOOL_NAME} = "none"\n`, "utf-8");
 });
 
 afterEach(() => {
@@ -34,6 +40,14 @@ function writeProgram(relativePath: string, source: string): string {
 }
 
 async function run(input: { path: string; args?: string[]; timeoutSeconds?: number }) {
+	const authority = discoverAuthority(root)!;
+	const decision = await finalizeAuthorityDecision(
+		authority,
+		evaluateToolCall(authority, COMPANY_TOOL_NAME, input, root),
+		COMPANY_TOOL_NAME,
+		input,
+	);
+	if (decision.kind === "block") throw new Error(decision.reason);
 	const definition = createCompanyToolDefinition(root);
 	const execute = definition.execute as unknown as (toolCallId: string, args: unknown) => Promise<unknown>;
 	return (await execute("test-call", input)) as {
@@ -62,7 +76,7 @@ describe("run_company_tool execution", () => {
 		expect(readFileSync(join(root, "departments", "from-tool.txt"), "utf-8")).toContain("made by tool");
 		// Acting code identity: root-relative POSIX path + content sha256.
 		expect(result.details?.behaviorPath).toBe("app/tools/hello.mjs");
-		expect(result.details?.contentHash).toBe(createHash("sha256").update(readFileSync(absolute)).digest("hex"));
+		expect(result.details?.contentHash).toBe(companyProgramExecutionFingerprint(root, root, absolute));
 		expect(result.details?.exitCode).toBe(0);
 	});
 
@@ -117,6 +131,7 @@ describe("run_company_tool execution", () => {
 describe("run_company_tool authority wiring (signature rule)", () => {
 	it("defaults to authority and stamps behavior identity when the founder opts it out", () => {
 		const absolute = writeProgram(join("app", "tools", "report.mjs"), "console.log('report');\n");
+		writeFileSync(join(root, "authority.toml"), "", "utf-8");
 		const authority = discoverAuthority(root);
 		expect(authority).toBeDefined();
 		const gated = evaluateToolCall(authority!, COMPANY_TOOL_NAME, { path: "app/tools/report.mjs" }, root, {
@@ -132,8 +147,30 @@ describe("run_company_tool authority wiring (signature rule)", () => {
 		expect(decision.kind).toBe("allow");
 		expect(decision.kind === "allow" && decision.behavior?.path).toBe("app/tools/report.mjs");
 		expect(decision.kind === "allow" && decision.behavior?.contentHash).toBe(
-			createHash("sha256").update(readFileSync(absolute)).digest("hex"),
+			companyProgramExecutionFingerprint(root, root, absolute),
 		);
+	});
+
+	it("rejects a program dependency changed after authority finalization", async () => {
+		writeProgram(join("app", "tools", "payload.mjs"), `export const payload = "reviewed";\n`);
+		writeProgram(
+			join("app", "tools", "report.mjs"),
+			`import { payload } from "./payload.mjs";\nconsole.log(payload);\n`,
+		);
+		const input = { path: "app/tools/report.mjs" };
+		const authority = discoverAuthority(root)!;
+		const decision = await finalizeAuthorityDecision(
+			authority,
+			evaluateToolCall(authority, COMPANY_TOOL_NAME, input, root),
+			COMPANY_TOOL_NAME,
+			input,
+		);
+		expect(decision.kind).toBe("allow");
+
+		writeProgram(join("app", "tools", "payload.mjs"), `export const payload = "changed";\n`);
+		const definition = createCompanyToolDefinition(root);
+		const execute = definition.execute as unknown as (toolCallId: string, args: unknown) => Promise<unknown>;
+		await expect(execute("changed-program", input)).rejects.toThrow(/changed after authority approval/);
 	});
 
 	it("unattended outward classification triggers the signature rule on the PROGRAM's content", () => {
@@ -199,7 +236,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 describe("program-side http lane", () => {
 	it("forwards program requests through the kernel lane with the program's identity attached", async () => {
 		const absolute = writeProgram(join("app", "tools", "reporter.mjs"), LANE_PROGRAM);
-		writeFileSync(join(root, "authority.toml"), `[tools]\nhttp_request = "none"\n`, "utf-8");
+		writeFileSync(
+			join(root, "authority.toml"),
+			`[tools]\nhttp_request = "none"\n${COMPANY_TOOL_NAME} = "none"\n`,
+			"utf-8",
+		);
 		const captured: Array<Record<string, unknown>> = [];
 		setHttpBrokerWriter((frame) => {
 			const record = frame as Record<string, unknown>;
@@ -220,7 +261,7 @@ describe("program-side http lane", () => {
 		expect(captured.length).toBe(1);
 		const behavior = captured[0].behavior as { path: string; contentHash: string };
 		expect(behavior.path).toBe("app/tools/reporter.mjs");
-		expect(behavior.contentHash).toBe(createHash("sha256").update(readFileSync(absolute)).digest("hex"));
+		expect(behavior.contentHash).toBe(companyProgramExecutionFingerprint(root, root, absolute));
 	});
 
 	it("applies the signature rule to program requests: unsigned outward-classed code is refused with a filed request", async () => {
@@ -231,7 +272,7 @@ describe("program-side http lane", () => {
 		// trust; that half is kernel-integration territory.)
 		writeFileSync(
 			join(root, "authority.toml"),
-			`[identity]\nmode = "notify"\n\n[tools]\nhttp_request = "identity"\n`,
+			`[identity]\nmode = "notify"\n\n[tools]\nhttp_request = "identity"\n${COMPANY_TOOL_NAME} = "none"\n`,
 			"utf-8",
 		);
 		const captured: Array<Record<string, unknown>> = [];

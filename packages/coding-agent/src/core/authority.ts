@@ -33,7 +33,7 @@ import { parse as parseToml } from "smol-toml";
 import { AUTHORITY_SIGNATURE_PATH, verifyAuthorityPolicy, verifyGateApproval } from "./founder-identity.ts";
 import { requestKernelGateConsumption, requestKernelGateTrust } from "./kernel-broker.ts";
 import { writeRawStdout } from "./output-guard.ts";
-import { mcpServerConfigurationFingerprint } from "./tools/mcp-config.ts";
+import { companyProgramExecutionFingerprint, mcpServerConfigurationFingerprint } from "./tools/mcp-config.ts";
 
 export type ConfigurableEffectClass = "money" | "identity" | "irreversible" | "authority";
 export type EffectClass = ConfigurableEffectClass | "product_code";
@@ -67,6 +67,8 @@ export type AuthorityDecision =
 			behavior?: BehaviorSignature;
 			gateId?: string;
 			mcpConfigurationHash?: string;
+			companyProgramHash?: string;
+			companyProgramPath?: string;
 			kernelGate?: { file: string; hash: string; id: string; effectClass: EffectClass };
 	  }
 	| { kind: "block"; reason: string; effectClass: EffectClass; gateId?: string; behavior?: BehaviorSignature };
@@ -98,13 +100,15 @@ export interface ToolCallContext {
 	 * ignored — only company-authored code is subject to signatures.
 	 */
 	behaviorPath?: string;
+	/** Precomputed identity for behavior whose execution includes bound local dependencies. */
+	behaviorHash?: string;
 }
 
 /** Signature status of the codified behavior backing a tool call. */
 export interface BehaviorSignature {
 	/** Root-relative POSIX path of the acting code. */
 	path: string;
-	/** sha256 of the file content at evaluation time. */
+	/** sha256 of the acting code identity at evaluation time (including bound dependencies when applicable). */
 	contentHash: string;
 	/** A durable founder approval exists for exactly this content. */
 	signed: boolean;
@@ -130,8 +134,9 @@ export interface GateRecord {
  * The company-tool runner (Build 2): executes company-authored programs as
  * clean-environment subprocesses. For this tool the acting behavior is the
  * PROGRAM being run, not the runner itself — behaviorPath derives from the
- * call's path argument so the signature rule covers the program's content
- * hash. Because an arbitrary program can conceal any host effect, the runner
+ * call's path argument so the signature rule covers the program's code and
+ * provable dependency closure. Because an arbitrary program can conceal any
+ * host effect, the runner
  * defaults to [authority] until the founder explicitly classifies or opts it
  * out; opted-out runs still stamp the program identity into the trail.
  */
@@ -543,8 +548,9 @@ function canonicalJson(value: unknown): string {
 	return JSON.stringify(value) ?? "null";
 }
 
-const MCP_BINDING_TTL_MS = 60_000;
+const EXECUTION_BINDING_TTL_MS = 60_000;
 const mcpExecutionBindings = new Map<string, Array<{ configurationHash: string; expiresAt: number }>>();
+const companyExecutionBindings = new Map<string, Array<{ programHash: string; expiresAt: number }>>();
 
 function mcpServerName(args: unknown): string {
 	if (!args || typeof args !== "object" || Array.isArray(args)) return "";
@@ -558,6 +564,12 @@ function mcpGateArgs(args: unknown, configurationHash: string | undefined): unkn
 	return { ...record, serverConfigurationSha256: configurationHash };
 }
 
+function companyGateArgs(args: unknown, programHash: string | undefined): unknown {
+	if (!programHash) return args;
+	const record = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
+	return { ...record, programExecutionSha256: programHash };
+}
+
 function mcpBindingKey(authority: Authority, args: unknown): string {
 	return `${resolve(authority.root)}\u0000${requestHash(MCP_TOOL_NAME, args)}`;
 }
@@ -566,7 +578,7 @@ function registerMcpExecutionBinding(authority: Authority, args: unknown, config
 	const key = mcpBindingKey(authority, args);
 	const now = Date.now();
 	const queue = (mcpExecutionBindings.get(key) ?? []).filter((entry) => entry.expiresAt > now);
-	queue.push({ configurationHash, expiresAt: now + MCP_BINDING_TTL_MS });
+	queue.push({ configurationHash, expiresAt: now + EXECUTION_BINDING_TTL_MS });
 	mcpExecutionBindings.set(key, queue);
 }
 
@@ -579,6 +591,29 @@ export function consumeMcpExecutionBinding(authority: Authority, args: unknown):
 	if (queue.length > 0) mcpExecutionBindings.set(key, queue);
 	else mcpExecutionBindings.delete(key);
 	return binding?.configurationHash;
+}
+
+function companyBindingKey(authority: Authority, args: unknown): string {
+	return `${resolve(authority.root)}\u0000${requestHash(COMPANY_TOOL_NAME, args)}`;
+}
+
+function registerCompanyExecutionBinding(authority: Authority, args: unknown, programHash: string): void {
+	const key = companyBindingKey(authority, args);
+	const now = Date.now();
+	const queue = (companyExecutionBindings.get(key) ?? []).filter((entry) => entry.expiresAt > now);
+	queue.push({ programHash, expiresAt: now + EXECUTION_BINDING_TTL_MS });
+	companyExecutionBindings.set(key, queue);
+}
+
+/** Consume the authority hook's one-shot binding immediately before company-program execution. */
+export function consumeCompanyExecutionBinding(authority: Authority, args: unknown): string | undefined {
+	const key = companyBindingKey(authority, args);
+	const now = Date.now();
+	const queue = (companyExecutionBindings.get(key) ?? []).filter((entry) => entry.expiresAt > now);
+	const binding = queue.shift();
+	if (queue.length > 0) companyExecutionBindings.set(key, queue);
+	else companyExecutionBindings.delete(key);
+	return binding?.programHash;
 }
 
 export function requestHash(toolName: string, args: unknown): string {
@@ -784,10 +819,10 @@ function summarizeCall(toolName: string, args: unknown): string {
  * Signatures are durable in the path-scoped desktop kernel: a native-reviewed
  * capability covers exactly that company path and content hash across child
  * replacement, while copied company files carry no authority. The
- * hash is computed from the file as it is NOW — with jiti hot-reload this
- * tracks what actually executes next; a stale in-memory registration from a
- * since-edited file resolves to the new (unsigned) content, which errs
- * toward gating.
+ * hash is computed from the code as it is NOW — with jiti hot-reload this
+ * tracks what actually executes next; company programs bind their provable
+ * dependency closure too. A stale in-memory registration from since-edited
+ * code resolves to the new (unsigned) identity, which errs toward gating.
  */
 /**
  * The acting code behind a tool call. For the company-tool runner the
@@ -811,13 +846,15 @@ function effectiveBehaviorPath(
 function resolveBehaviorSignature(
 	authority: Authority,
 	behaviorPath: string | undefined,
+	executionHash?: string,
 ): BehaviorSignature | undefined {
 	if (!behaviorPath) return undefined;
 	const resolved = resolve(behaviorPath);
 	if (!isUnderDir(resolved, authority.root)) return undefined;
 	let contentHash: string;
 	try {
-		contentHash = createHash("sha256").update(readFileSync(resolved)).digest("hex");
+		const content = readFileSync(resolved);
+		contentHash = executionHash ?? createHash("sha256").update(content).digest("hex");
 	} catch {
 		return undefined;
 	}
@@ -962,7 +999,19 @@ export function evaluateToolCall(
 	const config = readAuthorityConfig(authority);
 	const mcpConfigurationHash =
 		toolName === MCP_TOOL_NAME ? mcpServerConfigurationFingerprint(authority.root, mcpServerName(args)) : undefined;
-	const gatedArgs = mcpGateArgs(args, mcpConfigurationHash);
+	const companyProgramPath =
+		toolName === COMPANY_TOOL_NAME ? effectiveBehaviorPath(toolName, args, cwd, context) : undefined;
+	const companyProgramHash =
+		companyProgramPath !== undefined
+			? companyProgramExecutionFingerprint(authority.root, authority.root, companyProgramPath)
+			: undefined;
+	const gatedArgs = companyGateArgs(mcpGateArgs(args, mcpConfigurationHash), companyProgramHash);
+	const callBehavior = (): BehaviorSignature | undefined =>
+		resolveBehaviorSignature(
+			authority,
+			effectiveBehaviorPath(toolName, args, cwd, context),
+			toolName === COMPANY_TOOL_NAME ? companyProgramHash : context?.behaviorHash,
+		);
 	let effectClass = classifyToolCall(authority, config, toolName, args, cwd);
 	if (!effectClass) {
 		// Company-tool runs stamp behavior identity even when unclassified:
@@ -970,7 +1019,8 @@ export function evaluateToolCall(
 		if (toolName === COMPANY_TOOL_NAME) {
 			return {
 				kind: "allow",
-				behavior: resolveBehaviorSignature(authority, effectiveBehaviorPath(toolName, args, cwd, context)),
+				behavior: callBehavior(),
+				...(companyProgramHash ? { companyProgramHash, companyProgramPath } : {}),
 			};
 		}
 		return { kind: "allow", ...(mcpConfigurationHash ? { mcpConfigurationHash } : {}) };
@@ -1010,7 +1060,7 @@ export function evaluateToolCall(
 				kind: "allow",
 				effectClass: "product_code",
 				actor: "product-worker",
-				behavior: resolveBehaviorSignature(authority, effectiveBehaviorPath(toolName, args, cwd, context)),
+				behavior: callBehavior(),
 			};
 		}
 	}
@@ -1021,7 +1071,7 @@ export function evaluateToolCall(
 	// covers the model acting under founder direction, not agent-authored
 	// code acting with nobody present. Attended calls fall through to the
 	// normal per-action gates (presence is the intent source there).
-	const behavior = resolveBehaviorSignature(authority, effectiveBehaviorPath(toolName, args, cwd, context));
+	const behavior = callBehavior();
 	if (
 		behavior &&
 		!behavior.signed &&
@@ -1034,7 +1084,13 @@ export function evaluateToolCall(
 
 	const mode = config.classes[effectClass].mode;
 	if (mode === "auto") {
-		return { kind: "allow", effectClass, behavior, ...(mcpConfigurationHash ? { mcpConfigurationHash } : {}) };
+		return {
+			kind: "allow",
+			effectClass,
+			behavior,
+			...(mcpConfigurationHash ? { mcpConfigurationHash } : {}),
+			...(companyProgramHash ? { companyProgramHash, companyProgramPath } : {}),
+		};
 	}
 	if (mode === "notify") {
 		appendNotice(authority, `[${effectClass}] ${summarizeCall(toolName, args)} (auto-proceeded, notify mode)`);
@@ -1044,6 +1100,7 @@ export function evaluateToolCall(
 			effectClass,
 			behavior,
 			...(mcpConfigurationHash ? { mcpConfigurationHash } : {}),
+			...(companyProgramHash ? { companyProgramHash, companyProgramPath } : {}),
 		};
 	}
 
@@ -1058,6 +1115,7 @@ export function evaluateToolCall(
 				effectClass,
 				behavior,
 				...(mcpConfigurationHash ? { mcpConfigurationHash } : {}),
+				...(companyProgramHash ? { companyProgramHash, companyProgramPath } : {}),
 				kernelGate: { file: basename(approved.filePath), hash, id: approved.id, effectClass },
 			};
 		}
@@ -1069,6 +1127,7 @@ export function evaluateToolCall(
 			effectClass,
 			behavior,
 			...(mcpConfigurationHash ? { mcpConfigurationHash } : {}),
+			...(companyProgramHash ? { companyProgramHash, companyProgramPath } : {}),
 		};
 	}
 	const pending = records.find((record) => record.status === "pending");
@@ -1127,6 +1186,19 @@ export async function finalizeAuthorityDecision(
 			};
 		}
 	}
+	if (toolName === COMPANY_TOOL_NAME) {
+		const currentHash = finalized.companyProgramPath
+			? companyProgramExecutionFingerprint(authority.root, authority.root, finalized.companyProgramPath)
+			: undefined;
+		if (!finalized.companyProgramHash || finalized.companyProgramHash !== currentHash) {
+			return {
+				kind: "block",
+				effectClass: finalized.effectClass ?? "authority",
+				reason:
+					"Company-program authority binding: the selected program or one of its dependencies changed after policy evaluation. Retry the call so the current code is reviewed before it starts.",
+			};
+		}
+	}
 	if (finalized.behavior?.kernelTrust) {
 		const trust = finalized.behavior.kernelTrust;
 		const granted = await requestKernelGateTrust(trust.file, trust.hash);
@@ -1148,6 +1220,9 @@ export async function finalizeAuthorityDecision(
 		if (toolName === MCP_TOOL_NAME && finalized.mcpConfigurationHash) {
 			registerMcpExecutionBinding(authority, args, finalized.mcpConfigurationHash);
 		}
+		if (toolName === COMPANY_TOOL_NAME && finalized.companyProgramHash) {
+			registerCompanyExecutionBinding(authority, args, finalized.companyProgramHash);
+		}
 		return finalized;
 	}
 	const gate = finalized.kernelGate;
@@ -1165,6 +1240,9 @@ export async function finalizeAuthorityDecision(
 	const { kernelGate: _kernelGate, ...completed } = finalized;
 	if (toolName === MCP_TOOL_NAME && completed.mcpConfigurationHash) {
 		registerMcpExecutionBinding(authority, args, completed.mcpConfigurationHash);
+	}
+	if (toolName === COMPANY_TOOL_NAME && completed.companyProgramHash) {
+		registerCompanyExecutionBinding(authority, args, completed.companyProgramHash);
 	}
 	return { ...completed, gateId: gate.id };
 }

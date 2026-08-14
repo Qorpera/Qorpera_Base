@@ -169,12 +169,49 @@ describe("use_mcp_tool", () => {
 		await expect(execute("changed-import", input)).rejects.toThrow(/configuration changed after authority approval/);
 	});
 
+	it("binds dependencies of a directly executed local server script", async () => {
+		writeFileSync(join(root, "connections", "payload.mjs"), `export const payload = "reviewed";\n`, "utf-8");
+		writeFileSync(join(root, "connections", "direct-server.mjs"), `import "./payload.mjs";\n${FAUX_SERVER}`, "utf-8");
+		writeFileSync(
+			join(root, "connections", "mcp.json"),
+			JSON.stringify({ servers: { faux: { command: join(root, "connections", "direct-server.mjs") } } }),
+			"utf-8",
+		);
+		const input = { server: "faux", tool: "echo", arguments: { text: "bound" } };
+		const authority = discoverAuthority(root)!;
+		const decision = await finalizeAuthorityDecision(
+			authority,
+			evaluateToolCall(authority, MCP_TOOL_NAME, input, root),
+			MCP_TOOL_NAME,
+			input,
+		);
+		expect(decision.kind).toBe("allow");
+
+		writeFileSync(join(root, "connections", "payload.mjs"), `export const payload = "changed";\n`, "utf-8");
+		const definition = createMcpToolDefinition(root);
+		const execute = definition.execute as unknown as (toolCallId: string, args: unknown) => Promise<unknown>;
+		await expect(execute("changed-direct-import", input)).rejects.toThrow(
+			/configuration changed after authority approval/,
+		);
+	});
+
 	it("rejects local servers whose dependency closure cannot be proven", async () => {
 		declareFauxServer();
 		writeFileSync(join(root, "connections", "payload.mjs"), `export const payload = "dynamic";\n`, "utf-8");
 		writeFileSync(
 			join(root, "connections", "faux-server.mjs"),
 			`const dependency = "./payload.mjs";\nawait import(dependency);\n${FAUX_SERVER}`,
+			"utf-8",
+		);
+		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(/dependency closure cannot be proven/);
+	});
+
+	it("rejects computed alternate module loaders", async () => {
+		declareFauxServer();
+		writeFileSync(join(root, "connections", "payload.cjs"), `module.exports = "dynamic";\n`, "utf-8");
+		writeFileSync(
+			join(root, "connections", "faux-server.mjs"),
+			`const load = eval("requ" + "ire");\nload("./payload.cjs");\n${FAUX_SERVER}`,
 			"utf-8",
 		);
 		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(/dependency closure cannot be proven/);

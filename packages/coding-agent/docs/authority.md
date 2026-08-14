@@ -98,7 +98,13 @@ transition. Editing the file alone never mints an executable capability.
 - **Denied** requests block without re-filing; the founder can return one to
   `pending` and review it again through Base.
 - Matching is by SHA-256 of tool name + canonical-JSON args — approval covers
-  exactly the requested action.
+  exactly the requested action. For `run_company_tool`, the match also binds
+  the resolved program and its provable local dependency closure; for local
+  MCP it binds the selected configuration, spawn environment, executable,
+  script arguments, and their provable local dependency closure. Both are
+  revalidated immediately before spawn. Non-literal or alternate JavaScript
+  module loaders fail closed because their dependency closure cannot be
+  reviewed reliably.
 
 ## Project extension gating
 
@@ -155,12 +161,14 @@ root are ignored — only company-authored code is subject).
   acting with nobody present.
 - Necessary, not sufficient: signed code still hits per-action class gates
   and limits.
-- Signatures are durable per physical company path and content hash
+- Signatures are durable per physical company path and code identity
   (`behavior_signature` requests, the same mechanism as extension-load
   approvals): local native review signs exactly that code across child
   replacement, while copied gate files carry no authority. Revocation is a
-  native-reviewed transition from the consumed gate card. The hash is computed from the file as it is now —
-  with hot-reload this tracks what executes next and errs toward gating.
+  native-reviewed transition from the consumed gate card. Company-program
+  identities include the provable local dependency closure; other behavior
+  hashes use the source file as it is now. With hot-reload this tracks what
+  executes next and errs toward gating.
 - Attended calls fall through to the normal inline gates: presence is the
   intent source there.
 
