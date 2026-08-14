@@ -600,6 +600,21 @@ export function appendKernelSessionEndObservation(
 	appendKernelCustomObservation(binding, "qorpera_kernel_session_end", input);
 }
 
+/** Durable evidence for an unexpected provider-process exit. The trail stays
+ * the session identity; this records why its replaceable runtime disappeared
+ * before the kernel resumes the same file. */
+export function appendKernelRuntimeExitObservation(
+	binding: TrailBinding,
+	input: {
+		code: number | null;
+		signal: NodeJS.Signals | null;
+		busy: boolean;
+		stderr: string;
+	},
+): void {
+	appendKernelCustomObservation(binding, "qorpera_kernel_runtime_exit", input);
+}
+
 export function appendKernelHttpObservation(
 	binding: TrailBinding,
 	input: {

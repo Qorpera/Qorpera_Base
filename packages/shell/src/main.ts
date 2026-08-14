@@ -91,6 +91,7 @@ import {
 	appendKernelMutationObservation,
 	appendKernelObservation,
 	appendKernelProductStorageObservation,
+	appendKernelRuntimeExitObservation,
 	appendKernelSessionEndObservation,
 	appendKernelWakeObservation,
 	applyKernelWriteFrame,
@@ -322,6 +323,9 @@ interface CompanyRuntime {
 	pendingInboundWake?: boolean;
 	inventoryWatcher?: ReturnType<typeof watch>;
 	transitionQueue: Promise<void>;
+	/** Bounded crash-loop state for the replaceable attended RPC process. */
+	runtimeReconnectAttempts: number;
+	lastUnexpectedRuntimeExitAt?: number;
 	closing: boolean;
 	runtimeLock: CompanyRuntimeLock;
 }
@@ -946,11 +950,35 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			if (!silent) send(win(), "rpc-log", line);
 		}
 	});
+	const stderrTail: string[] = [];
+	let stderrTailBytes = 0;
 	createInterface({ input: child.stderr }).on("line", (line) => {
+		stderrTail.push(line);
+		stderrTailBytes += Buffer.byteLength(line, "utf-8") + 1;
+		while (stderrTailBytes > 4096 && stderrTail.length > 1) {
+			stderrTailBytes -= Buffer.byteLength(stderrTail.shift()!, "utf-8") + 1;
+		}
 		if (!silent) send(win(), "rpc-log", line);
 	});
-	child.on("exit", (code) => {
-		if (!silent && !intentionalKills.has(child)) send(win(), "rpc-exit", code);
+	child.on("exit", (code, signal) => {
+		if (silent || intentionalKills.has(child)) return;
+		const detail = stderrTail.join("\n").slice(-4096);
+		try {
+			appendKernelRuntimeExitObservation(binding, {
+				code,
+				signal,
+				busy: childBusy.get(child) ?? false,
+				stderr: detail,
+			});
+		} catch (error) {
+			console.error(`runtime-exit observation failed: ${(error as Error).message}`);
+		}
+		const runtime = slot.runtime;
+		if (runtime && runtime.root === root && runtime.child === child && !runtime.closing && !autonomousName) {
+			scheduleRuntimeReconnect(slot, runtime, child, binding.file, options.model, code, detail);
+			return;
+		}
+		send(win(), "rpc-exit", code);
 	});
 	child.on("close", () => {
 		liveChildren.delete(child);
@@ -1071,6 +1099,56 @@ function enqueueRuntimeTransition<T>(runtime: CompanyRuntime, transition: () => 
 		() => undefined,
 	);
 	return result;
+}
+
+function scheduleRuntimeReconnect(
+	slot: Slot,
+	runtime: CompanyRuntime,
+	exitedChild: ChildProcessWithoutNullStreams,
+	sessionFile: string,
+	model: ControllerModelSelection | undefined,
+	code: number | null,
+	detail: string,
+): void {
+	const now = Date.now();
+	if (!runtime.lastUnexpectedRuntimeExitAt || now - runtime.lastUnexpectedRuntimeExitAt > 30_000) {
+		runtime.runtimeReconnectAttempts = 0;
+	}
+	runtime.lastUnexpectedRuntimeExitAt = now;
+	runtime.runtimeReconnectAttempts += 1;
+	const attempt = runtime.runtimeReconnectAttempts;
+	if (attempt > 3) {
+		send(slot.window, "rpc-event", { type: "runtime_reconnect_failed", code, detail });
+		send(slot.window, "rpc-exit", code);
+		return;
+	}
+
+	send(slot.window, "rpc-event", { type: "runtime_reconnecting", code, attempt });
+	void enqueueRuntimeTransition(runtime, async () => {
+		await childCheckpointCompletion.get(exitedChild);
+		await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, [250, 750, 2_000][attempt - 1]));
+		if (slot.runtime !== runtime || runtime.closing || runtime.child !== exitedChild) return;
+		const resumeOptions: ChildOptions = {
+			...runtime.childOptions,
+			sessionFile,
+			model: model ?? runtime.childOptions.model,
+		};
+		runtime.childOptions = resumeOptions;
+		runtime.child = startChild(slot, runtime.root, resumeOptions);
+		send(slot.window, "rpc-event", { type: "runtime_reconnected", attempt });
+	}).catch((error) => {
+		console.error(`controller runtime reconnect failed: ${(error as Error).message}`);
+		if (slot.runtime !== runtime || runtime.closing || runtime.child !== exitedChild) return;
+		scheduleRuntimeReconnect(
+			slot,
+			runtime,
+			exitedChild,
+			sessionFile,
+			model,
+			code,
+			`${detail}\nreconnect: ${(error as Error).message}`.trim(),
+		);
+	});
 }
 
 function isCurrentRuntimeChild(slot: Slot, runtime: CompanyRuntime, child: ChildProcessWithoutNullStreams): boolean {
@@ -1673,6 +1751,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 			usingBaseFallback: false,
 			backendToken,
 			transitionQueue: Promise.resolve(),
+			runtimeReconnectAttempts: 0,
 			closing: false,
 			runtimeLock,
 		};

@@ -670,6 +670,46 @@ describe("Coding Agent Tools", () => {
 			expect(getTextOutput(result)).toContain("line 4999");
 		});
 
+		it("should keep a bounded result when the full-output temp directory is unwritable", async () => {
+			const blockedTemp = join(testDir, "not-a-directory");
+			writeFileSync(blockedTemp, "file blocks child creation", "utf-8");
+			const previous = {
+				TEMP: process.env.TEMP,
+				TMP: process.env.TMP,
+				TMPDIR: process.env.TMPDIR,
+			};
+			process.env.TEMP = blockedTemp;
+			process.env.TMP = blockedTemp;
+			process.env.TMPDIR = blockedTemp;
+			const operations: BashOperations = {
+				exec: async (_command, _cwd, { onData }) => {
+					for (let i = 0; i < 3000; i++) {
+						onData(Buffer.from(`line-${i}-${"x".repeat(32)}\n`, "utf-8"));
+					}
+					return { exitCode: 0 };
+				},
+			};
+
+			try {
+				const bash = createBashTool(testDir, { operations });
+				const result = await bash.execute("test-call-unwritable-temp", { command: "chatty" });
+				expect(result.details?.truncation?.truncated).toBe(true);
+				expect(result.details?.fullOutputPath).toBeUndefined();
+				expect(getTextOutput(result)).toContain("line-2999");
+				expect(getTextOutput(result)).not.toContain("Full output: undefined");
+
+				const direct = await executeBashWithOperations("chatty", testDir, operations);
+				expect(direct.truncated).toBe(true);
+				expect(direct.fullOutputPath).toBeUndefined();
+				expect(direct.output).toContain("line-2999");
+			} finally {
+				for (const [name, value] of Object.entries(previous)) {
+					if (value === undefined) delete process.env[name];
+					else process.env[name] = value;
+				}
+			}
+		});
+
 		it("should not count a trailing newline as an extra truncated bash output line", async () => {
 			const operations: BashOperations = {
 				exec: async (_command, _cwd, { onData }) => {
