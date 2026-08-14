@@ -7,7 +7,12 @@ import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createCompanyAppServer } from "../src/core/app-server.ts";
+import {
+	createCompanyAppServer,
+	type SessionRuntimeSnapshot,
+	type SessionRuntimeSource,
+	type SessionRuntimeUpdate,
+} from "../src/core/app-server.ts";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
 import { scaffoldCompany, scaffoldProductDepartment } from "../src/core/company.ts";
 import { LITELLM_RATES_URL, parseUsageRateTable, type UsageRateCatalog } from "../src/core/usage-pricing.ts";
@@ -15,6 +20,9 @@ import { LITELLM_RATES_URL, parseUsageRateTable, type UsageRateCatalog } from ".
 let root: string;
 let server: Server | undefined;
 let base: string;
+let runtimeSnapshot: SessionRuntimeSnapshot;
+let runtimeListeners: Set<(update: SessionRuntimeUpdate) => void>;
+let hiddenTrails: Set<string>;
 
 const TEST_USAGE_RATE_CATALOG: UsageRateCatalog = {
 	rates: parseUsageRateTable({
@@ -41,10 +49,26 @@ const TEST_USAGE_RATE_CATALOG: UsageRateCatalog = {
 beforeEach(async () => {
 	root = join(tmpdir(), `qorpera-app-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	scaffoldCompany(root);
+	runtimeSnapshot = {
+		revision: 0,
+		generatedAt: "2026-08-14T08:00:00.000Z",
+		sessions: [],
+	};
+	runtimeListeners = new Set();
+	hiddenTrails = new Set();
+	const sessionRuntime: SessionRuntimeSource = {
+		snapshot: () => runtimeSnapshot,
+		isTrailVisible: (trailFile) => !hiddenTrails.has(trailFile),
+		subscribe: (listener) => {
+			runtimeListeners.add(listener);
+			return () => runtimeListeners.delete(listener);
+		},
+	};
 	server = createCompanyAppServer({
 		root,
 		authToken: "test-token",
 		usageRateCatalog: async () => TEST_USAGE_RATE_CATALOG,
+		sessionRuntime,
 	});
 	await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
 	const address = server!.address() as { port: number };
@@ -57,6 +81,93 @@ afterEach(async () => {
 });
 
 describe("company app server", () => {
+	it("excludes trails quarantined by the canonical replay", async () => {
+		const file = "broken.jsonl";
+		writeFileSync(
+			join(root, "trail", file),
+			`${JSON.stringify({
+				type: "session",
+				version: 5,
+				id: "broken",
+				timestamp: "2026-08-14T08:00:00.000Z",
+				cwd: root,
+				qorpera: { actor: "controller", attended: true },
+			})}\nnot-json\n`,
+			"utf-8",
+		);
+		hiddenTrails.add(file);
+
+		const state = (await (await fetch(`${base}/api/state`)).json()) as {
+			sessions: Array<{ file: string }>;
+		};
+		expect(state.sessions.map((session) => session.file)).not.toContain(file);
+	});
+
+	it("serves one canonical session projection as snapshot state and a live stream", async () => {
+		runtimeSnapshot = {
+			revision: 1,
+			generatedAt: "2026-08-14T08:01:00.000Z",
+			sessions: [
+				{
+					trailFile: "trail-live.jsonl",
+					sessionId: "session-live",
+					actor: "controller",
+					autonomous: false,
+					status: "running",
+					live: true,
+					kernelInstanceId: "kernel-a",
+					executorId: "executor-a",
+					updatedAt: "2026-08-14T08:01:00.000Z",
+					activity: { kind: "thinking" },
+				},
+			],
+		};
+		const state = (await (await fetch(`${base}/api/state`)).json()) as {
+			runtime: SessionRuntimeSnapshot;
+		};
+		expect(state.runtime).toEqual(runtimeSnapshot);
+
+		const stream = await fetch(`${base}/api/runtime`);
+		expect(stream.headers.get("content-type")).toContain("text/event-stream");
+		const reader = stream.body!.getReader();
+		const first = new TextDecoder().decode((await reader.read()).value);
+		expect(first).toContain("event: snapshot");
+		expect(first).toContain('"revision":1');
+
+		runtimeSnapshot = {
+			...runtimeSnapshot,
+			revision: 2,
+			generatedAt: "2026-08-14T08:02:00.000Z",
+		};
+		for (const listener of runtimeListeners) listener({ snapshot: runtimeSnapshot });
+		const second = new TextDecoder().decode((await reader.read()).value);
+		expect(second).toContain("event: runtime");
+		expect(second).toContain('"revision":2');
+
+		const activitySession = {
+			...runtimeSnapshot.sessions[0],
+			updatedAt: "2026-08-14T08:03:00.000Z",
+			activity: { kind: "writing" as const },
+		};
+		runtimeSnapshot = {
+			revision: 3,
+			generatedAt: activitySession.updatedAt,
+			sessions: [activitySession],
+		};
+		for (const listener of runtimeListeners) {
+			listener({
+				event: { kind: "activity", at: activitySession.updatedAt },
+				session: activitySession,
+				snapshot: runtimeSnapshot,
+			});
+		}
+		const third = new TextDecoder().decode((await reader.read()).value);
+		expect(third).toContain('"revision":3');
+		expect(third).toContain('"session":');
+		expect(third).not.toContain('"snapshot":');
+		await reader.cancel();
+	});
+
 	it("serves chrome, live state, and surfaces as the controller builds them", async () => {
 		const chrome = await (await fetch(`${base}/`)).text();
 		expect(chrome).toContain("Controller — Qorpera Base");
@@ -64,7 +175,12 @@ describe("company app server", () => {
 		let state = (await (await fetch(`${base}/api/state`)).json()) as {
 			projection: {
 				navigation: string[];
-				nodes: Array<{ id: string; kind: string; label: string; view?: { version?: number } }>;
+				nodes: Array<{
+					id: string;
+					kind: string;
+					label: string;
+					view?: { version?: number };
+				}>;
 			};
 			trailSessions: number;
 		};
@@ -76,7 +192,9 @@ describe("company app server", () => {
 		expect(state).not.toHaveProperty("surfaces");
 		writeFileSync(
 			join(root, "app", "manifest.json"),
-			JSON.stringify({ surfaces: [{ name: "Obsolete", entry: "obsolete.html" }] }),
+			JSON.stringify({
+				surfaces: [{ name: "Obsolete", entry: "obsolete.html" }],
+			}),
 			"utf-8",
 		);
 		state = (await (await fetch(`${base}/api/state`)).json()) as typeof state;
@@ -119,7 +237,11 @@ describe("company app server", () => {
 			expect.arrayContaining([
 				expect.objectContaining({
 					id: "page:main.hello",
-					view: expect.objectContaining({ type: "surface", entry: "hello.html", version: expect.any(Number) }),
+					view: expect.objectContaining({
+						type: "surface",
+						entry: "hello.html",
+						version: expect.any(Number),
+					}),
 				}),
 			]),
 		);
@@ -170,7 +292,13 @@ describe("company app server", () => {
 		writeFileSync(
 			join(root, "trail", "2026-08-08T10-00-00-000Z_usage.jsonl"),
 			`${[
-				JSON.stringify({ type: "session", version: 3, id: "usage", timestamp: "2026-08-08T10:00:00Z", cwd: root }),
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "usage",
+					timestamp: "2026-08-08T10:00:00Z",
+					cwd: root,
+				}),
 				JSON.stringify({
 					type: "message",
 					id: "a",
@@ -187,7 +315,13 @@ describe("company app server", () => {
 							cacheRead: 20,
 							cacheWrite: 0,
 							totalTokens: 80,
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							cost: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0,
+							},
 						},
 					},
 				}),
@@ -208,7 +342,13 @@ describe("company app server", () => {
 							cacheWrite: 10,
 							reasoning: 5,
 							totalTokens: 170,
-							cost: { input: 0.004, output: 0.006, cacheRead: 0.001, cacheWrite: 0.001, total: 0.012 },
+							cost: {
+								input: 0.004,
+								output: 0.006,
+								cacheRead: 0.001,
+								cacheWrite: 0.001,
+								total: 0.012,
+							},
 						},
 					},
 				}),
@@ -226,7 +366,13 @@ describe("company app server", () => {
 							cacheRead: 0,
 							cacheWrite: 0,
 							totalTokens: 1,
-							cost: { input: 0, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.02 },
+							cost: {
+								input: 0,
+								output: 0.02,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0.02,
+							},
 						},
 					},
 				}),
@@ -250,7 +396,11 @@ describe("company app server", () => {
 			pricedRecords: number;
 			unpricedRecords: number;
 			reasoningTokens: number;
-			costQuality: { cacheSavingsUsd: number; modelPricedShare: number; unpricedShare: number };
+			costQuality: {
+				cacheSavingsUsd: number;
+				modelPricedShare: number;
+				unpricedShare: number;
+			};
 			pricing: { status: string; source: string; knownModels: number };
 			providers: Array<{ provider: string; totalTokens: number }>;
 			daily: Array<{ day: string; totalTokens: number }>;
@@ -293,7 +443,13 @@ describe("company app server", () => {
 					api: "codex-app-server",
 					provider: "openai",
 					model: "gpt-5.3-codex",
-					usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 },
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+					},
 				},
 			})}\n`,
 			"utf-8",
@@ -340,12 +496,21 @@ describe("company app server", () => {
 		writeFileSync(
 			join(root, "trail", "2026-08-04T10-00-00-000Z_abc.jsonl"),
 			[
-				JSON.stringify({ type: "session", version: 3, id: "abc", timestamp: "t", cwd: root }),
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "abc",
+					timestamp: "t",
+					cwd: root,
+				}),
 				JSON.stringify({
 					type: "message",
 					id: "1",
 					parentId: null,
-					message: { role: "user", content: [{ type: "text", text: "plan the pricing analysis" }] },
+					message: {
+						role: "user",
+						content: [{ type: "text", text: "plan the pricing analysis" }],
+					},
 				}),
 			].join("\n"),
 			"utf-8",
@@ -367,14 +532,27 @@ describe("company app server", () => {
 					id: "auto",
 					timestamp: "2026-08-04T11:00:00.000Z",
 					cwd: root,
-					qorpera: { actor: "controller", attended: false, autonomous: true, label: "autonomous — conception" },
+					qorpera: {
+						actor: "controller",
+						attended: false,
+						autonomous: true,
+						label: "autonomous — conception",
+					},
 				}),
-				JSON.stringify({ type: "session_info", id: "s1", parentId: null, name: "autonomous — conception" }),
+				JSON.stringify({
+					type: "session_info",
+					id: "s1",
+					parentId: null,
+					name: "autonomous — conception",
+				}),
 				JSON.stringify({
 					type: "message",
 					id: "1",
 					parentId: "s1",
-					message: { role: "user", content: [{ type: "text", text: "begin conception" }] },
+					message: {
+						role: "user",
+						content: [{ type: "text", text: "begin conception" }],
+					},
 				}),
 				JSON.stringify({
 					type: "model_change",
@@ -396,7 +574,11 @@ describe("company app server", () => {
 					type: "custom",
 					timestamp: "2026-08-04T11:00:06.000Z",
 					customType: "qorpera_kernel_model_request",
-					data: { event: "intent", status: "completed", usage: { calls: 3, costUsd: 0.25 } },
+					data: {
+						event: "intent",
+						status: "completed",
+						usage: { calls: 3, costUsd: 0.25 },
+					},
 				}),
 			].join("\n"),
 			"utf-8",
@@ -444,7 +626,12 @@ describe("company app server", () => {
 				JSON.stringify({
 					type: "message",
 					timestamp: "2026-08-04T11:30:02.500Z",
-					message: { role: "toolResult", toolCallId: "edit-1", toolName: "edit", isError: false },
+					message: {
+						role: "toolResult",
+						toolCallId: "edit-1",
+						toolName: "edit",
+						isError: false,
+					},
 				}),
 				JSON.stringify({
 					type: "message",
@@ -461,7 +648,11 @@ describe("company app server", () => {
 					type: "custom",
 					timestamp: "2026-08-04T11:30:04.000Z",
 					customType: "qorpera_kernel_model_request",
-					data: { event: "intent", status: "aborted", usage: { calls: 1, costUsd: 0 } },
+					data: {
+						event: "intent",
+						status: "aborted",
+						usage: { calls: 1, costUsd: 0 },
+					},
 				}),
 				// Simulates the old inspection path appending child startup metadata.
 				// The historical start and finish must remain the original run times.
@@ -504,7 +695,12 @@ describe("company app server", () => {
 					id: "scoped",
 					timestamp: "t",
 					cwd: root,
-					qorpera: { actor: "product-worker", attended: true, department: department.path, worktree },
+					qorpera: {
+						actor: "product-worker",
+						attended: true,
+						department: department.path,
+						worktree,
+					},
 				}),
 				JSON.stringify({
 					type: "session_info",
@@ -516,7 +712,10 @@ describe("company app server", () => {
 					type: "message",
 					id: "1",
 					parentId: "s2",
-					message: { role: "user", content: [{ type: "text", text: "fix the launcher" }] },
+					message: {
+						role: "user",
+						content: [{ type: "text", text: "fix the launcher" }],
+					},
 				}),
 			].join("\n"),
 			"utf-8",
@@ -527,8 +726,19 @@ describe("company app server", () => {
 		writeFileSync(
 			join(root, "trail", "2026-08-04T13-00-00-000Z_sidechat.jsonl"),
 			[
-				JSON.stringify({ type: "session", version: 3, id: "sidechat", timestamp: "t", cwd: root }),
-				JSON.stringify({ type: "session_info", id: "s3", parentId: null, name: "page — page:revenue.overview" }),
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "sidechat",
+					timestamp: "t",
+					cwd: root,
+				}),
+				JSON.stringify({
+					type: "session_info",
+					id: "s3",
+					parentId: null,
+					name: "page — page:revenue.overview",
+				}),
 				JSON.stringify({
 					type: "message",
 					id: "1",
@@ -553,7 +763,13 @@ describe("company app server", () => {
 		writeFileSync(
 			join(root, "trail", "2026-08-04T14-00-00-000Z_kernelinput.jsonl"),
 			[
-				JSON.stringify({ type: "session", version: 3, id: "ki", timestamp: "t", cwd: root }),
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "ki",
+					timestamp: "t",
+					cwd: root,
+				}),
 				JSON.stringify({
 					type: "custom",
 					id: "c1",
@@ -564,11 +780,49 @@ describe("company app server", () => {
 			].join("\n"),
 			"utf-8",
 		);
+		// Runtime attachment history must not hide a conversation that receives
+		// its first founder message only after many idle reconnects.
+		writeFileSync(
+			join(root, "trail", "2026-08-04T14-30-00-000Z_late-first-message.jsonl"),
+			[
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "late-first-message",
+					timestamp: "t",
+					cwd: root,
+				}),
+				...Array.from({ length: 450 }, (_, index) =>
+					JSON.stringify({
+						type: "custom",
+						id: `runtime-${index}`,
+						customType: "qorpera_kernel_session_runtime",
+						data: { kind: "executor_ready" },
+					}),
+				),
+				JSON.stringify({
+					type: "message",
+					id: "late-user-message",
+					parentId: null,
+					message: {
+						role: "user",
+						content: [{ type: "text", text: "preserve this late conversation" }],
+					},
+				}),
+			].join("\n"),
+			"utf-8",
+		);
 		// A chat opened and abandoned before any input is spawn residue — the
 		// file stays in the trail but the chat list must not pile up with it.
 		writeFileSync(
 			join(root, "trail", "2026-08-04T15-00-00-000Z_empty.jsonl"),
-			JSON.stringify({ type: "session", version: 3, id: "empty", timestamp: "t", cwd: root }),
+			JSON.stringify({
+				type: "session",
+				version: 3,
+				id: "empty",
+				timestamp: "t",
+				cwd: root,
+			}),
 			"utf-8",
 		);
 
@@ -605,6 +859,7 @@ describe("company app server", () => {
 		const legacyWake = state.sessions.find((s) => s.file.includes("_legacy-wake"));
 		const scoped = state.sessions.find((s) => s.file.includes("_scoped"));
 		const sidechat = state.sessions.find((s) => s.file.includes("_sidechat"));
+		const lateFirstMessage = state.sessions.find((s) => s.file.includes("_late-first-message"));
 		expect(chat?.title).toBe("plan the pricing analysis");
 		expect(chat?.kind).toBe("chat");
 		expect(chat?.department).toBeUndefined();
@@ -658,6 +913,7 @@ describe("company app server", () => {
 		expect(sidechat?.kind).toBe("chat");
 		expect(sidechat?.page).toBe("page:revenue.overview");
 		expect(sidechat?.title).toBe("why did July dip?");
+		expect(lateFirstMessage?.title).toBe("preserve this late conversation");
 		const kernelInput = state.sessions.find((s) => s.file.includes("_kernelinput"));
 		const empty = state.sessions.find((s) => s.file.includes("_empty"));
 		expect(kernelInput?.title).toBe("review the supplier contracts");
@@ -695,8 +951,14 @@ describe("company app server", () => {
 		expect(body).toContain("Which currency");
 		const respond = await fetch(`${base}/api/inbox/respond`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
-			body: JSON.stringify({ file: "messages/msg-pricing.md", response: "DKK primarily, EUR later." }),
+			headers: {
+				"content-type": "application/json",
+				"x-qorpera-token": "test-token",
+			},
+			body: JSON.stringify({
+				file: "messages/msg-pricing.md",
+				response: "DKK primarily, EUR later.",
+			}),
 		});
 		expect(respond.status).toBe(200);
 		expect(readFileSync(join(root, "inbox", "messages", "msg-pricing.md"), "utf-8")).toContain("DKK primarily");
@@ -724,7 +986,10 @@ describe("company app server", () => {
 
 		const post = await fetch(`${base}/api/gate`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			headers: {
+				"content-type": "application/json",
+				"x-qorpera-token": "test-token",
+			},
 			body: JSON.stringify({ file: gate!.file, action: "approved" }),
 		});
 		expect(post.status).toBe(200);
@@ -737,7 +1002,10 @@ describe("company app server", () => {
 		// Bad requests are refused.
 		const bad = await fetch(`${base}/api/gate`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			headers: {
+				"content-type": "application/json",
+				"x-qorpera-token": "test-token",
+			},
 			body: JSON.stringify({ file: "../authority.toml", action: "approved" }),
 		});
 		expect(bad.status).toBe(400);
@@ -752,7 +1020,10 @@ describe("company app server", () => {
 		);
 		const revoked = await fetch(`${base}/api/gate`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			headers: {
+				"content-type": "application/json",
+				"x-qorpera-token": "test-token",
+			},
 			body: JSON.stringify({ file: durableFile, action: "denied" }),
 		});
 		expect(revoked.status).toBe(200);
@@ -766,7 +1037,10 @@ describe("company app server", () => {
 		);
 		const rejected = await fetch(`${base}/api/gate`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			headers: {
+				"content-type": "application/json",
+				"x-qorpera-token": "test-token",
+			},
 			body: JSON.stringify({ file: actionFile, action: "denied" }),
 		});
 		expect(rejected.status).toBe(400);
@@ -776,7 +1050,9 @@ describe("company app server", () => {
 		const authority = discoverAuthority(root)!;
 		const blocked = evaluateToolCall(authority, "bash", { command: "rm -rf work" }, root);
 		const gateId = (blocked as { gateId: string }).gateId;
-		const state = (await (await fetch(`${base}/api/state`)).json()) as { inbox: Array<{ file: string }> };
+		const state = (await (await fetch(`${base}/api/state`)).json()) as {
+			inbox: Array<{ file: string }>;
+		};
 		const gateFile = state.inbox.find((item) => item.file.startsWith(gateId))!.file;
 
 		for (const [path, payload] of [
@@ -814,9 +1090,15 @@ describe("company app server", () => {
 
 		const save = await fetch(`${base}/api/authority/config`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			headers: {
+				"content-type": "application/json",
+				"x-qorpera-token": "test-token",
+			},
 			body: JSON.stringify({
-				classes: { irreversible: { mode: "notify" }, money: { mode: "gate", limitUsd: 100 } },
+				classes: {
+					irreversible: { mode: "notify" },
+					money: { mode: "gate", limitUsd: 100 },
+				},
 			}),
 		});
 		expect(save.status).toBe(200);
@@ -835,14 +1117,20 @@ describe("company app server", () => {
 
 		const invalid = await fetch(`${base}/api/authority`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			headers: {
+				"content-type": "application/json",
+				"x-qorpera-token": "test-token",
+			},
 			body: JSON.stringify({ content: "not [valid toml" }),
 		});
 		expect(invalid.status).toBe(400);
 
 		const valid = await fetch(`${base}/api/authority`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "x-qorpera-token": "test-token" },
+			headers: {
+				"content-type": "application/json",
+				"x-qorpera-token": "test-token",
+			},
 			body: JSON.stringify({ content: `[irreversible]\nmode = "notify"\n` }),
 		});
 		expect(valid.status).toBe(200);

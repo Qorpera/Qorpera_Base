@@ -9,6 +9,7 @@ import { generateFounderIdentity } from "@qorpera/pi-coding-agent/founder-identi
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	appendKernelObservation,
+	appendKernelSessionInfo,
 	applyKernelWriteFrame,
 	bindTrailSession,
 	brokeredChildEnvironment,
@@ -116,6 +117,27 @@ function createProductCheckpointFixture(company: string): {
 	return { worktree, trailPath, assignmentPath };
 }
 
+it("kernel-stamps a fresh session name before an executor is attached", () => {
+	const company = join(root, "company");
+	const binding = bindTrailSession(company, company, {
+		actor: "controller",
+		attended: false,
+	});
+	appendKernelSessionInfo(binding, "page — page:strategy");
+
+	const entries = readFileSync(binding.path, "utf-8")
+		.trimEnd()
+		.split("\n")
+		.map((line) => JSON.parse(line));
+	expect(entries[1]).toMatchObject({
+		type: "session_info",
+		name: "page — page:strategy",
+		provenance: { source: "kernel", trust: "observed" },
+		kernel: { sequence: 1, previousHash: null },
+	});
+	expect(latestResumableTrailSession(company)).toBe(binding.file);
+});
+
 describe("kernel-bound agent runtime", () => {
 	it("resumes the newest founder chat and prunes contentless sessions at open", () => {
 		const company = join(root, "company");
@@ -164,8 +186,8 @@ describe("kernel-bound agent runtime", () => {
 			"utf-8",
 		);
 
-		// Before the sweep the newest resumable file is the controller husk.
-		expect(latestResumableTrailSession(company)).toBe("2099-01-01T00-00-00-000Z_husk.jsonl");
+		// The unaudited controller husk is never resumable, even before cleanup.
+		expect(latestResumableTrailSession(company)).toBe(spoken.file);
 		expect(pruneEmptyTrailSessions(company)).toBe(2); // controller husk + product husk
 		expect(existsSync(husk)).toBe(false);
 		expect(existsSync(productHusk)).toBe(false);

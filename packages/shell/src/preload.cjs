@@ -1,7 +1,25 @@
 // Preload bridge — the renderer's entire capability surface. CJS on purpose
-// (sandboxed preload); kept tiny: companies, one RPC pipe, and one read-only
-// kernel status lane (wake-activity beats for the Agents page), nothing else.
+// (sandboxed preload); kept tiny: companies and one RPC content pipe. Durable
+// company/session state comes from the backend read model.
 const { contextBridge, ipcRenderer } = require("electron");
+
+// Compatibility for company-evolved userlands that predate explicit trail
+// scoping. The preload learns attachment only from kernel-confirmed replies;
+// old renderers therefore gain the same exact-session check without being
+// handed an ambient "current child" capability.
+let activeTrailFile;
+async function appInfo() {
+	const result = await ipcRenderer.invoke("app:info");
+	if (typeof result?.activeCompany?.sessionFile === "string") {
+		activeTrailFile = result.activeCompany.sessionFile;
+	}
+	return result;
+}
+async function openChat(sessionFile, department, worktree, sessionName) {
+	const result = await ipcRenderer.invoke("chat:open", sessionFile, department, worktree, sessionName);
+	if (result?.ok && typeof result.sessionFile === "string") activeTrailFile = result.sessionFile;
+	return result;
+}
 
 contextBridge.exposeInMainWorld("qorpera", {
 	listCompanies: () => ipcRenderer.invoke("companies:list"),
@@ -15,10 +33,10 @@ contextBridge.exposeInMainWorld("qorpera", {
 	deleteScheduledJob: (id) => ipcRenderer.invoke("company:scheduled-job-delete", id),
 	runScheduledJob: (id) => ipcRenderer.invoke("company:scheduled-job-run", id),
 	closeCompany: () => ipcRenderer.invoke("company:close"),
-	openChat: (sessionFile, department, worktree) => ipcRenderer.invoke("chat:open", sessionFile, department, worktree),
+	openChat,
 	showHub: () => ipcRenderer.invoke("hub:show"),
 	settingsInfo: () => ipcRenderer.invoke("settings:info"),
-	appInfo: () => ipcRenderer.invoke("app:info"),
+	appInfo,
 	authorizedBackendPost: (path, body) => ipcRenderer.invoke("backend:authorized-post", path, body),
 	setActiveApp: (app) => ipcRenderer.invoke("userland:set-active", app),
 	restoreVersion: (id) => ipcRenderer.invoke("userland:restore", id),
@@ -31,9 +49,9 @@ contextBridge.exposeInMainWorld("qorpera", {
 	onUpdateStatus: (handler) => ipcRenderer.on("update-status", (_event, text) => handler(text)),
 	onUpdateReady: (handler) => ipcRenderer.on("update-ready", (_event, version) => handler(version)),
 	onOpenCompany: (handler) => ipcRenderer.on("open-company", (_event, root) => handler(root)),
-	rpcSend: (frame) => ipcRenderer.invoke("rpc:send", frame),
+	rpcSend: (frame, expectedTrailFile) =>
+		ipcRenderer.invoke("rpc:send", frame, expectedTrailFile ?? activeTrailFile),
 	onRpcEvent: (handler) => ipcRenderer.on("rpc-event", (_event, frame) => handler(frame)),
-	onWakeActivity: (handler) => ipcRenderer.on("wake-activity", (_event, info) => handler(info)),
 	onRpcLog: (handler) => ipcRenderer.on("rpc-log", (_event, line) => handler(line)),
 	onRpcExit: (handler) => ipcRenderer.on("rpc-exit", (_event, code) => handler(code)),
 });
