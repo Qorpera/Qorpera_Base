@@ -168,6 +168,13 @@ const STATIC_LITERAL_PATTERNS = [
 	{ pattern: /`((?:\\[\s\S]|[^`])*)`/g, template: true },
 ] as const;
 const CHILD_PROCESS_CALL = /\b(exec|execFile|execFileSync|execSync|fork|spawn|spawnSync)\s*\(/g;
+const CHILD_PROCESS_METHODS = "exec|execFile|execFileSync|execSync|fork|spawn|spawnSync";
+const ALIASED_CHILD_PROCESS_IMPORT = new RegExp(
+	`\\b(?:${CHILD_PROCESS_METHODS})\\s+(?:as\\s+\\w+|:\\s*\\w+)|=\\s*(?:\\w+\\.)?(?:${CHILD_PROCESS_METHODS})\\b(?!\\s*\\()|\\[\\s*["'](?:${CHILD_PROCESS_METHODS})["']\\s*\\]`,
+);
+const BOUND_EXECUTABLE_READ =
+	/^\s*(?:JSON\s*\.\s*parse\s*\(\s*)?readFileSync\s*\(\s*["'][^"'\\\r\n]*["'](?:\s*,\s*["'][^"'\\\r\n]*["'])?\s*\)\s*\)?(?:\s*(?:\.\s*[$\w]+|\[\s*(?:["'][^"']+["']|\d+)\s*\]))*\s*$/;
+const SHELL_ENABLED = /(?:\bshell\b|["']shell["'])\s*:\s*true\b/;
 const SCRIPT_INTERPRETERS = new Set([
 	"bash",
 	"bun",
@@ -371,7 +378,26 @@ function isPathLike(value: string): boolean {
 	);
 }
 
+function shellCommandInputIdentities(root: string, command: string, path: string): object[] {
+	if (/[$`%]/.test(command)) {
+		throw new Error(
+			`Local host program runtime input closure cannot be proven for ${path}; shell commands cannot use runtime expansion`,
+		);
+	}
+	const inputs: object[] = [];
+	for (const token of command.match(/"[^"]*"|'[^']*'|[^\s|&;<>]+/g) ?? []) {
+		const value = token.replace(/^["']|["']$/g, "");
+		if (isPathLike(value)) inputs.push(runtimePathIdentity(resolve(root, value)));
+	}
+	return inputs;
+}
+
 function childProcessInputIdentities(root: string, source: string, path: string): object[] {
+	if (ALIASED_CHILD_PROCESS_IMPORT.test(source)) {
+		throw new Error(
+			`Local host program runtime input closure cannot be proven for ${path}; child-process APIs cannot be aliased or accessed indirectly`,
+		);
+	}
 	const inputs: object[] = [];
 	CHILD_PROCESS_CALL.lastIndex = 0;
 	for (let match = CHILD_PROCESS_CALL.exec(source); match; match = CHILD_PROCESS_CALL.exec(source)) {
@@ -390,15 +416,12 @@ function childProcessInputIdentities(root: string, source: string, path: string)
 		const method = match[1];
 		if (method === "exec" || method === "execSync") {
 			const command = staticStringExpression(expressions[0]);
-			if (command === undefined || /[$`%]/.test(command)) {
+			if (command === undefined) {
 				throw new Error(
-					`Local host program runtime input closure cannot be proven for ${path}; shell commands must be static and cannot use runtime expansion`,
+					`Local host program runtime input closure cannot be proven for ${path}; shell commands must be static`,
 				);
 			}
-			for (const token of command.match(/"[^"]*"|'[^']*'|[^\s|&;<>]+/g) ?? []) {
-				const value = token.replace(/^["']|["']$/g, "");
-				if (isPathLike(value)) inputs.push(runtimePathIdentity(resolve(root, value)));
-			}
+			inputs.push(...shellCommandInputIdentities(root, command, path));
 			continue;
 		}
 		if (method === "fork") {
@@ -414,12 +437,21 @@ function childProcessInputIdentities(root: string, source: string, path: string)
 		const usesCurrentNode = expressions[0].replace(/\s/g, "") === "process.execPath";
 		const command = usesCurrentNode ? process.execPath : staticStringExpression(expressions[0]);
 		if (command === undefined) {
-			if (FILE_READ_METHOD.test(expressions[0])) continue;
+			if (BOUND_EXECUTABLE_READ.test(expressions[0])) continue;
 			throw new Error(
 				`Local host program runtime input closure cannot be proven for ${path}; child-process executables must be static`,
 			);
 		}
 		if (isPathLike(command)) inputs.push(runtimePathIdentity(resolve(root, command)));
+		const optionsIndex = expressions[1]?.trim().startsWith("{") ? 1 : 2;
+		if (expressions[optionsIndex] && SHELL_ENABLED.test(expressions[optionsIndex])) {
+			inputs.push(...shellCommandInputIdentities(root, command, path));
+			if (optionsIndex === 2 && !staticStringArray(expressions[1])) {
+				throw new Error(
+					`Local host program runtime input closure cannot be proven for ${path}; shell-enabled child-process arguments must be static`,
+				);
+			}
+		}
 		const executableName = command.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() ?? "";
 		if (!usesCurrentNode && !SCRIPT_INTERPRETERS.has(executableName)) continue;
 		if (!expressions[1] || expressions[1].trim().startsWith("{")) continue;

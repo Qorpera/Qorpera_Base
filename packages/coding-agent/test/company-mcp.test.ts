@@ -333,6 +333,29 @@ describe("use_mcp_tool", () => {
 		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(/interpreter arguments must be static/);
 	});
 
+	it.each([
+		[
+			"aliased child-process APIs",
+			`import { spawnSync as runChild } from "node:child_process";\nif (false) runChild(process.env.CMD);`,
+			/child-process APIs cannot be aliased/,
+		],
+		[
+			"unrelated file reads in dynamic executable expressions",
+			`import { readFileSync } from "node:fs";\nimport { spawnSync } from "node:child_process";\nif (false) spawnSync((readFileSync("payload.txt"), process.env.CMD));`,
+			/child-process executables must be static/,
+		],
+		[
+			"shell expansion through spawn options",
+			`import { spawnSync } from "node:child_process";\nif (false) spawnSync("exec $(cat command)", { shell: true });`,
+			/shell commands cannot use runtime expansion/,
+		],
+	])("rejects %s", async (_name, source, expected) => {
+		declareFauxServer();
+		writeFileSync(join(root, "payload.txt"), "reviewed\n", "utf-8");
+		writeFileSync(join(root, "connections", "faux-server.mjs"), `${source}\n${FAUX_SERVER}`, "utf-8");
+		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(expected);
+	});
+
 	it("does not bind unrelated company files to a local server", () => {
 		declareFauxServer();
 		const before = mcpServerConfigurationFingerprint(root, "faux");
