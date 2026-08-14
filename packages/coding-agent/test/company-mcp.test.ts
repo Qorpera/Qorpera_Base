@@ -306,6 +306,22 @@ describe("use_mcp_tool", () => {
 		expect(mcpServerConfigurationFingerprint(root, "faux")).not.toBe(before);
 	});
 
+	it.each([
+		["escaped quoted", `["payload\\u002emjs"]`],
+		["escaped template", `[\`payload\\u002emjs\`]`],
+	])("binds %s child-process scripts", (_name, childArguments) => {
+		declareFauxServer();
+		writeFileSync(join(root, "payload.mjs"), `console.log("reviewed");\n`, "utf-8");
+		writeFileSync(
+			join(root, "connections", "faux-server.mjs"),
+			`import { spawnSync } from "node:child_process";\nif (false) spawnSync(process.execPath, ${childArguments});\n${FAUX_SERVER}`,
+			"utf-8",
+		);
+		const before = mcpServerConfigurationFingerprint(root, "faux");
+		writeFileSync(join(root, "payload.mjs"), `console.log("changed");\n`, "utf-8");
+		expect(mcpServerConfigurationFingerprint(root, "faux")).not.toBe(before);
+	});
+
 	it("does not bind unrelated company files to a local server", () => {
 		declareFauxServer();
 		const before = mcpServerConfigurationFingerprint(root, "faux");

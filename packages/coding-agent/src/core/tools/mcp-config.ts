@@ -162,8 +162,62 @@ const LITERAL_FILE_READ_CALL = new RegExp(
 	"g",
 );
 const ALIASED_FILE_READ_IMPORT = new RegExp(`\\b(?:${FILE_READ_METHOD_NAMES.join("|")})\\s+as\\s+\\w+`);
-const STRING_LITERAL = /(["'])([^"'\\\r\n]*)\1/g;
-const NO_SUBSTITUTION_TEMPLATE_LITERAL = /`([^`\\$]*)`/g;
+const STATIC_LITERAL_PATTERNS = [
+	{ pattern: /'((?:\\[\s\S]|[^'\\\r\n])*)'/g, template: false },
+	{ pattern: /"((?:\\[\s\S]|[^"\\\r\n])*)"/g, template: false },
+	{ pattern: /`((?:\\[\s\S]|[^`])*)`/g, template: true },
+] as const;
+
+function decodeStaticJavaScriptLiteral(raw: string, template: boolean): string | undefined {
+	let value = "";
+	for (let index = 0; index < raw.length; index += 1) {
+		const character = raw[index];
+		if (template && character === "$" && raw[index + 1] === "{") return undefined;
+		if (character !== "\\") {
+			value += character;
+			continue;
+		}
+		index += 1;
+		const escaped = raw[index];
+		if (escaped === undefined) return undefined;
+		if (escaped === "\n") continue;
+		if (escaped === "\r") {
+			if (raw[index + 1] === "\n") index += 1;
+			continue;
+		}
+		const simple = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" }[escaped];
+		if (simple !== undefined) {
+			value += simple;
+			continue;
+		}
+		if (escaped === "0") {
+			if (/\d/.test(raw[index + 1] ?? "")) return undefined;
+			value += "\u0000";
+			continue;
+		}
+		if (/[1-9]/.test(escaped)) return undefined;
+		if (escaped === "x") {
+			const hex = raw.slice(index + 1, index + 3);
+			if (!/^[\da-fA-F]{2}$/.test(hex)) return undefined;
+			value += String.fromCodePoint(Number.parseInt(hex, 16));
+			index += 2;
+			continue;
+		}
+		if (escaped === "u") {
+			const braced = raw[index + 1] === "{";
+			const end = braced ? raw.indexOf("}", index + 2) : index + 5;
+			const hex = braced ? raw.slice(index + 2, end) : raw.slice(index + 1, end);
+			if (end < 0 || !/^[\da-fA-F]+$/.test(hex) || (!braced && hex.length !== 4)) return undefined;
+			const codePoint = Number.parseInt(hex, 16);
+			if (codePoint > 0x10ffff) return undefined;
+			value += String.fromCodePoint(codePoint);
+			index = braced ? end : end - 1;
+			continue;
+		}
+		value += escaped;
+	}
+	return value;
+}
 
 function runtimePathIdentity(path: string): object {
 	let resolved: string;
@@ -231,10 +285,15 @@ function runtimeInputIdentities(root: string, source: string, path: string, spec
 		inputs.push(runtimePathIdentity(resolve(root, match[3])));
 	}
 	if (usesChildProcess) {
-		for (const pattern of [STRING_LITERAL, NO_SUBSTITUTION_TEMPLATE_LITERAL]) {
+		for (const { pattern, template } of STATIC_LITERAL_PATTERNS) {
 			pattern.lastIndex = 0;
 			for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
-				const value = match[2] ?? match[1];
+				const value = decodeStaticJavaScriptLiteral(match[1], template);
+				if (value === undefined) {
+					throw new Error(
+						`Local host program runtime input closure cannot be proven for ${path}; child-process strings must be statically decodable`,
+					);
+				}
 				if (
 					value &&
 					!value.includes("\u0000") &&
