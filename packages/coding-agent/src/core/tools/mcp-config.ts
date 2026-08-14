@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { createRequire } from "node:module";
+import { createRequire, isBuiltin } from "node:module";
 import { delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -131,6 +131,7 @@ const ALTERNATE_MODULE_LOADERS = new Set(["module", "node:module", "node:vm", "v
 const DYNAMIC_CODE_CONSTRUCT =
 	/\b(?:eval|Function|AsyncFunction|GeneratorFunction|WebAssembly|globalThis)\b|\.constructor\b|\bprocess\s*\.\s*getBuiltinModule\b|\bmodule\s*\[/;
 const FILE_SYSTEM_MODULES = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises"]);
+const CHILD_PROCESS_MODULES = new Set(["child_process", "node:child_process"]);
 const FILE_READ_METHOD_NAMES = [
 	"access",
 	"accessSync",
@@ -160,6 +161,8 @@ const LITERAL_FILE_READ_CALL = new RegExp(
 	`\\b(${FILE_READ_METHOD_NAMES.join("|")})\\s*\\(\\s*(["'])([^"'\\\\\\r\\n]*)\\2`,
 	"g",
 );
+const ALIASED_FILE_READ_IMPORT = new RegExp(`\\b(?:${FILE_READ_METHOD_NAMES.join("|")})\\s+as\\s+\\w+`);
+const STRING_LITERAL = /(["'])([^"'\\\r\n]*)\1/g;
 
 function runtimePathIdentity(path: string): object {
 	let resolved: string;
@@ -208,26 +211,55 @@ function runtimePathIdentity(path: string): object {
 
 /**
  * Bind only runtime files that reviewed source can reach through literal
- * node:fs reads. Dynamic paths fail closed: without an immutable filesystem
- * snapshot they cannot be tied to the approval that launches host code.
+ * node:fs reads or literal child-process script arguments. Dynamic fs paths
+ * fail closed: without an immutable filesystem snapshot they cannot be tied
+ * to the approval that launches host code.
  */
 function runtimeInputIdentities(root: string, source: string, path: string, specifiers: string[]): object[] {
-	if (!specifiers.some((specifier) => FILE_SYSTEM_MODULES.has(specifier))) return [];
+	const usesFileSystem = specifiers.some((specifier) => FILE_SYSTEM_MODULES.has(specifier));
+	const usesChildProcess = specifiers.some((specifier) => CHILD_PROCESS_MODULES.has(specifier));
+	if (!usesFileSystem && !usesChildProcess) return [];
+	if (usesFileSystem && ALIASED_FILE_READ_IMPORT.test(source)) {
+		throw new Error(
+			`Local host program runtime input closure cannot be proven for ${path}; node:fs read imports cannot be aliased`,
+		);
+	}
 	const inputs: object[] = [];
 	LITERAL_FILE_READ_CALL.lastIndex = 0;
 	for (let match = LITERAL_FILE_READ_CALL.exec(source); match; match = LITERAL_FILE_READ_CALL.exec(source)) {
-		inputs.push({ method: match[1], ...runtimePathIdentity(resolve(root, match[3])) });
+		inputs.push(runtimePathIdentity(resolve(root, match[3])));
 	}
-	const unverifiedSource = source
-		.replace(STATIC_MODULE_SPECIFIER, "")
-		.replace(CALLED_MODULE_SPECIFIER, "")
-		.replace(LITERAL_FILE_READ_CALL, "");
-	if (FILE_READ_METHOD.test(unverifiedSource)) {
-		throw new Error(
-			`Local host program runtime input closure cannot be proven for ${path}; node:fs reads must use literal paths`,
-		);
+	if (usesChildProcess) {
+		STRING_LITERAL.lastIndex = 0;
+		for (let match = STRING_LITERAL.exec(source); match; match = STRING_LITERAL.exec(source)) {
+			const value = match[2];
+			if (
+				value &&
+				!value.includes("\u0000") &&
+				(isAbsolute(value) ||
+					value.startsWith(".") ||
+					value.includes("/") ||
+					value.includes("\\") ||
+					extname(value))
+			) {
+				inputs.push(runtimePathIdentity(resolve(root, value)));
+			}
+		}
 	}
-	return inputs.sort((a, b) => canonicalJson(a).localeCompare(canonicalJson(b)));
+	if (usesFileSystem) {
+		const unverifiedSource = source
+			.replace(STATIC_MODULE_SPECIFIER, "")
+			.replace(CALLED_MODULE_SPECIFIER, "")
+			.replace(LITERAL_FILE_READ_CALL, "");
+		if (FILE_READ_METHOD.test(unverifiedSource)) {
+			throw new Error(
+				`Local host program runtime input closure cannot be proven for ${path}; node:fs reads must use literal paths`,
+			);
+		}
+	}
+	return [...new Map(inputs.map((input) => [canonicalJson(input), input])).values()].sort((a, b) =>
+		canonicalJson(a).localeCompare(canonicalJson(b)),
+	);
 }
 
 function moduleSpecifiers(source: string, path: string): string[] {
@@ -259,9 +291,9 @@ function moduleSpecifiers(source: string, path: string): string[] {
 function resolveModuleSpecifier(importer: string, specifier: string): string | undefined {
 	try {
 		const configured = specifier.startsWith("file:")
-			? fileURLToPath(specifier)
+			? fileURLToPath(new URL(specifier))
 			: specifier.startsWith(".") || isAbsolute(specifier)
-				? resolve(dirname(importer), specifier)
+				? resolve(dirname(importer), specifier.replace(/[?#].*$/, ""))
 				: undefined;
 		if (configured && statSync(configured).isFile()) return configured;
 		const resolved = createRequire(importer).resolve(specifier);
@@ -298,9 +330,14 @@ function transitiveModuleIdentity(root: string, entry: string): object[] {
 		const runtimeInputs = runtimeInputIdentities(root, source, resolved, specifiers);
 		if (runtimeInputs.length > 0) identities.push({ importer: resolved, runtimeInputs });
 		for (const specifier of specifiers) {
+			if (isBuiltin(specifier)) continue;
 			const dependency = resolveModuleSpecifier(resolved, specifier);
 			if (dependency) visit(dependency);
-			else identities.push({ importer: resolved, specifier, state: "unresolved" });
+			else {
+				throw new Error(
+					`Local host program dependency closure cannot be proven for ${resolved}; ${specifier} could not be resolved`,
+				);
+			}
 		}
 	};
 	visit(entry);

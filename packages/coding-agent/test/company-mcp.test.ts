@@ -256,6 +256,43 @@ describe("use_mcp_tool", () => {
 		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(/runtime input closure cannot be proven/);
 	});
 
+	it("rejects aliased filesystem read imports", async () => {
+		declareFauxServer();
+		writeFileSync(join(root, "payload.json"), JSON.stringify({ command: "aliased" }), "utf-8");
+		writeFileSync(
+			join(root, "connections", "faux-server.mjs"),
+			`import { readFileSync as load } from "node:fs";\nload("payload.json");\n${FAUX_SERVER}`,
+			"utf-8",
+		);
+		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(/read imports cannot be aliased/);
+	});
+
+	it("resolves query-bearing ESM dependencies", () => {
+		declareFauxServer();
+		writeFileSync(join(root, "connections", "payload.mjs"), `export const payload = "reviewed";\n`, "utf-8");
+		writeFileSync(
+			join(root, "connections", "faux-server.mjs"),
+			`import "./payload.mjs?runtime";\n${FAUX_SERVER}`,
+			"utf-8",
+		);
+		const before = mcpServerConfigurationFingerprint(root, "faux");
+		writeFileSync(join(root, "connections", "payload.mjs"), `export const payload = "changed";\n`, "utf-8");
+		expect(mcpServerConfigurationFingerprint(root, "faux")).not.toBe(before);
+	});
+
+	it("binds literal child-process scripts", () => {
+		declareFauxServer();
+		writeFileSync(join(root, "payload.mjs"), `console.log("reviewed");\n`, "utf-8");
+		writeFileSync(
+			join(root, "connections", "faux-server.mjs"),
+			`import { spawnSync } from "node:child_process";\nif (false) spawnSync(process.execPath, ["payload.mjs"]);\n${FAUX_SERVER}`,
+			"utf-8",
+		);
+		const before = mcpServerConfigurationFingerprint(root, "faux");
+		writeFileSync(join(root, "payload.mjs"), `console.log("changed");\n`, "utf-8");
+		expect(mcpServerConfigurationFingerprint(root, "faux")).not.toBe(before);
+	});
+
 	it("does not bind unrelated company files to a local server", () => {
 		declareFauxServer();
 		const before = mcpServerConfigurationFingerprint(root, "faux");

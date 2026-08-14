@@ -102,12 +102,12 @@ transition. Editing the file alone never mints an executable capability.
   the resolved program and its provable local dependency closure; for local
   MCP it binds the selected configuration, spawn environment, executable,
   script arguments, and their provable local dependency closure. Literal
-  runtime file reads reachable from that code are bound as well, including
-  files inside installed-dependency trees, without tying unrelated company
-  state to the launch. Both paths revalidate immediately before spawn.
-  Non-literal runtime paths and non-literal or alternate JavaScript module
-  loaders fail closed because their input/dependency closure cannot be
-  reviewed reliably.
+  runtime file reads and child-process script arguments reachable from that
+  code are bound as well, including files inside installed-dependency trees,
+  without tying unrelated company state to the launch. Both paths revalidate
+  immediately before spawn. Unresolved imports, aliased/dynamic runtime file
+  reads, and non-literal or alternate JavaScript module loaders fail closed
+  because their input/dependency closure cannot be reviewed reliably.
 
 Codex engine sessions with authority run inside Codex's read-only sandbox
 with `untrusted` approvals forced on. Reads can proceed directly, but command
