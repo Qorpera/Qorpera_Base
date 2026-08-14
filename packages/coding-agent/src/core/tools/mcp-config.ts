@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { delimiter, extname, isAbsolute, join, relative, resolve } from "node:path";
 
 export const MCP_CONFIG_PATH = join("connections", "mcp.json");
+const CONTROLLER_ONLY_ENV = new Set(["QORPERA_MODEL_BROKER_HANDLES", "QORPERA_TRAIL_BROKER_TOKEN"]);
 
 export interface McpServerConfig {
 	/** Local stdio server: spawned with the controller's host access. */
@@ -38,26 +39,46 @@ function isUnderRoot(path: string, root: string): boolean {
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-function environmentValue(declared: Record<string, string> | undefined, name: string): string | undefined {
-	for (const [key, value] of Object.entries(declared ?? {})) {
-		if (key.toLowerCase() === name.toLowerCase()) return value;
+function setEnvironmentValue(environment: Record<string, string>, name: string, value: string): void {
+	if (process.platform === "win32") {
+		for (const existing of Object.keys(environment)) {
+			if (existing.toLowerCase() === name.toLowerCase()) delete environment[existing];
+		}
 	}
-	for (const [key, value] of Object.entries(process.env)) {
-		if (key.toLowerCase() === name.toLowerCase()) return value;
+	environment[name] = value;
+}
+
+export function createMcpServerEnvironment(declared: Record<string, string> | undefined): Record<string, string> {
+	const environment: Record<string, string> = {};
+	for (const [name, value] of Object.entries(process.env)) {
+		if (value !== undefined && !CONTROLLER_ONLY_ENV.has(name)) setEnvironmentValue(environment, name, value);
 	}
-	return undefined;
+	setEnvironmentValue(environment, "ELECTRON_RUN_AS_NODE", "1");
+	// Declared values override the inherited host environment. Avoid writing
+	// raw secrets here when a secret:// reference over remote MCP is suitable.
+	for (const [name, value] of Object.entries(declared ?? {})) {
+		if (typeof value === "string") setEnvironmentValue(environment, name, value);
+	}
+	return environment;
+}
+
+function environmentValue(environment: Record<string, string>, name: string): string | undefined {
+	if (process.platform !== "win32") return environment[name];
+	const match = Object.keys(environment).find((key) => key.toLowerCase() === name.toLowerCase());
+	return match ? environment[match] : undefined;
 }
 
 function resolveExecutable(root: string, config: McpServerConfig) {
 	const command = config.command!;
+	const environment = createMcpServerEnvironment(config.env);
 	const direct = isAbsolute(command) || /[/\\]/.test(command);
 	const extensions =
 		process.platform === "win32" && !extname(command)
-			? (environmentValue(config.env, "PATHEXT") ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
+			? (environmentValue(environment, "PATHEXT") ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
 			: [""];
 	const bases = direct
 		? [resolve(root, command)]
-		: (environmentValue(config.env, "PATH") ?? "")
+		: (environmentValue(environment, "PATH") ?? "")
 				.split(delimiter)
 				.map((entry) => resolve(root, entry.replace(/^"|"$/g, ""), command));
 	for (const base of bases) {

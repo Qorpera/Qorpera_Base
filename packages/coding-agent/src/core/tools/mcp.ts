@@ -31,7 +31,12 @@ import { spawn } from "../../utils/child-process.ts";
 import { consumeMcpExecutionBinding, discoverAuthority, MCP_TOOL_NAME } from "../authority.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { brokeredHttpRequest } from "../http-broker-client.ts";
-import { MCP_CONFIG_PATH, type McpServerConfig, resolveMcpServerConfig } from "./mcp-config.ts";
+import {
+	createMcpServerEnvironment,
+	MCP_CONFIG_PATH,
+	type McpServerConfig,
+	resolveMcpServerConfig,
+} from "./mcp-config.ts";
 import { getTextOutput, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, truncateHead } from "./truncate.ts";
@@ -42,26 +47,11 @@ export { MCP_CONFIG_PATH } from "./mcp-config.ts";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 const CALL_TIMEOUT_MS = 60_000;
 const SPAWN_TIMEOUT_MS = 30_000;
-const CONTROLLER_ONLY_ENV = new Set(["QORPERA_MODEL_BROKER_HANDLES", "QORPERA_TRAIL_BROKER_TOKEN"]);
 
 interface McpToolInfo {
 	name: string;
 	description?: string;
 	inputSchema?: unknown;
-}
-
-function serverEnvironment(declared: Record<string, string> | undefined): Record<string, string> {
-	const env: Record<string, string> = {};
-	for (const [name, value] of Object.entries(process.env)) {
-		if (value !== undefined && !CONTROLLER_ONLY_ENV.has(name)) env[name] = value;
-	}
-	env.ELECTRON_RUN_AS_NODE = "1";
-	// Declared values override the inherited host environment. Avoid writing
-	// raw secrets here when a secret:// reference over remote MCP is suitable.
-	for (const [name, value] of Object.entries(declared ?? {})) {
-		if (typeof value === "string") env[name] = value;
-	}
-	return env;
 }
 
 /** One live stdio MCP server connection with JSON-RPC correlation. */
@@ -102,7 +92,7 @@ class McpConnection {
 		if (!config.command) throw new Error(`MCP server ${name} has no command`);
 		const child = spawn(config.command, config.args ?? [], {
 			cwd: root,
-			env: serverEnvironment(config.env),
+			env: createMcpServerEnvironment(config.env),
 			stdio: ["pipe", "pipe", "pipe"],
 			shell: false,
 		});
