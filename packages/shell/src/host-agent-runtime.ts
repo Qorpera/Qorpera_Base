@@ -13,6 +13,13 @@ export interface HostAgentProcess {
 	env: NodeJS.ProcessEnv;
 }
 
+function replaceEnvironmentValue(environment: NodeJS.ProcessEnv, name: string, value?: string): void {
+	for (const existing of Object.keys(environment)) {
+		if (existing.toLowerCase() === name.toLowerCase()) delete environment[existing];
+	}
+	if (value !== undefined) environment[name] = value;
+}
+
 /**
  * Launch a controller as the signed-in desktop user. The process inherits the
  * complete host environment and working directory so ordinary CLIs can use
@@ -24,8 +31,8 @@ export function createHostAgentProcess(options: HostAgentProcessOptions): HostAg
 	// Runtime role markers belong to the child being created, not the process
 	// that happened to launch Base. startChild adds this marker back only for
 	// controller-initiated work.
-	delete env.QORPERA_AUTONOMOUS;
-	env.ELECTRON_RUN_AS_NODE = "1";
+	replaceEnvironmentValue(env, "QORPERA_AUTONOMOUS");
+	replaceEnvironmentValue(env, "ELECTRON_RUN_AS_NODE", "1");
 	return {
 		command: options.nodeExecutable,
 		args: [options.rpcEntry, ...options.args],

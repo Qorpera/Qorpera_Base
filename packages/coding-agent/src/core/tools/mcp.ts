@@ -259,7 +259,7 @@ class RemoteMcpConnection implements McpServerConnection {
 async function connect(root: string, name: string, expectedConfigurationHash: string): Promise<McpServerConnection> {
 	// NUL separator (written as an escape: a raw NUL byte makes git treat this file as binary).
 	const key = `${root}\u0000${name}`;
-	const { config, configurationHash } = resolveMcpServerConfig(root, name);
+	let { config, configurationHash } = resolveMcpServerConfig(root, name);
 	if (configurationHash !== expectedConfigurationHash) {
 		throw new Error(
 			`MCP server ${name} configuration changed after authority approval; retry the call to review the current configuration`,
@@ -273,6 +273,15 @@ async function connect(root: string, name: string, expectedConfigurationHash: st
 			await (await existing.connection).dispose();
 		} catch {
 			// A connection that failed to start has nothing to dispose.
+		}
+		// Disposal is asynchronous. Recompute every bound file identity after
+		// the old process has actually exited so a watcher cannot swap local
+		// code or its executable in the gap before the replacement spawn.
+		({ config, configurationHash } = resolveMcpServerConfig(root, name));
+		if (configurationHash !== expectedConfigurationHash) {
+			throw new Error(
+				`MCP server ${name} configuration changed after authority approval; retry the call to review the current configuration`,
+			);
 		}
 	}
 	const pending: Promise<McpServerConnection> = (

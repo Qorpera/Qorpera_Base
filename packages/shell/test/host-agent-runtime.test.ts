@@ -12,6 +12,8 @@ describe("host-capable agent runtime", () => {
 			AWS_PROFILE: "production",
 			CUSTOM_HOST_CAPABILITY: "available",
 			QORPERA_AUTONOMOUS: "1",
+			Qorpera_Autonomous: "1",
+			Electron_Run_As_Node: "0",
 		};
 		const invocation = createHostAgentProcess({
 			nodeExecutable: "Qorpera Base.exe",
@@ -37,6 +39,10 @@ describe("host-capable agent runtime", () => {
 			ELECTRON_RUN_AS_NODE: "1",
 		});
 		expect(invocation.env.QORPERA_AUTONOMOUS).toBeUndefined();
+		expect(Object.keys(invocation.env).some((name) => name.toLowerCase() === "qorpera_autonomous")).toBe(false);
+		expect(Object.keys(invocation.env).filter((name) => name.toLowerCase() === "electron_run_as_node")).toEqual([
+			"ELECTRON_RUN_AS_NODE",
+		]);
 		expect(invocation.env).not.toBe(environment);
 	});
 });
