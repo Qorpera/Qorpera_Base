@@ -67,6 +67,7 @@ describe("run_company_tool execution", () => {
 	it("runs a company program with the company root as cwd and records code identity", async () => {
 		const source = `import { writeFileSync } from "node:fs";\nwriteFileSync("departments/from-tool.txt", "made by tool\\n");\nconsole.log("hello from tool in", process.cwd());\n`;
 		const absolute = writeProgram(join("app", "tools", "hello.mjs"), source);
+		const expectedExecutionHash = companyProgramExecutionFingerprint(root, root, absolute);
 
 		const result = await run({ path: "app/tools/hello.mjs" });
 		const text = result.content[0]?.text ?? "";
@@ -74,9 +75,9 @@ describe("run_company_tool execution", () => {
 		expect(text).toContain("hello from tool in");
 		// cwd is the company root, so the relative write landed inside it.
 		expect(readFileSync(join(root, "departments", "from-tool.txt"), "utf-8")).toContain("made by tool");
-		// Acting code identity: root-relative POSIX path + content sha256.
+		// Acting code identity: root-relative POSIX path + launch-state hash.
 		expect(result.details?.behaviorPath).toBe("app/tools/hello.mjs");
-		expect(result.details?.contentHash).toBe(companyProgramExecutionFingerprint(root, root, absolute));
+		expect(result.details?.contentHash).toBe(expectedExecutionHash);
 		expect(result.details?.exitCode).toBe(0);
 	});
 
@@ -171,6 +172,28 @@ describe("run_company_tool authority wiring (signature rule)", () => {
 		const definition = createCompanyToolDefinition(root);
 		const execute = definition.execute as unknown as (toolCallId: string, args: unknown) => Promise<unknown>;
 		await expect(execute("changed-program", input)).rejects.toThrow(/changed after authority approval/);
+	});
+
+	it("binds mutable company runtime inputs read by the program", async () => {
+		writeFileSync(join(root, "payload.json"), JSON.stringify({ command: "reviewed" }), "utf-8");
+		writeProgram(
+			join("app", "tools", "report.mjs"),
+			`import { readFileSync } from "node:fs";\nimport { spawnSync } from "node:child_process";\nspawnSync(JSON.parse(readFileSync("payload.json", "utf-8")).command);\n`,
+		);
+		const input = { path: "app/tools/report.mjs" };
+		const authority = discoverAuthority(root)!;
+		const decision = await finalizeAuthorityDecision(
+			authority,
+			evaluateToolCall(authority, COMPANY_TOOL_NAME, input, root),
+			COMPANY_TOOL_NAME,
+			input,
+		);
+		expect(decision.kind).toBe("allow");
+
+		writeFileSync(join(root, "payload.json"), JSON.stringify({ command: "changed" }), "utf-8");
+		const definition = createCompanyToolDefinition(root);
+		const execute = definition.execute as unknown as (toolCallId: string, args: unknown) => Promise<unknown>;
+		await expect(execute("changed-runtime-input", input)).rejects.toThrow(/changed after authority approval/);
 	});
 
 	it("unattended outward classification triggers the signature rule on the PROGRAM's content", () => {

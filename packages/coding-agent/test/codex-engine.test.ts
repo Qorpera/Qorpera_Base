@@ -127,6 +127,11 @@ describe("codex engine adapter", () => {
 			{ kind: "commandApproval", command: "rm -rf work", decision: "decline" },
 		]);
 		expect(finalText).toContain("decisions: decline,decline");
+		const threadStart = out.find((entry) => entry.kind === "threadStart") as {
+			params?: { approvalPolicy?: string; sandbox?: string };
+		};
+		expect(threadStart.params?.approvalPolicy).toBe("untrusted");
+		expect(threadStart.params?.sandbox).toBe("read-only");
 
 		// Both the default host-shell gate and the destructive gate landed in
 		// the company inbox, and the trail recorded the declined effects.

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,6 +38,56 @@ function sha256(value: string): string {
 
 function fileSha256(path: string): string {
 	return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+const RUNTIME_STATE_EXCLUSIONS = new Set([".git", ".qorpera", "inbox", "node_modules", "trail"]);
+
+/**
+ * Bind mutable company-controlled runtime inputs, not only source imports.
+ * Kernel/trail/git state and installed dependency trees are excluded because
+ * they change independently of a reviewed launch; statically imported code
+ * from those dependency trees is still covered by transitiveModuleIdentity.
+ */
+function companyRuntimeStateIdentity(root: string): object[] {
+	const identities: object[] = [];
+	const visitedDirectories = new Set<string>();
+	const visit = (logicalDirectory: string): void => {
+		let physicalDirectory: string;
+		try {
+			physicalDirectory = realpathSync.native(logicalDirectory);
+		} catch {
+			return;
+		}
+		if (visitedDirectories.has(physicalDirectory) || !isUnderRoot(physicalDirectory, root)) return;
+		visitedDirectories.add(physicalDirectory);
+		for (const entry of readdirSync(logicalDirectory, { withFileTypes: true }).sort((a, b) =>
+			a.name.localeCompare(b.name),
+		)) {
+			if (RUNTIME_STATE_EXCLUSIONS.has(entry.name)) continue;
+			const logicalPath = join(logicalDirectory, entry.name);
+			let resolved: string;
+			let stats: ReturnType<typeof statSync>;
+			try {
+				resolved = realpathSync.native(logicalPath);
+				stats = statSync(resolved);
+			} catch {
+				identities.push({ path: relative(root, logicalPath), state: "missing" });
+				continue;
+			}
+			if (stats.isDirectory()) {
+				if (isUnderRoot(resolved, root)) visit(logicalPath);
+				else identities.push({ path: relative(root, logicalPath), resolved, state: "external-directory" });
+				continue;
+			}
+			if (!stats.isFile()) {
+				identities.push({ path: relative(root, logicalPath), resolved, state: "not-file" });
+				continue;
+			}
+			identities.push({ path: relative(root, logicalPath), resolved, sha256: fileSha256(resolved) });
+		}
+	};
+	visit(root);
+	return identities;
 }
 
 function isUnderRoot(path: string, root: string): boolean {
@@ -239,6 +289,7 @@ function localExecutionIdentity(root: string, config: McpServerConfig): object |
 			const identity = argumentFileIdentity(root, arg);
 			return identity ? [identity] : [];
 		}),
+		companyRuntimeState: companyRuntimeStateIdentity(root),
 	};
 }
 
@@ -257,6 +308,7 @@ export function companyProgramExecutionFingerprint(root: string, cwd: string, ra
 			resolved,
 			insideCompany: isUnderRoot(candidate, root) && isUnderRoot(resolved, root),
 			dependencies: transitiveModuleIdentity(root, resolved),
+			companyRuntimeState: companyRuntimeStateIdentity(root),
 		}),
 	);
 }

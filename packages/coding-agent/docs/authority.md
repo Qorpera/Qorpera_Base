@@ -101,10 +101,18 @@ transition. Editing the file alone never mints an executable capability.
   exactly the requested action. For `run_company_tool`, the match also binds
   the resolved program and its provable local dependency closure; for local
   MCP it binds the selected configuration, spawn environment, executable,
-  script arguments, and their provable local dependency closure. Both are
-  revalidated immediately before spawn. Non-literal or alternate JavaScript
-  module loaders fail closed because their dependency closure cannot be
-  reviewed reliably.
+  script arguments, and their provable local dependency closure. Both also
+  bind mutable company-controlled runtime files outside reserved kernel,
+  trail, Git, and installed-dependency directories, then revalidate
+  immediately before spawn. Non-literal or alternate JavaScript module
+  loaders fail closed because their dependency closure cannot be reviewed
+  reliably.
+
+Codex engine sessions with authority run inside Codex's read-only sandbox
+with `untrusted` approvals forced on. Reads can proceed directly, but command
+and file effects must request a sandbox escape and cross the same Qorpera
+`bash`/`apply_patch` bridge; callers cannot weaken that policy through engine
+options.
 
 ## Project extension gating
 

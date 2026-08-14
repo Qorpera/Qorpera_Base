@@ -16,9 +16,10 @@
  *  3. authority — codex approval requests route through the SAME gates as
  *     direct mode: command approvals evaluate as `bash`, patch approvals as
  *     `apply_patch` per file. authority.toml binds engine mode exactly like
- *     everything else. When an authority is present the thread defaults to
- *     approvalPolicy "untrusted" so every command consults the gates; the
- *     containment underneath is codex's own sandbox.
+ *     everything else. When an authority is present the thread is forced to
+ *     approvalPolicy "untrusted" inside Codex's read-only sandbox. Reads may
+ *     proceed directly, while every command or patch with an effect must
+ *     escape that sandbox through the Qorpera approval bridge.
  *
  * Targets the stable v2 surface (initialize, thread/start, turn/start,
  * item/started|completed, turn/completed, the two approval requests) —
@@ -64,7 +65,7 @@ export interface CodexEngineOptions {
 	model?: string;
 	/** Optional developer-tier reinforcement (append; never replaces base). */
 	developerInstructions?: string;
-	/** thread/start approvalPolicy. Default: "untrusted" when an authority is present. */
+	/** thread/start approvalPolicy for sessions without authority. Authority sessions always use "untrusted". */
 	approvalPolicy?: string;
 	/** Streaming observer for CLI display. */
 	onEvent?: (event: CodexEngineEvent) => void;
@@ -153,7 +154,8 @@ export class CodexEngineSession {
 				lifecycleTimeoutMs,
 			);
 			session.notify("initialized", {});
-			const approvalPolicy = options.approvalPolicy ?? (options.authority ? "untrusted" : undefined);
+			const approvalPolicy = options.authority ? "untrusted" : options.approvalPolicy;
+			const sandbox = options.authority ? "read-only" : undefined;
 			const startResult = (await session.request(
 				"thread/start",
 				{
@@ -161,6 +163,7 @@ export class CodexEngineSession {
 					...(options.model ? { model: options.model } : {}),
 					...(options.developerInstructions ? { developerInstructions: options.developerInstructions } : {}),
 					...(approvalPolicy ? { approvalPolicy } : {}),
+					...(sandbox ? { sandbox } : {}),
 				},
 				lifecycleTimeoutMs,
 			)) as { thread?: { id?: string }; model?: string; modelProvider?: string };
@@ -173,6 +176,7 @@ export class CodexEngineSession {
 				model: session.model,
 				modelProvider: session.modelProvider,
 				approvalPolicy: approvalPolicy ?? "(codex default)",
+				sandbox: sandbox ?? "(codex default)",
 			});
 			return session;
 		} catch (error) {
