@@ -239,14 +239,21 @@ details.work summary {
 	transition: background 150ms ease, color 150ms ease;
 }
 details.work summary::-webkit-details-marker { display: none; }
-details.work summary::before { content: "▸"; font-size: 10px; color: var(--text-soft); transition: transform 120ms ease; }
-details.work[open] summary::before { transform: rotate(90deg); }
 details.work summary:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+.work-spinner {
+	width: 12px; height: 12px; flex: 0 0 auto; border-radius: 50%;
+	border: 1.5px solid var(--border-strong); border-top-color: var(--text-muted);
+	animation: spin 0.8s linear infinite;
+}
 details.work .workbody {
 	display: flex; flex-direction: column; gap: 5px;
-	border-left: 2px solid var(--border-strong); margin: 6px 0 2px 3px; padding-left: 12px;
+	margin: 6px 0 2px;
 }
 details.work .workbody .msg { max-width: 100%; }
+
+@media (prefers-reduced-motion: reduce) {
+	.work-spinner { border-color: var(--text-muted); animation: none; }
+}
 
 /* ---- composer: one glass shell floating over the thread ------------------ */
 #composer-footer {
