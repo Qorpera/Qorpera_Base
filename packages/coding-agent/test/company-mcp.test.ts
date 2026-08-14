@@ -169,6 +169,17 @@ describe("use_mcp_tool", () => {
 		await expect(execute("changed-import", input)).rejects.toThrow(/configuration changed after authority approval/);
 	});
 
+	it("rejects local servers whose dependency closure cannot be proven", async () => {
+		declareFauxServer();
+		writeFileSync(join(root, "connections", "payload.mjs"), `export const payload = "dynamic";\n`, "utf-8");
+		writeFileSync(
+			join(root, "connections", "faux-server.mjs"),
+			`const dependency = "./payload.mjs";\nawait import(dependency);\n${FAUX_SERVER}`,
+			"utf-8",
+		);
+		await expect(run({ server: "faux", tool: "echo" })).rejects.toThrow(/dependency closure cannot be proven/);
+	});
+
 	it("lists a declared server's tools", async () => {
 		declareFauxServer();
 		const result = await run({ server: "faux" });

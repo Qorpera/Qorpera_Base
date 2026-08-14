@@ -115,10 +115,17 @@ describe("run_company_tool execution", () => {
 });
 
 describe("run_company_tool authority wiring (signature rule)", () => {
-	it("stamps behavior identity on auto-class runs", () => {
+	it("defaults to authority and stamps behavior identity when the founder opts it out", () => {
 		const absolute = writeProgram(join("app", "tools", "report.mjs"), "console.log('report');\n");
 		const authority = discoverAuthority(root);
 		expect(authority).toBeDefined();
+		const gated = evaluateToolCall(authority!, COMPANY_TOOL_NAME, { path: "app/tools/report.mjs" }, root, {
+			attended: false,
+		});
+		expect(gated.kind).toBe("block");
+		expect(gated.kind === "block" && gated.effectClass).toBe("authority");
+
+		writeFileSync(join(root, "authority.toml"), `[tools]\n${COMPANY_TOOL_NAME} = "none"\n`, "utf-8");
 		const decision = evaluateToolCall(authority!, COMPANY_TOOL_NAME, { path: "app/tools/report.mjs" }, root, {
 			attended: false,
 		});

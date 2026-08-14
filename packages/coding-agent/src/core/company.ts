@@ -274,8 +274,9 @@ mode = "gate"      # editing this file, the kernel files, or inbox/.
 
 # [tools]          # optional per-tool overrides, e.g.:
 # deploy = "irreversible"
-# Host-capable bash and MCP calls default to [authority] because their true
-# effect cannot be inferred generically. Classify or opt them out explicitly.
+# Host-capable bash, company-program, and MCP calls default to [authority]
+# because their true effect cannot be inferred generically. Classify or opt
+# them out explicitly.
 `;
 
 const CONNECTIONS_README = `# Connections

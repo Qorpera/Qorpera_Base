@@ -131,7 +131,9 @@ export interface GateRecord {
  * clean-environment subprocesses. For this tool the acting behavior is the
  * PROGRAM being run, not the runner itself — behaviorPath derives from the
  * call's path argument so the signature rule covers the program's content
- * hash, and the behavior stamp lands in the trail even for auto-class runs.
+ * hash. Because an arbitrary program can conceal any host effect, the runner
+ * defaults to [authority] until the founder explicitly classifies or opts it
+ * out; opted-out runs still stamp the program identity into the trail.
  */
 export const COMPANY_TOOL_NAME = "run_company_tool";
 
@@ -524,6 +526,7 @@ export function classifyToolCall(
 	}
 
 	if (overrideRaw === "none") return undefined;
+	if (toolName === COMPANY_TOOL_NAME) return override ?? "authority";
 	if (toolName === MCP_TOOL_NAME) return override ?? "authority";
 	if (toolName === HTTP_TOOL_NAME) return override ?? "identity";
 	return override;

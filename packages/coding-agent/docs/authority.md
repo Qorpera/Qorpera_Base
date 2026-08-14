@@ -42,9 +42,10 @@ file fails **closed** — every class gates.
   `CLAUDE.md`, or anything under `inbox/` (the agent cannot approve its own
   requests) — checked for `write`/`edit` path args and screened in `bash`
   command strings; also loading project-local extensions (below).
-  Unclassified host-capable `bash` commands and `use_mcp_tool` calls default
-  here because arbitrary executables can conceal any protected effect. The
-  founder may explicitly assign a narrower class or `none` in `[tools]`.
+  Unclassified host-capable `bash`, `run_company_tool`, and `use_mcp_tool`
+  calls default here because arbitrary executables can conceal any protected
+  effect. The founder may explicitly assign a narrower class or `none` in
+  `[tools]`.
 - **irreversible**: `bash` commands matching a conservative destructive
   screen (`rm -rf`, `git push --force`, `git reset --hard`, `DROP TABLE`,
   `mkfs`, …). False positives gate (recoverable); the screen errs that way

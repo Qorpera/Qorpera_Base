@@ -128,11 +128,20 @@ const MODULE_SOURCE_EXTENSIONS = new Set([".cjs", ".cts", ".js", ".jsx", ".mjs",
 const STATIC_MODULE_SPECIFIER = /(?:^|[;\n\r])\s*(?:import|export)\s+(?:[^"'();]*?\s+from\s+)?["']([^"']+)["']/g;
 const CALLED_MODULE_SPECIFIER = /\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g;
 
-function moduleSpecifiers(source: string): string[] {
+function moduleSpecifiers(source: string, path: string): string[] {
 	const specifiers = new Set<string>();
 	for (const pattern of [STATIC_MODULE_SPECIFIER, CALLED_MODULE_SPECIFIER]) {
 		pattern.lastIndex = 0;
 		for (let match = pattern.exec(source); match; match = pattern.exec(source)) specifiers.add(match[1]);
+	}
+	const unverifiedSource = source
+		.replace(STATIC_MODULE_SPECIFIER, "")
+		.replace(CALLED_MODULE_SPECIFIER, "")
+		.replace(/\bimport\s*\.\s*meta\b/g, "");
+	if (/\b(?:import|require)\b/.test(unverifiedSource)) {
+		throw new Error(
+			`MCP local server dependency closure cannot be proven for ${path}; use only literal import, export-from, and require references`,
+		);
 	}
 	return [...specifiers].sort();
 }
@@ -174,7 +183,7 @@ function transitiveModuleIdentity(root: string, entry: string): object[] {
 				: { stat: { size: stats.size, modifiedMs: stats.mtimeMs, changedMs: stats.ctimeMs } }),
 		});
 		if (!agentControlled || !MODULE_SOURCE_EXTENSIONS.has(extname(resolved).toLowerCase())) return;
-		for (const specifier of moduleSpecifiers(readFileSync(resolved, "utf-8"))) {
+		for (const specifier of moduleSpecifiers(readFileSync(resolved, "utf-8"), resolved)) {
 			const dependency = resolveModuleSpecifier(resolved, specifier);
 			if (dependency) visit(dependency);
 			else identities.push({ importer: resolved, specifier, state: "unresolved" });
@@ -188,19 +197,20 @@ function argumentFileIdentity(root: string, arg: string): object | undefined {
 	const rawPath = fileLikeArgument(arg);
 	if (!rawPath) return undefined;
 	const candidate = resolve(root, rawPath);
+	let resolved: string;
 	try {
 		if (!statSync(candidate).isFile()) return { argument: arg, path: candidate, state: "not-file" };
-		const resolved = realpathSync.native(candidate);
-		return {
-			argument: arg,
-			path: candidate,
-			resolved,
-			sha256: fileSha256(resolved),
-			dependencies: transitiveModuleIdentity(root, resolved),
-		};
+		resolved = realpathSync.native(candidate);
 	} catch {
 		return { argument: arg, path: candidate, state: "missing" };
 	}
+	return {
+		argument: arg,
+		path: candidate,
+		resolved,
+		sha256: fileSha256(resolved),
+		dependencies: transitiveModuleIdentity(root, resolved),
+	};
 }
 
 function localExecutionIdentity(root: string, config: McpServerConfig): object | undefined {
