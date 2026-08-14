@@ -588,6 +588,29 @@ export function appendKernelWakeObservation(
 	commitTrailAppend(binding, append);
 }
 
+/** Durable end-of-session marker, appended by the kernel when it releases a
+ * child. Classification (Activity/Agents) reads it to distinguish "the kernel
+ * closed this session" from "this trail just stopped growing" — without it,
+ * liveness is a 30-minute mtime guess. `settled` records whether the child was
+ * idle (post agent_settled) or mid-turn when the kernel released it. */
+export function appendKernelSessionEndObservation(
+	binding: TrailBinding,
+	input: {
+		settled: boolean;
+	},
+): void {
+	const append = stampKernelEntry(binding, {
+		type: "custom",
+		id: randomUUID(),
+		parentId: null,
+		timestamp: "",
+		customType: "qorpera_kernel_session_end",
+		data: input,
+	});
+	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+	commitTrailAppend(binding, append);
+}
+
 export function appendKernelHttpObservation(
 	binding: TrailBinding,
 	input: {

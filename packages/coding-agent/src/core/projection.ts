@@ -251,6 +251,6 @@ export const EMPTY_PROJECTION: ProjectionDocument = {
 export const PLATFORM_PROJECTION_NODES: ProjectionNode[] = [
 	{ id: "q:main", kind: "department", label: "Main", items: ["q:inbox", "q:activity", "q:chats"] },
 	{ id: "q:inbox", kind: "page", label: "Inbox", view: { type: "builtin", id: "qorpera.inbox" } },
-	{ id: "q:activity", kind: "page", label: "Activity", view: { type: "builtin", id: "qorpera.activity" } },
+	{ id: "q:activity", kind: "page", label: "Agents", view: { type: "builtin", id: "qorpera.activity" } },
 	{ id: "q:chats", kind: "page", label: "Chats", view: { type: "builtin", id: "qorpera.chats" } },
 ];

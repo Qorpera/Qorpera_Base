@@ -91,6 +91,7 @@ import {
 	appendKernelMutationObservation,
 	appendKernelObservation,
 	appendKernelProductStorageObservation,
+	appendKernelSessionEndObservation,
 	appendKernelWakeObservation,
 	applyKernelWriteFrame,
 	bindTrailSession,
@@ -940,6 +941,13 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	child.on("close", () => {
 		liveChildren.delete(child);
 		try {
+			// Durable end marker BEFORE the close checkpoint, so the same kernel
+			// commit that attributes this session's work also records its release.
+			try {
+				appendKernelSessionEndObservation(binding, { settled: !(childBusy.get(child) ?? false) });
+			} catch (error) {
+				console.error(`session-end observation failed: ${(error as Error).message}`);
+			}
 			httpBroker.release();
 			brokeredCredentials.release();
 			const result = checkpointCompanyGit(root, gitBaseline, binding.file);
@@ -1096,6 +1104,29 @@ function wakePrompt(
 	return `Scheduled job: ${job?.title ?? "Company orchestration"}.${missed}\n\n${job?.prompt ?? "Read company.md, the inbox, and app/routines/, decide for yourself what most needs doing, and do it. Post inbox/messages items for anything that needs the founder; when nothing needs doing, settle without inventing work."}`;
 }
 
+/** Compress a silent wake child's RPC frames into founder-legible status
+ * beats for the Agents page. Deltas are dropped — only phase changes and tool
+ * starts are worth a renderer round-trip. Purely observational: the wake child
+ * stays silent on the rpc-event lane and is never rebound to the chat pane. */
+function wakeActivitySummary(frame: Record<string, unknown>): { kind: string; detail?: string } | undefined {
+	if (frame.type === "agent_start") return { kind: "start" };
+	if (frame.type === "agent_settled") return { kind: "settled" };
+	if (frame.type === "tool_execution_start") {
+		const name = typeof frame.toolName === "string" ? frame.toolName : "tool";
+		const args = (frame.args ?? {}) as Record<string, unknown>;
+		const target = [args.path, args.filePath, args.file_path, args.pattern, args.url, args.command].find(
+			(value) => typeof value === "string" && value.trim(),
+		) as string | undefined;
+		return { kind: "tool", detail: target ? `${name} · ${target.slice(0, 120)}` : name };
+	}
+	if (frame.type === "message_update") {
+		const delta = (frame as { assistantMessageEvent?: { type?: string } }).assistantMessageEvent;
+		if (delta?.type === "thinking_start") return { kind: "thinking" };
+		if (delta?.type === "text_start") return { kind: "writing" };
+	}
+	return undefined;
+}
+
 function persistScheduledJobOutcome(
 	runtime: CompanyRuntime,
 	job: ScheduledJob,
@@ -1177,6 +1208,15 @@ async function startWakeChild(
 			onRpcEvent: (frame) => {
 				if (frame.type === "agent_start") started = true;
 				if (wakeFrameFailed(frame)) failed = true;
+				const activity = wakeActivitySummary(frame);
+				if (activity) {
+					send(slot.window, "wake-activity", {
+						root: runtime.root,
+						trailFile: childBindings.get(child)?.file,
+						at: Date.now(),
+						...activity,
+					});
+				}
 				if (frame.type === "agent_settled") {
 					settledCleanly = started && !failed;
 					intentionalKills.add(child);

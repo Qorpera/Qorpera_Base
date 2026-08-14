@@ -589,6 +589,8 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 	const assistantErrors: string[] = [];
 	let lastRequestStatus: string | undefined;
 	let intentStatus: string | undefined;
+	let sessionEnded = false;
+	let sessionEndAt: number | undefined;
 	let calls: number | undefined;
 	let requestCostUsd = 0;
 	let sawRequestCost = false;
@@ -665,6 +667,13 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 					if (/^(?:bash|shell|shell_command)$/i.test(tool.name)) uncertainShellChanges = true;
 				}
 			}
+			if (entry.type === "custom" && entry.customType === "qorpera_kernel_session_end") {
+				// The kernel released this session: liveness is settled fact from
+				// here on, never an mtime guess.
+				sessionEnded = true;
+				if (Number.isFinite(observedAt)) sessionEndAt = observedAt;
+				continue;
+			}
 			if (entry.type !== "custom" || entry.customType !== "qorpera_kernel_model_request") continue;
 			if (typeof entry.data?.provider === "string") modelProvider = entry.data.provider;
 			if (typeof entry.data?.model === "string") modelId = entry.data.model;
@@ -708,9 +717,14 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 		outcome = "failed";
 	} else if (intentStatus === "completed" && lastAssistantStopReason === "stop") {
 		outcome = "succeeded";
+	} else if (sessionEnded) {
+		// Kernel-released without terminal success markers: not running, and no
+		// 30-minute wait to say so.
+		outcome = "incomplete";
 	} else {
 		outcome = Date.now() - (lastObservedAt || mtimeMs) < 30 * 60_000 ? "running" : "incomplete";
 	}
+	if (terminalAt === undefined && sessionEndAt !== undefined) terminalAt = sessionEndAt;
 	const usefulError =
 		assistantErrors.find((message) => !/kernel model request denied|^terminated$/i.test(message.trim())) ??
 		assistantErrors[0];
