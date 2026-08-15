@@ -188,6 +188,7 @@ import {
 	lockDownRendererWebContents,
 	rendererPartitionForCompany,
 } from "./renderer-boundary.ts";
+import { bitmapLooksBlank } from "./renderer-smoke.ts";
 import {
 	SessionControlPlane,
 	type SessionRuntimeActivity,
@@ -217,6 +218,11 @@ import {
 	writeWakeRunState,
 } from "./wake-scheduler.ts";
 import { startWebhookListener } from "./webhook-listener.ts";
+
+// Electron 43's Windows GPU compositor can produce a live but completely
+// white renderer (Chromium UnknownVizError) on the founder's current display
+// stack. CSS motion remains available through software compositing.
+if (process.platform === "win32") app.disableHardwareAcceleration();
 
 const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
 const CODEX_ENTRY = resolveCodexEntry();
@@ -3707,6 +3713,14 @@ function createRendererWindow(
 		},
 	});
 	lockDownRendererWebContents(win.webContents);
+	win.webContents.on("console-message", (details) => {
+		if (details.level !== "warning" && details.level !== "error") return;
+		console.error(`renderer ${details.level} at ${details.sourceId}:${details.lineNumber}: ${details.message}`);
+	});
+	win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+		if (!isMainFrame) return;
+		console.error(`renderer load failed (${errorCode}) ${validatedURL}: ${errorDescription}`);
+	});
 	const contentsId = win.webContents.id;
 	if (options.bounds) win.setBounds(options.bounds);
 	win.setMenuBarVisibility(false);
@@ -4706,17 +4720,20 @@ app.whenReady().then(async () => {
 			timer = setTimeout(async () => {
 				try {
 					const image = await initial.window.webContents.capturePage();
+					if (bitmapLooksBlank(image.toBitmap())) throw new Error("renderer capture is visually blank");
 					writeFileSync(smokeShotTarget, image.toPNG());
 					console.log(`SHOT_SAVED ${smokeShotTarget}`);
 				} catch (error) {
 					console.error(`SHOT_FAILED ${(error as Error).message}`);
+					app.exit(1);
+					return;
 				}
 				app.quit();
 			}, 1600);
 		});
 	}
 	// Headless smoke: prove the shell boots, then leave.
-	if (process.argv.includes("--smoke")) {
+	if (process.argv.includes("--smoke") && !smokeShotTarget) {
 		initial.window.webContents.once("did-finish-load", () => {
 			console.log("SHELL_READY");
 			setTimeout(() => app.quit(), 1500);

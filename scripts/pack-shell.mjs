@@ -219,5 +219,33 @@ if (missingPackedRuntimeFiles.length > 0) {
 	process.exit(1);
 }
 console.log("pack verification: agent and Codex runtimes present in packed app");
+
+// A structurally complete app can still ship an all-white Chromium frame.
+// Exercise the unpacked packaged-mode renderer and let main reject a
+// single-color capture before the installer is allowed to publish.
+const packedShellExecutable = join(outDir, "win-unpacked", "Qorpera Base.exe");
+const packedSmokeRoot = join(outDir, ".pack-smoke");
+const packedSmokeShot = join(packedSmokeRoot, "shell.png");
+const packedSmokeProfile = join(packedSmokeRoot, "profile");
+rmSync(packedSmokeRoot, { recursive: true, force: true });
+mkdirSync(packedSmokeRoot, { recursive: true });
+const packedSmoke = spawnSync(
+	packedShellExecutable,
+	["--smoke-shot", packedSmokeShot, `--user-data-dir=${packedSmokeProfile}`],
+	{
+		encoding: "utf8",
+		shell: false,
+		timeout: 30_000,
+		windowsHide: true,
+	},
+);
+const packedSmokeOutput = `${packedSmoke.stdout ?? ""}${packedSmoke.stderr ?? ""}`.trim();
+if (packedSmoke.error || packedSmoke.status !== 0 || !existsSync(packedSmokeShot)) {
+	console.error(`PACK VERIFICATION FAILED: packaged renderer did not paint\n${packedSmokeOutput}`);
+	rmSync(packedSmokeRoot, { recursive: true, force: true });
+	process.exit(packedSmoke.status ?? 1);
+}
+rmSync(packedSmokeRoot, { recursive: true, force: true });
+console.log("pack verification: packaged renderer produced a nonblank frame");
 console.log(`installer in ${outDir}`);
 for (const file of readdirSync(outDir)) console.log(`  ${file}`);
