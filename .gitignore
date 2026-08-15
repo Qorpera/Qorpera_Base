@@ -43,3 +43,4 @@ plans/
 .qorpera/hf-sessions-backup/
 collect.sh
 build/
+output/

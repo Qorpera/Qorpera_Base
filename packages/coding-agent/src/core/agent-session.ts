@@ -682,13 +682,21 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
-		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
-		// This ensures the UI sees the updated queue state
+		// Associate the causal kernel intent before extensions, tools, or the model can observe the message.
+		// Ordinary custom messages must not clear an intent established by an adjacent user message.
+		if (event.type === "message_start") {
+			const messageKernelIntent = this._messageKernelIntents.get(event.message);
+			if (event.message.role === "user" || messageKernelIntent) {
+				this._activeKernelIntent = messageKernelIntent;
+				// The HTTP lane rides the same verified causal intent as the model
+				// lane: outbound requests are authorized per turn, not ambiently.
+				setHttpBrokerIntent(this._activeKernelIntent);
+			}
+		}
+
+		// When a user message starts, check if it's from either queue and remove it BEFORE emitting.
+		// This ensures the UI sees the updated queue state.
 		if (event.type === "message_start" && event.message.role === "user") {
-			this._activeKernelIntent = this._messageKernelIntents.get(event.message);
-			// The HTTP lane rides the same verified causal intent as the model
-			// lane: outbound requests are authorized per turn, not ambiently.
-			setHttpBrokerIntent(this._activeKernelIntent);
 			this._overflowRecoveryAttempted = false;
 			const messageText = contentText(event.message.content, "");
 			if (messageText) {
@@ -1548,12 +1556,16 @@ export class AgentSession {
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (this.isStreaming) {
+			const kernelIntent = this._incomingKernelIntent.getStore();
+			if (kernelIntent) this._messageKernelIntents.set(appMessage, kernelIntent);
 			if (options?.deliverAs === "followUp") {
 				this.agent.followUp(appMessage);
 			} else {
 				this.agent.steer(appMessage);
 			}
 		} else if (options?.triggerTurn) {
+			const kernelIntent = this._incomingKernelIntent.getStore();
+			if (kernelIntent) this._messageKernelIntents.set(appMessage, kernelIntent);
 			await this._runAgentPrompt(appMessage);
 		} else {
 			this.agent.state.messages.push(appMessage);
@@ -1566,6 +1578,30 @@ export class AgentSession {
 			this._emit({ type: "message_start", message: appMessage });
 			this._emit({ type: "message_end", message: appMessage });
 		}
+	}
+
+	/** Trigger an employee's first turn from hidden, durable kernel-provided context. */
+	async sendStaffIntro(content: string): Promise<void> {
+		const normalizedContent = content.trim();
+		if (!normalizedContent) {
+			throw new Error("Staff intro message must not be empty");
+		}
+		if (Buffer.byteLength(normalizedContent, "utf-8") > 32 * 1024) {
+			throw new Error("Staff intro message exceeds 32 KiB");
+		}
+		if (this.isStreaming) {
+			throw new Error("Cannot start a staff intro while the agent is already processing");
+		}
+
+		await this.sendCustomMessage(
+			{
+				customType: "qorpera_staff_intro",
+				content: normalizedContent,
+				display: false,
+				details: { source: "kernel" as const },
+			},
+			{ triggerTurn: true },
+		);
 	}
 
 	/**

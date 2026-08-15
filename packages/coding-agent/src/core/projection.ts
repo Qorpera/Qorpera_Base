@@ -50,6 +50,8 @@ export interface ProjectionPageNode {
 	kind: "page";
 	label: string;
 	description?: string;
+	/** Explicit staff ownership. Absence means Unassigned. */
+	staffAgentId?: string;
 	view: ProjectionSurfaceView | ProjectionBuiltinView;
 }
 
@@ -67,6 +69,7 @@ export interface ProjectionState extends ProjectionDocument {
 }
 
 const NODE_ID = /^[a-z][a-z0-9]*(?::[a-z0-9][a-z0-9._-]*)+$/;
+const STAFF_AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const BUILTIN_IDS: ReadonlySet<string> = new Set<ProjectionBuiltinId>([
 	"qorpera.inbox",
 	"qorpera.activity",
@@ -124,6 +127,14 @@ function parseNode(value: unknown, index: number, diagnostics: string[]): Projec
 		diagnostics.push(`node ${raw.id} has unsupported kind ${String(raw.kind)}`);
 		return undefined;
 	}
+	if (
+		raw.staffAgentId !== undefined &&
+		(typeof raw.staffAgentId !== "string" || !STAFF_AGENT_ID.test(raw.staffAgentId))
+	) {
+		diagnostics.push(`page ${raw.id} staffAgentId must be a lowercase UUID v4`);
+		return undefined;
+	}
+	const staffAgentId = typeof raw.staffAgentId === "string" ? raw.staffAgentId : undefined;
 	if (!raw.view || typeof raw.view !== "object" || Array.isArray(raw.view)) {
 		diagnostics.push(`page ${raw.id} requires a view`);
 		return undefined;
@@ -146,6 +157,7 @@ function parseNode(value: unknown, index: number, diagnostics: string[]): Projec
 			kind: "page",
 			label: label.slice(0, 120),
 			...(description ? { description } : {}),
+			...(staffAgentId ? { staffAgentId } : {}),
 			view: {
 				type: "surface",
 				entry: view.entry,
@@ -175,6 +187,7 @@ function parseNode(value: unknown, index: number, diagnostics: string[]): Projec
 		kind: "page",
 		label: label.slice(0, 120),
 		...(description ? { description } : {}),
+		...(staffAgentId ? { staffAgentId } : {}),
 		view: { type: "builtin", id: view.id as ProjectionBuiltinId, ...(context ? { context } : {}) },
 	};
 }

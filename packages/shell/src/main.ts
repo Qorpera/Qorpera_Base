@@ -2,12 +2,11 @@
  * Qorpera Base shell — the minimal desktop app every company controller is
  * built on (spec §7, v0.8 posture: between PI and a full desktop app).
  *
- * Static foundation by construction: this window and its plumbing never
- * change per company. Everything self-evolving is interpreted from the
- * company folder at runtime — surfaces through the in-process backend,
- * the intelligence through the CLI's `--mode rpc` seam, spawned as a child
- * of Electron's own Node runtime (ELECTRON_RUN_AS_NODE), so a packaged
- * shell needs no system Node. Companies never build anything.
+ * Fixed agent interface by construction: every company uses the same trusted
+ * shell. Company-authored artifacts are sandboxed surfaces, while model
+ * runtimes are replaceable local processes attached to durable staff and
+ * trails. A packaged shell uses Electron's Node runtime and needs no system
+ * Node installation.
  *
  * Windows: one window per open thing — the hub, or one company controller.
  * Several controllers run side by side, each with its own window, RPC child,
@@ -16,18 +15,8 @@
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import {
-	appendFileSync,
-	copyFileSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	realpathSync,
-	rmSync,
-	watch,
-	writeFileSync,
-} from "node:fs";
-import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, watch, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { ModelRuntime } from "@qorpera/pi-coding-agent";
@@ -77,6 +66,14 @@ import {
 	suspendScheduledJob,
 	updateScheduledJob,
 } from "@qorpera/pi-coding-agent/company-connections";
+import {
+	archiveStaffAgent,
+	createStaffAgent,
+	createStaffAgents,
+	readStaffAgents,
+	type StaffAgent,
+	updateStaffAgent,
+} from "@qorpera/pi-coding-agent/company-staff";
 import { FOUNDER_PUBLIC_FILE, founderPublicProjection } from "@qorpera/pi-coding-agent/founder-identity";
 import {
 	app,
@@ -153,14 +150,36 @@ import {
 	revokeCompanyGateTrust,
 } from "./company-kernel-state.ts";
 import {
+	beginConnectionRequest,
+	type ConnectionRequest,
+	type ConnectionRequestIdentity,
+	type CreateConnectionRequestInput,
+	cancelConnectionRequest,
+	completeConnectionRequest,
+	createConnectionRequest,
+	failConnectionRequest,
+	getConnectionRequest,
+	projectConnectionRequest,
+	readRendererConnectionRequests,
+} from "./connection-requests.ts";
+import {
 	type ControllerModelSelection,
 	controllerLaunchOptions,
 	controllerModelArgs,
 	modelSelectionFromRpcFrame,
+	readDefaultControllerModelPreference,
 	writeControllerModelPreference,
+	writeDefaultControllerModelPreference,
 } from "./controller-model.ts";
+import { migrateCompanyToFixedShell } from "./fixed-shell-migration.ts";
 import { connectGitHubCli, readGitHubCliStatus } from "./github-connection.ts";
 import { createHttpRequestBroker, type HttpRequestBroker } from "./http-request-broker.ts";
+import {
+	INTELLIGENCE_PROVIDER_CATALOG,
+	intelligenceSelectionForProvider,
+	isIntelligenceProviderId,
+	resolveIntelligenceReadiness,
+} from "./intelligence-onboarding.ts";
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
 import {
 	isRendererRequestAllowed,
@@ -174,20 +193,15 @@ import {
 	type SessionRuntimeEventInput,
 } from "./session-control-plane.ts";
 import {
-	assertUserlandStorage,
-	ensureUserland,
-	getActiveApp,
-	isUnmodified,
-	listVersions,
-	mergeTaskPrompt,
-	restoreVersion,
-	reviewVersion,
-	setActiveApp,
-	setVersionFavorite,
-	snapshotIfChanged,
-	type UserlandStatus,
-	type UserlandVersion,
-} from "./userland-manager.ts";
+	claimStaffIntro,
+	finishStaffIntro,
+	readStaffRuntimeState,
+	recordStaffIntroPending,
+	type StaffOrientationContext,
+	staffRuntimeStatePath,
+	writeStaffRuntimeState,
+} from "./staff-runtime-state.ts";
+import { getStaffTemplate, listStaffTemplates } from "./staff-templates.ts";
 import {
 	decideScheduledWake,
 	readWakeRunState,
@@ -266,6 +280,14 @@ const MODEL_CONNECTIONS = [
 		ambientProviders: ["anthropic"],
 		accountFallback: "Claude account",
 	},
+	{
+		id: "xai",
+		name: "xAI",
+		description: "Grok account",
+		credentialProviders: ["xai"],
+		ambientProviders: ["xai"],
+		accountFallback: "Grok account",
+	},
 ] as const;
 const MODEL_CONNECTION_IDS = new Set<string>(MODEL_CONNECTIONS.map((connection) => connection.id));
 const GITHUB_CONNECTION_DESTINATIONS = [
@@ -273,6 +295,9 @@ const GITHUB_CONNECTION_DESTINATIONS = [
 	["uploads.github.com", "GitHub release uploads"],
 	["raw.githubusercontent.com", "GitHub raw content"],
 ] as const;
+const STAFF_DEFAULT_THINKING_LEVEL = "low";
+const STAFF_DEFAULT_RESPONSE_SPEED = "fast";
+const STAFF_TOOL_NAMES = "read,bash,edit,write,request_connection";
 const MAX_KERNEL_REVIEW_BYTES = 16 * 1024;
 const MAX_PROMPT_BYTES = 64 * 1024;
 const MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -394,6 +419,90 @@ function modelConnectionInfo(): SettingsConnectionInfo[] {
 	});
 }
 
+function validStoredOnboardingCredential(credential: Record<string, unknown> | undefined): boolean {
+	if (!credential) return false;
+	return (
+		credential.type === "oauth" &&
+		typeof credential.access === "string" &&
+		Boolean(credential.access.trim()) &&
+		typeof credential.refresh === "string" &&
+		Boolean(credential.refresh.trim()) &&
+		typeof credential.expires === "number" &&
+		Number.isFinite(credential.expires)
+	);
+}
+
+function intelligenceInfo(): {
+	providers: Array<{
+		id: string;
+		name: string;
+		product: string;
+		description: string;
+		connected: boolean;
+		accountName: string;
+	}>;
+	ready: boolean;
+	selection?: ControllerModelSelection;
+	selectionSource?: "stored" | "inferred";
+	requiresChoice: boolean;
+} {
+	if (IS_SMOKE) {
+		const selection = intelligenceSelectionForProvider("openai-codex")!;
+		return {
+			providers: INTELLIGENCE_PROVIDER_CATALOG.map((provider) => ({
+				id: provider.id,
+				name: provider.name,
+				product: provider.product,
+				description: `Sign in with ${provider.product}`,
+				connected: provider.id === selection.provider,
+				accountName: provider.id === selection.provider ? "Smoke test" : "",
+			})),
+			ready: true,
+			selection,
+			selectionSource: "inferred",
+			requiresChoice: false,
+		};
+	}
+	const credentials = sourceModelCredentials();
+	const modelConnections = new Map(
+		MODEL_CONNECTIONS.map((connection) => {
+			const sourceProvider = connection.credentialProviders.find((providerId) =>
+				validStoredOnboardingCredential(recordValue(credentials[providerId])),
+			);
+			const credential = sourceProvider ? recordValue(credentials[sourceProvider]) : undefined;
+			return [
+				connection.id,
+				{
+					connected: Boolean(sourceProvider),
+					accountName: sourceProvider ? connectionAccountName(connection, credential, sourceProvider) : "",
+					description: connection.description,
+				},
+			] as const;
+		}),
+	);
+	const readiness = resolveIntelligenceReadiness(
+		[...modelConnections.entries()].flatMap(([id, connection]) => (connection.connected ? [id] : [])),
+		readDefaultControllerModelPreference(app.getPath("userData")),
+	);
+	return {
+		providers: INTELLIGENCE_PROVIDER_CATALOG.map((provider) => {
+			const connection = modelConnections.get(provider.id);
+			return {
+				id: provider.id,
+				name: provider.name,
+				product: provider.product,
+				description: connection?.description ?? `Sign in with ${provider.product}`,
+				connected: connection?.connected ?? false,
+				accountName: connection?.accountName ?? "",
+			};
+		}),
+		ready: readiness.ready,
+		selection: readiness.selection,
+		selectionSource: readiness.selectionSource,
+		requiresChoice: readiness.requiresChoice,
+	};
+}
+
 async function githubConnectionInfo(root: string | undefined): Promise<SettingsConnectionInfo> {
 	const status = await readGitHubCliStatus();
 	let companyBound = false;
@@ -430,15 +539,14 @@ interface ConnectionLogin {
 
 const connectionLogins = new Map<number, ConnectionLogin>();
 
-function waitForConnectionCallback(signal?: AbortSignal): Promise<string> {
-	return new Promise<string>((_resolve, reject) => {
-		const cancel = () => reject(new Error("Login cancelled"));
-		if (signal?.aborted) {
-			cancel();
-			return;
-		}
-		signal?.addEventListener("abort", cancel, { once: true });
-	});
+function unsupportedManualCodePrompt(signal?: AbortSignal): Promise<string> {
+	return Promise.reject(
+		new Error(
+			signal?.aborted
+				? "Login cancelled"
+				: "This sign-in method needs a code-entry screen that is not available yet. Choose another provider or try again after updating Qorpera Base.",
+		),
+	);
 }
 
 function connectionError(error: unknown): { ok: false; cancelled?: true; error?: string } {
@@ -472,13 +580,9 @@ interface CompanyRuntime {
 	child: ChildProcessWithoutNullStreams;
 	backendPort: number;
 	backendClose?: () => void;
-	userland: UserlandStatus;
-	usingBaseFallback: boolean;
 	backendToken: string;
 	childOptions: ChildOptions;
 	productWorker?: { department: string; worktree: string };
-	/** Live userland-merge session, if one is running (kernel-spawned, silent). */
-	mergeChild?: ChildProcessWithoutNullStreams;
 	/** Live wake session, if one is running (kernel-spawned, single-flight). */
 	wakeChild?: ChildProcessWithoutNullStreams;
 	/** Named scheduled job currently owning wakeChild; absent for event wakes. */
@@ -493,6 +597,9 @@ interface CompanyRuntime {
 	/** Bounded crash-loop state for the replaceable attended RPC process. */
 	runtimeReconnectAttempts: number;
 	lastUnexpectedRuntimeExitAt?: number;
+	/** During initial profile setup, return the attended runtime to the first
+	 * selected staff member after the local intro queue has settled. */
+	staffBootstrapReturn?: { staffAgentId: string; trailFile: string };
 	closing: boolean;
 	closePromise?: Promise<void>;
 	runtimeLock: CompanyRuntimeLock;
@@ -513,7 +620,7 @@ interface Slot {
 	openGeneration: number;
 }
 
-const BASE_USERLAND_DIR = join(DIRNAME, "userland");
+const FIXED_SHELL_DIR = join(DIRNAME, "userland");
 
 // Window/taskbar icon: the Qorpera mark by default; a company can carry its
 // own at app/icon.(ico|png|jpg) — set from Settings → App, or by the
@@ -557,9 +664,53 @@ const childExecutorIds = new WeakMap<ChildProcessWithoutNullStreams, string>();
 const childAttachmentSequences = new WeakMap<ChildProcessWithoutNullStreams, number>();
 const childSessionPlanes = new WeakMap<ChildProcessWithoutNullStreams, SessionControlPlane>();
 const childRuntimeReady = new WeakSet<ChildProcessWithoutNullStreams>();
+interface ChildReadiness {
+	promise: Promise<boolean>;
+	resolve: (ready: boolean) => void;
+	settled: boolean;
+}
+const childReadiness = new WeakMap<ChildProcessWithoutNullStreams, ChildReadiness>();
+type StaffConnectionRequestToolInput = Omit<CreateConnectionRequestInput, "staffAgentId" | "sessionFile">;
+interface ChildConnectionRequestCalls {
+	pending: Map<string, StaffConnectionRequestToolInput>;
+	completed: Set<string>;
+}
+const childConnectionRequestCalls = new WeakMap<ChildProcessWithoutNullStreams, ChildConnectionRequestCalls>();
 
 const KERNEL_INSTANCE_ID = randomUUID();
 const sessionControlPlanes = new Map<string, SessionControlPlane>();
+
+function trackChildReadiness(child: ChildProcessWithoutNullStreams): void {
+	let resolveReadiness: (ready: boolean) => void = () => {};
+	const promise = new Promise<boolean>((resolvePromise) => {
+		resolveReadiness = resolvePromise;
+	});
+	childReadiness.set(child, { promise, resolve: resolveReadiness, settled: false });
+}
+
+function settleChildReadiness(child: ChildProcessWithoutNullStreams, ready: boolean): void {
+	const state = childReadiness.get(child);
+	if (!state || state.settled) return;
+	state.settled = true;
+	state.resolve(ready);
+}
+
+async function waitForChildReadiness(child: ChildProcessWithoutNullStreams): Promise<boolean> {
+	if (childRuntimeReady.has(child)) return true;
+	const state = childReadiness.get(child);
+	if (!state) return false;
+	let timeout: NodeJS.Timeout | undefined;
+	try {
+		return await Promise.race([
+			state.promise,
+			new Promise<boolean>((resolvePromise) => {
+				timeout = setTimeout(() => resolvePromise(false), 15_000);
+			}),
+		]);
+	} finally {
+		if (timeout) clearTimeout(timeout);
+	}
+}
 
 function recordSessionRuntime(
 	sessions: SessionControlPlane,
@@ -598,9 +749,8 @@ function observeSessionActivity(
 const slots = new Map<number, Slot>();
 
 /** A company root is a folder scaffolded as one — company.md is the anchor
- * every scaffold writes. Anything else must never be registered or have a
- * userland forked into it (a bad argv token once created a "company" named
- * after a Chromium switch). */
+ * every scaffold writes. Anything else must never be registered or started
+ * (a bad argv token once created a "company" named after a Chromium switch). */
 function isCompanyRoot(root: string): boolean {
 	try {
 		return existsSync(join(root, "company.md"));
@@ -648,7 +798,7 @@ function isTrustedHubSender(sender: WebContents): boolean {
 	const slot = slotOf(sender);
 	if (!slot || slot.runtime) return false;
 	try {
-		return normalizedRoot(fileURLToPath(sender.getURL())) === normalizedRoot(join(BASE_USERLAND_DIR, "index.html"));
+		return normalizedRoot(fileURLToPath(sender.getURL())) === normalizedRoot(join(FIXED_SHELL_DIR, "index.html"));
 	} catch {
 		return false;
 	}
@@ -847,7 +997,6 @@ async function closeCompany(slot: Slot): Promise<void> {
 			await runtime.transitionQueue;
 			await stopChild(runtime.child);
 			if (runtime.wakeChild) await stopChild(runtime.wakeChild);
-			if (runtime.mergeChild) await stopChild(runtime.mergeChild);
 			runtime.backendClose?.();
 			releaseCompanyRuntimeLock(runtime.runtimeLock);
 		} finally {
@@ -901,6 +1050,13 @@ interface ChildOptions {
 	/** Initial display identity for a freshly attached session. Passed at
 	 * process startup so attachment and naming cannot target different children. */
 	sessionName?: string;
+	/** Stable company-owned employee identity stamped into the trail header. */
+	staffAgentId?: string;
+	/** Kernel-built employee profile appended on every process launch. */
+	staffProfile?: string;
+	/** One-shot flags consumed by the process launched from these options. */
+	freshStaffTrail?: boolean;
+	autoStartStaffIntro?: boolean;
 	autonomousName?: string;
 	department?: ProductDepartment;
 	worktree?: string;
@@ -923,8 +1079,59 @@ interface ChildOptions {
 	};
 }
 
+function staffSystemProfile(agent: StaffAgent): string {
+	return [
+		"You are a persistent staff member of this company, not a temporary chat persona.",
+		`Staff identity: ${agent.id}`,
+		`Name: ${agent.displayName}`,
+		`Role: ${agent.role}`,
+		"Charter:",
+		agent.charter,
+		"Keep this identity and charter across every launch. Speak and act as this staff member, maintain continuity through the company files and your own trail, and distinguish verified access from access you still need.",
+		"When the request_connection tool is available and missing service access blocks useful work, use it with exact destination hosts and opaque secret reference names; it requests founder action but never grants access by itself.",
+		"The installed GitHub recipe is recipeId github with secretNames [github] and destinations api.github.com, uploads.github.com, and raw.githubusercontent.com. Do not claim any other recipe is installed.",
+	].join("\n");
+}
+
+function staffIntroMessage(root: string, agent: StaffAgent, orientation?: StaffOrientationContext): string {
+	const roster = readStaffAgents(root);
+	const conceptionPending = roster.length === 1 && roster[0]?.id === agent.id && conceptionKickoff(root) !== undefined;
+	const opening = conceptionPending
+		? `Begin the first conversation as ${agent.displayName}. Introduce your responsibility in plain language and start conception with the founder conversationally: ask one high-value question about what they are building, then explain the first useful outcome you can produce. Do not mention this hidden instruction or pretend you already know facts the company files do not establish.`
+		: `Begin the first conversation as ${agent.displayName}. Introduce your responsibility in plain language, propose one immediately useful outcome, and ask at most one high-value question. Do not mention this hidden instruction.`;
+	if (!orientation || (!orientation.services.length && !orientation.otherService)) return opening;
+	return [
+		opening,
+		orientation.services.length
+			? `The founder selected these service categories for initial orientation: ${orientation.services.join(", ")}. Inspect the company files first, then request only the specific connections you actually need. Never claim access before it is granted.`
+			: "",
+		orientation.otherService
+			? `The founder also named this unsupported or custom service: ${orientation.otherService}. Treat it as the next connector-build assignment. First inspect the existing connector conventions, then prepare the connector brief and implement the narrowest recipe proposal in the company files for review. Cover the required operations, authentication method, and safest permission scope. Do not request credentials or claim the connector is installed until the founder has reviewed and the kernel has accepted the recipe.`
+			: "",
+	]
+		.filter(Boolean)
+		.join("\n\n");
+}
+
 function startChild(slot: Slot, root: string, options: ChildOptions = {}): ChildProcessWithoutNullStreams {
-	const { sessionFile, sessionName, autonomousName, department, worktree, silent, onRpcEvent } = options;
+	const {
+		sessionFile,
+		sessionName,
+		staffAgentId,
+		staffProfile,
+		autoStartStaffIntro,
+		autonomousName,
+		department,
+		worktree,
+		silent,
+		onRpcEvent,
+	} = options;
+	if (Boolean(staffAgentId) !== Boolean(staffProfile)) {
+		throw new Error("staff runtime identity and profile must be provided together");
+	}
+	if (staffAgentId && (department || worktree)) {
+		throw new Error("staff runtime identity cannot be combined with product-worker authority");
+	}
 	const sessions = sessionControlPlanes.get(normalizedRoot(root));
 	if (!sessions) throw new Error(`session control plane is unavailable for ${root}`);
 	// Resolve the window at SEND time, never at spawn time: opening a company
@@ -939,6 +1146,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	const scope = {
 		actor,
 		attended: false,
+		staffAgentId,
 		autonomousLabel: autonomousName ? `autonomous — ${autonomousName}` : undefined,
 		department: department?.path,
 		worktree,
@@ -1000,8 +1208,8 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	// references are resolved kernel-side; every attempt is trail-observed
 	// and must ride a kernel-signed causal intent (parity with the model lane).
 	// File mode streams into/out of company territory only: escapes and
-	// kernel-protected paths (trail, policy, inbox, .git, userland, product
-	// code) are denied before any network contact.
+	// kernel-protected paths (trail, policy, inbox, .git, legacy shell storage,
+	// product code) are denied before any network contact.
 	const resolveCompanyPath = createCompanyFileResolver(root, [
 		...protectedControllerPaths(root, products),
 		join(root, "userland"),
@@ -1049,7 +1257,19 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			nodeExecutable: process.execPath,
 			env,
 		});
-		const rpcArgs = [RPC_ENTRY, "--mode", "rpc", "--session", binding.path, ...controllerModelArgs(options.model)];
+		const rpcArgs = [
+			RPC_ENTRY,
+			"--mode",
+			"rpc",
+			"--session",
+			binding.path,
+			...(staffProfile ? ["--append-system-prompt", staffProfile] : []),
+			...(staffAgentId && (!sessionFile || options.freshStaffTrail)
+				? ["--thinking", STAFF_DEFAULT_THINKING_LEVEL]
+				: []),
+			...(staffAgentId ? ["--tools", STAFF_TOOL_NAMES] : []),
+			...controllerModelArgs(options.model),
+		];
 		invocation = codexSpawn(
 			CODEX_ENTRY,
 			process.execPath,
@@ -1121,6 +1341,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		brokeredCredentials.release();
 		throw error;
 	}
+	trackChildReadiness(child);
 	liveChildren.add(child);
 	// stdin write failures land asynchronously as an "error" event; without a
 	// listener they become an uncaughtException that takes down the app.
@@ -1185,6 +1406,19 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 						return;
 					}
 					childRuntimeReady.add(child);
+					const staffDefaultsApplied =
+						!staffAgentId ||
+						writeChildFrame(
+							child,
+							`${JSON.stringify({ type: "set_response_speed", speed: STAFF_DEFAULT_RESPONSE_SPEED })}\n`,
+						);
+					if (!staffDefaultsApplied) {
+						send(win(), "rpc-log", "staff response-speed default could not be applied");
+					}
+					settleChildReadiness(child, staffDefaultsApplied);
+					if (staffAgentId && autoStartStaffIntro && staffDefaultsApplied) {
+						scheduleAutomaticStaffIntro(slot, child, staffAgentId, binding.file);
+					}
 				}
 				return;
 			}
@@ -1230,8 +1464,33 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				} else send(win(), "rpc-log", "rejected invalid trail append frame");
 				return;
 			}
+			observeStaffConnectionRequestFrame(slot, root, child, staffAgentId, binding, frame as Record<string, unknown>);
 			const activity = sessionActivityFromFrame(frame as Record<string, unknown>);
 			if (activity) observeSessionActivity(sessions, binding, executorId, activity);
+			if (staffAgentId) {
+				const staffFrame = frame as Record<string, unknown>;
+				if (
+					staffFrame.type === "response" &&
+					staffFrame.command === "staff_intro" &&
+					staffFrame.success === false
+				) {
+					const error = typeof staffFrame.error === "string" ? staffFrame.error : "staff intro RPC failed";
+					finishStaffIntroDurably(root, staffAgentId, binding.file, false, error);
+					recordSessionRuntime(sessions, binding, {
+						kind: "turn_interrupted",
+						executorId,
+						origin: "staff-intro-rpc-failed",
+					});
+					childBusy.set(child, false);
+					brokeredCredentials.endTurn("failed");
+					httpBroker.endTurn();
+					scheduleNextQueuedStaffIntro(slot, child);
+				} else if (wakeFrameFailed(staffFrame)) {
+					finishStaffIntroDurably(root, staffAgentId, binding.file, false, "staff intro model request failed");
+				} else if (staffFrame.type === "agent_settled") {
+					finishStaffIntroDurably(root, staffAgentId, binding.file, true);
+				}
+			}
 			if ((frame as { type?: unknown }).type === "agent_settled") {
 				if (
 					!recordSessionRuntime(sessions, binding, {
@@ -1277,6 +1536,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 					// reconciliation retries the checkpoint from its saved baseline.
 					console.error(`session checkpoint failed: ${(error as Error).message}`);
 				}
+				if (staffAgentId) scheduleNextQueuedStaffIntro(slot, child);
 			}
 			if (onRpcEvent) onRpcEvent(frame as Record<string, unknown>);
 			else if (
@@ -1316,6 +1576,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		exitHandled = true;
 		const detail = [stderrTail.join("\n"), immediateDetail].filter(Boolean).join("\n").slice(-4096);
 		const expected = intentionalKills.has(child);
+		settleChildReadiness(child, false);
 		const busy = childBusy.get(child) ?? false;
 		recordSessionRuntime(sessions, binding, {
 			kind: "executor_exited",
@@ -1356,6 +1617,15 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	child.on("close", () => {
 		liveChildren.delete(child);
 		try {
+			if (staffAgentId) {
+				finishStaffIntroDurably(
+					root,
+					staffAgentId,
+					binding.file,
+					false,
+					"staff intro runtime exited before completion",
+				);
+			}
 			// Durable end marker BEFORE the close checkpoint, so the same kernel
 			// commit that attributes this session's work also records its release.
 			// Autonomous sessions only: they are the ones run classification
@@ -1474,6 +1744,86 @@ function sendKernelPrompt(
 	return true;
 }
 
+function finishStaffIntroDurably(
+	root: string,
+	staffAgentId: string,
+	trailFile: string,
+	success: boolean,
+	error?: string,
+): void {
+	const path = staffRuntimeStatePath(app.getPath("userData"), root);
+	const current = readStaffRuntimeState(path);
+	const next = finishStaffIntro(current, staffAgentId, trailFile, success, Date.now(), error);
+	if (next !== current) writeStaffRuntimeState(path, next);
+}
+
+function reconcileInterruptedStaffIntros(root: string): void {
+	const path = staffRuntimeStatePath(app.getPath("userData"), root);
+	const current = readStaffRuntimeState(path);
+	let next = current;
+	for (const intro of Object.values(current.intros)) {
+		if (intro.status !== "started") continue;
+		next = finishStaffIntro(
+			next,
+			intro.staffAgentId,
+			intro.trailFile,
+			false,
+			Date.now(),
+			"staff intro was interrupted before completion",
+		);
+	}
+	if (next !== current) writeStaffRuntimeState(path, next);
+}
+
+/** The only kernel path that can start an employee's proactive first turn.
+ * Its RPC command persists hidden custom context instead of a visible user
+ * message; the renderer receives only the employee's response stream. */
+function sendKernelStaffIntro(child: ChildProcessWithoutNullStreams, message: string): boolean {
+	const binding = childBindings.get(child);
+	const signIntent = childIntentSigners.get(child);
+	if (!binding || !signIntent || child.exitCode !== null) return false;
+	const frame = { type: "staff_intro" as const, message };
+	const kernelIntent = signIntent(frame, false);
+	if (!childModelCapabilities.get(child)?.authorizeIntent(kernelIntent)) return false;
+	childHttpBrokers.get(child)?.authorizeIntent(kernelIntent);
+	appendKernelObservation(binding, {
+		frameType: "staff_intro",
+		message,
+		attended: false,
+		origin: "kernel-staff-intro",
+		intent: kernelIntent,
+		images: [],
+	});
+	const sessions = childSessionPlanes.get(child);
+	const executorId = childExecutorIds.get(child);
+	if (
+		!sessions ||
+		!executorId ||
+		!recordSessionRuntime(sessions, binding, {
+			kind: "turn_started",
+			executorId,
+			origin: "kernel-staff-intro",
+		})
+	) {
+		childModelCapabilities.get(child)?.endTurn("aborted");
+		childHttpBrokers.get(child)?.endTurn();
+		return false;
+	}
+	childBusy.set(child, true);
+	if (!writeChildFrame(child, `${JSON.stringify({ ...frame, kernelIntent })}\n`)) {
+		recordSessionRuntime(sessions, binding, {
+			kind: "turn_interrupted",
+			executorId,
+			origin: "staff-intro-dispatch-failed",
+		});
+		childModelCapabilities.get(child)?.endTurn("aborted");
+		childHttpBrokers.get(child)?.endTurn();
+		killChildTree(child);
+		return false;
+	}
+	return true;
+}
+
 async function replaceRuntimeChild(slot: Slot, runtime: CompanyRuntime, options: ChildOptions): Promise<void> {
 	const previousOptions = runtime.childOptions;
 	await stopChild(runtime.child);
@@ -1517,13 +1867,7 @@ async function refreshSlotModelCredentials(slot: Slot): Promise<boolean> {
 	const runtime = slot.runtime;
 	if (!runtime) return true;
 	return enqueueRuntimeTransition(runtime, async () => {
-		if (
-			slot.runtime !== runtime ||
-			runtime.closing ||
-			runtime.mergeChild ||
-			runtime.wakeChild ||
-			childBusy.get(runtime.child)
-		) {
+		if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild || childBusy.get(runtime.child)) {
 			return false;
 		}
 		await replaceRuntimeChild(slot, runtime, {
@@ -1571,7 +1915,7 @@ async function connectModelAccount(
 					return Promise.resolve(first.id);
 				}
 				if (prompt.type === "manual_code") {
-					return waitForConnectionCallback(prompt.signal ?? controller.signal);
+					return unsupportedManualCodePrompt(prompt.signal ?? controller.signal);
 				}
 				return Promise.reject(new Error("This sign-in flow requires an unsupported prompt"));
 			},
@@ -1605,7 +1949,7 @@ async function connectModelAccount(
 		return { ok: true, message };
 	} catch (error) {
 		const result = connectionError(error);
-		const connected = modelConnectionInfo().find((connection) => connection.id === providerId)?.connected;
+		const connected = intelligenceInfo().providers.find((provider) => provider.id === providerId)?.connected;
 		if (connected && !result.cancelled) {
 			const refreshed = await refreshSlotModelCredentials(slot).catch(() => false);
 			const message = !slot.runtime
@@ -1621,6 +1965,33 @@ async function connectModelAccount(
 	} finally {
 		connectionLogins.delete(sender.id);
 	}
+}
+
+async function configureIntelligence(
+	sender: WebContents,
+	providerId: string,
+): Promise<
+	{ ok: true; intelligence: ReturnType<typeof intelligenceInfo> } | { ok: false; cancelled?: true; error: string }
+> {
+	if (!isIntelligenceProviderId(providerId)) return { ok: false, error: "unsupported intelligence provider" };
+	const connected = intelligenceInfo().providers.find((provider) => provider.id === providerId)?.connected ?? false;
+	if (!connected) {
+		const connection = await connectModelAccount(sender, providerId);
+		if (!connection.ok) {
+			return {
+				ok: false,
+				...(connection.cancelled ? { cancelled: true as const } : {}),
+				error: connection.error ?? "intelligence connection failed",
+			};
+		}
+	}
+	const selection = intelligenceSelectionForProvider(providerId);
+	if (!selection || !writeDefaultControllerModelPreference(app.getPath("userData"), selection)) {
+		return { ok: false, error: "could not persist the default intelligence" };
+	}
+	const slot = slotOf(sender);
+	if (slot?.runtime) writeControllerModelPreference(app.getPath("userData"), slot.runtime.root, selection);
+	return { ok: true, intelligence: intelligenceInfo() };
 }
 
 async function connectGitHubAccount(sender: WebContents): Promise<{
@@ -1753,7 +2124,7 @@ function isCurrentRuntimeChild(slot: Slot, runtime: CompanyRuntime, child: Child
 
 function restartForProductInventory(slot: Slot, runtime: CompanyRuntime): void {
 	void enqueueRuntimeTransition(runtime, async () => {
-		if (slot.runtime !== runtime || runtime.mergeChild || runtime.wakeChild) return;
+		if (slot.runtime !== runtime || runtime.wakeChild) return;
 		if (childBusy.get(runtime.child)) {
 			runtime.pendingInventoryRestart = true;
 			return;
@@ -1780,14 +2151,7 @@ function isInside(target: string, parent: string): boolean {
 	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
-/**
- * Run the staged userland merge as its OWN autonomous session — never
- * through the founder's chat child, so a reload can't re-send the task into
- * a session that already ran it. Silent: events are consumed here (the
- * agent's own settle ends the run), not forwarded to the chat pane. The
- * result reaches the renderer as one `merge-done` event, and the open-time
- * userland status is refreshed so the merge button reflects reality.
- */
+/** Build the exact unattended prompt for a scheduled or event-driven run. */
 function wakePrompt(
 	cause: "schedule" | "founder_response" | "inbound_event",
 	coalesced: number,
@@ -1832,6 +2196,109 @@ function sessionActivityFromFrame(frame: Record<string, unknown>): SessionRuntim
 	return undefined;
 }
 
+function parsedStaffConnectionRequestToolInput(value: unknown): StaffConnectionRequestToolInput | undefined {
+	const args = recordValue(value);
+	if (
+		!args ||
+		typeof args.displayName !== "string" ||
+		typeof args.purpose !== "string" ||
+		!Array.isArray(args.destinations) ||
+		!args.destinations.every((destination) => {
+			const candidate = recordValue(destination);
+			return (
+				candidate !== undefined &&
+				typeof candidate.host === "string" &&
+				(candidate.note === undefined || typeof candidate.note === "string") &&
+				Object.keys(candidate).every((key) => key === "host" || key === "note")
+			);
+		}) ||
+		!Array.isArray(args.secretNames) ||
+		!args.secretNames.every((secretName) => typeof secretName === "string") ||
+		(args.recipeId !== undefined && typeof args.recipeId !== "string") ||
+		Object.keys(args).some(
+			(key) => !["displayName", "purpose", "destinations", "secretNames", "recipeId"].includes(key),
+		)
+	) {
+		return undefined;
+	}
+	return {
+		displayName: args.displayName,
+		purpose: args.purpose,
+		destinations: args.destinations.map((destination) => {
+			const candidate = destination as { host: string; note?: string };
+			return { host: candidate.host, ...(candidate.note !== undefined ? { note: candidate.note } : {}) };
+		}),
+		secretNames: [...args.secretNames] as string[],
+		...(typeof args.recipeId === "string" ? { recipeId: args.recipeId } : {}),
+	};
+}
+
+function observeStaffConnectionRequestFrame(
+	slot: Slot,
+	root: string,
+	child: ChildProcessWithoutNullStreams,
+	staffAgentId: string | undefined,
+	binding: TrailBinding,
+	frame: Record<string, unknown>,
+): void {
+	if (
+		!staffAgentId ||
+		(frame.type !== "tool_execution_start" && frame.type !== "tool_execution_end") ||
+		frame.toolName !== "request_connection" ||
+		typeof frame.toolCallId !== "string" ||
+		!frame.toolCallId ||
+		Buffer.byteLength(frame.toolCallId, "utf-8") > 512
+	) {
+		return;
+	}
+	const calls = childConnectionRequestCalls.get(child) ?? {
+		pending: new Map<string, StaffConnectionRequestToolInput>(),
+		completed: new Set<string>(),
+	};
+	childConnectionRequestCalls.set(child, calls);
+	if (calls.completed.has(frame.toolCallId)) return;
+	if (frame.type === "tool_execution_start") {
+		if (calls.pending.has(frame.toolCallId)) return;
+		const input = parsedStaffConnectionRequestToolInput(frame.args);
+		if (input) calls.pending.set(frame.toolCallId, input);
+		return;
+	}
+	const input = calls.pending.get(frame.toolCallId);
+	calls.pending.delete(frame.toolCallId);
+	calls.completed.add(frame.toolCallId);
+	if (!input || frame.isError !== false) return;
+	const runtime = slot.runtime;
+	const attachedStaffChild =
+		runtime && isCurrentRuntimeChild(slot, runtime, child) && runtime.childOptions.staffAgentId === staffAgentId;
+	const scheduledStaffChild =
+		runtime?.wakeChild === child && runtime.wakeJobId !== undefined && runtime.child !== child;
+	if (!runtime || (!attachedStaffChild && !scheduledStaffChild)) {
+		return;
+	}
+	if (!activeStaffAgent(root, staffAgentId)) return;
+	try {
+		const request = createConnectionRequest(app.getPath("userData"), root, {
+			staffAgentId,
+			sessionFile: binding.file,
+			...input,
+		});
+		send(slot.window, "connection-requests-changed", projectConnectionRequest(request));
+	} catch (error) {
+		console.error(`staff connection request rejected: ${(error as Error).message}`);
+	}
+}
+
+function isGitHubNativeConnectionRequest(request: ConnectionRequest): boolean {
+	const expectedDestinations = new Set<string>(GITHUB_CONNECTION_DESTINATIONS.map(([host]) => host));
+	return (
+		request.recipeId === "github" &&
+		request.secretNames.length === 1 &&
+		request.secretNames[0] === "github" &&
+		request.destinations.length === expectedDestinations.size &&
+		request.destinations.every((destination) => expectedDestinations.has(destination.host))
+	);
+}
+
 function persistScheduledJobOutcome(
 	runtime: CompanyRuntime,
 	job: ScheduledJob,
@@ -1874,7 +2341,7 @@ async function startWakeChildExclusive(
 	job?: ScheduledJob,
 	manual = false,
 ): Promise<boolean> {
-	if (runtime.mergeChild || runtime.wakeChild || runtime.closing) return false;
+	if (runtime.wakeChild || runtime.closing) return false;
 	// Never preempt a founder turn in flight: the wake defers to the next tick.
 	if (childBusy.get(runtime.child)) return false;
 	if (job) {
@@ -1884,6 +2351,11 @@ async function startWakeChildExclusive(
 			const outcome = persistScheduledJobOutcome(runtime, job, false, previous.activeTrailFile);
 			if (outcome.suspend) return false;
 		}
+	}
+	const assignedStaff = job?.staffAgentId ? activeStaffAgent(runtime.root, job.staffAgentId) : undefined;
+	if (job?.staffAgentId && !assignedStaff) {
+		suspendScheduledJob(runtime.root, job.id, "assigned staff member is unavailable or archived");
+		return false;
 	}
 	const wakeId = randomUUID();
 	const resumeOptions = {
@@ -1908,6 +2380,7 @@ async function startWakeChildExclusive(
 							? "wake — founder response"
 							: "wake — schedule",
 			group: job ? `job:${job.id}` : `wake:${cause}`,
+			...(assignedStaff ? { staffAgentId: assignedStaff.id, staffProfile: staffSystemProfile(assignedStaff) } : {}),
 			silent: true,
 			model: resumeOptions.model,
 			wake: {
@@ -1952,6 +2425,13 @@ async function startWakeChildExclusive(
 			await restoreAttendedChild(slot, runtime, resumeOptions, "post-wake controller restore failed");
 		}).catch((error) => console.error(`wake ownership transition failed: ${(error as Error).message}`));
 	});
+	if (assignedStaff && !(await waitForChildReadiness(child))) {
+		console.error(
+			`staff-owned scheduled job runtime did not become ready: ${job?.title ?? assignedStaff.displayName}`,
+		);
+		await stopChild(child);
+		return false;
+	}
 	if (
 		!sendKernelPrompt(
 			child,
@@ -1995,7 +2475,7 @@ function startWakeTicker(): void {
 	setInterval(() => {
 		for (const slot of slots.values()) {
 			const runtime = slot.runtime;
-			if (!runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) continue;
+			if (!runtime || runtime.closing || runtime.wakeChild) continue;
 			if (childBusy.get(runtime.child)) continue;
 			// Inbound events that arrived mid-turn come first: their files are
 			// already durable, they just never got their wake.
@@ -2055,91 +2535,6 @@ async function restoreAttendedChild(
 	return false;
 }
 
-async function startMergeChildExclusive(slot: Slot, runtime: CompanyRuntime, reviewedPrompt: string): Promise<boolean> {
-	if (runtime.mergeChild || runtime.wakeChild || runtime.closing || childBusy.get(runtime.child)) return false;
-	const resumeOptions = {
-		...runtime.childOptions,
-		sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
-	};
-	await stopChild(runtime.child);
-	if (slot.runtime !== runtime || runtime.closing) return false;
-	try {
-		runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
-	} catch (error) {
-		console.error(`pre-merge userland validation failed: ${(error as Error).message}`);
-		await restoreAttendedChild(slot, runtime, resumeOptions, "pre-merge controller restore failed");
-		return false;
-	}
-	if (
-		(runtime.userland.action !== "staged" && runtime.userland.action !== "already-staged") ||
-		mergeTaskPrompt(runtime.userland) !== reviewedPrompt
-	) {
-		await restoreAttendedChild(slot, runtime, resumeOptions, "stale-merge controller restore failed");
-		return false;
-	}
-	let started = false;
-	let child: ChildProcessWithoutNullStreams;
-	try {
-		child = startChild(slot, runtime.root, {
-			autonomousName: `userland merge v${runtime.userland.stagedVersion}`,
-			group: "merge",
-			silent: true,
-			model: resumeOptions.model,
-			onRpcEvent: (frame) => {
-				if (frame.type === "agent_start") started = true;
-				// Any settle ends the run — including a prompt that failed before
-				// starting (never keeping a settled merge child alive beats a zombie
-				// that blocks userland:merge forever).
-				if (frame.type === "agent_settled") {
-					if (!started) console.error("merge session settled without starting (prompt failed?)");
-					intentionalKills.add(child);
-					killChildTree(child);
-				}
-			},
-		});
-	} catch (error) {
-		console.error(`merge runtime startup failed: ${(error as Error).message}`);
-		await restoreAttendedChild(slot, runtime, resumeOptions, "merge-start controller restore failed");
-		return false;
-	}
-	runtime.mergeChild = child;
-	child.on("close", () => {
-		void enqueueRuntimeTransition(runtime, async () => {
-			await childCheckpointCompletion.get(child);
-			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild !== child) return;
-			runtime.mergeChild = undefined;
-			// Re-read the manifest: a finished merge reads back as "current".
-			// Guarded twice: a throw here is an uncaught exception in main (fs can
-			// fail right after an agent rewrote userland/), and a MISSING manifest
-			// must not reach ensureUserland — its first-open branch would wipe the
-			// fork, .versions included.
-			let ok = false;
-			try {
-				if (existsSync(join(runtime.root, "userland", "userland.json"))) {
-					runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
-					ok =
-						runtime.userland.action === "current" ||
-						runtime.userland.action === "fast-forwarded" ||
-						runtime.userland.action === "auto-merged";
-				}
-			} catch (error) {
-				console.error(`post-merge userland refresh failed: ${(error as Error).message}`);
-			}
-			send(slot.window, "merge-done", { ok, action: runtime.userland.action });
-			await restoreAttendedChild(slot, runtime, resumeOptions, "post-merge controller restore failed");
-		}).catch((error) => console.error(`merge ownership transition failed: ${(error as Error).message}`));
-	});
-	if (!sendKernelPrompt(child, { type: "prompt", message: reviewedPrompt }, true, "native-userland-merge-review")) {
-		await stopChild(child);
-		if (runtime.mergeChild === child) runtime.mergeChild = undefined;
-		if (slot.runtime === runtime && !runtime.closing) {
-			await restoreAttendedChild(slot, runtime, resumeOptions, "failed-merge controller restore failed");
-		}
-		return false;
-	}
-	return true;
-}
-
 /** Each open company owns its backend server and token. Hashed ports can
  * collide, so walk forward until a bind succeeds: the renderer resolves
  * everything relative to backendUrl, and only a server we own honors the
@@ -2157,8 +2552,11 @@ async function listenBackend(
 			root,
 			port,
 			authToken,
-			userland: { baseDir: BASE_USERLAND_DIR },
+			fixedShell: { directory: FIXED_SHELL_DIR },
 			sessionRuntime: sessions,
+			staffReadModel: () => readStaffAgents(root),
+			connectionRequestReadModel: () => readRendererConnectionRequests(app.getPath("userData"), root),
+			scheduledJobReadModel: () => readScheduledJobs(root),
 		};
 		const server = createCompanyAppServer(serverOptions);
 		const listening = await new Promise<boolean>((resolvePromise) => {
@@ -2178,8 +2576,8 @@ async function listenBackend(
 	throw new Error(`no free backend port near ${base} for ${root}`);
 }
 
-function companyUserlandUrl(runtime: CompanyRuntime, choice: "fork" | "base"): string {
-	return `http://127.0.0.1:${runtime.backendPort}/userland/${choice}/index.html`;
+function companyShellUrl(runtime: CompanyRuntime): string {
+	return `http://127.0.0.1:${runtime.backendPort}/shell/index.html`;
 }
 
 interface ActiveCompany {
@@ -2189,10 +2587,6 @@ interface ActiveCompany {
 	id: string;
 	backendUrl: string;
 	kickoff: boolean;
-	userland: UserlandStatus;
-	usingBaseFallback: boolean;
-	mergePrompt?: string;
-	mergeRunning: boolean;
 	wakeRunning: boolean;
 	/** Exact autonomous trail currently owned by the kernel, if any. */
 	autonomousTrailFile?: string;
@@ -2207,9 +2601,6 @@ interface ActiveCompany {
 			running: boolean;
 		}
 	>;
-	activeApp: "fork" | "base";
-	versions: UserlandVersion[];
-	evolved: boolean;
 	/** Trail file the live founder child is bound to (resumed or fresh), so
 	 * the chrome can mark the session active and cache under the right key. */
 	sessionFile?: string;
@@ -2218,14 +2609,7 @@ interface ActiveCompany {
 function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 	const runtime = slot.runtime;
 	if (!runtime) return undefined;
-	const staged = runtime.userland.action === "staged" || runtime.userland.action === "already-staged";
-	const userlandDir = join(runtime.root, "userland");
-	const autonomousChild =
-		runtime.wakeChild?.exitCode === null
-			? runtime.wakeChild
-			: runtime.mergeChild?.exitCode === null
-				? runtime.mergeChild
-				: undefined;
+	const autonomousChild = runtime.wakeChild?.exitCode === null ? runtime.wakeChild : undefined;
 	const runState = readWakeRunState(wakeRunStatePath(app.getPath("userData"), runtime.root));
 	const now = Date.now();
 	const scheduledJobs = readScheduledJobs(runtime.root).map((job) => {
@@ -2251,16 +2635,9 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 		id: runtime.storageId,
 		backendUrl: `http://127.0.0.1:${runtime.backendPort}`,
 		kickoff: false,
-		userland: runtime.userland,
-		usingBaseFallback: runtime.usingBaseFallback,
-		mergePrompt: staged ? mergeTaskPrompt(runtime.userland) : undefined,
-		mergeRunning: Boolean(runtime.mergeChild && runtime.mergeChild.exitCode === null),
 		wakeRunning: Boolean(runtime.wakeChild && runtime.wakeChild.exitCode === null),
 		autonomousTrailFile: autonomousChild ? childBindings.get(autonomousChild)?.file : undefined,
 		scheduledJobs,
-		activeApp: getActiveApp(userlandDir),
-		versions: listVersions(userlandDir),
-		evolved: !isUnmodified(userlandDir),
 		sessionFile: childBindings.get(runtime.child)?.file,
 	};
 }
@@ -2272,15 +2649,14 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		root = canonicalCompanyRoot(root);
 	} catch {
 		console.error(`refusing to open unavailable company root: ${root}`);
-		if (!slot.runtime) void slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+		if (!slot.runtime) void slot.window.loadFile(join(FIXED_SHELL_DIR, "index.html"));
 		return;
 	}
-	// Refuse non-companies outright: opening is what registers a root and
-	// forks a userland into it, so an invalid path here would mint a fake
-	// company. The window stays on (or returns to) the hub instead.
+	// Refuse non-companies outright: opening registers a root and starts its
+	// local runtime, so an invalid path here would mint a fake company.
 	if (!isCompanyRoot(root)) {
 		console.error(`refusing to open non-company root: ${root}`);
-		if (!slot.runtime) void slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+		if (!slot.runtime) void slot.window.loadFile(join(FIXED_SHELL_DIR, "index.html"));
 		return;
 	}
 	// A company never runs in two windows: two RPC children on one trail and
@@ -2312,8 +2688,8 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		// company conceived under an older kernel passes current validation.
 		scaffoldCompany(root);
 		validateCompanyKernelStorage(root);
-		assertUserlandStorage(join(root, "userland"));
 		const userData = app.getPath("userData");
+		reconcileInterruptedStaffIntros(root);
 		const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "controller")), "checkpoints");
 		reconcilePendingProductCheckpoints(checkpointDir, root);
 		const hasLocalKernelState = hasCompanyKernelState(userData, root);
@@ -2341,14 +2717,12 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		// app/projection.json (files untouched) and drop the dead key.
 		migrateLegacyManifestSurfaces(root);
 		registerCompany(root);
-
-		// The fork model (spec §9a): the company runs ITS OWN userland — forked
-		// from base on first open, fast-forwarded when untouched, staged for a
-		// controller merge when evolved. The kernel only loads it.
-		const userland = ensureUserland(root, BASE_USERLAND_DIR, shellVersion());
-		// Any evolution since the last open is captured as a restorable version —
-		// the founder can always roll the app back from Settings → App.
-		snapshotIfChanged(join(root, "userland"));
+		const fixedShellMigration = migrateCompanyToFixedShell(root);
+		if (fixedShellMigration.removed) {
+			console.log(
+				`removed legacy company shell (${fixedShellMigration.filesRemoved} files, ${fixedShellMigration.versionsRemoved} saved versions): ${root}`,
+			);
+		}
 		commitCompanyMaterialization(root, [
 			join(".qorpera", "settings.json"),
 			"userland",
@@ -2376,19 +2750,15 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		pendingBackendClose = backend.close;
 		if (openingCancelled()) throw new CompanyOpenCancelledError();
 		const resumable = sessions.latestAttendedControllerTrailFile() ?? latestResumableTrailSession(root);
-		// Conception claims only the TRUE first boot — a company with no founder
-		// chats yet. Once the founder has any resumable session, opening the
-		// company must resume it: booting an unconceived-but-lived-in company
-		// into conception held the founder's history hostage behind an
-		// autonomous run that opening a chat would kill mid-thought — and since
-		// the interrupted conception never wrote company.md, every open
-		// re-spawned it and re-burned its tokens.
-		const kickoff = resumable ? undefined : conceptionKickoff(root);
+		// Startup may resume only a legacy/unowned controller conversation.
+		// Staff trails carry explicit identity and are opened by staff:open. A
+		// fresh company stays idle with an empty roster; its first employee's
+		// hidden staff_intro begins conception conversationally.
 		// A resumed trail records the model that session last used, but the
 		// founder's confirmed preference is newer authority. Pass it on every
 		// controller launch so reopening an old chat cannot silently move the
 		// controller, and the scheduled jobs it spawns, back to a stale model.
-		const childOptions: ChildOptions = controllerLaunchOptions(app.getPath("userData"), root, kickoff, resumable);
+		const childOptions: ChildOptions = controllerLaunchOptions(app.getPath("userData"), root, undefined, resumable);
 		const child = startChild(slot, root, childOptions);
 		pendingChild = child;
 		const childBinding = childBindings.get(child);
@@ -2409,8 +2779,6 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 			childOptions,
 			backendPort: backend.port,
 			backendClose: backend.close,
-			userland,
-			usingBaseFallback: false,
 			backendToken,
 			transitionQueue: Promise.resolve(),
 			runtimeReconnectAttempts: 0,
@@ -2439,7 +2807,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 				onEvent: () => {
 					const live = slot.runtime;
 					if (!live || live.closing) return;
-					if (live.mergeChild || live.wakeChild || childBusy.get(live.child)) {
+					if (live.wakeChild || childBusy.get(live.child)) {
 						live.pendingInboundWake = true;
 						return;
 					}
@@ -2470,15 +2838,10 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 				})
 				.catch((error) => console.error(`webhook listener failed to start: ${(error as Error).message}`));
 		}
-		if (kickoff) {
-			sendKernelPrompt(child, { type: "prompt", message: kickoff }, false, "kernel-conception");
-		}
-		slot.kickoffPending = Boolean(kickoff);
+		slot.kickoffPending = false;
 
-		// Load the company's own app — unless the founder switched this company to
-		// the pristine base app (Settings → App). If the evolved userland fails to
-		// boot, the kernel falls back to the base chrome — the company stays
-		// reachable either way.
+		// Every company uses the same trusted Base shell. Company-authored UI is
+		// limited to sandboxed artifacts exposed inside that shell.
 		if (openingCancelled()) throw new CompanyOpenCancelledError();
 		// A window that last showed the hub (throwaway partition) or another
 		// company cannot host this company's durable partition — swap in a
@@ -2487,14 +2850,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		const win = swap?.window ?? slot.window;
 		try {
 			setWindowIcon(win, companyIcon(root));
-			if (getActiveApp(join(root, "userland")) === "base") {
-				await win.loadURL(companyUserlandUrl(runtime, "base"));
-			} else {
-				await win.loadURL(companyUserlandUrl(runtime, "fork")).catch(async () => {
-					if (slot.runtime) slot.runtime.usingBaseFallback = true;
-					await win.loadURL(companyUserlandUrl(runtime, "base"));
-				});
-			}
+			await win.loadURL(companyShellUrl(runtime));
 			if (slot.openGeneration !== openGeneration || slot.runtime !== runtime) {
 				swap?.abort();
 				if (slot.runtime === runtime) await closeCompany(slot);
@@ -2525,7 +2881,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 async function showHub(slot: Slot): Promise<void> {
 	await closeCompany(slot);
 	setWindowIcon(slot.window, DEFAULT_ICON);
-	await slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+	await slot.window.loadFile(join(FIXED_SHELL_DIR, "index.html"));
 }
 
 /** Switch chat sessions. Product chats run a product-worker in one validated worktree. */
@@ -2702,10 +3058,481 @@ async function openChat(
 	};
 }
 
+function activeStaffAgent(root: string, staffAgentId: string): StaffAgent | undefined {
+	return readStaffAgents(root).find((agent) => agent.id === staffAgentId && agent.employmentStatus === "active");
+}
+
+function latestStaffTrailFile(runtime: CompanyRuntime, staffAgentId: string): string | undefined {
+	return runtime.sessions
+		.snapshot()
+		.sessions.filter((session) => session.staffAgentId === staffAgentId && !session.autonomous)
+		.sort(
+			(left, right) =>
+				(right.attachmentSequence ?? 0) - (left.attachmentSequence ?? 0) ||
+				right.updatedAt.localeCompare(left.updatedAt),
+		)[0]?.trailFile;
+}
+
+async function attachStaffChild(
+	slot: Slot,
+	runtime: CompanyRuntime,
+	agent: StaffAgent,
+	sessionFile: string | undefined,
+	markIntroPending: boolean,
+	autoStartStaffIntro = false,
+): Promise<{ sessionFile: string }> {
+	const currentBinding = childBindings.get(runtime.child);
+	if (
+		runtime.childOptions.staffAgentId === agent.id &&
+		currentBinding !== undefined &&
+		currentBinding.file === sessionFile &&
+		isCurrentRuntimeChild(slot, runtime, runtime.child)
+	) {
+		return { sessionFile: currentBinding.file };
+	}
+	const resumeOptions: ChildOptions = {
+		...runtime.childOptions,
+		sessionFile: currentBinding?.file ?? runtime.childOptions.sessionFile,
+	};
+	await stopChild(runtime.child);
+	if (slot.runtime !== runtime || runtime.closing) throw new Error("company runtime changed before staff attachment");
+	let child: ChildProcessWithoutNullStreams | undefined;
+	try {
+		const options: ChildOptions = {
+			sessionFile,
+			...(sessionFile ? {} : { sessionName: agent.displayName }),
+			staffAgentId: agent.id,
+			staffProfile: staffSystemProfile(agent),
+			model: runtime.childOptions.model,
+			...(autoStartStaffIntro ? { autoStartStaffIntro: true, freshStaffTrail: true } : {}),
+		};
+		child = startChild(slot, runtime.root, options);
+		const binding = childBindings.get(child);
+		if (!binding) throw new Error("staff runtime did not receive a trail binding");
+		if (markIntroPending) {
+			const statePath = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
+			const pending = recordStaffIntroPending(readStaffRuntimeState(statePath), agent.id, binding.file, Date.now());
+			writeStaffRuntimeState(statePath, pending);
+		}
+		runtime.childOptions = options;
+		delete runtime.childOptions.sessionName;
+		delete runtime.childOptions.autoStartStaffIntro;
+		delete runtime.childOptions.freshStaffTrail;
+		runtime.child = child;
+		runtime.productWorker = undefined;
+		runtime.runtimeReconnectAttempts = 0;
+		runtime.lastUnexpectedRuntimeExitAt = undefined;
+		return { sessionFile: binding.file };
+	} catch (error) {
+		if (child) await stopChild(child);
+		await restoreAttendedChild(slot, runtime, resumeOptions, "staff-attachment controller restore failed");
+		throw error;
+	}
+}
+
+const STAFF_AVATAR_COLORS = new Set([
+	"#ff642e",
+	"#ff365e",
+	"#ffae00",
+	"#00c878",
+	"#00bfb3",
+	"#1684ff",
+	"#8a4dff",
+	"#ff2994",
+	"#5367e8",
+]);
+const STAFF_AVATAR_SHAPES = new Set(["soft-square", "round", "wide", "gem", "tilted", "drop"]);
+
+function parsedStaffCreateInput(value: unknown): {
+	templateId: string;
+	displayName?: string;
+	appearance?: StaffAgent["appearance"];
+} {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid staff creation input");
+	const input = value as Record<string, unknown>;
+	if (
+		typeof input.templateId !== "string" ||
+		!input.templateId ||
+		(input.displayName !== undefined && typeof input.displayName !== "string") ||
+		(input.appearance !== undefined &&
+			(!input.appearance || typeof input.appearance !== "object" || Array.isArray(input.appearance))) ||
+		Object.keys(input).some((key) => key !== "templateId" && key !== "displayName" && key !== "appearance")
+	) {
+		throw new Error("invalid staff creation input");
+	}
+	const displayName = typeof input.displayName === "string" ? input.displayName.trim() : undefined;
+	if (displayName !== undefined && (!displayName || Buffer.byteLength(displayName, "utf-8") > 160)) {
+		throw new Error("invalid staff display name");
+	}
+	let appearance: StaffAgent["appearance"] | undefined;
+	if (input.appearance !== undefined) {
+		const record = input.appearance as Record<string, unknown>;
+		if (
+			Object.keys(record).some((key) => key !== "color" && key !== "shape") ||
+			typeof record.color !== "string" ||
+			typeof record.shape !== "string" ||
+			!STAFF_AVATAR_COLORS.has(record.color) ||
+			!STAFF_AVATAR_SHAPES.has(record.shape)
+		) {
+			throw new Error("invalid staff appearance");
+		}
+		appearance = { color: record.color, shape: record.shape };
+	}
+	return {
+		templateId: input.templateId,
+		...(displayName ? { displayName } : {}),
+		...(appearance ? { appearance } : {}),
+	};
+}
+
+function parsedStaffBootstrapInput(value: unknown): {
+	agents: ReturnType<typeof parsedStaffCreateInput>[];
+	orientation: StaffOrientationContext;
+} {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid staff bootstrap input");
+	const input = value as Record<string, unknown>;
+	if (
+		Object.keys(input).some((key) => key !== "agents" && key !== "services" && key !== "otherService") ||
+		!Array.isArray(input.agents) ||
+		input.agents.length === 0 ||
+		input.agents.length > listStaffTemplates().length ||
+		!Array.isArray(input.services) ||
+		input.services.length > 24 ||
+		input.services.some((service) => typeof service !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(service)) ||
+		new Set(input.services).size !== input.services.length ||
+		(input.otherService !== undefined && typeof input.otherService !== "string")
+	) {
+		throw new Error("invalid staff bootstrap input");
+	}
+	const agents = input.agents.map((agent) => parsedStaffCreateInput(agent));
+	if (new Set(agents.map((agent) => agent.templateId)).size !== agents.length) {
+		throw new Error("initial staff templates must be unique");
+	}
+	const otherService = typeof input.otherService === "string" ? input.otherService.trim() : undefined;
+	if (
+		otherService !== undefined &&
+		(!otherService || otherService.includes("\0") || Buffer.byteLength(otherService, "utf-8") > 2_048)
+	) {
+		throw new Error("invalid custom service request");
+	}
+	return {
+		agents,
+		orientation: {
+			services: [...input.services] as string[],
+			...(otherService ? { otherService } : {}),
+		},
+	};
+}
+
+async function bootstrapStaffTeam(
+	slot: Slot,
+	value: unknown,
+): Promise<
+	| { ok: true; staff: Array<{ staff: StaffAgent; sessionFile: string; introStatus: "pending" }> }
+	| { ok: false; error: string }
+> {
+	let input: ReturnType<typeof parsedStaffBootstrapInput>;
+	let templates: ReturnType<typeof getStaffTemplate>[];
+	try {
+		input = parsedStaffBootstrapInput(value);
+		templates = input.agents.map((agent) => getStaffTemplate(agent.templateId));
+	} catch (error) {
+		return { ok: false, error: error instanceof Error ? error.message : String(error) };
+	}
+	const runtime = slot.runtime;
+	if (!runtime) return { ok: false, error: "open a profile before adding staff" };
+	return enqueueRuntimeTransition(runtime, async () => {
+		if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild || childBusy.get(runtime.child)) {
+			return { ok: false, error: "profile runtime is busy" };
+		}
+		if (readStaffAgents(runtime.root).some((staff) => staff.employmentStatus === "active")) {
+			return { ok: false, error: "this profile already has staff; use Add staff instead" };
+		}
+		const resumeOptions: ChildOptions = {
+			...runtime.childOptions,
+			sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
+		};
+		await stopChild(runtime.child);
+		if (slot.runtime !== runtime || runtime.closing) return { ok: false, error: "profile runtime changed" };
+		let staffChild: ChildProcessWithoutNullStreams | undefined;
+		let created: StaffAgent[] = [];
+		try {
+			snapshotFounderGitState(runtime.root, "founder initial team creation");
+			created = createStaffAgents(
+				runtime.root,
+				input.agents.map((agent, index) => {
+					const template = templates[index]!;
+					return {
+						displayName: agent.displayName ?? template.name,
+						role: template.role,
+						charter: template.charter,
+						templateId: template.id,
+						appearance: {
+							color: agent.appearance?.color ?? template.avatarColorToken,
+							shape: agent.appearance?.shape ?? template.avatarShapeToken,
+						},
+					};
+				}),
+			);
+			const statePath = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
+			let introState = readStaffRuntimeState(statePath);
+			const bindings = created.map((staff) => {
+				const binding = bindTrailSession(runtime.root, runtime.root, {
+					actor: "controller",
+					attended: false,
+					staffAgentId: staff.id,
+				});
+				appendKernelSessionInfo(binding, staff.displayName);
+				runtime.sessions.rememberAudit(binding);
+				introState = recordStaffIntroPending(introState, staff.id, binding.file, Date.now(), input.orientation);
+				return binding;
+			});
+			writeStaffRuntimeState(statePath, introState);
+			commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);
+			const first = created[0]!;
+			const firstBinding = bindings[0]!;
+			const options: ChildOptions = {
+				sessionFile: firstBinding.file,
+				staffAgentId: first.id,
+				staffProfile: staffSystemProfile(first),
+				model: resumeOptions.model,
+				freshStaffTrail: true,
+				autoStartStaffIntro: true,
+			};
+			staffChild = startChild(slot, runtime.root, options);
+			runtime.childOptions = options;
+			delete runtime.childOptions.freshStaffTrail;
+			delete runtime.childOptions.autoStartStaffIntro;
+			runtime.child = staffChild;
+			runtime.productWorker = undefined;
+			runtime.staffBootstrapReturn = { staffAgentId: first.id, trailFile: firstBinding.file };
+			runtime.runtimeReconnectAttempts = 0;
+			runtime.lastUnexpectedRuntimeExitAt = undefined;
+			return {
+				ok: true,
+				staff: created.map((staff, index) => ({
+					staff,
+					sessionFile: bindings[index]!.file,
+					introStatus: "pending" as const,
+				})),
+			};
+		} catch (error) {
+			if (staffChild) await stopChild(staffChild);
+			for (const staff of created) {
+				try {
+					archiveStaffAgent(runtime.root, staff.id);
+				} catch {
+					// Preserve the original failure; archived records are only rollback hygiene.
+				}
+			}
+			await restoreAttendedChild(slot, runtime, resumeOptions, "staff-bootstrap controller restore failed");
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+}
+
+async function createStaffMember(
+	slot: Slot,
+	value: unknown,
+): Promise<
+	{ ok: true; staff: StaffAgent; sessionFile: string; introStatus: "pending" } | { ok: false; error: string }
+> {
+	let input: ReturnType<typeof parsedStaffCreateInput>;
+	let template: ReturnType<typeof getStaffTemplate>;
+	try {
+		input = parsedStaffCreateInput(value);
+		template = getStaffTemplate(input.templateId);
+	} catch (error) {
+		return { ok: false, error: error instanceof Error ? error.message : String(error) };
+	}
+	const runtime = slot.runtime;
+	if (!runtime) return { ok: false, error: "open a company before adding staff" };
+	return enqueueRuntimeTransition(runtime, async () => {
+		if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild || childBusy.get(runtime.child)) {
+			return { ok: false, error: "company runtime is busy" };
+		}
+		const resumeOptions: ChildOptions = {
+			...runtime.childOptions,
+			sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
+		};
+		await stopChild(runtime.child);
+		if (slot.runtime !== runtime || runtime.closing) return { ok: false, error: "company runtime changed" };
+		let staffChild: ChildProcessWithoutNullStreams | undefined;
+		try {
+			snapshotFounderGitState(runtime.root, "founder staff creation");
+			const staff = createStaffAgent(runtime.root, {
+				displayName: input.displayName ?? template.name,
+				role: template.role,
+				charter: template.charter,
+				templateId: template.id,
+				appearance: {
+					color: input.appearance?.color ?? template.avatarColorToken,
+					shape: input.appearance?.shape ?? template.avatarShapeToken,
+				},
+			});
+			commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);
+			const options: ChildOptions = {
+				sessionName: staff.displayName,
+				staffAgentId: staff.id,
+				staffProfile: staffSystemProfile(staff),
+				model: resumeOptions.model,
+			};
+			staffChild = startChild(slot, runtime.root, options);
+			const binding = childBindings.get(staffChild);
+			if (!binding) throw new Error("staff runtime did not receive a trail binding");
+			const statePath = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
+			writeStaffRuntimeState(
+				statePath,
+				recordStaffIntroPending(readStaffRuntimeState(statePath), staff.id, binding.file, Date.now()),
+			);
+			runtime.childOptions = options;
+			delete runtime.childOptions.sessionName;
+			delete runtime.childOptions.autoStartStaffIntro;
+			delete runtime.childOptions.freshStaffTrail;
+			runtime.child = staffChild;
+			runtime.productWorker = undefined;
+			runtime.runtimeReconnectAttempts = 0;
+			runtime.lastUnexpectedRuntimeExitAt = undefined;
+			return { ok: true, staff, sessionFile: binding.file, introStatus: "pending" as const };
+		} catch (error) {
+			if (staffChild) await stopChild(staffChild);
+			await restoreAttendedChild(slot, runtime, resumeOptions, "staff-create controller restore failed");
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+}
+
+function parsedStaffUpdateInput(value: unknown): { displayName?: string; role?: string } {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid staff update");
+	const input = value as Record<string, unknown>;
+	if (
+		Object.keys(input).length === 0 ||
+		Object.keys(input).some((key) => key !== "displayName" && key !== "role") ||
+		(input.displayName !== undefined && typeof input.displayName !== "string") ||
+		(input.role !== undefined && typeof input.role !== "string")
+	) {
+		throw new Error("invalid staff update");
+	}
+	const displayName = typeof input.displayName === "string" ? input.displayName.trim() : undefined;
+	const role = typeof input.role === "string" ? input.role.trim() : undefined;
+	if (displayName !== undefined && (!displayName || Buffer.byteLength(displayName, "utf-8") > 160)) {
+		throw new Error("invalid staff display name");
+	}
+	if (role !== undefined && (!role || Buffer.byteLength(role, "utf-8") > 320)) {
+		throw new Error("invalid staff role");
+	}
+	return { ...(displayName ? { displayName } : {}), ...(role ? { role } : {}) };
+}
+
+async function updateStaffMember(
+	slot: Slot,
+	staffAgentId: string,
+	value: unknown,
+): Promise<{ ok: true; staff: StaffAgent } | { ok: false; error: string }> {
+	let update: ReturnType<typeof parsedStaffUpdateInput>;
+	try {
+		update = parsedStaffUpdateInput(value);
+	} catch (error) {
+		return { ok: false, error: error instanceof Error ? error.message : String(error) };
+	}
+	const runtime = slot.runtime;
+	if (!runtime) return { ok: false, error: "open a company before editing staff" };
+	return enqueueRuntimeTransition<{ ok: true; staff: StaffAgent } | { ok: false; error: string }>(
+		runtime,
+		async () => {
+			if (slot.runtime !== runtime || runtime.closing) return { ok: false, error: "company runtime changed" };
+			if (childBusy.get(runtime.child) || runtime.wakeChild) {
+				return { ok: false, error: "wait for the current company work to finish" };
+			}
+			try {
+				if (!activeStaffAgent(runtime.root, staffAgentId))
+					return { ok: false, error: "staff member is unavailable" };
+				snapshotFounderGitState(runtime.root, "founder staff update");
+				const staff = updateStaffAgent(runtime.root, staffAgentId, update);
+				commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);
+				if (runtime.childOptions.staffAgentId === staff.id) {
+					runtime.childOptions.staffProfile = staffSystemProfile(staff);
+				}
+				return { ok: true, staff };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+}
+
+async function openStaffMember(
+	slot: Slot,
+	staffAgentId: string,
+): Promise<
+	| { ok: true; staff: StaffAgent; sessionFile: string; introStatus?: "pending" | "started" | "completed" | "failed" }
+	| { ok: false; error: string }
+> {
+	const runtime = slot.runtime;
+	if (!runtime) return { ok: false, error: "open a company before opening staff" };
+	return enqueueRuntimeTransition(runtime, async () => {
+		if (slot.runtime !== runtime || runtime.closing) return { ok: false, error: "company runtime changed" };
+		const staff = activeStaffAgent(runtime.root, staffAgentId);
+		if (!staff) return { ok: false, error: "staff member is unavailable or archived" };
+		const introState = readStaffRuntimeState(staffRuntimeStatePath(app.getPath("userData"), runtime.root)).intros[
+			staff.id
+		];
+		const currentBinding = childBindings.get(runtime.child);
+		if (
+			runtime.childOptions.staffAgentId === staff.id &&
+			currentBinding &&
+			isCurrentRuntimeChild(slot, runtime, runtime.child)
+		) {
+			return {
+				ok: true,
+				staff,
+				sessionFile: currentBinding.file,
+				...(introState?.status ? { introStatus: introState.status } : {}),
+			};
+		}
+		if (runtime.wakeChild || childBusy.get(runtime.child)) {
+			return { ok: false, error: "company runtime is busy" };
+		}
+		try {
+			const existingTrail = introState?.trailFile ?? latestStaffTrailFile(runtime, staff.id);
+			const attached = await attachStaffChild(slot, runtime, staff, existingTrail, !existingTrail);
+			return {
+				ok: true,
+				staff,
+				sessionFile: attached.sessionFile,
+				...(introState?.status
+					? { introStatus: introState.status }
+					: !existingTrail
+						? { introStatus: "pending" as const }
+						: {}),
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+}
+
+async function staffIntroReady(
+	slot: Slot,
+	staffAgentId: string,
+	trailFile: string,
+	retry: boolean,
+): Promise<{ ok: boolean; status?: string; error?: string }> {
+	const runtime = slot.runtime;
+	if (!runtime) return { ok: false, error: "open a company before starting a staff introduction" };
+	return enqueueRuntimeTransition(runtime, async () => {
+		if (slot.runtime !== runtime || runtime.closing) return { ok: false, error: "company runtime changed" };
+		const staff = activeStaffAgent(runtime.root, staffAgentId);
+		const child = runtime.child;
+		if (!staff) return { ok: false, error: "staff member is unavailable" };
+		return beginAttachedStaffIntro(slot, runtime, staff, child, trailFile, retry);
+	});
+}
+
 function rendererRequestAllowed(slot: Slot, value: string): boolean {
 	return isRendererRequestAllowed(value, {
 		backendOrigin: slot.runtime ? `http://127.0.0.1:${slot.runtime.backendPort}` : undefined,
-		trustedFileRoot: BASE_USERLAND_DIR,
+		trustedFileRoot: FIXED_SHELL_DIR,
 	});
 }
 
@@ -2731,7 +3558,7 @@ function rendererSessionFor(partition: string): Session {
 		const allowed = owner
 			? rendererRequestAllowed(owner, details.url)
 			: isRendererRequestAllowed(details.url, {
-					trustedFileRoot: BASE_USERLAND_DIR,
+					trustedFileRoot: FIXED_SHELL_DIR,
 				});
 		callback({ cancel: !allowed });
 	});
@@ -2752,6 +3579,103 @@ function initialRendererPartition(companyRoot?: string): string {
 	return `qorpera-renderer-${randomUUID()}`;
 }
 
+function beginAttachedStaffIntro(
+	slot: Slot,
+	runtime: CompanyRuntime,
+	staff: StaffAgent,
+	child: ChildProcessWithoutNullStreams,
+	trailFile: string,
+	retry: boolean,
+): { ok: boolean; status?: string; error?: string } {
+	const binding = childBindings.get(child);
+	if (
+		runtime.childOptions.staffAgentId !== staff.id ||
+		binding?.file !== trailFile ||
+		!isCurrentRuntimeChild(slot, runtime, child)
+	) {
+		return { ok: false, error: "staff introduction target is not the attached session" };
+	}
+	if (!childRuntimeReady.has(child)) {
+		return { ok: false, error: "staff introduction target is not the attached ready session" };
+	}
+	if (childBusy.get(child)) return { ok: false, error: "staff session is already working" };
+	const path = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
+	const current = readStaffRuntimeState(path);
+	const claim = claimStaffIntro(current, staff.id, trailFile, Date.now(), retry);
+	if (!claim.claimed) {
+		const status = current.intros[staff.id]?.status;
+		return {
+			ok: status === "started" || status === "completed",
+			status,
+			...(status === "failed" && !retry ? { error: "staff introduction requires an explicit retry" } : {}),
+		};
+	}
+	writeStaffRuntimeState(path, claim.state);
+	if (
+		!sendKernelStaffIntro(child, staffIntroMessage(runtime.root, staff, claim.state.intros[staff.id]?.orientation))
+	) {
+		finishStaffIntroDurably(runtime.root, staff.id, trailFile, false, "staff intro dispatch failed");
+		return { ok: false, status: "failed", error: "staff introduction could not be started" };
+	}
+	return { ok: true, status: "started" };
+}
+
+function scheduleAutomaticStaffIntro(
+	slot: Slot,
+	expectedChild: ChildProcessWithoutNullStreams,
+	staffAgentId: string,
+	trailFile: string,
+): void {
+	setTimeout(() => {
+		const runtime = slot.runtime;
+		if (!runtime || runtime.child !== expectedChild || runtime.closing) return;
+		void enqueueRuntimeTransition(runtime, async () => {
+			if (slot.runtime !== runtime || runtime.child !== expectedChild || runtime.closing) return;
+			const staff = activeStaffAgent(runtime.root, staffAgentId);
+			if (!staff) return;
+			const result = beginAttachedStaffIntro(slot, runtime, staff, expectedChild, trailFile, false);
+			if (!result.ok) console.error(`automatic staff intro failed: ${result.error ?? result.status ?? "unknown"}`);
+		});
+	}, 0).unref();
+}
+
+function scheduleNextQueuedStaffIntro(slot: Slot, expectedChild: ChildProcessWithoutNullStreams): void {
+	setTimeout(() => {
+		const runtime = slot.runtime;
+		if (!runtime || runtime.child !== expectedChild || runtime.closing) return;
+		void enqueueRuntimeTransition(runtime, async () => {
+			if (
+				slot.runtime !== runtime ||
+				runtime.child !== expectedChild ||
+				runtime.closing ||
+				runtime.wakeChild ||
+				childBusy.get(expectedChild)
+			) {
+				return;
+			}
+			const state = readStaffRuntimeState(staffRuntimeStatePath(app.getPath("userData"), runtime.root));
+			const active = new Map(
+				readStaffAgents(runtime.root)
+					.filter((staff) => staff.employmentStatus === "active")
+					.map((staff) => [staff.id, staff]),
+			);
+			const next = Object.values(state.intros).find(
+				(intro) => intro.status === "pending" && active.has(intro.staffAgentId),
+			);
+			if (next) {
+				await attachStaffChild(slot, runtime, active.get(next.staffAgentId)!, next.trailFile, false, true);
+				return;
+			}
+			const returnTarget = runtime.staffBootstrapReturn;
+			if (!returnTarget) return;
+			delete runtime.staffBootstrapReturn;
+			if (runtime.childOptions.staffAgentId === returnTarget.staffAgentId) return;
+			const staff = active.get(returnTarget.staffAgentId);
+			if (staff) await attachStaffChild(slot, runtime, staff, returnTarget.trailFile, false);
+		});
+	}, 0).unref();
+}
+
 /** Build one renderer window on the given partition and wire every kernel
  * duty to it. `forSlot` resolves the owning slot lazily: a fresh slot is
  * built around its first window, and a swap window joins an existing slot
@@ -2768,7 +3692,7 @@ function createRendererWindow(
 		show: options.show ?? true,
 		title: "Qorpera Base",
 		backgroundColor: "#101010",
-		// Frameless, Desktop-style chrome: the userland draws the titlebar
+		// Frameless, Desktop-style chrome: the fixed shell draws the titlebar
 		// (a -webkit-app-region: drag header), the OS overlays min/max/close.
 		titleBarStyle: "hidden",
 		titleBarOverlay: { color: "#101010", symbolColor: "#e4e4e1", height: 40 },
@@ -2785,10 +3709,8 @@ function createRendererWindow(
 	const contentsId = win.webContents.id;
 	if (options.bounds) win.setBounds(options.bounds);
 	win.setMenuBarVisibility(false);
-	// Kernel duty: the window must stay draggable in EVERY userland, including
-	// evolved forks that predate the frameless titlebar and draw no drag
-	// region of their own. A thin top strip guarantees that; userlands with a
-	// real titlebar simply overlap it.
+	// Kernel duty: keep a thin native drag region above the fixed shell's
+	// interactive header controls.
 	win.webContents.on("did-finish-load", () => {
 		void win.webContents
 			.insertCSS(
@@ -2815,11 +3737,9 @@ function createRendererWindow(
 		}
 		return { action: "deny" };
 	});
-	// Page loads are kernel-only. The window's history holds the hub and the
-	// base/fork chromes as ordinary pages, so mouse back/forward buttons (or
-	// any history walk) re-enter the same company through a DIFFERENT chrome —
-	// which reads as the app spontaneously changing shape. Swallow the mouse
-	// app-commands and drop history after every kernel-initiated load.
+	// Page loads are kernel-only. Swallow mouse history commands and drop
+	// history after every kernel-initiated load so the fixed shell cannot
+	// navigate back into a stale hub document.
 	win.on("app-command", (event, command) => {
 		if (command === "browser-backward" || command === "browser-forward") event.preventDefault();
 	});
@@ -2827,16 +3747,11 @@ function createRendererWindow(
 	win.webContents.on("will-navigate", (event, url) => {
 		if (!rendererRequestAllowed(forSlot(), url)) event.preventDefault();
 	});
-	// A crashed evolved userland must not strand the company: fall back to
-	// the base chrome (kernel duty — last-good behavior). Guarded to the
-	// slot's CURRENT window: an uncommitted swap window's crash is handled by
-	// its pending loadURL rejecting instead.
+	// Reload the fixed shell after a renderer crash. Guarded to the slot's
+	// current window; an uncommitted swap rejects its own pending load.
 	win.webContents.on("render-process-gone", () => {
 		const slot = forSlot();
-		if (slot.window === win && slot.runtime && !slot.runtime.usingBaseFallback) {
-			slot.runtime.usingBaseFallback = true;
-			void win.loadURL(companyUserlandUrl(slot.runtime, "base"));
-		}
+		if (slot.window === win && slot.runtime) void win.loadURL(companyShellUrl(slot.runtime));
 	});
 	// Closing a controller window is closing that company: kill its child
 	// and backend; other windows are untouched. A window retired by a swap
@@ -2868,7 +3783,7 @@ function createWindow(companyRoot?: string): Slot {
 	const { window, rendererSession } = createRendererWindow(partition, () => slot);
 	slot = { window, rendererSession, partition, kickoffPending: false, openGeneration: 0 };
 	registerRendererWindow(window, slot);
-	void window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+	void window.loadFile(join(FIXED_SHELL_DIR, "index.html"));
 	return slot;
 }
 
@@ -2947,6 +3862,17 @@ app.whenReady().then(async () => {
 		allowedProviders: MODEL_AUTH_PROVIDERS,
 	});
 	startWakeTicker();
+	ipcMain.handle("intelligence:info", (event) => {
+		if (!slotOf(event.sender)) return { ready: false, providers: [], requiresChoice: false };
+		return intelligenceInfo();
+	});
+	ipcMain.handle("intelligence:configure", (event, providerId: unknown) => {
+		if (!slotOf(event.sender) || typeof providerId !== "string") {
+			return { ok: false, error: "invalid intelligence provider" };
+		}
+		return configureIntelligence(event.sender, providerId);
+	});
+	ipcMain.handle("staff:catalog", (event) => (slotOf(event.sender) ? listStaffTemplates() : []));
 	ipcMain.handle("companies:list", () => listCompanies());
 	ipcMain.handle("company:open", (event, root: string) => {
 		if (!isTrustedHubSender(event.sender)) return;
@@ -2994,13 +3920,7 @@ app.whenReady().then(async () => {
 		)
 			return { ok: false, error: "invalid product transaction" };
 		return enqueueRuntimeTransition(runtime, async () => {
-			if (
-				slot.runtime !== runtime ||
-				runtime.closing ||
-				runtime.mergeChild ||
-				runtime.wakeChild ||
-				childBusy.get(runtime.child)
-			) {
+			if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild || childBusy.get(runtime.child)) {
 				return { ok: false, error: "company runtime is not available" };
 			}
 			const departmentId = productDepartmentId(product.trim());
@@ -3104,9 +4024,17 @@ app.whenReady().then(async () => {
 			typeof input.prompt !== "string" ||
 			typeof input.intervalMinutes !== "number" ||
 			(input.enabled !== undefined && typeof input.enabled !== "boolean") ||
-			Object.keys(input).some((key) => !["title", "prompt", "intervalMinutes", "enabled"].includes(key))
+			(input.staffAgentId !== undefined && typeof input.staffAgentId !== "string") ||
+			Object.keys(input).some(
+				(key) => !["title", "prompt", "intervalMinutes", "enabled", "staffAgentId"].includes(key),
+			)
 		) {
 			return { ok: false, error: "invalid scheduled job" };
+		}
+		const assignedStaff =
+			typeof input.staffAgentId === "string" ? activeStaffAgent(runtime.root, input.staffAgentId) : undefined;
+		if (typeof input.staffAgentId === "string" && !assignedStaff) {
+			return { ok: false, error: "scheduled-job staff member is unavailable or archived" };
 		}
 		const approved = await confirmKernelReview(slot.window, {
 			title: "Create scheduled job",
@@ -3115,6 +4043,7 @@ app.whenReady().then(async () => {
 			metadata: [
 				`Company: ${runtime.root}`,
 				`Title: ${input.title}`,
+				`Staff: ${assignedStaff?.displayName ?? "Company / Unassigned"}`,
 				`Schedule: every ${input.intervalMinutes} minutes`,
 				`Status: ${input.enabled === false ? "paused" : "active"}`,
 			].join("\n"),
@@ -3128,6 +4057,7 @@ app.whenReady().then(async () => {
 					prompt: input.prompt,
 					intervalMinutes: input.intervalMinutes,
 					...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+					...(assignedStaff ? { staffAgentId: assignedStaff.id } : {}),
 				}),
 			};
 		} catch (error) {
@@ -3149,12 +4079,25 @@ app.whenReady().then(async () => {
 			(input.prompt !== undefined && typeof input.prompt !== "string") ||
 			(input.intervalMinutes !== undefined && typeof input.intervalMinutes !== "number") ||
 			(input.enabled !== undefined && typeof input.enabled !== "boolean") ||
-			Object.keys(input).some((key) => !["title", "prompt", "intervalMinutes", "enabled"].includes(key))
+			(input.staffAgentId !== undefined && input.staffAgentId !== null && typeof input.staffAgentId !== "string") ||
+			Object.keys(input).some(
+				(key) => !["title", "prompt", "intervalMinutes", "enabled", "staffAgentId"].includes(key),
+			)
 		) {
 			return { ok: false, error: "invalid scheduled-job update" };
 		}
 		const current = readScheduledJobs(runtime.root).find((job) => job.id === id);
 		if (!current) return { ok: false, error: "scheduled job not found" };
+		const assignedStaffId =
+			input.staffAgentId === null
+				? undefined
+				: typeof input.staffAgentId === "string"
+					? input.staffAgentId
+					: current.staffAgentId;
+		const assignedStaff = assignedStaffId ? activeStaffAgent(runtime.root, assignedStaffId) : undefined;
+		if (assignedStaffId && !assignedStaff) {
+			return { ok: false, error: "scheduled-job staff member is unavailable or archived" };
+		}
 		const approved = await confirmKernelReview(slot.window, {
 			title: "Update scheduled job",
 			summary: "Apply these recurring-work settings to the open company?",
@@ -3162,6 +4105,7 @@ app.whenReady().then(async () => {
 			metadata: [
 				`Company: ${runtime.root}`,
 				`Title: ${typeof input.title === "string" ? input.title : current.title}`,
+				`Staff: ${assignedStaff?.displayName ?? "Company / Unassigned"}`,
 				`Schedule: every ${typeof input.intervalMinutes === "number" ? input.intervalMinutes : current.intervalMinutes} minutes`,
 				`Status: ${(typeof input.enabled === "boolean" ? input.enabled : current.enabled) ? "active" : "paused"}`,
 			].join("\n"),
@@ -3175,6 +4119,11 @@ app.whenReady().then(async () => {
 					...(typeof input.prompt === "string" ? { prompt: input.prompt } : {}),
 					...(typeof input.intervalMinutes === "number" ? { intervalMinutes: input.intervalMinutes } : {}),
 					...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+					...(input.staffAgentId === null
+						? { staffAgentId: null }
+						: typeof input.staffAgentId === "string"
+							? { staffAgentId: input.staffAgentId }
+							: {}),
 				}),
 			};
 		} catch (error) {
@@ -3213,18 +4162,21 @@ app.whenReady().then(async () => {
 		const runtime = slot?.runtime;
 		if (!slot || !runtime || typeof id !== "string") return { ok: false, error: "invalid scheduled job" };
 		return enqueueRuntimeTransition(runtime, async () => {
-			if (slot.runtime !== runtime || runtime.closing || runtime.mergeChild || runtime.wakeChild) {
+			if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild) {
 				return { ok: false, error: "company runtime is busy" };
 			}
 			const job = readScheduledJobs(runtime.root).find((candidate) => candidate.id === id);
 			if (!job) return { ok: false, error: "scheduled job not found" };
 			const approved = await confirmKernelReview(slot.window, {
 				title: "Run scheduled job now",
-				summary: "Start this controller job immediately?",
+				summary: job.staffAgentId
+					? "Start this staff-owned job immediately?"
+					: "Start this company job immediately?",
 				exactText: job.prompt,
 				metadata: [
 					`Company: ${runtime.root}`,
 					`Title: ${job.title}`,
+					`Staff: ${job.staffAgentId ? (activeStaffAgent(runtime.root, job.staffAgentId)?.displayName ?? job.staffAgentId) : "Company / Unassigned"}`,
 					`Usual schedule: every ${job.intervalMinutes} minutes`,
 				].join("\n"),
 			});
@@ -3266,7 +4218,7 @@ app.whenReady().then(async () => {
 				}
 				// A dead click during autonomous work must say so — the founder is
 				// otherwise left staring at a pane that "won't load".
-				if (runtime.mergeChild || runtime.wakeChild) {
+				if (runtime.wakeChild) {
 					return Promise.resolve({
 						ok: false,
 						error: "autonomous work is running — watch it under Agents, or try again once it settles",
@@ -3276,6 +4228,31 @@ app.whenReady().then(async () => {
 			});
 		},
 	);
+	ipcMain.handle("staff:create", (event, value: unknown) => {
+		const slot = slotOf(event.sender);
+		return slot ? createStaffMember(slot, value) : { ok: false, error: "untrusted staff creation request" };
+	});
+	ipcMain.handle("staff:bootstrap", (event, value: unknown) => {
+		const slot = slotOf(event.sender);
+		return slot ? bootstrapStaffTeam(slot, value) : { ok: false, error: "untrusted staff bootstrap request" };
+	});
+	ipcMain.handle("staff:update", (event, staffAgentId: unknown, value: unknown) => {
+		const slot = slotOf(event.sender);
+		if (!slot || typeof staffAgentId !== "string") return { ok: false, error: "invalid staff identity" };
+		return updateStaffMember(slot, staffAgentId, value);
+	});
+	ipcMain.handle("staff:open", (event, staffAgentId: unknown) => {
+		const slot = slotOf(event.sender);
+		if (!slot || typeof staffAgentId !== "string") return { ok: false, error: "invalid staff identity" };
+		return openStaffMember(slot, staffAgentId);
+	});
+	ipcMain.handle("staff:intro-ready", (event, staffAgentId: unknown, trailFile: unknown, retry: unknown = false) => {
+		const slot = slotOf(event.sender);
+		if (!slot || typeof staffAgentId !== "string" || typeof trailFile !== "string" || typeof retry !== "boolean") {
+			return { ok: false, error: "invalid staff introduction target" };
+		}
+		return staffIntroReady(slot, staffAgentId, trailFile, retry);
+	});
 	ipcMain.handle("hub:show", (event) => {
 		const slot = slotOf(event.sender);
 		if (slot) return showHub(slot);
@@ -3296,143 +4273,99 @@ app.whenReady().then(async () => {
 		login.controller.abort();
 		return true;
 	});
-	// Kernel userland controls remain available to evolved company apps even
-	// though the base settings UI no longer exposes fork/version management.
-	ipcMain.handle("userland:set-active", async (event, appChoice: "fork" | "base") => {
-		const slot = slotOf(event.sender);
-		if (!slot?.runtime) return false;
-		const runtime = slot.runtime;
-		setActiveApp(join(runtime.root, "userland"), appChoice === "base" ? "base" : "fork");
-		runtime.usingBaseFallback = false;
-		await slot.window.loadURL(companyUserlandUrl(runtime, appChoice)).catch(async () => {
-			runtime.usingBaseFallback = true;
-			await slot.window.loadURL(companyUserlandUrl(runtime, "base"));
-		});
-		return true;
-	});
-	ipcMain.handle("userland:restore", async (event, id: string) => {
-		const slot = slotOf(event.sender);
-		if (!slot?.runtime || typeof id !== "string" || id.includes("/") || id.includes("\\") || id.includes(".."))
-			return false;
-		const runtime = slot.runtime;
-		return enqueueRuntimeTransition(runtime, async () => {
-			if (
-				slot.runtime !== runtime ||
-				runtime.closing ||
-				runtime.mergeChild ||
-				runtime.wakeChild ||
-				childBusy.get(runtime.child)
-			)
-				return false;
-			const userlandDir = join(runtime.root, "userland");
-			const reviewed = reviewVersion(userlandDir, id);
-			if (!reviewed) return false;
-			const reviewDocument = JSON.stringify(reviewed, null, "\t");
-			const approved = await confirmKernelReview(slot.window, {
-				title: "Restore company app version",
-				summary:
-					"Replace the live company userland with this exact saved version? The current state is snapshotted first.",
-				exactText: reviewDocument,
-				metadata: `Target: ${userlandDir}\nCurrent Base: ${shellVersion()}`,
-			});
-			if (!approved) return false;
-			const resumeOptions = {
-				...runtime.childOptions,
-				sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
-			};
-			await stopChild(runtime.child);
-			if (slot.runtime !== runtime || runtime.closing) return false;
-			let status: UserlandStatus | undefined;
-			let controllerRestored = false;
-			try {
-				if (JSON.stringify(reviewVersion(userlandDir, id), null, "\t") === reviewDocument) {
-					// Restoring an old version rejoins the CURRENT base on demand: the
-					// current base is staged when the snapshot is behind.
-					status = restoreVersion(userlandDir, id, {
-						dir: BASE_USERLAND_DIR,
-						version: shellVersion(),
-					});
-					if (status) runtime.userland = status;
-				}
-			} finally {
-				controllerRestored = await restoreAttendedChild(
-					slot,
-					runtime,
-					resumeOptions,
-					"userland-restore controller restore failed",
-				);
-			}
-			if (!status || !controllerRestored) return false;
-			if (getActiveApp(userlandDir) === "fork") {
-				runtime.usingBaseFallback = false;
-				await slot.window.loadURL(companyUserlandUrl(runtime, "fork")).catch(async () => {
-					runtime.usingBaseFallback = true;
-					await slot.window.loadURL(companyUserlandUrl(runtime, "base"));
-				});
-			}
-			return true;
-		});
-	});
-	// Evolved userlands can still star saved versions. Metadata only — no reload needed.
-	ipcMain.handle("userland:favorite", (event, id: string, favorite: boolean) => {
-		const slot = slotOf(event.sender);
-		if (!slot?.runtime || typeof id !== "string" || id.includes("/") || id.includes("\\") || id.includes(".."))
-			return false;
-		return setVersionFavorite(join(slot.runtime.root, "userland"), id, Boolean(favorite));
-	});
-	// Evolved userlands can still pick a company window icon (copied into app/,
-	// so it travels with the company folder and the controller can manage it).
-	ipcMain.handle("userland:set-icon", async (event) => {
-		const slot = slotOf(event.sender);
-		const runtime = slot?.runtime;
-		if (!slot || !runtime) return { ok: false };
-		const picked = await dialog.showOpenDialog(slot.window, {
-			title: "Choose the controller's window icon",
-			properties: ["openFile"],
-			filters: [{ name: "Images", extensions: ["ico", "png", "jpg", "jpeg"] }],
-		});
-		const source = picked.filePaths[0];
-		if (picked.canceled || !source) return { ok: false };
-		const ext = extname(source).toLowerCase().replace(".", "") || "png";
-		// One icon file only — remove other variants so precedence stays obvious.
-		for (const name of ICON_NAMES) {
-			rmSync(join(runtime.root, "app", name), { force: true });
+	ipcMain.handle("connection-requests:list", (event) => {
+		const runtime = slotOf(event.sender)?.runtime;
+		if (!runtime) return [];
+		try {
+			return readRendererConnectionRequests(app.getPath("userData"), runtime.root);
+		} catch (error) {
+			console.error(`connection request projection failed: ${(error as Error).message}`);
+			return [];
 		}
-		const target = join(runtime.root, "app", `icon.${ext === "jpeg" ? "jpg" : ext}`);
-		mkdirSync(join(runtime.root, "app"), { recursive: true });
-		copyFileSync(source, target);
-		setWindowIcon(slot.window, target);
-		return { ok: true };
 	});
-	// The titlebar update control starts at most one kernel-owned company app update.
-	ipcMain.handle("userland:merge", async (event) => {
+	ipcMain.handle("connection-request:begin", async (event, value: unknown) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
-		if (!slot || !runtime) return { ok: false, reason: "no-company" };
-		return enqueueRuntimeTransition(runtime, async () => {
-			if (slot.runtime !== runtime || runtime.closing) return { ok: false, reason: "no-company" };
-			if (runtime.wakeChild) return { ok: false, reason: "wake-running" };
-			const staged = runtime.userland.action === "staged" || runtime.userland.action === "already-staged";
-			if (!staged) return { ok: false, reason: "nothing-staged" };
-			if (runtime.mergeChild && runtime.mergeChild.exitCode === null)
-				return { ok: false, reason: "already-running" };
-			const prompt = mergeTaskPrompt(runtime.userland);
-			const approved = await confirmKernelReview(slot.window, {
-				title: "Authorize autonomous userland merge",
-				summary: "Start this exact agent task with write access to company userland?",
-				exactText: prompt,
-				metadata: `Target: ${join(runtime.root, "userland")}`,
-			});
-			if (!approved) return { ok: false, reason: "cancelled" };
-			return { ok: await startMergeChildExclusive(slot, runtime, prompt) };
-		});
+		if (!slot || !runtime || !value || typeof value !== "object" || Array.isArray(value)) {
+			return { ok: false, error: "invalid connection request identity" };
+		}
+		const candidate = value as Record<string, unknown>;
+		const binding = childBindings.get(runtime.child);
+		if (
+			Object.keys(candidate).some((key) => !["id", "staffAgentId", "sessionFile"].includes(key)) ||
+			typeof candidate.id !== "string" ||
+			typeof candidate.staffAgentId !== "string" ||
+			typeof candidate.sessionFile !== "string" ||
+			runtime.childOptions.staffAgentId !== candidate.staffAgentId ||
+			!binding ||
+			!activeStaffAgent(runtime.root, candidate.staffAgentId)
+		) {
+			return { ok: false, error: "connection request is not owned by the selected staff member" };
+		}
+		const identity: ConnectionRequestIdentity = {
+			id: candidate.id,
+			staffAgentId: candidate.staffAgentId,
+			sessionFile: candidate.sessionFile,
+		};
+		const userData = app.getPath("userData");
+		const root = runtime.root;
+		let began = false;
+		try {
+			const request = getConnectionRequest(userData, root, identity.id);
+			if (
+				!request ||
+				request.staffAgentId !== identity.staffAgentId ||
+				request.sessionFile !== identity.sessionFile
+			) {
+				return { ok: false, error: "connection request ownership does not match" };
+			}
+			if (!isGitHubNativeConnectionRequest(request)) {
+				return { ok: false, error: "this connection does not have an installed native connector recipe" };
+			}
+			const connecting = beginConnectionRequest(userData, root, identity);
+			began = true;
+			send(slot.window, "connection-requests-changed", projectConnectionRequest(connecting));
+			const result = await connectGitHubAccount(event.sender);
+			const settled = result.ok
+				? completeConnectionRequest(userData, root, identity, "github-native")
+				: result.cancelled
+					? cancelConnectionRequest(userData, root, identity)
+					: failConnectionRequest(userData, root, identity, "GitHub connection failed");
+			const projected = projectConnectionRequest(settled);
+			send(slot.window, "connection-requests-changed", projected);
+			return result.ok
+				? { ok: true, request: projected }
+				: {
+						ok: false,
+						...(result.cancelled ? { cancelled: true as const } : { error: "GitHub connection failed" }),
+						request: projected,
+					};
+		} catch (error) {
+			if (began) {
+				try {
+					const failed = failConnectionRequest(
+						userData,
+						root,
+						identity,
+						"GitHub connection could not be finalized",
+					);
+					const projected = projectConnectionRequest(failed);
+					send(slot.window, "connection-requests-changed", projected);
+					return { ok: false, error: "GitHub connection could not be finalized", request: projected };
+				} catch (settlementError) {
+					console.error(`connection request settlement failed: ${(settlementError as Error).message}`);
+				}
+				return { ok: false, error: "GitHub connection could not be finalized" };
+			}
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
 	});
 	ipcMain.handle("backend:authorized-post", async (event, path: string, body: unknown) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, status: 404, text: "no company" };
 		return enqueueRuntimeTransition(runtime, async () => {
-			if (runtime.mergeChild || !isCurrentRuntimeChild(slot, runtime, runtime.child)) {
+			if (!isCurrentRuntimeChild(slot, runtime, runtime.child)) {
 				return {
 					ok: false,
 					status: 409,
@@ -3600,7 +4533,7 @@ app.whenReady().then(async () => {
 	ipcMain.handle("rpc:send", async (event, frame: unknown, expectedTrailFile: unknown) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
-		if (!slot || !runtime || runtime.mergeChild || runtime.wakeChild) return { ok: false };
+		if (!slot || !runtime || runtime.wakeChild) return { ok: false };
 		if (!frame || typeof frame !== "object" || !("type" in frame) || typeof frame.type !== "string") {
 			return { ok: false };
 		}
@@ -3634,8 +4567,11 @@ app.whenReady().then(async () => {
 		]);
 		if (promptTypes.has(frame.type)) {
 			return enqueueRuntimeTransition(runtime, async () => {
-				if (runtime.mergeChild || !isCurrentRuntimeChild(slot, runtime, runtime.child)) return { ok: false };
+				if (!isCurrentRuntimeChild(slot, runtime, runtime.child)) return { ok: false };
 				const reviewedChild = runtime.child;
+				if (runtime.childOptions.staffAgentId && !childRuntimeReady.has(reviewedChild)) {
+					return { ok: false, error: "staff member is still getting ready" };
+				}
 				if (!attachedTo(reviewedChild)) {
 					return { ok: false, error: "session changed before command" };
 				}
@@ -3670,6 +4606,7 @@ app.whenReady().then(async () => {
 	// happens in place, with no window swap.
 	const smokeCompanyIndex = process.argv.indexOf("--smoke-company");
 	const smokeCompanyRoot = smokeCompanyIndex >= 0 ? process.argv[smokeCompanyIndex + 1] : undefined;
+	const smokeBootstrapServices = process.argv.includes("--smoke-bootstrap-services");
 	const initial = createWindow(pendingCompany ?? smokeCompanyRoot);
 
 	// Foundation self-update: packaged builds check Qorpera_Base_Releases
@@ -3703,11 +4640,8 @@ app.whenReady().then(async () => {
 	} else {
 		ipcMain.handle("update:install", () => {});
 
-		// Dev-lane reflection (founder direction 2026-08-06): in a dev tree the
-		// build output IS the product changing, so the kernel watches dist and
-		// re-runs the open flow when it settles — fork maintenance (fast-forward
-		// is content-driven) and a window reload, no restart ritual. Kernel
-		// (main-process) changes still need a restart; this lane is the chrome.
+		// In development, reload the fixed renderer after the copied shell files
+		// settle. Main-process changes still require an app restart.
 		if (!IS_SMOKE) {
 			let reloadTimer: NodeJS.Timeout | undefined;
 			try {
@@ -3715,27 +4649,15 @@ app.whenReady().then(async () => {
 					if (reloadTimer) clearTimeout(reloadTimer);
 					// A build writes many files; act once the burst settles.
 					reloadTimer = setTimeout(() => {
-						if (!existsSync(join(BASE_USERLAND_DIR, "index.html"))) return; // mid-copy
+						if (!existsSync(join(FIXED_SHELL_DIR, "index.html"))) return; // mid-copy
 						for (const slot of slots.values()) {
 							if (slot.window.isDestroyed()) continue;
 							const runtime = slot.runtime;
 							if (!runtime) {
-								void slot.window.loadFile(join(BASE_USERLAND_DIR, "index.html"));
+								void slot.window.loadFile(join(FIXED_SHELL_DIR, "index.html"));
 								continue;
 							}
-							try {
-								runtime.userland = ensureUserland(runtime.root, BASE_USERLAND_DIR, shellVersion());
-							} catch (error) {
-								console.error(`dev reload: fork maintenance failed: ${(error as Error).message}`);
-							}
-							const useBase =
-								getActiveApp(join(runtime.root, "userland")) === "base" || runtime.usingBaseFallback;
-							void slot.window
-								.loadURL(companyUserlandUrl(runtime, useBase ? "base" : "fork"))
-								.catch(async () => {
-									runtime.usingBaseFallback = true;
-									await slot.window.loadURL(companyUserlandUrl(runtime, "base"));
-								});
+							void slot.window.loadURL(companyShellUrl(runtime));
 						}
 					}, 600);
 				});
@@ -3750,16 +4672,17 @@ app.whenReady().then(async () => {
 	// cheap way to verify chrome work without a human at the keyboard.
 	// Composes with --smoke-company (captures after the company loads).
 	const shotIndex = process.argv.indexOf("--smoke-shot");
-	if (shotIndex >= 0 && process.argv[shotIndex + 1]) {
-		const target = process.argv[shotIndex + 1];
+	const smokeShotTarget = shotIndex >= 0 ? process.argv[shotIndex + 1] : undefined;
+	if (smokeShotTarget) {
 		let timer: NodeJS.Timeout | undefined;
 		initial.window.webContents.on("did-finish-load", () => {
+			if (smokeCompanyRoot && !initial.window.webContents.getURL().startsWith("http://127.0.0.1:")) return;
 			if (timer) clearTimeout(timer);
 			timer = setTimeout(async () => {
 				try {
 					const image = await initial.window.webContents.capturePage();
-					writeFileSync(target, image.toPNG());
-					console.log(`SHOT_SAVED ${target}`);
+					writeFileSync(smokeShotTarget, image.toPNG());
+					console.log(`SHOT_SAVED ${smokeShotTarget}`);
 				} catch (error) {
 					console.error(`SHOT_FAILED ${(error as Error).message}`);
 				}
@@ -3777,20 +4700,59 @@ app.whenReady().then(async () => {
 	// A smoke run must never hang: an openCompany failure (sandbox
 	// provisioning, company lock, …) would otherwise become an unhandled
 	// rejection that leaves the process alive with no exit path.
+	let smokeFailurePending = false;
 	const failSmoke = (error: Error): void => {
+		if (smokeFailurePending) return;
+		smokeFailurePending = true;
 		console.error(`SMOKE_FAILED ${error.message}`);
-		app.exit(1);
+		void Promise.all([...slots.values()].map((slot) => closeCompany(slot)))
+			.catch((cleanupError) => console.error(`SMOKE_CLEANUP_FAILED ${(cleanupError as Error).message}`))
+			.finally(() => app.exit(1));
 	};
-	// Fork-model smoke: open a company, prove its userland loads.
+	// Fixed-shell smoke: open a company and prove its trusted renderer loads.
 	if (smokeCompanyRoot) {
-		void openCompany(initial, smokeCompanyRoot).then(() => {
-			setTimeout(() => {
-				console.log(
-					`USERLAND_LOADED ${initial.window.webContents.getURL()} action=${initial.runtime?.userland.action}`,
-				);
-				app.quit();
-			}, 1500);
-		}, failSmoke);
+		void openCompany(initial, smokeCompanyRoot)
+			.then(async () => {
+				if (smokeBootstrapServices) {
+					const result = (await initial.window.webContents.executeJavaScript(`
+					(async () => {
+					let rendererError = "";
+					const captureError = (event) => { rendererError = event.error?.stack ?? event.message ?? "unknown renderer error"; };
+					window.addEventListener("error", captureError);
+					await new Promise((resolve, reject) => {
+						let attempts = 0;
+						const inspect = () => {
+							if (document.querySelectorAll(".staff-bootstrap-card").length >= 3) resolve();
+							else if (++attempts >= 50) reject(new Error("staff bootstrap cards did not render"));
+							else setTimeout(inspect, 100);
+						};
+						inspect();
+					});
+					for (let index = 0; index < 3; index += 1) document.querySelectorAll(".staff-bootstrap-card")[index]?.click();
+					document.querySelector(".staff-bootstrap-actions .primary-button")?.click();
+					await new Promise((resolve) => setTimeout(resolve, 100));
+					return {
+						title: document.querySelector(".staff-bootstrap-head h1")?.textContent,
+						serviceCount: document.querySelectorAll(".staff-bootstrap-service").length,
+						actionText: document.querySelector(".staff-bootstrap-actions .primary-button")?.textContent,
+						rendererError,
+					};
+					})()
+				`)) as { title?: string; serviceCount?: number; actionText?: string; rendererError?: string };
+					if (result.title !== "What does your company use?" || !result.serviceCount) {
+						throw new Error(
+							`staff bootstrap service choices did not render (title=${result.title ?? "missing"}, action=${result.actionText ?? "missing"}, choices=${result.serviceCount ?? 0}, renderer=${result.rendererError ?? "none"})`,
+						);
+					}
+					console.log(`BOOTSTRAP_SERVICES_READY choices=${result.serviceCount}`);
+				}
+				if (!smokeShotTarget)
+					setTimeout(() => {
+						console.log(`SHELL_LOADED ${initial.window.webContents.getURL()}`);
+						app.quit();
+					}, 1500);
+			})
+			.catch(failSmoke);
 	}
 	// Multi-window smoke: two companies, two live controllers side by side.
 	const smokeMultiIndex = process.argv.indexOf("--smoke-multi");

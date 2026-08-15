@@ -60,6 +60,9 @@ function assertPhysicalCompanyTree(root: string, relativePath: string): string {
 interface QorperaSessionAuthority {
 	actor: "controller" | "product-worker";
 	attended: boolean;
+	/** Stable staff member identity. Missing means the pre-staff system/legacy
+	 * controller rather than an unnamed staff member. */
+	staffAgentId?: string;
 	autonomous?: boolean;
 	label?: string;
 	department?: string;
@@ -104,6 +107,7 @@ interface SessionEntry {
 export interface AgentScope {
 	actor: "controller" | "product-worker";
 	attended: boolean;
+	staffAgentId?: string;
 	autonomousLabel?: string;
 	department?: string;
 	worktree?: string;
@@ -201,9 +205,16 @@ function authorityForScope(scope: AgentScope): QorperaSessionAuthority {
 	if (scope.actor === "product-worker" && (!scope.department || !scope.worktree)) {
 		throw new Error("product-worker sessions require an exact department and worktree assignment");
 	}
+	if (
+		scope.staffAgentId !== undefined &&
+		(scope.staffAgentId.trim().length === 0 || scope.staffAgentId.length > 128)
+	) {
+		throw new Error("staff agent identity must be a non-empty string of at most 128 characters");
+	}
 	return {
 		actor: scope.actor,
 		attended: scope.attended,
+		staffAgentId: scope.staffAgentId,
 		autonomous: scope.autonomousLabel ? true : undefined,
 		label: scope.autonomousLabel,
 		department: scope.department,
@@ -215,7 +226,7 @@ function authorityForScope(scope: AgentScope): QorperaSessionAuthority {
 
 function assertMatchingAuthority(actual: QorperaSessionAuthority | undefined, expected: QorperaSessionAuthority): void {
 	if (!actual) throw new Error("legacy trail sessions have no kernel authority binding and cannot be resumed");
-	for (const key of ["actor", "department", "worktree"] as const) {
+	for (const key of ["actor", "staffAgentId", "department", "worktree"] as const) {
 		if (actual[key] !== expected[key]) {
 			throw new Error(`trail session authority does not match the requested ${key}`);
 		}
@@ -348,6 +359,9 @@ export function migrateLegacyTrailSession(root: string, sessionFile: string, sco
 	assertPhysicalCompanyTree(root, join("trail", sessionFile));
 	const header = readHeader(path);
 	if (header.version === TRAIL_SESSION_VERSION) return false;
+	if (scope.staffAgentId !== undefined) {
+		throw new Error("legacy trail sessions remain system-owned and cannot be adopted by a staff agent");
+	}
 	const original = readFileSync(path, "utf-8");
 	const entryLines = original.split(/\r?\n/).slice(1).filter(Boolean);
 	const authority = authorityForScope(scope);
@@ -456,7 +470,14 @@ export function latestResumableTrailSession(root: string): string | undefined {
 			if (header.version !== TRAIL_SESSION_VERSION) continue;
 			const authority = header.qorpera;
 			if (!authority || authority.autonomous || authority.label) continue;
-			if (authority.actor !== "controller" || authority.department || authority.worktree) continue;
+			if (
+				authority.actor !== "controller" ||
+				authority.staffAgentId !== undefined ||
+				authority.department ||
+				authority.worktree
+			) {
+				continue;
+			}
 			// A torn newest trail must not hold the whole company hostage. Only a
 			// session whose complete append chain is bindable can be selected.
 			loadTrailAudit(path);
@@ -595,7 +616,7 @@ export function appendKernelSessionInfo(binding: TrailBinding, name: string): vo
 export function appendKernelObservation(
 	binding: TrailBinding,
 	input: {
-		frameType: "prompt" | "steer" | "follow_up";
+		frameType: "prompt" | "steer" | "follow_up" | "staff_intro";
 		message: string;
 		attended: boolean;
 		origin: string;
@@ -1312,8 +1333,8 @@ function tomlString(value: string): string {
  * load-bearing on Windows: the coding agent's bash tool probes
  * %ProgramFiles%\Git\bin\bash.exe first, and without them its PATH fallback
  * finds the System32 WSL stub, which cannot run inside the offline sandbox —
- * every bash call then fails and kernel-spawned sessions (userland merges,
- * wakes) are left without a shell.
+ * every bash call then fails and kernel-spawned staff or scheduled sessions
+ * are left without a shell.
  */
 export const SAFE_CHILD_ENV = new Set([
 	"PATH",

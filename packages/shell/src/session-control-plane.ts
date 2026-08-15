@@ -108,6 +108,7 @@ export interface SessionRuntimeView {
 	sessionId: string;
 	actor: "controller" | "product-worker";
 	autonomous: boolean;
+	staffAgentId?: string;
 	label?: string;
 	department?: string;
 	worktree?: string;
@@ -153,6 +154,7 @@ export interface SessionRuntimeSource {
 
 interface SessionAuthority {
 	actor?: unknown;
+	staffAgentId?: unknown;
 	autonomous?: unknown;
 	label?: unknown;
 	department?: unknown;
@@ -292,6 +294,7 @@ function validCachedSession(value: unknown, trailFile: string): value is Session
 		typeof candidate.sessionId === "string" &&
 		(candidate.actor === "controller" || candidate.actor === "product-worker") &&
 		typeof candidate.autonomous === "boolean" &&
+		validOptionalString(candidate.staffAgentId) &&
 		validOptionalString(candidate.label) &&
 		validOptionalString(candidate.department) &&
 		validOptionalString(candidate.worktree) &&
@@ -537,10 +540,14 @@ async function* readObservedEvents(
 
 function authorityIdentity(
 	authority: SessionAuthority,
-): Pick<SessionRuntimeView, "actor" | "autonomous" | "label" | "department" | "worktree" | "group" | "parentSession"> {
+): Pick<
+	SessionRuntimeView,
+	"actor" | "autonomous" | "staffAgentId" | "label" | "department" | "worktree" | "group" | "parentSession"
+> {
 	return {
 		actor: authority.actor === "product-worker" ? "product-worker" : "controller",
 		autonomous: authority.autonomous === true,
+		staffAgentId: typeof authority.staffAgentId === "string" ? authority.staffAgentId : undefined,
 		label: typeof authority.label === "string" ? authority.label : undefined,
 		department: typeof authority.department === "string" ? authority.department : undefined,
 		worktree: typeof authority.worktree === "string" ? authority.worktree : undefined,
@@ -703,6 +710,7 @@ export class SessionControlPlane implements SessionRuntimeSource {
 					!this.#invalidTrails.has(session.trailFile) &&
 					session.actor === "controller" &&
 					!session.autonomous &&
+					session.staffAgentId === undefined &&
 					!session.label &&
 					!session.department &&
 					!session.worktree,

@@ -2,7 +2,7 @@
  * Company connections state (Build 3): founder-bound destinations and
  * secrets, kernel-side dereferencing, and the RFC 6749 refresh lifecycle.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -150,6 +150,8 @@ describe("secrets", () => {
 });
 
 describe("wake schedule", () => {
+	const staffAgentId = "6ba7b810-9dad-4d1d-80b4-00c04fd430c8";
+
 	it("binds, reports, disables, and enforces the wake-rate ceiling", () => {
 		expect(readWakeSchedule(root)).toBeUndefined();
 		expect(() => bindWakeSchedule(root, MIN_WAKE_INTERVAL_MINUTES - 1)).toThrow(/ceiling/);
@@ -180,7 +182,52 @@ describe("wake schedule", () => {
 			enabled: true,
 		});
 		expect(jobs[0].prompt).toContain("company.md");
+		expect(Object.hasOwn(jobs[0], "staffAgentId")).toBe(false);
 		expect(readWakeSchedule(root)).toEqual({ intervalMinutes: 10, enabled: true });
+	});
+
+	it("persists explicit staff ownership and supports returning a job to Unassigned", () => {
+		const job = createScheduledJob(root, {
+			title: "Morning digest",
+			prompt: "Prepare the founder's morning digest.",
+			intervalMinutes: 60,
+			staffAgentId,
+		});
+		expect(readScheduledJobs(root)).toEqual([job]);
+		expect(job.staffAgentId).toBe(staffAgentId);
+
+		const unassigned = updateScheduledJob(root, job.id, { staffAgentId: null });
+		expect(Object.hasOwn(unassigned, "staffAgentId")).toBe(false);
+		expect(Object.hasOwn(readScheduledJobs(root)[0], "staffAgentId")).toBe(false);
+	});
+
+	it("rejects invalid staff ownership without guessing an assignment", () => {
+		expect(() =>
+			createScheduledJob(root, {
+				title: "Morning digest",
+				prompt: "Prepare the founder's morning digest.",
+				intervalMinutes: 60,
+				staffAgentId: "staff-night-shift",
+			}),
+		).toThrow(/staffAgentId must be a lowercase UUID v4/);
+		expect(readScheduledJobs(root)).toEqual([]);
+	});
+
+	it("fails closed on invalid persisted staff ownership", () => {
+		createScheduledJob(root, {
+			title: "Morning digest",
+			prompt: "Prepare the founder's morning digest.",
+			intervalMinutes: 60,
+			staffAgentId,
+		});
+		const path = companyConnectionsPath(root);
+		const state = JSON.parse(readFileSync(path, "utf-8")) as {
+			scheduledJobs: Array<{ staffAgentId?: string }>;
+		};
+		state.scheduledJobs[0].staffAgentId = "not-a-staff-identity";
+		writeFileSync(path, JSON.stringify(state), "utf-8");
+
+		expect(() => readScheduledJobs(root)).toThrow(/staffAgentId must be a lowercase UUID v4/);
 	});
 
 	it("creates, edits, pauses, resumes, and deletes independent scheduled jobs", () => {

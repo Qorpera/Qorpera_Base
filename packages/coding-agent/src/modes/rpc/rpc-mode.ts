@@ -483,6 +483,32 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "follow_up");
 			}
 
+			case "staff_intro": {
+				if (process.env.QORPERA_KERNEL_REQUIRED !== "1") {
+					return error(id, "staff_intro", "staff_intro is only available to a kernel-bound session");
+				}
+				const intent = kernelIntent();
+				if (intent === undefined) {
+					return error(id, "staff_intro", "missing, invalid, expired, or reused kernel intent capability");
+				}
+				if (typeof command.message !== "string" || command.message.trim().length === 0) {
+					return error(id, "staff_intro", "staff intro message must be a non-empty string");
+				}
+				const message = command.message.trim();
+				if (Buffer.byteLength(message, "utf-8") > 32 * 1024) {
+					return error(id, "staff_intro", "staff intro message exceeds 32 KiB");
+				}
+				if (session.isStreaming) {
+					return error(id, "staff_intro", "cannot start a staff intro while the agent is already processing");
+				}
+
+				activateKernelIntent(intent);
+				void session
+					.withKernelIntent(intent, () => session.sendStaffIntro(message))
+					.catch(() => endKernelIntent(intent, "failed"));
+				return success(id, "staff_intro");
+			}
+
 			case "abort": {
 				endAllKernelIntents("aborted");
 				await session.abort();

@@ -87,6 +87,7 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 			"http_request",
 			"ls",
 			"read",
+			"request_connection",
 			"run_company_tool",
 			"use_mcp_tool",
 			"write",

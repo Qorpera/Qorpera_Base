@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <title>Qorpera Base</title>
@@ -9,69 +9,103 @@
 </head>
 <body>
 <header id="titlebar">
-	<button class="sidebar-toggle" id="toggleSidebarButton" type="button" aria-label="Hide navigation panel" aria-controls="primaryNavigation" aria-expanded="true" title="Hide navigation panel"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9.5 4v16"/></svg></button>
 	<button class="titlebar-update" id="updateButton" type="button" aria-label="Install Qorpera Base update" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4.5-4.5M12 15l-4.5-4.5"/><path d="M5 20h14"/></svg><span>Update</span></button>
 	<span id="wordmark">Qorpera Base</span>
 	<div></div>
 </header>
+<section id="welcomeView" aria-labelledby="welcomeTitle" hidden>
+	<div class="welcome-card">
+		<div class="welcome-brand staff-avatar shape-soft-square" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></div>
+		<h1 id="welcomeTitle">Qorpera</h1>
+		<p>Persistent AI staff working over your company files on this computer.</p>
+		<div id="intelligenceProviders" class="provider-grid" aria-label="Intelligence providers"></div>
+		<div id="intelligenceStatus" class="welcome-status" role="status" aria-live="polite"></div>
+	</div>
+</section>
 <div id="shell">
-<nav id="primaryNavigation">
+	<nav id="primaryNavigation" aria-label="Company navigation">
 	<!-- The hub has no sidebar: it renders full-screen in <main> (#view-hub).
 	     This stub stays because enterCompany() addresses it by id. -->
 	<div id="hubnav" style="display:none"></div>
 	<div id="conav" style="display:none">
-		<div class="sidebar-create">
-			<button class="add-department" id="addDepartmentButton" type="button"><span aria-hidden="true">+</span> Add department</button>
-			<button class="reset-panel" id="resetPanelButton" type="button" disabled>Reset Panel</button>
+		<div class="rail-primary-actions">
+			<label class="rail-search"><span class="sr-only">Search staff</span><input id="railSearch" type="search" placeholder="Search staff" autocomplete="off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></label>
+			<button id="addStaffButton" class="rail-add-staff" type="button" aria-label="Add staff" title="Add staff"><span aria-hidden="true">+</span></button>
 		</div>
-		<div id="navigation" class="sidebar-scroll" aria-label="Company navigation"></div>
-		<div id="projectionDiagnostics" class="projection-diagnostics"></div>
-		<div class="navspacer"></div>
-		<button class="profileRow" onclick="openSettings('usage')" title="Settings"><span class="avatar" id="coProfileAvatar">C</span><span class="profileName" id="coProfileName">Company</span></button>
+		<div id="railScroll" class="rail-scroll">
+			<section class="rail-section" id="staffSection" aria-labelledby="staffSectionTitle">
+				<h2 id="staffSectionTitle">Staff</h2>
+				<div id="staffNavigation"></div>
+			</section>
+		</div>
+		<div id="secondaryWorkspaceNodes" hidden>
+			<button id="addDepartmentButton" type="button">Add department</button>
+			<div id="navigation" class="sidebar-scroll" aria-label="Company workspace"></div>
+			<button class="reset-panel" id="resetPanelButton" type="button" disabled>Reset workspace view</button>
+			<div id="projectionDiagnostics" class="projection-diagnostics"></div>
+		</div>
+		<div class="rail-bottom">
+			<div class="rail-company-switcher">
+					<button id="companySwitcherButton" type="button" aria-haspopup="menu" aria-expanded="false" title="Switch profile or open profile settings"><span class="company-switcher-mark" id="companySwitcherMark">Q</span><strong id="companySwitcherName">Profile</strong></button>
+				<div id="companySwitcherMenu" class="company-switcher-menu" role="menu" hidden></div>
+			</div>
+		</div>
 	</div>
 </nav>
-<div id="navHandle" class="paneHandle" title="Drag to resize the sidebar"></div>
 <main>
 	<div id="view-hub">
 		<div class="hub-inner">
 			<div class="hub-hero">
-				<div class="eyebrow">Qorpera Base</div>
-				<h1>Your companies</h1>
-				<p>Every company runs under its own controller. Open one, or found a new company and its controller together.</p>
+					<h1>Select a profile</h1>
+					<p>Each profile keeps one company’s staff, connections, and files together.</p>
 			</div>
 			<div id="hubCompanies" class="hub-grid"></div>
+			<div id="hubError" class="hub-error" role="status" aria-live="polite"></div>
 			<div class="hub-foot">
 				<span class="hubver" id="hubVersion"></span>
-				<span class="spacer"></span>
-				<span title="Sync, community, and compliance — not built yet">Qorpera Cloud — soon</span>
-				<button class="profileRow" onclick="openSettings('usage')" title="Settings"><span class="avatar">F</span><span class="profileName">Founder</span></button>
+					<span class="spacer"></span>
 			</div>
 		</div>
 	</div>
+	<div id="view-roster">
+		<div class="roster-home" id="rosterHome"></div>
+	</div>
+	<header id="threadHeader" class="thread-header" hidden>
+		<button id="staffIdentityButton" class="staff-identity-button" type="button" aria-label="Open agent settings" aria-expanded="false"><span id="threadAvatar" class="staff-avatar" aria-hidden="true"></span><strong id="threadTitle">Qorpera</strong></button>
+		<nav id="staffSurfaceTabs" class="staff-surface-tabs" aria-label="Agent artifacts"></nav>
+		<div class="staff-header-actions">
+			<button id="staffSidepanelButton" type="button" aria-label="Open agent computer and routines" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="12" rx="1.8"/><path d="M8.5 20h7M12 16.5V20"/></svg></button>
+		</div>
+	</header>
 	<div id="view-chat">
-		<div id="messages"></div>
+		<div id="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation"></div>
 		<div id="composer-footer">
 			<div class="composer-shell">
 				<div id="attachStrip"></div>
-				<textarea id="input" rows="1" placeholder="Steer the company… (Enter to send, Shift+Enter for newline)"></textarea>
+				<textarea id="input" rows="1" aria-label="Message" placeholder="Message…"></textarea>
 				<div class="composer-strip">
-					<div class="chipwrap">
+					<input id="attachFileInput" type="file" accept="image/*" multiple hidden>
+					<button id="composerMoreButton" class="composer-more" type="button" title="Chat settings and more" aria-label="Chat settings and more" aria-haspopup="menu" aria-expanded="false"><span aria-hidden="true">•••</span></button>
+					<div id="composerMoreMenu" class="composer-more-menu" role="menu" aria-label="Chat settings and more">
+						<button id="composerAddFilesButton" class="composer-more-action" type="button" role="menuitem"><span>Add files</span><small>Images, paste, or drag and drop</small></button>
+						<button id="modelCtlBtn" class="composer-more-action composer-model-action" type="button" role="menuitem" title="Model and effort" aria-haspopup="menu" aria-expanded="false"><span>Model &amp; effort</span><small>Loading…</small></button>
+						<button id="composerNewWorktree" class="composer-more-action" type="button" role="menuitem"><span>New worktree</span><small>Available for product work</small></button>
+					</div>
+					<div class="chipwrap compatibility-control" hidden>
 						<button id="scopeBtn" class="stripchip" title="Company controller or product-development department" aria-haspopup="menu" aria-expanded="false">…</button>
 						<div id="scopeMenu" class="chipmenu"></div>
 					</div>
 					<span class="composer-spacer"></span>
-					<div class="chipwrap">
-						<button id="modelCtlBtn" class="stripchip" title="Model · effort · speed" aria-haspopup="menu" aria-expanded="false">…</button>
-						<div id="modelCtlMenu" class="chipmenu modelctl" role="menu" aria-label="Model control">
-							<input id="mcEffort" type="range" min="0" max="3" step="1" value="2" aria-label="Reasoning effort">
-							<div class="mc-bottom">
-								<button id="mcModelDrop" class="mc-model" type="button"><span id="mcModelLabel">…</span><span class="mc-chev">›</span></button>
-								<button id="mcSpeed" class="mc-bolt" type="button" role="switch" aria-checked="false" title="Fast responses">
-									<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 3.5 14H10l-1 8L18.5 10H12l1-8z"/></svg>
-								</button>
-							</div>
-							<div id="mcModelList" class="mc-list"></div>
+					<div id="modelCtlMenu" class="chipmenu modelctl" role="menu" aria-label="Model control">
+						<div class="mc-effort-heading"><span>Reasoning effort</span><output id="mcEffortLabel">Medium</output></div>
+						<input id="mcEffort" type="range" min="0" max="3" step="1" value="2" aria-label="Reasoning effort">
+						<div class="mc-bottom">
+							<button id="mcModelDrop" class="mc-model" type="button"><span id="mcModelLabel">…</span><span class="mc-chev">›</span></button>
+							<button id="mcSpeed" class="mc-bolt" type="button" role="switch" aria-checked="false" title="Fast responses">
+								<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 3.5 14H10l-1 8L18.5 10H12l1-8z"/></svg>
+							</button>
 						</div>
+						<div id="mcModelList" class="mc-list"></div>
 					</div>
 					<button id="stopBtn" class="composer-send" data-active="true" hidden onclick="stopAgent()" title="Stop the agent">
 						<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
@@ -84,7 +118,7 @@
 		</div>
 	</div>
 	<div id="view-surfacewrap">
-		<iframe id="view-surface"></iframe>
+		<iframe id="view-surface" title="Company surface" sandbox="allow-scripts"></iframe>
 		<div id="sidechatHandle" class="paneHandle" title="Drag to resize the chat"></div>
 		<aside id="sidechat">
 			<div id="sidechat-head">
@@ -98,18 +132,21 @@
 	</div>
 	<div id="view-panel"></div>
 	<div id="view-usage"></div>
-	<div id="status"></div>
+	<div id="status" role="status" aria-live="polite"></div>
 </main>
+	<aside id="agentSidepanel" class="agent-sidepanel" aria-label="Agent details" hidden>
+		<header class="agent-sidepanel-head"><button id="agentSidepanelBack" type="button" aria-label="Close agent side panel">←</button><strong id="agentSidepanelTitle">Agent</strong><button id="agentSidepanelClose" type="button" aria-label="Close agent side panel">×</button></header>
+		<div id="agentSidepanelContent" class="agent-sidepanel-content"></div>
+	</aside>
 </div>
 <div id="settingsView">
 	<nav>
 		<button onclick="closeSettings()">← Back</button>
-		<h1 style="margin:10px 0 4px">Settings</h1>
+		<h1 style="margin:10px 0 4px">Profile</h1>
 		<button class="stab" data-tab="connections" onclick="openSettings('connections')">Connections</button>
 		<button class="stab" data-tab="usage" onclick="openSettings('usage')">Usage</button>
 		<button class="stab" data-tab="appearance" onclick="openSettings('appearance')">Appearance</button>
 		<button class="stab" data-tab="authority" onclick="openSettings('authority')">Authority</button>
-		<button class="stab" data-tab="cloud" onclick="openSettings('cloud')">Cloud</button>
 	</nav>
 	<div id="settingsContent"></div>
 </div>
@@ -185,7 +222,7 @@
 			<section class="wizard-step" id="departmentStepType">
 				<header class="wizard-heading">
 					<h3>What kind of department is this?</h3>
-					<p>This changes the setup options shown next. It does not constrain how the department can evolve.</p>
+					<p>This changes the setup options shown next. It does not constrain the work the staff can do.</p>
 				</header>
 				<div class="department-type-grid">
 					<button class="choice-card" id="departmentTypeInterface" type="button" aria-pressed="false">
@@ -263,23 +300,50 @@
 	<form class="confirm-modal company-modal" id="companyForm" role="dialog" aria-modal="true" aria-labelledby="companyModalTitle">
 		<header>
 			<div class="eyebrow">Qorpera Base</div>
-			<h2 id="companyModalTitle">New company controller</h2>
+				<h2 id="companyModalTitle">Create a profile</h2>
 		</header>
-		<p>Name the company. Its controller is founded with it and starts by studying the company with you.</p>
+			<p>Name this profile’s company. Its local folder will hold the staff, connections, artifacts, memory, and files you build together.</p>
 		<label class="wizard-field">
 			<span>Company name</span>
 			<input id="companyName" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. Northwind Robotics" maxlength="64">
 			<small id="companyPathPreview">Lives under C:\Companies</small>
 		</label>
+		<div id="companyFormError" class="company-form-error" role="status" aria-live="polite"></div>
 		<footer>
 			<button class="secondary-button" id="companyCancel" type="button">Cancel</button>
-			<button class="primary-button" id="companyCreate" type="submit" disabled>Create controller</button>
+				<button class="primary-button" id="companyCreate" type="submit" disabled>Create profile</button>
 		</footer>
 	</form>
 </div>
 
+<div class="staff-creator-view" id="staffModal" hidden>
+	<form class="staff-modal" id="staffForm" aria-labelledby="staffModalTitle">
+		<header class="staff-modal-head">
+			<div><div class="eyebrow">Your staff</div><h2 id="staffModalTitle">New staff member</h2><p>Choose a durable role for this company.</p></div>
+			<button class="modal-close" id="staffClose" type="button" aria-label="Close staff creator">×</button>
+		</header>
+		<div class="staff-modal-body">
+			<div class="staff-creator-center">
+				<div class="staff-creator-stage">
+					<span id="staffCreatorAvatar" class="staff-avatar shape-soft-square" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></span>
+					<h3 id="staffCreatorRole">Operations Lead</h3>
+					<p id="staffCreatorDescription">Keeps recurring work moving, coordinates handoffs, and brings decisions to you.</p>
+				</div>
+				<div class="staff-appearance-picker">
+					<div id="staffColorPicker" class="staff-color-picker" role="radiogroup" aria-label="Agent color"></div>
+					<div id="staffShapePicker" class="staff-shape-picker" role="radiogroup" aria-label="Agent face shape"></div>
+				</div>
+				<label class="staff-name-field"><span>Name</span><input id="staffDisplayName" type="text" maxlength="64" autocomplete="off" placeholder="Staff member name"><small>This becomes their persistent identity in the company.</small></label>
+				<div id="staffCreateStatus" class="staff-create-status" role="status" aria-live="polite"></div>
+				<footer class="staff-modal-actions"><button class="secondary-button" id="staffCancel" type="button">Cancel</button><button class="primary-button" id="staffCreateButton" type="submit" disabled>Add to company</button></footer>
+			</div>
+			<div class="staff-suggestions-label">Suggestions</div>
+			<div id="staffTemplateGrid" class="staff-template-grid" role="radiogroup" aria-label="Staff roles"></div>
+		</div>
+	</form>
+</div>
+
 <div class="controller-toast" id="controllerToast" role="status" hidden></div>
-<script src="./browser-preview.js"></script>
 <script src="./marked.umd.js"></script>
 <script src="./usage.js"></script>
 <script src="./renderer.js"></script>

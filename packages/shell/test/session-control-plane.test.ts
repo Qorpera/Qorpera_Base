@@ -72,6 +72,7 @@ describe("session control plane", () => {
 		const binding = bindTrailSession(root, root, {
 			actor: "controller",
 			attended: false,
+			staffAgentId: "staff-night-shift",
 		});
 		const cachePath = join(root, "kernel-state", "sessions-v1.json");
 		const plane = await SessionControlPlane.create(root, "kernel-a", cachePath);
@@ -81,6 +82,7 @@ describe("session control plane", () => {
 		const firstRestart = await SessionControlPlane.create(root, "kernel-b", cachePath);
 		expect(firstRestart.snapshot().sessions[0]).toMatchObject({
 			trailFile: binding.file,
+			staffAgentId: "staff-night-shift",
 			executorId: "executor-a",
 			status: "detached",
 			live: false,
@@ -89,6 +91,7 @@ describe("session control plane", () => {
 		const cachedRestart = await SessionControlPlane.create(root, "kernel-c", cachePath);
 		expect(cachedRestart.snapshot().sessions[0]).toMatchObject({
 			trailFile: binding.file,
+			staffAgentId: "staff-night-shift",
 			executorId: "executor-a",
 			status: "detached",
 			live: false,
@@ -101,6 +104,7 @@ describe("session control plane", () => {
 		const changedRestart = await SessionControlPlane.create(root, "kernel-d", cachePath);
 		expect(changedRestart.snapshot().sessions[0]).toMatchObject({
 			trailFile: binding.file,
+			staffAgentId: "staff-night-shift",
 			executorId: "executor-a",
 			status: "interrupted",
 			turnInterrupted: true,
@@ -111,6 +115,7 @@ describe("session control plane", () => {
 		const replayed = await SessionControlPlane.create(root, "kernel-e", cachePath);
 		expect(replayed.snapshot().sessions[0]).toMatchObject({
 			trailFile: binding.file,
+			staffAgentId: "staff-night-shift",
 			executorId: "executor-a",
 			status: "interrupted",
 			live: false,
@@ -276,14 +281,27 @@ describe("session control plane", () => {
 			actor: "controller",
 			attended: false,
 		});
+		const staff = bindTrailSession(root, root, {
+			actor: "controller",
+			attended: false,
+			staffAgentId: "staff-chief-of-staff",
+		});
 		const plane = await SessionControlPlane.create(root, "kernel-a");
 		plane.record(newer, { kind: "executor_started", executorId: "newer" });
 		plane.record(older, {
 			kind: "executor_started",
 			executorId: "older-reopened",
 		});
+		plane.record(staff, { kind: "executor_started", executorId: "staff-reopened" });
 		expect(plane.latestAttendedControllerTrailFile()).toBe(older.file);
-		expect((await SessionControlPlane.create(root, "kernel-b")).latestAttendedControllerTrailFile()).toBe(older.file);
+		const restarted = await SessionControlPlane.create(root, "kernel-b");
+		expect(restarted.latestAttendedControllerTrailFile()).toBe(older.file);
+		expect(restarted.snapshot().sessions.find((session) => session.trailFile === staff.file)).toMatchObject({
+			staffAgentId: "staff-chief-of-staff",
+		});
+		expect(
+			restarted.snapshot().sessions.find((session) => session.trailFile === older.file)?.staffAgentId,
+		).toBeUndefined();
 	});
 
 	it("isolates read-model listeners from durable control decisions", async () => {
