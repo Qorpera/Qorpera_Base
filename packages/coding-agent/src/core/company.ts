@@ -3533,6 +3533,25 @@ export function registerCompany(rootDir: string): void {
 	}
 }
 
+/** Remove a company from this machine's profile selector without touching its files. */
+export function unregisterCompany(rootDir: string): boolean {
+	const root = canonicalCompanyRoot(rootDir);
+	const records = listCompanies().filter((record) => {
+		try {
+			return normalizedPath(canonicalCompanyRoot(record.root)) !== normalizedPath(root);
+		} catch {
+			return false;
+		}
+	});
+	try {
+		mkdirSync(getAgentDir(), { recursive: true });
+		writeFileSync(registryPath(), `${JSON.stringify(records, null, "\t")}\n`, "utf-8");
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 // ---- the hub ---------------------------------------------------------------
 
 function askLine(question: string): Promise<string> {

@@ -290,6 +290,8 @@ async function renderHub() {
 	const grid = $("hubCompanies");
 	grid.innerHTML = "";
 	for (const company of companies) {
+		const shell = document.createElement("div");
+		shell.className = "profile-card-shell";
 		const card = document.createElement("button");
 		card.className = "hub-card profile-card";
 		card.type = "button";
@@ -325,7 +327,38 @@ async function renderHub() {
 				}
 			});
 		};
-		grid.appendChild(card);
+		const actions = document.createElement("button");
+		actions.className = "profile-card-actions";
+		actions.type = "button";
+		actions.setAttribute("aria-label", `Profile actions for ${company.name}`);
+		actions.setAttribute("aria-expanded", "false");
+		actions.textContent = "•••";
+		const menu = document.createElement("div");
+		menu.className = "profile-card-menu";
+		menu.hidden = true;
+		menu.setAttribute("role", "menu");
+		const remove = document.createElement("button");
+		remove.type = "button";
+		remove.setAttribute("role", "menuitem");
+		remove.textContent = "Remove profile";
+		remove.onclick = async () => {
+			menu.hidden = true;
+			actions.setAttribute("aria-expanded", "false");
+			const result = await window.qorpera.removeProfile(company.root);
+			if (result?.ok) {
+				await renderHub();
+				return;
+			}
+			if (!result?.cancelled) $("hubError").textContent = result?.error ?? "Profile could not be removed.";
+		};
+		menu.appendChild(remove);
+		actions.onclick = () => {
+			menu.hidden = !menu.hidden;
+			actions.setAttribute("aria-expanded", String(!menu.hidden));
+			if (!menu.hidden) remove.focus();
+		};
+		shell.append(card, actions, menu);
+		grid.appendChild(shell);
 	}
 	const create = document.createElement("button");
 	create.className = "hub-card create profile-card profile-add-card";

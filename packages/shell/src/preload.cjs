@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	intelligenceInfo: () => ipcRenderer.invoke("intelligence:info"),
 	configureIntelligence: (providerId) => ipcRenderer.invoke("intelligence:configure", providerId),
 	listCompanies: () => ipcRenderer.invoke("companies:list"),
+	removeProfile: (root) => ipcRenderer.invoke("profile:remove", root),
 	openCompany: (root) => ipcRenderer.invoke("company:open", root),
 	newCompany: (dir) => ipcRenderer.invoke("company:new", dir),
 	integrateCompany: (dir, from) => ipcRenderer.invoke("company:integrate", dir, from),

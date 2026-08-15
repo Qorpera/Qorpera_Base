@@ -49,6 +49,7 @@ import {
 	releaseCompanyRuntimeLock,
 	scaffoldCompany,
 	scaffoldProductDepartmentWithRuntimeLock,
+	unregisterCompany,
 	validateCompanyKernelStorage,
 } from "@qorpera/pi-coding-agent/company";
 import {
@@ -3874,6 +3875,30 @@ app.whenReady().then(async () => {
 	});
 	ipcMain.handle("staff:catalog", (event) => (slotOf(event.sender) ? listStaffTemplates() : []));
 	ipcMain.handle("companies:list", () => listCompanies());
+	ipcMain.handle("profile:remove", async (event, root: unknown) => {
+		if (!isTrustedHubSender(event.sender) || typeof root !== "string" || !root.trim()) {
+			return { ok: false, error: "invalid profile" };
+		}
+		if (slotForCompany(root)) {
+			return { ok: false, error: "Close this profile's window before removing it." };
+		}
+		const company = listCompanies().find((record) => normalizedRoot(record.root) === normalizedRoot(root));
+		if (!company) return { ok: false, error: "Profile is no longer registered." };
+		const owner = BrowserWindow.fromWebContents(event.sender);
+		if (!owner) return { ok: false, error: "Profile selector is unavailable." };
+		const confirmation = await dialog.showMessageBox(owner, {
+			type: "warning",
+			buttons: ["Cancel", "Remove profile"],
+			defaultId: 0,
+			cancelId: 0,
+			message: `Remove ${company.name} from Qorpera?`,
+			detail: `The company folder and everything in it will stay at ${company.root}. You can open it again later.`,
+		});
+		if (confirmation.response !== 1) return { ok: false, cancelled: true };
+		return unregisterCompany(company.root)
+			? { ok: true }
+			: { ok: false, error: "Qorpera could not update the profile selector." };
+	});
 	ipcMain.handle("company:open", (event, root: string) => {
 		if (!isTrustedHubSender(event.sender)) return;
 		const slot = slotOf(event.sender);

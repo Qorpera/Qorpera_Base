@@ -1083,11 +1083,11 @@ describe("product-development departments", () => {
 });
 
 describe("company registry", () => {
-	it("registers, dedupes, sorts by recency, and filters vanished companies", async () => {
+	it("registers, removes, dedupes, sorts by recency, and filters vanished companies", async () => {
 		const prevAgentDir = process.env.QORPERA_CODING_AGENT_DIR;
 		process.env.QORPERA_CODING_AGENT_DIR = join(root, "agent-home");
 		try {
-			const { listCompanies, registerCompany } = await import("../src/core/company.ts");
+			const { listCompanies, registerCompany, unregisterCompany } = await import("../src/core/company.ts");
 			const companyA = join(root, "co-a");
 			const companyB = join(root, "co-b");
 			scaffoldCompany(companyA);
@@ -1100,6 +1100,11 @@ describe("company registry", () => {
 			expect(companies.length).toBe(2);
 			expect(companies[0].root).toBe(companyA);
 			expect(companies[0].name).toBe("co-a");
+
+			expect(unregisterCompany(companyA)).toBe(true);
+			expect(listCompanies().map((company) => company.root)).toEqual([companyB]);
+			expect(existsSync(companyA)).toBe(true);
+			registerCompany(companyA);
 
 			// A registered dir that stops being a company disappears from the list.
 			rmSync(join(companyB, "authority.toml"));
