@@ -221,8 +221,22 @@ import { startWebhookListener } from "./webhook-listener.ts";
 
 // Electron 43's Windows GPU compositor can produce a live but completely
 // white renderer (Chromium UnknownVizError) on the founder's current display
-// stack. CSS motion remains available through software compositing.
-if (process.platform === "win32") app.disableHardwareAcceleration();
+// stack. Chromium reads --disable-gpu before app code runs, so packaged
+// Windows launches bounce once through the proven process-level switch.
+// CSS motion remains available through software compositing.
+const WINDOWS_SOFTWARE_RENDERER_FLAG = "--qorpera-software-renderer";
+if (process.platform === "win32" && app.isPackaged && !process.argv.includes("--disable-gpu")) {
+	app.relaunch({
+		args: [
+			...process.argv.slice(1).filter((argument) => argument !== WINDOWS_SOFTWARE_RENDERER_FLAG),
+			"--disable-gpu",
+			WINDOWS_SOFTWARE_RENDERER_FLAG,
+		],
+	});
+	app.exit(0);
+} else if (process.platform === "win32") {
+	app.disableHardwareAcceleration();
+}
 
 const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
 const CODEX_ENTRY = resolveCodexEntry();
@@ -4719,6 +4733,16 @@ app.whenReady().then(async () => {
 			if (timer) clearTimeout(timer);
 			timer = setTimeout(async () => {
 				try {
+					const readyDeadline = Date.now() + 10_000;
+					let rendererReady = "";
+					while (!rendererReady && Date.now() < readyDeadline) {
+						rendererReady = await initial.window.webContents.executeJavaScript(
+							'document.documentElement.dataset.qorperaReady ?? ""',
+						);
+						if (!rendererReady) await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+					}
+					if (!rendererReady) throw new Error("renderer did not finish booting");
+					await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
 					const image = await initial.window.webContents.capturePage();
 					if (bitmapLooksBlank(image.toBitmap())) throw new Error("renderer capture is visually blank");
 					writeFileSync(smokeShotTarget, image.toPNG());
@@ -4729,7 +4753,7 @@ app.whenReady().then(async () => {
 					return;
 				}
 				app.quit();
-			}, 1600);
+			}, 100);
 		});
 	}
 	// Headless smoke: prove the shell boots, then leave.

@@ -240,11 +240,16 @@ const packedSmoke = spawnSync(
 	},
 );
 const packedSmokeOutput = `${packedSmoke.stdout ?? ""}${packedSmoke.stderr ?? ""}`.trim();
+const packedSmokeDeadline = Date.now() + 30_000;
+while (!existsSync(packedSmokeShot) && Date.now() < packedSmokeDeadline) {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+}
 if (packedSmoke.error || packedSmoke.status !== 0 || !existsSync(packedSmokeShot)) {
 	console.error(`PACK VERIFICATION FAILED: packaged renderer did not paint\n${packedSmokeOutput}`);
 	rmSync(packedSmokeRoot, { recursive: true, force: true });
 	process.exit(packedSmoke.status ?? 1);
 }
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
 rmSync(packedSmokeRoot, { recursive: true, force: true });
 console.log("pack verification: packaged renderer produced a nonblank frame");
 console.log(`installer in ${outDir}`);

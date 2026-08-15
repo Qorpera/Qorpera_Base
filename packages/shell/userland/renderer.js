@@ -6229,6 +6229,7 @@ async function bootWorkspace() {
 			const intelligence = await window.qorpera.intelligenceInfo();
 			if (!intelligenceIsConfigured(intelligence)) {
 				await renderIntelligenceWelcome(intelligence);
+				document.documentElement.dataset.qorperaReady = "welcome";
 				return;
 			}
 		} catch (error) {
@@ -6236,4 +6237,5 @@ async function bootWorkspace() {
 		}
 	}
 	await bootWorkspace();
+	document.documentElement.dataset.qorperaReady = document.body.classList.contains("hub") ? "hub" : "company";
 })();
