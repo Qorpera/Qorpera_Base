@@ -1,0 +1,309 @@
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import { dirname, join } from "node:path";
+import { createClient, type Session, type SupportedStorage, type User } from "@supabase/supabase-js";
+
+export const QORPERA_AUTH_URL = "https://bzbvxthyjcgcrwpcvdpj.supabase.co";
+export const QORPERA_AUTH_PUBLISHABLE_KEY = "sb_publishable_WXcmU0LTzmvkAHImRnczdQ_fzIOImTx";
+export const QORPERA_AUTH_REDIRECT_PATTERN = "http://127.0.0.1:*/auth/callback";
+
+const ACCOUNT_AUTH_FILE = "account-auth.json";
+const CALLBACK_PATH = "/auth/callback";
+const DEFAULT_AUTH_TIMEOUT_MS = 5 * 60_000;
+
+export type QorperaAccountProvider = "github" | "google";
+
+export interface QorperaAccount {
+	id: string;
+	email: string;
+	displayName: string;
+	avatarUrl?: string;
+	provider?: string;
+}
+
+export interface QorperaAccountInfo {
+	authenticated: boolean;
+	user?: QorperaAccount;
+}
+
+export interface QorperaAccountAuthOptions {
+	openExternal: (url: string) => Promise<void>;
+	fetch?: typeof fetch;
+	projectUrl?: string;
+	publishableKey?: string;
+	timeoutMs?: number;
+}
+
+export class FileAccountAuthStorage implements SupportedStorage {
+	readonly path: string;
+
+	constructor(path: string) {
+		this.path = path;
+	}
+
+	getItem(key: string): string | null {
+		return this.read()[key] ?? null;
+	}
+
+	setItem(key: string, value: string): void {
+		const entries = this.read();
+		entries[key] = value;
+		this.write(entries);
+	}
+
+	removeItem(key: string): void {
+		const entries = this.read();
+		if (!(key in entries)) return;
+		delete entries[key];
+		this.write(entries);
+	}
+
+	clear(): void {
+		rmSync(this.path, { force: true });
+	}
+
+	private read(): Record<string, string> {
+		try {
+			const parsed: unknown = JSON.parse(readFileSync(this.path, "utf-8"));
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+			const entries: Record<string, string> = {};
+			for (const [key, value] of Object.entries(parsed)) {
+				if (typeof value === "string") entries[key] = value;
+			}
+			return entries;
+		} catch {
+			return {};
+		}
+	}
+
+	private write(entries: Record<string, string>): void {
+		const temporary = `${this.path}.${randomUUID()}.tmp`;
+		try {
+			mkdirSync(dirname(this.path), { recursive: true });
+			writeFileSync(temporary, `${JSON.stringify(entries, null, "\t")}\n`, {
+				encoding: "utf-8",
+				mode: 0o600,
+			});
+			renameSync(temporary, this.path);
+		} catch (error) {
+			rmSync(temporary, { force: true });
+			throw error;
+		}
+	}
+}
+
+export function accountAuthStoragePath(userData: string): string {
+	return join(userData, ACCOUNT_AUTH_FILE);
+}
+
+export function projectQorperaAccount(user: User): QorperaAccount {
+	const metadata = user.user_metadata;
+	const displayName = [metadata.full_name, metadata.name, metadata.user_name, metadata.preferred_username]
+		.find((value): value is string => typeof value === "string" && Boolean(value.trim()))
+		?.trim();
+	const avatarUrl = [metadata.avatar_url, metadata.picture].find(
+		(value): value is string => typeof value === "string" && /^https:\/\//.test(value),
+	);
+	const provider = typeof user.app_metadata.provider === "string" ? user.app_metadata.provider : undefined;
+	return {
+		id: user.id,
+		email: user.email ?? "",
+		displayName: displayName ?? user.email?.split("@")[0] ?? "Qorpera user",
+		...(avatarUrl ? { avatarUrl } : {}),
+		...(provider ? { provider } : {}),
+	};
+}
+
+interface LoopbackCallback {
+	redirectTo: string;
+	result: Promise<URL>;
+	close: () => void;
+}
+
+async function startLoopbackCallback(timeoutMs: number): Promise<LoopbackCallback> {
+	let settle: ((url: URL) => void) | undefined;
+	let fail: ((error: Error) => void) | undefined;
+	let settled = false;
+	let timeout: NodeJS.Timeout | undefined;
+	let server: Server;
+	const result = new Promise<URL>((resolvePromise, rejectPromise) => {
+		settle = resolvePromise;
+		fail = rejectPromise;
+	});
+	// A sign-in setup failure can close the listener before its result is
+	// awaited. Keep that cancellation from becoming an unhandled rejection.
+	void result.catch(() => {});
+	server = createServer((request, response) => {
+		const address = server.address();
+		if (!address || typeof address === "string") {
+			response.writeHead(503).end("Qorpera sign-in is unavailable.");
+			return;
+		}
+		const url = new URL(request.url ?? "/", `http://127.0.0.1:${address.port}`);
+		if (url.pathname !== CALLBACK_PATH) {
+			response.writeHead(404).end("Not found");
+			return;
+		}
+		response.writeHead(200, {
+			"content-security-policy": "default-src 'none'; style-src 'unsafe-inline'",
+			"content-type": "text/html; charset=utf-8",
+		});
+		response.end(
+			"<!doctype html><meta charset=utf-8><title>Qorpera</title><style>body{font:16px system-ui;display:grid;place-items:center;min-height:80vh;color:#171716}</style><p>Signed in. You can close this tab and return to Qorpera.</p>",
+		);
+		if (!settled) {
+			settled = true;
+			settle?.(url);
+		}
+	});
+	await new Promise<void>((resolvePromise, rejectPromise) => {
+		server.once("error", rejectPromise);
+		server.listen(0, "127.0.0.1", () => {
+			server.off("error", rejectPromise);
+			resolvePromise();
+		});
+	});
+	const address = server.address();
+	if (!address || typeof address === "string") {
+		server.close();
+		throw new Error("Could not reserve the Qorpera sign-in callback");
+	}
+	timeout = setTimeout(() => {
+		if (settled) return;
+		settled = true;
+		fail?.(new Error("Sign-in timed out. Try again."));
+		server.close();
+	}, timeoutMs);
+	return {
+		redirectTo: `http://127.0.0.1:${address.port}${CALLBACK_PATH}`,
+		result,
+		close: () => {
+			if (timeout) clearTimeout(timeout);
+			server.close();
+		},
+	};
+}
+
+function accountInfoForSession(session: Session | null): QorperaAccountInfo {
+	return session ? { authenticated: true, user: projectQorperaAccount(session.user) } : { authenticated: false };
+}
+
+export class QorperaAccountAuth {
+	private readonly client;
+	private readonly openExternal: (url: string) => Promise<void>;
+	private readonly storage: FileAccountAuthStorage;
+	private readonly timeoutMs: number;
+	private signInPending = false;
+
+	constructor(userData: string, options: QorperaAccountAuthOptions) {
+		this.openExternal = options.openExternal;
+		this.timeoutMs = options.timeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS;
+		this.storage = new FileAccountAuthStorage(accountAuthStoragePath(userData));
+		this.client = createClient(
+			options.projectUrl ?? QORPERA_AUTH_URL,
+			options.publishableKey ?? QORPERA_AUTH_PUBLISHABLE_KEY,
+			{
+				auth: {
+					autoRefreshToken: true,
+					detectSessionInUrl: false,
+					flowType: "pkce",
+					persistSession: true,
+					storage: this.storage,
+				},
+				...(options.fetch ? { global: { fetch: options.fetch } } : {}),
+			},
+		);
+	}
+
+	async info(): Promise<QorperaAccountInfo> {
+		const { data, error } = await this.client.auth.getSession();
+		if (error) throw error;
+		return accountInfoForSession(data.session);
+	}
+
+	async signInWithProvider(
+		provider: QorperaAccountProvider,
+		report: (message: string) => void = () => {},
+	): Promise<QorperaAccountInfo> {
+		return this.runSignIn(async () => {
+			const callback = await startLoopbackCallback(this.timeoutMs);
+			try {
+				const { data, error } = await this.client.auth.signInWithOAuth({
+					provider,
+					options: { redirectTo: callback.redirectTo, skipBrowserRedirect: true },
+				});
+				if (error) throw error;
+				if (!data.url) throw new Error("The sign-in provider did not return an authorization URL");
+				report(`Finish signing in with ${provider === "github" ? "GitHub" : "Google"} in your browser…`);
+				await this.openExternal(data.url);
+				const callbackUrl = await callback.result;
+				const providerError =
+					callbackUrl.searchParams.get("error_description") ?? callbackUrl.searchParams.get("error");
+				if (providerError) throw new Error(providerError);
+				const code = callbackUrl.searchParams.get("code");
+				if (!code) throw new Error("The sign-in callback did not include an authorization code");
+				const { data: sessionData, error: exchangeError } = await this.client.auth.exchangeCodeForSession(
+					code,
+					data.flowId ? { flowId: data.flowId } : undefined,
+				);
+				if (exchangeError) throw exchangeError;
+				if (!sessionData.session) throw new Error("Supabase did not create a Qorpera session");
+				report("Signed in.");
+				return accountInfoForSession(sessionData.session);
+			} finally {
+				callback.close();
+			}
+		});
+	}
+
+	async signInWithEmail(email: string, report: (message: string) => void = () => {}): Promise<QorperaAccountInfo> {
+		const normalizedEmail = email.trim().toLowerCase();
+		if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) throw new Error("Enter a valid email address");
+		return this.runSignIn(async () => {
+			const callback = await startLoopbackCallback(this.timeoutMs);
+			try {
+				const { error } = await this.client.auth.signInWithOtp({
+					email: normalizedEmail,
+					options: { emailRedirectTo: callback.redirectTo, shouldCreateUser: true },
+				});
+				if (error) throw error;
+				report("Check your email and open the Qorpera sign-in link.");
+				const callbackUrl = await callback.result;
+				const providerError =
+					callbackUrl.searchParams.get("error_description") ?? callbackUrl.searchParams.get("error");
+				if (providerError) throw new Error(providerError);
+				const code = callbackUrl.searchParams.get("code");
+				if (!code) throw new Error("The email sign-in callback did not include an authorization code");
+				const { data: sessionData, error: exchangeError } = await this.client.auth.exchangeCodeForSession(code);
+				if (exchangeError) throw exchangeError;
+				if (!sessionData.session) throw new Error("Supabase did not create a Qorpera session");
+				report("Signed in.");
+				return accountInfoForSession(sessionData.session);
+			} finally {
+				callback.close();
+			}
+		});
+	}
+
+	async signOut(): Promise<QorperaAccountInfo> {
+		try {
+			await this.client.auth.signOut({ scope: "local" });
+		} finally {
+			// Signing out must still close the local gate while offline. Provider
+			// intelligence credentials are intentionally stored elsewhere.
+			this.storage.clear();
+		}
+		return { authenticated: false };
+	}
+
+	private async runSignIn<T>(operation: () => Promise<T>): Promise<T> {
+		if (this.signInPending) throw new Error("Another Qorpera sign-in is already in progress");
+		this.signInPending = true;
+		try {
+			return await operation();
+		} finally {
+			this.signInPending = false;
+		}
+	}
+}

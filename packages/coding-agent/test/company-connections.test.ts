@@ -27,6 +27,7 @@ import {
 	removeCompanySecret,
 	removeNetworkDestination,
 	resolveCompanySecret,
+	scheduledJobIntervalMinutes,
 	suspendScheduledJob,
 	suspendWakeSchedule,
 	updateScheduledJob,
@@ -151,6 +152,7 @@ describe("secrets", () => {
 
 describe("wake schedule", () => {
 	const staffAgentId = "6ba7b810-9dad-4d1d-80b4-00c04fd430c8";
+	const schedule = (intervalMinutes: number) => [{ kind: "schedule" as const, intervalMinutes }];
 
 	it("binds, reports, disables, and enforces the wake-rate ceiling", () => {
 		expect(readWakeSchedule(root)).toBeUndefined();
@@ -178,9 +180,9 @@ describe("wake schedule", () => {
 		expect(jobs[0]).toMatchObject({
 			id: DEFAULT_SCHEDULED_JOB_ID,
 			title: "Company orchestration",
-			intervalMinutes: 10,
 			enabled: true,
 		});
+		expect(scheduledJobIntervalMinutes(jobs[0])).toBe(10);
 		expect(jobs[0].prompt).toContain("company.md");
 		expect(Object.hasOwn(jobs[0], "staffAgentId")).toBe(false);
 		expect(readWakeSchedule(root)).toEqual({ intervalMinutes: 10, enabled: true });
@@ -190,7 +192,7 @@ describe("wake schedule", () => {
 		const job = createScheduledJob(root, {
 			title: "Morning digest",
 			prompt: "Prepare the founder's morning digest.",
-			intervalMinutes: 60,
+			triggers: schedule(60),
 			staffAgentId,
 		});
 		expect(readScheduledJobs(root)).toEqual([job]);
@@ -206,7 +208,7 @@ describe("wake schedule", () => {
 			createScheduledJob(root, {
 				title: "Morning digest",
 				prompt: "Prepare the founder's morning digest.",
-				intervalMinutes: 60,
+				triggers: schedule(60),
 				staffAgentId: "staff-night-shift",
 			}),
 		).toThrow(/staffAgentId must be a lowercase UUID v4/);
@@ -217,7 +219,7 @@ describe("wake schedule", () => {
 		createScheduledJob(root, {
 			title: "Morning digest",
 			prompt: "Prepare the founder's morning digest.",
-			intervalMinutes: 60,
+			triggers: schedule(60),
 			staffAgentId,
 		});
 		const path = companyConnectionsPath(root);
@@ -234,14 +236,15 @@ describe("wake schedule", () => {
 		const job = createScheduledJob(root, {
 			title: "Reliability sweep",
 			prompt: "Inspect the reliability dashboard and repair the highest-impact issue.",
-			intervalMinutes: 15,
+			triggers: schedule(15),
 		});
 		expect(readScheduledJobs(root)).toEqual([job]);
-		const paused = updateScheduledJob(root, job.id, { enabled: false, intervalMinutes: 30 });
-		expect(paused).toMatchObject({ enabled: false, intervalMinutes: 30 });
+		const paused = updateScheduledJob(root, job.id, { enabled: false, triggers: schedule(30) });
+		expect(paused.enabled).toBe(false);
+		expect(scheduledJobIntervalMinutes(paused)).toBe(30);
 		const resumed = updateScheduledJob(root, job.id, { enabled: true, title: "Reliability review" });
 		expect(resumed).toMatchObject({ enabled: true, title: "Reliability review" });
-		expect(() => createScheduledJob(root, { title: "Too fast", prompt: "Run", intervalMinutes: 1 })).toThrow(
+		expect(() => createScheduledJob(root, { title: "Too fast", prompt: "Run", triggers: schedule(1) })).toThrow(
 			/ceiling/,
 		);
 		expect(deleteScheduledJob(root, job.id)).toBe(true);
@@ -253,7 +256,7 @@ describe("wake schedule", () => {
 		const job = createScheduledJob(root, {
 			title: "Reliability sweep",
 			prompt: "Inspect reliability.",
-			intervalMinutes: 15,
+			triggers: schedule(15),
 		});
 		suspendScheduledJob(root, job.id, "3 consecutive wake failures");
 		expect(updateScheduledJob(root, job.id, { title: "Reliability review" }).suspendedReason).toContain("failures");

@@ -41,6 +41,13 @@ describe.sequential("Anthropic OAuth", () => {
 	it("keeps the localhost redirect_uri for manual callback login", async () => {
 		let authUrl = "";
 		const fetchMock = vi.fn(async (input: unknown, init?: RequestInit): Promise<Response> => {
+			if (getUrl(input) === "https://api.anthropic.com/api/oauth/profile") {
+				expect(new Headers(init?.headers).get("authorization")).toBe("Bearer access-token");
+				return jsonResponse({
+					account: { uuid: "account-1", email: "founder@example.com", display_name: "Founder" },
+					organization: { uuid: "organization-1" },
+				});
+			}
 			expect(getUrl(input)).toBe("https://platform.claude.com/v1/oauth/token");
 			expect(init?.method).toBe("POST");
 			const body = getJsonBody(init);
@@ -72,7 +79,10 @@ describe.sequential("Anthropic OAuth", () => {
 
 		expect(credentials.access).toBe("access-token");
 		expect(credentials.refresh).toBe("refresh-token");
-		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(credentials.email).toBe("founder@example.com");
+		expect(credentials.accountName).toBe("Founder");
+		expect(credentials.accountId).toBe("account-1");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
 	it("omits scope from refresh token requests", async () => {
@@ -98,12 +108,14 @@ describe.sequential("Anthropic OAuth", () => {
 				access: "old-access-token",
 				refresh: "refresh-token",
 				expires: 0,
+				email: "founder@example.com",
 			},
 			neverAbortedSignal,
 		);
 
 		expect(credentials.access).toBe("new-access-token");
 		expect(credentials.refresh).toBe("new-refresh-token");
+		expect(credentials.email).toBe("founder@example.com");
 		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 
@@ -113,6 +125,7 @@ describe.sequential("Anthropic OAuth", () => {
 			if (url.includes("/oauth/token")) {
 				return jsonResponse({ access_token: "access", refresh_token: "refresh", expires_in: 3600 });
 			}
+			if (url.includes("/api/oauth/profile")) return jsonResponse({}, 404);
 			throw new Error(`Unexpected fetch: ${url}`);
 		});
 		vi.stubGlobal("fetch", fetchMock);

@@ -72,7 +72,11 @@ vi.mock("@qorpera/pi-coding-agent", () => ({
 	ModelRuntime: { create: vi.fn(async () => runtime) },
 }));
 
-import { startModelRequestBroker } from "../src/model-request-broker.ts";
+import {
+	type ModelRequestAccountRouter,
+	type ModelRequestRuntime,
+	startModelRequestBroker,
+} from "../src/model-request-broker.ts";
 import { brokerCredentialProjection } from "../src/model-request-scope.ts";
 
 const DEFAULT_BUDGET: KernelModelIntentBudget = {
@@ -404,6 +408,48 @@ describe("kernel model-request broker", () => {
 			}),
 		);
 		expect(runtime.streamSimple).toHaveBeenCalledTimes(2);
+		child.release();
+		broker.close();
+	});
+
+	it("holds one account lease across provider authentication and streaming", async () => {
+		let insideLease = false;
+		const release = vi.fn();
+		const run = async <T>(operation: () => Promise<T>): Promise<T> => {
+			insideLease = true;
+			try {
+				return await operation();
+			} finally {
+				insideLease = false;
+			}
+		};
+		const lease = vi.fn<ModelRequestAccountRouter["lease"]>(async () => ({
+			accountId: "account-two",
+			run,
+			release,
+		}));
+		const routedRuntime = {
+			getModel: runtime.getModel,
+			streamSimple: vi.fn((...args: Parameters<typeof runtime.streamSimple>) => {
+				expect(insideLease).toBe(true);
+				return runtime.streamSimple(...args);
+			}),
+		} as unknown as ModelRequestRuntime;
+		const broker = await startModelRequestBroker({
+			authPath: "auth.json",
+			modelsPath: "models.json",
+			allowedProviders: new Set(["openai"]),
+			runtime: routedRuntime,
+			accountRouter: { lease, markRateLimited: vi.fn() },
+		});
+		const child = broker.registerChild("session-one", { openai: { type: "api_key", key: "secret" } }, []);
+		const capability = intent("19191919-1919-4919-8919-191919191919");
+		expect(child.authorizeIntent(capability)).toBe(true);
+		const send = vi.fn();
+		child.handleFrame(request(child.handles.openai, capability, "20202020-2020-4020-8020-202020202020"), send);
+		await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+		expect(lease).toHaveBeenCalledWith("openai");
+		expect(routedRuntime.streamSimple).toHaveBeenCalledOnce();
 		child.release();
 		broker.close();
 	});

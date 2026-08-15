@@ -15,7 +15,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { ScheduledJob } from "@qorpera/pi-coding-agent/company-connections";
+import { type ScheduledJob, scheduledJobIntervalMinutes } from "@qorpera/pi-coding-agent/company-connections";
 
 const LEGACY_SCHEDULED_JOB_ID = "company-orchestration";
 
@@ -121,7 +121,9 @@ export function decideScheduledWake(
 	nowMs: number,
 ): WakeDecision {
 	if (!job?.enabled || job.suspendedReason) return { due: false, coalesced: 0 };
-	const intervalMs = Math.max(job.intervalMinutes, 1) * 60_000;
+	const intervalMinutes = scheduledJobIntervalMinutes(job);
+	if (intervalMinutes === undefined) return { due: false, coalesced: 0 };
+	const intervalMs = Math.max(intervalMinutes, 1) * 60_000;
 	if (!state.lastWakeAt) return { due: true, coalesced: 0 };
 	const last = Date.parse(state.lastWakeAt);
 	if (!Number.isFinite(last)) return { due: true, coalesced: 0 };

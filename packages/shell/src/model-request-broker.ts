@@ -105,6 +105,17 @@ export interface ModelRequestRuntime {
 	streamSimple: ModelRuntime["streamSimple"];
 }
 
+export interface ModelRequestAccountLease {
+	accountId: string;
+	run<T>(operation: () => Promise<T>): Promise<T>;
+	release(): void;
+}
+
+export interface ModelRequestAccountRouter {
+	lease(providerId: string): ModelRequestAccountLease | undefined | Promise<ModelRequestAccountLease | undefined>;
+	markRateLimited(accountId: string): void;
+}
+
 function exactObject(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
 	return (
 		value !== null &&
@@ -325,6 +336,14 @@ function usageFromEvent(value: unknown): ModelUsage | undefined {
 	};
 }
 
+function providerRateLimited(value: unknown): boolean {
+	try {
+		return /usage[_ -]?limit|rate[_ -]?limit|limit[_ -]?reached|quota[_ -]?exhaust/i.test(JSON.stringify(value));
+	} catch {
+		return false;
+	}
+}
+
 function costUpperBound(
 	model: NonNullable<ReturnType<ModelRuntime["getModel"]>>,
 	inputTokens: number,
@@ -345,6 +364,8 @@ export async function startModelRequestBroker(options: {
 	allowedProviders: ReadonlySet<string>;
 	/** Explicit transport seam for integration tests; production always uses the kernel-owned ModelRuntime. */
 	runtime?: ModelRequestRuntime;
+	/** Optional multi-account lease. The selected account stays bound across auth refresh and streaming. */
+	accountRouter?: ModelRequestAccountRouter;
 }): Promise<ModelRequestBroker> {
 	const runtime =
 		options.runtime ??
@@ -456,18 +477,25 @@ export async function startModelRequestBroker(options: {
 		let terminalUsage: ModelUsage | undefined;
 		let terminalStatus: ModelRequestObservation["status"] | undefined;
 		let requestStatus: "completed" | "failed" | "aborted" = "failed";
+		let rateLimited = false;
+		const accountLease = await options.accountRouter?.lease(provider);
 		try {
-			const stream = runtime.streamSimple(model, frame.context, {
-				...parsedOptions,
-				maxTokens: outputTokens,
-				signal: controller.signal,
-			});
-			for await (const event of stream) {
-				terminalUsage = usageFromEvent(event) ?? terminalUsage;
-				if (event.type === "done") terminalStatus = "completed";
-				if (event.type === "error") terminalStatus = event.reason === "aborted" ? "aborted" : "failed";
-				send({ type: "qorpera_model_event", requestId: frame.requestId, event });
-			}
+			const execute = async (): Promise<void> => {
+				const stream = runtime.streamSimple(model, frame.context, {
+					...parsedOptions,
+					maxTokens: outputTokens,
+					signal: controller.signal,
+				});
+				for await (const event of stream) {
+					terminalUsage = usageFromEvent(event) ?? terminalUsage;
+					rateLimited ||= providerRateLimited(event);
+					if (event.type === "done") terminalStatus = "completed";
+					if (event.type === "error") terminalStatus = event.reason === "aborted" ? "aborted" : "failed";
+					send({ type: "qorpera_model_event", requestId: frame.requestId, event });
+				}
+			};
+			if (accountLease) await accountLease.run(execute);
+			else await execute();
 			requestStatus = controller.signal.aborted
 				? "aborted"
 				: terminalStatus === "completed"
@@ -478,10 +506,13 @@ export async function startModelRequestBroker(options: {
 				requestId: frame.requestId,
 				...(terminalStatus ? {} : { error: "kernel model execution ended without a terminal event" }),
 			});
-		} catch {
+		} catch (error) {
+			rateLimited ||= providerRateLimited(error);
 			requestStatus = controller.signal.aborted ? "aborted" : "failed";
 			send({ type: "qorpera_model_end", requestId: frame.requestId, error: "kernel model execution failed" });
 		} finally {
+			if (rateLimited && accountLease) options.accountRouter?.markRateLimited(accountLease.accountId);
+			accountLease?.release();
 			clearTimeout(expiryTimer);
 			inFlight.delete(frame.requestId);
 			intent.reserved.inputTokens -= reservation.inputTokens;

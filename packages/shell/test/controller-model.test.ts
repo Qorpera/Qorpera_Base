@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	clearControllerModelPreference,
+	clearDefaultControllerModelPreference,
 	controllerLaunchOptions,
 	controllerModelArgs,
 	controllerModelPreferencePath,
@@ -137,6 +139,27 @@ describe("controller model continuity", () => {
 				provider: "xai",
 				modelId: "grok-4.5",
 			});
+		} finally {
+			if (existsSync(userData)) rmSync(userData, { recursive: true, force: true });
+		}
+	});
+
+	it("clears shell-wide and company-local preferences when intelligence signs out", () => {
+		const userData = join(
+			tmpdir(),
+			`qorpera-controller-sign-out-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
+		const root = join(userData, "company-a");
+		try {
+			writeDefaultControllerModelPreference(userData, { provider: "anthropic", modelId: "claude-opus-4-8" });
+			writeControllerModelPreference(userData, root, { provider: "xai", modelId: "grok-4.5" });
+			expect(clearDefaultControllerModelPreference(userData)).toBe(true);
+			expect(clearControllerModelPreference(userData, root)).toBe(true);
+			expect(readDefaultControllerModelPreference(userData)).toBeUndefined();
+			expect(readControllerModelPreference(userData, root)).toBeUndefined();
+			// Missing files are already in the desired signed-out state.
+			expect(clearDefaultControllerModelPreference(userData)).toBe(true);
+			expect(clearControllerModelPreference(userData, root)).toBe(true);
 		} finally {
 			if (existsSync(userData)) rmSync(userData, { recursive: true, force: true });
 		}

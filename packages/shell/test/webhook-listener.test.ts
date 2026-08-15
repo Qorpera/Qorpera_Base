@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { RoutineTriggerEvent } from "../src/routine-triggers.ts";
 import { startWebhookListener, type WebhookListener } from "../src/webhook-listener.ts";
 
 let root: string;
@@ -48,6 +49,37 @@ describe("webhook listener", () => {
 		);
 		expect((await fetch(`http://127.0.0.1:${listener.port}/hook/tok-1`)).status).toBe(404);
 		expect(existsSync(join(root, "inbox", "events"))).toBe(false);
+	});
+
+	it("projects the normalized event envelope used by agent-built trigger adapters", async () => {
+		let projected: RoutineTriggerEvent | undefined;
+		listener = await startWebhookListener({
+			root,
+			token: "tok-1",
+			onEvent: (_file, event) => {
+				projected = event;
+			},
+		});
+		const response = await fetch(`http://127.0.0.1:${listener.port}/hook/tok-1`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				schema: "qorpera.trigger-event/v1",
+				id: "invoice-42",
+				source: "bank.nordea",
+				type: "payment.settled",
+				summary: "Invoice 42 settled",
+				payload: { amount: 42 },
+			}),
+		});
+		expect(response.status).toBe(202);
+		expect(projected).toMatchObject({
+			id: "invoice-42",
+			source: "bank.nordea",
+			type: "payment.settled",
+			summary: "Invoice 42 settled",
+			payload: { amount: 42 },
+		});
 	});
 
 	it("caps event size", async () => {

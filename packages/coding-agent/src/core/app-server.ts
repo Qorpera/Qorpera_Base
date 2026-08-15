@@ -32,7 +32,7 @@ import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
 import { canonicalCompanyRoot, listProductDepartments } from "./company.ts";
-import { DEFAULT_SCHEDULED_JOB_ID, DEFAULT_SCHEDULED_JOB_TITLE } from "./company-connections.ts";
+import { DEFAULT_SCHEDULED_JOB_ID, DEFAULT_SCHEDULED_JOB_TITLE, type RoutineTrigger } from "./company-connections.ts";
 import type { StaffAgent } from "./company-staff.ts";
 import { readFounderIdentity, signAuthorityPolicy, signGateApproval } from "./founder-identity.ts";
 import {
@@ -97,7 +97,7 @@ export interface CompanyScheduledJobView {
 	id: string;
 	title: string;
 	prompt: string;
-	intervalMinutes: number;
+	triggers: RoutineTrigger[];
 	enabled: boolean;
 	createdAt: string;
 	updatedAt: string;
@@ -1212,7 +1212,11 @@ function scheduledJobView(job: CompanyScheduledJobView): CompanyScheduledJobView
 		id: job.id,
 		title: job.title,
 		prompt: job.prompt,
-		intervalMinutes: job.intervalMinutes,
+		triggers: job.triggers.map((trigger) => {
+			if (trigger.kind === "schedule") return { ...trigger };
+			if (trigger.kind === "github") return { ...trigger, events: [...trigger.events], actors: [...trigger.actors] };
+			return { ...trigger };
+		}),
 		enabled: job.enabled,
 		createdAt: job.createdAt,
 		updatedAt: job.updatedAt,

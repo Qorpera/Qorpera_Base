@@ -5,19 +5,55 @@
 <title>Qorpera Base</title>
 <link rel="stylesheet" href="./tokens.css">
 <link rel="stylesheet" href="./base.css">
-<link rel="stylesheet" href="./usage.css">
+<link rel="stylesheet" href="./rail-resize.css">
 </head>
 <body>
 <header id="titlebar">
+	<div class="titlebar-rail">
+		<label class="rail-search"><span class="sr-only">Search staff</span><input id="railSearch" type="search" placeholder="Search" autocomplete="off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></label>
+		<button id="addStaffButton" class="rail-add-staff" type="button" aria-label="Add agent" title="Add agent"><span aria-hidden="true">+</span></button>
+	</div>
+	<div id="threadHeader" class="thread-header" hidden>
+		<button id="staffIdentityButton" class="staff-identity-button" type="button" aria-label="Open agent settings" aria-expanded="false"><span id="threadAvatar" class="staff-avatar" aria-hidden="true"></span><strong id="threadTitle">Qorpera</strong></button>
+		<nav id="staffSurfaceTabs" class="staff-surface-tabs" aria-label="Agent artifacts"></nav>
+		<div class="staff-header-actions">
+			<button id="staffSidepanelButton" type="button" aria-label="Open agent computer and routines" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="12" rx="1.8"/><path d="M8.5 20h7M12 16.5V20"/></svg></button>
+		</div>
+	</div>
+	<div id="staffCreatorTitlebar" class="staff-creator-titlebar" hidden>
+		<strong>New Agent</strong>
+		<button class="staff-creator-close" id="staffClose" type="button" aria-label="Close agent creator">×</button>
+	</div>
+	<div id="agentSidepanelTitlebar" class="agent-sidepanel-titlebar" hidden>
+		<button id="agentSidepanelBack" type="button" aria-label="Close agent side panel">←</button>
+		<strong id="agentSidepanelTitle">Agent</strong>
+		<button id="agentSidepanelClose" type="button" aria-label="Close agent side panel">×</button>
+	</div>
 	<button class="titlebar-update" id="updateButton" type="button" aria-label="Install Qorpera Base update" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4.5-4.5M12 15l-4.5-4.5"/><path d="M5 20h14"/></svg><span>Update</span></button>
 	<span id="wordmark">Qorpera Base</span>
-	<div></div>
 </header>
+<section id="accountView" aria-labelledby="accountTitle" hidden>
+	<div class="welcome-card account-card">
+		<div class="welcome-brand staff-avatar shape-soft-square" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></div>
+		<h1 id="accountTitle">Qorpera</h1>
+		<p>Sign in to keep your profiles and staff connected to you.</p>
+		<div class="provider-grid" id="accountProviders" aria-label="Qorpera sign-in methods">
+			<button class="provider-option" type="button" data-account-provider="google"><span class="provider-mark"><img src="./provider-google.svg" alt=""></span><span class="provider-option-copy"><strong>Continue with Google</strong></span><span class="provider-option-arrow" aria-hidden="true">→</span></button>
+			<button class="provider-option" type="button" data-account-provider="email" aria-expanded="false"><span class="provider-mark"><img src="./provider-email.svg" alt=""></span><span class="provider-option-copy"><strong>Continue with email</strong></span><span class="provider-option-arrow" aria-hidden="true">→</span></button>
+			<button class="provider-option" type="button" data-account-provider="github"><span class="provider-mark"><img src="./provider-github.svg" alt=""></span><span class="provider-option-copy"><strong>Continue with GitHub</strong></span><span class="provider-option-arrow" aria-hidden="true">→</span></button>
+		</div>
+		<form id="accountEmailForm" class="account-email-form" hidden>
+			<label for="accountEmail">Email address</label>
+			<div><input id="accountEmail" type="email" autocomplete="email" required placeholder="you@company.com"><button type="submit">Continue</button></div>
+		</form>
+		<div id="accountStatus" class="welcome-status" role="status" aria-live="polite"></div>
+	</div>
+</section>
 <section id="welcomeView" aria-labelledby="welcomeTitle" hidden>
 	<div class="welcome-card">
 		<div class="welcome-brand staff-avatar shape-soft-square" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></div>
-		<h1 id="welcomeTitle">Qorpera</h1>
-		<p>Persistent AI staff working over your company files on this computer.</p>
+		<h1 id="welcomeTitle">Connect intelligence</h1>
+		<p>Choose the intelligence provider your staff will use.</p>
 		<div id="intelligenceProviders" class="provider-grid" aria-label="Intelligence providers"></div>
 		<div id="intelligenceStatus" class="welcome-status" role="status" aria-live="polite"></div>
 	</div>
@@ -28,10 +64,6 @@
 	     This stub stays because enterCompany() addresses it by id. -->
 	<div id="hubnav" style="display:none"></div>
 	<div id="conav" style="display:none">
-		<div class="rail-primary-actions">
-			<label class="rail-search"><span class="sr-only">Search staff</span><input id="railSearch" type="search" placeholder="Search staff" autocomplete="off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></label>
-			<button id="addStaffButton" class="rail-add-staff" type="button" aria-label="Add staff" title="Add staff"><span aria-hidden="true">+</span></button>
-		</div>
 		<div id="railScroll" class="rail-scroll">
 			<section class="rail-section" id="staffSection" aria-labelledby="staffSectionTitle">
 				<h2 id="staffSectionTitle">Staff</h2>
@@ -52,6 +84,7 @@
 		</div>
 	</div>
 </nav>
+	<div id="railResizeHandle" class="rail-resize-handle" role="separator" aria-label="Resize agent navigation" aria-controls="primaryNavigation" aria-orientation="vertical" aria-valuemin="80" aria-valuemax="380" aria-valuenow="304" tabindex="0"></div>
 <main>
 	<div id="view-hub">
 		<div class="hub-inner">
@@ -63,20 +96,14 @@
 			<div id="hubError" class="hub-error" role="status" aria-live="polite"></div>
 			<div class="hub-foot">
 				<span class="hubver" id="hubVersion"></span>
-					<span class="spacer"></span>
+				<span class="spacer"></span>
+				<button class="hub-sign-out" id="signOutButton" type="button">Sign out</button>
 			</div>
 		</div>
 	</div>
 	<div id="view-roster">
 		<div class="roster-home" id="rosterHome"></div>
 	</div>
-	<header id="threadHeader" class="thread-header" hidden>
-		<button id="staffIdentityButton" class="staff-identity-button" type="button" aria-label="Open agent settings" aria-expanded="false"><span id="threadAvatar" class="staff-avatar" aria-hidden="true"></span><strong id="threadTitle">Qorpera</strong></button>
-		<nav id="staffSurfaceTabs" class="staff-surface-tabs" aria-label="Agent artifacts"></nav>
-		<div class="staff-header-actions">
-			<button id="staffSidepanelButton" type="button" aria-label="Open agent computer and routines" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="12" rx="1.8"/><path d="M8.5 20h7M12 16.5V20"/></svg></button>
-		</div>
-	</header>
 	<div id="view-chat">
 		<div id="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation"></div>
 		<div id="composer-footer">
@@ -87,9 +114,9 @@
 					<input id="attachFileInput" type="file" accept="image/*" multiple hidden>
 					<button id="composerMoreButton" class="composer-more" type="button" title="Chat settings and more" aria-label="Chat settings and more" aria-haspopup="menu" aria-expanded="false"><span aria-hidden="true">•••</span></button>
 					<div id="composerMoreMenu" class="composer-more-menu" role="menu" aria-label="Chat settings and more">
-						<button id="composerAddFilesButton" class="composer-more-action" type="button" role="menuitem"><span>Add files</span><small>Images, paste, or drag and drop</small></button>
-						<button id="modelCtlBtn" class="composer-more-action composer-model-action" type="button" role="menuitem" title="Model and effort" aria-haspopup="menu" aria-expanded="false"><span>Model &amp; effort</span><small>Loading…</small></button>
-						<button id="composerNewWorktree" class="composer-more-action" type="button" role="menuitem"><span>New worktree</span><small>Available for product work</small></button>
+						<button id="composerAddFilesButton" class="composer-more-action" type="button" role="menuitem"><img src="./icon-attach.svg" alt=""><span>Attach files</span></button>
+						<button id="modelCtlBtn" class="composer-more-action composer-model-action" type="button" role="menuitem" title="Model and effort" aria-haspopup="menu" aria-expanded="false"><img src="./icon-brain.svg" alt=""><span>Model &amp; effort</span></button>
+						<button id="composerNewWorktree" class="composer-more-action" type="button" role="menuitem"><img src="./icon-git-branch.svg" alt=""><span>New worktree</span></button>
 					</div>
 					<div class="chipwrap compatibility-control" hidden>
 						<button id="scopeBtn" class="stripchip" title="Company controller or product-development department" aria-haspopup="menu" aria-expanded="false">…</button>
@@ -97,10 +124,10 @@
 					</div>
 					<span class="composer-spacer"></span>
 					<div id="modelCtlMenu" class="chipmenu modelctl" role="menu" aria-label="Model control">
-						<div class="mc-effort-heading"><span>Reasoning effort</span><output id="mcEffortLabel">Medium</output></div>
-						<input id="mcEffort" type="range" min="0" max="3" step="1" value="2" aria-label="Reasoning effort">
+						<div class="mc-effort-heading"><span class="sr-only">Reasoning effort</span><output id="mcEffortLabel">Medium</output></div>
+						<input id="mcEffort" type="range" min="0" max="3" step="0.01" value="2" aria-label="Reasoning effort">
 						<div class="mc-bottom">
-							<button id="mcModelDrop" class="mc-model" type="button"><span id="mcModelLabel">…</span><span class="mc-chev">›</span></button>
+							<button id="mcModelDrop" class="mc-model" type="button" aria-haspopup="menu" aria-expanded="false"><span id="mcModelLabel">…</span></button>
 							<button id="mcSpeed" class="mc-bolt" type="button" role="switch" aria-checked="false" title="Fast responses">
 								<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 3.5 14H10l-1 8L18.5 10H12l1-8z"/></svg>
 							</button>
@@ -131,24 +158,24 @@
 		<button id="sidechatTab" onclick="toggleSidechat(true)" title="Talk to the controller about this surface">Chat</button>
 	</div>
 	<div id="view-panel"></div>
-	<div id="view-usage"></div>
 	<div id="status" role="status" aria-live="polite"></div>
 </main>
 	<aside id="agentSidepanel" class="agent-sidepanel" aria-label="Agent details" hidden>
-		<header class="agent-sidepanel-head"><button id="agentSidepanelBack" type="button" aria-label="Close agent side panel">←</button><strong id="agentSidepanelTitle">Agent</strong><button id="agentSidepanelClose" type="button" aria-label="Close agent side panel">×</button></header>
 		<div id="agentSidepanelContent" class="agent-sidepanel-content"></div>
 	</aside>
 </div>
-<div id="settingsView">
-	<nav>
-		<button onclick="closeSettings()">← Back</button>
-		<h1 style="margin:10px 0 4px">Profile</h1>
-		<button class="stab" data-tab="connections" onclick="openSettings('connections')">Connections</button>
-		<button class="stab" data-tab="usage" onclick="openSettings('usage')">Usage</button>
-		<button class="stab" data-tab="appearance" onclick="openSettings('appearance')">Appearance</button>
-		<button class="stab" data-tab="authority" onclick="openSettings('authority')">Authority</button>
-	</nav>
-	<div id="settingsContent"></div>
+<div id="settingsView" aria-hidden="true">
+	<section class="settings-dialog" role="dialog" aria-modal="true" aria-label="Settings">
+		<nav aria-label="Settings sections">
+			<input id="settingsSearch" class="settings-search" type="search" placeholder="Search settings" autocomplete="off" aria-label="Search settings">
+			<button class="stab" data-tab="general" data-search="general account profile theme appearance local computer execution permission sign out" onclick="openSettings('general')">General</button>
+			<button class="stab" data-tab="connections" data-search="connections accounts services github openai anthropic xai models usage allowance limits disconnect" onclick="openSettings('connections')">Connections</button>
+			<button class="stab" data-tab="authority" data-search="authority permissions approvals gates money spending identity irreversible actions product code" onclick="openSettings('authority')">Authority</button>
+			<p id="settingsSearchEmpty" class="settings-search-empty" hidden>No settings found</p>
+		</nav>
+		<div id="settingsContent"></div>
+		<button id="settingsClose" class="settings-close" type="button" onclick="closeSettings()" aria-label="Close settings">×</button>
+	</section>
 </div>
 <div class="nav-context-menu" id="navContext" role="menu" hidden>
 	<div class="context-title" id="contextTitle"></div>
@@ -185,6 +212,41 @@
 	<div class="context-title">Navigation panel</div>
 	<div class="panel-hidden-heading">Hidden departments</div>
 	<div class="panel-hidden-list" id="panelHiddenDepartments"></div>
+</div>
+
+<div class="staff-context-menu" id="staffContextMenu" role="menu" aria-label="Agent actions" hidden>
+	<button id="staffContextPin" type="button" role="menuitem"><span class="staff-context-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m14.5 4.5 5 5-3 1.5-3.5 4.5-1 4-2.5-2.5L7 14.5l4-1L15.5 10z"/><path d="m9.5 17-5 5"/></svg></span><span>Pin</span></button>
+	<div class="staff-context-separator"></div>
+	<button id="staffContextEdit" type="button" role="menuitem"><span class="staff-context-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9a2.1 2.1 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg></span><span>Edit profile</span></button>
+	<button id="staffContextCopy" type="button" role="menuitem"><span class="staff-context-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="7" y="7" width="12" height="12" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></svg></span><span>Copy conversation ID</span></button>
+	<div class="staff-context-separator"></div>
+	<button id="staffContextHide" type="button" role="menuitem"><span class="staff-context-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 10.7a2 2 0 0 0 2.7 2.7"/><path d="M9.9 4.4A10.8 10.8 0 0 1 12 4c5 0 8.5 4.3 9.5 6.1a4 4 0 0 1 0 3.8 14.7 14.7 0 0 1-2.1 2.8M6.2 6.2a14.2 14.2 0 0 0-3.7 3.9 4 4 0 0 0 0 3.8C3.5 15.7 7 20 12 20a10 10 0 0 0 4.1-.9"/></svg></span><span>Hide from sidebar</span></button>
+	<div class="staff-context-separator"></div>
+	<button id="staffContextDelete" class="danger" type="button" role="menuitem"><span class="staff-context-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></span><span>Delete</span></button>
+</div>
+
+<div class="modal-backdrop hidden-staff-backdrop" id="hiddenStaffModal" hidden>
+	<section class="hidden-staff-modal" role="dialog" aria-modal="true" aria-labelledby="hiddenStaffTitle" aria-describedby="hiddenStaffDescription">
+		<header>
+			<div>
+				<h2 id="hiddenStaffTitle">Hidden Bots</h2>
+				<p id="hiddenStaffDescription">Hidden Bots stay active and keep their history. They just do not appear in the sidebar.</p>
+			</div>
+			<button id="hiddenStaffClose" type="button" aria-label="Close hidden bots">×</button>
+		</header>
+		<div class="hidden-staff-list" id="hiddenStaffList"></div>
+	</section>
+</div>
+
+<div class="modal-backdrop" id="staffDeleteModal" hidden>
+	<section class="confirm-modal staff-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="staffDeleteTitle" aria-describedby="staffDeleteDescription">
+		<header><h2 id="staffDeleteTitle">Delete agent?</h2></header>
+		<p id="staffDeleteDescription"></p>
+		<footer>
+			<button class="secondary-button" id="staffDeleteCancel" type="button">Cancel</button>
+			<button class="danger-button" id="staffDeleteConfirm" type="button">Delete</button>
+		</footer>
+	</section>
 </div>
 
 <div class="modal-backdrop" id="archiveModal" hidden>
@@ -299,15 +361,12 @@
 <div class="modal-backdrop" id="companyModal" hidden>
 	<form class="confirm-modal company-modal" id="companyForm" role="dialog" aria-modal="true" aria-labelledby="companyModalTitle">
 		<header>
-			<div class="eyebrow">Qorpera Base</div>
-				<h2 id="companyModalTitle">Create a profile</h2>
+			<h2 id="companyModalTitle">Create a profile</h2>
 		</header>
-			<p>Name this profile’s company. Its local folder will hold the staff, connections, artifacts, memory, and files you build together.</p>
-		<label class="wizard-field">
-			<span>Company name</span>
-			<input id="companyName" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. Northwind Robotics" maxlength="64">
-			<small id="companyPathPreview">Lives under C:\Companies</small>
-		</label>
+		<div class="company-icon-stage" aria-hidden="true"><img id="companyIconPreview" src="./profile-icons/hop-warm-titanium.png" alt=""></div>
+		<div id="companyIconPicker" class="company-icon-picker" role="radiogroup" aria-label="Profile icon"></div>
+		<label class="sr-only" for="companyName">Profile name</label>
+		<input class="company-name-input" id="companyName" type="text" autocomplete="off" spellcheck="false" maxlength="64" aria-describedby="companyFormError">
 		<div id="companyFormError" class="company-form-error" role="status" aria-live="polite"></div>
 		<footer>
 			<button class="secondary-button" id="companyCancel" type="button">Cancel</button>
@@ -318,34 +377,32 @@
 
 <div class="staff-creator-view" id="staffModal" hidden>
 	<form class="staff-modal" id="staffForm" aria-labelledby="staffModalTitle">
-		<header class="staff-modal-head">
-			<div><div class="eyebrow">Your staff</div><h2 id="staffModalTitle">New staff member</h2><p>Choose a durable role for this company.</p></div>
-			<button class="modal-close" id="staffClose" type="button" aria-label="Close staff creator">×</button>
-		</header>
+		<h2 id="staffModalTitle" class="sr-only">New Agent</h2>
 		<div class="staff-modal-body">
 			<div class="staff-creator-center">
 				<div class="staff-creator-stage">
-					<span id="staffCreatorAvatar" class="staff-avatar shape-soft-square" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></span>
-					<h3 id="staffCreatorRole">Operations Lead</h3>
-					<p id="staffCreatorDescription">Keeps recurring work moving, coordinates handoffs, and brings decisions to you.</p>
+					<span id="staffCreatorAvatar" class="staff-avatar shape-round" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></span>
+					<h3 id="staffCreatorRole">New Agent</h3>
+					<p id="staffCreatorDescription"></p>
 				</div>
 				<div class="staff-appearance-picker">
-					<div id="staffColorPicker" class="staff-color-picker" role="radiogroup" aria-label="Agent color"></div>
 					<div id="staffShapePicker" class="staff-shape-picker" role="radiogroup" aria-label="Agent face shape"></div>
+					<div id="staffColorPicker" class="staff-color-picker" role="radiogroup" aria-label="Agent color"></div>
 				</div>
-				<label class="staff-name-field"><span>Name</span><input id="staffDisplayName" type="text" maxlength="64" autocomplete="off" placeholder="Staff member name"><small>This becomes their persistent identity in the company.</small></label>
+				<label class="staff-name-field"><span>Name</span><input id="staffDisplayName" type="text" maxlength="64" autocomplete="off" placeholder="Agent name"><small>This becomes their persistent identity in the company.</small></label>
 				<div id="staffCreateStatus" class="staff-create-status" role="status" aria-live="polite"></div>
-				<footer class="staff-modal-actions"><button class="secondary-button" id="staffCancel" type="button">Cancel</button><button class="primary-button" id="staffCreateButton" type="submit" disabled>Add to company</button></footer>
+				<footer class="staff-modal-actions"><button class="secondary-button" id="staffCancel" type="button">Cancel</button><button class="primary-button" id="staffCreateButton" type="submit" disabled>Create</button></footer>
 			</div>
 			<div class="staff-suggestions-label">Suggestions</div>
 			<div id="staffTemplateGrid" class="staff-template-grid" role="radiogroup" aria-label="Staff roles"></div>
+			<div id="staffTemplateScrollbar" class="staff-template-scrollbar" aria-hidden="true"><span id="staffTemplateScrollbarThumb"></span></div>
 		</div>
 	</form>
 </div>
 
 <div class="controller-toast" id="controllerToast" role="status" hidden></div>
 <script src="./marked.umd.js"></script>
-<script src="./usage.js"></script>
 <script src="./renderer.js"></script>
+<script src="./rail-resize.js"></script>
 </body>
 </html>

@@ -7,16 +7,20 @@ import {
 } from "../src/staff-templates.ts";
 
 const EXPECTED_ROLES = [
-	["operations-lead", "Operations Lead"],
+	["financial-officer", "Financial Officer"],
+	["marketing-lead", "Marketing Lead"],
+	["product-manager", "Product Manager"],
+	["software-developer", "Software Developer"],
+	["product-designer", "Product Designer"],
+	["legal-expert", "Legal Expert"],
+	["operations-specialist", "Operations Specialist"],
 	["research-lead", "Research Lead"],
-	["inbox-steward", "Inbox Steward"],
-	["finance-partner", "Finance Partner"],
-	["product-builder", "Product Builder"],
-	["customer-advocate", "Customer Advocate"],
+	["costumer-relationist", "Costumer Relationist"],
+	["outreaching-conversationalist", "Outreaching Conversationalist"],
 ] as const;
 
 describe("shell starter staff templates", () => {
-	it("provides the six original roles in a stable order", () => {
+	it("provides the ten founder-selected roles in a stable order", () => {
 		const templates = listStaffTemplates();
 		expect(templates.map(({ id, name }) => [id, name])).toEqual(EXPECTED_ROLES);
 		expect(STAFF_TEMPLATE_IDS).toEqual(EXPECTED_ROLES.map(([id]) => id));
@@ -24,34 +28,27 @@ describe("shell starter staff templates", () => {
 		expect(JSON.stringify(templates).toLowerCase()).not.toContain("grok");
 	});
 
-	it("carries first-turn behavior, Qorpera avatar tokens, and generic connection metadata", () => {
+	it("carries first-turn behavior and Qorpera avatar tokens", () => {
 		for (const template of listStaffTemplates()) {
 			expect(template.role.length).toBeGreaterThan(0);
 			expect(template.description.length).toBeGreaterThan(0);
 			expect(template.charter).toContain("On the first turn");
 			expect(template.charter).toContain("propose one useful outcome");
 			expect(template.charter).toContain("ask at most one high-value question");
-			expect(template.charter).toContain("Honestly name any missing");
+			expect(template.charter).toContain("request the exact service inside this conversation");
 			expect(template.avatarColorToken).toMatch(/^qorpera-[a-z]+$/);
 			expect(template.avatarShapeToken).toMatch(/^[a-z][a-z-]*$/);
-			expect(template.suggestedConnectionIds.length).toBeGreaterThan(0);
-			for (const connectionId of template.suggestedConnectionIds) {
-				expect(connectionId).toMatch(/^[a-z][a-z-]*$/);
-			}
 		}
 	});
 
 	it("looks up strictly and returns deep-frozen copy-safe values", () => {
-		const first = getStaffTemplate("operations-lead");
-		const second = getStaffTemplate("operations-lead");
+		const first = getStaffTemplate("financial-officer");
+		const second = getStaffTemplate("financial-officer");
 		expect(first).toEqual(second);
 		expect(first).not.toBe(second);
-		expect(first.suggestedConnectionIds).not.toBe(second.suggestedConnectionIds);
 		expect(Object.isFrozen(first)).toBe(true);
-		expect(Object.isFrozen(first.suggestedConnectionIds)).toBe(true);
 		expect(Reflect.set(first, "name", "Changed")).toBe(false);
-		expect(Reflect.set(first.suggestedConnectionIds, "0", "changed")).toBe(false);
-		expect(getStaffTemplate("operations-lead")).toEqual(second);
+		expect(getStaffTemplate("financial-officer")).toEqual(second);
 		expect(() => getStaffTemplate("operations")).toThrow("Unknown staff template: operations");
 		expect(() => getStaffTemplate("")).toThrow("Unknown staff template");
 	});

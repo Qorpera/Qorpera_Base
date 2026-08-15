@@ -59,11 +59,15 @@ import {
 	deleteScheduledJob,
 	destinationAllowed,
 	persistWebhookPort,
+	type RoutineTriggerInput,
 	readCompanyConnections,
 	readScheduledJobs,
 	readWebhookBinding,
+	removeCompanySecret,
+	removeNetworkDestination,
 	resolveCompanySecret,
 	type ScheduledJob,
+	scheduledJobIntervalMinutes,
 	suspendScheduledJob,
 	updateScheduledJob,
 } from "@qorpera/pi-coding-agent/company-connections";
@@ -88,6 +92,7 @@ import {
 	type WebContents,
 } from "electron";
 import electronUpdater from "electron-updater";
+import { QorperaAccountAuth, type QorperaAccountInfo, type QorperaAccountProvider } from "./account-auth.ts";
 import {
 	appendKernelHttpObservation,
 	appendKernelModelObservation,
@@ -165,9 +170,12 @@ import {
 } from "./connection-requests.ts";
 import {
 	type ControllerModelSelection,
+	clearControllerModelPreference,
+	clearDefaultControllerModelPreference,
 	controllerLaunchOptions,
 	controllerModelArgs,
 	modelSelectionFromRpcFrame,
+	readControllerModelPreference,
 	readDefaultControllerModelPreference,
 	writeControllerModelPreference,
 	writeDefaultControllerModelPreference,
@@ -176,12 +184,34 @@ import { migrateCompanyToFixedShell } from "./fixed-shell-migration.ts";
 import { connectGitHubCli, readGitHubCliStatus } from "./github-connection.ts";
 import { createHttpRequestBroker, type HttpRequestBroker } from "./http-request-broker.ts";
 import {
+	clearIntelligenceAccountBinding,
+	intelligenceBindingMatches,
+	readIntelligenceAccountBinding,
+	writeIntelligenceAccountBinding,
+} from "./intelligence-account.ts";
+import {
 	INTELLIGENCE_PROVIDER_CATALOG,
 	intelligenceSelectionForProvider,
 	isIntelligenceProviderId,
 	resolveIntelligenceReadiness,
 } from "./intelligence-onboarding.ts";
+import {
+	type LocalExecutionPermission,
+	localExecutionToolArgs,
+	readLocalExecutionPermission,
+	writeLocalExecutionPermission,
+} from "./local-execution.ts";
+import { ModelAccountStore, type ModelAccountView } from "./model-accounts.ts";
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
+import {
+	DEFAULT_PROFILE_ICON_ID,
+	forgetProfileIcon,
+	isProfileIconId,
+	type ProfileIconId,
+	readProfileIcon,
+	writeProfileIcon,
+} from "./profile-appearance.ts";
+import { claimProfile, claimUnownedProfiles, forgetProfile, profileOwnedBy } from "./profile-ownership.ts";
 import {
 	isRendererRequestAllowed,
 	lockDownRendererSession,
@@ -189,6 +219,16 @@ import {
 	rendererPartitionForCompany,
 } from "./renderer-boundary.ts";
 import { bitmapLooksBlank } from "./renderer-smoke.ts";
+import {
+	type PendingRoutineTrigger,
+	persistRoutineTriggerEvent,
+	pollGitHubRoutineTriggers,
+	queueCustomRoutineTrigger,
+	readRoutineTriggerState,
+	removePendingRoutineTrigger,
+	routineTriggerStatePath,
+	writeRoutineTriggerState,
+} from "./routine-triggers.ts";
 import {
 	SessionControlPlane,
 	type SessionRuntimeActivity,
@@ -379,9 +419,12 @@ function tokenAccountName(credential: Record<string, unknown>): string | undefin
 	try {
 		const claims = recordValue(JSON.parse(Buffer.from(tokenParts[1], "base64url").toString("utf-8")));
 		if (!claims) return undefined;
-		for (const field of ["email", "name", "preferred_username"]) {
-			const value = claims[field];
-			if (typeof value === "string" && value.trim()) return value.trim();
+		for (const source of [claims, recordValue(claims["https://api.openai.com/profile"])]) {
+			if (!source) continue;
+			for (const field of ["email", "emailAddress", "name", "preferred_username"]) {
+				const value = source[field];
+				if (typeof value === "string" && value.trim()) return value.trim();
+			}
 		}
 	} catch {
 		// Opaque access tokens have no displayable account metadata.
@@ -416,28 +459,58 @@ interface SettingsConnectionInfo {
 	description: string;
 	connected: boolean;
 	accountName: string;
+	accounts?: ModelAccountView[];
 	group: "services" | "models";
 }
 
 function modelConnectionInfo(): SettingsConnectionInfo[] {
 	const credentials = sourceModelCredentials();
 	const ambient = new Set(ambientModelProviders());
+	const accounts = modelAccountStore?.views() ?? [];
 	return MODEL_CONNECTIONS.map((connection) => {
 		const sourceProvider = connection.credentialProviders.find(
 			(providerId) => recordValue(credentials[providerId]) !== undefined,
 		);
 		const credential = sourceProvider ? recordValue(credentials[sourceProvider]) : undefined;
 		const ambientConnected = connection.ambientProviders.some((providerId) => ambient.has(providerId));
-		const connected = credential !== undefined || ambientConnected;
+		const providerAccounts = accounts.filter((account) =>
+			connection.credentialProviders.some((providerId) => providerId === account.providerId),
+		);
+		const connected = providerAccounts.length > 0 || credential !== undefined || ambientConnected;
 		return {
 			id: connection.id,
 			name: connection.name,
 			description: connection.description,
 			connected,
-			accountName: connected ? connectionAccountName(connection, credential, sourceProvider) : "",
+			accountName:
+				providerAccounts[0]?.accountName ??
+				(connected ? connectionAccountName(connection, credential, sourceProvider) : ""),
+			accounts: providerAccounts,
 			group: "models",
 		};
 	});
+}
+
+async function modelAccountUsageInfo(force = true): Promise<ModelAccountView[]> {
+	const store = modelAccountStore;
+	const runtime = brokerModelRuntime;
+	if (!store || !runtime) return [];
+	if (!force && Date.now() - modelAccountUsageRefreshedAt < 60_000) return store.views();
+	if (modelAccountUsageRefreshInFlight) return modelAccountUsageRefreshInFlight;
+	const refresh = store.refreshUsage((accountId, providerId) =>
+		store.withAccount(accountId, async () => {
+			const resolution = await runtime.getAuth(providerId, { minOAuthValidityMs: 60_000 });
+			return resolution?.auth.apiKey;
+		}),
+	);
+	modelAccountUsageRefreshInFlight = refresh;
+	try {
+		const accounts = await refresh;
+		modelAccountUsageRefreshedAt = Date.now();
+		return accounts;
+	} finally {
+		if (modelAccountUsageRefreshInFlight === refresh) modelAccountUsageRefreshInFlight = undefined;
+	}
 }
 
 function validStoredOnboardingCredential(credential: Record<string, unknown> | undefined): boolean {
@@ -501,9 +574,16 @@ function intelligenceInfo(): {
 			] as const;
 		}),
 	);
+	const userData = app.getPath("userData");
 	const readiness = resolveIntelligenceReadiness(
 		[...modelConnections.entries()].flatMap(([id, connection]) => (connection.connected ? [id] : [])),
-		readDefaultControllerModelPreference(app.getPath("userData")),
+		readDefaultControllerModelPreference(userData),
+	);
+	const accountBinding = readIntelligenceAccountBinding(userData);
+	const intelligenceBelongsToAccount = intelligenceBindingMatches(
+		accountBinding,
+		currentQorperaAccountId,
+		readiness.selection?.provider,
 	);
 	return {
 		providers: INTELLIGENCE_PROVIDER_CATALOG.map((provider) => {
@@ -517,11 +597,46 @@ function intelligenceInfo(): {
 				accountName: connection?.accountName ?? "",
 			};
 		}),
-		ready: readiness.ready,
-		selection: readiness.selection,
-		selectionSource: readiness.selectionSource,
-		requiresChoice: readiness.requiresChoice,
+		ready: readiness.ready && intelligenceBelongsToAccount,
+		...(intelligenceBelongsToAccount && readiness.selection ? { selection: readiness.selection } : {}),
+		...(intelligenceBelongsToAccount && readiness.selectionSource
+			? { selectionSource: readiness.selectionSource }
+			: {}),
+		requiresChoice: !intelligenceBelongsToAccount || readiness.requiresChoice,
 	};
+}
+
+async function verifiedIntelligenceInfo(): Promise<ReturnType<typeof intelligenceInfo>> {
+	const info = intelligenceInfo();
+	if (!info.ready || !info.selection) return info;
+	const modelAgentDir = join(app.getPath("home"), ".qorpera", "agent");
+	try {
+		const runtime = await ModelRuntime.create({
+			authPath: join(modelAgentDir, "auth.json"),
+			modelsPath: join(modelAgentDir, "models.json"),
+			allowModelNetwork: false,
+		});
+		if (!(await runtime.getAuth(info.selection.provider))) {
+			throw new Error("the selected provider has no usable credential");
+		}
+		const userData = app.getPath("userData");
+		for (const company of listCompanies()) {
+			const companySelection = readControllerModelPreference(userData, company.root);
+			if (!companySelection || companySelection.provider === info.selection.provider) continue;
+			try {
+				if (await runtime.getAuth(companySelection.provider)) continue;
+			} catch {
+				// Invalid profile-local credentials fall back to the account provider below.
+			}
+			writeControllerModelPreference(userData, company.root, info.selection);
+		}
+		return intelligenceInfo();
+	} catch {
+		// A stored OAuth shape is not proof that its refresh token is still valid.
+		// Fail back to provider setup before a staff runtime can start.
+		clearIntelligenceAccountBinding(app.getPath("userData"));
+		return intelligenceInfo();
+	}
 }
 
 async function githubConnectionInfo(root: string | undefined): Promise<SettingsConnectionInfo> {
@@ -560,14 +675,19 @@ interface ConnectionLogin {
 
 const connectionLogins = new Map<number, ConnectionLogin>();
 
-function unsupportedManualCodePrompt(signal?: AbortSignal): Promise<string> {
-	return Promise.reject(
-		new Error(
-			signal?.aborted
-				? "Login cancelled"
-				: "This sign-in method needs a code-entry screen that is not available yet. Choose another provider or try again after updating Qorpera Base.",
-		),
-	);
+function waitForBrowserOAuthCallback(...signals: Array<AbortSignal | undefined>): Promise<string> {
+	return new Promise((_resolve, reject) => {
+		const activeSignals = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+		const cancel = (): void => {
+			for (const signal of activeSignals) signal.removeEventListener("abort", cancel);
+			reject(new Error("Login cancelled"));
+		};
+		if (activeSignals.some((signal) => signal.aborted)) {
+			cancel();
+			return;
+		}
+		for (const signal of activeSignals) signal.addEventListener("abort", cancel, { once: true });
+	});
 }
 
 function connectionError(error: unknown): { ok: false; cancelled?: true; error?: string } {
@@ -577,7 +697,45 @@ function connectionError(error: unknown): { ok: false; cancelled?: true; error?:
 }
 
 let modelRequestBroker: ModelRequestBroker | undefined;
+let modelAccountStore: ModelAccountStore | undefined;
+let brokerModelRuntime: ModelRuntime | undefined;
+let modelAccountUsageRefreshedAt = 0;
+let modelAccountUsageRefreshInFlight: Promise<ModelAccountView[]> | undefined;
+let qorperaAccountAuth: QorperaAccountAuth | undefined;
+let currentQorperaAccountId: string | undefined;
 let downloadedUpdateVersion: string | undefined;
+
+function rememberAuthenticatedAccount(account: QorperaAccountInfo): QorperaAccountInfo {
+	currentQorperaAccountId = account.authenticated && account.user ? account.user.id : undefined;
+	modelAccountStore?.setActiveOwner(currentQorperaAccountId);
+	modelAccountUsageRefreshedAt = 0;
+	return account;
+}
+
+async function refreshBrokerModels(providerIds?: readonly string[]): Promise<void> {
+	if (!brokerModelRuntime) return;
+	await brokerModelRuntime.refresh({ allowNetwork: false, ...(providerIds ? { providers: providerIds } : {}) });
+}
+
+async function authenticatedAccount(): Promise<QorperaAccountInfo | undefined> {
+	if (!qorperaAccountAuth) return undefined;
+	try {
+		const account = rememberAuthenticatedAccount(await qorperaAccountAuth.info());
+		return account.authenticated && account.user ? account : undefined;
+	} catch {
+		currentQorperaAccountId = undefined;
+		return undefined;
+	}
+}
+
+function claimExistingProfiles(account: QorperaAccountInfo): void {
+	if (!account.user) return;
+	claimUnownedProfiles(
+		app.getPath("userData"),
+		account.user.id,
+		listCompanies().map((company) => company.root),
+	);
+}
 
 function shellVersion(): string {
 	try {
@@ -612,6 +770,8 @@ interface CompanyRuntime {
 	webhookClose?: () => void;
 	/** An inbound event arrived while the company was busy; the wake ticker owes it a wake. */
 	pendingInboundWake?: boolean;
+	/** Prevent overlapping GitHub event polls for this open profile. */
+	routineTriggerPolling?: boolean;
 	inventoryWatcher?: ReturnType<typeof watch>;
 	pendingInventoryRestart: boolean;
 	transitionQueue: Promise<void>;
@@ -1175,6 +1335,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		parentSession: options.parentSession,
 	} as const;
 	const userData = app.getPath("userData");
+	const localExecutionPermission = readLocalExecutionPermission(userData, root);
 	const binding = bindTrailSession(
 		root,
 		cwd,
@@ -1288,7 +1449,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			...(staffAgentId && (!sessionFile || options.freshStaffTrail)
 				? ["--thinking", STAFF_DEFAULT_THINKING_LEVEL]
 				: []),
-			...(staffAgentId ? ["--tools", STAFF_TOOL_NAMES] : []),
+			...localExecutionToolArgs(localExecutionPermission, staffAgentId ? STAFF_TOOL_NAMES : undefined),
 			...controllerModelArgs(options.model),
 		];
 		invocation = codexSpawn(
@@ -1927,7 +2088,7 @@ async function connectModelAccount(
 		const provider = runtime.getProvider(providerId);
 		if (!provider?.auth.oauth) return { ok: false, error: "this account does not support browser sign-in" };
 		report("Waiting for provider sign-in…");
-		await runtime.login(providerId, "oauth", {
+		const credential = await runtime.login(providerId, "oauth", {
 			signal: controller.signal,
 			prompt: (prompt) => {
 				if (prompt.type === "select") {
@@ -1936,7 +2097,10 @@ async function connectModelAccount(
 					return Promise.resolve(first.id);
 				}
 				if (prompt.type === "manual_code") {
-					return unsupportedManualCodePrompt(prompt.signal ?? controller.signal);
+					// Browser OAuth races this fallback prompt against the local callback
+					// listener. Keep the fallback pending so the localhost listener stays
+					// alive until the browser returns or the founder cancels the flow.
+					return waitForBrowserOAuthCallback(prompt.signal, controller.signal);
 				}
 				return Promise.reject(new Error("This sign-in flow requires an unsupported prompt"));
 			},
@@ -1959,6 +2123,10 @@ async function connectModelAccount(
 				}
 			},
 		});
+		if (!modelAccountStore) throw new Error("Model account storage is unavailable");
+		await modelAccountStore.add(providerId, credential);
+		await refreshBrokerModels([providerId]);
+		await modelAccountUsageInfo().catch(() => []);
 		report("Connected. Refreshing the active controller…");
 		const refreshed = await refreshSlotModelCredentials(slot);
 		const message = !slot.runtime
@@ -1970,17 +2138,6 @@ async function connectModelAccount(
 		return { ok: true, message };
 	} catch (error) {
 		const result = connectionError(error);
-		const connected = intelligenceInfo().providers.find((provider) => provider.id === providerId)?.connected;
-		if (connected && !result.cancelled) {
-			const refreshed = await refreshSlotModelCredentials(slot).catch(() => false);
-			const message = !slot.runtime
-				? "Connected."
-				: refreshed
-					? "Connected. The active controller is ready to use it."
-					: "Connected. It will be available when the current controller turn finishes.";
-			report(message);
-			return { ok: true, message };
-		}
 		report(result.cancelled ? "Connection cancelled." : (result.error ?? "Connection failed."));
 		return result;
 	} finally {
@@ -1995,8 +2152,17 @@ async function configureIntelligence(
 	{ ok: true; intelligence: ReturnType<typeof intelligenceInfo> } | { ok: false; cancelled?: true; error: string }
 > {
 	if (!isIntelligenceProviderId(providerId)) return { ok: false, error: "unsupported intelligence provider" };
-	const connected = intelligenceInfo().providers.find((provider) => provider.id === providerId)?.connected ?? false;
-	if (!connected) {
+	const account = await authenticatedAccount();
+	if (!account?.user) return { ok: false, error: "sign in to Qorpera before connecting intelligence" };
+	const userData = app.getPath("userData");
+	const verified = await verifiedIntelligenceInfo();
+	const connected = verified.providers.find((provider) => provider.id === providerId)?.connected ?? false;
+	const boundToThisAccount = intelligenceBindingMatches(
+		readIntelligenceAccountBinding(userData),
+		account.user.id,
+		providerId,
+	);
+	if (!connected || !boundToThisAccount) {
 		const connection = await connectModelAccount(sender, providerId);
 		if (!connection.ok) {
 			return {
@@ -2007,11 +2173,97 @@ async function configureIntelligence(
 		}
 	}
 	const selection = intelligenceSelectionForProvider(providerId);
-	if (!selection || !writeDefaultControllerModelPreference(app.getPath("userData"), selection)) {
+	if (!selection || !writeDefaultControllerModelPreference(userData, selection)) {
 		return { ok: false, error: "could not persist the default intelligence" };
 	}
+	if (!writeIntelligenceAccountBinding(userData, { accountUserId: account.user.id, providerId })) {
+		return { ok: false, error: "could not connect this intelligence to your Qorpera account" };
+	}
+	if (!boundToThisAccount) {
+		for (const company of listCompanies()) writeControllerModelPreference(userData, company.root, selection);
+	}
 	const slot = slotOf(sender);
-	if (slot?.runtime) writeControllerModelPreference(app.getPath("userData"), slot.runtime.root, selection);
+	if (slot?.runtime) writeControllerModelPreference(userData, slot.runtime.root, selection);
+	return { ok: true, intelligence: intelligenceInfo() };
+}
+
+async function disconnectModelAccount(
+	sender: WebContents,
+	connectionId: string,
+	accountId: string,
+): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
+	const slot = slotOf(sender);
+	const connection = MODEL_CONNECTIONS.find((candidate) => candidate.id === connectionId);
+	if (!slot || !connection || !modelAccountStore) return { ok: false, error: "unsupported model account" };
+	const account = modelAccountStore.views().find((candidate) => candidate.id === accountId);
+	if (!account || !connection.credentialProviders.some((providerId) => providerId === account.providerId)) {
+		return { ok: false, error: "model account is unavailable" };
+	}
+	const login = connectionLogins.get(sender.id);
+	if (login?.connectionId === connectionId) login.controller.abort();
+	if (!(await modelAccountStore.remove(accountId))) return { ok: false, error: "model account is unavailable" };
+	await refreshBrokerModels([account.providerId]);
+	const hasRemainingAccounts = modelAccountStore
+		.views()
+		.some((candidate) => connection.credentialProviders.some((providerId) => providerId === candidate.providerId));
+	if (hasRemainingAccounts) {
+		await refreshSlotModelCredentials(slot).catch(() => false);
+		return { ok: true, message: `${account.accountName} disconnected.` };
+	}
+
+	const userData = app.getPath("userData");
+	const usesConnection = (selection: ControllerModelSelection | undefined): boolean =>
+		Boolean(selection && connection.credentialProviders.some((providerId) => providerId === selection.provider));
+	const activeUsesConnection = usesConnection(slot.runtime?.childOptions.model);
+	const companyRootsUsingConnection = listCompanies()
+		.filter((company) => usesConnection(readControllerModelPreference(userData, company.root)))
+		.map((company) => company.root);
+	if (usesConnection(readDefaultControllerModelPreference(userData))) clearDefaultControllerModelPreference(userData);
+	for (const root of companyRootsUsingConnection) clearControllerModelPreference(userData, root);
+	if (readIntelligenceAccountBinding(userData)?.providerId === connectionId) clearIntelligenceAccountBinding(userData);
+	if (activeUsesConnection && slot.runtime) {
+		const { model: _model, ...remainingOptions } = slot.runtime.childOptions;
+		slot.runtime.childOptions = remainingOptions;
+		await refreshSlotModelCredentials(slot).catch(() => false);
+	}
+	return { ok: true, message: `${account.accountName} disconnected.` };
+}
+
+function disconnectGitHubAccount(sender: WebContents): { ok: true; message: string } | { ok: false; error: string } {
+	const root = slotOf(sender)?.runtime?.root;
+	if (!root) return { ok: false, error: "Open a profile before disconnecting GitHub." };
+	try {
+		removeCompanySecret(root, "github");
+		for (const [host] of GITHUB_CONNECTION_DESTINATIONS) removeNetworkDestination(root, host);
+		return { ok: true, message: "GitHub disconnected from this profile." };
+	} catch (error) {
+		return { ok: false, error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+async function signOutIntelligence(
+	sender: WebContents,
+): Promise<{ ok: true; intelligence: ReturnType<typeof intelligenceInfo> } | { ok: false; error: string }> {
+	const login = connectionLogins.get(sender.id);
+	if (login) login.controller.abort();
+	try {
+		if (!modelAccountStore) throw new Error("Model account storage is unavailable");
+		await modelAccountStore.removeAll();
+		await refreshBrokerModels();
+	} catch (error) {
+		return {
+			ok: false,
+			error: `Could not remove intelligence accounts: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+	const userData = app.getPath("userData");
+	const preferencesCleared = [
+		clearDefaultControllerModelPreference(userData),
+		...listCompanies().map((company) => clearControllerModelPreference(userData, company.root)),
+		clearIntelligenceAccountBinding(userData),
+	].every(Boolean);
+	if (!preferencesCleared)
+		return { ok: false, error: "The account was removed, but its saved model choice could not be cleared." };
 	return { ok: true, intelligence: intelligenceInfo() };
 }
 
@@ -2177,6 +2429,7 @@ function wakePrompt(
 	cause: "schedule" | "founder_response" | "inbound_event",
 	coalesced: number,
 	job?: ScheduledJob,
+	trigger?: PendingRoutineTrigger,
 ): string {
 	const missed =
 		coalesced > 0
@@ -2186,6 +2439,9 @@ function wakePrompt(
 		return `Wake: the founder responded in the inbox. Read the updated items and continue the affected work; post follow-up inbox items for anything that needs the founder again.${missed}`;
 	}
 	if (cause === "inbound_event") {
+		if (job && trigger) {
+			return `Triggered routine: ${job.title}.\n\nEvent: ${trigger.event.summary}\nSource: ${trigger.event.source}${trigger.event.repository ? `\nRepository: ${trigger.event.repository}` : ""}${trigger.event.actor ? `\nActor: ${trigger.event.actor}` : ""}\nThe full event is stored under inbox/events/.\n\n${job.prompt}`;
+		}
 		return `Wake: an external event arrived. Read the new files under inbox/events/, decide what they mean for the company, and act; events are durable, so handle every unprocessed one, not just the newest.${missed}`;
 	}
 	return `Scheduled job: ${job?.title ?? "Company orchestration"}.${missed}\n\n${job?.prompt ?? "Read company.md, the inbox, and app/routines/, decide for yourself what most needs doing, and do it. Post inbox/messages items for anything that needs the founder; when nothing needs doing, settle without inventing work."}`;
@@ -2361,6 +2617,7 @@ async function startWakeChildExclusive(
 	coalesced: number,
 	job?: ScheduledJob,
 	manual = false,
+	trigger?: PendingRoutineTrigger,
 ): Promise<boolean> {
 	if (runtime.wakeChild || runtime.closing) return false;
 	// Never preempt a founder turn in flight: the wake defers to the next tick.
@@ -2407,7 +2664,7 @@ async function startWakeChildExclusive(
 			wake: {
 				id: wakeId,
 				cause,
-				intervalMinutes: job?.intervalMinutes,
+				intervalMinutes: job ? scheduledJobIntervalMinutes(job) : undefined,
 				coalesced,
 			},
 			onRpcEvent: (frame) => {
@@ -2456,7 +2713,7 @@ async function startWakeChildExclusive(
 	if (
 		!sendKernelPrompt(
 			child,
-			{ type: "prompt", message: wakePrompt(cause, coalesced, job) },
+			{ type: "prompt", message: wakePrompt(cause, coalesced, job, trigger) },
 			false,
 			`kernel-wake-${cause}`,
 		)
@@ -2480,10 +2737,41 @@ function startWakeChild(
 	coalesced: number,
 	job?: ScheduledJob,
 	manual = false,
+	trigger?: PendingRoutineTrigger,
 ): Promise<boolean> {
 	return enqueueRuntimeTransition(runtime, () =>
-		startWakeChildExclusive(slot, runtime, cause, coalesced, job, manual),
+		startWakeChildExclusive(slot, runtime, cause, coalesced, job, manual, trigger),
 	);
+}
+
+async function dispatchRoutineTrigger(
+	slot: Slot,
+	runtime: CompanyRuntime,
+	jobs: readonly ScheduledJob[],
+): Promise<boolean> {
+	if (runtime.routineTriggerPolling) return false;
+	runtime.routineTriggerPolling = true;
+	try {
+		const path = routineTriggerStatePath(app.getPath("userData"), runtime.root);
+		let triggerState = readRoutineTriggerState(path);
+		triggerState = await pollGitHubRoutineTriggers({ jobs, state: triggerState });
+		writeRoutineTriggerState(path, triggerState);
+		const pending = triggerState.pending.find((candidate) => jobs.some((job) => job.id === candidate.jobId));
+		if (!pending) return false;
+		const job = jobs.find((candidate) => candidate.id === pending.jobId);
+		if (!job) return false;
+		persistRoutineTriggerEvent(runtime.root, pending);
+		const started = await startWakeChild(slot, runtime, "inbound_event", 0, job, false, pending);
+		if (started) {
+			writeRoutineTriggerState(path, removePendingRoutineTrigger(triggerState, pending.id));
+		}
+		return started;
+	} catch (error) {
+		console.error(`routine trigger poll failed for ${runtime.root}: ${(error as Error).message}`);
+		return false;
+	} finally {
+		runtime.routineTriggerPolling = false;
+	}
 }
 
 /**
@@ -2514,17 +2802,20 @@ function startWakeTicker(): void {
 			}
 			try {
 				const jobs = readScheduledJobs(runtime.root);
-				const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
-				const state = readWakeRunState(statePath);
-				const due = jobs
-					.map((job) => ({
-						job,
-						decision: decideScheduledWake(job, scheduledJobRunState(state, job.id), Date.now()),
-					}))
-					.find((candidate) => candidate.decision.due);
-				if (!due) continue;
-				void startWakeChild(slot, runtime, "schedule", due.decision.coalesced, due.job).catch((error) => {
-					console.error(`scheduled wake failed for ${runtime.root}: ${(error as Error).message}`);
+				void dispatchRoutineTrigger(slot, runtime, jobs).then((started) => {
+					if (started || slot.runtime !== runtime || runtime.closing || runtime.wakeChild) return;
+					const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
+					const state = readWakeRunState(statePath);
+					const due = jobs
+						.map((job) => ({
+							job,
+							decision: decideScheduledWake(job, scheduledJobRunState(state, job.id), Date.now()),
+						}))
+						.find((candidate) => candidate.decision.due);
+					if (!due) return;
+					void startWakeChild(slot, runtime, "schedule", due.decision.coalesced, due.job).catch((error) => {
+						console.error(`scheduled wake failed for ${runtime.root}: ${(error as Error).message}`);
+					});
 				});
 			} catch (error) {
 				console.error(`wake tick failed for ${runtime.root}: ${(error as Error).message}`);
@@ -2606,6 +2897,7 @@ interface ActiveCompany {
 	/** Stable company identity — the renderer keys its localStorage by this,
 	 * never by the (port-derived, collision-walked) backendUrl. */
 	id: string;
+	profileIcon: ProfileIconId;
 	backendUrl: string;
 	kickoff: boolean;
 	wakeRunning: boolean;
@@ -2636,9 +2928,10 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 	const scheduledJobs = readScheduledJobs(runtime.root).map((job) => {
 		const jobState = scheduledJobRunState(runState, job.id);
 		const lastRunMs = jobState.lastWakeAt ? Date.parse(jobState.lastWakeAt) : Number.NaN;
+		const intervalMinutes = scheduledJobIntervalMinutes(job);
 		const nextRunAt =
-			job.enabled && !job.suspendedReason
-				? new Date(Number.isFinite(lastRunMs) ? lastRunMs + job.intervalMinutes * 60_000 : now).toISOString()
+			job.enabled && !job.suspendedReason && intervalMinutes !== undefined
+				? new Date(Number.isFinite(lastRunMs) ? lastRunMs + intervalMinutes * 60_000 : now).toISOString()
 				: undefined;
 		return {
 			...job,
@@ -2654,6 +2947,9 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 	return {
 		root: runtime.root,
 		id: runtime.storageId,
+		profileIcon: currentQorperaAccountId
+			? readProfileIcon(app.getPath("userData"), currentQorperaAccountId, runtime.root)
+			: DEFAULT_PROFILE_ICON_ID,
 		backendUrl: `http://127.0.0.1:${runtime.backendPort}`,
 		kickoff: false,
 		wakeRunning: Boolean(runtime.wakeChild && runtime.wakeChild.exitCode === null),
@@ -2825,9 +3121,20 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 				root,
 				token: webhookBinding.token,
 				port: webhookBinding.port,
-				onEvent: () => {
+				onEvent: (_file, triggerEvent) => {
 					const live = slot.runtime;
 					if (!live || live.closing) return;
+					if (triggerEvent) {
+						const path = routineTriggerStatePath(app.getPath("userData"), live.root);
+						const previous = readRoutineTriggerState(path);
+						const queued = queueCustomRoutineTrigger(readScheduledJobs(live.root), previous, triggerEvent);
+						if (queued.pending.length > previous.pending.length) {
+							writeRoutineTriggerState(path, queued);
+							if (!live.wakeChild && !childBusy.get(live.child))
+								void dispatchRoutineTrigger(slot, live, readScheduledJobs(live.root));
+							return;
+						}
+					}
 					if (live.wakeChild || childBusy.get(live.child)) {
 						live.pendingInboundWake = true;
 						return;
@@ -3165,15 +3472,14 @@ const STAFF_AVATAR_COLORS = new Set([
 const STAFF_AVATAR_SHAPES = new Set(["soft-square", "round", "wide", "gem", "tilted", "drop"]);
 
 function parsedStaffCreateInput(value: unknown): {
-	templateId: string;
+	templateId?: string;
 	displayName?: string;
 	appearance?: StaffAgent["appearance"];
 } {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid staff creation input");
 	const input = value as Record<string, unknown>;
 	if (
-		typeof input.templateId !== "string" ||
-		!input.templateId ||
+		(input.templateId !== undefined && (typeof input.templateId !== "string" || !input.templateId)) ||
 		(input.displayName !== undefined && typeof input.displayName !== "string") ||
 		(input.appearance !== undefined &&
 			(!input.appearance || typeof input.appearance !== "object" || Array.isArray(input.appearance))) ||
@@ -3185,6 +3491,7 @@ function parsedStaffCreateInput(value: unknown): {
 	if (displayName !== undefined && (!displayName || Buffer.byteLength(displayName, "utf-8") > 160)) {
 		throw new Error("invalid staff display name");
 	}
+	if (input.templateId === undefined && !displayName) throw new Error("custom staff requires a display name");
 	let appearance: StaffAgent["appearance"] | undefined;
 	if (input.appearance !== undefined) {
 		const record = input.appearance as Record<string, unknown>;
@@ -3200,49 +3507,38 @@ function parsedStaffCreateInput(value: unknown): {
 		appearance = { color: record.color, shape: record.shape };
 	}
 	return {
-		templateId: input.templateId,
+		...(typeof input.templateId === "string" ? { templateId: input.templateId } : {}),
 		...(displayName ? { displayName } : {}),
 		...(appearance ? { appearance } : {}),
 	};
 }
 
+function parsedTemplatedStaffCreateInput(value: unknown): ReturnType<typeof parsedStaffCreateInput> & {
+	templateId: string;
+} {
+	const input = parsedStaffCreateInput(value);
+	if (!input.templateId) throw new Error("initial staff requires a template");
+	return { ...input, templateId: input.templateId };
+}
+
 function parsedStaffBootstrapInput(value: unknown): {
-	agents: ReturnType<typeof parsedStaffCreateInput>[];
-	orientation: StaffOrientationContext;
+	agents: ReturnType<typeof parsedTemplatedStaffCreateInput>[];
 } {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid staff bootstrap input");
 	const input = value as Record<string, unknown>;
 	if (
-		Object.keys(input).some((key) => key !== "agents" && key !== "services" && key !== "otherService") ||
+		Object.keys(input).some((key) => key !== "agents") ||
 		!Array.isArray(input.agents) ||
 		input.agents.length === 0 ||
-		input.agents.length > listStaffTemplates().length ||
-		!Array.isArray(input.services) ||
-		input.services.length > 24 ||
-		input.services.some((service) => typeof service !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(service)) ||
-		new Set(input.services).size !== input.services.length ||
-		(input.otherService !== undefined && typeof input.otherService !== "string")
+		input.agents.length > listStaffTemplates().length
 	) {
 		throw new Error("invalid staff bootstrap input");
 	}
-	const agents = input.agents.map((agent) => parsedStaffCreateInput(agent));
+	const agents = input.agents.map((agent) => parsedTemplatedStaffCreateInput(agent));
 	if (new Set(agents.map((agent) => agent.templateId)).size !== agents.length) {
 		throw new Error("initial staff templates must be unique");
 	}
-	const otherService = typeof input.otherService === "string" ? input.otherService.trim() : undefined;
-	if (
-		otherService !== undefined &&
-		(!otherService || otherService.includes("\0") || Buffer.byteLength(otherService, "utf-8") > 2_048)
-	) {
-		throw new Error("invalid custom service request");
-	}
-	return {
-		agents,
-		orientation: {
-			services: [...input.services] as string[],
-			...(otherService ? { otherService } : {}),
-		},
-	};
+	return { agents };
 }
 
 async function bootstrapStaffTeam(
@@ -3305,7 +3601,7 @@ async function bootstrapStaffTeam(
 				});
 				appendKernelSessionInfo(binding, staff.displayName);
 				runtime.sessions.rememberAudit(binding);
-				introState = recordStaffIntroPending(introState, staff.id, binding.file, Date.now(), input.orientation);
+				introState = recordStaffIntroPending(introState, staff.id, binding.file, Date.now());
 				return binding;
 			});
 			writeStaffRuntimeState(statePath, introState);
@@ -3359,10 +3655,10 @@ async function createStaffMember(
 	{ ok: true; staff: StaffAgent; sessionFile: string; introStatus: "pending" } | { ok: false; error: string }
 > {
 	let input: ReturnType<typeof parsedStaffCreateInput>;
-	let template: ReturnType<typeof getStaffTemplate>;
+	let template: ReturnType<typeof getStaffTemplate> | undefined;
 	try {
 		input = parsedStaffCreateInput(value);
-		template = getStaffTemplate(input.templateId);
+		template = input.templateId ? getStaffTemplate(input.templateId) : undefined;
 	} catch (error) {
 		return { ok: false, error: error instanceof Error ? error.message : String(error) };
 	}
@@ -3381,14 +3677,22 @@ async function createStaffMember(
 		let staffChild: ChildProcessWithoutNullStreams | undefined;
 		try {
 			snapshotFounderGitState(runtime.root, "founder staff creation");
+			const displayName = input.displayName ?? template!.name;
 			const staff = createStaffAgent(runtime.root, {
-				displayName: input.displayName ?? template.name,
-				role: template.role,
-				charter: template.charter,
-				templateId: template.id,
+				displayName,
+				role: template?.role ?? "Role to define with the founder",
+				charter:
+					template?.charter ??
+					[
+						`You are ${displayName}, a durable agent working over this company's files.`,
+						"Your role is intentionally unconfigured. Do not invent a specialty or claim ownership until the founder defines what they want you around for.",
+						"On the first turn, introduce yourself briefly and ask one direct question about the responsibility the founder wants you to own. Then turn their answer into a durable working role and a concrete first outcome.",
+						"Inspect available company context before asking for access. Request only the exact service needed inside the conversation, and never claim access or completion you cannot verify.",
+					].join(" "),
+				...(template ? { templateId: template.id } : {}),
 				appearance: {
-					color: input.appearance?.color ?? template.avatarColorToken,
-					shape: input.appearance?.shape ?? template.avatarShapeToken,
+					color: input.appearance?.color ?? template?.avatarColorToken ?? "#1684ff",
+					shape: input.appearance?.shape ?? template?.avatarShapeToken ?? "round",
 				},
 			});
 			commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);
@@ -3476,6 +3780,75 @@ async function updateStaffMember(
 				}
 				return { ok: true, staff };
 			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+}
+
+async function archiveStaffMember(
+	slot: Slot,
+	staffAgentId: string,
+): Promise<{ ok: true; staff: StaffAgent } | { ok: false; error: string }> {
+	const runtime = slot.runtime;
+	if (!runtime) return { ok: false, error: "open a company before deleting staff" };
+	return enqueueRuntimeTransition<{ ok: true; staff: StaffAgent } | { ok: false; error: string }>(
+		runtime,
+		async () => {
+			if (slot.runtime !== runtime || runtime.closing) return { ok: false, error: "company runtime changed" };
+			if (childBusy.get(runtime.child) || runtime.wakeChild) {
+				return { ok: false, error: "wait for the current company work to finish" };
+			}
+			const staff = activeStaffAgent(runtime.root, staffAgentId);
+			if (!staff) return { ok: false, error: "staff member is unavailable" };
+			const attached = runtime.childOptions.staffAgentId === staff.id;
+			const previousBinding = childBindings.get(runtime.child);
+			const previousOptions: ChildOptions = {
+				...runtime.childOptions,
+				sessionFile: previousBinding?.file ?? runtime.childOptions.sessionFile,
+			};
+			let archived = false;
+			try {
+				snapshotFounderGitState(runtime.root, "founder staff delete");
+				if (attached) await stopChild(runtime.child);
+				const deleted = archiveStaffAgent(runtime.root, staff.id);
+				archived = true;
+				commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);
+				if (attached) {
+					const next = readStaffAgents(runtime.root).find(
+						(candidate) => candidate.employmentStatus !== "archived",
+					);
+					const nextTrail = next
+						? (readStaffRuntimeState(staffRuntimeStatePath(app.getPath("userData"), runtime.root)).intros[next.id]
+								?.trailFile ?? latestStaffTrailFile(runtime, next.id))
+						: undefined;
+					const options: ChildOptions = next
+						? {
+								sessionFile: nextTrail,
+								...(nextTrail ? {} : { sessionName: next.displayName, freshStaffTrail: true }),
+								staffAgentId: next.id,
+								staffProfile: staffSystemProfile(next),
+								model: previousOptions.model,
+							}
+						: { model: previousOptions.model };
+					runtime.child = startChild(slot, runtime.root, options);
+					runtime.childOptions = { ...options };
+					delete runtime.childOptions.sessionName;
+					delete runtime.childOptions.freshStaffTrail;
+					runtime.productWorker = undefined;
+					runtime.runtimeReconnectAttempts = 0;
+					runtime.lastUnexpectedRuntimeExitAt = undefined;
+				}
+				return { ok: true, staff: deleted };
+			} catch (error) {
+				if (attached && slot.runtime === runtime && !runtime.closing) {
+					await restoreAttendedChild(
+						slot,
+						runtime,
+						archived ? { model: previousOptions.model } : previousOptions,
+						"staff-delete controller restore failed",
+					);
+				}
 				return { ok: false, error: error instanceof Error ? error.message : String(error) };
 			}
 		},
@@ -3712,11 +4085,11 @@ function createRendererWindow(
 		height: 860,
 		show: options.show ?? true,
 		title: "Qorpera Base",
-		backgroundColor: "#101010",
+		backgroundColor: "#ffffff",
 		// Frameless, Desktop-style chrome: the fixed shell draws the titlebar
 		// (a -webkit-app-region: drag header), the OS overlays min/max/close.
 		titleBarStyle: "hidden",
-		titleBarOverlay: { color: "#101010", symbolColor: "#e4e4e1", height: 40 },
+		titleBarOverlay: { color: "#ffffff", symbolColor: "#111111", height: 40 },
 		icon: DEFAULT_ICON,
 		webPreferences: {
 			preload: join(DIRNAME, "preload.cjs"),
@@ -3873,7 +4246,12 @@ app.on("second-instance", (_event, argv) => {
 	if (root) {
 		const existing = slotForCompany(root);
 		if (existing) focusWindow(existing.window);
-		else void openCompany(createWindow(root), root);
+		else {
+			// Route launchers through the signed-in fixed shell. The renderer
+			// consumes this only after the account gate has completed.
+			pendingCompany = root;
+			createWindow();
+		}
 		return;
 	}
 	// Launching "Qorpera Base" itself means: take me to the hub — in its own
@@ -3884,16 +4262,115 @@ app.on("second-instance", (_event, argv) => {
 });
 
 app.whenReady().then(async () => {
+	qorperaAccountAuth = new QorperaAccountAuth(app.getPath("userData"), {
+		openExternal: (url) => electronShell.openExternal(url),
+	});
+	try {
+		const account = await qorperaAccountAuth.info();
+		currentQorperaAccountId = account.authenticated && account.user ? account.user.id : undefined;
+	} catch {
+		currentQorperaAccountId = undefined;
+	}
 	const modelAgentDir = join(app.getPath("home"), ".qorpera", "agent");
+	modelAccountStore = new ModelAccountStore(
+		join(app.getPath("userData"), "model-accounts.json"),
+		join(modelAgentDir, "auth.json"),
+		{ ownerUserId: currentQorperaAccountId },
+	);
+	brokerModelRuntime = await ModelRuntime.create({
+		credentials: modelAccountStore,
+		modelsPath: join(modelAgentDir, "models.json"),
+		allowModelNetwork: false,
+	});
 	modelRequestBroker = await startModelRequestBroker({
 		authPath: join(modelAgentDir, "auth.json"),
 		modelsPath: join(modelAgentDir, "models.json"),
 		allowedProviders: MODEL_AUTH_PROVIDERS,
+		runtime: brokerModelRuntime,
+		accountRouter: {
+			lease: async (providerId) => {
+				await modelAccountUsageInfo(false).catch(() => []);
+				return modelAccountStore?.lease(providerId);
+			},
+			markRateLimited: (accountId) => modelAccountStore?.markRateLimited(accountId),
+		},
 	});
+	void modelAccountUsageInfo(false).catch(() => []);
 	startWakeTicker();
-	ipcMain.handle("intelligence:info", (event) => {
+	ipcMain.handle("account:info", async (event): Promise<QorperaAccountInfo> => {
+		if (!slotOf(event.sender) || !qorperaAccountAuth) return { authenticated: false };
+		try {
+			const account = rememberAuthenticatedAccount(await qorperaAccountAuth.info());
+			if (account.authenticated) claimExistingProfiles(account);
+			return account;
+		} catch (error) {
+			currentQorperaAccountId = undefined;
+			console.error(`Qorpera account read failed: ${error instanceof Error ? error.message : String(error)}`);
+			return { authenticated: false };
+		}
+	});
+	ipcMain.handle("account:sign-in", async (event, input: unknown) => {
+		const owner = slotOf(event.sender);
+		if (!isTrustedHubSender(event.sender) || !owner || !qorperaAccountAuth) {
+			return { ok: false, error: "Qorpera sign-in is only available from the profile selector." };
+		}
+		if (!input || typeof input !== "object" || Array.isArray(input)) {
+			return { ok: false, error: "invalid sign-in request" };
+		}
+		const value = input as { provider?: unknown; email?: unknown };
+		const report = (message: string): void => send(owner.window, "account-status", message);
+		try {
+			let account: QorperaAccountInfo;
+			if (value.provider === "email" && typeof value.email === "string") {
+				account = await qorperaAccountAuth.signInWithEmail(value.email, report);
+			} else if (value.provider === "github" || value.provider === "google") {
+				account = await qorperaAccountAuth.signInWithProvider(value.provider as QorperaAccountProvider, report);
+			} else {
+				return { ok: false, error: "unsupported Qorpera sign-in provider" };
+			}
+			rememberAuthenticatedAccount(account);
+			await refreshBrokerModels();
+			claimExistingProfiles(account);
+			return { ok: true, account };
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			report(message);
+			return { ok: false, error: message };
+		}
+	});
+	ipcMain.handle("account:sign-out", async (event) => {
+		const owner = slotOf(event.sender);
+		if (!owner || !qorperaAccountAuth) {
+			return { ok: false, error: "Sign out is unavailable from this window." };
+		}
+		try {
+			const account = await qorperaAccountAuth.signOut();
+			const companySlots = [...slots.values()].filter((slot) => slot.runtime);
+			const otherCompanySlots = companySlots.filter((slot) => slot !== owner);
+			await Promise.all(otherCompanySlots.map((slot) => closeCompany(slot)));
+			for (const slot of otherCompanySlots) {
+				if (!slot.window.isDestroyed()) slot.window.destroy();
+			}
+			rememberAuthenticatedAccount(account);
+			await refreshBrokerModels();
+			if (owner.runtime) await showHub(owner);
+			return { ok: true, account };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("feedback:open", async (event) => {
+		if (!slotOf(event.sender)) return { ok: false, error: "Feedback is unavailable from this window." };
+		try {
+			await electronShell.openExternal("https://github.com/Qorpera/Qorpera_Base/issues/new");
+			return { ok: true };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("intelligence:info", async (event) => {
 		if (!slotOf(event.sender)) return { ready: false, providers: [], requiresChoice: false };
-		return intelligenceInfo();
+		return verifiedIntelligenceInfo();
 	});
 	ipcMain.handle("intelligence:configure", (event, providerId: unknown) => {
 		if (!slotOf(event.sender) || typeof providerId !== "string") {
@@ -3901,14 +4378,34 @@ app.whenReady().then(async () => {
 		}
 		return configureIntelligence(event.sender, providerId);
 	});
+	ipcMain.handle("intelligence:sign-out", (event) => {
+		if (!isTrustedHubSender(event.sender)) {
+			return { ok: false, error: "Intelligence can only be disconnected from profile settings." };
+		}
+		return signOutIntelligence(event.sender);
+	});
 	ipcMain.handle("staff:catalog", (event) => (slotOf(event.sender) ? listStaffTemplates() : []));
-	ipcMain.handle("companies:list", () => listCompanies());
+	ipcMain.handle("companies:list", async (event) => {
+		if (!isTrustedHubSender(event.sender)) return [];
+		const account = await authenticatedAccount();
+		if (!account?.user) return [];
+		claimExistingProfiles(account);
+		const userId = account.user.id;
+		const userData = app.getPath("userData");
+		return listCompanies()
+			.filter((company) => profileOwnedBy(userData, userId, company.root))
+			.map((company) => ({ ...company, profileIcon: readProfileIcon(userData, userId, company.root) }));
+	});
 	ipcMain.handle("profile:remove", async (event, root: unknown) => {
 		if (!isTrustedHubSender(event.sender) || typeof root !== "string" || !root.trim()) {
 			return { ok: false, error: "invalid profile" };
 		}
 		if (slotForCompany(root)) {
 			return { ok: false, error: "Close this profile's window before removing it." };
+		}
+		const account = await authenticatedAccount();
+		if (!account?.user || !profileOwnedBy(app.getPath("userData"), account.user.id, root)) {
+			return { ok: false, error: "Profile is not owned by the signed-in account." };
 		}
 		const company = listCompanies().find((record) => normalizedRoot(record.root) === normalizedRoot(root));
 		if (!company) return { ok: false, error: "Profile is no longer registered." };
@@ -3923,28 +4420,47 @@ app.whenReady().then(async () => {
 			detail: `The company folder and everything in it will stay at ${company.root}. You can open it again later.`,
 		});
 		if (confirmation.response !== 1) return { ok: false, cancelled: true };
-		return unregisterCompany(company.root)
-			? { ok: true }
-			: { ok: false, error: "Qorpera could not update the profile selector." };
+		if (!unregisterCompany(company.root))
+			return { ok: false, error: "Qorpera could not update the profile selector." };
+		forgetProfile(app.getPath("userData"), account.user.id, company.root);
+		forgetProfileIcon(app.getPath("userData"), account.user.id, company.root);
+		return { ok: true };
 	});
-	ipcMain.handle("company:open", (event, root: string) => {
+	ipcMain.handle("company:open", async (event, root: string) => {
 		if (!isTrustedHubSender(event.sender)) return;
+		const account = await authenticatedAccount();
+		if (!account?.user || !profileOwnedBy(app.getPath("userData"), account.user.id, root)) {
+			throw new Error("This profile does not belong to the signed-in Qorpera account.");
+		}
 		const slot = slotOf(event.sender);
 		if (slot) return openCompany(slot, root);
 	});
-	ipcMain.handle("company:new", async (event, dir: string) => {
-		if (!isTrustedHubSender(event.sender) || typeof dir !== "string" || !dir.trim()) return;
+	ipcMain.handle("company:new", async (event, dir: unknown, profileIcon: unknown) => {
+		if (
+			!isTrustedHubSender(event.sender) ||
+			typeof dir !== "string" ||
+			!dir.trim() ||
+			!isProfileIconId(profileIcon)
+		) {
+			return;
+		}
+		const account = await authenticatedAccount();
+		if (!account?.user) throw new Error("Sign in before creating a profile.");
 		// The founding modal already shows the derived path — clicking Create IS
 		// the decision; a second native confirmation was pure friction (founder
 		// direction 2026-08-12).
 		const result = scaffoldCompany(resolve(dir));
 		registerCompany(result.root);
+		claimProfile(app.getPath("userData"), account.user.id, result.root);
+		writeProfileIcon(app.getPath("userData"), account.user.id, result.root, profileIcon);
 		return result.root;
 	});
 	ipcMain.handle("company:integrate", async (event, dir: string, from: string) => {
 		if (!isTrustedHubSender(event.sender) || typeof dir !== "string" || !dir.trim() || typeof from !== "string") {
 			return;
 		}
+		const account = await authenticatedAccount();
+		if (!account?.user) throw new Error("Sign in before creating a profile.");
 		const target = resolve(dir);
 		const confirmation = await dialog.showMessageBox(BrowserWindow.fromWebContents(event.sender)!, {
 			type: "warning",
@@ -3957,6 +4473,7 @@ app.whenReady().then(async () => {
 		if (confirmation.response !== 1) return;
 		const result = scaffoldCompany(target);
 		registerCompany(result.root);
+		claimProfile(app.getPath("userData"), account.user.id, result.root);
 		const ok = integrateRepo(result.root, from);
 		return { root: result.root, ok };
 	});
@@ -4075,12 +4592,10 @@ app.whenReady().then(async () => {
 		if (
 			typeof input.title !== "string" ||
 			typeof input.prompt !== "string" ||
-			typeof input.intervalMinutes !== "number" ||
+			!Array.isArray(input.triggers) ||
 			(input.enabled !== undefined && typeof input.enabled !== "boolean") ||
 			(input.staffAgentId !== undefined && typeof input.staffAgentId !== "string") ||
-			Object.keys(input).some(
-				(key) => !["title", "prompt", "intervalMinutes", "enabled", "staffAgentId"].includes(key),
-			)
+			Object.keys(input).some((key) => !["title", "prompt", "triggers", "enabled", "staffAgentId"].includes(key))
 		) {
 			return { ok: false, error: "invalid scheduled job" };
 		}
@@ -4089,26 +4604,18 @@ app.whenReady().then(async () => {
 		if (typeof input.staffAgentId === "string" && !assignedStaff) {
 			return { ok: false, error: "scheduled-job staff member is unavailable or archived" };
 		}
-		const approved = await confirmKernelReview(slot.window, {
-			title: "Create scheduled job",
-			summary: "Bind this recurring controller work to the open company?",
-			exactText: input.prompt,
-			metadata: [
-				`Company: ${runtime.root}`,
-				`Title: ${input.title}`,
-				`Staff: ${assignedStaff?.displayName ?? "Company / Unassigned"}`,
-				`Schedule: every ${input.intervalMinutes} minutes`,
-				`Status: ${input.enabled === false ? "paused" : "active"}`,
-			].join("\n"),
-		});
-		if (!approved) return { ok: false, error: "cancelled" };
+		const triggers = input.triggers as RoutineTriggerInput[];
+		if (triggers.some((trigger) => trigger && typeof trigger === "object" && trigger.kind === "github")) {
+			const github = await readGitHubCliStatus();
+			if (!github.connected) return { ok: false, error: "Connect GitHub before activating a GitHub trigger." };
+		}
 		try {
 			return {
 				ok: true,
 				job: createScheduledJob(runtime.root, {
 					title: input.title,
 					prompt: input.prompt,
-					intervalMinutes: input.intervalMinutes,
+					triggers,
 					...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
 					...(assignedStaff ? { staffAgentId: assignedStaff.id } : {}),
 				}),
@@ -4130,12 +4637,10 @@ app.whenReady().then(async () => {
 		if (
 			(input.title !== undefined && typeof input.title !== "string") ||
 			(input.prompt !== undefined && typeof input.prompt !== "string") ||
-			(input.intervalMinutes !== undefined && typeof input.intervalMinutes !== "number") ||
+			(input.triggers !== undefined && !Array.isArray(input.triggers)) ||
 			(input.enabled !== undefined && typeof input.enabled !== "boolean") ||
 			(input.staffAgentId !== undefined && input.staffAgentId !== null && typeof input.staffAgentId !== "string") ||
-			Object.keys(input).some(
-				(key) => !["title", "prompt", "intervalMinutes", "enabled", "staffAgentId"].includes(key),
-			)
+			Object.keys(input).some((key) => !["title", "prompt", "triggers", "enabled", "staffAgentId"].includes(key))
 		) {
 			return { ok: false, error: "invalid scheduled-job update" };
 		}
@@ -4151,26 +4656,18 @@ app.whenReady().then(async () => {
 		if (assignedStaffId && !assignedStaff) {
 			return { ok: false, error: "scheduled-job staff member is unavailable or archived" };
 		}
-		const approved = await confirmKernelReview(slot.window, {
-			title: "Update scheduled job",
-			summary: "Apply these recurring-work settings to the open company?",
-			exactText: typeof input.prompt === "string" ? input.prompt : current.prompt,
-			metadata: [
-				`Company: ${runtime.root}`,
-				`Title: ${typeof input.title === "string" ? input.title : current.title}`,
-				`Staff: ${assignedStaff?.displayName ?? "Company / Unassigned"}`,
-				`Schedule: every ${typeof input.intervalMinutes === "number" ? input.intervalMinutes : current.intervalMinutes} minutes`,
-				`Status: ${(typeof input.enabled === "boolean" ? input.enabled : current.enabled) ? "active" : "paused"}`,
-			].join("\n"),
-		});
-		if (!approved) return { ok: false, error: "cancelled" };
+		const triggers = input.triggers === undefined ? undefined : (input.triggers as RoutineTriggerInput[]);
+		if (triggers?.some((trigger) => trigger && typeof trigger === "object" && trigger.kind === "github")) {
+			const github = await readGitHubCliStatus();
+			if (!github.connected) return { ok: false, error: "Connect GitHub before activating a GitHub trigger." };
+		}
 		try {
 			return {
 				ok: true,
 				job: updateScheduledJob(runtime.root, id, {
 					...(typeof input.title === "string" ? { title: input.title } : {}),
 					...(typeof input.prompt === "string" ? { prompt: input.prompt } : {}),
-					...(typeof input.intervalMinutes === "number" ? { intervalMinutes: input.intervalMinutes } : {}),
+					...(triggers ? { triggers } : {}),
 					...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
 					...(input.staffAgentId === null
 						? { staffAgentId: null }
@@ -4220,20 +4717,6 @@ app.whenReady().then(async () => {
 			}
 			const job = readScheduledJobs(runtime.root).find((candidate) => candidate.id === id);
 			if (!job) return { ok: false, error: "scheduled job not found" };
-			const approved = await confirmKernelReview(slot.window, {
-				title: "Run scheduled job now",
-				summary: job.staffAgentId
-					? "Start this staff-owned job immediately?"
-					: "Start this company job immediately?",
-				exactText: job.prompt,
-				metadata: [
-					`Company: ${runtime.root}`,
-					`Title: ${job.title}`,
-					`Staff: ${job.staffAgentId ? (activeStaffAgent(runtime.root, job.staffAgentId)?.displayName ?? job.staffAgentId) : "Company / Unassigned"}`,
-					`Usual schedule: every ${job.intervalMinutes} minutes`,
-				].join("\n"),
-			});
-			if (!approved) return { ok: false, error: "cancelled" };
 			return (await startWakeChildExclusive(slot, runtime, "schedule", 0, job, true))
 				? { ok: true }
 				: { ok: false, error: "company runtime is busy" };
@@ -4294,10 +4777,25 @@ app.whenReady().then(async () => {
 		if (!slot || typeof staffAgentId !== "string") return { ok: false, error: "invalid staff identity" };
 		return updateStaffMember(slot, staffAgentId, value);
 	});
+	ipcMain.handle("staff:archive", (event, staffAgentId: unknown) => {
+		const slot = slotOf(event.sender);
+		if (!slot || typeof staffAgentId !== "string") return { ok: false, error: "invalid staff identity" };
+		return archiveStaffMember(slot, staffAgentId);
+	});
 	ipcMain.handle("staff:open", (event, staffAgentId: unknown) => {
 		const slot = slotOf(event.sender);
 		if (!slot || typeof staffAgentId !== "string") return { ok: false, error: "invalid staff identity" };
 		return openStaffMember(slot, staffAgentId);
+	});
+	ipcMain.handle("staff:copy-conversation-id", (event, staffAgentId: unknown) => {
+		const runtime = slotOf(event.sender)?.runtime;
+		if (!runtime || typeof staffAgentId !== "string") {
+			return { ok: false, error: "invalid conversation identity" };
+		}
+		const staff = activeStaffAgent(runtime.root, staffAgentId);
+		if (!staff) return { ok: false, error: "staff conversation is unavailable" };
+		clipboard.writeText(staff.id);
+		return { ok: true, conversationId: staff.id };
 	});
 	ipcMain.handle("staff:intro-ready", (event, staffAgentId: unknown, trailFile: unknown, retry: unknown = false) => {
 		const slot = slotOf(event.sender);
@@ -4312,13 +4810,57 @@ app.whenReady().then(async () => {
 	});
 	ipcMain.handle("settings:info", async (event) => {
 		const slot = slotOf(event.sender);
-		return { connections: [await githubConnectionInfo(slot?.runtime?.root), ...modelConnectionInfo()] };
+		const account = await authenticatedAccount();
+		return {
+			account,
+			profile: slot?.runtime ? { root: slot.runtime.root } : undefined,
+			localExecution: slot?.runtime
+				? readLocalExecutionPermission(app.getPath("userData"), slot.runtime.root)
+				: "always",
+			connections: [await githubConnectionInfo(slot?.runtime?.root), ...modelConnectionInfo()],
+		};
 	});
+	ipcMain.handle("settings:local-execution", async (event, permission: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || (permission !== "always" && permission !== "never")) {
+			return { ok: false, error: "invalid local execution permission" };
+		}
+		if (
+			!writeLocalExecutionPermission(app.getPath("userData"), runtime.root, permission as LocalExecutionPermission)
+		) {
+			return { ok: false, error: "Local execution permission could not be saved." };
+		}
+		if (runtime.wakeChild || childBusy.get(runtime.child)) {
+			return { ok: true, permission, applies: "next-run" };
+		}
+		try {
+			await enqueueRuntimeTransition(runtime, async () => {
+				if (slot.runtime !== runtime || runtime.closing) return;
+				await replaceRuntimeChild(slot, runtime, {
+					...runtime.childOptions,
+					sessionFile: childBindings.get(runtime.child)?.file ?? runtime.childOptions.sessionFile,
+				});
+			});
+			return { ok: true, permission, applies: "now" };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("model-accounts:usage", (event) => (slotOf(event.sender) ? modelAccountUsageInfo() : []));
 	ipcMain.handle("connection:connect", (event, connectionId: unknown) => {
 		if (typeof connectionId !== "string") return { ok: false, error: "invalid connection" };
 		return connectionId === "github"
 			? connectGitHubAccount(event.sender)
 			: connectModelAccount(event.sender, connectionId);
+	});
+	ipcMain.handle("connection:disconnect", (event, connectionId: unknown, accountId: unknown) => {
+		if (typeof connectionId !== "string") return { ok: false, error: "invalid connection" };
+		return connectionId === "github"
+			? disconnectGitHubAccount(event.sender)
+			: typeof accountId === "string"
+				? disconnectModelAccount(event.sender, connectionId, accountId)
+				: { ok: false, error: "invalid model account" };
 	});
 	ipcMain.handle("connection:cancel", (event, connectionId: unknown) => {
 		const login = connectionLogins.get(event.sender.id);
@@ -4659,7 +5201,7 @@ app.whenReady().then(async () => {
 	// happens in place, with no window swap.
 	const smokeCompanyIndex = process.argv.indexOf("--smoke-company");
 	const smokeCompanyRoot = smokeCompanyIndex >= 0 ? process.argv[smokeCompanyIndex + 1] : undefined;
-	const smokeBootstrapServices = process.argv.includes("--smoke-bootstrap-services");
+	const smokeBootstrapPicker = process.argv.includes("--smoke-bootstrap");
 	const initial = createWindow(pendingCompany ?? smokeCompanyRoot);
 
 	// Foundation self-update: packaged builds check Qorpera_Base_Releases
@@ -4678,16 +5220,15 @@ app.whenReady().then(async () => {
 		autoUpdater.checkForUpdatesAndNotify().catch((error: Error) => {
 			console.error(`update check failed: ${error.message}`);
 		});
-		ipcMain.handle("update:install", async (event) => {
+		ipcMain.handle("update:install", (event) => {
 			const slot = slotOf(event.sender);
 			if (!slot || !downloadedUpdateVersion) return false;
-			const approved = await confirmKernelReview(slot.window, {
-				title: "Install Qorpera Base update",
-				summary: "Quit every company controller and install this foundation update?",
-				exactText: downloadedUpdateVersion,
-			});
-			if (!approved) return false;
-			autoUpdater.quitAndInstall();
+			// Clicking the versioned Update control is the founder's explicit
+			// consent. Kernel exact-content review is for company capabilities and
+			// mutations, not a signed application update already verified by the
+			// packaged updater.
+			sendAll("update-status", `restarting to install ${downloadedUpdateVersion}…`);
+			autoUpdater.quitAndInstall(false, true);
 			return true;
 		});
 	} else {
@@ -4779,7 +5320,7 @@ app.whenReady().then(async () => {
 	if (smokeCompanyRoot) {
 		void openCompany(initial, smokeCompanyRoot)
 			.then(async () => {
-				if (smokeBootstrapServices) {
+				if (smokeBootstrapPicker) {
 					const result = (await initial.window.webContents.executeJavaScript(`
 					(async () => {
 					let rendererError = "";
@@ -4795,22 +5336,24 @@ app.whenReady().then(async () => {
 						inspect();
 					});
 					for (let index = 0; index < 3; index += 1) document.querySelectorAll(".staff-bootstrap-card")[index]?.click();
-					document.querySelector(".staff-bootstrap-actions .primary-button")?.click();
-					await new Promise((resolve) => setTimeout(resolve, 100));
 					return {
 						title: document.querySelector(".staff-bootstrap-head h1")?.textContent,
-						serviceCount: document.querySelectorAll(".staff-bootstrap-service").length,
+						cardCount: document.querySelectorAll(".staff-bootstrap-card").length,
 						actionText: document.querySelector(".staff-bootstrap-actions .primary-button")?.textContent,
 						rendererError,
 					};
 					})()
-				`)) as { title?: string; serviceCount?: number; actionText?: string; rendererError?: string };
-					if (result.title !== "What does your company use?" || !result.serviceCount) {
+				`)) as { title?: string; cardCount?: number; actionText?: string; rendererError?: string };
+					if (
+						result.title !== "Choose your starting team" ||
+						result.cardCount !== 10 ||
+						result.actionText !== "Start 3 staff"
+					) {
 						throw new Error(
-							`staff bootstrap service choices did not render (title=${result.title ?? "missing"}, action=${result.actionText ?? "missing"}, choices=${result.serviceCount ?? 0}, renderer=${result.rendererError ?? "none"})`,
+							`staff bootstrap picker did not render (title=${result.title ?? "missing"}, action=${result.actionText ?? "missing"}, cards=${result.cardCount ?? 0}, renderer=${result.rendererError ?? "none"})`,
 						);
 					}
-					console.log(`BOOTSTRAP_SERVICES_READY choices=${result.serviceCount}`);
+					console.log(`BOOTSTRAP_PICKER_READY cards=${result.cardCount}`);
 				}
 				if (!smokeShotTarget)
 					setTimeout(() => {

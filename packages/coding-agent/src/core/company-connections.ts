@@ -68,6 +68,51 @@ export interface WakeSchedule {
 export const MIN_WAKE_INTERVAL_MINUTES = 5;
 const MAX_WAKE_INTERVAL_MINUTES = 7 * 24 * 60;
 
+export const GITHUB_ROUTINE_EVENT_TYPES = [
+	"pull_request.opened",
+	"pull_request.updated",
+	"pull_request.merged",
+	"pull_request.review_requested",
+	"review.approved",
+	"review.changes_requested",
+	"pull_request.comment",
+	"pull_request.review_comment",
+	"check_run.succeeded",
+	"check_run.failed",
+	"issue.assigned",
+] as const;
+
+export type GitHubRoutineEventType = (typeof GITHUB_ROUTINE_EVENT_TYPES)[number];
+
+export type RoutineTrigger =
+	| {
+			id: string;
+			kind: "schedule";
+			intervalMinutes: number;
+	  }
+	| {
+			id: string;
+			kind: "github";
+			repository: string;
+			events: GitHubRoutineEventType[];
+			/** Empty means any GitHub actor. */
+			actors: string[];
+	  }
+	| {
+			id: string;
+			kind: "custom";
+			/** Agent-built adapters emit this stable source and event pair. */
+			adapterId: string;
+			event: string;
+			label: string;
+	  };
+
+export type RoutineTriggerInput = RoutineTrigger extends infer Trigger
+	? Trigger extends { id: string }
+		? Omit<Trigger, "id"> & { id?: string }
+		: never
+	: never;
+
 /**
  * A founder-bound unit of recurring controller work. Definitions stay in the
  * machine-local connection store because enabling unattended work is standing
@@ -77,7 +122,7 @@ export interface ScheduledJob {
 	id: string;
 	title: string;
 	prompt: string;
-	intervalMinutes: number;
+	triggers: RoutineTrigger[];
 	enabled: boolean;
 	/** Explicit staff ownership. Absence means Unassigned. */
 	staffAgentId?: string;
@@ -90,7 +135,7 @@ export interface ScheduledJob {
 export interface ScheduledJobInput {
 	title: string;
 	prompt: string;
-	intervalMinutes: number;
+	triggers: RoutineTriggerInput[];
 	enabled?: boolean;
 	staffAgentId?: string;
 }
@@ -98,7 +143,7 @@ export interface ScheduledJobInput {
 export interface ScheduledJobUpdate {
 	title?: string;
 	prompt?: string;
-	intervalMinutes?: number;
+	triggers?: RoutineTriggerInput[];
 	enabled?: boolean;
 	/** A string assigns the job; null explicitly returns it to Unassigned. */
 	staffAgentId?: string | null;
@@ -118,6 +163,11 @@ interface CompanyConnectionsState {
 	/** Pre-named-job schedule, migrated on first scheduled-job read. */
 	wake?: WakeSchedule;
 	webhook?: WebhookBinding;
+}
+
+interface LegacyScheduledJob extends Omit<ScheduledJob, "triggers"> {
+	intervalMinutes: number;
+	triggers?: RoutineTrigger[];
 }
 
 const FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
@@ -239,9 +289,10 @@ export function destinationAllowed(root: string, url: URL): boolean {
 
 export function readWakeSchedule(root: string): WakeSchedule | undefined {
 	const job = readScheduledJobs(root).find((candidate) => candidate.id === DEFAULT_SCHEDULED_JOB_ID);
-	return job
+	const intervalMinutes = job ? scheduledJobIntervalMinutes(job) : undefined;
+	return job && intervalMinutes !== undefined
 		? {
-				intervalMinutes: job.intervalMinutes,
+				intervalMinutes,
 				enabled: job.enabled,
 				...(job.suspendedReason ? { suspendedReason: job.suspendedReason } : {}),
 			}
@@ -254,13 +305,14 @@ export function bindWakeSchedule(root: string, intervalMinutes: number): WakeSch
 	const normalizedInterval = validScheduledJobInterval(intervalMinutes);
 	const now = new Date().toISOString();
 	const current = jobs.find((job) => job.id === DEFAULT_SCHEDULED_JOB_ID);
+	const schedule = validRoutineTrigger({ kind: "schedule", intervalMinutes: normalizedInterval });
 	const job: ScheduledJob = current
-		? { ...current, intervalMinutes: normalizedInterval, enabled: true, updatedAt: now, suspendedReason: undefined }
+		? { ...current, triggers: [schedule], enabled: true, updatedAt: now, suspendedReason: undefined }
 		: {
 				id: DEFAULT_SCHEDULED_JOB_ID,
 				title: DEFAULT_SCHEDULED_JOB_TITLE,
 				prompt: DEFAULT_SCHEDULED_JOB_PROMPT,
-				intervalMinutes: normalizedInterval,
+				triggers: [schedule],
 				enabled: true,
 				createdAt: now,
 				updatedAt: now,
@@ -268,7 +320,7 @@ export function bindWakeSchedule(root: string, intervalMinutes: number): WakeSch
 	state.scheduledJobs = [...jobs.filter((candidate) => candidate.id !== job.id), job];
 	delete state.wake;
 	writeState(root, state);
-	return { intervalMinutes: job.intervalMinutes, enabled: job.enabled };
+	return { intervalMinutes: normalizedInterval, enabled: job.enabled };
 }
 
 export function disableWakeSchedule(root: string): boolean {
@@ -312,13 +364,79 @@ function validScheduledJobStaffAgentId(value: unknown): string {
 	return value;
 }
 
+const GITHUB_REPOSITORY_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9])?\/[a-z0-9._-]{1,100}$/i;
+const ROUTINE_ADAPTER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+
+function validRoutineTrigger(input: RoutineTriggerInput): RoutineTrigger {
+	const id = input.id?.trim() ? input.id.trim() : randomUUID();
+	if (Buffer.byteLength(id, "utf-8") > 160) throw new Error("Routine trigger id is too long");
+	if (input.kind === "schedule") {
+		return { id, kind: "schedule", intervalMinutes: validScheduledJobInterval(input.intervalMinutes) };
+	}
+	if (input.kind === "github") {
+		const repository = input.repository.trim();
+		if (!GITHUB_REPOSITORY_PATTERN.test(repository)) {
+			throw new Error("GitHub routine repository must use owner/repo");
+		}
+		const allowed = new Set<string>(GITHUB_ROUTINE_EVENT_TYPES);
+		const events = [...new Set(input.events)];
+		if (!events.length || events.some((event) => !allowed.has(event))) {
+			throw new Error("GitHub routine trigger needs at least one supported event");
+		}
+		const actors = [...new Set(input.actors.map((actor) => actor.trim()).filter(Boolean))];
+		if (actors.some((actor) => !/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/i.test(actor))) {
+			throw new Error("GitHub routine actors must be GitHub usernames");
+		}
+		return { id, kind: "github", repository, events, actors };
+	}
+	const adapterId = input.adapterId.trim();
+	const event = input.event.trim();
+	const label = input.label.trim();
+	if (!ROUTINE_ADAPTER_ID_PATTERN.test(adapterId) || !event || !label) {
+		throw new Error("Custom routine trigger is invalid");
+	}
+	if (Buffer.byteLength(event, "utf-8") > 160 || Buffer.byteLength(label, "utf-8") > 160) {
+		throw new Error("Custom routine trigger is too long");
+	}
+	return { id, kind: "custom", adapterId, event, label };
+}
+
+function validRoutineTriggers(value: readonly RoutineTriggerInput[]): RoutineTrigger[] {
+	if (!Array.isArray(value) || value.length < 1 || value.length > 12) {
+		throw new Error("A routine needs between 1 and 12 triggers");
+	}
+	const triggers = value.map(validRoutineTrigger);
+	if (new Set(triggers.map((trigger) => trigger.id)).size !== triggers.length) {
+		throw new Error("Routine trigger ids must be unique");
+	}
+	return triggers;
+}
+
+export function scheduledJobIntervalMinutes(job: ScheduledJob): number | undefined {
+	return job.triggers.find((trigger) => trigger.kind === "schedule")?.intervalMinutes;
+}
+
 function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 	if (state.scheduledJobs) {
-		return state.scheduledJobs.map((job) =>
-			job.staffAgentId === undefined
-				? job
-				: { ...job, staffAgentId: validScheduledJobStaffAgentId(job.staffAgentId) },
-		);
+		return (state.scheduledJobs as LegacyScheduledJob[]).map((job) => {
+			const triggers = Array.isArray(job.triggers)
+				? validRoutineTriggers(job.triggers)
+				: [validRoutineTrigger({ kind: "schedule", intervalMinutes: job.intervalMinutes })];
+			const migrated: ScheduledJob = {
+				id: job.id,
+				title: job.title,
+				prompt: job.prompt,
+				triggers,
+				enabled: job.enabled,
+				createdAt: job.createdAt,
+				updatedAt: job.updatedAt,
+				...(job.staffAgentId === undefined
+					? {}
+					: { staffAgentId: validScheduledJobStaffAgentId(job.staffAgentId) }),
+				...(job.suspendedReason ? { suspendedReason: job.suspendedReason } : {}),
+			};
+			return migrated;
+		});
 	}
 	if (!state.wake) return [];
 	const now = new Date().toISOString();
@@ -327,7 +445,7 @@ function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 			id: DEFAULT_SCHEDULED_JOB_ID,
 			title: DEFAULT_SCHEDULED_JOB_TITLE,
 			prompt: DEFAULT_SCHEDULED_JOB_PROMPT,
-			intervalMinutes: state.wake.intervalMinutes,
+			triggers: [validRoutineTrigger({ kind: "schedule", intervalMinutes: state.wake.intervalMinutes })],
 			enabled: state.wake.enabled,
 			createdAt: now,
 			updatedAt: now,
@@ -339,7 +457,10 @@ function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 export function readScheduledJobs(root: string): ScheduledJob[] {
 	const state = readState(root);
 	const jobs = migrateScheduledJobs(state);
-	if (!state.scheduledJobs && state.wake) {
+	if (
+		(!state.scheduledJobs && state.wake) ||
+		state.scheduledJobs?.some((job) => !Array.isArray((job as ScheduledJob).triggers))
+	) {
 		state.scheduledJobs = jobs;
 		delete state.wake;
 		writeState(root, state);
@@ -355,7 +476,7 @@ export function createScheduledJob(root: string, input: ScheduledJobInput): Sche
 		id: randomUUID(),
 		title: validScheduledJobText(input.title, "title", 160),
 		prompt: validScheduledJobText(input.prompt, "prompt", 32 * 1024),
-		intervalMinutes: validScheduledJobInterval(input.intervalMinutes),
+		triggers: validRoutineTriggers(input.triggers),
 		enabled: input.enabled ?? true,
 		...(input.staffAgentId !== undefined ? { staffAgentId: validScheduledJobStaffAgentId(input.staffAgentId) } : {}),
 		createdAt: now,
@@ -378,9 +499,7 @@ export function updateScheduledJob(root: string, id: string, update: ScheduledJo
 		...current,
 		...(update.title !== undefined ? { title: validScheduledJobText(update.title, "title", 160) } : {}),
 		...(update.prompt !== undefined ? { prompt: validScheduledJobText(update.prompt, "prompt", 32 * 1024) } : {}),
-		...(update.intervalMinutes !== undefined
-			? { intervalMinutes: validScheduledJobInterval(update.intervalMinutes) }
-			: {}),
+		...(update.triggers !== undefined ? { triggers: validRoutineTriggers(update.triggers) } : {}),
 		...(update.staffAgentId === null
 			? { staffAgentId: undefined }
 			: update.staffAgentId !== undefined

@@ -267,7 +267,15 @@ describe("company app server", () => {
 			id: "morning-digest",
 			title: "Morning digest",
 			prompt: "Summarize overnight work.",
-			intervalMinutes: 1_440,
+			triggers: [
+				{
+					id: "github-prs",
+					kind: "github" as const,
+					repository: "Qorpera/Qorpera_Base",
+					events: ["pull_request.opened" as const],
+					actors: [],
+				},
+			],
 			enabled: true,
 			createdAt: "2026-08-15T00:00:00.000Z",
 			updatedAt: "2026-08-15T00:01:00.000Z",
@@ -288,7 +296,15 @@ describe("company app server", () => {
 				id: "morning-digest",
 				title: "Morning digest",
 				prompt: "Summarize overnight work.",
-				intervalMinutes: 1_440,
+				triggers: [
+					{
+						id: "github-prs",
+						kind: "github",
+						repository: "Qorpera/Qorpera_Base",
+						events: ["pull_request.opened"],
+						actors: [],
+					},
+				],
 				enabled: true,
 				createdAt: "2026-08-15T00:00:00.000Z",
 				updatedAt: "2026-08-15T00:01:00.000Z",

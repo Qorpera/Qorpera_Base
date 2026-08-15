@@ -86,6 +86,23 @@ export function writeDefaultControllerModelPreference(userData: string, model: C
 	return writeModelPreference(defaultControllerModelPreferencePath(userData), model);
 }
 
+export function clearControllerModelPreference(userData: string, root: string): boolean {
+	return clearModelPreference(controllerModelPreferencePath(userData, root));
+}
+
+export function clearDefaultControllerModelPreference(userData: string): boolean {
+	return clearModelPreference(defaultControllerModelPreferencePath(userData));
+}
+
+function clearModelPreference(path: string): boolean {
+	try {
+		rmSync(path, { force: true });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function writeModelPreference(path: string, model: ControllerModelSelection): boolean {
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	try {

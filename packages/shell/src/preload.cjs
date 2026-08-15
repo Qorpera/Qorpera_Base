@@ -36,12 +36,18 @@ async function openStaff(staffAgentId) {
 }
 
 contextBridge.exposeInMainWorld("qorpera", {
+	accountInfo: () => ipcRenderer.invoke("account:info"),
+	accountSignIn: (input) => ipcRenderer.invoke("account:sign-in", input),
+	accountSignOut: () => ipcRenderer.invoke("account:sign-out"),
+	openFeedback: () => ipcRenderer.invoke("feedback:open"),
+	onAccountStatus: (handler) => ipcRenderer.on("account-status", (_event, message) => handler(message)),
 	intelligenceInfo: () => ipcRenderer.invoke("intelligence:info"),
 	configureIntelligence: (providerId) => ipcRenderer.invoke("intelligence:configure", providerId),
+	disconnectIntelligence: () => ipcRenderer.invoke("intelligence:sign-out"),
 	listCompanies: () => ipcRenderer.invoke("companies:list"),
 	removeProfile: (root) => ipcRenderer.invoke("profile:remove", root),
 	openCompany: (root) => ipcRenderer.invoke("company:open", root),
-	newCompany: (dir) => ipcRenderer.invoke("company:new", dir),
+	newCompany: (dir, profileIcon) => ipcRenderer.invoke("company:new", dir, profileIcon),
 	integrateCompany: (dir, from) => ipcRenderer.invoke("company:integrate", dir, from),
 	addProduct: (product, from) => ipcRenderer.invoke("company:product-add", product, from),
 	chooseProductSource: () => ipcRenderer.invoke("company:product-source-choose"),
@@ -55,12 +61,18 @@ contextBridge.exposeInMainWorld("qorpera", {
 	staffCreate: createStaff,
 	staffBootstrap: bootstrapStaff,
 	staffUpdate: (staffAgentId, update) => ipcRenderer.invoke("staff:update", staffAgentId, update),
+	staffArchive: (staffAgentId) => ipcRenderer.invoke("staff:archive", staffAgentId),
 	staffOpen: openStaff,
+	copyStaffConversationId: (staffAgentId) => ipcRenderer.invoke("staff:copy-conversation-id", staffAgentId),
 	staffIntroReady: (staffAgentId, sessionFile, retry = false) =>
 		ipcRenderer.invoke("staff:intro-ready", staffAgentId, sessionFile, retry),
 	showHub: () => ipcRenderer.invoke("hub:show"),
 	settingsInfo: () => ipcRenderer.invoke("settings:info"),
+	setLocalExecution: (permission) => ipcRenderer.invoke("settings:local-execution", permission),
+	modelAccountUsage: () => ipcRenderer.invoke("model-accounts:usage"),
 	connectAccount: (connectionId) => ipcRenderer.invoke("connection:connect", connectionId),
+	disconnectAccount: (connectionId, accountId) =>
+		ipcRenderer.invoke("connection:disconnect", connectionId, accountId),
 	cancelConnection: (connectionId) => ipcRenderer.invoke("connection:cancel", connectionId),
 	connectionRequests: () => ipcRenderer.invoke("connection-requests:list"),
 	beginConnectionRequest: (identity) => ipcRenderer.invoke("connection-request:begin", identity),

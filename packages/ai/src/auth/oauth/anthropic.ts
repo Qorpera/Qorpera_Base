@@ -29,6 +29,7 @@ const decode = (s: string) => atob(s);
 const CLIENT_ID = decode("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
 const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const CALLBACK_HOST = getProviderEnvValue("QORPERA_OAUTH_CALLBACK_HOST") || "127.0.0.1";
 const CALLBACK_PORT = 53692;
 const CALLBACK_PATH = "/callback";
@@ -187,6 +188,37 @@ async function postJson(url: string, body: Record<string, string | number>, sign
 	return responseBody;
 }
 
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+async function accountMetadata(accessToken: string, signal: AbortSignal): Promise<Record<string, string>> {
+	try {
+		const response = await fetch(PROFILE_URL, {
+			headers: {
+				Authorization: `Bearer ${accessToken}`,
+				"Content-Type": "application/json",
+			},
+			signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+		});
+		if (!response.ok) return {};
+		const profile = recordValue((await response.json()) as unknown);
+		const account = recordValue(profile?.account);
+		if (!account) return {};
+		const email = typeof account.email === "string" ? account.email.trim() : "";
+		const accountName = typeof account.display_name === "string" ? account.display_name.trim() : "";
+		const accountId = typeof account.uuid === "string" ? account.uuid.trim() : "";
+		return {
+			...(email ? { email } : {}),
+			...(accountName ? { accountName } : {}),
+			...(accountId ? { accountId } : {}),
+		};
+	} catch {
+		// Account metadata improves local display but is not required for auth.
+		return {};
+	}
+}
+
 async function exchangeAuthorizationCode(
 	code: string,
 	state: string,
@@ -223,12 +255,13 @@ async function exchangeAuthorizationCode(
 		);
 	}
 
-	return {
+	const credential: OAuthCredential = {
 		type: "oauth",
 		refresh: tokenData.refresh_token,
 		access: tokenData.access_token,
 		expires: Date.now() + tokenData.expires_in * 1000 - 5 * 60 * 1000,
 	};
+	return { ...credential, ...(await accountMetadata(credential.access, signal)) };
 }
 
 async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
@@ -355,7 +388,10 @@ async function refreshAnthropicToken(refreshToken: string, signal: AbortSignal):
 export const anthropicOAuth: OAuthAuth = {
 	name: "Anthropic (Claude Pro/Max)",
 	login: loginAnthropic,
-	refresh: (credential, signal) => refreshAnthropicToken(credential.refresh, signal),
+	refresh: async (credential, signal) => ({
+		...credential,
+		...(await refreshAnthropicToken(credential.refresh, signal)),
+	}),
 
 	async toAuth(credential) {
 		return { apiKey: credential.access };

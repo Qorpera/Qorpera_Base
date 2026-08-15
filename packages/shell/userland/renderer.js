@@ -45,8 +45,12 @@ let currentWorktree = null; // kernel-assigned product worktree, when applicable
 let sidechatOpen = false; // the surface view's docked chat panel
 let sidechatPageId = null; // stable page ID the live session is attached to
 let sidechatPending = null; // page awaiting its context preamble (fresh session)
-let assistantEl = null;
-let thinkingEl = null;
+const pendingAssistantTextByIndex = new Map();
+const renderedAssistantTextByIndex = new Map();
+let turnProgressBubbleCount = 0;
+let turnProgressLastKind = "";
+let turnProgressLastAt = 0;
+let threadActivityEl = null;
 let poller = null;
 let runtimeStream = null;
 let hydratedExecutorId = "";
@@ -79,6 +83,10 @@ let focusedDepartmentId = null;
 let navContextTarget = null;
 let navContextTrigger = null;
 let navContextPoint = { x: 0, y: 0 };
+let staffContextTarget = null;
+let staffContextTrigger = null;
+let staffDeleteTarget = null;
+let hiddenStaffTrigger = null;
 let archiveTarget = null;
 let toastTimeout = null;
 let foundationUpdateVersion = "";
@@ -95,20 +103,39 @@ let scheduledJobPanel = null; // { mode: "view"|"create"|"run", id?, file?, draf
 let staffCatalogCache = null;
 let staffCreatorSelection = null;
 let staffCreatorPending = false;
-let staffCreatorColor = "#ff642e";
-let staffCreatorShape = "soft-square";
-let staffBootstrapStep = "staff";
+let staffCreatorClosing = false;
+let staffCreatorColor = "#1684ff";
+let staffCreatorShape = "round";
 let staffBootstrapSelections = new Set();
-let staffBootstrapServices = new Set();
-let staffBootstrapOtherEnabled = false;
-let staffBootstrapOther = "";
 let staffBootstrapPending = false;
 let railSearchQuery = "";
 let activityStaffId = null;
 let agentSidepanelMode = null;
+let agentRoutineEditor = null; // { staffAgentId, mode: "create"|"edit", id?, draft, dirty, error, status, pending }
+let agentSidepanelMotionTimer = null;
+let profileCreatorIcon = "hop-warm-titanium";
+let currentProfileIcon = "hop-warm-titanium";
 
-const STAFF_AVATAR_COLORS = ["#ff642e", "#ff365e", "#ffae00", "#00c878", "#00bfb3", "#1684ff", "#8a4dff", "#ff2994", "#5367e8"];
+const STAFF_AVATAR_COLORS = [
+	"#171716",
+	"#9c7151",
+	"#ff365e",
+	"#ff642e",
+	"#ffae00",
+	"#00c878",
+	"#00bfb3",
+	"#1684ff",
+	"#8a4dff",
+	"#ff2994",
+	"#7c7c7a",
+	"#5367e8",
+];
 const STAFF_AVATAR_SHAPES = ["soft-square", "round", "wide", "gem", "tilted", "drop"];
+const PROFILE_ICONS = [
+	{ id: "hop-warm-titanium", label: "Warm titanium", src: "./profile-icons/hop-warm-titanium.png" },
+	{ id: "hop-blue-steel", label: "Blue steel", src: "./profile-icons/hop-blue-steel.png" },
+	{ id: "hop-mono-cloud", label: "Monochrome cloud", src: "./profile-icons/hop-mono-cloud.png" },
+];
 const STAFF_COLOR_TOKENS = {
 	"qorpera-terracotta": "#ff642e",
 	"qorpera-cobalt": "#1684ff",
@@ -116,6 +143,10 @@ const STAFF_COLOR_TOKENS = {
 	"qorpera-emerald": "#00c878",
 	"qorpera-violet": "#8a4dff",
 	"qorpera-coral": "#ff365e",
+	"qorpera-pink": "#ff2994",
+	"qorpera-indigo": "#5367e8",
+	"qorpera-teal": "#00bfb3",
+	"qorpera-blue": "#1684ff",
 	"#cc7d5e": "#ff642e",
 	"#e9606f": "#ff365e",
 	"#d89b35": "#ffae00",
@@ -127,80 +158,85 @@ const STAFF_COLOR_TOKENS = {
 	"#777772": "#5367e8",
 };
 
-const SERVICE_CATALOG = {
-	calendar: { name: "Calendar", detail: "Schedules, meetings, and recurring work" },
-	"team-messaging": { name: "Team messaging", detail: "Slack, Teams, or another shared workspace" },
-	"project-tracking": { name: "Project tracking", detail: "Tasks, owners, and delivery status" },
-	"web-research": { name: "Web research", detail: "Public sources and market information" },
-	"knowledge-base": { name: "Knowledge base", detail: "Company notes, policies, and decisions" },
-	"cloud-files": { name: "Cloud files", detail: "Drive, Box, SharePoint, or similar" },
-	email: { name: "Email", detail: "Inbox triage and drafting" },
-	crm: { name: "CRM", detail: "Customers, deals, and follow-up" },
-	accounting: { name: "Accounting", detail: "Books, reporting, and reconciliation" },
-	billing: { name: "Billing", detail: "Invoices, subscriptions, and collections" },
-	banking: { name: "Banking", detail: "Balances and transaction visibility" },
-	"source-control": { name: "Source control", detail: "Repositories, reviews, and releases" },
-	"issue-tracking": { name: "Issue tracking", detail: "Bugs, requests, and product work" },
-	"product-analytics": { name: "Product analytics", detail: "Usage, funnels, and behavior" },
-	"support-desk": { name: "Support desk", detail: "Customer questions and resolutions" },
-};
-
-const TEMPLATE_SERVICE_FALLBACKS = {
-	"operations-lead": ["calendar", "team-messaging", "project-tracking"],
-	"research-lead": ["web-research", "knowledge-base", "cloud-files"],
-	"inbox-steward": ["email", "calendar", "crm"],
-	"finance-partner": ["accounting", "billing", "banking"],
-	"product-builder": ["source-control", "issue-tracking", "product-analytics"],
-	"customer-advocate": ["support-desk", "crm", "team-messaging"],
-};
-
 const DEFAULT_STAFF_TEMPLATES = [
 	{
-		id: "operations-lead",
-		displayName: "Operations Lead",
-		name: "Operations Lead",
-		description: "Keeps recurring work moving, coordinates handoffs, and brings decisions to you.",
-		color: "#ff642e",
+		id: "financial-officer",
+		displayName: "Financial Officer",
+		name: "Financial Officer",
+		description: "Tracks cash, budgets, forecasts, and financial risks.",
+		color: "#00c878",
+		shape: "gem",
+	},
+	{
+		id: "marketing-lead",
+		displayName: "Marketing Lead",
+		name: "Marketing Lead",
+		description: "Shapes the story, plans campaigns, and measures what creates demand.",
+		color: "#ff365e",
+		shape: "drop",
+	},
+	{
+		id: "product-manager",
+		displayName: "Product Manager",
+		name: "Product Manager",
+		description: "Turns customer and company needs into clear product priorities.",
+		color: "#8a4dff",
 		shape: "soft-square",
+	},
+	{
+		id: "software-developer",
+		displayName: "Software Developer",
+		name: "Software Developer",
+		description: "Builds, tests, and maintains the company’s software.",
+		color: "#1684ff",
+		shape: "wide",
+	},
+	{
+		id: "product-designer",
+		displayName: "Product Designer",
+		name: "Product Designer",
+		description: "Designs clear, useful product experiences from real user needs.",
+		color: "#ff2994",
+		shape: "round",
+	},
+	{
+		id: "legal-expert",
+		displayName: "Legal Expert",
+		name: "Legal Expert",
+		description: "Reviews contracts, policies, compliance questions, and legal risk.",
+		color: "#ffae00",
+		shape: "gem",
+	},
+	{
+		id: "operations-specialist",
+		displayName: "Operations Specialist",
+		name: "Operations Specialist",
+		description: "Keeps workflows, schedules, handoffs, and recurring work moving.",
+		color: "#ff642e",
+		shape: "tilted",
 	},
 	{
 		id: "research-lead",
 		displayName: "Research Lead",
 		name: "Research Lead",
-		description: "Investigates markets, competitors, and questions that deserve a rigorous answer.",
-		color: "#1684ff",
+		description: "Turns open questions into sourced findings and clear recommendations.",
+		color: "#5367e8",
 		shape: "round",
 	},
 	{
-		id: "inbox-steward",
-		displayName: "Inbox Steward",
-		name: "Inbox Steward",
-		description: "Triage messages, draft replies, and pull you in only when judgment is needed.",
-		color: "#ffae00",
-		shape: "wide",
+		id: "costumer-relationist",
+		displayName: "Costumer Relationist",
+		name: "Costumer Relationist",
+		description: "Looks after customer conversations, issues, feedback, and follow-up.",
+		color: "#00bfb3",
+		shape: "soft-square",
 	},
 	{
-		id: "finance-partner",
-		displayName: "Finance Partner",
-		name: "Finance Partner",
-		description: "Tracks cash, commitments, forecasts, and the financial consequences of decisions.",
-		color: "#00c878",
-		shape: "gem",
-	},
-	{
-		id: "product-builder",
-		displayName: "Product Builder",
-		name: "Product Builder",
-		description: "Turns priorities into product work across connected repositories and surfaces.",
-		color: "#8a4dff",
-		shape: "tilted",
-	},
-	{
-		id: "customer-advocate",
-		displayName: "Customer Advocate",
-		name: "Customer Advocate",
-		description: "Listens for customer friction, organizes feedback, and follows issues through.",
-		color: "#ff365e",
+		id: "outreaching-conversationalist",
+		displayName: "Outreaching Conversationalist",
+		name: "Outreaching Conversationalist",
+		description: "Starts useful conversations with prospects, partners, and other people outside the company.",
+		color: "#1684ff",
 		shape: "drop",
 	},
 ];
@@ -209,6 +245,62 @@ function setupSidebarToggle() {
 	// The roster rail is permanent. Keeping this no-op preserves the old boot
 	// call while intentionally dropping collapse state and its titlebar control.
 	document.body.classList.remove("sidebar-collapsed");
+}
+
+// ---- Qorpera account -------------------------------------------------------
+
+function setAccountControlsDisabled(disabled) {
+	for (const button of $("accountProviders").querySelectorAll("button")) button.disabled = disabled;
+	$("accountEmail").disabled = disabled;
+	$("accountEmailForm").querySelector("button").disabled = disabled;
+}
+
+async function completeAccountSignIn(input) {
+	setAccountControlsDisabled(true);
+	$("accountStatus").textContent = input.provider === "email" ? "Sending a secure sign-in link…" : "Opening sign-in…";
+	try {
+		const result = await window.qorpera.accountSignIn(input);
+		if (!result?.ok || !result.account?.authenticated) {
+			throw new Error(result?.error ?? "Sign-in did not complete.");
+		}
+		$("accountStatus").textContent = "Signed in.";
+		$("accountView").hidden = true;
+		await bootSignedInWorkspace();
+	} catch (error) {
+		$("accountStatus").textContent = error instanceof Error ? error.message : "Sign-in did not complete.";
+		setAccountControlsDisabled(false);
+	}
+}
+
+function renderAccountWelcome() {
+	document.body.classList.add("welcome");
+	document.body.classList.remove("hub", "company-shell");
+	$("accountView").hidden = false;
+	$("welcomeView").hidden = true;
+	$("wordmark").hidden = false;
+	$("accountStatus").textContent = "";
+	$("accountEmailForm").hidden = true;
+	$("accountEmail").value = "";
+	setAccountControlsDisabled(false);
+	for (const button of $("accountProviders").querySelectorAll("[data-account-provider]")) {
+		button.setAttribute("aria-expanded", "false");
+		button.onclick = () => {
+			const provider = button.dataset.accountProvider;
+			if (provider === "email") {
+				const form = $("accountEmailForm");
+				form.hidden = !form.hidden;
+				button.setAttribute("aria-expanded", String(!form.hidden));
+				if (!form.hidden) $("accountEmail").focus();
+				return;
+			}
+			void completeAccountSignIn({ provider });
+		};
+	}
+	$("accountEmailForm").onsubmit = (event) => {
+		event.preventDefault();
+		void completeAccountSignIn({ provider: "email", email: $("accountEmail").value });
+	};
+	$("accountProviders").querySelector("button")?.focus();
 }
 
 // ---- intelligence-first welcome -------------------------------------------
@@ -237,6 +329,7 @@ function intelligenceProviders(info) {
 async function renderIntelligenceWelcome(info) {
 	document.body.classList.add("welcome");
 	document.body.classList.remove("hub");
+	$("accountView").hidden = true;
 	$("welcomeView").hidden = false;
 	$("wordmark").hidden = false;
 	const list = $("intelligenceProviders");
@@ -283,6 +376,7 @@ async function renderHub() {
 	document.body.classList.add("hub");
 	document.body.classList.remove("welcome", "company-shell");
 	$("welcomeView").hidden = true;
+	$("accountView").hidden = true;
 	$("wordmark").hidden = false;
 	document.title = "Qorpera Base";
 	$("hubError").textContent = "";
@@ -296,15 +390,7 @@ async function renderHub() {
 		card.className = "hub-card profile-card";
 		card.type = "button";
 		card.setAttribute("aria-label", `Open ${company.name} profile`);
-		const avatar = makeStaffAvatar({
-			id: `profile-${company.name}`,
-			displayName: company.name,
-			appearance: {
-				color: STAFF_AVATAR_COLORS[grid.children.length % STAFF_AVATAR_COLORS.length],
-				shape: STAFF_AVATAR_SHAPES[grid.children.length % STAFF_AVATAR_SHAPES.length],
-			},
-		});
-		avatar.classList.add("profile-avatar");
+		const avatar = makeProfileIcon(company.profileIcon, company.name, "profile-avatar");
 		const label = document.createElement("strong");
 		label.textContent = company.name;
 		card.append(avatar, label);
@@ -368,6 +454,24 @@ async function renderHub() {
 	grid.appendChild(create);
 }
 
+async function signOut() {
+	const button = $("signOutButton");
+	button.disabled = true;
+	button.textContent = "Signing out…";
+	$("hubError").textContent = "";
+	try {
+		const result = await window.qorpera.accountSignOut();
+		if (!result?.ok) throw new Error(result?.error ?? "Could not sign out.");
+		renderAccountWelcome();
+		document.documentElement.dataset.qorperaReady = "account";
+	} catch (error) {
+		$("hubError").textContent = error instanceof Error ? error.message : "Could not sign out.";
+	} finally {
+		button.disabled = false;
+		button.textContent = "Sign out";
+	}
+}
+
 // ---- founding a durable company ----------------------------------------------
 // The founder names the company; the machine derives the folder (the registry
 // convention: C:\Companies\<slug>). Electron has no window.prompt() — it
@@ -388,11 +492,52 @@ function companyRootFor(name) {
 	return slug ? `${COMPANIES_HOME}\\${slug}` : "";
 }
 
+function profileIcon(iconId) {
+	return PROFILE_ICONS.find((candidate) => candidate.id === iconId) ?? PROFILE_ICONS[0];
+}
+
+function makeProfileIcon(iconId, label, className = "") {
+	const shell = document.createElement("span");
+	shell.className = `company-profile-icon ${className}`.trim();
+	const image = document.createElement("img");
+	image.src = profileIcon(iconId).src;
+	image.alt = "";
+	image.setAttribute("aria-hidden", "true");
+	shell.appendChild(image);
+	if (label) shell.setAttribute("aria-label", `${label} profile`);
+	return shell;
+}
+
+function renderCompanyIconPicker() {
+	const picker = $("companyIconPicker");
+	picker.replaceChildren();
+	for (const icon of PROFILE_ICONS) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "company-icon-choice";
+		button.dataset.profileIcon = icon.id;
+		button.setAttribute("role", "radio");
+		button.setAttribute("aria-label", icon.label);
+		button.setAttribute("aria-checked", String(icon.id === profileCreatorIcon));
+		button.appendChild(makeProfileIcon(icon.id, ""));
+		button.onclick = () => {
+			profileCreatorIcon = icon.id;
+			$("companyIconPreview").src = icon.src;
+			for (const choice of picker.querySelectorAll(".company-icon-choice")) {
+				choice.setAttribute("aria-checked", String(choice.dataset.profileIcon === profileCreatorIcon));
+			}
+		};
+		picker.appendChild(button);
+	}
+}
+
 function openCompanyModal() {
+	profileCreatorIcon = PROFILE_ICONS[0].id;
 	$("companyName").value = "";
-	$("companyPathPreview").textContent = "Lives under C:\\Companies";
 	$("companyFormError").textContent = "";
 	$("companyCreate").disabled = true;
+	$("companyIconPreview").src = profileIcon(profileCreatorIcon).src;
+	renderCompanyIconPicker();
 	$("companyModal").hidden = false;
 	$("companyName").focus();
 }
@@ -405,7 +550,6 @@ function setupCompanyModal() {
 	const input = $("companyName");
 	input.addEventListener("input", () => {
 		const root = companyRootFor(input.value.trim());
-		$("companyPathPreview").textContent = root ? `Will live at ${root}` : "Lives under C:\\Companies";
 		$("companyCreate").disabled = !root;
 	});
 	input.addEventListener("keydown", (event) => {
@@ -424,7 +568,7 @@ function setupCompanyModal() {
 		button.disabled = true;
 		button.textContent = "Creating…";
 		try {
-			const created = await window.qorpera.newCompany(root);
+			const created = await window.qorpera.newCompany(root, profileCreatorIcon);
 			const opened = await openCompany(created, $("companyFormError"));
 			if (opened) closeCompanyModal();
 		} catch (error) {
@@ -456,6 +600,7 @@ async function openCompany(root, errorTarget = $("hubError")) {
 async function enterCompany(active) {
 	backendUrl = active.backendUrl;
 	companyId = active.id || "";
+	currentProfileIcon = profileIcon(active.profileIcon).id;
 	// Appearance was applied at boot from the pre-company bucket; re-apply now
 	// that this company's stored appearance is addressable.
 	applyNavAppearance();
@@ -465,6 +610,7 @@ async function enterCompany(active) {
 	document.body.classList.remove("hub", "welcome");
 	document.body.classList.add("company-shell");
 	$("welcomeView").hidden = true;
+	$("accountView").hidden = true;
 	$("hubnav").style.display = "none";
 	$("conav").style.display = "";
 	$("messages").innerHTML = "";
@@ -674,6 +820,8 @@ function closeOpenChipMenu() {
 	if (!openChipMenu) return;
 	openChipMenu.menu.classList.remove("open");
 	openChipMenu.button.setAttribute("aria-expanded", "false");
+	$("modelCtlMenu").classList.remove("open");
+	$("modelCtlBtn").setAttribute("aria-expanded", "false");
 	openChipMenu = null;
 }
 document.addEventListener("click", (event) => {
@@ -682,6 +830,8 @@ document.addEventListener("click", (event) => {
 		openChipMenu &&
 		!openChipMenu.menu.contains(event.target) &&
 		!openChipMenu.button.contains(event.target) &&
+		!$("modelCtlMenu").contains(event.target) &&
+		!$("modelCtlBtn").contains(event.target) &&
 		!path.includes(openChipMenu.button)
 	) {
 		closeOpenChipMenu();
@@ -801,6 +951,8 @@ const modelCtl = (() => {
 	const list = $("mcModelList");
 	const speed = $("mcSpeed");
 	const effortOutput = $("mcEffortLabel");
+	let effortLabelAnimation = null;
+	let effortSnapAnimationFrame = null;
 	let models = []; // { value: "provider::id", name, fastCapable }
 	let levels = [];
 	// The catalog barely changes between sessions (it moves when the founder
@@ -849,19 +1001,35 @@ const modelCtl = (() => {
 		max: "Max",
 	};
 	const effortLabel = (level) => EFFORT_LABELS[level] ?? level;
+	const showEffortLabel = (label, animate = false) => {
+		effortLabelAnimation?.cancel();
+		effortLabelAnimation = null;
+		effortOutput.textContent = label;
+		if (!animate || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+		effortLabelAnimation = effortOutput.animate(
+			[
+				{ opacity: 0.48, transform: "translateY(2px)" },
+				{ opacity: 1, transform: "translateY(0)" },
+			],
+			{ duration: 110, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" },
+		);
+		effortLabelAnimation.onfinish = () => {
+			effortLabelAnimation = null;
+		};
+	};
 	const currentModel = () => models.find((m) => m.value === currentModelKey);
 	const fastOn = () => Boolean(currentModel()?.fastCapable) && currentSpeed === "fast";
-	// The row lives inside the composer's More menu. Keep the action name fixed
-	// and put the current model/effort in secondary copy so it scans like a
-	// settings menu rather than another composer chip.
+	// The row lives inside the composer's More menu. Keep its compact, fixed
+	// title while the detailed model controls remain in the nested picker.
 	const renderChip = () => {
+		const icon = button.querySelector("img")?.cloneNode(true);
 		const title = document.createElement("span");
 		title.textContent = "Model & effort";
-		const detail = document.createElement("small");
-		detail.textContent = [fastOn() ? "Fast" : "", currentModel()?.name ?? "Model", currentEffort ? effortLabel(currentEffort) : ""]
+		const detail = [fastOn() ? "Fast" : "", currentModel()?.name ?? "Model", currentEffort ? effortLabel(currentEffort) : ""]
 			.filter(Boolean)
 			.join(" · ");
-		button.replaceChildren(title, detail);
+		button.title = `Model & effort · ${detail}`;
+		button.replaceChildren(...(icon ? [icon, title] : [title]));
 	};
 	// The track is painted by hand: accent fill up to the knob, a faint dot
 	// per stop (the Desktop look — accent-color can't draw ticks).
@@ -869,11 +1037,11 @@ const modelCtl = (() => {
 		const max = Math.max(Number(slider.max), 1);
 		const fill = (Number(slider.value) / max) * 100;
 		const layers = [];
-		for (let i = 0; i <= max; i++) {
+		for (let i = 1; i < max; i++) {
 			const at = 4 + (i / max) * 92;
-			layers.push(`radial-gradient(circle at ${at}% 50%, rgba(17, 17, 17, 0.24) 2px, transparent 2.5px)`);
+			layers.push(`radial-gradient(circle at ${at}% 50%, rgba(255, 255, 255, 0.62) 1.5px, transparent 2px)`);
 		}
-		layers.push(`linear-gradient(to right, var(--primary) ${fill}%, rgba(17, 17, 17, 0.1) ${fill}%)`);
+		layers.push(`linear-gradient(to right, var(--mc-blue) ${fill}%, #e3e3e0 ${fill}%)`);
 		slider.style.setProperty("--mc-track", layers.join(", "));
 	};
 	const sync = () => {
@@ -883,7 +1051,7 @@ const modelCtl = (() => {
 		const index = levels.indexOf(currentEffort);
 		if (index >= 0) slider.value = String(index);
 		slider.title = currentEffort ? `Effort: ${effortLabel(currentEffort)}` : "Effort";
-		effortOutput.textContent = currentEffort ? effortLabel(currentEffort) : "Default";
+		showEffortLabel(currentEffort ? effortLabel(currentEffort) : "Default");
 		paintTrack();
 		modelLabel.textContent = currentModel()?.name ?? "…";
 		const fastCapable = Boolean(currentModel()?.fastCapable);
@@ -906,20 +1074,59 @@ const modelCtl = (() => {
 				const [provider, modelId] = model.value.split("::");
 				sendRpc({ type: "set_model", provider, modelId });
 				list.classList.remove("open");
+				drop.setAttribute("aria-expanded", "false");
 				sync();
 			};
 			list.appendChild(item);
 		}
 	};
+	const sliderLevel = () => {
+		const index = Math.max(0, Math.min(levels.length - 1, Math.round(Number(slider.value))));
+		return levels[index];
+	};
 	slider.oninput = () => {
-		const level = levels[Number(slider.value)];
+		if (effortSnapAnimationFrame !== null) {
+			cancelAnimationFrame(effortSnapAnimationFrame);
+			effortSnapAnimationFrame = null;
+		}
+		const level = sliderLevel();
 		if (!level) return;
-		currentEffort = level;
-		slider.title = `Effort: ${effortLabel(level)}`;
-		effortOutput.textContent = effortLabel(level);
-		renderChip();
+		if (level !== currentEffort) {
+			currentEffort = level;
+			slider.title = `Effort: ${effortLabel(level)}`;
+			showEffortLabel(effortLabel(level), true);
+			renderChip();
+		}
 		paintTrack();
-		sendRpc({ type: "set_thinking_level", level });
+	};
+	slider.onchange = () => {
+		const level = sliderLevel();
+		if (!level) return;
+		const target = levels.indexOf(level);
+		const start = Number(slider.value);
+		const finish = () => {
+			effortSnapAnimationFrame = null;
+			slider.value = String(target);
+			paintTrack();
+			currentEffort = level;
+			persist();
+			sendRpc({ type: "set_thinking_level", level });
+		};
+		if (window.matchMedia("(prefers-reduced-motion: reduce)").matches || Math.abs(target - start) < 0.001) {
+			finish();
+			return;
+		}
+		const startedAt = performance.now();
+		const duration = 145;
+		const animateSnap = (now) => {
+			const progress = Math.min(1, (now - startedAt) / duration);
+			const eased = 1 - (1 - progress) ** 3;
+			slider.value = String(start + (target - start) * eased);
+			paintTrack();
+			if (progress < 1) effortSnapAnimationFrame = requestAnimationFrame(animateSnap);
+			else finish();
+		};
+		effortSnapAnimationFrame = requestAnimationFrame(animateSnap);
 	};
 	speed.onclick = () => {
 		if (speed.disabled) return;
@@ -929,22 +1136,41 @@ const modelCtl = (() => {
 	};
 	// An empty list is a dark sliver, not a menu — don't open until models exist.
 	drop.onclick = () => {
-		if (models.length) list.classList.toggle("open");
+		if (!models.length) return;
+		const opening = !list.classList.contains("open");
+		list.classList.toggle("open", opening);
+		drop.setAttribute("aria-expanded", String(opening));
 	};
-	button.onclick = () => {
+	button.onclick = (event) => {
+		// Keep clicks on every part of the menu row inside the composite menu.
+		// In particular, the icon-side hit target must not reach the document's
+		// outside-click handler and dismiss the parent menu.
+		event.stopPropagation();
 		if (menu.classList.contains("open")) {
-			closeOpenChipMenu();
+			menu.classList.remove("open");
+			button.setAttribute("aria-expanded", "false");
 			return;
 		}
-		const rect = button.getBoundingClientRect();
-		closeOpenChipMenu();
+		const parentMenu = $("composerMoreMenu");
+		if (!parentMenu.classList.contains("open")) return;
+		const parentRect = parentMenu.getBoundingClientRect();
+		const buttonRect = button.getBoundingClientRect();
 		sync();
 		list.classList.remove("open");
-		menu.style.right = `${Math.max(8, window.innerWidth - Math.max(rect.right, rect.left + 252))}px`;
-		menu.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+		drop.setAttribute("aria-expanded", "false");
+		const panelWidth = 252;
+		const preferredLeft = parentRect.right + 8;
+		const left =
+			preferredLeft + panelWidth <= window.innerWidth - 8
+				? preferredLeft
+				: Math.max(8, parentRect.left - panelWidth - 8);
+		menu.style.left = `${left}px`;
+		menu.style.right = "auto";
+		menu.style.bottom = "auto";
 		menu.classList.add("open");
+		const panelHeight = menu.getBoundingClientRect().height;
+		menu.style.top = `${Math.max(8, Math.min(buttonRect.bottom - panelHeight, window.innerHeight - panelHeight - 8))}px`;
 		button.setAttribute("aria-expanded", "true");
-		openChipMenu = { menu, button };
 	};
 	return {
 		setModels(next) {
@@ -990,7 +1216,7 @@ const composerMore = (() => {
 	const sync = () => {
 		const available = worktreeAvailable();
 		worktree.setAttribute("aria-disabled", String(!available));
-		worktree.querySelector("small").textContent = available
+		worktree.title = available
 			? `Create a fresh ${departmentName(currentDepartment)} worktree`
 			: currentStaffId
 				? "Choose a product artifact before creating one"
@@ -1009,7 +1235,7 @@ const composerMore = (() => {
 		closeOpenChipMenu();
 		sync();
 		const rect = button.getBoundingClientRect();
-		menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 296))}px`;
+		menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 222))}px`;
 		menu.style.bottom = `${window.innerHeight - rect.top + 8}px`;
 		menu.classList.add("open");
 		button.setAttribute("aria-expanded", "true");
@@ -1234,10 +1460,28 @@ function makeStaffAvatar(staffOrTemplate, status = "idle") {
 	const avatar = document.createElement("span");
 	avatar.className = `staff-avatar ${status} shape-${staffShape(staffOrTemplate)}`;
 	avatar.style.setProperty("--staff-color", staffColor(staffOrTemplate));
+	avatar.style.setProperty("--staff-motion-delay", staffMotionDelay(staffOrTemplate));
 	if (staffId(staffOrTemplate)) avatar.dataset.staffId = staffId(staffOrTemplate);
+	avatar.append(makeStaffWorkOrbit("blue"), makeStaffWorkOrbit("duo"));
 	avatar.appendChild(makeStaffFace());
 	avatar.setAttribute("aria-hidden", "true");
 	return avatar;
+}
+
+function staffMotionDelay(staffOrTemplate) {
+	const identity = staffId(staffOrTemplate) || templateId(staffOrTemplate) || staffDisplayName(staffOrTemplate);
+	let seed = 0;
+	for (const character of identity) seed = (seed * 31 + character.charCodeAt(0)) % 9600;
+	return `${-seed}ms`;
+}
+
+function makeStaffWorkOrbit(variant) {
+	const orbit = document.createElement("img");
+	orbit.className = `staff-work-orbit staff-work-orbit-${variant}`;
+	orbit.src = variant === "duo" ? "./staff-work-orbit-duo.png" : "./staff-work-orbit.png";
+	orbit.alt = "";
+	orbit.setAttribute("aria-hidden", "true");
+	return orbit;
 }
 
 function makeStaffFace() {
@@ -1249,8 +1493,9 @@ function makeStaffFace() {
 }
 
 function paintStaffAvatar(avatar, staff, status = "idle") {
-	avatar.replaceChildren(makeStaffFace());
+	avatar.replaceChildren(makeStaffWorkOrbit("blue"), makeStaffWorkOrbit("duo"), makeStaffFace());
 	avatar.style.setProperty("--staff-color", staffColor(staff));
+	avatar.style.setProperty("--staff-motion-delay", staffMotionDelay(staff));
 	avatar.className = `staff-avatar ${status} shape-${staffShape(staff)}`;
 	if (staffId(staff)) avatar.dataset.staffId = staffId(staff);
 	else delete avatar.dataset.staffId;
@@ -1299,13 +1544,52 @@ function renderTemplateCards(container, templates, selectedId, onSelect) {
 	}
 }
 
-async function openStaffCreator(preselectedId = "") {
+function syncStaffTemplateScrollbar() {
+	const grid = $("staffTemplateGrid");
+	const scrollbar = $("staffTemplateScrollbar");
+	const thumb = $("staffTemplateScrollbarThumb");
+	const scrollRange = Math.max(0, grid.scrollWidth - grid.clientWidth);
+	if (scrollRange <= 1 || scrollbar.clientWidth <= 0) {
+		scrollbar.hidden = true;
+		return;
+	}
+	scrollbar.hidden = false;
+	const thumbWidth = Math.max(54, Math.round((grid.clientWidth / grid.scrollWidth) * scrollbar.clientWidth));
+	const travel = Math.max(0, scrollbar.clientWidth - thumbWidth);
+	const offset = scrollRange > 0 ? Math.round((grid.scrollLeft / scrollRange) * travel) : 0;
+	thumb.style.width = `${thumbWidth}px`;
+	thumb.style.transform = `translateX(${offset}px)`;
+}
+
+async function openStaffCreator() {
 	staffCreatorPending = false;
+	staffCreatorClosing = false;
 	$("staffCreateStatus").textContent = "";
 	$("staffModal").hidden = false;
+	document.body.classList.add("staff-creator-open");
+	$("threadHeader").hidden = true;
+	$("staffCreatorTitlebar").hidden = false;
+	if (!$("agentSidepanel").hidden) closeAgentSidepanel(false);
+	renderRosterRail({ animateCreateRow: true });
 	const templates = await loadStaffCatalog();
-	staffCreatorSelection = templates.find((template) => templateId(template) === preselectedId) ?? templates[0] ?? null;
+	const clearSelection = () => {
+		staffCreatorSelection = null;
+		staffCreatorColor = "#1684ff";
+		staffCreatorShape = "round";
+		$("staffDisplayName").value = "";
+		$("staffCreateButton").disabled = true;
+		paintStaffAvatar($("staffCreatorAvatar"), { color: staffCreatorColor, shape: staffCreatorShape });
+		$("staffCreatorRole").textContent = "New Agent";
+		$("staffCreatorDescription").textContent = "";
+		renderStaffAppearancePickers();
+		renderTemplateCards($("staffTemplateGrid"), templates, "", select);
+		requestAnimationFrame(syncStaffTemplateScrollbar);
+	};
 	const select = (template) => {
+		if (templateId(staffCreatorSelection) === templateId(template)) {
+			clearSelection();
+			return;
+		}
 		staffCreatorSelection = template;
 		staffCreatorColor = staffColor(template);
 		staffCreatorShape = staffShape(template);
@@ -1316,9 +1600,13 @@ async function openStaffCreator(preselectedId = "") {
 		$("staffCreatorDescription").textContent = staffDescription(template);
 		renderStaffAppearancePickers();
 		renderTemplateCards($("staffTemplateGrid"), templates, templateId(template), select);
+		requestAnimationFrame(syncStaffTemplateScrollbar);
 	};
-	if (staffCreatorSelection) select(staffCreatorSelection);
-	requestAnimationFrame(() => $("staffTemplateGrid").querySelector('[aria-checked="true"]')?.focus());
+	clearSelection();
+	requestAnimationFrame(() => {
+		$("staffDisplayName").focus();
+		syncStaffTemplateScrollbar();
+	});
 }
 
 function renderStaffAppearancePickers() {
@@ -1360,14 +1648,30 @@ function renderStaffAppearancePickers() {
 }
 
 function closeStaffCreator() {
-	if (staffCreatorPending) return;
-	$("staffModal").hidden = true;
-	staffCreatorSelection = null;
-	$("addStaffButton").focus();
+	if (staffCreatorPending || staffCreatorClosing) return;
+	staffCreatorClosing = true;
+	const finish = () => {
+		$("staffModal").hidden = true;
+		document.body.classList.remove("staff-creator-open");
+		$("staffCreatorTitlebar").hidden = true;
+		$("threadHeader").hidden =
+			currentView !== "chat" && !(currentStaffId && (currentView === "surface" || currentView === "panel"));
+		staffCreatorSelection = null;
+		staffCreatorClosing = false;
+		renderRosterRail();
+		$("addStaffButton").focus();
+	};
+	const createRow = document.querySelector(".staff-create-row");
+	if (!createRow || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+		finish();
+		return;
+	}
+	createRow.classList.add("is-closing");
+	window.setTimeout(finish, 220);
 }
 
 async function createStaffMember() {
-	if (!staffCreatorSelection || staffCreatorPending) return;
+	if (staffCreatorPending) return;
 	const displayName = $("staffDisplayName").value.trim();
 	if (!displayName) {
 		$("staffDisplayName").focus();
@@ -1375,11 +1679,11 @@ async function createStaffMember() {
 	}
 	staffCreatorPending = true;
 	$("staffCreateButton").disabled = true;
-	$("staffCreateButton").textContent = "Adding…";
-	$("staffCreateStatus").textContent = "Creating a persistent staff member and preparing their introduction…";
+	$("staffCreateButton").textContent = "Creating…";
+	$("staffCreateStatus").textContent = "Creating the agent and preparing its introduction…";
 	try {
 		const result = await window.qorpera.staffCreate({
-			templateId: templateId(staffCreatorSelection),
+			...(staffCreatorSelection ? { templateId: templateId(staffCreatorSelection) } : {}),
 			displayName,
 			appearance: { color: staffCreatorColor, shape: staffCreatorShape },
 		});
@@ -1392,6 +1696,8 @@ async function createStaffMember() {
 			state.staff = [...(state.staff ?? []), { ...created, id, sessionFile }];
 		}
 		$("staffModal").hidden = true;
+		document.body.classList.remove("staff-creator-open");
+		$("staffCreatorTitlebar").hidden = true;
 		activateStaffSession(id, sessionFile, result);
 		$("staffCreateStatus").textContent = "Your new staff member is getting ready to introduce themselves…";
 		let intro;
@@ -1412,8 +1718,8 @@ async function createStaffMember() {
 		$("staffCreateStatus").textContent = message;
 		if ($("staffModal").hidden) showControllerToast(message);
 	} finally {
-		$("staffCreateButton").textContent = "Add to company";
-		$("staffCreateButton").disabled = staffCreatorPending || !staffCreatorSelection;
+		$("staffCreateButton").textContent = "Create";
+		$("staffCreateButton").disabled = staffCreatorPending || !$("staffDisplayName").value.trim();
 	}
 }
 
@@ -1529,23 +1835,407 @@ function renderStaffHeaderNavigation(staff) {
 }
 
 function closeAgentSidepanel(restoreFocus = true) {
+	const panel = $("agentSidepanel");
+	const titlebar = $("agentSidepanelTitlebar");
+	if (panel.hidden) return;
 	const previousMode = agentSidepanelMode;
 	agentSidepanelMode = null;
-	$("agentSidepanel").hidden = true;
+	agentRoutineEditor = null;
 	$("staffIdentityButton").setAttribute("aria-expanded", "false");
 	$("staffSidepanelButton").setAttribute("aria-expanded", "false");
-	if (!restoreFocus) return;
-	if (previousMode === "settings") $("staffIdentityButton").focus();
-	else $("staffSidepanelButton").focus();
+	if (agentSidepanelMotionTimer) clearTimeout(agentSidepanelMotionTimer);
+	const finish = () => {
+		if (agentSidepanelMode !== null) return;
+		panel.hidden = true;
+		titlebar.hidden = true;
+		panel.classList.remove("is-opening", "is-closing");
+		titlebar.classList.remove("is-opening", "is-closing");
+		agentSidepanelMotionTimer = null;
+		if (!restoreFocus) return;
+		if (previousMode === "settings") $("staffIdentityButton").focus();
+		else $("staffSidepanelButton").focus();
+	};
+	if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+		finish();
+		return;
+	}
+	panel.classList.remove("is-opening");
+	titlebar.classList.remove("is-opening");
+	panel.classList.add("is-closing");
+	titlebar.classList.add("is-closing");
+	agentSidepanelMotionTimer = setTimeout(finish, 280);
+}
+
+function handleAgentSidepanelBack() {
+	if (agentSidepanelMode === "computer" && agentRoutineEditor && currentStaff()) {
+		agentRoutineEditor = null;
+		$("agentSidepanelTitle").textContent = staffDisplayName(currentStaff());
+		renderAgentComputerPanel(currentStaff());
+		return;
+	}
+	closeAgentSidepanel();
 }
 
 function agentRoutines(staff) {
 	return (state.scheduledJobs ?? []).filter((job) => job.staffAgentId === staffId(staff));
 }
 
-function renderAgentComputerPanel(staff) {
+function openAgentRoutineEditor(staff, job = null) {
+	agentRoutineEditor = {
+		staffAgentId: staffId(staff),
+		mode: job ? "edit" : "create",
+		...(job ? { id: job.id } : {}),
+		draft: scheduledJobDraft(job),
+		dirty: false,
+		triggerPickerOpen: false,
+		error: "",
+		status: "",
+		pending: false,
+	};
+	$("agentSidepanelTitle").textContent = "Routine";
+	renderAgentComputerPanel(staff, true);
+}
+
+function agentRoutineField(labelText, control, helpText = "") {
+	const label = document.createElement("label");
+	label.className = "agent-routine-field";
+	const title = document.createElement("span");
+	title.textContent = labelText;
+	label.append(title, control);
+	if (helpText) {
+		const help = document.createElement("small");
+		help.textContent = helpText;
+		label.appendChild(help);
+	}
+	return label;
+}
+
+function renderAgentRoutineEditor(content, staff) {
+	const editor = agentRoutineEditor;
+	if (!editor || editor.staffAgentId !== staffId(staff)) {
+		agentRoutineEditor = null;
+		renderAgentComputerPanel(staff, true);
+		return;
+	}
+	const job = editor.mode === "edit" ? agentRoutines(staff).find((candidate) => candidate.id === editor.id) : null;
+	if (editor.mode === "edit" && !job) {
+		agentRoutineEditor = null;
+		$("agentSidepanelTitle").textContent = staffDisplayName(staff);
+		renderAgentComputerPanel(staff, true);
+		return;
+	}
+	const section = document.createElement("section");
+	section.className = "agent-routine-editor";
+	const form = document.createElement("form");
+	form.className = "agent-routine-form";
+	const toolbar = document.createElement("div");
+	toolbar.className = "agent-routine-toolbar";
+	const active = document.createElement("label");
+	active.className = "agent-routine-active";
+	const enabled = document.createElement("input");
+	enabled.type = "checkbox";
+	enabled.checked = editor.draft.enabled;
+	enabled.onchange = () => {
+		editor.draft.enabled = enabled.checked;
+		editor.dirty = true;
+	};
+	const switchTrack = document.createElement("span");
+	switchTrack.className = "agent-routine-switch";
+	active.append(enabled, switchTrack, document.createTextNode("Active"));
+	toolbar.appendChild(active);
+	const toolbarActions = document.createElement("div");
+	toolbarActions.className = "agent-routine-toolbar-actions";
+	if (job) {
+		const remove = document.createElement("button");
+		remove.type = "button";
+		remove.textContent = "Delete";
+		remove.disabled = job.running || editor.pending;
+		remove.onclick = async () => {
+			editor.pending = true;
+			const result = await scheduledJobRequest(() => window.qorpera.deleteScheduledJob(job.id), "Could not delete the routine.");
+			editor.pending = false;
+			if (result?.ok) {
+				forgetScheduledJob(job.id);
+				agentRoutineEditor = null;
+				$("agentSidepanelTitle").textContent = staffDisplayName(staff);
+			} else editor.error = result?.error ?? "Could not delete the routine.";
+			renderAgentComputerPanel(staff, true);
+		};
+		const run = document.createElement("button");
+		run.type = "button";
+		run.textContent = job.running ? "Running…" : "Test run";
+		run.disabled = job.running || editor.pending;
+		run.onclick = async () => {
+			editor.pending = true;
+			editor.error = "";
+			const result = await scheduledJobRequest(() => window.qorpera.runScheduledJob(job.id), "Could not start the routine.");
+			editor.pending = false;
+			editor.status = result?.ok ? "Routine started." : "";
+			editor.error = result?.ok ? "" : (result?.error ?? "Could not start the routine.");
+			renderAgentComputerPanel(staff, true);
+		};
+		toolbarActions.append(remove, run);
+	}
+	toolbar.appendChild(toolbarActions);
+	form.appendChild(toolbar);
+
+	const title = document.createElement("input");
+	title.type = "text";
+	title.maxLength = 160;
+	title.placeholder = "Name this routine";
+	title.value = editor.draft.title;
+	title.oninput = () => {
+		editor.draft.title = title.value;
+		editor.dirty = true;
+	};
+	form.appendChild(agentRoutineField("Name", title));
+	const prompt = document.createElement("textarea");
+	prompt.placeholder = "What should this routine do each time it runs?";
+	prompt.value = editor.draft.prompt;
+	prompt.oninput = () => {
+		editor.draft.prompt = prompt.value;
+		editor.dirty = true;
+	};
+	form.appendChild(agentRoutineField("Instruction", prompt));
+
+	const triggerSection = document.createElement("section");
+	triggerSection.className = "agent-routine-triggers";
+	const triggerTitle = document.createElement("span");
+	triggerTitle.textContent = "When to run";
+	triggerSection.appendChild(triggerTitle);
+	const eventLabels = {
+		"pull_request.opened": "PR opened",
+		"pull_request.updated": "PR updated",
+		"pull_request.merged": "PR merged",
+		"pull_request.review_requested": "Review requested",
+		"review.approved": "Review approved",
+		"review.changes_requested": "Changes requested",
+		"pull_request.comment": "PR comment",
+		"pull_request.review_comment": "Inline review comment",
+		"check_run.succeeded": "CI passed",
+		"check_run.failed": "CI failed",
+		"issue.assigned": "Issue assigned",
+	};
+	const rerender = () => {
+		editor.dirty = true;
+		renderAgentComputerPanel(staff, true);
+	};
+	for (const trigger of editor.draft.triggers) {
+		const card = document.createElement("div");
+		card.className = `agent-routine-trigger-card ${trigger.kind}`;
+		const removeTrigger = document.createElement("button");
+		removeTrigger.type = "button";
+		removeTrigger.className = "agent-routine-trigger-remove";
+		removeTrigger.textContent = "×";
+		removeTrigger.setAttribute("aria-label", "Remove trigger");
+		removeTrigger.onclick = () => {
+			editor.draft.triggers = editor.draft.triggers.filter((candidate) => candidate.id !== trigger.id);
+			rerender();
+		};
+		if (trigger.kind === "schedule") {
+			const icon = document.createElement("span");
+			icon.className = "agent-routine-trigger-icon clock";
+			icon.textContent = "◷";
+			const schedule = document.createElement("select");
+			for (const [minutes, label] of [[60, "Every hour"], [1440, "Every day"], [10080, "Every week"]]) {
+				const option = document.createElement("option");
+				option.value = String(minutes);
+				option.textContent = label;
+				option.selected = trigger.intervalMinutes === minutes;
+				schedule.appendChild(option);
+			}
+			schedule.onchange = () => {
+				trigger.intervalMinutes = Number(schedule.value);
+				editor.dirty = true;
+			};
+			card.append(icon, schedule, removeTrigger);
+		} else if (trigger.kind === "github") {
+			const icon = document.createElement("img");
+			icon.className = "agent-routine-trigger-icon";
+			icon.src = "./provider-github.svg";
+			icon.alt = "";
+			const fields = document.createElement("div");
+			fields.className = "agent-routine-github-fields";
+			const details = document.createElement("details");
+			details.className = "agent-routine-event-picker";
+			const summary = document.createElement("summary");
+			summary.textContent = trigger.events.length === 1 ? eventLabels[trigger.events[0]] : `${trigger.events.length} GitHub events`;
+			details.appendChild(summary);
+			const eventMenu = document.createElement("div");
+			eventMenu.className = "agent-routine-event-menu";
+			for (const [value, label] of Object.entries(eventLabels)) {
+				const choice = document.createElement("label");
+				const checkbox = document.createElement("input");
+				checkbox.type = "checkbox";
+				checkbox.checked = trigger.events.includes(value);
+				checkbox.onchange = () => {
+					if (checkbox.checked) trigger.events = [...new Set([...trigger.events, value])];
+					else if (trigger.events.length > 1) trigger.events = trigger.events.filter((event) => event !== value);
+					else checkbox.checked = true;
+					editor.dirty = true;
+					summary.textContent = trigger.events.length === 1 ? eventLabels[trigger.events[0]] : `${trigger.events.length} GitHub events`;
+				};
+				choice.append(checkbox, document.createTextNode(label));
+				eventMenu.appendChild(choice);
+			}
+			details.appendChild(eventMenu);
+			const repository = document.createElement("input");
+			repository.type = "text";
+			repository.placeholder = "owner/repo";
+			repository.value = trigger.repository;
+			repository.oninput = () => {
+				trigger.repository = repository.value;
+				editor.dirty = true;
+			};
+			const actors = document.createElement("input");
+			actors.type = "text";
+			actors.placeholder = "Anyone";
+			actors.value = trigger.actors.join(", ");
+			actors.oninput = () => {
+				trigger.actors = actors.value.split(",").map((actor) => actor.trim()).filter(Boolean);
+				editor.dirty = true;
+			};
+			fields.append(details, repository, actors);
+			card.append(icon, fields, removeTrigger);
+		}
+		triggerSection.appendChild(card);
+	}
+	const addTrigger = document.createElement("button");
+	addTrigger.type = "button";
+	addTrigger.className = "agent-routine-add-trigger";
+	addTrigger.textContent = "+  Add trigger";
+	addTrigger.setAttribute("aria-expanded", String(editor.triggerPickerOpen));
+	addTrigger.onclick = () => {
+		editor.triggerPickerOpen = !editor.triggerPickerOpen;
+		renderAgentComputerPanel(staff, true);
+	};
+	triggerSection.appendChild(addTrigger);
+	if (editor.triggerPickerOpen) {
+		const menu = document.createElement("div");
+		menu.className = "agent-routine-trigger-menu";
+		const choice = (label, detail, icon, action) => {
+			const button = document.createElement("button");
+			button.type = "button";
+			const mark = document.createElement(icon.endsWith(".svg") ? "img" : "span");
+			mark.className = "agent-routine-trigger-menu-icon";
+			if (mark instanceof HTMLImageElement) {
+				mark.src = icon;
+				mark.alt = "";
+			} else mark.textContent = icon;
+			const copy = document.createElement("span");
+			const strong = document.createElement("strong");
+			strong.textContent = label;
+			const small = document.createElement("small");
+			small.textContent = detail;
+			copy.append(strong, small);
+			button.append(mark, copy);
+			button.onclick = action;
+			return button;
+		};
+		menu.append(
+			choice("On a schedule", "Hourly, daily, or weekly", "◷", () => {
+				editor.draft.triggers.push({ id: crypto.randomUUID(), kind: "schedule", intervalMinutes: 60 });
+				editor.triggerPickerOpen = false;
+				rerender();
+			}),
+			choice("GitHub event", "Pull requests, reviews, comments, or CI", "./provider-github.svg", () => {
+				editor.draft.triggers.push({ id: crypto.randomUUID(), kind: "github", repository: "", events: ["pull_request.opened"], actors: [] });
+				editor.triggerPickerOpen = false;
+				rerender();
+			}),
+			choice("Build another trigger", `Ask ${staffDisplayName(staff)} to create an adapter`, "+", () => {
+				closeAgentSidepanel(false);
+				const input = $("input");
+				input.value = "Build a new routine trigger adapter for ";
+				syncComposer();
+				input.focus();
+			}),
+		);
+		triggerSection.appendChild(menu);
+	}
+	form.appendChild(triggerSection);
+	if (editor.error) {
+		const error = document.createElement("div");
+		error.className = "agent-routine-error";
+		error.textContent = editor.error;
+		form.appendChild(error);
+	}
+	const status = document.createElement("div");
+	status.className = "agent-routine-status";
+	status.setAttribute("role", "status");
+	status.textContent = editor.status;
+	form.appendChild(status);
+	const actions = document.createElement("footer");
+	actions.className = "agent-routine-actions";
+	const save = document.createElement("button");
+	save.type = "submit";
+	save.className = "primary-button";
+	save.textContent = editor.pending ? "Saving…" : editor.mode === "create" ? "Create routine" : "Save";
+	save.disabled = editor.pending;
+	actions.appendChild(save);
+	form.appendChild(actions);
+	form.onsubmit = async (event) => {
+		event.preventDefault();
+		const routineTitle = editor.draft.title.trim();
+		const instructions = editor.draft.prompt.trim();
+		if (!routineTitle || !instructions) {
+			editor.error = "Name and instructions are required.";
+			renderAgentComputerPanel(staff, true);
+			return;
+		}
+		if (!editor.draft.triggers.length) {
+			editor.error = "Add at least one trigger.";
+			renderAgentComputerPanel(staff, true);
+			return;
+		}
+		if (editor.draft.triggers.some((trigger) => trigger.kind === "github" && !/^[^/\s]+\/[^/\s]+$/.test(trigger.repository.trim()))) {
+			editor.error = "Enter each GitHub repository as owner/repo.";
+			renderAgentComputerPanel(staff, true);
+			return;
+		}
+		editor.pending = true;
+		editor.error = "";
+		const draft = {
+			title: routineTitle,
+			prompt: instructions,
+			triggers: editor.draft.triggers,
+			enabled: Boolean(editor.draft.enabled),
+			staffAgentId: staffId(staff),
+		};
+		const result = await scheduledJobRequest(
+			() => (job ? window.qorpera.updateScheduledJob(job.id, draft) : window.qorpera.createScheduledJob(draft)),
+			"Could not save the routine.",
+		);
+		editor.pending = false;
+		if (result?.ok) {
+			rememberScheduledJob(result.job);
+			agentRoutineEditor = {
+				staffAgentId: staffId(staff),
+				mode: "edit",
+				id: result.job.id,
+				draft: scheduledJobDraft(result.job),
+				dirty: false,
+				error: "",
+				status: "Saved",
+				triggerPickerOpen: false,
+				pending: false,
+			};
+			$("agentSidepanelTitle").textContent = "Routine";
+		} else editor.error = result?.error ?? "Could not save the routine.";
+		renderAgentComputerPanel(staff, true);
+	};
+	section.appendChild(form);
+	content.appendChild(section);
+}
+
+function renderAgentComputerPanel(staff, force = false) {
 	const content = $("agentSidepanelContent");
+	if (!force && agentRoutineEditor?.dirty && content.contains(document.activeElement)) return;
 	content.replaceChildren();
+	if (agentRoutineEditor) {
+		renderAgentRoutineEditor(content, staff);
+		return;
+	}
 	const computer = document.createElement("section");
 	computer.className = "agent-computer-section";
 	const screen = document.createElement("div");
@@ -1573,19 +2263,31 @@ function renderAgentComputerPanel(staff) {
 
 	const routines = document.createElement("section");
 	routines.className = "agent-routines-section";
-	const heading = document.createElement("h2");
-	heading.textContent = "Routines";
-	routines.appendChild(heading);
+	const create = document.createElement("button");
+	create.type = "button";
+	create.className = "agent-routine-create";
+	create.textContent = "Create Routine";
+	create.onclick = () => openAgentRoutineEditor(staff);
 	const jobs = agentRoutines(staff);
 	if (!jobs.length) {
-		const empty = document.createElement("p");
+		const empty = document.createElement("div");
 		empty.className = "agent-routines-empty";
-		empty.textContent = "Recurring work for this agent will appear here.";
+		const copy = document.createElement("p");
+		copy.textContent = "Routines are recurring tasks this agent runs on a schedule or when an event happens.";
+		empty.append(copy, create);
 		routines.appendChild(empty);
 	} else {
+		const head = document.createElement("div");
+		head.className = "agent-routines-head";
+		const heading = document.createElement("h2");
+		heading.textContent = "Routines";
+		head.append(heading, create);
+		routines.appendChild(head);
 		for (const job of jobs) {
-			const row = document.createElement("div");
+			const row = document.createElement("button");
+			row.type = "button";
 			row.className = "agent-routine-row";
+			row.onclick = () => openAgentRoutineEditor(staff, job);
 			const copy = document.createElement("span");
 			const title = document.createElement("strong");
 			title.textContent = job.title;
@@ -1593,7 +2295,7 @@ function renderAgentComputerPanel(staff) {
 			meta.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)}`;
 			copy.append(title, meta);
 			const stateLabel = document.createElement("small");
-			stateLabel.textContent = job.enabled && !job.suspendedReason ? "On" : "Off";
+			stateLabel.textContent = job.running ? "Running" : job.enabled && !job.suspendedReason ? "On" : "Off";
 			row.append(copy, stateLabel);
 			routines.appendChild(row);
 		}
@@ -1701,17 +2403,37 @@ function renderAgentSettingsPanel(staff) {
 function openAgentSidepanel(mode) {
 	const staff = currentStaff();
 	if (!staff) return;
-	if (agentSidepanelMode === mode && !$("agentSidepanel").hidden) {
+	const panel = $("agentSidepanel");
+	const titlebar = $("agentSidepanelTitlebar");
+	if (agentSidepanelMode === mode && !panel.hidden && !panel.classList.contains("is-closing")) {
 		closeAgentSidepanel();
 		return;
 	}
+	const opening = panel.hidden || panel.classList.contains("is-closing");
+	if (agentSidepanelMotionTimer) {
+		clearTimeout(agentSidepanelMotionTimer);
+		agentSidepanelMotionTimer = null;
+	}
 	agentSidepanelMode = mode;
-	$("agentSidepanel").hidden = false;
+	agentRoutineEditor = null;
+	panel.hidden = false;
+	titlebar.hidden = false;
+	panel.classList.remove("is-closing");
+	titlebar.classList.remove("is-closing");
 	$("agentSidepanelTitle").textContent = mode === "settings" ? "Settings" : staffDisplayName(staff);
 	$("staffIdentityButton").setAttribute("aria-expanded", String(mode === "settings"));
 	$("staffSidepanelButton").setAttribute("aria-expanded", String(mode === "computer"));
 	if (mode === "settings") renderAgentSettingsPanel(staff);
 	else renderAgentComputerPanel(staff);
+	if (!opening || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+	panel.classList.add("is-opening");
+	titlebar.classList.add("is-opening");
+	void panel.offsetWidth;
+	requestAnimationFrame(() => {
+		if (agentSidepanelMode !== mode) return;
+		panel.classList.remove("is-opening");
+		titlebar.classList.remove("is-opening");
+	});
 }
 
 async function retryStaffIntroduction() {
@@ -1740,36 +2462,116 @@ function syncConversationAccess() {
 	document.querySelector(".composer-shell")?.classList.remove("read-only");
 }
 
-function renderRosterRail() {
+function renderRosterRail({ animateCreateRow = false } = {}) {
 	const container = $("staffNavigation");
 	if (!container) return;
 	container.replaceChildren();
-	const staffMembers = activeStaffMembers();
+	if (!$("staffModal").hidden) {
+		const create = document.createElement("button");
+		create.type = "button";
+		create.className = "staff-nav-row staff-create-row active";
+		create.setAttribute("aria-current", "page");
+		const mark = document.createElement("span");
+		mark.className = "staff-create-mark";
+		mark.setAttribute("aria-hidden", "true");
+		mark.textContent = "+";
+		const copy = document.createElement("span");
+		copy.className = "staff-nav-copy";
+		const name = document.createElement("strong");
+		name.textContent = "Create new";
+		copy.appendChild(name);
+		create.append(mark, copy);
+		create.onclick = () => $("staffDisplayName").focus();
+		container.appendChild(create);
+		if (animateCreateRow && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+			create.classList.add("is-entering");
+			create.getBoundingClientRect();
+			requestAnimationFrame(() => create.classList.remove("is-entering"));
+		}
+	}
+	const pinned = storedStaffIds("staff-pinned");
+	const hidden = storedStaffIds("staff-hidden");
+	const staffMembers = activeStaffMembers()
+		.filter((staff) => !hidden.has(staffId(staff)))
+		.sort((left, right) => Number(pinned.has(staffId(right))) - Number(pinned.has(staffId(left))));
 	for (const staff of staffMembers) {
 		const id = staffId(staff);
 		const row = document.createElement("button");
 		row.type = "button";
 		row.className = "staff-nav-row";
-		row.classList.toggle("active", currentView === "chat" && currentStaffId === id);
+		row.classList.toggle("active", $("staffModal").hidden && currentView === "chat" && currentStaffId === id);
 		row.dataset.searchText = `${staffDisplayName(staff)} ${staffRoleLabel(staff)}`.toLowerCase();
 		row.appendChild(makeStaffAvatar(staff, staffStatus(staff)));
 		const copy = document.createElement("span");
 		copy.className = "staff-nav-copy";
+		const heading = document.createElement("span");
+		heading.className = "staff-nav-heading";
 		const name = document.createElement("strong");
 		name.textContent = staffDisplayName(staff);
+		heading.appendChild(name);
+		const lastMessageAt = Math.max(
+			0,
+			...(state.sessions ?? [])
+				.filter((session) => session.staffAgentId === id && session.kind === "chat")
+				.map((session) => Number(session.mtimeMs) || 0),
+		);
+		if (lastMessageAt) {
+			const messageDate = new Date(lastMessageAt);
+			const today = new Date();
+			const dayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+			const messageDayStart = new Date(
+				messageDate.getFullYear(),
+				messageDate.getMonth(),
+				messageDate.getDate(),
+			).getTime();
+			const ageInDays = Math.round((dayStart - messageDayStart) / 86_400_000);
+			const time = document.createElement("time");
+			time.className = "staff-nav-time";
+			time.dateTime = messageDate.toISOString();
+			time.textContent =
+				ageInDays === 0
+					? messageDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+					: ageInDays === 1
+						? "Yesterday"
+						: ageInDays > 1 && ageInDays < 7
+							? messageDate.toLocaleDateString([], { weekday: "short" })
+							: messageDate.toLocaleDateString([], { month: "short", day: "numeric" });
+			heading.appendChild(time);
+		}
 		const role = document.createElement("small");
 		const runtime = staffRuntime(staff);
 		role.textContent = runtime ? runtimeDoingLine(runtime) : staffRoleLabel(staff);
-		copy.append(name, role);
+		copy.append(heading, role);
 		const arrow = document.createElement("span");
 		arrow.className = "staff-nav-arrow";
 		arrow.setAttribute("aria-hidden", "true");
 		arrow.textContent = "›";
 		row.append(copy, arrow);
 		row.onclick = () => void openStaff(id);
+		row.oncontextmenu = (event) => openStaffContext(event, staff);
+		row.onkeydown = (event) => {
+			if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+			const bounds = row.getBoundingClientRect();
+			openStaffContext(event, staff, { x: bounds.left + 32, y: bounds.top + 24 });
+		};
 		container.appendChild(row);
 	}
-	if (!staffMembers.length) {
+	const hiddenStaff = activeStaffMembers().filter((staff) => hidden.has(staffId(staff)));
+	if (hiddenStaff.length) {
+		const hiddenEntry = document.createElement("button");
+		hiddenEntry.type = "button";
+		hiddenEntry.className = "hidden-staff-entry";
+		hiddenEntry.setAttribute("aria-haspopup", "dialog");
+		const label = document.createElement("span");
+		label.textContent = "Hidden Bots";
+		const count = document.createElement("span");
+		count.className = "hidden-staff-count";
+		count.textContent = String(hiddenStaff.length);
+		hiddenEntry.append(label, count);
+		hiddenEntry.onclick = (event) => openHiddenStaffModal(event.currentTarget);
+		container.appendChild(hiddenEntry);
+	}
+	if (!staffMembers.length && !hiddenStaff.length) {
 		const empty = document.createElement("div");
 		empty.className = "rail-empty";
 		empty.textContent = "Choose your starting team.";
@@ -1778,17 +2580,156 @@ function renderRosterRail() {
 	filterRosterRail(railSearchQuery);
 }
 
-function selectedBootstrapTemplates(templates) {
-	return templates.filter((template) => staffBootstrapSelections.has(templateId(template)));
+function storedStaffIds(name) {
+	try {
+		const value = JSON.parse(localStorage.getItem(navStorageKey(name)) ?? "[]");
+		return new Set(Array.isArray(value) ? value.filter((id) => typeof id === "string") : []);
+	} catch {
+		return new Set();
+	}
 }
 
-function bootstrapServiceIds(templates) {
-	const ids = new Set();
-	for (const template of selectedBootstrapTemplates(templates)) {
-		const suggested = template.suggestedConnectionIds ?? TEMPLATE_SERVICE_FALLBACKS[templateId(template)] ?? [];
-		for (const id of suggested) ids.add(id);
+function storeStaffIds(name, ids) {
+	localStorage.setItem(navStorageKey(name), JSON.stringify([...ids]));
+}
+
+function hiddenStaffMembers() {
+	const hidden = storedStaffIds("staff-hidden");
+	return activeStaffMembers().filter((staff) => hidden.has(staffId(staff)));
+}
+
+function renderHiddenStaffList() {
+	const list = $("hiddenStaffList");
+	list.replaceChildren();
+	const hiddenStaff = hiddenStaffMembers();
+	if (!hiddenStaff.length) {
+		const empty = document.createElement("div");
+		empty.className = "hidden-staff-empty";
+		empty.textContent = "No hidden Bots.";
+		list.appendChild(empty);
+		return;
 	}
-	return [...ids];
+	for (const staff of hiddenStaff) {
+		const row = document.createElement("div");
+		row.className = "hidden-staff-row";
+		row.appendChild(makeStaffAvatar(staff, staffStatus(staff)));
+		const name = document.createElement("strong");
+		name.textContent = staffDisplayName(staff);
+		const unhide = document.createElement("button");
+		unhide.type = "button";
+		unhide.textContent = "Unhide";
+		unhide.setAttribute("aria-label", `Unhide ${staffDisplayName(staff)}`);
+		unhide.onclick = () => {
+			const hidden = storedStaffIds("staff-hidden");
+			hidden.delete(staffId(staff));
+			storeStaffIds("staff-hidden", hidden);
+			renderRosterRail();
+			if (hiddenStaffMembers().length) renderHiddenStaffList();
+			else closeHiddenStaffModal();
+		};
+		row.append(name, unhide);
+		list.appendChild(row);
+	}
+}
+
+function openHiddenStaffModal(trigger) {
+	hiddenStaffTrigger = trigger;
+	renderHiddenStaffList();
+	$("hiddenStaffModal").hidden = false;
+	$("hiddenStaffClose").focus();
+}
+
+function closeHiddenStaffModal(restoreFocus = true) {
+	$("hiddenStaffModal").hidden = true;
+	if (restoreFocus) {
+		const replacement = document.querySelector(".hidden-staff-entry");
+		if (replacement instanceof HTMLElement) replacement.focus();
+		else if (hiddenStaffTrigger?.isConnected) hiddenStaffTrigger.focus();
+		else document.querySelector("#staffNavigation button")?.focus();
+	}
+	hiddenStaffTrigger = null;
+}
+
+function closeStaffContext(restoreFocus = false) {
+	$("staffContextMenu").hidden = true;
+	staffContextTarget = null;
+	if (restoreFocus) staffContextTrigger?.focus();
+	staffContextTrigger = null;
+}
+
+function openStaffContext(event, staff, point) {
+	event.preventDefault();
+	event.stopPropagation();
+	closeNavContext();
+	closePanelContext();
+	closeStaffContext();
+	staffContextTarget = staff;
+	staffContextTrigger = event.currentTarget;
+	navContextPoint = point ?? { x: event.clientX, y: event.clientY };
+	const id = staffId(staff);
+	const pinned = storedStaffIds("staff-pinned").has(id);
+	const hidden = storedStaffIds("staff-hidden").has(id);
+	$("staffContextPin").querySelector("span:last-child").textContent = pinned ? "Unpin" : "Pin";
+	$("staffContextHide").querySelector("span:last-child").textContent = hidden ? "Show in sidebar" : "Hide from sidebar";
+	$("staffContextMenu").hidden = false;
+	placeFloatingMenu($("staffContextMenu"));
+	$("staffContextPin").focus();
+}
+
+function toggleStaffContextPreference(name) {
+	if (!staffContextTarget) return;
+	const ids = storedStaffIds(name);
+	const id = staffId(staffContextTarget);
+	if (ids.has(id)) ids.delete(id);
+	else ids.add(id);
+	storeStaffIds(name, ids);
+	closeStaffContext();
+	renderRosterRail();
+}
+
+function openStaffDeleteConfirmation() {
+	if (!staffContextTarget) return;
+	staffDeleteTarget = staffContextTarget;
+	closeStaffContext();
+	$("staffDeleteTitle").textContent = `Delete ${staffDisplayName(staffDeleteTarget)}?`;
+	$("staffDeleteDescription").textContent =
+		"This removes the agent from active staff. Its existing company trail remains in the company file for audit history.";
+	$("staffDeleteModal").hidden = false;
+	$("staffDeleteCancel").focus();
+}
+
+function closeStaffDeleteConfirmation() {
+	$("staffDeleteModal").hidden = true;
+	staffDeleteTarget = null;
+}
+
+async function deleteStaffMember() {
+	if (!staffDeleteTarget) return;
+	const id = staffId(staffDeleteTarget);
+	const button = $("staffDeleteConfirm");
+	button.disabled = true;
+	button.textContent = "Deleting…";
+	try {
+		const result = await window.qorpera.staffArchive(id);
+		if (result?.ok === false) throw new Error(result.error ?? "The agent could not be deleted.");
+		const hidden = storedStaffIds("staff-hidden");
+		const pinned = storedStaffIds("staff-pinned");
+		hidden.delete(id);
+		pinned.delete(id);
+		storeStaffIds("staff-hidden", hidden);
+		storeStaffIds("staff-pinned", pinned);
+		closeStaffDeleteConfirmation();
+		await refreshState();
+	} catch (error) {
+		showControllerToast(error instanceof Error ? error.message : "The agent could not be deleted.");
+	} finally {
+		button.disabled = false;
+		button.textContent = "Delete";
+	}
+}
+
+function selectedBootstrapTemplates(templates) {
+	return templates.filter((template) => staffBootstrapSelections.has(templateId(template)));
 }
 
 async function startStaffBootstrap(templates) {
@@ -1804,10 +2745,6 @@ async function startStaffBootstrap(templates) {
 				displayName: templateName(template),
 				appearance: { color: staffColor(template), shape: staffShape(template) },
 			})),
-			services: [...staffBootstrapServices],
-			...(staffBootstrapOtherEnabled && staffBootstrapOther.trim()
-				? { otherService: staffBootstrapOther.trim() }
-				: {}),
 		});
 		if (result?.ok === false) throw new Error(result.error ?? "The team could not be created.");
 		const created = Array.isArray(result?.staff) ? result.staff : [];
@@ -1822,12 +2759,8 @@ async function startStaffBootstrap(templates) {
 		const firstStaff = first?.staff ?? first?.agent;
 		if (!staffId(firstStaff) || !first?.sessionFile) throw new Error("The first staff conversation is unavailable.");
 		activateStaffSession(staffId(firstStaff), first.sessionFile, first);
-		$("status").textContent = `${created.length} staff joined. Their first orientation turns are queued on this computer.`;
+		$("status").textContent = `${created.length} staff joined. Their first conversations are starting on this computer.`;
 		staffBootstrapSelections = new Set();
-		staffBootstrapServices = new Set();
-		staffBootstrapOtherEnabled = false;
-		staffBootstrapOther = "";
-		staffBootstrapStep = "staff";
 		staffBootstrapPending = false;
 		await refreshState();
 		setTimeout(() => {
@@ -1847,136 +2780,51 @@ function renderStaffBootstrapHome(home, templates) {
 	const header = document.createElement("header");
 	header.className = "staff-bootstrap-head";
 	const title = document.createElement("h1");
-	title.textContent = staffBootstrapStep === "staff" ? "Choose your starting team" : "What does your company use?";
+	title.textContent = "Choose your starting team";
 	const subtitle = document.createElement("p");
-	subtitle.textContent =
-		staffBootstrapStep === "staff"
-			? "Select everyone you want to begin with. You can add more later."
-			: "Choose what they should orient around. They will inspect the company first, then ask only for access they need.";
+	subtitle.textContent = "Select everyone you want to begin with. You can add more later.";
 	header.append(title, subtitle);
 	home.appendChild(header);
 
-	if (staffBootstrapStep === "staff") {
-		const grid = document.createElement("div");
-		grid.className = "staff-bootstrap-grid";
-		for (const template of templates) {
-			const id = templateId(template);
-			const selected = staffBootstrapSelections.has(id);
-			const card = document.createElement("button");
-			card.type = "button";
-			card.className = "staff-bootstrap-card";
-			card.classList.toggle("selected", selected);
-			card.setAttribute("role", "checkbox");
-			card.setAttribute("aria-checked", String(selected));
-			card.appendChild(makeStaffAvatar(template));
-			const name = document.createElement("strong");
-			name.textContent = templateName(template);
-			const description = document.createElement("p");
-			description.textContent = staffDescription(template);
-			const check = document.createElement("span");
-			check.className = "staff-bootstrap-check";
-			check.textContent = selected ? "✓" : "+";
-			card.append(name, description, check);
-			card.onclick = () => {
-				if (selected) staffBootstrapSelections.delete(id);
-				else staffBootstrapSelections.add(id);
-				renderStaffHome();
-			};
-			grid.appendChild(card);
-		}
-		home.appendChild(grid);
-	} else {
-		const choices = document.createElement("div");
-		choices.className = "staff-bootstrap-services";
-		for (const id of bootstrapServiceIds(templates)) {
-			const service = SERVICE_CATALOG[id] ?? { name: id, detail: "Company service" };
-			const selected = staffBootstrapServices.has(id);
-			const row = document.createElement("button");
-			row.type = "button";
-			row.className = "staff-bootstrap-service";
-			row.classList.toggle("selected", selected);
-			row.setAttribute("role", "checkbox");
-			row.setAttribute("aria-checked", String(selected));
-			const mark = document.createElement("span");
-			mark.className = "bootstrap-choice-mark";
-			mark.textContent = selected ? "✓" : "";
-			const copy = document.createElement("span");
-			const name = document.createElement("strong");
-			name.textContent = service.name;
-			const detail = document.createElement("small");
-			detail.textContent = service.detail;
-			copy.append(name, detail);
-			row.append(mark, copy);
-			row.onclick = () => {
-				if (selected) staffBootstrapServices.delete(id);
-				else staffBootstrapServices.add(id);
-				renderStaffHome();
-			};
-			choices.appendChild(row);
-		}
-		const other = document.createElement("button");
-		other.type = "button";
-		other.className = "staff-bootstrap-service other";
-		other.classList.toggle("selected", staffBootstrapOtherEnabled);
-		other.setAttribute("role", "checkbox");
-		other.setAttribute("aria-checked", String(staffBootstrapOtherEnabled));
-		other.innerHTML = `<span class="bootstrap-choice-mark">${staffBootstrapOtherEnabled ? "✓" : ""}</span><span><strong>Other</strong><small>Tell us about another service you use or want to use</small></span>`;
-		other.onclick = () => {
-			staffBootstrapOtherEnabled = !staffBootstrapOtherEnabled;
+	const grid = document.createElement("div");
+	grid.className = "staff-bootstrap-grid";
+	for (const template of templates) {
+		const id = templateId(template);
+		const selected = staffBootstrapSelections.has(id);
+		const card = document.createElement("button");
+		card.type = "button";
+		card.className = "staff-bootstrap-card";
+		card.classList.toggle("selected", selected);
+		card.setAttribute("role", "checkbox");
+		card.setAttribute("aria-checked", String(selected));
+		card.appendChild(makeStaffAvatar(template));
+		const name = document.createElement("strong");
+		name.textContent = templateName(template);
+		const description = document.createElement("p");
+		description.textContent = staffDescription(template);
+		const check = document.createElement("span");
+		check.className = "staff-bootstrap-check";
+		check.textContent = selected ? "✓" : "+";
+		card.append(name, description, check);
+		card.onclick = () => {
+			if (selected) staffBootstrapSelections.delete(id);
+			else staffBootstrapSelections.add(id);
 			renderStaffHome();
 		};
-		choices.appendChild(other);
-		if (staffBootstrapOtherEnabled) {
-			const field = document.createElement("label");
-			field.className = "staff-bootstrap-other";
-			field.innerHTML = "<span>What should they connect to?</span>";
-			const input = document.createElement("textarea");
-			input.rows = 3;
-			input.maxLength = 2048;
-			input.placeholder = "e.g. Nordea Corporate Netbank — balances and transactions for Finance Partner";
-			input.value = staffBootstrapOther;
-			input.oninput = () => {
-				staffBootstrapOther = input.value;
-			};
-			const help = document.createElement("small");
-			help.textContent = "Staff will make the connector brief and recipe proposal their next build. They will not ask for credentials until it is implemented and ready for review.";
-			field.append(input, help);
-			choices.appendChild(field);
-		}
-		home.appendChild(choices);
+		grid.appendChild(card);
 	}
+	home.appendChild(grid);
 
 	const actions = document.createElement("footer");
 	actions.className = "staff-bootstrap-actions";
-	if (staffBootstrapStep === "services") {
-		const back = document.createElement("button");
-		back.type = "button";
-		back.className = "secondary-button";
-		back.textContent = "Back";
-		back.disabled = staffBootstrapPending;
-		back.onclick = () => {
-			staffBootstrapStep = "staff";
-			renderStaffHome();
-		};
-		actions.appendChild(back);
-	}
 	const primary = document.createElement("button");
 	primary.type = "button";
 	primary.className = "primary-button";
 	const count = staffBootstrapSelections.size;
-	primary.textContent = staffBootstrapPending
-		? "Creating your team…"
-		: staffBootstrapStep === "staff"
-			? `Continue with ${count || 0}`
-			: `Start ${count} staff`;
-	primary.disabled = staffBootstrapPending || count === 0 || (staffBootstrapOtherEnabled && !staffBootstrapOther.trim());
+	primary.textContent = staffBootstrapPending ? "Creating your team…" : `Start ${count} staff`;
+	primary.disabled = staffBootstrapPending || count === 0;
 	primary.onclick = () => {
-		if (staffBootstrapStep === "staff") {
-			staffBootstrapStep = "services";
-			renderStaffHome();
-		} else {
-			void startStaffBootstrap(templates);
-		}
+		void startStaffBootstrap(templates);
 	};
 	actions.appendChild(primary);
 	home.appendChild(actions);
@@ -1996,21 +2844,12 @@ function renderStaffHome() {
 		});
 		return;
 	}
-	const header = document.createElement("header");
-	header.className = "roster-home-head";
-	const copy = document.createElement("div");
-	const title = document.createElement("h1");
-	title.textContent = "Your staff";
-	const subtitle = document.createElement("p");
-	subtitle.textContent = "Open a staff member to delegate work, review what they need, or continue the relationship.";
-	copy.append(title, subtitle);
-	header.appendChild(copy);
 	const add = document.createElement("button");
 	add.type = "button";
+	add.className = "roster-home-add";
 	add.textContent = "+ Add staff";
 	add.onclick = () => void openStaffCreator();
-	header.appendChild(add);
-	home.appendChild(header);
+	home.appendChild(add);
 	const grid = document.createElement("div");
 	grid.className = "roster-grid";
 	home.appendChild(grid);
@@ -2049,37 +2888,44 @@ async function openCompanySwitcher() {
 		return;
 	}
 	menu.replaceChildren();
-	const settings = document.createElement("button");
-	settings.type = "button";
-	settings.setAttribute("role", "menuitem");
-	settings.innerHTML = "<strong>Profile settings</strong><small>Connections, authority, and account</small>";
-	settings.onclick = () => {
+	const close = () => {
 		menu.hidden = true;
 		button.setAttribute("aria-expanded", "false");
-		openSettings("connections");
 	};
-	menu.appendChild(settings);
-	const companies = await window.qorpera.listCompanies();
-	for (const company of companies) {
+	const item = (label, icon, action, className = "") => {
 		const option = document.createElement("button");
 		option.type = "button";
+		option.className = className;
 		option.setAttribute("role", "menuitem");
-		const name = document.createElement("strong");
-		name.textContent = company.name;
-		option.append(name);
-		option.onclick = () => void openCompany(company.root);
-		menu.appendChild(option);
-	}
-	const create = document.createElement("button");
-	create.type = "button";
-	create.setAttribute("role", "menuitem");
-	create.innerHTML = "<strong>New profile</strong>";
-	create.onclick = () => {
-		menu.hidden = true;
-		button.setAttribute("aria-expanded", "false");
-		openCompanyModal();
+		const mark = document.createElement("img");
+		mark.className = "company-switcher-menu-icon";
+		mark.src = `./icon-${icon}.svg`;
+		mark.alt = "";
+		const text = document.createElement("span");
+		text.textContent = label;
+		option.append(mark, text);
+		option.onclick = async () => {
+			close();
+			await action();
+		};
+		return option;
 	};
-	menu.appendChild(create);
+	menu.append(
+		item("Settings", "settings", () => openSettings("general")),
+		item("Feedback", "feedback", async () => {
+			const result = await window.qorpera.openFeedback();
+			if (!result?.ok) showControllerToast(result?.error ?? "Feedback could not be opened.");
+		}),
+		item(
+			"Log out",
+			"log-out",
+			async () => {
+				const result = await window.qorpera.accountSignOut();
+				if (!result?.ok) showControllerToast(result?.error ?? "Could not log out.");
+			},
+			"company-switcher-menu-logout",
+		),
+	);
 	menu.hidden = false;
 	button.setAttribute("aria-expanded", "true");
 	menu.querySelector("button")?.focus();
@@ -2088,7 +2934,7 @@ async function openCompanySwitcher() {
 function renderCompanySwitcher() {
 	const name = state.name || "Profile";
 	$("companySwitcherName").textContent = name;
-	$("companySwitcherMark").textContent = name.trim().slice(0, 1).toUpperCase() || "Q";
+	$("companySwitcherMark").replaceChildren(makeProfileIcon(currentProfileIcon, ""));
 }
 
 function syncConnectionRequestCards() {
@@ -2242,7 +3088,10 @@ function hydrateAgentState(withHistory) {
 }
 
 function cacheCurrentSession() {
-	if (currentSession) sessionCache[currentSession] = $("messages").innerHTML;
+	if (!currentSession) return;
+	const snapshot = $("messages").cloneNode(true);
+	for (const activity of snapshot.querySelectorAll(".agent-thread-activity")) activity.remove();
+	sessionCache[currentSession] = snapshot.innerHTML;
 }
 
 async function openSession(file, pageId = "q:chats") {
@@ -2357,6 +3206,7 @@ async function newChat() {
 function renderHistory(messages) {
 	$("messages").innerHTML = "";
 	resetWorkGroup();
+	resetAssistantStreamState();
 	lastSubmittedPrompt = null;
 	turnFailureCard = null;
 	let historyProgress = createRunProgress();
@@ -2390,12 +3240,8 @@ function renderHistory(messages) {
 				historyFailureShown = false;
 				historyToolCalls.clear();
 			}
-		} else if (message.role === "assistant") {
-			const assistantText = (message.content ?? [])
-				.filter((part) => part.type === "text" && part.text)
-				.map((part) => part.text)
-				.join("\n\n");
-			if (assistantText) renderMarkdown(addMsg("assistant", ""), assistantText);
+			} else if (message.role === "assistant") {
+				appendAssistantMessages(assistantTextPartsFromMessage(message));
 			for (const part of message.content ?? []) {
 				if (part.type === "toolCall") {
 					if (part.id)
@@ -2406,7 +3252,9 @@ function renderHistory(messages) {
 				}
 			}
 			if (message.stopReason === "error" && !historyFailureShown) {
-				addModelFailureCard(message.errorMessage, historyProgress, historyPrompt);
+				addModelFailureCard(message.errorMessage, historyProgress, historyPrompt, {
+					historical: true,
+				});
 				historyFailureShown = true;
 			}
 		} else if (message.role === "toolResult" && message.isError === false) {
@@ -3563,12 +4411,7 @@ async function openProjectionNode(id, updateRoute = true) {
 		show("roster");
 		renderRosterRail();
 	} else if (node.view.id === "qorpera.usage") {
-		// Company-authored usage pages only — the platform's Usage lives in Settings.
-		window.qorperaUsage.open({
-			backendUrl,
-			onBack: () => void openProjectionNode("q:main"),
-		});
-		show("usage");
+		openSettings("connections");
 	} else if (node.view.id === "qorpera.product-chat") {
 		const department = (state.departments ?? []).find((entry) => entry.id === context.departmentId);
 		renderProductChats(department, node);
@@ -3679,13 +4522,27 @@ function setupHierarchicalController() {
 	$("companySwitcherButton").onclick = () => void openCompanySwitcher();
 	$("staffIdentityButton").onclick = () => openAgentSidepanel("settings");
 	$("staffSidepanelButton").onclick = () => openAgentSidepanel("computer");
-	$("agentSidepanelBack").onclick = () => closeAgentSidepanel();
+	$("agentSidepanelBack").onclick = handleAgentSidepanelBack;
 	$("agentSidepanelClose").onclick = () => closeAgentSidepanel();
-	$("railSearch").oninput = () => filterRosterRail($("railSearch").value);
+	$("railSearch").oninput = () => {
+		filterRosterRail($("railSearch").value);
+		renderRosterRail();
+	};
 	$("staffClose").onclick = closeStaffCreator;
 	$("staffCancel").onclick = closeStaffCreator;
+	$("staffTemplateGrid").addEventListener(
+		"wheel",
+		(event) => {
+			if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+			event.preventDefault();
+			$("staffTemplateGrid").scrollLeft += event.deltaY;
+		},
+		{ passive: false },
+	);
+	$("staffTemplateGrid").addEventListener("scroll", syncStaffTemplateScrollbar, { passive: true });
+	window.addEventListener("resize", syncStaffTemplateScrollbar);
 	$("staffDisplayName").oninput = () => {
-		$("staffCreateButton").disabled = staffCreatorPending || !staffCreatorSelection || !$("staffDisplayName").value.trim();
+		$("staffCreateButton").disabled = staffCreatorPending || !$("staffDisplayName").value.trim();
 	};
 	$("staffForm").onsubmit = (event) => {
 		event.preventDefault();
@@ -3697,7 +4554,70 @@ function setupHierarchicalController() {
 		$("navigation").scrollTop = 0;
 		showControllerToast("Panel reset. Manually hidden items remain hidden.");
 	};
-	$("conav").oncontextmenu = openPanelContext;
+	$("conav").oncontextmenu = (event) => event.preventDefault();
+	$("staffContextPin").onclick = () => toggleStaffContextPreference("staff-pinned");
+	$("staffContextHide").onclick = () => toggleStaffContextPreference("staff-hidden");
+	$("staffContextEdit").onclick = async () => {
+		const id = staffContextTarget ? staffId(staffContextTarget) : null;
+		closeStaffContext();
+		if (!id) return;
+		await openStaff(id);
+		if (currentStaffId === id) openAgentSidepanel("settings");
+	};
+	$("staffContextCopy").onclick = async () => {
+		const id = staffContextTarget ? staffId(staffContextTarget) : null;
+		closeStaffContext();
+		if (!id) return;
+		try {
+			const result = await window.qorpera.copyStaffConversationId(id);
+			if (!result?.ok) throw new Error(result?.error ?? "Conversation ID could not be copied.");
+			showControllerToast("Conversation ID copied.");
+		} catch {
+			showControllerToast("The conversation ID could not be copied.");
+		}
+	};
+	$("staffContextDelete").onclick = openStaffDeleteConfirmation;
+	$("staffContextMenu").onkeydown = (event) => {
+		if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
+		event.preventDefault();
+		const items = [...$("staffContextMenu").querySelectorAll('button[role="menuitem"]:not(:disabled)')];
+		const current = Math.max(0, items.indexOf(document.activeElement));
+		const next =
+			event.key === "Home"
+				? 0
+				: event.key === "End"
+					? items.length - 1
+					: (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+		items[next]?.focus();
+	};
+	$("staffDeleteCancel").onclick = closeStaffDeleteConfirmation;
+	$("staffDeleteConfirm").onclick = () => void deleteStaffMember();
+	$("staffDeleteModal").onpointerdown = (event) => {
+		if (event.target === $("staffDeleteModal")) closeStaffDeleteConfirmation();
+	};
+	$("hiddenStaffClose").onclick = () => closeHiddenStaffModal();
+	$("hiddenStaffModal").onpointerdown = (event) => {
+		if (event.target === $("hiddenStaffModal")) closeHiddenStaffModal();
+	};
+	$("hiddenStaffModal").onkeydown = (event) => {
+		if (event.key === "Escape") {
+			event.preventDefault();
+			closeHiddenStaffModal();
+			return;
+		}
+		if (event.key !== "Tab") return;
+		const controls = [...$("hiddenStaffModal").querySelectorAll("button:not(:disabled)")];
+		if (!controls.length) return;
+		const first = controls[0];
+		const last = controls.at(-1);
+		if (event.shiftKey && document.activeElement === first) {
+			event.preventDefault();
+			last.focus();
+		} else if (!event.shiftKey && document.activeElement === last) {
+			event.preventDefault();
+			first.focus();
+		}
+	};
 
 	$("adjustHeightButton").onclick = () => {
 		$("contextActions").hidden = true;
@@ -3793,6 +4713,7 @@ function setupHierarchicalController() {
 	document.addEventListener("pointerdown", (event) => {
 		if (!$("navContext").hidden && !$("navContext").contains(event.target)) closeNavContext();
 		if (!$("panelContextMenu").hidden && !$("panelContextMenu").contains(event.target)) closePanelContext();
+		if (!$("staffContextMenu").hidden && !$("staffContextMenu").contains(event.target)) closeStaffContext();
 		if (!$("companySwitcherMenu").hidden && !$("companySwitcherMenu").contains(event.target) && !$("companySwitcherButton").contains(event.target)) {
 			$("companySwitcherMenu").hidden = true;
 			$("companySwitcherButton").setAttribute("aria-expanded", "false");
@@ -3801,10 +4722,12 @@ function setupHierarchicalController() {
 	document.addEventListener("keydown", (event) => {
 		if (event.key !== "Escape") return;
 		if (!$("staffModal").hidden) closeStaffCreator();
+		else if (!$("staffDeleteModal").hidden) closeStaffDeleteConfirmation();
 		else if (!$("archiveModal").hidden) closeArchiveConfirmation();
 		else if (!$("departmentModal").hidden) closeDepartmentModal();
 		else if (!$("navContext").hidden) closeNavContext();
 		else if (!$("panelContextMenu").hidden) closePanelContext();
+		else if (!$("staffContextMenu").hidden) closeStaffContext(true);
 		else if (!$("agentSidepanel").hidden) closeAgentSidepanel();
 	});
 }
@@ -3848,17 +4771,15 @@ function show(view) {
 	currentView = view;
 	const docked = view === "surface" && sidechatOpen;
 	const staffHeaderVisible = view === "chat" || Boolean(currentStaffId && (view === "surface" || view === "panel"));
+	const staffCreatorOpen = !$("staffModal").hidden;
 	dockChat(docked);
-	$("threadHeader").hidden = !staffHeaderVisible;
+	$("threadHeader").hidden = staffCreatorOpen || !staffHeaderVisible;
+	$("staffCreatorTitlebar").hidden = !staffCreatorOpen;
 	$("view-roster").style.display = view === "roster" ? "block" : "none";
 	$("view-chat").style.display = view === "chat" || docked ? "flex" : "none";
 	$("view-surfacewrap").style.display = view === "surface" ? "flex" : "none";
 	$("view-surfacewrap").classList.toggle("chat-open", sidechatOpen);
 	$("view-panel").style.display = view === "panel" ? "block" : "none";
-	// Leave the usage view alone while it is docked inside Settings.
-	if ($("view-usage").parentElement !== $("settingsContent")) {
-		$("view-usage").style.display = view === "usage" ? "block" : "none";
-	}
 	if (view === "roster") renderStaffHome();
 	if (staffHeaderVisible) renderThreadHeader();
 	renderCompanyNavSafe();
@@ -4009,17 +4930,23 @@ const TRAIL_OUTCOME_LABELS = {
 };
 
 function scheduledJobScheduleLabel(job) {
-	const minutes = Number(job.intervalMinutes);
-	if (minutes === 60) return "Hourly";
-	if (minutes % 1440 === 0) return `Every ${minutes / 1440} day${minutes === 1440 ? "" : "s"}`;
-	if (minutes % 60 === 0) return `Every ${minutes / 60} hour${minutes === 60 ? "" : "s"}`;
-	return `Every ${minutes} minute${minutes === 1 ? "" : "s"}`;
+	const labels = (job.triggers ?? []).map((trigger) => {
+		if (trigger.kind === "github") return trigger.repository ? `GitHub · ${trigger.repository}` : "GitHub event";
+		if (trigger.kind === "custom") return trigger.label;
+		const minutes = Number(trigger.intervalMinutes);
+		if (minutes === 60) return "Hourly";
+		if (minutes % 1440 === 0) return `Every ${minutes / 1440} day${minutes === 1440 ? "" : "s"}`;
+		if (minutes % 60 === 0) return `Every ${minutes / 60} hour${minutes === 60 ? "" : "s"}`;
+		return `Every ${minutes} minute${minutes === 1 ? "" : "s"}`;
+	});
+	return labels.join(" · ") || "No trigger";
 }
 
 function scheduledJobNextLabel(job) {
 	if (job.running) return "Running now";
 	if (job.suspendedReason) return "Suspended";
 	if (!job.enabled) return "Paused";
+	if (!(job.triggers ?? []).some((trigger) => trigger.kind === "schedule")) return "Waiting for event";
 	const next = Date.parse(job.nextRunAt);
 	if (!Number.isFinite(next) || next <= Date.now()) return "Due now";
 	const minutes = Math.ceil((next - Date.now()) / 60000);
@@ -4033,7 +4960,10 @@ function scheduledJobDraft(job) {
 	return {
 		title: job?.title ?? "",
 		prompt: job?.prompt ?? "",
-		intervalMinutes: job?.intervalMinutes ?? 10,
+		triggers: (job?.triggers ?? []).map((trigger) => ({
+			...trigger,
+			...(trigger.kind === "github" ? { events: [...trigger.events], actors: [...trigger.actors] } : {}),
+		})),
 		enabled: job?.enabled ?? true,
 	};
 }
@@ -4352,9 +5282,11 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 	interval.min = "5";
 	interval.max = String(7 * 24 * 60);
 	interval.step = "1";
-	interval.value = String(scheduledJobPanel.draft.intervalMinutes);
+	interval.value = String(scheduledJobPanel.draft.triggers.find((trigger) => trigger.kind === "schedule")?.intervalMinutes ?? 60);
 	interval.oninput = () => {
-		scheduledJobPanel.draft.intervalMinutes = Number(interval.value);
+		const schedule = scheduledJobPanel.draft.triggers.find((trigger) => trigger.kind === "schedule");
+		if (schedule) schedule.intervalMinutes = Number(interval.value);
+		else scheduledJobPanel.draft.triggers.push({ id: crypto.randomUUID(), kind: "schedule", intervalMinutes: Number(interval.value) });
 		scheduledJobPanel.dirty = true;
 	};
 	form.appendChild(
@@ -4484,7 +5416,9 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 		const draft = {
 			title: scheduledJobPanel.draft.title,
 			prompt: scheduledJobPanel.draft.prompt,
-			intervalMinutes: Number(scheduledJobPanel.draft.intervalMinutes),
+			triggers: scheduledJobPanel.draft.triggers.length
+				? scheduledJobPanel.draft.triggers
+				: [{ id: crypto.randomUUID(), kind: "schedule", intervalMinutes: Number(interval.value) }],
 			enabled: Boolean(scheduledJobPanel.draft.enabled),
 			...(activityStaffId ? { staffAgentId: activityStaffId } : {}),
 		};
@@ -5125,8 +6059,231 @@ function addMsg(cls, text) {
 	return div;
 }
 
+function assistantTextPartsFromMessage(message) {
+	return (message?.content ?? [])
+		.filter((part) => part.type === "text" && part.text)
+		.map((part) => part.text)
+		.filter(Boolean);
+}
+
+function assistantTextBlocksFromMessage(message) {
+	return (message?.content ?? [])
+		.map((part, contentIndex) => ({ contentIndex, text: part.type === "text" ? String(part.text ?? "") : "" }))
+		.filter((part) => part.text);
+}
+
+/** Preserve provider-authored text blocks, then split only at top-level blank
+ * lines. This changes presentation, not the stored trail or model prompt. */
+function assistantDisplaySegments(source) {
+	const text = String(source ?? "").replace(/\r\n?/g, "\n").trim();
+	if (!text) return [];
+	const blocks = [];
+	let block = [];
+	let fence = "";
+	const flush = () => {
+		const value = block.join("\n").trim();
+		if (value) blocks.push(value);
+		block = [];
+	};
+	for (const line of text.split("\n")) {
+		const marker = line.match(/^\s*(```|~~~)/)?.[1] ?? "";
+		if (!fence && marker) fence = marker;
+		else if (fence && marker === fence) fence = "";
+		if (!fence && !line.trim()) flush();
+		else block.push(line);
+	}
+	flush();
+
+	const segments = [];
+	for (const value of blocks) {
+		const structured = /^(?:[-*+]\s|\d+[.)]\s|\|)/.test(value);
+		const previous = segments.at(-1);
+		if (structured && previous && /[:：]\s*$/.test(previous)) segments[segments.length - 1] = `${previous}\n\n${value}`;
+		else segments.push(value);
+	}
+	return segments;
+}
+
+function appendAssistantMessages(parts, animate = false) {
+	const segments = parts.flatMap(assistantDisplaySegments);
+	const messages = [];
+	for (const [index, text] of segments.entries()) {
+		const message = addMsg("assistant", "");
+		message.classList.add("assistant-segment");
+		if (animate) {
+			message.classList.add("message-pop");
+			message.style.setProperty("--message-pop-delay", `${Math.min(index * 65, 260)}ms`);
+		}
+		renderMarkdown(message, text);
+		messages.push(message);
+	}
+	$("messages").scrollTop = $("messages").scrollHeight;
+	return messages;
+}
+
+function resetAssistantStreamState() {
+	pendingAssistantTextByIndex.clear();
+	renderedAssistantTextByIndex.clear();
+}
+
+function assistantStreamHasPendingText() {
+	return [...pendingAssistantTextByIndex.values()].some((text) => text.trim());
+}
+
+/** Commit a provider-completed text block as one or more digestible bubbles.
+ * The provider stream stays canonical; hidden reasoning is never projected. */
+function renderCompletedAssistantBlock(contentIndex, content) {
+	const text = String(content ?? "").trim();
+	if (!text) return [];
+	const previous = renderedAssistantTextByIndex.get(contentIndex);
+	if (previous?.text === text) return previous.elements;
+	for (const element of previous?.elements ?? []) element.remove();
+	const elements = appendAssistantMessages([text], true);
+	renderedAssistantTextByIndex.set(contentIndex, { text, elements });
+	if (elements.length) {
+		turnProgressBubbleCount = Math.min(2, turnProgressBubbleCount + elements.length);
+		turnProgressLastKind = "provider";
+		turnProgressLastAt = Date.now();
+	}
+	return elements;
+}
+
+function reconcileCompletedAssistantMessage(message) {
+	const blocks = assistantTextBlocksFromMessage(message);
+	for (const block of blocks) renderCompletedAssistantBlock(block.contentIndex, block.text);
+	if (!blocks.length) {
+		for (const [contentIndex, text] of pendingAssistantTextByIndex) {
+			renderCompletedAssistantBlock(contentIndex, text);
+		}
+	}
+}
+
+function toolProgressKind(toolName) {
+	const tool = String(toolName ?? "").toLowerCase();
+	if (/^(?:read|grep|find|ls|glob|search)$/.test(tool)) return "company-search";
+	if (/^(?:web_search|web-search|http-request|fetch|browser|navigate)$/.test(tool)) return "web-search";
+	if (/^(?:write|edit|edit-diff|apply_patch|patch|notebook_edit)$/.test(tool)) return "change";
+	if (/^(?:bash|shell|shell_command)$/.test(tool)) return "command";
+	return "work";
+}
+
+function toolProgressText(kind) {
+	if (kind === "company-search") return "Checking the company files now.";
+	if (kind === "web-search") return "Looking that up now.";
+	if (kind === "change") return "Making that change now.";
+	if (kind === "command") return "Running that now.";
+	return "Working on that now.";
+}
+
+/** Show at most two factual phase updates per turn. These are derived from
+ * explicit tool events; hidden reasoning and thinking deltas remain hidden. */
+function maybeAppendToolProgress(toolName) {
+	if (turnProgressBubbleCount >= 2) return;
+	const kind = toolProgressKind(toolName);
+	const now = Date.now();
+	if (turnProgressBubbleCount && now - turnProgressLastAt < 900) return;
+	if (kind === turnProgressLastKind && now - turnProgressLastAt < 6000) return;
+	const [message] = appendAssistantMessages([toolProgressText(kind)], true);
+	message?.classList.add("assistant-progress");
+	turnProgressBubbleCount += 1;
+	turnProgressLastKind = kind;
+	turnProgressLastAt = now;
+}
+
+function threadActivityLabel(mode) {
+	const staff = currentStaff();
+	const name = staff ? staffDisplayName(staff) : $("threadTitle").textContent || "Agent";
+	const action = mode === "working" ? "working" : mode === "typing" ? "writing" : "thinking";
+	return `${name} ${action}`;
+}
+
+function showThreadActivity(mode) {
+	if (currentView !== "chat" && !(currentView === "surface" && sidechatOpen)) return;
+	const staff = currentStaff();
+	const activityStaffId = staffId(staff);
+	if (!threadActivityEl?.isConnected) {
+		threadActivityEl = document.createElement("div");
+		threadActivityEl.tabIndex = 0;
+		threadActivityEl.setAttribute("role", "status");
+		$("messages").appendChild(threadActivityEl);
+	}
+	const label = threadActivityLabel(mode);
+	if (threadActivityEl.dataset.mode === mode && threadActivityEl.dataset.staffId === activityStaffId) {
+		$("messages").appendChild(threadActivityEl);
+		$("messages").scrollTop = $("messages").scrollHeight;
+		return;
+	}
+	threadActivityEl.className = `agent-thread-activity is-${mode}`;
+	threadActivityEl.dataset.mode = mode;
+	threadActivityEl.dataset.staffId = activityStaffId;
+	threadActivityEl.dataset.tooltip = label;
+	threadActivityEl.setAttribute("aria-label", label);
+	const motion = mode === "working" ? "working" : mode === "typing" ? "finishing" : "starting";
+	threadActivityEl.replaceChildren(makeStaffAvatar(staff, motion));
+	if (mode === "typing") {
+		const dots = document.createElement("span");
+		dots.className = "agent-writing-dots";
+		dots.setAttribute("aria-hidden", "true");
+		dots.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
+		threadActivityEl.appendChild(dots);
+		if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+			for (const [index, dot] of [...dots.children].entries()) {
+				dot.animate(
+					[
+						{ transform: "translateY(0) scale(1)", offset: 0 },
+						{ transform: "translateY(-5px) scale(1.16)", offset: 0.22 },
+						{ transform: "translateY(0) scale(1)", offset: 0.46 },
+						{ transform: "translateY(0) scale(1)", offset: 1 },
+					],
+					{
+						duration: 900,
+						easing: "cubic-bezier(.34,.05,.3,1)",
+						iterations: Number.POSITIVE_INFINITY,
+						iterationStart: index * 0.13,
+					},
+				);
+			}
+		}
+	}
+	$("messages").appendChild(threadActivityEl);
+	$("messages").scrollTop = $("messages").scrollHeight;
+}
+
+function hideThreadActivity() {
+	threadActivityEl?.remove();
+	threadActivityEl = null;
+}
+
 // ---- image attachments: paste or drop into the composer ----------------------
 let pendingImages = []; // { mimeType, dataUrl }
+
+function openImageLightbox(url, label = "Attached image") {
+	const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+	const box = document.createElement("div");
+	box.className = "lightbox";
+	box.setAttribute("role", "dialog");
+	box.setAttribute("aria-modal", "true");
+	box.setAttribute("aria-label", label);
+	box.tabIndex = -1;
+	const full = document.createElement("img");
+	full.src = url;
+	full.alt = label;
+	const close = () => {
+		document.removeEventListener("keydown", onKeyDown);
+		box.remove();
+		previousFocus?.focus();
+	};
+	const onKeyDown = (event) => {
+		if (event.key === "Escape") close();
+	};
+	box.onclick = (event) => {
+		if (event.target === box) close();
+	};
+	document.addEventListener("keydown", onKeyDown);
+	box.appendChild(full);
+	document.body.appendChild(box);
+	box.focus();
+}
 
 function renderAttachStrip() {
 	const strip = $("attachStrip");
@@ -5138,6 +6295,15 @@ function renderAttachStrip() {
 		const img = document.createElement("img");
 		img.src = image.dataUrl;
 		img.alt = "attached image";
+		img.tabIndex = 0;
+		img.setAttribute("role", "button");
+		img.setAttribute("aria-label", "Enlarge attached image");
+		img.onclick = () => openImageLightbox(image.dataUrl);
+		img.onkeydown = (event) => {
+			if (event.key !== "Enter" && event.key !== " ") return;
+			event.preventDefault();
+			openImageLightbox(image.dataUrl);
+		};
 		const remove = document.createElement("button");
 		remove.className = "attach-remove";
 		remove.title = "Remove";
@@ -5196,14 +6362,14 @@ function appendMsgImages(div, dataUrls) {
 		const img = document.createElement("img");
 		img.src = url;
 		img.alt = "attached image";
-		img.onclick = () => {
-			const box = document.createElement("div");
-			box.className = "lightbox";
-			const full = document.createElement("img");
-			full.src = url;
-			box.appendChild(full);
-			box.onclick = () => box.remove();
-			document.body.appendChild(box);
+		img.tabIndex = 0;
+		img.setAttribute("role", "button");
+		img.setAttribute("aria-label", "Enlarge attached image");
+		img.onclick = () => openImageLightbox(url);
+		img.onkeydown = (event) => {
+			if (event.key !== "Enter" && event.key !== " ") return;
+			event.preventDefault();
+			openImageLightbox(url);
 		};
 		wrap.appendChild(img);
 	}
@@ -5414,17 +6580,26 @@ async function retryPrompt(prompt = lastSubmittedPrompt) {
 	await sendPrompt();
 }
 
-function addModelFailureCard(errorMessage, progress = activeRunProgress, prompt = lastSubmittedPrompt) {
+function addModelFailureCard(
+	errorMessage,
+	progress = activeRunProgress,
+	prompt = lastSubmittedPrompt,
+	{ historical = false } = {},
+) {
 	const info = modelFailureInfo(errorMessage);
 	const card = document.createElement("article");
-	card.className = "model-failure-card";
+	card.className = `model-failure-card${historical ? " is-historical" : ""}`;
 	const heading = document.createElement("strong");
-	heading.textContent = info.cause;
+	heading.textContent = historical ? `Previous failure: ${info.cause}` : info.cause;
 	const partial = document.createElement("p");
 	partial.className = "model-failure-partial";
 	partial.textContent = `Partial work: ${runProgressSummary(progress)}`;
 	const guidance = document.createElement("p");
 	guidance.textContent = info.guidance;
+	const historyNote = document.createElement("p");
+	historyNote.className = "model-failure-history";
+	historyNote.textContent =
+		"Recorded on an earlier run. New requests use the model currently selected in Chat settings.";
 	const actions = document.createElement("div");
 	actions.className = "model-failure-actions";
 	const retry = document.createElement("button");
@@ -5442,17 +6617,86 @@ function addModelFailureCard(errorMessage, progress = activeRunProgress, prompt 
 		details.append(summary, text);
 		actions.appendChild(details);
 	}
-	card.append(heading, partial, guidance, actions);
+	card.append(heading, partial, guidance);
+	if (historical) card.appendChild(historyNote);
+	card.appendChild(actions);
 	$("messages").appendChild(card);
 	$("messages").scrollTop = $("messages").scrollHeight;
 	return card;
 }
 
-/** Grow the textarea with its content and light the send button up. */
+let composerMeasurementInput = null;
+
+function measureComposerHeight(input, width, expanded, value = input.value) {
+	if (!composerMeasurementInput) {
+		composerMeasurementInput = document.createElement("textarea");
+		composerMeasurementInput.tabIndex = -1;
+		composerMeasurementInput.setAttribute("aria-hidden", "true");
+		Object.assign(composerMeasurementInput.style, {
+			position: "fixed",
+			top: "0",
+			left: "-10000px",
+			boxSizing: "border-box",
+			height: "1px",
+			minHeight: "0",
+			maxHeight: "none",
+			border: "0",
+			borderRadius: "0",
+			overflow: "hidden",
+			resize: "none",
+			visibility: "hidden",
+			whiteSpace: "pre-wrap",
+		});
+		document.body.appendChild(composerMeasurementInput);
+	}
+	const styles = getComputedStyle(input);
+	Object.assign(composerMeasurementInput.style, {
+		width: `${Math.max(40, width)}px`,
+		padding: expanded ? "5px 0 0 5px" : "8px 1px",
+		fontFamily: styles.fontFamily,
+		fontSize: styles.fontSize,
+		fontWeight: styles.fontWeight,
+		fontStyle: styles.fontStyle,
+		lineHeight: styles.lineHeight,
+		letterSpacing: styles.letterSpacing,
+		wordBreak: styles.wordBreak,
+		overflowWrap: styles.overflowWrap,
+	});
+	composerMeasurementInput.value = value || " ";
+	return composerMeasurementInput.scrollHeight;
+}
+
+/** Keep the resting composer compact, then grow it one text line at a time.
+ * Measurements happen offscreen so editing never collapses the live composer. */
 function syncComposer() {
 	const input = $("input");
-	input.style.height = "auto";
-	input.style.height = `${Math.min(input.scrollHeight, 270)}px`;
+	const shell = document.querySelector(".composer-shell");
+	if (!shell) return;
+	input.style.removeProperty("height");
+	const shellStyles = getComputedStyle(shell);
+	const contentWidth =
+		shell.clientWidth -
+		Number.parseFloat(shellStyles.paddingLeft) -
+		Number.parseFloat(shellStyles.paddingRight);
+	const columnGap = Number.parseFloat(shellStyles.columnGap) || 0;
+	const compactWidth = contentWidth - 80 - columnGap * 2;
+	const compactHeight = measureComposerHeight(input, compactWidth, false);
+	const compactSingleLineHeight = measureComposerHeight(input, compactWidth, false, "M");
+	const expanded = Boolean(
+		pendingImages.length ||
+		(input.value.length > 0 && (input.value.includes("\n") || compactHeight > compactSingleLineHeight + 2)),
+	);
+	if (expanded) {
+		const fullHeight = measureComposerHeight(input, contentWidth, true);
+		const textHeight = Math.min(112, Math.max(38, fullHeight));
+		shell.style.setProperty("--composer-text-height", `${textHeight}px`);
+		input.style.overflowY = fullHeight > 112 ? "auto" : "hidden";
+	} else {
+		shell.style.removeProperty("--composer-text-height");
+		input.style.overflowY = "hidden";
+	}
+	shell.classList.toggle("composer-expanded", expanded);
+	shell.classList.toggle("composer-has-attachments", pendingImages.length > 0);
 	$("sendBtn").dataset.active = input.value.trim() || pendingImages.length ? "true" : "false";
 	const nextTyping = Boolean(input.value.trim());
 	if (nextTyping !== founderTyping) {
@@ -5462,6 +6706,13 @@ function syncComposer() {
 }
 
 $("input").addEventListener("input", syncComposer);
+document.querySelector(".composer-shell")?.addEventListener("focusin", syncComposer);
+document.querySelector(".composer-shell")?.addEventListener("focusout", () => setTimeout(syncComposer));
+document.querySelector(".composer-shell")?.addEventListener("pointerdown", (event) => {
+	if (event.target !== event.currentTarget) return;
+	event.preventDefault();
+	$("input").focus();
+});
 $("input").addEventListener("keydown", (event) => {
 	if (event.key === "Enter" && !event.shiftKey) {
 		event.preventDefault();
@@ -5541,6 +6792,11 @@ function resetWorkGroup() {
 	if (workGroup) clearInterval(workGroup.timer);
 	workGroup = null;
 	pendingToolLines = [];
+	hideThreadActivity();
+	resetAssistantStreamState();
+	turnProgressBubbleCount = 0;
+	turnProgressLastKind = "";
+	turnProgressLastAt = 0;
 }
 
 // ---- resizable panes: the sidebar and the sidechat -------------------------
@@ -5628,23 +6884,31 @@ window.qorpera.onRpcEvent((frame) => {
 			if (!delta) break;
 			if (delta.type === "text_start") {
 				closeWorkGroup();
-				if (assistantEl) assistantEl.dataset.source += "\n\n";
-				else {
-					assistantEl = addMsg("assistant", "");
-					assistantEl.dataset.source = "";
-				}
+				pendingAssistantTextByIndex.set(delta.contentIndex, "");
+				showThreadActivity("typing");
 			}
-			if (delta.type === "text_delta" && assistantEl) {
-				assistantEl.dataset.source += delta.delta;
-				renderMarkdown(assistantEl, assistantEl.dataset.source);
-				$("messages").scrollTop = $("messages").scrollHeight;
+			if (delta.type === "text_delta") {
+				pendingAssistantTextByIndex.set(
+					delta.contentIndex,
+					`${pendingAssistantTextByIndex.get(delta.contentIndex) ?? ""}${delta.delta}`,
+				);
+				showThreadActivity("typing");
 			}
-			if (delta.type === "thinking_start") thinkingEl = null;
-			if (delta.type === "thinking_end") thinkingEl = null;
+			if (delta.type === "text_end") {
+				renderCompletedAssistantBlock(
+					delta.contentIndex,
+					delta.content ?? pendingAssistantTextByIndex.get(delta.contentIndex) ?? "",
+				);
+				pendingAssistantTextByIndex.delete(delta.contentIndex);
+				showThreadActivity("thinking");
+			}
+			if (delta.type === "thinking_start") showThreadActivity("thinking");
 			break;
 		}
 		case "tool_execution_start": {
 			setCurrentAvatarAction("working");
+			maybeAppendToolProgress(frame.toolName);
+			showThreadActivity("working");
 			pendingToolLines.push({
 				toolName: frame.toolName,
 				args: frame.args,
@@ -5659,16 +6923,23 @@ window.qorpera.onRpcEvent((frame) => {
 			const entry = index >= 0 ? pendingToolLines.splice(index, 1)[0] : null;
 			if (entry?.line) entry.line.textContent = `${frame.isError ? "✗" : "✓"}${entry.line.textContent.slice(1)}`;
 			if (!frame.isError) recordCompletedTool(activeRunProgress, frame.toolName, entry?.args);
+			if (!pendingToolLines.length && !assistantStreamHasPendingText()) showThreadActivity("thinking");
 			refreshState();
 			break;
 		}
 		case "agent_settled":
 			closeWorkGroup();
+			hideThreadActivity();
 			setCurrentAvatarAction("finishing", 850);
 			refreshState();
 			break;
 		case "agent_start":
+			resetAssistantStreamState();
+			turnProgressBubbleCount = 0;
+			turnProgressLastKind = "";
+			turnProgressLastAt = 0;
 			setCurrentAvatarAction("working");
+			showThreadActivity("thinking");
 			if (!activeRunProgress) activeRunProgress = createRunProgress();
 			break;
 		case "message_end": {
@@ -5676,8 +6947,14 @@ window.qorpera.onRpcEvent((frame) => {
 			// founder saw blank panes while the real reason (an OAuth refresh
 			// failure) sat unread in the trail. Say what happened, in the thread.
 			const ended = frame.message;
-			if (ended?.role === "assistant") assistantEl = null;
-			if (ended?.role === "assistant") setCurrentAvatarAction("finishing", 850);
+			if (ended?.role === "assistant") {
+				hideThreadActivity();
+				setCurrentAvatarAction("finishing", 850);
+				if (ended.stopReason !== "error" && ended.stopReason !== "aborted") {
+					reconcileCompletedAssistantMessage(ended);
+				}
+				resetAssistantStreamState();
+			}
 			if (ended?.role === "assistant" && ended.stopReason === "error") {
 				closeWorkGroup();
 				if (!turnFailureCard) turnFailureCard = addModelFailureCard(ended.errorMessage);
@@ -5800,36 +7077,68 @@ function summarizeArgs(args) {
 	return "";
 }
 
-// ---- the settings page (own sidebar of tabs, Codex-app shape) ---------------
+// ---- profile settings -------------------------------------------------------
 
-const SETTINGS_TABS = new Set(["connections", "usage", "appearance", "authority"]);
-let settingsTab = "connections";
+const SETTINGS_TABS = new Set(["general", "connections", "authority"]);
+let settingsTab = "general";
 let connectingConnection = null;
+let disconnectingConnection = null;
+let settingsRenderVersion = 0;
+let settingsReturnFocus = null;
 const connectionMessages = new Map();
 
+function syncSettingsSearch() {
+	const query = $("settingsSearch").value.trim().toLocaleLowerCase();
+	const buttons = [...document.querySelectorAll("#settingsView .stab")];
+	const matches = buttons.filter((button) => {
+		const searchable = `${button.textContent ?? ""} ${button.dataset.search ?? ""}`.toLocaleLowerCase();
+		const matchesQuery = !query || searchable.includes(query);
+		button.hidden = !matchesQuery;
+		return matchesQuery;
+	});
+	$("settingsSearchEmpty").hidden = matches.length > 0;
+	if (!query || matches.length === 0 || matches.some((button) => button.dataset.tab === settingsTab)) return;
+	settingsTab = matches[0].dataset.tab;
+	for (const button of buttons) button.classList.toggle("active", button.dataset.tab === settingsTab);
+	void renderSettingsTab();
+}
+
 function openSettings(tab) {
-	settingsTab = SETTINGS_TABS.has(tab) ? tab : "connections";
-	$("settingsView").classList.add("open");
+	settingsTab = SETTINGS_TABS.has(tab) ? tab : "general";
+	const view = $("settingsView");
+	const opening = !view.classList.contains("open");
+	if (opening) {
+		settingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		$("settingsSearch").value = "";
+		syncSettingsSearch();
+	}
+	view.classList.add("open");
+	view.setAttribute("aria-hidden", "false");
 	for (const b of document.querySelectorAll("#settingsView .stab")) {
 		b.classList.toggle("active", b.dataset.tab === settingsTab);
 	}
-	renderSettingsTab();
+	void renderSettingsTab();
+	requestAnimationFrame(() => {
+		if (opening) $("settingsSearch").focus();
+		else document.querySelector(`#settingsView .stab[data-tab="${settingsTab}"]`)?.focus();
+	});
 }
 function closeSettings() {
-	undockUsage();
-	$("settingsView").classList.remove("open");
+	settingsRenderVersion += 1;
+	const view = $("settingsView");
+	view.classList.remove("open");
+	view.setAttribute("aria-hidden", "true");
+	settingsReturnFocus?.focus();
+	settingsReturnFocus = null;
 }
 
-/** The one usage view (#view-usage) docks inside Settings for the Usage tab
- * and returns to <main> for company-authored usage pages. Must run before
- * settingsContent is cleared, or the node would be destroyed with it. */
-function undockUsage() {
-	const usage = $("view-usage");
-	if (usage.parentElement === $("settingsContent")) {
-		usage.style.display = "none";
-		document.querySelector("main").insertBefore(usage, $("status"));
-	}
-}
+$("settingsView").addEventListener("pointerdown", (event) => {
+	if (event.target === $("settingsView")) closeSettings();
+});
+$("settingsSearch").addEventListener("input", syncSettingsSearch);
+document.addEventListener("keydown", (event) => {
+	if (event.key === "Escape" && $("settingsView").classList.contains("open")) closeSettings();
+});
 
 function setHeading(content, text) {
 	const h = document.createElement("h1");
@@ -5864,18 +7173,24 @@ function modeSelect(value) {
 }
 
 const CONNECTION_LOGOS = {
-	github:
-		'<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0C17.7 5 18.7 5.4 18.7 5.4c.7 1.7.3 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.2c0 .3.2.7.8.6A12 12 0 0 0 12 .3Z"/></svg>',
-	"openai-codex":
-		'<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 4.3a6 6 0 0 1 5.7 4.1 6 6 0 0 1 3.7 9.8 6 6 0 0 1-7.2 8.6 6 6 0 0 1-9.9-3.2 6 6 0 0 1-1.9-10.3A6 6 0 0 1 16 4.3Z"/><path d="m10.3 8.2 5.8 3.3v9.1l-5.8 3.3M21.7 8.4l-5.7 3.3-7.9 4.5M25.3 18.3l-5.7-3.4-7.9 4.6"/></svg>',
-	anthropic:
-		'<svg viewBox="0 0 32 32" aria-hidden="true"><path fill="currentColor" d="M3.5 25 12.3 6.7h3.2L24.4 25h-4.2l-2-4.5H9.4L7.3 25H3.5Zm7.4-8h5.8l-2.9-6.6-2.9 6.6ZM25.2 7h3.3v18h-3.3z"/></svg>',
+	github: "./provider-github.svg",
+	"openai-codex": "./provider-openai.svg",
+	anthropic: "./provider-anthropic.svg",
+	xai: "./provider-xai.svg",
 };
 
 function connectionLogo(connectionId) {
 	const logo = document.createElement("span");
 	logo.className = `connection-logo ${connectionId}`;
-	logo.innerHTML = CONNECTION_LOGOS[connectionId] ?? navGlyphSvg("grid", "connection-fallback-logo");
+	const asset = CONNECTION_LOGOS[connectionId];
+	if (asset) {
+		const image = document.createElement("img");
+		image.src = asset;
+		image.alt = "";
+		logo.appendChild(image);
+	} else {
+		logo.innerHTML = navGlyphSvg("grid", "connection-fallback-logo");
+	}
 	return logo;
 }
 
@@ -5892,7 +7207,7 @@ async function toggleConnection(connectionId) {
 	void renderSettingsTab();
 	try {
 		const result = await window.qorpera.connectAccount(connectionId);
-		if (result?.ok) connectionMessages.set(connectionId, result.message ?? "Connected.");
+		if (result?.ok) connectionMessages.delete(connectionId);
 		else if (result?.cancelled) connectionMessages.set(connectionId, "Connection cancelled.");
 		else connectionMessages.set(connectionId, result?.error ?? "Connection failed.");
 	} catch (error) {
@@ -5905,15 +7220,69 @@ async function toggleConnection(connectionId) {
 	}
 }
 
-function renderConnectionGroup(content, title, description, connections) {
+async function disconnectConnection(connectionId, accountId) {
+	if (connectingConnection || disconnectingConnection) return;
+	const operationId = `${connectionId}:${accountId}`;
+	disconnectingConnection = operationId;
+	void renderSettingsTab();
+	try {
+		const result = await window.qorpera.disconnectAccount(connectionId, accountId);
+		if (result?.ok) connectionMessages.delete(connectionId);
+		else connectionMessages.set(connectionId, result?.error ?? "Could not disconnect this account.");
+	} catch (error) {
+		connectionMessages.set(connectionId, error instanceof Error ? error.message : "Could not disconnect this account.");
+	} finally {
+		disconnectingConnection = null;
+		if ($("settingsView").classList.contains("open") && settingsTab === "connections") {
+			void renderSettingsTab();
+		}
+	}
+}
+
+function renderAccountUsage(account) {
+	const windows = account?.usage?.status === "available" ? account.usage.windows : [];
+	if (!Array.isArray(windows) || windows.length === 0) return null;
+	const usage = document.createElement("div");
+	usage.className = "connection-usage";
+	for (const window of windows) {
+		const item = document.createElement("div");
+		item.className = "connection-usage-window";
+		const meta = document.createElement("div");
+		meta.className = "connection-usage-meta";
+		const label = document.createElement("span");
+		label.textContent = window.label;
+		const remaining = document.createElement("span");
+		const remainingPercent = Math.max(0, Math.min(100, Number(window.remainingPercent) || 0));
+		remaining.textContent = `${Math.round(remainingPercent)}% left`;
+		meta.append(label, remaining);
+		const track = document.createElement("div");
+		track.className = "connection-usage-track";
+		track.setAttribute("role", "meter");
+		track.setAttribute("aria-label", `${window.label} usage remaining`);
+		track.setAttribute("aria-valuemin", "0");
+		track.setAttribute("aria-valuemax", "100");
+		track.setAttribute("aria-valuenow", String(Math.round(remainingPercent)));
+		const fill = document.createElement("span");
+		fill.style.width = `${remainingPercent}%`;
+		track.appendChild(fill);
+		item.append(meta, track);
+		usage.appendChild(item);
+	}
+	return usage;
+}
+
+function renderConnectionGroup(content, title, description, connections, accountUsageById) {
 	const group = document.createElement("section");
 	group.className = "settings-group";
 	const header = document.createElement("header");
 	const heading = document.createElement("h2");
 	heading.textContent = title;
-	const detail = document.createElement("p");
-	detail.textContent = description;
-	header.append(heading, detail);
+	header.appendChild(heading);
+	if (description) {
+		const detail = document.createElement("p");
+		detail.textContent = description;
+		header.appendChild(detail);
+	}
 	group.appendChild(header);
 	const list = document.createElement("div");
 	list.className = "connection-list";
@@ -5929,15 +7298,56 @@ function renderConnectionGroup(content, title, description, connections) {
 		detail.textContent = connectionMessages.get(connection.id) ?? connection.description;
 		copy.append(name, detail);
 		card.appendChild(copy);
-		if (connection.connected) {
+		const accounts = Array.isArray(connection.accounts) ? connection.accounts : [];
+		if (connection.group === "models") {
+			card.classList.add("connection-card-multiple");
+			const add = document.createElement("button");
+			add.type = "button";
+			add.className = "connection-action";
+			const busy = connectingConnection === connection.id;
+			add.dataset.busy = String(busy);
+			add.textContent = busy ? "Cancel" : accounts.length ? "Add account" : "Connect";
+			add.disabled = Boolean(connectingConnection && !busy);
+			add.onclick = () => void toggleConnection(connection.id);
+			card.appendChild(add);
+			if (accounts.length) {
+				const accountList = document.createElement("div");
+				accountList.className = "connection-account-list";
+				for (const modelAccount of accounts) {
+					const row = document.createElement("div");
+					row.className = "connection-account-row";
+					const main = document.createElement("div");
+					main.className = "connection-account-main";
+					const accountName = document.createElement("span");
+					accountName.textContent = modelAccount.accountName || "Account details unavailable";
+					const disconnect = document.createElement("button");
+					disconnect.type = "button";
+					disconnect.className = "connection-action connection-disconnect";
+					const operationId = `${connection.id}:${modelAccount.id}`;
+					const disconnecting = disconnectingConnection === operationId;
+					disconnect.textContent = disconnecting ? "Disconnecting…" : "Disconnect";
+					disconnect.disabled = Boolean(connectingConnection || (disconnectingConnection && !disconnecting));
+					disconnect.onclick = () => void disconnectConnection(connection.id, modelAccount.id);
+					main.append(accountName, disconnect);
+					row.appendChild(main);
+					const usage = renderAccountUsage(accountUsageById.get(modelAccount.id));
+					if (usage) row.appendChild(usage);
+					accountList.appendChild(row);
+				}
+				card.appendChild(accountList);
+			}
+		} else if (connection.connected) {
 			const account = document.createElement("div");
 			account.className = "connection-account";
-			const state = document.createElement("span");
-			state.className = "connection-connected";
-			state.textContent = "Connected";
 			const accountName = document.createElement("small");
-			accountName.textContent = connection.accountName;
-			account.append(state, accountName);
+			accountName.textContent = connection.accountName || "Account details unavailable";
+			const disconnect = document.createElement("button");
+			disconnect.type = "button";
+			disconnect.className = "connection-action connection-disconnect";
+			disconnect.textContent = "Disconnect";
+			disconnect.disabled = Boolean(connectingConnection || disconnectingConnection);
+			disconnect.onclick = () => void disconnectConnection(connection.id, connection.id);
+			account.append(accountName, disconnect);
 			card.appendChild(account);
 		} else {
 			const action = document.createElement("button");
@@ -5956,11 +7366,10 @@ function renderConnectionGroup(content, title, description, connections) {
 	content.appendChild(group);
 }
 
-function renderConnections(content, connections) {
+function renderConnections(content, connections, accountUsageById) {
 	const heading = document.createElement("header");
 	heading.className = "settings-heading";
-	heading.innerHTML =
-		'<div class="eyebrow">Accounts & services</div><h1>Connections</h1><p>Accounts installed for this profile. Staff ask for additional access inside the conversation where it is needed.</p>';
+	heading.innerHTML = "<h1>Connections</h1>";
 	content.appendChild(heading);
 
 	const services = connections.filter((connection) => connection.group === "services");
@@ -5970,23 +7379,127 @@ function renderConnections(content, connections) {
 			"Services",
 			"Accounts the active company can use for external work.",
 			services,
+			accountUsageById,
 		);
 	}
 	const models = connections.filter((connection) => connection.group === "models");
 	if (models.length) {
-		renderConnectionGroup(
-			content,
-			"Model accounts",
-			"Accounts supported by the model picker are always shown here, whether connected or not.",
-			models,
-		);
+		renderConnectionGroup(content, "Model accounts", "", models, accountUsageById);
 	}
 }
 
 async function renderSettingsTab() {
+	const renderVersion = ++settingsRenderVersion;
+	const renderedTab = settingsTab;
 	const content = $("settingsContent");
-	undockUsage();
 	content.innerHTML = "";
+
+	if (settingsTab === "general") {
+		const info = await window.qorpera.settingsInfo();
+		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
+		setHeading(content, "General");
+
+		const profileGroup = document.createElement("section");
+		profileGroup.className = "settings-group general-settings-group";
+		profileGroup.innerHTML = "<header><h2>Profile</h2></header>";
+		const profileCard = document.createElement("div");
+		profileCard.className = "general-profile-card";
+		profileCard.appendChild(
+			makeProfileIcon(info.profile?.profileIcon || currentProfileIcon, info.profile?.name || state.name || "Current profile"),
+		);
+		const profileCopy = document.createElement("div");
+		profileCopy.className = "general-account-copy";
+		const profileName = document.createElement("strong");
+		profileName.textContent = info.profile?.name || state.name || "Current profile";
+		const profileDetail = document.createElement("small");
+		profileDetail.textContent = "Staff, connections, and files for this profile";
+		profileCopy.append(profileName, profileDetail);
+		const switchProfile = document.createElement("button");
+		switchProfile.type = "button";
+		switchProfile.textContent = "Switch profile";
+		switchProfile.onclick = async () => {
+			switchProfile.disabled = true;
+			await window.qorpera.showHub();
+		};
+		profileCard.append(profileCopy, switchProfile);
+		profileGroup.appendChild(profileCard);
+		content.appendChild(profileGroup);
+
+		const accountGroup = document.createElement("section");
+		accountGroup.className = "settings-group general-settings-group";
+		accountGroup.innerHTML = "<header><h2>Account</h2></header>";
+		const accountCard = document.createElement("div");
+		accountCard.className = "general-account-card";
+		const accountCopy = document.createElement("div");
+		accountCopy.className = "general-account-copy";
+		const accountEmail = document.createElement("strong");
+		accountEmail.textContent = info.account?.user?.email || "Email unavailable";
+		accountCopy.appendChild(accountEmail);
+		const signOutButton = document.createElement("button");
+		signOutButton.type = "button";
+		signOutButton.textContent = "Sign out";
+		signOutButton.onclick = async () => {
+			signOutButton.disabled = true;
+			const result = await window.qorpera.accountSignOut();
+			if (!result?.ok) {
+				signOutButton.disabled = false;
+				showControllerToast(result?.error ?? "Could not sign out.");
+				return;
+			}
+			closeSettings();
+			renderAccountWelcome();
+			document.documentElement.dataset.qorperaReady = "account";
+		};
+		accountCard.append(accountCopy, signOutButton);
+		accountGroup.appendChild(accountCard);
+		content.appendChild(accountGroup);
+
+		const appearanceGroup = document.createElement("section");
+		appearanceGroup.className = "settings-group general-settings-group";
+		appearanceGroup.innerHTML = "<header><h2>Appearance</h2></header>";
+		const theme = document.createElement("select");
+		theme.setAttribute("aria-label", "Theme");
+		theme.appendChild(new Option("Light", "light"));
+		theme.value = "light";
+		setRow(appearanceGroup, "Theme", "", theme);
+		content.appendChild(appearanceGroup);
+
+		const executionGroup = document.createElement("section");
+		executionGroup.className = "settings-group general-settings-group";
+		executionGroup.innerHTML = "<header><h2>Agents</h2></header>";
+		const execution = document.createElement("select");
+		execution.setAttribute("aria-label", "Execution on local computer");
+		for (const [value, label] of [["always", "Always allow"], ["never", "Don’t allow"]]) {
+			const option = document.createElement("option");
+			option.value = value;
+			option.textContent = label;
+			execution.appendChild(option);
+		}
+		execution.value = info.localExecution === "never" ? "never" : "always";
+		const executionStatus = document.createElement("small");
+		executionStatus.className = "general-setting-status";
+		execution.onchange = async () => {
+			execution.disabled = true;
+			executionStatus.textContent = "Saving…";
+			const result = await window.qorpera.setLocalExecution(execution.value);
+			if (!result?.ok) {
+				execution.value = info.localExecution === "never" ? "never" : "always";
+				executionStatus.textContent = result?.error ?? "Permission could not be saved.";
+			} else {
+				executionStatus.textContent = result.applies === "next-run" ? "Applies after the current run." : "";
+			}
+			execution.disabled = false;
+		};
+		const executionRow = setRow(
+			executionGroup,
+			"Execution on local computer",
+			"Let agents open files and run tasks here. Qorpera’s sandbox and authority gates still apply.",
+			execution,
+		);
+		executionRow.appendChild(executionStatus);
+		content.appendChild(executionGroup);
+		return;
+	}
 
 	if (settingsTab === "usage") {
 		if (!backendUrl) {
@@ -6116,6 +7629,7 @@ async function renderSettingsTab() {
 			return;
 		}
 		const cfg = await (await fetch(`${backendUrl}/api/authority/config`)).json();
+		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
 		const note = document.createElement("div");
 		note.className = "sess-meta";
 
@@ -6160,7 +7674,29 @@ async function renderSettingsTab() {
 
 	if (settingsTab === "connections") {
 		const info = await window.qorpera.settingsInfo();
-		renderConnections(content, info.connections ?? []);
+		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
+		content.replaceChildren();
+		const connections = info.connections ?? [];
+		const cachedUsageById = new Map(
+			connections.flatMap((connection) => connection.accounts ?? []).map((account) => [account.id, account]),
+		);
+		renderConnections(content, connections, cachedUsageById);
+		void window.qorpera
+			.modelAccountUsage()
+			.then((accountUsage) => {
+				if (
+					renderVersion !== settingsRenderVersion ||
+					renderedTab !== settingsTab ||
+					!Array.isArray(accountUsage)
+				) {
+					return;
+				}
+				const scrollTop = content.scrollTop;
+				content.replaceChildren();
+				renderConnections(content, connections, new Map(accountUsage.map((account) => [account.id, account])));
+				content.scrollTop = scrollTop;
+			})
+			.catch(() => {});
 		return;
 	}
 
@@ -6198,17 +7734,22 @@ window.qorpera.onUpdateReady((version) => {
 });
 window.qorpera.onConnectionStatus((event) => {
 	if (!event?.connectionId || !event.message) return;
-	connectionMessages.set(event.connectionId, event.message);
+	if (/^Connected\b/u.test(event.message)) connectionMessages.delete(event.connectionId);
+	else connectionMessages.set(event.connectionId, event.message);
 	if ($("settingsView").classList.contains("open") && settingsTab === "connections") {
 		void renderSettingsTab();
 	}
 	void refreshState();
+});
+window.qorpera.onAccountStatus((message) => {
+	if (typeof message === "string" && !$("accountView").hidden) $("accountStatus").textContent = message;
 });
 window.qorpera.onOpenCompany((root) => openCompany(root));
 
 setupHierarchicalController();
 setupSidebarToggle();
 setupCompanyModal();
+$("signOutButton").onclick = signOut;
 applyNavAppearance();
 
 async function bootWorkspace() {
@@ -6223,7 +7764,7 @@ async function bootWorkspace() {
 	}
 }
 
-(async () => {
+async function bootSignedInWorkspace() {
 	if (typeof window.qorpera.intelligenceInfo === "function") {
 		try {
 			const intelligence = await window.qorpera.intelligenceInfo();
@@ -6238,4 +7779,21 @@ async function bootWorkspace() {
 	}
 	await bootWorkspace();
 	document.documentElement.dataset.qorperaReady = document.body.classList.contains("hub") ? "hub" : "company";
+}
+
+(async () => {
+	try {
+		const account = await window.qorpera.accountInfo();
+		if (!account?.authenticated) {
+			renderAccountWelcome();
+			document.documentElement.dataset.qorperaReady = "account";
+			return;
+		}
+	} catch (error) {
+		console.warn("Qorpera account readiness could not be read", error);
+		renderAccountWelcome();
+		document.documentElement.dataset.qorperaReady = "account";
+		return;
+	}
+	await bootSignedInWorkspace();
 })();

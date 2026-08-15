@@ -25,7 +25,7 @@ const schedule = (intervalMinutes: number, extra?: object) => ({
 	id: "job-1",
 	title: "Company orchestration",
 	prompt: "Run the company",
-	intervalMinutes,
+	triggers: [{ id: "schedule-1", kind: "schedule" as const, intervalMinutes }],
 	enabled: true,
 	createdAt: "2026-08-10T10:00:00Z",
 	updatedAt: "2026-08-10T10:00:00Z",

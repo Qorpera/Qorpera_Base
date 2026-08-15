@@ -1,0 +1,264 @@
+/* Resizable roster rail. Below the snap point the shell becomes a compact,
+ * figure-led switcher while preserving the same durable agent buttons. */
+:root {
+	--rail-compact-width: 80px;
+}
+
+body.company-shell #primaryNavigation,
+body.company-shell #titlebar,
+body.company-shell #titlebar::after,
+body.company-shell .rail-resize-handle,
+body.company-shell #titlebar .thread-header,
+body.company-shell .staff-creator-titlebar {
+	transition:
+		width 190ms cubic-bezier(.2, .8, .2, 1),
+		min-width 190ms cubic-bezier(.2, .8, .2, 1),
+		flex-basis 190ms cubic-bezier(.2, .8, .2, 1),
+		grid-template-columns 190ms cubic-bezier(.2, .8, .2, 1),
+		left 190ms cubic-bezier(.2, .8, .2, 1),
+		padding 190ms cubic-bezier(.2, .8, .2, 1),
+		background 190ms cubic-bezier(.2, .8, .2, 1);
+}
+
+body.rail-resizing,
+body.rail-resizing * {
+	cursor: col-resize !important;
+	user-select: none !important;
+}
+
+body.rail-resizing #primaryNavigation,
+body.rail-resizing #titlebar,
+body.rail-resizing #titlebar::after,
+body.rail-resizing .rail-resize-handle,
+body.rail-resizing #titlebar .thread-header,
+body.rail-resizing .staff-creator-titlebar {
+	transition: none !important;
+}
+
+.rail-resize-handle {
+	position: absolute;
+	z-index: 140;
+	top: 0;
+	bottom: 0;
+	left: calc(var(--rail-width) - 4px);
+	display: none;
+	width: 8px;
+	touch-action: none;
+	cursor: col-resize;
+	-webkit-app-region: no-drag;
+}
+
+body.company-shell .rail-resize-handle {
+	display: block;
+}
+
+.rail-resize-handle::after {
+	content: "";
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: 3px;
+	width: 1px;
+	background: var(--border);
+	transition: width 120ms ease, left 120ms ease, background 120ms ease;
+}
+
+.rail-resize-handle:hover::after,
+.rail-resize-handle:focus-visible::after,
+.rail-resize-handle[data-dragging]::after {
+	left: 2px;
+	width: 3px;
+	background: color-mix(in srgb, var(--primary) 34%, transparent);
+}
+
+.rail-resize-handle:focus-visible {
+	outline: 2px solid var(--ring);
+	outline-offset: -2px;
+}
+
+/* Compact, icon-only navigation. */
+body.company-shell.rail-compact .titlebar-rail {
+	display: block;
+	padding: 0;
+}
+
+body.company-shell.rail-compact .titlebar-rail .rail-search {
+	display: none;
+}
+
+body.company-shell.rail-compact .titlebar-rail .rail-add-staff,
+body.company-shell.rail-compact .titlebar-rail .rail-add-staff:hover:not(:disabled),
+body.company-shell.rail-compact .titlebar-rail .rail-add-staff:active {
+	position: fixed;
+	z-index: 180;
+	left: calc((var(--rail-width) - 34px) / 2);
+	bottom: 62px;
+	display: grid;
+	place-items: center;
+	width: 34px;
+	height: 34px;
+	min-height: 34px;
+	padding: 0;
+	border: 0;
+	border-radius: 50%;
+	background: transparent;
+	color: #777773;
+	box-shadow: none;
+}
+
+body.company-shell.rail-compact .titlebar-rail .rail-add-staff:hover:not(:disabled),
+body.company-shell.rail-compact .titlebar-rail .rail-add-staff:focus-visible {
+	background: #ececea;
+	color: var(--text);
+}
+
+body.company-shell.rail-compact #primaryNavigation {
+	overflow: visible;
+}
+
+body.company-shell.rail-compact #conav {
+	overflow: visible;
+}
+
+body.company-shell.rail-compact .rail-scroll {
+	padding: 9px 9px 108px;
+	overflow-x: hidden;
+}
+
+body.company-shell.rail-compact .rail-section {
+	margin: 0;
+}
+
+body.company-shell.rail-compact #staffNavigation {
+	display: grid;
+	justify-items: center;
+	gap: 4px;
+}
+
+body.company-shell.rail-compact .staff-nav-row,
+body.company-shell.rail-compact .controller-nav-row {
+	display: grid;
+	grid-template-columns: 1fr;
+	place-items: center;
+	width: 62px;
+	height: 60px;
+	min-height: 60px;
+	padding: 9px;
+	border-radius: 10px;
+}
+
+body.company-shell.rail-compact .staff-nav-row:hover,
+body.company-shell.rail-compact .staff-nav-row.active,
+body.company-shell.rail-compact .controller-nav-row:hover,
+body.company-shell.rail-compact .controller-nav-row.active {
+	background: #e8e8e6;
+}
+
+body.company-shell.rail-compact .staff-nav-row .staff-avatar,
+body.company-shell.rail-compact .controller-nav-row .staff-avatar {
+	width: 42px;
+	height: 42px;
+}
+
+body.company-shell.rail-compact .staff-nav-copy,
+body.company-shell.rail-compact .staff-nav-arrow,
+body.company-shell.rail-compact .staff-create-row,
+body.company-shell.rail-compact .rail-empty {
+	display: none;
+}
+
+body.company-shell.rail-compact .hidden-staff-entry {
+	position: relative;
+	display: grid;
+	place-items: center;
+	grid-template-columns: 1fr;
+	width: 46px;
+	height: 38px;
+	min-height: 38px;
+	margin: 5px auto 0;
+	padding: 0;
+	border-radius: 9px;
+}
+
+body.company-shell.rail-compact .hidden-staff-entry > span:first-child {
+	width: 24px;
+	overflow: hidden;
+	font-size: 0;
+}
+
+body.company-shell.rail-compact .hidden-staff-entry > span:first-child::before {
+	content: "◌";
+	display: block;
+	font-size: 24px;
+	font-weight: 300;
+	line-height: 1;
+}
+
+body.company-shell.rail-compact .hidden-staff-count {
+	position: absolute;
+	top: 3px;
+	right: 3px;
+	display: grid;
+	place-items: center;
+	min-width: 15px;
+	height: 15px;
+	padding: 0 3px;
+	border-radius: 999px;
+	background: #171716;
+	color: #fff;
+	font-size: 9px;
+}
+
+body.company-shell.rail-compact .rail-bottom {
+	position: relative;
+	z-index: 170;
+	padding: 5px 10px 9px;
+}
+
+body.company-shell.rail-compact .rail-company-switcher {
+	display: grid;
+	place-items: center;
+}
+
+body.company-shell.rail-compact .rail-bottom #companySwitcherButton {
+	display: grid;
+	place-items: center;
+	width: 44px;
+	height: 44px;
+	min-height: 44px;
+	padding: 4px;
+	border-radius: 12px;
+}
+
+body.company-shell.rail-compact .rail-bottom #companySwitcherButton > strong {
+	display: none;
+}
+
+body.company-shell.rail-compact .company-switcher-mark {
+	width: 36px;
+	height: 36px;
+}
+
+body.company-shell.rail-compact .company-switcher-menu {
+	top: auto;
+	right: auto;
+	bottom: 0;
+	left: calc(100% + 9px);
+	width: 214px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	body.company-shell #primaryNavigation,
+	body.company-shell #titlebar,
+	body.company-shell #titlebar::after,
+	body.company-shell .rail-resize-handle,
+	body.company-shell #titlebar .thread-header,
+	body.company-shell .staff-creator-titlebar {
+		transition: none;
+	}
+}
+
+@media (forced-colors: active) {
+	.rail-resize-handle::after { background: CanvasText; }
+	body.company-shell.rail-compact .staff-nav-row.active { outline: 2px solid Highlight; }
+}

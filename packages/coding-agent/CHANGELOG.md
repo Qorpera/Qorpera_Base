@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+- Replaced `ScheduledJob.intervalMinutes` with a required `triggers` array supporting scheduled, GitHub-event, and custom-adapter triggers. Callers creating or updating scheduled jobs must now provide at least one trigger.
 - Changed JSON and RPC `message_update` events to emit only `assistantMessageEvent` deltas, removing the cumulative `message` and `assistantMessageEvent.partial` fields that caused quadratic output growth. Clients that need partial messages must assemble deltas between `message_start` and `message_end`; the latter remains authoritative ([#7290](https://github.com/earendil-works/pi/issues/7290)).
 - `ModelRegistry.getApiKeyAndHeaders()` now returns `ProviderHeaders` with `string | null` values and preserves `null` header-deletion markers. Extensions that inspect returned headers must handle `null`; extensions forwarding them to pi-ai streams should pass them through unchanged. This prevents placeholder OpenAI credentials from being sent through Cloudflare AI Gateway ([#7030](https://github.com/earendil-works/pi/issues/7030)).
 - Changed `ModelRegistry.refresh()` to accept `ModelsRefreshOptions` and return `ModelsRefreshResult` instead of discarding cancellation and provider errors.
@@ -75,6 +76,7 @@
 
 ### Added
 
+- Added GitHub routine triggers for pull requests, reviews, comments, checks, and issue assignments, plus a normalized custom-trigger contract for agent-built adapters.
 - Added named scheduled company jobs end-to-end: machine-local create/edit/pause/resume/run-now/delete contracts, kernel-owned interval execution and per-job failure suspension, and an Activity details surface showing titles, prompts, schedules, next/last run state, full job configuration, and linked autonomous run history.
 - Added release-lane coordination to the shell installer publish flow: publishing now requires a clean checkout exactly at `origin/master`, atomically claims the version via a `shell-v<version>` tag on the source repo (one winner per version; the tag doubles as build provenance), requires versions to be strictly newer than the latest published release, and blocks a new cut while a release younger than 30 minutes exists (`--allow-rapid` / `--allow-unsynced` are loud escape hatches). Stops parallel agent sessions from racing each other into back-to-back releases, as 0.18.4/0.18.5 did.
 - Added pinning to the desktop company navigation (T3 Code shape): any chat, page, or category pins into a Pinned block under Main's rows via the row context menu — pinned chats lift out of the chat pile, the pin glyph on a pinned row is the one-click unpin — and pinning a department orders it first with an in-title pin cue. The Chats pile also collapses on title click like a department. All of it is per-machine panel presentation; company documents are untouched.
