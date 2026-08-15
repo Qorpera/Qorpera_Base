@@ -4,11 +4,9 @@
  * Qorpera Base is the foundation every company's app is built on. Connecting
  * it to a company folder yields that company's own desktop app: an Electron
  * window over a kernel-owned local backend that renders whatever the
- * controller has built in `app/` — nav
- * from `app/projection.json`, surfaces served live, the inbox as an
- * approve/deny queue. Self-updating by construction: everything is read from
- * the folder on request and the window polls for changes, so a surface the
- * controller writes mid-session appears with no deploy step.
+ * staff has built in `app/`: artifact tabs from `app/projection.json`, live
+ * sandboxed surfaces, and kernel-owned read models. The fixed Base shell is
+ * never loaded from the company folder.
  *
  * The server is not a standalone launcher. Only the desktop kernel may
  * create it and retain its mutation credential.
@@ -35,6 +33,7 @@ import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
 import { canonicalCompanyRoot, listProductDepartments } from "./company.ts";
 import { DEFAULT_SCHEDULED_JOB_ID, DEFAULT_SCHEDULED_JOB_TITLE } from "./company-connections.ts";
+import type { StaffAgent } from "./company-staff.ts";
 import { readFounderIdentity, signAuthorityPolicy, signGateApproval } from "./founder-identity.ts";
 import {
 	PLATFORM_PROJECTION_NODES,
@@ -52,7 +51,7 @@ export interface CompanyAppOptions {
 	/** Kernel-owned static roots. Company UI is served through the same local
 	 * origin as its read models so an agent-authored renderer never receives
 	 * ambient file:// or outbound-network authority. */
-	userland?: { baseDir: string };
+	fixedShell?: { directory: string };
 	/**
 	 * Required on every MUTATING endpoint (gate resolution, inbox responses,
 	 * authority edits) via the x-qorpera-token header. The backend listens on
@@ -67,6 +66,43 @@ export interface CompanyAppOptions {
 	 * temporary attachments; this durable read model is what UI surfaces
 	 * observe. */
 	sessionRuntime?: SessionRuntimeSource;
+	/** Company-folder staff registry projected by the desktop kernel. */
+	staffReadModel?: () => readonly StaffAgent[];
+	/** Machine-local connection requests already stripped of credentials by
+	 * the desktop kernel. The app server applies its own field allowlist too. */
+	connectionRequestReadModel?: () => readonly CompanyConnectionRequestView[];
+	/** Machine-local recurring work definitions. Dynamic run state remains a
+	 * desktop concern; this view carries only the safe durable definition. */
+	scheduledJobReadModel?: () => readonly CompanyScheduledJobView[];
+}
+
+export type CompanyConnectionRequestStatus = "pending" | "connecting" | "connected" | "denied" | "failed" | "cancelled";
+
+export interface CompanyConnectionRequestView {
+	id: string;
+	staffAgentId: string;
+	sessionFile: string;
+	displayName: string;
+	purpose: string;
+	destinations: Array<{ host: string; note?: string }>;
+	recipeId?: string;
+	status: CompanyConnectionRequestStatus;
+	createdAt: string;
+	updatedAt: string;
+	failure?: string;
+	grantId?: string;
+}
+
+export interface CompanyScheduledJobView {
+	id: string;
+	title: string;
+	prompt: string;
+	intervalMinutes: number;
+	enabled: boolean;
+	createdAt: string;
+	updatedAt: string;
+	suspendedReason?: string;
+	staffAgentId?: string;
 }
 
 export type SessionRuntimeStatus =
@@ -90,6 +126,7 @@ export interface SessionRuntimeView {
 	sessionId: string;
 	actor: "controller" | "product-worker";
 	autonomous: boolean;
+	staffAgentId?: string;
 	label?: string;
 	department?: string;
 	worktree?: string;
@@ -496,6 +533,8 @@ interface SessionSummary {
 	kind: "chat" | "autonomous";
 	/** Fine-grained trail category (user-led conversations are different). */
 	category: SessionCategory;
+	/** Stable staff member identity stamped into the immutable trail header. */
+	staffAgentId?: string;
 	/** Product-development department assigned to this chat. */
 	department?: string;
 	/** Exact product worktree assigned to this chat. */
@@ -886,6 +925,7 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 			let sessionAuthority:
 				| {
 						autonomous?: boolean;
+						staffAgentId?: string;
 						label?: string;
 						department?: string;
 						worktree?: string;
@@ -990,6 +1030,7 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 						: title || kernelInput || chatName || "New chat",
 				kind,
 				category,
+				staffAgentId: sessionAuthority?.staffAgentId,
 				department: sessionAuthority?.department,
 				worktree: sessionAuthority?.worktree,
 				page,
@@ -1120,7 +1161,74 @@ function respondToInboxItem(root: string, file: string, response: string): boole
 	}
 }
 
-function stateFor(root: string, runtime?: SessionRuntimeSnapshot, sessions?: SessionSummary[]): unknown {
+function safeReadModel<T, View>(read: (() => readonly T[]) | undefined, project: (value: T) => View): View[] {
+	if (!read) return [];
+	try {
+		const values = read();
+		if (!Array.isArray(values)) return [];
+		return values.map(project);
+	} catch {
+		return [];
+	}
+}
+
+function staffView(agent: StaffAgent): StaffAgent {
+	return {
+		id: agent.id,
+		displayName: agent.displayName,
+		role: agent.role,
+		charter: agent.charter,
+		...(agent.templateId !== undefined ? { templateId: agent.templateId } : {}),
+		...(agent.departmentId !== undefined ? { departmentId: agent.departmentId } : {}),
+		appearance: { color: agent.appearance.color, shape: agent.appearance.shape },
+		employmentStatus: agent.employmentStatus,
+		createdAt: agent.createdAt,
+		updatedAt: agent.updatedAt,
+	};
+}
+
+function connectionRequestView(request: CompanyConnectionRequestView): CompanyConnectionRequestView {
+	return {
+		id: request.id,
+		staffAgentId: request.staffAgentId,
+		sessionFile: request.sessionFile,
+		displayName: request.displayName,
+		purpose: request.purpose,
+		destinations: request.destinations.map((destination) => ({
+			host: destination.host,
+			...(destination.note !== undefined ? { note: destination.note } : {}),
+		})),
+		...(request.recipeId !== undefined ? { recipeId: request.recipeId } : {}),
+		status: request.status,
+		createdAt: request.createdAt,
+		updatedAt: request.updatedAt,
+		...(request.failure !== undefined ? { failure: request.failure } : {}),
+		...(request.grantId !== undefined ? { grantId: request.grantId } : {}),
+	};
+}
+
+function scheduledJobView(job: CompanyScheduledJobView): CompanyScheduledJobView {
+	return {
+		id: job.id,
+		title: job.title,
+		prompt: job.prompt,
+		intervalMinutes: job.intervalMinutes,
+		enabled: job.enabled,
+		createdAt: job.createdAt,
+		updatedAt: job.updatedAt,
+		...(job.suspendedReason !== undefined ? { suspendedReason: job.suspendedReason } : {}),
+		...(job.staffAgentId !== undefined ? { staffAgentId: job.staffAgentId } : {}),
+	};
+}
+
+function stateFor(
+	root: string,
+	runtime?: SessionRuntimeSnapshot,
+	sessions?: SessionSummary[],
+	staff: readonly StaffAgent[] = [],
+	connectionRequests: readonly CompanyConnectionRequestView[] = [],
+	scheduledJobs: readonly CompanyScheduledJobView[] = [],
+): unknown {
 	let trailSessions = 0;
 	try {
 		const trail = physicalDirectoryWithin(root, "trail");
@@ -1152,6 +1260,9 @@ function stateFor(root: string, runtime?: SessionRuntimeSnapshot, sessions?: Ses
 			runtime: runtimeByTrail.get(session.file),
 		})),
 		runtime: runtime ?? { revision: 0, generatedAt: "", sessions: [] },
+		staff,
+		connectionRequests,
+		scheduledJobs,
 		trailSessions,
 		departments,
 	};
@@ -1162,7 +1273,7 @@ function writeServerEvent(response: ServerResponse, event: string, data: unknown
 }
 
 /**
- * The base surface design system. Values mirror the base userland tokens
+ * The artifact design system. Values mirror the fixed shell tokens
  * verbatim so surfaces blend into the chrome that embeds them. Served at
  * /assets/surface.css and linked into rendered .md/.txt surfaces; HTML
  * surfaces opt in with <link rel="stylesheet" href="/assets/surface.css">.
@@ -1170,7 +1281,7 @@ function writeServerEvent(response: ServerResponse, event: string, data: unknown
  * and always linked AFTER the tokens — controllers (or the founder) restyle
  * by redefining variables, not by forking the sheet.
  */
-const SURFACE_TOKENS_CSS = `/* Tokens mirror the base userland (tokens.css) so surfaces blend into the
+const SURFACE_TOKENS_CSS = `/* Tokens mirror the fixed shell so artifacts blend into the
  * chrome that embeds them. Token system and document metrics adapted from
  * T3 Code <https://github.com/pingdotgg/t3code>, MIT, (c) 2026 T3 Tools Inc.
  * Type is the system stack by design: surfaces ship no font files, so a
@@ -1360,19 +1471,14 @@ function staticContentType(path: string): string {
 	}
 }
 
-function serveUserland(directory: string, entry: string, response: ServerResponse): void {
+function serveFixedShell(directory: string, entry: string, response: ServerResponse): void {
 	const target = readPhysicalFileWithin(directory, entry || "index.html");
-	serveUserlandTarget(target, response);
+	serveFixedShellTarget(target, response);
 }
 
-function serveCompanyUserland(root: string, entry: string, response: ServerResponse): void {
-	const target = readCompanyFileWithin(root, "userland", entry || "index.html");
-	serveUserlandTarget(target, response);
-}
-
-function serveUserlandTarget(target: PhysicalFile | undefined, response: ServerResponse): void {
+function serveFixedShellTarget(target: PhysicalFile | undefined, response: ServerResponse): void {
 	if (!target) {
-		response.writeHead(404).end("userland asset not found");
+		response.writeHead(404).end("shell asset not found");
 		return;
 	}
 	response
@@ -1621,29 +1727,42 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 	const authorized = (request: IncomingMessage): boolean => request.headers["x-qorpera-token"] === authToken;
 	return createServer((request: IncomingMessage, response: ServerResponse) => {
 		const url = new URL(request.url ?? "/", "http://localhost");
-		if (url.pathname.startsWith("/userland/base/") && options.userland) {
-			const entry = decodedPath(url.pathname.slice("/userland/base/".length), response);
-			if (entry !== undefined) serveUserland(options.userland.baseDir, entry, response);
-			return;
-		}
-		if (url.pathname.startsWith("/userland/fork/") && options.userland) {
-			const entry = decodedPath(url.pathname.slice("/userland/fork/".length), response);
-			if (entry !== undefined) serveCompanyUserland(root, entry, response);
+		if (url.pathname.startsWith("/shell/") && options.fixedShell) {
+			const entry = decodedPath(url.pathname.slice("/shell/".length), response);
+			if (entry !== undefined) serveFixedShell(options.fixedShell.directory, entry, response);
 			return;
 		}
 		if (url.pathname === "/") {
+			if (options.fixedShell) {
+				response.writeHead(302, { location: "/shell/index.html" }).end();
+				return;
+			}
 			response
 				.writeHead(200, { "content-type": "text/html; charset=utf-8" })
 				.end(CHROME_HTML(companyName(root), ""));
 			return;
 		}
 		if (url.pathname === "/api/state") {
+			const staff = safeReadModel(options.staffReadModel, staffView);
+			const connectionRequests = safeReadModel(options.connectionRequestReadModel, connectionRequestView);
+			const scheduledJobs = safeReadModel(options.scheduledJobReadModel, scheduledJobView);
 			response
 				.writeHead(200, {
 					"content-type": "application/json",
 					"cache-control": "no-store",
 				})
-				.end(JSON.stringify(stateFor(root, options.sessionRuntime?.snapshot(), trailSessions())));
+				.end(
+					JSON.stringify(
+						stateFor(
+							root,
+							options.sessionRuntime?.snapshot(),
+							trailSessions(),
+							staff,
+							connectionRequests,
+							scheduledJobs,
+						),
+					),
+				);
 			return;
 		}
 		if (url.pathname === "/api/runtime" && request.method === "GET") {
@@ -1662,7 +1781,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			const unsubscribe = options.sessionRuntime.subscribe((update) => {
 				// Stream only the event discriminator plus the canonical read model.
 				// Provider diagnostics stay in the protected trail and never become
-				// ambient same-origin userland data.
+				// ambient same-origin shell data.
 				if (update.event?.kind === "activity" && update.session) {
 					writeServerEvent(response, "runtime", {
 						event: { kind: update.event.kind, at: update.event.at },

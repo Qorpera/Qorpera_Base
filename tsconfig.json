@@ -20,6 +20,8 @@
 			"@qorpera/pi-coding-agent/company-connections": [
 				"./packages/coding-agent/src/core/company-connections.ts"
 			],
+			"@qorpera/pi-coding-agent/company-staff": ["./packages/coding-agent/src/core/company-staff.ts"],
+			"@qorpera/pi-coding-agent/founder-identity": ["./packages/coding-agent/src/core/founder-identity.ts"],
 			"@qorpera/pi-coding-agent/hooks": ["./packages/coding-agent/src/core/hooks/index.ts"],
 			"@qorpera/pi-coding-agent/*": ["./packages/coding-agent/src/*"],
 			"@qorpera/pi-protocol": ["./packages/protocol/src/index.ts"],

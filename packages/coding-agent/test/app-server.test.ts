@@ -2,27 +2,43 @@
  * Per-company app server (spec §7 v1): state API, surface serving with
  * traversal protection, and gate resolution through the UI endpoint.
  */
-import { appendFileSync, existsSync, linkSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	linkSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	type CompanyConnectionRequestView,
+	type CompanyScheduledJobView,
 	createCompanyAppServer,
 	type SessionRuntimeSnapshot,
 	type SessionRuntimeSource,
 	type SessionRuntimeUpdate,
 } from "../src/core/app-server.ts";
-import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
+import { discoverAuthority, evaluateToolCall, readAuthorityConfig } from "../src/core/authority.ts";
 import { scaffoldCompany, scaffoldProductDepartment } from "../src/core/company.ts";
+import type { StaffAgent } from "../src/core/company-staff.ts";
 import { LITELLM_RATES_URL, parseUsageRateTable, type UsageRateCatalog } from "../src/core/usage-pricing.ts";
 
 let root: string;
+let fixedShell: string;
 let server: Server | undefined;
 let base: string;
 let runtimeSnapshot: SessionRuntimeSnapshot;
 let runtimeListeners: Set<(update: SessionRuntimeUpdate) => void>;
 let hiddenTrails: Set<string>;
+let staffReadModel: () => readonly StaffAgent[];
+let connectionRequestReadModel: () => readonly CompanyConnectionRequestView[];
+let scheduledJobReadModel: () => readonly CompanyScheduledJobView[];
 
 const TEST_USAGE_RATE_CATALOG: UsageRateCatalog = {
 	rates: parseUsageRateTable({
@@ -48,7 +64,10 @@ const TEST_USAGE_RATE_CATALOG: UsageRateCatalog = {
 
 beforeEach(async () => {
 	root = join(tmpdir(), `qorpera-app-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	fixedShell = join(tmpdir(), `qorpera-fixed-shell-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	scaffoldCompany(root);
+	mkdirSync(fixedShell, { recursive: true });
+	writeFileSync(join(fixedShell, "index.html"), "<h1>Qorpera staff shell</h1>", "utf-8");
 	runtimeSnapshot = {
 		revision: 0,
 		generatedAt: "2026-08-14T08:00:00.000Z",
@@ -56,6 +75,9 @@ beforeEach(async () => {
 	};
 	runtimeListeners = new Set();
 	hiddenTrails = new Set();
+	staffReadModel = () => [];
+	connectionRequestReadModel = () => [];
+	scheduledJobReadModel = () => [];
 	const sessionRuntime: SessionRuntimeSource = {
 		snapshot: () => runtimeSnapshot,
 		isTrailVisible: (trailFile) => !hiddenTrails.has(trailFile),
@@ -66,9 +88,13 @@ beforeEach(async () => {
 	};
 	server = createCompanyAppServer({
 		root,
+		fixedShell: { directory: fixedShell },
 		authToken: "test-token",
 		usageRateCatalog: async () => TEST_USAGE_RATE_CATALOG,
 		sessionRuntime,
+		staffReadModel: () => staffReadModel(),
+		connectionRequestReadModel: () => connectionRequestReadModel(),
+		scheduledJobReadModel: () => scheduledJobReadModel(),
 	});
 	await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
 	const address = server!.address() as { port: number };
@@ -78,6 +104,7 @@ beforeEach(async () => {
 afterEach(async () => {
 	await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
 	if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
+	if (fixedShell && existsSync(fixedShell)) rmSync(fixedShell, { recursive: true, force: true });
 });
 
 describe("company app server", () => {
@@ -113,6 +140,7 @@ describe("company app server", () => {
 					sessionId: "session-live",
 					actor: "controller",
 					autonomous: false,
+					staffAgentId: "staff-night-shift",
 					status: "running",
 					live: true,
 					kernelInstanceId: "kernel-a",
@@ -168,9 +196,128 @@ describe("company app server", () => {
 		await reader.cancel();
 	});
 
-	it("serves chrome, live state, and surfaces as the controller builds them", async () => {
+	it("serves safe staff and connection-request read models", async () => {
+		const unsafeStaff = {
+			id: "11111111-1111-4111-8111-111111111111",
+			displayName: "Night Shift",
+			role: "Overnight operator",
+			charter: "Prepare the morning briefing.",
+			templateId: "night-shift",
+			departmentId: "operations",
+			appearance: { color: "blue", shape: "round" },
+			employmentStatus: "active" as const,
+			createdAt: "2026-08-15T00:00:00.000Z",
+			updatedAt: "2026-08-15T00:00:00.000Z",
+			root: "C:\\private-company-root",
+			credentials: { token: "staff-secret-token" },
+		};
+		const unsafeRequest = {
+			id: "22222222-2222-4222-8222-222222222222",
+			staffAgentId: unsafeStaff.id,
+			sessionFile: "night-shift.jsonl",
+			displayName: "GitHub",
+			purpose: "Review pull requests",
+			destinations: [{ host: "github.com", note: "Repository access", credential: "destination-secret" }],
+			recipeId: "github-oauth",
+			status: "pending" as const,
+			createdAt: "2026-08-15T00:01:00.000Z",
+			updatedAt: "2026-08-15T00:01:00.000Z",
+			secretNames: ["GITHUB_TOKEN"],
+			root: "C:\\private-company-root",
+			credentials: { token: "request-secret-token" },
+		};
+		staffReadModel = () => [unsafeStaff];
+		connectionRequestReadModel = () => [unsafeRequest];
+
+		let state = (await (await fetch(`${base}/api/state`)).json()) as {
+			staff: Array<Record<string, unknown>>;
+			connectionRequests: Array<Record<string, unknown>>;
+		};
+		expect(state.staff[0]).toMatchObject({
+			id: unsafeStaff.id,
+			displayName: "Night Shift",
+			appearance: { color: "blue", shape: "round" },
+		});
+		expect(state.staff[0]).not.toHaveProperty("root");
+		expect(state.staff[0]).not.toHaveProperty("credentials");
+		expect(state.connectionRequests[0]).toMatchObject({
+			id: unsafeRequest.id,
+			staffAgentId: unsafeStaff.id,
+			destinations: [{ host: "github.com", note: "Repository access" }],
+			status: "pending",
+		});
+		expect(state.connectionRequests[0]).not.toHaveProperty("secretNames");
+		expect(state.connectionRequests[0]).not.toHaveProperty("root");
+		expect(state.connectionRequests[0]).not.toHaveProperty("credentials");
+		expect(JSON.stringify(state)).not.toContain("destination-secret");
+
+		staffReadModel = () => {
+			throw new Error("staff unavailable");
+		};
+		connectionRequestReadModel = () => {
+			throw new Error("connection requests unavailable");
+		};
+		state = (await (await fetch(`${base}/api/state`)).json()) as typeof state;
+		expect(state.staff).toEqual([]);
+		expect(state.connectionRequests).toEqual([]);
+	});
+
+	it("serves a safe scheduled-job read model with explicit staff ownership", async () => {
+		const unsafeJob = {
+			id: "morning-digest",
+			title: "Morning digest",
+			prompt: "Summarize overnight work.",
+			intervalMinutes: 1_440,
+			enabled: true,
+			createdAt: "2026-08-15T00:00:00.000Z",
+			updatedAt: "2026-08-15T00:01:00.000Z",
+			suspendedReason: "Awaiting provider reconnection",
+			staffAgentId: "11111111-1111-4111-8111-111111111111",
+			secretNames: ["GMAIL_TOKEN"],
+			webhook: { token: "webhook-secret-token" },
+			root: "C:\\private-company-root",
+			credentials: { token: "scheduled-job-secret-token" },
+		};
+		scheduledJobReadModel = () => [unsafeJob];
+
+		let state = (await (await fetch(`${base}/api/state`)).json()) as {
+			scheduledJobs: Array<Record<string, unknown>>;
+		};
+		expect(state.scheduledJobs).toEqual([
+			{
+				id: "morning-digest",
+				title: "Morning digest",
+				prompt: "Summarize overnight work.",
+				intervalMinutes: 1_440,
+				enabled: true,
+				createdAt: "2026-08-15T00:00:00.000Z",
+				updatedAt: "2026-08-15T00:01:00.000Z",
+				suspendedReason: "Awaiting provider reconnection",
+				staffAgentId: "11111111-1111-4111-8111-111111111111",
+			},
+		]);
+		expect(JSON.stringify(state)).not.toContain("GMAIL_TOKEN");
+		expect(JSON.stringify(state)).not.toContain("webhook-secret-token");
+		expect(JSON.stringify(state)).not.toContain("private-company-root");
+		expect(JSON.stringify(state)).not.toContain("scheduled-job-secret-token");
+		scheduledJobReadModel = () => [{ ...unsafeJob, id: "unassigned-job", staffAgentId: undefined }];
+		state = (await (await fetch(`${base}/api/state`)).json()) as typeof state;
+		expect(state.scheduledJobs[0]).not.toHaveProperty("staffAgentId");
+
+		scheduledJobReadModel = () => {
+			throw new Error("scheduled jobs unavailable");
+		};
+		state = (await (await fetch(`${base}/api/state`)).json()) as typeof state;
+		expect(state.scheduledJobs).toEqual([]);
+	});
+
+	it("serves only the fixed shell while artifacts remain live", async () => {
 		const chrome = await (await fetch(`${base}/`)).text();
-		expect(chrome).toContain("Controller — Qorpera Base");
+		expect(chrome).toContain("Qorpera staff shell");
+		mkdirSync(join(root, "userland"), { recursive: true });
+		writeFileSync(join(root, "userland", "index.html"), "<h1>untrusted legacy shell</h1>", "utf-8");
+		const legacyShell = await fetch(`${base}/userland/fork/index.html`);
+		expect(legacyShell.status).toBe(404);
 
 		let state = (await (await fetch(`${base}/api/state`)).json()) as {
 			projection: {
@@ -183,6 +330,9 @@ describe("company app server", () => {
 				}>;
 			};
 			trailSessions: number;
+			staff: unknown[];
+			connectionRequests: unknown[];
+			scheduledJobs: unknown[];
 		};
 		expect(state.projection.navigation).toEqual(["q:main"]);
 		expect(state.projection.nodes.map((node) => node.id)).toEqual(
@@ -190,6 +340,9 @@ describe("company app server", () => {
 		);
 		expect(state.projection.nodes.map((node) => node.id)).not.toContain("q:usage");
 		expect(state).not.toHaveProperty("surfaces");
+		expect(state.staff).toEqual([]);
+		expect(state.connectionRequests).toEqual([]);
+		expect(state.scheduledJobs).toEqual([]);
 		writeFileSync(
 			join(root, "app", "manifest.json"),
 			JSON.stringify({
@@ -698,6 +851,7 @@ describe("company app server", () => {
 					qorpera: {
 						actor: "product-worker",
 						attended: true,
+						staffAgentId: "staff-launcher",
 						department: department.path,
 						worktree,
 					},
@@ -832,6 +986,7 @@ describe("company app server", () => {
 				title: string;
 				kind: string;
 				category?: string;
+				staffAgentId?: string;
 				department?: string;
 				worktree?: string;
 				page?: string;
@@ -907,6 +1062,7 @@ describe("company app server", () => {
 		});
 		expect(scoped?.kind).toBe("chat");
 		expect(scoped?.category).toBe("product");
+		expect(scoped?.staffAgentId).toBe("staff-launcher");
 		expect(scoped?.department).toBe(department.path);
 		expect(scoped?.worktree).toBe(worktree);
 		expect(scoped?.title).toBe("fix the launcher");
@@ -1105,7 +1261,7 @@ describe("company app server", () => {
 		const written = readFileSync(join(root, "authority.toml"), "utf-8");
 		expect(written).toContain('deploy = "irreversible"'); // [tools] survived
 		const authority = discoverAuthority(root)!;
-		const config = (await import("../src/core/authority.ts")).readAuthorityConfig(authority);
+		const config = readAuthorityConfig(authority);
 		expect(config.classes.irreversible.mode).toBe("notify");
 		expect(config.classes.money.limitUsd).toBe(100);
 		expect(config.classes.authority.mode).toBe("gate"); // never configurable

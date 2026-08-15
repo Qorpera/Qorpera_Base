@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM_PROJECTION_NODES, PROJECTION_SCHEMA, parseProjectionDocument } from "../src/core/projection.ts";
 
 describe("company UI projection", () => {
+	const staffAgentId = "6ba7b810-9dad-4d1d-80b4-00c04fd430c8";
+
 	it("keeps Usage out of the platform navigation — it lives in Settings", () => {
 		expect(PLATFORM_PROJECTION_NODES.map((node) => node.id)).not.toContain("q:usage");
 		const main = PLATFORM_PROJECTION_NODES.find((node) => node.id === "q:main");
@@ -31,6 +33,7 @@ describe("company UI projection", () => {
 					id: "page:finance.overview",
 					kind: "page",
 					label: "Overview",
+					staffAgentId,
 					view: { type: "surface", entry: "finance/overview.html", version: 7 },
 				},
 				{
@@ -45,7 +48,38 @@ describe("company UI projection", () => {
 		expect(projection.diagnostics).toEqual([]);
 		expect(projection.navigation).toEqual(["department:finance"]);
 		expect(projection.default).toBe("page:finance.overview");
-		expect(projection.nodes[2]).toMatchObject({ view: { version: 7 } });
+		expect(projection.nodes[2]).toMatchObject({ staffAgentId, view: { version: 7 } });
+		expect(Object.hasOwn(projection.nodes[3], "staffAgentId")).toBe(false);
+	});
+
+	it("rejects invalid staff ownership instead of silently treating the page as Unassigned", () => {
+		const projection = parseProjectionDocument({
+			schema: PROJECTION_SCHEMA,
+			navigation: ["department:finance"],
+			nodes: [
+				{
+					id: "department:finance",
+					kind: "department",
+					label: "Finance",
+					items: ["page:finance.overview"],
+				},
+				{
+					id: "page:finance.overview",
+					kind: "page",
+					label: "Overview",
+					staffAgentId: "department:finance",
+					view: { type: "surface", entry: "finance/overview.html" },
+				},
+			],
+		});
+
+		expect(projection.nodes.map((node) => node.id)).toEqual(["department:finance"]);
+		expect(projection.diagnostics).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("staffAgentId must be a lowercase UUID v4"),
+				expect.stringContaining("references missing node page:finance.overview"),
+			]),
+		);
 	});
 
 	it("rejects reserved IDs, missing references, and category nesting", () => {

@@ -72,6 +72,12 @@ export {
 	type ReadToolOptions,
 } from "./read.ts";
 export {
+	createRequestConnectionTool,
+	createRequestConnectionToolDefinition,
+	REQUEST_CONNECTION_TOOL_NAME,
+	type RequestConnectionToolInput,
+} from "./request-connection.ts";
+export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	formatSize,
@@ -100,6 +106,7 @@ import { createHttpRequestTool, createHttpRequestToolDefinition } from "./http-r
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
 import { createMcpTool, createMcpToolDefinition } from "./mcp.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
+import { createRequestConnectionTool, createRequestConnectionToolDefinition } from "./request-connection.ts";
 import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
 
 export type Tool = AgentTool<any>;
@@ -114,6 +121,7 @@ export type ToolName =
 	| "ls"
 	| "run_company_tool"
 	| "http_request"
+	| "request_connection"
 	| "use_mcp_tool";
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
@@ -125,6 +133,7 @@ export const allToolNames: Set<ToolName> = new Set([
 	"ls",
 	"run_company_tool",
 	"http_request",
+	"request_connection",
 	"use_mcp_tool",
 ]);
 
@@ -159,6 +168,8 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createCompanyToolDefinition(cwd, options?.run_company_tool);
 		case "http_request":
 			return createHttpRequestToolDefinition();
+		case "request_connection":
+			return createRequestConnectionToolDefinition();
 		case "use_mcp_tool":
 			return createMcpToolDefinition(cwd);
 		default:
@@ -186,6 +197,8 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createCompanyTool(cwd, options?.run_company_tool);
 		case "http_request":
 			return createHttpRequestTool();
+		case "request_connection":
+			return createRequestConnectionTool();
 		case "use_mcp_tool":
 			return createMcpTool(cwd);
 		default:
@@ -222,6 +235,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		ls: createLsToolDefinition(cwd, options?.ls),
 		run_company_tool: createCompanyToolDefinition(cwd, options?.run_company_tool),
 		http_request: createHttpRequestToolDefinition(),
+		request_connection: createRequestConnectionToolDefinition(),
 		use_mcp_tool: createMcpToolDefinition(cwd),
 	};
 }
@@ -255,6 +269,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		ls: createLsTool(cwd, options?.ls),
 		run_company_tool: createCompanyTool(cwd, options?.run_company_tool),
 		http_request: createHttpRequestTool(),
+		request_connection: createRequestConnectionTool(),
 		use_mcp_tool: createMcpTool(cwd),
 	};
 }

@@ -239,7 +239,7 @@ export function commitCompanyMaterialization(root: string, paths: string[]): voi
 		"commit",
 		"--only",
 		"-m",
-		"docs: materialize company runtime\n\nQorpera-Trigger: desktop kernel open\nQorpera-Rationale: preserve kernel scaffolding, migrations, and evolved userland before controller execution",
+		"docs: materialize company runtime\n\nQorpera-Trigger: desktop kernel open\nQorpera-Rationale: preserve kernel scaffolding, fixed-shell migrations, and company artifacts before staff execution",
 		"--",
 		...existingPaths,
 	]);

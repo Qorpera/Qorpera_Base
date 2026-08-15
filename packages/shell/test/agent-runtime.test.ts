@@ -295,6 +295,104 @@ describe("kernel-bound agent runtime", () => {
 		).toThrow("authority does not match");
 	});
 
+	it("binds staff identity immutably without adopting legacy system trails", () => {
+		const company = join(root, "company");
+		const legacy = bindTrailSession(company, company, { actor: "controller", attended: true });
+		const legacyBytes = readFileSync(legacy.path, "utf-8");
+		const staff = bindTrailSession(company, company, {
+			actor: "controller",
+			attended: true,
+			staffAgentId: "staff-night-shift",
+		});
+
+		expect(JSON.parse(readFileSync(staff.path, "utf-8").split("\n")[0]).qorpera).toMatchObject({
+			actor: "controller",
+			attended: true,
+			staffAgentId: "staff-night-shift",
+		});
+		appendKernelObservation(staff, {
+			frameType: "staff_intro",
+			message: "Introduce yourself and ask what to work on first.",
+			attended: false,
+			origin: "kernel-staff-introduction",
+			intent: {
+				nonce: "11111111-1111-4111-8111-111111111111",
+				sessionId: staff.sessionId,
+				requestHash: "b".repeat(64),
+				attended: false,
+				issuedAt: "2026-08-15T00:00:00.000Z",
+				expiresAt: "2026-08-15T01:00:00.000Z",
+				budget: { maxCalls: 4, maxInputTokens: 1_000, maxOutputTokens: 1_000, maxCostUsd: 1 },
+				signature: "kernel-signature",
+			},
+			images: [],
+		});
+		expect(JSON.parse(readFileSync(staff.path, "utf-8").split("\n")[1])).toMatchObject({
+			type: "custom",
+			customType: "qorpera_kernel_input",
+			data: {
+				frameType: "staff_intro",
+				origin: "kernel-staff-introduction",
+			},
+			provenance: { source: "kernel", trust: "observed" },
+		});
+		expect(
+			bindTrailSession(
+				company,
+				company,
+				{ actor: "controller", attended: true, staffAgentId: "staff-night-shift" },
+				staff.file,
+			).file,
+		).toBe(staff.file);
+		expect(() =>
+			bindTrailSession(
+				company,
+				company,
+				{ actor: "controller", attended: true, staffAgentId: "staff-chief-of-staff" },
+				staff.file,
+			),
+		).toThrow("requested staffAgentId");
+		expect(() => bindTrailSession(company, company, { actor: "controller", attended: true }, staff.file)).toThrow(
+			"requested staffAgentId",
+		);
+		expect(() =>
+			bindTrailSession(
+				company,
+				company,
+				{ actor: "controller", attended: true, staffAgentId: "staff-night-shift" },
+				legacy.file,
+			),
+		).toThrow("requested staffAgentId");
+		expect(readFileSync(legacy.path, "utf-8")).toBe(legacyBytes);
+		// Generic system-chat discovery must not attach the shell to the newer
+		// named employee without an explicit staff context.
+		expect(latestResumableTrailSession(company)).toBe(legacy.file);
+	});
+
+	it("refuses to migrate a legacy trail into a staff identity", () => {
+		const company = join(root, "company");
+		const file = "2026-08-04T07-00-00-000Z_legacy-staff.jsonl";
+		const path = join(company, "trail", file);
+		const original = `${JSON.stringify({
+			type: "session",
+			version: 3,
+			id: "legacy-staff",
+			timestamp: "2026-08-04T07:00:00.000Z",
+			cwd: company,
+		})}\n`;
+		writeFileSync(path, original, "utf-8");
+
+		expect(() =>
+			migrateLegacyTrailSession(company, file, {
+				actor: "controller",
+				attended: true,
+				staffAgentId: "staff-night-shift",
+			}),
+		).toThrow("remain system-owned");
+		expect(readFileSync(path, "utf-8")).toBe(original);
+		expect(existsSync(`${path}.v3.bak`)).toBe(false);
+	});
+
 	it("accepts only token-bound append frames and kernel-owned gate transitions", () => {
 		const company = join(root, "company");
 		const binding = bindTrailSession(company, company, { actor: "controller", attended: true });
@@ -804,8 +902,8 @@ describe("kernel-bound agent runtime", () => {
 			SystemRoot: "C:\\Windows",
 			// getShellConfig (coding-agent) probes %ProgramFiles%\Git\bin\bash.exe
 			// first; stripping these regressed every kernel-spawned session to the
-			// unrunnable WSL stub — userland merges then settled with "Bash tool
-			// unavailable" (v0.18.1).
+			// unrunnable WSL stub — kernel-spawned work then settled with "Bash
+			// tool unavailable" (v0.18.1).
 			ProgramFiles: "C:\\Program Files",
 			"ProgramFiles(x86)": "C:\\Program Files (x86)",
 			ANTHROPIC_API_KEY: "secret",
@@ -1094,22 +1192,23 @@ describe("kernel-bound agent runtime", () => {
 		);
 	}, 30_000);
 
-	it("commits kernel materialization into an existing company repository before baseline capture", () => {
+	it("commits removal of a legacy company shell before staff execution", () => {
 		const company = join(root, "company");
+		mkdirSync(join(company, "userland"), { recursive: true });
 		writeFileSync(join(company, "seed.md"), "existing repository\n", "utf-8");
+		writeFileSync(join(company, "userland", "index.html"), "legacy shell\n", "utf-8");
 		for (const args of [
 			["init"],
-			["add", "seed.md"],
+			["add", "seed.md", "userland/index.html"],
 			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "seed"],
 		]) {
 			expect(spawnSync("git", args, { cwd: company, stdio: "ignore" }).status).toBe(0);
 		}
-		mkdirSync(join(company, "userland"), { recursive: true });
-		writeFileSync(join(company, "userland", "index.html"), "evolved\n", "utf-8");
+		rmSync(join(company, "userland"), { recursive: true, force: true });
 		commitCompanyMaterialization(company, ["userland"]);
 		expect(
 			spawnSync("git", ["ls-files", "userland/index.html"], { cwd: company, encoding: "utf-8" }).stdout.trim(),
-		).toBe("userland/index.html");
+		).toBe("");
 		expect(spawnSync("git", ["log", "-1", "--format=%B"], { cwd: company, encoding: "utf-8" }).stdout).toContain(
 			"Qorpera-Trigger: desktop kernel open",
 		);

@@ -1,7 +1,8 @@
 /* ---- design tokens (generalize everything against these) -------------------
  * The whole palette derives from one near-black base: surfaces lift from
  * --chrome with white mixes, borders and hovers are white alphas, and one
- * action color drives every "act now" affordance. Dark-only.
+ * action color drives every "act now" affordance. The staff-first shell uses
+ * a light, paper-like canvas so identities and conversations carry the color.
  *
  * Token system (alpha borders, color-mix surface lifts, radius scale, glass
  * recipe, surface grain) adapted from T3 Code
@@ -23,30 +24,30 @@
 	src: url("./fonts/source-sans-3-latin-italic.woff2") format("woff2");
 }
 :root {
-	color-scheme: dark;
+	color-scheme: light;
 
-	/* neutrals — near-black chrome framing one lifted content sheet */
-	--chrome: #0a0a0a;                                        /* titlebar + sidebar */
-	--bg: color-mix(in srgb, var(--chrome) 96%, #ffffff);     /* the content sheet */
+	/* neutrals — warm navigation chrome framing a white work surface */
+	--chrome: #fafafa;
+	--bg: #ffffff;
 	--pane: var(--bg);
-	--pane-strong: rgba(255, 255, 255, 0.05);
-	--hover: rgba(255, 255, 255, 0.07);
-	--popover: color-mix(in srgb, var(--chrome) 91%, #ffffff);/* menus, floating panels */
-	--text: #f5f5f5;
-	--text-muted: #a6a6a6;
-	--text-soft: #7f7f7f;
-	--border: rgba(255, 255, 255, 0.07);
-	--border-strong: rgba(255, 255, 255, 0.15);
+	--pane-strong: rgba(18, 18, 17, 0.075);
+	--hover: rgba(18, 18, 17, 0.055);
+	--popover: rgba(255, 255, 255, 0.98);
+	--text: #161615;
+	--text-muted: #686866;
+	--text-soft: #92928e;
+	--border: rgba(18, 18, 17, 0.09);
+	--border-strong: rgba(18, 18, 17, 0.17);
 
 	/* action color — send, links, focus, slider fill */
-	--primary: oklch(0.588 0.217 264);
-	--primary-hover: oklch(0.55 0.217 264);
+	--primary: #171716;
+	--primary-hover: #30302e;
 	--ring: color-mix(in srgb, var(--primary) 55%, transparent);
-	--blue: oklch(0.74 0.13 264);           /* readable small-text variant */
+	--blue: #305fbe;                         /* readable small-text variant */
 
 	/* brand accent (Qorpera terracotta) — identity, scope tags, gate chips */
-	--accent: #cc7d5e;
-	--accent-soft: rgba(204, 125, 94, 0.15);
+	--accent: #d76f45;
+	--accent-soft: rgba(215, 111, 69, 0.12);
 
 	/* status */
 	--danger: #f26b5e;
@@ -58,7 +59,7 @@
 	--ok-soft: rgba(16, 185, 129, 0.14);
 
 	/* controls */
-	--send-idle: rgba(255, 255, 255, 0.08);
+	--send-idle: rgba(18, 18, 17, 0.1);
 	--send-active: var(--primary);
 	--send-active-hover: var(--primary-hover);
 
@@ -69,11 +70,19 @@
 	--radius-xl: 18px;
 	--radius-pill: 999px;
 	--titlebar-height: 40px;
-	--thread-width: 760px;
+	--thread-width: 720px;
+	--rail-width: 304px;
+	--agent-operations: #e78542;
+	--agent-research: #7868d7;
+	--agent-inbox: #ef5c78;
+	--agent-finance: #22a578;
+	--agent-product: #3d86df;
+	--agent-customer: #d8a022;
 
 	/* type */
-	--font-sans: "Source Sans 3", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
-	--font-mono: "SFMono-Regular", "Cascadia Code", Consolas, Menlo, monospace;
+	--font-sans: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", Arial, ui-sans-serif, system-ui, sans-serif;
+	--font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", Arial, ui-sans-serif, system-ui, sans-serif;
+	--font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "SFMono-Regular", Menlo, monospace;
 
 	/* glass — composer, menus, floating pills */
 	--glass-blur: 16px;
@@ -81,6 +90,6 @@
 
 	/* chrome grain — static SVG noise baked into surface backgrounds (cheap:
 	   no overlay element, no per-frame compositing cost) */
-	--surface-grain: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+	--surface-grain: none;
 	--surface-grain-size: 256px 256px;
 }

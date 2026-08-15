@@ -15,6 +15,10 @@ export interface ControllerLaunchOptions {
 
 const MODEL_PREFERENCE_FILE = "controller-model.json";
 
+export function defaultControllerModelPreferencePath(userData: string): string {
+	return join(userData, MODEL_PREFERENCE_FILE);
+}
+
 export function controllerModelPreferencePath(userData: string, root: string): string {
 	const normalized = process.platform === "win32" ? resolve(root).toLowerCase() : resolve(root);
 	const id = createHash("sha256").update(normalized).digest("hex");
@@ -48,13 +52,15 @@ export function readControllerModelPreference(userData: string, root: string): C
 	try {
 		return modelSelection(JSON.parse(readFileSync(controllerModelPreferencePath(userData, root), "utf-8")));
 	} catch {
-		try {
-			const legacy = modelSelection(JSON.parse(readFileSync(join(userData, MODEL_PREFERENCE_FILE), "utf-8")));
-			if (legacy) writeControllerModelPreference(userData, root, legacy);
-			return legacy;
-		} catch {
-			return undefined;
-		}
+		return readDefaultControllerModelPreference(userData);
+	}
+}
+
+export function readDefaultControllerModelPreference(userData: string): ControllerModelSelection | undefined {
+	try {
+		return modelSelection(JSON.parse(readFileSync(defaultControllerModelPreferencePath(userData), "utf-8")));
+	} catch {
+		return undefined;
 	}
 }
 
@@ -73,7 +79,14 @@ export function writeControllerModelPreference(
 	root: string,
 	model: ControllerModelSelection,
 ): boolean {
-	const path = controllerModelPreferencePath(userData, root);
+	return writeModelPreference(controllerModelPreferencePath(userData, root), model);
+}
+
+export function writeDefaultControllerModelPreference(userData: string, model: ControllerModelSelection): boolean {
+	return writeModelPreference(defaultControllerModelPreferencePath(userData), model);
+}
+
+function writeModelPreference(path: string, model: ControllerModelSelection): boolean {
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	try {
 		mkdirSync(dirname(path), { recursive: true });

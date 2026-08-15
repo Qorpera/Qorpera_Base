@@ -3,10 +3,8 @@
 // company/session state comes from the backend read model.
 const { contextBridge, ipcRenderer } = require("electron");
 
-// Compatibility for company-evolved userlands that predate explicit trail
-// scoping. The preload learns attachment only from kernel-confirmed replies;
-// old renderers therefore gain the same exact-session check without being
-// handed an ambient "current child" capability.
+// The preload learns attachment only from kernel-confirmed replies, so the
+// fixed renderer never receives an ambient "current child" capability.
 let activeTrailFile;
 async function appInfo() {
 	const result = await ipcRenderer.invoke("app:info");
@@ -20,8 +18,26 @@ async function openChat(sessionFile, department, worktree, sessionName) {
 	if (result?.ok && typeof result.sessionFile === "string") activeTrailFile = result.sessionFile;
 	return result;
 }
+async function createStaff(input) {
+	const result = await ipcRenderer.invoke("staff:create", input);
+	if (result?.ok && typeof result.sessionFile === "string") activeTrailFile = result.sessionFile;
+	return result;
+}
+async function bootstrapStaff(input) {
+	const result = await ipcRenderer.invoke("staff:bootstrap", input);
+	const first = result?.ok && Array.isArray(result.staff) ? result.staff[0] : undefined;
+	if (typeof first?.sessionFile === "string") activeTrailFile = first.sessionFile;
+	return result;
+}
+async function openStaff(staffAgentId) {
+	const result = await ipcRenderer.invoke("staff:open", staffAgentId);
+	if (result?.ok && typeof result.sessionFile === "string") activeTrailFile = result.sessionFile;
+	return result;
+}
 
 contextBridge.exposeInMainWorld("qorpera", {
+	intelligenceInfo: () => ipcRenderer.invoke("intelligence:info"),
+	configureIntelligence: (providerId) => ipcRenderer.invoke("intelligence:configure", providerId),
 	listCompanies: () => ipcRenderer.invoke("companies:list"),
 	openCompany: (root) => ipcRenderer.invoke("company:open", root),
 	newCompany: (dir) => ipcRenderer.invoke("company:new", dir),
@@ -34,18 +50,23 @@ contextBridge.exposeInMainWorld("qorpera", {
 	runScheduledJob: (id) => ipcRenderer.invoke("company:scheduled-job-run", id),
 	closeCompany: () => ipcRenderer.invoke("company:close"),
 	openChat,
+	staffCatalog: () => ipcRenderer.invoke("staff:catalog"),
+	staffCreate: createStaff,
+	staffBootstrap: bootstrapStaff,
+	staffUpdate: (staffAgentId, update) => ipcRenderer.invoke("staff:update", staffAgentId, update),
+	staffOpen: openStaff,
+	staffIntroReady: (staffAgentId, sessionFile, retry = false) =>
+		ipcRenderer.invoke("staff:intro-ready", staffAgentId, sessionFile, retry),
 	showHub: () => ipcRenderer.invoke("hub:show"),
 	settingsInfo: () => ipcRenderer.invoke("settings:info"),
 	connectAccount: (connectionId) => ipcRenderer.invoke("connection:connect", connectionId),
 	cancelConnection: (connectionId) => ipcRenderer.invoke("connection:cancel", connectionId),
+	connectionRequests: () => ipcRenderer.invoke("connection-requests:list"),
+	beginConnectionRequest: (identity) => ipcRenderer.invoke("connection-request:begin", identity),
+	onConnectionRequestsChanged: (handler) =>
+		ipcRenderer.on("connection-requests-changed", (_event, request) => handler(request)),
 	appInfo,
 	authorizedBackendPost: (path, body) => ipcRenderer.invoke("backend:authorized-post", path, body),
-	setActiveApp: (app) => ipcRenderer.invoke("userland:set-active", app),
-	restoreVersion: (id) => ipcRenderer.invoke("userland:restore", id),
-	favoriteVersion: (id, favorite) => ipcRenderer.invoke("userland:favorite", id, favorite),
-	mergeUserland: () => ipcRenderer.invoke("userland:merge"),
-	chooseIcon: () => ipcRenderer.invoke("userland:set-icon"),
-	onMergeDone: (handler) => ipcRenderer.on("merge-done", (_event, result) => handler(result)),
 	updateInstall: () => ipcRenderer.invoke("update:install"),
 	onUpdateStatus: (handler) => ipcRenderer.on("update-status", (_event, text) => handler(text)),
 	onUpdateReady: (handler) => ipcRenderer.on("update-ready", (_event, version) => handler(version)),

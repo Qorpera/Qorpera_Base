@@ -79,6 +79,8 @@ export interface ScheduledJob {
 	prompt: string;
 	intervalMinutes: number;
 	enabled: boolean;
+	/** Explicit staff ownership. Absence means Unassigned. */
+	staffAgentId?: string;
 	createdAt: string;
 	updatedAt: string;
 	/** Set by the kernel after repeated failures; cleared when the job is re-enabled. */
@@ -90,6 +92,7 @@ export interface ScheduledJobInput {
 	prompt: string;
 	intervalMinutes: number;
 	enabled?: boolean;
+	staffAgentId?: string;
 }
 
 export interface ScheduledJobUpdate {
@@ -97,6 +100,8 @@ export interface ScheduledJobUpdate {
 	prompt?: string;
 	intervalMinutes?: number;
 	enabled?: boolean;
+	/** A string assigns the job; null explicitly returns it to Unassigned. */
+	staffAgentId?: string | null;
 }
 
 export const DEFAULT_SCHEDULED_JOB_ID = "company-orchestration";
@@ -116,6 +121,7 @@ interface CompanyConnectionsState {
 }
 
 const FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
+const STAFF_AGENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function normalizedRoot(root: string): string {
 	const resolved = resolve(root);
@@ -299,8 +305,21 @@ function validScheduledJobText(value: string, field: "title" | "prompt", maxByte
 	return normalized;
 }
 
+function validScheduledJobStaffAgentId(value: unknown): string {
+	if (typeof value !== "string" || !STAFF_AGENT_ID_PATTERN.test(value)) {
+		throw new Error("Scheduled job staffAgentId must be a lowercase UUID v4");
+	}
+	return value;
+}
+
 function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
-	if (state.scheduledJobs) return [...state.scheduledJobs];
+	if (state.scheduledJobs) {
+		return state.scheduledJobs.map((job) =>
+			job.staffAgentId === undefined
+				? job
+				: { ...job, staffAgentId: validScheduledJobStaffAgentId(job.staffAgentId) },
+		);
+	}
 	if (!state.wake) return [];
 	const now = new Date().toISOString();
 	return [
@@ -338,6 +357,7 @@ export function createScheduledJob(root: string, input: ScheduledJobInput): Sche
 		prompt: validScheduledJobText(input.prompt, "prompt", 32 * 1024),
 		intervalMinutes: validScheduledJobInterval(input.intervalMinutes),
 		enabled: input.enabled ?? true,
+		...(input.staffAgentId !== undefined ? { staffAgentId: validScheduledJobStaffAgentId(input.staffAgentId) } : {}),
 		createdAt: now,
 		updatedAt: now,
 	};
@@ -361,10 +381,16 @@ export function updateScheduledJob(root: string, id: string, update: ScheduledJo
 		...(update.intervalMinutes !== undefined
 			? { intervalMinutes: validScheduledJobInterval(update.intervalMinutes) }
 			: {}),
+		...(update.staffAgentId === null
+			? { staffAgentId: undefined }
+			: update.staffAgentId !== undefined
+				? { staffAgentId: validScheduledJobStaffAgentId(update.staffAgentId) }
+				: {}),
 		enabled,
 		updatedAt: new Date().toISOString(),
 		...(update.enabled === true ? { suspendedReason: undefined } : {}),
 	};
+	if (next.staffAgentId === undefined) delete next.staffAgentId;
 	jobs[index] = next;
 	state.scheduledJobs = jobs;
 	delete state.wake;
