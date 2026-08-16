@@ -106,6 +106,7 @@ let staffCreatorPending = false;
 let staffCreatorClosing = false;
 let staffCreatorColor = "#1684ff";
 let staffCreatorShape = "round";
+let staffCreatorCreature = "palette";
 let staffBootstrapSelections = new Set();
 let staffBootstrapPending = false;
 let railSearchQuery = "";
@@ -132,6 +133,41 @@ const STAFF_AVATAR_COLORS = [
 	"#5367e8",
 ];
 const STAFF_AVATAR_SHAPES = ["soft-square", "round", "wide", "gem", "tilted", "drop"];
+const STAFF_CREATURE_MOTION_ROOT = "./staff-creatures/motion";
+const STAFF_CREATURE_CATALOG = Object.freeze({
+	pebble: Object.freeze({ label: "Pebble", asset: "./staff-creatures/financial-officer.png", motion: "financial-officer" }),
+	kite: Object.freeze({ label: "Kite", asset: "./staff-creatures/marketing-lead.png", motion: "marketing-lead" }),
+	ollie: Object.freeze({ label: "Ollie", asset: "./staff-creatures/product-manager.png", motion: "product-manager" }),
+	wisp: Object.freeze({ label: "Wisp", asset: "./staff-creatures/software-developer.png", motion: "software-developer" }),
+	palette: Object.freeze({ label: "Palette", asset: "./staff-creatures/product-designer.png", motion: "product-designer" }),
+	sable: Object.freeze({ label: "Sable", asset: "./staff-creatures/legal-expert.png", motion: "legal-expert" }),
+	bramble: Object.freeze({ label: "Bramble", asset: "./staff-creatures/operations-specialist.png", motion: "operations-specialist" }),
+	nox: Object.freeze({ label: "Nox", asset: "./staff-creatures/research-lead.png", motion: "research-lead" }),
+	mallow: Object.freeze({ label: "Mallow", asset: "./staff-creatures/costumer-relationist.png", motion: "costumer-relationist" }),
+	echo: Object.freeze({ label: "Echo", asset: "./staff-creatures/outreaching-conversationalist.png", motion: "outreaching-conversationalist" }),
+});
+const STAFF_CREATURE_IDS = Object.freeze(Object.keys(STAFF_CREATURE_CATALOG));
+const STAFF_CREATURE_BY_TEMPLATE = Object.freeze({
+	"financial-officer": "pebble",
+	"marketing-lead": "kite",
+	"product-manager": "ollie",
+	"software-developer": "wisp",
+	"product-designer": "palette",
+	"legal-expert": "sable",
+	"operations-specialist": "bramble",
+	"research-lead": "nox",
+	"costumer-relationist": "mallow",
+	"outreaching-conversationalist": "echo",
+});
+const STAFF_REDUCED_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)");
+const STAFF_CREATURE_BY_SHAPE = Object.freeze({
+	"soft-square": "ollie",
+	round: "palette",
+	wide: "wisp",
+	gem: "pebble",
+	tilted: "bramble",
+	drop: "kite",
+});
 const PROFILE_ICONS = [
 	{ id: "hop-warm-titanium", label: "Warm titanium", src: "./profile-icons/hop-warm-titanium.png" },
 	{ id: "hop-blue-steel", label: "Blue steel", src: "./profile-icons/hop-blue-steel.png" },
@@ -1395,6 +1431,29 @@ function staffShape(staffOrTemplate) {
 	return STAFF_AVATAR_SHAPES.includes(shape) ? shape : "soft-square";
 }
 
+function staffCreatureId(staffOrTemplate) {
+	const directCreature = staffOrTemplate?.appearance?.creature ?? staffOrTemplate?.creature;
+	if (STAFF_CREATURE_CATALOG[directCreature]) return directCreature;
+	const assignedTemplateId = staffTemplateId(staffOrTemplate);
+	const catalogTemplateId = STAFF_CREATURE_BY_TEMPLATE[staffOrTemplate?.id] ? staffOrTemplate.id : "";
+	const sourceId = assignedTemplateId || catalogTemplateId;
+	if (sourceId && STAFF_CREATURE_BY_TEMPLATE[sourceId]) return STAFF_CREATURE_BY_TEMPLATE[sourceId];
+	return STAFF_CREATURE_BY_SHAPE[staffShape(staffOrTemplate)] ?? "ollie";
+}
+
+function staffAvatarStyle() {
+	return localStorage.getItem("qorpera:staff-avatar-style") === "creatures" ? "creatures" : "simple";
+}
+
+function applyStaffAvatarStyle() {
+	const style = staffAvatarStyle();
+	document.documentElement.dataset.staffAvatarStyle = style;
+	for (const avatar of document.querySelectorAll(".staff-avatar")) {
+		const status = STAFF_MOTION_STATES.find((motion) => avatar.classList.contains(motion)) ?? "idle";
+		syncStaffCreatureMotion(avatar, status);
+	}
+}
+
 function staffDescription(staffOrTemplate) {
 	const source = staffId(staffOrTemplate) ? staffTemplate(staffOrTemplate) : staffOrTemplate;
 	return staffOrTemplate?.description ?? source?.description ?? "Works alongside you and keeps this responsibility moving.";
@@ -1433,8 +1492,10 @@ function staffStatus(staff) {
 const STAFF_MOTION_STATES = ["idle", "listening", "starting", "working", "finishing", "reconnecting"];
 
 function setAvatarMotionState(avatar, status) {
+	const motion = STAFF_MOTION_STATES.includes(status) ? status : "idle";
 	avatar.classList.remove(...STAFF_MOTION_STATES);
-	avatar.classList.add(STAFF_MOTION_STATES.includes(status) ? status : "idle");
+	avatar.classList.add(motion);
+	syncStaffCreatureMotion(avatar, motion);
 }
 
 function syncVisibleStaffAvatars() {
@@ -1464,8 +1525,9 @@ function makeStaffAvatar(staffOrTemplate, status = "idle") {
 	avatar.style.setProperty("--staff-color", staffColor(staffOrTemplate));
 	avatar.style.setProperty("--staff-motion-delay", staffMotionDelay(staffOrTemplate));
 	if (staffId(staffOrTemplate)) avatar.dataset.staffId = staffId(staffOrTemplate);
-	avatar.append(makeStaffWorkOrbit("blue"), makeStaffWorkOrbit("duo"));
-	avatar.appendChild(makeStaffFace());
+	avatar.dataset.creature = staffCreatureId(staffOrTemplate);
+	avatar.append(makeStaffCreature(staffOrTemplate, status), makeStaffFace());
+	syncStaffCreatureMotion(avatar, status);
 	avatar.setAttribute("aria-hidden", "true");
 	return avatar;
 }
@@ -1477,15 +1539,6 @@ function staffMotionDelay(staffOrTemplate) {
 	return `${-seed}ms`;
 }
 
-function makeStaffWorkOrbit(variant) {
-	const orbit = document.createElement("img");
-	orbit.className = `staff-work-orbit staff-work-orbit-${variant}`;
-	orbit.src = variant === "duo" ? "./staff-work-orbit-duo.png" : "./staff-work-orbit.png";
-	orbit.alt = "";
-	orbit.setAttribute("aria-hidden", "true");
-	return orbit;
-}
-
 function makeStaffFace() {
 	const figure = document.createElement("span");
 	figure.className = "staff-face";
@@ -1494,13 +1547,77 @@ function makeStaffFace() {
 	return figure;
 }
 
+function staffCreatureMotionAsset(creatureId, motion) {
+	return `${STAFF_CREATURE_MOTION_ROOT}/${STAFF_CREATURE_CATALOG[creatureId].motion}-${motion}.webm`;
+}
+
+function makeStaffCreature(staffOrTemplate, status = "idle", animated = true) {
+	const creatureId = staffCreatureId(staffOrTemplate);
+	if (animated) {
+		const video = document.createElement("video");
+		video.className = "staff-creature-image staff-creature-video";
+		video.poster = STAFF_CREATURE_CATALOG[creatureId].asset;
+		video.dataset.idleSrc = staffCreatureMotionAsset(creatureId, "idle");
+		video.dataset.workingSrc = staffCreatureMotionAsset(creatureId, "working");
+		video.autoplay = true;
+		video.loop = true;
+		video.muted = true;
+		video.playsInline = true;
+		video.preload = "metadata";
+		video.disablePictureInPicture = true;
+		video.setAttribute("aria-hidden", "true");
+		if (staffAvatarStyle() === "creatures" && !STAFF_REDUCED_MOTION.matches) {
+			video.src = status === "working" ? video.dataset.workingSrc : video.dataset.idleSrc;
+		}
+		video.addEventListener("error", () => {
+			video.pause();
+			video.removeAttribute("src");
+			video.load();
+		}, { once: true });
+		return video;
+	}
+	const image = document.createElement("img");
+	image.className = "staff-creature-image";
+	image.src = STAFF_CREATURE_CATALOG[creatureId].asset;
+	image.alt = "";
+	image.decoding = "async";
+	image.draggable = false;
+	image.setAttribute("aria-hidden", "true");
+	image.addEventListener("error", () => {
+		image.hidden = true;
+	}, { once: true });
+	return image;
+}
+
+function syncStaffCreatureMotion(avatar, status) {
+	const video = avatar.querySelector(".staff-creature-video");
+	if (!video) return;
+	if (staffAvatarStyle() !== "creatures" || STAFF_REDUCED_MOTION.matches) {
+		if (video.hasAttribute("src")) {
+			video.pause();
+			video.removeAttribute("src");
+			video.load();
+		}
+		return;
+	}
+	const source = status === "working" ? video.dataset.workingSrc : video.dataset.idleSrc;
+	if (video.getAttribute("src") !== source) {
+		video.src = source;
+		video.load();
+	}
+	const playback = video.play();
+	if (playback) void playback.catch(() => {});
+}
+
 function paintStaffAvatar(avatar, staff, status = "idle") {
-	avatar.replaceChildren(makeStaffWorkOrbit("blue"), makeStaffWorkOrbit("duo"), makeStaffFace());
+	avatar.replaceChildren(makeStaffCreature(staff, status), makeStaffFace());
 	avatar.style.setProperty("--staff-color", staffColor(staff));
 	avatar.style.setProperty("--staff-motion-delay", staffMotionDelay(staff));
 	avatar.className = `staff-avatar ${status} shape-${staffShape(staff)}`;
+	avatar.dataset.creature = staffCreatureId(staff);
 	if (staffId(staff)) avatar.dataset.staffId = staffId(staff);
 	else delete avatar.dataset.staffId;
+	syncStaffCreatureMotion(avatar, status);
 }
 
 async function loadStaffCatalog(force = false) {
@@ -1578,9 +1695,12 @@ async function openStaffCreator() {
 		staffCreatorSelection = null;
 		staffCreatorColor = "#1684ff";
 		staffCreatorShape = "round";
+		staffCreatorCreature = "palette";
 		$("staffDisplayName").value = "";
 		$("staffCreateButton").disabled = true;
-		paintStaffAvatar($("staffCreatorAvatar"), { color: staffCreatorColor, shape: staffCreatorShape });
+		paintStaffAvatar($("staffCreatorAvatar"), {
+			appearance: { color: staffCreatorColor, shape: staffCreatorShape, creature: staffCreatorCreature },
+		});
 		$("staffCreatorRole").textContent = "New Agent";
 		$("staffCreatorDescription").textContent = "";
 		renderStaffAppearancePickers();
@@ -1595,9 +1715,13 @@ async function openStaffCreator() {
 		staffCreatorSelection = template;
 		staffCreatorColor = staffColor(template);
 		staffCreatorShape = staffShape(template);
+		staffCreatorCreature = STAFF_CREATURE_BY_TEMPLATE[templateId(template)] ?? "palette";
 		$("staffDisplayName").value = template.displayName ?? templateName(template);
 		$("staffCreateButton").disabled = false;
-		paintStaffAvatar($("staffCreatorAvatar"), { color: staffCreatorColor, shape: staffCreatorShape });
+		paintStaffAvatar($("staffCreatorAvatar"), {
+			...template,
+			appearance: { color: staffCreatorColor, shape: staffCreatorShape, creature: staffCreatorCreature },
+		});
 		$("staffCreatorRole").textContent = templateName(template);
 		$("staffCreatorDescription").textContent = staffDescription(template);
 		renderStaffAppearancePickers();
@@ -1612,6 +1736,27 @@ async function openStaffCreator() {
 }
 
 function renderStaffAppearancePickers() {
+	const creaturePicker = $("staffCreaturePicker");
+	creaturePicker.replaceChildren();
+	for (const creature of STAFF_CREATURE_IDS) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "staff-creature-choice";
+		button.setAttribute("role", "radio");
+		button.setAttribute("aria-label", `Use ${STAFF_CREATURE_CATALOG[creature].label} character`);
+		button.title = STAFF_CREATURE_CATALOG[creature].label;
+		button.setAttribute("aria-checked", String(creature === staffCreatorCreature));
+		button.appendChild(makeStaffCreature({ appearance: { creature } }, "idle", false));
+		button.onclick = () => {
+			staffCreatorCreature = creature;
+			paintStaffAvatar($("staffCreatorAvatar"), {
+				...(staffCreatorSelection ?? {}),
+				appearance: { color: staffCreatorColor, shape: staffCreatorShape, creature: staffCreatorCreature },
+			});
+			renderStaffAppearancePickers();
+		};
+		creaturePicker.appendChild(button);
+	}
 	const colorPicker = $("staffColorPicker");
 	colorPicker.replaceChildren();
 	for (const color of STAFF_AVATAR_COLORS) {
@@ -1624,7 +1769,10 @@ function renderStaffAppearancePickers() {
 		button.setAttribute("aria-checked", String(color === staffCreatorColor));
 		button.onclick = () => {
 			staffCreatorColor = color;
-			paintStaffAvatar($("staffCreatorAvatar"), { color: staffCreatorColor, shape: staffCreatorShape });
+			paintStaffAvatar($("staffCreatorAvatar"), {
+				...(staffCreatorSelection ?? {}),
+				appearance: { color: staffCreatorColor, shape: staffCreatorShape, creature: staffCreatorCreature },
+			});
 			renderStaffAppearancePickers();
 		};
 		colorPicker.appendChild(button);
@@ -1637,12 +1785,15 @@ function renderStaffAppearancePickers() {
 		button.className = `staff-shape-choice shape-${shape}`;
 		button.style.setProperty("--staff-color", staffCreatorColor);
 		button.setAttribute("role", "radio");
-		button.setAttribute("aria-label", `Use ${shape.replace("-", " ")} face`);
+		button.setAttribute("aria-label", `Use ${shape.replace("-", " ")} simple agent`);
 		button.setAttribute("aria-checked", String(shape === staffCreatorShape));
 		button.appendChild(makeStaffFace());
 		button.onclick = () => {
 			staffCreatorShape = shape;
-			paintStaffAvatar($("staffCreatorAvatar"), { color: staffCreatorColor, shape: staffCreatorShape });
+			paintStaffAvatar($("staffCreatorAvatar"), {
+				...(staffCreatorSelection ?? {}),
+				appearance: { color: staffCreatorColor, shape: staffCreatorShape, creature: staffCreatorCreature },
+			});
 			renderStaffAppearancePickers();
 		};
 		shapePicker.appendChild(button);
@@ -1687,7 +1838,7 @@ async function createStaffMember() {
 		const result = await window.qorpera.staffCreate({
 			...(staffCreatorSelection ? { templateId: templateId(staffCreatorSelection) } : {}),
 			displayName,
-			appearance: { color: staffCreatorColor, shape: staffCreatorShape },
+			appearance: { color: staffCreatorColor, shape: staffCreatorShape, creature: staffCreatorCreature },
 		});
 		if (result?.ok === false) throw new Error(result.error ?? "Staff member could not be created.");
 		const created = result?.staff ?? result?.agent ?? result;
@@ -2745,7 +2896,11 @@ async function startStaffBootstrap(templates) {
 			agents: selected.map((template) => ({
 				templateId: templateId(template),
 				displayName: templateName(template),
-				appearance: { color: staffColor(template), shape: staffShape(template) },
+				appearance: {
+					color: staffColor(template),
+					shape: staffShape(template),
+					creature: STAFF_CREATURE_BY_TEMPLATE[templateId(template)] ?? "palette",
+				},
 			})),
 		});
 		if (result?.ok === false) throw new Error(result.error ?? "The team could not be created.");
@@ -7544,6 +7699,29 @@ async function renderSettingsTab() {
 		theme.appendChild(new Option("Light", "light"));
 		theme.value = "light";
 		setRow(appearanceGroup, "Theme", "", theme);
+		const agentCharacters = document.createElement("button");
+		agentCharacters.type = "button";
+		agentCharacters.className = "settings-toggle";
+		agentCharacters.setAttribute("role", "switch");
+		agentCharacters.setAttribute("aria-label", "Agent characters");
+		const syncAgentCharacters = () => {
+			const enabled = staffAvatarStyle() === "creatures";
+			agentCharacters.classList.toggle("active", enabled);
+			agentCharacters.setAttribute("aria-checked", String(enabled));
+		};
+		syncAgentCharacters();
+		agentCharacters.onclick = () => {
+			const style = staffAvatarStyle() === "creatures" ? "simple" : "creatures";
+			localStorage.setItem("qorpera:staff-avatar-style", style);
+			applyStaffAvatarStyle();
+			syncAgentCharacters();
+		};
+		setRow(
+			appearanceGroup,
+			"Agent characters",
+			"Show animated character figures. Off keeps the original colored shapes.",
+			agentCharacters,
+		);
 		content.appendChild(appearanceGroup);
 
 		const executionGroup = document.createElement("section");
@@ -7833,6 +8011,8 @@ setupSidebarToggle();
 setupCompanyModal();
 $("signOutButton").onclick = signOut;
 applyNavAppearance();
+STAFF_REDUCED_MOTION.addEventListener("change", applyStaffAvatarStyle);
+applyStaffAvatarStyle();
 
 async function bootWorkspace() {
 	const info = await window.qorpera.appInfo();

@@ -234,6 +234,7 @@ import {
 	type SessionRuntimeActivity,
 	type SessionRuntimeEventInput,
 } from "./session-control-plane.ts";
+import { isStaffCharacterId, staffCharacterForTemplate } from "./staff-characters.ts";
 import {
 	claimStaffIntro,
 	finishStaffIntro,
@@ -3485,6 +3486,8 @@ async function attachStaffChild(
 }
 
 const STAFF_AVATAR_COLORS = new Set([
+	"#171716",
+	"#9c7151",
 	"#ff642e",
 	"#ff365e",
 	"#ffae00",
@@ -3493,6 +3496,7 @@ const STAFF_AVATAR_COLORS = new Set([
 	"#1684ff",
 	"#8a4dff",
 	"#ff2994",
+	"#7c7c7a",
 	"#5367e8",
 ]);
 const STAFF_AVATAR_SHAPES = new Set(["soft-square", "round", "wide", "gem", "tilted", "drop"]);
@@ -3522,15 +3526,20 @@ function parsedStaffCreateInput(value: unknown): {
 	if (input.appearance !== undefined) {
 		const record = input.appearance as Record<string, unknown>;
 		if (
-			Object.keys(record).some((key) => key !== "color" && key !== "shape") ||
+			Object.keys(record).some((key) => key !== "color" && key !== "shape" && key !== "creature") ||
 			typeof record.color !== "string" ||
 			typeof record.shape !== "string" ||
+			(record.creature !== undefined && !isStaffCharacterId(record.creature)) ||
 			!STAFF_AVATAR_COLORS.has(record.color) ||
 			!STAFF_AVATAR_SHAPES.has(record.shape)
 		) {
 			throw new Error("invalid staff appearance");
 		}
-		appearance = { color: record.color, shape: record.shape };
+		appearance = {
+			color: record.color,
+			shape: record.shape,
+			...(typeof record.creature === "string" ? { creature: record.creature } : {}),
+		};
 	}
 	return {
 		...(typeof input.templateId === "string" ? { templateId: input.templateId } : {}),
@@ -3613,6 +3622,7 @@ async function bootstrapStaffTeam(
 						appearance: {
 							color: agent.appearance?.color ?? template.avatarColorToken,
 							shape: agent.appearance?.shape ?? template.avatarShapeToken,
+							creature: agent.appearance?.creature ?? staffCharacterForTemplate(template.id),
 						},
 					};
 				}),
@@ -3719,6 +3729,7 @@ async function createStaffMember(
 				appearance: {
 					color: input.appearance?.color ?? template?.avatarColorToken ?? "#1684ff",
 					shape: input.appearance?.shape ?? template?.avatarShapeToken ?? "round",
+					creature: input.appearance?.creature ?? (template ? staffCharacterForTemplate(template.id) : "palette"),
 				},
 			});
 			commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);

@@ -1,4 +1,8 @@
+import { existsSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { isStaffCharacterId, STAFF_CHARACTER_BY_TEMPLATE, STAFF_CHARACTER_IDS } from "../src/staff-characters.ts";
 import {
 	getStaffTemplate,
 	listStaffTemplates,
@@ -18,6 +22,8 @@ const EXPECTED_ROLES = [
 	["costumer-relationist", "Costumer Relationist"],
 	["outreaching-conversationalist", "Outreaching Conversationalist"],
 ] as const;
+const STAFF_CREATURE_DIRECTORY = fileURLToPath(new URL("../userland/staff-creatures/", import.meta.url));
+const STAFF_CREATURE_MOTION_DIRECTORY = join(STAFF_CREATURE_DIRECTORY, "motion");
 
 describe("shell starter staff templates", () => {
 	it("provides the ten founder-selected roles in a stable order", () => {
@@ -39,6 +45,25 @@ describe("shell starter staff templates", () => {
 			expect(template.avatarColorToken).toMatch(/^qorpera-[a-z]+$/);
 			expect(template.avatarShapeToken).toMatch(/^[a-z][a-z-]*$/);
 		}
+	});
+
+	it("ships static, idle, and working creature assets for every starter role", () => {
+		for (const templateId of STAFF_TEMPLATE_IDS) {
+			expect(existsSync(join(STAFF_CREATURE_DIRECTORY, `${templateId}.png`))).toBe(true);
+			for (const motion of ["idle", "working"]) {
+				const asset = join(STAFF_CREATURE_MOTION_DIRECTORY, `${templateId}-${motion}.webm`);
+				expect(existsSync(asset)).toBe(true);
+				expect(statSync(asset).size).toBeGreaterThan(10_000);
+			}
+		}
+	});
+
+	it("keeps character identity independent from suggested role identity", () => {
+		expect(new Set(Object.values(STAFF_CHARACTER_BY_TEMPLATE))).toEqual(new Set(STAFF_CHARACTER_IDS));
+		expect(STAFF_CHARACTER_IDS.every(isStaffCharacterId)).toBe(true);
+		expect(STAFF_CHARACTER_IDS.some((characterId) => new Set<string>(STAFF_TEMPLATE_IDS).has(characterId))).toBe(
+			false,
+		);
 	});
 
 	it("looks up strictly and returns deep-frozen copy-safe values", () => {

@@ -31,13 +31,13 @@ describe("company staff registry", () => {
 			charter: "Prepare the founder's morning digest.",
 			templateId: "night-shift",
 			departmentId: "operations",
-			appearance: { color: "#ff6b00", shape: "gem" },
+			appearance: { color: "#ff6b00", shape: "gem", creature: "palette" },
 		});
 
 		expect(created).toMatchObject({
 			displayName: "Night Shift",
 			employmentStatus: "active",
-			appearance: { color: "#ff6b00", shape: "gem" },
+			appearance: { color: "#ff6b00", shape: "gem", creature: "palette" },
 		});
 		expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
 		expect(staffRegistryPath(root)).toBe(join(root, ".qorpera", "staff.json"));
@@ -59,7 +59,7 @@ describe("company staff registry", () => {
 			charter: "Sort inbound mail and draft replies.",
 			templateId: null,
 			departmentId: null,
-			appearance: { color: "magenta", shape: "soft-square" },
+			appearance: { color: "magenta", shape: "soft-square", creature: "nox" },
 		});
 
 		expect(updated).toMatchObject({
@@ -68,7 +68,7 @@ describe("company staff registry", () => {
 			role: created.role,
 			employmentStatus: "active",
 			createdAt: created.createdAt,
-			appearance: { color: "magenta", shape: "soft-square" },
+			appearance: { color: "magenta", shape: "soft-square", creature: "nox" },
 		});
 		expect(updated).not.toHaveProperty("templateId");
 		expect(updated).not.toHaveProperty("departmentId");

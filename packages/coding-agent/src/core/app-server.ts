@@ -1180,7 +1180,11 @@ function staffView(agent: StaffAgent): StaffAgent {
 		charter: agent.charter,
 		...(agent.templateId !== undefined ? { templateId: agent.templateId } : {}),
 		...(agent.departmentId !== undefined ? { departmentId: agent.departmentId } : {}),
-		appearance: { color: agent.appearance.color, shape: agent.appearance.shape },
+		appearance: {
+			color: agent.appearance.color,
+			shape: agent.appearance.shape,
+			...(agent.appearance.creature !== undefined ? { creature: agent.appearance.creature } : {}),
+		},
 		employmentStatus: agent.employmentStatus,
 		createdAt: agent.createdAt,
 		updatedAt: agent.updatedAt,
