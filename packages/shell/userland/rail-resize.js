@@ -15,7 +15,9 @@
 	let pointerId = null;
 	let dragStartX = 0;
 	let dragStartWidth = DEFAULT_WIDTH;
+	let dragStartCompact = false;
 	let liveWidth = DEFAULT_WIDTH;
+	let popTimer = null;
 
 	function readStoredNumber(key, fallback) {
 		try {
@@ -66,6 +68,19 @@
 		}
 	}
 
+	function playRailPop(compact) {
+		if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+		if (popTimer !== null) window.clearTimeout(popTimer);
+		document.body.classList.remove("rail-pop-compact", "rail-pop-expanded");
+		void rail.offsetWidth;
+		const className = compact ? "rail-pop-compact" : "rail-pop-expanded";
+		document.body.classList.add(className);
+		popTimer = window.setTimeout(() => {
+			document.body.classList.remove(className);
+			popTimer = null;
+		}, 360);
+	}
+
 	function setRail(width, compact, persist = false, unrestricted = false) {
 		const nextWidth = unrestricted
 			? Math.min(maximumWidth(), Math.max(COMPACT_WIDTH, Math.round(width)))
@@ -86,6 +101,7 @@
 	function toggleCompact() {
 		const compact = document.body.classList.contains("rail-compact");
 		setRail(compact ? lastExpandedWidth : COMPACT_WIDTH, !compact, true);
+		playRailPop(!compact);
 	}
 
 	function finishDrag() {
@@ -100,6 +116,7 @@
 		}
 		pointerId = null;
 		setRail(compact ? COMPACT_WIDTH : liveWidth, compact, true);
+		if (compact !== dragStartCompact) playRailPop(compact);
 	}
 
 	handle.addEventListener("pointerdown", (event) => {
@@ -107,6 +124,7 @@
 		pointerId = event.pointerId;
 		dragStartX = event.clientX;
 		dragStartWidth = liveWidth;
+		dragStartCompact = document.body.classList.contains("rail-compact");
 		handle.setPointerCapture(pointerId);
 		handle.dataset.dragging = "true";
 		document.body.classList.add("rail-resizing");
@@ -130,12 +148,16 @@
 		}
 		if (event.key === "Home") {
 			event.preventDefault();
+			const changed = !document.body.classList.contains("rail-compact");
 			setRail(COMPACT_WIDTH, true, true);
+			if (changed) playRailPop(true);
 			return;
 		}
 		if (event.key === "End") {
 			event.preventDefault();
+			const changed = document.body.classList.contains("rail-compact");
 			setRail(maximumWidth(), false, true);
+			if (changed) playRailPop(false);
 			return;
 		}
 		if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -143,11 +165,15 @@
 		const direction = event.key === "ArrowLeft" ? -1 : 1;
 		const compact = document.body.classList.contains("rail-compact");
 		const width = compact && direction > 0 ? lastExpandedWidth : liveWidth + direction * 16;
-		setRail(width, width <= SNAP_WIDTH, true);
+		const nextCompact = width <= SNAP_WIDTH;
+		setRail(width, nextCompact, true);
+		if (nextCompact !== compact) playRailPop(nextCompact);
 	});
 
 	search?.addEventListener("focus", () => {
-		if (document.body.classList.contains("rail-compact")) setRail(lastExpandedWidth, false, true);
+		if (!document.body.classList.contains("rail-compact")) return;
+		setRail(lastExpandedWidth, false, true);
+		playRailPop(false);
 	});
 
 	new MutationObserver(() => syncCompactTooltips(document.body.classList.contains("rail-compact"))).observe(

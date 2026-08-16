@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	staffIntroReady: (staffAgentId, sessionFile, retry = false) =>
 		ipcRenderer.invoke("staff:intro-ready", staffAgentId, sessionFile, retry),
 	showHub: () => ipcRenderer.invoke("hub:show"),
+	setSettingsOverlayActive: (active) => ipcRenderer.send("settings:overlay", active),
 	settingsInfo: () => ipcRenderer.invoke("settings:info"),
 	setLocalExecution: (permission) => ipcRenderer.invoke("settings:local-execution", permission),
 	modelAccountUsage: () => ipcRenderer.invoke("model-accounts:usage"),

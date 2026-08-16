@@ -808,6 +808,7 @@ const FIXED_SHELL_DIR = join(DIRNAME, "userland");
 // controller itself (app/ is its territory).
 const DEFAULT_ICON = join(DIRNAME, "assets", process.platform === "win32" ? "qorpera.ico" : "qorpera.png");
 const ICON_NAMES = ["icon.ico", "icon.png", "icon.jpg", "icon.jpeg"];
+const TITLE_BAR_OVERLAY = { color: "#ffffff", symbolColor: "#111111", height: 40 } as const;
 
 function companyIcon(root: string): string {
 	for (const name of ICON_NAMES) {
@@ -822,6 +823,18 @@ function setWindowIcon(win: BrowserWindow, iconPath: string): void {
 		win.setIcon(iconPath);
 	} catch {
 		// an unreadable/corrupt image must never take the window down
+	}
+}
+
+function setSettingsTitleBarOverlay(win: BrowserWindow, active: boolean): void {
+	try {
+		win.setTitleBarOverlay({
+			...TITLE_BAR_OVERLAY,
+			color: active ? "#8e8e8d" : TITLE_BAR_OVERLAY.color,
+			symbolColor: active ? "#3e3e3c" : TITLE_BAR_OVERLAY.symbolColor,
+		});
+	} catch {
+		// Native title-bar overlays are available on Windows and Linux only.
 	}
 }
 /** Children we killed on purpose (session switch/close) — their exits are not news. */
@@ -2892,6 +2905,19 @@ function companyShellUrl(runtime: CompanyRuntime): string {
 	return `http://127.0.0.1:${runtime.backendPort}/shell/index.html`;
 }
 
+function isTrustedProfileSwitcherSender(sender: WebContents): boolean {
+	const slot = slotOf(sender);
+	if (!slot) return false;
+	if (!slot.runtime) return isTrustedHubSender(sender);
+	try {
+		const currentUrl = new URL(sender.getURL());
+		const trustedUrl = new URL(companyShellUrl(slot.runtime));
+		return currentUrl.origin === trustedUrl.origin && currentUrl.pathname === trustedUrl.pathname;
+	} catch {
+		return false;
+	}
+}
+
 interface ActiveCompany {
 	root: string;
 	/** Stable company identity — the renderer keys its localStorage by this,
@@ -4089,7 +4115,7 @@ function createRendererWindow(
 		// Frameless, Desktop-style chrome: the fixed shell draws the titlebar
 		// (a -webkit-app-region: drag header), the OS overlays min/max/close.
 		titleBarStyle: "hidden",
-		titleBarOverlay: { color: "#ffffff", symbolColor: "#111111", height: 40 },
+		titleBarOverlay: TITLE_BAR_OVERLAY,
 		icon: DEFAULT_ICON,
 		webPreferences: {
 			preload: join(DIRNAME, "preload.cjs"),
@@ -4114,6 +4140,7 @@ function createRendererWindow(
 	// Kernel duty: keep a thin native drag region above the fixed shell's
 	// interactive header controls.
 	win.webContents.on("did-finish-load", () => {
+		setSettingsTitleBarOverlay(win, false);
 		void win.webContents
 			.insertCSS(
 				"body::before{content:'';position:fixed;top:0;left:0;right:150px;height:12px;z-index:2147483647;-webkit-app-region:drag;}",
@@ -4391,7 +4418,7 @@ app.whenReady().then(async () => {
 	});
 	ipcMain.handle("staff:catalog", (event) => (slotOf(event.sender) ? listStaffTemplates() : []));
 	ipcMain.handle("companies:list", async (event) => {
-		if (!isTrustedHubSender(event.sender)) return [];
+		if (!isTrustedProfileSwitcherSender(event.sender)) return [];
 		const account = await authenticatedAccount();
 		if (!account?.user) return [];
 		claimExistingProfiles(account);
@@ -4432,7 +4459,7 @@ app.whenReady().then(async () => {
 		return { ok: true };
 	});
 	ipcMain.handle("company:open", async (event, root: string) => {
-		if (!isTrustedHubSender(event.sender)) return;
+		if (!isTrustedProfileSwitcherSender(event.sender)) return;
 		const account = await authenticatedAccount();
 		if (!account?.user || !profileOwnedBy(app.getPath("userData"), account.user.id, root)) {
 			throw new Error("This profile does not belong to the signed-in Qorpera account.");
@@ -4812,6 +4839,11 @@ app.whenReady().then(async () => {
 	ipcMain.handle("hub:show", (event) => {
 		const slot = slotOf(event.sender);
 		if (slot) return showHub(slot);
+	});
+	ipcMain.on("settings:overlay", (event, active: unknown) => {
+		const slot = slotOf(event.sender);
+		if (!slot || typeof active !== "boolean") return;
+		setSettingsTitleBarOverlay(slot.window, active);
 	});
 	ipcMain.handle("settings:info", async (event) => {
 		const slot = slotOf(event.sender);

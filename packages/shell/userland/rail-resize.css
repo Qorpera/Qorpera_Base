@@ -78,8 +78,10 @@ body.company-shell .rail-resize-handle {
 
 /* Compact, icon-only navigation. */
 body.company-shell.rail-compact .titlebar-rail {
-	display: block;
-	padding: 0;
+	display: grid;
+	grid-template-columns: 1fr;
+	place-items: center;
+	padding: 2px 0 3px;
 }
 
 body.company-shell.rail-compact .titlebar-rail .rail-search {
@@ -89,12 +91,11 @@ body.company-shell.rail-compact .titlebar-rail .rail-search {
 body.company-shell.rail-compact .titlebar-rail .rail-add-staff,
 body.company-shell.rail-compact .titlebar-rail .rail-add-staff:hover:not(:disabled),
 body.company-shell.rail-compact .titlebar-rail .rail-add-staff:active {
-	position: fixed;
-	z-index: 180;
-	left: calc((var(--rail-width) - 34px) / 2);
-	bottom: 62px;
+	position: static;
+	z-index: auto;
 	display: grid;
 	place-items: center;
+	justify-self: center;
 	width: 34px;
 	height: 34px;
 	min-height: 34px;
@@ -121,7 +122,7 @@ body.company-shell.rail-compact #conav {
 }
 
 body.company-shell.rail-compact .rail-scroll {
-	padding: 9px 9px 108px;
+	padding: 9px 9px 12px;
 	overflow-x: hidden;
 }
 
@@ -247,6 +248,30 @@ body.company-shell.rail-compact .company-switcher-menu {
 	width: 214px;
 }
 
+body.rail-pop-compact #staffNavigation .staff-avatar,
+body.rail-pop-compact .titlebar-rail .rail-add-staff,
+body.rail-pop-compact .company-switcher-mark {
+	animation: rail-compact-pop 330ms cubic-bezier(.18, .88, .28, 1.2) both;
+}
+
+body.rail-pop-expanded #staffNavigation .staff-nav-row,
+body.rail-pop-expanded .titlebar-rail,
+body.rail-pop-expanded .company-switcher-mark {
+	animation: rail-expanded-pop 330ms cubic-bezier(.18, .88, .28, 1.12) both;
+}
+
+@keyframes rail-compact-pop {
+	0% { opacity: .68; transform: scale(.82); }
+	58% { opacity: 1; transform: scale(1.13); }
+	100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes rail-expanded-pop {
+	0% { opacity: .72; transform: translateX(-5px) scale(.96); }
+	62% { opacity: 1; transform: translateX(1px) scale(1.025); }
+	100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+
 @media (prefers-reduced-motion: reduce) {
 	body.company-shell #primaryNavigation,
 	body.company-shell #titlebar,
@@ -255,6 +280,14 @@ body.company-shell.rail-compact .company-switcher-menu {
 	body.company-shell #titlebar .thread-header,
 	body.company-shell .staff-creator-titlebar {
 		transition: none;
+	}
+	body.rail-pop-compact #staffNavigation .staff-avatar,
+	body.rail-pop-compact .titlebar-rail .rail-add-staff,
+	body.rail-pop-compact .company-switcher-mark,
+	body.rail-pop-expanded #staffNavigation .staff-nav-row,
+	body.rail-pop-expanded .titlebar-rail,
+	body.rail-pop-expanded .company-switcher-mark {
+		animation: none;
 	}
 }
 

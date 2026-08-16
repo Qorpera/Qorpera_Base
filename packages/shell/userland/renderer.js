@@ -115,6 +115,7 @@ let agentRoutineEditor = null; // { staffAgentId, mode: "create"|"edit", id?, dr
 let agentSidepanelMotionTimer = null;
 let profileCreatorIcon = "hop-warm-titanium";
 let currentProfileIcon = "hop-warm-titanium";
+let currentProfileRoot = "";
 
 const STAFF_AVATAR_COLORS = [
 	"#171716",
@@ -600,6 +601,7 @@ async function openCompany(root, errorTarget = $("hubError")) {
 async function enterCompany(active) {
 	backendUrl = active.backendUrl;
 	companyId = active.id || "";
+	currentProfileRoot = active.root || "";
 	currentProfileIcon = profileIcon(active.profileIcon).id;
 	// Appearance was applied at boot from the pre-company bucket; re-apply now
 	// that this company's stored appearance is addressable.
@@ -2910,7 +2912,80 @@ async function openCompanySwitcher() {
 		};
 		return option;
 	};
+	const profileSection = document.createElement("div");
+	profileSection.className = "company-switcher-profile-section";
+	const profileTrigger = document.createElement("button");
+	profileTrigger.type = "button";
+	profileTrigger.className = "company-switcher-profile-trigger";
+	profileTrigger.setAttribute("role", "menuitem");
+	profileTrigger.setAttribute("aria-haspopup", "menu");
+	profileTrigger.setAttribute("aria-expanded", "false");
+	profileTrigger.appendChild(makeProfileIcon(currentProfileIcon, "", "company-switcher-menu-profile-icon"));
+	const profileLabel = document.createElement("span");
+	profileLabel.textContent = "Profile";
+	const profileCaret = document.createElement("span");
+	profileCaret.className = "company-switcher-profile-caret";
+	profileCaret.setAttribute("aria-hidden", "true");
+	profileCaret.textContent = "›";
+	profileTrigger.append(profileLabel, profileCaret);
+	const profileList = document.createElement("div");
+	profileList.className = "company-switcher-profile-list";
+	profileList.setAttribute("role", "menu");
+	profileList.setAttribute("aria-label", "Account profiles");
+	profileList.hidden = true;
+	let companies = [];
+	try {
+		companies = await window.qorpera.listCompanies();
+	} catch {
+		// Keep the rest of the account menu available if profile discovery fails.
+	}
+	const normalizeRoot = (root) => String(root ?? "").replace(/\//g, "\\").replace(/\\+$/g, "").toLowerCase();
+	for (const company of companies) {
+		const selected = normalizeRoot(company.root) === normalizeRoot(currentProfileRoot);
+		const option = document.createElement("button");
+		option.type = "button";
+		option.className = "company-switcher-profile-option";
+		option.classList.toggle("selected", selected);
+		option.setAttribute("role", "menuitemradio");
+		option.setAttribute("aria-checked", String(selected));
+		option.appendChild(makeProfileIcon(company.profileIcon, "", "company-switcher-profile-option-icon"));
+		const name = document.createElement("span");
+		name.textContent = company.name;
+		const check = document.createElement("span");
+		check.className = "company-switcher-profile-check";
+		check.setAttribute("aria-hidden", "true");
+		check.textContent = "✓";
+		option.append(name, check);
+		option.onclick = async (event) => {
+			event.stopPropagation();
+			if (selected) {
+				close();
+				button.focus();
+				return;
+			}
+			close();
+			const opened = await openCompany(company.root, null);
+			if (!opened) showControllerToast(`Could not switch to ${company.name}.`);
+		};
+		profileList.appendChild(option);
+	}
+	if (!companies.length) {
+		const unavailable = document.createElement("div");
+		unavailable.className = "company-switcher-profile-empty";
+		unavailable.textContent = "Profiles unavailable";
+		profileList.appendChild(unavailable);
+	}
+	profileTrigger.onclick = (event) => {
+		event.stopPropagation();
+		const opening = profileList.hidden;
+		profileList.hidden = !opening;
+		profileTrigger.setAttribute("aria-expanded", String(opening));
+		profileSection.classList.toggle("open", opening);
+		if (opening) profileList.querySelector("button")?.focus();
+	};
+	profileSection.append(profileTrigger, profileList);
 	menu.append(
+		profileSection,
 		item("Settings", "settings", () => openSettings("general")),
 		item("Feedback", "feedback", async () => {
 			const result = await window.qorpera.openFeedback();
@@ -4728,6 +4803,11 @@ function setupHierarchicalController() {
 		else if (!$("navContext").hidden) closeNavContext();
 		else if (!$("panelContextMenu").hidden) closePanelContext();
 		else if (!$("staffContextMenu").hidden) closeStaffContext(true);
+		else if (!$("companySwitcherMenu").hidden) {
+			$("companySwitcherMenu").hidden = true;
+			$("companySwitcherButton").setAttribute("aria-expanded", "false");
+			$("companySwitcherButton").focus();
+		}
 		else if (!$("agentSidepanel").hidden) closeAgentSidepanel();
 	});
 }
@@ -7111,6 +7191,7 @@ function openSettings(tab) {
 		settingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 		$("settingsSearch").value = "";
 		syncSettingsSearch();
+		window.qorpera.setSettingsOverlayActive?.(true);
 	}
 	view.classList.add("open");
 	view.setAttribute("aria-hidden", "false");
@@ -7128,6 +7209,7 @@ function closeSettings() {
 	const view = $("settingsView");
 	view.classList.remove("open");
 	view.setAttribute("aria-hidden", "true");
+	window.qorpera.setSettingsOverlayActive?.(false);
 	settingsReturnFocus?.focus();
 	settingsReturnFocus = null;
 }
