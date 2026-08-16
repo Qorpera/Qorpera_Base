@@ -37,7 +37,8 @@ async function openStaff(staffAgentId) {
 
 contextBridge.exposeInMainWorld("qorpera", {
 	accountInfo: () => ipcRenderer.invoke("account:info"),
-	accountSignIn: (input) => ipcRenderer.invoke("account:sign-in", input),
+	accountSignIn: (input) =>
+		ipcRenderer.invoke("account:sign-in", input, document.getElementById("accountRemember")?.checked === true),
 	accountSignOut: () => ipcRenderer.invoke("account:sign-out"),
 	openFeedback: () => ipcRenderer.invoke("feedback:open"),
 	onAccountStatus: (handler) => ipcRenderer.on("account-status", (_event, message) => handler(message)),

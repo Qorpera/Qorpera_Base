@@ -37,22 +37,32 @@ export interface QorperaAccountAuthOptions {
 
 export class FileAccountAuthStorage implements SupportedStorage {
 	readonly path: string;
+	private memory: Record<string, string> = {};
+	private persistent = true;
 
 	constructor(path: string) {
 		this.path = path;
 	}
 
 	getItem(key: string): string | null {
-		return this.read()[key] ?? null;
+		return (this.persistent ? this.read() : this.memory)[key] ?? null;
 	}
 
 	setItem(key: string, value: string): void {
+		if (!this.persistent) {
+			this.memory[key] = value;
+			return;
+		}
 		const entries = this.read();
 		entries[key] = value;
 		this.write(entries);
 	}
 
 	removeItem(key: string): void {
+		if (!this.persistent) {
+			delete this.memory[key];
+			return;
+		}
 		const entries = this.read();
 		if (!(key in entries)) return;
 		delete entries[key];
@@ -60,6 +70,19 @@ export class FileAccountAuthStorage implements SupportedStorage {
 	}
 
 	clear(): void {
+		this.memory = {};
+		rmSync(this.path, { force: true });
+	}
+
+	setPersistence(persistent: boolean): void {
+		if (persistent === this.persistent) return;
+		if (persistent) {
+			this.memory = {};
+			this.persistent = true;
+			return;
+		}
+		this.memory = this.read();
+		this.persistent = false;
 		rmSync(this.path, { force: true });
 	}
 
@@ -224,9 +247,10 @@ export class QorperaAccountAuth {
 
 	async signInWithProvider(
 		provider: QorperaAccountProvider,
+		options: { rememberLocally?: boolean } = {},
 		report: (message: string) => void = () => {},
 	): Promise<QorperaAccountInfo> {
-		return this.runSignIn(async () => {
+		return this.runSignIn(options.rememberLocally !== false, async () => {
 			const callback = await startLoopbackCallback(this.timeoutMs);
 			try {
 				const { data, error } = await this.client.auth.signInWithOAuth({
@@ -257,10 +281,14 @@ export class QorperaAccountAuth {
 		});
 	}
 
-	async signInWithEmail(email: string, report: (message: string) => void = () => {}): Promise<QorperaAccountInfo> {
+	async signInWithEmail(
+		email: string,
+		options: { rememberLocally?: boolean } = {},
+		report: (message: string) => void = () => {},
+	): Promise<QorperaAccountInfo> {
 		const normalizedEmail = email.trim().toLowerCase();
 		if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) throw new Error("Enter a valid email address");
-		return this.runSignIn(async () => {
+		return this.runSignIn(options.rememberLocally !== false, async () => {
 			const callback = await startLoopbackCallback(this.timeoutMs);
 			try {
 				const { error } = await this.client.auth.signInWithOtp({
@@ -297,9 +325,10 @@ export class QorperaAccountAuth {
 		return { authenticated: false };
 	}
 
-	private async runSignIn<T>(operation: () => Promise<T>): Promise<T> {
+	private async runSignIn<T>(rememberLocally: boolean, operation: () => Promise<T>): Promise<T> {
 		if (this.signInPending) throw new Error("Another Qorpera sign-in is already in progress");
 		this.signInPending = true;
+		this.storage.setPersistence(rememberLocally);
 		try {
 			return await operation();
 		} finally {

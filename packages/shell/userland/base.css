@@ -61,16 +61,15 @@ code, pre { font-family: var(--font-mono); }
 }
 .titlebar-update {
 	display: inline-flex; align-items: center; gap: 6px;
-	width: auto; height: 28px; min-height: 28px; padding: 0 10px;
-	border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--border)); border-radius: 8px;
-	background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--text);
+	width: auto; height: 28px; min-height: 28px; padding: 0 12px;
+	border: 1px solid #0a84ff; border-radius: var(--radius-pill);
+	background: #0a84ff; color: #ffffff;
 	font-size: 11.5px; font-weight: 620; cursor: default; -webkit-app-region: no-drag;
 }
 .titlebar-update[hidden] { display: none; }
-.titlebar-update svg { width: 14px; height: 14px; color: var(--accent); }
+.titlebar-update svg { width: 14px; height: 14px; color: currentColor; }
 .titlebar-update:hover:not(:disabled), .titlebar-update:focus-visible {
-	border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
-	background: color-mix(in srgb, var(--accent) 20%, transparent);
+	border-color: #0077e6; background: #0077e6;
 }
 #wordmark {
 	color: var(--text-muted); font-size: 12px; font-weight: 560;
@@ -1406,6 +1405,14 @@ body.welcome #titlebar { border-bottom-color: transparent; background: var(--bg)
 .account-email-form input { min-width: 0; padding: 0 11px; color: var(--text); font-size: 13.5px; }
 .account-email-form button { padding: 0 15px; color: #fff; background: #171716; font-size: 12.5px; font-weight: 650; }
 .account-email-form button:hover:not(:disabled) { background: #30302e; }
+.account-remember {
+	display: flex; align-items: flex-start; gap: 9px; width: min(340px, 100%); margin: 14px auto 0;
+	color: var(--text); text-align: left; cursor: default;
+}
+.account-remember input { width: 16px; height: 16px; margin-top: 2px; accent-color: #0a84ff; }
+.account-remember span { display: grid; gap: 2px; }
+.account-remember strong { font-size: 12.5px; font-weight: 620; }
+.account-remember small { color: var(--text-muted); font-size: 11px; line-height: 1.35; }
 
 /* Permanent roster rail. */
 .rail-company-switcher { position: relative; padding: 10px 10px 5px; }
@@ -2039,45 +2046,51 @@ main { border-left: 0; }
 .staff-face {
 	position: relative; z-index: 1; display: block; width: 86%; height: 86%;
 	background: var(--staff-color, var(--accent));
-	box-shadow: inset 0 -1px 0 rgba(0,0,0,.09), 0 1px 2px rgba(0,0,0,.08);
-	filter: saturate(1.12); transform-origin: 50% 62%;
+	box-shadow: inset 0 -1px 0 rgba(0,0,0,.09);
+	filter: saturate(1.28) brightness(1.04) contrast(1.02); transform-origin: 50% 62%;
 }
 .staff-face i {
-	position: absolute; top: 38%; width: 10%; height: 21%; border-radius: 999px;
+	position: absolute; top: 30%; width: 10%; height: 21%; border-radius: 999px;
 	background: #fff; box-shadow: 0 .5px 0 rgba(0,0,0,.08);
 	transform-origin: 50% 50%; transition: width .18s ease, top .18s ease;
 }
-.staff-face i:first-child { left: 28%; rotate: -8deg; }
-.staff-face i:last-child { right: 28%; rotate: 8deg; }
-.shape-soft-square .staff-face { border-radius: 32%; transform: rotate(-2deg); }
-.shape-round .staff-face { border-radius: 50%; }
-.shape-wide .staff-face { width: 94%; height: 72%; border-radius: 38% 45% 34% 42%; transform: rotate(2deg); }
+.staff-face i:first-child { left: 49%; rotate: -9deg; }
+.staff-face i:last-child { right: 14%; rotate: -9deg; }
+.shape-soft-square .staff-face { border-radius: 25% 29% 24% 28% / 25% 25% 29% 27%; transform: rotate(-2deg); }
+.shape-round .staff-face { border-radius: 48% 52% 50% 46% / 50% 46% 53% 50%; transform: rotate(-3deg); }
+.shape-wide .staff-face {
+	width: 96%; height: 70%; border-radius: 28% 34% 29% 31% / 41% 42% 38% 44%; transform: rotate(2deg);
+}
 .shape-gem .staff-face {
 	width: 98%; height: 84%; border-radius: 0; clip-path: none; transform: none; box-shadow: none;
 	-webkit-mask: url("./staff-face-mask.png") center / 100% 100% no-repeat;
 	mask: url("./staff-face-mask.png") center / 100% 100% no-repeat;
-	filter: saturate(1.04);
+	filter: saturate(1.28) brightness(1.04) contrast(1.02);
 }
-.shape-gem .staff-face i { top: 37%; width: 9.5%; height: 20.5%; }
-.shape-gem .staff-face i:first-child { left: 31%; rotate: -7deg; }
-.shape-gem .staff-face i:last-child { right: 31%; rotate: 7deg; }
-.shape-tilted .staff-face { width: 82%; height: 90%; border-radius: 31% 42% 35% 45%; transform: rotate(10deg); }
-.shape-drop .staff-face { width: 80%; height: 92%; border-radius: 58% 43% 58% 42% / 47% 45% 65% 55%; transform: rotate(5deg); }
+.shape-gem .staff-face i { top: 30%; width: 9.5%; height: 20.5%; }
+.shape-gem .staff-face i:first-child { left: 48%; rotate: -9deg; }
+.shape-gem .staff-face i:last-child { right: 14%; rotate: -9deg; }
+.shape-tilted .staff-face {
+	width: 84%; height: 91%; border-radius: 24% 31% 25% 29% / 25% 28% 26% 31%; transform: rotate(9deg);
+}
+.shape-drop .staff-face {
+	width: 82%; height: 94%; border-radius: 72% 18% 60% 44% / 58% 18% 70% 48%; transform: rotate(7deg);
+}
 .staff-avatar.idle .staff-face i {
 	animation: staff-idle-eyes 9.6s cubic-bezier(.2,.7,.25,1) var(--staff-motion-delay, 0s) infinite;
 }
 .staff-avatar.listening .staff-face { animation: staff-listening-nod 2.2s ease-in-out infinite; }
 .staff-avatar.listening .staff-face i { animation: staff-listening-look 1.65s ease-in-out infinite; }
 .staff-avatar.starting .staff-face { animation: staff-starting-pop .82s cubic-bezier(.2,.82,.3,1) infinite alternate; }
-.staff-avatar.starting .staff-face i { top: 37%; width: 12%; height: 24%; animation: staff-starting-eyes .82s ease-in-out infinite alternate; }
+.staff-avatar.starting .staff-face i { top: 29%; width: 12%; height: 24%; animation: staff-starting-eyes .82s ease-in-out infinite alternate; }
 .staff-avatar.working .staff-face { animation: staff-working-motion 1.85s cubic-bezier(.42,.05,.4,.95) infinite; }
 .staff-avatar.working .staff-face i {
-	top: 35.5%; width: 13.5%; height: 28%; animation: staff-working-eyes 6.4s cubic-bezier(.2,.72,.25,1) infinite;
+	top: 28%; width: 13.5%; height: 28%; animation: staff-working-eyes 6.4s cubic-bezier(.2,.72,.25,1) infinite;
 }
 .staff-avatar.finishing .staff-face { animation: staff-finishing-nod .82s cubic-bezier(.25,.8,.25,1) infinite; }
 .staff-avatar.finishing .staff-face i { animation: staff-happy-eyes .82s ease-in-out infinite; }
 .staff-avatar.reconnecting .staff-face { animation: staff-reconnecting-look 1.9s ease-in-out infinite; }
-.staff-avatar.reconnecting .staff-face i { top: 38%; width: 10.5%; height: 22%; animation: staff-reconnecting-eyes 1.9s ease-in-out infinite; }
+.staff-avatar.reconnecting .staff-face i { top: 30%; width: 10.5%; height: 22%; animation: staff-reconnecting-eyes 1.9s ease-in-out infinite; }
 @keyframes staff-idle-eyes {
 	0%, 13%, 100% { translate: 0 0; scale: 1; }
 	22%, 29% { translate: 10% -2%; scale: 1.04; }
@@ -2179,6 +2192,7 @@ main { border-left: 0; }
 .staff-color-choice {
 	position: relative; width: 20px; min-height: 20px; padding: 0; border: 0; border-radius: 50%;
 	background: var(--choice-color); box-shadow: inset 0 0 0 1px rgba(0,0,0,.05), 0 1px 2px rgba(0,0,0,.14);
+	filter: saturate(1.18) brightness(1.03);
 }
 .staff-color-choice[aria-checked="true"]::after {
 	content: ""; position: absolute; inset: -4px; border: 1px solid #888780; border-radius: 50%;
@@ -2674,8 +2688,9 @@ body.company-shell .titlebar-rail { display: grid; }
 	transform: translateY(-12px) scale(.98);
 }
 .staff-create-mark {
-	display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid #c9c9c6;
-	border-radius: 50%; color: var(--text-muted); font-size: 20px; font-weight: 300;
+	display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 1px 0 0;
+	border: 1px solid #c9c9c6; border-radius: 50%; color: var(--text-muted);
+	font-size: 20px; font-weight: 300; line-height: 1;
 }
 .staff-create-row .staff-nav-copy { align-self: center; }
 
