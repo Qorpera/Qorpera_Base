@@ -7,6 +7,7 @@ import {
 	FileAccountAuthStorage,
 	projectQorperaAccount,
 	QorperaAccountAuth,
+	type QorperaAccountAuthOptions,
 } from "../src/account-auth.ts";
 
 const temporaryRoots: string[] = [];
@@ -60,7 +61,7 @@ describe("Qorpera account auth", () => {
 		});
 	});
 
-	it("completes a browser PKCE callback and persists a Supabase user session", async () => {
+	it("persists remembered browser sessions and keeps unremembered sessions in memory", async () => {
 		const userData = temporaryRoot("account-oauth");
 		const userId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 		const payload = Buffer.from(
@@ -96,7 +97,7 @@ describe("Qorpera account auth", () => {
 				{ status: 200, headers: { "content-type": "application/json" } },
 			);
 		};
-		const auth = new QorperaAccountAuth(userData, {
+		const options: QorperaAccountAuthOptions = {
 			projectUrl: "https://project.test",
 			publishableKey: "sb_publishable_test",
 			fetch: fauxFetch,
@@ -107,7 +108,8 @@ describe("Qorpera account auth", () => {
 				const response = await fetch(`${redirectTo}?code=faux-code`);
 				expect(response.ok).toBe(true);
 			},
-		});
+		};
+		const auth = new QorperaAccountAuth(userData, options);
 
 		const account = await auth.signInWithProvider("github");
 		expect(account).toEqual({
@@ -127,7 +129,16 @@ describe("Qorpera account auth", () => {
 				? Object.keys(persistedEntries).filter((key) => key.endsWith("-code-verifier"))
 				: null,
 		).toEqual([]);
-		expect(await auth.signOut()).toEqual({ authenticated: false });
+		const restored = new QorperaAccountAuth(userData, options);
+		expect(await restored.info()).toEqual(account);
+		expect(await restored.signOut()).toEqual({ authenticated: false });
 		expect(existsSync(accountAuthStoragePath(userData))).toBe(false);
+
+		const ephemeral = new QorperaAccountAuth(userData, options);
+		expect(await ephemeral.signInWithProvider("github", { rememberLocally: false })).toEqual(account);
+		expect(await ephemeral.info()).toEqual(account);
+		expect(existsSync(accountAuthStoragePath(userData))).toBe(false);
+		expect(await new QorperaAccountAuth(userData, options).info()).toEqual({ authenticated: false });
+		expect(await ephemeral.signOut()).toEqual({ authenticated: false });
 	});
 });

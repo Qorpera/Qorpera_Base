@@ -4309,7 +4309,7 @@ app.whenReady().then(async () => {
 			return { authenticated: false };
 		}
 	});
-	ipcMain.handle("account:sign-in", async (event, input: unknown) => {
+	ipcMain.handle("account:sign-in", async (event, input: unknown, rememberLocally: unknown) => {
 		const owner = slotOf(event.sender);
 		if (!isTrustedHubSender(event.sender) || !owner || !qorperaAccountAuth) {
 			return { ok: false, error: "Qorpera sign-in is only available from the profile selector." };
@@ -4317,14 +4317,19 @@ app.whenReady().then(async () => {
 		if (!input || typeof input !== "object" || Array.isArray(input)) {
 			return { ok: false, error: "invalid sign-in request" };
 		}
+		if (typeof rememberLocally !== "boolean") return { ok: false, error: "invalid remember-me selection" };
 		const value = input as { provider?: unknown; email?: unknown };
 		const report = (message: string): void => send(owner.window, "account-status", message);
 		try {
 			let account: QorperaAccountInfo;
 			if (value.provider === "email" && typeof value.email === "string") {
-				account = await qorperaAccountAuth.signInWithEmail(value.email, report);
+				account = await qorperaAccountAuth.signInWithEmail(value.email, { rememberLocally }, report);
 			} else if (value.provider === "github" || value.provider === "google") {
-				account = await qorperaAccountAuth.signInWithProvider(value.provider as QorperaAccountProvider, report);
+				account = await qorperaAccountAuth.signInWithProvider(
+					value.provider as QorperaAccountProvider,
+					{ rememberLocally },
+					report,
+				);
 			} else {
 				return { ok: false, error: "unsupported Qorpera sign-in provider" };
 			}

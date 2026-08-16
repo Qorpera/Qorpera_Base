@@ -36,7 +36,7 @@
 	<div class="welcome-card account-card">
 		<div class="welcome-brand staff-avatar shape-soft-square" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></div>
 		<h1 id="accountTitle">Qorpera</h1>
-		<p>Sign in to keep your profiles and staff connected to you.</p>
+		<p>Sign in to keep your profiles, staff, and connections tied to your account.</p>
 		<div class="provider-grid" id="accountProviders" aria-label="Qorpera sign-in methods">
 			<button class="provider-option" type="button" data-account-provider="google"><span class="provider-mark"><img src="./provider-google.svg" alt=""></span><span class="provider-option-copy"><strong>Continue with Google</strong></span><span class="provider-option-arrow" aria-hidden="true">→</span></button>
 			<button class="provider-option" type="button" data-account-provider="email" aria-expanded="false"><span class="provider-mark"><img src="./provider-email.svg" alt=""></span><span class="provider-option-copy"><strong>Continue with email</strong></span><span class="provider-option-arrow" aria-hidden="true">→</span></button>
@@ -46,6 +46,10 @@
 			<label for="accountEmail">Email address</label>
 			<div><input id="accountEmail" type="email" autocomplete="email" required placeholder="you@company.com"><button type="submit">Continue</button></div>
 		</form>
+		<label class="account-remember" for="accountRemember">
+			<input id="accountRemember" type="checkbox" checked>
+			<span><strong>Remember me locally</strong><small>Keep this session on this device and restore this account’s saved connections.</small></span>
+		</label>
 		<div id="accountStatus" class="welcome-status" role="status" aria-live="polite"></div>
 	</div>
 </section>

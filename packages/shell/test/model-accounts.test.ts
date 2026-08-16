@@ -64,6 +64,24 @@ describe("model account store", () => {
 		expect(empty["openai-codex"]).toBeUndefined();
 	});
 
+	it("restores saved connections when the same Qorpera user signs in again", async () => {
+		const root = mkdtempSync(join(tmpdir(), "qorpera-model-accounts-"));
+		temporaryDirectories.push(root);
+		const accountsPath = join(root, "model-accounts.json");
+		const legacyPath = join(root, "auth.json");
+		writeFileSync(legacyPath, "{}");
+		const firstSession = new ModelAccountStore(accountsPath, legacyPath, { ownerUserId: "user-one" });
+		await firstSession.add("openai-codex", oauth("one", "one@example.com"));
+
+		firstSession.setActiveOwner(undefined);
+		expect(firstSession.views()).toEqual([]);
+
+		const nextSession = new ModelAccountStore(accountsPath, legacyPath, { ownerUserId: "user-two" });
+		expect(nextSession.views()).toEqual([]);
+		nextSession.setActiveOwner("user-one");
+		expect(nextSession.views()).toMatchObject([{ providerId: "openai-codex", accountName: "one@example.com" }]);
+	});
+
 	it("routes a request through the account with the most remaining usage", async () => {
 		const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
 			expect(String(input)).toBe("https://chatgpt.com/backend-api/wham/usage");
