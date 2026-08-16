@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 export interface StaffAgentAppearance {
 	color: string;
 	shape: string;
+	creature?: string;
 }
 
 export type StaffAgentEmploymentStatus = "active" | "archived";
@@ -70,7 +71,7 @@ const AGENT_FIELDS = new Set([
 	"createdAt",
 	"updatedAt",
 ]);
-const APPEARANCE_FIELDS = new Set(["color", "shape"]);
+const APPEARANCE_FIELDS = new Set(["color", "shape", "creature"]);
 const REGISTRY_FIELDS = new Set(["version", "agents"]);
 const UPDATE_FIELDS = new Set(["displayName", "role", "charter", "templateId", "departmentId", "appearance"]);
 
@@ -152,9 +153,12 @@ function optionalIdentifier(value: unknown, field: "templateId" | "departmentId"
 function appearanceValue(value: unknown): StaffAgentAppearance {
 	const record = recordValue(value);
 	if (!record || !exactFields(record, APPEARANCE_FIELDS)) throw new Error("Staff agent appearance is invalid");
+	const creature =
+		record.creature === undefined ? undefined : boundedText(record.creature, "appearance creature", 64, false);
 	return {
 		color: boundedText(record.color, "appearance color", 64, false),
 		shape: boundedText(record.shape, "appearance shape", 64, false),
+		...(creature ? { creature } : {}),
 	};
 }
 

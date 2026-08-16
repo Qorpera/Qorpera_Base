@@ -1504,8 +1504,6 @@ body.welcome #titlebar { border-bottom-color: transparent; background: var(--bg)
 }
 .staff-avatar::after { content: ""; position: absolute; right: -2px; bottom: -2px; width: 8px; height: 8px; border: 2px solid var(--chrome); border-radius: 50%; background: var(--ok); }
 .staff-avatar.idle::after { background: #b4b4af; }
-.staff-avatar.working::before { content: ""; position: absolute; inset: -3px; border: 2px solid color-mix(in srgb, var(--staff-color, var(--accent)) 45%, transparent); border-radius: 17px 17px 17px 7px; animation: staff-breathe 1.7s ease-in-out infinite; }
-@keyframes staff-breathe { 50% { transform: scale(1.09); opacity: 0.25; } }
 .staff-nav-copy { display: grid; gap: 2px; min-width: 0; }
 .staff-nav-copy strong, .staff-nav-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .staff-nav-copy strong { font-size: 13px; font-weight: 620; }
@@ -2069,11 +2067,6 @@ main { border-left: 0; }
 	background: transparent; box-shadow: none;
 }
 .staff-avatar .staff-figure { display: none; }
-.staff-work-orbit {
-	position: absolute; z-index: 2; top: 50%; left: 50%; width: 184%; height: 184%;
-	object-fit: contain; opacity: 0; pointer-events: none; transform-style: preserve-3d;
-	transform: translate(-50%, -50%) perspective(110px) rotateX(58deg) rotateY(-14deg) rotateZ(-18deg) scale(.72);
-}
 .staff-face {
 	position: relative; z-index: 1; display: block; width: 86%; height: 86%;
 	background: var(--staff-color, var(--accent));
@@ -2220,6 +2213,16 @@ main { border-left: 0; }
 
 .staff-appearance-picker { display: grid; justify-items: center; gap: 9px; margin-top: 14px; }
 .staff-color-picker, .staff-shape-picker { display: flex; align-items: center; justify-content: center; gap: 7px; }
+.staff-creature-picker {
+	display: grid; grid-template-columns: repeat(5, 40px); align-items: center; justify-content: center; gap: 6px;
+}
+.staff-creature-choice {
+	display: grid; place-items: center; width: 40px; min-height: 40px; padding: 1px;
+	border: 1px solid transparent; border-radius: 9px; background: transparent;
+}
+.staff-creature-choice:hover:not(:disabled) { border-color: #d0d0cc; background: #f4f4f2; }
+.staff-creature-choice[aria-checked="true"] { border-color: #aaa9a4; background: #eeeeeb; }
+.staff-creature-choice .staff-creature-image { width: 37px; height: 37px; }
 .staff-color-choice {
 	position: relative; width: 20px; min-height: 20px; padding: 0; border: 0; border-radius: 50%;
 	background: var(--choice-color); box-shadow: inset 0 0 0 1px rgba(0,0,0,.05), 0 1px 2px rgba(0,0,0,.14);
@@ -2727,6 +2730,7 @@ body.company-shell .titlebar-rail { display: grid; }
 
 body.staff-creator-open .staff-modal-head { display: none; }
 body.staff-creator-open .staff-appearance-picker { gap: 10px; margin-top: 16px; }
+body.staff-creator-open .staff-creature-picker { gap: 7px; }
 body.staff-creator-open .staff-color-picker, body.staff-creator-open .staff-shape-picker { gap: 9px; }
 body.staff-creator-open .staff-color-choice {
 	width: 24px; min-height: 24px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.13);
@@ -2744,16 +2748,8 @@ body.staff-creator-open .staff-shape-choice .staff-face { width: 25px; height: 2
 	min-height: 38px; margin: 3px 0 7px 2px; outline: 0;
 }
 .agent-thread-activity .staff-avatar { width: 36px; height: 36px; }
-.agent-thread-activity .staff-avatar.working .staff-work-orbit-blue {
-	animation: staff-work-orbit-blue 10.4s cubic-bezier(.2,.76,.3,1) infinite;
-}
-.agent-thread-activity .staff-avatar.working .staff-work-orbit-duo {
-	animation: staff-work-orbit-duo 10.4s cubic-bezier(.2,.76,.3,1) infinite;
-}
 .agent-thread-activity .staff-avatar.working .staff-face {
-	backface-visibility: visible; transform-style: preserve-3d;
-	animation: staff-working-motion 1.85s cubic-bezier(.42,.05,.4,.95) infinite,
-		staff-work-turn 10.4s cubic-bezier(.2,.78,.26,1) infinite;
+	animation: staff-working-motion 1.85s cubic-bezier(.42,.05,.4,.95) infinite;
 }
 .agent-thread-activity:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 8px; }
 .agent-thread-activity::after {
@@ -2776,35 +2772,6 @@ body.staff-creator-open .staff-shape-choice .staff-face { width: 25px; height: 2
 .msg.assistant.message-pop {
 	transform-origin: 0 100%; animation: assistant-message-pop 180ms cubic-bezier(.2,.82,.25,1) both;
 	animation-delay: var(--message-pop-delay, 0ms);
-}
-@keyframes staff-work-orbit-blue {
-	0%, 5%, 31%, 100% {
-		opacity: 0;
-		transform: translate(-50%, -50%) perspective(110px) rotateX(66deg) rotateY(-24deg) rotateZ(-26deg) scale(.68);
-	}
-	9% { opacity: 0; }
-	13%, 25% { opacity: .96; }
-	29% {
-		opacity: 0;
-		transform: translate(-50%, -50%) perspective(110px) rotateX(47deg) rotateY(26deg) rotateZ(174deg) scale(1.02);
-	}
-}
-@keyframes staff-work-orbit-duo {
-	0%, 48%, 78%, 100% {
-		opacity: 0;
-		transform: translate(-50%, -50%) perspective(110px) rotateX(42deg) rotateY(24deg) rotateZ(18deg) scale(.7);
-	}
-	53% { opacity: 0; }
-	57%, 72% { opacity: .94; }
-	76% {
-		opacity: 0;
-		transform: translate(-50%, -50%) perspective(110px) rotateX(69deg) rotateY(-28deg) rotateZ(-178deg) scale(1.04);
-	}
-}
-@keyframes staff-work-turn {
-	0%, 58%, 78%, 100% { transform: perspective(100px) rotateY(0deg); }
-	64% { transform: perspective(100px) rotateY(164deg) scale(.92, 1.04); }
-	73% { transform: perspective(100px) rotateY(360deg); }
 }
 @keyframes assistant-message-pop {
 	0% { opacity: 0; transform: translateY(4px) scale(.975); }
@@ -2883,9 +2850,8 @@ body.staff-creator-open .staff-shape-choice .staff-face { width: 25px; height: 2
 }
 @media (prefers-reduced-motion: reduce) {
 	.staff-avatar .staff-face, .staff-avatar .staff-face i, .agent-notification-toggle::after,
-	.staff-work-orbit, .agent-writing-dots i, .msg.assistant.message-pop, .composer-shell, .agent-sidepanel,
+	.agent-writing-dots i, .msg.assistant.message-pop, .composer-shell, .agent-sidepanel,
 	.agent-sidepanel-titlebar, .lightbox, .lightbox img, .staff-create-row { animation: none !important; transition: none; }
-	.staff-work-orbit { display: none; }
 }
 @media (forced-colors: active) {
 	.staff-face { background: CanvasText; }
@@ -2966,4 +2932,121 @@ body.hub .profile-card .profile-avatar { width: 72px; height: 72px; }
 
 @media (forced-colors: active) {
 	.company-icon-choice[aria-checked="true"] { outline: 2px solid Highlight; }
+}
+
+/* Character choice is independent of role. The existing color token remains
+ * the activity/emote accent and powers the optional simple-agent style. */
+.staff-creature-image {
+	position: relative;
+	z-index: 1;
+	display: block;
+	width: 112%;
+	height: 112%;
+	max-width: none;
+	object-fit: contain;
+	background: transparent;
+	pointer-events: none;
+	user-select: none;
+	backface-visibility: hidden;
+}
+.staff-avatar { isolation: isolate; }
+.staff-avatar > .staff-face { display: block; }
+.staff-avatar > .staff-creature-image { display: none; }
+html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face { display: none; }
+html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-creature-image { display: block; }
+.staff-creature-video { object-fit: contain; }
+
+/* The figures are larger than the previous face tokens, while remaining
+ * subordinate to names, status, and task content. */
+.staff-nav-row,
+.controller-nav-row {
+	grid-template-columns: 44px minmax(0, 1fr);
+	min-height: 69px;
+}
+.staff-nav-row .staff-avatar,
+.controller-nav-row .staff-avatar { width: 44px; height: 44px; }
+.thread-header .staff-avatar { width: 26px; height: 26px; }
+#titlebar .thread-header .staff-avatar { width: 28px; height: 28px; }
+.roster-card .staff-avatar,
+.staff-template-card .staff-avatar { width: 62px; height: 62px; }
+.staff-template-card { grid-template-columns: 62px minmax(0, 1fr); }
+.staff-bootstrap-card .staff-avatar { width: 60px; height: 60px; }
+.staff-creator-stage .staff-avatar { width: 88px; height: 88px; }
+.agent-computer-screen .staff-avatar { width: 38px; height: 38px; }
+.agent-thread-activity .staff-avatar { width: 42px; height: 42px; }
+.hidden-staff-row { grid-template-columns: 30px minmax(0, 1fr) auto; }
+.hidden-staff-row .staff-avatar { width: 30px; height: 30px; }
+.staff-shape-choice .staff-creature-image,
+body.staff-creator-open .staff-shape-choice .staff-creature-image {
+	width: 30px;
+	height: 30px;
+}
+body.staff-creator-open .staff-shape-choice {
+	width: 40px;
+	min-height: 40px;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker .staff-color-picker,
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker .staff-shape-picker {
+	display: none;
+}
+html[data-staff-avatar-style="simple"] .staff-creature-picker { display: none; }
+
+/* Simple agents preserve the original compact scale while sharing the same
+ * status motion and activity indicators. */
+html[data-staff-avatar-style="simple"] .staff-nav-row,
+html[data-staff-avatar-style="simple"] .controller-nav-row {
+	grid-template-columns: 36px minmax(0, 1fr);
+	min-height: 65px;
+}
+html[data-staff-avatar-style="simple"] .staff-nav-row .staff-avatar,
+html[data-staff-avatar-style="simple"] .controller-nav-row .staff-avatar { width: 36px; height: 36px; }
+html[data-staff-avatar-style="simple"] .thread-header .staff-avatar { width: 20px; height: 20px; }
+html[data-staff-avatar-style="simple"] #titlebar .thread-header .staff-avatar { width: 24px; height: 24px; }
+html[data-staff-avatar-style="simple"] .roster-card .staff-avatar,
+html[data-staff-avatar-style="simple"] .staff-template-card .staff-avatar { width: 42px; height: 42px; }
+html[data-staff-avatar-style="simple"] .staff-template-card { grid-template-columns: 42px minmax(0, 1fr); }
+html[data-staff-avatar-style="simple"] .staff-bootstrap-card .staff-avatar { width: 52px; height: 52px; }
+html[data-staff-avatar-style="simple"] .staff-creator-stage .staff-avatar { width: 62px; height: 62px; }
+html[data-staff-avatar-style="simple"] .agent-computer-screen .staff-avatar { width: 34px; height: 34px; }
+html[data-staff-avatar-style="simple"] .agent-thread-activity .staff-avatar { width: 36px; height: 36px; }
+html[data-staff-avatar-style="simple"] .hidden-staff-row { grid-template-columns: 24px minmax(0, 1fr) auto; }
+html[data-staff-avatar-style="simple"] .hidden-staff-row .staff-avatar { width: 24px; height: 24px; }
+
+.general-settings-group .setrow .settings-toggle {
+	position: relative;
+	width: 34px;
+	min-height: 20px;
+	padding: 0;
+	border: 0;
+	border-radius: 999px;
+	background: #aaa;
+}
+.general-settings-group .setrow .settings-toggle::after {
+	content: "";
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	background: #fff;
+	box-shadow: 0 1px 2px rgba(0,0,0,.22);
+	transition: transform .16s ease;
+}
+.general-settings-group .setrow .settings-toggle.active { background: #111; }
+.general-settings-group .setrow .settings-toggle.active::after { transform: translateX(14px); }
+.general-settings-group .setrow .settings-toggle:focus-visible {
+	outline: 2px solid var(--action);
+	outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.staff-creature-video, .settings-toggle::after { transition: none !important; }
+}
+
+@media (forced-colors: active) {
+	.staff-creature-image { filter: none; }
+	.general-settings-group .setrow .settings-toggle { border: 1px solid ButtonText; }
+	.general-settings-group .setrow .settings-toggle.active { background: Highlight; }
 }
