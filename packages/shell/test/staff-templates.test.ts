@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { isStaffCharacterId, STAFF_CHARACTER_BY_TEMPLATE, STAFF_CHARACTER_IDS } from "../src/staff-characters.ts";
 import {
@@ -48,6 +48,17 @@ describe("shell starter staff templates", () => {
 			expect(existsSync(asset)).toBe(true);
 			expect(statSync(asset).size).toBeGreaterThan(10_000);
 		}
+	});
+
+	it("loads the creature motion layer with integrated eyes and activity states", () => {
+		const index = readFileSync(new URL("../userland/index.html", import.meta.url), "utf8");
+		const motion = readFileSync(new URL("../userland/character-motion.css", import.meta.url), "utf8");
+		expect(index).toContain('<link rel="stylesheet" href="./character-motion.css">');
+		expect(motion).toContain(".staff-avatar > .staff-face i");
+		expect(motion).toContain("@keyframes creature-eye-one-blink");
+		expect(motion).toContain("@keyframes creature-working");
+		expect(motion).toContain("@keyframes creature-writing");
+		expect(motion).toContain("@keyframes creature-attention");
 	});
 
 	it("keeps character identity independent from suggested role identity", () => {
