@@ -450,7 +450,7 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 			"--mount",
 			`type=bind,src=${mounts.inputRoot},dst=/qorpera/input,ro=true,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
 			"--mount",
-			`type=tmpfs,destination=${CONTAINER_PATHS.outputRoot},tmpfs-size=${request.limits.maxOutputBytes + OUTPUT_TMPFS_OVERHEAD_BYTES},tmpfs-mode=0700,notmpcopyup`,
+			`type=tmpfs,destination=${CONTAINER_PATHS.outputRoot},tmpfs-size=${request.limits.maxOutputBytes + OUTPUT_TMPFS_OVERHEAD_BYTES},tmpfs-mode=0700,notmpcopyup,U=true`,
 		];
 		if (mounts.brokerRoot) {
 			args.push(

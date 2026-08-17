@@ -207,7 +207,7 @@ describe("rootless Podman cloud runner", () => {
 		);
 		expect(run.args).not.toContain("--rm");
 		expect(run.args).toContain(
-			"type=tmpfs,destination=/qorpera/output,tmpfs-size=2097152,tmpfs-mode=0700,notmpcopyup",
+			"type=tmpfs,destination=/qorpera/output,tmpfs-size=2097152,tmpfs-mode=0700,notmpcopyup,U=true",
 		);
 		expect(run.args.join(" ")).not.toContain(`src=${request.outputRoot},dst=/qorpera/output`);
 		expect(run.args.join(" ")).not.toContain("private founder request");
