@@ -48,6 +48,8 @@ These commands are a Linux-VM runbook, not commands to run on the current Window
 5. Place the one-time runner activation token at `/var/lib/qorpera-runner/.config/credstore/qorpera-runner-activation` with mode `0600`. It is loaded through `LoadCredential=` and never passed in argv or the ordinary environment.
 6. Reload and start the service through the `qorpera-runner` user manager. Once the runner is active and its private authority state exists, delete the credential-store source. Later restarts use rotated session authority from the private state file; the relative `LoadCredential=` declaration intentionally tolerates the now-absent one-time credential.
 
+If an active runner loses all session authority, stop its user service, reissue activation as an owner or admin, and place only the new token at `.config/credstore/qorpera-runner-repair` with mode `0600`. Start the service and remove that repair credential source once activation succeeds. The distinct repair credential is an explicit signal to replace stale authority; a leftover initial activation credential is never interpreted as permission to do so.
+
 ## Linux acceptance gate
 
 Do not call this production-ready until a disposable Linux VM proves all of the following:

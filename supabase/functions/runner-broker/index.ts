@@ -167,7 +167,6 @@ Deno.serve(async (request) => {
 					url: gateway.url,
 					token: gateway.token,
 					request: action,
-					inputTokenReservation,
 					finalize: async (finalization) => {
 						const { data, error } = await client.rpc("qorpera_runner_broker_finalize_model_request", {
 							...args,

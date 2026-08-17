@@ -22,7 +22,9 @@ A contributor can therefore cause already-authorized work without buying a plan 
 4. The Edge Function forwards only the provider, model, input, request UUID, and output limit to the configured Qorpera model gateway. The gateway credential remains in Edge Function secrets.
 5. A bounded gateway response is finalized against the same lease and reservation. One immutable usage observation records provider, model, outcome, observed tokens, and provider-reported cost in micro-USD.
 
-Completed request UUIDs replay their stored response, including after a job lease moves to another runner. An ambiguous in-flight replay transfers finalization authority to the job's current runner and may call the controlled gateway again with the same `idempotency-key`; the gateway must return the original result without starting or charging another provider call. Job completion is rejected while a non-expired model reservation remains active; expired reservations are atomically closed with a failed observation before completion proceeds. Failed, expired, or altered requests fail closed. Prompt bodies are not stored in the authority or usage tables; the request digest and bounded final response provide retry integrity.
+Completed request UUIDs replay their stored response, including after a job lease moves to another runner. An ambiguous timeout, transport error, invalid response, or non-success gateway status does not invent a permanent zero-usage result: the reservation remains unresolved, replay extends its recovery window, and the controlled gateway receives the same `idempotency-key`. The gateway must return the original result without starting or charging another provider call. Job completion is rejected while any unresolved model reservation remains. Prompt bodies are not stored in the authority or usage tables; the request digest and bounded final response provide retry integrity.
+
+The encoded-input reservation is a conservative budget hold, not a claim about provider tokenization. A valid response may report more input tokens than the estimate and is recorded exactly. If a provider exceeds the requested output-token limit, the request fails for the runner but the reported input, output, and cost remain an immutable usage fact.
 
 ## Gateway contract
 
@@ -67,7 +69,8 @@ The database authority, Edge gateway adapter, host transport, policy administrat
 ## Deployment
 
 1. Apply `migrations/20260817003000_runner_model_gateway.sql` after the runner usage migration.
-2. Deploy the updated `functions/runner-broker`.
-3. Configure a dedicated HTTPS model gateway and secret only after account entitlement and sponsorship enforcement are ready.
-4. Run the real Linux containment workflow, then queue a disposable job, authorize one test model, replay one request UUID, and verify exactly one usage observation.
-5. Verify a contributor cannot configure policy, an unlisted model cannot reserve, and runner credentials never reach the gateway.
+2. Apply `migrations/20260817006000_runner_recovery_ambiguity.sql` before configuring any paid provider. It preserves ambiguous reservations and makes both usage ledgers append-only with restrictive references.
+3. Deploy the updated `functions/runner-broker`.
+4. Configure a dedicated HTTPS model gateway and secret only after account entitlement and sponsorship enforcement are ready.
+5. Run the real Linux containment workflow, then queue a disposable job, authorize one test model, replay one request UUID, and verify exactly one usage observation.
+6. Verify a contributor cannot configure policy, an unlisted model cannot reserve, and runner credentials never reach the gateway.

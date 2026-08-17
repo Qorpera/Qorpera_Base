@@ -1,5 +1,9 @@
 import { CloudRunnerBrokerOutputPublisher, type CloudRunnerBrokerTransport } from "./cloud-runner-broker.ts";
-import type { CloudRunnerJob, DisposableCloudRunner } from "./cloud-runner-control.ts";
+import {
+	type CloudRunnerJob,
+	cloudRunnerControlRequestStatus,
+	type DisposableCloudRunner,
+} from "./cloud-runner-control.ts";
 import {
 	type CloudRunnerExecutionResult,
 	type CloudRunnerSandboxBackend,
@@ -118,17 +122,23 @@ export class EphemeralCloudRunnerWorker {
 		const retained = this.#options.runner.leasedJobs();
 		if (retained.length > 1) throw new Error("Single-lane ephemeral worker restored multiple active jobs");
 		let job: CloudRunnerJob | undefined = retained.at(0);
-		if (job) {
-			const pendingCompletion = this.#options.runner.pendingCompletion(job.jobId);
-			if (pendingCompletion) {
-				return { status: "completed", job: await this.#options.runner.complete(job.jobId, pendingCompletion) };
-			}
-		}
-		await this.#options.backend.prepare?.();
 		if (job && Date.parse(job.leaseExpiresAt as string) <= this.#now()) {
 			await this.#options.runner.discardJobAuthority(job.jobId);
 			job = undefined;
 		}
+		if (job) {
+			const pendingCompletion = this.#options.runner.pendingCompletion(job.jobId);
+			if (pendingCompletion) {
+				try {
+					return { status: "completed", job: await this.#options.runner.complete(job.jobId, pendingCompletion) };
+				} catch (error) {
+					if (cloudRunnerControlRequestStatus(error) !== 409) throw error;
+					await this.#options.runner.discardJobAuthority(job.jobId);
+					job = undefined;
+				}
+			}
+		}
+		await this.#options.backend.prepare?.();
 		if (job) job = await this.#options.runner.renew(job.jobId);
 		else job = await this.#options.runner.claim();
 		if (!job) return { status: "idle" };

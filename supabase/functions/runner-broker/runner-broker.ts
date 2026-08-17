@@ -63,7 +63,8 @@ export interface RunnerModelGatewayFinalization {
 
 export type RunnerModelGatewayExecutionResult =
 	| { status: "completed"; value: unknown }
-	| { status: "failed" };
+	| { status: "failed" }
+	| { status: "ambiguous"; errorCode: string };
 
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
@@ -311,7 +312,6 @@ export async function executeRunnerModelGateway(options: {
 		input: unknown;
 		maxOutputTokens: number;
 	};
-	inputTokenReservation: number;
 	finalize: (input: RunnerModelGatewayFinalization) => Promise<unknown>;
 	fetchImplementation?: typeof fetch;
 	timeoutMs?: number;
@@ -343,27 +343,19 @@ export async function executeRunnerModelGateway(options: {
 			signal: controller.signal,
 		});
 		if (!response.ok) gatewayFailure = "gateway_rejected";
-		else {
-			gatewayResponse = await readRunnerModelGatewayResponse(response);
-			if (
-				gatewayResponse.usage.inputTokens > options.inputTokenReservation ||
-				gatewayResponse.usage.outputTokens > options.request.maxOutputTokens
-			) {
-				gatewayResponse = undefined;
-				gatewayFailure = "gateway_usage_invalid";
-			}
-		}
+		else gatewayResponse = await readRunnerModelGatewayResponse(response);
 	} catch {
 		gatewayFailure = controller.signal.aborted ? "gateway_timeout" : "gateway_invalid";
 	} finally {
 		clearTimeout(timer);
 	}
-	if (!gatewayResponse) {
+	if (!gatewayResponse) return { status: "ambiguous", errorCode: gatewayFailure };
+	if (gatewayResponse.usage.outputTokens > options.request.maxOutputTokens) {
 		await options.finalize({
 			outcome: "failed",
-			usage: { inputTokens: 0, outputTokens: 0, costMicrousd: 0 },
+			usage: gatewayResponse.usage,
 			response: null,
-			errorCode: gatewayFailure,
+			errorCode: "gateway_usage_exceeded",
 		});
 		return { status: "failed" };
 	}

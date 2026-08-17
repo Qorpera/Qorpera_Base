@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { CloudRunnerBrokerTransport } from "../src/cloud-runner-broker.ts";
 import {
 	type CloudRunnerControlRequest,
+	CloudRunnerControlRequestError,
 	type CloudRunnerControlTransport,
 	DisposableCloudRunner,
 } from "../src/cloud-runner-control.ts";
@@ -83,6 +84,7 @@ class RunnerService implements CloudRunnerControlTransport {
 	readonly requests: CloudRunnerControlRequest[] = [];
 	status: "queued" | "leased" | "completed" | "failed" = "queued";
 	failCompletionOnce = false;
+	completionErrorStatus?: number;
 
 	async request(_token: string, body: CloudRunnerControlRequest): Promise<unknown> {
 		this.requests.push(structuredClone(body));
@@ -96,6 +98,11 @@ class RunnerService implements CloudRunnerControlTransport {
 		}
 		if (body.action === "renew") return jobRecord("leased");
 		if (body.action === "complete") {
+			if (this.completionErrorStatus !== undefined) {
+				const status = this.completionErrorStatus;
+				this.completionErrorStatus = undefined;
+				throw new CloudRunnerControlRequestError(status);
+			}
 			this.status = "completed";
 			if (this.failCompletionOnce) {
 				this.failCompletionOnce = false;
@@ -178,7 +185,7 @@ function worker(
 	runner: DisposableCloudRunner,
 	serviceBackend: CloudRunnerSandboxBackend,
 	executeJob: (options: ExecuteCloudRunnerJobOptions) => Promise<CloudRunnerExecutionResult>,
-	options: { leaseRenewalMs?: number; heartbeatMs?: number } = {},
+	options: { leaseRenewalMs?: number; heartbeatMs?: number; now?: () => number } = {},
 ): EphemeralCloudRunnerWorker {
 	return new EphemeralCloudRunnerWorker({
 		runner,
@@ -280,5 +287,51 @@ describe("ephemeral cloud runner worker", () => {
 		const completions = service.requests.filter((request) => request.action === "complete");
 		expect(completions).toHaveLength(2);
 		expect(completions[0]).toEqual(completions[1]);
+	});
+
+	it("discards a staged completion after the hosted lease is definitively unavailable", async () => {
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		service.failCompletionOnce = true;
+		const executeJob = vi.fn(async () => successfulExecution({ outcome: "staged" }));
+		const ephemeralWorker = worker(runner, backend(), executeJob);
+		await expect(ephemeralWorker.runNext()).rejects.toThrow("completion response lost");
+		expect(runner.pendingCompletion(jobId)).toEqual({ outcome: "staged" });
+		service.completionErrorStatus = 409;
+
+		await expect(ephemeralWorker.runNext()).resolves.toEqual({ status: "idle" });
+		expect(runner.leasedJobs()).toEqual([]);
+		expect(executeJob).toHaveBeenCalledOnce();
+	});
+
+	it("retains a staged completion while a model request is unresolved", async () => {
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		service.failCompletionOnce = true;
+		const executeJob = vi.fn(async () => successfulExecution({ outcome: "waiting" }));
+		const ephemeralWorker = worker(runner, backend(), executeJob);
+		await expect(ephemeralWorker.runNext()).rejects.toThrow("completion response lost");
+		service.completionErrorStatus = 423;
+
+		await expect(ephemeralWorker.runNext()).rejects.toThrow("Runner control request failed (423)");
+		expect(runner.pendingCompletion(jobId)).toEqual({ outcome: "waiting" });
+		expect(runner.leasedJobs()).toHaveLength(1);
+		expect(executeJob).toHaveBeenCalledOnce();
+	});
+
+	it("does not replay a staged completion after its local lease expiry", async () => {
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		service.failCompletionOnce = true;
+		const executeJob = vi.fn(async () => successfulExecution({ outcome: "expired" }));
+		await expect(worker(runner, backend(), executeJob).runNext()).rejects.toThrow("completion response lost");
+		const leaseExpiry = Date.parse(runner.leasedJobs()[0]?.leaseExpiresAt as string);
+
+		await expect(worker(runner, backend(), executeJob, { now: () => leaseExpiry + 1 }).runNext()).resolves.toEqual({
+			status: "idle",
+		});
+		expect(service.requests.filter((request) => request.action === "complete")).toHaveLength(1);
+		expect(runner.leasedJobs()).toEqual([]);
+		expect(executeJob).toHaveBeenCalledOnce();
 	});
 });

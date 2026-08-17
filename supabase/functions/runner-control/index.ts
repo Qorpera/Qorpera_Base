@@ -3,6 +3,7 @@ import {
 	parseRunnerBearer,
 	readRunnerControlRequest,
 	runnerControlRpcName,
+	runnerControlRpcStatus,
 	type RunnerControlRequest,
 } from "./runner-control.ts";
 
@@ -27,12 +28,6 @@ function configuredServiceKey(): string | undefined {
 async function sha256(value: string): Promise<string> {
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
 	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function rpcStatus(error: { code?: string }): number {
-	if (error.code === "42501") return 401;
-	if (error.code === "40001" || error.code === "55000") return 409;
-	return 503;
 }
 
 Deno.serve(async (request) => {
@@ -110,6 +105,6 @@ Deno.serve(async (request) => {
 			break;
 	}
 	const { data, error } = await client.rpc(runnerControlRpcName(action.action), args);
-	if (error) return jsonResponse({ error: "Runner request was rejected" }, rpcStatus(error));
+	if (error) return jsonResponse({ error: "Runner request was rejected" }, runnerControlRpcStatus(error));
 	return jsonResponse({ value: data });
 });

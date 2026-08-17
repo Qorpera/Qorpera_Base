@@ -4,6 +4,7 @@ import type { CloudRunnerBrokerAuthority, CloudRunnerBrokerTransport } from "../
 import {
 	type CloudRunnerAuthorityStore,
 	type CloudRunnerControlRequest,
+	CloudRunnerControlRequestError,
 	type CloudRunnerControlTransport,
 	createCloudRunnerPairingSecret,
 	DisposableCloudRunner,
@@ -200,6 +201,72 @@ describe("disposable cloud runner", () => {
 		expect(runner.leasedJobs()).toEqual([]);
 		expect(store.saves).toBeGreaterThan(6);
 		expect(JSON.stringify(runner.snapshot())).not.toContain(pairing.activationToken);
+	});
+
+	it("recovers heartbeat authority after the previous-token grace period", async () => {
+		const pairing = createCloudRunnerPairingSecret();
+		const attempts: Array<{ token: string; body: CloudRunnerControlRequest }> = [];
+		let sessionToken: string | undefined;
+		let loseFirstHeartbeat = true;
+		const transport: CloudRunnerControlTransport = {
+			request: vi.fn(async (token, body) => {
+				attempts.push({ token, body: structuredClone(body) });
+				if (body.action === "activate") {
+					sessionToken = body.nextSessionToken;
+					return runnerRecord();
+				}
+				if (body.action !== "heartbeat") throw new Error("unexpected runner action");
+				if (token !== sessionToken) throw new CloudRunnerControlRequestError(401);
+				sessionToken = body.nextSessionToken;
+				if (loseFirstHeartbeat) {
+					loseFirstHeartbeat = false;
+					throw new Error("heartbeat response lost");
+				}
+				return runnerRecord();
+			}),
+		};
+		const runner = new DisposableCloudRunner(transport, runnerId, pairing.activationToken);
+		await runner.activate("linux-x64", "0.1.0");
+
+		await expect(runner.heartbeat()).rejects.toThrow("heartbeat response lost");
+		await expect(runner.heartbeat()).resolves.toMatchObject({ runnerId, status: "active" });
+
+		const heartbeats = attempts.filter((attempt) => attempt.body.action === "heartbeat");
+		expect(heartbeats).toHaveLength(3);
+		expect(heartbeats[1]).toEqual(heartbeats[0]);
+		expect(heartbeats[2]?.token).toBe(
+			heartbeats[0]?.body.action === "heartbeat" ? heartbeats[0].body.nextSessionToken : undefined,
+		);
+		expect(heartbeats[2]?.body).not.toEqual(heartbeats[0]?.body);
+	});
+
+	it("replaces an expired ambiguous claim identity and claims again", async () => {
+		const pairing = createCloudRunnerPairingSecret();
+		const claims: Array<Extract<CloudRunnerControlRequest, { action: "claim" }>> = [];
+		let firstClientLeaseId: string | undefined;
+		const transport: CloudRunnerControlTransport = {
+			request: vi.fn(async (_token, body) => {
+				if (body.action === "activate") return runnerRecord();
+				if (body.action !== "claim") throw new Error("unexpected runner action");
+				claims.push(structuredClone(body));
+				if (!firstClientLeaseId) {
+					firstClientLeaseId = body.clientLeaseId;
+					throw new Error("claim response lost");
+				}
+				if (body.clientLeaseId === firstClientLeaseId) throw new CloudRunnerControlRequestError(409);
+				return jobRecord("leased");
+			}),
+		};
+		const runner = new DisposableCloudRunner(transport, runnerId, pairing.activationToken);
+		await runner.activate("linux-x64", "0.1.0");
+
+		await expect(runner.claim()).rejects.toThrow("claim response lost");
+		await expect(runner.claim()).resolves.toMatchObject({ jobId, status: "leased" });
+
+		expect(claims).toHaveLength(3);
+		expect(claims[1]).toEqual(claims[0]);
+		expect(claims[2]?.clientLeaseId).not.toBe(claims[0]?.clientLeaseId);
+		expect(claims[2]?.leaseToken).not.toBe(claims[0]?.leaseToken);
 	});
 
 	it("sends only the publishable key and custom short-lived bearer to the control function", async () => {

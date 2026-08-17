@@ -11,6 +11,7 @@ import { safeCloudRunnerServiceError, withCloudRunnerShutdownSignals } from "../
 
 const runnerId = "77777777-7777-4777-8777-777777777777";
 const activationToken = "a".repeat(43);
+const repairToken = "b".repeat(43);
 const image = `registry.qorpera.test/runner@sha256:${"b".repeat(64)}`;
 const temporaryDirectories: string[] = [];
 
@@ -137,6 +138,44 @@ describe("ephemeral cloud runner service", () => {
 				runWorker: async () => undefined,
 			}),
 		).rejects.toThrow("required for initial setup");
+	});
+
+	it("replaces expired session state only when an explicit repair credential is present", async () => {
+		const root = await serviceRoot();
+		const credentialsDirectory = join(root, "credentials");
+		await mkdir(credentialsDirectory, { mode: 0o700 });
+		await writeFile(join(credentialsDirectory, "qorpera-runner-activation"), `${activationToken}\n`, {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+		const config = parseEphemeralCloudRunnerServiceConfig(configValue(root));
+		await runEphemeralCloudRunnerService({
+			config,
+			credentialsDirectory,
+			signal: new AbortController().signal,
+			runWorker: async () => undefined,
+		});
+		await rm(join(credentialsDirectory, "qorpera-runner-activation"));
+		await writeFile(join(credentialsDirectory, "qorpera-runner-repair"), `${repairToken}\n`, {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+
+		await runEphemeralCloudRunnerService({
+			config,
+			credentialsDirectory,
+			signal: new AbortController().signal,
+			runWorker: async () => undefined,
+		});
+
+		const stored = JSON.parse(await readFile(config.authorityStatePath, "utf-8")) as Record<string, unknown>;
+		expect(stored).toMatchObject({
+			schema: "qorpera.runner-authority/v1",
+			runner_id: runnerId,
+			activation_token: repairToken,
+			session_token: null,
+			leases: [],
+		});
 	});
 
 	it("turns SIGTERM into cooperative cancellation and removes listeners", async () => {

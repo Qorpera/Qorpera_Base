@@ -165,7 +165,6 @@ describe("runner broker request validation", () => {
 				input: { prompt: "bounded" },
 				maxOutputTokens: 128,
 			},
-			inputTokenReservation: 16_400,
 			fetchImplementation: async (input, init) => {
 				gatewayRequest = { url: String(input), init };
 				return Response.json({
@@ -195,7 +194,7 @@ describe("runner broker request validation", () => {
 		]);
 	});
 
-	it("fails and records zero observed usage when the gateway exceeds its reservation", async () => {
+	it("records observed usage when the gateway exceeds its reservation", async () => {
 		const finalizations: unknown[] = [];
 		const result = await executeRunnerModelGateway({
 			url: "https://models.qorpera.test/v1/run",
@@ -207,7 +206,6 @@ describe("runner broker request validation", () => {
 				input: { prompt: "bounded" },
 				maxOutputTokens: 1,
 			},
-			inputTokenReservation: 32,
 			fetchImplementation: async () =>
 				Response.json({
 					schema: "qorpera.model-gateway-response/v1",
@@ -223,10 +221,36 @@ describe("runner broker request validation", () => {
 		assert.deepEqual(finalizations, [
 			{
 				outcome: "failed",
-				usage: { inputTokens: 0, outputTokens: 0, costMicrousd: 0 },
+				usage: { inputTokens: 8, outputTokens: 2, costMicrousd: 125 },
 				response: null,
-				errorCode: "gateway_usage_invalid",
+				errorCode: "gateway_usage_exceeded",
 			},
 		]);
+	});
+
+	it("leaves timeouts recoverable without inventing a zero-usage finalization", async () => {
+		const finalizations: unknown[] = [];
+		const result = await executeRunnerModelGateway({
+			url: "https://models.qorpera.test/v1/run",
+			token: "gateway-secret-token-that-is-long-enough",
+			request: {
+				requestId: "34343434-3434-4434-8434-343434343434",
+				provider: "openai",
+				model: "gpt-test",
+				input: { prompt: "bounded" },
+				maxOutputTokens: 128,
+			},
+			fetchImplementation: async (_input, init) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+				}),
+			timeoutMs: 1,
+			finalize: async (input) => {
+				finalizations.push(input);
+				return null;
+			},
+		});
+		assert.deepEqual(result, { status: "ambiguous", errorCode: "gateway_timeout" });
+		assert.deepEqual(finalizations, []);
 	});
 });

@@ -49,6 +49,13 @@ export function runnerControlRpcName(action: RunnerControlRequest["action"]): st
 	}
 }
 
+export function runnerControlRpcStatus(error: { code?: string }): number {
+	if (error.code === "42501") return 401;
+	if (error.code === "40001") return 409;
+	if (error.code === "55000") return 423;
+	return 503;
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
 	return value as Record<string, unknown>;

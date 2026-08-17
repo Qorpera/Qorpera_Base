@@ -15,6 +15,7 @@ import { FileCloudRunnerAuthorityStore } from "./cloud-runner-worker-state.ts";
 
 const CONFIG_SCHEMA = "qorpera.ephemeral-runner-service/v1";
 const ACTIVATION_CREDENTIAL_NAME = "qorpera-runner-activation";
+const REPAIR_CREDENTIAL_NAME = "qorpera-runner-repair";
 const MAX_CONFIG_BYTES = 64 * 1024;
 const MAX_CREDENTIAL_BYTES = 256;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -285,24 +286,23 @@ export async function loadEphemeralCloudRunnerServiceConfig(path: string): Promi
 	return parseEphemeralCloudRunnerServiceConfig(value);
 }
 
-async function activationCredential(credentialsDirectory: string | undefined): Promise<string | undefined> {
+async function runnerCredential(
+	credentialsDirectory: string | undefined,
+	credentialName: string,
+	label: string,
+): Promise<string | undefined> {
 	if (!credentialsDirectory) return undefined;
 	const directory = requiredAbsolutePath(credentialsDirectory, "Runner credentials directory");
 	let encoded: string;
 	try {
-		encoded = await readBoundedFile(
-			join(directory, ACTIVATION_CREDENTIAL_NAME),
-			MAX_CREDENTIAL_BYTES,
-			"Runner activation credential",
-			true,
-		);
+		encoded = await readBoundedFile(join(directory, credentialName), MAX_CREDENTIAL_BYTES, label, true);
 	} catch (error) {
 		const cause = error instanceof Error ? error.cause : undefined;
 		if (cause && typeof cause === "object" && "code" in cause && cause.code === "ENOENT") return undefined;
 		throw error;
 	}
 	const token = encoded.trim();
-	if (!TOKEN_PATTERN.test(token)) throw new Error("Runner activation credential is invalid");
+	if (!TOKEN_PATTERN.test(token)) throw new Error(`${label} is invalid`);
 	return token;
 }
 
@@ -312,12 +312,24 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 	const authorityStore = new FileCloudRunnerAuthorityStore(config.authorityStatePath);
 	const storedAuthority = await authorityStore.load();
 	const activationToken =
-		storedAuthority === undefined ? await activationCredential(options.credentialsDirectory) : undefined;
+		storedAuthority === undefined
+			? await runnerCredential(
+					options.credentialsDirectory,
+					ACTIVATION_CREDENTIAL_NAME,
+					"Runner activation credential",
+				)
+			: undefined;
+	const repairToken =
+		storedAuthority === undefined
+			? undefined
+			: await runnerCredential(options.credentialsDirectory, REPAIR_CREDENTIAL_NAME, "Runner repair credential");
 	if (storedAuthority === undefined && !activationToken) {
 		throw new Error("Runner activation credential is required for initial setup");
 	}
 	const control = new SupabaseCloudRunnerControlTransport(config.baseUrl, config.publishableKey);
-	const runner = await DisposableCloudRunner.open(control, config.runnerId, authorityStore, activationToken);
+	const runner = repairToken
+		? await DisposableCloudRunner.repair(control, config.runnerId, authorityStore, repairToken)
+		: await DisposableCloudRunner.open(control, config.runnerId, authorityStore, activationToken);
 	const backend = new RootlessPodmanSandboxBackend({
 		image: config.image,
 		capabilities: config.capabilities,

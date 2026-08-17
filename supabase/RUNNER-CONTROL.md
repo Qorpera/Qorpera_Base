@@ -10,7 +10,7 @@ The NAS is not involved in this slice.
 - A contributor, admin, or owner can enqueue work for an exact environment and composite substrate version. An optional shared session must belong to the same environment.
 - The registration client generates a 32-byte activation token before the request and persists it locally for ambiguous-response retry. Postgres stores only its SHA-256 hash.
 - The runner sends the activation token to `runner-control` and supplies a new session token. The Edge Function hashes both and calls service-role RPCs; the raw tokens are never written to Postgres or audit receipts.
-- Heartbeats rotate the runner session token. The new session lasts 15 minutes; the previous token remains valid for two minutes only to recover a lost heartbeat response with the same renewal UUID.
+- Heartbeats rotate the runner session token. The new session lasts 15 minutes; the previous token remains valid for two minutes for direct replay. If that grace elapses after a lost response, the worker treats the staged next token as the committed current token and rotates it again under a new durable renewal UUID.
 - Job claims generate independent client-lease and lease-token values. A lease lasts two minutes and can be renewed while its runner session remains valid.
 - Revocation clears current and previous session authority immediately. Unfinished leases return to the queue unless they have exhausted eight attempts.
 
@@ -33,7 +33,7 @@ The durable record includes only the authority needed to recover protocol ambigu
 - Exact leased job projections and their lease tokens.
 - A bounded completion result staged before the completion request.
 
-After restart, the worker reuses the exact pending operation. It never generates a replacement token or completion identity until the previous operation is resolved. Public status snapshots expose job IDs and health only, never these tokens.
+After restart, the worker reuses the exact pending operation. A definitive stale-replay response is the only exception: an expired claim identity is cleared before a fresh claim, and a rejected or locally expired staged completion drops its obsolete lease authority instead of replaying forever. Public status snapshots expose job IDs and health only, never these tokens.
 
 The first worker loop is deliberately single-lane. It validates the containment backend before claiming new work, restores a retained lease, renews it every 45 seconds, rotates the runner session during long jobs, connects the exact broker substrate to the sandbox, publishes outputs, stages completion durably, and then invokes atomic output-substrate completion. Graceful shutdown destroys the sandbox but retains lease authority so restart can recover or let the hosted lease expire; it does not falsely report a job failure.
 
@@ -41,7 +41,8 @@ The first worker loop is deliberately single-lane. It validates the containment 
 
 1. Apply `migrations/20260816019000_runner_registration_leases.sql`.
 2. Apply `migrations/20260817001000_runner_output_substrates.sql` after the object-broker migration to install job-attributed artifacts and atomic output publication.
-3. Deploy `functions/runner-control` with JWT verification disabled as declared in `config.toml`. The function performs its own 43-character bearer-token validation.
+3. Apply `migrations/20260817006000_runner_recovery_ambiguity.sql` before enabling a real runner. It adds active-runner re-pairing and keeps usage-bearing jobs from deleting their facts.
+4. Deploy `functions/runner-control` with JWT verification disabled as declared in `config.toml`. The function performs its own 43-character bearer-token validation.
 4. Keep the Supabase secret key inside the Edge Function environment. Runner installations receive only the project URL, publishable key, runner UUID, and their current short-lived token.
 5. Create a service-account-owned mode `0700` state directory and keep its authority file at mode `0600`. Supply the one-time activation token only for first initialization.
 6. Verify a disposable lifecycle before registering physical hardware: register, activate, restart during activation, heartbeat, restart during claim, renew, execute, restart during completion, replay completion, revoke, and confirm that the revoked session is rejected.
@@ -51,12 +52,13 @@ The deployable worker package is under `deploy/ephemeral-runner`. It is a dedica
 ## Failure and recovery
 
 - Registration, activation, heartbeat, claim, completion, and failure operations are idempotent when retried with the same client UUIDs, bodies, and locally retained tokens. Completion reuses deterministic artifact-index and substrate-version UUIDs derived from the job identity.
-- A lost activation or heartbeat response reuses the pending next-session token. A lost claim response reuses its client-lease UUID and lease token.
+- A lost activation or heartbeat response reuses the pending next-session token. A heartbeat response lost beyond the two-minute previous-token grace recovers through the already-committed next token. A lost claim response reuses its client-lease UUID and lease token until the hosted service definitively reports that replay expired, then mints a fresh pair.
+- If the entire 15-minute runner session expires, an owner or admin can reissue activation for the active runner. Reissue atomically clears session authority and requeues its leases. The host then supplies the new token as the separate `qorpera-runner-repair` systemd credential; the worker replaces stale local authority durably, activates under the normal retry-safe path, and the credential source is removed after success.
 - Expired leases can be claimed by another compatible runner. After eight attempts, an expired lease fails terminally.
 - Retryable runner failures requeue work without changing its immutable substrate reference.
 - Successful completion atomically creates a child substrate when the job registered outputs. It preserves the source company snapshot and operation watermark, unions the source artifact index with only that job's artifacts, and records the child on the completed job. Zero-output jobs complete without manufacturing a redundant child.
 - Concurrent jobs that share a source substrate publish independent child substrates. They are never silently merged; a later explicit operation must select or combine sibling work.
-- A completion result is durably staged before the network request. If the process or response is lost, restart submits that exact result and the existing deterministic artifact-index and substrate-version UUIDs without rerunning the container.
+- A completion result is durably staged before the network request. If the process or response is lost while the lease remains authoritative, restart submits that exact result and the existing deterministic artifact-index and substrate-version UUIDs without rerunning the container. A locally expired lease or definitive hosted lease rejection discards the staged authority and returns to scheduling.
 - Authority-state write failure stops the operation before a new token or lease is used. A graceful worker shutdown retains the current lease instead of marking the job failed; expiry recovery remains hosted and idempotent.
 - Audit receipts contain runner/job identities, counts, capabilities, expiry timestamps, and state transitions. They never contain bearer, session, or lease tokens.
 

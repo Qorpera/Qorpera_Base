@@ -126,6 +126,20 @@ export interface CloudRunnerControlTransport {
 	request(token: string, body: CloudRunnerControlRequest): Promise<unknown>;
 }
 
+export class CloudRunnerControlRequestError extends Error {
+	readonly status: number;
+
+	constructor(status: number) {
+		super(`Runner control request failed (${status})`);
+		this.name = "CloudRunnerControlRequestError";
+		this.status = status;
+	}
+}
+
+export function cloudRunnerControlRequestStatus(error: unknown): number | undefined {
+	return error instanceof CloudRunnerControlRequestError ? error.status : undefined;
+}
+
 export interface CloudRunnerAuthorityStore {
 	load(): Promise<unknown | undefined>;
 	save(value: JsonValue): Promise<void>;
@@ -400,7 +414,7 @@ export class SupabaseCloudRunnerControlTransport implements CloudRunnerControlTr
 			},
 			body: JSON.stringify(body),
 		});
-		if (!response.ok) throw new Error(`Runner control request failed (${response.status})`);
+		if (!response.ok) throw new CloudRunnerControlRequestError(response.status);
 		const envelope = record(await response.json(), "response");
 		return envelope.value;
 	}
@@ -630,6 +644,20 @@ export class DisposableCloudRunner {
 		return instance;
 	}
 
+	static async repair(
+		transport: CloudRunnerControlTransport,
+		runnerId: string,
+		authorityStore: CloudRunnerAuthorityStore,
+		activationToken: string,
+	): Promise<DisposableCloudRunner> {
+		if ((await authorityStore.load()) === undefined) {
+			throw new Error("Runner authority repair requires existing state");
+		}
+		const repaired = new DisposableCloudRunner(transport, runnerId, activationToken, authorityStore);
+		await repaired.#persist();
+		return repaired;
+	}
+
 	async activate(platform: string, runnerVersion: string): Promise<CloudRunner> {
 		if (!this.#activationToken) {
 			if (!this.#runner) throw new Error("Runner activation is unavailable");
@@ -670,77 +698,113 @@ export class DisposableCloudRunner {
 	}
 
 	async heartbeat(): Promise<CloudRunner> {
-		const token = this.#sessionToken;
-		if (!token) throw new Error("Runner is not active");
-		if (!this.#pendingHeartbeat) {
-			this.#pendingHeartbeat = { nextToken: createToken(), renewalId: randomUUID() };
-			await this.#persist();
+		let recoverCommittedRotation = true;
+		while (true) {
+			const token = this.#sessionToken;
+			if (!token) throw new Error("Runner is not active");
+			if (!this.#pendingHeartbeat) {
+				this.#pendingHeartbeat = { nextToken: createToken(), renewalId: randomUUID() };
+				await this.#persist();
+			}
+			const pendingHeartbeat = this.#pendingHeartbeat;
+			let value: unknown;
+			try {
+				value = await this.#transport.request(token, {
+					action: "heartbeat",
+					runnerId: this.#runnerId,
+					nextSessionToken: pendingHeartbeat.nextToken,
+					renewalId: pendingHeartbeat.renewalId,
+				});
+			} catch (error) {
+				if (!recoverCommittedRotation || cloudRunnerControlRequestStatus(error) !== 401) throw error;
+				const recoveryHeartbeat = { nextToken: createToken(), renewalId: randomUUID() };
+				this.#sessionToken = pendingHeartbeat.nextToken;
+				this.#pendingHeartbeat = recoveryHeartbeat;
+				try {
+					await this.#persist();
+				} catch (persistError) {
+					this.#sessionToken = token;
+					this.#pendingHeartbeat = pendingHeartbeat;
+					throw persistError;
+				}
+				recoverCommittedRotation = false;
+				continue;
+			}
+			const runner = parseCloudRunner(value);
+			if (runner.runnerId !== this.#runnerId || runner.status !== "active") {
+				throw new Error("Runner heartbeat returned an inconsistent runner");
+			}
+			this.#sessionToken = pendingHeartbeat.nextToken;
+			this.#pendingHeartbeat = undefined;
+			const previousRunner = this.#runner;
+			this.#runner = runner;
+			try {
+				await this.#persist();
+			} catch (error) {
+				this.#sessionToken = token;
+				this.#pendingHeartbeat = pendingHeartbeat;
+				this.#runner = previousRunner;
+				throw error;
+			}
+			return runner;
 		}
-		const pendingHeartbeat = this.#pendingHeartbeat;
-		const runner = parseCloudRunner(
-			await this.#transport.request(token, {
-				action: "heartbeat",
-				runnerId: this.#runnerId,
-				nextSessionToken: pendingHeartbeat.nextToken,
-				renewalId: pendingHeartbeat.renewalId,
-			}),
-		);
-		if (runner.runnerId !== this.#runnerId || runner.status !== "active") {
-			throw new Error("Runner heartbeat returned an inconsistent runner");
-		}
-		this.#sessionToken = pendingHeartbeat.nextToken;
-		this.#pendingHeartbeat = undefined;
-		const previousRunner = this.#runner;
-		this.#runner = runner;
-		try {
-			await this.#persist();
-		} catch (error) {
-			this.#sessionToken = token;
-			this.#pendingHeartbeat = pendingHeartbeat;
-			this.#runner = previousRunner;
-			throw error;
-		}
-		return runner;
 	}
 
 	async claim(): Promise<CloudRunnerJob | undefined> {
 		const token = this.#sessionToken;
 		if (!token) throw new Error("Runner is not active");
-		if (!this.#pendingClaim) {
-			this.#pendingClaim = { clientLeaseId: randomUUID(), leaseToken: createToken() };
-			await this.#persist();
-		}
-		const pendingClaim = this.#pendingClaim;
-		const value = await this.#transport.request(token, {
-			action: "claim",
-			runnerId: this.#runnerId,
-			clientLeaseId: pendingClaim.clientLeaseId,
-			leaseToken: pendingClaim.leaseToken,
-		});
-		if (value === null) {
+		let replaceExpiredReplay = true;
+		while (true) {
+			if (!this.#pendingClaim) {
+				this.#pendingClaim = { clientLeaseId: randomUUID(), leaseToken: createToken() };
+				await this.#persist();
+			}
+			const pendingClaim = this.#pendingClaim;
+			let value: unknown;
+			try {
+				value = await this.#transport.request(token, {
+					action: "claim",
+					runnerId: this.#runnerId,
+					clientLeaseId: pendingClaim.clientLeaseId,
+					leaseToken: pendingClaim.leaseToken,
+				});
+			} catch (error) {
+				if (!replaceExpiredReplay || cloudRunnerControlRequestStatus(error) !== 409) throw error;
+				this.#pendingClaim = undefined;
+				try {
+					await this.#persist();
+				} catch (persistError) {
+					this.#pendingClaim = pendingClaim;
+					throw persistError;
+				}
+				replaceExpiredReplay = false;
+				continue;
+			}
+			if (value === null) {
+				this.#pendingClaim = undefined;
+				try {
+					await this.#persist();
+				} catch (error) {
+					this.#pendingClaim = pendingClaim;
+					throw error;
+				}
+				return undefined;
+			}
+			const job = parseCloudRunnerJob(value);
+			if (job.runnerId !== this.#runnerId || job.status !== "leased") {
+				throw new Error("Runner claim returned an inconsistent lease");
+			}
+			this.#leases.set(job.jobId, { job, leaseToken: pendingClaim.leaseToken });
 			this.#pendingClaim = undefined;
 			try {
 				await this.#persist();
 			} catch (error) {
+				this.#leases.delete(job.jobId);
 				this.#pendingClaim = pendingClaim;
 				throw error;
 			}
-			return undefined;
+			return job;
 		}
-		const job = parseCloudRunnerJob(value);
-		if (job.runnerId !== this.#runnerId || job.status !== "leased") {
-			throw new Error("Runner claim returned an inconsistent lease");
-		}
-		this.#leases.set(job.jobId, { job, leaseToken: pendingClaim.leaseToken });
-		this.#pendingClaim = undefined;
-		try {
-			await this.#persist();
-		} catch (error) {
-			this.#leases.delete(job.jobId);
-			this.#pendingClaim = pendingClaim;
-			throw error;
-		}
-		return job;
 	}
 
 	async renew(jobId: string): Promise<CloudRunnerJob> {
