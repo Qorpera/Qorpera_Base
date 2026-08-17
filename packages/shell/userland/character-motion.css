@@ -212,29 +212,14 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.working > .staff-face {
 	animation: creature-working 3.2s cubic-bezier(.42, .05, .4, .95) var(--creature-motion-delay) infinite;
 }
 
-html[data-staff-avatar-style="creatures"] .agent-thread-activity.is-typing .staff-avatar > .staff-creature-image,
-html[data-staff-avatar-style="creatures"] .agent-thread-activity.is-typing .staff-avatar > .staff-face {
+html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-creature-image,
+html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face {
 	animation: creature-writing 1.8s cubic-bezier(.34, .05, .3, 1) var(--creature-motion-delay) infinite;
 }
 
-html[data-staff-avatar-style="creatures"] .staff-avatar.reconnecting > .staff-creature-image,
-html[data-staff-avatar-style="creatures"] .staff-avatar.reconnecting > .staff-face {
+html[data-staff-avatar-style="creatures"] .staff-avatar.needs-attention > .staff-creature-image,
+html[data-staff-avatar-style="creatures"] .staff-avatar.needs-attention > .staff-face {
 	animation: creature-attention 2.7s cubic-bezier(.34, 1.32, .58, 1) var(--creature-motion-delay) infinite;
-}
-
-html[data-staff-avatar-style="creatures"] .staff-avatar.listening > .staff-creature-image,
-html[data-staff-avatar-style="creatures"] .staff-avatar.listening > .staff-face {
-	animation: creature-listening 2.2s ease-in-out var(--creature-motion-delay) infinite;
-}
-
-html[data-staff-avatar-style="creatures"] .staff-avatar.starting > .staff-creature-image,
-html[data-staff-avatar-style="creatures"] .staff-avatar.starting > .staff-face {
-	animation: creature-starting .82s cubic-bezier(.2, .82, .3, 1) var(--creature-motion-delay) infinite alternate;
-}
-
-html[data-staff-avatar-style="creatures"] .staff-avatar.finishing > .staff-creature-image,
-html[data-staff-avatar-style="creatures"] .staff-avatar.finishing > .staff-face {
-	animation: creature-finishing .82s cubic-bezier(.25, .8, .25, 1) var(--creature-motion-delay) infinite;
 }
 
 /* One pseudo-element carries the three focus dots so the effect remains small
@@ -260,7 +245,7 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.working > .staff-face::b
 	animation: creature-focus-dots 3.2s ease-in-out var(--creature-motion-delay) infinite;
 }
 
-html[data-staff-avatar-style="creatures"] .agent-thread-activity.is-typing .staff-avatar > .staff-face::after {
+html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::after {
 	top: 17%;
 	right: 7%;
 	width: 14%;
@@ -270,10 +255,6 @@ html[data-staff-avatar-style="creatures"] .agent-thread-activity.is-typing .staf
 	box-shadow: .42em 1.05em 0 -.08em #ffd166, -.12em 2.05em 0 -.16em #ffd166;
 	transform: rotate(-12deg);
 	animation: creature-writing-marks 1.8s ease-in-out var(--creature-motion-delay) infinite;
-}
-
-html[data-staff-avatar-style="creatures"] .agent-thread-activity.is-typing .agent-writing-dots {
-	display: none;
 }
 
 @keyframes creature-eye-one-blink {
@@ -308,21 +289,6 @@ html[data-staff-avatar-style="creatures"] .agent-thread-activity.is-typing .agen
 	55% { transform: translateY(-2%) rotate(.25deg) scale(1); }
 }
 
-@keyframes creature-listening {
-	0%, 100% { transform: rotate(0deg); }
-	50% { transform: rotate(1.2deg) scaleX(1.006) scaleY(.994); }
-}
-
-@keyframes creature-starting {
-	0% { transform: scaleX(.98) scaleY(1.02); }
-	100% { transform: scaleX(1.025) scaleY(.98); }
-}
-
-@keyframes creature-finishing {
-	0%, 100% { transform: rotate(0deg) scale(1); }
-	38% { transform: rotate(1deg) scaleX(1.02) scaleY(.96); }
-	64% { transform: rotate(-1deg) scale(1); }
-}
 
 @keyframes creature-focus-dots {
 	0%, 100% { opacity: 1; transform: scale(.9); }
@@ -365,7 +331,7 @@ html[data-staff-avatar-style="creatures"] .agent-thread-activity.is-typing .agen
 		background: CanvasText;
 		box-shadow: .95em .8em 0 CanvasText, 1.65em 1.8em 0 CanvasText;
 	}
-	html[data-staff-avatar-style="creatures"] .agent-thread-activity.is-typing .staff-avatar > .staff-face::after {
+	html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::after {
 		background: Highlight;
 		box-shadow: .42em 1.05em 0 -.08em Highlight, -.12em 2.05em 0 -.16em Highlight;
 	}
