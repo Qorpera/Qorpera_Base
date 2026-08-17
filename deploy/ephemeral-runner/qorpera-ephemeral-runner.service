@@ -7,7 +7,6 @@ After=network-online.target
 [Service]
 Type=exec
 Environment=QORPERA_RUNNER_CONFIG=%h/.config/qorpera-runner/config.json
-Environment=PODMAN_NO_PAUSE_PROCESS=1
 LoadCredential=qorpera-runner-activation
 LoadCredential=qorpera-runner-repair
 ExecStart=/usr/bin/node /opt/qorpera-runner/qorpera-ephemeral-runner.mjs

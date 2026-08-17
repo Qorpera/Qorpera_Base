@@ -80,7 +80,6 @@ if command -v systemd-analyze >/dev/null; then
 	fi
 	if systemctl --user show-environment >/dev/null 2>&1; then
 		user_manager_ready=true
-		podman_path=$(command -v podman)
 		sed \
 			-e 's/^Type=exec$/Type=oneshot/' \
 			-e 's/^Restart=on-failure$/Restart=no/' \
@@ -88,7 +87,7 @@ if command -v systemd-analyze >/dev/null; then
 			-e '/^LoadCredential=/d' \
 			-e '/^ProtectHostname=/d' \
 			-e '/^ProtectClock=/d' \
-			-e "s|^ExecStart=.*|Environment=PODMAN_NO_PAUSE_PROCESS=1\\nEnvironment=QORPERA_SYSTEMD_PROBE_PODMAN=$podman_path\\nEnvironment=QORPERA_SYSTEMD_PROBE_IMAGE=$immutable_image\\nEnvironment=QORPERA_SYSTEMD_PROBE_HOME=$home_marker\\nEnvironment=QORPERA_SYSTEMD_PROBE_RUNTIME=$runtime_marker\\nExecStart=/bin/sh $repository_root/deploy/ephemeral-runner/systemd-boundary-probe.sh|" \
+			-e "s|^ExecStart=.*|Environment=QORPERA_SYSTEMD_PROBE_HOME=$home_marker\\nEnvironment=QORPERA_SYSTEMD_PROBE_RUNTIME=$runtime_marker\\nExecStart=/bin/sh $repository_root/deploy/ephemeral-runner/systemd-boundary-probe.sh|" \
 			deploy/ephemeral-runner/qorpera-ephemeral-runner.service > "$unit_copy"
 		systemctl --user link "$unit_copy"
 		systemctl --user daemon-reload
