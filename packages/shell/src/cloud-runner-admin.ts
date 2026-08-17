@@ -14,6 +14,15 @@ import {
 	parseCloudRunnerJob,
 	runnerActivationTokenSha256,
 } from "./cloud-runner-control.ts";
+import {
+	type CloudRunnerModelPolicy,
+	type CloudRunnerModelUsageObservation,
+	type ConfigureCloudRunnerModelPolicyInput,
+	normalizeCloudRunnerAllowedModels,
+	parseCloudRunnerModelPolicy,
+	parseCloudRunnerModelUsageObservation,
+} from "./cloud-runner-model.ts";
+import { type CloudRunnerUsageObservation, parseCloudRunnerUsageObservation } from "./cloud-runner-usage.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -81,6 +90,15 @@ export interface CloudRunnerAdminTransport {
 	listRunnerJobs(input: { p_profile_id: string; p_limit: number }): Promise<unknown>;
 	cancelRunnerJob(input: { p_job_id: string }): Promise<unknown>;
 	listRunnerAudit(input: { p_profile_id: string; p_after_id: number; p_limit: number }): Promise<unknown>;
+	listRunnerUsage(input: { p_profile_id: string; p_after_id: number; p_limit: number }): Promise<unknown>;
+	configureRunnerModelPolicy(input: {
+		p_job_id: string;
+		p_allowed_models: JsonValue;
+		p_max_calls: number;
+		p_max_input_tokens: number;
+		p_max_output_tokens: number;
+	}): Promise<unknown>;
+	listRunnerModelUsage(input: { p_profile_id: string; p_after_id: number; p_limit: number }): Promise<unknown>;
 }
 
 export interface CloudRunnerAdminDatabase {
@@ -118,6 +136,18 @@ export interface CloudRunnerAdminDatabase {
 			};
 			qorpera_list_runner_audit: {
 				Args: Parameters<CloudRunnerAdminTransport["listRunnerAudit"]>[0];
+				Returns: JsonValue;
+			};
+			qorpera_list_runner_usage: {
+				Args: Parameters<CloudRunnerAdminTransport["listRunnerUsage"]>[0];
+				Returns: JsonValue;
+			};
+			qorpera_configure_runner_model_policy: {
+				Args: Parameters<CloudRunnerAdminTransport["configureRunnerModelPolicy"]>[0];
+				Returns: JsonValue;
+			};
+			qorpera_list_runner_model_usage: {
+				Args: Parameters<CloudRunnerAdminTransport["listRunnerModelUsage"]>[0];
 				Returns: JsonValue;
 			};
 		};
@@ -183,6 +213,28 @@ export class SupabaseCloudRunnerAdminTransport implements CloudRunnerAdminTransp
 
 	async listRunnerAudit(input: Parameters<CloudRunnerAdminTransport["listRunnerAudit"]>[0]): Promise<unknown> {
 		const { data, error } = await this.#client.rpc("qorpera_list_runner_audit", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async listRunnerUsage(input: Parameters<CloudRunnerAdminTransport["listRunnerUsage"]>[0]): Promise<unknown> {
+		const { data, error } = await this.#client.rpc("qorpera_list_runner_usage", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async configureRunnerModelPolicy(
+		input: Parameters<CloudRunnerAdminTransport["configureRunnerModelPolicy"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.#client.rpc("qorpera_configure_runner_model_policy", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async listRunnerModelUsage(
+		input: Parameters<CloudRunnerAdminTransport["listRunnerModelUsage"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.#client.rpc("qorpera_list_runner_model_usage", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -368,5 +420,74 @@ export class QorperaCloudRunnerAdmin {
 			}),
 			"runner audit list",
 		).map(parseCloudRunnerAuditReceipt);
+	}
+
+	async listUsage(profileId: string, afterObservationId = 0, limit = 200): Promise<CloudRunnerUsageObservation[]> {
+		requiredUuid(profileId, "Runner profile id");
+		if (!Number.isSafeInteger(afterObservationId) || afterObservationId < 0) {
+			throw new Error("Runner usage cursor must be a non-negative integer");
+		}
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+			throw new Error("Runner usage page size must be between 1 and 500");
+		}
+		return rows(
+			await this.#transport.listRunnerUsage({
+				p_profile_id: profileId,
+				p_after_id: afterObservationId,
+				p_limit: limit,
+			}),
+			"runner usage list",
+		).map(parseCloudRunnerUsageObservation);
+	}
+
+	async configureModelPolicy(input: ConfigureCloudRunnerModelPolicyInput): Promise<CloudRunnerModelPolicy> {
+		requiredUuid(input.jobId, "Runner model policy job id");
+		if (!Number.isSafeInteger(input.maxCalls) || input.maxCalls < 1 || input.maxCalls > 128) {
+			throw new Error("Runner model policy call limit must be between 1 and 128");
+		}
+		if (
+			!Number.isSafeInteger(input.maxInputTokens) ||
+			input.maxInputTokens < 1 ||
+			input.maxInputTokens > 100_000_000 ||
+			!Number.isSafeInteger(input.maxOutputTokens) ||
+			input.maxOutputTokens < 1 ||
+			input.maxOutputTokens > 100_000_000
+		) {
+			throw new Error("Runner model policy token limits are invalid");
+		}
+		const allowedModels: JsonValue = normalizeCloudRunnerAllowedModels(input.allowedModels).map(
+			(entry): JsonValue => ({ provider: entry.provider, model: entry.model }),
+		);
+		return parseCloudRunnerModelPolicy(
+			await this.#transport.configureRunnerModelPolicy({
+				p_job_id: input.jobId,
+				p_allowed_models: allowedModels,
+				p_max_calls: input.maxCalls,
+				p_max_input_tokens: input.maxInputTokens,
+				p_max_output_tokens: input.maxOutputTokens,
+			}),
+		);
+	}
+
+	async listModelUsage(
+		profileId: string,
+		afterObservationId = 0,
+		limit = 200,
+	): Promise<CloudRunnerModelUsageObservation[]> {
+		requiredUuid(profileId, "Runner profile id");
+		if (!Number.isSafeInteger(afterObservationId) || afterObservationId < 0) {
+			throw new Error("Runner model usage cursor must be a non-negative integer");
+		}
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+			throw new Error("Runner model usage page size must be between 1 and 500");
+		}
+		return rows(
+			await this.#transport.listRunnerModelUsage({
+				p_profile_id: profileId,
+				p_after_id: afterObservationId,
+				p_limit: limit,
+			}),
+			"runner model usage list",
+		).map(parseCloudRunnerModelUsageObservation);
 	}
 }

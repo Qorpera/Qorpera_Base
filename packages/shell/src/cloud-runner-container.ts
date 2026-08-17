@@ -1,6 +1,9 @@
 import { lstat, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import type { JsonValue } from "@qorpera/pi-protocol";
+import type { CloudRunnerModelRequest } from "./cloud-runner-model.ts";
+import { validateCloudRunnerModelRequest } from "./cloud-runner-model.ts";
+import { requestCloudRunnerModelSocket } from "./cloud-runner-model-socket.ts";
 
 const REQUEST_SCHEMA = "qorpera.ephemeral-container-request/v1";
 const RESULT_SCHEMA = "qorpera.sandbox-probe-result/v1";
@@ -16,6 +19,7 @@ export const CLOUD_RUNNER_CONTAINER_PATHS = Object.freeze({
 	operationsPath: "/qorpera/input/operations.jsonl",
 	artifactsRoot: "/qorpera/input/artifacts",
 	outputRoot: "/qorpera/output",
+	modelBrokerSocket: "/qorpera/broker/model.sock",
 });
 
 export interface CloudRunnerContainerHostPaths {
@@ -24,6 +28,7 @@ export interface CloudRunnerContainerHostPaths {
 	operationsPath: string;
 	artifactsRoot: string;
 	outputRoot: string;
+	modelBrokerSocket?: string;
 }
 
 interface SandboxProbeRequest {
@@ -35,11 +40,13 @@ interface SandboxProbeRequest {
 	memoryBytes: number;
 	cpuCount: number;
 	maxPids: number;
+	modelRequest?: CloudRunnerModelRequest;
 	assertions: {
 		inputReadOnly: boolean;
 		rootReadOnly: boolean;
 		networkIsolated: boolean;
 		resourceLimits: boolean;
+		modelBroker: boolean;
 	};
 }
 
@@ -72,12 +79,12 @@ function parseRequest(value: unknown): SandboxProbeRequest {
 	const paths = record(input.paths, "Container paths");
 	const limits = record(input.limits, "Container limits");
 	const payload = record(job.payload, "Container job payload");
-	exactKeys(payload, ["assertions"], "Container job payload");
+	exactKeys(payload, ["assertions", "model_request"], "Container job payload");
 	const requestedAssertions =
 		payload.assertions === undefined ? {} : record(payload.assertions, "Container assertions");
 	exactKeys(
 		requestedAssertions,
-		["input_read_only", "root_read_only", "network_isolated", "resource_limits"],
+		["input_read_only", "root_read_only", "network_isolated", "resource_limits", "model_broker"],
 		"Container assertions",
 	);
 	if (
@@ -107,6 +114,12 @@ function parseRequest(value: unknown): SandboxProbeRequest {
 		throw new Error("Container paths are invalid");
 	}
 	if (
+		paths.modelBrokerSocket !== undefined &&
+		paths.modelBrokerSocket !== CLOUD_RUNNER_CONTAINER_PATHS.modelBrokerSocket
+	) {
+		throw new Error("Container model broker path is invalid");
+	}
+	if (
 		typeof substrate.versionId !== "string" ||
 		!UUID_PATTERN.test(substrate.versionId) ||
 		typeof substrate.contentSha256 !== "string" ||
@@ -128,6 +141,26 @@ function parseRequest(value: unknown): SandboxProbeRequest {
 	) {
 		throw new Error("Container resource limits are invalid");
 	}
+	const modelBrokerAssertion = assertion(requestedAssertions.model_broker, "Model broker assertion");
+	let modelRequest: CloudRunnerModelRequest | undefined;
+	if (payload.model_request !== undefined) {
+		const requestedModel = record(payload.model_request, "Container model request");
+		exactKeys(
+			requestedModel,
+			["request_id", "provider", "model", "input", "max_output_tokens"],
+			"Container model request",
+		);
+		modelRequest = validateCloudRunnerModelRequest({
+			requestId: requestedModel.request_id as string,
+			provider: requestedModel.provider as string,
+			model: requestedModel.model as string,
+			input: requestedModel.input as JsonValue,
+			maxOutputTokens: requestedModel.max_output_tokens as number,
+		});
+	}
+	if (modelBrokerAssertion !== Boolean(modelRequest) || modelBrokerAssertion !== Boolean(paths.modelBrokerSocket)) {
+		throw new Error("Container model broker assertion is incomplete");
+	}
 	return {
 		jobId: job.jobId,
 		versionId: substrate.versionId,
@@ -137,11 +170,13 @@ function parseRequest(value: unknown): SandboxProbeRequest {
 		memoryBytes,
 		cpuCount: limits.cpuCount,
 		maxPids,
+		...(modelRequest ? { modelRequest } : {}),
 		assertions: {
 			inputReadOnly: assertion(requestedAssertions.input_read_only, "Input read-only assertion"),
 			rootReadOnly: assertion(requestedAssertions.root_read_only, "Root read-only assertion"),
 			networkIsolated: assertion(requestedAssertions.network_isolated, "Network isolation assertion"),
 			resourceLimits: assertion(requestedAssertions.resource_limits, "Resource-limit assertion"),
+			modelBroker: modelBrokerAssertion,
 		},
 	};
 }
@@ -254,6 +289,12 @@ export async function runCloudRunnerContainerJob(
 	}
 	if (request.assertions.networkIsolated) assertNetworkIsolated();
 	if (request.assertions.resourceLimits) await assertResourceLimits(request);
+	if (request.assertions.modelBroker) {
+		if (!request.modelRequest || !hostPaths.modelBrokerSocket) {
+			throw new Error("Container model broker is unavailable");
+		}
+		await requestCloudRunnerModelSocket(hostPaths.modelBrokerSocket, request.modelRequest);
+	}
 	const proof: JsonValue = {
 		schema: PROOF_SCHEMA,
 		job_id: request.jobId,
@@ -265,6 +306,7 @@ export async function runCloudRunnerContainerJob(
 		root_read_only: request.assertions.rootReadOnly ? true : null,
 		network_isolated: request.assertions.networkIsolated ? true : null,
 		resource_limits: request.assertions.resourceLimits ? true : null,
+		model_broker: request.assertions.modelBroker ? true : null,
 	};
 	await writeFile(`${hostPaths.outputRoot}/sandbox-proof.json`, `${JSON.stringify(proof)}\n`, {
 		encoding: "utf-8",

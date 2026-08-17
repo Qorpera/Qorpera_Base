@@ -197,6 +197,7 @@ export class EphemeralCloudRunnerWorker {
 					substrate: broker,
 					objects: broker.objects,
 					backend: this.#options.backend,
+					modelBroker: broker,
 					outputPublisher: new CloudRunnerBrokerOutputPublisher(broker),
 					...(this.#options.limits ? { limits: this.#options.limits } : {}),
 					...(this.#options.environment ? { environment: this.#options.environment } : {}),

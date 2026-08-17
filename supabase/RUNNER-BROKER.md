@@ -55,4 +55,4 @@ Sandbox output publication is deterministic. The host rereads and rehashes every
 - Expired, completed, failed, requeued, or revoked authority fails closed. The runner must obtain a current job lease rather than extending object access independently.
 - Uploaded but unregistered output remains job-attributed and is not a durable retained root. Reference-aware cleanup can collect it in a later orphan-output policy; that automatic policy is not enabled in this slice.
 
-Chunked runner output, explicit sibling-substrate merge/rebase, model/network brokering, usage metering, and physical compute isolation remain separate work.
+Chunked runner output, explicit sibling-substrate merge/rebase, approved network-tool adapters, billing attribution, and physical compute isolation remain separate work. The leased-job model gateway authority is defined in `RUNNER-MODEL-GATEWAY.md`; successful runner resource observations are defined separately in `RUNNER-USAGE.md`.

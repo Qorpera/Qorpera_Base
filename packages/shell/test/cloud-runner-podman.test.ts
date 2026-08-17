@@ -2,7 +2,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonValue } from "@qorpera/pi-protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CloudRunnerModelSocketFactory } from "../src/cloud-runner-model-socket.ts";
 import {
 	NodePodmanCommandTransport,
 	type PodmanCommandLimits,
@@ -130,12 +131,16 @@ async function sandboxRequest(): Promise<CloudRunnerSandboxRequest> {
 	};
 }
 
-function backend(commands: PodmanCommandTransport): RootlessPodmanSandboxBackend {
+function backend(
+	commands: PodmanCommandTransport,
+	modelSocketFactory?: CloudRunnerModelSocketFactory,
+): RootlessPodmanSandboxBackend {
 	return new RootlessPodmanSandboxBackend({
 		image,
 		capabilities: ["agent_turn"],
 		jobTypes: ["agent_turn"],
 		commandTransport: commands,
+		...(modelSocketFactory ? { modelSocketFactory } : {}),
 	});
 }
 
@@ -203,6 +208,44 @@ describe("rootless Podman cloud runner", () => {
 		expect(running.terminateCalls).toBe(1);
 		expect(commands.calls[2]?.args.slice(0, 4)).toEqual(["rm", "--force", "--time=0", "--ignore"]);
 		await expect(processHandle.result).rejects.toThrow("Podman client terminated");
+	});
+
+	it("mounts a job-private model socket without serializing host credentials and closes it with the container", async () => {
+		const request = await sandboxRequest();
+		const brokerRoot = join(request.outputRoot, "..", "broker");
+		await mkdir(brokerRoot);
+		const modelBroker = {
+			requestModel: vi.fn(async () => {
+				throw new Error("not called by the command boundary test");
+			}),
+		};
+		request.hostBroker = { root: brokerRoot, model: modelBroker };
+		const commands = new FakePodmanCommands();
+		commands.responses.push(
+			completed(commandResult(runtimeInfo())),
+			completed(commandResult('{"status":"ok"}\n')),
+			completed(commandResult()),
+		);
+		const close = vi.fn(async () => undefined);
+		const modelSocketFactory = vi.fn(async (options: Parameters<CloudRunnerModelSocketFactory>[0]) => ({
+			socketPath: options.socketPath,
+			close,
+		}));
+
+		const processHandle = await backend(commands, modelSocketFactory).start(request);
+		await expect(processHandle.result).resolves.toEqual({ status: "ok" });
+
+		expect(modelSocketFactory).toHaveBeenCalledWith({
+			socketPath: join(brokerRoot, "model.sock"),
+			broker: modelBroker,
+		});
+		const run = commands.calls[1] as CapturedCommand;
+		expect(run.args).toContain(
+			`type=bind,src=${brokerRoot},dst=/qorpera/broker,ro=true,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
+		);
+		expect(JSON.parse(run.input)).toMatchObject({ paths: { modelBrokerSocket: "/qorpera/broker/model.sock" } });
+		expect(run.input).not.toContain("credential");
+		expect(close).toHaveBeenCalledOnce();
 	});
 
 	it("refuses a rootful or remote-incompatible runtime before creating a container", async () => {

@@ -12,6 +12,7 @@ import {
 	SupabaseCloudRunnerBrokerTransport,
 } from "../src/cloud-runner-broker.ts";
 import { parseCloudRunnerJob } from "../src/cloud-runner-control.ts";
+import type { CloudRunnerModelRequest } from "../src/cloud-runner-model.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";
@@ -140,6 +141,7 @@ class MemoryBrokerTransport implements CloudRunnerBrokerTransport {
 	readonly objects = new Map<string, Uint8Array>();
 	readonly authorities: CloudRunnerBrokerAuthority[] = [];
 	readonly registrations: RegisterCloudRunnerArtifactInput[] = [];
+	readonly modelRequests: CloudRunnerModelRequest[] = [];
 	readonly description = descriptionRecord();
 
 	async describe(authority: CloudRunnerBrokerAuthority): Promise<unknown> {
@@ -201,6 +203,18 @@ class MemoryBrokerTransport implements CloudRunnerBrokerTransport {
 			bytes: input.bytes,
 			name: input.name,
 		});
+	}
+
+	async requestModel(authority: CloudRunnerBrokerAuthority, input: CloudRunnerModelRequest): Promise<unknown> {
+		this.authorities.push({ ...authority });
+		this.modelRequests.push(structuredClone(input));
+		return {
+			request_id: input.requestId,
+			provider: input.provider,
+			model: input.model,
+			output: { text: "bounded answer" },
+			usage: { input_tokens: 8, output_tokens: 3, cost_microusd: 125 },
+		};
 	}
 }
 
@@ -286,6 +300,24 @@ describe("cloud runner object broker", () => {
 		expect(current.transport.authorities.every((authority) => authority.sessionToken === sessionToken)).toBe(true);
 	});
 
+	it("brokers a bounded model request with the current job lease and no provider credential", async () => {
+		const current = broker();
+		const request = {
+			requestId: "34343434-3434-4434-8434-343434343434",
+			provider: "openai",
+			model: "gpt-test",
+			input: { prompt: "Answer from the immutable substrate" },
+			maxOutputTokens: 128,
+		};
+		await expect(current.broker.requestModel(request)).resolves.toMatchObject({
+			requestId: request.requestId,
+			output: { text: "bounded answer" },
+			usage: { inputTokens: 8, outputTokens: 3, costMicrousd: 125 },
+		});
+		expect(current.transport.modelRequests).toEqual([request]);
+		expect(current.transport.authorities.at(-1)).toEqual({ runnerId, jobId, sessionToken, leaseToken });
+	});
+
 	it("keeps runner credentials out of broker URLs and request bodies", async () => {
 		const calls: Array<{ url: string; init?: RequestInit }> = [];
 		const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -300,6 +332,13 @@ describe("cloud runner object broker", () => {
 		const authority = { runnerId, jobId, sessionToken, leaseToken };
 
 		await transport.describe(authority);
+		await transport.requestModel(authority, {
+			requestId: "34343434-3434-4434-8434-343434343434",
+			provider: "openai",
+			model: "gpt-test",
+			input: { prompt: "safe" },
+			maxOutputTokens: 64,
+		});
 
 		expect(calls[0]?.url).toBe("https://example.supabase.co/functions/v1/runner-broker");
 		expect(calls[0]?.url).not.toContain(sessionToken);
@@ -308,5 +347,8 @@ describe("cloud runner object broker", () => {
 		expect(String(calls[0]?.init?.body)).not.toContain(leaseToken);
 		expect(new Headers(calls[0]?.init?.headers).get("authorization")).toBe(`Bearer ${sessionToken}`);
 		expect(new Headers(calls[0]?.init?.headers).get("x-qorpera-lease-token")).toBe(leaseToken);
+		expect(String(calls[1]?.init?.body)).toContain('"action":"model"');
+		expect(String(calls[1]?.init?.body)).not.toContain(sessionToken);
+		expect(String(calls[1]?.init?.body)).not.toContain(leaseToken);
 	});
 });

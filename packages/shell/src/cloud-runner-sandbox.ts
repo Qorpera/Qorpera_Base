@@ -8,6 +8,8 @@ import { currentCloudCompanyTreeReference, materializeCloudCompanyTree } from ".
 import type { ResolvedCompanySubstrateReference } from "./cloud-company-substrate.ts";
 import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
 import type { CloudRunnerCapability, CloudRunnerJob } from "./cloud-runner-control.ts";
+import type { CloudRunnerModelBroker } from "./cloud-runner-model-socket.ts";
+import { type CloudRunnerExecutionUsage, serializeCloudRunnerExecutionUsage } from "./cloud-runner-usage.ts";
 import type {
 	HostedArtifactIndex,
 	HostedArtifactIndexEntry,
@@ -79,6 +81,10 @@ export interface CloudRunnerSandboxRequest {
 	};
 	input: CloudRunnerSandboxInput;
 	outputRoot: string;
+	hostBroker?: Readonly<{
+		root: string;
+		model: CloudRunnerModelBroker;
+	}>;
 	environment: Readonly<Record<string, string>>;
 	limits: Readonly<CloudRunnerSandboxLimits>;
 }
@@ -136,24 +142,28 @@ export interface ExecuteCloudRunnerJobOptions {
 	substrate: CloudRunnerSubstrateResolver;
 	objects: CloudContentAddressedStore;
 	backend: CloudRunnerSandboxBackend;
+	modelBroker?: CloudRunnerModelBroker;
 	outputPublisher?: CloudRunnerOutputPublisher;
 	limits?: Partial<CloudRunnerSandboxLimits>;
 	environment?: Readonly<Record<string, string>>;
 	temporaryRoot?: string;
 	signal?: AbortSignal;
 	allowTestBackend?: boolean;
+	monotonicNow?: () => number;
 }
 
 export interface CloudRunnerExecutionResult {
 	result: JsonValue;
 	outputFiles: readonly CloudRunnerOutputFile[];
 	outputBytes: number;
+	usage: CloudRunnerExecutionUsage;
 }
 
 interface MaterializedCloudRunnerInput {
 	input: CloudRunnerSandboxInput;
 	version: HostedCompanySubstrateVersion;
 	artifactCount: number;
+	inputBytes: number;
 }
 
 function requiredSafeInteger(value: number, label: string, minimum: number, maximum: number): void {
@@ -170,8 +180,18 @@ function resolvedLimits(overrides: Partial<CloudRunnerSandboxLimits> | undefined
 		throw new Error("Sandbox CPU count is outside the supported range");
 	}
 	requiredSafeInteger(limits.maxPids, "Sandbox process count", 1, 4096);
-	requiredSafeInteger(limits.maxInputBytes, "Sandbox input bytes", 1, Number.MAX_SAFE_INTEGER);
-	requiredSafeInteger(limits.maxOutputBytes, "Sandbox output bytes", 0, Number.MAX_SAFE_INTEGER);
+	requiredSafeInteger(
+		limits.maxInputBytes,
+		"Sandbox input bytes",
+		1,
+		DEFAULT_CLOUD_RUNNER_SANDBOX_LIMITS.maxInputBytes,
+	);
+	requiredSafeInteger(
+		limits.maxOutputBytes,
+		"Sandbox output bytes",
+		0,
+		DEFAULT_CLOUD_RUNNER_SANDBOX_LIMITS.maxOutputBytes,
+	);
 	requiredSafeInteger(limits.maxResultBytes, "Sandbox result bytes", 2, 64 * 1024);
 	return limits;
 }
@@ -449,12 +469,13 @@ async function materializeInput(
 		artifactCount: artifacts.artifactCount,
 	};
 	const encodedManifest = `${JSON.stringify(manifest)}\n`;
-	assertInputBudget(artifacts.inputBytes, Buffer.byteLength(encodedManifest), limits.maxInputBytes);
+	inputBytes = assertInputBudget(artifacts.inputBytes, Buffer.byteLength(encodedManifest), limits.maxInputBytes);
 	await writeFile(substrateManifestPath, encodedManifest, { encoding: "utf-8", mode: 0o400, flag: "wx" });
 	return {
 		input: { companyRoot, substrateManifestPath, operationsPath, artifactsRoot },
 		version,
 		artifactCount: artifacts.artifactCount,
+		inputBytes,
 	};
 }
 
@@ -594,6 +615,11 @@ export async function executeCloudRunnerJob(
 		const materialized = await materializeInput(executionRoot, options, limits);
 		const outputRoot = join(executionRoot, "output");
 		await mkdir(outputRoot, { recursive: true });
+		const brokerRoot = join(executionRoot, "broker");
+		if (options.modelBroker) await mkdir(brokerRoot, { mode: 0o700 });
+		const monotonicNow = options.monotonicNow ?? performance.now.bind(performance);
+		const executionStartedAt = monotonicNow();
+		if (!Number.isFinite(executionStartedAt)) throw new Error("Runner monotonic clock is invalid");
 		const processHandle = await options.backend.start({
 			job: {
 				jobId: options.job.jobId,
@@ -611,11 +637,19 @@ export async function executeCloudRunnerJob(
 			},
 			input: materialized.input,
 			outputRoot,
+			...(options.modelBroker
+				? { hostBroker: Object.freeze({ root: brokerRoot, model: options.modelBroker }) }
+				: {}),
 			environment: Object.freeze({ ...environment }),
 			limits: Object.freeze({ ...limits }),
 		});
 		const backendResult = await waitForSandbox(processHandle, limits.wallTimeMs, options.signal);
+		const executionFinishedAt = monotonicNow();
+		if (!Number.isFinite(executionFinishedAt) || executionFinishedAt < executionStartedAt) {
+			throw new Error("Runner monotonic clock is invalid");
+		}
 		assertJsonBytes(backendResult, "Sandbox result", limits.maxResultBytes);
+		const resultBytes = Buffer.byteLength(JSON.stringify(backendResult));
 		const outputFiles = await collectOutputs(outputRoot, limits.maxOutputBytes);
 		const outputBytes = outputFiles.reduce((total, file) => total + file.bytes, 0);
 		const publication = options.outputPublisher
@@ -628,6 +662,21 @@ export async function executeCloudRunnerJob(
 					files: outputFiles,
 				})
 			: null;
+		const usage: CloudRunnerExecutionUsage = {
+			executionMs: Math.max(1, Math.ceil(executionFinishedAt - executionStartedAt)),
+			inputBytes: materialized.inputBytes,
+			outputBytes,
+			resultBytes,
+			limits: {
+				wallTimeMs: limits.wallTimeMs,
+				memoryBytes: limits.memoryBytes,
+				cpuMillis: Math.ceil(limits.cpuCount * 1000),
+				maxPids: limits.maxPids,
+				maxInputBytes: limits.maxInputBytes,
+				maxOutputBytes: limits.maxOutputBytes,
+				maxResultBytes: limits.maxResultBytes,
+			},
+		};
 		const result: JsonValue = {
 			schema: EXECUTION_RESULT_SCHEMA,
 			backend: options.backend.backendId,
@@ -636,9 +685,10 @@ export async function executeCloudRunnerJob(
 			output_count: outputFiles.length,
 			output_bytes: outputBytes,
 			publication,
+			usage: serializeCloudRunnerExecutionUsage(usage),
 		};
 		assertJsonBytes(result, "Runner completion result", 64 * 1024);
-		return { result, outputFiles, outputBytes };
+		return { result, outputFiles, outputBytes, usage };
 	} finally {
 		assertDisposableRoot(temporaryBase, executionRoot);
 		await rm(executionRoot, { recursive: true, force: true });

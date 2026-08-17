@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCloudRunnerContainerJob } from "../src/cloud-runner-container.ts";
 import { readCloudRunnerContainerRequest } from "../src/cloud-runner-container-main.ts";
+import { startCloudRunnerModelSocketServer } from "../src/cloud-runner-model-socket.ts";
 
 const jobId = "77777777-7777-4777-8777-777777777777";
 const versionId = "66666666-6666-4666-8666-666666666666";
@@ -110,6 +112,56 @@ describe("cloud runner container contract", () => {
 			payload: { assertions: { input_read_only: true } },
 		};
 		await expect(runCloudRunnerContainerJob(value, hostPaths)).rejects.toThrow("Container input is writable");
+	});
+
+	it("proves the container-side client can use only the bounded model socket", async () => {
+		const hostPaths = await layout();
+		const requestId = "34343434-3434-4434-8434-343434343434";
+		const socketPath =
+			process.platform === "win32"
+				? `\\\\.\\pipe\\qorpera-container-model-${randomUUID()}`
+				: join(dirname(hostPaths.outputRoot), "model.sock");
+		const modelSocket = await startCloudRunnerModelSocketServer({
+			socketPath,
+			broker: {
+				requestModel: async (input) => ({
+					requestId: input.requestId,
+					provider: input.provider,
+					model: input.model,
+					output: { text: "networkless broker proof" },
+					usage: { inputTokens: 3, outputTokens: 2, costMicrousd: 11 },
+				}),
+			},
+		});
+		const value = request();
+		value.paths = {
+			...(value.paths as Record<string, unknown>),
+			modelBrokerSocket: "/qorpera/broker/model.sock",
+		};
+		value.job = {
+			jobId,
+			jobType: "sandbox_probe",
+			requiredCapability: "company_substrate",
+			attemptCount: 1,
+			payload: {
+				assertions: { model_broker: true },
+				model_request: {
+					request_id: requestId,
+					provider: "openai",
+					model: "gpt-test",
+					input: { prompt: "socket proof" },
+					max_output_tokens: 8,
+				},
+			},
+		};
+
+		try {
+			await runCloudRunnerContainerJob(value, { ...hostPaths, modelBrokerSocket: socketPath });
+			const proof = JSON.parse(await readFile(join(hostPaths.outputRoot, "sandbox-proof.json"), "utf-8"));
+			expect(proof).toMatchObject({ model_broker: true, network_isolated: null });
+		} finally {
+			await modelSocket.close();
+		}
 	});
 
 	it("bounds stdin before parsing JSON", async () => {

@@ -1,9 +1,10 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { realpath, stat } from "node:fs/promises";
+import { lstat, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import type { JsonValue } from "@qorpera/pi-protocol";
 import type { CloudRunnerCapability } from "./cloud-runner-control.ts";
+import { type CloudRunnerModelSocketFactory, startCloudRunnerModelSocketServer } from "./cloud-runner-model-socket.ts";
 import type {
 	CloudRunnerSandboxBackend,
 	CloudRunnerSandboxGuarantees,
@@ -21,6 +22,7 @@ const CONTAINER_PATHS = Object.freeze({
 	operationsPath: "/qorpera/input/operations.jsonl",
 	artifactsRoot: "/qorpera/input/artifacts",
 	outputRoot: "/qorpera/output",
+	modelBrokerSocket: "/qorpera/broker/model.sock",
 });
 const MAX_COMMAND_STDERR_BYTES = 16 * 1024;
 const MAX_CONTAINER_REQUEST_BYTES = 128 * 1024;
@@ -55,6 +57,7 @@ export interface RootlessPodmanSandboxBackendOptions {
 	podmanPath?: string;
 	entrypoint?: string;
 	commandTransport?: PodmanCommandTransport;
+	modelSocketFactory?: CloudRunnerModelSocketFactory;
 }
 
 function restrictedPodmanEnvironment(): NodeJS.ProcessEnv {
@@ -233,7 +236,9 @@ function assertRequest(request: CloudRunnerSandboxRequest): void {
 	assertEnvironment(request.environment);
 }
 
-async function verifiedMounts(request: CloudRunnerSandboxRequest): Promise<{ inputRoot: string; outputRoot: string }> {
+async function verifiedMounts(
+	request: CloudRunnerSandboxRequest,
+): Promise<{ inputRoot: string; outputRoot: string; brokerRoot?: string }> {
 	const [companyRoot, substrateManifestPath, operationsPath, artifactsRoot, outputRoot] = await Promise.all([
 		realpath(request.input.companyRoot),
 		realpath(request.input.substrateManifestPath),
@@ -267,7 +272,24 @@ async function verifiedMounts(request: CloudRunnerSandboxRequest): Promise<{ inp
 	) {
 		throw new Error("Podman sandbox layout has invalid filesystem entries");
 	}
-	return { inputRoot: safeHostPath(inputRoot), outputRoot: safeHostPath(outputRoot) };
+	if (!request.hostBroker) {
+		return { inputRoot: safeHostPath(inputRoot), outputRoot: safeHostPath(outputRoot) };
+	}
+	const brokerRoot = await realpath(request.hostBroker.root);
+	const broker = await lstat(request.hostBroker.root);
+	if (
+		brokerRoot !== request.hostBroker.root ||
+		brokerRoot !== join(dirname(inputRoot), "broker") ||
+		!broker.isDirectory() ||
+		broker.isSymbolicLink()
+	) {
+		throw new Error("Podman model broker path does not match the disposable job layout");
+	}
+	return {
+		inputRoot: safeHostPath(inputRoot),
+		outputRoot: safeHostPath(outputRoot),
+		brokerRoot: safeHostPath(brokerRoot),
+	};
 }
 
 export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
@@ -289,6 +311,7 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 	readonly #podmanPath: string;
 	readonly #entrypoint: string;
 	readonly #commands: PodmanCommandTransport;
+	readonly #modelSocketFactory: CloudRunnerModelSocketFactory;
 	#runtimeReady?: Promise<void>;
 
 	constructor(options: RootlessPodmanSandboxBackendOptions) {
@@ -308,6 +331,7 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 		this.#podmanPath = safeHostPath(options.podmanPath ?? "/usr/bin/podman");
 		this.#entrypoint = safeContainerEntrypoint(options.entrypoint ?? "/qorpera/bin/run-job");
 		this.#commands = options.commandTransport ?? new NodePodmanCommandTransport();
+		this.#modelSocketFactory = options.modelSocketFactory ?? startCloudRunnerModelSocketServer;
 		this.capabilities = Object.freeze([...options.capabilities]);
 		this.jobTypes = Object.freeze([...options.jobTypes]);
 	}
@@ -328,7 +352,15 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 			schema: CONTAINER_REQUEST_SCHEMA,
 			job: request.job,
 			substrate: request.substrate,
-			paths: CONTAINER_PATHS,
+			paths: request.hostBroker
+				? CONTAINER_PATHS
+				: {
+						companyRoot: CONTAINER_PATHS.companyRoot,
+						substrateManifestPath: CONTAINER_PATHS.substrateManifestPath,
+						operationsPath: CONTAINER_PATHS.operationsPath,
+						artifactsRoot: CONTAINER_PATHS.artifactsRoot,
+						outputRoot: CONTAINER_PATHS.outputRoot,
+					},
 			limits: request.limits,
 		})}\n`;
 		if (Buffer.byteLength(containerRequest) > MAX_CONTAINER_REQUEST_BYTES) {
@@ -378,17 +410,36 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 			"--mount",
 			`type=bind,src=${mounts.outputRoot},dst=${CONTAINER_PATHS.outputRoot},ro=false,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
 		];
+		if (mounts.brokerRoot) {
+			args.push(
+				"--mount",
+				`type=bind,src=${mounts.brokerRoot},dst=/qorpera/broker,ro=true,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
+			);
+		}
 		for (const [key, value] of Object.entries(request.environment).sort(([left], [right]) =>
 			left.localeCompare(right, "en"),
 		)) {
 			args.push("--env", `${key}=${value}`);
 		}
 		args.push(this.#image);
-		const container = this.#commands.start(this.#podmanPath, args, containerRequest, {
-			stdoutBytes: request.limits.maxResultBytes + 1,
-			stderrBytes: MAX_COMMAND_STDERR_BYTES,
-			timeoutMs: request.limits.wallTimeMs + 30_000,
-		});
+		const modelSocket =
+			request.hostBroker && mounts.brokerRoot
+				? await this.#modelSocketFactory({
+						socketPath: join(mounts.brokerRoot, "model.sock"),
+						broker: request.hostBroker.model,
+					})
+				: undefined;
+		let container: PodmanCommandProcess;
+		try {
+			container = this.#commands.start(this.#podmanPath, args, containerRequest, {
+				stdoutBytes: request.limits.maxResultBytes + 1,
+				stderrBytes: MAX_COMMAND_STDERR_BYTES,
+				timeoutMs: request.limits.wallTimeMs + 30_000,
+			});
+		} catch (error) {
+			await modelSocket?.close();
+			throw error;
+		}
 		let removal: Promise<void> | undefined;
 		const remove = (): Promise<void> => {
 			removal ??= this.#removeContainer(containerName);
@@ -406,7 +457,11 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 				}
 				return record(value, "runner result") as JsonValue;
 			} finally {
-				await remove();
+				try {
+					await remove();
+				} finally {
+					await modelSocket?.close();
+				}
 			}
 		})();
 		return {

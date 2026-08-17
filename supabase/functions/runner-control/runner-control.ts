@@ -32,6 +32,23 @@ export type RunnerControlRequest =
 			retryable: boolean;
 	  };
 
+export function runnerControlRpcName(action: RunnerControlRequest["action"]): string {
+	switch (action) {
+		case "activate":
+			return "qorpera_activate_runner";
+		case "heartbeat":
+			return "qorpera_heartbeat_runner";
+		case "claim":
+			return "qorpera_claim_runner_job";
+		case "renew":
+			return "qorpera_renew_runner_job";
+		case "complete":
+			return "qorpera_complete_runner_job_v4";
+		case "fail":
+			return "qorpera_fail_runner_job";
+	}
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
 	return value as Record<string, unknown>;

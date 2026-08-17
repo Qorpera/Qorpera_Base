@@ -260,6 +260,7 @@ describe("cloud runner execution sandboxes", () => {
 		const publish = vi.fn(async (input: { outputRoot: string }) => ({
 			artifact: await readFile(join(input.outputRoot, "answer.md"), "utf-8"),
 		}));
+		const monotonicNow = vi.fn().mockReturnValueOnce(100).mockReturnValueOnce(125);
 
 		const execution = await executeCloudRunnerJob({
 			...fixture,
@@ -267,6 +268,7 @@ describe("cloud runner execution sandboxes", () => {
 			allowTestBackend: true,
 			environment: { QORPERA_JOB_MODE: "test" },
 			outputPublisher: { publish },
+			monotonicNow,
 		});
 
 		expect(execution.result).toMatchObject({
@@ -274,7 +276,16 @@ describe("cloud runner execution sandboxes", () => {
 			backend_result: { status: "ok" },
 			output_count: 1,
 			publication: { artifact: "bounded answer\n" },
+			usage: {
+				schema: "qorpera.runner-usage/v1",
+				execution_ms: 25,
+				output_bytes: 15,
+				result_bytes: 15,
+				limits: { cpu_millis: 2000 },
+			},
 		});
+		expect(execution.usage).toMatchObject({ executionMs: 25, outputBytes: 15, resultBytes: 15 });
+		expect(execution.usage.inputBytes).toBeGreaterThan(0);
 		expect(execution.outputFiles).toMatchObject([{ path: "answer.md", bytes: 15 }]);
 		expect(publish).toHaveBeenCalledOnce();
 		await expect(stat(executionRoot)).rejects.toMatchObject({ code: "ENOENT" });
@@ -287,6 +298,33 @@ describe("cloud runner execution sandboxes", () => {
 			"Test sandbox backend cannot execute untrusted runner work",
 		);
 		expect(fixture.substrate.resolveCalls).toBe(0);
+	});
+
+	it("creates a disposable host-only broker directory without putting credentials in the sandbox request", async () => {
+		const fixture = await sandboxFixture();
+		let brokerRoot = "";
+		const modelBroker = {
+			requestModel: vi.fn(async () => {
+				throw new Error("not called by the sandbox materialization test");
+			}),
+		};
+		const backend = new TestSandboxBackend(async (request) => {
+			expect(request.hostBroker?.model).toBe(modelBroker);
+			brokerRoot = request.hostBroker?.root ?? "";
+			expect(brokerRoot).toBe(join(dirname(dirname(request.input.companyRoot)), "broker"));
+			expect((await stat(brokerRoot)).isDirectory()).toBe(true);
+			return { status: "ok" };
+		});
+
+		await executeCloudRunnerJob({
+			...fixture,
+			backend,
+			modelBroker,
+			allowTestBackend: true,
+		});
+
+		expect(modelBroker.requestModel).not.toHaveBeenCalled();
+		await expect(stat(brokerRoot)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
 	it("refuses a backend that does not deny host filesystem access", async () => {

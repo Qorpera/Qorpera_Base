@@ -17,7 +17,9 @@ job root
 |   `-- artifacts/
 |       |-- index.json       ordered immutable artifact metadata
 |       `-- 000001/content   verified artifact bytes
-`-- output/                  the only writable job mount
+|-- output/                  the only writable job mount
+`-- broker/
+    `-- model.sock           optional host-owned, job-private model adapter
 ```
 
 The host verifies every company manifest, file manifest, chunk, artifact hash, operation count, artifact ordinal, and declared byte total. Input and output budgets are checked before a completion result can be returned. Inputs are mounted read-only by the containment backend; `output/` is mounted as a job-private writable volume.
@@ -30,7 +32,7 @@ The sandbox receives a copied job payload, non-secret identifiers, an explicit e
 - Model-provider credentials.
 - The host filesystem or Docker/VM control socket.
 
-Model calls, Git fetches, package downloads, and object publication must go through host-side brokers. They are not reasons to put credentials or unrestricted networking inside the sandbox. The job-scoped object broker is implemented for exact substrate input and bounded direct artifact output; model and general network brokers are not.
+Model calls, Git fetches, package downloads, and object publication must go through host-side brokers. They are not reasons to put credentials or unrestricted networking inside the sandbox. The job-scoped object broker is implemented for exact substrate input and bounded direct artifact output. The model broker is exposed to an eligible job through a bounded Unix-domain socket; general network forwarding is not implemented.
 
 ## Required guarantees
 
@@ -57,12 +59,15 @@ Every job receives:
 - `--network=none`, an empty inherited container environment, and disabled proxy propagation.
 - A read-only image root with automatic image volumes disabled.
 - One non-recursive, read-only input bind and one non-recursive, job-private output bind.
+- When the job has model authority, one non-recursive, read-only broker-directory bind containing only `/qorpera/broker/model.sock`. The socket is mode `0600`, accepts at most four simultaneous connections and 128 single-frame requests, and closes with the container boundary.
 - A rootless `keep-id` user namespace, all capabilities removed, `no-new-privileges`, private IPC/PID/cgroup/UTS namespaces, and seccomp verified on the host.
 - Kernel CPU, memory, swap, process-count, and wall-time bounds.
 - Bounded stdout and stderr collection. The job request travels through stdin rather than the process list, and stdout must be one JSON object.
 - `podman rm --force --time=0 --ignore` after success, failure, cancellation, or deadline expiry. Completion does not return until container destruction is confirmed.
 
-The pinned image contract exposes `/qorpera/bin/run-job`. It reads one `qorpera.ephemeral-container-request/v1` object from stdin, reads immutable inputs under `/qorpera/input`, writes durable candidates only under `/qorpera/output`, and emits one bounded JSON result on stdout. The first bundled image implements only `sandbox_probe`: it verifies that the exact substrate manifest is mounted and produces a bounded `sandbox-proof.json`. It is an acceptance-test workload, not an agent runtime. The image, entrypoint, and worker daemon do not receive runner, Storage, account, or model-provider credentials.
+The pinned image contract exposes `/qorpera/bin/run-job`. It reads one `qorpera.ephemeral-container-request/v1` object from stdin, reads immutable inputs under `/qorpera/input`, writes durable candidates only under `/qorpera/output`, and emits one bounded JSON result on stdout. The first bundled image implements only `sandbox_probe`: it verifies that the exact substrate manifest is mounted and can issue one fake model request through the socket while direct networking remains disabled. It is an acceptance-test workload, not an agent runtime. The image and entrypoint do not receive runner, Storage, account, gateway, or model-provider credentials.
+
+The socket protocol is newline-delimited `qorpera.runner-model-socket-request/v1` JSON with a 300 KiB request ceiling and 600 KiB response ceiling. It accepts only a request UUID, provider, model, JSON input, and output-token limit. The trusted worker passes the validated request to the current leased `CloudRunnerJobBroker`; generic failures cross back to the sandbox, while host and provider error details remain outside. The adapter cannot forward URLs or invoke arbitrary host functions.
 
 `EphemeralCloudRunnerWorker` connects this backend to runner control and the job-scoped broker. It performs containment preflight before claiming, recovers one retained lease after restart, renews the lease and runner session serially while a container runs, publishes verified output, stages the completion result in the private authority store, and completes the job atomically. A staged completion always takes precedence over starting another container.
 
@@ -82,6 +87,6 @@ MicroVMs are the stronger later boundary for hostile multi-tenant workloads. The
 ## Remaining production work
 
 1. Run the headless rootless-Podman workflow and then build, push, and sign the packaged `sandbox_probe` image in an OIDC-enabled registry environment. The standalone Node bundles, strict configuration, one-time systemd credential handoff, authority restoration, shutdown, image I/O contract, Linux containment harness, and Cosign build script are implemented. The hosted workflow exercises the real per-job Linux container boundary once these changes are landed; service-account lingering and host-reboot recovery still require a disposable Linux VM. No NAS process is involved.
-2. Route model and approved network/tool operations through metered host brokers.
+2. Run the model-socket probe through the real Linux workflow to confirm that rootless Podman's read-only bind permits socket connection while `--network=none` remains enforced. The protocol, host lifecycle, worker wiring, portable client/server proof, command boundary, and Linux acceptance test are implemented locally. Then add separately approved named network/tool adapters; do not expose arbitrary URL forwarding. Successful sandbox resource observations and applied-limit reporting are implemented independently in `RUNNER-USAGE.md`.
 3. Extend the object broker for chunked outputs above 8 MiB and define explicit sibling-substrate merge/rebase operations.
 4. Add abuse, escape, cancellation, host-reboot, disk-pressure, broker-revocation, image-supply-chain, and restore tests before registering physical hardware.

@@ -5,6 +5,12 @@ import type { JsonValue } from "@qorpera/pi-protocol";
 import type { ResolvedCompanySubstrateReference } from "./cloud-company-substrate.ts";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "./cloud-object-store.ts";
 import type { CloudRunnerCapability, CloudRunnerJob } from "./cloud-runner-control.ts";
+import {
+	type CloudRunnerModelRequest,
+	type CloudRunnerModelResponse,
+	parseCloudRunnerModelResponse,
+	validateCloudRunnerModelRequest,
+} from "./cloud-runner-model.ts";
 import type {
 	CloudRunnerOutputPublicationInput,
 	CloudRunnerOutputPublisher,
@@ -69,6 +75,7 @@ export interface CloudRunnerBrokerTransport {
 		mediaType: string,
 	): Promise<"exists" | "stored">;
 	registerArtifact(authority: CloudRunnerBrokerAuthority, input: RegisterCloudRunnerArtifactInput): Promise<unknown>;
+	requestModel(authority: CloudRunnerBrokerAuthority, input: CloudRunnerModelRequest): Promise<unknown>;
 }
 
 export interface CloudRunnerJobBrokerOptions {
@@ -436,6 +443,18 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		});
 	}
 
+	async requestModel(authority: CloudRunnerBrokerAuthority, input: CloudRunnerModelRequest): Promise<unknown> {
+		const request = validateCloudRunnerModelRequest(input);
+		return this.#post(authority, {
+			action: "model",
+			requestId: request.requestId,
+			provider: request.provider,
+			model: request.model,
+			input: request.input,
+			maxOutputTokens: request.maxOutputTokens,
+		});
+	}
+
 	#headers(authority: CloudRunnerBrokerAuthority, objectSha256?: string): Record<string, string> {
 		requiredAuthority(authority);
 		return {
@@ -554,6 +573,22 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 			throw new Error("Runner broker registered an inconsistent artifact");
 		}
 		return artifact;
+	}
+
+	async requestModel(input: CloudRunnerModelRequest): Promise<CloudRunnerModelResponse> {
+		const request = validateCloudRunnerModelRequest(input);
+		const response = parseCloudRunnerModelResponse(
+			await this.#options.transport.requestModel(this.#authority(), request),
+		);
+		if (
+			response.requestId !== request.requestId ||
+			response.provider !== request.provider ||
+			response.model !== request.model ||
+			response.usage.outputTokens > request.maxOutputTokens
+		) {
+			throw new Error("Runner model broker returned another request");
+		}
+		return response;
 	}
 
 	async profileId(): Promise<string> {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { parseRunnerBearer, parseRunnerControlRequest } from "./runner-control.ts";
+import { parseRunnerBearer, parseRunnerControlRequest, runnerControlRpcName } from "./runner-control.ts";
 
 const runnerId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
 const jobId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
@@ -45,6 +45,7 @@ describe("runner control boundary", () => {
 	});
 
 	it("bounds claim, completion, and failure payloads", () => {
+		assert.equal(runnerControlRpcName("complete"), "qorpera_complete_runner_job_v4");
 		assert.deepEqual(
 			parseRunnerControlRequest({
 				action: "claim",

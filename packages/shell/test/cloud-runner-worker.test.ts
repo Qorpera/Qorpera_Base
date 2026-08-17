@@ -141,11 +141,31 @@ function brokerTransport(): CloudRunnerBrokerTransport {
 		getObject: vi.fn(async () => new Uint8Array()),
 		putObject: vi.fn(async () => "stored" as const),
 		registerArtifact: vi.fn(async () => ({})),
+		requestModel: vi.fn(async () => ({})),
 	};
 }
 
 function successfulExecution(result: JsonValue = { outcome: "ok" }): CloudRunnerExecutionResult {
-	return { result, outputFiles: [], outputBytes: 0 };
+	return {
+		result,
+		outputFiles: [],
+		outputBytes: 0,
+		usage: {
+			executionMs: 10,
+			inputBytes: 1,
+			outputBytes: 0,
+			resultBytes: 16,
+			limits: {
+				wallTimeMs: 30 * 60 * 1000,
+				memoryBytes: 2 * 1024 * 1024 * 1024,
+				cpuMillis: 2000,
+				maxPids: 256,
+				maxInputBytes: 16 * 1024 * 1024 * 1024,
+				maxOutputBytes: 256 * 1024 * 1024,
+				maxResultBytes: 32 * 1024,
+			},
+		},
+	};
 }
 
 async function activeRunner(service: RunnerService): Promise<DisposableCloudRunner> {
@@ -188,6 +208,7 @@ describe("ephemeral cloud runner worker", () => {
 		expect(executeJob.mock.calls[0]?.[0]).toMatchObject({
 			job: { jobId, substrateVersionId },
 			backend: serviceBackend,
+			modelBroker: { requestModel: expect.any(Function) },
 		});
 		expect(service.requests.map((request) => request.action)).toEqual(["activate", "claim", "complete"]);
 		expect(runner.leasedJobs()).toEqual([]);

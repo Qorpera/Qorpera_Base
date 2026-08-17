@@ -135,6 +135,7 @@ describe("disposable cloud runner", () => {
 			}),
 			putObject: vi.fn(async () => "stored" as const),
 			registerArtifact: vi.fn(async () => ({})),
+			requestModel: vi.fn(async () => ({})),
 		};
 		const broker = runner.broker(claimedJob as NonNullable<typeof claimedJob>, brokerTransport);
 		await broker.readObject("f".repeat(64));

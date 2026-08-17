@@ -92,6 +92,65 @@ function transport(): CloudRunnerAdminTransport {
 				created_at: createdAt,
 			},
 		]),
+		listRunnerUsage: vi.fn(async () => [
+			{
+				observation_id: 1,
+				profile_id: profileId,
+				environment_id: environmentId,
+				job_id: jobId,
+				runner_id: runnerId,
+				actor_user_id: actorUserId,
+				usage: {
+					schema: "qorpera.runner-usage/v1",
+					execution_ms: 250,
+					input_bytes: 1024,
+					output_bytes: 512,
+					result_bytes: 64,
+					limits: {
+						wall_time_ms: 30_000,
+						memory_bytes: 512 * 1024 * 1024,
+						cpu_millis: 2000,
+						max_pids: 64,
+						max_input_bytes: 2048,
+						max_output_bytes: 1024,
+						max_result_bytes: 1024,
+					},
+				},
+				reserved_cpu_milliseconds: 500,
+				reserved_memory_mib_milliseconds: 128_000,
+				created_at: createdAt,
+			},
+		]),
+		configureRunnerModelPolicy: vi.fn(async (input) => ({
+			job_id: input.p_job_id,
+			profile_id: profileId,
+			environment_id: environmentId,
+			allowed_models: input.p_allowed_models,
+			max_calls: input.p_max_calls,
+			max_input_tokens: input.p_max_input_tokens,
+			max_output_tokens: input.p_max_output_tokens,
+			authorized_by_user_id: actorUserId,
+			created_at: createdAt,
+		})),
+		listRunnerModelUsage: vi.fn(async () => [
+			{
+				observation_id: 2,
+				profile_id: profileId,
+				environment_id: environmentId,
+				job_id: jobId,
+				request_id: "34343434-3434-4434-8434-343434343434",
+				runner_id: runnerId,
+				actor_user_id: actorUserId,
+				authorized_by_user_id: actorUserId,
+				provider: "openai",
+				model: "gpt-test",
+				outcome: "completed",
+				input_tokens: 12,
+				output_tokens: 4,
+				cost_microusd: 125,
+				created_at: createdAt,
+			},
+		]),
 	};
 }
 
@@ -163,6 +222,21 @@ describe("cloud runner administration", () => {
 		await expect(admin.revokeRunner(runnerId)).resolves.toMatchObject({ status: "revoked" });
 		await expect(admin.listAudit(profileId)).resolves.toMatchObject([
 			{ receiptId: 1, runnerId, eventType: "runner_registered" },
+		]);
+		await expect(admin.listUsage(profileId)).resolves.toMatchObject([
+			{ observationId: 1, jobId, actorUserId, executionMs: 250 },
+		]);
+		await expect(
+			admin.configureModelPolicy({
+				jobId,
+				allowedModels: [{ provider: "openai", model: "gpt-test" }],
+				maxCalls: 4,
+				maxInputTokens: 10_000,
+				maxOutputTokens: 2_000,
+			}),
+		).resolves.toMatchObject({ jobId, maxCalls: 4, authorizedByUserId: actorUserId });
+		await expect(admin.listModelUsage(profileId)).resolves.toMatchObject([
+			{ observationId: 2, jobId, provider: "openai", costMicrousd: 125 },
 		]);
 
 		await expect(

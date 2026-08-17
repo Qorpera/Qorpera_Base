@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import {
+	executeRunnerModelGateway,
 	MAX_RUNNER_BROKER_OBJECT_BYTES,
 	parseRunnerBrokerAuthorization,
 	parseRunnerBrokerObjectRequest,
@@ -10,6 +11,7 @@ import {
 } from "./runner-broker.ts";
 
 const OBJECT_BUCKET = "qorpera-profile-objects";
+const MODEL_GATEWAY_INPUT_TOKEN_OVERHEAD = 16_384;
 
 function jsonResponse(value: unknown, status = 200): Response {
 	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
@@ -57,6 +59,28 @@ function rpcName(action: RunnerBrokerRequest["action"]): string {
 			return "qorpera_runner_broker_list_artifacts";
 		case "register_artifact":
 			return "qorpera_runner_broker_register_artifact";
+		case "model":
+			throw new Error("Runner model requests use the model gateway boundary");
+	}
+}
+
+function modelGatewayConfiguration(): { url: string; token: string } | undefined {
+	const rawUrl = Deno.env.get("QORPERA_RUNNER_MODEL_GATEWAY_URL");
+	const token = Deno.env.get("QORPERA_RUNNER_MODEL_GATEWAY_TOKEN");
+	if (!rawUrl || !token || token.length < 32 || /[\0\r\n]/.test(token)) return undefined;
+	try {
+		const url = new URL(rawUrl);
+		if (
+			(url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") ||
+			url.username ||
+			url.password ||
+			url.hash
+		) {
+			return undefined;
+		}
+		return { url: url.href, token };
+	} catch {
+		return undefined;
 	}
 }
 
@@ -96,6 +120,78 @@ Deno.serve(async (request) => {
 			p_job_id: action.jobId,
 			p_lease_token_sha256: await sha256(leaseToken),
 		};
+		if (action.action === "model") {
+			const gateway = modelGatewayConfiguration();
+			if (!gateway) return jsonResponse({ error: "Runner model gateway is not configured" }, 503);
+			const requestProjection = {
+				request_id: action.requestId,
+				provider: action.provider,
+				model: action.model,
+				input: action.input,
+				max_output_tokens: action.maxOutputTokens,
+			};
+			const encodedProjection = JSON.stringify(requestProjection);
+			const inputBytes = new TextEncoder().encode(JSON.stringify(action.input)).byteLength;
+			const inputTokenReservation = inputBytes + MODEL_GATEWAY_INPUT_TOKEN_OVERHEAD;
+			const requestSha256 = await sha256(encodedProjection);
+			const { data: reservationData, error: reservationError } = await client.rpc(
+				"qorpera_runner_broker_reserve_model_request",
+				{
+					...args,
+					p_request_id: action.requestId,
+					p_provider: action.provider,
+					p_model: action.model,
+					p_request_sha256: requestSha256,
+					p_input_token_reservation: inputTokenReservation,
+					p_output_token_reservation: action.maxOutputTokens,
+				},
+			);
+			if (reservationError) {
+				return jsonResponse({ error: "Runner model request was rejected" }, rpcStatus(reservationError));
+			}
+			let reservation: Record<string, unknown>;
+			try {
+				reservation = record(reservationData, "runner model reservation");
+			} catch {
+				return jsonResponse({ error: "Runner model broker returned invalid authority" }, 503);
+			}
+			if (reservation.state === "completed") {
+				return jsonResponse({ value: reservation.response });
+			}
+			if (reservation.state !== "reserved") {
+				return jsonResponse({ error: "Runner model request is unavailable" }, 409);
+			}
+
+			try {
+				const result = await executeRunnerModelGateway({
+					url: gateway.url,
+					token: gateway.token,
+					request: action,
+					inputTokenReservation,
+					finalize: async (finalization) => {
+						const { data, error } = await client.rpc("qorpera_runner_broker_finalize_model_request", {
+							...args,
+							p_request_id: action.requestId,
+							p_request_sha256: requestSha256,
+							p_outcome: finalization.outcome,
+							p_input_tokens: finalization.usage.inputTokens,
+							p_output_tokens: finalization.usage.outputTokens,
+							p_cost_microusd: finalization.usage.costMicrousd,
+							p_response: finalization.response,
+							p_error_code: finalization.errorCode,
+						});
+						if (error) throw error;
+						return data;
+					},
+				});
+				return result.status === "completed"
+					? jsonResponse({ value: result.value })
+					: jsonResponse({ error: "Runner model gateway request failed" }, 503);
+			} catch (error) {
+				const rpcError = error && typeof error === "object" && "code" in error ? error : {};
+				return jsonResponse({ error: "Runner model result was rejected" }, rpcStatus(rpcError));
+			}
+		}
 		if (action.action === "operations") {
 			args.p_after_sequence = action.afterSequence;
 			args.p_limit = action.limit;

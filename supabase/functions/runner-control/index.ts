@@ -2,6 +2,7 @@ import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import {
 	parseRunnerBearer,
 	readRunnerControlRequest,
+	runnerControlRpcName,
 	type RunnerControlRequest,
 } from "./runner-control.ts";
 
@@ -32,23 +33,6 @@ function rpcStatus(error: { code?: string }): number {
 	if (error.code === "42501") return 401;
 	if (error.code === "40001" || error.code === "55000") return 409;
 	return 503;
-}
-
-function rpcName(action: RunnerControlRequest["action"]): string {
-	switch (action) {
-		case "activate":
-			return "qorpera_activate_runner";
-		case "heartbeat":
-			return "qorpera_heartbeat_runner";
-		case "claim":
-			return "qorpera_claim_runner_job";
-		case "renew":
-			return "qorpera_renew_runner_job";
-		case "complete":
-			return "qorpera_complete_runner_job_v2";
-		case "fail":
-			return "qorpera_fail_runner_job";
-	}
 }
 
 Deno.serve(async (request) => {
@@ -125,7 +109,7 @@ Deno.serve(async (request) => {
 			};
 			break;
 	}
-	const { data, error } = await client.rpc(rpcName(action.action), args);
+	const { data, error } = await client.rpc(runnerControlRpcName(action.action), args);
 	if (error) return jsonResponse({ error: "Runner request was rejected" }, rpcStatus(error));
 	return jsonResponse({ value: data });
 });

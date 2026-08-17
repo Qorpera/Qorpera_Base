@@ -12,7 +12,9 @@ const enabled = process.platform === "linux" && typeof image === "string" && ima
 const jobId = "77777777-7777-4777-8777-777777777777";
 const versionId = "66666666-6666-4666-8666-666666666666";
 const contentSha256 = "a".repeat(64);
+const modelRequestId = "34343434-3434-4434-8434-343434343434";
 const temporaryDirectories: string[] = [];
+let modelRequestCount = 0;
 
 async function request(): Promise<CloudRunnerSandboxRequest> {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-podman-linux-test-"));
@@ -21,10 +23,12 @@ async function request(): Promise<CloudRunnerSandboxRequest> {
 	const companyRoot = join(inputRoot, "company");
 	const artifactsRoot = join(inputRoot, "artifacts");
 	const outputRoot = join(root, "output");
+	const brokerRoot = join(root, "broker");
 	await Promise.all([
 		mkdir(companyRoot, { recursive: true }),
 		mkdir(artifactsRoot, { recursive: true }),
 		mkdir(outputRoot),
+		mkdir(brokerRoot, { mode: 0o700 }),
 	]);
 	const substrateManifestPath = join(inputRoot, "substrate.json");
 	const operationsPath = join(inputRoot, "operations.jsonl");
@@ -55,12 +59,35 @@ async function request(): Promise<CloudRunnerSandboxRequest> {
 					root_read_only: true,
 					network_isolated: true,
 					resource_limits: true,
+					model_broker: true,
+				},
+				model_request: {
+					request_id: modelRequestId,
+					provider: "openai",
+					model: "gpt-test",
+					input: { prompt: "networkless socket proof" },
+					max_output_tokens: 8,
 				},
 			},
 		},
 		substrate: { versionId, contentSha256, operationSequence: 1, operationCount: 1, artifactCount: 0 },
 		input: { companyRoot, substrateManifestPath, operationsPath, artifactsRoot },
 		outputRoot,
+		hostBroker: {
+			root: brokerRoot,
+			model: {
+				requestModel: async (input) => {
+					modelRequestCount += 1;
+					return {
+						requestId: input.requestId,
+						provider: input.provider,
+						model: input.model,
+						output: { text: "host broker reached" },
+						usage: { inputTokens: 4, outputTokens: 3, costMicrousd: 13 },
+					};
+				},
+			},
+		},
 		environment: { QORPERA_JOB_MODE: "ephemeral" },
 		limits: {
 			wallTimeMs: 30_000,
@@ -76,6 +103,7 @@ async function request(): Promise<CloudRunnerSandboxRequest> {
 
 afterEach(async () => {
 	for (const directory of temporaryDirectories.splice(0)) await rm(directory, { recursive: true, force: true });
+	modelRequestCount = 0;
 });
 
 describe.skipIf(!enabled)("rootless Podman Linux boundary", () => {
@@ -102,7 +130,9 @@ describe.skipIf(!enabled)("rootless Podman Linux boundary", () => {
 			root_read_only: true,
 			network_isolated: true,
 			resource_limits: true,
+			model_broker: true,
 		});
+		expect(modelRequestCount).toBe(1);
 		const retained = execFileSync(
 			podmanPath,
 			["ps", "--all", "--filter", "name=qorpera-job-", "--format", "{{.Names}}"],

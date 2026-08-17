@@ -127,6 +127,18 @@ class DisposableRunnerService implements CloudRunnerAdminTransport, CloudRunnerC
 		return [];
 	}
 
+	async listRunnerUsage(): Promise<unknown> {
+		return [];
+	}
+
+	async configureRunnerModelPolicy(): Promise<unknown> {
+		throw new Error("Lifecycle test does not configure model policy");
+	}
+
+	async listRunnerModelUsage(): Promise<unknown> {
+		return [];
+	}
+
 	async request(token: string, body: CloudRunnerControlRequest): Promise<unknown> {
 		if (body.action === "activate") {
 			if (this.#status !== "pending" || sha256(token) !== this.#activationTokenSha256) {
