@@ -234,6 +234,15 @@ export class CloudCompanyWorkspaceState {
 		};
 		writeAtomic(this.#path, this.#binding);
 	}
+
+	discard(clientSnapshotId: string): void {
+		if (!this.#binding.pending || this.#binding.pending.clientSnapshotId !== clientSnapshotId) {
+			throw new Error("Cloud company workspace checkpoint discard is stale");
+		}
+		const { pending: _pending, ...binding } = this.#binding;
+		this.#binding = binding;
+		writeAtomic(this.#path, this.#binding);
+	}
 }
 
 export async function checkpointCloudCompanyWorkspace(
@@ -253,18 +262,24 @@ export async function checkpointCloudCompanyWorkspace(
 	});
 	if (state.binding.pending) {
 		const pending = state.binding.pending;
-		const snapshot = await input.primary.commitCompanySnapshot({
-			workspaceId: workspace.workspaceId,
-			clientSnapshotId: pending.clientSnapshotId,
-			...(pending.expectedHeadSnapshotId ? { expectedHeadSnapshotId: pending.expectedHeadSnapshotId } : {}),
-			tree: pending.tree,
-		});
-		state.complete(pending.clientSnapshotId, snapshot);
-		return {
-			changed: true,
-			workspace: { ...workspace, headSnapshotId: snapshot.snapshotId, updatedAt: snapshot.createdAt },
-			snapshot,
-		};
+		try {
+			const snapshot = await input.primary.commitCompanySnapshot({
+				workspaceId: workspace.workspaceId,
+				clientSnapshotId: pending.clientSnapshotId,
+				...(pending.expectedHeadSnapshotId ? { expectedHeadSnapshotId: pending.expectedHeadSnapshotId } : {}),
+				tree: pending.tree,
+			});
+			state.complete(pending.clientSnapshotId, snapshot);
+			return {
+				changed: true,
+				workspace: { ...workspace, headSnapshotId: snapshot.snapshotId, updatedAt: snapshot.createdAt },
+				snapshot,
+			};
+		} catch (error) {
+			if (!(error instanceof Error) || !/\(PT409\)$/.test(error.message)) throw error;
+			state.discard(pending.clientSnapshotId);
+			throw new Error("Cloud company workspace head changed on another computer", { cause: error });
+		}
 	}
 	const tree = await captureCloudCompanyTree(input.companyRoot, input.profileId, input.objects, {
 		...(input.runtimeLock ? { runtimeLock: input.runtimeLock } : {}),

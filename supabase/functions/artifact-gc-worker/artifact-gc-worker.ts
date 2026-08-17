@@ -16,6 +16,7 @@ export interface ArtifactGcWorkerObject {
 
 export interface ArtifactGcWorkerStore {
 	claimObjects(job: ArtifactGcWorkerJob): Promise<ArtifactGcWorkerObject[]>;
+	renewLease(job: ArtifactGcWorkerJob, sha256s: string[]): Promise<void>;
 	acknowledgeObjects(job: ArtifactGcWorkerJob, sha256s: string[]): Promise<void>;
 	complete(job: ArtifactGcWorkerJob): Promise<void>;
 	fail(job: ArtifactGcWorkerJob, message: string): Promise<"failed" | "retrying">;
@@ -106,6 +107,10 @@ export async function runArtifactGcWorkerBatch(
 			while (true) {
 				const objects = await store.claimObjects(job);
 				if (objects.length === 0) break;
+				await store.renewLease(
+					job,
+					objects.map((object) => object.sha256),
+				);
 				await storage.remove(objects);
 				await store.acknowledgeObjects(
 					job,

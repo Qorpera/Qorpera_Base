@@ -51,6 +51,7 @@ describe("artifact cleanup worker", () => {
 			[],
 		];
 		const removed: string[][] = [];
+		const renewed: string[][] = [];
 		const acknowledged: string[][] = [];
 		let completed = false;
 		const storage: ArtifactGcStorageProvider = {
@@ -58,6 +59,7 @@ describe("artifact cleanup worker", () => {
 		};
 		const store: ArtifactGcWorkerStore = {
 			claimObjects: async () => claimed.shift() ?? [],
+			renewLease: async (_job, sha256s) => renewed.push(sha256s),
 			acknowledgeObjects: async (_job, sha256s) => acknowledged.push(sha256s),
 			complete: async () => {
 				completed = true;
@@ -75,6 +77,7 @@ describe("artifact cleanup worker", () => {
 			[`${profileId}/${firstSha256}`],
 			[`${profileId}/${secondSha256}`],
 		]);
+		assert.deepEqual(renewed, [[firstSha256], [secondSha256]]);
 		assert.deepEqual(acknowledged, [[firstSha256], [secondSha256]]);
 		assert.equal(completed, true);
 	});
@@ -83,6 +86,7 @@ describe("artifact cleanup worker", () => {
 		let failure = "";
 		const store: ArtifactGcWorkerStore = {
 			claimObjects: async () => [{ sha256: firstSha256, bytes: 42, path: `${profileId}/${firstSha256}` }],
+			renewLease: async () => {},
 			acknowledgeObjects: async () => {},
 			complete: async () => {},
 			fail: async (_job, message) => {
@@ -100,5 +104,31 @@ describe("artifact cleanup worker", () => {
 		);
 		assert.equal(failure, "Storage unavailable");
 		assert.doesNotMatch(failure, new RegExp(firstSha256));
+	});
+
+	it("does not remove storage when the lease cannot be renewed", async () => {
+		let removed = false;
+		let failure = "";
+		const store: ArtifactGcWorkerStore = {
+			claimObjects: async () => [{ sha256: firstSha256, bytes: 42, path: `${profileId}/${firstSha256}` }],
+			renewLease: async () => Promise.reject(new Error("Lease expired")),
+			acknowledgeObjects: async () => {},
+			complete: async () => {},
+			fail: async (_job, message) => {
+				failure = message;
+				return "retrying";
+			},
+		};
+		await runArtifactGcWorkerBatch(
+			[job()],
+			{
+				remove: async () => {
+					removed = true;
+				},
+			},
+			store,
+		);
+		assert.equal(removed, false);
+		assert.equal(failure, "Lease expired");
 	});
 });

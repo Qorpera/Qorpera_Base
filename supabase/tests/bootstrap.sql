@@ -4,6 +4,7 @@
 
 create schema extensions;
 create extension pgcrypto with schema extensions;
+create extension dblink;
 
 create role anon nologin;
 create role authenticated nologin;

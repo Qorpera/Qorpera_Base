@@ -72,6 +72,14 @@ Deno.serve(async (request) => {
 			if (error) throw new Error("Artifact cleanup object claim failed");
 			return parseArtifactGcWorkerObjects(data, job);
 		},
+		renewLease: async (job, sha256s) => {
+			const { error } = await client.rpc("qorpera_renew_artifact_gc_lease", {
+				p_plan_id: job.planId,
+				p_lease_id: job.leaseId,
+				p_object_sha256s: sha256s,
+			});
+			if (error) throw new Error("Artifact cleanup lease renewal failed");
+		},
 		acknowledgeObjects: async (job, sha256s) => {
 			const { error } = await client.rpc("qorpera_complete_artifact_gc_objects", {
 				p_plan_id: job.planId,

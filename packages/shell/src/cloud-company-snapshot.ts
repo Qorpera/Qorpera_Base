@@ -100,7 +100,18 @@ function normalizedRelativePath(path: string): string {
 		normalized.includes("\\") ||
 		normalized.includes("\0") ||
 		Buffer.byteLength(normalized, "utf-8") > MAX_RELATIVE_PATH_BYTES ||
-		normalized.split("/").some((segment) => !segment || segment === "." || segment === "..")
+		normalized
+			.split("/")
+			.some(
+				(segment) =>
+					!segment ||
+					segment === "." ||
+					segment === ".." ||
+					segment.includes(":") ||
+					/[\u0001-\u001f]/.test(segment) ||
+					/[. ]$/.test(segment) ||
+					/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9]|conin\$|conout\$)(?:\..*)?$/i.test(segment),
+			)
 	) {
 		throw new Error("Cloud company tree path is invalid");
 	}

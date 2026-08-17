@@ -104,6 +104,44 @@ describe("cloud company snapshots", () => {
 		await expect(captureCloudCompanyTree(root, profileId, store)).rejects.toThrow("physical files");
 	});
 
+	it.each(["CON", "nested/COM1.txt", "notes.md:hidden", "trailing. "])(
+		"rejects Win32 namespace path %s before materialization",
+		async (path) => {
+			const transport = new MemoryObjectTransport();
+			const store = new CloudContentAddressedStore(transport);
+			const encoded = Buffer.from(
+				JSON.stringify({
+					schema: "qorpera.company-tree/v1",
+					contractVersion: 1,
+					omittedLayers: [
+						"company-git-history",
+						"session-trail",
+						"staff-registry",
+						"product-git-checkouts",
+						"dependency-caches",
+					],
+					entries: [{ kind: "directory", path }],
+				}),
+				"utf-8",
+			);
+			const manifest = await store.putObject(profileId, encoded, "application/vnd.qorpera.company-tree+json");
+			await expect(
+				materializeCloudCompanyTree(
+					join(await temporaryDirectory(), "materialized"),
+					profileId,
+					{
+						manifestSha256: manifest.sha256,
+						manifestBytes: manifest.bytes,
+						contractVersion: 1,
+						fileCount: 0,
+						totalBytes: 0,
+					},
+					store,
+				),
+			).rejects.toThrow("path is invalid");
+		},
+	);
+
 	it("persists one workspace identity and retries an uncertain commit with the same snapshot identity", async () => {
 		const root = await companyFixture();
 		const userData = await temporaryDirectory();
@@ -161,5 +199,52 @@ describe("cloud company snapshots", () => {
 		const finalState = CloudCompanyWorkspaceState.open(userData, profileId, environmentId, root);
 		expect(finalState.binding.clientWorkspaceId).toBe(stateAfterFailure.binding.clientWorkspaceId);
 		expect(finalState.binding.pending).toBeUndefined();
+	});
+
+	it("discards a pending checkpoint rejected against the current head", async () => {
+		const root = await companyFixture();
+		const userData = await temporaryDirectory();
+		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
+		const remoteHeadId = "55555555-5555-4555-8555-555555555555";
+		let invocation = 0;
+		const attemptedClientIds: string[] = [];
+		const primary: CompanyWorkspacePrimary = {
+			ensureCompanyWorkspace: vi.fn(async (input) => ({
+				workspaceId,
+				profileId,
+				environmentId,
+				clientWorkspaceId: input.clientWorkspaceId,
+				name: input.name,
+				...(invocation > 0 ? { headSnapshotId: remoteHeadId } : {}),
+				createdByUserId: actorUserId,
+				createdAt,
+				updatedAt: createdAt,
+			})),
+			commitCompanySnapshot: vi.fn(async (input) => {
+				attemptedClientIds.push(input.clientSnapshotId);
+				if (invocation === 0) {
+					invocation++;
+					throw new Error("response lost before settlement");
+				}
+				throw new Error("company workspace head changed (PT409)");
+			}),
+			getCompanySnapshot: vi.fn(async () => {
+				throw new Error("no hosted snapshot lookup expected");
+			}),
+		};
+		const input = {
+			userData,
+			companyRoot: root,
+			profileId,
+			environmentId,
+			workspaceName: "Shared company",
+			primary,
+			objects,
+		};
+		await expect(checkpointCloudCompanyWorkspace(input)).rejects.toThrow("response lost");
+		await expect(checkpointCloudCompanyWorkspace(input)).rejects.toThrow("head changed on another computer");
+		expect(attemptedClientIds).toHaveLength(2);
+		expect(attemptedClientIds[0]).toBe(attemptedClientIds[1]);
+		expect(CloudCompanyWorkspaceState.open(userData, profileId, environmentId, root).binding.pending).toBeUndefined();
 	});
 });
