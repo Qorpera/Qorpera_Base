@@ -90,7 +90,11 @@ if command -v systemd-analyze >/dev/null; then
 			deploy/ephemeral-runner/qorpera-ephemeral-runner.service > "$unit_copy"
 		systemctl --user link "$unit_copy"
 		systemctl --user daemon-reload
-		systemctl --user start "$unit_name"
+		if ! systemctl --user start "$unit_name"; then
+			systemctl --user status --no-pager "$unit_name" >&2 || true
+			journalctl --user --no-pager --unit "$unit_name" --lines 100 >&2 || true
+			exit 1
+		fi
 		if [ "$(systemctl --user show --property=Result --value "$unit_name")" != success ]; then
 			echo "Systemd runner boundary probe failed" >&2
 			exit 1
