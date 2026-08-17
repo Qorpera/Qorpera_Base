@@ -138,7 +138,7 @@ const STAFF_CREATURE_CATALOG = Object.freeze({
 	lantern: Object.freeze({ label: "Lantern", asset: "./staff-creatures/lantern.png" }),
 	brain: Object.freeze({ label: "Brain", asset: "./staff-creatures/brain.png" }),
 	wisp: Object.freeze({ label: "Wisp Float", asset: "./staff-creatures/wisp.png" }),
-	halo: Object.freeze({ label: "Flame Halo", asset: "./staff-creatures/halo.png" }),
+	halo: Object.freeze({ label: "Flame Halo Walker", asset: "./staff-creatures/halo.png" }),
 	ribbon: Object.freeze({ label: "Ribbon", asset: "./staff-creatures/ribbon.png" }),
 	bloom: Object.freeze({ label: "Bloom", asset: "./staff-creatures/bloom.png" }),
 });
