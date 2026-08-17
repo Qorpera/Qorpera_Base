@@ -2,13 +2,27 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { dirname, join } from "node:path";
-import { createClient, type Session, type SupportedStorage, type User } from "@supabase/supabase-js";
+import {
+	createClient,
+	isAuthRetryableFetchError,
+	type Session,
+	type SupportedStorage,
+	type User,
+} from "@supabase/supabase-js";
+import { CloudContentAddressedStore, SupabaseCloudObjectTransport } from "./cloud-object-store.ts";
+import { SupabaseCloudRealtimeTransport } from "./cloud-realtime-sync.ts";
+import {
+	createSupabaseHostedPrimary,
+	type HostedPrimaryDatabase,
+	type QorperaHostedPrimary,
+} from "./hosted-primary.ts";
 
 export const QORPERA_AUTH_URL = "https://bzbvxthyjcgcrwpcvdpj.supabase.co";
 export const QORPERA_AUTH_PUBLISHABLE_KEY = "sb_publishable_WXcmU0LTzmvkAHImRnczdQ_fzIOImTx";
 export const QORPERA_AUTH_REDIRECT_PATTERN = "http://127.0.0.1:*/auth/callback";
 
 const ACCOUNT_AUTH_FILE = "account-auth.json";
+const ACCOUNT_PROJECTION_STORAGE_KEY = "qorpera-account-projection/v1";
 const CALLBACK_PATH = "/auth/callback";
 const DEFAULT_AUTH_TIMEOUT_MS = 5 * 60_000;
 
@@ -25,6 +39,7 @@ export interface QorperaAccount {
 export interface QorperaAccountInfo {
 	authenticated: boolean;
 	user?: QorperaAccount;
+	offline?: true;
 }
 
 export interface QorperaAccountAuthOptions {
@@ -212,19 +227,85 @@ function accountInfoForSession(session: Session | null): QorperaAccountInfo {
 	return session ? { authenticated: true, user: projectQorperaAccount(session.user) } : { authenticated: false };
 }
 
+function parseCachedAccount(value: string | null): QorperaAccount | undefined {
+	if (!value) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(value);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+		const candidate = parsed as Record<string, unknown>;
+		if (
+			candidate.schema !== ACCOUNT_PROJECTION_STORAGE_KEY ||
+			typeof candidate.account !== "object" ||
+			candidate.account === null ||
+			Array.isArray(candidate.account)
+		) {
+			return undefined;
+		}
+		const account = candidate.account as Record<string, unknown>;
+		if (
+			typeof account.id !== "string" ||
+			!account.id ||
+			Buffer.byteLength(account.id, "utf-8") > 128 ||
+			typeof account.email !== "string" ||
+			Buffer.byteLength(account.email, "utf-8") > 320 ||
+			typeof account.displayName !== "string" ||
+			!account.displayName ||
+			Buffer.byteLength(account.displayName, "utf-8") > 512 ||
+			(account.avatarUrl !== undefined &&
+				(typeof account.avatarUrl !== "string" || !/^https:\/\//.test(account.avatarUrl))) ||
+			(account.provider !== undefined &&
+				(typeof account.provider !== "string" || Buffer.byteLength(account.provider, "utf-8") > 64))
+		) {
+			return undefined;
+		}
+		return {
+			id: account.id,
+			email: account.email,
+			displayName: account.displayName,
+			...(typeof account.avatarUrl === "string" ? { avatarUrl: account.avatarUrl } : {}),
+			...(typeof account.provider === "string" ? { provider: account.provider } : {}),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+function storedSessionExpired(value: string | null): boolean {
+	if (!value) return false;
+	try {
+		const parsed: unknown = JSON.parse(value);
+		return Boolean(
+			parsed &&
+				typeof parsed === "object" &&
+				!Array.isArray(parsed) &&
+				typeof (parsed as Record<string, unknown>).expires_at === "number" &&
+				((parsed as Record<string, unknown>).expires_at as number) * 1000 <= Date.now(),
+		);
+	} catch {
+		return false;
+	}
+}
+
 export class QorperaAccountAuth {
 	private readonly client;
+	private readonly authStorageKey: string;
+	private readonly primary: QorperaHostedPrimary;
+	private readonly realtime: SupabaseCloudRealtimeTransport;
+	private readonly objects: CloudContentAddressedStore;
 	private readonly openExternal: (url: string) => Promise<void>;
 	private readonly storage: FileAccountAuthStorage;
 	private readonly timeoutMs: number;
+	private refreshExpiredSessionInFlight: Promise<void> | undefined;
 	private signInPending = false;
 
 	constructor(userData: string, options: QorperaAccountAuthOptions) {
 		this.openExternal = options.openExternal;
 		this.timeoutMs = options.timeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS;
 		this.storage = new FileAccountAuthStorage(accountAuthStoragePath(userData));
-		this.client = createClient(
-			options.projectUrl ?? QORPERA_AUTH_URL,
+		const projectUrl = options.projectUrl ?? QORPERA_AUTH_URL;
+		this.authStorageKey = `sb-${new URL(projectUrl).hostname.split(".")[0]}-auth-token`;
+		this.client = createClient<HostedPrimaryDatabase>(
+			projectUrl,
 			options.publishableKey ?? QORPERA_AUTH_PUBLISHABLE_KEY,
 			{
 				auth: {
@@ -237,12 +318,42 @@ export class QorperaAccountAuth {
 				...(options.fetch ? { global: { fetch: options.fetch } } : {}),
 			},
 		);
+		this.primary = createSupabaseHostedPrimary(this.client);
+		this.realtime = new SupabaseCloudRealtimeTransport(this.client);
+		this.objects = new CloudContentAddressedStore(new SupabaseCloudObjectTransport(this.client));
+	}
+
+	hostedPrimary(): QorperaHostedPrimary {
+		return this.primary;
+	}
+
+	hostedRealtime(): SupabaseCloudRealtimeTransport {
+		return this.realtime;
+	}
+
+	hostedObjects(): CloudContentAddressedStore {
+		return this.objects;
 	}
 
 	async info(): Promise<QorperaAccountInfo> {
-		const { data, error } = await this.client.auth.getSession();
-		if (error) throw error;
-		return accountInfoForSession(data.session);
+		const cachedAccount = parseCachedAccount(this.storage.getItem(ACCOUNT_PROJECTION_STORAGE_KEY));
+		if (cachedAccount && storedSessionExpired(this.storage.getItem(this.authStorageKey))) {
+			this.refreshExpiredSession();
+			return { authenticated: true, user: cachedAccount, offline: true };
+		}
+		try {
+			const { data, error } = await this.client.auth.getSession();
+			if (error) throw error;
+			const account = accountInfoForSession(data.session);
+			if (account.user) this.rememberAccount(account.user);
+			else this.storage.removeItem(ACCOUNT_PROJECTION_STORAGE_KEY);
+			return account;
+		} catch (error) {
+			if (!isAuthRetryableFetchError(error)) throw error;
+			const account = parseCachedAccount(this.storage.getItem(ACCOUNT_PROJECTION_STORAGE_KEY));
+			if (!account) throw error;
+			return { authenticated: true, user: account, offline: true };
+		}
 	}
 
 	async signInWithProvider(
@@ -274,7 +385,9 @@ export class QorperaAccountAuth {
 				if (exchangeError) throw exchangeError;
 				if (!sessionData.session) throw new Error("Supabase did not create a Qorpera session");
 				report("Signed in.");
-				return accountInfoForSession(sessionData.session);
+				const account = accountInfoForSession(sessionData.session);
+				if (account.user) this.rememberAccount(account.user);
+				return account;
 			} finally {
 				callback.close();
 			}
@@ -307,7 +420,9 @@ export class QorperaAccountAuth {
 				if (exchangeError) throw exchangeError;
 				if (!sessionData.session) throw new Error("Supabase did not create a Qorpera session");
 				report("Signed in.");
-				return accountInfoForSession(sessionData.session);
+				const account = accountInfoForSession(sessionData.session);
+				if (account.user) this.rememberAccount(account.user);
+				return account;
 			} finally {
 				callback.close();
 			}
@@ -334,5 +449,32 @@ export class QorperaAccountAuth {
 		} finally {
 			this.signInPending = false;
 		}
+	}
+
+	private rememberAccount(account: QorperaAccount): void {
+		this.storage.setItem(
+			ACCOUNT_PROJECTION_STORAGE_KEY,
+			JSON.stringify({ schema: ACCOUNT_PROJECTION_STORAGE_KEY, account }),
+		);
+	}
+
+	private refreshExpiredSession(): void {
+		if (this.refreshExpiredSessionInFlight) return;
+		this.refreshExpiredSessionInFlight = this.client.auth
+			.getSession()
+			.then(({ data, error }) => {
+				if (error) {
+					if (!isAuthRetryableFetchError(error)) this.storage.removeItem(ACCOUNT_PROJECTION_STORAGE_KEY);
+					return;
+				}
+				if (data.session) this.rememberAccount(projectQorperaAccount(data.session.user));
+				else this.storage.removeItem(ACCOUNT_PROJECTION_STORAGE_KEY);
+			})
+			.catch((error: unknown) => {
+				if (!isAuthRetryableFetchError(error)) this.storage.removeItem(ACCOUNT_PROJECTION_STORAGE_KEY);
+			})
+			.finally(() => {
+				this.refreshExpiredSessionInFlight = undefined;
+			});
 	}
 }

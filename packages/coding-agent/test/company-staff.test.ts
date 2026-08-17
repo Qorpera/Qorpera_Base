@@ -7,6 +7,7 @@ import {
 	createStaffAgent,
 	createStaffAgents,
 	readStaffAgents,
+	replaceStaffAgents,
 	restoreStaffAgent,
 	staffRegistryPath,
 	updateStaffAgent,
@@ -126,6 +127,26 @@ describe("company staff registry", () => {
 		expect(readStaffAgents(root)).toHaveLength(1);
 		expect(restoreStaffAgent(root, created.id).employmentStatus).toBe("active");
 		expect(readStaffAgents(root)).toMatchObject([{ id: created.id, employmentStatus: "active" }]);
+	});
+
+	it("replaces the local projection with validated stable cloud identities", () => {
+		const initial = createStaffAgent(root, {
+			displayName: "Local only",
+			role: "Temporary role",
+			charter: "This record will be replaced.",
+			appearance: { color: "gray", shape: "round" },
+		});
+		const cloud = {
+			...initial,
+			id: "11111111-1111-4111-8111-111111111111",
+			displayName: "Shared operator",
+			updatedAt: new Date(Date.parse(initial.updatedAt) + 1_000).toISOString(),
+		};
+
+		expect(replaceStaffAgents(root, [cloud])).toEqual([cloud]);
+		expect(readStaffAgents(root)).toEqual([cloud]);
+		expect(() => replaceStaffAgents(root, [cloud, cloud])).toThrow("Duplicate staff agent");
+		expect(readStaffAgents(root)).toEqual([cloud]);
 	});
 
 	it("rejects malformed registries instead of silently dropping records", () => {

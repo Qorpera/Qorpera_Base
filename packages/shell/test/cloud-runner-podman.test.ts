@@ -1,0 +1,253 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { JsonValue } from "@qorpera/pi-protocol";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+	NodePodmanCommandTransport,
+	type PodmanCommandLimits,
+	type PodmanCommandProcess,
+	type PodmanCommandResult,
+	type PodmanCommandTransport,
+	RootlessPodmanSandboxBackend,
+} from "../src/cloud-runner-podman.ts";
+import type { CloudRunnerSandboxRequest } from "../src/cloud-runner-sandbox.ts";
+
+const jobId = "77777777-7777-4777-8777-777777777777";
+const versionId = "66666666-6666-4666-8666-666666666666";
+const image = `registry.qorpera.test/runner@sha256:${"a".repeat(64)}`;
+const temporaryDirectories: string[] = [];
+
+function commandResult(stdout = "", exitCode = 0, stderr = ""): PodmanCommandResult {
+	return { exitCode, stdout, stderr };
+}
+
+function completed(result: PodmanCommandResult): PodmanCommandProcess {
+	return { completion: Promise.resolve(result), terminateClient: () => undefined };
+}
+
+class DeferredCommand implements PodmanCommandProcess {
+	readonly completion: Promise<PodmanCommandResult>;
+	#reject?: (error: Error) => void;
+	terminateCalls = 0;
+
+	constructor() {
+		this.completion = new Promise((_resolve, reject) => {
+			this.#reject = reject;
+		});
+	}
+
+	terminateClient(): void {
+		this.terminateCalls++;
+		this.#reject?.(new Error("Podman client terminated"));
+	}
+}
+
+interface CapturedCommand {
+	executable: string;
+	args: readonly string[];
+	input: string;
+	limits: PodmanCommandLimits;
+}
+
+class FakePodmanCommands implements PodmanCommandTransport {
+	readonly platform: NodeJS.Platform = "linux";
+	readonly calls: CapturedCommand[] = [];
+	readonly responses: PodmanCommandProcess[] = [];
+
+	start(
+		executable: string,
+		args: readonly string[],
+		input: string,
+		limits: PodmanCommandLimits,
+	): PodmanCommandProcess {
+		this.calls.push({ executable, args: [...args], input, limits: { ...limits } });
+		const response = this.responses.shift();
+		if (!response) throw new Error("Unexpected Podman command");
+		return response;
+	}
+}
+
+function runtimeInfo(rootless = true): string {
+	return JSON.stringify({
+		host: {
+			os: "linux",
+			serviceIsRemote: false,
+			cgroupVersion: "v2",
+			security: { rootless, seccompEnabled: true },
+		},
+		version: { Version: "5.6.1" },
+	});
+}
+
+async function sandboxRequest(): Promise<CloudRunnerSandboxRequest> {
+	const root = await mkdtemp(join(tmpdir(), "qorpera-podman-test-"));
+	temporaryDirectories.push(root);
+	const inputRoot = join(root, "input");
+	const companyRoot = join(inputRoot, "company");
+	const artifactsRoot = join(inputRoot, "artifacts");
+	const outputRoot = join(root, "output");
+	await mkdir(inputRoot, { recursive: true });
+	await Promise.all([
+		mkdir(companyRoot, { recursive: true }),
+		mkdir(artifactsRoot, { recursive: true }),
+		mkdir(outputRoot, { recursive: true }),
+		writeFile(join(inputRoot, "substrate.json"), "{}\n", "utf-8"),
+		writeFile(join(inputRoot, "operations.jsonl"), "", "utf-8"),
+	]);
+	return {
+		job: {
+			jobId,
+			jobType: "agent_turn",
+			requiredCapability: "agent_turn",
+			attemptCount: 1,
+			payload: { prompt: "private founder request" },
+		},
+		substrate: {
+			versionId,
+			contentSha256: "b".repeat(64),
+			operationSequence: 4,
+			operationCount: 4,
+			artifactCount: 2,
+		},
+		input: {
+			companyRoot,
+			substrateManifestPath: join(inputRoot, "substrate.json"),
+			operationsPath: join(inputRoot, "operations.jsonl"),
+			artifactsRoot,
+		},
+		outputRoot,
+		environment: { QORPERA_JOB_MODE: "ephemeral" },
+		limits: {
+			wallTimeMs: 60_000,
+			memoryBytes: 512 * 1024 * 1024,
+			cpuCount: 1.5,
+			maxPids: 64,
+			maxInputBytes: 1024 * 1024,
+			maxOutputBytes: 1024 * 1024,
+			maxResultBytes: 4096,
+		},
+	};
+}
+
+function backend(commands: PodmanCommandTransport): RootlessPodmanSandboxBackend {
+	return new RootlessPodmanSandboxBackend({
+		image,
+		capabilities: ["agent_turn"],
+		jobTypes: ["agent_turn"],
+		commandTransport: commands,
+	});
+}
+
+afterEach(async () => {
+	for (const directory of temporaryDirectories.splice(0)) await rm(directory, { recursive: true, force: true });
+});
+
+describe("rootless Podman cloud runner", () => {
+	it("starts a digest-pinned, networkless, resource-limited container and destroys it", async () => {
+		const request = await sandboxRequest();
+		const commands = new FakePodmanCommands();
+		commands.responses.push(
+			completed(commandResult(runtimeInfo())),
+			completed(commandResult('{"status":"ok"}\n')),
+			completed(commandResult()),
+		);
+		const processHandle = await backend(commands).start(request);
+
+		await expect(processHandle.result).resolves.toEqual({ status: "ok" });
+		expect(commands.calls).toHaveLength(3);
+		expect(commands.calls[0]?.args).toEqual(["info", "--format", "json"]);
+		const run = commands.calls[1] as CapturedCommand;
+		expect(run.executable).toBe("/usr/bin/podman");
+		expect(run.args).toEqual(
+			expect.arrayContaining([
+				"run",
+				"--pull=never",
+				"--network=none",
+				"--read-only",
+				"--read-only-tmpfs=false",
+				"--image-volume=ignore",
+				"--cap-drop=all",
+				"--security-opt=no-new-privileges",
+				"--userns=keep-id:size=1024",
+				"--unsetenv-all",
+				"--log-driver=none",
+				"QORPERA_JOB_MODE=ephemeral",
+				image,
+			]),
+		);
+		expect(run.args.join(" ")).not.toContain("private founder request");
+		expect(JSON.parse(run.input) as JsonValue).toMatchObject({
+			schema: "qorpera.ephemeral-container-request/v1",
+			job: { jobId, payload: { prompt: "private founder request" } },
+			paths: { companyRoot: "/qorpera/input/company", outputRoot: "/qorpera/output" },
+		});
+		expect(run.limits).toEqual({ stdoutBytes: 4097, stderrBytes: 16 * 1024, timeoutMs: 90_000 });
+		expect(commands.calls[2]?.args).toEqual([
+			"rm",
+			"--force",
+			"--time=0",
+			"--ignore",
+			expect.stringMatching(/^qorpera-job-[0-9a-f-]{36}$/),
+		]);
+	});
+
+	it("force-removes the container before cancellation completes", async () => {
+		const request = await sandboxRequest();
+		const commands = new FakePodmanCommands();
+		const running = new DeferredCommand();
+		commands.responses.push(completed(commandResult(runtimeInfo())), running, completed(commandResult()));
+		const processHandle = await backend(commands).start(request);
+
+		await expect(processHandle.terminate("cancelled")).resolves.toBeUndefined();
+		expect(running.terminateCalls).toBe(1);
+		expect(commands.calls[2]?.args.slice(0, 4)).toEqual(["rm", "--force", "--time=0", "--ignore"]);
+		await expect(processHandle.result).rejects.toThrow("Podman client terminated");
+	});
+
+	it("refuses a rootful or remote-incompatible runtime before creating a container", async () => {
+		const request = await sandboxRequest();
+		const commands = new FakePodmanCommands();
+		commands.responses.push(completed(commandResult(runtimeInfo(false))));
+
+		await expect(backend(commands).start(request)).rejects.toThrow("rootless isolation baseline");
+		expect(commands.calls).toHaveLength(1);
+	});
+
+	it("refuses mutable image references", () => {
+		const commands = new FakePodmanCommands();
+		expect(
+			() =>
+				new RootlessPodmanSandboxBackend({
+					image: "registry.qorpera.test/runner:latest",
+					capabilities: ["agent_turn"],
+					jobTypes: ["agent_turn"],
+					commandTransport: commands,
+				}),
+		).toThrow("pinned by SHA-256 digest");
+	});
+
+	it("bounds subprocess output before it can exhaust the worker", async () => {
+		const environment: NodeJS.ProcessEnv = {};
+		if (process.env.SystemRoot) environment.SystemRoot = process.env.SystemRoot;
+		const commands = new NodePodmanCommandTransport(environment);
+		const processHandle = commands.start(process.execPath, ["-e", "process.stdout.write('12345')"], "", {
+			stdoutBytes: 4,
+			stderrBytes: 1024,
+			timeoutMs: 1000,
+		});
+		await expect(processHandle.completion).rejects.toThrow("stdout exceeded its byte limit");
+	});
+
+	it("bounds a stuck host command independently of the container deadline", async () => {
+		const environment: NodeJS.ProcessEnv = {};
+		if (process.env.SystemRoot) environment.SystemRoot = process.env.SystemRoot;
+		const commands = new NodePodmanCommandTransport(environment);
+		const processHandle = commands.start(process.execPath, ["-e", "setInterval(() => {}, 1000)"], "", {
+			stdoutBytes: 1024,
+			stderrBytes: 1024,
+			timeoutMs: 20,
+		});
+		await expect(processHandle.completion).rejects.toThrow("wall-time limit");
+	});
+});

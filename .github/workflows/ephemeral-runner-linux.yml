@@ -1,0 +1,53 @@
+name: Ephemeral runner Linux boundary
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/ephemeral-runner-linux.yml'
+      - 'deploy/ephemeral-runner/**'
+      - 'packages/shell/src/cloud-runner-*.ts'
+      - 'packages/shell/test/cloud-runner-*.test.ts'
+      - 'scripts/package-ephemeral-runner.mjs'
+      - 'scripts/package-ephemeral-runner.test.mjs'
+      - 'scripts/test-ephemeral-runner-linux.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ephemeral-runner-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  containment:
+    name: Rootless Podman containment
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Inspect rootless runtime
+        run: |
+          set -euo pipefail
+          podman --version
+          podman info --format 'os={{.Host.OS}} rootless={{.Host.Security.Rootless}} cgroups={{.Host.CgroupVersion}} seccomp={{.Host.Security.SeccompEnabled}} remote={{.Host.ServiceIsRemote}}'
+
+      - name: Run real containment test
+        env:
+          QORPERA_LINUX_BASE_IMAGE: docker.io/library/node@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
+        run: sh scripts/test-ephemeral-runner-linux.sh
+
+      - name: Report retained containers
+        if: always()
+        run: podman ps --all --filter name=qorpera-job-

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/local/bin/node /qorpera/lib/qorpera-sandbox-probe.mjs

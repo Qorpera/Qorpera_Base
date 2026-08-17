@@ -544,6 +544,15 @@ function processInstanceIdentity(pid: number): string | undefined {
 			return undefined;
 		}
 	}
+	if (process.platform === "darwin") {
+		const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+			encoding: "utf-8",
+			shell: false,
+			timeout: 5_000,
+		});
+		const startedAt = result.status === 0 ? result.stdout.trim().replace(/\s+/g, " ") : "";
+		return startedAt ? `darwin:${createHash("sha256").update(startedAt).digest("hex")}` : undefined;
+	}
 	return undefined;
 }
 
@@ -613,7 +622,7 @@ function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): C
 				!Number.isSafeInteger(owner.pid) ||
 				owner.pid! <= 0 ||
 				typeof owner.processInstance !== "string" ||
-				!/^(?:windows|linux):\d+$/.test(owner.processInstance) ||
+				!/^(?:windows:\d+|linux:\d+|darwin:[0-9a-f]{64})$/.test(owner.processInstance) ||
 				typeof owner.token !== "string" ||
 				!/^[0-9a-f-]{36}$/i.test(owner.token) ||
 				(owner.mode !== "runtime" && owner.mode !== "product-registration") ||
