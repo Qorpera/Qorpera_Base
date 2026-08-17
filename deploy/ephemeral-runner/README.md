@@ -15,7 +15,7 @@ Use a disposable Linux VM before the NAS. The host must provide:
 - A dedicated `qorpera-runner` account with subordinate UID/GID ranges and lingering enabled.
 - Cosign and registry authentication only on the image build/signing machine.
 
-Podman documents that rootless systemd workloads belong in the user unit search path and that Quadlet/rootless operation requires cgroups v2. The worker follows the same dedicated-user model even though the long-running service is Node and it launches one disposable Podman container per job.
+Podman documents that rootless systemd workloads belong in the user unit search path and that Quadlet/rootless operation requires cgroups v2. The worker follows the same dedicated-user model even though the long-running service is Node and it launches one disposable Podman container per job. The worker unit does not set systemd's `NoNewPrivileges=` because rootless Podman must establish a user namespace with the account's subordinate UID/GID mappings. Every untrusted job container independently applies Podman's `no-new-privileges` security option in addition to dropping all capabilities.
 
 ## Headless Linux containment test
 

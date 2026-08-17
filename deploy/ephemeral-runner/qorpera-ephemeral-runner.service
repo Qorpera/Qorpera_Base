@@ -16,7 +16,6 @@ TimeoutStopSec=45s
 KillSignal=SIGTERM
 UMask=0077
 Delegate=yes
-NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ReadWritePaths=%h %t
