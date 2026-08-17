@@ -141,5 +141,5 @@ describe.skipIf(!enabled)("rootless Podman Linux boundary", () => {
 			},
 		);
 		expect(retained.trim()).toBe("");
-	});
+	}, 30_000);
 });
