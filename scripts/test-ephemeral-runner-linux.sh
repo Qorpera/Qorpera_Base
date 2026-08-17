@@ -52,9 +52,11 @@ if command -v shellcheck >/dev/null; then
 fi
 if command -v systemd-analyze >/dev/null; then
 	unit_copy=$(mktemp --suffix=.service)
+	node_path=$(command -v node)
 	trap 'rm -f -- "$unit_copy"' EXIT HUP INT TERM
 	sed \
-		"s|/opt/qorpera-runner/qorpera-ephemeral-runner.mjs|$repository_root/.artifacts/ephemeral-runner/qorpera-ephemeral-runner.mjs|" \
+		-e "s|/usr/bin/node|$node_path|" \
+		-e "s|/opt/qorpera-runner/qorpera-ephemeral-runner.mjs|$repository_root/.artifacts/ephemeral-runner/qorpera-ephemeral-runner.mjs|" \
 		deploy/ephemeral-runner/qorpera-ephemeral-runner.service > "$unit_copy"
 	systemd-analyze --user verify "$unit_copy"
 fi
