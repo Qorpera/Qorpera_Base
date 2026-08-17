@@ -86,6 +86,11 @@ if command -v systemd-analyze >/dev/null; then
 			-e 's/^Restart=on-failure$/Restart=no/' \
 			-e '/^Environment=/d' \
 			-e '/^LoadCredential=/d' \
+			-e '/^ProtectKernelTunables=/d' \
+			-e '/^ProtectKernelModules=/d' \
+			-e '/^ProtectHostname=/d' \
+			-e '/^ProtectClock=/d' \
+			-e '/^RestrictRealtime=/d' \
 			-e "s|^ExecStart=.*|Environment=QORPERA_SYSTEMD_PROBE_PODMAN=$podman_path\\nEnvironment=QORPERA_SYSTEMD_PROBE_IMAGE=$immutable_image\\nEnvironment=QORPERA_SYSTEMD_PROBE_HOME=$home_marker\\nEnvironment=QORPERA_SYSTEMD_PROBE_RUNTIME=$runtime_marker\\nExecStart=/bin/sh $repository_root/deploy/ephemeral-runner/systemd-boundary-probe.sh|" \
 			deploy/ephemeral-runner/qorpera-ephemeral-runner.service > "$unit_copy"
 		systemctl --user link "$unit_copy"
