@@ -25,8 +25,8 @@ command -v node >/dev/null
 command -v podman >/dev/null
 command -v cosign >/dev/null
 
-script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repository_root=$(CDPATH= cd -- "$script_directory/../.." && pwd)
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repository_root=$(CDPATH='' cd -- "$script_directory/../.." && pwd)
 artifact_directory="$repository_root/.artifacts/ephemeral-runner"
 digest_file=$(mktemp)
 trap 'rm -f -- "$digest_file"' EXIT HUP INT TERM

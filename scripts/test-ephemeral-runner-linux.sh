@@ -9,8 +9,8 @@ command -v node >/dev/null
 command -v npm >/dev/null
 command -v podman >/dev/null
 
-script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repository_root=$(CDPATH= cd -- "$script_directory/.." && pwd)
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 base_image=${QORPERA_LINUX_BASE_IMAGE:-docker.io/library/node@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d}
 local_image=${QORPERA_LINUX_LOCAL_IMAGE:-localhost/qorpera/sandbox-probe:linux-test}
 case "$base_image" in *@sha256:*) ;; *) echo "Linux test base image must be digest-pinned" >&2; exit 2 ;; esac
