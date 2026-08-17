@@ -2,30 +2,27 @@ import type { StaffTemplateId } from "./staff-templates.ts";
 
 export const STAFF_CHARACTER_IDS = Object.freeze([
 	"pebble",
-	"kite",
-	"ollie",
+	"lantern",
+	"brain",
 	"wisp",
-	"palette",
-	"sable",
-	"bramble",
-	"nox",
-	"mallow",
-	"echo",
+	"halo",
+	"ribbon",
+	"bloom",
 ] as const);
 
 export type StaffCharacterId = (typeof STAFF_CHARACTER_IDS)[number];
 
 export const STAFF_CHARACTER_BY_TEMPLATE = Object.freeze({
 	"financial-officer": "pebble",
-	"marketing-lead": "kite",
-	"product-manager": "ollie",
+	"marketing-lead": "bloom",
+	"product-manager": "lantern",
 	"software-developer": "wisp",
-	"product-designer": "palette",
-	"legal-expert": "sable",
-	"operations-specialist": "bramble",
-	"research-lead": "nox",
-	"costumer-relationist": "mallow",
-	"outreaching-conversationalist": "echo",
+	"product-designer": "ribbon",
+	"legal-expert": "halo",
+	"operations-specialist": "lantern",
+	"research-lead": "brain",
+	"costumer-relationist": "bloom",
+	"outreaching-conversationalist": "ribbon",
 } satisfies Readonly<Record<StaffTemplateId, StaffCharacterId>>);
 
 const STAFF_CHARACTER_ID_SET = new Set<string>(STAFF_CHARACTER_IDS);

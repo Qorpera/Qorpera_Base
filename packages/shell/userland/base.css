@@ -2950,11 +2950,14 @@ body.hub .profile-card .profile-avatar { width: 72px; height: 72px; }
 	backface-visibility: hidden;
 }
 .staff-avatar { isolation: isolate; }
+html[data-staff-avatar-style="creatures"] .staff-avatar {
+	border-color: #faf8f3;
+	background: #faf8f3;
+}
 .staff-avatar > .staff-face { display: block; }
 .staff-avatar > .staff-creature-image { display: none; }
 html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face { display: none; }
 html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-creature-image { display: block; }
-.staff-creature-video { object-fit: contain; }
 
 /* The figures are larger than the previous face tokens, while remaining
  * subordinate to names, status, and task content. */
@@ -3042,7 +3045,7 @@ html[data-staff-avatar-style="simple"] .hidden-staff-row .staff-avatar { width: 
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.staff-creature-video, .settings-toggle::after { transition: none !important; }
+	.settings-toggle::after { transition: none !important; }
 }
 
 @media (forced-colors: active) {
