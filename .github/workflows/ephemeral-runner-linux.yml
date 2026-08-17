@@ -41,7 +41,9 @@ jobs:
         run: |
           set -euo pipefail
           podman --version
-          podman info --format 'os={{.Host.OS}} rootless={{.Host.Security.Rootless}} cgroups={{.Host.CgroupVersion}} seccomp={{.Host.Security.SeccompEnabled}} remote={{.Host.ServiceIsRemote}}'
+          runtime_info="$(podman info --format json)"
+          jq -c '{os: .host.os, rootless: .host.security.rootless, cgroups: (.host.cgroupsVersion // .host.cgroupVersion), seccomp: .host.security.seccompEnabled, remote: .host.serviceIsRemote}' <<<"$runtime_info"
+          jq -e '.host.os == "linux" and .host.security.rootless == true' <<<"$runtime_info" >/dev/null
 
       - name: Run real containment test
         env:
