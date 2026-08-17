@@ -173,6 +173,9 @@ function closeServer(server: Server): Promise<void> {
 export async function startCloudRunnerModelSocketServer(
 	options: StartCloudRunnerModelSocketServerOptions,
 ): Promise<CloudRunnerModelSocketServer> {
+	if (isWindowsPipe(options.socketPath)) {
+		throw new Error("Windows named pipes are not an accepted runner model boundary");
+	}
 	const maxRequests = options.maxRequests ?? DEFAULT_MAX_REQUESTS;
 	const maxConnections = options.maxConnections ?? DEFAULT_MAX_CONNECTIONS;
 	if (!Number.isSafeInteger(maxRequests) || maxRequests < 1 || maxRequests > DEFAULT_MAX_REQUESTS) {
@@ -181,10 +184,10 @@ export async function startCloudRunnerModelSocketServer(
 	if (!Number.isSafeInteger(maxConnections) || maxConnections < 1 || maxConnections > 16) {
 		throw new Error("Runner model socket contains an invalid connection limit");
 	}
-	if (/\0|\r|\n/.test(options.socketPath) || (!isWindowsPipe(options.socketPath) && !isAbsolute(options.socketPath))) {
+	if (/\0|\r|\n/.test(options.socketPath) || !isAbsolute(options.socketPath)) {
 		throw new Error("Runner model socket path is invalid");
 	}
-	if (!isWindowsPipe(options.socketPath) && Buffer.byteLength(options.socketPath) > 100) {
+	if (Buffer.byteLength(options.socketPath) > 100) {
 		throw new Error("Runner model socket path exceeds the portable Unix socket limit");
 	}
 
@@ -265,16 +268,16 @@ export async function startCloudRunnerModelSocketServer(
 	});
 	server.on("error", () => undefined);
 
-	if (!isWindowsPipe(options.socketPath)) await assertSocketPathAvailable(options.socketPath);
+	await assertSocketPathAvailable(options.socketPath);
 	let listening = false;
 	try {
 		await listen(server, options.socketPath);
 		listening = true;
-		if (!isWindowsPipe(options.socketPath)) await chmod(options.socketPath, 0o600);
+		await chmod(options.socketPath, 0o600);
 	} catch (error) {
 		for (const socket of sockets) socket.destroy();
 		await closeServer(server).catch(() => undefined);
-		if (listening && !isWindowsPipe(options.socketPath)) await rm(options.socketPath, { force: true });
+		if (listening) await rm(options.socketPath, { force: true });
 		throw error;
 	}
 
@@ -288,7 +291,7 @@ export async function startCloudRunnerModelSocketServer(
 				await closeServer(server).catch((error: unknown) => {
 					if ((error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") throw error;
 				});
-				if (!isWindowsPipe(options.socketPath)) await rm(options.socketPath, { force: true });
+				await rm(options.socketPath, { force: true });
 			})();
 			return closePromise;
 		},
@@ -300,6 +303,9 @@ export async function requestCloudRunnerModelSocket(
 	input: CloudRunnerModelRequest,
 	timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 ): Promise<CloudRunnerModelResponse> {
+	if (isWindowsPipe(socketPath)) {
+		throw new Error("Windows named pipes are not an accepted runner model boundary");
+	}
 	const request = validateCloudRunnerModelRequest(input);
 	if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) {
 		throw new Error("Runner model socket contains an invalid timeout");

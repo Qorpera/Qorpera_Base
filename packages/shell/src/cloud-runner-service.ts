@@ -336,6 +336,7 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 		jobTypes: config.jobTypes,
 		podmanPath: config.podmanPath,
 		entrypoint: config.entrypoint,
+		temporaryRoot: config.temporaryRoot,
 	});
 	const worker = new EphemeralCloudRunnerWorker({
 		runner,

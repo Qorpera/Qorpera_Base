@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonValue } from "@qorpera/pi-protocol";
@@ -24,11 +24,18 @@ function commandResult(stdout = "", exitCode = 0, stderr = ""): PodmanCommandRes
 }
 
 function completed(result: PodmanCommandResult): PodmanCommandProcess {
-	return { completion: Promise.resolve(result), terminateClient: () => undefined };
+	const newline = result.stdout.indexOf("\n");
+	return {
+		completion: Promise.resolve(result),
+		firstStdoutLine:
+			newline < 0 ? new Promise<string>(() => undefined) : Promise.resolve(result.stdout.slice(0, newline)),
+		terminateClient: () => undefined,
+	};
 }
 
 class DeferredCommand implements PodmanCommandProcess {
 	readonly completion: Promise<PodmanCommandResult>;
+	readonly firstStdoutLine = new Promise<string>(() => undefined);
 	#reject?: (error: Error) => void;
 	terminateCalls = 0;
 
@@ -134,6 +141,7 @@ async function sandboxRequest(): Promise<CloudRunnerSandboxRequest> {
 function backend(
 	commands: PodmanCommandTransport,
 	modelSocketFactory?: CloudRunnerModelSocketFactory,
+	temporaryRoot?: string,
 ): RootlessPodmanSandboxBackend {
 	return new RootlessPodmanSandboxBackend({
 		image,
@@ -141,6 +149,7 @@ function backend(
 		jobTypes: ["agent_turn"],
 		commandTransport: commands,
 		...(modelSocketFactory ? { modelSocketFactory } : {}),
+		...(temporaryRoot ? { temporaryRoot } : {}),
 	});
 }
 
@@ -154,19 +163,32 @@ describe("rootless Podman cloud runner", () => {
 		const commands = new FakePodmanCommands();
 		commands.responses.push(
 			completed(commandResult(runtimeInfo())),
+			completed(commandResult()),
 			completed(commandResult('{"status":"ok"}\n')),
+			completed(commandResult("true\n")),
+			completed(commandResult()),
 			completed(commandResult()),
 		);
 		const processHandle = await backend(commands).start(request);
 
 		await expect(processHandle.result).resolves.toEqual({ status: "ok" });
-		expect(commands.calls).toHaveLength(3);
+		expect(commands.calls).toHaveLength(6);
 		expect(commands.calls[0]?.args).toEqual(["info", "--format", "json"]);
-		const run = commands.calls[1] as CapturedCommand;
+		expect(commands.calls[1]?.args).toEqual([
+			"ps",
+			"--all",
+			"--filter",
+			"name=^qorpera-job-",
+			"--format",
+			"{{.Names}}",
+		]);
+		const run = commands.calls[2] as CapturedCommand;
 		expect(run.executable).toBe("/usr/bin/podman");
 		expect(run.args).toEqual(
 			expect.arrayContaining([
 				"run",
+				"--label",
+				"io.qorpera.ephemeral-runner=true",
 				"--pull=never",
 				"--network=none",
 				"--read-only",
@@ -177,10 +199,17 @@ describe("rootless Podman cloud runner", () => {
 				"--userns=keep-id:size=1024",
 				"--unsetenv-all",
 				"--log-driver=none",
+				"--timeout",
+				"60",
 				"QORPERA_JOB_MODE=ephemeral",
 				image,
 			]),
 		);
+		expect(run.args).not.toContain("--rm");
+		expect(run.args).toContain(
+			"type=tmpfs,destination=/qorpera/output,tmpfs-size=2097152,tmpfs-mode=0700,notmpcopyup",
+		);
+		expect(run.args.join(" ")).not.toContain(`src=${request.outputRoot},dst=/qorpera/output`);
 		expect(run.args.join(" ")).not.toContain("private founder request");
 		expect(JSON.parse(run.input) as JsonValue).toMatchObject({
 			schema: "qorpera.ephemeral-container-request/v1",
@@ -188,7 +217,19 @@ describe("rootless Podman cloud runner", () => {
 			paths: { companyRoot: "/qorpera/input/company", outputRoot: "/qorpera/output" },
 		});
 		expect(run.limits).toEqual({ stdoutBytes: 4097, stderrBytes: 16 * 1024, timeoutMs: 90_000 });
-		expect(commands.calls[2]?.args).toEqual([
+		expect(commands.calls[3]?.args).toEqual([
+			"inspect",
+			"--format",
+			"{{.State.Running}}",
+			expect.stringMatching(/^qorpera-job-[0-9a-f-]{36}$/),
+		]);
+		expect(commands.calls[4]?.args).toEqual([
+			"cp",
+			"--archive=false",
+			expect.stringMatching(/^qorpera-job-[0-9a-f-]{36}:\/qorpera\/output\/\.$/),
+			request.outputRoot,
+		]);
+		expect(commands.calls[5]?.args).toEqual([
 			"rm",
 			"--force",
 			"--time=0",
@@ -201,12 +242,17 @@ describe("rootless Podman cloud runner", () => {
 		const request = await sandboxRequest();
 		const commands = new FakePodmanCommands();
 		const running = new DeferredCommand();
-		commands.responses.push(completed(commandResult(runtimeInfo())), running, completed(commandResult()));
+		commands.responses.push(
+			completed(commandResult(runtimeInfo())),
+			completed(commandResult()),
+			running,
+			completed(commandResult()),
+		);
 		const processHandle = await backend(commands).start(request);
 
 		await expect(processHandle.terminate("cancelled")).resolves.toBeUndefined();
 		expect(running.terminateCalls).toBe(1);
-		expect(commands.calls[2]?.args.slice(0, 4)).toEqual(["rm", "--force", "--time=0", "--ignore"]);
+		expect(commands.calls[3]?.args.slice(0, 4)).toEqual(["rm", "--force", "--time=0", "--ignore"]);
 		await expect(processHandle.result).rejects.toThrow("Podman client terminated");
 	});
 
@@ -223,7 +269,10 @@ describe("rootless Podman cloud runner", () => {
 		const commands = new FakePodmanCommands();
 		commands.responses.push(
 			completed(commandResult(runtimeInfo())),
+			completed(commandResult()),
 			completed(commandResult('{"status":"ok"}\n')),
+			completed(commandResult("true\n")),
+			completed(commandResult()),
 			completed(commandResult()),
 		);
 		const close = vi.fn(async () => undefined);
@@ -239,13 +288,34 @@ describe("rootless Podman cloud runner", () => {
 			socketPath: join(brokerRoot, "model.sock"),
 			broker: modelBroker,
 		});
-		const run = commands.calls[1] as CapturedCommand;
+		const run = commands.calls[2] as CapturedCommand;
 		expect(run.args).toContain(
 			`type=bind,src=${brokerRoot},dst=/qorpera/broker,ro=true,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
 		);
 		expect(JSON.parse(run.input)).toMatchObject({ paths: { modelBrokerSocket: "/qorpera/broker/model.sock" } });
 		expect(run.input).not.toContain("credential");
 		expect(close).toHaveBeenCalledOnce();
+	});
+
+	it("removes only owned stale containers and workspaces during startup", async () => {
+		const temporaryRoot = await mkdtemp(join(tmpdir(), "qorpera-podman-cleanup-test-"));
+		temporaryDirectories.push(temporaryRoot);
+		const staleWorkspace = join(temporaryRoot, "qorpera-runner-AbC123");
+		const unrelatedWorkspace = join(temporaryRoot, "keep-me");
+		await Promise.all([mkdir(staleWorkspace), mkdir(unrelatedWorkspace)]);
+		const staleContainer = "qorpera-job-11111111-1111-4111-8111-111111111111";
+		const commands = new FakePodmanCommands();
+		commands.responses.push(
+			completed(commandResult(runtimeInfo())),
+			completed(commandResult(`${staleContainer}\n`)),
+			completed(commandResult()),
+		);
+
+		await backend(commands, undefined, temporaryRoot).prepare();
+
+		expect(commands.calls[2]?.args).toEqual(["rm", "--force", "--time=0", staleContainer]);
+		await expect(stat(staleWorkspace)).rejects.toMatchObject({ code: "ENOENT" });
+		expect((await stat(unrelatedWorkspace)).isDirectory()).toBe(true);
 	});
 
 	it("refuses a rootful or remote-incompatible runtime before creating a container", async () => {
@@ -270,6 +340,15 @@ describe("rootless Podman cloud runner", () => {
 		).toThrow("pinned by SHA-256 digest");
 	});
 
+	it("rejects invalid resource ranges before invoking Podman", async () => {
+		const valid = await sandboxRequest();
+		const request = { ...valid, limits: { ...valid.limits, maxOutputBytes: -1 } };
+		const commands = new FakePodmanCommands();
+
+		await expect(backend(commands).start(request)).rejects.toThrow("sandbox request is invalid");
+		expect(commands.calls).toHaveLength(0);
+	});
+
 	it("bounds subprocess output before it can exhaust the worker", async () => {
 		const environment: NodeJS.ProcessEnv = {};
 		if (process.env.SystemRoot) environment.SystemRoot = process.env.SystemRoot;
@@ -292,5 +371,20 @@ describe("rootless Podman cloud runner", () => {
 			timeoutMs: 20,
 		});
 		await expect(processHandle.completion).rejects.toThrow("wall-time limit");
+	});
+
+	it("exposes the first result line while the container process remains alive", async () => {
+		const environment: NodeJS.ProcessEnv = {};
+		if (process.env.SystemRoot) environment.SystemRoot = process.env.SystemRoot;
+		const commands = new NodePodmanCommandTransport(environment);
+		const processHandle = commands.start(
+			process.execPath,
+			["-e", 'process.stdout.write(\'{\\"status\\":\\"ok\\"}\\n\'); setInterval(() => {}, 1000)'],
+			"",
+			{ stdoutBytes: 1024, stderrBytes: 1024, timeoutMs: 1000 },
+		);
+		await expect(processHandle.firstStdoutLine).resolves.toBe('{"status":"ok"}');
+		processHandle.terminateClient();
+		await processHandle.completion.catch(() => undefined);
 	});
 });

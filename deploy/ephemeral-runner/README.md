@@ -4,7 +4,7 @@ This package runs one single-lane Qorpera worker as a dedicated systemd user. Ea
 
 ## What can be tested on Windows
 
-`npm run pack:ephemeral-runner` bundles the service and container entrypoints. The focused tests exercise strict configuration, one-time credential handoff, durable authority restoration, cooperative shutdown, bounded container input, immutable substrate verification, and private output generation. They do not prove Linux namespaces, cgroups, seccomp, systemd, or rootless Podman.
+`npm run pack:ephemeral-runner` bundles the service and container entrypoints. The focused tests exercise strict configuration, one-time credential handoff, durable authority restoration, cooperative shutdown, bounded container input, immutable substrate verification, private output generation, and rejection of Windows named pipes as a model boundary. Unix-domain model sockets and the production sandbox remain Linux-only. These Windows tests do not prove Linux namespaces, cgroups, seccomp, systemd, or rootless Podman.
 
 ## Linux host baseline
 
@@ -19,7 +19,7 @@ Podman documents that rootless systemd workloads belong in the user unit search 
 
 ## Headless Linux containment test
 
-No GUI or Computer Use automation is required. `sh scripts/test-ephemeral-runner-linux.sh` packages the two executables, pulls a digest-pinned Node base, builds the local probe image, runs the real `RootlessPodmanSandboxBackend`, and verifies read-only input, read-only image root, network isolation, cgroup CPU/memory/PID limits, private output, and container destruction. It also statically verifies the systemd unit when `systemd-analyze` is available.
+No GUI or Computer Use automation is required. `sh scripts/test-ephemeral-runner-linux.sh` packages the two executables, pulls a digest-pinned Node base, builds the local probe image, runs the real `RootlessPodmanSandboxBackend`, and verifies read-only input, read-only image root, network isolation, cgroup CPU/memory/PID limits, bounded tmpfs output extraction, and container destruction. It statically verifies the systemd unit and, when a user manager is available, executes a derived one-shot unit with the production hardening directives to start a rootless container and prove writes under both `%h` and `%t`. CI starts the user manager when necessary; an ordinary host without one reports the runtime probe as skipped.
 
 `.github/workflows/ephemeral-runner-linux.yml` runs the same harness on the pinned `ubuntu-26.04` GitHub-hosted runner. That image currently supplies Podman 5 and cgroups v2; the harness still performs the runtime preflight and fails closed if the hosted image changes. A hosted workflow run proves the per-job container boundary, but not service-account lingering or recovery across a real host reboot.
 

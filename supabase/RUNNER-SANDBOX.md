@@ -22,7 +22,7 @@ job root
     `-- model.sock           optional host-owned, job-private model adapter
 ```
 
-The host verifies every company manifest, file manifest, chunk, artifact hash, operation count, artifact ordinal, and declared byte total. Input and output budgets are checked before a completion result can be returned. Inputs are mounted read-only by the containment backend; `output/` is mounted as a job-private writable volume.
+The host verifies every company manifest, file manifest, chunk, artifact hash, operation count, artifact ordinal, and declared byte total. Input and output budgets are checked before a completion result can be returned. Inputs are mounted read-only by the containment backend; `output/` is a size-bounded job-private tmpfs whose contents are copied to the host only while the container boundary is still alive.
 
 The sandbox receives a copied job payload, non-secret identifiers, an explicit environment allowlist, resource limits, and those mounts. It does not receive:
 
@@ -44,7 +44,7 @@ A backend is eligible for untrusted work only when it declares and implements al
 - Deny-by-default network policy.
 - Explicit environment allowlist.
 - Unprivileged process with no host runtime socket.
-- Kernel-enforced CPU, memory, process-count, and wall-time limits.
+- Kernel-enforced CPU, memory, process-count, output-filesystem, and wall-time limits.
 - Cancellation completes only after the container or VM has been destroyed.
 
 The runner refuses weaker backends. The in-process backend used by tests requires a separate `allowTestBackend` flag and cannot be selected accidentally by normal execution.
@@ -58,20 +58,20 @@ Every job receives:
 - A new random container identity and `--pull=never` image resolution.
 - `--network=none`, an empty inherited container environment, and disabled proxy propagation.
 - A read-only image root with automatic image volumes disabled.
-- One non-recursive, read-only input bind and one non-recursive, job-private output bind.
-- When the job has model authority, one non-recursive, read-only broker-directory bind containing only `/qorpera/broker/model.sock`. The socket is mode `0600`, accepts at most four simultaneous connections and 128 single-frame requests, and closes with the container boundary.
+- One non-recursive, read-only input bind and one empty, size-bounded tmpfs output mount. The host output directory is never mounted into the sandbox.
+- When the job has model authority, one non-recursive, read-only broker-directory bind containing only `/qorpera/broker/model.sock`. The Linux Unix-domain socket is mode `0600`, accepts at most four simultaneous connections and 128 single-frame requests, and closes with the container boundary. Windows named pipes are rejected because this implementation does not establish an equivalent ACL boundary.
 - A rootless `keep-id` user namespace, all capabilities removed, `no-new-privileges`, private IPC/PID/cgroup/UTS namespaces, and seccomp verified on the host.
-- Kernel CPU, memory, swap, process-count, and wall-time bounds.
-- Bounded stdout and stderr collection. The job request travels through stdin rather than the process list, and stdout must be one JSON object.
-- `podman rm --force --time=0 --ignore` after success, failure, cancellation, or deadline expiry. Completion does not return until container destruction is confirmed.
+- Kernel CPU, memory, swap, process-count, output-tmpfs, and conmon wall-time bounds.
+- Bounded stdout and stderr collection. The job request travels through stdin rather than the process list, and the first stdout line must be one JSON object.
+- `podman rm --force --time=0 --ignore` after success, failure, cancellation, or deadline expiry. Completion does not return until container destruction is confirmed. Startup also removes only exact `qorpera-job-<uuid>` containers and exact private workspace names left by an interrupted worker.
 
-The pinned image contract exposes `/qorpera/bin/run-job`. It reads one `qorpera.ephemeral-container-request/v1` object from stdin, reads immutable inputs under `/qorpera/input`, writes durable candidates only under `/qorpera/output`, and emits one bounded JSON result on stdout. The first bundled image implements only `sandbox_probe`: it verifies that the exact substrate manifest is mounted and can issue one fake model request through the socket while direct networking remains disabled. It is an acceptance-test workload, not an agent runtime. The image and entrypoint do not receive runner, Storage, account, gateway, or model-provider credentials.
+The pinned image contract exposes `/qorpera/bin/run-job`. It reads one `qorpera.ephemeral-container-request/v1` object from stdin, reads immutable inputs under `/qorpera/input`, writes durable candidates only under `/qorpera/output`, emits one bounded JSON result on stdout, and remains alive without further work until the trusted host copies output and destroys it. The host fails closed unless the container is still running before extraction. The first bundled image implements only `sandbox_probe`: it verifies that the exact substrate manifest is mounted and can issue one fake model request through the socket while direct networking remains disabled. It is an acceptance-test workload, not an agent runtime. The image and entrypoint do not receive runner, Storage, account, gateway, or model-provider credentials.
 
 The socket protocol is newline-delimited `qorpera.runner-model-socket-request/v1` JSON with a 300 KiB request ceiling and 600 KiB response ceiling. It accepts only a request UUID, provider, model, JSON input, and output-token limit. The trusted worker passes the validated request to the current leased `CloudRunnerJobBroker`; generic failures cross back to the sandbox, while host and provider error details remain outside. The adapter cannot forward URLs or invoke arbitrary host functions.
 
 `EphemeralCloudRunnerWorker` connects this backend to runner control and the job-scoped broker. It performs containment preflight before claiming, recovers one retained lease after restart, renews the lease and runner session serially while a container runs, publishes verified output, stages the completion result in the private authority store, and completes the job atomically. A staged completion always takes precedence over starting another container.
 
-Output is scanned after containment stops. Links, aliases, special files, path escapes, excessive file counts, and excessive bytes are rejected. The host-side publisher rereads and rehashes each scanned file, uploads it through the current job lease, and registers a deterministic immutable artifact before the disposable directory is removed. The sandbox never performs that upload itself. The first broker contract accepts direct files up to 8 MiB; larger outputs require the later chunked-output extension.
+Output is copied from the live bounded tmpfs, the container is destroyed, and only then is the extracted host directory scanned. Links, aliases, special files, path escapes, excessive file counts, and excessive bytes are rejected. The host-side publisher rereads and rehashes each scanned file, uploads it through the current job lease, and registers a deterministic immutable artifact before the disposable directory is removed. The sandbox never performs that upload itself. The first broker contract accepts direct files up to 8 MiB; larger outputs require the later chunked-output extension.
 
 ## Production placement
 

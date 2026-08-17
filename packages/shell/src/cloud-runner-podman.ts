@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, realpath, stat } from "node:fs/promises";
+import { lstat, readdir, realpath, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import type { JsonValue } from "@qorpera/pi-protocol";
 import type { CloudRunnerCapability } from "./cloud-runner-control.ts";
@@ -27,6 +27,10 @@ const CONTAINER_PATHS = Object.freeze({
 const MAX_COMMAND_STDERR_BYTES = 16 * 1024;
 const MAX_CONTAINER_REQUEST_BYTES = 128 * 1024;
 const MAX_PODMAN_INFO_BYTES = 256 * 1024;
+const OUTPUT_TMPFS_OVERHEAD_BYTES = 1024 * 1024;
+const STALE_CONTAINER_NAME_PATTERN =
+	/^qorpera-job-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const STALE_WORKSPACE_NAME_PATTERN = /^qorpera-runner-[A-Za-z0-9]{6}$/;
 
 export interface PodmanCommandResult {
 	exitCode: number;
@@ -36,6 +40,7 @@ export interface PodmanCommandResult {
 
 export interface PodmanCommandProcess {
 	readonly completion: Promise<PodmanCommandResult>;
+	readonly firstStdoutLine: Promise<string>;
 	terminateClient(): void;
 }
 
@@ -56,6 +61,7 @@ export interface RootlessPodmanSandboxBackendOptions {
 	jobTypes: readonly string[];
 	podmanPath?: string;
 	entrypoint?: string;
+	temporaryRoot?: string;
 	commandTransport?: PodmanCommandTransport;
 	modelSocketFactory?: CloudRunnerModelSocketFactory;
 }
@@ -117,6 +123,11 @@ export class NodePodmanCommandTransport implements PodmanCommandTransport {
 		let stdoutBytes = 0;
 		let stderrBytes = 0;
 		let boundaryError: Error | undefined;
+		let resolveFirstStdoutLine: (line: string) => void = () => undefined;
+		let firstStdoutLineSettled = false;
+		const firstStdoutLine = new Promise<string>((resolve) => {
+			resolveFirstStdoutLine = resolve;
+		});
 		const timer = setTimeout(() => {
 			boundaryError ??= new Error("Podman command exceeded its wall-time limit");
 			child.kill("SIGKILL");
@@ -135,7 +146,15 @@ export class NodePodmanCommandTransport implements PodmanCommandTransport {
 			else stderrBytes = next;
 			chunks.push(Buffer.from(chunk));
 		};
-		child.stdout.on("data", (chunk: Buffer) => collect(stdout, limits.stdoutBytes, "stdout", chunk));
+		child.stdout.on("data", (chunk: Buffer) => {
+			collect(stdout, limits.stdoutBytes, "stdout", chunk);
+			if (boundaryError || firstStdoutLineSettled) return;
+			const buffered = Buffer.concat(stdout);
+			const newline = buffered.indexOf(0x0a);
+			if (newline < 0) return;
+			firstStdoutLineSettled = true;
+			resolveFirstStdoutLine(buffered.subarray(0, newline).toString("utf-8"));
+		});
 		child.stderr.on("data", (chunk: Buffer) => collect(stderr, limits.stderrBytes, "stderr", chunk));
 		child.stdin.on("error", () => undefined);
 		child.stdin.end(input);
@@ -167,6 +186,7 @@ export class NodePodmanCommandTransport implements PodmanCommandTransport {
 		});
 		return {
 			completion,
+			firstStdoutLine,
 			terminateClient: () => {
 				if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 			},
@@ -222,10 +242,26 @@ function assertRequest(request: CloudRunnerSandboxRequest): void {
 		!Number.isSafeInteger(request.job.attemptCount) ||
 		request.job.attemptCount < 1 ||
 		!Number.isSafeInteger(request.limits.wallTimeMs) ||
+		request.limits.wallTimeMs < 10 ||
+		request.limits.wallTimeMs > 24 * 60 * 60 * 1000 ||
 		!Number.isSafeInteger(request.limits.memoryBytes) ||
+		request.limits.memoryBytes < 64 * 1024 * 1024 ||
+		request.limits.memoryBytes > 256 * 1024 * 1024 * 1024 ||
 		!Number.isFinite(request.limits.cpuCount) ||
+		request.limits.cpuCount < 0.1 ||
+		request.limits.cpuCount > 64 ||
 		!Number.isSafeInteger(request.limits.maxPids) ||
-		!Number.isSafeInteger(request.limits.maxResultBytes)
+		request.limits.maxPids < 1 ||
+		request.limits.maxPids > 4096 ||
+		!Number.isSafeInteger(request.limits.maxInputBytes) ||
+		request.limits.maxInputBytes < 1 ||
+		request.limits.maxInputBytes > 16 * 1024 * 1024 * 1024 ||
+		!Number.isSafeInteger(request.limits.maxOutputBytes) ||
+		request.limits.maxOutputBytes < 0 ||
+		request.limits.maxOutputBytes > 256 * 1024 * 1024 ||
+		!Number.isSafeInteger(request.limits.maxResultBytes) ||
+		request.limits.maxResultBytes < 2 ||
+		request.limits.maxResultBytes > 64 * 1024
 	) {
 		throw new Error("Podman sandbox request is invalid");
 	}
@@ -272,6 +308,7 @@ async function verifiedMounts(
 	) {
 		throw new Error("Podman sandbox layout has invalid filesystem entries");
 	}
+	if ((await readdir(outputRoot)).length > 0) throw new Error("Podman sandbox output directory must start empty");
 	if (!request.hostBroker) {
 		return { inputRoot: safeHostPath(inputRoot), outputRoot: safeHostPath(outputRoot) };
 	}
@@ -310,6 +347,7 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 	readonly #image: string;
 	readonly #podmanPath: string;
 	readonly #entrypoint: string;
+	readonly #temporaryRoot?: string;
 	readonly #commands: PodmanCommandTransport;
 	readonly #modelSocketFactory: CloudRunnerModelSocketFactory;
 	#runtimeReady?: Promise<void>;
@@ -330,6 +368,7 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 		this.#image = options.image;
 		this.#podmanPath = safeHostPath(options.podmanPath ?? "/usr/bin/podman");
 		this.#entrypoint = safeContainerEntrypoint(options.entrypoint ?? "/qorpera/bin/run-job");
+		this.#temporaryRoot = options.temporaryRoot ? safeHostPath(options.temporaryRoot) : undefined;
 		this.#commands = options.commandTransport ?? new NodePodmanCommandTransport();
 		this.#modelSocketFactory = options.modelSocketFactory ?? startCloudRunnerModelSocketServer;
 		this.capabilities = Object.freeze([...options.capabilities]);
@@ -368,9 +407,10 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 		}
 		const args = [
 			"run",
-			"--rm",
 			"--name",
 			containerName,
+			"--label",
+			"io.qorpera.ephemeral-runner=true",
 			"--pull=never",
 			"--network=none",
 			"--read-only",
@@ -400,6 +440,8 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 			"--restart=no",
 			"--sdnotify=ignore",
 			"--stop-timeout=0",
+			"--timeout",
+			String(Math.ceil(request.limits.wallTimeMs / 1000)),
 			"--umask=077",
 			"--workdir",
 			CONTAINER_PATHS.companyRoot,
@@ -408,7 +450,7 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 			"--mount",
 			`type=bind,src=${mounts.inputRoot},dst=/qorpera/input,ro=true,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
 			"--mount",
-			`type=bind,src=${mounts.outputRoot},dst=${CONTAINER_PATHS.outputRoot},ro=false,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
+			`type=tmpfs,destination=${CONTAINER_PATHS.outputRoot},tmpfs-size=${request.limits.maxOutputBytes + OUTPUT_TMPFS_OVERHEAD_BYTES},tmpfs-mode=0700,notmpcopyup`,
 		];
 		if (mounts.brokerRoot) {
 			args.push(
@@ -447,15 +489,23 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 		};
 		const result = (async (): Promise<JsonValue> => {
 			try {
-				const completed = await container.completion;
-				commandSucceeded(completed, "Podman runner container");
+				const line = await Promise.race([
+					container.firstStdoutLine,
+					container.completion.then((completed) => {
+						commandSucceeded(completed, "Podman runner container");
+						throw new Error("Podman runner exited without a result");
+					}),
+				]);
 				let value: unknown;
 				try {
-					value = JSON.parse(completed.stdout.trim());
+					value = JSON.parse(line);
 				} catch (error) {
 					throw new Error("Podman runner returned invalid JSON", { cause: error });
 				}
-				return record(value, "runner result") as JsonValue;
+				const parsed = record(value, "runner result") as JsonValue;
+				await this.#assertContainerRunning(containerName);
+				await this.#copyContainerOutputs(containerName, mounts.outputRoot);
+				return parsed;
 			} finally {
 				try {
 					await remove();
@@ -525,6 +575,75 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 		) {
 			throw new Error("Podman runtime does not satisfy the rootless isolation baseline");
 		}
+		await this.#sweepContainers();
+		await this.#pruneTemporaryRoot();
+	}
+
+	async #sweepContainers(): Promise<void> {
+		const processHandle = this.#commands.start(
+			this.#podmanPath,
+			["ps", "--all", "--filter", "name=^qorpera-job-", "--format", "{{.Names}}"],
+			"",
+			{ stdoutBytes: 256 * 1024, stderrBytes: MAX_COMMAND_STDERR_BYTES, timeoutMs: 15_000 },
+		);
+		const result = await processHandle.completion;
+		commandSucceeded(result, "Podman stale-container inspection");
+		const names = result.stdout
+			.split(/\r?\n/)
+			.map((name) => name.trim())
+			.filter(Boolean);
+		if (names.some((name) => !STALE_CONTAINER_NAME_PATTERN.test(name)) || new Set(names).size !== names.length) {
+			throw new Error("Podman stale-container inspection returned an invalid name");
+		}
+		if (names.length === 0) return;
+		const removal = this.#commands.start(this.#podmanPath, ["rm", "--force", "--time=0", ...names], "", {
+			stdoutBytes: 256 * 1024,
+			stderrBytes: MAX_COMMAND_STDERR_BYTES,
+			timeoutMs: 60_000,
+		});
+		commandSucceeded(await removal.completion, "Podman stale-container destruction");
+	}
+
+	async #pruneTemporaryRoot(): Promise<void> {
+		if (!this.#temporaryRoot) return;
+		const root = await realpath(this.#temporaryRoot);
+		const rootMetadata = await lstat(root);
+		if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
+			throw new Error("Podman temporary root is invalid");
+		}
+		for (const entry of await readdir(root, { withFileTypes: true })) {
+			if (!STALE_WORKSPACE_NAME_PATTERN.test(entry.name)) continue;
+			const target = join(root, entry.name);
+			const targetMetadata = await lstat(target);
+			if (!entry.isDirectory() || !targetMetadata.isDirectory() || targetMetadata.isSymbolicLink()) {
+				throw new Error("Podman stale workspace is invalid");
+			}
+			if (dirname(await realpath(target)) !== root) throw new Error("Podman stale workspace escapes its root");
+			await rm(target, { recursive: true, force: false });
+		}
+	}
+
+	async #copyContainerOutputs(containerName: string, outputRoot: string): Promise<void> {
+		const processHandle = this.#commands.start(
+			this.#podmanPath,
+			["cp", "--archive=false", `${containerName}:${CONTAINER_PATHS.outputRoot}/.`, outputRoot],
+			"",
+			{ stdoutBytes: 4096, stderrBytes: MAX_COMMAND_STDERR_BYTES, timeoutMs: 60_000 },
+		);
+		const result = await processHandle.completion;
+		commandSucceeded(result, "Podman output extraction");
+	}
+
+	async #assertContainerRunning(containerName: string): Promise<void> {
+		const processHandle = this.#commands.start(
+			this.#podmanPath,
+			["inspect", "--format", "{{.State.Running}}", containerName],
+			"",
+			{ stdoutBytes: 16, stderrBytes: MAX_COMMAND_STDERR_BYTES, timeoutMs: 5000 },
+		);
+		const result = await processHandle.completion;
+		commandSucceeded(result, "Podman output-boundary inspection");
+		if (result.stdout.trim() !== "true") throw new Error("Podman runner exited before output extraction");
 	}
 
 	async #removeContainer(containerName: string): Promise<void> {
