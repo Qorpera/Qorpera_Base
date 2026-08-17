@@ -115,7 +115,7 @@ let agentSidepanelMode = null;
 let agentRoutineEditor = null; // { staffAgentId, mode: "create"|"edit", id?, draft, dirty, error, status, pending }
 let agentSidepanelMotionTimer = null;
 let profileCreatorIcon = "hop-warm-titanium";
-let profileCreatorOffering = "free";
+let profileCreatorPlacement = "local";
 let currentProfileIcon = "hop-warm-titanium";
 let currentProfileRoot = "";
 let currentProfileAccess = {
@@ -182,30 +182,14 @@ const PROFILE_ICONS = [
 	{ id: "hop-blue-steel", label: "Blue steel", src: "./profile-icons/hop-blue-steel.png" },
 	{ id: "hop-mono-cloud", label: "Monochrome cloud", src: "./profile-icons/hop-mono-cloud.png" },
 ];
-const PROFILE_OFFERINGS = {
-	free: {
-		label: "Free",
-		description: "Local company profile · execution on this computer",
-		sharedSubstrate: false,
-		managedComputer: false,
+const PROFILE_PLACEMENTS = {
+	local: {
+		label: "On this computer",
+		description: "Profile identity, history, and team access stay on this computer.",
 	},
-	cloud: {
-		label: "Cloud",
-		description: "Shared company substrate · execution on each member's computer",
-		sharedSubstrate: true,
-		managedComputer: false,
-	},
-	computer: {
-		label: "Computer",
-		description: "Private company profile · Qorpera-hosted computer",
-		sharedSubstrate: false,
-		managedComputer: true,
-	},
-	hq: {
-		label: "HQ",
-		description: "Shared company substrate · Qorpera-hosted computers",
-		sharedSubstrate: true,
-		managedComputer: true,
+	hosted: {
+		label: "Hosted for sharing",
+		description: "Profile identity, team access, staff, and attended chats sync across members.",
 	},
 };
 const STAFF_COLOR_TOKENS = {
@@ -469,8 +453,8 @@ async function renderHub() {
 		type.className = "profile-type-label";
 		const role = PROFILE_ROLE_LABELS[company.access?.role ?? company.invitationRole];
 		type.textContent = company.invitationPending
-			? `Invitation · Cloud profile${role ? ` · ${role}` : ""}`
-			: `${PROFILE_OFFERINGS[company.offering]?.label ?? "Free"} · ${company.profileType === "cloud" ? "Cloud profile" : "Local profile"}${company.setupRequired && role ? ` · ${role}` : ""}`;
+			? `Invitation · Hosted profile${role ? ` · ${role}` : ""}`
+			: `${company.product?.profile?.placement === "hosted" || company.profileType === "cloud" ? "Hosted profile" : "On this computer"}${company.setupRequired && role ? ` · ${role}` : ""}`;
 		card.append(avatar, label, type);
 		if (company.invitationPending || company.setupRequired) {
 			const setup = document.createElement("small");
@@ -606,9 +590,8 @@ async function signOut() {
 }
 
 // ---- founding a durable company ----------------------------------------------
-// The founder names the company and chooses its operating model. The kernel
-// derives the platform-correct folder and persists the offering before any
-// hosted provisioning begins.
+// The founder names the company and chooses where its profile lives. Account
+// entitlement and per-session execution remain separate decisions.
 
 function companySlug(name) {
 	return String(name)
@@ -622,16 +605,16 @@ function profileIcon(iconId) {
 	return PROFILE_ICONS.find((candidate) => candidate.id === iconId) ?? PROFILE_ICONS[0];
 }
 
-function renderCompanyOfferingPicker() {
-	const picker = $("companyOfferingPicker");
-	for (const choice of picker.querySelectorAll("[data-profile-offering]")) {
-		const selected = choice.dataset.profileOffering === profileCreatorOffering;
+function renderCompanyPlacementPicker() {
+	const picker = $("companyPlacementPicker");
+	for (const choice of picker.querySelectorAll("[data-profile-placement]")) {
+		const selected = choice.dataset.profilePlacement === profileCreatorPlacement;
 		choice.classList.toggle("selected", selected);
 		choice.setAttribute("aria-pressed", String(selected));
 		choice.onclick = () => {
-			profileCreatorOffering = choice.dataset.profileOffering;
-			renderCompanyOfferingPicker();
-			$("companyOfferingNote").textContent = PROFILE_OFFERINGS[profileCreatorOffering].description;
+			profileCreatorPlacement = choice.dataset.profilePlacement;
+			renderCompanyPlacementPicker();
+			$("companyPlacementNote").textContent = PROFILE_PLACEMENTS[profileCreatorPlacement].description;
 		};
 	}
 }
@@ -673,14 +656,14 @@ function renderCompanyIconPicker() {
 
 function openCompanyModal() {
 	profileCreatorIcon = PROFILE_ICONS[0].id;
-	profileCreatorOffering = "free";
+	profileCreatorPlacement = "local";
 	$("companyName").value = "";
 	$("companyFormError").textContent = "";
 	$("companyCreate").disabled = true;
 	$("companyIconPreview").src = profileIcon(profileCreatorIcon).src;
 	renderCompanyIconPicker();
-	renderCompanyOfferingPicker();
-	$("companyOfferingNote").textContent = PROFILE_OFFERINGS[profileCreatorOffering].description;
+	renderCompanyPlacementPicker();
+	$("companyPlacementNote").textContent = PROFILE_PLACEMENTS[profileCreatorPlacement].description;
 	$("companyModal").hidden = false;
 	$("companyName").focus();
 }
@@ -713,7 +696,7 @@ function setupCompanyModal() {
 			const created = await window.qorpera.newCompany(
 				profileName,
 				profileCreatorIcon,
-				profileCreatorOffering,
+				profileCreatorPlacement,
 			);
 			if (!created?.root) throw new Error("Profile creation did not return a company folder.");
 			const opened = await openCompany(created.root, $("companyFormError"));
@@ -7806,7 +7789,7 @@ const PROFILE_STATUS_LABELS = {
 		attention: "Needs attention",
 		cloud: "Synced",
 	},
-	computer: { local: "This computer", unavailable: "Not provisioned" },
+	execution: { local: "This computer", cloud: "Ephemeral cloud runner", computer: "Qorpera Computer" },
 	files: {
 		local: "Local checkout",
 		pending: "Starting",
@@ -7818,62 +7801,74 @@ const PROFILE_STATUS_LABELS = {
 
 const PROFILE_PROMOTION_LABELS = {
 	requested: "Ready to start",
-	provisioning: "Provisioning cloud identity",
-	"identity-ready": "Cloud identity ready · shared sync starting",
-	complete: "Cloud substrate ready",
+	provisioning: "Provisioning hosted identity",
+	"identity-ready": "Hosted identity ready · shared sync starting",
+	complete: "Hosted profile ready",
 	failed: "Needs attention",
 };
 
-async function selectProfileOffering(offering) {
-	const configured = await window.qorpera.setProfileOffering(offering);
-	if (!configured?.ok) {
-		showControllerToast(configured?.error ?? "Profile plan could not be updated.");
-		return;
-	}
-	if (PROFILE_OFFERINGS[offering].sharedSubstrate && configured.attachment?.profileType === "local") {
-		const promoted = await window.qorpera.enableCloudProfile();
-		if (!promoted?.ok) {
-			showControllerToast(promoted?.error ?? "Cloud setup needs attention. You can retry from Settings.");
-			await renderSettingsTab();
-			return;
-		}
-		applyCloudProfileTransition(promoted);
-		showControllerToast("Cloud profile is active. Shared staff and attended chats are syncing.");
-	} else if (PROFILE_OFFERINGS[offering].managedComputer) {
-		showControllerToast("Profile plan saved. Qorpera Computer provisioning is not available in this build.");
-	} else {
-		showControllerToast("Profile plan updated.");
-	}
-	await renderSettingsTab();
-}
-
-function renderProfilePlanControls(content, info) {
+function renderProfileProductControls(content, info) {
 	const profile = info.profile;
 	if (!profile) return;
-	const offering = PROFILE_OFFERINGS[profile.offering] ?? PROFILE_OFFERINGS.free;
+	const product = profile.product ?? {
+		account: { entitlement: "not-connected" },
+		profile: {
+			placement: profile.profileType === "cloud" ? "hosted" : "local",
+			billingSponsor: profile.profileType === "cloud" ? "not-configured" : "not-applicable",
+		},
+		execution: { target: "local" },
+	};
 	const group = document.createElement("section");
 	group.className = "settings-group general-settings-group";
 	const header = document.createElement("header");
 	const heading = document.createElement("h2");
-	heading.textContent = "Profile plan";
+	heading.textContent = "Product and execution";
 	const description = document.createElement("p");
-	description.textContent = offering.description;
+	description.textContent =
+		"Account access, profile placement, execution target, and billing responsibility are independent.";
 	header.append(heading, description);
 	group.appendChild(header);
 
-	const plan = document.createElement("small");
-	plan.textContent = offering.label;
+	const entitlement = document.createElement("small");
+	entitlement.textContent =
+		product.account.entitlement === "not-connected" ? "Billing not connected" : product.account.entitlement;
 	setRow(
 		group,
-		"Current plan",
-		"Product capabilities belong to the account. Attributable usage follows its actor; shared profile costs follow the billing sponsor.",
-		plan,
+		"Account entitlement",
+		"Capabilities and subscription belong to the signed-in account, not to this profile.",
+		entitlement,
 	);
+	const placement = document.createElement("small");
+	placement.textContent = product.profile.placement === "hosted" ? "Hosted profile" : "On this computer";
+	setRow(group, "Profile placement", "Controls where shared profile state is stored and synchronized.", placement);
+	const execution = document.createElement("small");
+	execution.textContent =
+		product.execution.target === "cloud"
+			? "Ephemeral cloud runner"
+			: product.execution.target === "computer"
+				? "Qorpera Computer"
+				: "This computer";
+	setRow(
+		group,
+		"Execution target",
+		"Chosen per session or worktree. Hosted profiles do not automatically move execution to the cloud.",
+		execution,
+	);
+	const sponsor = document.createElement("small");
+	sponsor.textContent = product.profile.billingSponsor === "not-applicable" ? "Not applicable" : "Not configured";
+	setRow(
+		group,
+		"Billing sponsor",
+		product.profile.billingSponsor === "not-applicable"
+			? "Local profile activity has no shared hosting sponsor."
+			: "The sponsor will cover shared profile costs; contributors will not have to buy a plan merely to join.",
+		sponsor,
+	);
+
 	for (const [key, label] of [
-		["identity", "Profile identity"],
 		["sharedStaff", "Staff and sessions"],
 		["trail", "Attended chat trail"],
-		["computer", "Agent execution"],
+		["execution", "Agent execution"],
 		["files", "Company files"],
 	]) {
 		const value = profile.status?.[key];
@@ -7887,58 +7882,38 @@ function renderProfilePlanControls(content, info) {
 		promotion.textContent = PROFILE_PROMOTION_LABELS[profile.promotion.phase] ?? profile.promotion.phase;
 		setRow(
 			group,
-			"Cloud promotion",
+			"Hosting setup",
 			profile.promotion.lastError ?? "The local profile remains recoverable throughout promotion.",
 			promotion,
 		);
 	}
 
-	const actions = document.createElement("div");
-	actions.className = "appearance-actions";
-	const choices =
-		profile.offering === "free"
-			? [
-					["cloud", "Upgrade to Cloud"],
-					["computer", "Add Computer"],
-					["hq", "Upgrade to HQ"],
-				]
-			: profile.offering === "cloud" || profile.offering === "computer"
-				? [["hq", "Upgrade to HQ"]]
-				: [];
-	for (const [target, label] of choices) {
-		const button = document.createElement("button");
-		button.type = "button";
-		button.textContent = label;
-		button.disabled = profile.access?.capabilities?.manageMembers !== true;
-		button.onclick = async () => {
-			for (const action of actions.querySelectorAll("button")) action.disabled = true;
-			await selectProfileOffering(target);
-		};
-		actions.appendChild(button);
-	}
-	if (
-		profile.profileType === "local" &&
-		offering.sharedSubstrate &&
-		(profile.promotion?.phase === "requested" || profile.promotion?.phase === "failed")
-	) {
-		const resume = document.createElement("button");
-		resume.type = "button";
-		resume.textContent = profile.promotion.phase === "failed" ? "Retry cloud setup" : "Start cloud setup";
-		resume.disabled = profile.access?.capabilities?.manageMembers !== true;
-		resume.onclick = async () => {
-			resume.disabled = true;
+	if (profile.profileType === "local") {
+		const host = document.createElement("button");
+		host.type = "button";
+		host.textContent =
+			profile.promotion?.phase === "failed"
+				? "Retry hosting setup"
+				: profile.promotion
+					? "Resume hosting setup"
+					: "Host this profile";
+		host.disabled = profile.access?.capabilities?.manageMembers !== true;
+		host.onclick = async () => {
+			host.disabled = true;
 			const result = await window.qorpera.enableCloudProfile();
 			if (result?.ok) {
 				applyCloudProfileTransition(result);
-				showControllerToast("Cloud profile is active. Shared staff and attended chats are syncing.");
+				showControllerToast("Hosted profile is active. Shared staff and attended chats are syncing.");
 			} else {
-				showControllerToast(result?.error ?? "Cloud setup still needs attention.");
+				showControllerToast(result?.error ?? "Hosting setup still needs attention.");
 			}
 			await renderSettingsTab();
 		};
-		actions.appendChild(resume);
+		const actions = document.createElement("div");
+		actions.className = "appearance-actions";
+		actions.appendChild(host);
+		group.appendChild(actions);
 	}
-	if (actions.childElementCount > 0) group.appendChild(actions);
 	content.appendChild(group);
 }
 
@@ -7949,11 +7924,11 @@ function renderProfileCloudControls(content, info) {
 	group.className = "settings-group general-settings-group";
 	const header = document.createElement("header");
 	const heading = document.createElement("h2");
-	heading.textContent = "Profile storage";
+	heading.textContent = "Profile placement";
 	const description = document.createElement("p");
 	description.textContent =
 		profile.profileType === "cloud"
-			? "Profile identity, team access, shared staff, and attended chats are cloud-backed. Files and execution remain attached to this checkout."
+			? "Profile identity, team access, shared staff, and attended chats are hosted. Files remain attached to this checkout unless published; execution is selected separately."
 			: "This profile identity, its team list, files, and agent trail currently exist only on this computer.";
 	header.append(heading, description);
 	group.appendChild(header);
@@ -7963,7 +7938,7 @@ function renderProfileCloudControls(content, info) {
 		identity.textContent = profile.profileId;
 		setRow(
 			group,
-			"Cloud profile",
+			"Hosted profile",
 			"Hosting and usage are scoped to this profile. Product entitlement remains attached to each account.",
 			identity,
 		);
@@ -8163,7 +8138,7 @@ function renderProfileTeam(content, info) {
 	const description = document.createElement("p");
 	description.textContent = canManage
 		? cloudProfile
-			? "Invite cloud-enabled accounts to this profile. Their role controls access; the profile records the billing sponsor and attributable usage."
+			? "Invite people to this hosted profile. Their role controls access; contributors do not have to buy a plan merely to join."
 			: "Invite accounts on this installation and choose what they can do in this local profile."
 		: "People who share access to this profile.";
 	header.append(heading, description);
@@ -8301,9 +8276,9 @@ async function renderSettingsTab() {
 		const profileName = document.createElement("strong");
 		profileName.textContent = info.profile?.name || state.name || "Current profile";
 		const profileDetail = document.createElement("small");
-		const profileTypeLabel = info.profile?.profileType === "cloud" ? "Cloud profile" : "Local profile";
-		const offeringLabel = PROFILE_OFFERINGS[info.profile?.offering]?.label ?? "Free";
-		profileDetail.textContent = `${offeringLabel} · ${profileTypeLabel} · ${PROFILE_ROLE_LABELS[currentProfileAccess.role] ?? "Shared access"}`;
+		const profileTypeLabel =
+			info.profile?.product?.profile?.placement === "hosted" ? "Hosted profile" : "On this computer";
+		profileDetail.textContent = `${profileTypeLabel} · ${PROFILE_ROLE_LABELS[currentProfileAccess.role] ?? "Shared access"}`;
 		profileCopy.append(profileName, profileDetail);
 		const switchProfile = document.createElement("button");
 		switchProfile.type = "button";
@@ -8315,7 +8290,7 @@ async function renderSettingsTab() {
 		profileCard.append(profileCopy, switchProfile);
 		profileGroup.appendChild(profileCard);
 		content.appendChild(profileGroup);
-		renderProfilePlanControls(content, info);
+		renderProfileProductControls(content, info);
 		renderProfileCloudControls(content, info);
 		renderCloudCompanyWorkspaces(content, info);
 		renderProfileTeam(content, info);

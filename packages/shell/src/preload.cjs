@@ -51,7 +51,6 @@ contextBridge.exposeInMainWorld("qorpera", {
 	materializeCloudProfile: (profileId) => ipcRenderer.invoke("profile:materialize-cloud", profileId),
 	removeProfile: (root) => ipcRenderer.invoke("profile:remove", root),
 	cloudProfileOptions: () => ipcRenderer.invoke("profile:cloud-options"),
-	setProfileOffering: (offering) => ipcRenderer.invoke("profile:set-offering", offering),
 	enableCloudProfile: () => ipcRenderer.invoke("profile:enable-cloud"),
 	attachCloudProfile: (profileId) => ipcRenderer.invoke("profile:attach-cloud", profileId),
 	inviteProfileMember: (value) => ipcRenderer.invoke("profile-team:invite", value),
@@ -63,8 +62,8 @@ contextBridge.exposeInMainWorld("qorpera", {
 		ipcRenderer.invoke("profile-team:update-role", memberUserId, role),
 	removeProfileMember: (memberUserId) => ipcRenderer.invoke("profile-team:remove-member", memberUserId),
 	openCompany: (root) => ipcRenderer.invoke("company:open", root),
-	newCompany: (profileName, profileIcon, offering) =>
-		ipcRenderer.invoke("company:new", profileName, profileIcon, offering),
+	newCompany: (profileName, profileIcon, placement) =>
+		ipcRenderer.invoke("company:new", profileName, profileIcon, placement),
 	integrateCompany: (dir, from) => ipcRenderer.invoke("company:integrate", dir, from),
 	addProduct: (product, from) => ipcRenderer.invoke("company:product-add", product, from),
 	chooseProductSource: () => ipcRenderer.invoke("company:product-source-choose"),

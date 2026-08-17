@@ -241,7 +241,6 @@ import {
 	attachCloudProfile,
 	beginProfilePromotion,
 	completeProfilePromotion,
-	configureProfileOffering,
 	ensureProfileAttachment,
 	failProfilePromotion,
 	forgetProfileAttachment,
@@ -251,12 +250,6 @@ import {
 	recordProfilePromotionCloudIdentity,
 } from "./profile-identity.ts";
 import { profileInvitationIdFromArgv, profileInvitationIdFromProtocolUrl } from "./profile-invitation-handoff.ts";
-import {
-	cloudPromotionOffering,
-	isProfileOffering,
-	type ProfileOffering,
-	profileOfferingDefinition,
-} from "./profile-offering.ts";
 import {
 	cancelProfileInvitation,
 	claimProfile,
@@ -272,6 +265,7 @@ import {
 	removeProfileMember,
 	updateProfileMemberRole,
 } from "./profile-ownership.ts";
+import { isProfilePlacement, type ProductContext, productContext } from "./profile-product.ts";
 import {
 	isRendererRequestAllowed,
 	lockDownRendererSession,
@@ -884,8 +878,7 @@ async function promoteProfileRoot(
 	if (current.profileType === "cloud" && !current.promotion) {
 		throw new Error("This profile is already attached to a cloud profile.");
 	}
-	const targetOffering = cloudPromotionOffering(current.offering);
-	const prepared = beginProfilePromotion(userData, root, targetOffering);
+	const prepared = beginProfilePromotion(userData, root);
 	const promotion = prepared.promotion;
 	if (!promotion) throw new Error("Profile promotion could not be prepared.");
 	try {
@@ -3663,7 +3656,7 @@ interface ActiveCompany {
 	id: string;
 	profileType: ProfileAttachment["profileType"];
 	profileId: string;
-	offering: ProfileOffering;
+	product: ProductContext;
 	environmentId?: string;
 	access: ProfileAccess;
 	profileIcon: ProfileIconId;
@@ -3721,7 +3714,7 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 		id: profileIdentityKey(attachment),
 		profileType: attachment.profileType,
 		profileId: attachment.profileId,
-		offering: attachment.offering,
+		product: productContext(attachment.profileType),
 		...(attachment.profileType === "cloud" ? { environmentId: attachment.environmentId } : {}),
 		access,
 		profileIcon: readProfileIcon(app.getPath("userData"), access.ownerUserId, runtime.root),
@@ -5301,7 +5294,7 @@ app.whenReady().then(async () => {
 					id: profileIdentityKey(attachment),
 					profileType: attachment.profileType,
 					profileId: attachment.profileId,
-					offering: attachment.offering,
+					product: productContext(attachment.profileType),
 					promotion: attachment.promotion,
 					...(attachment.profileType === "cloud" ? { environmentId: attachment.environmentId } : {}),
 					access,
@@ -5327,7 +5320,7 @@ app.whenReady().then(async () => {
 							profileType: profile.profileType,
 							profileId: profile.profileId,
 							environmentId: profile.environmentId,
-							offering: "cloud" as const,
+							product: productContext(profile.profileType),
 							access,
 							profileIcon: DEFAULT_PROFILE_ICON_ID,
 							setupRequired: true as const,
@@ -5344,7 +5337,7 @@ app.whenReady().then(async () => {
 							profileType: profile.profileType,
 							profileId: profile.profileId,
 							environmentId: profile.environmentId,
-							offering: "cloud" as const,
+							product: productContext(profile.profileType),
 							access: hostedProfileAccess(cached),
 							profileIcon: DEFAULT_PROFILE_ICON_ID,
 							setupRequired: true as const,
@@ -5358,7 +5351,7 @@ app.whenReady().then(async () => {
 			profileType: "cloud" as const,
 			profileId: invitation.profileId,
 			environmentId: invitation.environmentId,
-			offering: "cloud" as const,
+			product: productContext("cloud"),
 			invitationId: invitation.id,
 			invitationRole: invitation.role,
 			invitationPending: true as const,
@@ -5556,14 +5549,14 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		if (slot) return openCompany(slot, root);
 	});
-	ipcMain.handle("company:new", async (event, profileName: unknown, profileIcon: unknown, offering: unknown) => {
+	ipcMain.handle("company:new", async (event, profileName: unknown, profileIcon: unknown, placement: unknown) => {
 		if (
 			!isTrustedHubSender(event.sender) ||
 			typeof profileName !== "string" ||
 			!profileName.trim() ||
 			profileName.length > 64 ||
 			!isProfileIconId(profileIcon) ||
-			!isProfileOffering(offering)
+			!isProfilePlacement(placement)
 		) {
 			return;
 		}
@@ -5574,10 +5567,9 @@ app.whenReady().then(async () => {
 		registerCompany(result.root);
 		claimProfile(app.getPath("userData"), account.user, result.root);
 		ensureProfileAttachment(app.getPath("userData"), result.root);
-		configureProfileOffering(app.getPath("userData"), result.root, offering);
 		writeProfileIcon(app.getPath("userData"), account.user.id, result.root, profileIcon);
 		let promotionError: string | undefined;
-		if (profileOfferingDefinition(offering).sharedSubstrate) {
+		if (placement === "hosted") {
 			try {
 				await promoteProfileRoot(result.root, name);
 			} catch (error) {
@@ -6141,20 +6133,6 @@ app.whenReady().then(async () => {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
 	});
-	ipcMain.handle("profile:set-offering", async (event, offering: unknown) => {
-		const slot = slotOf(event.sender);
-		const root = slot?.runtime?.root;
-		if (!slot || !root || !isProfileOffering(offering)) {
-			return { ok: false, error: "invalid profile offering" };
-		}
-		if (!activeProfileAccess(root)?.capabilities.manageMembers) return profilePermissionError("manage-members");
-		try {
-			const attachment = configureProfileOffering(app.getPath("userData"), root, offering);
-			return { ok: true, attachment };
-		} catch (error) {
-			return { ok: false, error: error instanceof Error ? error.message : String(error) };
-		}
-	});
 	ipcMain.handle("profile:enable-cloud", async (event) => {
 		const slot = slotOf(event.sender);
 		const root = slot?.runtime?.root;
@@ -6413,7 +6391,7 @@ app.whenReady().then(async () => {
 							id: profileIdentityKey(attachment),
 							profileType: attachment.profileType,
 							profileId: attachment.profileId,
-							offering: attachment.offering,
+							product: productContext(attachment.profileType),
 							promotion: attachment.promotion,
 							...(attachment.profileType === "cloud" ? { environmentId: attachment.environmentId } : {}),
 							...(hostedProfile ? { name: hostedProfile.profileName } : {}),
@@ -6439,9 +6417,7 @@ app.whenReady().then(async () => {
 												: slot?.runtime?.cloudTrailSyncHealth?.phase === "healthy"
 													? "cloud"
 													: "pending",
-								computer: profileOfferingDefinition(attachment.offering).managedComputer
-									? "unavailable"
-									: "local",
+								execution: "local",
 								files:
 									attachment.profileType === "local"
 										? "local"

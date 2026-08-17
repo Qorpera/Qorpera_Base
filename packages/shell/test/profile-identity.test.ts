@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,7 +6,6 @@ import {
 	attachCloudProfile,
 	beginProfilePromotion,
 	completeProfilePromotion,
-	configureProfileOffering,
 	ensureProfileAttachment,
 	failProfilePromotion,
 	forgetProfileAttachment,
@@ -37,7 +36,8 @@ describe("profile identity", () => {
 		const userData = temporaryRoot();
 		const company = join(temporaryRoot(), "company");
 		const identity = ensureProfileAttachment(userData, company, localProfileId);
-		expect(identity).toMatchObject({ profileType: "local", profileId: localProfileId, offering: "free" });
+		expect(identity).toMatchObject({ profileType: "local", profileId: localProfileId });
+		expect(identity).not.toHaveProperty("offering");
 		expect(ensureProfileAttachment(userData, company)).toEqual(identity);
 		expect(readProfileAttachment(userData, company)).toEqual(identity);
 		expect(profileAttachmentsPath(userData).startsWith(company)).toBe(false);
@@ -67,29 +67,14 @@ describe("profile identity", () => {
 		expect(attachment).not.toHaveProperty("userId");
 	});
 
-	it("records the desired offering independently from the current profile identity", () => {
-		const userData = temporaryRoot();
-		const company = join(temporaryRoot(), "company");
-		ensureProfileAttachment(userData, company, localProfileId);
-		const requested = configureProfileOffering(userData, company, "hq");
-		expect(requested).toMatchObject({
-			profileType: "local",
-			offering: "hq",
-			promotion: {
-				sourceProfileId: localProfileId,
-				targetOffering: "hq",
-				phase: "requested",
-			},
-		});
-		expect(requested.promotion?.promotionId).toMatch(/^[0-9a-f-]{36}$/i);
-	});
-
 	it("persists a resumable local-to-cloud promotion without changing identity early", () => {
 		const userData = temporaryRoot();
 		const company = join(temporaryRoot(), "company");
 		ensureProfileAttachment(userData, company, localProfileId);
-		const started = beginProfilePromotion(userData, company, "cloud");
+		const started = beginProfilePromotion(userData, company);
 		expect(started).toMatchObject({ profileType: "local", promotion: { phase: "provisioning" } });
+		expect(started).not.toHaveProperty("offering");
+		expect(started.promotion).not.toHaveProperty("targetOffering");
 
 		const provisioned = recordProfilePromotionCloudIdentity(userData, company, {
 			profileId: cloudProfileId,
@@ -105,7 +90,6 @@ describe("profile identity", () => {
 		expect(attached).toMatchObject({
 			profileType: "cloud",
 			profileId: cloudProfileId,
-			offering: "cloud",
 			promotion: { sourceProfileId: localProfileId, phase: "identity-ready" },
 		});
 		expect(readProfileAttachment(userData, company)).toEqual(attached);
@@ -116,25 +100,58 @@ describe("profile identity", () => {
 		const userData = temporaryRoot();
 		const company = join(temporaryRoot(), "company");
 		ensureProfileAttachment(userData, company, localProfileId);
-		const started = beginProfilePromotion(userData, company, "cloud");
+		const started = beginProfilePromotion(userData, company);
 		const failed = failProfilePromotion(userData, company, "network unavailable");
 		expect(failed).toMatchObject({ promotion: { phase: "failed", lastError: "network unavailable" } });
-		const retried = beginProfilePromotion(userData, company, "cloud");
+		const retried = beginProfilePromotion(userData, company);
 		expect(retried.promotion?.promotionId).toBe(started.promotion?.promotionId);
 		expect(retried).toMatchObject({ promotion: { phase: "provisioning" } });
 		expect(retried.promotion).not.toHaveProperty("lastError");
 	});
 
-	it("permits only additive offering promotions", () => {
+	it("migrates legacy offering attachments without turning plans into profile identity", () => {
 		const userData = temporaryRoot();
 		const company = join(temporaryRoot(), "company");
-		ensureProfileAttachment(userData, company, localProfileId);
-		expect(configureProfileOffering(userData, company, "computer")).toMatchObject({ offering: "computer" });
-		expect(() => configureProfileOffering(userData, company, "cloud")).toThrow("cannot move");
-		expect(configureProfileOffering(userData, company, "hq")).toMatchObject({
-			offering: "hq",
-			promotion: { targetOffering: "hq", phase: "requested" },
-		});
+		const startedAt = "2026-08-17T10:00:00.000Z";
+		mkdirSync(userData, { recursive: true });
+		writeFileSync(
+			profileAttachmentsPath(userData),
+			JSON.stringify({
+				schema: "qorpera.profile-attachments/v1",
+				attachments: {
+					[company]: {
+						profileType: "local",
+						profileId: localProfileId,
+						attachedAt: startedAt,
+						offering: "hq",
+						promotion: {
+							promotionId: "c8502fc3-e605-4b5c-9207-a5f4ed0c2765",
+							sourceProfileId: localProfileId,
+							targetOffering: "hq",
+							phase: "failed",
+							startedAt,
+							updatedAt: startedAt,
+							lastError: "offline",
+						},
+					},
+				},
+			}),
+			"utf-8",
+		);
+
+		const migrated = readProfileAttachment(userData, company);
+		expect(migrated).toMatchObject({ profileType: "local", promotion: { phase: "failed" } });
+		expect(migrated).not.toHaveProperty("offering");
+		expect(migrated?.promotion).not.toHaveProperty("targetOffering");
+
+		beginProfilePromotion(userData, company);
+		const stored = JSON.parse(readFileSync(profileAttachmentsPath(userData), "utf-8")) as {
+			schema: string;
+			attachments: Record<string, unknown>;
+		};
+		expect(stored.schema).toBe("qorpera.profile-attachments/v2");
+		expect(JSON.stringify(stored.attachments)).not.toContain("offering");
+		expect(JSON.stringify(stored.attachments)).not.toContain("targetOffering");
 	});
 
 	it("attaches multiple machine folders to the same cloud profile", () => {

@@ -1,16 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import {
-	cloudPromotionOffering,
-	isProfileOffering,
-	type ProfileOffering,
-	profileOfferingCanPromote,
-	profileOfferingDefinition,
-} from "./profile-offering.ts";
 
 const PROFILE_ATTACHMENTS_FILE = "profile-attachments.json";
-const PROFILE_ATTACHMENTS_SCHEMA = "qorpera.profile-attachments/v1";
+const LEGACY_PROFILE_ATTACHMENTS_SCHEMA = "qorpera.profile-attachments/v1";
+const PROFILE_ATTACHMENTS_SCHEMA = "qorpera.profile-attachments/v2";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type ProfileType = "local" | "cloud";
@@ -35,7 +29,6 @@ export type ProfilePromotionPhase = (typeof PROFILE_PROMOTION_PHASES)[number];
 export interface ProfilePromotion {
 	promotionId: string;
 	sourceProfileId: string;
-	targetOffering: "cloud" | "hq";
 	phase: ProfilePromotionPhase;
 	startedAt: string;
 	updatedAt: string;
@@ -46,7 +39,6 @@ export interface ProfilePromotion {
 
 export type ProfileAttachment = ProfileIdentity & {
 	attachedAt: string;
-	offering: ProfileOffering;
 	promotion?: ProfilePromotion;
 };
 
@@ -85,7 +77,6 @@ function parsePromotion(value: unknown, sourceProfileId?: string): ProfilePromot
 		typeof promotion.sourceProfileId !== "string" ||
 		!UUID_PATTERN.test(promotion.sourceProfileId) ||
 		(sourceProfileId !== undefined && promotion.sourceProfileId !== sourceProfileId) ||
-		(promotion.targetOffering !== "cloud" && promotion.targetOffering !== "hq") ||
 		!PROFILE_PROMOTION_PHASES.some((candidate) => candidate === promotion.phase) ||
 		!timestamp(promotion.startedAt) ||
 		!timestamp(promotion.updatedAt) ||
@@ -99,7 +90,6 @@ function parsePromotion(value: unknown, sourceProfileId?: string): ProfilePromot
 	return {
 		promotionId: promotion.promotionId,
 		sourceProfileId: promotion.sourceProfileId,
-		targetOffering: promotion.targetOffering,
 		phase: promotion.phase!,
 		startedAt: promotion.startedAt,
 		updatedAt: promotion.updatedAt,
@@ -121,11 +111,6 @@ function parseAttachment(value: unknown): ProfileAttachment | undefined {
 	) {
 		return undefined;
 	}
-	const offering = isProfileOffering(attachment.offering)
-		? attachment.offering
-		: attachment.profileType === "cloud"
-			? "cloud"
-			: "free";
 	const promotion = parsePromotion(
 		attachment.promotion,
 		attachment.profileType === "local" ? attachment.profileId : undefined,
@@ -134,13 +119,11 @@ function parseAttachment(value: unknown): ProfileAttachment | undefined {
 		if (typeof attachment.environmentId !== "string" || !UUID_PATTERN.test(attachment.environmentId)) {
 			return undefined;
 		}
-		if (!profileOfferingDefinition(offering).sharedSubstrate) return undefined;
 		return {
 			profileType: "cloud",
 			profileId: attachment.profileId,
 			environmentId: attachment.environmentId,
 			attachedAt: attachment.attachedAt,
-			offering,
 			...(promotion ? { promotion } : {}),
 		};
 	}
@@ -148,7 +131,6 @@ function parseAttachment(value: unknown): ProfileAttachment | undefined {
 		profileType: "local",
 		profileId: attachment.profileId,
 		attachedAt: attachment.attachedAt,
-		offering,
 		...(promotion ? { promotion } : {}),
 	};
 }
@@ -159,7 +141,7 @@ function readAttachments(path: string): ProfileAttachments {
 		if (!value || typeof value !== "object" || Array.isArray(value)) return emptyAttachments();
 		const record = value as { schema?: unknown; attachments?: unknown };
 		if (
-			record.schema !== PROFILE_ATTACHMENTS_SCHEMA ||
+			(record.schema !== PROFILE_ATTACHMENTS_SCHEMA && record.schema !== LEGACY_PROFILE_ATTACHMENTS_SCHEMA) ||
 			!record.attachments ||
 			typeof record.attachments !== "object" ||
 			Array.isArray(record.attachments)
@@ -227,62 +209,32 @@ export function ensureProfileAttachment(
 		profileType: "local",
 		profileId: localProfileId,
 		attachedAt: new Date().toISOString(),
-		offering: "free",
 	};
 	attachments.attachments[key] = attachment;
 	writeAttachments(path, attachments);
 	return attachment;
 }
 
-export function configureProfileOffering(userData: string, root: string, offering: ProfileOffering): ProfileAttachment {
-	const existing = ensureProfileAttachment(userData, root);
-	if (existing.offering === offering) return existing;
-	if (!profileOfferingCanPromote(existing.offering, offering)) {
-		throw new Error(`Profile offering cannot move from ${existing.offering} to ${offering}`);
-	}
-	if (existing.profileType === "cloud" && !profileOfferingDefinition(offering).sharedSubstrate) {
-		throw new Error("A cloud profile cannot be changed back to a local-only offering");
-	}
+export function beginProfilePromotion(userData: string, root: string): ProfileAttachment {
+	let attachment = ensureProfileAttachment(userData, root);
+	if (!attachment.promotion && attachment.profileType === "cloud") return attachment;
 	const now = new Date().toISOString();
-	let promotion = existing.promotion;
-	if (existing.profileType === "local" && profileOfferingDefinition(offering).sharedSubstrate) {
-		const targetOffering = cloudPromotionOffering(offering);
-		promotion = promotion
-			? { ...promotion, targetOffering, updatedAt: now }
-			: {
-					promotionId: randomUUID(),
-					sourceProfileId: existing.profileId,
-					targetOffering,
-					phase: "requested",
-					startedAt: now,
-					updatedAt: now,
-				};
-	}
-	return saveAttachment(userData, root, {
-		...existing,
-		offering,
-		...(promotion ? { promotion } : {}),
-	});
-}
-
-export function beginProfilePromotion(
-	userData: string,
-	root: string,
-	targetOffering: "cloud" | "hq",
-): ProfileAttachment {
-	let attachment = configureProfileOffering(userData, root, targetOffering);
-	if (!attachment.promotion) {
-		if (attachment.profileType === "cloud") return attachment;
-		throw new Error("Profile promotion could not be prepared");
-	}
+	const currentPromotion =
+		attachment.promotion ??
+		({
+			promotionId: randomUUID(),
+			sourceProfileId: attachment.profileId,
+			phase: "requested",
+			startedAt: now,
+			updatedAt: now,
+		} satisfies ProfilePromotion);
 	const promotion: ProfilePromotion = {
-		...attachment.promotion,
-		targetOffering,
+		...currentPromotion,
 		phase: "provisioning",
-		updatedAt: new Date().toISOString(),
+		updatedAt: now,
 	};
 	delete promotion.lastError;
-	attachment = { ...attachment, offering: targetOffering, promotion };
+	attachment = { ...attachment, promotion };
 	return saveAttachment(userData, root, attachment);
 }
 
@@ -383,14 +335,10 @@ export function attachCloudProfile(
 		writeAttachments(path, attachments);
 		return attachment;
 	}
-	const offering = existing
-		? (existing.promotion?.targetOffering ?? cloudPromotionOffering(existing.offering))
-		: "cloud";
 	const attachment: ProfileAttachment = {
 		profileType: "cloud",
 		...identity,
 		attachedAt: new Date().toISOString(),
-		offering,
 		...(existing?.promotion
 			? {
 					promotion: {
