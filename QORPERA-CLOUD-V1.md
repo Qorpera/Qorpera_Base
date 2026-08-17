@@ -163,6 +163,8 @@ Each machine stores a company-folder attachment under the shell's user-data dire
 
 ## Deployment sequence
 
+Migration-history note: `20260816003000_profile_promotion_identity.sql` was renamed to `20260816003500_profile_promotion_identity.sql` before any Supabase CLI migration history was initialized. The 2026-08-16 migrations already applied through the SQL editor must be reconciled under the unique `03500` version when migration history is created; do not record the removed duplicate `03000` filename. Environments that received the earlier SQL-editor deployment must also apply `20260817004000_review_blocker_hardening.sql` before artifact cleanup or runner-output publication is enabled. That migration permits deletion authority only for exact direct-object closures verified from relational metadata; client-restored manifest graphs remain useful for integrity analysis but fail closed for physical cleanup until manifest closure is independently verified by a service boundary.
+
 1. Apply `supabase/migrations/20260816000000_hosted_primary_v1.sql` and `supabase/migrations/20260816001000_hosted_profile_management.sql` to the target project. Complete.
 2. Exercise profile creation, invitation acceptance, session creation, append retry, stale-sequence rejection, and cross-account reads. Complete across Windows and a physical Mac.
 3. Bind typed profile identity, local-to-cloud enablement, folder attachment, and the existing team UI to the hosted client. Complete.

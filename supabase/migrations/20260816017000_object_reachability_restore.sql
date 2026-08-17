@@ -320,6 +320,7 @@ declare
 	v_profile_id uuid;
 	v_environment_id uuid;
 	v_expected_root text;
+	v_root_creator_user_id uuid;
 	v_existing public.qorpera_object_reachability_graphs%rowtype;
 	v_graph public.qorpera_object_reachability_graphs%rowtype;
 begin
@@ -327,21 +328,22 @@ begin
 		raise exception 'authentication required' using errcode = '42501';
 	end if;
 	if p_root_kind = 'artifact' then
-		select artifact.profile_id, artifact.environment_id, artifact.root_object_sha256
-		into v_profile_id, v_environment_id, v_expected_root
+		select artifact.profile_id, artifact.environment_id, artifact.root_object_sha256, artifact.created_by_user_id
+		into v_profile_id, v_environment_id, v_expected_root, v_root_creator_user_id
 		from public.qorpera_artifacts as artifact
 		where artifact.id = p_root_id
 			and artifact.root_contract <> 'qorpera.unverified-root/v1';
 	elsif p_root_kind = 'company_snapshot' then
-		select snapshot.profile_id, snapshot.environment_id, snapshot.tree_manifest_sha256
-		into v_profile_id, v_environment_id, v_expected_root
+		select snapshot.profile_id, snapshot.environment_id, snapshot.tree_manifest_sha256, snapshot.created_by_user_id
+		into v_profile_id, v_environment_id, v_expected_root, v_root_creator_user_id
 		from public.qorpera_company_snapshots as snapshot
 		where snapshot.id = p_root_id;
 	else
 		raise exception 'object reachability root is invalid' using errcode = '22023';
 	end if;
-	if v_profile_id is null or not public.qorpera_can_write_profile(v_profile_id) then
-		raise exception 'profile write access is required' using errcode = '42501';
+	if v_profile_id is null or v_root_creator_user_id is distinct from v_user_id
+		or not public.qorpera_can_write_profile(v_profile_id) then
+		raise exception 'object reachability requires root-creator access' using errcode = '42501';
 	end if;
 	if p_client_graph_id is null
 		or p_root_object_sha256 is distinct from v_expected_root
@@ -403,8 +405,9 @@ begin
 	from public.qorpera_object_reachability_graphs as graph
 	where graph.id = p_graph_id
 	for update;
-	if auth.uid() is null or not found or not public.qorpera_can_write_profile(v_graph.profile_id) then
-		raise exception 'profile write access is required' using errcode = '42501';
+	if auth.uid() is null or not found or v_graph.created_by_user_id <> auth.uid()
+		or not public.qorpera_can_write_profile(v_graph.profile_id) then
+		raise exception 'object reachability requires graph-creator access' using errcode = '42501';
 	end if;
 	if v_graph.status <> 'uploading' or jsonb_typeof(p_entries) <> 'array'
 		or jsonb_array_length(p_entries) not between 1 and 500 then
@@ -476,13 +479,15 @@ declare
 	v_object_count integer;
 	v_storage_bytes bigint;
 	v_content_sha256 text;
+	v_direct_artifact_bytes bigint;
 begin
 	select graph.* into v_graph
 	from public.qorpera_object_reachability_graphs as graph
 	where graph.id = p_graph_id
 	for update;
-	if auth.uid() is null or not found or not public.qorpera_can_write_profile(v_graph.profile_id) then
-		raise exception 'profile write access is required' using errcode = '42501';
+	if auth.uid() is null or not found or v_graph.created_by_user_id <> auth.uid()
+		or not public.qorpera_can_write_profile(v_graph.profile_id) then
+		raise exception 'object reachability requires graph-creator access' using errcode = '42501';
 	end if;
 	if v_graph.status = 'complete' then
 		return public.qorpera_object_reachability_graph_json(v_graph);
@@ -512,6 +517,14 @@ begin
 		)
 		or not public.qorpera_object_graph_objects_available(p_graph_id) then
 		raise exception 'object reachability graph does not match its declaration' using errcode = '22023';
+	end if;
+	if v_graph.root_kind = 'artifact' then
+		select artifact.bytes into v_direct_artifact_bytes
+		from public.qorpera_artifacts as artifact
+		where artifact.id = v_graph.root_id and artifact.root_contract = 'qorpera.object/v1';
+		if found and (v_object_count <> 1 or v_storage_bytes <> v_direct_artifact_bytes) then
+			raise exception 'direct artifact reachability must contain exactly its root object' using errcode = '22023';
+		end if;
 	end if;
 
 	update public.qorpera_object_reachability_graphs
@@ -564,8 +577,9 @@ begin
 	select graph.* into v_graph
 	from public.qorpera_object_reachability_graphs as graph
 	where graph.id = p_graph_id;
-	if v_user_id is null or not found or not public.qorpera_can_write_profile(v_graph.profile_id) then
-		raise exception 'profile write access is required' using errcode = '42501';
+	if v_user_id is null or not found or v_graph.created_by_user_id <> v_user_id
+		or not public.qorpera_can_write_profile(v_graph.profile_id) then
+		raise exception 'object restore proof requires graph-creator access' using errcode = '42501';
 	end if;
 	if v_graph.status <> 'complete' or p_client_proof_id is null
 		or p_restored_content_sha256 !~ '^[0-9a-f]{64}$'

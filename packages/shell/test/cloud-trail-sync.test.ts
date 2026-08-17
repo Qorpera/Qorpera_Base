@@ -13,7 +13,7 @@ import {
 	type TrailBinding,
 	trailSessionStaffAgentId,
 } from "../src/agent-runtime.ts";
-import { CloudTrailSynchronizer } from "../src/cloud-trail-sync.ts";
+import { CloudTrailSynchronizer, cloudTrailSyncStatePath } from "../src/cloud-trail-sync.ts";
 import type {
 	AppendHostedSessionEventInput,
 	CreateHostedSessionInput,
@@ -161,6 +161,75 @@ afterEach(() => {
 });
 
 describe("cloud trail synchronization", () => {
+	it("quarantines an unparseable event and continues materializing later events", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const primary = new FakeHostedPrimary();
+		const hosted = await primary.createSession({
+			environmentId,
+			clientSessionId: "11111111-1111-4111-8111-111111111111",
+			title: "Quarantine recovery",
+		});
+		const events = primary.events.get(hosted.sessionId);
+		if (!events) throw new Error("hosted session events were not created");
+		events.push(
+			{
+				sessionId: hosted.sessionId,
+				sequence: 1,
+				eventId: "22222222-2222-4222-8222-222222222222",
+				eventType: "message",
+				actorUserId,
+				body: { schema: "malicious.unknown/v1", payload: "ignored" },
+				eventHash: "1".repeat(64),
+				createdAt: new Date().toISOString(),
+			},
+			{
+				sessionId: hosted.sessionId,
+				sequence: 2,
+				eventId: "33333333-3333-4333-8333-333333333333",
+				eventType: "session_info",
+				actorUserId,
+				body: {
+					schema: "qorpera.shared-session/v1",
+					entry: {
+						type: "session_info",
+						id: "cloud-session-info:11111111-1111-4111-8111-111111111111",
+						parentId: null,
+						timestamp: new Date().toISOString(),
+						name: "Quarantine recovery",
+					},
+				},
+				previousHash: "1".repeat(64),
+				eventHash: "2".repeat(64),
+				createdAt: new Date().toISOString(),
+			},
+		);
+
+		const sync = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => false,
+		});
+		await expect(sync.sync()).resolves.toMatchObject({
+			eventsDownloaded: 2,
+			eventsQuarantined: 1,
+			entriesMaterialized: 1,
+		});
+		expect(listSharedTrailSessions(machine)).toHaveLength(1);
+		const state = JSON.parse(readFileSync(cloudTrailSyncStatePath(userData, machine, profileId), "utf-8")) as {
+			sessions: Record<string, { cursor: number; quarantinedEvents: Array<{ eventId: string; reason: string }> }>;
+		};
+		expect(state.sessions[hosted.sessionId]).toMatchObject({
+			cursor: 2,
+			quarantinedEvents: [{ eventId: "22222222-2222-4222-8222-222222222222", reason: "unknown event schema" }],
+		});
+		expect((await sync.sync()).eventsDownloaded).toBe(0);
+	});
+
 	it("retries a remotely committed event without duplicating it after the response is lost", async () => {
 		const machine = join(root, "machine", "company");
 		const userData = join(root, "machine", "user-data");

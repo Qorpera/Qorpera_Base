@@ -21,6 +21,7 @@ const SESSION_METADATA_SCHEMA = "qorpera.shared-session/v1";
 const ENTRY_PART_SCHEMA = "qorpera.shared-trail-entry-part/v1";
 const RAW_PART_BYTES = 128 * 1024;
 const MAX_PARTS = 128;
+const MAX_QUARANTINE_RECEIPTS = 1_000;
 
 type CloudTrailPrimary = Pick<
 	QorperaHostedPrimary,
@@ -33,10 +34,18 @@ interface PendingEntryParts {
 	parts: Array<string | null>;
 }
 
+interface QuarantinedHostedEvent {
+	eventId: string;
+	sequence: number;
+	reason: string;
+	quarantinedAt: string;
+}
+
 interface SessionSyncState {
 	cursor: number;
 	knownEntryIds: string[];
 	pending: Record<string, PendingEntryParts>;
+	quarantinedEvents: QuarantinedHostedEvent[];
 }
 
 interface CloudTrailState {
@@ -51,6 +60,7 @@ export interface CloudTrailSyncResult {
 	sessionsCreated: number;
 	eventsUploaded: number;
 	eventsDownloaded: number;
+	eventsQuarantined: number;
 	entriesMaterialized: number;
 }
 
@@ -99,6 +109,21 @@ function validPending(value: unknown): value is PendingEntryParts {
 	);
 }
 
+function validQuarantineReceipt(value: unknown): value is QuarantinedHostedEvent {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const receipt = value as Partial<QuarantinedHostedEvent>;
+	return (
+		typeof receipt.eventId === "string" &&
+		Number.isSafeInteger(receipt.sequence) &&
+		(receipt.sequence ?? 0) > 0 &&
+		typeof receipt.reason === "string" &&
+		receipt.reason.length > 0 &&
+		receipt.reason.length <= 256 &&
+		typeof receipt.quarantinedAt === "string" &&
+		Number.isFinite(Date.parse(receipt.quarantinedAt))
+	);
+}
+
 function readState(path: string, options: CloudTrailSynchronizerOptions): CloudTrailState {
 	try {
 		const value: unknown = JSON.parse(readFileSync(path, "utf-8"));
@@ -134,10 +159,14 @@ function readState(path: string, options: CloudTrailSynchronizerOptions): CloudT
 			for (const [entryId, parts] of Object.entries(session.pending)) {
 				if (validPending(parts)) pending[entryId] = parts;
 			}
+			const quarantinedEvents = Array.isArray(session.quarantinedEvents)
+				? session.quarantinedEvents.filter(validQuarantineReceipt).slice(-MAX_QUARANTINE_RECEIPTS)
+				: [];
 			sessions[sessionId] = {
 				cursor: session.cursor as number,
 				knownEntryIds: [...new Set(session.knownEntryIds)],
 				pending,
+				quarantinedEvents,
 			};
 		}
 		return { ...emptyState(options), sessions };
@@ -161,7 +190,7 @@ function writeState(path: string, state: CloudTrailState): void {
 function sessionState(state: CloudTrailState, hostedSessionId: string): SessionSyncState {
 	const existing = state.sessions[hostedSessionId];
 	if (existing) return existing;
-	const created: SessionSyncState = { cursor: 0, knownEntryIds: [], pending: {} };
+	const created: SessionSyncState = { cursor: 0, knownEntryIds: [], pending: {}, quarantinedEvents: [] };
 	state.sessions[hostedSessionId] = created;
 	return created;
 }
@@ -245,15 +274,24 @@ function sharedEntry(value: JsonValue | undefined): SharedTrailEntry | undefined
 	return entry as SharedTrailEntry;
 }
 
+class HostedTrailEventError extends Error {
+	readonly entryId?: string;
+
+	constructor(message: string, entryId?: string) {
+		super(message);
+		this.entryId = entryId;
+	}
+}
+
 function consumeHostedEvent(event: HostedSessionEvent, state: SessionSyncState): SharedTrailEntry | undefined {
 	const body = bodyRecord(event.body);
-	if (!body) throw new Error(`hosted trail event ${event.eventId} has an invalid body`);
+	if (!body) throw new HostedTrailEventError("invalid event body");
 	if (body.schema === SESSION_METADATA_SCHEMA) {
 		const entry = sharedEntry(body.entry);
-		if (!entry || entry.type !== "session_info") throw new Error("hosted session metadata is invalid");
+		if (!entry || entry.type !== "session_info") throw new HostedTrailEventError("invalid session metadata");
 		return entry;
 	}
-	if (body.schema !== ENTRY_PART_SCHEMA) throw new Error(`hosted trail event ${event.eventId} has an unknown schema`);
+	if (body.schema !== ENTRY_PART_SCHEMA) throw new HostedTrailEventError("unknown event schema");
 	const { entryId, entryType, partIndex, partCount, payloadBase64 } = body;
 	if (
 		typeof entryId !== "string" ||
@@ -267,7 +305,7 @@ function consumeHostedEvent(event: HostedSessionEvent, state: SessionSyncState):
 		(partIndex as number) >= (partCount as number) ||
 		typeof payloadBase64 !== "string"
 	) {
-		throw new Error(`hosted trail entry part ${event.eventId} is invalid`);
+		throw new HostedTrailEventError("invalid entry part", typeof entryId === "string" ? entryId : undefined);
 	}
 	let pending = state.pending[entryId];
 	if (!pending) {
@@ -279,11 +317,11 @@ function consumeHostedEvent(event: HostedSessionEvent, state: SessionSyncState):
 		state.pending[entryId] = pending;
 	}
 	if (pending.entryType !== entryType || pending.partCount !== partCount) {
-		throw new Error(`hosted trail entry parts conflict: ${entryId}`);
+		throw new HostedTrailEventError("entry parts conflict", entryId);
 	}
 	const index = partIndex as number;
 	if (pending.parts[index] !== null && pending.parts[index] !== payloadBase64) {
-		throw new Error(`hosted trail entry part conflicts: ${entryId}:${index}`);
+		throw new HostedTrailEventError("entry part conflicts", entryId);
 	}
 	pending.parts[index] = payloadBase64;
 	if (pending.parts.some((part) => part === null)) return undefined;
@@ -292,11 +330,11 @@ function consumeHostedEvent(event: HostedSessionEvent, state: SessionSyncState):
 	try {
 		parsed = JSON.parse(json) as JsonValue;
 	} catch {
-		throw new Error(`hosted trail entry payload is invalid JSON: ${entryId}`);
+		throw new HostedTrailEventError("entry payload is invalid JSON", entryId);
 	}
 	const entry = sharedEntry(parsed);
 	if (!entry || entry.id !== entryId || entry.type !== entryType) {
-		throw new Error(`hosted trail entry payload identity is invalid: ${entryId}`);
+		throw new HostedTrailEventError("entry payload identity is invalid", entryId);
 	}
 	delete state.pending[entryId];
 	return entry;
@@ -345,7 +383,21 @@ export class CloudTrailSynchronizer {
 				if (event.sessionId !== hosted.sessionId || event.sequence !== state.cursor + 1) {
 					throw new Error(`hosted trail sequence is discontinuous for ${hosted.sessionId}`);
 				}
-				const entry = consumeHostedEvent(event, state);
+				let entry: SharedTrailEntry | undefined;
+				try {
+					entry = consumeHostedEvent(event, state);
+				} catch (error) {
+					if (!(error instanceof HostedTrailEventError)) throw error;
+					if (error.entryId) delete state.pending[error.entryId];
+					state.quarantinedEvents.push({
+						eventId: event.eventId,
+						sequence: event.sequence,
+						reason: error.message.slice(0, 256),
+						quarantinedAt: new Date().toISOString(),
+					});
+					state.quarantinedEvents = state.quarantinedEvents.slice(-MAX_QUARANTINE_RECEIPTS);
+					result.eventsQuarantined++;
+				}
 				state.cursor = event.sequence;
 				result.eventsDownloaded++;
 				if (entry) {
@@ -444,6 +496,7 @@ export class CloudTrailSynchronizer {
 			sessionsCreated: 0,
 			eventsUploaded: 0,
 			eventsDownloaded: 0,
+			eventsQuarantined: 0,
 			entriesMaterialized: 0,
 		};
 		const state = readState(this.#statePath, this.#options);
