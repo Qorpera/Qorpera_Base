@@ -74,7 +74,6 @@ let pendingRewind = null; // { text } awaiting get_fork_messages for edit-and-re
 let lastSubmittedPrompt = null; // { text, images } — retained so a failed model call can be retried
 let activeRunProgress = null; // completed steps and known file changes for the current founder turn
 let turnFailureCard = null;
-let founderTyping = false;
 let avatarActionPhase = "";
 let avatarActionTimer = null;
 let hiddenNavigation = new Set();
@@ -1464,27 +1463,53 @@ function activeStaffMembers() {
 
 function staffRuntime(staff) {
 	const id = staffId(staff);
-	return (state.runtime?.sessions ?? []).find(
-		(runtime) => (runtime.staffAgentId ?? runtime.agentId) === id && runtime.live,
+	const runtimes = (state.runtime?.sessions ?? []).filter(
+		(runtime) => (runtime.staffAgentId ?? runtime.agentId) === id,
+	);
+	if (id === currentStaffId) {
+		const current = runtimes.find((runtime) => runtime.trailFile === currentSession);
+		if (current) return current;
+	}
+	const live = runtimes.find((runtime) => runtime.live);
+	if (live) return live;
+	return runtimes.find((runtime) => !runtime.autonomous);
+}
+
+function staffNeedsAttention(staff, runtime) {
+	if (runtime?.status === "interrupted") return true;
+	if (staffId(staff) === currentStaffId && currentStaffIntroStatus === "failed") return true;
+	if (
+		!runtime?.live &&
+		(state.scheduledJobs ?? []).some(
+			(job) =>
+				job.staffAgentId === staffId(staff) &&
+				(Boolean(job.suspendedReason) || job.lastOutcome === "failed"),
+		)
+	)
+		return true;
+	return (state.connectionRequests ?? []).some(
+		(request) =>
+			request.staffAgentId === staffId(staff) &&
+			!["connected", "denied", "cancelled"].includes(request.status),
 	);
 }
 
 function staffStatus(staff) {
 	const runtime = staffRuntime(staff);
-	if (runtime?.status === "reconnecting") return "reconnecting";
+	if (staffNeedsAttention(staff, runtime)) return "needs-attention";
+	if (runtime?.status === "reconnecting") return "idle";
 	if (staffId(staff) === currentStaffId && avatarActionPhase) return avatarActionPhase;
-	if (runtime?.status === "starting") return "starting";
-	if (runtime?.status === "running") return "working";
-	if (runtime?.status === "finishing") return "finishing";
-	if (staffId(staff) === currentStaffId && founderTyping && currentView === "chat") return "listening";
+	if (runtime?.status === "running" && runtime.activity?.kind === "writing") return "writing";
+	if (["starting", "running", "finishing"].includes(runtime?.status)) return "working";
 	return staff?.status === "working" || staff?.status === "running" ? "working" : "idle";
 }
 
-const STAFF_MOTION_STATES = ["idle", "listening", "starting", "working", "finishing", "reconnecting"];
+const STAFF_MOTION_STATES = ["idle", "working", "writing", "needs-attention"];
+const STAFF_LEGACY_MOTION_STATES = ["listening", "starting", "finishing", "reconnecting"];
 
 function setAvatarMotionState(avatar, status) {
 	const motion = STAFF_MOTION_STATES.includes(status) ? status : "idle";
-	avatar.classList.remove(...STAFF_MOTION_STATES);
+	avatar.classList.remove(...STAFF_MOTION_STATES, ...STAFF_LEGACY_MOTION_STATES);
 	avatar.classList.add(motion);
 }
 
@@ -1511,7 +1536,8 @@ function setCurrentAvatarAction(phase, duration = 0) {
 
 function makeStaffAvatar(staffOrTemplate, status = "idle") {
 	const avatar = document.createElement("span");
-	avatar.className = `staff-avatar ${status} shape-${staffShape(staffOrTemplate)}`;
+	avatar.className = `staff-avatar shape-${staffShape(staffOrTemplate)}`;
+	setAvatarMotionState(avatar, status);
 	avatar.style.setProperty("--staff-color", staffColor(staffOrTemplate));
 	avatar.style.setProperty("--staff-motion-delay", staffMotionDelay(staffOrTemplate));
 	if (staffId(staffOrTemplate)) avatar.dataset.staffId = staffId(staffOrTemplate);
@@ -1555,7 +1581,8 @@ function paintStaffAvatar(avatar, staff, status = "idle") {
 	avatar.replaceChildren(makeStaffCreature(staff), makeStaffFace());
 	avatar.style.setProperty("--staff-color", staffColor(staff));
 	avatar.style.setProperty("--staff-motion-delay", staffMotionDelay(staff));
-	avatar.className = `staff-avatar ${status} shape-${staffShape(staff)}`;
+	avatar.className = `staff-avatar shape-${staffShape(staff)}`;
+	setAvatarMotionState(avatar, status);
 	avatar.dataset.creature = staffCreatureId(staff);
 	if (staffId(staff)) avatar.dataset.staffId = staffId(staff);
 	else delete avatar.dataset.staffId;
@@ -2338,17 +2365,13 @@ function renderAgentComputerPanel(staff, force = false) {
 	const screenCopy = document.createElement("span");
 	const motion = staffStatus(staff);
 	screenCopy.textContent =
-		motion === "listening"
-			? "Listening to you"
-			: motion === "starting"
-				? "Waking up"
-				: motion === "working"
-					? "Working on the company files"
-					: motion === "finishing"
-						? "Saving its work"
-						: motion === "reconnecting"
-							? "Reconnecting"
-							: "Local computer is idle";
+		motion === "writing"
+			? "Writing"
+			: motion === "working"
+				? "Working"
+				: motion === "needs-attention"
+					? "Needs your attention"
+					: "Local computer is idle";
 	screen.append(avatar, screenCopy);
 	const caption = document.createElement("small");
 	caption.textContent = `This computer · ${staffDisplayName(staff)}`;
@@ -6369,7 +6392,7 @@ function maybeAppendToolProgress(toolName) {
 function threadActivityLabel(mode) {
 	const staff = currentStaff();
 	const name = staff ? staffDisplayName(staff) : $("threadTitle").textContent || "Agent";
-	const action = mode === "working" ? "working" : mode === "typing" ? "writing" : "thinking";
+	const action = mode === "writing" ? "writing" : "working";
 	return `${name} ${action}`;
 }
 
@@ -6394,33 +6417,7 @@ function showThreadActivity(mode) {
 	threadActivityEl.dataset.staffId = activityStaffId;
 	threadActivityEl.dataset.tooltip = label;
 	threadActivityEl.setAttribute("aria-label", label);
-	const motion = mode === "working" ? "working" : mode === "typing" ? "finishing" : "starting";
-	threadActivityEl.replaceChildren(makeStaffAvatar(staff, motion));
-	if (mode === "typing") {
-		const dots = document.createElement("span");
-		dots.className = "agent-writing-dots";
-		dots.setAttribute("aria-hidden", "true");
-		dots.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
-		threadActivityEl.appendChild(dots);
-		if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-			for (const [index, dot] of [...dots.children].entries()) {
-				dot.animate(
-					[
-						{ transform: "translateY(0) scale(1)", offset: 0 },
-						{ transform: "translateY(-5px) scale(1.16)", offset: 0.22 },
-						{ transform: "translateY(0) scale(1)", offset: 0.46 },
-						{ transform: "translateY(0) scale(1)", offset: 1 },
-					],
-					{
-						duration: 900,
-						easing: "cubic-bezier(.34,.05,.3,1)",
-						iterations: Number.POSITIVE_INFINITY,
-						iterationStart: index * 0.13,
-					},
-				);
-			}
-		}
-	}
+	threadActivityEl.replaceChildren(makeStaffAvatar(staff, mode));
 	$("messages").appendChild(threadActivityEl);
 	$("messages").scrollTop = $("messages").scrollHeight;
 }
@@ -6627,7 +6624,7 @@ async function sendPrompt() {
 		);
 		return;
 	}
-	setCurrentAvatarAction("starting", 1200);
+	setCurrentAvatarAction("working", 1200);
 	input.value = "";
 	lastSubmittedPrompt = {
 		text,
@@ -6874,11 +6871,6 @@ function syncComposer() {
 	shell.classList.toggle("composer-expanded", expanded);
 	shell.classList.toggle("composer-has-attachments", pendingImages.length > 0);
 	$("sendBtn").dataset.active = input.value.trim() || pendingImages.length ? "true" : "false";
-	const nextTyping = Boolean(input.value.trim());
-	if (nextTyping !== founderTyping) {
-		founderTyping = nextTyping;
-		syncVisibleStaffAvatars();
-	}
 }
 
 $("input").addEventListener("input", syncComposer);
@@ -7061,14 +7053,16 @@ window.qorpera.onRpcEvent((frame) => {
 			if (delta.type === "text_start") {
 				closeWorkGroup();
 				pendingAssistantTextByIndex.set(delta.contentIndex, "");
-				showThreadActivity("typing");
+				setCurrentAvatarAction("writing");
+				showThreadActivity("writing");
 			}
 			if (delta.type === "text_delta") {
 				pendingAssistantTextByIndex.set(
 					delta.contentIndex,
 					`${pendingAssistantTextByIndex.get(delta.contentIndex) ?? ""}${delta.delta}`,
 				);
-				showThreadActivity("typing");
+				setCurrentAvatarAction("writing");
+				showThreadActivity("writing");
 			}
 			if (delta.type === "text_end") {
 				renderCompletedAssistantBlock(
@@ -7076,9 +7070,13 @@ window.qorpera.onRpcEvent((frame) => {
 					delta.content ?? pendingAssistantTextByIndex.get(delta.contentIndex) ?? "",
 				);
 				pendingAssistantTextByIndex.delete(delta.contentIndex);
-				showThreadActivity("thinking");
+				setCurrentAvatarAction("working");
+				showThreadActivity("working");
 			}
-			if (delta.type === "thinking_start") showThreadActivity("thinking");
+			if (delta.type === "thinking_start") {
+				setCurrentAvatarAction("working");
+				showThreadActivity("working");
+			}
 			break;
 		}
 		case "tool_execution_start": {
@@ -7099,14 +7097,14 @@ window.qorpera.onRpcEvent((frame) => {
 			const entry = index >= 0 ? pendingToolLines.splice(index, 1)[0] : null;
 			if (entry?.line) entry.line.textContent = `${frame.isError ? "✗" : "✓"}${entry.line.textContent.slice(1)}`;
 			if (!frame.isError) recordCompletedTool(activeRunProgress, frame.toolName, entry?.args);
-			if (!pendingToolLines.length && !assistantStreamHasPendingText()) showThreadActivity("thinking");
+			if (!pendingToolLines.length && !assistantStreamHasPendingText()) showThreadActivity("working");
 			refreshState();
 			break;
 		}
 		case "agent_settled":
 			closeWorkGroup();
 			hideThreadActivity();
-			setCurrentAvatarAction("finishing", 850);
+			setCurrentAvatarAction(turnFailureCard ? "needs-attention" : "idle", turnFailureCard ? 0 : 850);
 			refreshState();
 			break;
 		case "agent_start":
@@ -7115,7 +7113,7 @@ window.qorpera.onRpcEvent((frame) => {
 			turnProgressLastKind = "";
 			turnProgressLastAt = 0;
 			setCurrentAvatarAction("working");
-			showThreadActivity("thinking");
+			showThreadActivity("working");
 			if (!activeRunProgress) activeRunProgress = createRunProgress();
 			break;
 		case "message_end": {
@@ -7125,7 +7123,10 @@ window.qorpera.onRpcEvent((frame) => {
 			const ended = frame.message;
 			if (ended?.role === "assistant") {
 				hideThreadActivity();
-				setCurrentAvatarAction("finishing", 850);
+				setCurrentAvatarAction(
+					ended.stopReason === "error" ? "needs-attention" : "idle",
+					ended.stopReason === "error" ? 0 : 850,
+				);
 				if (ended.stopReason !== "error" && ended.stopReason !== "aborted") {
 					reconcileCompletedAssistantMessage(ended);
 				}
