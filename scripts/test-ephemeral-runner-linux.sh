@@ -75,8 +75,8 @@ if command -v systemd-analyze >/dev/null; then
 
 	if ! systemctl --user show-environment >/dev/null 2>&1 && [ "${CI:-}" = true ] && command -v sudo >/dev/null; then
 		sudo systemctl start "user@$(id -u).service"
-		export XDG_RUNTIME_DIR=$runtime_directory
-		export DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime_directory/bus
+		export XDG_RUNTIME_DIR="$runtime_directory"
+		export DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime_directory/bus"
 	fi
 	if systemctl --user show-environment >/dev/null 2>&1; then
 		user_manager_ready=true
