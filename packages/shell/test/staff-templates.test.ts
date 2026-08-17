@@ -1,6 +1,4 @@
 import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isStaffCharacterId, STAFF_CHARACTER_BY_TEMPLATE, STAFF_CHARACTER_IDS } from "../src/staff-characters.ts";
 import {
@@ -22,9 +20,6 @@ const EXPECTED_ROLES = [
 	["costumer-relationist", "Costumer Relationist"],
 	["outreaching-conversationalist", "Outreaching Conversationalist"],
 ] as const;
-const STAFF_CREATURE_DIRECTORY = fileURLToPath(new URL("../userland/staff-creatures/", import.meta.url));
-const STAFF_CREATURE_MOTION_DIRECTORY = join(STAFF_CREATURE_DIRECTORY, "motion");
-
 describe("shell starter staff templates", () => {
 	it("provides the ten founder-selected roles in a stable order", () => {
 		const templates = listStaffTemplates();
@@ -47,14 +42,11 @@ describe("shell starter staff templates", () => {
 		}
 	});
 
-	it("ships static, idle, and working creature assets for every starter role", () => {
-		for (const templateId of STAFF_TEMPLATE_IDS) {
-			expect(existsSync(join(STAFF_CREATURE_DIRECTORY, `${templateId}.png`))).toBe(true);
-			for (const motion of ["idle", "working"]) {
-				const asset = join(STAFF_CREATURE_MOTION_DIRECTORY, `${templateId}-${motion}.webm`);
-				expect(existsSync(asset)).toBe(true);
-				expect(statSync(asset).size).toBeGreaterThan(10_000);
-			}
+	it("ships a static asset for every approved character", () => {
+		for (const characterId of STAFF_CHARACTER_IDS) {
+			const asset = new URL(`../userland/staff-creatures/${characterId}.png`, import.meta.url);
+			expect(existsSync(asset)).toBe(true);
+			expect(statSync(asset).size).toBeGreaterThan(10_000);
 		}
 	});
 

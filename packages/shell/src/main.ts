@@ -3729,7 +3729,7 @@ async function createStaffMember(
 				appearance: {
 					color: input.appearance?.color ?? template?.avatarColorToken ?? "#1684ff",
 					shape: input.appearance?.shape ?? template?.avatarShapeToken ?? "round",
-					creature: input.appearance?.creature ?? (template ? staffCharacterForTemplate(template.id) : "palette"),
+					creature: input.appearance?.creature ?? (template ? staffCharacterForTemplate(template.id) : "pebble"),
 				},
 			});
 			commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);
