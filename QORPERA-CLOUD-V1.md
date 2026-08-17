@@ -193,6 +193,7 @@ Migration-history note: `20260816003000_profile_promotion_identity.sql` was rena
 
 ## Not in this slice
 
+- Remaining non-blocking review findings are grouped by subsystem and deployment gate in [`CLOUD-HARDENING-BACKLOG.md`](CLOUD-HARDENING-BACKLOG.md).
 - Building and signing the execution image in a real registry, live Linux systemd/rootless-container validation, optional microVM execution, and physical runner-host hardening.
 - Autonomous scheduling policy and separately approved named network/tool adapters.
 - Chunked runner outputs above 8 MiB, explicit sibling-substrate merge/rebase, automatic orphan-output cleanup, automatic retention-policy cleanup, and object compaction.
