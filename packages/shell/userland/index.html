@@ -372,6 +372,14 @@
 		<div id="companyIconPicker" class="company-icon-picker" role="radiogroup" aria-label="Profile icon"></div>
 		<label class="sr-only" for="companyName">Profile name</label>
 		<input class="company-name-input" id="companyName" type="text" autocomplete="off" spellcheck="false" maxlength="64" aria-describedby="companyFormError">
+		<fieldset class="company-placement-picker">
+			<legend>Where should this profile live?</legend>
+			<div class="department-type-grid" id="companyPlacementPicker">
+				<button class="choice-card selected" type="button" data-profile-placement="local" aria-pressed="true"><strong>On this computer</strong><small>Keep the profile and its history local.</small></button>
+				<button class="choice-card" type="button" data-profile-placement="hosted" aria-pressed="false"><strong>Hosted for sharing</strong><small>Sync profile identity, team access, staff, and attended chats.</small></button>
+			</div>
+			<p id="companyPlacementNote">Execution is chosen separately for each session or worktree.</p>
+		</fieldset>
 		<div id="companyFormError" class="company-form-error" role="status" aria-live="polite"></div>
 		<footer>
 			<button class="secondary-button" id="companyCancel" type="button">Cancel</button>

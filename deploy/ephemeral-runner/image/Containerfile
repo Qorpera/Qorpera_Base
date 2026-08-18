@@ -1,0 +1,11 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.title="Qorpera sandbox probe"
+LABEL org.opencontainers.image.description="Minimal execution contract used to prove Qorpera ephemeral runner containment"
+LABEL org.opencontainers.image.vendor="Qorpera"
+
+COPY --chmod=0444 qorpera-sandbox-probe.mjs /qorpera/lib/qorpera-sandbox-probe.mjs
+COPY --chmod=0555 run-job /qorpera/bin/run-job
+
+ENTRYPOINT ["/qorpera/bin/run-job"]

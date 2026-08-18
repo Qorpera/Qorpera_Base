@@ -131,6 +131,32 @@ export interface TrailAppendFrame {
 	entry: SessionEntry;
 }
 
+/** Portable conversation entry. Local kernel stamps are deliberately absent:
+ * each machine verifies and re-stamps materialized events into its own trail. */
+export interface SharedTrailEntry {
+	type: string;
+	id: string;
+	parentId: string | null;
+	timestamp: string;
+	[key: string]: unknown;
+}
+
+export interface SharedTrailSession {
+	localSessionId: string;
+	trailFile: string;
+	createdAt: string;
+	title: string;
+	staffAgentId?: string;
+	entries: SharedTrailEntry[];
+}
+
+export interface SharedTrailMaterialization {
+	localSessionId: string;
+	createdAt: string;
+	title: string;
+	staffAgentId?: string;
+}
+
 interface KernelWriteFrame {
 	type: "qorpera_kernel_write";
 	token: string;
@@ -173,6 +199,7 @@ export interface SignedKernelBindingResponse {
 const MAX_HEADER_BYTES = 64 * 1024;
 const MAX_TRAIL_ENTRY_BYTES = 16 * 1024 * 1024;
 const TRAIL_SESSION_VERSION = 5;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TRAIL_ENTRY_TYPES = new Set([
 	"message",
 	"thinking_level_change",
@@ -451,6 +478,261 @@ export function bindTrailSession(
 		writeFileSync(path, `${JSON.stringify(header)}\n`, { flag: "wx" });
 	}
 	return { path, file: basename(path), sessionId, cwd: resolve(cwd), token: randomUUID(), authority, audit };
+}
+
+function portableTrailEntries(path: string): SharedTrailEntry[] {
+	const localEntries = readFileSync(path, "utf-8")
+		.split(/\r?\n/)
+		.slice(1)
+		.filter(Boolean)
+		.map((line) => JSON.parse(line) as SessionEntry);
+	const echoedUserMessages: Array<{ text: string; at: number }> = [];
+	for (const entry of localEntries) {
+		if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
+		const message = entry.message as { role?: unknown; content?: unknown };
+		if (message.role !== "user" || !Array.isArray(message.content)) continue;
+		const text = message.content
+			.map((part) =>
+				part && typeof part === "object" && (part as { type?: unknown }).type === "text"
+					? (part as { text?: unknown }).text
+					: undefined,
+			)
+			.filter((part): part is string => typeof part === "string")
+			.join("");
+		if (text) echoedUserMessages.push({ text, at: Date.parse(entry.timestamp) });
+	}
+	const entries: SharedTrailEntry[] = [];
+	const portableIds = new Set<string>();
+	for (const entry of localEntries) {
+		let candidate: SharedTrailEntry;
+		if (entry.type === "custom" && entry.customType === "qorpera_kernel_input") {
+			const data = entry.data;
+			if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+			const input = data as { attended?: unknown; frameType?: unknown; message?: unknown };
+			if (input.attended !== true || input.frameType !== "prompt" || typeof input.message !== "string") continue;
+			const timestamp = Date.parse(entry.timestamp);
+			if (
+				echoedUserMessages.some(
+					(message) => message.text === input.message && Math.abs(message.at - timestamp) <= 30_000,
+				)
+			)
+				continue;
+			candidate = {
+				type: "message",
+				id: `shared-input:${createHash("sha256").update(entry.id).digest("hex").slice(0, 32)}`,
+				parentId: entries.at(-1)?.id ?? null,
+				timestamp: entry.timestamp,
+				message: {
+					role: "user",
+					content: [{ type: "text", text: input.message }],
+					timestamp,
+				},
+			};
+		} else {
+			if (entry.type === "custom" && entry.customType?.toString().startsWith("qorpera_kernel_")) continue;
+			candidate = unsignedTrailEntry(entry) as SharedTrailEntry;
+		}
+		delete candidate.provenance;
+		if (
+			typeof candidate.timestamp !== "string" ||
+			!Number.isFinite(Date.parse(candidate.timestamp)) ||
+			(candidate.parentId !== null && !portableIds.has(candidate.parentId)) ||
+			(candidate.type === "branch_summary" && !portableIds.has(candidate.fromId as string)) ||
+			(candidate.type === "label" && !portableIds.has(candidate.targetId as string))
+		) {
+			continue;
+		}
+		const validationIds = new Set(portableIds);
+		if (!validTrailEntry(candidate, validationIds)) continue;
+		portableIds.add(candidate.id);
+		entries.push(candidate);
+	}
+	return entries;
+}
+
+function sharedTrailTitle(entries: readonly SharedTrailEntry[], staffAgentId?: string): string {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry.type === "session_info" && typeof entry.name === "string" && entry.name.trim()) {
+			return entry.name
+				.replace(/[\r\n]+/g, " ")
+				.trim()
+				.slice(0, 256);
+		}
+	}
+	return staffAgentId ? staffAgentId.replace(/[-_]+/g, " ").slice(0, 256) : "Founder chat";
+}
+
+function trailHasAttendedInput(path: string): boolean {
+	for (const line of readFileSync(path, "utf-8").split(/\r?\n/).slice(1)) {
+		if (!line) continue;
+		const entry = JSON.parse(line) as SessionEntry;
+		if (entry.type !== "custom" || entry.customType !== "qorpera_kernel_input") continue;
+		const data = entry.data;
+		if (
+			data &&
+			typeof data === "object" &&
+			!Array.isArray(data) &&
+			(data as { attended?: unknown }).attended === true
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/** Enumerate controller conversations with attended authority or a verified
+ * attended input. Staff introductions begin unattended, so their immutable
+ * header becomes shareable only after a person actually writes in the chat.
+ * Autonomous runs and product worktrees stay machine-local in this slice. */
+export function listSharedTrailSessions(root: string): SharedTrailSession[] {
+	const trailDir = assertPhysicalCompanyTree(root, "trail");
+	const sessions: SharedTrailSession[] = [];
+	const sessionIds = new Set<string>();
+	for (const file of readdirSync(trailDir)
+		.filter((candidate) => candidate.endsWith(".jsonl"))
+		.sort()) {
+		const path = join(trailDir, file);
+		const header = readHeader(path);
+		const authority = header.qorpera;
+		if (
+			header.version !== TRAIL_SESSION_VERSION ||
+			!UUID_PATTERN.test(header.id) ||
+			!authority ||
+			authority.actor !== "controller" ||
+			(!authority.attended && !trailHasAttendedInput(path)) ||
+			authority.autonomous ||
+			authority.label ||
+			authority.department ||
+			authority.worktree
+		) {
+			continue;
+		}
+		loadTrailAudit(path);
+		if (sessionIds.has(header.id)) throw new Error(`duplicate trail session identity: ${header.id}`);
+		sessionIds.add(header.id);
+		const entries = portableTrailEntries(path);
+		if (entries.length === 0) continue;
+		sessions.push({
+			localSessionId: header.id,
+			trailFile: file,
+			createdAt: header.timestamp,
+			title: sharedTrailTitle(entries, authority.staffAgentId),
+			staffAgentId: authority.staffAgentId,
+			entries,
+		});
+	}
+	return sessions;
+}
+
+/** Read the kernel-bound staff identity for a local trail. Callers use this
+ * to restore the correct staff runtime when a shared conversation is opened;
+ * the renderer never supplies or overrides the identity. */
+export function trailSessionStaffAgentId(root: string, sessionFile: string): string | undefined {
+	const trailDir = assertPhysicalCompanyTree(root, "trail");
+	if (basename(sessionFile) !== sessionFile || !sessionFile.endsWith(".jsonl")) {
+		throw new Error("trail session must be a JSONL filename inside the company trail");
+	}
+	const path = join(trailDir, sessionFile);
+	if (!existsSync(path)) throw new Error(`trail session does not exist: ${sessionFile}`);
+	assertPhysicalCompanyTree(root, join("trail", sessionFile));
+	const header = readHeader(path);
+	if (header.version !== TRAIL_SESSION_VERSION) {
+		throw new Error(`trail session schema ${header.version ?? 1} requires an explicit append-only migration`);
+	}
+	return header.qorpera?.staffAgentId;
+}
+
+function existingTrailFileForSession(root: string, sessionId: string): string | undefined {
+	const trailDir = assertPhysicalCompanyTree(root, "trail");
+	let match: string | undefined;
+	for (const file of readdirSync(trailDir).filter((candidate) => candidate.endsWith(".jsonl"))) {
+		const header = readHeader(join(trailDir, file));
+		if (header.id !== sessionId) continue;
+		if (match) throw new Error(`duplicate trail session identity: ${sessionId}`);
+		match = file;
+	}
+	return match;
+}
+
+function stampSharedTrailEntry(binding: TrailBinding, entry: SharedTrailEntry): TrailAppendFrame {
+	if (!Number.isFinite(Date.parse(entry.timestamp))) throw new Error("shared trail entry timestamp is invalid");
+	const stamped: SessionEntry = {
+		...unsignedTrailEntry(entry as SessionEntry),
+		provenance: { source: "kernel", trust: "observed" },
+	};
+	stamped.kernel = {
+		sequence: binding.audit.sequence + 1,
+		receivedAt: entry.timestamp,
+		previousHash: binding.audit.lastHash || null,
+		hash: "",
+	};
+	stamped.kernel.hash = auditHash(stamped, binding.audit.lastHash);
+	return { type: "qorpera_trail_append", token: binding.token, entry: stamped };
+}
+
+/** Merge hosted entries into a verified local trail. Passing the live binding
+ * updates the exact audit cursor used by the attached executor. */
+export function materializeSharedTrailSession(
+	root: string,
+	session: SharedTrailMaterialization,
+	entries: readonly SharedTrailEntry[],
+	liveBinding?: TrailBinding,
+): TrailBinding {
+	if (!UUID_PATTERN.test(session.localSessionId)) throw new Error("shared trail session id must be a UUID");
+	if (!Number.isFinite(Date.parse(session.createdAt))) throw new Error("shared trail creation time is invalid");
+	const scope: AgentScope = {
+		actor: "controller",
+		attended: true,
+		...(session.staffAgentId ? { staffAgentId: session.staffAgentId } : {}),
+	};
+	let binding = liveBinding;
+	if (binding && binding.sessionId !== session.localSessionId) {
+		throw new Error("live trail binding does not match the shared session");
+	}
+	if (!binding) {
+		let trailFile = existingTrailFileForSession(root, session.localSessionId);
+		if (!trailFile) {
+			const trailDir = assertPhysicalCompanyTree(root, "trail");
+			const fileTimestamp = session.createdAt.replace(/[:.]/g, "-");
+			trailFile = `${fileTimestamp}_${session.localSessionId}.jsonl`;
+			const header: SessionHeader = {
+				type: "session",
+				version: TRAIL_SESSION_VERSION,
+				id: session.localSessionId,
+				timestamp: session.createdAt,
+				cwd: resolve(root),
+				qorpera: authorityForScope(scope),
+			};
+			writeFileSync(join(trailDir, trailFile), `${JSON.stringify(header)}\n`, { flag: "wx" });
+		}
+		binding = bindTrailSession(root, root, scope, trailFile);
+	}
+
+	const existing = new Map(portableTrailEntries(binding.path).map((entry) => [entry.id, entry]));
+	for (const input of entries) {
+		const candidate = { ...input };
+		delete candidate.kernel;
+		delete candidate.provenance;
+		const previous = existing.get(candidate.id);
+		if (previous) {
+			if (JSON.stringify(previous) !== JSON.stringify(candidate)) {
+				throw new Error(`shared trail entry identity conflict: ${candidate.id}`);
+			}
+			continue;
+		}
+		if (Buffer.byteLength(JSON.stringify(candidate), "utf-8") > MAX_TRAIL_ENTRY_BYTES) {
+			throw new Error(`shared trail entry is too large: ${candidate.id}`);
+		}
+		if (!validTrailEntry(candidate as SessionEntry, binding.audit.ids)) {
+			throw new Error(`shared trail entry graph is invalid: ${candidate.id}`);
+		}
+		const append = stampSharedTrailEntry(binding, candidate);
+		appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+		commitTrailAppend(binding, append);
+		existing.set(candidate.id, candidate);
+	}
+	return binding;
 }
 
 /** Newest founder chat the controller scope can resume: current schema,

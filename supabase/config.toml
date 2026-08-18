@@ -1,0 +1,11 @@
+[functions.profile-invitation-email]
+verify_jwt = false
+
+[functions.artifact-gc-worker]
+verify_jwt = false
+
+[functions.runner-control]
+verify_jwt = false
+
+[functions.runner-broker]
+verify_jwt = false
