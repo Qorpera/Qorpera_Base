@@ -439,6 +439,8 @@ export interface HostedPrimaryTransport {
 	}): Promise<unknown>;
 	listInvitations(): Promise<unknown>;
 	acceptInvitation(input: { p_invitation_id: string }): Promise<unknown>;
+	leaveProfile(input: { p_profile_id: string }): Promise<unknown>;
+	deleteProfile(input: { p_profile_id: string }): Promise<unknown>;
 	declineInvitation(input: { p_invitation_id: string }): Promise<unknown>;
 	profileTeam(input: { p_profile_id: string }): Promise<unknown>;
 	cancelInvitation(input: { p_profile_id: string; p_invitation_id: string }): Promise<unknown>;
@@ -602,6 +604,8 @@ export interface HostedPrimaryDatabase {
 			qorpera_list_profile_invitations: { Args: Record<never, never>; Returns: JsonValue };
 			qorpera_accept_profile_invitation: { Args: { p_invitation_id: string }; Returns: JsonValue };
 			qorpera_decline_profile_invitation: { Args: { p_invitation_id: string }; Returns: JsonValue };
+			qorpera_leave_hosted_profile: { Args: { p_profile_id: string }; Returns: JsonValue };
+			qorpera_delete_hosted_profile: { Args: { p_profile_id: string }; Returns: JsonValue };
 			qorpera_profile_team_info: { Args: { p_profile_id: string }; Returns: JsonValue };
 			qorpera_cancel_profile_invitation: {
 				Args: { p_profile_id: string; p_invitation_id: string };
@@ -857,6 +861,18 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 
 	async declineInvitation(input: Parameters<HostedPrimaryTransport["declineInvitation"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_decline_profile_invitation", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async leaveProfile(input: Parameters<HostedPrimaryTransport["leaveProfile"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_leave_hosted_profile", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async deleteProfile(input: Parameters<HostedPrimaryTransport["deleteProfile"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_delete_hosted_profile", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -1952,6 +1968,16 @@ export class QorperaHostedPrimary {
 			await this.transport.declineInvitation({ p_invitation_id: invitationId }),
 			"invitation decline result",
 		);
+	}
+
+	async leaveProfile(profileId: string): Promise<void> {
+		requiredUuid(profileId, "Profile id");
+		requireTrue(await this.transport.leaveProfile({ p_profile_id: profileId }), "profile leave result");
+	}
+
+	async deleteProfile(profileId: string): Promise<void> {
+		requiredUuid(profileId, "Profile id");
+		requireTrue(await this.transport.deleteProfile({ p_profile_id: profileId }), "profile deletion result");
 	}
 
 	async profileTeam(profileId: string): Promise<HostedProfileTeam> {

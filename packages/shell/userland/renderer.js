@@ -533,25 +533,35 @@ async function renderHub() {
 			const remove = document.createElement("button");
 			remove.type = "button";
 			remove.setAttribute("role", "menuitem");
-			// Which dismissal this card supports: invitations decline, hosted
-			// profiles not set up here hide locally, attached companies detach.
-			// Detaching a cloud company never touches the cloud profile, so it
-			// is safe for every member role, not just owners.
-			remove.textContent = company.invitationPending
-				? "Decline invitation"
-				: company.setupRequired
-					? "Hide on this computer"
-					: company.profileType === "cloud"
-						? "Remove from this computer"
-						: "Remove from Qorpera";
+			// Which dismissal this card supports: invitations decline; cloud
+			// companies follow the caller's role -- the owner deletes the
+			// profile for everyone, an invited member leaves it; local
+			// companies detach from this machine.
+			const cloudRole = company.profileType === "cloud" ? company.access?.role : undefined;
+			const dismissal = company.invitationPending
+				? "decline"
+				: cloudRole === "owner"
+					? "delete"
+					: cloudRole
+						? "leave"
+						: "remove";
+			remove.textContent = {
+				decline: "Decline invitation",
+				delete: "Delete from cloud",
+				leave: "Leave company",
+				remove: "Remove from Qorpera",
+			}[dismissal];
 			remove.onclick = async () => {
 				menu.hidden = true;
 				actions.setAttribute("aria-expanded", "false");
-				const result = company.invitationPending
-					? await window.qorpera.declineCloudInvitation(company.invitationId)
-					: company.setupRequired
-						? await window.qorpera.hideCloudProfile(company.profileId, company.name)
-						: await window.qorpera.removeCompany(company.root);
+				const result =
+					dismissal === "decline"
+						? await window.qorpera.declineCloudInvitation(company.invitationId)
+						: dismissal === "delete"
+							? await window.qorpera.deleteCloudProfile(company.profileId, company.name)
+							: dismissal === "leave"
+								? await window.qorpera.leaveCloudProfile(company.profileId, company.name)
+								: await window.qorpera.removeCompany(company.root);
 				if (result?.ok) {
 					await renderHub();
 					return;
@@ -559,11 +569,12 @@ async function renderHub() {
 				if (!result?.cancelled) {
 					$("hubError").textContent =
 						result?.error ??
-						(company.invitationPending
-							? "Invitation could not be declined."
-							: company.setupRequired
-								? "Profile could not be hidden."
-								: "Company could not be removed from Qorpera.");
+						{
+							decline: "Invitation could not be declined.",
+							delete: "Company could not be deleted from the cloud.",
+							leave: "Company could not be left.",
+							remove: "Company could not be removed from Qorpera.",
+						}[dismissal];
 				}
 			};
 			menu.appendChild(remove);
