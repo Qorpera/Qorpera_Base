@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	disconnectIntelligence: () => ipcRenderer.invoke("intelligence:sign-out"),
 	listCompanies: () => ipcRenderer.invoke("companies:list"),
 	removeCompany: (root) => ipcRenderer.invoke("company:remove", root),
+	hideCloudProfile: (profileId, name) => ipcRenderer.invoke("profile:hide-cloud", profileId, name),
 	acceptCloudInvitation: (invitationId) => ipcRenderer.invoke("profile:accept-invitation", invitationId),
 	declineCloudInvitation: (invitationId) => ipcRenderer.invoke("profile:decline-invitation", invitationId),
 	materializeCloudProfile: (profileId) => ipcRenderer.invoke("profile:materialize-cloud", profileId),
