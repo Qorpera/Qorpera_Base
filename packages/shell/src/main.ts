@@ -1451,6 +1451,19 @@ interface Slot {
 
 const FIXED_SHELL_DIR = join(DIRNAME, "userland");
 
+function detachCloudProfileLocally(userId: string, profileId: string): void {
+	const userData = app.getPath("userData");
+	for (const company of listCompanies()) {
+		const attachment = readProfileAttachment(userData, company.root);
+		if (attachment?.profileType !== "cloud" || attachment.profileId !== profileId) continue;
+		if (slotForCompany(company.root)) continue; // an open window keeps its runtime; the hub refresh reflects the loss
+		unregisterCompany(company.root);
+		forgetCompany(userData, userId, company.root);
+		forgetCompanyIcon(userData, userId, company.root);
+		forgetProfileAttachment(userData, company.root);
+	}
+}
+
 const HIDDEN_CLOUD_PROFILES_SCHEMA = "qorpera.hidden-cloud-profiles/v1";
 
 function hiddenCloudProfilesPath(userData: string): string {
@@ -8320,30 +8333,60 @@ app.whenReady().then(async () => {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
 	});
-	ipcMain.handle("profile:hide-cloud", async (event, profileId: unknown, name: unknown) => {
-		if (
-			!isTrustedHubSender(event.sender) ||
-			typeof profileId !== "string" ||
-			!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{3,4}-[0-9a-f]{3,4}-[0-9a-f]{12}$/i.test(profileId.trim())
-		) {
+	ipcMain.handle("profile:leave-cloud", async (event, profileId: unknown, name: unknown) => {
+		if (!isTrustedHubSender(event.sender) || typeof profileId !== "string") {
 			return { ok: false, error: "invalid profile" };
 		}
 		const account = await authenticatedAccount();
-		if (!account?.user) return { ok: false, error: "Sign in before hiding a profile." };
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		if (!account?.user || !primary) return { ok: false, error: "Sign in before leaving a company." };
 		const owner = BrowserWindow.fromWebContents(event.sender);
 		if (!owner) return { ok: false, error: "Company selector is unavailable." };
-		const displayName = typeof name === "string" && name.trim() ? name.trim().slice(0, 120) : "this profile";
+		const displayName = typeof name === "string" && name.trim() ? name.trim().slice(0, 120) : "this company";
 		const confirmation = await dialog.showMessageBox(owner, {
 			type: "warning",
-			buttons: ["Cancel", "Hide on this computer"],
+			buttons: ["Cancel", "Leave company"],
 			defaultId: 0,
 			cancelId: 0,
-			message: `Hide ${displayName} on this computer?`,
+			message: `Leave ${displayName}?`,
 			detail:
-				"The cloud profile, its team, and its data stay intact, and it stays available on every other computer. Accepting a new invitation brings it back here.",
+				"Your membership is removed and the company disappears from your list on every computer. The company itself, its team, and its data stay intact. Rejoining needs a new invitation.",
 		});
 		if (confirmation.response !== 1) return { ok: false, cancelled: true };
-		hideCloudProfileForAccount(app.getPath("userData"), account.user.id, profileId.trim());
+		try {
+			await primary.leaveProfile(profileId);
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+		detachCloudProfileLocally(account.user.id, profileId);
+		return { ok: true };
+	});
+	ipcMain.handle("profile:delete-cloud", async (event, profileId: unknown, name: unknown) => {
+		if (!isTrustedHubSender(event.sender) || typeof profileId !== "string") {
+			return { ok: false, error: "invalid profile" };
+		}
+		const account = await authenticatedAccount();
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		if (!account?.user || !primary) return { ok: false, error: "Sign in before deleting a company." };
+		const owner = BrowserWindow.fromWebContents(event.sender);
+		if (!owner) return { ok: false, error: "Company selector is unavailable." };
+		const displayName = typeof name === "string" && name.trim() ? name.trim().slice(0, 120) : "this company";
+		const confirmation = await dialog.showMessageBox(owner, {
+			type: "warning",
+			buttons: ["Cancel", "Delete from cloud"],
+			defaultId: 0,
+			cancelId: 0,
+			message: `Delete ${displayName} from the cloud?`,
+			detail:
+				"This permanently deletes the cloud profile for every member: the team, its sessions, snapshots, and artifacts. Company folders already on a computer stay on that computer. This cannot be undone.",
+		});
+		if (confirmation.response !== 1) return { ok: false, cancelled: true };
+		try {
+			await primary.deleteProfile(profileId);
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+		detachCloudProfileLocally(account.user.id, profileId);
 		return { ok: true };
 	});
 	ipcMain.handle("company:remove", async (event, root: unknown) => {
