@@ -72,7 +72,7 @@ begin
 			('qorpera_list_company_workspaces(uuid)', format('public.qorpera_list_company_workspaces(%L)', v_env)),
 			('qorpera_list_shared_sessions(uuid)', format('public.qorpera_list_shared_sessions(%L)', v_env)),
 			-- writes
-			('qorpera_invite_profile_member(uuid, text, public.qorpera_profile_role)', format('public.qorpera_invite_profile_member(%L, %L, ''member'')', v_a, 'cross-account@example.test')),
+			('qorpera_invite_profile_member(uuid, text, public.qorpera_profile_role)', format('public.qorpera_invite_profile_member(%L, %L, ''contributor'')', v_a, 'cross-account@example.test')),
 			('qorpera_ensure_company_workspace(uuid, uuid, text, uuid)', format('public.qorpera_ensure_company_workspace(%L, ''88000000-0000-4000-8000-000000000001'', ''Hijack'', null)', v_env)),
 			('qorpera_create_shared_session(uuid, text, text, uuid)', format('public.qorpera_create_shared_session(%L, ''Hijack'', null, null)', v_env))
 		) as t(sig, call)
