@@ -8,8 +8,9 @@
 --
 -- Role switching stays at the top level (psql), never inside plpgsql, so each
 -- assertion block provably runs under the role named just above it. Profile
--- ids are captured while still superuser, because RLS deliberately hides the
--- other account's id from the account doing the asserting.
+-- ids travel in session GUCs, because RLS deliberately hides the other
+-- account's id from the account doing the asserting, and psql does not
+-- interpolate its own variables inside dollar-quoted blocks.
 
 insert into auth.users (id, email, email_confirmed_at)
 values
@@ -18,19 +19,19 @@ values
 
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;
-select (public.qorpera_create_hosted_profile('Separation A', 'main', 1) ->> 'profile_id') as profile_a \gset
+select set_config('qorpera_test.profile_a', public.qorpera_create_hosted_profile('Separation A', 'main', 1) ->> 'profile_id', false);
 reset role;
 
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000b","email":"sep-owner-b@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;
-select (public.qorpera_create_hosted_profile('Separation B', 'main', 1) ->> 'profile_id') as profile_b \gset
+select set_config('qorpera_test.profile_b', public.qorpera_create_hosted_profile('Separation B', 'main', 1) ->> 'profile_id', false);
 reset role;
 
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000b","email":"sep-owner-b@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;
 
 do $$
-declare v_a uuid := :'profile_a'; v_b uuid := :'profile_b'; v_seen integer; v_ok boolean;
+declare v_a uuid := current_setting('qorpera_test.profile_a')::uuid; v_b uuid := current_setting('qorpera_test.profile_b')::uuid; v_seen integer; v_ok boolean;
 begin
 	if current_user <> 'authenticated' then
 		raise exception 'separation test is not running as authenticated (got %)', current_user;
@@ -102,7 +103,7 @@ select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-0000000
 set role authenticated;
 
 do $$
-declare v_a uuid := :'profile_a'; v_seen integer;
+declare v_a uuid := current_setting('qorpera_test.profile_a')::uuid; v_seen integer;
 begin
 	insert into storage.objects (bucket_id, name, metadata)
 	values ('qorpera-profile-objects', v_a::text || '/' || repeat('1', 64), '{"size":"11"}');
