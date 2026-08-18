@@ -49,6 +49,20 @@ $$;
 
 reset role;
 
+-- Anti-vacuity, asserted from outside any client role: B's zero-count read
+-- below only means "hidden" if there is genuinely something under A's prefix
+-- to hide. Without this, deleting the read policy outright would still pass.
+do $$
+declare v_a uuid := current_setting('qorpera_test.profile_a')::uuid; v_seen integer;
+begin
+	select count(*) into v_seen from storage.objects
+	where bucket_id = 'qorpera-profile-objects' and name = v_a::text || '/' || repeat('1', 64);
+	if v_seen <> 1 then
+		raise exception 'cross-account read assertion would be vacuous: A has no object to hide';
+	end if;
+end
+$$;
+
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000b","email":"sep-owner-b@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;
 
@@ -125,11 +139,6 @@ begin
 	select count(*) into v_seen from storage.objects
 	where bucket_id = 'qorpera-profile-objects' and name like v_a::text || '/%';
 	if v_seen <> 0 then raise exception 'B read objects under A prefix'; end if;
-	-- Anti-vacuity: the zero above is only meaningful because A's object
-	-- exists and is hidden. Confirm it exists from a vantage that can see it.
-	if not public.qorpera_object_exists(v_a, repeat('1', 64), 11) then
-		raise exception 'cross-account read assertion is vacuous: A has no object to hide';
-	end if;
 end
 $$;
 
