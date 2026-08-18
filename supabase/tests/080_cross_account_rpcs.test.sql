@@ -11,6 +11,13 @@
 -- data. A leak is any payload. Anything else -- including a signature that no
 -- longer exists -- fails loudly rather than passing quietly, because an
 -- assertion that silently stops testing anything is worse than none.
+--
+-- Only RPCs keyed by an identifier account A actually owns are listed. Others
+-- in the granted surface are keyed by a workspace, plan, version or job id
+-- (or, for qorpera_promote_local_profile, by a caller-supplied idempotency
+-- key that never addresses another account's data at all) and would test
+-- nothing here; covering those needs fixtures that create those objects for A
+-- first, and is left for when this suite grows them.
 
 select set_config('qorpera_test.rpc_profile_a',
 	(select profile.id::text from public.qorpera_profiles as profile
@@ -27,6 +34,7 @@ do $$
 declare
 	v_a text := current_setting('qorpera_test.rpc_profile_a');
 	v_env text := current_setting('qorpera_test.rpc_environment_a');
+	v_expected integer := 16;
 	v_case record;
 	v_sql text;
 	v_retset boolean;
@@ -52,24 +60,19 @@ begin
 			('qorpera_list_profile_staff(uuid)', format('public.qorpera_list_profile_staff(%L)', v_a)),
 			('qorpera_member_role(uuid)', format('public.qorpera_member_role(%L)', v_a)),
 			('qorpera_profile_team_info(uuid)', format('public.qorpera_profile_team_info(%L)', v_a)),
-			('qorpera_list_company_workspaces(uuid)', format('public.qorpera_list_company_workspaces(%L)', v_a)),
-			('qorpera_list_company_snapshots(uuid, integer)', format('public.qorpera_list_company_snapshots(%L, 10)', v_a)),
-			('qorpera_list_shared_sessions(uuid)', format('public.qorpera_list_shared_sessions(%L)', v_a)),
 			('qorpera_list_runners(uuid)', format('public.qorpera_list_runners(%L)', v_a)),
 			('qorpera_list_runner_jobs(uuid, integer)', format('public.qorpera_list_runner_jobs(%L, 10)', v_a)),
 			('qorpera_list_artifact_gc_candidates(uuid, integer)', format('public.qorpera_list_artifact_gc_candidates(%L, 10)', v_a)),
 			('qorpera_list_artifact_gc_plans(uuid, integer)', format('public.qorpera_list_artifact_gc_plans(%L, 10)', v_a)),
-			('qorpera_list_artifact_gc_audit(uuid, bigint, integer)', format('public.qorpera_list_artifact_gc_audit(%L, 0, 10)', v_a)),
 			('qorpera_list_runner_usage(uuid, bigint, integer)', format('public.qorpera_list_runner_usage(%L, 0, 10)', v_a)),
 			('qorpera_list_runner_audit(uuid, bigint, integer)', format('public.qorpera_list_runner_audit(%L, 0, 10)', v_a)),
 			('qorpera_list_runner_model_usage(uuid, bigint, integer)', format('public.qorpera_list_runner_model_usage(%L, 0, 10)', v_a)),
-			('qorpera_list_company_substrate_operations(uuid, bigint, integer)', format('public.qorpera_list_company_substrate_operations(%L, 0, 10)', v_a)),
 			('qorpera_profile_object_writes_allowed(uuid)', format('public.qorpera_profile_object_writes_allowed(%L)', v_a)),
-			-- profile-keyed writes
+			-- environment-keyed reads
+			('qorpera_list_company_workspaces(uuid)', format('public.qorpera_list_company_workspaces(%L)', v_env)),
+			('qorpera_list_shared_sessions(uuid)', format('public.qorpera_list_shared_sessions(%L)', v_env)),
+			-- writes
 			('qorpera_invite_profile_member(uuid, text, public.qorpera_profile_role)', format('public.qorpera_invite_profile_member(%L, %L, ''member'')', v_a, 'cross-account@example.test')),
-			('qorpera_promote_local_profile(uuid, text, text, integer)', format('public.qorpera_promote_local_profile(%L, ''Hijack'', ''main'', 1)', v_a)),
-			('qorpera_configure_runner_model_policy(uuid, jsonb, integer, bigint, bigint)', format('public.qorpera_configure_runner_model_policy(%L, ''{}''::jsonb, 1, 1, 1)', v_a)),
-			-- environment-keyed writes
 			('qorpera_ensure_company_workspace(uuid, uuid, text, uuid)', format('public.qorpera_ensure_company_workspace(%L, ''88000000-0000-4000-8000-000000000001'', ''Hijack'', null)', v_env)),
 			('qorpera_create_shared_session(uuid, text, text, uuid)', format('public.qorpera_create_shared_session(%L, ''Hijack'', null, null)', v_env))
 		) as t(sig, call)
@@ -120,8 +123,8 @@ begin
 		-- so it must not be counted as covered.
 		raise exception 'inconclusive cross-account results: %', array_to_string(v_unexpected, '; ');
 	end if;
-	if v_denied + v_empty < 21 then
-		raise exception 'only % of 21 rpc cases reached a verdict', v_denied + v_empty;
+	if v_denied + v_empty < v_expected then
+		raise exception 'only % of % rpc cases reached a verdict', v_denied + v_empty, v_expected;
 	end if;
 end
 $$;
@@ -137,17 +140,21 @@ set role authenticated;
 do $$
 declare
 	v_a uuid := current_setting('qorpera_test.rpc_profile_a')::uuid;
+	v_env uuid := current_setting('qorpera_test.rpc_environment_a')::uuid;
 	v_role text;
-	v_seen bigint;
+	v_team jsonb;
 begin
 	select public.qorpera_member_role(v_a) into v_role;
-	if v_role is null then
-		raise exception 'owning account cannot read its own membership role';
+	if v_role is distinct from 'owner' then
+		raise exception 'owning account reads its own role as % (expected owner)', v_role;
 	end if;
-	select count(*) into v_seen from public.qorpera_list_company_workspaces(v_a);
-	if v_seen is null then
-		raise exception 'owning account cannot list its own workspaces';
+	select public.qorpera_profile_team_info(v_a) into v_team;
+	if v_team is null then
+		raise exception 'owning account cannot read its own team info';
 	end if;
+	-- Exercised for reachability, not row count: a fresh environment may hold
+	-- no workspaces, and asserting a count here would be the vacuous kind.
+	perform count(*) from public.qorpera_list_company_workspaces(v_env);
 end
 $$;
 
