@@ -772,7 +772,10 @@ export function upsertStaffScheduledJob(
 		triggers: input.triggers,
 		enabled: input.enabled ?? true,
 		effort: input.effort ?? "high",
-		placement: input.placement ?? "local",
+		// Placement is founder-set execution policy, not per-run tuning: an
+		// agent upsert that does not name it must never move a parked cloud or
+		// requires-local routine back to this machine.
+		...(input.placement !== undefined ? { placement: input.placement } : {}),
 		staffAgentId,
 	});
 }

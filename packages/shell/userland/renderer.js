@@ -43,6 +43,7 @@ let currentStaffId = null; // durable staff identity for the open conversation
 let currentRoomId = null; // durable group-chat identity for the open conversation
 let currentRoomMessages = [];
 const roomActivity = new Map(); // room id -> Map(staff agent id -> activity)
+const recentRoomWrites = new Map(); // room id -> ms timestamp of the last local registry write
 const roomDeliveryCards = new Map();
 let roomSettingsPending = false;
 let roomSettingsTrigger = null;
@@ -2085,6 +2086,17 @@ async function openConversationRecipients() {
 		.filter((staff) => conversationRecipients.has(staffId(staff)))
 		.map(staffId);
 	if (!ids.length) return;
+	if (ids.length < conversationRecipients.size) {
+		// A selected agent was archived since selection; never silently
+		// downgrade a group to a 1:1 — resync the picker and let the founder
+		// decide.
+		conversationRecipients = new Set(ids);
+		renderConversationRecipientChips();
+		renderConversationRecipientMenu();
+		updateConversationOpenAction();
+		$("conversationStatus").textContent = "Some selected agents are no longer active; review the recipients.";
+		return;
+	}
 	staffCreatorPending = true;
 	updateConversationOpenAction();
 	$("conversationStatus").textContent = ids.length > 1 ? "Creating group chat…" : "Opening conversation…";
@@ -2383,6 +2395,7 @@ async function openRoom(id) {
 
 function rememberRoom(room) {
 	if (!room?.id) return;
+	recentRoomWrites.set(room.id, Date.now());
 	const index = (state.rooms ?? []).findIndex((candidate) => candidate.id === room.id);
 	if (index >= 0) state.rooms[index] = room;
 	else state.rooms = [room, ...(state.rooms ?? [])];
@@ -4489,7 +4502,13 @@ async function refreshState() {
 		}
 		if (JSON.stringify(next) !== JSON.stringify(state)) {
 			state = next;
-			if (currentRoomId && !(state.rooms ?? []).some((room) => room.id === currentRoomId && room.status !== "archived")) {
+			if (
+				currentRoomId &&
+				!(state.rooms ?? []).some((room) => room.id === currentRoomId && room.status !== "archived") &&
+				// A poll snapshot fetched before a just-created or just-restored
+				// room's registry write must not bounce the founder out of it.
+				Date.now() - (recentRoomWrites.get(currentRoomId) ?? 0) > 10_000
+			) {
 				roomSettingsPending = false;
 				if (!$("roomSettingsModal").hidden) closeRoomSettings(false);
 				leaveRoomView();

@@ -5593,7 +5593,7 @@ function startWakeTicker(): void {
 			// Queued room deliveries wake one participant at a time. The durable
 			// delivery registry is the queue itself, so a room conversation
 			// survives restarts, retries with backoff, and runs when free.
-			const roomDue = dueRoomDelivery(runtime.root);
+			const roomDue = dueRoomDelivery(slot, runtime.root);
 			if (roomDue) {
 				void startRoomChild(slot, runtime, roomDue).catch((error) => {
 					console.error(`room delivery wake failed for ${runtime.root}: ${(error as Error).message}`);
@@ -5769,7 +5769,7 @@ function locallyPlacedScheduledJobs(root: string): ScheduledJob[] {
 	return readScheduledJobs(root).filter((job) => job.placement !== "cloud");
 }
 
-function dueRoomDelivery(root: string): DueRoomDelivery | undefined {
+function dueRoomDelivery(slot: Slot, root: string): DueRoomDelivery | undefined {
 	try {
 		const now = Date.now();
 		const deliveries = readQueuedCompanyRoomDeliveries(root);
@@ -5779,11 +5779,21 @@ function dueRoomDelivery(root: string): DueRoomDelivery | undefined {
 			if (Date.parse(delivery.nextAttemptAt) > now) continue;
 			const room = rooms.get(delivery.roomId);
 			if (!room || room.status !== "active") continue;
-			// Membership can change while a delivery waits: only targets that are
-			// still active participants may run; others wait for the reschedule
-			// paths to drop them.
-			const target = delivery.targetStaffAgentIds
-				.filter((id) => room.participantIds.includes(id))
+			// Membership and employment can change while a delivery waits. A
+			// target that left the room or was archived can never be served, so
+			// it is pruned here rather than parking the delivery forever.
+			const servableIds = delivery.targetStaffAgentIds.filter(
+				(id) => room.participantIds.includes(id) && activeStaffAgent(root, id) !== undefined,
+			);
+			if (servableIds.length !== delivery.targetStaffAgentIds.length) {
+				const pruned = rescheduleCompanyRoomDelivery(root, delivery.id, servableIds);
+				if (!pruned) {
+					sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
+					continue;
+				}
+				sendRoomEvent(slot, { kind: "delivery", roomId: room.id, delivery: pruned });
+			}
+			const target = servableIds
 				.map((id) => activeStaffAgent(root, id))
 				.find((staff): staff is StaffAgent => staff !== undefined);
 			if (!target) continue;
@@ -5791,6 +5801,7 @@ function dueRoomDelivery(root: string): DueRoomDelivery | undefined {
 			if (!message) {
 				// The transcript no longer carries this message; drop the delivery.
 				rescheduleCompanyRoomDelivery(root, delivery.id, []);
+				sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
 				continue;
 			}
 			return { room, delivery, target, message };
@@ -5916,10 +5927,10 @@ async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due:
 					}
 				}
 				if (frame.type === "agent_settled") {
-					// A persisted reply means the room was served even if a transient
-					// frame failed mid-turn; a reply that could not be persisted means
-					// the delivery must retry even though the turn itself settled.
-					settledCleanly = started && !replyPersistFailed && (replyPersisted || !failed);
+					// Any durably persisted reply means the room was served — a retry
+					// would re-run the turn and duplicate it. Only a turn with NO
+					// persisted reply retries, whether frames failed or a persist did.
+					settledCleanly = started && (replyPersisted || (!failed && !replyPersistFailed));
 					sendRoomEvent(slot, { kind: "activity", roomId: room.id, staffAgentId: target.id, activity: "idle" });
 					intentionalKills.add(child);
 					killChildTree(child);
@@ -5957,12 +5968,28 @@ async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due:
 						`${target.displayName}'s room turn did not settle cleanly`,
 					);
 					if (rescheduled && rescheduled.attempts >= WAKE_FAILURE_SUSPENSION_THRESHOLD) {
-						// Give up like the other autonomous lanes do, so a permanently
-						// failing participant cannot starve mail and routines forever.
+						// Give up on the failing participant like the other autonomous
+						// lanes do, so it cannot starve mail and routines forever — but
+						// co-recipients who never got a turn keep theirs: they continue
+						// on a fresh delivery with a clean attempt budget.
 						rescheduleCompanyRoomDelivery(runtime.root, delivery.id, []);
+						sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
+						const survivors = delivery.targetStaffAgentIds.filter((id) => id !== target.id);
+						if (survivors.length) {
+							try {
+								const requeued = queueCompanyRoomDelivery(runtime.root, room.id, {
+									messageId: delivery.messageId,
+									targetStaffAgentIds: survivors,
+									...(delivery.delegation ? { delegation: delivery.delegation } : {}),
+								});
+								sendRoomEvent(slot, { kind: "delivery", roomId: room.id, delivery: requeued });
+							} catch (error) {
+								console.error(`room delivery survivor requeue failed: ${(error as Error).message}`);
+							}
+						}
 						writeFileSync(
 							join(inboxMessagesPath(runtime.root), `msg-room-delivery-failed-${Date.now()}.md`),
-							`# Group-chat delivery gave up\n\n**${roomDisplayTitle(runtime.root, room)}**\n\n${target.displayName}'s turn failed ${rescheduled.attempts} times in a row; the message delivery was retired. Open the group chat and resend when the underlying problem (model access, credentials, runtime) is resolved.\n`,
+							`# Group-chat delivery gave up\n\n**${roomDisplayTitle(runtime.root, room)}**\n\n${target.displayName}'s turn failed ${rescheduled.attempts} times in a row; delivery to them was retired${survivors.length ? " while the other recipients keep their queued delivery" : ""}. Open the group chat and resend when the underlying problem (model access, credentials, runtime) is resolved.\n`,
 							"utf-8",
 						);
 						sendRoomEvent(slot, {
@@ -5973,6 +6000,10 @@ async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due:
 						});
 					} else if (rescheduled) {
 						sendRoomEvent(slot, { kind: "delivery", roomId: room.id, delivery: rescheduled });
+					} else {
+						// The delivery vanished while the turn ran (archive or prune);
+						// clear its card.
+						sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
 					}
 				}
 				commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
@@ -6015,7 +6046,7 @@ function scheduleRoomDeliveryPump(slot: Slot, runtime: CompanyRuntime): void {
 	setTimeout(() => {
 		if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild) return;
 		if (isChildBusy(runtime.child)) return;
-		const due = dueRoomDelivery(runtime.root);
+		const due = dueRoomDelivery(slot, runtime.root);
 		if (!due) return;
 		void startRoomChild(slot, runtime, due).catch((error) => {
 			console.error(`room delivery failed for ${runtime.root}: ${(error as Error).message}`);
@@ -6417,6 +6448,16 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 								void dispatchRoutineTrigger(slot, live, locallyPlacedScheduledJobs(live.root));
 							return;
 						}
+						// An event whose only matching routine is cloud-placed stays
+						// parked for the hosted lane; it must not leak into the generic
+						// local inbound wake either. The event file remains durable
+						// under inbox/events for that lane to consume.
+						const cloudMatched = queueCustomRoutineTrigger(
+							readScheduledJobs(live.root).filter((job) => job.placement === "cloud"),
+							previous,
+							triggerEvent,
+						);
+						if (cloudMatched.pending.length > previous.pending.length) return;
 					}
 					if (live.wakeChild || isChildBusy(live.child)) {
 						live.pendingInboundWake = true;
@@ -7484,9 +7525,16 @@ function beginAttachedStaffIntro(
 	if (!childRuntimeReady.has(child)) {
 		return { ok: false, error: "staff introduction target is not the attached ready session" };
 	}
-	if (childBusy.get(child)) return { ok: false, error: "staff session is already working" };
 	const path = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
 	const current = readStaffRuntimeState(path);
+	// An intro already claimed by a concurrent kick (creation and open both
+	// kick) is a success for the second caller, not a busy refusal — the busy
+	// state IS the introduction running.
+	const existingStatus = current.intros[staff.id]?.status;
+	if (!retry && (existingStatus === "started" || existingStatus === "completed")) {
+		return { ok: true, status: existingStatus };
+	}
+	if (childBusy.get(child)) return { ok: false, error: "staff session is already working" };
 	const claim = claimStaffIntro(current, staff.id, trailFile, Date.now(), retry);
 	if (!claim.claimed) {
 		const status = current.intros[staff.id]?.status;
@@ -7719,6 +7767,9 @@ function createRendererWindow(
 			slot.openGeneration += 1;
 			void closeCompany(slot);
 		}
+		// Destroyed windows (sign-out, swaps) bypass the "close" interception;
+		// a tray pointing at a gone slot must not linger.
+		syncBackgroundTray();
 	});
 	return { window: win, rendererSession };
 }
@@ -8941,7 +8992,11 @@ app.whenReady().then(async () => {
 			try {
 				delivery = queueCompanyRoomDelivery(runtime.root, room.id, {
 					messageId: message.id,
-					targetStaffAgentIds: message.targetStaffAgentIds ?? room.participantIds,
+					// Archived members can stay in participantIds; only active staff
+					// can ever be served, so a default broadcast targets just them.
+					targetStaffAgentIds:
+						message.targetStaffAgentIds ??
+						room.participantIds.filter((id) => activeStaffAgent(runtime.root, id) !== undefined),
 				});
 			} catch (error) {
 				// The founder message is already durable in the transcript; failing

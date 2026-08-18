@@ -801,8 +801,14 @@ export function appendCompanyRoomMessage(
 	const message: CompanyRoomMessage = { ...unsigned, hash: roomMessageHash(unsigned) };
 	const path = transcriptPath(root, room.id, true)!;
 	appendFileSync(path, `${JSON.stringify(message)}\n`, { encoding: "utf-8", flag: "a" });
-	registry.rooms[room.id] = { ...room, updatedAt: message.createdAt };
-	writeRegistry(root, registry);
+	try {
+		registry.rooms[room.id] = { ...room, updatedAt: message.createdAt };
+		writeRegistry(root, registry);
+	} catch {
+		// The transcript line above is already durable; failing the append now
+		// would make callers retry and duplicate the message over a best-effort
+		// recency bump.
+	}
 	return {
 		...message,
 		speaker: { ...message.speaker },
@@ -879,7 +885,9 @@ export function rescheduleCompanyRoomDelivery(
 ): QueuedCompanyRoomDelivery | undefined {
 	const registry = readDeliveryRegistry(root);
 	const current = registry.deliveries[checkedRoomId(deliveryId)];
-	if (!current) throw new Error(`Unknown company room delivery: ${deliveryId}`);
+	// A delivery can be retired concurrently (room archived, queue pruned)
+	// while its turn is still running; the reschedule then has nothing to do.
+	if (!current) return undefined;
 	const room = readCompanyRoom(root, current.roomId);
 	// Membership and lifecycle can change while a delivery waits. Targets that
 	// left the room are dropped rather than poisoning the remaining recipients,
@@ -896,7 +904,9 @@ export function rescheduleCompanyRoomDelivery(
 		return undefined;
 	}
 	const error = lastError === undefined ? undefined : boundedText(lastError.trim(), "delivery error", 1_024);
-	const attempts = Math.min(1_000, current.attempts + (error ? 1 : 0));
+	// attempts counts CONSECUTIVE failures: a successful turn resets it so one
+	// participant's earlier failures never spend another participant's budget.
+	const attempts = error ? Math.min(1_000, current.attempts + 1) : 0;
 	const delay = error ? Math.min(60_000, 1_000 * 2 ** Math.min(attempts - 1, 6)) : 0;
 	const updatedAt = new Date().toISOString();
 	const delivery: QueuedCompanyRoomDelivery = {
@@ -904,9 +914,10 @@ export function rescheduleCompanyRoomDelivery(
 		targetStaffAgentIds: targets,
 		attempts,
 		nextAttemptAt: new Date(Date.now() + delay).toISOString(),
-		...(error ? { lastError: error } : {}),
 		updatedAt,
 	};
+	if (error) delivery.lastError = error;
+	else delete delivery.lastError;
 	registry.deliveries[delivery.id] = delivery;
 	writeDeliveryRegistry(root, registry);
 	return cloneDelivery(delivery);
