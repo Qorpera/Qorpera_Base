@@ -171,14 +171,6 @@ const STAFF_CREATURE_BY_TEMPLATE = Object.freeze({
 	"costumer-relationist": "bloom",
 	"outreaching-conversationalist": "ribbon",
 });
-const STAFF_CREATURE_BY_SHAPE = Object.freeze({
-	"soft-square": "lantern",
-	round: "bloom",
-	wide: "wisp",
-	gem: "pebble",
-	tilted: "ribbon",
-	drop: "halo",
-});
 const COMPANY_ICONS = [
 	{ id: "hop-warm-titanium", label: "Warm titanium", src: "./profile-icons/hop-warm-titanium.png" },
 	{ id: "hop-blue-steel", label: "Blue steel", src: "./profile-icons/hop-blue-steel.png" },
@@ -529,7 +521,7 @@ async function renderHub() {
 			});
 		};
 		shell.appendChild(card);
-		if (company.invitationPending || (!company.setupRequired && company.access?.role === "owner")) {
+		if (company.invitationPending || company.setupRequired || company.access) {
 			const actions = document.createElement("button");
 			actions.className = "company-card-actions";
 			actions.type = "button";
@@ -546,13 +538,25 @@ async function renderHub() {
 			const remove = document.createElement("button");
 			remove.type = "button";
 			remove.setAttribute("role", "menuitem");
-			remove.textContent = company.invitationPending ? "Decline invitation" : "Remove from Qorpera";
+			// Which dismissal this card supports: invitations decline, hosted
+			// profiles not set up here hide locally, attached companies detach.
+			// Detaching a cloud company never touches the cloud profile, so it
+			// is safe for every member role, not just owners.
+			remove.textContent = company.invitationPending
+				? "Decline invitation"
+				: company.setupRequired
+					? "Hide on this computer"
+					: company.profileType === "cloud"
+						? "Remove from this computer"
+						: "Remove from Qorpera";
 			remove.onclick = async () => {
 				menu.hidden = true;
 				actions.setAttribute("aria-expanded", "false");
 				const result = company.invitationPending
 					? await window.qorpera.declineCloudInvitation(company.invitationId)
-					: await window.qorpera.removeCompany(company.root);
+					: company.setupRequired
+						? await window.qorpera.hideCloudProfile(company.profileId, company.name)
+						: await window.qorpera.removeCompany(company.root);
 				if (result?.ok) {
 					await renderHub();
 					return;
@@ -562,7 +566,9 @@ async function renderHub() {
 						result?.error ??
 						(company.invitationPending
 							? "Invitation could not be declined."
-							: "Company could not be removed from Qorpera.");
+							: company.setupRequired
+								? "Profile could not be hidden."
+								: "Company could not be removed from Qorpera.");
 				}
 			};
 			menu.appendChild(remove);
@@ -1577,11 +1583,18 @@ function staffCreatureId(staffOrTemplate) {
 	const catalogTemplateId = STAFF_CREATURE_BY_TEMPLATE[staffOrTemplate?.id] ? staffOrTemplate.id : "";
 	const sourceId = assignedTemplateId || catalogTemplateId;
 	if (sourceId && STAFF_CREATURE_BY_TEMPLATE[sourceId]) return STAFF_CREATURE_BY_TEMPLATE[sourceId];
-	return STAFF_CREATURE_BY_SHAPE[staffShape(staffOrTemplate)] ?? "pebble";
+	// No persisted character and no template: derive one stably from the staff
+	// identity so both machines (and tomorrow's session) agree without writes.
+	const identity = staffId(staffOrTemplate) || staffDisplayName(staffOrTemplate) || "";
+	let seed = 0;
+	for (const character of identity) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
+	return STAFF_CREATURE_IDS[seed % STAFF_CREATURE_IDS.length];
 }
 
 function staffAvatarStyle() {
-	return localStorage.getItem("qorpera:staff-avatar-style") === "creatures" ? "creatures" : "simple";
+	// Characters are the identity system, not a skin: the old colored-shape
+	// avatars are retired, and the pre-retirement localStorage flag is ignored.
+	return "creatures";
 }
 
 function applyStaffAvatarStyle() {
@@ -10188,29 +10201,6 @@ async function renderSettingsTab() {
 		theme.appendChild(new Option("Light", "light"));
 		theme.value = "light";
 		setRow(appearanceGroup, "Theme", "", theme);
-		const agentCharacters = document.createElement("button");
-		agentCharacters.type = "button";
-		agentCharacters.className = "settings-toggle";
-		agentCharacters.setAttribute("role", "switch");
-		agentCharacters.setAttribute("aria-label", "Agent characters");
-		const syncAgentCharacters = () => {
-			const enabled = staffAvatarStyle() === "creatures";
-			agentCharacters.classList.toggle("active", enabled);
-			agentCharacters.setAttribute("aria-checked", String(enabled));
-		};
-		syncAgentCharacters();
-		agentCharacters.onclick = () => {
-			const style = staffAvatarStyle() === "creatures" ? "simple" : "creatures";
-			localStorage.setItem("qorpera:staff-avatar-style", style);
-			applyStaffAvatarStyle();
-			syncAgentCharacters();
-		};
-		setRow(
-			appearanceGroup,
-			"Agent characters",
-			"Show agent characters. Off keeps the original colored shapes.",
-			agentCharacters,
-		);
 		content.appendChild(appearanceGroup);
 
 		const executionGroup = document.createElement("section");

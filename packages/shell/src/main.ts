@@ -1449,6 +1449,46 @@ interface Slot {
 
 const FIXED_SHELL_DIR = join(DIRNAME, "userland");
 
+const HIDDEN_CLOUD_PROFILES_SCHEMA = "qorpera.hidden-cloud-profiles/v1";
+
+function hiddenCloudProfilesPath(userData: string): string {
+	return join(userData, "hidden-cloud-profiles.json");
+}
+
+function readHiddenCloudProfiles(userData: string, accountId: string): Set<string> {
+	try {
+		const parsed = JSON.parse(readFileSync(hiddenCloudProfilesPath(userData), "utf8")) as {
+			schema?: string;
+			accounts?: Record<string, string[]>;
+		};
+		if (parsed.schema !== HIDDEN_CLOUD_PROFILES_SCHEMA) return new Set();
+		const ids = parsed.accounts?.[accountId];
+		return new Set(Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : []);
+	} catch {
+		return new Set();
+	}
+}
+
+function hideCloudProfileForAccount(userData: string, accountId: string, profileId: string): void {
+	let accounts: Record<string, string[]> = {};
+	try {
+		const parsed = JSON.parse(readFileSync(hiddenCloudProfilesPath(userData), "utf8")) as {
+			schema?: string;
+			accounts?: Record<string, string[]>;
+		};
+		if (parsed.schema === HIDDEN_CLOUD_PROFILES_SCHEMA && parsed.accounts) accounts = parsed.accounts;
+	} catch {
+		// first hide, or an unreadable file: start fresh
+	}
+	const existing = new Set(accounts[accountId] ?? []);
+	existing.add(profileId);
+	accounts[accountId] = [...existing];
+	writeFileSync(
+		hiddenCloudProfilesPath(userData),
+		`${JSON.stringify({ schema: HIDDEN_CLOUD_PROFILES_SCHEMA, accounts }, null, "\t")}\n`,
+	);
+}
+
 // Window/taskbar icon: company appearance is machine-local account state,
 // never company-authored executable or UI content.
 const DEFAULT_ICON = join(DIRNAME, "assets", process.platform === "win32" ? "qorpera.ico" : "qorpera.png");
@@ -8085,7 +8125,11 @@ app.whenReady().then(async () => {
 		);
 		const availableCloudProfiles = await Promise.all(
 			hostedProfiles
-				.filter((profile) => !attachedProfileIds.has(profile.profileId))
+				.filter(
+					(profile) =>
+						!attachedProfileIds.has(profile.profileId) &&
+						!readHiddenCloudProfiles(userData, userId).has(profile.profileId),
+				)
 				.map(async (profile) => {
 					try {
 						const access = hostedProfileAccess(await refreshHostedTeam(profile.profileId));
@@ -8273,6 +8317,32 @@ app.whenReady().then(async () => {
 		} catch (error) {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
+	});
+	ipcMain.handle("profile:hide-cloud", async (event, profileId: unknown, name: unknown) => {
+		if (
+			!isTrustedHubSender(event.sender) ||
+			typeof profileId !== "string" ||
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{3,4}-[0-9a-f]{3,4}-[0-9a-f]{12}$/i.test(profileId.trim())
+		) {
+			return { ok: false, error: "invalid profile" };
+		}
+		const account = await authenticatedAccount();
+		if (!account?.user) return { ok: false, error: "Sign in before hiding a profile." };
+		const owner = BrowserWindow.fromWebContents(event.sender);
+		if (!owner) return { ok: false, error: "Company selector is unavailable." };
+		const displayName = typeof name === "string" && name.trim() ? name.trim().slice(0, 120) : "this profile";
+		const confirmation = await dialog.showMessageBox(owner, {
+			type: "warning",
+			buttons: ["Cancel", "Hide on this computer"],
+			defaultId: 0,
+			cancelId: 0,
+			message: `Hide ${displayName} on this computer?`,
+			detail:
+				"The cloud profile, its team, and its data stay intact, and it stays available on every other computer. Accepting a new invitation brings it back here.",
+		});
+		if (confirmation.response !== 1) return { ok: false, cancelled: true };
+		hideCloudProfileForAccount(app.getPath("userData"), account.user.id, profileId.trim());
+		return { ok: true };
 	});
 	ipcMain.handle("company:remove", async (event, root: unknown) => {
 		if (!isTrustedHubSender(event.sender) || typeof root !== "string" || !root.trim()) {
