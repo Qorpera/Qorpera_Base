@@ -27,6 +27,42 @@ set role authenticated;
 select set_config('qorpera_test.profile_b', public.qorpera_create_hosted_profile('Separation B', 'main', 1) ->> 'profile_id', false);
 reset role;
 
+-- Account A writes and reads back its own object first. Ordering matters:
+-- B's cross-account read assertion below is vacuous unless something actually
+-- exists under A's prefix for it to fail to see.
+select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
+set role authenticated;
+
+do $$
+declare v_a uuid := current_setting('qorpera_test.profile_a')::uuid; v_seen integer;
+begin
+	if current_user <> 'authenticated' then
+		raise exception 'owner block is not running as authenticated (got %)', current_user;
+	end if;
+	insert into storage.objects (bucket_id, name, metadata)
+	values ('qorpera-profile-objects', v_a::text || '/' || repeat('1', 64), '{"size":"11"}');
+	select count(*) into v_seen from storage.objects
+	where bucket_id = 'qorpera-profile-objects' and name like v_a::text || '/%';
+	if v_seen <> 1 then raise exception 'owning account could not read back its own object'; end if;
+end
+$$;
+
+reset role;
+
+-- Anti-vacuity, asserted from outside any client role: B's zero-count read
+-- below only means "hidden" if there is genuinely something under A's prefix
+-- to hide. Without this, deleting the read policy outright would still pass.
+do $$
+declare v_a uuid := current_setting('qorpera_test.profile_a')::uuid; v_seen integer;
+begin
+	select count(*) into v_seen from storage.objects
+	where bucket_id = 'qorpera-profile-objects' and name = v_a::text || '/' || repeat('1', 64);
+	if v_seen <> 1 then
+		raise exception 'cross-account read assertion would be vacuous: A has no object to hide';
+	end if;
+end
+$$;
+
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000b","email":"sep-owner-b@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;
 
@@ -67,21 +103,30 @@ begin
 	exception when insufficient_privilege then null;
 	end;
 
+	-- Existence is asserted separately so a renamed or re-signed function
+	-- fails the suite instead of raising undefined_function and being scored
+	-- as a denial forever after.
+	if to_regprocedure('qorpera_claim_runner_job(uuid, text, uuid, text)') is null then
+		raise exception 'qorpera_claim_runner_job signature drifted; denial test would be vacuous';
+	end if;
 	v_ok := false;
 	begin
 		perform public.qorpera_claim_runner_job(
 			'80000000-0000-4000-8000-0000000000c1', repeat('a', 64),
 			'80000000-0000-4000-8000-0000000000c2', repeat('b', 64));
-	exception when insufficient_privilege or undefined_function then v_ok := true;
+	exception when insufficient_privilege then v_ok := true;
 	end;
 	if not v_ok then raise exception 'authenticated invoked the runner claim entry point'; end if;
 
+	if to_regprocedure('qorpera_renew_artifact_gc_lease(uuid, uuid, text[])') is null then
+		raise exception 'qorpera_renew_artifact_gc_lease signature drifted; denial test would be vacuous';
+	end if;
 	v_ok := false;
 	begin
 		perform public.qorpera_renew_artifact_gc_lease(
 			'80000000-0000-4000-8000-0000000000c3', '80000000-0000-4000-8000-0000000000c4',
 			array[repeat('c', 64)]);
-	exception when insufficient_privilege or undefined_function then v_ok := true;
+	exception when insufficient_privilege then v_ok := true;
 	end;
 	if not v_ok then raise exception 'authenticated invoked the GC lease renewal'; end if;
 
@@ -94,22 +139,6 @@ begin
 	select count(*) into v_seen from storage.objects
 	where bucket_id = 'qorpera-profile-objects' and name like v_a::text || '/%';
 	if v_seen <> 0 then raise exception 'B read objects under A prefix'; end if;
-end
-$$;
-
-reset role;
-
-select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
-
-do $$
-declare v_a uuid := current_setting('qorpera_test.profile_a')::uuid; v_seen integer;
-begin
-	insert into storage.objects (bucket_id, name, metadata)
-	values ('qorpera-profile-objects', v_a::text || '/' || repeat('1', 64), '{"size":"11"}');
-	select count(*) into v_seen from storage.objects
-	where bucket_id = 'qorpera-profile-objects' and name like v_a::text || '/%';
-	if v_seen <> 1 then raise exception 'owning account could not read back its own object'; end if;
 end
 $$;
 

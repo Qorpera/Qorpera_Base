@@ -5,11 +5,14 @@
 do $$
 declare v_drift bigint; v_rows bigint;
 begin
-	-- Prior suites have already written profile objects, so the backfill has
-	-- real rows to have adopted rather than a vacuous empty match.
+	-- Migrations run before any fixture exists, so the inline backfill in
+	-- 20260818003000 always ran against an empty table: these rows arrived via
+	-- the mirror trigger, and this assertion proves the mirror populated the
+	-- catalog, not that the backfill works. The backfill is covered as a
+	-- callable function in 070, where it can be exercised with real data.
 	select count(*) into v_rows from public.qorpera_profile_objects;
 	if v_rows = 0 then
-		raise exception 'catalog is empty; backfill proved nothing';
+		raise exception 'catalog is empty; the mirror adopted nothing';
 	end if;
 	select public.qorpera_object_catalog_drift() into v_drift;
 	if v_drift <> 0 then
