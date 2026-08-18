@@ -62,7 +62,9 @@ describe("shell starter staff templates", () => {
 		expect(motion).toContain("@keyframes creature-attention");
 		expect(motion).toContain(".staff-avatar.writing");
 		expect(motion).toContain(".staff-avatar.needs-attention");
+		expect(motion).toContain('.staff-avatar[data-creature="folio"]');
 		expect(renderer).toContain('const STAFF_MOTION_STATES = ["idle", "working", "writing", "needs-attention"];');
+		expect(renderer).toContain('folio: Object.freeze({ label: "Folio", asset: "./staff-creatures/folio.png" })');
 		expect(renderer).toContain('if (staffNeedsAttention(staff, runtime)) return "needs-attention";');
 		expect(renderer).toContain('runtime.activity?.kind === "writing"');
 		expect(renderer).not.toContain('showThreadActivity("typing")');
@@ -71,6 +73,7 @@ describe("shell starter staff templates", () => {
 
 	it("keeps character identity independent from suggested role identity", () => {
 		expect(new Set(Object.values(STAFF_CHARACTER_BY_TEMPLATE))).toEqual(new Set(STAFF_CHARACTER_IDS));
+		expect(STAFF_CHARACTER_BY_TEMPLATE["product-manager"]).toBe("folio");
 		expect(STAFF_CHARACTER_IDS.every(isStaffCharacterId)).toBe(true);
 		expect(STAFF_CHARACTER_IDS.some((characterId) => new Set<string>(STAFF_TEMPLATE_IDS).has(characterId))).toBe(
 			false,

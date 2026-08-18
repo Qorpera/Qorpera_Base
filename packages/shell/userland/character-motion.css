@@ -21,6 +21,17 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="lantern"]
 	--creature-eye-height: 7%;
 }
 
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"] {
+	--creature-eye-one-x: 41.5%;
+	--creature-eye-one-y: 46%;
+	--creature-eye-two-x: 55.2%;
+	--creature-eye-two-y: 48.5%;
+	--creature-eye-one-r: 6deg;
+	--creature-eye-two-r: 6deg;
+	--creature-eye-width: 5%;
+	--creature-eye-height: 8%;
+}
+
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="brain"] {
 	--creature-eye-one-x: 54.5%;
 	--creature-eye-one-y: 36%;
@@ -89,6 +100,17 @@ html[data-staff-avatar-style="creatures"] .staff-creature-choice:has(.staff-crea
 	--picker-eye-two-y: 43.5%;
 	--picker-eye-width: 3.7%;
 	--picker-eye-height: 6.5%;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-creature-choice:has(.staff-creature-image[src$="/folio.png"]) {
+	--picker-eye-one-x: 40.6%;
+	--picker-eye-one-y: 45.8%;
+	--picker-eye-two-x: 55.8%;
+	--picker-eye-two-y: 48.3%;
+	--picker-eye-one-r: 6deg;
+	--picker-eye-two-r: 6deg;
+	--picker-eye-width: 5.4%;
+	--picker-eye-height: 8.6%;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-creature-choice:has(.staff-creature-image[src$="/brain.png"]) {
