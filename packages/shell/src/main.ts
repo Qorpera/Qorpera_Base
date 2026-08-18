@@ -7679,7 +7679,9 @@ app.whenReady().then(async () => {
 			typeof dir !== "string" ||
 			!dir.trim() ||
 			!isCompanyIconId(companyIcon) ||
-			(placement !== undefined && placement !== "local" && placement !== "cloud")
+			// The founding picker's placement token is "hosted"; "cloud" stays
+			// accepted because the profile attachment type uses that name.
+			(placement !== undefined && placement !== "local" && placement !== "hosted" && placement !== "cloud")
 		) {
 			return;
 		}
@@ -7694,7 +7696,7 @@ app.whenReady().then(async () => {
 		claimProfile(app.getPath("userData"), account.user, result.root);
 		ensureProfileAttachment(app.getPath("userData"), result.root);
 		writeCompanyIcon(app.getPath("userData"), account.user.id, result.root, companyIcon);
-		if (placement !== "cloud") return { root: result.root };
+		if (placement !== "hosted" && placement !== "cloud") return { root: result.root };
 		// Hosted placement chosen at creation. The folder already exists either
 		// way, so a failed promotion degrades to a local company the founder can
 		// host later from Settings instead of losing the creation.
