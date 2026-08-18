@@ -119,15 +119,29 @@ select set_config('request.jwt.claims', '{"role":"anon"}', false);
 set role anon;
 
 do $$
-declare v_seen integer;
+declare v_seen integer; v_ok boolean;
 begin
 	if current_user <> 'anon' then
 		raise exception 'anon block is not running as anon (got %)', current_user;
 	end if;
-	select count(*) into v_seen from public.qorpera_profiles;
-	if v_seen <> 0 then raise exception 'anon read profile rows'; end if;
-	select count(*) into v_seen from public.qorpera_session_events;
-	if v_seen <> 0 then raise exception 'anon read session events'; end if;
+	-- anon is denied at the grant level, not merely filtered by RLS: the
+	-- baseline revokes every privilege and only re-grants select to
+	-- authenticated. Asserting the error (rather than a zero count) pins the
+	-- stronger of the two guarantees, and would fail if a future migration
+	-- handed anon a grant and left RLS as the only defence.
+	v_ok := false;
+	begin
+		select count(*) into v_seen from public.qorpera_profiles;
+	exception when insufficient_privilege then v_ok := true;
+	end;
+	if not v_ok then raise exception 'anon holds a grant on qorpera_profiles'; end if;
+
+	v_ok := false;
+	begin
+		select count(*) into v_seen from public.qorpera_session_events;
+	exception when insufficient_privilege then v_ok := true;
+	end;
+	if not v_ok then raise exception 'anon holds a grant on qorpera_session_events'; end if;
 end
 $$;
 
