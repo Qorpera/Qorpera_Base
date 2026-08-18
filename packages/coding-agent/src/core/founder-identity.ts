@@ -1,7 +1,7 @@
 /**
  * Cryptographic founder identity (manifesto §3.1, invariant 15).
  *
- * Until now "founder" meant "whoever operates this machine's kernel". This
+ * Until now "founder" meant "whoever operates this machine's desktop host". This
  * module gives the founder a durable ed25519 identity and makes policy
  * provenance verifiable: `authority.toml` carries a detached signature
  * (`.qorpera/authority.sig.json`), and the authority layer refuses to
@@ -14,7 +14,7 @@
  * Key handling: the private key lives in the foundation's machine-local
  * agent directory (mode 0600, outside every company folder and sandbox
  * grant) and is used only by founder-context code — the CLI and the
- * desktop kernel. The child/sandbox side sees only the projected PUBLIC
+ * desktop host. The child/sandbox side sees only the public
  * key (`founder-public.json`), enough to verify, never to sign. The
  * signature sidecar travels with exports and forks as data: a fork
  * verified against a DIFFERENT local founder key simply fails closed to
@@ -28,7 +28,7 @@ import { join } from "node:path";
 import { getAgentDir } from "../config.ts";
 
 export const FOUNDER_IDENTITY_FILE = "founder-identity.json";
-/** Public-only projection the kernel writes into a child's agent dir. */
+/** Public-only founder record the desktop host writes into a child's agent directory. */
 export const FOUNDER_PUBLIC_FILE = "founder-public.json";
 export const AUTHORITY_SIGNATURE_PATH = join(".qorpera", "authority.sig.json");
 
@@ -57,13 +57,13 @@ function identityPath(): string {
 	return join(getAgentDir(), FOUNDER_IDENTITY_FILE);
 }
 
-function publicProjectionPath(): string {
+function publicFounderPath(): string {
 	return join(getAgentDir(), FOUNDER_PUBLIC_FILE);
 }
 
 /** The founder identity visible in this context — full in founder contexts, public-only in the sandbox. */
 export function readFounderIdentity(): FounderIdentity | undefined {
-	for (const path of [identityPath(), publicProjectionPath()]) {
+	for (const path of [identityPath(), publicFounderPath()]) {
 		if (!existsSync(path)) continue;
 		try {
 			const parsed = JSON.parse(readFileSync(path, "utf-8")) as FounderIdentity;
@@ -82,7 +82,7 @@ export function readFounderIdentity(): FounderIdentity | undefined {
  * treats it as "invalid" (all-gate), never as "no-identity" (legacy).
  */
 export function founderIdentityPresent(): boolean {
-	return existsSync(identityPath()) || existsSync(publicProjectionPath());
+	return existsSync(identityPath()) || existsSync(publicFounderPath());
 }
 
 export function generateFounderIdentity(name?: string): FounderIdentity {
@@ -102,17 +102,17 @@ export function generateFounderIdentity(name?: string): FounderIdentity {
 	return identity;
 }
 
-/** The public-only projection content for a sandboxed child's agent dir. */
-export function founderPublicProjection(): string | undefined {
+/** The public-only founder content for a sandboxed child's agent directory. */
+export function founderPublicRecord(): string | undefined {
 	const identity = readFounderIdentity();
 	if (!identity) return undefined;
-	const projection: FounderIdentity = {
+	const publicIdentity: FounderIdentity = {
 		version: 1,
 		...(identity.name ? { name: identity.name } : {}),
 		publicKeyPem: identity.publicKeyPem,
 		createdAt: identity.createdAt,
 	};
-	return `${JSON.stringify(projection, null, "\t")}\n`;
+	return `${JSON.stringify(publicIdentity, null, "\t")}\n`;
 }
 
 /**

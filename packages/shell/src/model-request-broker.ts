@@ -362,7 +362,7 @@ export async function startModelRequestBroker(options: {
 	authPath: string;
 	modelsPath: string;
 	allowedProviders: ReadonlySet<string>;
-	/** Explicit transport seam for integration tests; production always uses the kernel-owned ModelRuntime. */
+	/** Explicit transport seam for integration tests; production always uses the host-owned ModelRuntime. */
 	runtime?: ModelRequestRuntime;
 	/** Optional multi-account lease. The selected account stays bound across auth refresh and streaming. */
 	accountRouter?: ModelRequestAccountRouter;
@@ -394,7 +394,7 @@ export async function startModelRequestBroker(options: {
 	};
 
 	const deny = (send: (frame: object) => void, requestId: string): void => {
-		send({ type: "qorpera_model_end", requestId, error: "kernel model request denied" });
+		send({ type: "qorpera_model_end", requestId, error: "host model request denied" });
 	};
 
 	const sendRequest = async (
@@ -504,12 +504,12 @@ export async function startModelRequestBroker(options: {
 			send({
 				type: "qorpera_model_end",
 				requestId: frame.requestId,
-				...(terminalStatus ? {} : { error: "kernel model execution ended without a terminal event" }),
+				...(terminalStatus ? {} : { error: "host model execution ended without a terminal event" }),
 			});
 		} catch (error) {
 			rateLimited ||= providerRateLimited(error);
 			requestStatus = controller.signal.aborted ? "aborted" : "failed";
-			send({ type: "qorpera_model_end", requestId: frame.requestId, error: "kernel model execution failed" });
+			send({ type: "qorpera_model_end", requestId: frame.requestId, error: "host model execution failed" });
 		} finally {
 			if (rateLimited && accountLease) options.accountRouter?.markRateLimited(accountLease.accountId);
 			accountLease?.release();

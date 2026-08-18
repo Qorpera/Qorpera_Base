@@ -1,12 +1,12 @@
 /**
- * Outbound HTTP through the kernel (Build 3 — generic connectivity).
+ * Outbound HTTP through the desktop host (Build 3 — generic connectivity).
  *
- * The child has no network; this tool submits the request over the kernel
+ * The child has no network; this tool submits the request over the host
  * pipe. Secrets are used by reference: put `secret://<name>` in the URL,
- * a header value, or the body, and the kernel substitutes the raw value
+ * a header value, or the body, and the host substitutes the raw value
  * at the trusted boundary — the value never enters this process, the
  * model's context, or the trail. Destinations must be founder-bound
- * network capabilities; everything else is denied kernel-side.
+ * network capabilities; everything else is denied at the host boundary.
  */
 
 import type { AgentTool } from "@qorpera/pi-agent-core";
@@ -24,7 +24,7 @@ const httpRequestSchema = Type.Object({
 	method: Type.String({ description: "HTTP method: GET, POST, PUT, PATCH, DELETE, or HEAD" }),
 	url: Type.String({
 		description:
-			"HTTPS URL. The destination host must be a founder-bound network capability. secret://<name> references are substituted by the kernel and never appear in your context.",
+			"HTTPS URL. The destination host must be a founder-bound network capability. secret://<name> references are substituted by the desktop host and never appear in your context.",
 	}),
 	headers: Type.Optional(
 		Type.Record(Type.String(), Type.String(), {
@@ -66,8 +66,8 @@ export function createHttpRequestToolDefinition(): ToolDefinition<
 		name: HTTP_TOOL_NAME,
 		label: "http request",
 		description:
-			"Make an outbound HTTPS request through the kernel. Destinations must be founder-bound network capabilities (the founder binds them with 'qorpera company destination add <host>'); use secret://<name> references for credentials — the kernel substitutes raw values at the trusted boundary, so they never enter your context or the trail. Responses come back inline (bounded); how you store provider data is yours to decide.",
-		promptSnippet: "Outbound HTTPS via the kernel with secret:// references",
+			"Make an outbound HTTPS request through the desktop host. Destinations must be founder-bound network capabilities (the founder binds them with 'qorpera company destination add <host>'); use secret://<name> references for credentials — the host substitutes raw values at the trusted boundary, so they never enter your context or the trail. Responses come back inline (bounded); how you store provider data is yours to decide.",
+		promptSnippet: "Outbound HTTPS via the desktop host with secret:// references",
 		parameters: httpRequestSchema,
 		async execute(
 			_toolCallId,
@@ -75,7 +75,7 @@ export function createHttpRequestToolDefinition(): ToolDefinition<
 			signal,
 		) {
 			if (!isHttpBrokerAvailable()) {
-				throw new Error("http_request requires the kernel broker (company sessions under the desktop kernel)");
+				throw new Error("http_request requires the Qorpera desktop host");
 			}
 			const response = await brokeredHttpRequest(
 				{
@@ -93,7 +93,7 @@ export function createHttpRequestToolDefinition(): ToolDefinition<
 			const saved = response.savedTo
 				? ` — saved to ${response.savedTo} (sha256 ${response.sha256?.slice(0, 12)}…)`
 				: "";
-			const header = `HTTP ${response.status} ${method.toUpperCase()} ${url} (${response.bodyBytes} bytes${response.bodyTruncated ? ", body truncated by kernel at 8MB" : ""})${saved}`;
+			const header = `HTTP ${response.status} ${method.toUpperCase()} ${url} (${response.bodyBytes} bytes${response.bodyTruncated ? ", body truncated by host at 8MB" : ""})${saved}`;
 			const details: HttpRequestToolDetails = {
 				status: response.status,
 				bodyBytes: response.bodyBytes,

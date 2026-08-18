@@ -1,17 +1,8 @@
 /**
- * Per-company app server (spec §7 v1): state API, surface serving with
- * traversal protection, and gate resolution through the UI endpoint.
+ * Per-company app server: fixed-shell state, runtime streams, and authorized
+ * user actions. Company-authored UI files are deliberately not executable.
  */
-import {
-	appendFileSync,
-	existsSync,
-	linkSync,
-	mkdirSync,
-	readFileSync,
-	rmSync,
-	symlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { appendFileSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,8 +16,10 @@ import {
 	type SessionRuntimeUpdate,
 } from "../src/core/app-server.ts";
 import { discoverAuthority, evaluateToolCall, readAuthorityConfig } from "../src/core/authority.ts";
-import { scaffoldCompany, scaffoldProductDepartment } from "../src/core/company.ts";
-import type { StaffAgent } from "../src/core/company-staff.ts";
+import { COMPANY_MANIFEST_RELATIVE_PATH, scaffoldCompany, scaffoldProductDepartment } from "../src/core/company.ts";
+import type { CompanyArtifactRecord } from "../src/core/company-artifacts.ts";
+import type { CompanyConnectorManifestRecord } from "../src/core/company-connectors.ts";
+import type { StaffAgent, StaffAgentMessage } from "../src/core/company-staff.ts";
 import { LITELLM_RATES_URL, parseUsageRateTable, type UsageRateCatalog } from "../src/core/usage-pricing.ts";
 
 let root: string;
@@ -37,8 +30,12 @@ let runtimeSnapshot: SessionRuntimeSnapshot;
 let runtimeListeners: Set<(update: SessionRuntimeUpdate) => void>;
 let hiddenTrails: Set<string>;
 let staffReadModel: () => readonly StaffAgent[];
+let artifactReadModel: () => readonly CompanyArtifactRecord[];
+let connectorReadModel: () => readonly CompanyConnectorManifestRecord[];
+let artifactUpdateModel: (id: string, update: unknown) => CompanyArtifactRecord;
 let connectionRequestReadModel: () => readonly CompanyConnectionRequestView[];
 let scheduledJobReadModel: () => readonly CompanyScheduledJobView[];
+let staffMessageReadModel: () => readonly StaffAgentMessage[];
 
 const TEST_USAGE_RATE_CATALOG: UsageRateCatalog = {
 	rates: parseUsageRateTable({
@@ -76,8 +73,14 @@ beforeEach(async () => {
 	runtimeListeners = new Set();
 	hiddenTrails = new Set();
 	staffReadModel = () => [];
+	artifactReadModel = () => [];
+	connectorReadModel = () => [];
+	artifactUpdateModel = () => {
+		throw new Error("artifact update unavailable");
+	};
 	connectionRequestReadModel = () => [];
 	scheduledJobReadModel = () => [];
+	staffMessageReadModel = () => [];
 	const sessionRuntime: SessionRuntimeSource = {
 		snapshot: () => runtimeSnapshot,
 		isTrailVisible: (trailFile) => !hiddenTrails.has(trailFile),
@@ -93,8 +96,12 @@ beforeEach(async () => {
 		usageRateCatalog: async () => TEST_USAGE_RATE_CATALOG,
 		sessionRuntime,
 		staffReadModel: () => staffReadModel(),
+		artifactReadModel: () => artifactReadModel(),
+		connectorReadModel: () => connectorReadModel(),
+		artifactUpdateModel: (id, update) => artifactUpdateModel(id, update),
 		connectionRequestReadModel: () => connectionRequestReadModel(),
 		scheduledJobReadModel: () => scheduledJobReadModel(),
+		staffMessageReadModel: () => staffMessageReadModel(),
 	});
 	await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
 	const address = server!.address() as { port: number };
@@ -118,7 +125,7 @@ describe("company app server", () => {
 				id: "broken",
 				timestamp: "2026-08-14T08:00:00.000Z",
 				cwd: root,
-				qorpera: { actor: "controller", attended: true },
+				qorpera: { actor: "company-agent", attended: true },
 			})}\nnot-json\n`,
 			"utf-8",
 		);
@@ -130,7 +137,7 @@ describe("company app server", () => {
 		expect(state.sessions.map((session) => session.file)).not.toContain(file);
 	});
 
-	it("serves one canonical session projection as snapshot state and a live stream", async () => {
+	it("serves one canonical session snapshot and live stream", async () => {
 		runtimeSnapshot = {
 			revision: 1,
 			generatedAt: "2026-08-14T08:01:00.000Z",
@@ -138,7 +145,7 @@ describe("company app server", () => {
 				{
 					trailFile: "trail-live.jsonl",
 					sessionId: "session-live",
-					actor: "controller",
+					actor: "company-agent",
 					autonomous: false,
 					staffAgentId: "staff-night-shift",
 					status: "running",
@@ -196,6 +203,59 @@ describe("company app server", () => {
 		await reader.cancel();
 	});
 
+	it("serves the per-agent model choice and durable agent messages", async () => {
+		staffReadModel = () => [
+			{
+				id: "11111111-1111-4111-8111-111111111111",
+				displayName: "Analyst",
+				role: "Data analyst",
+				charter: "Own analytical measures.",
+				appearance: { color: "green", shape: "gem" },
+				model: { provider: "anthropic", modelId: "claude-fable-5" },
+				employmentStatus: "active",
+				lifecycleState: "active",
+				createdAt: "2026-08-15T00:00:00.000Z",
+				updatedAt: "2026-08-15T00:00:00.000Z",
+			},
+		];
+		staffMessageReadModel = () => [
+			{
+				id: "33333333-3333-4333-8333-333333333333",
+				fromAgentId: "11111111-1111-4111-8111-111111111111",
+				toAgentId: "44444444-4444-4444-8444-444444444444",
+				subject: "Handoff",
+				body: "The supplier report is ready.",
+				createdAt: "2026-08-15T00:01:00.000Z",
+				status: "queued",
+				secret: "leaked",
+			} as unknown as StaffAgentMessage,
+		];
+
+		const state = (await (await fetch(`${base}/api/state`)).json()) as {
+			staff: Array<Record<string, unknown>>;
+			agentMessages: Array<Record<string, unknown>>;
+		};
+		expect(state.staff[0]?.model).toEqual({ provider: "anthropic", modelId: "claude-fable-5" });
+		expect(state.agentMessages).toEqual([
+			{
+				id: "33333333-3333-4333-8333-333333333333",
+				fromAgentId: "11111111-1111-4111-8111-111111111111",
+				toAgentId: "44444444-4444-4444-8444-444444444444",
+				subject: "Handoff",
+				body: "The supplier report is ready.",
+				createdAt: "2026-08-15T00:01:00.000Z",
+				status: "queued",
+			},
+		]);
+		expect(JSON.stringify(state)).not.toContain("leaked");
+
+		staffMessageReadModel = () => {
+			throw new Error("messages unavailable");
+		};
+		const fallback = (await (await fetch(`${base}/api/state`)).json()) as { agentMessages: unknown[] };
+		expect(fallback.agentMessages).toEqual([]);
+	});
+
 	it("serves safe staff and connection-request read models", async () => {
 		const unsafeStaff = {
 			id: "11111111-1111-4111-8111-111111111111",
@@ -206,6 +266,7 @@ describe("company app server", () => {
 			departmentId: "operations",
 			appearance: { color: "blue", shape: "round" },
 			employmentStatus: "active" as const,
+			lifecycleState: "setup" as const,
 			createdAt: "2026-08-15T00:00:00.000Z",
 			updatedAt: "2026-08-15T00:00:00.000Z",
 			root: "C:\\private-company-root",
@@ -218,19 +279,100 @@ describe("company app server", () => {
 			displayName: "GitHub",
 			purpose: "Review pull requests",
 			destinations: [{ host: "github.com", note: "Repository access", credential: "destination-secret" }],
+			providerSuggestions: ["GitHub", "GitLab"],
 			recipeId: "github-oauth",
-			status: "pending" as const,
+			artifactId: "customer-health",
+			dataNeedId: "support-inbox",
+			status: "connecting" as const,
+			phase: "awaiting_auth" as const,
+			guidance: "GitHub is open in your browser. Sign in and approve access.",
 			createdAt: "2026-08-15T00:01:00.000Z",
 			updatedAt: "2026-08-15T00:01:00.000Z",
 			secretNames: ["GITHUB_TOKEN"],
 			root: "C:\\private-company-root",
 			credentials: { token: "request-secret-token" },
 		};
+		const unsafeArtifact = {
+			schema: "qorpera.artifact/v1" as const,
+			id: "customer-health",
+			title: "Customer health",
+			purpose: "Track support quality.",
+			stewardAgentId: unsafeStaff.id,
+			status: "waiting-for-data" as const,
+			metrics: [
+				{
+					id: "response-time",
+					label: "Response time",
+					description: "Time to first useful response.",
+					direction: "lower-is-better" as const,
+					status: "unknown" as const,
+					evidence: [],
+					observations: [
+						{ at: "2026-08-14T00:00:00.000Z", value: 18 },
+						{ at: "2026-08-15T00:00:00.000Z", value: 12 },
+					],
+				},
+			],
+			dataNeeds: [
+				{
+					id: "support-inbox",
+					label: "Support inbox",
+					purpose: "Read customer messages.",
+					connectorHints: ["gmail"],
+					status: "missing" as const,
+					sourceRefs: [],
+					sourceAssessments: [],
+					connectionRequestId: unsafeRequest.id,
+				},
+			],
+			createdAt: "2026-08-15T00:00:00.000Z",
+			updatedAt: "2026-08-15T00:01:00.000Z",
+			relativePath: "artifacts/staff/customer-health.json",
+			root: "C:\\private-company-root",
+			credentials: { token: "artifact-secret-token" },
+		};
+		const unsafeConnector = {
+			schema: "qorpera.connector/v1" as const,
+			id: "support-inbox",
+			displayName: "Support inbox",
+			purpose: "Read and triage customer support email.",
+			ownerAgentId: unsafeStaff.id,
+			environment: "sandbox" as const,
+			operations: [
+				{
+					id: "messages.read",
+					label: "Read messages",
+					description: "Read messages in the support inbox.",
+					access: "read" as const,
+				},
+			],
+			destinations: [{ host: "mail.example.com", note: "Support mailbox" }],
+			authentication: {
+				kind: "oauth2" as const,
+				secretName: "support_oauth",
+				label: "Support mailbox",
+				authorizationUrl: "https://identity.example.com/authorize",
+				tokenUrl: "https://identity.example.com/token",
+				clientId: "private-client-id",
+				scopes: ["messages.read"],
+				clientSecretLabel: "OAuth client secret",
+			},
+			implementation: { kind: "agent-playbook" as const, entry: "README.md" },
+			createdAt: "2026-08-15T00:00:00.000Z",
+			updatedAt: "2026-08-15T00:01:00.000Z",
+			relativePath: "connectors/support-inbox/manifest.json",
+			root: "C:\\private-company-root",
+			credentials: { token: "connector-secret-token" },
+		};
 		staffReadModel = () => [unsafeStaff];
+		artifactReadModel = () => [unsafeArtifact];
+		connectorReadModel = () => [unsafeConnector];
 		connectionRequestReadModel = () => [unsafeRequest];
 
 		let state = (await (await fetch(`${base}/api/state`)).json()) as {
 			staff: Array<Record<string, unknown>>;
+			artifacts: Array<Record<string, unknown>>;
+			connectors: Array<Record<string, unknown>>;
 			connectionRequests: Array<Record<string, unknown>>;
 		};
 		expect(state.staff[0]).toMatchObject({
@@ -240,25 +382,77 @@ describe("company app server", () => {
 		});
 		expect(state.staff[0]).not.toHaveProperty("root");
 		expect(state.staff[0]).not.toHaveProperty("credentials");
+		expect(state.artifacts[0]).toMatchObject({
+			id: "customer-health",
+			stewardAgentId: unsafeStaff.id,
+			metrics: [
+				{
+					id: "response-time",
+					evidence: [],
+					observations: [
+						{ at: "2026-08-14T00:00:00.000Z", value: 18 },
+						{ at: "2026-08-15T00:00:00.000Z", value: 12 },
+					],
+				},
+			],
+			dataNeeds: [{ id: "support-inbox", connectorHints: ["gmail"], connectionRequestId: unsafeRequest.id }],
+		});
+		expect(state.artifacts[0]).not.toHaveProperty("root");
+		expect(state.artifacts[0]).not.toHaveProperty("credentials");
+		expect(state.connectors[0]).toEqual({
+			id: "support-inbox",
+			displayName: "Support inbox",
+			purpose: "Read and triage customer support email.",
+			ownerAgentId: unsafeStaff.id,
+			environment: "sandbox",
+			operations: [
+				{
+					id: "messages.read",
+					label: "Read messages",
+					description: "Read messages in the support inbox.",
+					access: "read",
+				},
+			],
+			destinations: [{ host: "mail.example.com", note: "Support mailbox" }],
+			authentication: { kind: "oauth2", label: "Support mailbox" },
+			createdAt: "2026-08-15T00:00:00.000Z",
+			updatedAt: "2026-08-15T00:01:00.000Z",
+			relativePath: "connectors/support-inbox/manifest.json",
+		});
 		expect(state.connectionRequests[0]).toMatchObject({
 			id: unsafeRequest.id,
 			staffAgentId: unsafeStaff.id,
 			destinations: [{ host: "github.com", note: "Repository access" }],
-			status: "pending",
+			providerSuggestions: ["GitHub", "GitLab"],
+			status: "connecting",
+			phase: "awaiting_auth",
+			guidance: "GitHub is open in your browser. Sign in and approve access.",
+			artifactId: "customer-health",
+			dataNeedId: "support-inbox",
 		});
 		expect(state.connectionRequests[0]).not.toHaveProperty("secretNames");
 		expect(state.connectionRequests[0]).not.toHaveProperty("root");
 		expect(state.connectionRequests[0]).not.toHaveProperty("credentials");
 		expect(JSON.stringify(state)).not.toContain("destination-secret");
+		expect(JSON.stringify(state)).not.toContain("private-client-id");
+		expect(JSON.stringify(state)).not.toContain("connector-secret-token");
 
 		staffReadModel = () => {
 			throw new Error("staff unavailable");
+		};
+		artifactReadModel = () => {
+			throw new Error("artifacts unavailable");
+		};
+		connectorReadModel = () => {
+			throw new Error("connectors unavailable");
 		};
 		connectionRequestReadModel = () => {
 			throw new Error("connection requests unavailable");
 		};
 		state = (await (await fetch(`${base}/api/state`)).json()) as typeof state;
 		expect(state.staff).toEqual([]);
+		expect(state.artifacts).toEqual([]);
+		expect(state.connectors).toEqual([]);
 		expect(state.connectionRequests).toEqual([]);
 	});
 
@@ -277,6 +471,7 @@ describe("company app server", () => {
 				},
 			],
 			enabled: true,
+			effort: "high" as const,
 			createdAt: "2026-08-15T00:00:00.000Z",
 			updatedAt: "2026-08-15T00:01:00.000Z",
 			suspendedReason: "Awaiting provider reconnection",
@@ -306,6 +501,7 @@ describe("company app server", () => {
 					},
 				],
 				enabled: true,
+				effort: "high",
 				createdAt: "2026-08-15T00:00:00.000Z",
 				updatedAt: "2026-08-15T00:01:00.000Z",
 				suspendedReason: "Awaiting provider reconnection",
@@ -327,7 +523,7 @@ describe("company app server", () => {
 		expect(state.scheduledJobs).toEqual([]);
 	});
 
-	it("serves only the fixed shell while artifacts remain live", async () => {
+	it("serves only fixed shell navigation and never executes company-authored app files", async () => {
 		const chrome = await (await fetch(`${base}/`)).text();
 		expect(chrome).toContain("Qorpera staff shell");
 		mkdirSync(join(root, "userland"), { recursive: true });
@@ -336,13 +532,14 @@ describe("company app server", () => {
 		expect(legacyShell.status).toBe(404);
 
 		let state = (await (await fetch(`${base}/api/state`)).json()) as {
-			projection: {
-				navigation: string[];
+			shellNavigation: {
+				defaultPageId: string;
+				sectionIds: string[];
 				nodes: Array<{
 					id: string;
 					kind: string;
 					label: string;
-					view?: { version?: number };
+					view?: { type: string; id: string };
 				}>;
 			};
 			trailSessions: number;
@@ -350,26 +547,18 @@ describe("company app server", () => {
 			connectionRequests: unknown[];
 			scheduledJobs: unknown[];
 		};
-		expect(state.projection.navigation).toEqual(["q:main"]);
-		expect(state.projection.nodes.map((node) => node.id)).toEqual(
+		expect(state.shellNavigation.defaultPageId).toBe("q:chats");
+		expect(state.shellNavigation.sectionIds).toEqual(["q:main"]);
+		expect(state.shellNavigation.nodes.map((node) => node.id)).toEqual(
 			expect.arrayContaining(["q:main", "q:inbox", "q:activity", "q:chats"]),
 		);
-		expect(state.projection.nodes.map((node) => node.id)).not.toContain("q:usage");
+		expect(state.shellNavigation.nodes.map((node) => node.id)).not.toContain("q:usage");
 		expect(state).not.toHaveProperty("surfaces");
+		expect(state).not.toHaveProperty("projection");
 		expect(state.staff).toEqual([]);
 		expect(state.connectionRequests).toEqual([]);
 		expect(state.scheduledJobs).toEqual([]);
-		writeFileSync(
-			join(root, "app", "manifest.json"),
-			JSON.stringify({
-				surfaces: [{ name: "Obsolete", entry: "obsolete.html" }],
-			}),
-			"utf-8",
-		);
-		state = (await (await fetch(`${base}/api/state`)).json()) as typeof state;
-		expect(state.projection.nodes.some((node) => node.label === "Obsolete")).toBe(false);
-
-		// The controller publishes a stable hierarchy: it appears with no restart.
+		mkdirSync(join(root, "app", "surfaces"), { recursive: true });
 		writeFileSync(join(root, "app", "surfaces", "hello.html"), "<h1>live surface</h1>", "utf-8");
 		writeFileSync(
 			join(root, "app", "projection.json"),
@@ -401,60 +590,17 @@ describe("company app server", () => {
 			"utf-8",
 		);
 		state = (await (await fetch(`${base}/api/state`)).json()) as typeof state;
-		expect(state.projection.navigation).toEqual(["q:main", "department:published"]);
-		expect(state.projection.nodes).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					id: "page:main.hello",
-					view: expect.objectContaining({
-						type: "surface",
-						entry: "hello.html",
-						version: expect.any(Number),
-					}),
-				}),
-			]),
-		);
+		expect(state.shellNavigation.nodes.some((node) => node.id === "page:main.hello")).toBe(false);
 
-		const surface = await fetch(`${base}/surface/hello.html`);
-		expect(await surface.text()).toContain("live surface");
-
-		// Traversal out of app/surfaces is refused.
-		const traversal = await fetch(`${base}/surface/..%2F..%2Fauthority.toml`);
-		expect(traversal.status).toBe(403);
-	});
-
-	it("serves the surface design system, read-only kit, theme override, and substrate reads", async () => {
-		// Tokens: every rendered markdown surface links the shared stylesheet
-		// (not an inline hardcoded style) plus the company theme override.
-		writeFileSync(join(root, "app", "surfaces", "notes.md"), "# Notes\ncontent", "utf-8");
-		const rendered = await (await fetch(`${base}/surface/notes.md`)).text();
-		expect(rendered).toContain('href="/assets/surface.css"');
-		expect(rendered).toContain('href="/assets/theme.css"');
-		expect(rendered).not.toContain("<style>");
-
-		const css = await fetch(`${base}/assets/surface.css`);
-		expect(css.headers.get("content-type")).toContain("text/css");
-		const cssText = await css.text();
-		expect(cssText).toContain("--chrome: #0a0a0a");
-		expect(cssText).toContain(".q-card");
-
-		// Theme override: empty when absent, the company file when present.
-		expect(await (await fetch(`${base}/assets/theme.css`)).text()).toBe("");
-		writeFileSync(join(root, "app", "surfaces", "theme.css"), ":root { --accent: #35b8a5; }", "utf-8");
-		expect(await (await fetch(`${base}/assets/theme.css`)).text()).toContain("#35b8a5");
-
-		// The kit is read-only capability: state + substrate + inbox reads.
-		const kit = await (await fetch(`${base}/assets/surface-kit.js`)).text();
-		expect(kit).toContain("window.qorpera");
-		expect(kit).not.toContain("x-qorpera-token");
-
-		writeFileSync(join(root, "app", "substrates", "beliefs.md"), "price: 249 DKK (estimate)", "utf-8");
-		const substrate = await fetch(`${base}/api/substrate/beliefs.md`);
-		expect(await substrate.text()).toContain("249 DKK");
-
-		// Traversal out of app/substrates is refused.
-		const traversal = await fetch(`${base}/api/substrate/..%2F..%2Fauthority.toml`);
-		expect(traversal.status).toBe(403);
+		for (const path of [
+			"/surface/hello.html",
+			"/assets/surface.css",
+			"/assets/surface-kit.js",
+			"/assets/theme.css",
+			"/api/substrate/beliefs.md",
+		]) {
+			expect((await fetch(`${base}${path}`)).status, path).toBe(404);
+		}
 	});
 
 	it("reports active-company trail usage priced with T3-compatible model rates", async () => {
@@ -635,7 +781,7 @@ describe("company app server", () => {
 	});
 
 	it("refuses linked trail sessions instead of parsing files outside the trail boundary", async () => {
-		linkSync(join(root, "authority.toml"), join(root, "trail", "linked.jsonl"));
+		linkSync(join(root, COMPANY_MANIFEST_RELATIVE_PATH), join(root, "trail", "linked.jsonl"));
 		const params = new URLSearchParams({
 			sinceDay: "2026-08-08",
 			untilDay: "2026-08-09",
@@ -647,20 +793,7 @@ describe("company app server", () => {
 		expect(await response.text()).not.toContain("[irreversible]");
 	});
 
-	it("refuses linked surface and substrate parents instead of reading host files", async () => {
-		const linkType = process.platform === "win32" ? "junction" : "dir";
-		symlinkSync(root, join(root, "app", "surfaces", "linked"), linkType);
-		symlinkSync(root, join(root, "app", "substrates", "linked"), linkType);
-
-		const surface = await fetch(`${base}/surface/linked%2Fauthority.toml`);
-		const substrate = await fetch(`${base}/api/substrate/linked%2Fauthority.toml`);
-		expect(surface.status).toBe(403);
-		expect(substrate.status).toBe(403);
-		expect(await surface.text()).not.toContain("[irreversible]");
-		expect(await substrate.text()).not.toContain("[irreversible]");
-	});
-
-	it("lists trail sessions and serves the controller↔founder message round-trip", async () => {
+	it("lists trail sessions and serves the agent↔founder message round-trip", async () => {
 		// A trail session appears in state with its first user message as title.
 		writeFileSync(
 			join(root, "trail", "2026-08-04T10-00-00-000Z_abc.jsonl"),
@@ -702,7 +835,7 @@ describe("company app server", () => {
 					timestamp: "2026-08-04T11:00:00.000Z",
 					cwd: root,
 					qorpera: {
-						actor: "controller",
+						actor: "company-agent",
 						attended: false,
 						autonomous: true,
 						label: "autonomous — conception",
@@ -762,7 +895,7 @@ describe("company app server", () => {
 					timestamp: "2026-08-04T11:30:00.000Z",
 					cwd: root,
 					qorpera: {
-						actor: "controller",
+						actor: "company-agent",
 						attended: false,
 						autonomous: true,
 						label: "autonomous — wake — scheduled-job:job-42 — Reliability sweep",
@@ -843,7 +976,7 @@ describe("company app server", () => {
 				timestamp: "2026-08-04T11:45:00.000Z",
 				cwd: root,
 				qorpera: {
-					actor: "controller",
+					actor: "company-agent",
 					attended: false,
 					autonomous: true,
 					label: "autonomous — wake — schedule",
@@ -919,6 +1052,33 @@ describe("company app server", () => {
 							{
 								type: "text",
 								text: '[Sidechat context: this chat is docked to the surface "Revenue" — app/surfaces/revenue.html. The founder is looking at it right now; orient from that file before answering.]\n\nwhy did July dip?',
+							},
+						],
+					},
+				}),
+			].join("\n"),
+			"utf-8",
+		);
+		writeFileSync(
+			join(root, "trail", "2026-08-04T13-30-00-000Z_connection-choice.jsonl"),
+			[
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "connection-choice",
+					timestamp: "t",
+					cwd: root,
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "1",
+					parentId: null,
+					message: {
+						role: "user",
+						content: [
+							{
+								type: "text",
+								text: '[Connection choice context: selected "Choose services individually" for data need "Financial ledger" in artifact "Financial health". Use existing company files first.]\n\nChoose services individually',
 							},
 						],
 					},
@@ -1030,6 +1190,7 @@ describe("company app server", () => {
 		const legacyWake = state.sessions.find((s) => s.file.includes("_legacy-wake"));
 		const scoped = state.sessions.find((s) => s.file.includes("_scoped"));
 		const sidechat = state.sessions.find((s) => s.file.includes("_sidechat"));
+		const connectionChoice = state.sessions.find((s) => s.file.includes("_connection-choice"));
 		const lateFirstMessage = state.sessions.find((s) => s.file.includes("_late-first-message"));
 		expect(chat?.title).toBe("plan the pricing analysis");
 		expect(chat?.kind).toBe("chat");
@@ -1083,8 +1244,9 @@ describe("company app server", () => {
 		expect(scoped?.worktree).toBe(worktree);
 		expect(scoped?.title).toBe("fix the launcher");
 		expect(sidechat?.kind).toBe("chat");
-		expect(sidechat?.page).toBe("page:revenue.overview");
+		expect(sidechat).not.toHaveProperty("page");
 		expect(sidechat?.title).toBe("why did July dip?");
+		expect(connectionChoice?.title).toBe("Choose services individually");
 		expect(lateFirstMessage?.title).toBe("preserve this late conversation");
 		const kernelInput = state.sessions.find((s) => s.file.includes("_kernelinput"));
 		const empty = state.sessions.find((s) => s.file.includes("_empty"));
@@ -1218,6 +1380,45 @@ describe("company app server", () => {
 		expect(rejected.status).toBe(400);
 	});
 
+	it("routes authorized artifact definition edits through the host-owned mutation model", async () => {
+		const artifact: CompanyArtifactRecord = {
+			schema: "qorpera.artifact/v1",
+			id: "customer-health",
+			title: "Customer trust",
+			purpose: "Track support quality.",
+			stewardAgentId: "11111111-1111-4111-8111-111111111111",
+			status: "waiting-for-data",
+			metrics: [],
+			dataNeeds: [],
+			createdAt: "2026-08-15T00:00:00.000Z",
+			updatedAt: "2026-08-15T00:01:00.000Z",
+			relativePath: "artifacts/staff/customer-health.json",
+		};
+		let received: { id: string; update: unknown } | undefined;
+		artifactUpdateModel = (id, update) => {
+			received = { id, update };
+			return artifact;
+		};
+		const update = {
+			expectedUpdatedAt: "2026-08-15T00:00:00.000Z",
+			title: "Customer trust",
+		};
+		const response = await fetch(`${base}/api/artifact/update`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				"x-qorpera-token": "test-token",
+			},
+			body: JSON.stringify({ id: artifact.id, update }),
+		});
+		expect(response.status).toBe(200);
+		expect(received).toEqual({ id: artifact.id, update });
+		expect(await response.json()).toMatchObject({
+			ok: true,
+			artifact: { id: artifact.id, title: "Customer trust", relativePath: artifact.relativePath },
+		});
+	});
+
 	it("rejects mutations without the kernel token — the agent cannot curl its own approvals", async () => {
 		const authority = discoverAuthority(root)!;
 		const blocked = evaluateToolCall(authority, "bash", { command: "rm -rf work" }, root);
@@ -1231,6 +1432,7 @@ describe("company app server", () => {
 			["/api/gate", { file: gateFile, action: "approved" }],
 			["/api/inbox/respond", { file: gateFile, response: "yes" }],
 			["/api/authority", { content: `[irreversible]\nmode = "auto"\n` }],
+			["/api/artifact/update", { id: "customer-health", update: {} }],
 		] as const) {
 			const res = await fetch(`${base}${path}`, {
 				method: "POST",

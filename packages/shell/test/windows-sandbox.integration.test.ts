@@ -274,60 +274,62 @@ describe.skipIf(!RUN_WINDOWS_INTEGRATION)("bundled Codex Windows sandbox integra
 			expect(runReplacementProbe(revokedTarget, "deny").status).toBe(0);
 			expect(existsSync(revokedTarget)).toBe(false);
 
-			const controllerConfigDir = join(integrationRoot, "controller-codex-home");
-			const controllerRuntimeDir = sandboxRuntimeDir(integrationRoot, companyRoot, "controller", randomUUID());
-			mkdirSync(controllerConfigDir, { recursive: true });
-			mkdirSync(controllerRuntimeDir, { recursive: true });
-			const controllerEnv = cleanEnvironment(controllerConfigDir, controllerRuntimeDir);
+			const companyAgentConfigDir = join(integrationRoot, "company-agent-codex-home");
+			const companyAgentRuntimeDir = sandboxRuntimeDir(integrationRoot, companyRoot, "company-agent", randomUUID());
+			mkdirSync(companyAgentConfigDir, { recursive: true });
+			mkdirSync(companyAgentRuntimeDir, { recursive: true });
+			const companyAgentEnv = cleanEnvironment(companyAgentConfigDir, companyAgentRuntimeDir);
 			writeSandboxProfile(
-				controllerConfigDir,
-				controllerRuntimeDir,
+				companyAgentConfigDir,
+				companyAgentRuntimeDir,
 				companyRoot,
-				{ actor: "controller", attended: false },
+				{ actor: "company-agent", attended: false },
 				[join(companyRoot, repositoryPath), join(companyRoot, worktreesPath)],
 				[dirname(process.execPath), resolve(CODEX_ENTRY, "..", "..", "..")],
 			);
 			provisionWindowsSandbox({
 				codexEntry: CODEX_ENTRY,
-				configDir: controllerConfigDir,
-				runtimeDir: controllerRuntimeDir,
+				configDir: companyAgentConfigDir,
+				runtimeDir: companyAgentRuntimeDir,
 				nodeExecutable: process.execPath,
-				env: controllerEnv,
+				env: companyAgentEnv,
 			});
-			const controllerWriteProbe = join(controllerRuntimeDir, "write-probe.mjs");
-			writeFileSync(controllerWriteProbe, writeProbeSource, "utf-8");
-			const runControllerProbe = (target: string, expected: "allow" | "deny") =>
+			const companyAgentWriteProbe = join(companyAgentRuntimeDir, "write-probe.mjs");
+			writeFileSync(companyAgentWriteProbe, writeProbeSource, "utf-8");
+			const runCompanyAgentProbe = (target: string, expected: "allow" | "deny") =>
 				spawnSync(
 					process.execPath,
-					sandboxCommandArgs(CODEX_ENTRY, controllerRuntimeDir, process.execPath, [
-						controllerWriteProbe,
+					sandboxCommandArgs(CODEX_ENTRY, companyAgentRuntimeDir, process.execPath, [
+						companyAgentWriteProbe,
 						target,
 						expected,
 					]),
-					{ cwd: controllerRuntimeDir, env: controllerEnv, encoding: "utf-8", timeout: 120_000 },
+					{ cwd: companyAgentRuntimeDir, env: companyAgentEnv, encoding: "utf-8", timeout: 120_000 },
 				);
-			const controllerTarget = join(companyRoot, "app", "controller-allowed.txt");
-			expect(runControllerProbe(controllerTarget, "allow").status).toBe(0);
-			expect(existsSync(controllerTarget)).toBe(true);
+			const companyAgentTarget = join(companyRoot, "app", "company-agent-allowed.txt");
+			expect(runCompanyAgentProbe(companyAgentTarget, "allow").status).toBe(0);
+			expect(existsSync(companyAgentTarget)).toBe(true);
 			for (const deniedTarget of [
-				join(companyRoot, repositoryPath, "controller-blocked-repository.txt"),
-				join(worktreeRoot, "controller-blocked-worktree.txt"),
-				join(worktreeRoot, ".git", "controller-blocked-git"),
+				join(companyRoot, repositoryPath, "company-agent-blocked-repository.txt"),
+				join(worktreeRoot, "company-agent-blocked-worktree.txt"),
+				join(worktreeRoot, ".git", "company-agent-blocked-git"),
 			]) {
-				expect(runControllerProbe(deniedTarget, "deny").status, deniedTarget).toBe(0);
+				expect(runCompanyAgentProbe(deniedTarget, "deny").status, deniedTarget).toBe(0);
 				expect(existsSync(deniedTarget)).toBe(false);
 			}
-			const controllerNetworkProbe = join(controllerRuntimeDir, "network-probe.mjs");
-			writeFileSync(controllerNetworkProbe, readFileSync(networkProbe, "utf-8"), "utf-8");
-			const controllerNetwork = spawnSync(
+			const companyAgentNetworkProbe = join(companyAgentRuntimeDir, "network-probe.mjs");
+			writeFileSync(companyAgentNetworkProbe, readFileSync(networkProbe, "utf-8"), "utf-8");
+			const companyAgentNetwork = spawnSync(
 				process.execPath,
-				sandboxCommandArgs(CODEX_ENTRY, controllerRuntimeDir, process.execPath, [
-					controllerNetworkProbe,
+				sandboxCommandArgs(CODEX_ENTRY, companyAgentRuntimeDir, process.execPath, [
+					companyAgentNetworkProbe,
 					networkTarget,
 				]),
-				{ cwd: controllerRuntimeDir, env: controllerEnv, encoding: "utf-8", timeout: 120_000 },
+				{ cwd: companyAgentRuntimeDir, env: companyAgentEnv, encoding: "utf-8", timeout: 120_000 },
 			);
-			expect({ status: controllerNetwork.status, stderr: controllerNetwork.stderr }).toMatchObject({ status: 0 });
+			expect({ status: companyAgentNetwork.status, stderr: companyAgentNetwork.stderr }).toMatchObject({
+				status: 0,
+			});
 
 			// Userland-merge regression (shell 0.18.1, "Bash tool unavailable"):
 			// the coding agent's Windows shell discovery probes
@@ -344,8 +346,8 @@ describe.skipIf(!RUN_WINDOWS_INTEGRATION)("bundled Codex Windows sandbox integra
 			if (existsSync(gitBash)) {
 				const bashProbe = spawnSync(
 					process.execPath,
-					sandboxCommandArgs(CODEX_ENTRY, controllerRuntimeDir, gitBash, ["-c", "echo qorpera-bash-ok"]),
-					{ cwd: controllerRuntimeDir, env: controllerEnv, encoding: "utf-8", timeout: 120_000 },
+					sandboxCommandArgs(CODEX_ENTRY, companyAgentRuntimeDir, gitBash, ["-c", "echo qorpera-bash-ok"]),
+					{ cwd: companyAgentRuntimeDir, env: companyAgentEnv, encoding: "utf-8", timeout: 120_000 },
 				);
 				expect({ status: bashProbe.status, stderr: bashProbe.stderr }).toMatchObject({ status: 0 });
 				expect(bashProbe.stdout).toContain("qorpera-bash-ok");

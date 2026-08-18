@@ -46,10 +46,10 @@ contextBridge.exposeInMainWorld("qorpera", {
 	configureIntelligence: (providerId) => ipcRenderer.invoke("intelligence:configure", providerId),
 	disconnectIntelligence: () => ipcRenderer.invoke("intelligence:sign-out"),
 	listCompanies: () => ipcRenderer.invoke("companies:list"),
+	removeCompany: (root) => ipcRenderer.invoke("company:remove", root),
 	acceptCloudInvitation: (invitationId) => ipcRenderer.invoke("profile:accept-invitation", invitationId),
 	declineCloudInvitation: (invitationId) => ipcRenderer.invoke("profile:decline-invitation", invitationId),
 	materializeCloudProfile: (profileId) => ipcRenderer.invoke("profile:materialize-cloud", profileId),
-	removeProfile: (root) => ipcRenderer.invoke("profile:remove", root),
 	cloudProfileOptions: () => ipcRenderer.invoke("profile:cloud-options"),
 	enableCloudProfile: () => ipcRenderer.invoke("profile:enable-cloud"),
 	attachCloudProfile: (profileId) => ipcRenderer.invoke("profile:attach-cloud", profileId),
@@ -62,8 +62,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 		ipcRenderer.invoke("profile-team:update-role", memberUserId, role),
 	removeProfileMember: (memberUserId) => ipcRenderer.invoke("profile-team:remove-member", memberUserId),
 	openCompany: (root) => ipcRenderer.invoke("company:open", root),
-	newCompany: (profileName, profileIcon, placement) =>
-		ipcRenderer.invoke("company:new", profileName, profileIcon, placement),
+	newCompany: (dir, companyIcon) => ipcRenderer.invoke("company:new", dir, companyIcon),
 	integrateCompany: (dir, from) => ipcRenderer.invoke("company:integrate", dir, from),
 	addProduct: (product, from) => ipcRenderer.invoke("company:product-add", product, from),
 	chooseProductSource: () => ipcRenderer.invoke("company:product-source-choose"),
@@ -82,6 +81,8 @@ contextBridge.exposeInMainWorld("qorpera", {
 	staffBootstrap: bootstrapStaff,
 	staffUpdate: (staffAgentId, update) => ipcRenderer.invoke("staff:update", staffAgentId, update),
 	staffArchive: (staffAgentId) => ipcRenderer.invoke("staff:archive", staffAgentId),
+	staffDelete: (staffAgentId) => ipcRenderer.invoke("staff:delete", staffAgentId),
+	staffRestore: (staffAgentId) => ipcRenderer.invoke("staff:restore", staffAgentId),
 	staffOpen: openStaff,
 	copyStaffConversationId: (staffAgentId) => ipcRenderer.invoke("staff:copy-conversation-id", staffAgentId),
 	staffIntroReady: (staffAgentId, sessionFile, retry = false) =>
@@ -96,6 +97,9 @@ contextBridge.exposeInMainWorld("qorpera", {
 		ipcRenderer.invoke("connection:disconnect", connectionId, accountId),
 	cancelConnection: (connectionId) => ipcRenderer.invoke("connection:cancel", connectionId),
 	connectionRequests: () => ipcRenderer.invoke("connection-requests:list"),
+	selectConnectionRequest: (identity, selection) =>
+		ipcRenderer.invoke("connection-request:select", identity, selection),
+	prepareConnectionRequest: (identity) => ipcRenderer.invoke("connection-request:prepare", identity),
 	beginConnectionRequest: (identity) => ipcRenderer.invoke("connection-request:begin", identity),
 	onConnectionRequestsChanged: (handler) =>
 		ipcRenderer.on("connection-requests-changed", (_event, request) => handler(request)),

@@ -96,7 +96,7 @@ function assertNoExternalLocalGitConfig(root: string, env: NodeJS.ProcessEnv): v
 		(key) => key.startsWith("include.") || key.startsWith("includeif.") || key.startsWith("filter."),
 	);
 	if (unsafe) {
-		throw new Error(`repository-local Git execution config is not permitted in kernel checkpoints: ${unsafe}`);
+		throw new Error(`repository-local Git execution config is not permitted in host checkpoints: ${unsafe}`);
 	}
 }
 
@@ -154,11 +154,11 @@ function transientCheckpointPath(path: string): boolean {
 }
 
 /**
- * Preserve every pre-controller Git state before granting company-folder
+ * Preserve every pre-agent Git state before granting company-folder
  * write access. A staged version is committed first so a different working
  * version becomes a second recoverable snapshot instead of replacing it.
  */
-export function snapshotFounderGitState(root: string, actor = "controller"): void {
+export function snapshotFounderGitState(root: string, actor = "agent"): void {
 	const staged = git(root, ["diff", "--cached", "--quiet"]);
 	if (staged.status === 1) {
 		commitSnapshot(
@@ -218,7 +218,7 @@ export function captureCompanyGitBaseline(root: string): CompanyGitBaseline {
 }
 
 export function commitCompanyMaterialization(root: string, paths: string[]): void {
-	// A path must exist on disk — or be a tracked file a kernel migration
+	// A path must exist on disk — or be a tracked file a host migration
 	// just deleted, so the deletion lands in this commit, not a later turn's.
 	const existingPaths = paths.filter(
 		(path) => existsSync(join(root, path)) || git(root, ["ls-files", "--error-unmatch", "--", path]).status === 0,
@@ -233,13 +233,13 @@ export function commitCompanyMaterialization(root: string, paths: string[]): voi
 	if (changed.status !== 1) throw new Error("could not inspect the company materialization snapshot");
 	const committed = git(root, [
 		"-c",
-		"user.name=Qorpera Kernel",
+		"user.name=Qorpera Host",
 		"-c",
-		"user.email=kernel@qorpera.local",
+		"user.email=host@qorpera.local",
 		"commit",
 		"--only",
 		"-m",
-		"docs: materialize company runtime\n\nQorpera-Trigger: desktop kernel open\nQorpera-Rationale: preserve kernel scaffolding, fixed-shell migrations, and company artifacts before staff execution",
+		"docs: materialize company runtime\n\nQorpera-Trigger: desktop host open\nQorpera-Rationale: preserve host-managed scaffolding, fixed-shell migrations, and company artifacts before agent execution",
 		"--",
 		...existingPaths,
 	]);
@@ -302,11 +302,11 @@ export function checkpointCompanyGit(
 ): CompanyCheckpointResult {
 	return checkpointGit(root, baseline, {
 		forcedPath: `trail/${trailFile}`,
-		name: "Qorpera Controller",
-		email: "controller@qorpera.local",
-		title: "docs: checkpoint controller session",
+		name: "Qorpera Agent",
+		email: "agent@qorpera.local",
+		title: "docs: checkpoint agent session",
 		trigger: `trail/${trailFile}`,
-		rationale: "preserve the settled controller change set",
+		rationale: "preserve the settled agent change set",
 	});
 }
 
@@ -374,9 +374,9 @@ function commitProductRecoveryMetadata(company: string, trail: string, paths: st
 	if (added.status !== 0) throw new Error("product recovery staging failed");
 	const committed = git(company, [
 		"-c",
-		"user.name=Qorpera Kernel",
+		"user.name=Qorpera Host",
 		"-c",
-		"user.email=kernel@qorpera.local",
+		"user.email=host@qorpera.local",
 		"commit",
 		"--only",
 		"-m",

@@ -54,7 +54,7 @@
 	}
 
 	function syncCompactTooltips(compact) {
-		for (const row of document.querySelectorAll("#staffNavigation .staff-nav-row, #staffNavigation .controller-nav-row")) {
+		for (const row of document.querySelectorAll("#staffNavigation .staff-nav-row, #staffNavigation .company-runtime-row")) {
 			if (!(row instanceof HTMLElement)) continue;
 			if (compact) {
 				const name = row.querySelector("strong")?.textContent?.trim() || "Agent";

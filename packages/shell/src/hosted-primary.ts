@@ -460,7 +460,11 @@ export interface HostedPrimaryTransport {
 		p_department_id: string | null;
 		p_appearance_color: string;
 		p_appearance_shape: string;
+		p_appearance_creature: string | null;
+		p_model_provider: string | null;
+		p_model_id: string | null;
 		p_employment_status: StaffAgent["employmentStatus"];
+		p_lifecycle_state: StaffAgent["lifecycleState"];
 		p_created_at: string;
 		p_expected_version: number | null;
 	}): Promise<unknown>;
@@ -631,7 +635,11 @@ export interface HostedPrimaryDatabase {
 					p_department_id: string | null;
 					p_appearance_color: string;
 					p_appearance_shape: string;
+					p_appearance_creature: string | null;
+					p_model_provider: string | null;
+					p_model_id: string | null;
 					p_employment_status: StaffAgent["employmentStatus"];
+					p_lifecycle_state: StaffAgent["lifecycleState"];
 					p_created_at: string;
 					p_expected_version: number | null;
 				};
@@ -1331,6 +1339,16 @@ function parseStaff(value: unknown): HostedStaffAgent {
 	if (employmentStatus !== "active" && employmentStatus !== "archived") {
 		throw new Error("Hosted primary returned invalid staff employment status");
 	}
+	const lifecycleState = input.lifecycle_state;
+	if (lifecycleState !== "setup" && lifecycleState !== "active") {
+		throw new Error("Hosted primary returned invalid staff lifecycle state");
+	}
+	const appearanceCreature = input.appearance_creature;
+	const modelProvider = input.model_provider;
+	const modelId = input.model_id;
+	if ((modelProvider === null || modelProvider === undefined) !== (modelId === null || modelId === undefined)) {
+		throw new Error("Hosted primary returned an incomplete staff model selection");
+	}
 	const templateId = input.template_id;
 	const departmentId = input.department_id;
 	const staffText = (text: unknown, label: string, maxBytes: number, multiline: boolean): string => {
@@ -1359,8 +1377,20 @@ function parseStaff(value: unknown): HostedStaffAgent {
 		appearance: {
 			color: staffText(input.appearance_color, "staff appearance color", 64, false),
 			shape: staffText(input.appearance_shape, "staff appearance shape", 64, false),
+			...(appearanceCreature === null || appearanceCreature === undefined
+				? {}
+				: { creature: staffText(appearanceCreature, "staff appearance creature", 64, false) }),
 		},
+		...(modelProvider === null || modelProvider === undefined
+			? {}
+			: {
+					model: {
+						provider: staffText(modelProvider, "staff model provider", 128, false),
+						modelId: staffText(modelId, "staff model id", 256, false),
+					},
+				}),
 		employmentStatus,
+		lifecycleState,
 		version: staffVersion as number,
 		createdAt: canonicalTimestamp(input.created_at, "staff creation time"),
 		updatedAt: canonicalTimestamp(input.updated_at, "staff update time"),
@@ -2345,7 +2375,11 @@ export class QorperaHostedPrimary {
 				p_department_id: staff.departmentId ?? null,
 				p_appearance_color: staff.appearance.color,
 				p_appearance_shape: staff.appearance.shape,
+				p_appearance_creature: staff.appearance.creature ?? null,
+				p_model_provider: staff.model?.provider ?? null,
+				p_model_id: staff.model?.modelId ?? null,
 				p_employment_status: staff.employmentStatus,
+				p_lifecycle_state: staff.lifecycleState,
 				p_created_at: staff.createdAt,
 				p_expected_version: expectedVersion ?? null,
 			}),

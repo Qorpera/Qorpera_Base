@@ -1,22 +1,4 @@
-/**
- * Company folder scaffold — the Qorpera Base spine (spec §2).
- *
- * The folder IS the company. Base defines the spine plus the product-
- * development department kit and never opines past that line: `app/` and
- * department-authored content belong to the company's agents. Scaffolding
- * is strictly idempotent — existing files are never overwritten (a
- * company's `company.md` is its identity, not ours to reset). Sessions ARE
- * the trail: the scaffold points
- * the project `sessionDir` at `./trail`, so every session's tree-shaped
- * JSONL record lands inside the company folder with no mirroring layer.
- *
- * The kernel prompt is single-sourced here and materialized as BOTH
- * `AGENTS.md` and `CLAUDE.md` (spec §5.1): the context-file slot is the one
- * channel every vendor co-trains models to honor, it costs zero vendor-
- * prompt upkeep, and it makes the folder self-describing on any harness —
- * including ones Base has never met. Authority for the rules the kernel
- * describes comes from enforcement (`authority.ts`), never from prompt tier.
- */
+/** Agents-only company storage and optional product/environment operations. */
 
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -44,15 +26,12 @@ import { spawnSync } from "../utils/child-process.ts";
 import {
 	bindCompanySecret,
 	bindNetworkDestination,
-	bindWakeSchedule,
 	type CompanySecret,
 	companyConnectionsPath,
-	disableWakeSchedule,
 	disableWebhook,
 	enableWebhook,
 	type OAuth2Secret,
 	readCompanyConnections,
-	readWakeSchedule,
 	readWebhookBinding,
 	removeCompanySecret,
 	removeNetworkDestination,
@@ -64,229 +43,85 @@ import {
 	signGateApproval,
 } from "./founder-identity.ts";
 import { runOAuthOnboarding } from "./oauth-onboarding.ts";
-import {
-	EMPTY_PROJECTION,
-	type ProjectionDocument,
-	type ProjectionNode,
-	parseProjectionDocument,
-} from "./projection.ts";
+export const COMPANY_MANIFEST_SCHEMA = "qorpera.company/v1" as const;
+export const COMPANY_MANIFEST_RELATIVE_PATH = join(".qorpera", "company.json");
+const STAFF_REGISTRY_RELATIVE_PATH = join(".qorpera", "staff.json");
 
-/**
- * The kernel prompt (spec §5.2). L0 — companies and models may layer above
- * it, never below it. Written to AGENTS.md and CLAUDE.md at the company
- * root; both files are [authority]-gated against agent edits.
- */
-export const KERNEL_PROMPT = `# Kernel
+export interface CompanyManifestParent {
+	companyId: string;
+	state: string | null;
+	forkedAt: string;
+}
 
-You are the controller of the company rooted in this folder — and the
-builder of its controller platform. The human opens one app to run this
-company: the app is \`app/\`, and you are its author. Build what the company
-needs — surfaces that show the work, substrates that model what matters,
-routines that keep it moving, and real capability in \`app/tools/\` when you
-need machinery that doesn't exist: commands against your connections,
-operational planes, your own ways of working. The controller should fit
-this company the way a hand-built instrument fits its player.
+export interface CompanyManifest {
+	schema: typeof COMPANY_MANIFEST_SCHEMA;
+	id: string;
+	name: string;
+	createdAt: string;
+	parent?: CompanyManifestParent;
+}
 
-Surfaces are instruments, not reports: prefer HTML that reads live state
-over prose that freezes it. The backend serves the company design system
-at \`/assets/surface.css\` (markdown surfaces inherit it automatically;
-HTML surfaces get layout classes too — \`.q-grid\`, \`.q-card\`, \`.q-stat\`,
-\`.q-badge\`, \`.q-row\` — so instruments compose without hand-rolled CSS;
-override tokens in \`app/surfaces/theme.css\`) and a read-only kit at
-\`/assets/surface-kit.js\` — \`window.qorpera\` with \`getState()\`,
-\`readSubstrate(name)\`, \`readInbox(file)\`, and \`every(ms, fn)\` — so a
-surface can show the company as it is right now and refresh itself.
+const COMPANY_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-\`app/projection.json\` is the only navigation publication document. It is
-not your company model. Publish only the small part of the company the
-founder should navigate. Its stable nodes are departments, categories, and
-pages: a department contains pages or categories; a category contains pages
-only; a page either hosts a surface or a named Base builtin. Node IDs are
-immutable even when files or labels move. Do not derive navigation from the
-folder tree, place routines in the projection, or reorganize company data to
-fit the UI. Main is platform-owned and always present.
+function manifestTimestamp(value: unknown, field: string): string {
+	if (typeof value !== "string" || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) {
+		throw new Error(`Company manifest ${field} is invalid`);
+	}
+	return value;
+}
 
-When you wake: read \`company.md\`, look around — the app, the inbox, the
-state of the work — and decide for yourself what most needs doing. Routines
-in \`app/routines/\` are jobs you can run; the inbox may carry steering from
-the human; beyond that, use your judgment. The founder can bind a wake
-schedule (\`qorpera company wake set <minutes>\`): the kernel then wakes
-you on that cadence while the company is open, one wake at a time, with
-each wake's cause and any missed-interval coalescing recorded in your
-trail. A wake with nothing worth doing should settle without inventing
-work — repeated failed wakes suspend the schedule and notify the founder. Treat the app as something you
-keep in good repair, not something you endlessly rework: when reality and
-its surfaces diverge — new work worth showing, a surface gone stale, a
-capability missing — fix it, and otherwise leave it be.
+function parseCompanyManifest(value: unknown): CompanyManifest {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Company manifest is invalid");
+	const record = value as Record<string, unknown>;
+	if (
+		record.schema !== COMPANY_MANIFEST_SCHEMA ||
+		typeof record.id !== "string" ||
+		!COMPANY_ID_PATTERN.test(record.id) ||
+		typeof record.name !== "string" ||
+		record.name !== record.name.trim() ||
+		!record.name ||
+		record.name.includes("\0") ||
+		Buffer.byteLength(record.name, "utf-8") > 160 ||
+		Object.keys(record).some((key) => !["schema", "id", "name", "createdAt", "parent"].includes(key))
+	) {
+		throw new Error("Company manifest is invalid");
+	}
+	let parent: CompanyManifestParent | undefined;
+	if (record.parent !== undefined) {
+		if (!record.parent || typeof record.parent !== "object" || Array.isArray(record.parent)) {
+			throw new Error("Company manifest parent is invalid");
+		}
+		const candidate = record.parent as Record<string, unknown>;
+		if (
+			typeof candidate.companyId !== "string" ||
+			!COMPANY_ID_PATTERN.test(candidate.companyId) ||
+			(candidate.state !== null &&
+				(typeof candidate.state !== "string" || !/^[0-9a-f]{40,64}$/i.test(candidate.state))) ||
+			Object.keys(candidate).some((key) => !["companyId", "state", "forkedAt"].includes(key))
+		) {
+			throw new Error("Company manifest parent is invalid");
+		}
+		parent = {
+			companyId: candidate.companyId,
+			state: candidate.state,
+			forkedAt: manifestTimestamp(candidate.forkedAt, "parent.forkedAt"),
+		};
+	}
+	return {
+		schema: COMPANY_MANIFEST_SCHEMA,
+		id: record.id,
+		name: record.name,
+		createdAt: manifestTimestamp(record.createdAt, "createdAt"),
+		...(parent ? { parent } : {}),
+	};
+}
 
-The outside world is reached through the \`http_request\` tool: HTTPS
-only, and only to destinations the founder has bound as network
-capabilities (\`qorpera company destination add <host>\`). Credentials are
-used by reference — put \`secret://<name>\` in a URL, header, or body and
-the kernel substitutes the real value outside your process; you never
-see raw secrets and must never ask the founder to paste them into chat
-(they bind them with \`qorpera company secret set <name>\`). How you store
-what comes back — files, databases, indexes — is entirely your design.
-For downloads, uploads, and anything binary or large, use file mode:
-\`saveToPath\` streams the response straight into a company file (bounded
-by disk, binary-safe; you get back only bytes and a sha256), and
-\`sendFilePath\` streams a company file out as the request body. Inline
-responses are for inspecting APIs, not for moving data.
-
-If the founder enables inbound webhooks (\`qorpera company webhook
-enable\`), external events arrive as durable kernel-authored files under
-\`inbox/events/\` and wake you when you are idle. Handle every
-unprocessed event, not just the newest — they are files, and they wait.
-
-You can also adopt existing tools: declare stdio or remote MCP servers in
-\`connections/mcp.json\` and use them through \`use_mcp_tool\` (omit the
-tool name to list what a server offers). MCP servers run as sandboxed
-subprocesses — no network, no credentials — so they are for local
-capabilities; anything that needs the outside world goes through
-\`http_request\`.
-
-You can build your own capabilities as programs in the company folder
-(\`app/tools/\` by convention) and run them with the \`run_company_tool\`
-tool. That is the sanctioned lane for codified behavior: it runs the
-program in a clean environment with the company folder as working
-directory, and it records the program's content-hash identity in the
-trail — which is what lets the founder sign a program once for unattended
-outward action (editing the program is a new identity and a new
-signature). Running company programs through \`bash\` works but carries no
-code identity, so bash-run code can never act outward unattended. A
-program can make its own outbound requests: print a
-\`{"type":"qorpera_program_http_request","requestId":…,"method":…,"url":…}\`
-line on stdout and read the matching response line from stdin — each
-request is checked against your authority policy with the program as the
-acting behavior, so a signed program can reach its bound destinations
-with nobody present.
-
-Prefer derived understanding over asked understanding: read the data, the
-repositories, and the connected services first, and ask the founder to fill
-gaps and resolve uncertainty — not to dictate what you could measure.
-Founder answers are evidence, not constants: record them with their date
-and provenance, and treat every number in them (prices, budgets, forecasts)
-as a current best estimate to test and revise with analysis. \`company.md\`
-holds identity and intent only; working beliefs — pricing, plans, forecasts
-— live in \`app/substrates/\` where you can revise them as evidence arrives.
-
-Everything you think and do is recorded automatically: sessions land in
-\`trail/\` as append-only trees. Never compact, replace, expire, or delete
-that trail. When a session becomes too large, start a fresh session or, for
-product work, a fresh worktree. You owe the record nothing — but it is
-searchable history when you need to know why something is the way it is,
-and a smarter model than you will one day read it and redo your work
-better. Work in clean units so the record stays legible.
-
-The company's git metadata is kernel-owned. At each settled controller turn,
-the kernel checkpoints the files that turn changed and attaches the trail
-session as provenance; never edit \`.git/\` or rewrite company history.
-Product workers are different: their assigned worktree is an isolated clone,
-so they change and test only there. The kernel owns that clone's Git metadata,
-checkpoints the settled change set with its trail provenance, and brokers any
-later push or pull-request effect. You are explaining yourself to your future
-self, not to a reviewer.
-
-How you and the founder communicate: chat sessions are for work the founder
-brings to you. Your own autonomous work communicates through \`inbox/messages/\` —
-write \`inbox/messages/msg-<slug>.md\` files for anything user-facing: questions,
-proposals, plans, progress updates, decisions you need. One item per file,
-a clear title, and enough context to answer without reading your session.
-The founder responds inside the item (a Response section appears below your
-text); read answers on your next wake. Never block waiting for a reply —
-post the item and continue other work.
-
-\`authority.toml\` defines which effects require the human — it binds the
-tools you build exactly as it binds you, and it is enforced in the harness,
-not by this text. Blocked effects file gate requests in \`inbox/\`
-automatically; keep working elsewhere while you wait. Never edit
-\`authority.toml\`, this file, or anything in \`inbox/\` other than your own
-\`inbox/messages/msg-*.md\` items — the rest belongs to the human. Where
-the founder has a cryptographic identity, policy is founder-RATIFIED:
-only \`authority.toml\` content the founder signed grants its configured
-modes, and any unratified edit makes everything gate until the founder
-re-ratifies. Editing policy can therefore never widen your authority —
-propose changes through the inbox instead.
-
-Product code lives only inside \`departments/<product>-development/\`.
-As the company controller you may study product repositories, worktrees,
-pull requests, and their trails, but you cannot modify product code. Write
-briefs and delegate implementation through the department's Product Chat.
-That launches a product-worker in one assigned \`worktrees/<task>/\`
-directory. A product-worker changes and tests only that worktree, while the
-kernel checkpoints and later proposes integration through a
-pull request.
-Controller authority never turns into product-worker authority.
-
-Qorpera Base is a fixed, kernel-owned interface into staff working over this
-company. Do not create or modify \`userland/\`; legacy company-owned shell code
-is removed during migration. Build durable artifacts under \`app/surfaces/\`
-and publish them through \`app/projection.json\`. An artifact owned by one staff
-member carries that staff ID in its page projection and appears as a toggle in
-that staff member's header. Authority enforcement, staff identity, trails,
-connectors, and the Base shell remain kernel-owned.
-
-If your model id is newer than the stamps in the trail, you may understand
-things your predecessors did not. Re-derive their choices where it matters
-and redo the work. Steer the company to the better path; do not bulldoze it.
-`;
-
-const COMPANY_MD_TEMPLATE = `# Company
-
-*This company does not exist yet.*
-
-*If you are the controller reading this: interview your founder — who is
-this company, what is it trying to become, which constraints matter, what
-does the founder care about — then rewrite this file as the company's
-identity. Keep it prose, keep it current, keep it honest. It must survive
-any model and any decade.*
-`;
-
-const AUTHORITY_TOML_TEMPLATE = `# Authority gates — human-owned. The agent reads this file, never writes it.
-# Modes: "auto" (proceed) | "notify" (proceed, record a notice) | "gate" (require approval).
-# Blocked effects file requests in inbox/; resolve them through Base's native review.
-
-[money]
-mode = "gate"
-limit_usd = 50
-
-[identity]
-mode = "gate"      # acting AS the company externally: sending, posting, signing
-
-[irreversible]
-mode = "gate"      # prod deploys, deletions, legal commitments
-
-[authority]
-mode = "gate"      # editing this file, the kernel files, or inbox/.
-                   # ALWAYS gated — the harness enforces this regardless of
-                   # what this line says.
-
-# [tools]          # optional per-tool overrides, e.g.:
-# deploy = "irreversible"
-`;
-
-const CONNECTIONS_README = `# Connections
-
-Declared capabilities: plugins, accounts, subscription lanes. References
-only — secret values live in the foundation's machine-local store outside
-this folder and are brokered by the kernel; they never appear here, in
-prompts, or in the trail.
-`;
-
-const INBOX_README = `# Inbox
-
-Gate requests and human steering land here.
-
-- \`gate-*.md\` — a blocked effect awaiting native founder review in Base.
-  Editing its \`status:\` line does not create an executable capability.
-  Tool-call approvals are single-use; extension-load trust is stored by the
-  local desktop kernel for this company path and reviewed content hash.
-- \`notices.md\` — effects that proceeded under notify mode.
-- \`messages/msg-*.md\` — agent-authored questions, proposals, and updates.
-- Anything else you put here is steering the agent reads on its next wake.
-`;
-
-const APP_PROJECTION_TEMPLATE = `${JSON.stringify(EMPTY_PROJECTION, null, "\t")}\n`;
+export function readCompanyManifest(rootDir: string): CompanyManifest {
+	const root = canonicalCompanyRoot(rootDir);
+	const path = join(root, COMPANY_MANIFEST_RELATIVE_PATH);
+	storageIdentity(path, "file");
+	return parseCompanyManifest(JSON.parse(readFileSync(path, "utf-8")) as unknown);
+}
 
 const PRODUCT_DEPARTMENT_GITIGNORE = `# Product Git data belongs to the product repository, not the company repository.
 repository/
@@ -337,7 +172,7 @@ export function assertPhysicalCompanyTree(rootDir: string, relativePath: string)
 			normalizedPath(realpathSync(path)) !== normalizedPath(path) ||
 			(entry.isFile() && entry.nlink !== 1)
 		) {
-			throw new Error(`Company kernel storage must be one physical entry: ${relativePath}`);
+			throw new Error(`Company storage must be one physical entry: ${relativePath}`);
 		}
 		if (entry.isDirectory()) {
 			for (const child of readdirSync(path)) visit(join(path, child));
@@ -347,24 +182,24 @@ export function assertPhysicalCompanyTree(rootDir: string, relativePath: string)
 	return target;
 }
 
-export function validateCompanyKernelStorage(rootDir: string): void {
+export function validateCompanyHostStorage(rootDir: string): void {
 	const root = canonicalCompanyRoot(rootDir);
-	for (const directory of [".qorpera", "trail", "inbox", join("inbox", "messages"), "app", "departments"]) {
+	for (const directory of [".qorpera", "trail", "inbox", join("inbox", "messages"), "connectors", "agents", "files"]) {
 		canonicalDirectory(root, directory);
 	}
-	for (const tree of ["trail", "inbox"]) assertPhysicalCompanyTree(root, tree);
-	for (const file of [
-		"company.md",
-		"authority.toml",
-		"AGENTS.md",
-		"CLAUDE.md",
-		PRODUCT_REGISTRY_PATH,
-		join("app", "projection.json"),
-	]) {
+	for (const tree of ["trail", "inbox", "connectors", "agents", "files"]) assertPhysicalCompanyTree(root, tree);
+	for (const file of [COMPANY_MANIFEST_RELATIVE_PATH, STAFF_REGISTRY_RELATIVE_PATH]) {
 		storageIdentity(join(root, file), "file");
 	}
+	readCompanyManifest(root);
 	if (existsSync(join(root, ".qorpera", "settings.json"))) {
 		storageIdentity(join(root, ".qorpera", "settings.json"), "file");
+	}
+	if (existsSync(join(root, "authority.toml"))) storageIdentity(join(root, "authority.toml"), "file");
+	const hasProductStorage = ["departments", PRODUCT_REGISTRY_PATH].some((path) => existsSync(join(root, path)));
+	if (hasProductStorage) {
+		canonicalDirectory(root, "departments");
+		storageIdentity(join(root, PRODUCT_REGISTRY_PATH), "file");
 	}
 	for (const optionalTree of [
 		join(".qorpera", "product-worktrees"),
@@ -385,9 +220,7 @@ interface StorageIdentity {
 export interface ProductTransactionStorage {
 	root: StorageIdentity;
 	departments: StorageIdentity;
-	app: StorageIdentity;
 	qorpera: StorageIdentity;
-	projection: StorageIdentity;
 	productRegistry: StorageIdentity;
 }
 
@@ -412,25 +245,17 @@ function storageIdentity(path: string, kind: StorageIdentity["kind"]): StorageId
  */
 export function captureProductTransactionStorage(rootDir: string): ProductTransactionStorage {
 	const root = canonicalCompanyRoot(rootDir);
+	materializeProductSpine(root);
 	return {
 		root: storageIdentity(root, "directory"),
 		departments: storageIdentity(canonicalDirectory(root, "departments"), "directory"),
-		app: storageIdentity(canonicalDirectory(root, "app"), "directory"),
 		qorpera: storageIdentity(canonicalDirectory(root, ".qorpera"), "directory"),
-		projection: storageIdentity(join(root, "app", "projection.json"), "file"),
 		productRegistry: storageIdentity(join(root, PRODUCT_REGISTRY_PATH), "file"),
 	};
 }
 
 export function assertProductTransactionStorage(storage: ProductTransactionStorage): string {
-	for (const identity of [
-		storage.root,
-		storage.departments,
-		storage.app,
-		storage.qorpera,
-		storage.projection,
-		storage.productRegistry,
-	]) {
+	for (const identity of [storage.root, storage.departments, storage.qorpera, storage.productRegistry]) {
 		const actual = storageIdentity(identity.path, identity.kind);
 		if (
 			normalizedPath(actual.path) !== normalizedPath(identity.path) ||
@@ -608,13 +433,14 @@ function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): C
 				if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
 				throw statError;
 			}
-			if (Date.now() - modifiedAt <= COMPANY_LOCK_STALE_MS) {
-				throw new Error("Company transaction is already owned by another process", { cause: error });
-			}
+			const recentlyModified = Date.now() - modifiedAt <= COMPANY_LOCK_STALE_MS;
 			let owner: Partial<CompanyLockRecord>;
 			try {
 				owner = JSON.parse(readFileSync(path, "utf-8")) as Partial<CompanyLockRecord>;
 			} catch (readError) {
+				if (recentlyModified) {
+					throw new Error("Company transaction is already owned by another process", { cause: error });
+				}
 				throw new Error("Stale company transaction lock has invalid owner identity", { cause: readError });
 			}
 			if (
@@ -628,6 +454,9 @@ function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): C
 				(owner.mode !== "runtime" && owner.mode !== "product-registration") ||
 				normalizedPath(owner.root ?? "") !== normalizedPath(root)
 			) {
+				if (recentlyModified) {
+					throw new Error("Company transaction is already owned by another process", { cause: error });
+				}
 				throw new Error("Stale company transaction lock has invalid owner identity");
 			}
 			if (lockOwnerProcessIsAlive(owner.pid!)) {
@@ -636,6 +465,9 @@ function acquireCompanyLock(rootDir: string, mode: CompanyLockRecord["mode"]): C
 					throw new Error("Could not validate the live company lock owner", { cause: error });
 				}
 				if (liveInstance === owner.processInstance) {
+					if (recentlyModified) {
+						throw new Error("Company transaction is already owned by another process", { cause: error });
+					}
 					throw new Error("Company transaction is already owned by another live process", { cause: error });
 				}
 			}
@@ -682,7 +514,7 @@ function assertRuntimeLock(root: string, lock: CompanyRuntimeLock): void {
 		failedLockHeartbeats.has(lock) ||
 		normalizedPath(lock.root) !== normalizedPath(canonicalRoot)
 	) {
-		throw new Error("desktop product transaction has no kernel-owned runtime capability");
+		throw new Error("desktop product transaction has no host-owned runtime capability");
 	}
 	const path = companyRuntimeLockPath(canonicalRoot);
 	let record: Partial<CompanyLockRecord>;
@@ -744,7 +576,7 @@ function parseProductRegistry(root: string, allowMissing: boolean): ProductRegis
 }
 
 function readProductRegistry(root: string): ProductRegistry {
-	return parseProductRegistry(root, false);
+	return parseProductRegistry(root, true);
 }
 
 function registerProductDepartment(root: string, id: string, storage: ProductTransactionStorage): void {
@@ -763,7 +595,6 @@ function checkpointProductKit(root: string, id: string): void {
 		return;
 	const paths = [
 		PRODUCT_REGISTRY_PATH,
-		join("app", "projection.json"),
 		join("departments", id, "department.json"),
 		join("departments", id, ".gitignore"),
 		join("departments", id, "briefs", ".gitkeep"),
@@ -799,13 +630,13 @@ function checkpointProductKit(root: string, id: string): void {
 			"-C",
 			root,
 			"-c",
-			"user.name=Qorpera Kernel",
+			"user.name=Qorpera Host",
 			"-c",
-			"user.email=kernel@qorpera.local",
+			"user.email=host@qorpera.local",
 			"commit",
 			"--only",
 			"-m",
-			`feat: add ${id} product department\n\nQorpera-Trigger: founder product kit request\nQorpera-Rationale: preserve the registered product boundary and its UI projection`,
+			`feat: add ${id} product department\n\nQorpera-Trigger: founder product kit request\nQorpera-Rationale: preserve the registered product boundary`,
 			"--",
 			...paths,
 		],
@@ -833,9 +664,9 @@ function checkpointProductIntegrationRecord(root: string, id: string, rationale:
 			"-C",
 			root,
 			"-c",
-			"user.name=Qorpera Kernel",
+			"user.name=Qorpera Host",
 			"-c",
-			"user.email=kernel@qorpera.local",
+			"user.email=host@qorpera.local",
 			"commit",
 			"--only",
 			"-m",
@@ -848,110 +679,6 @@ function checkpointProductIntegrationRecord(root: string, id: string, rationale:
 	if (committed.status !== 0) {
 		throw new Error(`Could not commit product integration journal: ${committed.stderr || committed.stdout}`);
 	}
-}
-
-function productProjectionNodes(department: ProductDepartment): ProjectionNode[] {
-	const namespace = department.id.toLowerCase();
-	const departmentId = `department:${namespace}`;
-	const context = { departmentId: department.id };
-	return [
-		{
-			id: departmentId,
-			kind: "department",
-			label: `${department.name} Development`,
-			items: [`page:${namespace}.chat`, `page:${namespace}.pull-requests`, `page:${namespace}.architecture`],
-		},
-		{
-			id: `page:${namespace}.chat`,
-			kind: "page",
-			label: "Chat",
-			description: "Start product work in a fresh isolated worktree.",
-			view: { type: "builtin", id: "qorpera.product-chat", context },
-		},
-		{
-			id: `page:${namespace}.pull-requests`,
-			kind: "page",
-			label: "Pull Requests",
-			description: "Review synchronized local pull-request records.",
-			view: { type: "builtin", id: "qorpera.pull-requests", context },
-		},
-		{
-			id: `page:${namespace}.architecture`,
-			kind: "page",
-			label: "Architecture",
-			description: "Reserved for the product's auditable architecture trail.",
-			view: {
-				type: "builtin",
-				id: "qorpera.placeholder",
-				context: {
-					title: `${department.name} Architecture`,
-					message: "The architecture model will be defined later.",
-				},
-			},
-		},
-	];
-}
-
-/** Install the product kit into the one company UI projection document. */
-function installProductProjection(
-	root: string,
-	department: ProductDepartment,
-	write = true,
-	storage?: ProductTransactionStorage,
-): void {
-	const projectionPath = join(root, "app", "projection.json");
-	let document: ProjectionDocument = {
-		schema: EMPTY_PROJECTION.schema,
-		default: EMPTY_PROJECTION.default,
-		navigation: [],
-		nodes: [],
-	};
-	if (existsSync(projectionPath)) {
-		const raw = JSON.parse(readFileSync(projectionPath, "utf-8")) as unknown;
-		const parsed = parseProjectionDocument(raw);
-		if (parsed.diagnostics.length > 0) {
-			throw new Error(
-				`Cannot install product UI into invalid app/projection.json: ${parsed.diagnostics.join("; ")}`,
-			);
-		}
-		document = {
-			schema: parsed.schema,
-			...(parsed.default ? { default: parsed.default } : {}),
-			navigation: parsed.navigation,
-			nodes: parsed.nodes,
-		};
-	}
-	const kitNodes = productProjectionNodes(department);
-	const existing = new Map(document.nodes.map((node) => [node.id, node]));
-	const departmentId = kitNodes[0].id;
-	let changed = false;
-	for (const node of kitNodes) {
-		const current = existing.get(node.id);
-		if (current) {
-			if (JSON.stringify(current) !== JSON.stringify(node)) {
-				throw new Error(
-					`Cannot install product UI: projection node ${node.id} is already owned by incompatible content`,
-				);
-			}
-			continue;
-		}
-		document.nodes.push(node);
-		changed = true;
-	}
-	if (!document.navigation.includes(departmentId)) {
-		document.navigation.push(departmentId);
-		changed = true;
-	}
-	const completed = parseProjectionDocument(document);
-	if (completed.diagnostics.length > 0) {
-		throw new Error(`Cannot install product UI into app/projection.json: ${completed.diagnostics.join("; ")}`);
-	}
-	if (!write) return;
-	if (!changed && existsSync(projectionPath)) return;
-	if (!storage) throw new Error("Product projection mutation requires bound transaction storage");
-	mkdirSync(join(root, "app"), { recursive: true });
-	writeAtomicText(projectionPath, `${JSON.stringify(document, null, "\t")}\n`);
-	storage.projection = storageIdentity(projectionPath, "file");
 }
 
 export interface ProductDepartment {
@@ -1048,6 +775,14 @@ function ensureDir(root: string, relPath: string, result: ScaffoldResult): void 
 	}
 }
 
+/** Product-development storage is an optional capability, not part of
+ * agents-only company genesis. Materialize it only when requested. */
+function materializeProductSpine(root: string): void {
+	const result: ScaffoldResult = { root, created: [], skipped: [], gitInitialized: false };
+	if (!existsSync(join(root, "departments"))) mkdirSync(join(root, "departments"));
+	writeIfMissing(root, PRODUCT_REGISTRY_PATH, `${JSON.stringify({ version: 1, products: [] }, null, "\t")}\n`, result);
+}
+
 function readdirIsEmpty(dir: string): boolean {
 	try {
 		return readdirSync(dir).length === 0;
@@ -1112,15 +847,15 @@ function ensureProjectSettings(root: string, result: ScaffoldResult): boolean {
 	return true;
 }
 
-/** Reassert kernel-owned retention policy whenever an existing company opens. */
-export function enforceCompanyKernelSettings(rootDir: string): void {
+/** Reassert host-owned retention policy whenever an existing company opens. */
+export function enforceCompanyHostSettings(rootDir: string): void {
 	const root = canonicalCompanyRoot(rootDir);
 	if (!ensureProjectSettings(root, { root, created: [], skipped: [], gitInitialized: false })) return;
 	if (spawnSync("git", ["-C", root, "rev-parse", "--verify", "HEAD"], { stdio: "ignore", shell: false }).status !== 0)
 		return;
 	const path = join(".qorpera", "settings.json");
 	if (spawnSync("git", ["-C", root, "add", "--", path], { stdio: "ignore", shell: false }).status !== 0) {
-		throw new Error("Could not stage kernel retention settings");
+		throw new Error("Could not stage host retention settings");
 	}
 	if (
 		spawnSync("git", ["-C", root, "diff", "--cached", "--quiet", "--", path], {
@@ -1135,9 +870,9 @@ export function enforceCompanyKernelSettings(rootDir: string): void {
 			"-C",
 			root,
 			"-c",
-			"user.name=Qorpera Kernel",
+			"user.name=Qorpera Host",
 			"-c",
-			"user.email=kernel@qorpera.local",
+			"user.email=host@qorpera.local",
 			"commit",
 			"--only",
 			"-m",
@@ -1148,7 +883,7 @@ export function enforceCompanyKernelSettings(rootDir: string): void {
 		{ encoding: "utf-8", shell: false },
 	);
 	if (committed.status !== 0) {
-		throw new Error(`Could not commit kernel retention settings: ${committed.stderr || committed.stdout}`);
+		throw new Error(`Could not commit host retention settings: ${committed.stderr || committed.stdout}`);
 	}
 }
 
@@ -1205,7 +940,7 @@ export function listProductDepartments(rootDir: string): ProductDepartment[] {
 		.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Kernel protection inventory; never depends on agent-writable department manifests. */
+/** Host protection inventory; never depends on agent-writable department manifests. */
 export function readProductProtectionInventory(
 	rootDir: string,
 ): Array<{ id: string; repositoryPath: string; worktreesPath: string }> {
@@ -1340,8 +1075,6 @@ function scaffoldProductDepartmentUnlocked(
 	}
 	if (existing) {
 		assertProductTransactionStorage(storage);
-		installProductProjection(root, existing, true, storage);
-		assertProductTransactionStorage(storage);
 		registerProductDepartment(root, id, storage);
 		assertProductTransactionStorage(storage);
 		checkpointProductKit(root, id);
@@ -1353,16 +1086,6 @@ function scaffoldProductDepartmentUnlocked(
 		kind: PRODUCT_DEPARTMENT_KIND,
 		product: product.trim() || productSlug(product),
 	};
-	const department: ProductDepartment = {
-		id,
-		name: manifest.product,
-		path,
-		repositoryPath: join(path, "repository"),
-		worktreesPath: join(path, "worktrees"),
-		pullRequestsPath: join(path, "pull-requests"),
-		repositoryExists: false,
-	};
-	installProductProjection(root, department, false);
 	assertProductTransactionStorage(storage);
 	writeIfMissing(root, join(path, "department.json"), `${JSON.stringify(manifest, null, "\t")}\n`, result);
 	writeIfMissing(root, join(path, ".gitignore"), PRODUCT_DEPARTMENT_GITIGNORE, result);
@@ -1372,15 +1095,13 @@ function scaffoldProductDepartmentUnlocked(
 	writeIfMissing(root, join(path, "pull-requests", "README.md"), PULL_REQUESTS_README, result);
 	const created = productDepartmentFromEntry(root, id)!;
 	assertProductTransactionStorage(storage);
-	installProductProjection(root, created, true, storage);
-	assertProductTransactionStorage(storage);
 	registerProductDepartment(root, id, storage);
 	assertProductTransactionStorage(storage);
 	checkpointProductKit(root, id);
 	return created;
 }
 
-/** Offline product registration. The lock is held across inventory, folder, projection, and Git mutation. */
+/** Offline product registration. The lock is held across inventory, folder, and Git mutation. */
 export function scaffoldProductDepartment(rootDir: string, product: string): ProductDepartment {
 	const lock = acquireCompanyLock(rootDir, "product-registration");
 	try {
@@ -1391,7 +1112,7 @@ export function scaffoldProductDepartment(rootDir: string, product: string): Pro
 	}
 }
 
-/** Desktop-kernel product registration under the already-held runtime transaction. */
+/** Desktop-host product registration under the already-held runtime transaction. */
 export function scaffoldProductDepartmentWithRuntimeLock(
 	rootDir: string,
 	product: string,
@@ -1456,13 +1177,13 @@ function commitProductWorktreeAssignment(root: string, path: string, departmentI
 			"-C",
 			root,
 			"-c",
-			"user.name=Qorpera Kernel",
+			"user.name=Qorpera Host",
 			"-c",
-			"user.email=kernel@qorpera.local",
+			"user.email=host@qorpera.local",
 			"commit",
 			"--only",
 			"-m",
-			`docs: assign ${departmentId} worktree\n\nQorpera-Trigger: founder product-chat request\nQorpera-Rationale: bind product-code authority to one kernel-created clone`,
+			`docs: assign ${departmentId} worktree\n\nQorpera-Trigger: founder product-chat request\nQorpera-Rationale: bind product-code authority to one host-created clone`,
 			"--",
 			relativePath,
 		],
@@ -1575,13 +1296,13 @@ export function createProductWorktree(
 			normalizedPath(dirname(actualTarget)) !== normalizedPath(worktreesRoot)
 		) {
 			rmSync(target, { recursive: true, force: true });
-			throw new Error("Kernel-created product worktree escaped its assigned parent");
+			throw new Error("Host-created product worktree escaped its assigned parent");
 		}
 		const sourceRemote = gitOutput(target, ["remote", "get-url", "origin"]);
 		const sourceHead = gitOutput(target, ["rev-parse", "HEAD"]);
 		if (!sourceRemote || sourceRemote !== plan.sourceRemote || sourceHead !== plan.sourceHead) {
 			rmSync(target, { recursive: true, force: true });
-			throw new Error("Kernel-created product worktree source changed after founder review");
+			throw new Error("Host-created product worktree source changed after founder review");
 		}
 		const assignment: ProductWorktreeAssignment = {
 			version: 3,
@@ -1678,7 +1399,7 @@ function readProductWorktreeRecord(
 	return { assignment: assignment as ProductWorktreeAssignment, assignmentPath, taskId };
 }
 
-/** Verify an existing assignment against its immutable kernel record and clone identity. */
+/** Verify an existing assignment against its immutable host record and clone identity. */
 export function readProductWorktreeAssignment(
 	rootDir: string,
 	department: ProductDepartment,
@@ -1721,7 +1442,7 @@ export function readProductWorktreeAssignment(
 	return assignment as ProductWorktree;
 }
 
-/** Plan recovery of one clone from its kernel-tracked source and portable bundle. */
+/** Plan recovery of one clone from its host-tracked source and portable bundle. */
 export function planProductWorktreeRecovery(
 	rootDir: string,
 	department: ProductDepartment,
@@ -1898,7 +1619,7 @@ function ensureCompanyGenesis(root: string, createdPaths: string[]): void {
 	}
 	const message =
 		head.status === 0
-			? "docs: materialize company spine\n\nQorpera-Trigger: company scaffold migration\nQorpera-Rationale: make kernel-owned company state cloneable before controller execution"
+			? "docs: materialize company home\n\nQorpera-Trigger: company scaffold migration\nQorpera-Rationale: make host-managed company state cloneable before agent execution"
 			: "feat: create company genesis\n\nQorpera-Trigger: company scaffold\nQorpera-Rationale: make the complete company spine cloneable and recoverable";
 	const pathArgs = head.status === 0 ? ["--only", "--", ...materializedPaths] : [];
 	const committed = spawnSync(
@@ -1907,9 +1628,9 @@ function ensureCompanyGenesis(root: string, createdPaths: string[]): void {
 			"-C",
 			root,
 			"-c",
-			"user.name=Qorpera Kernel",
+			"user.name=Qorpera Host",
 			"-c",
-			"user.email=kernel@qorpera.local",
+			"user.email=host@qorpera.local",
 			"commit",
 			"-m",
 			message,
@@ -1922,143 +1643,33 @@ function ensureCompanyGenesis(root: string, createdPaths: string[]): void {
 	}
 }
 
-/**
- * One-shot migration for companies conceived before the projection model
- * (shipped after 0.16.0): their UI was driven by `app/manifest.json`
- * surfaces, which the app no longer reads. Fold those entries into
- * `app/projection.json` — surfaces keep rendering, files are untouched —
- * and drop the legacy key so no dead configuration lingers.
- *
- * Conservative by rule: a controller-authored (non-empty) projection is
- * never modified — the company already moved on, only the stale key is
- * removed. An unparseable projection stops the migration entirely so the
- * legacy configuration survives until someone can look.
- */
-export function migrateLegacyManifestSurfaces(root: string): { pages: number } | undefined {
-	const manifestPath = join(root, "app", "manifest.json");
-	if (!existsSync(manifestPath)) return undefined;
-	let manifest: Record<string, unknown>;
-	try {
-		const parsed = JSON.parse(readFileSync(manifestPath, "utf-8")) as unknown;
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-		manifest = parsed as Record<string, unknown>;
-	} catch {
-		return undefined;
-	}
-	if (!Array.isArray(manifest.surfaces)) return undefined;
-	// The old liberal-reader mapping, verbatim: {name,entry} alongside the
-	// {id,title,path} spelling agents produced live.
-	const legacy = (manifest.surfaces as Array<Record<string, unknown>>)
-		.map((surface) => {
-			const rawEntry = surface?.entry ?? surface?.path;
-			if (typeof rawEntry !== "string" || !rawEntry.trim()) return undefined;
-			const entry = rawEntry.replace(/^\.?\/?(app\/)?surfaces\//, "");
-			const rawName = surface.name ?? surface.title ?? surface.id;
-			return { name: typeof rawName === "string" && rawName.trim() ? rawName : entry, entry };
-		})
-		.filter((surface): surface is { name: string; entry: string } => surface !== undefined);
-
-	const projectionPath = join(root, "app", "projection.json");
-	let projection: ProjectionDocument | undefined;
-	if (existsSync(projectionPath)) {
-		try {
-			const parsed = parseProjectionDocument(JSON.parse(readFileSync(projectionPath, "utf-8")));
-			projection = parsed.nodes.length === 0 && parsed.navigation.length === 0 ? { ...EMPTY_PROJECTION } : undefined;
-		} catch {
-			return undefined;
-		}
-	} else {
-		projection = { ...EMPTY_PROJECTION };
-	}
-
-	let pages = 0;
-	if (projection && legacy.length > 0) {
-		const usedIds = new Set<string>();
-		const pageNodes: ProjectionNode[] = legacy.map((surface) => {
-			const slug =
-				surface.entry
-					.toLowerCase()
-					.replace(/[^a-z0-9._-]+/g, "-")
-					.replace(/^[^a-z0-9]+/, "") || "surface";
-			let id = `page:surfaces.${slug}`;
-			for (let suffix = 2; usedIds.has(id); suffix++) id = `page:surfaces.${slug}-${suffix}`;
-			usedIds.add(id);
-			return {
-				id,
-				kind: "page",
-				label: surface.name.slice(0, 120),
-				view: { type: "surface", entry: surface.entry },
-			};
-		});
-		const document: ProjectionDocument = {
-			...projection,
-			navigation: ["department:surfaces"],
-			nodes: [
-				{
-					id: "department:surfaces",
-					kind: "department",
-					label: "Surfaces",
-					items: pageNodes.map((node) => node.id),
-				},
-				...pageNodes,
-			],
-		};
-		if (parseProjectionDocument(document).diagnostics.length > 0) return undefined;
-		writeFileSync(projectionPath, `${JSON.stringify(document, null, "\t")}\n`, "utf-8");
-		pages = pageNodes.length;
-	}
-
-	delete manifest.surfaces;
-	if (Object.keys(manifest).length === 0) rmSync(manifestPath, { force: true });
-	else writeFileSync(manifestPath, `${JSON.stringify(manifest, null, "\t")}\n`, "utf-8");
-	return { pages };
-}
-
-/**
- * Create the company spine at `dir` (idempotent; never overwrites).
- * The folder is a git repository (spec §2: fork a company = clone it);
- * `git init` runs only when no repository is present and git is available.
- */
+/** Create an agents-only company home. Service data and credentials do
+ * not belong here: the company carries internal identity, agent workspaces,
+ * shared files, connector recipes, and reconstructable Git history. */
 export function scaffoldCompany(dir: string): ScaffoldResult {
 	const root = resolve(dir);
 	mkdirSync(root, { recursive: true });
 	const result: ScaffoldResult = { root, created: [], skipped: [], gitInitialized: false };
-
-	// Kernel files are kernel-owned: refreshed to the current kernel text on
-	// every scaffold (that is how kernel upgrades reach existing companies).
-	// Everything else is never overwritten.
-	for (const kernelFile of ["AGENTS.md", "CLAUDE.md"]) {
-		const target = join(root, kernelFile);
-		if (!existsSync(target)) {
-			writeFileSync(target, KERNEL_PROMPT, "utf-8");
-			result.created.push(kernelFile);
-		} else if (readFileSync(target, "utf-8") !== KERNEL_PROMPT) {
-			writeFileSync(target, KERNEL_PROMPT, "utf-8");
-			result.created.push(`${kernelFile} (kernel refreshed)`);
-		} else {
-			result.skipped.push(kernelFile);
-		}
-	}
-	writeIfMissing(root, "company.md", COMPANY_MD_TEMPLATE, result);
-	writeIfMissing(root, "authority.toml", AUTHORITY_TOML_TEMPLATE, result);
-	writeIfMissing(root, join("connections", "README.md"), CONNECTIONS_README, result);
-	writeIfMissing(root, join("inbox", "README.md"), INBOX_README, result);
+	const createdAt = new Date().toISOString();
+	const manifest: CompanyManifest = {
+		schema: COMPANY_MANIFEST_SCHEMA,
+		id: randomUUID(),
+		name: basename(root),
+		createdAt,
+	};
+	writeIfMissing(root, COMPANY_MANIFEST_RELATIVE_PATH, `${JSON.stringify(manifest, null, "\t")}\n`, result);
+	writeIfMissing(
+		root,
+		STAFF_REGISTRY_RELATIVE_PATH,
+		`${JSON.stringify({ version: 1, agents: {} }, null, "\t")}\n`,
+		result,
+	);
 	ensureDir(root, join("inbox", "messages"), result);
 	ensureDir(root, "trail", result);
-	writeIfMissing(root, join("app", "projection.json"), APP_PROJECTION_TEMPLATE, result);
-	ensureDir(root, join("app", "surfaces"), result);
-	ensureDir(root, join("app", "substrates"), result);
-	ensureDir(root, join("app", "routines"), result);
-	ensureDir(root, join("app", "tools"), result);
-	ensureDir(root, "departments", result);
-	writeIfMissing(root, PRODUCT_REGISTRY_PATH, `${JSON.stringify({ version: 1, products: [] }, null, "\t")}\n`, result);
+	ensureDir(root, "connectors", result);
+	ensureDir(root, "agents", result);
+	ensureDir(root, "files", result);
 	ensureProjectSettings(root, result);
-	// A freshly scaffolded policy is founder-authored by construction: ratify
-	// it when this machine has a signing identity. Existing policy is NEVER
-	// auto-signed — ratification of edits is an explicit founder act.
-	if (result.created.includes("authority.toml") && readFounderIdentity()?.privateKeyPem) {
-		signAuthorityPolicy(root);
-	}
 
 	if (!existsSync(join(root, ".git"))) {
 		const git = spawnSync("git", ["init"], { cwd: root, stdio: "ignore", shell: false });
@@ -2069,13 +1680,6 @@ export function scaffoldCompany(dir: string): ScaffoldResult {
 	return result;
 }
 
-const CONCEPTION_SHARED = `Your primary source of understanding is data, not interview: derive the scope of the company from what you can read. This is an autonomous session — do NOT hold an interactive interview. For the gaps data cannot answer (intent, customers, constraints, which data sources and services to connect), post inbox/messages/msg-*.md items — focused, answerable questions with your working assumption stated — then continue with everything that does not depend on the answers. Treat founder answers as dated evidence with provenance, never fixed facts: numbers (prices, budgets, forecasts) are early estimates you are expected to test and revise with analysis. Perform the setup yourself: rewrite company.md as identity and intent only (mark unconfirmed parts provisional), keep working beliefs in app/substrates/ as revisable records, propose authority.toml adjustments and connections through the inbox (the founder ratifies), and build the first state-of-the-company surface in app/. Finish by posting a msg item summarizing what you did and what awaits the founder.`;
-
-const CONCEPTION_NEW = `This company folder was just created and company.md is still the template. Begin conception. ${CONCEPTION_SHARED}`;
-
-const CONCEPTION_INTEGRATE = (department: ProductDepartment) =>
-	`This company folder was just created around the ${department.name} product at ${department.repositoryPath}. Begin conception with study: read that repository enough to understand what exists. As controller, do not modify it; implementation belongs to a product-worker in ${department.worktreesPath}. ${CONCEPTION_SHARED}`;
-
 function printScaffoldReport(result: ScaffoldResult): void {
 	console.log(`Company spine at ${result.root}`);
 	for (const entry of result.created) console.log(`  created ${entry}`);
@@ -2085,12 +1689,11 @@ function printScaffoldReport(result: ScaffoldResult): void {
 
 /**
  * Re-exec this CLI interactively inside the company folder. Launched bare on
- * purpose: main() detects the company, registers it, and auto-injects the
- * conception kickoff when company.md is still the template — so kickoff
- * logic lives in exactly one place (conceptionKickoff).
+ * purpose: main() detects and registers the company so an agent can be hired.
+ * New companies never start a universal company agent.
  */
 function launchSession(dir: string): Promise<number> {
-	console.log(`Company ready at ${resolve(dir)}. Open it in Qorpera Base desktop to start the kernel-owned session.`);
+	console.log(`Company ready at ${resolve(dir)}. Open it in Qorpera Base desktop to hire its first agent.`);
 	return Promise.resolve(0);
 }
 
@@ -2126,7 +1729,7 @@ function cloneInto(source: string, destination: string): boolean {
 // is inspectable with no Qorpera installation and portable across Base
 // versions that share the contract. Secrets and standing authority never
 // appear in an export because they never live in the folder: credentials sit
-// in the machine auth store and durable gate trust in machine-local kernel
+// in the machine auth store and durable gate trust in machine-local host
 // state keyed by the canonical root path, which is also why an imported
 // company starts with a fresh environment identity and no inherited trust.
 
@@ -2175,12 +1778,12 @@ function assertOutsideCompany(root: string, target: string): void {
 
 export function exportCompany(companyDir: string, targetDir: string): ExportResult {
 	const root = canonicalCompanyRoot(companyDir);
-	validateCompanyKernelStorage(root);
+	validateCompanyHostStorage(root);
 	const target = resolve(targetDir);
 	assertOutsideCompany(root, target);
 	assertEmptyDestination(target);
 	// Exports are defined at checkpoint boundaries only: holding the runtime
-	// lock guarantees no live controller is mutating the environment mid-copy.
+	// lock guarantees no live agent is mutating the environment mid-copy.
 	const lock = claimCompanyRuntimeLock(root);
 	try {
 		mkdirSync(target, { recursive: true });
@@ -2192,7 +1795,7 @@ export function exportCompany(companyDir: string, targetDir: string): ExportResu
 			schema: EXPORT_MANIFEST_SCHEMA,
 			contractVersion: ENVIRONMENT_CONTRACT_VERSION,
 			exportedAt: new Date().toISOString(),
-			companyName: basenameOf(root),
+			companyName: readCompanyManifest(root).name,
 			sourceHead: gitHead(root),
 		};
 		writeAtomicText(join(target, EXPORT_MANIFEST_FILE), `${JSON.stringify(manifest, null, "\t")}\n`);
@@ -2235,7 +1838,7 @@ export function importCompany(exportDir: string, targetDir: string): ImportResul
 	const target = resolve(targetDir);
 	assertEmptyDestination(target);
 	cpSync(companySource, target, { recursive: true });
-	validateCompanyKernelStorage(target);
+	validateCompanyHostStorage(target);
 	const head = gitHead(target);
 	if (manifest.sourceHead && head !== manifest.sourceHead) {
 		throw new Error(
@@ -2249,7 +1852,7 @@ export function importCompany(exportDir: string, targetDir: string): ImportResul
 // ---- environment operations (build plan §7) --------------------------------
 //
 // Snapshot, restore, fork, trail playback, and erase — operations on the
-// company environment as a whole, built on the export substrate Build 1
+// company environment as a whole, built on the export mechanism Build 1
 // proved. All of them prove the environment is not live (the runtime lock)
 // before acting; none of them interprets business content. Fork severs
 // authority structurally: credentials, gate trust, wake state, and
@@ -2341,7 +1944,7 @@ export function restoreCompany(companyDir: string, snapshotId: string): { root: 
 		recursive: true,
 		filter: (path) => !normalizedPath(path).split(/[\\/]/).includes(RUNTIME_LOCK_DIR_SEGMENT),
 	});
-	validateCompanyKernelStorage(root);
+	validateCompanyHostStorage(root);
 	return { root, safetySnapshot: safety.id };
 }
 
@@ -2358,11 +1961,13 @@ export interface ForkLineage {
  */
 export function forkCompany(companyDir: string, targetDir: string): ImportResult & { lineage: ForkLineage } {
 	const root = canonicalCompanyRoot(companyDir);
+	const sourceCompany = readCompanyManifest(root);
 	const target = resolve(targetDir);
 	const staging = `${target}.fork-${randomUUID()}`;
 	try {
 		const exported = exportCompany(root, staging);
 		const imported = importCompany(staging, target);
+		const forkedAt = new Date().toISOString();
 		const lineage: ForkLineage = {
 			version: 1,
 			forkedFrom: {
@@ -2370,10 +1975,22 @@ export function forkCompany(companyDir: string, targetDir: string): ImportResult
 				head: exported.manifest.sourceHead,
 				contractVersion: exported.manifest.contractVersion,
 			},
-			forkedAt: new Date().toISOString(),
+			forkedAt,
 		};
+		const forkManifest: CompanyManifest = {
+			schema: COMPANY_MANIFEST_SCHEMA,
+			id: randomUUID(),
+			name: basename(target),
+			createdAt: forkedAt,
+			parent: { companyId: sourceCompany.id, state: exported.manifest.sourceHead, forkedAt },
+		};
+		writeFileSync(
+			join(target, COMPANY_MANIFEST_RELATIVE_PATH),
+			`${JSON.stringify(forkManifest, null, "\t")}\n`,
+			"utf-8",
+		);
 		writeFileSync(join(target, ".qorpera", "lineage.json"), `${JSON.stringify(lineage, null, "\t")}\n`, "utf-8");
-		spawnSync("git", ["-C", target, "add", "--", join(".qorpera", "lineage.json")], {
+		spawnSync("git", ["-C", target, "add", "--", COMPANY_MANIFEST_RELATIVE_PATH, join(".qorpera", "lineage.json")], {
 			stdio: "ignore",
 			shell: false,
 		});
@@ -2383,19 +2000,21 @@ export function forkCompany(companyDir: string, targetDir: string): ImportResult
 				"-C",
 				target,
 				"-c",
-				"user.name=Qorpera Kernel",
+				"user.name=Qorpera Host",
 				"-c",
-				"user.email=kernel@qorpera.local",
+				"user.email=host@qorpera.local",
 				"commit",
 				"-m",
 				"chore: record fork lineage\n\nQorpera-Trigger: environment fork\nQorpera-Rationale: the fork may understand its origin without inheriting its authority",
 				"--only",
 				"--",
+				COMPANY_MANIFEST_RELATIVE_PATH,
 				join(".qorpera", "lineage.json"),
 			],
 			{ stdio: "ignore", shell: false },
 		);
-		return { ...imported, lineage };
+		registerCompany(target);
+		return { ...imported, head: gitHead(target), lineage };
 	} finally {
 		rmSync(staging, { recursive: true, force: true });
 	}
@@ -2405,12 +2024,12 @@ export function forkCompany(companyDir: string, targetDir: string): ImportResult
  * Erase the company environment: the folder plus every machine-local record
  * this foundation holds for it — connections (secrets, destinations, wake
  * schedule) and snapshots. The registry self-heals (vanished roots are
- * filtered on read). Desktop-kernel state under the shell's own data
+ * filtered on read). Desktop-host state under the shell's own data
  * directory is keyed by the now-gone root path and becomes inert.
  */
 export function eraseCompany(companyDir: string): { root: string; removed: string[] } {
 	const root = canonicalCompanyRoot(companyDir);
-	validateCompanyKernelStorage(root);
+	validateCompanyHostStorage(root);
 	releaseCompanyRuntimeLock(claimCompanyRuntimeLock(root));
 	const removed: string[] = [];
 	const snapshots = snapshotsDir(root);
@@ -2438,9 +2057,9 @@ export interface TrailVerification {
 }
 
 /**
- * Re-run the kernel hash chain over a trail session, outside the runtime,
- * exactly as documented in docs/trail.md. "unaudited" marks sessions with
- * no kernel envelopes (written outside the desktop kernel); any break in
+ * Re-run the trusted-host hash chain over a trail session, outside the runtime.
+ * "unaudited" marks sessions with no host envelopes (the serialized field
+ * remains `kernel` for trail compatibility); any break in
  * an audited chain is "broken".
  */
 export function verifyTrailFile(path: string): TrailVerification {
@@ -2943,7 +2562,7 @@ export function integrateRepo(root: string, from: string, product = basenameOf(f
 	}
 }
 
-/** Desktop-kernel integration under the already-held runtime transaction. */
+/** Desktop-host integration under the already-held runtime transaction. */
 export function integrateRepoWithRuntimeLock(
 	root: string,
 	from: string,
@@ -3015,7 +2634,9 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 			process.exitCode = 1;
 			return true;
 		}
-		if (!cloneInto(source, dir)) {
+		if (existsSync(source) && existsSync(join(source, COMPANY_MANIFEST_RELATIVE_PATH))) {
+			forkCompany(source, dir);
+		} else if (!cloneInto(source, dir)) {
 			console.error(`Could not clone ${source}.`);
 			process.exitCode = 1;
 			return true;
@@ -3089,7 +2710,9 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 		}
 		try {
 			const root = process.cwd();
-			if (!existsSync(join(root, "company.md"))) throw new Error("current directory is not a company root");
+			if (!existsSync(join(root, COMPANY_MANIFEST_RELATIVE_PATH))) {
+				throw new Error("current directory is not a company root");
+			}
 			if (from) {
 				if (!integrateRepo(root, from, product)) throw new Error("product source clone failed");
 			} else {
@@ -3111,7 +2734,7 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 			if (action === "add" && host) {
 				bindNetworkDestination(root, host, args.slice(4).join(" ") || undefined);
 				console.log(
-					`Bound destination ${host.toLowerCase()} (HTTPS only). The controller can now reach it via http_request.`,
+					`Bound destination ${host.toLowerCase()} (HTTPS only). Company agents can now reach it via http_request.`,
 				);
 			} else if (action === "remove" && host) {
 				console.log(
@@ -3183,7 +2806,7 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 				);
 				console.log(
 					result.kind === "oauth2"
-						? `Bound secret://${name} (oauth2${result.expiresAt ? `, refreshes automatically` : ""}). Tokens went straight to the kernel store — nothing to paste.`
+						? `Bound secret://${name} (oauth2${result.expiresAt ? `, refreshes automatically` : ""}). Tokens went straight to the trusted local store — nothing to paste.`
 						: `Bound secret://${name} (static — the provider returned no refresh token, so it will not auto-refresh).`,
 				);
 			} else if (action === "remove" && name) {
@@ -3269,7 +2892,7 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 	if (sub === "erase") {
 		if (!args.includes("--force")) {
 			console.error(
-				"company erase permanently deletes the company folder, its secrets, destinations, wake schedule, and snapshots. Re-run with --force to proceed.",
+				"company erase permanently deletes the company folder, its secrets, destinations, routine state, and snapshots. Re-run with --force to proceed.",
 			);
 			process.exitCode = 1;
 			return true;
@@ -3329,18 +2952,18 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 				const port = explicit ?? readWebhookBinding(root)?.port ?? (await pickFreeLoopbackPort());
 				const binding = enableWebhook(root, port);
 				console.log(
-					`Inbound webhooks enabled. While the company is open, the kernel listens at http://127.0.0.1:${binding.port}/hook/${binding.token}`,
+					`Inbound webhooks enabled. While the company is open, Qorpera listens at http://127.0.0.1:${binding.port}/hook/${binding.token}`,
 				);
 				console.log(
-					"Local loopback only — expose it through a tunnel or reverse proxy of your choosing if a provider must reach it. Events land in inbox/events/ and wake the controller when idle.",
+					"Local loopback only — expose it through a tunnel or reverse proxy of your choosing if a provider must reach it. Events land in inbox/events/ and trigger matching agent routines.",
 				);
 			} else if (action === "disable") {
 				console.log(disableWebhook(root) ? "Inbound webhooks disabled." : "Inbound webhooks were not enabled.");
 			} else if (action === "status") {
 				const binding = readWebhookBinding(root);
-				if (!binding?.enabled) console.log("Inbound webhooks are off (the optional kernel module default).");
+				if (!binding?.enabled) console.log("Inbound webhooks are off by default.");
 				else if (binding.port === undefined) {
-					// Enabled before ports were persisted: the kernel records one
+					// Enabled before ports were persisted: the host records one
 					// at the next company open; re-running enable fixes it now.
 					console.log(
 						`Enabled, but no port is persisted yet. Re-run 'company webhook enable' to fix one; token /hook/${binding.token}`,
@@ -3348,37 +2971,6 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 				} else console.log(`Enabled: http://127.0.0.1:${binding.port}/hook/${binding.token}`);
 			} else {
 				console.error("Usage: company webhook enable [port] | disable | status");
-				process.exitCode = 1;
-			}
-		} catch (error) {
-			console.error(error instanceof Error ? error.message : String(error));
-			process.exitCode = 1;
-		}
-		return true;
-	}
-	if (sub === "wake") {
-		const action = args[2];
-		try {
-			const root = companyRootFromCwd();
-			if (action === "set" && args[3]) {
-				const schedule = bindWakeSchedule(root, Number(args[3]));
-				console.log(
-					`Scheduled wakes every ${schedule.intervalMinutes} minutes while the company is open in Qorpera Base. The controller decides what each wake does.`,
-				);
-			} else if (action === "off") {
-				console.log(disableWakeSchedule(root) ? "Scheduled wakes disabled." : "Scheduled wakes were not enabled.");
-			} else if (action === "status") {
-				const schedule = readWakeSchedule(root);
-				if (!schedule) console.log("No wake schedule bound.");
-				else if (schedule.suspendedReason) {
-					console.log(
-						`Suspended by the kernel: ${schedule.suspendedReason}. Re-enable with 'company wake set ${schedule.intervalMinutes}'.`,
-					);
-				} else {
-					console.log(schedule.enabled ? `Every ${schedule.intervalMinutes} minutes.` : "Disabled.");
-				}
-			} else {
-				console.error("Usage: company wake set <minutes> | off | status");
 				process.exitCode = 1;
 			}
 		} catch (error) {
@@ -3428,7 +3020,7 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 	}
 	if (sub !== "init") {
 		console.error(
-			`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir] | export | import | snapshot [label] | snapshots | restore <id> | fork <dir> | erase --force | trail list|verify|show | destination … | secret … | wake …`,
+			`Unknown company command: ${sub ?? "(none)"}. Usage: company init [dir] | export | import | snapshot [label] | snapshots | restore <id> | fork <dir> | erase --force | trail list|verify|show | destination … | secret …`,
 		);
 		process.exitCode = 1;
 		return true;
@@ -3437,15 +3029,15 @@ export async function handleCompanyCommand(args: string[]): Promise<boolean> {
 	const result = scaffoldCompany(dir);
 	printScaffoldReport(result);
 	registerCompany(result.root);
-	console.log(
-		"\nNext: open the company in Qorpera Base desktop. Gates live in authority.toml; requests appear in inbox/.",
-	);
+	console.log("\nNext: open the company in Qorpera Base desktop and hire its first agent.");
 	return true;
 }
 
 function companyRootFromCwd(): string {
 	const root = process.cwd();
-	if (!existsSync(join(root, "company.md"))) throw new Error("current directory is not a company root");
+	if (!existsSync(join(root, COMPANY_MANIFEST_RELATIVE_PATH))) {
+		throw new Error("current directory is not a company root");
+	}
 	return root;
 }
 
@@ -3478,24 +3070,6 @@ function basenameOf(source: string): string {
 	return segments[segments.length - 1] || "company";
 }
 
-/**
- * If this company has never been conceived (company.md is still the
- * template), return the kickoff message to auto-send on session start — the
- * founder should never have to type "hello?" to make setup begin. Companies
- * with a product-development department get the study-first variant.
- */
-export function conceptionKickoff(root: string): string | undefined {
-	try {
-		const companyMd = readFileSync(join(root, "company.md"), "utf-8");
-		if (!companyMd.includes("This company does not exist yet")) return undefined;
-	} catch {
-		return undefined;
-	}
-	const department = listProductDepartments(root).find((entry) => entry.repositoryExists);
-	if (department) return CONCEPTION_INTEGRATE(department);
-	return CONCEPTION_NEW;
-}
-
 // ---- company registry (the hub's memory) ----------------------------------
 
 export interface CompanyRecord {
@@ -3515,7 +3089,10 @@ export function listCompanies(): CompanyRecord[] {
 		if (!Array.isArray(records)) return [];
 		return records
 			.filter(
-				(record) => record && typeof record.root === "string" && existsSync(join(record.root, "authority.toml")),
+				(record) =>
+					record &&
+					typeof record.root === "string" &&
+					existsSync(join(record.root, COMPANY_MANIFEST_RELATIVE_PATH)),
 			)
 			.sort((a, b) => (b.lastOpened ?? "").localeCompare(a.lastOpened ?? ""));
 	} catch {
@@ -3525,7 +3102,7 @@ export function listCompanies(): CompanyRecord[] {
 
 export function registerCompany(rootDir: string): void {
 	const root = canonicalCompanyRoot(rootDir);
-	const name = basenameOf(root);
+	const name = readCompanyManifest(root).name;
 	const existing = listCompanies().filter((record) => {
 		try {
 			return normalizedPath(canonicalCompanyRoot(record.root)) !== normalizedPath(root);
@@ -3542,7 +3119,7 @@ export function registerCompany(rootDir: string): void {
 	}
 }
 
-/** Remove a company from this machine's profile selector without touching its files. */
+/** Remove a company from this machine's company selector without touching its files. */
 export function unregisterCompany(rootDir: string): boolean {
 	const root = canonicalCompanyRoot(rootDir);
 	const records = listCompanies().filter((record) => {

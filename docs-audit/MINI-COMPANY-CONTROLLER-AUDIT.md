@@ -1,5 +1,7 @@
 # Qorpera's Mini Company — controller audit
 
+> Historical audit of the removed universal-controller architecture.
+
 **Date:** 2026-08-13
 **Company:** `C:\Companies\qorperas-mini-company`
 **Base installer under test:** shell `0.18.12`, published release

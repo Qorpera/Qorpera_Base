@@ -1,10 +1,10 @@
 /**
- * Child side of the kernel HTTP lane (Build 3 — generic connectivity).
+ * Child side of the host HTTP lane (Build 3 — generic connectivity).
  *
  * The sandboxed child has no network. Outbound HTTP requests travel as
- * frames over the existing kernel pipe: the child writes a
+ * frames over the existing host pipe: the child writes a
  * `qorpera_http_request` frame carrying the request WITH opaque
- * `secret://<name>` references intact; the kernel checks the destination
+ * `secret://<name>` references intact; the host checks the destination
  * against founder-bound capabilities, dereferences the references at the
  * trusted boundary, executes, records the attempt in the trail, and
  * returns one `qorpera_http_response` frame. Raw secret values never
@@ -37,7 +37,7 @@ export interface HttpBrokerResponse {
 	body: string;
 	bodyBytes: number;
 	bodyTruncated?: boolean;
-	/** File mode: where the kernel streamed the response, with its digest. */
+	/** File mode: where the host streamed the response, with its digest. */
 	savedTo?: string;
 	sha256?: string;
 }
@@ -51,14 +51,14 @@ const pending = new Map<string, PendingRequest>();
 let writeFrame: ((frame: object) => void) | undefined;
 let activeIntent: KernelIntentCapability | undefined;
 
-export function setHttpBrokerWriter(writer: (frame: object) => void): void {
+export function setHttpBrokerWriter(writer: ((frame: object) => void) | undefined): void {
 	writeFrame = writer;
 }
 
 /**
- * Scope the verified founder/kernel causal intent to the current turn —
+ * Scope the verified founder/host causal intent to the current turn —
  * the same capability the model lane rides. Outbound requests without an
- * active intent are refused under the kernel (parity with the model lane).
+ * active intent are refused by the host (parity with the model lane).
  */
 export function setHttpBrokerIntent(intent: KernelIntentCapability | undefined): void {
 	activeIntent = intent;
@@ -68,15 +68,15 @@ export function isHttpBrokerAvailable(): boolean {
 	return writeFrame !== undefined;
 }
 
-/** Send one outbound request through the kernel; resolves with the kernel's single response frame. */
+/** Send one outbound request through the host; resolves with the host's single response frame. */
 export function brokeredHttpRequest(request: HttpBrokerRequest, signal?: AbortSignal): Promise<HttpBrokerResponse> {
 	return new Promise((resolve, reject) => {
 		if (!writeFrame) {
-			reject(new Error("http_request requires the kernel broker (company sessions under the desktop kernel)"));
+			reject(new Error("http_request requires the Qorpera desktop host"));
 			return;
 		}
 		if (isModelBrokerInstalled() && !activeIntent) {
-			reject(new Error("kernel http request has no verified causal intent for this turn"));
+			reject(new Error("host HTTP request has no verified causal intent for this turn"));
 			return;
 		}
 		const requestId = randomUUID();
@@ -85,11 +85,11 @@ export function brokeredHttpRequest(request: HttpBrokerRequest, signal?: AbortSi
 		try {
 			serialized = JSON.stringify(frame);
 		} catch {
-			reject(new Error("kernel http request is not serializable"));
+			reject(new Error("host HTTP request is not serializable"));
 			return;
 		}
 		if (Buffer.byteLength(serialized, "utf-8") > MAX_HTTP_REQUEST_BYTES) {
-			reject(new Error("kernel http request exceeds 2 MiB"));
+			reject(new Error("host HTTP request exceeds 2 MiB"));
 			return;
 		}
 		const settle = (action: () => void): void => {
@@ -115,7 +115,7 @@ export function brokeredHttpRequest(request: HttpBrokerRequest, signal?: AbortSi
 	});
 }
 
-/** Consume kernel-originated http response frames from RPC stdin. */
+/** Consume host-originated HTTP response frames from RPC stdin. */
 export function handleHttpBrokerFrame(value: unknown): boolean {
 	if (!value || typeof value !== "object") return false;
 	const frame = value as {
@@ -144,7 +144,7 @@ export function handleHttpBrokerFrame(value: unknown): boolean {
 		!frame.headers ||
 		typeof frame.headers !== "object"
 	) {
-		entry.reject(new Error("kernel http response frame is invalid"));
+		entry.reject(new Error("host HTTP response frame is invalid"));
 		return true;
 	}
 	entry.resolve({

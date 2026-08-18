@@ -4,11 +4,11 @@ Qorpera Base's default runtime for real company work (spec §6.0). The codex
 app-server runs its own loop — co-trained prompts, its own tools, caching,
 compaction — and Base does exactly three things around it:
 
-1. **Lifecycle.** `initialize` → `thread/start` (cwd = the company root, so
-   codex natively reads the kernel `AGENTS.md` through the channel its models
-   are co-trained on) → `turn/start` per task. Optional
-   `developerInstructions` append is available as reinforcement; the base
-   prompt is never replaced (co-training).
+1. **Lifecycle.** `initialize` → `thread/start` → `turn/start` per task. The
+   desktop host binds the run to one durable company agent and supplies that
+   agent's private instructions, artifact measures, connector inventory, and
+   lifecycle behavior. An agents-only company has no root universal
+   `AGENTS.md` persona and no unnamed company-wide controller.
 2. **Trail.** Every completed item is normalized into the session tree:
    agent messages become assistant messages with model/usage attribution;
    reasoning, command executions, and file changes persist as `custom`
@@ -18,7 +18,7 @@ compaction — and Base does exactly three things around it:
    everything else: command approvals evaluate as `bash`, patch approvals as
    `apply_patch` per file. Declines file `inbox/gate-*.md` requests; a human
    approval is consumed by the next matching attempt. When an authority is
-   present the thread defaults to `approvalPolicy: "untrusted"` so every
+   present the task defaults to `approvalPolicy: "untrusted"` so every
    command consults the gates; codex's own sandbox is the containment layer
    underneath.
 

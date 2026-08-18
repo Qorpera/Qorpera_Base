@@ -24,11 +24,37 @@ import { getAgentDir } from "../config.ts";
 export const SECRET_REFERENCE_PATTERN = /secret:\/\/([a-z0-9][a-z0-9_-]{0,63})/gi;
 const SECRET_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 const DESTINATION_PATTERN = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?$/i;
+const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9a-z-]+$/i;
+const FORBIDDEN_CLIENT_AUTH_HEADERS = new Set(["authorization", "content-type", "cookie", "host"]);
+const FORBIDDEN_TEMPLATE_HEADERS = new Set([
+	"authorization",
+	"connection",
+	"content-length",
+	"cookie",
+	"host",
+	"proxy-authorization",
+	"transfer-encoding",
+]);
+const OAUTH_HEADER_TEMPLATE_NAMES = new Set(["body_sha256_digest", "http_date", "url_host"]);
+const OAUTH_HTTP_DATE_PLACEHOLDER = "$" + "{http_date}";
+const OAUTH_URL_HOST_PLACEHOLDER = "$" + "{url_host}";
+const OAUTH_BODY_DIGEST_PLACEHOLDER = "$" + "{body_sha256_digest}";
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
 
 export interface StaticSecret {
 	kind: "static";
 	value: string;
 }
+
+export type OAuth2ClientAuthentication =
+	| { kind: "body" }
+	| {
+			kind: "headers";
+			clientIdHeader: string;
+			clientSecretHeader: string;
+	  };
+
+export type OAuthRequestHeaderTemplates = Readonly<Record<string, string>>;
 
 export interface OAuth2Secret {
 	kind: "oauth2";
@@ -37,12 +63,32 @@ export interface OAuth2Secret {
 	tokenUrl: string;
 	clientId?: string;
 	clientSecret?: string;
+	clientAuthentication?: OAuth2ClientAuthentication;
+	/** Public header templates required by the token and refresh endpoint.
+	 * Values may use ${http_date}, ${url_host}, and
+	 * ${body_sha256_digest}; credentials remain separate vault fields. */
+	tokenHeaders?: OAuthRequestHeaderTemplates;
 	scope?: string;
 	/** ISO timestamp after which the access token needs a refresh. */
 	expiresAt?: string;
 }
 
 export type CompanySecret = StaticSecret | OAuth2Secret;
+
+/** Optional trusted secret storage installed by the desktop host. The coding
+ * agent never receives this object; only host-side connection operations do. */
+export interface CompanySecretStore {
+	list(root: string): string[];
+	get(root: string, name: string): CompanySecret | undefined;
+	put(root: string, name: string, secret: CompanySecret): void;
+	remove(root: string, name: string): boolean;
+}
+
+let companySecretStore: CompanySecretStore | undefined;
+
+export function setCompanySecretStore(store: CompanySecretStore | undefined): void {
+	companySecretStore = store;
+}
 
 export interface NetworkDestination {
 	/** Lowercase host, optionally with an explicit :port. HTTPS only. */
@@ -51,13 +97,8 @@ export interface NetworkDestination {
 	boundAt: string;
 }
 
-/**
- * The founder-bound wake schedule (Build 4 — durable autonomy). The kernel
- * wakes the controller on this cadence; what the wake MEANS — which routine
- * runs, what gets done — stays entirely the controller's decision. The
- * minimum interval is a kernel-owned wake-rate ceiling: a malfunctioning
- * controller cannot bound itself.
- */
+/** Legacy company-wide schedule, accepted only to migrate old local state into
+ * a named routine. New schedules are created and owned by individual agents. */
 export interface WakeSchedule {
 	intervalMinutes: number;
 	enabled: boolean;
@@ -67,6 +108,17 @@ export interface WakeSchedule {
 
 export const MIN_WAKE_INTERVAL_MINUTES = 5;
 const MAX_WAKE_INTERVAL_MINUTES = 7 * 24 * 60;
+
+export const ROUTINE_WEEKDAYS = Object.freeze([
+	"sunday",
+	"monday",
+	"tuesday",
+	"wednesday",
+	"thursday",
+	"friday",
+	"saturday",
+] as const);
+export type RoutineWeekday = (typeof ROUTINE_WEEKDAYS)[number];
 
 export const GITHUB_ROUTINE_EVENT_TYPES = [
 	"pull_request.opened",
@@ -89,6 +141,13 @@ export type RoutineTrigger =
 			id: string;
 			kind: "schedule";
 			intervalMinutes: number;
+			/** Optional absolute anchor for the first and subsequent interval slots. */
+			startAt?: string;
+			/** Calendar fields are present together for wall-clock weekly schedules. */
+			weekdays?: RoutineWeekday[];
+			localTime?: string;
+			/** `auto` follows the current computer; otherwise an IANA timezone. */
+			timeZone?: string;
 	  }
 	| {
 			id: string;
@@ -105,6 +164,13 @@ export type RoutineTrigger =
 			adapterId: string;
 			event: string;
 			label: string;
+			/** Optional agent-built polling monitor. Custom triggers without this
+			 * field remain webhook/event-bus adapters. */
+			monitor?: {
+				instructions: string;
+				intervalMinutes: number;
+				connectorIds: string[];
+			};
 	  };
 
 export type RoutineTriggerInput = RoutineTrigger extends infer Trigger
@@ -113,22 +179,30 @@ export type RoutineTriggerInput = RoutineTrigger extends infer Trigger
 		: never
 	: never;
 
+export const SCHEDULED_JOB_EFFORTS = Object.freeze(["low", "medium", "high", "xhigh", "max"] as const);
+export type ScheduledJobEffort = (typeof SCHEDULED_JOB_EFFORTS)[number];
+
 /**
- * A founder-bound unit of recurring controller work. Definitions stay in the
+ * A founder-bound unit of recurring agent work. Definitions stay in the
  * machine-local connection store because enabling unattended work is standing
  * authority; the resulting runs and artifacts still land in the company trail.
  */
 export interface ScheduledJob {
 	id: string;
+	/** Stable idempotency key for a routine managed by its owning agent. This is
+	 * machine-local implementation state and is not projected into the UI. */
+	agentKey?: string;
 	title: string;
 	prompt: string;
 	triggers: RoutineTrigger[];
 	enabled: boolean;
+	/** Reasoning effort for each autonomous run. Scheduled work defaults high. */
+	effort: ScheduledJobEffort;
 	/** Explicit staff ownership. Absence means Unassigned. */
 	staffAgentId?: string;
 	createdAt: string;
 	updatedAt: string;
-	/** Set by the kernel after repeated failures; cleared when the job is re-enabled. */
+	/** Set by the host after repeated failures; cleared when the job is re-enabled. */
 	suspendedReason?: string;
 }
 
@@ -137,7 +211,9 @@ export interface ScheduledJobInput {
 	prompt: string;
 	triggers: RoutineTriggerInput[];
 	enabled?: boolean;
+	effort?: ScheduledJobEffort;
 	staffAgentId?: string;
+	agentKey?: string;
 }
 
 export interface ScheduledJobUpdate {
@@ -145,6 +221,7 @@ export interface ScheduledJobUpdate {
 	prompt?: string;
 	triggers?: RoutineTriggerInput[];
 	enabled?: boolean;
+	effort?: ScheduledJobEffort;
 	/** A string assigns the job; null explicitly returns it to Unassigned. */
 	staffAgentId?: string | null;
 }
@@ -152,7 +229,7 @@ export interface ScheduledJobUpdate {
 export const DEFAULT_SCHEDULED_JOB_ID = "company-orchestration";
 export const DEFAULT_SCHEDULED_JOB_TITLE = "Company orchestration";
 export const DEFAULT_SCHEDULED_JOB_PROMPT =
-	"Read company.md, the inbox, and app/routines/. Decide what most needs doing and do it. Post inbox/messages items for anything that needs the founder; when nothing needs doing, settle without inventing work.";
+	"Review your charter, owned artifacts, granted connectors, recent trail, and relevant inbox items. Advance the responsibility and measures you own. Ask the founder only for a specific missing decision or authorization; when nothing needs doing, settle without inventing work.";
 
 interface CompanyConnectionsState {
 	version: 1;
@@ -165,20 +242,44 @@ interface CompanyConnectionsState {
 	webhook?: WebhookBinding;
 }
 
-interface LegacyScheduledJob extends Omit<ScheduledJob, "triggers"> {
+interface LegacyScheduledJob extends Omit<ScheduledJob, "triggers" | "effort"> {
 	intervalMinutes: number;
 	triggers?: RoutineTrigger[];
+	effort?: ScheduledJobEffort;
 }
 
 const FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
 const STAFF_AGENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const AGENT_ROUTINE_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
 function normalizedRoot(root: string): string {
 	const resolved = resolve(root);
 	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
+function companyConnectionStorageIdentity(root: string): string {
+	try {
+		const manifest = JSON.parse(readFileSync(join(resolve(root), ".qorpera", "company.json"), "utf-8")) as {
+			id?: unknown;
+		};
+		if (
+			typeof manifest.id === "string" &&
+			/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(manifest.id)
+		) {
+			return `company:${manifest.id.toLowerCase()}`;
+		}
+	} catch {
+		// Non-company unit tests and legacy CLI roots retain path isolation.
+	}
+	return `root:${normalizedRoot(root)}`;
+}
+
 export function companyConnectionsPath(root: string): string {
+	const id = createHash("sha256").update(companyConnectionStorageIdentity(root)).digest("hex");
+	return join(getAgentDir(), "connections", `${id}.json`);
+}
+
+function legacyCompanyConnectionsPath(root: string): string {
 	const id = createHash("sha256").update(normalizedRoot(root)).digest("hex");
 	return join(getAgentDir(), "connections", `${id}.json`);
 }
@@ -189,6 +290,11 @@ function emptyState(root: string): CompanyConnectionsState {
 
 function readState(root: string): CompanyConnectionsState {
 	const path = companyConnectionsPath(root);
+	const legacyPath = legacyCompanyConnectionsPath(root);
+	if (!existsSync(path) && path !== legacyPath && existsSync(legacyPath)) {
+		mkdirSync(join(path, ".."), { recursive: true });
+		renameSync(legacyPath, path);
+	}
 	if (!existsSync(path)) return emptyState(root);
 	const parsed = JSON.parse(readFileSync(path, "utf-8")) as CompanyConnectionsState;
 	if (parsed.version !== 1 || !Array.isArray(parsed.destinations) || typeof parsed.secrets !== "object") {
@@ -210,10 +316,22 @@ function writeState(root: string, state: CompanyConnectionsState): void {
 	}
 }
 
+function migrateSecretsToTrustedStore(root: string, state: CompanyConnectionsState): void {
+	if (!companySecretStore || Object.keys(state.secrets).length === 0) return;
+	for (const [name, secret] of Object.entries(state.secrets)) companySecretStore.put(root, name, secret);
+	state.secrets = {};
+	state.root = resolve(root);
+	writeState(root, state);
+}
+
 /** Names and destinations only — never secret values. */
 export function readCompanyConnections(root: string): { destinations: NetworkDestination[]; secretNames: string[] } {
 	const state = readState(root);
-	return { destinations: state.destinations, secretNames: Object.keys(state.secrets).sort() };
+	migrateSecretsToTrustedStore(root, state);
+	return {
+		destinations: state.destinations,
+		secretNames: companySecretStore ? companySecretStore.list(root) : Object.keys(state.secrets).sort(),
+	};
 }
 
 export function bindNetworkDestination(root: string, host: string, note?: string): void {
@@ -250,15 +368,83 @@ function trustedTokenUrl(tokenUrl: string): boolean {
 	}
 }
 
-function validSecret(secret: CompanySecret): boolean {
+function validOAuthRequestHeaders(value: OAuthRequestHeaderTemplates | undefined): boolean {
+	if (value === undefined) return true;
+	const entries = Object.entries(value);
+	return (
+		entries.length <= 16 &&
+		entries.every(([name, template]) => {
+			if (
+				!HTTP_HEADER_NAME_PATTERN.test(name) ||
+				FORBIDDEN_TEMPLATE_HEADERS.has(name.toLowerCase()) ||
+				typeof template !== "string" ||
+				!template ||
+				template !== template.trim() ||
+				CONTROL_CHARACTER_PATTERN.test(template) ||
+				Buffer.byteLength(template, "utf-8") > 1_024 ||
+				template.toLowerCase().includes("secret://")
+			) {
+				return false;
+			}
+			if (template.replace(/\$\{[^}]+\}/g, "").includes("${")) return false;
+			return [...template.matchAll(/\$\{([^}]+)\}/g)].every((match) => OAUTH_HEADER_TEMPLATE_NAMES.has(match[1]));
+		})
+	);
+}
+
+export function materializeOAuthRequestHeaders(
+	templates: OAuthRequestHeaderTemplates | undefined,
+	url: string | URL,
+	body: string,
+	now: Date = new Date(),
+): Record<string, string> {
+	if (!validOAuthRequestHeaders(templates)) throw new Error("OAuth request header templates are invalid");
+	const endpoint = new URL(url);
+	const digest = `SHA-256=${createHash("sha256").update(body).digest("base64")}`;
+	return Object.fromEntries(
+		Object.entries(templates ?? {}).map(([name, template]) => [
+			name,
+			template
+				.replaceAll(OAUTH_HTTP_DATE_PLACEHOLDER, now.toUTCString())
+				.replaceAll(OAUTH_URL_HOST_PLACEHOLDER, endpoint.host)
+				.replaceAll(OAUTH_BODY_DIGEST_PLACEHOLDER, digest),
+		]),
+	);
+}
+
+export function validCompanySecret(secret: CompanySecret): boolean {
 	if (secret.kind === "static") return typeof secret.value === "string" && secret.value.length > 0;
+	const clientAuthentication = secret.clientAuthentication;
+	const validClientAuthentication =
+		clientAuthentication === undefined ||
+		clientAuthentication.kind === "body" ||
+		(clientAuthentication.kind === "headers" &&
+			typeof secret.clientId === "string" &&
+			secret.clientId.length > 0 &&
+			typeof secret.clientSecret === "string" &&
+			secret.clientSecret.length > 0 &&
+			HTTP_HEADER_NAME_PATTERN.test(clientAuthentication.clientIdHeader) &&
+			HTTP_HEADER_NAME_PATTERN.test(clientAuthentication.clientSecretHeader) &&
+			!FORBIDDEN_CLIENT_AUTH_HEADERS.has(clientAuthentication.clientIdHeader.toLowerCase()) &&
+			!FORBIDDEN_CLIENT_AUTH_HEADERS.has(clientAuthentication.clientSecretHeader.toLowerCase()) &&
+			clientAuthentication.clientIdHeader.toLowerCase() !== clientAuthentication.clientSecretHeader.toLowerCase());
+	const clientHeaderNames =
+		clientAuthentication?.kind === "headers"
+			? new Set([
+					clientAuthentication.clientIdHeader.toLowerCase(),
+					clientAuthentication.clientSecretHeader.toLowerCase(),
+				])
+			: new Set<string>();
 	return (
 		secret.kind === "oauth2" &&
 		typeof secret.accessToken === "string" &&
 		typeof secret.refreshToken === "string" &&
 		secret.refreshToken.length > 0 &&
 		typeof secret.tokenUrl === "string" &&
-		trustedTokenUrl(secret.tokenUrl)
+		trustedTokenUrl(secret.tokenUrl) &&
+		validClientAuthentication &&
+		validOAuthRequestHeaders(secret.tokenHeaders) &&
+		Object.keys(secret.tokenHeaders ?? {}).every((name) => !clientHeaderNames.has(name.toLowerCase()))
 	);
 }
 
@@ -266,14 +452,20 @@ export function bindCompanySecret(root: string, name: string, secret: CompanySec
 	if (!SECRET_NAME_PATTERN.test(name)) {
 		throw new Error(`Invalid secret name: ${name} (letters, digits, - and _, max 64 chars)`);
 	}
-	if (!validSecret(secret)) throw new Error(`Invalid ${secret.kind} secret for ${name}`);
+	if (!validCompanySecret(secret)) throw new Error(`Invalid ${secret.kind} secret for ${name}`);
 	const state = readState(root);
-	state.secrets[name] = secret;
-	writeState(root, state);
+	migrateSecretsToTrustedStore(root, state);
+	if (companySecretStore) companySecretStore.put(root, name, secret);
+	else {
+		state.secrets[name] = secret;
+		writeState(root, state);
+	}
 }
 
 export function removeCompanySecret(root: string, name: string): boolean {
 	const state = readState(root);
+	migrateSecretsToTrustedStore(root, state);
+	if (companySecretStore) return companySecretStore.remove(root, name);
 	if (!(name in state.secrets)) return false;
 	delete state.secrets[name];
 	writeState(root, state);
@@ -287,63 +479,10 @@ export function destinationAllowed(root: string, url: URL): boolean {
 	return readState(root).destinations.some((destination) => destination.host === host);
 }
 
-export function readWakeSchedule(root: string): WakeSchedule | undefined {
-	const job = readScheduledJobs(root).find((candidate) => candidate.id === DEFAULT_SCHEDULED_JOB_ID);
-	const intervalMinutes = job ? scheduledJobIntervalMinutes(job) : undefined;
-	return job && intervalMinutes !== undefined
-		? {
-				intervalMinutes,
-				enabled: job.enabled,
-				...(job.suspendedReason ? { suspendedReason: job.suspendedReason } : {}),
-			}
-		: undefined;
-}
-
-export function bindWakeSchedule(root: string, intervalMinutes: number): WakeSchedule {
-	const state = readState(root);
-	const jobs = migrateScheduledJobs(state);
-	const normalizedInterval = validScheduledJobInterval(intervalMinutes);
-	const now = new Date().toISOString();
-	const current = jobs.find((job) => job.id === DEFAULT_SCHEDULED_JOB_ID);
-	const schedule = validRoutineTrigger({ kind: "schedule", intervalMinutes: normalizedInterval });
-	const job: ScheduledJob = current
-		? { ...current, triggers: [schedule], enabled: true, updatedAt: now, suspendedReason: undefined }
-		: {
-				id: DEFAULT_SCHEDULED_JOB_ID,
-				title: DEFAULT_SCHEDULED_JOB_TITLE,
-				prompt: DEFAULT_SCHEDULED_JOB_PROMPT,
-				triggers: [schedule],
-				enabled: true,
-				createdAt: now,
-				updatedAt: now,
-			};
-	state.scheduledJobs = [...jobs.filter((candidate) => candidate.id !== job.id), job];
-	delete state.wake;
-	writeState(root, state);
-	return { intervalMinutes: normalizedInterval, enabled: job.enabled };
-}
-
-export function disableWakeSchedule(root: string): boolean {
-	const state = readState(root);
-	const jobs = migrateScheduledJobs(state);
-	const index = jobs.findIndex((job) => job.id === DEFAULT_SCHEDULED_JOB_ID);
-	if (index < 0 || !jobs[index].enabled) return false;
-	jobs[index] = { ...jobs[index], enabled: false, updatedAt: new Date().toISOString() };
-	state.scheduledJobs = jobs;
-	delete state.wake;
-	writeState(root, state);
-	return true;
-}
-
-/** Kernel-side suspension (e.g. repeated wake failures). Re-binding clears it. */
-export function suspendWakeSchedule(root: string, reason: string): void {
-	suspendScheduledJob(root, DEFAULT_SCHEDULED_JOB_ID, reason);
-}
-
 function validScheduledJobInterval(value: number): number {
 	if (!Number.isFinite(value) || value < MIN_WAKE_INTERVAL_MINUTES || value > MAX_WAKE_INTERVAL_MINUTES) {
 		throw new Error(
-			`Wake interval must be between ${MIN_WAKE_INTERVAL_MINUTES} minutes and 7 days (kernel wake-rate ceiling)`,
+			`Routine interval must be between ${MIN_WAKE_INTERVAL_MINUTES} minutes and 7 days (host execution-rate ceiling)`,
 		);
 	}
 	return Math.round(value);
@@ -364,6 +503,20 @@ function validScheduledJobStaffAgentId(value: unknown): string {
 	return value;
 }
 
+function validAgentRoutineKey(value: unknown): string {
+	if (typeof value !== "string" || !AGENT_ROUTINE_KEY_PATTERN.test(value)) {
+		throw new Error("Agent routine key must use lowercase letters, digits, dots, underscores, or hyphens");
+	}
+	return value;
+}
+
+function validScheduledJobEffort(value: unknown): ScheduledJobEffort {
+	if (typeof value !== "string" || !SCHEDULED_JOB_EFFORTS.includes(value as ScheduledJobEffort)) {
+		throw new Error(`Scheduled job effort must be one of ${SCHEDULED_JOB_EFFORTS.join(", ")}`);
+	}
+	return value as ScheduledJobEffort;
+}
+
 const GITHUB_REPOSITORY_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9])?\/[a-z0-9._-]{1,100}$/i;
 const ROUTINE_ADAPTER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
@@ -371,7 +524,54 @@ function validRoutineTrigger(input: RoutineTriggerInput): RoutineTrigger {
 	const id = input.id?.trim() ? input.id.trim() : randomUUID();
 	if (Buffer.byteLength(id, "utf-8") > 160) throw new Error("Routine trigger id is too long");
 	if (input.kind === "schedule") {
-		return { id, kind: "schedule", intervalMinutes: validScheduledJobInterval(input.intervalMinutes) };
+		const calendarFieldCount = [input.weekdays, input.localTime, input.timeZone].filter(
+			(value) => value !== undefined,
+		).length;
+		if (calendarFieldCount !== 0 && calendarFieldCount !== 3) {
+			throw new Error("Weekly routine schedules require weekdays, localTime, and timeZone together");
+		}
+		if (calendarFieldCount && input.startAt !== undefined) {
+			throw new Error("A routine schedule cannot combine startAt with a weekly wall-clock schedule");
+		}
+		let startAt: string | undefined;
+		if (input.startAt !== undefined) {
+			const parsed = Date.parse(input.startAt);
+			if (!Number.isFinite(parsed)) throw new Error("Routine schedule startAt must be an ISO 8601 timestamp");
+			startAt = new Date(parsed).toISOString();
+		}
+		let weekly: { weekdays: RoutineWeekday[]; localTime: string; timeZone: string } | undefined;
+		if (calendarFieldCount) {
+			const weekdays = [...new Set(input.weekdays)];
+			if (
+				weekdays.length < 1 ||
+				weekdays.length > 7 ||
+				weekdays.some((weekday) => !ROUTINE_WEEKDAYS.includes(weekday)) ||
+				typeof input.localTime !== "string" ||
+				!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(input.localTime) ||
+				typeof input.timeZone !== "string"
+			) {
+				throw new Error("Weekly routine schedule is invalid");
+			}
+			if (input.timeZone !== "auto") {
+				try {
+					new Intl.DateTimeFormat("en-US", { timeZone: input.timeZone }).format(0);
+				} catch {
+					throw new Error("Weekly routine timeZone must be auto or an IANA timezone");
+				}
+			}
+			weekly = {
+				weekdays: ROUTINE_WEEKDAYS.filter((weekday) => weekdays.includes(weekday)),
+				localTime: input.localTime,
+				timeZone: input.timeZone,
+			};
+		}
+		return {
+			id,
+			kind: "schedule",
+			intervalMinutes: validScheduledJobInterval(input.intervalMinutes),
+			...(startAt ? { startAt } : {}),
+			...weekly,
+		};
 	}
 	if (input.kind === "github") {
 		const repository = input.repository.trim();
@@ -398,7 +598,25 @@ function validRoutineTrigger(input: RoutineTriggerInput): RoutineTrigger {
 	if (Buffer.byteLength(event, "utf-8") > 160 || Buffer.byteLength(label, "utf-8") > 160) {
 		throw new Error("Custom routine trigger is too long");
 	}
-	return { id, kind: "custom", adapterId, event, label };
+	let monitor: Extract<RoutineTrigger, { kind: "custom" }>["monitor"];
+	if (input.monitor !== undefined) {
+		const instructions = input.monitor.instructions.trim();
+		const connectorIds = [...new Set(input.monitor.connectorIds.map((connectorId) => connectorId.trim()))];
+		if (
+			!instructions ||
+			Buffer.byteLength(instructions, "utf-8") > 32 * 1024 ||
+			connectorIds.length > 16 ||
+			connectorIds.some((connectorId) => !ROUTINE_ADAPTER_ID_PATTERN.test(connectorId))
+		) {
+			throw new Error("Custom routine monitor is invalid");
+		}
+		monitor = {
+			instructions,
+			intervalMinutes: validScheduledJobInterval(input.monitor.intervalMinutes),
+			connectorIds,
+		};
+	}
+	return { id, kind: "custom", adapterId, event, label, ...(monitor ? { monitor } : {}) };
 }
 
 function validRoutineTriggers(value: readonly RoutineTriggerInput[]): RoutineTrigger[] {
@@ -416,6 +634,10 @@ export function scheduledJobIntervalMinutes(job: ScheduledJob): number | undefin
 	return job.triggers.find((trigger) => trigger.kind === "schedule")?.intervalMinutes;
 }
 
+export function scheduledJobStartAt(job: ScheduledJob): string | undefined {
+	return job.triggers.find((trigger) => trigger.kind === "schedule")?.startAt;
+}
+
 function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 	if (state.scheduledJobs) {
 		return (state.scheduledJobs as LegacyScheduledJob[]).map((job) => {
@@ -424,10 +646,12 @@ function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 				: [validRoutineTrigger({ kind: "schedule", intervalMinutes: job.intervalMinutes })];
 			const migrated: ScheduledJob = {
 				id: job.id,
+				...(job.agentKey === undefined ? {} : { agentKey: validAgentRoutineKey(job.agentKey) }),
 				title: job.title,
 				prompt: job.prompt,
 				triggers,
 				enabled: job.enabled,
+				effort: job.effort === undefined ? "high" : validScheduledJobEffort(job.effort),
 				createdAt: job.createdAt,
 				updatedAt: job.updatedAt,
 				...(job.staffAgentId === undefined
@@ -447,6 +671,7 @@ function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 			prompt: DEFAULT_SCHEDULED_JOB_PROMPT,
 			triggers: [validRoutineTrigger({ kind: "schedule", intervalMinutes: state.wake.intervalMinutes })],
 			enabled: state.wake.enabled,
+			effort: "high",
 			createdAt: now,
 			updatedAt: now,
 			...(state.wake.suspendedReason ? { suspendedReason: state.wake.suspendedReason } : {}),
@@ -459,7 +684,9 @@ export function readScheduledJobs(root: string): ScheduledJob[] {
 	const jobs = migrateScheduledJobs(state);
 	if (
 		(!state.scheduledJobs && state.wake) ||
-		state.scheduledJobs?.some((job) => !Array.isArray((job as ScheduledJob).triggers))
+		state.scheduledJobs?.some(
+			(job) => !Array.isArray((job as ScheduledJob).triggers) || (job as Partial<ScheduledJob>).effort === undefined,
+		)
 	) {
 		state.scheduledJobs = jobs;
 		delete state.wake;
@@ -472,13 +699,22 @@ export function createScheduledJob(root: string, input: ScheduledJobInput): Sche
 	const state = readState(root);
 	const jobs = migrateScheduledJobs(state);
 	const now = new Date().toISOString();
+	const staffAgentId =
+		input.staffAgentId === undefined ? undefined : validScheduledJobStaffAgentId(input.staffAgentId);
+	const agentKey = input.agentKey === undefined ? undefined : validAgentRoutineKey(input.agentKey);
+	if (agentKey && !staffAgentId) throw new Error("Agent routine key requires staff ownership");
+	if (agentKey && jobs.some((job) => job.staffAgentId === staffAgentId && job.agentKey === agentKey)) {
+		throw new Error(`Agent routine already exists: ${agentKey}`);
+	}
 	const job: ScheduledJob = {
 		id: randomUUID(),
+		...(agentKey ? { agentKey } : {}),
 		title: validScheduledJobText(input.title, "title", 160),
 		prompt: validScheduledJobText(input.prompt, "prompt", 32 * 1024),
 		triggers: validRoutineTriggers(input.triggers),
 		enabled: input.enabled ?? true,
-		...(input.staffAgentId !== undefined ? { staffAgentId: validScheduledJobStaffAgentId(input.staffAgentId) } : {}),
+		effort: input.effort === undefined ? "high" : validScheduledJobEffort(input.effort),
+		...(staffAgentId ? { staffAgentId } : {}),
 		createdAt: now,
 		updatedAt: now,
 	};
@@ -486,6 +722,30 @@ export function createScheduledJob(root: string, input: ScheduledJobInput): Sche
 	delete state.wake;
 	writeState(root, state);
 	return job;
+}
+
+export function findStaffScheduledJob(root: string, staffAgentId: string, agentKey: string): ScheduledJob | undefined {
+	const owner = validScheduledJobStaffAgentId(staffAgentId);
+	const key = validAgentRoutineKey(agentKey);
+	return readScheduledJobs(root).find((job) => job.staffAgentId === owner && job.agentKey === key);
+}
+
+export function upsertStaffScheduledJob(
+	root: string,
+	staffAgentId: string,
+	agentKey: string,
+	input: Omit<ScheduledJobInput, "staffAgentId" | "agentKey">,
+): ScheduledJob {
+	const current = findStaffScheduledJob(root, staffAgentId, agentKey);
+	if (!current) return createScheduledJob(root, { ...input, staffAgentId, agentKey });
+	return updateScheduledJob(root, current.id, {
+		title: input.title,
+		prompt: input.prompt,
+		triggers: input.triggers,
+		enabled: input.enabled ?? true,
+		effort: input.effort ?? "high",
+		staffAgentId,
+	});
 }
 
 export function updateScheduledJob(root: string, id: string, update: ScheduledJobUpdate): ScheduledJob {
@@ -500,6 +760,7 @@ export function updateScheduledJob(root: string, id: string, update: ScheduledJo
 		...(update.title !== undefined ? { title: validScheduledJobText(update.title, "title", 160) } : {}),
 		...(update.prompt !== undefined ? { prompt: validScheduledJobText(update.prompt, "prompt", 32 * 1024) } : {}),
 		...(update.triggers !== undefined ? { triggers: validRoutineTriggers(update.triggers) } : {}),
+		...(update.effort !== undefined ? { effort: validScheduledJobEffort(update.effort) } : {}),
 		...(update.staffAgentId === null
 			? { staffAgentId: undefined }
 			: update.staffAgentId !== undefined
@@ -540,8 +801,7 @@ export function suspendScheduledJob(root: string, id: string, reason: string): v
 }
 
 /**
- * Inbound webhooks — the first optional kernel module (manifesto §9):
- * kernel-necessary when wanted, off by default, no ontology. The kernel
+ * Inbound webhooks are an optional host capability, off by default. The host
  * listens on the local loopback only; public reachability is the
  * founder's business (a tunnel or reverse proxy of their choosing).
  */
@@ -579,7 +839,7 @@ export function disableWebhook(root: string): boolean {
 }
 
 /**
- * Record the port the kernel actually bound. Bindings enabled before ports
+ * Record the port the host actually bound. Bindings enabled before ports
  * were persisted carry none; the first listener start writes its OS-assigned
  * port back so the founder gets a stable tunnel/provider endpoint.
  */
@@ -594,7 +854,7 @@ export function persistWebhookPort(root: string, port: number): WebhookBinding |
 const REFRESH_MARGIN_MS = 60_000;
 
 /**
- * Dereference a secret to its raw value — kernel-side only. OAuth2 secrets
+ * Dereference a secret to its raw value — host-side only. OAuth2 secrets
  * past their expiry are refreshed through the token endpoint (RFC 6749
  * §6) and the rotated tokens are persisted before the value is returned.
  */
@@ -604,19 +864,31 @@ export async function resolveCompanySecret(
 	fetchImpl: typeof fetch = fetch,
 ): Promise<string> {
 	const state = readState(root);
-	const secret = state.secrets[name];
+	migrateSecretsToTrustedStore(root, state);
+	const secret = companySecretStore ? companySecretStore.get(root, name) : state.secrets[name];
 	if (!secret) throw new Error(`Unknown secret reference: secret://${name}`);
 	if (secret.kind === "static") return secret.value;
 	const expiresAt = secret.expiresAt ? Date.parse(secret.expiresAt) : Number.POSITIVE_INFINITY;
 	if (Number.isFinite(expiresAt) && expiresAt <= Date.now() + REFRESH_MARGIN_MS) {
 		const parameters = new URLSearchParams({ grant_type: "refresh_token", refresh_token: secret.refreshToken });
-		if (secret.clientId) parameters.set("client_id", secret.clientId);
-		if (secret.clientSecret) parameters.set("client_secret", secret.clientSecret);
+		if (secret.clientAuthentication?.kind !== "headers") {
+			if (secret.clientId) parameters.set("client_id", secret.clientId);
+			if (secret.clientSecret) parameters.set("client_secret", secret.clientSecret);
+		}
 		if (secret.scope) parameters.set("scope", secret.scope);
+		const body = parameters.toString();
+		const headers: Record<string, string> = {
+			"content-type": "application/x-www-form-urlencoded",
+			...materializeOAuthRequestHeaders(secret.tokenHeaders, secret.tokenUrl, body),
+		};
+		if (secret.clientAuthentication?.kind === "headers") {
+			headers[secret.clientAuthentication.clientIdHeader] = secret.clientId ?? "";
+			headers[secret.clientAuthentication.clientSecretHeader] = secret.clientSecret ?? "";
+		}
 		const response = await fetchImpl(secret.tokenUrl, {
 			method: "POST",
-			headers: { "content-type": "application/x-www-form-urlencoded" },
-			body: parameters.toString(),
+			headers,
+			body,
 		});
 		if (!response.ok) {
 			throw new Error(`Secret refresh failed for secret://${name}: token endpoint returned ${response.status}`);
@@ -639,9 +911,12 @@ export async function resolveCompanySecret(
 				? { expiresAt: new Date(Date.now() + granted.expires_in * 1000).toISOString() }
 				: {}),
 		};
-		const current = readState(root);
-		current.secrets[name] = updated;
-		writeState(root, current);
+		if (companySecretStore) companySecretStore.put(root, name, updated);
+		else {
+			const current = readState(root);
+			current.secrets[name] = updated;
+			writeState(root, current);
+		}
 		return updated.accessToken;
 	}
 	return secret.accessToken;

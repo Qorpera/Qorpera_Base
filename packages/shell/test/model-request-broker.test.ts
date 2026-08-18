@@ -126,7 +126,7 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-describe("kernel model-request broker", () => {
+describe("host model-request broker", () => {
 	it("projects opaque handles without copying API keys or OAuth tokens", () => {
 		const projection = brokerCredentialProjection(
 			{
@@ -176,7 +176,7 @@ describe("kernel model-request broker", () => {
 			expect(send).toHaveBeenCalledWith({
 				type: "qorpera_model_end",
 				requestId: "33333333-3333-4333-8333-333333333333",
-				error: "kernel model request denied",
+				error: "host model request denied",
 			}),
 		);
 		expect(runtime.streamSimple).toHaveBeenCalledOnce();
@@ -195,7 +195,7 @@ describe("kernel model-request broker", () => {
 			expect(send).toHaveBeenCalledWith(
 				expect.objectContaining({
 					requestId: "13131313-1313-4313-8313-131313131313",
-					error: "kernel model request denied",
+					error: "host model request denied",
 				}),
 			),
 		);
@@ -216,7 +216,7 @@ describe("kernel model-request broker", () => {
 		const send = vi.fn();
 		child.handleFrame(request(child.handles.openai, expired, "55555555-5555-4555-8555-555555555555"), send);
 		await vi.waitFor(() =>
-			expect(send).toHaveBeenCalledWith(expect.objectContaining({ error: "kernel model request denied" })),
+			expect(send).toHaveBeenCalledWith(expect.objectContaining({ error: "host model request denied" })),
 		);
 
 		const active = intent("66666666-6666-4666-8666-666666666666");
@@ -232,7 +232,7 @@ describe("kernel model-request broker", () => {
 			expect(send).toHaveBeenCalledWith(
 				expect.objectContaining({
 					requestId: "77777777-7777-4777-8777-777777777777",
-					error: "kernel model execution failed",
+					error: "host model execution failed",
 				}),
 			),
 		);
@@ -247,7 +247,7 @@ describe("kernel model-request broker", () => {
 			expect(send).toHaveBeenCalledWith(
 				expect.objectContaining({
 					requestId: "88888888-8888-4888-8888-888888888888",
-					error: "kernel model request denied",
+					error: "host model request denied",
 				}),
 			),
 		);
@@ -284,7 +284,7 @@ describe("kernel model-request broker", () => {
 			expect(send).toHaveBeenCalledWith(
 				expect.objectContaining({
 					requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-					error: "kernel model request denied",
+					error: "host model request denied",
 				}),
 			),
 		);
@@ -310,13 +310,13 @@ describe("kernel model-request broker", () => {
 			expect(send).toHaveBeenCalledWith(
 				expect.objectContaining({
 					requestId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-					error: "kernel model request denied",
+					error: "host model request denied",
 				}),
 			);
 			expect(send).toHaveBeenCalledWith(
 				expect.objectContaining({
 					requestId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
-					error: "kernel model request denied",
+					error: "host model request denied",
 				}),
 			);
 		});
@@ -404,7 +404,7 @@ describe("kernel model-request broker", () => {
 		expect(send).not.toHaveBeenCalledWith(
 			expect.objectContaining({
 				requestId: "18181818-1818-4818-8818-181818181818",
-				error: "kernel model request denied",
+				error: "host model request denied",
 			}),
 		);
 		expect(runtime.streamSimple).toHaveBeenCalledTimes(2);

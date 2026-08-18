@@ -14,6 +14,16 @@
 import * as crypto from "node:crypto";
 import type { KernelIntentCapability, ModelIntentTerminalStatus } from "@qorpera/pi-protocol";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import {
+	handleCompanyOperationBrokerFrame,
+	setCompanyOperationBrokerIntent,
+	setCompanyOperationBrokerWriter,
+} from "../../core/company-operation-broker-client.ts";
+import {
+	handleComputerBrokerFrame,
+	setComputerBrokerIntent,
+	setComputerBrokerWriter,
+} from "../../core/computer-broker-client.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -71,9 +81,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	};
 	setModelBrokerWriter(output);
 	setHttpBrokerWriter(output);
+	setComputerBrokerWriter(output);
+	setCompanyOperationBrokerWriter(output);
 	const activeKernelIntents = new Map<string, KernelIntentCapability>();
 	const activateKernelIntent = (intent: KernelIntentCapability | undefined): void => {
-		if (intent) activeKernelIntents.set(intent.nonce, intent);
+		if (intent) {
+			activeKernelIntents.set(intent.nonce, intent);
+			setComputerBrokerIntent(intent);
+			setCompanyOperationBrokerIntent(intent);
+		}
 	};
 	const endKernelIntent = (intent: KernelIntentCapability | undefined, status: ModelIntentTerminalStatus): void => {
 		if (!intent || !activeKernelIntents.delete(intent.nonce)) return;
@@ -81,6 +97,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	};
 	const endAllKernelIntents = (status: ModelIntentTerminalStatus): void => {
 		for (const intent of [...activeKernelIntents.values()]) endKernelIntent(intent, status);
+		setComputerBrokerIntent(undefined);
+		setCompanyOperationBrokerIntent(undefined);
 	};
 
 	const success = <T extends RpcCommand["type"]>(
@@ -424,7 +442,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "prompt": {
 				const intent = kernelIntent();
 				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && intent === undefined) {
-					return error(id, "prompt", "missing, invalid, expired, or reused kernel intent capability");
+					return error(id, "prompt", "missing, invalid, expired, or reused host intent capability");
 				}
 				activateKernelIntent(intent);
 				// Start prompt handling immediately, but emit the authoritative response only after
@@ -456,7 +474,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "steer": {
 				const intent = kernelIntent();
 				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && intent === undefined) {
-					return error(id, "steer", "missing, invalid, expired, or reused kernel intent capability");
+					return error(id, "steer", "missing, invalid, expired, or reused host intent capability");
 				}
 				activateKernelIntent(intent);
 				try {
@@ -471,7 +489,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "follow_up": {
 				const intent = kernelIntent();
 				if (process.env.QORPERA_KERNEL_REQUIRED === "1" && intent === undefined) {
-					return error(id, "follow_up", "missing, invalid, expired, or reused kernel intent capability");
+					return error(id, "follow_up", "missing, invalid, expired, or reused host intent capability");
 				}
 				activateKernelIntent(intent);
 				try {
@@ -485,11 +503,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "staff_intro": {
 				if (process.env.QORPERA_KERNEL_REQUIRED !== "1") {
-					return error(id, "staff_intro", "staff_intro is only available to a kernel-bound session");
+					return error(id, "staff_intro", "staff_intro is only available to a host-bound agent run");
 				}
 				const intent = kernelIntent();
 				if (intent === undefined) {
-					return error(id, "staff_intro", "missing, invalid, expired, or reused kernel intent capability");
+					return error(id, "staff_intro", "missing, invalid, expired, or reused host intent capability");
 				}
 				if (typeof command.message !== "string" || command.message.trim().length === 0) {
 					return error(id, "staff_intro", "staff intro message must be a non-empty string");
@@ -557,6 +575,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (!model) {
 					return error(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
 				}
+				// A model is part of the complete agent turn, including every
+				// continuation after a tool result. Changing it while that turn is
+				// active can make one response straddle providers. Treat picker and
+				// host preference changes as next-turn configuration instead.
+				await session.waitForIdle();
 				await session.setModel(model);
 				return success(id, "set_model", model);
 			}
@@ -862,6 +885,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 		if (handleModelBrokerFrame(parsed)) return;
 		if (handleHttpBrokerFrame(parsed)) return;
+		if (handleComputerBrokerFrame(parsed)) return;
+		if (handleCompanyOperationBrokerFrame(parsed)) return;
 		if (process.env.QORPERA_KERNEL_REQUIRED === "1" && !isKernelBindingEstablished()) {
 			pendingKernelInputLines.push(line);
 			return;

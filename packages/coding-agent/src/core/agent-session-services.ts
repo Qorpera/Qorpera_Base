@@ -167,7 +167,7 @@ export async function createAgentSessionServices(
 				{
 					type: "info",
 					message:
-						"In-process extensions are disabled inside the company kernel; agent-authored tools run as sandboxed routines instead.",
+						"In-process extensions are disabled inside the company host; agent-authored tools run as sandboxed routines instead.",
 				},
 			]
 		: [];

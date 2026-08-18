@@ -1,5 +1,10 @@
 # Qorpera Staff Shell Specification
 
+> The agents-only implementation supersedes the universal controller,
+> company-owned projection/surface, and self-evolving userland portions of
+> this frozen v1 contract. Agent, connector, routine, and artifact decisions
+> remain applicable.
+
 **Status:** v1 product contract — frozen decisions
 **Date:** 2026-08-15
 **Scope:** Qorpera Base desktop shell, provider onboarding, durable staff presentation, agent artifacts, capability requests, activity, authority, and migration

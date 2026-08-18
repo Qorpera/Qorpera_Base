@@ -1,15 +1,10 @@
 /**
- * The per-company desktop app — "[Company Name] Controller" (spec §7, v1).
+ * Trusted local read/action backend for the fixed company shell.
  *
- * Qorpera Base is the foundation every company's app is built on. Connecting
- * it to a company folder yields that company's own desktop app: an Electron
- * window over a kernel-owned local backend that renders whatever the
- * staff has built in `app/`: artifact tabs from `app/projection.json`, live
- * sandboxed surfaces, and kernel-owned read models. The fixed Base shell is
- * never loaded from the company folder.
- *
- * The server is not a standalone launcher. Only the desktop kernel may
- * create it and retain its mutation credential.
+ * Agent artifacts are read from `agents/<id>/artifacts/`; shared work lives
+ * under `files/`. Company files cannot provide shell code or navigation. The
+ * server is not a standalone launcher: only the desktop host creates it and
+ * retains its mutation credential.
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -28,55 +23,77 @@ import {
 } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
-import { marked } from "marked";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
-import { canonicalCompanyRoot, listProductDepartments } from "./company.ts";
-import { DEFAULT_SCHEDULED_JOB_ID, DEFAULT_SCHEDULED_JOB_TITLE, type RoutineTrigger } from "./company-connections.ts";
-import type { StaffAgent } from "./company-staff.ts";
-import { readFounderIdentity, signAuthorityPolicy, signGateApproval } from "./founder-identity.ts";
+import { canonicalCompanyRoot, listProductDepartments, readCompanyManifest } from "./company.ts";
+import type { CompanyArtifactRecord } from "./company-artifacts.ts";
 import {
-	PLATFORM_PROJECTION_NODES,
-	PROJECTION_SCHEMA,
-	type ProjectionNode,
-	type ProjectionState,
-	parseProjectionDocument,
-} from "./projection.ts";
+	DEFAULT_SCHEDULED_JOB_ID,
+	DEFAULT_SCHEDULED_JOB_TITLE,
+	type RoutineTrigger,
+	type ScheduledJobEffort,
+} from "./company-connections.ts";
+import type { CompanyConnectorManifestRecord } from "./company-connectors.ts";
+import type { StaffAgent, StaffAgentMessage } from "./company-staff.ts";
+import { readFounderIdentity, signAuthorityPolicy, signGateApproval } from "./founder-identity.ts";
+import { isPublicSessionGroup, isPublicSessionRuntime, publicSessionRuntimeSnapshot } from "./session-visibility.ts";
+import { FIXED_SHELL_NAVIGATION, type ShellNavigationState } from "./shell-navigation.ts";
 import { readUsageRateCatalog, type UsageRateCatalog } from "./usage-pricing.ts";
 import { companyUsageWindowError, readCompanyUsage } from "./usage-summary.ts";
 
 export interface CompanyAppOptions {
 	root: string;
 	port?: number;
-	/** Kernel-owned static roots. Company UI is served through the same local
-	 * origin as its read models so an agent-authored renderer never receives
-	 * ambient file:// or outbound-network authority. */
+	/** Host-owned static shell served on the same local origin as its read models. */
 	fixedShell?: { directory: string };
 	/**
 	 * Required on every MUTATING endpoint (gate resolution, inbox responses,
 	 * authority edits) via the x-qorpera-token header. The backend listens on
 	 * localhost, which the agent can reach with curl — without this token the
-	 * agent could approve its own gates. The Electron kernel holds the token;
-	 * agent-authored same-origin surfaces never receive it.
+	 * agent could approve its own gates. The desktop host holds the token;
+	 * renderer never receives it.
 	 */
 	authToken: string;
 	/** Optional pricing source override for deterministic embedding and tests. */
 	usageRateCatalog?: () => Promise<UsageRateCatalog>;
-	/** Kernel-owned session lifecycle projection. Provider processes are
-	 * temporary attachments; this durable read model is what UI surfaces
-	 * observe. */
+	/** Host-owned session lifecycle read model. Provider processes are
+	 * temporary attachments. */
 	sessionRuntime?: SessionRuntimeSource;
-	/** Company-folder staff registry projected by the desktop kernel. */
+	/** Company-folder staff registry read through the desktop host. */
 	staffReadModel?: () => readonly StaffAgent[];
+	/** Agent-owned, ordinary company artifacts validated before display. */
+	artifactReadModel?: () => readonly CompanyArtifactRecord[];
+	/** Agent-built connector recipes discovered from ordinary company files.
+	 * Authentication endpoints, client ids, and secret references are withheld
+	 * from the renderer read model. */
+	connectorReadModel?: () => readonly CompanyConnectorManifestRecord[];
+	/** Founder-authorized definition edit. The desktop host owns persistence
+	 * and reconstruction bookkeeping; this server only validates the token and body. */
+	artifactUpdateModel?: (id: string, update: unknown) => CompanyArtifactRecord;
 	/** Machine-local connection requests already stripped of credentials by
-	 * the desktop kernel. The app server applies its own field allowlist too. */
+	 * the desktop host. The app server applies its own field allowlist too. */
 	connectionRequestReadModel?: () => readonly CompanyConnectionRequestView[];
 	/** Machine-local recurring work definitions. Dynamic run state remains a
 	 * desktop concern; this view carries only the safe durable definition. */
 	scheduledJobReadModel?: () => readonly CompanyScheduledJobView[];
+	/** Durable agent-to-agent mail from the host-protected company ledger. */
+	staffMessageReadModel?: () => readonly StaffAgentMessage[];
 }
 
 export type CompanyConnectionRequestStatus = "pending" | "connecting" | "connected" | "denied" | "failed" | "cancelled";
+export type CompanyConnectionIntentPhase =
+	| "suggested"
+	| "selected"
+	| "preparing"
+	| "awaiting_setup"
+	| "awaiting_auth"
+	| "verifying"
+	| "connected"
+	| "syncing"
+	| "ready"
+	| "failed"
+	| "denied"
+	| "cancelled";
 
 export interface CompanyConnectionRequestView {
 	id: string;
@@ -85,8 +102,14 @@ export interface CompanyConnectionRequestView {
 	displayName: string;
 	purpose: string;
 	destinations: Array<{ host: string; note?: string }>;
+	providerSuggestions?: string[];
 	recipeId?: string;
+	artifactId?: string;
+	dataNeedId?: string;
 	status: CompanyConnectionRequestStatus;
+	phase: CompanyConnectionIntentPhase;
+	guidance?: string;
+	selection?: { label: string; kind: "suggestion" | "custom"; selectedAt: string };
 	createdAt: string;
 	updatedAt: string;
 	failure?: string;
@@ -99,10 +122,30 @@ export interface CompanyScheduledJobView {
 	prompt: string;
 	triggers: RoutineTrigger[];
 	enabled: boolean;
+	effort: ScheduledJobEffort;
 	createdAt: string;
 	updatedAt: string;
 	suspendedReason?: string;
 	staffAgentId?: string;
+}
+
+export interface CompanyConnectorView {
+	id: string;
+	displayName: string;
+	purpose: string;
+	ownerAgentId: string;
+	environment: "production" | "sandbox";
+	operations: Array<{
+		id: string;
+		label: string;
+		description: string;
+		access: "read" | "write";
+	}>;
+	destinations: Array<{ host: string; note?: string }>;
+	authentication: { kind: "none" | "api-key" | "oauth2"; label?: string };
+	createdAt: string;
+	updatedAt: string;
+	relativePath: string;
 }
 
 export type SessionRuntimeStatus =
@@ -124,7 +167,7 @@ export type SessionRuntimeActivity =
 export interface SessionRuntimeView {
 	trailFile: string;
 	sessionId: string;
-	actor: "controller" | "product-worker";
+	actor: "company-agent" | "product-worker";
 	autonomous: boolean;
 	staffAgentId?: string;
 	label?: string;
@@ -179,7 +222,7 @@ interface InboxItem {
 	/** Gate items only: the agent's founder-facing outcome description, folded
 	 * in from the companion inbox/msg-<gateId>-intent.md (the msg carve-out is
 	 * the agent's one sanctioned inbox lane; the gate file itself is
-	 * kernel-written and protected). The companion's # heading becomes the
+	 * host-written and protected). The companion's # heading becomes the
 	 * card TITLE, so the founder reads an outcome, not "Gate request: bash". */
 	intent?: string;
 	/** Gate items only: the gated tool and effect class, for the meta line. */
@@ -189,11 +232,7 @@ interface InboxItem {
 
 function companyName(root: string): string {
 	try {
-		const file = readCompanyFile(root, "company.md");
-		if (!file) throw new Error("company identity is not a physical file");
-		const md = file.content.toString("utf-8");
-		const heading = md.match(/^#\s+(.+)$/m)?.[1]?.trim();
-		if (heading && !/^Company$/i.test(heading)) return heading.replace(/\s*[—-]\s*Company$/i, "");
+		return readCompanyManifest(root).name;
 	} catch {
 		// fall through to basename
 	}
@@ -307,7 +346,7 @@ function writeAtomicPhysicalFile(path: string, content: string): void {
 		entry.nlink !== 1 ||
 		normalizedPath(realpathSync(path)) !== normalizedPath(path)
 	) {
-		throw new Error("kernel mutation target is not one physical file");
+		throw new Error("host mutation target is not one physical file");
 	}
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	let descriptor: number | undefined;
@@ -324,21 +363,40 @@ function writeAtomicPhysicalFile(path: string, content: string): void {
 	}
 }
 
-/** Resolve one physical regular file without following a link at any level. */
-function physicalFileWithin(directory: string, entry: string): string | undefined {
+function writeOptionalAuthorityPolicy(root: string, content: string): void {
+	const path = join(canonicalCompanyRoot(root), "authority.toml");
+	if (readCompanyFile(root, "authority.toml")) {
+		writeAtomicPhysicalFile(path, content);
+		return;
+	}
+	let descriptor: number | undefined;
 	try {
-		const root = realpathSync(resolve(directory));
-		if (!lstatSync(root).isDirectory()) return undefined;
-		const target = resolve(root, normalize(entry));
-		const rel = relative(root, target);
-		if (!rel || rel.startsWith("..") || isAbsolute(rel)) return undefined;
-		const actual = realpathSync(target);
-		if (normalizedPath(actual) !== normalizedPath(target) || !lstatSync(target).isFile()) return undefined;
-		return actual;
-	} catch {
-		return undefined;
+		descriptor = openSync(path, "wx");
+		writeFileSync(descriptor, content, "utf-8");
+		fsyncSync(descriptor);
+		closeSync(descriptor);
+		descriptor = undefined;
+	} catch (error) {
+		if (descriptor !== undefined) closeSync(descriptor);
+		throw error;
 	}
 }
+
+const BASE_AUTHORITY_POLICY = `# Optional company authority override.
+# Without this file, Qorpera Base gates every effect class.
+
+[money]
+mode = "gate"
+
+[identity]
+mode = "gate"
+
+[irreversible]
+mode = "gate"
+
+[authority]
+mode = "gate"
+`;
 
 function physicalDirectoryWithin(directory: string, entry = "."): string | undefined {
 	try {
@@ -355,73 +413,18 @@ function physicalDirectoryWithin(directory: string, entry = "."): string | undef
 	}
 }
 
-function companyFileWithin(root: string, directoryPath: string, entry: string): string | undefined {
-	const directory = physicalDirectoryWithin(root, directoryPath);
-	return directory ? physicalFileWithin(directory, entry) : undefined;
-}
-
 function readCompanyFile(root: string, relativePath: string, maxBytes?: number): PhysicalFile | undefined {
 	return readPhysicalFileWithin(root, relativePath, maxBytes);
 }
 
-function readCompanyFileWithin(
-	root: string,
-	directoryPath: string,
-	entry: string,
-	maxBytes?: number,
-): PhysicalFile | undefined {
-	const directory = physicalDirectoryWithin(root, directoryPath);
-	return directory ? readPhysicalFileWithin(directory, entry, maxBytes) : undefined;
-}
-
-function safeSurfaceEntry(root: string, entry: string): boolean {
-	return companyFileWithin(root, join("app", "surfaces"), entry) !== undefined;
-}
-
-function readProjection(root: string): ProjectionState {
-	const diagnostics: string[] = [];
-	let parsed: ProjectionState;
-	try {
-		const file = readCompanyFile(root, join("app", "projection.json"));
-		if (!file) throw new Error("projection is not a physical file");
-		parsed = parseProjectionDocument(JSON.parse(file.content.toString("utf-8")));
-	} catch {
-		parsed = {
-			schema: PROJECTION_SCHEMA,
-			default: "q:chats",
-			navigation: [],
-			nodes: [],
-			diagnostics: ["app/projection.json is missing or unreadable"],
-		};
-	}
-	diagnostics.push(...parsed.diagnostics);
-	const nodes: ProjectionNode[] = [...PLATFORM_PROJECTION_NODES, ...parsed.nodes].map((node) => {
-		if (node.kind !== "page" || node.view.type !== "surface") return node;
-		if (!safeSurfaceEntry(root, node.view.entry)) {
-			diagnostics.push(`surface page ${node.id} has an unsafe entry`);
-			return {
-				...node,
-				view: {
-					type: "builtin" as const,
-					id: "qorpera.placeholder" as const,
-					context: {
-						title: node.label,
-						message: "This page has an invalid surface entry.",
-					},
-				},
-			};
-		}
-		return {
-			...node,
-			view: { ...node.view, version: surfaceVersion(root, node.view.entry) },
-		};
-	});
+function readShellNavigation(): ShellNavigationState {
 	return {
-		schema: PROJECTION_SCHEMA,
-		default: parsed.default ?? "q:chats",
-		navigation: ["q:main", ...parsed.navigation],
-		nodes,
-		diagnostics,
+		defaultPageId: FIXED_SHELL_NAVIGATION.defaultPageId,
+		sectionIds: [...FIXED_SHELL_NAVIGATION.sectionIds],
+		nodes: FIXED_SHELL_NAVIGATION.nodes.map((node) => ({
+			...node,
+			...(node.kind === "department" ? { items: [...node.items] } : { view: { ...node.view } }),
+		})),
 	};
 }
 
@@ -509,17 +512,9 @@ function readInbox(root: string): InboxItem[] {
 	return items;
 }
 
-function surfaceVersion(root: string, entry: string): number {
-	try {
-		return readCompanyFileWithin(root, join("app", "surfaces"), entry)?.mtimeMs ?? 0;
-	} catch {
-		return 0;
-	}
-}
-
 /** What a trail session is a trail OF — founder-led conversation, scoped
- * product work, or one of the kernel's autonomous lanes. Derived from the
- * kernel-authored authority header, so the categorization is trustworthy. */
+ * product work, or one of the host's autonomous lanes. Derived from the
+ * host-authored authority header, so the categorization is trustworthy. */
 export type SessionCategory = "conversation" | "product" | "conception" | "merge" | "wake" | "autonomous";
 
 interface SessionSummary {
@@ -529,7 +524,7 @@ interface SessionSummary {
 	 * mtime, inspecting a trail cannot move this historical timestamp. */
 	startedAtMs?: number;
 	title: string;
-	/** "autonomous" = controller-initiated work (tagged at spawn); "chat" = founder-brought. */
+	/** "autonomous" = agent-initiated work (tagged at spawn); "chat" = founder-brought. */
 	kind: "chat" | "autonomous";
 	/** Fine-grained trail category (user-led conversations are different). */
 	category: SessionCategory;
@@ -539,16 +534,14 @@ interface SessionSummary {
 	department?: string;
 	/** Exact product worktree assigned to this chat. */
 	worktree?: string;
-	/** Stable projection page ID a sidechat session is docked to, if any. */
-	page?: string;
-	/** Named scheduled-job identity parsed from the kernel-authenticated session label. */
+	/** Named scheduled-job identity parsed from the host-authenticated session label. */
 	scheduledJobId?: string;
 	scheduledJobTitle?: string;
-	/** Kernel-stamped grouping identity ("job:<id>", "merge", a workflow run id). */
+	/** Host-stamped grouping identity ("job:<id>", "merge", a workflow run id). */
 	group?: string;
 	/** Trail filename of the session that caused this spawn (subagent parent link). */
 	parentSession?: string;
-	/** Autonomous-run health derived from kernel-observed trail entries. */
+	/** Autonomous-run health derived from host-observed trail entries. */
 	outcome?: "running" | "succeeded" | "failed" | "incomplete";
 	/** Last model recorded for the run. */
 	modelProvider?: string;
@@ -556,7 +549,7 @@ interface SessionSummary {
 	/** End-to-end elapsed time, from the session header to the terminal entry. */
 	durationMs?: number;
 	finishedAtMs?: number;
-	/** Kernel-accounted aggregate usage for the intent. */
+	/** Host-accounted aggregate usage for the intent. */
 	calls?: number;
 	costUsd?: number;
 	/** Founder-facing failure explanation and recovery guidance. */
@@ -576,7 +569,7 @@ interface SessionSummary {
  * founder's words; whitespace collapses; one line, bounded. */
 function sessionTitleText(text: string): string {
 	return text
-		.replace(/^\[Sidechat context:[^\]]*\]\s*/, "")
+		.replace(/^(?:\[(?:Sidechat|Connection choice) context:[^\]]*\]\s*)+/, "")
 		.replace(/\s+/g, " ")
 		.trim()
 		.slice(0, 70);
@@ -654,7 +647,7 @@ function runFailureGuidance(
 	}
 	if (/terminated|aborted|stopped/.test(raw) || intentStatus === "aborted") {
 		return {
-			cause: "The controller stopped before it finished.",
+			cause: "The agent stopped before it finished.",
 			guidance: "Review the partial work below, then retry the run.",
 			detail,
 		};
@@ -689,7 +682,7 @@ function partialChangeSummary(completedSteps: number, changedFiles: string[], un
 /** Read enough of a trail to classify an autonomous run without reparsing a
  * potentially 64 MiB history file on every two-second state poll. The head
  * carries the authenticated session/model declarations; the tail carries the
- * terminal assistant and kernel intent-accounting entries. */
+ * terminal assistant and host intent-accounting entries. */
 function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSummary {
 	const headBytes = 262_144;
 	const tailBytes = 524_288;
@@ -802,7 +795,7 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 				}
 			}
 			if (entry.type === "custom" && entry.customType === "qorpera_kernel_session_end") {
-				// The kernel released this session: liveness is settled fact from
+				// The host released this session: liveness is settled fact from
 				// here on, never an mtime guess.
 				sessionEnded = true;
 				if (Number.isFinite(observedAt)) sessionEndAt = observedAt;
@@ -852,7 +845,7 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 	} else if (intentStatus === "completed" && lastAssistantStopReason === "stop") {
 		outcome = "succeeded";
 	} else if (sessionEnded) {
-		// Kernel-released without terminal success markers: not running, and no
+		// Host-released without terminal success markers: not running, and no
 		// 30-minute wait to say so.
 		outcome = "incomplete";
 	} else {
@@ -860,7 +853,7 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 	}
 	if (terminalAt === undefined && sessionEndAt !== undefined) terminalAt = sessionEndAt;
 	const usefulError =
-		assistantErrors.find((message) => !/kernel model request denied|^terminated$/i.test(message.trim())) ??
+		assistantErrors.find((message) => !/(?:host|kernel) model request denied|^terminated$/i.test(message.trim())) ??
 		assistantErrors[0];
 	const failure = outcome === "failed" ? runFailureGuidance(usefulError, intentStatus) : undefined;
 	const files = [...changedFiles].sort();
@@ -892,7 +885,7 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 }
 
 /** Trail sessions ARE the chat list (spec §3). Title = first user message,
- * falling back to the kernel's observed first input, then the stored session
+ * falling back to the host's observed first input, then the stored session
  * name. A chat the founder never spoke into — opened and abandoned before any
  * input — is spawn residue, not history: it is skipped entirely, so panels
  * never pile up with contentless "New chat" rows. Autonomous work is tagged
@@ -916,7 +909,7 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 			if (!source) continue;
 			const lines = source.content.toString("utf-8").split("\n");
 			let title = "";
-			let kernelInput = "";
+			let hostInput = "";
 			let name = "";
 			// Words are title material; a user message ENTRY (even an image-only
 			// one) is proof of content — tracked apart so wordless-but-real chats
@@ -957,15 +950,15 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 					if (entry.type === "session_info" && typeof entry.name === "string" && !name) {
 						name = entry.name;
 					}
-					// The kernel records the founder's exact first input before the
+					// The host records the founder's exact first input before the
 					// child's own message entry lands — the cheapest title source.
 					if (
 						entry.type === "custom" &&
 						entry.customType === "qorpera_kernel_input" &&
-						!kernelInput &&
+						!hostInput &&
 						typeof entry.data?.message === "string"
 					) {
-						kernelInput = sessionTitleText(entry.data.message);
+						hostInput = sessionTitleText(entry.data.message);
 					}
 					if (entry.type === "message" && entry.message?.role === "user") {
 						sawUserMessage = true;
@@ -984,13 +977,14 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 				}
 				if (titleEntries >= 400) break;
 			}
+			if (!isPublicSessionGroup(sessionAuthority?.group)) continue;
 			const kind = sessionAuthority?.autonomous ? "autonomous" : "chat";
 			const label = (sessionAuthority?.label ?? "").toLowerCase();
 			const scheduledJob = sessionAuthority?.autonomous
 				? (sessionAuthority.label ?? "").match(/^autonomous — wake — scheduled-job:([a-z0-9-]+) — (.+)$/i)
 				: undefined;
 			const legacyScheduledJob = label === "autonomous — wake — schedule";
-			// The kernel-stamped group is the structured identity; the label regex
+			// The host-stamped group is the structured identity; the label regex
 			// remains as the fallback for trails written before stamping existed.
 			const stampedJobId = sessionAuthority?.group?.startsWith("job:")
 				? sessionAuthority.group.slice("job:".length)
@@ -1010,16 +1004,13 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 				: sessionAuthority?.department || sessionAuthority?.worktree
 					? "product"
 					: "conversation";
-			// Sidechats carry immutable projection page IDs so moving a surface file
-			// does not detach its conversations from the UI instrument.
-			const page = kind === "chat" ? name.match(/^page — (.+)$/)?.[1] : undefined;
-			// Page and product tags are plumbing; a founder-given name is title material.
-			const chatName = page || /^product — /.test(name) ? "" : name;
+			// Legacy surface-sidechat and product tags are plumbing, not title material.
+			const chatName = /^(?:page|product) — /.test(name) ? "" : name;
 			// Every openChat spawn writes a trail file before the founder types;
 			// scope switches and app opens leave these behind by the dozen. No
-			// user message, no kernel input, no founder-given name → nothing to
+			// user message, no host input, no founder-given name → nothing to
 			// resume, nothing to list.
-			if (kind === "chat" && !sawUserMessage && !kernelInput && !chatName) continue;
+			if (kind === "chat" && !sawUserMessage && !hostInput && !chatName) continue;
 			const run = kind === "autonomous" ? autonomousRunSummary(source.content, source.mtimeMs) : undefined;
 			sessions.push({
 				file,
@@ -1027,13 +1018,12 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 				title:
 					kind === "autonomous"
 						? (scheduledJobTitle ?? sessionAuthority?.label ?? name)
-						: title || kernelInput || chatName || "New chat",
+						: title || hostInput || chatName || "New chat",
 				kind,
 				category,
 				staffAgentId: sessionAuthority?.staffAgentId,
 				department: sessionAuthority?.department,
 				worktree: sessionAuthority?.worktree,
-				page,
 				scheduledJobId,
 				scheduledJobTitle,
 				group: sessionAuthority?.group,
@@ -1185,9 +1175,81 @@ function staffView(agent: StaffAgent): StaffAgent {
 			shape: agent.appearance.shape,
 			...(agent.appearance.creature !== undefined ? { creature: agent.appearance.creature } : {}),
 		},
+		...(agent.model !== undefined ? { model: { provider: agent.model.provider, modelId: agent.model.modelId } } : {}),
 		employmentStatus: agent.employmentStatus,
+		lifecycleState: agent.lifecycleState,
 		createdAt: agent.createdAt,
 		updatedAt: agent.updatedAt,
+	};
+}
+
+function staffMessageView(message: StaffAgentMessage): StaffAgentMessage {
+	return {
+		id: message.id,
+		fromAgentId: message.fromAgentId,
+		toAgentId: message.toAgentId,
+		...(message.subject !== undefined ? { subject: message.subject } : {}),
+		body: message.body,
+		createdAt: message.createdAt,
+		status: message.status,
+		...(message.deliveredAt !== undefined ? { deliveredAt: message.deliveredAt } : {}),
+	};
+}
+
+function artifactView(artifact: CompanyArtifactRecord): CompanyArtifactRecord {
+	return {
+		schema: artifact.schema,
+		id: artifact.id,
+		title: artifact.title,
+		purpose: artifact.purpose,
+		stewardAgentId: artifact.stewardAgentId,
+		...(artifact.accountableDepartmentId !== undefined
+			? { accountableDepartmentId: artifact.accountableDepartmentId }
+			: {}),
+		status: artifact.status,
+		...(artifact.score !== undefined ? { score: artifact.score } : {}),
+		metrics: artifact.metrics.map((metric) => ({
+			id: metric.id,
+			label: metric.label,
+			description: metric.description,
+			direction: metric.direction,
+			...(metric.unit !== undefined ? { unit: metric.unit } : {}),
+			...(metric.target !== undefined ? { target: metric.target } : {}),
+			status: metric.status,
+			...(metric.statusReason !== undefined ? { statusReason: metric.statusReason } : {}),
+			...(metric.statusChangedAt !== undefined ? { statusChangedAt: metric.statusChangedAt } : {}),
+			...(metric.value !== undefined ? { value: metric.value } : {}),
+			...(metric.score !== undefined ? { score: metric.score } : {}),
+			evidence: [...metric.evidence],
+			...(metric.observedAt !== undefined ? { observedAt: metric.observedAt } : {}),
+			...(metric.sourceRef !== undefined ? { sourceRef: metric.sourceRef } : {}),
+			...(metric.observations !== undefined
+				? { observations: metric.observations.map((observation) => ({ ...observation })) }
+				: {}),
+		})),
+		dataNeeds: artifact.dataNeeds.map((need) => ({
+			id: need.id,
+			label: need.label,
+			purpose: need.purpose,
+			connectorHints: [...need.connectorHints],
+			status: need.status,
+			sourceRefs: [...need.sourceRefs],
+			sourceAssessments: need.sourceAssessments.map((assessment) => ({
+				sourceRef: assessment.sourceRef,
+				dataType: assessment.dataType,
+				decision: assessment.decision,
+				rationale: assessment.rationale,
+				metricIds: [...assessment.metricIds],
+				evidence: [...assessment.evidence],
+				assessedAt: assessment.assessedAt,
+				assessedBy: assessment.assessedBy,
+			})),
+			...(need.connectionRequestId !== undefined ? { connectionRequestId: need.connectionRequestId } : {}),
+		})),
+		...(artifact.starter !== undefined ? { starter: { templateId: artifact.starter.templateId } } : {}),
+		createdAt: artifact.createdAt,
+		updatedAt: artifact.updatedAt,
+		relativePath: artifact.relativePath,
 	};
 }
 
@@ -1202,12 +1264,37 @@ function connectionRequestView(request: CompanyConnectionRequestView): CompanyCo
 			host: destination.host,
 			...(destination.note !== undefined ? { note: destination.note } : {}),
 		})),
+		...(request.providerSuggestions !== undefined ? { providerSuggestions: [...request.providerSuggestions] } : {}),
 		...(request.recipeId !== undefined ? { recipeId: request.recipeId } : {}),
+		...(request.artifactId !== undefined ? { artifactId: request.artifactId } : {}),
+		...(request.dataNeedId !== undefined ? { dataNeedId: request.dataNeedId } : {}),
 		status: request.status,
+		phase: request.phase,
+		...(request.guidance !== undefined ? { guidance: request.guidance } : {}),
+		...(request.selection ? { selection: { ...request.selection } } : {}),
 		createdAt: request.createdAt,
 		updatedAt: request.updatedAt,
 		...(request.failure !== undefined ? { failure: request.failure } : {}),
 		...(request.grantId !== undefined ? { grantId: request.grantId } : {}),
+	};
+}
+
+function connectorView(connector: CompanyConnectorManifestRecord): CompanyConnectorView {
+	return {
+		id: connector.id,
+		displayName: connector.displayName,
+		purpose: connector.purpose,
+		ownerAgentId: connector.ownerAgentId,
+		environment: connector.environment ?? "production",
+		operations: connector.operations.map((operation) => ({ ...operation })),
+		destinations: connector.destinations.map((destination) => ({ ...destination })),
+		authentication: {
+			kind: connector.authentication.kind,
+			...(connector.authentication.kind !== "none" ? { label: connector.authentication.label } : {}),
+		},
+		createdAt: connector.createdAt,
+		updatedAt: connector.updatedAt,
+		relativePath: connector.relativePath,
 	};
 }
 
@@ -1222,6 +1309,7 @@ function scheduledJobView(job: CompanyScheduledJobView): CompanyScheduledJobView
 			return { ...trigger };
 		}),
 		enabled: job.enabled,
+		effort: job.effort,
 		createdAt: job.createdAt,
 		updatedAt: job.updatedAt,
 		...(job.suspendedReason !== undefined ? { suspendedReason: job.suspendedReason } : {}),
@@ -1234,16 +1322,14 @@ function stateFor(
 	runtime?: SessionRuntimeSnapshot,
 	sessions?: SessionSummary[],
 	staff: readonly StaffAgent[] = [],
+	artifacts: readonly CompanyArtifactRecord[] = [],
+	connectors: readonly CompanyConnectorView[] = [],
 	connectionRequests: readonly CompanyConnectionRequestView[] = [],
 	scheduledJobs: readonly CompanyScheduledJobView[] = [],
+	agentMessages: readonly StaffAgentMessage[] = [],
 ): unknown {
-	let trailSessions = 0;
-	try {
-		const trail = physicalDirectoryWithin(root, "trail");
-		trailSessions = trail ? readdirSync(trail).filter((name) => name.endsWith(".jsonl")).length : 0;
-	} catch {
-		// no trail yet
-	}
+	const projectedSessions = sessions ?? listTrailSessions(root);
+	const publicRuntime = runtime ? publicSessionRuntimeSnapshot(runtime) : undefined;
 	let departments: Array<
 		ReturnType<typeof listProductDepartments>[number] & {
 			pullRequests: PullRequestSummary[];
@@ -1257,197 +1343,29 @@ function stateFor(
 	} catch {
 		// a malformed department record must not take company state down
 	}
-	const projectedSessions = sessions ?? listTrailSessions(root);
-	const runtimeByTrail = new Map((runtime?.sessions ?? []).map((session) => [session.trailFile, session]));
+	const runtimeByTrail = new Map((publicRuntime?.sessions ?? []).map((session) => [session.trailFile, session]));
 	return {
 		name: companyName(root),
-		projection: readProjection(root),
+		shellNavigation: readShellNavigation(),
 		inbox: readInbox(root),
 		sessions: projectedSessions.map((session) => ({
 			...session,
 			runtime: runtimeByTrail.get(session.file),
 		})),
-		runtime: runtime ?? { revision: 0, generatedAt: "", sessions: [] },
+		runtime: publicRuntime ?? { revision: 0, generatedAt: "", sessions: [] },
 		staff,
+		artifacts,
+		connectors,
 		connectionRequests,
 		scheduledJobs,
-		trailSessions,
+		agentMessages,
+		trailSessions: projectedSessions.length,
 		departments,
 	};
 }
 
 function writeServerEvent(response: ServerResponse, event: string, data: unknown): void {
 	response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-}
-
-/**
- * The artifact design system. Values mirror the fixed shell tokens
- * verbatim so surfaces blend into the chrome that embeds them. Served at
- * /assets/surface.css and linked into rendered .md/.txt surfaces; HTML
- * surfaces opt in with <link rel="stylesheet" href="/assets/surface.css">.
- * A company override at app/surfaces/theme.css is served at /assets/theme.css
- * and always linked AFTER the tokens — controllers (or the founder) restyle
- * by redefining variables, not by forking the sheet.
- */
-const SURFACE_TOKENS_CSS = `/* Tokens mirror the fixed shell so artifacts blend into the
- * chrome that embeds them. Token system and document metrics adapted from
- * T3 Code <https://github.com/pingdotgg/t3code>, MIT, (c) 2026 T3 Tools Inc.
- * Type is the system stack by design: surfaces ship no font files, so a
- * webfont name here would silently fall back anyway. */
-:root {
-	color-scheme: dark;
-	--chrome: #0a0a0a;
-	--bg: color-mix(in srgb, var(--chrome) 96%, #ffffff);
-	--pane-strong: rgba(255, 255, 255, 0.05); --hover: rgba(255, 255, 255, 0.07);
-	--text: #f5f5f5; --text-muted: #a6a6a6; --text-soft: #7f7f7f;
-	--border: rgba(255, 255, 255, 0.07); --border-strong: rgba(255, 255, 255, 0.15);
-	--primary: oklch(0.588 0.217 264); --blue: oklch(0.74 0.13 264);
-	--accent: #cc7d5e; --accent-soft: rgba(204, 125, 94, 0.15);
-	--danger: #f26b5e; --danger-soft: rgba(242, 107, 94, 0.14);
-	--warning: #fbbf24; --warning-soft: rgba(245, 158, 11, 0.15);
-	--ok: #34d399; --ok-soft: rgba(16, 185, 129, 0.14);
-	--radius-sm: 6px; --radius: 10px; --radius-lg: 14px; --radius-pill: 999px;
-	--font-ui: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
-	--font-mono: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, monospace;
-}
-body { max-width: 880px; margin: 0 auto; padding: 28px 32px; background: var(--bg); color: var(--text);
-	font-family: var(--font-ui); font-size: 14px; line-height: 1.55;
-	background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
-	background-repeat: repeat; background-size: 256px 256px; }
-h1, h2, h3 { margin: 20px 0 8px; font-weight: 600; line-height: 1.3; }
-h1 { font-size: 20px; } h2 { font-size: 16px; } h3 { font-size: 14px; }
-h1:first-child { margin-top: 0; }
-p, ul, ol { margin: 0 0 10px; } ul, ol { padding-left: 22px; } li + li { margin-top: 4px; }
-code { border: 1px solid var(--border); background: rgba(255, 255, 255, 0.04); border-radius: var(--radius-sm);
-	padding: 1px 5px; font-family: var(--font-mono); font-size: 12px; }
-pre { background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: 12px;
-	padding: 12px 14px; overflow-x: auto; scrollbar-width: thin; }
-pre code { border: 0; background: none; padding: 0; }
-table { border-collapse: collapse; margin: 0 0 10px; font-size: 12.5px; }
-td, th { border: 0; border-bottom: 1px solid color-mix(in srgb, var(--border-strong) 60%, transparent);
-	padding: 7px 12px; text-align: left; }
-th { font-weight: 600; white-space: nowrap; }
-blockquote { border-left: 2px solid var(--border-strong); margin: 0 0 10px; padding-left: 12px; color: var(--text-muted); }
-a { color: var(--blue); text-decoration: none; }
-a:hover { background-image: radial-gradient(circle, currentcolor 0.75px, transparent 1px);
-	background-position: left bottom; background-repeat: repeat-x; background-size: 4px 2px; }
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { border-radius: 3px; background: rgba(255, 255, 255, 0.08); }
-
-/* ---- kit classes: layout vocabulary for HTML surfaces ---------------------
- * Additive only — element styles above keep working without them. */
-.q-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 12px 0; }
-.q-card { background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
-.q-card > :first-child { margin-top: 0; } .q-card > :last-child { margin-bottom: 0; }
-.q-title { font-size: 13px; font-weight: 600; margin: 0 0 4px; }
-.q-meta { font-size: 11.5px; color: var(--text-soft); }
-.q-stat { display: flex; flex-direction: column; gap: 2px; }
-.q-stat-value { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.2; }
-.q-stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-soft); font-weight: 600; }
-.q-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 600;
-	text-transform: uppercase; letter-spacing: 0.04em; border-radius: 5px; padding: 2px 6px;
-	background: rgba(255, 255, 255, 0.06); color: var(--text-muted); }
-.q-badge.ok { background: var(--ok-soft); color: var(--ok); }
-.q-badge.warn { background: var(--warning-soft); color: var(--warning); }
-.q-badge.danger { background: var(--danger-soft); color: var(--danger); }
-.q-badge.accent { background: var(--accent-soft); color: var(--accent); }
-.q-row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 8px; }
-.q-row:hover { background: rgba(255, 255, 255, 0.04); }
-.q-divider { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
-`;
-
-/**
- * Read-only capability kit for HTML surfaces (window.qorpera): live state
- * instead of frozen prose — surfaces as instruments, not reports.
- * Deliberately has NO mutating powers: the backend's mutating endpoints
- * require the kernel-held token (self-approval hole closed in 0.7.0) and
- * surfaces must never carry it. An action bridge (invoke(prompt) starting a
- * controller session) is planned and needs its own token design — never
- * fake it here through founder-lane endpoints.
- */
-const SURFACE_KIT_JS = `window.qorpera = {
-	/** Company state: name, projection, inbox summary, sessions. */
-	async getState() { return (await fetch("/api/state")).json(); },
-	/** Raw text of a substrate file (app/substrates/<name>). */
-	async readSubstrate(name) {
-		const r = await fetch("/api/substrate/" + encodeURIComponent(name));
-		if (!r.ok) throw new Error("substrate not found: " + name);
-		return r.text();
-	},
-	/** Raw text of an inbox item (msg-*.md / gate-*.md). */
-	async readInbox(file) {
-		const r = await fetch("/api/inbox/" + encodeURIComponent(file));
-		if (!r.ok) throw new Error("inbox item not found: " + file);
-		return r.text();
-	},
-	/** Run fn now and every ms milliseconds — live instruments. */
-	every(ms, fn) { fn(); return setInterval(fn, ms); },
-};
-`;
-
-const SURFACE_HEAD_LINKS = `<link rel="stylesheet" href="/assets/surface.css"><link rel="stylesheet" href="/assets/theme.css">`;
-
-function escapeHtmlText(source: string): string {
-	return source.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-/**
- * Serve a file strictly from inside app/surfaces (no traversal). Controllers
- * write surfaces in whatever form fits — HTML is served as-is; markdown and
- * plain text are rendered into a dark-styled document so prose surfaces are
- * first-class, not raw bytes.
- */
-function serveSurface(root: string, entry: string, response: ServerResponse): void {
-	const target = readCompanyFileWithin(root, join("app", "surfaces"), entry);
-	if (!target) {
-		response.writeHead(403).end("outside surfaces");
-		return;
-	}
-	try {
-		const { content } = target;
-		if (target.path.endsWith(".md") || target.path.endsWith(".txt")) {
-			const source = content.toString("utf-8");
-			const body = target.path.endsWith(".md")
-				? marked.parse(escapeHtmlText(source), { breaks: false, async: false })
-				: `<pre>${escapeHtmlText(source)}</pre>`;
-			response
-				.writeHead(200, { "content-type": "text/html; charset=utf-8" })
-				.end(
-					`<!doctype html><html><head><meta charset="utf-8">${SURFACE_HEAD_LINKS}</head><body>${body}</body></html>`,
-				);
-			return;
-		}
-		const type = target.path.endsWith(".html")
-			? "text/html; charset=utf-8"
-			: target.path.endsWith(".js")
-				? "text/javascript"
-				: target.path.endsWith(".css")
-					? "text/css"
-					: target.path.endsWith(".json")
-						? "application/json"
-						: "text/plain; charset=utf-8";
-		response.writeHead(200, { "content-type": type }).end(content);
-	} catch {
-		response.writeHead(404).end("surface not found");
-	}
-}
-
-/**
- * Serve a substrate file read-only from inside app/substrates (no
- * traversal) — the data side of surfaces-as-instruments.
- */
-function serveSubstrate(root: string, entry: string, response: ServerResponse): void {
-	const target = readCompanyFileWithin(root, join("app", "substrates"), entry);
-	if (!target) {
-		response.writeHead(403).end("outside substrates");
-		return;
-	}
-	try {
-		response.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end(target.content);
-	} catch {
-		response.writeHead(404).end("substrate not found");
-	}
 }
 
 function staticContentType(path: string): string {
@@ -1543,7 +1461,7 @@ const CHROME_HTML = (name: string, token: string) => `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>${name} Controller</title>
+<title>${name}</title>
 <style>
 	:root { color-scheme: dark; }
 	* { box-sizing: border-box; margin: 0; }
@@ -1556,7 +1474,6 @@ const CHROME_HTML = (name: string, token: string) => `<!doctype html>
 	nav button:hover { background: #1a2027; }
 	nav button.active { background: #24303b; color: #fff; }
 	main { flex: 1; display: flex; flex-direction: column; }
-	main iframe { flex: 1; border: 0; width: 100%; background: #fff; }
 	#panel { flex: 1; padding: 24px; overflow-y: auto; display: none; }
 	.gate { border: 1px solid #232a31; border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; }
 	.gate .t { font-weight: 600; margin-bottom: 4px; }
@@ -1570,16 +1487,15 @@ const CHROME_HTML = (name: string, token: string) => `<!doctype html>
 </head>
 <body>
 <nav>
-	<h1 id="title">${name}<small>Controller — Qorpera Base</small></h1>
+	<h1 id="title">${name}<small>Qorpera Base</small></h1>
 	<div id="navigation"></div>
 </nav>
 <main>
-	<iframe id="frame" hidden></iframe>
 	<div id="panel"></div>
 </main>
 <script>
-let state = { projection: { navigation: [], nodes: [], diagnostics: [] }, inbox: [], sessions: [], trailSessions: 0 };
-let current = null; // stable projection node ID
+let state = { shellNavigation: { defaultPageId: "q:chats", sectionIds: [], nodes: [] }, inbox: [], sessions: [], trailSessions: 0 };
+let current = null;
 async function refresh() {
 	try {
 		const next = await (await fetch("/api/state")).json();
@@ -1592,13 +1508,13 @@ function render() {
 	const nav = document.getElementById("navigation");
 	nav.innerHTML = "";
 	if (current && !node(current)) current = null;
-	for (const departmentId of state.projection.navigation) {
-		const department = node(departmentId);
-		if (!department || department.kind !== "department") continue;
+	for (const sectionId of state.shellNavigation.sectionIds) {
+		const section = node(sectionId);
+		if (!section || section.kind !== "department") continue;
 		const heading = document.createElement("h2");
-		heading.textContent = department.label;
+		heading.textContent = section.label;
 		nav.appendChild(heading);
-		for (const childId of department.items) {
+		for (const childId of section.items) {
 			const child = node(childId);
 			if (!child) continue;
 			const button = document.createElement("button");
@@ -1608,64 +1524,22 @@ function render() {
 			nav.appendChild(button);
 		}
 	}
-	if (!current && state.projection.default) openNode(state.projection.default);
+	if (!current && state.shellNavigation.defaultPageId) openNode(state.shellNavigation.defaultPageId);
 	const target = node(current);
-	if (target && target.kind === "page" && target.view.type === "surface") {
-		const src = "/surface/" + encodeURIComponent(target.view.entry) + "?v=" + (target.view.version || 0);
-		const frame = document.getElementById("frame");
-		if (frame.getAttribute("src") !== src) frame.src = src;
-	}
-	if (target && target.kind === "page" && target.view.type === "builtin") {
+	if (target && target.kind === "page") {
 		if (target.view.id === "qorpera.inbox") showPanel("inbox", true);
 		if (target.view.id === "qorpera.activity" || target.view.id === "qorpera.chats") showPanel("trail", true);
 	}
 }
-function node(id) { return state.projection.nodes.find((entry) => entry.id === id); }
+function node(id) { return state.shellNavigation.nodes.find((entry) => entry.id === id); }
 function openNode(id) {
 	const target = node(id);
-	if (!target) return;
+	if (!target || target.kind !== "page") return;
 	current = id;
-	if (target.kind === "department" || target.kind === "category") return showCollection(target);
-	if (target.view.type === "surface") return showSurface(target);
 	if (target.view.id === "qorpera.inbox") return showPanel("inbox");
 	if (target.view.id === "qorpera.activity" || target.view.id === "qorpera.chats") return showPanel("trail");
-	const message = target.view.context && target.view.context.message || "This builtin is available in the desktop app.";
-	showMessage(target.label, message);
-}
-function showSurface(page) {
-	document.getElementById("panel").style.display = "none";
-	const f = document.getElementById("frame");
-	f.hidden = false; f.src = "/surface/" + encodeURIComponent(page.view.entry) + "?v=" + (page.view.version || 0);
-	render();
-}
-function showCollection(collection) {
-	const p = document.getElementById("panel");
-	document.getElementById("frame").hidden = true;
-	p.style.display = "block";
-	p.innerHTML = "<h1></h1>";
-	p.querySelector("h1").textContent = collection.label;
-	for (const id of collection.items) {
-		const page = node(id);
-		if (!page || page.kind !== "page") continue;
-		const button = document.createElement("button");
-		button.className = "gate";
-		button.textContent = page.label;
-		button.onclick = () => openNode(page.id);
-		p.appendChild(button);
-	}
-	render();
-}
-function showMessage(title, message) {
-	const p = document.getElementById("panel");
-	document.getElementById("frame").hidden = true;
-	p.style.display = "block";
-	p.innerHTML = '<div class="gate"><div class="t"></div><div class="s"></div></div>';
-	p.querySelector(".t").textContent = title;
-	p.querySelector(".s").textContent = message;
-	render();
 }
 function showPanel(which, keep) {
-	document.getElementById("frame").hidden = true;
 	const p = document.getElementById("panel");
 	p.style.display = "block";
 	if (which === "inbox") {
@@ -1731,7 +1605,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 	const trailSessions = createTrailSessionReadModel(root, options.sessionRuntime?.isTrailVisible);
 	const usageRateCatalog = options.usageRateCatalog ?? readUsageRateCatalog;
 	const authToken = options.authToken;
-	if (!authToken) throw new Error("company app server requires a desktop-kernel authorization token");
+	if (!authToken) throw new Error("company app server requires a desktop-host authorization token");
 	const authorized = (request: IncomingMessage): boolean => request.headers["x-qorpera-token"] === authToken;
 	return createServer((request: IncomingMessage, response: ServerResponse) => {
 		const url = new URL(request.url ?? "/", "http://localhost");
@@ -1752,8 +1626,11 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 		}
 		if (url.pathname === "/api/state") {
 			const staff = safeReadModel(options.staffReadModel, staffView);
+			const artifacts = safeReadModel(options.artifactReadModel, artifactView);
+			const connectors = safeReadModel(options.connectorReadModel, connectorView);
 			const connectionRequests = safeReadModel(options.connectionRequestReadModel, connectionRequestView);
 			const scheduledJobs = safeReadModel(options.scheduledJobReadModel, scheduledJobView);
+			const agentMessages = safeReadModel(options.staffMessageReadModel, staffMessageView);
 			response
 				.writeHead(200, {
 					"content-type": "application/json",
@@ -1766,11 +1643,49 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 							options.sessionRuntime?.snapshot(),
 							trailSessions(),
 							staff,
+							artifacts,
+							connectors,
 							connectionRequests,
 							scheduledJobs,
+							agentMessages,
 						),
 					),
 				);
+			return;
+		}
+		if (url.pathname === "/api/artifact/update" && request.method === "POST") {
+			if (!authorized(request)) {
+				response.writeHead(401).end("token required");
+				return;
+			}
+			if (!options.artifactUpdateModel) {
+				response.writeHead(404).end("unavailable");
+				return;
+			}
+			let body = "";
+			let exceeded = false;
+			request.on("data", (chunk: Buffer) => {
+				if (exceeded) return;
+				body += chunk.toString("utf-8");
+				if (Buffer.byteLength(body, "utf-8") > 256 * 1024) exceeded = true;
+			});
+			request.on("end", () => {
+				try {
+					if (exceeded) throw new Error("Artifact update exceeds 256 KiB");
+					const input = JSON.parse(body) as { id?: unknown; update?: unknown };
+					if (!input || typeof input !== "object" || Array.isArray(input) || typeof input.id !== "string") {
+						throw new Error("Artifact update is invalid");
+					}
+					const artifact = options.artifactUpdateModel!(input.id, input.update);
+					response
+						.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+						.end(JSON.stringify({ ok: true, artifact: artifactView(artifact) }));
+				} catch (error) {
+					response
+						.writeHead(400, { "content-type": "application/json", "cache-control": "no-store" })
+						.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+				}
+			});
 			return;
 		}
 		if (url.pathname === "/api/runtime" && request.method === "GET") {
@@ -1785,12 +1700,13 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 				"cache-control": "no-cache, no-transform",
 				connection: "keep-alive",
 			});
-			writeServerEvent(response, "snapshot", options.sessionRuntime.snapshot());
+			writeServerEvent(response, "snapshot", publicSessionRuntimeSnapshot(options.sessionRuntime.snapshot()));
 			const unsubscribe = options.sessionRuntime.subscribe((update) => {
 				// Stream only the event discriminator plus the canonical read model.
 				// Provider diagnostics stay in the protected trail and never become
 				// ambient same-origin shell data.
 				if (update.event?.kind === "activity" && update.session) {
+					if (!isPublicSessionRuntime(update.session)) return;
 					writeServerEvent(response, "runtime", {
 						event: { kind: update.event.kind, at: update.event.at },
 						revision: update.snapshot.revision,
@@ -1801,7 +1717,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 				}
 				writeServerEvent(response, "runtime", {
 					...(update.event ? { event: { kind: update.event.kind, at: update.event.at } } : {}),
-					snapshot: update.snapshot,
+					snapshot: publicSessionRuntimeSnapshot(update.snapshot),
 				});
 			});
 			// The response owns an SSE subscription. The request body is already
@@ -1821,38 +1737,6 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 				return;
 			}
 			void serveCompanyUsage(root, window, usageRateCatalog, response);
-			return;
-		}
-		if (url.pathname === "/assets/surface.css") {
-			response.writeHead(200, { "content-type": "text/css" }).end(SURFACE_TOKENS_CSS);
-			return;
-		}
-		if (url.pathname === "/assets/surface-kit.js") {
-			response.writeHead(200, { "content-type": "text/javascript" }).end(SURFACE_KIT_JS);
-			return;
-		}
-		if (url.pathname === "/assets/theme.css") {
-			// Company override point: served empty when absent so the link
-			// in every rendered surface is always safe. Read BEFORE writing
-			// headers — a throw after writeHead kills the server.
-			let theme = "";
-			try {
-				const file = readCompanyFileWithin(root, join("app", "surfaces"), "theme.css");
-				if (file) theme = file.content.toString("utf-8");
-			} catch {
-				// absent: serve empty
-			}
-			response.writeHead(200, { "content-type": "text/css" }).end(theme);
-			return;
-		}
-		if (url.pathname.startsWith("/api/substrate/") && request.method === "GET") {
-			const entry = decodedPath(url.pathname.slice("/api/substrate/".length), response);
-			if (entry !== undefined) serveSubstrate(root, entry, response);
-			return;
-		}
-		if (url.pathname.startsWith("/surface/")) {
-			const entry = decodedPath(url.pathname.slice("/surface/".length), response);
-			if (entry !== undefined) serveSurface(root, entry, response);
 			return;
 		}
 		if (url.pathname.startsWith("/api/inbox/") && request.method === "GET") {
@@ -1910,10 +1794,12 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 					// custom sections survive; comments do not (Advanced tab
 					// exists for comment-preserving edits).
 					const source = readCompanyFile(root, "authority.toml");
-					if (!source) throw new Error("authority policy is not a physical file");
 					let existing: Record<string, unknown> = {};
 					try {
-						existing = parseToml(source.content.toString("utf-8")) as Record<string, unknown>;
+						existing = parseToml(source?.content.toString("utf-8") ?? BASE_AUTHORITY_POLICY) as Record<
+							string,
+							unknown
+						>;
 					} catch {
 						existing = {};
 					}
@@ -1932,7 +1818,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 						...((existing.authority as Record<string, unknown>) ?? {}),
 						mode: "gate",
 					};
-					writeAtomicPhysicalFile(source.path, `${stringifyToml(existing)}\n`);
+					writeOptionalAuthorityPolicy(root, `${stringifyToml(existing)}\n`);
 					ratifyPolicyIfFounder(root);
 					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
 				} catch (error) {
@@ -1946,10 +1832,9 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 		if (url.pathname === "/api/authority" && request.method === "GET") {
 			try {
 				const source = readCompanyFile(root, "authority.toml");
-				if (!source) throw new Error("authority policy is not a physical file");
 				response
 					.writeHead(200, { "content-type": "text/plain; charset=utf-8" })
-					.end(source.content.toString("utf-8"));
+					.end(source?.content.toString("utf-8") ?? BASE_AUTHORITY_POLICY);
 			} catch {
 				response.writeHead(404).end("no authority.toml");
 			}
@@ -1972,9 +1857,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 						return;
 					}
 					parseToml(content); // reject unparseable TOML with a clear error
-					const source = readCompanyFile(root, "authority.toml");
-					if (!source) throw new Error("authority policy is not a physical file");
-					writeAtomicPhysicalFile(source.path, content);
+					writeOptionalAuthorityPolicy(root, content);
 					ratifyPolicyIfFounder(root);
 					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
 				} catch (error) {

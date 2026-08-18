@@ -29,14 +29,44 @@ describe("shell starter staff templates", () => {
 		expect(JSON.stringify(templates).toLowerCase()).not.toContain("grok");
 	});
 
-	it("carries first-turn behavior and Qorpera avatar tokens", () => {
+	it("keeps durable responsibility separate from setup behavior", () => {
 		for (const template of listStaffTemplates()) {
 			expect(template.role.length).toBeGreaterThan(0);
 			expect(template.description.length).toBeGreaterThan(0);
-			expect(template.charter).toContain("On the first turn");
-			expect(template.charter).toContain("propose one useful outcome");
-			expect(template.charter).toContain("ask at most one high-value question");
-			expect(template.charter).toContain("request the exact service inside this conversation");
+			expect(template.charter).toContain("durable company responsibility");
+			expect(template.charter).toContain("already-ready connectors");
+			expect(template.charter).toContain("ready company mailbox");
+			expect(template.charter).toContain("not automatically as the authoritative source");
+			expect(template.charter).toContain("ask one plain question");
+			expect(template.charter).toContain("never guess a provider list");
+			expect(template.charter).toContain("offer only Gmail or Outlook Email");
+			expect(template.charter).toContain("leave the evidence gap explicit");
+			expect(template.charter).toContain("Continue source discovery after conception");
+			expect(template.charter).not.toContain("On the first turn");
+			expect(template.charter).not.toContain("During setup");
+			expect(template.setupPrompt).toContain("private conception turn");
+			expect(template.setupPrompt).toContain("employment relationship");
+			expect(template.setupPrompt).toContain("Existing company evidence takes priority");
+			expect(template.setupPrompt).toContain("test already-ready read connections");
+			expect(template.setupPrompt).toContain("Trace concrete service and account names");
+			expect(template.setupPrompt).toContain("search it narrowly");
+			expect(template.setupPrompt).toContain("ask one brief ordinary-language question");
+			expect(template.setupPrompt).toContain("Gmail or Outlook Email discovery connection");
+			expect(template.setupPrompt).toContain("without artifactId or dataNeedId");
+			expect(template.setupPrompt).toContain("never convert that uncertainty into guessed providers");
+			expect(template.setupPrompt).toContain("offer only a separate Gmail or Outlook Email");
+			expect(template.setupPrompt).toContain("call request_connection exactly once");
+			expect(template.setupPrompt).toContain("exact setup contract");
+			expect(template.setupPrompt).toContain("Never silently replace it with a public export");
+			expect(template.setupPrompt).toContain("Choose where I should look first below.");
+			expect(template.setupPrompt).toContain("Never say that access was requested");
+			expect(template.setupPrompt).toContain("propose one concrete recurring job and cadence");
+			expect(template.setupPrompt).toContain(template.starterArtifact.title);
+			expect(template.starterArtifact.title.length).toBeGreaterThan(0);
+			expect(template.starterArtifact.purpose.length).toBeGreaterThan(0);
+			expect(template.starterArtifact.metrics).toHaveLength(3);
+			expect(template.starterArtifact.dataNeeds.length).toBeGreaterThan(0);
+			expect(template.starterArtifact.dataNeeds.every((need) => need.connectorHints.length > 0)).toBe(true);
 			expect(template.avatarColorToken).toMatch(/^qorpera-[a-z]+$/);
 			expect(template.avatarShapeToken).toMatch(/^[a-z][a-z-]*$/);
 		}
@@ -83,6 +113,10 @@ describe("shell starter staff templates", () => {
 		expect(first).toEqual(second);
 		expect(first).not.toBe(second);
 		expect(Object.isFrozen(first)).toBe(true);
+		expect(typeof first.setupPrompt).toBe("string");
+		expect(Object.isFrozen(first.starterArtifact)).toBe(true);
+		expect(Object.isFrozen(first.starterArtifact.metrics)).toBe(true);
+		expect(first.starterArtifact.metrics.every((metric) => Object.isFrozen(metric))).toBe(true);
 		expect(Reflect.set(first, "name", "Changed")).toBe(false);
 		expect(getStaffTemplate("financial-officer")).toEqual(second);
 		expect(() => getStaffTemplate("operations")).toThrow("Unknown staff template: operations");

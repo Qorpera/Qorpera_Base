@@ -42,7 +42,7 @@ export interface SessionHeader {
 }
 
 export interface QorperaSessionAuthority {
-	actor: "controller" | "product-worker";
+	actor: "company-agent" | "product-worker";
 	attended: boolean;
 	autonomous?: boolean;
 	label?: string;
@@ -345,7 +345,7 @@ function buildEntryIndex(entries: SessionEntry[], byId?: Map<string, SessionEntr
 
 /**
  * The active leaf when none is explicitly tracked. Kernel observations
- * (rootless `custom` entries the desktop kernel appends into the trail —
+ * (rootless `custom` entries the desktop host appends into the trail —
  * model/HTTP/wake records) are audit metadata, never conversation nodes:
  * naively adopting "the last entry" as the leaf after one of them landed
  * silently rerooted the conversation and orphaned the entire history,
@@ -1033,7 +1033,7 @@ export class SessionManager {
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
 		if (process.env.QORPERA_TRAIL_BROKER_TOKEN) {
-			throw new Error("Kernel-bound trail sessions are append-only and cannot be rewritten");
+			throw new Error("Host-bound trail sessions are append-only and cannot be rewritten");
 		}
 		const fd = openSync(this.sessionFile, "w");
 		try {
@@ -1076,7 +1076,7 @@ export class SessionManager {
 			return;
 		}
 		if (!this.getHeader()?.qorpera) {
-			throw new Error("Kernel-bound trail writes require a trusted session header");
+			throw new Error("Host-bound trail writes require a trusted session header");
 		}
 		// Through the output guard's raw writer: in rpc mode a plain
 		// process.stdout.write is redirected to stderr and the kernel's trail

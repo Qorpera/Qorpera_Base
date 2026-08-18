@@ -229,9 +229,10 @@ describe("file mode (fetch-to-file / upload-from-file)", () => {
 			new Response(new Uint8Array(BINARY), { status: 200, headers: { "content-type": "application/pdf" } });
 		const h = harness({ fetchImpl: binaryFetch });
 		h.broker.handleFrame(h.request({ method: "GET", body: undefined, saveTo: "imports/statement.pdf" }), h.send);
-		await h.settle();
+		const savedPath = join(h.root, "imports", "statement.pdf");
+		await vi.waitFor(() => expect(existsSync(savedPath)).toBe(true));
 
-		const saved = readFileSync(join(h.root, "imports", "statement.pdf"));
+		const saved = readFileSync(savedPath);
 		expect(Buffer.compare(saved, BINARY)).toBe(0);
 		expect(h.sent[0].status).toBe(200);
 		expect(h.sent[0].body).toBe("");

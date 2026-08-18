@@ -9,11 +9,11 @@
  * run stamps `qorpera_effect.behavior` into the trail.
  *
  * Isolation model (stated honestly, manifesto §7.2): the subprocess inherits
- * the OS confinement of the controller child that spawns it — under the
- * desktop kernel that is the Codex sandbox profile (company-scope writes,
+ * the OS confinement of the company-agent child that spawns it — under the
+ * desktop host that is the Codex sandbox profile (company-scope writes,
  * protected paths read-only, no network). What THIS code enforces on every
  * platform: a clean environment (allowlist below — no ambient credentials,
- * no QORPERA_* kernel state), the program resolving to a physical file
+ * no QORPERA_* host state), the program resolving to a physical file
  * inside the company, bounded output, and a hard timeout.
  */
 
@@ -92,6 +92,12 @@ interface ProgramHttpFrame {
 	sendFile?: string;
 }
 
+export interface CompanyProgramHttpAuthorization {
+	behaviorPath: string;
+	contentHash: string;
+	request: Omit<ProgramHttpFrame, "requestId">;
+}
+
 function parsedProgramHttpFrame(line: string): ProgramHttpFrame | undefined {
 	if (!line.startsWith('{"type":"qorpera_program_http_request"')) return undefined;
 	try {
@@ -115,11 +121,12 @@ async function serveProgramHttpFrame(
 	cwd: string,
 	program: ResolvedProgram,
 	respond: (payload: object) => void,
+	authorizeProgramHttp?: (authorization: CompanyProgramHttpAuthorization) => Promise<void>,
 ): Promise<void> {
 	const fail = (error: string): void =>
 		respond({ type: "qorpera_program_http_response", requestId: frame.requestId, error });
 	if (!isHttpBrokerAvailable()) {
-		fail("http lane requires the kernel broker (company sessions under the desktop kernel)");
+		fail("HTTP lane requires the Qorpera desktop host");
 		return;
 	}
 	const spec = {
@@ -131,17 +138,38 @@ async function serveProgramHttpFrame(
 		...(frame.sendFile !== undefined ? { sendFile: frame.sendFile } : {}),
 		...(frame.timeoutMs !== undefined ? { timeoutMs: frame.timeoutMs } : {}),
 	};
-	// Program-initiated requests are never founder presence: attended=false
-	// regardless of who is watching the chat, so outward classes require the
-	// program's signature and class modes apply on top.
-	const decision = evaluateToolCall(authority, HTTP_TOOL_NAME, spec, cwd, {
-		attended: false,
-		behaviorPath: program.absolute,
-	});
-	const finalized = await finalizeAuthorityDecision(authority, decision, HTTP_TOOL_NAME, spec);
-	if (finalized.kind === "block") {
-		fail(finalized.reason);
-		return;
+	if (authorizeProgramHttp) {
+		try {
+			await authorizeProgramHttp({
+				behaviorPath: program.rootRelative,
+				contentHash: program.contentHash,
+				request: {
+					method: frame.method,
+					url: frame.url,
+					...(frame.headers ? { headers: frame.headers } : {}),
+					...(frame.body !== undefined ? { body: frame.body } : {}),
+					...(frame.saveTo !== undefined ? { saveTo: frame.saveTo } : {}),
+					...(frame.sendFile !== undefined ? { sendFile: frame.sendFile } : {}),
+					...(frame.timeoutMs !== undefined ? { timeoutMs: frame.timeoutMs } : {}),
+				},
+			});
+		} catch (error) {
+			fail(error instanceof Error ? error.message : String(error));
+			return;
+		}
+	} else {
+		// Generic company programs still use the standing behavior-signature
+		// lane. Connector calls can instead supply a host-validated grant scoped
+		// to their exact manifest, operation, destination, and secret references.
+		const decision = evaluateToolCall(authority, HTTP_TOOL_NAME, spec, cwd, {
+			attended: false,
+			behaviorPath: program.absolute,
+		});
+		const finalized = await finalizeAuthorityDecision(authority, decision, HTTP_TOOL_NAME, spec);
+		if (finalized.kind === "block") {
+			fail(finalized.reason);
+			return;
+		}
 	}
 	try {
 		const response = await brokeredHttpRequest({
@@ -166,8 +194,8 @@ async function serveProgramHttpFrame(
 
 /**
  * The complete environment a company program receives. Values come from the
- * controller's own (already sandbox-scoped) environment; nothing else —
- * no model keys, no QORPERA_* kernel state, no broker tokens.
+ * company agent's own (already sandbox-scoped) environment; nothing else —
+ * no model keys, no QORPERA_* host state, no broker tokens.
  */
 const CLEAN_ENV_ALLOWLIST = [
 	"PATH",
@@ -194,7 +222,7 @@ function cleanProgramEnvironment(): Record<string, string> {
 		const value = process.env[name];
 		if (value !== undefined) env[name] = value;
 	}
-	// The controller may itself run on Electron's embedded Node.
+	// The company agent may itself run on Electron's embedded Node.
 	env.ELECTRON_RUN_AS_NODE = "1";
 	return env;
 }
@@ -243,6 +271,8 @@ function resolveProgram(rawPath: string, cwd: string, authorityRoot: string): Re
 export interface CompanyToolOptions {
 	/** Override the executable used to run programs (tests). Default: this Node runtime. */
 	nodeBinary?: string;
+	/** Authorize one program HTTP request through a narrower host-owned lane. */
+	authorizeProgramHttp?: (authorization: CompanyProgramHttpAuthorization) => Promise<void>;
 }
 
 export function createCompanyToolDefinition(
@@ -308,7 +338,7 @@ export function createCompanyToolDefinition(
 					createInterface({ input: child.stdout }).on("line", (line) => {
 						const frame = parsedProgramHttpFrame(line);
 						if (frame) {
-							void serveProgramHttpFrame(frame, authority, cwd, program, respond);
+							void serveProgramHttpFrame(frame, authority, cwd, program, respond, options?.authorizeProgramHttp);
 							return;
 						}
 						collect(Buffer.from(`${line}\n`, "utf-8"));

@@ -1,4 +1,4 @@
-import type { ControllerModelSelection } from "./controller-model.ts";
+import type { RuntimeModelSelection } from "./runtime-model.ts";
 
 export const INTELLIGENCE_PROVIDER_CATALOG = [
 	{
@@ -27,7 +27,7 @@ export type IntelligenceProviderDefinition = (typeof INTELLIGENCE_PROVIDER_CATAL
 
 export interface IntelligenceReadiness {
 	ready: boolean;
-	selection?: ControllerModelSelection;
+	selection?: RuntimeModelSelection;
 	selectionSource?: "stored" | "inferred";
 	connectedProviderIds: IntelligenceProviderId[];
 	requiresChoice: boolean;
@@ -41,7 +41,7 @@ export function intelligenceProvider(providerId: string): IntelligenceProviderDe
 	return INTELLIGENCE_PROVIDER_CATALOG.find((provider) => provider.id === providerId);
 }
 
-export function intelligenceSelectionForProvider(providerId: string): ControllerModelSelection | undefined {
+export function intelligenceSelectionForProvider(providerId: string): RuntimeModelSelection | undefined {
 	const provider = intelligenceProvider(providerId);
 	return provider ? { provider: provider.id, modelId: provider.defaultModelId } : undefined;
 }
@@ -57,7 +57,7 @@ export function intelligenceSelectionForProvider(providerId: string): Controller
  */
 export function resolveIntelligenceReadiness(
 	connectedProviderIds: Iterable<string>,
-	storedSelection?: ControllerModelSelection,
+	storedSelection?: RuntimeModelSelection,
 ): IntelligenceReadiness {
 	const connected = new Set(connectedProviderIds);
 	const supportedConnected = INTELLIGENCE_PROVIDER_CATALOG.flatMap((provider) =>

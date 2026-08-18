@@ -81,7 +81,7 @@ function validTree(value: unknown): value is CloudCompanyTreeReference {
 		SHA256_PATTERN.test(tree.manifestSha256 ?? "") &&
 		Number.isSafeInteger(tree.manifestBytes) &&
 		(tree.manifestBytes ?? -1) >= 0 &&
-		tree.contractVersion === 1 &&
+		(tree.contractVersion === 1 || tree.contractVersion === 2) &&
 		Number.isSafeInteger(tree.fileCount) &&
 		(tree.fileCount ?? -1) >= 0 &&
 		Number.isSafeInteger(tree.totalBytes) &&

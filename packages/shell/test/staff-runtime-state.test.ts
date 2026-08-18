@@ -1,7 +1,7 @@
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	claimStaffIntro,
 	finishStaffIntro,
@@ -14,7 +14,17 @@ import {
 describe("staff intro runtime state", () => {
 	const userData = join(tmpdir(), `qorpera-staff-runtime-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	const root = join(userData, "company");
-	const path = staffRuntimeStatePath(userData, root);
+	let path: string;
+
+	beforeEach(() => {
+		mkdirSync(join(root, ".qorpera"), { recursive: true });
+		writeFileSync(
+			join(root, ".qorpera", "company.json"),
+			`${JSON.stringify({ schema: "qorpera.company/v1", id: "66666666-6666-4666-8666-666666666666" })}\n`,
+			"utf-8",
+		);
+		path = staffRuntimeStatePath(userData, root);
+	});
 
 	afterEach(() => {
 		if (existsSync(userData)) rmSync(userData, { recursive: true, force: true });

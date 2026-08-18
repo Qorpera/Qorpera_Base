@@ -2,6 +2,7 @@
  * Company connections state (Build 3): founder-bound destinations and
  * secrets, kernel-side dereferencing, and the RFC 6749 refresh lifecycle.
  */
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,28 +10,28 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	bindCompanySecret,
 	bindNetworkDestination,
-	bindWakeSchedule,
+	type CompanySecret,
+	type CompanySecretStore,
 	companyConnectionsPath,
 	createScheduledJob,
 	DEFAULT_SCHEDULED_JOB_ID,
 	deleteScheduledJob,
 	destinationAllowed,
-	disableWakeSchedule,
 	disableWebhook,
 	enableWebhook,
-	MIN_WAKE_INTERVAL_MINUTES,
+	findStaffScheduledJob,
 	persistWebhookPort,
 	readCompanyConnections,
 	readScheduledJobs,
-	readWakeSchedule,
 	readWebhookBinding,
 	removeCompanySecret,
 	removeNetworkDestination,
 	resolveCompanySecret,
 	scheduledJobIntervalMinutes,
+	setCompanySecretStore,
 	suspendScheduledJob,
-	suspendWakeSchedule,
 	updateScheduledJob,
+	upsertStaffScheduledJob,
 } from "../src/core/company-connections.ts";
 
 let root: string;
@@ -41,9 +42,11 @@ beforeEach(() => {
 	mkdirSync(root, { recursive: true });
 	prevAgentDir = process.env.QORPERA_CODING_AGENT_DIR;
 	process.env.QORPERA_CODING_AGENT_DIR = join(root, "agent-home");
+	setCompanySecretStore(undefined);
 });
 
 afterEach(() => {
+	setCompanySecretStore(undefined);
 	if (prevAgentDir === undefined) delete process.env.QORPERA_CODING_AGENT_DIR;
 	else process.env.QORPERA_CODING_AGENT_DIR = prevAgentDir;
 	if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
@@ -83,6 +86,24 @@ describe("secrets", () => {
 		expect(removeCompanySecret(root, "api-key")).toBe(true);
 		expect(removeCompanySecret(root, "api-key")).toBe(false);
 		expect(() => bindCompanySecret(root, "bad name!", { kind: "static", value: "x" })).toThrow(/Invalid secret name/);
+	});
+
+	it("migrates legacy plaintext secrets into an installed trusted store", async () => {
+		bindCompanySecret(root, "api-key", { kind: "static", value: "legacy-raw-value" });
+		const path = companyConnectionsPath(root);
+		expect(readFileSync(path, "utf-8")).toContain("legacy-raw-value");
+		const stored = new Map<string, CompanySecret>();
+		const store: CompanySecretStore = {
+			list: () => [...stored.keys()].sort(),
+			get: (_root, name) => stored.get(name),
+			put: (_root, name, secret) => stored.set(name, secret),
+			remove: (_root, name) => stored.delete(name),
+		};
+		setCompanySecretStore(store);
+
+		expect(readCompanyConnections(root).secretNames).toEqual(["api-key"]);
+		expect(readFileSync(path, "utf-8")).not.toContain("legacy-raw-value");
+		expect(await resolveCompanySecret(root, "api-key")).toBe("legacy-raw-value");
 	});
 
 	it("resolves static secrets and non-expired oauth2 secrets without network", async () => {
@@ -137,6 +158,54 @@ describe("secrets", () => {
 		expect(await resolveCompanySecret(root, "oauth", failingFetch)).toBe("fresh-token");
 	});
 
+	it("refreshes a Nordea-style grant with signed public headers, header credentials, and token rotation", async () => {
+		bindCompanySecret(root, "nordea", {
+			kind: "oauth2",
+			accessToken: "stale-token",
+			refreshToken: "refresh-1",
+			tokenUrl: "https://api.nordeaopenbanking.com/business/v5/authorize/token",
+			clientId: "sandbox-client-id",
+			clientSecret: "sandbox-client-secret",
+			clientAuthentication: {
+				kind: "headers",
+				clientIdHeader: "X-IBM-Client-Id",
+				clientSecretHeader: "X-IBM-Client-Secret",
+			},
+			tokenHeaders: {
+				Signature: "SKIP_SIGNATURE_VALIDATION_FOR_SANDBOX",
+				"X-Nordea-Originating-Host": "$" + "{url_host}",
+				"X-Nordea-Originating-Date": "$" + "{http_date}",
+				Digest: "$" + "{body_sha256_digest}",
+			},
+			expiresAt: new Date(Date.now() - 1000).toISOString(),
+		});
+		const seenRefreshTokens: string[] = [];
+		const fakeFetch: typeof fetch = async (url, init) => {
+			const body = String(init?.body);
+			const form = new URLSearchParams(body);
+			const headers = new Headers(init?.headers);
+			seenRefreshTokens.push(form.get("refresh_token") ?? "");
+			expect(String(url)).toBe("https://api.nordeaopenbanking.com/business/v5/authorize/token");
+			expect(form.get("client_id")).toBeNull();
+			expect(form.get("client_secret")).toBeNull();
+			expect(headers.get("X-IBM-Client-Id")).toBe("sandbox-client-id");
+			expect(headers.get("X-IBM-Client-Secret")).toBe("sandbox-client-secret");
+			expect(headers.get("Signature")).toBe("SKIP_SIGNATURE_VALIDATION_FOR_SANDBOX");
+			expect(headers.get("X-Nordea-Originating-Host")).toBe("api.nordeaopenbanking.com");
+			expect(headers.get("X-Nordea-Originating-Date")).not.toBe("");
+			expect(headers.get("Digest")).toBe(`SHA-256=${createHash("sha256").update(body).digest("base64")}`);
+			const rotation = seenRefreshTokens.length + 1;
+			return new Response(
+				JSON.stringify({ access_token: `access-${rotation}`, refresh_token: `refresh-${rotation}`, expires_in: 0 }),
+				{ status: 200 },
+			);
+		};
+
+		expect(await resolveCompanySecret(root, "nordea", fakeFetch)).toBe("access-2");
+		expect(await resolveCompanySecret(root, "nordea", fakeFetch)).toBe("access-3");
+		expect(seenRefreshTokens).toEqual(["refresh-1", "refresh-2"]);
+	});
+
 	it("fails closed when the token endpoint rejects the refresh", async () => {
 		bindCompanySecret(root, "oauth", {
 			kind: "oauth2",
@@ -150,42 +219,35 @@ describe("secrets", () => {
 	});
 });
 
-describe("wake schedule", () => {
+describe("agent routines", () => {
 	const staffAgentId = "6ba7b810-9dad-4d1d-80b4-00c04fd430c8";
 	const schedule = (intervalMinutes: number) => [{ kind: "schedule" as const, intervalMinutes }];
 
-	it("binds, reports, disables, and enforces the wake-rate ceiling", () => {
-		expect(readWakeSchedule(root)).toBeUndefined();
-		expect(() => bindWakeSchedule(root, MIN_WAKE_INTERVAL_MINUTES - 1)).toThrow(/ceiling/);
-		const schedule = bindWakeSchedule(root, 30);
-		expect(schedule).toEqual({ intervalMinutes: 30, enabled: true });
-		expect(readWakeSchedule(root)).toEqual(schedule);
-		expect(disableWakeSchedule(root)).toBe(true);
-		expect(readWakeSchedule(root)?.enabled).toBe(false);
-		expect(disableWakeSchedule(root)).toBe(false);
-	});
-
-	it("kernel suspension sticks until the founder re-binds", () => {
-		bindWakeSchedule(root, 30);
-		suspendWakeSchedule(root, "3 consecutive wake failures");
-		expect(readWakeSchedule(root)?.suspendedReason).toContain("failures");
-		// Re-binding is the founder's re-enable: suspension clears.
-		expect(bindWakeSchedule(root, 30).suspendedReason).toBeUndefined();
-	});
-
 	it("migrates the founder-bound wake into a named scheduled job", () => {
-		bindWakeSchedule(root, 10);
+		const path = companyConnectionsPath(root);
+		mkdirSync(join(path, ".."), { recursive: true });
+		writeFileSync(
+			path,
+			`${JSON.stringify({
+				version: 1,
+				root,
+				destinations: [],
+				secrets: {},
+				wake: { intervalMinutes: 10, enabled: true },
+			})}\n`,
+			"utf-8",
+		);
 		const jobs = readScheduledJobs(root);
 		expect(jobs).toHaveLength(1);
 		expect(jobs[0]).toMatchObject({
 			id: DEFAULT_SCHEDULED_JOB_ID,
 			title: "Company orchestration",
 			enabled: true,
+			effort: "high",
 		});
 		expect(scheduledJobIntervalMinutes(jobs[0])).toBe(10);
-		expect(jobs[0].prompt).toContain("company.md");
+		expect(jobs[0].prompt).toContain("owned artifacts");
 		expect(Object.hasOwn(jobs[0], "staffAgentId")).toBe(false);
-		expect(readWakeSchedule(root)).toEqual({ intervalMinutes: 10, enabled: true });
 	});
 
 	it("persists explicit staff ownership and supports returning a job to Unassigned", () => {
@@ -197,10 +259,70 @@ describe("wake schedule", () => {
 		});
 		expect(readScheduledJobs(root)).toEqual([job]);
 		expect(job.staffAgentId).toBe(staffAgentId);
+		expect(job.effort).toBe("high");
 
 		const unassigned = updateScheduledJob(root, job.id, { staffAgentId: null });
 		expect(Object.hasOwn(unassigned, "staffAgentId")).toBe(false);
 		expect(Object.hasOwn(readScheduledJobs(root)[0], "staffAgentId")).toBe(false);
+	});
+
+	it("idempotently creates and updates an agent-owned routine by stable key", () => {
+		const created = upsertStaffScheduledJob(root, staffAgentId, "weekly-financial-review", {
+			title: "Weekly financial review",
+			prompt: "Refresh the financial-health artifact.",
+			triggers: schedule(7 * 24 * 60),
+		});
+		expect(created).toMatchObject({
+			agentKey: "weekly-financial-review",
+			staffAgentId,
+			effort: "high",
+			enabled: true,
+		});
+		const updated = upsertStaffScheduledJob(root, staffAgentId, "weekly-financial-review", {
+			title: "Weekly cash review",
+			prompt: "Refresh cash, burn, and runway.",
+			triggers: schedule(24 * 60),
+			effort: "xhigh",
+		});
+		expect(updated.id).toBe(created.id);
+		expect(updated).toMatchObject({ title: "Weekly cash review", effort: "xhigh" });
+		expect(scheduledJobIntervalMinutes(updated)).toBe(24 * 60);
+		expect(readScheduledJobs(root)).toHaveLength(1);
+		expect(findStaffScheduledJob(root, staffAgentId, "weekly-financial-review")?.id).toBe(created.id);
+	});
+
+	it("scopes the same routine key independently to each agent", () => {
+		const otherStaffAgentId = "7ca7b810-9dad-4d1d-80b4-00c04fd430c9";
+		const input = {
+			title: "Daily review",
+			prompt: "Review owned measures.",
+			triggers: schedule(24 * 60),
+		};
+		const first = upsertStaffScheduledJob(root, staffAgentId, "daily-review", input);
+		const second = upsertStaffScheduledJob(root, otherStaffAgentId, "daily-review", input);
+		expect(first.id).not.toBe(second.id);
+		expect(readScheduledJobs(root)).toHaveLength(2);
+	});
+
+	it("migrates existing scheduled jobs to high effort", () => {
+		createScheduledJob(root, {
+			title: "Morning digest",
+			prompt: "Prepare the founder's morning digest.",
+			triggers: schedule(60),
+			effort: "low",
+		});
+		const path = companyConnectionsPath(root);
+		const state = JSON.parse(readFileSync(path, "utf-8")) as {
+			scheduledJobs: Array<{ effort?: string }>;
+		};
+		delete state.scheduledJobs[0].effort;
+		writeFileSync(path, JSON.stringify(state), "utf-8");
+
+		expect(readScheduledJobs(root)[0].effort).toBe("high");
+		const migrated = JSON.parse(readFileSync(path, "utf-8")) as {
+			scheduledJobs: Array<{ effort?: string }>;
+		};
+		expect(migrated.scheduledJobs[0].effort).toBe("high");
 	});
 
 	it("rejects invalid staff ownership without guessing an assignment", () => {
@@ -239,8 +361,10 @@ describe("wake schedule", () => {
 			triggers: schedule(15),
 		});
 		expect(readScheduledJobs(root)).toEqual([job]);
-		const paused = updateScheduledJob(root, job.id, { enabled: false, triggers: schedule(30) });
+		expect(job.effort).toBe("high");
+		const paused = updateScheduledJob(root, job.id, { enabled: false, triggers: schedule(30), effort: "low" });
 		expect(paused.enabled).toBe(false);
+		expect(paused.effort).toBe("low");
 		expect(scheduledJobIntervalMinutes(paused)).toBe(30);
 		const resumed = updateScheduledJob(root, job.id, { enabled: true, title: "Reliability review" });
 		expect(resumed).toMatchObject({ enabled: true, title: "Reliability review" });

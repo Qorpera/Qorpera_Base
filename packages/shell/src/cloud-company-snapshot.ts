@@ -16,19 +16,42 @@ import type {
 
 const TREE_MANIFEST_SCHEMA = "qorpera.company-tree/v1";
 const TREE_MANIFEST_MEDIA_TYPE = "application/vnd.qorpera.company-tree+json";
-const TREE_CONTRACT_VERSION = 1;
+const TREE_CONTRACT_VERSION = 2;
 const MAX_TREE_ENTRIES = 50_000;
 const MAX_TREE_BYTES = 1024 * 1024 * 1024 * 1024;
 const MAX_RELATIVE_PATH_BYTES = 4 * 1024;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
-export const CLOUD_COMPANY_TREE_OMITTED_LAYERS = [
+/** Contract v1 predates the agents-only runtime; already-published manifests
+ * carry this exact list and must keep validating against it forever. */
+const CLOUD_COMPANY_TREE_OMITTED_LAYERS_V1 = [
 	"company-git-history",
 	"session-trail",
 	"staff-registry",
 	"product-git-checkouts",
 	"dependency-caches",
 ] as const;
+
+/** Contract v2 additionally omits per-agent instruction files (the charter is
+ * part of the separately-authoritative staff layer and travels through staff
+ * sync, not tree snapshots), per-agent memory (mutable every-turn state whose
+ * sync needs its own layer, not fork-with-tree snapshot semantics), and the
+ * operational mail surfaces (machine-local host-to-agent state: the inbox's
+ * authority gates and trigger events, and the agent message delivery ledger).
+ * Agent artifacts, skills, connector manifests, and shared files publish
+ * normally as company work product. */
+export const CLOUD_COMPANY_TREE_OMITTED_LAYERS = [
+	...CLOUD_COMPANY_TREE_OMITTED_LAYERS_V1,
+	"staff-instructions",
+	"staff-memory",
+	"operational-inbox",
+] as const;
+
+export type CloudCompanyTreeContractVersion = 1 | 2;
+
+function omittedLayersForContract(version: CloudCompanyTreeContractVersion): readonly string[] {
+	return version === 1 ? CLOUD_COMPANY_TREE_OMITTED_LAYERS_V1 : CLOUD_COMPANY_TREE_OMITTED_LAYERS;
+}
 
 export interface CloudCompanyDirectoryEntry {
 	kind: "directory";
@@ -46,15 +69,15 @@ export type CloudCompanyTreeEntry = CloudCompanyDirectoryEntry | CloudCompanyFil
 
 export interface CloudCompanyTreeManifest {
 	schema: typeof TREE_MANIFEST_SCHEMA;
-	contractVersion: typeof TREE_CONTRACT_VERSION;
-	omittedLayers: readonly (typeof CLOUD_COMPANY_TREE_OMITTED_LAYERS)[number][];
+	contractVersion: CloudCompanyTreeContractVersion;
+	omittedLayers: readonly string[];
 	entries: CloudCompanyTreeEntry[];
 }
 
 export interface CloudCompanyTreeReference {
 	manifestSha256: string;
 	manifestBytes: number;
-	contractVersion: typeof TREE_CONTRACT_VERSION;
+	contractVersion: CloudCompanyTreeContractVersion;
 	fileCount: number;
 	totalBytes: number;
 }
@@ -80,7 +103,7 @@ export function currentCloudCompanyTreeReference(value: {
 		!SHA256_PATTERN.test(value.manifestSha256) ||
 		!Number.isSafeInteger(value.manifestBytes) ||
 		value.manifestBytes < 1 ||
-		value.contractVersion !== TREE_CONTRACT_VERSION ||
+		(value.contractVersion !== 1 && value.contractVersion !== TREE_CONTRACT_VERSION) ||
 		!Number.isSafeInteger(value.fileCount) ||
 		value.fileCount < 0 ||
 		!Number.isSafeInteger(value.totalBytes) ||
@@ -88,7 +111,7 @@ export function currentCloudCompanyTreeReference(value: {
 	) {
 		throw new Error("Cloud company tree reference is not supported by this client");
 	}
-	return { ...value, contractVersion: TREE_CONTRACT_VERSION };
+	return { ...value, contractVersion: value.contractVersion as CloudCompanyTreeContractVersion };
 }
 
 function normalizedRelativePath(path: string): string {
@@ -118,11 +141,18 @@ function normalizedRelativePath(path: string): string {
 	return normalized;
 }
 
-function shouldOmit(path: string): boolean {
+function shouldOmit(path: string, contractVersion: CloudCompanyTreeContractVersion = TREE_CONTRACT_VERSION): boolean {
 	const parts = path.split("/");
 	if (parts[0] === ".git" || parts[0] === "trail" || parts.includes("node_modules")) return true;
 	if (parts[0] === ".qorpera") {
 		if (parts[1] === "staff.json" || parts[1] === "product-worktrees" || parts[1] === "w") return true;
+		if (contractVersion >= 2 && parts[1] === "agent-messages.json") return true;
+	}
+	if (contractVersion >= 2) {
+		if (parts[0] === "inbox") return true;
+		if (parts[0] === "agents" && parts.length === 3 && (parts[2] === "instructions.md" || parts[2] === "memory.md")) {
+			return true;
+		}
 	}
 	return parts[0] === "departments" && parts.length >= 3 && (parts[2] === "repository" || parts[2] === "worktrees");
 }
@@ -173,12 +203,15 @@ function parseManifest(bytes: Uint8Array, reference: CloudCompanyTreeReference):
 		throw new Error("Cloud company tree manifest is invalid");
 	}
 	const input = parsed as Partial<CloudCompanyTreeManifest>;
+	// Historical manifests validate against their own contract's omission
+	// rules: a v1 snapshot may legitimately contain paths v2 omits.
+	const expectedLayers = omittedLayersForContract(reference.contractVersion);
 	if (
 		input.schema !== TREE_MANIFEST_SCHEMA ||
-		input.contractVersion !== TREE_CONTRACT_VERSION ||
+		input.contractVersion !== reference.contractVersion ||
 		!Array.isArray(input.omittedLayers) ||
-		input.omittedLayers.length !== CLOUD_COMPANY_TREE_OMITTED_LAYERS.length ||
-		input.omittedLayers.some((layer, index) => layer !== CLOUD_COMPANY_TREE_OMITTED_LAYERS[index]) ||
+		input.omittedLayers.length !== expectedLayers.length ||
+		input.omittedLayers.some((layer, index) => layer !== expectedLayers[index]) ||
 		!Array.isArray(input.entries) ||
 		input.entries.length > MAX_TREE_ENTRIES
 	) {
@@ -195,7 +228,12 @@ function parseManifest(bytes: Uint8Array, reference: CloudCompanyTreeReference):
 		}
 		const entry = value as Record<string, unknown>;
 		const path = normalizedRelativePath(String(entry.path ?? ""));
-		if (path <= previousPath || seen.has(path) || folded.has(path.toLowerCase()) || shouldOmit(path)) {
+		if (
+			path <= previousPath ||
+			seen.has(path) ||
+			folded.has(path.toLowerCase()) ||
+			shouldOmit(path, reference.contractVersion)
+		) {
 			throw new Error("Cloud company tree paths are invalid or collide");
 		}
 		previousPath = path;
@@ -213,17 +251,13 @@ function parseManifest(bytes: Uint8Array, reference: CloudCompanyTreeReference):
 		}
 		return { kind: "file", path, executable: entry.executable, file };
 	});
-	if (
-		reference.contractVersion !== TREE_CONTRACT_VERSION ||
-		reference.fileCount !== fileCount ||
-		reference.totalBytes !== totalBytes
-	) {
+	if (reference.fileCount !== fileCount || reference.totalBytes !== totalBytes) {
 		throw new Error("Cloud company tree reference does not match its manifest");
 	}
 	return {
 		schema: TREE_MANIFEST_SCHEMA,
-		contractVersion: TREE_CONTRACT_VERSION,
-		omittedLayers: CLOUD_COMPANY_TREE_OMITTED_LAYERS,
+		contractVersion: reference.contractVersion,
+		omittedLayers: expectedLayers,
 		entries,
 	};
 }

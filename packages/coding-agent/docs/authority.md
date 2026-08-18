@@ -53,13 +53,13 @@ file fails **closed** — every class gates.
 - **product_code**: mutations under
   `departments/<product>-development/repository/` or a task directory under
   `worktrees/`. This is a fixed role boundary, not an `authority.toml`
-  class. Controllers are read-only even when attended, and their denied
+  class. Company agents are read-only even when attended, and their denied
   mutations create no approvable gate. Product-workers can mutate only the
-  exact worktree assigned by the kernel. Path-argument tools are precise;
+  exact worktree assigned by the host. Path-argument tools are precise;
   `bash` uses conservative mutation and worktree-escape screens. Boundary
   checks rank above `[tools]` opt-outs.
 
-## Controller and product-worker roles
+## Company-agent and product-worker roles
 
 Attendance expresses founder intent for ordinary outward effects; it never
 changes organizational role. A product department Chat creates a Git
@@ -67,15 +67,19 @@ worktree, starts the runtime with actor `product-worker`, and records the
 department and worktree in the session name. The authority hook receives the
 same actor/worktree capability in pi-native and Codex engine modes.
 
-- **controller** — reads product repositories, worktrees, PR records, and
+- **company-agent** — reads product repositories, worktrees, PR records, and
   trails; writes briefs and company operations; cannot modify product code.
 - **product-worker** — modifies only non-`.git` content in its assigned
   worktree. It receives no direct network, credentials, repository-metadata,
-  commit, push, or PR capability. The kernel checkpoints content changes;
-  future push and PR operations require explicit kernel brokers.
+  commit, push, or PR capability. The host checkpoints content changes;
+  future push and PR operations require explicit host brokers.
 - Gates cannot widen the worktree, `.git`, network, or credential boundary.
 - Destructive commands and PR merge/close operations re-classify as
   `[irreversible]`; ordinary irreversible policy still applies.
+
+Trail schema version 5 still serializes a normal company agent as
+`actor:"controller"`. That is a compatibility wire value, not a live
+organizational role or universal company process.
 
 ## Gate lifecycle
 
@@ -99,7 +103,7 @@ transition. Editing the file alone never mints an executable capability.
 Project-local extensions are agent-authorable code that runs with full user
 permissions (`SEAMS.md` c.3) — so loading one from inside the authority root
 is an authority-class effect. Applied at every load site including the
-pre-trust load. Trust is **durable in the local desktop kernel** and scoped to
+pre-trust load. Trust is **durable in the local desktop host** and scoped to
 the physical company path, extension path, and content hash. Child replacement
 does not lose it, copied Git files do not carry it, and the founder can revoke
 it from the consumed gate's inbox card. User-global extensions
@@ -123,7 +127,7 @@ zones, destructive patterns) — a mention inside a commit message is data,
 not an effect. The same applies to the path arguments of index-only git
 verbs (`git add`, `git commit` pathspecs): staging or committing a file
 reads it into the index and cannot modify it, so committing inbox records
-or the kernel files is bookkeeping, not an effect. Bodies or arguments
+or host-owned files is bookkeeping, not an effect. Bodies or arguments
 containing execution constructs (`$(…)`, backticks, `${…}`) are NOT
 blanked; flags survive the strip (`--amend` still hits the history
 screen); worktree-writing git verbs (checkout, restore, reset, rm, mv,
@@ -160,13 +164,13 @@ root are ignored — only company-authored code is subject).
 
 Every classified effect is stamped into the trail as a `qorpera_effect`
 custom entry — tool, effect class, decision, consumed gate ID, and (when
-codified behavior acted) its content hash and signature status. The kernel
+codified behavior acted) its content hash and signature status. The host
 separately journals a gate creation plan before its first trail transition,
 advances the durable phase before every later transition, then records each
 creation completion, consumption, or orphan reset in the hash-chained trail.
 The journal is keyed by gate file rather than request hash, so repeated exact
 requests remain independent. An interrupted creation is reconciled
-idempotently across recovery trails from desktop kernel state before the next
+idempotently across recovery trails from desktop host state before the next
 child receives access, so file state and child assertions are not the
 authority evidence.
 
@@ -180,7 +184,7 @@ effect on another machine or in a later child session.
 ## What this is not
 
 Prompt-tier guidance. Enforcement is code at the tool-call boundary and the
-extension loader; the kernel prompt only explains the rules. Known limits of
+extension loader; the system prompt only explains the rules. Known limits of
 v1: the bash screen is string-level (no shell parsing), and `limit_usd` is
 parsed but not yet enforced because Base has no money-moving tools. Native
 founder reviews, child effect assertions, gate transitions, and broker-observed

@@ -23,22 +23,23 @@ import { dirname, isAbsolute, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
 import {
+	COMPANY_MANIFEST_RELATIVE_PATH,
+	COMPANY_MANIFEST_SCHEMA,
 	captureProductTransactionStorage,
 	claimCompanyRuntimeLock,
 	companyRuntimeLockPath,
 	createProductWorktree,
 	ENVIRONMENT_CONTRACT_VERSION,
 	EXPORT_MANIFEST_FILE,
-	enforceCompanyKernelSettings,
+	enforceCompanyHostSettings,
 	exportCompany,
 	importCompany,
 	integrateRepo,
-	KERNEL_PROMPT,
 	listProductDepartments,
 	materializeClonedProductStorage,
-	migrateLegacyManifestSurfaces,
 	planProductWorktree,
 	planProductWorktreeRecovery,
+	readCompanyManifest,
 	readProductProtectionInventory,
 	readProductWorktreeAssignment,
 	recoverProductWorktree,
@@ -46,76 +47,83 @@ import {
 	scaffoldCompany,
 	scaffoldProductDepartment,
 	scaffoldProductDepartmentWithRuntimeLock,
-	validateCompanyKernelStorage,
+	validateCompanyHostStorage,
 } from "../src/core/company.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 let root: string;
+let previousAgentDir: string | undefined;
 
 beforeEach(() => {
 	root = join(tmpdir(), `qorpera-company-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	previousAgentDir = process.env.QORPERA_CODING_AGENT_DIR;
+	process.env.QORPERA_CODING_AGENT_DIR = join(root, "agent-home");
 });
 
 afterEach(() => {
+	if (previousAgentDir === undefined) delete process.env.QORPERA_CODING_AGENT_DIR;
+	else process.env.QORPERA_CODING_AGENT_DIR = previousAgentDir;
 	if (root && existsSync(root)) {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
 
 describe("scaffoldCompany", () => {
-	it("creates the full spine with kernel files materialized from one source", () => {
+	it("creates a minimal agents-only company genesis", () => {
 		const result = scaffoldCompany(root);
 
 		for (const entry of [
+			COMPANY_MANIFEST_RELATIVE_PATH,
+			join(".qorpera", "staff.json"),
+			join("inbox", "messages"),
+			"trail",
+			"connectors",
+			"agents",
+			"files",
+		]) {
+			expect(existsSync(join(root, entry)), entry).toBe(true);
+		}
+		for (const legacy of [
 			"AGENTS.md",
 			"CLAUDE.md",
 			"company.md",
 			"authority.toml",
-			join("connections", "README.md"),
-			join("inbox", "README.md"),
-			"trail",
-			join("app", "projection.json"),
-			join("app", "surfaces"),
-			join("app", "substrates"),
-			join("app", "routines"),
-			join("app", "tools"),
 			"departments",
+			"artifacts",
+			"app",
 		]) {
-			expect(existsSync(join(root, entry)), entry).toBe(true);
+			expect(existsSync(join(root, legacy)), legacy).toBe(false);
 		}
+		const company = readCompanyManifest(root);
+		expect(company).toMatchObject({ schema: COMPANY_MANIFEST_SCHEMA, name: expect.any(String) });
+		expect(company.id).toMatch(/^[0-9a-f-]{36}$/);
+		expect(JSON.parse(readFileSync(join(root, ".qorpera", "staff.json"), "utf-8")).agents).toEqual({});
 
-		// Kernel single-sourced: both files carry the same text.
-		expect(readFileSync(join(root, "AGENTS.md"), "utf-8")).toBe(KERNEL_PROMPT);
-		expect(readFileSync(join(root, "CLAUDE.md"), "utf-8")).toBe(KERNEL_PROMPT);
-		expect(KERNEL_PROMPT).toContain("controller of the company rooted in this folder");
-
-		const projection = JSON.parse(readFileSync(join(root, "app", "projection.json"), "utf-8"));
-		expect(projection).toEqual({
-			schema: "qorpera.projection/v1",
-			default: "q:chats",
-			navigation: [],
-			nodes: [],
-		});
 		const settings = JSON.parse(readFileSync(join(root, ".qorpera", "settings.json"), "utf-8"));
 		expect(settings.compaction).toEqual({ enabled: false });
 		expect(settings.transport).toBe("sse");
 
-		expect(result.created.length).toBeGreaterThan(10);
+		expect(result.created.length).toBeGreaterThanOrEqual(9);
 		expect(result.skipped.length).toBe(0);
 		expect(spawnSync("git", ["rev-parse", "--verify", "HEAD"], { cwd: root, stdio: "ignore" }).status).toBe(0);
 	});
 
 	it("is idempotent and never overwrites existing company files", () => {
 		scaffoldCompany(root);
-		writeFileSync(join(root, "company.md"), "# Acme\n\nWe make anvils.\n", "utf-8");
+		const company = readCompanyManifest(root);
+		writeFileSync(
+			join(root, COMPANY_MANIFEST_RELATIVE_PATH),
+			`${JSON.stringify({ ...company, name: "Acme" }, null, "\t")}\n`,
+			"utf-8",
+		);
 		writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "auto"\n`, "utf-8");
 
 		const second = scaffoldCompany(root);
-		expect(readFileSync(join(root, "company.md"), "utf-8")).toContain("anvils");
+		expect(readCompanyManifest(root).name).toBe("Acme");
 		expect(readFileSync(join(root, "authority.toml"), "utf-8")).toContain("auto");
 		expect(second.created.length).toBe(0);
-		expect(second.skipped.length).toBeGreaterThan(10);
+		expect(second.skipped.length).toBeGreaterThanOrEqual(8);
 	});
 
 	it("initializes a git repository when none exists", () => {
@@ -139,9 +147,9 @@ describe("scaffoldCompany", () => {
 			expect(spawnSync("git", args, { cwd: root, stdio: "ignore" }).status).toBe(0);
 		}
 		scaffoldCompany(root);
-		expect(spawnSync("git", ["ls-files", "company.md"], { cwd: root, encoding: "utf-8" }).stdout.trim()).toBe(
-			"company.md",
-		);
+		expect(
+			spawnSync("git", ["ls-files", COMPANY_MANIFEST_RELATIVE_PATH], { cwd: root, encoding: "utf-8" }).stdout.trim(),
+		).toBe(COMPANY_MANIFEST_RELATIVE_PATH.replaceAll("\\", "/"));
 		expect(spawnSync("git", ["log", "-1", "--format=%B"], { cwd: root, encoding: "utf-8" }).stdout).toContain(
 			"Qorpera-Trigger: company scaffold migration",
 		);
@@ -152,8 +160,13 @@ describe("scaffoldCompany", () => {
 		const authority = discoverAuthority(root);
 		expect(authority?.root).toBe(root);
 
-		// The default gates protect the kernel and the gate machinery itself.
-		const decision = evaluateToolCall(authority!, "write", { path: join(root, "AGENTS.md"), content: "x" }, root);
+		// Base's authority floor exists without a company-authored policy file.
+		const decision = evaluateToolCall(
+			authority!,
+			"write",
+			{ path: join(root, COMPANY_MANIFEST_RELATIVE_PATH), content: "x" },
+			root,
+		);
 		expect(decision.kind).toBe("block");
 		const destructive = evaluateToolCall(authority!, "bash", { command: "rm -rf work" }, root);
 		expect(destructive.kind).toBe("block");
@@ -169,7 +182,7 @@ describe("scaffoldCompany", () => {
 		expect(settings.compaction).toEqual({ enabled: false });
 		expect(settings.transport).toBe("sse");
 
-		// The kernel always restores the company trail as the session store.
+		// The host always restores the company trail as the session store.
 		writeFileSync(
 			join(root, ".qorpera", "settings.json"),
 			JSON.stringify({ sessionDir: "/custom/elsewhere" }),
@@ -195,151 +208,34 @@ describe("scaffoldCompany", () => {
 	it("fails closed on malformed company settings", () => {
 		scaffoldCompany(root);
 		writeFileSync(join(root, ".qorpera", "settings.json"), "null\n", "utf-8");
-		expect(() => enforceCompanyKernelSettings(root)).toThrow("cannot be opened safely");
+		expect(() => enforceCompanyHostSettings(root)).toThrow("cannot be opened safely");
 	});
 
-	it("rejects linked kernel settings without modifying the external file", () => {
+	it("rejects linked host settings without modifying the external file", () => {
 		scaffoldCompany(root);
 		const outside = join(root, "outside-settings.json");
 		const settings = join(root, ".qorpera", "settings.json");
 		writeFileSync(outside, `${JSON.stringify({ founder: true })}\n`, "utf-8");
 		rmSync(settings);
 		linkSync(outside, settings);
-		expect(() => enforceCompanyKernelSettings(root)).toThrow("one physical in-company file");
+		expect(() => enforceCompanyHostSettings(root)).toThrow("one physical in-company file");
 		expect(readFileSync(outside, "utf-8")).toBe(`${JSON.stringify({ founder: true })}\n`);
 	});
 });
 
-describe("kernel upgrades reach existing companies through the scaffold", () => {
-	it("re-scaffolding an old-kernel company fills the missing spine so current validation passes", () => {
+describe("agents-only genesis repair", () => {
+	it("re-scaffolding fills missing agents-only directories", () => {
 		scaffoldCompany(root);
-		// Strip the spine down to what an older kernel created: no
-		// inbox/messages, no departments, no product registry, no projection.
 		rmSync(join(root, "inbox", "messages"), { recursive: true, force: true });
-		rmSync(join(root, "departments"), { recursive: true, force: true });
-		rmSync(join(root, ".qorpera", "products.json"), { force: true });
-		rmSync(join(root, "app", "projection.json"), { force: true });
-		expect(() => validateCompanyKernelStorage(root)).toThrow();
-		// The desktop kernel scaffolds before validating at open; the refilled
+		rmSync(join(root, "connectors"), { recursive: true, force: true });
+		rmSync(join(root, "agents"), { recursive: true, force: true });
+		rmSync(join(root, "files"), { recursive: true, force: true });
+		expect(() => validateCompanyHostStorage(root)).toThrow();
+		// The desktop host scaffolds before validating at open; the refilled
 		// spine must satisfy the validator or every legacy company is a dead
 		// click in the hub.
 		scaffoldCompany(root);
-		expect(() => validateCompanyKernelStorage(root)).not.toThrow();
-	});
-});
-
-describe("migrateLegacyManifestSurfaces (pre-projection companies)", () => {
-	const manifestPath = () => join(root, "app", "manifest.json");
-	const projectionPath = () => join(root, "app", "projection.json");
-	const readProjection = () => JSON.parse(readFileSync(projectionPath(), "utf-8"));
-
-	it("folds legacy manifest surfaces into the projection and drops the dead key", () => {
-		scaffoldCompany(root);
-		writeFileSync(join(root, "app", "surfaces", "revenue.html"), "<h1>rev</h1>", "utf-8");
-		writeFileSync(
-			manifestPath(),
-			JSON.stringify({
-				surfaces: [
-					{ name: "Revenue", entry: "revenue.html" },
-					// The {id,title,path} spelling agents produced live, prefix included.
-					{ id: "pipeline", title: "Pipeline", path: "app/surfaces/pipeline.md" },
-				],
-			}),
-			"utf-8",
-		);
-
-		expect(migrateLegacyManifestSurfaces(root)).toEqual({ pages: 2 });
-
-		const projection = readProjection();
-		expect(projection.navigation).toEqual(["department:surfaces"]);
-		expect(projection.nodes).toEqual([
-			{
-				id: "department:surfaces",
-				kind: "department",
-				label: "Surfaces",
-				items: ["page:surfaces.revenue.html", "page:surfaces.pipeline.md"],
-			},
-			{
-				id: "page:surfaces.revenue.html",
-				kind: "page",
-				label: "Revenue",
-				view: { type: "surface", entry: "revenue.html" },
-			},
-			{
-				id: "page:surfaces.pipeline.md",
-				kind: "page",
-				label: "Pipeline",
-				view: { type: "surface", entry: "pipeline.md" },
-			},
-		]);
-		// The dead key is gone; the surface files are untouched.
-		expect(existsSync(manifestPath())).toBe(false);
-		expect(readFileSync(join(root, "app", "surfaces", "revenue.html"), "utf-8")).toBe("<h1>rev</h1>");
-		// Idempotent: a second open changes nothing.
-		expect(migrateLegacyManifestSurfaces(root)).toBeUndefined();
-	});
-
-	it("keeps manifest keys that are not the legacy surfaces list", () => {
-		scaffoldCompany(root);
-		writeFileSync(
-			manifestPath(),
-			JSON.stringify({ theme: "dark", surfaces: [{ name: "One", entry: "one.html" }] }),
-			"utf-8",
-		);
-		expect(migrateLegacyManifestSurfaces(root)).toEqual({ pages: 1 });
-		expect(JSON.parse(readFileSync(manifestPath(), "utf-8"))).toEqual({ theme: "dark" });
-	});
-
-	it("never modifies a controller-authored projection; only strips the stale key", () => {
-		scaffoldCompany(root);
-		const authored = {
-			schema: "qorpera.projection/v1",
-			navigation: ["department:own"],
-			nodes: [
-				{ id: "department:own", kind: "department", label: "Own", items: ["page:own.home"] },
-				{ id: "page:own.home", kind: "page", label: "Home", view: { type: "surface", entry: "home.html" } },
-			],
-		};
-		writeFileSync(projectionPath(), JSON.stringify(authored), "utf-8");
-		writeFileSync(manifestPath(), JSON.stringify({ surfaces: [{ name: "Old", entry: "old.html" }] }), "utf-8");
-
-		expect(migrateLegacyManifestSurfaces(root)).toEqual({ pages: 0 });
-		expect(readProjection()).toEqual(authored);
-		expect(existsSync(manifestPath())).toBe(false);
-	});
-
-	it("touches nothing when the projection is unparseable", () => {
-		scaffoldCompany(root);
-		writeFileSync(projectionPath(), "{broken", "utf-8");
-		const manifest = JSON.stringify({ surfaces: [{ name: "Old", entry: "old.html" }] });
-		writeFileSync(manifestPath(), manifest, "utf-8");
-		expect(migrateLegacyManifestSurfaces(root)).toBeUndefined();
-		expect(readFileSync(manifestPath(), "utf-8")).toBe(manifest);
-	});
-
-	it("dedupes colliding entries and defaults labels to the entry", () => {
-		scaffoldCompany(root);
-		writeFileSync(
-			manifestPath(),
-			JSON.stringify({ surfaces: [{ path: "surfaces/Report Q3.html" }, { path: "./app/surfaces/Report Q3.html" }] }),
-			"utf-8",
-		);
-		expect(migrateLegacyManifestSurfaces(root)).toEqual({ pages: 2 });
-		const projection = readProjection();
-		expect(projection.nodes.map((node: { id: string }) => node.id)).toEqual([
-			"department:surfaces",
-			"page:surfaces.report-q3.html",
-			"page:surfaces.report-q3.html-2",
-		]);
-		expect(projection.nodes[1].label).toBe("Report Q3.html");
-	});
-
-	it("does nothing without a manifest or without a surfaces key", () => {
-		scaffoldCompany(root);
-		expect(migrateLegacyManifestSurfaces(root)).toBeUndefined();
-		writeFileSync(manifestPath(), JSON.stringify({ theme: "dark" }), "utf-8");
-		expect(migrateLegacyManifestSurfaces(root)).toBeUndefined();
-		expect(JSON.parse(readFileSync(manifestPath(), "utf-8"))).toEqual({ theme: "dark" });
+		expect(() => validateCompanyHostStorage(root)).not.toThrow();
 	});
 });
 
@@ -361,7 +257,7 @@ describe("forking hub verbs (no-launch paths)", () => {
 		const company = join(root, "integrated-co");
 		const handled = await handleCompanyCommand(["new", company, "--from", product, "--no-launch"]);
 		expect(handled).toBe(true);
-		expect(existsSync(join(company, "authority.toml"))).toBe(true);
+		expect(readCompanyManifest(company).schema).toBe(COMPANY_MANIFEST_SCHEMA);
 		expect(existsSync(join(company, "departments", "legacy-product-development", "repository", "index.js"))).toBe(
 			true,
 		);
@@ -408,8 +304,10 @@ describe("forking hub verbs (no-launch paths)", () => {
 		const forked = join(root, "forked-co");
 		const handled = await handleCompanyCommand(["fork", original, forked, "--no-launch"]);
 		expect(handled).toBe(true);
-		expect(existsSync(join(forked, "AGENTS.md"))).toBe(true);
-		expect(existsSync(join(forked, "authority.toml"))).toBe(true);
+		const originalManifest = readCompanyManifest(original);
+		const forkManifest = readCompanyManifest(forked);
+		expect(forkManifest.id).not.toBe(originalManifest.id);
+		expect(forkManifest.parent).toMatchObject({ companyId: originalManifest.id, state: expect.any(String) });
 		expect(existsSync(join(forked, ".git"))).toBe(true);
 	});
 });
@@ -497,6 +395,21 @@ describe("product-development departments", () => {
 					: "linux:1";
 		writeFileSync(lockPath, `${JSON.stringify(liveRecord)}\n`, "utf-8");
 		utimesSync(lockPath, old, old);
+		const recovered = claimCompanyRuntimeLock(root);
+		releaseCompanyRuntimeLock(recovered);
+	});
+
+	it("immediately reclaims a fresh lock whose owner process exited", () => {
+		scaffoldCompany(root);
+		const lockPath = companyRuntimeLockPath(root);
+		const original = claimCompanyRuntimeLock(root);
+		const deadRecord = JSON.parse(readFileSync(lockPath, "utf-8")) as Record<string, unknown>;
+		releaseCompanyRuntimeLock(original);
+		deadRecord.pid = 2_147_483_647;
+		deadRecord.processInstance = process.platform === "win32" ? "windows:1" : "linux:1";
+		mkdirSync(dirname(lockPath), { recursive: true });
+		writeFileSync(lockPath, `${JSON.stringify(deadRecord)}\n`, "utf-8");
+
 		const recovered = claimCompanyRuntimeLock(root);
 		releaseCompanyRuntimeLock(recovered);
 	});
@@ -816,6 +729,7 @@ describe("product-development departments", () => {
 
 	it("rejects linked product transaction parents before writing the kit", () => {
 		scaffoldCompany(root);
+		captureProductTransactionStorage(root);
 		const physicalDepartments = join(root, "departments-physical");
 		renameSync(join(root, "departments"), physicalDepartments);
 		symlinkSync(physicalDepartments, join(root, "departments"), process.platform === "win32" ? "junction" : "dir");
@@ -824,22 +738,23 @@ describe("product-development departments", () => {
 		expect(existsSync(join(physicalDepartments, "widget-development"))).toBe(false);
 	});
 
-	it("rejects aliased kernel transaction files before writing the kit", () => {
+	it("rejects aliased product transaction files before writing the kit", () => {
 		scaffoldCompany(root);
-		const projection = join(root, "app", "projection.json");
-		rmSync(projection);
-		linkSync(join(root, "authority.toml"), projection);
+		captureProductTransactionStorage(root);
+		const registry = join(root, ".qorpera", "products.json");
+		rmSync(registry);
+		linkSync(join(root, COMPANY_MANIFEST_RELATIVE_PATH), registry);
 
 		expect(() => scaffoldProductDepartment(root, "Widget")).toThrow("must be one physical entry");
 		expect(existsSync(join(root, "departments", "widget-development"))).toBe(false);
 	});
 
 	it("tracks keep files created in pre-existing empty spine directories", () => {
-		mkdirSync(join(root, "app", "tools"), { recursive: true });
+		mkdirSync(join(root, "connectors"), { recursive: true });
 		scaffoldCompany(root);
-		expect(spawnSync("git", ["ls-files", "app/tools/.gitkeep"], { cwd: root, encoding: "utf-8" }).stdout.trim()).toBe(
-			"app/tools/.gitkeep",
-		);
+		expect(
+			spawnSync("git", ["ls-files", "connectors/.gitkeep"], { cwd: root, encoding: "utf-8" }).stdout.trim(),
+		).toBe("connectors/.gitkeep");
 	});
 
 	it("materializes and discovers the standard department kit", () => {
@@ -851,40 +766,16 @@ describe("product-development departments", () => {
 		expect(existsSync(join(root, department.path, "department.json"))).toBe(true);
 		expect(existsSync(join(root, department.worktreesPath))).toBe(true);
 		expect(listProductDepartments(root)).toEqual([department]);
-		const projection = JSON.parse(readFileSync(join(root, "app", "projection.json"), "utf-8"));
-		expect(projection.navigation).toEqual(["department:my-product-development"]);
-		expect(projection.nodes).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					id: "department:my-product-development",
-					kind: "department",
-					items: [
-						"page:my-product-development.chat",
-						"page:my-product-development.pull-requests",
-						"page:my-product-development.architecture",
-					],
-				}),
-				expect.objectContaining({
-					id: "page:my-product-development.architecture",
-					view: expect.objectContaining({ id: "qorpera.placeholder" }),
-				}),
-			]),
-		);
-		expect(projection.navigation.filter((id: string) => id === "department:my-product-development")).toHaveLength(1);
-		expect(
-			projection.nodes.filter((node: { id: string }) => node.id.startsWith("page:my-product-development.")),
-		).toHaveLength(3);
+		expect(existsSync(join(root, "app"))).toBe(false);
 	});
 
-	it("creates valid projection IDs for punctuation-prefixed product names", () => {
+	it("creates a valid department ID for punctuation-prefixed product names", () => {
 		scaffoldCompany(root);
 		const department = scaffoldProductDepartment(root, "...Product...");
 		expect(department.id).toBe("product-development");
-		const projection = JSON.parse(readFileSync(join(root, "app", "projection.json"), "utf-8"));
-		expect(projection.navigation).toEqual(["department:product-development"]);
 	});
 
-	it("uses one canonical department and projection namespace for case variants", () => {
+	it("uses one canonical department namespace for case variants", () => {
 		scaffoldCompany(root);
 		const first = scaffoldProductDepartment(root, "Widget");
 		const second = scaffoldProductDepartment(root, "widget");
@@ -892,8 +783,6 @@ describe("product-development departments", () => {
 		expect(readdirSync(join(root, "departments")).filter((id) => id.endsWith("-development"))).toEqual([
 			"widget-development",
 		]);
-		const projection = JSON.parse(readFileSync(join(root, "app", "projection.json"), "utf-8"));
-		expect(projection.navigation).toEqual(["department:widget-development"]);
 	});
 
 	it("ignores arbitrary department folders without a product-development manifest", () => {
@@ -1068,33 +957,6 @@ describe("product-development departments", () => {
 		expect(() => scaffoldProductDepartment(root, "Widget")).toThrow("already exists");
 		expect(readdirSync(departmentPath)).toEqual(["department.json"]);
 	});
-
-	it("rejects incompatible product projection node ownership", () => {
-		scaffoldCompany(root);
-		writeFileSync(
-			join(root, "app", "projection.json"),
-			`${JSON.stringify(
-				{
-					schema: "qorpera.projection/v1",
-					navigation: [],
-					nodes: [
-						{
-							id: "department:widget-development",
-							kind: "department",
-							label: "Unrelated",
-							items: [],
-						},
-					],
-				},
-				null,
-				"\t",
-			)}\n`,
-			"utf-8",
-		);
-
-		expect(() => scaffoldProductDepartment(root, "Widget")).toThrow("incompatible content");
-		expect(existsSync(join(root, "departments", "widget-development"))).toBe(false);
-	});
 });
 
 describe("company registry", () => {
@@ -1122,7 +984,7 @@ describe("company registry", () => {
 			registerCompany(companyA);
 
 			// A registered dir that stops being a company disappears from the list.
-			rmSync(join(companyB, "authority.toml"));
+			rmSync(join(companyB, COMPANY_MANIFEST_RELATIVE_PATH));
 			companies = listCompanies();
 			expect(companies.length).toBe(1);
 			expect(companies[0].root).toBe(companyA);
@@ -1152,7 +1014,7 @@ describe("sessions are the trail", () => {
 			content: [{ type: "text", text: "hello trail" }],
 			timestamp: Date.now(),
 		} as never);
-		// The kernel creates the session header immediately; assistant output
+		// The host creates the session header immediately; assistant output
 		// then appends to the already-auditable trail.
 		sessionManager.appendMessage({
 			role: "assistant",
@@ -1233,7 +1095,8 @@ describe("environment export and import", () => {
 
 	it("round-trips: export is independently inspectable and import reproduces the environment", () => {
 		scaffoldWithTrail();
-		writeFileSync(join(root, "departments", "notes.md"), "# Agent-owned state\n", "utf-8");
+		mkdirSync(join(root, "files", "notes"), { recursive: true });
+		writeFileSync(join(root, "files", "notes", "work.md"), "# Shared company work\n", "utf-8");
 
 		const exported = exportCompany(root, exportDir);
 		expect(exported.manifest.schema).toBe("qorpera.export/v1");
@@ -1242,9 +1105,10 @@ describe("environment export and import", () => {
 
 		// Independent inspection: plain fs reads against the export, no runtime.
 		const company = join(exportDir, "company");
-		expect(readFileSync(join(company, "company.md"), "utf-8")).toContain("company");
-		expect(readFileSync(join(company, "authority.toml"), "utf-8")).toContain("[");
-		expect(readFileSync(join(company, "departments", "notes.md"), "utf-8")).toContain("Agent-owned");
+		expect(JSON.parse(readFileSync(join(company, COMPANY_MANIFEST_RELATIVE_PATH), "utf-8")).schema).toBe(
+			COMPANY_MANIFEST_SCHEMA,
+		);
+		expect(readFileSync(join(company, "files", "notes", "work.md"), "utf-8")).toContain("Shared company");
 		const trailFiles = readdirSync(join(company, "trail")).filter((name) => name.endsWith(".jsonl"));
 		expect(trailFiles.length).toBe(1);
 		const trailLines = readFileSync(join(company, "trail", trailFiles[0]), "utf-8")
@@ -1257,10 +1121,17 @@ describe("environment export and import", () => {
 
 		const imported = importCompany(exportDir, importDir);
 		expect(imported.head).toBe(exported.manifest.sourceHead);
-		for (const entry of ["company.md", "authority.toml", "AGENTS.md", "trail", join("app", "projection.json")]) {
+		for (const entry of [
+			COMPANY_MANIFEST_RELATIVE_PATH,
+			join(".qorpera", "staff.json"),
+			"connectors",
+			"agents",
+			"files",
+			"trail",
+		]) {
 			expect(existsSync(join(importDir, entry)), entry).toBe(true);
 		}
-		expect(readFileSync(join(importDir, "departments", "notes.md"), "utf-8")).toContain("Agent-owned");
+		expect(readFileSync(join(importDir, "files", "notes", "work.md"), "utf-8")).toContain("Shared company");
 		const importedHead = spawnSync("git", ["-C", importDir, "rev-parse", "--verify", "HEAD"], {
 			encoding: "utf-8",
 		});

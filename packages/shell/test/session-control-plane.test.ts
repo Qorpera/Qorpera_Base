@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	appendKernelSessionRuntimeObservation,
 	bindTrailSession,
-	latestResumableTrailSession,
 	pruneEmptyTrailSessions,
 } from "../src/agent-runtime.ts";
 import { SessionControlPlane } from "../src/session-control-plane.ts";
@@ -24,7 +23,7 @@ afterEach(() => {
 describe("session control plane", () => {
 	it("persists lifecycle facts and reconstructs the read model from the trail", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 		});
 		const plane = await SessionControlPlane.create(root, "kernel-a");
@@ -70,7 +69,7 @@ describe("session control plane", () => {
 
 	it("restores unchanged trails from a derived cache and ignores an invalid cache", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 			staffAgentId: "staff-night-shift",
 		});
@@ -124,7 +123,7 @@ describe("session control plane", () => {
 
 	it("keeps a replacement executor authoritative over late events from the old process", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 		});
 		const plane = await SessionControlPlane.create(root, "kernel-a");
@@ -157,7 +156,7 @@ describe("session control plane", () => {
 
 	it("keeps an attended session alive while its replaceable executor reconnects", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 		});
 		const plane = await SessionControlPlane.create(root, "kernel-a");
@@ -206,7 +205,7 @@ describe("session control plane", () => {
 
 	it("replays canonical append order even when the wall clock moves backward", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 		});
 		appendKernelSessionRuntimeObservation(binding, {
@@ -231,7 +230,7 @@ describe("session control plane", () => {
 
 	it("does not let buffered frames revive an exited executor", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 		});
 		const plane = await SessionControlPlane.create(root, "kernel-a");
@@ -258,7 +257,7 @@ describe("session control plane", () => {
 
 	it("treats same-process reconstruction as an executor ownership boundary", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 		});
 		const plane = await SessionControlPlane.create(root, "kernel-a");
@@ -272,41 +271,9 @@ describe("session control plane", () => {
 		});
 	});
 
-	it("selects the founder chat most recently attached by the kernel", async () => {
-		const older = bindTrailSession(root, root, {
-			actor: "controller",
-			attended: false,
-		});
-		const newer = bindTrailSession(root, root, {
-			actor: "controller",
-			attended: false,
-		});
-		const staff = bindTrailSession(root, root, {
-			actor: "controller",
-			attended: false,
-			staffAgentId: "staff-chief-of-staff",
-		});
-		const plane = await SessionControlPlane.create(root, "kernel-a");
-		plane.record(newer, { kind: "executor_started", executorId: "newer" });
-		plane.record(older, {
-			kind: "executor_started",
-			executorId: "older-reopened",
-		});
-		plane.record(staff, { kind: "executor_started", executorId: "staff-reopened" });
-		expect(plane.latestAttendedControllerTrailFile()).toBe(older.file);
-		const restarted = await SessionControlPlane.create(root, "kernel-b");
-		expect(restarted.latestAttendedControllerTrailFile()).toBe(older.file);
-		expect(restarted.snapshot().sessions.find((session) => session.trailFile === staff.file)).toMatchObject({
-			staffAgentId: "staff-chief-of-staff",
-		});
-		expect(
-			restarted.snapshot().sessions.find((session) => session.trailFile === older.file)?.staffAgentId,
-		).toBeUndefined();
-	});
-
 	it("isolates read-model listeners from durable control decisions", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 		});
 		const plane = await SessionControlPlane.create(root, "kernel-a");
@@ -319,7 +286,7 @@ describe("session control plane", () => {
 
 	it("stops replay at the first broken trail hash-chain link", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 		});
 		const plane = await SessionControlPlane.create(root, "kernel-a");
@@ -338,22 +305,20 @@ describe("session control plane", () => {
 			status: "detached",
 			executorId: "executor-a",
 		});
-		expect(restarted.latestAttendedControllerTrailFile()).toBeUndefined();
-		expect(latestResumableTrailSession(root)).toBeUndefined();
+		expect(restarted.isTrailVisible(binding.file)).toBe(false);
 		const reopened = await SessionControlPlane.create(root, "kernel-c", cachePath);
-		expect(reopened.latestAttendedControllerTrailFile()).toBeUndefined();
-		expect(latestResumableTrailSession(root)).toBeUndefined();
+		expect(reopened.isTrailVisible(binding.file)).toBe(false);
 	});
 
 	it("rejects a metadata-matching cache written before verification quarantine", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 		});
 		const plane = await SessionControlPlane.create(root, "kernel-a");
 		plane.record(binding, { kind: "executor_started", executorId: "executor-a" });
 		plane.record(binding, { kind: "executor_ready", executorId: "executor-a" });
-		const cachePath = join(root, "kernel-state", "sessions-v2.json");
+		const cachePath = join(root, "kernel-state", "sessions-v3.json");
 		await SessionControlPlane.create(root, "kernel-b", cachePath);
 		const validCache = JSON.parse(readFileSync(cachePath, "utf-8"));
 
@@ -368,13 +333,13 @@ describe("session control plane", () => {
 		writeFileSync(cachePath, `${JSON.stringify({ ...validCache, version: 1 })}\n`, "utf-8");
 
 		const restarted = await SessionControlPlane.create(root, "kernel-c", cachePath);
-		expect(restarted.latestAttendedControllerTrailFile()).toBeUndefined();
-		expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toMatchObject({ version: 2, files: {} });
+		expect(restarted.isTrailVisible(binding.file)).toBe(false);
+		expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toMatchObject({ version: 3, files: {} });
 	});
 
 	it("marks unfinished autonomous work interrupted after a kernel restart", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 			autonomousLabel: "autonomous — scheduled review",
 		});
@@ -395,7 +360,7 @@ describe("session control plane", () => {
 
 	it("keeps autonomous work nonterminal until its executor closes", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 			autonomousLabel: "autonomous — scheduled review",
 		});
@@ -427,7 +392,7 @@ describe("session control plane", () => {
 
 	it("marks an intentionally stopped in-flight founder turn interrupted", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 		});
 		const plane = await SessionControlPlane.create(root, "kernel-a");
@@ -457,7 +422,7 @@ describe("session control plane", () => {
 
 	it("does not make an otherwise empty founder session permanent", async () => {
 		const binding = bindTrailSession(root, root, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 		});
 		const plane = await SessionControlPlane.create(root, "kernel-a");

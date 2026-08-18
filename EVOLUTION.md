@@ -1,5 +1,9 @@
 # EVOLUTION.md — self-evolution and the signature rule
 
+> Superseded product architecture. The agents-only company no longer has a
+> self-evolving controller or executable app surfaces. The behavior-signature
+> security rules remain relevant to brokered executable connector code.
+
 Converged design, 2026-08-05. **Status: RATIFIED 2026-08-05.** Extends
 spec-v0 and the company-folder spine
 (`packages/coding-agent/docs/company.md`). Supersedes the earlier draft of

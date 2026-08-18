@@ -321,7 +321,7 @@ describe("cloud trail synchronization", () => {
 		const machine = join(root, "machine", "company");
 		const userData = join(root, "machine", "user-data");
 		mkdirSync(join(machine, "trail"), { recursive: true });
-		const live = bindTrailSession(machine, machine, { actor: "controller", attended: true });
+		const live = bindTrailSession(machine, machine, { actor: "company-agent", attended: true });
 		appendKernelSessionInfo(live, "Recovery test");
 		const primary = new FakeHostedPrimary();
 		primary.failAfterNextAppend = true;
@@ -351,7 +351,7 @@ describe("cloud trail synchronization", () => {
 		mkdirSync(join(machineB, "trail"), { recursive: true });
 
 		const liveA = bindTrailSession(machineA, machineA, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: false,
 			staffAgentId: "financial-officer",
 		});
@@ -462,7 +462,7 @@ describe("cloud trail synchronization", () => {
 			bindTrailSession(
 				machineA,
 				machineA,
-				{ actor: "controller", attended: true, staffAgentId: "financial-officer" },
+				{ actor: "company-agent", attended: true, staffAgentId: "financial-officer" },
 				liveA.file,
 			).audit.sequence,
 		).toBe(liveA.audit.sequence);

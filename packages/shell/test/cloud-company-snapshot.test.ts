@@ -57,6 +57,7 @@ async function companyFixture(): Promise<string> {
 	await writeFile(join(root, "departments", "product", "repository", "local.txt"), "checkout", "utf-8");
 	await mkdir(join(root, "app", "tools", "example", "node_modules", "dependency"), { recursive: true });
 	await writeFile(join(root, "app", "tools", "example", "node_modules", "dependency", "index.js"), "cache", "utf-8");
+	await mkdir(join(root, "app", "substrates"), { recursive: true });
 	await writeFile(join(root, "app", "substrates", "market.md"), "durable substrate\n", "utf-8");
 	return root;
 }
@@ -95,6 +96,53 @@ describe("cloud company snapshots", () => {
 			readFile(join(target, "app", "tools", "example", "node_modules", "dependency", "index.js"), "utf-8"),
 		).rejects.toMatchObject({ code: "ENOENT" });
 		await expect(readFile(join(target, ".git", "HEAD"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("publishes agent work product while omitting instructions and the operational inbox", async () => {
+		const root = await companyFixture();
+		const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+		await mkdir(join(root, "agents", agentId, "artifacts"), { recursive: true });
+		await mkdir(join(root, "agents", agentId, "skills"), { recursive: true });
+		await writeFile(join(root, "agents", agentId, "instructions.md"), "# Charter\n", "utf-8");
+		await writeFile(join(root, "agents", agentId, "memory.md"), "# Memory\n", "utf-8");
+		await writeFile(join(root, "agents", agentId, "skills", "digest.md"), "# Skill\n", "utf-8");
+		await writeFile(join(root, ".qorpera", "agent-messages.json"), "{}\n", "utf-8");
+		await writeFile(join(root, "agents", agentId, "artifacts", "runway.json"), "{}\n", "utf-8");
+		await mkdir(join(root, "connectors", "github"), { recursive: true });
+		await writeFile(join(root, "connectors", "github", "manifest.json"), "{}\n", "utf-8");
+		await mkdir(join(root, "files"), { recursive: true });
+		await writeFile(join(root, "files", "notes.md"), "shared notes\n", "utf-8");
+		await mkdir(join(root, "inbox", "messages"), { recursive: true });
+		await writeFile(join(root, "inbox", "messages", "msg-1.json"), "{}\n", "utf-8");
+		await writeFile(join(root, "inbox", "gate-1.md"), "authority gate\n", "utf-8");
+		const transport = new MemoryObjectTransport();
+		const store = new CloudContentAddressedStore(transport);
+
+		const reference = await captureCloudCompanyTree(root, profileId, store);
+		expect(reference.contractVersion).toBe(2);
+		const target = join(await temporaryDirectory(), "materialized");
+		await materializeCloudCompanyTree(target, profileId, reference, store);
+		await expect(readFile(join(target, "agents", agentId, "artifacts", "runway.json"), "utf-8")).resolves.toBe(
+			"{}\n",
+		);
+		await expect(readFile(join(target, "connectors", "github", "manifest.json"), "utf-8")).resolves.toBe("{}\n");
+		await expect(readFile(join(target, "files", "notes.md"), "utf-8")).resolves.toBe("shared notes\n");
+		await expect(readFile(join(target, "agents", agentId, "skills", "digest.md"), "utf-8")).resolves.toBe(
+			"# Skill\n",
+		);
+		await expect(readFile(join(target, "agents", agentId, "instructions.md"), "utf-8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+		await expect(readFile(join(target, "agents", agentId, "memory.md"), "utf-8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+		await expect(readFile(join(target, ".qorpera", "agent-messages.json"), "utf-8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+		await expect(readFile(join(target, "inbox", "messages", "msg-1.json"), "utf-8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+		await expect(readFile(join(target, "inbox", "gate-1.md"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
 	it("rejects aliased company files instead of silently changing their semantics", async () => {

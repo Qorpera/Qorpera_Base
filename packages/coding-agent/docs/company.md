@@ -1,234 +1,146 @@
 # Company folders
 
-## The forking hub (spec §6.1a)
+A company is a small, portable home for agents. Operational data stays in
+the services the company connects to. Credentials stay in the trusted local or
+cloud secret store and are referenced by opaque names; they are never written
+into the company folder.
 
-Base desktop is the runtime hub companies are opened from. The CLI can list,
-register, scaffold, integrate, and clone company folders, but it never starts
-a company controller: controller authority exists only inside the desktop
-kernel. Bare `qorpera` outside a company still offers the CLI hub and prints
-the company path to open in Base desktop.
+## Genesis
 
-The same scaffold flows exist as explicit verbs:
+`qorpera company init [dir]` creates an idempotent agents-only company:
 
-- `qorpera new <dir>` — scaffold and register a new company from zero. Open
-  it in Base desktop to let the kernel start autonomous conception.
-- `qorpera new <dir> --from <repo>` — integrate an existing product/company:
-  a `<product>-development` department is created, the repo is cloned into
-  its `repository/`. Open the company in Base desktop to begin study.
-- `qorpera fork <company-repo> [dir]` — fork an existing company (the folder
-  is the company and it is a git repo, so forking is cloning). Opens as an
-  ordinary registered company — it already knows itself.
-
-`--no-launch` remains accepted for scripting but company sessions are never
-launched by the CLI. An existing company can add a product through the
-desktop kernel's `addProduct(product, source?)` bridge, or while the desktop
-is closed with `qorpera company product add <product> [--from <repo>]`.
-Both paths hold the same cross-process transaction lock across inventory,
-folder, projection, repository, and Git changes.
-The human's setup obligations are exactly three: say what the company is,
-ratify `authority.toml`, and connect subscriptions through a foundation-owned
-login outside the mutable company controller (or `codex login` for engine
-mode). Controller children receive only revocable opaque handles and cannot
-create, refresh, or export the foundation's provider credentials.
-
-## The spine
-
-`qorpera company init [dir]` is the bare scaffold plumbing (spec §2) —
-the folder IS the company, and it is a git repository (fork a company =
-clone it):
-
-```
+```text
 <company>/
-  AGENTS.md         # the kernel prompt, materialized (single-sourced with
-  CLAUDE.md         # CLAUDE.md — the context-file slot both vendors
-                    # co-train models to honor). [authority]-gated.
-  company.md        # identity — starts as an interview prompt, becomes prose
-  authority.toml    # the gates (see authority.md). Human-owned.
-  connections/      # declared capabilities; references only, never secrets
-  trail/            # sessions ARE the trail: project settings point
-                    # sessionDir here, so every session's tree-shaped JSONL
-                    # lands inside the company folder. Never compact/delete.
-  inbox/            # gate requests + human steering
-  app/              # THE CONTROLLER the agent builds: projection.json,
-                    # surfaces/, substrates/, routines/, tools/
-  departments/      # optional department kits; arbitrary other structures
-                    # remain agent-authored
+  .qorpera/
+    company.json       # stable company identity and optional fork parent
+    staff.json         # agent registry (identity, charter ref, per-agent model)
+    agent-messages.json # host-protected agent-to-agent message ledger
+    settings.json      # runtime retention and transport settings
+  agents/               # one private workspace per agent
+    <agent-id>/
+      instructions.md
+      memory.md         # durable personal memory carried into every session
+      skills/           # personal skills loaded only for this agent
+      artifacts/        # measures and evidence this agent owns
+  connectors/           # executable, provider-neutral connector recipes
+  files/                # shared files agents may organize as needed
+  inbox/messages/       # durable user-facing questions and notices
+  trail/                # append-only conversations and autonomous runs
 ```
 
-Scaffolding is idempotent and never overwrites — a company's `company.md`
-is its identity, not ours to reset. The two retention settings are kernel
-invariants: `.qorpera/settings.json` always uses `sessionDir: "./trail"`,
-`compaction.enabled: false`, and `transport: "sse"` so model operations stay
-inside the kernel model executor; all unrelated settings keys are preserved.
+Suggested agents and their starter artifacts are product templates, not
+company state. Creating a suggested agent copies the selected starter into its
+workspace. A blank agent starts without responsibilities or artifacts and
+discovers them during setup.
 
-## UI projection hierarchy
+The old universal controller files (`AGENTS.md`, `CLAUDE.md`, `company.md`),
+company-owned shell (`app/`), projection document, surfaces, substrates, and
+global artifact folder are not part of genesis or the runtime contract.
 
-`app/projection.json` is the only navigation publication contract. There is
-no compatibility reader for the former flat manifest. The agent remains free
-to arrange company data, code, schemas, routines, tools, and integrations in
-whatever form the company requires; the projection contains only the small
-subset deliberately exposed to the founder.
+## Agent lifecycle
 
-The hierarchy is intentionally bounded:
+Each agent has a silent lifecycle value:
 
-```
-Department
-  ├─ Page
-  └─ Category
-       └─ Page
-```
+- `setup`: proactively seeks a useful responsibility, checks existing files
+  and connectors, identifies missing data for its artifacts, proposes the
+  smallest useful connection, and asks about recurring work.
+- `active`: ordinary worker behavior with no setup-specific prompting.
+- `archived`: retained but not active. Permanent deletion remains available.
 
-- A **Department** groups related user-facing responsibilities.
-- A **Category** opens a generated collection page; its pages do not expand
-  into the sidebar.
-- A **Page** either hosts an agent-authored surface or a named Base builtin.
-- IDs are immutable and namespaced. Labels and surface file paths may move
-  without detaching routes or sidechat trails.
-- `q:` is reserved for the platform-owned Main department and its Inbox,
-  Activity, and Chats pages.
-- Navigation never scans or infers structure from the company folder.
-- Invalid references are shown as projection diagnostics rather than being
-  repaired by filesystem discovery.
+The agent completes its own setup once it has a concrete responsibility and
+the data access needed to begin useful work. The lifecycle is behavioral state,
+not a status badge in the UI.
 
-Department titles are static group labels with no collapse affordance.
-Right-clicking any department or row exposes a per-item height adjustment of
-±12px. Appearance settings control the optional page/category hue indicators.
-These are local presentation preferences and never change `projection.json`.
+## Per-agent configuration
 
-## Product-development departments
+Each agent is a customizable employee with its own configuration:
 
-Product development is a built-in optional department kit, not the
-company's universal ontology:
+- **Model.** A staff record may carry a durable `model` (provider and model
+  id). Every session and wake for that agent launches on its model; agents
+  without one inherit the company runtime default. Changing the model from the
+  running conversation persists to the agent, and the founder can also set or
+  clear it from the agent's settings panel.
+- **Memory.** `agents/<agent-id>/memory.md` is the agent's private long-term
+  memory, injected into every launch. The agent maintains it directly:
+  founder preferences, decisions, recurring context, and lessons learned.
+- **Skills.** `agents/<agent-id>/skills/` is scanned on every launch through
+  the additive skill lane, so an agent's personal skills stack on the shared
+  user and company skill roots without leaking to coworkers.
 
-```
-departments/
-  <product>-development/
-    department.json   # kit identity and product display name
-    briefs/           # controller-owned direction
-    repository/       # controlling clone; controller read-only
-    worktrees/        # one isolated task worktree per product assignment
-    pull-requests/     # synchronized local PR read models
-```
+## Agent-to-agent messages
 
-The company Git repository ignores `repository/` and `worktrees/`; each
-product repository owns its own history. Kernel-owned assignment records in
-`.qorpera/product-worktrees/` bind every authorized task to an immediate
-`worktrees/<task>/` clone, branch, source, and creation time. Installing the
-product kit adds an ordinary projection Department with three Pages: **Chat**,
-**Pull Requests**, and **Architecture**. The renderer has no separate
-product-navigation path.
-Chat opens the product's chat collection; its explicit new-task action creates
-a fresh Git worktree and launches a `product-worker` rooted there. Pull
-Requests reads synchronized JSON records from `pull-requests/`.
-Architecture opens an inert placeholder; it defines no folder schema,
-ontology, search contract, or storage model yet.
+Agents communicate through durable addressed messages, not shared context.
+The `send_agent_message` tool submits a bounded message through the brokered
+company-operation lane; the desktop host validates the recipient against the
+staff registry and appends it to the protected ledger at
+`.qorpera/agent-messages.json`, which agents cannot write directly.
 
-The controller can inspect every product artifact and write briefs, but it
-cannot modify product repositories or worktrees — not even in an attended
-session and not through a one-off approval. A product-worker can modify only
-its kernel-assigned worktree. Before a resumed worker starts, the kernel
-commits staged, working, untracked, and deleted founder state in that product
-repository; it also checkpoints any uncommitted worker result on settle/exit.
-Raw product checkouts remain outside company Git. After every worker
-checkpoint, the kernel stores the latest commit in protected `.qorpera/`
-recovery records. The first checkpoint carries one verified full Git bundle;
-later checkpoints add content-addressed incremental bundles chained to the
-prior recovered head, so retained history grows with new Git objects instead
-of multiplying the entire product history at every checkpoint. The kernel
-commits the assignment and exact bundle blobs to company Git before reporting
-success. A company fork can therefore restore active unpushed work after the
-controlling repository is hydrated; restoration and the new worker capability
-each receive their own exact native review.
+Delivery is store-and-forward: a company runs at most one agent process at a
+time, so the wake ticker starts a session for the recipient (cause
+`agent_message`), whose launch context lists every unhandled message together
+with the coworker roster. Mail is marked delivered only after a session that
+displays it has actually started, and recently delivered mail stays listed for
+continuity. The founder can observe all traffic through the `agentMessages`
+read model in `/api/state`.
 
-Product integration records contain portable transaction IDs, never
-machine-specific staging paths. Live and quarantined clone bytes stay under
-the company repository's kernel-owned Git admin directory, outside company
-history; only their journaled recovery metadata is versioned. A recovery move
-is recorded before rename and reconciled after interruption. When an original
-machine has neither side of a portable quarantine move, the kernel records a
-`source-storage-unavailable` outcome instead of inventing or deleting bytes,
-then permits a new exact founder-reviewed retry. When an original local
-acquisition path does not exist on a new machine, a new exact founder review
-records a source rebind while preserving the old source and commit evidence.
-Credential-bearing submitted or derived remotes are rejected across URL
-schemes before they can enter company history; an SSH username without a
-password remains valid.
-The desktop kernel records clone-local hydration outside company Git. A fresh
-clone may open with an explicit hydration-required warning, but disappearance
-or physical replacement of a repository or worktree previously observed on
-that machine fails closed. Forward-only commits in the same physical clone
-advance its observed head; replacement or backward history movement does not.
-Founder-reviewed source rebinding and quarantined staging attempts preserve the
-recovery trail without deleting partial product data.
-New Chat from the department starts a new
-worktree; the ordinary new-chat action continues the currently assigned
-worktree. Product sessions remain in the company `trail/` and are named
-`product — <department> — <worktree>`, so the exact capability and provenance
-can be restored.
+## Connectors and credentials
 
-## Chats vs autonomous work (the communication split)
+Connector manifests live under `connectors/` and belong to the company. Agents
+may create a manifest and its implementation when support does not already
+exist. A manifest defines ownership, operations, access level, destinations,
+authentication shape, and the executable entrypoint.
 
-Chat sessions are for work the founder brings. The controller's own
-autonomous work communicates through the inbox instead: it requests creation
-of `inbox/messages/msg-*.md` items — questions, proposals, plans, progress updates —
-and the founder responds inside the item (the shell renders a reply box; the
-response is appended as a `## Response` section the agent reads on its next
-wake). Conception runs this way: study, set up, post questions — never an
-interactive interrogation. The kernel exclusively creates message IDs and
-appends founder responses while recording them in the trusted trail. Existing
-message files, response sections, gate files, and every other inbox path are
-read-only to children.
+Execution is brokered by the desktop host:
 
-## Kernel runtime boundary
+1. The agent selects or creates a connector recipe.
+2. The host resolves opaque secret references from the trusted secret store.
+3. OAuth or browser setup is driven by the agent through controlled Chrome
+   until the first real sign-in, MFA, identity, or consent boundary.
+4. The user completes only that private boundary.
+5. The agent verifies the first real read before the connection becomes ready.
 
-The desktop kernel, not the company renderer, creates controller and product
-workers. Each child receives a clean environment and opaque model-broker
-handles, never model, Git, cloud, connector, or desktop credentials. Structured
-model context and streamed events use the existing kernel pipe; provider
-request construction, authentication, paid execution, and network remain in
-the desktop process. Every request must carry a kernel-issued causal intent
-and is recorded in the trail. There is no child loopback or CONNECT lane.
-On Windows, Base requires the elevated offline sandbox account and
-fails closed when it is unavailable. Product registration and company open
-use the same atomic transaction lock before either reads or mutates inventory.
+Moving or copying a company locally preserves credential bindings for the same
+company ID on that OS account. Creating a new company produces a new ID and
+does not inherit credentials. An explicit passphrase-encrypted export/import
+can rewrap the same company's credentials under another local OS protector;
+the bundle is company-ID-bound and contains neither plaintext names nor values.
+A configured cloud secret store may provide the equivalent rewrapping path.
+Raw secrets remain outside company files in every case.
 
-Company userland and surfaces are served from the kernel's local read origin
-inside a per-window renderer session. That session can reach only its exact
-backend origin; external fetches, WebSockets, beacons, remote subresources,
-and arbitrary `file://` reads are denied. External links require exact native
-review before the operating system opens them.
+## Artifacts
 
-Mutable userland may request a prompt, but a trusted kernel modal shows the
-full canonical text, image hashes, and exact product assignment before
-approval. The reviewed frame is delivered with a signed, expiring, single-use
-intent capability. Queued turns retain that intent identifier, and the trail
-links later effect assertions to the kernel-observed input. Child events remain
-append-only and hash-chained but explicitly remain child assertions.
+Artifacts live inside the responsible agent's workspace. They are editable
+scorecards, not generated mini-apps. An artifact defines measures, targets,
+data needs, evidence references, observations, and optional scores.
 
-Behavior notes:
+A metric becomes measured only through an actual connector or file observation
+with source evidence and an observation time. Updating a definition cannot
+manufacture observed values. Observations remain chronological and retain
+point-level provenance; an older backfill cannot replace the newer current
+value.
 
-- The scaffolded `authority.toml` activates gates immediately: the folder
-  protects its own spine from the first session (writes to kernel files,
-  `authority.toml`, or `inbox/` gate; destructive bash gates).
-- `sessionDir` is stored as `./trail`, which the CLI resolves at launch —
-  start sessions at the company root (the normal case). Hosts embedding the
-  SDK should pass an absolute session dir rooted at `<company>/trail`.
-- Company scaffolding and every desktop open force `compaction.enabled` to
-  `false`. Base never rewrites, summarizes in place, expires, or deletes trail
-  records. Long work continues in a new session or worktree instead.
-- Session headers materialize immediately when the kernel binds a new session,
-  so even an abandoned prompt leaves an auditable session record.
-- In-process extensions are disabled in company-kernel children because they
-  would share the trusted model/control process. The company remains free to
-  build backend files, tools, routines, schemas, and integrations; executable
-  behavior runs as sandboxed subprocess work and crosses authority brokers for
-  outward effects instead of inheriting ambient process capabilities.
-- Known transient (2026-08-05, tsx + node 24 on Windows): the CLI
-  intermittently dies with 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN,
-  surfaces as "exit 9"), sometimes mid-session. Work already performed
-  persists (filed gates, flushed trail); an identical retry has succeeded
-  every observed time. The scheduled runtime should carry retry-once
-  semantics for wakes.
-- There is no wizard: the desktop kernel starts autonomous conception. The
-  controller records questions in the inbox, rewrites `company.md`, and
-  bootstraps its first selectively published surfaces in `app/`.
+## Routines
+
+Agents create and manage their own recurring work through named routines.
+Routines support schedules, GitHub events, and custom adapter triggers. Chat
+defaults to low reasoning effort; scheduled work defaults to high effort, with
+an explicit per-routine override.
+
+Routine definitions and run history are host-managed read models. The company
+folder retains the agent work and trail needed to explain the outcome without
+storing provider credentials or service-owned datasets.
+
+## Trusted host boundary
+
+The Electron desktop host remains a security and persistence boundary. It owns
+model requests, secret resolution, browser/computer capabilities, effect
+review, process isolation, and append-only trail envelopes. This is not a
+universal company agent and it contributes no company persona or goals.
+
+The fixed shell is host-owned and exposes only fixed navigation plus native
+agent, artifact, routine, connector, inbox, and activity views. Company files
+cannot publish navigation or executable UI.
+
+Product-development storage and company fork/export operations remain optional
+capabilities. They are not materialized at company conception and should not be
+treated as the company ontology.

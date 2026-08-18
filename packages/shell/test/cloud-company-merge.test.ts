@@ -54,6 +54,7 @@ async function companyRoots(): Promise<{ base: string; local: string; remote: st
 	const remote = join(parent, "remote");
 	scaffoldCompany(base);
 	await writeFile(join(base, "company.md"), "# Shared company\n", "utf-8");
+	await mkdir(join(base, "app", "substrates"), { recursive: true });
 	await writeFile(join(base, "app", "substrates", "market.md"), "base market\n", "utf-8");
 	await cp(base, local, { recursive: true });
 	await cp(base, remote, { recursive: true });

@@ -30,7 +30,7 @@ export async function handleEngineCommand(args: string[]): Promise<boolean> {
 	const cwd = process.cwd();
 	const authority = discoverAuthority(cwd);
 	if (authority) {
-		console.error("Engine error: company engine sessions must be launched by the Qorpera Base desktop kernel");
+		console.error("Engine error: company agent runs must be launched by the Qorpera Base desktop host");
 		process.exitCode = 1;
 		return true;
 	}
@@ -44,9 +44,9 @@ export async function handleEngineCommand(args: string[]): Promise<boolean> {
 			sessionManager,
 			authority,
 			// A terminal-run engine command is a founder session unless the
-			// kernel marked the process as autonomous work.
+			// host marked the process as autonomous work.
 			attended: sessionAuthority?.attended ?? (process.stdout.isTTY === true && !process.env.QORPERA_AUTONOMOUS),
-			actor: sessionAuthority?.actor ?? "controller",
+			actor: sessionAuthority?.actor ?? "company-agent",
 			productWorktree: sessionAuthority?.worktree,
 			onEvent: (event) => {
 				if (event.type === "reasoning" && event.summary) console.error(`[thinking] ${event.summary}`);

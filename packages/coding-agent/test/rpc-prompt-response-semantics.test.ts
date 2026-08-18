@@ -129,10 +129,10 @@ async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: 
 	const sessionManager = SessionManager.inMemory();
 	const settingsManager = SettingsManager.create(tempDir, tempDir);
 	const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
-	const modelRegistry = await createInMemoryModelRegistry(authStorage);
 	if (options.withAuth) {
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 	}
+	const modelRegistry = await createInMemoryModelRegistry(authStorage);
 
 	const session = new AgentSession({
 		agent,
@@ -172,6 +172,7 @@ async function createRuntimeHost(options: { withAuth: boolean; responseDelayMs: 
 
 async function startRpcMode(options: { withAuth: boolean; responseDelayMs: number; model?: Model<any> }): Promise<{
 	lineHandler: (line: string) => void;
+	runtimeHost: AgentSessionRuntime;
 	cleanup: () => Promise<void>;
 }> {
 	rpcIo.outputLines = [];
@@ -181,7 +182,7 @@ async function startRpcMode(options: { withAuth: boolean; responseDelayMs: numbe
 	void runRpcMode(runtimeHost);
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
-	return { lineHandler: rpcIo.lineHandler!, cleanup };
+	return { lineHandler: rpcIo.lineHandler!, runtimeHost, cleanup };
 }
 
 describe("RPC prompt response semantics", () => {
@@ -285,4 +286,44 @@ describe("RPC prompt response semantics", () => {
 			await cleanup();
 		}
 	});
+
+	it("defers a model change until the active turn has settled", async () => {
+		const { lineHandler, runtimeHost, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 150 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "turn", type: "prompt", message: "Hello" }));
+			await vi.waitFor(() => expect(runtimeHost.session.isStreaming).toBe(true));
+
+			lineHandler(
+				JSON.stringify({
+					id: "model",
+					type: "set_model",
+					provider: "anthropic",
+					modelId: "claude-haiku-4-5",
+				}),
+			);
+
+			await sleep(25);
+			expect(runtimeHost.session.model?.id).toBe("claude-sonnet-4-5");
+			expect(
+				parseOutputLines(rpcIo.outputLines).filter(
+					(record) => record.id === "model" && record.type === "response" && record.command === "set_model",
+				),
+			).toEqual([]);
+
+			await vi.waitFor(() => {
+				expect(runtimeHost.session.model?.id).toBe("claude-haiku-4-5");
+				expect(parseOutputLines(rpcIo.outputLines)).toContainEqual(
+					expect.objectContaining({
+						id: "model",
+						type: "response",
+						command: "set_model",
+						success: true,
+					}),
+				);
+			});
+		} finally {
+			await cleanup();
+		}
+	}, 60_000);
 });

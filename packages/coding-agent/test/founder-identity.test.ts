@@ -1,6 +1,6 @@
 /**
  * Cryptographic founder identity (manifesto §3.1, invariant 15): keypair
- * lifecycle, policy ratification and verification, public-only projection,
+ * lifecycle, policy ratification and verification, public-only records,
  * and the authority layer's fail-closed enforcement.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -11,7 +11,7 @@ import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
 import { scaffoldCompany } from "../src/core/company.ts";
 import {
 	FOUNDER_PUBLIC_FILE,
-	founderPublicProjection,
+	founderPublicRecord,
 	generateFounderIdentity,
 	readFounderIdentity,
 	signAuthorityPolicy,
@@ -50,12 +50,12 @@ describe("founder identity lifecycle", () => {
 		expect(() => generateFounderIdentity()).toThrow(/already exists/);
 	});
 
-	it("projects the public key only", () => {
+	it("exposes the public key only", () => {
 		generateFounderIdentity();
-		const projection = founderPublicProjection();
-		expect(projection).toBeDefined();
-		expect(projection).toContain("PUBLIC KEY");
-		expect(projection).not.toContain("PRIVATE KEY");
+		const record = founderPublicRecord();
+		expect(record).toBeDefined();
+		expect(record).toContain("PUBLIC KEY");
+		expect(record).not.toContain("PRIVATE KEY");
 	});
 });
 
@@ -63,7 +63,8 @@ describe("policy ratification and verification", () => {
 	it("signs policy, verifies it, and detects tampering and un-ratified edits", () => {
 		generateFounderIdentity();
 		scaffoldCompany(root);
-		// Scaffold auto-ratified the freshly created policy.
+		writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "gate"\n`, "utf-8");
+		signAuthorityPolicy(root);
 		expect(verifyAuthorityPolicy(root)).toBe("valid");
 
 		// Any edit invalidates the ratification until the founder re-signs.
@@ -80,6 +81,8 @@ describe("policy ratification and verification", () => {
 	it("rejects policy signed by a DIFFERENT founder", () => {
 		generateFounderIdentity();
 		scaffoldCompany(root);
+		writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "gate"\n`, "utf-8");
+		signAuthorityPolicy(root);
 		expect(verifyAuthorityPolicy(root)).toBe("valid");
 		// The company lands on a machine with another founder identity: the
 		// old ratification carries no authority there.
@@ -88,13 +91,15 @@ describe("policy ratification and verification", () => {
 		expect(verifyAuthorityPolicy(root)).toBe("invalid");
 	});
 
-	it("verifies with the public-only projection (sandbox context)", () => {
+	it("verifies with the public-only record (sandbox context)", () => {
 		generateFounderIdentity();
 		scaffoldCompany(root);
-		const projection = founderPublicProjection()!;
+		writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "gate"\n`, "utf-8");
+		signAuthorityPolicy(root);
+		const publicRecord = founderPublicRecord()!;
 		useAgentDir("agent-sandbox");
 		mkdirSync(join(base, "agent-sandbox"), { recursive: true });
-		writeFileSync(join(base, "agent-sandbox", FOUNDER_PUBLIC_FILE), projection, "utf-8");
+		writeFileSync(join(base, "agent-sandbox", FOUNDER_PUBLIC_FILE), publicRecord, "utf-8");
 		expect(readFounderIdentity()?.privateKeyPem).toBeUndefined();
 		expect(verifyAuthorityPolicy(root)).toBe("valid");
 		expect(() => signAuthorityPolicy(root)).toThrow(/requires the founder identity/);
@@ -108,6 +113,8 @@ describe("policy ratification and verification", () => {
 	it("a corrupt identity file keeps enforcement ON — never fails open to legacy", () => {
 		generateFounderIdentity();
 		scaffoldCompany(root);
+		writeFileSync(join(root, "authority.toml"), `[irreversible]\nmode = "gate"\n`, "utf-8");
+		signAuthorityPolicy(root);
 		expect(verifyAuthorityPolicy(root)).toBe("valid");
 		// The key file is damaged: verification must degrade to all-gate
 		// ("invalid"), not to permissive no-identity semantics.

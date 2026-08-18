@@ -21,6 +21,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	setHttpBrokerWriter(undefined);
 	if (root && existsSync(root)) {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -51,7 +52,7 @@ async function run(input: { path: string; args?: string[]; timeoutSeconds?: numb
 
 describe("run_company_tool execution", () => {
 	it("runs a company program with the company root as cwd and records code identity", async () => {
-		const source = `import { writeFileSync } from "node:fs";\nwriteFileSync("departments/from-tool.txt", "made by tool\\n");\nconsole.log("hello from tool in", process.cwd());\n`;
+		const source = `import { writeFileSync } from "node:fs";\nwriteFileSync("files/from-tool.txt", "made by tool\\n");\nconsole.log("hello from tool in", process.cwd());\n`;
 		const absolute = writeProgram(join("app", "tools", "hello.mjs"), source);
 
 		const result = await run({ path: "app/tools/hello.mjs" });
@@ -59,14 +60,14 @@ describe("run_company_tool execution", () => {
 		expect(text).toContain("exit 0");
 		expect(text).toContain("hello from tool in");
 		// cwd is the company root, so the relative write landed inside it.
-		expect(readFileSync(join(root, "departments", "from-tool.txt"), "utf-8")).toContain("made by tool");
+		expect(readFileSync(join(root, "files", "from-tool.txt"), "utf-8")).toContain("made by tool");
 		// Acting code identity: root-relative POSIX path + content sha256.
 		expect(result.details?.behaviorPath).toBe("app/tools/hello.mjs");
 		expect(result.details?.contentHash).toBe(createHash("sha256").update(readFileSync(absolute)).digest("hex"));
 		expect(result.details?.exitCode).toBe(0);
 	});
 
-	it("starts programs with a clean environment: no ambient credentials or kernel state", async () => {
+	it("starts programs with a clean environment: no ambient credentials or host state", async () => {
 		process.env.FAKE_PROVIDER_API_KEY = "super-secret";
 		process.env.QORPERA_TEST_KERNEL_STATE = "kernel-internal";
 		try {
@@ -190,6 +191,46 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 `;
 
 describe("program-side http lane", () => {
+	it("accepts a narrower host connector grant without filing a behavior-signature request", async () => {
+		const absolute = writeProgram(join("connectors", "ledger", "connector.mjs"), LANE_PROGRAM);
+		writeFileSync(
+			join(root, "authority.toml"),
+			`[identity]\nmode = "notify"\n\n[tools]\nhttp_request = "identity"\n`,
+			"utf-8",
+		);
+		const authorizations: Array<Record<string, unknown>> = [];
+		setHttpBrokerWriter((frame) => {
+			const record = frame as Record<string, unknown>;
+			handleHttpBrokerFrame({
+				type: "qorpera_http_response",
+				requestId: record.requestId,
+				status: 200,
+				headers: {},
+				body: "connector-data",
+				bodyBytes: 14,
+			});
+		});
+		const definition = createCompanyToolDefinition(root, {
+			authorizeProgramHttp: async (authorization) => {
+				authorizations.push(authorization as unknown as Record<string, unknown>);
+			},
+		});
+		const execute = definition.execute as unknown as (toolCallId: string, args: unknown) => Promise<unknown>;
+		const result = (await execute("connector-call", { path: "connectors/ledger/connector.mjs" })) as {
+			content: Array<{ type: string; text?: string }>;
+		};
+
+		expect(result.content[0]?.text).toContain("LANE OK 200 connector-data");
+		expect(authorizations).toEqual([
+			{
+				behaviorPath: "connectors/ledger/connector.mjs",
+				contentHash: createHash("sha256").update(readFileSync(absolute)).digest("hex"),
+				request: { method: "GET", url: "https://api.test.example/data" },
+			},
+		]);
+		expect(readdirSync(join(root, "inbox")).filter((name) => name.startsWith("gate-"))).toEqual([]);
+	});
+
 	it("forwards program requests through the kernel lane with the program's identity attached", async () => {
 		const absolute = writeProgram(join("app", "tools", "reporter.mjs"), LANE_PROGRAM);
 		writeFileSync(join(root, "authority.toml"), `[tools]\nhttp_request = "none"\n`, "utf-8");
@@ -220,7 +261,7 @@ describe("program-side http lane", () => {
 		writeProgram(join("app", "tools", "reporter.mjs"), LANE_PROGRAM);
 		// notify mode: once the program is SIGNED this would auto-proceed with a
 		// notice — the per-request block below is purely the missing signature.
-		// (Completing the signed path needs the live desktop kernel's durable
+		// (Completing the signed path needs the live desktop host's durable
 		// trust; that half is kernel-integration territory.)
 		writeFileSync(
 			join(root, "authority.toml"),

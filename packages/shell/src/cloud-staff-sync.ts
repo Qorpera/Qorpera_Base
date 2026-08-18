@@ -108,7 +108,9 @@ function localStaff(hosted: HostedStaffAgent): StaffAgent {
 		...(hosted.templateId ? { templateId: hosted.templateId } : {}),
 		...(hosted.departmentId ? { departmentId: hosted.departmentId } : {}),
 		appearance: { ...hosted.appearance },
+		...(hosted.model ? { model: { ...hosted.model } } : {}),
 		employmentStatus: hosted.employmentStatus,
+		lifecycleState: hosted.lifecycleState,
 		createdAt: hosted.createdAt,
 		updatedAt: hosted.updatedAt,
 	};
@@ -124,8 +126,14 @@ function contentHash(staff: StaffAgent): string {
 				charter: staff.charter,
 				templateId: staff.templateId ?? null,
 				departmentId: staff.departmentId ?? null,
-				appearance: staff.appearance,
+				appearance: {
+					color: staff.appearance.color,
+					shape: staff.appearance.shape,
+					creature: staff.appearance.creature ?? null,
+				},
+				model: staff.model ? { provider: staff.model.provider, modelId: staff.model.modelId } : null,
 				employmentStatus: staff.employmentStatus,
+				lifecycleState: staff.lifecycleState,
 				createdAt: staff.createdAt,
 			}),
 		)
