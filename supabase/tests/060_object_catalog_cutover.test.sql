@@ -41,7 +41,32 @@ begin
 end
 $$;
 
--- A minimal graph over that object, then the divergence experiment.
+-- A minimal graph over that object, then the divergence experiment. The
+-- hardening triggers demand a real root whose creator matches and an
+-- auth.uid() equal to that creator, so the fixture builds the honest chain
+-- (workspace, snapshot, graph, entry) with user A's claims in place.
+select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
+
+insert into public.qorpera_company_workspaces
+	(id, profile_id, environment_id, client_workspace_id, name, created_by_user_id)
+values ('91000000-0000-4000-8000-000000000004',
+	current_setting('qorpera_test.cutover_profile')::uuid,
+	current_setting('qorpera_test.cutover_environment')::uuid,
+	'91000000-0000-4000-8000-000000000005', 'Cutover workspace',
+	'80000000-0000-4000-8000-00000000000a');
+
+insert into public.qorpera_company_snapshots
+	(id, profile_id, environment_id, workspace_id, client_snapshot_id,
+	tree_manifest_sha256, tree_manifest_bytes, tree_contract_version,
+	file_count, total_bytes, created_by_user_id)
+values ('91000000-0000-4000-8000-000000000002',
+	current_setting('qorpera_test.cutover_profile')::uuid,
+	current_setting('qorpera_test.cutover_environment')::uuid,
+	'91000000-0000-4000-8000-000000000004',
+	'91000000-0000-4000-8000-000000000006',
+	repeat('c', 64), 42, 2, 1, 42,
+	'80000000-0000-4000-8000-00000000000a');
+
 insert into public.qorpera_object_reachability_graphs
 	(id, profile_id, environment_id, root_kind, root_id, client_graph_id,
 	root_object_sha256, contract_version, content_sha256, object_count, storage_bytes,
@@ -56,6 +81,8 @@ values ('91000000-0000-4000-8000-000000000001',
 
 insert into public.qorpera_object_reachability_entries (graph_id, object_sha256, bytes)
 values ('91000000-0000-4000-8000-000000000001', repeat('c', 64), 42);
+
+select set_config('request.jwt.claims', '', false);
 
 do $$
 begin
