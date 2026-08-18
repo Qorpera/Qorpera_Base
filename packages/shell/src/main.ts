@@ -25,7 +25,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { ModelRuntime } from "@qorpera/pi-coding-agent";
@@ -7673,12 +7673,13 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		if (slot) return openCompany(slot, root);
 	});
-	ipcMain.handle("company:new", async (event, dir: unknown, companyIcon: unknown) => {
+	ipcMain.handle("company:new", async (event, dir: unknown, companyIcon: unknown, placement: unknown) => {
 		if (
 			!isTrustedHubSender(event.sender) ||
 			typeof dir !== "string" ||
 			!dir.trim() ||
-			!isCompanyIconId(companyIcon)
+			!isCompanyIconId(companyIcon) ||
+			(placement !== undefined && placement !== "local" && placement !== "cloud")
 		) {
 			return;
 		}
@@ -7693,7 +7694,17 @@ app.whenReady().then(async () => {
 		claimProfile(app.getPath("userData"), account.user, result.root);
 		ensureProfileAttachment(app.getPath("userData"), result.root);
 		writeCompanyIcon(app.getPath("userData"), account.user.id, result.root, companyIcon);
-		return result.root;
+		if (placement !== "cloud") return { root: result.root };
+		// Hosted placement chosen at creation. The folder already exists either
+		// way, so a failed promotion degrades to a local company the founder can
+		// host later from Settings instead of losing the creation.
+		try {
+			const company = listCompanies().find((record) => normalizedRoot(record.root) === normalizedRoot(result.root));
+			await promoteProfileRoot(result.root, company?.name ?? basename(result.root));
+			return { root: result.root };
+		} catch (error) {
+			return { root: result.root, cloudError: error instanceof Error ? error.message : String(error) };
+		}
 	});
 	ipcMain.handle("company:integrate", async (event, dir: string, from: string) => {
 		if (!isTrustedHubSender(event.sender) || typeof dir !== "string" || !dir.trim() || typeof from !== "string") {
