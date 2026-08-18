@@ -497,7 +497,7 @@ begin
 		extensions.digest(
 			convert_to(coalesce(string_agg(
 				entry.object_sha256 || ':' || entry.bytes::text,
-				E'\\n' order by entry.object_sha256
+				E'\n' order by entry.object_sha256
 			), ''), 'utf8'),
 			'sha256'
 		),

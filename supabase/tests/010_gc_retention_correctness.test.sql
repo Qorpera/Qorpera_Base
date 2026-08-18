@@ -417,3 +417,63 @@ begin
 	end if;
 end
 $$;
+
+-- Completing a graph through the RPC with more than one entry exercises the
+-- canonical hash separator, which single-entry fixtures never touch: with one
+-- row, string_agg ignores its delimiter entirely. The declared hash below is
+-- computed exactly the way clients compute it — entries joined by a real
+-- newline — so this fails if the server formula ever diverges again.
+insert into public.qorpera_artifacts (
+	id, profile_id, environment_id, client_artifact_id, artifact_type, name,
+	root_object_sha256, content_sha256, bytes, media_type, created_by_user_id,
+	created_at, eligible_for_gc_at, root_contract
+)
+values (
+	'70000000-0000-4000-8000-000000000030', '20000000-0000-4000-8000-000000000010',
+	'20000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000031',
+	'fixture', 'manifest.bin', repeat('1', 64), repeat('1', 64), 42, 'application/octet-stream',
+	'20000000-0000-4000-8000-000000000001', statement_timestamp(),
+	statement_timestamp() + interval '30 days', 'qorpera.company-tree/v1'
+);
+
+insert into storage.objects (bucket_id, name, metadata)
+values
+	('qorpera-profile-objects', '20000000-0000-4000-8000-000000000010/' || repeat('1', 64), '{"size":"30"}'),
+	('qorpera-profile-objects', '20000000-0000-4000-8000-000000000010/' || repeat('2', 64), '{"size":"12"}');
+
+select set_config(
+	'request.jwt.claims',
+	'{"sub":"20000000-0000-4000-8000-000000000001","email":"gc-owner@example.test","role":"authenticated","user_metadata":{}}',
+	false
+);
+
+insert into public.qorpera_object_reachability_graphs (
+	id, profile_id, environment_id, root_kind, root_id, client_graph_id,
+	root_object_sha256, contract_version, content_sha256, object_count,
+	storage_bytes, status, created_by_user_id, completed_at, closure_verified
+)
+values (
+	'70000000-0000-4000-8000-000000000040', '20000000-0000-4000-8000-000000000010',
+	'20000000-0000-4000-8000-000000000020', 'artifact', '70000000-0000-4000-8000-000000000030',
+	'70000000-0000-4000-8000-000000000041', repeat('1', 64), 1,
+	encode(extensions.digest(convert_to(
+		repeat('1', 64) || ':30' || E'\n' || repeat('2', 64) || ':12', 'utf8'
+	), 'sha256'), 'hex'),
+	2, 42, 'uploading', '20000000-0000-4000-8000-000000000001', null, false
+);
+
+insert into public.qorpera_object_reachability_entries (graph_id, object_sha256, bytes)
+values
+	('70000000-0000-4000-8000-000000000040', repeat('1', 64), 30),
+	('70000000-0000-4000-8000-000000000040', repeat('2', 64), 12);
+
+select public.qorpera_complete_object_reachability_graph('70000000-0000-4000-8000-000000000040');
+
+do $$
+begin
+	if (select status from public.qorpera_object_reachability_graphs
+		where id = '70000000-0000-4000-8000-000000000040') <> 'complete' then
+		raise exception 'multi-entry graph completion did not verify the canonical hash';
+	end if;
+end
+$$;
