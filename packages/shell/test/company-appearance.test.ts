@@ -1,6 +1,6 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	DEFAULT_COMPANY_ICON_ID,
@@ -25,42 +25,32 @@ afterEach(() => {
 describe("company appearance", () => {
 	const founder = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 	const other = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";
+	const picture = `data:image/png;base64,${Buffer.from("89504e470d0a1a0a", "hex").toString("base64")}` as const;
 
-	it("uses the selected company icon only for its owning account", () => {
+	it("uses the selected company picture only for its owning account", () => {
 		const userData = temporaryRoot();
 		const company = join(userData, "company-a");
 		expect(readCompanyIcon(userData, founder, company)).toBe(DEFAULT_COMPANY_ICON_ID);
-		writeCompanyIcon(userData, founder, company, "hop-mono-cloud");
-		expect(readCompanyIcon(userData, founder, company)).toBe("hop-mono-cloud");
+		writeCompanyIcon(userData, founder, company, picture);
+		expect(readCompanyIcon(userData, founder, company)).toBe(picture);
 		expect(readCompanyIcon(userData, other, company)).toBe(DEFAULT_COMPANY_ICON_ID);
 		forgetCompanyIcon(userData, founder, company);
 		expect(readCompanyIcon(userData, founder, company)).toBe(DEFAULT_COMPANY_ICON_ID);
 	});
 
-	it("reads legacy profile appearance state until the company record is next written", () => {
+	it("replaces a custom picture with the anonymous icon", () => {
 		const userData = temporaryRoot();
 		const company = join(userData, "company-a");
-		mkdirSync(userData, { recursive: true });
-		writeFileSync(
-			join(userData, "profile-appearances.json"),
-			JSON.stringify({
-				schema: "qorpera.profile-appearances/v1",
-				profiles: {
-					[process.platform === "win32" ? resolve(company).toLowerCase() : resolve(company)]: {
-						userId: founder,
-						iconId: "hop-blue-steel",
-					},
-				},
-			}),
-			"utf-8",
-		);
-		expect(readCompanyIcon(userData, founder, company)).toBe("hop-blue-steel");
-		writeCompanyIcon(userData, founder, company, "hop-mono-cloud");
-		expect(readCompanyIcon(userData, founder, company)).toBe("hop-mono-cloud");
+		writeCompanyIcon(userData, founder, company, picture);
+		writeCompanyIcon(userData, founder, company, DEFAULT_COMPANY_ICON_ID);
+		expect(readCompanyIcon(userData, founder, company)).toBe(DEFAULT_COMPANY_ICON_ID);
 	});
 
-	it("rejects unknown company icon identifiers", () => {
-		expect(isCompanyIconId("hop-blue-steel")).toBe(true);
-		expect(isCompanyIconId("agent-gem")).toBe(false);
+	it("accepts supported pictures and rejects malformed or oversized data", () => {
+		expect(isCompanyIconId(DEFAULT_COMPANY_ICON_ID)).toBe(true);
+		expect(isCompanyIconId(picture)).toBe(true);
+		expect(isCompanyIconId("data:image/svg+xml;base64,PHN2Zz4=")).toBe(false);
+		expect(isCompanyIconId("data:image/png;base64,PHN2Zz4=")).toBe(false);
+		expect(isCompanyIconId(`data:image/png;base64,${Buffer.alloc(1024 * 1024 + 1).toString("base64")}`)).toBe(false);
 	});
 });

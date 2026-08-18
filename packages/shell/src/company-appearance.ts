@@ -1,18 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 const COMPANY_APPEARANCES_FILE = "company-appearances.json";
-const COMPANY_APPEARANCES_SCHEMA = "qorpera.company-appearances/v1";
-const LEGACY_PROFILE_APPEARANCES_FILE = "profile-appearances.json";
-const LEGACY_PROFILE_APPEARANCES_SCHEMA = "qorpera.profile-appearances/v1";
+const COMPANY_APPEARANCES_SCHEMA = "qorpera.company-appearances/v2";
 const USER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const COMPANY_ICON_DATA_URL_PATTERN = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
+const MAX_COMPANY_ICON_BYTES = 1024 * 1024;
 
-export const COMPANY_ICON_IDS = ["hop-warm-titanium", "hop-blue-steel", "hop-mono-cloud"] as const;
+export const COMPANY_ICON_IDS = ["anonymous"] as const;
 
-export type CompanyIconId = (typeof COMPANY_ICON_IDS)[number];
+type CompanyIconMediaType = "image/jpeg" | "image/png" | "image/webp";
 
-export const DEFAULT_COMPANY_ICON_ID: CompanyIconId = "hop-warm-titanium";
+export type CompanyIconId = (typeof COMPANY_ICON_IDS)[number] | `data:${CompanyIconMediaType};base64,${string}`;
+
+export const DEFAULT_COMPANY_ICON_ID: CompanyIconId = "anonymous";
 
 interface CompanyAppearanceRecord {
 	userId: string;
@@ -38,16 +40,30 @@ function emptyAppearances(): CompanyAppearances {
 }
 
 export function isCompanyIconId(value: unknown): value is CompanyIconId {
-	return typeof value === "string" && COMPANY_ICON_IDS.includes(value as CompanyIconId);
+	if (value === DEFAULT_COMPANY_ICON_ID) return true;
+	if (typeof value !== "string" || value.length > Math.ceil((MAX_COMPANY_ICON_BYTES * 4) / 3) + 64) return false;
+	const match = COMPANY_ICON_DATA_URL_PATTERN.exec(value);
+	if (!match) return false;
+	const bytes = Buffer.from(match[2]!, "base64");
+	if (bytes.length === 0 || bytes.length > MAX_COMPANY_ICON_BYTES || bytes.toString("base64") !== match[2])
+		return false;
+	if (match[1] === "image/png") return bytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"));
+	if (match[1] === "image/jpeg") return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+	return bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
 }
 
-function parseAppearances(path: string, schema: string, recordsKey: "companies" | "profiles"): CompanyAppearances {
+function parseAppearances(path: string): CompanyAppearances {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return emptyAppearances();
 		const value = parsed as Record<string, unknown>;
-		const records = value[recordsKey];
-		if (value.schema !== schema || !records || typeof records !== "object" || Array.isArray(records)) {
+		const records = value.companies;
+		if (
+			value.schema !== COMPANY_APPEARANCES_SCHEMA ||
+			!records ||
+			typeof records !== "object" ||
+			Array.isArray(records)
+		) {
 			return emptyAppearances();
 		}
 		const companies: Record<string, CompanyAppearanceRecord> = {};
@@ -65,12 +81,7 @@ function parseAppearances(path: string, schema: string, recordsKey: "companies" 
 }
 
 function readAppearances(userData: string): CompanyAppearances {
-	const path = companyAppearancesPath(userData);
-	if (existsSync(path)) return parseAppearances(path, COMPANY_APPEARANCES_SCHEMA, "companies");
-	const legacyPath = join(userData, LEGACY_PROFILE_APPEARANCES_FILE);
-	return existsSync(legacyPath)
-		? parseAppearances(legacyPath, LEGACY_PROFILE_APPEARANCES_SCHEMA, "profiles")
-		: emptyAppearances();
+	return parseAppearances(companyAppearancesPath(userData));
 }
 
 function writeAppearances(path: string, appearances: CompanyAppearances): void {

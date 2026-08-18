@@ -119,8 +119,8 @@ let artifactEditor = null; // { id, expectedUpdatedAt, draft, dirty, error, pend
 const dismissedConnectionRequestGroups = new Map();
 const autoStartedConnectionRequestIds = new Set();
 let agentSidepanelMotionTimer = null;
-let companyCreatorIcon = "hop-warm-titanium";
-let currentCompanyIcon = "hop-warm-titanium";
+let companyCreatorIcon = "anonymous";
+let currentCompanyIcon = "anonymous";
 let currentCompanyRoot = "";
 let profileCreatorPlacement = "local";
 let currentProfileAccess = {
@@ -171,11 +171,6 @@ const STAFF_CREATURE_BY_TEMPLATE = Object.freeze({
 	"costumer-relationist": "bloom",
 	"outreaching-conversationalist": "ribbon",
 });
-const COMPANY_ICONS = [
-	{ id: "hop-warm-titanium", label: "Warm titanium", src: "./profile-icons/hop-warm-titanium.png" },
-	{ id: "hop-blue-steel", label: "Blue steel", src: "./profile-icons/hop-blue-steel.png" },
-	{ id: "hop-mono-cloud", label: "Monochrome cloud", src: "./profile-icons/hop-mono-cloud.png" },
-];
 const PROFILE_PLACEMENTS = {
 	local: {
 		label: "On this computer",
@@ -625,10 +620,6 @@ function companyRootFor(name) {
 	return slug ? `${COMPANIES_HOME}\\${slug}` : "";
 }
 
-function companyIcon(iconId) {
-	return COMPANY_ICONS.find((candidate) => candidate.id === iconId) ?? COMPANY_ICONS[0];
-}
-
 function renderCompanyPlacementPicker() {
 	const picker = $("companyPlacementPicker");
 	for (const choice of picker.querySelectorAll("[data-profile-placement]")) {
@@ -646,46 +637,107 @@ function renderCompanyPlacementPicker() {
 function makeCompanyIcon(iconId, label, className = "") {
 	const shell = document.createElement("span");
 	shell.className = `company-icon ${className}`.trim();
-	const image = document.createElement("img");
-	image.src = companyIcon(iconId).src;
-	image.alt = "";
-	image.setAttribute("aria-hidden", "true");
-	shell.appendChild(image);
+	if (typeof iconId === "string" && iconId.startsWith("data:image/")) {
+		const image = document.createElement("img");
+		image.src = iconId;
+		image.alt = "";
+		image.setAttribute("aria-hidden", "true");
+		shell.appendChild(image);
+	} else {
+		const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		svg.setAttribute("viewBox", "0 0 24 24");
+		svg.setAttribute("fill", "none");
+		svg.setAttribute("stroke", "currentColor");
+		svg.setAttribute("stroke-width", "1.7");
+		svg.setAttribute("aria-hidden", "true");
+		const head = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+		head.setAttribute("cx", "12");
+		head.setAttribute("cy", "8");
+		head.setAttribute("r", "3.25");
+		const shoulders = document.createElementNS("http://www.w3.org/2000/svg", "path");
+		shoulders.setAttribute("d", "M5.5 19c.8-3.2 3-5 6.5-5s5.7 1.8 6.5 5");
+		svg.append(head, shoulders);
+		shell.appendChild(svg);
+	}
 	if (label) shell.setAttribute("aria-label", `${label} company`);
 	return shell;
 }
 
-function renderCompanyIconPicker() {
-	const picker = $("companyIconPicker");
-	picker.replaceChildren();
-	for (const icon of COMPANY_ICONS) {
-		const button = document.createElement("button");
-		button.type = "button";
-		button.className = "company-icon-choice";
-		button.dataset.companyIcon = icon.id;
-		button.setAttribute("role", "radio");
-		button.setAttribute("aria-label", icon.label);
-		button.setAttribute("aria-checked", String(icon.id === companyCreatorIcon));
-		button.appendChild(makeCompanyIcon(icon.id, ""));
-		button.onclick = () => {
-			companyCreatorIcon = icon.id;
-			$("companyIconPreview").src = icon.src;
-			for (const choice of picker.querySelectorAll(".company-icon-choice")) {
-				choice.setAttribute("aria-checked", String(choice.dataset.companyIcon === companyCreatorIcon));
-			}
-		};
-		picker.appendChild(button);
+function renderCompanyPicturePreview() {
+	const preview = makeCompanyIcon(companyCreatorIcon, "", "company-icon-preview");
+	preview.id = "companyIconPreview";
+	$("companyIconPreview").replaceWith(preview);
+	$("companyPictureAnonymous").hidden = !companyCreatorIcon.startsWith("data:image/");
+}
+
+async function prepareCompanyPicture(file) {
+	if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+		throw new Error("Choose a PNG, JPEG, or WebP image.");
+	}
+	if (file.size <= 0 || file.size > 10 * 1024 * 1024) throw new Error("Choose an image smaller than 10 MB.");
+	const source = URL.createObjectURL(file);
+	try {
+		const image = new Image();
+		image.src = source;
+		await image.decode();
+		if (!image.naturalWidth || !image.naturalHeight) throw new Error("The selected image could not be read.");
+		const canvas = document.createElement("canvas");
+		canvas.width = 512;
+		canvas.height = 512;
+		const context = canvas.getContext("2d");
+		if (!context) throw new Error("The selected image could not be prepared.");
+		const side = Math.min(image.naturalWidth, image.naturalHeight);
+		const sourceX = (image.naturalWidth - side) / 2;
+		const sourceY = (image.naturalHeight - side) / 2;
+		context.imageSmoothingEnabled = true;
+		context.imageSmoothingQuality = "high";
+		context.drawImage(image, sourceX, sourceY, side, side, 0, 0, canvas.width, canvas.height);
+		const picture = canvas.toDataURL("image/webp", 0.86);
+		if (!picture.startsWith("data:image/webp;base64,") || picture.length > 1_400_000) {
+			throw new Error("The selected image is too detailed. Choose a smaller image.");
+		}
+		return picture;
+	} finally {
+		URL.revokeObjectURL(source);
 	}
 }
 
+function chooseCompanyPicture(onPicture, errorTarget) {
+	const input = $("companyPictureFile");
+	input.value = "";
+	input.onchange = async () => {
+		const file = input.files?.[0];
+		if (!file) return;
+		try {
+			if (errorTarget) errorTarget.textContent = "";
+			await onPicture(await prepareCompanyPicture(file));
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "The selected image could not be prepared.";
+			if (errorTarget) errorTarget.textContent = message;
+			else showToast(message);
+		}
+	};
+	input.click();
+}
+
+async function saveCurrentCompanyIcon(companyIconId) {
+	const result = await window.qorpera.setCompanyIcon(companyIconId);
+	if (!result?.ok) {
+		showToast(result?.error ?? "The company picture could not be saved.");
+		return false;
+	}
+	currentCompanyIcon = result.companyIcon;
+	renderCompanySwitcher();
+	return true;
+}
+
 function openCompanyModal() {
-	companyCreatorIcon = COMPANY_ICONS[0].id;
+	companyCreatorIcon = "anonymous";
 	profileCreatorPlacement = "local";
 	$("companyName").value = "";
 	$("companyFormError").textContent = "";
 	$("companyCreate").disabled = true;
-	$("companyIconPreview").src = companyIcon(companyCreatorIcon).src;
-	renderCompanyIconPicker();
+	renderCompanyPicturePreview();
 	renderCompanyPlacementPicker();
 	$("companyPlacementNote").textContent = PROFILE_PLACEMENTS[profileCreatorPlacement].description;
 	$("companyModal").hidden = false;
@@ -698,6 +750,15 @@ function closeCompanyModal() {
 
 function setupCompanyModal() {
 	const input = $("companyName");
+	$("companyPictureUpload").onclick = () =>
+		chooseCompanyPicture(async (picture) => {
+			companyCreatorIcon = picture;
+			renderCompanyPicturePreview();
+		}, $("companyFormError"));
+	$("companyPictureAnonymous").onclick = () => {
+		companyCreatorIcon = "anonymous";
+		renderCompanyPicturePreview();
+	};
 	input.addEventListener("input", () => {
 		$("companyCreate").disabled = !companySlug(input.value.trim());
 	});
@@ -761,7 +822,7 @@ async function enterCompany(active) {
 	backendUrl = active.backendUrl;
 	companyId = active.id || "";
 	currentCompanyRoot = active.root || "";
-	currentCompanyIcon = companyIcon(active.companyIcon).id;
+	currentCompanyIcon = active.companyIcon || "anonymous";
 	currentProfileAccess = active.access ?? currentProfileAccess;
 	// Appearance was applied at boot from the pre-company bucket; re-apply now
 	// that this company's stored appearance is addressable.
@@ -10149,6 +10210,29 @@ async function renderSettingsTab() {
 			? `${profileTypeLabel} · ${PROFILE_ROLE_LABELS[currentProfileAccess.role] ?? "Shared access"}`
 			: "Agents, connector recipes, and work for this company";
 		companyCopy.append(companyName, companyDetail);
+		const companyActions = document.createElement("div");
+		companyActions.className = "general-company-actions";
+		const changePicture = document.createElement("button");
+		changePicture.type = "button";
+		changePicture.textContent = "Choose picture";
+		changePicture.onclick = () =>
+			chooseCompanyPicture(async (picture) => {
+				changePicture.disabled = true;
+				if (await saveCurrentCompanyIcon(picture)) await renderSettingsTab();
+				else changePicture.disabled = false;
+			});
+		companyActions.appendChild(changePicture);
+		if (currentCompanyIcon.startsWith("data:image/")) {
+			const useAnonymous = document.createElement("button");
+			useAnonymous.type = "button";
+			useAnonymous.textContent = "Use anonymous icon";
+			useAnonymous.onclick = async () => {
+				useAnonymous.disabled = true;
+				if (await saveCurrentCompanyIcon("anonymous")) await renderSettingsTab();
+				else useAnonymous.disabled = false;
+			};
+			companyActions.appendChild(useAnonymous);
+		}
 		const switchCompany = document.createElement("button");
 		switchCompany.type = "button";
 		switchCompany.textContent = "Switch company";
@@ -10156,7 +10240,8 @@ async function renderSettingsTab() {
 			switchCompany.disabled = true;
 			await window.qorpera.showHub();
 		};
-		companyCard.append(companyCopy, switchCompany);
+		companyActions.appendChild(switchCompany);
+		companyCard.append(companyCopy, companyActions);
 		companyGroup.appendChild(companyCard);
 		content.appendChild(companyGroup);
 		renderProfileProductControls(content, info);
