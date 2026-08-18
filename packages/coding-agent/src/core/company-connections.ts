@@ -183,6 +183,16 @@ export const SCHEDULED_JOB_EFFORTS = Object.freeze(["low", "medium", "high", "xh
 export type ScheduledJobEffort = (typeof SCHEDULED_JOB_EFFORTS)[number];
 
 /**
+ * Where a routine is allowed to execute. "local" runs on this machine,
+ * "cloud" declares hosted-runner execution and is fail-closed (the local
+ * kernel never runs it, and it stays parked until a hosted lane exists),
+ * and "requires-local" asserts host-only needs (filesystem, connectors,
+ * computer use) so the job must never be enqueued to a runner.
+ */
+export const ROUTINE_PLACEMENTS = Object.freeze(["local", "cloud", "requires-local"] as const);
+export type RoutinePlacement = (typeof ROUTINE_PLACEMENTS)[number];
+
+/**
  * A founder-bound unit of recurring agent work. Definitions stay in the
  * machine-local connection store because enabling unattended work is standing
  * authority; the resulting runs and artifacts still land in the company trail.
@@ -198,6 +208,8 @@ export interface ScheduledJob {
 	enabled: boolean;
 	/** Reasoning effort for each autonomous run. Scheduled work defaults high. */
 	effort: ScheduledJobEffort;
+	/** Explicit execution placement. Missing legacy values migrate to local. */
+	placement: RoutinePlacement;
 	/** Explicit staff ownership. Absence means Unassigned. */
 	staffAgentId?: string;
 	createdAt: string;
@@ -212,6 +224,7 @@ export interface ScheduledJobInput {
 	triggers: RoutineTriggerInput[];
 	enabled?: boolean;
 	effort?: ScheduledJobEffort;
+	placement?: RoutinePlacement;
 	staffAgentId?: string;
 	agentKey?: string;
 }
@@ -222,6 +235,7 @@ export interface ScheduledJobUpdate {
 	triggers?: RoutineTriggerInput[];
 	enabled?: boolean;
 	effort?: ScheduledJobEffort;
+	placement?: RoutinePlacement;
 	/** A string assigns the job; null explicitly returns it to Unassigned. */
 	staffAgentId?: string | null;
 }
@@ -242,10 +256,11 @@ interface CompanyConnectionsState {
 	webhook?: WebhookBinding;
 }
 
-interface LegacyScheduledJob extends Omit<ScheduledJob, "triggers" | "effort"> {
+interface LegacyScheduledJob extends Omit<ScheduledJob, "triggers" | "effort" | "placement"> {
 	intervalMinutes: number;
 	triggers?: RoutineTrigger[];
 	effort?: ScheduledJobEffort;
+	placement?: RoutinePlacement;
 }
 
 const FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
@@ -517,6 +532,13 @@ function validScheduledJobEffort(value: unknown): ScheduledJobEffort {
 	return value as ScheduledJobEffort;
 }
 
+function validRoutinePlacement(value: unknown): RoutinePlacement {
+	if (typeof value !== "string" || !ROUTINE_PLACEMENTS.includes(value as RoutinePlacement)) {
+		throw new Error(`Scheduled job placement must be one of ${ROUTINE_PLACEMENTS.join(", ")}`);
+	}
+	return value as RoutinePlacement;
+}
+
 const GITHUB_REPOSITORY_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9])?\/[a-z0-9._-]{1,100}$/i;
 const ROUTINE_ADAPTER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
@@ -652,6 +674,7 @@ function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 				triggers,
 				enabled: job.enabled,
 				effort: job.effort === undefined ? "high" : validScheduledJobEffort(job.effort),
+				placement: job.placement === undefined ? "local" : validRoutinePlacement(job.placement),
 				createdAt: job.createdAt,
 				updatedAt: job.updatedAt,
 				...(job.staffAgentId === undefined
@@ -672,6 +695,7 @@ function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 			triggers: [validRoutineTrigger({ kind: "schedule", intervalMinutes: state.wake.intervalMinutes })],
 			enabled: state.wake.enabled,
 			effort: "high",
+			placement: "local",
 			createdAt: now,
 			updatedAt: now,
 			...(state.wake.suspendedReason ? { suspendedReason: state.wake.suspendedReason } : {}),
@@ -685,7 +709,10 @@ export function readScheduledJobs(root: string): ScheduledJob[] {
 	if (
 		(!state.scheduledJobs && state.wake) ||
 		state.scheduledJobs?.some(
-			(job) => !Array.isArray((job as ScheduledJob).triggers) || (job as Partial<ScheduledJob>).effort === undefined,
+			(job) =>
+				!Array.isArray((job as ScheduledJob).triggers) ||
+				(job as Partial<ScheduledJob>).effort === undefined ||
+				(job as Partial<ScheduledJob>).placement === undefined,
 		)
 	) {
 		state.scheduledJobs = jobs;
@@ -714,6 +741,7 @@ export function createScheduledJob(root: string, input: ScheduledJobInput): Sche
 		triggers: validRoutineTriggers(input.triggers),
 		enabled: input.enabled ?? true,
 		effort: input.effort === undefined ? "high" : validScheduledJobEffort(input.effort),
+		placement: input.placement === undefined ? "local" : validRoutinePlacement(input.placement),
 		...(staffAgentId ? { staffAgentId } : {}),
 		createdAt: now,
 		updatedAt: now,
@@ -744,6 +772,7 @@ export function upsertStaffScheduledJob(
 		triggers: input.triggers,
 		enabled: input.enabled ?? true,
 		effort: input.effort ?? "high",
+		placement: input.placement ?? "local",
 		staffAgentId,
 	});
 }
@@ -761,6 +790,7 @@ export function updateScheduledJob(root: string, id: string, update: ScheduledJo
 		...(update.prompt !== undefined ? { prompt: validScheduledJobText(update.prompt, "prompt", 32 * 1024) } : {}),
 		...(update.triggers !== undefined ? { triggers: validRoutineTriggers(update.triggers) } : {}),
 		...(update.effort !== undefined ? { effort: validScheduledJobEffort(update.effort) } : {}),
+		...(update.placement !== undefined ? { placement: validRoutinePlacement(update.placement) } : {}),
 		...(update.staffAgentId === null
 			? { staffAgentId: undefined }
 			: update.staffAgentId !== undefined

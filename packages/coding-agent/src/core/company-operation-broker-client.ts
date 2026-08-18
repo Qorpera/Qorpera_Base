@@ -21,6 +21,7 @@ export const COMPANY_OPERATION_KINDS = [
 	"finish_trigger_build",
 	"finish_trigger_check",
 	"send_agent_message",
+	"delegate_to_staff",
 ] as const;
 
 export type CompanyOperationKind = (typeof COMPANY_OPERATION_KINDS)[number];

@@ -36,6 +36,12 @@ export {
 	createComputerToolDefinition,
 } from "./computer.ts";
 export {
+	createDelegateToStaffTool,
+	createDelegateToStaffToolDefinition,
+	DELEGATE_TO_STAFF_TOOL_NAME,
+	type DelegateToStaffToolInput,
+} from "./delegate-to-staff.ts";
+export {
 	createEditTool,
 	createEditToolDefinition,
 	type EditOperations,
@@ -162,6 +168,7 @@ import { type BashToolOptions, createBashTool, createBashToolDefinition } from "
 import { type CompanyToolOptions, createCompanyTool, createCompanyToolDefinition } from "./company-tool.ts";
 import { createCompleteSetupTool, createCompleteSetupToolDefinition } from "./complete-setup.ts";
 import { createComputerTool, createComputerToolDefinition } from "./computer.ts";
+import { createDelegateToStaffTool, createDelegateToStaffToolDefinition } from "./delegate-to-staff.ts";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
 import {
@@ -210,6 +217,7 @@ export type ToolName =
 	| "manage_routine"
 	| "complete_setup"
 	| "send_agent_message"
+	| "delegate_to_staff"
 	| "finish_trigger_build"
 	| "finish_trigger_check"
 	| "use_mcp_tool";
@@ -232,6 +240,7 @@ export const allToolNames: Set<ToolName> = new Set([
 	"manage_routine",
 	"complete_setup",
 	"send_agent_message",
+	"delegate_to_staff",
 	"finish_trigger_build",
 	"finish_trigger_check",
 	"use_mcp_tool",
@@ -286,6 +295,8 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createCompleteSetupToolDefinition();
 		case "send_agent_message":
 			return createSendAgentMessageToolDefinition();
+		case "delegate_to_staff":
+			return createDelegateToStaffToolDefinition();
 		case "finish_trigger_build":
 			return createFinishTriggerBuildToolDefinition();
 		case "finish_trigger_check":
@@ -335,6 +346,8 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createCompleteSetupTool();
 		case "send_agent_message":
 			return createSendAgentMessageTool();
+		case "delegate_to_staff":
+			return createDelegateToStaffTool();
 		case "finish_trigger_build":
 			return createFinishTriggerBuildTool();
 		case "finish_trigger_check":
@@ -384,6 +397,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		manage_routine: createManageRoutineToolDefinition(),
 		complete_setup: createCompleteSetupToolDefinition(),
 		send_agent_message: createSendAgentMessageToolDefinition(),
+		delegate_to_staff: createDelegateToStaffToolDefinition(),
 		finish_trigger_build: createFinishTriggerBuildToolDefinition(),
 		finish_trigger_check: createFinishTriggerCheckToolDefinition(),
 		use_mcp_tool: createMcpToolDefinition(cwd),
@@ -428,6 +442,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		manage_routine: createManageRoutineTool(),
 		complete_setup: createCompleteSetupTool(),
 		send_agent_message: createSendAgentMessageTool(),
+		delegate_to_staff: createDelegateToStaffTool(),
 		finish_trigger_build: createFinishTriggerBuildTool(),
 		finish_trigger_check: createFinishTriggerCheckTool(),
 		use_mcp_tool: createMcpTool(cwd),

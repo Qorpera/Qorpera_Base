@@ -30,10 +30,12 @@ import type { CompanyArtifactRecord } from "./company-artifacts.ts";
 import {
 	DEFAULT_SCHEDULED_JOB_ID,
 	DEFAULT_SCHEDULED_JOB_TITLE,
+	type RoutinePlacement,
 	type RoutineTrigger,
 	type ScheduledJobEffort,
 } from "./company-connections.ts";
 import type { CompanyConnectorManifestRecord } from "./company-connectors.ts";
+import type { CompanyRoom } from "./company-rooms.ts";
 import type { StaffAgent, StaffAgentMessage } from "./company-staff.ts";
 import { readFounderIdentity, signAuthorityPolicy, signGateApproval } from "./founder-identity.ts";
 import { isPublicSessionGroup, isPublicSessionRuntime, publicSessionRuntimeSnapshot } from "./session-visibility.ts";
@@ -61,6 +63,8 @@ export interface CompanyAppOptions {
 	sessionRuntime?: SessionRuntimeSource;
 	/** Company-folder staff registry read through the desktop host. */
 	staffReadModel?: () => readonly StaffAgent[];
+	/** Company-folder multi-staff room registry read through the desktop host. */
+	roomReadModel?: () => readonly CompanyRoom[];
 	/** Agent-owned, ordinary company artifacts validated before display. */
 	artifactReadModel?: () => readonly CompanyArtifactRecord[];
 	/** Agent-built connector recipes discovered from ordinary company files.
@@ -123,6 +127,7 @@ export interface CompanyScheduledJobView {
 	triggers: RoutineTrigger[];
 	enabled: boolean;
 	effort: ScheduledJobEffort;
+	placement: RoutinePlacement;
 	createdAt: string;
 	updatedAt: string;
 	suspendedReason?: string;
@@ -170,6 +175,8 @@ export interface SessionRuntimeView {
 	actor: "company-agent" | "product-worker";
 	autonomous: boolean;
 	staffAgentId?: string;
+	/** Durable multi-staff room carried by this participant trail. */
+	roomId?: string;
 	label?: string;
 	department?: string;
 	worktree?: string;
@@ -530,6 +537,8 @@ interface SessionSummary {
 	category: SessionCategory;
 	/** Stable staff member identity stamped into the immutable trail header. */
 	staffAgentId?: string;
+	/** Durable multi-staff room carried by this participant trail. */
+	roomId?: string;
 	/** Product-development department assigned to this chat. */
 	department?: string;
 	/** Exact product worktree assigned to this chat. */
@@ -919,6 +928,7 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 				| {
 						autonomous?: boolean;
 						staffAgentId?: string;
+						roomId?: string;
 						label?: string;
 						department?: string;
 						worktree?: string;
@@ -1022,6 +1032,7 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 				kind,
 				category,
 				staffAgentId: sessionAuthority?.staffAgentId,
+				roomId: sessionAuthority?.roomId,
 				department: sessionAuthority?.department,
 				worktree: sessionAuthority?.worktree,
 				scheduledJobId,
@@ -1183,6 +1194,18 @@ function staffView(agent: StaffAgent): StaffAgent {
 	};
 }
 
+function roomView(room: CompanyRoom): CompanyRoom {
+	return {
+		id: room.id,
+		participantIds: [...room.participantIds],
+		historicalParticipantIds: [...room.historicalParticipantIds],
+		...(room.title !== undefined ? { title: room.title } : {}),
+		status: room.status,
+		createdAt: room.createdAt,
+		updatedAt: room.updatedAt,
+	};
+}
+
 function staffMessageView(message: StaffAgentMessage): StaffAgentMessage {
 	return {
 		id: message.id,
@@ -1310,6 +1333,7 @@ function scheduledJobView(job: CompanyScheduledJobView): CompanyScheduledJobView
 		}),
 		enabled: job.enabled,
 		effort: job.effort,
+		placement: job.placement,
 		createdAt: job.createdAt,
 		updatedAt: job.updatedAt,
 		...(job.suspendedReason !== undefined ? { suspendedReason: job.suspendedReason } : {}),
@@ -1322,6 +1346,7 @@ function stateFor(
 	runtime?: SessionRuntimeSnapshot,
 	sessions?: SessionSummary[],
 	staff: readonly StaffAgent[] = [],
+	rooms: readonly CompanyRoom[] = [],
 	artifacts: readonly CompanyArtifactRecord[] = [],
 	connectors: readonly CompanyConnectorView[] = [],
 	connectionRequests: readonly CompanyConnectionRequestView[] = [],
@@ -1354,6 +1379,7 @@ function stateFor(
 		})),
 		runtime: publicRuntime ?? { revision: 0, generatedAt: "", sessions: [] },
 		staff,
+		rooms,
 		artifacts,
 		connectors,
 		connectionRequests,
@@ -1626,6 +1652,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 		}
 		if (url.pathname === "/api/state") {
 			const staff = safeReadModel(options.staffReadModel, staffView);
+			const rooms = safeReadModel(options.roomReadModel, roomView);
 			const artifacts = safeReadModel(options.artifactReadModel, artifactView);
 			const connectors = safeReadModel(options.connectorReadModel, connectorView);
 			const connectionRequests = safeReadModel(options.connectionRequestReadModel, connectionRequestView);
@@ -1643,6 +1670,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 							options.sessionRuntime?.snapshot(),
 							trailSessions(),
 							staff,
+							rooms,
 							artifacts,
 							connectors,
 							connectionRequests,
