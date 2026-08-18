@@ -493,16 +493,21 @@ describe("ToolExecutionComponent parity", () => {
 				false,
 			);
 
-			const collapsed = stripAnsi(component.render(120).join("\n"));
-			expect(collapsed).toContain(scenario.compact);
-			expect(collapsed).not.toContain(scenario.hidden);
+			// The outside-AGENTS.md scenario renders the checkout's absolute path,
+			// which line-wraps mid-token at 120 columns in a deeply nested
+			// checkout; comparing without whitespace keeps the assertions about
+			// content, not the wrap position.
+			const flattened = (value: string) => value.replace(/\s+/g, "");
+			const collapsed = flattened(stripAnsi(component.render(120).join("\n")));
+			expect(collapsed).toContain(flattened(scenario.compact));
+			expect(collapsed).not.toContain(flattened(scenario.hidden));
 			if (scenario.absent) {
-				expect(collapsed).not.toContain(scenario.absent);
+				expect(collapsed).not.toContain(flattened(scenario.absent));
 			}
 
 			component.setExpanded(true);
-			const expanded = stripAnsi(component.render(120).join("\n"));
-			expect(expanded).toContain(scenario.hidden);
+			const expanded = flattened(stripAnsi(component.render(120).join("\n")));
+			expect(expanded).toContain(flattened(scenario.hidden));
 		});
 	}
 

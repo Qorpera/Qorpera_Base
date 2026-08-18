@@ -62,7 +62,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 		ipcRenderer.invoke("profile-team:update-role", memberUserId, role),
 	removeProfileMember: (memberUserId) => ipcRenderer.invoke("profile-team:remove-member", memberUserId),
 	openCompany: (root) => ipcRenderer.invoke("company:open", root),
-	newCompany: (dir, companyIcon) => ipcRenderer.invoke("company:new", dir, companyIcon),
+	newCompany: (dir, companyIcon, placement) => ipcRenderer.invoke("company:new", dir, companyIcon, placement),
 	integrateCompany: (dir, from) => ipcRenderer.invoke("company:integrate", dir, from),
 	addProduct: (product, from) => ipcRenderer.invoke("company:product-add", product, from),
 	chooseProductSource: () => ipcRenderer.invoke("company:product-source-choose"),

@@ -690,13 +690,19 @@ function setupCompanyModal() {
 		button.disabled = true;
 		button.textContent = "Creating…";
 		try {
-			// TODO(cloud-ui): the agents-only company:new IPC takes (dir, companyIcon)
-			// and cannot honor the hosted placement choice at creation time; a
-			// company created here starts local, and hosting is enabled afterwards
-			// from Settings (profile:enable-cloud).
 			const root = companyRootFor(profileName);
-			const created = await window.qorpera.newCompany(root, companyCreatorIcon);
-			const opened = await openCompany(created, $("companyFormError"));
+			const created = await window.qorpera.newCompany(root, companyCreatorIcon, profileCreatorPlacement);
+			if (!created) throw new Error("creation was rejected");
+			if (created.cloudError) {
+				// The company exists locally; keep the modal open so the founder
+				// sees why hosting did not start (a reload would swallow it).
+				await renderHub();
+				$("companyFormError").textContent =
+					`Company created locally, but hosting could not be enabled: ${created.cloudError} ` +
+					"You can host it later from Settings.";
+				return;
+			}
+			const opened = await openCompany(created.root, $("companyFormError"));
 			if (opened) closeCompanyModal();
 		} catch (error) {
 			$("companyFormError").textContent = `Could not create the company: ${(error && error.message) || error}`;
