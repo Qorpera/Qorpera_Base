@@ -103,6 +103,7 @@ import {
 	type QueuedCompanyRoomDelivery,
 	queueCompanyRoomDelivery,
 	readCompanyRoom,
+	readCompanyRoomMessage,
 	readCompanyRoomMessages,
 	readCompanyRooms,
 	readQueuedCompanyRoomDeliveries,
@@ -1137,6 +1138,9 @@ interface CompanyRuntime {
 	infrastructureWork?: "trigger-build" | "trigger-check";
 	/** Named scheduled job currently owning wakeChild; absent for event wakes. */
 	wakeJobId?: string;
+	/** Group-chat delivery currently owning wakeChild; the autonomous lane is
+	 * carrying a room participant turn, not a scheduled or event wake. */
+	roomDelivery?: { roomId: string; staffAgentId: string };
 	/** Closes the inbound webhook listener (optional kernel module). */
 	webhookClose?: () => void;
 	/** An inbound event arrived while the company was busy; the wake ticker owes it a wake. */
@@ -1499,12 +1503,6 @@ const childBusy = new WeakMap<ChildProcessWithoutNullStreams, boolean>();
 const childApprovedGates = new WeakMap<ChildProcessWithoutNullStreams, Set<string>>();
 /** Bounded delegation-graph position of a live room participant turn. */
 const childRoomDelegationContexts = new WeakMap<ChildProcessWithoutNullStreams, RoomDelegationContext>();
-/** Assistant reply identities already persisted to a room transcript. */
-const childRoomReplyKeys = new WeakMap<ChildProcessWithoutNullStreams, Set<string>>();
-/** Delegation-graph context for queued room deliveries, keyed by delivery id.
- * Machine-memory only: after a restart, a surviving queued delegation restarts
- * depth accounting from a fresh root context, which only tightens the bound. */
-const pendingRoomDelegationContexts = new Map<string, RoomDelegationContext>();
 const childCheckpointCompletion = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 const childExecutorIds = new WeakMap<ChildProcessWithoutNullStreams, string>();
 const childAttachmentSequences = new WeakMap<ChildProcessWithoutNullStreams, number>();
@@ -1783,6 +1781,9 @@ function slotForCompany(root: string): Slot | undefined {
 }
 
 function focusWindow(win: BrowserWindow): void {
+	// A background company's window is hidden, not closed; every path that
+	// surfaces a window must be able to bring it back, not just the tray.
+	if (!win.isVisible()) win.show();
 	if (win.isMinimized()) win.restore();
 	win.focus();
 }
@@ -4484,7 +4485,7 @@ async function applyStaffCompanyOperation(
 					success: true,
 					...(checkpoint !== undefined ? { checkpoint } : {}),
 				});
-				state = queueCustomRoutineTrigger(readScheduledJobs(root), state, {
+				state = queueCustomRoutineTrigger(locallyPlacedScheduledJobs(root), state, {
 					id: input.eventId.trim(),
 					source: triggerWorker.adapterId,
 					type: triggerWorker.event,
@@ -4796,12 +4797,26 @@ async function applyStaffCompanyOperation(
 			targetStaffAgentIds: [target.id],
 			sourceTrailFile: binding.file,
 		});
-		const delivery = queueCompanyRoomDelivery(root, room.id, {
-			messageId: message.id,
-			targetStaffAgentIds: [target.id],
-		});
+		try {
+			queueCompanyRoomDelivery(root, room.id, {
+				messageId: message.id,
+				targetStaffAgentIds: [target.id],
+				delegation: {
+					depth: planned.target.depth,
+					ancestorStaffAgentIds: [...planned.target.ancestorStaffAgentIds],
+				},
+			});
+		} catch (error) {
+			// The delegation message is already durable in the transcript; a retry
+			// would append a duplicate assignment, so report instead of rethrowing.
+			commitCompanyMaterialization(root, roomMaterializationPaths(room.id));
+			sendRoomEvent(slot, { kind: "message", roomId: room.id, message });
+			const detail = error instanceof Error ? error.message : String(error);
+			return {
+				message: `The delegation was posted to the room, but delivery to ${target.displayName} could not be queued: ${detail}. Do not repeat the delegation; report the problem in your own reply so the founder can resend it.`,
+			};
+		}
 		childRoomDelegationContexts.set(child, planned.source);
-		pendingRoomDelegationContexts.set(delivery.id, planned.target);
 		commitCompanyMaterialization(root, roomMaterializationPaths(room.id));
 		sendRoomEvent(slot, { kind: "message", roomId: room.id, message });
 		sendRoomEvent(slot, {
@@ -5229,7 +5244,7 @@ async function startCustomTriggerBuilderExclusive(slot: Slot, runtime: CompanyRu
 async function startCustomTriggerCheckExclusive(slot: Slot, runtime: CompanyRuntime): Promise<boolean> {
 	if (runtime.wakeChild || runtime.closing || isChildBusy(runtime.child)) return false;
 	const statePath = routineTriggerStatePath(app.getPath("userData"), runtime.root);
-	const due = dueCustomRoutineCheck(readScheduledJobs(runtime.root), readRoutineTriggerState(statePath));
+	const due = dueCustomRoutineCheck(locallyPlacedScheduledJobs(runtime.root), readRoutineTriggerState(statePath));
 	if (!due) return false;
 	const staff = due.job.staffAgentId ? activeStaffAgent(runtime.root, due.job.staffAgentId) : undefined;
 	if (!staff) {
@@ -5550,7 +5565,7 @@ function startWakeTicker(): void {
 			);
 			// Cloud-placed routines are fail-closed: this local host never runs
 			// them, and they stay parked until a hosted execution lane exists.
-			const customJobs = readScheduledJobs(runtime.root).filter((job) => job.placement !== "cloud");
+			const customJobs = locallyPlacedScheduledJobs(runtime.root);
 			if (
 				customBuilds.builds.some((build) => build.status === "queued") ||
 				dueCustomRoutineCheck(
@@ -5609,7 +5624,7 @@ function startWakeTicker(): void {
 				continue;
 			}
 			try {
-				const jobs = readScheduledJobs(runtime.root).filter((job) => job.placement !== "cloud");
+				const jobs = locallyPlacedScheduledJobs(runtime.root);
 				void dispatchRoutineTrigger(slot, runtime, jobs).then((started) => {
 					if (started || slot.runtime !== runtime || runtime.closing || runtime.wakeChild) return;
 					const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
@@ -5746,23 +5761,35 @@ interface DueRoomDelivery {
 	message: CompanyRoomMessage;
 }
 
+/** Routines this local host may execute or monitor. Cloud placement is
+ * fail-closed at every point work can start — ticker, event triggers,
+ * webhook dispatch, custom-trigger checks, and manual runs — not just the
+ * cron decision. */
+function locallyPlacedScheduledJobs(root: string): ScheduledJob[] {
+	return readScheduledJobs(root).filter((job) => job.placement !== "cloud");
+}
+
 function dueRoomDelivery(root: string): DueRoomDelivery | undefined {
 	try {
 		const now = Date.now();
-		for (const delivery of readQueuedCompanyRoomDeliveries(root)) {
+		const deliveries = readQueuedCompanyRoomDeliveries(root);
+		if (!deliveries.length) return undefined;
+		const rooms = new Map(readCompanyRooms(root).map((room) => [room.id, room]));
+		for (const delivery of deliveries) {
 			if (Date.parse(delivery.nextAttemptAt) > now) continue;
-			const room = readCompanyRoom(root, delivery.roomId);
+			const room = rooms.get(delivery.roomId);
 			if (!room || room.status !== "active") continue;
+			// Membership can change while a delivery waits: only targets that are
+			// still active participants may run; others wait for the reschedule
+			// paths to drop them.
 			const target = delivery.targetStaffAgentIds
+				.filter((id) => room.participantIds.includes(id))
 				.map((id) => activeStaffAgent(root, id))
 				.find((staff): staff is StaffAgent => staff !== undefined);
 			if (!target) continue;
-			const message = readCompanyRoomMessages(root, room.id).find(
-				(candidate) => candidate.id === delivery.messageId,
-			);
+			const message = readCompanyRoomMessage(root, room.id, delivery.messageId);
 			if (!message) {
 				// The transcript no longer carries this message; drop the delivery.
-				pendingRoomDelegationContexts.delete(delivery.id);
 				rescheduleCompanyRoomDelivery(root, delivery.id, []);
 				continue;
 			}
@@ -5803,9 +5830,43 @@ async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due:
 	};
 	if (attendedChild) await stopChild(attendedChild);
 	if (slot.runtime !== runtime || runtime.closing) return false;
-	const delegationContext = pendingRoomDelegationContexts.get(delivery.id) ?? rootRoomDelegationContext(target.id);
+	// The scan ran outside the transition queue and the stop awaited above, so
+	// the room may have been archived, edited, or drained in the meantime.
+	const liveRoom = readCompanyRoom(runtime.root, room.id);
+	if (
+		!liveRoom ||
+		liveRoom.status !== "active" ||
+		!liveRoom.participantIds.includes(target.id) ||
+		!readQueuedCompanyRoomDeliveries(runtime.root, room.id).some((candidate) => candidate.id === delivery.id)
+	) {
+		if (attendedChild && slot.runtime === runtime && !runtime.closing) {
+			await restoreAttendedChild(slot, runtime, resumeOptions, "room-revalidation chat restore failed");
+		}
+		return false;
+	}
+	// Depth and ancestry ride the durable delivery record, so the bounded
+	// delegation graph survives restarts; only within-turn fanout accounting
+	// is per-child memory.
+	const delegationContext: RoomDelegationContext = delivery.delegation
+		? {
+				depth: delivery.delegation.depth,
+				ancestorStaffAgentIds: new Set(delivery.delegation.ancestorStaffAgentIds),
+				delegatedStaffAgentIds: new Set(),
+			}
+		: rootRoomDelegationContext(target.id);
+	// Build the prompt before wiring closures so the founder message (which may
+	// carry image attachments) is not retained for the life of the child.
+	const prompt = roomPrompt(
+		runtime.root,
+		liveRoom,
+		target,
+		roomDeliveryInstruction(runtime.root, message, delegationContext.depth),
+	);
+	const seenReplyKeys = new Set<string>();
 	let started = false;
 	let failed = false;
+	let replyPersisted = false;
+	let replyPersistFailed = false;
 	let settledCleanly = false;
 	let child: ChildProcessWithoutNullStreams;
 	try {
@@ -5833,32 +5894,32 @@ async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due:
 				}
 				if (wakeFrameFailed(frame)) failed = true;
 				const reply = assistantRoomReply(frame);
-				if (reply) {
-					const seen = childRoomReplyKeys.get(child) ?? new Set<string>();
-					childRoomReplyKeys.set(child, seen);
-					if (!seen.has(reply.key)) {
-						seen.add(reply.key);
-						try {
-							const persisted = appendCompanyRoomMessage(runtime.root, room.id, {
-								speaker: { kind: "staff", staffAgentId: target.id },
-								text: reply.text,
-								sourceTrailFile: childBindings.get(child)?.file,
-							});
-							commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
-							sendRoomEvent(slot, { kind: "message", roomId: room.id, message: persisted });
-						} catch (error) {
-							console.error(`room reply persistence failed: ${(error as Error).message}`);
-							sendRoomEvent(slot, {
-								kind: "error",
-								roomId: room.id,
-								staffAgentId: target.id,
-								message: `${target.displayName}'s response could not be saved to this room.`,
-							});
-						}
+				if (reply && !seenReplyKeys.has(reply.key)) {
+					seenReplyKeys.add(reply.key);
+					try {
+						const persisted = appendCompanyRoomMessage(runtime.root, room.id, {
+							speaker: { kind: "staff", staffAgentId: target.id },
+							text: reply.text,
+							sourceTrailFile: childBindings.get(child)?.file,
+						});
+						replyPersisted = true;
+						sendRoomEvent(slot, { kind: "message", roomId: room.id, message: persisted });
+					} catch (error) {
+						replyPersistFailed = true;
+						console.error(`room reply persistence failed: ${(error as Error).message}`);
+						sendRoomEvent(slot, {
+							kind: "error",
+							roomId: room.id,
+							staffAgentId: target.id,
+							message: `${target.displayName}'s response could not be saved to this room.`,
+						});
 					}
 				}
 				if (frame.type === "agent_settled") {
-					settledCleanly = started && !failed;
+					// A persisted reply means the room was served even if a transient
+					// frame failed mid-turn; a reply that could not be persisted means
+					// the delivery must retry even though the turn itself settled.
+					settledCleanly = started && !replyPersistFailed && (replyPersisted || !failed);
 					sendRoomEvent(slot, { kind: "activity", roomId: room.id, staffAgentId: target.id, activity: "idle" });
 					intentionalKills.add(child);
 					killChildTree(child);
@@ -5873,18 +5934,19 @@ async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due:
 		return false;
 	}
 	runtime.wakeChild = child;
+	runtime.roomDelivery = { roomId: room.id, staffAgentId: target.id };
 	childRoomDelegationContexts.set(child, delegationContext);
-	pendingRoomDelegationContexts.delete(delivery.id);
 	child.on("close", () => {
 		void enqueueRuntimeTransition(runtime, async () => {
 			await childCheckpointCompletion.get(child);
 			if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild !== child) return;
 			runtime.wakeChild = undefined;
+			runtime.roomDelivery = undefined;
 			try {
 				if (settledCleanly) {
 					const remaining = delivery.targetStaffAgentIds.filter((id) => id !== target.id);
-					rescheduleCompanyRoomDelivery(runtime.root, delivery.id, remaining);
-					if (remaining.length === 0) {
+					const rescheduled = rescheduleCompanyRoomDelivery(runtime.root, delivery.id, remaining);
+					if (!rescheduled) {
 						sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
 					}
 				} else {
@@ -5894,8 +5956,22 @@ async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due:
 						delivery.targetStaffAgentIds,
 						`${target.displayName}'s room turn did not settle cleanly`,
 					);
-					if (rescheduled) {
-						pendingRoomDelegationContexts.set(rescheduled.id, delegationContext);
+					if (rescheduled && rescheduled.attempts >= WAKE_FAILURE_SUSPENSION_THRESHOLD) {
+						// Give up like the other autonomous lanes do, so a permanently
+						// failing participant cannot starve mail and routines forever.
+						rescheduleCompanyRoomDelivery(runtime.root, delivery.id, []);
+						writeFileSync(
+							join(inboxMessagesPath(runtime.root), `msg-room-delivery-failed-${Date.now()}.md`),
+							`# Group-chat delivery gave up\n\n**${roomDisplayTitle(runtime.root, room)}**\n\n${target.displayName}'s turn failed ${rescheduled.attempts} times in a row; the message delivery was retired. Open the group chat and resend when the underlying problem (model access, credentials, runtime) is resolved.\n`,
+							"utf-8",
+						);
+						sendRoomEvent(slot, {
+							kind: "error",
+							roomId: room.id,
+							staffAgentId: target.id,
+							message: `Delivery to ${target.displayName} was retired after ${rescheduled.attempts} failed attempts.`,
+						});
+					} else if (rescheduled) {
 						sendRoomEvent(slot, { kind: "delivery", roomId: room.id, delivery: rescheduled });
 					}
 				}
@@ -5923,15 +5999,7 @@ async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due:
 		await stopChild(child);
 		return false;
 	}
-	const instruction = roomDeliveryInstruction(runtime.root, message, delegationContext.depth);
-	if (
-		!sendKernelPrompt(
-			child,
-			{ type: "prompt", message: roomPrompt(runtime.root, room, target, instruction) },
-			false,
-			"host-room-delivery",
-		)
-	) {
+	if (!sendKernelPrompt(child, { type: "prompt", message: prompt }, false, "host-room-delivery")) {
 		await stopChild(child);
 		return false;
 	}
@@ -6083,7 +6151,9 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 	if (!access) return undefined;
 	const attachment = profileAttachment(runtime.root);
 	const autonomousChild =
-		!runtime.infrastructureWork && runtime.wakeChild?.exitCode === null ? runtime.wakeChild : undefined;
+		!runtime.infrastructureWork && !runtime.roomDelivery && runtime.wakeChild?.exitCode === null
+			? runtime.wakeChild
+			: undefined;
 	const runState = readWakeRunState(wakeRunStatePath(app.getPath("userData"), runtime.root));
 	const now = Date.now();
 	const scheduledJobs = readScheduledJobs(runtime.root).map((job) => {
@@ -6113,7 +6183,12 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 		access,
 		backendUrl: `http://127.0.0.1:${runtime.backendPort}`,
 		kickoff: false,
-		wakeRunning: Boolean(!runtime.infrastructureWork && runtime.wakeChild && runtime.wakeChild.exitCode === null),
+		wakeRunning: Boolean(
+			!runtime.infrastructureWork &&
+				!runtime.roomDelivery &&
+				runtime.wakeChild &&
+				runtime.wakeChild.exitCode === null,
+		),
 		autonomousTrailFile: autonomousChild ? childBindings.get(autonomousChild)?.file : undefined,
 		scheduledJobs,
 		sessionFile: runtime.child ? childBindings.get(runtime.child)?.file : undefined,
@@ -6331,11 +6406,15 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 					if (triggerEvent) {
 						const path = routineTriggerStatePath(app.getPath("userData"), live.root);
 						const previous = readRoutineTriggerState(path);
-						const queued = queueCustomRoutineTrigger(readScheduledJobs(live.root), previous, triggerEvent);
+						const queued = queueCustomRoutineTrigger(
+							locallyPlacedScheduledJobs(live.root),
+							previous,
+							triggerEvent,
+						);
 						if (queued.pending.length > previous.pending.length) {
 							writeRoutineTriggerState(path, queued);
 							if (!live.wakeChild && !isChildBusy(live.child))
-								void dispatchRoutineTrigger(slot, live, readScheduledJobs(live.root));
+								void dispatchRoutineTrigger(slot, live, locallyPlacedScheduledJobs(live.root));
 							return;
 						}
 					}
@@ -7625,6 +7704,8 @@ function createRendererWindow(
 		win.hide();
 		syncBackgroundTray();
 	});
+	// Any path that re-surfaces a hidden background window retires the tray.
+	win.on("show", () => syncBackgroundTray());
 	// Closing a company window is closing that company: kill its child
 	// and backend; other windows are untouched. A window retired by a swap
 	// is no longer the slot's window — its company must stay running.
@@ -8721,7 +8802,9 @@ app.whenReady().then(async () => {
 				if (runtime.wakeChild) {
 					return Promise.resolve({
 						ok: false,
-						error: "autonomous work is running — watch it under Agents, or try again once it settles",
+						error: runtime.roomDelivery
+							? "a group chat is answering — watch it in the room, or try again once it settles"
+							: "autonomous work is running — watch it under Agents, or try again once it settles",
 					});
 				}
 				return openChat(slot, sessionFile, department, worktree, sessionName);
@@ -8824,6 +8907,10 @@ app.whenReady().then(async () => {
 				room,
 				messages: readCompanyRoomMessages(runtime.root, room.id),
 				deliveries: readQueuedCompanyRoomDeliveries(runtime.root, room.id),
+				// Rehydrates the live participant state after a renderer reload.
+				...(runtime.roomDelivery?.roomId === room.id
+					? { activity: { staffAgentId: runtime.roomDelivery.staffAgentId, activity: "working" } }
+					: {}),
 			};
 		} catch (error) {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -8849,15 +8936,31 @@ app.whenReady().then(async () => {
 					? { targetStaffAgentIds: input.targetStaffAgentIds as string[] }
 					: {}),
 			});
-			const delivery = queueCompanyRoomDelivery(runtime.root, room.id, {
-				messageId: message.id,
-				targetStaffAgentIds: message.targetStaffAgentIds ?? room.participantIds,
-			});
+			let delivery: QueuedCompanyRoomDelivery | undefined;
+			let deliveryError: string | undefined;
+			try {
+				delivery = queueCompanyRoomDelivery(runtime.root, room.id, {
+					messageId: message.id,
+					targetStaffAgentIds: message.targetStaffAgentIds ?? room.participantIds,
+				});
+			} catch (error) {
+				// The founder message is already durable in the transcript; failing
+				// the whole send would invite a duplicate resend of the same text.
+				deliveryError = error instanceof Error ? error.message : String(error);
+			}
 			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
 			sendRoomEvent(slot, { kind: "message", roomId: room.id, message });
-			sendRoomEvent(slot, { kind: "delivery", roomId: room.id, delivery });
-			scheduleRoomDeliveryPump(slot, runtime);
-			return { ok: true, message, delivery };
+			if (delivery) {
+				sendRoomEvent(slot, { kind: "delivery", roomId: room.id, delivery });
+				scheduleRoomDeliveryPump(slot, runtime);
+			} else if (deliveryError) {
+				sendRoomEvent(slot, {
+					kind: "error",
+					roomId: room.id,
+					message: `The message was saved, but delivery could not be queued: ${deliveryError}`,
+				});
+			}
+			return { ok: true, message, ...(delivery ? { delivery } : {}), ...(deliveryError ? { deliveryError } : {}) };
 		} catch (error) {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
@@ -8883,6 +8986,13 @@ app.whenReady().then(async () => {
 				return { ok: false, error: "every group participant must be an active staff agent" };
 			}
 			const room = updateCompanyRoom(runtime.root, roomId, input);
+			// Membership edits prune queued deliveries for removed participants;
+			// the module drops targets that are no longer in the room.
+			for (const delivery of readQueuedCompanyRoomDeliveries(runtime.root, room.id)) {
+				if (delivery.targetStaffAgentIds.some((id) => !room.participantIds.includes(id))) {
+					rescheduleCompanyRoomDelivery(runtime.root, delivery.id, delivery.targetStaffAgentIds);
+				}
+			}
 			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
 			sendRoomEvent(slot, { kind: "room", roomId: room.id, room });
 			return { ok: true, room };
@@ -8896,8 +9006,7 @@ app.whenReady().then(async () => {
 		if (!slot || !runtime || typeof roomId !== "string") return { ok: false, error: "invalid group chat" };
 		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 		try {
-			const removed = removeQueuedCompanyRoomDeliveries(runtime.root, roomId);
-			for (const delivery of removed) pendingRoomDelegationContexts.delete(delivery.id);
+			removeQueuedCompanyRoomDeliveries(runtime.root, roomId);
 			const room = archiveCompanyRoom(runtime.root, roomId);
 			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
 			sendRoomEvent(slot, { kind: "room", roomId: room.id, room });

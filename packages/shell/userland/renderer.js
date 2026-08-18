@@ -2053,6 +2053,18 @@ async function createStaffMember() {
 		conversationRecipients.add(id);
 		showConversationPicker();
 		$("conversationStatus").textContent = `${staffDisplayName(created)} added. Select another agent to make this a group.`;
+		// The introduction must start even when the founder never opens the 1:1
+		// chat — e.g. when this agent flows straight into a group. The kernel
+		// attached the fresh staff session during creation; kick the intro now.
+		void (async () => {
+			for (let attempt = 0; attempt < 12; attempt += 1) {
+				const intro = await window.qorpera.staffIntroReady(id, sessionFile);
+				if (intro?.ok !== false || intro.error !== "staff introduction target is not the attached ready session") {
+					break;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 250));
+			}
+		})();
 	} catch (error) {
 		staffCreatorPending = false;
 		const message = error instanceof Error ? error.message : "Staff member could not be created.";
@@ -2357,6 +2369,10 @@ async function openRoom(id) {
 	setRoomRoute(id);
 	resetWorkGroup();
 	show("chat");
+	roomActivity.delete(id);
+	if (result.activity?.staffAgentId) {
+		roomActivityFor(id).set(result.activity.staffAgentId, result.activity.activity ?? "working");
+	}
 	renderRoomHistory(result.messages ?? [], result.deliveries ?? []);
 	renderThreadHeader();
 	syncConnectionRequestCards();

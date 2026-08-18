@@ -9,6 +9,7 @@ import {
 	companyRoomRegistryPath,
 	createCompanyRoom,
 	queueCompanyRoomDelivery,
+	readCompanyRoomMessage,
 	readCompanyRoomMessages,
 	readCompanyRooms,
 	readQueuedCompanyRoomDeliveries,
@@ -118,6 +119,57 @@ describe("company room registry and transcript", () => {
 		expect(retry).toMatchObject({ targetStaffAgentIds: [STAFF_B], attempts: 1, lastError: "runtime unavailable" });
 		expect(rescheduleCompanyRoomDelivery(root, delivery.id, [])).toBeUndefined();
 		expect(readQueuedCompanyRoomDeliveries(root)).toEqual([]);
+	});
+
+	it("persists delegation context on deliveries and preserves it across reschedules", () => {
+		const room = createCompanyRoom(root, { participantIds: [STAFF_A, STAFF_B, STAFF_C] });
+		const delegation = appendCompanyRoomMessage(root, room.id, {
+			speaker: { kind: "staff", staffAgentId: STAFF_A },
+			text: "Own the launch checklist.",
+			targetStaffAgentIds: [STAFF_B],
+		});
+		const delivery = queueCompanyRoomDelivery(root, room.id, {
+			messageId: delegation.id,
+			targetStaffAgentIds: [STAFF_B],
+			delegation: { depth: 1, ancestorStaffAgentIds: [STAFF_A, STAFF_B] },
+		});
+		expect(delivery.delegation).toEqual({ depth: 1, ancestorStaffAgentIds: [STAFF_A, STAFF_B] });
+		const retried = rescheduleCompanyRoomDelivery(root, delivery.id, [STAFF_B], "runtime unavailable");
+		expect(retried?.delegation).toEqual({ depth: 1, ancestorStaffAgentIds: [STAFF_A, STAFF_B] });
+		expect(readQueuedCompanyRoomDeliveries(root, room.id)[0].delegation).toEqual({
+			depth: 1,
+			ancestorStaffAgentIds: [STAFF_A, STAFF_B],
+		});
+	});
+
+	it("drops delivery targets that left the room instead of poisoning the rest", () => {
+		const room = createCompanyRoom(root, { participantIds: [STAFF_A, STAFF_B, STAFF_C] });
+		const message = appendCompanyRoomMessage(root, room.id, {
+			speaker: { kind: "founder" },
+			text: "Broadcast to everyone.",
+		});
+		const delivery = queueCompanyRoomDelivery(root, room.id, {
+			messageId: message.id,
+			targetStaffAgentIds: [STAFF_A, STAFF_B, STAFF_C],
+		});
+		updateCompanyRoom(root, room.id, { participantIds: [STAFF_A, STAFF_B] });
+		const rescheduled = rescheduleCompanyRoomDelivery(root, delivery.id, [STAFF_B, STAFF_C]);
+		expect(rescheduled?.targetStaffAgentIds).toEqual([STAFF_B]);
+		expect(rescheduleCompanyRoomDelivery(root, delivery.id, [STAFF_C])).toBeUndefined();
+		expect(readQueuedCompanyRoomDeliveries(root)).toEqual([]);
+	});
+
+	it("finds one message by id without replaying the chain and appends from the tail", () => {
+		const room = createCompanyRoom(root, { participantIds: [STAFF_A, STAFF_B] });
+		const first = appendCompanyRoomMessage(root, room.id, { speaker: { kind: "founder" }, text: "First." });
+		const second = appendCompanyRoomMessage(root, room.id, {
+			speaker: { kind: "staff", staffAgentId: STAFF_A },
+			text: "Second.",
+		});
+		expect(second.sequence).toBe(2);
+		expect(second.previousHash).toBe(first.hash);
+		expect(readCompanyRoomMessage(root, room.id, first.id)).toEqual(first);
+		expect(readCompanyRoomMessage(root, room.id, "99999999-9999-4999-8999-999999999999")).toBeUndefined();
 	});
 
 	it("queues staff-delegation deliveries but never back to their own speaker", () => {

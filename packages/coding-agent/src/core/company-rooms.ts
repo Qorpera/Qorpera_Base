@@ -45,6 +45,14 @@ export interface CompanyRoomMessage {
 	hash: string;
 }
 
+/** Bounded delegation-graph position carried by a queued delegation so the
+ * depth and cycle limits survive restarts instead of resetting to a fresh
+ * root context. */
+export interface CompanyRoomDeliveryDelegation {
+	depth: number;
+	ancestorStaffAgentIds: string[];
+}
+
 export interface QueuedCompanyRoomDelivery {
 	id: string;
 	roomId: string;
@@ -53,6 +61,7 @@ export interface QueuedCompanyRoomDelivery {
 	attempts: number;
 	nextAttemptAt: string;
 	lastError?: string;
+	delegation?: CompanyRoomDeliveryDelegation;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -78,6 +87,7 @@ export interface AppendCompanyRoomMessageInput {
 export interface QueueCompanyRoomDeliveryInput {
 	messageId: string;
 	targetStaffAgentIds: string[];
+	delegation?: CompanyRoomDeliveryDelegation;
 }
 
 interface CompanyRoomRegistry {
@@ -120,6 +130,7 @@ const DELIVERY_FIELDS = new Set([
 	"attempts",
 	"nextAttemptAt",
 	"lastError",
+	"delegation",
 	"createdAt",
 	"updatedAt",
 ]);
@@ -154,18 +165,27 @@ function boundedText(value: unknown, field: string, maximumBytes: number, option
 	return value;
 }
 
-function timestampValue(value: unknown, field: "createdAt" | "updatedAt"): string {
+function timestampValue(value: unknown, field: "nextAttemptAt" | "createdAt" | "updatedAt", subject = "room"): string {
 	if (typeof value !== "string" || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) {
-		throw new Error(`Company room ${field} is invalid`);
+		throw new Error(`Company ${subject} ${field} is invalid`);
 	}
 	return value;
 }
 
-function deliveryTimestampValue(value: unknown, field: "nextAttemptAt" | "createdAt" | "updatedAt"): string {
-	if (typeof value !== "string" || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) {
-		throw new Error(`Company room delivery ${field} is invalid`);
+function delegationValue(value: unknown): CompanyRoomDeliveryDelegation | undefined {
+	if (value === undefined) return undefined;
+	const record = recordValue(value);
+	if (
+		!record ||
+		!exactFields(record, new Set(["depth", "ancestorStaffAgentIds"])) ||
+		typeof record.depth !== "number" ||
+		!Number.isInteger(record.depth) ||
+		record.depth < 0 ||
+		record.depth > 32
+	) {
+		throw new Error("Company room delivery delegation is invalid");
 	}
-	return value;
+	return { depth: record.depth, ancestorStaffAgentIds: staffIdsValue(record.ancestorStaffAgentIds, 1) };
 }
 
 function staffIdsValue(value: unknown, minimum: number): string[] {
@@ -331,11 +351,12 @@ function deliveryValue(value: unknown, key: string): QueuedCompanyRoomDelivery {
 	) {
 		throw new Error("Company room delivery is invalid");
 	}
-	const nextAttemptAt = deliveryTimestampValue(record.nextAttemptAt, "nextAttemptAt");
-	const createdAt = deliveryTimestampValue(record.createdAt, "createdAt");
-	const updatedAt = deliveryTimestampValue(record.updatedAt, "updatedAt");
+	const nextAttemptAt = timestampValue(record.nextAttemptAt, "nextAttemptAt", "room delivery");
+	const createdAt = timestampValue(record.createdAt, "createdAt", "room delivery");
+	const updatedAt = timestampValue(record.updatedAt, "updatedAt", "room delivery");
 	if (Date.parse(updatedAt) < Date.parse(createdAt)) throw new Error("Company room delivery timestamps are invalid");
 	const lastError = boundedText(record.lastError, "delivery error", 1_024, true);
+	const delegation = delegationValue(record.delegation);
 	return {
 		id: key,
 		roomId: record.roomId,
@@ -344,6 +365,7 @@ function deliveryValue(value: unknown, key: string): QueuedCompanyRoomDelivery {
 		attempts: record.attempts,
 		nextAttemptAt,
 		...(lastError ? { lastError } : {}),
+		...(delegation ? { delegation } : {}),
 		createdAt,
 		updatedAt,
 	};
@@ -390,7 +412,26 @@ function writeDeliveryRegistry(root: string, registry: CompanyRoomDeliveryRegist
 }
 
 function cloneDelivery(delivery: QueuedCompanyRoomDelivery): QueuedCompanyRoomDelivery {
-	return { ...delivery, targetStaffAgentIds: [...delivery.targetStaffAgentIds] };
+	return {
+		...delivery,
+		targetStaffAgentIds: [...delivery.targetStaffAgentIds],
+		...(delivery.delegation
+			? {
+					delegation: {
+						depth: delivery.delegation.depth,
+						ancestorStaffAgentIds: [...delivery.delegation.ancestorStaffAgentIds],
+					},
+				}
+			: {}),
+	};
+}
+
+function cloneRoom(room: CompanyRoom): CompanyRoom {
+	return {
+		...room,
+		participantIds: [...room.participantIds],
+		historicalParticipantIds: [...room.historicalParticipantIds],
+	};
 }
 
 function checkedRoomId(roomId: string): string {
@@ -461,8 +502,7 @@ function roomMessageHash(message: Omit<CompanyRoomMessage, "hash">): string {
 function messageValue(
 	value: unknown,
 	room: CompanyRoom,
-	expectedSequence: number,
-	previousHash: string | null,
+	expected?: { sequence: number; previousHash: string | null },
 ): CompanyRoomMessage {
 	const record = recordValue(value);
 	if (
@@ -486,8 +526,13 @@ function messageValue(
 		typeof record.id !== "string" ||
 		!UUID_PATTERN.test(record.id) ||
 		record.roomId !== room.id ||
-		record.sequence !== expectedSequence ||
-		record.previousHash !== previousHash ||
+		(expected
+			? record.sequence !== expected.sequence || record.previousHash !== expected.previousHash
+			: typeof record.sequence !== "number" ||
+				!Number.isInteger(record.sequence) ||
+				record.sequence < 1 ||
+				(record.previousHash !== null &&
+					(typeof record.previousHash !== "string" || !/^[a-f0-9]{64}$/.test(record.previousHash)))) ||
 		typeof record.hash !== "string" ||
 		!/^[a-f0-9]{64}$/.test(record.hash)
 	) {
@@ -512,14 +557,14 @@ function messageValue(
 	const unsigned: Omit<CompanyRoomMessage, "hash"> = {
 		id: record.id,
 		roomId: room.id,
-		sequence: expectedSequence,
+		sequence: expected ? expected.sequence : (record.sequence as number),
 		speaker,
 		text,
 		...(images ? { images } : {}),
 		...(targets ? { targetStaffAgentIds: targets } : {}),
 		...(sourceTrailFile ? { sourceTrailFile } : {}),
 		createdAt,
-		previousHash,
+		previousHash: expected ? expected.previousHash : (record.previousHash as string | null),
 	};
 	if (record.hash !== roomMessageHash(unsigned)) throw new Error("Company room transcript hash is invalid");
 	return { ...unsigned, hash: record.hash };
@@ -536,22 +581,12 @@ export function companyRoomDeliveryRegistryPath(root: string): string {
 export function readCompanyRooms(root: string): CompanyRoom[] {
 	return Object.values(readRegistry(root).rooms)
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-		.map((room) => ({
-			...room,
-			participantIds: [...room.participantIds],
-			historicalParticipantIds: [...room.historicalParticipantIds],
-		}));
+		.map(cloneRoom);
 }
 
 export function readCompanyRoom(root: string, roomId: string): CompanyRoom | undefined {
 	const room = readRegistry(root).rooms[checkedRoomId(roomId)];
-	return room
-		? {
-				...room,
-				participantIds: [...room.participantIds],
-				historicalParticipantIds: [...room.historicalParticipantIds],
-			}
-		: undefined;
+	return room ? cloneRoom(room) : undefined;
 }
 
 export function createCompanyRoom(root: string, input: CreateCompanyRoomInput): CompanyRoom {
@@ -573,53 +608,26 @@ export function createCompanyRoom(root: string, input: CreateCompanyRoomInput): 
 	};
 	registry.rooms[room.id] = room;
 	writeRegistry(root, registry);
-	return {
-		...room,
-		participantIds: [...room.participantIds],
-		historicalParticipantIds: [...room.historicalParticipantIds],
-	};
+	return cloneRoom(room);
+}
+
+function setRoomStatus(root: string, roomId: string, status: CompanyRoomStatus): CompanyRoom {
+	const registry = readRegistry(root);
+	const current = registry.rooms[checkedRoomId(roomId)];
+	if (!current) throw new Error(`Unknown company room: ${roomId}`);
+	if (current.status === status) return cloneRoom(current);
+	const room: CompanyRoom = { ...current, status, updatedAt: new Date().toISOString() };
+	registry.rooms[room.id] = room;
+	writeRegistry(root, registry);
+	return cloneRoom(room);
 }
 
 export function archiveCompanyRoom(root: string, roomId: string): CompanyRoom {
-	const registry = readRegistry(root);
-	const current = registry.rooms[checkedRoomId(roomId)];
-	if (!current) throw new Error(`Unknown company room: ${roomId}`);
-	if (current.status === "archived") {
-		return {
-			...current,
-			participantIds: [...current.participantIds],
-			historicalParticipantIds: [...current.historicalParticipantIds],
-		};
-	}
-	const room: CompanyRoom = { ...current, status: "archived", updatedAt: new Date().toISOString() };
-	registry.rooms[room.id] = room;
-	writeRegistry(root, registry);
-	return {
-		...room,
-		participantIds: [...room.participantIds],
-		historicalParticipantIds: [...room.historicalParticipantIds],
-	};
+	return setRoomStatus(root, roomId, "archived");
 }
 
 export function restoreCompanyRoom(root: string, roomId: string): CompanyRoom {
-	const registry = readRegistry(root);
-	const current = registry.rooms[checkedRoomId(roomId)];
-	if (!current) throw new Error(`Unknown company room: ${roomId}`);
-	if (current.status === "active") {
-		return {
-			...current,
-			participantIds: [...current.participantIds],
-			historicalParticipantIds: [...current.historicalParticipantIds],
-		};
-	}
-	const room: CompanyRoom = { ...current, status: "active", updatedAt: new Date().toISOString() };
-	registry.rooms[room.id] = room;
-	writeRegistry(root, registry);
-	return {
-		...room,
-		participantIds: [...room.participantIds],
-		historicalParticipantIds: [...room.historicalParticipantIds],
-	};
+	return setRoomStatus(root, roomId, "active");
 }
 
 export function updateCompanyRoom(root: string, roomId: string, input: UpdateCompanyRoomInput): CompanyRoom {
@@ -650,11 +658,7 @@ export function updateCompanyRoom(root: string, roomId: string, input: UpdateCom
 	if (record.title === null) delete room.title;
 	registry.rooms[room.id] = room;
 	writeRegistry(root, registry);
-	return {
-		...room,
-		participantIds: [...room.participantIds],
-		historicalParticipantIds: [...room.historicalParticipantIds],
-	};
+	return cloneRoom(room);
 }
 
 export function readCompanyRoomMessages(root: string, roomId: string): CompanyRoomMessage[] {
@@ -672,7 +676,7 @@ export function readCompanyRoomMessages(root: string, roomId: string): CompanyRo
 		} catch {
 			throw new Error("Company room transcript is invalid");
 		}
-		const message = messageValue(parsed, room, messages.length + 1, previousHash);
+		const message = messageValue(parsed, room, { sequence: messages.length + 1, previousHash });
 		messages.push(message);
 		previousHash = message.hash;
 	}
@@ -682,6 +686,67 @@ export function readCompanyRoomMessages(root: string, roomId: string): CompanyRo
 		...(message.images ? { images: message.images.map((image) => ({ ...image })) } : {}),
 		...(message.targetStaffAgentIds ? { targetStaffAgentIds: [...message.targetStaffAgentIds] } : {}),
 	}));
+}
+
+/** Last transcript entry, self-hash-verified without replaying the whole
+ * chain. Appends only need the tail's sequence and hash; full-chain
+ * verification stays on the read paths, keeping appends O(1) in messages
+ * instead of O(n) parse-and-hash over transcripts that may carry images. */
+function transcriptTail(root: string, room: CompanyRoom): { sequence: number; hash: string } | null {
+	const path = transcriptPath(root, room.id, false);
+	if (!path) return null;
+	const content = readFileSync(path, "utf-8");
+	let end = content.length;
+	while (end > 0) {
+		const start = content.lastIndexOf("\n", end - 1);
+		const line = content.slice(start + 1, end).trim();
+		if (line) {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(line);
+			} catch {
+				throw new Error("Company room transcript is invalid");
+			}
+			const message = messageValue(parsed, room);
+			return { sequence: message.sequence, hash: message.hash };
+		}
+		if (start < 0) break;
+		end = start;
+	}
+	return null;
+}
+
+/** Locate one message by id without verifying the whole chain: lines are
+ * prefiltered by an id substring scan and only the match is validated
+ * against its own hash. */
+export function readCompanyRoomMessage(
+	root: string,
+	roomId: string,
+	messageId: string,
+): CompanyRoomMessage | undefined {
+	const room = readCompanyRoom(root, roomId);
+	if (!room) throw new Error(`Unknown company room: ${roomId}`);
+	if (!UUID_PATTERN.test(messageId)) throw new Error("Company room message identity is invalid");
+	const path = transcriptPath(root, room.id, false);
+	if (!path) return undefined;
+	for (const line of readFileSync(path, "utf-8").split(/\r?\n/)) {
+		if (!line || !line.includes(messageId)) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(line);
+		} catch {
+			throw new Error("Company room transcript is invalid");
+		}
+		const message = messageValue(parsed, room);
+		if (message.id !== messageId) continue;
+		return {
+			...message,
+			speaker: { ...message.speaker },
+			...(message.images ? { images: message.images.map((image) => ({ ...image })) } : {}),
+			...(message.targetStaffAgentIds ? { targetStaffAgentIds: [...message.targetStaffAgentIds] } : {}),
+		};
+	}
+	return undefined;
 }
 
 export function appendCompanyRoomMessage(
@@ -696,7 +761,7 @@ export function appendCompanyRoomMessage(
 	const registry = readRegistry(root);
 	const room = registry.rooms[checkedRoomId(roomId)];
 	if (!room || room.status !== "active") throw new Error("Company room is unavailable");
-	const messages = readCompanyRoomMessages(root, room.id);
+	const tail = transcriptTail(root, room);
 	const speaker = speakerValue(record.speaker);
 	if (speaker.kind === "staff" && !room.participantIds.includes(speaker.staffAgentId)) {
 		throw new Error("Company room speaker is not a participant");
@@ -724,14 +789,14 @@ export function appendCompanyRoomMessage(
 	const unsigned: Omit<CompanyRoomMessage, "hash"> = {
 		id: randomUUID(),
 		roomId: room.id,
-		sequence: messages.length + 1,
+		sequence: (tail?.sequence ?? 0) + 1,
 		speaker,
 		text,
 		...(images ? { images } : {}),
 		...(targets ? { targetStaffAgentIds: targets } : {}),
 		...(sourceTrailFile ? { sourceTrailFile } : {}),
 		createdAt: new Date().toISOString(),
-		previousHash: messages.at(-1)?.hash ?? null,
+		previousHash: tail?.hash ?? null,
 	};
 	const message: CompanyRoomMessage = { ...unsigned, hash: roomMessageHash(unsigned) };
 	const path = transcriptPath(root, room.id, true)!;
@@ -763,7 +828,7 @@ export function queueCompanyRoomDelivery(
 	if (!room || room.status !== "active") throw new Error("Company room is unavailable");
 	const record = input as unknown as Record<string, unknown>;
 	if (
-		!exactFields(record, new Set(["messageId", "targetStaffAgentIds"])) ||
+		!exactFields(record, new Set(["messageId", "targetStaffAgentIds", "delegation"])) ||
 		typeof record.messageId !== "string" ||
 		!UUID_PATTERN.test(record.messageId)
 	) {
@@ -773,7 +838,8 @@ export function queueCompanyRoomDelivery(
 	if (targets.some((id) => !room.participantIds.includes(id))) {
 		throw new Error("Company room delivery target is not a participant");
 	}
-	const message = readCompanyRoomMessages(root, room.id).find((candidate) => candidate.id === record.messageId);
+	const delegation = delegationValue(record.delegation);
+	const message = readCompanyRoomMessage(root, room.id, record.messageId);
 	if (!message) throw new Error("Company room delivery message is invalid");
 	if (message.speaker.kind === "staff" && targets.includes(message.speaker.staffAgentId)) {
 		throw new Error("Company room delivery cannot target its own speaker");
@@ -796,6 +862,7 @@ export function queueCompanyRoomDelivery(
 		targetStaffAgentIds: targets,
 		attempts: 0,
 		nextAttemptAt: now,
+		...(delegation ? { delegation } : {}),
 		createdAt: now,
 		updatedAt: now,
 	};
@@ -813,19 +880,20 @@ export function rescheduleCompanyRoomDelivery(
 	const registry = readDeliveryRegistry(root);
 	const current = registry.deliveries[checkedRoomId(deliveryId)];
 	if (!current) throw new Error(`Unknown company room delivery: ${deliveryId}`);
-	if (!targetStaffAgentIds.length) {
+	const room = readCompanyRoom(root, current.roomId);
+	// Membership and lifecycle can change while a delivery waits. Targets that
+	// left the room are dropped rather than poisoning the remaining recipients,
+	// and a vanished or archived room retires the delivery entirely.
+	const targets =
+		room && room.status === "active"
+			? staffIdsValue([...targetStaffAgentIds], 0).filter(
+					(id) => current.targetStaffAgentIds.includes(id) && room.participantIds.includes(id),
+				)
+			: [];
+	if (!targets.length) {
 		delete registry.deliveries[current.id];
 		writeDeliveryRegistry(root, registry);
 		return undefined;
-	}
-	const room = readCompanyRoom(root, current.roomId);
-	if (!room || room.status !== "active") throw new Error("Company room is unavailable");
-	const targets = staffIdsValue([...targetStaffAgentIds], 1);
-	if (
-		targets.some((id) => !current.targetStaffAgentIds.includes(id)) ||
-		targets.some((id) => !room.participantIds.includes(id))
-	) {
-		throw new Error("Company room delivery targets are invalid");
 	}
 	const error = lastError === undefined ? undefined : boundedText(lastError.trim(), "delivery error", 1_024);
 	const attempts = Math.min(1_000, current.attempts + (error ? 1 : 0));
