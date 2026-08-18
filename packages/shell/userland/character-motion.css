@@ -10,6 +10,109 @@ html[data-staff-avatar-style="creatures"] .staff-avatar {
 	--creature-eye-width: 4%;
 	--creature-eye-height: 7.5%;
 	--creature-motion-delay: var(--staff-motion-delay, 0s);
+	border-color: transparent;
+	background: transparent;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-creature-image {
+	width: 100%;
+	height: 100%;
+}
+
+/* Character art is shipped with a transparent alpha channel. The SVG filters
+ * replace its original teal pixels with the persisted profile color while
+ * preserving the exact silhouette and anti-aliased edge. */
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #171716"] > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#charcoal");
+}
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #9c7151"] > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#brown");
+}
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #ff365e"] > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#coral");
+}
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #ff642e"] > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#orange");
+}
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #ffae00"] > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#amber");
+}
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #00c878"] > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#emerald");
+}
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #00bfb3"] > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#teal");
+}
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #1684ff"] > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#cobalt");
+}
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #8a4dff"] > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#violet");
+}
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #ff2994"] > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#pink");
+}
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #7c7c7a"] > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#gray");
+}
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #5367e8"] > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#indigo");
+}
+
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker .staff-color-picker {
+	display: flex;
+	flex-wrap: wrap;
+}
+
+body.staff-creator-open .staff-color-picker {
+	width: 190px;
+	row-gap: 12px;
+}
+
+/* Indigo remains renderable for existing agents and role defaults, but the
+ * creator presents the 11-color profile palette. */
+html[data-staff-avatar-style="creatures"] .staff-color-choice[aria-label="Use #5367e8"] {
+	display: none;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#cobalt");
+}
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #171716"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#charcoal");
+}
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #9c7151"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#brown");
+}
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #ff365e"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#coral");
+}
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #ff642e"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#orange");
+}
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #ffae00"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#amber");
+}
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #00c878"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#emerald");
+}
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #00bfb3"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#teal");
+}
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #1684ff"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#cobalt");
+}
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #8a4dff"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#violet");
+}
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #ff2994"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#pink");
+}
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #7c7c7a"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#gray");
+}
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #5367e8"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+	filter: url("./staff-creature-colors.svg#indigo");
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="lantern"] {

@@ -78,12 +78,16 @@ describe("shell starter staff templates", () => {
 			const asset = new URL(`../userland/staff-creatures/${characterId}.png`, import.meta.url);
 			expect(existsSync(asset)).toBe(true);
 			expect(statSync(asset).size).toBeGreaterThan(10_000);
+			const png = readFileSync(asset);
+			expect(png.subarray(1, 4).toString("ascii")).toBe("PNG");
+			expect(png[25]).toBe(6);
 		}
 	});
 
 	it("loads the creature motion layer with integrated eyes and activity states", () => {
 		const index = readFileSync(new URL("../userland/index.html", import.meta.url), "utf8");
 		const motion = readFileSync(new URL("../userland/character-motion.css", import.meta.url), "utf8");
+		const colors = readFileSync(new URL("../userland/staff-creature-colors.svg", import.meta.url), "utf8");
 		const renderer = readFileSync(new URL("../userland/renderer.js", import.meta.url), "utf8");
 		expect(index).toContain('<link rel="stylesheet" href="./character-motion.css">');
 		expect(motion).toContain(".staff-avatar > .staff-face i");
@@ -94,6 +98,10 @@ describe("shell starter staff templates", () => {
 		expect(motion).toContain(".staff-avatar.writing");
 		expect(motion).toContain(".staff-avatar.needs-attention");
 		expect(motion).toContain('.staff-avatar[data-creature="folio"]');
+		expect(motion).toContain('filter: url("./staff-creature-colors.svg#cobalt")');
+		expect(motion).toContain(".staff-appearance-picker .staff-color-picker");
+		expect(colors.match(/<filter id=/g)).toHaveLength(12);
+		expect(colors).toContain('flood-color="#ff365e"');
 		expect(renderer).toContain('const STAFF_MOTION_STATES = ["idle", "working", "writing", "needs-attention"];');
 		expect(renderer).toContain('folio: Object.freeze({ label: "Folio", asset: "./staff-creatures/folio.png" })');
 		expect(renderer).toContain('if (staffNeedsAttention(staff, runtime)) return "needs-attention";');
