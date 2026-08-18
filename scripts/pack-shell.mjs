@@ -34,6 +34,17 @@ const shellPkg = JSON.parse(readFileSync(join(repoRoot, "packages", "shell", "pa
 const productVersion = shellPkg.productVersion ?? "0.1.0";
 const electronVersion = shellPkg.devDependencies.electron;
 
+// Packaging targets the platform it runs on. The closure copy below can only
+// see the optional platform binaries npm installed for THIS host -- the Codex
+// vendor packages are per-platform optional dependencies -- so cross-building
+// would assemble an app whose agent binary is silently absent and the
+// structural assertion at the end would (rightly) fail.
+const isMac = process.platform === "darwin";
+const codexTriple = isMac
+	? (process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin")
+	: (process.arch === "arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc");
+const codexPlatformPackage = `codex-${isMac ? "darwin" : "win32"}-${process.arch}`;
+
 // Workspace packages are copied as {package.json, dist} from their source dirs.
 const workspaceDirs = {
 	"@qorpera/pi-coding-agent": "packages/coding-agent",
@@ -149,12 +160,28 @@ writeFileSync(
 		'  - name: "Qorpera invitation"',
 		"    schemes:",
 		"      - qorpera",
-		"win:",
-		"  target: nsis",
-		'  icon: "dist/assets/qorpera.ico"',
-		"nsis:",
-		"  oneClick: true",
-		"  perMachine: false",
+		// The mac zip target is not optional: electron-updater updates from the
+		// zip and only offers the dmg to humans. No signing identity is
+		// configured here; electron-builder ad-hoc signs, which Apple Silicon
+		// requires to launch at all. Real signing arrives via CSC_* env vars
+		// without a config change.
+		...(isMac
+			? [
+					"mac:",
+					"  target:",
+					"    - dmg",
+					"    - zip",
+					'  icon: "dist/assets/qorpera.png"',
+					"  category: public.app-category.productivity",
+				]
+			: [
+					"win:",
+					"  target: nsis",
+					'  icon: "dist/assets/qorpera.ico"',
+					"nsis:",
+					"  oneClick: true",
+					"  perMachine: false",
+				]),
 		"publish:",
 		"  provider: github",
 		"  owner: Qorpera",
@@ -169,7 +196,7 @@ if (process.argv.includes("--no-build")) {
 }
 const builder = spawnSync(
 	process.execPath,
-	[join(rootModules, "electron-builder", "cli.js"), "--config", "electron-builder.yml", "--win", "--publish", "never"],
+	[join(rootModules, "electron-builder", "cli.js"), "--config", "electron-builder.yml", isMac ? "--mac" : "--win", "--publish", "never"],
 	{ cwd: appDir, stdio: "inherit", shell: false },
 );
 if (builder.status !== 0) {
@@ -180,41 +207,23 @@ if (builder.status !== 0) {
 // Structural assertion: the packed app must contain the agent and Codex runtimes.
 // Guards against electron-builder pruning regressions — a hub-only app
 // passes every smoke that doesn't open a company.
-const packedRpcEntry = join(
-	outDir,
-	"win-unpacked",
-	"resources",
-	"app",
-	"node_modules",
-	"@qorpera",
-	"pi-coding-agent",
-	"dist",
-	"rpc-entry.js",
-);
-const packedCodexEntry = join(
-	outDir,
-	"win-unpacked",
-	"resources",
-	"app",
-	"node_modules",
-	"@openai",
-	"codex",
-	"bin",
-	"codex.js",
-);
-const codexPlatform = process.arch === "arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc";
+// electron-builder's unpacked output differs per platform: win-unpacked on
+// Windows, mac[-arm64]/<Product>.app/Contents/Resources on macOS.
+const packedResourcesRoot = isMac
+	? join(outDir, process.arch === "arm64" ? "mac-arm64" : "mac", "Qorpera Base.app", "Contents", "Resources")
+	: join(outDir, "win-unpacked", "resources");
+const packedAppRoot = join(packedResourcesRoot, "app");
+const packedRpcEntry = join(packedAppRoot, "node_modules", "@qorpera", "pi-coding-agent", "dist", "rpc-entry.js");
+const packedCodexEntry = join(packedAppRoot, "node_modules", "@openai", "codex", "bin", "codex.js");
 const packedCodexExecutable = join(
-	outDir,
-	"win-unpacked",
-	"resources",
-	"app",
+	packedAppRoot,
 	"node_modules",
 	"@openai",
-	`codex-win32-${process.arch}`,
+	codexPlatformPackage,
 	"vendor",
-	codexPlatform,
+	codexTriple,
 	"bin",
-	"codex.exe",
+	isMac ? "codex" : "codex.exe",
 );
 const packedRuntimeFiles = [packedRpcEntry, packedCodexEntry, packedCodexExecutable];
 const missingPackedRuntimeFiles = packedRuntimeFiles.filter((path) => !existsSync(path));
@@ -227,7 +236,16 @@ console.log("pack verification: agent and Codex runtimes present in packed app")
 // A structurally complete app can still ship an all-white Chromium frame.
 // Exercise the unpacked packaged-mode renderer and let main reject a
 // single-color capture before the installer is allowed to publish.
-const packedShellExecutable = join(outDir, "win-unpacked", "Qorpera Base.exe");
+const packedShellExecutable = isMac
+	? join(
+			outDir,
+			process.arch === "arm64" ? "mac-arm64" : "mac",
+			"Qorpera Base.app",
+			"Contents",
+			"MacOS",
+			"Qorpera Base",
+		)
+	: join(outDir, "win-unpacked", "Qorpera Base.exe");
 const packedSmokeRoot = join(outDir, ".pack-smoke");
 const packedSmokeShot = join(packedSmokeRoot, "shell.png");
 const packedSmokeProfile = join(packedSmokeRoot, "profile");
