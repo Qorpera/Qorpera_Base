@@ -32,6 +32,11 @@ describe("local execution permission", () => {
 			"--tools",
 			"request_connection",
 		]);
+		expect(localExecutionToolArgs("never", "read,bash,edit,write,request_connection,delegate_to_staff")).toEqual([
+			"--tools",
+			"request_connection,delegate_to_staff",
+		]);
+		expect(localExecutionToolArgs("never")).toEqual(["--tools", "request_connection"]);
 	});
 
 	it("defaults a new local profile to always allow", () => {

@@ -67,7 +67,9 @@ import {
 	deleteScheduledJob,
 	destinationAllowed,
 	persistWebhookPort,
+	ROUTINE_PLACEMENTS,
 	ROUTINE_WEEKDAYS,
+	type RoutinePlacement,
 	type RoutineTriggerInput,
 	type RoutineWeekday,
 	readCompanyConnections,
@@ -92,6 +94,24 @@ import {
 	readCompanyConnectorManifests,
 } from "@qorpera/pi-coding-agent/company-connectors";
 import type { CompanyOperationKind } from "@qorpera/pi-coding-agent/company-operation-broker";
+import {
+	appendCompanyRoomMessage,
+	archiveCompanyRoom,
+	type CompanyRoom,
+	type CompanyRoomMessage,
+	createCompanyRoom,
+	type QueuedCompanyRoomDelivery,
+	queueCompanyRoomDelivery,
+	readCompanyRoom,
+	readCompanyRoomMessage,
+	readCompanyRoomMessages,
+	readCompanyRooms,
+	readQueuedCompanyRoomDeliveries,
+	removeQueuedCompanyRoomDeliveries,
+	rescheduleCompanyRoomDelivery,
+	restoreCompanyRoom,
+	updateCompanyRoom,
+} from "@qorpera/pi-coding-agent/company-rooms";
 import {
 	activateStaffAgent,
 	archiveStaffAgent,
@@ -134,8 +154,10 @@ import {
 	session as electronSession,
 	shell as electronShell,
 	ipcMain,
+	Menu,
 	type Session,
 	safeStorage,
+	Tray,
 	type WebContents,
 } from "electron";
 import electronUpdater from "electron-updater";
@@ -178,6 +200,7 @@ import {
 	writeSandboxProfile,
 } from "./agent-runtime.ts";
 import { migrateCompanyToAgentsOnly } from "./agents-only-company-migration.ts";
+import { readBackgroundCompanyRoots, setBackgroundCompanyEnabled } from "./background-companies.ts";
 import { CloudProfileAccessRefresh } from "./cloud-access-refresh.ts";
 import { type CloudCompanyInbox, CloudCompanyWorkspaceInboxSync } from "./cloud-company-inbox.ts";
 import {
@@ -338,6 +361,13 @@ import {
 	rendererPartitionForCompany,
 } from "./renderer-boundary.ts";
 import { bitmapLooksBlank } from "./renderer-smoke.ts";
+import {
+	MAX_ROOM_DELEGATION_DEPTH,
+	MAX_ROOM_DELEGATION_FANOUT,
+	planRoomDelegation,
+	type RoomDelegationContext,
+	rootRoomDelegationContext,
+} from "./room-delegation-policy.ts";
 import {
 	completePendingRoutineTrigger,
 	dueCustomRoutineCheck,
@@ -1108,6 +1138,9 @@ interface CompanyRuntime {
 	infrastructureWork?: "trigger-build" | "trigger-check";
 	/** Named scheduled job currently owning wakeChild; absent for event wakes. */
 	wakeJobId?: string;
+	/** Group-chat delivery currently owning wakeChild; the autonomous lane is
+	 * carrying a room participant turn, not a scheduled or event wake. */
+	roomDelivery?: { roomId: string; staffAgentId: string };
 	/** Closes the inbound webhook listener (optional kernel module). */
 	webhookClose?: () => void;
 	/** An inbound event arrived while the company was busy; the wake ticker owes it a wake. */
@@ -1468,6 +1501,8 @@ const childTriggerWorkers = new WeakMap<ChildProcessWithoutNullStreams, TriggerW
  * founder turn in flight. Wakes must never preempt it. */
 const childBusy = new WeakMap<ChildProcessWithoutNullStreams, boolean>();
 const childApprovedGates = new WeakMap<ChildProcessWithoutNullStreams, Set<string>>();
+/** Bounded delegation-graph position of a live room participant turn. */
+const childRoomDelegationContexts = new WeakMap<ChildProcessWithoutNullStreams, RoomDelegationContext>();
 const childCheckpointCompletion = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 const childExecutorIds = new WeakMap<ChildProcessWithoutNullStreams, string>();
 const childAttachmentSequences = new WeakMap<ChildProcessWithoutNullStreams, number>();
@@ -1746,8 +1781,78 @@ function slotForCompany(root: string): Slot | undefined {
 }
 
 function focusWindow(win: BrowserWindow): void {
+	// A background company's window is hidden, not closed; every path that
+	// surfaces a window must be able to bring it back, not just the tray.
+	if (!win.isVisible()) win.show();
 	if (win.isMinimized()) win.restore();
 	win.focus();
+}
+
+/**
+ * Machine-local background execution: an opted-in company keeps its runtime —
+ * wake ticker, queued room deliveries, coworker mail, delegation — alive with
+ * its window hidden instead of closing. A tray icon owns the hidden windows,
+ * and login-start keeps the schedule running across reboots while any
+ * company on this machine is opted in.
+ */
+let appQuitting = false;
+let backgroundTray: Tray | undefined;
+
+function backgroundCompanyEnabled(root: string): boolean {
+	const wanted = normalizedRoot(root);
+	return readBackgroundCompanyRoots(app.getPath("userData")).some((candidate) => normalizedRoot(candidate) === wanted);
+}
+
+function syncBackgroundLoginItem(roots: readonly string[]): void {
+	if (process.platform !== "win32" && process.platform !== "darwin") return;
+	try {
+		app.setLoginItemSettings({ openAtLogin: roots.length > 0 });
+	} catch (error) {
+		console.error(`background login-item update failed: ${(error as Error).message}`);
+	}
+}
+
+function showBackgroundWindows(): void {
+	let focused = false;
+	for (const slot of slots.values()) {
+		if (slot.window.isDestroyed()) continue;
+		if (!slot.window.isVisible()) slot.window.show();
+		if (!focused) {
+			focusWindow(slot.window);
+			focused = true;
+		}
+	}
+	syncBackgroundTray();
+}
+
+function syncBackgroundTray(): void {
+	const hiddenBackground = [...slots.values()].some(
+		(slot) =>
+			slot.runtime &&
+			!slot.runtime.closing &&
+			!slot.window.isDestroyed() &&
+			!slot.window.isVisible() &&
+			backgroundCompanyEnabled(slot.runtime.root),
+	);
+	if (hiddenBackground && !backgroundTray) {
+		try {
+			backgroundTray = new Tray(DEFAULT_ICON);
+			backgroundTray.setToolTip("Qorpera Base — background companies are running");
+			backgroundTray.setContextMenu(
+				Menu.buildFromTemplate([
+					{ label: "Open Qorpera Base", click: () => showBackgroundWindows() },
+					{ type: "separator" },
+					{ label: "Quit Qorpera Base", click: () => app.quit() },
+				]),
+			);
+			backgroundTray.on("click", () => showBackgroundWindows());
+		} catch (error) {
+			console.error(`background tray could not start: ${(error as Error).message}`);
+		}
+	} else if (!hiddenBackground && backgroundTray) {
+		backgroundTray.destroy();
+		backgroundTray = undefined;
+	}
 }
 
 function escapeHtml(value: string): string {
@@ -2151,6 +2256,8 @@ interface ChildOptions {
 	sessionName?: string;
 	/** Stable company-owned employee identity stamped into the trail header. */
 	staffAgentId?: string;
+	/** Durable multi-staff room whose participant trail this process carries. */
+	roomId?: string;
 	/** Host-built employee context appended on every process launch. */
 	staffContext?: string;
 	/** One-shot flags consumed by the process launched from these options. */
@@ -2423,6 +2530,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		actor,
 		attended: false,
 		staffAgentId,
+		roomId: options.roomId,
 		autonomousLabel: autonomousName ? `autonomous — ${autonomousName}` : undefined,
 		department: department?.path,
 		worktree,
@@ -4377,7 +4485,7 @@ async function applyStaffCompanyOperation(
 					success: true,
 					...(checkpoint !== undefined ? { checkpoint } : {}),
 				});
-				state = queueCustomRoutineTrigger(readScheduledJobs(root), state, {
+				state = queueCustomRoutineTrigger(locallyPlacedScheduledJobs(root), state, {
 					id: input.eventId.trim(),
 					source: triggerWorker.adapterId,
 					type: triggerWorker.event,
@@ -4649,6 +4757,77 @@ async function applyStaffCompanyOperation(
 		runtime.childOptions.staffContext = staffSystemContext(root, activated);
 		runtime.pendingStaffContextRestart = true;
 		return { message: "Continue normally without announcing this internal transition." };
+	}
+
+	if (kind === "delegate_to_staff") {
+		const roomId = binding.authority.roomId;
+		if (!background || !roomId) {
+			throw new Error("delegation is only available inside a group-chat room turn");
+		}
+		const input = recordValue(value);
+		if (
+			!input ||
+			typeof input.staffAgentId !== "string" ||
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.staffAgentId) ||
+			typeof input.message !== "string" ||
+			input.message !== input.message.trim() ||
+			!input.message ||
+			input.message.includes("\0") ||
+			Buffer.byteLength(input.message, "utf-8") > 4_000 ||
+			Object.keys(input).some((key) => key !== "staffAgentId" && key !== "message")
+		) {
+			throw new Error("delegation requires a room participant and bounded message");
+		}
+		if (staff.templateId !== "agent-manager") throw new Error("only the Agent Manager can delegate room work");
+		const room = readCompanyRoom(root, roomId);
+		if (!room || room.status !== "active") throw new Error("this group chat is no longer active");
+		if (!room.participantIds.includes(staffAgentId)) {
+			throw new Error("the delegating manager is no longer a participant in this room");
+		}
+		if (!room.participantIds.includes(input.staffAgentId)) {
+			throw new Error("delegation target is not a participant in this room");
+		}
+		const target = activeStaffAgent(root, input.staffAgentId);
+		if (!target) throw new Error("delegation target is unavailable or archived");
+		const context = childRoomDelegationContexts.get(child) ?? rootRoomDelegationContext(staffAgentId);
+		const planned = planRoomDelegation(context, staffAgentId, input.staffAgentId);
+		const message = appendCompanyRoomMessage(root, room.id, {
+			speaker: { kind: "staff", staffAgentId },
+			text: input.message,
+			targetStaffAgentIds: [target.id],
+			sourceTrailFile: binding.file,
+		});
+		try {
+			queueCompanyRoomDelivery(root, room.id, {
+				messageId: message.id,
+				targetStaffAgentIds: [target.id],
+				delegation: {
+					depth: planned.target.depth,
+					ancestorStaffAgentIds: [...planned.target.ancestorStaffAgentIds],
+				},
+			});
+		} catch (error) {
+			// The delegation message is already durable in the transcript; a retry
+			// would append a duplicate assignment, so report instead of rethrowing.
+			commitCompanyMaterialization(root, roomMaterializationPaths(room.id));
+			sendRoomEvent(slot, { kind: "message", roomId: room.id, message });
+			const detail = error instanceof Error ? error.message : String(error);
+			return {
+				message: `The delegation was posted to the room, but delivery to ${target.displayName} could not be queued: ${detail}. Do not repeat the delegation; report the problem in your own reply so the founder can resend it.`,
+			};
+		}
+		childRoomDelegationContexts.set(child, planned.source);
+		commitCompanyMaterialization(root, roomMaterializationPaths(room.id));
+		sendRoomEvent(slot, { kind: "message", roomId: room.id, message });
+		sendRoomEvent(slot, {
+			kind: "delegation",
+			roomId: room.id,
+			fromStaffAgentId: staffAgentId,
+			toStaffAgentId: target.id,
+		});
+		return {
+			message: `Delegation queued for ${target.displayName} in this room. They respond in their own session; continue your own contribution without impersonating them or claiming their work is done.`,
+		};
 	}
 
 	throw new Error(`company operation ${kind} is unavailable in this agent run`);
@@ -5065,7 +5244,7 @@ async function startCustomTriggerBuilderExclusive(slot: Slot, runtime: CompanyRu
 async function startCustomTriggerCheckExclusive(slot: Slot, runtime: CompanyRuntime): Promise<boolean> {
 	if (runtime.wakeChild || runtime.closing || isChildBusy(runtime.child)) return false;
 	const statePath = routineTriggerStatePath(app.getPath("userData"), runtime.root);
-	const due = dueCustomRoutineCheck(readScheduledJobs(runtime.root), readRoutineTriggerState(statePath));
+	const due = dueCustomRoutineCheck(locallyPlacedScheduledJobs(runtime.root), readRoutineTriggerState(statePath));
 	if (!due) return false;
 	const staff = due.job.staffAgentId ? activeStaffAgent(runtime.root, due.job.staffAgentId) : undefined;
 	if (!staff) {
@@ -5384,7 +5563,9 @@ function startWakeTicker(): void {
 			const customBuilds = readCustomTriggerBuildState(
 				customTriggerBuildStatePath(app.getPath("userData"), runtime.root),
 			);
-			const customJobs = readScheduledJobs(runtime.root);
+			// Cloud-placed routines are fail-closed: this local host never runs
+			// them, and they stay parked until a hosted execution lane exists.
+			const customJobs = locallyPlacedScheduledJobs(runtime.root);
 			if (
 				customBuilds.builds.some((build) => build.status === "queued") ||
 				dueCustomRoutineCheck(
@@ -5407,6 +5588,16 @@ function startWakeTicker(): void {
 						console.error(`inbound wake failed for ${runtime.root}: ${(error as Error).message}`);
 						if (slot.runtime === runtime && !runtime.closing) runtime.pendingInboundWake = true;
 					});
+				continue;
+			}
+			// Queued room deliveries wake one participant at a time. The durable
+			// delivery registry is the queue itself, so a room conversation
+			// survives restarts, retries with backoff, and runs when free.
+			const roomDue = dueRoomDelivery(slot, runtime.root);
+			if (roomDue) {
+				void startRoomChild(slot, runtime, roomDue).catch((error) => {
+					console.error(`room delivery wake failed for ${runtime.root}: ${(error as Error).message}`);
+				});
 				continue;
 			}
 			// Durable coworker mail wakes its recipient. The protected ledger is
@@ -5433,7 +5624,7 @@ function startWakeTicker(): void {
 				continue;
 			}
 			try {
-				const jobs = readScheduledJobs(runtime.root);
+				const jobs = locallyPlacedScheduledJobs(runtime.root);
 				void dispatchRoutineTrigger(slot, runtime, jobs).then((started) => {
 					if (started || slot.runtime !== runtime || runtime.closing || runtime.wakeChild) return;
 					const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
@@ -5454,6 +5645,417 @@ function startWakeTicker(): void {
 			}
 		}
 	}, 60_000).unref();
+}
+
+/**
+ * Durable multi-staff rooms ride the single autonomous lane. A queued room
+ * delivery wakes one participant at a time: the recipient's per-room trail
+ * is resumed, the shared hash-chained transcript is rebuilt into the prompt,
+ * and the reply is persisted back into the room before the next participant
+ * runs. Concurrent participant processes stay out on purpose — the company
+ * keeps its one-agent-process contract and single-writer git checkpointing;
+ * the durable delivery queue is what makes the room feel concurrent.
+ */
+function roomMaterializationPaths(roomId: string): string[] {
+	return [
+		join(".qorpera", "rooms.json"),
+		join(".qorpera", "room-deliveries.json"),
+		join(".qorpera", "rooms", `${roomId}.jsonl`),
+	];
+}
+
+function roomDisplayTitle(root: string, room: CompanyRoom): string {
+	if (room.title) return room.title;
+	const names = room.participantIds.flatMap((id) => {
+		const staff = activeStaffAgent(root, id);
+		return staff ? [staff.displayName] : [];
+	});
+	return names.join(", ") || "Group chat";
+}
+
+function roomSpeakerName(root: string, message: CompanyRoomMessage): string {
+	if (message.speaker.kind === "founder") return "Founder";
+	return activeStaffAgent(root, message.speaker.staffAgentId)?.displayName ?? "Former staff member";
+}
+
+function roomTranscriptContext(root: string, messages: readonly CompanyRoomMessage[]): string {
+	const selected: string[] = [];
+	let bytes = 0;
+	for (const message of [...messages].reverse()) {
+		const targets = message.targetStaffAgentIds?.length ? ` -> ${message.targetStaffAgentIds.join(", ")}` : "";
+		const line = `${roomSpeakerName(root, message)}${targets}: ${message.text.slice(0, 6_000)}${message.images?.length ? ` [${message.images.length} image attachment${message.images.length === 1 ? "" : "s"}]` : ""}`;
+		const lineBytes = Buffer.byteLength(line, "utf-8");
+		if (selected.length >= 48 || bytes + lineBytes > 40 * 1024) break;
+		selected.unshift(line);
+		bytes += lineBytes;
+	}
+	return selected.join("\n\n");
+}
+
+function roomParticipantContext(root: string, room: CompanyRoom): string {
+	return room.participantIds
+		.flatMap((id) => {
+			const staff = activeStaffAgent(root, id);
+			return staff ? [`${staff.displayName} (${staff.id}) — ${staff.role}`] : [];
+		})
+		.join("\n");
+}
+
+function roomPrompt(root: string, room: CompanyRoom, recipient: StaffAgent, instruction: string): string {
+	const transcript = roomTranscriptContext(root, readCompanyRoomMessages(root, room.id));
+	return [
+		`Qorpera group chat: ${roomDisplayTitle(root, room)}`,
+		`You are responding as ${recipient.displayName}. Never impersonate or speak on behalf of another participant.`,
+		"Participants (use the exact UUID only with delegate_to_staff):",
+		roomParticipantContext(root, room),
+		"A founder message is delivered to every listed target unless an @mention narrowed it. Participants respond one at a time in their own sessions; respond with your own contribution and settle without waiting on anyone else's turn.",
+		recipient.templateId === "agent-manager"
+			? `You may use delegate_to_staff for bounded assignments to other participants in this room. The host permits at most ${MAX_ROOM_DELEGATION_DEPTH} delegation hops, rejects cycles and repeated targets within one turn, and limits each manager turn to ${MAX_ROOM_DELEGATION_FANOUT} delegated participants.`
+			: "Only the Agent Manager can delegate work to another room participant. Respond with your own contribution.",
+		transcript ? `Recent durable room transcript:\n${transcript}` : "Recent durable room transcript: empty",
+		`Current instruction:\n${instruction}`,
+	].join("\n\n");
+}
+
+function roomDeliveryInstruction(root: string, message: CompanyRoomMessage, depth: number): string {
+	const attachments = message.images?.length
+		? `\n[${message.images.length} image attachment${message.images.length === 1 ? "" : "s"} shown in the founder's room view]`
+		: "";
+	if (message.speaker.kind === "staff") {
+		const source = roomSpeakerName(root, message);
+		return `${source} delegated this bounded assignment to you (hop ${depth} of ${MAX_ROOM_DELEGATION_DEPTH}):\n${message.text}${attachments}`;
+	}
+	return `The founder posted to this room:\n${message.text}${attachments}`;
+}
+
+function assistantRoomReply(frame: Record<string, unknown>): { key: string; text: string } | undefined {
+	if (frame.type !== "message_end") return undefined;
+	const message = recordValue(frame.message);
+	if (
+		!message ||
+		message.role !== "assistant" ||
+		(message.stopReason !== "stop" && message.stopReason !== "length") ||
+		!Array.isArray(message.content)
+	) {
+		return undefined;
+	}
+	const text = message.content
+		.flatMap((part) => {
+			const content = recordValue(part);
+			return content?.type === "text" && typeof content.text === "string" ? [content.text] : [];
+		})
+		.join("")
+		.trim();
+	if (!text) return undefined;
+	const identity =
+		typeof message.responseId === "string"
+			? message.responseId
+			: `${typeof message.timestamp === "number" ? message.timestamp : "unknown"}:${createHash("sha256").update(text).digest("hex")}`;
+	return { key: identity, text };
+}
+
+interface DueRoomDelivery {
+	room: CompanyRoom;
+	delivery: QueuedCompanyRoomDelivery;
+	target: StaffAgent;
+	message: CompanyRoomMessage;
+}
+
+/** Routines this local host may execute or monitor. Cloud placement is
+ * fail-closed at every point work can start — ticker, event triggers,
+ * webhook dispatch, custom-trigger checks, and manual runs — not just the
+ * cron decision. */
+function locallyPlacedScheduledJobs(root: string): ScheduledJob[] {
+	return readScheduledJobs(root).filter((job) => job.placement !== "cloud");
+}
+
+function dueRoomDelivery(slot: Slot, root: string): DueRoomDelivery | undefined {
+	try {
+		const now = Date.now();
+		const deliveries = readQueuedCompanyRoomDeliveries(root);
+		if (!deliveries.length) return undefined;
+		const rooms = new Map(readCompanyRooms(root).map((room) => [room.id, room]));
+		for (const delivery of deliveries) {
+			if (Date.parse(delivery.nextAttemptAt) > now) continue;
+			const room = rooms.get(delivery.roomId);
+			if (!room || room.status !== "active") continue;
+			// Membership and employment can change while a delivery waits. A
+			// target that left the room or was archived can never be served, so
+			// it is pruned here rather than parking the delivery forever.
+			const servableIds = delivery.targetStaffAgentIds.filter(
+				(id) => room.participantIds.includes(id) && activeStaffAgent(root, id) !== undefined,
+			);
+			if (servableIds.length !== delivery.targetStaffAgentIds.length) {
+				const pruned = rescheduleCompanyRoomDelivery(root, delivery.id, servableIds, undefined, {
+					preserveAttempts: true,
+				});
+				if (!pruned) {
+					sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
+					continue;
+				}
+				sendRoomEvent(slot, { kind: "delivery", roomId: room.id, delivery: pruned });
+			}
+			const target = servableIds
+				.map((id) => activeStaffAgent(root, id))
+				.find((staff): staff is StaffAgent => staff !== undefined);
+			if (!target) continue;
+			const message = readCompanyRoomMessage(root, room.id, delivery.messageId);
+			if (!message) {
+				// The transcript no longer carries this message; drop the delivery.
+				rescheduleCompanyRoomDelivery(root, delivery.id, []);
+				sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
+				continue;
+			}
+			return { room, delivery, target, message };
+		}
+	} catch (error) {
+		console.error(`room delivery scan failed for ${root}: ${(error as Error).message}`);
+	}
+	return undefined;
+}
+
+function latestRoomTrailFile(runtime: CompanyRuntime, roomId: string, staffAgentId: string): string | undefined {
+	return runtime.sessions
+		.snapshot()
+		.sessions.filter((session) => session.roomId === roomId && session.staffAgentId === staffAgentId)
+		.sort(
+			(left, right) =>
+				(right.attachmentSequence ?? 0) - (left.attachmentSequence ?? 0) ||
+				right.updatedAt.localeCompare(left.updatedAt),
+		)[0]?.trailFile;
+}
+
+function sendRoomEvent(slot: Slot, payload: Record<string, unknown>): void {
+	send(slot.window, "room-event", payload);
+}
+
+async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due: DueRoomDelivery): Promise<boolean> {
+	if (runtime.wakeChild || runtime.closing) return false;
+	// Never preempt a founder turn in flight: the delivery waits its turn.
+	if (isChildBusy(runtime.child)) return false;
+	const { room, delivery, target, message } = due;
+	const attendedChild = runtime.child;
+	const resumeOptions = {
+		...runtime.childOptions,
+		sessionFile: attendedChild
+			? (childBindings.get(attendedChild)?.file ?? runtime.childOptions.sessionFile)
+			: runtime.childOptions.sessionFile,
+	};
+	if (attendedChild) await stopChild(attendedChild);
+	if (slot.runtime !== runtime || runtime.closing) return false;
+	// The scan ran outside the transition queue and the stop awaited above, so
+	// the room may have been archived, edited, or drained in the meantime.
+	const liveRoom = readCompanyRoom(runtime.root, room.id);
+	if (
+		!liveRoom ||
+		liveRoom.status !== "active" ||
+		!liveRoom.participantIds.includes(target.id) ||
+		!readQueuedCompanyRoomDeliveries(runtime.root, room.id).some((candidate) => candidate.id === delivery.id)
+	) {
+		if (attendedChild && slot.runtime === runtime && !runtime.closing) {
+			await restoreAttendedChild(slot, runtime, resumeOptions, "room-revalidation chat restore failed");
+		}
+		return false;
+	}
+	// Depth and ancestry ride the durable delivery record, so the bounded
+	// delegation graph survives restarts; only within-turn fanout accounting
+	// is per-child memory.
+	const delegationContext: RoomDelegationContext = delivery.delegation
+		? {
+				depth: delivery.delegation.depth,
+				ancestorStaffAgentIds: new Set(delivery.delegation.ancestorStaffAgentIds),
+				delegatedStaffAgentIds: new Set(),
+			}
+		: rootRoomDelegationContext(target.id);
+	// Build the prompt before wiring closures so the founder message (which may
+	// carry image attachments) is not retained for the life of the child.
+	const prompt = roomPrompt(
+		runtime.root,
+		liveRoom,
+		target,
+		roomDeliveryInstruction(runtime.root, message, delegationContext.depth),
+	);
+	const seenReplyKeys = new Set<string>();
+	let started = false;
+	let failed = false;
+	let replyPersisted = false;
+	let replyPersistFailed = false;
+	let settledCleanly = false;
+	let child: ChildProcessWithoutNullStreams;
+	try {
+		child = startChild(slot, runtime.root, {
+			sessionFile: latestRoomTrailFile(runtime, room.id, target.id),
+			autonomousName: `room — ${roomDisplayTitle(runtime.root, room)} — ${target.displayName}`,
+			group: `room:${room.id}`,
+			staffAgentId: target.id,
+			roomId: room.id,
+			staffContext: staffSystemContext(runtime.root, target),
+			silent: true,
+			model: target.model ?? resumeOptions.model,
+			toolNames: target.templateId === "agent-manager" ? `${STAFF_TOOL_NAMES},delegate_to_staff` : STAFF_TOOL_NAMES,
+			onRpcEvent: (frame) => {
+				if (frame.type === "agent_start") {
+					started = true;
+					sendRoomEvent(slot, { kind: "activity", roomId: room.id, staffAgentId: target.id, activity: "working" });
+				} else if (frame.type === "tool_execution_start") {
+					sendRoomEvent(slot, {
+						kind: "activity",
+						roomId: room.id,
+						staffAgentId: target.id,
+						activity: typeof frame.toolName === "string" ? frame.toolName : "tool",
+					});
+				}
+				if (wakeFrameFailed(frame)) failed = true;
+				const reply = assistantRoomReply(frame);
+				if (reply && !seenReplyKeys.has(reply.key)) {
+					seenReplyKeys.add(reply.key);
+					try {
+						const persisted = appendCompanyRoomMessage(runtime.root, room.id, {
+							speaker: { kind: "staff", staffAgentId: target.id },
+							text: reply.text,
+							sourceTrailFile: childBindings.get(child)?.file,
+						});
+						replyPersisted = true;
+						sendRoomEvent(slot, { kind: "message", roomId: room.id, message: persisted });
+					} catch (error) {
+						replyPersistFailed = true;
+						console.error(`room reply persistence failed: ${(error as Error).message}`);
+						sendRoomEvent(slot, {
+							kind: "error",
+							roomId: room.id,
+							staffAgentId: target.id,
+							message: `${target.displayName}'s response could not be saved to this room.`,
+						});
+					}
+				}
+				if (frame.type === "agent_settled") {
+					// Any durably persisted reply means the room was served — a retry
+					// would re-run the turn and duplicate it. Only a turn with NO
+					// persisted reply retries, whether frames failed or a persist did.
+					settledCleanly = started && (replyPersisted || (!failed && !replyPersistFailed));
+					sendRoomEvent(slot, { kind: "activity", roomId: room.id, staffAgentId: target.id, activity: "idle" });
+					intentionalKills.add(child);
+					killChildTree(child);
+				}
+			},
+		});
+	} catch (error) {
+		console.error(`room participant runtime failed to start: ${(error as Error).message}`);
+		if (attendedChild && slot.runtime === runtime && !runtime.closing) {
+			await restoreAttendedChild(slot, runtime, resumeOptions, "room-start chat restore failed");
+		}
+		return false;
+	}
+	runtime.wakeChild = child;
+	runtime.roomDelivery = { roomId: room.id, staffAgentId: target.id };
+	childRoomDelegationContexts.set(child, delegationContext);
+	child.on("close", () => {
+		void enqueueRuntimeTransition(runtime, async () => {
+			await childCheckpointCompletion.get(child);
+			if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild !== child) return;
+			runtime.wakeChild = undefined;
+			runtime.roomDelivery = undefined;
+			try {
+				if (settledCleanly) {
+					const remaining = delivery.targetStaffAgentIds.filter((id) => id !== target.id);
+					const rescheduled = rescheduleCompanyRoomDelivery(runtime.root, delivery.id, remaining);
+					if (!rescheduled) {
+						sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
+					}
+				} else {
+					const rescheduled = rescheduleCompanyRoomDelivery(
+						runtime.root,
+						delivery.id,
+						delivery.targetStaffAgentIds,
+						`${target.displayName}'s room turn did not settle cleanly`,
+					);
+					if (rescheduled && rescheduled.attempts >= WAKE_FAILURE_SUSPENSION_THRESHOLD) {
+						// Give up on the failing participant like the other autonomous
+						// lanes do, so it cannot starve mail and routines forever — but
+						// co-recipients who never got a turn keep theirs: they continue
+						// on a fresh delivery with a clean attempt budget.
+						rescheduleCompanyRoomDelivery(runtime.root, delivery.id, []);
+						sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
+						// The first reschedule already filtered survivors to current
+						// room members; the dispatch-time snapshot may be stale.
+						const survivors = rescheduled.targetStaffAgentIds.filter((id) => id !== target.id);
+						if (survivors.length) {
+							try {
+								const requeued = queueCompanyRoomDelivery(runtime.root, room.id, {
+									messageId: delivery.messageId,
+									targetStaffAgentIds: survivors,
+									...(delivery.delegation ? { delegation: delivery.delegation } : {}),
+								});
+								sendRoomEvent(slot, { kind: "delivery", roomId: room.id, delivery: requeued });
+							} catch (error) {
+								console.error(`room delivery survivor requeue failed: ${(error as Error).message}`);
+							}
+						}
+						writeFileSync(
+							join(inboxMessagesPath(runtime.root), `msg-room-delivery-failed-${Date.now()}.md`),
+							`# Group-chat delivery gave up\n\n**${roomDisplayTitle(runtime.root, room)}**\n\n${target.displayName}'s turn failed ${rescheduled.attempts} times in a row; delivery to them was retired${survivors.length ? " while the other recipients keep their queued delivery" : ""}. Open the group chat and resend when the underlying problem (model access, credentials, runtime) is resolved.\n`,
+							"utf-8",
+						);
+						sendRoomEvent(slot, {
+							kind: "error",
+							roomId: room.id,
+							staffAgentId: target.id,
+							message: `Delivery to ${target.displayName} was retired after ${rescheduled.attempts} failed attempts.`,
+						});
+					} else if (rescheduled) {
+						sendRoomEvent(slot, { kind: "delivery", roomId: room.id, delivery: rescheduled });
+					} else {
+						// The delivery vanished while the turn ran (archive or prune);
+						// clear its card.
+						sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
+					}
+				}
+				commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+			} catch (error) {
+				console.error(`room delivery bookkeeping failed: ${(error as Error).message}`);
+				try {
+					rescheduleCompanyRoomDelivery(runtime.root, delivery.id, []);
+				} catch {
+					// the delivery registry itself is unreadable; the scan will retry
+				}
+			}
+			sendRoomEvent(slot, {
+				kind: "activity",
+				roomId: room.id,
+				staffAgentId: target.id,
+				activity: "offline",
+			});
+			if (attendedChild) await restoreAttendedChild(slot, runtime, resumeOptions, "post-room chat restore failed");
+			scheduleRoomDeliveryPump(slot, runtime);
+		}).catch((error) => console.error(`room ownership transition failed: ${(error as Error).message}`));
+	});
+	if (!(await waitForChildReadiness(child))) {
+		console.error(`room participant runtime did not become ready: ${target.displayName}`);
+		await stopChild(child);
+		return false;
+	}
+	if (!sendKernelPrompt(child, { type: "prompt", message: prompt }, false, "host-room-delivery")) {
+		await stopChild(child);
+		return false;
+	}
+	return true;
+}
+
+function startRoomChild(slot: Slot, runtime: CompanyRuntime, due: DueRoomDelivery): Promise<boolean> {
+	return enqueueRuntimeTransition(runtime, () => startRoomChildExclusive(slot, runtime, due));
+}
+
+/** Drain the next due room delivery soon, without waiting for the ticker. */
+function scheduleRoomDeliveryPump(slot: Slot, runtime: CompanyRuntime): void {
+	setTimeout(() => {
+		if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild) return;
+		if (isChildBusy(runtime.child)) return;
+		const due = dueRoomDelivery(slot, runtime.root);
+		if (!due) return;
+		void startRoomChild(slot, runtime, due).catch((error) => {
+			console.error(`room delivery failed for ${runtime.root}: ${(error as Error).message}`);
+		});
+	}, 500).unref();
 }
 
 async function restoreAttendedChild(
@@ -5499,6 +6101,7 @@ async function listenBackend(
 			fixedShell: { directory: FIXED_SHELL_DIR },
 			sessionRuntime: sessions,
 			staffReadModel: () => readStaffAgents(root),
+			roomReadModel: () => readCompanyRooms(root),
 			staffMessageReadModel: () => readStaffAgentMessages(root),
 			artifactReadModel: () => readCompanyArtifacts(root),
 			connectorReadModel: () => readCompanyConnectorManifests(root),
@@ -5583,7 +6186,9 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 	if (!access) return undefined;
 	const attachment = profileAttachment(runtime.root);
 	const autonomousChild =
-		!runtime.infrastructureWork && runtime.wakeChild?.exitCode === null ? runtime.wakeChild : undefined;
+		!runtime.infrastructureWork && !runtime.roomDelivery && runtime.wakeChild?.exitCode === null
+			? runtime.wakeChild
+			: undefined;
 	const runState = readWakeRunState(wakeRunStatePath(app.getPath("userData"), runtime.root));
 	const now = Date.now();
 	const scheduledJobs = readScheduledJobs(runtime.root).map((job) => {
@@ -5613,7 +6218,12 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 		access,
 		backendUrl: `http://127.0.0.1:${runtime.backendPort}`,
 		kickoff: false,
-		wakeRunning: Boolean(!runtime.infrastructureWork && runtime.wakeChild && runtime.wakeChild.exitCode === null),
+		wakeRunning: Boolean(
+			!runtime.infrastructureWork &&
+				!runtime.roomDelivery &&
+				runtime.wakeChild &&
+				runtime.wakeChild.exitCode === null,
+		),
 		autonomousTrailFile: autonomousChild ? childBindings.get(autonomousChild)?.file : undefined,
 		scheduledJobs,
 		sessionFile: runtime.child ? childBindings.get(runtime.child)?.file : undefined,
@@ -5831,13 +6441,27 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 					if (triggerEvent) {
 						const path = routineTriggerStatePath(app.getPath("userData"), live.root);
 						const previous = readRoutineTriggerState(path);
-						const queued = queueCustomRoutineTrigger(readScheduledJobs(live.root), previous, triggerEvent);
+						const queued = queueCustomRoutineTrigger(
+							locallyPlacedScheduledJobs(live.root),
+							previous,
+							triggerEvent,
+						);
 						if (queued.pending.length > previous.pending.length) {
 							writeRoutineTriggerState(path, queued);
 							if (!live.wakeChild && !isChildBusy(live.child))
-								void dispatchRoutineTrigger(slot, live, readScheduledJobs(live.root));
+								void dispatchRoutineTrigger(slot, live, locallyPlacedScheduledJobs(live.root));
 							return;
 						}
+						// An event whose only matching routine is cloud-placed stays
+						// parked for the hosted lane; it must not leak into the generic
+						// local inbound wake either. The event file remains durable
+						// under inbox/events for that lane to consume.
+						const cloudMatched = queueCustomRoutineTrigger(
+							readScheduledJobs(live.root).filter((job) => job.placement === "cloud"),
+							previous,
+							triggerEvent,
+						);
+						if (cloudMatched.pending.length > previous.pending.length) return;
 					}
 					if (live.wakeChild || isChildBusy(live.child)) {
 						live.pendingInboundWake = true;
@@ -6905,9 +7529,16 @@ function beginAttachedStaffIntro(
 	if (!childRuntimeReady.has(child)) {
 		return { ok: false, error: "staff introduction target is not the attached ready session" };
 	}
-	if (childBusy.get(child)) return { ok: false, error: "staff session is already working" };
 	const path = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
 	const current = readStaffRuntimeState(path);
+	// An intro already claimed by a concurrent kick (creation and open both
+	// kick) is a success for the second caller, not a busy refusal — the busy
+	// state IS the introduction running.
+	const existingStatus = current.intros[staff.id]?.status;
+	if (!retry && (existingStatus === "started" || existingStatus === "completed")) {
+		return { ok: true, status: existingStatus };
+	}
+	if (childBusy.get(child)) return { ok: false, error: "staff session is already working" };
 	const claim = claimStaffIntro(current, staff.id, trailFile, Date.now(), retry);
 	if (!claim.claimed) {
 		const status = current.intros[staff.id]?.status;
@@ -7112,6 +7743,21 @@ function createRendererWindow(
 		const slot = forSlot();
 		if (slot.window === win && slot.runtime) void win.loadURL(companyShellUrl(slot.runtime));
 	});
+	// An opted-in background company survives its window: closing the window
+	// hides it instead, the runtime keeps its wake ticker and queued room
+	// deliveries, and the tray owns the way back in. Quit always wins.
+	win.on("close", (event) => {
+		if (appQuitting) return;
+		const slot = forSlot();
+		if (slot.window !== win) return;
+		const runtime = slot.runtime;
+		if (!runtime || runtime.closing || !backgroundCompanyEnabled(runtime.root)) return;
+		event.preventDefault();
+		win.hide();
+		syncBackgroundTray();
+	});
+	// Any path that re-surfaces a hidden background window retires the tray.
+	win.on("show", () => syncBackgroundTray());
 	// Closing a company window is closing that company: kill its child
 	// and backend; other windows are untouched. A window retired by a swap
 	// is no longer the slot's window — its company must stay running.
@@ -7125,6 +7771,9 @@ function createRendererWindow(
 			slot.openGeneration += 1;
 			void closeCompany(slot);
 		}
+		// Destroyed windows (sign-out, swaps) bypass the "close" interception;
+		// a tray pointing at a gone slot must not linger.
+		syncBackgroundTray();
 	});
 	return { window: win, rendererSession };
 }
@@ -7228,6 +7877,9 @@ app.on("open-url", (event, url) => {
 });
 
 app.whenReady().then(async () => {
+	// Reconcile login-start with the durable background-company registry, so
+	// removing the last opted-in company (or an edited registry) takes effect.
+	syncBackgroundLoginItem(readBackgroundCompanyRoots(app.getPath("userData")));
 	setCompanySecretStore(
 		createLocalCompanySecretStore(join(app.getPath("userData"), "company-secret-vaults"), {
 			id: "electron-safe-storage-v1",
@@ -7852,9 +8504,10 @@ app.whenReady().then(async () => {
 			!Array.isArray(input.triggers) ||
 			(input.enabled !== undefined && typeof input.enabled !== "boolean") ||
 			(input.effort !== undefined && !SCHEDULED_JOB_EFFORTS.includes(input.effort as ScheduledJobEffort)) ||
+			(input.placement !== undefined && !ROUTINE_PLACEMENTS.includes(input.placement as RoutinePlacement)) ||
 			(input.staffAgentId !== undefined && typeof input.staffAgentId !== "string") ||
 			Object.keys(input).some(
-				(key) => !["title", "prompt", "triggers", "enabled", "effort", "staffAgentId"].includes(key),
+				(key) => !["title", "prompt", "triggers", "enabled", "effort", "placement", "staffAgentId"].includes(key),
 			)
 		) {
 			return { ok: false, error: "invalid scheduled job" };
@@ -7878,6 +8531,7 @@ app.whenReady().then(async () => {
 					triggers,
 					...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
 					...(typeof input.effort === "string" ? { effort: input.effort as ScheduledJobEffort } : {}),
+					...(typeof input.placement === "string" ? { placement: input.placement as RoutinePlacement } : {}),
 					...(assignedStaff ? { staffAgentId: assignedStaff.id } : {}),
 				}),
 			};
@@ -7902,9 +8556,10 @@ app.whenReady().then(async () => {
 			(input.triggers !== undefined && !Array.isArray(input.triggers)) ||
 			(input.enabled !== undefined && typeof input.enabled !== "boolean") ||
 			(input.effort !== undefined && !SCHEDULED_JOB_EFFORTS.includes(input.effort as ScheduledJobEffort)) ||
+			(input.placement !== undefined && !ROUTINE_PLACEMENTS.includes(input.placement as RoutinePlacement)) ||
 			(input.staffAgentId !== undefined && input.staffAgentId !== null && typeof input.staffAgentId !== "string") ||
 			Object.keys(input).some(
-				(key) => !["title", "prompt", "triggers", "enabled", "effort", "staffAgentId"].includes(key),
+				(key) => !["title", "prompt", "triggers", "enabled", "effort", "placement", "staffAgentId"].includes(key),
 			)
 		) {
 			return { ok: false, error: "invalid scheduled-job update" };
@@ -7935,6 +8590,7 @@ app.whenReady().then(async () => {
 					...(triggers ? { triggers } : {}),
 					...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
 					...(typeof input.effort === "string" ? { effort: input.effort as ScheduledJobEffort } : {}),
+					...(typeof input.placement === "string" ? { placement: input.placement as RoutinePlacement } : {}),
 					...(input.staffAgentId === null
 						? { staffAgentId: null }
 						: typeof input.staffAgentId === "string"
@@ -7985,6 +8641,12 @@ app.whenReady().then(async () => {
 			}
 			const job = readScheduledJobs(runtime.root).find((candidate) => candidate.id === id);
 			if (!job) return { ok: false, error: "scheduled job not found" };
+			if (job.placement === "cloud") {
+				return {
+					ok: false,
+					error: "This routine is placed in the cloud; hosted routine execution is not available yet.",
+				};
+			}
 			return (await startWakeChildExclusive(slot, runtime, "schedule", 0, job, true))
 				? { ok: true }
 				: { ok: false, error: "company runtime is busy" };
@@ -8195,7 +8857,9 @@ app.whenReady().then(async () => {
 				if (runtime.wakeChild) {
 					return Promise.resolve({
 						ok: false,
-						error: "autonomous work is running — watch it under Agents, or try again once it settles",
+						error: runtime.roomDelivery
+							? "a group chat is answering — watch it in the room, or try again once it settles"
+							: "autonomous work is running — watch it under Agents, or try again once it settles",
 					});
 				}
 				return openChat(slot, sessionFile, department, worktree, sessionName);
@@ -8258,6 +8922,173 @@ app.whenReady().then(async () => {
 		}
 		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 		return staffIntroReady(slot, staffAgentId, trailFile, retry);
+	});
+	ipcMain.handle("room:create", (event, value: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime) return { ok: false, error: "open a company before creating a group chat" };
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		const input = recordValue(value);
+		if (
+			!input ||
+			!Array.isArray(input.participantIds) ||
+			(input.title !== undefined && typeof input.title !== "string") ||
+			Object.keys(input).some((key) => key !== "participantIds" && key !== "title")
+		) {
+			return { ok: false, error: "invalid group chat" };
+		}
+		try {
+			if (input.participantIds.some((id) => typeof id !== "string" || !activeStaffAgent(runtime.root, id))) {
+				return { ok: false, error: "every group participant must be an active staff agent" };
+			}
+			const room = createCompanyRoom(runtime.root, {
+				participantIds: input.participantIds as string[],
+				...(typeof input.title === "string" && input.title.trim() ? { title: input.title.trim() } : {}),
+			});
+			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+			return { ok: true, room };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("room:open", (event, roomId: unknown) => {
+		const runtime = slotOf(event.sender)?.runtime;
+		if (!runtime || typeof roomId !== "string") return { ok: false, error: "invalid group chat" };
+		try {
+			const room = readCompanyRoom(runtime.root, roomId);
+			if (!room) return { ok: false, error: "this group chat no longer exists" };
+			return {
+				ok: true,
+				room,
+				messages: readCompanyRoomMessages(runtime.root, room.id),
+				deliveries: readQueuedCompanyRoomDeliveries(runtime.root, room.id),
+				// Rehydrates the live participant state after a renderer reload.
+				...(runtime.roomDelivery?.roomId === room.id
+					? { activity: { staffAgentId: runtime.roomDelivery.staffAgentId, activity: "working" } }
+					: {}),
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("room:send", (event, roomId: unknown, value: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof roomId !== "string") return { ok: false, error: "invalid group chat" };
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		const input = recordValue(value);
+		if (!input || Object.keys(input).some((key) => !["text", "images", "targetStaffAgentIds"].includes(key))) {
+			return { ok: false, error: "invalid group message" };
+		}
+		try {
+			const room = readCompanyRoom(runtime.root, roomId);
+			if (!room || room.status !== "active") return { ok: false, error: "this group chat is not active" };
+			const message = appendCompanyRoomMessage(runtime.root, room.id, {
+				speaker: { kind: "founder" },
+				...(input.text !== undefined ? { text: input.text as string } : {}),
+				...(input.images !== undefined ? { images: input.images as { mimeType: string; data: string }[] } : {}),
+				...(input.targetStaffAgentIds !== undefined
+					? { targetStaffAgentIds: input.targetStaffAgentIds as string[] }
+					: {}),
+			});
+			let delivery: QueuedCompanyRoomDelivery | undefined;
+			let deliveryError: string | undefined;
+			try {
+				delivery = queueCompanyRoomDelivery(runtime.root, room.id, {
+					messageId: message.id,
+					// Archived members can stay in participantIds; only active staff
+					// can ever be served, so a default broadcast targets just them.
+					targetStaffAgentIds:
+						message.targetStaffAgentIds ??
+						room.participantIds.filter((id) => activeStaffAgent(runtime.root, id) !== undefined),
+				});
+			} catch (error) {
+				// The founder message is already durable in the transcript; failing
+				// the whole send would invite a duplicate resend of the same text.
+				deliveryError = error instanceof Error ? error.message : String(error);
+			}
+			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+			sendRoomEvent(slot, { kind: "message", roomId: room.id, message });
+			if (delivery) {
+				sendRoomEvent(slot, { kind: "delivery", roomId: room.id, delivery });
+				scheduleRoomDeliveryPump(slot, runtime);
+			} else if (deliveryError) {
+				sendRoomEvent(slot, {
+					kind: "error",
+					roomId: room.id,
+					message: `The message was saved, but delivery could not be queued: ${deliveryError}`,
+				});
+			}
+			return { ok: true, message, ...(delivery ? { delivery } : {}), ...(deliveryError ? { deliveryError } : {}) };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("room:update", (event, roomId: unknown, value: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof roomId !== "string") return { ok: false, error: "invalid group chat" };
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		const input = recordValue(value);
+		if (
+			!input ||
+			!Object.keys(input).length ||
+			Object.keys(input).some((key) => key !== "participantIds" && key !== "title")
+		) {
+			return { ok: false, error: "invalid group chat update" };
+		}
+		try {
+			if (
+				Array.isArray(input.participantIds) &&
+				input.participantIds.some((id) => typeof id !== "string" || !activeStaffAgent(runtime.root, id))
+			) {
+				return { ok: false, error: "every group participant must be an active staff agent" };
+			}
+			const room = updateCompanyRoom(runtime.root, roomId, input);
+			// Membership edits prune queued deliveries for removed participants;
+			// the module drops targets that are no longer in the room.
+			for (const delivery of readQueuedCompanyRoomDeliveries(runtime.root, room.id)) {
+				if (delivery.targetStaffAgentIds.some((id) => !room.participantIds.includes(id))) {
+					rescheduleCompanyRoomDelivery(runtime.root, delivery.id, delivery.targetStaffAgentIds, undefined, {
+						preserveAttempts: true,
+					});
+				}
+			}
+			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+			sendRoomEvent(slot, { kind: "room", roomId: room.id, room });
+			return { ok: true, room };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("room:archive", (event, roomId: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof roomId !== "string") return { ok: false, error: "invalid group chat" };
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		try {
+			removeQueuedCompanyRoomDeliveries(runtime.root, roomId);
+			const room = archiveCompanyRoom(runtime.root, roomId);
+			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+			sendRoomEvent(slot, { kind: "room", roomId: room.id, room });
+			return { ok: true, room };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("room:restore", (event, roomId: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof roomId !== "string") return { ok: false, error: "invalid group chat" };
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		try {
+			const room = restoreCompanyRoom(runtime.root, roomId);
+			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+			sendRoomEvent(slot, { kind: "room", roomId: room.id, room });
+			return { ok: true, room };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
 	});
 	ipcMain.handle("hub:show", (event) => {
 		const slot = slotOf(event.sender);
@@ -8588,8 +9419,25 @@ app.whenReady().then(async () => {
 						}
 					: undefined,
 			localExecution: root ? readLocalExecutionPermission(app.getPath("userData"), root) : "always",
+			backgroundEnabled: root ? backgroundCompanyEnabled(root) : false,
 			connections: [await githubConnectionInfo(root), ...modelConnectionInfo()],
 		};
+	});
+	ipcMain.handle("settings:background", (event, enabled: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof enabled !== "boolean") {
+			return { ok: false, error: "invalid background execution preference" };
+		}
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
+		try {
+			const roots = setBackgroundCompanyEnabled(app.getPath("userData"), runtime.root, enabled);
+			syncBackgroundLoginItem(roots);
+			syncBackgroundTray();
+			return { ok: true, backgroundEnabled: enabled };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
 	});
 	ipcMain.handle("settings:local-execution", async (event, permission: unknown) => {
 		const slot = slotOf(event.sender);
@@ -9295,7 +10143,13 @@ app.whenReady().then(async () => {
 	}
 });
 
+app.on("before-quit", () => {
+	appQuitting = true;
+});
+
 app.on("will-quit", () => {
+	backgroundTray?.destroy();
+	backgroundTray = undefined;
 	modelRequestBroker?.close();
 	// Window-close teardown (closeCompany) is async — it awaits the transition
 	// queue before it kills anything — and quit does not wait for it, so any

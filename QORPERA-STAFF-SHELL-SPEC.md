@@ -91,7 +91,7 @@ For a named service without an installed connector, staff first prepare a connec
 
 Starter roles are initial briefs, not fixed workflows or kernel ontology. The controller remains free to represent and improve each role using ordinary company files.
 
-### 3.3 Staff are durable; runtimes are replaceable and local
+### 3.3 Staff are durable; runtimes are replaceable, local, and explicitly placed
 
 V1 does not introduce concurrent company controllers.
 
@@ -103,17 +103,27 @@ V1 does not introduce concurrent company controllers.
 - Other staff work is shown as **Queued**, not as simultaneously working.
 - The shell MUST use the states **Ready**, **Queued**, **Working**, **Waiting for you**, **Paused**, and **Error**.
 - The shell MUST NOT use presence language such as online, awake, or always on.
-- Scheduled work MUST say **Runs while this company is open** until headless kernel execution exists.
+- Routines carry explicit `local`, `cloud`, or `requires-local` placement. Local and `requires-local` work runs while this company is open on this machine; `requires-local` additionally asserts the job must never be enqueued to a hosted runner. `cloud` placement is fail-closed: the local kernel never runs a cloud-placed routine, and it stays parked until a verified hosted routine lane exists.
+- Background execution is an explicit per-company setting, off by default. When enabled, closing the company window hides it to the system tray while the local runtime — wake ticker, queued room deliveries, coworker mail — keeps running, and Base starts at login while any company on the machine is opted in. Quitting Base still stops everything; a durable staff identity alone is never evidence of background execution.
 
 The staff metaphor is durable responsibility, continuity, and proactive work. It is not a claim of parallel runtime execution.
 
-### 3.4 The controller remains invisible infrastructure
+### 3.4 Group chats are durable rooms on the single company lane
+
+- A room has a stable `roomId`, an ordered active participant list with retained historical membership, lifecycle status, and a hash-chained append-only transcript.
+- Every room message records an explicit founder or `staffAgentId` speaker. Staff output is never merged into an anonymous assistant voice.
+- Each participant responds on a room-scoped trail carrying both `roomId` and `staffAgentId`; no process or trail is shared between speakers.
+- A founder message broadcasts to all active room participants by default. One or more `@name` mentions narrow delivery to the matching participants while the message remains visible in the room transcript.
+- Delivery is durable and per recipient. Participants respond **one at a time** through the company's single autonomous lane; queued deliveries survive restart, retry with backoff, and run when the lane is free. The room feels responsive because delivery is durable, not because processes run in parallel, and the shell MUST NOT present queued participants as simultaneously working.
+- **Agent Manager** is an ordinary staff template, not a privileged controller. In a room it may propose bounded delegations through `delegate_to_staff`; the kernel verifies room membership, prevents self-delegation and cycles, caps each manager turn at eight targets, and permits at most three delegation hops. Delegations queue as ordinary targeted room deliveries.
+
+### 3.5 The controller remains invisible infrastructure
 
 New tasks are assigned to staff, not to a visible controller persona. The controller continues to own company semantics and to execute the charter associated with the selected `staffAgentId`.
 
 There is no visible controller row, compatibility chat, or legacy shell. Unassigned historical trails remain on disk for provenance but do not become a conversational destination. Unassigned schedules are disabled during migration; unassigned artifacts remain unpublished until assigned to an active staff UUID. No trail is rewritten to manufacture staff attribution.
 
-### 3.5 Artifacts are projection-backed and staff-owned
+### 3.6 Artifacts are projection-backed and staff-owned
 
 `app/projection.json` remains the only department/page publication contract, but it no longer produces a global Workspace page or rail section.
 
@@ -126,7 +136,7 @@ There is no visible controller row, compatibility chat, or legacy shell. Unassig
 - Departments and surfaces remain company-authored; the shell MUST NOT infer structure by scanning folders.
 - Header tabs update when a valid projection is atomically published.
 
-### 3.6 Connector plugins are model-neutral capabilities
+### 3.7 Connector plugins are model-neutral capabilities
 
 Base has one connector installation and permission model shared by every supported intelligence provider.
 
@@ -138,7 +148,7 @@ Base has one connector installation and permission model shared by every support
 - Staff request a capability at the moment a concrete outcome is blocked. The Company / Profile sheet owns inventory, updates, revocation, and repair; there is no permanent Connections rail row.
 - Qorpera MAY ship bespoke connectors when no suitable public plugin exists. A Nordea connector begins against Nordea's official sandbox with read-only account information; production payment initiation remains separately gated and unavailable without the required regulated-party credentials and roles.
 
-### 3.7 Shell chrome is fixed; company surfaces remain mutable
+### 3.8 Shell chrome is fixed; company surfaces remain mutable
 
 Base owns and signs the application frame, ultra-minimal rail, selected-staff header, conversations, staff Activity/details, Connections, profile controls, composer, and every authority or credential review.
 
@@ -785,18 +795,18 @@ V1 is complete only when Phases 1 through 5 pass together on a migrated existing
 
 The following work is explicitly outside v1:
 
-- Headless kernel/service execution while Base is closed.
+- Headless kernel/service execution while Base itself is closed. Background execution keeps the Base process alive under the tray; quitting Base still stops everything.
 - Any **always on** product claim.
-- Parallel company-controller writers or parallel staff execution.
+- Parallel company-controller writers or parallel staff execution. Rooms serialize participant turns through the single autonomous lane.
 - Staff-specific kernel authority roles; all staff use the controller role in v1.
-- Inter-staff delegation protocol and merge semantics.
+- Unbounded delegation graphs, recursive manager trees beyond three hops, and automatic merge arbitration beyond the room's explicit speaker transcript.
 - A hosted public Qorpera connector catalogue, ratings, or automated third-party publishing pipeline. Local reviewed package installation is V1.
 - Production Nordea payments or other regulated financial actions without the required external licensing, roles, and credentials.
 - Inbound webhook/listening support except as an optional kernel module.
 - MCP server exposure of company capabilities except as an optional kernel module.
 - A Qorpera cloud account, cloud sync identity, or multi-user organization service.
 - Remote agent computers or remote desktop streaming. Staff execute on the founder's current local machine in V1.
-- Multi-staff rooms and group chats. They require a durable room entity, per-message speaker identity, mention routing, and deterministic response ownership rather than pretending one staff trail is a room.
+- Concurrent per-participant room execution. Rooms exist as durable entities with per-message speaker identity and mention routing; their participants respond serially on the single company lane.
 - Cross-company business-data aggregation.
 - Automatic reassignment of legacy schedules, surfaces, or conversations to new staff.
 - Voice input and voice conversations.

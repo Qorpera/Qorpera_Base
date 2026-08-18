@@ -2693,6 +2693,89 @@ body.staff-creator-open .staff-color-choice[aria-checked="true"]::after { inset:
 body.staff-creator-open .staff-shape-choice { width: 34px; min-height: 34px; padding: 4px; border-radius: 9px; }
 body.staff-creator-open .staff-shape-choice .staff-face { width: 25px; height: 25px; }
 
+/* New conversation: the recipient field is the primary control, matching the
+ * direct-message mental model while the canvas keeps the agent cards. */
+.conversation-recipient-field {
+	display: flex; align-items: center; gap: 7px;
+	width: min(620px, 100%); min-height: 34px; -webkit-app-region: no-drag;
+}
+.conversation-recipient-field > span:first-child { flex: 0 0 auto; color: #888884; font-size: 12px; font-weight: 500; }
+.conversation-recipient-field input {
+	flex: 1; min-width: 120px; height: 30px; padding: 0;
+	border: 0; background: transparent; font-size: 12.5px; box-shadow: none;
+}
+.conversation-recipient-field input:focus, .conversation-recipient-field input:focus-visible { border: 0; outline: 0; box-shadow: none; }
+.conversation-recipient-chips { display: flex; align-items: center; gap: 5px; }
+.conversation-recipient-chip {
+	display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 2px 7px 2px 3px;
+	border: 1px solid #d9d9d5; border-radius: 8px; background: #f2f2ef; color: var(--text); font-size: 11.5px;
+}
+.conversation-recipient-chip .staff-avatar { width: 20px; height: 20px; }
+.conversation-recipient-chip button {
+	width: 15px; height: 15px; min-height: 15px; padding: 0; border: 0;
+	background: transparent; color: #858581; font-size: 14px; line-height: 1;
+}
+.conversation-recipient-chip button:hover, .conversation-recipient-chip button:focus-visible { border: 0; color: var(--text); }
+.conversation-recipient-menu {
+	position: fixed; z-index: 4100; top: calc(var(--titlebar-height) - 4px); left: calc(var(--rail-width) + 14px);
+	width: min(530px, calc(100vw - var(--rail-width) - 180px)); max-height: min(420px, calc(100vh - 90px));
+	overflow-y: auto; padding: 6px; border: 1px solid #d9d9d5; border-radius: 13px; background: #fff;
+	box-shadow: 0 14px 38px rgba(22, 22, 20, 0.15); -webkit-app-region: no-drag;
+}
+.conversation-recipient-menu[hidden] { display: none; }
+.conversation-recipient-option {
+	display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 9px;
+	width: 100%; min-height: 48px; padding: 6px 9px; border: 0; border-radius: 9px;
+	background: transparent; text-align: left;
+}
+.conversation-recipient-option:hover, .conversation-recipient-option:focus-visible,
+.conversation-recipient-option[aria-selected="true"] { border: 0; background: #efefed; }
+.conversation-recipient-option .staff-avatar { width: 32px; height: 32px; }
+.conversation-recipient-option span { display: grid; gap: 1px; min-width: 0; }
+.conversation-recipient-option strong { overflow: hidden; font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-recipient-option small { overflow: hidden; color: var(--text-soft); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-recipient-option > small { color: #777773; font-size: 11px; }
+.conversation-recipient-option .conversation-new-mark { width: 32px; height: 32px; font-size: 20px; }
+.conversation-picker-view {
+	display: flex; flex: 1; flex-direction: column; min-height: 0;
+	padding: clamp(28px, 6vh, 68px) clamp(28px, 5vw, 76px) 26px;
+}
+.conversation-picker-view[hidden] { display: none; }
+.conversation-picker-heading { margin-bottom: 22px; }
+.conversation-picker-heading h3 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -.015em; }
+.conversation-picker-heading p { margin: 5px 0 0; color: var(--text-muted); font-size: 12.5px; }
+.conversation-suggestion-grid {
+	display: grid; grid-template-columns: repeat(auto-fill, minmax(238px, 1fr)); gap: 11px;
+	align-content: start; overflow-y: auto; padding: 2px 2px 24px;
+}
+.conversation-suggestion-card {
+	display: grid; grid-template-columns: 48px minmax(0, 1fr); grid-template-rows: auto 1fr;
+	align-items: center; gap: 3px 12px; min-height: 94px; padding: 14px; overflow: hidden;
+	border: 1px solid #e1e1dd; border-radius: 13px; background: #fff; text-align: left;
+}
+.conversation-suggestion-card:hover, .conversation-suggestion-card:focus-visible {
+	border-color: #c9c9c4; box-shadow: 0 8px 24px rgba(20, 20, 18, .06);
+}
+.conversation-suggestion-card .staff-avatar { grid-row: 1 / span 2; width: 48px; height: 48px; }
+.conversation-suggestion-card strong,
+.conversation-suggestion-card p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-suggestion-card strong { align-self: end; font-size: 14px; font-weight: 650; }
+.conversation-suggestion-card p { align-self: start; margin: 0; color: var(--text-muted); font-size: 11.5px; line-height: 1.35; }
+.conversation-new-mark {
+	display: grid; grid-row: 1 / span 2; place-items: center; width: 48px; height: 48px;
+	border: 1px solid #cececa; border-radius: 50%; color: #777773; font-size: 26px; font-weight: 300;
+}
+.conversation-picker-actions {
+	display: flex; align-items: center; justify-content: flex-end; gap: 14px;
+	min-height: 50px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.conversation-picker-actions > div { flex: 1; color: var(--text-muted); font-size: 11.5px; }
+.conversation-picker-actions button { min-width: 94px; }
+.staff-configure-view { position: relative; display: flex; flex: 1; min-height: 0; }
+.staff-configure-view[hidden] { display: none; }
+.staff-configure-back { position: absolute; top: 18px; left: 20px; z-index: 1; }
+.staff-configure-view .staff-creator-center { width: 100%; }
+
 /* Runtime activity sits where the next assistant bubble will arrive. Provider
  * text blocks and top-level paragraphs pop in as digestible bubbles; tool and
  * thinking detail remains in the trail while the face and dots communicate
@@ -2773,12 +2856,13 @@ body.staff-creator-open .staff-shape-choice .staff-face { width: 25px; height: 2
 }
 .hidden-staff-modal h2 { margin: 0 0 5px; font-size: 14px; font-weight: 650; }
 .hidden-staff-modal p { max-width: 390px; margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.42; }
-#hiddenStaffClose {
+#hiddenStaffClose, #archivedRoomsClose {
 	display: grid; place-items: center; width: 32px; height: 32px; min-height: 32px; padding: 0;
 	border: 0; border-radius: 8px; background: transparent; color: var(--text-soft);
 	font-size: 20px; font-weight: 300; line-height: 1;
 }
-#hiddenStaffClose:hover:not(:disabled), #hiddenStaffClose:focus-visible { border: 0; background: #eeeeec; color: var(--text); }
+#hiddenStaffClose:hover:not(:disabled), #hiddenStaffClose:focus-visible,
+#archivedRoomsClose:hover:not(:disabled), #archivedRoomsClose:focus-visible { border: 0; background: #eeeeec; color: var(--text); }
 .hidden-staff-list { flex: 1; overflow-y: auto; padding: 14px 16px; }
 .hidden-staff-row {
 	display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px;
@@ -2792,6 +2876,48 @@ body.staff-creator-open .staff-shape-choice .staff-face { width: 25px; height: 2
 }
 .hidden-staff-row button:hover:not(:disabled), .hidden-staff-row button:focus-visible { border: 0; background: #eeeeec; color: var(--text); }
 .hidden-staff-empty { padding: 24px 8px; color: var(--text-soft); font-size: 12px; text-align: center; }
+
+/* Archived group chats reuse the hidden-staff modal grammar; room settings is
+ * its own quiet dialog: rename, participant checklist, archive. */
+.archived-room-entry { margin-top: 3px; border-top: 1px solid var(--border); }
+.hidden-staff-row.archived-room-row,
+html[data-staff-avatar-style="simple"] .hidden-staff-row.archived-room-row { grid-template-columns: 44px minmax(0, 1fr) auto; }
+.archived-room-row .room-avatar { transform: scale(.78); transform-origin: left center; }
+.archived-room-row > span { display: grid; min-width: 0; gap: 2px; }
+.archived-room-row > span small { overflow: hidden; color: var(--text-soft); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.room-settings-modal {
+	display: flex; flex-direction: column; width: min(520px, calc(100vw - 32px)); max-height: min(650px, calc(100vh - 48px));
+	overflow: hidden; border: 1px solid #d8d8d5; border-radius: 15px; background: #fff;
+	box-shadow: 0 24px 70px rgba(18,18,17,.2); color: var(--text);
+}
+.room-settings-modal > header {
+	display: grid; grid-template-columns: minmax(0, 1fr) 32px; align-items: start; gap: 12px;
+	padding: 17px 18px 15px; border-bottom: 1px solid var(--border);
+}
+.room-settings-modal > header h2 { margin: 0; font-size: 18px; font-weight: 650; }
+#roomSettingsClose {
+	display: grid; place-items: center; width: 32px; height: 32px; min-height: 32px; padding: 0;
+	border: 0; border-radius: 8px; background: transparent; color: var(--text-soft); font-size: 20px; font-weight: 300;
+}
+#roomSettingsClose:hover:not(:disabled), #roomSettingsClose:focus-visible { border: 0; background: #eeeeec; color: var(--text); }
+.room-title-field { display: grid; gap: 6px; padding: 16px 18px 12px; color: var(--text-muted); font-size: 11px; font-weight: 620; }
+.room-title-field input { width: 100%; height: 38px; padding: 0 11px; border: 1px solid var(--border-strong); border-radius: 9px; font-size: 13px; }
+.room-participant-fieldset { min-height: 0; margin: 0; padding: 0 18px 10px; border: 0; }
+.room-participant-fieldset legend { padding: 0 0 7px; color: var(--text-muted); font-size: 11px; font-weight: 620; }
+.room-participant-list { overflow-y: auto; max-height: 310px; padding: 3px; border: 1px solid var(--border); border-radius: 11px; }
+.room-participant-option {
+	display: grid; grid-template-columns: 18px 30px minmax(0, 1fr); align-items: center; gap: 9px;
+	min-height: 48px; padding: 5px 8px; border-radius: 8px;
+}
+.room-participant-option:hover { background: #f2f2f0; }
+.room-participant-option input { width: 15px; height: 15px; }
+.room-participant-option .staff-avatar { width: 28px; height: 28px; }
+.room-participant-option > span { display: grid; min-width: 0; gap: 1px; }
+.room-participant-option strong, .room-participant-option small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-participant-option strong { font-size: 12.5px; font-weight: 580; }
+.room-participant-option small { color: var(--text-soft); font-size: 10.5px; }
+.room-settings-status { min-height: 18px; margin: 0; padding: 0 18px; color: var(--danger-muted); font-size: 11px; }
+.room-settings-modal > footer { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; padding: 13px 18px 16px; border-top: 1px solid var(--border); }
 .staff-delete-modal { width: min(380px, calc(100vw - 32px)); }
 .staff-delete-modal header { margin-bottom: 10px; }
 .staff-delete-modal h2 { font-size: 19px; }
@@ -2969,6 +3095,50 @@ html[data-staff-avatar-style="simple"] .agent-computer-screen .staff-avatar { wi
 html[data-staff-avatar-style="simple"] .agent-thread-activity .staff-avatar { width: 36px; height: 36px; }
 html[data-staff-avatar-style="simple"] .hidden-staff-row { grid-template-columns: 24px minmax(0, 1fr) auto; }
 html[data-staff-avatar-style="simple"] .hidden-staff-row .staff-avatar { width: 24px; height: 24px; }
+
+/* Group rooms: a composite avatar stacks up to three participants; room rows
+ * share the staff rail grammar; staff bubbles carry the speaker's name; queued
+ * deliveries narrate waiting for the company's single autonomous lane. */
+.room-avatar { position: relative; display: inline-block; flex: 0 0 auto; width: 44px; height: 38px; }
+.room-avatar .staff-avatar {
+	position: absolute; top: 2px; width: 30px; height: 30px;
+	border: 2px solid var(--bg); box-shadow: 0 1px 2px rgba(20, 20, 18, .12);
+}
+.room-avatar .staff-avatar:nth-child(1) { left: 0; z-index: 3; }
+.room-avatar .staff-avatar:nth-child(2) { left: 14px; z-index: 2; }
+.room-avatar .staff-avatar:nth-child(3) { left: 26px; z-index: 1; }
+html[data-staff-avatar-style="simple"] .staff-nav-row .room-avatar .staff-avatar,
+html[data-staff-avatar-style="simple"] .hidden-staff-row .room-avatar .staff-avatar { width: 30px; height: 30px; }
+.staff-nav-row.room-nav-row,
+html[data-staff-avatar-style="simple"] .staff-nav-row.room-nav-row { grid-template-columns: 44px minmax(0, 1fr); }
+#titlebar .thread-header .room-avatar { width: 42px; height: 30px; }
+#titlebar .thread-header .room-avatar .staff-avatar,
+html[data-staff-avatar-style="simple"] #titlebar .thread-header .room-avatar .staff-avatar { width: 26px; height: 26px; }
+#titlebar .thread-header .room-avatar .staff-avatar:nth-child(2) { left: 12px; }
+#titlebar .thread-header .room-avatar .staff-avatar:nth-child(3) { left: 23px; }
+.msg.room-message.assistant { position: relative; padding-top: 26px; }
+.msg.room-message.assistant .room-speaker {
+	position: absolute; top: 8px; left: 14px;
+	color: var(--text-soft); font-size: 10.5px; font-weight: 650;
+}
+.msg.room-message .room-message-body { white-space: pre-wrap; }
+.msg.room-message.assistant .room-message-body { white-space: normal; }
+.msg.room-message .room-message-body > :last-child { margin-bottom: 0; }
+.room-delivery-card, .room-error-card {
+	display: flex; align-items: center; align-self: flex-start; gap: 12px;
+	width: min(100%, 720px); min-height: 46px; padding: 10px 12px;
+	border: 1px solid var(--border); border-radius: 12px;
+	background: var(--pane); color: var(--text-muted); font-size: 12px;
+}
+.room-delivery-card { display: grid; gap: 2px; }
+.room-delivery-title { color: var(--text); font-size: 12.5px; font-weight: 650; }
+.room-delivery-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-delivery-card.delivered { border-color: color-mix(in srgb, var(--blue) 42%, var(--border)); }
+.room-error-card {
+	border-color: color-mix(in srgb, var(--danger) 38%, var(--border));
+	background: color-mix(in srgb, var(--danger-soft) 45%, var(--pane));
+	color: var(--danger-muted);
+}
 
 .general-settings-group .setrow .settings-toggle {
 	position: relative;

@@ -14,6 +14,7 @@ export const STAFF_CHARACTER_IDS = Object.freeze([
 export type StaffCharacterId = (typeof STAFF_CHARACTER_IDS)[number];
 
 export const STAFF_CHARACTER_BY_TEMPLATE = Object.freeze({
+	"agent-manager": "lantern",
 	"financial-officer": "pebble",
 	"marketing-lead": "bloom",
 	"product-manager": "folio",

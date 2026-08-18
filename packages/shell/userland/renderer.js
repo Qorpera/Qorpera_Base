@@ -17,6 +17,7 @@ let state = {
 	inbox: [],
 	sessions: [],
 	staff: [],
+	rooms: [],
 	artifacts: [],
 	connectors: [],
 	scheduledJobs: [],
@@ -39,6 +40,14 @@ async function authorizedPost(path, body) {
 let currentNodeId = null;
 let currentSession = null; // trail file of the open chat (null = fresh/unsaved)
 let currentStaffId = null; // durable staff identity for the open conversation
+let currentRoomId = null; // durable group-chat identity for the open conversation
+let currentRoomMessages = [];
+const roomActivity = new Map(); // room id -> Map(staff agent id -> activity)
+const recentRoomWrites = new Map(); // room id -> ms timestamp of the last local registry write
+const roomDeliveryCards = new Map();
+let roomSettingsPending = false;
+let roomSettingsTrigger = null;
+let archivedRoomsTrigger = null;
 let currentStaffIntroStatus = null;
 let currentDepartment = null; // product department of the open chat, when applicable
 let currentWorktree = null; // host-assigned product worktree, when applicable
@@ -99,6 +108,7 @@ let staffCreatorClosing = false;
 let staffCreatorColor = "#1684ff";
 let staffCreatorShape = "round";
 let staffCreatorCreature = "pebble";
+let conversationRecipients = new Set();
 let staffBootstrapSelections = new Set();
 let staffBootstrapPending = false;
 let railSearchQuery = "";
@@ -149,6 +159,7 @@ const STAFF_CREATURE_CATALOG = Object.freeze({
 });
 const STAFF_CREATURE_IDS = Object.freeze(Object.keys(STAFF_CREATURE_CATALOG));
 const STAFF_CREATURE_BY_TEMPLATE = Object.freeze({
+	"agent-manager": "lantern",
 	"financial-officer": "pebble",
 	"marketing-lead": "bloom",
 	"product-manager": "folio",
@@ -206,6 +217,14 @@ const STAFF_COLOR_TOKENS = {
 };
 
 const DEFAULT_STAFF_TEMPLATES = [
+	{
+		id: "agent-manager",
+		displayName: "Agent Manager",
+		name: "Agent Manager",
+		description: "Coordinates the room, assigns bounded work, and synthesizes the team’s output.",
+		color: "#ff642e",
+		shape: "tilted",
+	},
 	{
 		id: "financial-officer",
 		displayName: "Financial Officer",
@@ -756,6 +775,8 @@ async function enterCompany(active) {
 	// trail file so the chat pile marks it active and caching keys line up.
 	currentSession = active.sessionFile ?? null;
 	currentStaffId = null;
+	currentRoomId = null;
+	currentRoomMessages = [];
 	if (active.kickoff) {
 		addMsg("tool", "· setup started — the agent is learning its responsibility…");
 	}
@@ -765,13 +786,22 @@ async function enterCompany(active) {
 	// reload the chrome), so the live thread must come back with it. A fresh
 	// child answers with an empty history — harmless.
 	await refreshState();
-	const resumed = (state.sessions ?? []).find((session) => session.file === currentSession);
-	currentStaffId = activeStaffMembers().some((staff) => staffId(staff) === resumed?.staffAgentId)
-		? resumed.staffAgentId
-		: null;
-	renderStaffHome();
-	renderRosterRail();
-	hydratedExecutorId = runtimeForTrail(currentSession)?.executorId ?? "";
+	const routedRoomId = roomIdFromRoute();
+	const routedRoom = (state.rooms ?? []).find((room) => room.id === routedRoomId && room.status !== "archived");
+	if (routedRoomId && !routedRoom) {
+		localStorage.removeItem(navStorageKey("active-room"));
+		if (location.hash.startsWith("#/room/")) history.replaceState(null, "", "#/");
+	}
+	if (routedRoom) await openRoom(routedRoom.id);
+	if (!currentRoomId) {
+		const resumed = (state.sessions ?? []).find((session) => session.file === currentSession);
+		currentStaffId = activeStaffMembers().some((staff) => staffId(staff) === resumed?.staffAgentId)
+			? resumed.staffAgentId
+			: null;
+		renderStaffHome();
+		renderRosterRail();
+		hydratedExecutorId = runtimeForTrail(currentSession)?.executorId ?? "";
+	}
 	connectSessionRuntime();
 	document.title = state.name || "Qorpera Base";
 	$("wordmark").hidden = true;
@@ -789,6 +819,16 @@ let lastInterruptedRuntime = "";
 /** Chat continuity belongs to the saved session. A provider process can be
  * replaced without changing which conversation the founder is in. */
 function applyCurrentSessionRuntime() {
+	if (currentRoomId) {
+		// A room rides the autonomous lane, not an attached provider process —
+		// the attended-runtime states (exited, reconnecting) never apply here.
+		runtimeReconnecting = false;
+		agentExited = false;
+		agentWorking = roomActiveParticipants(currentRoomId).length > 0;
+		$("status").textContent = agentWorking ? roomActivityLabel(currentRoomId) || "agents working…" : "ready";
+		$("stopBtn").hidden = true;
+		return;
+	}
 	const runtime = runtimeForTrail(currentSession);
 	if (!runtime) {
 		runtimeReconnecting = false;
@@ -1434,7 +1474,10 @@ function syncScopeChrome() {
 	scopeChip.setOptions(options, currentDepartment ?? "");
 	scopeChip.value = currentDepartment ?? "";
 	const staff = currentStaff();
-	$("input").placeholder = staff
+	const room = currentRoom();
+	$("input").placeholder = room
+		? `Message ${roomTitle(room)}… Use @name to target specific agents.`
+		: staff
 			? `Message ${staffDisplayName(staff)}…`
 		: currentDepartment
 			? `Work on ${departmentName(currentDepartment)}… (Enter to send, Shift+Enter for newline)`
@@ -1450,6 +1493,8 @@ const scopeChip = createChipSelect("scopeBtn", "scopeMenu", async (picked) => {
 	if (result?.ok) {
 		currentSession = result.sessionFile ?? null;
 		currentStaffId = null;
+		currentRoomId = null;
+		clearRoomRoute();
 		currentDepartment = result.department ?? null;
 		currentWorktree = result.worktree ?? null;
 	}
@@ -1707,30 +1752,6 @@ async function loadStaffCatalog(force = false) {
 	return staffCatalogCache;
 }
 
-function renderTemplateCards(container, templates, selectedId, onSelect) {
-	container.replaceChildren();
-	for (const template of templates) {
-		const id = templateId(template);
-		const card = document.createElement("button");
-		card.type = "button";
-		card.className = "staff-template-card";
-		card.classList.toggle("selected", id === selectedId);
-		card.setAttribute("role", "radio");
-		card.setAttribute("aria-checked", String(id === selectedId));
-		card.style.setProperty("--staff-color", staffColor(template));
-		card.appendChild(makeStaffAvatar(template));
-		const title = document.createElement("strong");
-		title.textContent = templateName(template);
-		const description = document.createElement("p");
-		description.textContent = staffDescription(template);
-		const detail = document.createElement("small");
-		detail.textContent = template.detail ?? "Persistent staff · proactive first message";
-		card.append(title, description, detail);
-		card.onclick = () => onSelect(template);
-		container.appendChild(card);
-	}
-}
-
 function syncStaffTemplateScrollbar() {
 	const grid = $("staffTemplateGrid");
 	const scrollbar = $("staffTemplateScrollbar");
@@ -1748,9 +1769,160 @@ function syncStaffTemplateScrollbar() {
 	thumb.style.transform = `translateX(${offset}px)`;
 }
 
+function updateConversationOpenAction() {
+	const selected = activeStaffMembers().filter((staff) => conversationRecipients.has(staffId(staff)));
+	const button = $("conversationOpenButton");
+	button.disabled = staffCreatorPending || selected.length === 0;
+	button.textContent =
+		selected.length > 1
+			? `Create group (${selected.length})`
+			: selected.length === 1
+				? `Open ${staffDisplayName(selected[0])}`
+				: "Open";
+}
+
+function renderConversationRecipientChips() {
+	const container = $("conversationRecipientChips");
+	container.replaceChildren();
+	for (const staff of activeStaffMembers().filter((candidate) => conversationRecipients.has(staffId(candidate)))) {
+		const chip = document.createElement("span");
+		chip.className = "conversation-recipient-chip";
+		chip.appendChild(makeStaffAvatar(staff));
+		const label = document.createElement("span");
+		label.textContent = staffDisplayName(staff);
+		const remove = document.createElement("button");
+		remove.type = "button";
+		remove.setAttribute("aria-label", `Remove ${staffDisplayName(staff)}`);
+		remove.textContent = "×";
+		remove.onclick = () => {
+			conversationRecipients.delete(staffId(staff));
+			renderConversationRecipientChips();
+			renderConversationRecipientMenu();
+			updateConversationOpenAction();
+		};
+		chip.append(label, remove);
+		container.appendChild(chip);
+	}
+}
+
+/** Swap the picker for the existing configure view, pre-seeded from a
+ * suggestion card (or blank for a from-scratch agent). */
+function configureSuggestedAgent(template = null, proposedName = "") {
+	$("conversationPickerView").hidden = true;
+	$("staffConfigureView").hidden = false;
+	$("conversationRecipientMenu").hidden = true;
+	$("conversationRecipientSearch").setAttribute("aria-expanded", "false");
+	staffCreatorSelection = template;
+	staffCreatorColor = template ? staffColor(template) : "#1684ff";
+	staffCreatorShape = template ? staffShape(template) : "round";
+	staffCreatorCreature = template ? STAFF_CREATURE_BY_TEMPLATE[templateId(template)] ?? "pebble" : "pebble";
+	$("staffDisplayName").value = proposedName || (template ? template.displayName ?? templateName(template) : "");
+	$("staffCreatorRole").textContent = template ? templateName(template) : "New Agent";
+	$("staffCreatorDescription").textContent = template
+		? staffDescription(template)
+		: "A blank persistent agent whose responsibility you define together.";
+	paintStaffAvatar($("staffCreatorAvatar"), {
+		...(template ?? {}),
+		appearance: { color: staffCreatorColor, shape: staffCreatorShape, creature: staffCreatorCreature },
+	});
+	renderStaffAppearancePickers();
+	$("staffCreateStatus").textContent = "";
+	$("staffCreateButton").disabled = !$("staffDisplayName").value.trim();
+	requestAnimationFrame(() => $("staffDisplayName").focus());
+}
+
+function renderConversationSuggestions() {
+	const container = $("conversationSuggestionGrid");
+	container.replaceChildren();
+	const createCard = (template) => {
+		const card = document.createElement("button");
+		card.type = "button";
+		card.className = "conversation-suggestion-card";
+		if (template) card.appendChild(makeStaffAvatar(template));
+		else {
+			const mark = document.createElement("span");
+			mark.className = "conversation-new-mark";
+			mark.setAttribute("aria-hidden", "true");
+			mark.textContent = "+";
+			card.appendChild(mark);
+		}
+		const title = document.createElement("strong");
+		title.textContent = template ? templateName(template) : "New";
+		const description = document.createElement("p");
+		description.textContent = template ? staffDescription(template) : "Create a blank agent and configure it yourself.";
+		card.append(title, description);
+		card.onclick = () => configureSuggestedAgent(template);
+		container.appendChild(card);
+	};
+	createCard(null);
+	for (const template of staffCatalogCache ?? DEFAULT_STAFF_TEMPLATES) createCard(template);
+}
+
+function renderConversationRecipientMenu() {
+	const menu = $("conversationRecipientMenu");
+	const query = $("conversationRecipientSearch").value.trim().toLowerCase();
+	menu.replaceChildren();
+	const create = document.createElement("button");
+	create.type = "button";
+	create.className = "conversation-recipient-option";
+	const createMark = document.createElement("span");
+	createMark.className = "conversation-new-mark";
+	createMark.textContent = "+";
+	const createCopy = document.createElement("span");
+	const createTitle = document.createElement("strong");
+	createTitle.textContent = query ? `Create “${$("conversationRecipientSearch").value.trim()}”` : "Create new agent";
+	const createDetail = document.createElement("small");
+	createDetail.textContent = "Configure a blank persistent agent";
+	createCopy.append(createTitle, createDetail);
+	create.append(createMark, createCopy);
+	create.onclick = () => configureSuggestedAgent(null, $("conversationRecipientSearch").value.trim());
+	menu.appendChild(create);
+	for (const staff of activeStaffMembers().filter((candidate) => {
+		const haystack = `${staffDisplayName(candidate)} ${staffRoleLabel(candidate)}`.toLowerCase();
+		return !query || haystack.includes(query);
+	})) {
+		const id = staffId(staff);
+		const option = document.createElement("button");
+		option.type = "button";
+		option.className = "conversation-recipient-option";
+		option.setAttribute("role", "option");
+		option.setAttribute("aria-selected", String(conversationRecipients.has(id)));
+		option.appendChild(makeStaffAvatar(staff, staffStatus(staff)));
+		const copy = document.createElement("span");
+		const name = document.createElement("strong");
+		name.textContent = staffDisplayName(staff);
+		const role = document.createElement("small");
+		role.textContent = staffRoleLabel(staff);
+		copy.append(name, role);
+		const stateLabel = document.createElement("small");
+		stateLabel.textContent = conversationRecipients.has(id) ? "Added" : "Add";
+		option.append(copy, stateLabel);
+		option.onclick = () => {
+			if (conversationRecipients.has(id)) conversationRecipients.delete(id);
+			else conversationRecipients.add(id);
+			renderConversationRecipientChips();
+			renderConversationRecipientMenu();
+			updateConversationOpenAction();
+		};
+		menu.appendChild(option);
+	}
+}
+
+function showConversationPicker() {
+	$("conversationPickerView").hidden = false;
+	$("staffConfigureView").hidden = true;
+	$("staffCreateStatus").textContent = "";
+	renderConversationSuggestions();
+	renderConversationRecipientChips();
+	updateConversationOpenAction();
+}
+
 async function openStaffCreator() {
 	staffCreatorPending = false;
 	staffCreatorClosing = false;
+	conversationRecipients = new Set();
+	$("conversationRecipientSearch").value = "";
+	$("conversationStatus").textContent = "";
 	$("staffCreateStatus").textContent = "";
 	$("staffModal").hidden = false;
 	document.body.classList.add("staff-creator-open");
@@ -1758,49 +1930,9 @@ async function openStaffCreator() {
 	$("staffCreatorTitlebar").hidden = false;
 	if (!$("agentSidepanel").hidden) closeAgentSidepanel(false);
 	renderRosterRail({ animateCreateRow: true });
-	const templates = await loadStaffCatalog();
-	const clearSelection = () => {
-		staffCreatorSelection = null;
-		staffCreatorColor = "#1684ff";
-		staffCreatorShape = "round";
-		staffCreatorCreature = "pebble";
-		$("staffDisplayName").value = "";
-		$("staffCreateButton").disabled = true;
-		paintStaffAvatar($("staffCreatorAvatar"), {
-			appearance: { color: staffCreatorColor, shape: staffCreatorShape, creature: staffCreatorCreature },
-		});
-		$("staffCreatorRole").textContent = "New Agent";
-		$("staffCreatorDescription").textContent = "";
-		renderStaffAppearancePickers();
-		renderTemplateCards($("staffTemplateGrid"), templates, "", select);
-		requestAnimationFrame(syncStaffTemplateScrollbar);
-	};
-	const select = (template) => {
-		if (templateId(staffCreatorSelection) === templateId(template)) {
-			clearSelection();
-			return;
-		}
-		staffCreatorSelection = template;
-		staffCreatorColor = staffColor(template);
-		staffCreatorShape = staffShape(template);
-		staffCreatorCreature = STAFF_CREATURE_BY_TEMPLATE[templateId(template)] ?? "pebble";
-		$("staffDisplayName").value = template.displayName ?? templateName(template);
-		$("staffCreateButton").disabled = false;
-		paintStaffAvatar($("staffCreatorAvatar"), {
-			...template,
-			appearance: { color: staffCreatorColor, shape: staffCreatorShape, creature: staffCreatorCreature },
-		});
-		$("staffCreatorRole").textContent = templateName(template);
-		$("staffCreatorDescription").textContent = staffDescription(template);
-		renderStaffAppearancePickers();
-		renderTemplateCards($("staffTemplateGrid"), templates, templateId(template), select);
-		requestAnimationFrame(syncStaffTemplateScrollbar);
-	};
-	clearSelection();
-	requestAnimationFrame(() => {
-		$("staffDisplayName").focus();
-		syncStaffTemplateScrollbar();
-	});
+	await loadStaffCatalog();
+	showConversationPicker();
+	requestAnimationFrame(() => $("conversationRecipientSearch").focus());
 }
 
 function renderStaffAppearancePickers() {
@@ -1875,6 +2007,8 @@ function closeStaffCreator() {
 		$("staffModal").hidden = true;
 		document.body.classList.remove("staff-creator-open");
 		$("staffCreatorTitlebar").hidden = true;
+		$("conversationRecipientMenu").hidden = true;
+		$("conversationRecipientSearch").setAttribute("aria-expanded", "false");
 		$("threadHeader").hidden = currentView !== "chat" && !(currentStaffId && currentView === "panel");
 		staffCreatorSelection = null;
 		staffCreatorClosing = false;
@@ -1915,23 +2049,23 @@ async function createStaffMember() {
 		if (created && typeof created === "object" && !(state.staff ?? []).some((staff) => staffId(staff) === id)) {
 			state.staff = [...(state.staff ?? []), { ...created, id, sessionFile }];
 		}
-		$("staffModal").hidden = true;
-		document.body.classList.remove("staff-creator-open");
-		$("staffCreatorTitlebar").hidden = true;
-		activateStaffSession(id, sessionFile, result);
-		$("staffCreateStatus").textContent = "Your new staff member is getting ready to introduce themselves…";
-		let intro;
-		for (let attempt = 0; attempt < 12; attempt += 1) {
-			intro = await window.qorpera.staffIntroReady(id, sessionFile);
-			if (intro?.ok !== false || intro.error !== "staff introduction target is not the attached ready session") break;
-			await new Promise((resolve) => setTimeout(resolve, 250));
-		}
-		if (intro?.ok === false) throw new Error(intro.error ?? "The staff introduction did not finish.");
 		staffCreatorPending = false;
 		await refreshState();
-		setTimeout(() => {
-			if (currentStaffId === id && currentSession === sessionFile) sendRpc({ type: "get_messages" });
-		}, 600);
+		conversationRecipients.add(id);
+		showConversationPicker();
+		$("conversationStatus").textContent = `${staffDisplayName(created)} added. Select another agent to make this a group.`;
+		// The introduction must start even when the founder never opens the 1:1
+		// chat — e.g. when this agent flows straight into a group. The kernel
+		// attached the fresh staff session during creation; kick the intro now.
+		void (async () => {
+			for (let attempt = 0; attempt < 12; attempt += 1) {
+				const intro = await window.qorpera.staffIntroReady(id, sessionFile);
+				if (intro?.ok !== false || intro.error !== "staff introduction target is not the attached ready session") {
+					break;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 250));
+			}
+		})();
 	} catch (error) {
 		staffCreatorPending = false;
 		const message = error instanceof Error ? error.message : "Staff member could not be created.";
@@ -1940,10 +2074,55 @@ async function createStaffMember() {
 	} finally {
 		$("staffCreateButton").textContent = "Create";
 		$("staffCreateButton").disabled = staffCreatorPending || !$("staffDisplayName").value.trim();
+		updateConversationOpenAction();
+	}
+}
+
+/** The picker's single action: one recipient opens the direct staff chat,
+ * several become a durable group room. */
+async function openConversationRecipients() {
+	if (staffCreatorPending) return;
+	const ids = activeStaffMembers()
+		.filter((staff) => conversationRecipients.has(staffId(staff)))
+		.map(staffId);
+	if (!ids.length) return;
+	if (ids.length < conversationRecipients.size) {
+		// A selected agent was archived since selection; never silently
+		// downgrade a group to a 1:1 — resync the picker and let the founder
+		// decide.
+		conversationRecipients = new Set(ids);
+		renderConversationRecipientChips();
+		renderConversationRecipientMenu();
+		updateConversationOpenAction();
+		$("conversationStatus").textContent = "Some selected agents are no longer active; review the recipients.";
+		return;
+	}
+	staffCreatorPending = true;
+	updateConversationOpenAction();
+	$("conversationStatus").textContent = ids.length > 1 ? "Creating group chat…" : "Opening conversation…";
+	try {
+		if (ids.length === 1) {
+			staffCreatorPending = false;
+			closeStaffCreator();
+			await openStaff(ids[0]);
+			return;
+		}
+		const result = await window.qorpera.roomCreate({ participantIds: ids });
+		if (result?.ok === false || !result?.room?.id) throw new Error(result?.error ?? "Group chat could not be created.");
+		rememberRoom(result.room);
+		const roomId = result.room.id;
+		staffCreatorPending = false;
+		closeStaffCreator();
+		await openRoom(roomId);
+	} catch (error) {
+		staffCreatorPending = false;
+		$("conversationStatus").textContent = error instanceof Error ? error.message : "Conversation could not be opened.";
+		updateConversationOpenAction();
 	}
 }
 
 function setStaffRoute(id) {
+	clearRoomRoute();
 	const next = `#/staff/${encodeURIComponent(id)}`;
 	if (location.hash !== next) history.replaceState(null, "", next);
 }
@@ -1951,6 +2130,8 @@ function setStaffRoute(id) {
 function activateStaffSession(id, sessionFile, result = {}) {
 	cacheCurrentSession();
 	currentStaffId = id;
+	currentRoomId = null;
+	currentRoomMessages = [];
 	setCurrentAvatarAction("");
 	currentStaffIntroStatus = result?.introStatus ?? result?.staff?.introStatus ?? null;
 	currentSession = sessionFile;
@@ -1995,23 +2176,436 @@ async function openStaff(id) {
 		return;
 	}
 	activateStaffSession(id, sessionFile, result);
+	if (result?.introStatus === "pending") {
+		// Creation returns to the picker without attaching, so the introduction
+		// starts on first open — once this session reports itself attached.
+		void (async () => {
+			let intro;
+			for (let attempt = 0; attempt < 12; attempt += 1) {
+				intro = await window.qorpera.staffIntroReady(id, sessionFile);
+				if (intro?.ok !== false || intro.error !== "staff introduction target is not the attached ready session") break;
+				await new Promise((resolve) => setTimeout(resolve, 250));
+			}
+			if (intro?.ok === false) {
+				showToast(intro.error ?? "The staff introduction did not finish.");
+				return;
+			}
+			setTimeout(() => {
+				if (currentStaffId === id && currentSession === sessionFile) sendRpc({ type: "get_messages" });
+			}, 600);
+		})();
+	}
+}
+
+function currentRoom() {
+	return (state.rooms ?? []).find((room) => room.id === currentRoomId && room.status !== "archived") ?? null;
+}
+
+function roomParticipants(room) {
+	return (room?.participantIds ?? []).flatMap((id) => {
+		const staff = activeStaffMembers().find((candidate) => staffId(candidate) === id);
+		return staff ? [staff] : [];
+	});
+}
+
+function roomTitle(room) {
+	return room?.title || roomParticipants(room).map(staffDisplayName).join(", ") || "Group chat";
+}
+
+function roomActivityFor(roomId) {
+	let activities = roomActivity.get(roomId);
+	if (!activities) {
+		activities = new Map();
+		roomActivity.set(roomId, activities);
+	}
+	return activities;
+}
+
+function roomActiveParticipants(roomId) {
+	return [...roomActivityFor(roomId).keys()];
+}
+
+/** Per-participant activity line, e.g. "Nova is working…" or "Nova is using bash…". */
+function roomActivityLabel(roomId) {
+	const activities = roomActivityFor(roomId);
+	const active = activeStaffMembers().filter((staff) => activities.has(staffId(staff)));
+	if (!active.length) return activities.size ? "agents working…" : "";
+	if (active.length > 1) return `${active.length} agents are working…`;
+	const activity = activities.get(staffId(active[0]));
+	return `${staffDisplayName(active[0])} is ${activity === "working" ? "working" : `using ${activity}`}…`;
+}
+
+function makeRoomAvatar(room, status = "idle") {
+	const avatar = document.createElement("span");
+	avatar.className = "room-avatar";
+	avatar.setAttribute("aria-hidden", "true");
+	for (const staff of roomParticipants(room).slice(0, 3)) avatar.appendChild(makeStaffAvatar(staff, status));
+	return avatar;
+}
+
+function setRoomRoute(id) {
+	localStorage.setItem(navStorageKey("active-room"), id);
+	const next = `#/room/${encodeURIComponent(id)}`;
+	if (location.hash !== next) history.replaceState(null, "", next);
+}
+
+function clearRoomRoute() {
+	localStorage.removeItem(navStorageKey("active-room"));
+	if (location.hash.startsWith("#/room/")) history.replaceState(null, "", "#/");
+}
+
+function roomIdFromRoute() {
+	const match = location.hash.match(/^#\/room\/([^/?#]+)$/);
+	if (match) {
+		try {
+			return decodeURIComponent(match[1]);
+		} catch {
+			return "";
+		}
+	}
+	// The stored room only resumes when no other destination owns the route.
+	if (location.hash && location.hash !== "#" && location.hash !== "#/") return "";
+	return localStorage.getItem(navStorageKey("active-room")) ?? "";
+}
+
+function renderRoomMessage(message) {
+	if (!message || currentRoomMessages.some((known) => known.id === message.id)) return;
+	currentRoomMessages.push(message);
+	currentRoomMessages.sort((left, right) => (left.sequence ?? 0) - (right.sequence ?? 0));
+	const founder = message.speaker?.kind === "founder";
+	const staff = founder
+		? null
+		: activeStaffMembers().find((candidate) => staffId(candidate) === message.speaker?.staffAgentId);
+	const row = addMsg(founder ? "user" : "assistant", "");
+	row.classList.add("room-message");
+	row.dataset.roomMessageId = message.id;
+	const body = document.createElement("div");
+	body.className = "room-message-body";
+	if (founder) {
+		// The founder's bubble already sits alone on the right; no name needed.
+		body.textContent = message.text ?? "";
+		row.replaceChildren(body);
+	} else {
+		const speaker = document.createElement("strong");
+		speaker.className = "room-speaker";
+		speaker.textContent = staffDisplayName(staff);
+		renderMarkdown(body, message.text ?? "");
+		row.replaceChildren(speaker, body);
+	}
+	appendMsgImages(
+		row,
+		(message.images ?? []).map((image) => `data:${image.mimeType};base64,${image.data}`),
+	);
+}
+
+function roomRecipientNames(ids) {
+	const names = (ids ?? []).flatMap((id) => {
+		const staff = activeStaffMembers().find((candidate) => staffId(candidate) === id);
+		return staff ? [staffDisplayName(staff)] : [];
+	});
+	return names.join(", ") || "room participants";
+}
+
+/** Every send queues a durable delivery on the company's single autonomous
+ * lane; the card narrates waiting, not failure. */
+function renderRoomDelivery(delivery, status = "queued") {
+	if (!delivery?.id || currentRoomId !== delivery.roomId) return;
+	let card = roomDeliveryCards.get(delivery.id);
+	if (!card) {
+		if (status === "delivered") return;
+		card = document.createElement("div");
+		card.className = "room-delivery-card";
+		card.dataset.deliveryId = delivery.id;
+		const title = document.createElement("strong");
+		title.className = "room-delivery-title";
+		const detail = document.createElement("span");
+		detail.className = "room-delivery-detail";
+		card.append(title, detail);
+		roomDeliveryCards.set(delivery.id, card);
+		appendConversationEntry(card);
+		$("messages").scrollTop = $("messages").scrollHeight;
+	}
+	const title = card.querySelector(".room-delivery-title");
+	const detail = card.querySelector(".room-delivery-detail");
+	if (status === "delivered") {
+		title.textContent = "Delivered";
+		detail.textContent = "The queued message reached its remaining recipients.";
+		card.classList.add("delivered");
+		setTimeout(() => {
+			if (roomDeliveryCards.get(delivery.id) === card) roomDeliveryCards.delete(delivery.id);
+			card.remove();
+		}, 3200);
+		return;
+	}
+	title.textContent = "Waiting to run";
+	detail.textContent = `Queued for ${roomRecipientNames(delivery.targetStaffAgentIds)} — runs when the company is free${delivery.lastError ? " · retrying after a delivery error" : ""}`;
+}
+
+function renderRoomError(message) {
+	const card = document.createElement("div");
+	card.className = "room-error-card";
+	card.textContent = message || "A group-chat operation failed.";
+	appendConversationEntry(card);
+	$("messages").scrollTop = $("messages").scrollHeight;
+}
+
+function renderRoomHistory(messages, deliveries) {
+	currentRoomMessages = [];
+	roomDeliveryCards.clear();
+	$("messages").replaceChildren();
+	for (const message of messages ?? []) renderRoomMessage(message);
+	for (const delivery of deliveries ?? []) renderRoomDelivery(delivery);
+}
+
+async function openRoom(id) {
+	if (!$("staffModal").hidden) closeStaffCreator();
+	if (currentRoomId === id && currentView === "chat") return;
+	const navigation = ++navigationGeneration;
+	cacheCurrentSession();
+	const result = await window.qorpera.roomOpen(id).catch((error) => ({ ok: false, error: String(error?.message ?? error) }));
+	if (navigation !== navigationGeneration) return;
+	if (result?.ok !== true) {
+		localStorage.removeItem(navStorageKey("active-room"));
+		showToast(result?.error ?? "This group chat could not be opened.");
+		return;
+	}
+	if (result?.room) rememberRoom(result.room);
+	if (!$("agentSidepanel").hidden) closeAgentSidepanel(false);
+	currentRoomId = id;
+	currentStaffId = null;
+	currentStaffIntroStatus = null;
+	currentSession = null;
+	currentDepartment = null;
+	currentWorktree = null;
+	currentNodeId = null;
+	setRoomRoute(id);
+	resetWorkGroup();
+	show("chat");
+	roomActivity.delete(id);
+	if (result.activity?.staffAgentId) {
+		roomActivityFor(id).set(result.activity.staffAgentId, result.activity.activity ?? "working");
+	}
+	renderRoomHistory(result.messages ?? [], result.deliveries ?? []);
+	renderThreadHeader();
+	syncConnectionRequestCards();
+	renderRosterRail();
+	syncScopeChrome();
+	applyCurrentSessionRuntime();
+}
+
+function rememberRoom(room) {
+	if (!room?.id) return;
+	recentRoomWrites.set(room.id, Date.now());
+	const index = (state.rooms ?? []).findIndex((candidate) => candidate.id === room.id);
+	if (index >= 0) state.rooms[index] = room;
+	else state.rooms = [room, ...(state.rooms ?? [])];
+}
+
+function leaveRoomView() {
+	currentRoomId = null;
+	currentRoomMessages = [];
+	roomDeliveryCards.clear();
+	clearRoomRoute();
+	$("messages").replaceChildren();
+	show("roster");
+}
+
+function selectedRoomParticipantIds() {
+	return [...$("roomParticipantList").querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value);
+}
+
+function syncRoomSettingsActions() {
+	const count = selectedRoomParticipantIds().length;
+	$("roomSettingsSave").disabled = roomSettingsPending || count < 2;
+	$("roomArchiveButton").disabled = roomSettingsPending;
+	if (!roomSettingsPending) {
+		$("roomSettingsStatus").textContent = count < 2 ? "Choose at least two active participants." : "";
+	}
+}
+
+function renderRoomParticipantSettings(room) {
+	const list = $("roomParticipantList");
+	list.replaceChildren();
+	for (const staff of activeStaffMembers()) {
+		const id = staffId(staff);
+		const row = document.createElement("label");
+		row.className = "room-participant-option";
+		const input = document.createElement("input");
+		input.type = "checkbox";
+		input.value = id;
+		input.checked = room.participantIds.includes(id);
+		input.onchange = syncRoomSettingsActions;
+		row.append(input, makeStaffAvatar(staff, staffStatus(staff)));
+		const copy = document.createElement("span");
+		const name = document.createElement("strong");
+		name.textContent = staffDisplayName(staff);
+		const role = document.createElement("small");
+		role.textContent = staffRoleLabel(staff);
+		copy.append(name, role);
+		row.appendChild(copy);
+		list.appendChild(row);
+	}
+}
+
+function openRoomSettings(trigger = document.activeElement) {
+	const room = currentRoom();
+	if (!room || roomSettingsPending) return;
+	roomSettingsTrigger = trigger;
+	$("roomTitleInput").value = room.title ?? "";
+	$("roomSettingsStatus").textContent = "";
+	renderRoomParticipantSettings(room);
+	$("roomSettingsModal").hidden = false;
+	$("staffIdentityButton").setAttribute("aria-expanded", "true");
+	syncRoomSettingsActions();
+	requestAnimationFrame(() => $("roomTitleInput").focus());
+}
+
+function closeRoomSettings(restoreFocus = true) {
+	if (roomSettingsPending) return;
+	$("roomSettingsModal").hidden = true;
+	$("staffIdentityButton").setAttribute("aria-expanded", "false");
+	if (restoreFocus) roomSettingsTrigger?.focus();
+	roomSettingsTrigger = null;
+}
+
+async function saveRoomSettings() {
+	const room = currentRoom();
+	if (!room || roomSettingsPending) return;
+	const participantIds = selectedRoomParticipantIds();
+	if (participantIds.length < 2) {
+		syncRoomSettingsActions();
+		return;
+	}
+	roomSettingsPending = true;
+	$("roomSettingsStatus").textContent = "Saving…";
+	syncRoomSettingsActions();
+	try {
+		const title = $("roomTitleInput").value.trim();
+		const result = await window.qorpera.roomUpdate(room.id, {
+			title: title || null,
+			participantIds,
+		});
+		if (result?.ok === false || !result?.room) throw new Error(result?.error ?? "Room settings could not be saved.");
+		rememberRoom(result.room);
+		renderThreadHeader();
+		renderRosterRail();
+		syncScopeChrome();
+		roomSettingsPending = false;
+		closeRoomSettings();
+	} catch (error) {
+		$("roomSettingsStatus").textContent = error instanceof Error ? error.message : "Room settings could not be saved.";
+		roomSettingsPending = false;
+		syncRoomSettingsActions();
+	}
+}
+
+async function archiveCurrentRoom() {
+	const room = currentRoom();
+	if (!room || roomSettingsPending) return;
+	roomSettingsPending = true;
+	$("roomSettingsStatus").textContent = "Archiving…";
+	syncRoomSettingsActions();
+	try {
+		const result = await window.qorpera.roomArchive(room.id);
+		if (result?.ok === false || !result?.room) throw new Error(result?.error ?? "The group chat could not be archived.");
+		rememberRoom(result.room);
+		roomSettingsPending = false;
+		closeRoomSettings(false);
+		leaveRoomView();
+	} catch (error) {
+		$("roomSettingsStatus").textContent = error instanceof Error ? error.message : "The group chat could not be archived.";
+		roomSettingsPending = false;
+		syncRoomSettingsActions();
+	}
+}
+
+function closeArchivedRooms(restoreFocus = true) {
+	$("archivedRoomsModal").hidden = true;
+	if (restoreFocus) archivedRoomsTrigger?.focus();
+	archivedRoomsTrigger = null;
+}
+
+function renderArchivedRooms() {
+	const list = $("archivedRoomsList");
+	list.replaceChildren();
+	const rooms = (state.rooms ?? []).filter((room) => room.status === "archived");
+	if (!rooms.length) {
+		const empty = document.createElement("div");
+		empty.className = "hidden-staff-empty";
+		empty.textContent = "No archived group chats.";
+		list.appendChild(empty);
+		return;
+	}
+	for (const room of rooms) {
+		const row = document.createElement("div");
+		row.className = "hidden-staff-row archived-room-row";
+		row.appendChild(makeRoomAvatar(room));
+		const copy = document.createElement("span");
+		const name = document.createElement("strong");
+		name.textContent = roomTitle(room);
+		const detail = document.createElement("small");
+		detail.textContent = `${roomParticipants(room).length} active former participants`;
+		copy.append(name, detail);
+		const restore = document.createElement("button");
+		restore.type = "button";
+		restore.textContent = "Restore";
+		restore.onclick = async () => {
+			restore.disabled = true;
+			restore.textContent = "Restoring…";
+			const result = await window.qorpera
+				.roomRestore(room.id)
+				.catch((error) => ({ ok: false, error: String(error?.message ?? error) }));
+			if (result?.ok === false || !result?.room) {
+				restore.disabled = false;
+				restore.textContent = "Restore";
+				showToast(result?.error ?? "The group chat could not be restored.");
+				return;
+			}
+			rememberRoom(result.room);
+			closeArchivedRooms(false);
+			renderRosterRail();
+			await openRoom(result.room.id);
+		};
+		row.append(copy, restore);
+		list.appendChild(row);
+	}
+}
+
+function openArchivedRooms(trigger) {
+	archivedRoomsTrigger = trigger;
+	renderArchivedRooms();
+	$("archivedRoomsModal").hidden = false;
+	requestAnimationFrame(() => $("archivedRoomsClose").focus());
 }
 
 function renderThreadHeader() {
 	const staff = currentStaff();
+	const room = currentRoom();
 	const avatar = $("threadAvatar");
-	if (staff) {
+	if (room) {
+		const composite = makeRoomAvatar(room, agentWorking ? "working" : "idle");
+		avatar.className = composite.className;
+		avatar.replaceChildren(...composite.childNodes);
+		avatar.removeAttribute("style");
+		delete avatar.dataset.staffId;
+		$("threadTitle").textContent = roomTitle(room);
+	} else if (staff) {
 		paintStaffAvatar(avatar, staff, staffStatus(staff));
 		$("threadTitle").textContent = staffDisplayName(staff);
 	} else {
 		paintStaffAvatar(avatar, { color: "#171716", shape: "soft-square" });
 		$("threadTitle").textContent = state.name || "Qorpera";
 	}
-	$("staffIdentityButton").disabled = !staff;
-	$("staffIdentityButton").setAttribute("aria-expanded", String(Boolean(staff && agentSidepanelMode === "settings")));
-	$("staffSidepanelButton").hidden = !staff;
+	$("staffIdentityButton").disabled = !staff && !room;
+	$("staffIdentityButton").setAttribute("aria-label", room ? "Open group chat settings" : "Open agent settings");
+	$("staffIdentityButton").setAttribute(
+		"aria-expanded",
+		String(room ? !$("roomSettingsModal").hidden : Boolean(staff && agentSidepanelMode === "settings")),
+	);
+	$("staffSidepanelButton").hidden = !staff || Boolean(room);
 	$("staffSidepanelButton").setAttribute("aria-expanded", String(Boolean(staff && agentSidepanelMode === "computer")));
-	renderStaffHeaderNavigation(staff);
+	renderStaffHeaderNavigation(room ? null : staff);
+	$("modelCtlBtn").hidden = Boolean(room);
 	composerMore.sync();
 	syncConversationAccess();
 }
@@ -2189,6 +2783,25 @@ function scheduledJobEffortSelect(value, onChange) {
 	return select;
 }
 
+const ROUTINE_PLACEMENT_OPTIONS = [
+	["local", "This computer"],
+	["requires-local", "Requires this computer"],
+	["cloud", "Cloud (not yet available)"],
+];
+
+function scheduledJobPlacementSelect(value, onChange) {
+	const select = document.createElement("select");
+	for (const [optionValue, label] of ROUTINE_PLACEMENT_OPTIONS) {
+		const option = document.createElement("option");
+		option.value = optionValue;
+		option.textContent = label;
+		select.appendChild(option);
+	}
+	select.value = value ?? "local";
+	select.onchange = () => onChange(select.value);
+	return select;
+}
+
 function scheduledJobEffortLabel(value) {
 	return SCHEDULED_JOB_EFFORT_OPTIONS.find(([optionValue]) => optionValue === value)?.[1] ?? "High";
 }
@@ -2286,6 +2899,17 @@ function renderAgentRoutineEditor(content, staff) {
 	});
 	form.appendChild(
 		agentRoutineField("Effort", effort, "High by default for scheduled work; change it when the routine needs less or deeper reasoning."),
+	);
+	const placement = scheduledJobPlacementSelect(editor.draft.placement, (value) => {
+		editor.draft.placement = value;
+		editor.dirty = true;
+	});
+	form.appendChild(
+		agentRoutineField(
+			"Runs on",
+			placement,
+			"Cloud placement is fail-closed: this computer never runs a cloud-placed routine, and it stays parked until hosted routine execution exists.",
+		),
 	);
 
 	const triggerSection = document.createElement("section");
@@ -2491,6 +3115,7 @@ function renderAgentRoutineEditor(content, staff) {
 			triggers: editor.draft.triggers,
 			enabled: Boolean(editor.draft.enabled),
 			effort: editor.draft.effort,
+			placement: editor.draft.placement,
 			staffAgentId: staffId(staff),
 		};
 		const result = await scheduledJobRequest(
@@ -2829,13 +3454,38 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		name.textContent = "Create new";
 		copy.appendChild(name);
 		create.append(mark, copy);
-		create.onclick = () => $("staffDisplayName").focus();
+		create.onclick = () => $("conversationRecipientSearch").focus();
 		container.appendChild(create);
 		if (animateCreateRow && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
 			create.classList.add("is-entering");
 			create.getBoundingClientRect();
 			requestAnimationFrame(() => create.classList.remove("is-entering"));
 		}
+	}
+	const activeRooms = (state.rooms ?? [])
+		.filter((room) => room.status !== "archived")
+		.sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+	for (const room of activeRooms) {
+		const row = document.createElement("button");
+		row.type = "button";
+		row.className = "staff-nav-row room-nav-row";
+		row.classList.toggle("active", $("staffModal").hidden && currentView === "chat" && currentRoomId === room.id);
+		row.dataset.searchText = `${roomTitle(room)} group chat`.toLowerCase();
+		const active = roomActiveParticipants(room.id).length > 0;
+		row.appendChild(makeRoomAvatar(room, active ? "working" : "idle"));
+		const copy = document.createElement("span");
+		copy.className = "staff-nav-copy";
+		const heading = document.createElement("span");
+		heading.className = "staff-nav-heading";
+		const name = document.createElement("strong");
+		name.textContent = roomTitle(room);
+		heading.appendChild(name);
+		const role = document.createElement("small");
+		role.textContent = roomActivityLabel(room.id) || `${roomParticipants(room).length} agents`;
+		copy.append(heading, role);
+		row.appendChild(copy);
+		row.onclick = () => void openRoom(room.id);
+		container.appendChild(row);
 	}
 	const pinned = storedStaffIds("staff-pinned");
 	const hidden = storedStaffIds("staff-hidden");
@@ -2847,7 +3497,10 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		const row = document.createElement("button");
 		row.type = "button";
 		row.className = "staff-nav-row";
-		row.classList.toggle("active", $("staffModal").hidden && currentView === "chat" && currentStaffId === id);
+		row.classList.toggle(
+			"active",
+			$("staffModal").hidden && currentView === "chat" && !currentRoomId && currentStaffId === id,
+		);
 		row.dataset.searchText = `${staffDisplayName(staff)} ${staffRoleLabel(staff)}`.toLowerCase();
 		row.appendChild(makeStaffAvatar(staff, staffStatus(staff)));
 		const copy = document.createElement("span");
@@ -2860,7 +3513,7 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		const lastMessageAt = Math.max(
 			0,
 			...(state.sessions ?? [])
-				.filter((session) => session.staffAgentId === id && session.kind === "chat")
+				.filter((session) => session.staffAgentId === id && !session.roomId && session.kind === "chat")
 				.map((session) => Number(session.mtimeMs) || 0),
 		);
 		if (lastMessageAt) {
@@ -2920,7 +3573,22 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		hiddenEntry.onclick = (event) => openHiddenStaffModal(event.currentTarget);
 		container.appendChild(hiddenEntry);
 	}
-	if (!staffMembers.length && !hiddenStaff.length && !archivedStaff.length) {
+	const archivedRooms = (state.rooms ?? []).filter((room) => room.status === "archived");
+	if (archivedRooms.length) {
+		const archivedEntry = document.createElement("button");
+		archivedEntry.type = "button";
+		archivedEntry.className = "hidden-staff-entry archived-room-entry";
+		archivedEntry.setAttribute("aria-haspopup", "dialog");
+		const label = document.createElement("span");
+		label.textContent = "Archived chats";
+		const count = document.createElement("span");
+		count.className = "hidden-staff-count";
+		count.textContent = String(archivedRooms.length);
+		archivedEntry.append(label, count);
+		archivedEntry.onclick = (event) => openArchivedRooms(event.currentTarget);
+		container.appendChild(archivedEntry);
+	}
+	if (!staffMembers.length && !hiddenStaff.length && !archivedStaff.length && !activeRooms.length) {
 		const empty = document.createElement("div");
 		empty.className = "rail-empty";
 		empty.textContent = "Choose your starting team.";
@@ -3834,6 +4502,17 @@ async function refreshState() {
 		}
 		if (JSON.stringify(next) !== JSON.stringify(state)) {
 			state = next;
+			if (
+				currentRoomId &&
+				!(state.rooms ?? []).some((room) => room.id === currentRoomId && room.status !== "archived") &&
+				// A poll snapshot fetched before a just-created or just-restored
+				// room's registry write must not bounce the founder out of it.
+				Date.now() - (recentRoomWrites.get(currentRoomId) ?? 0) > 10_000
+			) {
+				roomSettingsPending = false;
+				if (!$("roomSettingsModal").hidden) closeRoomSettings(false);
+				leaveRoomView();
+			}
 			if (currentStaffId && !activeStaffMembers().some((staff) => staffId(staff) === currentStaffId)) {
 				if (!$("agentSidepanel").hidden) closeAgentSidepanel(false);
 				currentStaffId = null;
@@ -3929,6 +4608,8 @@ async function openSession(file, pageId = "q:chats") {
 	// (navigate away, click back, and the streaming answer died mid-thought).
 	if (file && file === currentSession && !agentExited) {
 		currentStaffId = summary?.staffAgentId ?? null;
+		currentRoomId = null;
+		clearRoomRoute();
 		currentNodeId = pageId;
 		setNavigationRoute(pageId);
 		show("chat");
@@ -3948,6 +4629,8 @@ async function openSession(file, pageId = "q:chats") {
 	if (result?.ok) {
 		currentSession = result.sessionFile ?? file;
 		currentStaffId = summary?.staffAgentId ?? null;
+		currentRoomId = null;
+		clearRoomRoute();
 		currentDepartment = result.department ?? null;
 		currentWorktree = result.worktree ?? null;
 	}
@@ -3979,6 +4662,8 @@ async function newCompanyChat() {
 	if (result?.ok) {
 		currentSession = result.sessionFile ?? null;
 		currentStaffId = null;
+		currentRoomId = null;
+		clearRoomRoute();
 		currentDepartment = null;
 		currentWorktree = null;
 	}
@@ -4005,6 +4690,8 @@ async function newChat() {
 	if (result?.ok) {
 		currentSession = result.sessionFile ?? null;
 		currentStaffId = null;
+		currentRoomId = null;
+		clearRoomRoute();
 		currentDepartment = result.department ?? null;
 		currentWorktree = result.worktree ?? null;
 	}
@@ -5935,6 +6622,8 @@ async function openDepartmentChat(department, pageId) {
 	if (result?.ok) {
 		currentSession = result.sessionFile ?? null;
 		currentStaffId = null;
+		currentRoomId = null;
+		clearRoomRoute();
 		currentDepartment = result.department ?? null;
 		currentWorktree = result.worktree ?? null;
 	}
@@ -6000,7 +6689,10 @@ function setupCompanyNavigation() {
 	$("addDepartmentButton").onclick = openDepartmentModal;
 	$("addStaffButton").onclick = () => void openStaffCreator();
 	$("companySwitcherButton").onclick = () => void openCompanySwitcher();
-	$("staffIdentityButton").onclick = () => openAgentSidepanel("settings");
+	$("staffIdentityButton").onclick = () => {
+		if (currentRoom()) openRoomSettings($("staffIdentityButton"));
+		else openAgentSidepanel("settings");
+	};
 	$("staffSidepanelButton").onclick = () => openAgentSidepanel("computer");
 	$("agentSidepanelBack").onclick = handleAgentSidepanelBack;
 	$("agentSidepanelClose").onclick = () => closeAgentSidepanel();
@@ -6009,7 +6701,19 @@ function setupCompanyNavigation() {
 		renderRosterRail();
 	};
 	$("staffClose").onclick = closeStaffCreator;
-	$("staffCancel").onclick = closeStaffCreator;
+	$("staffCancel").onclick = showConversationPicker;
+	$("staffConfigureBack").onclick = showConversationPicker;
+	$("conversationOpenButton").onclick = () => void openConversationRecipients();
+	$("conversationRecipientSearch").onfocus = () => {
+		renderConversationRecipientMenu();
+		$("conversationRecipientMenu").hidden = false;
+		$("conversationRecipientSearch").setAttribute("aria-expanded", "true");
+	};
+	$("conversationRecipientSearch").oninput = () => {
+		renderConversationRecipientMenu();
+		$("conversationRecipientMenu").hidden = false;
+		$("conversationRecipientSearch").setAttribute("aria-expanded", "true");
+	};
 	$("staffTemplateGrid").addEventListener(
 		"wheel",
 		(event) => {
@@ -6026,6 +6730,12 @@ function setupCompanyNavigation() {
 	};
 	$("staffForm").onsubmit = (event) => {
 		event.preventDefault();
+		// Enter in the picker's recipient search targets the picker's action;
+		// only the configure view submits a create.
+		if (!$("conversationPickerView").hidden) {
+			void openConversationRecipients();
+			return;
+		}
 		void createStaffMember();
 	};
 	$("resetPanelButton").onclick = () => {
@@ -6079,6 +6789,20 @@ function setupCompanyNavigation() {
 	$("hiddenStaffClose").onclick = () => closeHiddenStaffModal();
 	$("hiddenStaffModal").onpointerdown = (event) => {
 		if (event.target === $("hiddenStaffModal")) closeHiddenStaffModal();
+	};
+	$("roomSettingsClose").onclick = () => closeRoomSettings();
+	$("roomSettingsCancel").onclick = () => closeRoomSettings();
+	$("roomArchiveButton").onclick = () => void archiveCurrentRoom();
+	$("roomSettingsForm").onsubmit = (event) => {
+		event.preventDefault();
+		void saveRoomSettings();
+	};
+	$("roomSettingsModal").onpointerdown = (event) => {
+		if (event.target === $("roomSettingsModal")) closeRoomSettings();
+	};
+	$("archivedRoomsClose").onclick = () => closeArchivedRooms();
+	$("archivedRoomsModal").onpointerdown = (event) => {
+		if (event.target === $("archivedRoomsModal")) closeArchivedRooms();
 	};
 	$("hiddenStaffModal").onkeydown = (event) => {
 		if (event.key === "Escape") {
@@ -6192,6 +6916,14 @@ function setupCompanyNavigation() {
 	};
 
 	document.addEventListener("pointerdown", (event) => {
+		if (
+			!$("conversationRecipientMenu").hidden &&
+			!$("conversationRecipientMenu").contains(event.target) &&
+			!$("conversationRecipientSearch").contains(event.target)
+		) {
+			$("conversationRecipientMenu").hidden = true;
+			$("conversationRecipientSearch").setAttribute("aria-expanded", "false");
+		}
 		if (!$("navContext").hidden && !$("navContext").contains(event.target)) closeNavContext();
 		if (!$("panelContextMenu").hidden && !$("panelContextMenu").contains(event.target)) closePanelContext();
 		if (!$("staffContextMenu").hidden && !$("staffContextMenu").contains(event.target)) closeStaffContext();
@@ -6204,6 +6936,8 @@ function setupCompanyNavigation() {
 		if (event.key !== "Escape") return;
 		if (!$("staffModal").hidden) closeStaffCreator();
 		else if (!$("staffDeleteModal").hidden) closeStaffDeleteConfirmation();
+		else if (!$("roomSettingsModal").hidden) closeRoomSettings();
+		else if (!$("archivedRoomsModal").hidden) closeArchivedRooms();
 		else if (!$("archiveModal").hidden) closeArchiveConfirmation();
 		else if (!$("departmentModal").hidden) closeDepartmentModal();
 		else if (!$("navContext").hidden) closeNavContext();
@@ -6307,6 +7041,7 @@ function scheduledJobScheduleLabel(job) {
 }
 
 function scheduledJobNextLabel(job) {
+	if (job.placement === "cloud") return "Waiting for cloud execution";
 	if (job.running) return "Running now";
 	if (job.suspendedReason) return "Suspended";
 	if (!job.enabled) return "Paused";
@@ -6330,6 +7065,7 @@ function scheduledJobDraft(job) {
 		})),
 		enabled: job?.enabled ?? true,
 		effort: job?.effort ?? "high",
+		placement: job?.placement ?? "local",
 	};
 }
 
@@ -6649,6 +7385,17 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 	form.appendChild(
 		scheduledJobField("Effort", effort, "Scheduled work defaults to high. The selected model will use the nearest supported level."),
 	);
+	const placementSelect = scheduledJobPlacementSelect(scheduledJobPanel.draft.placement, (value) => {
+		scheduledJobPanel.draft.placement = value;
+		scheduledJobPanel.dirty = true;
+	});
+	form.appendChild(
+		scheduledJobField(
+			"Runs on",
+			placementSelect,
+			"Cloud placement is fail-closed until hosted routine execution exists; this computer never runs a cloud-placed job.",
+		),
+	);
 	const interval = document.createElement("input");
 	interval.type = "number";
 	interval.min = "5";
@@ -6794,6 +7541,7 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 				: [{ id: crypto.randomUUID(), kind: "schedule", intervalMinutes: Number(interval.value) }],
 			enabled: Boolean(scheduledJobPanel.draft.enabled),
 			effort: scheduledJobPanel.draft.effort,
+			placement: scheduledJobPanel.draft.placement,
 			...(activityStaffId ? { staffAgentId: activityStaffId } : {}),
 		};
 		const result = await scheduledJobRequest(
@@ -7756,15 +8504,75 @@ function decorateUserMsg(el, text) {
 	return el;
 }
 
+/** @mention parsing narrows a room send to specific participants: @First (when
+ * unambiguous) or the @Full Name. Nothing recognized means broadcast. */
+function roomMentionTargets(text, room) {
+	const normalized = String(text ?? "").normalize("NFKC");
+	const containsMention = (name) => {
+		const escaped = name.normalize("NFKC").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		return new RegExp(`(^|[^\\p{L}\\p{N}_])@${escaped}(?=$|[^\\p{L}\\p{N}_])`, "iu").test(normalized);
+	};
+	const participants = roomParticipants(room);
+	const firstNameCounts = new Map();
+	for (const staff of participants) {
+		const first = staffDisplayName(staff).trim().normalize("NFKC").split(/\s+/)[0].toLocaleLowerCase();
+		firstNameCounts.set(first, (firstNameCounts.get(first) ?? 0) + 1);
+	}
+	const targets = participants.filter((staff) => {
+		const name = staffDisplayName(staff).trim().normalize("NFKC");
+		const first = name.split(/\s+/)[0];
+		return containsMention(name) || (firstNameCounts.get(first.toLocaleLowerCase()) === 1 && containsMention(first));
+	});
+	return targets.length ? targets.map(staffId) : undefined;
+}
+
+async function sendRoomPrompt(text, images) {
+	const room = currentRoom();
+	if (!room) {
+		showToast("This group chat is unavailable.");
+		return;
+	}
+	const targetStaffAgentIds = roomMentionTargets(text, room);
+	const payload = {
+		...(text ? { text } : {}),
+		...(images.length
+			? {
+					images: images.map((image) => ({
+						mimeType: image.mimeType,
+						data: image.dataUrl.slice(image.dataUrl.indexOf(",") + 1),
+					})),
+				}
+			: {}),
+		...(targetStaffAgentIds ? { targetStaffAgentIds } : {}),
+	};
+	const result = await window.qorpera
+		.roomSend(currentRoomId, payload)
+		.catch((error) => ({ ok: false, error: String(error?.message ?? error) }));
+	if (result?.ok === false) {
+		showToast(result.error ?? "The group message could not be sent. Your draft was preserved.");
+		return;
+	}
+	if (result?.message) renderRoomMessage(result.message);
+	if (result?.delivery) renderRoomDelivery(result.delivery);
+	$("input").value = "";
+	pendingImages = [];
+	renderAttachStrip();
+	syncComposer();
+}
+
 async function sendPrompt(promptContext = "") {
 	const input = $("input");
 	if (!canUseProfile("write")) {
-		showControllerToast("This profile is read-only. Ask an owner or admin for contributor access.");
+		showToast("This profile is read-only. Ask an owner or admin for contributor access.");
 		return;
 	}
 	const text = input.value.trim();
 	const images = pendingImages;
 	if (!text && !images.length) return false;
+	if (currentRoomId) {
+		await sendRoomPrompt(text, images);
+		return false;
+	}
 	if (agentExited) {
 		showToast("agent stopped — reopen this saved chat to attach a new runtime");
 		return false;
@@ -8159,6 +8967,59 @@ function renderMarkdown(el, source) {
 	const escaped = source.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 	el.innerHTML = window.marked?.parse ? window.marked.parse(escaped, { breaks: true }) : escaped.replace(/\n/g, "<br>");
 }
+
+window.qorpera.onRoomEvent((event) => {
+	if (!event?.roomId) return;
+	if (event.kind === "room" && event.room) {
+		rememberRoom(event.room);
+		if (event.room.status === "archived" && currentRoomId === event.roomId) {
+			roomSettingsPending = false;
+			if (!$("roomSettingsModal").hidden) closeRoomSettings(false);
+			leaveRoomView();
+			return;
+		}
+		if (currentRoomId === event.roomId) {
+			renderThreadHeader();
+			syncScopeChrome();
+		}
+		renderRosterRail();
+		if (!$("archivedRoomsModal").hidden) renderArchivedRooms();
+		return;
+	}
+	if (event.kind === "message") {
+		const room = (state.rooms ?? []).find((candidate) => candidate.id === event.roomId);
+		if (room && event.message?.createdAt) room.updatedAt = event.message.createdAt;
+		if (currentRoomId === event.roomId) renderRoomMessage(event.message);
+		renderRosterRail();
+		return;
+	}
+	if (event.kind === "activity" && event.staffAgentId) {
+		const activities = roomActivityFor(event.roomId);
+		if (event.activity === "idle" || event.activity === "offline") activities.delete(event.staffAgentId);
+		else activities.set(event.staffAgentId, event.activity);
+		if (currentRoomId === event.roomId) {
+			applyCurrentSessionRuntime();
+			renderThreadHeader();
+		}
+		renderRosterRail();
+		return;
+	}
+	if (event.kind === "delegation" && currentRoomId === event.roomId) {
+		const source = activeStaffMembers().find((staff) => staffId(staff) === event.fromStaffAgentId);
+		const target = activeStaffMembers().find((staff) => staffId(staff) === event.toStaffAgentId);
+		$("status").textContent = `${staffDisplayName(source)} delegated to ${staffDisplayName(target)}`;
+		return;
+	}
+	if (event.kind === "delivery" && currentRoomId === event.roomId) {
+		renderRoomDelivery(event.delivery);
+		return;
+	}
+	if (event.kind === "delivered" && currentRoomId === event.roomId) {
+		renderRoomDelivery({ id: event.deliveryId, roomId: event.roomId }, "delivered");
+		return;
+	}
+	if (event.kind === "error" && currentRoomId === event.roomId) renderRoomError(event.message);
+});
 
 window.qorpera.onRpcEvent((frame) => {
 	const runtimeIdentity = frame?._qorperaRuntime;
@@ -9386,6 +10247,42 @@ async function renderSettingsTab() {
 			execution,
 		);
 		executionRow.appendChild(executionStatus);
+		const background = document.createElement("button");
+		background.type = "button";
+		background.className = "settings-toggle";
+		background.setAttribute("role", "switch");
+		background.setAttribute("aria-label", "Keep running in the background");
+		let backgroundEnabled = Boolean(info.backgroundEnabled);
+		const syncBackground = () => {
+			background.classList.toggle("active", backgroundEnabled);
+			background.setAttribute("aria-checked", String(backgroundEnabled));
+		};
+		syncBackground();
+		background.disabled = !info.company || !canUseProfile("authorize");
+		const backgroundStatus = document.createElement("small");
+		backgroundStatus.className = "general-setting-status";
+		background.onclick = async () => {
+			background.disabled = true;
+			backgroundStatus.textContent = "Saving…";
+			const result = await window.qorpera.setBackgroundEnabled(!backgroundEnabled);
+			if (result?.ok) {
+				backgroundEnabled = Boolean(result.backgroundEnabled);
+				backgroundStatus.textContent = backgroundEnabled
+					? "Closing this window keeps the company running in the tray."
+					: "";
+			} else {
+				backgroundStatus.textContent = result?.error ?? "Background preference could not be saved.";
+			}
+			syncBackground();
+			background.disabled = !info.company || !canUseProfile("authorize");
+		};
+		const backgroundRow = setRow(
+			executionGroup,
+			"Keep running in the background",
+			"Closing this company’s window hides it to the system tray while routines, group-chat deliveries, and coworker mail keep running. Qorpera also starts at login while any company is opted in.",
+			background,
+		);
+		backgroundRow.appendChild(backgroundStatus);
 		content.appendChild(executionGroup);
 		return;
 	}

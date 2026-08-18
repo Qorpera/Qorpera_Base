@@ -23,8 +23,9 @@
 		</div>
 	</div>
 	<div id="staffCreatorTitlebar" class="staff-creator-titlebar" hidden>
-		<strong>New Agent</strong>
-		<button class="staff-creator-close" id="staffClose" type="button" aria-label="Close agent creator">×</button>
+		<label class="conversation-recipient-field" for="conversationRecipientSearch"><span>To:</span><span id="conversationRecipientChips" class="conversation-recipient-chips"></span><input id="conversationRecipientSearch" type="search" placeholder="Search or create agents" autocomplete="off" role="combobox" aria-controls="conversationRecipientMenu" aria-expanded="false"></label>
+		<div id="conversationRecipientMenu" class="conversation-recipient-menu" role="listbox" aria-label="Conversation recipients" hidden></div>
+		<button class="staff-creator-close" id="staffClose" type="button" aria-label="Close new conversation">×</button>
 	</div>
 	<div id="agentSidepanelTitlebar" class="agent-sidepanel-titlebar" hidden>
 		<button id="agentSidepanelBack" type="button" aria-label="Close agent side panel">←</button>
@@ -230,6 +231,43 @@
 	</section>
 </div>
 
+<div class="modal-backdrop" id="roomSettingsModal" hidden>
+	<form class="room-settings-modal" id="roomSettingsForm" role="dialog" aria-modal="true" aria-labelledby="roomSettingsTitle">
+		<header>
+			<div>
+				<div class="eyebrow">Group chat</div>
+				<h2 id="roomSettingsTitle">Room settings</h2>
+			</div>
+			<button id="roomSettingsClose" type="button" aria-label="Close room settings">×</button>
+		</header>
+		<label class="room-title-field">Name<input id="roomTitleInput" type="text" maxlength="320" placeholder="Automatic participant names" autocomplete="off"></label>
+		<fieldset class="room-participant-fieldset">
+			<legend>Participants</legend>
+			<div id="roomParticipantList" class="room-participant-list"></div>
+		</fieldset>
+		<p id="roomSettingsStatus" class="room-settings-status" aria-live="polite"></p>
+		<footer>
+			<button class="danger-button room-archive-button" id="roomArchiveButton" type="button">Archive chat</button>
+			<span></span>
+			<button class="secondary-button" id="roomSettingsCancel" type="button">Cancel</button>
+			<button class="primary-button" id="roomSettingsSave" type="submit">Save</button>
+		</footer>
+	</form>
+</div>
+
+<div class="modal-backdrop hidden-staff-backdrop" id="archivedRoomsModal" hidden>
+	<section class="hidden-staff-modal archived-rooms-modal" role="dialog" aria-modal="true" aria-labelledby="archivedRoomsTitle" aria-describedby="archivedRoomsDescription">
+		<header>
+			<div>
+				<h2 id="archivedRoomsTitle">Archived group chats</h2>
+				<p id="archivedRoomsDescription">Restore a room to return it to the sidebar. Its transcript remains intact.</p>
+			</div>
+			<button id="archivedRoomsClose" type="button" aria-label="Close archived group chats">×</button>
+		</header>
+		<div class="hidden-staff-list archived-rooms-list" id="archivedRoomsList"></div>
+	</section>
+</div>
+
 <div class="modal-backdrop" id="staffDeleteModal" hidden>
 	<section class="confirm-modal staff-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="staffDeleteTitle" aria-describedby="staffDeleteDescription">
 		<header><h2 id="staffDeleteTitle">Archive agent?</h2></header>
@@ -378,26 +416,33 @@
 
 <div class="staff-creator-view" id="staffModal" hidden>
 	<form class="staff-modal" id="staffForm" aria-labelledby="staffModalTitle">
-		<h2 id="staffModalTitle" class="sr-only">New Agent</h2>
+		<h2 id="staffModalTitle" class="sr-only">New conversation</h2>
 		<div class="staff-modal-body">
-			<div class="staff-creator-center">
-				<div class="staff-creator-stage">
-					<span id="staffCreatorAvatar" class="staff-avatar shape-round" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></span>
-					<h3 id="staffCreatorRole">New Agent</h3>
-					<p id="staffCreatorDescription"></p>
+			<section id="conversationPickerView" class="conversation-picker-view" aria-labelledby="conversationSuggestionsTitle">
+				<div class="conversation-picker-heading"><h3 id="conversationSuggestionsTitle">Suggested agents</h3><p>Select one agent for a direct conversation, or several for a group chat.</p></div>
+				<div id="conversationSuggestionGrid" class="conversation-suggestion-grid"></div>
+				<footer class="conversation-picker-actions"><div id="conversationStatus" role="status" aria-live="polite"></div><button class="primary-button" id="conversationOpenButton" type="button" disabled>Open</button></footer>
+			</section>
+			<div id="staffConfigureView" class="staff-configure-view" hidden>
+				<button id="staffConfigureBack" class="staff-configure-back secondary-button" type="button">Back</button>
+				<div class="staff-creator-center">
+					<div class="staff-creator-stage">
+						<span id="staffCreatorAvatar" class="staff-avatar shape-round" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></span>
+						<h3 id="staffCreatorRole">New Agent</h3>
+						<p id="staffCreatorDescription"></p>
+					</div>
+					<div class="staff-appearance-picker">
+						<div id="staffCreaturePicker" class="staff-creature-picker" role="radiogroup" aria-label="Agent character"></div>
+						<div id="staffShapePicker" class="staff-shape-picker" role="radiogroup" aria-label="Agent face shape"></div>
+						<div id="staffColorPicker" class="staff-color-picker" role="radiogroup" aria-label="Agent color"></div>
+					</div>
+					<label class="staff-name-field"><span>Name</span><input id="staffDisplayName" type="text" maxlength="64" autocomplete="off" placeholder="Agent name"><small>This becomes their persistent identity in the company.</small></label>
+					<div id="staffCreateStatus" class="staff-create-status" role="status" aria-live="polite"></div>
+					<footer class="staff-modal-actions"><button class="secondary-button" id="staffCancel" type="button">Cancel</button><button class="primary-button" id="staffCreateButton" type="submit" disabled>Create</button></footer>
 				</div>
-				<div class="staff-appearance-picker">
-					<div id="staffCreaturePicker" class="staff-creature-picker" role="radiogroup" aria-label="Agent character"></div>
-					<div id="staffShapePicker" class="staff-shape-picker" role="radiogroup" aria-label="Agent face shape"></div>
-					<div id="staffColorPicker" class="staff-color-picker" role="radiogroup" aria-label="Agent color"></div>
-				</div>
-				<label class="staff-name-field"><span>Name</span><input id="staffDisplayName" type="text" maxlength="64" autocomplete="off" placeholder="Agent name"><small>This becomes their persistent identity in the company.</small></label>
-				<div id="staffCreateStatus" class="staff-create-status" role="status" aria-live="polite"></div>
-				<footer class="staff-modal-actions"><button class="secondary-button" id="staffCancel" type="button">Cancel</button><button class="primary-button" id="staffCreateButton" type="submit" disabled>Create</button></footer>
 			</div>
-			<div class="staff-suggestions-label">Suggestions</div>
-			<div id="staffTemplateGrid" class="staff-template-grid" role="radiogroup" aria-label="Staff roles"></div>
-			<div id="staffTemplateScrollbar" class="staff-template-scrollbar" aria-hidden="true"><span id="staffTemplateScrollbarThumb"></span></div>
+			<div id="staffTemplateGrid" hidden></div>
+			<div id="staffTemplateScrollbar" hidden><span id="staffTemplateScrollbarThumb"></span></div>
 		</div>
 	</form>
 </div>

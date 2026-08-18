@@ -48,6 +48,10 @@
 			"types": "./dist/core/company-secret-vault.d.ts",
 			"import": "./dist/core/company-secret-vault.js"
 		},
+		"./company-rooms": {
+			"types": "./dist/core/company-rooms.d.ts",
+			"import": "./dist/core/company-rooms.js"
+		},
 		"./company-staff": {
 			"types": "./dist/core/company-staff.d.ts",
 			"import": "./dist/core/company-staff.js"

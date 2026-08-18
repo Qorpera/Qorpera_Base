@@ -304,6 +304,50 @@ describe("agent routines", () => {
 		expect(readScheduledJobs(root)).toHaveLength(2);
 	});
 
+	it("defaults legacy routines to local placement and persists explicit placement", () => {
+		const job = createScheduledJob(root, {
+			title: "Cloud digest",
+			prompt: "Prepare the digest in the hosted environment.",
+			triggers: schedule(60),
+			placement: "cloud",
+		});
+		expect(job.placement).toBe("cloud");
+		expect(updateScheduledJob(root, job.id, { placement: "requires-local" }).placement).toBe("requires-local");
+		expect(() => updateScheduledJob(root, job.id, { placement: "invalid" as "cloud" })).toThrow(/placement/);
+
+		const path = companyConnectionsPath(root);
+		const state = JSON.parse(readFileSync(path, "utf-8")) as {
+			scheduledJobs: Array<{ placement?: string }>;
+		};
+		delete state.scheduledJobs[0].placement;
+		writeFileSync(path, JSON.stringify(state), "utf-8");
+		expect(readScheduledJobs(root)[0].placement).toBe("local");
+		expect(readFileSync(path, "utf-8")).toContain('"placement": "local"');
+	});
+
+	it("preserves founder-set placement across agent routine upserts", () => {
+		const created = upsertStaffScheduledJob(root, staffAgentId, "weekly-digest", {
+			title: "Weekly digest",
+			prompt: "Prepare the digest.",
+			triggers: schedule(7 * 24 * 60),
+		});
+		updateScheduledJob(root, created.id, { placement: "cloud" });
+		const upserted = upsertStaffScheduledJob(root, staffAgentId, "weekly-digest", {
+			title: "Weekly digest v2",
+			prompt: "Prepare the improved digest.",
+			triggers: schedule(24 * 60),
+		});
+		expect(upserted.placement).toBe("cloud");
+		expect(
+			upsertStaffScheduledJob(root, staffAgentId, "weekly-digest", {
+				title: "Weekly digest v3",
+				prompt: "Prepare the digest locally.",
+				triggers: schedule(24 * 60),
+				placement: "local",
+			}).placement,
+		).toBe("local");
+	});
+
 	it("migrates existing scheduled jobs to high effort", () => {
 		createScheduledJob(root, {
 			title: "Morning digest",
