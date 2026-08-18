@@ -153,8 +153,10 @@ import {
 	session as electronSession,
 	shell as electronShell,
 	ipcMain,
+	Menu,
 	type Session,
 	safeStorage,
+	Tray,
 	type WebContents,
 } from "electron";
 import electronUpdater from "electron-updater";
@@ -197,6 +199,7 @@ import {
 	writeSandboxProfile,
 } from "./agent-runtime.ts";
 import { migrateCompanyToAgentsOnly } from "./agents-only-company-migration.ts";
+import { readBackgroundCompanyRoots, setBackgroundCompanyEnabled } from "./background-companies.ts";
 import { CloudProfileAccessRefresh } from "./cloud-access-refresh.ts";
 import { type CloudCompanyInbox, CloudCompanyWorkspaceInboxSync } from "./cloud-company-inbox.ts";
 import {
@@ -1782,6 +1785,73 @@ function slotForCompany(root: string): Slot | undefined {
 function focusWindow(win: BrowserWindow): void {
 	if (win.isMinimized()) win.restore();
 	win.focus();
+}
+
+/**
+ * Machine-local background execution: an opted-in company keeps its runtime —
+ * wake ticker, queued room deliveries, coworker mail, delegation — alive with
+ * its window hidden instead of closing. A tray icon owns the hidden windows,
+ * and login-start keeps the schedule running across reboots while any
+ * company on this machine is opted in.
+ */
+let appQuitting = false;
+let backgroundTray: Tray | undefined;
+
+function backgroundCompanyEnabled(root: string): boolean {
+	const wanted = normalizedRoot(root);
+	return readBackgroundCompanyRoots(app.getPath("userData")).some((candidate) => normalizedRoot(candidate) === wanted);
+}
+
+function syncBackgroundLoginItem(roots: readonly string[]): void {
+	if (process.platform !== "win32" && process.platform !== "darwin") return;
+	try {
+		app.setLoginItemSettings({ openAtLogin: roots.length > 0 });
+	} catch (error) {
+		console.error(`background login-item update failed: ${(error as Error).message}`);
+	}
+}
+
+function showBackgroundWindows(): void {
+	let focused = false;
+	for (const slot of slots.values()) {
+		if (slot.window.isDestroyed()) continue;
+		if (!slot.window.isVisible()) slot.window.show();
+		if (!focused) {
+			focusWindow(slot.window);
+			focused = true;
+		}
+	}
+	syncBackgroundTray();
+}
+
+function syncBackgroundTray(): void {
+	const hiddenBackground = [...slots.values()].some(
+		(slot) =>
+			slot.runtime &&
+			!slot.runtime.closing &&
+			!slot.window.isDestroyed() &&
+			!slot.window.isVisible() &&
+			backgroundCompanyEnabled(slot.runtime.root),
+	);
+	if (hiddenBackground && !backgroundTray) {
+		try {
+			backgroundTray = new Tray(DEFAULT_ICON);
+			backgroundTray.setToolTip("Qorpera Base — background companies are running");
+			backgroundTray.setContextMenu(
+				Menu.buildFromTemplate([
+					{ label: "Open Qorpera Base", click: () => showBackgroundWindows() },
+					{ type: "separator" },
+					{ label: "Quit Qorpera Base", click: () => app.quit() },
+				]),
+			);
+			backgroundTray.on("click", () => showBackgroundWindows());
+		} catch (error) {
+			console.error(`background tray could not start: ${(error as Error).message}`);
+		}
+	} else if (!hiddenBackground && backgroundTray) {
+		backgroundTray.destroy();
+		backgroundTray = undefined;
+	}
 }
 
 function escapeHtml(value: string): string {
@@ -7542,6 +7612,19 @@ function createRendererWindow(
 		const slot = forSlot();
 		if (slot.window === win && slot.runtime) void win.loadURL(companyShellUrl(slot.runtime));
 	});
+	// An opted-in background company survives its window: closing the window
+	// hides it instead, the runtime keeps its wake ticker and queued room
+	// deliveries, and the tray owns the way back in. Quit always wins.
+	win.on("close", (event) => {
+		if (appQuitting) return;
+		const slot = forSlot();
+		if (slot.window !== win) return;
+		const runtime = slot.runtime;
+		if (!runtime || runtime.closing || !backgroundCompanyEnabled(runtime.root)) return;
+		event.preventDefault();
+		win.hide();
+		syncBackgroundTray();
+	});
 	// Closing a company window is closing that company: kill its child
 	// and backend; other windows are untouched. A window retired by a swap
 	// is no longer the slot's window — its company must stay running.
@@ -7658,6 +7741,9 @@ app.on("open-url", (event, url) => {
 });
 
 app.whenReady().then(async () => {
+	// Reconcile login-start with the durable background-company registry, so
+	// removing the last opted-in company (or an edited registry) takes effect.
+	syncBackgroundLoginItem(readBackgroundCompanyRoots(app.getPath("userData")));
 	setCompanySecretStore(
 		createLocalCompanySecretStore(join(app.getPath("userData"), "company-secret-vaults"), {
 			id: "electron-safe-storage-v1",
@@ -9163,8 +9249,25 @@ app.whenReady().then(async () => {
 						}
 					: undefined,
 			localExecution: root ? readLocalExecutionPermission(app.getPath("userData"), root) : "always",
+			backgroundEnabled: root ? backgroundCompanyEnabled(root) : false,
 			connections: [await githubConnectionInfo(root), ...modelConnectionInfo()],
 		};
+	});
+	ipcMain.handle("settings:background", (event, enabled: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof enabled !== "boolean") {
+			return { ok: false, error: "invalid background execution preference" };
+		}
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
+		try {
+			const roots = setBackgroundCompanyEnabled(app.getPath("userData"), runtime.root, enabled);
+			syncBackgroundLoginItem(roots);
+			syncBackgroundTray();
+			return { ok: true, backgroundEnabled: enabled };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
 	});
 	ipcMain.handle("settings:local-execution", async (event, permission: unknown) => {
 		const slot = slotOf(event.sender);
@@ -9870,7 +9973,13 @@ app.whenReady().then(async () => {
 	}
 });
 
+app.on("before-quit", () => {
+	appQuitting = true;
+});
+
 app.on("will-quit", () => {
+	backgroundTray?.destroy();
+	backgroundTray = undefined;
 	modelRequestBroker?.close();
 	// Window-close teardown (closeCompany) is async — it awaits the transition
 	// queue before it kills anything — and quit does not wait for it, so any

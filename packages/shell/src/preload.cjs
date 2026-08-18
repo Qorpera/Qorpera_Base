@@ -97,6 +97,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	showHub: () => ipcRenderer.invoke("hub:show"),
 	setSettingsOverlayActive: (active) => ipcRenderer.send("settings:overlay", active),
 	settingsInfo: () => ipcRenderer.invoke("settings:info"),
+	setBackgroundEnabled: (enabled) => ipcRenderer.invoke("settings:background", enabled),
 	setLocalExecution: (permission) => ipcRenderer.invoke("settings:local-execution", permission),
 	modelAccountUsage: () => ipcRenderer.invoke("model-accounts:usage"),
 	connectAccount: (connectionId) => ipcRenderer.invoke("connection:connect", connectionId),
