@@ -34,7 +34,7 @@ import {
 	type ScheduledJobEffort,
 } from "./company-connections.ts";
 import type { CompanyConnectorManifestRecord } from "./company-connectors.ts";
-import type { StaffAgent } from "./company-staff.ts";
+import type { StaffAgent, StaffAgentMessage } from "./company-staff.ts";
 import { readFounderIdentity, signAuthorityPolicy, signGateApproval } from "./founder-identity.ts";
 import { isPublicSessionGroup, isPublicSessionRuntime, publicSessionRuntimeSnapshot } from "./session-visibility.ts";
 import { FIXED_SHELL_NAVIGATION, type ShellNavigationState } from "./shell-navigation.ts";
@@ -76,6 +76,8 @@ export interface CompanyAppOptions {
 	/** Machine-local recurring work definitions. Dynamic run state remains a
 	 * desktop concern; this view carries only the safe durable definition. */
 	scheduledJobReadModel?: () => readonly CompanyScheduledJobView[];
+	/** Durable agent-to-agent mail from the host-protected company ledger. */
+	staffMessageReadModel?: () => readonly StaffAgentMessage[];
 }
 
 export type CompanyConnectionRequestStatus = "pending" | "connecting" | "connected" | "denied" | "failed" | "cancelled";
@@ -1173,10 +1175,24 @@ function staffView(agent: StaffAgent): StaffAgent {
 			shape: agent.appearance.shape,
 			...(agent.appearance.creature !== undefined ? { creature: agent.appearance.creature } : {}),
 		},
+		...(agent.model !== undefined ? { model: { provider: agent.model.provider, modelId: agent.model.modelId } } : {}),
 		employmentStatus: agent.employmentStatus,
 		lifecycleState: agent.lifecycleState,
 		createdAt: agent.createdAt,
 		updatedAt: agent.updatedAt,
+	};
+}
+
+function staffMessageView(message: StaffAgentMessage): StaffAgentMessage {
+	return {
+		id: message.id,
+		fromAgentId: message.fromAgentId,
+		toAgentId: message.toAgentId,
+		...(message.subject !== undefined ? { subject: message.subject } : {}),
+		body: message.body,
+		createdAt: message.createdAt,
+		status: message.status,
+		...(message.deliveredAt !== undefined ? { deliveredAt: message.deliveredAt } : {}),
 	};
 }
 
@@ -1310,6 +1326,7 @@ function stateFor(
 	connectors: readonly CompanyConnectorView[] = [],
 	connectionRequests: readonly CompanyConnectionRequestView[] = [],
 	scheduledJobs: readonly CompanyScheduledJobView[] = [],
+	agentMessages: readonly StaffAgentMessage[] = [],
 ): unknown {
 	const projectedSessions = sessions ?? listTrailSessions(root);
 	const publicRuntime = runtime ? publicSessionRuntimeSnapshot(runtime) : undefined;
@@ -1341,6 +1358,7 @@ function stateFor(
 		connectors,
 		connectionRequests,
 		scheduledJobs,
+		agentMessages,
 		trailSessions: projectedSessions.length,
 		departments,
 	};
@@ -1612,6 +1630,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			const connectors = safeReadModel(options.connectorReadModel, connectorView);
 			const connectionRequests = safeReadModel(options.connectionRequestReadModel, connectionRequestView);
 			const scheduledJobs = safeReadModel(options.scheduledJobReadModel, scheduledJobView);
+			const agentMessages = safeReadModel(options.staffMessageReadModel, staffMessageView);
 			response
 				.writeHead(200, {
 					"content-type": "application/json",
@@ -1628,6 +1647,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 							connectors,
 							connectionRequests,
 							scheduledJobs,
+							agentMessages,
 						),
 					),
 				);

@@ -20,6 +20,7 @@ export const COMPANY_OPERATION_KINDS = [
 	"complete_setup",
 	"finish_trigger_build",
 	"finish_trigger_check",
+	"send_agent_message",
 ] as const;
 
 export type CompanyOperationKind = (typeof COMPANY_OPERATION_KINDS)[number];

@@ -13,11 +13,14 @@ into the company folder.
 <company>/
   .qorpera/
     company.json       # stable company identity and optional fork parent
-    staff.json         # agent registry
+    staff.json         # agent registry (identity, charter ref, per-agent model)
+    agent-messages.json # host-protected agent-to-agent message ledger
     settings.json      # runtime retention and transport settings
   agents/               # one private workspace per agent
     <agent-id>/
       instructions.md
+      memory.md         # durable personal memory carried into every session
+      skills/           # personal skills loaded only for this agent
       artifacts/        # measures and evidence this agent owns
   connectors/           # executable, provider-neutral connector recipes
   files/                # shared files agents may organize as needed
@@ -47,6 +50,38 @@ Each agent has a silent lifecycle value:
 The agent completes its own setup once it has a concrete responsibility and
 the data access needed to begin useful work. The lifecycle is behavioral state,
 not a status badge in the UI.
+
+## Per-agent configuration
+
+Each agent is a customizable employee with its own configuration:
+
+- **Model.** A staff record may carry a durable `model` (provider and model
+  id). Every session and wake for that agent launches on its model; agents
+  without one inherit the company runtime default. Changing the model from the
+  running conversation persists to the agent, and the founder can also set or
+  clear it from the agent's settings panel.
+- **Memory.** `agents/<agent-id>/memory.md` is the agent's private long-term
+  memory, injected into every launch. The agent maintains it directly:
+  founder preferences, decisions, recurring context, and lessons learned.
+- **Skills.** `agents/<agent-id>/skills/` is scanned on every launch through
+  the additive skill lane, so an agent's personal skills stack on the shared
+  user and company skill roots without leaking to coworkers.
+
+## Agent-to-agent messages
+
+Agents communicate through durable addressed messages, not shared context.
+The `send_agent_message` tool submits a bounded message through the brokered
+company-operation lane; the desktop host validates the recipient against the
+staff registry and appends it to the protected ledger at
+`.qorpera/agent-messages.json`, which agents cannot write directly.
+
+Delivery is store-and-forward: a company runs at most one agent process at a
+time, so the wake ticker starts a session for the recipient (cause
+`agent_message`), whose launch context lists every unhandled message together
+with the coworker roster. Mail is marked delivered only after a session that
+displays it has actually started, and recently delivered mail stays listed for
+continuity. The founder can observe all traffic through the `agentMessages`
+read model in `/api/state`.
 
 ## Connectors and credentials
 

@@ -8,10 +8,13 @@ import {
 	createStaffAgent,
 	createStaffAgents,
 	deleteStaffAgent,
+	readStaffAgentMemory,
 	readStaffAgents,
 	restoreStaffAgent,
 	staffAgentDirectoryPath,
 	staffAgentInstructionsPath,
+	staffAgentMemoryPath,
+	staffAgentSkillsPath,
 	staffRegistryPath,
 	updateStaffAgent,
 } from "../src/core/company-staff.ts";
@@ -161,6 +164,58 @@ describe("company staff registry", () => {
 			lifecycleState: "active",
 			employmentStatus: "active",
 		});
+	});
+
+	it("provisions a private memory file and personal skills directory with the workspace", () => {
+		const created = createStaffAgent(root, {
+			displayName: "Archivist",
+			role: "Records keeper",
+			charter: "Keep durable records current.",
+			appearance: { color: "blue", shape: "round" },
+		});
+
+		expect(staffAgentMemoryPath(root, created.id)).toBe(join(root, "agents", created.id, "memory.md"));
+		expect(staffAgentSkillsPath(root, created.id)).toBe(join(root, "agents", created.id, "skills"));
+		expect(existsSync(staffAgentMemoryPath(root, created.id))).toBe(true);
+		expect(existsSync(staffAgentSkillsPath(root, created.id))).toBe(true);
+		expect(readStaffAgentMemory(root, created.id)).toContain("# Memory");
+
+		writeFileSync(staffAgentMemoryPath(root, created.id), "# Memory\n\nFounder prefers weekly digests.\n", "utf-8");
+		updateStaffAgent(root, created.id, { role: "Company archivist" });
+		expect(readStaffAgentMemory(root, created.id)).toContain("Founder prefers weekly digests.");
+		expect(readStaffAgentMemory(root, "11111111-1111-4111-8111-111111111111")).toBe("");
+	});
+
+	it("persists a durable per-agent model choice and clears it back to the company default", () => {
+		const created = createStaffAgent(root, {
+			displayName: "Analyst",
+			role: "Data analyst",
+			charter: "Own analytical measures.",
+			appearance: { color: "green", shape: "gem" },
+		});
+		expect(created).not.toHaveProperty("model");
+
+		const chosen = updateStaffAgent(root, created.id, {
+			model: { provider: "anthropic", modelId: "claude-fable-5" },
+		});
+		expect(chosen.model).toEqual({ provider: "anthropic", modelId: "claude-fable-5" });
+		expect(readStaffAgents(root)[0]?.model).toEqual({ provider: "anthropic", modelId: "claude-fable-5" });
+
+		const kept = updateStaffAgent(root, created.id, { displayName: "Senior Analyst" });
+		expect(kept.model).toEqual({ provider: "anthropic", modelId: "claude-fable-5" });
+
+		const cleared = updateStaffAgent(root, created.id, { model: null });
+		expect(cleared).not.toHaveProperty("model");
+		expect(readStaffAgents(root)[0]).not.toHaveProperty("model");
+
+		expect(() =>
+			updateStaffAgent(root, created.id, { model: { provider: "", modelId: "claude-fable-5" } as never }),
+		).toThrow("model provider");
+		expect(() =>
+			updateStaffAgent(root, created.id, {
+				model: { provider: "anthropic", modelId: "claude-fable-5", extra: true } as never,
+			}),
+		).toThrow("Staff agent model is invalid");
 	});
 
 	it("permanently deletes a staff definition when explicitly requested", () => {
