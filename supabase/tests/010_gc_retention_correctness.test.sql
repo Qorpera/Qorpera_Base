@@ -273,20 +273,20 @@ select dblink_disconnect('write_locker');
 -- it would strand the plan (and the profile fence) forever. A fresh plan with
 -- an expired proof must instead park in 'retrying' without aborting the batch.
 insert into public.qorpera_profiles (id, name, created_by_user_id)
-values ('50000000-0000-4000-8000-000000000010', 'Resume liveness profile', '20000000-0000-4000-8000-000000000001');
+values ('60000000-0000-4000-8000-000000000010', 'Resume liveness profile', '20000000-0000-4000-8000-000000000001');
 
 insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role)
-values ('50000000-0000-4000-8000-000000000010', '20000000-0000-4000-8000-000000000001', 'gc-owner@example.test', 'GC owner', 'owner');
+values ('60000000-0000-4000-8000-000000000010', '20000000-0000-4000-8000-000000000001', 'gc-owner@example.test', 'GC owner', 'owner');
 
 insert into public.qorpera_company_environments (
 	id, profile_id, name, contract_version, created_by_user_id
 )
-values ('50000000-0000-4000-8000-000000000020', '50000000-0000-4000-8000-000000000010', 'Resume', 1, '20000000-0000-4000-8000-000000000001');
+values ('60000000-0000-4000-8000-000000000020', '60000000-0000-4000-8000-000000000010', 'Resume', 1, '20000000-0000-4000-8000-000000000001');
 
 insert into storage.objects (bucket_id, name, metadata)
 values
-	('qorpera-profile-objects', '50000000-0000-4000-8000-000000000010/' || repeat('e', 64), '{"size":"42"}'),
-	('qorpera-profile-objects', '50000000-0000-4000-8000-000000000010/' || repeat('f', 64), '{"size":"21"}');
+	('qorpera-profile-objects', '60000000-0000-4000-8000-000000000010/' || repeat('e', 64), '{"size":"42"}'),
+	('qorpera-profile-objects', '60000000-0000-4000-8000-000000000010/' || repeat('f', 64), '{"size":"21"}');
 
 select set_config(
 	'request.jwt.claims',
@@ -301,15 +301,15 @@ insert into public.qorpera_artifacts (
 )
 values
 	(
-		'50000000-0000-4000-8000-000000000030', '50000000-0000-4000-8000-000000000010',
-		'50000000-0000-4000-8000-000000000020', '50000000-0000-4000-8000-000000000031',
+		'60000000-0000-4000-8000-000000000030', '60000000-0000-4000-8000-000000000010',
+		'60000000-0000-4000-8000-000000000020', '60000000-0000-4000-8000-000000000031',
 		'fixture', 'resumed.bin', repeat('e', 64), repeat('e', 64), 42, 'application/octet-stream',
 		'20000000-0000-4000-8000-000000000001', statement_timestamp() - interval '40 days',
 		statement_timestamp() - interval '10 days', 'qorpera.object/v1'
 	),
 	(
-		'50000000-0000-4000-8000-000000000032', '50000000-0000-4000-8000-000000000010',
-		'50000000-0000-4000-8000-000000000020', '50000000-0000-4000-8000-000000000033',
+		'60000000-0000-4000-8000-000000000032', '60000000-0000-4000-8000-000000000010',
+		'60000000-0000-4000-8000-000000000020', '60000000-0000-4000-8000-000000000033',
 		'fixture', 'fresh.bin', repeat('f', 64), repeat('f', 64), 21, 'application/octet-stream',
 		'20000000-0000-4000-8000-000000000001', statement_timestamp() - interval '40 days',
 		statement_timestamp() - interval '10 days', 'qorpera.object/v1'
@@ -322,28 +322,28 @@ insert into public.qorpera_object_reachability_graphs (
 )
 values
 	(
-		'50000000-0000-4000-8000-000000000040', '50000000-0000-4000-8000-000000000010',
-		'50000000-0000-4000-8000-000000000020', 'artifact', '50000000-0000-4000-8000-000000000030',
-		'50000000-0000-4000-8000-000000000041', repeat('e', 64), 1,
+		'60000000-0000-4000-8000-000000000040', '60000000-0000-4000-8000-000000000010',
+		'60000000-0000-4000-8000-000000000020', 'artifact', '60000000-0000-4000-8000-000000000030',
+		'60000000-0000-4000-8000-000000000041', repeat('e', 64), 1,
 		encode(extensions.digest(convert_to(repeat('e', 64) || ':42', 'utf8'), 'sha256'), 'hex'), 1, 42,
 		'uploading', '20000000-0000-4000-8000-000000000001', null, false
 	),
 	(
-		'50000000-0000-4000-8000-000000000042', '50000000-0000-4000-8000-000000000010',
-		'50000000-0000-4000-8000-000000000020', 'artifact', '50000000-0000-4000-8000-000000000032',
-		'50000000-0000-4000-8000-000000000043', repeat('f', 64), 1,
+		'60000000-0000-4000-8000-000000000042', '60000000-0000-4000-8000-000000000010',
+		'60000000-0000-4000-8000-000000000020', 'artifact', '60000000-0000-4000-8000-000000000032',
+		'60000000-0000-4000-8000-000000000043', repeat('f', 64), 1,
 		encode(extensions.digest(convert_to(repeat('f', 64) || ':21', 'utf8'), 'sha256'), 'hex'), 1, 21,
 		'uploading', '20000000-0000-4000-8000-000000000001', null, false
 	);
 
 insert into public.qorpera_object_reachability_entries (graph_id, object_sha256, bytes)
 values
-	('50000000-0000-4000-8000-000000000040', repeat('e', 64), 42),
-	('50000000-0000-4000-8000-000000000042', repeat('f', 64), 21);
+	('60000000-0000-4000-8000-000000000040', repeat('e', 64), 42),
+	('60000000-0000-4000-8000-000000000042', repeat('f', 64), 21);
 
 update public.qorpera_object_reachability_graphs
 set status = 'complete', completed_at = statement_timestamp()
-where id in ('50000000-0000-4000-8000-000000000040', '50000000-0000-4000-8000-000000000042');
+where id in ('60000000-0000-4000-8000-000000000040', '60000000-0000-4000-8000-000000000042');
 
 insert into public.qorpera_object_restore_proofs (
 	id, graph_id, profile_id, client_proof_id, restored_content_sha256,
@@ -351,13 +351,13 @@ insert into public.qorpera_object_restore_proofs (
 )
 values
 	(
-		'50000000-0000-4000-8000-000000000050', '50000000-0000-4000-8000-000000000040',
-		'50000000-0000-4000-8000-000000000010', '50000000-0000-4000-8000-000000000051',
+		'60000000-0000-4000-8000-000000000050', '60000000-0000-4000-8000-000000000040',
+		'60000000-0000-4000-8000-000000000010', '60000000-0000-4000-8000-000000000051',
 		repeat('e', 64), 42, '20000000-0000-4000-8000-000000000001'
 	),
 	(
-		'50000000-0000-4000-8000-000000000052', '50000000-0000-4000-8000-000000000042',
-		'50000000-0000-4000-8000-000000000010', '50000000-0000-4000-8000-000000000053',
+		'60000000-0000-4000-8000-000000000052', '60000000-0000-4000-8000-000000000042',
+		'60000000-0000-4000-8000-000000000010', '60000000-0000-4000-8000-000000000053',
 		repeat('f', 64), 21, '20000000-0000-4000-8000-000000000001'
 	);
 
@@ -368,33 +368,33 @@ insert into public.qorpera_artifact_gc_plans (
 )
 values
 	(
-		'50000000-0000-4000-8000-000000000060', '50000000-0000-4000-8000-000000000010',
-		'50000000-0000-4000-8000-000000000030', '50000000-0000-4000-8000-000000000040',
-		'50000000-0000-4000-8000-000000000050', '50000000-0000-4000-8000-000000000061',
+		'60000000-0000-4000-8000-000000000060', '60000000-0000-4000-8000-000000000010',
+		'60000000-0000-4000-8000-000000000030', '60000000-0000-4000-8000-000000000040',
+		'60000000-0000-4000-8000-000000000050', '60000000-0000-4000-8000-000000000061',
 		'retrying', 1, 42, statement_timestamp() - interval '1 hour', statement_timestamp() - interval '2 minutes',
 		1, null, null, '20000000-0000-4000-8000-000000000001', statement_timestamp() - interval '26 hours',
 		statement_timestamp() - interval '30 minutes'
 	),
 	(
-		'50000000-0000-4000-8000-000000000062', '50000000-0000-4000-8000-000000000010',
-		'50000000-0000-4000-8000-000000000032', '50000000-0000-4000-8000-000000000042',
-		'50000000-0000-4000-8000-000000000052', '50000000-0000-4000-8000-000000000063',
+		'60000000-0000-4000-8000-000000000062', '60000000-0000-4000-8000-000000000010',
+		'60000000-0000-4000-8000-000000000032', '60000000-0000-4000-8000-000000000042',
+		'60000000-0000-4000-8000-000000000052', '60000000-0000-4000-8000-000000000063',
 		'waiting', 1, 21, statement_timestamp() - interval '1 hour', statement_timestamp() - interval '1 minute',
 		0, null, null, '20000000-0000-4000-8000-000000000001', statement_timestamp() - interval '26 hours', null
 	);
 
 insert into public.qorpera_artifact_gc_plan_entries (plan_id, object_sha256, bytes)
 values
-	('50000000-0000-4000-8000-000000000060', repeat('e', 64), 42),
-	('50000000-0000-4000-8000-000000000062', repeat('f', 64), 21);
+	('60000000-0000-4000-8000-000000000060', repeat('e', 64), 42),
+	('60000000-0000-4000-8000-000000000062', repeat('f', 64), 21);
 
 update public.qorpera_object_restore_proofs
 set verified_at = statement_timestamp() - interval '8 days',
 	valid_until = statement_timestamp() - interval '8 days' + interval '7 days'
-where id in ('50000000-0000-4000-8000-000000000050', '50000000-0000-4000-8000-000000000052');
+where id in ('60000000-0000-4000-8000-000000000050', '60000000-0000-4000-8000-000000000052');
 
 select set_config('request.jwt.claims', '{"role":"service_role"}', false);
-select public.qorpera_claim_artifact_gc_plans(2, '50000000-0000-4000-8000-000000000064');
+select public.qorpera_claim_artifact_gc_plans(2, '60000000-0000-4000-8000-000000000064');
 
 do $$
 declare
@@ -403,15 +403,15 @@ declare
 begin
 	select plan.* into v_resumed
 	from public.qorpera_artifact_gc_plans as plan
-	where plan.id = '50000000-0000-4000-8000-000000000060';
+	where plan.id = '60000000-0000-4000-8000-000000000060';
 	if v_resumed.status <> 'deleting' or v_resumed.attempt_count <> 2
-		or v_resumed.lease_id is distinct from '50000000-0000-4000-8000-000000000064'
-		or v_resumed.restore_proof_id is distinct from '50000000-0000-4000-8000-000000000050' then
+		or v_resumed.lease_id is distinct from '60000000-0000-4000-8000-000000000064'
+		or v_resumed.restore_proof_id is distinct from '60000000-0000-4000-8000-000000000050' then
 		raise exception 'started plan with an expired proof was not resumable';
 	end if;
 	select plan.* into v_fresh
 	from public.qorpera_artifact_gc_plans as plan
-	where plan.id = '50000000-0000-4000-8000-000000000062';
+	where plan.id = '60000000-0000-4000-8000-000000000062';
 	if v_fresh.status <> 'retrying' or v_fresh.started_at is not null then
 		raise exception 'fresh plan with an expired proof did not park in retrying';
 	end if;
