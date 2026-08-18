@@ -103,14 +103,23 @@ import {
 	createStaffAgents,
 	createStarterCompanyArtifact,
 	deleteStaffAgent,
+	markStaffAgentMessagesDelivered,
+	pendingStaffAgentMessages,
+	queueStaffAgentMessage,
 	readCompanyArtifacts,
+	readStaffAgentMemory,
+	readStaffAgentMessages,
 	readStaffAgents,
+	recentDeliveredStaffAgentMessages,
 	recordCompanyArtifactObservation,
 	reportCompanyArtifactSourceIssue,
 	restoreStaffAgent,
 	type StaffAgent,
+	type StaffAgentMessage,
+	type StaffAgentModel,
 	staffAgentDirectoryPath,
 	staffAgentInstructionsPath,
+	staffAgentSkillsPath,
 	transitionCompanyArtifactConnection,
 	updateCompanyArtifact,
 	updateStaffAgent,
@@ -481,7 +490,7 @@ const MODEL_CONNECTION_IDS = new Set<string>(MODEL_CONNECTIONS.map((connection) 
 const STAFF_DEFAULT_THINKING_LEVEL = "low";
 const STAFF_DEFAULT_RESPONSE_SPEED = "fast";
 const STAFF_TOOL_NAMES =
-	"read,bash,edit,write,request_connection,run_connector,assess_artifact_source,record_artifact_observation,report_artifact_source_issue,manage_routine,complete_setup,use_computer";
+	"read,bash,edit,write,request_connection,run_connector,assess_artifact_source,record_artifact_observation,report_artifact_source_issue,manage_routine,complete_setup,use_computer,send_agent_message";
 const TRIGGER_BUILDER_TOOL_NAMES = "read,bash,edit,write,run_connector,finish_trigger_build";
 const TRIGGER_CHECK_TOOL_NAMES = "read,run_connector,finish_trigger_check";
 const MAX_KERNEL_REVIEW_BYTES = 16 * 1024;
@@ -2167,10 +2176,44 @@ interface ChildOptions {
 	/** Kernel-issued wake identity: stamped into the wake session's trail. */
 	wake?: {
 		id: string;
-		cause: "schedule" | "founder_response" | "inbound_event";
+		cause: "schedule" | "founder_response" | "inbound_event" | "agent_message";
 		intervalMinutes?: number;
 		coalesced?: number;
 	};
+}
+
+function staffAgentMessageLine(message: StaffAgentMessage, senderNames: Map<string, string>): string {
+	const sender = senderNames.get(message.fromAgentId) ?? "a former coworker";
+	return `- [${message.id}] from ${sender} (${message.fromAgentId}) at ${message.createdAt}${message.subject ? ` — ${message.subject}` : ""}:\n${message.body}`;
+}
+
+function staffMessagesContext(root: string, agentId: string, senderNames: Map<string, string>): string {
+	let queued: StaffAgentMessage[];
+	let recent: StaffAgentMessage[];
+	try {
+		queued = pendingStaffAgentMessages(root, agentId);
+		recent = recentDeliveredStaffAgentMessages(root, agentId, 5);
+	} catch {
+		return "Your coworker mailbox could not be read this launch.";
+	}
+	const shownQueued = queued.slice(0, 12);
+	const overflow = queued.length - shownQueued.length;
+	if (!queued.length && !recent.length) return "You have no coworker messages.";
+	return [
+		...(queued.length
+			? [
+					"Unhandled coworker messages (act on each: do the work, reply with send_agent_message, or record why it needs nothing):",
+					...shownQueued.map((message) => staffAgentMessageLine(message, senderNames)),
+					...(overflow > 0 ? [`…and ${overflow} more queued messages.`] : []),
+				]
+			: []),
+		...(recent.length
+			? [
+					"Recently delivered coworker messages (already shown to you once; listed for continuity):",
+					...recent.map((message) => staffAgentMessageLine(message, senderNames)),
+				]
+			: []),
+	].join("\n");
 }
 
 function staffSystemContext(root: string, agent: StaffAgent): string {
@@ -2238,6 +2281,29 @@ function staffSystemContext(root: string, agent: StaffAgent): string {
 				),
 			].join("\n")
 		: "You do not have a recurring routine yet.";
+	const memory = readStaffAgentMemory(root, agent.id);
+	const memoryInstructions = [
+		`Private memory: agents/${agent.id}/memory.md`,
+		"This file is your durable personal memory across every session and wake. Record founder preferences, decisions, recurring context, and lessons the moment you learn them; prune anything wrong or stale. Keep it about how you work, not a copy of company data.",
+		...(memory.trim() ? ["Current memory:", memory.trim()] : []),
+	].join("\n");
+	const skillsInstructions = `Personal skills: agents/${agent.id}/skills/ holds skill files loaded only into your sessions. When you develop a repeatable procedure worth keeping, save it there as a skill; company-wide skills belong to the founder under .qorpera/skills/.`;
+	const coworkers = (() => {
+		try {
+			return readStaffAgents(root).filter((other) => other.id !== agent.id && other.employmentStatus === "active");
+		} catch {
+			return [];
+		}
+	})();
+	const coworkerInstructions = coworkers.length
+		? [
+				"Your coworkers are:",
+				...coworkers.map((other) => `- ${other.displayName} — ${other.role} [staffAgentId=${other.id}]`),
+				"Use send_agent_message with a coworker's exact staffAgentId to hand off work, ask for something they own, or report a result they are waiting on. Messages are durable and read in the coworker's own next session, never live: include all context needed to act, and do not assume they can see your conversation. Respect each other's responsibilities instead of doing a coworker's job yourself.",
+			].join("\n")
+		: "You are currently the only active staff member, so send_agent_message has no valid recipient yet.";
+	const senderNames = new Map([...coworkers, agent].map((member) => [member.id, member.displayName]));
+	const messageInstructions = staffMessagesContext(root, agent.id, senderNames);
 	const lifecycleInstructions =
 		agent.lifecycleState === "setup"
 			? [
@@ -2259,6 +2325,10 @@ function staffSystemContext(root: string, agent: StaffAgent): string {
 		"Instructions:",
 		agent.charter,
 		lifecycleInstructions,
+		memoryInstructions,
+		skillsInstructions,
+		coworkerInstructions,
+		messageInstructions,
 		artifactInstructions,
 		connectorInstructions,
 		routineInstructions,
@@ -2306,6 +2376,17 @@ function staffIntroMessage(root: string, agent: StaffAgent, orientation?: StaffO
 	]
 		.filter(Boolean)
 		.join("\n\n");
+}
+
+/** The agent's personal skill directory rides the additive --skill lane, so
+ * per-agent skills stack on top of the shared company and user skill roots. */
+function staffSkillArgs(root: string, staffAgentId: string): string[] {
+	try {
+		const skills = staffAgentSkillsPath(root, staffAgentId);
+		return existsSync(skills) ? ["--skill", skills] : [];
+	} catch {
+		return [];
+	}
 }
 
 function startChild(slot: Slot, root: string, options: ChildOptions = {}): ChildProcessWithoutNullStreams {
@@ -2466,6 +2547,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				localExecutionPermission,
 				staffAgentId ? (options.toolNames ?? STAFF_TOOL_NAMES) : undefined,
 			),
+			...(staffAgentId ? staffSkillArgs(root, staffAgentId) : []),
 			...runtimeModelArgs(options.model),
 		];
 		invocation = codexSpawn(
@@ -2607,7 +2689,17 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			const confirmedModel = modelSelectionFromRpcFrame(frame);
 			if (confirmedModel) {
 				options.model = confirmedModel;
-				writeCompanyRuntimeModelPreference(app.getPath("userData"), root, confirmedModel);
+				if (staffAgentId) {
+					// A confirmed model on a staff-bound child is that employee's
+					// durable choice, not a company-wide default.
+					try {
+						persistStaffAgentModel(root, staffAgentId, confirmedModel);
+					} catch (error) {
+						console.error(`staff model persistence failed: ${(error as Error).message}`);
+					}
+				} else {
+					writeCompanyRuntimeModelPreference(app.getPath("userData"), root, confirmedModel);
+				}
 			}
 			const challenge = frame as {
 				type?: unknown;
@@ -3721,7 +3813,7 @@ function isInside(target: string, parent: string): boolean {
 
 /** Build the exact unattended prompt for a scheduled or event-driven run. */
 function wakePrompt(
-	cause: "schedule" | "founder_response" | "inbound_event",
+	cause: "schedule" | "founder_response" | "inbound_event" | "agent_message",
 	coalesced: number,
 	job?: ScheduledJob,
 	trigger?: PendingRoutineTrigger,
@@ -3730,6 +3822,9 @@ function wakePrompt(
 		coalesced > 0
 			? ` Qorpera was closed or asleep for a while: ${coalesced} missed wake${coalesced === 1 ? "" : "s"} were coalesced into this one.`
 			: "";
+	if (cause === "agent_message") {
+		return `Wake: a coworker sent you one or more messages. Read the unhandled coworker messages listed in your context and act on each: do the requested work if it belongs to your responsibility, reply with send_agent_message when the sender needs an answer, and post an inbox item if something needs the founder. Settle when every message is handled.${missed}`;
+	}
 	if (cause === "founder_response") {
 		return `Wake: the founder responded in the inbox. Read the updated items and continue the affected work; post follow-up inbox items for anything that needs the founder again.${missed}`;
 	}
@@ -4519,6 +4614,32 @@ async function applyStaffCompanyOperation(
 		return { message: "Artifact source health was updated without discarding its last valid evidence." };
 	}
 
+	if (kind === "send_agent_message") {
+		const input = recordValue(value);
+		if (
+			!input ||
+			typeof input.toAgentId !== "string" ||
+			typeof input.message !== "string" ||
+			(input.subject !== undefined && typeof input.subject !== "string") ||
+			Object.keys(input).some((key) => key !== "toAgentId" && key !== "subject" && key !== "message")
+		) {
+			throw new Error("coworker message is invalid");
+		}
+		if (input.toAgentId === staffAgentId) throw new Error("a coworker message cannot target its own sender");
+		const recipient = activeStaffAgent(root, input.toAgentId);
+		if (!recipient) throw new Error("the addressed coworker is unavailable or archived");
+		const message = queueStaffAgentMessage(root, {
+			fromAgentId: staffAgentId,
+			toAgentId: recipient.id,
+			...(input.subject?.trim() ? { subject: input.subject.trim() } : {}),
+			body: input.message.trim(),
+		});
+		commitCompanyMaterialization(root, [join(".qorpera", "agent-messages.json")]);
+		return {
+			message: `Message ${message.id} was queued for ${recipient.displayName}. They will read it in their own next session and may reply the same way; do not wait for a live response.`,
+		};
+	}
+
 	if (kind === "complete_setup") {
 		if (!attached) throw new Error("setup can only finish from the attended agent conversation");
 		const input = recordValue(value);
@@ -5072,11 +5193,12 @@ function scheduleInfrastructureWork(slot: Slot, expectedRuntime: CompanyRuntime)
 async function startWakeChildExclusive(
 	slot: Slot,
 	runtime: CompanyRuntime,
-	cause: "schedule" | "founder_response" | "inbound_event",
+	cause: "schedule" | "founder_response" | "inbound_event" | "agent_message",
 	coalesced: number,
 	job?: ScheduledJob,
 	manual = false,
 	trigger?: PendingRoutineTrigger,
+	messageRecipient?: StaffAgent,
 ): Promise<boolean> {
 	if (runtime.wakeChild || runtime.closing) return false;
 	// Never preempt a founder turn in flight: the wake defers to the next tick.
@@ -5097,7 +5219,7 @@ async function startWakeChildExclusive(
 	const attendedStaff = runtime.childOptions.staffAgentId
 		? activeStaffAgent(runtime.root, runtime.childOptions.staffAgentId)
 		: undefined;
-	const wakeStaff = assignedStaff ?? attendedStaff;
+	const wakeStaff = assignedStaff ?? messageRecipient ?? attendedStaff;
 	if (!wakeStaff) return false;
 	const wakeId = randomUUID();
 	const attendedChild = runtime.child;
@@ -5123,12 +5245,14 @@ async function startWakeChildExclusive(
 						? "wake — inbound event"
 						: cause === "founder_response"
 							? "wake — founder response"
-							: "wake — schedule",
+							: cause === "agent_message"
+								? "wake — coworker message"
+								: "wake — schedule",
 			group: job ? `job:${job.id}` : `wake:${cause}`,
 			staffAgentId: wakeStaff.id,
 			staffContext: staffSystemContext(runtime.root, wakeStaff),
 			silent: true,
-			model: resumeOptions.model,
+			model: wakeStaff.model ?? resumeOptions.model,
 			thinkingLevel: job?.effort ?? "high",
 			wake: {
 				id: wakeId,
@@ -5189,6 +5313,9 @@ async function startWakeChildExclusive(
 		return false;
 	}
 	promptSent = true;
+	// The wake context was built fresh in this same transition, so any queued
+	// coworker mail it displays is now delivered.
+	deliverQueuedStaffMessages(runtime.root, wakeStaff.id);
 	if (job) {
 		const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
 		writeWakeRunState(statePath, recordWakeStart(readWakeRunState(statePath), job.id, Date.now(), trailFile));
@@ -5200,14 +5327,15 @@ async function startWakeChildExclusive(
 function startWakeChild(
 	slot: Slot,
 	runtime: CompanyRuntime,
-	cause: "schedule" | "founder_response" | "inbound_event",
+	cause: "schedule" | "founder_response" | "inbound_event" | "agent_message",
 	coalesced: number,
 	job?: ScheduledJob,
 	manual = false,
 	trigger?: PendingRoutineTrigger,
+	messageRecipient?: StaffAgent,
 ): Promise<boolean> {
 	return enqueueRuntimeTransition(runtime, () =>
-		startWakeChildExclusive(slot, runtime, cause, coalesced, job, manual, trigger),
+		startWakeChildExclusive(slot, runtime, cause, coalesced, job, manual, trigger, messageRecipient),
 	);
 }
 
@@ -5281,6 +5409,29 @@ function startWakeTicker(): void {
 					});
 				continue;
 			}
+			// Durable coworker mail wakes its recipient. The protected ledger is
+			// the queue itself, so delivery survives restarts and closed companies;
+			// mail addressed to archived staff simply waits.
+			const messageRecipient = (() => {
+				try {
+					for (const message of readStaffAgentMessages(runtime.root)) {
+						if (message.status !== "queued") continue;
+						const recipient = activeStaffAgent(runtime.root, message.toAgentId);
+						if (recipient) return recipient;
+					}
+				} catch (error) {
+					console.error(`coworker message scan failed for ${runtime.root}: ${(error as Error).message}`);
+				}
+				return undefined;
+			})();
+			if (messageRecipient) {
+				void startWakeChild(slot, runtime, "agent_message", 0, undefined, false, undefined, messageRecipient).catch(
+					(error) => {
+						console.error(`coworker message wake failed for ${runtime.root}: ${(error as Error).message}`);
+					},
+				);
+				continue;
+			}
 			try {
 				const jobs = readScheduledJobs(runtime.root);
 				void dispatchRoutineTrigger(slot, runtime, jobs).then((started) => {
@@ -5348,6 +5499,7 @@ async function listenBackend(
 			fixedShell: { directory: FIXED_SHELL_DIR },
 			sessionRuntime: sessions,
 			staffReadModel: () => readStaffAgents(root),
+			staffMessageReadModel: () => readStaffAgentMessages(root),
 			artifactReadModel: () => readCompanyArtifacts(root),
 			connectorReadModel: () => readCompanyConnectorManifests(root),
 			artifactUpdateModel: (id, update) => {
@@ -5946,6 +6098,32 @@ function activeStaffAgent(root: string, staffAgentId: string): StaffAgent | unde
 	return readStaffAgents(root).find((agent) => agent.id === staffAgentId && agent.employmentStatus === "active");
 }
 
+/** Persist a confirmed model as the employee's durable choice. Confirmation
+ * frames repeat on every get_state, so unchanged selections write nothing. */
+function persistStaffAgentModel(root: string, staffAgentId: string, model: RuntimeModelSelection): void {
+	const current = readStaffAgents(root).find((agent) => agent.id === staffAgentId);
+	if (!current || (current.model?.provider === model.provider && current.model?.modelId === model.modelId)) return;
+	updateStaffAgent(root, staffAgentId, { model: { provider: model.provider, modelId: model.modelId } });
+	commitCompanyMaterialization(root, [join(".qorpera", "staff.json")]);
+}
+
+/** Hand queued coworker mail to a freshly spawned session. Called only after
+ * a spawn whose staff context was built in the same transition, so delivery
+ * marking can never outrun the context that displays the messages. */
+function deliverQueuedStaffMessages(root: string, staffAgentId: string): void {
+	try {
+		const queued = pendingStaffAgentMessages(root, staffAgentId);
+		if (queued.length) {
+			markStaffAgentMessagesDelivered(
+				root,
+				queued.map((message) => message.id),
+			);
+		}
+	} catch (error) {
+		console.error(`coworker message delivery failed: ${(error as Error).message}`);
+	}
+}
+
 function latestStaffTrailFile(runtime: CompanyRuntime, staffAgentId: string): string | undefined {
 	return runtime.sessions
 		.snapshot()
@@ -5988,12 +6166,13 @@ async function attachStaffChild(
 			...(sessionFile ? {} : { sessionName: agent.displayName }),
 			staffAgentId: agent.id,
 			staffContext: staffSystemContext(runtime.root, agent),
-			model: runtime.childOptions.model,
+			model: agent.model ?? runtime.childOptions.model,
 			...(autoStartStaffIntro ? { autoStartStaffIntro: true, freshStaffTrail: true } : {}),
 		};
 		child = startChild(slot, runtime.root, options);
 		const binding = childBindings.get(child);
 		if (!binding) throw new Error("staff runtime did not receive a trail binding");
+		deliverQueuedStaffMessages(runtime.root, agent.id);
 		if (markIntroPending) {
 			const statePath = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
 			const pending = recordStaffIntroPending(readStaffRuntimeState(statePath), agent.id, binding.file, Date.now());
@@ -6325,12 +6504,16 @@ async function createStaffMember(
 	});
 }
 
-function parsedStaffUpdateInput(value: unknown): { displayName?: string; role?: string } {
+function parsedStaffUpdateInput(value: unknown): {
+	displayName?: string;
+	role?: string;
+	model?: StaffAgentModel | null;
+} {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid staff update");
 	const input = value as Record<string, unknown>;
 	if (
 		Object.keys(input).length === 0 ||
-		Object.keys(input).some((key) => key !== "displayName" && key !== "role") ||
+		Object.keys(input).some((key) => key !== "displayName" && key !== "role" && key !== "model") ||
 		(input.displayName !== undefined && typeof input.displayName !== "string") ||
 		(input.role !== undefined && typeof input.role !== "string")
 	) {
@@ -6344,7 +6527,30 @@ function parsedStaffUpdateInput(value: unknown): { displayName?: string; role?: 
 	if (role !== undefined && (!role || Buffer.byteLength(role, "utf-8") > 320)) {
 		throw new Error("invalid staff role");
 	}
-	return { ...(displayName ? { displayName } : {}), ...(role ? { role } : {}) };
+	let model: StaffAgentModel | null | undefined;
+	if (input.model === null) {
+		model = null;
+	} else if (input.model !== undefined) {
+		const record = input.model as Record<string, unknown>;
+		if (
+			!record ||
+			typeof record !== "object" ||
+			Array.isArray(record) ||
+			typeof record.provider !== "string" ||
+			!record.provider.trim() ||
+			typeof record.modelId !== "string" ||
+			!record.modelId.trim() ||
+			Object.keys(record).some((key) => key !== "provider" && key !== "modelId")
+		) {
+			throw new Error("invalid staff model selection");
+		}
+		model = { provider: record.provider.trim(), modelId: record.modelId.trim() };
+	}
+	return {
+		...(displayName ? { displayName } : {}),
+		...(role ? { role } : {}),
+		...(model !== undefined ? { model } : {}),
+	};
 }
 
 async function updateStaffMember(
@@ -6379,6 +6585,19 @@ async function updateStaffMember(
 				triggerCloudStaffSync(runtime);
 				if (runtime.childOptions.staffAgentId === staff.id) {
 					runtime.childOptions.staffContext = staffSystemContext(runtime.root, staff);
+					if (update.model !== undefined) {
+						const resolved =
+							staff.model ?? readCompanyRuntimeModelPreference(app.getPath("userData"), runtime.root);
+						runtime.childOptions.model = resolved;
+						// Apply the founder's choice to the running session too; the
+						// child's confirmation frame re-persists it idempotently.
+						if (staff.model && runtime.child) {
+							writeChildFrame(
+								runtime.child,
+								`${JSON.stringify({ type: "set_model", provider: staff.model.provider, modelId: staff.model.modelId })}\n`,
+							);
+						}
+					}
 				}
 				return { ok: true, staff };
 			} catch (error) {
@@ -6437,7 +6656,7 @@ async function archiveStaffMember(
 							...(nextTrail ? {} : { sessionName: next.displayName, freshStaffTrail: true }),
 							staffAgentId: next.id,
 							staffContext: staffSystemContext(runtime.root, next),
-							model: previousOptions.model,
+							model: next.model ?? previousOptions.model,
 						};
 						runtime.child = startChild(slot, runtime.root, options);
 						runtime.childOptions = { ...options };

@@ -19,7 +19,7 @@ import { discoverAuthority, evaluateToolCall, readAuthorityConfig } from "../src
 import { COMPANY_MANIFEST_RELATIVE_PATH, scaffoldCompany, scaffoldProductDepartment } from "../src/core/company.ts";
 import type { CompanyArtifactRecord } from "../src/core/company-artifacts.ts";
 import type { CompanyConnectorManifestRecord } from "../src/core/company-connectors.ts";
-import type { StaffAgent } from "../src/core/company-staff.ts";
+import type { StaffAgent, StaffAgentMessage } from "../src/core/company-staff.ts";
 import { LITELLM_RATES_URL, parseUsageRateTable, type UsageRateCatalog } from "../src/core/usage-pricing.ts";
 
 let root: string;
@@ -35,6 +35,7 @@ let connectorReadModel: () => readonly CompanyConnectorManifestRecord[];
 let artifactUpdateModel: (id: string, update: unknown) => CompanyArtifactRecord;
 let connectionRequestReadModel: () => readonly CompanyConnectionRequestView[];
 let scheduledJobReadModel: () => readonly CompanyScheduledJobView[];
+let staffMessageReadModel: () => readonly StaffAgentMessage[];
 
 const TEST_USAGE_RATE_CATALOG: UsageRateCatalog = {
 	rates: parseUsageRateTable({
@@ -79,6 +80,7 @@ beforeEach(async () => {
 	};
 	connectionRequestReadModel = () => [];
 	scheduledJobReadModel = () => [];
+	staffMessageReadModel = () => [];
 	const sessionRuntime: SessionRuntimeSource = {
 		snapshot: () => runtimeSnapshot,
 		isTrailVisible: (trailFile) => !hiddenTrails.has(trailFile),
@@ -99,6 +101,7 @@ beforeEach(async () => {
 		artifactUpdateModel: (id, update) => artifactUpdateModel(id, update),
 		connectionRequestReadModel: () => connectionRequestReadModel(),
 		scheduledJobReadModel: () => scheduledJobReadModel(),
+		staffMessageReadModel: () => staffMessageReadModel(),
 	});
 	await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
 	const address = server!.address() as { port: number };
@@ -198,6 +201,59 @@ describe("company app server", () => {
 		expect(third).toContain('"session":');
 		expect(third).not.toContain('"snapshot":');
 		await reader.cancel();
+	});
+
+	it("serves the per-agent model choice and durable agent messages", async () => {
+		staffReadModel = () => [
+			{
+				id: "11111111-1111-4111-8111-111111111111",
+				displayName: "Analyst",
+				role: "Data analyst",
+				charter: "Own analytical measures.",
+				appearance: { color: "green", shape: "gem" },
+				model: { provider: "anthropic", modelId: "claude-fable-5" },
+				employmentStatus: "active",
+				lifecycleState: "active",
+				createdAt: "2026-08-15T00:00:00.000Z",
+				updatedAt: "2026-08-15T00:00:00.000Z",
+			},
+		];
+		staffMessageReadModel = () => [
+			{
+				id: "33333333-3333-4333-8333-333333333333",
+				fromAgentId: "11111111-1111-4111-8111-111111111111",
+				toAgentId: "44444444-4444-4444-8444-444444444444",
+				subject: "Handoff",
+				body: "The supplier report is ready.",
+				createdAt: "2026-08-15T00:01:00.000Z",
+				status: "queued",
+				secret: "leaked",
+			} as unknown as StaffAgentMessage,
+		];
+
+		const state = (await (await fetch(`${base}/api/state`)).json()) as {
+			staff: Array<Record<string, unknown>>;
+			agentMessages: Array<Record<string, unknown>>;
+		};
+		expect(state.staff[0]?.model).toEqual({ provider: "anthropic", modelId: "claude-fable-5" });
+		expect(state.agentMessages).toEqual([
+			{
+				id: "33333333-3333-4333-8333-333333333333",
+				fromAgentId: "11111111-1111-4111-8111-111111111111",
+				toAgentId: "44444444-4444-4444-8444-444444444444",
+				subject: "Handoff",
+				body: "The supplier report is ready.",
+				createdAt: "2026-08-15T00:01:00.000Z",
+				status: "queued",
+			},
+		]);
+		expect(JSON.stringify(state)).not.toContain("leaked");
+
+		staffMessageReadModel = () => {
+			throw new Error("messages unavailable");
+		};
+		const fallback = (await (await fetch(`${base}/api/state`)).json()) as { agentMessages: unknown[] };
+		expect(fallback.agentMessages).toEqual([]);
 	});
 
 	it("serves safe staff and connection-request read models", async () => {

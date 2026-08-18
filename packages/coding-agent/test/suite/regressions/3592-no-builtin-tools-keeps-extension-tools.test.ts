@@ -97,6 +97,7 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 			"request_connection",
 			"run_company_tool",
 			"run_connector",
+			"send_agent_message",
 			"use_computer",
 			"use_mcp_tool",
 			"write",

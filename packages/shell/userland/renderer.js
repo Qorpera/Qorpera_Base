@@ -2604,7 +2604,41 @@ function renderAgentSettingsPanel(staff) {
 	const nameField = field("Name", staffDisplayName(staff));
 	const titleField = field("Title", staffRoleLabel(staff));
 	const descriptionField = field("Description", staffDescription(staff), true, true);
-	form.append(nameField.label, titleField.label, descriptionField.label);
+	// Per-agent model: each employee keeps their own durable model choice, and
+	// "Company default" clears it back to the shared runtime preference.
+	const modelRow = document.createElement("label");
+	modelRow.className = "agent-settings-model";
+	const modelTitle = document.createElement("span");
+	modelTitle.textContent = "Model";
+	const modelSelect = document.createElement("select");
+	const modelCatalog = (() => {
+		try {
+			const cached = JSON.parse(localStorage.getItem("qorpera.modelCatalog") ?? "null");
+			return Array.isArray(cached?.models) && cached.models.length ? curateModels(cached.models) : [];
+		} catch {
+			return [];
+		}
+	})();
+	const staffModelValue = staff.model ? `${staff.model.provider}::${staff.model.modelId}` : "";
+	const defaultOption = document.createElement("option");
+	defaultOption.value = "";
+	defaultOption.textContent = "Company default";
+	modelSelect.appendChild(defaultOption);
+	for (const model of modelCatalog) {
+		const option = document.createElement("option");
+		option.value = model.value;
+		option.textContent = model.name ?? model.value;
+		modelSelect.appendChild(option);
+	}
+	if (staffModelValue && !modelCatalog.some((model) => model.value === staffModelValue)) {
+		const option = document.createElement("option");
+		option.value = staffModelValue;
+		option.textContent = staff.model.modelId;
+		modelSelect.appendChild(option);
+	}
+	modelSelect.value = staffModelValue;
+	modelRow.append(modelTitle, modelSelect);
+	form.append(nameField.label, titleField.label, descriptionField.label, modelRow);
 	const saveStatus = document.createElement("div");
 	saveStatus.className = "agent-settings-status";
 	saveStatus.setAttribute("role", "status");
@@ -2643,6 +2677,31 @@ function renderAgentSettingsPanel(staff) {
 	};
 	nameField.input.onchange = () => void saveIdentity();
 	titleField.input.onchange = () => void saveIdentity();
+	modelSelect.onchange = async () => {
+		if (saving) {
+			modelSelect.value = staffModelValue;
+			return;
+		}
+		const value = modelSelect.value;
+		const separator = value.indexOf("::");
+		const model = value ? { provider: value.slice(0, separator), modelId: value.slice(separator + 2) } : null;
+		saving = true;
+		modelSelect.disabled = true;
+		saveStatus.textContent = "Saving…";
+		try {
+			const result = await window.qorpera.staffUpdate(staffId(staff), { model });
+			if (result?.ok === false) throw new Error(result.error ?? "Agent model could not be saved.");
+			const updated = result?.staff ?? { ...staff, model: model ?? undefined };
+			state.staff = (state.staff ?? []).map((candidate) => (staffId(candidate) === staffId(staff) ? { ...candidate, ...updated, model: updated.model } : candidate));
+			saveStatus.textContent = "Saved";
+		} catch (error) {
+			modelSelect.value = staffModelValue;
+			saveStatus.textContent = error instanceof Error ? error.message : "Agent model could not be saved.";
+		} finally {
+			saving = false;
+			modelSelect.disabled = false;
+		}
+	};
 	const notice = document.createElement("div");
 	notice.className = "agent-notification-setting";
 	const noticeCopy = document.createElement("span");

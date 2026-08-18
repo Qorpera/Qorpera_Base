@@ -12,6 +12,19 @@ import {
 import { join, resolve } from "node:path";
 
 export type {
+	QueueStaffAgentMessageInput,
+	StaffAgentMessage,
+	StaffAgentMessageStatus,
+} from "./company-agent-messages.ts";
+export {
+	markStaffAgentMessagesDelivered,
+	pendingStaffAgentMessages,
+	queueStaffAgentMessage,
+	readStaffAgentMessages,
+	recentDeliveredStaffAgentMessages,
+	staffAgentMessagesPath,
+} from "./company-agent-messages.ts";
+export type {
 	CompanyArtifactConnectionTransition,
 	CompanyArtifactFounderUpdate,
 	CompanyArtifactMetricDirection,
@@ -38,6 +51,13 @@ export interface StaffAgentAppearance {
 	creature?: string;
 }
 
+/** Durable per-agent model choice. Absent means the agent inherits the
+ * company runtime default; the selection persists across sessions and wakes. */
+export interface StaffAgentModel {
+	provider: string;
+	modelId: string;
+}
+
 export type StaffAgentEmploymentStatus = "active" | "archived";
 export type StaffAgentLifecycleState = "setup" | "active";
 
@@ -49,6 +69,7 @@ export interface StaffAgent {
 	templateId?: string;
 	departmentId?: string;
 	appearance: StaffAgentAppearance;
+	model?: StaffAgentModel;
 	employmentStatus: StaffAgentEmploymentStatus;
 	lifecycleState: StaffAgentLifecycleState;
 	createdAt: string;
@@ -71,6 +92,8 @@ export interface UpdateStaffAgentInput {
 	templateId?: string | null;
 	departmentId?: string | null;
 	appearance?: StaffAgentAppearance;
+	/** null clears the per-agent selection back to the company default. */
+	model?: StaffAgentModel | null;
 }
 
 interface StaffRegistry {
@@ -81,6 +104,13 @@ interface StaffRegistry {
 const STAFF_REGISTRY_RELATIVE_PATH = join(".qorpera", "staff.json");
 const AGENTS_RELATIVE_PATH = "agents";
 const AGENT_INSTRUCTIONS_FILE = "instructions.md";
+const AGENT_MEMORY_FILE = "memory.md";
+const AGENT_SKILLS_DIRECTORY = "skills";
+const MAX_AGENT_MEMORY_BYTES = 64 * 1024;
+const AGENT_MEMORY_SEED = `# Memory
+
+Durable facts this agent has learned: founder preferences, decisions, recurring context, and lessons from past work. Keep entries short, current, and remove anything that turns out to be wrong.
+`;
 const MAX_STAFF_REGISTRY_BYTES = 4 * 1024 * 1024;
 const MAX_STAFF_AGENTS = 1_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -92,14 +122,17 @@ const AGENT_FIELDS = new Set([
 	"templateId",
 	"departmentId",
 	"appearance",
+	"model",
 	"employmentStatus",
 	"lifecycleState",
 	"createdAt",
 	"updatedAt",
 ]);
 const APPEARANCE_FIELDS = new Set(["color", "shape", "creature"]);
+const MODEL_FIELDS = new Set(["provider", "modelId"]);
 const REGISTRY_FIELDS = new Set(["version", "agents"]);
-const UPDATE_FIELDS = new Set(["displayName", "role", "charter", "templateId", "departmentId", "appearance"]);
+const CREATE_FIELDS = new Set(["displayName", "role", "charter", "templateId", "departmentId", "appearance"]);
+const UPDATE_FIELDS = new Set(["displayName", "role", "charter", "templateId", "departmentId", "appearance", "model"]);
 
 function normalizedPath(path: string): string {
 	const resolved = resolve(path);
@@ -188,6 +221,16 @@ function appearanceValue(value: unknown): StaffAgentAppearance {
 	};
 }
 
+function modelValue(value: unknown): StaffAgentModel | undefined {
+	if (value === undefined) return undefined;
+	const record = recordValue(value);
+	if (!record || !exactFields(record, MODEL_FIELDS)) throw new Error("Staff agent model is invalid");
+	return {
+		provider: boundedText(record.provider, "model provider", 128, false),
+		modelId: boundedText(record.modelId, "model id", 256, false),
+	};
+}
+
 function timestampValue(value: unknown, field: "createdAt" | "updatedAt"): string {
 	if (typeof value !== "string" || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) {
 		throw new Error(`Staff agent ${field} is invalid`);
@@ -209,6 +252,7 @@ function staffAgentValue(value: unknown, key: string): StaffAgent {
 	const updatedAt = timestampValue(record.updatedAt, "updatedAt");
 	const templateId = optionalIdentifier(record.templateId, "templateId");
 	const departmentId = optionalIdentifier(record.departmentId, "departmentId");
+	const model = modelValue(record.model);
 	if (Date.parse(updatedAt) < Date.parse(createdAt)) throw new Error("Staff agent timestamps are invalid");
 	return {
 		id: key,
@@ -218,6 +262,7 @@ function staffAgentValue(value: unknown, key: string): StaffAgent {
 		...(templateId ? { templateId } : {}),
 		...(departmentId ? { departmentId } : {}),
 		appearance: appearanceValue(record.appearance),
+		...(model ? { model } : {}),
 		employmentStatus: record.employmentStatus,
 		lifecycleState: record.lifecycleState ?? "setup",
 		createdAt,
@@ -273,7 +318,7 @@ function createInputValue(
 ): Omit<StaffAgent, "id" | "employmentStatus" | "lifecycleState" | "createdAt" | "updatedAt"> {
 	const record = input as unknown as Record<string, unknown>;
 	if (
-		!exactFields(record, UPDATE_FIELDS) ||
+		!exactFields(record, CREATE_FIELDS) ||
 		!Object.hasOwn(record, "displayName") ||
 		!Object.hasOwn(record, "role") ||
 		!Object.hasOwn(record, "charter") ||
@@ -324,6 +369,32 @@ export function staffAgentInstructionsPath(root: string, id: string): string {
 	return join(staffAgentDirectoryPath(root, id), AGENT_INSTRUCTIONS_FILE);
 }
 
+export function staffAgentMemoryPath(root: string, id: string): string {
+	return join(staffAgentDirectoryPath(root, id), AGENT_MEMORY_FILE);
+}
+
+export function staffAgentSkillsPath(root: string, id: string): string {
+	return join(staffAgentDirectoryPath(root, id), AGENT_SKILLS_DIRECTORY);
+}
+
+/** Best-effort read of an agent's durable private memory. Missing or invalid
+ * memory degrades to empty instead of blocking a launch; oversized memory is
+ * truncated at the byte limit so a runaway file cannot flood the context. */
+export function readStaffAgentMemory(root: string, id: string): string {
+	const path = staffAgentMemoryPath(root, id);
+	try {
+		const entry = lstatSync(path);
+		if (!entry.isFile() || entry.isSymbolicLink()) return "";
+		const content = readFileSync(path, "utf-8");
+		const buffer = Buffer.from(content, "utf-8");
+		return buffer.length > MAX_AGENT_MEMORY_BYTES
+			? buffer.subarray(0, MAX_AGENT_MEMORY_BYTES).toString("utf-8")
+			: content;
+	} catch {
+		return "";
+	}
+}
+
 function physicalAgentDirectory(root: string, id: string, create: boolean): string | undefined {
 	const agents = physicalAgentsDirectory(root, create);
 	if (!agents) return undefined;
@@ -351,6 +422,10 @@ function writeAgentInstructions(root: string, id: string, charter: string): void
 	if (!artifactEntry.isDirectory() || artifactEntry.isSymbolicLink()) {
 		throw new Error("Agent artifacts must be one physical directory");
 	}
+	const skills = join(directory, AGENT_SKILLS_DIRECTORY);
+	if (!existsSync(skills)) mkdirSync(skills);
+	const memory = join(directory, AGENT_MEMORY_FILE);
+	if (!existsSync(memory)) writeFileSync(memory, AGENT_MEMORY_SEED, { encoding: "utf-8", flag: "wx" });
 	const path = join(directory, AGENT_INSTRUCTIONS_FILE);
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	try {
@@ -380,8 +455,12 @@ function readAgentInstructions(root: string, id: string): string {
 	return boundedText(readFileSync(path, "utf-8").trim(), "charter", 32 * 1024, true);
 }
 
+function cloneStaffAgent(agent: StaffAgent): StaffAgent {
+	return { ...agent, appearance: { ...agent.appearance }, ...(agent.model ? { model: { ...agent.model } } : {}) };
+}
+
 function withAgentInstructions(root: string, agent: StaffAgent): StaffAgent {
-	return { ...agent, charter: readAgentInstructions(root, agent.id), appearance: { ...agent.appearance } };
+	return { ...cloneStaffAgent(agent), charter: readAgentInstructions(root, agent.id) };
 }
 
 function existingStaffAgent(registry: StaffRegistry, id: string): StaffAgent {
@@ -454,7 +533,7 @@ export function createStaffAgents(root: string, inputs: readonly CreateStaffAgen
 		for (const directory of createdDirectories) rmSync(directory, { recursive: true, force: true });
 		throw error;
 	}
-	return agents.map((agent) => ({ ...agent, appearance: { ...agent.appearance } }));
+	return agents.map(cloneStaffAgent);
 }
 
 export function updateStaffAgent(root: string, id: string, update: UpdateStaffAgentInput): StaffAgent {
@@ -482,10 +561,16 @@ export function updateStaffAgent(root: string, id: string, update: UpdateStaffAg
 				? { departmentId: optionalIdentifier(record.departmentId, "departmentId") }
 				: {}),
 		...(record.appearance !== undefined ? { appearance: appearanceValue(record.appearance) } : {}),
+		...(record.model === null
+			? { model: undefined }
+			: record.model !== undefined
+				? { model: modelValue(record.model) }
+				: {}),
 		updatedAt: new Date().toISOString(),
 	};
 	if (next.templateId === undefined) delete next.templateId;
 	if (next.departmentId === undefined) delete next.departmentId;
+	if (next.model === undefined) delete next.model;
 	registry.agents[id] = next;
 	const previousInstructions = current.charter;
 	writeAgentInstructions(root, id, next.charter);
@@ -495,13 +580,13 @@ export function updateStaffAgent(root: string, id: string, update: UpdateStaffAg
 		writeAgentInstructions(root, id, previousInstructions);
 		throw error;
 	}
-	return { ...next, appearance: { ...next.appearance } };
+	return cloneStaffAgent(next);
 }
 
 function setEmploymentStatus(root: string, id: string, status: StaffAgentEmploymentStatus): StaffAgent {
 	const registry = readRegistry(root);
 	const current = withAgentInstructions(root, existingStaffAgent(registry, id));
-	if (current.employmentStatus === status) return { ...current, appearance: { ...current.appearance } };
+	if (current.employmentStatus === status) return cloneStaffAgent(current);
 	const next: StaffAgent = {
 		...current,
 		employmentStatus: status,
@@ -509,7 +594,7 @@ function setEmploymentStatus(root: string, id: string, status: StaffAgentEmploym
 	};
 	registry.agents[id] = next;
 	writeRegistry(root, registry);
-	return { ...next, appearance: { ...next.appearance } };
+	return cloneStaffAgent(next);
 }
 
 export function archiveStaffAgent(root: string, id: string): StaffAgent {
@@ -526,7 +611,7 @@ export function restoreStaffAgent(root: string, id: string): StaffAgent {
 export function activateStaffAgent(root: string, id: string): StaffAgent {
 	const registry = readRegistry(root);
 	const current = withAgentInstructions(root, existingStaffAgent(registry, id));
-	if (current.lifecycleState === "active") return { ...current, appearance: { ...current.appearance } };
+	if (current.lifecycleState === "active") return cloneStaffAgent(current);
 	const next: StaffAgent = {
 		...current,
 		lifecycleState: "active",
@@ -534,7 +619,7 @@ export function activateStaffAgent(root: string, id: string): StaffAgent {
 	};
 	registry.agents[id] = next;
 	writeRegistry(root, registry);
-	return { ...next, appearance: { ...next.appearance } };
+	return cloneStaffAgent(next);
 }
 
 /** Permanently remove a staff definition. Archive is the reversible default;
@@ -545,5 +630,5 @@ export function deleteStaffAgent(root: string, id: string): StaffAgent {
 	const current = withAgentInstructions(root, existingStaffAgent(registry, id));
 	delete registry.agents[id];
 	writeRegistry(root, registry);
-	return { ...current, appearance: { ...current.appearance } };
+	return cloneStaffAgent(current);
 }

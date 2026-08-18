@@ -132,6 +132,12 @@ export {
 	type RunConnectorToolInput,
 } from "./run-connector.ts";
 export {
+	createSendAgentMessageTool,
+	createSendAgentMessageToolDefinition,
+	SEND_AGENT_MESSAGE_TOOL_NAME,
+	type SendAgentMessageToolInput,
+} from "./send-agent-message.ts";
+export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	formatSize,
@@ -180,6 +186,7 @@ import {
 } from "./report-artifact-source-issue.ts";
 import { createRequestConnectionTool, createRequestConnectionToolDefinition } from "./request-connection.ts";
 import { createRunConnectorTool, createRunConnectorToolDefinition } from "./run-connector.ts";
+import { createSendAgentMessageTool, createSendAgentMessageToolDefinition } from "./send-agent-message.ts";
 import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } from "./write.ts";
 
 export type Tool = AgentTool<any>;
@@ -202,6 +209,7 @@ export type ToolName =
 	| "report_artifact_source_issue"
 	| "manage_routine"
 	| "complete_setup"
+	| "send_agent_message"
 	| "finish_trigger_build"
 	| "finish_trigger_check"
 	| "use_mcp_tool";
@@ -223,6 +231,7 @@ export const allToolNames: Set<ToolName> = new Set([
 	"report_artifact_source_issue",
 	"manage_routine",
 	"complete_setup",
+	"send_agent_message",
 	"finish_trigger_build",
 	"finish_trigger_check",
 	"use_mcp_tool",
@@ -275,6 +284,8 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createManageRoutineToolDefinition();
 		case "complete_setup":
 			return createCompleteSetupToolDefinition();
+		case "send_agent_message":
+			return createSendAgentMessageToolDefinition();
 		case "finish_trigger_build":
 			return createFinishTriggerBuildToolDefinition();
 		case "finish_trigger_check":
@@ -322,6 +333,8 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createManageRoutineTool();
 		case "complete_setup":
 			return createCompleteSetupTool();
+		case "send_agent_message":
+			return createSendAgentMessageTool();
 		case "finish_trigger_build":
 			return createFinishTriggerBuildTool();
 		case "finish_trigger_check":
@@ -370,6 +383,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		report_artifact_source_issue: createReportArtifactSourceIssueToolDefinition(),
 		manage_routine: createManageRoutineToolDefinition(),
 		complete_setup: createCompleteSetupToolDefinition(),
+		send_agent_message: createSendAgentMessageToolDefinition(),
 		finish_trigger_build: createFinishTriggerBuildToolDefinition(),
 		finish_trigger_check: createFinishTriggerCheckToolDefinition(),
 		use_mcp_tool: createMcpToolDefinition(cwd),
@@ -413,6 +427,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		report_artifact_source_issue: createReportArtifactSourceIssueTool(),
 		manage_routine: createManageRoutineTool(),
 		complete_setup: createCompleteSetupTool(),
+		send_agent_message: createSendAgentMessageTool(),
 		finish_trigger_build: createFinishTriggerBuildTool(),
 		finish_trigger_check: createFinishTriggerCheckTool(),
 		use_mcp_tool: createMcpTool(cwd),
