@@ -1,8 +1,12 @@
 [functions.profile-invitation-email]
 verify_jwt = false
 
+# The cleanup worker is invoked by the scheduled job with a service key, so
+# the platform JWT gate is satisfiable and kept as defense in depth on top of
+# the function's own shared-secret check. The other functions are reached by
+# runners and mail delivery that hold no JWT and authenticate themselves.
 [functions.artifact-gc-worker]
-verify_jwt = false
+verify_jwt = true
 
 [functions.runner-control]
 verify_jwt = false
