@@ -110,7 +110,7 @@ function normalizedRelativePath(path: string): string {
 					segment.includes(":") ||
 					/[\u0001-\u001f]/.test(segment) ||
 					/[. ]$/.test(segment) ||
-					/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9]|conin\$|conout\$)(?:\..*)?$/i.test(segment),
+					/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$)(?:\..*)?$/i.test(segment),
 			)
 	) {
 		throw new Error("Cloud company tree path is invalid");

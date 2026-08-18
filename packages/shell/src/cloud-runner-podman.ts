@@ -582,19 +582,32 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 	async #sweepContainers(): Promise<void> {
 		const processHandle = this.#commands.start(
 			this.#podmanPath,
-			["ps", "--all", "--filter", "name=^qorpera-job-", "--format", "{{.Names}}"],
+			[
+				"ps",
+				"--all",
+				"--filter",
+				"name=^qorpera-job-",
+				"--filter",
+				"label=io.qorpera.ephemeral-runner=true",
+				"--format",
+				"{{.Names}}",
+			],
 			"",
 			{ stdoutBytes: 256 * 1024, stderrBytes: MAX_COMMAND_STDERR_BYTES, timeoutMs: 15_000 },
 		);
 		const result = await processHandle.completion;
 		commandSucceeded(result, "Podman stale-container inspection");
-		const names = result.stdout
-			.split(/\r?\n/)
-			.map((name) => name.trim())
-			.filter(Boolean);
-		if (names.some((name) => !STALE_CONTAINER_NAME_PATTERN.test(name)) || new Set(names).size !== names.length) {
-			throw new Error("Podman stale-container inspection returned an invalid name");
-		}
+		// Remove only names this backend provably created (exact UUID shape and
+		// the runner label). A foreign same-prefix container must not brick the
+		// sweep or be destroyed — it simply stays behind for the operator.
+		const names = [
+			...new Set(
+				result.stdout
+					.split(/\r?\n/)
+					.map((name) => name.trim())
+					.filter((name) => STALE_CONTAINER_NAME_PATTERN.test(name)),
+			),
+		];
 		if (names.length === 0) return;
 		const removal = this.#commands.start(this.#podmanPath, ["rm", "--force", "--time=0", ...names], "", {
 			stdoutBytes: 256 * 1024,

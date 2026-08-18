@@ -11,7 +11,7 @@ Each observation binds:
 - The CPU, memory, process, wall-time, input, output, and result limits actually applied by the worker.
 - Server-derived reserved CPU-milliseconds and memory-MiB-milliseconds.
 
-The sandbox emits `qorpera.runner-usage/v1` inside its bounded completion result. `qorpera_complete_runner_job_v3` validates every numeric field, cross-checks output bytes, derives reserved capacity itself, completes the job through the existing idempotent v2 publication transaction, and inserts the observation before that transaction commits.
+The sandbox emits `qorpera.runner-usage/v1` inside its bounded completion result. `qorpera_complete_runner_job_v4` validates every numeric field, cross-checks output bytes, derives reserved capacity itself, completes the job through the existing idempotent v2 publication transaction, and inserts the observation before that transaction commits.
 
 One job can have only one observation. Replaying the same completion returns the existing job and observation; changing any observed value fails. Failed, cancelled, requeued, and expired jobs do not create successful-execution observations.
 
@@ -43,7 +43,7 @@ Automatic 50/50 cost splitting is not inferred from profile membership.
 
 1. Apply `migrations/20260817002000_runner_usage_observations.sql` after the runner output-substrate migration.
 2. Apply `migrations/20260817006000_runner_recovery_ambiguity.sql` before any paid provider call.
-3. Deploy the updated `functions/runner-control`; its completion action calls `qorpera_complete_runner_job_v3`.
+3. Deploy the updated `functions/runner-control`; its completion action calls `qorpera_complete_runner_job_v4`.
 4. Complete and replay a disposable job, confirm exactly one observation, and confirm a changed replay is rejected.
 5. Confirm a non-member cannot list the profile ledger, authenticated clients cannot write the table directly, and parent deletion cannot cascade-delete an observation.
 

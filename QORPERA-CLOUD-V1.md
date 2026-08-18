@@ -134,7 +134,7 @@ Each machine stores a company-folder attachment under the shell's user-data dire
 - Events are ordered by a per-session sequence.
 - Appends take a caller-generated event UUID for idempotent retries.
 - An optional expected sequence prevents accidental writes against stale state.
-- Events form a SHA-256 chain.
+- Events carry server-generated SHA-256 hashes as correlation fields; clients do not yet verify the chain, so it is not a tamper-evidence guarantee.
 - Account RPCs always stamp `auth.uid()` as the actor; clients cannot impersonate an agent or kernel.
 - `authorization_decision` requires `owner` or `admin` access.
 - Agent and kernel observations will use short-lived runner capabilities through a separate service boundary.

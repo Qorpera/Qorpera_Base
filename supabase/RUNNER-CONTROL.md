@@ -43,9 +43,9 @@ The first worker loop is deliberately single-lane. It validates the containment 
 2. Apply `migrations/20260817001000_runner_output_substrates.sql` after the object-broker migration to install job-attributed artifacts and atomic output publication.
 3. Apply `migrations/20260817006000_runner_recovery_ambiguity.sql` before enabling a real runner. It adds active-runner re-pairing and keeps usage-bearing jobs from deleting their facts.
 4. Deploy `functions/runner-control` with JWT verification disabled as declared in `config.toml`. The function performs its own 43-character bearer-token validation.
-4. Keep the Supabase secret key inside the Edge Function environment. Runner installations receive only the project URL, publishable key, runner UUID, and their current short-lived token.
-5. Create a service-account-owned mode `0700` state directory and keep its authority file at mode `0600`. Supply the one-time activation token only for first initialization.
-6. Verify a disposable lifecycle before registering physical hardware: register, activate, restart during activation, heartbeat, restart during claim, renew, execute, restart during completion, replay completion, revoke, and confirm that the revoked session is rejected.
+5. Keep the Supabase secret key inside the Edge Function environment. Runner installations receive only the project URL, publishable key, runner UUID, and their current short-lived token.
+6. Create a service-account-owned mode `0700` state directory and keep its authority file at mode `0600`. Supply the one-time activation token only for first initialization.
+7. Verify a disposable lifecycle before registering physical hardware: register, activate, restart during activation, heartbeat, restart during claim, renew, execute, restart during completion, replay completion, revoke, and confirm that the revoked session is rejected.
 
 The deployable worker package is under `deploy/ephemeral-runner`. It is a dedicated systemd user service, so rootless Podman receives a real user manager, home directory, and runtime directory. `LoadCredential=qorpera-runner-activation` supplies the activation token only when the private authority file does not yet exist; the source credential is removed after successful activation. The configuration rejects mutable image tags, unknown settings, credential-shaped container environment entries, and non-absolute host paths before the worker loop starts.
 

@@ -104,7 +104,7 @@ describe("cloud company snapshots", () => {
 		await expect(captureCloudCompanyTree(root, profileId, store)).rejects.toThrow("physical files");
 	});
 
-	it.each(["CON", "nested/COM1.txt", "notes.md:hidden", "trailing. "])(
+	it.each(["CON", "nested/COM1.txt", "notes.md:hidden", "trailing. ", "COM¹", "nested/LPT².log"])(
 		"rejects Win32 namespace path %s before materialization",
 		async (path) => {
 			const transport = new MemoryObjectTransport();

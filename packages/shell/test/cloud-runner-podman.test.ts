@@ -179,6 +179,8 @@ describe("rootless Podman cloud runner", () => {
 			"--all",
 			"--filter",
 			"name=^qorpera-job-",
+			"--filter",
+			"label=io.qorpera.ephemeral-runner=true",
 			"--format",
 			"{{.Names}}",
 		]);
@@ -304,15 +306,26 @@ describe("rootless Podman cloud runner", () => {
 		const unrelatedWorkspace = join(temporaryRoot, "keep-me");
 		await Promise.all([mkdir(staleWorkspace), mkdir(unrelatedWorkspace)]);
 		const staleContainer = "qorpera-job-11111111-1111-4111-8111-111111111111";
+		const foreignContainer = "qorpera-job-not-a-uuid";
 		const commands = new FakePodmanCommands();
 		commands.responses.push(
 			completed(commandResult(runtimeInfo())),
-			completed(commandResult(`${staleContainer}\n`)),
+			completed(commandResult(`${staleContainer}\n${foreignContainer}\n`)),
 			completed(commandResult()),
 		);
 
 		await backend(commands, undefined, temporaryRoot).prepare();
 
+		expect(commands.calls[1]?.args).toEqual([
+			"ps",
+			"--all",
+			"--filter",
+			"name=^qorpera-job-",
+			"--filter",
+			"label=io.qorpera.ephemeral-runner=true",
+			"--format",
+			"{{.Names}}",
+		]);
 		expect(commands.calls[2]?.args).toEqual(["rm", "--force", "--time=0", staleContainer]);
 		await expect(stat(staleWorkspace)).rejects.toMatchObject({ code: "ENOENT" });
 		expect((await stat(unrelatedWorkspace)).isDirectory()).toBe(true);

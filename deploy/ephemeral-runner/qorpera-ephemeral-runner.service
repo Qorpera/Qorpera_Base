@@ -7,8 +7,11 @@ After=network-online.target
 [Service]
 Type=exec
 Environment=QORPERA_RUNNER_CONFIG=%h/.config/qorpera-runner/config.json
-LoadCredential=qorpera-runner-activation
-LoadCredential=qorpera-runner-repair
+# ImportCredential tolerates an absent credential; LoadCredential without a
+# source path is fatal on some systemd versions once the one-time file is
+# deleted after consumption, which would block every later restart.
+ImportCredential=qorpera-runner-activation
+ImportCredential=qorpera-runner-repair
 ExecStart=/usr/bin/node /opt/qorpera-runner/qorpera-ephemeral-runner.mjs
 Restart=on-failure
 RestartSec=5s
