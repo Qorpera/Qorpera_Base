@@ -140,6 +140,7 @@ const STAFF_AVATAR_SHAPES = ["soft-square", "round", "wide", "gem", "tilted", "d
 const STAFF_CREATURE_CATALOG = Object.freeze({
 	pebble: Object.freeze({ label: "Pebble", asset: "./staff-creatures/pebble.png" }),
 	lantern: Object.freeze({ label: "Lantern", asset: "./staff-creatures/lantern.png" }),
+	folio: Object.freeze({ label: "Folio", asset: "./staff-creatures/folio.png" }),
 	brain: Object.freeze({ label: "Brain", asset: "./staff-creatures/brain.png" }),
 	wisp: Object.freeze({ label: "Wisp Float", asset: "./staff-creatures/wisp.png" }),
 	halo: Object.freeze({ label: "Flame Halo Walker", asset: "./staff-creatures/halo.png" }),
@@ -150,7 +151,7 @@ const STAFF_CREATURE_IDS = Object.freeze(Object.keys(STAFF_CREATURE_CATALOG));
 const STAFF_CREATURE_BY_TEMPLATE = Object.freeze({
 	"financial-officer": "pebble",
 	"marketing-lead": "bloom",
-	"product-manager": "lantern",
+	"product-manager": "folio",
 	"software-developer": "wisp",
 	"product-designer": "ribbon",
 	"legal-expert": "halo",

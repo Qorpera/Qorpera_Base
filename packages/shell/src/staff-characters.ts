@@ -3,6 +3,7 @@ import type { StaffTemplateId } from "./staff-templates.ts";
 export const STAFF_CHARACTER_IDS = Object.freeze([
 	"pebble",
 	"lantern",
+	"folio",
 	"brain",
 	"wisp",
 	"halo",
@@ -15,7 +16,7 @@ export type StaffCharacterId = (typeof STAFF_CHARACTER_IDS)[number];
 export const STAFF_CHARACTER_BY_TEMPLATE = Object.freeze({
 	"financial-officer": "pebble",
 	"marketing-lead": "bloom",
-	"product-manager": "lantern",
+	"product-manager": "folio",
 	"software-developer": "wisp",
 	"product-designer": "ribbon",
 	"legal-expert": "halo",
