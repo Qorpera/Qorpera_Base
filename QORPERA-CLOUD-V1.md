@@ -147,6 +147,12 @@ Each machine stores a company-folder attachment under the shell's user-data dire
 - The hosted staff roster carries `lifecycle_state`, `appearance_creature`, and the per-agent model selection (`model_provider`/`model_id`) so the authoritative cloud replacement cannot downgrade an active agent to setup behavior, strip its appearance, or silently reset its chosen model to the company default. The local replacement writes each agent's instructions file alongside the registry.
 - Routines, connection requests, and credentials are deliberately machine-local standing authority: a company synced to another machine arrives with agents and artifacts but without recurring work or credentials until they are granted there. Hosted placement for these is the declared `hostedCompanyState` capability, not tree snapshots.
 
+## Compute servers (planned)
+
+- Compute servers have internet; agent processes do not. Terminal, browser, and file capabilities are host-side brokers the sandboxed agent requests through job-private channels, following the model-gateway socket pattern. Every brokered action is observable in the trail.
+- Credentials live in a vault agents can request from but never read: the local company vault (OS-protected, `secret://` references dereferenced only kernel-side) extends to the declared `hosted-kms-vault` placement for cloud execution, so compute-server jobs use credentials without the values entering any agent context.
+- Cross-account separation rests on RLS plus security-definer RPCs, profile-scoped object prefixes, and lease-scoped runner reads. Closing DBTEST-1 (role-based behavioral tests for RLS and the grant matrix) is a prerequisite for hosting multiple real customer accounts.
+
 ## Failure model
 
 - If the hosted primary is unavailable, local profiles remain available. A cloud profile with a validated account-bound cache can reopen for reading and contribution; authorization and membership management fail closed, and outbound synchronization retries durably in the background.
