@@ -28,9 +28,25 @@
 			"types": "./dist/core/company.d.ts",
 			"import": "./dist/core/company.js"
 		},
+		"./company-artifacts": {
+			"types": "./dist/core/company-artifacts.d.ts",
+			"import": "./dist/core/company-artifacts.js"
+		},
 		"./company-connections": {
 			"types": "./dist/core/company-connections.d.ts",
 			"import": "./dist/core/company-connections.js"
+		},
+		"./company-connectors": {
+			"types": "./dist/core/company-connectors.d.ts",
+			"import": "./dist/core/company-connectors.js"
+		},
+		"./company-operation-broker": {
+			"types": "./dist/core/company-operation-broker-client.d.ts",
+			"import": "./dist/core/company-operation-broker-client.js"
+		},
+		"./company-secret-vault": {
+			"types": "./dist/core/company-secret-vault.d.ts",
+			"import": "./dist/core/company-secret-vault.js"
 		},
 		"./company-staff": {
 			"types": "./dist/core/company-staff.d.ts",
@@ -39,6 +55,10 @@
 		"./founder-identity": {
 			"types": "./dist/core/founder-identity.d.ts",
 			"import": "./dist/core/founder-identity.js"
+		},
+		"./oauth-onboarding": {
+			"types": "./dist/core/oauth-onboarding.d.ts",
+			"import": "./dist/core/oauth-onboarding.js"
 		},
 		"./app-server": {
 			"types": "./dist/core/app-server.d.ts",

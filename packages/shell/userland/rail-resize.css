@@ -137,7 +137,7 @@ body.company-shell.rail-compact #staffNavigation {
 }
 
 body.company-shell.rail-compact .staff-nav-row,
-body.company-shell.rail-compact .controller-nav-row {
+body.company-shell.rail-compact .company-runtime-row {
 	display: grid;
 	grid-template-columns: 1fr;
 	place-items: center;
@@ -150,13 +150,13 @@ body.company-shell.rail-compact .controller-nav-row {
 
 body.company-shell.rail-compact .staff-nav-row:hover,
 body.company-shell.rail-compact .staff-nav-row.active,
-body.company-shell.rail-compact .controller-nav-row:hover,
-body.company-shell.rail-compact .controller-nav-row.active {
+body.company-shell.rail-compact .company-runtime-row:hover,
+body.company-shell.rail-compact .company-runtime-row.active {
 	background: #e8e8e6;
 }
 
 body.company-shell.rail-compact .staff-nav-row .staff-avatar,
-body.company-shell.rail-compact .controller-nav-row .staff-avatar {
+body.company-shell.rail-compact .company-runtime-row .staff-avatar {
 	width: 42px;
 	height: 42px;
 }

@@ -1,5 +1,8 @@
 # Qorpera Base Minimum Build Plan
 
+> Historical plan, superseded by the agents-only company model documented in
+> `packages/coding-agent/docs/company.md`.
+
 **Status:** Ratification draft (review edits applied)
 **Date:** 2026-08-10
 **Implementation base:** A fresh worktree from the latest `master` (`claude/base-minimum`); not the detached pre-PR #2 checkout in which the first draft was prepared.

@@ -212,7 +212,7 @@ export function createWriteToolDefinition(
 					resolve(messagesRoot, messageFile) === resolve(absolutePath)
 				) {
 					const created = await requestKernelMessageCreation(messageFile, content);
-					if (!created) throw new Error("Kernel refused inbox message creation");
+					if (!created) throw new Error("Desktop host refused inbox message creation");
 					return {
 						content: [
 							{

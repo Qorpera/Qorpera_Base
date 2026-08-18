@@ -1,7 +1,7 @@
 /**
- * File-mode path validation for the kernel HTTP lane (Build 3).
+ * File-mode path validation for the desktop host's HTTP lane.
  *
- * The kernel opens `sendFile` sources and creates `saveTo` targets OUTSIDE
+ * The host opens `sendFile` sources and creates `saveTo` targets outside
  * the sandbox, so containment cannot be lexical: any symlinked component
  * inside company territory could point anywhere on the host. Every existing
  * path component is resolved physically before the containment and
@@ -75,7 +75,7 @@ export function createCompanyFileResolver(
 					normalized.startsWith(`${protectedPath}\\`) ||
 					normalized.startsWith(`${protectedPath}/`)
 				) {
-					throw new Error(`saveTo cannot write into kernel-protected territory: ${relativePath}`);
+					throw new Error(`saveTo cannot write into host-protected territory: ${relativePath}`);
 				}
 			}
 		}

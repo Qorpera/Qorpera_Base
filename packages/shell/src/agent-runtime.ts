@@ -25,6 +25,7 @@ import {
 	requestHash,
 } from "@qorpera/pi-coding-agent/authority";
 import type { KernelIntentCapability, KernelModelIntentBudget, ModelIntentTerminalStatus } from "@qorpera/pi-protocol";
+import type { ConnectionRequest } from "./connection-requests.ts";
 
 export type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
 
@@ -47,7 +48,7 @@ function assertPhysicalCompanyTree(root: string, relativePath: string): string {
 			normalizedPhysicalPath(realpathSync(path)) !== normalizedPhysicalPath(path) ||
 			(entry.isFile() && entry.nlink !== 1)
 		) {
-			throw new Error(`Company kernel storage must be one physical entry: ${relativePath}`);
+			throw new Error(`Company storage must be one physical entry: ${relativePath}`);
 		}
 		if (entry.isDirectory()) {
 			for (const child of readdirSync(path)) visit(join(path, child));
@@ -58,10 +59,9 @@ function assertPhysicalCompanyTree(root: string, relativePath: string): string {
 }
 
 interface QorperaSessionAuthority {
-	actor: "controller" | "product-worker";
+	actor: "company-agent" | "product-worker";
 	attended: boolean;
-	/** Stable staff member identity. Missing means the pre-staff system/legacy
-	 * controller rather than an unnamed staff member. */
+	/** Stable staff member identity. */
 	staffAgentId?: string;
 	autonomous?: boolean;
 	label?: string;
@@ -105,7 +105,7 @@ interface SessionEntry {
 }
 
 export interface AgentScope {
-	actor: "controller" | "product-worker";
+	actor: "company-agent" | "product-worker";
 	attended: boolean;
 	staffAgentId?: string;
 	autonomousLabel?: string;
@@ -225,7 +225,7 @@ function authorityForScope(scope: AgentScope): QorperaSessionAuthority {
 }
 
 function assertMatchingAuthority(actual: QorperaSessionAuthority | undefined, expected: QorperaSessionAuthority): void {
-	if (!actual) throw new Error("legacy trail sessions have no kernel authority binding and cannot be resumed");
+	if (!actual) throw new Error("legacy trail sessions have no trusted host binding and cannot be resumed");
 	for (const key of ["actor", "staffAgentId", "department", "worktree"] as const) {
 		if (actual[key] !== expected[key]) {
 			throw new Error(`trail session authority does not match the requested ${key}`);
@@ -406,6 +406,50 @@ export function migrateLegacyTrailSession(root: string, sessionFile: string, sco
 	return true;
 }
 
+/**
+ * Replace the retired `controller` actor label in current-schema trails.
+ * Entry bytes stay unchanged, so the append hash chain remains valid. The
+ * original file is retained once beside the trail for recovery.
+ */
+export function migrateLegacyCompanyAgentTrails(root: string): number {
+	const trailDir = assertPhysicalCompanyTree(root, "trail");
+	let migratedCount = 0;
+	for (const file of readdirSync(trailDir)) {
+		if (!file.endsWith(".jsonl")) continue;
+		const path = join(trailDir, file);
+		assertPhysicalCompanyTree(root, join("trail", file));
+		const original = readFileSync(path, "utf-8");
+		const newline = original.indexOf("\n");
+		if (newline < 0) throw new Error(`trail session header is missing or too large: ${path}`);
+		const header = readHeader(path);
+		const authority = header.qorpera as (Omit<QorperaSessionAuthority, "actor"> & { actor?: string }) | undefined;
+		if (header.version !== TRAIL_SESSION_VERSION || authority?.actor !== "controller") continue;
+		loadTrailAudit(path);
+		const migratedHeader: SessionHeader = {
+			...header,
+			qorpera: { ...authority, actor: "company-agent" },
+		};
+		const backup = `${path}.controller.bak`;
+		if (!existsSync(backup)) writeFileSync(backup, original, { encoding: "utf-8", flag: "wx" });
+		else if (readFileSync(backup, "utf-8") !== original) {
+			throw new Error(`legacy trail backup does not match the source: ${file}`);
+		}
+		const staging = `${path}.${randomUUID()}.migrating`;
+		try {
+			writeFileSync(staging, `${JSON.stringify(migratedHeader)}\n${original.slice(newline + 1)}`, {
+				encoding: "utf-8",
+				flag: "wx",
+			});
+			renameSync(staging, path);
+		} catch (error) {
+			rmSync(staging, { force: true });
+			throw error;
+		}
+		migratedCount++;
+	}
+	return migratedCount;
+}
+
 export function bindTrailSession(
 	root: string,
 	cwd: string,
@@ -453,42 +497,6 @@ export function bindTrailSession(
 	return { path, file: basename(path), sessionId, cwd: resolve(cwd), token: randomUUID(), authority, audit };
 }
 
-/** Newest founder chat the controller scope can resume: current schema,
- * kernel-authored authority header, no autonomous label, no product
- * assignment. Returns the bare trail filename, or undefined for none. */
-export function latestResumableTrailSession(root: string): string | undefined {
-	const trailDir = join(root, "trail");
-	if (!existsSync(trailDir)) return undefined;
-	const files = readdirSync(trailDir)
-		.filter((file) => file.endsWith(".jsonl"))
-		.sort()
-		.reverse();
-	for (const file of files) {
-		try {
-			const path = join(trailDir, file);
-			const header = readHeader(path);
-			if (header.version !== TRAIL_SESSION_VERSION) continue;
-			const authority = header.qorpera;
-			if (!authority || authority.autonomous || authority.label) continue;
-			if (
-				authority.actor !== "controller" ||
-				authority.staffAgentId !== undefined ||
-				authority.department ||
-				authority.worktree
-			) {
-				continue;
-			}
-			// A torn newest trail must not hold the whole company hostage. Only a
-			// session whose complete append chain is bindable can be selected.
-			loadTrailAudit(path);
-			return file;
-		} catch {
-			// unreadable header — not resumable
-		}
-	}
-	return undefined;
-}
-
 /** Entry types that make a session part of the company's memory. Everything
  * else (header, model/thinking selection, a session name) is plumbing a
  * window open writes before anyone speaks. */
@@ -497,7 +505,7 @@ const TRAIL_CONTENT_TYPES = new Set(["message", "custom", "custom_message", "lab
 /**
  * Remove founder chat trail files that never carried any content — the
  * husk a window open used to mint per spawn. Kernel-side hygiene at company
- * open: autonomous sessions are controller work history and always stay,
+ * open: autonomous sessions are agent work history and always stay,
  * and any file with a single content entry (or anything unparseable) stays.
  * Returns the number of files removed.
  */
@@ -724,6 +732,35 @@ export function appendKernelHttpObservation(
 	appendKernelCustomObservation(binding, "qorpera_kernel_http_request", input);
 }
 
+/** Reconstructable record of the agent's visible computer navigation. Page
+ * contents and screenshots stay out of the trail; it records only the action,
+ * URL, and outcome needed to explain how a user handoff was reached. */
+export function appendKernelComputerObservation(
+	binding: TrailBinding,
+	input: {
+		requestId: string;
+		action: string;
+		url?: string;
+		status: "started" | "completed" | "failed" | "denied" | "handoff";
+		detail?: string;
+	},
+): void {
+	appendKernelCustomObservation(binding, "qorpera_kernel_computer_action", input);
+}
+
+/** Portable connector reconstruction record. Secret values and provider
+ * payloads never enter the request record; secretNames are opaque capability
+ * references that tell a future agent what support must be rebound. */
+export function appendKernelConnectionObservation(
+	binding: TrailBinding,
+	input: {
+		version: 1;
+		request: ConnectionRequest;
+	},
+): void {
+	appendKernelCustomObservation(binding, "qorpera_kernel_connection", input);
+}
+
 export function appendKernelMutationObservation(
 	binding: TrailBinding,
 	input: {
@@ -825,7 +862,7 @@ export function reconcileKernelGateCreations(
 				assertPhysicalCompanyTree(root, join("inbox", creation.file));
 				const record = parseGateDocument(creation.file, readFileSync(path, "utf-8"));
 				if (!record || record.hash !== creation.hash) {
-					throw new Error(`Pending kernel gate creation is not canonical: ${creation.file}`);
+					throw new Error(`Pending host gate creation is not canonical: ${creation.file}`);
 				}
 				transition = "created";
 			}
@@ -1240,7 +1277,7 @@ function intentRequestHash(frame: Record<string, unknown>): string {
 	return createHash("sha256").update(JSON.stringify(frame)).digest("hex");
 }
 
-/** Founder call (2026-08-13): the controller runs at full permission on the
+/** Founder call (2026-08-13): the company agent runs at full permission on the
  * founder's own machine — no call, token, or dollar ceilings on their work
  * (the codex full-access posture). The signed-intent structure is unchanged:
  * every model call still rides a kernel-signed intent and every request and
@@ -1268,7 +1305,7 @@ function checkedModelIntentBudget(budget: KernelModelIntentBudget): KernelModelI
 		!Number.isFinite(budget.maxCostUsd) ||
 		budget.maxCostUsd < 0
 	) {
-		throw new Error("kernel model intent budget is invalid");
+		throw new Error("host model intent budget is invalid");
 	}
 	return { ...budget };
 }
@@ -1283,11 +1320,11 @@ export function createKernelResponseSigner(options: {
 	signBinding: (response: { nonce: string; sessionId: string }) => SignedKernelBindingResponse;
 	signIntent: (frame: Record<string, unknown>, attended: boolean) => KernelIntentCapability;
 } {
-	if (!options.sessionId) throw new Error("kernel intent signer requires a session id");
+	if (!options.sessionId) throw new Error("host intent signer requires a session id");
 	const budget = checkedModelIntentBudget(options.modelBudget ?? DEFAULT_MODEL_INTENT_BUDGET);
 	const lifetimeMs = options.intentLifetimeMs ?? DEFAULT_MODEL_INTENT_LIFETIME_MS;
 	if (!Number.isInteger(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > MAX_MODEL_INTENT_LIFETIME_MS) {
-		throw new Error("kernel model intent lifetime is invalid");
+		throw new Error("host model intent lifetime is invalid");
 	}
 	const pair = generateKeyPairSync("ed25519");
 	const publicKey = pair.publicKey.export({ format: "der", type: "spki" }).toString("base64");
@@ -1410,13 +1447,13 @@ export function writeSandboxProfile(
 		[":tmpdir", "write"],
 		[":slash_tmp", "write"],
 		[resolve(runtimeDir), "write"],
-		[resolve(companyRoot), scope.actor === "controller" ? "write" : "read"],
+		[resolve(companyRoot), scope.actor === "company-agent" ? "write" : "read"],
 	]);
 	for (const path of foundationReadPaths) permissions.set(resolve(path), "read");
 	for (const path of protectedPaths) permissions.set(resolve(path), "read");
-	if (scope.actor === "controller") {
+	if (scope.actor === "company-agent") {
 		// The one sanctioned agent-writable inbox lane (authority.ts
-		// isProtectedPath): the controller authors inbox/messages/msg-*.md
+		// isProtectedPath): the company agent authors inbox/messages/msg-*.md
 		// items. The OS grant is directory-level; which FILES inside are
 		// legitimate stays enforced at the tool boundary. Gate records and
 		// notices live at inbox/ root and remain read-only here.
@@ -1552,7 +1589,7 @@ export function shareWindowsSandboxState(userData: string, configDir: string): v
 					renameSync(source, target);
 				} catch {
 					// A file the migration cannot move (locked log, permission) only
-					// costs one more elevated setup — never block the controller.
+					// costs one more elevated setup — never block the company agent.
 				}
 			}
 			rmSync(local, { recursive: true, force: true });
@@ -1609,7 +1646,7 @@ export function provisionWindowsSandbox(options: {
 			.trim()
 			.slice(0, 4096);
 		throw new Error(
-			`Bundled Codex Windows sandbox provisioning failed; Qorpera will not start the controller.${detail ? `\n${detail}` : ""}`,
+			`Bundled Codex Windows sandbox provisioning failed; Qorpera will not start the agent runtime.${detail ? `\n${detail}` : ""}`,
 		);
 	}
 
@@ -1619,7 +1656,7 @@ export function provisionWindowsSandbox(options: {
 /**
  * Exercise the effective offline identity, not only the sandbox's setup
  * marker. Any successful direct HTTPS request means network isolation is
- * absent or stale, so the controller must not start.
+ * absent or stale, so the company agent must not start.
  */
 function assertSandboxNetworkIsolation(options: {
 	codexEntry: string;
@@ -1650,14 +1687,14 @@ function assertSandboxNetworkIsolation(options: {
 			.trim()
 			.slice(0, 4096);
 		throw new Error(
-			`Bundled Codex sandbox network isolation failed; Qorpera will not start the controller.${detail ? `\n${detail}` : ""}`,
+			`Bundled Codex sandbox network isolation failed; Qorpera will not start the agent runtime.${detail ? `\n${detail}` : ""}`,
 		);
 	}
 }
 
 /**
  * Fail-closed sandbox verification on every platform (manifesto §7.2 —
- * isolation strength is stated honestly or the controller does not start).
+ * isolation strength is stated honestly or the company agent does not start).
  * Windows adds the Codex offline-identity check; every platform must prove
  * network isolation is actually enforced before an agent runs. If the
  * bundled sandbox no-ops on a platform, the probe's fetch succeeds and the
@@ -1681,7 +1718,7 @@ export function provisionSandbox(options: {
 	});
 }
 
-export function protectedControllerPaths(
+export function protectedCompanyAgentPaths(
 	root: string,
 	productPaths: Array<{ repository: string; worktrees: string }>,
 ): string[] {
@@ -1689,12 +1726,10 @@ export function protectedControllerPaths(
 		join(root, ".git"),
 		join(root, "trail"),
 		join(root, "authority.toml"),
-		join(root, "AGENTS.md"),
-		join(root, "CLAUDE.md"),
 		join(root, ".qorpera"),
 		join(root, "inbox"),
 		...productPaths.flatMap((product) => [join(root, product.repository), join(root, product.worktrees)]),
-	];
+	].filter((path) => existsSync(path));
 }
 
 export function inboxMessagesPath(root: string): string {

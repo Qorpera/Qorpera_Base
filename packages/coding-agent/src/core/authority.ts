@@ -1,10 +1,12 @@
 /**
  * Authority gates — Qorpera Base's enforcement layer (spec §4).
  *
- * Full freedom in thought and construction; gates on effect. `authority.toml`
- * at the company root defines four configurable effect classes (money,
- * identity, irreversible, authority) with modes auto | notify | gate.
- * Product code is a separate role boundary: controllers can only read it;
+ * Full freedom in thought and construction; gates on effect. Base supplies a
+ * fail-closed authority floor for every company manifest. An optional
+ * `authority.toml` at the company root can define four configurable effect
+ * classes (money, identity, irreversible, authority) with modes auto |
+ * notify | gate.
+ * Product code is a separate role boundary: company agents can only read it;
  * product-workers can mutate only their assigned worktree. `[authority]` is
  * ALWAYS gated regardless of configuration — it covers changes to the
  * authority file itself, the kernel files (AGENTS.md / CLAUDE.md at the
@@ -14,11 +16,11 @@
  * `<root>/inbox/gate-*.md` and returns a block reason; the agent keeps
  * working elsewhere. Base resolves the request through exact native review.
  * Tool-call approvals are single-use (consumed on the next matching call);
- * extension and behavior trust is durable in the desktop kernel for the
+ * extension and behavior trust is durable in the desktop host for the
  * reviewed company path and content hash (new content = new hash = new gate).
  *
- * Without an `authority.toml` anywhere above the working directory, every
- * decision is `allow` — Base behaves like the stock harness.
+ * Outside a company and without `authority.toml`, Base behaves like the stock
+ * harness. Inside a company, a missing policy means every class gates.
  *
  * This module is policy + record-keeping only. Enforcement happens where it
  * is wired: `agent-session.ts` (`_installAgentToolHooks`, before extension
@@ -36,7 +38,7 @@ import { writeRawStdout } from "./output-guard.ts";
 
 export type ConfigurableEffectClass = "money" | "identity" | "irreversible" | "authority";
 export type EffectClass = ConfigurableEffectClass | "product_code";
-export type CompanyActor = "controller" | "product-worker";
+export type CompanyActor = "company-agent" | "product-worker";
 export type AuthorityMode = "auto" | "notify" | "gate";
 
 export interface AuthorityClassConfig {
@@ -76,7 +78,7 @@ export type AuthorityDecision =
 export interface ToolCallContext {
 	/**
 	 * True when a founder is present with approval-capable UI (tui/rpc modes)
-	 * AND the session is not controller-initiated: kernel-spawned autonomous
+	 * AND the session is not agent-initiated: host-spawned autonomous
 	 * work (conception, merges, wakes) carries QORPERA_AUTONOMOUS and is never
 	 * attended even though it runs in rpc mode. Headless runs (print/json/SDK)
 	 * are unattended. Attended sessions are founder sessions: the founder's
@@ -84,7 +86,7 @@ export interface ToolCallContext {
 	 * remain role-scoped regardless of attendance.
 	 */
 	attended: boolean;
-	/** Kernel-assigned organizational role. Missing means company controller. */
+	/** Host-assigned organizational role. Missing means the primary company agent. */
 	actor?: CompanyActor;
 	/** Root-relative worktree assigned by the product-development runtime. */
 	productWorktree?: string;
@@ -108,7 +110,7 @@ export interface BehaviorSignature {
 	signed: boolean;
 	gateId?: string;
 	gateStatus?: "pending" | "denied";
-	/** Durable approval awaiting proof from the live local desktop kernel. */
+	/** Durable approval awaiting proof from the live local desktop host. */
 	kernelTrust?: { file: string; hash: string };
 }
 
@@ -152,6 +154,8 @@ const OUTWARD_CLASSES: ReadonlySet<EffectClass> = new Set(["money", "identity", 
 /** Path-arg zone checks apply only to tools that mutate the path. */
 const MUTATING_PATH_TOOLS = new Set(["write", "edit", "apply_patch", "multiedit"]);
 const AUTHORITY_FILE = "authority.toml";
+const COMPANY_MANIFEST_FILE = join(".qorpera", "company.json");
+const STAFF_REGISTRY_FILE = join(".qorpera", "staff.json");
 const INBOX_DIR = "inbox";
 /** Root-level files whose modification is an [authority]-class effect. */
 const PROTECTED_ROOT_FILES = new Set([AUTHORITY_FILE, "AGENTS.md", "CLAUDE.md"]);
@@ -248,12 +252,12 @@ function stripIndexSafeGitPaths(command: string): string {
 	});
 }
 
-/** Walk upward from startDir looking for authority.toml. */
+/** Walk upward looking for an explicit policy or an agents-only company. */
 export function discoverAuthority(startDir: string): Authority | undefined {
 	let dir = resolve(startDir);
 	while (true) {
 		const candidate = join(dir, AUTHORITY_FILE);
-		if (existsSync(candidate)) {
+		if (existsSync(candidate) || existsSync(join(dir, COMPANY_MANIFEST_FILE))) {
 			return { root: dir, configPath: candidate };
 		}
 		const parent = dirname(dir);
@@ -278,6 +282,7 @@ export function readAuthorityConfig(authority: Authority): AuthorityConfig {
 		},
 		tools: {},
 	};
+	if (!existsSync(authority.configPath)) return fallback;
 	// Policy provenance (manifesto §3.1, invariant 15): once a founder
 	// identity exists in this context, only policy the LOCAL founder signed
 	// grants auto/notify modes — unsigned, tampered, or foreign-signed
@@ -342,7 +347,7 @@ function isUnderDir(target: string, root: string): boolean {
 /**
  * Does this file path touch authority-protected territory?
  *
- * The inbox is the controller↔founder channel: the agent MAY author
+ * The inbox is the agent↔founder channel: the agent MAY author
  * `msg-*.md` items (questions, proposals, plans, updates — the founder
  * responds in the shell). Everything else in inbox/ stays gated — gate
  * files especially, since writing those is self-approval.
@@ -357,6 +362,11 @@ function isProtectedPath(authority: Authority, rawPath: string, cwd: string): bo
 		return !(isDirectChild && isAgentMessage);
 	}
 	if (dirname(resolved) === resolve(authority.root) && PROTECTED_ROOT_FILES.has(basename(resolved))) return true;
+	if (
+		resolved === resolve(authority.root, COMPANY_MANIFEST_FILE) ||
+		resolved === resolve(authority.root, STAFF_REGISTRY_FILE)
+	)
+		return true;
 	if (resolved === resolve(authority.root, PRODUCT_REGISTRY_PATH)) return true;
 	if (resolved === resolve(authority.root, AUTHORITY_SIGNATURE_PATH)) return true;
 	return false;
@@ -397,6 +407,7 @@ function bashTouchesProtected(command: string): boolean {
 	if (!WRITEISH_BASH.test(stripped)) return false;
 	if (/\binbox[/\\]/.test(stripped)) return true;
 	if (stripped.includes(AUTHORITY_FILE)) return true;
+	if (/\.qorpera[/\\](?:company|staff)\.json/i.test(stripped)) return true;
 	if (/\.qorpera[/\\]products\.json/i.test(stripped)) return true;
 	if (/\b(AGENTS|CLAUDE)\.md\b/i.test(stripped)) return true;
 	return false;
@@ -724,7 +735,7 @@ function summarizeCall(toolName: string, args: unknown): string {
  * authority root (built-ins, SDK tools, user-global extensions — outside the
  * company's signature regime, mirroring extension-load gating's carve-out).
  *
- * Signatures are durable in the path-scoped desktop kernel: a native-reviewed
+ * Signatures are durable in the path-scoped desktop host: a native-reviewed
  * capability covers exactly that company path and content hash across child
  * replacement, while copied company files carry no authority. The
  * hash is computed from the file as it is NOW — with jiti hot-reload this
@@ -874,13 +885,13 @@ export function evaluateToolCall(
 			kind: "block",
 			effectClass: "product_code",
 			reason:
-				"Product-worker boundary: this actor may modify only its kernel-assigned worktree. Continue inside that worktree or return the task to the controller for reassignment; this boundary cannot be approved away.",
+				"Product-worker boundary: this actor may modify only its host-assigned worktree. Continue inside that worktree or return the task for reassignment; this boundary cannot be approved away.",
 		};
 	}
 
 	// Kernel policy boundary (Build 2): when a mutating tool precisely
 	// targets kernel-owned territory, block WITHOUT filing a gate — the
-	// desktop kernel's sandbox mounts these paths read-only for the agent,
+	// desktop host's sandbox mounts these paths read-only for the agent,
 	// so an approval could never execute. Filing one would be noise that
 	// looks actionable. The working lanes are named in the reason instead.
 	// (Bash mention-based screens stay on the ordinary gate path: the target
@@ -896,8 +907,8 @@ export function evaluateToolCall(
 				kind: "block",
 				effectClass: "authority",
 				reason: isPolicyFile
-					? `Kernel policy boundary: ${basename(resolved)} is founder-ratified and read-only to you at the OS layer — an approval could not execute, so none is filed. Propose the change instead: write inbox/messages/msg-<slug>.md describing the exact edit and why; the founder applies it from the app (Settings → Authority).`
-					: "Kernel policy boundary: inbox gate records and notices are kernel territory and read-only to you at the OS layer — writing them is self-approval and cannot be approved away. Author inbox/messages/msg-*.md items instead; that is your one sanctioned inbox lane.",
+					? `Host policy boundary: ${basename(resolved)} is founder-ratified and read-only to you at the OS layer — an approval could not execute, so none is filed. Propose the change instead: write inbox/messages/msg-<slug>.md describing the exact edit and why; the founder applies it from the app (Settings → Authority).`
+					: "Host policy boundary: inbox gate records and notices are host territory and read-only to you at the OS layer — writing them is self-approval and cannot be approved away. Author inbox/messages/msg-*.md items instead; that is your one sanctioned inbox lane.",
 			};
 		}
 	}
@@ -916,7 +927,7 @@ export function evaluateToolCall(
 		return { kind: "allow" };
 	}
 
-	// Product code is a role boundary, not an approval mode. A controller is
+	// Product code is a role boundary, not an approval mode. A company agent is
 	// read-only even when a founder is present; implementation happens in a
 	// kernel-assigned product-worker worktree. A product-worker's destructive
 	// commands still re-classify and hit the ordinary irreversible gate.
@@ -926,7 +937,7 @@ export function evaluateToolCall(
 				kind: "block",
 				effectClass,
 				reason:
-					"Product-development boundary: the company controller may read product code but cannot modify repositories or worktrees. Delegate the task through the product department's Chat; this boundary cannot be approved away.",
+					"Product-development boundary: the company agent may read product code but cannot modify repositories or worktrees. Delegate the task through the product department's Chat; this boundary cannot be approved away.",
 			};
 		}
 		if (!productWorkerMutationAllowed(authority, toolName, args, cwd, context)) {
@@ -1050,7 +1061,7 @@ export async function finalizeAuthorityDecision(
 				effectClass: finalized.effectClass ?? "authority",
 				gateId: finalized.behavior.gateId,
 				behavior: { ...finalized.behavior, signed: false, kernelTrust: undefined },
-				reason: `Signature rule: ${finalized.behavior.path} has no live local kernel trust. Review its signature request again in Base.`,
+				reason: `Signature rule: ${finalized.behavior.path} has no live local host trust. Review its signature request again in Base.`,
 			};
 		}
 		finalized = {
@@ -1079,7 +1090,7 @@ export async function finalizeAuthorityDecision(
  * Extension-load gating. Project-local extensions under the authority root
  * are agent-authorable code that runs with full user permissions (see
  * SEAMS.md c.3) — loading one is an [authority]-class effect. Approvals are
- * durable per company path and content hash in the desktop kernel. Native
+ * durable per company path and content hash in the desktop host. Native
  * review establishes trust for that exact code; changed content requires
  * fresh trust and the founder may revoke existing trust from the inbox.
  */

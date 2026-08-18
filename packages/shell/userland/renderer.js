@@ -3,22 +3,22 @@
  * stream and direct commands. */
 const $ = (id) => document.getElementById(id);
 let backendUrl = "";
-// Stable company identity from the kernel (appInfo). Storage is keyed by
+// Stable company identity from the desktop host (appInfo). Storage is keyed by
 // this, never by backendUrl: the backend port is hash-derived from a small
 // space and walks forward on bind collisions, so a port-keyed pref bucket
 // can silently change between opens.
 let companyId = "";
 let state = {
-	projection: {
-		schema: "qorpera.projection/v1",
-		default: "q:chats",
-		navigation: [],
+	shellNavigation: {
+		defaultPageId: "q:chats",
+		sectionIds: [],
 		nodes: [],
-		diagnostics: [],
 	},
 	inbox: [],
 	sessions: [],
 	staff: [],
+	artifacts: [],
+	connectors: [],
 	scheduledJobs: [],
 	connectionRequests: [],
 	departments: [],
@@ -40,23 +40,16 @@ let currentNodeId = null;
 let currentSession = null; // trail file of the open chat (null = fresh/unsaved)
 let currentStaffId = null; // durable staff identity for the open conversation
 let currentStaffIntroStatus = null;
-let currentDepartment = null; // product department of the open chat (null = company controller)
-let currentWorktree = null; // kernel-assigned product worktree, when applicable
-let sidechatOpen = false; // the surface view's docked chat panel
-let sidechatPageId = null; // stable page ID the live session is attached to
-let sidechatPending = null; // page awaiting its context preamble (fresh session)
+let currentDepartment = null; // product department of the open chat, when applicable
+let currentWorktree = null; // host-assigned product worktree, when applicable
 const pendingAssistantTextByIndex = new Map();
 const renderedAssistantTextByIndex = new Map();
-let turnProgressBubbleCount = 0;
-let turnProgressLastKind = "";
-let turnProgressLastAt = 0;
 let threadActivityEl = null;
 let poller = null;
 let runtimeStream = null;
 let hydratedExecutorId = "";
 const runtimeAttachmentSequences = new Map();
 let navigationGeneration = 0;
-let sidechatGeneration = 0;
 let activityRenderGeneration = 0;
 let currentModelKey = "";
 let preferredModelKey = "";
@@ -112,10 +105,13 @@ let railSearchQuery = "";
 let activityStaffId = null;
 let agentSidepanelMode = null;
 let agentRoutineEditor = null; // { staffAgentId, mode: "create"|"edit", id?, draft, dirty, error, status, pending }
+let artifactEditor = null; // { id, expectedUpdatedAt, draft, dirty, error, pending }
+const dismissedConnectionRequestGroups = new Map();
+const autoStartedConnectionRequestIds = new Set();
 let agentSidepanelMotionTimer = null;
-let profileCreatorIcon = "hop-warm-titanium";
-let currentProfileIcon = "hop-warm-titanium";
-let currentProfileRoot = "";
+let companyCreatorIcon = "hop-warm-titanium";
+let currentCompanyIcon = "hop-warm-titanium";
+let currentCompanyRoot = "";
 
 const STAFF_AVATAR_COLORS = [
 	"#171716",
@@ -162,7 +158,7 @@ const STAFF_CREATURE_BY_SHAPE = Object.freeze({
 	tilted: "ribbon",
 	drop: "halo",
 });
-const PROFILE_ICONS = [
+const COMPANY_ICONS = [
 	{ id: "hop-warm-titanium", label: "Warm titanium", src: "./profile-icons/hop-warm-titanium.png" },
 	{ id: "hop-blue-steel", label: "Blue steel", src: "./profile-icons/hop-blue-steel.png" },
 	{ id: "hop-mono-cloud", label: "Monochrome cloud", src: "./profile-icons/hop-mono-cloud.png" },
@@ -416,12 +412,12 @@ async function renderHub() {
 	grid.innerHTML = "";
 	for (const company of companies) {
 		const shell = document.createElement("div");
-		shell.className = "profile-card-shell";
+		shell.className = "company-card-shell";
 		const card = document.createElement("button");
-		card.className = "hub-card profile-card";
+		card.className = "hub-card company-card";
 		card.type = "button";
-		card.setAttribute("aria-label", `Open ${company.name} profile`);
-		const avatar = makeProfileIcon(company.profileIcon, company.name, "profile-avatar");
+		card.setAttribute("aria-label", `Open ${company.name} company`);
+		const avatar = makeCompanyIcon(company.companyIcon, company.name, "company-avatar");
 		const label = document.createElement("strong");
 		label.textContent = company.name;
 		card.append(avatar, label);
@@ -445,28 +441,29 @@ async function renderHub() {
 			});
 		};
 		const actions = document.createElement("button");
-		actions.className = "profile-card-actions";
+		actions.className = "company-card-actions";
 		actions.type = "button";
-		actions.setAttribute("aria-label", `Profile actions for ${company.name}`);
+		actions.setAttribute("aria-label", `Company actions for ${company.name}`);
 		actions.setAttribute("aria-expanded", "false");
 		actions.textContent = "•••";
 		const menu = document.createElement("div");
-		menu.className = "profile-card-menu";
+		menu.className = "company-card-menu";
 		menu.hidden = true;
 		menu.setAttribute("role", "menu");
 		const remove = document.createElement("button");
 		remove.type = "button";
 		remove.setAttribute("role", "menuitem");
-		remove.textContent = "Remove profile";
+		remove.textContent = "Remove from Qorpera";
 		remove.onclick = async () => {
 			menu.hidden = true;
 			actions.setAttribute("aria-expanded", "false");
-			const result = await window.qorpera.removeProfile(company.root);
+			const result = await window.qorpera.removeCompany(company.root);
 			if (result?.ok) {
 				await renderHub();
 				return;
 			}
-			if (!result?.cancelled) $("hubError").textContent = result?.error ?? "Profile could not be removed.";
+			if (!result?.cancelled)
+				$("hubError").textContent = result?.error ?? "Company could not be removed from Qorpera.";
 		};
 		menu.appendChild(remove);
 		actions.onclick = () => {
@@ -478,9 +475,9 @@ async function renderHub() {
 		grid.appendChild(shell);
 	}
 	const create = document.createElement("button");
-	create.className = "hub-card create profile-card profile-add-card";
+	create.className = "hub-card create company-card company-add-card";
 	create.type = "button";
-	create.innerHTML = '<span class="plus" aria-hidden="true">+</span><strong>New profile</strong>';
+	create.innerHTML = '<span class="plus" aria-hidden="true">+</span><strong>New company</strong>';
 	create.onclick = openCompanyModal;
 	grid.appendChild(create);
 }
@@ -523,39 +520,39 @@ function companyRootFor(name) {
 	return slug ? `${COMPANIES_HOME}\\${slug}` : "";
 }
 
-function profileIcon(iconId) {
-	return PROFILE_ICONS.find((candidate) => candidate.id === iconId) ?? PROFILE_ICONS[0];
+function companyIcon(iconId) {
+	return COMPANY_ICONS.find((candidate) => candidate.id === iconId) ?? COMPANY_ICONS[0];
 }
 
-function makeProfileIcon(iconId, label, className = "") {
+function makeCompanyIcon(iconId, label, className = "") {
 	const shell = document.createElement("span");
-	shell.className = `company-profile-icon ${className}`.trim();
+	shell.className = `company-icon ${className}`.trim();
 	const image = document.createElement("img");
-	image.src = profileIcon(iconId).src;
+	image.src = companyIcon(iconId).src;
 	image.alt = "";
 	image.setAttribute("aria-hidden", "true");
 	shell.appendChild(image);
-	if (label) shell.setAttribute("aria-label", `${label} profile`);
+	if (label) shell.setAttribute("aria-label", `${label} company`);
 	return shell;
 }
 
 function renderCompanyIconPicker() {
 	const picker = $("companyIconPicker");
 	picker.replaceChildren();
-	for (const icon of PROFILE_ICONS) {
+	for (const icon of COMPANY_ICONS) {
 		const button = document.createElement("button");
 		button.type = "button";
 		button.className = "company-icon-choice";
-		button.dataset.profileIcon = icon.id;
+		button.dataset.companyIcon = icon.id;
 		button.setAttribute("role", "radio");
 		button.setAttribute("aria-label", icon.label);
-		button.setAttribute("aria-checked", String(icon.id === profileCreatorIcon));
-		button.appendChild(makeProfileIcon(icon.id, ""));
+		button.setAttribute("aria-checked", String(icon.id === companyCreatorIcon));
+		button.appendChild(makeCompanyIcon(icon.id, ""));
 		button.onclick = () => {
-			profileCreatorIcon = icon.id;
+			companyCreatorIcon = icon.id;
 			$("companyIconPreview").src = icon.src;
 			for (const choice of picker.querySelectorAll(".company-icon-choice")) {
-				choice.setAttribute("aria-checked", String(choice.dataset.profileIcon === profileCreatorIcon));
+				choice.setAttribute("aria-checked", String(choice.dataset.companyIcon === companyCreatorIcon));
 			}
 		};
 		picker.appendChild(button);
@@ -563,11 +560,11 @@ function renderCompanyIconPicker() {
 }
 
 function openCompanyModal() {
-	profileCreatorIcon = PROFILE_ICONS[0].id;
+	companyCreatorIcon = COMPANY_ICONS[0].id;
 	$("companyName").value = "";
 	$("companyFormError").textContent = "";
 	$("companyCreate").disabled = true;
-	$("companyIconPreview").src = profileIcon(profileCreatorIcon).src;
+	$("companyIconPreview").src = companyIcon(companyCreatorIcon).src;
 	renderCompanyIconPicker();
 	$("companyModal").hidden = false;
 	$("companyName").focus();
@@ -599,13 +596,13 @@ function setupCompanyModal() {
 		button.disabled = true;
 		button.textContent = "Creating…";
 		try {
-			const created = await window.qorpera.newCompany(root, profileCreatorIcon);
+			const created = await window.qorpera.newCompany(root, companyCreatorIcon);
 			const opened = await openCompany(created, $("companyFormError"));
 			if (opened) closeCompanyModal();
 		} catch (error) {
-			$("companyFormError").textContent = `Could not create the profile: ${(error && error.message) || error}`;
+			$("companyFormError").textContent = `Could not create the company: ${(error && error.message) || error}`;
 		} finally {
-			button.textContent = "Create profile";
+			button.textContent = "Create company";
 			button.disabled = false;
 		}
 	});
@@ -614,7 +611,7 @@ function setupCompanyModal() {
 // ---- company ---------------------------------------------------------------
 
 async function openCompany(root, errorTarget = $("hubError")) {
-	// The kernel opens the company runtime and reloads this fixed shell into
+	// The desktop host opens the company runtime and reloads this fixed shell into
 	// its isolated renderer partition. Returns false so a failed open can hand
 	// control back to the hub.
 	try {
@@ -622,17 +619,17 @@ async function openCompany(root, errorTarget = $("hubError")) {
 		await window.qorpera.openCompany(root);
 		return true;
 	} catch (error) {
-		if (errorTarget) errorTarget.textContent = `Could not open the profile: ${(error && error.message) || error}`;
+		if (errorTarget) errorTarget.textContent = `Could not open the company: ${(error && error.message) || error}`;
 		return false;
 	}
 }
 
-/** Boot into an already-open company (called after the kernel loads us). */
+/** Boot into an already-open company after the desktop host loads us. */
 async function enterCompany(active) {
 	backendUrl = active.backendUrl;
 	companyId = active.id || "";
-	currentProfileRoot = active.root || "";
-	currentProfileIcon = profileIcon(active.profileIcon).id;
+	currentCompanyRoot = active.root || "";
+	currentCompanyIcon = companyIcon(active.companyIcon).id;
 	// Appearance was applied at boot from the pre-company bucket; re-apply now
 	// that this company's stored appearance is addressable.
 	applyNavAppearance();
@@ -647,12 +644,12 @@ async function enterCompany(active) {
 	$("conav").style.display = "";
 	$("messages").innerHTML = "";
 	resetWorkGroup();
-	// The kernel resumes the newest founder session across restarts; adopt its
+	// The desktop host resumes the newest user session across restarts; adopt its
 	// trail file so the chat pile marks it active and caching keys line up.
 	currentSession = active.sessionFile ?? null;
 	currentStaffId = null;
 	if (active.kickoff) {
-		addMsg("tool", "· conception started — the controller is studying the company…");
+		addMsg("tool", "· setup started — the agent is learning its responsibility…");
 	}
 	renderUpdateButton();
 	show("roster");
@@ -715,7 +712,7 @@ function applyCurrentSessionRuntime() {
 		agentExited = true;
 		agentWorking = false;
 		closeWorkGroup();
-		$("status").textContent = "controller stopped";
+		$("status").textContent = "agent stopped";
 		$("stopBtn").hidden = true;
 		if (lastInterruptedRuntime !== terminalKey) {
 			lastInterruptedRuntime = terminalKey;
@@ -793,7 +790,7 @@ function applyRuntimeSnapshot(snapshot, eventKind = "") {
 		hydratedExecutorId = currentRuntime.executorId;
 		hydrateAgentState(true);
 	}
-	if (currentView === "panel" && projectionNode(currentNodeId)?.view?.id === "qorpera.activity") {
+	if (currentView === "panel" && navigationNode(currentNodeId)?.view?.id === "qorpera.activity") {
 		if (eventKind !== "activity" || !updateLiveAgentNarration()) void renderActivity();
 	}
 }
@@ -1279,7 +1276,7 @@ const composerMore = (() => {
 	};
 	worktree.onclick = () => {
 		if (!worktreeAvailable()) {
-			showControllerToast(
+			showToast(
 				currentStaffId
 					? "Open a product artifact before creating an isolated worktree."
 					: "New worktrees are available from a product conversation.",
@@ -1288,7 +1285,7 @@ const composerMore = (() => {
 		}
 		const department = (state.departments ?? []).find((entry) => entry.path === currentDepartment);
 		if (!department) {
-			showControllerToast("The product workspace is not available.");
+			showToast("The product workspace is not available.");
 			return;
 		}
 		close();
@@ -1297,14 +1294,14 @@ const composerMore = (() => {
 	return { sync };
 })();
 
-// ---- company controller vs product-worker (the role selector) ---------------
+// ---- company vs product-worker scope selector -------------------------------
 
 function departmentName(path) {
 	const parts = String(path).replace(/\\/g, "/").split("/").filter(Boolean);
 	return (parts[parts.length - 1] || String(path)).replace(/-development$/, "");
 }
 
-// A company controller and a product-worker are different organizational roles.
+// Company-level and product-worker sessions have different capabilities.
 const COMPANY_ICON =
 	'<svg class="chipicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18M5 21V5.5L12 3l7 2.5V21M9.5 9h.01M14.5 9h.01M9.5 13h.01M14.5 13h.01M10 21v-3.5h4V21"/></svg>';
 const PRODUCT_ICON =
@@ -1314,7 +1311,7 @@ function syncScopeChrome() {
 	const options = [
 		{
 			value: "",
-			label: state.name ? `${state.name} Controller` : "Company",
+			label: state.name || "Company",
 			icon: COMPANY_ICON,
 		},
 	];
@@ -1328,11 +1325,8 @@ function syncScopeChrome() {
 	}
 	scopeChip.setOptions(options, currentDepartment ?? "");
 	scopeChip.value = currentDepartment ?? "";
-	const sidechatOwner = sidechatOpen && sidechatPageId ? projectionNode(sidechatPageId) : undefined;
 	const staff = currentStaff();
-	$("input").placeholder = sidechatOwner
-		? `Ask about ${sidechatOwner.label}… (Enter to send, Shift+Enter for newline)`
-		: staff
+	$("input").placeholder = staff
 			? `Message ${staffDisplayName(staff)}…`
 		: currentDepartment
 			? `Work on ${departmentName(currentDepartment)}… (Enter to send, Shift+Enter for newline)`
@@ -1350,8 +1344,6 @@ const scopeChip = createChipSelect("scopeBtn", "scopeMenu", async (picked) => {
 		currentStaffId = null;
 		currentDepartment = result.department ?? null;
 		currentWorktree = result.worktree ?? null;
-		sidechatPageId = null;
-		sidechatPending = null;
 	}
 	if (navigation !== navigationGeneration) return;
 	if (!result?.ok) {
@@ -1369,7 +1361,7 @@ const scopeChip = createChipSelect("scopeBtn", "scopeMenu", async (picked) => {
 });
 
 /** The bottom company control stays deliberately one-line and unlabelled. */
-function renderProfileRow() {
+function renderCompanyRow() {
 	renderCompanySwitcher();
 }
 
@@ -1775,8 +1767,7 @@ function closeStaffCreator() {
 		$("staffModal").hidden = true;
 		document.body.classList.remove("staff-creator-open");
 		$("staffCreatorTitlebar").hidden = true;
-		$("threadHeader").hidden =
-			currentView !== "chat" && !(currentStaffId && (currentView === "surface" || currentView === "panel"));
+		$("threadHeader").hidden = currentView !== "chat" && !(currentStaffId && currentView === "panel");
 		staffCreatorSelection = null;
 		staffCreatorClosing = false;
 		renderRosterRail();
@@ -1837,7 +1828,7 @@ async function createStaffMember() {
 		staffCreatorPending = false;
 		const message = error instanceof Error ? error.message : "Staff member could not be created.";
 		$("staffCreateStatus").textContent = message;
-		if ($("staffModal").hidden) showControllerToast(message);
+		if ($("staffModal").hidden) showToast(message);
 	} finally {
 		$("staffCreateButton").textContent = "Create";
 		$("staffCreateButton").disabled = staffCreatorPending || !$("staffDisplayName").value.trim();
@@ -1857,8 +1848,6 @@ function activateStaffSession(id, sessionFile, result = {}) {
 	currentSession = sessionFile;
 	currentDepartment = result?.department ?? null;
 	currentWorktree = result?.worktree ?? null;
-	sidechatPageId = null;
-	sidechatPending = null;
 	currentNodeId = null;
 	setStaffRoute(id);
 	$("messages").innerHTML = sessionCache[sessionFile] ?? pageSkeletonMarkup();
@@ -1888,13 +1877,13 @@ async function openStaff(id) {
 	const result = await window.qorpera.staffOpen(id).catch((error) => ({ ok: false, error: String(error?.message ?? error) }));
 	if (navigation !== navigationGeneration) return;
 	if (result?.ok === false) {
-		showControllerToast(result.error ?? "This staff member could not be opened.");
+		showToast(result.error ?? "This staff member could not be opened.");
 		return;
 	}
 	const staff = activeStaffMembers().find((candidate) => staffId(candidate) === id);
 	const sessionFile = result?.sessionFile ?? result?.staff?.sessionFile ?? staff?.sessionFile ?? staff?.primarySessionFile;
 	if (!sessionFile) {
-		showControllerToast("This staff member does not have a conversation session yet.");
+		showToast("This staff member does not have a conversation session yet.");
 		return;
 	}
 	activateStaffSession(id, sessionFile, result);
@@ -1919,10 +1908,18 @@ function renderThreadHeader() {
 	syncConversationAccess();
 }
 
-function staffSurfaceNodes(id) {
-	return (state.projection?.nodes ?? []).filter(
-		(node) => node.kind === "page" && node.staffAgentId === id && node.view?.id !== "qorpera.activity" && node.view?.id !== "qorpera.chats",
-	);
+function artifactNodeId(id) {
+	return `artifact:${id}`;
+}
+
+function artifactByNodeId(id) {
+	if (typeof id !== "string" || !id.startsWith("artifact:")) return null;
+	const artifactId = id.slice("artifact:".length);
+	return (state.artifacts ?? []).find((artifact) => artifact.id === artifactId) ?? null;
+}
+
+function staffArtifacts(id) {
+	return (state.artifacts ?? []).filter((artifact) => artifact.stewardAgentId === id);
 }
 
 function showStaffConversation() {
@@ -1934,24 +1931,56 @@ function showStaffConversation() {
 }
 
 function renderStaffHeaderNavigation(staff) {
-	const tabs = $("staffSurfaceTabs");
+	const tabs = $("staffArtifactTabs");
 	tabs.replaceChildren();
 	if (!staff) return;
-	const appendTab = (label, active, onClick) => {
+	const artifacts = staffArtifacts(staffId(staff));
+	const artifactButton = (artifact) => {
+		const nodeId = artifactNodeId(artifact.id);
+		const active = currentNodeId === nodeId && currentView === "panel";
 		const button = document.createElement("button");
 		button.type = "button";
-		button.textContent = label;
+		button.className = "staff-artifact-tab";
+		const label = document.createElement("span");
+		label.textContent = artifact.title;
+		button.appendChild(label);
+		const unresolved = (artifact.dataNeeds ?? []).filter(
+			(need) => need.status !== "available" && need.status !== "declined",
+		).length;
+		if (unresolved) {
+			const badge = document.createElement("span");
+			badge.className = "staff-artifact-tab-badge";
+			badge.textContent = String(unresolved);
+			badge.setAttribute("aria-label", `${unresolved} setup item${unresolved === 1 ? "" : "s"}`);
+			button.appendChild(badge);
+		}
 		button.classList.toggle("active", active);
 		button.setAttribute("aria-pressed", String(active));
-		button.onclick = onClick;
-		tabs.appendChild(button);
-	};
-	for (const node of staffSurfaceNodes(staffId(staff)).slice(0, 4)) {
-		const active = currentNodeId === node.id && (currentView === "panel" || currentView === "surface");
-		appendTab(node.label, active, () => {
+		button.onclick = () => {
 			if (active) showStaffConversation();
-			else void openProjectionNode(node.id);
-		});
+			else openStaffArtifact(artifact.id);
+		};
+		return button;
+	};
+	let direct = artifacts;
+	if (artifacts.length > 3) {
+		const active = artifacts.find((artifact) => currentNodeId === artifactNodeId(artifact.id));
+		direct = [...artifacts.slice(0, 2), ...(active && !artifacts.slice(0, 2).includes(active) ? [active] : [artifacts[2]])];
+	}
+	for (const artifact of direct) tabs.appendChild(artifactButton(artifact));
+	const overflow = artifacts.filter((artifact) => !direct.includes(artifact));
+	if (overflow.length) {
+		const more = document.createElement("details");
+		more.className = "staff-artifact-tab-more";
+		const summary = document.createElement("summary");
+		summary.textContent = `+${overflow.length}`;
+		summary.setAttribute("aria-label", `${overflow.length} more artifacts`);
+		more.appendChild(summary);
+		const menu = document.createElement("div");
+		menu.className = "staff-artifact-tab-menu";
+		for (const artifact of overflow) menu.appendChild(artifactButton(artifact));
+		more.appendChild(menu);
+		tabs.appendChild(more);
 	}
 }
 
@@ -2029,6 +2058,31 @@ function agentRoutineField(labelText, control, helpText = "") {
 		label.appendChild(help);
 	}
 	return label;
+}
+
+const SCHEDULED_JOB_EFFORT_OPTIONS = [
+	["low", "Low"],
+	["medium", "Medium"],
+	["high", "High"],
+	["xhigh", "Extra high"],
+	["max", "Maximum"],
+];
+
+function scheduledJobEffortSelect(value, onChange) {
+	const select = document.createElement("select");
+	for (const [optionValue, label] of SCHEDULED_JOB_EFFORT_OPTIONS) {
+		const option = document.createElement("option");
+		option.value = optionValue;
+		option.textContent = label;
+		select.appendChild(option);
+	}
+	select.value = value ?? "high";
+	select.onchange = () => onChange(select.value);
+	return select;
+}
+
+function scheduledJobEffortLabel(value) {
+	return SCHEDULED_JOB_EFFORT_OPTIONS.find(([optionValue]) => optionValue === value)?.[1] ?? "High";
 }
 
 function renderAgentRoutineEditor(content, staff) {
@@ -2118,6 +2172,13 @@ function renderAgentRoutineEditor(content, staff) {
 		editor.dirty = true;
 	};
 	form.appendChild(agentRoutineField("Instruction", prompt));
+	const effort = scheduledJobEffortSelect(editor.draft.effort, (value) => {
+		editor.draft.effort = value;
+		editor.dirty = true;
+	});
+	form.appendChild(
+		agentRoutineField("Effort", effort, "High by default for scheduled work; change it when the routine needs less or deeper reasoning."),
+	);
 
 	const triggerSection = document.createElement("section");
 	triggerSection.className = "agent-routine-triggers";
@@ -2321,6 +2382,7 @@ function renderAgentRoutineEditor(content, staff) {
 			prompt: instructions,
 			triggers: editor.draft.triggers,
 			enabled: Boolean(editor.draft.enabled),
+			effort: editor.draft.effort,
 			staffAgentId: staffId(staff),
 		};
 		const result = await scheduledJobRequest(
@@ -2567,7 +2629,7 @@ async function retryStaffIntroduction() {
 		}, 600);
 	} else {
 		$("status").textContent = "introduction retry did not start";
-		showControllerToast("The introduction could not be restarted yet. Try again when this staff member is ready.");
+		showToast("The introduction could not be restarted yet. Try again when this staff member is ready.");
 	}
 }
 
@@ -2674,21 +2736,22 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		container.appendChild(row);
 	}
 	const hiddenStaff = activeStaffMembers().filter((staff) => hidden.has(staffId(staff)));
-	if (hiddenStaff.length) {
+	const archivedStaff = (state.staff ?? []).filter((staff) => staff?.employmentStatus === "archived");
+	if (hiddenStaff.length || archivedStaff.length) {
 		const hiddenEntry = document.createElement("button");
 		hiddenEntry.type = "button";
 		hiddenEntry.className = "hidden-staff-entry";
 		hiddenEntry.setAttribute("aria-haspopup", "dialog");
 		const label = document.createElement("span");
-		label.textContent = "Hidden Bots";
+		label.textContent = hiddenStaff.length && !archivedStaff.length ? "Hidden agents" : "Inactive agents";
 		const count = document.createElement("span");
 		count.className = "hidden-staff-count";
-		count.textContent = String(hiddenStaff.length);
+		count.textContent = String(hiddenStaff.length + archivedStaff.length);
 		hiddenEntry.append(label, count);
 		hiddenEntry.onclick = (event) => openHiddenStaffModal(event.currentTarget);
 		container.appendChild(hiddenEntry);
 	}
-	if (!staffMembers.length && !hiddenStaff.length) {
+	if (!staffMembers.length && !hiddenStaff.length && !archivedStaff.length) {
 		const empty = document.createElement("div");
 		empty.className = "rail-empty";
 		empty.textContent = "Choose your starting team.";
@@ -2715,16 +2778,49 @@ function hiddenStaffMembers() {
 	return activeStaffMembers().filter((staff) => hidden.has(staffId(staff)));
 }
 
+function archivedStaffMembers() {
+	return (state.staff ?? []).filter((staff) => staff?.employmentStatus === "archived");
+}
+
 function renderHiddenStaffList() {
 	const list = $("hiddenStaffList");
 	list.replaceChildren();
 	const hiddenStaff = hiddenStaffMembers();
-	if (!hiddenStaff.length) {
+	const archivedStaff = archivedStaffMembers();
+	if (!hiddenStaff.length && !archivedStaff.length) {
 		const empty = document.createElement("div");
 		empty.className = "hidden-staff-empty";
-		empty.textContent = "No hidden Bots.";
+		empty.textContent = "No inactive agents.";
 		list.appendChild(empty);
 		return;
+	}
+	for (const staff of archivedStaff) {
+		const row = document.createElement("div");
+		row.className = "hidden-staff-row";
+		row.appendChild(makeStaffAvatar(staff, "idle"));
+		const name = document.createElement("strong");
+		name.textContent = staffDisplayName(staff);
+		const restore = document.createElement("button");
+		restore.type = "button";
+		restore.textContent = "Restore";
+		restore.setAttribute("aria-label", `Restore ${staffDisplayName(staff)}`);
+		restore.onclick = async () => {
+			restore.disabled = true;
+			restore.textContent = "Restoring…";
+			try {
+				const result = await window.qorpera.staffRestore(staffId(staff));
+				if (result?.ok === false) throw new Error(result.error ?? "The agent could not be restored.");
+				await refreshState();
+				if (hiddenStaffMembers().length || archivedStaffMembers().length) renderHiddenStaffList();
+				else closeHiddenStaffModal();
+			} catch (error) {
+				showToast(error instanceof Error ? error.message : "The agent could not be restored.");
+				restore.disabled = false;
+				restore.textContent = "Restore";
+			}
+		};
+		row.append(name, restore);
+		list.appendChild(row);
 	}
 	for (const staff of hiddenStaff) {
 		const row = document.createElement("div");
@@ -2808,9 +2904,9 @@ function openStaffDeleteConfirmation() {
 	if (!staffContextTarget) return;
 	staffDeleteTarget = staffContextTarget;
 	closeStaffContext();
-	$("staffDeleteTitle").textContent = `Delete ${staffDisplayName(staffDeleteTarget)}?`;
+	$("staffDeleteTitle").textContent = `Archive ${staffDisplayName(staffDeleteTarget)}?`;
 	$("staffDeleteDescription").textContent =
-		"This removes the agent from active staff. Its existing company trail remains in the company file for audit history.";
+		"Archive keeps the agent, its artifacts, and its trail in the company so it can be restored later. Permanent deletion removes the agent and its owned artifacts from the current company state; its trail and Git history remain reconstructable.";
 	$("staffDeleteModal").hidden = false;
 	$("staffDeleteCancel").focus();
 }
@@ -2824,11 +2920,13 @@ async function deleteStaffMember() {
 	if (!staffDeleteTarget) return;
 	const id = staffId(staffDeleteTarget);
 	const button = $("staffDeleteConfirm");
+	const permanentButton = $("staffDeletePermanent");
 	button.disabled = true;
-	button.textContent = "Deleting…";
+	permanentButton.disabled = true;
+	button.textContent = "Archiving…";
 	try {
 		const result = await window.qorpera.staffArchive(id);
-		if (result?.ok === false) throw new Error(result.error ?? "The agent could not be deleted.");
+		if (result?.ok === false) throw new Error(result.error ?? "The agent could not be archived.");
 		const hidden = storedStaffIds("staff-hidden");
 		const pinned = storedStaffIds("staff-pinned");
 		hidden.delete(id);
@@ -2838,10 +2936,39 @@ async function deleteStaffMember() {
 		closeStaffDeleteConfirmation();
 		await refreshState();
 	} catch (error) {
-		showControllerToast(error instanceof Error ? error.message : "The agent could not be deleted.");
+		showToast(error instanceof Error ? error.message : "The agent could not be archived.");
 	} finally {
 		button.disabled = false;
-		button.textContent = "Delete";
+		permanentButton.disabled = false;
+		button.textContent = "Archive";
+	}
+}
+
+async function permanentlyDeleteStaffMember() {
+	if (!staffDeleteTarget) return;
+	const id = staffId(staffDeleteTarget);
+	const button = $("staffDeletePermanent");
+	const archiveButton = $("staffDeleteConfirm");
+	button.disabled = true;
+	archiveButton.disabled = true;
+	button.textContent = "Deleting…";
+	try {
+		const result = await window.qorpera.staffDelete(id);
+		if (result?.ok === false) throw new Error(result.error ?? "The agent could not be permanently deleted.");
+		const hidden = storedStaffIds("staff-hidden");
+		const pinned = storedStaffIds("staff-pinned");
+		hidden.delete(id);
+		pinned.delete(id);
+		storeStaffIds("staff-hidden", hidden);
+		storeStaffIds("staff-pinned", pinned);
+		closeStaffDeleteConfirmation();
+		await refreshState();
+	} catch (error) {
+		showToast(error instanceof Error ? error.message : "The agent could not be permanently deleted.");
+	} finally {
+		button.disabled = false;
+		archiveButton.disabled = false;
+		button.textContent = "Delete permanently";
 	}
 }
 
@@ -2891,7 +3018,7 @@ async function startStaffBootstrap(templates) {
 		}, 800);
 	} catch (error) {
 		staffBootstrapPending = false;
-		showControllerToast(error instanceof Error ? error.message : "The team could not be created.");
+		showToast(error instanceof Error ? error.message : "The team could not be created.");
 		renderStaffHome();
 	}
 }
@@ -2986,7 +3113,7 @@ function renderStaffHome() {
 		description.textContent = staffDescription(staff);
 		const meta = document.createElement("small");
 		const runtime = staffRuntime(staff);
-		meta.textContent = runtime ? runtimeDoingLine(runtime) : `Ready · ${staffRoleLabel(staff)}`;
+		meta.textContent = runtime ? runtimeDoingLine(runtime) : staffRoleLabel(staff);
 		card.append(name, description, meta);
 		card.onclick = () => void openStaff(staffId(staff));
 		grid.appendChild(card);
@@ -3031,43 +3158,43 @@ async function openCompanySwitcher() {
 		};
 		return option;
 	};
-	const profileSection = document.createElement("div");
-	profileSection.className = "company-switcher-profile-section";
-	const profileTrigger = document.createElement("button");
-	profileTrigger.type = "button";
-	profileTrigger.className = "company-switcher-profile-trigger";
-	profileTrigger.setAttribute("role", "menuitem");
-	profileTrigger.setAttribute("aria-haspopup", "menu");
-	profileTrigger.setAttribute("aria-expanded", "false");
-	profileTrigger.appendChild(makeProfileIcon(currentProfileIcon, "", "company-switcher-menu-profile-icon"));
-	const profileLabel = document.createElement("span");
-	profileLabel.textContent = "Profile";
-	const profileCaret = document.createElement("span");
-	profileCaret.className = "company-switcher-profile-caret";
-	profileCaret.setAttribute("aria-hidden", "true");
-	profileCaret.textContent = "›";
-	profileTrigger.append(profileLabel, profileCaret);
-	const profileList = document.createElement("div");
-	profileList.className = "company-switcher-profile-list";
-	profileList.setAttribute("role", "menu");
-	profileList.setAttribute("aria-label", "Account profiles");
-	profileList.hidden = true;
+	const companySection = document.createElement("div");
+	companySection.className = "company-switcher-profile-section";
+	const companyTrigger = document.createElement("button");
+	companyTrigger.type = "button";
+	companyTrigger.className = "company-switcher-profile-trigger";
+	companyTrigger.setAttribute("role", "menuitem");
+	companyTrigger.setAttribute("aria-haspopup", "menu");
+	companyTrigger.setAttribute("aria-expanded", "false");
+	companyTrigger.appendChild(makeCompanyIcon(currentCompanyIcon, "", "company-switcher-menu-profile-icon"));
+	const companyLabel = document.createElement("span");
+	companyLabel.textContent = "Companies";
+	const companyCaret = document.createElement("span");
+	companyCaret.className = "company-switcher-profile-caret";
+	companyCaret.setAttribute("aria-hidden", "true");
+	companyCaret.textContent = "›";
+	companyTrigger.append(companyLabel, companyCaret);
+	const companyList = document.createElement("div");
+	companyList.className = "company-switcher-profile-list";
+	companyList.setAttribute("role", "menu");
+	companyList.setAttribute("aria-label", "Companies");
+	companyList.hidden = true;
 	let companies = [];
 	try {
 		companies = await window.qorpera.listCompanies();
 	} catch {
-		// Keep the rest of the account menu available if profile discovery fails.
+		// Keep the rest of the account menu available if company discovery fails.
 	}
 	const normalizeRoot = (root) => String(root ?? "").replace(/\//g, "\\").replace(/\\+$/g, "").toLowerCase();
 	for (const company of companies) {
-		const selected = normalizeRoot(company.root) === normalizeRoot(currentProfileRoot);
+		const selected = normalizeRoot(company.root) === normalizeRoot(currentCompanyRoot);
 		const option = document.createElement("button");
 		option.type = "button";
 		option.className = "company-switcher-profile-option";
 		option.classList.toggle("selected", selected);
 		option.setAttribute("role", "menuitemradio");
 		option.setAttribute("aria-checked", String(selected));
-		option.appendChild(makeProfileIcon(company.profileIcon, "", "company-switcher-profile-option-icon"));
+		option.appendChild(makeCompanyIcon(company.companyIcon, "", "company-switcher-profile-option-icon"));
 		const name = document.createElement("span");
 		name.textContent = company.name;
 		const check = document.createElement("span");
@@ -3086,36 +3213,36 @@ async function openCompanySwitcher() {
 			const opened = await openCompany(company.root, null);
 			if (!opened) showControllerToast(`Could not switch to ${company.name}.`);
 		};
-		profileList.appendChild(option);
+		companyList.appendChild(option);
 	}
 	if (!companies.length) {
 		const unavailable = document.createElement("div");
 		unavailable.className = "company-switcher-profile-empty";
-		unavailable.textContent = "Profiles unavailable";
-		profileList.appendChild(unavailable);
+		unavailable.textContent = "Companies unavailable";
+		companyList.appendChild(unavailable);
 	}
-	profileTrigger.onclick = (event) => {
+	companyTrigger.onclick = (event) => {
 		event.stopPropagation();
-		const opening = profileList.hidden;
-		profileList.hidden = !opening;
-		profileTrigger.setAttribute("aria-expanded", String(opening));
-		profileSection.classList.toggle("open", opening);
-		if (opening) profileList.querySelector("button")?.focus();
+		const opening = companyList.hidden;
+		companyList.hidden = !opening;
+		companyTrigger.setAttribute("aria-expanded", String(opening));
+		companySection.classList.toggle("open", opening);
+		if (opening) companyList.querySelector("button")?.focus();
 	};
-	profileSection.append(profileTrigger, profileList);
+	companySection.append(companyTrigger, companyList);
 	menu.append(
-		profileSection,
+		companySection,
 		item("Settings", "settings", () => openSettings("general")),
 		item("Feedback", "feedback", async () => {
 			const result = await window.qorpera.openFeedback();
-			if (!result?.ok) showControllerToast(result?.error ?? "Feedback could not be opened.");
+			if (!result?.ok) showToast(result?.error ?? "Feedback could not be opened.");
 		}),
 		item(
 			"Log out",
 			"log-out",
 			async () => {
 				const result = await window.qorpera.accountSignOut();
-				if (!result?.ok) showControllerToast(result?.error ?? "Could not log out.");
+				if (!result?.ok) showToast(result?.error ?? "Could not log out.");
 			},
 			"company-switcher-menu-logout",
 		),
@@ -3126,76 +3253,400 @@ async function openCompanySwitcher() {
 }
 
 function renderCompanySwitcher() {
-	const name = state.name || "Profile";
+	const name = state.name || "Company";
 	$("companySwitcherName").textContent = name;
-	$("companySwitcherMark").replaceChildren(makeProfileIcon(currentProfileIcon, ""));
+	$("companySwitcherMark").replaceChildren(makeCompanyIcon(currentCompanyIcon, ""));
+}
+
+function connectionRequestIdentity(request) {
+	return {
+		id: request.id,
+		staffAgentId: request.staffAgentId,
+		sessionFile: request.sessionFile,
+	};
+}
+
+function applyConnectionRequestResult(request, result) {
+	const index = state.connectionRequests.findIndex((candidate) => candidate.id === request.id);
+	if (result?.request) {
+		if (index >= 0) state.connectionRequests[index] = result.request;
+		else state.connectionRequests.push(result.request);
+	}
+	if (currentView === "chat") syncConnectionRequestCards();
+	const artifact = artifactByNodeId(currentNodeId);
+	if (currentView === "panel" && artifact) renderStaffArtifact(artifact);
+}
+
+async function reviewConnectionRequest(request) {
+	const result = await window.qorpera.beginConnectionRequest(connectionRequestIdentity(request));
+	applyConnectionRequestResult(request, result);
+	if (result?.ok === false) showToast(result.error ?? "The connection request could not be opened.");
+	return result;
+}
+
+async function selectConnectionChoice(request, label, custom = "") {
+	const result = await window.qorpera.selectConnectionRequest(connectionRequestIdentity(request), {
+		label: custom || label,
+		kind: custom ? "custom" : "suggestion",
+	});
+	applyConnectionRequestResult(request, result);
+	if (result?.ok === false) showToast(result.error ?? "The connection choice could not be saved.");
+	return result;
+}
+
+async function prepareSelectedConnection(request) {
+	const result = await window.qorpera.prepareConnectionRequest(connectionRequestIdentity(request));
+	applyConnectionRequestResult(request, result);
+	if (result?.ok === false) showToast(result.error ?? "The connection setup could not be started.");
+	return result;
+}
+
+function connectionRequestGroupKey(request) {
+	if (request.artifactId && request.dataNeedId) return `artifact:${request.artifactId}:${request.dataNeedId}`;
+	return `session:${request.sessionFile}:${request.purpose}`;
+}
+
+function connectionRequestGeneration(requests) {
+	return requests.map((request) => request.id).sort().join(":");
+}
+
+function activeConnectionRequest(requests) {
+	return [...requests].sort((left, right) => {
+		const leftUpdated = Date.parse(left.updatedAt ?? left.createdAt ?? "");
+		const rightUpdated = Date.parse(right.updatedAt ?? right.createdAt ?? "");
+		const updatedDifference = (Number.isFinite(leftUpdated) ? leftUpdated : 0) -
+			(Number.isFinite(rightUpdated) ? rightUpdated : 0);
+		if (updatedDifference) return updatedDifference;
+		const leftCreated = Date.parse(left.createdAt ?? "");
+		const rightCreated = Date.parse(right.createdAt ?? "");
+		const createdDifference = (Number.isFinite(leftCreated) ? leftCreated : 0) -
+			(Number.isFinite(rightCreated) ? rightCreated : 0);
+		return createdDifference || String(left.id).localeCompare(String(right.id));
+	}).at(-1);
+}
+
+function connectionRequestContext(request) {
+	const artifact = request.artifactId
+		? (state.artifacts ?? []).find((candidate) => candidate.id === request.artifactId)
+		: undefined;
+	const need = artifact?.dataNeeds?.find((candidate) => candidate.id === request.dataNeedId);
+	return { artifact, need };
+}
+
+function connectionPhaseLabel(phase) {
+	return (
+		{
+			suggested: "Choose source",
+			selected: "Selected",
+			preparing: "Preparing",
+			awaiting_setup: "Waiting for sign-in",
+			awaiting_auth: "Browser open",
+			verifying: "Verifying",
+			connected: "Connected",
+			syncing: "Syncing",
+			ready: "Ready",
+			failed: "Failed",
+			denied: "Declined",
+			cancelled: "Cancelled",
+		}[phase] ?? "Choose source"
+	);
+}
+
+function connectionGuidance(request) {
+	if (!request) return "";
+	return (
+		{
+			preparing: `Preparing ${request.displayName}…`,
+			awaiting_setup: `${request.displayName} is ready at the first private sign-in step. Complete it in Qorpera Chrome, then return here.`,
+			awaiting_auth: `${request.displayName} is open in your browser. Sign in and approve access.`,
+			verifying: `Qorpera is checking that ${request.displayName} completed the connection.`,
+			connected: `${request.displayName} is connected.`,
+			syncing: `${request.displayName} is connected. The agent is checking the first data before marking it ready.`,
+			ready: `${request.displayName} is ready.`,
+		}[request.phase] ?? ""
+	);
+}
+
+function genericConnectionChoiceLabel(request) {
+	const identity = `${request.displayName ?? ""} ${request.recipeId ?? ""}`.toLowerCase();
+	if (/sheet|excel|csv|file|drive|document/.test(identity)) return "Company files and spreadsheets";
+	if (/bank|plaid/.test(identity)) return "Banking only for now";
+	if (/xero|quickbooks|account|stripe|adyen|payment|ledger/.test(identity)) {
+		return "Accounting, banking, and payments";
+	}
+	return request.displayName ?? "Suggested connection";
+}
+
+function connectionChoices(requests) {
+	const first = activeConnectionRequest(requests);
+	const proposedProviders = first.providerSuggestions ??
+		activeConnectionRequest(requests.filter((request) => request.providerSuggestions?.length))?.providerSuggestions;
+	if (proposedProviders?.length) {
+		return proposedProviders.slice(0, 4).map((label) => ({ label, request: undefined }));
+	}
+	const { artifact, need } = connectionRequestContext(first);
+	const installedConnectors = (state.connectors ?? []).filter(
+		(connector) =>
+			requests.some((request) => request.recipeId === `company:${connector.id}`),
+	);
+	const financeContext = /financ|cash|burn|runway|ledger|bank|payment|revenue|commitment/i.test(
+		`${staffDisplayName(currentStaff())} ${artifact?.title ?? ""} ${need?.label ?? ""} ${first.purpose ?? ""}`,
+	);
+	const defaults = financeContext
+		? [
+				"Accounting, banking, and payments",
+				"Company files and spreadsheets",
+				"Banking only for now",
+				"Choose services individually",
+			]
+		: [
+				...(need?.connectorHints ?? []).map((hint) =>
+					hint
+						.split(/[-_ ]+/)
+						.map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+						.join(" "),
+				),
+				"Use company files for now",
+				"Choose services individually",
+			];
+	const requestByLabel = new Map();
+	const installedConnectorByRecipe = new Map(
+		installedConnectors.map((connector) => [`company:${connector.id}`, connector]),
+	);
+	for (const request of requests) {
+		const label = installedConnectorByRecipe.get(request.recipeId)?.displayName ?? genericConnectionChoiceLabel(request);
+		const current = requestByLabel.get(label);
+		if (!current || activeConnectionRequest([current, request]) === request) requestByLabel.set(label, request);
+	}
+	for (const connector of installedConnectors) {
+		const matchingRequest = activeConnectionRequest(
+			requests.filter((request) => request.recipeId === `company:${connector.id}`),
+		);
+		if (matchingRequest) requestByLabel.set(connector.displayName, matchingRequest);
+	}
+	const seenLabels = new Set();
+	const labels = [...requestByLabel.keys(), ...installedConnectors.map((connector) => connector.displayName), ...defaults].filter(
+		(label) => {
+			const normalized = label?.trim().toLocaleLowerCase();
+			if (!normalized || seenLabels.has(normalized)) return false;
+			seenLabels.add(normalized);
+			return true;
+		},
+	);
+	return labels.slice(0, 4).map((label) => ({ label, request: requestByLabel.get(label) }));
+}
+
+async function sendConnectionChoiceToAgent(request, label, custom = "") {
+	const selected = await selectConnectionChoice(request, label, custom);
+	if (!selected?.ok) return false;
+	const selectedRequest = selected.request ?? request;
+	const { artifact, need } = connectionRequestContext(request);
+	showStaffConversation();
+	const input = $("input");
+	input.value = custom || label;
+	syncComposer();
+	input.focus();
+	const safe = (value) => String(value ?? "").replace(/[[\]]/g, ")");
+	const artifactContext = artifact && need
+		? ` for data need "${safe(need.label)}" in artifact "${safe(artifact.title)}" (artifactId "${safe(artifact.id)}", dataNeedId "${safe(need.id)}")`
+		: "";
+	const promptContext = `[Connection choice context: selected "${safe(custom || label)}"${artifactContext}. Use existing company files or installed connections first. If support is missing, build the smallest connector needed. Use the Qorpera-controlled Chrome profile to handle every public setup step yourself, dismiss cookie/privacy prompts without accepting optional tracking where possible, and hand it over only at the first unobstructed sign-in, identity, MFA, consent, or equivalent secure user-only boundary. Completion of that protected step authorizes the rest of the exact selected connector setup; continue without another approval. Store provider-generated secrets directly through use_computer store_secret and never ask the founder to copy them. Do not stop on a landing page or ask the founder to navigate it.]`;
+	const sent = await sendPrompt(promptContext);
+	if (sent) await prepareSelectedConnection(selectedRequest);
+	return sent;
+}
+
+function renderConnectionChoiceForm(requests) {
+	const first = activeConnectionRequest(requests);
+	const groupKey = connectionRequestGroupKey(first);
+	const preparedRequest = first.phase === "preparing" && first.recipeId ? first : undefined;
+	const selectedRequest = !preparedRequest && first.selection && !["failed", "denied", "cancelled"].includes(first.phase)
+		? first
+		: undefined;
+	const form = document.createElement("form");
+	form.className = "connection-choice-form";
+	form.dataset.connectionRequestGroup = groupKey;
+	form.setAttribute("aria-label", "Choose a connection setup");
+
+	const header = document.createElement("div");
+	header.className = "connection-choice-header";
+	const copy = document.createElement("div");
+	const title = document.createElement("strong");
+	const explanation = document.createElement("p");
+	if (preparedRequest) title.textContent = "Ready to connect";
+	else if (selectedRequest?.phase === "awaiting_setup") title.textContent = "Sign in to continue";
+	else if (selectedRequest?.phase === "awaiting_auth") title.textContent = "Finish in your browser";
+	else if (selectedRequest?.phase === "verifying") title.textContent = "Checking the connection";
+	else if (selectedRequest?.phase === "connected") title.textContent = "Connection added";
+	else if (selectedRequest?.phase === "syncing") title.textContent = "Checking the first data";
+	else if (selectedRequest?.phase === "preparing") title.textContent = `Preparing ${selectedRequest.displayName}`;
+	else title.textContent = "Where should I look first?";
+	explanation.textContent = preparedRequest
+		? `${preparedRequest.displayName} is ready. Continue to secure verification in your browser.`
+		: selectedRequest?.guidance || connectionGuidance(selectedRequest) ||
+		"You can change this later. Nothing connects before you choose; secure verification opens in your browser when needed.";
+	copy.append(title, explanation);
+	const close = document.createElement("button");
+	close.type = "button";
+	close.className = "connection-choice-close";
+	close.textContent = "×";
+	close.setAttribute("aria-label", "Dismiss connection choices");
+	close.onclick = () => {
+		dismissedConnectionRequestGroups.set(groupKey, connectionRequestGeneration(requests));
+		form.remove();
+	};
+	header.append(copy, close);
+	form.appendChild(header);
+
+	const list = document.createElement("div");
+	list.className = "connection-choice-list";
+	const choices = preparedRequest
+		? [{ label: preparedRequest.displayName, request: preparedRequest }]
+		: selectedRequest
+			? [{ label: selectedRequest.selection.label, request: selectedRequest }]
+		: connectionChoices(requests);
+	choices.forEach((choice, index) => {
+		const action = document.createElement("button");
+		action.type = "button";
+		action.className = "connection-choice-row";
+		const request = choice.request;
+		const working = ["preparing", "awaiting_setup", "awaiting_auth", "verifying", "syncing"].includes(request?.phase) &&
+			!(request?.phase === "preparing" && request.recipeId);
+		action.classList.toggle("selected", Boolean(request?.selection));
+		action.disabled = working;
+		const shortcut = document.createElement("span");
+		shortcut.className = "connection-choice-shortcut";
+		shortcut.textContent = String.fromCharCode(65 + index);
+		const label = document.createElement("span");
+		label.textContent = choice.label;
+		action.append(shortcut, label);
+		if (working || request === preparedRequest) {
+			const stateLabel = document.createElement("span");
+			stateLabel.className = "connection-choice-state";
+			stateLabel.textContent = request === preparedRequest ? "Connect" : `${connectionPhaseLabel(request.phase)}…`;
+			action.appendChild(stateLabel);
+		}
+		action.onclick = async () => {
+			for (const row of list.querySelectorAll(".connection-choice-row")) row.disabled = true;
+			action.classList.add("selected");
+			if (request?.recipeId) {
+				const selected = request === preparedRequest
+					? { ok: true, request }
+					: await selectConnectionChoice(request, choice.label);
+				const result = selected?.ok ? await reviewConnectionRequest(selected.request ?? request) : selected;
+				if (result?.ok === false) {
+					for (const row of list.querySelectorAll(".connection-choice-row")) row.disabled = false;
+					action.classList.remove("selected");
+				}
+				return;
+			}
+			const sent = await sendConnectionChoiceToAgent(request ?? first, choice.label);
+			if (!sent) {
+				for (const row of list.querySelectorAll(".connection-choice-row")) row.disabled = false;
+				action.classList.remove("selected");
+			}
+		};
+		list.appendChild(action);
+	});
+	form.appendChild(list);
+
+	if (!selectedRequest && !preparedRequest) {
+		const custom = document.createElement("input");
+		custom.className = "connection-choice-custom";
+		custom.type = "text";
+		custom.maxLength = 240;
+		custom.placeholder = "Describe another setup";
+		custom.setAttribute("aria-label", "Describe another connection setup");
+		form.appendChild(custom);
+		form.onsubmit = async (event) => {
+			event.preventDefault();
+			const value = custom.value.trim();
+			if (!value) return;
+			custom.disabled = true;
+			if (!(await sendConnectionChoiceToAgent(first, "Custom setup", value))) custom.disabled = false;
+		};
+	}
+	return form;
+}
+
+function connectionRequestFingerprint(requests) {
+	return JSON.stringify(
+		requests.map((request) => ({
+			id: request.id,
+			displayName: request.displayName,
+			purpose: request.purpose,
+			recipeId: request.recipeId,
+			providerSuggestions: request.providerSuggestions,
+			status: request.status,
+			phase: request.phase,
+			guidance: request.guidance,
+			selection: request.selection,
+			failure: request.failure,
+			updatedAt: request.updatedAt,
+		})),
+	);
+}
+
+function insertConnectionRequestForm(messages, form, request) {
+	const createdAt = Date.parse(request.createdAt ?? "");
+	const laterMessage = Number.isFinite(createdAt)
+		? [...messages.children].find((element) => {
+				const timestamp = Number(element.dataset.messageTimestamp);
+				return Number.isFinite(timestamp) && timestamp > createdAt;
+			})
+		: undefined;
+	if (laterMessage) messages.insertBefore(form, laterMessage);
+	else if (threadActivityEl?.isConnected) messages.insertBefore(form, threadActivityEl);
+	else messages.appendChild(form);
 }
 
 function syncConnectionRequestCards() {
 	const messages = $("messages");
 	if (!messages) return;
 	for (const card of messages.querySelectorAll(".connection-request-card")) card.remove();
+	const existingForms = new Map(
+		[...messages.querySelectorAll(".connection-choice-form[data-connection-request-group]")].map((form) => [
+			form.dataset.connectionRequestGroup,
+			form,
+		]),
+	);
 	const requests = Array.isArray(state.connectionRequests) ? state.connectionRequests : [];
+	const groups = new Map();
 	for (const request of requests) {
 		if (request.staffAgentId !== currentStaffId) continue;
-		if (["connected", "denied", "cancelled"].includes(request.status)) continue;
-		const backgroundRequest = request.sessionFile !== currentSession;
-		const requiresManualSetup = request.status !== "pending";
-		const connectionName = request.displayName ?? "Connection";
-		const card = document.createElement("article");
-		card.className = "connection-request-card";
-		card.dataset.connectionRequestId = request.id;
-		card.setAttribute("aria-label", `${connectionName} connection requested`);
-		const icon = document.createElement("span");
-		icon.className = "connection-request-icon";
-		icon.textContent = connectionName.slice(0, 1).toUpperCase();
-		const copy = document.createElement("div");
-		copy.className = "connection-request-copy";
-		const title = document.createElement("strong");
-		title.textContent = request.status === "failed"
-			? `${staffDisplayName(currentStaff())} still needs ${connectionName}`
-			: request.status === "connecting"
-			? `${staffDisplayName(currentStaff())} is waiting on ${connectionName}`
-			: backgroundRequest
-				? `${staffDisplayName(currentStaff())} needs ${connectionName} for scheduled work`
-				: `${staffDisplayName(currentStaff())} needs ${connectionName}`;
-		const reason = document.createElement("p");
-		reason.textContent = request.purpose ?? `Connect ${connectionName} so this work can continue.`;
-		copy.append(title, reason);
-		if (requiresManualSetup) {
-			const limitation = document.createElement("small");
-			limitation.textContent = request.status === "failed"
-				? "The connection did not complete. Review the profile account, then retry when the staff member asks again."
-				: "Connection setup is in progress. Complete the provider window if it asks for your attention.";
-			copy.appendChild(limitation);
+		if (request.phase === "ready" || ["denied", "cancelled"].includes(request.status)) continue;
+		const key = connectionRequestGroupKey(request);
+		const group = groups.get(key) ?? [];
+		group.push(request);
+		groups.set(key, group);
+	}
+	const visibleGroups = new Set();
+	for (const [key, group] of groups) {
+		const existing = existingForms.get(key);
+		const generation = connectionRequestGeneration(group);
+		if (dismissedConnectionRequestGroups.get(key) === generation) {
+			existing?.remove();
+			continue;
 		}
-		const action = document.createElement("button");
-		action.type = "button";
-		action.textContent = requiresManualSetup ? "Open Connections" : "Review connection";
-		action.onclick = async () => {
-			if (requiresManualSetup) {
-				openSettings("connections");
-				return;
-			}
-			action.disabled = true;
-			action.textContent = "Opening request…";
-			const result = await window.qorpera.beginConnectionRequest({
-				id: request.id,
-				staffAgentId: request.staffAgentId,
-				sessionFile: request.sessionFile,
-			});
-			if (result?.ok === false) {
-				action.disabled = false;
-				action.textContent = "Review connection";
-				showControllerToast(result.error ?? "The connection request could not be opened.");
-				return;
-			}
-			const index = state.connectionRequests.findIndex((candidate) => candidate.id === request.id);
-			if (index >= 0 && result?.request) state.connectionRequests[index] = result.request;
-			syncConnectionRequestCards();
-		};
-		card.append(icon, copy, action);
-		messages.appendChild(card);
+		dismissedConnectionRequestGroups.delete(key);
+		visibleGroups.add(key);
+		const fingerprint = connectionRequestFingerprint(group);
+		if (!existing || existing.dataset.connectionRequestFingerprint !== fingerprint) {
+			const form = renderConnectionChoiceForm(group);
+			form.dataset.connectionRequestFingerprint = fingerprint;
+			existing?.remove();
+			insertConnectionRequestForm(messages, form, activeConnectionRequest(group));
+		}
+		const prepared = group.find(
+			(request) => request.phase === "preparing" && request.selection && request.recipeId === "github",
+		);
+		if (prepared && !autoStartedConnectionRequestIds.has(prepared.id)) {
+			autoStartedConnectionRequestIds.add(prepared.id);
+			queueMicrotask(() => void reviewConnectionRequest(prepared));
+		}
+	}
+	for (const [key, form] of existingForms) {
+		if (!visibleGroups.has(key)) form.remove();
 	}
 }
 
@@ -3225,7 +3676,7 @@ async function refreshState() {
 			applyCurrentSessionRuntime();
 			renderCompanyNav();
 			renderRosterRail();
-			renderProfileRow();
+			renderCompanyRow();
 			if (currentView === "roster") renderStaffHome();
 			if (currentView === "chat") syncConnectionRequestCards();
 			if (!$("agentSidepanel").hidden && currentStaff()) {
@@ -3233,7 +3684,10 @@ async function refreshState() {
 				else renderAgentComputerPanel(currentStaff());
 			}
 			const staffRoutinesOpen = currentNodeId === `staff-routines:${currentStaffId}`;
-			if (currentNodeId && !projectionNode(currentNodeId) && !staffRoutinesOpen) currentNodeId = null;
+			const staffArtifactOpen = artifactByNodeId(currentNodeId);
+			if (currentNodeId && !navigationNode(currentNodeId) && !staffRoutinesOpen && !staffArtifactOpen) {
+				currentNodeId = null;
+			}
 			if (!currentNodeId && currentView !== "roster" && currentView !== "chat") {
 				const routed = location.hash.match(/^#\/p\/(.+)$/)?.[1];
 				let routedId;
@@ -3242,15 +3696,19 @@ async function refreshState() {
 				} catch {
 					routedId = undefined;
 				}
-				const target = projectionNode(routedId) ? routedId : undefined;
-				if (target) void openProjectionNode(target);
+				const target = navigationNode(routedId) ? routedId : undefined;
+				if (target) void openNavigationNode(target);
 				else show("roster");
 			} else if (currentView === "panel" && staffRoutinesOpen) {
 				void renderActivity(false, currentStaffId);
-			} else if (currentView === "panel" || currentView === "surface") {
+			} else if (currentView === "panel" && staffArtifactOpen) {
+				if (!artifactEditor?.dirty || artifactEditor.id !== staffArtifactOpen.id) {
+					renderStaffArtifact(staffArtifactOpen);
+				}
+			} else if (currentView === "panel") {
 				// Refresh the open read model without disturbing a live chat. A
 				// product Chat page is now inert until its explicit create action.
-				void openProjectionNode(currentNodeId, false);
+				void openNavigationNode(currentNodeId, false);
 			}
 		}
 	} catch {
@@ -3284,7 +3742,9 @@ function hydrateAgentState(withHistory) {
 function cacheCurrentSession() {
 	if (!currentSession) return;
 	const snapshot = $("messages").cloneNode(true);
-	for (const activity of snapshot.querySelectorAll(".agent-thread-activity")) activity.remove();
+	for (const transient of snapshot.querySelectorAll(
+		".agent-thread-activity, .connection-choice-form, .connection-request-card",
+	)) transient.remove();
 	sessionCache[currentSession] = snapshot.innerHTML;
 }
 
@@ -3292,7 +3752,7 @@ async function openSession(file, pageId = "q:chats") {
 	const navigation = ++navigationGeneration;
 	const summary = (state.sessions ?? []).find((session) => session.file === file);
 	if (summary?.staffAgentId && !activeStaffMembers().some((staff) => staffId(staff) === summary.staffAgentId)) {
-		showControllerToast("This archived staff conversation is available in the company trail but cannot be reopened.");
+		showToast("This archived staff conversation is available in the company trail but cannot be reopened.");
 		return;
 	}
 	// Re-clicking the chat that is already live must only bring its view back —
@@ -3301,7 +3761,7 @@ async function openSession(file, pageId = "q:chats") {
 	if (file && file === currentSession && !agentExited) {
 		currentStaffId = summary?.staffAgentId ?? null;
 		currentNodeId = pageId;
-		setProjectionRoute(pageId);
+		setNavigationRoute(pageId);
 		show("chat");
 		renderThreadHeader();
 		syncConnectionRequestCards();
@@ -3321,18 +3781,16 @@ async function openSession(file, pageId = "q:chats") {
 		currentStaffId = summary?.staffAgentId ?? null;
 		currentDepartment = result.department ?? null;
 		currentWorktree = result.worktree ?? null;
-		sidechatPageId = null;
-		sidechatPending = null;
 	}
 	if (navigation !== navigationGeneration) return;
 	if (!result?.ok) {
 		// A dead click teaches the founder nothing — say why the chat
 		// wouldn't open (legacy-migration refusals land here too).
-		showControllerToast(result?.error ? `could not open this chat: ${result.error}` : "could not open this chat");
+		showToast(result?.error ? `could not open this chat: ${result.error}` : "could not open this chat");
 		return;
 	}
 	currentNodeId = pageId;
-	setProjectionRoute(pageId);
+	setNavigationRoute(pageId);
 	// Cached pages show instantly; fresh ones get the text-line skeleton.
 	// Either way the live child re-hydrates and replaces once ready.
 	$("messages").innerHTML = sessionCache[file] ?? pageSkeletonMarkup();
@@ -3354,13 +3812,11 @@ async function newCompanyChat() {
 		currentStaffId = null;
 		currentDepartment = null;
 		currentWorktree = null;
-		sidechatPageId = null;
-		sidechatPending = null;
 	}
 	if (navigation !== navigationGeneration) return;
 	if (!result?.ok) return;
 	currentNodeId = "q:chats";
-	setProjectionRoute("q:chats");
+	setNavigationRoute("q:chats");
 	$("messages").innerHTML = "";
 	resetWorkGroup();
 	show("chat");
@@ -3382,8 +3838,6 @@ async function newChat() {
 		currentStaffId = null;
 		currentDepartment = result.department ?? null;
 		currentWorktree = result.worktree ?? null;
-		sidechatPageId = null;
-		sidechatPending = null;
 	}
 	if (navigation !== navigationGeneration) return;
 	if (!result?.ok) return;
@@ -3414,14 +3868,14 @@ function renderHistory(messages) {
 				.filter((p) => p.type === "text")
 				.map((p) => p.text)
 				.join("\n");
-			// The sidechat context preamble is plumbing, not something the
+			// Context preambles are runtime plumbing, not something the
 			// founder typed — show the message as they wrote it.
-			const text = raw.replace(/^\[Sidechat context:[^\]]*\]\s*/, "");
+			const text = raw.replace(/^(?:\[(?:Sidechat|Connection choice) context:[^\]]*\]\s*)+/, "");
 			const imageUrls = parts
 				.filter((p) => p.type === "image" && p.data)
 				.map((p) => `data:${p.mimeType};base64,${p.data}`);
 			if (text || imageUrls.length) {
-				appendMsgImages(decorateUserMsg(addMsg("user", text), text), imageUrls);
+				appendMsgImages(decorateUserMsg(addMsg("user", text, message.timestamp), text), imageUrls);
 				historyPrompt = {
 					text,
 					images: imageUrls.map((dataUrl, index) => ({
@@ -3435,7 +3889,7 @@ function renderHistory(messages) {
 				historyToolCalls.clear();
 			}
 			} else if (message.role === "assistant") {
-				appendAssistantMessages(assistantTextPartsFromMessage(message));
+				appendAssistantMessages(assistantTextPartsFromMessage(message), false, message.timestamp);
 			for (const part of message.content ?? []) {
 				if (part.type === "toolCall") {
 					if (part.id)
@@ -3464,8 +3918,8 @@ function renderHistory(messages) {
 	$("messages").scrollTop = $("messages").scrollHeight;
 }
 
-function projectionNode(id) {
-	return (state.projection?.nodes ?? []).find((node) => node.id === id);
+function navigationNode(id) {
+	return (state.shellNavigation?.nodes ?? []).find((node) => node.id === id);
 }
 
 function navStorageKey(name) {
@@ -3546,14 +4000,16 @@ function applyNavMetrics(element, node, focused = false) {
 }
 
 function navigationDepartments() {
-	return (state.projection?.navigation ?? []).map(projectionNode).filter((node) => node?.kind === "department");
+	return (state.shellNavigation?.sectionIds ?? [])
+		.map(navigationNode)
+		.filter((node) => node?.kind === "department");
 }
 
-function departmentForProjectionNode(id) {
+function departmentForNavigationNode(id) {
 	return navigationDepartments().find((department) =>
 		department.items.some((childId) => {
 			if (childId === id) return true;
-			const child = projectionNode(childId);
+			const child = navigationNode(childId);
 			return child?.kind === "category" && child.items.includes(id);
 		}),
 	);
@@ -3564,13 +4020,13 @@ function nodeIsVisible(id) {
 }
 
 function visibleCategoryPages(category) {
-	return category.items.map(projectionNode).filter((node) => node?.kind === "page" && nodeIsVisible(node.id));
+	return category.items.map(navigationNode).filter((node) => node?.kind === "page" && nodeIsVisible(node.id));
 }
 
 function hiddenItemsForDepartment(department) {
 	const hidden = [];
 	for (const childId of department.items) {
-		const child = projectionNode(childId);
+		const child = navigationNode(childId);
 		if (!child) continue;
 		if (hiddenNavigation.has(child.id)) {
 			hidden.push({
@@ -3581,7 +4037,7 @@ function hiddenItemsForDepartment(department) {
 		}
 		if (child.kind !== "category") continue;
 		for (const pageId of child.items) {
-			const page = projectionNode(pageId);
+			const page = navigationNode(pageId);
 			if (page?.kind === "page" && hiddenNavigation.has(page.id)) {
 				hidden.push({
 					id: page.id,
@@ -3621,8 +4077,8 @@ function openNavContext(event, node, placement) {
 	$("contextActions").hidden = false;
 	$("heightEditor").hidden = true;
 	$("iconEditor").hidden = true;
-	// Chats are trail sessions, not projection nodes: pinnable, but height /
-	// hide / archive act on projection ids and stay out of their menu.
+	// Chats are trail sessions, not navigation nodes: pinnable, but height /
+	// hide / archive act on navigation ids and stay out of their menu.
 	const isChat = node.kind === "chat";
 	const canAdjust = placement !== "collection" && !isChat;
 	$("adjustHeightButton").hidden = !canAdjust;
@@ -3654,12 +4110,12 @@ function openSessionContext(event, session) {
 }
 
 /** Inline rename: the department title label becomes an input until
- * Enter/blur commits (empty restores the projection label) or Escape cancels.
- * Presentation override only — the projection document is never modified. */
+ * Enter/blur commits (empty restores the navigation label) or Escape cancels.
+ * Presentation override only — the navigation document is never modified. */
 function startDepartmentRename(department) {
 	closeNavContext();
-	const group = document.querySelector(`.projection-department[data-department-id="${CSS.escape(department.id)}"]`);
-	const label = group?.querySelector(".projection-department-label");
+	const group = document.querySelector(`.navigation-department[data-department-id="${CSS.escape(department.id)}"]`);
+	const label = group?.querySelector(".navigation-department-label");
 	if (!label) return;
 	const input = document.createElement("input");
 	input.className = "dept-rename-input";
@@ -3735,12 +4191,12 @@ function setTargetHeight(value) {
 	updateHeightEditor();
 }
 
-function showControllerToast(message) {
+function showToast(message) {
 	clearTimeout(toastTimeout);
-	$("controllerToast").textContent = message;
-	$("controllerToast").hidden = false;
+	$("appToast").textContent = message;
+	$("appToast").hidden = false;
 	toastTimeout = setTimeout(() => {
-		$("controllerToast").hidden = true;
+		$("appToast").hidden = true;
 	}, 3400);
 }
 
@@ -3749,7 +4205,7 @@ function currentInsideNode(node) {
 	if (node.kind === "page") return false;
 	return node.items.some((id) => {
 		if (id === currentNodeId) return true;
-		const child = projectionNode(id);
+		const child = navigationNode(id);
 		return child?.kind === "category" && child.items.includes(currentNodeId);
 	});
 }
@@ -3759,7 +4215,7 @@ function firstAvailableNavigationTarget() {
 		if (focusedDepartmentId && department.id !== focusedDepartmentId) continue;
 		if (!nodeIsVisible(department.id)) continue;
 		for (const childId of department.items) {
-			const child = projectionNode(childId);
+			const child = navigationNode(childId);
 			if (child && nodeIsVisible(child.id)) return child;
 		}
 	}
@@ -3768,7 +4224,7 @@ function firstAvailableNavigationTarget() {
 
 function openNavigationFallback() {
 	const fallback = firstAvailableNavigationTarget();
-	if (fallback) void openProjectionNode(fallback.id);
+	if (fallback) void openNavigationNode(fallback.id);
 	else {
 		currentNodeId = null;
 		const panel = $("view-panel");
@@ -3788,9 +4244,9 @@ function hideNavigationTarget() {
 	closeNavContext();
 	renderCompanyNavSafe();
 	if (containedCurrent) openNavigationFallback();
-	else if (currentView === "panel" && projectionNode(currentNodeId)?.kind === "category")
-		renderCollection(projectionNode(currentNodeId));
-	showControllerToast(
+	else if (currentView === "panel" && navigationNode(currentNodeId)?.kind === "category")
+		renderCollection(navigationNode(currentNodeId));
+	showToast(
 		node.kind === "department"
 			? `${node.label} hidden. Right-click the navigation panel to show it again.`
 			: `${node.label} hidden. Use its department Show menu to restore it.`,
@@ -3801,9 +4257,9 @@ function restoreHiddenNode(node) {
 	hiddenNavigation.delete(node.id);
 	storeNavigationSet("nav-hidden", hiddenNavigation);
 	renderCompanyNavSafe();
-	if (currentView === "panel" && projectionNode(currentNodeId)?.kind === "category")
-		renderCollection(projectionNode(currentNodeId));
-	showControllerToast(`${node.label} shown in the panel.`);
+	if (currentView === "panel" && navigationNode(currentNodeId)?.kind === "category")
+		renderCollection(navigationNode(currentNodeId));
+	showToast(`${node.label} shown in the panel.`);
 }
 
 function toggleDepartmentFocus() {
@@ -3815,12 +4271,12 @@ function toggleDepartmentFocus() {
 	renderCompanyNavSafe();
 	$("navigation").scrollTop = 0;
 	if (enabling) {
-		const target = department.items.map(projectionNode).find((node) => node && nodeIsVisible(node.id));
-		if (target) void openProjectionNode(target.id);
+		const target = department.items.map(navigationNode).find((node) => node && nodeIsVisible(node.id));
+		if (target) void openNavigationNode(target.id);
 		else openNavigationFallback();
-		showControllerToast(`${department.label} focused. Reset Panel restores the complete view.`);
+		showToast(`${department.label} focused. Reset Panel restores the complete view.`);
 	} else {
-		showControllerToast("Panel focus reset. Hidden items remain hidden.");
+		showToast("Panel focus reset. Hidden items remain hidden.");
 	}
 }
 
@@ -3854,9 +4310,9 @@ function confirmArchivePreview() {
 	archiveTarget = null;
 	renderCompanyNavSafe();
 	if (containedCurrent) openNavigationFallback();
-	else if (currentView === "panel" && projectionNode(currentNodeId)?.kind === "category")
-		renderCollection(projectionNode(currentNodeId));
-	showControllerToast(`${target.label} archived for this preview. Durable archive remains unbound.`);
+	else if (currentView === "panel" && navigationNode(currentNodeId)?.kind === "category")
+		renderCollection(navigationNode(currentNodeId));
+	showToast(`${target.label} archived for this preview. Durable archive remains unbound.`);
 }
 
 function renderPanelHiddenDepartments() {
@@ -3879,7 +4335,7 @@ function renderPanelHiddenDepartments() {
 }
 
 function openPanelContext(event) {
-	if (event.target.closest(".projection-department, .sidebar-create, .profileRow")) return;
+	if (event.target.closest(".navigation-department, .sidebar-create")) return;
 	event.preventDefault();
 	closeNavContext();
 	navContextPoint = { x: event.clientX, y: event.clientY };
@@ -3890,7 +4346,7 @@ function openPanelContext(event) {
 }
 
 // ---- department identity glyphs ---------------------------------------------
-// The projection schema carries no icon field, so the glyph derives from the
+// The navigation schema carries no icon field, so the glyph derives from the
 // department's shape: product departments (their pages bind a departmentId)
 // get the code glyph; interface departments match on the founder's own words;
 // everything else is a folder.
@@ -3925,7 +4381,7 @@ function departmentGlyphName(department) {
 	const override = navOverrides()[department.id]?.icon;
 	if (override && NAV_GLYPHS[override]) return override;
 	const productLike = department.items.some((childId) => {
-		const child = projectionNode(childId);
+		const child = navigationNode(childId);
 		return child?.kind === "page" && child.view?.context?.departmentId !== undefined;
 	});
 	const label = displayLabel(department).toLowerCase();
@@ -3958,7 +4414,7 @@ function relativeSessionTime(mtimeMs) {
 
 // ---- local navigation overrides (rename / icon) and collapse state -----------
 // Panel presentation only, stored per machine like heights and hidden items —
-// the projection document itself is never modified from the frontend.
+// the navigation document itself is never modified from the frontend.
 function navOverrides() {
 	return readStoredObject("nav-overrides", {});
 }
@@ -3991,13 +4447,13 @@ function toggleDepartmentCollapsed(id) {
 }
 
 // The chat pile collapses like a department; it shares the nav-collapsed
-// store under a reserved id no projection document produces.
+// store under a reserved id no navigation document produces.
 const CHAT_PILE_ID = "chat-pile";
 
 // ---- pins: founder-chosen shortcuts at the top of the panel (T3 shape) -------
 // Pin state is panel presentation like collapse/hidden — stored per machine,
 // never in company documents. One ordered list carries every pin: `node:<id>`
-// entries are projection pages/categories (rendered in the Pinned section) or
+// entries are navigation pages/categories (rendered in the Pinned section) or
 // departments (ordered first among departments); `chat:<file>` entries are
 // trail sessions lifted out of the chat pile.
 function pinnedNavigation() {
@@ -4045,11 +4501,10 @@ function sessionRow(session) {
 	row.classList.toggle("active", currentSession === session.file && currentView === "chat");
 	row.innerHTML = `${navGlyphSvg("bubble", "session-glyph")}<span class="session-copy"><span class="session-title"></span><small class="session-meta"><span class="session-scope"></span><span class="session-time"></span></small></span>`;
 	row.querySelector(".session-title").textContent = session.title;
-	const page = session.page ? projectionNode(session.page) : undefined;
-	row.querySelector(".session-scope").textContent = page?.label ?? session.worktree ?? "Company";
+	row.querySelector(".session-scope").textContent = session.worktree ?? "Company";
 	row.querySelector(".session-time").textContent = relativeSessionTime(session.mtimeMs);
 	row.title = session.title;
-	row.onclick = () => openSession(session.file, session.page);
+	row.onclick = () => openSession(session.file);
 	row.oncontextmenu = (event) => openSessionContext(event, session);
 	return row;
 }
@@ -4085,7 +4540,7 @@ function renderPinnedSection(nav) {
 	const entries = [];
 	for (const key of pinnedNavigation()) {
 		if (key.startsWith("node:")) {
-			const node = projectionNode(key.slice(5));
+			const node = navigationNode(key.slice(5));
 			// Departments pin by ordering first, not by a shortcut row; stale
 			// pins (removed nodes) and hidden/archived items stay out.
 			if (!node || node.kind === "department" || !nodeIsVisible(node.id)) continue;
@@ -4111,7 +4566,7 @@ function renderPinnedSection(nav) {
 			row.innerHTML = `${navGlyphSvg(entry.node.kind === "category" ? "folder" : mainPageGlyphName(entry.node), "session-glyph")}<span class="session-copy"><span class="session-title"></span></span>`;
 			row.querySelector(".session-title").textContent = displayLabel(entry.node);
 			row.title = entry.node.description ?? displayLabel(entry.node);
-			row.onclick = () => void openProjectionNode(entry.node.id);
+			row.onclick = () => void openNavigationNode(entry.node.id);
 			row.oncontextmenu = (event) => openNavContext(event, entry.node, "pinned");
 		} else {
 			row = sessionRow(entry.session);
@@ -4142,18 +4597,18 @@ function renderCompanyNav() {
 		if (focusedDepartmentId && !focused) continue;
 		if (!nodeIsVisible(department.id)) continue;
 		const group = document.createElement("section");
-		group.className = "projection-department";
+		group.className = "navigation-department";
 		group.dataset.departmentId = department.id;
 		const isMainDepartment = department.id === "q:main";
 		if (isMainDepartment) group.classList.add("dept-main");
 		const collapsed = !isMainDepartment && !focused && collapsedNavigation().has(department.id);
 		group.classList.toggle("collapsed", collapsed);
 		group.oncontextmenu = (event) => {
-			if (!event.target.closest(".projection-row, .hidden-items-control"))
+			if (!event.target.closest(".navigation-row, .hidden-items-control"))
 				openNavContext(event, department, "department");
 		};
 		const title = document.createElement("div");
-		title.className = "projection-department-title";
+		title.className = "navigation-department-title";
 		title.innerHTML = navGlyphSvg(departmentGlyphName(department), "dept-glyph");
 		title.setAttribute("role", "button");
 		title.setAttribute("aria-expanded", String(!collapsed));
@@ -4162,7 +4617,7 @@ function renderCompanyNav() {
 			toggleDepartmentCollapsed(department.id);
 		};
 		const titleLabel = document.createElement("span");
-		titleLabel.className = "projection-department-label";
+		titleLabel.className = "navigation-department-label";
 		titleLabel.textContent = displayLabel(department);
 		title.appendChild(titleLabel);
 		const caret = document.createElement("span");
@@ -4182,7 +4637,7 @@ function renderCompanyNav() {
 				`Show ${hiddenItems.length} hidden item${hiddenItems.length === 1 ? "" : "s"} in ${department.label}`,
 			);
 			for (const hidden of hiddenItems) {
-				const node = projectionNode(hidden.id);
+				const node = navigationNode(hidden.id);
 				if (!node) continue;
 				const restore = document.createElement("button");
 				restore.type = "button";
@@ -4213,21 +4668,21 @@ function renderCompanyNav() {
 		applyNavMetrics(title, department);
 		group.appendChild(title);
 		const items = document.createElement("div");
-		items.className = "projection-department-items";
+		items.className = "navigation-department-items";
 		items.dataset.emptyLabel = department.items.length ? "No visible items" : "Empty department";
 		if (isMainDepartment) {
 			// Codex-app shape: the panel leads with starting a conversation.
 			const newChat = document.createElement("button");
 			newChat.type = "button";
-			newChat.className = "projection-row page new-chat-row";
-			newChat.innerHTML = '<span class="projection-row-label"></span>';
-			newChat.querySelector(".projection-row-label").innerHTML = `${navGlyphSvg("plus", "nav-row-glyph")}New chat`;
+			newChat.className = "navigation-row page new-chat-row";
+			newChat.innerHTML = '<span class="navigation-row-label"></span>';
+			newChat.querySelector(".navigation-row-label").innerHTML = `${navGlyphSvg("plus", "nav-row-glyph")}New chat`;
 			newChat.title = "Start a new company chat";
 			newChat.onclick = () => void newCompanyChat();
 			items.appendChild(newChat);
 		}
 		for (const childId of department.items) {
-			const child = projectionNode(childId);
+			const child = navigationNode(childId);
 			if (!child || (child.kind !== "page" && child.kind !== "category")) continue;
 			if (!nodeIsVisible(child.id)) continue;
 			// The chat archive lives in the pile below the departments now; the
@@ -4235,15 +4690,15 @@ function renderCompanyNav() {
 			if (isMainDepartment && child.kind === "page" && child.view?.id === "qorpera.chats") continue;
 			const row = document.createElement("button");
 			const ownsCurrent = child.kind === "category" && child.items.includes(currentNodeId);
-			row.className = `projection-row ${child.kind}${focused ? " focus-row" : ""}`;
+			row.className = `navigation-row ${child.kind}${focused ? " focus-row" : ""}`;
 			row.innerHTML = focused
-				? '<span class="projection-row-copy"><span class="projection-row-label"></span><small></small></span><span class="focus-arrow" aria-hidden="true">-&gt;</span>'
-				: '<span class="projection-row-label"></span>';
-			row.querySelector(".projection-row-label").textContent = child.label;
+				? '<span class="navigation-row-copy"><span class="navigation-row-label"></span><small></small></span><span class="focus-arrow" aria-hidden="true">-&gt;</span>'
+				: '<span class="navigation-row-label"></span>';
+			row.querySelector(".navigation-row-label").textContent = child.label;
 			// Main's free rows carry their own glyphs (Codex-app shape) since
 			// the department header that would anchor them is not rendered.
 			if (isMainDepartment && !focused) {
-				row.querySelector(".projection-row-label").insertAdjacentHTML(
+				row.querySelector(".navigation-row-label").insertAdjacentHTML(
 					"afterbegin",
 					navGlyphSvg(mainPageGlyphName(child), "nav-row-glyph"),
 				);
@@ -4256,9 +4711,7 @@ function renderCompanyNav() {
 				row.querySelector("small").textContent =
 					child.kind === "category"
 						? `Category / ${visiblePages} page${visiblePages === 1 ? "" : "s"}`
-						: child.view.type === "builtin"
-							? "Built-in page"
-							: "Direct surface";
+						: "Built-in page";
 			}
 			if (child.id === "q:inbox") {
 				const pending = state.inbox.filter((item) => item.status === "pending").length;
@@ -4270,7 +4723,7 @@ function renderCompanyNav() {
 				}
 			}
 			applyNavMetrics(row, child, focused);
-			row.onclick = () => void openProjectionNode(child.id);
+			row.onclick = () => void openNavigationNode(child.id);
 			row.oncontextmenu = (event) => openNavContext(event, child, "row");
 			items.appendChild(row);
 		}
@@ -4324,12 +4777,6 @@ function renderCompanyNav() {
 		section.appendChild(pile);
 		nav.appendChild(section);
 	}
-	const diagnostics = $("projectionDiagnostics");
-	const messages = state.projection?.diagnostics ?? [];
-	diagnostics.textContent = messages.length
-		? `${messages.length} projection issue${messages.length === 1 ? "" : "s"}`
-		: "";
-	diagnostics.title = messages.join("\n");
 	$("resetPanelButton").disabled = focusedDepartmentId === null;
 	$("resetPanelButton").title = focusedDepartmentId
 		? "Exit department focus without changing hidden items"
@@ -4338,7 +4785,7 @@ function renderCompanyNav() {
 	filterRosterRail(railSearchQuery);
 }
 
-function setProjectionRoute(id) {
+function setNavigationRoute(id) {
 	const next = `#/p/${encodeURIComponent(id)}`;
 	if (location.hash !== next) history.replaceState(null, "", next);
 }
@@ -4347,7 +4794,7 @@ function renderCollection(node) {
 	const panel = $("view-panel");
 	panel.innerHTML =
 		'<section class="collection-view"><header class="collection-view-head"><div><div class="eyebrow"></div><h1></h1><p></p></div></header><div class="collection-tools"><label class="collection-search"><input type="search" placeholder="Filter this category" aria-label="Filter pages"></label><span class="collection-count"></span></div><div class="collection-list"></div></section>';
-	const department = departmentForProjectionNode(node.id);
+	const department = departmentForNavigationNode(node.id);
 	panel.querySelector(".eyebrow").textContent =
 		node.kind === "department" ? "Company / Department" : `${department?.label ?? "Company"} / Category`;
 	panel.querySelector("h1").textContent = node.label;
@@ -4362,7 +4809,7 @@ function renderCollection(node) {
 		const publishedPages =
 			node.kind === "category"
 				? visibleCategoryPages(node)
-				: node.items.map(projectionNode).filter((page) => page?.kind === "page" && nodeIsVisible(page.id));
+				: node.items.map(navigationNode).filter((page) => page?.kind === "page" && nodeIsVisible(page.id));
 		const pages = publishedPages.filter((page) =>
 			`${page.label} ${page.description ?? ""}`.toLowerCase().includes(query),
 		);
@@ -4381,14 +4828,13 @@ function renderCollection(node) {
 			row.querySelector(".collection-index").textContent = String(index + 1).padStart(2, "0");
 			row.querySelector("strong").textContent = page.label;
 			row.querySelector("p").textContent = page.description ?? "Open this company page.";
-			row.querySelector(".collection-meta span:last-child").textContent =
-				page.view.type === "surface" ? "Surface" : "Built-in";
-			row.onclick = () => void openProjectionNode(page.id);
+			row.querySelector(".collection-meta span:last-child").textContent = "Built-in";
+			row.onclick = () => void openNavigationNode(page.id);
 			row.oncontextmenu = (event) => openNavContext(event, page, "collection");
 			row.onkeydown = (event) => {
 				if (event.key === "Enter" || event.key === " ") {
 					event.preventDefault();
-					void openProjectionNode(page.id);
+					void openNavigationNode(page.id);
 				}
 			};
 			list.appendChild(row);
@@ -4435,7 +4881,7 @@ function renderDepartmentWizard() {
 	$("departmentName").value = departmentWizard.name;
 	$("departmentNameHelp").textContent =
 		departmentWizard.type === "product"
-			? "Use the product name people expect to see in the controller."
+			? "Use the product name people expect to see in the company."
 			: "Use the name people expect to see in the company interface.";
 	$("interfaceSetup").hidden = departmentWizard.type !== "interface";
 	$("productSetup").hidden = departmentWizard.type !== "product";
@@ -4506,14 +4952,14 @@ async function finishDepartmentCreation() {
 			const result = await window.qorpera.addProduct(name, source);
 			if (!result?.ok) {
 				if (result?.error !== "cancelled")
-					showControllerToast(result?.error ?? "Product department was not created.");
+					showToast(result?.error ?? "Product department was not created.");
 				return;
 			}
 			closeDepartmentModal();
 			await refreshState();
-			showControllerToast(`${name} product-development department created.`);
+			showToast(`${name} product-development department created.`);
 		} catch (error) {
-			showControllerToast(error instanceof Error ? error.message : "Product department could not be created.");
+			showToast(error instanceof Error ? error.message : "Product department could not be created.");
 		} finally {
 			create.textContent = "Create department";
 			updateDepartmentActions();
@@ -4523,7 +4969,7 @@ async function finishDepartmentCreation() {
 	const template = document.querySelector(`[data-template="${departmentWizard.template}"] strong`)?.textContent;
 	const setup = departmentWizard.template === "blank" ? "from scratch" : `from the ${template} template`;
 	closeDepartmentModal();
-	showControllerToast(
+	showToast(
 		`${name} is ready to create ${setup}. The frontend is complete; the company command remains unbound.`,
 	);
 }
@@ -4554,7 +5000,7 @@ function renderProductChats(department, page) {
 	}
 	for (const session of sessions) {
 		const card = document.createElement("button");
-		card.className = "projection-card chat-card";
+		card.className = "navigation-card chat-card";
 		card.classList.toggle("active", currentSession === session.file);
 		const label = document.createElement("strong");
 		label.textContent = session.title;
@@ -4567,17 +5013,17 @@ function renderProductChats(department, page) {
 	}
 }
 
-async function openProjectionNode(id, updateRoute = true) {
+async function openNavigationNode(id, updateRoute = true) {
 	const navigation = updateRoute || currentNodeId !== id ? ++navigationGeneration : navigationGeneration;
-	const node = projectionNode(id);
+	const node = navigationNode(id);
 	if (!node) return;
 	$("view-panel").classList.toggle("activity-panel", node.view?.id === "qorpera.activity");
 	const pageChanged = currentNodeId !== id;
 	// Remember the page being left so returning to it insta-loads.
 	if (pageChanged) cacheCurrentPanelPage();
 	currentNodeId = id;
-	if (updateRoute) setProjectionRoute(id);
-	if (pageChanged && node.view?.type !== "surface") {
+	if (updateRoute) setNavigationRoute(id);
+	if (pageChanged) {
 		// Visited pages restore instantly; fresh ones show the text skeleton
 		// until their renderer replaces it (sync renderers do so same-frame).
 		$("view-panel").innerHTML = pageCache.get(id) ?? pageSkeletonMarkup();
@@ -4586,10 +5032,6 @@ async function openProjectionNode(id, updateRoute = true) {
 		renderCollection(node);
 		show("panel");
 		renderCompanyNavSafe();
-		return;
-	}
-	if (node.view.type === "surface") {
-		showSurface(node);
 		return;
 	}
 	const context = node.view.context ?? {};
@@ -4628,6 +5070,683 @@ async function openProjectionNode(id, updateRoute = true) {
 	renderCompanyNavSafe();
 }
 
+function artifactStatusLabel(status) {
+	return String(status ?? "setting-up")
+		.split("-")
+		.map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+		.join(" ");
+}
+
+function appendArtifactMeta(container, label, value) {
+	if (value === undefined || value === null || value === "") return;
+	const item = document.createElement("span");
+	const key = document.createElement("strong");
+	key.textContent = `${label}: `;
+	item.append(key, document.createTextNode(String(value)));
+	container.appendChild(item);
+}
+
+function askStaffForArtifactData(artifact, need) {
+	showStaffConversation();
+	const input = $("input");
+	const hints = need.connectorHints?.length ? ` Likely sources: ${need.connectorHints.join(", ")}.` : "";
+	input.value = `Set up the missing data for \"${need.label}\" in the \"${artifact.title}\" artifact. ${need.purpose}.${hints} Use existing company data first, then request only the minimum connector you need. If a connector is required, link request_connection to artifactId \"${artifact.id}\" and dataNeedId \"${need.id}\".`;
+	syncComposer();
+	input.focus();
+}
+
+function artifactDefinitionDraft(artifact) {
+	return {
+		title: artifact.title,
+		purpose: artifact.purpose,
+		accountableDepartmentId: artifact.accountableDepartmentId ?? "",
+		metrics: (artifact.metrics ?? []).map((metric) => ({
+			id: metric.id,
+			label: metric.label,
+			description: metric.description,
+			direction: metric.direction,
+			unit: metric.unit ?? "",
+			target: metric.target ?? "",
+		})),
+		dataNeeds: (artifact.dataNeeds ?? []).map((need) => ({
+			id: need.id,
+			label: need.label,
+			purpose: need.purpose,
+			connectorHints: [...(need.connectorHints ?? [])],
+		})),
+	};
+}
+
+function artifactEditField(labelText, control, className = "") {
+	const label = document.createElement("label");
+	label.className = `staff-artifact-edit-field${className ? ` ${className}` : ""}`;
+	const caption = document.createElement("span");
+	caption.textContent = labelText;
+	label.append(caption, control);
+	return label;
+}
+
+function artifactEditorInput(value, update, multiline = false) {
+	const input = document.createElement(multiline ? "textarea" : "input");
+	input.value = value ?? "";
+	input.oninput = () => {
+		update(input.value);
+		artifactEditor.dirty = true;
+	};
+	return input;
+}
+
+function artifactDefinitionGroup(headingText, entries, renderEntry, addLabel, addEntry, artifact) {
+	const group = document.createElement("section");
+	group.className = "staff-artifact-edit-group";
+	const heading = document.createElement("div");
+	heading.className = "staff-artifact-edit-group-heading";
+	const name = document.createElement("h3");
+	name.textContent = headingText;
+	const add = document.createElement("button");
+	add.type = "button";
+	add.textContent = addLabel;
+	add.onclick = () => {
+		entries.push(addEntry());
+		artifactEditor.dirty = true;
+		renderStaffArtifact(artifactByNodeId(currentNodeId) ?? artifact);
+	};
+	heading.append(name, add);
+	group.appendChild(heading);
+	entries.forEach((entry, index) => group.appendChild(renderEntry(entry, index)));
+	return group;
+}
+
+function renderArtifactEditor(view, artifact) {
+	const editor = artifactEditor;
+	if (!editor || editor.id !== artifact.id) return;
+	const form = document.createElement("form");
+	form.className = "staff-artifact-editor";
+	const title = document.createElement("h2");
+	title.textContent = "Artifact definition";
+	const explanation = document.createElement("p");
+	explanation.textContent = "Edit what this agent owns and measures. Observed values, evidence, and connection state remain agent-maintained.";
+	form.append(title, explanation);
+
+	const overview = document.createElement("div");
+	overview.className = "staff-artifact-edit-overview";
+	overview.appendChild(
+		artifactEditField("Name", artifactEditorInput(editor.draft.title, (value) => (editor.draft.title = value))),
+	);
+	overview.appendChild(
+		artifactEditField(
+			"Purpose",
+			artifactEditorInput(editor.draft.purpose, (value) => (editor.draft.purpose = value), true),
+			"wide",
+		),
+	);
+	const department = document.createElement("select");
+	const unassigned = document.createElement("option");
+	unassigned.value = "";
+	unassigned.textContent = "No department";
+	department.appendChild(unassigned);
+	for (const candidate of state.departments ?? []) {
+		const option = document.createElement("option");
+		option.value = candidate.id;
+		option.textContent = candidate.name ?? candidate.label ?? candidate.id;
+		department.appendChild(option);
+	}
+	department.value = editor.draft.accountableDepartmentId;
+	department.onchange = () => {
+		editor.draft.accountableDepartmentId = department.value;
+		editor.dirty = true;
+	};
+	overview.appendChild(artifactEditField("Accountable department", department));
+	form.appendChild(overview);
+
+	form.appendChild(
+		artifactDefinitionGroup(
+			"Measures",
+			editor.draft.metrics,
+			(metric, index) => {
+				const row = document.createElement("article");
+				row.className = "staff-artifact-edit-row";
+				const remove = document.createElement("button");
+				remove.type = "button";
+				remove.className = "staff-artifact-edit-remove";
+				remove.textContent = "Remove";
+				remove.onclick = () => {
+					editor.draft.metrics.splice(index, 1);
+					editor.dirty = true;
+					renderStaffArtifact(artifactByNodeId(currentNodeId) ?? artifact);
+				};
+				const direction = document.createElement("select");
+				for (const value of ["higher-is-better", "lower-is-better", "target", "observe"]) {
+					const option = document.createElement("option");
+					option.value = value;
+					option.textContent = artifactStatusLabel(value);
+					direction.appendChild(option);
+				}
+				direction.value = metric.direction;
+				direction.onchange = () => {
+					metric.direction = direction.value;
+					editor.dirty = true;
+				};
+				row.append(
+					artifactEditField("Measure", artifactEditorInput(metric.label, (value) => (metric.label = value))),
+					artifactEditField("Direction", direction),
+					artifactEditField("Target", artifactEditorInput(metric.target, (value) => (metric.target = value))),
+					artifactEditField("Unit", artifactEditorInput(metric.unit, (value) => (metric.unit = value))),
+					artifactEditField(
+						"Definition",
+						artifactEditorInput(metric.description, (value) => (metric.description = value), true),
+						"wide",
+					),
+					remove,
+				);
+				return row;
+			},
+			"Add measure",
+			() => ({
+				id: `metric-${crypto.randomUUID()}`,
+				label: "New measure",
+				description: "Define what this measure represents.",
+				direction: "observe",
+				unit: "",
+				target: "",
+			}),
+			artifact,
+		),
+	);
+
+	form.appendChild(
+		artifactDefinitionGroup(
+			"Data needs",
+			editor.draft.dataNeeds,
+			(need, index) => {
+				const row = document.createElement("article");
+				row.className = "staff-artifact-edit-row";
+				const remove = document.createElement("button");
+				remove.type = "button";
+				remove.className = "staff-artifact-edit-remove";
+				remove.textContent = "Remove";
+				remove.onclick = () => {
+					editor.draft.dataNeeds.splice(index, 1);
+					editor.dirty = true;
+					renderStaffArtifact(artifactByNodeId(currentNodeId) ?? artifact);
+				};
+				row.append(
+					artifactEditField("Data", artifactEditorInput(need.label, (value) => (need.label = value))),
+					artifactEditField(
+						"Connector hints",
+						artifactEditorInput(need.connectorHints.join(", "), (value) => {
+							need.connectorHints = value.split(",").map((hint) => hint.trim()).filter(Boolean);
+						}),
+					),
+					artifactEditField(
+						"Purpose",
+						artifactEditorInput(need.purpose, (value) => (need.purpose = value), true),
+						"wide",
+					),
+					remove,
+				);
+				return row;
+			},
+			"Add data need",
+			() => ({
+				id: `data-${crypto.randomUUID()}`,
+				label: "New data need",
+				purpose: "Explain why the agent needs this data.",
+				connectorHints: [],
+			}),
+			artifact,
+		),
+	);
+
+	if (editor.error) {
+		const error = document.createElement("div");
+		error.className = "staff-artifact-edit-error";
+		error.textContent = editor.error;
+		form.appendChild(error);
+	}
+	const actions = document.createElement("div");
+	actions.className = "staff-artifact-edit-actions";
+	const cancel = document.createElement("button");
+	cancel.type = "button";
+	cancel.textContent = "Cancel";
+	cancel.onclick = () => {
+		artifactEditor = null;
+		renderStaffArtifact(artifactByNodeId(currentNodeId) ?? artifact);
+	};
+	const save = document.createElement("button");
+	save.type = "submit";
+	save.className = "primary";
+	save.textContent = editor.pending ? "Saving…" : "Save definition";
+	save.disabled = editor.pending;
+	actions.append(cancel, save);
+	form.appendChild(actions);
+	form.onsubmit = async (event) => {
+		event.preventDefault();
+		editor.pending = true;
+		editor.error = "";
+		renderStaffArtifact(artifactByNodeId(currentNodeId) ?? artifact);
+		const response = await authorizedPost("/api/artifact/update", {
+			id: artifact.id,
+			update: {
+				expectedUpdatedAt: editor.expectedUpdatedAt,
+				title: editor.draft.title,
+				purpose: editor.draft.purpose,
+				accountableDepartmentId: editor.draft.accountableDepartmentId || null,
+				metrics: editor.draft.metrics.map((metric) => ({
+					...metric,
+					unit: metric.unit || null,
+					target: metric.target === "" ? null : metric.target,
+				})),
+				dataNeeds: editor.draft.dataNeeds,
+			},
+		});
+		const result = await response.json().catch(() => ({}));
+		if (!response.ok || !result.artifact) {
+			editor.pending = false;
+			editor.error = result.error ?? "Artifact definition could not be saved.";
+			renderStaffArtifact(artifactByNodeId(currentNodeId) ?? artifact);
+			return;
+		}
+		const index = state.artifacts.findIndex((candidate) => candidate.id === artifact.id);
+		if (index >= 0) state.artifacts[index] = result.artifact;
+		artifactEditor = null;
+		renderStaffArtifact(result.artifact);
+	};
+	view.appendChild(form);
+}
+
+function connectionRequestForDataNeed(artifact, need) {
+	const requests = state.connectionRequests ?? [];
+	return (
+		requests.find((request) => request.id === need.connectionRequestId) ??
+		[...requests]
+			.reverse()
+			.find((request) => request.artifactId === artifact.id && request.dataNeedId === need.id)
+	);
+}
+
+function artifactMetricValue(metric) {
+	if (metric.value === undefined) return "—";
+	const unit = metric.unit ?? "";
+	const separator = unit && !/^[%°]/.test(unit) ? " " : "";
+	return `${metric.value}${separator}${unit}`;
+}
+
+function artifactMetricObservations(metric) {
+	return globalThis.QorperaArtifactDashboard.metricObservations(metric);
+}
+
+function artifactMetricChange(metric) {
+	const delta = globalThis.QorperaArtifactDashboard.metricDelta(metric);
+	if (!delta) return "—";
+	const unit = metric.unit ?? "";
+	const separator = unit && !/^[%°]/.test(unit) ? " " : "";
+	return `${delta.value > 0 ? "+" : ""}${Number(delta.value.toFixed(2))}${separator}${unit}`;
+}
+
+function artifactMetricSource(metric) {
+	return globalThis.QorperaArtifactDashboard.latestMetricSource(metric) ?? "—";
+}
+
+function artifactUpdatedLabel(value) {
+	if (!value || !Number.isFinite(Date.parse(value))) return "—";
+	return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(
+		new Date(value),
+	);
+}
+
+function drawArtifactTrend(canvas, metric, observations) {
+	const context = canvas.getContext("2d");
+	if (!context || observations.length < 2) return;
+	const width = canvas.width;
+	const height = canvas.height;
+	const padding = { top: 18, right: 18, bottom: 32, left: 54 };
+	const values = observations.map((observation) => observation.value);
+	const rawMin = Math.min(...values);
+	const rawMax = Math.max(...values);
+	const spread = rawMax - rawMin || Math.max(Math.abs(rawMax) * 0.1, 1);
+	const minimum = rawMin - spread * 0.15;
+	const maximum = rawMax + spread * 0.15;
+	const chartWidth = width - padding.left - padding.right;
+	const chartHeight = height - padding.top - padding.bottom;
+	const x = (index) => padding.left + (index / (observations.length - 1)) * chartWidth;
+	const y = (value) => padding.top + ((maximum - value) / (maximum - minimum)) * chartHeight;
+
+	context.clearRect(0, 0, width, height);
+	context.font = '15px "Segoe UI Variable Text", "Segoe UI", sans-serif';
+	context.fillStyle = "#686866";
+	context.strokeStyle = "rgba(18, 18, 17, 0.09)";
+	context.lineWidth = 1;
+	for (let index = 0; index <= 4; index += 1) {
+		const value = minimum + ((maximum - minimum) * (4 - index)) / 4;
+		const lineY = padding.top + (chartHeight * index) / 4;
+		context.beginPath();
+		context.moveTo(padding.left, lineY);
+		context.lineTo(width - padding.right, lineY);
+		context.stroke();
+		context.fillText(`${Number(value.toFixed(1))}${metric.unit ? ` ${metric.unit}` : ""}`, 4, lineY + 7);
+	}
+
+	context.strokeStyle = "#22a578";
+	context.lineWidth = 3;
+	context.lineJoin = "round";
+	context.lineCap = "round";
+	context.beginPath();
+	observations.forEach((observation, index) => {
+		if (index === 0) context.moveTo(x(index), y(observation.value));
+		else context.lineTo(x(index), y(observation.value));
+	});
+	context.stroke();
+
+	context.fillStyle = "#686866";
+	const labelIndexes = [...new Set([0, Math.floor((observations.length - 1) / 2), observations.length - 1])];
+	for (const index of labelIndexes) {
+		const label = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(
+			new Date(observations[index].at),
+		);
+		const measured = context.measureText(label).width;
+		context.fillText(label, Math.max(0, Math.min(width - measured, x(index) - measured / 2)), height - 8);
+	}
+}
+
+function renderStaffArtifact(artifact) {
+	if (!artifact || artifact.stewardAgentId !== currentStaffId) return;
+	currentNodeId = artifactNodeId(artifact.id);
+	$("view-panel").classList.remove("activity-panel");
+	const panel = $("view-panel");
+	panel.replaceChildren();
+	const view = document.createElement("section");
+	view.className = "staff-artifact";
+
+	const header = document.createElement("header");
+	header.className = "staff-artifact-header";
+	const headingCopy = document.createElement("div");
+	const heading = document.createElement("h1");
+	heading.textContent = artifact.title;
+	const purpose = document.createElement("p");
+	purpose.textContent = artifact.purpose;
+	headingCopy.append(heading, purpose);
+	const health = document.createElement("div");
+	health.className = "staff-artifact-health";
+	const edit = document.createElement("button");
+	edit.type = "button";
+	edit.className = "staff-artifact-edit-button";
+	edit.textContent = artifactEditor?.id === artifact.id ? "Close editor" : "Edit definition";
+	edit.onclick = () => {
+		if (artifactEditor?.id === artifact.id) artifactEditor = null;
+		else {
+			artifactEditor = {
+				id: artifact.id,
+				expectedUpdatedAt: artifact.updatedAt,
+				draft: artifactDefinitionDraft(artifact),
+				dirty: false,
+				error: "",
+				pending: false,
+			};
+		}
+		renderStaffArtifact(artifactByNodeId(currentNodeId) ?? artifact);
+	};
+	health.appendChild(edit);
+	header.append(headingCopy, health);
+	view.appendChild(header);
+	const department = artifact.accountableDepartmentId
+		? (state.departments ?? []).find((candidate) => candidate.id === artifact.accountableDepartmentId)
+		: undefined;
+	const metadata = document.createElement("div");
+	metadata.className = "staff-artifact-metadata";
+	const artifactSummary = globalThis.QorperaArtifactDashboard.artifactSummary(artifact);
+	const status = document.createElement("span");
+	status.className = `staff-artifact-status status-${artifact.status}`;
+	const statusDot = document.createElement("span");
+	statusDot.className = "staff-artifact-status-dot";
+	status.append(statusDot, document.createTextNode(artifactStatusLabel(artifact.status)));
+	metadata.appendChild(status);
+	appendArtifactMeta(
+		metadata,
+		"Coverage",
+		`${artifactSummary.measuredMetricCount}/${artifactSummary.metricCount} measures`,
+	);
+	appendArtifactMeta(metadata, "Data through", artifactUpdatedLabel(artifactSummary.latestObservedAt));
+	appendArtifactMeta(
+		metadata,
+		"Sources",
+		artifactSummary.sourceCount ? String(artifactSummary.sourceCount) : "None yet",
+	);
+	appendArtifactMeta(
+		metadata,
+		"Issues",
+		artifactSummary.staleMetricCount || artifactSummary.blockedMetricCount
+			? [
+					artifactSummary.staleMetricCount ? `${artifactSummary.staleMetricCount} stale` : "",
+					artifactSummary.blockedMetricCount ? `${artifactSummary.blockedMetricCount} blocked` : "",
+				].filter(Boolean).join(" · ")
+			: undefined,
+	);
+	appendArtifactMeta(metadata, "Owner", staffDisplayName(currentStaff()));
+	appendArtifactMeta(
+		metadata,
+		"Department",
+		department?.name ?? department?.label ?? artifact.accountableDepartmentId,
+	);
+	appendArtifactMeta(metadata, "Confidence", Number.isFinite(artifact.score) ? `${artifact.score}/100` : undefined);
+	view.appendChild(metadata);
+	renderArtifactEditor(view, artifact);
+
+	const trendMetrics = (artifact.metrics ?? []).filter((metric) => artifactMetricObservations(metric).length >= 2);
+	if (trendMetrics.length) {
+		const trendSection = document.createElement("section");
+		trendSection.className = "staff-artifact-trends";
+		const trendHeading = document.createElement("div");
+		trendHeading.className = "staff-artifact-section-heading";
+		const trendTitle = document.createElement("h2");
+		trendTitle.textContent = "Trends";
+		const trendRange = document.createElement("span");
+		trendRange.textContent = `${trendMetrics.length} measured series`;
+		trendHeading.append(trendTitle, trendRange);
+		const trendGrid = document.createElement("div");
+		trendGrid.className = "staff-artifact-trend-grid";
+		const charts = [];
+		for (const metric of trendMetrics) {
+			const observations = artifactMetricObservations(metric);
+			const trend = document.createElement("article");
+			trend.className = "staff-artifact-trend";
+			const metricHeading = document.createElement("div");
+			metricHeading.className = "staff-artifact-trend-heading";
+			const label = document.createElement("h3");
+			label.textContent = metric.label;
+			const current = document.createElement("strong");
+			current.textContent = artifactMetricValue(metric);
+			metricHeading.append(label, current);
+			const canvas = document.createElement("canvas");
+			canvas.className = "staff-artifact-trend-canvas";
+			canvas.width = 720;
+			canvas.height = 240;
+			canvas.setAttribute("role", "img");
+			canvas.setAttribute("aria-label", `${metric.label} over ${observations.length} observations`);
+			const provenance = document.createElement("div");
+			provenance.className = "staff-artifact-trend-provenance";
+			const source = artifactMetricSource(metric);
+			provenance.textContent = `${observations.length} observations · ${artifactUpdatedLabel(observations.at(-1).at)} · ${source}`;
+			provenance.title = source;
+			trend.append(metricHeading, canvas, provenance);
+			trendGrid.appendChild(trend);
+			charts.push({ canvas, metric, observations });
+		}
+		trendSection.append(trendHeading, trendGrid);
+		view.appendChild(trendSection);
+		requestAnimationFrame(() => {
+			for (const chart of charts) drawArtifactTrend(chart.canvas, chart.metric, chart.observations);
+		});
+	}
+
+	const metricSection = document.createElement("section");
+	metricSection.className = "staff-artifact-measure-section";
+	const metricHeading = document.createElement("div");
+	metricHeading.className = "staff-artifact-section-heading";
+	const metricTitle = document.createElement("h2");
+	metricTitle.textContent = "Measures";
+	const metricCount = document.createElement("span");
+	metricCount.textContent = `${(artifact.metrics ?? []).length} tracked`;
+	metricHeading.append(metricTitle, metricCount);
+	metricSection.appendChild(metricHeading);
+	const metrics = document.createElement("div");
+	metrics.className = "staff-artifact-table-wrap";
+	const table = document.createElement("table");
+	table.className = "staff-artifact-metric-table";
+	const tableHead = document.createElement("thead");
+	const headingRow = document.createElement("tr");
+	for (const label of ["Measure", "Current", "Change", "Target", "Status", "Source", "Updated"]) {
+		const cell = document.createElement("th");
+		cell.scope = "col";
+		cell.textContent = label;
+		headingRow.appendChild(cell);
+	}
+	tableHead.appendChild(headingRow);
+	const tableBody = document.createElement("tbody");
+	for (const metric of artifact.metrics ?? []) {
+		const row = document.createElement("tr");
+		row.className = `metric-${metric.status}`;
+		const measure = document.createElement("th");
+		measure.scope = "row";
+		const measureLabel = document.createElement("strong");
+		measureLabel.textContent = metric.label;
+		const description = document.createElement("small");
+		description.textContent = metric.description;
+		measure.append(measureLabel, description);
+		const current = document.createElement("td");
+		current.className = "numeric";
+		current.textContent = artifactMetricValue(metric);
+		const change = document.createElement("td");
+		change.className = "numeric";
+		change.textContent = artifactMetricChange(metric);
+		const delta = globalThis.QorperaArtifactDashboard.metricDelta(metric);
+		if (delta) change.classList.add(`change-${delta.tone}`);
+		const target = document.createElement("td");
+		target.className = "numeric";
+		target.textContent = metric.target === undefined ? "—" : String(metric.target);
+		const metricStatus = document.createElement("td");
+		const metricState = document.createElement("span");
+		metricState.className = `staff-artifact-table-status status-${metric.status}`;
+		const metricDot = document.createElement("span");
+		metricDot.className = "staff-artifact-status-dot";
+		metricState.append(metricDot, document.createTextNode(artifactStatusLabel(metric.status)));
+		if (metric.statusReason) {
+			metricState.title = `${metric.statusReason}${metric.statusChangedAt ? ` · ${artifactUpdatedLabel(metric.statusChangedAt)}` : ""}`;
+		}
+		metricStatus.appendChild(metricState);
+		const source = document.createElement("td");
+		source.textContent = artifactMetricSource(metric);
+		source.title = source.textContent;
+		const updated = document.createElement("td");
+		updated.textContent = artifactUpdatedLabel(metric.observedAt);
+		row.append(measure, current, change, target, metricStatus, source, updated);
+		tableBody.appendChild(row);
+	}
+	if (!(artifact.metrics ?? []).length) {
+		const row = document.createElement("tr");
+		const empty = document.createElement("td");
+		empty.colSpan = 7;
+		empty.className = "staff-artifact-empty";
+		empty.textContent = "This agent has not defined its measures yet.";
+		row.appendChild(empty);
+		tableBody.appendChild(row);
+	}
+	table.append(tableHead, tableBody);
+	metrics.appendChild(table);
+	metricSection.appendChild(metrics);
+	view.appendChild(metricSection);
+
+	const dataSection = document.createElement("section");
+	dataSection.className = "staff-artifact-data-section";
+	const dataHeading = document.createElement("div");
+	dataHeading.className = "staff-artifact-section-heading";
+	const dataTitle = document.createElement("h2");
+	dataTitle.textContent = "Sources";
+	const dataCount = document.createElement("span");
+	const unresolvedCount = (artifact.dataNeeds ?? []).filter(
+		(need) => need.status !== "available" && need.status !== "connected" && need.status !== "declined",
+	).length;
+	dataCount.textContent = unresolvedCount ? `${unresolvedCount} need setup` : "Current";
+	dataHeading.append(dataTitle, dataCount);
+	dataSection.appendChild(dataHeading);
+	const needs = document.createElement("div");
+	needs.className = "staff-artifact-needs";
+	for (const need of artifact.dataNeeds ?? []) {
+		const request = connectionRequestForDataNeed(artifact, need);
+		const row = document.createElement("article");
+		row.className = `staff-artifact-need need-${need.status}${request ? ` request-${request.phase ?? request.status}` : ""}`;
+		const copy = document.createElement("div");
+		copy.className = "staff-artifact-need-copy";
+		const title = document.createElement("h3");
+		title.textContent = need.label;
+		const needPurpose = document.createElement("p");
+		needPurpose.textContent = need.purpose;
+		const source = document.createElement("small");
+		source.textContent = need.sourceRefs?.length
+			? `Sources: ${need.sourceRefs.join(", ")}`
+			: `Likely: ${(need.connectorHints ?? []).join(", ") || "company files"}`;
+		copy.append(title, needPurpose, source);
+		const stateChip = document.createElement("span");
+		stateChip.className = "staff-artifact-need-state";
+		const needStatus = request ? connectionPhaseLabel(request.phase) : artifactStatusLabel(need.status);
+		const needDot = document.createElement("span");
+		needDot.className = "staff-artifact-status-dot";
+		stateChip.append(needDot, document.createTextNode(needStatus));
+		row.append(copy, stateChip);
+		if (request?.phase === "suggested" || request?.phase === "failed") {
+			const action = document.createElement("button");
+			action.type = "button";
+			action.textContent = "Choose source";
+			action.onclick = () => {
+				dismissedConnectionRequestGroups.delete(connectionRequestGroupKey(request));
+				showStaffConversation();
+			};
+			row.appendChild(action);
+		} else if (["selected", "preparing", "awaiting_auth", "verifying", "syncing"].includes(request?.phase)) {
+			const action = document.createElement("button");
+			action.type = "button";
+			action.disabled = true;
+			action.textContent = `${connectionPhaseLabel(request.phase)}…`;
+			row.appendChild(action);
+		} else if (
+			need.status === "missing" ||
+			need.status === "selected" ||
+			["failed", "cancelled", "denied"].includes(request?.status)
+		) {
+			const action = document.createElement("button");
+			action.type = "button";
+			action.textContent = request ? "Review sources" : "Choose source";
+			action.onclick = () => askStaffForArtifactData(artifact, need);
+			row.appendChild(action);
+		}
+		needs.appendChild(row);
+	}
+	if (!(artifact.dataNeeds ?? []).length) {
+		const empty = document.createElement("div");
+		empty.className = "staff-artifact-empty";
+		empty.textContent = "No external data needs are currently defined.";
+		needs.appendChild(empty);
+	}
+	dataSection.appendChild(needs);
+	view.appendChild(dataSection);
+
+	const footer = document.createElement("footer");
+	footer.className = "staff-artifact-footer";
+	footer.textContent = `${artifact.relativePath} · Updated ${new Date(artifact.updatedAt).toLocaleString()}`;
+	view.appendChild(footer);
+	panel.appendChild(view);
+	show("panel");
+}
+
+function openStaffArtifact(id) {
+	const artifact = (state.artifacts ?? []).find((candidate) => candidate.id === id);
+	if (!artifact || artifact.stewardAgentId !== currentStaffId) return;
+	++navigationGeneration;
+	cacheCurrentPanelPage();
+	setStaffRoute(currentStaffId);
+	renderStaffArtifact(artifact);
+}
+
 async function showStaffRoutines(id) {
 	const staff = activeStaffMembers().find((candidate) => staffId(candidate) === id);
 	if (!staff) return;
@@ -4649,8 +5768,6 @@ async function openDepartmentChat(department, pageId) {
 		currentStaffId = null;
 		currentDepartment = result.department ?? null;
 		currentWorktree = result.worktree ?? null;
-		sidechatPageId = null;
-		sidechatPending = null;
 	}
 	if (navigation !== navigationGeneration) return;
 	if (!result?.ok) {
@@ -4658,7 +5775,7 @@ async function openDepartmentChat(department, pageId) {
 		return;
 	}
 	currentNodeId = pageId;
-	setProjectionRoute(pageId);
+	setNavigationRoute(pageId);
 	$("messages").innerHTML = "";
 	resetWorkGroup();
 	show("chat");
@@ -4710,7 +5827,7 @@ function showPullRequests(department, page) {
 	show("panel");
 }
 
-function setupHierarchicalController() {
+function setupCompanyNavigation() {
 	$("addDepartmentButton").onclick = openDepartmentModal;
 	$("addStaffButton").onclick = () => void openStaffCreator();
 	$("companySwitcherButton").onclick = () => void openCompanySwitcher();
@@ -4746,7 +5863,7 @@ function setupHierarchicalController() {
 		focusedDepartmentId = null;
 		renderCompanyNavSafe();
 		$("navigation").scrollTop = 0;
-		showControllerToast("Panel reset. Manually hidden items remain hidden.");
+		showToast("Panel reset. Manually hidden items remain hidden.");
 	};
 	$("conav").oncontextmenu = (event) => event.preventDefault();
 	$("staffContextPin").onclick = () => toggleStaffContextPreference("staff-pinned");
@@ -4765,9 +5882,9 @@ function setupHierarchicalController() {
 		try {
 			const result = await window.qorpera.copyStaffConversationId(id);
 			if (!result?.ok) throw new Error(result?.error ?? "Conversation ID could not be copied.");
-			showControllerToast("Conversation ID copied.");
+			showToast("Conversation ID copied.");
 		} catch {
-			showControllerToast("The conversation ID could not be copied.");
+			showToast("The conversation ID could not be copied.");
 		}
 	};
 	$("staffContextDelete").onclick = openStaffDeleteConfirmation;
@@ -4785,6 +5902,7 @@ function setupHierarchicalController() {
 		items[next]?.focus();
 	};
 	$("staffDeleteCancel").onclick = closeStaffDeleteConfirmation;
+	$("staffDeletePermanent").onclick = () => void permanentlyDeleteStaffMember();
 	$("staffDeleteConfirm").onclick = () => void deleteStaffMember();
 	$("staffDeleteModal").onpointerdown = (event) => {
 		if (event.target === $("staffDeleteModal")) closeStaffDeleteConfirmation();
@@ -4935,17 +6053,6 @@ function setupHierarchicalController() {
 
 let currentView = null;
 
-/** The one chat machinery (#view-chat: thread + composer) lives either in
- * <main> (the full Chat view) or inside the surface view's dock. Moving the
- * DOM node keeps streaming, work groups, and the chips working unchanged. */
-function dockChat(docked) {
-	const chat = $("view-chat");
-	if (docked && chat.parentElement !== $("sidechat")) $("sidechat").appendChild(chat);
-	else if (!docked && chat.parentElement === $("sidechat")) {
-		document.querySelector("main").insertBefore(chat, $("view-surfacewrap"));
-	}
-}
-
 /** The between-pages loading state: a text-line skeleton, as if a text
  * page's contents are arriving. Widths vary so it reads as prose. */
 function pageSkeletonMarkup() {
@@ -4958,7 +6065,7 @@ function pageSkeletonMarkup() {
 /** Session-scoped page cache: a page the founder already visited restores
  * instantly on return (its renderer then refreshes it in place from live
  * state); only never-visited pages show the loading skeleton. */
-const pageCache = new Map(); // projection node id -> #view-panel innerHTML
+const pageCache = new Map(); // navigation node id -> #view-panel innerHTML
 
 function cacheCurrentPanelPage() {
 	if (currentView === "panel" && currentNodeId && !$("view-panel").querySelector(".page-skeleton")) {
@@ -4968,16 +6075,12 @@ function cacheCurrentPanelPage() {
 
 function show(view) {
 	currentView = view;
-	const docked = view === "surface" && sidechatOpen;
-	const staffHeaderVisible = view === "chat" || Boolean(currentStaffId && (view === "surface" || view === "panel"));
+	const staffHeaderVisible = view === "chat" || Boolean(currentStaffId && view === "panel");
 	const staffCreatorOpen = !$("staffModal").hidden;
-	dockChat(docked);
 	$("threadHeader").hidden = staffCreatorOpen || !staffHeaderVisible;
 	$("staffCreatorTitlebar").hidden = !staffCreatorOpen;
 	$("view-roster").style.display = view === "roster" ? "block" : "none";
-	$("view-chat").style.display = view === "chat" || docked ? "flex" : "none";
-	$("view-surfacewrap").style.display = view === "surface" ? "flex" : "none";
-	$("view-surfacewrap").classList.toggle("chat-open", sidechatOpen);
+	$("view-chat").style.display = view === "chat" ? "flex" : "none";
 	$("view-panel").style.display = view === "panel" ? "block" : "none";
 	if (view === "roster") renderStaffHome();
 	if (staffHeaderVisible) renderThreadHeader();
@@ -4992,116 +6095,9 @@ function renderCompanyNavSafe() {
 	}
 }
 
-function showSurface(page) {
-	if (currentNodeId !== page.id) cacheCurrentPanelPage();
-	currentNodeId = page.id;
-	const staffOwned = Boolean(currentStaffId && page.staffAgentId === currentStaffId);
-	$("view-surfacewrap").classList.toggle("staff-owned", staffOwned);
-	if (staffOwned) sidechatOpen = false;
-	const frame = $("view-surface");
-	const version = String(page.view.version ?? 0);
-	if (frame.dataset.pageId !== page.id || frame.dataset.version !== version) {
-		// A fresh surface load gets the text skeleton over the iframe until its
-		// document arrives; revisits keep the loaded iframe and skip it.
-		let overlay = document.getElementById("surfaceSkeleton");
-		if (!overlay) {
-			overlay = document.createElement("div");
-			overlay.id = "surfaceSkeleton";
-			overlay.className = "surface-skeleton";
-			frame.parentElement.appendChild(overlay);
-		}
-		overlay.innerHTML = pageSkeletonMarkup();
-		overlay.hidden = false;
-		frame.addEventListener(
-			"load",
-			() => {
-				overlay.hidden = true;
-			},
-			{ once: true },
-		);
-		frame.src = `${backendUrl}/surface/${encodeURIComponent(page.view.entry)}?v=${version}`;
-		frame.dataset.pageId = page.id;
-		frame.dataset.version = version;
-	}
-	if (!staffOwned && sidechatOpen && sidechatPageId !== page.id) void attachSidechat(page);
-	$("sidechat-title").textContent = `Chat — ${page.label}`;
-	show("surface");
-	renderCompanyNavSafe();
-}
-
-// ---- sidechat: a session docked to one stable projection page ----------------
-
-function pageSessions(pageId) {
-	return (state.sessions ?? []).filter((session) => session.kind !== "autonomous" && session.page === pageId);
-}
-
-/** Attach the dock to this page: resume its latest tagged session, or
- * (fresh = true, or none yet) open a new one tagged to it. */
-async function attachSidechat(page, fresh) {
-	const attachment = ++sidechatGeneration;
-	const navigation = navigationGeneration;
-	const latest = fresh ? undefined : pageSessions(page.id)[0];
-	cacheCurrentSession();
-	const result = await window.qorpera.openChat(
-		latest ? latest.file : null,
-		undefined,
-		undefined,
-		latest ? undefined : `page — ${page.id}`,
-	);
-	if (result?.ok) {
-		currentSession = result.sessionFile ?? latest?.file ?? null;
-		currentStaffId = null;
-		currentDepartment = null;
-		currentWorktree = null;
-		sidechatPageId = page.id;
-		sidechatPending = latest ? null : page;
-	}
-	if (
-		attachment !== sidechatGeneration ||
-		navigation !== navigationGeneration ||
-		!sidechatOpen ||
-		currentNodeId !== page.id
-	) {
-		return;
-	}
-	if (!result?.ok) return;
-	if (latest) {
-		$("messages").innerHTML = sessionCache[latest.file] ?? '<div class="loading">loading session…</div>';
-	} else {
-		$("messages").innerHTML = "";
-	}
-	resetWorkGroup();
-	renderThreadHeader();
-	syncConnectionRequestCards();
-	syncScopeChrome();
-	renderCompanyNavSafe();
-	hydrateAgentState(Boolean(latest));
-}
-
-function toggleSidechat(open) {
-	sidechatOpen = open;
-	const page = projectionNode(currentNodeId);
-	if (open && page?.kind === "page" && page.view.type === "surface" && sidechatPageId !== page.id) {
-		void attachSidechat(page);
-	}
-	if (page) $("sidechat-title").textContent = `Chat — ${page.label}`;
-	show("surface");
-}
-
-function newSidechat() {
-	const page = projectionNode(currentNodeId);
-	if (!page || page.kind !== "page" || page.view.type !== "surface") return;
-	void attachSidechat(page, true).then(() => {
-		// A fresh chat over an already-empty thread looks like a no-op —
-		// say what happened and put the cursor where the founder types next.
-		$("status").textContent = `new chat on ${page.label} — earlier conversations stay under Chats`;
-		$("input").focus();
-	});
-}
-
-/** The controller's own work: autonomous sessions only (chats live in the nav). */
+/** Autonomous sessions only; chats live in the navigation. */
 /** The trail categorizes what it is a trail OF — user-led conversations are
- * different from the kernel's own work (founder call 2026-08-13). Section
+ * different from autonomous work. Section
  * order tells the story: the founder's words first, then scoped product
  * work, then each autonomous lane. */
 const TRAIL_SECTIONS = [
@@ -5164,6 +6160,7 @@ function scheduledJobDraft(job) {
 			...(trigger.kind === "github" ? { events: [...trigger.events], actors: [...trigger.actors] } : {}),
 		})),
 		enabled: job?.enabled ?? true,
+		effort: job?.effort ?? "high",
 	};
 }
 
@@ -5476,6 +6473,13 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 	form.appendChild(
 		scheduledJobField("Instructions", prompt, activityStaffId ? "This staff member receives the full instructions at every run." : "The assigned worker receives these full instructions at every run."),
 	);
+	const effort = scheduledJobEffortSelect(scheduledJobPanel.draft.effort, (value) => {
+		scheduledJobPanel.draft.effort = value;
+		scheduledJobPanel.dirty = true;
+	});
+	form.appendChild(
+		scheduledJobField("Effort", effort, "Scheduled work defaults to high. The selected model will use the nearest supported level."),
+	);
 	const interval = document.createElement("input");
 	interval.type = "number";
 	interval.min = "5";
@@ -5510,6 +6514,7 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 		facts.className = "scheduled-job-facts";
 		facts.append(
 			scheduledJobFact("Schedule", scheduledJobScheduleLabel(job)),
+			scheduledJobFact("Effort", scheduledJobEffortLabel(job.effort)),
 			scheduledJobFact("Next run", job.nextRunAt ? new Date(job.nextRunAt).toLocaleString() : "Paused"),
 			scheduledJobFact("Last ran", job.lastRunAt ? new Date(job.lastRunAt).toLocaleString() : "Never"),
 			scheduledJobFact(
@@ -5619,6 +6624,7 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 				? scheduledJobPanel.draft.triggers
 				: [{ id: crypto.randomUUID(), kind: "schedule", intervalMinutes: Number(interval.value) }],
 			enabled: Boolean(scheduledJobPanel.draft.enabled),
+			effort: scheduledJobPanel.draft.effort,
 			...(activityStaffId ? { staffAgentId: activityStaffId } : {}),
 		};
 		const result = await scheduledJobRequest(
@@ -5745,11 +6751,11 @@ function agentTile({ statusClass, name, actions, wide }) {
 	return { tile, doing, meta };
 }
 
-function controllerTile(sessions, jobs, liveRuntime) {
+function companyRuntimeTile(sessions, jobs, liveRuntime) {
 	const working = Boolean(liveRuntime);
 	const liveSession = working ? sessions.find((session) => session.file === liveRuntime.trailFile) : undefined;
 	const attended = working && !liveRuntime.autonomous;
-	const agentName = liveRuntime?.actor === "product-worker" ? departmentName(liveRuntime.department) : "Controller";
+		const agentName = liveRuntime?.actor === "product-worker" ? departmentName(liveRuntime.department) : "Company runtime";
 	const liveAction = liveSession
 		? attended
 			? agentIconButton("Open chat", "expand", () => openSession(liveSession.file, liveSession.page ?? "q:chats"))
@@ -5808,7 +6814,7 @@ function scheduledJobTile(job, sessions) {
 						() => window.qorpera.updateScheduledJob(job.id, { enabled: !active }),
 						"Could not update the job.",
 					);
-					// A declined kernel review or a failed write must not be a
+					// A declined host review or a failed write must not be a
 					// silent no-op: surface it in the job's detail panel.
 					if (result?.ok) {
 						rememberScheduledJob(result.job);
@@ -5829,12 +6835,12 @@ function scheduledJobTile(job, sessions) {
 	if (job.running) doing.textContent = "Running now.";
 	else if (job.suspendedReason) {
 		doing.classList.add("failure");
-		doing.textContent = `Suspended by the kernel: ${job.suspendedReason}.`;
+			doing.textContent = `Paused after repeated failures: ${job.suspendedReason}.`;
 	} else if (job.lastOutcome === "failed" && lastRun) {
 		doing.classList.add("failure");
 		doing.textContent = `Last run failed: ${runFailureCause(lastRun, "failed")}`;
 	} else doing.textContent = job.prompt;
-	meta.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)}`;
+	meta.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)} · ${scheduledJobEffortLabel(job.effort)} effort`;
 	return tile;
 }
 
@@ -5898,7 +6904,7 @@ async function renderActivity(force = false, staffOwnerId = activityStaffId) {
 		}));
 	const stillOnRequestedView = staffOwnerId
 		? currentNodeId === `staff-routines:${staffOwnerId}`
-		: projectionNode(requestedNodeId)?.view?.id === "qorpera.activity";
+		: navigationNode(requestedNodeId)?.view?.id === "qorpera.activity";
 	if (
 		renderGeneration !== activityRenderGeneration ||
 		currentNodeId !== requestedNodeId ||
@@ -5935,7 +6941,7 @@ async function renderActivity(force = false, staffOwnerId = activityStaffId) {
 	};
 	pageHeader.append(pageCopy, create);
 	main.appendChild(pageHeader);
-	if (!owner) main.appendChild(controllerTile(sessions, jobs, liveRuntime));
+	if (!owner) main.appendChild(companyRuntimeTile(sessions, jobs, liveRuntime));
 	const jobsHead = document.createElement("h2");
 	jobsHead.className = "trail-section scheduled-jobs-heading";
 	jobsHead.textContent = `${owner ? "Routines" : "Scheduled"} · ${jobs.length}`;
@@ -6142,7 +7148,7 @@ function renderInboxCard(item, settled) {
 	}
 
 	if (item.kind === "message" && item.status === "pending") {
-		// Settle: acknowledged, nothing to add — the controller reads the
+		// Settle: acknowledged, nothing to add — the agent reads the
 		// acknowledgement next wake, same lane as a written response.
 		actions.appendChild(
 			inboxAction("Settle", "ok", async () => {
@@ -6157,7 +7163,7 @@ function renderInboxCard(item, settled) {
 		reply.className = "card-reply";
 		reply.style.display = "none";
 		const text = document.createElement("textarea");
-		text.placeholder = "Respond to the controller…";
+		text.placeholder = "Respond…";
 		reply.appendChild(text);
 		reply.appendChild(
 			inboxAction("Send response", "ok", async () => {
@@ -6249,11 +7255,19 @@ function renderInbox() {
 
 // ---- chat over the RPC pipe --------------------------------------------------
 
-function addMsg(cls, text) {
+function appendConversationEntry(element) {
+	const messages = $("messages");
+	if (threadActivityEl?.isConnected && element !== threadActivityEl) messages.insertBefore(element, threadActivityEl);
+	else if (element.parentNode !== messages || messages.lastElementChild !== element) messages.appendChild(element);
+	return element;
+}
+
+function addMsg(cls, text, timestamp) {
 	const div = document.createElement("div");
 	div.className = `msg ${cls}`;
 	div.textContent = text;
-	$("messages").appendChild(div);
+	if (Number.isFinite(timestamp)) div.dataset.messageTimestamp = String(timestamp);
+	appendConversationEntry(div);
 	$("messages").scrollTop = $("messages").scrollHeight;
 	return div;
 }
@@ -6271,17 +7285,44 @@ function assistantTextBlocksFromMessage(message) {
 		.filter((part) => part.text);
 }
 
+function stripMechanicalFileSummaries(source) {
+	const lines = String(source ?? "").split("\n");
+	const visible = [];
+	for (let index = 0; index < lines.length; index += 1) {
+		if (
+			/^(?:#{1,6}\s*)?(?:\*\*|__)?(?:files? (?:touched|changed)|changed files|change[- ]set files)(?:\*\*|__)?\s*:?$/i.test(
+				lines[index].trim(),
+			)
+		) {
+			let cursor = index + 1;
+			while (cursor < lines.length && !lines[cursor].trim()) cursor += 1;
+			const firstItem = cursor;
+			while (cursor < lines.length && /^(?:[-*+]\s+|\d+[.)]\s+)\S+/.test(lines[cursor].trim())) cursor += 1;
+			if (cursor > firstItem) {
+				index = cursor - 1;
+				continue;
+			}
+		}
+		visible.push(lines[index]);
+	}
+	return visible.join("\n");
+}
+
 /** Preserve provider-authored text blocks, then split only at top-level blank
- * lines. This changes presentation, not the stored trail or model prompt. */
+ * lines. Mechanical change-set path inventories remain in the trail but are
+ * not useful conversation, so both live and historical rendering omit them. */
 function assistantDisplaySegments(source) {
-	const text = String(source ?? "").replace(/\r\n?/g, "\n").trim();
+	const text = stripMechanicalFileSummaries(String(source ?? "").replace(/\r\n?/g, "\n")).trim();
 	if (!text) return [];
 	const blocks = [];
 	let block = [];
 	let fence = "";
 	const flush = () => {
 		const value = block.join("\n").trim();
-		if (value) blocks.push(value);
+		// Some providers emit their transient activity caption as a completed
+		// text block. The dedicated activity row already communicates this state;
+		// keeping the caption would turn it into a permanent chat message.
+		if (value && !/^(?:running|working) (?:on )?that now[.!…]*$/i.test(value)) blocks.push(value);
 		block = [];
 	};
 	for (const line of text.split("\n")) {
@@ -6303,11 +7344,11 @@ function assistantDisplaySegments(source) {
 	return segments;
 }
 
-function appendAssistantMessages(parts, animate = false) {
+function appendAssistantMessages(parts, animate = false, timestamp) {
 	const segments = parts.flatMap(assistantDisplaySegments);
 	const messages = [];
 	for (const [index, text] of segments.entries()) {
-		const message = addMsg("assistant", "");
+		const message = addMsg("assistant", "", timestamp);
 		message.classList.add("assistant-segment");
 		if (animate) {
 			message.classList.add("message-pop");
@@ -6339,11 +7380,6 @@ function renderCompletedAssistantBlock(contentIndex, content) {
 	for (const element of previous?.elements ?? []) element.remove();
 	const elements = appendAssistantMessages([text], true);
 	renderedAssistantTextByIndex.set(contentIndex, { text, elements });
-	if (elements.length) {
-		turnProgressBubbleCount = Math.min(2, turnProgressBubbleCount + elements.length);
-		turnProgressLastKind = "provider";
-		turnProgressLastAt = Date.now();
-	}
 	return elements;
 }
 
@@ -6357,38 +7393,6 @@ function reconcileCompletedAssistantMessage(message) {
 	}
 }
 
-function toolProgressKind(toolName) {
-	const tool = String(toolName ?? "").toLowerCase();
-	if (/^(?:read|grep|find|ls|glob|search)$/.test(tool)) return "company-search";
-	if (/^(?:web_search|web-search|http-request|fetch|browser|navigate)$/.test(tool)) return "web-search";
-	if (/^(?:write|edit|edit-diff|apply_patch|patch|notebook_edit)$/.test(tool)) return "change";
-	if (/^(?:bash|shell|shell_command)$/.test(tool)) return "command";
-	return "work";
-}
-
-function toolProgressText(kind) {
-	if (kind === "company-search") return "Checking the company files now.";
-	if (kind === "web-search") return "Looking that up now.";
-	if (kind === "change") return "Making that change now.";
-	if (kind === "command") return "Running that now.";
-	return "Working on that now.";
-}
-
-/** Show at most two factual phase updates per turn. These are derived from
- * explicit tool events; hidden reasoning and thinking deltas remain hidden. */
-function maybeAppendToolProgress(toolName) {
-	if (turnProgressBubbleCount >= 2) return;
-	const kind = toolProgressKind(toolName);
-	const now = Date.now();
-	if (turnProgressBubbleCount && now - turnProgressLastAt < 900) return;
-	if (kind === turnProgressLastKind && now - turnProgressLastAt < 6000) return;
-	const [message] = appendAssistantMessages([toolProgressText(kind)], true);
-	message?.classList.add("assistant-progress");
-	turnProgressBubbleCount += 1;
-	turnProgressLastKind = kind;
-	turnProgressLastAt = now;
-}
-
 function threadActivityLabel(mode) {
 	const staff = currentStaff();
 	const name = staff ? staffDisplayName(staff) : $("threadTitle").textContent || "Agent";
@@ -6397,18 +7401,17 @@ function threadActivityLabel(mode) {
 }
 
 function showThreadActivity(mode) {
-	if (currentView !== "chat" && !(currentView === "surface" && sidechatOpen)) return;
+	if (currentView !== "chat") return;
 	const staff = currentStaff();
 	const activityStaffId = staffId(staff);
 	if (!threadActivityEl?.isConnected) {
 		threadActivityEl = document.createElement("div");
 		threadActivityEl.tabIndex = 0;
 		threadActivityEl.setAttribute("role", "status");
-		$("messages").appendChild(threadActivityEl);
+		appendConversationEntry(threadActivityEl);
 	}
 	const label = threadActivityLabel(mode);
 	if (threadActivityEl.dataset.mode === mode && threadActivityEl.dataset.staffId === activityStaffId) {
-		$("messages").appendChild(threadActivityEl);
 		$("messages").scrollTop = $("messages").scrollHeight;
 		return;
 	}
@@ -6564,7 +7567,7 @@ function stopAgent() {
  */
 function rewindUserMessage(text) {
 	if (agentWorking) {
-		showControllerToast("stop the run first, then rewind");
+		showToast("stop the run first, then rewind");
 		return;
 	}
 	pendingRewind = { text };
@@ -6584,26 +7587,17 @@ function decorateUserMsg(el, text) {
 	return el;
 }
 
-async function sendPrompt() {
+async function sendPrompt(promptContext = "") {
 	const input = $("input");
 	const text = input.value.trim();
 	const images = pendingImages;
-	if (!text && !images.length) return;
+	if (!text && !images.length) return false;
 	if (agentExited) {
-		showControllerToast("controller stopped — reopen this saved chat to attach a new runtime");
-		return;
+		showToast("agent stopped — reopen this saved chat to attach a new runtime");
+		return false;
 	}
-	let message = text;
-	const sidechatContext = sidechatPending;
-	if (sidechatPending) {
-		// First prompt of a fresh sidechat: tell the controller what the founder
-		// is looking at. Square brackets are stripped from the interpolations so
-		// the block stays cleanly parseable (chrome and backend both strip it
-		// from display; see renderHistory / listTrailSessions).
-		const name = String(sidechatPending.label).replace(/[[\]]/g, ")");
-		const entry = String(sidechatPending.view.entry).replace(/[[\]]/g, ")");
-		message = `[Sidechat context: this chat is docked to the surface "${name}" — app/surfaces/${entry}. The founder is looking at it right now; orient from that file before answering.]\n\n${text}`;
-	}
+	const hiddenContext = typeof promptContext === "string" ? promptContext.trim() : "";
+	const message = hiddenContext ? `${hiddenContext}\n\n${text}` : text;
 	const frame = { type: "prompt", message };
 	if (images.length) {
 		frame.images = images.map((image) => ({
@@ -6617,12 +7611,12 @@ async function sendPrompt() {
 	const result = await sendRpc(frame);
 	if (!result?.ok) {
 		activeRunProgress = null;
-		showControllerToast(
+		showToast(
 			runtimeReconnecting
-				? "controller is reconnecting — your draft was preserved"
-				: "controller is busy with autonomous work — your draft was preserved",
+				? "agent is reconnecting — your draft was preserved"
+				: "agent is busy with autonomous work — your draft was preserved",
 		);
-		return;
+		return false;
 	}
 	setCurrentAvatarAction("working", 1200);
 	input.value = "";
@@ -6634,13 +7628,13 @@ async function sendPrompt() {
 		})),
 	};
 	pendingImages = [];
-	if (sidechatPending === sidechatContext) sidechatPending = null;
 	renderAttachStrip();
 	syncComposer();
 	appendMsgImages(
 		decorateUserMsg(addMsg("user", text), text),
 		images.map((image) => image.dataUrl),
 	);
+	return true;
 }
 
 function modelFailureInfo(value) {
@@ -6683,7 +7677,7 @@ function modelFailureInfo(value) {
 	}
 	if (/terminated|aborted|stopped/.test(raw)) {
 		return {
-			cause: "The controller stopped before it finished.",
+			cause: "The agent stopped before it finished.",
 			guidance: "Review the partial work below, then retry.",
 			detail,
 		};
@@ -6698,34 +7692,18 @@ function modelFailureInfo(value) {
 function createRunProgress() {
 	return {
 		completedSteps: 0,
-		changedFiles: new Set(),
 		uncertainShellChanges: false,
 	};
 }
 
-function mutationPath(toolName, args) {
-	if (!/^(?:write|edit|apply_patch|patch|notebook_edit)$/i.test(String(toolName ?? ""))) return "";
-	const value = args?.path ?? args?.filePath ?? args?.file_path;
-	return typeof value === "string" ? value.trim().replace(/\\/g, "/") : "";
-}
-
-function recordCompletedTool(progress, toolName, args) {
+function recordCompletedTool(progress, toolName) {
 	if (!progress) return;
 	progress.completedSteps += 1;
-	const path = mutationPath(toolName, args);
-	if (path) progress.changedFiles.add(path);
 	if (/^(?:bash|shell|shell_command)$/i.test(String(toolName ?? ""))) progress.uncertainShellChanges = true;
 }
 
 function runProgressSummary(progress) {
 	const completed = progress?.completedSteps ?? 0;
-	const files = [...(progress?.changedFiles ?? [])].sort();
-	if (files.length) {
-		const visible = files.slice(0, 5).join(", ");
-		const remainder = files.length > 5 ? ` and ${files.length - 5} more` : "";
-		const shellNote = progress.uncertainShellChanges ? " Other shell steps may also have changed files." : "";
-		return `Changed ${files.length} file${files.length === 1 ? "" : "s"}: ${visible}${remainder}.${shellNote}`;
-	}
 	if (!completed) return "No completed steps were reported before the model stopped.";
 	if (progress?.uncertainShellChanges) {
 		return `Completed ${completed} step${completed === 1 ? "" : "s"}. Shell work may have changed files; review the work log before retrying.`;
@@ -6735,15 +7713,15 @@ function runProgressSummary(progress) {
 
 async function retryPrompt(prompt = lastSubmittedPrompt) {
 	if (!prompt?.text && !prompt?.images?.length) {
-		showControllerToast("there is no failed request to retry");
+		showToast("there is no failed request to retry");
 		return;
 	}
 	if (agentWorking) {
-		showControllerToast("wait for the current run to finish before retrying");
+		showToast("wait for the current run to finish before retrying");
 		return;
 	}
 	if (agentExited) {
-		showControllerToast("controller stopped — start a new chat, then retry the request");
+		showToast("agent stopped — start a new chat, then retry the request");
 		return;
 	}
 	$("input").value = prompt.text;
@@ -6793,7 +7771,7 @@ function addModelFailureCard(
 	card.append(heading, partial, guidance);
 	if (historical) card.appendChild(historyNote);
 	card.appendChild(actions);
-	$("messages").appendChild(card);
+	appendConversationEntry(card);
 	$("messages").scrollTop = $("messages").scrollHeight;
 	return card;
 }
@@ -6924,7 +7902,7 @@ function makeWorkGroup(open) {
 function ensureWorkGroup() {
 	if (workGroup) return workGroup;
 	workGroup = makeWorkGroup(true);
-	$("messages").appendChild(workGroup.el);
+	appendConversationEntry(workGroup.el);
 	$("messages").scrollTop = $("messages").scrollHeight;
 	return workGroup;
 }
@@ -6962,16 +7940,11 @@ function resetWorkGroup() {
 	pendingToolLines = [];
 	hideThreadActivity();
 	resetAssistantStreamState();
-	turnProgressBubbleCount = 0;
-	turnProgressLastKind = "";
-	turnProgressLastAt = 0;
 }
 
-// ---- resizable panes: the sidebar and the sidechat -------------------------
-// Drag the seam; widths persist per machine (localStorage — chrome
-// preference, not company state). Pointer capture keeps the drag alive over
-// the surface iframe, which additionally has its pointer events parked so it
-// can never swallow the gesture.
+// ---- resizable pane: sidebar -----------------------------------------------
+// Width persists per machine (localStorage — chrome preference, not company
+// state).
 
 function makePaneResizer(handleId, cssVar, storageKey, opts) {
 	const handle = $(handleId);
@@ -6986,7 +7959,6 @@ function makePaneResizer(handleId, cssVar, storageKey, opts) {
 		event.preventDefault();
 		handle.setPointerCapture(event.pointerId);
 		handle.dataset.dragging = "true";
-		$("view-surface").style.pointerEvents = "none";
 		const startX = event.clientX;
 		const startWidth = opts.el().getBoundingClientRect().width;
 		const move = (ev) => apply(startWidth + (ev.clientX - startX) * opts.direction);
@@ -6994,7 +7966,6 @@ function makePaneResizer(handleId, cssVar, storageKey, opts) {
 			handle.removeEventListener("pointermove", move);
 			handle.removeEventListener("pointerup", up);
 			delete handle.dataset.dragging;
-			$("view-surface").style.pointerEvents = "";
 			localStorage.setItem(storageKey, String(Math.round(opts.el().getBoundingClientRect().width)));
 		};
 		handle.addEventListener("pointermove", move);
@@ -7007,12 +7978,6 @@ makePaneResizer("navHandle", "--nav-width", "qorpera.navWidth", {
 	min: 190,
 	max: 420,
 	direction: 1,
-});
-makePaneResizer("sidechatHandle", "--sidechat-width", "qorpera.sidechatWidth", {
-	el: () => $("sidechat"),
-	min: 300,
-	max: 720,
-	direction: -1,
 });
 
 /* Markdown for assistant prose. The source is HTML-escaped BEFORE parsing so
@@ -7081,7 +8046,6 @@ window.qorpera.onRpcEvent((frame) => {
 		}
 		case "tool_execution_start": {
 			setCurrentAvatarAction("working");
-			maybeAppendToolProgress(frame.toolName);
 			showThreadActivity("working");
 			pendingToolLines.push({
 				toolName: frame.toolName,
@@ -7109,9 +8073,6 @@ window.qorpera.onRpcEvent((frame) => {
 			break;
 		case "agent_start":
 			resetAssistantStreamState();
-			turnProgressBubbleCount = 0;
-			turnProgressLastKind = "";
-			turnProgressLastAt = 0;
 			setCurrentAvatarAction("working");
 			showThreadActivity("working");
 			if (!activeRunProgress) activeRunProgress = createRunProgress();
@@ -7184,7 +8145,7 @@ window.qorpera.onRpcEvent((frame) => {
 					const candidates = (frame.data?.messages ?? []).filter((m) => (m.text ?? "").trim() === wanted);
 					const target = candidates[candidates.length - 1];
 					if (target) sendRpc({ type: "fork", entryId: target.entryId });
-					else showControllerToast("could not find that message to rewind");
+					else showToast("could not find that message to rewind");
 				}
 			} else if (frame.command === "fork" && frame.success) {
 				if (!frame.data?.cancelled) {
@@ -7254,7 +8215,7 @@ function summarizeArgs(args) {
 	return "";
 }
 
-// ---- profile settings -------------------------------------------------------
+// ---- company settings -------------------------------------------------------
 
 const SETTINGS_TABS = new Set(["general", "connections", "authority"]);
 let settingsTab = "general";
@@ -7290,6 +8251,7 @@ function openSettings(tab) {
 		syncSettingsSearch();
 		window.qorpera.setSettingsOverlayActive?.(true);
 	}
+	view.inert = false;
 	view.classList.add("open");
 	view.setAttribute("aria-hidden", "false");
 	for (const b of document.querySelectorAll("#settingsView .stab")) {
@@ -7304,6 +8266,19 @@ function openSettings(tab) {
 function closeSettings() {
 	settingsRenderVersion += 1;
 	const view = $("settingsView");
+	const returnTarget =
+		settingsReturnFocus?.isConnected && !view.contains(settingsReturnFocus)
+			? settingsReturnFocus
+			: $("input").offsetParent
+				? $("input")
+				: $("companySwitcherButton").offsetParent
+					? $("companySwitcherButton")
+					: $("railSearch");
+	returnTarget?.focus();
+	if (document.activeElement instanceof HTMLElement && view.contains(document.activeElement)) {
+		document.activeElement.blur();
+	}
+	view.inert = true;
 	view.classList.remove("open");
 	view.setAttribute("aria-hidden", "true");
 	window.qorpera.setSettingsOverlayActive?.(false);
@@ -7578,31 +8553,34 @@ async function renderSettingsTab() {
 		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
 		setHeading(content, "General");
 
-		const profileGroup = document.createElement("section");
-		profileGroup.className = "settings-group general-settings-group";
-		profileGroup.innerHTML = "<header><h2>Profile</h2></header>";
-		const profileCard = document.createElement("div");
-		profileCard.className = "general-profile-card";
-		profileCard.appendChild(
-			makeProfileIcon(info.profile?.profileIcon || currentProfileIcon, info.profile?.name || state.name || "Current profile"),
+		const companyGroup = document.createElement("section");
+		companyGroup.className = "settings-group general-settings-group";
+		companyGroup.innerHTML = "<header><h2>Company</h2></header>";
+		const companyCard = document.createElement("div");
+		companyCard.className = "general-company-card";
+		companyCard.appendChild(
+			makeCompanyIcon(
+				info.company?.companyIcon || currentCompanyIcon,
+				info.company?.name || state.name || "Current company",
+			),
 		);
-		const profileCopy = document.createElement("div");
-		profileCopy.className = "general-account-copy";
-		const profileName = document.createElement("strong");
-		profileName.textContent = info.profile?.name || state.name || "Current profile";
-		const profileDetail = document.createElement("small");
-		profileDetail.textContent = "Staff, connections, and files for this profile";
-		profileCopy.append(profileName, profileDetail);
-		const switchProfile = document.createElement("button");
-		switchProfile.type = "button";
-		switchProfile.textContent = "Switch profile";
-		switchProfile.onclick = async () => {
-			switchProfile.disabled = true;
+		const companyCopy = document.createElement("div");
+		companyCopy.className = "general-account-copy";
+		const companyName = document.createElement("strong");
+		companyName.textContent = info.company?.name || state.name || "Current company";
+		const companyDetail = document.createElement("small");
+		companyDetail.textContent = "Agents, connector recipes, and work for this company";
+		companyCopy.append(companyName, companyDetail);
+		const switchCompany = document.createElement("button");
+		switchCompany.type = "button";
+		switchCompany.textContent = "Switch company";
+		switchCompany.onclick = async () => {
+			switchCompany.disabled = true;
 			await window.qorpera.showHub();
 		};
-		profileCard.append(profileCopy, switchProfile);
-		profileGroup.appendChild(profileCard);
-		content.appendChild(profileGroup);
+		companyCard.append(companyCopy, switchCompany);
+		companyGroup.appendChild(companyCard);
+		content.appendChild(companyGroup);
 
 		const accountGroup = document.createElement("section");
 		accountGroup.className = "settings-group general-settings-group";
@@ -7622,7 +8600,7 @@ async function renderSettingsTab() {
 			const result = await window.qorpera.accountSignOut();
 			if (!result?.ok) {
 				signOutButton.disabled = false;
-				showControllerToast(result?.error ?? "Could not sign out.");
+				showToast(result?.error ?? "Could not sign out.");
 				return;
 			}
 			closeSettings();
@@ -7795,7 +8773,7 @@ async function renderSettingsTab() {
 		categoryHue.oninput = save;
 		density.onchange = save;
 		setRow(group, "Show type hues", "Display the indicator at the left edge of each navigation row.", showKinds);
-		setRow(group, "Page hue", "Direct pages and surfaces", pageHue);
+		setRow(group, "Page hue", "Built-in company pages", pageHue);
 		setRow(group, "Category hue", "Folders that open a list of pages", categoryHue);
 		setRow(
 			group,
@@ -7850,10 +8828,10 @@ async function renderSettingsTab() {
 		setRow(
 			content,
 			"Product code",
-			"controllers are always read-only; product-workers can modify only their assigned worktree — not configurable",
+			"company agents are read-only here; product-workers can modify only their assigned worktree — not configurable",
 		);
 
-		setRow(content, "Authority itself", "editing gates, kernel files, or the inbox — always gated, not configurable");
+		setRow(content, "Authority itself", "editing gates, protected company files, or the inbox — always gated, not configurable");
 
 		const save = document.createElement("button");
 		save.className = "save";
@@ -7943,12 +8921,18 @@ window.qorpera.onConnectionStatus((event) => {
 	}
 	void refreshState();
 });
+if (typeof window.qorpera.onConnectionRequestsChanged === "function") {
+	window.qorpera.onConnectionRequestsChanged((request) => {
+		if (!request?.id) return;
+		applyConnectionRequestResult(request, { request });
+	});
+}
 window.qorpera.onAccountStatus((message) => {
 	if (typeof message === "string" && !$("accountView").hidden) $("accountStatus").textContent = message;
 });
 window.qorpera.onOpenCompany((root) => openCompany(root));
 
-setupHierarchicalController();
+setupCompanyNavigation();
 setupSidebarToggle();
 setupCompanyModal();
 $("signOutButton").onclick = signOut;

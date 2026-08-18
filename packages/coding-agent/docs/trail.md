@@ -10,11 +10,12 @@ self-describing plain files inside the exportable environment).
 
 ## Files
 
-One JSONL file per controller session at
+One JSONL file per agent run at
 `<company>/trail/<ISO-timestamp-with-:.-replaced-by-->_<uuid>.jsonl`.
-Line 1 is the session header; every following non-empty line is one entry.
-Sessions ARE the trail — there is no mirroring layer, and compaction is
-disabled by forced project settings (`.qorpera/settings.json`).
+Line 1 is the run header; every following non-empty line is one entry. Agent
+runs accumulate into the trail without becoming company identity or lifecycle
+objects. There is no mirroring layer, and compaction is disabled by forced
+project settings (`.qorpera/settings.json`).
 
 ## Header (line 1)
 
@@ -25,8 +26,10 @@ disabled by forced project settings (`.qorpera/settings.json`).
 ```
 
 `version` must equal 5 to resume; other versions require an explicit
-append-only migration. `qorpera` is the kernel authority binding; resuming a
-session with a different `actor`/`department`/`worktree` is refused.
+append-only migration. `qorpera` is the trusted-host authority binding;
+resuming a run with a different `actor`/`department`/`worktree` is refused.
+`controller` remains the version-5 wire value for a normal company agent; it
+is not a separate company actor.
 Header max size: 64 KiB.
 
 ## Entry envelope
@@ -37,25 +40,25 @@ Every entry line carries:
   `branch_summary`, `custom`, `custom_message`, `label`, `session_info`.
 - `id` — unique within the session (1–128 chars); `parentId` — `null` or a
   previously seen id (the session is a tree).
-- `timestamp` — set by the kernel at receipt (equals `kernel.receivedAt`).
+- `timestamp` — set by the host at receipt (equals `kernel.receivedAt`).
 - `provenance` — exactly one of:
-  - `{"source":"kernel","trust":"observed"}` — written by the shell kernel
-    from what it directly observed;
-  - `{"source":"child","trust":"assertion"}` — asserted by the controller
+  - `{"source":"kernel","trust":"observed"}` — the legacy wire value for an
+    observation written directly by the desktop host from what it observed;
+  - `{"source":"child","trust":"assertion"}` — asserted by the agent
     child process. Message content (including thinking blocks) is in this
-    class: attributable, hash-chained, but not kernel-verified against
+    class: attributable, hash-chained, but not host-verified against
     provider bytes.
-- `kernel` — the integrity envelope:
+- `kernel` — the version-5 wire name for the host integrity envelope:
   - `sequence` — 1-based, strictly increasing by 1;
-  - `receivedAt` — kernel receipt time;
+  - `receivedAt` — host receipt time;
   - `previousHash` — prior entry's `hash`, `null` for the first entry;
   - `hash` — `sha256(previousHash + "\n" + JSON(entry without kernel))`,
     hex. `loadTrailAudit` re-verifies the whole chain on resume and refuses
     the session on any break.
 
-Entry max size: 16 MiB. Only the kernel writes the file; the child submits
+Entry max size: 16 MiB. Only the host writes the file; the child submits
 entries as `{"type":"qorpera_trail_append","token":…,"entry":…}` frames on
-stdout, which the kernel validates, stamps, and appends.
+stdout, which the host validates, stamps, and appends.
 
 ## Per-type payloads
 
@@ -76,19 +79,19 @@ Effect boundary (child-asserted, written at the authority layer):
 
 - `qorpera_effect` — every classified tool call: tool, effect class,
   decision, gateId, attended flag, actor, behavior content-hash + signature
-  status, kernel intent.
+  status, host intent (serialized as `kernelIntent` in version 5).
 
-Kernel-observed (`source:"kernel"`):
+Host-observed (`source:"kernel"` in the version-5 wire format):
 
 - `qorpera_kernel_input` — founder input delivered to the child.
 - `qorpera_kernel_model_request` — provider, model, request sha256, status,
-  budget reservation, usage. (The kernel records the request identity and
+  budget reservation, usage. (The host records the request identity and
   usage — not response bytes; see provenance note above.)
 - `qorpera_kernel_founder_mutation` — authorized founder POSTs (authority,
   gate, inbox responses) with review decision and result.
 - `qorpera_kernel_product_storage` — product worktree/bundle operations.
 - `qorpera_kernel_gate_transition` — gate lifecycle changes.
-- `qorpera_kernel_inbox_message` — inbox messages observed by the kernel.
+- `qorpera_kernel_inbox_message` — inbox messages observed by the host.
 
 ## Reading a trail without Qorpera
 
@@ -102,12 +105,12 @@ the original line with `kernel` removed).
 
 ## Guarantees and non-guarantees
 
-- Append-only from the controller's side: rewrite paths throw for
-  kernel-bound sessions, the sandbox mounts `trail/` read-only, and the hash
+- Append-only from the agent's side: rewrite paths throw for
+  host-bound runs, the sandbox mounts `trail/` read-only, and the hash
   chain makes out-of-band edits detectable at next resume.
 - Never lossily compacted; large payloads are subject to the entry size cap,
   not summarization.
 - Child-asserted content is attributable, never reproducible (EVOLUTION §8.5)
-  — the trail proves what the controller recorded, and the kernel envelope
+  — the trail proves what the agent recorded, and the host envelope
   proves when and in what order, not that provider output was transcribed
   faithfully.

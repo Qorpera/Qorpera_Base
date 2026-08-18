@@ -58,7 +58,7 @@ export interface CodexEngineOptions {
 	 * effects but never changes product-code roles.
 	 */
 	attended?: boolean;
-	actor?: "controller" | "product-worker";
+	actor?: "company-agent" | "product-worker";
 	productWorktree?: string;
 	binary?: CodexBinary;
 	model?: string;

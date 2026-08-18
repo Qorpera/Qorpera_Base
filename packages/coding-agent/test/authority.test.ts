@@ -135,7 +135,7 @@ describe("classification and evaluation", () => {
 		// Kernel-owned policy files: the founder lane is named, no gate filed.
 		const policy = evaluateToolCall(authority, "write", { path: join(root, "authority.toml"), content: "x" }, root);
 		expect(policy.kind).toBe("block");
-		expect((policy as { reason: string }).reason).toContain("Kernel policy boundary");
+		expect((policy as { reason: string }).reason).toContain("Host policy boundary");
 		expect((policy as { reason: string }).reason).toContain("inbox/messages/msg-");
 		// Inbox gate records: self-approval, no gate filed.
 		const gate = evaluateToolCall(
@@ -222,9 +222,9 @@ describe("product-development role boundary", () => {
 		};
 	});
 
-	it("keeps controllers read-only even when attended and creates no approvable gate", () => {
+	it("keeps company agents read-only even when attended and creates no approvable gate", () => {
 		const authority = discoverAuthority(root)!;
-		for (const context of [undefined, { attended: false }, { attended: true, actor: "controller" as const }]) {
+		for (const context of [undefined, { attended: false }, { attended: true, actor: "company-agent" as const }]) {
 			const decision = evaluateToolCall(
 				authority,
 				"write",
@@ -239,7 +239,7 @@ describe("product-development role boundary", () => {
 		expect(existsSync(join(root, "inbox"))).toBe(false);
 	});
 
-	it("allows controllers to study repositories and worktrees", () => {
+	it("allows company agents to study repositories and worktrees", () => {
 		const authority = discoverAuthority(root)!;
 		expect(evaluateToolCall(authority, "read", { path: join(repository, "src", "main.ts") }, root).kind).toBe(
 			"allow",
@@ -403,7 +403,7 @@ describe("provenance trailers on agent commits (EVOLUTION.md §4 invariant 3)", 
 	it("matches the inline -c author/committer convention", () => {
 		writeAuthorityToml(`[irreversible]\nmode = "auto"\n`);
 		const authority = discoverAuthority(root)!;
-		const convention = `git -c user.name="Controller" -c user.email="c@x.com" commit --author="Qorpera <j@x.com>"`;
+		const convention = `git -c user.name="Agent" -c user.email="c@x.com" commit --author="Qorpera <j@x.com>"`;
 		expect(evaluateToolCall(authority, "bash", { command: `${convention} -m "msg"` }, root).kind).toBe("block");
 		expect(evaluateToolCall(authority, "bash", { command: `${convention} -m "msg ${TRAILERS}"` }, root).kind).toBe(
 			"allow",
@@ -515,7 +515,7 @@ describe("the signature rule (behavior signatures, EVOLUTION.md §3)", () => {
 		const third = await finalizeAuthorityDecision(authority, provisional, "send_update", { to: "list" });
 		expect(third.kind).toBe("block");
 		expect(third.behavior?.signed).toBe(false);
-		expect((third as { reason: string }).reason).toContain("no live local kernel trust");
+		expect((third as { reason: string }).reason).toContain("no live local host trust");
 
 		// Edited code = new hash = new signature request.
 		writeBehaviorFile("export default () => { console.log('changed'); };");
@@ -553,7 +553,7 @@ describe("the signature rule (behavior signatures, EVOLUTION.md §3)", () => {
 			{ to: "list" },
 		);
 		expect(third.kind).toBe("block");
-		expect((third as { reason: string }).reason).toContain("no live local kernel trust");
+		expect((third as { reason: string }).reason).toContain("no live local host trust");
 	});
 
 	it("inward classes do not require signatures", () => {
@@ -643,7 +643,7 @@ describe("agent-session mount", () => {
 				id: "kernel-session",
 				timestamp: new Date().toISOString(),
 				cwd: root,
-				qorpera: { actor: "controller", attended: true },
+				qorpera: { actor: "company-agent", attended: true },
 			})}\n`,
 			"utf-8",
 		);
@@ -683,7 +683,7 @@ describe("agent-session mount", () => {
 			expect(stampData.decision).toBe("block");
 
 			// The child can request a gate but cannot materialize or approve it.
-			// Both actions are brokered by the desktop kernel.
+			// Both actions are brokered by the desktop host.
 			const gateId = blocked!.reason!.match(/gate-[a-f0-9-]+/)![0];
 			expect(readdirSync(join(root, "inbox")).some((name) => name.startsWith(gateId))).toBe(false);
 		} finally {

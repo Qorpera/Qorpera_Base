@@ -3,7 +3,7 @@
 	"version": "0.83.0",
 	"private": true,
 	"type": "module",
-	"description": "Qorpera Base shell — the minimal desktop app every company controller is built on.",
+	"description": "Qorpera Base shell — the desktop host for agent-operated companies.",
 	"main": "dist/main.js",
 	"scripts": {
 		"build": "tsgo -p tsconfig.build.json && shx rm -rf dist/userland dist/assets && shx cp -r userland dist/userland && shx cp -r assets dist/assets && shx cp ../../node_modules/marked/lib/marked.umd.js dist/userland/marked.umd.js && shx cp src/preload.cjs dist/preload.cjs",
@@ -18,7 +18,8 @@
 		"@qorpera/pi-protocol": "^0.83.0",
 		"@supabase/supabase-js": "2.112.3",
 		"electron-updater": "6.8.9",
-		"marked": "18.0.5"
+		"marked": "18.0.5",
+		"playwright-core": "1.62.1"
 	},
 	"devDependencies": {
 		"electron": "43.2.0",

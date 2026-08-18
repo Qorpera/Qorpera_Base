@@ -1,6 +1,6 @@
 /**
  * Environment operations (Build 5): snapshot, restore, fork, erase, and
- * trail playback/verification — on the export substrate, with severed
+ * trail playback/verification — on the export mechanism, with severed
  * authority proven structurally.
  */
 import { spawnSync } from "node:child_process";
@@ -19,7 +19,7 @@ import {
 	scaffoldCompany,
 	snapshotCompany,
 	snapshotsDir,
-	validateCompanyKernelStorage,
+	validateCompanyHostStorage,
 	verifyTrailFile,
 } from "../src/core/company.ts";
 import { bindCompanySecret, companyConnectionsPath, readCompanyConnections } from "../src/core/company-connections.ts";
@@ -44,22 +44,22 @@ afterEach(() => {
 
 describe("snapshot and restore", () => {
 	it("captures, lists, and restores the environment with a pre-restore safety snapshot", () => {
-		writeFileSync(join(root, "departments", "note.md"), "v1\n", "utf-8");
+		writeFileSync(join(root, "files", "note.md"), "v1\n", "utf-8");
 		const snapshot = snapshotCompany(root, "Before Changes!");
 		expect(snapshot.id).toMatch(/_before-changes$/);
 		expect(existsSync(join(snapshot.path, "export-manifest.json"))).toBe(true);
 		expect(listSnapshots(root).map((record) => record.id)).toContain(snapshot.id);
 
-		writeFileSync(join(root, "departments", "note.md"), "v2\n", "utf-8");
-		writeFileSync(join(root, "departments", "stray.md"), "stray\n", "utf-8");
+		writeFileSync(join(root, "files", "note.md"), "v2\n", "utf-8");
+		writeFileSync(join(root, "files", "stray.md"), "stray\n", "utf-8");
 		const result = restoreCompany(root, snapshot.id);
-		expect(readFileSync(join(root, "departments", "note.md"), "utf-8")).toBe("v1\n");
-		expect(existsSync(join(root, "departments", "stray.md"))).toBe(false);
-		validateCompanyKernelStorage(root);
+		expect(readFileSync(join(root, "files", "note.md"), "utf-8")).toBe("v1\n");
+		expect(existsSync(join(root, "files", "stray.md"))).toBe(false);
+		validateCompanyHostStorage(root);
 		// The replaced state was captured first: restore is reversible.
 		const safety = listSnapshots(root).find((record) => record.id === result.safetySnapshot);
 		expect(safety).toBeDefined();
-		expect(readFileSync(join(safety!.path, "company", "departments", "note.md"), "utf-8")).toBe("v2\n");
+		expect(readFileSync(join(safety!.path, "company", "files", "note.md"), "utf-8")).toBe("v2\n");
 	});
 
 	it("refuses to snapshot a live environment", () => {
@@ -75,12 +75,12 @@ describe("snapshot and restore", () => {
 describe("fork", () => {
 	it("carries files, history, and lineage — and structurally no credentials or bindings", () => {
 		bindCompanySecret(root, "api-key", { kind: "static", value: "raw-value" });
-		writeFileSync(join(root, "departments", "work.md"), "state\n", "utf-8");
+		writeFileSync(join(root, "files", "work.md"), "state\n", "utf-8");
 		const target = `${root}-fork`;
 
 		const result = forkCompany(root, target);
-		validateCompanyKernelStorage(target);
-		expect(readFileSync(join(target, "departments", "work.md"), "utf-8")).toBe("state\n");
+		validateCompanyHostStorage(target);
+		expect(readFileSync(join(target, "files", "work.md"), "utf-8")).toBe("state\n");
 		const lineage = JSON.parse(readFileSync(join(target, ".qorpera", "lineage.json"), "utf-8"));
 		expect(lineage.forkedFrom.head).toBe(result.manifest.sourceHead);
 		const log = spawnSync("git", ["-C", target, "log", "-1", "--format=%B"], { encoding: "utf-8" });
@@ -148,7 +148,7 @@ describe("trail verification (playback is inspection)", () => {
 		provenance: { source: "child", trust: "assertion" },
 	});
 
-	it("verifies an intact kernel chain and detects tampering", () => {
+	it("verifies an intact host chain and detects tampering", () => {
 		const path = join(root, "trail", "chained.jsonl");
 		writeFileSync(path, chained([entry("e1", "first"), entry("e2", "second")]), "utf-8");
 		expect(verifyTrailFile(path)).toMatchObject({ status: "verified", entries: 2 });
@@ -160,7 +160,7 @@ describe("trail verification (playback is inspection)", () => {
 		expect(tampered.detail).toContain("integrity break");
 	});
 
-	it("reports sessions without kernel envelopes as unaudited, not broken", () => {
+	it("reports sessions without host envelopes as unaudited, not broken", () => {
 		const path = join(root, "trail", "plain.jsonl");
 		const header = { type: "session", version: 5, id: "s2", timestamp: "2026-08-10T12:00:00.000Z", cwd: root };
 		writeFileSync(path, `${JSON.stringify(header)}\n${JSON.stringify(entry("e1", "hello"))}\n`, "utf-8");

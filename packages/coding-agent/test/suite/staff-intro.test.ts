@@ -166,7 +166,7 @@ describe("staff intro", () => {
 		}
 	});
 
-	it("accepts staff_intro only through a kernel-bound RPC command", async () => {
+	it("accepts staff_intro only through a host-bound RPC command", async () => {
 		const listenerSnapshot = takeListenerSnapshot();
 		const harness = await createHarness();
 		harness.setResponses([fauxAssistantMessage("I have arrived.")]);
@@ -212,7 +212,7 @@ describe("staff intro", () => {
 					type: "response",
 					command: "staff_intro",
 					success: false,
-					error: "staff_intro is only available to a kernel-bound session",
+					error: "staff_intro is only available to a host-bound agent run",
 				});
 			});
 			expect(harness.session.messages).toEqual([]);

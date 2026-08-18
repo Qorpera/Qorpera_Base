@@ -60,6 +60,7 @@ export interface HarnessOptions {
 	settings?: Partial<Settings>;
 	systemPrompt?: string;
 	tools?: AgentTool[];
+	toolFactory?: (tempDir: string) => AgentTool[];
 	initialActiveToolNames?: string[];
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
@@ -100,7 +101,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	});
 	fauxProvider.setResponses([]);
 	const model = fauxProvider.getModel();
-	const toolMap = options.tools ? Object.fromEntries(options.tools.map((tool) => [tool.name, tool])) : undefined;
+	const tools = options.toolFactory?.(tempDir) ?? options.tools;
+	const toolMap = tools ? Object.fromEntries(tools.map((tool) => [tool.name, tool])) : undefined;
 	const withConfiguredAuth = options.withConfiguredAuth ?? true;
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 

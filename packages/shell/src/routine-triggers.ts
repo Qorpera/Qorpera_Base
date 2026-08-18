@@ -6,6 +6,7 @@ import type {
 	RoutineTrigger,
 	ScheduledJob,
 } from "@qorpera/pi-coding-agent/company-connections";
+import { companyHostStorageFile } from "./company-host-storage.ts";
 import { type GitHubCommandRunner, runGitHubCommand } from "./github-connection.ts";
 
 export interface RoutineTriggerEvent {
@@ -30,7 +31,14 @@ export interface RoutineTriggerState {
 	version: 1;
 	githubCursors: Record<string, string>;
 	pending: PendingRoutineTrigger[];
+	completedEventIds?: string[];
+	customChecks?: Record<
+		string,
+		{ lastCheckedAt: string; failureStreak: number; lastError?: string; checkpoint?: string }
+	>;
 }
+
+const MAX_COMPLETED_EVENT_IDS = 1_000;
 
 interface GitHubRepositoryEvent {
 	id: string;
@@ -110,17 +118,22 @@ export function parseGitHubRepositoryEvents(raw: string): GitHubRepositoryEvent[
 export function routineTriggerStatePath(userData: string, root: string): string {
 	const normalized = process.platform === "win32" ? resolve(root).toLowerCase() : resolve(root);
 	const id = createHash("sha256").update(normalized).digest("hex");
-	return join(userData, "company-kernel-state", id, "routine-triggers.json");
+	return companyHostStorageFile(userData, id, "routine-triggers.json");
 }
 
 export function readRoutineTriggerState(path: string): RoutineTriggerState {
-	if (!existsSync(path)) return { version: 1, githubCursors: {}, pending: [] };
+	if (!existsSync(path))
+		return { version: 1, githubCursors: {}, pending: [], completedEventIds: [], customChecks: {} };
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf-8")) as RoutineTriggerState;
 		if (parsed.version !== 1 || !parsed.githubCursors || !Array.isArray(parsed.pending)) throw new Error("invalid");
-		return parsed;
+		return {
+			...parsed,
+			completedEventIds: Array.isArray(parsed.completedEventIds) ? parsed.completedEventIds : [],
+			customChecks: parsed.customChecks ?? {},
+		};
 	} catch {
-		return { version: 1, githubCursors: {}, pending: [] };
+		return { version: 1, githubCursors: {}, pending: [], completedEventIds: [], customChecks: {} };
 	}
 }
 
@@ -155,6 +168,8 @@ export async function pollGitHubRoutineTriggers(options: {
 		version: 1,
 		githubCursors: { ...options.state.githubCursors },
 		pending: [...options.state.pending],
+		completedEventIds: [...(options.state.completedEventIds ?? [])],
+		customChecks: { ...options.state.customChecks },
 	};
 	const repositories = new Map<
 		string,
@@ -187,7 +202,7 @@ export async function pollGitHubRoutineTriggers(options: {
 				if (!trigger.events.includes(normalized.type as GitHubRoutineEventType)) continue;
 				if (trigger.actors.length && (!normalized.actor || !trigger.actors.includes(normalized.actor))) continue;
 				const id = `${job.id}:${trigger.id}:${normalized.id}`;
-				if (next.pending.some((candidate) => candidate.id === id)) continue;
+				if (next.pending.some((candidate) => candidate.id === id) || next.completedEventIds?.includes(id)) continue;
 				next.pending.push({ id, jobId: job.id, triggerId: trigger.id, event: normalized });
 			}
 		}
@@ -195,8 +210,80 @@ export async function pollGitHubRoutineTriggers(options: {
 	return next;
 }
 
-export function removePendingRoutineTrigger(state: RoutineTriggerState, id: string): RoutineTriggerState {
-	return { ...state, pending: state.pending.filter((event) => event.id !== id) };
+export function completePendingRoutineTrigger(state: RoutineTriggerState, id: string): RoutineTriggerState {
+	if (!state.pending.some((event) => event.id === id)) return state;
+	return {
+		...state,
+		pending: state.pending.filter((event) => event.id !== id),
+		completedEventIds: [...(state.completedEventIds ?? []).filter((completed) => completed !== id), id].slice(
+			-MAX_COMPLETED_EVENT_IDS,
+		),
+	};
+}
+
+export interface DueCustomRoutineCheck {
+	job: ScheduledJob;
+	trigger: Extract<RoutineTrigger, { kind: "custom" }> & {
+		monitor: NonNullable<Extract<RoutineTrigger, { kind: "custom" }>["monitor"]>;
+	};
+	lastCheckedAt?: string;
+	checkpoint?: string;
+}
+
+function customCheckKey(jobId: string, triggerId: string): string {
+	return `${jobId}:${triggerId}`;
+}
+
+export function dueCustomRoutineCheck(
+	jobs: readonly ScheduledJob[],
+	state: RoutineTriggerState,
+	now = Date.now(),
+): DueCustomRoutineCheck | undefined {
+	for (const job of jobs) {
+		if (!job.enabled || job.suspendedReason || !job.staffAgentId) continue;
+		for (const trigger of job.triggers) {
+			if (trigger.kind !== "custom" || !trigger.monitor) continue;
+			const previous = state.customChecks?.[customCheckKey(job.id, trigger.id)];
+			const lastCheckedAt = previous?.lastCheckedAt;
+			const lastCheckedMs = lastCheckedAt ? Date.parse(lastCheckedAt) : Number.NaN;
+			if (!Number.isFinite(lastCheckedMs) || lastCheckedMs + trigger.monitor.intervalMinutes * 60_000 <= now) {
+				return {
+					job,
+					trigger: { ...trigger, monitor: trigger.monitor },
+					...(lastCheckedAt ? { lastCheckedAt } : {}),
+					...(previous?.checkpoint ? { checkpoint: previous.checkpoint } : {}),
+				};
+			}
+		}
+	}
+	return undefined;
+}
+
+export function recordCustomRoutineCheck(
+	state: RoutineTriggerState,
+	jobId: string,
+	triggerId: string,
+	result: { success: true; checkpoint?: string } | { success: false; error: string },
+	now = new Date().toISOString(),
+): RoutineTriggerState {
+	const key = customCheckKey(jobId, triggerId);
+	const previous = state.customChecks?.[key];
+	return {
+		...state,
+		customChecks: {
+			...state.customChecks,
+			[key]: {
+				lastCheckedAt: now,
+				failureStreak: result.success ? 0 : (previous?.failureStreak ?? 0) + 1,
+				...(result.success ? {} : { lastError: result.error.slice(0, 2_000) }),
+				...(result.success && result.checkpoint !== undefined
+					? { checkpoint: result.checkpoint }
+					: previous?.checkpoint
+						? { checkpoint: previous.checkpoint }
+						: {}),
+			},
+		},
+	};
 }
 
 export function queueCustomRoutineTrigger(
@@ -210,7 +297,7 @@ export function queueCustomRoutineTrigger(
 		for (const trigger of job.triggers) {
 			if (trigger.kind !== "custom" || trigger.adapterId !== event.source || trigger.event !== event.type) continue;
 			const id = `${job.id}:${trigger.id}:${event.id}`;
-			if (!pending.some((candidate) => candidate.id === id)) {
+			if (!pending.some((candidate) => candidate.id === id) && !state.completedEventIds?.includes(id)) {
 				pending.push({ id, jobId: job.id, triggerId: trigger.id, event });
 			}
 		}

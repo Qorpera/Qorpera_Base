@@ -106,7 +106,7 @@ export type SessionRuntimeEventInput =
 export interface SessionRuntimeView {
 	trailFile: string;
 	sessionId: string;
-	actor: "controller" | "product-worker";
+	actor: "company-agent" | "product-worker";
 	autonomous: boolean;
 	staffAgentId?: string;
 	label?: string;
@@ -186,7 +186,7 @@ const SESSION_RUNTIME_STATUSES = new Set<SessionRuntimeStatus>([
 ]);
 
 interface SessionReadModelCache {
-	version: 2;
+	version: 3;
 	files: Record<
 		string,
 		TrailMetadata & {
@@ -292,7 +292,7 @@ function validCachedSession(value: unknown, trailFile: string): value is Session
 	return (
 		candidate.trailFile === trailFile &&
 		typeof candidate.sessionId === "string" &&
-		(candidate.actor === "controller" || candidate.actor === "product-worker") &&
+		(candidate.actor === "company-agent" || candidate.actor === "product-worker") &&
 		typeof candidate.autonomous === "boolean" &&
 		validOptionalString(candidate.staffAgentId) &&
 		validOptionalString(candidate.label) &&
@@ -330,7 +330,7 @@ function readSessionCache(path: string): SessionReadModelCache | undefined {
 		const stat = lstatSync(path);
 		if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) return undefined;
 		const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<SessionReadModelCache>;
-		if (parsed.version !== 2 || !parsed.files || typeof parsed.files !== "object" || Array.isArray(parsed.files)) {
+		if (parsed.version !== 3 || !parsed.files || typeof parsed.files !== "object" || Array.isArray(parsed.files)) {
 			return undefined;
 		}
 		for (const [file, entry] of Object.entries(parsed.files)) {
@@ -377,7 +377,7 @@ function writeSessionCache(
 				: {}),
 		};
 	}
-	const cache: SessionReadModelCache = { version: 2, files };
+	const cache: SessionReadModelCache = { version: 3, files };
 	mkdirSync(dirname(path), { recursive: true });
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	writeFileSync(temporary, `${JSON.stringify(cache)}\n`, { encoding: "utf-8", flag: "wx" });
@@ -545,7 +545,7 @@ function authorityIdentity(
 	"actor" | "autonomous" | "staffAgentId" | "label" | "department" | "worktree" | "group" | "parentSession"
 > {
 	return {
-		actor: authority.actor === "product-worker" ? "product-worker" : "controller",
+		actor: authority.actor === "product-worker" ? "product-worker" : "company-agent",
 		autonomous: authority.autonomous === true,
 		staffAgentId: typeof authority.staffAgentId === "string" ? authority.staffAgentId : undefined,
 		label: typeof authority.label === "string" ? authority.label : undefined,
@@ -566,7 +566,6 @@ export class SessionControlPlane implements SessionRuntimeSource {
 	readonly #audits = new Map<string, TrailAuditState>();
 	readonly #invalidTrails = new Set<string>();
 	readonly #listeners = new Set<(update: SessionRuntimeUpdate) => void>();
-	#lastAttachedTrailFile: string | undefined;
 	#attachmentSequence = 0;
 	#revision = 0;
 	#generatedAt = new Date(0).toISOString();
@@ -700,37 +699,6 @@ export class SessionControlPlane implements SessionRuntimeSource {
 		return session;
 	}
 
-	/** Last founder-led controller session attached by the kernel. Older
-	 * companies without lifecycle observations fall back to filename-based
-	 * discovery in the caller. */
-	latestAttendedControllerTrailFile(): string | undefined {
-		const candidates = [...this.#sessions.values()]
-			.filter(
-				(session) =>
-					!this.#invalidTrails.has(session.trailFile) &&
-					session.actor === "controller" &&
-					!session.autonomous &&
-					session.staffAgentId === undefined &&
-					!session.label &&
-					!session.department &&
-					!session.worktree,
-			)
-			.sort(
-				(left, right) =>
-					(right.attachmentSequence ?? 0) - (left.attachmentSequence ?? 0) ||
-					right.updatedAt.localeCompare(left.updatedAt),
-			);
-		if ((candidates[0]?.attachmentSequence ?? 0) > 0) return candidates[0]?.trailFile;
-		const newestAt = candidates[0]?.updatedAt;
-		if (newestAt && this.#lastAttachedTrailFile) {
-			const tied = candidates.find(
-				(session) => session.updatedAt === newestAt && session.trailFile === this.#lastAttachedTrailFile,
-			);
-			if (tied) return tied.trailFile;
-		}
-		return candidates[0]?.trailFile;
-	}
-
 	snapshot = (): SessionRuntimeSnapshot => ({
 		revision: this.#revision,
 		generatedAt: this.#generatedAt,
@@ -780,7 +748,6 @@ export class SessionControlPlane implements SessionRuntimeSource {
 		this.#sessions.set(restored.trailFile, restored);
 		if ((restored.attachmentSequence ?? 0) >= this.#attachmentSequence) {
 			this.#attachmentSequence = restored.attachmentSequence ?? this.#attachmentSequence;
-			if (restored.attachmentSequence !== undefined) this.#lastAttachedTrailFile = restored.trailFile;
 		}
 		this.#revision += 1;
 		this.#generatedAt = restored.updatedAt;
@@ -815,10 +782,7 @@ export class SessionControlPlane implements SessionRuntimeSource {
 				if (event.attachmentSequence !== undefined) {
 					if (event.attachmentSequence >= this.#attachmentSequence) {
 						this.#attachmentSequence = event.attachmentSequence;
-						this.#lastAttachedTrailFile = observed.trailFile;
 					}
-				} else if (this.#attachmentSequence === 0) {
-					this.#lastAttachedTrailFile = observed.trailFile;
 				}
 				next = {
 					...next,

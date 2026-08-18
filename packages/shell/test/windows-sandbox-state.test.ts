@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 function configDirFor(company: string): string {
-	return join(userData, "agent-sandbox", company, "controller");
+	return join(userData, "agent-sandbox", company, "company-agent");
 }
 
 describe.runIf(onWindows)("shareWindowsSandboxState", () => {

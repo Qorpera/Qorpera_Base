@@ -15,10 +15,10 @@ import {
 	brokeredChildEnvironment,
 	commitTrailAppend,
 	kernelGateReviewDocument,
-	latestResumableTrailSession,
+	migrateLegacyCompanyAgentTrails,
 	migrateLegacyTrailSession,
 	parseTrailAppendFrame,
-	protectedControllerPaths,
+	protectedCompanyAgentPaths,
 	pruneEmptyTrailSessions,
 	reconcileKernelGateCreations,
 	sandboxCommandArgs,
@@ -41,7 +41,7 @@ import {
 	beginCompanyGateCreation,
 	completeCompanyGateCreation,
 	listPendingCompanyGateCreations,
-} from "../src/company-kernel-state.ts";
+} from "../src/company-host-state.ts";
 
 let root: string;
 
@@ -54,6 +54,15 @@ beforeEach(() => {
 afterEach(() => {
 	if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
 });
+
+function writeCompanyManifest(company: string): void {
+	mkdirSync(join(company, ".qorpera"), { recursive: true });
+	writeFileSync(
+		join(company, ".qorpera", "company.json"),
+		`${JSON.stringify({ schema: "qorpera.company/v1", id: "11111111-1111-4111-8111-111111111111" })}\n`,
+		"utf-8",
+	);
+}
 
 function createProductCheckpointFixture(company: string): {
 	worktree: string;
@@ -117,10 +126,10 @@ function createProductCheckpointFixture(company: string): {
 	return { worktree, trailPath, assignmentPath };
 }
 
-it("kernel-stamps a fresh session name before an executor is attached", () => {
+it("kernel-stamps a fresh agent session name before an executor is attached", () => {
 	const company = join(root, "company");
 	const binding = bindTrailSession(company, company, {
-		actor: "controller",
+		actor: "company-agent",
 		attended: false,
 	});
 	appendKernelSessionInfo(binding, "page — page:strategy");
@@ -135,15 +144,14 @@ it("kernel-stamps a fresh session name before an executor is attached", () => {
 		provenance: { source: "kernel", trust: "observed" },
 		kernel: { sequence: 1, previousHash: null },
 	});
-	expect(latestResumableTrailSession(company)).toBe(binding.file);
 });
 
 describe("kernel-bound agent runtime", () => {
-	it("resumes the newest founder chat and prunes contentless sessions at open", () => {
+	it("prunes contentless unnamed sessions at company open", () => {
 		const company = join(root, "company");
 		// A real conversation the founder should return to — appended through
 		// the kernel lane so the audit chain stays valid for resume.
-		const spoken = bindTrailSession(company, company, { actor: "controller", attended: true });
+		const spoken = bindTrailSession(company, company, { actor: "company-agent", attended: true });
 		const spokenEntry = {
 			type: "message",
 			id: "m1",
@@ -161,7 +169,7 @@ describe("kernel-bound agent runtime", () => {
 		const husk = join(company, "trail", "2099-01-01T00-00-00-000Z_husk.jsonl");
 		writeFileSync(
 			husk,
-			`${JSON.stringify({ type: "session", version: 5, id: "husk", timestamp: "t", cwd: company, qorpera: { actor: "controller", attended: true } })}\n${JSON.stringify({ type: "model_change", id: "mc", parentId: "husk", provider: "p", modelId: "m" })}\n`,
+			`${JSON.stringify({ type: "session", version: 5, id: "husk", timestamp: "t", cwd: company, qorpera: { actor: "company-agent", attended: true } })}\n${JSON.stringify({ type: "model_change", id: "mc", parentId: "husk", provider: "p", modelId: "m" })}\n`,
 			"utf-8",
 		);
 		// Product-scoped husk: never resumable as the company chat, still swept.
@@ -175,29 +183,25 @@ describe("kernel-bound agent runtime", () => {
 		const autonomous = join(company, "trail", "2099-01-03T00-00-00-000Z_auto.jsonl");
 		writeFileSync(
 			autonomous,
-			`${JSON.stringify({ type: "session", version: 5, id: "auto", timestamp: "t", cwd: company, qorpera: { actor: "controller", attended: false, autonomous: true, label: "autonomous — wake" } })}\n`,
+			`${JSON.stringify({ type: "session", version: 5, id: "auto", timestamp: "t", cwd: company, qorpera: { actor: "company-agent", attended: false, autonomous: true, label: "autonomous — wake" } })}\n`,
 			"utf-8",
 		);
 		// Old-schema sessions need an explicit migration; never auto-resumed.
 		const legacy = join(company, "trail", "2099-01-04T00-00-00-000Z_legacy.jsonl");
 		writeFileSync(
 			legacy,
-			`${JSON.stringify({ type: "session", version: 3, id: "old", timestamp: "t", cwd: company, qorpera: { actor: "controller", attended: true } })}\n${JSON.stringify({ type: "message", id: "m2", parentId: null, message: { role: "user", content: [] } })}\n`,
+			`${JSON.stringify({ type: "session", version: 3, id: "old", timestamp: "t", cwd: company, qorpera: { actor: "company-agent", attended: true } })}\n${JSON.stringify({ type: "message", id: "m2", parentId: null, message: { role: "user", content: [] } })}\n`,
 			"utf-8",
 		);
 
-		// The unaudited controller husk is never resumable, even before cleanup.
-		expect(latestResumableTrailSession(company)).toBe(spoken.file);
-		expect(pruneEmptyTrailSessions(company)).toBe(2); // controller husk + product husk
+		expect(pruneEmptyTrailSessions(company)).toBe(2); // company-agent husk + product husk
 		expect(existsSync(husk)).toBe(false);
 		expect(existsSync(productHusk)).toBe(false);
 		expect(existsSync(autonomous)).toBe(true);
 		expect(existsSync(legacy)).toBe(true);
 		expect(existsSync(spoken.path)).toBe(true);
-		// After the sweep the founder's real conversation is what resumes, and
-		// resuming it actually binds.
-		expect(latestResumableTrailSession(company)).toBe(spoken.file);
-		expect(bindTrailSession(company, company, { actor: "controller", attended: true }, spoken.file).file).toBe(
+		// The real conversation remains bindable by its named owner.
+		expect(bindTrailSession(company, company, { actor: "company-agent", attended: true }, spoken.file).file).toBe(
 			spoken.file,
 		);
 		// Idempotent: nothing left to sweep.
@@ -206,7 +210,7 @@ describe("kernel-bound agent runtime", () => {
 
 	it("migrates a legacy founder chat whole and binds it for live appends", () => {
 		const company = join(root, "company");
-		const scope = { actor: "controller", attended: false } as const;
+		const scope = { actor: "company-agent", attended: false } as const;
 		// A pre-v5 chat exactly as the pivot-era kernel wrote them: no
 		// authority header, no provenance, no kernel hash chain.
 		const file = "2026-08-04T05-49-07-753Z_legacy.jsonl";
@@ -275,11 +279,26 @@ describe("kernel-bound agent runtime", () => {
 		expect(readFileSync(join(company, "trail", poisoned), "utf-8")).toBe(before);
 	});
 
+	it("migrates current trails from the retired controller actor label once", () => {
+		const company = join(root, "company");
+		const current = bindTrailSession(company, company, { actor: "company-agent", attended: true });
+		const original = readFileSync(current.path, "utf-8").replace('"actor":"company-agent"', '"actor":"controller"');
+		writeFileSync(current.path, original, "utf-8");
+
+		expect(migrateLegacyCompanyAgentTrails(company)).toBe(1);
+		expect(migrateLegacyCompanyAgentTrails(company)).toBe(0);
+		expect(JSON.parse(readFileSync(current.path, "utf-8").split("\n")[0]).qorpera.actor).toBe("company-agent");
+		expect(readFileSync(`${current.path}.controller.bak`, "utf-8")).toBe(original);
+		expect(bindTrailSession(company, company, { actor: "company-agent", attended: true }, current.file).file).toBe(
+			current.file,
+		);
+	});
+
 	it("binds role and worktree scope into an immutable trail header", () => {
 		const company = join(root, "company");
-		const binding = bindTrailSession(company, company, { actor: "controller", attended: true });
+		const binding = bindTrailSession(company, company, { actor: "company-agent", attended: true });
 		const header = JSON.parse(readFileSync(binding.path, "utf-8").split("\n")[0]);
-		expect(header.qorpera).toEqual({ actor: "controller", attended: true });
+		expect(header.qorpera).toEqual({ actor: "company-agent", attended: true });
 		expect(() =>
 			bindTrailSession(
 				company,
@@ -297,16 +316,16 @@ describe("kernel-bound agent runtime", () => {
 
 	it("binds staff identity immutably without adopting legacy system trails", () => {
 		const company = join(root, "company");
-		const legacy = bindTrailSession(company, company, { actor: "controller", attended: true });
+		const legacy = bindTrailSession(company, company, { actor: "company-agent", attended: true });
 		const legacyBytes = readFileSync(legacy.path, "utf-8");
 		const staff = bindTrailSession(company, company, {
-			actor: "controller",
+			actor: "company-agent",
 			attended: true,
 			staffAgentId: "staff-night-shift",
 		});
 
 		expect(JSON.parse(readFileSync(staff.path, "utf-8").split("\n")[0]).qorpera).toMatchObject({
-			actor: "controller",
+			actor: "company-agent",
 			attended: true,
 			staffAgentId: "staff-night-shift",
 		});
@@ -340,7 +359,7 @@ describe("kernel-bound agent runtime", () => {
 			bindTrailSession(
 				company,
 				company,
-				{ actor: "controller", attended: true, staffAgentId: "staff-night-shift" },
+				{ actor: "company-agent", attended: true, staffAgentId: "staff-night-shift" },
 				staff.file,
 			).file,
 		).toBe(staff.file);
@@ -348,25 +367,23 @@ describe("kernel-bound agent runtime", () => {
 			bindTrailSession(
 				company,
 				company,
-				{ actor: "controller", attended: true, staffAgentId: "staff-chief-of-staff" },
+				{ actor: "company-agent", attended: true, staffAgentId: "staff-chief-of-staff" },
 				staff.file,
 			),
 		).toThrow("requested staffAgentId");
-		expect(() => bindTrailSession(company, company, { actor: "controller", attended: true }, staff.file)).toThrow(
+		expect(() => bindTrailSession(company, company, { actor: "company-agent", attended: true }, staff.file)).toThrow(
 			"requested staffAgentId",
 		);
 		expect(() =>
 			bindTrailSession(
 				company,
 				company,
-				{ actor: "controller", attended: true, staffAgentId: "staff-night-shift" },
+				{ actor: "company-agent", attended: true, staffAgentId: "staff-night-shift" },
 				legacy.file,
 			),
 		).toThrow("requested staffAgentId");
 		expect(readFileSync(legacy.path, "utf-8")).toBe(legacyBytes);
-		// Generic system-chat discovery must not attach the shell to the newer
-		// named employee without an explicit staff context.
-		expect(latestResumableTrailSession(company)).toBe(legacy.file);
+		// The named employee remains isolated from the pre-staff trail.
 	});
 
 	it("refuses to migrate a legacy trail into a staff identity", () => {
@@ -384,7 +401,7 @@ describe("kernel-bound agent runtime", () => {
 
 		expect(() =>
 			migrateLegacyTrailSession(company, file, {
-				actor: "controller",
+				actor: "company-agent",
 				attended: true,
 				staffAgentId: "staff-night-shift",
 			}),
@@ -393,9 +410,9 @@ describe("kernel-bound agent runtime", () => {
 		expect(existsSync(`${path}.v3.bak`)).toBe(false);
 	});
 
-	it("accepts only token-bound append frames and kernel-owned gate transitions", () => {
+	it("accepts only token-bound append frames and host-owned gate transitions", () => {
 		const company = join(root, "company");
-		const binding = bindTrailSession(company, company, { actor: "controller", attended: true });
+		const binding = bindTrailSession(company, company, { actor: "company-agent", attended: true });
 		const entry = { type: "custom", id: "one", parentId: null, timestamp: new Date().toISOString(), customType: "x" };
 		expect(parseTrailAppendFrame({ type: "qorpera_trail_append", token: "wrong", entry }, binding)).toBeUndefined();
 		const append = parseTrailAppendFrame({ type: "qorpera_trail_append", token: binding.token, entry }, binding);
@@ -425,7 +442,7 @@ describe("kernel-bound agent runtime", () => {
 			images: [],
 		});
 		expect(
-			bindTrailSession(company, company, { actor: "controller", attended: true }, binding.file).audit.sequence,
+			bindTrailSession(company, company, { actor: "company-agent", attended: true }, binding.file).audit.sequence,
 		).toBe(2);
 		const unknown = { ...entry, id: "two", type: "fabricated_root_event" };
 		expect(
@@ -593,7 +610,7 @@ describe("kernel-bound agent runtime", () => {
 		try {
 			generateFounderIdentity("Test Founder");
 			const company = join(root, "company");
-			const binding = bindTrailSession(company, company, { actor: "controller", attended: true });
+			const binding = bindTrailSession(company, company, { actor: "company-agent", attended: true });
 			const createGate = (contentHash: string): { file: string; hash: string; path: string } => {
 				const args = { path: "extensions/signed.ts", contentHash };
 				const hash = requestHash("behavior_signature", args);
@@ -706,7 +723,7 @@ describe("kernel-bound agent runtime", () => {
 
 	it("rejects child gate descriptions whose displayed semantics do not match the canonical hash", () => {
 		const company = join(root, "company");
-		const binding = bindTrailSession(company, company, { actor: "controller", attended: false });
+		const binding = bindTrailSession(company, company, { actor: "company-agent", attended: false });
 		const dangerousArgs = { path: "extensions/danger.ts", contentHash: "d".repeat(64) };
 		const dangerousHash = requestHash("behavior_signature", dangerousArgs);
 		const gateId = `gate-${dangerousHash.slice(0, 8)}`;
@@ -735,7 +752,7 @@ describe("kernel-bound agent runtime", () => {
 
 	it("reconciles a gate file created before its completed trail event", () => {
 		const company = join(root, "company");
-		const binding = bindTrailSession(company, company, { actor: "controller", attended: false });
+		const binding = bindTrailSession(company, company, { actor: "company-agent", attended: false });
 		const args = { path: "extensions/recover.ts", contentHash: "f".repeat(64) };
 		const hash = requestHash("behavior_signature", args);
 		const gateId = `gate-${hash.slice(0, 8)}`;
@@ -759,7 +776,7 @@ describe("kernel-bound agent runtime", () => {
 		);
 		const interrupted = readFileSync(binding.path, "utf-8").split(/\r?\n/).filter(Boolean).slice(0, 2);
 		writeFileSync(binding.path, `${interrupted.join("\n")}\n`, "utf-8");
-		const recoveryBinding = bindTrailSession(company, company, { actor: "controller", attended: false });
+		const recoveryBinding = bindTrailSession(company, company, { actor: "company-agent", attended: false });
 		const pending: {
 			file: string;
 			hash: string;
@@ -782,7 +799,7 @@ describe("kernel-bound agent runtime", () => {
 		expect(completed).toBe(1);
 		expect(readFileSync(recoveryBinding.path, "utf-8")).toContain('"transition":"created","phase":"completed"');
 
-		const secondRecovery = bindTrailSession(company, company, { actor: "controller", attended: false });
+		const secondRecovery = bindTrailSession(company, company, { actor: "company-agent", attended: false });
 		reconcileKernelGateCreations(
 			secondRecovery,
 			company,
@@ -801,9 +818,10 @@ describe("kernel-bound agent runtime", () => {
 
 	it("reconciles a gate journal persisted before its started trail event", () => {
 		const company = join(root, "company");
+		writeCompanyManifest(company);
 		const userData = join(root, "user-data");
-		const interrupted = bindTrailSession(company, company, { actor: "controller", attended: false });
-		const recovery = bindTrailSession(company, company, { actor: "controller", attended: false });
+		const interrupted = bindTrailSession(company, company, { actor: "company-agent", attended: false });
+		const recovery = bindTrailSession(company, company, { actor: "company-agent", attended: false });
 		const file = "gate-aaaaaaaa.md";
 		const hash = "a".repeat(64);
 		beginCompanyGateCreation(userData, company, file, hash, interrupted.file);
@@ -821,12 +839,13 @@ describe("kernel-bound agent runtime", () => {
 		expect(listPendingCompanyGateCreations(userData, company)).toEqual([]);
 	});
 
-	it("generates controller and worker sandbox profiles with nested read-only boundaries", () => {
+	it("generates primary-agent and product-worker sandbox profiles with nested read-only boundaries", () => {
 		const previousProgramData = process.env.ProgramData;
 		if (process.platform === "win32" && !process.env.ProgramData && !process.env.PROGRAMDATA) {
 			process.env.ProgramData = join(root, "program-data");
 		}
 		const company = join(root, "company");
+		writeCompanyManifest(company);
 		const configDir = join(root, "config");
 		const runtimeDir = join(root, "runtime");
 		const repository = "departments/widget-development/repository";
@@ -837,8 +856,8 @@ describe("kernel-bound agent runtime", () => {
 			configDir,
 			runtimeDir,
 			company,
-			{ actor: "controller", attended: true },
-			protectedControllerPaths(company, [{ repository, worktrees }]),
+			{ actor: "company-agent", attended: true },
+			protectedCompanyAgentPaths(company, [{ repository, worktrees }]),
 			[root],
 		);
 		let config = readFileSync(join(configDir, "config.toml"), "utf-8");
@@ -863,14 +882,14 @@ describe("kernel-bound agent runtime", () => {
 				department: "departments/widget-development",
 				worktree,
 			},
-			protectedControllerPaths(company, [{ repository, worktrees }]),
+			protectedCompanyAgentPaths(company, [{ repository, worktrees }]),
 			[root],
 		);
 		config = readFileSync(join(configDir, "config.toml"), "utf-8");
 		expect(config).toContain(`${JSON.stringify(company)} = "read"`);
 		expect(config).toContain(`${JSON.stringify(join(company, worktree))} = "write"`);
 		expect(config).toContain(`${JSON.stringify(join(company, worktree, ".git"))} = "read"`);
-		// Product-workers do not get the controller's inbox lane.
+		// Product workers do not get the primary agent's inbox lane.
 		expect(config).not.toContain(`${JSON.stringify(join(company, "inbox", "messages"))} = "write"`);
 		expect(sandboxCommandArgs("codex.js", runtimeDir, "node", ["rpc.js", "--mode", "rpc"])).toEqual(
 			expect.arrayContaining(["-C", runtimeDir, "--", "node", "rpc.js", "--mode", "rpc"]),
@@ -960,8 +979,8 @@ describe("kernel-bound agent runtime", () => {
 		writeFileSync(join(company, "founder.md"), "founder staged\n", "utf-8");
 		expect(spawnSync("git", ["add", "founder.md"], { cwd: company, stdio: "ignore" }).status).toBe(0);
 		const baseline = captureCompanyGitBaseline(company);
-		writeFileSync(join(company, "shared.md"), "founder baseline\ncontroller continuation\n", "utf-8");
-		writeFileSync(join(company, "agent.md"), "controller work\n", "utf-8");
+		writeFileSync(join(company, "shared.md"), "founder baseline\nagent continuation\n", "utf-8");
+		writeFileSync(join(company, "agent.md"), "agent work\n", "utf-8");
 		writeFileSync(join(company, "trail", "session.jsonl"), "trail\n", "utf-8");
 		expect(checkpointCompanyGit(company, baseline, "session.jsonl").success).toBe(true);
 		const log = spawnSync("git", ["log", "-1", "--format=%B"], { cwd: company, encoding: "utf-8" }).stdout;
@@ -985,7 +1004,7 @@ describe("kernel-bound agent runtime", () => {
 		).toContain("founder.md");
 	}, 30_000);
 
-	it("snapshots every founder Git version before controller access and makes later deletion recoverable", () => {
+	it("snapshots every founder Git version before agent access and makes later deletion recoverable", () => {
 		const company = join(root, "company");
 		writeFileSync(join(company, "company.md"), "seed\n", "utf-8");
 		writeFileSync(join(company, "founder.md"), "seed\n", "utf-8");
@@ -1210,7 +1229,7 @@ describe("kernel-bound agent runtime", () => {
 			spawnSync("git", ["ls-files", "userland/index.html"], { cwd: company, encoding: "utf-8" }).stdout.trim(),
 		).toBe("");
 		expect(spawnSync("git", ["log", "-1", "--format=%B"], { cwd: company, encoding: "utf-8" }).stdout).toContain(
-			"Qorpera-Trigger: desktop kernel open",
+			"Qorpera-Trigger: desktop host open",
 		);
 	});
 });

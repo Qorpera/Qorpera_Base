@@ -5,6 +5,11 @@ Every path below was checked in code, not carried from the fork audit. This is
 the map later slices build against: slice 2 (authority gates), slice 3 (trail
 recorder + company folder), slice 4 (codex app-server engine adapter).
 
+> Historical seam audit. The August 2026 agents-only architecture supersedes
+> references below to a universal company controller, root kernel prompt,
+> company-owned `app/`, projections, surfaces, and substrates. Current company
+> storage is documented in `packages/coding-agent/docs/company.md`.
+
 ## a. StreamFn — the per-turn LLM seam (direct mode)
 
 `packages/agent/src/types.ts:28` — `StreamFn = (model, context, options?) =>
@@ -113,7 +118,7 @@ author-then-hot-reload-in-one-session pattern (`docs/extensions.md`, reload via
 `ctx.reload()`) is the concrete mechanism for "the agent builds its own
 capability" (spec §2.1 `app/tools/`) — subject to the gate consequence in c.3.
 
-## f. System-prompt composition — where the kernel file enters (direct mode)
+## f. System-prompt composition — per-agent role and lifecycle context
 
 `packages/coding-agent/src/core/system-prompt.ts` — `BuildSystemPromptOptions`:
 `customPrompt` (full replacement), `appendSystemPrompt`, `promptGuidelines`,
@@ -122,10 +127,10 @@ capability" (spec §2.1 `app/tools/`) — subject to the gate consequence in c.3
 callback (`harness/types.ts`). Context-file discovery feeds AGENTS.md-style
 files into `contextFiles`.
 
-**Qorpera use:** per spec §5.1 the kernel lives as the locked AGENTS.md/
-CLAUDE.md at the company root and arrives through the context-file channel on
-ANY harness; in direct mode our short base prompt replaces the default via
-`customPrompt`. The pi-docs pointer block was already removed in slice 1B.
+**Current Qorpera use:** each agent receives its own role, artifact context,
+and silent setup/active lifecycle prompt through `appendSystemPrompt`. The
+company root no longer materializes a universal AGENTS.md/CLAUDE.md persona.
+Security and persistence remain host-enforced rather than prompt-enforced.
 
 ---
 
@@ -143,13 +148,11 @@ requests → `evaluateToolCall`), both of which already exist. If/when the
 shell needs a uniform session interface across engines, wrap this class in
 that shape then. See `packages/coding-agent/docs/engine.md`.
 
-**Slice 3 update (2026-08-04):** seam (d) is now occupied without new code at
-the storage layer: sessions ARE the trail. `core/company.ts` scaffolds the
-spine (`qorpera company init`) and points project `sessionDir` at
-`<root>/trail/`, so every session's tree-shaped JSONL lands inside the
-company folder — no mirroring layer, no normalization gap. The kernel prompt
-is single-sourced in `KERNEL_PROMPT` and materialized as AGENTS.md +
-CLAUDE.md (seam f, spec §5.1). See `packages/coding-agent/docs/company.md`.
+**Agents-only update (2026-08-16):** sessions remain the append-only trail,
+but the company scaffold now contains only company identity, staff, agent
+workspaces and artifacts, connector recipes, shared files, inbox messages,
+settings, and trail. Agent profiles replace the removed universal root prompt.
+See `packages/coding-agent/docs/company.md`.
 
 **Slice 2 update (2026-08-04):** the authority gates now occupy seam (c) —
 `src/core/authority.ts`, mounted core-owned at the head of

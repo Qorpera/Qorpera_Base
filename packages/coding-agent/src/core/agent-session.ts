@@ -66,6 +66,7 @@ import {
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.ts";
+import { setCompanyOperationBrokerIntent } from "./company-operation-broker-client.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
@@ -361,7 +362,7 @@ export class AgentSession {
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
-	/** Verified kernel intent associated with the input currently causing effects. */
+	/** Verified host intent associated with the input currently causing effects. */
 	private _activeKernelIntent?: KernelIntentCapability;
 	/** Per-command intent copied onto any user message that async command creates. */
 	private readonly _incomingKernelIntent = new AsyncLocalStorage<KernelIntentCapability | undefined>();
@@ -402,7 +403,7 @@ export class AgentSession {
 				!process.env.QORPERA_KERNEL_PUBLIC_KEY ||
 				!isModelBrokerInstalled())
 		) {
-			throw new Error("Company sessions require a live Qorpera Base desktop kernel binding");
+			throw new Error("Company agent runs require a live Qorpera Base desktop host binding");
 		}
 		this._modelRuntime = config.modelRuntime;
 		if (isModelBrokerInstalled()) {
@@ -502,10 +503,10 @@ export class AgentSession {
 			if (this._authority) {
 				const sessionAuthority = this.sessionManager.getHeader()?.qorpera;
 				// Authority context: attended identifies founder intent for outward
-				// effects; actor + productWorktree carry the kernel-assigned product
+				// effects; actor + productWorktree carry the host-assigned product
 				// capability. Signature-rule context (EVOLUTION.md §3/§9.1): attended =
 				// approval-capable UI is in front of a human (tui/rpc) and the
-				// session is not kernel-spawned autonomous work (the shell
+				// session is not host-spawned autonomous work (the shell
 				// tags those with QORPERA_AUTONOMOUS — they run in rpc mode
 				// with nobody present, so they must never count as founder
 				// sessions). behaviorPath identifies extension-registered
@@ -515,7 +516,7 @@ export class AgentSession {
 					attended: sessionAuthority
 						? this._activeKernelIntent?.attended === true
 						: (this._extensionMode === "tui" || this._extensionMode === "rpc") && !process.env.QORPERA_AUTONOMOUS,
-					actor: sessionAuthority?.actor ?? "controller",
+					actor: sessionAuthority?.actor ?? "company-agent",
 					productWorktree: sessionAuthority?.worktree,
 					behaviorPath: this._toolDefinitions.get(toolCall.name)?.sourceInfo.path,
 				});
@@ -668,6 +669,7 @@ export class AgentSession {
 	private async _emitAgentSettled(): Promise<void> {
 		this._isAgentRunActive = false;
 		this._activeKernelIntent = undefined;
+		setCompanyOperationBrokerIntent(undefined);
 		setHttpBrokerIntent(undefined);
 		try {
 			await this._extensionRunner.emit({ type: "agent_settled" });
@@ -682,12 +684,13 @@ export class AgentSession {
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
-		// Associate the causal kernel intent before extensions, tools, or the model can observe the message.
+		// Associate the causal host intent before extensions, tools, or the model can observe the message.
 		// Ordinary custom messages must not clear an intent established by an adjacent user message.
 		if (event.type === "message_start") {
 			const messageKernelIntent = this._messageKernelIntents.get(event.message);
 			if (event.message.role === "user" || messageKernelIntent) {
 				this._activeKernelIntent = messageKernelIntent;
+				setCompanyOperationBrokerIntent(this._activeKernelIntent);
 				// The HTTP lane rides the same verified causal intent as the model
 				// lane: outbound requests are authorized per turn, not ambiently.
 				setHttpBrokerIntent(this._activeKernelIntent);
@@ -1580,7 +1583,7 @@ export class AgentSession {
 		}
 	}
 
-	/** Trigger an employee's first turn from hidden, durable kernel-provided context. */
+	/** Trigger an employee's first turn from hidden, durable host-provided context. */
 	async sendStaffIntro(content: string): Promise<void> {
 		const normalizedContent = content.trim();
 		if (!normalizedContent) {

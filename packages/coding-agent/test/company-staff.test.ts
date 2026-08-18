@@ -1,13 +1,17 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	activateStaffAgent,
 	archiveStaffAgent,
 	createStaffAgent,
 	createStaffAgents,
+	deleteStaffAgent,
 	readStaffAgents,
 	restoreStaffAgent,
+	staffAgentDirectoryPath,
+	staffAgentInstructionsPath,
 	staffRegistryPath,
 	updateStaffAgent,
 } from "../src/core/company-staff.ts";
@@ -37,10 +41,16 @@ describe("company staff registry", () => {
 		expect(created).toMatchObject({
 			displayName: "Night Shift",
 			employmentStatus: "active",
+			lifecycleState: "setup",
 			appearance: { color: "#ff6b00", shape: "gem", creature: "palette" },
 		});
 		expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
 		expect(staffRegistryPath(root)).toBe(join(root, ".qorpera", "staff.json"));
+		expect(staffAgentDirectoryPath(root, created.id)).toBe(join(root, "agents", created.id));
+		expect(readFileSync(staffAgentInstructionsPath(root, created.id), "utf-8")).toBe(
+			"Prepare the founder's morning digest.",
+		);
+		expect(existsSync(join(root, "agents", created.id, "artifacts"))).toBe(true);
 		expect(readStaffAgents(root)).toEqual([created]);
 		expect(readdirSync(join(root, ".qorpera"))).toEqual(["staff.json"]);
 	});
@@ -73,6 +83,9 @@ describe("company staff registry", () => {
 		expect(updated).not.toHaveProperty("templateId");
 		expect(updated).not.toHaveProperty("departmentId");
 		expect(readStaffAgents(root)).toEqual([updated]);
+		expect(readFileSync(staffAgentInstructionsPath(root, created.id), "utf-8")).toBe(
+			"Sort inbound mail and draft replies.",
+		);
 	});
 
 	it("creates an initial team atomically", () => {
@@ -94,6 +107,7 @@ describe("company staff registry", () => {
 		expect(created).toHaveLength(2);
 		expect(created[0]?.createdAt).toBe(created[1]?.createdAt);
 		expect(readStaffAgents(root)).toEqual(created);
+		expect(created.every((agent) => existsSync(staffAgentInstructionsPath(root, agent.id)))).toBe(true);
 
 		expect(() =>
 			createStaffAgents(root, [
@@ -126,6 +140,41 @@ describe("company staff registry", () => {
 		expect(readStaffAgents(root)).toHaveLength(1);
 		expect(restoreStaffAgent(root, created.id).employmentStatus).toBe("active");
 		expect(readStaffAgents(root)).toMatchObject([{ id: created.id, employmentStatus: "active" }]);
+	});
+
+	it("keeps conception separate from employment and activates it durably", () => {
+		const created = createStaffAgent(root, {
+			displayName: "Financial Officer",
+			role: "Financial control",
+			charter: "Own financial visibility.",
+			appearance: { color: "green", shape: "gem" },
+		});
+
+		expect(created.lifecycleState).toBe("setup");
+		const activated = activateStaffAgent(root, created.id);
+		expect(activated).toMatchObject({ lifecycleState: "active", employmentStatus: "active" });
+		expect(archiveStaffAgent(root, created.id)).toMatchObject({
+			lifecycleState: "active",
+			employmentStatus: "archived",
+		});
+		expect(restoreStaffAgent(root, created.id)).toMatchObject({
+			lifecycleState: "active",
+			employmentStatus: "active",
+		});
+	});
+
+	it("permanently deletes a staff definition when explicitly requested", () => {
+		const created = createStaffAgent(root, {
+			displayName: "Temporary analyst",
+			role: "Analyst",
+			charter: "Complete a bounded analysis.",
+			appearance: { color: "blue", shape: "round" },
+		});
+
+		expect(deleteStaffAgent(root, created.id)).toEqual(created);
+		expect(readStaffAgents(root)).toEqual([]);
+		expect(existsSync(staffAgentDirectoryPath(root, created.id))).toBe(true);
+		expect(() => deleteStaffAgent(root, created.id)).toThrow("Unknown staff agent");
 	});
 
 	it("rejects malformed registries instead of silently dropping records", () => {

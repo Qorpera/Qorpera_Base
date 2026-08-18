@@ -27,13 +27,10 @@ The integration therefore has four Qorpera-owned parts:
   used by T3 Code. The document is cached for 24 hours in
   `~/.qorpera/agent/usage-model-rates.json`; no trail or company data is sent
   with that request.
-- `GET /api/usage` exposes that aggregate to the company's static userland as a
+- `GET /api/usage` exposes that aggregate to the fixed desktop shell as a
   read-only endpoint.
-- The chrome's Settings view hosts the DOM view as its first page. The
-  `qorpera.usage` builtin remains available to company-authored
-  `app/projection.json` pages, but the platform no longer reserves a `q:usage`
-  navigation node; it is not a flat manifest entry or a company-authored
-  surface.
+- The fixed shell's Settings view hosts the DOM view. Company files cannot
+  publish a second usage page or replace its navigation.
 
 The DOM implementation keeps the page layout, time-window selector, headline,
 provider shares, daily chart, metric strip, loading state, and model/day

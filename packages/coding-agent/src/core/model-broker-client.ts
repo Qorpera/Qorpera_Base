@@ -94,7 +94,7 @@ export function installModelBrokerFetch(): void {
 	const entries = Object.entries(parsed);
 	if (!entries.every(([provider, handle]) => provider && typeof handle === "string" && handle)) return;
 	handles = new Map(entries as Array<[string, string]>);
-	globalThis.fetch = () => Promise.reject(new Error("all child HTTP requests are disabled by the kernel"));
+	globalThis.fetch = () => Promise.reject(new Error("all child HTTP requests are disabled by the desktop host"));
 	installed = true;
 }
 
@@ -119,7 +119,7 @@ export function endModelBrokerIntent(intent: KernelIntentCapability, status: Mod
 /** Scope a verified founder/kernel intent to the core agent's model stream call. */
 export function withModelBrokerTurn<T>(intent: KernelIntentCapability | undefined, action: () => T): T {
 	if (!installed) return action();
-	if (!intent) throw new Error("kernel model request has no verified causal intent");
+	if (!intent) throw new Error("host model request has no verified causal intent");
 	return turnContext.run(intent, action);
 }
 
@@ -136,7 +136,7 @@ export function brokeredStreamSimple(
 	if (!installed) return undefined;
 	const intent = turnContext.getStore();
 	const handle = handles.get(model.provider);
-	if (!intent || !handle) return failedStream(model, "kernel model request is not authorized for this turn/provider");
+	if (!intent || !handle) return failedStream(model, "host model request is not authorized for this turn/provider");
 	const requestId = randomUUID();
 	const stream = createAssistantMessageEventStream();
 	const frame: BrokerRequestFrame = {
@@ -152,12 +152,12 @@ export function brokeredStreamSimple(
 	try {
 		serialized = JSON.stringify(frame);
 	} catch {
-		return failedStream(model, "kernel model request is not serializable");
+		return failedStream(model, "host model request is not serializable");
 	}
 	if (Buffer.byteLength(serialized, "utf-8") > MAX_MODEL_REQUEST_BYTES) {
-		return failedStream(model, "kernel model request exceeds 64 MiB");
+		return failedStream(model, "host model request exceeds 64 MiB");
 	}
-	if (!writeFrame) return failedStream(model, "kernel model pipe is unavailable");
+	if (!writeFrame) return failedStream(model, "host model pipe is unavailable");
 	pending.set(requestId, stream);
 	writeFrame(frame);
 	if (options?.signal) {

@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { companyHostStorageFile } from "./company-host-storage.ts";
 
 export interface ProductStorageExpectation {
 	path: string;
@@ -29,7 +30,7 @@ interface HydratedProductStorage extends ProductStorageExpectation {
 	observedHead: string;
 }
 
-interface CompanyKernelState {
+interface CompanyHostState {
 	version: 3;
 	root: string;
 	rootIdentity: string;
@@ -49,27 +50,42 @@ function canonicalRoot(root: string): string {
 }
 
 function rootId(root: string): string {
-	return createHash("sha256").update(normalizedPath(root)).digest("hex");
+	const manifestPath = join(root, ".qorpera", "company.json");
+	const entry = lstatSync(manifestPath);
+	if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) {
+		throw new Error("Company identity must be one physical file");
+	}
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as { schema?: unknown; id?: unknown };
+	if (
+		manifest.schema !== "qorpera.company/v1" ||
+		typeof manifest.id !== "string" ||
+		!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(manifest.id)
+	) {
+		throw new Error("Company identity is invalid");
+	}
+	return createHash("sha256")
+		.update(`${manifest.id}\0${normalizedPath(root)}`)
+		.digest("hex");
 }
 
-/** Stable machine-local company identity: sha256 of the canonical root path.
- * Ports, windows, and sessions all churn; this is the one company key that
- * does not — renderer storage and its partition are keyed by it. */
+/** Stable machine-local company identity: the hidden company ID plus its
+ * canonical physical location. Reusing a path for a new company cannot
+ * inherit the previous company's credentials, computers, or runtime state. */
 export function companyRootId(root: string): string {
 	return rootId(canonicalRoot(root));
 }
 
 function rootIdentity(root: string): string {
 	const entry = lstatSync(root, { bigint: true });
-	if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("Company kernel state requires a physical root");
+	if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("Company host state requires a physical root");
 	return `${entry.dev.toString(16)}:${entry.ino.toString(16)}:${entry.birthtimeNs.toString(16)}`;
 }
 
-export function companyKernelStatePath(userData: string, root: string): string {
-	return join(userData, "company-kernel-state", rootId(canonicalRoot(root)), "state.json");
+export function companyHostStatePath(userData: string, root: string): string {
+	return companyHostStorageFile(userData, rootId(canonicalRoot(root)), "state.json");
 }
 
-function emptyState(root: string): CompanyKernelState {
+function emptyState(root: string): CompanyHostState {
 	return {
 		version: 3,
 		root,
@@ -108,15 +124,15 @@ function validHydratedProductStorage(value: unknown): value is HydratedProductSt
 	);
 }
 
-function readState(userData: string, root: string): CompanyKernelState | undefined {
+function readState(userData: string, root: string): CompanyHostState | undefined {
 	const canonical = canonicalRoot(root);
-	const path = companyKernelStatePath(userData, canonical);
+	const path = companyHostStatePath(userData, canonical);
 	if (!existsSync(path)) return undefined;
 	const entry = lstatSync(path);
 	if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) {
-		throw new Error("Company kernel state must be one physical file");
+		throw new Error("Company host state must be one physical file");
 	}
-	const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<CompanyKernelState>;
+	const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<CompanyHostState>;
 	if (
 		parsed.version !== 3 ||
 		typeof parsed.root !== "string" ||
@@ -133,7 +149,7 @@ function readState(userData: string, root: string): CompanyKernelState | undefin
 		!Array.isArray(parsed.unhydratedProductStorage) ||
 		!parsed.unhydratedProductStorage.every(validStorageExpectation)
 	) {
-		throw new Error("Company kernel state is invalid");
+		throw new Error("Company host state is invalid");
 	}
 	for (const [hash, record] of Object.entries(parsed.trustedGates)) {
 		if (
@@ -144,7 +160,7 @@ function readState(userData: string, root: string): CompanyKernelState | undefin
 			typeof record.file !== "string" ||
 			typeof record.establishedAt !== "string"
 		) {
-			throw new Error("Company kernel trust state is invalid");
+			throw new Error("Company host trust state is invalid");
 		}
 	}
 	for (const [file, record] of Object.entries(parsed.pendingGateCreations)) {
@@ -159,28 +175,28 @@ function readState(userData: string, root: string): CompanyKernelState | undefin
 			typeof record.startedAt !== "string" ||
 			!(["planned", "started", "finalizing-created", "finalizing-aborted"] as const).includes(record.phase)
 		) {
-			throw new Error("Company kernel gate-creation state is invalid");
+			throw new Error("Company host gate-creation state is invalid");
 		}
 	}
-	return parsed as CompanyKernelState;
+	return parsed as CompanyHostState;
 }
 
-function writeState(userData: string, state: CompanyKernelState): void {
-	const path = companyKernelStatePath(userData, state.root);
+function writeState(userData: string, state: CompanyHostState): void {
+	const path = companyHostStatePath(userData, state.root);
 	mkdirSync(dirname(path), { recursive: true });
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	writeFileSync(temporary, `${JSON.stringify(state, null, "\t")}\n`, { encoding: "utf-8", flag: "wx" });
 	renameSync(temporary, path);
 }
 
-function updateState(userData: string, root: string, mutate: (state: CompanyKernelState) => void): void {
+function updateState(userData: string, root: string, mutate: (state: CompanyHostState) => void): void {
 	const canonical = canonicalRoot(root);
 	const state = readState(userData, canonical) ?? emptyState(canonical);
 	mutate(state);
 	writeState(userData, state);
 }
 
-export function hasCompanyKernelState(userData: string, root: string): boolean {
+export function hasCompanyHostState(userData: string, root: string): boolean {
 	return readState(userData, root) !== undefined;
 }
 

@@ -1,8 +1,8 @@
 /**
  * File-mode path validation (Build 3): physical containment for the paths
- * the kernel opens outside the sandbox — symlinks must not smuggle
+ * the desktop host opens outside the sandbox — symlinks must not smuggle
  * `sendFile` reads or `saveTo` writes past the company folder or into
- * kernel-protected territory.
+ * host-protected territory.
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,8 +63,8 @@ describe("createCompanyFileResolver", () => {
 	it("rejects writes routed into protected territory through a symlink", () => {
 		const { root, resolve } = harness();
 		symlinkSync(join(root, "trail"), join(root, "innocent"), directoryLinkType);
-		expect(() => resolve(join("innocent", "session.jsonl"), "write")).toThrow(/kernel-protected territory/);
-		expect(() => resolve(join("trail", "session.jsonl"), "write")).toThrow(/kernel-protected territory/);
+		expect(() => resolve(join("innocent", "session.jsonl"), "write")).toThrow(/host-protected territory/);
+		expect(() => resolve(join("trail", "session.jsonl"), "write")).toThrow(/host-protected territory/);
 	});
 
 	it.skipIf(process.platform === "win32")("rejects a file symlink whose target is outside", () => {
@@ -88,7 +88,7 @@ describe("createCompanyFileResolver", () => {
 		symlinkSync(root, alias, directoryLinkType);
 		const resolve = createCompanyFileResolver(alias, [join(alias, "trail")]);
 		expect(resolve("file.txt", "write")).toBe(join(realpathSync(root), "file.txt"));
-		expect(() => resolve(join("trail", "x.jsonl"), "write")).toThrow(/kernel-protected territory/);
+		expect(() => resolve(join("trail", "x.jsonl"), "write")).toThrow(/host-protected territory/);
 		expect(() => resolve(`..${sep}escape.txt`, "write")).toThrow(/must stay inside the company folder/);
 	});
 });

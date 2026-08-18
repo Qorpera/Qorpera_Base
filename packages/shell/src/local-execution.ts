@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { companyHostStorageFile } from "./company-host-storage.ts";
 
 export type LocalExecutionPermission = "always" | "never";
 
@@ -17,7 +18,7 @@ export function localExecutionToolArgs(
 export function localExecutionPreferencePath(userData: string, root: string): string {
 	const normalized = process.platform === "win32" ? resolve(root).toLowerCase() : resolve(root);
 	const id = createHash("sha256").update(normalized).digest("hex");
-	return join(userData, "company-kernel-state", id, LOCAL_EXECUTION_FILE);
+	return companyHostStorageFile(userData, id, LOCAL_EXECUTION_FILE);
 }
 
 export function readLocalExecutionPermission(userData: string, root: string): LocalExecutionPermission {

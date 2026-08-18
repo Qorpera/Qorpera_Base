@@ -1,6 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { companyRootId } from "./company-host-state.ts";
+import { companyHostStorageFile } from "./company-host-storage.ts";
 
 export type StaffIntroStatus = "pending" | "started" | "completed" | "failed";
 
@@ -113,9 +115,7 @@ function introValue(value: unknown, key: string): StaffIntroState | undefined {
 }
 
 export function staffRuntimeStatePath(userData: string, root: string): string {
-	const normalized = process.platform === "win32" ? resolve(root).toLowerCase() : resolve(root);
-	const id = createHash("sha256").update(normalized).digest("hex");
-	return join(userData, "company-kernel-state", id, STAFF_RUNTIME_STATE_FILE);
+	return companyHostStorageFile(userData, companyRootId(resolve(root)), STAFF_RUNTIME_STATE_FILE);
 }
 
 export function readStaffRuntimeState(path: string): StaffRuntimeState {

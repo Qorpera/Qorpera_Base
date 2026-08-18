@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,24 +7,38 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	advanceCompanyGateCreation,
 	beginCompanyGateCreation,
-	companyKernelStatePath,
+	companyHostStatePath,
 	companyRootId,
 	completeCompanyGateCreation,
 	hasCompanyGateTrust,
-	hasCompanyKernelState,
+	hasCompanyHostState,
 	listPendingCompanyGateCreations,
 	type ProductStorageExpectation,
 	reconcileCompanyProductStorage,
 	rememberCompanyGateTrust,
 	revokeCompanyGateTrust,
-} from "../src/company-kernel-state.ts";
+} from "../src/company-host-state.ts";
 
-describe("desktop company kernel state", () => {
+function createCompany(path: string): void {
+	mkdirSync(join(path, ".qorpera"), { recursive: true });
+	writeFileSync(
+		join(path, ".qorpera", "company.json"),
+		`${JSON.stringify({
+			schema: "qorpera.company/v1",
+			id: randomUUID(),
+			name: "Test company",
+			createdAt: "2026-08-16T00:00:00.000Z",
+		})}\n`,
+		"utf-8",
+	);
+}
+
+describe("desktop company host state", () => {
 	let root: string;
 	let userData: string;
 
 	beforeEach(() => {
-		root = mkdtempSync(join(tmpdir(), "qorpera-kernel-state-"));
+		root = mkdtempSync(join(tmpdir(), "qorpera-host-state-"));
 		userData = join(root, "user-data");
 		mkdirSync(userData);
 	});
@@ -35,44 +50,44 @@ describe("desktop company kernel state", () => {
 	it("derives one stable company identity per canonical root", () => {
 		const company = join(root, "company");
 		const sibling = join(root, "sibling");
-		mkdirSync(company);
-		mkdirSync(sibling);
+		createCompany(company);
+		createCompany(sibling);
 		const id = companyRootId(company);
 		expect(id).toMatch(/^[0-9a-f]{64}$/);
 		// Deterministic, canonicalizing (trailing separators, Windows casing),
-		// and shared with the kernel-state location for the same root.
+		// and shared with the host-state location for the same root.
 		expect(companyRootId(join(company, "a", ".."))).toBe(id);
 		if (process.platform === "win32") expect(companyRootId(company.toUpperCase())).toBe(id);
 		expect(companyRootId(sibling)).not.toBe(id);
-		expect(companyKernelStatePath(userData, company)).toContain(id);
+		expect(companyHostStatePath(userData, company)).toContain(id);
 		// A root that does not exist has no identity — callers canonicalize
 		// (and thereby validate) the root before ever asking for one.
 		expect(() => companyRootId(join(root, "missing"))).toThrow();
 	});
 
-	it("persists and revokes path-scoped gate trust outside company Git", () => {
+	it("does not carry machine state into a new company created at the same path", () => {
 		const company = join(root, "company");
-		mkdirSync(company);
+		createCompany(company);
 		const file = "gate-aaaaaaaa.md";
 		const hash = "a".repeat(64);
 
 		rememberCompanyGateTrust(userData, company, file, hash);
 		expect(hasCompanyGateTrust(userData, company, file, hash)).toBe(true);
-		expect(companyKernelStatePath(userData, company).startsWith(userData)).toBe(true);
+		expect(companyHostStatePath(userData, company).startsWith(userData)).toBe(true);
 		const copiedCompany = join(root, "copied-company");
-		mkdirSync(copiedCompany);
+		createCompany(copiedCompany);
 		expect(hasCompanyGateTrust(userData, copiedCompany, file, hash)).toBe(false);
 		revokeCompanyGateTrust(userData, company, file, hash);
 		expect(hasCompanyGateTrust(userData, company, file, hash)).toBe(false);
 		rmSync(company, { recursive: true });
-		mkdirSync(company);
-		expect(() => hasCompanyGateTrust(userData, company, file, hash)).toThrow("Company kernel state is invalid");
+		createCompany(company);
+		expect(hasCompanyGateTrust(userData, company, file, hash)).toBe(false);
 	});
 
 	it("distinguishes initial clone hydration from disappearance of observed product Git", () => {
 		const company = join(root, "company");
 		const repository = join(company, "departments", "widget-development", "repository");
-		mkdirSync(company);
+		createCompany(company);
 		const expectations: ProductStorageExpectation[] = [
 			{
 				path: "departments/widget-development/repository",
@@ -82,7 +97,7 @@ describe("desktop company kernel state", () => {
 		];
 
 		reconcileCompanyProductStorage(userData, company, expectations, true);
-		expect(hasCompanyKernelState(userData, company)).toBe(true);
+		expect(hasCompanyHostState(userData, company)).toBe(true);
 		reconcileCompanyProductStorage(userData, company, expectations, false);
 
 		mkdirSync(repository, { recursive: true });
@@ -121,7 +136,7 @@ describe("desktop company kernel state", () => {
 
 	it("persists and completes crash-recovery state for gate creation", () => {
 		const company = join(root, "company");
-		mkdirSync(company);
+		createCompany(company);
 		const file = "gate-aaaaaaaa.md";
 		const hash = "a".repeat(64);
 		beginCompanyGateCreation(userData, company, file, hash, "session.jsonl");
@@ -141,6 +156,7 @@ describe("desktop company kernel state", () => {
 		const company = join(root, "company");
 		const repository = join(company, "departments", "widget-development", "repository");
 		const replacement = join(root, "replacement");
+		createCompany(company);
 		mkdirSync(repository, { recursive: true });
 		writeFileSync(join(repository, "README.md"), "identity\n", "utf-8");
 		for (const args of [
@@ -174,7 +190,7 @@ describe("desktop company kernel state", () => {
 
 	it("fails closed for a new missing product record after local state is bound", () => {
 		const company = join(root, "company");
-		mkdirSync(company);
+		createCompany(company);
 		reconcileCompanyProductStorage(userData, company, [], true);
 
 		expect(() =>

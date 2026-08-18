@@ -34,7 +34,7 @@ describe("company CLI kernel boundary", () => {
 				id: "11111111-1111-4111-8111-111111111111",
 				timestamp: new Date().toISOString(),
 				cwd: company,
-				qorpera: { actor: "controller", attended: true },
+				qorpera: { actor: "company-agent", attended: true },
 			})}\n`,
 			"utf-8",
 		);
@@ -67,8 +67,6 @@ describe("company CLI kernel boundary", () => {
 		);
 
 		expect(result.status).toBe(1);
-		expect(result.stderr).toContain(
-			"Company sessions require a live Qorpera Base desktop kernel binding after session resolution.",
-		);
+		expect(result.stderr).toContain("Company agent runs require a live Qorpera Base desktop host binding");
 	});
 });

@@ -55,7 +55,7 @@ describe("model broker client", () => {
 		expect(serialized).not.toContain(model.baseUrl);
 		expect(serialized).not.toContain("authorization");
 		await expect(fetch("https://example.com/unbrokered")).rejects.toThrow(
-			"all child HTTP requests are disabled by the kernel",
+			"all child HTTP requests are disabled by the desktop host",
 		);
 
 		const requestId = (frames[0] as { requestId: string }).requestId;

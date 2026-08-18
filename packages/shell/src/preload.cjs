@@ -46,9 +46,9 @@ contextBridge.exposeInMainWorld("qorpera", {
 	configureIntelligence: (providerId) => ipcRenderer.invoke("intelligence:configure", providerId),
 	disconnectIntelligence: () => ipcRenderer.invoke("intelligence:sign-out"),
 	listCompanies: () => ipcRenderer.invoke("companies:list"),
-	removeProfile: (root) => ipcRenderer.invoke("profile:remove", root),
+	removeCompany: (root) => ipcRenderer.invoke("company:remove", root),
 	openCompany: (root) => ipcRenderer.invoke("company:open", root),
-	newCompany: (dir, profileIcon) => ipcRenderer.invoke("company:new", dir, profileIcon),
+	newCompany: (dir, companyIcon) => ipcRenderer.invoke("company:new", dir, companyIcon),
 	integrateCompany: (dir, from) => ipcRenderer.invoke("company:integrate", dir, from),
 	addProduct: (product, from) => ipcRenderer.invoke("company:product-add", product, from),
 	chooseProductSource: () => ipcRenderer.invoke("company:product-source-choose"),
@@ -63,6 +63,8 @@ contextBridge.exposeInMainWorld("qorpera", {
 	staffBootstrap: bootstrapStaff,
 	staffUpdate: (staffAgentId, update) => ipcRenderer.invoke("staff:update", staffAgentId, update),
 	staffArchive: (staffAgentId) => ipcRenderer.invoke("staff:archive", staffAgentId),
+	staffDelete: (staffAgentId) => ipcRenderer.invoke("staff:delete", staffAgentId),
+	staffRestore: (staffAgentId) => ipcRenderer.invoke("staff:restore", staffAgentId),
 	staffOpen: openStaff,
 	copyStaffConversationId: (staffAgentId) => ipcRenderer.invoke("staff:copy-conversation-id", staffAgentId),
 	staffIntroReady: (staffAgentId, sessionFile, retry = false) =>
@@ -77,6 +79,9 @@ contextBridge.exposeInMainWorld("qorpera", {
 		ipcRenderer.invoke("connection:disconnect", connectionId, accountId),
 	cancelConnection: (connectionId) => ipcRenderer.invoke("connection:cancel", connectionId),
 	connectionRequests: () => ipcRenderer.invoke("connection-requests:list"),
+	selectConnectionRequest: (identity, selection) =>
+		ipcRenderer.invoke("connection-request:select", identity, selection),
+	prepareConnectionRequest: (identity) => ipcRenderer.invoke("connection-request:prepare", identity),
 	beginConnectionRequest: (identity) => ipcRenderer.invoke("connection-request:begin", identity),
 	onConnectionRequestsChanged: (handler) =>
 		ipcRenderer.on("connection-requests-changed", (_event, request) => handler(request)),

@@ -21,12 +21,13 @@ import {
 } from "../src/wake-scheduler.ts";
 
 const MINUTE = 60_000;
-const schedule = (intervalMinutes: number, extra?: object) => ({
+const schedule = (intervalMinutes: number, extra?: object, startAt?: string) => ({
 	id: "job-1",
 	title: "Company orchestration",
 	prompt: "Run the company",
-	triggers: [{ id: "schedule-1", kind: "schedule" as const, intervalMinutes }],
+	triggers: [{ id: "schedule-1", kind: "schedule" as const, intervalMinutes, ...(startAt ? { startAt } : {}) }],
 	enabled: true,
+	effort: "high" as const,
 	createdAt: "2026-08-10T10:00:00Z",
 	updatedAt: "2026-08-10T10:00:00Z",
 	...extra,
@@ -49,6 +50,49 @@ describe("decideScheduledWake", () => {
 		const started = scheduledJobRunState(recordWakeStart({ version: 2, jobs: {} }, "job-1", now), "job-1");
 		// Host slept through 5 intervals: one wake, 4 coalesced.
 		expect(decideScheduledWake(schedule(30), started, now + 150 * MINUTE)).toEqual({ due: true, coalesced: 4 });
+	});
+
+	it("waits for an anchored first run and keeps later runs on that anchor", () => {
+		const start = Date.parse("2026-08-24T07:00:00.000Z");
+		const job = schedule(7 * 24 * 60, undefined, "2026-08-24T07:00:00.000Z");
+		expect(decideScheduledWake(job, { failureStreak: 0 }, start - MINUTE)).toEqual({
+			due: false,
+			coalesced: 0,
+		});
+		expect(decideScheduledWake(job, { failureStreak: 0 }, start)).toEqual({ due: true, coalesced: 0 });
+
+		const delayedFirstRun = recordWakeStart({ version: 2, jobs: {} }, "job-1", start + 30 * MINUTE);
+		const delayedState = scheduledJobRunState(delayedFirstRun, "job-1");
+		expect(decideScheduledWake(job, delayedState, start + 7 * 24 * 60 * MINUTE - MINUTE).due).toBe(false);
+		expect(decideScheduledWake(job, delayedState, start + 7 * 24 * 60 * MINUTE)).toEqual({
+			due: true,
+			coalesced: 0,
+		});
+	});
+
+	it("keeps weekly wall-clock time across daylight-saving changes", () => {
+		const job = schedule(7 * 24 * 60, {
+			createdAt: "2026-10-19T06:50:00.000Z",
+			triggers: [
+				{
+					id: "weekly-1",
+					kind: "schedule" as const,
+					intervalMinutes: 7 * 24 * 60,
+					weekdays: ["monday" as const],
+					localTime: "09:00",
+					timeZone: "Europe/Copenhagen",
+				},
+			],
+		});
+		const first = Date.parse("2026-10-19T07:00:00.000Z");
+		expect(decideScheduledWake(job, { failureStreak: 0 }, first - MINUTE).due).toBe(false);
+		expect(decideScheduledWake(job, { failureStreak: 0 }, first)).toEqual({ due: true, coalesced: 0 });
+
+		const state = scheduledJobRunState(recordWakeStart({ version: 2, jobs: {} }, "job-1", first), "job-1");
+		const afterDstBeforeNine = Date.parse("2026-10-26T07:30:00.000Z");
+		const afterDstAtNine = Date.parse("2026-10-26T08:00:00.000Z");
+		expect(decideScheduledWake(job, state, afterDstBeforeNine).due).toBe(false);
+		expect(decideScheduledWake(job, state, afterDstAtNine)).toEqual({ due: true, coalesced: 0 });
 	});
 
 	it("never fires when disabled, suspended, or unbound", () => {

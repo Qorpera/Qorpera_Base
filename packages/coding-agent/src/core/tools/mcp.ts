@@ -7,8 +7,8 @@
  *
  *   { "servers": { "<name>": { "command": "node", "args": ["path.js"], "env": {"K":"V"} } } }
  *
- * Servers are spawned as subprocesses of the controller child, so under
- * the desktop kernel they inherit the sandbox: no network, no
+ * Servers are spawned as subprocesses of the company-agent child, so under
+ * the desktop host they inherit the sandbox: no network, no
  * credentials, company-scope filesystem. That makes stdio MCP servers a
  * lane for LOCAL capabilities; servers that need the outside world go
  * through the kernel HTTP lane instead. The transport is MCP's stdio

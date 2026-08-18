@@ -1,5 +1,8 @@
 # Qorpera Base Architecture Manifesto
 
+> Historical architecture, superseded by the agents-only company model
+> documented in `packages/coding-agent/docs/company.md`.
+
 **Status:** Ratification draft (review edits applied)
 **Date:** 2026-08-10
 **Purpose:** Define the minimally viable environment around a self-evolving company-file and explain why each Base responsibility belongs there.

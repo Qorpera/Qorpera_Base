@@ -71,7 +71,7 @@ export function beginKernelBinding(sessionId: string): void {
 		})}\n`,
 	);
 	kernelBindingTimer = setTimeout(() => {
-		process.stderr.write("Qorpera Base kernel binding timed out\n");
+		process.stderr.write("Qorpera Base host binding timed out\n");
 		process.exit(1);
 	}, 10_000);
 }
@@ -218,7 +218,7 @@ export function requestKernelGateConsumption(file: string, hash: string): Promis
 	return requestKernelGate("consume_gate", file, hash);
 }
 
-/** Query or establish durable trust in the desktop kernel, never child memory. */
+/** Query or establish durable trust in the desktop host, never child memory. */
 export function requestKernelGateTrust(file: string, hash: string): Promise<boolean> {
 	return requestKernelGate("trust_gate", file, hash);
 }

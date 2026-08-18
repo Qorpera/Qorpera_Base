@@ -268,23 +268,23 @@ export function createHttpRequestBroker(options: {
 		try {
 			rawUrl = new URL(frame.url);
 		} catch {
-			deny("kernel http request denied: invalid URL");
+			deny("host HTTP request denied: invalid URL");
 			return;
 		}
 		// The destination is judged on the URL as sent: secret references may
 		// appear only in the path, query, headers, and body — never the host.
 		if (`${rawUrl.protocol}//${rawUrl.host}`.toLowerCase().includes("secret://")) {
-			deny("kernel http request denied: secret references are not allowed in the destination");
+			deny("host HTTP request denied: secret references are not allowed in the destination");
 			return;
 		}
 		if (!options.allowedDestination(rawUrl)) {
 			deny(
-				`kernel http request denied: ${rawUrl.host} is not a bound network destination for this company (the founder binds destinations with 'qorpera company destination add <host>')`,
+				`host HTTP request denied: ${rawUrl.host} is not a bound network destination for this company (the founder binds destinations with 'qorpera company destination add <host>')`,
 			);
 			return;
 		}
 		if (seenRequestIds.has(frame.requestId)) {
-			deny("kernel http request denied: replayed request id");
+			deny("host HTTP request denied: replayed request id");
 			return;
 		}
 		seenRequestIds.add(frame.requestId);
@@ -302,7 +302,7 @@ export function createHttpRequestBroker(options: {
 			!Number.isFinite(expiresAt) ||
 			expiresAt <= now
 		) {
-			deny("kernel http request denied: no verified causal intent for this turn");
+			deny("host HTTP request denied: no verified causal intent for this turn");
 			return;
 		}
 		const intentBudget = Math.min(
@@ -310,7 +310,7 @@ export function createHttpRequestBroker(options: {
 			Number.isInteger(intent.capability.budget.maxCalls) ? intent.capability.budget.maxCalls : maxRequestsPerIntent,
 		);
 		if (intent.requests >= intentBudget) {
-			deny(`kernel http request denied: intent request budget (${intentBudget}) exhausted`);
+			deny(`host HTTP request denied: intent request budget (${intentBudget}) exhausted`);
 			return;
 		}
 		intent.requests++;
@@ -328,13 +328,13 @@ export function createHttpRequestBroker(options: {
 			try {
 				resolved.set(name, await options.resolveSecret(name));
 			} catch (error) {
-				deny(`kernel http request denied: ${error instanceof Error ? error.message : String(error)}`);
+				deny(`host HTTP request denied: ${error instanceof Error ? error.message : String(error)}`);
 				return;
 			}
 		}
 		const resolvedUrl = new URL(substituteReferences(frame.url, resolved));
 		if (resolvedUrl.host !== rawUrl.host || resolvedUrl.protocol !== rawUrl.protocol) {
-			deny("kernel http request denied: substitution changed the destination");
+			deny("host HTTP request denied: substitution changed the destination");
 			return;
 		}
 		// File mode: the kernel validates paths against company territory —
@@ -345,7 +345,7 @@ export function createHttpRequestBroker(options: {
 			if (frame.saveTo !== undefined) savePath = options.companyFile.resolveForWrite(frame.saveTo);
 			if (frame.sendFile !== undefined) sendPath = options.companyFile.resolveForRead(frame.sendFile);
 		} catch (error) {
-			deny(`kernel http request denied: ${error instanceof Error ? error.message : String(error)}`);
+			deny(`host HTTP request denied: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
 
@@ -448,8 +448,8 @@ export function createHttpRequestBroker(options: {
 				type: "qorpera_http_response",
 				requestId: frame.requestId,
 				error: controller.signal.aborted
-					? "kernel http request timed out or was aborted"
-					: `kernel http request failed: ${error instanceof Error ? error.message : "network error"}`,
+					? "host HTTP request timed out or was aborted"
+					: `host HTTP request failed: ${error instanceof Error ? error.message : "network error"}`,
 			});
 		} finally {
 			clearTimeout(timer);
@@ -501,7 +501,7 @@ export function createHttpRequestBroker(options: {
 					send({
 						type: "qorpera_http_response",
 						requestId,
-						error: "kernel http request denied: invalid frame",
+						error: "host HTTP request denied: invalid frame",
 					});
 				}
 				return true;
