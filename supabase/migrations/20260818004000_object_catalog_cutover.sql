@@ -37,6 +37,46 @@ $$;
 
 revoke all on function public.qorpera_object_exists(uuid, text, bigint) from public;
 
+-- The drift function shipped in 20260818003000 with an operator-precedence
+-- defect: except and union all share precedence and associate left, so its
+-- body evaluated as ((live except catalog) union all catalog) except live,
+-- which reads zero exactly when the catalog is missing rows -- the one
+-- divergence that matters most. The 050 suite never noticed because it only
+-- asserts drift in agreeing states, where the broken shape also reads zero;
+-- the forced-divergence experiment in 060 exposed it. Both directions are
+-- now parenthesized explicitly.
+create or replace function public.qorpera_object_catalog_drift()
+returns bigint
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	with live as (
+		select identity.profile_id, identity.sha256, identity.bytes
+		from storage.objects as object
+		cross join lateral
+			public.qorpera_profile_object_identity(object.bucket_id, object.name, object.metadata) as identity
+		where identity.profile_id is not null
+			and identity.sha256 is not null
+			and identity.bytes is not null
+	)
+	select count(*)
+	from (
+		(
+			select profile_id, sha256, bytes from live
+			except
+			select profile_id, sha256, bytes from public.qorpera_profile_objects
+		)
+		union all
+		(
+			select profile_id, sha256, bytes from public.qorpera_profile_objects
+			except
+			select profile_id, sha256, bytes from live
+		)
+	) as divergence
+$$;
+
 create or replace function public.qorpera_register_artifact(
 	p_environment_id uuid,
 	p_client_artifact_id uuid,
