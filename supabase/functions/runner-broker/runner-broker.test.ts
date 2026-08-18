@@ -253,4 +253,55 @@ describe("runner broker request validation", () => {
 		assert.deepEqual(result, { status: "ambiguous", errorCode: "gateway_timeout" });
 		assert.deepEqual(finalizations, []);
 	});
+
+	it("settles a deterministic gateway rejection as failed with zero usage", async () => {
+		const finalizations: unknown[] = [];
+		const result = await executeRunnerModelGateway({
+			url: "https://models.qorpera.test/v1/run",
+			token: "gateway-secret-token-that-is-long-enough",
+			request: {
+				requestId: "34343434-3434-4434-8434-343434343434",
+				provider: "openai",
+				model: "gpt-test",
+				input: { prompt: "bounded" },
+				maxOutputTokens: 128,
+			},
+			fetchImplementation: async () => new Response("model is not allowed", { status: 422 }),
+			finalize: async (input) => {
+				finalizations.push(input);
+				return null;
+			},
+		});
+		assert.deepEqual(result, { status: "failed" });
+		assert.deepEqual(finalizations, [
+			{
+				outcome: "failed",
+				usage: { inputTokens: 0, outputTokens: 0, costMicrousd: 0 },
+				response: null,
+				errorCode: "gateway_rejected",
+			},
+		]);
+	});
+
+	it("keeps transient gateway backpressure ambiguous for replay recovery", async () => {
+		const finalizations: unknown[] = [];
+		const result = await executeRunnerModelGateway({
+			url: "https://models.qorpera.test/v1/run",
+			token: "gateway-secret-token-that-is-long-enough",
+			request: {
+				requestId: "34343434-3434-4434-8434-343434343434",
+				provider: "openai",
+				model: "gpt-test",
+				input: { prompt: "bounded" },
+				maxOutputTokens: 128,
+			},
+			fetchImplementation: async () => new Response("slow down", { status: 429 }),
+			finalize: async (input) => {
+				finalizations.push(input);
+				return null;
+			},
+		});
+		assert.deepEqual(result, { status: "ambiguous", errorCode: "gateway_rejected" });
+		assert.deepEqual(finalizations, []);
+	});
 });

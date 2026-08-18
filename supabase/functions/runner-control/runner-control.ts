@@ -52,6 +52,10 @@ export function runnerControlRpcName(action: RunnerControlRequest["action"]): st
 export function runnerControlRpcStatus(error: { code?: string }): number {
 	if (error.code === "42501") return 401;
 	if (error.code === "40001") return 409;
+	// Unique violations are replay-divergence rejections: retrying the same
+	// request can never succeed, so surface them as terminal conflicts rather
+	// than a retryable 503.
+	if (error.code === "23505") return 409;
 	if (error.code === "55000") return 423;
 	return 503;
 }

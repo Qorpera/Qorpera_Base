@@ -328,6 +328,7 @@ export async function executeRunnerModelGateway(options: {
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	let gatewayResponse: RunnerModelGatewayResponse | undefined;
 	let gatewayFailure = "gateway_unavailable";
+	let deterministicRejection = false;
 	try {
 		const response = await (options.fetchImplementation ?? fetch)(options.url, {
 			method: "POST",
@@ -342,14 +343,36 @@ export async function executeRunnerModelGateway(options: {
 			redirect: "error",
 			signal: controller.signal,
 		});
-		if (!response.ok) gatewayFailure = "gateway_rejected";
-		else gatewayResponse = await readRunnerModelGatewayResponse(response);
+		if (!response.ok) {
+			gatewayFailure = "gateway_rejected";
+			// A non-transient 4xx means the gateway refused the request before
+			// any provider charge could occur. 408/429 stay ambiguous so the
+			// payload-pinned request UUID can retry the same reservation later.
+			deterministicRejection =
+				response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429;
+		} else {
+			gatewayResponse = await readRunnerModelGatewayResponse(response);
+		}
 	} catch {
 		gatewayFailure = controller.signal.aborted ? "gateway_timeout" : "gateway_invalid";
 	} finally {
 		clearTimeout(timer);
 	}
-	if (!gatewayResponse) return { status: "ambiguous", errorCode: gatewayFailure };
+	if (!gatewayResponse) {
+		if (deterministicRejection) {
+			// Settle the reservation so the job's completion path is not blocked
+			// forever by a request the gateway will reject identically on every
+			// replay. No provider call happened, so zero usage is truthful.
+			await options.finalize({
+				outcome: "failed",
+				usage: { inputTokens: 0, outputTokens: 0, costMicrousd: 0 },
+				response: null,
+				errorCode: "gateway_rejected",
+			});
+			return { status: "failed" };
+		}
+		return { status: "ambiguous", errorCode: gatewayFailure };
+	}
 	if (gatewayResponse.usage.outputTokens > options.request.maxOutputTokens) {
 		await options.finalize({
 			outcome: "failed",

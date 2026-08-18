@@ -52,6 +52,7 @@ describe("runner control boundary", () => {
 	it("bounds claim, completion, and failure payloads", () => {
 		assert.equal(runnerControlRpcName("complete"), "qorpera_complete_runner_job_v4");
 		assert.equal(runnerControlRpcStatus({ code: "40001" }), 409);
+		assert.equal(runnerControlRpcStatus({ code: "23505" }), 409);
 		assert.equal(runnerControlRpcStatus({ code: "55000" }), 423);
 		assert.deepEqual(
 			parseRunnerControlRequest({
