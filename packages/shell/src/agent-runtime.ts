@@ -63,6 +63,8 @@ interface QorperaSessionAuthority {
 	attended: boolean;
 	/** Stable staff member identity. */
 	staffAgentId?: string;
+	/** Durable multi-staff room whose context this staff runtime carries. */
+	roomId?: string;
 	autonomous?: boolean;
 	label?: string;
 	department?: string;
@@ -108,6 +110,7 @@ export interface AgentScope {
 	actor: "company-agent" | "product-worker";
 	attended: boolean;
 	staffAgentId?: string;
+	roomId?: string;
 	autonomousLabel?: string;
 	department?: string;
 	worktree?: string;
@@ -238,10 +241,20 @@ function authorityForScope(scope: AgentScope): QorperaSessionAuthority {
 	) {
 		throw new Error("staff agent identity must be a non-empty string of at most 128 characters");
 	}
+	if (
+		scope.roomId !== undefined &&
+		(typeof scope.roomId !== "string" || !scope.roomId.trim() || scope.roomId.length > 128)
+	) {
+		throw new Error("room identity must be a non-empty string of at most 128 characters");
+	}
+	if (scope.roomId !== undefined && scope.staffAgentId === undefined) {
+		throw new Error("room sessions require a staff agent identity");
+	}
 	return {
 		actor: scope.actor,
 		attended: scope.attended,
 		staffAgentId: scope.staffAgentId,
+		roomId: scope.roomId,
 		autonomous: scope.autonomousLabel ? true : undefined,
 		label: scope.autonomousLabel,
 		department: scope.department,
@@ -253,7 +266,7 @@ function authorityForScope(scope: AgentScope): QorperaSessionAuthority {
 
 function assertMatchingAuthority(actual: QorperaSessionAuthority | undefined, expected: QorperaSessionAuthority): void {
 	if (!actual) throw new Error("legacy trail sessions have no trusted host binding and cannot be resumed");
-	for (const key of ["actor", "staffAgentId", "department", "worktree"] as const) {
+	for (const key of ["actor", "staffAgentId", "roomId", "department", "worktree"] as const) {
 		if (actual[key] !== expected[key]) {
 			throw new Error(`trail session authority does not match the requested ${key}`);
 		}

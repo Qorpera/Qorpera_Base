@@ -28,6 +28,7 @@ const schedule = (intervalMinutes: number, extra?: object, startAt?: string) => 
 	triggers: [{ id: "schedule-1", kind: "schedule" as const, intervalMinutes, ...(startAt ? { startAt } : {}) }],
 	enabled: true,
 	effort: "high" as const,
+	placement: "local" as const,
 	createdAt: "2026-08-10T10:00:00Z",
 	updatedAt: "2026-08-10T10:00:00Z",
 	...extra,

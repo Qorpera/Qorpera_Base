@@ -87,6 +87,13 @@ contextBridge.exposeInMainWorld("qorpera", {
 	copyStaffConversationId: (staffAgentId) => ipcRenderer.invoke("staff:copy-conversation-id", staffAgentId),
 	staffIntroReady: (staffAgentId, sessionFile, retry = false) =>
 		ipcRenderer.invoke("staff:intro-ready", staffAgentId, sessionFile, retry),
+	roomCreate: (input) => ipcRenderer.invoke("room:create", input),
+	roomOpen: (roomId) => ipcRenderer.invoke("room:open", roomId),
+	roomSend: (roomId, input) => ipcRenderer.invoke("room:send", roomId, input),
+	roomUpdate: (roomId, input) => ipcRenderer.invoke("room:update", roomId, input),
+	roomArchive: (roomId) => ipcRenderer.invoke("room:archive", roomId),
+	roomRestore: (roomId) => ipcRenderer.invoke("room:restore", roomId),
+	onRoomEvent: (handler) => ipcRenderer.on("room-event", (_event, value) => handler(value)),
 	showHub: () => ipcRenderer.invoke("hub:show"),
 	setSettingsOverlayActive: (active) => ipcRenderer.send("settings:overlay", active),
 	settingsInfo: () => ipcRenderer.invoke("settings:info"),

@@ -11,7 +11,16 @@ export function localExecutionToolArgs(
 	permission: LocalExecutionPermission,
 	staffToolNames?: string,
 ): readonly string[] {
-	if (permission === "never") return ["--tools", "request_connection"];
+	if (permission === "never") {
+		// Delegation is a bounded host-mediated message, not local execution, so
+		// it survives the local-execution lockdown alongside connection requests.
+		const allowedWithoutLocalExecution = new Set(["request_connection", "delegate_to_staff"]);
+		const toolNames = (staffToolNames ?? "request_connection")
+			.split(",")
+			.filter((name) => allowedWithoutLocalExecution.has(name))
+			.join(",");
+		return ["--tools", toolNames || "request_connection"];
+	}
 	return staffToolNames ? ["--tools", staffToolNames] : [];
 }
 

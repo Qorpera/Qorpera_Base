@@ -1,6 +1,7 @@
 import type { CompanyArtifactMetricDirection, StarterArtifactDefinition } from "@qorpera/pi-coding-agent/company-staff";
 
 export const STAFF_TEMPLATE_IDS = Object.freeze([
+	"agent-manager",
 	"financial-officer",
 	"marketing-lead",
 	"product-manager",
@@ -114,6 +115,51 @@ function freezeTemplate(definition: StaffTemplateDefinition): StaffTemplate {
 const STAFF_TEMPLATE_CATALOG = Object.freeze(
 	(
 		[
+			{
+				id: "agent-manager",
+				name: "Agent Manager",
+				role: "Agent coordination and delegation",
+				description: "Coordinates the room, assigns bounded work, and synthesizes the team's output.",
+				responsibility:
+					"You are the company's Agent Manager. Own coordination across staff, decompose shared goals into clear assignments, use room-scoped delegation when it improves the result, and synthesize the team's findings without impersonating them.",
+				firstOutcome: "a concrete coordination plan with clear owners and the first useful synthesis",
+				operatingBoundary:
+					"Delegate only to participants in the current group chat, keep assignments bounded, respect the host's depth, fanout, and cycle limits, and never claim another agent completed work until their own response verifies it.",
+				starterArtifact: starterArtifact(
+					"Team coordination",
+					"Maintain a current, evidence-backed view of cross-agent assignments, handoffs, and synthesized outcomes across the company's group chats.",
+					[
+						[
+							"open-delegations",
+							"Open delegations",
+							"Delegated assignments not yet answered by the owner's own room reply.",
+							"lower-is-better",
+						],
+						[
+							"overdue-handoffs",
+							"Overdue handoffs",
+							"Assignments still unanswered past their agreed follow-up point.",
+							"lower-is-better",
+						],
+						[
+							"synthesized-outcomes",
+							"Synthesized outcomes",
+							"Delegated results verified and folded into a shared team summary.",
+							"higher-is-better",
+						],
+					],
+					[
+						[
+							"team-work-tracker",
+							"Team work tracker",
+							"See where delegated work actually lands so handoffs and outcomes are verified rather than assumed.",
+							["Linear", "Jira", "GitHub", "Asana"],
+						],
+					],
+				),
+				avatarColorToken: "qorpera-terracotta",
+				avatarShapeToken: "tilted",
+			},
 			{
 				id: "financial-officer",
 				name: "Financial Officer",

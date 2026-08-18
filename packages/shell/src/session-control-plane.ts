@@ -109,6 +109,8 @@ export interface SessionRuntimeView {
 	actor: "company-agent" | "product-worker";
 	autonomous: boolean;
 	staffAgentId?: string;
+	/** Durable multi-staff room carried by this participant trail. */
+	roomId?: string;
 	label?: string;
 	department?: string;
 	worktree?: string;
@@ -155,6 +157,7 @@ export interface SessionRuntimeSource {
 interface SessionAuthority {
 	actor?: unknown;
 	staffAgentId?: unknown;
+	roomId?: unknown;
 	autonomous?: unknown;
 	label?: unknown;
 	department?: unknown;
@@ -295,6 +298,7 @@ function validCachedSession(value: unknown, trailFile: string): value is Session
 		(candidate.actor === "company-agent" || candidate.actor === "product-worker") &&
 		typeof candidate.autonomous === "boolean" &&
 		validOptionalString(candidate.staffAgentId) &&
+		validOptionalString(candidate.roomId) &&
 		validOptionalString(candidate.label) &&
 		validOptionalString(candidate.department) &&
 		validOptionalString(candidate.worktree) &&
@@ -542,12 +546,13 @@ function authorityIdentity(
 	authority: SessionAuthority,
 ): Pick<
 	SessionRuntimeView,
-	"actor" | "autonomous" | "staffAgentId" | "label" | "department" | "worktree" | "group" | "parentSession"
+	"actor" | "autonomous" | "staffAgentId" | "roomId" | "label" | "department" | "worktree" | "group" | "parentSession"
 > {
 	return {
 		actor: authority.actor === "product-worker" ? "product-worker" : "company-agent",
 		autonomous: authority.autonomous === true,
 		staffAgentId: typeof authority.staffAgentId === "string" ? authority.staffAgentId : undefined,
+		roomId: typeof authority.roomId === "string" ? authority.roomId : undefined,
 		label: typeof authority.label === "string" ? authority.label : undefined,
 		department: typeof authority.department === "string" ? authority.department : undefined,
 		worktree: typeof authority.worktree === "string" ? authority.worktree : undefined,

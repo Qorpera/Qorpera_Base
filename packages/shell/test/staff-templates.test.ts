@@ -9,6 +9,7 @@ import {
 } from "../src/staff-templates.ts";
 
 const EXPECTED_ROLES = [
+	["agent-manager", "Agent Manager"],
 	["financial-officer", "Financial Officer"],
 	["marketing-lead", "Marketing Lead"],
 	["product-manager", "Product Manager"],
@@ -21,7 +22,7 @@ const EXPECTED_ROLES = [
 	["outreaching-conversationalist", "Outreaching Conversationalist"],
 ] as const;
 describe("shell starter staff templates", () => {
-	it("provides the ten founder-selected roles in a stable order", () => {
+	it("provides the founder-selected roles in a stable order", () => {
 		const templates = listStaffTemplates();
 		expect(templates.map(({ id, name }) => [id, name])).toEqual(EXPECTED_ROLES);
 		expect(STAFF_TEMPLATE_IDS).toEqual(EXPECTED_ROLES.map(([id]) => id));

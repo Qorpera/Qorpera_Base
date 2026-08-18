@@ -56,6 +56,7 @@ const SOURCE_FILE = "files/conception-source.json";
 const SOURCE_REF = `file:${SOURCE_FILE}`;
 
 const PROVIDER_SUGGESTIONS: Readonly<Record<StaffTemplateId, readonly [string, string, ...string[]]>> = Object.freeze({
+	"agent-manager": ["Linear", "Jira", "GitHub"],
 	"financial-officer": ["Google Sheets", "Xero", "Nordea Open Banking"],
 	"marketing-lead": ["Google Analytics", "HubSpot", "Meta Ads"],
 	"product-manager": ["Linear", "Jira", "Productboard"],

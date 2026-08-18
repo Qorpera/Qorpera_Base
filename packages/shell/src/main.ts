@@ -67,7 +67,9 @@ import {
 	deleteScheduledJob,
 	destinationAllowed,
 	persistWebhookPort,
+	ROUTINE_PLACEMENTS,
 	ROUTINE_WEEKDAYS,
+	type RoutinePlacement,
 	type RoutineTriggerInput,
 	type RoutineWeekday,
 	readCompanyConnections,
@@ -92,6 +94,23 @@ import {
 	readCompanyConnectorManifests,
 } from "@qorpera/pi-coding-agent/company-connectors";
 import type { CompanyOperationKind } from "@qorpera/pi-coding-agent/company-operation-broker";
+import {
+	appendCompanyRoomMessage,
+	archiveCompanyRoom,
+	type CompanyRoom,
+	type CompanyRoomMessage,
+	createCompanyRoom,
+	type QueuedCompanyRoomDelivery,
+	queueCompanyRoomDelivery,
+	readCompanyRoom,
+	readCompanyRoomMessages,
+	readCompanyRooms,
+	readQueuedCompanyRoomDeliveries,
+	removeQueuedCompanyRoomDeliveries,
+	rescheduleCompanyRoomDelivery,
+	restoreCompanyRoom,
+	updateCompanyRoom,
+} from "@qorpera/pi-coding-agent/company-rooms";
 import {
 	activateStaffAgent,
 	archiveStaffAgent,
@@ -338,6 +357,13 @@ import {
 	rendererPartitionForCompany,
 } from "./renderer-boundary.ts";
 import { bitmapLooksBlank } from "./renderer-smoke.ts";
+import {
+	MAX_ROOM_DELEGATION_DEPTH,
+	MAX_ROOM_DELEGATION_FANOUT,
+	planRoomDelegation,
+	type RoomDelegationContext,
+	rootRoomDelegationContext,
+} from "./room-delegation-policy.ts";
 import {
 	completePendingRoutineTrigger,
 	dueCustomRoutineCheck,
@@ -1468,6 +1494,14 @@ const childTriggerWorkers = new WeakMap<ChildProcessWithoutNullStreams, TriggerW
  * founder turn in flight. Wakes must never preempt it. */
 const childBusy = new WeakMap<ChildProcessWithoutNullStreams, boolean>();
 const childApprovedGates = new WeakMap<ChildProcessWithoutNullStreams, Set<string>>();
+/** Bounded delegation-graph position of a live room participant turn. */
+const childRoomDelegationContexts = new WeakMap<ChildProcessWithoutNullStreams, RoomDelegationContext>();
+/** Assistant reply identities already persisted to a room transcript. */
+const childRoomReplyKeys = new WeakMap<ChildProcessWithoutNullStreams, Set<string>>();
+/** Delegation-graph context for queued room deliveries, keyed by delivery id.
+ * Machine-memory only: after a restart, a surviving queued delegation restarts
+ * depth accounting from a fresh root context, which only tightens the bound. */
+const pendingRoomDelegationContexts = new Map<string, RoomDelegationContext>();
 const childCheckpointCompletion = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 const childExecutorIds = new WeakMap<ChildProcessWithoutNullStreams, string>();
 const childAttachmentSequences = new WeakMap<ChildProcessWithoutNullStreams, number>();
@@ -2151,6 +2185,8 @@ interface ChildOptions {
 	sessionName?: string;
 	/** Stable company-owned employee identity stamped into the trail header. */
 	staffAgentId?: string;
+	/** Durable multi-staff room whose participant trail this process carries. */
+	roomId?: string;
 	/** Host-built employee context appended on every process launch. */
 	staffContext?: string;
 	/** One-shot flags consumed by the process launched from these options. */
@@ -2423,6 +2459,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		actor,
 		attended: false,
 		staffAgentId,
+		roomId: options.roomId,
 		autonomousLabel: autonomousName ? `autonomous — ${autonomousName}` : undefined,
 		department: department?.path,
 		worktree,
@@ -4651,6 +4688,63 @@ async function applyStaffCompanyOperation(
 		return { message: "Continue normally without announcing this internal transition." };
 	}
 
+	if (kind === "delegate_to_staff") {
+		const roomId = binding.authority.roomId;
+		if (!background || !roomId) {
+			throw new Error("delegation is only available inside a group-chat room turn");
+		}
+		const input = recordValue(value);
+		if (
+			!input ||
+			typeof input.staffAgentId !== "string" ||
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.staffAgentId) ||
+			typeof input.message !== "string" ||
+			input.message !== input.message.trim() ||
+			!input.message ||
+			input.message.includes("\0") ||
+			Buffer.byteLength(input.message, "utf-8") > 4_000 ||
+			Object.keys(input).some((key) => key !== "staffAgentId" && key !== "message")
+		) {
+			throw new Error("delegation requires a room participant and bounded message");
+		}
+		if (staff.templateId !== "agent-manager") throw new Error("only the Agent Manager can delegate room work");
+		const room = readCompanyRoom(root, roomId);
+		if (!room || room.status !== "active") throw new Error("this group chat is no longer active");
+		if (!room.participantIds.includes(staffAgentId)) {
+			throw new Error("the delegating manager is no longer a participant in this room");
+		}
+		if (!room.participantIds.includes(input.staffAgentId)) {
+			throw new Error("delegation target is not a participant in this room");
+		}
+		const target = activeStaffAgent(root, input.staffAgentId);
+		if (!target) throw new Error("delegation target is unavailable or archived");
+		const context = childRoomDelegationContexts.get(child) ?? rootRoomDelegationContext(staffAgentId);
+		const planned = planRoomDelegation(context, staffAgentId, input.staffAgentId);
+		const message = appendCompanyRoomMessage(root, room.id, {
+			speaker: { kind: "staff", staffAgentId },
+			text: input.message,
+			targetStaffAgentIds: [target.id],
+			sourceTrailFile: binding.file,
+		});
+		const delivery = queueCompanyRoomDelivery(root, room.id, {
+			messageId: message.id,
+			targetStaffAgentIds: [target.id],
+		});
+		childRoomDelegationContexts.set(child, planned.source);
+		pendingRoomDelegationContexts.set(delivery.id, planned.target);
+		commitCompanyMaterialization(root, roomMaterializationPaths(room.id));
+		sendRoomEvent(slot, { kind: "message", roomId: room.id, message });
+		sendRoomEvent(slot, {
+			kind: "delegation",
+			roomId: room.id,
+			fromStaffAgentId: staffAgentId,
+			toStaffAgentId: target.id,
+		});
+		return {
+			message: `Delegation queued for ${target.displayName} in this room. They respond in their own session; continue your own contribution without impersonating them or claiming their work is done.`,
+		};
+	}
+
 	throw new Error(`company operation ${kind} is unavailable in this agent run`);
 }
 
@@ -5384,7 +5478,9 @@ function startWakeTicker(): void {
 			const customBuilds = readCustomTriggerBuildState(
 				customTriggerBuildStatePath(app.getPath("userData"), runtime.root),
 			);
-			const customJobs = readScheduledJobs(runtime.root);
+			// Cloud-placed routines are fail-closed: this local host never runs
+			// them, and they stay parked until a hosted execution lane exists.
+			const customJobs = readScheduledJobs(runtime.root).filter((job) => job.placement !== "cloud");
 			if (
 				customBuilds.builds.some((build) => build.status === "queued") ||
 				dueCustomRoutineCheck(
@@ -5407,6 +5503,16 @@ function startWakeTicker(): void {
 						console.error(`inbound wake failed for ${runtime.root}: ${(error as Error).message}`);
 						if (slot.runtime === runtime && !runtime.closing) runtime.pendingInboundWake = true;
 					});
+				continue;
+			}
+			// Queued room deliveries wake one participant at a time. The durable
+			// delivery registry is the queue itself, so a room conversation
+			// survives restarts, retries with backoff, and runs when free.
+			const roomDue = dueRoomDelivery(runtime.root);
+			if (roomDue) {
+				void startRoomChild(slot, runtime, roomDue).catch((error) => {
+					console.error(`room delivery wake failed for ${runtime.root}: ${(error as Error).message}`);
+				});
 				continue;
 			}
 			// Durable coworker mail wakes its recipient. The protected ledger is
@@ -5433,7 +5539,7 @@ function startWakeTicker(): void {
 				continue;
 			}
 			try {
-				const jobs = readScheduledJobs(runtime.root);
+				const jobs = readScheduledJobs(runtime.root).filter((job) => job.placement !== "cloud");
 				void dispatchRoutineTrigger(slot, runtime, jobs).then((started) => {
 					if (started || slot.runtime !== runtime || runtime.closing || runtime.wakeChild) return;
 					const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
@@ -5454,6 +5560,329 @@ function startWakeTicker(): void {
 			}
 		}
 	}, 60_000).unref();
+}
+
+/**
+ * Durable multi-staff rooms ride the single autonomous lane. A queued room
+ * delivery wakes one participant at a time: the recipient's per-room trail
+ * is resumed, the shared hash-chained transcript is rebuilt into the prompt,
+ * and the reply is persisted back into the room before the next participant
+ * runs. Concurrent participant processes stay out on purpose — the company
+ * keeps its one-agent-process contract and single-writer git checkpointing;
+ * the durable delivery queue is what makes the room feel concurrent.
+ */
+function roomMaterializationPaths(roomId: string): string[] {
+	return [
+		join(".qorpera", "rooms.json"),
+		join(".qorpera", "room-deliveries.json"),
+		join(".qorpera", "rooms", `${roomId}.jsonl`),
+	];
+}
+
+function roomDisplayTitle(root: string, room: CompanyRoom): string {
+	if (room.title) return room.title;
+	const names = room.participantIds.flatMap((id) => {
+		const staff = activeStaffAgent(root, id);
+		return staff ? [staff.displayName] : [];
+	});
+	return names.join(", ") || "Group chat";
+}
+
+function roomSpeakerName(root: string, message: CompanyRoomMessage): string {
+	if (message.speaker.kind === "founder") return "Founder";
+	return activeStaffAgent(root, message.speaker.staffAgentId)?.displayName ?? "Former staff member";
+}
+
+function roomTranscriptContext(root: string, messages: readonly CompanyRoomMessage[]): string {
+	const selected: string[] = [];
+	let bytes = 0;
+	for (const message of [...messages].reverse()) {
+		const targets = message.targetStaffAgentIds?.length ? ` -> ${message.targetStaffAgentIds.join(", ")}` : "";
+		const line = `${roomSpeakerName(root, message)}${targets}: ${message.text.slice(0, 6_000)}${message.images?.length ? ` [${message.images.length} image attachment${message.images.length === 1 ? "" : "s"}]` : ""}`;
+		const lineBytes = Buffer.byteLength(line, "utf-8");
+		if (selected.length >= 48 || bytes + lineBytes > 40 * 1024) break;
+		selected.unshift(line);
+		bytes += lineBytes;
+	}
+	return selected.join("\n\n");
+}
+
+function roomParticipantContext(root: string, room: CompanyRoom): string {
+	return room.participantIds
+		.flatMap((id) => {
+			const staff = activeStaffAgent(root, id);
+			return staff ? [`${staff.displayName} (${staff.id}) — ${staff.role}`] : [];
+		})
+		.join("\n");
+}
+
+function roomPrompt(root: string, room: CompanyRoom, recipient: StaffAgent, instruction: string): string {
+	const transcript = roomTranscriptContext(root, readCompanyRoomMessages(root, room.id));
+	return [
+		`Qorpera group chat: ${roomDisplayTitle(root, room)}`,
+		`You are responding as ${recipient.displayName}. Never impersonate or speak on behalf of another participant.`,
+		"Participants (use the exact UUID only with delegate_to_staff):",
+		roomParticipantContext(root, room),
+		"A founder message is delivered to every listed target unless an @mention narrowed it. Participants respond one at a time in their own sessions; respond with your own contribution and settle without waiting on anyone else's turn.",
+		recipient.templateId === "agent-manager"
+			? `You may use delegate_to_staff for bounded assignments to other participants in this room. The host permits at most ${MAX_ROOM_DELEGATION_DEPTH} delegation hops, rejects cycles and repeated targets within one turn, and limits each manager turn to ${MAX_ROOM_DELEGATION_FANOUT} delegated participants.`
+			: "Only the Agent Manager can delegate work to another room participant. Respond with your own contribution.",
+		transcript ? `Recent durable room transcript:\n${transcript}` : "Recent durable room transcript: empty",
+		`Current instruction:\n${instruction}`,
+	].join("\n\n");
+}
+
+function roomDeliveryInstruction(root: string, message: CompanyRoomMessage, depth: number): string {
+	const attachments = message.images?.length
+		? `\n[${message.images.length} image attachment${message.images.length === 1 ? "" : "s"} shown in the founder's room view]`
+		: "";
+	if (message.speaker.kind === "staff") {
+		const source = roomSpeakerName(root, message);
+		return `${source} delegated this bounded assignment to you (hop ${depth} of ${MAX_ROOM_DELEGATION_DEPTH}):\n${message.text}${attachments}`;
+	}
+	return `The founder posted to this room:\n${message.text}${attachments}`;
+}
+
+function assistantRoomReply(frame: Record<string, unknown>): { key: string; text: string } | undefined {
+	if (frame.type !== "message_end") return undefined;
+	const message = recordValue(frame.message);
+	if (
+		!message ||
+		message.role !== "assistant" ||
+		(message.stopReason !== "stop" && message.stopReason !== "length") ||
+		!Array.isArray(message.content)
+	) {
+		return undefined;
+	}
+	const text = message.content
+		.flatMap((part) => {
+			const content = recordValue(part);
+			return content?.type === "text" && typeof content.text === "string" ? [content.text] : [];
+		})
+		.join("")
+		.trim();
+	if (!text) return undefined;
+	const identity =
+		typeof message.responseId === "string"
+			? message.responseId
+			: `${typeof message.timestamp === "number" ? message.timestamp : "unknown"}:${createHash("sha256").update(text).digest("hex")}`;
+	return { key: identity, text };
+}
+
+interface DueRoomDelivery {
+	room: CompanyRoom;
+	delivery: QueuedCompanyRoomDelivery;
+	target: StaffAgent;
+	message: CompanyRoomMessage;
+}
+
+function dueRoomDelivery(root: string): DueRoomDelivery | undefined {
+	try {
+		const now = Date.now();
+		for (const delivery of readQueuedCompanyRoomDeliveries(root)) {
+			if (Date.parse(delivery.nextAttemptAt) > now) continue;
+			const room = readCompanyRoom(root, delivery.roomId);
+			if (!room || room.status !== "active") continue;
+			const target = delivery.targetStaffAgentIds
+				.map((id) => activeStaffAgent(root, id))
+				.find((staff): staff is StaffAgent => staff !== undefined);
+			if (!target) continue;
+			const message = readCompanyRoomMessages(root, room.id).find(
+				(candidate) => candidate.id === delivery.messageId,
+			);
+			if (!message) {
+				// The transcript no longer carries this message; drop the delivery.
+				pendingRoomDelegationContexts.delete(delivery.id);
+				rescheduleCompanyRoomDelivery(root, delivery.id, []);
+				continue;
+			}
+			return { room, delivery, target, message };
+		}
+	} catch (error) {
+		console.error(`room delivery scan failed for ${root}: ${(error as Error).message}`);
+	}
+	return undefined;
+}
+
+function latestRoomTrailFile(runtime: CompanyRuntime, roomId: string, staffAgentId: string): string | undefined {
+	return runtime.sessions
+		.snapshot()
+		.sessions.filter((session) => session.roomId === roomId && session.staffAgentId === staffAgentId)
+		.sort(
+			(left, right) =>
+				(right.attachmentSequence ?? 0) - (left.attachmentSequence ?? 0) ||
+				right.updatedAt.localeCompare(left.updatedAt),
+		)[0]?.trailFile;
+}
+
+function sendRoomEvent(slot: Slot, payload: Record<string, unknown>): void {
+	send(slot.window, "room-event", payload);
+}
+
+async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due: DueRoomDelivery): Promise<boolean> {
+	if (runtime.wakeChild || runtime.closing) return false;
+	// Never preempt a founder turn in flight: the delivery waits its turn.
+	if (isChildBusy(runtime.child)) return false;
+	const { room, delivery, target, message } = due;
+	const attendedChild = runtime.child;
+	const resumeOptions = {
+		...runtime.childOptions,
+		sessionFile: attendedChild
+			? (childBindings.get(attendedChild)?.file ?? runtime.childOptions.sessionFile)
+			: runtime.childOptions.sessionFile,
+	};
+	if (attendedChild) await stopChild(attendedChild);
+	if (slot.runtime !== runtime || runtime.closing) return false;
+	const delegationContext = pendingRoomDelegationContexts.get(delivery.id) ?? rootRoomDelegationContext(target.id);
+	let started = false;
+	let failed = false;
+	let settledCleanly = false;
+	let child: ChildProcessWithoutNullStreams;
+	try {
+		child = startChild(slot, runtime.root, {
+			sessionFile: latestRoomTrailFile(runtime, room.id, target.id),
+			autonomousName: `room — ${roomDisplayTitle(runtime.root, room)} — ${target.displayName}`,
+			group: `room:${room.id}`,
+			staffAgentId: target.id,
+			roomId: room.id,
+			staffContext: staffSystemContext(runtime.root, target),
+			silent: true,
+			model: target.model ?? resumeOptions.model,
+			toolNames: target.templateId === "agent-manager" ? `${STAFF_TOOL_NAMES},delegate_to_staff` : STAFF_TOOL_NAMES,
+			onRpcEvent: (frame) => {
+				if (frame.type === "agent_start") {
+					started = true;
+					sendRoomEvent(slot, { kind: "activity", roomId: room.id, staffAgentId: target.id, activity: "working" });
+				} else if (frame.type === "tool_execution_start") {
+					sendRoomEvent(slot, {
+						kind: "activity",
+						roomId: room.id,
+						staffAgentId: target.id,
+						activity: typeof frame.toolName === "string" ? frame.toolName : "tool",
+					});
+				}
+				if (wakeFrameFailed(frame)) failed = true;
+				const reply = assistantRoomReply(frame);
+				if (reply) {
+					const seen = childRoomReplyKeys.get(child) ?? new Set<string>();
+					childRoomReplyKeys.set(child, seen);
+					if (!seen.has(reply.key)) {
+						seen.add(reply.key);
+						try {
+							const persisted = appendCompanyRoomMessage(runtime.root, room.id, {
+								speaker: { kind: "staff", staffAgentId: target.id },
+								text: reply.text,
+								sourceTrailFile: childBindings.get(child)?.file,
+							});
+							commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+							sendRoomEvent(slot, { kind: "message", roomId: room.id, message: persisted });
+						} catch (error) {
+							console.error(`room reply persistence failed: ${(error as Error).message}`);
+							sendRoomEvent(slot, {
+								kind: "error",
+								roomId: room.id,
+								staffAgentId: target.id,
+								message: `${target.displayName}'s response could not be saved to this room.`,
+							});
+						}
+					}
+				}
+				if (frame.type === "agent_settled") {
+					settledCleanly = started && !failed;
+					sendRoomEvent(slot, { kind: "activity", roomId: room.id, staffAgentId: target.id, activity: "idle" });
+					intentionalKills.add(child);
+					killChildTree(child);
+				}
+			},
+		});
+	} catch (error) {
+		console.error(`room participant runtime failed to start: ${(error as Error).message}`);
+		if (attendedChild && slot.runtime === runtime && !runtime.closing) {
+			await restoreAttendedChild(slot, runtime, resumeOptions, "room-start chat restore failed");
+		}
+		return false;
+	}
+	runtime.wakeChild = child;
+	childRoomDelegationContexts.set(child, delegationContext);
+	pendingRoomDelegationContexts.delete(delivery.id);
+	child.on("close", () => {
+		void enqueueRuntimeTransition(runtime, async () => {
+			await childCheckpointCompletion.get(child);
+			if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild !== child) return;
+			runtime.wakeChild = undefined;
+			try {
+				if (settledCleanly) {
+					const remaining = delivery.targetStaffAgentIds.filter((id) => id !== target.id);
+					rescheduleCompanyRoomDelivery(runtime.root, delivery.id, remaining);
+					if (remaining.length === 0) {
+						sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
+					}
+				} else {
+					const rescheduled = rescheduleCompanyRoomDelivery(
+						runtime.root,
+						delivery.id,
+						delivery.targetStaffAgentIds,
+						`${target.displayName}'s room turn did not settle cleanly`,
+					);
+					if (rescheduled) {
+						pendingRoomDelegationContexts.set(rescheduled.id, delegationContext);
+						sendRoomEvent(slot, { kind: "delivery", roomId: room.id, delivery: rescheduled });
+					}
+				}
+				commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+			} catch (error) {
+				console.error(`room delivery bookkeeping failed: ${(error as Error).message}`);
+				try {
+					rescheduleCompanyRoomDelivery(runtime.root, delivery.id, []);
+				} catch {
+					// the delivery registry itself is unreadable; the scan will retry
+				}
+			}
+			sendRoomEvent(slot, {
+				kind: "activity",
+				roomId: room.id,
+				staffAgentId: target.id,
+				activity: "offline",
+			});
+			if (attendedChild) await restoreAttendedChild(slot, runtime, resumeOptions, "post-room chat restore failed");
+			scheduleRoomDeliveryPump(slot, runtime);
+		}).catch((error) => console.error(`room ownership transition failed: ${(error as Error).message}`));
+	});
+	if (!(await waitForChildReadiness(child))) {
+		console.error(`room participant runtime did not become ready: ${target.displayName}`);
+		await stopChild(child);
+		return false;
+	}
+	const instruction = roomDeliveryInstruction(runtime.root, message, delegationContext.depth);
+	if (
+		!sendKernelPrompt(
+			child,
+			{ type: "prompt", message: roomPrompt(runtime.root, room, target, instruction) },
+			false,
+			"host-room-delivery",
+		)
+	) {
+		await stopChild(child);
+		return false;
+	}
+	return true;
+}
+
+function startRoomChild(slot: Slot, runtime: CompanyRuntime, due: DueRoomDelivery): Promise<boolean> {
+	return enqueueRuntimeTransition(runtime, () => startRoomChildExclusive(slot, runtime, due));
+}
+
+/** Drain the next due room delivery soon, without waiting for the ticker. */
+function scheduleRoomDeliveryPump(slot: Slot, runtime: CompanyRuntime): void {
+	setTimeout(() => {
+		if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild) return;
+		if (isChildBusy(runtime.child)) return;
+		const due = dueRoomDelivery(runtime.root);
+		if (!due) return;
+		void startRoomChild(slot, runtime, due).catch((error) => {
+			console.error(`room delivery failed for ${runtime.root}: ${(error as Error).message}`);
+		});
+	}, 500).unref();
 }
 
 async function restoreAttendedChild(
@@ -5499,6 +5928,7 @@ async function listenBackend(
 			fixedShell: { directory: FIXED_SHELL_DIR },
 			sessionRuntime: sessions,
 			staffReadModel: () => readStaffAgents(root),
+			roomReadModel: () => readCompanyRooms(root),
 			staffMessageReadModel: () => readStaffAgentMessages(root),
 			artifactReadModel: () => readCompanyArtifacts(root),
 			connectorReadModel: () => readCompanyConnectorManifests(root),
@@ -7852,9 +8282,10 @@ app.whenReady().then(async () => {
 			!Array.isArray(input.triggers) ||
 			(input.enabled !== undefined && typeof input.enabled !== "boolean") ||
 			(input.effort !== undefined && !SCHEDULED_JOB_EFFORTS.includes(input.effort as ScheduledJobEffort)) ||
+			(input.placement !== undefined && !ROUTINE_PLACEMENTS.includes(input.placement as RoutinePlacement)) ||
 			(input.staffAgentId !== undefined && typeof input.staffAgentId !== "string") ||
 			Object.keys(input).some(
-				(key) => !["title", "prompt", "triggers", "enabled", "effort", "staffAgentId"].includes(key),
+				(key) => !["title", "prompt", "triggers", "enabled", "effort", "placement", "staffAgentId"].includes(key),
 			)
 		) {
 			return { ok: false, error: "invalid scheduled job" };
@@ -7878,6 +8309,7 @@ app.whenReady().then(async () => {
 					triggers,
 					...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
 					...(typeof input.effort === "string" ? { effort: input.effort as ScheduledJobEffort } : {}),
+					...(typeof input.placement === "string" ? { placement: input.placement as RoutinePlacement } : {}),
 					...(assignedStaff ? { staffAgentId: assignedStaff.id } : {}),
 				}),
 			};
@@ -7902,9 +8334,10 @@ app.whenReady().then(async () => {
 			(input.triggers !== undefined && !Array.isArray(input.triggers)) ||
 			(input.enabled !== undefined && typeof input.enabled !== "boolean") ||
 			(input.effort !== undefined && !SCHEDULED_JOB_EFFORTS.includes(input.effort as ScheduledJobEffort)) ||
+			(input.placement !== undefined && !ROUTINE_PLACEMENTS.includes(input.placement as RoutinePlacement)) ||
 			(input.staffAgentId !== undefined && input.staffAgentId !== null && typeof input.staffAgentId !== "string") ||
 			Object.keys(input).some(
-				(key) => !["title", "prompt", "triggers", "enabled", "effort", "staffAgentId"].includes(key),
+				(key) => !["title", "prompt", "triggers", "enabled", "effort", "placement", "staffAgentId"].includes(key),
 			)
 		) {
 			return { ok: false, error: "invalid scheduled-job update" };
@@ -7935,6 +8368,7 @@ app.whenReady().then(async () => {
 					...(triggers ? { triggers } : {}),
 					...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
 					...(typeof input.effort === "string" ? { effort: input.effort as ScheduledJobEffort } : {}),
+					...(typeof input.placement === "string" ? { placement: input.placement as RoutinePlacement } : {}),
 					...(input.staffAgentId === null
 						? { staffAgentId: null }
 						: typeof input.staffAgentId === "string"
@@ -7985,6 +8419,12 @@ app.whenReady().then(async () => {
 			}
 			const job = readScheduledJobs(runtime.root).find((candidate) => candidate.id === id);
 			if (!job) return { ok: false, error: "scheduled job not found" };
+			if (job.placement === "cloud") {
+				return {
+					ok: false,
+					error: "This routine is placed in the cloud; hosted routine execution is not available yet.",
+				};
+			}
 			return (await startWakeChildExclusive(slot, runtime, "schedule", 0, job, true))
 				? { ok: true }
 				: { ok: false, error: "company runtime is busy" };
@@ -8258,6 +8698,141 @@ app.whenReady().then(async () => {
 		}
 		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 		return staffIntroReady(slot, staffAgentId, trailFile, retry);
+	});
+	ipcMain.handle("room:create", (event, value: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime) return { ok: false, error: "open a company before creating a group chat" };
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		const input = recordValue(value);
+		if (
+			!input ||
+			!Array.isArray(input.participantIds) ||
+			(input.title !== undefined && typeof input.title !== "string") ||
+			Object.keys(input).some((key) => key !== "participantIds" && key !== "title")
+		) {
+			return { ok: false, error: "invalid group chat" };
+		}
+		try {
+			if (input.participantIds.some((id) => typeof id !== "string" || !activeStaffAgent(runtime.root, id))) {
+				return { ok: false, error: "every group participant must be an active staff agent" };
+			}
+			const room = createCompanyRoom(runtime.root, {
+				participantIds: input.participantIds as string[],
+				...(typeof input.title === "string" && input.title.trim() ? { title: input.title.trim() } : {}),
+			});
+			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+			return { ok: true, room };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("room:open", (event, roomId: unknown) => {
+		const runtime = slotOf(event.sender)?.runtime;
+		if (!runtime || typeof roomId !== "string") return { ok: false, error: "invalid group chat" };
+		try {
+			const room = readCompanyRoom(runtime.root, roomId);
+			if (!room) return { ok: false, error: "this group chat no longer exists" };
+			return {
+				ok: true,
+				room,
+				messages: readCompanyRoomMessages(runtime.root, room.id),
+				deliveries: readQueuedCompanyRoomDeliveries(runtime.root, room.id),
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("room:send", (event, roomId: unknown, value: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof roomId !== "string") return { ok: false, error: "invalid group chat" };
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		const input = recordValue(value);
+		if (!input || Object.keys(input).some((key) => !["text", "images", "targetStaffAgentIds"].includes(key))) {
+			return { ok: false, error: "invalid group message" };
+		}
+		try {
+			const room = readCompanyRoom(runtime.root, roomId);
+			if (!room || room.status !== "active") return { ok: false, error: "this group chat is not active" };
+			const message = appendCompanyRoomMessage(runtime.root, room.id, {
+				speaker: { kind: "founder" },
+				...(input.text !== undefined ? { text: input.text as string } : {}),
+				...(input.images !== undefined ? { images: input.images as { mimeType: string; data: string }[] } : {}),
+				...(input.targetStaffAgentIds !== undefined
+					? { targetStaffAgentIds: input.targetStaffAgentIds as string[] }
+					: {}),
+			});
+			const delivery = queueCompanyRoomDelivery(runtime.root, room.id, {
+				messageId: message.id,
+				targetStaffAgentIds: message.targetStaffAgentIds ?? room.participantIds,
+			});
+			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+			sendRoomEvent(slot, { kind: "message", roomId: room.id, message });
+			sendRoomEvent(slot, { kind: "delivery", roomId: room.id, delivery });
+			scheduleRoomDeliveryPump(slot, runtime);
+			return { ok: true, message, delivery };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("room:update", (event, roomId: unknown, value: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof roomId !== "string") return { ok: false, error: "invalid group chat" };
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		const input = recordValue(value);
+		if (
+			!input ||
+			!Object.keys(input).length ||
+			Object.keys(input).some((key) => key !== "participantIds" && key !== "title")
+		) {
+			return { ok: false, error: "invalid group chat update" };
+		}
+		try {
+			if (
+				Array.isArray(input.participantIds) &&
+				input.participantIds.some((id) => typeof id !== "string" || !activeStaffAgent(runtime.root, id))
+			) {
+				return { ok: false, error: "every group participant must be an active staff agent" };
+			}
+			const room = updateCompanyRoom(runtime.root, roomId, input);
+			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+			sendRoomEvent(slot, { kind: "room", roomId: room.id, room });
+			return { ok: true, room };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("room:archive", (event, roomId: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof roomId !== "string") return { ok: false, error: "invalid group chat" };
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		try {
+			const removed = removeQueuedCompanyRoomDeliveries(runtime.root, roomId);
+			for (const delivery of removed) pendingRoomDelegationContexts.delete(delivery.id);
+			const room = archiveCompanyRoom(runtime.root, roomId);
+			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+			sendRoomEvent(slot, { kind: "room", roomId: room.id, room });
+			return { ok: true, room };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("room:restore", (event, roomId: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof roomId !== "string") return { ok: false, error: "invalid group chat" };
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		try {
+			const room = restoreCompanyRoom(runtime.root, roomId);
+			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));
+			sendRoomEvent(slot, { kind: "room", roomId: room.id, room });
+			return { ok: true, room };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
 	});
 	ipcMain.handle("hub:show", (event) => {
 		const slot = slotOf(event.sender);
