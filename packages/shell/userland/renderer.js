@@ -594,6 +594,7 @@ function companySlug(name) {
 		.replace(/^-+|-+$/g, "");
 }
 
+const COMPANIES_HOME = "C:\\Companies";
 function companyRootFor(name) {
 	const slug = companySlug(name);
 	return slug ? `${COMPANIES_HOME}\\${slug}` : "";
