@@ -34,11 +34,16 @@ const CLOUD_COMPANY_TREE_OMITTED_LAYERS_V1 = [
 
 /** Contract v2 additionally omits per-agent instruction files (the charter is
  * part of the separately-authoritative staff layer and travels through staff
- * sync, not tree snapshots) and the operational inbox (machine-local
- * host-to-agent mail: authority gates and trigger events). */
+ * sync, not tree snapshots), per-agent memory (mutable every-turn state whose
+ * sync needs its own layer, not fork-with-tree snapshot semantics), and the
+ * operational mail surfaces (machine-local host-to-agent state: the inbox's
+ * authority gates and trigger events, and the agent message delivery ledger).
+ * Agent artifacts, skills, connector manifests, and shared files publish
+ * normally as company work product. */
 export const CLOUD_COMPANY_TREE_OMITTED_LAYERS = [
 	...CLOUD_COMPANY_TREE_OMITTED_LAYERS_V1,
 	"staff-instructions",
+	"staff-memory",
 	"operational-inbox",
 ] as const;
 
@@ -141,10 +146,13 @@ function shouldOmit(path: string, contractVersion: CloudCompanyTreeContractVersi
 	if (parts[0] === ".git" || parts[0] === "trail" || parts.includes("node_modules")) return true;
 	if (parts[0] === ".qorpera") {
 		if (parts[1] === "staff.json" || parts[1] === "product-worktrees" || parts[1] === "w") return true;
+		if (contractVersion >= 2 && parts[1] === "agent-messages.json") return true;
 	}
 	if (contractVersion >= 2) {
 		if (parts[0] === "inbox") return true;
-		if (parts[0] === "agents" && parts.length === 3 && parts[2] === "instructions.md") return true;
+		if (parts[0] === "agents" && parts.length === 3 && (parts[2] === "instructions.md" || parts[2] === "memory.md")) {
+			return true;
+		}
 	}
 	return parts[0] === "departments" && parts.length >= 3 && (parts[2] === "repository" || parts[2] === "worktrees");
 }

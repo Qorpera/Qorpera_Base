@@ -15,7 +15,26 @@ alter table public.qorpera_profile_staff
 		check (
 			appearance_creature is null
 			or (char_length(appearance_creature) between 1 and 64 and appearance_creature = btrim(appearance_creature))
+		),
+	add column if not exists model_provider text
+		check (
+			model_provider is null
+			or (char_length(model_provider) between 1 and 128 and model_provider = btrim(model_provider))
+		),
+	add column if not exists model_id text
+		check (
+			model_id is null
+			or (char_length(model_id) between 1 and 256 and model_id = btrim(model_id))
 		);
+
+do $$
+begin
+	alter table public.qorpera_profile_staff
+		add constraint qorpera_profile_staff_model_pair
+		check ((model_provider is null) = (model_id is null));
+exception when duplicate_object then null;
+end
+$$;
 
 create or replace function public.qorpera_list_profile_staff(p_profile_id uuid)
 returns jsonb
@@ -51,6 +70,8 @@ begin
 				'appearance_color', staff.appearance_color,
 				'appearance_shape', staff.appearance_shape,
 				'appearance_creature', staff.appearance_creature,
+				'model_provider', staff.model_provider,
+				'model_id', staff.model_id,
 				'employment_status', staff.employment_status,
 				'lifecycle_state', staff.lifecycle_state,
 				'version', staff.version,
@@ -87,6 +108,8 @@ create function public.qorpera_put_profile_staff(
 	p_appearance_color text,
 	p_appearance_shape text,
 	p_appearance_creature text,
+	p_model_provider text,
+	p_model_id text,
 	p_employment_status text,
 	p_lifecycle_state text,
 	p_created_at timestamptz,
@@ -122,6 +145,9 @@ begin
 		or char_length(p_appearance_color) not between 1 and 64 or p_appearance_color <> btrim(p_appearance_color)
 		or char_length(p_appearance_shape) not between 1 and 64 or p_appearance_shape <> btrim(p_appearance_shape)
 		or (p_appearance_creature is not null and (char_length(p_appearance_creature) not between 1 and 64 or p_appearance_creature <> btrim(p_appearance_creature)))
+		or ((p_model_provider is null) <> (p_model_id is null))
+		or (p_model_provider is not null and (char_length(p_model_provider) not between 1 and 128 or p_model_provider <> btrim(p_model_provider)))
+		or (p_model_id is not null and (char_length(p_model_id) not between 1 and 256 or p_model_id <> btrim(p_model_id)))
 		or (p_template_id is not null and (char_length(p_template_id) not between 1 and 256 or p_template_id <> btrim(p_template_id)))
 		or (p_department_id is not null and (char_length(p_department_id) not between 1 and 256 or p_department_id <> btrim(p_department_id)))
 		or p_employment_status not in ('active', 'archived')
@@ -141,13 +167,13 @@ begin
 		end if;
 		insert into public.qorpera_profile_staff (
 			profile_id, staff_agent_id, display_name, role, charter, template_id, department_id,
-			appearance_color, appearance_shape, appearance_creature, employment_status, lifecycle_state,
-			version, created_at, updated_at, updated_by_user_id
+			appearance_color, appearance_shape, appearance_creature, model_provider, model_id,
+			employment_status, lifecycle_state, version, created_at, updated_at, updated_by_user_id
 		)
 		values (
 			p_profile_id, p_staff_agent_id, p_display_name, p_role, p_charter, p_template_id, p_department_id,
-			p_appearance_color, p_appearance_shape, p_appearance_creature, p_employment_status, p_lifecycle_state,
-			1, p_created_at, p_created_at, v_user_id
+			p_appearance_color, p_appearance_shape, p_appearance_creature, p_model_provider, p_model_id,
+			p_employment_status, p_lifecycle_state, 1, p_created_at, p_created_at, v_user_id
 		)
 		returning * into v_result;
 	else
@@ -160,6 +186,8 @@ begin
 				and v_current.appearance_color = p_appearance_color
 				and v_current.appearance_shape = p_appearance_shape
 				and v_current.appearance_creature is not distinct from p_appearance_creature
+				and v_current.model_provider is not distinct from p_model_provider
+				and v_current.model_id is not distinct from p_model_id
 				and v_current.employment_status = p_employment_status
 				and v_current.lifecycle_state = p_lifecycle_state
 				and v_current.created_at = p_created_at then
@@ -179,6 +207,8 @@ begin
 				appearance_color = p_appearance_color,
 				appearance_shape = p_appearance_shape,
 				appearance_creature = p_appearance_creature,
+				model_provider = p_model_provider,
+				model_id = p_model_id,
 				employment_status = p_employment_status,
 				lifecycle_state = p_lifecycle_state,
 				version = version + 1,
@@ -200,6 +230,8 @@ begin
 		'appearance_color', v_result.appearance_color,
 		'appearance_shape', v_result.appearance_shape,
 		'appearance_creature', v_result.appearance_creature,
+		'model_provider', v_result.model_provider,
+		'model_id', v_result.model_id,
 		'employment_status', v_result.employment_status,
 		'lifecycle_state', v_result.lifecycle_state,
 		'version', v_result.version,
@@ -211,8 +243,8 @@ end
 $$;
 
 revoke all on function public.qorpera_put_profile_staff(
-	uuid, uuid, text, text, text, text, text, text, text, text, text, text, timestamptz, bigint
+	uuid, uuid, text, text, text, text, text, text, text, text, text, text, text, text, timestamptz, bigint
 ) from public;
 grant execute on function public.qorpera_put_profile_staff(
-	uuid, uuid, text, text, text, text, text, text, text, text, text, text, timestamptz, bigint
+	uuid, uuid, text, text, text, text, text, text, text, text, text, text, text, text, timestamptz, bigint
 ) to authenticated;

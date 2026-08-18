@@ -102,7 +102,11 @@ describe("cloud company snapshots", () => {
 		const root = await companyFixture();
 		const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 		await mkdir(join(root, "agents", agentId, "artifacts"), { recursive: true });
+		await mkdir(join(root, "agents", agentId, "skills"), { recursive: true });
 		await writeFile(join(root, "agents", agentId, "instructions.md"), "# Charter\n", "utf-8");
+		await writeFile(join(root, "agents", agentId, "memory.md"), "# Memory\n", "utf-8");
+		await writeFile(join(root, "agents", agentId, "skills", "digest.md"), "# Skill\n", "utf-8");
+		await writeFile(join(root, ".qorpera", "agent-messages.json"), "{}\n", "utf-8");
 		await writeFile(join(root, "agents", agentId, "artifacts", "runway.json"), "{}\n", "utf-8");
 		await mkdir(join(root, "connectors", "github"), { recursive: true });
 		await writeFile(join(root, "connectors", "github", "manifest.json"), "{}\n", "utf-8");
@@ -123,7 +127,16 @@ describe("cloud company snapshots", () => {
 		);
 		await expect(readFile(join(target, "connectors", "github", "manifest.json"), "utf-8")).resolves.toBe("{}\n");
 		await expect(readFile(join(target, "files", "notes.md"), "utf-8")).resolves.toBe("shared notes\n");
+		await expect(readFile(join(target, "agents", agentId, "skills", "digest.md"), "utf-8")).resolves.toBe(
+			"# Skill\n",
+		);
 		await expect(readFile(join(target, "agents", agentId, "instructions.md"), "utf-8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+		await expect(readFile(join(target, "agents", agentId, "memory.md"), "utf-8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+		await expect(readFile(join(target, ".qorpera", "agent-messages.json"), "utf-8")).rejects.toMatchObject({
 			code: "ENOENT",
 		});
 		await expect(readFile(join(target, "inbox", "messages", "msg-1.json"), "utf-8")).rejects.toMatchObject({
