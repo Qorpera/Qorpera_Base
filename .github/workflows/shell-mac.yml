@@ -46,6 +46,12 @@ jobs:
       - name: Install dependencies (with lifecycle scripts; see header)
         run: npm ci --no-audit --no-fund
 
+      # Model data is generated, gitignored, and asserted fresh by the build;
+      # a bare checkout has none. Hydration reads public model catalogs and
+      # needs no credentials.
+      - name: Hydrate model data
+        run: npm run hydrate:model-data
+
       - name: Build all workspaces
         run: npm run build:offline
 
