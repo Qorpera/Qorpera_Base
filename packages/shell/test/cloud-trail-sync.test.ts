@@ -230,6 +230,93 @@ describe("cloud trail synchronization", () => {
 		expect((await sync.sync()).eventsDownloaded).toBe(0);
 	});
 
+	it("quarantines a conflicting part without destroying the entry's accumulated parts", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const primary = new FakeHostedPrimary();
+		const hosted = await primary.createSession({
+			environmentId,
+			clientSessionId: "11111111-1111-4111-8111-111111111111",
+			title: "Conflict resilience",
+		});
+		const events = primary.events.get(hosted.sessionId);
+		if (!events) throw new Error("hosted session events were not created");
+		const entry = {
+			type: "session_info",
+			id: "cloud-session-info:11111111-1111-4111-8111-111111111111",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			name: "Conflict resilience",
+		};
+		const payload = Buffer.from(JSON.stringify(entry), "utf-8");
+		const half = Math.ceil(payload.length / 2);
+		const part = (partIndex: number, partCount: number, bytes: Buffer) => ({
+			schema: "qorpera.shared-trail-entry-part/v1",
+			entryId: entry.id,
+			entryType: entry.type,
+			partIndex,
+			partCount,
+			payloadBase64: bytes.toString("base64"),
+		});
+		events.push(
+			{
+				sessionId: hosted.sessionId,
+				sequence: 1,
+				eventId: "22222222-2222-4222-8222-222222222222",
+				eventType: "session_info",
+				actorUserId,
+				body: part(0, 2, payload.subarray(0, half)),
+				eventHash: "1".repeat(64),
+				createdAt: new Date().toISOString(),
+			},
+			{
+				sessionId: hosted.sessionId,
+				sequence: 2,
+				eventId: "33333333-3333-4333-8333-333333333333",
+				eventType: "session_info",
+				actorUserId,
+				body: part(0, 1, payload),
+				previousHash: "1".repeat(64),
+				eventHash: "2".repeat(64),
+				createdAt: new Date().toISOString(),
+			},
+			{
+				sessionId: hosted.sessionId,
+				sequence: 3,
+				eventId: "44444444-4444-4444-8444-444444444444",
+				eventType: "session_info",
+				actorUserId,
+				body: part(1, 2, payload.subarray(half)),
+				previousHash: "2".repeat(64),
+				eventHash: "3".repeat(64),
+				createdAt: new Date().toISOString(),
+			},
+		);
+
+		const sync = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => false,
+		});
+		await expect(sync.sync()).resolves.toMatchObject({
+			eventsDownloaded: 3,
+			eventsQuarantined: 1,
+			entriesMaterialized: 1,
+		});
+		expect(listSharedTrailSessions(machine)).toHaveLength(1);
+		const state = JSON.parse(readFileSync(cloudTrailSyncStatePath(userData, machine, profileId), "utf-8")) as {
+			sessions: Record<string, { cursor: number; quarantinedEvents: Array<{ eventId: string; reason: string }> }>;
+		};
+		expect(state.sessions[hosted.sessionId]).toMatchObject({
+			cursor: 3,
+			quarantinedEvents: [{ eventId: "33333333-3333-4333-8333-333333333333", reason: "entry parts conflict" }],
+		});
+	});
+
 	it("retries a remotely committed event without duplicating it after the response is lost", async () => {
 		const machine = join(root, "machine", "company");
 		const userData = join(root, "machine", "user-data");

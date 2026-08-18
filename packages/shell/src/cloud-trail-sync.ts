@@ -276,10 +276,15 @@ function sharedEntry(value: JsonValue | undefined): SharedTrailEntry | undefined
 
 class HostedTrailEventError extends Error {
 	readonly entryId?: string;
+	/** True only when the fully assembled entry itself is unusable. A conflicting
+	 * or malformed single event must never discard another writer's legitimately
+	 * accumulated parts — quarantining the offending event alone is sufficient. */
+	readonly discardsPending: boolean;
 
-	constructor(message: string, entryId?: string) {
+	constructor(message: string, entryId?: string, discardsPending = false) {
 		super(message);
 		this.entryId = entryId;
+		this.discardsPending = discardsPending;
 	}
 }
 
@@ -330,11 +335,11 @@ function consumeHostedEvent(event: HostedSessionEvent, state: SessionSyncState):
 	try {
 		parsed = JSON.parse(json) as JsonValue;
 	} catch {
-		throw new HostedTrailEventError("entry payload is invalid JSON", entryId);
+		throw new HostedTrailEventError("entry payload is invalid JSON", entryId, true);
 	}
 	const entry = sharedEntry(parsed);
 	if (!entry || entry.id !== entryId || entry.type !== entryType) {
-		throw new HostedTrailEventError("entry payload identity is invalid", entryId);
+		throw new HostedTrailEventError("entry payload identity is invalid", entryId, true);
 	}
 	delete state.pending[entryId];
 	return entry;
@@ -388,7 +393,7 @@ export class CloudTrailSynchronizer {
 					entry = consumeHostedEvent(event, state);
 				} catch (error) {
 					if (!(error instanceof HostedTrailEventError)) throw error;
-					if (error.entryId) delete state.pending[error.entryId];
+					if (error.entryId && error.discardsPending) delete state.pending[error.entryId];
 					state.quarantinedEvents.push({
 						eventId: event.eventId,
 						sequence: event.sequence,

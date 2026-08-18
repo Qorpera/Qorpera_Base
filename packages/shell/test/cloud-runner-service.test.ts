@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -175,6 +176,56 @@ describe("ephemeral cloud runner service", () => {
 			activation_token: repairToken,
 			session_token: null,
 			leases: [],
+			consumed_repair_sha256: createHash("sha256").update(repairToken).digest("hex"),
+		});
+	});
+
+	it("does not wipe repaired authority again while the consumed repair credential lingers", async () => {
+		const root = await serviceRoot();
+		const credentialsDirectory = join(root, "credentials");
+		await mkdir(credentialsDirectory, { mode: 0o700 });
+		await writeFile(join(credentialsDirectory, "qorpera-runner-activation"), `${activationToken}\n`, {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+		const config = parseEphemeralCloudRunnerServiceConfig(configValue(root));
+		await runEphemeralCloudRunnerService({
+			config,
+			credentialsDirectory,
+			signal: new AbortController().signal,
+			runWorker: async () => undefined,
+		});
+		await rm(join(credentialsDirectory, "qorpera-runner-activation"));
+		await writeFile(join(credentialsDirectory, "qorpera-runner-repair"), `${repairToken}\n`, {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+		await runEphemeralCloudRunnerService({
+			config,
+			credentialsDirectory,
+			signal: new AbortController().signal,
+			runWorker: async () => undefined,
+		});
+
+		// Simulate a crash between activation staging and completion: the staged
+		// replay token must survive the next boot even though the consumed repair
+		// credential file was never deleted.
+		const stagedReplayToken = "c".repeat(43);
+		const stored = JSON.parse(await readFile(config.authorityStatePath, "utf-8")) as Record<string, unknown>;
+		stored.pending_activation_token = stagedReplayToken;
+		await writeFile(config.authorityStatePath, `${JSON.stringify(stored)}\n`, { encoding: "utf-8", mode: 0o600 });
+
+		await runEphemeralCloudRunnerService({
+			config,
+			credentialsDirectory,
+			signal: new AbortController().signal,
+			runWorker: async () => undefined,
+		});
+		const after = JSON.parse(await readFile(config.authorityStatePath, "utf-8")) as Record<string, unknown>;
+		expect(after).toMatchObject({
+			activation_token: repairToken,
+			pending_activation_token: stagedReplayToken,
+			consumed_repair_sha256: createHash("sha256").update(repairToken).digest("hex"),
 		});
 	});
 

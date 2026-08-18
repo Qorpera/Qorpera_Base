@@ -444,6 +444,7 @@ interface RestoredRunnerAuthority {
 	pendingClaim?: PendingClaim;
 	runner?: CloudRunner;
 	leases: ActiveRunnerLease[];
+	consumedRepairSha256?: string;
 }
 
 function optionalToken(value: unknown, label: string): string | undefined {
@@ -535,6 +536,13 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 			leaseToken: stateToken(pending.lease_token, "pending claim lease token"),
 		};
 	}
+	let consumedRepairSha256: string | undefined;
+	if (input.consumed_repair_sha256 !== null && input.consumed_repair_sha256 !== undefined) {
+		if (typeof input.consumed_repair_sha256 !== "string" || !SHA256_PATTERN.test(input.consumed_repair_sha256)) {
+			throw new Error("Runner authority state has an invalid repair record");
+		}
+		consumedRepairSha256 = input.consumed_repair_sha256;
+	}
 	const runner = input.runner === null || input.runner === undefined ? undefined : parseCloudRunner(input.runner);
 	if (!Array.isArray(input.leases)) throw new Error("Runner authority state contains invalid leases");
 	const leases = input.leases.map((value): ActiveRunnerLease => {
@@ -575,6 +583,7 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 		...(pendingClaim ? { pendingClaim } : {}),
 		...(runner ? { runner } : {}),
 		leases,
+		...(consumedRepairSha256 ? { consumedRepairSha256 } : {}),
 	};
 }
 
@@ -595,6 +604,7 @@ export class DisposableCloudRunner {
 	#pendingHeartbeat?: PendingHeartbeat;
 	#pendingClaim?: PendingClaim;
 	#runner?: CloudRunner;
+	#consumedRepairSha256?: string;
 	readonly #leases = new Map<string, ActiveRunnerLease>();
 	#persistTail: Promise<void> = Promise.resolve();
 
@@ -640,6 +650,7 @@ export class DisposableCloudRunner {
 		instance.#pendingHeartbeat = restored.pendingHeartbeat;
 		instance.#pendingClaim = restored.pendingClaim;
 		instance.#runner = restored.runner;
+		instance.#consumedRepairSha256 = restored.consumedRepairSha256;
 		for (const lease of restored.leases) instance.#leases.set(lease.job.jobId, lease);
 		return instance;
 	}
@@ -650,10 +661,21 @@ export class DisposableCloudRunner {
 		authorityStore: CloudRunnerAuthorityStore,
 		activationToken: string,
 	): Promise<DisposableCloudRunner> {
-		if ((await authorityStore.load()) === undefined) {
+		const stored = await authorityStore.load();
+		if (stored === undefined) {
 			throw new Error("Runner authority repair requires existing state");
 		}
+		// A repair credential can outlive the repair it authorized (the operator
+		// deletes it out of band). Once its hash is recorded in the authority
+		// state, the stored rotating authority is current and must not be wiped
+		// again — re-running the wipe would regenerate the activation replay
+		// token and permanently diverge from the server's consumed binding.
+		const restored = parseRunnerAuthorityState(stored, runnerId);
+		if (restored.consumedRepairSha256 === runnerActivationTokenSha256(activationToken)) {
+			return DisposableCloudRunner.open(transport, runnerId, authorityStore);
+		}
 		const repaired = new DisposableCloudRunner(transport, runnerId, activationToken, authorityStore);
+		repaired.#consumedRepairSha256 = runnerActivationTokenSha256(activationToken);
 		await repaired.#persist();
 		return repaired;
 	}
@@ -985,6 +1007,7 @@ export class DisposableCloudRunner {
 					}
 				: null,
 			runner: this.#runner ? storedRunner(this.#runner) : null,
+			consumed_repair_sha256: this.#consumedRepairSha256 ?? null,
 			leases: [...this.#leases.values()]
 				.sort((left, right) => left.job.jobId.localeCompare(right.job.jobId, "en"))
 				.map((lease) => ({
