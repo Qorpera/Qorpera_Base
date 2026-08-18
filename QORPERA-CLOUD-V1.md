@@ -147,6 +147,12 @@ Each machine stores a company-folder attachment under the shell's user-data dire
 - The hosted staff roster carries `lifecycle_state`, `appearance_creature`, and the per-agent model selection (`model_provider`/`model_id`) so the authoritative cloud replacement cannot downgrade an active agent to setup behavior, strip its appearance, or silently reset its chosen model to the company default. The local replacement writes each agent's instructions file alongside the registry.
 - Routines, connection requests, and credentials are deliberately machine-local standing authority: a company synced to another machine arrives with agents and artifacts but without recurring work or credentials until they are granted there. Hosted placement for these is the declared `hostedCompanyState` capability, not tree snapshots.
 
+## Compute servers (planned)
+
+- Compute servers have internet; agent processes do not. Terminal, browser, and file capabilities are host-side brokers the sandboxed agent requests through job-private channels, following the model-gateway socket pattern. Every brokered action is observable in the trail.
+- Credentials live in a vault agents can request from but never read: the local company vault (OS-protected, `secret://` references dereferenced only kernel-side) extends to the declared `hosted-kms-vault` placement for cloud execution, so compute-server jobs use credentials without the values entering any agent context.
+- Cross-account separation rests on RLS plus security-definer RPCs, profile-scoped object prefixes, and lease-scoped runner reads. Closing DBTEST-1 (role-based behavioral tests for RLS and the grant matrix) is a prerequisite for hosting multiple real customer accounts.
+
 ## Failure model
 
 - If the hosted primary is unavailable, local profiles remain available. A cloud profile with a validated account-bound cache can reopen for reading and contribution; authorization and membership management fail closed, and outbound synchronization retries durably in the background.
@@ -196,7 +202,7 @@ Migration-history note: `20260816003000_profile_promotion_identity.sql` was rena
 22. Record immutable runner resource observations independently from billing attribution. Complete locally: the sandbox reports its applied limits and bounded metrics, v3 completion validates and inserts one idempotent profile/job/actor observation, members can page the ledger, and corrective constraints/triggers prevent mutation or cascade deletion. Production migration and rollback-only QA remain.
 23. Add leased-job model gateway authority and immutable provider observations. Complete locally at the database, Edge request, host transport, explicit authorization, token budget, recoverable ambiguity, exact over-reservation usage, idempotency, bounded response, and secret-separation boundaries. Production deployment and account-entitlement enforcement remain.
 24. Mount a job-private Unix-domain-socket adapter so the networkless sandbox can call the trusted host model broker. Complete locally for protocol, lifecycle, client, worker, packaging, and Podman command boundaries; rerunning the real Linux containment workflow remains.
-25. Set up and register the first real NAS runner only after the hardware, storage, network, backup, isolation, and restore baseline is ready.
+25. Founder decision 2026-08-18: the NAS never runs agent execution. It is the self-owned host for company data; its first data role is object storage for company files once the retention layer no longer queries `storage.objects` directly. Register the first real runner on dedicated compute hardware only after that machine's storage, network, backup, isolation, and restore baseline is ready. Runners receive a forked immutable substrate, operate on it on their own machine, and publish back through the existing atomic child-substrate path; continuous work visibility for long-running agents is a planned slice (checkpointed job chains), with live trail sync already carrying the narrative in real time.
 
 ## Not in this slice
 
