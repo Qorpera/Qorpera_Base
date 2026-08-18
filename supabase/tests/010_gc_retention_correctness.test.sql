@@ -389,7 +389,8 @@ values
 	('50000000-0000-4000-8000-000000000062', repeat('f', 64), 21);
 
 update public.qorpera_object_restore_proofs
-set valid_until = statement_timestamp() - interval '1 minute'
+set verified_at = statement_timestamp() - interval '8 days',
+	valid_until = statement_timestamp() - interval '8 days' + interval '7 days'
 where id in ('50000000-0000-4000-8000-000000000050', '50000000-0000-4000-8000-000000000052');
 
 select set_config('request.jwt.claims', '{"role":"service_role"}', false);
