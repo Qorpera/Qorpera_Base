@@ -73,39 +73,54 @@ if (!notes && !notesFile) fail("one of --notes or --notes-file is required");
 if (notes && notesFile) fail("--notes and --notes-file are mutually exclusive");
 if (notesFile && !existsSync(notesFile)) fail(`notes file not found: ${notesFile}`);
 
-// --- Parse latest.yml --------------------------------------------------------
+// --- Parse latest.yml (and latest-mac.yml when present) ----------------------
+
+// Minimal line-walk of electron-builder's updater manifests: top-level version
+// plus the files list's url/sha512/size triples. A yaml dependency buys
+// nothing here.
+function parseUpdaterManifest(path) {
+	const text = readFileSync(path, "utf8");
+	const version = text.match(/^version:\s*(\S+)\s*$/m)?.[1];
+	if (!version) fail(`could not parse version from ${basename(path)}`);
+	const entries = [];
+	let inFiles = false;
+	for (const line of text.split("\n")) {
+		if (/^files:/.test(line)) {
+			inFiles = true;
+			continue;
+		}
+		if (inFiles && /^\S/.test(line)) inFiles = false;
+		if (!inFiles) continue;
+		const url = line.match(/^\s*-\s*url:\s*(\S+)\s*$/)?.[1];
+		if (url) {
+			entries.push({ url });
+			continue;
+		}
+		const current = entries[entries.length - 1];
+		if (!current) continue;
+		const sha512 = line.match(/^\s*sha512:\s*(\S+)\s*$/)?.[1];
+		if (sha512) current.sha512 = sha512;
+		const size = line.match(/^\s*size:\s*(\d+)\s*$/)?.[1];
+		if (size) current.size = Number(size);
+	}
+	if (entries.length === 0) fail(`could not parse any files entries from ${basename(path)}`);
+	return { version, entries };
+}
 
 const latestYmlPath = join(outDir, "latest.yml");
 if (!existsSync(latestYmlPath)) fail(`${latestYmlPath} not found — run pack-shell.mjs first`);
-const latestYml = readFileSync(latestYmlPath, "utf8");
+const { version, entries: fileEntries } = parseUpdaterManifest(latestYmlPath);
 
-// Minimal line-walk of electron-builder's latest.yml: top-level version plus
-// the files list's url/sha512/size triples. A yaml dependency buys nothing here.
-const version = latestYml.match(/^version:\s*(\S+)\s*$/m)?.[1];
-if (!version) fail("could not parse version from latest.yml");
-
-const fileEntries = [];
-let inFiles = false;
-for (const line of latestYml.split("\n")) {
-	if (/^files:/.test(line)) {
-		inFiles = true;
-		continue;
-	}
-	if (inFiles && /^\S/.test(line)) inFiles = false;
-	if (!inFiles) continue;
-	const url = line.match(/^\s*-\s*url:\s*(\S+)\s*$/)?.[1];
-	if (url) {
-		fileEntries.push({ url });
-		continue;
-	}
-	const current = fileEntries[fileEntries.length - 1];
-	if (!current) continue;
-	const sha512 = line.match(/^\s*sha512:\s*(\S+)\s*$/)?.[1];
-	if (sha512) current.sha512 = sha512;
-	const size = line.match(/^\s*size:\s*(\d+)\s*$/)?.[1];
-	if (size) current.size = Number(size);
+// The mac manifest rides in the same outDir when a mac pack's artifacts have
+// been dropped there (CI builds them; this machine cannot). Optional on
+// purpose: a Windows-only cut must keep working, but when the mac files ARE
+// present they are verified and published with the same rigour, under one
+// release, so both updaters resolve the same version.
+const latestMacYmlPath = join(outDir, "latest-mac.yml");
+const macManifest = existsSync(latestMacYmlPath) ? parseUpdaterManifest(latestMacYmlPath) : undefined;
+if (macManifest && macManifest.version !== version) {
+	fail(`latest-mac.yml is for ${macManifest.version} but latest.yml is for ${version} — mixed-version release refused`);
 }
-if (fileEntries.length === 0) fail("could not parse any files entries from latest.yml");
 
 const shellPkg = JSON.parse(readFileSync(join(repoRoot, "packages", "shell", "package.json"), "utf8"));
 const productVersion = shellPkg.productVersion ?? "0.1.0";
@@ -179,10 +194,18 @@ function locateSource(wantedName) {
 }
 
 const assets = [latestYmlPath];
-for (const entry of fileEntries) {
+if (macManifest) assets.push(latestMacYmlPath);
+
+async function stageAndVerify(entry, manifestName) {
+	// The dmg is for humans, not the updater; electron-builder does not
+	// always emit a blockmap for it, and its absence breaks nothing.
+	const blockmapOptional = entry.url.endsWith(".dmg");
 	for (const wanted of [entry.url, `${entry.url}.blockmap`]) {
 		const source = locateSource(wanted);
-		if (!source) fail(`no file in ${outDir} matching ${wanted}`);
+		if (!source) {
+			if (wanted.endsWith(".blockmap") && blockmapOptional) continue;
+			fail(`no file in ${outDir} matching ${wanted}`);
+		}
 		const target = join(outDir, wanted);
 		if (source !== target) {
 			copyFileSync(source, target);
@@ -193,14 +216,17 @@ for (const entry of fileEntries) {
 	if (entry.sha512) {
 		const actual = await sha512Base64(join(outDir, entry.url));
 		if (actual !== entry.sha512) {
-			fail(`sha512 mismatch for ${entry.url}: latest.yml says ${entry.sha512}, file is ${actual}`);
+			fail(`sha512 mismatch for ${entry.url}: ${manifestName} says ${entry.sha512}, file is ${actual}`);
 		}
 	}
 	if (entry.size !== undefined && statSync(join(outDir, entry.url)).size !== entry.size) {
-		fail(`size mismatch for ${entry.url} vs latest.yml`);
+		fail(`size mismatch for ${entry.url} vs ${manifestName}`);
 	}
-	console.log(`verified ${entry.url} against latest.yml sha512/size`);
+	console.log(`verified ${entry.url} against ${manifestName} sha512/size`);
 }
+
+for (const entry of fileEntries) await stageAndVerify(entry, "latest.yml");
+for (const entry of macManifest?.entries ?? []) await stageAndVerify(entry, "latest-mac.yml");
 
 // --- Create the release and verify what GitHub actually named the assets -----
 
