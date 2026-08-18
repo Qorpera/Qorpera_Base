@@ -433,7 +433,7 @@ values (
 	'20000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000031',
 	'fixture', 'manifest.bin', repeat('1', 64), repeat('1', 64), 42, 'application/octet-stream',
 	'20000000-0000-4000-8000-000000000001', statement_timestamp(),
-	statement_timestamp() + interval '30 days', 'qorpera.company-tree/v1'
+	statement_timestamp() + interval '30 days', 'qorpera.cloud-file-manifest/v1'
 );
 
 insert into storage.objects (bucket_id, name, metadata)
