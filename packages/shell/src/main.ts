@@ -5786,7 +5786,9 @@ function dueRoomDelivery(slot: Slot, root: string): DueRoomDelivery | undefined 
 				(id) => room.participantIds.includes(id) && activeStaffAgent(root, id) !== undefined,
 			);
 			if (servableIds.length !== delivery.targetStaffAgentIds.length) {
-				const pruned = rescheduleCompanyRoomDelivery(root, delivery.id, servableIds);
+				const pruned = rescheduleCompanyRoomDelivery(root, delivery.id, servableIds, undefined, {
+					preserveAttempts: true,
+				});
 				if (!pruned) {
 					sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
 					continue;
@@ -5974,7 +5976,9 @@ async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due:
 						// on a fresh delivery with a clean attempt budget.
 						rescheduleCompanyRoomDelivery(runtime.root, delivery.id, []);
 						sendRoomEvent(slot, { kind: "delivered", roomId: room.id, deliveryId: delivery.id });
-						const survivors = delivery.targetStaffAgentIds.filter((id) => id !== target.id);
+						// The first reschedule already filtered survivors to current
+						// room members; the dispatch-time snapshot may be stale.
+						const survivors = rescheduled.targetStaffAgentIds.filter((id) => id !== target.id);
 						if (survivors.length) {
 							try {
 								const requeued = queueCompanyRoomDelivery(runtime.root, room.id, {
@@ -9045,7 +9049,9 @@ app.whenReady().then(async () => {
 			// the module drops targets that are no longer in the room.
 			for (const delivery of readQueuedCompanyRoomDeliveries(runtime.root, room.id)) {
 				if (delivery.targetStaffAgentIds.some((id) => !room.participantIds.includes(id))) {
-					rescheduleCompanyRoomDelivery(runtime.root, delivery.id, delivery.targetStaffAgentIds);
+					rescheduleCompanyRoomDelivery(runtime.root, delivery.id, delivery.targetStaffAgentIds, undefined, {
+						preserveAttempts: true,
+					});
 				}
 			}
 			commitCompanyMaterialization(runtime.root, roomMaterializationPaths(room.id));

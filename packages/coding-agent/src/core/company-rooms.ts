@@ -882,6 +882,7 @@ export function rescheduleCompanyRoomDelivery(
 	deliveryId: string,
 	targetStaffAgentIds: readonly string[],
 	lastError?: string,
+	options?: { preserveAttempts?: boolean },
 ): QueuedCompanyRoomDelivery | undefined {
 	const registry = readDeliveryRegistry(root);
 	const current = registry.deliveries[checkedRoomId(deliveryId)];
@@ -904,20 +905,23 @@ export function rescheduleCompanyRoomDelivery(
 		return undefined;
 	}
 	const error = lastError === undefined ? undefined : boundedText(lastError.trim(), "delivery error", 1_024);
-	// attempts counts CONSECUTIVE failures: a successful turn resets it so one
+	// attempts counts CONSECUTIVE failures: a served turn resets it so one
 	// participant's earlier failures never spend another participant's budget.
-	const attempts = error ? Math.min(1_000, current.attempts + 1) : 0;
+	// A target-only prune (preserveAttempts) is neither a success nor a
+	// failure and must not refresh a failing target's retry budget.
+	const attempts = error ? Math.min(1_000, current.attempts + 1) : options?.preserveAttempts ? current.attempts : 0;
 	const delay = error ? Math.min(60_000, 1_000 * 2 ** Math.min(attempts - 1, 6)) : 0;
 	const updatedAt = new Date().toISOString();
 	const delivery: QueuedCompanyRoomDelivery = {
 		...current,
 		targetStaffAgentIds: targets,
 		attempts,
-		nextAttemptAt: new Date(Date.now() + delay).toISOString(),
+		nextAttemptAt:
+			options?.preserveAttempts && !error ? current.nextAttemptAt : new Date(Date.now() + delay).toISOString(),
 		updatedAt,
 	};
 	if (error) delivery.lastError = error;
-	else delete delivery.lastError;
+	else if (!options?.preserveAttempts) delete delivery.lastError;
 	registry.deliveries[delivery.id] = delivery;
 	writeDeliveryRegistry(root, registry);
 	return cloneDelivery(delivery);
