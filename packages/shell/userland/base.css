@@ -2553,6 +2553,11 @@ input[type="range"],
 	width: auto; min-height: 32px; padding: 0 12px; border: 1px solid #d7d7d3; border-radius: 9px;
 	background: #e7e7e4; color: #232321; font-size: 12px;
 }
+.general-company-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 290px; }
+.general-company-actions button {
+	width: auto; min-height: 32px; padding: 0 12px; border: 1px solid #d7d7d3; border-radius: 9px;
+	background: #e7e7e4; color: #232321; font-size: 12px;
+}
 .general-account-mark {
 	display: grid; place-items: center; width: 42px; height: 42px; border: 1px solid #d7d7d3;
 	border-radius: 50%; background: #e7e7e4; color: #5f5f5b; font-size: 13px; font-weight: 650;
@@ -2940,9 +2945,8 @@ html[data-staff-avatar-style="simple"] .hidden-staff-row.archived-room-row { gri
 	.msg.user, .msg.assistant, .composer-more-menu { border: 1px solid CanvasText; forced-color-adjust: auto; }
 }
 
-/* Company creation uses the same quiet, image-led grammar as staff creation.
- * The picker contains the exact folder-mascot assets selected for Qorpera's
- * company identity; the native caption remains part of one white titlebar. */
+/* Company creation uses a neutral anonymous profile until the signed-in user
+ * chooses a private picture from this computer. */
 body.hub #titlebar { z-index: 4001; background: #fff; }
 #companyModal { top: var(--titlebar-height); }
 .company-modal {
@@ -2957,45 +2961,37 @@ body.hub #titlebar { z-index: 4001; background: #fff; }
 	min-height: 108px;
 	margin: 2px 0 10px;
 }
-.company-icon-stage img {
-	display: block;
+.company-icon-stage .company-icon {
 	width: 92px;
 	height: 92px;
-	object-fit: contain;
 }
-.company-icon-picker {
+.company-picture-actions {
 	display: flex;
 	justify-content: center;
-	gap: 10px;
+	gap: 7px;
+	margin: 0 0 8px;
+}
+.company-picture-actions button { min-height: 34px; padding-inline: 12px; }
+.company-picture-note {
 	margin: 0 0 18px;
-}
-.company-icon-choice {
-	display: grid;
-	place-items: center;
-	width: 48px;
-	height: 48px;
-	min-height: 48px;
-	padding: 4px;
-	border: 1px solid transparent;
-	border-radius: 12px;
-	background: transparent;
-}
-.company-icon-choice:hover:not(:disabled) { border-color: transparent; background: #eeeeec; }
-.company-icon-choice[aria-checked="true"] {
-	border-color: #aeb7c2;
-	background: #f3f4f5;
-	box-shadow: 0 0 0 2px #fff, 0 0 0 3px #aeb7c2;
-}
-.company-icon-choice .company-icon {
-	width: 38px;
-	height: 38px;
+	color: var(--text-soft);
+	font-size: 10.5px;
+	line-height: 1.35;
+	text-align: center;
 }
 .company-icon {
-	display: block;
+	display: grid;
+	place-items: center;
 	width: 100%;
 	height: 100%;
+	overflow: hidden;
+	border: 1px solid #d8d8d4;
+	border-radius: 50%;
+	background: #efefed;
+	color: #777773;
 }
-.company-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.company-icon svg { display: block; width: 56%; height: 56%; stroke-linecap: round; stroke-linejoin: round; }
+.company-icon img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .company-modal .company-name-input:focus,
 .company-modal .company-name-input:focus-visible {
 	border-color: #c9c9c6;
@@ -3010,9 +3006,7 @@ body.hub #titlebar { z-index: 4001; background: #fff; }
 .company-switcher-mark .company-icon { width: 100%; height: 100%; }
 body.hub .company-card .company-avatar { width: 72px; height: 72px; }
 
-@media (forced-colors: active) {
-	.company-icon-choice[aria-checked="true"] { outline: 2px solid Highlight; }
-}
+@media (forced-colors: active) { .company-icon { border-color: CanvasText; } }
 
 /* Character choice is independent of role. The existing color token remains
  * the activity/emote accent and powers the optional simple-agent style. */

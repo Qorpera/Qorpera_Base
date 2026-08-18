@@ -155,6 +155,8 @@ import {
 	shell as electronShell,
 	ipcMain,
 	Menu,
+	type NativeImage,
+	nativeImage,
 	type Session,
 	safeStorage,
 	Tray,
@@ -1494,15 +1496,15 @@ function hideCloudProfileForAccount(userData: string, accountId: string, profile
 const DEFAULT_ICON = join(DIRNAME, "assets", process.platform === "win32" ? "qorpera.ico" : "qorpera.png");
 const TITLE_BAR_OVERLAY = { color: "#ffffff", symbolColor: "#111111", height: 40 } as const;
 
-function companyWindowIcon(root: string): string {
+function companyWindowIcon(root: string): string | NativeImage {
 	if (!currentQorperaAccountId) return DEFAULT_ICON;
 	const iconId = readCompanyIcon(app.getPath("userData"), currentQorperaAccountId, root);
-	return join(FIXED_SHELL_DIR, "profile-icons", `${iconId}.png`);
+	return iconId.startsWith("data:") ? nativeImage.createFromDataURL(iconId) : DEFAULT_ICON;
 }
 
-function setWindowIcon(win: BrowserWindow, iconPath: string): void {
+function setWindowIcon(win: BrowserWindow, icon: string | NativeImage): void {
 	try {
-		win.setIcon(iconPath);
+		win.setIcon(icon);
 	} catch {
 		// an unreadable/corrupt image must never take the window down
 	}
@@ -8430,6 +8432,22 @@ app.whenReady().then(async () => {
 			return { root: result.root, cloudError: error instanceof Error ? error.message : String(error) };
 		}
 	});
+	ipcMain.handle("company:set-icon", async (event, companyIcon: unknown) => {
+		const slot = slotOf(event.sender);
+		const root = slot?.runtime?.root;
+		if (!slot || !root || !isCompanyIconId(companyIcon)) {
+			return { ok: false, error: "invalid company picture" };
+		}
+		const account = await authenticatedAccount();
+		if (!account?.user) return { ok: false, error: "Sign in before changing a company picture." };
+		try {
+			writeCompanyIcon(app.getPath("userData"), account.user.id, root, companyIcon);
+			setWindowIcon(slot.window, companyWindowIcon(root));
+			return { ok: true, companyIcon };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
 	ipcMain.handle("company:integrate", async (event, dir: string, from: string) => {
 		if (!isTrustedHubSender(event.sender) || typeof dir !== "string" || !dir.trim() || typeof from !== "string") {
 			return;
@@ -9436,7 +9454,13 @@ app.whenReady().then(async () => {
 		}
 		return {
 			account,
-			company: slot?.runtime ? { root: slot.runtime.root } : undefined,
+			company:
+				slot?.runtime && account?.user
+					? {
+							root: slot.runtime.root,
+							companyIcon: readCompanyIcon(app.getPath("userData"), account.user.id, slot.runtime.root),
+						}
+					: undefined,
 			profile:
 				root && attachment
 					? {
