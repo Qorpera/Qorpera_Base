@@ -38,6 +38,7 @@
 		"profile:tui": "node scripts/profile-coding-agent-node.mjs --mode tui",
 		"profile:rpc": "node scripts/profile-coding-agent-node.mjs --mode rpc",
 		"test": "npm run test:scripts && npm run test --workspaces --if-present",
+		"test:hosted-db": "node scripts/test-hosted-db.mjs",
 		"test:scripts": "node --test scripts/*.test.mjs",
 		"version:patch": "npm version patch -ws --no-git-tag-version && node scripts/sync-versions.js && npm install --package-lock-only --ignore-scripts",
 		"version:minor": "npm version minor -ws --no-git-tag-version && node scripts/sync-versions.js && npm install --package-lock-only --ignore-scripts",
@@ -56,6 +57,7 @@
 		"prepare": "husky",
 		"shell": "electron packages/shell/dist/main.js",
 		"pack:shell": "npm run build:offline && node scripts/pack-shell.mjs",
+		"pack:ephemeral-runner": "node scripts/package-ephemeral-runner.mjs",
 		"publish:shell": "node scripts/publish-shell-release.mjs"
 	},
 	"devDependencies": {

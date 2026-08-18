@@ -24,6 +24,7 @@ import {
 	watch,
 	writeFileSync,
 } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -168,6 +169,22 @@ import {
 	writeSandboxProfile,
 } from "./agent-runtime.ts";
 import { migrateCompanyToAgentsOnly } from "./agents-only-company-migration.ts";
+import { CloudProfileAccessRefresh } from "./cloud-access-refresh.ts";
+import { type CloudCompanyInbox, CloudCompanyWorkspaceInboxSync } from "./cloud-company-inbox.ts";
+import {
+	inspectCloudCompanyMerge,
+	mergeCloudCompanySnapshots,
+	previewCloudCompanySnapshot,
+} from "./cloud-company-merge.ts";
+import { CloudCompanyPublication } from "./cloud-company-publication.ts";
+import { currentCloudCompanyTreeReference, materializeCloudCompanyTree } from "./cloud-company-snapshot.ts";
+import { CloudCompanySubstrate } from "./cloud-company-substrate.ts";
+import { CloudCompanyWorkspaceState } from "./cloud-company-workspace.ts";
+import { publishCompanySnapshotRestoreProofIfDue } from "./cloud-object-reachability.ts";
+import { CloudProfileRealtimeSync, type CloudRealtimeChange, type CloudRealtimeHealth } from "./cloud-realtime-sync.ts";
+import { CloudStaffSynchronizer } from "./cloud-staff-sync.ts";
+import { type CloudSyncHealth, cloudSyncErrorIsRetryable, DurableCloudSyncLoop } from "./cloud-sync-loop.ts";
+import { CloudTrailSynchronizer } from "./cloud-trail-sync.ts";
 import {
 	type CompanyIconId,
 	DEFAULT_COMPANY_ICON_ID,
@@ -246,6 +263,13 @@ import {
 	GITHUB_CONNECTION_DESTINATIONS,
 } from "./github-company-connector.ts";
 import { connectGitHubCli, readGitHubCliStatus } from "./github-connection.ts";
+import type { HostedIncomingProfileInvitation, HostedProfile, HostedProfileTeam } from "./hosted-primary.ts";
+import {
+	cacheHostedProfiles,
+	cacheHostedTeam,
+	loadHostedProfileCache,
+	offlineHostedProfileTeam,
+} from "./hosted-profile-cache.ts";
 import { createHttpRequestBroker, type HttpRequestBroker } from "./http-request-broker.ts";
 import {
 	clearIntelligenceAccountBinding,
@@ -268,6 +292,36 @@ import {
 } from "./local-execution.ts";
 import { ModelAccountStore, type ModelAccountView } from "./model-accounts.ts";
 import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
+import { hostedProfileAccess } from "./profile-collaboration.ts";
+import {
+	attachCloudProfile,
+	beginProfilePromotion,
+	completeProfilePromotion,
+	ensureProfileAttachment,
+	failProfilePromotion,
+	forgetProfileAttachment,
+	type ProfileAttachment,
+	profileIdentityKey,
+	readProfileAttachment,
+	recordProfilePromotionCloudIdentity,
+} from "./profile-identity.ts";
+import { profileInvitationIdFromArgv, profileInvitationIdFromProtocolUrl } from "./profile-invitation-handoff.ts";
+import {
+	cancelProfileInvitation,
+	claimProfile,
+	claimUnownedProfiles,
+	forgetProfile,
+	inviteProfileMember,
+	PROFILE_MEMBER_ROLES,
+	type ProfileAccess,
+	type ProfileCapability,
+	type ProfileMemberRole,
+	profileAccessFor,
+	profileTeamInfo,
+	removeProfileMember,
+	updateProfileMemberRole,
+} from "./profile-ownership.ts";
+import { type ProductContext, productContext } from "./profile-product.ts";
 import {
 	isRendererRequestAllowed,
 	lockDownRendererSession,
@@ -781,10 +835,30 @@ let modelAccountUsageRefreshedAt = 0;
 let modelAccountUsageRefreshInFlight: Promise<ModelAccountView[]> | undefined;
 let qorperaAccountAuth: QorperaAccountAuth | undefined;
 let currentQorperaAccountId: string | undefined;
+const hostedProfilesById = new Map<string, HostedProfile>();
+const hostedTeamsByProfileId = new Map<string, HostedProfileTeam>();
+const freshHostedTeamProfileIds = new Set<string>();
+const restrictedHostedAccessProfileIds = new Set<string>();
+const hostedAccessRefreshes = new Map<string, CloudProfileAccessRefresh>();
 let downloadedUpdateVersion: string | undefined;
+let pendingProfileInvitationId = profileInvitationIdFromArgv(process.argv);
+let profileInvitationHandoffInFlight = false;
 
 function rememberAuthenticatedAccount(account: QorperaAccountInfo): QorperaAccountInfo {
-	currentQorperaAccountId = account.authenticated && account.user ? account.user.id : undefined;
+	const nextAccountId = account.authenticated && account.user ? account.user.id : undefined;
+	if (nextAccountId !== currentQorperaAccountId) {
+		hostedProfilesById.clear();
+		hostedTeamsByProfileId.clear();
+		freshHostedTeamProfileIds.clear();
+		restrictedHostedAccessProfileIds.clear();
+		hostedAccessRefreshes.clear();
+		if (nextAccountId) {
+			const cached = loadHostedProfileCache(app.getPath("userData"), nextAccountId);
+			for (const profile of cached.profiles) hostedProfilesById.set(profile.profileId, profile);
+			for (const [profileId, team] of Object.entries(cached.teams)) hostedTeamsByProfileId.set(profileId, team);
+		}
+	}
+	currentQorperaAccountId = nextAccountId;
 	modelAccountStore?.setActiveOwner(currentQorperaAccountId);
 	modelAccountUsageRefreshedAt = 0;
 	return account;
@@ -802,17 +876,194 @@ async function authenticatedAccount(): Promise<QorperaAccountInfo | undefined> {
 		return account.authenticated && account.user ? account : undefined;
 	} catch {
 		currentQorperaAccountId = undefined;
+		hostedProfilesById.clear();
+		hostedTeamsByProfileId.clear();
+		freshHostedTeamProfileIds.clear();
+		restrictedHostedAccessProfileIds.clear();
+		hostedAccessRefreshes.clear();
 		return undefined;
 	}
 }
 
 function claimExistingCompanies(account: QorperaAccountInfo): void {
 	if (!account.user) return;
+	const userData = app.getPath("userData");
 	claimUnownedCompanies(
-		app.getPath("userData"),
+		userData,
 		account.user.id,
 		listCompanies().map((company) => company.root),
 	);
+	const localRoots = listCompanies()
+		.map((company) => company.root)
+		.filter((root) => ensureProfileAttachment(userData, root).profileType === "local");
+	claimUnownedProfiles(userData, account.user, localRoots);
+}
+
+async function refreshHostedProfiles(): Promise<HostedProfile[]> {
+	const primary = qorperaAccountAuth?.hostedPrimary();
+	if (!primary || !currentQorperaAccountId) return [];
+	const profiles = await primary.listProfiles();
+	hostedProfilesById.clear();
+	for (const profile of profiles) hostedProfilesById.set(profile.profileId, profile);
+	for (const profileId of hostedTeamsByProfileId.keys()) {
+		if (!hostedProfilesById.has(profileId)) {
+			hostedTeamsByProfileId.delete(profileId);
+			freshHostedTeamProfileIds.delete(profileId);
+		}
+	}
+	try {
+		cacheHostedProfiles(app.getPath("userData"), currentQorperaAccountId, profiles);
+	} catch (error) {
+		console.error(
+			`Cloud profile cache could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	return profiles;
+}
+
+async function refreshHostedTeam(profileId: string): Promise<HostedProfileTeam> {
+	const primary = qorperaAccountAuth?.hostedPrimary();
+	if (!primary || !currentQorperaAccountId) throw new Error("Sign in to access this cloud profile.");
+	const team = await primary.profileTeam(profileId);
+	hostedTeamsByProfileId.set(profileId, team);
+	freshHostedTeamProfileIds.add(profileId);
+	try {
+		cacheHostedTeam(app.getPath("userData"), currentQorperaAccountId, team);
+	} catch (error) {
+		console.error(`Cloud team cache could not be saved: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	return team;
+}
+
+function effectiveHostedTeam(profileId: string): HostedProfileTeam | undefined {
+	if (restrictedHostedAccessProfileIds.has(profileId)) return undefined;
+	const team = hostedTeamsByProfileId.get(profileId);
+	if (!team || freshHostedTeamProfileIds.has(profileId)) return team;
+	return offlineHostedProfileTeam(team);
+}
+
+function profileAttachment(root: string): ProfileAttachment {
+	return ensureProfileAttachment(app.getPath("userData"), root);
+}
+
+async function promoteProfileRoot(
+	root: string,
+	profileName: string,
+): Promise<{
+	profile: HostedProfile;
+	team: HostedProfileTeam;
+	attachment: ProfileAttachment;
+}> {
+	if (!qorperaAccountAuth || !currentQorperaAccountId) throw new Error("Sign in to promote this profile.");
+	const userData = app.getPath("userData");
+	const current = profileAttachment(root);
+	if (current.profileType === "cloud" && !current.promotion) {
+		throw new Error("This profile is already attached to a cloud profile.");
+	}
+	const prepared = beginProfilePromotion(userData, root);
+	const promotion = prepared.promotion;
+	if (!promotion) throw new Error("Profile promotion could not be prepared.");
+	try {
+		const profile = await qorperaAccountAuth.hostedPrimary().createProfile({
+			profileName,
+			environmentName: profileName,
+			contractVersion: 1,
+			promotionId: promotion.promotionId,
+		});
+		recordProfilePromotionCloudIdentity(userData, root, {
+			profileId: profile.profileId,
+			environmentId: profile.environmentId,
+		});
+		await new CloudStaffSynchronizer({
+			root,
+			userData,
+			profileId: profile.profileId,
+			primary: qorperaAccountAuth.hostedPrimary(),
+			canWrite: () => true,
+		}).sync();
+		hostedProfilesById.set(profile.profileId, profile);
+		attachCloudProfile(userData, root, {
+			profileId: profile.profileId,
+			environmentId: profile.environmentId,
+		});
+		const team = await refreshHostedTeam(profile.profileId);
+		const runtime = slotForCompany(root)?.runtime;
+		if (runtime) {
+			await installCloudStaffSync(runtime);
+			await installCloudTrailSync(runtime);
+			installCloudCompanySync(runtime);
+		}
+		const attachment = completeProfilePromotion(userData, root);
+		return { profile, team, attachment };
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		failProfilePromotion(userData, root, message);
+		throw error;
+	}
+}
+
+function activeProfileAccess(root: string): ProfileAccess | undefined {
+	const attachment = profileAttachment(root);
+	if (attachment.profileType === "cloud") {
+		if (!currentQorperaAccountId) return undefined;
+		if (restrictedHostedAccessProfileIds.has(attachment.profileId)) return undefined;
+		const team = effectiveHostedTeam(attachment.profileId);
+		return team ? hostedProfileAccess(team) : undefined;
+	}
+	if (currentQorperaAccountId) {
+		return profileAccessFor(app.getPath("userData"), currentQorperaAccountId, root);
+	}
+	return IS_SMOKE
+		? {
+				role: "owner",
+				ownerUserId: "00000000-0000-4000-8000-000000000000",
+				capabilities: { read: true, write: true, authorize: true, manageMembers: true },
+			}
+		: undefined;
+}
+
+async function refreshProfileAccess(root: string): Promise<ProfileAccess | undefined> {
+	const attachment = profileAttachment(root);
+	if (attachment.profileType === "local") return activeProfileAccess(root);
+	try {
+		const access = hostedProfileAccess(await refreshHostedTeam(attachment.profileId));
+		if (!hostedAccessRefreshes.get(attachment.profileId)?.refreshing()) {
+			restrictedHostedAccessProfileIds.delete(attachment.profileId);
+		}
+		return access;
+	} catch (error) {
+		if (!cloudSyncErrorIsRetryable(error)) {
+			hostedProfilesById.delete(attachment.profileId);
+			hostedTeamsByProfileId.delete(attachment.profileId);
+			freshHostedTeamProfileIds.delete(attachment.profileId);
+			restrictedHostedAccessProfileIds.add(attachment.profileId);
+			return undefined;
+		}
+		const cached = effectiveHostedTeam(attachment.profileId);
+		if (cached) return hostedProfileAccess(cached);
+		throw error;
+	}
+}
+
+function slotHasProfileCapability(slot: Slot, capability: ProfileCapability): boolean {
+	const root = slot.runtime?.root;
+	if (!root) return false;
+	if (IS_SMOKE) return true;
+	const access = activeProfileAccess(root);
+	if (!access) return false;
+	return capability === "manage-members" ? access.capabilities.manageMembers : access.capabilities[capability];
+}
+
+function profilePermissionError(capability: ProfileCapability): { ok: false; error: string } {
+	return {
+		ok: false,
+		error:
+			capability === "write"
+				? "This profile is read-only for your account."
+				: capability === "authorize"
+					? "Full profile access is required to authorize this action."
+					: "Full profile access is required to manage members.",
+	};
 }
 
 function shellVersion(): string {
@@ -855,6 +1106,20 @@ interface CompanyRuntime {
 	/** Prevent overlapping GitHub event polls for this open company. */
 	routineTriggerPolling?: boolean;
 	inventoryWatcher?: ReturnType<typeof watch>;
+	cloudTrailSync?: CloudTrailSynchronizer;
+	cloudTrailSyncLoop?: DurableCloudSyncLoop;
+	cloudTrailSyncHealth?: CloudSyncHealth;
+	cloudStaffSync?: CloudStaffSynchronizer;
+	cloudStaffSyncLoop?: DurableCloudSyncLoop;
+	cloudStaffSyncHealth?: CloudSyncHealth;
+	cloudRealtimeSync?: CloudProfileRealtimeSync;
+	cloudRealtimeHealth?: CloudRealtimeHealth;
+	cloudCompanyPublication?: CloudCompanyPublication;
+	cloudCompanyPublicationHealth?: CloudSyncHealth;
+	cloudCompanySubstrate?: CloudCompanySubstrate;
+	cloudCompanyInboxSync?: CloudCompanyWorkspaceInboxSync;
+	cloudCompanyInboxHealth?: CloudSyncHealth;
+	cloudCompanyInbox?: CloudCompanyInbox;
 	pendingInventoryRestart: boolean;
 	pendingStaffContextRestart: boolean;
 	/** Connector setup recovery is attempted once per durable request during
@@ -870,6 +1135,259 @@ interface CompanyRuntime {
 	closing: boolean;
 	closePromise?: Promise<void>;
 	runtimeLock: CompanyRuntimeLock;
+}
+
+function liveTrailBindings(runtime: CompanyRuntime): TrailBinding[] {
+	const bindings = [
+		runtime.child ? childBindings.get(runtime.child) : undefined,
+		runtime.wakeChild ? childBindings.get(runtime.wakeChild) : undefined,
+	];
+	return bindings.filter((binding): binding is TrailBinding => binding !== undefined);
+}
+
+function createCloudTrailSynchronizer(
+	root: string,
+	liveBindings: () => Iterable<TrailBinding>,
+	onMaterialized: (binding: TrailBinding) => void,
+): CloudTrailSynchronizer | undefined {
+	const attachment = profileAttachment(root);
+	const primary = qorperaAccountAuth?.hostedPrimary();
+	if (attachment.profileType !== "cloud" || !primary || !currentQorperaAccountId) return undefined;
+	return new CloudTrailSynchronizer({
+		root,
+		userData: app.getPath("userData"),
+		profileId: attachment.profileId,
+		environmentId: attachment.environmentId,
+		primary,
+		canWrite: () => activeProfileAccess(root)?.capabilities.write === true,
+		liveBindings,
+		onMaterialized,
+	});
+}
+
+function createCloudStaffSynchronizer(root: string): CloudStaffSynchronizer | undefined {
+	const attachment = profileAttachment(root);
+	const primary = qorperaAccountAuth?.hostedPrimary();
+	if (attachment.profileType !== "cloud" || !primary || !currentQorperaAccountId) return undefined;
+	return new CloudStaffSynchronizer({
+		root,
+		userData: app.getPath("userData"),
+		profileId: attachment.profileId,
+		primary,
+		canWrite: () => activeProfileAccess(root)?.capabilities.write === true,
+	});
+}
+
+function recordCloudSyncHealth(runtime: CompanyRuntime, channel: "staff" | "trail", health: CloudSyncHealth): void {
+	const previous = channel === "staff" ? runtime.cloudStaffSyncHealth : runtime.cloudTrailSyncHealth;
+	if (channel === "staff") runtime.cloudStaffSyncHealth = health;
+	else runtime.cloudTrailSyncHealth = health;
+	if (health.lastError && health.lastError !== previous?.lastError) {
+		console.error(`cloud ${channel} sync ${health.phase}: ${health.lastError}`);
+	}
+}
+
+function createCloudStaffSyncLoop(runtime: CompanyRuntime): DurableCloudSyncLoop | undefined {
+	const sync = runtime.cloudStaffSync;
+	const attachment = profileAttachment(runtime.root);
+	if (!sync || attachment.profileType !== "cloud") return undefined;
+	const loop = new DurableCloudSyncLoop({
+		root: runtime.root,
+		userData: app.getPath("userData"),
+		profileId: attachment.profileId,
+		channel: "staff",
+		sync: () => sync.sync(),
+		onHealth: (health) => recordCloudSyncHealth(runtime, "staff", health),
+	});
+	recordCloudSyncHealth(runtime, "staff", loop.health());
+	return loop;
+}
+
+function startCloudStaffSync(runtime: CompanyRuntime): void {
+	if (!runtime.cloudStaffSync || runtime.closing) return;
+	if (!runtime.cloudStaffSyncLoop) runtime.cloudStaffSyncLoop = createCloudStaffSyncLoop(runtime);
+	runtime.cloudStaffSyncLoop?.start();
+}
+
+function triggerCloudStaffSync(runtime: CompanyRuntime): void {
+	if (!runtime.cloudStaffSync || runtime.closing) return;
+	startCloudStaffSync(runtime);
+	void runtime.cloudStaffSyncLoop?.trigger().catch((error) => {
+		console.error(
+			`cloud staff sync state could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	});
+}
+
+async function installCloudStaffSync(runtime: CompanyRuntime): Promise<void> {
+	if (!runtime.cloudStaffSync) runtime.cloudStaffSync = createCloudStaffSynchronizer(runtime.root);
+	if (!runtime.cloudStaffSync) return;
+	startCloudStaffSync(runtime);
+	const health = await runtime.cloudStaffSyncLoop!.trigger();
+	if (health.phase !== "healthy") throw new Error(health.lastError ?? "Cloud staff synchronization failed");
+}
+
+function createCloudTrailSyncLoop(runtime: CompanyRuntime): DurableCloudSyncLoop | undefined {
+	const sync = runtime.cloudTrailSync;
+	const attachment = profileAttachment(runtime.root);
+	if (!sync || attachment.profileType !== "cloud") return undefined;
+	const loop = new DurableCloudSyncLoop({
+		root: runtime.root,
+		userData: app.getPath("userData"),
+		profileId: attachment.profileId,
+		channel: "trail",
+		sync: () => sync.sync(),
+		onHealth: (health) => recordCloudSyncHealth(runtime, "trail", health),
+	});
+	recordCloudSyncHealth(runtime, "trail", loop.health());
+	return loop;
+}
+
+function startCloudTrailSync(runtime: CompanyRuntime): void {
+	if (!runtime.cloudTrailSync || runtime.closing) return;
+	if (!runtime.cloudTrailSyncLoop) runtime.cloudTrailSyncLoop = createCloudTrailSyncLoop(runtime);
+	runtime.cloudTrailSyncLoop?.start();
+}
+
+function triggerCloudTrailSync(runtime: CompanyRuntime): void {
+	if (!runtime.cloudTrailSync || runtime.closing) return;
+	startCloudTrailSync(runtime);
+	void runtime.cloudTrailSyncLoop?.trigger().catch((error) => {
+		console.error(
+			`cloud trail sync state could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	});
+}
+
+async function installCloudTrailSync(runtime: CompanyRuntime): Promise<void> {
+	if (!runtime.cloudTrailSync) {
+		runtime.cloudTrailSync = createCloudTrailSynchronizer(
+			runtime.root,
+			() => liveTrailBindings(runtime),
+			(binding) => runtime.sessions.rememberAudit(binding),
+		);
+	}
+	if (!runtime.cloudTrailSync) return;
+	startCloudTrailSync(runtime);
+	const health = await runtime.cloudTrailSyncLoop!.trigger();
+	if (health.phase !== "healthy") throw new Error(health.lastError ?? "Cloud trail synchronization failed");
+}
+
+function recordCloudCompanyHealth(
+	runtime: CompanyRuntime,
+	channel: "publication" | "inbox",
+	health: CloudSyncHealth,
+): void {
+	const previous = channel === "publication" ? runtime.cloudCompanyPublicationHealth : runtime.cloudCompanyInboxHealth;
+	if (channel === "publication") runtime.cloudCompanyPublicationHealth = health;
+	else runtime.cloudCompanyInboxHealth = health;
+	if (health.lastError && health.lastError !== previous?.lastError) {
+		console.error(`cloud company ${channel} ${health.phase}: ${health.lastError}`);
+	}
+}
+
+function installCloudCompanySync(runtime: CompanyRuntime): void {
+	if (runtime.closing) return;
+	const attachment = profileAttachment(runtime.root);
+	const primary = qorperaAccountAuth?.hostedPrimary();
+	const objects = qorperaAccountAuth?.hostedObjects();
+	if (attachment.profileType !== "cloud" || !primary || !objects || !currentQorperaAccountId) return;
+	const state = CloudCompanyWorkspaceState.open(
+		app.getPath("userData"),
+		attachment.profileId,
+		attachment.environmentId,
+		runtime.root,
+	);
+	if (!runtime.cloudCompanyInboxSync) {
+		runtime.cloudCompanyInboxSync = new CloudCompanyWorkspaceInboxSync({
+			userData: app.getPath("userData"),
+			companyRoot: runtime.root,
+			profileId: attachment.profileId,
+			environmentId: attachment.environmentId,
+			localClientWorkspaceId: state.binding.clientWorkspaceId,
+			primary,
+			onHealth: (health) => recordCloudCompanyHealth(runtime, "inbox", health),
+			onInbox: (inbox) => {
+				runtime.cloudCompanyInbox = inbox;
+				const slot = slotForCompany(runtime.root);
+				if (slot && !slot.window.isDestroyed()) send(slot.window, "cloud-company-inbox", inbox);
+			},
+		});
+		runtime.cloudCompanyInbox = runtime.cloudCompanyInboxSync.inbox();
+		recordCloudCompanyHealth(runtime, "inbox", runtime.cloudCompanyInboxSync.health());
+		runtime.cloudCompanyInboxSync.start();
+	}
+	if (!runtime.cloudCompanyPublication && activeProfileAccess(runtime.root)?.capabilities.write) {
+		runtime.cloudCompanySubstrate ??= new CloudCompanySubstrate({
+			userData: app.getPath("userData"),
+			companyRoot: runtime.root,
+			profileId: attachment.profileId,
+			environmentId: attachment.environmentId,
+			primary,
+		});
+		runtime.cloudCompanyPublication = new CloudCompanyPublication({
+			userData: app.getPath("userData"),
+			companyRoot: runtime.root,
+			profileId: attachment.profileId,
+			environmentId: attachment.environmentId,
+			workspaceName: hostname().trim() || "This computer",
+			primary,
+			objects,
+			runtimeLock: runtime.runtimeLock,
+			runCheckpoint: (checkpoint) =>
+				enqueueRuntimeTransition(runtime, async () => {
+					if (runtime.closing) throw new Error("Cloud company publication stopped while the profile was closing");
+					if (runtime.wakeChild || isChildBusy(runtime.child)) {
+						throw new Error("Cloud company publication is waiting for the active agent run to finish");
+					}
+					return checkpoint();
+				}),
+			onCheckpoint: async (checkpoint) => {
+				await installCloudStaffSync(runtime);
+				await installCloudTrailSync(runtime);
+				await publishCompanySnapshotRestoreProofIfDue({
+					userData: app.getPath("userData"),
+					companyRoot: runtime.root,
+					snapshot: checkpoint.snapshot,
+					store: objects,
+					primary,
+				});
+				await runtime.cloudCompanySubstrate!.publish(checkpoint.snapshot);
+				void runtime.cloudCompanyInboxSync?.refreshNow();
+			},
+			onHealth: (health) => recordCloudCompanyHealth(runtime, "publication", health),
+			onWatcherError: (error) => console.error(`cloud company watcher unavailable: ${error.message}`),
+		});
+		recordCloudCompanyHealth(runtime, "publication", runtime.cloudCompanyPublication.health());
+		runtime.cloudCompanyPublication.start();
+	}
+}
+
+function recordCloudRealtimeHealth(runtime: CompanyRuntime, health: CloudRealtimeHealth): void {
+	const previous = runtime.cloudRealtimeHealth;
+	runtime.cloudRealtimeHealth = health;
+	if (health.error && health.error !== previous?.error)
+		console.error(`cloud realtime ${health.phase}: ${health.error}`);
+}
+
+function startCloudRealtimeSync(runtime: CompanyRuntime): void {
+	if (runtime.cloudRealtimeSync || runtime.closing) return;
+	const attachment = profileAttachment(runtime.root);
+	const transport = qorperaAccountAuth?.hostedRealtime();
+	if (attachment.profileType !== "cloud" || !transport || !currentQorperaAccountId) return;
+	runtime.cloudRealtimeSync = new CloudProfileRealtimeSync({
+		profileId: attachment.profileId,
+		transport,
+		onChange: (change: CloudRealtimeChange) => {
+			if (runtime.closing) return;
+			if (change.resource === "trail") triggerCloudTrailSync(runtime);
+			else if (change.resource === "staff") triggerCloudStaffSync(runtime);
+			else if (change.resource === "workspace") runtime.cloudCompanyInboxSync?.handleRealtimeChange(change);
+			else triggerHostedAccessRefresh(attachment.profileId, change.subjectUserId);
+		},
+		onHealth: (health) => recordCloudRealtimeHealth(runtime, health),
+	});
+	runtime.cloudRealtimeSync.start();
 }
 
 /** One window = one slot: the hub while `runtime` is unset, a company
@@ -1036,6 +1554,93 @@ function observeSessionActivity(
 
 const slots = new Map<number, Slot>();
 
+function slotsForHostedProfile(profileId: string): Slot[] {
+	return [...slots.values()].filter((slot) => {
+		const root = slot.runtime?.root;
+		if (!root) return false;
+		const attachment = profileAttachment(root);
+		return attachment.profileType === "cloud" && attachment.profileId === profileId;
+	});
+}
+
+async function suspendHostedProfileSlots(profileId: string, message: string, detail: string): Promise<void> {
+	for (const slot of slotsForHostedProfile(profileId)) {
+		await showHub(slot);
+		if (slot.window.isDestroyed()) continue;
+		await dialog.showMessageBox(slot.window, {
+			type: "warning",
+			title: "Cloud profile access changed",
+			message,
+			detail,
+		});
+	}
+}
+
+function triggerHostedAccessRefresh(profileId: string, subjectUserId?: string): void {
+	const accountId = currentQorperaAccountId;
+	if (!accountId) return;
+	let accessRefresh = hostedAccessRefreshes.get(profileId);
+	if (!accessRefresh) {
+		let suspendRuntimes = false;
+		accessRefresh = new CloudProfileAccessRefresh({
+			refresh: async () => {
+				if (currentQorperaAccountId !== accountId) throw new Error("Qorpera account changed during access refresh");
+				const previous = hostedTeamsByProfileId.get(profileId);
+				const profiles = await refreshHostedProfiles();
+				if (!profiles.some((profile) => profile.profileId === profileId)) return "revoked";
+				const team = await refreshHostedTeam(profileId);
+				suspendRuntimes ||= previous?.capabilities.write === true && !team.capabilities.write;
+				return "active";
+			},
+			onRestricted: () => {
+				if (currentQorperaAccountId === accountId) restrictedHostedAccessProfileIds.add(profileId);
+			},
+			onActive: async () => {
+				if (currentQorperaAccountId !== accountId) return;
+				restrictedHostedAccessProfileIds.delete(profileId);
+				if (suspendRuntimes) {
+					suspendRuntimes = false;
+					await suspendHostedProfileSlots(
+						profileId,
+						"This profile is now read-only for your account.",
+						"Any running agent was stopped. You can reopen the profile to read its shared activity.",
+					);
+					return;
+				}
+				for (const slot of slotsForHostedProfile(profileId)) {
+					if (!slot.runtime) continue;
+					triggerCloudStaffSync(slot.runtime);
+					triggerCloudTrailSync(slot.runtime);
+					installCloudCompanySync(slot.runtime);
+				}
+			},
+			onRevoked: async () => {
+				if (currentQorperaAccountId !== accountId) return;
+				hostedProfilesById.delete(profileId);
+				hostedTeamsByProfileId.delete(profileId);
+				freshHostedTeamProfileIds.delete(profileId);
+				restrictedHostedAccessProfileIds.add(profileId);
+				await suspendHostedProfileSlots(
+					profileId,
+					"Your access to this cloud profile was removed.",
+					"Cloud synchronization and running agents were stopped. Local company files remain on this computer.",
+				);
+			},
+			onError: (error) => {
+				if (currentQorperaAccountId !== accountId) return;
+				console.error(
+					`cloud access refresh failed closed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			},
+		});
+		hostedAccessRefreshes.set(profileId, accessRefresh);
+	}
+	const restrict = subjectUserId === undefined || subjectUserId === accountId;
+	void accessRefresh.trigger(restrict).catch((error) => {
+		console.error(`cloud access transition failed: ${error instanceof Error ? error.message : String(error)}`);
+	});
+}
+
 /** A company root is a folder carrying a company manifest. Anything else
  * must never be registered or started
  * (a bad argv token once created a "company" named after a Chromium switch). */
@@ -1045,6 +1650,25 @@ function isCompanyRoot(root: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+function profileNameSlug(name: string): string {
+	return name
+		.toLowerCase()
+		.replace(/['’]/g, "")
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+}
+
+function newCompanyRoot(name: string): string {
+	const slug = profileNameSlug(name);
+	if (!slug) throw new Error("Profile name is invalid.");
+	const home = process.platform === "win32" ? "C:\\Companies" : join(app.getPath("home"), "Companies");
+	return join(home, slug);
+}
+
+function cloudCheckoutRoot(profile: HostedProfile): string {
+	return `${newCompanyRoot(profile.profileName)}-${profile.profileId.slice(0, 8)}`;
 }
 
 /**
@@ -1337,6 +1961,108 @@ function sendAll(channel: string, payload: unknown): void {
 	for (const slot of slots.values()) send(slot.window, channel, payload);
 }
 
+function invitationRoleDescription(role: HostedIncomingProfileInvitation["role"]): string {
+	if (role === "admin") return "Admin — contribute, authorize actions, and manage members";
+	if (role === "contributor") return "Contributor — contribute and communicate without authorizing actions";
+	return "Viewer — read-only access";
+}
+
+function invitationHub(): Slot {
+	const existing = [...slots.values()].find((slot) => !slot.runtime);
+	return existing ?? createWindow();
+}
+
+function scheduleProfileInvitationHandoff(slot: Slot): void {
+	const start = (): void => {
+		setTimeout(() => void presentPendingProfileInvitation(slot), 0);
+	};
+	if (slot.window.webContents.isLoading()) slot.window.webContents.once("did-finish-load", start);
+	else start();
+}
+
+function queueProfileInvitationHandoff(invitationId: string): void {
+	pendingProfileInvitationId = invitationId;
+	if (!app.isReady() || !qorperaAccountAuth) return;
+	const hub = invitationHub();
+	focusWindow(hub.window);
+	scheduleProfileInvitationHandoff(hub);
+}
+
+function queueProfileInvitationProtocolUrl(value: string): boolean {
+	const invitationId = profileInvitationIdFromProtocolUrl(value);
+	if (!invitationId) return false;
+	queueProfileInvitationHandoff(invitationId);
+	return true;
+}
+
+async function presentPendingProfileInvitation(preferredHub?: Slot): Promise<void> {
+	const invitationId = pendingProfileInvitationId;
+	if (!invitationId || profileInvitationHandoffInFlight) return;
+	const hub = preferredHub && !preferredHub.runtime ? preferredHub : invitationHub();
+	profileInvitationHandoffInFlight = true;
+	try {
+		const account = await authenticatedAccount();
+		if (!account?.user) {
+			send(hub.window, "account-status", "Sign in with the invited email to preview this profile invitation.");
+			return;
+		}
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		if (!primary) return;
+		let invitation: HostedIncomingProfileInvitation | undefined;
+		try {
+			invitation = (await primary.listInvitations()).find((candidate) => candidate.id === invitationId);
+		} catch {
+			await dialog.showMessageBox(hub.window, {
+				type: "error",
+				title: "Invitation unavailable",
+				message: "Qorpera could not load this invitation.",
+				detail: "Check your connection and open the invitation link again.",
+			});
+			return;
+		}
+		if (pendingProfileInvitationId !== invitationId) return;
+		if (!invitation) {
+			pendingProfileInvitationId = undefined;
+			await dialog.showMessageBox(hub.window, {
+				type: "info",
+				title: "Invitation unavailable",
+				message: "This invitation is not available for the signed-in account.",
+				detail: "It may have expired, been cancelled, already been used, or been sent to another email address.",
+			});
+			return;
+		}
+		const decision = await dialog.showMessageBox(hub.window, {
+			type: "question",
+			title: "Profile invitation",
+			buttons: ["Accept invitation", "Not now"],
+			defaultId: 1,
+			cancelId: 1,
+			message: `Join ${invitation.profileName}?`,
+			detail: `${invitationRoleDescription(invitation.role)}\n\nInvited account: ${account.user.email}`,
+		});
+		if (pendingProfileInvitationId !== invitationId) return;
+		pendingProfileInvitationId = undefined;
+		if (decision.response !== 0) return;
+		try {
+			await primary.acceptInvitation(invitationId);
+			await refreshHostedProfiles();
+			await hub.window.loadFile(join(FIXED_SHELL_DIR, "index.html"));
+		} catch {
+			await dialog.showMessageBox(hub.window, {
+				type: "error",
+				title: "Invitation not accepted",
+				message: "Qorpera could not accept this invitation.",
+				detail: "No access was changed. Open the invitation link and try again.",
+			});
+		}
+	} finally {
+		profileInvitationHandoffInFlight = false;
+		if (pendingProfileInvitationId && pendingProfileInvitationId !== invitationId) {
+			scheduleProfileInvitationHandoff(invitationHub());
+		}
+	}
+}
+
 async function closeCompany(slot: Slot): Promise<void> {
 	if (!slot.runtime) return;
 	const runtime = slot.runtime;
@@ -1347,6 +2073,11 @@ async function closeCompany(slot: Slot): Promise<void> {
 	runtime.closing = true;
 	runtime.closePromise = (async () => {
 		try {
+			runtime.cloudStaffSyncLoop?.stop();
+			runtime.cloudTrailSyncLoop?.stop();
+			runtime.cloudCompanyPublication?.stop();
+			runtime.cloudCompanyInboxSync?.stop();
+			await runtime.cloudRealtimeSync?.stop();
 			runtime.inventoryWatcher?.close();
 			runtime.webhookClose?.();
 			await runtime.transitionQueue;
@@ -1982,6 +2713,11 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				if (append) {
 					appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
 					commitTrailAppend(binding, append);
+					sessions.rememberAudit(binding);
+					if (append.entry.type === "message" || append.entry.type === "session_info") {
+						const runtime = slot.runtime;
+						if (runtime && normalizedRoot(runtime.root) === normalizedRoot(root)) triggerCloudTrailSync(runtime);
+					}
 				} else send(win(), "rpc-log", "rejected invalid trail append frame");
 				return;
 			}
@@ -4659,10 +5395,14 @@ function isTrustedProfileSwitcherSender(sender: WebContents): boolean {
 
 interface ActiveCompany {
 	root: string;
-	/** Stable company identity — the renderer keys its localStorage by this,
-	 * never by the (port-derived, collision-walked) backendUrl. */
+	/** Typed profile identity. Local and cloud UUIDs never share a namespace. */
 	id: string;
 	companyIcon: CompanyIconId;
+	profileType: ProfileAttachment["profileType"];
+	profileId: string;
+	product: ProductContext;
+	environmentId?: string;
+	access: ProfileAccess;
 	backendUrl: string;
 	kickoff: boolean;
 	wakeRunning: boolean;
@@ -4687,6 +5427,9 @@ interface ActiveCompany {
 function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 	const runtime = slot.runtime;
 	if (!runtime) return undefined;
+	const access = activeProfileAccess(runtime.root);
+	if (!access) return undefined;
+	const attachment = profileAttachment(runtime.root);
 	const autonomousChild =
 		!runtime.infrastructureWork && runtime.wakeChild?.exitCode === null ? runtime.wakeChild : undefined;
 	const runState = readWakeRunState(wakeRunStatePath(app.getPath("userData"), runtime.root));
@@ -4711,6 +5454,11 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 		companyIcon: currentQorperaAccountId
 			? readCompanyIcon(app.getPath("userData"), currentQorperaAccountId, runtime.root)
 			: DEFAULT_COMPANY_ICON_ID,
+		profileType: attachment.profileType,
+		profileId: attachment.profileId,
+		product: productContext(attachment.profileType),
+		...(attachment.profileType === "cloud" ? { environmentId: attachment.environmentId } : {}),
+		access,
 		backendUrl: `http://127.0.0.1:${runtime.backendPort}`,
 		kickoff: false,
 		wakeRunning: Boolean(!runtime.infrastructureWork && runtime.wakeChild && runtime.wakeChild.exitCode === null),
@@ -4736,6 +5484,19 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		console.error(`refusing to open non-company root: ${root}`);
 		if (!slot.runtime) void slot.window.loadFile(join(FIXED_SHELL_DIR, "index.html"));
 		return;
+	}
+	if (!IS_SMOKE) {
+		try {
+			if (!(await refreshProfileAccess(root))) {
+				throw new Error("This profile is not shared with the signed-in Qorpera account.");
+			}
+		} catch (error) {
+			console.error(
+				`refusing to open inaccessible profile: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			if (!slot.runtime) void slot.window.loadFile(join(FIXED_SHELL_DIR, "index.html"));
+			return;
+		}
 	}
 	// A company never runs in two windows: two RPC children on one trail and
 	// two tokens against one backend both end badly. Route to the live one.
@@ -4832,10 +5593,36 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		// Reconstruct the company-owned session state before any new executor
 		// attaches. The backend and every child share this one read model.
 		const sessionCachePath = join(dirname(companyHostStatePath(app.getPath("userData"), root)), "sessions-v3.json");
+		const cloudStaffSync = createCloudStaffSynchronizer(root);
+		if (cloudStaffSync) {
+			try {
+				await cloudStaffSync.sync();
+			} catch (error) {
+				console.error(
+					`initial cloud staff sync deferred: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+		if (openingCancelled()) throw new CompanyOpenCancelledError();
 		const sessions = await SessionControlPlane.create(root, KERNEL_INSTANCE_ID, sessionCachePath);
 		if (openingCancelled()) throw new CompanyOpenCancelledError();
 		pendingSessions = sessions;
 		sessionControlPlanes.set(normalizedRoot(root), sessions);
+		const cloudTrailSync = createCloudTrailSynchronizer(
+			root,
+			() => (installedRuntime ? liveTrailBindings(installedRuntime) : []),
+			(binding) => sessions.rememberAudit(binding),
+		);
+		if (cloudTrailSync) {
+			try {
+				await cloudTrailSync.sync();
+			} catch (error) {
+				console.error(
+					`initial cloud trail sync deferred: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+		if (openingCancelled()) throw new CompanyOpenCancelledError();
 		const backendToken = randomUUID();
 		const backend = await listenBackend(root, backendToken, sessions);
 		pendingBackendClose = backend.close;
@@ -4860,11 +5647,17 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 			pendingInventoryRestart: false,
 			pendingStaffContextRestart: false,
 			resumedConnectionSetupIds: new Set(),
+			cloudTrailSync,
+			cloudStaffSync,
 			closing: false,
 			runtimeLock,
 		};
 		installedRuntime = runtime;
 		slot.runtime = runtime;
+		startCloudTrailSync(runtime);
+		startCloudStaffSync(runtime);
+		installCloudCompanySync(runtime);
+		startCloudRealtimeSync(runtime);
 		pendingBackendClose = undefined;
 		pendingSessions = undefined;
 		runtime.inventoryWatcher = watch(join(root, ".qorpera"), { persistent: false }, (_event, file) => {
@@ -5396,6 +6189,7 @@ async function bootstrapStaffTeam(
 				...created.map((staff) => relative(runtime.root, staffAgentDirectoryPath(runtime.root, staff.id))),
 				...artifactPaths,
 			]);
+			triggerCloudStaffSync(runtime);
 			const first = created[0]!;
 			const firstBinding = bindings[0]!;
 			const options: ChildOptions = {
@@ -5498,6 +6292,7 @@ async function createStaffMember(
 				relative(runtime.root, staffAgentDirectoryPath(runtime.root, staff.id)),
 				...(artifactPath ? [artifactPath] : []),
 			]);
+			triggerCloudStaffSync(runtime);
 			const options: ChildOptions = {
 				sessionName: staff.displayName,
 				staffAgentId: staff.id,
@@ -5581,6 +6376,7 @@ async function updateStaffMember(
 					join(".qorpera", "staff.json"),
 					relative(runtime.root, staffAgentInstructionsPath(runtime.root, staff.id)),
 				]);
+				triggerCloudStaffSync(runtime);
 				if (runtime.childOptions.staffAgentId === staff.id) {
 					runtime.childOptions.staffContext = staffSystemContext(runtime.root, staff);
 				}
@@ -5626,6 +6422,7 @@ async function archiveStaffMember(
 				} catch (error) {
 					console.error(`staff connection request cleanup failed: ${(error as Error).message}`);
 				}
+				triggerCloudStaffSync(runtime);
 				if (attached) {
 					const next = readStaffAgents(runtime.root).find(
 						(candidate) => candidate.employmentStatus !== "archived",
@@ -5784,6 +6581,7 @@ async function openStaffMember(
 		}
 		try {
 			const existingTrail = introState?.trailFile ?? latestStaffTrailFile(runtime, staff.id);
+			if (!existingTrail && !slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 			const attached = await attachStaffChild(slot, runtime, staff, existingTrail, !existingTrail);
 			return {
 				ok: true,
@@ -6182,6 +6980,11 @@ if (!IS_SMOKE && !app.requestSingleInstanceLock()) {
 	app.quit();
 }
 app.on("second-instance", (_event, argv) => {
+	const invitationId = profileInvitationIdFromArgv(argv);
+	if (invitationId) {
+		queueProfileInvitationHandoff(invitationId);
+		return;
+	}
 	const root = companyFromArgv(argv);
 	if (root) {
 		const existing = slotForCompany(root);
@@ -6199,6 +7002,10 @@ app.on("second-instance", (_event, argv) => {
 	const hub = [...slots.values()].find((slot) => !slot.runtime);
 	if (hub) focusWindow(hub.window);
 	else createWindow();
+});
+app.on("open-url", (event, url) => {
+	if (!queueProfileInvitationProtocolUrl(url)) return;
+	event.preventDefault();
 });
 
 app.whenReady().then(async () => {
@@ -6219,10 +7026,9 @@ app.whenReady().then(async () => {
 		openExternal: (url) => electronShell.openExternal(url),
 	});
 	try {
-		const account = await qorperaAccountAuth.info();
-		currentQorperaAccountId = account.authenticated && account.user ? account.user.id : undefined;
+		rememberAuthenticatedAccount(await qorperaAccountAuth.info());
 	} catch {
-		currentQorperaAccountId = undefined;
+		rememberAuthenticatedAccount({ authenticated: false });
 	}
 	const modelAgentDir = join(app.getPath("home"), ".qorpera", "agent");
 	modelAccountStore = new ModelAccountStore(
@@ -6289,6 +7095,7 @@ app.whenReady().then(async () => {
 			rememberAuthenticatedAccount(account);
 			await refreshBrokerModels();
 			claimExistingCompanies(account);
+			if (pendingProfileInvitationId) scheduleProfileInvitationHandoff(owner);
 			return { ok: true, account };
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -6350,9 +7157,251 @@ app.whenReady().then(async () => {
 		claimExistingCompanies(account);
 		const userId = account.user.id;
 		const userData = app.getPath("userData");
-		return listCompanies()
-			.filter((company) => companyOwnedBy(userData, userId, company.root))
-			.map((company) => ({ ...company, companyIcon: readCompanyIcon(userData, userId, company.root) }));
+		const companies = listCompanies();
+		const hostedProfiles = await refreshHostedProfiles().catch((error) => {
+			console.error(`Cloud profile list refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+			return [...hostedProfilesById.values()];
+		});
+		const incomingInvitations = await qorperaAccountAuth
+			?.hostedPrimary()
+			.listInvitations()
+			.catch((error) => {
+				console.error(
+					`Cloud invitation list refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return [];
+			});
+		const entries = await Promise.all(
+			companies.map(async (company) => {
+				const attachment = profileAttachment(company.root);
+				let access: ProfileAccess | undefined;
+				if (attachment.profileType === "cloud") {
+					if (!hostedProfilesById.has(attachment.profileId)) return undefined;
+					try {
+						access = hostedProfileAccess(await refreshHostedTeam(attachment.profileId));
+					} catch (error) {
+						console.error(
+							`Cloud profile access refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						const cached = effectiveHostedTeam(attachment.profileId);
+						access = cached ? hostedProfileAccess(cached) : undefined;
+					}
+				} else {
+					if (!companyOwnedBy(userData, userId, company.root)) return undefined;
+					access = profileAccessFor(userData, userId, company.root);
+				}
+				if (!access) return undefined;
+				const hosted = hostedProfilesById.get(attachment.profileId);
+				return {
+					...company,
+					...(hosted ? { name: hosted.profileName } : {}),
+					id: profileIdentityKey(attachment),
+					profileType: attachment.profileType,
+					profileId: attachment.profileId,
+					product: productContext(attachment.profileType),
+					promotion: attachment.promotion,
+					...(attachment.profileType === "cloud" ? { environmentId: attachment.environmentId } : {}),
+					access,
+					companyIcon: readCompanyIcon(userData, userId, company.root),
+				};
+			}),
+		);
+		const attachedProfileIds = new Set(
+			companies
+				.map((company) => profileAttachment(company.root))
+				.filter((attachment) => attachment.profileType === "cloud")
+				.map((attachment) => attachment.profileId),
+		);
+		const availableCloudProfiles = await Promise.all(
+			hostedProfiles
+				.filter((profile) => !attachedProfileIds.has(profile.profileId))
+				.map(async (profile) => {
+					try {
+						const access = hostedProfileAccess(await refreshHostedTeam(profile.profileId));
+						return {
+							name: profile.profileName,
+							id: profileIdentityKey(profile),
+							profileType: profile.profileType,
+							profileId: profile.profileId,
+							environmentId: profile.environmentId,
+							product: productContext(profile.profileType),
+							access,
+							companyIcon: DEFAULT_COMPANY_ICON_ID,
+							setupRequired: true as const,
+						};
+					} catch (error) {
+						console.error(
+							`Cloud profile access refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						const cached = effectiveHostedTeam(profile.profileId);
+						if (!cached) return undefined;
+						return {
+							name: profile.profileName,
+							id: profileIdentityKey(profile),
+							profileType: profile.profileType,
+							profileId: profile.profileId,
+							environmentId: profile.environmentId,
+							product: productContext(profile.profileType),
+							access: hostedProfileAccess(cached),
+							companyIcon: DEFAULT_COMPANY_ICON_ID,
+							setupRequired: true as const,
+						};
+					}
+				}),
+		);
+		const pendingInvitations = (incomingInvitations ?? []).map((invitation) => ({
+			name: invitation.profileName,
+			id: `invitation:${invitation.id}`,
+			profileType: "cloud" as const,
+			profileId: invitation.profileId,
+			environmentId: invitation.environmentId,
+			product: productContext("cloud"),
+			invitationId: invitation.id,
+			invitationRole: invitation.role,
+			invitationPending: true as const,
+			expiresAt: invitation.expiresAt,
+			companyIcon: DEFAULT_COMPANY_ICON_ID,
+		}));
+		return [...entries, ...availableCloudProfiles, ...pendingInvitations].filter((entry) => entry !== undefined);
+	});
+	ipcMain.handle("profile:accept-invitation", async (event, invitationId: unknown) => {
+		if (!isTrustedHubSender(event.sender) || typeof invitationId !== "string") {
+			return { ok: false, error: "invalid profile invitation" };
+		}
+		const account = await authenticatedAccount();
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		if (!account?.user || !primary) return { ok: false, error: "Sign in to accept this invitation." };
+		try {
+			await primary.acceptInvitation(invitationId);
+			await refreshHostedProfiles();
+			return { ok: true };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("profile:decline-invitation", async (event, invitationId: unknown) => {
+		if (!isTrustedHubSender(event.sender) || typeof invitationId !== "string") {
+			return { ok: false, error: "invalid profile invitation" };
+		}
+		const account = await authenticatedAccount();
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		if (!account?.user || !primary) return { ok: false, error: "Sign in to decline this invitation." };
+		try {
+			await primary.declineInvitation(invitationId);
+			return { ok: true };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("profile:materialize-cloud", async (event, profileId: unknown) => {
+		if (!isTrustedHubSender(event.sender) || typeof profileId !== "string") {
+			return { ok: false, error: "invalid cloud profile" };
+		}
+		const account = await authenticatedAccount();
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		const objects = qorperaAccountAuth?.hostedObjects();
+		if (!account?.user || !primary || !objects) {
+			return { ok: false, error: "Sign in to set up this cloud profile." };
+		}
+		try {
+			const profile = (await refreshHostedProfiles()).find((candidate) => candidate.profileId === profileId);
+			if (!profile) return { ok: false, error: "Cloud profile is not available to this account." };
+			const team = await refreshHostedTeam(profile.profileId);
+			const access = hostedProfileAccess(team);
+			const existing = listCompanies().find((company) => {
+				const attachment = readProfileAttachment(app.getPath("userData"), company.root);
+				return attachment?.profileType === "cloud" && attachment.profileId === profile.profileId;
+			});
+			if (existing) return { ok: true, root: existing.root };
+			const root = cloudCheckoutRoot(profile);
+			const existingAttachment = readProfileAttachment(app.getPath("userData"), root);
+			if (existsSync(root)) {
+				if (
+					isCompanyRoot(root) &&
+					existingAttachment?.profileType === "cloud" &&
+					existingAttachment.profileId === profile.profileId
+				) {
+					if (access.capabilities.write) {
+						const workspaceState = CloudCompanyWorkspaceState.open(
+							app.getPath("userData"),
+							profile.profileId,
+							profile.environmentId,
+							root,
+						);
+						if (!workspaceState.binding.pending && !workspaceState.binding.lastCheckpoint) {
+							const workspace = (await primary.listCompanyWorkspaces(profile.environmentId)).find(
+								(candidate) => candidate.clientWorkspaceId === workspaceState.binding.clientWorkspaceId,
+							);
+							if (workspace?.headSnapshotId) {
+								workspaceState.adopt(await primary.getCompanySnapshot(workspace.headSnapshotId));
+							}
+						}
+					}
+					registerCompany(root);
+					return { ok: true, root };
+				}
+				return {
+					ok: false,
+					error: `The local checkout path already exists: ${root}`,
+				};
+			}
+			const sourceWorkspace = (await primary.listCompanyWorkspaces(profile.environmentId))
+				.filter((workspace) => workspace.headSnapshotId)
+				.sort(
+					(left, right) =>
+						right.updatedAt.localeCompare(left.updatedAt) || left.workspaceId.localeCompare(right.workspaceId),
+				)[0];
+			const sourceSnapshot = sourceWorkspace?.headSnapshotId
+				? await primary.getCompanySnapshot(sourceWorkspace.headSnapshotId)
+				: undefined;
+			if (sourceSnapshot) {
+				await materializeCloudCompanyTree(
+					root,
+					profile.profileId,
+					currentCloudCompanyTreeReference(sourceSnapshot.tree),
+					objects,
+				);
+			}
+			const result = scaffoldCompany(root);
+			attachCloudProfile(app.getPath("userData"), result.root, {
+				profileId: profile.profileId,
+				environmentId: profile.environmentId,
+			});
+			if (sourceSnapshot && access.capabilities.write) {
+				const workspaceState = CloudCompanyWorkspaceState.open(
+					app.getPath("userData"),
+					profile.profileId,
+					profile.environmentId,
+					result.root,
+				);
+				const workspace = await primary.ensureCompanyWorkspace({
+					environmentId: profile.environmentId,
+					clientWorkspaceId: workspaceState.binding.clientWorkspaceId,
+					name: hostname().trim() || "This computer",
+					baseSnapshotId: sourceSnapshot.snapshotId,
+				});
+				if (workspace.headSnapshotId !== sourceSnapshot.snapshotId) {
+					throw new Error("The new local workspace did not retain its selected cloud base.");
+				}
+				workspaceState.adopt(sourceSnapshot);
+			}
+			writeCompanyIcon(app.getPath("userData"), account.user.id, result.root, DEFAULT_COMPANY_ICON_ID);
+			registerCompany(result.root);
+			await new CloudStaffSynchronizer({
+				root: result.root,
+				userData: app.getPath("userData"),
+				profileId: profile.profileId,
+				primary,
+				canWrite: () => access.capabilities.write,
+			}).sync();
+			return {
+				ok: true,
+				root: result.root,
+				...(sourceWorkspace ? { sourceWorkspaceName: sourceWorkspace.name } : {}),
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
 	});
 	ipcMain.handle("company:remove", async (event, root: unknown) => {
 		if (!isTrustedHubSender(event.sender) || typeof root !== "string" || !root.trim()) {
@@ -6362,11 +7411,18 @@ app.whenReady().then(async () => {
 			return { ok: false, error: "Close this company's window before removing it." };
 		}
 		const account = await authenticatedAccount();
-		if (!account?.user || !companyOwnedBy(app.getPath("userData"), account.user.id, root)) {
-			return { ok: false, error: "Company is not owned by the signed-in account." };
+		if (!account?.user) return { ok: false, error: "Sign in before removing a company." };
+		const userData = app.getPath("userData");
+		let access: ProfileAccess | undefined;
+		try {
+			access = await refreshProfileAccess(root);
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
+		if (!access) return { ok: false, error: "Company is not available to the signed-in account." };
 		const company = listCompanies().find((record) => normalizedRoot(record.root) === normalizedRoot(root));
 		if (!company) return { ok: false, error: "Company is no longer registered." };
+		const attachment = profileAttachment(company.root);
 		const owner = BrowserWindow.fromWebContents(event.sender);
 		if (!owner) return { ok: false, error: "Company selector is unavailable." };
 		const confirmation = await dialog.showMessageBox(owner, {
@@ -6375,20 +7431,25 @@ app.whenReady().then(async () => {
 			defaultId: 0,
 			cancelId: 0,
 			message: `Remove ${company.name} from Qorpera?`,
-			detail: `The company folder and everything in it will stay at ${company.root}. You can open it again later.`,
+			detail:
+				attachment.profileType === "cloud"
+					? `This removes only this computer's attachment. The cloud profile, team, and company folder at ${company.root} stay intact.`
+					: `The company folder and everything in it will stay at ${company.root}. You can open it again later.`,
 		});
 		if (confirmation.response !== 1) return { ok: false, cancelled: true };
 		if (!unregisterCompany(company.root))
 			return { ok: false, error: "Qorpera could not update the company selector." };
-		forgetCompany(app.getPath("userData"), account.user.id, company.root);
-		forgetCompanyIcon(app.getPath("userData"), account.user.id, company.root);
+		forgetCompany(userData, account.user.id, company.root);
+		forgetCompanyIcon(userData, account.user.id, company.root);
+		if (attachment.profileType === "local") forgetProfile(userData, account.user.id, company.root);
+		forgetProfileAttachment(userData, company.root);
 		return { ok: true };
 	});
 	ipcMain.handle("company:open", async (event, root: string) => {
 		if (!isTrustedProfileSwitcherSender(event.sender)) return;
 		const account = await authenticatedAccount();
-		if (!account?.user || !companyOwnedBy(app.getPath("userData"), account.user.id, root)) {
-			throw new Error("This company does not belong to the signed-in Qorpera account.");
+		if (!account?.user || !(await refreshProfileAccess(root))) {
+			throw new Error("This company is not available to the signed-in Qorpera account.");
 		}
 		const slot = slotOf(event.sender);
 		if (slot) return openCompany(slot, root);
@@ -6410,6 +7471,8 @@ app.whenReady().then(async () => {
 		const result = scaffoldCompany(resolve(dir));
 		registerCompany(result.root);
 		claimCompany(app.getPath("userData"), account.user.id, result.root);
+		claimProfile(app.getPath("userData"), account.user, result.root);
+		ensureProfileAttachment(app.getPath("userData"), result.root);
 		writeCompanyIcon(app.getPath("userData"), account.user.id, result.root, companyIcon);
 		return result.root;
 	});
@@ -6432,6 +7495,8 @@ app.whenReady().then(async () => {
 		const result = scaffoldCompany(target);
 		registerCompany(result.root);
 		claimCompany(app.getPath("userData"), account.user.id, result.root);
+		claimProfile(app.getPath("userData"), account.user, result.root);
+		ensureProfileAttachment(app.getPath("userData"), result.root);
 		const ok = integrateRepo(result.root, from);
 		return { root: result.root, ok };
 	});
@@ -6447,6 +7512,7 @@ app.whenReady().then(async () => {
 			(from !== undefined && (typeof from !== "string" || Buffer.byteLength(from, "utf-8") > 8192))
 		)
 			return { ok: false, error: "invalid product transaction" };
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		return enqueueRuntimeTransition(runtime, async () => {
 			if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild || isChildBusy(runtime.child)) {
 				return { ok: false, error: "company runtime is not available" };
@@ -6546,6 +7612,7 @@ app.whenReady().then(async () => {
 		if (!slot || !runtime || !value || typeof value !== "object" || Array.isArray(value)) {
 			return { ok: false, error: "invalid scheduled job" };
 		}
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		const input = value as Record<string, unknown>;
 		if (
 			typeof input.title !== "string" ||
@@ -6595,6 +7662,7 @@ app.whenReady().then(async () => {
 		if (!slot || !runtime || typeof id !== "string" || !value || typeof value !== "object" || Array.isArray(value)) {
 			return { ok: false, error: "invalid scheduled-job update" };
 		}
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		const input = value as Record<string, unknown>;
 		if (
 			(input.title !== undefined && typeof input.title !== "string") ||
@@ -6653,6 +7721,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime || typeof id !== "string") return { ok: false, error: "invalid scheduled job" };
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		const job = readScheduledJobs(runtime.root).find((candidate) => candidate.id === id);
 		if (!job) return { ok: false, error: "scheduled job not found" };
 		if (runtime.wakeJobId === id) return { ok: false, error: "scheduled job is running" };
@@ -6677,6 +7746,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime || typeof id !== "string") return { ok: false, error: "invalid scheduled job" };
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		return enqueueRuntimeTransition(runtime, async () => {
 			if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild) {
 				return { ok: false, error: "company runtime is busy" };
@@ -6688,6 +7758,170 @@ app.whenReady().then(async () => {
 				: { ok: false, error: "company runtime is busy" };
 		});
 	});
+	ipcMain.handle("company-cloud:workspaces", async (event) => {
+		const runtime = slotOf(event.sender)?.runtime;
+		if (!runtime?.cloudCompanyInboxSync) {
+			return { ok: false, error: "Cloud company workspaces are unavailable for this profile." };
+		}
+		await runtime.cloudCompanyInboxSync.refreshNow();
+		return {
+			ok: true,
+			inbox: runtime.cloudCompanyInboxSync.inbox(),
+			publicationHealth: runtime.cloudCompanyPublication?.health(),
+			inboxHealth: runtime.cloudCompanyInboxSync.health(),
+		};
+	});
+	ipcMain.handle("company-cloud:preview", async (event, workspaceId: unknown) => {
+		const runtime = slotOf(event.sender)?.runtime;
+		const attachment = runtime ? profileAttachment(runtime.root) : undefined;
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		const objects = qorperaAccountAuth?.hostedObjects();
+		if (
+			!runtime?.cloudCompanyInboxSync ||
+			attachment?.profileType !== "cloud" ||
+			!primary ||
+			!objects ||
+			typeof workspaceId !== "string"
+		) {
+			return { ok: false, error: "Cloud company preview is unavailable." };
+		}
+		try {
+			await runtime.cloudCompanyInboxSync.refreshNow();
+			const workspace = runtime.cloudCompanyInboxSync
+				.inbox()
+				?.workspaces.find((candidate) => candidate.workspaceId === workspaceId && !candidate.isLocal);
+			if (!workspace?.head) return { ok: false, error: "This remote workspace has no published files." };
+			const snapshot = await primary.getCompanySnapshot(workspace.head.snapshotId);
+			if (snapshot.profileId !== attachment.profileId || snapshot.environmentId !== attachment.environmentId) {
+				throw new Error("Cloud company preview snapshot is outside this profile environment");
+			}
+			const preview = await previewCloudCompanySnapshot({
+				userData: app.getPath("userData"),
+				profileId: attachment.profileId,
+				snapshot,
+				objects,
+			});
+			const openError = await electronShell.openPath(preview.path);
+			if (openError) throw new Error(openError);
+			return { ok: true, preview };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("company-cloud:inspect-merge", async (event, workspaceId: unknown) => {
+		const runtime = slotOf(event.sender)?.runtime;
+		const attachment = runtime ? profileAttachment(runtime.root) : undefined;
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		const objects = qorperaAccountAuth?.hostedObjects();
+		if (
+			!runtime?.cloudCompanyInboxSync ||
+			attachment?.profileType !== "cloud" ||
+			!primary ||
+			!objects ||
+			typeof workspaceId !== "string"
+		) {
+			return { ok: false, error: "Cloud company merge inspection is unavailable." };
+		}
+		if (runtime.wakeChild || isChildBusy(runtime.child)) {
+			return { ok: false, error: "Wait for the active agent run to finish before reviewing a merge." };
+		}
+		try {
+			await runtime.cloudCompanyPublication?.publishNow();
+			await runtime.cloudCompanyInboxSync.refreshNow();
+			const inbox = runtime.cloudCompanyInboxSync.inbox();
+			const local = inbox?.workspaces.find((workspace) => workspace.isLocal);
+			const remote = inbox?.workspaces.find(
+				(workspace) => workspace.workspaceId === workspaceId && !workspace.isLocal,
+			);
+			if (!local?.head) return { ok: false, error: "Publish this computer's company files before merging." };
+			if (!remote?.head) return { ok: false, error: "This remote workspace has no published files." };
+			return {
+				ok: true,
+				workspace: remote,
+				plan: await inspectCloudCompanyMerge({
+					companyRoot: runtime.root,
+					profileId: attachment.profileId,
+					environmentId: attachment.environmentId,
+					localSnapshotId: local.head.snapshotId,
+					remoteSnapshotId: remote.head.snapshotId,
+					primary,
+					objects,
+				}),
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("company-cloud:merge", async (event, workspaceId: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		const attachment = runtime ? profileAttachment(runtime.root) : undefined;
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		const objects = qorperaAccountAuth?.hostedObjects();
+		if (
+			!slot ||
+			!runtime?.cloudCompanyInboxSync ||
+			!runtime.cloudCompanyPublication ||
+			attachment?.profileType !== "cloud" ||
+			!primary ||
+			!objects ||
+			typeof workspaceId !== "string"
+		) {
+			return { ok: false, error: "Cloud company merge is unavailable." };
+		}
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		if (runtime.wakeChild || isChildBusy(runtime.child)) {
+			return { ok: false, error: "Wait for the active agent run to finish before merging." };
+		}
+		try {
+			const publicationHealth = await runtime.cloudCompanyPublication.publishNow();
+			if (publicationHealth.phase !== "healthy") {
+				return { ok: false, error: publicationHealth.lastError ?? "Local company files could not be published." };
+			}
+			await runtime.cloudCompanyInboxSync.refreshNow();
+			const inbox = runtime.cloudCompanyInboxSync.inbox();
+			const local = inbox?.workspaces.find((workspace) => workspace.isLocal);
+			const remote = inbox?.workspaces.find(
+				(workspace) => workspace.workspaceId === workspaceId && !workspace.isLocal,
+			);
+			if (!local?.head) return { ok: false, error: "Publish this computer's company files before merging." };
+			if (!remote?.head) return { ok: false, error: "This remote workspace has no published files." };
+			const mergeInput = {
+				companyRoot: runtime.root,
+				profileId: attachment.profileId,
+				environmentId: attachment.environmentId,
+				localSnapshotId: local.head.snapshotId,
+				remoteSnapshotId: remote.head.snapshotId,
+				primary,
+				objects,
+				runtimeLock: runtime.runtimeLock,
+			};
+			const plan = await inspectCloudCompanyMerge(mergeInput);
+			if (plan.conflicts.length > 0 || plan.changedPaths.length === 0) {
+				return { ok: true, applied: false, workspace: remote, plan };
+			}
+			const confirmation = await dialog.showMessageBox(slot.window, {
+				type: "question",
+				buttons: ["Cancel", "Merge published files"],
+				defaultId: 0,
+				cancelId: 0,
+				message: `Merge ${remote.name} into this company?`,
+				detail: `${plan.changedPaths.length} logical file or folder path${plan.changedPaths.length === 1 ? "" : "s"} will change. Local trails, staff state, Git checkouts, and dependency caches are excluded.`,
+			});
+			if (confirmation.response !== 1) return { ok: false, cancelled: true };
+			const result = await enqueueRuntimeTransition(runtime, async () => {
+				if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild || isChildBusy(runtime.child)) {
+					throw new Error("Company runtime became busy before the merge.");
+				}
+				return mergeCloudCompanySnapshots(mergeInput);
+			});
+			if (result.applied) await runtime.cloudCompanyPublication.publishNow();
+			await runtime.cloudCompanyInboxSync.refreshNow();
+			return { ok: true, workspace: remote, ...result };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
 	ipcMain.handle("company:close", (event) => {
 		const slot = slotOf(event.sender);
 		if (slot) return closeCompany(slot);
@@ -6698,6 +7932,12 @@ app.whenReady().then(async () => {
 			const slot = slotOf(event.sender);
 			const runtime = slot?.runtime;
 			if (!slot || !runtime) return { ok: false };
+			if (sessionFile === null && !slotHasProfileCapability(slot, "write")) {
+				return profilePermissionError("write");
+			}
+			if ((department || worktree) && !slotHasProfileCapability(slot, "authorize")) {
+				return profilePermissionError("authorize");
+			}
 			if (
 				sessionName !== undefined &&
 				(typeof sessionName !== "string" ||
@@ -6732,20 +7972,26 @@ app.whenReady().then(async () => {
 	);
 	ipcMain.handle("staff:create", (event, value: unknown) => {
 		const slot = slotOf(event.sender);
-		return slot ? createStaffMember(slot, value) : { ok: false, error: "untrusted staff creation request" };
+		if (!slot) return { ok: false, error: "untrusted staff creation request" };
+		return slotHasProfileCapability(slot, "write") ? createStaffMember(slot, value) : profilePermissionError("write");
 	});
 	ipcMain.handle("staff:bootstrap", (event, value: unknown) => {
 		const slot = slotOf(event.sender);
-		return slot ? bootstrapStaffTeam(slot, value) : { ok: false, error: "untrusted staff bootstrap request" };
+		if (!slot) return { ok: false, error: "untrusted staff bootstrap request" };
+		return slotHasProfileCapability(slot, "write")
+			? bootstrapStaffTeam(slot, value)
+			: profilePermissionError("write");
 	});
 	ipcMain.handle("staff:update", (event, staffAgentId: unknown, value: unknown) => {
 		const slot = slotOf(event.sender);
 		if (!slot || typeof staffAgentId !== "string") return { ok: false, error: "invalid staff identity" };
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 		return updateStaffMember(slot, staffAgentId, value);
 	});
 	ipcMain.handle("staff:archive", (event, staffAgentId: unknown) => {
 		const slot = slotOf(event.sender);
 		if (!slot || typeof staffAgentId !== "string") return { ok: false, error: "invalid staff identity" };
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		return archiveStaffMember(slot, staffAgentId);
 	});
 	ipcMain.handle("staff:delete", (event, staffAgentId: unknown) => {
@@ -6778,6 +8024,7 @@ app.whenReady().then(async () => {
 		if (!slot || typeof staffAgentId !== "string" || typeof trailFile !== "string" || typeof retry !== "boolean") {
 			return { ok: false, error: "invalid staff introduction target" };
 		}
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 		return staffIntroReady(slot, staffAgentId, trailFile, retry);
 	});
 	ipcMain.handle("hub:show", (event) => {
@@ -6789,16 +8036,327 @@ app.whenReady().then(async () => {
 		if (!slot || typeof active !== "boolean") return;
 		setSettingsTitleBarOverlay(slot.window, active);
 	});
+	ipcMain.handle("profile:cloud-options", async (event) => {
+		const slot = slotOf(event.sender);
+		const root = slot?.runtime?.root;
+		if (!slot || !root || !currentQorperaAccountId) return { ok: false, error: "Open a signed-in profile first." };
+		if (profileAttachment(root).profileType !== "local") {
+			return { ok: false, error: "This profile is already a cloud profile." };
+		}
+		if (!activeProfileAccess(root)?.capabilities.manageMembers) return profilePermissionError("manage-members");
+		try {
+			return { ok: true, profiles: await refreshHostedProfiles() };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("profile:enable-cloud", async (event) => {
+		const slot = slotOf(event.sender);
+		const root = slot?.runtime?.root;
+		const account = await authenticatedAccount();
+		if (!slot || !root || !account?.user || !qorperaAccountAuth) {
+			return { ok: false, error: "Open a signed-in profile first." };
+		}
+		const attachment = profileAttachment(root);
+		if (attachment.profileType === "cloud" && !attachment.promotion) {
+			return { ok: false, error: "This profile is already cloud-enabled." };
+		}
+		const localAccess = activeProfileAccess(root);
+		if (!localAccess?.capabilities.manageMembers) return profilePermissionError("manage-members");
+		const company = listCompanies().find((record) => normalizedRoot(record.root) === normalizedRoot(root));
+		if (!company) return { ok: false, error: "Profile is no longer registered." };
+		try {
+			const promoted = await promoteProfileRoot(root, company.name);
+			return {
+				ok: true,
+				profile: promoted.profile,
+				team: promoted.team,
+				attachment: promoted.attachment,
+				profileKey: profileIdentityKey(promoted.attachment),
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("profile:attach-cloud", async (event, profileId: unknown) => {
+		const slot = slotOf(event.sender);
+		const root = slot?.runtime?.root;
+		const account = await authenticatedAccount();
+		if (!slot || !root || !account?.user || typeof profileId !== "string") {
+			return { ok: false, error: "invalid cloud profile attachment" };
+		}
+		if (profileAttachment(root).profileType !== "local") {
+			return { ok: false, error: "This company folder is already attached to a cloud profile." };
+		}
+		try {
+			const primary = qorperaAccountAuth?.hostedPrimary();
+			if (!primary) return { ok: false, error: "Cloud profile service is unavailable." };
+			const profile = (await refreshHostedProfiles()).find((candidate) => candidate.profileId === profileId);
+			if (!profile) return { ok: false, error: "Cloud profile is not available to this account." };
+			const team = await refreshHostedTeam(profile.profileId);
+			const access = hostedProfileAccess(team);
+			const localAccess = activeProfileAccess(root);
+			if (!localAccess?.capabilities.manageMembers) return profilePermissionError("manage-members");
+			const confirmation = await dialog.showMessageBox(slot.window, {
+				type: "warning",
+				buttons: ["Cancel", "Attach folder"],
+				defaultId: 0,
+				cancelId: 0,
+				message: `Attach this company folder to ${profile.profileName}?`,
+				detail: `Profile identity, team access, and attended agent chats will come from the cloud profile. Files, worktrees, and agent execution remain local at ${root}.`,
+			});
+			if (confirmation.response !== 1) return { ok: false, cancelled: true };
+			const icon = currentQorperaAccountId
+				? readCompanyIcon(app.getPath("userData"), currentQorperaAccountId, root)
+				: DEFAULT_COMPANY_ICON_ID;
+			await new CloudStaffSynchronizer({
+				root,
+				userData: app.getPath("userData"),
+				profileId: profile.profileId,
+				primary,
+				canWrite: () => access.capabilities.write,
+			}).sync();
+			const cloudAttachment = attachCloudProfile(app.getPath("userData"), root, {
+				profileId: profile.profileId,
+				environmentId: profile.environmentId,
+			});
+			if (currentQorperaAccountId) writeCompanyIcon(app.getPath("userData"), currentQorperaAccountId, root, icon);
+			if (slot.runtime) {
+				await installCloudStaffSync(slot.runtime);
+				await installCloudTrailSync(slot.runtime);
+				installCloudCompanySync(slot.runtime);
+			}
+			return {
+				ok: true,
+				profile,
+				team,
+				profileKey: profileIdentityKey(cloudAttachment),
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("profile-team:invite", async (event, value: unknown) => {
+		const slot = slotOf(event.sender);
+		const root = slot?.runtime?.root;
+		if (!slot || !root || !currentQorperaAccountId || !value || typeof value !== "object" || Array.isArray(value)) {
+			return { ok: false, error: "invalid profile invitation" };
+		}
+		const input = value as { email?: unknown; role?: unknown };
+		if (
+			typeof input.email !== "string" ||
+			!PROFILE_MEMBER_ROLES.some((role) => role === input.role) ||
+			Object.keys(input).some((key) => key !== "email" && key !== "role")
+		) {
+			return { ok: false, error: "invalid profile invitation" };
+		}
+		try {
+			const attachment = profileAttachment(root);
+			if (attachment.profileType === "cloud") {
+				const primary = qorperaAccountAuth?.hostedPrimary();
+				if (!primary) throw new Error("Cloud profile access is unavailable.");
+				const invitation = await primary.inviteMember(
+					attachment.profileId,
+					input.email,
+					input.role as ProfileMemberRole,
+				);
+				await refreshHostedTeam(attachment.profileId);
+				return { ok: true, invitation };
+			}
+			const invitation = inviteProfileMember(
+				app.getPath("userData"),
+				currentQorperaAccountId,
+				root,
+				input.email,
+				input.role as ProfileMemberRole,
+			);
+			return { ok: true, invitation };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("profile-team:cancel-invitation", async (event, invitationId: unknown) => {
+		const slot = slotOf(event.sender);
+		const root = slot?.runtime?.root;
+		if (!slot || !root || !currentQorperaAccountId || typeof invitationId !== "string") {
+			return { ok: false, error: "invalid profile invitation" };
+		}
+		try {
+			const attachment = profileAttachment(root);
+			if (attachment.profileType === "cloud") {
+				const primary = qorperaAccountAuth?.hostedPrimary();
+				if (!primary) throw new Error("Cloud profile access is unavailable.");
+				await primary.cancelInvitation(attachment.profileId, invitationId);
+				await refreshHostedTeam(attachment.profileId);
+				return { ok: true };
+			}
+			cancelProfileInvitation(app.getPath("userData"), currentQorperaAccountId, root, invitationId);
+			return { ok: true };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("profile-team:retry-invitation-delivery", async (event, invitationId: unknown) => {
+		const slot = slotOf(event.sender);
+		const root = slot?.runtime?.root;
+		if (!slot || !root || !currentQorperaAccountId || typeof invitationId !== "string") {
+			return { ok: false, error: "invalid profile invitation" };
+		}
+		try {
+			const attachment = profileAttachment(root);
+			if (attachment.profileType !== "cloud") {
+				throw new Error("Email delivery is only available for cloud profiles.");
+			}
+			const primary = qorperaAccountAuth?.hostedPrimary();
+			if (!primary) throw new Error("Cloud profile access is unavailable.");
+			const delivery = await primary.retryInvitationDelivery(attachment.profileId, invitationId);
+			await refreshHostedTeam(attachment.profileId);
+			return { ok: true, delivery };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("profile-team:update-role", async (event, memberUserId: unknown, role: unknown) => {
+		const slot = slotOf(event.sender);
+		const root = slot?.runtime?.root;
+		if (
+			!slot ||
+			!root ||
+			!currentQorperaAccountId ||
+			typeof memberUserId !== "string" ||
+			!PROFILE_MEMBER_ROLES.some((candidate) => candidate === role)
+		) {
+			return { ok: false, error: "invalid profile member update" };
+		}
+		try {
+			const attachment = profileAttachment(root);
+			if (attachment.profileType === "cloud") {
+				const primary = qorperaAccountAuth?.hostedPrimary();
+				if (!primary) throw new Error("Cloud profile access is unavailable.");
+				const member = await primary.updateMemberRole(
+					attachment.profileId,
+					memberUserId,
+					role as ProfileMemberRole,
+				);
+				await refreshHostedTeam(attachment.profileId);
+				return { ok: true, member };
+			}
+			const member = updateProfileMemberRole(
+				app.getPath("userData"),
+				currentQorperaAccountId,
+				root,
+				memberUserId,
+				role as ProfileMemberRole,
+			);
+			return { ok: true, member };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("profile-team:remove-member", async (event, memberUserId: unknown) => {
+		const slot = slotOf(event.sender);
+		const root = slot?.runtime?.root;
+		if (!slot || !root || !currentQorperaAccountId || typeof memberUserId !== "string") {
+			return { ok: false, error: "invalid profile member" };
+		}
+		try {
+			const attachment = profileAttachment(root);
+			if (attachment.profileType === "cloud") {
+				const primary = qorperaAccountAuth?.hostedPrimary();
+				if (!primary) throw new Error("Cloud profile access is unavailable.");
+				await primary.removeMember(attachment.profileId, memberUserId);
+				await refreshHostedTeam(attachment.profileId);
+				return { ok: true };
+			}
+			removeProfileMember(app.getPath("userData"), currentQorperaAccountId, root, memberUserId);
+			return { ok: true };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
 	ipcMain.handle("settings:info", async (event) => {
 		const slot = slotOf(event.sender);
 		const account = await authenticatedAccount();
+		const root = slot?.runtime?.root;
+		const attachment = root ? profileAttachment(root) : undefined;
+		let team: HostedProfileTeam | ReturnType<typeof profileTeamInfo> | undefined;
+		let access: ProfileAccess | undefined;
+		let hostedProfile: HostedProfile | undefined;
+		if (root && attachment && account?.user) {
+			if (attachment.profileType === "cloud") {
+				try {
+					await refreshHostedProfiles();
+					hostedProfile = hostedProfilesById.get(attachment.profileId);
+					team = await refreshHostedTeam(attachment.profileId);
+					access = hostedProfileAccess(team);
+				} catch (error) {
+					console.error(
+						`Cloud profile settings refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					team = effectiveHostedTeam(attachment.profileId);
+					access = team ? hostedProfileAccess(team) : undefined;
+				}
+			} else {
+				team = profileTeamInfo(app.getPath("userData"), account.user.id, root);
+				access = team ?? activeProfileAccess(root);
+			}
+		}
 		return {
 			account,
 			company: slot?.runtime ? { root: slot.runtime.root } : undefined,
-			localExecution: slot?.runtime
-				? readLocalExecutionPermission(app.getPath("userData"), slot.runtime.root)
-				: "always",
-			connections: [await githubConnectionInfo(slot?.runtime?.root), ...modelConnectionInfo()],
+			profile:
+				root && attachment
+					? {
+							root,
+							id: profileIdentityKey(attachment),
+							profileType: attachment.profileType,
+							profileId: attachment.profileId,
+							product: productContext(attachment.profileType),
+							promotion: attachment.promotion,
+							...(attachment.profileType === "cloud" ? { environmentId: attachment.environmentId } : {}),
+							...(hostedProfile ? { name: hostedProfile.profileName } : {}),
+							status: {
+								identity: attachment.profileType,
+								sharedStaff:
+									attachment.profileType === "local"
+										? "local"
+										: slot?.runtime?.cloudStaffSyncHealth?.phase === "attention"
+											? "attention"
+											: slot?.runtime?.cloudStaffSyncHealth?.phase === "retrying"
+												? "retrying"
+												: slot?.runtime?.cloudStaffSyncHealth?.phase === "healthy"
+													? "cloud"
+													: "pending",
+								trail:
+									attachment.profileType === "local"
+										? "local"
+										: slot?.runtime?.cloudTrailSyncHealth?.phase === "attention"
+											? "attention"
+											: slot?.runtime?.cloudTrailSyncHealth?.phase === "retrying"
+												? "retrying"
+												: slot?.runtime?.cloudTrailSyncHealth?.phase === "healthy"
+													? "cloud"
+													: "pending",
+								execution: "local",
+								files:
+									attachment.profileType === "local"
+										? "local"
+										: slot?.runtime?.cloudCompanyPublicationHealth?.phase === "attention"
+											? "attention"
+											: slot?.runtime?.cloudCompanyPublicationHealth?.phase === "retrying"
+												? "retrying"
+												: slot?.runtime?.cloudCompanyPublicationHealth?.phase === "healthy"
+													? "cloud"
+													: "pending",
+							},
+							workspaces: slot?.runtime?.cloudCompanyInbox?.workspaces ?? [],
+							workspaceInboxHealth: slot?.runtime?.cloudCompanyInboxHealth,
+							access,
+							team,
+						}
+					: undefined,
+			localExecution: root ? readLocalExecutionPermission(app.getPath("userData"), root) : "always",
+			connections: [await githubConnectionInfo(root), ...modelConnectionInfo()],
 		};
 	});
 	ipcMain.handle("settings:local-execution", async (event, permission: unknown) => {
@@ -6807,6 +8365,7 @@ app.whenReady().then(async () => {
 		if (!slot || !runtime || (permission !== "always" && permission !== "never")) {
 			return { ok: false, error: "invalid local execution permission" };
 		}
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		if (
 			!writeLocalExecutionPermission(app.getPath("userData"), runtime.root, permission as LocalExecutionPermission)
 		) {
@@ -6833,12 +8392,16 @@ app.whenReady().then(async () => {
 	ipcMain.handle("model-accounts:usage", (event) => (slotOf(event.sender) ? modelAccountUsageInfo() : []));
 	ipcMain.handle("connection:connect", (event, connectionId: unknown) => {
 		if (typeof connectionId !== "string") return { ok: false, error: "invalid connection" };
+		const slot = slotOf(event.sender);
+		if (slot?.runtime && !slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		return connectionId === "github"
 			? connectGitHubAccount(event.sender)
 			: connectModelAccount(event.sender, connectionId);
 	});
 	ipcMain.handle("connection:disconnect", (event, connectionId: unknown, accountId: unknown) => {
 		if (typeof connectionId !== "string") return { ok: false, error: "invalid connection" };
+		const slot = slotOf(event.sender);
+		if (slot?.runtime && !slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		return connectionId === "github"
 			? disconnectGitHubAccount(event.sender)
 			: typeof accountId === "string"
@@ -6924,6 +8487,7 @@ app.whenReady().then(async () => {
 		if (!slot || !runtime || !parsed) {
 			return { ok: false, error: "invalid connection request identity" };
 		}
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		const { identity, binding } = parsed;
 		const attendedChild = runtime.child;
 		if (!attendedChild) return { ok: false, error: "connection request agent is not attached" };
@@ -7026,6 +8590,17 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, status: 404, text: "no company" };
+		const capability: ProfileCapability = path === "/api/inbox/respond" ? "write" : "authorize";
+		if (!slotHasProfileCapability(slot, capability)) {
+			return {
+				ok: false,
+				status: 403,
+				text:
+					capability === "write"
+						? "This profile is read-only for your account."
+						: "Full profile access is required to authorize this action.",
+			};
+		}
 		return enqueueRuntimeTransition(runtime, async () => {
 			if (!isCurrentRuntimeChild(slot, runtime, runtime.child)) {
 				return {
@@ -7206,6 +8781,17 @@ app.whenReady().then(async () => {
 		const attachedTo = (child: ChildProcessWithoutNullStreams): boolean =>
 			childBindings.get(child)?.file === expectedTrailFile;
 		const promptTypes = new Set(["prompt", "steer", "follow_up"]);
+		const readOnlyControlTypes = new Set([
+			"get_state",
+			"get_messages",
+			"get_available_models",
+			"get_available_thinking_levels",
+			"get_session_stats",
+			"get_entries",
+			"get_tree",
+			"get_fork_messages",
+			"get_commands",
+		]);
 		const safeControlTypes = new Set([
 			"abort",
 			"get_state",
@@ -7229,6 +8815,7 @@ app.whenReady().then(async () => {
 			"set_session_name",
 		]);
 		if (promptTypes.has(frame.type)) {
+			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 			return enqueueRuntimeTransition(runtime, async () => {
 				if (!isCurrentRuntimeChild(slot, runtime, runtime.child)) return { ok: false };
 				const reviewedChild = runtime.child;
@@ -7251,11 +8838,21 @@ app.whenReady().then(async () => {
 					return { ok: false, error: "session changed before command" };
 				}
 				return {
-					ok: sendKernelPrompt(reviewedChild, reviewed, true, "composer-attended"),
+					ok: sendKernelPrompt(
+						reviewedChild,
+						reviewed,
+						true,
+						currentQorperaAccountId
+							? `account:${currentQorperaAccountId}:composer-attended`
+							: "composer-attended",
+					),
 				};
 			});
 		}
 		if (!safeControlTypes.has(frame.type)) return { ok: false };
+		if (!readOnlyControlTypes.has(frame.type) && !slotHasProfileCapability(slot, "write")) {
+			return profilePermissionError("write");
+		}
 		const targetChild = runtime.child;
 		if (!isCurrentRuntimeChild(slot, runtime, targetChild) || !attachedTo(targetChild)) {
 			return { ok: false, error: "session changed before command" };
@@ -7276,6 +8873,7 @@ app.whenReady().then(async () => {
 	const smokeCompanyRoot = smokeCompanyIndex >= 0 ? process.argv[smokeCompanyIndex + 1] : undefined;
 	const smokeBootstrapPicker = process.argv.includes("--smoke-bootstrap");
 	const initial = createWindow(pendingCompany ?? smokeCompanyRoot);
+	if (pendingProfileInvitationId) scheduleProfileInvitationHandoff(initial);
 
 	// Foundation self-update: packaged builds check Qorpera_Base_Releases
 	// (public) via electron-updater; downloads apply on quit. The foundation

@@ -364,6 +364,16 @@ describe("product-development departments", () => {
 		}
 	});
 
+	it.runIf(process.platform === "darwin")("establishes a stable Darwin process identity", () => {
+		scaffoldCompany(root);
+		const lock = claimCompanyRuntimeLock(root);
+		try {
+			expect(lock.processInstance).toMatch(/^darwin:[0-9a-f]{64}$/);
+		} finally {
+			releaseCompanyRuntimeLock(lock);
+		}
+	});
+
 	it("distinguishes a live lock owner from a reused process ID", () => {
 		scaffoldCompany(root);
 		const lockPath = companyRuntimeLockPath(root);
@@ -377,7 +387,12 @@ describe("product-development departments", () => {
 
 		expect(() => claimCompanyRuntimeLock(root)).toThrow("already owned by another live process");
 
-		liveRecord.processInstance = process.platform === "win32" ? "windows:1" : "linux:1";
+		liveRecord.processInstance =
+			process.platform === "win32"
+				? "windows:1"
+				: process.platform === "darwin"
+					? `darwin:${"1".repeat(64)}`
+					: "linux:1";
 		writeFileSync(lockPath, `${JSON.stringify(liveRecord)}\n`, "utf-8");
 		utimesSync(lockPath, old, old);
 		const recovered = claimCompanyRuntimeLock(root);

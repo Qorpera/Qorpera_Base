@@ -1,0 +1,8 @@
+#!/bin/sh
+/usr/local/bin/node /qorpera/lib/qorpera-sandbox-probe.mjs || exit $?
+
+# Keep tmpfs outputs mounted until the trusted host copies them and destroys
+# the container. Podman's independent --timeout remains the hard deadline.
+while :; do
+	sleep 3600
+done

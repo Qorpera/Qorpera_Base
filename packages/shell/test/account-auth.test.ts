@@ -61,6 +61,70 @@ describe("Qorpera account auth", () => {
 		});
 	});
 
+	it("restores the last validated account when an expired session cannot refresh offline", async () => {
+		const userData = temporaryRoot("account-offline");
+		const storage = new FileAccountAuthStorage(accountAuthStoragePath(userData));
+		const user = {
+			id: "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f",
+			email: "founder@qorpera.com",
+			aud: "authenticated",
+			role: "authenticated",
+			app_metadata: { provider: "github" },
+			user_metadata: { full_name: "Qorpera Founder" },
+			created_at: "2026-08-15T00:00:00.000Z",
+		};
+		const payload = Buffer.from(
+			JSON.stringify({
+				sub: user.id,
+				aud: "authenticated",
+				role: "authenticated",
+				exp: Math.floor(Date.now() / 1000) - 60,
+			}),
+		).toString("base64url");
+		storage.setItem(
+			"sb-project-auth-token",
+			JSON.stringify({
+				access_token: `eyJhbGciOiJIUzI1NiJ9.${payload}.signature`,
+				refresh_token: "refresh-token",
+				expires_at: Math.floor(Date.now() / 1000) - 60,
+				expires_in: 3600,
+				token_type: "bearer",
+				user,
+			}),
+		);
+		storage.setItem(
+			"qorpera-account-projection/v1",
+			JSON.stringify({
+				schema: "qorpera-account-projection/v1",
+				account: {
+					id: user.id,
+					email: user.email,
+					displayName: "Qorpera Founder",
+					provider: "github",
+				},
+			}),
+		);
+
+		const auth = new QorperaAccountAuth(userData, {
+			projectUrl: "https://project.test",
+			publishableKey: "sb_publishable_test",
+			fetch: async () => {
+				throw new TypeError("fetch failed");
+			},
+			openExternal: async () => {},
+		});
+		expect(await auth.info()).toEqual({
+			authenticated: true,
+			offline: true,
+			user: {
+				id: user.id,
+				email: user.email,
+				displayName: "Qorpera Founder",
+				provider: "github",
+			},
+		});
+	});
+
 	it("persists remembered browser sessions and keeps unremembered sessions in memory", async () => {
 		const userData = temporaryRoot("account-oauth");
 		const userId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";

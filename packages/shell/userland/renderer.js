@@ -112,6 +112,15 @@ let agentSidepanelMotionTimer = null;
 let companyCreatorIcon = "hop-warm-titanium";
 let currentCompanyIcon = "hop-warm-titanium";
 let currentCompanyRoot = "";
+let profileCreatorPlacement = "local";
+let currentProfileAccess = {
+	role: "owner",
+	capabilities: { read: true, write: true, authorize: true, manageMembers: true },
+};
+
+function canUseProfile(capability) {
+	return currentProfileAccess?.capabilities?.[capability] === true;
+}
 
 const STAFF_AVATAR_COLORS = [
 	"#171716",
@@ -163,6 +172,16 @@ const COMPANY_ICONS = [
 	{ id: "hop-blue-steel", label: "Blue steel", src: "./profile-icons/hop-blue-steel.png" },
 	{ id: "hop-mono-cloud", label: "Monochrome cloud", src: "./profile-icons/hop-mono-cloud.png" },
 ];
+const PROFILE_PLACEMENTS = {
+	local: {
+		label: "On this computer",
+		description: "Profile identity, history, and team access stay on this computer.",
+	},
+	hosted: {
+		label: "Hosted for sharing",
+		description: "Profile identity, team access, staff, and attended chats sync across members.",
+	},
+};
 const STAFF_COLOR_TOKENS = {
 	"qorpera-terracotta": "#ff642e",
 	"qorpera-cobalt": "#1684ff",
@@ -420,8 +439,28 @@ async function renderHub() {
 		const avatar = makeCompanyIcon(company.companyIcon, company.name, "company-avatar");
 		const label = document.createElement("strong");
 		label.textContent = company.name;
-		card.append(avatar, label);
-		card.onclick = () => {
+		const type = document.createElement("small");
+		type.className = "profile-type-label";
+		const role = PROFILE_ROLE_LABELS[company.access?.role ?? company.invitationRole];
+		type.textContent = company.invitationPending
+			? `Invitation · Hosted profile${role ? ` · ${role}` : ""}`
+			: `${company.product?.profile?.placement === "hosted" || company.profileType === "cloud" ? "Hosted profile" : "On this computer"}${company.setupRequired && role ? ` · ${role}` : ""}`;
+		card.append(avatar, label, type);
+		if (company.invitationPending || company.setupRequired) {
+			const setup = document.createElement("small");
+			setup.className = "profile-setup-label";
+			setup.textContent = company.invitationPending ? "Accept invitation" : "Set up on this computer";
+			card.appendChild(setup);
+		}
+		card.setAttribute(
+			"aria-label",
+			company.invitationPending
+				? `Accept invitation to ${company.name}`
+				: company.setupRequired
+					? `Set up ${company.name} on this computer`
+					: `Open ${company.name} profile`,
+		);
+		card.onclick = async () => {
 			// The click must visibly land: opening provisions the local sandbox,
 			// which can take seconds — spin the card and quiet the rest.
 			if (document.body.classList.contains("hub-opening")) return;
@@ -430,7 +469,36 @@ async function renderHub() {
 			const spinner = document.createElement("span");
 			spinner.className = "hub-spinner";
 			card.appendChild(spinner);
-			openCompany(company.root).then((opened) => {
+			if (company.invitationPending) {
+				const accepted = await window.qorpera.acceptCloudInvitation(company.invitationId);
+				document.body.classList.remove("hub-opening");
+				card.classList.remove("loading");
+				spinner.remove();
+				if (!accepted?.ok) {
+					$("hubError").textContent = accepted?.error ?? "Invitation could not be accepted.";
+					return;
+				}
+				await renderHub();
+				return;
+			}
+			const materializeAndOpen = async () => {
+				try {
+					let root = company.root;
+					if (company.setupRequired) {
+						const result = await window.qorpera.materializeCloudProfile(company.profileId);
+						if (!result?.ok || !result.root) {
+							throw new Error(result?.error ?? "Cloud profile setup did not return a local checkout.");
+						}
+						root = result.root;
+					}
+					if (!root) throw new Error("This profile does not have a local checkout.");
+					return await openCompany(root);
+				} catch (error) {
+					$("hubError").textContent = error instanceof Error ? error.message : String(error);
+					return false;
+				}
+			};
+			void materializeAndOpen().then((opened) => {
 				// Success reloads this window into the company; reaching here
 				// means the open failed — hand the hub back.
 				if (!opened) {
@@ -440,38 +508,51 @@ async function renderHub() {
 				}
 			});
 		};
-		const actions = document.createElement("button");
-		actions.className = "company-card-actions";
-		actions.type = "button";
-		actions.setAttribute("aria-label", `Company actions for ${company.name}`);
-		actions.setAttribute("aria-expanded", "false");
-		actions.textContent = "•••";
-		const menu = document.createElement("div");
-		menu.className = "company-card-menu";
-		menu.hidden = true;
-		menu.setAttribute("role", "menu");
-		const remove = document.createElement("button");
-		remove.type = "button";
-		remove.setAttribute("role", "menuitem");
-		remove.textContent = "Remove from Qorpera";
-		remove.onclick = async () => {
-			menu.hidden = true;
+		shell.appendChild(card);
+		if (company.invitationPending || (!company.setupRequired && company.access?.role === "owner")) {
+			const actions = document.createElement("button");
+			actions.className = "company-card-actions";
+			actions.type = "button";
+			actions.setAttribute(
+				"aria-label",
+				company.invitationPending ? `Invitation actions for ${company.name}` : `Company actions for ${company.name}`,
+			);
 			actions.setAttribute("aria-expanded", "false");
-			const result = await window.qorpera.removeCompany(company.root);
-			if (result?.ok) {
-				await renderHub();
-				return;
-			}
-			if (!result?.cancelled)
-				$("hubError").textContent = result?.error ?? "Company could not be removed from Qorpera.";
-		};
-		menu.appendChild(remove);
-		actions.onclick = () => {
-			menu.hidden = !menu.hidden;
-			actions.setAttribute("aria-expanded", String(!menu.hidden));
-			if (!menu.hidden) remove.focus();
-		};
-		shell.append(card, actions, menu);
+			actions.textContent = "•••";
+			const menu = document.createElement("div");
+			menu.className = "company-card-menu";
+			menu.hidden = true;
+			menu.setAttribute("role", "menu");
+			const remove = document.createElement("button");
+			remove.type = "button";
+			remove.setAttribute("role", "menuitem");
+			remove.textContent = company.invitationPending ? "Decline invitation" : "Remove from Qorpera";
+			remove.onclick = async () => {
+				menu.hidden = true;
+				actions.setAttribute("aria-expanded", "false");
+				const result = company.invitationPending
+					? await window.qorpera.declineCloudInvitation(company.invitationId)
+					: await window.qorpera.removeCompany(company.root);
+				if (result?.ok) {
+					await renderHub();
+					return;
+				}
+				if (!result?.cancelled) {
+					$("hubError").textContent =
+						result?.error ??
+						(company.invitationPending
+							? "Invitation could not be declined."
+							: "Company could not be removed from Qorpera.");
+				}
+			};
+			menu.appendChild(remove);
+			actions.onclick = () => {
+				menu.hidden = !menu.hidden;
+				actions.setAttribute("aria-expanded", String(!menu.hidden));
+				if (!menu.hidden) remove.focus();
+			};
+			shell.append(actions, menu);
+		}
 		grid.appendChild(shell);
 	}
 	const create = document.createElement("button");
@@ -501,11 +582,8 @@ async function signOut() {
 }
 
 // ---- founding a durable company ----------------------------------------------
-// The founder names the company; the machine derives the folder (the registry
-// convention: C:\Companies\<slug>). Electron has no window.prompt() — it
-// throws — so the flow lives in an in-chrome modal (#companyModal).
-
-const COMPANIES_HOME = "C:\\Companies";
+// The founder names the company and chooses where its profile lives. Account
+// entitlement and per-session execution remain separate decisions.
 
 function companySlug(name) {
 	return String(name)
@@ -522,6 +600,20 @@ function companyRootFor(name) {
 
 function companyIcon(iconId) {
 	return COMPANY_ICONS.find((candidate) => candidate.id === iconId) ?? COMPANY_ICONS[0];
+}
+
+function renderCompanyPlacementPicker() {
+	const picker = $("companyPlacementPicker");
+	for (const choice of picker.querySelectorAll("[data-profile-placement]")) {
+		const selected = choice.dataset.profilePlacement === profileCreatorPlacement;
+		choice.classList.toggle("selected", selected);
+		choice.setAttribute("aria-pressed", String(selected));
+		choice.onclick = () => {
+			profileCreatorPlacement = choice.dataset.profilePlacement;
+			renderCompanyPlacementPicker();
+			$("companyPlacementNote").textContent = PROFILE_PLACEMENTS[profileCreatorPlacement].description;
+		};
+	}
 }
 
 function makeCompanyIcon(iconId, label, className = "") {
@@ -561,11 +653,14 @@ function renderCompanyIconPicker() {
 
 function openCompanyModal() {
 	companyCreatorIcon = COMPANY_ICONS[0].id;
+	profileCreatorPlacement = "local";
 	$("companyName").value = "";
 	$("companyFormError").textContent = "";
 	$("companyCreate").disabled = true;
 	$("companyIconPreview").src = companyIcon(companyCreatorIcon).src;
 	renderCompanyIconPicker();
+	renderCompanyPlacementPicker();
+	$("companyPlacementNote").textContent = PROFILE_PLACEMENTS[profileCreatorPlacement].description;
 	$("companyModal").hidden = false;
 	$("companyName").focus();
 }
@@ -577,8 +672,7 @@ function closeCompanyModal() {
 function setupCompanyModal() {
 	const input = $("companyName");
 	input.addEventListener("input", () => {
-		const root = companyRootFor(input.value.trim());
-		$("companyCreate").disabled = !root;
+		$("companyCreate").disabled = !companySlug(input.value.trim());
 	});
 	input.addEventListener("keydown", (event) => {
 		if (event.key === "Escape") closeCompanyModal();
@@ -589,13 +683,18 @@ function setupCompanyModal() {
 	});
 	$("companyForm").addEventListener("submit", async (event) => {
 		event.preventDefault();
-		const root = companyRootFor(input.value.trim());
-		if (!root) return;
+		const profileName = input.value.trim();
+		if (!companySlug(profileName)) return;
 		const button = $("companyCreate");
 		$("companyFormError").textContent = "";
 		button.disabled = true;
 		button.textContent = "Creating…";
 		try {
+			// TODO(cloud-ui): the agents-only company:new IPC takes (dir, companyIcon)
+			// and cannot honor the hosted placement choice at creation time; a
+			// company created here starts local, and hosting is enabled afterwards
+			// from Settings (profile:enable-cloud).
+			const root = companyRootFor(profileName);
 			const created = await window.qorpera.newCompany(root, companyCreatorIcon);
 			const opened = await openCompany(created, $("companyFormError"));
 			if (opened) closeCompanyModal();
@@ -630,6 +729,7 @@ async function enterCompany(active) {
 	companyId = active.id || "";
 	currentCompanyRoot = active.root || "";
 	currentCompanyIcon = companyIcon(active.companyIcon).id;
+	currentProfileAccess = active.access ?? currentProfileAccess;
 	// Appearance was applied at boot from the pre-company bucket; re-apply now
 	// that this company's stored appearance is addressable.
 	applyNavAppearance();
@@ -2635,10 +2735,12 @@ async function retryStaffIntroduction() {
 
 function syncConversationAccess() {
 	const input = $("input");
-	input.readOnly = false;
-	$("composerMoreButton").disabled = false;
-	$("sendBtn").disabled = false;
-	document.querySelector(".composer-shell")?.classList.remove("read-only");
+	const canWrite = canUseProfile("write");
+	input.readOnly = !canWrite;
+	if (!canWrite) input.placeholder = "Read-only profile — ask an owner or admin for contributor access";
+	$("composerMoreButton").disabled = !canWrite;
+	$("sendBtn").disabled = !canWrite;
+	document.querySelector(".composer-shell")?.classList.toggle("read-only", !canWrite);
 }
 
 function renderRosterRail({ animateCreateRow = false } = {}) {
@@ -7589,6 +7691,10 @@ function decorateUserMsg(el, text) {
 
 async function sendPrompt(promptContext = "") {
 	const input = $("input");
+	if (!canUseProfile("write")) {
+		showControllerToast("This profile is read-only. Ask an owner or admin for contributor access.");
+		return;
+	}
 	const text = input.value.trim();
 	const images = pendingImages;
 	if (!text && !images.length) return false;
@@ -8514,6 +8620,9 @@ function renderConnectionGroup(content, title, description, connections, account
 			action.onclick = () => void toggleConnection(connection.id);
 			card.appendChild(action);
 		}
+		if (!canUseProfile("authorize")) {
+			for (const button of card.querySelectorAll("button")) button.disabled = true;
+		}
 		list.appendChild(card);
 	}
 	group.appendChild(list);
@@ -8542,6 +8651,521 @@ function renderConnections(content, connections, accountUsageById) {
 	}
 }
 
+const PROFILE_ROLE_LABELS = {
+	owner: "Owner",
+	admin: "Full access",
+	contributor: "Partial access",
+	viewer: "Read-only",
+};
+
+const PROFILE_ROLE_DETAILS = {
+	owner: "Can manage access, authorize actions, and contribute",
+	admin: "Can manage access, authorize actions, and contribute",
+	contributor: "Can write and communicate, but cannot authorize actions",
+	viewer: "Can inspect the profile without making changes",
+};
+
+function invitationDeliveryDetail(delivery) {
+	if (delivery?.status === "delivered") return "Email sent";
+	if (delivery?.status === "delivering") return "Sending email";
+	if (delivery?.status === "retrying") return `Email retrying · attempt ${delivery.attemptCount}`;
+	if (delivery?.status === "failed") return "Email delivery needs attention";
+	return "Email queued";
+}
+
+function profileRoleSelect(value, includeAdmin) {
+	const select = document.createElement("select");
+	select.setAttribute("aria-label", "Profile access level");
+	for (const role of ["admin", "contributor", "viewer"]) {
+		if (role === "admin" && !includeAdmin) continue;
+		const option = document.createElement("option");
+		option.value = role;
+		option.textContent = PROFILE_ROLE_LABELS[role];
+		option.selected = role === value;
+		select.appendChild(option);
+	}
+	return select;
+}
+
+function profileMemberLabel(member) {
+	return member.displayName || member.email || "Qorpera account";
+}
+
+function applyCloudProfileTransition(result) {
+	companyId = result.profileKey ?? companyId;
+	currentProfileAccess = result.team ?? currentProfileAccess;
+}
+
+const PROFILE_STATUS_LABELS = {
+	identity: { local: "Local identity", cloud: "Cloud identity" },
+	sharedStaff: {
+		local: "Local only",
+		pending: "Migration pending",
+		retrying: "Reconnecting",
+		attention: "Needs attention",
+		cloud: "Shared",
+	},
+	trail: {
+		local: "Local only",
+		pending: "Starting",
+		retrying: "Reconnecting",
+		attention: "Needs attention",
+		cloud: "Synced",
+	},
+	execution: { local: "This computer", cloud: "Ephemeral cloud runner", computer: "Qorpera Computer" },
+	files: {
+		local: "Local checkout",
+		pending: "Starting",
+		retrying: "Reconnecting",
+		attention: "Needs attention",
+		cloud: "Publishing",
+	},
+};
+
+const PROFILE_PROMOTION_LABELS = {
+	requested: "Ready to start",
+	provisioning: "Provisioning hosted identity",
+	"identity-ready": "Hosted identity ready · shared sync starting",
+	complete: "Hosted profile ready",
+	failed: "Needs attention",
+};
+
+function renderProfileProductControls(content, info) {
+	const profile = info.profile;
+	if (!profile) return;
+	const product = profile.product ?? {
+		account: { entitlement: "not-connected" },
+		profile: {
+			placement: profile.profileType === "cloud" ? "hosted" : "local",
+			billingSponsor: profile.profileType === "cloud" ? "not-configured" : "not-applicable",
+		},
+		execution: { target: "local" },
+	};
+	const group = document.createElement("section");
+	group.className = "settings-group general-settings-group";
+	const header = document.createElement("header");
+	const heading = document.createElement("h2");
+	heading.textContent = "Product and execution";
+	const description = document.createElement("p");
+	description.textContent =
+		"Account access, profile placement, execution target, and billing responsibility are independent.";
+	header.append(heading, description);
+	group.appendChild(header);
+
+	const entitlement = document.createElement("small");
+	entitlement.textContent =
+		product.account.entitlement === "not-connected" ? "Billing not connected" : product.account.entitlement;
+	setRow(
+		group,
+		"Account entitlement",
+		"Capabilities and subscription belong to the signed-in account, not to this profile.",
+		entitlement,
+	);
+	const placement = document.createElement("small");
+	placement.textContent = product.profile.placement === "hosted" ? "Hosted profile" : "On this computer";
+	setRow(group, "Profile placement", "Controls where shared profile state is stored and synchronized.", placement);
+	const execution = document.createElement("small");
+	execution.textContent =
+		product.execution.target === "cloud"
+			? "Ephemeral cloud runner"
+			: product.execution.target === "computer"
+				? "Qorpera Computer"
+				: "This computer";
+	setRow(
+		group,
+		"Execution target",
+		"Chosen per session or worktree. Hosted profiles do not automatically move execution to the cloud.",
+		execution,
+	);
+	const sponsor = document.createElement("small");
+	sponsor.textContent = product.profile.billingSponsor === "not-applicable" ? "Not applicable" : "Not configured";
+	setRow(
+		group,
+		"Billing sponsor",
+		product.profile.billingSponsor === "not-applicable"
+			? "Local profile activity has no shared hosting sponsor."
+			: "The sponsor will cover shared profile costs; contributors will not have to buy a plan merely to join.",
+		sponsor,
+	);
+
+	for (const [key, label] of [
+		["sharedStaff", "Staff and sessions"],
+		["trail", "Attended chat trail"],
+		["execution", "Agent execution"],
+		["files", "Company files"],
+	]) {
+		const value = profile.status?.[key];
+		const status = document.createElement("small");
+		status.textContent = PROFILE_STATUS_LABELS[key]?.[value] ?? value ?? "Unknown";
+		setRow(group, label, "", status);
+	}
+
+	if (profile.promotion) {
+		const promotion = document.createElement("small");
+		promotion.textContent = PROFILE_PROMOTION_LABELS[profile.promotion.phase] ?? profile.promotion.phase;
+		setRow(
+			group,
+			"Hosting setup",
+			profile.promotion.lastError ?? "The local profile remains recoverable throughout promotion.",
+			promotion,
+		);
+	}
+
+	if (profile.profileType === "local") {
+		const host = document.createElement("button");
+		host.type = "button";
+		host.textContent =
+			profile.promotion?.phase === "failed"
+				? "Retry hosting setup"
+				: profile.promotion
+					? "Resume hosting setup"
+					: "Host this profile";
+		host.disabled = profile.access?.capabilities?.manageMembers !== true;
+		host.onclick = async () => {
+			host.disabled = true;
+			const result = await window.qorpera.enableCloudProfile();
+			if (result?.ok) {
+				applyCloudProfileTransition(result);
+				showControllerToast("Hosted profile is active. Shared staff and attended chats are syncing.");
+			} else {
+				showControllerToast(result?.error ?? "Hosting setup still needs attention.");
+			}
+			await renderSettingsTab();
+		};
+		const actions = document.createElement("div");
+		actions.className = "appearance-actions";
+		actions.appendChild(host);
+		group.appendChild(actions);
+	}
+	content.appendChild(group);
+}
+
+function renderProfileCloudControls(content, info) {
+	const profile = info.profile;
+	if (!profile) return;
+	const group = document.createElement("section");
+	group.className = "settings-group general-settings-group";
+	const header = document.createElement("header");
+	const heading = document.createElement("h2");
+	heading.textContent = "Profile placement";
+	const description = document.createElement("p");
+	description.textContent =
+		profile.profileType === "cloud"
+			? "Profile identity, team access, shared staff, and attended chats are hosted. Files remain attached to this checkout unless published; execution is selected separately."
+			: "This profile identity, its team list, files, and agent trail currently exist only on this computer.";
+	header.append(heading, description);
+	group.appendChild(header);
+
+	if (profile.profileType === "cloud") {
+		const identity = document.createElement("small");
+		identity.textContent = profile.profileId;
+		setRow(
+			group,
+			"Hosted profile",
+			"Hosting and usage are scoped to this profile. Product entitlement remains attached to each account.",
+			identity,
+		);
+		content.appendChild(group);
+		return;
+	}
+
+	const canEnable = profile.access?.capabilities?.manageMembers === true;
+	const attach = document.createElement("button");
+	attach.type = "button";
+	attach.textContent = "Choose cloud profile";
+	attach.disabled = !canEnable;
+	attach.onclick = async () => {
+		attach.disabled = true;
+		attach.textContent = "Loading…";
+		const result = await window.qorpera.cloudProfileOptions();
+		if (!result?.ok) {
+			attach.disabled = false;
+			attach.textContent = "Choose cloud profile";
+			showControllerToast(result?.error ?? "Cloud profiles could not be loaded.");
+			return;
+		}
+		const profiles = result.profiles ?? [];
+		if (!profiles.length) {
+			attach.disabled = false;
+			attach.textContent = "Choose cloud profile";
+			showControllerToast("No cloud profiles are available to this account.");
+			return;
+		}
+		const select = document.createElement("select");
+		select.setAttribute("aria-label", "Cloud profile to attach");
+		select.appendChild(new Option("Choose a cloud profile", ""));
+		for (const candidate of profiles) {
+			select.appendChild(
+				new Option(
+					`${candidate.profileName} · ${PROFILE_ROLE_LABELS[candidate.role] ?? candidate.role}`,
+					candidate.profileId,
+				),
+			);
+		}
+		const confirm = document.createElement("button");
+		confirm.type = "button";
+		confirm.textContent = "Attach folder";
+		confirm.disabled = true;
+		select.onchange = () => {
+			confirm.disabled = !select.value;
+		};
+		confirm.onclick = async () => {
+			select.disabled = true;
+			confirm.disabled = true;
+			const attached = await window.qorpera.attachCloudProfile(select.value);
+			if (!attached?.ok) {
+				select.disabled = false;
+				confirm.disabled = !select.value;
+				if (!attached?.cancelled) showControllerToast(attached?.error ?? "Cloud profile could not be attached.");
+				return;
+			}
+			applyCloudProfileTransition(attached);
+			showControllerToast("Folder attached. Profile identity and team access now come from the cloud profile.");
+			await renderSettingsTab();
+		};
+		const row = attach.closest(".setrow");
+		if (row) {
+			attach.remove();
+			row.append(select, confirm);
+		}
+	};
+	setRow(
+		group,
+		"Attach to an existing cloud profile",
+		"Use this folder as a local checkout. Qorpera will confirm before replacing its local profile identity.",
+		attach,
+	);
+	content.appendChild(group);
+}
+
+function renderCloudCompanyWorkspaces(content, info) {
+	const profile = info.profile;
+	if (profile?.profileType !== "cloud") return;
+	const group = document.createElement("section");
+	group.className = "settings-group general-settings-group";
+	const header = document.createElement("header");
+	const heading = document.createElement("h2");
+	heading.textContent = "Company workspaces";
+	const description = document.createElement("p");
+	description.textContent =
+		"Each computer publishes an isolated company-file fork. Remote changes are previewed and merged explicitly; they never overwrite this checkout on arrival.";
+	header.append(heading, description);
+	group.appendChild(header);
+
+	const health = document.createElement("small");
+	const inboxPhase = profile.workspaceInboxHealth?.phase;
+	health.textContent =
+		inboxPhase === "attention"
+			? "Needs attention"
+			: inboxPhase === "retrying"
+				? "Reconnecting"
+				: inboxPhase === "healthy"
+					? "Up to date"
+					: "Starting";
+	setRow(group, "Workspace inbox", "Realtime invalidations are verified against immutable snapshots.", health);
+
+	const workspaces = profile.workspaces ?? [];
+	for (const workspace of workspaces) {
+		const actions = document.createElement("div");
+		const updated = Number.isFinite(Date.parse(workspace.updatedAt))
+			? new Date(workspace.updatedAt).toLocaleString()
+			: "Update time unavailable";
+		const detail = workspace.head
+			? `${workspace.head.tree.fileCount} files · ${updated}`
+			: `No published files · ${updated}`;
+		if (workspace.isLocal) {
+			const local = document.createElement("small");
+			local.textContent = workspace.head ? "This computer · published" : "This computer · preparing";
+			actions.appendChild(local);
+		} else if (workspace.head) {
+			const preview = document.createElement("button");
+			preview.type = "button";
+			preview.textContent = "Preview";
+			preview.onclick = async () => {
+				preview.disabled = true;
+				const result = await window.qorpera.previewCloudCompanyWorkspace(workspace.workspaceId);
+				preview.disabled = false;
+				showControllerToast(result?.ok ? "Verified preview opened." : result?.error ?? "Preview could not be opened.");
+			};
+			const merge = document.createElement("button");
+			merge.type = "button";
+			merge.textContent = "Review merge";
+			merge.onclick = async () => {
+				merge.disabled = true;
+				merge.textContent = "Reviewing…";
+				const inspection = await window.qorpera.inspectCloudCompanyMerge(workspace.workspaceId);
+				if (!inspection?.ok) {
+					merge.disabled = false;
+					merge.textContent = "Review merge";
+					showControllerToast(inspection?.error ?? "Merge could not be inspected.");
+					return;
+				}
+				const plan = inspection.plan;
+				if (plan.conflicts.length) {
+					merge.textContent = `${plan.conflicts.length} conflict${plan.conflicts.length === 1 ? "" : "s"}`;
+					merge.title = plan.conflicts.map((conflict) => conflict.path).join("\n");
+					showControllerToast("This fork has conflicting paths. Preview it before resolving locally.");
+					return;
+				}
+				if (!plan.changedPaths.length) {
+					merge.textContent = "Already included";
+					return;
+				}
+				if (profile.access?.capabilities?.write !== true) {
+					merge.textContent = `${plan.changedPaths.length} changes · read-only`;
+					return;
+				}
+				merge.disabled = false;
+				merge.textContent = `Merge ${plan.changedPaths.length} changes`;
+				merge.onclick = async () => {
+					merge.disabled = true;
+					const result = await window.qorpera.mergeCloudCompanyWorkspace(workspace.workspaceId);
+					if (!result?.ok) {
+						merge.disabled = false;
+						if (!result?.cancelled) showControllerToast(result?.error ?? "Remote changes were not merged.");
+						return;
+					}
+					showControllerToast(result.applied ? "Remote changes merged and published." : "No files were changed.");
+					await renderSettingsTab();
+				};
+			};
+			actions.append(preview, merge);
+		}
+		setRow(group, workspace.name, detail, actions);
+	}
+	if (!workspaces.some((workspace) => !workspace.isLocal)) {
+		const empty = document.createElement("small");
+		empty.textContent = "No remote forks";
+		setRow(
+			group,
+			"Other computers",
+			"A teammate's published fork will appear here after they open this cloud profile.",
+			empty,
+		);
+	}
+	content.appendChild(group);
+}
+
+function renderProfileTeam(content, info) {
+	const team = info.profile?.team;
+	if (!team) return;
+	const cloudProfile = info.profile?.profileType === "cloud";
+	const actorId = info.account?.user?.id;
+	const canManage = team.capabilities?.manageMembers === true;
+	const actorIsOwner = team.role === "owner";
+	const group = document.createElement("section");
+	group.className = "settings-group general-settings-group";
+	const header = document.createElement("header");
+	const heading = document.createElement("h2");
+	heading.textContent = "Team";
+	const description = document.createElement("p");
+	description.textContent = canManage
+		? cloudProfile
+			? "Invite people to this hosted profile. Their role controls access; contributors do not have to buy a plan merely to join."
+			: "Invite accounts on this installation and choose what they can do in this local profile."
+		: "People who share access to this profile.";
+	header.append(heading, description);
+	group.appendChild(header);
+
+	for (const member of team.members ?? []) {
+		const detail = [member.email, PROFILE_ROLE_DETAILS[member.role]].filter(Boolean).join(" · ");
+		const editable =
+			canManage &&
+			member.role !== "owner" &&
+			(actorIsOwner || member.role !== "admin") &&
+			member.userId !== actorId;
+		const control = editable ? profileRoleSelect(member.role, actorIsOwner) : document.createElement("small");
+		if (editable) {
+			control.onchange = async () => {
+				control.disabled = true;
+				const result = await window.qorpera.updateProfileMemberRole(member.userId, control.value);
+				if (!result?.ok) showControllerToast(result?.error ?? "Profile access could not be updated.");
+				await renderSettingsTab();
+			};
+		} else {
+			control.textContent = PROFILE_ROLE_LABELS[member.role] ?? member.role;
+		}
+		const row = setRow(group, profileMemberLabel(member), detail, control);
+		if (editable) {
+			const remove = document.createElement("button");
+			remove.type = "button";
+			remove.textContent = "Remove";
+			remove.onclick = async () => {
+				remove.disabled = true;
+				const result = await window.qorpera.removeProfileMember(member.userId);
+				if (!result?.ok) showControllerToast(result?.error ?? "Profile member could not be removed.");
+				await renderSettingsTab();
+			};
+			row.appendChild(remove);
+		}
+	}
+
+	if (canManage) {
+		for (const invitation of team.invitations ?? []) {
+			const actions = document.createElement("div");
+			if (invitation.delivery?.status === "failed") {
+				const retry = document.createElement("button");
+				retry.type = "button";
+				retry.textContent = "Retry email";
+				retry.onclick = async () => {
+					retry.disabled = true;
+					const result = await window.qorpera.retryProfileInvitationDelivery(invitation.id);
+					if (!result?.ok) showControllerToast(result?.error ?? "Invitation email could not be retried.");
+					else showControllerToast("Invitation email queued again.");
+					await renderSettingsTab();
+				};
+				actions.appendChild(retry);
+			}
+			const cancel = document.createElement("button");
+			cancel.type = "button";
+			cancel.textContent = "Cancel invite";
+			cancel.onclick = async () => {
+				cancel.disabled = true;
+				const result = await window.qorpera.cancelProfileInvitation(invitation.id);
+				if (!result?.ok) showControllerToast(result?.error ?? "Invitation could not be cancelled.");
+				await renderSettingsTab();
+			};
+			actions.appendChild(cancel);
+			setRow(
+				group,
+				invitation.email,
+				`Pending acceptance · ${PROFILE_ROLE_LABELS[invitation.role]} · ${invitationDeliveryDetail(invitation.delivery)}`,
+				actions,
+			);
+		}
+
+		const email = document.createElement("input");
+		email.type = "email";
+		email.placeholder = "friend@example.com";
+		email.setAttribute("aria-label", "Invitee email address");
+		const role = profileRoleSelect("contributor", actorIsOwner);
+		const invite = document.createElement("button");
+		invite.type = "button";
+		invite.textContent = "Create invite";
+		invite.onclick = async () => {
+			invite.disabled = true;
+			const result = await window.qorpera.inviteProfileMember({ email: email.value, role: role.value });
+			if (!result?.ok) {
+				invite.disabled = false;
+				showControllerToast(result?.error ?? "Invitation could not be created.");
+				return;
+			}
+			showControllerToast(cloudProfile ? "Invitation created. Email queued." : "Invitation created.");
+			await renderSettingsTab();
+		};
+		const inviteRow = setRow(
+			group,
+			"Invite a friend",
+			cloudProfile
+				? "Sends an expiring email invitation. The recipient must sign in with this address and accept explicitly."
+				: "Access activates when this email signs in on the same Qorpera installation.",
+			email,
+		);
+		inviteRow.append(role, invite);
+	}
+	content.appendChild(group);
+}
+
 async function renderSettingsTab() {
 	const renderVersion = ++settingsRenderVersion;
 	const renderedTab = settingsTab;
@@ -8551,6 +9175,15 @@ async function renderSettingsTab() {
 	if (settingsTab === "general") {
 		const info = await window.qorpera.settingsInfo();
 		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
+		if (info.profile?.profileType === "cloud") {
+			const cloud = await window.qorpera.cloudCompanyWorkspaces().catch(() => undefined);
+			if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
+			if (cloud?.ok) {
+				info.profile.workspaces = cloud.inbox?.workspaces ?? info.profile.workspaces;
+				info.profile.workspaceInboxHealth = cloud.inboxHealth;
+			}
+		}
+		currentProfileAccess = info.profile?.access ?? info.profile?.team ?? currentProfileAccess;
 		setHeading(content, "General");
 
 		const companyGroup = document.createElement("section");
@@ -8569,7 +9202,11 @@ async function renderSettingsTab() {
 		const companyName = document.createElement("strong");
 		companyName.textContent = info.company?.name || state.name || "Current company";
 		const companyDetail = document.createElement("small");
-		companyDetail.textContent = "Agents, connector recipes, and work for this company";
+		const profileTypeLabel =
+			info.profile?.product?.profile?.placement === "hosted" ? "Hosted profile" : "On this computer";
+		companyDetail.textContent = info.profile
+			? `${profileTypeLabel} · ${PROFILE_ROLE_LABELS[currentProfileAccess.role] ?? "Shared access"}`
+			: "Agents, connector recipes, and work for this company";
 		companyCopy.append(companyName, companyDetail);
 		const switchCompany = document.createElement("button");
 		switchCompany.type = "button";
@@ -8581,6 +9218,10 @@ async function renderSettingsTab() {
 		companyCard.append(companyCopy, switchCompany);
 		companyGroup.appendChild(companyCard);
 		content.appendChild(companyGroup);
+		renderProfileProductControls(content, info);
+		renderProfileCloudControls(content, info);
+		renderCloudCompanyWorkspaces(content, info);
+		renderProfileTeam(content, info);
 
 		const accountGroup = document.createElement("section");
 		accountGroup.className = "settings-group general-settings-group";
@@ -8656,6 +9297,7 @@ async function renderSettingsTab() {
 			execution.appendChild(option);
 		}
 		execution.value = info.localExecution === "never" ? "never" : "always";
+		execution.disabled = !canUseProfile("authorize");
 		const executionStatus = document.createElement("small");
 		executionStatus.className = "general-setting-status";
 		execution.onchange = async () => {
@@ -8836,6 +9478,12 @@ async function renderSettingsTab() {
 		const save = document.createElement("button");
 		save.className = "save";
 		save.textContent = "Save gates";
+		const canAuthorize = canUseProfile("authorize");
+		money.disabled = !canAuthorize;
+		limit.disabled = !canAuthorize;
+		identity.disabled = !canAuthorize;
+		irreversible.disabled = !canAuthorize;
+		save.disabled = !canAuthorize;
 		save.onclick = async () => {
 			const res = await authorizedPost("/api/authority/config", {
 				classes: {

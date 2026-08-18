@@ -396,6 +396,31 @@ export function readStaffAgents(root: string): StaffAgent[] {
 		.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
+/** Replace the local projection with an authoritative staff snapshot while
+ * preserving every cloud-owned identity and timestamp. Charters live
+ * authoritatively in each agent's instructions file, so the replacement must
+ * write those alongside the registry or the replaced roster would be
+ * unreadable; workspaces of agents absent from the snapshot are left behind
+ * for explicit deletion, matching updateStaffAgent's ownership rules. */
+export function replaceStaffAgents(root: string, agents: readonly StaffAgent[]): StaffAgent[] {
+	if (agents.length > MAX_STAFF_AGENTS) throw new Error("Staff registry is full");
+	const registry = emptyRegistry();
+	for (const value of agents) {
+		const record = value as unknown as Record<string, unknown>;
+		const id = typeof record.id === "string" ? record.id : "";
+		const agent = staffAgentValue(value, id);
+		if (registry.agents[id]) throw new Error(`Duplicate staff agent: ${id}`);
+		registry.agents[id] = agent;
+	}
+	for (const agent of Object.values(registry.agents)) {
+		writeAgentInstructions(root, agent.id, agent.charter);
+	}
+	writeRegistry(root, registry);
+	return Object.values(registry.agents)
+		.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+		.map((agent) => ({ ...agent, appearance: { ...agent.appearance } }));
+}
+
 export function createStaffAgent(root: string, input: CreateStaffAgentInput): StaffAgent {
 	return createStaffAgents(root, [input])[0]!;
 }
