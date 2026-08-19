@@ -433,6 +433,7 @@ async function renderHub() {
 	$("wordmark").hidden = false;
 	document.title = "Qorpera Base";
 	$("hubError").textContent = "";
+	wireFriendsPanel();
 	const companies = await window.qorpera.listCompanies();
 	const grid = $("hubCompanies");
 	grid.innerHTML = "";
@@ -10690,3 +10691,137 @@ async function bootSignedInWorkspace() {
 	}
 	await bootSignedInWorkspace();
 })();
+
+
+// ---- friends ---------------------------------------------------------------
+// Friends are the social graph the hub renders: requests, the roster, and the
+// pending company invitations that previously only lived in email. Errors
+// surface in the panel instead of being swallowed -- an invisible failure
+// here is exactly how invitations went missing before.
+
+let friendsWired = false;
+
+function wireFriendsPanel() {
+	if (friendsWired) return;
+	friendsWired = true;
+	$("friendsButton").onclick = () => {
+		const panel = $("friendsPanel");
+		panel.hidden = !panel.hidden;
+		if (!panel.hidden) void renderFriendsPanel();
+	};
+	$("friendsClose").onclick = () => {
+		$("friendsPanel").hidden = true;
+	};
+	$("friendAdd").onclick = async () => {
+		const input = $("friendEmail");
+		const email = input.value.trim();
+		if (!email) return;
+		$("friendsError").textContent = "";
+		const result = await window.qorpera.friendsRequest(email);
+		if (result?.ok) {
+			input.value = "";
+			await renderFriendsPanel();
+		} else {
+			$("friendsError").textContent = result?.error ?? "Friend request failed.";
+		}
+	};
+}
+
+function friendRow(label, sub, buttons) {
+	const row = document.createElement("div");
+	row.className = "friend-row";
+	const who = document.createElement("span");
+	who.className = "who";
+	who.textContent = label;
+	const small = document.createElement("small");
+	small.textContent = sub;
+	who.appendChild(small);
+	row.appendChild(who);
+	for (const [text, action] of buttons) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.textContent = text;
+		button.onclick = async () => {
+			button.disabled = true;
+			$("friendsError").textContent = "";
+			const result = await action();
+			if (result?.ok) {
+				await renderFriendsPanel();
+				if (result.refreshHub) await renderHub();
+			} else {
+				button.disabled = false;
+				$("friendsError").textContent = result?.error ?? "That did not work.";
+			}
+		};
+		row.appendChild(button);
+	}
+	return row;
+}
+
+function friendsSection(container, title) {
+	const heading = document.createElement("div");
+	heading.className = "friends-section-title";
+	heading.textContent = title;
+	container.appendChild(heading);
+}
+
+async function renderFriendsPanel() {
+	const invitesBox = $("friendsInvites");
+	const listBox = $("friendsList");
+	invitesBox.innerHTML = "";
+	listBox.innerHTML = "";
+	$("friendsError").textContent = "";
+
+	const invites = await window.qorpera.listCloudInvitations();
+	if (!invites?.ok) {
+		$("friendsError").textContent = `Invitations: ${invites?.error ?? "unavailable"}`;
+	} else if (invites.invitations.length > 0) {
+		friendsSection(invitesBox, "Company invites");
+		for (const invitation of invites.invitations) {
+			invitesBox.appendChild(
+				friendRow(invitation.profileName, `invited as ${invitation.role}`, [
+					[
+						"Accept",
+						async () => {
+							const result = await window.qorpera.acceptCloudInvitation(invitation.id);
+							return result?.ok ? { ok: true, refreshHub: true } : result;
+						},
+					],
+					["Decline", () => window.qorpera.declineCloudInvitation(invitation.id)],
+				]),
+			);
+		}
+	}
+
+	const friends = await window.qorpera.friendsList();
+	if (!friends?.ok) {
+		$("friendsError").textContent = friends?.error ?? "Friends are unavailable.";
+		return;
+	}
+	const incoming = friends.friends.filter((friend) => friend.status === "pending" && friend.direction === "incoming");
+	const outgoing = friends.friends.filter((friend) => friend.status === "pending" && friend.direction === "outgoing");
+	const accepted = friends.friends.filter((friend) => friend.status === "accepted");
+	if (incoming.length > 0) {
+		friendsSection(listBox, "Friend requests");
+		for (const friend of incoming) {
+			listBox.appendChild(
+				friendRow(friend.displayName, friend.email, [
+					["Accept", () => window.qorpera.friendsRespond(friend.userId, true)],
+					["Decline", () => window.qorpera.friendsRespond(friend.userId, false)],
+				]),
+			);
+		}
+	}
+	friendsSection(listBox, accepted.length > 0 ? "Friends" : "No friends yet — add one by email.");
+	for (const friend of accepted) {
+		listBox.appendChild(
+			friendRow(friend.displayName, friend.email, [["Remove", () => window.qorpera.friendsRemove(friend.userId)]]),
+		);
+	}
+	if (outgoing.length > 0) {
+		friendsSection(listBox, "Waiting on");
+		for (const friend of outgoing) {
+			listBox.appendChild(friendRow(friend.displayName, `${friend.email} · invited`, []));
+		}
+	}
+}

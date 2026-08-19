@@ -8536,6 +8536,69 @@ app.whenReady().then(async () => {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
 	});
+	ipcMain.handle("profile:list-invitations", async (event) => {
+		if (!isTrustedHubSender(event.sender)) return { ok: false, error: "invalid sender" };
+		const account = await authenticatedAccount();
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		if (!account?.user || !primary) return { ok: false, error: "Sign in to see invitations." };
+		try {
+			return { ok: true, invitations: await primary.listInvitations() };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("friends:list", async (event) => {
+		if (!isTrustedHubSender(event.sender)) return { ok: false, error: "invalid sender" };
+		const account = await authenticatedAccount();
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		if (!account?.user || !primary) return { ok: false, error: "Sign in to see friends." };
+		try {
+			return { ok: true, friends: await primary.listFriends() };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("friends:request", async (event, email: unknown) => {
+		if (!isTrustedHubSender(event.sender) || typeof email !== "string") {
+			return { ok: false, error: "invalid friend request" };
+		}
+		const account = await authenticatedAccount();
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		if (!account?.user || !primary) return { ok: false, error: "Sign in to add friends." };
+		try {
+			return { ok: true, status: await primary.sendFriendRequest(email) };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("friends:respond", async (event, userId: unknown, accept: unknown) => {
+		if (!isTrustedHubSender(event.sender) || typeof userId !== "string" || typeof accept !== "boolean") {
+			return { ok: false, error: "invalid friend response" };
+		}
+		const account = await authenticatedAccount();
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		if (!account?.user || !primary) return { ok: false, error: "Sign in first." };
+		try {
+			await primary.respondFriendRequest(userId, accept);
+			return { ok: true };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("friends:remove", async (event, userId: unknown) => {
+		if (!isTrustedHubSender(event.sender) || typeof userId !== "string") {
+			return { ok: false, error: "invalid friend removal" };
+		}
+		const account = await authenticatedAccount();
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		if (!account?.user || !primary) return { ok: false, error: "Sign in first." };
+		try {
+			await primary.removeFriend(userId);
+			return { ok: true };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
 	ipcMain.handle("profile:decline-invitation", async (event, invitationId: unknown) => {
 		if (!isTrustedHubSender(event.sender) || typeof invitationId !== "string") {
 			return { ok: false, error: "invalid profile invitation" };
