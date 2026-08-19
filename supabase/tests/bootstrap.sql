@@ -16,6 +16,9 @@ create table auth.users (
 	id uuid primary key,
 	email text,
 	email_confirmed_at timestamptz,
+	-- Present on real Supabase auth.users; the friends listing reads display
+	-- names from it, so the fixture must carry it too.
+	raw_user_meta_data jsonb not null default '{}'::jsonb,
 	created_at timestamptz not null default statement_timestamp()
 );
 
