@@ -74,7 +74,9 @@ export interface HostedProfileInvitation {
 	invitedByUserId: string;
 	createdAt: string;
 	expiresAt: string;
-	delivery: {
+	/** Present on the owner-side team listing only; the incoming-invitation
+	 * listing has no delivery record (the invitee never sees delivery state). */
+	delivery?: {
 		status: HostedInvitationDeliveryStatus;
 		attemptCount: number;
 		nextAttemptAt: string;
@@ -1357,7 +1359,13 @@ function parseInvitation(value: unknown): HostedProfileInvitation {
 		invitedByUserId: uuid(input.invited_by_user_id, "invitation actor id"),
 		createdAt: timestamp(input.created_at, "invitation creation time"),
 		expiresAt: timestamp(input.expires_at, "invitation expiry"),
-		delivery: parseInvitationDelivery(input.delivery),
+		// The incoming listing (qorpera_list_profile_invitations) has never
+		// returned a delivery record; demanding one made every invitee's
+		// listing throw, and swallowed catches turned that into invitations
+		// that simply never appeared anywhere.
+		...(input.delivery === null || input.delivery === undefined
+			? {}
+			: { delivery: parseInvitationDelivery(input.delivery) }),
 	};
 }
 
