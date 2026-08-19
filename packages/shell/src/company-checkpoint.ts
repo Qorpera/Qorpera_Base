@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
 	existsSync,
@@ -100,30 +100,95 @@ function assertNoExternalLocalGitConfig(root: string, env: NodeJS.ProcessEnv): v
 	}
 }
 
-function git(root: string, args: string[]): ReturnType<typeof spawnSync> {
+function gitArgs(root: string, args: string[]): string[] {
 	const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+	return [
+		"--no-optional-locks",
+		"-c",
+		`core.hooksPath=${nullDevice}`,
+		"-c",
+		"core.fsmonitor=false",
+		"-c",
+		`core.attributesFile=${nullDevice}`,
+		"-c",
+		"credential.helper=",
+		"-c",
+		"commit.gpgSign=false",
+		"-C",
+		root,
+		...args,
+	];
+}
+
+function git(root: string, args: string[]): ReturnType<typeof spawnSync> {
 	const env = gitEnvironment();
 	assertNoExternalLocalGitConfig(root, env);
-	return spawnSync(
-		"git",
-		[
-			"--no-optional-locks",
-			"-c",
-			`core.hooksPath=${nullDevice}`,
-			"-c",
-			"core.fsmonitor=false",
-			"-c",
-			`core.attributesFile=${nullDevice}`,
-			"-c",
-			"credential.helper=",
-			"-c",
-			"commit.gpgSign=false",
-			"-C",
-			root,
-			...args,
-		],
-		{ encoding: "utf-8", shell: false, windowsHide: true, env },
+	return spawnSync("git", gitArgs(root, args), { encoding: "utf-8", shell: false, windowsHide: true, env });
+}
+
+interface GitResult {
+	status: number | null;
+	stdout: string;
+	stderr: string;
+}
+
+/** git without blocking the main event loop. While an agent child process is
+ * live, spawnSync("git", …) can fail to observe the exited process and never
+ * return (verified on Windows 2026-08-19: no git process, spawnSync parked
+ * forever) — freezing the entire app. This runner resolves on process exit
+ * and force-kills on timeout, so the worst case is a failed commit, never a
+ * frozen shell. */
+function gitAsync(root: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs = 20_000): Promise<GitResult> {
+	return new Promise((resolvePromise) => {
+		const child = spawn("git", gitArgs(root, args), {
+			stdio: ["ignore", "pipe", "pipe"],
+			shell: false,
+			windowsHide: true,
+			env,
+		});
+		let stdout = "";
+		let stderr = "";
+		let settled = false;
+		const settle = (status: number | null) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			// Exit precedes the final stdout flush by a beat; git's outputs here
+			// are tiny, so one macrotask of grace collects them.
+			setImmediate(() => resolvePromise({ status, stdout, stderr }));
+		};
+		const timer = setTimeout(() => {
+			child.kill();
+			settle(null);
+		}, timeoutMs);
+		child.stdout.on("data", (chunk: Buffer) => {
+			stdout += chunk.toString("utf-8");
+		});
+		child.stderr.on("data", (chunk: Buffer) => {
+			stderr += chunk.toString("utf-8");
+		});
+		child.on("error", () => settle(null));
+		child.on("exit", (code) => settle(code));
+	});
+}
+
+async function assertNoExternalLocalGitConfigAsync(root: string, env: NodeJS.ProcessEnv): Promise<void> {
+	const list = async (scope: "--local" | "--worktree") => {
+		const result = await gitAsync(root, ["config", scope, "--no-includes", "--null", "--list"], env);
+		if (result.status !== 0) throw new Error(`could not inspect ${scope.slice(2)} Git config without includes`);
+		return result.stdout
+			.split("\0")
+			.filter(Boolean)
+			.map((entry) => entry.split(/\r?\n/, 1)[0].toLowerCase());
+	};
+	const local = await list("--local");
+	const keys = local.includes("extensions.worktreeconfig") ? [...local, ...(await list("--worktree"))] : local;
+	const unsafe = keys.find(
+		(key) => key.startsWith("include.") || key.startsWith("includeif.") || key.startsWith("filter."),
 	);
+	if (unsafe) {
+		throw new Error(`repository-local Git execution config is not permitted in host checkpoints: ${unsafe}`);
+	}
 }
 
 function commitSnapshot(root: string, message: string): void {
@@ -245,6 +310,53 @@ export function commitCompanyMaterialization(root: string, paths: string[]): voi
 	]);
 	if (committed.status !== 0) {
 		git(root, ["restore", "--staged", "--", ...existingPaths]);
+		throw new Error(
+			`company materialization commit failed: ${committed.stderr || committed.stdout || "git commit failed"}`,
+		);
+	}
+}
+
+/** commitCompanyMaterialization for callers that run while agent children are
+ * live: identical semantics, but no spawnSync anywhere on the path (see
+ * gitAsync — a synchronous git here froze the whole shell). */
+export async function commitCompanyMaterializationAsync(root: string, paths: string[]): Promise<void> {
+	const env = gitEnvironment();
+	await assertNoExternalLocalGitConfigAsync(root, env);
+	const existingPaths: string[] = [];
+	for (const path of paths) {
+		if (
+			existsSync(join(root, path)) ||
+			(await gitAsync(root, ["ls-files", "--error-unmatch", "--", path], env)).status === 0
+		) {
+			existingPaths.push(path);
+		}
+	}
+	if (existingPaths.length === 0) return;
+	const staged = await gitAsync(root, ["add", "--", ...existingPaths], env);
+	if (staged.status !== 0) {
+		throw new Error(`company materialization staging failed: ${staged.stderr || staged.stdout || "git add failed"}`);
+	}
+	const changed = await gitAsync(root, ["diff", "--cached", "--quiet", "--", ...existingPaths], env);
+	if (changed.status === 0) return;
+	if (changed.status !== 1) throw new Error("could not inspect the company materialization snapshot");
+	const committed = await gitAsync(
+		root,
+		[
+			"-c",
+			"user.name=Qorpera Host",
+			"-c",
+			"user.email=host@qorpera.local",
+			"commit",
+			"--only",
+			"-m",
+			"docs: materialize company runtime\n\nQorpera-Trigger: desktop host open\nQorpera-Rationale: preserve host-managed scaffolding, fixed-shell migrations, and company artifacts before agent execution",
+			"--",
+			...existingPaths,
+		],
+		env,
+	);
+	if (committed.status !== 0) {
+		await gitAsync(root, ["restore", "--staged", "--", ...existingPaths], env);
 		throw new Error(
 			`company materialization commit failed: ${committed.stderr || committed.stdout || "git commit failed"}`,
 		);

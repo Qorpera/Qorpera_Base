@@ -10,6 +10,7 @@ import {
 	type User,
 } from "@supabase/supabase-js";
 import { CloudContentAddressedStore, SupabaseCloudObjectTransport } from "./cloud-object-store.ts";
+import { SupabaseCloudPresenceTransport } from "./cloud-presence.ts";
 import { SupabaseCloudRealtimeTransport } from "./cloud-realtime-sync.ts";
 import {
 	createSupabaseHostedPrimary,
@@ -291,6 +292,7 @@ export class QorperaAccountAuth {
 	private readonly authStorageKey: string;
 	private readonly primary: QorperaHostedPrimary;
 	private readonly realtime: SupabaseCloudRealtimeTransport;
+	private readonly presence: SupabaseCloudPresenceTransport;
 	private readonly objects: CloudContentAddressedStore;
 	private readonly openExternal: (url: string) => Promise<void>;
 	private readonly storage: FileAccountAuthStorage;
@@ -320,6 +322,7 @@ export class QorperaAccountAuth {
 		);
 		this.primary = createSupabaseHostedPrimary(this.client);
 		this.realtime = new SupabaseCloudRealtimeTransport(this.client);
+		this.presence = new SupabaseCloudPresenceTransport(this.client);
 		this.objects = new CloudContentAddressedStore(new SupabaseCloudObjectTransport(this.client));
 	}
 
@@ -329,6 +332,10 @@ export class QorperaAccountAuth {
 
 	hostedRealtime(): SupabaseCloudRealtimeTransport {
 		return this.realtime;
+	}
+
+	hostedPresence(): SupabaseCloudPresenceTransport {
+		return this.presence;
 	}
 
 	hostedObjects(): CloudContentAddressedStore {
