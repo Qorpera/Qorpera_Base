@@ -703,7 +703,7 @@ export function trailSessionStaffAgentId(root: string, sessionFile: string): str
 	return header.qorpera?.staffAgentId;
 }
 
-function existingTrailFileForSession(root: string, sessionId: string): string | undefined {
+export function existingTrailFileForSession(root: string, sessionId: string): string | undefined {
 	const trailDir = assertPhysicalCompanyTree(root, "trail");
 	let match: string | undefined;
 	for (const file of readdirSync(trailDir).filter((candidate) => candidate.endsWith(".jsonl"))) {
