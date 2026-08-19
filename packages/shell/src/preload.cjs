@@ -124,6 +124,8 @@ contextBridge.exposeInMainWorld("qorpera", {
 	updateInstall: () => ipcRenderer.invoke("update:install"),
 	onUpdateStatus: (handler) => ipcRenderer.on("update-status", (_event, text) => handler(text)),
 	onUpdateReady: (handler) => ipcRenderer.on("update-ready", (_event, version) => handler(version)),
+	onStaffSessionRefreshed: (handler) =>
+		ipcRenderer.on("staff-session-refreshed", (_event, payload) => handler(payload)),
 	onConnectionStatus: (handler) => ipcRenderer.on("connection-status", (_event, status) => handler(status)),
 	onOpenCompany: (handler) => ipcRenderer.on("open-company", (_event, root) => handler(root)),
 	onCloudCompanyInbox: (handler) => ipcRenderer.on("cloud-company-inbox", (_event, inbox) => handler(inbox)),

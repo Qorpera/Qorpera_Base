@@ -10827,6 +10827,16 @@ function renderUpdateButton() {
 window.qorpera.onUpdateStatus((text) => {
 	$("status").textContent = text;
 });
+// A remote member's turn synced into the thread on screen: main respawned
+// the child from the updated trail; reload the transcript the same way a
+// manual thread swap does. The composer is untouched.
+window.qorpera.onStaffSessionRefreshed?.((payload) => {
+	if (currentView !== "chat" || !payload?.staffAgentId) return;
+	if (payload.staffAgentId !== currentStaffId) return;
+	delete sessionCache[payload.sessionFile];
+	activateStaffSession(payload.staffAgentId, payload.sessionFile);
+});
+
 window.qorpera.onUpdateReady((version) => {
 	foundationUpdateVersion = version;
 	renderUpdateButton();
