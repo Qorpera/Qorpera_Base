@@ -45,7 +45,7 @@ export function offlineHostedProfileTeam(team: HostedProfileTeam): HostedProfile
 		members: team.members.map((member) => ({ ...member })),
 		invitations: team.invitations.map((invitation) => ({
 			...invitation,
-			delivery: { ...invitation.delivery },
+			...(invitation.delivery ? { delivery: { ...invitation.delivery } } : {}),
 		})),
 	};
 }
@@ -291,7 +291,10 @@ export function cacheHostedTeam(userData: string, accountId: string, team: Hoste
 			...team,
 			capabilities: { ...team.capabilities },
 			members: team.members.map((entry) => ({ ...entry })),
-			invitations: team.invitations.map((entry) => ({ ...entry, delivery: { ...entry.delivery } })),
+			invitations: team.invitations.map((entry) => ({
+				...entry,
+				...(entry.delivery ? { delivery: { ...entry.delivery } } : {}),
+			})),
 		},
 	};
 	writeFile(path, file);
