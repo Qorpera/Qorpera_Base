@@ -2,7 +2,12 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cloudSyncHealthPath, DurableCloudSyncLoop } from "../src/cloud-sync-loop.ts";
+import {
+	cloudSyncHealthAfter,
+	cloudSyncHealthPath,
+	DurableCloudSyncLoop,
+	persistCloudSyncHealth,
+} from "../src/cloud-sync-loop.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 
@@ -131,5 +136,73 @@ describe("durable cloud sync loop", () => {
 		await vi.waitFor(() => expect(sync).toHaveBeenCalledTimes(2));
 		finishes[1]?.();
 		await vi.waitFor(() => expect(loop.health().phase).toBe("healthy"));
+	});
+});
+
+describe("cloud sync health outside a loop", () => {
+	let root = "";
+	let userData = "";
+
+	afterEach(() => {
+		for (const path of [root, userData]) {
+			if (path && existsSync(path)) rmSync(path, { recursive: true, force: true });
+		}
+	});
+
+	it("resets to healthy on success and keeps the last success across failures", () => {
+		const at = Date.parse("2026-08-19T00:00:00.000Z");
+		const healthy = cloudSyncHealthAfter(undefined, { ok: true }, at);
+		expect(healthy).toEqual({
+			phase: "healthy",
+			consecutiveFailures: 0,
+			lastAttemptAt: "2026-08-19T00:00:00.000Z",
+			lastSuccessAt: "2026-08-19T00:00:00.000Z",
+		});
+		const failed = cloudSyncHealthAfter(healthy, { ok: false, error: new Error("fetch failed") }, at + 1_000);
+		expect(failed).toMatchObject({
+			phase: "retrying",
+			consecutiveFailures: 1,
+			lastSuccessAt: "2026-08-19T00:00:00.000Z",
+			lastError: "fetch failed",
+		});
+		expect(cloudSyncHealthAfter(failed, { ok: false, error: new Error("fetch failed") }, at + 2_000)).toMatchObject({
+			phase: "retrying",
+			consecutiveFailures: 2,
+		});
+	});
+
+	it("marks permission failures as attention without scheduling anything", () => {
+		const health = cloudSyncHealthAfter(
+			undefined,
+			{ ok: false, error: new Error("permission denied for function qorpera_ensure_staff_session (42501)") },
+			Date.parse("2026-08-19T00:00:00.000Z"),
+		);
+		expect(health.phase).toBe("attention");
+		expect(health.nextAttemptAt).toBeUndefined();
+	});
+
+	it("persists a sessions channel record that a fresh loop can read back", () => {
+		root = mkdtempSync(join(tmpdir(), "qorpera-cloud-loop-root-"));
+		userData = mkdtempSync(join(tmpdir(), "qorpera-cloud-loop-state-"));
+		const health = cloudSyncHealthAfter(
+			undefined,
+			{ ok: false, error: new Error("permission denied for function qorpera_ensure_staff_session (42501)") },
+			Date.parse("2026-08-19T00:00:00.000Z"),
+		);
+		persistCloudSyncHealth(userData, root, profileId, "sessions", health);
+		const path = cloudSyncHealthPath(userData, root, profileId, "sessions");
+		expect(existsSync(path)).toBe(true);
+		const resumed = new DurableCloudSyncLoop({
+			root,
+			userData,
+			profileId,
+			channel: "sessions",
+			sync: async () => undefined,
+		});
+		expect(resumed.health()).toMatchObject({
+			phase: "attention",
+			consecutiveFailures: 1,
+			lastError: "permission denied for function qorpera_ensure_staff_session (42501)",
+		});
 	});
 });

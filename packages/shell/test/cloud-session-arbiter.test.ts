@@ -15,10 +15,10 @@ interface FakeCalls {
 	complete: Array<Record<string, unknown>>;
 }
 
-function fakePrimary(overrides: {
-	created?: boolean;
-	claimResult?: () => unknown;
-}): { primary: QorperaHostedPrimary; calls: FakeCalls } {
+function fakePrimary(overrides: { created?: boolean; claimResult?: () => unknown }): {
+	primary: QorperaHostedPrimary;
+	calls: FakeCalls;
+} {
 	const calls: FakeCalls = { ensure: [], append: [], claim: [], renew: [], complete: [] };
 	const transport = {
 		async ensureStaffSession(input: Record<string, unknown>) {
