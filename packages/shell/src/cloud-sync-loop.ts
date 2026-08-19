@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 
 const CLOUD_SYNC_HEALTH_SCHEMA = "qorpera.cloud-sync-health/v1";
 
-export type CloudSyncChannel = "company-tree" | "staff" | "trail" | "workspace-inbox";
+export type CloudSyncChannel = "company-tree" | "sessions" | "staff" | "trail" | "workspace-inbox";
 export type CloudSyncPhase = "idle" | "syncing" | "healthy" | "retrying" | "attention";
 
 export interface CloudSyncHealth {
@@ -95,7 +95,11 @@ function readHealth(path: string, options: DurableCloudSyncLoopOptions): CloudSy
 	}
 }
 
-function writeHealth(path: string, options: DurableCloudSyncLoopOptions, health: CloudSyncHealth): void {
+function writeHealth(
+	path: string,
+	options: Pick<DurableCloudSyncLoopOptions, "root" | "profileId" | "channel">,
+	health: CloudSyncHealth,
+): void {
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	const record: PersistedCloudSyncHealth = {
 		schema: CLOUD_SYNC_HEALTH_SCHEMA,
@@ -113,6 +117,41 @@ function writeHealth(path: string, options: DurableCloudSyncLoopOptions, health:
 		rmSync(temporary, { force: true });
 		throw error;
 	}
+}
+
+/** Fold one attempt outcome into a channel's health. Failures classified
+ * non-retryable surface as "attention" but carry no schedule of their own —
+ * whether anything retries is the caller's policy, not this record's. */
+export function cloudSyncHealthAfter(
+	previous: CloudSyncHealth | undefined,
+	outcome: { ok: true } | { ok: false; error: unknown },
+	at: number = Date.now(),
+): CloudSyncHealth {
+	const lastAttemptAt = new Date(at).toISOString();
+	if (outcome.ok) {
+		return { phase: "healthy", consecutiveFailures: 0, lastAttemptAt, lastSuccessAt: lastAttemptAt };
+	}
+	const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+	return {
+		phase: cloudSyncErrorIsRetryable(outcome.error) ? "retrying" : "attention",
+		consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
+		lastAttemptAt,
+		...(previous?.lastSuccessAt ? { lastSuccessAt: previous.lastSuccessAt } : {}),
+		lastError: message.slice(0, 2048),
+	};
+}
+
+/** Durably record a channel's health outside a DurableCloudSyncLoop — for
+ * channels (like session arbitration) whose retry cadence lives elsewhere but
+ * whose degradation must still be visible on disk after the app closes. */
+export function persistCloudSyncHealth(
+	userData: string,
+	root: string,
+	profileId: string,
+	channel: CloudSyncChannel,
+	health: CloudSyncHealth,
+): void {
+	writeHealth(cloudSyncHealthPath(userData, root, profileId, channel), { root, profileId, channel }, health);
 }
 
 export function cloudSyncErrorIsRetryable(error: unknown): boolean {

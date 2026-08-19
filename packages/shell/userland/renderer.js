@@ -9725,6 +9725,13 @@ const PROFILE_STATUS_LABELS = {
 		attention: "Needs attention",
 		cloud: "Synced",
 	},
+	sessions: {
+		local: "Local only",
+		pending: "Starting",
+		retrying: "Reconnecting",
+		attention: "Needs attention",
+		cloud: "Arbitrated",
+	},
 	execution: { local: "This computer", cloud: "Ephemeral cloud runner", computer: "Qorpera Computer" },
 	files: {
 		local: "Local checkout",
@@ -9802,8 +9809,9 @@ function renderProfileProductControls(content, info) {
 	);
 
 	for (const [key, label] of [
-		["sharedStaff", "Staff and sessions"],
+		["sharedStaff", "Staff roster"],
 		["trail", "Attended chat trail"],
+		["sessions", "Session arbitration"],
 		["execution", "Agent execution"],
 		["files", "Company files"],
 	]) {

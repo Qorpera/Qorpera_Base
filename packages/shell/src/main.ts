@@ -205,7 +205,6 @@ import {
 } from "./agent-runtime.ts";
 import { migrateCompanyToAgentsOnly } from "./agents-only-company-migration.ts";
 import { readBackgroundCompanyRoots, setBackgroundCompanyEnabled } from "./background-companies.ts";
-import { CloudSessionArbiter } from "./cloud-session-arbiter.ts";
 import { CloudProfileAccessRefresh } from "./cloud-access-refresh.ts";
 import { type CloudCompanyInbox, CloudCompanyWorkspaceInboxSync } from "./cloud-company-inbox.ts";
 import {
@@ -219,8 +218,15 @@ import { CloudCompanySubstrate } from "./cloud-company-substrate.ts";
 import { CloudCompanyWorkspaceState } from "./cloud-company-workspace.ts";
 import { publishCompanySnapshotRestoreProofIfDue } from "./cloud-object-reachability.ts";
 import { CloudProfileRealtimeSync, type CloudRealtimeChange, type CloudRealtimeHealth } from "./cloud-realtime-sync.ts";
+import { type ArbiterSessionRef, CloudSessionArbiter } from "./cloud-session-arbiter.ts";
 import { CloudStaffSynchronizer } from "./cloud-staff-sync.ts";
-import { type CloudSyncHealth, cloudSyncErrorIsRetryable, DurableCloudSyncLoop } from "./cloud-sync-loop.ts";
+import {
+	type CloudSyncHealth,
+	cloudSyncErrorIsRetryable,
+	cloudSyncHealthAfter,
+	DurableCloudSyncLoop,
+	persistCloudSyncHealth,
+} from "./cloud-sync-loop.ts";
 import { CloudTrailSynchronizer } from "./cloud-trail-sync.ts";
 import {
 	type CompanyIconId,
@@ -1176,6 +1182,10 @@ interface CompanyRuntime {
 	 * open session per staff agent, plus this machine's single turn claim. */
 	cloudSessionArbiter?: CloudSessionArbiter;
 	cloudSessionPump?: NodeJS.Timeout;
+	cloudSessionArbiterHealth?: CloudSyncHealth;
+	/** One re-adoption at a time: the pump found the attended chat bound to a
+	 * trail other than the arbiter's open session and is re-attaching. */
+	staffSessionReadoptInFlight?: boolean;
 	pendingInventoryRestart: boolean;
 	pendingStaffContextRestart: boolean;
 	/** Connector setup recovery is attempted once per durable request during
@@ -1234,12 +1244,43 @@ function createCloudStaffSynchronizer(root: string): CloudStaffSynchronizer | un
 	});
 }
 
-function recordCloudSyncHealth(runtime: CompanyRuntime, channel: "staff" | "trail", health: CloudSyncHealth): void {
-	const previous = channel === "staff" ? runtime.cloudStaffSyncHealth : runtime.cloudTrailSyncHealth;
+function recordCloudSyncHealth(
+	runtime: CompanyRuntime,
+	channel: "sessions" | "staff" | "trail",
+	health: CloudSyncHealth,
+): void {
+	const previous =
+		channel === "staff"
+			? runtime.cloudStaffSyncHealth
+			: channel === "trail"
+				? runtime.cloudTrailSyncHealth
+				: runtime.cloudSessionArbiterHealth;
 	if (channel === "staff") runtime.cloudStaffSyncHealth = health;
-	else runtime.cloudTrailSyncHealth = health;
+	else if (channel === "trail") runtime.cloudTrailSyncHealth = health;
+	else runtime.cloudSessionArbiterHealth = health;
 	if (health.lastError && health.lastError !== previous?.lastError) {
 		console.error(`cloud ${channel} sync ${health.phase}: ${health.lastError}`);
+	}
+}
+
+/** Session arbitration has no DurableCloudSyncLoop of its own — the 10s pump
+ * is its retry cadence — but its degradation must be as visible as every
+ * other channel's: recorded on the runtime for the settings surface and
+ * persisted so a packaged app leaves evidence behind. */
+function recordCloudSessionArbiterOutcome(
+	runtime: CompanyRuntime,
+	outcome: { ok: true } | { ok: false; error: unknown },
+): void {
+	const health = cloudSyncHealthAfter(runtime.cloudSessionArbiterHealth, outcome);
+	recordCloudSyncHealth(runtime, "sessions", health);
+	const attachment = profileAttachment(runtime.root);
+	if (attachment.profileType !== "cloud") return;
+	try {
+		persistCloudSyncHealth(app.getPath("userData"), runtime.root, attachment.profileId, "sessions", health);
+	} catch (error) {
+		console.error(
+			`cloud sessions health could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 }
 
@@ -1315,6 +1356,26 @@ function trailFileSessionId(file: string): string | undefined {
 	return /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(file)?.[1];
 }
 
+/** The local trail file carrying the arbiter session's shared identity,
+ * materializing an empty stub when this machine has never seen it. */
+function localTrailForArbiterRef(runtime: CompanyRuntime, staff: StaffAgent, ref: ArbiterSessionRef): string {
+	const local = existingTrailFileForSession(runtime.root, ref.clientSessionId);
+	if (local) return local;
+	const stub = materializeSharedTrailSession(
+		runtime.root,
+		{
+			localSessionId: ref.clientSessionId,
+			createdAt: ref.createdAt,
+			title: ref.title,
+			staffAgentId: staff.id,
+		},
+		[],
+	);
+	runtime.sessions.rememberAudit(stub);
+	triggerCloudTrailSync(runtime);
+	return stub.file;
+}
+
 function startCloudSessionPump(slot: Slot, runtime: CompanyRuntime): void {
 	if (runtime.cloudSessionPump || runtime.closing) return;
 	if (!runtimeCloudSessionArbiter(runtime)) return;
@@ -1348,9 +1409,46 @@ function cloudTurnMessage(runtime: CompanyRuntime, inputs: readonly SessionTurnI
 	return parts.join("\n\n");
 }
 
+/** The pump found the attended chat bound to a trail other than the
+ * arbiter's open session — the open ran while arbitration was unreachable
+ * and fell back solo. Re-attach onto the adopted trail so this machine
+ * rejoins the shared conversation instead of forking it for the rest of
+ * the app run. Idle-only, single-flight, and re-checked inside the
+ * runtime transition because the world may move while queued. */
+async function readoptStaffCloudSession(
+	slot: Slot,
+	runtime: CompanyRuntime,
+	staffAgentId: string,
+	ref: ArbiterSessionRef,
+): Promise<void> {
+	if (runtime.staffSessionReadoptInFlight || runtime.closing) return;
+	runtime.staffSessionReadoptInFlight = true;
+	try {
+		await enqueueRuntimeTransition(runtime, async () => {
+			if (slot.runtime !== runtime || runtime.closing) return;
+			if (runtime.childOptions.staffAgentId !== staffAgentId) return;
+			const child = runtime.child;
+			if (!child || runtime.wakeChild || isChildBusy(child)) return;
+			const binding = childBindings.get(child);
+			if (!binding || binding.sessionId === ref.clientSessionId) return;
+			const staff = activeStaffAgent(runtime.root, staffAgentId);
+			if (!staff) return;
+			await attachStaffChild(slot, runtime, staff, localTrailForArbiterRef(runtime, staff, ref), false);
+		});
+	} catch (error) {
+		console.error(`staff session re-adoption failed: ${error instanceof Error ? error.message : String(error)}`);
+	} finally {
+		runtime.staffSessionReadoptInFlight = false;
+	}
+}
+
 /** Become the executor for the attached staff agent's pending turn, if any.
  * Runs on a 10s cadence plus after every settled turn; every await is
- * followed by a re-check because the runtime may have moved underneath. */
+ * followed by a re-check because the runtime may have moved underneath.
+ * The pump is also arbitration's self-repair: when the open-time ensure
+ * failed (cloud unreachable, auth mid-recovery), it keeps re-ensuring, and
+ * when the chat is bound to the wrong trail it re-adopts — one transient
+ * failure must never fork this machine for the rest of the app run. */
 async function pumpCloudSessionTurn(slot: Slot, runtime: CompanyRuntime): Promise<void> {
 	if (slot.runtime !== runtime || runtime.closing) return;
 	const arbiter = runtime.cloudSessionArbiter;
@@ -1359,8 +1457,25 @@ async function pumpCloudSessionTurn(slot: Slot, runtime: CompanyRuntime): Promis
 	if (!arbiter || !child || !staffAgentId || arbiter.activeClaim) return;
 	if (runtime.wakeChild || isChildBusy(child) || !childRuntimeReady.has(child)) return;
 	const binding = childBindings.get(child);
-	const ref = arbiter.sessionForStaff(staffAgentId);
-	if (!binding || !ref || binding.sessionId !== ref.clientSessionId) return;
+	if (!binding) return;
+	let ref = arbiter.sessionForStaff(staffAgentId);
+	if (!ref) {
+		const staff = activeStaffAgent(runtime.root, staffAgentId);
+		if (!staff || !slotHasProfileCapability(slot, "write")) return;
+		try {
+			ref = await arbiter.ensureSession(staffAgentId, staff.displayName, binding.sessionId);
+			recordCloudSessionArbiterOutcome(runtime, { ok: true });
+		} catch (error) {
+			recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
+			return; // the next tick retries
+		}
+		if (slot.runtime !== runtime || runtime.closing || runtime.child !== child) return;
+		if (runtime.wakeChild || isChildBusy(child)) return;
+	}
+	if (binding.sessionId !== ref.clientSessionId) {
+		void readoptStaffCloudSession(slot, runtime, staffAgentId, ref);
+		return; // claim on the next tick, once the adopted trail is bound
+	}
 	let claim: Awaited<ReturnType<CloudSessionArbiter["claimTurn"]>>;
 	try {
 		claim = await arbiter.claimTurn(staffAgentId);
@@ -1390,6 +1505,15 @@ async function pumpCloudSessionTurn(slot: Slot, runtime: CompanyRuntime): Promis
 		// seeded so the existing intro machinery (status, retry, completion)
 		// keeps working as the local mirror of the remote claim.
 		const statePath = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
+		const existingIntro = readStaffRuntimeState(statePath).intros[staff.id];
+		if (existingIntro && (existingIntro.trailFile !== binding.file || existingIntro.status !== "pending")) {
+			// This machine already introduced the agent — usually a solo intro
+			// that ran while the cloud was unreachable, before the ensure ever
+			// succeeded. Consume the kickoff instead of introducing twice; the
+			// shared session proceeds when a member speaks.
+			void arbiter.completeTurn().catch(() => undefined);
+			return;
+		}
 		writeStaffRuntimeState(
 			statePath,
 			recordStaffIntroPending(readStaffRuntimeState(statePath), staff.id, binding.file, Date.now()),
@@ -1405,9 +1529,7 @@ async function pumpCloudSessionTurn(slot: Slot, runtime: CompanyRuntime): Promis
 		return;
 	}
 	const frame = reviewedPromptFrame({ type: "prompt", message });
-	const sent = frame
-		? sendKernelPrompt(child, frame, true, `arbiter:${arbiter.claimantId}`)
-		: false;
+	const sent = frame ? sendKernelPrompt(child, frame, true, `arbiter:${arbiter.claimantId}`) : false;
 	if (!sent) arbiter.abandonClaim();
 }
 
@@ -1606,26 +1728,6 @@ function readHiddenCloudProfiles(userData: string, accountId: string): Set<strin
 	} catch {
 		return new Set();
 	}
-}
-
-function hideCloudProfileForAccount(userData: string, accountId: string, profileId: string): void {
-	let accounts: Record<string, string[]> = {};
-	try {
-		const parsed = JSON.parse(readFileSync(hiddenCloudProfilesPath(userData), "utf8")) as {
-			schema?: string;
-			accounts?: Record<string, string[]>;
-		};
-		if (parsed.schema === HIDDEN_CLOUD_PROFILES_SCHEMA && parsed.accounts) accounts = parsed.accounts;
-	} catch {
-		// first hide, or an unreadable file: start fresh
-	}
-	const existing = new Set(accounts[accountId] ?? []);
-	existing.add(profileId);
-	accounts[accountId] = [...existing];
-	writeFileSync(
-		hiddenCloudProfilesPath(userData),
-		`${JSON.stringify({ schema: HIDDEN_CLOUD_PROFILES_SCHEMA, accounts }, null, "\t")}\n`,
-	);
 }
 
 // Window/taskbar icon: company appearance is machine-local account state,
@@ -7644,26 +7746,11 @@ async function openStaffMember(
 						sessionArbiter.sessionForStaff(staff.id) ??
 						(await sessionArbiter.ensureSession(staff.id, staff.displayName, preferred));
 					if (slot.runtime !== runtime || runtime.closing) return { ok: false, error: "company runtime changed" };
-					const local = existingTrailFileForSession(runtime.root, ref.clientSessionId);
-					if (local) {
-						existingTrail = local;
-					} else {
-						const stub = materializeSharedTrailSession(
-							runtime.root,
-							{
-								localSessionId: ref.clientSessionId,
-								createdAt: ref.createdAt,
-								title: ref.title,
-								staffAgentId: staff.id,
-							},
-							[],
-						);
-						runtime.sessions.rememberAudit(stub);
-						existingTrail = stub.file;
-						triggerCloudTrailSync(runtime);
-					}
+					existingTrail = localTrailForArbiterRef(runtime, staff, ref);
 					cloudAdopted = true;
+					recordCloudSessionArbiterOutcome(runtime, { ok: true });
 				} catch (error) {
+					recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
 					console.error(
 						`staff session arbitration unavailable; continuing solo: ${error instanceof Error ? error.message : String(error)}`,
 					);
@@ -7674,7 +7761,12 @@ async function openStaffMember(
 			// dispatches it, so the machine-local intro trigger stays off and a
 			// second machine can never re-run it.
 			const attached = await attachStaffChild(slot, runtime, staff, existingTrail, !cloudAdopted && !existingTrail);
-			if (cloudAdopted) {
+			if (runtimeCloudSessionArbiter(runtime)) {
+				// The pump runs even when adoption just failed — or when a stale
+				// capability check kept the ensure from being attempted at all: it
+				// re-ensures on its cadence and re-adopts the shared trail once
+				// the cloud is reachable again, so a transient failure at open
+				// never leaves this machine forked solo for the rest of the run.
 				startCloudSessionPump(slot, runtime);
 				setTimeout(() => {
 					void pumpCloudSessionTurn(slot, runtime).catch(() => undefined);
@@ -9736,6 +9828,16 @@ app.whenReady().then(async () => {
 												: slot?.runtime?.cloudTrailSyncHealth?.phase === "healthy"
 													? "cloud"
 													: "pending",
+								sessions:
+									attachment.profileType === "local"
+										? "local"
+										: slot?.runtime?.cloudSessionArbiterHealth?.phase === "attention"
+											? "attention"
+											: slot?.runtime?.cloudSessionArbiterHealth?.phase === "retrying"
+												? "retrying"
+												: slot?.runtime?.cloudSessionArbiterHealth?.phase === "healthy"
+													? "cloud"
+													: "pending",
 								execution: "local",
 								files:
 									attachment.profileType === "local"
@@ -10263,8 +10365,45 @@ app.whenReady().then(async () => {
 				// arbitration failure degrades to solo dispatch.
 				const sendArbiter = runtime.cloudSessionArbiter;
 				const sendStaffId = runtime.childOptions.staffAgentId;
-				const sendRef = sendArbiter && sendStaffId ? sendArbiter.sessionForStaff(sendStaffId) : undefined;
 				const sendBinding = childBindings.get(reviewedChild);
+				let sendRef = sendArbiter && sendStaffId ? sendArbiter.sessionForStaff(sendStaffId) : undefined;
+				if (
+					sendArbiter &&
+					sendStaffId &&
+					!sendRef &&
+					sendBinding &&
+					frame.type === "prompt" &&
+					reviewed.message &&
+					!sendArbiter.activeClaim &&
+					!isChildBusy(reviewedChild) &&
+					slotHasProfileCapability(slot, "write")
+				) {
+					// The open-time ensure failed (arbitration unreachable then);
+					// retry it here so this very message still goes through the
+					// queue instead of extending the solo fork by another turn.
+					const sendStaff = activeStaffAgent(runtime.root, sendStaffId);
+					if (sendStaff) {
+						try {
+							sendRef = await sendArbiter.ensureSession(
+								sendStaffId,
+								sendStaff.displayName,
+								sendBinding.sessionId,
+							);
+							recordCloudSessionArbiterOutcome(runtime, { ok: true });
+						} catch (error) {
+							recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
+						}
+						if (!isCurrentRuntimeChild(slot, runtime, reviewedChild) || !attachedTo(reviewedChild)) {
+							return { ok: false, error: "session changed before command" };
+						}
+						if (sendRef && sendBinding.sessionId !== sendRef.clientSessionId) {
+							// The chat is bound to a trail the arbiter does not own —
+							// dispatch solo this once and let the pump re-adopt the
+							// shared session before the next turn.
+							void readoptStaffCloudSession(slot, runtime, sendStaffId, sendRef);
+						}
+					}
+				}
 				if (
 					sendArbiter &&
 					sendStaffId &&
@@ -10278,7 +10417,9 @@ app.whenReady().then(async () => {
 				) {
 					try {
 						await sendArbiter.appendUserMessage(sendStaffId, reviewed.message);
+						recordCloudSessionArbiterOutcome(runtime, { ok: true });
 					} catch (error) {
+						recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
 						console.error(
 							`session input enqueue failed; sending solo: ${error instanceof Error ? error.message : String(error)}`,
 						);
