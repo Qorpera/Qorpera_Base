@@ -3207,3 +3207,44 @@ html[data-staff-avatar-style="simple"] #titlebar .thread-header .room-avatar .st
 .team-staff-card .staff-avatar { width: 46px; height: 46px; margin-bottom: 5px; }
 .team-staff-card strong { font-size: 12.5px; font-weight: 650; }
 .team-staff-card small { color: var(--text-muted); font-size: 11px; }
+
+/* ---- presence: teammates' open threads and typing -------------------------
+ * peer-open marks a staff row/card a teammate is currently viewing; the
+ * typing bubble mirrors the familiar messenger three-dot cadence. */
+.staff-nav-row.peer-open, .roster-card.peer-open {
+	border-color: var(--accent);
+	animation: peer-open-pulse 2.4s ease-in-out infinite;
+}
+@keyframes peer-open-pulse {
+	0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 38%, transparent); }
+	50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 10%, transparent); }
+}
+.peer-open-badge {
+	display: inline-flex; align-items: center; margin-left: 6px; padding: 1px 7px;
+	border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+	font-size: 10px; font-weight: 600; line-height: 1.6; white-space: nowrap;
+}
+.roster-card .peer-open-badge { position: absolute; top: 10px; right: 10px; }
+.roster-card.peer-open { position: relative; }
+.peer-typing {
+	display: flex; align-items: flex-end; gap: 8px;
+	width: 100%; max-width: var(--thread-width); margin-top: 4px;
+}
+.peer-typing-name { font-size: 11px; color: var(--text-soft); margin-bottom: 6px; }
+.peer-typing-bubble {
+	display: inline-flex; gap: 4px; align-items: center;
+	background: var(--pane-strong); border-radius: 16px; padding: 12px 14px;
+}
+.peer-typing-bubble i {
+	width: 7px; height: 7px; border-radius: 50%; background: var(--text-soft);
+	animation: peer-typing-bounce 1.2s ease-in-out infinite;
+}
+.peer-typing-bubble i:nth-child(2) { animation-delay: 0.15s; }
+.peer-typing-bubble i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes peer-typing-bounce {
+	0%, 60%, 100% { transform: translateY(0); opacity: 0.55; }
+	30% { transform: translateY(-4px); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.staff-nav-row.peer-open, .roster-card.peer-open, .peer-typing-bubble i { animation: none; }
+}

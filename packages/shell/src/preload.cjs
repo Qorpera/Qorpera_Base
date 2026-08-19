@@ -126,6 +126,12 @@ contextBridge.exposeInMainWorld("qorpera", {
 	onUpdateReady: (handler) => ipcRenderer.on("update-ready", (_event, version) => handler(version)),
 	onStaffSessionRefreshed: (handler) =>
 		ipcRenderer.on("staff-session-refreshed", (_event, payload) => handler(payload)),
+	onProfileAccessChanged: (handler) =>
+		ipcRenderer.on("profile-access-changed", (_event, access) => handler(access)),
+	presenceThread: (staffAgentId) => ipcRenderer.send("presence:thread", staffAgentId ?? null),
+	presenceTyping: (staffAgentId) => ipcRenderer.send("presence:typing", staffAgentId),
+	onPresenceMembers: (handler) => ipcRenderer.on("presence-members", (_event, members) => handler(members)),
+	onPresenceTyping: (handler) => ipcRenderer.on("presence-typing", (_event, event) => handler(event)),
 	onConnectionStatus: (handler) => ipcRenderer.on("connection-status", (_event, status) => handler(status)),
 	onOpenCompany: (handler) => ipcRenderer.on("open-company", (_event, root) => handler(root)),
 	onCloudCompanyInbox: (handler) => ipcRenderer.on("cloud-company-inbox", (_event, inbox) => handler(inbox)),

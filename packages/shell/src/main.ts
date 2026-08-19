@@ -217,6 +217,7 @@ import { currentCloudCompanyTreeReference, materializeCloudCompanyTree } from ".
 import { CloudCompanySubstrate } from "./cloud-company-substrate.ts";
 import { CloudCompanyWorkspaceState } from "./cloud-company-workspace.ts";
 import { publishCompanySnapshotRestoreProofIfDue } from "./cloud-object-reachability.ts";
+import type { CloudPresenceHandle } from "./cloud-presence.ts";
 import { CloudProfileRealtimeSync, type CloudRealtimeChange, type CloudRealtimeHealth } from "./cloud-realtime-sync.ts";
 import { type ArbiterSessionRef, CloudSessionArbiter } from "./cloud-session-arbiter.ts";
 import { CloudStaffSynchronizer } from "./cloud-staff-sync.ts";
@@ -241,6 +242,7 @@ import {
 	checkpointCompanyGit,
 	checkpointProductWorktreeGit,
 	commitCompanyMaterialization,
+	commitCompanyMaterializationAsync,
 	finishPendingCompanyCheckpoint,
 	reconcilePendingCompanyCheckpoints,
 	reconcilePendingProductCheckpoints,
@@ -1171,6 +1173,7 @@ interface CompanyRuntime {
 	cloudStaffSyncLoop?: DurableCloudSyncLoop;
 	cloudStaffSyncHealth?: CloudSyncHealth;
 	cloudRealtimeSync?: CloudProfileRealtimeSync;
+	cloudPresence?: CloudPresenceHandle;
 	cloudRealtimeHealth?: CloudRealtimeHealth;
 	cloudCompanyPublication?: CloudCompanyPublication;
 	cloudCompanyPublicationHealth?: CloudSyncHealth;
@@ -1411,6 +1414,7 @@ async function refreshAttachedStaffThread(
 	sessionFile: string,
 ): Promise<void> {
 	try {
+		let refreshed: { child: ChildProcessWithoutNullStreams; sessionFile: string } | undefined;
 		await enqueueRuntimeTransition(runtime, async () => {
 			if (slot.runtime !== runtime || runtime.closing) return;
 			if (runtime.childOptions.staffAgentId !== staffAgentId) return;
@@ -1424,8 +1428,16 @@ async function refreshAttachedStaffThread(
 			if (slot.runtime !== runtime || runtime.closing) return;
 			runtime.child = undefined;
 			const attached = await attachStaffChild(slot, runtime, staff, sessionFile, false);
-			send(slot.window, "staff-session-refreshed", { staffAgentId, sessionFile: attached.sessionFile });
+			if (runtime.child) refreshed = { child: runtime.child, sessionFile: attached.sessionFile };
 		});
+		if (!refreshed) return;
+		// The renderer reloads the transcript through the new child; announcing
+		// the refresh before it can answer repaints the thread stale. Waiting
+		// here, outside the transition, keeps composer sends unblocked.
+		await waitForChildReadiness(refreshed.child);
+		if (slot.runtime === runtime && runtime.child === refreshed.child) {
+			send(slot.window, "staff-session-refreshed", { staffAgentId, sessionFile: refreshed.sessionFile });
+		}
 	} catch (error) {
 		console.error(`staff thread refresh failed: ${error instanceof Error ? error.message : String(error)}`);
 	}
@@ -1746,6 +1758,35 @@ function recordCloudRealtimeHealth(runtime: CompanyRuntime, health: CloudRealtim
 	runtime.cloudRealtimeHealth = health;
 	if (health.error && health.error !== previous?.error)
 		console.error(`cloud realtime ${health.phase}: ${health.error}`);
+}
+
+/** Presence lane (SESSIONS.md): typing and who-has-what-open, fire-and-forget
+ * over the profile's realtime channel — lossy by design, never stored. The
+ * renderer paints from whatever arrives; silence simply fades the signal. */
+async function startCloudPresence(slot: Slot, runtime: CompanyRuntime): Promise<void> {
+	if (runtime.cloudPresence || runtime.closing) return;
+	const attachment = profileAttachment(runtime.root);
+	const transport = qorperaAccountAuth?.hostedPresence();
+	if (attachment.profileType !== "cloud" || !transport || !currentQorperaAccountId) return;
+	const account = await authenticatedAccount();
+	if (!account?.user || runtime.cloudPresence || runtime.closing || slot.runtime !== runtime) return;
+	const selfUserId = account.user.id;
+	runtime.cloudPresence = transport.join(
+		attachment.profileId,
+		{ userId: selfUserId, name: account.user.displayName },
+		(members) => {
+			if (runtime.closing || slot.runtime !== runtime) return;
+			send(
+				slot.window,
+				"presence-members",
+				members.filter((member) => member.userId !== selfUserId),
+			);
+		},
+		(event) => {
+			if (runtime.closing || slot.runtime !== runtime) return;
+			send(slot.window, "presence-typing", event);
+		},
+	);
 }
 
 function startCloudRealtimeSync(runtime: CompanyRuntime): void {
@@ -2562,6 +2603,7 @@ async function closeCompany(slot: Slot): Promise<void> {
 			runtime.cloudCompanyPublication?.stop();
 			runtime.cloudCompanyInboxSync?.stop();
 			await runtime.cloudRealtimeSync?.stop();
+			await runtime.cloudPresence?.stop();
 			runtime.inventoryWatcher?.close();
 			runtime.webhookClose?.();
 			await runtime.transitionQueue;
@@ -3170,11 +3212,11 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				if (staffAgentId) {
 					// A confirmed model on a staff-bound child is that employee's
 					// durable choice, not a company-wide default.
-					try {
-						persistStaffAgentModel(root, staffAgentId, confirmedModel);
-					} catch (error) {
-						console.error(`staff model persistence failed: ${(error as Error).message}`);
-					}
+					persistStaffAgentModel(root, staffAgentId, confirmedModel).catch((error: unknown) => {
+						console.error(
+							`staff model persistence failed: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					});
 				} else {
 					writeCompanyRuntimeModelPreference(app.getPath("userData"), root, confirmedModel);
 				}
@@ -6824,6 +6866,9 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		startCloudStaffSync(runtime);
 		installCloudCompanySync(runtime);
 		startCloudRealtimeSync(runtime);
+		void startCloudPresence(slot, runtime).catch((error: unknown) => {
+			console.error(`cloud presence unavailable: ${error instanceof Error ? error.message : String(error)}`);
+		});
 		startCloudSessionPump(slot, runtime);
 		pendingBackendClose = undefined;
 		pendingSessions = undefined;
@@ -7127,13 +7172,51 @@ function activeStaffAgent(root: string, staffAgentId: string): StaffAgent | unde
 	return readStaffAgents(root).find((agent) => agent.id === staffAgentId && agent.employmentStatus === "active");
 }
 
+/** The model a resumed session will actually continue on: the latest model
+ * signal already recorded in its trail. Forcing agent.model over this on
+ * every re-attach is what silently reverted composer model choices — and
+ * with them the sponsorship transfer the choice was meant to perform. */
+function trailModelSelection(root: string, sessionFile: string): RuntimeModelSelection | undefined {
+	try {
+		const path = isAbsolute(sessionFile) ? sessionFile : join(root, "trail", sessionFile);
+		let model: RuntimeModelSelection | undefined;
+		for (const line of readFileSync(path, "utf8").split("\n")) {
+			const trimmed = line.trim();
+			if (!trimmed) continue;
+			let entry: Record<string, unknown>;
+			try {
+				entry = JSON.parse(trimmed) as Record<string, unknown>;
+			} catch {
+				continue;
+			}
+			if (entry.type === "model_change" && typeof entry.provider === "string" && typeof entry.modelId === "string") {
+				model = { provider: entry.provider, modelId: entry.modelId };
+			} else if (entry.type === "message") {
+				const message = entry.message as Record<string, unknown> | undefined;
+				if (
+					message?.role === "assistant" &&
+					typeof message.provider === "string" &&
+					typeof message.model === "string"
+				) {
+					model = { provider: message.provider, modelId: message.model };
+				}
+			}
+		}
+		return model;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Persist a confirmed model as the employee's durable choice. Confirmation
  * frames repeat on every get_state, so unchanged selections write nothing. */
-function persistStaffAgentModel(root: string, staffAgentId: string, model: RuntimeModelSelection): void {
+async function persistStaffAgentModel(root: string, staffAgentId: string, model: RuntimeModelSelection): Promise<void> {
 	const current = readStaffAgents(root).find((agent) => agent.id === staffAgentId);
 	if (!current || (current.model?.provider === model.provider && current.model?.modelId === model.modelId)) return;
 	updateStaffAgent(root, staffAgentId, { model: { provider: model.provider, modelId: model.modelId } });
-	commitCompanyMaterialization(root, [join(".qorpera", "staff.json")]);
+	// Async on purpose: this runs while the agent child is alive, where a
+	// synchronous git call can park forever and freeze the shell.
+	await commitCompanyMaterializationAsync(root, [join(".qorpera", "staff.json")]);
 }
 
 /** Hand queued coworker mail to a freshly spawned session. Called only after
@@ -7195,7 +7278,10 @@ async function attachStaffChild(
 			...(sessionFile ? {} : { sessionName: agent.displayName }),
 			staffAgentId: agent.id,
 			staffContext: staffSystemContext(runtime.root, agent),
-			model: agent.model ?? runtime.childOptions.model,
+			model:
+				(sessionFile ? trailModelSelection(runtime.root, sessionFile) : undefined) ??
+				agent.model ??
+				runtime.childOptions.model,
 			...(autoStartStaffIntro ? { autoStartStaffIntro: true, freshStaffTrail: true } : {}),
 		};
 		child = startChild(slot, runtime.root, options);
@@ -10451,14 +10537,38 @@ app.whenReady().then(async () => {
 			activeCompany: active,
 		};
 	});
+	// Presence signals from the renderer. Lossy lane: no acks, no errors — a
+	// dropped signal just means a teammate's indicator arrives a beat later.
+	ipcMain.on("presence:thread", (event, staffAgentId: unknown) => {
+		const slot = slotOf(event.sender);
+		if (!slot?.runtime) return;
+		slot.runtime.cloudPresence?.setOpenThread(typeof staffAgentId === "string" && staffAgentId ? staffAgentId : null);
+	});
+	ipcMain.on("presence:typing", (event, staffAgentId: unknown) => {
+		const slot = slotOf(event.sender);
+		if (!slot?.runtime || typeof staffAgentId !== "string" || !staffAgentId) return;
+		slot.runtime.cloudPresence?.sendTyping(staffAgentId);
+	});
+
 	ipcMain.handle("rpc:send", async (event, frame: unknown, expectedTrailFile: unknown) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
-		if (!slot || !runtime || runtime.wakeChild) return { ok: false };
+		if (!slot || !runtime || runtime.wakeChild) {
+			// Every silent ok:false here previously cost a debugging session;
+			// a rejection that keeps the founder's draft must at least say why.
+			// Read-only polls (get_state etc.) reject quietly — they retry.
+			const frameType = frame && typeof frame === "object" && "type" in frame ? String(frame.type) : "";
+			if (frameType === "prompt" || frameType === "steer" || frameType === "follow_up") {
+				console.error(`rpc:send reject: slot=${!!slot} runtime=${!!runtime} wake=${!!runtime?.wakeChild}`);
+				return { ok: false, error: "agent is busy with autonomous work" };
+			}
+			return { ok: false };
+		}
 		if (!frame || typeof frame !== "object" || !("type" in frame) || typeof frame.type !== "string") {
 			return { ok: false };
 		}
 		if (typeof expectedTrailFile !== "string" || !expectedTrailFile) {
+			console.error("rpc:send reject: no session attachment");
 			return { ok: false, error: "session attachment required" };
 		}
 		const attachedTo = (child: ChildProcessWithoutNullStreams): boolean =>
@@ -10498,14 +10608,33 @@ app.whenReady().then(async () => {
 			"set_session_name",
 		]);
 		if (promptTypes.has(frame.type)) {
-			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+			if (!slotHasProfileCapability(slot, "write")) {
+				// A cold hosted-team cache right after open must not eat the
+				// founder's message: re-resolve access once before refusing, and
+				// tell the renderer whatever the answer turned out to be.
+				try {
+					await refreshProfileAccess(runtime.root);
+				} catch {
+					/* unreachable cloud: the recheck below decides */
+				}
+				send(slot.window, "profile-access-changed", activeProfileAccess(runtime.root));
+				if (!slotHasProfileCapability(slot, "write")) {
+					console.error("rpc:send reject: write capability missing after access refresh");
+					return profilePermissionError("write");
+				}
+			}
 			return enqueueRuntimeTransition(runtime, async () => {
-				if (!isCurrentRuntimeChild(slot, runtime, runtime.child)) return { ok: false };
+				if (!isCurrentRuntimeChild(slot, runtime, runtime.child)) {
+					console.error("rpc:send reject: runtime child changed before prompt");
+					return { ok: false, error: "session changed before command" };
+				}
 				const reviewedChild = runtime.child;
 				if (runtime.childOptions.staffAgentId && !childRuntimeReady.has(reviewedChild)) {
+					console.error("rpc:send reject: staff child not ready");
 					return { ok: false, error: "staff member is still getting ready" };
 				}
 				if (!attachedTo(reviewedChild)) {
+					console.error("rpc:send reject: prompt bound to a different session file");
 					return { ok: false, error: "session changed before command" };
 				}
 				const reviewed = reviewedPromptFrame(frame as Record<string, unknown>);

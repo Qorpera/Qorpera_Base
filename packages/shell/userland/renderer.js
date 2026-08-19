@@ -2218,6 +2218,11 @@ function activateStaffSession(id, sessionFile, result = {}) {
 	currentStaffId = id;
 	currentRoomId = null;
 	currentRoomMessages = [];
+	try {
+		reportPresenceThread();
+	} catch {
+		/* presence not wired yet */
+	}
 	setCurrentAvatarAction("");
 	currentStaffIntroStatus = result?.introStatus ?? result?.staff?.introStatus ?? null;
 	currentSession = sessionFile;
@@ -3629,6 +3634,15 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		const runtime = staffRuntime(staff);
 		role.textContent = runtime ? runtimeDoingLine(runtime) : staffRoleLabel(staff);
 		copy.append(heading, role);
+		const viewingPeers = peersOnStaff(id);
+		if (viewingPeers.length) {
+			row.classList.add("peer-open");
+			const badge = document.createElement("span");
+			badge.className = "peer-open-badge";
+			badge.textContent = viewingPeers.map((peer) => (peer.name || "Teammate").split(" ")[0]).join(", ");
+			badge.title = `${viewingPeers.map((peer) => peer.name || "a teammate").join(", ")} viewing this thread`;
+			heading.appendChild(badge);
+		}
 		const arrow = document.createElement("span");
 		arrow.className = "staff-nav-arrow";
 		arrow.setAttribute("aria-hidden", "true");
@@ -4038,6 +4052,14 @@ function renderStaffHome() {
 		const runtime = staffRuntime(staff);
 		meta.textContent = runtime ? runtimeDoingLine(runtime) : staffRoleLabel(staff);
 		card.append(name, description, meta);
+		const viewingPeers = peersOnStaff(staffId(staff));
+		if (viewingPeers.length) {
+			card.classList.add("peer-open");
+			const badge = document.createElement("span");
+			badge.className = "peer-open-badge";
+			badge.textContent = `${viewingPeers.map((peer) => (peer.name || "Teammate").split(" ")[0]).join(", ")} viewing`;
+			card.appendChild(badge);
+		}
 		card.onclick = () => void openStaff(staffId(staff));
 		grid.appendChild(card);
 	}
@@ -7075,6 +7097,12 @@ function show(view) {
 	if (staffHeaderVisible) renderThreadHeader();
 	renderCompanyNavSafe();
 	renderRosterRail();
+	try {
+		reportPresenceThread();
+		renderPeerTypingIndicator();
+	} catch {
+		/* presence not wired pre-company */
+	}
 }
 function renderCompanyNavSafe() {
 	try {
@@ -8648,10 +8676,11 @@ async function sendRoomPrompt(text, images) {
 
 async function sendPrompt(promptContext = "") {
 	const input = $("input");
-	if (!canUseProfile("write")) {
-		showToast("This profile is read-only. Ask an owner or admin for contributor access.");
-		return;
-	}
+	// No local capability wall here: right after opening a cloud company the
+	// cached access can lag reality, and silently eating the founder's message
+	// behind a 3-second toast cost a full debugging session. The main process
+	// re-resolves access on send and is the authority; its verdict comes back
+	// as a visible error below.
 	const text = input.value.trim();
 	const images = pendingImages;
 	if (!text && !images.length) return false;
@@ -8678,11 +8707,18 @@ async function sendPrompt(promptContext = "") {
 	const result = await sendRpc(frame);
 	if (!result?.ok) {
 		activeRunProgress = null;
-		showToast(
-			runtimeReconnecting
-				? "agent is reconnecting — your draft was preserved"
-				: "agent is busy with autonomous work — your draft was preserved",
-		);
+		if (result?.error) {
+			// A named rejection stays visible in the thread; a toast alone
+			// reads as "nothing happened" the moment it fades.
+			addMsg("log", `Message not sent: ${result.error}. Your draft is still in the composer.`);
+			showToast(`Message not sent: ${result.error}`);
+		} else {
+			showToast(
+				runtimeReconnecting
+					? "agent is reconnecting — your draft was preserved"
+					: "agent is busy with autonomous work — your draft was preserved",
+			);
+		}
 		return false;
 	}
 	setCurrentAvatarAction("working", 1200);
@@ -8931,6 +8967,16 @@ $("input").addEventListener("keydown", (event) => {
 		event.preventDefault();
 		sendPrompt();
 	}
+});
+// Typing presence: one lossy signal per throttle window while keys land in a
+// staff thread's composer. Receivers expire it themselves — no "stopped
+// typing" event exists, exactly like the messengers this mirrors.
+$("input").addEventListener("input", () => {
+	if (currentView !== "chat" || !currentStaffId || currentRoomId) return;
+	const now = Date.now();
+	if (now - presenceTypingLastSent < 1500) return;
+	presenceTypingLastSent = now;
+	window.qorpera.presenceTyping?.(currentStaffId);
 });
 
 // ---- work groups: the agent's tool calls + thinking fold under a
@@ -10830,6 +10876,97 @@ window.qorpera.onUpdateStatus((text) => {
 // A remote member's turn synced into the thread on screen: main respawned
 // the child from the updated trail; reload the transcript the same way a
 // manual thread swap does. The composer is untouched.
+// Main re-resolved this member's profile access (e.g. on a send that hit a
+// cold cache); adopt the fresh verdict so composer state matches reality.
+window.qorpera.onProfileAccessChanged?.((access) => {
+	if (access && typeof access === "object") currentProfileAccess = access;
+});
+
+// ---- presence: which threads teammates have open, and who is typing --------
+// The lossy lane: signals paint indicators and expire on silence; nothing
+// here is stored or replayed. Self is filtered out by the main process.
+
+let presencePeers = [];
+const presenceTypingPeers = new Map();
+let presenceThreadReported;
+let presenceTypingLastSent = 0;
+
+function peersOnStaff(staffAgentIdValue) {
+	return presencePeers.filter((peer) => peer.staffAgentId === staffAgentIdValue);
+}
+
+/** Tell teammates which staff thread is on this screen (null when none). */
+function reportPresenceThread() {
+	const open = currentView === "chat" && !currentRoomId && currentStaffId ? currentStaffId : null;
+	if (open === presenceThreadReported) return;
+	presenceThreadReported = open;
+	window.qorpera.presenceThread?.(open);
+}
+
+/** The iMessage-style bubble: three bouncing dots pinned to the end of the
+ * transcript while a teammate types in the thread on screen. */
+function renderPeerTypingIndicator() {
+	const messages = $("messages");
+	const existing = document.getElementById("peerTyping");
+	const typing =
+		currentView === "chat" && currentStaffId && !currentRoomId
+			? [...presenceTypingPeers.values()].filter((peer) => peer.staffAgentId === currentStaffId)
+			: [];
+	if (!messages || !typing.length) {
+		existing?.remove();
+		return;
+	}
+	const names = [...new Set(typing.map((peer) => peer.name || "Teammate"))].join(", ");
+	let bubble = existing;
+	if (!bubble) {
+		bubble = document.createElement("div");
+		bubble.id = "peerTyping";
+		bubble.className = "peer-typing";
+		const label = document.createElement("span");
+		label.className = "peer-typing-name";
+		const dots = document.createElement("span");
+		dots.className = "peer-typing-bubble";
+		for (let i = 0; i < 3; i++) dots.appendChild(document.createElement("i"));
+		bubble.append(label, dots);
+		const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
+		messages.appendChild(bubble);
+		if (atBottom) messages.scrollTop = messages.scrollHeight;
+	}
+	bubble.querySelector(".peer-typing-name").textContent = names;
+	if (bubble !== messages.lastElementChild) messages.appendChild(bubble);
+}
+
+window.qorpera.onPresenceMembers?.((members) => {
+	presencePeers = Array.isArray(members)
+		? members.filter((member) => member && typeof member.userId === "string")
+		: [];
+	try {
+		renderRosterRail();
+		if (currentView === "roster") renderStaffHome();
+	} catch {
+		/* pre-company views have no rail */
+	}
+});
+window.qorpera.onPresenceTyping?.((event) => {
+	if (!event || typeof event.userId !== "string" || typeof event.staffAgentId !== "string") return;
+	presenceTypingPeers.set(event.userId, {
+		name: typeof event.name === "string" ? event.name : "",
+		staffAgentId: event.staffAgentId,
+		until: Date.now() + 4000,
+	});
+	renderPeerTypingIndicator();
+});
+setInterval(() => {
+	let expired = false;
+	for (const [userId, peer] of presenceTypingPeers) {
+		if (peer.until <= Date.now()) {
+			presenceTypingPeers.delete(userId);
+			expired = true;
+		}
+	}
+	if (expired) renderPeerTypingIndicator();
+}, 1000);
+
 window.qorpera.onStaffSessionRefreshed?.((payload) => {
 	if (currentView !== "chat" || !payload?.staffAgentId) return;
 	if (payload.staffAgentId !== currentStaffId) return;
