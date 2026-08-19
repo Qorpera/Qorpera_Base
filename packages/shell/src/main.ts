@@ -181,11 +181,13 @@ import {
 	codexSpawn,
 	commitTrailAppend,
 	createKernelResponseSigner,
+	existingTrailFileForSession,
 	inboxMessagesPath,
 	type KernelIntentCapability,
 	kernelGateReviewDocument,
 	killChildTree,
 	killChildTreeSync,
+	materializeSharedTrailSession,
 	migrateLegacyCompanyAgentTrails,
 	migrateLegacyTrailSession,
 	parseTrailAppendFrame,
@@ -203,6 +205,7 @@ import {
 } from "./agent-runtime.ts";
 import { migrateCompanyToAgentsOnly } from "./agents-only-company-migration.ts";
 import { readBackgroundCompanyRoots, setBackgroundCompanyEnabled } from "./background-companies.ts";
+import { CloudSessionArbiter } from "./cloud-session-arbiter.ts";
 import { CloudProfileAccessRefresh } from "./cloud-access-refresh.ts";
 import { type CloudCompanyInbox, CloudCompanyWorkspaceInboxSync } from "./cloud-company-inbox.ts";
 import {
@@ -297,7 +300,12 @@ import {
 	GITHUB_CONNECTION_DESTINATIONS,
 } from "./github-company-connector.ts";
 import { connectGitHubCli, readGitHubCliStatus } from "./github-connection.ts";
-import type { HostedIncomingProfileInvitation, HostedProfile, HostedProfileTeam } from "./hosted-primary.ts";
+import type {
+	HostedIncomingProfileInvitation,
+	HostedProfile,
+	HostedProfileTeam,
+	SessionTurnInput,
+} from "./hosted-primary.ts";
 import {
 	cacheHostedProfiles,
 	cacheHostedTeam,
@@ -1164,6 +1172,10 @@ interface CompanyRuntime {
 	cloudCompanyInboxSync?: CloudCompanyWorkspaceInboxSync;
 	cloudCompanyInboxHealth?: CloudSyncHealth;
 	cloudCompanyInbox?: CloudCompanyInbox;
+	/** Hosted session arbitration for this company (SESSIONS.md): the one
+	 * open session per staff agent, plus this machine's single turn claim. */
+	cloudSessionArbiter?: CloudSessionArbiter;
+	cloudSessionPump?: NodeJS.Timeout;
 	pendingInventoryRestart: boolean;
 	pendingStaffContextRestart: boolean;
 	/** Connector setup recovery is attempted once per durable request during
@@ -1285,6 +1297,118 @@ function createCloudTrailSyncLoop(runtime: CompanyRuntime): DurableCloudSyncLoop
 	});
 	recordCloudSyncHealth(runtime, "trail", loop.health());
 	return loop;
+}
+
+function runtimeCloudSessionArbiter(runtime: CompanyRuntime): CloudSessionArbiter | undefined {
+	if (runtime.cloudSessionArbiter) return runtime.cloudSessionArbiter;
+	const attachment = profileAttachment(runtime.root);
+	if (attachment.profileType !== "cloud" || !attachment.environmentId) return undefined;
+	const primary = qorperaAccountAuth?.hostedPrimary();
+	if (!primary || !currentQorperaAccountId) return undefined;
+	runtime.cloudSessionArbiter = new CloudSessionArbiter(primary, attachment.environmentId);
+	return runtime.cloudSessionArbiter;
+}
+
+/** The trail file name is `${timestamp}_${sessionId}.jsonl` for both minted
+ * and materialized sessions; the id is the shared trail identity. */
+function trailFileSessionId(file: string): string | undefined {
+	return /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(file)?.[1];
+}
+
+function startCloudSessionPump(slot: Slot, runtime: CompanyRuntime): void {
+	if (runtime.cloudSessionPump || runtime.closing) return;
+	if (!runtimeCloudSessionArbiter(runtime)) return;
+	const timer = setInterval(() => {
+		void pumpCloudSessionTurn(slot, runtime).catch((error) => {
+			console.error(`cloud session pump failed: ${error instanceof Error ? error.message : String(error)}`);
+		});
+	}, 10_000);
+	timer.unref();
+	runtime.cloudSessionPump = timer;
+}
+
+/** Compose one attended prompt from a claimed batch. Inputs are ordered by
+ * queue position and carry their author; the agent is in a group
+ * conversation and must know who said what. Kickoff rows compose to
+ * nothing — they are dispatched as staff intros, or superseded when a
+ * member speaks before the intro ever ran. */
+function cloudTurnMessage(runtime: CompanyRuntime, inputs: readonly SessionTurnInput[]): string {
+	const attachment = profileAttachment(runtime.root);
+	const team = attachment.profileType === "cloud" ? effectiveHostedTeam(attachment.profileId) : undefined;
+	const parts: string[] = [];
+	for (const input of inputs) {
+		if (input.kind !== "user_message") continue;
+		const body = input.body as { text?: unknown };
+		const text = typeof body?.text === "string" ? body.text.trim() : "";
+		if (!text) continue;
+		const member = team?.members.find((candidate) => candidate.userId === input.authorUserId);
+		const speaker = member?.displayName || member?.email;
+		parts.push(speaker && parts.length + inputs.length > 1 ? `${speaker}: ${text}` : text);
+	}
+	return parts.join("\n\n");
+}
+
+/** Become the executor for the attached staff agent's pending turn, if any.
+ * Runs on a 10s cadence plus after every settled turn; every await is
+ * followed by a re-check because the runtime may have moved underneath. */
+async function pumpCloudSessionTurn(slot: Slot, runtime: CompanyRuntime): Promise<void> {
+	if (slot.runtime !== runtime || runtime.closing) return;
+	const arbiter = runtime.cloudSessionArbiter;
+	const child = runtime.child;
+	const staffAgentId = runtime.childOptions.staffAgentId;
+	if (!arbiter || !child || !staffAgentId || arbiter.activeClaim) return;
+	if (runtime.wakeChild || isChildBusy(child) || !childRuntimeReady.has(child)) return;
+	const binding = childBindings.get(child);
+	const ref = arbiter.sessionForStaff(staffAgentId);
+	if (!binding || !ref || binding.sessionId !== ref.clientSessionId) return;
+	let claim: Awaited<ReturnType<CloudSessionArbiter["claimTurn"]>>;
+	try {
+		claim = await arbiter.claimTurn(staffAgentId);
+	} catch {
+		return; // cloud unreachable; the next tick retries
+	}
+	if (!claim) return;
+	if (
+		slot.runtime !== runtime ||
+		runtime.closing ||
+		runtime.child !== child ||
+		runtime.wakeChild ||
+		isChildBusy(child) ||
+		!isCurrentRuntimeChild(slot, runtime, child)
+	) {
+		arbiter.abandonClaim();
+		return;
+	}
+	const hasMessages = claim.inputs.some((input) => input.kind === "user_message");
+	if (!hasMessages && claim.inputs.some((input) => input.kind === "kickoff")) {
+		const staff = activeStaffAgent(runtime.root, staffAgentId);
+		if (!staff) {
+			arbiter.abandonClaim();
+			return;
+		}
+		// The queue claim is the authority; the machine-local intro record is
+		// seeded so the existing intro machinery (status, retry, completion)
+		// keeps working as the local mirror of the remote claim.
+		const statePath = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
+		writeStaffRuntimeState(
+			statePath,
+			recordStaffIntroPending(readStaffRuntimeState(statePath), staff.id, binding.file, Date.now()),
+		);
+		const started = beginAttachedStaffIntro(slot, runtime, staff, child, binding.file, false);
+		if (!started.ok) arbiter.abandonClaim();
+		return;
+	}
+	const message = cloudTurnMessage(runtime, claim.inputs);
+	if (!message) {
+		// Nothing dispatchable (empty bodies); consume so the queue drains.
+		void arbiter.completeTurn().catch(() => undefined);
+		return;
+	}
+	const frame = reviewedPromptFrame({ type: "prompt", message });
+	const sent = frame
+		? sendKernelPrompt(child, frame, true, `arbiter:${arbiter.claimantId}`)
+		: false;
+	if (!sent) arbiter.abandonClaim();
 }
 
 function startCloudTrailSync(runtime: CompanyRuntime): void {
@@ -2242,6 +2366,7 @@ async function closeCompany(slot: Slot): Promise<void> {
 	runtime.closing = true;
 	runtime.closePromise = (async () => {
 		try {
+			if (runtime.cloudSessionPump) clearInterval(runtime.cloudSessionPump);
 			runtime.cloudStaffSyncLoop?.stop();
 			runtime.cloudTrailSyncLoop?.stop();
 			runtime.cloudCompanyPublication?.stop();
@@ -2978,6 +3103,9 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			}
 			const activity = sessionActivityFromFrame(frame as Record<string, unknown>);
 			if (activity) observeSessionActivity(sessions, binding, executorId, activity);
+			if (activity && slot.runtime?.child === child && slot.runtime.cloudSessionArbiter?.activeClaim) {
+				void slot.runtime.cloudSessionArbiter.renewIfDue().catch(() => undefined);
+			}
 			if (staffAgentId) {
 				const staffFrame = frame as Record<string, unknown>;
 				if (
@@ -3016,6 +3144,27 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 					return;
 				}
 				childBusy.set(child, false);
+				{
+					const settledRuntime = slot.runtime;
+					if (
+						settledRuntime &&
+						settledRuntime.child === child &&
+						settledRuntime.cloudSessionArbiter?.activeClaim
+					) {
+						const settledArbiter = settledRuntime.cloudSessionArbiter;
+						void settledArbiter
+							.completeTurn()
+							.then(() => pumpCloudSessionTurn(slot, settledRuntime))
+							.catch((error) => {
+								// Completion failing leaves the rows claimed until the
+								// lease expires; another executor then takes them over.
+								settledArbiter.abandonClaim();
+								console.error(
+									`session turn completion failed: ${error instanceof Error ? error.message : String(error)}`,
+								);
+							});
+					}
+				}
 				if (staffAgentId) {
 					try {
 						finishSyncedConnectionRequests(slot, root, staffAgentId, binding);
@@ -6475,6 +6624,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		startCloudStaffSync(runtime);
 		installCloudCompanySync(runtime);
 		startCloudRealtimeSync(runtime);
+		startCloudSessionPump(slot, runtime);
 		pendingBackendClose = undefined;
 		pendingSessions = undefined;
 		runtime.inventoryWatcher = watch(join(root, ".qorpera"), { persistent: false }, (_event, file) => {
@@ -7478,16 +7628,65 @@ async function openStaffMember(
 			return { ok: false, error: "company runtime is busy" };
 		}
 		try {
-			const existingTrail = introState?.trailFile ?? latestStaffTrailFile(runtime, staff.id);
+			let existingTrail = introState?.trailFile ?? latestStaffTrailFile(runtime, staff.id);
+			// Cloud companies adopt the hosted session instead of minting a local
+			// one: the arbiter answers with the one open session for this agent
+			// (creating it — and its single kickoff row — atomically when none
+			// exists). Arbitration being unreachable degrades to solo behaviour.
+			let cloudAdopted = false;
+			const sessionArbiter = slotHasProfileCapability(slot, "write")
+				? runtimeCloudSessionArbiter(runtime)
+				: undefined;
+			if (sessionArbiter) {
+				try {
+					const preferred = existingTrail ? trailFileSessionId(existingTrail) : undefined;
+					const ref =
+						sessionArbiter.sessionForStaff(staff.id) ??
+						(await sessionArbiter.ensureSession(staff.id, staff.displayName, preferred));
+					if (slot.runtime !== runtime || runtime.closing) return { ok: false, error: "company runtime changed" };
+					const local = existingTrailFileForSession(runtime.root, ref.clientSessionId);
+					if (local) {
+						existingTrail = local;
+					} else {
+						const stub = materializeSharedTrailSession(
+							runtime.root,
+							{
+								localSessionId: ref.clientSessionId,
+								createdAt: ref.createdAt,
+								title: ref.title,
+								staffAgentId: staff.id,
+							},
+							[],
+						);
+						runtime.sessions.rememberAudit(stub);
+						existingTrail = stub.file;
+						triggerCloudTrailSync(runtime);
+					}
+					cloudAdopted = true;
+				} catch (error) {
+					console.error(
+						`staff session arbitration unavailable; continuing solo: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
 			if (!existingTrail && !slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
-			const attached = await attachStaffChild(slot, runtime, staff, existingTrail, !existingTrail);
+			// Under arbitration the kickoff is a queue row: the pump claims and
+			// dispatches it, so the machine-local intro trigger stays off and a
+			// second machine can never re-run it.
+			const attached = await attachStaffChild(slot, runtime, staff, existingTrail, !cloudAdopted && !existingTrail);
+			if (cloudAdopted) {
+				startCloudSessionPump(slot, runtime);
+				setTimeout(() => {
+					void pumpCloudSessionTurn(slot, runtime).catch(() => undefined);
+				}, 1_500).unref();
+			}
 			return {
 				ok: true,
 				staff,
 				sessionFile: attached.sessionFile,
 				...(introState?.status
 					? { introStatus: introState.status }
-					: !existingTrail
+					: !cloudAdopted && !existingTrail
 						? { introStatus: "pending" as const }
 						: {}),
 			};
@@ -10054,16 +10253,68 @@ app.whenReady().then(async () => {
 				if (!isCurrentRuntimeChild(slot, runtime, reviewedChild) || !attachedTo(reviewedChild)) {
 					return { ok: false, error: "session changed before command" };
 				}
-				return {
-					ok: sendKernelPrompt(
-						reviewedChild,
-						reviewed,
-						true,
-						currentQorperaAccountId
-							? `account:${currentQorperaAccountId}:composer-attended`
-							: "composer-attended",
-					),
-				};
+				const promptOrigin = currentQorperaAccountId
+					? `account:${currentQorperaAccountId}:composer-attended`
+					: "composer-attended";
+				// Under session arbitration a fresh prompt is a queue row first:
+				// exactly one machine claims the turn and executes. Steers and
+				// follow-ups during this machine's own claimed turn go straight to
+				// the child (they are part of the in-flight turn), and any
+				// arbitration failure degrades to solo dispatch.
+				const sendArbiter = runtime.cloudSessionArbiter;
+				const sendStaffId = runtime.childOptions.staffAgentId;
+				const sendRef = sendArbiter && sendStaffId ? sendArbiter.sessionForStaff(sendStaffId) : undefined;
+				const sendBinding = childBindings.get(reviewedChild);
+				if (
+					sendArbiter &&
+					sendStaffId &&
+					sendRef &&
+					sendBinding &&
+					sendBinding.sessionId === sendRef.clientSessionId &&
+					frame.type === "prompt" &&
+					reviewed.message &&
+					!sendArbiter.activeClaim &&
+					!isChildBusy(reviewedChild)
+				) {
+					try {
+						await sendArbiter.appendUserMessage(sendStaffId, reviewed.message);
+					} catch (error) {
+						console.error(
+							`session input enqueue failed; sending solo: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						return { ok: sendKernelPrompt(reviewedChild, reviewed, true, promptOrigin) };
+					}
+					let sendClaim: Awaited<ReturnType<CloudSessionArbiter["claimTurn"]>>;
+					try {
+						sendClaim = await sendArbiter.claimTurn(sendStaffId);
+					} catch {
+						sendClaim = undefined;
+					}
+					// Unclaimed: the message is durably queued and another machine's
+					// executor owns the turn in flight — it will consume ours too.
+					if (!sendClaim) return { ok: true };
+					if (
+						!isCurrentRuntimeChild(slot, runtime, reviewedChild) ||
+						!attachedTo(reviewedChild) ||
+						isChildBusy(reviewedChild)
+					) {
+						sendArbiter.abandonClaim();
+						return { ok: true };
+					}
+					// The claim may carry more than our own message: other members'
+					// queued inputs, or the never-run kickoff (a member speaking
+					// first supersedes the scripted intro). Compose one attributed
+					// turn from the whole batch.
+					const combined = cloudTurnMessage(runtime, sendClaim.inputs) || reviewed.message;
+					const combinedFrame =
+						combined === reviewed.message ? reviewed : reviewedPromptFrame({ ...frame, message: combined });
+					const okSend = combinedFrame
+						? sendKernelPrompt(reviewedChild, combinedFrame, true, promptOrigin)
+						: false;
+					if (!okSend) sendArbiter.abandonClaim();
+					return { ok: okSend };
+				}
+				return { ok: sendKernelPrompt(reviewedChild, reviewed, true, promptOrigin) };
 			});
 		}
 		if (!safeControlTypes.has(frame.type)) return { ok: false };

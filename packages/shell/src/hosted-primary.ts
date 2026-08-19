@@ -478,6 +478,21 @@ export interface HostedPrimaryTransport {
 		p_parent_session_id: string | null;
 	}): Promise<unknown>;
 	listSessions(input: { p_environment_id: string }): Promise<unknown>;
+	ensureStaffSession(input: {
+		p_environment_id: string;
+		p_staff_agent_id: string;
+		p_client_session_id: string;
+		p_title: string;
+	}): Promise<unknown>;
+	appendSessionInput(input: {
+		p_session_id: string;
+		p_client_input_id: string;
+		p_kind: "user_message";
+		p_body: JsonValue;
+	}): Promise<unknown>;
+	claimSessionTurn(input: { p_session_id: string; p_claimant_id: string; p_lease_seconds: number }): Promise<unknown>;
+	renewSessionTurn(input: { p_session_id: string; p_claimant_id: string; p_lease_seconds: number }): Promise<unknown>;
+	completeSessionTurn(input: { p_session_id: string; p_claimant_id: string }): Promise<unknown>;
 	appendAccountEvent(input: {
 		p_session_id: string;
 		p_event_id: string;
@@ -660,6 +675,26 @@ export interface HostedPrimaryDatabase {
 				Returns: JsonValue;
 			};
 			qorpera_list_shared_sessions: { Args: { p_environment_id: string }; Returns: JsonValue };
+			qorpera_ensure_staff_session: {
+				Args: { p_environment_id: string; p_staff_agent_id: string; p_client_session_id: string; p_title: string };
+				Returns: JsonValue;
+			};
+			qorpera_append_session_input: {
+				Args: { p_session_id: string; p_client_input_id: string; p_kind: string; p_body: JsonValue };
+				Returns: JsonValue;
+			};
+			qorpera_claim_session_turn: {
+				Args: { p_session_id: string; p_claimant_id: string; p_lease_seconds: number };
+				Returns: JsonValue;
+			};
+			qorpera_renew_session_turn: {
+				Args: { p_session_id: string; p_claimant_id: string; p_lease_seconds: number };
+				Returns: JsonValue;
+			};
+			qorpera_complete_session_turn: {
+				Args: { p_session_id: string; p_claimant_id: string };
+				Returns: JsonValue;
+			};
 			qorpera_append_account_event: {
 				Args: {
 					p_session_id: string;
@@ -873,6 +908,36 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 
 	async deleteProfile(input: Parameters<HostedPrimaryTransport["deleteProfile"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_delete_hosted_profile", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async ensureStaffSession(input: Parameters<HostedPrimaryTransport["ensureStaffSession"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_ensure_staff_session", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async appendSessionInput(input: Parameters<HostedPrimaryTransport["appendSessionInput"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_append_session_input", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async claimSessionTurn(input: Parameters<HostedPrimaryTransport["claimSessionTurn"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_claim_session_turn", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async renewSessionTurn(input: Parameters<HostedPrimaryTransport["renewSessionTurn"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_renew_session_turn", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async completeSessionTurn(input: Parameters<HostedPrimaryTransport["completeSessionTurn"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_complete_session_turn", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -1903,6 +1968,59 @@ function requiredText(value: string, label: string, maxLength: number): string {
 	return normalized;
 }
 
+export interface StaffSessionHandle {
+	sessionId: string;
+	environmentId: string;
+	title: string;
+	created: boolean;
+	createdByUserId: string;
+}
+
+export interface SessionTurnInput {
+	inputId: string;
+	position: number;
+	kind: "kickoff" | "user_message";
+	authorUserId: string;
+	body: JsonValue;
+	createdAt: string;
+}
+
+export type SessionTurnClaim =
+	| { claimed: true; inputs: SessionTurnInput[] }
+	| { claimed: false; reason: "turn-in-flight" | "queue-empty" };
+
+function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
+	const payload = record(value, "staff session");
+	return {
+		sessionId: uuid(payload.session_id, "Session id"),
+		environmentId: uuid(payload.environment_id, "Environment id"),
+		title: String(payload.title ?? ""),
+		created: payload.created === true,
+		createdByUserId: uuid(payload.created_by_user_id, "Session creator"),
+	};
+}
+
+function parseSessionTurnClaim(value: unknown): SessionTurnClaim {
+	const payload = record(value, "session turn claim");
+	if (payload.claimed !== true) {
+		const reason = payload.reason === "turn-in-flight" ? "turn-in-flight" : "queue-empty";
+		return { claimed: false, reason };
+	}
+	const inputs = array(payload.inputs, "session turn inputs").map((entry) => {
+		const input = record(entry, "session turn input");
+		const kind = input.kind === "kickoff" ? "kickoff" : "user_message";
+		return {
+			inputId: uuid(input.input_id, "Input id"),
+			position: Number(input.position),
+			kind: kind as SessionTurnInput["kind"],
+			authorUserId: uuid(input.author_user_id, "Input author"),
+			body: jsonValue(input.body ?? {}),
+			createdAt: timestamp(input.created_at, "Input created at"),
+		};
+	});
+	return { claimed: true, inputs };
+}
+
 export class QorperaHostedPrimary {
 	private readonly transport: HostedPrimaryTransport;
 
@@ -1978,6 +2096,63 @@ export class QorperaHostedPrimary {
 	async deleteProfile(profileId: string): Promise<void> {
 		requiredUuid(profileId, "Profile id");
 		requireTrue(await this.transport.deleteProfile({ p_profile_id: profileId }), "profile deletion result");
+	}
+
+	async ensureStaffSession(
+		environmentId: string,
+		staffAgentId: string,
+		clientSessionId: string,
+		title: string,
+	): Promise<StaffSessionHandle> {
+		requiredUuid(environmentId, "Environment id");
+		requiredUuid(clientSessionId, "Client session id");
+		return parseStaffSessionHandle(
+			await this.transport.ensureStaffSession({
+				p_environment_id: environmentId,
+				p_staff_agent_id: requiredText(staffAgentId, "Staff agent id", 128),
+				p_client_session_id: clientSessionId,
+				p_title: requiredText(title, "Session title", 256),
+			}),
+		);
+	}
+
+	async appendSessionInput(sessionId: string, clientInputId: string, body: JsonValue): Promise<void> {
+		requiredUuid(sessionId, "Session id");
+		requiredUuid(clientInputId, "Client input id");
+		await this.transport.appendSessionInput({
+			p_session_id: sessionId,
+			p_client_input_id: clientInputId,
+			p_kind: "user_message",
+			p_body: body,
+		});
+	}
+
+	async claimSessionTurn(sessionId: string, claimantId: string, leaseSeconds = 120): Promise<SessionTurnClaim> {
+		requiredUuid(sessionId, "Session id");
+		requiredUuid(claimantId, "Claimant id");
+		return parseSessionTurnClaim(
+			await this.transport.claimSessionTurn({
+				p_session_id: sessionId,
+				p_claimant_id: claimantId,
+				p_lease_seconds: leaseSeconds,
+			}),
+		);
+	}
+
+	async renewSessionTurn(sessionId: string, claimantId: string, leaseSeconds = 120): Promise<void> {
+		requiredUuid(sessionId, "Session id");
+		requiredUuid(claimantId, "Claimant id");
+		await this.transport.renewSessionTurn({
+			p_session_id: sessionId,
+			p_claimant_id: claimantId,
+			p_lease_seconds: leaseSeconds,
+		});
+	}
+
+	async completeSessionTurn(sessionId: string, claimantId: string): Promise<void> {
+		requiredUuid(sessionId, "Session id");
+		requiredUuid(claimantId, "Claimant id");
+		await this.transport.completeSessionTurn({ p_session_id: sessionId, p_claimant_id: claimantId });
 	}
 
 	async profileTeam(profileId: string): Promise<HostedProfileTeam> {
