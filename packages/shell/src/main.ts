@@ -8547,8 +8547,11 @@ app.whenReady().then(async () => {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
 	});
+	// Friends are account-scoped, not profile-scoped: the hub renders the roster
+	// and the company window's Team tab invites from it, so both trusted shell
+	// surfaces may call these handlers.
 	ipcMain.handle("friends:list", async (event) => {
-		if (!isTrustedHubSender(event.sender)) return { ok: false, error: "invalid sender" };
+		if (!isTrustedProfileSwitcherSender(event.sender)) return { ok: false, error: "invalid sender" };
 		const account = await authenticatedAccount();
 		const primary = qorperaAccountAuth?.hostedPrimary();
 		if (!account?.user || !primary) return { ok: false, error: "Sign in to see friends." };
@@ -8559,7 +8562,7 @@ app.whenReady().then(async () => {
 		}
 	});
 	ipcMain.handle("friends:request", async (event, email: unknown) => {
-		if (!isTrustedHubSender(event.sender) || typeof email !== "string") {
+		if (!isTrustedProfileSwitcherSender(event.sender) || typeof email !== "string") {
 			return { ok: false, error: "invalid friend request" };
 		}
 		const account = await authenticatedAccount();
@@ -8572,7 +8575,7 @@ app.whenReady().then(async () => {
 		}
 	});
 	ipcMain.handle("friends:respond", async (event, userId: unknown, accept: unknown) => {
-		if (!isTrustedHubSender(event.sender) || typeof userId !== "string" || typeof accept !== "boolean") {
+		if (!isTrustedProfileSwitcherSender(event.sender) || typeof userId !== "string" || typeof accept !== "boolean") {
 			return { ok: false, error: "invalid friend response" };
 		}
 		const account = await authenticatedAccount();
@@ -8586,7 +8589,7 @@ app.whenReady().then(async () => {
 		}
 	});
 	ipcMain.handle("friends:remove", async (event, userId: unknown) => {
-		if (!isTrustedHubSender(event.sender) || typeof userId !== "string") {
+		if (!isTrustedProfileSwitcherSender(event.sender) || typeof userId !== "string") {
 			return { ok: false, error: "invalid friend removal" };
 		}
 		const account = await authenticatedAccount();
@@ -10526,9 +10529,7 @@ app.whenReady().then(async () => {
 						return { ok: sendKernelPrompt(reviewedChild, reviewed, true, promptOrigin) };
 					}
 					const sendStaff = activeStaffAgent(runtime.root, sendStaffId);
-					const sendIneligible = sendStaff
-						? await cloudExecutorEligibility(runtime, sendStaff)
-						: undefined;
+					const sendIneligible = sendStaff ? await cloudExecutorEligibility(runtime, sendStaff) : undefined;
 					runtime.cloudSessionWaiting = sendIneligible;
 					// Ineligible: the message is durably queued; an eligible
 					// machine claims and executes it, our text riding along.
