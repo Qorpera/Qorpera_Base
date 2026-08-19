@@ -72,3 +72,43 @@ forked one is corruption.
 
 Outputs continue through the existing session-event and trail mechanisms; the
 queue governs only who may produce them.
+
+## Executor eligibility (sponsorship, affinity, freshness)
+
+Adopted 2026-08-19 after the first arbitrated two-machine run.
+
+**Subscriptions are the design center.** API-key pricing is roughly a 40x
+multiple on subscription intelligence and would flatten the use case, so the
+architecture must run on consumer subscriptions permanently — which providers
+permit for one user's own agents on that user's own machines, and forbid to
+pool across users. Model credentials therefore stay **per member, never a
+company pool**: the vault maps each member to their own connections and hands
+tokens only to executors acting on that member's behalf.
+
+**Every agent has a sponsor**: the member whose subscription its configured
+model (staff registry `model_provider`/`model_id`, already company state)
+runs on. An agent's turns execute only on machines holding its sponsor's
+connection for that provider; usage draws down the sponsor's plan limits
+exactly as if they ran it by hand.
+
+Three predicates gate a claim, and a machine that fails any of them simply
+does not claim — the queue holds the turn for a machine that passes:
+
+1. **Affinity** — this machine can execute the agent's configured provider.
+   No claim, no model flapping: the agent keeps one mind regardless of who
+   is typing. (The API layer is already replay-safe across executors and
+   providers — openai-codex falls back to full input whenever its
+   connection-scoped continuation does not prefix-match, and the messages
+   API is stateless — so affinity is about identity and terms, not about
+   context survival.)
+2. **Freshness** — this machine's local trail for the session matches the
+   cloud's event head. Claiming with a lagging trail would execute on
+   partial context: the silent-clearing failure, moved one layer down.
+   Sync first, claim after.
+3. **Capability** — write access and a ready, idle child, as today.
+
+A queued turn with no eligible executor online is a **visible** state, not a
+silent one: the thread shows who the session is waiting for ("waiting for
+<sponsor>'s computer"). Degraded arbitration is likewise surfaced through
+the same health channel as the other cloud sync loops — a fallback nobody
+can see is a fork factory with better manners.
