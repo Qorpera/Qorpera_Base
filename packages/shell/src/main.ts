@@ -1183,6 +1183,9 @@ interface CompanyRuntime {
 	cloudSessionArbiter?: CloudSessionArbiter;
 	cloudSessionPump?: NodeJS.Timeout;
 	cloudSessionArbiterHealth?: CloudSyncHealth;
+	/** Why this machine is not claiming turns (affinity or freshness), for
+	 * the visible waiting state. Cleared whenever a claim is attempted. */
+	cloudSessionWaiting?: string;
 	/** One re-adoption at a time: the pump found the attended chat bound to a
 	 * trail other than the arbiter's open session and is re-attaching. */
 	staffSessionReadoptInFlight?: boolean;
@@ -1449,6 +1452,30 @@ async function readoptStaffCloudSession(
  * failed (cloud unreachable, auth mid-recovery), it keeps re-ensuring, and
  * when the chat is bound to the wrong trail it re-adopts — one transient
  * failure must never fork this machine for the rest of the app run. */
+/** Executor eligibility (SESSIONS.md): affinity — do not claim a turn for a
+ * provider this machine holds no connection for (subscriptions never pool;
+ * the sponsor's machine executes, and claiming anyway would flap the
+ * agent's model); freshness — do not claim over a lagging trail (a forced
+ * sync pass must succeed first, or the turn would run on partial context).
+ * An ineligible machine leaves the turn queued for one that qualifies and
+ * records why, so waiting is visible instead of silent. */
+async function cloudExecutorEligibility(runtime: CompanyRuntime, staff: StaffAgent): Promise<string | undefined> {
+	const provider = staff.model?.provider;
+	if (provider) {
+		const connected = modelAccountStore?.views().some((view) => view.providerId === provider) ?? false;
+		if (!connected) return `waiting for a computer with ${provider} access`;
+	}
+	try {
+		await runtime.cloudTrailSyncLoop?.trigger();
+	} catch {
+		// health below decides
+	}
+	if (runtime.cloudTrailSync && runtime.cloudTrailSyncHealth?.phase !== "healthy") {
+		return "waiting for the conversation to finish syncing";
+	}
+	return undefined;
+}
+
 async function pumpCloudSessionTurn(slot: Slot, runtime: CompanyRuntime): Promise<void> {
 	if (slot.runtime !== runtime || runtime.closing) return;
 	const arbiter = runtime.cloudSessionArbiter;
@@ -1475,6 +1502,15 @@ async function pumpCloudSessionTurn(slot: Slot, runtime: CompanyRuntime): Promis
 	if (binding.sessionId !== ref.clientSessionId) {
 		void readoptStaffCloudSession(slot, runtime, staffAgentId, ref);
 		return; // claim on the next tick, once the adopted trail is bound
+	}
+	{
+		const staff = activeStaffAgent(runtime.root, staffAgentId);
+		if (!staff) return;
+		const ineligible = await cloudExecutorEligibility(runtime, staff);
+		runtime.cloudSessionWaiting = ineligible;
+		if (ineligible) return; // the turn stays queued for an eligible machine
+		if (slot.runtime !== runtime || runtime.closing || runtime.child !== child) return;
+		if (runtime.wakeChild || isChildBusy(child)) return;
 	}
 	let claim: Awaited<ReturnType<CloudSessionArbiter["claimTurn"]>>;
 	try {
@@ -9828,6 +9864,7 @@ app.whenReady().then(async () => {
 												: slot?.runtime?.cloudTrailSyncHealth?.phase === "healthy"
 													? "cloud"
 													: "pending",
+								sessionsWaitingFor: slot?.runtime?.cloudSessionWaiting,
 								sessions:
 									attachment.profileType === "local"
 										? "local"
@@ -10425,6 +10462,14 @@ app.whenReady().then(async () => {
 						);
 						return { ok: sendKernelPrompt(reviewedChild, reviewed, true, promptOrigin) };
 					}
+					const sendStaff = activeStaffAgent(runtime.root, sendStaffId);
+					const sendIneligible = sendStaff
+						? await cloudExecutorEligibility(runtime, sendStaff)
+						: undefined;
+					runtime.cloudSessionWaiting = sendIneligible;
+					// Ineligible: the message is durably queued; an eligible
+					// machine claims and executes it, our text riding along.
+					if (sendIneligible) return { ok: true };
 					let sendClaim: Awaited<ReturnType<CloudSessionArbiter["claimTurn"]>>;
 					try {
 						sendClaim = await sendArbiter.claimTurn(sendStaffId);
