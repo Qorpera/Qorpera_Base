@@ -332,6 +332,10 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		]),
 		acceptInvitation: vi.fn(async () => true),
 		declineInvitation: vi.fn(async () => true),
+		sendFriendRequest: vi.fn(async () => ({ status: "pending" })),
+		listFriends: vi.fn(async () => []),
+		respondFriendRequest: vi.fn(async () => true),
+		removeFriend: vi.fn(async () => true),
 		profileTeam: vi.fn(async () => ({
 			profile_id: profileId,
 			role: "owner",
