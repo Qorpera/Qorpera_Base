@@ -32,7 +32,10 @@ conversation and must know who said what.
 approvals) go through the queue and events tables: written once, kept forever,
 replicated. Presence (typing indicators, who-is-viewing) is fire-and-forget
 pub/sub: lossy by design and never stored. Typing indicators must never
-touch the durable lane.
+touch the durable lane. Lossy is not public: the presence topic is a private
+Realtime channel (migration `20260819011000`), authorized against profile
+membership through RLS on `realtime.messages` — receive and publish both
+require membership, so the anon key alone can neither watch nor spoof.
 
 ## Primary and backup
 
@@ -72,6 +75,37 @@ forked one is corruption.
 
 Outputs continue through the existing session-event and trail mechanisms; the
 queue governs only who may produce them.
+
+## Wake arbitration (20260819012000)
+
+Autonomous wakes — scheduled routines, trigger events, durable coworker mail —
+fire on every machine that has the company open, so without arbitration two
+machines run duplicate autonomous sessions: the fork bug, on the proactive
+lane. Wakes are therefore claimed rows, the same primitive as session turns.
+
+Each wake occurrence has one **deterministic key**, derived from the work
+itself and never from local run state, so every machine names the same
+occurrence identically: scheduled jobs key on the schedule's occurrence
+(weekly instant, anchored slot index, or the epoch grid for unanchored
+intervals), trigger wakes on the source's stable event id, mail wakes on the
+message id. Claiming is atomic with a short lease, renewed while the wake
+runs. The winner executes; a loser consumes the occurrence locally without
+running. Completion makes the occurrence final on every machine; a lease that
+expires without completion is a dead executor, and the occurrence is
+claimable again.
+
+- `qorpera_claim_wake(environment, wake_key, claimant, lease_seconds)` —
+  insert-or-takeover; the holder's own re-claim refreshes the lease so a
+  failed spawn retries idempotently. Losers learn why: `in-flight` (someone
+  is running it) or `already-run` (it is finished forever).
+- `qorpera_renew_wake` / `qorpera_complete_wake` — lease upkeep and
+  completion, claimant-scoped.
+
+Manual "run now" is founder intent on that machine and machine-local events
+have no shared identity — both run unarbitrated. An unreachable cloud
+degrades to solo behaviour (the wake runs locally) rather than blocking
+autonomous work; completed rows are swept after 30 days, long past any
+machine's chance to re-derive the same key.
 
 ## Executor eligibility (sponsorship, affinity, freshness)
 

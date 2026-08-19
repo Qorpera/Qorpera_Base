@@ -9,11 +9,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	decideScheduledWake,
 	readWakeRunState,
+	recordRemoteWakeConsumption,
 	recordWakeOutcome,
 	recordWakeStart,
 	removeScheduledJobRunState,
 	scheduledJobRunInterrupted,
 	scheduledJobRunState,
+	scheduledWakeOccurrenceKey,
 	WAKE_FAILURE_SUSPENSION_THRESHOLD,
 	wakeFrameFailed,
 	wakeRunStatePath,
@@ -223,5 +225,73 @@ describe("run state persistence", () => {
 			jobs: { second: { failureStreak: 0 } },
 		});
 		expect(removeScheduledJobRunState(state, "missing")).toBe(state);
+	});
+});
+
+describe("scheduledWakeOccurrenceKey", () => {
+	it("derives the same anchored key on machines with divergent run state", () => {
+		const job = schedule(60, undefined, "2026-08-24T07:00:00.000Z");
+		const anchor = Date.parse("2026-08-24T07:00:00.000Z");
+		// Machine A fires exactly on the slot; machine B's ticker lands 40
+		// minutes late. Both derive slot 3.
+		expect(scheduledWakeOccurrenceKey(job, anchor + 3 * 60 * MINUTE)).toBe("slot:3");
+		expect(scheduledWakeOccurrenceKey(job, anchor + 3 * 60 * MINUTE + 40 * MINUTE)).toBe("slot:3");
+		expect(scheduledWakeOccurrenceKey(job, anchor + 4 * 60 * MINUTE)).toBe("slot:4");
+		expect(scheduledWakeOccurrenceKey(job, anchor - MINUTE)).toBeUndefined();
+	});
+
+	it("derives the weekly occurrence instant regardless of the tick's lateness", () => {
+		const job = schedule(7 * 24 * 60, {
+			triggers: [
+				{
+					id: "weekly-1",
+					kind: "schedule" as const,
+					intervalMinutes: 7 * 24 * 60,
+					weekdays: ["monday" as const],
+					localTime: "09:00",
+					timeZone: "Europe/Copenhagen",
+				},
+			],
+		});
+		const monday = Date.parse("2026-08-17T07:00:00.000Z");
+		const key = scheduledWakeOccurrenceKey(job, monday);
+		expect(key).toBe(`weekly:${monday}`);
+		expect(scheduledWakeOccurrenceKey(job, monday + 3 * 60 * MINUTE)).toBe(key);
+		expect(scheduledWakeOccurrenceKey(job, monday + 7 * 24 * 60 * MINUTE)).toBe(
+			`weekly:${monday + 7 * 24 * 60 * MINUTE}`,
+		);
+	});
+
+	it("quantizes unanchored intervals onto the epoch grid", () => {
+		const now = Date.parse("2026-08-10T12:00:00Z");
+		const key = scheduledWakeOccurrenceKey(schedule(30), now);
+		expect(key).toBe(`grid:${Math.floor(now / (30 * MINUTE))}`);
+		expect(scheduledWakeOccurrenceKey(schedule(30), now + 29 * MINUTE)).toBe(key);
+		expect(scheduledWakeOccurrenceKey(schedule(30), now + 30 * MINUTE)).not.toBe(key);
+		expect(scheduledWakeOccurrenceKey(schedule(30, { triggers: [] }), now)).toBeUndefined();
+	});
+});
+
+describe("recordRemoteWakeConsumption", () => {
+	it("consumes the occurrence without inventing an outcome", () => {
+		const started = recordWakeStart(
+			{ version: 2, jobs: { "job-1": { failureStreak: 2, lastOutcome: "failed" } } },
+			"job-1",
+			Date.parse("2026-08-10T11:00:00Z"),
+			"trail/active.jsonl",
+		);
+		const consumed = recordRemoteWakeConsumption(started, "job-1", Date.parse("2026-08-10T12:00:00Z"));
+		expect(scheduledJobRunState(consumed, "job-1")).toEqual({
+			failureStreak: 2,
+			lastOutcome: "failed",
+			lastWakeAt: "2026-08-10T12:00:00.000Z",
+			lastFinishedAt: "2026-08-10T12:00:00.000Z",
+		});
+		// Consumed = not interrupted and not due until the next occurrence.
+		expect(scheduledJobRunInterrupted(scheduledJobRunState(consumed, "job-1"))).toBe(false);
+		expect(
+			decideScheduledWake(schedule(30), scheduledJobRunState(consumed, "job-1"), Date.parse("2026-08-10T12:29:00Z"))
+				.due,
+		).toBe(false);
 	});
 });

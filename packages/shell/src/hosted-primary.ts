@@ -495,6 +495,19 @@ export interface HostedPrimaryTransport {
 	claimSessionTurn(input: { p_session_id: string; p_claimant_id: string; p_lease_seconds: number }): Promise<unknown>;
 	renewSessionTurn(input: { p_session_id: string; p_claimant_id: string; p_lease_seconds: number }): Promise<unknown>;
 	completeSessionTurn(input: { p_session_id: string; p_claimant_id: string }): Promise<unknown>;
+	claimWake(input: {
+		p_environment_id: string;
+		p_wake_key: string;
+		p_claimant_id: string;
+		p_lease_seconds: number;
+	}): Promise<unknown>;
+	renewWake(input: {
+		p_environment_id: string;
+		p_wake_key: string;
+		p_claimant_id: string;
+		p_lease_seconds: number;
+	}): Promise<unknown>;
+	completeWake(input: { p_environment_id: string; p_wake_key: string; p_claimant_id: string }): Promise<unknown>;
 	sendFriendRequest(input: { p_email: string }): Promise<unknown>;
 	listFriends(): Promise<unknown>;
 	respondFriendRequest(input: { p_user_id: string; p_accept: boolean }): Promise<unknown>;
@@ -699,6 +712,18 @@ export interface HostedPrimaryDatabase {
 			};
 			qorpera_complete_session_turn: {
 				Args: { p_session_id: string; p_claimant_id: string };
+				Returns: JsonValue;
+			};
+			qorpera_claim_wake: {
+				Args: { p_environment_id: string; p_wake_key: string; p_claimant_id: string; p_lease_seconds: number };
+				Returns: JsonValue;
+			};
+			qorpera_renew_wake: {
+				Args: { p_environment_id: string; p_wake_key: string; p_claimant_id: string; p_lease_seconds: number };
+				Returns: JsonValue;
+			};
+			qorpera_complete_wake: {
+				Args: { p_environment_id: string; p_wake_key: string; p_claimant_id: string };
 				Returns: JsonValue;
 			};
 			qorpera_send_friend_request: { Args: { p_email: string }; Returns: JsonValue };
@@ -948,6 +973,24 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 
 	async completeSessionTurn(input: Parameters<HostedPrimaryTransport["completeSessionTurn"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_complete_session_turn", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async claimWake(input: Parameters<HostedPrimaryTransport["claimWake"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_claim_wake", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async renewWake(input: Parameters<HostedPrimaryTransport["renewWake"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_renew_wake", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async completeWake(input: Parameters<HostedPrimaryTransport["completeWake"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_complete_wake", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -2061,6 +2104,15 @@ function parseSessionTurnClaim(value: unknown): SessionTurnClaim {
 	return { claimed: true, inputs };
 }
 
+export type WakeClaimResult = { claimed: true } | { claimed: false; reason: "in-flight" | "already-run" };
+
+function parseWakeClaimResult(value: unknown): WakeClaimResult {
+	const payload = record(value, "wake claim");
+	if (payload.claimed === true) return { claimed: true };
+	const reason = payload.reason === "already-run" ? "already-run" : "in-flight";
+	return { claimed: false, reason };
+}
+
 export interface HostedFriend {
 	userId: string;
 	email: string;
@@ -2216,6 +2268,45 @@ export class QorperaHostedPrimary {
 		requiredUuid(sessionId, "Session id");
 		requiredUuid(claimantId, "Claimant id");
 		await this.transport.completeSessionTurn({ p_session_id: sessionId, p_claimant_id: claimantId });
+	}
+
+	async claimWake(
+		environmentId: string,
+		wakeKey: string,
+		claimantId: string,
+		leaseSeconds = 300,
+	): Promise<WakeClaimResult> {
+		requiredUuid(environmentId, "Environment id");
+		requiredUuid(claimantId, "Claimant id");
+		return parseWakeClaimResult(
+			await this.transport.claimWake({
+				p_environment_id: environmentId,
+				p_wake_key: requiredText(wakeKey, "Wake key", 200),
+				p_claimant_id: claimantId,
+				p_lease_seconds: leaseSeconds,
+			}),
+		);
+	}
+
+	async renewWake(environmentId: string, wakeKey: string, claimantId: string, leaseSeconds = 300): Promise<void> {
+		requiredUuid(environmentId, "Environment id");
+		requiredUuid(claimantId, "Claimant id");
+		await this.transport.renewWake({
+			p_environment_id: environmentId,
+			p_wake_key: requiredText(wakeKey, "Wake key", 200),
+			p_claimant_id: claimantId,
+			p_lease_seconds: leaseSeconds,
+		});
+	}
+
+	async completeWake(environmentId: string, wakeKey: string, claimantId: string): Promise<void> {
+		requiredUuid(environmentId, "Environment id");
+		requiredUuid(claimantId, "Claimant id");
+		await this.transport.completeWake({
+			p_environment_id: environmentId,
+			p_wake_key: requiredText(wakeKey, "Wake key", 200),
+			p_claimant_id: claimantId,
+		});
 	}
 
 	async sendFriendRequest(emailInput: string): Promise<"pending" | "accepted"> {
