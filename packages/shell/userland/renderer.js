@@ -1449,6 +1449,12 @@ const modelCtl = (() => {
 function reassertPreferredModel() {
 	if (!modelPreferencePending || !modelStateHydrated || !modelCatalogHydrated) return;
 	modelPreferencePending = false;
+	// Never assert this machine's cached preference over a staff session: the
+	// trail and the agent record carry the session's durable model, and two
+	// members with different cached preferences would set_model against each
+	// other forever — observed live 2026-08-19 as a cross-machine ping-pong
+	// that re-broke a working thread every six seconds.
+	if (currentStaffId) return;
 	if (!preferredModelKey || !modelCtl.hasModel(preferredModelKey) || currentModelKey === preferredModelKey) return;
 	currentModelKey = preferredModelKey;
 	const [provider, modelId] = preferredModelKey.split("::");
