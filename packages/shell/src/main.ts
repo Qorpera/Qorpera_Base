@@ -1186,6 +1186,9 @@ interface CompanyRuntime {
 	/** Why this machine is not claiming turns (affinity or freshness), for
 	 * the visible waiting state. Cleared whenever a claim is attempted. */
 	cloudSessionWaiting?: string;
+	/** A remote turn synced into the bound thread while the child was busy;
+	 * refresh (respawn from the updated trail) once the local turn settles. */
+	pendingStaffThreadRefresh?: { staffAgentId: string; sessionFile: string };
 	/** One re-adoption at a time: the pump found the attended chat bound to a
 	 * trail other than the arbiter's open session and is re-attaching. */
 	staffSessionReadoptInFlight?: boolean;
@@ -1377,6 +1380,55 @@ function localTrailForArbiterRef(runtime: CompanyRuntime, staff: StaffAgent, ref
 	runtime.sessions.rememberAudit(stub);
 	triggerCloudTrailSync(runtime);
 	return stub.file;
+}
+
+/** A remote executor's turn just landed in the bound thread's trail file.
+ * The attended child holds the session in memory and never re-reads the
+ * file, so without this the new turn is invisible until the founder swaps
+ * threads (which respawns the child) — and worse, a stale child that later
+ * claimed a turn would execute on partial context. Refresh = respawn from
+ * the updated file + tell the renderer to reload, exactly what the manual
+ * swap-away-and-back does, minus the founder doing it. */
+function scheduleStaffThreadRefresh(slot: Slot, runtime: CompanyRuntime, binding: TrailBinding): void {
+	const staffAgentId = binding.authority.staffAgentId;
+	if (!staffAgentId || runtime.closing || slot.runtime !== runtime) return;
+	if (runtime.childOptions.staffAgentId !== staffAgentId) return;
+	const child = runtime.child;
+	if (!child) return;
+	const current = childBindings.get(child);
+	if (!current || current.sessionId !== binding.sessionId) return;
+	if (runtime.wakeChild || isChildBusy(child)) {
+		runtime.pendingStaffThreadRefresh = { staffAgentId, sessionFile: binding.file };
+		return;
+	}
+	void refreshAttachedStaffThread(slot, runtime, staffAgentId, binding.file);
+}
+
+async function refreshAttachedStaffThread(
+	slot: Slot,
+	runtime: CompanyRuntime,
+	staffAgentId: string,
+	sessionFile: string,
+): Promise<void> {
+	try {
+		await enqueueRuntimeTransition(runtime, async () => {
+			if (slot.runtime !== runtime || runtime.closing) return;
+			if (runtime.childOptions.staffAgentId !== staffAgentId) return;
+			const child = runtime.child;
+			if (!child || runtime.wakeChild || isChildBusy(child)) return;
+			const staff = activeStaffAgent(runtime.root, staffAgentId);
+			if (!staff) return;
+			// attachStaffChild short-circuits on an identical binding; the whole
+			// point here is the respawn, so retire the current child first.
+			await stopChild(child);
+			if (slot.runtime !== runtime || runtime.closing) return;
+			runtime.child = undefined;
+			const attached = await attachStaffChild(slot, runtime, staff, sessionFile, false);
+			send(slot.window, "staff-session-refreshed", { staffAgentId, sessionFile: attached.sessionFile });
+		});
+	} catch (error) {
+		console.error(`staff thread refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
 }
 
 function startCloudSessionPump(slot: Slot, runtime: CompanyRuntime): void {
@@ -3284,6 +3336,13 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 				childBusy.set(child, false);
 				{
 					const settledRuntime = slot.runtime;
+					if (settledRuntime && settledRuntime.child === child && settledRuntime.pendingStaffThreadRefresh) {
+						const pending = settledRuntime.pendingStaffThreadRefresh;
+						settledRuntime.pendingStaffThreadRefresh = undefined;
+						setTimeout(() => {
+							void refreshAttachedStaffThread(slot, settledRuntime, pending.staffAgentId, pending.sessionFile);
+						}, 500).unref();
+					}
 					if (
 						settledRuntime &&
 						settledRuntime.child === child &&
@@ -6715,7 +6774,10 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		const cloudTrailSync = createCloudTrailSynchronizer(
 			root,
 			() => (installedRuntime ? liveTrailBindings(installedRuntime) : []),
-			(binding) => sessions.rememberAudit(binding),
+			(binding) => {
+				sessions.rememberAudit(binding);
+				if (installedRuntime) scheduleStaffThreadRefresh(slot, installedRuntime, binding);
+			},
 		);
 		if (cloudTrailSync) {
 			try {
