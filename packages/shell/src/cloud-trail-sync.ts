@@ -511,7 +511,9 @@ export class CloudTrailSynchronizer {
 			await this.#pullSession(hosted, state, sessionState(state, hosted.sessionId), bindings, result);
 		}
 
-		const localSessions = listSharedTrailSessions(this.#options.root);
+		const localSessions = listSharedTrailSessions(this.#options.root, {
+			adoptedSessionIds: new Set(hostedSessions.map((session) => session.clientSessionId)),
+		});
 		if (this.#options.canWrite()) {
 			const hostedByClientId = new Map(hostedSessions.map((session) => [session.clientSessionId, session]));
 			for (const local of localSessions) {

@@ -643,7 +643,17 @@ function trailHasAttendedInput(path: string): boolean {
  * arrives per turn, so a chat becomes shareable only once a person actually
  * writes in it. Autonomous runs, wake/job groups, subagent trees, and product
  * worktrees stay machine-local in this slice. */
-export function listSharedTrailSessions(root: string): SharedTrailSession[] {
+export function listSharedTrailSessions(
+	root: string,
+	options?: {
+		/** Trail ids already registered as hosted sessions. Adoption IS the
+		 * attendance: a staff-bootstrap trail carries attended:false, but once
+		 * the arbiter registers its identity as the agent's one open session,
+		 * excluding it from sync would strand the conversation on the machine
+		 * that authored it — every other member sees a blank thread. */
+		adoptedSessionIds?: ReadonlySet<string>;
+	},
+): SharedTrailSession[] {
 	const trailDir = assertPhysicalCompanyTree(root, "trail");
 	const sessions: SharedTrailSession[] = [];
 	const sessionIds = new Set<string>();
@@ -658,7 +668,9 @@ export function listSharedTrailSessions(root: string): SharedTrailSession[] {
 			!UUID_PATTERN.test(header.id) ||
 			!authority ||
 			authority.actor !== "company-agent" ||
-			(!authority.attended && !trailHasAttendedInput(path)) ||
+			(!authority.attended &&
+				!options?.adoptedSessionIds?.has(header.id) &&
+				!trailHasAttendedInput(path)) ||
 			authority.autonomous ||
 			authority.label ||
 			authority.department ||
