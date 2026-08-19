@@ -493,6 +493,10 @@ export interface HostedPrimaryTransport {
 	claimSessionTurn(input: { p_session_id: string; p_claimant_id: string; p_lease_seconds: number }): Promise<unknown>;
 	renewSessionTurn(input: { p_session_id: string; p_claimant_id: string; p_lease_seconds: number }): Promise<unknown>;
 	completeSessionTurn(input: { p_session_id: string; p_claimant_id: string }): Promise<unknown>;
+	sendFriendRequest(input: { p_email: string }): Promise<unknown>;
+	listFriends(): Promise<unknown>;
+	respondFriendRequest(input: { p_user_id: string; p_accept: boolean }): Promise<unknown>;
+	removeFriend(input: { p_user_id: string }): Promise<unknown>;
 	appendAccountEvent(input: {
 		p_session_id: string;
 		p_event_id: string;
@@ -695,6 +699,10 @@ export interface HostedPrimaryDatabase {
 				Args: { p_session_id: string; p_claimant_id: string };
 				Returns: JsonValue;
 			};
+			qorpera_send_friend_request: { Args: { p_email: string }; Returns: JsonValue };
+			qorpera_list_friends: { Args: Record<string, never>; Returns: JsonValue };
+			qorpera_respond_friend_request: { Args: { p_user_id: string; p_accept: boolean }; Returns: JsonValue };
+			qorpera_remove_friend: { Args: { p_user_id: string }; Returns: JsonValue };
 			qorpera_append_account_event: {
 				Args: {
 					p_session_id: string;
@@ -938,6 +946,30 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 
 	async completeSessionTurn(input: Parameters<HostedPrimaryTransport["completeSessionTurn"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_complete_session_turn", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async sendFriendRequest(input: Parameters<HostedPrimaryTransport["sendFriendRequest"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_send_friend_request", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async listFriends(): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_list_friends", {});
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async respondFriendRequest(input: Parameters<HostedPrimaryTransport["respondFriendRequest"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_respond_friend_request", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async removeFriend(input: Parameters<HostedPrimaryTransport["removeFriend"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_remove_friend", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -2021,6 +2053,29 @@ function parseSessionTurnClaim(value: unknown): SessionTurnClaim {
 	return { claimed: true, inputs };
 }
 
+export interface HostedFriend {
+	userId: string;
+	email: string;
+	displayName: string;
+	status: "pending" | "accepted";
+	direction: "incoming" | "outgoing";
+	since: string;
+}
+
+function parseFriend(value: unknown): HostedFriend {
+	const input = record(value, "friend");
+	const status = input.status === "accepted" ? "accepted" : "pending";
+	const direction = input.direction === "incoming" ? "incoming" : "outgoing";
+	return {
+		userId: uuid(input.user_id, "friend user id"),
+		email: nonEmptyString(input.email, "friend email", 320),
+		displayName: nonEmptyString(input.display_name, "friend display name", 160),
+		status,
+		direction,
+		since: timestamp(input.since, "friendship time"),
+	};
+}
+
 export class QorperaHostedPrimary {
 	private readonly transport: HostedPrimaryTransport;
 
@@ -2153,6 +2208,29 @@ export class QorperaHostedPrimary {
 		requiredUuid(sessionId, "Session id");
 		requiredUuid(claimantId, "Claimant id");
 		await this.transport.completeSessionTurn({ p_session_id: sessionId, p_claimant_id: claimantId });
+	}
+
+	async sendFriendRequest(emailInput: string): Promise<"pending" | "accepted"> {
+		const email = emailInput.trim().toLowerCase();
+		if (!email || email.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+			throw new Error("Email is invalid");
+		}
+		const result = record(await this.transport.sendFriendRequest({ p_email: email }), "friend request result");
+		return result.status === "accepted" ? "accepted" : "pending";
+	}
+
+	async listFriends(): Promise<HostedFriend[]> {
+		return array(await this.transport.listFriends(), "friend list").map(parseFriend);
+	}
+
+	async respondFriendRequest(userId: string, accept: boolean): Promise<void> {
+		requiredUuid(userId, "Friend user id");
+		await this.transport.respondFriendRequest({ p_user_id: userId, p_accept: accept });
+	}
+
+	async removeFriend(userId: string): Promise<void> {
+		requiredUuid(userId, "Friend user id");
+		await this.transport.removeFriend({ p_user_id: userId });
 	}
 
 	async profileTeam(profileId: string): Promise<HostedProfileTeam> {

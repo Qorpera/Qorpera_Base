@@ -100,9 +100,23 @@
 			</div>
 			<div id="hubCompanies" class="hub-grid"></div>
 			<div id="hubError" class="hub-error" role="status" aria-live="polite"></div>
+			<div id="friendsPanel" class="friends-panel" hidden>
+				<header>
+					<h2>Friends</h2>
+					<button id="friendsClose" type="button" aria-label="Close friends">×</button>
+				</header>
+				<div class="friends-add">
+					<input id="friendEmail" type="email" placeholder="friend@email.com" aria-label="Friend email" />
+					<button id="friendAdd" type="button">Add friend</button>
+				</div>
+				<div id="friendsError" class="hub-error" role="status" aria-live="polite"></div>
+				<div id="friendsInvites"></div>
+				<div id="friendsList"></div>
+			</div>
 			<div class="hub-foot">
 				<span class="hubver" id="hubVersion"></span>
 				<span class="spacer"></span>
+				<button class="hub-sign-out" id="friendsButton" type="button">Friends</button>
 				<button class="hub-sign-out" id="signOutButton" type="button">Sign out</button>
 			</div>
 		</div>
