@@ -29,4 +29,10 @@ describe("userland wiring", () => {
 			expect(indexSource).toContain(`onclick="openSettings('${tab}')"`);
 		}
 	});
+
+	it("keeps non-actionable hosting internals out of settings", () => {
+		for (const label of ["Product and execution", "Profile placement", "Company workspaces"]) {
+			expect(rendererSource).not.toContain(label);
+		}
+	});
 });
