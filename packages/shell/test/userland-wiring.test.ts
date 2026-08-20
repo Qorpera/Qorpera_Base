@@ -33,6 +33,22 @@ describe("userland wiring", () => {
 		}
 	});
 
+	it("keeps non-actionable hosting internals out of settings", () => {
+		for (const label of ["Product and execution", "Profile placement", "Company workspaces"]) {
+			expect(rendererSource).not.toContain(label);
+		}
+	});
+
+	it("keeps the remaining company controls actionable and accessible", () => {
+		expect(rendererSource).toContain("window.qorpera.enableCloudProfile()");
+		expect(rendererSource).toContain('event.key !== "Tab"');
+		expect(rendererSource).toMatch(/item\.setAttribute\("aria-label", `\$\{name\}, \$\{role\}`\)/);
+		expect(rendererSource).toContain("Pick from your friends or add someone first");
+		expect(baseCssSource).not.toMatch(/\.company-person-actions \{[^}]*visibility:\s*hidden/s);
+		expect(baseCssSource).toMatch(/\.company-person-actions \{[^}]*opacity:\s*0/s);
+		expect(baseCssSource).toContain(".company-person-row:focus-within .company-person-actions");
+	});
+
 	it("keeps macOS native window controls clear of titlebar actions", () => {
 		expect(preloadSource).toContain("document.documentElement.dataset.platform = process.platform");
 		expect(baseCssSource).toMatch(/html\[data-platform="darwin"\] \.titlebar-rail \{ padding-left: 78px; \}/);

@@ -9389,7 +9389,7 @@ function summarizeArgs(args) {
 
 // ---- company settings -------------------------------------------------------
 
-const SETTINGS_TABS = new Set(["general", "team", "connections", "authority"]);
+const SETTINGS_TABS = new Set(["general", "company", "connections", "authority"]);
 let settingsTab = "general";
 let connectingConnection = null;
 let disconnectingConnection = null;
@@ -9724,13 +9724,6 @@ const PROFILE_ROLE_LABELS = {
 	viewer: "Read-only",
 };
 
-const PROFILE_ROLE_DETAILS = {
-	owner: "Can manage access, authorize actions, and contribute",
-	admin: "Can manage access, authorize actions, and contribute",
-	contributor: "Can write and communicate, but cannot authorize actions",
-	viewer: "Can inspect the profile without making changes",
-};
-
 function invitationDeliveryDetail(delivery) {
 	if (delivery?.status === "delivered") return "Email sent";
 	if (delivery?.status === "delivering") return "Sending email";
@@ -9757,369 +9750,6 @@ function profileMemberLabel(member) {
 	return member.displayName || member.email || "Qorpera account";
 }
 
-function applyCloudProfileTransition(result) {
-	companyId = result.profileKey ?? companyId;
-	currentProfileAccess = result.team ?? currentProfileAccess;
-}
-
-const PROFILE_STATUS_LABELS = {
-	identity: { local: "Local identity", cloud: "Cloud identity" },
-	sharedStaff: {
-		local: "Local only",
-		pending: "Migration pending",
-		retrying: "Reconnecting",
-		attention: "Needs attention",
-		cloud: "Shared",
-	},
-	trail: {
-		local: "Local only",
-		pending: "Starting",
-		retrying: "Reconnecting",
-		attention: "Needs attention",
-		cloud: "Synced",
-	},
-	sessions: {
-		local: "Local only",
-		pending: "Starting",
-		retrying: "Reconnecting",
-		attention: "Needs attention",
-		cloud: "Arbitrated",
-	},
-	execution: { local: "This computer", cloud: "Ephemeral cloud runner", computer: "Qorpera Computer" },
-	files: {
-		local: "Local checkout",
-		pending: "Starting",
-		retrying: "Reconnecting",
-		attention: "Needs attention",
-		cloud: "Publishing",
-	},
-};
-
-const PROFILE_PROMOTION_LABELS = {
-	requested: "Ready to start",
-	provisioning: "Provisioning hosted identity",
-	"identity-ready": "Hosted identity ready · shared sync starting",
-	complete: "Hosted profile ready",
-	failed: "Needs attention",
-};
-
-function renderProfileProductControls(content, info) {
-	const profile = info.profile;
-	if (!profile) return;
-	const product = profile.product ?? {
-		account: { entitlement: "not-connected" },
-		profile: {
-			placement: profile.profileType === "cloud" ? "hosted" : "local",
-			billingSponsor: profile.profileType === "cloud" ? "not-configured" : "not-applicable",
-		},
-		execution: { target: "local" },
-	};
-	const group = document.createElement("section");
-	group.className = "settings-group general-settings-group";
-	const header = document.createElement("header");
-	const heading = document.createElement("h2");
-	heading.textContent = "Product and execution";
-	const description = document.createElement("p");
-	description.textContent =
-		"Account access, profile placement, execution target, and billing responsibility are independent.";
-	header.append(heading, description);
-	group.appendChild(header);
-
-	const entitlement = document.createElement("small");
-	entitlement.textContent =
-		product.account.entitlement === "not-connected" ? "Billing not connected" : product.account.entitlement;
-	setRow(
-		group,
-		"Account entitlement",
-		"Capabilities and subscription belong to the signed-in account, not to this profile.",
-		entitlement,
-	);
-	const placement = document.createElement("small");
-	placement.textContent = product.profile.placement === "hosted" ? "Hosted profile" : "On this computer";
-	setRow(group, "Profile placement", "Controls where shared profile state is stored and synchronized.", placement);
-	const execution = document.createElement("small");
-	execution.textContent =
-		product.execution.target === "cloud"
-			? "Ephemeral cloud runner"
-			: product.execution.target === "computer"
-				? "Qorpera Computer"
-				: "This computer";
-	setRow(
-		group,
-		"Execution target",
-		"Chosen per session or worktree. Hosted profiles do not automatically move execution to the cloud.",
-		execution,
-	);
-	const sponsor = document.createElement("small");
-	sponsor.textContent = product.profile.billingSponsor === "not-applicable" ? "Not applicable" : "Not configured";
-	setRow(
-		group,
-		"Billing sponsor",
-		product.profile.billingSponsor === "not-applicable"
-			? "Local profile activity has no shared hosting sponsor."
-			: "The sponsor will cover shared profile costs; contributors will not have to buy a plan merely to join.",
-		sponsor,
-	);
-
-	for (const [key, label] of [
-		["sharedStaff", "Staff roster"],
-		["trail", "Attended chat trail"],
-		["sessions", "Session arbitration"],
-		["execution", "Agent execution"],
-		["files", "Company files"],
-	]) {
-		const value = profile.status?.[key];
-		const status = document.createElement("small");
-		status.textContent = PROFILE_STATUS_LABELS[key]?.[value] ?? value ?? "Unknown";
-		setRow(group, label, "", status);
-	}
-
-	if (profile.promotion) {
-		const promotion = document.createElement("small");
-		promotion.textContent = PROFILE_PROMOTION_LABELS[profile.promotion.phase] ?? profile.promotion.phase;
-		setRow(
-			group,
-			"Hosting setup",
-			profile.promotion.lastError ?? "The local profile remains recoverable throughout promotion.",
-			promotion,
-		);
-	}
-
-	if (profile.profileType === "local") {
-		const host = document.createElement("button");
-		host.type = "button";
-		host.textContent =
-			profile.promotion?.phase === "failed"
-				? "Retry hosting setup"
-				: profile.promotion
-					? "Resume hosting setup"
-					: "Host this profile";
-		host.disabled = profile.access?.capabilities?.manageMembers !== true;
-		host.onclick = async () => {
-			host.disabled = true;
-			const result = await window.qorpera.enableCloudProfile();
-			if (result?.ok) {
-				applyCloudProfileTransition(result);
-				showToast("Hosted profile is active. Shared staff and attended chats are syncing.");
-			} else {
-				showToast(result?.error ?? "Hosting setup still needs attention.");
-			}
-			await renderSettingsTab();
-		};
-		const actions = document.createElement("div");
-		actions.className = "appearance-actions";
-		actions.appendChild(host);
-		group.appendChild(actions);
-	}
-	content.appendChild(group);
-}
-
-function renderProfileCloudControls(content, info) {
-	const profile = info.profile;
-	if (!profile) return;
-	const group = document.createElement("section");
-	group.className = "settings-group general-settings-group";
-	const header = document.createElement("header");
-	const heading = document.createElement("h2");
-	heading.textContent = "Profile placement";
-	const description = document.createElement("p");
-	description.textContent =
-		profile.profileType === "cloud"
-			? "Profile identity, team access, shared staff, and attended chats are hosted. Files remain attached to this checkout unless published; execution is selected separately."
-			: "This profile identity, its team list, files, and agent trail currently exist only on this computer.";
-	header.append(heading, description);
-	group.appendChild(header);
-
-	if (profile.profileType === "cloud") {
-		const identity = document.createElement("small");
-		identity.textContent = profile.profileId;
-		setRow(
-			group,
-			"Hosted profile",
-			"Hosting and usage are scoped to this profile. Product entitlement remains attached to each account.",
-			identity,
-		);
-		content.appendChild(group);
-		return;
-	}
-
-	const canEnable = profile.access?.capabilities?.manageMembers === true;
-	const attach = document.createElement("button");
-	attach.type = "button";
-	attach.textContent = "Choose cloud profile";
-	attach.disabled = !canEnable;
-	attach.onclick = async () => {
-		attach.disabled = true;
-		attach.textContent = "Loading…";
-		const result = await window.qorpera.cloudProfileOptions();
-		if (!result?.ok) {
-			attach.disabled = false;
-			attach.textContent = "Choose cloud profile";
-			showToast(result?.error ?? "Cloud profiles could not be loaded.");
-			return;
-		}
-		const profiles = result.profiles ?? [];
-		if (!profiles.length) {
-			attach.disabled = false;
-			attach.textContent = "Choose cloud profile";
-			showToast("No cloud profiles are available to this account.");
-			return;
-		}
-		const select = document.createElement("select");
-		select.setAttribute("aria-label", "Cloud profile to attach");
-		select.appendChild(new Option("Choose a cloud profile", ""));
-		for (const candidate of profiles) {
-			select.appendChild(
-				new Option(
-					`${candidate.profileName} · ${PROFILE_ROLE_LABELS[candidate.role] ?? candidate.role}`,
-					candidate.profileId,
-				),
-			);
-		}
-		const confirm = document.createElement("button");
-		confirm.type = "button";
-		confirm.textContent = "Attach folder";
-		confirm.disabled = true;
-		select.onchange = () => {
-			confirm.disabled = !select.value;
-		};
-		confirm.onclick = async () => {
-			select.disabled = true;
-			confirm.disabled = true;
-			const attached = await window.qorpera.attachCloudProfile(select.value);
-			if (!attached?.ok) {
-				select.disabled = false;
-				confirm.disabled = !select.value;
-				if (!attached?.cancelled) showToast(attached?.error ?? "Cloud profile could not be attached.");
-				return;
-			}
-			applyCloudProfileTransition(attached);
-			showToast("Folder attached. Profile identity and team access now come from the cloud profile.");
-			await renderSettingsTab();
-		};
-		const row = attach.closest(".setrow");
-		if (row) {
-			attach.remove();
-			row.append(select, confirm);
-		}
-	};
-	setRow(
-		group,
-		"Attach to an existing cloud profile",
-		"Use this folder as a local checkout. Qorpera will confirm before replacing its local profile identity.",
-		attach,
-	);
-	content.appendChild(group);
-}
-
-function renderCloudCompanyWorkspaces(content, info) {
-	const profile = info.profile;
-	if (profile?.profileType !== "cloud") return;
-	const group = document.createElement("section");
-	group.className = "settings-group general-settings-group";
-	const header = document.createElement("header");
-	const heading = document.createElement("h2");
-	heading.textContent = "Company workspaces";
-	const description = document.createElement("p");
-	description.textContent =
-		"Each computer publishes an isolated company-file fork. Remote changes are previewed and merged explicitly; they never overwrite this checkout on arrival.";
-	header.append(heading, description);
-	group.appendChild(header);
-
-	const health = document.createElement("small");
-	const inboxPhase = profile.workspaceInboxHealth?.phase;
-	health.textContent =
-		inboxPhase === "attention"
-			? "Needs attention"
-			: inboxPhase === "retrying"
-				? "Reconnecting"
-				: inboxPhase === "healthy"
-					? "Up to date"
-					: "Starting";
-	setRow(group, "Workspace inbox", "Realtime invalidations are verified against immutable snapshots.", health);
-
-	const workspaces = profile.workspaces ?? [];
-	for (const workspace of workspaces) {
-		const actions = document.createElement("div");
-		const updated = Number.isFinite(Date.parse(workspace.updatedAt))
-			? new Date(workspace.updatedAt).toLocaleString()
-			: "Update time unavailable";
-		const detail = workspace.head
-			? `${workspace.head.tree.fileCount} files · ${updated}`
-			: `No published files · ${updated}`;
-		if (workspace.isLocal) {
-			const local = document.createElement("small");
-			local.textContent = workspace.head ? "This computer · published" : "This computer · preparing";
-			actions.appendChild(local);
-		} else if (workspace.head) {
-			const preview = document.createElement("button");
-			preview.type = "button";
-			preview.textContent = "Preview";
-			preview.onclick = async () => {
-				preview.disabled = true;
-				const result = await window.qorpera.previewCloudCompanyWorkspace(workspace.workspaceId);
-				preview.disabled = false;
-				showToast(result?.ok ? "Verified preview opened." : result?.error ?? "Preview could not be opened.");
-			};
-			const merge = document.createElement("button");
-			merge.type = "button";
-			merge.textContent = "Review merge";
-			merge.onclick = async () => {
-				merge.disabled = true;
-				merge.textContent = "Reviewing…";
-				const inspection = await window.qorpera.inspectCloudCompanyMerge(workspace.workspaceId);
-				if (!inspection?.ok) {
-					merge.disabled = false;
-					merge.textContent = "Review merge";
-					showToast(inspection?.error ?? "Merge could not be inspected.");
-					return;
-				}
-				const plan = inspection.plan;
-				if (plan.conflicts.length) {
-					merge.textContent = `${plan.conflicts.length} conflict${plan.conflicts.length === 1 ? "" : "s"}`;
-					merge.title = plan.conflicts.map((conflict) => conflict.path).join("\n");
-					showToast("This fork has conflicting paths. Preview it before resolving locally.");
-					return;
-				}
-				if (!plan.changedPaths.length) {
-					merge.textContent = "Already included";
-					return;
-				}
-				if (profile.access?.capabilities?.write !== true) {
-					merge.textContent = `${plan.changedPaths.length} changes · read-only`;
-					return;
-				}
-				merge.disabled = false;
-				merge.textContent = `Merge ${plan.changedPaths.length} changes`;
-				merge.onclick = async () => {
-					merge.disabled = true;
-					const result = await window.qorpera.mergeCloudCompanyWorkspace(workspace.workspaceId);
-					if (!result?.ok) {
-						merge.disabled = false;
-						if (!result?.cancelled) showToast(result?.error ?? "Remote changes were not merged.");
-						return;
-					}
-					showToast(result.applied ? "Remote changes merged and published." : "No files were changed.");
-					await renderSettingsTab();
-				};
-			};
-			actions.append(preview, merge);
-		}
-		setRow(group, workspace.name, detail, actions);
-	}
-	if (!workspaces.some((workspace) => !workspace.isLocal)) {
-		const empty = document.createElement("small");
-		empty.textContent = "No remote forks";
-		setRow(
-			group,
-			"Other computers",
-			"A teammate's published fork will appear here after they open this cloud profile.",
-			empty,
-		);
-	}
-	content.appendChild(group);
-}
-
 function teamPersonAvatar(label, pending = false) {
 	const avatar = document.createElement("span");
 	avatar.className = `team-person-avatar${pending ? " pending" : ""}`;
@@ -10132,43 +9762,11 @@ function teamPersonAvatar(label, pending = false) {
 	return avatar;
 }
 
-function teamGroup(content, title, description) {
-	const group = document.createElement("section");
-	group.className = "settings-group general-settings-group";
-	const header = document.createElement("header");
-	const heading = document.createElement("h2");
-	heading.textContent = title;
-	header.appendChild(heading);
-	if (description) {
-		const copy = document.createElement("p");
-		copy.textContent = description;
-		header.appendChild(copy);
-	}
-	group.appendChild(header);
-	content.appendChild(group);
-	return group;
-}
-
-function teamPersonRow(group, name, detail, { pending = false } = {}) {
-	const row = document.createElement("div");
-	row.className = "setrow team-person-row";
-	row.appendChild(teamPersonAvatar(name, pending));
-	const copy = document.createElement("label");
-	copy.textContent = name;
-	if (detail) {
-		const small = document.createElement("small");
-		small.textContent = detail;
-		copy.appendChild(small);
-	}
-	row.appendChild(copy);
-	group.appendChild(row);
-	return row;
-}
-
-function renderTeamTab(content, info, friendsResult) {
+function renderCompanyTab(content, info) {
 	const team = info.profile?.team;
 	if (!team) {
-		content.insertAdjacentHTML("beforeend", '<div class="sess-meta">Open a company to manage its team.</div>');
+		setHeading(content, "Company");
+		content.insertAdjacentHTML("beforeend", '<div class="sess-meta">Open a company to manage it here.</div>');
 		return;
 	}
 	const cloudProfile = info.profile?.profileType === "cloud";
@@ -10178,34 +9776,15 @@ function renderTeamTab(content, info, friendsResult) {
 	const members = team.members ?? [];
 	const invitations = canManage ? (team.invitations ?? []) : [];
 
-	// Company identity card, then one shared inline error line. Every action in
-	// this tab reports failures there and IPC rejections are caught too — a
-	// silently swallowed failure is exactly how invitations went missing in
-	// 0.20.5.
-	const card = document.createElement("section");
-	card.className = "settings-group general-settings-group";
-	const companyCard = document.createElement("div");
-	companyCard.className = "general-company-card";
-	const companyLabel = info.company?.name || state.name || "Current company";
-	companyCard.appendChild(makeCompanyIcon(info.company?.companyIcon || currentCompanyIcon, companyLabel));
-	const companyCopy = document.createElement("div");
-	companyCopy.className = "general-account-copy";
-	const companyName = document.createElement("strong");
-	companyName.textContent = companyLabel;
-	const companyDetail = document.createElement("small");
-	const memberCount = members.length === 1 ? "1 member" : `${members.length} members`;
-	companyDetail.textContent = `${cloudProfile ? "Hosted profile" : "On this computer"} · ${memberCount}${
-		invitations.length ? ` · ${invitations.length} invited` : ""
-	}`;
-	companyCopy.append(companyName, companyDetail);
-	companyCard.appendChild(companyCopy);
-	card.appendChild(companyCard);
+	// The company name is the tab heading, then one shared inline error line.
+	// Every action in this tab reports failures there and IPC rejections are
+	// caught too — a silently swallowed failure is exactly how invitations went
+	// missing in 0.20.5.
+	setHeading(content, info.company?.name || state.name || "Company");
 	const errorBox = document.createElement("div");
 	errorBox.className = "hub-error team-error";
 	errorBox.setAttribute("role", "status");
 	errorBox.setAttribute("aria-live", "polite");
-	card.appendChild(errorBox);
-	content.appendChild(card);
 
 	const runTeamAction = async (button, action, successMessage) => {
 		if (button) button.disabled = true;
@@ -10223,21 +9802,41 @@ function renderTeamTab(content, info, friendsResult) {
 		}
 	};
 
-	const people = teamGroup(
-		content,
-		"People",
-		canManage
-			? "Everyone with access to this profile. Roles control what each person can do."
-			: "People who share access to this profile.",
-	);
+	// A plain list — no row containers or dividers. Management controls sit at
+	// the right edge of each row and only show on hover or keyboard focus, so
+	// the resting state stays as calm as the company card.
+	const people = document.createElement("div");
+	people.className = "company-people";
+	const personRow = (name, status, { pending = false, email, roleLabel } = {}) => {
+		const row = document.createElement("div");
+		row.className = "company-person-row";
+		const hover = [email, roleLabel].filter(Boolean).join(" · ");
+		if (hover) row.title = hover;
+		row.appendChild(teamPersonAvatar(name, pending));
+		const copy = document.createElement("div");
+		copy.className = "company-person-copy";
+		const label = document.createElement("strong");
+		label.textContent = name;
+		const detail = document.createElement("small");
+		detail.textContent = status;
+		copy.append(label, detail);
+		row.appendChild(copy);
+		const actions = document.createElement("div");
+		actions.className = "company-person-actions";
+		row.appendChild(actions);
+		people.appendChild(row);
+		return actions;
+	};
 	for (const member of members) {
-		const detail = [member.email, PROFILE_ROLE_DETAILS[member.role]].filter(Boolean).join(" · ");
 		const editable =
 			canManage &&
 			member.role !== "owner" &&
 			(actorIsOwner || member.role !== "admin") &&
 			member.userId !== actorId;
-		const row = teamPersonRow(people, profileMemberLabel(member), detail);
+		const actions = personRow(profileMemberLabel(member), member.role === "owner" ? "Started it" : "Building", {
+			email: member.email,
+			roleLabel: PROFILE_ROLE_LABELS[member.role] ?? member.role,
+		});
 		if (editable) {
 			const control = profileRoleSelect(member.role, actorIsOwner);
 			control.onchange = () =>
@@ -10247,23 +9846,18 @@ function renderTeamTab(content, info, friendsResult) {
 			remove.textContent = "Remove";
 			remove.onclick = () =>
 				runTeamAction(remove, () => window.qorpera.removeProfileMember(member.userId), "Removed from the team.");
-			row.append(control, remove);
-		} else {
-			const roleLabel = document.createElement("small");
-			roleLabel.textContent = PROFILE_ROLE_LABELS[member.role] ?? member.role;
-			row.appendChild(roleLabel);
+			actions.append(control, remove);
 		}
 	}
 	for (const invitation of invitations) {
-		const row = teamPersonRow(
-			people,
-			invitation.email,
-			`Pending acceptance · ${PROFILE_ROLE_LABELS[invitation.role]}${
+		const failed = invitation.delivery?.status === "failed";
+		const actions = personRow(invitation.email, failed ? "Invited · email failed" : "Invited", {
+			pending: true,
+			roleLabel: `${PROFILE_ROLE_LABELS[invitation.role]}${
 				cloudProfile ? ` · ${invitationDeliveryDetail(invitation.delivery)}` : ""
 			}`,
-			{ pending: true },
-		);
-		if (invitation.delivery?.status === "failed") {
+		});
+		if (failed) {
 			const retry = document.createElement("button");
 			retry.type = "button";
 			retry.textContent = "Retry email";
@@ -10273,173 +9867,369 @@ function renderTeamTab(content, info, friendsResult) {
 					() => window.qorpera.retryProfileInvitationDelivery(invitation.id),
 					"Invitation email queued again.",
 				);
-			row.appendChild(retry);
+			actions.appendChild(retry);
 		}
 		const cancel = document.createElement("button");
 		cancel.type = "button";
-		cancel.textContent = "Cancel invite";
+		cancel.textContent = "Cancel";
 		cancel.onclick = () =>
 			runTeamAction(cancel, () => window.qorpera.cancelProfileInvitation(invitation.id), "Invitation cancelled.");
-		row.appendChild(cancel);
+		actions.appendChild(cancel);
 	}
 
 	if (canManage) {
-		const inviteGroup = teamGroup(
-			content,
-			"Invite a friend",
-			cloudProfile
-				? "Pick a friend and choose their access. Qorpera sends them an expiring email invitation to accept."
-				: "Pick a friend and choose their access. It activates when they sign in on this installation.",
-		);
-		if (!friendsResult?.ok) {
-			const note = document.createElement("div");
-			note.className = "sess-meta";
-			note.textContent = friendsResult?.error ?? "Friends are unavailable right now.";
-			inviteGroup.appendChild(note);
-		} else {
-			const memberEmails = new Set(members.map((member) => (member.email ?? "").toLowerCase()));
-			const invitedEmails = new Set(invitations.map((invitation) => invitation.email.toLowerCase()));
-			const incoming = friendsResult.friends.filter(
-				(friend) => friend.status === "pending" && friend.direction === "incoming",
-			);
-			const outgoing = friendsResult.friends.filter(
-				(friend) => friend.status === "pending" && friend.direction === "outgoing",
-			);
-			const accepted = friendsResult.friends.filter((friend) => friend.status === "accepted");
-			for (const friend of accepted) {
-				const onTeam = memberEmails.has(friend.email.toLowerCase());
-				const invited = invitedEmails.has(friend.email.toLowerCase());
-				const row = teamPersonRow(
-					inviteGroup,
-					friend.displayName,
-					onTeam
-						? `${friend.email} · Already on the team`
-						: invited
-							? `${friend.email} · Invitation pending`
-							: friend.email,
-				);
-				if (!onTeam && !invited) {
-					const role = profileRoleSelect("contributor", actorIsOwner);
-					const invite = document.createElement("button");
-					invite.type = "button";
-					invite.textContent = "Invite";
-					invite.onclick = () =>
-						runTeamAction(
-							invite,
-							() => window.qorpera.inviteProfileMember({ email: friend.email, role: role.value }),
-							cloudProfile
-								? `Invitation email queued for ${friend.displayName}.`
-								: `${friend.displayName} can join when they sign in here.`,
-						);
-					row.append(role, invite);
-				}
-			}
-			if (!accepted.length) {
-				const empty = document.createElement("div");
-				empty.className = "sess-meta";
-				empty.textContent = "No friends yet — add one below and invite them once they accept.";
-				inviteGroup.appendChild(empty);
-			}
-			for (const friend of incoming) {
-				const row = teamPersonRow(inviteGroup, friend.displayName, `${friend.email} · Wants to be friends`, {
-					pending: true,
-				});
-				const accept = document.createElement("button");
-				accept.type = "button";
-				accept.textContent = "Accept";
-				accept.onclick = () =>
-					runTeamAction(
-						accept,
-						() => window.qorpera.friendsRespond(friend.userId, true),
-						`${friend.displayName} is now a friend.`,
-					);
-				const decline = document.createElement("button");
-				decline.type = "button";
-				decline.textContent = "Decline";
-				decline.onclick = () => runTeamAction(decline, () => window.qorpera.friendsRespond(friend.userId, false));
-				row.append(accept, decline);
-			}
-			for (const friend of outgoing) {
-				teamPersonRow(inviteGroup, friend.displayName, `${friend.email} · Friend request sent`, { pending: true });
-			}
-		}
-
-		const addEmail = document.createElement("input");
-		addEmail.type = "email";
-		addEmail.placeholder = "friend@example.com";
-		addEmail.setAttribute("aria-label", "Friend email address");
-		const add = document.createElement("button");
-		add.type = "button";
-		add.textContent = "Add friend";
-		add.onclick = () =>
-			runTeamAction(
-				add,
-				async () => {
-					const address = addEmail.value.trim();
-					if (!address) throw new Error("Enter an email address to add a friend.");
-					return window.qorpera.friendsRequest(address);
-				},
-				"Friend request sent.",
-			);
-		const addRow = setRow(
-			inviteGroup,
-			"Add friends",
-			"Not friends yet? Send a request by email — they appear here once they accept.",
-			addEmail,
-		);
-		addRow.appendChild(add);
-
-		const email = document.createElement("input");
-		email.type = "email";
-		email.placeholder = "colleague@example.com";
-		email.setAttribute("aria-label", "Invitee email address");
-		const role = profileRoleSelect("contributor", actorIsOwner);
-		const invite = document.createElement("button");
-		invite.type = "button";
-		invite.textContent = "Create invite";
-		invite.onclick = () =>
-			runTeamAction(
-				invite,
-				async () => {
-					const address = email.value.trim();
-					if (!address) throw new Error("Enter an email address to invite.");
-					return window.qorpera.inviteProfileMember({ email: address, role: role.value });
-				},
-				cloudProfile ? "Invitation created. Email queued." : "Invitation created.",
-			);
-		const emailGroup = teamGroup(
-			content,
-			"Invite by email",
-			cloudProfile
-				? "Sends an expiring email invitation. The recipient must sign in with this address and accept explicitly."
-				: "Access activates when this email signs in on the same Qorpera installation.",
-		);
-		const inviteRow = setRow(emailGroup, "Email invitation", "", email);
-		inviteRow.append(role, invite);
+		// The invite affordance is the last row of the list: a dashed "+" row
+		// that opens the friends list and can start a friend request by email.
+		const launch = document.createElement("button");
+		launch.type = "button";
+		launch.className = "company-invite-launch";
+		const plus = document.createElement("span");
+		plus.className = "team-person-avatar team-invite-plus";
+		plus.textContent = "+";
+		plus.setAttribute("aria-hidden", "true");
+		const launchCopy = document.createElement("span");
+		launchCopy.className = "company-person-copy";
+		const launchTitle = document.createElement("strong");
+		launchTitle.textContent = "Invite a friend";
+		const launchHint = document.createElement("small");
+		launchHint.textContent = "Pick from your friends or add someone first";
+		launchCopy.append(launchTitle, launchHint);
+		launch.append(plus, launchCopy);
+		launch.onclick = () => openCompanyInvitePopup({ cloudProfile, actorIsOwner });
+		people.appendChild(launch);
 	}
+	content.appendChild(people);
+	content.appendChild(errorBox);
 
 	const staff = activeStaffMembers();
 	if (staff.length) {
-		const staffGroup = teamGroup(
-			content,
-			"Staff at work",
-			"The company's agent staff. They come with the company — no invitation needed.",
-		);
-		const grid = document.createElement("div");
-		grid.className = "team-staff-grid";
+		const strip = document.createElement("section");
+		strip.className = "company-staff-strip";
+		const stripLabel = document.createElement("small");
+		stripLabel.className = "company-staff-label";
+		stripLabel.textContent = "Staff at work";
+		strip.appendChild(stripLabel);
+		const staffRow = document.createElement("div");
+		staffRow.className = "company-staff-row";
+		staffRow.setAttribute("role", "list");
 		for (const member of staff) {
-			const staffCard = document.createElement("div");
-			staffCard.className = "team-staff-card";
-			staffCard.appendChild(makeStaffAvatar(member, staffStatus(member)));
-			const name = document.createElement("strong");
-			name.textContent = staffDisplayName(member);
-			const roleLabel = document.createElement("small");
-			roleLabel.textContent = staffRoleLabel(member);
-			staffCard.append(name, roleLabel);
-			grid.appendChild(staffCard);
+			const name = staffDisplayName(member);
+			const role = staffRoleLabel(member);
+			const item = document.createElement("div");
+			item.className = "company-staff-member";
+			item.setAttribute("role", "listitem");
+			item.setAttribute("aria-label", `${name}, ${role}`);
+			const avatar = makeStaffAvatar(member, staffStatus(member));
+			avatar.title = `${name} · ${role}`;
+			item.appendChild(avatar);
+			staffRow.appendChild(item);
 		}
-		staffGroup.appendChild(grid);
+		strip.appendChild(staffRow);
+		content.appendChild(strip);
 	}
+}
+
+// A company invitation can only reach someone you are already friends with,
+// so this popup is the friends list and nothing else: search at the top,
+// friend requests folded behind it, then the friends themselves with a role
+// and an invite. Searching an address that belongs to nobody you know offers
+// to send a friend request instead of an invitation — there is deliberately no
+// invite-a-stranger path. It refetches on open and after every action, and
+// re-renders the settings tab underneath so the people list stays current.
+async function openCompanyInvitePopup({ cloudProfile, actorIsOwner }) {
+	const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+	const overlay = document.createElement("div");
+	overlay.className = "company-invite-overlay";
+	const panel = document.createElement("section");
+	panel.className = "company-invite-panel";
+	panel.setAttribute("role", "dialog");
+	panel.setAttribute("aria-modal", "true");
+	panel.setAttribute("aria-label", "Invite a friend");
+	overlay.appendChild(panel);
+	const backgroundState = [];
+	let closed = false;
+	const close = () => {
+		if (closed) return;
+		closed = true;
+		overlay.remove();
+		document.removeEventListener("keydown", onKey, true);
+		for (const [element, inert] of backgroundState) element.inert = inert;
+		const returnTarget = opener?.isConnected ? opener : document.querySelector(".company-invite-launch");
+		returnTarget?.focus();
+	};
+	const onKey = (event) => {
+		if (event.key === "Escape") {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			close();
+			return;
+		}
+		if (event.key !== "Tab") return;
+		const controls = [...panel.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')].filter(
+			(element) => element instanceof HTMLElement && !element.hidden && element.offsetParent !== null,
+		);
+		if (!controls.length) return;
+		const first = controls[0];
+		const last = controls[controls.length - 1];
+		if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+			event.preventDefault();
+			last.focus();
+		} else if (!event.shiftKey && (document.activeElement === last || !panel.contains(document.activeElement))) {
+			event.preventDefault();
+			first.focus();
+		}
+	};
+	overlay.onpointerdown = (event) => {
+		if (event.target === overlay) close();
+	};
+	document.addEventListener("keydown", onKey, true);
+
+	const searchRow = document.createElement("div");
+	searchRow.className = "company-invite-search";
+	const search = document.createElement("input");
+	search.type = "search";
+	search.placeholder = "Search friends, or type an email to add someone";
+	search.setAttribute("aria-label", "Search friends or add someone by email");
+	const closeButton = document.createElement("button");
+	closeButton.type = "button";
+	closeButton.className = "company-invite-close";
+	closeButton.textContent = "×";
+	closeButton.setAttribute("aria-label", "Close invite window");
+	closeButton.onclick = close;
+	const suggestions = document.createElement("div");
+	suggestions.className = "company-invite-suggest";
+	suggestions.hidden = true;
+	searchRow.append(search, closeButton, suggestions);
+	const requestsHost = document.createElement("div");
+	const body = document.createElement("div");
+	body.className = "company-invite-body";
+	const errorLine = document.createElement("div");
+	errorLine.className = "hub-error";
+	errorLine.setAttribute("role", "status");
+	errorLine.setAttribute("aria-live", "polite");
+	panel.append(searchRow, requestsHost, body, errorLine);
+	document.body.appendChild(overlay);
+	for (const element of document.body.children) {
+		if (!(element instanceof HTMLElement) || element === overlay) continue;
+		backgroundState.push([element, element.inert]);
+		element.inert = true;
+	}
+
+	const runInviteAction = async (button, action, successMessage) => {
+		if (button) button.disabled = true;
+		errorLine.textContent = "";
+		try {
+			const result = await action();
+			if (!result?.ok) throw new Error(result?.error || "That did not work.");
+			if (successMessage) showToast(successMessage);
+			await refresh();
+			await renderSettingsTab();
+		} catch (error) {
+			errorLine.textContent = error instanceof Error ? error.message : String(error);
+			if (button) button.disabled = false;
+		}
+	};
+
+	const inviteRow = (host, name, detail, pending = false) => {
+		const row = document.createElement("div");
+		row.className = "company-invite-row";
+		row.appendChild(teamPersonAvatar(name, pending));
+		const who = document.createElement("span");
+		who.className = "who";
+		const label = document.createElement("strong");
+		label.textContent = name;
+		const small = document.createElement("small");
+		small.textContent = detail;
+		who.append(label, small);
+		row.appendChild(who);
+		host.appendChild(row);
+		return row;
+	};
+
+	let requestsOpen = false;
+	let data;
+
+	// There is no people directory to search, so a suggestion can only be the
+	// address the user typed. It appears once that address is plausible —
+	// something after an "@" — and never before, so half-typed names do not
+	// flash a stranger's row.
+	function paintSuggestion(query) {
+		suggestions.textContent = "";
+		const address = query.trim().toLowerCase();
+		const at = address.indexOf("@");
+		if (at < 1 || at === address.length - 1 || address.includes(" ")) {
+			suggestions.hidden = true;
+			return;
+		}
+		suggestions.hidden = false;
+		const known = (data?.friends ?? []).find((friend) => friend.email.toLowerCase() === address);
+		const row = inviteRow(suggestions, address, known ? "" : "Not in your friends yet", !known);
+		if (known?.status === "accepted") {
+			row.querySelector("small").textContent = "Already a friend";
+			return;
+		}
+		if (known) {
+			row.querySelector("small").textContent =
+				known.direction === "incoming" ? "Waiting for your answer" : "Friend request sent";
+			return;
+		}
+		const add = document.createElement("button");
+		add.type = "button";
+		add.textContent = "Add";
+		add.onclick = () =>
+			runInviteAction(add, () => window.qorpera.friendsRequest(address), `Friend request sent to ${address}.`);
+		row.appendChild(add);
+	}
+
+	function paintRequests() {
+		requestsHost.textContent = "";
+		const incoming = (data?.friends ?? []).filter(
+			(friend) => friend.status === "pending" && friend.direction === "incoming",
+		);
+		const outgoing = (data?.friends ?? []).filter(
+			(friend) => friend.status === "pending" && friend.direction === "outgoing",
+		);
+		if (!incoming.length && !outgoing.length) return;
+		const requests = document.createElement("div");
+		requests.className = "company-invite-requests";
+		const toggle = document.createElement("button");
+		toggle.type = "button";
+		toggle.className = "company-invite-requests-toggle";
+		const toggleLabel = document.createElement("span");
+		toggleLabel.textContent = `Friend requests (${incoming.length + outgoing.length})`;
+		const chevron = document.createElement("span");
+		chevron.className = "company-invite-requests-chevron";
+		chevron.textContent = "▾";
+		chevron.setAttribute("aria-hidden", "true");
+		toggle.append(toggleLabel, chevron);
+		const requestList = document.createElement("div");
+		requestList.hidden = !requestsOpen;
+		requests.classList.toggle("open", requestsOpen);
+		toggle.setAttribute("aria-expanded", requestsOpen ? "true" : "false");
+		toggle.onclick = () => {
+			requestsOpen = requestList.hidden;
+			requestList.hidden = !requestsOpen;
+			requests.classList.toggle("open", requestsOpen);
+			toggle.setAttribute("aria-expanded", requestsOpen ? "true" : "false");
+		};
+		requests.append(toggle, requestList);
+		requestsHost.appendChild(requests);
+		for (const friend of incoming) {
+			const row = inviteRow(requestList, friend.displayName, `${friend.email} · Wants to be friends`, true);
+			const accept = document.createElement("button");
+			accept.type = "button";
+			accept.textContent = "Accept";
+			accept.onclick = () =>
+				runInviteAction(
+					accept,
+					() => window.qorpera.friendsRespond(friend.userId, true),
+					`${friend.displayName} is now a friend.`,
+				);
+			const decline = document.createElement("button");
+			decline.type = "button";
+			decline.textContent = "Decline";
+			decline.onclick = () => runInviteAction(decline, () => window.qorpera.friendsRespond(friend.userId, false));
+			row.append(accept, decline);
+		}
+		for (const friend of outgoing) {
+			inviteRow(requestList, friend.displayName, `${friend.email} · Friend request sent`, true);
+		}
+	}
+
+	function paintFriends(query) {
+		body.textContent = "";
+		if (data?.error) {
+			const note = document.createElement("div");
+			note.className = "sess-meta";
+			note.textContent = data.error;
+			body.appendChild(note);
+			return;
+		}
+		const accepted = (data?.friends ?? []).filter((friend) => friend.status === "accepted");
+		// Searching reorders rather than filters: the match rises to the top and
+		// the rest of the roster stays browsable underneath.
+		const needle = query.trim().toLowerCase();
+		const ranked = needle
+			? accepted
+					.map((friend, index) => {
+						const name = friend.displayName.toLowerCase();
+						const address = friend.email.toLowerCase();
+						const rank = name.startsWith(needle) || address.startsWith(needle)
+							? 0
+							: name.includes(needle) || address.includes(needle)
+								? 1
+								: 2;
+						return { friend, rank, index };
+					})
+					.sort((a, b) => a.rank - b.rank || a.index - b.index)
+					.map((entry) => entry.friend)
+			: accepted;
+		for (const friend of ranked) {
+			const onTeam = data.memberEmails.has(friend.email.toLowerCase());
+			const invited = data.invitedEmails.has(friend.email.toLowerCase());
+			const row = inviteRow(body, friend.displayName, friend.email);
+			if (onTeam || invited) {
+				const already = document.createElement("small");
+				already.textContent = onTeam ? "On the team" : "Invited";
+				row.appendChild(already);
+			} else {
+				const friendRole = profileRoleSelect("contributor", actorIsOwner);
+				const invite = document.createElement("button");
+				invite.type = "button";
+				invite.textContent = "Invite";
+				invite.onclick = () =>
+					runInviteAction(
+						invite,
+						() => window.qorpera.inviteProfileMember({ email: friend.email, role: friendRole.value }),
+						cloudProfile
+							? `Invitation email queued for ${friend.displayName}.`
+							: `${friend.displayName} can join when they sign in here.`,
+					);
+				row.append(friendRole, invite);
+			}
+		}
+		if (!accepted.length) {
+			const empty = document.createElement("div");
+			empty.className = "sess-meta";
+			empty.textContent = "No friends yet — search an email address above to add someone.";
+			body.appendChild(empty);
+		}
+	}
+
+	function paint() {
+		const query = search.value;
+		paintSuggestion(query);
+		paintRequests();
+		paintFriends(query);
+	}
+
+	async function refresh() {
+		try {
+			const [info, friendsResult] = await Promise.all([window.qorpera.settingsInfo(), window.qorpera.friendsList()]);
+			if (!overlay.isConnected) return;
+			const team = info.profile?.team;
+			data = friendsResult?.ok
+				? {
+						friends: friendsResult.friends,
+						memberEmails: new Set((team?.members ?? []).map((member) => (member.email ?? "").toLowerCase())),
+						invitedEmails: new Set(
+							(team?.invitations ?? []).map((invitation) => invitation.email.toLowerCase()),
+						),
+					}
+				: { error: friendsResult?.error ?? "Friends are unavailable right now.", friends: [] };
+		} catch (error) {
+			if (!overlay.isConnected) return;
+			data = {
+				error: error instanceof Error ? error.message : "Friends are unavailable right now.",
+				friends: [],
+			};
+		}
+		paint();
+	}
+
+	search.oninput = paint;
+	await refresh();
+	if (overlay.isConnected) search.focus();
 }
 
 async function renderSettingsTab() {
@@ -10451,14 +10241,6 @@ async function renderSettingsTab() {
 	if (settingsTab === "general") {
 		const info = await window.qorpera.settingsInfo();
 		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
-		if (info.profile?.profileType === "cloud") {
-			const cloud = await window.qorpera.cloudCompanyWorkspaces().catch(() => undefined);
-			if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
-			if (cloud?.ok) {
-				info.profile.workspaces = cloud.inbox?.workspaces ?? info.profile.workspaces;
-				info.profile.workspaceInboxHealth = cloud.inboxHealth;
-			}
-		}
 		currentProfileAccess = info.profile?.access ?? info.profile?.team ?? currentProfileAccess;
 		setHeading(content, "General");
 
@@ -10478,10 +10260,8 @@ async function renderSettingsTab() {
 		const companyName = document.createElement("strong");
 		companyName.textContent = info.company?.name || state.name || "Current company";
 		const companyDetail = document.createElement("small");
-		const profileTypeLabel =
-			info.profile?.product?.profile?.placement === "hosted" ? "Hosted profile" : "On this computer";
 		companyDetail.textContent = info.profile
-			? `${profileTypeLabel} · ${PROFILE_ROLE_LABELS[currentProfileAccess.role] ?? "Shared access"}`
+			? (PROFILE_ROLE_LABELS[currentProfileAccess.role] ?? "Shared access")
 			: "Agents, connector recipes, and work for this company";
 		companyCopy.append(companyName, companyDetail);
 		const companyActions = document.createElement("div");
@@ -10507,6 +10287,34 @@ async function renderSettingsTab() {
 			};
 			companyActions.appendChild(useAnonymous);
 		}
+		if (
+			info.profile &&
+			(info.profile.profileType === "local" || info.profile.promotion?.phase === "failed") &&
+			info.profile.access?.capabilities?.manageMembers === true
+		) {
+			const hostCompany = document.createElement("button");
+			hostCompany.type = "button";
+			hostCompany.textContent = info.profile.promotion
+				? info.profile.promotion.phase === "failed"
+					? "Retry hosting"
+					: "Resume hosting"
+				: "Host company";
+			hostCompany.onclick = async () => {
+				hostCompany.disabled = true;
+				try {
+					const result = await window.qorpera.enableCloudProfile();
+					if (!result?.ok) throw new Error(result?.error ?? "Company hosting could not be enabled.");
+					companyId = result.profileKey ?? companyId;
+					currentProfileAccess = result.team ?? currentProfileAccess;
+					showToast("Company hosting is active.");
+					await renderSettingsTab();
+				} catch (error) {
+					hostCompany.disabled = false;
+					showToast(error instanceof Error ? error.message : "Company hosting could not be enabled.");
+				}
+			};
+			companyActions.appendChild(hostCompany);
+		}
 		const switchCompany = document.createElement("button");
 		switchCompany.type = "button";
 		switchCompany.textContent = "Switch company";
@@ -10518,9 +10326,6 @@ async function renderSettingsTab() {
 		companyCard.append(companyCopy, companyActions);
 		companyGroup.appendChild(companyCard);
 		content.appendChild(companyGroup);
-		renderProfileProductControls(content, info);
-		renderProfileCloudControls(content, info);
-		renderCloudCompanyWorkspaces(content, info);
 
 		const accountGroup = document.createElement("section");
 		accountGroup.className = "settings-group general-settings-group";
@@ -10635,15 +10440,11 @@ async function renderSettingsTab() {
 		return;
 	}
 
-	if (settingsTab === "team") {
+	if (settingsTab === "company") {
 		const info = await window.qorpera.settingsInfo();
 		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
 		currentProfileAccess = info.profile?.access ?? info.profile?.team ?? currentProfileAccess;
-		const friends =
-			info.profile?.team?.capabilities?.manageMembers === true ? await window.qorpera.friendsList() : undefined;
-		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
-		setHeading(content, "Team");
-		renderTeamTab(content, info, friends);
+		renderCompanyTab(content, info);
 		return;
 	}
 
