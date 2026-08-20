@@ -1513,4 +1513,58 @@ describe("company app server", () => {
 		const authority = discoverAuthority(root)!;
 		expect(evaluateToolCall(authority, "bash", { command: "rm -rf scratch" }, root).kind).toBe("allow");
 	});
+
+	it("ranks staff activity over a window and rejects an invalid one", async () => {
+		writeFileSync(
+			join(root, "trail", "2026-08-08T09-00-00-000Z_board.jsonl"),
+			`${[
+				JSON.stringify({
+					type: "session",
+					version: 5,
+					id: "board",
+					timestamp: "2026-08-08T09:00:00.000Z",
+					cwd: root,
+					qorpera: { actor: "company-agent", attended: true, staffAgentId: "agent-research" },
+				}),
+				JSON.stringify({
+					type: "custom",
+					id: "input-1",
+					customType: "qorpera_kernel_input",
+					timestamp: "2026-08-08T09:00:00.000Z",
+					data: { frameType: "prompt", message: "look into it", attended: true, origin: "kernel", images: [] },
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "assistant-1",
+					timestamp: "2026-08-08T09:02:00.000Z",
+					message: { role: "assistant", provider: "anthropic", model: "claude", stopReason: "stop" },
+				}),
+			].join("\n")}\n`,
+			"utf-8",
+		);
+
+		const params = new URLSearchParams({
+			sinceDay: "2026-08-08",
+			untilDay: "2026-08-09",
+			timeZone: "UTC",
+		});
+		const response = await fetch(`${base}/api/leaderboard?${params}`);
+		expect(response.status).toBe(200);
+		const activity = (await response.json()) as {
+			staff: Array<{ staffAgentId: string; activeMs: number; requests: number; tasksDone: number }>;
+			totals: { activeMs: number; requests: number; tasksDone: number };
+		};
+		expect(activity.staff).toHaveLength(1);
+		expect(activity.staff[0]).toMatchObject({
+			staffAgentId: "agent-research",
+			activeMs: 120_000,
+			requests: 1,
+			tasksDone: 0,
+		});
+		expect(activity.totals).toEqual({ activeMs: 120_000, requests: 1, tasksDone: 0 });
+
+		const invalid = await fetch(`${base}/api/leaderboard?sinceDay=2026-08-09&untilDay=2026-08-08&timeZone=UTC`);
+		expect(invalid.status).toBe(400);
+		expect((await invalid.json()) as { error: string }).toMatchObject({ error: "invalid day range" });
+	});
 });

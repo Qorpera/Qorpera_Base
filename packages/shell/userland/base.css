@@ -892,6 +892,94 @@ body.chunky-nav .session-section-title { font-size: 11.5px; padding-bottom: 6px;
 .appearance-actions button { width: auto; min-height: 28px; padding: 4px 9px; border: 1px solid var(--border-strong); border-radius: 5px; color: var(--text-muted); font-size: 10.5px; }
 .appearance-color { width: 38px; height: 28px; padding: 2px; }
 
+/* ---- settings leaderboards ------------------------------------------------
+ * One ranked list per metric. Medals are the only decoration, and they are
+ * paper washes rather than metallic gradients so the board stays inside the
+ * shell's flat, quiet register. */
+.leaderboard-controls {
+	display: flex; align-items: center; justify-content: space-between; gap: 14px;
+	max-width: 710px; margin-top: 22px; flex-wrap: wrap;
+}
+.leaderboard-metrics { display: flex; gap: 20px; }
+.leaderboard-metric {
+	position: relative; width: auto; min-height: 0; padding: 0 0 9px;
+	border: 0; border-radius: 0; background: transparent; color: var(--text-soft); font-size: 12.5px;
+}
+.leaderboard-metric:hover:not(:disabled) { border: 0; background: transparent; color: var(--text-muted); }
+.leaderboard-metric.active { color: var(--text); font-weight: 620; }
+.leaderboard-metric.active::after {
+	content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+	border-radius: 2px; background: var(--text);
+}
+.leaderboard-period { width: auto; padding: 5px 10px; font-size: 11.5px; }
+.leaderboard-board { max-width: 710px; margin-top: 16px; }
+
+.leaderboard-podium { display: grid; grid-template-columns: 1fr 1fr 1fr; align-items: end; gap: 12px; }
+.leaderboard-pod {
+	position: relative; display: grid; justify-items: center; gap: 7px; padding: 18px 12px 15px;
+	border: 1px solid var(--border); border-radius: 14px; background: #fdfdfc; text-align: center;
+}
+.leaderboard-pod strong { font-size: 13px; font-weight: 640; }
+.leaderboard-org { color: var(--text-muted); font-size: 10.5px; }
+.leaderboard-big { font-size: 21px; font-weight: 660; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.leaderboard-pod small { color: var(--text-soft); font-size: 10.5px; }
+.leaderboard-place {
+	padding: 2px 10px; border-radius: var(--radius-pill);
+	font-size: 10px; font-weight: 680; letter-spacing: 0.07em; text-transform: uppercase;
+}
+.leaderboard-pod.gold {
+	padding-top: 30px; padding-bottom: 19px;
+	border-color: #e2c684; background: linear-gradient(180deg, #fdf7e8, #faeed0);
+}
+.leaderboard-pod.gold .leaderboard-place { background: #f2dfa8; color: #856512; }
+.leaderboard-pod.gold .leaderboard-big { font-size: 26px; }
+.leaderboard-pod.silver { border-color: #d3d6d9; background: linear-gradient(180deg, #fbfbfc, #edeff0); }
+.leaderboard-pod.silver .leaderboard-place { background: #e1e4e6; color: #61676c; }
+.leaderboard-pod.bronze { border-color: #dfc0a0; background: linear-gradient(180deg, #fdf4ed, #f6e5d4); }
+.leaderboard-pod.bronze .leaderboard-place { background: #eed5bc; color: #8b582b; }
+.leaderboard-pod .leaderboard-avatar { width: 46px; height: 46px; }
+.leaderboard-pod.gold .leaderboard-avatar { width: 58px; height: 58px; margin-top: 14px; }
+.leaderboard-crown {
+	position: absolute; z-index: 2; top: -13px; left: 50%; width: 30px; height: 20px;
+	transform: translateX(-52%) rotate(-9deg);
+}
+
+.leaderboard-list { margin-top: 16px; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
+.leaderboard-row {
+	display: grid; grid-template-columns: 24px 34px minmax(0, 1fr) 118px 84px;
+	align-items: center; gap: 12px; padding: 10px 15px; background: #ffffff;
+}
+.leaderboard-row + .leaderboard-row { border-top: 1px solid var(--border); }
+.leaderboard-rank { color: var(--text-soft); font-size: 11.5px; font-variant-numeric: tabular-nums; text-align: right; }
+.leaderboard-row .leaderboard-avatar { width: 34px; height: 34px; }
+.leaderboard-who { display: grid; gap: 1px; min-width: 0; }
+.leaderboard-who strong { overflow: hidden; font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.leaderboard-who small { overflow: hidden; color: var(--text-soft); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.leaderboard-meter { height: 4px; border-radius: var(--radius-pill); background: #ecebe8; }
+.leaderboard-meter > span {
+	display: block; height: 100%; border-radius: inherit;
+	background: color-mix(in srgb, var(--leaderboard-hue, var(--accent)) 78%, transparent);
+}
+.leaderboard-num { font-size: 12.5px; font-variant-numeric: tabular-nums; text-align: right; }
+.leaderboard-num small { display: block; color: var(--text-soft); font-size: 10px; }
+
+.leaderboard-empty {
+	display: grid; justify-items: center; gap: 6px; padding: 38px 24px; text-align: center;
+	border: 1px dashed var(--border-strong); border-radius: 14px; background: #fcfcfb;
+}
+.leaderboard-empty strong { font-size: 14px; font-weight: 640; }
+.leaderboard-empty span { max-width: 44ch; color: var(--text-muted); font-size: 12px; }
+.leaderboard-footer {
+	display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+	margin-top: 11px; color: var(--text-soft); font-size: 10.5px;
+}
+.leaderboard-footer b { color: var(--text-muted); font-weight: 620; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+	.leaderboard-podium { grid-template-columns: 1fr; }
+	.leaderboard-row { grid-template-columns: 24px 34px minmax(0, 1fr) 84px; }
+	.leaderboard-row .leaderboard-meter { display: none; }
+}
+
 /* ---- settings connections ------------------------------------------------ */
 .connection-chat {
 	display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 13px;

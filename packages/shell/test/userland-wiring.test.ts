@@ -29,4 +29,25 @@ describe("userland wiring", () => {
 			expect(indexSource).toContain(`onclick="openSettings('${tab}')"`);
 		}
 	});
+
+	it("ranks leaderboards by fields the read model actually emits", () => {
+		// Renaming a field in the read model would leave the board silently
+		// rendering zeros, because a missing property sorts and formats fine.
+		const readModel = readFileSync(
+			join(import.meta.dirname, "..", "..", "coding-agent", "src", "core", "leaderboard-summary.ts"),
+			"utf-8",
+		);
+		const staffFields = readModel
+			.slice(readModel.indexOf("interface LeaderboardStaffActivity"))
+			.slice(0, readModel.slice(readModel.indexOf("interface LeaderboardStaffActivity")).indexOf("}"));
+		const metrics = [...rendererSource.matchAll(/\{ id: "(\w+)", label: "[^"]+", format:/g)].map((match) => match[1]);
+		expect(metrics).toEqual(["tasksDone", "requests", "activeMs"]);
+		for (const metric of metrics) {
+			expect(staffFields, `${metric} is ranked but not emitted per staff member`).toContain(`${metric}:`);
+		}
+		// The board reads these off each row and off the company totals.
+		for (const field of ["sessions:", "staffAgentId:"]) expect(staffFields).toContain(field);
+		expect(readModel).toContain("totals: { activeMs: number; tasksDone: number; requests: number }");
+		expect(rendererSource).toContain("/api/leaderboard?");
+	});
 });

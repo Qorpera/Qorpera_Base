@@ -38,6 +38,7 @@ import type { CompanyConnectorManifestRecord } from "./company-connectors.ts";
 import type { CompanyRoom } from "./company-rooms.ts";
 import type { StaffAgent, StaffAgentMessage } from "./company-staff.ts";
 import { readFounderIdentity, signAuthorityPolicy, signGateApproval } from "./founder-identity.ts";
+import { readCompanyLeaderboardActivity } from "./leaderboard-summary.ts";
 import { isPublicSessionGroup, isPublicSessionRuntime, publicSessionRuntimeSnapshot } from "./session-visibility.ts";
 import { FIXED_SHELL_NAVIGATION, type ShellNavigationState } from "./shell-navigation.ts";
 import { readUsageRateCatalog, type UsageRateCatalog } from "./usage-pricing.ts";
@@ -1626,6 +1627,23 @@ async function serveCompanyUsage(
 	}
 }
 
+async function serveCompanyLeaderboard(
+	root: string,
+	window: { sinceDay: string; untilDay: string; timeZone: string },
+	response: ServerResponse,
+): Promise<void> {
+	try {
+		const activity = await readCompanyLeaderboardActivity(root, window);
+		response
+			.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+			.end(JSON.stringify(activity));
+	} catch (error) {
+		response
+			.writeHead(500, { "content-type": "application/json" })
+			.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+	}
+}
+
 export function createCompanyAppServer(options: CompanyAppOptions): Server {
 	const root = canonicalCompanyRoot(options.root);
 	const trailSessions = createTrailSessionReadModel(root, options.sessionRuntime?.isTrailVisible);
@@ -1765,6 +1783,20 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 				return;
 			}
 			void serveCompanyUsage(root, window, usageRateCatalog, response);
+			return;
+		}
+		if (url.pathname === "/api/leaderboard" && request.method === "GET") {
+			const window = {
+				sinceDay: url.searchParams.get("sinceDay") ?? "",
+				untilDay: url.searchParams.get("untilDay") ?? "",
+				timeZone: url.searchParams.get("timeZone") ?? "",
+			};
+			const windowError = companyUsageWindowError(window);
+			if (windowError) {
+				response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: windowError }));
+				return;
+			}
+			void serveCompanyLeaderboard(root, window, response);
 			return;
 		}
 		if (url.pathname.startsWith("/api/inbox/") && request.method === "GET") {

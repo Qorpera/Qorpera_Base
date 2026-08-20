@@ -9389,7 +9389,7 @@ function summarizeArgs(args) {
 
 // ---- company settings -------------------------------------------------------
 
-const SETTINGS_TABS = new Set(["general", "team", "connections", "authority"]);
+const SETTINGS_TABS = new Set(["general", "team", "connections", "authority", "leaderboards"]);
 let settingsTab = "general";
 let connectingConnection = null;
 let disconnectingConnection = null;
@@ -10442,6 +10442,248 @@ function renderTeamTab(content, info, friendsResult) {
 	}
 }
 
+/* ---- leaderboards --------------------------------------------------------
+ * One ranked list of the company's agents over a window, on one of three
+ * metrics. Every number is derived from the durable trail by the backend read
+ * model; the renderer only joins it to staff identity and sorts. */
+const LEADERBOARD_METRICS = [
+	{ id: "tasksDone", label: "Tasks done", format: (value) => String(value) },
+	{ id: "requests", label: "Requests sent", format: (value) => String(value) },
+	{ id: "activeMs", label: "Agent hours", format: (value) => formatWorkDuration(value) },
+];
+const LEADERBOARD_PERIODS = [
+	{ id: "week", label: "Last 7 days", days: 7 },
+	{ id: "month", label: "Last 30 days", days: 30 },
+	{ id: "quarter", label: "Last 90 days", days: 90 },
+];
+let leaderboardMetric = "tasksDone";
+let leaderboardPeriod = "week";
+
+function formatWorkDuration(ms) {
+	const minutes = Math.round(ms / 60_000);
+	if (minutes < 60) return `${minutes}m`;
+	return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+function leaderboardWindow(periodId) {
+	const period = LEADERBOARD_PERIODS.find((entry) => entry.id === periodId) ?? LEADERBOARD_PERIODS[0];
+	const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+	const formatter = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+	const now = Date.now();
+	return {
+		timeZone,
+		sinceDay: formatter.format(new Date(now - (period.days - 1) * 86_400_000)),
+		untilDay: formatter.format(new Date(now)),
+	};
+}
+
+function leaderboardPlaceLabel(rank) {
+	return ["1st", "2nd", "3rd"][rank] ?? `${rank + 1}th`;
+}
+
+function makeLeaderboardCrown() {
+	const crown = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+	crown.setAttribute("class", "leaderboard-crown");
+	crown.setAttribute("viewBox", "0 0 30 20");
+	crown.setAttribute("fill", "none");
+	crown.setAttribute("aria-hidden", "true");
+	const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+	path.setAttribute("d", "M3 17.2 1.7 5.4l7.3 4.7L15 2l6 8.1 7.3-4.7L27 17.2Z");
+	path.setAttribute("fill", "#e8bf5c");
+	path.setAttribute("stroke", "#c2952f");
+	path.setAttribute("stroke-width", "1.3");
+	path.setAttribute("stroke-linejoin", "round");
+	crown.appendChild(path);
+	return crown;
+}
+
+function leaderboardPodiumCard(entry, rank, metric) {
+	const card = document.createElement("div");
+	card.className = `leaderboard-pod ${["gold", "silver", "bronze"][rank]}`;
+	const place = document.createElement("span");
+	place.className = "leaderboard-place";
+	place.textContent = leaderboardPlaceLabel(rank);
+	const avatar = makeStaffAvatar(entry.staff, "idle");
+	avatar.classList.add("leaderboard-avatar");
+	if (rank === 0) avatar.appendChild(makeLeaderboardCrown());
+	const name = document.createElement("strong");
+	name.textContent = staffDisplayName(entry.staff);
+	const role = document.createElement("span");
+	role.className = "leaderboard-org";
+	role.textContent = staffRoleLabel(entry.staff);
+	const value = document.createElement("span");
+	value.className = "leaderboard-big";
+	value.textContent = metric.format(entry[metric.id]);
+	const detail = document.createElement("small");
+	detail.textContent =
+		metric.id === "activeMs"
+			? `${entry.sessions} session${entry.sessions === 1 ? "" : "s"}`
+			: `${formatWorkDuration(entry.activeMs)} worked`;
+	card.append(place, avatar, name, role, value, detail);
+	return card;
+}
+
+function leaderboardRow(entry, rank, metric, leaderValue) {
+	const row = document.createElement("div");
+	row.className = "leaderboard-row";
+	const place = document.createElement("span");
+	place.className = "leaderboard-rank";
+	place.textContent = String(rank + 1);
+	const avatar = makeStaffAvatar(entry.staff, "idle");
+	avatar.classList.add("leaderboard-avatar");
+	const who = document.createElement("span");
+	who.className = "leaderboard-who";
+	const name = document.createElement("strong");
+	name.textContent = staffDisplayName(entry.staff);
+	const role = document.createElement("small");
+	role.textContent = staffRoleLabel(entry.staff);
+	who.append(name, role);
+	const meter = document.createElement("span");
+	meter.className = "leaderboard-meter";
+	meter.style.setProperty("--leaderboard-hue", staffColor(entry.staff));
+	const fill = document.createElement("span");
+	const share = leaderValue > 0 ? Math.max(2, Math.round((entry[metric.id] / leaderValue) * 100)) : 0;
+	fill.style.width = `${share}%`;
+	meter.appendChild(fill);
+	const value = document.createElement("span");
+	value.className = "leaderboard-num";
+	value.textContent = metric.format(entry[metric.id]);
+	const detail = document.createElement("small");
+	detail.textContent =
+		metric.id === "activeMs" ? `${entry.sessions} sessions` : `${formatWorkDuration(entry.activeMs)} worked`;
+	value.appendChild(detail);
+	row.append(place, avatar, who, meter, value);
+	return row;
+}
+
+async function renderLeaderboardsTab(content, stillCurrent) {
+	const heading = document.createElement("header");
+	heading.className = "settings-heading";
+	heading.innerHTML =
+		"<h1>Leaderboards</h1><p>Who did the work in this company. Every number is read from the durable trail — nothing is counted twice, and idle time is never billed as work.</p>";
+	content.appendChild(heading);
+	if (!backendUrl) {
+		content.insertAdjacentHTML(
+			"beforeend",
+			'<div class="sess-meta">Open a company — leaderboards rank the agents working inside one.</div>',
+		);
+		return;
+	}
+
+	const controls = document.createElement("div");
+	controls.className = "leaderboard-controls";
+	const metrics = document.createElement("div");
+	metrics.className = "leaderboard-metrics";
+	for (const metric of LEADERBOARD_METRICS) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = `leaderboard-metric${metric.id === leaderboardMetric ? " active" : ""}`;
+		button.textContent = metric.label;
+		button.onclick = () => {
+			if (leaderboardMetric === metric.id) return;
+			leaderboardMetric = metric.id;
+			void renderSettingsTab();
+		};
+		metrics.appendChild(button);
+	}
+	const period = document.createElement("select");
+	period.className = "leaderboard-period";
+	period.setAttribute("aria-label", "Leaderboard period");
+	for (const option of LEADERBOARD_PERIODS) {
+		const choice = document.createElement("option");
+		choice.value = option.id;
+		choice.textContent = option.label;
+		choice.selected = option.id === leaderboardPeriod;
+		period.appendChild(choice);
+	}
+	period.onchange = () => {
+		leaderboardPeriod = period.value;
+		void renderSettingsTab();
+	};
+	controls.append(metrics, period);
+	content.appendChild(controls);
+
+	const board = document.createElement("div");
+	board.className = "leaderboard-board";
+	board.innerHTML = '<div class="sess-meta">Reading the trail…</div>';
+	content.appendChild(board);
+
+	const window_ = leaderboardWindow(leaderboardPeriod);
+	const query = new URLSearchParams(window_).toString();
+	let activity;
+	try {
+		const response = await fetch(`${backendUrl}/api/leaderboard?${query}`);
+		if (!response.ok) throw new Error(`leaderboard unavailable (${response.status})`);
+		activity = await response.json();
+	} catch (error) {
+		if (!stillCurrent()) return;
+		board.innerHTML = "";
+		const failure = document.createElement("div");
+		failure.className = "sess-meta";
+		failure.textContent = `Leaderboard could not be read: ${error instanceof Error ? error.message : String(error)}`;
+		board.appendChild(failure);
+		return;
+	}
+	if (!stillCurrent()) return;
+
+	const metric = LEADERBOARD_METRICS.find((entry) => entry.id === leaderboardMetric) ?? LEADERBOARD_METRICS[0];
+	const staffById = new Map(activeStaffMembers().map((staff) => [staffId(staff), staff]));
+	const entries = (activity.staff ?? [])
+		.flatMap((row) => {
+			const staff = staffById.get(row.staffAgentId);
+			return staff ? [{ ...row, staff }] : [];
+		})
+		.filter((row) => row[metric.id] > 0)
+		.sort((left, right) => right[metric.id] - left[metric.id] || right.activeMs - left.activeMs);
+
+	board.innerHTML = "";
+	if (entries.length === 0) {
+		const empty = document.createElement("div");
+		empty.className = "leaderboard-empty";
+		empty.innerHTML =
+			"<strong>Nothing to rank yet</strong><span>No agent recorded this kind of work in the selected period. Give someone a task and check back.</span>";
+		board.appendChild(empty);
+		return;
+	}
+
+	const podiumEntries = entries.slice(0, 3);
+	if (podiumEntries.length === 3) {
+		const podium = document.createElement("div");
+		podium.className = "leaderboard-podium";
+		// Silver, gold, bronze: first place stands in the middle, as on a podium.
+		for (const rank of [1, 0, 2]) {
+			podium.appendChild(leaderboardPodiumCard(podiumEntries[rank], rank, metric));
+		}
+		board.appendChild(podium);
+	}
+
+	const listEntries = podiumEntries.length === 3 ? entries.slice(3) : entries;
+	if (listEntries.length > 0) {
+		const list = document.createElement("div");
+		list.className = "leaderboard-list";
+		const leaderValue = entries[0][metric.id];
+		const offset = podiumEntries.length === 3 ? 3 : 0;
+		for (const [index, entry] of listEntries.entries()) {
+			list.appendChild(leaderboardRow(entry, index + offset, metric, leaderValue));
+		}
+		board.appendChild(list);
+	}
+
+	const footer = document.createElement("div");
+	footer.className = "leaderboard-footer";
+	const definition = document.createElement("span");
+	definition.textContent =
+		metric.id === "tasksDone"
+			? "A task counts when an autonomous run finished on its own terms, not when it started."
+			: metric.id === "requests"
+				? "Requests are the messages you sent to each agent while you were present."
+				: "Working time counts observed activity, never an agent sitting idle.";
+	const totals = document.createElement("span");
+	totals.innerHTML = `<b>${activity.totals.tasksDone}</b> tasks · <b>${activity.totals.requests}</b> requests · <b>${formatWorkDuration(activity.totals.activeMs)}</b> of agent time`;
+	footer.append(definition, totals);
+	board.appendChild(footer);
+}
+
 async function renderSettingsTab() {
 	const renderVersion = ++settingsRenderVersion;
 	const renderedTab = settingsTab;
@@ -10765,6 +11007,11 @@ async function renderSettingsTab() {
 		sizing.textContent = "Right-click any department or navigation row to adjust its height by +/-12px.";
 		group.appendChild(sizing);
 		save();
+		return;
+	}
+
+	if (settingsTab === "leaderboards") {
+		await renderLeaderboardsTab(content, () => renderVersion === settingsRenderVersion && renderedTab === settingsTab);
 		return;
 	}
 
