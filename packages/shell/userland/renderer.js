@@ -114,6 +114,11 @@ let staffBootstrapPending = false;
 let railSearchQuery = "";
 let activityStaffId = null;
 let agentSidepanelMode = null;
+let agentSettingsOpen = false;
+let agentSettingsFullscreen = false;
+let agentFigurePickerOpen = false;
+let agentSettingsPending = false;
+let agentSettingsStatus = "";
 let agentRoutineEditor = null; // { staffAgentId, mode: "create"|"edit", id?, draft, dirty, error, status, pending }
 let artifactEditor = null; // { id, expectedUpdatedAt, draft, dirty, error, pending }
 const dismissedConnectionRequestGroups = new Map();
@@ -146,6 +151,20 @@ const STAFF_AVATAR_COLORS = [
 	"#7c7c7a",
 	"#5367e8",
 ];
+const STAFF_CREATURE_FILTERS = Object.freeze({
+	"#171716": "charcoal",
+	"#9c7151": "brown",
+	"#ff365e": "coral",
+	"#ff642e": "orange",
+	"#ffae00": "amber",
+	"#00c878": "emerald",
+	"#00bfb3": "teal",
+	"#1684ff": "cobalt",
+	"#8a4dff": "violet",
+	"#ff2994": "pink",
+	"#7c7c7a": "gray",
+	"#5367e8": "indigo",
+});
 const STAFF_AVATAR_SHAPES = ["soft-square", "round", "wide", "gem", "tilted", "drop"];
 const STAFF_CREATURE_CATALOG = Object.freeze({
 	pebble: Object.freeze({ label: "Pebble", asset: "./staff-creatures/pebble.png" }),
@@ -1645,6 +1664,11 @@ function applyStaffAvatarStyle() {
 }
 
 function staffDescription(staffOrTemplate) {
+	const id = staffId(staffOrTemplate);
+	if (id && companyId) {
+		const saved = localStorage.getItem(`qorpera.staff-description.${companyId}.${id}`)?.trim();
+		if (saved) return saved;
+	}
 	const source = staffId(staffOrTemplate) ? staffTemplate(staffOrTemplate) : staffOrTemplate;
 	return staffOrTemplate?.description ?? source?.description ?? "Works alongside you and keeps this responsibility moving.";
 }
@@ -1767,6 +1791,12 @@ function makeStaffCreature(staffOrTemplate) {
 	const image = document.createElement("img");
 	image.className = "staff-creature-image";
 	image.src = STAFF_CREATURE_CATALOG[creatureId].asset;
+	const filter = STAFF_CREATURE_FILTERS[staffColor(staffOrTemplate)];
+	if (filter) {
+		const filterValue = `url("./staff-creature-colors.svg#${filter}")`;
+		image.style.setProperty("--staff-creature-filter", filterValue);
+		image.style.filter = filterValue;
+	}
 	image.alt = "";
 	image.decoding = "async";
 	image.draggable = false;
@@ -1984,6 +2014,7 @@ async function openStaffCreator() {
 	$("threadHeader").hidden = true;
 	$("staffCreatorTitlebar").hidden = false;
 	if (!$("agentSidepanel").hidden) closeAgentSidepanel(false);
+	if (agentSettingsOpen) closeAgentSettingsPopover(false);
 	renderRosterRail({ animateCreateRow: true });
 	await loadStaffCatalog();
 	showConversationPicker();
@@ -2001,7 +2032,7 @@ function renderStaffAppearancePickers() {
 		button.setAttribute("aria-label", `Use ${STAFF_CREATURE_CATALOG[creature].label} character`);
 		button.title = STAFF_CREATURE_CATALOG[creature].label;
 		button.setAttribute("aria-checked", String(creature === staffCreatorCreature));
-		button.appendChild(makeStaffCreature({ appearance: { creature } }));
+		button.appendChild(makeStaffAvatar({ appearance: { color: staffCreatorColor, creature, shape: "round" } }, "idle"));
 		button.onclick = () => {
 			staffCreatorCreature = creature;
 			paintStaffAvatar($("staffCreatorAvatar"), {
@@ -2203,10 +2234,8 @@ function activateStaffSession(id, sessionFile, result = {}) {
 	resetWorkGroup();
 	show("chat");
 	renderThreadHeader();
-	if (!$("agentSidepanel").hidden && currentStaff()) {
-		if (agentSidepanelMode === "settings") renderAgentSettingsPanel(currentStaff());
-		else renderAgentComputerPanel(currentStaff());
-	}
+	if (!$("agentSidepanel").hidden && currentStaff()) renderAgentComputerPanel(currentStaff());
+	if (agentSettingsOpen) renderAgentSettingsPopover();
 	renderRosterRail();
 	syncScopeChrome();
 	hydrateAgentState(true);
@@ -2431,6 +2460,7 @@ async function openRoom(id) {
 	}
 	if (result?.room) rememberRoom(result.room);
 	if (!$("agentSidepanel").hidden) closeAgentSidepanel(false);
+	if (agentSettingsOpen) closeAgentSettingsPopover(false);
 	currentRoomId = id;
 	currentStaffId = null;
 	currentStaffIntroStatus = null;
@@ -2660,7 +2690,7 @@ function renderThreadHeader() {
 	$("staffIdentityButton").setAttribute("aria-label", room ? "Open group chat settings" : "Open agent settings");
 	$("staffIdentityButton").setAttribute(
 		"aria-expanded",
-		String(room ? !$("roomSettingsModal").hidden : Boolean(staff && agentSidepanelMode === "settings")),
+		String(room ? !$("roomSettingsModal").hidden : Boolean(staff && agentSettingsOpen)),
 	);
 	$("staffSidepanelButton").hidden = !staff || Boolean(room);
 	$("staffSidepanelButton").setAttribute("aria-expanded", String(Boolean(staff && agentSidepanelMode === "computer")));
@@ -2764,8 +2794,7 @@ function closeAgentSidepanel(restoreFocus = true) {
 		titlebar.classList.remove("is-opening", "is-closing");
 		agentSidepanelMotionTimer = null;
 		if (!restoreFocus) return;
-		if (previousMode === "settings") $("staffIdentityButton").focus();
-		else $("staffSidepanelButton").focus();
+		$("staffSidepanelButton").focus();
 	};
 	if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
 		finish();
@@ -3275,134 +3304,375 @@ function renderAgentComputerPanel(staff, force = false) {
 	content.appendChild(routines);
 }
 
-function renderAgentSettingsPanel(staff) {
-	const content = $("agentSidepanelContent");
-	content.replaceChildren();
-	const form = document.createElement("form");
-	form.className = "agent-settings-form";
-	const avatar = makeStaffAvatar(staff, staffStatus(staff));
-	avatar.classList.add("agent-settings-avatar");
-	form.appendChild(avatar);
-	const field = (labelText, value, multiline = false, readOnly = false) => {
-		const label = document.createElement("label");
-		const title = document.createElement("span");
-		title.textContent = labelText;
-		const input = document.createElement(multiline ? "textarea" : "input");
+function agentSettingsSvg(path, className = "") {
+	const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+	svg.setAttribute("viewBox", "0 0 24 24");
+	svg.setAttribute("fill", "none");
+	svg.setAttribute("stroke", "currentColor");
+	svg.setAttribute("stroke-width", "1.8");
+	svg.setAttribute("stroke-linecap", "round");
+	svg.setAttribute("stroke-linejoin", "round");
+	svg.setAttribute("aria-hidden", "true");
+	if (className) svg.setAttribute("class", className);
+	svg.innerHTML = path;
+	return svg;
+}
+
+function setAgentSettingsStatus(message) {
+	agentSettingsStatus = message;
+	const status = $("agentSettingsStatus");
+	if (status) status.textContent = message;
+}
+
+async function saveAgentStaffUpdate(staff, update, fallbackMessage) {
+	if (agentSettingsPending || !canUseProfile("write")) return false;
+	agentSettingsPending = true;
+	setAgentSettingsStatus("Saving…");
+	try {
+		const result = await window.qorpera.staffUpdate(staffId(staff), update);
+		if (result?.ok === false) throw new Error(result.error ?? fallbackMessage);
+		const updated = result?.staff ?? { ...staff, ...update };
+		state.staff = (state.staff ?? []).map((candidate) =>
+			staffId(candidate) === staffId(staff) ? { ...candidate, ...updated } : candidate,
+		);
+		agentSettingsPending = false;
+		agentSettingsStatus = "Saved";
+		renderThreadHeader();
+		renderRosterRail();
+		syncScopeChrome();
+		renderAgentSettingsPopover();
+		return true;
+	} catch (error) {
+		agentSettingsPending = false;
+		agentSettingsStatus = error instanceof Error ? error.message : fallbackMessage;
+		renderAgentSettingsPopover();
+		return false;
+	}
+}
+
+function renderAgentMetadataField(container, className, value, ariaLabel, save) {
+	const field = document.createElement("div");
+	field.className = `agent-metadata-field ${className}`;
+	const display = document.createElement("button");
+	display.type = "button";
+	display.className = "agent-metadata-display";
+	display.disabled = !canUseProfile("write") || agentSettingsPending;
+	display.setAttribute("aria-label", `Edit ${ariaLabel}`);
+	const copy = document.createElement(className === "agent-name" ? "strong" : "span");
+	copy.textContent = value;
+	const edit = agentSettingsSvg('<path d="M4 20h4L19 9a2.1 2.1 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>', "agent-metadata-edit");
+	display.append(copy, edit);
+	display.onclick = () => {
+		const input = document.createElement("input");
+		input.type = "text";
+		input.className = "agent-metadata-input";
 		input.value = value;
-		input.readOnly = readOnly;
-		if (multiline) input.rows = 3;
-		label.append(title, input);
-		return { label, input };
+		input.setAttribute("aria-label", ariaLabel);
+		field.replaceChildren(input);
+		let finished = false;
+		const finish = async (commit) => {
+			if (finished) return;
+			finished = true;
+			const next = input.value.trim();
+			if (!commit || !next || next === value) {
+				if (!next && commit) setAgentSettingsStatus(`${ariaLabel} is required.`);
+				renderAgentSettingsPopover();
+				return;
+			}
+			await save(next);
+		};
+		input.onkeydown = (event) => {
+			if (event.key === "Enter") {
+				event.preventDefault();
+				void finish(true);
+			} else if (event.key === "Escape") {
+				event.preventDefault();
+				void finish(false);
+			}
+		};
+		input.onblur = () => void finish(true);
+		input.focus();
+		input.select();
 	};
-	const nameField = field("Name", staffDisplayName(staff));
-	const titleField = field("Title", staffRoleLabel(staff));
-	const descriptionField = field("Description", staffDescription(staff), true, true);
-	// Per-agent model: each employee keeps their own durable model choice, and
-	// "Company default" clears it back to the shared runtime preference.
-	const modelRow = document.createElement("label");
-	modelRow.className = "agent-settings-model";
-	const modelTitle = document.createElement("span");
-	modelTitle.textContent = "Model";
-	const modelSelect = document.createElement("select");
-	const modelCatalog = (() => {
-		try {
-			const cached = JSON.parse(localStorage.getItem("qorpera.modelCatalog") ?? "null");
-			return Array.isArray(cached?.models) && cached.models.length ? curateModels(cached.models) : [];
-		} catch {
-			return [];
-		}
-	})();
-	const staffModelValue = staff.model ? `${staff.model.provider}::${staff.model.modelId}` : "";
-	const defaultOption = document.createElement("option");
-	defaultOption.value = "";
-	defaultOption.textContent = "Company default";
-	modelSelect.appendChild(defaultOption);
-	for (const model of modelCatalog) {
-		const option = document.createElement("option");
-		option.value = model.value;
-		option.textContent = model.name ?? model.value;
-		modelSelect.appendChild(option);
+	field.appendChild(display);
+	container.appendChild(field);
+}
+
+function renderAgentFigurePicker(container, staff) {
+	const picker = document.createElement("div");
+	picker.id = "agentFigurePicker";
+	picker.className = "agent-figure-picker staff-appearance-picker";
+	picker.hidden = !agentFigurePickerOpen;
+	picker.setAttribute("role", "dialog");
+	picker.setAttribute("aria-label", "Choose agent figure and color");
+	const reset = document.createElement("button");
+	reset.type = "button";
+	reset.className = "agent-figure-reset";
+	reset.textContent = "Reset";
+	reset.disabled = agentSettingsPending || !canUseProfile("write");
+	reset.onclick = () => {
+		const template = staffTemplate(staff);
+		const appearance = template
+			? {
+					color: staffColor(template),
+					shape: staffShape(template),
+					creature: STAFF_CREATURE_BY_TEMPLATE[staffTemplateId(staff)] ?? staffCreatureId(template),
+				}
+			: { color: "#1684ff", shape: "round", creature: "pebble" };
+		void saveAgentStaffUpdate(staff, { appearance }, "The agent figure could not be reset.");
+	};
+	picker.appendChild(reset);
+	const figures = document.createElement("div");
+	figures.className = "agent-figure-grid";
+	figures.setAttribute("role", "radiogroup");
+	figures.setAttribute("aria-label", "Figures");
+	for (const creature of STAFF_CREATURE_IDS) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "staff-creature-choice";
+		button.disabled = agentSettingsPending || !canUseProfile("write");
+		button.setAttribute("role", "radio");
+		button.setAttribute("aria-label", `Use ${STAFF_CREATURE_CATALOG[creature].label} figure`);
+		button.setAttribute("aria-checked", String(creature === staffCreatureId(staff)));
+		button.appendChild(makeStaffAvatar({ appearance: { color: staffColor(staff), creature, shape: "round" } }, "idle"));
+		button.onclick = () => {
+			const appearance = { ...staff.appearance, creature };
+			void saveAgentStaffUpdate(staff, { appearance }, "The agent figure could not be saved.");
+		};
+		figures.appendChild(button);
 	}
-	if (staffModelValue && !modelCatalog.some((model) => model.value === staffModelValue)) {
-		const option = document.createElement("option");
-		option.value = staffModelValue;
-		option.textContent = staff.model.modelId;
-		modelSelect.appendChild(option);
+	picker.appendChild(figures);
+	const divider = document.createElement("div");
+	divider.className = "agent-figure-picker-divider";
+	picker.appendChild(divider);
+	const colors = document.createElement("div");
+	colors.className = "agent-figure-color-grid";
+	colors.setAttribute("role", "radiogroup");
+	colors.setAttribute("aria-label", "Figure colors");
+	for (const color of STAFF_AVATAR_COLORS) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "staff-color-choice";
+		button.disabled = agentSettingsPending || !canUseProfile("write");
+		button.style.setProperty("--choice-color", color);
+		button.setAttribute("role", "radio");
+		button.setAttribute("aria-label", `Use ${color}`);
+		button.setAttribute("aria-checked", String(color === staffColor(staff)));
+		button.onclick = () => {
+			const appearance = { ...staff.appearance, color };
+			void saveAgentStaffUpdate(staff, { appearance }, "The agent color could not be saved.");
+		};
+		colors.appendChild(button);
 	}
-	modelSelect.value = staffModelValue;
-	modelRow.append(modelTitle, modelSelect);
-	form.append(nameField.label, titleField.label, descriptionField.label, modelRow);
-	const saveStatus = document.createElement("div");
-	saveStatus.className = "agent-settings-status";
-	saveStatus.setAttribute("role", "status");
-	saveStatus.setAttribute("aria-live", "polite");
-	form.appendChild(saveStatus);
-	let saving = false;
-	const saveIdentity = async () => {
-		if (saving) return;
-		const displayName = nameField.input.value.trim();
-		const role = titleField.input.value.trim();
-		if (!displayName || !role) {
-			saveStatus.textContent = "Name and title are required.";
-			return;
-		}
-		if (displayName === staffDisplayName(staff) && role === staffRoleLabel(staff)) return;
-		saving = true;
-		nameField.input.disabled = true;
-		titleField.input.disabled = true;
-		saveStatus.textContent = "Saving…";
-		try {
-			const result = await window.qorpera.staffUpdate(staffId(staff), { displayName, role });
-			if (result?.ok === false) throw new Error(result.error ?? "Agent settings could not be saved.");
-			const updated = result?.staff ?? { ...staff, displayName, role };
-			state.staff = (state.staff ?? []).map((candidate) => (staffId(candidate) === staffId(staff) ? { ...candidate, ...updated } : candidate));
-			saveStatus.textContent = "Saved";
-			renderThreadHeader();
-			renderRosterRail();
-			syncScopeChrome();
-		} catch (error) {
-			saveStatus.textContent = error instanceof Error ? error.message : "Agent settings could not be saved.";
-		} finally {
-			saving = false;
-			nameField.input.disabled = false;
-			titleField.input.disabled = false;
-		}
+	picker.appendChild(colors);
+	container.appendChild(picker);
+}
+
+function renderResponsibilityPreview(container) {
+	const card = document.createElement("button");
+	card.type = "button";
+	card.className = "responsibility-preview";
+	card.setAttribute("aria-label", "Open responsibility map");
+	const icon = document.createElement("span");
+	icon.className = "responsibility-preview-icon";
+	icon.appendChild(agentSettingsSvg('<circle cx="12" cy="5" r="2.4"/><circle cx="5" cy="18" r="2.4"/><circle cx="19" cy="18" r="2.4"/><path d="m10.8 7-4.6 8.7M13.2 7l4.6 8.7M7.4 18h9.2"/>'));
+	const copy = document.createElement("span");
+	const title = document.createElement("strong");
+	title.textContent = "Responsibility map";
+	const detail = document.createElement("small");
+	detail.textContent = "Scope, boundaries and handoffs";
+	copy.append(title, detail);
+	const nodes = document.createElement("span");
+	nodes.className = "responsibility-preview-nodes";
+	nodes.innerHTML = '<svg viewBox="0 0 210 58" aria-hidden="true"><path d="M105 15 42 37M105 15v22M105 15l63 22"/><circle class="root" cx="105" cy="13" r="8"/><circle cx="42" cy="39" r="5"/><circle cx="105" cy="39" r="5"/><circle cx="168" cy="39" r="5"/><text x="42" y="56">Build</text><text x="105" y="56">Verify</text><text x="168" y="56">Report</text></svg>';
+	const arrow = agentSettingsSvg('<path d="M5 12h14M14 7l5 5-5 5"/>', "responsibility-preview-arrow");
+	card.append(icon, copy, nodes, arrow);
+	card.onclick = () => {
+		agentSettingsFullscreen = true;
+		agentFigurePickerOpen = false;
+		renderAgentSettingsPopover();
 	};
-	nameField.input.onchange = () => void saveIdentity();
-	titleField.input.onchange = () => void saveIdentity();
-	modelSelect.onchange = async () => {
-		if (saving) {
-			modelSelect.value = staffModelValue;
-			return;
-		}
-		const value = modelSelect.value;
-		const separator = value.indexOf("::");
-		const model = value ? { provider: value.slice(0, separator), modelId: value.slice(separator + 2) } : null;
-		saving = true;
-		modelSelect.disabled = true;
-		saveStatus.textContent = "Saving…";
-		try {
-			const result = await window.qorpera.staffUpdate(staffId(staff), { model });
-			if (result?.ok === false) throw new Error(result.error ?? "Agent model could not be saved.");
-			const updated = result?.staff ?? { ...staff, model: model ?? undefined };
-			state.staff = (state.staff ?? []).map((candidate) => (staffId(candidate) === staffId(staff) ? { ...candidate, ...updated, model: updated.model } : candidate));
-			saveStatus.textContent = "Saved";
-		} catch (error) {
-			modelSelect.value = staffModelValue;
-			saveStatus.textContent = error instanceof Error ? error.message : "Agent model could not be saved.";
-		} finally {
-			saving = false;
-			modelSelect.disabled = false;
-		}
+	container.appendChild(card);
+}
+
+function renderResponsibilityCard(kind, label, titleText, description, chips) {
+	const card = document.createElement("article");
+	card.className = `responsibility-card ${kind}`;
+	const labelElement = document.createElement("small");
+	labelElement.textContent = label;
+	const title = document.createElement("h3");
+	title.textContent = titleText;
+	const copy = document.createElement("p");
+	copy.textContent = description;
+	const chipRow = document.createElement("div");
+	for (const chip of chips) {
+		const item = document.createElement("span");
+		item.textContent = chip;
+		chipRow.appendChild(item);
+	}
+	card.append(labelElement, title, copy, chipRow);
+	return card;
+}
+
+function renderResponsibilityMap(container, staff) {
+	const header = document.createElement("header");
+	header.className = "responsibility-map-header";
+	const eyebrow = document.createElement("span");
+	eyebrow.textContent = "Artifact / Responsibility map";
+	const title = document.createElement("h1");
+	title.textContent = "Responsibility map";
+	const copy = document.createElement("p");
+	copy.textContent = "What this agent owns, where it collaborates, and when it escalates.";
+	const statePill = document.createElement("span");
+	statePill.textContent = "Current definition";
+	header.append(eyebrow, title, copy, statePill);
+	const stage = document.createElement("div");
+	stage.className = "responsibility-map-stage";
+	const connections = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+	connections.setAttribute("viewBox", "0 0 1000 560");
+	connections.setAttribute("preserveAspectRatio", "none");
+	connections.setAttribute("aria-hidden", "true");
+	connections.classList.add("responsibility-map-connections");
+	connections.innerHTML = '<path class="owns" d="M500 142 C500 220 198 192 198 274"/><path class="collaborates" d="M500 142 C500 220 500 192 500 274"/><path class="escalates" d="M500 142 C500 220 802 192 802 274"/>';
+	const center = document.createElement("div");
+	center.className = "responsibility-agent-node";
+	center.appendChild(makeStaffAvatar(staff, "idle"));
+	const centerCopy = document.createElement("span");
+	const centerName = document.createElement("strong");
+	centerName.textContent = staffDisplayName(staff);
+	const centerRole = document.createElement("small");
+	centerRole.textContent = "Agent";
+	centerCopy.append(centerName, centerRole);
+	center.appendChild(centerCopy);
+	stage.append(
+		connections,
+		center,
+		renderResponsibilityCard(
+			"owns",
+			"OWNS",
+			staffRoleLabel(staff),
+			staffDescription(staff),
+			["Code changes", "Testing", "Maintenance"],
+		),
+		renderResponsibilityCard(
+			"collaborates",
+			"COLLABORATES",
+			"Product and design decisions",
+			"Surface tradeoffs and confirm changes that affect user intent.",
+			["Requirements", "UX changes"],
+		),
+		renderResponsibilityCard(
+			"escalates",
+			"ESCALATES",
+			"Scope or functionality conflicts",
+			"Ask before removing intentional behavior or expanding responsibility.",
+			["Scope conflict", "Removal request"],
+		),
+	);
+	const legend = document.createElement("div");
+	legend.className = "responsibility-map-legend";
+	for (const [kind, text] of [["owns", "Owns"], ["collaborates", "Collaborates"], ["escalates", "Escalates"]]) {
+		const item = document.createElement("span");
+		item.className = kind;
+		item.textContent = text;
+		legend.appendChild(item);
+	}
+	container.append(header, stage, legend);
+}
+
+function renderAgentSettingsPopover() {
+	const popover = $("agentSettingsPopover");
+	const content = $("agentSettingsPopoverContent");
+	const staff = currentStaff();
+	if (!agentSettingsOpen || !staff) {
+		popover.hidden = true;
+		popover.classList.remove("is-fullscreen");
+		return;
+	}
+	popover.hidden = false;
+	popover.classList.toggle("is-fullscreen", agentSettingsFullscreen);
+	content.replaceChildren();
+	if (agentSettingsFullscreen) {
+		const identity = document.createElement("div");
+		identity.className = "responsibility-agent-strip";
+		identity.appendChild(makeStaffAvatar(staff, "idle"));
+		const identityCopy = document.createElement("span");
+		const name = document.createElement("strong");
+		name.textContent = staffDisplayName(staff);
+		const role = document.createElement("small");
+		role.textContent = staffRoleLabel(staff);
+		identityCopy.append(name, role);
+		const details = document.createElement("button");
+		details.type = "button";
+		details.textContent = "Agent details";
+		details.onclick = () => {
+			agentSettingsFullscreen = false;
+			renderAgentSettingsPopover();
+		};
+		identity.append(identityCopy, details);
+		content.appendChild(identity);
+		renderResponsibilityMap(content, staff);
+		return;
+	}
+	const identity = document.createElement("div");
+	identity.className = "agent-settings-identity";
+	const figureArea = document.createElement("div");
+	figureArea.className = "agent-figure-area";
+	const figure = document.createElement("button");
+	figure.type = "button";
+	figure.className = "agent-figure-button";
+	figure.disabled = agentSettingsPending || !canUseProfile("write");
+	figure.setAttribute("aria-label", "Edit figure");
+	figure.setAttribute("aria-expanded", String(agentFigurePickerOpen));
+	const outline = makeStaffCreature(staff);
+	outline.classList.add("agent-figure-outline");
+	const avatar = makeStaffAvatar(staff, "idle");
+	avatar.classList.add("agent-settings-figure");
+	const pencil = document.createElement("span");
+	pencil.className = "agent-figure-pencil";
+	pencil.appendChild(agentSettingsSvg('<path d="M4 20h4L19 9a2.1 2.1 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>'));
+	const tooltip = document.createElement("span");
+	tooltip.className = "agent-figure-tooltip";
+	tooltip.textContent = "Edit figure";
+	figure.append(outline, avatar, pencil, tooltip);
+	figure.onclick = () => {
+		agentFigurePickerOpen = !agentFigurePickerOpen;
+		renderAgentSettingsPopover();
 	};
+	figureArea.appendChild(figure);
+	const metadata = document.createElement("div");
+	metadata.className = "agent-settings-metadata";
+	renderAgentMetadataField(metadata, "agent-name", staffDisplayName(staff), "Name", (displayName) =>
+		saveAgentStaffUpdate(staff, { displayName }, "The agent name could not be saved."),
+	);
+	renderAgentMetadataField(metadata, "agent-title", staffRoleLabel(staff), "Title", (role) =>
+		saveAgentStaffUpdate(staff, { role }, "The agent title could not be saved."),
+	);
+	renderAgentMetadataField(metadata, "agent-description", staffDescription(staff), "Description", async (description) => {
+		localStorage.setItem(`qorpera.staff-description.${companyId}.${staffId(staff)}`, description);
+		agentSettingsStatus = "Saved";
+		renderAgentSettingsPopover();
+		return true;
+	});
+	identity.append(figureArea, metadata);
+	content.appendChild(identity);
+	renderAgentFigurePicker(content, staff);
+	const divider = document.createElement("div");
+	divider.className = "agent-settings-divider";
+	content.appendChild(divider);
+	renderResponsibilityPreview(content);
+	const footer = document.createElement("div");
+	footer.className = "agent-settings-footer";
+	const status = document.createElement("span");
+	status.id = "agentSettingsStatus";
+	status.className = "agent-settings-status";
+	status.setAttribute("role", "status");
+	status.setAttribute("aria-live", "polite");
+	status.textContent = agentSettingsStatus;
 	const notice = document.createElement("div");
 	notice.className = "agent-notification-setting";
-	const noticeCopy = document.createElement("span");
 	const noticeTitle = document.createElement("strong");
 	noticeTitle.textContent = "Notifications";
-	const noticeDetail = document.createElement("small");
-	noticeDetail.textContent = "Notify me when this agent finishes or needs input";
-	noticeCopy.append(noticeTitle, noticeDetail);
 	const notificationKey = `qorpera.staff-notifications.${companyId}.${staffId(staff)}`;
 	const notificationsEnabled = localStorage.getItem(notificationKey) !== "off";
 	const toggle = document.createElement("button");
@@ -3418,22 +3688,53 @@ function renderAgentSettingsPanel(staff) {
 		toggle.classList.toggle("active", next);
 		localStorage.setItem(notificationKey, next ? "on" : "off");
 	};
-	notice.append(noticeCopy, toggle);
-	form.appendChild(notice);
+	notice.append(noticeTitle, toggle);
+	footer.append(status, notice);
 	if (currentStaffIntroStatus === "failed") {
 		const retry = document.createElement("button");
 		retry.type = "button";
 		retry.className = "secondary-button agent-intro-retry";
 		retry.textContent = "Retry introduction";
 		retry.onclick = () => void retryStaffIntroduction();
-		form.appendChild(retry);
+		footer.prepend(retry);
 	}
-	content.appendChild(form);
+	content.appendChild(footer);
+}
+
+function openAgentSettingsPopover() {
+	if (!currentStaff()) return;
+	if (agentSettingsOpen) {
+		closeAgentSettingsPopover();
+		return;
+	}
+	if (!$("agentSidepanel").hidden) closeAgentSidepanel(false);
+	agentSettingsOpen = true;
+	agentSettingsFullscreen = false;
+	agentFigurePickerOpen = false;
+	agentSettingsStatus = "";
+	$("staffIdentityButton").setAttribute("aria-expanded", "true");
+	renderAgentSettingsPopover();
+}
+
+function closeAgentSettingsPopover(restoreFocus = true) {
+	if (!agentSettingsOpen) return;
+	agentSettingsOpen = false;
+	agentSettingsFullscreen = false;
+	agentFigurePickerOpen = false;
+	$("agentSettingsPopover").hidden = true;
+	$("agentSettingsPopover").classList.remove("is-fullscreen");
+	$("staffIdentityButton").setAttribute("aria-expanded", "false");
+	if (restoreFocus) $("staffIdentityButton").focus();
 }
 
 function openAgentSidepanel(mode) {
+	if (mode === "settings") {
+		openAgentSettingsPopover();
+		return;
+	}
 	const staff = currentStaff();
 	if (!staff) return;
+	if (agentSettingsOpen) closeAgentSettingsPopover(false);
 	const panel = $("agentSidepanel");
 	const titlebar = $("agentSidepanelTitlebar");
 	if (agentSidepanelMode === mode && !panel.hidden && !panel.classList.contains("is-closing")) {
@@ -3451,11 +3752,10 @@ function openAgentSidepanel(mode) {
 	titlebar.hidden = false;
 	panel.classList.remove("is-closing");
 	titlebar.classList.remove("is-closing");
-	$("agentSidepanelTitle").textContent = mode === "settings" ? "Settings" : staffDisplayName(staff);
-	$("staffIdentityButton").setAttribute("aria-expanded", String(mode === "settings"));
+	$("agentSidepanelTitle").textContent = staffDisplayName(staff);
+	$("staffIdentityButton").setAttribute("aria-expanded", "false");
 	$("staffSidepanelButton").setAttribute("aria-expanded", String(mode === "computer"));
-	if (mode === "settings") renderAgentSettingsPanel(staff);
-	else renderAgentComputerPanel(staff);
+	renderAgentComputerPanel(staff);
 	if (!opening || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 	panel.classList.add("is-opening");
 	titlebar.classList.add("is-opening");
@@ -4596,6 +4896,7 @@ async function refreshState() {
 			}
 			if (currentStaffId && !activeStaffMembers().some((staff) => staffId(staff) === currentStaffId)) {
 				if (!$("agentSidepanel").hidden) closeAgentSidepanel(false);
+				if (agentSettingsOpen) closeAgentSettingsPopover(false);
 				currentStaffId = null;
 				currentStaffIntroStatus = null;
 				currentSession = null;
@@ -4608,10 +4909,8 @@ async function refreshState() {
 			renderCompanyRow();
 			if (currentView === "roster") renderStaffHome();
 			if (currentView === "chat") syncConnectionRequestCards();
-			if (!$("agentSidepanel").hidden && currentStaff()) {
-				if (agentSidepanelMode === "settings") renderAgentSettingsPanel(currentStaff());
-				else renderAgentComputerPanel(currentStaff());
-			}
+			if (!$("agentSidepanel").hidden && currentStaff()) renderAgentComputerPanel(currentStaff());
+			if (agentSettingsOpen) renderAgentSettingsPopover();
 			const staffRoutinesOpen = currentNodeId === `staff-routines:${currentStaffId}`;
 			const staffArtifactOpen = artifactByNodeId(currentNodeId);
 			if (currentNodeId && !navigationNode(currentNodeId) && !staffRoutinesOpen && !staffArtifactOpen) {
@@ -6772,7 +7071,7 @@ function setupCompanyNavigation() {
 	$("companySwitcherButton").onclick = () => void openCompanySwitcher();
 	$("staffIdentityButton").onclick = () => {
 		if (currentRoom()) openRoomSettings($("staffIdentityButton"));
-		else openAgentSidepanel("settings");
+		else openAgentSettingsPopover();
 	};
 	$("staffSidepanelButton").onclick = () => openAgentSidepanel("computer");
 	$("agentSidepanelBack").onclick = handleAgentSidepanelBack;
@@ -6833,7 +7132,7 @@ function setupCompanyNavigation() {
 		closeStaffContext();
 		if (!id) return;
 		await openStaff(id);
-		if (currentStaffId === id) openAgentSidepanel("settings");
+		if (currentStaffId === id) openAgentSettingsPopover();
 	};
 	$("staffContextCopy").onclick = async () => {
 		const id = staffContextTarget ? staffId(staffContextTarget) : null;
@@ -6997,6 +7296,23 @@ function setupCompanyNavigation() {
 	};
 
 	document.addEventListener("pointerdown", (event) => {
+		if (agentFigurePickerOpen) {
+			const figurePicker = $("agentFigurePicker");
+			const figureTrigger = $("agentSettingsPopover").querySelector(".agent-figure-button");
+			if (!figurePicker.contains(event.target) && !figureTrigger?.contains(event.target)) {
+				agentFigurePickerOpen = false;
+				figurePicker.hidden = true;
+				figureTrigger?.setAttribute("aria-expanded", "false");
+			}
+		}
+		if (
+			agentSettingsOpen &&
+			!agentSettingsFullscreen &&
+			!$("agentSettingsPopover").contains(event.target) &&
+			!$("staffIdentityButton").contains(event.target)
+		) {
+			closeAgentSettingsPopover(false);
+		}
 		if (
 			!$("conversationRecipientMenu").hidden &&
 			!$("conversationRecipientMenu").contains(event.target) &&
@@ -7029,6 +7345,15 @@ function setupCompanyNavigation() {
 			$("companySwitcherButton").setAttribute("aria-expanded", "false");
 			$("companySwitcherButton").focus();
 		}
+		else if (agentFigurePickerOpen) {
+			agentFigurePickerOpen = false;
+			renderAgentSettingsPopover();
+		}
+		else if (agentSettingsOpen && agentSettingsFullscreen) {
+			agentSettingsFullscreen = false;
+			renderAgentSettingsPopover();
+		}
+		else if (agentSettingsOpen) closeAgentSettingsPopover();
 		else if (!$("agentSidepanel").hidden) closeAgentSidepanel();
 	});
 }
@@ -7059,6 +7384,7 @@ function cacheCurrentPanelPage() {
 
 function show(view) {
 	currentView = view;
+	if (view === "roster" && agentSettingsOpen) closeAgentSettingsPopover(false);
 	const staffHeaderVisible = view === "chat" || Boolean(currentStaffId && view === "panel");
 	const staffCreatorOpen = !$("staffModal").hidden;
 	$("threadHeader").hidden = staffCreatorOpen || !staffHeaderVisible;
