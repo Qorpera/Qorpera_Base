@@ -9879,7 +9879,7 @@ function renderCompanyTab(content, info) {
 
 	if (canManage) {
 		// The invite affordance is the last row of the list: a dashed "+" row
-		// that opens the invite popup (friends list plus invite-by-email).
+		// that opens the friends list and can start a friend request by email.
 		const launch = document.createElement("button");
 		launch.type = "button";
 		launch.className = "company-invite-launch";
@@ -9892,7 +9892,7 @@ function renderCompanyTab(content, info) {
 		const launchTitle = document.createElement("strong");
 		launchTitle.textContent = "Invite a friend";
 		const launchHint = document.createElement("small");
-		launchHint.textContent = "Pick from your friends or invite by email";
+		launchHint.textContent = "Pick from your friends or add someone first";
 		launchCopy.append(launchTitle, launchHint);
 		launch.append(plus, launchCopy);
 		launch.onclick = () => openCompanyInvitePopup({ cloudProfile, actorIsOwner });
@@ -9911,10 +9911,18 @@ function renderCompanyTab(content, info) {
 		strip.appendChild(stripLabel);
 		const staffRow = document.createElement("div");
 		staffRow.className = "company-staff-row";
+		staffRow.setAttribute("role", "list");
 		for (const member of staff) {
+			const name = staffDisplayName(member);
+			const role = staffRoleLabel(member);
+			const item = document.createElement("div");
+			item.className = "company-staff-member";
+			item.setAttribute("role", "listitem");
+			item.setAttribute("aria-label", `${name}, ${role}`);
 			const avatar = makeStaffAvatar(member, staffStatus(member));
-			avatar.title = `${staffDisplayName(member)} · ${staffRoleLabel(member)}`;
-			staffRow.appendChild(avatar);
+			avatar.title = `${name} · ${role}`;
+			item.appendChild(avatar);
+			staffRow.appendChild(item);
 		}
 		strip.appendChild(staffRow);
 		content.appendChild(strip);
@@ -9929,6 +9937,7 @@ function renderCompanyTab(content, info) {
 // invite-a-stranger path. It refetches on open and after every action, and
 // re-renders the settings tab underneath so the people list stays current.
 async function openCompanyInvitePopup({ cloudProfile, actorIsOwner }) {
+	const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 	const overlay = document.createElement("div");
 	overlay.className = "company-invite-overlay";
 	const panel = document.createElement("section");
@@ -9937,15 +9946,38 @@ async function openCompanyInvitePopup({ cloudProfile, actorIsOwner }) {
 	panel.setAttribute("aria-modal", "true");
 	panel.setAttribute("aria-label", "Invite a friend");
 	overlay.appendChild(panel);
-	const onKey = (event) => {
-		if (event.key === "Escape") {
-			event.stopPropagation();
-			close();
-		}
-	};
+	const backgroundState = [];
+	let closed = false;
 	const close = () => {
+		if (closed) return;
+		closed = true;
 		overlay.remove();
 		document.removeEventListener("keydown", onKey, true);
+		for (const [element, inert] of backgroundState) element.inert = inert;
+		const returnTarget = opener?.isConnected ? opener : document.querySelector(".company-invite-launch");
+		returnTarget?.focus();
+	};
+	const onKey = (event) => {
+		if (event.key === "Escape") {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			close();
+			return;
+		}
+		if (event.key !== "Tab") return;
+		const controls = [...panel.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')].filter(
+			(element) => element instanceof HTMLElement && !element.hidden && element.offsetParent !== null,
+		);
+		if (!controls.length) return;
+		const first = controls[0];
+		const last = controls[controls.length - 1];
+		if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+			event.preventDefault();
+			last.focus();
+		} else if (!event.shiftKey && (document.activeElement === last || !panel.contains(document.activeElement))) {
+			event.preventDefault();
+			first.focus();
+		}
 	};
 	overlay.onpointerdown = (event) => {
 		if (event.target === overlay) close();
@@ -9977,6 +10009,11 @@ async function openCompanyInvitePopup({ cloudProfile, actorIsOwner }) {
 	errorLine.setAttribute("aria-live", "polite");
 	panel.append(searchRow, requestsHost, body, errorLine);
 	document.body.appendChild(overlay);
+	for (const element of document.body.children) {
+		if (!(element instanceof HTMLElement) || element === overlay) continue;
+		backgroundState.push([element, element.inert]);
+		element.inert = true;
+	}
 
 	const runInviteAction = async (button, action, successMessage) => {
 		if (button) button.disabled = true;
@@ -10167,22 +10204,32 @@ async function openCompanyInvitePopup({ cloudProfile, actorIsOwner }) {
 	}
 
 	async function refresh() {
-		const [info, friendsResult] = await Promise.all([window.qorpera.settingsInfo(), window.qorpera.friendsList()]);
-		if (!overlay.isConnected) return;
-		const team = info.profile?.team;
-		data = friendsResult?.ok
-			? {
-					friends: friendsResult.friends,
-					memberEmails: new Set((team?.members ?? []).map((member) => (member.email ?? "").toLowerCase())),
-					invitedEmails: new Set((team?.invitations ?? []).map((invitation) => invitation.email.toLowerCase())),
-				}
-			: { error: friendsResult?.error ?? "Friends are unavailable right now.", friends: [] };
+		try {
+			const [info, friendsResult] = await Promise.all([window.qorpera.settingsInfo(), window.qorpera.friendsList()]);
+			if (!overlay.isConnected) return;
+			const team = info.profile?.team;
+			data = friendsResult?.ok
+				? {
+						friends: friendsResult.friends,
+						memberEmails: new Set((team?.members ?? []).map((member) => (member.email ?? "").toLowerCase())),
+						invitedEmails: new Set(
+							(team?.invitations ?? []).map((invitation) => invitation.email.toLowerCase()),
+						),
+					}
+				: { error: friendsResult?.error ?? "Friends are unavailable right now.", friends: [] };
+		} catch (error) {
+			if (!overlay.isConnected) return;
+			data = {
+				error: error instanceof Error ? error.message : "Friends are unavailable right now.",
+				friends: [],
+			};
+		}
 		paint();
 	}
 
 	search.oninput = paint;
 	await refresh();
-	search.focus();
+	if (overlay.isConnected) search.focus();
 }
 
 async function renderSettingsTab() {
@@ -10239,6 +10286,34 @@ async function renderSettingsTab() {
 				else useAnonymous.disabled = false;
 			};
 			companyActions.appendChild(useAnonymous);
+		}
+		if (
+			info.profile &&
+			(info.profile.profileType === "local" || info.profile.promotion?.phase === "failed") &&
+			info.profile.access?.capabilities?.manageMembers === true
+		) {
+			const hostCompany = document.createElement("button");
+			hostCompany.type = "button";
+			hostCompany.textContent = info.profile.promotion
+				? info.profile.promotion.phase === "failed"
+					? "Retry hosting"
+					: "Resume hosting"
+				: "Host company";
+			hostCompany.onclick = async () => {
+				hostCompany.disabled = true;
+				try {
+					const result = await window.qorpera.enableCloudProfile();
+					if (!result?.ok) throw new Error(result?.error ?? "Company hosting could not be enabled.");
+					companyId = result.profileKey ?? companyId;
+					currentProfileAccess = result.team ?? currentProfileAccess;
+					showToast("Company hosting is active.");
+					await renderSettingsTab();
+				} catch (error) {
+					hostCompany.disabled = false;
+					showToast(error instanceof Error ? error.message : "Company hosting could not be enabled.");
+				}
+			};
+			companyActions.appendChild(hostCompany);
 		}
 		const switchCompany = document.createElement("button");
 		switchCompany.type = "button";

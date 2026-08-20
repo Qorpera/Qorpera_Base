@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const userland = join(import.meta.dirname, "..", "userland");
 const rendererSource = readFileSync(join(userland, "renderer.js"), "utf-8");
 const indexSource = readFileSync(join(userland, "index.html"), "utf-8");
+const baseSource = readFileSync(join(userland, "base.css"), "utf-8");
 
 describe("userland wiring", () => {
 	it("only calls toast helpers that renderer.js actually defines", () => {
@@ -34,5 +35,15 @@ describe("userland wiring", () => {
 		for (const label of ["Product and execution", "Profile placement", "Company workspaces"]) {
 			expect(rendererSource).not.toContain(label);
 		}
+	});
+
+	it("keeps the remaining company controls actionable and accessible", () => {
+		expect(rendererSource).toContain("window.qorpera.enableCloudProfile()");
+		expect(rendererSource).toContain('event.key !== "Tab"');
+		expect(rendererSource).toMatch(/item\.setAttribute\("aria-label", `\$\{name\}, \$\{role\}`\)/);
+		expect(rendererSource).toContain("Pick from your friends or add someone first");
+		expect(baseSource).not.toMatch(/\.company-person-actions \{[^}]*visibility:\s*hidden/s);
+		expect(baseSource).toMatch(/\.company-person-actions \{[^}]*opacity:\s*0/s);
+		expect(baseSource).toContain(".company-person-row:focus-within .company-person-actions");
 	});
 });

@@ -3209,9 +3209,9 @@ html[data-staff-avatar-style="simple"] #titlebar .thread-header .room-avatar .st
 	color: #1d1d1b; font-size: 13.5px; font-weight: 650;
 }
 .company-person-copy small { color: #92928e; font-size: 12px; }
-.company-person-actions { display: flex; align-items: center; gap: 6px; visibility: hidden; }
+.company-person-actions { display: flex; align-items: center; gap: 6px; opacity: 0; }
 .company-person-row:hover .company-person-actions,
-.company-person-row:focus-within .company-person-actions { visibility: visible; }
+.company-person-row:focus-within .company-person-actions { opacity: 1; }
 .company-person-actions select,
 .company-person-actions button {
 	width: auto; min-height: 28px; padding: 0 10px; border: 1px solid #d7d7d3; border-radius: 8px;
@@ -3233,6 +3233,7 @@ html[data-staff-avatar-style="simple"] #titlebar .thread-header .room-avatar .st
 	font-size: 10px; font-weight: 650; letter-spacing: .14em; text-transform: uppercase;
 }
 .company-staff-row { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; }
+.company-staff-member { display: inline-flex; }
 .company-staff-row .staff-avatar { width: 46px; height: 46px; }
 
 /* The invite popup: friends list with a one-click invite on the right. */
