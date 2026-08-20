@@ -15,6 +15,11 @@ describe("kernel intent capabilities", () => {
 			attended: true,
 			issuedAt,
 			expiresAt: new Date(Date.now() + 30_000).toISOString(),
+			execution: {
+				kind: "turn" as const,
+				id: "10000000-0000-4000-8000-000000000001",
+				claimantId: "10000000-0000-4000-8000-000000000002",
+			},
 			budget: { maxCalls: 4, maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostUsd: 1 },
 		};
 		const kernelIntent = {

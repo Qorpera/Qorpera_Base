@@ -6,7 +6,7 @@
  * acknowledge it before the tool can report success.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { KernelIntentCapability } from "@qorpera/pi-protocol";
 import { isModelBrokerInstalled } from "./model-broker-client.ts";
 
@@ -39,13 +39,20 @@ const MAX_OPERATION_BYTES = 512 * 1024;
 const pending = new Map<string, PendingOperation>();
 let writeFrame: ((frame: object) => void) | undefined;
 let activeIntent: KernelIntentCapability | undefined;
+let activeOperationOrdinal = 0;
 
 export function setCompanyOperationBrokerWriter(writer: ((frame: object) => void) | undefined): void {
 	writeFrame = writer;
 }
 
 export function setCompanyOperationBrokerIntent(intent: KernelIntentCapability | undefined): void {
+	if (intent?.nonce !== activeIntent?.nonce) activeOperationOrdinal = 0;
 	activeIntent = intent;
+}
+
+function deterministicOperationId(executionId: string, ordinal: number): string {
+	const hex = createHash("sha256").update(`qorpera-operation\0${executionId}\0${ordinal}`).digest("hex").slice(0, 32);
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
 }
 
 export function brokeredCompanyOperation(
@@ -62,7 +69,9 @@ export function brokeredCompanyOperation(
 			reject(new Error("company operation has no verified causal intent for this turn"));
 			return;
 		}
-		const requestId = randomUUID();
+		const requestId = activeIntent?.execution
+			? deterministicOperationId(activeIntent.execution.id, ++activeOperationOrdinal)
+			: randomUUID();
 		const frame = {
 			type: "qorpera_company_operation_request",
 			requestId,

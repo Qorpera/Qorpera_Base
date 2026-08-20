@@ -12,6 +12,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { cloudCompanyPathBelongsToLogicalTree } from "./cloud-company-snapshot.ts";
 
 export interface CompanyGitBaseline {
 	dirtyPaths: Map<string, string>;
@@ -239,10 +240,23 @@ export function snapshotFounderGitState(root: string, actor = "agent"): void {
 			`could not inspect founder working state: ${status.stderr || status.stdout || "git status failed"}`,
 		);
 	}
-	if (!status.stdout.trim()) return;
+	const ignored = git(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"]);
+	if (ignored.status !== 0 || typeof ignored.stdout !== "string") {
+		throw new Error("could not inspect ignored Company File paths");
+	}
+	const ignoredCompanyPaths = ignored.stdout.split("\0").filter(Boolean).filter(cloudCompanyPathBelongsToLogicalTree);
+	if (!status.stdout.trim() && ignoredCompanyPaths.length === 0) return;
 	const added = git(root, ["add", "--all", "--", ...CHECKPOINT_PATHS]);
 	if (added.status !== 0) {
 		throw new Error(`could not stage founder working state: ${added.stderr || added.stdout || "git add failed"}`);
+	}
+	if (ignoredCompanyPaths.length > 0) {
+		const forced = git(root, ["add", "--force", "--", ...ignoredCompanyPaths]);
+		if (forced.status !== 0) {
+			throw new Error(
+				`could not stage ignored Company File state: ${forced.stderr || forced.stdout || "git add failed"}`,
+			);
+		}
 	}
 	const checkpointable = git(root, ["diff", "--cached", "--quiet"]);
 	if (checkpointable.status === 0) return;

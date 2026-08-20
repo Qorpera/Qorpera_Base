@@ -8,6 +8,7 @@ const rendererSource = readFileSync(join(userland, "renderer.js"), "utf-8");
 const indexSource = readFileSync(join(userland, "index.html"), "utf-8");
 const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
 const preloadSource = readFileSync(join(shell, "src", "preload.cjs"), "utf-8");
+const mainSource = readFileSync(join(shell, "src", "main.ts"), "utf-8");
 
 describe("userland wiring", () => {
 	it("only calls toast helpers that renderer.js actually defines", () => {
@@ -40,7 +41,14 @@ describe("userland wiring", () => {
 	});
 
 	it("keeps the remaining company controls actionable and accessible", () => {
-		expect(rendererSource).toContain("window.qorpera.enableCloudProfile()");
+		expect(rendererSource).toContain("window.qorpera.openCompanyFile()");
+		expect(rendererSource).toContain('window.qorpera.resolveCompanyFileConflict("local")');
+		expect(rendererSource).toContain('window.qorpera.resolveCompanyFileConflict("cloud")');
+		expect(preloadSource).toContain('ipcRenderer.invoke("company-file:open-conflict-remote")');
+		expect(rendererSource).not.toContain("window.qorpera.enableCloudProfile()");
+		expect(indexSource).not.toContain("data-profile-placement");
+		expect(rendererSource).toContain("companyCreatorCreationId");
+		expect(indexSource).toContain("The first 50 GB is included");
 		expect(rendererSource).toContain('event.key !== "Tab"');
 		expect(rendererSource).toMatch(/item\.setAttribute\("aria-label", `\$\{name\}, \$\{role\}`\)/);
 		expect(rendererSource).toContain("Pick from your friends or add someone first");
@@ -55,5 +63,60 @@ describe("userland wiring", () => {
 		expect(baseCssSource).toMatch(
 			/html\[data-platform="darwin"\] #titlebar \.thread-header \{ padding-right: 10px; \}/,
 		);
+	});
+
+	it("renders durable queued prompts and remote staff activity", () => {
+		expect(preloadSource).toContain('ipcRenderer.on("staff-session-queue"');
+		expect(rendererSource).toContain("pendingSessionQueueByStaff");
+		expect(rendererSource).toContain(
+			'input.status === "processing" ? "Processing" : input.status === "failed" ? "Needs review" : "Queued"',
+		);
+		expect(rendererSource).toContain("result.queued");
+		expect(rendererSource).toContain("displayText: text");
+		expect(rendererSource).toContain("const pendingPromptSendFallbacks = new Map()");
+		expect(rendererSource).toContain("return { ...existing, storageKey }");
+		expect(mainSource).toContain("body?.displayText ?? body?.text");
+		expect(mainSource).toContain("text: reviewed.displayText ?? reviewed.message");
+		expect(baseCssSource).toContain(".msg.user.session-queued");
+		expect(preloadSource).toContain('ipcRenderer.on("presence-activity"');
+		expect(rendererSource).toContain("remoteStaffActivity");
+		expect(rendererSource).toContain("remoteStaffDoingLine");
+		expect(rendererSource).toContain("presencePeers.map((member) => member.clientId)");
+		expect(mainSource).not.toContain("continuing solo");
+		expect(mainSource).toContain("qorpera.staff-intro-retry/v1");
+		expect(mainSource).toContain("await checkpointCloudCompanyFile({");
+	});
+
+	it("finalizes clean cloud wakes without re-entering their owning transition", () => {
+		const handlerStart = mainSource.indexOf("const wakeSessionId = childBindings.get(child)?.sessionId;");
+		const handlerEnd = mainSource.indexOf("if (!(await waitForChildReadiness(child)))", handlerStart);
+		expect(handlerStart).toBeGreaterThan(-1);
+		expect(handlerEnd).toBeGreaterThan(handlerStart);
+		const closeHandler = mainSource.slice(handlerStart, handlerEnd);
+		expect(closeHandler).toMatch(
+			/const cloudCompletion = await enqueueRuntimeTransition[\s\S]+?\n\s*}\);\n\s*if \(!cloudCompletion\) return;[\s\S]+?await completeActiveCloudWake/,
+		);
+		expect(mainSource).toContain("liveWake?.exitCode === null");
+		expect(mainSource).toContain("liveWake.signalCode === null");
+		expect(mainSource).toContain(
+			"return completeActiveCloudWake(runtime, arbiter, wakeKey, clientSessionId, attempt + 1);",
+		);
+	});
+
+	it("binds immediate cloud claims and never publishes a live agent tree mid-turn", () => {
+		const immediateStart = mainSource.indexOf("let sendClaim: Awaited<ReturnType<CloudSessionArbiter");
+		const immediateEnd = mainSource.indexOf("if (cloudStaffConversation && frame.type", immediateStart);
+		expect(immediateStart).toBeGreaterThan(-1);
+		expect(immediateEnd).toBeGreaterThan(immediateStart);
+		const immediate = mainSource.slice(immediateStart, immediateEnd);
+		const binding = immediate.indexOf("bindChildDurableExecution(reviewedChild");
+		const dispatch = immediate.indexOf("sendKernelPrompt(reviewedChild");
+		expect(binding).toBeGreaterThan(-1);
+		expect(dispatch).toBeGreaterThan(binding);
+		expect(immediate).toContain("abandonCloudSessionClaim(sendArbiter, reviewedChild, sendClaim)");
+		expect(mainSource).not.toContain("withBrokerOutputCheckpoint(");
+		expect(mainSource).not.toContain("childBrokerOutputCheckpoints");
+		expect(mainSource).toContain("Cloud company publication is waiting for the active agent run to finish");
+		expect(mainSource).toContain("requireDurableExecution,");
 	});
 });

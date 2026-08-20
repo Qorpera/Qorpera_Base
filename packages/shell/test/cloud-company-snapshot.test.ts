@@ -98,7 +98,7 @@ describe("cloud company snapshots", () => {
 		await expect(readFile(join(target, ".git", "HEAD"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
-	it("publishes agent work product while omitting instructions and the operational inbox", async () => {
+	it("publishes agent memory and operational handoffs while omitting generated instructions", async () => {
 		const root = await companyFixture();
 		const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 		await mkdir(join(root, "agents", agentId, "artifacts"), { recursive: true });
@@ -119,7 +119,7 @@ describe("cloud company snapshots", () => {
 		const store = new CloudContentAddressedStore(transport);
 
 		const reference = await captureCloudCompanyTree(root, profileId, store);
-		expect(reference.contractVersion).toBe(2);
+		expect(reference.contractVersion).toBe(3);
 		const target = join(await temporaryDirectory(), "materialized");
 		await materializeCloudCompanyTree(target, profileId, reference, store);
 		await expect(readFile(join(target, "agents", agentId, "artifacts", "runway.json"), "utf-8")).resolves.toBe(
@@ -133,16 +133,10 @@ describe("cloud company snapshots", () => {
 		await expect(readFile(join(target, "agents", agentId, "instructions.md"), "utf-8")).rejects.toMatchObject({
 			code: "ENOENT",
 		});
-		await expect(readFile(join(target, "agents", agentId, "memory.md"), "utf-8")).rejects.toMatchObject({
-			code: "ENOENT",
-		});
-		await expect(readFile(join(target, ".qorpera", "agent-messages.json"), "utf-8")).rejects.toMatchObject({
-			code: "ENOENT",
-		});
-		await expect(readFile(join(target, "inbox", "messages", "msg-1.json"), "utf-8")).rejects.toMatchObject({
-			code: "ENOENT",
-		});
-		await expect(readFile(join(target, "inbox", "gate-1.md"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(readFile(join(target, "agents", agentId, "memory.md"), "utf-8")).resolves.toBe("# Memory\n");
+		await expect(readFile(join(target, ".qorpera", "agent-messages.json"), "utf-8")).resolves.toBe("{}\n");
+		await expect(readFile(join(target, "inbox", "messages", "msg-1.json"), "utf-8")).resolves.toBe("{}\n");
+		await expect(readFile(join(target, "inbox", "gate-1.md"), "utf-8")).resolves.toBe("authority gate\n");
 	});
 
 	it("rejects aliased company files instead of silently changing their semantics", async () => {

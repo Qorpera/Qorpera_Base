@@ -26,6 +26,8 @@ let state = {
 	runtime: { revision: 0, generatedAt: "", sessions: [] },
 };
 const sessionCache = {}; // session file -> rendered messages HTML
+const pendingSessionQueueByStaff = new Map();
+const remoteStaffActivity = new Map(); // staff id -> Map(client id -> { activity, name, until })
 
 async function authorizedPost(path, body) {
 	const response = await window.qorpera.authorizedBackendPost(path, body);
@@ -120,9 +122,9 @@ const dismissedConnectionRequestGroups = new Map();
 const autoStartedConnectionRequestIds = new Set();
 let agentSidepanelMotionTimer = null;
 let companyCreatorIcon = "anonymous";
+let companyCreatorCreationId = crypto.randomUUID();
 let currentCompanyIcon = "anonymous";
 let currentCompanyRoot = "";
-let profileCreatorPlacement = "local";
 let currentProfileAccess = {
 	role: "owner",
 	capabilities: { read: true, write: true, authorize: true, manageMembers: true },
@@ -170,16 +172,6 @@ const STAFF_CREATURE_BY_TEMPLATE = Object.freeze({
 	"costumer-relationist": "bloom",
 	"outreaching-conversationalist": "ribbon",
 });
-const PROFILE_PLACEMENTS = {
-	local: {
-		label: "On this computer",
-		description: "Profile identity, history, and team access stay on this computer.",
-	},
-	hosted: {
-		label: "Hosted for sharing",
-		description: "Profile identity, team access, staff, and attended chats sync across members.",
-	},
-};
 const STAFF_COLOR_TOKENS = {
 	"qorpera-terracotta": "#ff642e",
 	"qorpera-cobalt": "#1684ff",
@@ -450,22 +442,26 @@ async function renderHub() {
 		type.className = "profile-type-label";
 		const role = PROFILE_ROLE_LABELS[company.access?.role ?? company.invitationRole];
 		type.textContent = company.invitationPending
-			? `Invitation · Hosted profile${role ? ` · ${role}` : ""}`
-			: `${company.product?.profile?.placement === "hosted" || company.profileType === "cloud" ? "Hosted profile" : "On this computer"}${company.setupRequired && role ? ` · ${role}` : ""}`;
+			? `Invitation · Cloud company${role ? ` · ${role}` : ""}`
+			: company.migrationRequired
+				? "Moving Company File to the cloud"
+				: `Cloud company${role ? ` · ${role}` : ""}`;
 		card.append(avatar, label, type);
 		if (company.invitationPending || company.setupRequired) {
 			const setup = document.createElement("small");
 			setup.className = "profile-setup-label";
-			setup.textContent = company.invitationPending ? "Accept invitation" : "Set up on this computer";
+			setup.textContent = company.invitationPending ? "Accept invitation" : "Connect Company File";
 			card.appendChild(setup);
 		}
 		card.setAttribute(
 			"aria-label",
 			company.invitationPending
 				? `Accept invitation to ${company.name}`
+				: company.migrationRequired
+					? `Finish moving ${company.name} to the cloud`
 				: company.setupRequired
-					? `Set up ${company.name} on this computer`
-					: `Open ${company.name} profile`,
+						? `Connect ${company.name} Company File`
+						: `Open ${company.name} company`,
 		);
 		card.onclick = async () => {
 			// The click must visibly land: opening provisions the local sandbox,
@@ -476,6 +472,18 @@ async function renderHub() {
 			const spinner = document.createElement("span");
 			spinner.className = "hub-spinner";
 			card.appendChild(spinner);
+			if (company.migrationRequired) {
+				const migrated = await window.qorpera.migrateLocalCompany(company.root);
+				document.body.classList.remove("hub-opening");
+				card.classList.remove("loading");
+				spinner.remove();
+				if (!migrated?.ok) {
+					$("hubError").textContent = migrated?.error ?? company.migrationError ?? "Cloud migration failed.";
+					return;
+				}
+				await renderHub();
+				return;
+			}
 			if (company.invitationPending) {
 				const accepted = await window.qorpera.acceptCloudInvitation(company.invitationId);
 				document.body.classList.remove("hub-opening");
@@ -494,11 +502,11 @@ async function renderHub() {
 					if (company.setupRequired) {
 						const result = await window.qorpera.materializeCloudProfile(company.profileId);
 						if (!result?.ok || !result.root) {
-							throw new Error(result?.error ?? "Cloud profile setup did not return a local checkout.");
+							throw new Error(result?.error ?? "The Company File could not be connected on this device.");
 						}
 						root = result.root;
 					}
-					if (!root) throw new Error("This profile does not have a local checkout.");
+					if (!root) throw new Error("The Company File is not connected on this device.");
 					return await openCompany(root);
 				} catch (error) {
 					$("hubError").textContent = error instanceof Error ? error.message : String(error);
@@ -613,9 +621,7 @@ async function signOut() {
 	}
 }
 
-// ---- founding a durable company ----------------------------------------------
-// The founder names the company and chooses where its profile lives. Account
-// entitlement and per-session execution remain separate decisions.
+// ---- founding a cloud company -------------------------------------------------
 
 function companySlug(name) {
 	return String(name)
@@ -623,26 +629,6 @@ function companySlug(name) {
 		.replace(/['’]/g, "")
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "");
-}
-
-const COMPANIES_HOME = "C:\\Companies";
-function companyRootFor(name) {
-	const slug = companySlug(name);
-	return slug ? `${COMPANIES_HOME}\\${slug}` : "";
-}
-
-function renderCompanyPlacementPicker() {
-	const picker = $("companyPlacementPicker");
-	for (const choice of picker.querySelectorAll("[data-profile-placement]")) {
-		const selected = choice.dataset.profilePlacement === profileCreatorPlacement;
-		choice.classList.toggle("selected", selected);
-		choice.setAttribute("aria-pressed", String(selected));
-		choice.onclick = () => {
-			profileCreatorPlacement = choice.dataset.profilePlacement;
-			renderCompanyPlacementPicker();
-			$("companyPlacementNote").textContent = PROFILE_PLACEMENTS[profileCreatorPlacement].description;
-		};
-	}
 }
 
 function makeCompanyIcon(iconId, label, className = "") {
@@ -744,13 +730,11 @@ async function saveCurrentCompanyIcon(companyIconId) {
 
 function openCompanyModal() {
 	companyCreatorIcon = "anonymous";
-	profileCreatorPlacement = "local";
+	companyCreatorCreationId = crypto.randomUUID();
 	$("companyName").value = "";
 	$("companyFormError").textContent = "";
 	$("companyCreate").disabled = true;
 	renderCompanyPicturePreview();
-	renderCompanyPlacementPicker();
-	$("companyPlacementNote").textContent = PROFILE_PLACEMENTS[profileCreatorPlacement].description;
 	$("companyModal").hidden = false;
 	$("companyName").focus();
 }
@@ -789,18 +773,8 @@ function setupCompanyModal() {
 		button.disabled = true;
 		button.textContent = "Creating…";
 		try {
-			const root = companyRootFor(profileName);
-			const created = await window.qorpera.newCompany(root, companyCreatorIcon, profileCreatorPlacement);
-			if (!created) throw new Error("creation was rejected");
-			if (created.cloudError) {
-				// The company exists locally; keep the modal open so the founder
-				// sees why hosting did not start (a reload would swallow it).
-				await renderHub();
-				$("companyFormError").textContent =
-					`Company created locally, but hosting could not be enabled: ${created.cloudError} ` +
-					"You can host it later from Settings.";
-				return;
-			}
+			const created = await window.qorpera.newCompany(profileName, companyCreatorIcon, companyCreatorCreationId);
+			if (!created?.ok || !created.root) throw new Error(created?.error ?? "creation was rejected");
 			const opened = await openCompany(created.root, $("companyFormError"));
 			if (opened) closeCompanyModal();
 		} catch (error) {
@@ -1715,7 +1689,19 @@ function staffStatus(staff) {
 	if (staffId(staff) === currentStaffId && avatarActionPhase) return avatarActionPhase;
 	if (runtime?.status === "running" && runtime.activity?.kind === "writing") return "writing";
 	if (["starting", "running", "finishing"].includes(runtime?.status)) return "working";
+	const remote = [...(remoteStaffActivity.get(staffId(staff))?.values() ?? [])];
+	if (remote.some((entry) => entry.activity === "writing")) return "writing";
+	if (remote.some((entry) => entry.activity === "working")) return "working";
 	return staff?.status === "working" || staff?.status === "running" ? "working" : "idle";
+}
+
+function remoteStaffDoingLine(staff) {
+	const activity = [...(remoteStaffActivity.get(staffId(staff))?.values() ?? [])].find(
+		(entry) => entry.activity === "writing" || entry.activity === "working",
+	);
+	if (!activity) return "";
+	const name = activity.name || "Teammate";
+	return activity.activity === "writing" ? `${name}'s computer · writing` : `${name}'s computer · working`;
 }
 
 const STAFF_MOTION_STATES = ["idle", "working", "writing", "needs-attention"];
@@ -2208,6 +2194,7 @@ function activateStaffSession(id, sessionFile, result = {}) {
 	}
 	setCurrentAvatarAction("");
 	currentStaffIntroStatus = result?.introStatus ?? result?.staff?.introStatus ?? null;
+	if (Array.isArray(result?.queue)) pendingSessionQueueByStaff.set(id, result.queue);
 	currentSession = sessionFile;
 	currentDepartment = result?.department ?? null;
 	currentWorktree = result?.worktree ?? null;
@@ -2224,6 +2211,7 @@ function activateStaffSession(id, sessionFile, result = {}) {
 	renderRosterRail();
 	syncScopeChrome();
 	hydrateAgentState(true);
+	renderPendingSessionQueue();
 }
 
 async function openStaff(id) {
@@ -3615,7 +3603,7 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		}
 		const role = document.createElement("small");
 		const runtime = staffRuntime(staff);
-		role.textContent = runtime ? runtimeDoingLine(runtime) : staffRoleLabel(staff);
+		role.textContent = runtime ? runtimeDoingLine(runtime) : remoteStaffDoingLine(staff) || staffRoleLabel(staff);
 		copy.append(heading, role);
 		const viewingPeers = peersOnStaff(id);
 		if (viewingPeers.length) {
@@ -3927,7 +3915,7 @@ async function startStaffBootstrap(templates) {
 		const firstStaff = first?.staff ?? first?.agent;
 		if (!staffId(firstStaff) || !first?.sessionFile) throw new Error("The first staff conversation is unavailable.");
 		activateStaffSession(staffId(firstStaff), first.sessionFile, first);
-		$("status").textContent = `${created.length} staff joined. Their first conversations are starting on this computer.`;
+		$("status").textContent = `${created.length} staff joined. Their first conversations are starting.`;
 		staffBootstrapSelections = new Set();
 		staffBootstrapPending = false;
 		await refreshState();
@@ -4033,7 +4021,7 @@ function renderStaffHome() {
 		description.textContent = staffDescription(staff);
 		const meta = document.createElement("small");
 		const runtime = staffRuntime(staff);
-		meta.textContent = runtime ? runtimeDoingLine(runtime) : staffRoleLabel(staff);
+		meta.textContent = runtime ? runtimeDoingLine(runtime) : remoteStaffDoingLine(staff) || staffRoleLabel(staff);
 		card.append(name, description, meta);
 		const viewingPeers = peersOnStaff(staffId(staff));
 		if (viewingPeers.length) {
@@ -4682,7 +4670,7 @@ function cacheCurrentSession() {
 	if (!currentSession) return;
 	const snapshot = $("messages").cloneNode(true);
 	for (const transient of snapshot.querySelectorAll(
-		".agent-thread-activity, .connection-choice-form, .connection-request-card",
+		".agent-thread-activity, .connection-choice-form, .connection-request-card, .session-queued",
 	)) transient.remove();
 	sessionCache[currentSession] = snapshot.innerHTML;
 }
@@ -4862,6 +4850,7 @@ function renderHistory(messages) {
 	}
 	activeRunProgress = historyProgress;
 	syncConnectionRequestCards();
+	renderPendingSessionQueue();
 	$("messages").scrollTop = $("messages").scrollHeight;
 }
 
@@ -8276,6 +8265,38 @@ function appendConversationEntry(element) {
 	return element;
 }
 
+function renderPendingSessionQueue() {
+	for (const element of document.querySelectorAll("#messages > .session-queued")) element.remove();
+	if (!currentStaffId || currentRoomId || currentView !== "chat") return;
+	const queue = pendingSessionQueueByStaff.get(currentStaffId) ?? [];
+	for (const input of queue) {
+		if (!input || typeof input.inputId !== "string") continue;
+		const text = typeof input.text === "string" ? input.text.trim() : "";
+		const attachmentCount = Number.isSafeInteger(input.attachmentCount) ? input.attachmentCount : 0;
+		const bubble = document.createElement("div");
+		bubble.className = "msg user session-queued";
+		bubble.dataset.queueInputId = input.inputId;
+		const body = document.createElement("span");
+		body.className = "session-queued-body";
+		body.textContent = text || (attachmentCount === 1 ? "Attached image" : `${attachmentCount} attached images`);
+		const status = document.createElement("small");
+		status.className = "session-queued-status";
+		const author = typeof input.authorDisplayName === "string" ? input.authorDisplayName.trim() : "";
+		const stateLabel = input.status === "processing" ? "Processing" : input.status === "failed" ? "Needs review" : "Queued";
+		const failure = typeof input.failureReason === "string" ? input.failureReason.trim() : "";
+		status.textContent = `${stateLabel}${author ? ` · ${author}` : ""}${failure ? ` · ${failure}` : ""}`;
+		bubble.append(body, status);
+		appendConversationEntry(bubble);
+	}
+	$("messages").scrollTop = $("messages").scrollHeight;
+}
+
+function applySessionQueue(queue) {
+	if (!currentStaffId) return;
+	pendingSessionQueueByStaff.set(currentStaffId, Array.isArray(queue) ? queue : []);
+	renderPendingSessionQueue();
+}
+
 function addMsg(cls, text, timestamp) {
 	const div = document.createElement("div");
 	div.className = `msg ${cls}`;
@@ -8657,6 +8678,51 @@ async function sendRoomPrompt(text, images) {
 	syncComposer();
 }
 
+const pendingPromptSendFallbacks = new Map();
+
+function promptSendStorageKey() {
+	return `qorpera.pending-cloud-send/v1:${currentCompanyRoot}:${currentStaffId ?? "company"}`;
+}
+
+async function durablePromptSend(frame) {
+	const storageKey = promptSendStorageKey();
+	const serialized = JSON.stringify({
+		message: frame.message,
+		displayText: frame.displayText,
+		images: frame.images ?? [],
+	});
+	const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serialized)))]
+		.map((value) => value.toString(16).padStart(2, "0"))
+		.join("");
+	let existing = pendingPromptSendFallbacks.get(storageKey) ?? null;
+	try {
+		existing = JSON.parse(localStorage.getItem(storageKey) ?? "null");
+	} catch {
+		// The in-memory fallback still protects retries in this renderer run.
+	}
+	if (existing?.digest === digest && typeof existing.id === "string") return { ...existing, storageKey };
+	const pending = { id: crypto.randomUUID(), digest, storageKey };
+	pendingPromptSendFallbacks.set(storageKey, pending);
+	try {
+		localStorage.setItem(storageKey, JSON.stringify({ id: pending.id, digest: pending.digest }));
+	} catch {
+		// A storage-disabled renderer retains the id until this window closes.
+	}
+	return pending;
+}
+
+function clearDurablePromptSend(pending) {
+	if (pendingPromptSendFallbacks.get(pending.storageKey)?.id === pending.id) {
+		pendingPromptSendFallbacks.delete(pending.storageKey);
+	}
+	try {
+		const current = JSON.parse(localStorage.getItem(pending.storageKey) ?? "null");
+		if (current?.id === pending.id) localStorage.removeItem(pending.storageKey);
+	} catch {
+		// Nothing else is required after an acknowledged enqueue.
+	}
+}
+
 async function sendPrompt(promptContext = "") {
 	const input = $("input");
 	// No local capability wall here: right after opening a cloud company the
@@ -8677,7 +8743,7 @@ async function sendPrompt(promptContext = "") {
 	}
 	const hiddenContext = typeof promptContext === "string" ? promptContext.trim() : "";
 	const message = hiddenContext ? `${hiddenContext}\n\n${text}` : text;
-	const frame = { type: "prompt", message };
+	const frame = { type: "prompt", message, displayText: text };
 	if (images.length) {
 		frame.images = images.map((image) => ({
 			type: "image",
@@ -8685,6 +8751,8 @@ async function sendPrompt(promptContext = "") {
 			mimeType: image.mimeType,
 		}));
 	}
+	const durableSend = await durablePromptSend(frame);
+	frame.clientInputId = durableSend.id;
 	activeRunProgress = createRunProgress();
 	turnFailureCard = null;
 	const result = await sendRpc(frame);
@@ -8705,6 +8773,7 @@ async function sendPrompt(promptContext = "") {
 		return false;
 	}
 	setCurrentAvatarAction("working", 1200);
+	clearDurablePromptSend(durableSend);
 	input.value = "";
 	lastSubmittedPrompt = {
 		text,
@@ -8716,10 +8785,13 @@ async function sendPrompt(promptContext = "") {
 	pendingImages = [];
 	renderAttachStrip();
 	syncComposer();
-	appendMsgImages(
-		decorateUserMsg(addMsg("user", text), text),
-		images.map((image) => image.dataUrl),
-	);
+	if (result.queued) applySessionQueue(result.queue);
+	else {
+		appendMsgImages(
+			decorateUserMsg(addMsg("user", text), text),
+			images.map((image) => image.dataUrl),
+		);
+	}
 	return true;
 }
 
@@ -10264,34 +10336,6 @@ async function renderSettingsTab() {
 			};
 			companyActions.appendChild(useAnonymous);
 		}
-		if (
-			info.profile &&
-			(info.profile.profileType === "local" || info.profile.promotion?.phase === "failed") &&
-			info.profile.access?.capabilities?.manageMembers === true
-		) {
-			const hostCompany = document.createElement("button");
-			hostCompany.type = "button";
-			hostCompany.textContent = info.profile.promotion
-				? info.profile.promotion.phase === "failed"
-					? "Retry hosting"
-					: "Resume hosting"
-				: "Host company";
-			hostCompany.onclick = async () => {
-				hostCompany.disabled = true;
-				try {
-					const result = await window.qorpera.enableCloudProfile();
-					if (!result?.ok) throw new Error(result?.error ?? "Company hosting could not be enabled.");
-					companyId = result.profileKey ?? companyId;
-					currentProfileAccess = result.team ?? currentProfileAccess;
-					showToast("Company hosting is active.");
-					await renderSettingsTab();
-				} catch (error) {
-					hostCompany.disabled = false;
-					showToast(error instanceof Error ? error.message : "Company hosting could not be enabled.");
-				}
-			};
-			companyActions.appendChild(hostCompany);
-		}
 		const switchCompany = document.createElement("button");
 		switchCompany.type = "button";
 		switchCompany.textContent = "Switch company";
@@ -10303,6 +10347,137 @@ async function renderSettingsTab() {
 		companyCard.append(companyCopy, companyActions);
 		companyGroup.appendChild(companyCard);
 		content.appendChild(companyGroup);
+
+		const companyFileGroup = document.createElement("section");
+		companyFileGroup.className = "settings-group general-settings-group";
+		companyFileGroup.innerHTML = "<header><h2>Company File</h2></header>";
+		const companyFileCard = document.createElement("div");
+		companyFileCard.className = "general-account-card";
+		const companyFileCopy = document.createElement("div");
+		companyFileCopy.className = "general-account-copy";
+		const companyFileTitle = document.createElement("strong");
+		companyFileTitle.textContent = "Cloud storage";
+		const companyFileDetail = document.createElement("small");
+		const storage = info.profile?.companyFile;
+		const gibibytes = (bytes) => `${(Number(bytes || 0) / 1024 ** 3).toFixed(bytes >= 1024 ** 3 ? 1 : 2)} GB`;
+		const fileSyncState = info.profile?.status?.files;
+		const recoverableExecutions = Number(info.profile?.status?.recoverableExecutions || 0);
+		const fileConflictPaths = Number(info.profile?.status?.fileConflictPaths || 0);
+		const syncText =
+			fileConflictPaths > 0
+				? `${fileConflictPaths} ${fileConflictPaths === 1 ? "file changed" : "files changed"} in two places`
+				: recoverableExecutions > 0
+				? `${recoverableExecutions} agent ${recoverableExecutions === 1 ? "change needs" : "changes need"} review`
+				: fileSyncState === "cloud"
+					? "Synced across the company"
+					: fileSyncState === "offline"
+						? "Offline · changes are waiting to sync"
+						: fileSyncState === "attention"
+							? "Needs attention"
+							: "Syncing";
+		companyFileDetail.textContent = storage
+			? `${gibibytes(storage.storageUsedBytes)} of ${gibibytes(storage.storageLimitBytes)} stored · ${gibibytes(storage.retainedStorageBytes)} retained · ${syncText}`
+			: syncText;
+		const companyFileProtection = document.createElement("small");
+		companyFileProtection.textContent = canUseProfile("write")
+			? "Opens the Company File in File Explorer. Native copy, move, rename, and delete actions sync; protected runtime and Git state are not exposed."
+			: "Opens a view-only Company File in File Explorer. Protected runtime and Git state are not exposed.";
+		companyFileCopy.append(companyFileTitle, companyFileDetail, companyFileProtection);
+		const companyFileActions = document.createElement("div");
+		companyFileActions.className = "general-company-actions";
+		const openCompanyFile = document.createElement("button");
+		openCompanyFile.type = "button";
+		openCompanyFile.textContent = "Open Company File";
+		openCompanyFile.onclick = async () => {
+			openCompanyFile.disabled = true;
+			try {
+				const result = await window.qorpera.openCompanyFile();
+				if (!result?.ok) throw new Error(result?.error ?? "The Company File could not be opened.");
+			} catch (error) {
+				showToast(error instanceof Error ? error.message : "The Company File could not be opened.");
+			} finally {
+				openCompanyFile.disabled = false;
+			}
+		};
+		companyFileActions.appendChild(openCompanyFile);
+		if (fileConflictPaths > 0 && canUseProfile("write")) {
+			const openCloudVersion = document.createElement("button");
+			openCloudVersion.type = "button";
+			openCloudVersion.textContent = "Open cloud version";
+			openCloudVersion.onclick = async () => {
+				const result = await window.qorpera.openCompanyFileConflictRemote();
+				if (!result?.ok) showToast(result?.error || "The cloud version could not be opened.");
+			};
+			const useLocalVersion = document.createElement("button");
+			useLocalVersion.type = "button";
+			useLocalVersion.textContent = "Use this version";
+			useLocalVersion.onclick = async () => {
+				if (!window.confirm("Publish this machine's Company File version and replace the conflicting cloud files?")) return;
+				useLocalVersion.disabled = true;
+				const result = await window.qorpera.resolveCompanyFileConflict("local");
+				if (!result?.ok) {
+					showToast(result?.error || "This Company File version could not be published.");
+					useLocalVersion.disabled = false;
+					return;
+				}
+				await renderSettingsTab();
+			};
+			const useCloudVersion = document.createElement("button");
+			useCloudVersion.type = "button";
+			useCloudVersion.textContent = "Use cloud version";
+			useCloudVersion.onclick = async () => {
+				if (!window.confirm("Replace this machine's conflicting Company File changes with the current cloud version?")) return;
+				useCloudVersion.disabled = true;
+				const result = await window.qorpera.resolveCompanyFileConflict("cloud");
+				if (!result?.ok) {
+					showToast(result?.error || "The cloud Company File version could not be applied.");
+					useCloudVersion.disabled = false;
+					return;
+				}
+				await renderSettingsTab();
+			};
+			companyFileActions.append(openCloudVersion, useLocalVersion, useCloudVersion);
+		}
+		if (recoverableExecutions > 0 && canUseProfile("write")) {
+			const openReview = document.createElement("button");
+			openReview.type = "button";
+			openReview.textContent = "Open review";
+			openReview.onclick = async () => {
+				const result = await window.qorpera.openCompanyFileReview();
+				if (!result?.ok) showToast(result?.error || "Agent work could not be opened.");
+			};
+			const publishReview = document.createElement("button");
+			publishReview.type = "button";
+			publishReview.textContent = "Publish reviewed work";
+			publishReview.onclick = async () => {
+				publishReview.disabled = true;
+				const result = await window.qorpera.acceptCompanyFileReview();
+				if (!result?.ok) {
+					showToast(result?.error || "Reviewed work could not be published.");
+					publishReview.disabled = false;
+					return;
+				}
+				await renderSettingsTab();
+			};
+			const discardReview = document.createElement("button");
+			discardReview.type = "button";
+			discardReview.textContent = "Discard";
+			discardReview.onclick = async () => {
+				if (!window.confirm("Discard this agent's unpublished Company File changes?")) return;
+				discardReview.disabled = true;
+				const result = await window.qorpera.rejectCompanyFileReview();
+				if (!result?.ok) {
+					showToast(result?.error || "Agent work could not be discarded.");
+					discardReview.disabled = false;
+					return;
+				}
+				await renderSettingsTab();
+			};
+			companyFileActions.append(openReview, publishReview, discardReview);
+		}
+		companyFileCard.append(companyFileCopy, companyFileActions);
+		companyFileGroup.appendChild(companyFileCard);
+		content.appendChild(companyFileGroup);
 
 		const accountGroup = document.createElement("section");
 		accountGroup.className = "settings-group general-settings-group";
@@ -10724,6 +10899,13 @@ window.qorpera.onPresenceMembers?.((members) => {
 	presencePeers = Array.isArray(members)
 		? members.filter((member) => member && typeof member.userId === "string")
 		: [];
+	const presentClientIds = new Set(presencePeers.map((member) => member.clientId));
+	for (const [staffAgentId, byUser] of remoteStaffActivity) {
+		for (const clientId of byUser.keys()) {
+			if (!presentClientIds.has(clientId)) byUser.delete(clientId);
+		}
+		if (!byUser.size) remoteStaffActivity.delete(staffAgentId);
+	}
 	try {
 		renderRosterRail();
 		if (currentView === "roster") renderStaffHome();
@@ -10732,13 +10914,37 @@ window.qorpera.onPresenceMembers?.((members) => {
 	}
 });
 window.qorpera.onPresenceTyping?.((event) => {
-	if (!event || typeof event.userId !== "string" || typeof event.staffAgentId !== "string") return;
-	presenceTypingPeers.set(event.userId, {
+	if (!event || typeof event.clientId !== "string" || typeof event.staffAgentId !== "string") return;
+	presenceTypingPeers.set(event.clientId, {
 		name: typeof event.name === "string" ? event.name : "",
 		staffAgentId: event.staffAgentId,
 		until: Date.now() + 4000,
 	});
 	renderPeerTypingIndicator();
+});
+window.qorpera.onPresenceActivity?.((event) => {
+	if (!event || typeof event.clientId !== "string" || typeof event.staffAgentId !== "string") return;
+	let byUser = remoteStaffActivity.get(event.staffAgentId);
+	if (!byUser) {
+		byUser = new Map();
+		remoteStaffActivity.set(event.staffAgentId, byUser);
+	}
+	if (event.activity === "idle") byUser.delete(event.clientId);
+	else if (event.activity === "working" || event.activity === "writing") {
+		byUser.set(event.clientId, {
+			activity: event.activity,
+			name: typeof event.name === "string" ? event.name : "",
+			until: Date.now() + 20_000,
+		});
+	}
+	if (!byUser.size) remoteStaffActivity.delete(event.staffAgentId);
+	syncVisibleStaffAvatars();
+	try {
+		renderRosterRail();
+		if (currentView === "roster") renderStaffHome();
+	} catch {
+		/* pre-company views have no rail */
+	}
 });
 setInterval(() => {
 	let expired = false;
@@ -10748,7 +10954,25 @@ setInterval(() => {
 			expired = true;
 		}
 	}
-	if (expired) renderPeerTypingIndicator();
+	for (const [staffAgentId, byUser] of remoteStaffActivity) {
+		for (const [userId, activity] of byUser) {
+			if (activity.until <= Date.now()) {
+				byUser.delete(userId);
+				expired = true;
+			}
+		}
+		if (!byUser.size) remoteStaffActivity.delete(staffAgentId);
+	}
+	if (expired) {
+		renderPeerTypingIndicator();
+		syncVisibleStaffAvatars();
+		try {
+			renderRosterRail();
+			if (currentView === "roster") renderStaffHome();
+		} catch {
+			/* pre-company views have no rail */
+		}
+	}
 }, 1000);
 
 window.qorpera.onStaffSessionRefreshed?.((payload) => {
@@ -10756,6 +10980,12 @@ window.qorpera.onStaffSessionRefreshed?.((payload) => {
 	if (payload.staffAgentId !== currentStaffId) return;
 	delete sessionCache[payload.sessionFile];
 	activateStaffSession(payload.staffAgentId, payload.sessionFile);
+});
+
+window.qorpera.onStaffSessionQueue?.((payload) => {
+	if (!payload?.staffAgentId || !Array.isArray(payload.queue)) return;
+	pendingSessionQueueByStaff.set(payload.staffAgentId, payload.queue);
+	if (payload.staffAgentId === currentStaffId) renderPendingSessionQueue();
 });
 
 window.qorpera.onUpdateReady((version) => {

@@ -3,11 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CompanyFilePrimary } from "../src/cloud-company-file.ts";
 import { CloudCompanyPublication } from "../src/cloud-company-publication.ts";
 import type { CloudCompanyTreeReference } from "../src/cloud-company-snapshot.ts";
-import type { CompanyWorkspacePrimary } from "../src/cloud-company-workspace.ts";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
-import type { HostedCompanySnapshot } from "../src/hosted-primary.ts";
+import type {
+	BeginHostedObjectReachabilityGraphInput,
+	HostedCompanyFile,
+	HostedCompanySnapshot,
+	HostedObjectReachabilityGraph,
+	HostedObjectRestoreProof,
+} from "../src/hosted-primary.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";
@@ -32,32 +38,37 @@ class MemoryObjectTransport implements CloudObjectTransport {
 	}
 }
 
-class MemoryWorkspacePrimary implements CompanyWorkspacePrimary {
+class MemoryCompanyFilePrimary implements CompanyFilePrimary {
 	readonly snapshots = new Map<string, HostedCompanySnapshot>();
+	readonly revisions = new Map<string, HostedCompanySnapshot>();
 	commitCount = 0;
 	headSnapshotId?: string;
 
-	async ensureCompanyWorkspace(input: { clientWorkspaceId: string; name: string }) {
+	async getCompanyFile(_environmentId: string): Promise<HostedCompanyFile> {
 		return {
-			workspaceId,
 			profileId,
 			environmentId,
-			clientWorkspaceId: input.clientWorkspaceId,
-			name: input.name,
+			canonicalWorkspaceId: workspaceId,
 			...(this.headSnapshotId ? { headSnapshotId: this.headSnapshotId } : {}),
-			createdByUserId: actorUserId,
+			state: this.headSnapshotId ? "ready" : "provisioning",
+			logicalBytes: this.headSnapshotId ? (this.snapshots.get(this.headSnapshotId)?.tree.totalBytes ?? 0) : 0,
+			retainedStorageBytes: 0,
+			storageUsedBytes: 0,
+			storageLimitBytes: 50 * 1024 * 1024 * 1024,
 			createdAt,
 			updatedAt: createdAt,
 		};
 	}
 
-	async commitCompanySnapshot(input: {
-		clientSnapshotId: string;
+	async prepareCompanyFileRevision(input: {
+		environmentId: string;
+		clientRevisionId: string;
 		expectedHeadSnapshotId?: string;
 		tree: CloudCompanyTreeReference;
 	}): Promise<HostedCompanySnapshot> {
-		if (this.headSnapshotId !== input.expectedHeadSnapshotId)
-			throw new Error("company workspace head changed (PT409)");
+		const existing = this.revisions.get(input.clientRevisionId);
+		if (existing) return existing;
+		if (this.headSnapshotId !== input.expectedHeadSnapshotId) throw new Error("company file head changed (PT409)");
 		this.commitCount++;
 		const snapshotId = `${String(this.commitCount).padStart(8, "0")}-0000-4000-8000-000000000000`;
 		const snapshot: HostedCompanySnapshot = {
@@ -65,15 +76,82 @@ class MemoryWorkspacePrimary implements CompanyWorkspacePrimary {
 			profileId,
 			environmentId,
 			workspaceId,
-			clientSnapshotId: input.clientSnapshotId,
+			clientSnapshotId: input.clientRevisionId,
 			...(input.expectedHeadSnapshotId ? { parentSnapshotId: input.expectedHeadSnapshotId } : {}),
 			tree: input.tree,
 			createdByUserId: actorUserId,
 			createdAt,
 		};
 		this.snapshots.set(snapshotId, snapshot);
+		this.revisions.set(input.clientRevisionId, snapshot);
+		return snapshot;
+	}
+
+	async publishCompanyFileRevision(
+		_environmentId: string,
+		snapshotId: string,
+		expectedHeadSnapshotId?: string,
+	): Promise<HostedCompanySnapshot> {
+		const snapshot = this.snapshots.get(snapshotId);
+		if (!snapshot) throw new Error("snapshot not found");
+		if (this.headSnapshotId === snapshotId) return snapshot;
+		if (this.headSnapshotId !== expectedHeadSnapshotId) throw new Error("company file head changed (PT409)");
 		this.headSnapshotId = snapshotId;
 		return snapshot;
+	}
+
+	async beginObjectReachabilityGraph(
+		input: BeginHostedObjectReachabilityGraphInput,
+	): Promise<HostedObjectReachabilityGraph> {
+		return {
+			graphId: input.rootId,
+			profileId,
+			environmentId,
+			rootKind: input.rootKind,
+			rootId: input.rootId,
+			clientGraphId: input.clientGraphId,
+			rootObjectSha256: input.rootObjectSha256,
+			contractVersion: 1,
+			contentSha256: input.contentSha256,
+			objectCount: input.objectCount,
+			storageBytes: input.storageBytes,
+			status: "complete",
+			createdByUserId: actorUserId,
+			createdAt,
+			completedAt: createdAt,
+		};
+	}
+
+	async appendObjectReachabilityEntries(
+		_graphId: string,
+		entries: Array<{ sha256: string; bytes: number }>,
+	): Promise<number> {
+		return entries.length;
+	}
+
+	async completeObjectReachabilityGraph(_graphId: string): Promise<HostedObjectReachabilityGraph> {
+		throw new Error("already complete");
+	}
+
+	async verifyCompanySnapshotClosure(_snapshotId: string, _graphId: string): Promise<void> {}
+
+	async createObjectRestoreProof(
+		graphId: string,
+		clientProofId: string,
+		restoredContentSha256: string,
+		restoredBytes: number,
+	): Promise<HostedObjectRestoreProof> {
+		return {
+			proofId: graphId,
+			graphId,
+			profileId,
+			clientProofId,
+			restoredContentSha256,
+			restoredBytes,
+			verifiedByUserId: actorUserId,
+			verifiedAt: createdAt,
+			validUntil: "2026-08-27T12:00:00.000Z",
+		};
 	}
 
 	async getCompanySnapshot(snapshotId: string): Promise<HostedCompanySnapshot> {
@@ -94,12 +172,12 @@ afterEach(async () => {
 });
 
 describe("automatic cloud company publication", () => {
-	it("deduplicates steady checkpoints, debounces logical changes, and stops on a remote head conflict", async () => {
+	it("deduplicates checkpoints, debounces logical changes, and adopts a newer canonical head", async () => {
 		const root = join(await temporaryDirectory(), "company");
 		const userData = await temporaryDirectory();
 		scaffoldCompany(root);
 		await mkdir(join(root, "app", "substrates"), { recursive: true });
-		const primary = new MemoryWorkspacePrimary();
+		const primary = new MemoryCompanyFilePrimary();
 		let debounceCallback: (() => void) | undefined;
 		const timer = setTimeout(() => undefined, 60_000);
 		clearTimeout(timer);
@@ -109,7 +187,6 @@ describe("automatic cloud company publication", () => {
 			companyRoot: root,
 			profileId,
 			environmentId,
-			workspaceName: "Local test workspace",
 			primary,
 			objects: new CloudContentAddressedStore(new MemoryObjectTransport()),
 			onCheckpoint: (checkpoint) => {
@@ -137,9 +214,17 @@ describe("automatic cloud company publication", () => {
 		await vi.waitFor(() => expect(primary.commitCount).toBe(2));
 		expect(publication.lastCheckpoint()).toMatchObject({ changed: true });
 
-		primary.headSnapshotId = "99999999-9999-4999-8999-999999999999";
-		await expect(publication.publishNow()).resolves.toMatchObject({ phase: "attention" });
-		expect(publication.health().lastError).toContain("head changed");
+		const localHead = primary.headSnapshotId!;
+		const remoteHead = "99999999-9999-4999-8999-999999999999";
+		const localSnapshot = primary.snapshots.get(localHead)!;
+		primary.snapshots.set(remoteHead, {
+			...localSnapshot,
+			snapshotId: remoteHead,
+			clientSnapshotId: "88888888-8888-4888-8888-888888888888",
+			parentSnapshotId: localHead,
+		});
+		primary.headSnapshotId = remoteHead;
+		await expect(publication.publishNow()).resolves.toMatchObject({ phase: "healthy" });
 		expect(primary.commitCount).toBe(2);
 	});
 });

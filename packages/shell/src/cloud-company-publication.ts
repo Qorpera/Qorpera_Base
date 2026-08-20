@@ -1,24 +1,20 @@
 import { type FSWatcher, watch } from "node:fs";
-import { cloudCompanyPathBelongsToLogicalTree } from "./cloud-company-snapshot.ts";
 import {
-	type CheckpointCloudCompanyWorkspaceInput,
-	checkpointCloudCompanyWorkspace,
-} from "./cloud-company-workspace.ts";
+	type CheckpointCloudCompanyFileInput,
+	type CloudCompanyFileCheckpointResult,
+	checkpointCloudCompanyFile,
+} from "./cloud-company-file.ts";
+import { cloudCompanyPathBelongsToLogicalTree } from "./cloud-company-snapshot.ts";
 import type { CloudSyncHealth } from "./cloud-sync-loop.ts";
 import { DurableCloudSyncLoop } from "./cloud-sync-loop.ts";
-import type { HostedCompanySnapshot, HostedCompanyWorkspace } from "./hosted-primary.ts";
 
 interface CompanyTreeWatcher {
 	close(): void;
 }
 
-export interface CloudCompanyCheckpointResult {
-	changed: boolean;
-	workspace: HostedCompanyWorkspace;
-	snapshot: HostedCompanySnapshot;
-}
+export type CloudCompanyCheckpointResult = CloudCompanyFileCheckpointResult;
 
-export interface CloudCompanyPublicationOptions extends CheckpointCloudCompanyWorkspaceInput {
+export interface CloudCompanyPublicationOptions extends CheckpointCloudCompanyFileInput {
 	debounceMs?: number;
 	steadyDelayMs?: number;
 	onCheckpoint?: (result: CloudCompanyCheckpointResult) => void | Promise<void>;
@@ -46,6 +42,7 @@ export class CloudCompanyPublication {
 	#watcher?: CompanyTreeWatcher;
 	#debounceTimer?: ReturnType<typeof setTimeout>;
 	#lastCheckpoint?: CloudCompanyCheckpointResult;
+	#dirty = true;
 	#started = false;
 
 	constructor(options: CloudCompanyPublicationOptions) {
@@ -61,11 +58,12 @@ export class CloudCompanyPublication {
 			onHealth: options.onHealth,
 			sync: async () => {
 				const checkpoint = await (options.runCheckpoint ?? ((run) => run()))(() =>
-					checkpointCloudCompanyWorkspace(options),
+					checkpointCloudCompanyFile(options),
 				);
 				if (!checkpoint) return;
 				this.#lastCheckpoint = checkpoint;
 				await options.onCheckpoint?.(checkpoint);
+				this.#dirty = false;
 			},
 		});
 	}
@@ -78,10 +76,14 @@ export class CloudCompanyPublication {
 		return this.#lastCheckpoint
 			? {
 					...this.#lastCheckpoint,
-					workspace: { ...this.#lastCheckpoint.workspace },
+					companyFile: { ...this.#lastCheckpoint.companyFile },
 					snapshot: { ...this.#lastCheckpoint.snapshot, tree: { ...this.#lastCheckpoint.snapshot.tree } },
 				}
 			: undefined;
+	}
+
+	hasPendingWork(): boolean {
+		return this.#dirty || this.#debounceTimer !== undefined;
 	}
 
 	start(): void {
@@ -108,6 +110,7 @@ export class CloudCompanyPublication {
 
 	notifyPathChanged(relativePath?: string): void {
 		if (relativePath !== undefined && !cloudCompanyPathBelongsToLogicalTree(relativePath)) return;
+		this.#dirty = true;
 		if (this.#debounceTimer) this.#clearDebounceTimer(this.#debounceTimer);
 		this.#debounceTimer = this.#setDebounceTimer(() => {
 			this.#debounceTimer = undefined;

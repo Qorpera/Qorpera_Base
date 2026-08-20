@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue, KernelExecutionIdentity } from "@qorpera/pi-protocol";
 import {
 	listSharedTrailSessions,
 	materializeSharedTrailSession,
 	type SharedTrailEntry,
+	type SharedTrailScope,
 	type SharedTrailSession,
 	type TrailBinding,
 } from "./agent-runtime.ts";
@@ -25,7 +26,7 @@ const MAX_QUARANTINE_RECEIPTS = 1_000;
 
 type CloudTrailPrimary = Pick<
 	QorperaHostedPrimary,
-	"appendAccountEvent" | "createSession" | "listSessions" | "readSessionEvents"
+	"appendAccountEvent" | "closeSession" | "createSession" | "listSessions" | "readSessionEvents"
 >;
 
 interface PendingEntryParts {
@@ -54,6 +55,7 @@ interface CloudTrailState {
 	environmentId: string;
 	root: string;
 	sessions: Record<string, SessionSyncState>;
+	entryExecutions: Record<string, KernelExecutionIdentity>;
 }
 
 export interface CloudTrailSyncResult {
@@ -73,6 +75,7 @@ export interface CloudTrailSynchronizerOptions {
 	canWrite: () => boolean;
 	liveBindings?: () => Iterable<TrailBinding>;
 	onMaterialized?: (binding: TrailBinding) => void;
+	onCursorAdvanced?: (advance: { hostedSessionId: string; cursor: number; requiresReload: boolean }) => void;
 }
 
 function normalizedRoot(root: string): string {
@@ -92,6 +95,7 @@ function emptyState(options: CloudTrailSynchronizerOptions): CloudTrailState {
 		environmentId: options.environmentId,
 		root: normalizedRoot(options.root),
 		sessions: {},
+		entryExecutions: {},
 	};
 }
 
@@ -122,6 +126,22 @@ function validQuarantineReceipt(value: unknown): value is QuarantinedHostedEvent
 		typeof receipt.quarantinedAt === "string" &&
 		Number.isFinite(Date.parse(receipt.quarantinedAt))
 	);
+}
+
+function validExecution(value: unknown): value is KernelExecutionIdentity {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const execution = value as Partial<KernelExecutionIdentity>;
+	return (
+		(execution.kind === "turn" || execution.kind === "wake") &&
+		typeof execution.id === "string" &&
+		/^[0-9a-f-]{36}$/i.test(execution.id) &&
+		typeof execution.claimantId === "string" &&
+		/^[0-9a-f-]{36}$/i.test(execution.claimantId)
+	);
+}
+
+function entryExecutionKey(clientSessionId: string, entryId: string): string {
+	return `${clientSessionId}:${entryId}`;
 }
 
 function readState(path: string, options: CloudTrailSynchronizerOptions): CloudTrailState {
@@ -169,7 +189,13 @@ function readState(path: string, options: CloudTrailSynchronizerOptions): CloudT
 				quarantinedEvents,
 			};
 		}
-		return { ...emptyState(options), sessions };
+		const entryExecutions = Object.fromEntries(
+			Object.entries(input.entryExecutions ?? {}).filter(
+				(entry): entry is [string, KernelExecutionIdentity] =>
+					typeof entry[0] === "string" && entry[0].includes(":") && validExecution(entry[1]),
+			),
+		);
+		return { ...emptyState(options), sessions, entryExecutions };
 	} catch {
 		return emptyState(options);
 	}
@@ -258,6 +284,42 @@ function uploadEvents(sessionId: string, entry: SharedTrailEntry): UploadEvent[]
 
 function bodyRecord(body: JsonValue): Record<string, JsonValue> | undefined {
 	return body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, JsonValue>) : undefined;
+}
+
+function sharedExecutionScope(value: JsonValue | undefined, staffAgentId?: string): SharedTrailScope | undefined {
+	const input = bodyRecord(value ?? null);
+	if (!input || Object.keys(input).length === 0) return undefined;
+	if (
+		typeof input.attended !== "boolean" ||
+		(input.staffAgentId !== undefined && typeof input.staffAgentId !== "string") ||
+		(input.roomId !== undefined && typeof input.roomId !== "string") ||
+		(input.autonomousLabel !== undefined && typeof input.autonomousLabel !== "string") ||
+		(input.group !== undefined && typeof input.group !== "string") ||
+		(input.parentSession !== undefined && typeof input.parentSession !== "string") ||
+		(input.companySnapshotId !== undefined && typeof input.companySnapshotId !== "string") ||
+		(input.staffVersion !== undefined &&
+			(!Number.isSafeInteger(input.staffVersion) || (input.staffVersion as number) < 1)) ||
+		(input.companySnapshotId === undefined) !== (input.staffVersion === undefined) ||
+		Object.keys(input).some(
+			(key) =>
+				![
+					"attended",
+					"staffAgentId",
+					"roomId",
+					"autonomousLabel",
+					"group",
+					"parentSession",
+					"companySnapshotId",
+					"staffVersion",
+				].includes(key),
+		)
+	) {
+		throw new Error("hosted session execution scope is invalid");
+	}
+	if (input.staffAgentId !== undefined && input.staffAgentId !== staffAgentId) {
+		throw new Error("hosted session staff identity conflicts with its execution scope");
+	}
+	return input as unknown as SharedTrailScope;
 }
 
 function sharedEntry(value: JsonValue | undefined): SharedTrailEntry | undefined {
@@ -373,6 +435,33 @@ export class CloudTrailSynchronizer {
 		return operation;
 	}
 
+	cursorForHostedSession(hostedSessionId: string): number | undefined {
+		return readState(this.#statePath, this.#options).sessions[hostedSessionId]?.cursor;
+	}
+
+	bindEntryExecution(clientSessionId: string, entryId: string, execution: KernelExecutionIdentity): void {
+		if (!validExecution(execution) || !clientSessionId || !entryId) {
+			throw new Error("Trail entry execution identity is invalid");
+		}
+		const state = readState(this.#statePath, this.#options);
+		const key = entryExecutionKey(clientSessionId, entryId);
+		const existing = state.entryExecutions[key];
+		if (existing && JSON.stringify(existing) !== JSON.stringify(execution)) {
+			throw new Error("Trail entry is already bound to another durable execution");
+		}
+		state.entryExecutions[key] = { ...execution };
+		writeState(this.#statePath, state);
+	}
+
+	async finalizeOperationalSession(clientSessionId: string): Promise<void> {
+		await this.sync();
+		const hosted = (await this.#options.primary.listSessions(this.#options.environmentId)).find(
+			(session) => session.clientSessionId === clientSessionId,
+		);
+		if (!hosted) throw new Error("operational trail session was not uploaded");
+		if (hosted.status === "open") await this.#options.primary.closeSession(hosted.sessionId);
+	}
+
 	async #pullSession(
 		hosted: HostedSession,
 		cloudState: CloudTrailState,
@@ -412,6 +501,15 @@ export class CloudTrailSynchronizer {
 				}
 			}
 			if (materialized.length > 0) {
+				const scope = hosted.executionScope
+					? sharedExecutionScope(hosted.executionScope, hosted.staffAgentId)
+					: undefined;
+				if (
+					scope?.companySnapshotId !== undefined &&
+					(scope.companySnapshotId !== hosted.companySnapshotId || scope.staffVersion !== hosted.staffVersion)
+				) {
+					throw new Error("hosted session execution revisions conflict with its execution scope");
+				}
 				const binding = materializeSharedTrailSession(
 					this.#options.root,
 					{
@@ -419,6 +517,7 @@ export class CloudTrailSynchronizer {
 						createdAt: hosted.createdAt,
 						title: hosted.title,
 						staffAgentId: hosted.staffAgentId,
+						...(scope ? { scope } : {}),
 					},
 					materialized,
 					bindings.get(hosted.clientSessionId),
@@ -428,6 +527,11 @@ export class CloudTrailSynchronizer {
 				result.entriesMaterialized += materialized.length;
 			}
 			writeState(this.#statePath, cloudState);
+			this.#options.onCursorAdvanced?.({
+				hostedSessionId: hosted.sessionId,
+				cursor: state.cursor,
+				requiresReload: materialized.length > 0,
+			});
 			if (events.length < 500) return;
 		}
 	}
@@ -439,6 +543,7 @@ export class CloudTrailSynchronizer {
 		event: UploadEvent,
 		bindings: Map<string, TrailBinding>,
 		result: CloudTrailSyncResult,
+		execution?: KernelExecutionIdentity,
 	): Promise<void> {
 		for (let attempt = 0; attempt < 3; attempt++) {
 			try {
@@ -448,6 +553,7 @@ export class CloudTrailSynchronizer {
 					eventType: event.eventType,
 					body: event.body,
 					expectedSequence: state.cursor,
+					...(execution ? { execution } : {}),
 				});
 				result.eventsUploaded++;
 				if (appended.sequence === state.cursor + 1) state.cursor = appended.sequence;
@@ -484,15 +590,28 @@ export class CloudTrailSynchronizer {
 			);
 			state.knownEntryIds.push(metadataId);
 			writeState(this.#statePath, cloudState);
+			this.#options.onCursorAdvanced?.({
+				hostedSessionId: hosted.sessionId,
+				cursor: state.cursor,
+				requiresReload: false,
+			});
 		}
 		for (const entry of local.entries) {
 			if (state.knownEntryIds.includes(entry.id)) continue;
+			const executionKey = entryExecutionKey(local.localSessionId, entry.id);
+			const execution = cloudState.entryExecutions[executionKey];
 			for (const event of uploadEvents(hosted.sessionId, entry)) {
-				await this.#append(hosted, cloudState, state, event, bindings, result);
+				await this.#append(hosted, cloudState, state, event, bindings, result, execution);
 			}
 			delete state.pending[entry.id];
+			delete cloudState.entryExecutions[executionKey];
 			state.knownEntryIds.push(entry.id);
 			writeState(this.#statePath, cloudState);
+			this.#options.onCursorAdvanced?.({
+				hostedSessionId: hosted.sessionId,
+				cursor: state.cursor,
+				requiresReload: false,
+			});
 		}
 	}
 
@@ -523,6 +642,10 @@ export class CloudTrailSynchronizer {
 					clientSessionId: local.localSessionId,
 					title: local.title,
 					staffAgentId: local.staffAgentId,
+					...(local.scope ? { executionScope: local.scope as unknown as JsonValue } : {}),
+					...(local.scope?.companySnapshotId
+						? { companySnapshotId: local.scope.companySnapshotId, staffVersion: local.scope.staffVersion }
+						: {}),
 				});
 				hostedByClientId.set(local.localSessionId, hosted);
 				hostedSessions.push(hosted);

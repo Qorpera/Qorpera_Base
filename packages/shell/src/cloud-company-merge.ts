@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import {
 	type CompanyRuntimeLock,
@@ -10,6 +11,7 @@ import {
 import {
 	type CloudCompanyTreeEntry,
 	type CloudCompanyTreeManifest,
+	type CloudCompanyTreeReference,
 	cloudCompanyPathBelongsToLogicalTree,
 	currentCloudCompanyTreeReference,
 	materializeCloudCompanyTree,
@@ -20,6 +22,15 @@ import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
 import type { HostedCompanySnapshot } from "./hosted-primary.ts";
 
 const MAX_SNAPSHOT_LINEAGE = 10_000;
+const MERGE_JOURNAL_SCHEMA = "qorpera.cloud-company-merge-journal/v1";
+
+interface CloudCompanyMergeJournal {
+	schema: typeof MERGE_JOURNAL_SCHEMA;
+	companyRoot: string;
+	localEntries: CloudCompanyTreeEntry[];
+	resultEntries: CloudCompanyTreeEntry[];
+	createdAt: string;
+}
 
 export interface CloudCompanyMergeConflict {
 	path: string;
@@ -62,6 +73,28 @@ export interface MergeCloudCompanySnapshotsInput {
 export interface MergeCloudCompanySnapshotsResult {
 	applied: boolean;
 	plan: CloudCompanyMergePlan;
+}
+
+export interface ReconcileCloudCompanyCacheInput {
+	companyRoot: string;
+	profileId: string;
+	environmentId: string;
+	baseSnapshotId: string;
+	localTree: CloudCompanyTreeReference;
+	remoteSnapshotId: string;
+	primary: Pick<CompanyWorkspacePrimary, "getCompanySnapshot">;
+	objects: CloudContentAddressedStore;
+	runtimeLock?: CompanyRuntimeLock;
+}
+
+export interface ReplaceCloudCompanyCacheInput {
+	companyRoot: string;
+	profileId: string;
+	environmentId: string;
+	localTree: CloudCompanyTreeReference;
+	remoteSnapshot: HostedCompanySnapshot;
+	objects: CloudContentAddressedStore;
+	runtimeLock?: CompanyRuntimeLock;
 }
 
 interface PlannedCloudCompanyMerge {
@@ -148,7 +181,21 @@ function buildMergePlan(
 			addConflict(conflicts, path, "structural");
 		}
 	}
-	const resultEntries = [...result.values()].sort((left, right) => comparePath(left.path, right.path));
+	if (conflicts.size > 0) {
+		const conflictRoot = `Company File Conflicts/${remoteSnapshotId}`;
+		for (const conflict of conflicts.values()) {
+			const remoteEntry = remote.get(conflict.path);
+			if (!remoteEntry || remoteEntry.kind !== "file") continue;
+			const copyPath = `${conflictRoot}/${remoteEntry.path}`;
+			const segments = copyPath.split("/");
+			for (let index = 1; index < segments.length; index += 1) {
+				const directoryPath = segments.slice(0, index).join("/");
+				if (!result.has(directoryPath)) result.set(directoryPath, { kind: "directory", path: directoryPath });
+			}
+			result.set(copyPath, { ...remoteEntry, path: copyPath });
+		}
+	}
+	const finalResultEntries = [...result.values()].sort((left, right) => comparePath(left.path, right.path));
 	const changedPaths = [...new Set([...local.keys(), ...result.keys()])]
 		.filter((path) => !sameEntry(local.get(path), result.get(path)))
 		.sort(comparePath);
@@ -161,7 +208,7 @@ function buildMergePlan(
 			conflicts: [...conflicts.values()].sort((left, right) => comparePath(left.path, right.path)),
 		},
 		localManifest,
-		resultEntries,
+		resultEntries: finalResultEntries,
 	};
 }
 
@@ -316,6 +363,74 @@ async function stageChangedFiles(
 	return { transactionRoot, stagedRoot, backupRoot };
 }
 
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await lstat(path);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
+}
+
+async function writeMergeJournal(
+	transactionRoot: string,
+	root: string,
+	localEntries: CloudCompanyTreeEntry[],
+	resultEntries: CloudCompanyTreeEntry[],
+): Promise<void> {
+	const path = join(transactionRoot, "journal.json");
+	const handle = await open(path, "wx", 0o600);
+	try {
+		await handle.writeFile(
+			`${JSON.stringify({
+				schema: MERGE_JOURNAL_SCHEMA,
+				companyRoot: root,
+				localEntries,
+				resultEntries,
+				createdAt: new Date().toISOString(),
+			} satisfies CloudCompanyMergeJournal)}\n`,
+			"utf-8",
+		);
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+}
+
+async function writeMergeCommitMarker(transactionRoot: string): Promise<void> {
+	const handle = await open(join(transactionRoot, "committed"), "wx", 0o600);
+	try {
+		await handle.writeFile("committed\n", "utf-8");
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+}
+
+async function readMergeJournal(path: string, root: string): Promise<CloudCompanyMergeJournal> {
+	const value: unknown = JSON.parse(await readFile(path, "utf-8"));
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Cloud merge journal is invalid");
+	const journal = value as Partial<CloudCompanyMergeJournal>;
+	if (
+		journal.schema !== MERGE_JOURNAL_SCHEMA ||
+		journal.companyRoot !== root ||
+		!Array.isArray(journal.localEntries) ||
+		!Array.isArray(journal.resultEntries) ||
+		typeof journal.createdAt !== "string" ||
+		!Number.isFinite(Date.parse(journal.createdAt))
+	) {
+		throw new Error("Cloud merge journal is invalid");
+	}
+	for (const entry of [...journal.localEntries, ...journal.resultEntries]) {
+		if (!entry || (entry.kind !== "file" && entry.kind !== "directory") || typeof entry.path !== "string") {
+			throw new Error("Cloud merge journal entry is invalid");
+		}
+		logicalPath(root, entry.path);
+	}
+	return journal as CloudCompanyMergeJournal;
+}
+
 async function rollbackMerge(
 	root: string,
 	backupRoot: string,
@@ -358,11 +473,120 @@ async function rollbackMerge(
 	}
 }
 
+async function recoverMergeTransaction(
+	root: string,
+	transactionRoot: string,
+	journal: CloudCompanyMergeJournal,
+): Promise<void> {
+	const local = entryMap(journal.localEntries);
+	const result = entryMap(journal.resultEntries);
+	const backupRoot = join(transactionRoot, "backup");
+	const paths = [...new Set([...local.keys(), ...result.keys()])].sort(comparePath);
+	for (const path of paths) {
+		const localEntry = local.get(path);
+		const resultEntry = result.get(path);
+		if (sameEntry(localEntry, resultEntry)) continue;
+		const target = logicalPath(root, path);
+		const backup = logicalPath(backupRoot, path);
+		if (localEntry?.kind === "file") {
+			if (!(await pathExists(backup))) continue;
+			await rm(target, { recursive: true, force: true });
+			await mkdir(dirname(target), { recursive: true });
+			await rename(backup, target);
+		} else if (resultEntry?.kind === "file") {
+			await rm(target, { recursive: true, force: true });
+		}
+	}
+	const localDirectories = new Set(
+		journal.localEntries.filter((entry) => entry.kind === "directory").map((entry) => entry.path),
+	);
+	const resultOnlyDirectories = journal.resultEntries
+		.filter((entry) => entry.kind === "directory" && !localDirectories.has(entry.path))
+		.map((entry) => entry.path)
+		.sort((left, right) => right.split("/").length - left.split("/").length);
+	for (const path of resultOnlyDirectories) {
+		try {
+			await rmdir(logicalPath(root, path));
+		} catch (error) {
+			if (!new Set(["ENOENT", "ENOTEMPTY", "EEXIST"]).has((error as NodeJS.ErrnoException).code ?? "")) throw error;
+		}
+	}
+	for (const path of [...localDirectories].sort((left, right) => left.split("/").length - right.split("/").length)) {
+		await mkdir(logicalPath(root, path), { recursive: true });
+	}
+}
+
+export async function recoverInterruptedCloudCompanyMerges(
+	companyRoot: string,
+	runtimeLock?: CompanyRuntimeLock,
+): Promise<void> {
+	const root = canonicalCompanyRoot(companyRoot);
+	if (
+		runtimeLock &&
+		(process.platform === "win32"
+			? resolve(runtimeLock.root).toLowerCase() !== resolve(root).toLowerCase()
+			: resolve(runtimeLock.root) !== resolve(root))
+	) {
+		throw new Error("Cloud company merge recovery lock belongs to another company");
+	}
+	const lock = runtimeLock ?? claimCompanyRuntimeLock(root);
+	try {
+		const transactionParent = join(root, ".qorpera", "w");
+		let entries: Dirent[];
+		try {
+			entries = await readdir(transactionParent, { withFileTypes: true });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw error;
+		}
+		for (const entry of entries) {
+			if (!entry.isDirectory() || !entry.name.startsWith("cloud-merge-")) continue;
+			const transactionRoot = join(transactionParent, entry.name);
+			const journalPath = join(transactionRoot, "journal.json");
+			if (!(await pathExists(journalPath))) {
+				await rm(transactionRoot, { recursive: true, force: true });
+				continue;
+			}
+			const journal = await readMergeJournal(journalPath, root);
+			if (await pathExists(join(transactionRoot, "committed"))) {
+				const physical = await inspectPhysicalTree(root);
+				if (
+					physicalTreeMatchesManifest(physical, {
+						schema: "qorpera.company-tree/v1",
+						contractVersion: 3,
+						omittedLayers: [],
+						entries: journal.resultEntries,
+					})
+				) {
+					await rm(transactionRoot, { recursive: true, force: true });
+					continue;
+				}
+			}
+			await recoverMergeTransaction(root, transactionRoot, journal);
+			const physical = await inspectPhysicalTree(root);
+			if (
+				!physicalTreeMatchesManifest(physical, {
+					schema: "qorpera.company-tree/v1",
+					contractVersion: 3,
+					omittedLayers: [],
+					entries: journal.localEntries,
+				})
+			) {
+				throw new Error("Interrupted Company File merge could not be rolled back exactly");
+			}
+			await rm(transactionRoot, { recursive: true, force: true });
+		}
+	} finally {
+		if (!runtimeLock) releaseCompanyRuntimeLock(lock);
+	}
+}
+
 async function applyPlannedMerge(
 	input: MergeCloudCompanySnapshotsInput,
 	planned: PlannedCloudCompanyMerge,
 ): Promise<void> {
 	const root = canonicalCompanyRoot(input.companyRoot);
+	await recoverInterruptedCloudCompanyMerges(root, input.runtimeLock);
 	const local = entryMap(planned.localManifest.entries);
 	const result = entryMap(planned.resultEntries);
 	const transaction = await stageChangedFiles(root, input.profileId, local, result, input.objects);
@@ -379,10 +603,12 @@ async function applyPlannedMerge(
 	}
 	const lock = suppliedLock ?? claimCompanyRuntimeLock(root);
 	let released = suppliedLock !== undefined;
+	let transactionCanBeRemoved = false;
 	try {
 		if (!physicalTreeMatchesManifest(await inspectPhysicalTree(root), planned.localManifest)) {
 			throw new Error("Company files changed after their last cloud checkpoint; publish them before merging");
 		}
+		await writeMergeJournal(transaction.transactionRoot, root, planned.localManifest.entries, planned.resultEntries);
 		for (const [path, entry] of local) {
 			if (entry.kind !== "file" || sameEntry(entry, result.get(path))) continue;
 			const backup = logicalPath(transaction.backupRoot, path);
@@ -406,10 +632,22 @@ async function applyPlannedMerge(
 			await rename(logicalPath(transaction.stagedRoot, path), target);
 			installedFiles.push(path);
 		}
+		if (
+			!physicalTreeMatchesManifest(await inspectPhysicalTree(root), {
+				schema: "qorpera.company-tree/v1",
+				contractVersion: 3,
+				omittedLayers: [],
+				entries: planned.resultEntries,
+			})
+		) {
+			throw new Error("Company File merge did not install the planned tree exactly");
+		}
+		await writeMergeCommitMarker(transaction.transactionRoot);
 		if (!suppliedLock) {
 			releaseCompanyRuntimeLock(lock);
 			released = true;
 		}
+		transactionCanBeRemoved = true;
 	} catch (error) {
 		let rollbackError: unknown;
 		try {
@@ -430,10 +668,11 @@ async function applyPlannedMerge(
 		if (rollbackError) {
 			throw new AggregateError([error, rollbackError], "Cloud company merge failed and rollback needs attention");
 		}
+		transactionCanBeRemoved = true;
 		throw error;
 	} finally {
 		if (!released && !suppliedLock) releaseCompanyRuntimeLock(lock);
-		await rm(transaction.transactionRoot, { recursive: true, force: true });
+		if (transactionCanBeRemoved) await rm(transaction.transactionRoot, { recursive: true, force: true });
 	}
 }
 
@@ -467,9 +706,108 @@ export async function mergeCloudCompanySnapshots(
 	input: MergeCloudCompanySnapshotsInput,
 ): Promise<MergeCloudCompanySnapshotsResult> {
 	const planned = await planCloudCompanyMerge(input);
-	if (planned.plan.conflicts.length > 0 || planned.plan.changedPaths.length === 0) {
+	if (planned.plan.conflicts.length > 0) {
+		return { applied: false, plan: planned.plan };
+	}
+	if (planned.plan.changedPaths.length === 0) {
 		return { applied: false, plan: planned.plan };
 	}
 	await applyPlannedMerge(input, planned);
 	return { applied: true, plan: planned.plan };
+}
+
+/** Three-way reconciles unpublished cache changes against a newer canonical
+ * Company File head. This is deliberately separate from workspace merging:
+ * the local candidate is a content-addressed tree, not another cloud head. */
+export async function reconcileCloudCompanyCache(
+	input: ReconcileCloudCompanyCacheInput,
+): Promise<MergeCloudCompanySnapshotsResult> {
+	const [base, remote, localLineage, remoteLineage] = await Promise.all([
+		input.primary.getCompanySnapshot(input.baseSnapshotId),
+		input.primary.getCompanySnapshot(input.remoteSnapshotId),
+		snapshotLineage(input.baseSnapshotId, input.profileId, input.environmentId, input.primary),
+		snapshotLineage(input.remoteSnapshotId, input.profileId, input.environmentId, input.primary),
+	]);
+	assertSnapshotScope(base, input.profileId, input.environmentId);
+	assertSnapshotScope(remote, input.profileId, input.environmentId);
+	const ancestorSnapshotId = [...remoteLineage.keys()].find((snapshotId) => localLineage.has(snapshotId));
+	if (!ancestorSnapshotId) throw new Error("Canonical Company File and legacy cache have no common ancestor");
+	const ancestor = localLineage.get(ancestorSnapshotId) as HostedCompanySnapshot;
+	const [baseManifest, localManifest, remoteManifest] = await Promise.all([
+		readCloudCompanyTreeManifest(input.profileId, currentCloudCompanyTreeReference(ancestor.tree), input.objects),
+		readCloudCompanyTreeManifest(input.profileId, input.localTree, input.objects),
+		readCloudCompanyTreeManifest(input.profileId, currentCloudCompanyTreeReference(remote.tree), input.objects),
+	]);
+	const planned = buildMergePlan(
+		ancestor.snapshotId,
+		input.localTree.manifestSha256,
+		remote.snapshotId,
+		baseManifest,
+		localManifest,
+		remoteManifest,
+	);
+	if (planned.plan.conflicts.length > 0) {
+		return { applied: false, plan: planned.plan };
+	}
+	if (planned.plan.changedPaths.length === 0) {
+		return { applied: false, plan: planned.plan };
+	}
+	await applyPlannedMerge(
+		{
+			companyRoot: input.companyRoot,
+			profileId: input.profileId,
+			environmentId: input.environmentId,
+			localSnapshotId: input.baseSnapshotId,
+			remoteSnapshotId: input.remoteSnapshotId,
+			primary: input.primary,
+			objects: input.objects,
+			...(input.runtimeLock ? { runtimeLock: input.runtimeLock } : {}),
+		},
+		planned,
+	);
+	return { applied: true, plan: planned.plan };
+}
+
+/** Installs the reviewed canonical version over a conflicting local cache.
+ * The stored local tree is an exact precondition, so edits made after the
+ * conflict was recorded can never be discarded by this action. */
+export async function replaceCloudCompanyCacheWithSnapshot(input: ReplaceCloudCompanyCacheInput): Promise<void> {
+	assertSnapshotScope(input.remoteSnapshot, input.profileId, input.environmentId);
+	const [localManifest, remoteManifest] = await Promise.all([
+		readCloudCompanyTreeManifest(input.profileId, input.localTree, input.objects),
+		readCloudCompanyTreeManifest(
+			input.profileId,
+			currentCloudCompanyTreeReference(input.remoteSnapshot.tree),
+			input.objects,
+		),
+	]);
+	const localEntries = entryMap(localManifest.entries);
+	const remoteEntries = entryMap(remoteManifest.entries);
+	await applyPlannedMerge(
+		{
+			companyRoot: input.companyRoot,
+			profileId: input.profileId,
+			environmentId: input.environmentId,
+			localSnapshotId: input.localTree.manifestSha256,
+			remoteSnapshotId: input.remoteSnapshot.snapshotId,
+			primary: {
+				getCompanySnapshot: async () => input.remoteSnapshot,
+			},
+			objects: input.objects,
+			...(input.runtimeLock ? { runtimeLock: input.runtimeLock } : {}),
+		},
+		{
+			plan: {
+				ancestorSnapshotId: input.remoteSnapshot.parentSnapshotId ?? input.remoteSnapshot.snapshotId,
+				localSnapshotId: input.localTree.manifestSha256,
+				remoteSnapshotId: input.remoteSnapshot.snapshotId,
+				changedPaths: [...new Set([...localManifest.entries, ...remoteManifest.entries].map((entry) => entry.path))]
+					.filter((path) => !sameEntry(localEntries.get(path), remoteEntries.get(path)))
+					.sort(comparePath),
+				conflicts: [],
+			},
+			localManifest,
+			resultEntries: remoteManifest.entries,
+		},
+	);
 }

@@ -1,5 +1,5 @@
 import type { StaffAgent } from "@qorpera/pi-coding-agent/company-staff";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue, KernelExecutionIdentity } from "@qorpera/pi-protocol";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -124,6 +124,11 @@ export interface HostedSession {
 	title: string;
 	staffAgentId?: string;
 	parentSessionId?: string;
+	executionScope?: JsonValue;
+	/** Immutable Company File revision used as this session's input base. */
+	companySnapshotId?: string;
+	/** Immutable hosted staff configuration version used at session start. */
+	staffVersion?: number;
 	status: "open" | "closed";
 	createdByUserId: string;
 	createdAt: string;
@@ -139,6 +144,7 @@ export interface HostedSessionEvent {
 	body: JsonValue;
 	previousHash?: string;
 	eventHash: string;
+	execution?: KernelExecutionIdentity;
 	createdAt: string;
 }
 
@@ -176,6 +182,26 @@ export interface HostedCompanySnapshot {
 	};
 	createdByUserId: string;
 	createdAt: string;
+	publicationState?: "prepared" | "published";
+}
+
+export interface HostedCompanyFile {
+	profileId: string;
+	environmentId: string;
+	canonicalWorkspaceId: string;
+	headSnapshotId?: string;
+	state: "provisioning" | "ready";
+	logicalBytes: number;
+	retainedStorageBytes: number;
+	storageUsedBytes: number;
+	storageLimitBytes: number;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface CreatedHostedCompany {
+	profile: HostedProfile;
+	companyFile: HostedCompanyFile;
 }
 
 export interface HostedCompanySubstrateVersion {
@@ -348,12 +374,38 @@ export interface CreateHostedProfileInput {
 	promotionId?: string;
 }
 
+export interface CreateHostedCompanyInput {
+	clientCreationId: string;
+	companyName: string;
+	contractVersion: number;
+}
+
+export interface HostedOperationExecution {
+	kind: "turn" | "wake";
+	id: string;
+	claimantId: string;
+}
+
+export interface HostedPresenceIdentity {
+	clientId: string;
+	userId: string;
+	name: string;
+}
+
+export type HostedOperationReceiptBegin =
+	| { started: true; status: "executing" }
+	| { started: false; status: "executing" }
+	| { started: false; status: "completed"; result: JsonValue };
+
 export interface CreateHostedSessionInput {
 	environmentId: string;
 	clientSessionId: string;
 	title: string;
 	staffAgentId?: string;
 	parentSessionId?: string;
+	executionScope?: JsonValue;
+	companySnapshotId?: string;
+	staffVersion?: number;
 }
 
 export interface AppendHostedSessionEventInput {
@@ -363,6 +415,7 @@ export interface AppendHostedSessionEventInput {
 	body: JsonValue;
 	/** Last sequence observed by the caller. The append fails if the trail advanced. */
 	expectedSequence?: number;
+	execution?: KernelExecutionIdentity;
 }
 
 export interface EnsureHostedCompanyWorkspaceInput {
@@ -383,6 +436,13 @@ export interface CommitHostedCompanySnapshotInput {
 		fileCount: number;
 		totalBytes: number;
 	};
+}
+
+export interface PrepareHostedCompanyFileRevisionInput {
+	environmentId: string;
+	clientRevisionId: string;
+	expectedHeadSnapshotId?: string;
+	tree: CommitHostedCompanySnapshotInput["tree"];
 }
 
 export interface CaptureHostedCompanySubstrateVersionInput {
@@ -422,6 +482,11 @@ export interface BeginHostedObjectReachabilityGraphInput {
 }
 
 export interface HostedPrimaryTransport {
+	createCompany(input: {
+		p_client_creation_id: string;
+		p_company_name: string;
+		p_contract_version: number;
+	}): Promise<unknown>;
 	createProfile(input: {
 		p_profile_name: string;
 		p_environment_name: string;
@@ -478,7 +543,11 @@ export interface HostedPrimaryTransport {
 		p_title: string;
 		p_staff_agent_id: string | null;
 		p_parent_session_id: string | null;
+		p_execution_scope: JsonValue;
+		p_company_snapshot_id: string | null;
+		p_staff_version: number | null;
 	}): Promise<unknown>;
+	closeSession(input: { p_session_id: string }): Promise<unknown>;
 	listSessions(input: { p_environment_id: string }): Promise<unknown>;
 	ensureStaffSession(input: {
 		p_environment_id: string;
@@ -492,14 +561,41 @@ export interface HostedPrimaryTransport {
 		p_kind: "user_message";
 		p_body: JsonValue;
 	}): Promise<unknown>;
-	claimSessionTurn(input: { p_session_id: string; p_claimant_id: string; p_lease_seconds: number }): Promise<unknown>;
-	renewSessionTurn(input: { p_session_id: string; p_claimant_id: string; p_lease_seconds: number }): Promise<unknown>;
-	completeSessionTurn(input: { p_session_id: string; p_claimant_id: string }): Promise<unknown>;
+	listSessionInputs(input: { p_session_id: string; p_after_position: number; p_limit: number }): Promise<unknown>;
+	claimSessionTurn(input: {
+		p_session_id: string;
+		p_claimant_id: string;
+		p_lease_seconds: number;
+		p_company_snapshot_id: string;
+		p_staff_version: number;
+	}): Promise<unknown>;
+	renewSessionTurn(input: {
+		p_session_id: string;
+		p_turn_id: string;
+		p_claimant_id: string;
+		p_lease_seconds: number;
+	}): Promise<unknown>;
+	completeSessionTurn(input: {
+		p_session_id: string;
+		p_turn_id: string;
+		p_claimant_id: string;
+		p_trail_end_sequence: number;
+	}): Promise<unknown>;
+	quarantineSessionTurn(input: {
+		p_session_id: string;
+		p_turn_id: string;
+		p_claimant_id: string;
+		p_reason: string;
+	}): Promise<unknown>;
+	getSessionTurnStatus(input: { p_session_id: string; p_turn_id: string; p_claimant_id: string }): Promise<unknown>;
 	claimWake(input: {
 		p_environment_id: string;
 		p_wake_key: string;
 		p_claimant_id: string;
 		p_lease_seconds: number;
+		p_staff_agent_id: string;
+		p_company_snapshot_id: string;
+		p_staff_version: number;
 	}): Promise<unknown>;
 	renewWake(input: {
 		p_environment_id: string;
@@ -508,6 +604,29 @@ export interface HostedPrimaryTransport {
 		p_lease_seconds: number;
 	}): Promise<unknown>;
 	completeWake(input: { p_environment_id: string; p_wake_key: string; p_claimant_id: string }): Promise<unknown>;
+	beginOperationReceipt(input: {
+		p_execution_kind: HostedOperationExecution["kind"];
+		p_execution_id: string;
+		p_claimant_id: string;
+		p_operation_id: string;
+		p_operation_kind: string;
+		p_input_sha256: string;
+	}): Promise<unknown>;
+	stageOperationReceiptObjects(input: {
+		p_execution_id: string;
+		p_claimant_id: string;
+		p_operation_id: string;
+		p_objects: JsonValue;
+	}): Promise<unknown>;
+	completeOperationReceipt(input: {
+		p_execution_id: string;
+		p_claimant_id: string;
+		p_operation_id: string;
+		p_result: JsonValue;
+	}): Promise<unknown>;
+	registerPresenceDevice(input: { p_profile_id: string; p_client_id: string }): Promise<unknown>;
+	listPresenceDevices(input: { p_profile_id: string; p_client_ids: string[] }): Promise<unknown>;
+	unregisterPresenceDevice(input: { p_profile_id: string; p_client_id: string }): Promise<unknown>;
 	sendFriendRequest(input: { p_email: string }): Promise<unknown>;
 	listFriends(): Promise<unknown>;
 	respondFriendRequest(input: { p_user_id: string; p_accept: boolean }): Promise<unknown>;
@@ -518,8 +637,27 @@ export interface HostedPrimaryTransport {
 		p_event_type: HostedSessionEventType;
 		p_body: JsonValue;
 		p_expected_sequence: number | null;
+		p_execution_kind: KernelExecutionIdentity["kind"] | null;
+		p_execution_id: string | null;
+		p_execution_claimant_id: string | null;
 	}): Promise<unknown>;
 	readSessionEvents(input: { p_session_id: string; p_after_sequence: number; p_limit: number }): Promise<unknown>;
+	getCompanyFile(input: { p_environment_id: string }): Promise<unknown>;
+	prepareCompanyFileRevision(input: {
+		p_environment_id: string;
+		p_client_revision_id: string;
+		p_expected_head_snapshot_id: string | null;
+		p_tree_manifest_sha256: string;
+		p_tree_manifest_bytes: number;
+		p_tree_contract_version: number;
+		p_file_count: number;
+		p_total_bytes: number;
+	}): Promise<unknown>;
+	publishCompanyFileRevision(input: {
+		p_environment_id: string;
+		p_snapshot_id: string;
+		p_expected_head_snapshot_id: string | null;
+	}): Promise<unknown>;
 	ensureCompanyWorkspace(input: {
 		p_environment_id: string;
 		p_client_workspace_id: string;
@@ -584,6 +722,7 @@ export interface HostedPrimaryTransport {
 	appendObjectReachabilityEntries(input: { p_graph_id: string; p_entries: JsonValue }): Promise<unknown>;
 	completeObjectReachabilityGraph(input: { p_graph_id: string }): Promise<unknown>;
 	getObjectReachabilityGraph(input: { p_graph_id: string }): Promise<unknown>;
+	verifyCompanySnapshotClosure(input: { snapshotId: string; graphId: string }): Promise<unknown>;
 	createObjectRestoreProof(input: {
 		p_graph_id: string;
 		p_client_proof_id: string;
@@ -609,6 +748,14 @@ export interface HostedPrimaryDatabase {
 		Tables: Record<never, never>;
 		Views: Record<never, never>;
 		Functions: {
+			qorpera_create_cloud_company: {
+				Args: {
+					p_client_creation_id: string;
+					p_company_name: string;
+					p_contract_version: number;
+				};
+				Returns: JsonValue;
+			};
 			qorpera_create_hosted_profile: {
 				Args: {
 					p_profile_name: string;
@@ -683,16 +830,20 @@ export interface HostedPrimaryDatabase {
 				};
 				Returns: JsonValue;
 			};
-			qorpera_create_shared_session_v2: {
+			qorpera_create_shared_session_v4: {
 				Args: {
 					p_environment_id: string;
 					p_client_session_id: string;
 					p_title: string;
 					p_staff_agent_id: string | null;
 					p_parent_session_id: string | null;
+					p_execution_scope: JsonValue;
+					p_company_snapshot_id: string | null;
+					p_staff_version: number | null;
 				};
 				Returns: JsonValue;
 			};
+			qorpera_close_shared_session: { Args: { p_session_id: string }; Returns: JsonValue };
 			qorpera_list_shared_sessions: { Args: { p_environment_id: string }; Returns: JsonValue };
 			qorpera_ensure_staff_session: {
 				Args: { p_environment_id: string; p_staff_agent_id: string; p_client_session_id: string; p_title: string };
@@ -702,20 +853,51 @@ export interface HostedPrimaryDatabase {
 				Args: { p_session_id: string; p_client_input_id: string; p_kind: string; p_body: JsonValue };
 				Returns: JsonValue;
 			};
+			qorpera_list_session_inputs: {
+				Args: { p_session_id: string; p_after_position: number; p_limit: number };
+				Returns: JsonValue;
+			};
 			qorpera_claim_session_turn: {
-				Args: { p_session_id: string; p_claimant_id: string; p_lease_seconds: number };
+				Args: {
+					p_session_id: string;
+					p_claimant_id: string;
+					p_lease_seconds: number;
+					p_company_snapshot_id: string;
+					p_staff_version: number;
+				};
 				Returns: JsonValue;
 			};
-			qorpera_renew_session_turn: {
-				Args: { p_session_id: string; p_claimant_id: string; p_lease_seconds: number };
+			qorpera_renew_session_turn_v2: {
+				Args: { p_session_id: string; p_turn_id: string; p_claimant_id: string; p_lease_seconds: number };
 				Returns: JsonValue;
 			};
-			qorpera_complete_session_turn: {
-				Args: { p_session_id: string; p_claimant_id: string };
+			qorpera_complete_session_turn_v2: {
+				Args: {
+					p_session_id: string;
+					p_turn_id: string;
+					p_claimant_id: string;
+					p_trail_end_sequence: number;
+				};
 				Returns: JsonValue;
 			};
-			qorpera_claim_wake: {
-				Args: { p_environment_id: string; p_wake_key: string; p_claimant_id: string; p_lease_seconds: number };
+			qorpera_quarantine_session_turn: {
+				Args: { p_session_id: string; p_turn_id: string; p_claimant_id: string; p_reason: string };
+				Returns: JsonValue;
+			};
+			qorpera_get_session_turn_status: {
+				Args: { p_session_id: string; p_turn_id: string; p_claimant_id: string };
+				Returns: JsonValue;
+			};
+			qorpera_claim_wake_v2: {
+				Args: {
+					p_environment_id: string;
+					p_wake_key: string;
+					p_claimant_id: string;
+					p_lease_seconds: number;
+					p_staff_agent_id: string;
+					p_company_snapshot_id: string;
+					p_staff_version: number;
+				};
 				Returns: JsonValue;
 			};
 			qorpera_renew_wake: {
@@ -725,6 +907,47 @@ export interface HostedPrimaryDatabase {
 			qorpera_complete_wake: {
 				Args: { p_environment_id: string; p_wake_key: string; p_claimant_id: string };
 				Returns: JsonValue;
+			};
+			qorpera_begin_operation_receipt: {
+				Args: {
+					p_execution_kind: HostedOperationExecution["kind"];
+					p_execution_id: string;
+					p_claimant_id: string;
+					p_operation_id: string;
+					p_operation_kind: string;
+					p_input_sha256: string;
+				};
+				Returns: JsonValue;
+			};
+			qorpera_stage_operation_receipt_objects: {
+				Args: {
+					p_execution_id: string;
+					p_claimant_id: string;
+					p_operation_id: string;
+					p_objects: JsonValue;
+				};
+				Returns: JsonValue;
+			};
+			qorpera_complete_operation_receipt: {
+				Args: {
+					p_execution_id: string;
+					p_claimant_id: string;
+					p_operation_id: string;
+					p_result: JsonValue;
+				};
+				Returns: JsonValue;
+			};
+			qorpera_register_presence_device: {
+				Args: { p_profile_id: string; p_client_id: string };
+				Returns: JsonValue;
+			};
+			qorpera_list_presence_devices: {
+				Args: { p_profile_id: string; p_client_ids: string[] };
+				Returns: JsonValue;
+			};
+			qorpera_unregister_presence_device: {
+				Args: { p_profile_id: string; p_client_id: string };
+				Returns: undefined;
 			};
 			qorpera_send_friend_request: { Args: { p_email: string }; Returns: JsonValue };
 			qorpera_list_friends: { Args: Record<string, never>; Returns: JsonValue };
@@ -737,11 +960,36 @@ export interface HostedPrimaryDatabase {
 					p_event_type: HostedSessionEventType;
 					p_body: JsonValue;
 					p_expected_sequence: number | null;
+					p_execution_kind: KernelExecutionIdentity["kind"] | null;
+					p_execution_id: string | null;
+					p_execution_claimant_id: string | null;
 				};
 				Returns: JsonValue;
 			};
 			qorpera_read_session_events: {
 				Args: { p_session_id: string; p_after_sequence: number; p_limit: number };
+				Returns: JsonValue;
+			};
+			qorpera_get_company_file: { Args: { p_environment_id: string }; Returns: JsonValue };
+			qorpera_prepare_company_file_revision: {
+				Args: {
+					p_environment_id: string;
+					p_client_revision_id: string;
+					p_expected_head_snapshot_id: string | null;
+					p_tree_manifest_sha256: string;
+					p_tree_manifest_bytes: number;
+					p_tree_contract_version: number;
+					p_file_count: number;
+					p_total_bytes: number;
+				};
+				Returns: JsonValue;
+			};
+			qorpera_publish_company_file_revision: {
+				Args: {
+					p_environment_id: string;
+					p_snapshot_id: string;
+					p_expected_head_snapshot_id: string | null;
+				};
 				Returns: JsonValue;
 			};
 			qorpera_ensure_company_workspace: {
@@ -893,6 +1141,12 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		this.client = client;
 	}
 
+	async createCompany(input: Parameters<HostedPrimaryTransport["createCompany"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_create_cloud_company", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
 	async createProfile(input: Parameters<HostedPrimaryTransport["createProfile"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_create_hosted_profile", input);
 		if (error) throw rpcError(error);
@@ -959,6 +1213,12 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		return data;
 	}
 
+	async listSessionInputs(input: Parameters<HostedPrimaryTransport["listSessionInputs"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_list_session_inputs", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
 	async claimSessionTurn(input: Parameters<HostedPrimaryTransport["claimSessionTurn"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_claim_session_turn", input);
 		if (error) throw rpcError(error);
@@ -966,19 +1226,33 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 	}
 
 	async renewSessionTurn(input: Parameters<HostedPrimaryTransport["renewSessionTurn"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_renew_session_turn", input);
+		const { data, error } = await this.client.rpc("qorpera_renew_session_turn_v2", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
 
 	async completeSessionTurn(input: Parameters<HostedPrimaryTransport["completeSessionTurn"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_complete_session_turn", input);
+		const { data, error } = await this.client.rpc("qorpera_complete_session_turn_v2", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async quarantineSessionTurn(
+		input: Parameters<HostedPrimaryTransport["quarantineSessionTurn"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_quarantine_session_turn", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async getSessionTurnStatus(input: Parameters<HostedPrimaryTransport["getSessionTurnStatus"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_get_session_turn_status", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
 
 	async claimWake(input: Parameters<HostedPrimaryTransport["claimWake"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_claim_wake", input);
+		const { data, error } = await this.client.rpc("qorpera_claim_wake_v2", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -991,6 +1265,52 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 
 	async completeWake(input: Parameters<HostedPrimaryTransport["completeWake"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_complete_wake", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async beginOperationReceipt(
+		input: Parameters<HostedPrimaryTransport["beginOperationReceipt"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_begin_operation_receipt", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async stageOperationReceiptObjects(
+		input: Parameters<HostedPrimaryTransport["stageOperationReceiptObjects"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_stage_operation_receipt_objects", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async completeOperationReceipt(
+		input: Parameters<HostedPrimaryTransport["completeOperationReceipt"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_complete_operation_receipt", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async registerPresenceDevice(
+		input: Parameters<HostedPrimaryTransport["registerPresenceDevice"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_register_presence_device", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async listPresenceDevices(input: Parameters<HostedPrimaryTransport["listPresenceDevices"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_list_presence_devices", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async unregisterPresenceDevice(
+		input: Parameters<HostedPrimaryTransport["unregisterPresenceDevice"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_unregister_presence_device", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -1064,7 +1384,13 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 	}
 
 	async createSession(input: Parameters<HostedPrimaryTransport["createSession"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_create_shared_session_v2", input);
+		const { data, error } = await this.client.rpc("qorpera_create_shared_session_v4", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async closeSession(input: Parameters<HostedPrimaryTransport["closeSession"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_close_shared_session", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -1083,6 +1409,28 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 
 	async readSessionEvents(input: Parameters<HostedPrimaryTransport["readSessionEvents"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_read_session_events", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async getCompanyFile(input: Parameters<HostedPrimaryTransport["getCompanyFile"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_get_company_file", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async prepareCompanyFileRevision(
+		input: Parameters<HostedPrimaryTransport["prepareCompanyFileRevision"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_prepare_company_file_revision", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async publishCompanyFileRevision(
+		input: Parameters<HostedPrimaryTransport["publishCompanyFileRevision"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_publish_company_file_revision", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -1227,6 +1575,16 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		return data;
 	}
 
+	async verifyCompanySnapshotClosure(
+		input: Parameters<HostedPrimaryTransport["verifyCompanySnapshotClosure"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.functions.invoke("company-file-verifier", {
+			body: input,
+		});
+		if (error) throw new Error(error.message);
+		return data;
+	}
+
 	async getObjectReachabilityGraph(
 		input: Parameters<HostedPrimaryTransport["getObjectReachabilityGraph"]>[0],
 	): Promise<unknown> {
@@ -1363,6 +1721,58 @@ function parseProfile(value: unknown): HostedProfile {
 	};
 }
 
+function parseCompanyFile(value: unknown): HostedCompanyFile {
+	const input = record(value, "company file");
+	const headSnapshotId = input.head_snapshot_id;
+	const state = input.state;
+	if (state !== "provisioning" && state !== "ready") {
+		throw new Error("Hosted primary returned invalid company file state");
+	}
+	if ((state === "ready") !== (typeof headSnapshotId === "string")) {
+		throw new Error("Hosted primary returned inconsistent company file state");
+	}
+	return {
+		profileId: uuid(input.profile_id, "company file profile id"),
+		environmentId: uuid(input.environment_id, "company file environment id"),
+		canonicalWorkspaceId: uuid(input.canonical_workspace_id, "company file workspace id"),
+		...(typeof headSnapshotId === "string"
+			? { headSnapshotId: uuid(headSnapshotId, "company file head snapshot id") }
+			: {}),
+		state,
+		logicalBytes: boundedInteger(input.logical_bytes, "company file logical bytes", 0, MAX_TREE_BYTES),
+		retainedStorageBytes: boundedInteger(
+			input.retained_storage_bytes,
+			"company file retained storage",
+			0,
+			MAX_REACHABILITY_STORAGE_BYTES,
+		),
+		storageUsedBytes: boundedInteger(
+			input.storage_used_bytes,
+			"company file storage usage",
+			0,
+			MAX_REACHABILITY_STORAGE_BYTES,
+		),
+		storageLimitBytes: boundedInteger(
+			input.storage_limit_bytes,
+			"company file storage allowance",
+			1,
+			MAX_REACHABILITY_STORAGE_BYTES,
+		),
+		createdAt: timestamp(input.created_at, "company file creation time"),
+		updatedAt: timestamp(input.updated_at, "company file update time"),
+	};
+}
+
+function parseCreatedCompany(value: unknown): CreatedHostedCompany {
+	const input = record(value, "created company");
+	const profile = parseProfile(input);
+	const companyFile = parseCompanyFile(input.company_file);
+	if (profile.profileId !== companyFile.profileId || profile.environmentId !== companyFile.environmentId) {
+		throw new Error("Hosted primary returned a Company File outside the created company");
+	}
+	return { profile, companyFile };
+}
+
 function parseInvitationDelivery(value: unknown): HostedProfileInvitation["delivery"] {
 	const delivery = record(value, "invitation delivery");
 	const deliveryStatus = invitationDeliveryStatus(delivery.status);
@@ -1474,6 +1884,17 @@ function parseSession(value: unknown): HostedSession {
 	if (status !== "open" && status !== "closed") throw new Error("Hosted primary returned invalid session status");
 	const staffAgentId = input.staff_agent_id;
 	const parentSessionId = input.parent_session_id;
+	const companySnapshotId = input.company_snapshot_id;
+	const staffVersion = input.staff_version;
+	const executionScope = input.execution_scope;
+	const parsedExecutionScope =
+		executionScope === null || executionScope === undefined ? undefined : jsonValue(executionScope);
+	if (
+		parsedExecutionScope !== undefined &&
+		(typeof parsedExecutionScope !== "object" || Array.isArray(parsedExecutionScope))
+	) {
+		throw new Error("Hosted primary returned invalid session execution scope");
+	}
 	return {
 		sessionId: uuid(input.session_id, "session id"),
 		clientSessionId: uuid(input.client_session_id, "client session id"),
@@ -1486,6 +1907,13 @@ function parseSession(value: unknown): HostedSession {
 		...(parentSessionId === null || parentSessionId === undefined
 			? {}
 			: { parentSessionId: uuid(parentSessionId, "parent session id") }),
+		...(parsedExecutionScope === undefined ? {} : { executionScope: parsedExecutionScope }),
+		...(companySnapshotId === null || companySnapshotId === undefined
+			? {}
+			: { companySnapshotId: uuid(companySnapshotId, "session company snapshot id") }),
+		...(staffVersion === null || staffVersion === undefined
+			? {}
+			: { staffVersion: boundedInteger(staffVersion, "session staff version", 1, Number.MAX_SAFE_INTEGER) }),
 		status,
 		createdByUserId: uuid(input.created_by_user_id, "session creator id"),
 		createdAt: timestamp(input.created_at, "session creation time"),
@@ -1579,6 +2007,17 @@ function parseEvent(value: unknown): HostedSessionEvent {
 	if (typeof input.event_hash !== "string" || !SHA256_PATTERN.test(input.event_hash)) {
 		throw new Error("Hosted primary returned invalid event hash");
 	}
+	const executionKind = input.execution_kind;
+	const executionId = input.execution_id;
+	const executionClaimantId = input.execution_claimant_id;
+	if (
+		(executionKind === null || executionKind === undefined) !== (executionId === null || executionId === undefined) ||
+		(executionKind === null || executionKind === undefined) !==
+			(executionClaimantId === null || executionClaimantId === undefined) ||
+		(executionKind !== null && executionKind !== undefined && executionKind !== "turn" && executionKind !== "wake")
+	) {
+		throw new Error("Hosted primary returned invalid event execution identity");
+	}
 	return {
 		sessionId: uuid(input.session_id, "event session id"),
 		sequence: sequence as number,
@@ -1588,6 +2027,15 @@ function parseEvent(value: unknown): HostedSessionEvent {
 		body: jsonValue(input.body),
 		...(typeof previousHash === "string" ? { previousHash } : {}),
 		eventHash: input.event_hash,
+		...(executionKind === "turn" || executionKind === "wake"
+			? {
+					execution: {
+						kind: executionKind,
+						id: uuid(executionId, "event execution id"),
+						claimantId: uuid(executionClaimantId, "event execution claimant id"),
+					},
+				}
+			: {}),
 		createdAt: timestamp(input.created_at, "event creation time"),
 	};
 }
@@ -1620,8 +2068,17 @@ function boundedInteger(value: unknown, label: string, minimum: number, maximum:
 function parseCompanySnapshot(value: unknown): HostedCompanySnapshot {
 	const input = record(value, "company snapshot");
 	const parentSnapshotId = input.parent_snapshot_id;
+	const publicationState = input.publication_state;
 	if (typeof input.tree_manifest_sha256 !== "string" || !SHA256_PATTERN.test(input.tree_manifest_sha256)) {
 		throw new Error("Hosted primary returned invalid company tree manifest hash");
+	}
+	if (
+		publicationState !== undefined &&
+		publicationState !== null &&
+		publicationState !== "prepared" &&
+		publicationState !== "published"
+	) {
+		throw new Error("Hosted primary returned invalid company snapshot publication state");
 	}
 	return {
 		snapshotId: uuid(input.snapshot_id, "company snapshot id"),
@@ -1640,12 +2097,13 @@ function parseCompanySnapshot(value: unknown): HostedCompanySnapshot {
 				1,
 				MAX_TREE_MANIFEST_BYTES,
 			),
-			contractVersion: boundedInteger(input.tree_contract_version, "company tree contract version", 1, 1_000_000),
+			contractVersion: boundedInteger(input.tree_contract_version, "company tree contract version", 1, 3),
 			fileCount: boundedInteger(input.file_count, "company tree file count", 0, MAX_TREE_FILES),
 			totalBytes: boundedInteger(input.total_bytes, "company tree total bytes", 0, MAX_TREE_BYTES),
 		},
 		createdByUserId: uuid(input.created_by_user_id, "company snapshot creator id"),
 		createdAt: timestamp(input.created_at, "company snapshot creation time"),
+		...(publicationState === "prepared" || publicationState === "published" ? { publicationState } : {}),
 	};
 }
 
@@ -2055,6 +2513,8 @@ export interface StaffSessionHandle {
 	sessionId: string;
 	environmentId: string;
 	title: string;
+	companySnapshotId?: string;
+	staffVersion?: number;
 	created: boolean;
 	createdByUserId: string;
 }
@@ -2064,20 +2524,63 @@ export interface SessionTurnInput {
 	position: number;
 	kind: "kickoff" | "user_message";
 	authorUserId: string;
+	authorDisplayName: string;
 	body: JsonValue;
 	createdAt: string;
 }
 
+export interface SessionInputReceipt {
+	inputId: string;
+	position: number;
+}
+
+export interface PendingSessionInput extends SessionTurnInput {
+	status: "queued" | "processing" | "failed";
+	failureReason?: string;
+}
+
+export interface PendingSessionInputPage {
+	items: PendingSessionInput[];
+	nextAfterPosition: number;
+	hasMore: boolean;
+}
+
 export type SessionTurnClaim =
-	| { claimed: true; inputs: SessionTurnInput[] }
-	| { claimed: false; reason: "turn-in-flight" | "queue-empty" };
+	| { claimed: true; turnId: string; companySnapshotId: string; staffVersion: number; inputs: SessionTurnInput[] }
+	| { claimed: false; reason: "turn-in-flight" | "queue-empty" | "stale-revision" };
+
+export type SessionTurnStatus =
+	| { status: "unavailable" }
+	| { status: "active" | "completed" | "quarantined"; inputCount: number; remainingInputCount: number };
+
+export class SessionTurnOwnershipError extends Error {
+	constructor(action: "renew" | "complete") {
+		super(`Session turn ownership was lost before ${action}`);
+		this.name = "SessionTurnOwnershipError";
+	}
+}
+
+export class WakeOwnershipError extends Error {
+	constructor(action: "renew" | "complete") {
+		super(`Wake ownership was lost before ${action}`);
+		this.name = "WakeOwnershipError";
+	}
+}
 
 function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
 	const payload = record(value, "staff session");
+	const companySnapshotId = payload.company_snapshot_id;
+	const staffVersion = payload.staff_version;
 	return {
 		sessionId: uuid(payload.session_id, "Session id"),
 		environmentId: uuid(payload.environment_id, "Environment id"),
 		title: String(payload.title ?? ""),
+		...(companySnapshotId === null || companySnapshotId === undefined
+			? {}
+			: { companySnapshotId: uuid(companySnapshotId, "Session Company File revision") }),
+		...(staffVersion === null || staffVersion === undefined
+			? {}
+			: { staffVersion: boundedInteger(staffVersion, "Session staff version", 1, Number.MAX_SAFE_INTEGER) }),
 		created: payload.created === true,
 		createdByUserId: uuid(payload.created_by_user_id, "Session creator"),
 	};
@@ -2086,30 +2589,109 @@ function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
 function parseSessionTurnClaim(value: unknown): SessionTurnClaim {
 	const payload = record(value, "session turn claim");
 	if (payload.claimed !== true) {
-		const reason = payload.reason === "turn-in-flight" ? "turn-in-flight" : "queue-empty";
+		const reason =
+			payload.reason === "turn-in-flight"
+				? "turn-in-flight"
+				: payload.reason === "stale-revision"
+					? "stale-revision"
+					: "queue-empty";
 		return { claimed: false, reason };
 	}
-	const inputs = array(payload.inputs, "session turn inputs").map((entry) => {
+	return {
+		claimed: true,
+		turnId: uuid(payload.turn_id, "session turn id"),
+		companySnapshotId: uuid(payload.company_snapshot_id, "claimed Company File revision"),
+		staffVersion: boundedInteger(payload.staff_version, "claimed staff version", 1, Number.MAX_SAFE_INTEGER),
+		inputs: parseSessionInputs(payload.inputs, "session turn inputs"),
+	};
+}
+
+function parseOperationReceiptBegin(value: unknown): HostedOperationReceiptBegin {
+	const receipt = record(value, "operation receipt");
+	if (receipt.status === "completed") {
+		if (receipt.started !== false) throw new Error("Hosted primary returned inconsistent operation receipt");
+		return { started: false, status: "completed", result: jsonValue(receipt.result) };
+	}
+	if (receipt.status !== "executing" || typeof receipt.started !== "boolean" || receipt.result != null) {
+		throw new Error("Hosted primary returned invalid operation receipt");
+	}
+	return { started: receipt.started, status: "executing" };
+}
+
+function parsePresenceIdentity(value: unknown): HostedPresenceIdentity {
+	const identity = record(value, "presence identity");
+	return {
+		clientId: uuid(identity.client_id, "Presence client id"),
+		userId: uuid(identity.user_id, "Presence user id"),
+		name: nonEmptyString(identity.name, "Presence display name", 256),
+	};
+}
+
+function parseSessionInputs(value: unknown, label: string): SessionTurnInput[] {
+	return array(value, label).map((entry) => {
 		const input = record(entry, "session turn input");
 		const kind = input.kind === "kickoff" ? "kickoff" : "user_message";
 		return {
 			inputId: uuid(input.input_id, "Input id"),
-			position: Number(input.position),
+			position: boundedInteger(input.position, "Input position", 1, Number.MAX_SAFE_INTEGER),
 			kind: kind as SessionTurnInput["kind"],
 			authorUserId: uuid(input.author_user_id, "Input author"),
+			authorDisplayName: nonEmptyString(input.author_display_name, "Input author display name", 256),
 			body: jsonValue(input.body ?? {}),
 			createdAt: timestamp(input.created_at, "Input created at"),
 		};
 	});
-	return { claimed: true, inputs };
 }
 
-export type WakeClaimResult = { claimed: true } | { claimed: false; reason: "in-flight" | "already-run" };
+function parsePendingSessionInputs(value: unknown): PendingSessionInputPage {
+	const page = record(value, "pending session input page");
+	const entries = array(page.items, "pending session inputs");
+	const items = parseSessionInputs(entries, "pending session inputs").map((input, index) => {
+		const raw = record(entries[index], "pending session input");
+		const status: PendingSessionInput["status"] =
+			raw.status === "processing" ? "processing" : raw.status === "failed" ? "failed" : "queued";
+		return {
+			...input,
+			status,
+			...(typeof raw.failure_reason === "string"
+				? { failureReason: nonEmptyString(raw.failure_reason, "Input failure reason", 2048) }
+				: {}),
+		};
+	});
+	return {
+		items,
+		nextAfterPosition: boundedInteger(
+			page.next_after_position,
+			"Pending session input cursor",
+			0,
+			Number.MAX_SAFE_INTEGER,
+		),
+		hasMore: page.has_more === true,
+	};
+}
+
+export type WakeClaimResult =
+	| { claimed: true; executionId: string; companySnapshotId: string; staffVersion: number }
+	| { claimed: false; reason: "in-flight" | "already-run" | "stale-revision" | "requires-review" };
 
 function parseWakeClaimResult(value: unknown): WakeClaimResult {
 	const payload = record(value, "wake claim");
-	if (payload.claimed === true) return { claimed: true };
-	const reason = payload.reason === "already-run" ? "already-run" : "in-flight";
+	if (payload.claimed === true) {
+		return {
+			claimed: true,
+			executionId: uuid(payload.execution_id, "wake execution id"),
+			companySnapshotId: uuid(payload.company_snapshot_id, "wake company snapshot id"),
+			staffVersion: boundedInteger(payload.staff_version, "wake staff version", 1, Number.MAX_SAFE_INTEGER),
+		};
+	}
+	const reason =
+		payload.reason === "requires-review"
+			? "requires-review"
+			: payload.reason === "already-run"
+				? "already-run"
+				: payload.reason === "stale-revision"
+					? "stale-revision"
+					: "in-flight";
 	return { claimed: false, reason };
 }
 
@@ -2141,6 +2723,20 @@ export class QorperaHostedPrimary {
 
 	constructor(transport: HostedPrimaryTransport) {
 		this.transport = transport;
+	}
+
+	async createCompany(input: CreateHostedCompanyInput): Promise<CreatedHostedCompany> {
+		requiredUuid(input.clientCreationId, "Company creation id");
+		if (!Number.isSafeInteger(input.contractVersion) || input.contractVersion < 1) {
+			throw new Error("Environment contract version must be a positive integer");
+		}
+		return parseCreatedCompany(
+			await this.transport.createCompany({
+				p_client_creation_id: input.clientCreationId,
+				p_company_name: requiredText(input.companyName, "Company name", MAX_PROFILE_NAME_LENGTH),
+				p_contract_version: input.contractVersion,
+			}),
+		);
 	}
 
 	async createProfile(input: CreateHostedProfileInput): Promise<HostedProfile> {
@@ -2231,59 +2827,170 @@ export class QorperaHostedPrimary {
 		);
 	}
 
-	async appendSessionInput(sessionId: string, clientInputId: string, body: JsonValue): Promise<void> {
+	async appendSessionInput(sessionId: string, clientInputId: string, body: JsonValue): Promise<SessionInputReceipt> {
 		requiredUuid(sessionId, "Session id");
 		requiredUuid(clientInputId, "Client input id");
-		await this.transport.appendSessionInput({
-			p_session_id: sessionId,
-			p_client_input_id: clientInputId,
-			p_kind: "user_message",
-			p_body: body,
-		});
+		const result = record(
+			await this.transport.appendSessionInput({
+				p_session_id: sessionId,
+				p_client_input_id: clientInputId,
+				p_kind: "user_message",
+				p_body: body,
+			}),
+			"session input receipt",
+		);
+		return {
+			inputId: uuid(result.input_id, "Session input id"),
+			position: boundedInteger(result.position, "Session input position", 1, Number.MAX_SAFE_INTEGER),
+		};
 	}
 
-	async claimSessionTurn(sessionId: string, claimantId: string, leaseSeconds = 120): Promise<SessionTurnClaim> {
+	async listSessionInputsPage(sessionId: string, afterPosition = 0, limit = 100): Promise<PendingSessionInputPage> {
+		requiredUuid(sessionId, "Session id");
+		if (!Number.isSafeInteger(afterPosition) || afterPosition < 0) throw new Error("Session input cursor is invalid");
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+			throw new Error("Session input page size is invalid");
+		return parsePendingSessionInputs(
+			await this.transport.listSessionInputs({
+				p_session_id: sessionId,
+				p_after_position: afterPosition,
+				p_limit: limit,
+			}),
+		);
+	}
+
+	async listSessionInputs(sessionId: string): Promise<PendingSessionInput[]> {
+		return (await this.listSessionInputsPage(sessionId)).items;
+	}
+
+	async claimSessionTurn(
+		sessionId: string,
+		claimantId: string,
+		companySnapshotId: string,
+		staffVersion: number,
+		leaseSeconds = 120,
+	): Promise<SessionTurnClaim> {
 		requiredUuid(sessionId, "Session id");
 		requiredUuid(claimantId, "Claimant id");
+		requiredUuid(companySnapshotId, "Company File revision");
+		if (!Number.isSafeInteger(staffVersion) || staffVersion < 1) throw new Error("Staff version is invalid");
 		return parseSessionTurnClaim(
 			await this.transport.claimSessionTurn({
 				p_session_id: sessionId,
 				p_claimant_id: claimantId,
 				p_lease_seconds: leaseSeconds,
+				p_company_snapshot_id: companySnapshotId,
+				p_staff_version: staffVersion,
 			}),
 		);
 	}
 
-	async renewSessionTurn(sessionId: string, claimantId: string, leaseSeconds = 120): Promise<void> {
+	async renewSessionTurn(sessionId: string, turnId: string, claimantId: string, leaseSeconds = 120): Promise<void> {
 		requiredUuid(sessionId, "Session id");
+		requiredUuid(turnId, "Turn id");
 		requiredUuid(claimantId, "Claimant id");
-		await this.transport.renewSessionTurn({
-			p_session_id: sessionId,
-			p_claimant_id: claimantId,
-			p_lease_seconds: leaseSeconds,
-		});
+		const result = record(
+			await this.transport.renewSessionTurn({
+				p_session_id: sessionId,
+				p_turn_id: turnId,
+				p_claimant_id: claimantId,
+				p_lease_seconds: leaseSeconds,
+			}),
+			"session turn renewal",
+		);
+		if (boundedInteger(result.renewed, "Renewed input count", 0, Number.MAX_SAFE_INTEGER) === 0) {
+			throw new SessionTurnOwnershipError("renew");
+		}
 	}
 
-	async completeSessionTurn(sessionId: string, claimantId: string): Promise<void> {
+	async completeSessionTurn(
+		sessionId: string,
+		turnId: string,
+		claimantId: string,
+		trailEndSequence: number,
+	): Promise<void> {
 		requiredUuid(sessionId, "Session id");
+		requiredUuid(turnId, "Turn id");
 		requiredUuid(claimantId, "Claimant id");
-		await this.transport.completeSessionTurn({ p_session_id: sessionId, p_claimant_id: claimantId });
+		boundedInteger(trailEndSequence, "trail end sequence", 0, Number.MAX_SAFE_INTEGER);
+		const result = record(
+			await this.transport.completeSessionTurn({
+				p_session_id: sessionId,
+				p_turn_id: turnId,
+				p_claimant_id: claimantId,
+				p_trail_end_sequence: trailEndSequence,
+			}),
+			"session turn completion",
+		);
+		if (boundedInteger(result.completed, "Completed input count", 0, Number.MAX_SAFE_INTEGER) === 0) {
+			throw new SessionTurnOwnershipError("complete");
+		}
+	}
+
+	async quarantineSessionTurn(sessionId: string, turnId: string, claimantId: string, reason: string): Promise<void> {
+		requiredUuid(sessionId, "Session id");
+		requiredUuid(turnId, "Turn id");
+		requiredUuid(claimantId, "Claimant id");
+		const result = record(
+			await this.transport.quarantineSessionTurn({
+				p_session_id: sessionId,
+				p_turn_id: turnId,
+				p_claimant_id: claimantId,
+				p_reason: requiredText(reason, "Quarantine reason", 2048),
+			}),
+			"session turn quarantine",
+		);
+		if (boundedInteger(result.quarantined, "Quarantined turn count", 0, 1) === 0) {
+			throw new SessionTurnOwnershipError("complete");
+		}
+	}
+
+	async getSessionTurnStatus(sessionId: string, turnId: string, claimantId: string): Promise<SessionTurnStatus> {
+		requiredUuid(sessionId, "Session id");
+		requiredUuid(turnId, "Turn id");
+		requiredUuid(claimantId, "Claimant id");
+		const result = record(
+			await this.transport.getSessionTurnStatus({
+				p_session_id: sessionId,
+				p_turn_id: turnId,
+				p_claimant_id: claimantId,
+			}),
+			"session turn status",
+		);
+		if (result.status === "unavailable") return { status: "unavailable" };
+		if (result.status !== "active" && result.status !== "completed" && result.status !== "quarantined") {
+			throw new Error("Hosted primary returned invalid session turn status");
+		}
+		return {
+			status: result.status,
+			inputCount: boundedInteger(result.input_count, "Session turn input count", 1, 32),
+			remainingInputCount: boundedInteger(result.remaining_input_count, "Session turn remaining input count", 0, 32),
+		};
 	}
 
 	async claimWake(
 		environmentId: string,
 		wakeKey: string,
 		claimantId: string,
+		staffAgentId: string,
+		companySnapshotId: string,
+		staffVersion: number,
 		leaseSeconds = 300,
 	): Promise<WakeClaimResult> {
 		requiredUuid(environmentId, "Environment id");
 		requiredUuid(claimantId, "Claimant id");
+		requiredUuid(staffAgentId, "Staff agent id");
+		requiredUuid(companySnapshotId, "Company snapshot id");
+		if (!Number.isSafeInteger(staffVersion) || staffVersion < 1) throw new Error("Staff version must be positive");
 		return parseWakeClaimResult(
 			await this.transport.claimWake({
 				p_environment_id: environmentId,
 				p_wake_key: requiredText(wakeKey, "Wake key", 200),
 				p_claimant_id: claimantId,
 				p_lease_seconds: leaseSeconds,
+				p_staff_agent_id: staffAgentId,
+				p_company_snapshot_id: companySnapshotId,
+				p_staff_version: staffVersion,
 			}),
 		);
 	}
@@ -2291,22 +2998,131 @@ export class QorperaHostedPrimary {
 	async renewWake(environmentId: string, wakeKey: string, claimantId: string, leaseSeconds = 300): Promise<void> {
 		requiredUuid(environmentId, "Environment id");
 		requiredUuid(claimantId, "Claimant id");
-		await this.transport.renewWake({
-			p_environment_id: environmentId,
-			p_wake_key: requiredText(wakeKey, "Wake key", 200),
-			p_claimant_id: claimantId,
-			p_lease_seconds: leaseSeconds,
-		});
+		const result = record(
+			await this.transport.renewWake({
+				p_environment_id: environmentId,
+				p_wake_key: requiredText(wakeKey, "Wake key", 200),
+				p_claimant_id: claimantId,
+				p_lease_seconds: leaseSeconds,
+			}),
+			"wake renewal",
+		);
+		if (boundedInteger(result.renewed, "Renewed wake count", 0, 1) === 0) throw new WakeOwnershipError("renew");
 	}
 
 	async completeWake(environmentId: string, wakeKey: string, claimantId: string): Promise<void> {
 		requiredUuid(environmentId, "Environment id");
 		requiredUuid(claimantId, "Claimant id");
-		await this.transport.completeWake({
-			p_environment_id: environmentId,
-			p_wake_key: requiredText(wakeKey, "Wake key", 200),
-			p_claimant_id: claimantId,
-		});
+		const result = record(
+			await this.transport.completeWake({
+				p_environment_id: environmentId,
+				p_wake_key: requiredText(wakeKey, "Wake key", 200),
+				p_claimant_id: claimantId,
+			}),
+			"wake completion",
+		);
+		if (boundedInteger(result.completed, "Completed wake count", 0, 1) === 0) {
+			throw new WakeOwnershipError("complete");
+		}
+	}
+
+	async beginOperationReceipt(
+		execution: HostedOperationExecution,
+		operationId: string,
+		operationKind: string,
+		inputSha256: string,
+	): Promise<HostedOperationReceiptBegin> {
+		requiredUuid(execution.id, "Operation execution id");
+		requiredUuid(execution.claimantId, "Operation claimant id");
+		requiredUuid(operationId, "Operation id");
+		if (!/^[a-z][a-z0-9_]{0,63}$/.test(operationKind) || !SHA256_PATTERN.test(inputSha256)) {
+			throw new Error("Operation receipt is invalid");
+		}
+		return parseOperationReceiptBegin(
+			await this.transport.beginOperationReceipt({
+				p_execution_kind: execution.kind,
+				p_execution_id: execution.id,
+				p_claimant_id: execution.claimantId,
+				p_operation_id: operationId,
+				p_operation_kind: operationKind,
+				p_input_sha256: inputSha256,
+			}),
+		);
+	}
+
+	async completeOperationReceipt(
+		execution: HostedOperationExecution,
+		operationId: string,
+		result: JsonValue,
+	): Promise<JsonValue> {
+		requiredUuid(execution.id, "Operation execution id");
+		requiredUuid(execution.claimantId, "Operation claimant id");
+		requiredUuid(operationId, "Operation id");
+		return jsonValue(
+			await this.transport.completeOperationReceipt({
+				p_execution_id: execution.id,
+				p_claimant_id: execution.claimantId,
+				p_operation_id: operationId,
+				p_result: result,
+			}),
+		);
+	}
+
+	async stageOperationReceiptObjects(
+		execution: HostedOperationExecution,
+		operationId: string,
+		objects: Array<{ sha256: string; bytes: number }>,
+	): Promise<void> {
+		requiredUuid(execution.id, "Operation execution id");
+		requiredUuid(execution.claimantId, "Operation claimant id");
+		requiredUuid(operationId, "Operation id");
+		if (
+			objects.length < 1 ||
+			objects.length > 65 ||
+			objects.some(
+				(object) =>
+					!SHA256_PATTERN.test(object.sha256) ||
+					!Number.isSafeInteger(object.bytes) ||
+					object.bytes < 0 ||
+					object.bytes > 8 * 1024 * 1024,
+			)
+		) {
+			throw new Error("Operation receipt objects are invalid");
+		}
+		const result = record(
+			await this.transport.stageOperationReceiptObjects({
+				p_execution_id: execution.id,
+				p_claimant_id: execution.claimantId,
+				p_operation_id: operationId,
+				p_objects: objects as JsonValue,
+			}),
+			"operation receipt object staging",
+		);
+		boundedInteger(result.staged, "Staged operation object count", objects.length, objects.length);
+	}
+
+	async registerPresenceDevice(profileId: string, clientId: string): Promise<HostedPresenceIdentity> {
+		requiredUuid(profileId, "Presence profile id");
+		requiredUuid(clientId, "Presence client id");
+		return parsePresenceIdentity(
+			await this.transport.registerPresenceDevice({ p_profile_id: profileId, p_client_id: clientId }),
+		);
+	}
+
+	async listPresenceDevices(profileId: string, clientIds: string[]): Promise<HostedPresenceIdentity[]> {
+		requiredUuid(profileId, "Presence profile id");
+		if (clientIds.length > 200) throw new Error("Presence device lookup is too large");
+		for (const clientId of clientIds) requiredUuid(clientId, "Presence client id");
+		return array(
+			await this.transport.listPresenceDevices({ p_profile_id: profileId, p_client_ids: [...new Set(clientIds)] }),
+			"presence identities",
+		).map(parsePresenceIdentity);
+	}
+
+	async unregisterPresenceDevice(profileId: string, clientId: string): Promise<void> {
+		requiredUuid(profileId, "Presence profile id");
+		requiredUuid(clientId, "Presence client id");
+		await this.transport.unregisterPresenceDevice({ p_profile_id: profileId, p_client_id: clientId });
 	}
 
 	async sendFriendRequest(emailInput: string): Promise<"pending" | "accepted"> {
@@ -2388,6 +3204,51 @@ export class QorperaHostedPrimary {
 	async listStaff(profileId: string): Promise<HostedStaffAgent[]> {
 		requiredUuid(profileId, "Profile id");
 		return array(await this.transport.listStaff({ p_profile_id: profileId }), "staff list").map(parseStaff);
+	}
+
+	async getCompanyFile(environmentId: string): Promise<HostedCompanyFile> {
+		requiredUuid(environmentId, "Environment id");
+		return parseCompanyFile(await this.transport.getCompanyFile({ p_environment_id: environmentId }));
+	}
+
+	async prepareCompanyFileRevision(input: PrepareHostedCompanyFileRevisionInput): Promise<HostedCompanySnapshot> {
+		requiredUuid(input.environmentId, "Environment id");
+		requiredUuid(input.clientRevisionId, "Client revision id");
+		if (input.expectedHeadSnapshotId) requiredUuid(input.expectedHeadSnapshotId, "Expected head snapshot id");
+		if (!SHA256_PATTERN.test(input.tree.manifestSha256)) throw new Error("Tree manifest SHA-256 is invalid");
+		boundedInteger(input.tree.manifestBytes, "tree manifest bytes", 1, MAX_TREE_MANIFEST_BYTES);
+		if (input.tree.contractVersion !== 3) throw new Error("Company File tree contract version must be 3");
+		boundedInteger(input.tree.fileCount, "tree file count", 0, MAX_TREE_FILES);
+		boundedInteger(input.tree.totalBytes, "tree total bytes", 0, MAX_TREE_BYTES);
+		return parseCompanySnapshot(
+			await this.transport.prepareCompanyFileRevision({
+				p_environment_id: input.environmentId,
+				p_client_revision_id: input.clientRevisionId,
+				p_expected_head_snapshot_id: input.expectedHeadSnapshotId ?? null,
+				p_tree_manifest_sha256: input.tree.manifestSha256,
+				p_tree_manifest_bytes: input.tree.manifestBytes,
+				p_tree_contract_version: input.tree.contractVersion,
+				p_file_count: input.tree.fileCount,
+				p_total_bytes: input.tree.totalBytes,
+			}),
+		);
+	}
+
+	async publishCompanyFileRevision(
+		environmentId: string,
+		snapshotId: string,
+		expectedHeadSnapshotId?: string,
+	): Promise<HostedCompanySnapshot> {
+		requiredUuid(environmentId, "Environment id");
+		requiredUuid(snapshotId, "Snapshot id");
+		if (expectedHeadSnapshotId) requiredUuid(expectedHeadSnapshotId, "Expected head snapshot id");
+		return parseCompanySnapshot(
+			await this.transport.publishCompanyFileRevision({
+				p_environment_id: environmentId,
+				p_snapshot_id: snapshotId,
+				p_expected_head_snapshot_id: expectedHeadSnapshotId ?? null,
+			}),
+		);
 	}
 
 	async ensureCompanyWorkspace(input: EnsureHostedCompanyWorkspaceInput): Promise<HostedCompanyWorkspace> {
@@ -2671,6 +3532,14 @@ export class QorperaHostedPrimary {
 		return parseObjectReachabilityGraph(await this.transport.getObjectReachabilityGraph({ p_graph_id: graphId }));
 	}
 
+	async verifyCompanySnapshotClosure(snapshotId: string, graphId: string): Promise<void> {
+		requiredUuid(snapshotId, "Company snapshot id");
+		requiredUuid(graphId, "Object graph id");
+		const result = await this.transport.verifyCompanySnapshotClosure({ snapshotId, graphId });
+		const value = record(result, "Company snapshot verification");
+		if (value.verified !== true) throw new Error("Company snapshot server verification did not complete");
+	}
+
 	async createObjectRestoreProof(
 		graphId: string,
 		clientProofId: string,
@@ -2768,6 +3637,17 @@ export class QorperaHostedPrimary {
 		requiredUuid(input.environmentId, "Environment id");
 		requiredUuid(input.clientSessionId, "Client session id");
 		if (input.parentSessionId) requiredUuid(input.parentSessionId, "Parent session id");
+		if ((input.companySnapshotId === undefined) !== (input.staffVersion === undefined)) {
+			throw new Error("Session execution revisions must be provided together");
+		}
+		if (input.companySnapshotId) requiredUuid(input.companySnapshotId, "Company snapshot id");
+		if (input.staffVersion !== undefined && (!Number.isSafeInteger(input.staffVersion) || input.staffVersion < 1)) {
+			throw new Error("Staff version must be a positive integer");
+		}
+		const executionScope = jsonValue(input.executionScope ?? {});
+		if (!executionScope || typeof executionScope !== "object" || Array.isArray(executionScope)) {
+			throw new Error("Session execution scope must be an object");
+		}
 		return parseSession(
 			await this.transport.createSession({
 				p_environment_id: input.environmentId,
@@ -2777,6 +3657,9 @@ export class QorperaHostedPrimary {
 					? requiredText(input.staffAgentId, "Staff agent id", MAX_AGENT_ID_LENGTH)
 					: null,
 				p_parent_session_id: input.parentSessionId ?? null,
+				p_execution_scope: executionScope,
+				p_company_snapshot_id: input.companySnapshotId ?? null,
+				p_staff_version: input.staffVersion ?? null,
 			}),
 		);
 	}
@@ -2786,6 +3669,11 @@ export class QorperaHostedPrimary {
 		return array(await this.transport.listSessions({ p_environment_id: environmentId }), "session list").map(
 			parseSession,
 		);
+	}
+
+	async closeSession(sessionId: string): Promise<void> {
+		requiredUuid(sessionId, "Session id");
+		requireTrue(await this.transport.closeSession({ p_session_id: sessionId }), "session close result");
 	}
 
 	async appendAccountEvent(input: AppendHostedSessionEventInput): Promise<HostedSessionEvent> {
@@ -2802,6 +3690,10 @@ export class QorperaHostedPrimary {
 		if (Buffer.byteLength(JSON.stringify(eventBody), "utf-8") > MAX_EVENT_BODY_BYTES) {
 			throw new Error("Session event body is too large");
 		}
+		if (input.execution) {
+			requiredUuid(input.execution.id, "Event execution id");
+			requiredUuid(input.execution.claimantId, "Event execution claimant id");
+		}
 		return parseEvent(
 			await this.transport.appendAccountEvent({
 				p_session_id: input.sessionId,
@@ -2809,6 +3701,9 @@ export class QorperaHostedPrimary {
 				p_event_type: input.eventType,
 				p_body: eventBody,
 				p_expected_sequence: input.expectedSequence ?? null,
+				p_execution_kind: input.execution?.kind ?? null,
+				p_execution_id: input.execution?.id ?? null,
+				p_execution_claimant_id: input.execution?.claimantId ?? null,
 			}),
 		);
 	}

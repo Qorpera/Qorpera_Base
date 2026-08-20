@@ -98,6 +98,7 @@ describe("cloud object reachability", () => {
 				if (!graph) throw new Error("reachability graph was not started");
 				return { ...graph, status: "complete" as const, completedAt: createdAt };
 			}),
+			verifyCompanySnapshotClosure: vi.fn(async () => undefined),
 			createObjectRestoreProof: vi.fn(async (requestedGraphId, clientProofId, contentSha256, restoredBytes) => ({
 				proofId,
 				graphId: requestedGraphId,
@@ -130,13 +131,15 @@ describe("cloud object reachability", () => {
 		const manifest = Buffer.from(
 			JSON.stringify({
 				schema: "qorpera.company-tree/v1",
-				contractVersion: 1,
+				contractVersion: 3,
 				omittedLayers: [
 					"company-git-history",
 					"session-trail",
 					"staff-registry",
 					"product-git-checkouts",
 					"dependency-caches",
+					"staff-instructions",
+					"system-metadata",
 				],
 				entries: [],
 			}),
@@ -154,6 +157,7 @@ describe("cloud object reachability", () => {
 				if (!graph) throw new Error("reachability graph was not started");
 				return { ...graph, status: "complete" as const, completedAt: createdAt };
 			}),
+			verifyCompanySnapshotClosure: vi.fn(async () => undefined),
 			createObjectRestoreProof: vi.fn(async (requestedGraphId, clientProofId, contentSha256, restoredBytes) => ({
 				proofId,
 				graphId: requestedGraphId,
@@ -180,7 +184,7 @@ describe("cloud object reachability", () => {
 				tree: {
 					manifestSha256: root.sha256,
 					manifestBytes: root.bytes,
-					contractVersion: 1,
+					contractVersion: 3,
 					fileCount: 0,
 					totalBytes: 0,
 				},
@@ -195,5 +199,6 @@ describe("cloud object reachability", () => {
 		await expect(publishCompanySnapshotRestoreProofIfDue(options)).resolves.toBeDefined();
 		await expect(publishCompanySnapshotRestoreProofIfDue(options)).resolves.toBeUndefined();
 		expect(primary.beginObjectReachabilityGraph).toHaveBeenCalledTimes(1);
+		expect(primary.verifyCompanySnapshotClosure).toHaveBeenCalledTimes(1);
 	});
 });

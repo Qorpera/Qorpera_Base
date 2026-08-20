@@ -28,7 +28,7 @@ import { createReadStream, createWriteStream, mkdirSync, renameSync, rmSync } fr
 import { dirname } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import type { KernelIntentCapability } from "@qorpera/pi-protocol";
+import type { JsonValue, KernelExecutionIdentity, KernelIntentCapability } from "@qorpera/pi-protocol";
 
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_INTENT_LIFETIME_MS = 4 * 60 * 60 * 1000;
@@ -38,13 +38,14 @@ const MAX_URL_BYTES = 8 * 1024;
 const MAX_HEADER_BYTES = 32 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024;
+const MAX_DURABLE_RESPONSE_BODY_BYTES = 384 * 1024;
 const MAX_TIMEOUT_MS = 120_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 /** File transfers get a longer leash than inline API calls. */
 const DEFAULT_FILE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_FILE_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_MAX_REQUESTS_PER_TURN = 64;
-const DEFAULT_MAX_SAVE_BYTES = 1024 * 1024 * 1024;
+const DEFAULT_MAX_SAVE_BYTES = 256 * 1024 * 1024;
 const MAX_FILE_PATH_BYTES = 1024;
 /** Hop-by-hop or kernel-owned headers the child may not set. */
 const STRIPPED_HEADERS = new Set(["host", "content-length", "connection", "transfer-encoding", "upgrade", "cookie2"]);
@@ -100,6 +101,11 @@ export interface HttpRequestBroker {
 	release: () => void;
 }
 
+export type HttpOperationReceiptBegin =
+	| { started: true; status: "executing" }
+	| { started: false; status: "executing" }
+	| { started: false; status: "completed"; result: JsonValue };
+
 function exactKeys(value: object, allowed: readonly string[]): boolean {
 	return Object.keys(value).every((key) => allowed.includes(key));
 }
@@ -118,6 +124,7 @@ function validBehavior(value: unknown): value is { path: string; contentHash: st
 function validIntentShape(value: unknown): value is KernelIntentCapability {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const intent = value as Record<string, unknown>;
+	const execution = intent.execution as Record<string, unknown> | undefined;
 	return (
 		typeof intent.nonce === "string" &&
 		REQUEST_ID_PATTERN.test(intent.nonce) &&
@@ -127,6 +134,12 @@ function validIntentShape(value: unknown): value is KernelIntentCapability {
 		typeof intent.issuedAt === "string" &&
 		typeof intent.expiresAt === "string" &&
 		typeof intent.signature === "string" &&
+		(execution === undefined ||
+			((execution.kind === "turn" || execution.kind === "wake") &&
+				typeof execution.id === "string" &&
+				REQUEST_ID_PATTERN.test(execution.id) &&
+				typeof execution.claimantId === "string" &&
+				REQUEST_ID_PATTERN.test(execution.claimantId))) &&
 		!!intent.budget &&
 		typeof intent.budget === "object"
 	);
@@ -206,6 +219,79 @@ function frameDigest(frame: HttpRequestFrame): string {
 		.digest("hex");
 }
 
+function durableHttpResponse(value: unknown): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("durable HTTP response is invalid");
+	}
+	const response = value as Record<string, unknown>;
+	if (
+		!exactKeys(response, [
+			"status",
+			"headers",
+			"body",
+			"bodyBytes",
+			"bodyTruncated",
+			"savedTo",
+			"sha256",
+			"cloudManifestSha256",
+			"cloudObjects",
+		]) ||
+		typeof response.status !== "number" ||
+		!Number.isInteger(response.status) ||
+		!response.headers ||
+		typeof response.headers !== "object" ||
+		Array.isArray(response.headers) ||
+		!Object.values(response.headers).every((header) => typeof header === "string") ||
+		typeof response.body !== "string" ||
+		typeof response.bodyBytes !== "number" ||
+		!Number.isSafeInteger(response.bodyBytes) ||
+		(response.bodyTruncated !== undefined && response.bodyTruncated !== true) ||
+		(response.savedTo !== undefined && typeof response.savedTo !== "string") ||
+		(response.sha256 !== undefined &&
+			(typeof response.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(response.sha256))) ||
+		(response.cloudManifestSha256 !== undefined &&
+			(typeof response.cloudManifestSha256 !== "string" || !/^[0-9a-f]{64}$/.test(response.cloudManifestSha256))) ||
+		(response.cloudObjects !== undefined &&
+			(!Array.isArray(response.cloudObjects) ||
+				response.cloudObjects.length > 65 ||
+				response.cloudObjects.some(
+					(object) =>
+						!object ||
+						typeof object !== "object" ||
+						Array.isArray(object) ||
+						!exactKeys(object, ["sha256", "bytes"]) ||
+						typeof (object as { sha256?: unknown }).sha256 !== "string" ||
+						!/^[0-9a-f]{64}$/.test((object as { sha256: string }).sha256) ||
+						!Number.isSafeInteger((object as { bytes?: unknown }).bytes) ||
+						((object as { bytes: number }).bytes ?? -1) < 0,
+				)))
+	) {
+		throw new Error("durable HTTP response is invalid");
+	}
+	return response;
+}
+
+function boundedResponseHeaders(headers: Headers): Record<string, string> {
+	const entries = [...headers.entries()];
+	const totalBytes = entries.reduce(
+		(total, [name, value]) => total + Buffer.byteLength(`${name}: ${value}\n`, "utf-8"),
+		0,
+	);
+	if (totalBytes <= MAX_HEADER_BYTES) return Object.fromEntries(entries);
+	const marker: [string, string] = ["x-qorpera-headers-truncated", "true"];
+	const markerBytes = Buffer.byteLength(`${marker[0]}: ${marker[1]}\n`, "utf-8");
+	const retained: Array<[string, string]> = [];
+	let retainedBytes = 0;
+	for (const [name, value] of entries) {
+		const bytes = Buffer.byteLength(`${name}: ${value}\n`, "utf-8");
+		if (retainedBytes + bytes + markerBytes > MAX_HEADER_BYTES) continue;
+		retained.push([name, value]);
+		retainedBytes += bytes;
+	}
+	retained.push(marker);
+	return Object.fromEntries(retained);
+}
+
 function secretReferenceNames(...texts: Array<string | undefined>): string[] {
 	const names = new Set<string>();
 	for (const text of texts) {
@@ -236,6 +322,23 @@ export function createHttpRequestBroker(options: {
 	fetchImpl?: typeof fetch;
 	maxRequestsPerIntent?: number;
 	maxSaveBytes?: number;
+	requireDurableExecution?: boolean;
+	execution?: () => KernelExecutionIdentity | undefined;
+	beginReceipt?: (
+		execution: KernelExecutionIdentity,
+		operationId: string,
+		operationKind: "http_request",
+		inputSha256: string,
+	) => Promise<HttpOperationReceiptBegin>;
+	completeReceipt?: (execution: KernelExecutionIdentity, operationId: string, result: JsonValue) => Promise<JsonValue>;
+	syncOutput?: (output: {
+		execution: KernelExecutionIdentity;
+		operationId: string;
+		absolutePath: string;
+		relativePath: string;
+		bytes: number;
+		sha256: string;
+	}) => Promise<{ cloudManifestSha256: string; cloudObjects: Array<{ sha256: string; bytes: number }> }>;
 }): HttpRequestBroker {
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const maxRequestsPerIntent = options.maxRequestsPerIntent ?? DEFAULT_MAX_REQUESTS_PER_TURN;
@@ -244,6 +347,25 @@ export function createHttpRequestBroker(options: {
 	const inFlight = new Map<string, AbortController>();
 	const intents = new Map<string, HttpIntentState>();
 	let released = false;
+	const retryReceipt = async <T>(operation: () => Promise<T>, phase: string): Promise<T> => {
+		let lastError: unknown;
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			if (released) throw new Error(`durable HTTP ${phase} stopped with the host`);
+			try {
+				return await operation();
+			} catch (error) {
+				lastError = error;
+				if (attempt < 4) {
+					await new Promise<void>((resolvePromise) => {
+						setTimeout(resolvePromise, 100 * 2 ** attempt);
+					});
+				}
+			}
+		}
+		throw new Error(
+			`durable HTTP ${phase} failed after retries: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+		);
+	};
 
 	const endIntent = (intent: HttpIntentState): void => {
 		if (intent.status !== "active") return;
@@ -313,6 +435,16 @@ export function createHttpRequestBroker(options: {
 			deny(`host HTTP request denied: intent request budget (${intentBudget}) exhausted`);
 			return;
 		}
+		const execution = frame.intent.execution;
+		const liveExecution = options.execution?.();
+		if (options.requireDurableExecution && !execution) {
+			deny("host HTTP request denied: cloud execution has no durable lease");
+			return;
+		}
+		if ((liveExecution && !execution) || (execution && JSON.stringify(execution) !== JSON.stringify(liveExecution))) {
+			deny("host HTTP request denied: durable execution ownership changed");
+			return;
+		}
 		intent.requests++;
 
 		const headerEntries = Object.entries(frame.headers ?? {}).filter(
@@ -348,6 +480,33 @@ export function createHttpRequestBroker(options: {
 			deny(`host HTTP request denied: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
+		if (execution) {
+			if (!options.beginReceipt || !options.completeReceipt) {
+				deny("host HTTP request denied: durable operation receipts are unavailable");
+				return;
+			}
+			try {
+				const receipt = await retryReceipt(
+					() => options.beginReceipt!(execution, frame.requestId, "http_request", observed.requestSha256),
+					"reservation",
+				);
+				if (receipt.status === "completed") {
+					send({
+						type: "qorpera_http_response",
+						requestId: frame.requestId,
+						...durableHttpResponse(receipt.result),
+					});
+					return;
+				}
+				if (!receipt.started) {
+					deny("host HTTP request denied: prior remote outcome is ambiguous and requires review");
+					return;
+				}
+			} catch (error) {
+				deny(`host HTTP request denied: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
+		}
 
 		const controller = new AbortController();
 		inFlight.set(frame.requestId, controller);
@@ -356,6 +515,35 @@ export function createHttpRequestBroker(options: {
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 		options.observe?.({ ...observed, host: rawUrl.host, status: "started" });
 		try {
+			const complete = async (response: Record<string, unknown>): Promise<Record<string, unknown>> => {
+				if (!execution) return response;
+				let durableResponse = response;
+				if (
+					savePath !== undefined &&
+					frame.saveTo !== undefined &&
+					typeof response.bodyBytes === "number" &&
+					typeof response.sha256 === "string"
+				) {
+					if (!options.syncOutput) throw new Error("durable HTTP file staging is unavailable");
+					durableResponse = {
+						...response,
+						...(await options.syncOutput({
+							execution,
+							operationId: frame.requestId,
+							absolutePath: savePath,
+							relativePath: frame.saveTo,
+							bytes: response.bodyBytes,
+							sha256: response.sha256,
+						})),
+					};
+				}
+				return durableHttpResponse(
+					await retryReceipt(
+						() => options.completeReceipt!(execution, frame.requestId, durableResponse as JsonValue),
+						"acknowledgement",
+					),
+				);
+			};
 			const requestBody =
 				method === "GET" || method === "HEAD"
 					? undefined
@@ -364,11 +552,20 @@ export function createHttpRequestBroker(options: {
 						: frame.body !== undefined
 							? substituteReferences(frame.body, resolved)
 							: undefined;
+			const requestHeaders = Object.fromEntries(
+				headerEntries.map(([name, headerValue]) => [name, substituteReferences(headerValue, resolved)]),
+			);
+			if (
+				execution &&
+				method !== "GET" &&
+				method !== "HEAD" &&
+				!Object.keys(requestHeaders).some((name) => name.toLowerCase() === "idempotency-key")
+			) {
+				requestHeaders["Idempotency-Key"] = frame.requestId;
+			}
 			const response = await fetchImpl(resolvedUrl, {
 				method,
-				headers: Object.fromEntries(
-					headerEntries.map(([name, headerValue]) => [name, substituteReferences(headerValue, resolved)]),
-				),
+				headers: requestHeaders,
 				...(requestBody !== undefined ? { body: requestBody } : {}),
 				...(sendPath !== undefined ? { duplex: "half" } : {}),
 				redirect: "manual",
@@ -410,21 +607,21 @@ export function createHttpRequestBroker(options: {
 					savedTo: frame.saveTo,
 					...(frame.sendFile ? { sentFile: frame.sendFile } : {}),
 				});
-				send({
-					type: "qorpera_http_response",
-					requestId: frame.requestId,
+				const completed = await complete({
 					status: response.status,
-					headers: Object.fromEntries(response.headers.entries()),
+					headers: boundedResponseHeaders(response.headers),
 					body: "",
 					bodyBytes: written,
 					savedTo: frame.saveTo,
 					sha256,
 				});
+				send({ type: "qorpera_http_response", requestId: frame.requestId, ...completed });
 				return;
 			}
 			const raw = Buffer.from(await response.arrayBuffer());
-			const bodyTruncated = raw.length > MAX_RESPONSE_BODY_BYTES;
-			const body = raw.subarray(0, MAX_RESPONSE_BODY_BYTES).toString("utf-8");
+			const responseLimit = execution ? MAX_DURABLE_RESPONSE_BODY_BYTES : MAX_RESPONSE_BODY_BYTES;
+			const bodyTruncated = raw.length > responseLimit;
+			const body = raw.subarray(0, responseLimit).toString("utf-8");
 			options.observe?.({
 				...observed,
 				host: rawUrl.host,
@@ -433,15 +630,14 @@ export function createHttpRequestBroker(options: {
 				bodyBytes: raw.length,
 				...(frame.sendFile ? { sentFile: frame.sendFile } : {}),
 			});
-			send({
-				type: "qorpera_http_response",
-				requestId: frame.requestId,
+			const completed = await complete({
 				status: response.status,
-				headers: Object.fromEntries(response.headers.entries()),
+				headers: boundedResponseHeaders(response.headers),
 				body,
 				bodyBytes: raw.length,
 				...(bodyTruncated ? { bodyTruncated: true } : {}),
 			});
+			send({ type: "qorpera_http_response", requestId: frame.requestId, ...completed });
 		} catch (error) {
 			options.observe?.({ ...observed, host: rawUrl.host, status: "failed" });
 			send({

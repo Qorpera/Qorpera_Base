@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
 
@@ -45,6 +49,31 @@ describe("cloud content-addressed object store", () => {
 		expect(Buffer.compare(Buffer.from(restored.bytes), bytes)).toBe(0);
 		expect(restored.objects).toHaveLength(3);
 		expect(restored.objects.reduce((total, object) => total + object.bytes, 0)).toBeGreaterThan(bytes.byteLength);
+	});
+
+	it("stages a file path as immutable chunks while checking its exact receipt identity", async () => {
+		const root = mkdtempSync(join(tmpdir(), "qorpera-object-stage-"));
+		try {
+			const path = join(root, "output.bin");
+			const bytes = Buffer.alloc(4 * 1024 * 1024 + 17, 9);
+			writeFileSync(path, bytes);
+			const transport = new MemoryObjectTransport();
+			const store = new CloudContentAddressedStore(transport);
+			const reference = await store.putFileFromPath(profileId, path, "application/octet-stream", {
+				bytes: bytes.byteLength,
+				sha256: createHash("sha256").update(bytes).digest("hex"),
+			});
+			expect(reference.objects).toHaveLength(3);
+			expect(Buffer.compare(Buffer.from(await store.getFile(profileId, reference)), bytes)).toBe(0);
+			await expect(
+				store.putFileFromPath(profileId, path, "application/octet-stream", {
+					bytes: bytes.byteLength,
+					sha256: "f".repeat(64),
+				}),
+			).rejects.toThrow("changed");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("rejects corrupted objects before materialization", async () => {

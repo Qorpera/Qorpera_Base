@@ -8,6 +8,9 @@ verify_jwt = false
 [functions.artifact-gc-worker]
 verify_jwt = true
 
+[functions.company-file-verifier]
+verify_jwt = true
+
 [functions.runner-control]
 verify_jwt = false
 

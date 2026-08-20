@@ -74,6 +74,17 @@ function bindingPath(userData: string, profileId: string, root: string): string 
 	return join(userData, "cloud-company-workspaces", `${profileId}-${rootHash}.json`);
 }
 
+export function readLegacyCloudCompanyWorkspaceBinding(
+	userData: string,
+	profileId: string,
+	environmentId: string,
+	root: string,
+): CloudCompanyWorkspaceBinding | undefined {
+	const path = bindingPath(userData, profileId, root);
+	if (!existsSync(path)) return undefined;
+	return parseBinding(JSON.parse(readFileSync(path, "utf-8")), profileId, environmentId, canonicalRoot(root));
+}
+
 function validTree(value: unknown): value is CloudCompanyTreeReference {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const tree = value as Partial<CloudCompanyTreeReference>;
@@ -81,7 +92,7 @@ function validTree(value: unknown): value is CloudCompanyTreeReference {
 		SHA256_PATTERN.test(tree.manifestSha256 ?? "") &&
 		Number.isSafeInteger(tree.manifestBytes) &&
 		(tree.manifestBytes ?? -1) >= 0 &&
-		(tree.contractVersion === 1 || tree.contractVersion === 2) &&
+		(tree.contractVersion === 1 || tree.contractVersion === 2 || tree.contractVersion === 3) &&
 		Number.isSafeInteger(tree.fileCount) &&
 		(tree.fileCount ?? -1) >= 0 &&
 		Number.isSafeInteger(tree.totalBytes) &&
@@ -283,6 +294,7 @@ export async function checkpointCloudCompanyWorkspace(
 	}
 	const tree = await captureCloudCompanyTree(input.companyRoot, input.profileId, input.objects, {
 		...(input.runtimeLock ? { runtimeLock: input.runtimeLock } : {}),
+		userData: input.userData,
 	});
 	const completed = state.binding.lastCheckpoint;
 	if (completed) {

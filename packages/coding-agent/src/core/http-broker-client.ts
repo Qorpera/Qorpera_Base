@@ -11,7 +11,7 @@
  * exist in this process.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { KernelIntentCapability } from "@qorpera/pi-protocol";
 import { isModelBrokerInstalled } from "./model-broker-client.ts";
 
@@ -50,6 +50,7 @@ interface PendingRequest {
 const pending = new Map<string, PendingRequest>();
 let writeFrame: ((frame: object) => void) | undefined;
 let activeIntent: KernelIntentCapability | undefined;
+let activeRequestOrdinal = 0;
 
 export function setHttpBrokerWriter(writer: ((frame: object) => void) | undefined): void {
 	writeFrame = writer;
@@ -61,7 +62,13 @@ export function setHttpBrokerWriter(writer: ((frame: object) => void) | undefine
  * active intent are refused by the host (parity with the model lane).
  */
 export function setHttpBrokerIntent(intent: KernelIntentCapability | undefined): void {
+	if (intent?.nonce !== activeIntent?.nonce) activeRequestOrdinal = 0;
 	activeIntent = intent;
+}
+
+function deterministicRequestId(executionId: string, ordinal: number): string {
+	const hex = createHash("sha256").update(`qorpera-http\0${executionId}\0${ordinal}`).digest("hex").slice(0, 32);
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
 }
 
 export function isHttpBrokerAvailable(): boolean {
@@ -79,7 +86,9 @@ export function brokeredHttpRequest(request: HttpBrokerRequest, signal?: AbortSi
 			reject(new Error("host HTTP request has no verified causal intent for this turn"));
 			return;
 		}
-		const requestId = randomUUID();
+		const requestId = activeIntent?.execution
+			? deterministicRequestId(activeIntent.execution.id, ++activeRequestOrdinal)
+			: randomUUID();
 		const frame = { type: "qorpera_http_request", requestId, ...request, intent: activeIntent };
 		let serialized: string;
 		try {

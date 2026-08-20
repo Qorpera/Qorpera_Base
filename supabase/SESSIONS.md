@@ -1,7 +1,7 @@
 # Session arbitration
 
-**Status:** Contract. The migration `20260818007000` implements the queue; the
-shell adopts it next.
+**Status:** Implemented. Migration `20260820001000` binds the queue to immutable
+Company File and staff revisions; the shell adopts, renders, and executes it.
 **Problem it solves:** on 2026-08-18, two machines opening the same staff agent
 minutes apart each minted a session and ran a duplicate kickoff — one agent,
 two diverging conversations. Trail replication was healthy; nothing consulted
@@ -67,14 +67,21 @@ forked one is corruption.
   same transaction. Returns the session and whether this call created it.
 - `qorpera_append_session_input(session, client_input_id, kind, body)` —
   idempotent by client input id; any member with write access.
-- `qorpera_claim_session_turn(session, claimant, lease_seconds)` — claims all
-  pending inputs as one turn iff no unexpired claim is in flight; returns the
-  batch or nothing. Expired claims are claimable again (executor died).
+- `qorpera_claim_session_turn(session, claimant, lease_seconds,
+  company_snapshot, staff_version)` — claims all pending inputs as one turn
+  iff no unexpired claim is in flight and the supplied revisions are still
+  current; returns the batch or nothing. Expired claims are claimable again
+  (executor died).
 - `qorpera_renew_session_turn` / `qorpera_complete_session_turn` — lease
   upkeep and completion, claimant-scoped.
 
 Outputs continue through the existing session-event and trail mechanisms; the
 queue governs only who may produce them.
+
+Operational trails are registered through `qorpera_create_shared_session_v4`.
+Their execution scope carries the exact claimed Company File and staff
+revisions, so delayed trail synchronization cannot silently re-pin a finished
+wake to newer state.
 
 ## Wake arbitration (20260819012000)
 
@@ -94,18 +101,24 @@ running. Completion makes the occurrence final on every machine; a lease that
 expires without completion is a dead executor, and the occurrence is
 claimable again.
 
-- `qorpera_claim_wake(environment, wake_key, claimant, lease_seconds)` —
-  insert-or-takeover; the holder's own re-claim refreshes the lease so a
-  failed spawn retries idempotently. Losers learn why: `in-flight` (someone
-  is running it) or `already-run` (it is finished forever).
+- `qorpera_claim_wake_v2(environment, wake_key, claimant, lease_seconds,
+  staff_agent, company_snapshot, staff_version)` — insert-or-takeover only
+  when the supplied Company File and staff revisions are still current; the
+  holder's own re-claim refreshes the lease so a failed spawn retries
+  idempotently. Losers learn why: `in-flight` (someone is running it),
+  `already-run` (it is finished forever), or `stale-revision` (sync before
+  retrying).
 - `qorpera_renew_wake` / `qorpera_complete_wake` — lease upkeep and
   completion, claimant-scoped.
 
-Manual "run now" is founder intent on that machine and machine-local events
-have no shared identity — both run unarbitrated. An unreachable cloud
-degrades to solo behaviour (the wake runs locally) rather than blocking
-autonomous work; completed rows are swept after 30 days, long past any
-machine's chance to re-derive the same key.
+Manual "run now" is founder intent on that machine and has no competing
+occurrence to deduplicate, but it still waits for and records the exact cloud
+Company File and staff revisions it executes. Every deterministic autonomous
+occurrence must additionally be claimed in the cloud. Renewal and completion
+are fenced if either revision changes during a wake. An unreachable cloud
+leaves that occurrence pending; it never executes an unclaimed local copy.
+Completed rows are swept after 30 days, long past any machine's chance to
+re-derive the same key.
 
 ## Executor eligibility (sponsorship, affinity, freshness)
 

@@ -4,7 +4,13 @@ import { dirname, join, resolve } from "node:path";
 
 const CLOUD_SYNC_HEALTH_SCHEMA = "qorpera.cloud-sync-health/v1";
 
-export type CloudSyncChannel = "company-tree" | "sessions" | "staff" | "trail" | "workspace-inbox";
+export type CloudSyncChannel =
+	| "company-projection"
+	| "company-tree"
+	| "sessions"
+	| "staff"
+	| "trail"
+	| "workspace-inbox";
 export type CloudSyncPhase = "idle" | "syncing" | "healthy" | "retrying" | "attention";
 
 export interface CloudSyncHealth {

@@ -1535,6 +1535,14 @@ body.welcome #titlebar { border-bottom-color: transparent; background: var(--bg)
 	width: auto; max-width: min(78%, 620px); align-self: flex-end; padding: 9px 13px;
 	border-radius: 18px 18px 5px 18px; background: var(--text); color: #fff;
 }
+.msg.user.session-queued {
+	display: grid; gap: 4px; min-width: 130px; opacity: .72;
+	border: 1px dashed color-mix(in srgb, #fff 58%, transparent);
+}
+.session-queued-body { white-space: pre-wrap; }
+.session-queued-status {
+	justify-self: end; color: color-mix(in srgb, #fff 72%, transparent); font-size: 10px; font-weight: 650;
+}
 .msg.assistant {
 	width: auto; max-width: min(82%, 650px); align-self: flex-start; padding: 10px 14px;
 	border-radius: 18px 18px 18px 5px; background: #f0f0ee; color: var(--text);

@@ -53,10 +53,10 @@ describe("cloud profile realtime synchronization", () => {
 				filter: `profile_id=eq.${profileId}`,
 			},
 			{
-				resource: "workspace",
+				resource: "company-file",
 				event: "*",
 				schema: "public",
-				table: "qorpera_company_workspaces",
+				table: "qorpera_company_files",
 				filter: `profile_id=eq.${profileId}`,
 			},
 		]);
@@ -82,13 +82,13 @@ describe("cloud profile realtime synchronization", () => {
 		transport.onChange?.({ resource: "trail" });
 		transport.onChange?.({ resource: "staff" });
 		transport.onChange?.({ resource: "access", subjectUserId: "c98d600e-654a-40da-a07f-f1d54f93cc6c" });
-		transport.onChange?.({ resource: "workspace" });
+		transport.onChange?.({ resource: "company-file" });
 		expect(realtime.health()).toEqual({ phase: "connected" });
 		expect(changes).toEqual([
 			{ resource: "trail" },
 			{ resource: "staff" },
 			{ resource: "access", subjectUserId: "c98d600e-654a-40da-a07f-f1d54f93cc6c" },
-			{ resource: "workspace" },
+			{ resource: "company-file" },
 		]);
 
 		await realtime.stop();
@@ -99,7 +99,7 @@ describe("cloud profile realtime synchronization", () => {
 			{ resource: "trail" },
 			{ resource: "staff" },
 			{ resource: "access", subjectUserId: "c98d600e-654a-40da-a07f-f1d54f93cc6c" },
-			{ resource: "workspace" },
+			{ resource: "company-file" },
 		]);
 	});
 });

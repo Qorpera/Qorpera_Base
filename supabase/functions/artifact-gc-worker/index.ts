@@ -2,9 +2,12 @@ import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import {
 	parseArtifactGcWorkerJobs,
 	parseArtifactGcWorkerObjects,
+	parseCompanyObjectGcWorkerJob,
 	runArtifactGcWorkerBatch,
+	runCompanyObjectGcWorkerJob,
 	type ArtifactGcStorageProvider,
 	type ArtifactGcWorkerStore,
+	type CompanyObjectGcWorkerStore,
 } from "./artifact-gc-worker.ts";
 
 const OBJECT_BUCKET = "qorpera-profile-objects";
@@ -117,5 +120,46 @@ Deno.serve(async (request) => {
 			if (error) throw new Error("Storage object removal failed");
 		},
 	};
-	return jsonResponse(await runArtifactGcWorkerBatch(jobs, storage, store));
+	const artifactResult = await runArtifactGcWorkerBatch(jobs, storage, store);
+	const companyLeaseId = crypto.randomUUID();
+	const { data: companyClaim, error: companyClaimError } = await client.rpc("qorpera_claim_company_object_gc", {
+		p_limit: 100,
+		p_lease_id: companyLeaseId,
+	});
+	if (companyClaimError) {
+		return jsonResponse({ ...artifactResult, companyObjects: { claimed: 0, completed: 0, failed: 0 } });
+	}
+	let companyJob;
+	try {
+		companyJob = parseCompanyObjectGcWorkerJob(companyClaim);
+	} catch {
+		return jsonResponse({ error: "Company object cleanup claim was invalid" }, 503);
+	}
+	const companyStore: CompanyObjectGcWorkerStore = {
+		renewLease: async (job) => {
+			const { error } = await client.rpc("qorpera_renew_company_object_gc", {
+				p_profile_id: job.profileId,
+				p_lease_id: job.leaseId,
+				p_object_sha256s: job.objects.map((object) => object.sha256),
+			});
+			if (error) throw new Error("Company object cleanup lease renewal failed");
+		},
+		complete: async (job) => {
+			const { error } = await client.rpc("qorpera_complete_company_object_gc", {
+				p_profile_id: job.profileId,
+				p_lease_id: job.leaseId,
+				p_object_sha256s: job.objects.map((object) => object.sha256),
+			});
+			if (error) throw new Error("Company object cleanup completion failed");
+		},
+		release: async (job) => {
+			const { error } = await client.rpc("qorpera_release_company_object_gc", {
+				p_profile_id: job.profileId,
+				p_lease_id: job.leaseId,
+			});
+			if (error) throw new Error("Company object cleanup release failed");
+		},
+	};
+	const companyObjects = await runCompanyObjectGcWorkerJob(companyJob, storage, companyStore);
+	return jsonResponse({ ...artifactResult, companyObjects });
 });

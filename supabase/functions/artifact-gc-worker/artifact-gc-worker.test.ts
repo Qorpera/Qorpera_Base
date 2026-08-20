@@ -3,10 +3,13 @@ import { describe, it } from "node:test";
 import {
 	parseArtifactGcWorkerJobs,
 	parseArtifactGcWorkerObjects,
+	parseCompanyObjectGcWorkerJob,
 	runArtifactGcWorkerBatch,
+	runCompanyObjectGcWorkerJob,
 	type ArtifactGcStorageProvider,
 	type ArtifactGcWorkerJob,
 	type ArtifactGcWorkerStore,
+	type CompanyObjectGcWorkerStore,
 } from "./artifact-gc-worker.ts";
 
 const planId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
@@ -130,5 +133,64 @@ describe("artifact cleanup worker", () => {
 		);
 		assert.equal(removed, false);
 		assert.equal(failure, "Lease expired");
+	});
+
+	it("reclaims an unreferenced company object only after renewing its profile lease", async () => {
+		const parsed = parseCompanyObjectGcWorkerJob({
+			profile_id: profileId,
+			lease_id: leaseId,
+			objects: [{ sha256: firstSha256, bytes: 42, path: `${profileId}/${firstSha256}` }],
+		});
+		assert.ok(parsed);
+		const events: string[] = [];
+		const store: CompanyObjectGcWorkerStore = {
+			renewLease: async () => {
+				events.push("renew");
+			},
+			complete: async () => {
+				events.push("complete");
+			},
+			release: async () => {
+				events.push("release");
+			},
+		};
+		assert.deepEqual(
+			await runCompanyObjectGcWorkerJob(
+				parsed,
+				{
+					remove: async (objects) => {
+						events.push(`remove:${objects[0]?.path}`);
+					},
+				},
+				store,
+			),
+			{ claimed: 1, completed: 1, failed: 0 },
+		);
+		assert.deepEqual(events, ["renew", `remove:${profileId}/${firstSha256}`, "complete"]);
+	});
+
+	it("releases a company object lease after storage failure", async () => {
+		const parsed = parseCompanyObjectGcWorkerJob({
+			profile_id: profileId,
+			lease_id: leaseId,
+			objects: [{ sha256: firstSha256, bytes: 42, path: `${profileId}/${firstSha256}` }],
+		});
+		assert.ok(parsed);
+		let released = false;
+		assert.deepEqual(
+			await runCompanyObjectGcWorkerJob(
+				parsed,
+				{ remove: async () => Promise.reject(new Error("unavailable")) },
+				{
+					renewLease: async () => {},
+					complete: async () => {},
+					release: async () => {
+						released = true;
+					},
+				},
+			),
+			{ claimed: 1, completed: 0, failed: 1 },
+		);
+		assert.equal(released, true);
 	});
 });

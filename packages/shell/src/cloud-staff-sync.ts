@@ -154,6 +154,10 @@ export class CloudStaffSynchronizer {
 		this.#statePath = cloudStaffSyncStatePath(options.userData, options.root, options.profileId);
 	}
 
+	versionForStaff(staffAgentId: string): number | undefined {
+		return readState(this.#statePath, this.#options).agents[staffAgentId]?.version;
+	}
+
 	sync(): Promise<CloudStaffSyncResult> {
 		if (this.#inFlight) return this.#inFlight;
 		const operation = this.#syncOnce().finally(() => {

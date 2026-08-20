@@ -14,6 +14,18 @@ export interface ArtifactGcWorkerObject {
 	path: string;
 }
 
+export interface CompanyObjectGcWorkerJob {
+	profileId: string;
+	leaseId: string;
+	objects: ArtifactGcWorkerObject[];
+}
+
+export interface CompanyObjectGcWorkerStore {
+	renewLease(job: CompanyObjectGcWorkerJob): Promise<void>;
+	complete(job: CompanyObjectGcWorkerJob): Promise<void>;
+	release(job: CompanyObjectGcWorkerJob): Promise<void>;
+}
+
 export interface ArtifactGcWorkerStore {
 	claimObjects(job: ArtifactGcWorkerJob): Promise<ArtifactGcWorkerObject[]>;
 	renewLease(job: ArtifactGcWorkerJob, sha256s: string[]): Promise<void>;
@@ -32,6 +44,12 @@ export interface ArtifactGcWorkerResult {
 	retrying: number;
 	failed: number;
 	failurePending: number;
+}
+
+export interface CompanyObjectGcWorkerResult {
+	claimed: number;
+	completed: number;
+	failed: number;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -85,6 +103,17 @@ export function parseArtifactGcWorkerObjects(
 	});
 }
 
+export function parseCompanyObjectGcWorkerJob(value: unknown): CompanyObjectGcWorkerJob | undefined {
+	if (value === null) return undefined;
+	const input = record(value, "company object cleanup job");
+	const profileId = uuid(input.profile_id, "company object cleanup profile id");
+	const leaseId = uuid(input.lease_id, "company object cleanup lease id");
+	const job = { planId: leaseId, profileId, leaseId, attemptCount: 1 };
+	const objects = parseArtifactGcWorkerObjects(input.objects, job);
+	if (objects.length === 0) throw new Error("Invalid empty company object cleanup job");
+	return { profileId, leaseId, objects };
+}
+
 function cleanupError(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
 	return (message.trim() || "Storage cleanup failed").slice(0, 1000);
@@ -129,4 +158,25 @@ export async function runArtifactGcWorkerBatch(
 		}
 	}
 	return result;
+}
+
+export async function runCompanyObjectGcWorkerJob(
+	job: CompanyObjectGcWorkerJob | undefined,
+	storage: ArtifactGcStorageProvider,
+	store: CompanyObjectGcWorkerStore,
+): Promise<CompanyObjectGcWorkerResult> {
+	if (!job) return { claimed: 0, completed: 0, failed: 0 };
+	try {
+		await store.renewLease(job);
+		await storage.remove(job.objects);
+		await store.complete(job);
+		return { claimed: job.objects.length, completed: job.objects.length, failed: 0 };
+	} catch {
+		try {
+			await store.release(job);
+		} catch {
+			// The lease expires server-side; a later invocation can safely reclaim it.
+		}
+		return { claimed: job.objects.length, completed: 0, failed: job.objects.length };
+	}
 }

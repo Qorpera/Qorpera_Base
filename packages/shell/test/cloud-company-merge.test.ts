@@ -1,14 +1,20 @@
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claimCompanyRuntimeLock, releaseCompanyRuntimeLock, scaffoldCompany } from "@qorpera/pi-coding-agent/company";
+import {
+	canonicalCompanyRoot,
+	claimCompanyRuntimeLock,
+	releaseCompanyRuntimeLock,
+	scaffoldCompany,
+} from "@qorpera/pi-coding-agent/company";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	inspectCloudCompanyMerge,
 	mergeCloudCompanySnapshots,
 	previewCloudCompanySnapshot,
+	recoverInterruptedCloudCompanyMerges,
 } from "../src/cloud-company-merge.ts";
-import { captureCloudCompanyTree } from "../src/cloud-company-snapshot.ts";
+import { captureCloudCompanyTree, readCloudCompanyTreeManifest } from "../src/cloud-company-snapshot.ts";
 import type { CompanyWorkspacePrimary } from "../src/cloud-company-workspace.ts";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
 import type { HostedCompanySnapshot } from "../src/hosted-primary.ts";
@@ -160,7 +166,7 @@ describe("cloud company merge", () => {
 		await expect(readFile(join(roots.local, "remote-plan.md"), "utf-8")).resolves.toBe("remote plan\n");
 	});
 
-	it("refuses divergent edits and leaves the active company untouched", async () => {
+	it("preserves divergent local work without mutating the cache before review", async () => {
 		const roots = await companyRoots();
 		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
 		const base = snapshot(
@@ -193,6 +199,9 @@ describe("cloud company merge", () => {
 		});
 		expect(result).toMatchObject({ applied: false, plan: { conflicts: [{ path: "company.md" }] } });
 		await expect(readFile(join(roots.local, "company.md"), "utf-8")).resolves.toBe("# Local company\n");
+		await expect(
+			readFile(join(roots.local, "Company File Conflicts", remoteSnapshotId, "company.md"), "utf-8"),
+		).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
 	it("requires unpublished local edits to be checkpointed before applying a remote fork", async () => {
@@ -231,4 +240,42 @@ describe("cloud company merge", () => {
 		await expect(readFile(join(roots.local, "company.md"), "utf-8")).resolves.toBe("# Unpublished local company\n");
 		await expect(readFile(join(roots.local, "remote-plan.md"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
 	});
+
+	it.each(["after-backup", "after-install"] as const)(
+		"rolls back an interrupted merge %s before the next capture",
+		async (crashPoint) => {
+			const roots = await companyRoots();
+			const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
+			const localTree = await captureCloudCompanyTree(roots.local, profileId, objects);
+			await writeFile(join(roots.remote, "company.md"), "# Remote company\n", "utf-8");
+			const remoteTree = await captureCloudCompanyTree(roots.remote, profileId, objects);
+			const [localManifest, remoteManifest] = await Promise.all([
+				readCloudCompanyTreeManifest(profileId, localTree, objects),
+				readCloudCompanyTreeManifest(profileId, remoteTree, objects),
+			]);
+			const transactionRoot = join(roots.local, ".qorpera", "w", `cloud-merge-crash-${crashPoint}`);
+			const backupRoot = join(transactionRoot, "backup");
+			await mkdir(backupRoot, { recursive: true });
+			await writeFile(
+				join(transactionRoot, "journal.json"),
+				`${JSON.stringify({
+					schema: "qorpera.cloud-company-merge-journal/v1",
+					companyRoot: canonicalCompanyRoot(roots.local),
+					localEntries: localManifest.entries,
+					resultEntries: remoteManifest.entries,
+					createdAt,
+				})}\n`,
+				"utf-8",
+			);
+			await rename(join(roots.local, "company.md"), join(backupRoot, "company.md"));
+			if (crashPoint === "after-install") {
+				await writeFile(join(roots.local, "company.md"), "# Remote company\n", "utf-8");
+			}
+
+			await recoverInterruptedCloudCompanyMerges(roots.local);
+
+			await expect(readFile(join(roots.local, "company.md"), "utf-8")).resolves.toBe("# Shared company\n");
+			await expect(readFile(transactionRoot, "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
+		},
+	);
 });

@@ -48,6 +48,9 @@ class FakeHostedPrimary {
 			title: input.title,
 			staffAgentId: input.staffAgentId,
 			parentSessionId: input.parentSessionId,
+			executionScope: input.executionScope,
+			companySnapshotId: input.companySnapshotId,
+			staffVersion: input.staffVersion,
 			status: "open",
 			createdByUserId: actorUserId,
 			createdAt,
@@ -59,6 +62,8 @@ class FakeHostedPrimary {
 	}
 
 	async appendAccountEvent(input: AppendHostedSessionEventInput): Promise<HostedSessionEvent> {
+		const session = this.sessions.find((candidate) => candidate.sessionId === input.sessionId);
+		if (!session || session.status !== "open") throw new Error("session is closed");
 		const events = this.events.get(input.sessionId);
 		if (!events) throw new Error("session not found");
 		if (this.injectConcurrentEntry) {
@@ -92,7 +97,11 @@ class FakeHostedPrimary {
 		}
 		const existing = events.find((event) => event.eventId === input.eventId);
 		if (existing) {
-			if (existing.eventType !== input.eventType || JSON.stringify(existing.body) !== JSON.stringify(input.body)) {
+			if (
+				existing.eventType !== input.eventType ||
+				JSON.stringify(existing.body) !== JSON.stringify(input.body) ||
+				JSON.stringify(existing.execution) !== JSON.stringify(input.execution)
+			) {
 				throw new Error("event id is already bound to different content (23505)");
 			}
 			return existing;
@@ -107,6 +116,7 @@ class FakeHostedPrimary {
 			eventType: input.eventType,
 			actorUserId,
 			body: input.body as JsonValue,
+			execution: input.execution,
 			previousHash: events.at(-1)?.eventHash,
 			eventHash: (events.length + 1).toString(16).padStart(64, "0"),
 			createdAt: new Date().toISOString(),
@@ -121,6 +131,12 @@ class FakeHostedPrimary {
 
 	async readSessionEvents(sessionId: string, afterSequence = 0, limit = 200): Promise<HostedSessionEvent[]> {
 		return (this.events.get(sessionId) ?? []).filter((event) => event.sequence > afterSequence).slice(0, limit);
+	}
+
+	async closeSession(sessionId: string): Promise<void> {
+		const session = this.sessions.find((candidate) => candidate.sessionId === sessionId);
+		if (!session) throw new Error("session not found");
+		session.status = "closed";
 	}
 }
 
@@ -161,6 +177,92 @@ afterEach(() => {
 });
 
 describe("cloud trail synchronization", () => {
+	it("persists an immutable execution binding across restart and stamps every uploaded entry part", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const live = bindTrailSession(machine, machine, {
+			actor: "company-agent",
+			attended: true,
+			staffAgentId: "financial-officer",
+		});
+		appendMessage(live, "durable-answer", null, "assistant", "x".repeat(200_000));
+		const primary = new FakeHostedPrimary();
+		const execution = {
+			kind: "turn" as const,
+			id: "55555555-5555-4555-8555-555555555555",
+			claimantId: "66666666-6666-4666-8666-666666666666",
+		};
+		const first = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => true,
+			liveBindings: () => [live],
+		});
+		first.bindEntryExecution(live.sessionId, "durable-answer", execution);
+		const restarted = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => true,
+			liveBindings: () => [live],
+		});
+		await restarted.sync();
+		const answerEvents = (primary.events.get(hostedSessionId) ?? []).filter(
+			(event) =>
+				event.body &&
+				typeof event.body === "object" &&
+				!Array.isArray(event.body) &&
+				(event.body as Record<string, JsonValue>).entryId === "durable-answer",
+		);
+		expect(answerEvents.length).toBeGreaterThan(1);
+		expect(answerEvents.every((event) => JSON.stringify(event.execution) === JSON.stringify(execution))).toBe(true);
+	});
+
+	it("reports a durable cursor advance without requiring a reload for a quarantine-only batch", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const primary = new FakeHostedPrimary();
+		const hosted = await primary.createSession({
+			environmentId,
+			clientSessionId: "11111111-1111-4111-8111-111111111111",
+			title: "Quarantine-only recovery",
+		});
+		primary.events.get(hosted.sessionId)?.push({
+			sessionId: hosted.sessionId,
+			sequence: 1,
+			eventId: "22222222-2222-4222-8222-222222222222",
+			eventType: "message",
+			actorUserId,
+			body: { schema: "malicious.unknown/v1", payload: "ignored" },
+			eventHash: "1".repeat(64),
+			createdAt: new Date().toISOString(),
+		});
+		const advances: Array<{ hostedSessionId: string; cursor: number; requiresReload: boolean }> = [];
+		const sync = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => false,
+			onCursorAdvanced: (advance) => advances.push(advance),
+		});
+
+		await expect(sync.sync()).resolves.toMatchObject({
+			eventsDownloaded: 1,
+			eventsQuarantined: 1,
+			entriesMaterialized: 0,
+		});
+		expect(advances).toEqual([{ hostedSessionId: hosted.sessionId, cursor: 1, requiresReload: false }]);
+	});
+
 	it("quarantines an unparseable event and continues materializing later events", async () => {
 		const machine = join(root, "machine", "company");
 		const userData = join(root, "machine", "user-data");
@@ -473,5 +575,72 @@ describe("cloud trail synchronization", () => {
 		expect(idempotent.eventsUploaded).toBe(1);
 		expect((await syncA.sync()).eventsUploaded).toBe(0);
 		expect(readFileSync(liveA.path, "utf-8").match(/"id":"answer"/g)).toHaveLength(1);
+	});
+
+	it("round-trips autonomous staff work with its operational scope", async () => {
+		const machineA = join(root, "machine-a", "company");
+		const machineB = join(root, "machine-b", "company");
+		mkdirSync(join(machineA, "trail"), { recursive: true });
+		mkdirSync(join(machineB, "trail"), { recursive: true });
+		const live = bindTrailSession(machineA, machineA, {
+			actor: "company-agent",
+			attended: false,
+			staffAgentId: "legal-agent",
+			autonomousLabel: "Register ApS",
+			group: "job:company-registration",
+			companySnapshotId: "55555555-5555-4555-8555-555555555555",
+			staffVersion: 4,
+		});
+		appendMessage(live, "operational-result", null, "assistant", "The registration claim was submitted.");
+		const primary = new FakeHostedPrimary();
+		const push = new CloudTrailSynchronizer({
+			root: machineA,
+			userData: join(root, "machine-a", "user-data"),
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => true,
+		});
+		await expect(push.sync()).resolves.toMatchObject({ sessionsCreated: 1 });
+		await push.finalizeOperationalSession(live.sessionId);
+		expect(primary.sessions[0]?.executionScope).toEqual({
+			attended: false,
+			staffAgentId: "legal-agent",
+			autonomousLabel: "Register ApS",
+			group: "job:company-registration",
+			companySnapshotId: "55555555-5555-4555-8555-555555555555",
+			staffVersion: 4,
+		});
+		expect(primary.sessions[0]).toMatchObject({
+			companySnapshotId: "55555555-5555-4555-8555-555555555555",
+			staffVersion: 4,
+			status: "closed",
+		});
+
+		const pull = new CloudTrailSynchronizer({
+			root: machineB,
+			userData: join(root, "machine-b", "user-data"),
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => false,
+		});
+		await expect(pull.sync()).resolves.toMatchObject({ entriesMaterialized: 2 });
+		const shared = listSharedTrailSessions(machineB);
+		expect(shared).toHaveLength(1);
+		expect(shared[0]).toMatchObject({
+			staffAgentId: "legal-agent",
+			scope: {
+				attended: false,
+				staffAgentId: "legal-agent",
+				autonomousLabel: "Register ApS",
+				group: "job:company-registration",
+				companySnapshotId: "55555555-5555-4555-8555-555555555555",
+				staffVersion: 4,
+			},
+		});
+		expect(shared[0].entries).toContainEqual(
+			expect.objectContaining({ id: "operational-result", message: expect.objectContaining({ role: "assistant" }) }),
+		);
 	});
 });

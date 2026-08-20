@@ -113,7 +113,7 @@ describe("cloud company workspace inbox", () => {
 		sync.handleRealtimeChange({ resource: "trail" });
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(primary.listCompanyWorkspaces).toHaveBeenCalledTimes(listCalls);
-		sync.handleRealtimeChange({ resource: "workspace" });
+		sync.handleRealtimeChange({ resource: "company-file" });
 		await vi.waitFor(() => expect(primary.listCompanyWorkspaces).toHaveBeenCalledTimes(listCalls + 1));
 		expect(primary.getCompanySnapshot).toHaveBeenCalledWith(remoteSnapshotId);
 	});

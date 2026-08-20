@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { open } from "node:fs/promises";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { HostedPrimaryDatabase } from "./hosted-primary.ts";
 
@@ -22,6 +23,10 @@ export interface CloudFileReference {
 	fileSha256: string;
 	bytes: number;
 	mediaType: string;
+}
+
+export interface StagedCloudFileReference extends CloudFileReference {
+	objects: CloudReachableObject[];
 }
 
 export interface CloudReachableObject {
@@ -173,6 +178,70 @@ export class CloudContentAddressedStore {
 			fileSha256: manifest.fileSha256,
 			bytes: manifest.bytes,
 			mediaType: manifest.mediaType,
+		};
+	}
+
+	async putFileFromPath(
+		profileId: string,
+		path: string,
+		mediaType: string,
+		expected: { bytes: number; sha256: string },
+	): Promise<StagedCloudFileReference> {
+		requiredProfileId(profileId);
+		requiredSha256(expected.sha256);
+		if (!Number.isSafeInteger(expected.bytes) || expected.bytes < 0 || expected.bytes > MAX_FILE_BYTES) {
+			throw new Error("Cloud file exceeds the 256 MiB file limit");
+		}
+		const normalizedMediaType = requiredMediaType(mediaType);
+		const handle = await open(path, "r");
+		const chunks: CloudFileChunk[] = [];
+		const digest = createHash("sha256");
+		let offset = 0;
+		try {
+			const stat = await handle.stat();
+			if (!stat.isFile() || stat.size !== expected.bytes) {
+				throw new Error("Cloud file changed before durable staging");
+			}
+			while (offset < stat.size) {
+				const buffer = Buffer.allocUnsafe(Math.min(FILE_CHUNK_BYTES, stat.size - offset));
+				const read = await handle.read(buffer, 0, buffer.byteLength, offset);
+				if (read.bytesRead !== buffer.byteLength) throw new Error("Cloud file changed during durable staging");
+				offset += read.bytesRead;
+				digest.update(buffer);
+				const reference = await this.putObject(profileId, buffer, "application/octet-stream");
+				chunks.push({ sha256: reference.sha256, bytes: reference.bytes });
+			}
+		} finally {
+			await handle.close();
+		}
+		if (offset !== expected.bytes || digest.digest("hex") !== expected.sha256) {
+			throw new Error("Cloud file changed during durable staging");
+		}
+		const manifest: CloudFileManifest = {
+			schema: FILE_MANIFEST_SCHEMA,
+			fileSha256: expected.sha256,
+			bytes: expected.bytes,
+			mediaType: normalizedMediaType,
+			chunks,
+		};
+		const manifestReference = await this.putObject(
+			profileId,
+			Buffer.from(JSON.stringify(manifest), "utf-8"),
+			FILE_MANIFEST_MEDIA_TYPE,
+		);
+		return {
+			manifestSha256: manifestReference.sha256,
+			fileSha256: manifest.fileSha256,
+			bytes: manifest.bytes,
+			mediaType: manifest.mediaType,
+			objects: [
+				...new Map(
+					[
+						...chunks.map((chunk) => ({ sha256: chunk.sha256, bytes: chunk.bytes })),
+						{ sha256: manifestReference.sha256, bytes: manifestReference.bytes },
+					].map((object) => [object.sha256, object]),
+				).values(),
+			],
 		};
 	}
 

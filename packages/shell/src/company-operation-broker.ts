@@ -1,7 +1,8 @@
 /** Desktop-host boundary for transactional agent-owned company operations. */
 
+import { createHash } from "node:crypto";
 import { COMPANY_OPERATION_KINDS, type CompanyOperationKind } from "@qorpera/pi-coding-agent/company-operation-broker";
-import type { KernelIntentCapability } from "@qorpera/pi-protocol";
+import type { KernelExecutionIdentity, KernelIntentCapability } from "@qorpera/pi-protocol";
 
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_INTENT_LIFETIME_MS = 4 * 60 * 60 * 1000;
@@ -29,9 +30,15 @@ export interface CompanyOperationBroker {
 	release: () => void;
 }
 
+export type CompanyOperationReceiptBegin =
+	| { started: true; status: "executing" }
+	| { started: false; status: "executing" }
+	| { started: false; status: "completed"; result: { message: string } };
+
 function validIntent(value: unknown): value is KernelIntentCapability {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const intent = value as Record<string, unknown>;
+	const execution = intent.execution;
 	return (
 		typeof intent.nonce === "string" &&
 		REQUEST_ID_PATTERN.test(intent.nonce) &&
@@ -41,6 +48,15 @@ function validIntent(value: unknown): value is KernelIntentCapability {
 		typeof intent.issuedAt === "string" &&
 		typeof intent.expiresAt === "string" &&
 		typeof intent.signature === "string" &&
+		(execution === undefined ||
+			(!!execution &&
+				typeof execution === "object" &&
+				!Array.isArray(execution) &&
+				((execution as { kind?: unknown }).kind === "turn" || (execution as { kind?: unknown }).kind === "wake") &&
+				typeof (execution as { id?: unknown }).id === "string" &&
+				REQUEST_ID_PATTERN.test((execution as { id: string }).id) &&
+				typeof (execution as { claimantId?: unknown }).claimantId === "string" &&
+				REQUEST_ID_PATTERN.test((execution as { claimantId: string }).claimantId))) &&
 		!!intent.budget &&
 		typeof intent.budget === "object"
 	);
@@ -63,13 +79,65 @@ function requestFrame(value: unknown): CompanyOperationRequestFrame | undefined 
 	return frame as unknown as CompanyOperationRequestFrame;
 }
 
+function canonicalJson(value: unknown): string {
+	if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+	if (typeof value === "number") return Number.isFinite(value) ? JSON.stringify(value) : "null";
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (value && typeof value === "object") {
+		return `{${Object.entries(value)
+			.filter(([, entry]) => entry !== undefined)
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+			.join(",")}}`;
+	}
+	return "null";
+}
+
+function inputSha256(kind: CompanyOperationKind, input: unknown): string {
+	return createHash("sha256")
+		.update(`${kind}\0${canonicalJson(input)}`)
+		.digest("hex");
+}
+
 export function createCompanyOperationBroker(options: {
 	sessionId: string;
+	requireDurableExecution?: boolean;
+	execution: () => KernelExecutionIdentity | undefined;
+	beginReceipt: (
+		execution: KernelExecutionIdentity,
+		operationId: string,
+		operationKind: CompanyOperationKind,
+		inputSha256: string,
+	) => Promise<CompanyOperationReceiptBegin>;
+	completeReceipt: (
+		execution: KernelExecutionIdentity,
+		operationId: string,
+		result: { message: string },
+	) => Promise<{ message: string }>;
 	apply: (kind: CompanyOperationKind, input: unknown) => Promise<{ message: string }>;
 }): CompanyOperationBroker {
 	const intents = new Map<string, IntentState>();
 	const requestIds = new Set<string>();
 	let released = false;
+	const retryReceipt = async <T>(operation: () => Promise<T>, phase: string): Promise<T> => {
+		let lastError: unknown;
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			if (released) throw new Error(`durable company operation ${phase} stopped with the host`);
+			try {
+				return await operation();
+			} catch (error) {
+				lastError = error;
+				if (attempt < 4) {
+					await new Promise<void>((resolvePromise) => {
+						setTimeout(resolvePromise, 100 * 2 ** attempt);
+					});
+				}
+			}
+		}
+		throw new Error(
+			`durable company operation ${phase} failed after retries: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+		);
+	};
 
 	const endIntent = (intent: IntentState): void => {
 		if (intent.status !== "active") return;
@@ -134,10 +202,51 @@ export function createCompanyOperationBroker(options: {
 				});
 				return true;
 			}
+			const liveExecution = options.execution();
+			const intentExecution = intent.capability.execution;
+			if (options.requireDurableExecution && !intentExecution) {
+				send({
+					type: "qorpera_company_operation_response",
+					requestId: frame.requestId,
+					error: "company operation denied: cloud execution has no durable lease",
+				});
+				return true;
+			}
+			if (
+				(liveExecution && !intentExecution) ||
+				(intentExecution && JSON.stringify(intentExecution) !== JSON.stringify(liveExecution))
+			) {
+				send({
+					type: "qorpera_company_operation_response",
+					requestId: frame.requestId,
+					error: "company operation denied: durable execution ownership changed",
+				});
+				return true;
+			}
 			requestIds.add(frame.requestId);
 			intent.operations++;
-			void options
-				.apply(frame.kind, frame.input)
+			void (async () => {
+				if (!intentExecution) return options.apply(frame.kind, frame.input);
+				const receipt = await retryReceipt(
+					() =>
+						options.beginReceipt(
+							intentExecution,
+							frame.requestId,
+							frame.kind,
+							inputSha256(frame.kind, frame.input),
+						),
+					"reservation",
+				);
+				if (receipt.status === "completed") return receipt.result;
+				if (!receipt.started) {
+					throw new Error("company operation has an ambiguous prior outcome and requires review");
+				}
+				const result = await options.apply(frame.kind, frame.input);
+				return retryReceipt(
+					() => options.completeReceipt(intentExecution, frame.requestId, result),
+					"acknowledgement",
+				);
+			})()
 				.then((result) =>
 					send({
 						type: "qorpera_company_operation_response",

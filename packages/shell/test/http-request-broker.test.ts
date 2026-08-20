@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
+import type { JsonValue, KernelExecutionIdentity } from "@qorpera/pi-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHttpRequestBroker, type HttpRequestObservation } from "../src/http-request-broker.ts";
 
@@ -53,6 +54,11 @@ function harness(options?: {
 	failResolve?: boolean;
 	root?: string;
 	maxSaveBytes?: number;
+	execution?: KernelExecutionIdentity;
+	requireDurableExecution?: boolean;
+	beginReceipt?: Parameters<typeof createHttpRequestBroker>[0]["beginReceipt"];
+	completeReceipt?: Parameters<typeof createHttpRequestBroker>[0]["completeReceipt"];
+	syncOutput?: Parameters<typeof createHttpRequestBroker>[0]["syncOutput"];
 }) {
 	const seen: SeenRequest[] = [];
 	const sent: Array<Record<string, unknown>> = [];
@@ -96,8 +102,13 @@ function harness(options?: {
 		fetchImpl,
 		maxRequestsPerIntent: options?.maxRequestsPerIntent,
 		maxSaveBytes: options?.maxSaveBytes,
+		requireDurableExecution: options?.requireDurableExecution,
+		execution: () => options?.execution,
+		beginReceipt: options?.beginReceipt,
+		completeReceipt: options?.completeReceipt,
+		syncOutput: options?.syncOutput,
 	});
-	const intent = makeIntent();
+	const intent = makeIntent(options?.execution ? { execution: options.execution } : undefined);
 	expect(broker.authorizeIntent(intent as never)).toBe(true);
 	const send = (frame: object): void => {
 		sent.push(frame as Record<string, unknown>);
@@ -119,6 +130,14 @@ function harness(options?: {
 }
 
 describe("http request broker", () => {
+	it("fails closed when a cloud execution has no durable lease", async () => {
+		const h = harness({ requireDurableExecution: true });
+		h.broker.handleFrame(h.request({}), h.send);
+		await h.settle();
+		expect(String(h.sent[0].error)).toContain("no durable lease");
+		expect(h.seen).toHaveLength(0);
+	});
+
 	it("substitutes secret references kernel-side and records only the unresolved identity", async () => {
 		const h = harness();
 		expect(h.broker.handleFrame(h.request({}), h.send)).toBe(true);
@@ -214,6 +233,91 @@ describe("http request broker", () => {
 		expect(h.observed.map((event) => event.status)).toEqual(["started", "failed"]);
 	});
 
+	it("replays a completed durable receipt without repeating the HTTP effect", async () => {
+		const execution: KernelExecutionIdentity = {
+			kind: "turn",
+			id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+			claimantId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		};
+		const fetchImpl = vi.fn<typeof fetch>();
+		const h = harness({
+			execution,
+			fetchImpl,
+			beginReceipt: async () => ({
+				started: false,
+				status: "completed",
+				result: { status: 202, headers: {}, body: "already sent", bodyBytes: 12 },
+			}),
+			completeReceipt: async (_live, _operationId, result) => result,
+		});
+		h.broker.handleFrame(h.request({}), h.send);
+		await h.settle();
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(h.sent[0]).toMatchObject({ status: 202, body: "already sent" });
+	});
+
+	it("bounds response headers before persisting a durable operation result", async () => {
+		const execution: KernelExecutionIdentity = {
+			kind: "wake",
+			id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+			claimantId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		};
+		let completed: unknown;
+		const h = harness({
+			execution,
+			fetchImpl: async () => new Response("ok", { headers: { "x-large": "a".repeat(40 * 1024) } }),
+			beginReceipt: async () => ({ started: true, status: "executing" }),
+			completeReceipt: async (_live, _operationId, result) => {
+				completed = result;
+				return result;
+			},
+		});
+		h.broker.handleFrame(h.request({}), h.send);
+		await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+		expect(completed).toMatchObject({ headers: { "x-qorpera-headers-truncated": "true" } });
+		expect(Buffer.byteLength(JSON.stringify(completed), "utf-8")).toBeLessThan(512 * 1024);
+	});
+
+	it("supplies the durable operation id as the downstream idempotency key", async () => {
+		const execution: KernelExecutionIdentity = {
+			kind: "turn",
+			id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+			claimantId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		};
+		const h = harness({
+			execution,
+			beginReceipt: async () => ({ started: true, status: "executing" }),
+			completeReceipt: async (_live, _operationId, result) => result,
+		});
+		h.broker.handleFrame(h.request({}), h.send);
+		await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+		expect(h.seen[0].headers?.["Idempotency-Key"]).toBe(h.sent[0].requestId);
+	});
+
+	it("retries durable acknowledgement without repeating the HTTP request", async () => {
+		const execution: KernelExecutionIdentity = {
+			kind: "wake",
+			id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+			claimantId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		};
+		const fetchImpl = vi.fn(async () => new Response("ok"));
+		const completeReceipt = vi
+			.fn(async (_live: KernelExecutionIdentity, _operationId: string, result: JsonValue) => result)
+			.mockRejectedValueOnce(new Error("network response lost"))
+			.mockRejectedValueOnce(new Error("network unavailable"));
+		const h = harness({
+			execution,
+			fetchImpl,
+			beginReceipt: async () => ({ started: true, status: "executing" }),
+			completeReceipt,
+		});
+		h.broker.handleFrame(h.request({}), h.send);
+		await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+		expect(h.sent[0].status).toBe(200);
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		expect(completeReceipt).toHaveBeenCalledTimes(3);
+	});
+
 	it("ignores frames that are not http requests", () => {
 		const h = harness();
 		expect(h.broker.handleFrame({ type: "qorpera_model_request" }, h.send)).toBe(false);
@@ -240,6 +344,37 @@ describe("file mode (fetch-to-file / upload-from-file)", () => {
 		expect(h.sent[0].savedTo).toBe("imports/statement.pdf");
 		expect(h.sent[0].sha256).toBe(createHash("sha256").update(BINARY).digest("hex"));
 		expect(h.observed.at(-1)).toMatchObject({ status: "completed", savedTo: "imports/statement.pdf" });
+	});
+
+	it("stages the exact durable file output before completing its operation receipt", async () => {
+		const execution: KernelExecutionIdentity = {
+			kind: "turn",
+			id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+			claimantId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		};
+		const order: string[] = [];
+		const h = harness({
+			execution,
+			fetchImpl: async () => new Response(new Uint8Array(BINARY), { status: 200 }),
+			beginReceipt: async () => ({ started: true, status: "executing" }),
+			syncOutput: async (output) => {
+				order.push(`staged:${output.relativePath}:${output.bytes}`);
+				return {
+					cloudManifestSha256: "a".repeat(64),
+					cloudObjects: [{ sha256: "b".repeat(64), bytes: output.bytes }],
+				};
+			},
+			completeReceipt: async (_live, _operationId, result) => {
+				order.push("receipt-completed");
+				return result;
+			},
+		});
+		h.broker.handleFrame(
+			h.request({ method: "GET", body: undefined, saveTo: "imports/durable-statement.pdf" }),
+			h.send,
+		);
+		await vi.waitFor(() => expect(h.sent).toHaveLength(1));
+		expect(order).toEqual([`staged:imports/durable-statement.pdf:${BINARY.length}`, "receipt-completed"]);
 	});
 
 	it("denies protected and escaping save paths before any network contact", async () => {

@@ -322,7 +322,7 @@ export class QorperaAccountAuth {
 		);
 		this.primary = createSupabaseHostedPrimary(this.client);
 		this.realtime = new SupabaseCloudRealtimeTransport(this.client);
-		this.presence = new SupabaseCloudPresenceTransport(this.client);
+		this.presence = new SupabaseCloudPresenceTransport(this.client, this.primary);
 		this.objects = new CloudContentAddressedStore(new SupabaseCloudObjectTransport(this.client));
 	}
 
