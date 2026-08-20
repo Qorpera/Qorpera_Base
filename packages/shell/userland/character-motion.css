@@ -508,6 +508,233 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.working > .staff-face::b
 	68% { opacity: 1; transform: scale(.96); }
 }
 
+/* ---------------------------------------------------------------------------
+ * Folio reads a page while he works.
+ *
+ * The art is one flat PNG, so the raised right hand is redrawn as a second copy
+ * of the same file clipped to the arm alone and pivoted at the low corner of the
+ * shoulder joint. The base image is clipped just past the body's leftmost pixel
+ * (22%) so the static arm underneath never shows through the moving one, and the
+ * arm sits behind that image so its root stays tucked under the silhouette. The
+ * pivot has to be the bottom of the joint: every point of the cut edge is then
+ * above it, so the reach sweeps the seam further under the body instead of
+ * opening a gap beside it.
+ *
+ * The sheet is a background image on the avatar's ::after. A fixed clip-path
+ * traces the front flap's top contour, so only the part of the page that has
+ * cleared the mouth is painted and the sheet reads as sitting between the back
+ * cover and the foreground flap. Sliding background-position rather than the
+ * element itself keeps that clip anchored to the folder while the page travels.
+ *
+ * Working is one unbroken read. The reach and the lift play once, the hold then
+ * loops for as long as the state lasts, and putting the page away is an exit
+ * beat the renderer triggers with `stowing` — CSS cannot animate on class
+ * removal. Both working phases are anchored to --staff-work-elapsed, the
+ * negative offset the renderer writes for how long this agent has been working,
+ * so an avatar rebuilt by a re-render resumes the read at the right frame
+ * instead of grabbing for the page again.
+ * ------------------------------------------------------------------------- */
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working > .staff-creature-image,
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing > .staff-creature-image {
+	position: relative;
+	z-index: 1;
+	clip-path: inset(0 0 0 22%);
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::before,
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::before {
+	content: "";
+	position: absolute;
+	inset: 0;
+	z-index: 0;
+	width: auto;
+	height: auto;
+	aspect-ratio: auto;
+	background: url("./staff-creatures/folio.png") 0 0 / 100% 100% no-repeat;
+	clip-path: inset(41% 77.7% 45% 0);
+	filter: var(--staff-creature-filter, none);
+	opacity: 1;
+	transform: none;
+	transform-origin: 22.3% 54.5%;
+	transition: none;
+	rotate: 0deg;
+	pointer-events: none;
+}
+
+/* The working page temporarily owns the same generated layer used by the
+ * universal writing dots. Every inherited writing-layer property is reset so
+ * the page is full-size while working and returns cleanly to the cloud later. */
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::after,
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	z-index: 1;
+	width: auto;
+	height: auto;
+	border: 0;
+	border-radius: 0;
+	background-color: transparent;
+	background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 40'><g transform='rotate(6.5 56 23)'><rect x='35' y='5' width='42' height='36' rx='2.6' fill='%23fdfdfc' stroke='%23111110' stroke-opacity='.28' stroke-width='.9'/><rect x='39' y='8.8' width='17' height='2.6' rx='1.3' fill='%238e8e87'/><rect x='39' y='13.8' width='33' height='1.6' rx='.8' fill='%23c4c4be'/><rect x='39' y='18' width='33' height='1.6' rx='.8' fill='%23c4c4be'/><rect x='39' y='22.2' width='27' height='1.6' rx='.8' fill='%23c4c4be'/><rect x='39' y='26.4' width='33' height='1.6' rx='.8' fill='%23c4c4be'/><rect x='39' y='30.6' width='19' height='1.6' rx='.8' fill='%23c4c4be'/></g></svg>");
+	background-repeat: no-repeat;
+	background-size: 100% 40%;
+	background-position: 0% 53%;
+	clip-path: polygon(30% 0%, 80% 0%, 80% 39%, 78.5% 35.8%, 74% 33.4%, 68% 32.3%, 60% 31.5%, 54% 30.7%, 52% 27.4%, 49% 22%, 40% 20.8%, 34% 20.8%, 30% 22.5%);
+	opacity: 1;
+	transform: none;
+	transition: none;
+	pointer-events: none;
+}
+
+/* Every layer has to travel as one rig, so Folio carries his state motion on
+ * the avatar itself instead of on the image and face separately. */
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working > .staff-creature-image,
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working > .staff-face,
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing > .staff-creature-image,
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing > .staff-face {
+	animation: none;
+}
+
+/* The page and the scanning eyes carry the read, so the generic focus dots
+ * would only crowd the same corner. */
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working > .staff-face::before {
+	content: none;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working {
+	animation:
+		folio-body-enter 2.6s cubic-bezier(.4, .05, .35, 1) var(--staff-work-elapsed, 0ms) 1 normal both,
+		folio-body-read 5.2s ease-in-out calc(2.6s + var(--staff-work-elapsed, 0ms)) infinite;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::before {
+	animation:
+		folio-arm-enter 2.6s cubic-bezier(.34, .05, .3, 1) var(--staff-work-elapsed, 0ms) 1 normal both,
+		folio-arm-read 6.4s ease-in-out calc(2.6s + var(--staff-work-elapsed, 0ms)) infinite;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::after {
+	animation:
+		folio-page-enter 2.6s cubic-bezier(.32, .06, .28, 1) var(--staff-work-elapsed, 0ms) 1 normal both,
+		folio-page-read 5.6s ease-in-out calc(2.6s + var(--staff-work-elapsed, 0ms)) infinite;
+}
+
+/* Eye travel is a share of the eye itself, so the scan keeps its size across
+ * every avatar scale. The blink keeps its own per-agent stagger and runs
+ * alongside, because the two animations drive different properties. */
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working > .staff-face i {
+	animation:
+		folio-eye-enter 2.6s ease-in-out var(--staff-work-elapsed, 0ms) 1 normal both,
+		folio-read-scan 4.6s linear calc(2.6s + var(--staff-work-elapsed, 0ms)) infinite,
+		creature-eye-one-blink 6.4s steps(1, end) var(--creature-motion-delay) infinite;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working > .staff-face i:last-child {
+	animation:
+		folio-eye-enter 2.6s ease-in-out var(--staff-work-elapsed, 0ms) 1 normal both,
+		folio-read-scan 4.6s linear calc(2.6s + var(--staff-work-elapsed, 0ms)) infinite,
+		creature-eye-two-blink 6.4s steps(1, end) var(--creature-motion-delay) infinite;
+}
+
+/* Leaving `working` — for writing, or for anything else — plays the read out
+ * once. These rules follow the state rules above so they win the tie while both
+ * `stowing` and the incoming state class sit on the element. */
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing {
+	animation: folio-body-exit .82s cubic-bezier(.36, .02, .3, 1) 0s 1 normal both;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::before {
+	animation: folio-arm-exit .82s cubic-bezier(.36, .02, .3, 1) 0s 1 normal both;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::after {
+	animation: folio-page-exit .82s cubic-bezier(.36, .02, .3, 1) 0s 1 normal both;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing > .staff-face i {
+	animation: folio-eye-exit .44s ease-in-out 0s 1 normal both;
+}
+
+@keyframes folio-body-enter {
+	0%, 12% { transform: translateY(0) rotate(0deg); }
+	30% { transform: translateY(.5%) rotate(-.55deg); }
+	82% { transform: translateY(-.9%) rotate(.5deg); }
+	100% { transform: translateY(-.5%) rotate(.28deg); }
+}
+
+@keyframes folio-arm-enter {
+	0%, 12% { rotate: 0deg; }
+	30% { rotate: 9.8deg; }
+	40% { rotate: 8.4deg; }
+	82% { rotate: 15.2deg; }
+	100% { rotate: 13.8deg; }
+}
+
+@keyframes folio-page-enter {
+	0%, 26% { background-position: 0% 53%; }
+	34% { background-position: 0% 51%; }
+	82% { background-position: 0% 12.5%; }
+	100% { background-position: 0% 15%; }
+}
+
+@keyframes folio-eye-enter {
+	0%, 46% { translate: 0 0; }
+	100% { translate: -26% -30%; }
+}
+
+/* The hold: three loops of deliberately different length, so the page, the hand
+ * and the body never settle into one visible pulse. */
+@keyframes folio-body-read {
+	0%, 100% { transform: translateY(-.5%) rotate(.28deg); }
+	34% { transform: translateY(-.78%) rotate(.14deg); }
+	68% { transform: translateY(-.34%) rotate(.4deg); }
+}
+
+@keyframes folio-arm-read {
+	0%, 100% { rotate: 13.8deg; }
+	36% { rotate: 13deg; }
+	72% { rotate: 14.4deg; }
+}
+
+@keyframes folio-page-read {
+	0%, 100% { background-position: 0% 15%; }
+	40% { background-position: 0% 14.1%; }
+	74% { background-position: 0% 15.4%; }
+}
+
+/* Three lines, then back up to the top of the page. */
+@keyframes folio-read-scan {
+	0% { translate: -26% -30%; }
+	22% { translate: 30% -30%; }
+	24% { translate: -26% -18%; }
+	46% { translate: 30% -18%; }
+	48% { translate: -26% -6%; }
+	70% { translate: 30% -6%; }
+	78% { translate: 6% -16%; }
+	100% { translate: -26% -30%; }
+}
+
+@keyframes folio-body-exit {
+	from { transform: translateY(-.5%) rotate(.28deg); }
+	to { transform: translateY(0) rotate(0deg); }
+}
+
+@keyframes folio-arm-exit {
+	0% { rotate: 13.8deg; }
+	24% { rotate: 15.2deg; }
+	100% { rotate: 0deg; }
+}
+
+@keyframes folio-page-exit {
+	from { background-position: 0% 15%; }
+	to { background-position: 0% 53%; }
+}
+
+@keyframes folio-eye-exit {
+	from { translate: 0 -20%; }
+	to { translate: 0 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
 	html[data-staff-avatar-style="creatures"] .staff-avatar::before,
 	html[data-staff-avatar-style="creatures"] .staff-avatar::after,
@@ -529,6 +756,21 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.working > .staff-face::b
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face::after {
 		opacity: 0;
 	}
+	/* Folio keeps the read as a still pose: page out, hand up, nothing moving. */
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working,
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing,
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::before,
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::after,
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::before,
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::after {
+		animation: none !important;
+	}
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::before {
+		rotate: 13.8deg;
+	}
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::after {
+		background-position: 0% 15%;
+	}
 }
 
 @media (forced-colors: active) {
@@ -540,5 +782,11 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.working > .staff-face::b
 	html[data-staff-avatar-style="creatures"] .staff-avatar.working > .staff-face::before {
 		background: CanvasText;
 		box-shadow: .95em .8em 0 CanvasText, 1.65em 1.8em 0 CanvasText;
+	}
+	/* The sheet art is fixed paper white, which has no meaning in a forced
+	 * palette, so Folio reads with the hand motion alone. */
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::after,
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::after {
+		background-image: none;
 	}
 }

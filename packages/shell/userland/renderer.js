@@ -1731,16 +1731,84 @@ function staffStatus(staff) {
 const STAFF_MOTION_STATES = ["idle", "working", "writing", "needs-attention"];
 const STAFF_LEGACY_MOTION_STATES = ["listening", "starting", "finishing", "reconnecting"];
 
-function setAvatarMotionState(avatar, status) {
+const AVATAR_STOW_MS = 900;
+const avatarStowTimers = new WeakMap();
+const staffWorkStartedAt = new Map();
+
+function setAvatarMotionState(avatar, status, actualStatus = status) {
 	const motion = STAFF_MOTION_STATES.includes(status) ? status : "idle";
+	const actualMotion = STAFF_MOTION_STATES.includes(actualStatus) ? actualStatus : "idle";
+	const wasWorking = avatar.classList.contains("working");
 	avatar.classList.remove(...STAFF_MOTION_STATES, ...STAFF_LEGACY_MOTION_STATES);
 	avatar.classList.add(motion);
+	if (avatar.dataset.creature === "folio") {
+		avatar.style.setProperty(
+			"--staff-work-elapsed",
+			staffWorkElapsed(avatar.dataset.staffId, motion, actualMotion),
+		);
+		if (wasWorking && motion !== "working") startAvatarStow(avatar);
+		else if (motion === "working") cancelAvatarStow(avatar);
+	} else {
+		staffWorkStartedAt.delete(avatar.dataset.staffId);
+		avatar.style.removeProperty("--staff-work-elapsed");
+		cancelAvatarStow(avatar);
+	}
+}
+
+// Folio reads for the whole of `working`, so putting the page away is an exit
+// beat — and CSS cannot animate on class removal. This transient class carries
+// that beat, on its own timer, after the new state class is already in place.
+function startAvatarStow(avatar) {
+	cancelAvatarStow(avatar);
+	avatar.classList.add("stowing");
+	avatarStowTimers.set(
+		avatar,
+		setTimeout(() => {
+			avatarStowTimers.delete(avatar);
+			avatar.classList.remove("stowing");
+		}, AVATAR_STOW_MS),
+	);
+}
+
+function cancelAvatarStow(avatar) {
+	const pending = avatarStowTimers.get(avatar);
+	if (pending) clearTimeout(pending);
+	avatarStowTimers.delete(avatar);
+	avatar.classList.remove("stowing");
+}
+
+// A re-render rebuilds avatars from scratch, which would restart a one-shot
+// entry animation and make Folio grab for his page again mid-run. Reporting how
+// long the agent has been working lets CSS start the sequence that far in with a
+// negative delay, so the read simply continues.
+function staffWorkElapsed(identity, motion, actualMotion) {
+	if (!identity) return "0ms";
+	if (actualMotion !== "working") {
+		staffWorkStartedAt.delete(identity);
+		return "0ms";
+	}
+	// Composite room avatars can deliberately paint every participant as
+	// working. They may show the motion, but only the member's real runtime may
+	// seed or advance the continuity anchor.
+	if (motion !== actualMotion) return "0ms";
+	if (!staffWorkStartedAt.has(identity)) staffWorkStartedAt.set(identity, Date.now());
+	return `${staffWorkStartedAt.get(identity) - Date.now()}ms`;
 }
 
 function syncVisibleStaffAvatars() {
+	const members = activeStaffMembers();
+	// Clearing the work anchor belongs here, where the agent's real status is
+	// known: several places render a deliberately idle avatar for an agent that
+	// is still running, and those must not cut its read short.
+	for (const staff of members) {
+		if (staffStatus(staff) !== "working") staffWorkStartedAt.delete(staffId(staff));
+	}
 	for (const avatar of document.querySelectorAll(".staff-avatar[data-staff-id]")) {
-		const staff = activeStaffMembers().find((candidate) => staffId(candidate) === avatar.dataset.staffId);
-		if (staff) setAvatarMotionState(avatar, staffStatus(staff));
+		const staff = members.find((candidate) => staffId(candidate) === avatar.dataset.staffId);
+		if (staff) {
+			const status = staffStatus(staff);
+			setAvatarMotionState(avatar, status, status);
+		}
 	}
 }
 
@@ -1761,11 +1829,13 @@ function setCurrentAvatarAction(phase, duration = 0) {
 function makeStaffAvatar(staffOrTemplate, status = "idle") {
 	const avatar = document.createElement("span");
 	avatar.className = `staff-avatar shape-${staffShape(staffOrTemplate)}`;
-	setAvatarMotionState(avatar, status);
 	avatar.style.setProperty("--staff-color", staffColor(staffOrTemplate));
 	avatar.style.setProperty("--staff-motion-delay", staffMotionDelay(staffOrTemplate));
+	avatar.style.setProperty("--staff-creature-filter", staffCreatureFilter(staffOrTemplate));
 	if (staffId(staffOrTemplate)) avatar.dataset.staffId = staffId(staffOrTemplate);
 	avatar.dataset.creature = staffCreatureId(staffOrTemplate);
+	const actualStatus = staffId(staffOrTemplate) ? staffStatus(staffOrTemplate) : status;
+	setAvatarMotionState(avatar, status, actualStatus);
 	avatar.append(makeStaffCreature(staffOrTemplate), makeStaffFace());
 	avatar.setAttribute("aria-hidden", "true");
 	return avatar;
@@ -1786,14 +1856,20 @@ function makeStaffFace() {
 	return figure;
 }
 
+// Creature layers drawn outside the <img> — Folio's detached arm, for one —
+// read the recolor off the avatar, so the value has to live there too.
+function staffCreatureFilter(staffOrTemplate) {
+	const filter = STAFF_CREATURE_FILTERS[staffColor(staffOrTemplate)];
+	return filter ? `url("./staff-creature-colors.svg#${filter}")` : "none";
+}
+
 function makeStaffCreature(staffOrTemplate) {
 	const creatureId = staffCreatureId(staffOrTemplate);
 	const image = document.createElement("img");
 	image.className = "staff-creature-image";
 	image.src = STAFF_CREATURE_CATALOG[creatureId].asset;
-	const filter = STAFF_CREATURE_FILTERS[staffColor(staffOrTemplate)];
-	if (filter) {
-		const filterValue = `url("./staff-creature-colors.svg#${filter}")`;
+	const filterValue = staffCreatureFilter(staffOrTemplate);
+	if (filterValue !== "none") {
 		image.style.setProperty("--staff-creature-filter", filterValue);
 		image.style.filter = filterValue;
 	}
@@ -1811,11 +1887,13 @@ function paintStaffAvatar(avatar, staff, status = "idle") {
 	avatar.replaceChildren(makeStaffCreature(staff), makeStaffFace());
 	avatar.style.setProperty("--staff-color", staffColor(staff));
 	avatar.style.setProperty("--staff-motion-delay", staffMotionDelay(staff));
+	avatar.style.setProperty("--staff-creature-filter", staffCreatureFilter(staff));
 	avatar.className = `staff-avatar shape-${staffShape(staff)}`;
-	setAvatarMotionState(avatar, status);
 	avatar.dataset.creature = staffCreatureId(staff);
 	if (staffId(staff)) avatar.dataset.staffId = staffId(staff);
 	else delete avatar.dataset.staffId;
+	const actualStatus = staffId(staff) ? staffStatus(staff) : status;
+	setAvatarMotionState(avatar, status, actualStatus);
 }
 
 async function loadStaffCatalog(force = false) {
