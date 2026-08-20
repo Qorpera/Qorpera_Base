@@ -3826,7 +3826,8 @@ function openStaffDeleteConfirmation() {
 	closeStaffContext();
 	$("staffDeleteTitle").textContent = `Archive ${staffDisplayName(staffDeleteTarget)}?`;
 	$("staffDeleteDescription").textContent =
-		"Archive keeps the agent, its artifacts, and its trail in the company so it can be restored later. Permanent deletion removes the agent and its owned artifacts from the current company state; its trail and Git history remain reconstructable.";
+		"Archive keeps the agent and all of its data so it can be restored later. Permanent deletion removes the agent; choose below whether its artifacts stay in the current company state. Its trail and Git history remain reconstructable.";
+	$("staffDeleteKeepArtifacts").checked = true;
 	$("staffDeleteModal").hidden = false;
 	$("staffDeleteCancel").focus();
 }
@@ -3869,11 +3870,13 @@ async function permanentlyDeleteStaffMember() {
 	const id = staffId(staffDeleteTarget);
 	const button = $("staffDeletePermanent");
 	const archiveButton = $("staffDeleteConfirm");
+	const keepArtifactsOption = $("staffDeleteKeepArtifacts");
 	button.disabled = true;
 	archiveButton.disabled = true;
+	keepArtifactsOption.disabled = true;
 	button.textContent = "Deleting…";
 	try {
-		const result = await window.qorpera.staffDelete(id);
+		const result = await window.qorpera.staffDelete(id, { keepArtifacts: keepArtifactsOption.checked });
 		if (result?.ok === false) throw new Error(result.error ?? "The agent could not be permanently deleted.");
 		const hidden = storedStaffIds("staff-hidden");
 		const pinned = storedStaffIds("staff-pinned");
@@ -3888,6 +3891,7 @@ async function permanentlyDeleteStaffMember() {
 	} finally {
 		button.disabled = false;
 		archiveButton.disabled = false;
+		keepArtifactsOption.disabled = false;
 		button.textContent = "Delete permanently";
 	}
 }

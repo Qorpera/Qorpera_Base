@@ -417,6 +417,7 @@ import {
 	type SessionRuntimeEventInput,
 } from "./session-control-plane.ts";
 import { isStaffCharacterId, staffCharacterForTemplate } from "./staff-characters.ts";
+import { removeStaffWorkspace } from "./staff-deletion.ts";
 import { applyStaffRoutineOperation, type StaffRoutineOperation } from "./staff-routines.ts";
 import {
 	claimStaffIntro,
@@ -7898,11 +7899,27 @@ async function archiveStaffMember(
 async function permanentlyDeleteStaffMember(
 	slot: Slot,
 	staffAgentId: string,
+	keepArtifacts: boolean,
 ): Promise<{ ok: true; staff: StaffAgent } | { ok: false; error: string }> {
 	const archived = await archiveStaffMember(slot, staffAgentId);
 	if (!archived.ok) return archived;
 	const runtime = slot.runtime;
 	if (!runtime) return { ok: false, error: "company runtime closed after archiving the agent" };
+	if (profileAttachment(runtime.root).profileType === "cloud") {
+		runtime.cloudStaffSync ??= createCloudStaffSynchronizer(runtime.root);
+		try {
+			if (!runtime.cloudStaffSync) throw new Error("Cloud staff deletion is unavailable.");
+			await runtime.cloudStaffSync.deleteStaff(staffAgentId);
+		} catch (error) {
+			const restored = await restoreStaffMember(slot, staffAgentId);
+			if (restored.ok && slot.runtime === runtime && !runtime.closing) {
+				triggerCloudStaffSync(runtime);
+			} else if (!restored.ok) {
+				console.error(`staff deletion rollback failed: ${restored.error}`);
+			}
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	}
 	return enqueueRuntimeTransition<{ ok: true; staff: StaffAgent } | { ok: false; error: string }>(
 		runtime,
 		async () => {
@@ -7912,9 +7929,11 @@ async function permanentlyDeleteStaffMember(
 					.filter((artifact) => artifact.stewardAgentId === staffAgentId)
 					.map((artifact) => artifact.relativePath);
 				snapshotFounderGitState(runtime.root, "founder permanent staff deletion");
-				const deleted = deleteStaffAgent(runtime.root, staffAgentId);
+				const deleted = readStaffAgents(runtime.root).some((staff) => staff.id === staffAgentId)
+					? deleteStaffAgent(runtime.root, staffAgentId)
+					: archived.staff;
 				const agentDirectory = staffAgentDirectoryPath(runtime.root, staffAgentId);
-				if (existsSync(agentDirectory)) rmSync(agentDirectory, { recursive: true, force: true });
+				removeStaffWorkspace(agentDirectory, keepArtifacts);
 				commitCompanyMaterialization(runtime.root, [
 					join(".qorpera", "staff.json"),
 					relative(runtime.root, agentDirectory),
@@ -7936,6 +7955,7 @@ async function permanentlyDeleteStaffMember(
 				} catch (error) {
 					console.error(`staff computer cleanup failed: ${(error as Error).message}`);
 				}
+				triggerCloudStaffSync(runtime);
 				return { ok: true, staff: deleted };
 			} catch (error) {
 				return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -9670,10 +9690,21 @@ app.whenReady().then(async () => {
 		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		return archiveStaffMember(slot, staffAgentId);
 	});
-	ipcMain.handle("staff:delete", (event, staffAgentId: unknown) => {
+	ipcMain.handle("staff:delete", (event, staffAgentId: unknown, options: unknown) => {
 		const slot = slotOf(event.sender);
 		if (!slot || typeof staffAgentId !== "string") return { ok: false, error: "invalid staff identity" };
-		return permanentlyDeleteStaffMember(slot, staffAgentId);
+		if (
+			!options ||
+			typeof options !== "object" ||
+			Array.isArray(options) ||
+			Object.keys(options).length !== 1 ||
+			!("keepArtifacts" in options) ||
+			typeof options.keepArtifacts !== "boolean"
+		) {
+			return { ok: false, error: "invalid staff deletion options" };
+		}
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
+		return permanentlyDeleteStaffMember(slot, staffAgentId, options.keepArtifacts);
 	});
 	ipcMain.handle("staff:restore", (event, staffAgentId: unknown) => {
 		const slot = slotOf(event.sender);

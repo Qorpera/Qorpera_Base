@@ -2,7 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	archiveStaffAgent,
 	createStaffAgent,
+	deleteStaffAgent,
 	readStaffAgents,
 	type StaffAgent,
 	updateStaffAgent,
@@ -19,7 +21,7 @@ describe("cloud staff sync", () => {
 	let ownerRoot: string;
 	let friendRoot: string;
 	let records: Map<string, HostedStaffAgent>;
-	let primary: Pick<QorperaHostedPrimary, "listStaff" | "putStaff">;
+	let primary: Pick<QorperaHostedPrimary, "deleteStaff" | "listStaff" | "putStaff">;
 
 	beforeEach(() => {
 		userData = mkdtempSync(join(tmpdir(), "qorpera-cloud-staff-state-"));
@@ -29,6 +31,11 @@ describe("cloud staff sync", () => {
 		primary = {
 			listStaff: async () =>
 				[...records.values()].map((staff) => ({ ...staff, appearance: { ...staff.appearance } })),
+			deleteStaff: async (_profileId: string, staffAgentId: string, expectedVersion: number) => {
+				const current = records.get(staffAgentId);
+				if (current && current.version !== expectedVersion) throw new Error("staff version conflict (40001)");
+				records.delete(staffAgentId);
+			},
 			putStaff: async (_profileId: string, staff: StaffAgent, expectedVersion?: number) => {
 				const current = records.get(staff.id);
 				if ((current?.version ?? undefined) !== expectedVersion) throw new Error("staff version conflict (40001)");
@@ -117,7 +124,9 @@ describe("cloud staff sync", () => {
 		updateStaffAgent(ownerRoot, created.id, { displayName: "Committed remotely" });
 		const stablePrimary = primary;
 		let loseResponse = true;
-		const unreliablePrimary: Pick<QorperaHostedPrimary, "listStaff" | "putStaff"> = {
+		const unreliablePrimary: Pick<QorperaHostedPrimary, "deleteStaff" | "listStaff" | "putStaff"> = {
+			deleteStaff: (requestedProfileId, staffAgentId, expectedVersion) =>
+				stablePrimary.deleteStaff(requestedProfileId, staffAgentId, expectedVersion),
 			listStaff: (requestedProfileId) => stablePrimary.listStaff(requestedProfileId),
 			putStaff: async (requestedProfileId, staff, expectedVersion) => {
 				const hosted = await stablePrimary.putStaff(requestedProfileId, staff, expectedVersion);
@@ -146,5 +155,35 @@ describe("cloud staff sync", () => {
 		});
 		await expect(recovered.sync()).resolves.toEqual({ created: 0, updated: 0, downloaded: 0 });
 		expect(readStaffAgents(ownerRoot)[0]?.displayName).toBe("Committed remotely");
+	});
+
+	it("permanently deletes hosted staff and removes it from other machines", async () => {
+		const created = createStaffAgent(ownerRoot, {
+			displayName: "Temporary analyst",
+			role: "Analyst",
+			charter: "Complete a bounded analysis.",
+			appearance: { color: "blue", shape: "round" },
+		});
+		const owner = new CloudStaffSynchronizer({ root: ownerRoot, userData, profileId, primary, canWrite: () => true });
+		const friend = new CloudStaffSynchronizer({
+			root: friendRoot,
+			userData,
+			profileId,
+			primary,
+			canWrite: () => true,
+		});
+		await owner.sync();
+		await friend.sync();
+
+		archiveStaffAgent(ownerRoot, created.id);
+		await owner.sync();
+		await owner.deleteStaff(created.id);
+		deleteStaffAgent(ownerRoot, created.id);
+		await owner.sync();
+		await friend.sync();
+
+		expect(records.has(created.id)).toBe(false);
+		expect(readStaffAgents(ownerRoot)).toEqual([]);
+		expect(readStaffAgents(friendRoot)).toEqual([]);
 	});
 });

@@ -454,6 +454,7 @@ export interface HostedPrimaryTransport {
 	}): Promise<unknown>;
 	removeMember(input: { p_profile_id: string; p_member_user_id: string }): Promise<unknown>;
 	listStaff(input: { p_profile_id: string }): Promise<unknown>;
+	deleteStaff(input: { p_profile_id: string; p_staff_agent_id: string; p_expected_version: number }): Promise<unknown>;
 	putStaff(input: {
 		p_profile_id: string;
 		p_staff_agent_id: string;
@@ -662,6 +663,10 @@ export interface HostedPrimaryDatabase {
 				Returns: JsonValue;
 			};
 			qorpera_list_profile_staff: { Args: { p_profile_id: string }; Returns: JsonValue };
+			qorpera_delete_profile_staff: {
+				Args: { p_profile_id: string; p_staff_agent_id: string; p_expected_version: number };
+				Returns: JsonValue;
+			};
 			qorpera_put_profile_staff: {
 				Args: {
 					p_profile_id: string;
@@ -1053,6 +1058,12 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 
 	async listStaff(input: Parameters<HostedPrimaryTransport["listStaff"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_list_profile_staff", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async deleteStaff(input: Parameters<HostedPrimaryTransport["deleteStaff"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_delete_profile_staff", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -2388,6 +2399,22 @@ export class QorperaHostedPrimary {
 	async listStaff(profileId: string): Promise<HostedStaffAgent[]> {
 		requiredUuid(profileId, "Profile id");
 		return array(await this.transport.listStaff({ p_profile_id: profileId }), "staff list").map(parseStaff);
+	}
+
+	async deleteStaff(profileId: string, staffAgentId: string, expectedVersion: number): Promise<void> {
+		requiredUuid(profileId, "Profile id");
+		requiredUuid(staffAgentId, "Staff agent id");
+		if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
+			throw new Error("Expected staff version must be a positive integer");
+		}
+		requireTrue(
+			await this.transport.deleteStaff({
+				p_profile_id: profileId,
+				p_staff_agent_id: staffAgentId,
+				p_expected_version: expectedVersion,
+			}),
+			"staff deletion result",
+		);
 	}
 
 	async ensureCompanyWorkspace(input: EnsureHostedCompanyWorkspaceInput): Promise<HostedCompanyWorkspace> {
