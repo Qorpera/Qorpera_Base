@@ -2933,6 +2933,13 @@ html[data-staff-avatar-style="simple"] .hidden-staff-row.archived-room-row { gri
 .staff-delete-modal header { margin-bottom: 10px; }
 .staff-delete-modal h2 { font-size: 19px; }
 .staff-delete-modal p { color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+.staff-delete-option {
+	display: flex; align-items: flex-start; gap: 9px; margin-top: 15px; color: var(--text); text-align: left;
+}
+.staff-delete-option input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: #0a84ff; }
+.staff-delete-option span { display: grid; gap: 2px; }
+.staff-delete-option strong { font-size: 12.5px; font-weight: 620; }
+.staff-delete-option small { color: var(--text-muted); font-size: 11px; line-height: 1.35; }
 .staff-delete-modal footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 
 @media (max-width: 1050px) {

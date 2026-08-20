@@ -287,6 +287,13 @@
 	<section class="confirm-modal staff-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="staffDeleteTitle" aria-describedby="staffDeleteDescription">
 		<header><h2 id="staffDeleteTitle">Archive agent?</h2></header>
 		<p id="staffDeleteDescription"></p>
+		<label class="staff-delete-option" for="staffDeleteKeepArtifacts">
+			<input id="staffDeleteKeepArtifacts" type="checkbox" checked>
+			<span>
+				<strong>Keep this agent’s artifacts</strong>
+				<small>If permanently deleted, preserve its artifact files in the company without an active owner.</small>
+			</span>
+		</label>
 		<footer>
 			<button class="secondary-button" id="staffDeleteCancel" type="button">Cancel</button>
 			<button class="danger-button" id="staffDeletePermanent" type="button">Delete permanently</button>
