@@ -83,6 +83,35 @@ $$;
 
 create publication supabase_realtime;
 
+-- Realtime authorization surface: private-channel joins are authorized by
+-- evaluating RLS on realtime.messages as the connecting user, with the
+-- channel topic exposed through realtime.topic(). Production Supabase owns
+-- and partitions this table; the fixture reproduces only the contract the
+-- policies exercise.
+create schema realtime;
+
+create table realtime.messages (
+	id uuid not null default extensions.gen_random_uuid(),
+	topic text not null,
+	extension text not null,
+	payload jsonb,
+	event text,
+	private boolean default false,
+	inserted_at timestamptz not null default statement_timestamp(),
+	updated_at timestamptz not null default statement_timestamp(),
+	primary key (inserted_at, id)
+);
+
+alter table realtime.messages enable row level security;
+
+create function realtime.topic()
+returns text
+language sql
+stable
+as $$
+	select nullif(current_setting('realtime.topic', true), '')
+$$;
+
 -- Reproduce the platform's default privilege posture so migration-level
 -- revokes and RLS policies are exercised the way production exercises them:
 -- schemas usable, tables and sequences default-granted (which the protected
@@ -102,4 +131,10 @@ alter default privileges in schema public grant all on tables to anon, authentic
 alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
 grant all on storage.objects to authenticated, service_role;
 grant select on storage.buckets to authenticated, service_role;
+-- Matching the platform posture on realtime.messages: table privileges are
+-- broad and the row policies decide — an anon denial must come from policy
+-- scope, not a missing grant.
+grant usage on schema realtime to anon, authenticated, service_role;
+grant execute on function realtime.topic() to anon, authenticated, service_role;
+grant select, insert on realtime.messages to anon, authenticated, service_role;
 grant execute on function storage.foldername(text) to anon, authenticated, service_role;

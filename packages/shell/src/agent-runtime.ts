@@ -668,9 +668,7 @@ export function listSharedTrailSessions(
 			!UUID_PATTERN.test(header.id) ||
 			!authority ||
 			authority.actor !== "company-agent" ||
-			(!authority.attended &&
-				!options?.adoptedSessionIds?.has(header.id) &&
-				!trailHasAttendedInput(path)) ||
+			(!authority.attended && !options?.adoptedSessionIds?.has(header.id) && !trailHasAttendedInput(path)) ||
 			authority.autonomous ||
 			authority.label ||
 			authority.department ||

@@ -39,8 +39,11 @@ export class SupabaseCloudPresenceTransport {
 		onMembers: (members: PresenceMember[]) => void,
 		onTyping: (event: PresenceTypingEvent) => void,
 	): CloudPresenceHandle {
+		// Private channel: Realtime authorizes the join against the presence
+		// policies on realtime.messages (migration 20260819011000) with the
+		// signed-in user's JWT, which supabase-js forwards automatically.
 		const channel: RealtimeChannel = this.#client.channel(`qorpera-presence-${profileId}`, {
-			config: { presence: { key: self.userId }, broadcast: { self: false } },
+			config: { private: true, presence: { key: self.userId }, broadcast: { self: false } },
 		});
 		let openThread: string | null = null;
 		let subscribed = false;
@@ -72,10 +75,17 @@ export class SupabaseCloudPresenceTransport {
 				staffAgentId: data.staff_agent_id,
 			});
 		});
-		channel.subscribe((status) => {
+		channel.subscribe((status, error) => {
 			if (status === REALTIME_SUBSCRIBE_STATES.SUBSCRIBED) {
 				subscribed = true;
 				track();
+				return;
+			}
+			// Lossy lane: never escalate, but a refused private-channel join
+			// (membership revoked, migration missing) must leave evidence.
+			if (status === REALTIME_SUBSCRIBE_STATES.CHANNEL_ERROR || status === REALTIME_SUBSCRIBE_STATES.TIMED_OUT) {
+				subscribed = false;
+				console.error(`presence channel degraded (${status}): ${error?.message ?? "no detail"}`);
 			}
 		});
 		return {

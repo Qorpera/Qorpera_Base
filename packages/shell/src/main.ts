@@ -229,6 +229,7 @@ import {
 	persistCloudSyncHealth,
 } from "./cloud-sync-loop.ts";
 import { CloudTrailSynchronizer } from "./cloud-trail-sync.ts";
+import { CloudWakeArbiter } from "./cloud-wake-arbiter.ts";
 import {
 	type CompanyIconId,
 	DEFAULT_COMPANY_ICON_ID,
@@ -431,11 +432,13 @@ import {
 	decideScheduledWake,
 	nextScheduledWakeAt,
 	readWakeRunState,
+	recordRemoteWakeConsumption,
 	recordWakeOutcome,
 	recordWakeStart,
 	removeScheduledJobRunState,
 	scheduledJobRunInterrupted,
 	scheduledJobRunState,
+	scheduledWakeOccurrenceKey,
 	WAKE_FAILURE_SUSPENSION_THRESHOLD,
 	wakeFrameFailed,
 	wakeRunStatePath,
@@ -1184,6 +1187,9 @@ interface CompanyRuntime {
 	/** Hosted session arbitration for this company (SESSIONS.md): the one
 	 * open session per staff agent, plus this machine's single turn claim. */
 	cloudSessionArbiter?: CloudSessionArbiter;
+	/** Hosted wake arbitration (SESSIONS.md): autonomous wakes as claimed
+	 * rows, so a due occurrence executes on exactly one machine. */
+	cloudWakeArbiter?: CloudWakeArbiter;
 	cloudSessionPump?: NodeJS.Timeout;
 	cloudSessionArbiterHealth?: CloudSyncHealth;
 	/** Why this machine is not claiming turns (affinity or freshness), for
@@ -1357,6 +1363,16 @@ function runtimeCloudSessionArbiter(runtime: CompanyRuntime): CloudSessionArbite
 	if (!primary || !currentQorperaAccountId) return undefined;
 	runtime.cloudSessionArbiter = new CloudSessionArbiter(primary, attachment.environmentId);
 	return runtime.cloudSessionArbiter;
+}
+
+function runtimeCloudWakeArbiter(runtime: CompanyRuntime): CloudWakeArbiter | undefined {
+	if (runtime.cloudWakeArbiter) return runtime.cloudWakeArbiter;
+	const attachment = profileAttachment(runtime.root);
+	if (attachment.profileType !== "cloud" || !attachment.environmentId) return undefined;
+	const primary = qorperaAccountAuth?.hostedPrimary();
+	if (!primary || !currentQorperaAccountId) return undefined;
+	runtime.cloudWakeArbiter = new CloudWakeArbiter(primary, attachment.environmentId);
+	return runtime.cloudWakeArbiter;
 }
 
 /** The trail file name is `${timestamp}_${sessionId}.jsonl` for both minted
@@ -5843,6 +5859,61 @@ async function startWakeChildExclusive(
 		: undefined;
 	const wakeStaff = assignedStaff ?? messageRecipient ?? attendedStaff;
 	if (!wakeStaff) return false;
+	// Wake arbitration (SESSIONS.md): occurrences with a deterministic,
+	// machine-independent identity are claimed rows — exactly one machine with
+	// write access executes; a loser consumes the occurrence locally without
+	// running. Manual runs are founder intent on THIS machine and identity-less
+	// events are machine-local, so both run unarbitrated; an unreachable cloud
+	// degrades to solo behaviour rather than blocking the wake.
+	const wakeKey = manual
+		? undefined
+		: cause === "schedule" && job
+			? (() => {
+					const occurrence = scheduledWakeOccurrenceKey(job, Date.now());
+					return occurrence ? `job:${job.id}:${occurrence}` : undefined;
+				})()
+			: cause === "inbound_event" && job && trigger
+				? `trigger:${job.id}:${trigger.event.id}`
+				: cause === "agent_message" && messageRecipient
+					? (() => {
+							try {
+								const queued = readStaffAgentMessages(runtime.root).find(
+									(message) => message.status === "queued" && message.toAgentId === messageRecipient.id,
+								);
+								return queued ? `mail:${queued.id}` : undefined;
+							} catch {
+								return undefined;
+							}
+						})()
+					: undefined;
+	const wakeArbiter =
+		wakeKey && slotHasProfileCapability(slot, "write") ? runtimeCloudWakeArbiter(runtime) : undefined;
+	let wakeClaimed = false;
+	if (wakeArbiter && wakeKey) {
+		try {
+			const outcome = await wakeArbiter.claim(wakeKey);
+			recordCloudSessionArbiterOutcome(runtime, { ok: true });
+			if (outcome !== "claimed") {
+				if (cause === "schedule" && job) {
+					const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
+					writeWakeRunState(
+						statePath,
+						recordRemoteWakeConsumption(readWakeRunState(statePath), job.id, Date.now()),
+					);
+				} else if (cause === "inbound_event" && trigger) {
+					const path = routineTriggerStatePath(app.getPath("userData"), runtime.root);
+					writeRoutineTriggerState(path, completePendingRoutineTrigger(readRoutineTriggerState(path), trigger.id));
+				}
+				return false;
+			}
+			wakeClaimed = true;
+		} catch (error) {
+			recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
+			console.error(
+				`wake claim unavailable, running locally: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
 	const wakeId = randomUUID();
 	const attendedChild = runtime.child;
 	const resumeOptions = {
@@ -5852,7 +5923,10 @@ async function startWakeChildExclusive(
 			: runtime.childOptions.sessionFile,
 	};
 	if (attendedChild) await stopChild(attendedChild);
-	if (slot.runtime !== runtime || runtime.closing) return false;
+	if (slot.runtime !== runtime || runtime.closing) {
+		if (wakeClaimed) wakeArbiter?.abandon();
+		return false;
+	}
 	let started = false;
 	let settledCleanly = false;
 	let failed = false;
@@ -5885,6 +5959,7 @@ async function startWakeChildExclusive(
 			onRpcEvent: (frame) => {
 				if (frame.type === "agent_start") started = true;
 				if (wakeFrameFailed(frame)) failed = true;
+				if (wakeClaimed) void wakeArbiter?.renewIfDue().catch(() => undefined);
 				if (frame.type === "agent_settled") {
 					settledCleanly = started && !failed;
 					intentionalKills.add(child);
@@ -5894,6 +5969,7 @@ async function startWakeChildExclusive(
 		});
 	} catch (error) {
 		console.error(`wake child failed to start: ${(error as Error).message}`);
+		if (wakeClaimed) wakeArbiter?.abandon();
 		if (attendedChild && slot.runtime === runtime && !runtime.closing) {
 			await restoreAttendedChild(slot, runtime, resumeOptions, "wake-start chat restore failed");
 		}
@@ -5914,6 +5990,19 @@ async function startWakeChildExclusive(
 				}
 			} catch (error) {
 				console.error(`wake bookkeeping failed: ${(error as Error).message}`);
+			}
+			if (wakeClaimed && wakeArbiter) {
+				// A clean run finalizes the occurrence everywhere; anything else
+				// abandons so the lease expires and another machine takes over.
+				if (promptSent && settledCleanly) {
+					void wakeArbiter.complete().catch((error: unknown) => {
+						console.error(
+							`wake completion failed (lease will expire): ${error instanceof Error ? error.message : String(error)}`,
+						);
+					});
+				} else {
+					wakeArbiter.abandon();
+				}
 			}
 			if (attendedChild) await restoreAttendedChild(slot, runtime, resumeOptions, "post-wake chat restore failed");
 		}).catch((error) => console.error(`wake ownership transition failed: ${(error as Error).message}`));

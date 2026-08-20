@@ -259,6 +259,44 @@ export function decideScheduledWake(
 	return { due: true, coalesced: Math.max(0, Math.floor(elapsed / intervalMs) - 1) };
 }
 
+/**
+ * Deterministic identity of the scheduled occurrence a due wake fires for.
+ * Machines never compare run state — each derives the key from the job's own
+ * schedule and the clock, so two machines firing the same due occurrence
+ * derive the same string and the cloud wake claim (SESSIONS.md) lets exactly
+ * one of them execute. Unanchored intervals quantize onto the epoch grid:
+ * machines racing within one interval window agree, and a machine waking
+ * much later derives a fresh slot and legitimately runs the coalesced
+ * occurrence itself.
+ */
+export function scheduledWakeOccurrenceKey(job: ScheduledJob, nowMs: number): string | undefined {
+	const schedule = job.triggers.find((trigger): trigger is ScheduleTrigger => trigger.kind === "schedule");
+	if (schedule?.weekdays && schedule.localTime && schedule.timeZone) {
+		const latest = nearestWeeklyOccurrence(schedule, nowMs, "before-or-at");
+		return latest === undefined ? undefined : `weekly:${latest}`;
+	}
+	const intervalMinutes = scheduledJobIntervalMinutes(job);
+	if (intervalMinutes === undefined) return undefined;
+	const intervalMs = Math.max(intervalMinutes, 1) * 60_000;
+	const startAt = scheduledJobStartAt(job);
+	const anchor = startAt ? Date.parse(startAt) : Number.NaN;
+	if (Number.isFinite(anchor)) {
+		if (nowMs < anchor) return undefined;
+		return `slot:${Math.floor((nowMs - anchor) / intervalMs)}`;
+	}
+	return `grid:${Math.floor(nowMs / intervalMs)}`;
+}
+
+/** A remote machine won the wake claim: consume the occurrence locally so
+ * the schedule stops being due here, without recording an outcome this
+ * machine never produced — the streak and last outcome stay untouched. */
+export function recordRemoteWakeConsumption(state: WakeRunState, jobId: string, nowMs: number): WakeRunState {
+	const now = new Date(nowMs).toISOString();
+	const consumed = { ...scheduledJobRunState(state, jobId), lastWakeAt: now, lastFinishedAt: now };
+	delete consumed.activeTrailFile;
+	return { ...state, jobs: { ...state.jobs, [jobId]: consumed } };
+}
+
 export function nextScheduledWakeAt(job: ScheduledJob, state: ScheduledJobRunState, nowMs: number): string | undefined {
 	if (!job.enabled || job.suspendedReason) return undefined;
 	const schedule = job.triggers.find((trigger): trigger is ScheduleTrigger => trigger.kind === "schedule");
