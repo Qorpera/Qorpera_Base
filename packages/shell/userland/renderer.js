@@ -331,20 +331,12 @@ function renderAccountWelcome() {
 	$("welcomeView").hidden = true;
 	$("wordmark").hidden = false;
 	$("accountStatus").textContent = "";
-	$("accountEmailForm").hidden = true;
+	$("accountEmailForm").hidden = false;
 	$("accountEmail").value = "";
 	setAccountControlsDisabled(false);
 	for (const button of $("accountProviders").querySelectorAll("[data-account-provider]")) {
-		button.setAttribute("aria-expanded", "false");
 		button.onclick = () => {
 			const provider = button.dataset.accountProvider;
-			if (provider === "email") {
-				const form = $("accountEmailForm");
-				form.hidden = !form.hidden;
-				button.setAttribute("aria-expanded", String(!form.hidden));
-				if (!form.hidden) $("accountEmail").focus();
-				return;
-			}
 			void completeAccountSignIn({ provider });
 		};
 	}
@@ -446,13 +438,7 @@ async function renderHub() {
 		const avatar = makeCompanyIcon(company.companyIcon, company.name, "company-avatar");
 		const label = document.createElement("strong");
 		label.textContent = company.name;
-		const type = document.createElement("small");
-		type.className = "profile-type-label";
-		const role = PROFILE_ROLE_LABELS[company.access?.role ?? company.invitationRole];
-		type.textContent = company.invitationPending
-			? `Invitation · Hosted profile${role ? ` · ${role}` : ""}`
-			: `${company.product?.profile?.placement === "hosted" || company.profileType === "cloud" ? "Hosted profile" : "On this computer"}${company.setupRequired && role ? ` · ${role}` : ""}`;
-		card.append(avatar, label, type);
+		card.append(avatar, label);
 		if (company.invitationPending || company.setupRequired) {
 			const setup = document.createElement("small");
 			setup.className = "profile-setup-label";
