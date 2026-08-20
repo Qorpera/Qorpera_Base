@@ -115,15 +115,6 @@ html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-co
 	filter: url("./staff-creature-colors.svg#indigo");
 }
 
-html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="lantern"] {
-	--creature-eye-one-x: 39.5%;
-	--creature-eye-one-y: 43%;
-	--creature-eye-two-x: 56.5%;
-	--creature-eye-two-y: 43%;
-	--creature-eye-width: 4%;
-	--creature-eye-height: 7%;
-}
-
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"] {
 	--creature-eye-one-x: 41.5%;
 	--creature-eye-one-y: 46%;
@@ -194,15 +185,6 @@ html[data-staff-avatar-style="creatures"] .staff-creature-choice {
 	--picker-eye-width: 3.7%;
 	--picker-eye-height: 6.9%;
 	position: relative;
-}
-
-html[data-staff-avatar-style="creatures"] .staff-creature-choice:has(.staff-creature-image[src$="/lantern.png"]) {
-	--picker-eye-one-x: 40.3%;
-	--picker-eye-one-y: 43.5%;
-	--picker-eye-two-x: 56%;
-	--picker-eye-two-y: 43.5%;
-	--picker-eye-width: 3.7%;
-	--picker-eye-height: 6.5%;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-creature-choice:has(.staff-creature-image[src$="/folio.png"]) {
