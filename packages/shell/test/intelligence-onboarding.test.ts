@@ -10,13 +10,13 @@ import {
 describe("intelligence onboarding", () => {
 	it("defines the three supported provider defaults", () => {
 		expect(INTELLIGENCE_PROVIDER_CATALOG).toEqual([
-			{ id: "openai-codex", name: "OpenAI", product: "GPT", defaultModelId: "gpt-5.5" },
+			{ id: "openai-codex", name: "OpenAI", product: "GPT", defaultModelId: "gpt-5.6-sol" },
 			{ id: "anthropic", name: "Anthropic", product: "Claude", defaultModelId: "claude-opus-4-8" },
 			{ id: "xai", name: "xAI", product: "Grok", defaultModelId: "grok-4.5" },
 		]);
 		expect(intelligenceSelectionForProvider("openai-codex")).toEqual({
 			provider: "openai-codex",
-			modelId: "gpt-5.5",
+			modelId: "gpt-5.6-sol",
 		});
 	});
 

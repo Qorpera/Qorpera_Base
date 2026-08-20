@@ -65,7 +65,7 @@ let preferredModelKey = "";
 let currentEffort = "";
 let currentSpeed = "standard";
 let speedAsserted = false; // one re-assert of the remembered speed per child spawn
-let modelMoveAsserted = false; // one off-slate model migration per child spawn
+let modelFallbackAsserted = false; // one same-provider model fallback per child spawn
 let modelPreferencePending = false;
 let modelStateHydrated = false;
 let modelCatalogHydrated = false;
@@ -1170,31 +1170,9 @@ function createChipSelect(buttonId, menuId, onPick) {
 // priority lane (the OpenAI responses APIs today), disabled with a note
 // otherwise.
 
-// The picker offers a curated slate, not the raw provider catalogs: the
-// Claude 5 pair plus the GPT-5.6 pair. Sol/Terra prefer the ChatGPT
-// subscription lane (openai-codex) and fall back to the API-key provider.
-// If none of the slate is available (unusual auth setup), fall back to the
-// full catalog rather than an empty picker.
-const CURATED_MODELS = [
-	["anthropic::claude-fable-5"],
-	["anthropic::claude-opus-5"],
-	["openai-codex::gpt-5.6-sol", "openai::gpt-5.6-sol"],
-	["openai-codex::gpt-5.6-terra", "openai::gpt-5.6-terra"],
-];
-function curateModels(models) {
-	const byValue = new Map(models.map((m) => [m.value, m]));
-	const picked = [];
-	for (const lanes of CURATED_MODELS) {
-		for (const value of lanes) {
-			const model = byValue.get(value);
-			if (model) {
-				picked.push(model);
-				break;
-			}
-		}
-	}
-	return picked.length ? picked : models;
-}
+// The picker offers a curated slate. If an older stored default is outside
+// that slate, migration stays within its connected provider.
+const { curateModels, selectSameProviderFallback } = window.qorperaModelSelection;
 const modelCtl = (() => {
 	const button = $("modelCtlBtn");
 	const menu = $("modelCtlMenu");
@@ -4684,7 +4662,7 @@ async function refreshState() {
 function hydrateAgentState(withHistory) {
 	hydratedExecutorId = runtimeForTrail(currentSession)?.executorId ?? "";
 	speedAsserted = false;
-	modelMoveAsserted = false;
+	modelFallbackAsserted = false;
 	modelPreferencePending = !withHistory && Boolean(preferredModelKey);
 	modelStateHydrated = false;
 	modelCatalogHydrated = false;
@@ -9277,20 +9255,19 @@ window.qorpera.onRpcEvent((frame) => {
 			if (frame.command === "get_messages" && frame.success) renderHistory(frame.data?.messages ?? frame.data);
 			else if (frame.command === "get_available_models" && frame.success) {
 				const models = frame.data?.models ?? frame.data ?? [];
-				const offered = curateModels(
-					models.map((m) => ({
-						value: `${m.provider}::${m.id}`,
-						name: m.name ?? m.id,
-						// Both OpenAI responses lanes take service_tier: "priority";
-						// Anthropic has no priority lane, so fast stays disabled there.
-						fastCapable: m.api === "openai-codex-responses" || m.api === "openai-responses",
-					})),
-				);
+				const available = models.map((m) => ({
+					value: `${m.provider}::${m.id}`,
+					name: m.name ?? m.id,
+					// Both OpenAI responses lanes take service_tier: "priority";
+					// Anthropic has no priority lane, so fast stays disabled there.
+					fastCapable: m.api === "openai-codex-responses" || m.api === "openai-responses",
+				}));
+				const offered = curateModels(available);
 				modelCtl.setModels(offered);
 				modelCatalogHydrated = true;
-				// A session restored on a model we no longer offer would leave the
-				// chip naming nothing in the list — move it onto the same model's
-				// offered lane when one exists, otherwise the slate's head.
+				// A session restored on a model outside the curated slate may fall
+				// back within its current provider. Never cross providers automatically:
+				// connection state and onboarding choice remain authoritative.
 				// Once per spawn: hydrate asks twice (immediate + the dropped-input
 				// belt), and each unguarded answer re-sent set_model — duplicate
 				// model_change trail entries and aborted in-flight runs.
@@ -9298,15 +9275,16 @@ window.qorpera.onRpcEvent((frame) => {
 					currentModelKey &&
 					!offered.some((m) => m.value === currentModelKey) &&
 					offered.length &&
-					!modelMoveAsserted
+					!modelFallbackAsserted
 				) {
-					modelMoveAsserted = true;
-					const currentId = currentModelKey.split("::")[1];
-					const target = offered.find((m) => m.value.split("::")[1] === currentId) ?? offered[0];
-					const [provider, modelId] = target.value.split("::");
-					currentModelKey = target.value;
-					preferredModelKey = target.value;
-					sendRpc({ type: "set_model", provider, modelId });
+					const target = selectSameProviderFallback(offered, currentModelKey);
+					if (target) {
+						modelFallbackAsserted = true;
+						const [provider, modelId] = target.value.split("::");
+						currentModelKey = target.value;
+						preferredModelKey = target.value;
+						sendRpc({ type: "set_model", provider, modelId });
+					}
 				}
 				reassertPreferredModel();
 			} else if (frame.command === "get_fork_messages" && frame.success) {

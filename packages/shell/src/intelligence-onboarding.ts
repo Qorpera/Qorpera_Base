@@ -5,7 +5,7 @@ export const INTELLIGENCE_PROVIDER_CATALOG = [
 		id: "openai-codex",
 		name: "OpenAI",
 		product: "GPT",
-		defaultModelId: "gpt-5.5",
+		defaultModelId: "gpt-5.6-sol",
 	},
 	{
 		id: "anthropic",
