@@ -74,6 +74,8 @@ describe("shell starter staff templates", () => {
 	});
 
 	it("ships a static asset for every approved character", () => {
+		expect(STAFF_CHARACTER_IDS).not.toContain("lantern");
+		expect(existsSync(new URL("../userland/staff-creatures/lantern.png", import.meta.url))).toBe(false);
 		for (const characterId of STAFF_CHARACTER_IDS) {
 			const asset = new URL(`../userland/staff-creatures/${characterId}.png`, import.meta.url);
 			expect(existsSync(asset)).toBe(true);
@@ -98,12 +100,14 @@ describe("shell starter staff templates", () => {
 		expect(motion).toContain(".staff-avatar.writing");
 		expect(motion).toContain(".staff-avatar.needs-attention");
 		expect(motion).toContain('.staff-avatar[data-creature="folio"]');
+		expect(motion).not.toContain("lantern");
 		expect(motion).toContain('filter: url("./staff-creature-colors.svg#cobalt")');
 		expect(motion).toContain(".staff-appearance-picker .staff-color-picker");
 		expect(colors.match(/<filter id=/g)).toHaveLength(12);
 		expect(colors).toContain('flood-color="#ff365e"');
 		expect(renderer).toContain('const STAFF_MOTION_STATES = ["idle", "working", "writing", "needs-attention"];');
 		expect(renderer).toContain('folio: Object.freeze({ label: "Folio", asset: "./staff-creatures/folio.png" })');
+		expect(renderer).not.toContain("lantern");
 		expect(renderer).toContain('if (staffNeedsAttention(staff, runtime)) return "needs-attention";');
 		expect(renderer).toContain('runtime.activity?.kind === "writing"');
 		expect(renderer).not.toContain('showThreadActivity("typing")');
@@ -112,6 +116,8 @@ describe("shell starter staff templates", () => {
 
 	it("keeps character identity independent from suggested role identity", () => {
 		expect(new Set(Object.values(STAFF_CHARACTER_BY_TEMPLATE))).toEqual(new Set(STAFF_CHARACTER_IDS));
+		expect(STAFF_CHARACTER_BY_TEMPLATE["agent-manager"]).toBe("brain");
+		expect(STAFF_CHARACTER_BY_TEMPLATE["operations-specialist"]).toBe("pebble");
 		expect(STAFF_CHARACTER_BY_TEMPLATE["product-manager"]).toBe("folio");
 		expect(STAFF_CHARACTER_IDS.every(isStaffCharacterId)).toBe(true);
 		expect(STAFF_CHARACTER_IDS.some((characterId) => new Set<string>(STAFF_TEMPLATE_IDS).has(characterId))).toBe(
