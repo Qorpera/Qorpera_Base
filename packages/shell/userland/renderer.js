@@ -1735,14 +1735,24 @@ const AVATAR_STOW_MS = 900;
 const avatarStowTimers = new WeakMap();
 const staffWorkStartedAt = new Map();
 
-function setAvatarMotionState(avatar, status) {
+function setAvatarMotionState(avatar, status, actualStatus = status) {
 	const motion = STAFF_MOTION_STATES.includes(status) ? status : "idle";
+	const actualMotion = STAFF_MOTION_STATES.includes(actualStatus) ? actualStatus : "idle";
 	const wasWorking = avatar.classList.contains("working");
 	avatar.classList.remove(...STAFF_MOTION_STATES, ...STAFF_LEGACY_MOTION_STATES);
 	avatar.classList.add(motion);
-	avatar.style.setProperty("--staff-work-elapsed", staffWorkElapsed(avatar.dataset.staffId, motion));
-	if (wasWorking && motion !== "working") startAvatarStow(avatar);
-	else if (motion === "working") cancelAvatarStow(avatar);
+	if (avatar.dataset.creature === "folio") {
+		avatar.style.setProperty(
+			"--staff-work-elapsed",
+			staffWorkElapsed(avatar.dataset.staffId, motion, actualMotion),
+		);
+		if (wasWorking && motion !== "working") startAvatarStow(avatar);
+		else if (motion === "working") cancelAvatarStow(avatar);
+	} else {
+		staffWorkStartedAt.delete(avatar.dataset.staffId);
+		avatar.style.removeProperty("--staff-work-elapsed");
+		cancelAvatarStow(avatar);
+	}
 }
 
 // Folio reads for the whole of `working`, so putting the page away is an exit
@@ -1771,8 +1781,16 @@ function cancelAvatarStow(avatar) {
 // entry animation and make Folio grab for his page again mid-run. Reporting how
 // long the agent has been working lets CSS start the sequence that far in with a
 // negative delay, so the read simply continues.
-function staffWorkElapsed(identity, motion) {
-	if (motion !== "working" || !identity) return "0ms";
+function staffWorkElapsed(identity, motion, actualMotion) {
+	if (!identity) return "0ms";
+	if (actualMotion !== "working") {
+		staffWorkStartedAt.delete(identity);
+		return "0ms";
+	}
+	// Composite room avatars can deliberately paint every participant as
+	// working. They may show the motion, but only the member's real runtime may
+	// seed or advance the continuity anchor.
+	if (motion !== actualMotion) return "0ms";
 	if (!staffWorkStartedAt.has(identity)) staffWorkStartedAt.set(identity, Date.now());
 	return `${staffWorkStartedAt.get(identity) - Date.now()}ms`;
 }
@@ -1787,7 +1805,10 @@ function syncVisibleStaffAvatars() {
 	}
 	for (const avatar of document.querySelectorAll(".staff-avatar[data-staff-id]")) {
 		const staff = members.find((candidate) => staffId(candidate) === avatar.dataset.staffId);
-		if (staff) setAvatarMotionState(avatar, staffStatus(staff));
+		if (staff) {
+			const status = staffStatus(staff);
+			setAvatarMotionState(avatar, status, status);
+		}
 	}
 }
 
@@ -1813,7 +1834,8 @@ function makeStaffAvatar(staffOrTemplate, status = "idle") {
 	avatar.style.setProperty("--staff-creature-filter", staffCreatureFilter(staffOrTemplate));
 	if (staffId(staffOrTemplate)) avatar.dataset.staffId = staffId(staffOrTemplate);
 	avatar.dataset.creature = staffCreatureId(staffOrTemplate);
-	setAvatarMotionState(avatar, status);
+	const actualStatus = staffId(staffOrTemplate) ? staffStatus(staffOrTemplate) : status;
+	setAvatarMotionState(avatar, status, actualStatus);
 	avatar.append(makeStaffCreature(staffOrTemplate), makeStaffFace());
 	avatar.setAttribute("aria-hidden", "true");
 	return avatar;
@@ -1870,7 +1892,8 @@ function paintStaffAvatar(avatar, staff, status = "idle") {
 	avatar.dataset.creature = staffCreatureId(staff);
 	if (staffId(staff)) avatar.dataset.staffId = staffId(staff);
 	else delete avatar.dataset.staffId;
-	setAvatarMotionState(avatar, status);
+	const actualStatus = staffId(staff) ? staffStatus(staff) : status;
+	setAvatarMotionState(avatar, status, actualStatus);
 }
 
 async function loadStaffCatalog(force = false) {
