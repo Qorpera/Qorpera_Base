@@ -2,9 +2,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const userland = join(import.meta.dirname, "..", "userland");
+const shell = join(import.meta.dirname, "..");
+const userland = join(shell, "userland");
 const rendererSource = readFileSync(join(userland, "renderer.js"), "utf-8");
 const indexSource = readFileSync(join(userland, "index.html"), "utf-8");
+const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
+const preloadSource = readFileSync(join(shell, "src", "preload.cjs"), "utf-8");
 
 describe("userland wiring", () => {
 	it("only calls toast helpers that renderer.js actually defines", () => {
@@ -28,5 +31,13 @@ describe("userland wiring", () => {
 		for (const tab of buttons) {
 			expect(indexSource).toContain(`onclick="openSettings('${tab}')"`);
 		}
+	});
+
+	it("keeps macOS native window controls clear of titlebar actions", () => {
+		expect(preloadSource).toContain("document.documentElement.dataset.platform = process.platform");
+		expect(baseCssSource).toMatch(/html\[data-platform="darwin"\] \.titlebar-rail \{ padding-left: 78px; \}/);
+		expect(baseCssSource).toMatch(
+			/html\[data-platform="darwin"\] #titlebar \.thread-header \{ padding-right: 10px; \}/,
+		);
 	});
 });
