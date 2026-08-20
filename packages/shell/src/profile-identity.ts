@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 const PROFILE_ATTACHMENTS_FILE = "profile-attachments.json";
@@ -135,28 +135,63 @@ function parseAttachment(value: unknown): ProfileAttachment | undefined {
 	};
 }
 
-function readAttachments(path: string): ProfileAttachments {
-	try {
-		const value: unknown = JSON.parse(readFileSync(path, "utf-8"));
-		if (!value || typeof value !== "object" || Array.isArray(value)) return emptyAttachments();
-		const record = value as { schema?: unknown; attachments?: unknown };
-		if (
-			(record.schema !== PROFILE_ATTACHMENTS_SCHEMA && record.schema !== LEGACY_PROFILE_ATTACHMENTS_SCHEMA) ||
-			!record.attachments ||
-			typeof record.attachments !== "object" ||
-			Array.isArray(record.attachments)
-		) {
-			return emptyAttachments();
+/** The attachment store is unreadable or unrecognizable. Callers must treat
+ * this as "state unknown" — never as an empty store: rewriting defaults over
+ * an unreadable file silently downgraded a cloud attachment to local once. */
+export class ProfileAttachmentStoreError extends Error {}
+
+const READ_RETRY_ATTEMPTS = 4;
+const READ_RETRY_DELAY_MS = 10;
+
+function sleepSync(milliseconds: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+/** Reads the store file, riding out the brief window in which a concurrent
+ * atomic replace (temp + rename) leaves the path missing or locked on
+ * Windows. Only a persistent ENOENT means the store does not exist. */
+function readAttachmentsRaw(path: string): string | undefined {
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			return readFileSync(path, "utf-8");
+		} catch (error) {
+			if (attempt < READ_RETRY_ATTEMPTS) {
+				sleepSync(READ_RETRY_DELAY_MS);
+				continue;
+			}
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+			throw new ProfileAttachmentStoreError(`Profile attachments could not be read: ${(error as Error).message}`);
 		}
-		const attachments: Record<string, ProfileAttachment> = {};
-		for (const [root, candidate] of Object.entries(record.attachments)) {
-			const attachment = parseAttachment(candidate);
-			if (attachment) attachments[rootKey(root)] = attachment;
-		}
-		return { schema: PROFILE_ATTACHMENTS_SCHEMA, attachments };
-	} catch {
-		return emptyAttachments();
 	}
+}
+
+function readAttachments(path: string): ProfileAttachments {
+	const raw = readAttachmentsRaw(path);
+	if (raw === undefined) return emptyAttachments();
+	let value: unknown;
+	try {
+		value = JSON.parse(raw);
+	} catch (error) {
+		throw new ProfileAttachmentStoreError(`Profile attachments are corrupt: ${(error as Error).message}`);
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new ProfileAttachmentStoreError("Profile attachments are corrupt: not a JSON object");
+	}
+	const record = value as { schema?: unknown; attachments?: unknown };
+	if (
+		(record.schema !== PROFILE_ATTACHMENTS_SCHEMA && record.schema !== LEGACY_PROFILE_ATTACHMENTS_SCHEMA) ||
+		!record.attachments ||
+		typeof record.attachments !== "object" ||
+		Array.isArray(record.attachments)
+	) {
+		throw new ProfileAttachmentStoreError("Profile attachments have an unrecognized schema");
+	}
+	const attachments: Record<string, ProfileAttachment> = {};
+	for (const [root, candidate] of Object.entries(record.attachments)) {
+		const attachment = parseAttachment(candidate);
+		if (attachment) attachments[rootKey(root)] = attachment;
+	}
+	return { schema: PROFILE_ATTACHMENTS_SCHEMA, attachments };
 }
 
 function writeAttachments(path: string, attachments: ProfileAttachments): void {
@@ -174,15 +209,82 @@ function writeAttachments(path: string, attachments: ProfileAttachments): void {
 	}
 }
 
+const LOCK_WAIT_MS = 2000;
+const LOCK_POLL_MS = 25;
+const LOCK_STALE_MS = 10_000;
+
+/** Serializes read-modify-write across processes: a second app instance (or a
+ * smoke boot) mutating the same store must not interleave with ours. mkdir is
+ * the atomic acquire; a lock older than LOCK_STALE_MS is a crashed holder. */
+function acquireStoreLock(path: string): () => void {
+	const lockDir = `${path}.lock`;
+	mkdirSync(dirname(path), { recursive: true });
+	const deadline = Date.now() + LOCK_WAIT_MS;
+	for (;;) {
+		try {
+			mkdirSync(lockDir);
+			return () => {
+				try {
+					rmdirSync(lockDir);
+				} catch {
+					// Releasing a stale-collected lock is fine; never throw on release.
+				}
+			};
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+				throw new ProfileAttachmentStoreError(
+					`Profile attachment lock could not be acquired: ${(error as Error).message}`,
+				);
+			}
+		}
+		try {
+			if (Date.now() - statSync(lockDir).mtimeMs > LOCK_STALE_MS) {
+				rmdirSync(lockDir);
+				continue;
+			}
+		} catch {
+			continue; // The holder released between our attempts; retry immediately.
+		}
+		if (Date.now() >= deadline) {
+			throw new ProfileAttachmentStoreError("Profile attachments are locked by another process");
+		}
+		sleepSync(LOCK_POLL_MS);
+	}
+}
+
+/** Every mutation goes through here: fresh read under the cross-process lock,
+ * then an atomic replace. Return false from mutate to skip the write. A cloud
+ * attachment can only be replaced by a local one through data corruption or a
+ * mis-read, never intentionally — refuse it at the commit boundary. */
+function mutateAttachments(path: string, mutate: (attachments: ProfileAttachments) => boolean | undefined): void {
+	const release = acquireStoreLock(path);
+	try {
+		const previous = readAttachments(path);
+		const next: ProfileAttachments = { schema: PROFILE_ATTACHMENTS_SCHEMA, attachments: { ...previous.attachments } };
+		if (mutate(next) === false) return;
+		for (const [key, before] of Object.entries(previous.attachments)) {
+			const after = next.attachments[key];
+			if (before.profileType === "cloud" && after && after.profileType === "local") {
+				throw new ProfileAttachmentStoreError(
+					"Refusing to replace a cloud profile attachment with a local one; detach it explicitly first",
+				);
+			}
+		}
+		writeAttachments(path, next);
+	} finally {
+		release();
+	}
+}
+
 function requireUuid(value: string, label: string): void {
 	if (!UUID_PATTERN.test(value)) throw new Error(`${label} must be a UUID`);
 }
 
 function saveAttachment(userData: string, root: string, attachment: ProfileAttachment): ProfileAttachment {
-	const path = profileAttachmentsPath(userData);
-	const attachments = readAttachments(path);
-	attachments.attachments[rootKey(root)] = attachment;
-	writeAttachments(path, attachments);
+	mutateAttachments(profileAttachmentsPath(userData), (attachments) => {
+		attachments.attachments[rootKey(root)] = attachment;
+		return undefined;
+	});
 	return attachment;
 }
 
@@ -201,17 +303,28 @@ export function ensureProfileAttachment(
 ): ProfileAttachment {
 	requireUuid(localProfileId, "Local profile id");
 	const path = profileAttachmentsPath(userData);
-	const attachments = readAttachments(path);
 	const key = rootKey(root);
-	const existing = attachments.attachments[key];
+	const existing = readAttachments(path).attachments[key];
 	if (existing) return existing;
-	const attachment: ProfileAttachment = {
-		profileType: "local",
-		profileId: localProfileId,
-		attachedAt: new Date().toISOString(),
-	};
-	attachments.attachments[key] = attachment;
-	writeAttachments(path, attachments);
+	// Only an unseen root creates anything, and only under the store lock with
+	// a re-read: ensure must never manufacture a local identity over a cloud
+	// attachment it failed to see (the mistake that silently detached a cloud
+	// company when a concurrent write made the store briefly unreadable).
+	let attachment!: ProfileAttachment;
+	mutateAttachments(path, (attachments) => {
+		const current = attachments.attachments[key];
+		if (current) {
+			attachment = current;
+			return false;
+		}
+		attachment = {
+			profileType: "local",
+			profileId: localProfileId,
+			attachedAt: new Date().toISOString(),
+		};
+		attachments.attachments[key] = attachment;
+		return undefined;
+	});
 	return attachment;
 }
 
@@ -307,61 +420,63 @@ export function attachCloudProfile(
 	requireUuid(identity.profileId, "Cloud profile id");
 	requireUuid(identity.environmentId, "Cloud environment id");
 	const path = profileAttachmentsPath(userData);
-	const attachments = readAttachments(path);
 	const key = rootKey(root);
-	const existing = attachments.attachments[key];
-	if (existing?.profileType === "cloud") {
-		if (existing.profileId !== identity.profileId || existing.environmentId !== identity.environmentId) {
-			throw new Error("Company folder is already attached to a different cloud profile");
+	let attachment!: ProfileAttachment;
+	mutateAttachments(path, (attachments) => {
+		const existing = attachments.attachments[key];
+		if (existing?.profileType === "cloud") {
+			if (existing.profileId !== identity.profileId || existing.environmentId !== identity.environmentId) {
+				throw new Error("Company folder is already attached to a different cloud profile");
+			}
+			if (
+				!existing.promotion ||
+				existing.promotion.phase === "identity-ready" ||
+				existing.promotion.phase === "complete"
+			) {
+				attachment = existing;
+				return false;
+			}
+			attachment = {
+				...existing,
+				promotion: {
+					...existing.promotion,
+					phase: "identity-ready",
+					cloudProfileId: identity.profileId,
+					environmentId: identity.environmentId,
+					updatedAt: new Date().toISOString(),
+				},
+			};
+			attachments.attachments[key] = attachment;
+			return undefined;
 		}
-		if (
-			!existing.promotion ||
-			existing.promotion.phase === "identity-ready" ||
-			existing.promotion.phase === "complete"
-		) {
-			return existing;
-		}
-		const attachment: ProfileAttachment = {
-			...existing,
-			promotion: {
-				...existing.promotion,
-				phase: "identity-ready",
-				cloudProfileId: identity.profileId,
-				environmentId: identity.environmentId,
-				updatedAt: new Date().toISOString(),
-			},
+		attachment = {
+			profileType: "cloud",
+			...identity,
+			attachedAt: new Date().toISOString(),
+			...(existing?.promotion
+				? {
+						promotion: {
+							...existing.promotion,
+							phase: "identity-ready" as const,
+							cloudProfileId: identity.profileId,
+							environmentId: identity.environmentId,
+							updatedAt: new Date().toISOString(),
+						},
+					}
+				: {}),
 		};
 		attachments.attachments[key] = attachment;
-		writeAttachments(path, attachments);
-		return attachment;
-	}
-	const attachment: ProfileAttachment = {
-		profileType: "cloud",
-		...identity,
-		attachedAt: new Date().toISOString(),
-		...(existing?.promotion
-			? {
-					promotion: {
-						...existing.promotion,
-						phase: "identity-ready" as const,
-						cloudProfileId: identity.profileId,
-						environmentId: identity.environmentId,
-						updatedAt: new Date().toISOString(),
-					},
-				}
-			: {}),
-	};
-	attachments.attachments[key] = attachment;
-	writeAttachments(path, attachments);
+		return undefined;
+	});
 	return attachment;
 }
 
 /** Removes only this machine's checkout attachment; it never deletes a profile. */
 export function forgetProfileAttachment(userData: string, root: string): void {
-	const path = profileAttachmentsPath(userData);
-	const attachments = readAttachments(path);
 	const key = rootKey(root);
-	if (!attachments.attachments[key]) return;
-	delete attachments.attachments[key];
-	writeAttachments(path, attachments);
+	mutateAttachments(profileAttachmentsPath(userData), (attachments) => {
+		if (!attachments.attachments[key]) return false;
+		delete attachments.attachments[key];
+		return undefined;
+	});
 }

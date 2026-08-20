@@ -8452,7 +8452,8 @@ function beginRendererWindowSwap(slot: Slot, partition: string): RendererWindowS
 // running shell instead of stacking processes running different builds —
 // but windows are per-company, so a launcher for a company that is not open
 // gets a NEW window next to the others. Smoke runs are headless test boots
-// and must not join or disturb a live instance.
+// and must not join or disturb a live instance — they contend for the same
+// lock below and refuse to boot when they lose it.
 const IS_SMOKE = process.argv.some((arg) => arg.startsWith("--smoke"));
 
 // Electron's default uncaughtException behavior is a blocking native "Error"
@@ -8463,10 +8464,25 @@ const IS_SMOKE = process.argv.some((arg) => arg.startsWith("--smoke"));
 process.on("uncaughtException", (error) => {
 	console.error(`uncaught exception: ${error.stack ?? String(error)}`);
 });
-if (!IS_SMOKE && !app.requestSingleInstanceLock()) {
-	app.quit();
+// Every boot — smoke included — must hold the per-userData single-instance
+// lock: two processes doing read-modify-write over the same userData stores
+// (profile-attachments.json among them) once silently downgraded a cloud
+// attachment to local. A smoke that loses the lock refuses to run instead of
+// joining or disturbing the live instance; run it against its own
+// --user-data-dir to smoke next to a live shell.
+const HAS_SINGLE_INSTANCE_LOCK = app.requestSingleInstanceLock();
+if (!HAS_SINGLE_INSTANCE_LOCK) {
+	if (IS_SMOKE) {
+		console.error("SMOKE_REFUSED another instance is already running against this userData");
+		app.exit(1);
+	} else {
+		app.quit();
+	}
 }
 app.on("second-instance", (_event, argv) => {
+	// A refused smoke boot notifies us as a side effect of trying the lock;
+	// it must not conjure windows in the live instance.
+	if (argv.some((arg) => arg.startsWith("--smoke"))) return;
 	const invitationId = profileInvitationIdFromArgv(argv);
 	if (invitationId) {
 		queueProfileInvitationHandoff(invitationId);
@@ -8496,6 +8512,9 @@ app.on("open-url", (event, url) => {
 });
 
 app.whenReady().then(async () => {
+	// A losing instance is on its way out via quit/exit above; it must not
+	// touch any userData store in the meantime.
+	if (!HAS_SINGLE_INSTANCE_LOCK) return;
 	// Reconcile login-start with the durable background-company registry, so
 	// removing the last opted-in company (or an edited registry) takes effect.
 	syncBackgroundLoginItem(readBackgroundCompanyRoots(app.getPath("userData")));
