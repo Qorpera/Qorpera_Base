@@ -3,6 +3,19 @@
 // company/session state comes from the backend read model.
 const { contextBridge, ipcRenderer } = require("electron");
 
+// Platform-specific titlebar geometry must be available before the renderer
+// paints; macOS puts its native traffic-light controls on the left.
+if (document.documentElement) document.documentElement.dataset.platform = process.platform;
+else {
+	window.addEventListener(
+		"DOMContentLoaded",
+		() => {
+			document.documentElement.dataset.platform = process.platform;
+		},
+		{ once: true },
+	);
+}
+
 // The preload learns attachment only from kernel-confirmed replies, so the
 // fixed renderer never receives an ambient "current child" capability.
 let activeTrailFile;

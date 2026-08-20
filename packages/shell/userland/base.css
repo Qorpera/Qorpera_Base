@@ -2669,6 +2669,12 @@ body.company-shell .titlebar-rail { display: grid; }
 	position: absolute; z-index: 2; top: 7px; right: 182px; -webkit-app-region: no-drag;
 }
 
+/* macOS places native traffic lights on the left instead of Windows' caption
+ * controls on the right. Keep the rail controls clear of them and let the
+ * computer action use the full right edge of the conversation header. */
+html[data-platform="darwin"] .titlebar-rail { padding-left: 78px; }
+html[data-platform="darwin"] #titlebar .thread-header { padding-right: 10px; }
+
 .staff-create-row {
 	grid-template-columns: 32px minmax(0, 1fr); min-height: 65px; max-height: 65px; overflow: hidden;
 	transform-origin: top center;
