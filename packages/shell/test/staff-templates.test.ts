@@ -96,6 +96,16 @@ describe("shell starter staff templates", () => {
 		expect(motion).toContain("@keyframes creature-eye-one-blink");
 		expect(motion).toContain("@keyframes creature-working");
 		expect(motion).toContain("@keyframes creature-writing");
+		expect(motion).toContain("@keyframes creature-writing-dots");
+		expect(motion).toContain("@keyframes creature-writing-eye-one");
+		expect(motion).toContain("@keyframes creature-writing-eye-two");
+		expect(motion).toContain(".staff-avatar::before {");
+		expect(motion).toContain(".staff-avatar::after {");
+		expect(motion).toContain(".staff-avatar.writing::before");
+		expect(motion).toContain(".staff-avatar.writing::after");
+		expect(motion).not.toContain("creature-writing-cloud");
+		expect(motion).not.toContain("creature-writing-dots-visibility");
+		expect(motion).not.toContain("creature-writing-marks");
 		expect(motion).toContain("@keyframes creature-attention");
 		expect(motion).toContain(".staff-avatar.writing");
 		expect(motion).toContain(".staff-avatar.needs-attention");

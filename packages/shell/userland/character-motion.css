@@ -10,6 +10,8 @@ html[data-staff-avatar-style="creatures"] .staff-avatar {
 	--creature-eye-width: 4%;
 	--creature-eye-height: 7.5%;
 	--creature-motion-delay: var(--staff-motion-delay, 0s);
+	--creature-writing-thought-top: 2.1%;
+	--creature-writing-thought-right: -23.6%;
 	border-color: transparent;
 	background: transparent;
 }
@@ -124,6 +126,8 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"] {
 	--creature-eye-two-r: 6deg;
 	--creature-eye-width: 5%;
 	--creature-eye-height: 8%;
+	--creature-writing-thought-top: 3.5%;
+	--creature-writing-thought-right: -34.5%;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="brain"] {
@@ -133,6 +137,7 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="brain"] {
 	--creature-eye-two-y: 33%;
 	--creature-eye-width: 5%;
 	--creature-eye-height: 9%;
+	--creature-writing-thought-right: -34.5%;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="halo"] {
@@ -142,6 +147,8 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="halo"] {
 	--creature-eye-two-y: 53%;
 	--creature-eye-width: 3.5%;
 	--creature-eye-height: 6%;
+	--creature-writing-thought-top: 3.5%;
+	--creature-writing-thought-right: -22.3%;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="wisp"] {
@@ -153,6 +160,7 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="wisp"] {
 	--creature-eye-two-r: 10deg;
 	--creature-eye-width: 4%;
 	--creature-eye-height: 8%;
+	--creature-writing-thought-right: -19.6%;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="ribbon"] {
@@ -162,6 +170,8 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="ribbon"] 
 	--creature-eye-two-y: 35.5%;
 	--creature-eye-width: 4%;
 	--creature-eye-height: 8%;
+	--creature-writing-thought-top: -4.2%;
+	--creature-writing-thought-right: -25.7%;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="bloom"] {
@@ -171,6 +181,8 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="bloom"] {
 	--creature-eye-two-y: 46%;
 	--creature-eye-width: 4%;
 	--creature-eye-height: 8%;
+	--creature-writing-thought-top: .7%;
+	--creature-writing-thought-right: -31.1%;
 }
 
 /* Picker thumbnails use the same eyeless assets without a face node, so the
@@ -329,7 +341,67 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.working > .staff-face {
 
 html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-creature-image,
 html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face {
-	animation: creature-writing 1.8s cubic-bezier(.34, .05, .3, 1) var(--creature-motion-delay) infinite;
+	animation: creature-writing 3s ease-in-out var(--creature-motion-delay) infinite;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face i:first-child {
+	animation: creature-writing-eye-one 3s ease-in-out var(--creature-motion-delay) infinite;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face i:last-child {
+	animation: creature-writing-eye-two 3s ease-in-out var(--creature-motion-delay) infinite;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar::before {
+	content: "";
+	position: absolute;
+	z-index: 4;
+	top: var(--creature-writing-thought-top);
+	right: var(--creature-writing-thought-right);
+	width: 43.2%;
+	aspect-ratio: 64 / 51;
+	background: center / contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 76 60'%3E%3Cpath d='M15 40C7 40 2 35 2 28C2 21 7 16 14 15C14 9 19 4 26 5C32 1 40 2 44 8C51 5 59 9 61 15C69 15 74 20 74 27C74 34 68 39 60 39C56 39 53 38 50 36C45 42 35 43 28 39C24 41 19 41 15 40Z' fill='%23fff' stroke='%2320242b' stroke-width='2' stroke-linejoin='round'/%3E%3Ccircle cx='15' cy='48' r='4.5' fill='%23fff' stroke='%2320242b' stroke-width='2'/%3E%3Ccircle cx='7' cy='56' r='2.8' fill='%23fff' stroke='%2320242b' stroke-width='2'/%3E%3C/svg%3E");
+	filter: drop-shadow(0 2px 3px rgb(31 38 49 / 18%));
+	opacity: 0;
+	transform: translate(8%, 6%) scale(.64);
+	transform-origin: 12% 88%;
+	transition:
+		opacity .2s ease-in,
+		transform .26s cubic-bezier(.4, 0, .8, .2);
+	forced-color-adjust: none;
+	pointer-events: none;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar::after {
+	content: "";
+	position: absolute;
+	z-index: 5;
+	top: calc(var(--creature-writing-thought-top) + 13.4%);
+	right: calc(var(--creature-writing-thought-right) + 12.8%);
+	width: 16.9%;
+	height: 3.4%;
+	background:
+		radial-gradient(circle, #20242b 0 66%, transparent 70%) left center / 20% 100% no-repeat,
+		radial-gradient(circle, #20242b 0 66%, transparent 70%) center / 20% 100% no-repeat,
+		radial-gradient(circle, #20242b 0 66%, transparent 70%) right center / 20% 100% no-repeat;
+	opacity: 0;
+	transition: opacity .12s ease-out;
+	forced-color-adjust: none;
+	pointer-events: none;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar.writing::before {
+	opacity: 1;
+	transform: translate(0) scale(1);
+	transition:
+		opacity .16s ease-out,
+		transform .38s cubic-bezier(.2, .78, .25, 1);
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar.writing::after {
+	opacity: 1;
+	transition: opacity .16s ease-out .18s;
+	animation: creature-writing-dots 1.05s ease-in-out var(--creature-motion-delay) infinite;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar.needs-attention > .staff-creature-image,
@@ -360,18 +432,6 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.working > .staff-face::b
 	animation: creature-focus-dots 3.2s ease-in-out var(--creature-motion-delay) infinite;
 }
 
-html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::after {
-	top: 17%;
-	right: 7%;
-	width: 14%;
-	height: 3.8%;
-	border-radius: 999px;
-	background: #ffd166;
-	box-shadow: .42em 1.05em 0 -.08em #ffd166, -.12em 2.05em 0 -.16em #ffd166;
-	transform: rotate(-12deg);
-	animation: creature-writing-marks 1.8s ease-in-out var(--creature-motion-delay) infinite;
-}
-
 @keyframes creature-eye-one-blink {
 	0%, 45%, 54%, 100% { transform: rotate(var(--creature-eye-one-r)) scaleX(1) scaleY(1); }
 	48%, 52% { transform: rotate(var(--creature-eye-one-r)) scaleX(1.12) scaleY(.12); }
@@ -390,10 +450,47 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::a
 }
 
 @keyframes creature-writing {
-	0%, 100% { transform: translateX(0) rotate(0deg) scale(1); }
-	30% { transform: translateX(-1.5%) rotate(-1.2deg) scaleX(1.012) scaleY(.99); }
-	58% { transform: translateX(1%) rotate(.8deg) scaleX(.996) scaleY(1.006); }
-	78% { transform: translateX(-.4%) rotate(-.3deg) scale(1); }
+	0%, 8%, 100% { transform: rotate(0deg) scale(1); }
+	25% { transform: rotate(-.6deg) scale(.997, 1.003); }
+	52% { transform: rotate(.6deg) scale(1.004, .996); }
+	77% { transform: rotate(-.4deg) scale(.998, 1.002); }
+	92% { transform: rotate(0deg) scale(1); }
+}
+
+@keyframes creature-writing-eye-one {
+	0%, 11%, 95%, 100% { transform: translate(0) rotate(var(--creature-eye-one-r)) scale(1); }
+	22%, 82% { transform: translate(14%, -8%) rotate(var(--creature-eye-one-r)) scaleY(.78); }
+	87% { transform: translate(14%, -8%) rotate(var(--creature-eye-one-r)) scaleX(1.08) scaleY(.16); }
+}
+
+@keyframes creature-writing-eye-two {
+	0%, 11%, 95%, 100% { transform: translate(0) rotate(var(--creature-eye-two-r)) scale(1); }
+	22%, 82% { transform: translate(14%, -8%) rotate(var(--creature-eye-two-r)) scaleY(.78); }
+	87% { transform: translate(14%, -8%) rotate(var(--creature-eye-two-r)) scaleX(1.08) scaleY(.16); }
+}
+
+@keyframes creature-writing-dots {
+	0%, 100% {
+		background:
+			radial-gradient(circle, rgb(32 36 43 / 42%) 0 66%, transparent 70%) left 65% / 20% 100% no-repeat,
+			radial-gradient(circle, rgb(32 36 43 / 65%) 0 66%, transparent 70%) center / 20% 100% no-repeat,
+			radial-gradient(circle, #20242b 0 66%, transparent 70%) right 35% / 20% 100% no-repeat;
+		transform: translateY(20%) scale(.82);
+	}
+	33% {
+		background:
+			radial-gradient(circle, #20242b 0 66%, transparent 70%) left 35% / 20% 100% no-repeat,
+			radial-gradient(circle, rgb(32 36 43 / 42%) 0 66%, transparent 70%) center 65% / 20% 100% no-repeat,
+			radial-gradient(circle, rgb(32 36 43 / 65%) 0 66%, transparent 70%) right center / 20% 100% no-repeat;
+		transform: translateY(-40%) scale(1);
+	}
+	66% {
+		background:
+			radial-gradient(circle, rgb(32 36 43 / 65%) 0 66%, transparent 70%) left center / 20% 100% no-repeat,
+			radial-gradient(circle, #20242b 0 66%, transparent 70%) center 35% / 20% 100% no-repeat,
+			radial-gradient(circle, rgb(32 36 43 / 42%) 0 66%, transparent 70%) right 65% / 20% 100% no-repeat;
+		transform: translateY(0) scale(.9);
+	}
 }
 
 @keyframes creature-attention {
@@ -411,18 +508,16 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::a
 	68% { opacity: 1; transform: scale(.96); }
 }
 
-@keyframes creature-writing-marks {
-	0%, 12%, 76%, 100% { opacity: 0; translate: -8% 0; }
-	30%, 60% { opacity: 1; translate: 0 0; }
-}
-
 @media (prefers-reduced-motion: reduce) {
+	html[data-staff-avatar-style="creatures"] .staff-avatar::before,
+	html[data-staff-avatar-style="creatures"] .staff-avatar::after,
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-creature-image,
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face,
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face i,
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face::before,
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face::after {
 		animation: none !important;
+		transition: none !important;
 	}
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face i:first-child {
 		transform: rotate(var(--creature-eye-one-r)) scale(1);
@@ -445,9 +540,5 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::a
 	html[data-staff-avatar-style="creatures"] .staff-avatar.working > .staff-face::before {
 		background: CanvasText;
 		box-shadow: .95em .8em 0 CanvasText, 1.65em 1.8em 0 CanvasText;
-	}
-	html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::after {
-		background: Highlight;
-		box-shadow: .42em 1.05em 0 -.08em Highlight, -.12em 2.05em 0 -.16em Highlight;
 	}
 }
