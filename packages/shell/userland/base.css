@@ -3191,22 +3191,100 @@ html[data-staff-avatar-style="simple"] #titlebar .thread-header .room-avatar .st
 .friend-row .who small { display: block; color: rgba(0,0,0,.55); }
 .friends-section-title { margin: 10px 0 4px; font-size: 12px; font-weight: 600; color: rgba(0,0,0,.6); }
 
-/* ---- team tab ---------------------------------------------------------------- */
-.team-error { margin-top: 10px; }
+/* ---- company tab ------------------------------------------------------------- */
+.team-error { margin-top: 12px; }
+.team-error:empty { display: none; }
 .team-person-avatar {
 	display: grid; place-items: center; width: 34px; height: 34px; flex: none;
 	border-radius: 50%; background: var(--person-color, #7c7c7a); color: #fff;
 	font-size: 14px; font-weight: 650;
 }
 .team-person-avatar.pending { opacity: .5; }
-.team-staff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; }
-.team-staff-card {
-	display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 14px 10px;
-	border: 1px solid var(--border); border-radius: 14px; background: #fff; text-align: center;
+.company-people { display: grid; gap: 2px; margin-top: 18px; }
+.company-person-row { display: flex; align-items: center; gap: 14px; min-height: 56px; padding: 4px 0; }
+.company-person-row .team-person-avatar { width: 42px; height: 42px; font-size: 16px; }
+.company-person-copy { display: grid; flex: 1; min-width: 0; gap: 1px; text-align: left; }
+.company-person-copy strong {
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	color: #1d1d1b; font-size: 13.5px; font-weight: 650;
 }
-.team-staff-card .staff-avatar { width: 46px; height: 46px; margin-bottom: 5px; }
-.team-staff-card strong { font-size: 12.5px; font-weight: 650; }
-.team-staff-card small { color: var(--text-muted); font-size: 11px; }
+.company-person-copy small { color: #92928e; font-size: 12px; }
+.company-person-actions { display: flex; align-items: center; gap: 6px; visibility: hidden; }
+.company-person-row:hover .company-person-actions,
+.company-person-row:focus-within .company-person-actions { visibility: visible; }
+.company-person-actions select,
+.company-person-actions button {
+	width: auto; min-height: 28px; padding: 0 10px; border: 1px solid #d7d7d3; border-radius: 8px;
+	background: #fff; color: #444442; font-size: 11.5px;
+}
+.company-invite-launch {
+	display: flex; align-items: center; gap: 14px; width: 100%; min-height: 56px; padding: 4px 0;
+	border: 0; background: transparent; color: inherit; font: inherit; text-align: left;
+}
+.company-invite-launch .team-invite-plus { width: 42px; height: 42px; }
+.company-invite-launch:hover .team-invite-plus { border-color: #92928e; color: #5f5f5b; }
+.team-invite-plus {
+	border: 1.5px dashed #c2c2be; background: transparent; color: #92928e;
+	font-size: 18px; font-weight: 450;
+}
+.company-staff-strip { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
+.company-staff-label {
+	display: block; margin-bottom: 13px; color: #92928e;
+	font-size: 10px; font-weight: 650; letter-spacing: .14em; text-transform: uppercase;
+}
+.company-staff-row { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; }
+.company-staff-row .staff-avatar { width: 46px; height: 46px; }
+
+/* The invite popup: friends list with a one-click invite on the right. */
+.company-invite-overlay {
+	position: fixed; z-index: 4200; inset: 0; display: grid; place-items: center;
+	background: rgba(20, 20, 19, .35);
+}
+.company-invite-panel {
+	display: flex; flex-direction: column; width: min(430px, calc(100vw - 60px));
+	max-height: min(500px, calc(100vh - 80px)); padding: 16px 18px;
+	border: 1px solid #d9d9d6; border-radius: 14px; background: #fff;
+	box-shadow: 0 18px 60px rgba(0, 0, 0, .22);
+}
+.company-invite-search { position: relative; display: flex; align-items: center; gap: 8px; }
+.company-invite-search input {
+	flex: 1; min-width: 0; min-height: 32px; padding: 0 11px;
+	border: 1px solid #d7d7d3; border-radius: 9px; background: #fff; font-size: 12.5px;
+}
+.company-invite-search input::placeholder { color: #a8a8a3; }
+.company-invite-close { flex: none; border: 0; background: transparent; color: #7c7c78; font-size: 17px; }
+.company-invite-suggest {
+	position: absolute; z-index: 1; top: calc(100% + 5px); right: 27px; left: 0;
+	padding: 3px 9px; border: 1px solid #d9d9d6; border-radius: 10px; background: #fff;
+	box-shadow: 0 10px 26px rgba(0, 0, 0, .14);
+}
+.company-invite-body { flex: 1; min-height: 48px; margin-top: 4px; overflow-y: auto; }
+.company-invite-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.company-invite-row .team-person-avatar { width: 32px; height: 32px; font-size: 13px; }
+.company-invite-row .who { display: grid; flex: 1; min-width: 0; gap: 1px; }
+.company-invite-row .who strong { font-size: 12.5px; font-weight: 600; }
+.company-invite-row .who small {
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	color: #92928e; font-size: 11px;
+}
+.company-invite-row > small { flex: none; color: #92928e; font-size: 11px; }
+.company-invite-row button {
+	min-height: 28px; padding: 0 12px; border: 1px solid #d7d7d3; border-radius: 8px;
+	background: #f1f1ef; color: #232321; font-size: 11.5px;
+}
+.company-invite-row select {
+	width: auto; min-height: 28px; padding: 0 8px; border: 1px solid #d7d7d3; border-radius: 8px;
+	background: #fff; color: #444442; font-size: 11.5px;
+}
+.company-invite-requests { margin-top: 8px; border-bottom: 1px solid var(--border); }
+.company-invite-requests-toggle {
+	display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;
+	padding: 4px 0 8px; border: 0; background: transparent; color: #747470;
+	font-size: 11.5px; font-weight: 600; text-align: left;
+}
+.company-invite-requests-toggle:hover { color: #444442; }
+.company-invite-requests-chevron { color: #92928e; font-size: 10px; transition: rotate .15s ease; }
+.company-invite-requests.open .company-invite-requests-chevron { rotate: 180deg; }
 
 /* ---- presence: teammates' open threads and typing -------------------------
  * peer-open marks a staff row/card a teammate is currently viewing; the
