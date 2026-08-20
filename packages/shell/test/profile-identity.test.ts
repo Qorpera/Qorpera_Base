@@ -190,4 +190,52 @@ describe("profile identity", () => {
 		forgetProfileAttachment(userData, company);
 		expect(readProfileAttachment(userData, company)).toBeUndefined();
 	});
+
+	// Regression (2026-08-19): a store made briefly unreadable by a concurrent
+	// writer used to parse as empty, so ensure re-classified a cloud-attached
+	// company as a fresh local profile — silently disabling sync for it.
+	it("refuses to reclassify a company while the attachment store is unreadable", () => {
+		const userData = temporaryRoot();
+		const company = join(temporaryRoot(), "company");
+		attachCloudProfile(userData, company, { profileId: cloudProfileId, environmentId });
+		const path = profileAttachmentsPath(userData);
+		const torn = readFileSync(path, "utf-8").slice(0, 25);
+		writeFileSync(path, torn, "utf-8");
+		expect(() => ensureProfileAttachment(userData, company)).toThrow("corrupt");
+		expect(() => readProfileAttachment(userData, company)).toThrow("corrupt");
+		expect(readFileSync(path, "utf-8")).toBe(torn);
+	});
+
+	it("refuses to overwrite a store with an unrecognized schema", () => {
+		const userData = temporaryRoot();
+		const company = join(temporaryRoot(), "company");
+		mkdirSync(userData, { recursive: true });
+		writeFileSync(
+			profileAttachmentsPath(userData),
+			JSON.stringify({ schema: "qorpera.profile-attachments/v99", attachments: {} }),
+			"utf-8",
+		);
+		expect(() => ensureProfileAttachment(userData, company)).toThrow("unrecognized schema");
+	});
+
+	it("keeps a cloud attachment intact under a concurrent mutator's lock", () => {
+		const userData = temporaryRoot();
+		const company = join(temporaryRoot(), "company");
+		attachCloudProfile(userData, company, { profileId: cloudProfileId, environmentId });
+		const lockDir = `${profileAttachmentsPath(userData)}.lock`;
+		mkdirSync(lockDir);
+		try {
+			const other = join(temporaryRoot(), "other");
+			expect(() => ensureProfileAttachment(userData, other)).toThrow("locked by another process");
+			expect(readProfileAttachment(userData, company)).toMatchObject({
+				profileType: "cloud",
+				profileId: cloudProfileId,
+			});
+			rmSync(lockDir, { recursive: true, force: true });
+			expect(ensureProfileAttachment(userData, other).profileType).toBe("local");
+			expect(readProfileAttachment(userData, company)).toMatchObject({ profileType: "cloud" });
+		} finally {
+			rmSync(lockDir, { recursive: true, force: true });
+		}
+	});
 });
