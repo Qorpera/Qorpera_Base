@@ -266,6 +266,14 @@ html[data-staff-avatar-style="creatures"] .staff-creature-choice::after {
 	transform: rotate(var(--picker-eye-two-r));
 }
 
+/* Picker options now render the complete avatar so they share its calibrated,
+ * animated eye layer. The legacy pseudo-eyes only remain for older bare-image
+ * pickers elsewhere in the shell. */
+html[data-staff-avatar-style="creatures"] .staff-creature-choice:has(> .staff-avatar)::before,
+html[data-staff-avatar-style="creatures"] .staff-creature-choice:has(> .staff-avatar)::after {
+	content: none;
+}
+
 html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face {
 	position: absolute;
 	inset: -6%;

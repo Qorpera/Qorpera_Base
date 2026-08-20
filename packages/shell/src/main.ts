@@ -7416,6 +7416,26 @@ const STAFF_AVATAR_COLORS = new Set([
 ]);
 const STAFF_AVATAR_SHAPES = new Set(["soft-square", "round", "wide", "gem", "tilted", "drop"]);
 
+function parsedStaffAppearance(value: unknown): StaffAgent["appearance"] {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid staff appearance");
+	const record = value as Record<string, unknown>;
+	if (
+		Object.keys(record).some((key) => key !== "color" && key !== "shape" && key !== "creature") ||
+		typeof record.color !== "string" ||
+		typeof record.shape !== "string" ||
+		(record.creature !== undefined && !isStaffCharacterId(record.creature)) ||
+		!STAFF_AVATAR_COLORS.has(record.color) ||
+		!STAFF_AVATAR_SHAPES.has(record.shape)
+	) {
+		throw new Error("invalid staff appearance");
+	}
+	return {
+		color: record.color,
+		shape: record.shape,
+		...(typeof record.creature === "string" ? { creature: record.creature } : {}),
+	};
+}
+
 function parsedStaffCreateInput(value: unknown): {
 	templateId?: string;
 	displayName?: string;
@@ -7439,22 +7459,7 @@ function parsedStaffCreateInput(value: unknown): {
 	if (input.templateId === undefined && !displayName) throw new Error("custom staff requires a display name");
 	let appearance: StaffAgent["appearance"] | undefined;
 	if (input.appearance !== undefined) {
-		const record = input.appearance as Record<string, unknown>;
-		if (
-			Object.keys(record).some((key) => key !== "color" && key !== "shape" && key !== "creature") ||
-			typeof record.color !== "string" ||
-			typeof record.shape !== "string" ||
-			(record.creature !== undefined && !isStaffCharacterId(record.creature)) ||
-			!STAFF_AVATAR_COLORS.has(record.color) ||
-			!STAFF_AVATAR_SHAPES.has(record.shape)
-		) {
-			throw new Error("invalid staff appearance");
-		}
-		appearance = {
-			color: record.color,
-			shape: record.shape,
-			...(typeof record.creature === "string" ? { creature: record.creature } : {}),
-		};
+		appearance = parsedStaffAppearance(input.appearance);
 	}
 	return {
 		...(typeof input.templateId === "string" ? { templateId: input.templateId } : {}),
@@ -7712,20 +7717,26 @@ async function createStaffMember(
 function parsedStaffUpdateInput(value: unknown): {
 	displayName?: string;
 	role?: string;
+	appearance?: StaffAgent["appearance"];
 	model?: StaffAgentModel | null;
 } {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid staff update");
 	const input = value as Record<string, unknown>;
 	if (
 		Object.keys(input).length === 0 ||
-		Object.keys(input).some((key) => key !== "displayName" && key !== "role" && key !== "model") ||
+		Object.keys(input).some(
+			(key) => key !== "displayName" && key !== "role" && key !== "appearance" && key !== "model",
+		) ||
 		(input.displayName !== undefined && typeof input.displayName !== "string") ||
-		(input.role !== undefined && typeof input.role !== "string")
+		(input.role !== undefined && typeof input.role !== "string") ||
+		(input.appearance !== undefined &&
+			(!input.appearance || typeof input.appearance !== "object" || Array.isArray(input.appearance)))
 	) {
 		throw new Error("invalid staff update");
 	}
 	const displayName = typeof input.displayName === "string" ? input.displayName.trim() : undefined;
 	const role = typeof input.role === "string" ? input.role.trim() : undefined;
+	const appearance = input.appearance === undefined ? undefined : parsedStaffAppearance(input.appearance);
 	if (displayName !== undefined && (!displayName || Buffer.byteLength(displayName, "utf-8") > 160)) {
 		throw new Error("invalid staff display name");
 	}
@@ -7754,6 +7765,7 @@ function parsedStaffUpdateInput(value: unknown): {
 	return {
 		...(displayName ? { displayName } : {}),
 		...(role ? { role } : {}),
+		...(appearance ? { appearance } : {}),
 		...(model !== undefined ? { model } : {}),
 	};
 }
