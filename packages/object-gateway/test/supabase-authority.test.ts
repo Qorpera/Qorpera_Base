@@ -48,6 +48,44 @@ describe("Supabase object authority", () => {
 		expect(header(calls[0]!.request, calls[0]!.init, "authorization")).toBeNull();
 	});
 
+	it("authorizes and finalizes deletion in separate privileged calls", async () => {
+		const calls: Array<{ request: FetchInput; init: RequestInit | undefined }> = [];
+		const authority = new SupabaseObjectAuthority({
+			projectUrl: "https://project.supabase.co",
+			publishableKey: "sb_publishable_public",
+			secretKey: "sb_secret_private",
+			fetch: async (request, init) => {
+				calls.push({ request, init });
+				return Response.json(
+					calls.length === 1
+						? { state: "authorized", authorization_id: "83dc6943-b71c-4ba4-a38d-78da0861e0dc" }
+						: true,
+				);
+			},
+		});
+
+		const authorization = await authority.authorizeDelete(
+			profileId,
+			sha256,
+			12,
+			"73dc6943-b71c-4ba4-a38d-78da0861e0dc",
+		);
+		expect(authorization).toEqual({
+			state: "authorized",
+			authorizationId: "83dc6943-b71c-4ba4-a38d-78da0861e0dc",
+		});
+		await authority.finalizeDelete("83dc6943-b71c-4ba4-a38d-78da0861e0dc", profileId, sha256, 12);
+
+		expect(calls.map((call) => String(call.request))).toEqual([
+			"https://project.supabase.co/rest/v1/rpc/qorpera_authorize_profile_object_deletion",
+			"https://project.supabase.co/rest/v1/rpc/qorpera_finalize_profile_object_deletion",
+		]);
+		for (const call of calls) {
+			expect(header(call.request, call.init, "apikey")).toBe("sb_secret_private");
+			expect(header(call.request, call.init, "authorization")).toBeNull();
+		}
+	});
+
 	it("does not mislabel a modern secret key as a storage bearer token", async () => {
 		const calls: Array<{ request: FetchInput; init: RequestInit | undefined }> = [];
 		const authority = new SupabaseObjectAuthority({

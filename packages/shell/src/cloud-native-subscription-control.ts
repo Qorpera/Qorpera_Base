@@ -195,7 +195,7 @@ type NativeControlRpc =
 	| "qorpera_begin_native_provider_login"
 	| "qorpera_create_member_execution_sponsor"
 	| "qorpera_create_execution_sponsor_binding"
-	| "qorpera_request_session_turn"
+	| "qorpera_request_session_turn_v2"
 	| "qorpera_approve_session_turn_sponsorship"
 	| "qorpera_list_member_native_execution_connections"
 	| "qorpera_list_compute_identities"
@@ -524,7 +524,7 @@ export class NativeSubscriptionControlPlane {
 
 	async requestSessionTurn(input: RequestSponsoredSessionTurnInput): Promise<SessionTurnRequestResult> {
 		const value = record(
-			await this.#transport.rpc("qorpera_request_session_turn", {
+			await this.#transport.rpc("qorpera_request_session_turn_v2", {
 				p_session_id: input.sessionId,
 				p_client_input_id: input.clientInputId ?? randomUUID(),
 				p_client_request_id: input.clientRequestId ?? randomUUID(),

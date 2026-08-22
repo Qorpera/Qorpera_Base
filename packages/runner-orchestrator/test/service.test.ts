@@ -77,6 +77,26 @@ describe("runner orchestrator service boundary", () => {
 		});
 	});
 
+	it("permits HTTP only on loopback and rejects non-HTTP loopback schemes", () => {
+		const environment = {
+			QORPERA_SUPABASE_URL: "file://localhost/project",
+			QORPERA_SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+			QORPERA_RUNNER_ORCHESTRATOR_ID: "11111111-1111-4111-8111-111111111111",
+			QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN: "c".repeat(43),
+			QORPERA_RUNNER_ORCHESTRATOR_CONTROL_STATE: resolve(".test/orchestrator-control.json"),
+			QORPERA_RUNNER_PROVIDER_URL: "https://provider.example",
+			QORPERA_RUNNER_PROVIDER_ADAPTER: "managed",
+			QORPERA_RUNNER_PROVIDER_TOKEN: "provider-service-token",
+		};
+		expect(() => cloudRunnerOrchestratorServiceConfigFromEnvironment(environment)).toThrow("must use HTTPS");
+		expect(
+			() => new HttpCloudRunnerProviderAdapter("file://localhost/provider", "managed", "provider-token"),
+		).toThrow("must use HTTPS");
+		expect(
+			() => new HttpCloudRunnerProviderAdapter("http://127.0.0.1:8080", "managed", "provider-token"),
+		).not.toThrow();
+	});
+
 	it("provisions and delivers through the independent provider endpoint", async () => {
 		const calls: Array<{ body: Record<string, unknown>; headers: Headers }> = [];
 		const providerToken = "provider-service-token";

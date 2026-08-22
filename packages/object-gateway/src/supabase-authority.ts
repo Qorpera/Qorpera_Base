@@ -11,11 +11,25 @@ export interface AuthorizedObject {
 	bytes: number;
 }
 
+export type ObjectDeletionAuthorization = { state: "authorized"; authorizationId: string } | { state: "completed" };
+
 export interface ObjectGatewayAuthority {
 	authorizeUpload(userToken: string, profileId: string, sha256: string, bytes: number): Promise<void>;
 	authorizeDownload(userToken: string, profileId: string, sha256: string): Promise<AuthorizedObject>;
 	confirmUpload(profileId: string, sha256: string, bytes: number): Promise<void>;
-	confirmDelete(profileId: string, sha256: string, bytes: number, leaseId: string): Promise<void>;
+	authorizeDelete(
+		profileId: string,
+		sha256: string,
+		bytes: number,
+		leaseId: string,
+	): Promise<ObjectDeletionAuthorization>;
+	resumeDelete(
+		authorizationId: string,
+		profileId: string,
+		sha256: string,
+		bytes: number,
+	): Promise<ObjectDeletionAuthorization>;
+	finalizeDelete(authorizationId: string, profileId: string, sha256: string, bytes: number): Promise<void>;
 	readLegacyObject(profileId: string, sha256: string): Promise<Uint8Array>;
 }
 
@@ -29,6 +43,19 @@ interface SupabaseObjectAuthorityOptions {
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
 	return value as Record<string, unknown>;
+}
+
+function deletionAuthorization(value: unknown): ObjectDeletionAuthorization {
+	const authorization = record(value, "object deletion authorization");
+	if (authorization.state === "completed") return { state: "completed" };
+	if (
+		authorization.state !== "authorized" ||
+		typeof authorization.authorization_id !== "string" ||
+		!UUID_PATTERN.test(authorization.authorization_id)
+	) {
+		throw new Error("Invalid object deletion authorization");
+	}
+	return { state: "authorized", authorizationId: authorization.authorization_id };
 }
 
 export class SupabaseObjectAuthority implements ObjectGatewayAuthority {
@@ -82,15 +109,59 @@ export class SupabaseObjectAuthority implements ObjectGatewayAuthority {
 		);
 	}
 
-	async confirmDelete(profileId: string, sha256: string, bytes: number, leaseId: string): Promise<void> {
+	async authorizeDelete(
+		profileId: string,
+		sha256: string,
+		bytes: number,
+		leaseId: string,
+	): Promise<ObjectDeletionAuthorization> {
+		return deletionAuthorization(
+			await this.#rpc(
+				"qorpera_authorize_profile_object_deletion",
+				{
+					p_profile_id: profileId,
+					p_sha256: sha256,
+					p_bytes: bytes,
+					p_backend: "nas-object-gateway",
+					p_lease_id: leaseId,
+				},
+				undefined,
+				this.#secretKey,
+			),
+		);
+	}
+
+	async resumeDelete(
+		authorizationId: string,
+		profileId: string,
+		sha256: string,
+		bytes: number,
+	): Promise<ObjectDeletionAuthorization> {
+		return deletionAuthorization(
+			await this.#rpc(
+				"qorpera_describe_profile_object_deletion_authorization",
+				{
+					p_authorization_id: authorizationId,
+					p_profile_id: profileId,
+					p_sha256: sha256,
+					p_bytes: bytes,
+					p_backend: "nas-object-gateway",
+				},
+				undefined,
+				this.#secretKey,
+			),
+		);
+	}
+
+	async finalizeDelete(authorizationId: string, profileId: string, sha256: string, bytes: number): Promise<void> {
 		await this.#rpc(
-			"qorpera_confirm_profile_object_deletion",
+			"qorpera_finalize_profile_object_deletion",
 			{
+				p_authorization_id: authorizationId,
 				p_profile_id: profileId,
 				p_sha256: sha256,
 				p_bytes: bytes,
 				p_backend: "nas-object-gateway",
-				p_lease_id: leaseId,
 			},
 			undefined,
 			this.#secretKey,

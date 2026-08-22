@@ -8,7 +8,7 @@ Artifact cleanup is a recoverable, service-owned workflow. Desktop clients can c
 - Creating a plan quarantines the artifact and snapshots only objects that are exclusive at that point. The plan cannot run for 24 hours, so it can be reviewed and cancelled before deletion starts.
 - The worker rechecks the profile safety proof when it claims a plan. Claim decisions and root, retention, index, and substrate writes serialize on the same profile row, closing the READ COMMITTED write-skew window. While a plan is deleting, new profile object roots and graph completion are fenced.
 - Before each object batch, objects referenced by another completed root are changed to `retained` and are never sent to Storage removal.
-- Immediately before every Storage batch, the worker revalidates and renews the exact plan lease. Storage removal is acknowledged only after the provider call succeeds. Ambiguous or partial failures retry idempotently with the same object identities.
+- Immediately before every Storage batch, the worker revalidates and renews the exact plan lease. It then commits a service-only deletion authorization for the exact object, size, backend, and lease before asking the backend to remove bytes. The catalog is finalized only after backend success. Outstanding authorizations fence cancellation and lease release and are reconciled before any new cleanup claim, so ambiguous or partial failures retry idempotently without a post-cancel deletion window.
 - Completion is refused while a pending plan entry or an acknowledged Storage row still exists. Audit receipts contain counts and state transitions, not object paths.
 - Active deletion cannot be cancelled. If the worker disappears, an owner or admin can cancel only after the lease plus a one-minute stale-request grace has expired, which lifts the profile fence without accepting a late worker acknowledgement.
 - Deleting a profile leaves its immutable object-catalog rows as a durable cleanup queue. Independent deleted-profile leases allow the service worker to reclaim those bytes without restoring the deleted company or weakening the gateway's exact-lease check.
@@ -17,8 +17,9 @@ Artifact cleanup is a recoverable, service-owned workflow. Desktop clients can c
 
 1. Apply the repository migrations in version order, including
    `20260821006000_nas_object_gateway.sql`,
-   `20260821007000_deleted_profile_object_gc.sql`, and
-   `20260821008000_deleted_profile_gc_input_fencing.sql`. Existing SQL-editor
+   `20260821007000_deleted_profile_object_gc.sql`,
+   `20260821008000_deleted_profile_gc_input_fencing.sql`, and
+   `20260821009000_step1_security_fencing.sql`. Existing SQL-editor
    environments apply only migrations they have not already received.
 2. Deploy `functions/artifact-gc-worker` with platform JWT verification disabled
    as declared in `config.toml`. Modern `sb_secret_...` keys are not JWTs; the
@@ -30,8 +31,8 @@ Artifact cleanup is a recoverable, service-owned workflow. Desktop clients can c
 4. When any catalog row uses `nas-object-gateway`, configure
    `QORPERA_OBJECT_GATEWAY_URL` and `QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN` on
    the function. The control token authorizes deletion requests only; the
-   gateway still requires the exact live database GC lease before confirming a
-   catalog deletion.
+   gateway still requires the exact durable authorization derived from a live
+   database GC lease before removing bytes and finalizing a catalog deletion.
 5. After a zero-job dry run, schedule the worker every five minutes. Keep the
    project URL and dedicated worker key in Vault:
 

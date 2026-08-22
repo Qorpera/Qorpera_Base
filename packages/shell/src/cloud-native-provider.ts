@@ -98,7 +98,12 @@ function assertNoCredentialMaterial(value: unknown, label: string): void {
 		}
 		if (!current || typeof current !== "object") continue;
 		for (const [key, child] of Object.entries(current)) {
-			if (/^(access|refresh|oauth|id)[_-]?token$|^(credential|credential_store|provider_secret)$/i.test(key)) {
+			if (
+				/^(token|(access|refresh|oauth|id|session|bearer|api)[_-]?token)$/i.test(key) ||
+				/^(authorization|cookie|password|secret|api[_-]?key|credential|credential[_-]?store|provider[_-]?secret)$/i.test(
+					key,
+				)
+			) {
 				throw new Error(`${label} crossed the credential boundary`);
 			}
 			pending.push(child);
@@ -109,7 +114,8 @@ function assertNoCredentialMaterial(value: unknown, label: string): void {
 function bridgeUrl(value: string): URL {
 	const url = new URL(value);
 	if (
-		(url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") ||
+		(url.protocol !== "https:" &&
+			!(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost"))) ||
 		url.username ||
 		url.password ||
 		url.search ||
@@ -233,6 +239,8 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 						!/\0|\r|\n/.test(authorization.computeIdentityOwnerScopeKey);
 		if (
 			!TOKEN_PATTERN.test(authorization.capability) ||
+			!Number.isFinite(Date.parse(authorization.expiresAt)) ||
+			Date.parse(authorization.expiresAt) <= Date.now() ||
 			!UUID_PATTERN.test(authorization.loginId) ||
 			!UUID_PATTERN.test(authorization.computeIdentityId) ||
 			(authorization.nativeHarness !== "codex-cli" && authorization.nativeHarness !== "claude-code") ||

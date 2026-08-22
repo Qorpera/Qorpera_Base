@@ -67,7 +67,7 @@ function transport() {
 				return { binding_id: bindingId, version: 1 };
 			case "qorpera_create_execution_sponsor_binding":
 				return { binding_id: bindingId, version: 2 };
-			case "qorpera_request_session_turn":
+			case "qorpera_request_session_turn_v2":
 				return {
 					turn_request_id: requestId,
 					input_id: inputId,
@@ -189,7 +189,7 @@ describe("native subscription product control", () => {
 			sponsorMode: "member_connection",
 		});
 
-		const request = calls.find((call) => call.name === "qorpera_request_session_turn");
+		const request = calls.find((call) => call.name === "qorpera_request_session_turn_v2");
 		expect(request?.args).toMatchObject({
 			p_sponsor_mode: "member_connection",
 			p_sponsor_binding_id: bindingId,

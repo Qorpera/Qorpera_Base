@@ -4,10 +4,12 @@ import {
 	createRoutedArtifactGcStorageProvider,
 	parseArtifactGcWorkerJobs,
 	parseArtifactGcWorkerObjects,
+	parseAuthorizedArtifactGcWorkerObjects,
 	parseCompanyObjectGcWorkerJob,
 	resolveArtifactGcWorkerAuthorization,
 	runArtifactGcWorkerBatch,
 	runCompanyObjectGcWorkerJob,
+	reconcileAuthorizedArtifactGcWorkerObjects,
 	type ArtifactGcStorageProvider,
 	type ArtifactGcWorkerJob,
 	type ArtifactGcWorkerStore,
@@ -55,7 +57,8 @@ describe("artifact cleanup worker", () => {
 	it("routes each object to its declared backend and carries the exact cleanup lease", async () => {
 		const events: string[] = [];
 		const storage = createRoutedArtifactGcStorageProvider({
-			removeSupabase: async (paths) => events.push(`supabase:${paths.join(",")}`),
+			removeSupabase: async (object, cleanupLeaseId) =>
+				events.push(`supabase:${object.path}:${cleanupLeaseId}`),
 			removeNas: async (object, cleanupLeaseId) => events.push(`nas:${object.path}:${cleanupLeaseId}`),
 		});
 		await storage.remove(
@@ -82,9 +85,31 @@ describe("artifact cleanup worker", () => {
 			leaseId,
 		);
 		assert.deepEqual(events, [
-			`supabase:${profileId}/${firstSha256}`,
+			`supabase:${profileId}/${firstSha256}:${leaseId}`,
 			`nas:${profileId}/${secondSha256}:${leaseId}`,
 		]);
+	});
+
+	it("parses and reconciles durable deletion authorizations before new claims", async () => {
+		const authorizationId = "83dc6943-b71c-4ba4-a38d-78da0861e0dc";
+		const objects = parseAuthorizedArtifactGcWorkerObjects([
+			{
+				authorization_id: authorizationId,
+				profile_id: profileId,
+				sha256: firstSha256,
+				bytes: 42,
+				path: `${profileId}/${firstSha256}`,
+				backend: "supabase-storage",
+			},
+		]);
+		const removed: string[] = [];
+		assert.equal(
+			await reconcileAuthorizedArtifactGcWorkerObjects(objects, async (object) => {
+				removed.push(`${object.authorizationId}:${object.path}`);
+			}),
+			1,
+		);
+		assert.deepEqual(removed, [`${authorizationId}:${profileId}/${firstSha256}`]);
 	});
 
 	it("validates service jobs and refuses paths outside the claimed profile", () => {

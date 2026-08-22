@@ -120,6 +120,18 @@ function localAdapter(deliver = vi.fn(async (): Promise<void> => undefined)) {
 }
 
 describe("cloud runner orchestrator", () => {
+	it("rejects non-HTTP loopback control-plane URLs", () => {
+		expect(
+			() =>
+				new SupabaseCloudRunnerOrchestratorControlPlane(
+					"file://localhost/private",
+					"publishable-key",
+					orchestratorId,
+					"c".repeat(43),
+				),
+		).toThrow("must use HTTPS");
+	});
+
 	it("preserves member and company compute ownership without sponsor substitution", () => {
 		const base = claim().work;
 		const identityId = "13131313-1313-4313-8313-131313131313";

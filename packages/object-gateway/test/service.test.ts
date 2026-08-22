@@ -6,10 +6,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileSystemObjectStore } from "../src/object-store.ts";
 import { createObjectGatewayHandler } from "../src/service.ts";
-import type { AuthorizedObject, ObjectGatewayAuthority } from "../src/supabase-authority.ts";
+import type {
+	AuthorizedObject,
+	ObjectDeletionAuthorization,
+	ObjectGatewayAuthority,
+} from "../src/supabase-authority.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const leaseId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";
+const authorizationId = "83dc6943-b71c-4ba4-a38d-78da0861e0dc";
 const userToken = "member-token";
 const controlToken = "gateway-control-token";
 const roots: string[] = [];
@@ -17,7 +22,9 @@ const roots: string[] = [];
 class FakeAuthority implements ObjectGatewayAuthority {
 	readonly objects = new Map<string, AuthorizedObject>();
 	readonly legacy = new Map<string, Uint8Array>();
+	readonly authorizedDeletes = new Map<string, string>();
 	readonly confirmedDeletes: string[] = [];
+	allowDeletion = true;
 
 	async authorizeUpload(token: string, profile: string, sha256: string, bytes: number): Promise<void> {
 		if (token !== userToken || profile !== profileId || bytes < 0 || !sha256) throw new Error("denied");
@@ -35,11 +42,52 @@ class FakeAuthority implements ObjectGatewayAuthority {
 		this.objects.set(sha256, { backend: "nas-object-gateway", bytes });
 	}
 
-	async confirmDelete(profile: string, sha256: string, bytes: number, lease: string): Promise<void> {
-		if (profile !== profileId || lease !== leaseId || this.objects.get(sha256)?.bytes !== bytes) {
+	async authorizeDelete(
+		profile: string,
+		sha256: string,
+		bytes: number,
+		lease: string,
+	): Promise<ObjectDeletionAuthorization> {
+		if (
+			!this.allowDeletion ||
+			profile !== profileId ||
+			lease !== leaseId ||
+			this.objects.get(sha256)?.bytes !== bytes
+		) {
 			throw new Error("invalid deletion");
 		}
+		this.authorizedDeletes.set(authorizationId, sha256);
+		return { state: "authorized", authorizationId };
+	}
+
+	async resumeDelete(
+		authorization: string,
+		profile: string,
+		sha256: string,
+		bytes: number,
+	): Promise<ObjectDeletionAuthorization> {
+		if (
+			profile !== profileId ||
+			authorization !== authorizationId ||
+			this.authorizedDeletes.get(authorization) !== sha256 ||
+			this.objects.get(sha256)?.bytes !== bytes
+		) {
+			throw new Error("invalid deletion authorization");
+		}
+		return { state: "authorized", authorizationId: authorization };
+	}
+
+	async finalizeDelete(authorization: string, profile: string, sha256: string, bytes: number): Promise<void> {
+		if (
+			profile !== profileId ||
+			authorization !== authorizationId ||
+			this.authorizedDeletes.get(authorization) !== sha256 ||
+			this.objects.get(sha256)?.bytes !== bytes
+		) {
+			throw new Error("invalid deletion finalization");
+		}
 		this.objects.delete(sha256);
+		this.authorizedDeletes.delete(authorization);
 		this.confirmedDeletes.push(sha256);
 	}
 
@@ -185,6 +233,66 @@ describe("object gateway", () => {
 			expect(removed.status).toBe(204);
 			expect(service.authority.confirmedDeletes).toEqual([sha256]);
 			expect(service.authority.objects.has(sha256)).toBe(false);
+		} finally {
+			await service.close();
+		}
+	});
+
+	it("does not remove bytes when durable deletion authorization is rejected", async () => {
+		const service = await gateway();
+		try {
+			const bytes = Buffer.from("keep me", "utf-8");
+			const sha256 = objectSha256(bytes);
+			const url = `${service.baseUrl}/v1/profile-objects/${profileId}/${sha256}`;
+			await fetch(url, {
+				method: "PUT",
+				headers: { authorization: `Bearer ${userToken}` },
+				body: bytes,
+			});
+			service.authority.allowDeletion = false;
+			expect(
+				(
+					await fetch(url, {
+						method: "DELETE",
+						headers: {
+							authorization: `Bearer ${controlToken}`,
+							"x-qorpera-gc-lease-id": leaseId,
+							"x-qorpera-object-bytes": String(bytes.byteLength),
+						},
+					})
+				).status,
+			).toBe(503);
+			service.authority.allowDeletion = true;
+			const downloaded = await fetch(url, { headers: { authorization: `Bearer ${userToken}` } });
+			expect(downloaded.status).toBe(200);
+			expect(Buffer.from(await downloaded.arrayBuffer())).toEqual(bytes);
+		} finally {
+			await service.close();
+		}
+	});
+
+	it("resumes an authorized deletion after a lost gateway response", async () => {
+		const service = await gateway();
+		try {
+			const bytes = Buffer.from("resume deletion", "utf-8");
+			const sha256 = objectSha256(bytes);
+			const url = `${service.baseUrl}/v1/profile-objects/${profileId}/${sha256}`;
+			await fetch(url, {
+				method: "PUT",
+				headers: { authorization: `Bearer ${userToken}` },
+				body: bytes,
+			});
+			service.authority.authorizedDeletes.set(authorizationId, sha256);
+			const removed = await fetch(url, {
+				method: "DELETE",
+				headers: {
+					authorization: `Bearer ${controlToken}`,
+					"x-qorpera-deletion-authorization-id": authorizationId,
+					"x-qorpera-object-bytes": String(bytes.byteLength),
+				},
+			});
+			expect(removed.status).toBe(204);
+			expect(service.authority.confirmedDeletes).toEqual([sha256]);
 		} finally {
 			await service.close();
 		}

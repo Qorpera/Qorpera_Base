@@ -1457,7 +1457,10 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		} = {},
 	) {
 		const url = new URL("/functions/v1/runner-orchestrator", baseUrl);
-		if (url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+		if (
+			url.protocol !== "https:" &&
+			!(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost"))
+		) {
 			throw new Error("Runner orchestrator URL must use HTTPS");
 		}
 		if (!publishableKey.trim()) throw new Error("Runner orchestrator publishable key is required");

@@ -50,16 +50,17 @@ all-member-devices-offline model execution. Those are step 2.
 
 ## Local proof record
 
-The following gates passed from the repository root on 2026-08-21:
+The following gates passed from the repository root and were rerun after the
+merge-security review on 2026-08-22:
 
-- `npm run test:hosted-db`: all 52 migrations applied to a clean local Supabase
+- `npm run test:hosted-db`: all 54 migrations applied to a clean local Supabase
   database and all 21 SQL contract files passed.
 - Edge-function unit tests: 38 passed across company-file verification, runner
   control/broker/orchestration, artifact GC, invitations, and native-login
   authority.
 - `packages/runner-orchestrator`: 27 dispatcher-contract tests passed across 6
   files using fake/local providers.
-- `packages/object-gateway`: 10 service, authority, and migration tests passed.
+- `packages/object-gateway`: 11 service, authority, and migration tests passed.
   They cover server-verified addressing, deduplication, authenticated reads,
   modern secret-key header isolation, legacy-object migration, corruption
   refusal, and lease-scoped deletion.
@@ -73,6 +74,11 @@ The following gates passed from the repository root on 2026-08-21:
 - `npm run check`: repository formatting, dependency policy, import policy,
   shrinkwrap/install-lock verification, TypeScript, and browser smoke checks
   passed.
+- The focused merge-security suites passed across the object gateway,
+  runner orchestrator, shell runner/native-login controls, and Edge cleanup and
+  login modules. These include non-HTTP URL rejection, modern secret-key header
+  isolation, redacted provider-account references, expired capability denial,
+  exact sponsor-request replay, and two-phase object deletion recovery.
 
 The local provider adapters are test doubles for the future dispatch boundary.
 Their success is evidence for the contract only, not evidence that production
@@ -85,7 +91,7 @@ A new clean project was created expressly for Step 1:
 - project reference: `wovsmjvghnbcbfazdtvr` (`Qorpera Cloud Step 1`,
   `eu-central-1`);
 - health: `ACTIVE_HEALTHY`;
-- all 52 repository migrations are recorded remotely and `db push --dry-run`
+- all 54 repository migrations are recorded remotely and `db push --dry-run`
   reports that the hosted database is up to date;
 - Auth configuration as code preserves email confirmation and TOTP while
   allowlisting the desktop's dynamic `127.0.0.1` callback; email login is
@@ -149,6 +155,14 @@ A new clean project was created expressly for Step 1:
   not the final least-privilege service identity;
 - the legacy object migration command completed with zero source objects, as
   expected for this clean project.
+- after the merge-security deployment, a fresh two-account hosted smoke test
+  repeated app-native invitation and acceptance, canonical shared-session
+  ordering, exact input replay, cross-member NAS integrity reads, and immediate
+  session/object denial after membership revocation. It also exercised both a
+  normal live-lease NAS deletion and recovery from a previously committed
+  deletion authorization through `https://objects.qorpera.com`; both physical
+  objects, their catalog rows, the cleanup lease, temporary profile, and both
+  temporary Auth users were independently verified absent afterward.
 
 The prior `bzbvxthyjcgcrwpcvdpj` project remains intact and was not migrated or
 mutated by this deployment. It is no longer the default project endpoint in the

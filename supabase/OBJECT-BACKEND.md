@@ -1,7 +1,8 @@
 # Self-owned object backend
 
 **Status:** Catalog cutover, trusted gateway, client transport, mixed-backend
-cleanup, deleted-profile reclamation, and resumable migration are implemented.
+cleanup, two-phase deletion recovery, deleted-profile reclamation, and
+resumable migration are implemented.
 The clean hosted schema and physical NAS gateway passed Windows/Mac upload,
 download, deduplication, corruption refusal, cleanup, service restart, and
 same-NAS restore tests. Stable named TLS ingress and an enabled DSM boot task
@@ -83,9 +84,11 @@ adding.
    `packages/object-gateway` and migration `20260821006000`. Member clients use
    only their Supabase access token; NAS filesystem authority and the Supabase
    secret key stay in the gateway service.
-4. **Route cleanup by catalog backend.** Complete locally. Supabase objects use
-   Storage removal; NAS objects require the private gateway control token plus
-   the exact live GC lease before their catalog row can be removed.
+4. **Route cleanup by catalog backend.** Complete locally. Supabase and NAS
+   deletion both commit an exact, service-only authorization while the GC lease
+   is live, remove bytes second, and finalize the catalog last. The private NAS
+   gateway control token cannot bypass that authorization, and an interrupted
+   deletion is durably reconcilable before later work is claimed.
 5. **Deploy and migrate.** Mount the verified NAS data root, deploy the gateway
    behind TLS, apply the migration, configure clients and the cleanup worker,
    then run `qorpera-object-gateway migrate`. The command pages only legacy

@@ -128,11 +128,25 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						MAX_OBJECT_BYTES,
 					);
 					const leaseId = request.headers["x-qorpera-gc-lease-id"];
-					if (typeof leaseId !== "string" || !UUID_PATTERN.test(leaseId)) {
-						throw new HttpError(400, "Cleanup lease is invalid");
+					const authorizationId = request.headers["x-qorpera-deletion-authorization-id"];
+					if (
+						(typeof leaseId === "string") === (typeof authorizationId === "string") ||
+						(typeof leaseId === "string" && !UUID_PATTERN.test(leaseId)) ||
+						(typeof authorizationId === "string" && !UUID_PATTERN.test(authorizationId))
+					) {
+						throw new HttpError(400, "Cleanup authority is invalid");
+					}
+					const authorization =
+						typeof authorizationId === "string"
+							? await options.authority.resumeDelete(authorizationId, profileId, sha256, bytes)
+							: await options.authority.authorizeDelete(profileId, sha256, bytes, leaseId as string);
+					if (authorization.state === "completed") {
+						response.writeHead(204, { "cache-control": "no-store" });
+						response.end();
+						return;
 					}
 					await options.store.remove(profileId, sha256);
-					await options.authority.confirmDelete(profileId, sha256, bytes, leaseId);
+					await options.authority.finalizeDelete(authorization.authorizationId, profileId, sha256, bytes);
 					response.writeHead(204, { "cache-control": "no-store" });
 					response.end();
 					return;

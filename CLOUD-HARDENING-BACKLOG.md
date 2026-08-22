@@ -21,7 +21,7 @@ This backlog tracks the non-blocking findings from the PR #27 architecture revie
 - [ ] `OBJECT-5` Enforce one lowercase profile-prefix representation across Storage RLS, server lookup, and upload paths. Gate: automatic retention cleanup.
 - [ ] `OBJECT-6` Canonicalize both destination and target ancestors on macOS before containment comparison so `/tmp` and `/private/tmp` do not false-reject valid materialization. Gate: packaged macOS app.
 - [ ] `OBJECT-7` Verify manifest-rooted reachability closure at a service boundary so company-snapshot profiles regain physical cleanup; until then GC remains fail-closed and inert for any profile containing a snapshot. Gate: automatic retention cleanup.
-- [ ] `OBJECT-8` Bound the post-cancel residual where a stale worker's already-in-flight Storage removal can still destroy bytes after its acknowledgement is rejected — e.g. generation-checked object paths or a tombstone the worker checks per object. Gate: automatic retention cleanup.
+- [x] `OBJECT-8` Bound the post-cancel residual where a stale worker's already-in-flight Storage removal could destroy bytes after its acknowledgement was rejected. Resolved: every physical removal now requires a durable, exact, service-only deletion authorization created while the lease is live; outstanding authorizations fence cancellation and lease release, survive worker loss, and are reconciled before new cleanup claims. Catalog finalization occurs only after the backend confirms removal.
 - [ ] `OBJECT-9` Give capture a skip-or-rename escape (with the offending path named in the error) for local files whose names are valid on POSIX but reserved on Windows, instead of blocking all checkpointing of the workspace. Gate: broader hosted beta.
 
 ## Runner and provider operations

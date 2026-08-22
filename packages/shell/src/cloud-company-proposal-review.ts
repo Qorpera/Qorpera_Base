@@ -334,7 +334,7 @@ export async function prepareCompanyProposalReview(
 			currentCloudCompanyTreeReference(input.proposal.proposalSnapshot.tree),
 			input.objects,
 		);
-		const initialized = spawnSync("git", ["-C", staging, "init", "--quiet"], {
+		const initialized = spawnSync("git", ["-C", staging, "init", "--quiet", "--template="], {
 			encoding: "utf-8",
 			shell: false,
 		});

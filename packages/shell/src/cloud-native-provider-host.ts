@@ -419,8 +419,10 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			});
 			const checked = collectChildOutput(status);
 			await checked.completed;
-			const reference = checked.output().trim().slice(0, 512);
-			return reference ? { providerAccountReference: reference } : {};
+			const reference = checked.output().trim();
+			return reference
+				? { providerAccountReference: `${harness}:${createHash("sha256").update(reference).digest("hex")}` }
+				: {};
 		});
 		return {
 			prompt,
@@ -586,7 +588,11 @@ export class NativeProviderHost {
 		requiredUuid(request.loginId, "Native login id");
 		requiredUuid(request.clientConnectionId, "Native client connection id");
 		requiredUuid(request.computeIdentityId, "Native compute identity id");
-		if (!TOKEN_PATTERN.test(request.capability) || !Number.isFinite(Date.parse(request.expiresAt))) {
+		if (
+			!TOKEN_PATTERN.test(request.capability) ||
+			!Number.isFinite(Date.parse(request.expiresAt)) ||
+			Date.parse(request.expiresAt) <= Date.now()
+		) {
 			throw new Error("Native login capability is invalid");
 		}
 		const existing = this.#logins.get(request.loginId);

@@ -37,7 +37,10 @@ function requiredEnvironmentValue(environment: Readonly<Record<string, string | 
 
 function serviceUrl(value: string, label: string): string {
 	const url = new URL(value);
-	if (url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+	if (
+		url.protocol !== "https:" &&
+		!(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost"))
+	) {
 		throw new Error(`${label} must use HTTPS`);
 	}
 	return url.href;

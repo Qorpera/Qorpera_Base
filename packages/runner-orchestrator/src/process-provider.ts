@@ -12,6 +12,14 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const IMAGE_PATTERN = /^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/;
 const RUNTIME_START_TIMEOUT_MS = 30_000;
 
+function supabaseServiceHeaders(serviceKey: string): Record<string, string> {
+	const headers: Record<string, string> = { apikey: serviceKey };
+	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3) {
+		headers.authorization = `Bearer ${serviceKey}`;
+	}
+	return headers;
+}
+
 export interface ProcessCloudRunnerProviderConfig {
 	adapterId: string;
 	supabaseUrl: string;
@@ -401,8 +409,7 @@ export class ProcessCloudRunnerProviderBackend implements CloudRunnerProviderSer
 		const response = await this.#fetch(new URL(`/rest/v1/rpc/${name}`, this.#config.supabaseUrl), {
 			method: "POST",
 			headers: {
-				apikey: this.#config.supabaseServiceKey,
-				authorization: `Bearer ${this.#config.supabaseServiceKey}`,
+				...supabaseServiceHeaders(this.#config.supabaseServiceKey),
 				"content-type": "application/json",
 			},
 			body: JSON.stringify(body),

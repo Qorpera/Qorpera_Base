@@ -2,11 +2,13 @@ import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import {
 	parseArtifactGcWorkerJobs,
 	parseArtifactGcWorkerObjects,
+	parseAuthorizedArtifactGcWorkerObjects,
 	parseCompanyObjectGcWorkerJob,
 	createRoutedArtifactGcStorageProvider,
 	resolveArtifactGcWorkerAuthorization,
 	runArtifactGcWorkerBatch,
 	runCompanyObjectGcWorkerJob,
+	reconcileAuthorizedArtifactGcWorkerObjects,
 	type ArtifactGcStorageProvider,
 	type ArtifactGcWorkerStore,
 	type CompanyObjectGcWorkerStore,
@@ -67,6 +69,69 @@ Deno.serve(async (request) => {
 	const client = createClient(config.supabaseUrl, config.secretKey, {
 		auth: { autoRefreshToken: false, persistSession: false },
 	});
+	const gatewayUrl = Deno.env.get("QORPERA_OBJECT_GATEWAY_URL")?.replace(/\/$/, "");
+	const gatewayControlToken = Deno.env.get("QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN")?.trim();
+	const finalizeDeletion = async (input: {
+		authorizationId: string;
+		profileId: string;
+		sha256: string;
+		bytes: number;
+		backend: "nas-object-gateway" | "supabase-storage";
+	}): Promise<void> => {
+		const { error } = await client.rpc("qorpera_finalize_profile_object_deletion", {
+			p_authorization_id: input.authorizationId,
+			p_profile_id: input.profileId,
+			p_sha256: input.sha256,
+			p_bytes: input.bytes,
+			p_backend: input.backend,
+		});
+		if (error) throw new Error("Object deletion finalization failed");
+	};
+	const removeAuthorizedSupabaseObject = async (input: {
+		authorizationId: string;
+		profileId: string;
+		sha256: string;
+		bytes: number;
+		path: string;
+	}): Promise<void> => {
+		const { error } = await client.storage.from(OBJECT_BUCKET).remove([input.path]);
+		if (error) throw new Error("Storage object removal failed");
+		await finalizeDeletion({ ...input, backend: "supabase-storage" });
+	};
+	const removeAuthorizedNasObject = async (input: {
+		authorizationId: string;
+		profileId: string;
+		sha256: string;
+		bytes: number;
+		path: string;
+	}): Promise<void> => {
+		if (!gatewayUrl || !gatewayControlToken) throw new Error("NAS object cleanup is not configured");
+		const response = await fetch(`${gatewayUrl}/v1/profile-objects/${input.path}`, {
+			method: "DELETE",
+			headers: {
+				authorization: `Bearer ${gatewayControlToken}`,
+				"x-qorpera-deletion-authorization-id": input.authorizationId,
+				"x-qorpera-object-bytes": String(input.bytes),
+			},
+		});
+		if (!response.ok) throw new Error("NAS object removal failed");
+	};
+	const { data: pendingDeletions, error: pendingDeletionError } = await client.rpc(
+		"qorpera_list_authorized_profile_object_deletions",
+		{ p_limit: 100 },
+	);
+	if (pendingDeletionError) return jsonResponse({ error: "Authorized object reconciliation failed" }, 503);
+	try {
+		await reconcileAuthorizedArtifactGcWorkerObjects(
+			parseAuthorizedArtifactGcWorkerObjects(pendingDeletions),
+			async (object) => {
+				if (object.backend === "supabase-storage") await removeAuthorizedSupabaseObject(object);
+				else if (object.backend === "nas-object-gateway") await removeAuthorizedNasObject(object);
+			},
+		);
+	} catch {
+		return jsonResponse({ error: "Authorized object reconciliation failed" }, 503);
+	}
 	const leaseId = crypto.randomUUID();
 	const { data: claimed, error: claimError } = await client.rpc("qorpera_claim_artifact_gc_plans", {
 		p_limit: 5,
@@ -114,7 +179,7 @@ Deno.serve(async (request) => {
 			if (error) throw new Error("Artifact cleanup completion failed");
 		},
 		fail: async (job, message) => {
-			const { data, error } = await client.rpc("qorpera_fail_artifact_gc_plan", {
+			const { data, error } = await client.rpc("qorpera_fail_artifact_gc_plan_v2", {
 				p_plan_id: job.planId,
 				p_lease_id: job.leaseId,
 				p_error: message,
@@ -130,18 +195,36 @@ Deno.serve(async (request) => {
 		},
 	};
 	const storage: ArtifactGcStorageProvider = createRoutedArtifactGcStorageProvider({
-		removeSupabase: async (paths) => {
-			const { error } = await client.storage.from(OBJECT_BUCKET).remove([...paths]);
-			if (error) throw new Error("Storage object removal failed");
+		removeSupabase: async (object, gcLeaseId) => {
+			const { data, error } = await client.rpc("qorpera_authorize_profile_object_deletion", {
+				p_profile_id: object.path.slice(0, 36),
+				p_sha256: object.sha256,
+				p_bytes: object.bytes,
+				p_backend: "supabase-storage",
+				p_lease_id: gcLeaseId,
+			});
+			if (error || !data || typeof data !== "object" || Array.isArray(data)) {
+				throw new Error("Storage object deletion authorization failed");
+			}
+			const authorization = data as Record<string, unknown>;
+			if (authorization.state === "completed") return;
+			if (typeof authorization.authorization_id !== "string") {
+				throw new Error("Storage object deletion authorization was invalid");
+			}
+			await removeAuthorizedSupabaseObject({
+				authorizationId: authorization.authorization_id,
+				profileId: object.path.slice(0, 36),
+				sha256: object.sha256,
+				bytes: object.bytes,
+				path: object.path,
+			});
 		},
 		removeNas: async (object, gcLeaseId) => {
-			const gatewayUrl = Deno.env.get("QORPERA_OBJECT_GATEWAY_URL")?.replace(/\/$/, "");
-			const controlToken = Deno.env.get("QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN")?.trim();
-			if (!gatewayUrl || !controlToken) throw new Error("NAS object cleanup is not configured");
+			if (!gatewayUrl || !gatewayControlToken) throw new Error("NAS object cleanup is not configured");
 			const response = await fetch(`${gatewayUrl}/v1/profile-objects/${object.path}`, {
 				method: "DELETE",
 				headers: {
-					authorization: `Bearer ${controlToken}`,
+					authorization: `Bearer ${gatewayControlToken}`,
 					"x-qorpera-gc-lease-id": gcLeaseId,
 					"x-qorpera-object-bytes": String(object.bytes),
 				},
@@ -181,7 +264,7 @@ Deno.serve(async (request) => {
 				if (error) throw new Error("Company object cleanup completion failed");
 			},
 			release: async (job) => {
-				const { error } = await client.rpc("qorpera_release_company_object_gc", {
+				const { error } = await client.rpc("qorpera_release_company_object_gc_v2", {
 					p_profile_id: job.profileId,
 					p_lease_id: job.leaseId,
 				});
@@ -222,7 +305,7 @@ Deno.serve(async (request) => {
 				if (error) throw new Error("Deleted profile object cleanup completion failed");
 			},
 			release: async (job) => {
-				const { error } = await client.rpc("qorpera_release_deleted_profile_object_gc", {
+				const { error } = await client.rpc("qorpera_release_deleted_profile_object_gc_v2", {
 					p_profile_id: job.profileId,
 					p_lease_id: job.leaseId,
 				});

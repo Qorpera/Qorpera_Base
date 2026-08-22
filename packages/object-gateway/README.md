@@ -7,8 +7,11 @@ an agent runner and never executes provider or company code.
 The gateway authorizes each request against the caller's Supabase session,
 hashes every upload server-side, writes immutable bytes under
 `<profile-id>/<sha256>`, and only then confirms the catalog row with its
-service credential. Downloads are rehashed. Cleanup requires both the private
-gateway control token and a live Supabase GC lease.
+service credential. Downloads are rehashed. Cleanup requires the private
+gateway control token plus either a live Supabase GC lease or its previously
+committed, exact deletion authorization. The gateway authorizes first, removes
+bytes second, and finalizes the catalog last, so a lost response is safely
+reconcilable.
 
 Required configuration:
 

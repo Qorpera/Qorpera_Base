@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +14,11 @@ import {
 	openNativeCredentialCapsule,
 	sealNativeCredentialCapsule,
 } from "../src/cloud-native-provider-host.ts";
-import { HttpNativeProviderHostService } from "../src/cloud-native-provider-service.ts";
+import {
+	HttpNativeProviderHostService,
+	SupabaseNativeCredentialCapsuleStore,
+	SupabaseNativeProviderControlPlane,
+} from "../src/cloud-native-provider-service.ts";
 
 const roots: string[] = [];
 const masterKey = randomBytes(32).toString("base64url");
@@ -135,7 +139,9 @@ describe("native provider host", () => {
 			userCode: "TEST-CODE",
 		});
 		await expect(login.completed).resolves.toEqual({
-			providerAccountReference: "ChatGPT subscription test account",
+			providerAccountReference: `codex-cli:${createHash("sha256")
+				.update("ChatGPT subscription test account")
+				.digest("hex")}`,
 		});
 		await expect(readFile(join(identity, "codex", "auth.json"), "utf-8")).resolves.toContain("private");
 		await expect(
@@ -162,6 +168,44 @@ describe("native provider host", () => {
 			text: "official Codex response",
 			providerSessionId: "official-thread-1",
 		});
+	});
+
+	it("keeps modern Supabase secret keys out of bearer authorization", async () => {
+		const calls: Array<{ url: string; headers: Headers }> = [];
+		const fetchImplementation = vi.fn<typeof fetch>(async (input, init) => {
+			calls.push({ url: String(input), headers: new Headers(init?.headers) });
+			if (String(input).includes("qorpera_describe_native_provider_login")) {
+				return Response.json({
+					login_id: loginId,
+					profile_id: profileId,
+					client_connection_id: connectionId,
+					compute_identity_id: computeIdentityId,
+					compute_identity_ownership_kind: "member",
+					compute_identity_owner_user_id: ownerUserId,
+					compute_identity_owner_scope_key: null,
+					provider: "openai",
+					native_harness: "codex-cli",
+					expires_at: expiresAt,
+				});
+			}
+			return new Response(Uint8Array.from([1, 2, 3]));
+		});
+		const control = new SupabaseNativeProviderControlPlane(
+			"https://project.supabase.co",
+			"sb_secret_private",
+			fetchImplementation,
+		);
+		await control.describeLogin(loginId, capability);
+		const capsules = new SupabaseNativeCredentialCapsuleStore(
+			"https://project.supabase.co",
+			"sb_secret_private",
+			fetchImplementation,
+		);
+		await capsules.get(`native-capsule/${loginId}`);
+		for (const call of calls) {
+			expect(call.headers.get("apikey")).toBe("sb_secret_private");
+			expect(call.headers.get("authorization")).toBeNull();
+		}
 	});
 
 	it("runs official login inside the identity and returns only interaction metadata", async () => {

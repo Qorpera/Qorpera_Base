@@ -504,7 +504,7 @@ $$;
 
 select set_config(
 	'qorpera_test.own_turn',
-	public.qorpera_request_session_turn(
+	public.qorpera_request_session_turn_v2(
 		'16000000-0000-4000-8000-000000000040',
 		'16000000-0000-4000-8000-000000000070',
 		'16000000-0000-4000-8000-000000000071',
@@ -518,9 +518,63 @@ select set_config(
 	false
 );
 
+do $$
+declare
+	v_replay jsonb;
+	v_rejected boolean := false;
+begin
+	if has_function_privilege(
+		'authenticated',
+		'public.qorpera_request_session_turn(uuid,uuid,uuid,jsonb,text,uuid,bigint,uuid,uuid,uuid,text,text,text,text,text,uuid[])',
+		'EXECUTE'
+	) then
+		raise exception 'authenticated role can bypass exact sponsor-request replay fencing';
+	end if;
+	if not has_function_privilege(
+		'authenticated',
+		'public.qorpera_request_session_turn_v2(uuid,uuid,uuid,jsonb,text,uuid,bigint,uuid,uuid,uuid,text,text,text,text,text,uuid[])',
+		'EXECUTE'
+	) then
+		raise exception 'authenticated role cannot call the fenced sponsor-request RPC';
+	end if;
+	v_replay := public.qorpera_request_session_turn_v2(
+		'16000000-0000-4000-8000-000000000040',
+		'16000000-0000-4000-8000-000000000070',
+		'16000000-0000-4000-8000-000000000071',
+		'{"schema":"qorpera.session-prompt/v1","text":"Run with my native subscription.","images":[]}',
+		'member_connection',
+		(current_setting('qorpera_test.native_sponsor')::jsonb ->> 'binding_id')::uuid,
+		1, null,
+		(current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id')::uuid,
+		null, 'managed_sandbox', 'agent_turn', 'agent_turn', 'automatic', null, '{}'
+	);
+	if v_replay <> current_setting('qorpera_test.own_turn')::jsonb then
+		raise exception 'session turn exact replay returned another request';
+	end if;
+	begin
+		perform public.qorpera_request_session_turn_v2(
+			'16000000-0000-4000-8000-000000000040',
+			'16000000-0000-4000-8000-000000000070',
+			'16000000-0000-4000-8000-000000000071',
+			'{"schema":"qorpera.session-prompt/v1","text":"Different request under the same id.","images":[]}',
+			'member_connection',
+			(current_setting('qorpera_test.native_sponsor')::jsonb ->> 'binding_id')::uuid,
+			1, null,
+			(current_setting('qorpera_test.native_identity')::jsonb ->> 'compute_identity_id')::uuid,
+			null, 'managed_sandbox', 'agent_turn', 'agent_turn', 'automatic', null, '{}'
+		);
+	exception when unique_violation then
+		v_rejected := true;
+	end;
+	if not v_rejected then
+		raise exception 'session turn replay silently accepted divergent sponsor input';
+	end if;
+end
+$$;
+
 select set_config(
 	'qorpera_test.company_turn',
-	public.qorpera_request_session_turn(
+	public.qorpera_request_session_turn_v2(
 		'16000000-0000-4000-8000-000000000042',
 		'16000000-0000-4000-8000-000000000085',
 		'16000000-0000-4000-8000-000000000086',
@@ -562,7 +616,7 @@ $$;
 
 select set_config(
 	'qorpera_test.sponsored_turn',
-	public.qorpera_request_session_turn(
+	public.qorpera_request_session_turn_v2(
 		'16000000-0000-4000-8000-000000000040',
 		'16000000-0000-4000-8000-000000000072',
 		'16000000-0000-4000-8000-000000000073',
@@ -955,7 +1009,7 @@ declare
 	v_rejected boolean := false;
 begin
 	begin
-		perform public.qorpera_request_session_turn(
+		perform public.qorpera_request_session_turn_v2(
 			'16000000-0000-4000-8000-000000000040',
 			'16000000-0000-4000-8000-000000000074',
 			'16000000-0000-4000-8000-000000000075',
@@ -980,7 +1034,7 @@ $$;
 -- selected provider/model without rewriting the staff identity or transcript.
 select set_config(
 	'qorpera_test.anthropic_turn',
-	public.qorpera_request_session_turn(
+	public.qorpera_request_session_turn_v2(
 		'16000000-0000-4000-8000-000000000040',
 		'16000000-0000-4000-8000-0000000000a5',
 		'16000000-0000-4000-8000-0000000000a6',

@@ -41,6 +41,21 @@ begin
 	if not v_denied then
 		raise exception 'authenticated member can confirm an object catalog row';
 	end if;
+	v_denied := false;
+	begin
+		perform public.qorpera_authorize_profile_object_deletion(
+			current_setting('qorpera_test.nas_profile')::uuid,
+			repeat('9', 64),
+			23,
+			'nas-object-gateway',
+			'99000000-0000-4000-8000-000000000001'
+		);
+	exception when insufficient_privilege then
+		v_denied := true;
+	end;
+	if not v_denied then
+		raise exception 'authenticated member can authorize physical object deletion';
+	end if;
 end
 $$;
 
@@ -186,7 +201,7 @@ $$;
 reset role;
 select set_config('request.jwt.claims', '', false);
 
--- Deletion confirmation is accepted only under a live exact GC lease.
+-- Physical deletion is accepted only after a durable exact authorization.
 insert into public.qorpera_company_object_gc_leases (profile_id, lease_id, lease_expires_at)
 values (
 	current_setting('qorpera_test.nas_profile')::uuid,
@@ -208,15 +223,82 @@ select set_config(
 );
 set role service_role;
 do $$
+declare
+	v_authorization jsonb;
+	v_authorization_id uuid;
+	v_denied boolean := false;
 begin
-	if not public.qorpera_confirm_profile_object_deletion(
+	if has_function_privilege(
+		'service_role',
+		'public.qorpera_confirm_profile_object_deletion(uuid,text,bigint,text,uuid)',
+		'EXECUTE'
+	) then
+		raise exception 'service role can call the retired post-delete authorization RPC';
+	end if;
+	begin
+		perform public.qorpera_describe_profile_object_deletion_authorization(
+			'99000000-0000-4000-8000-000000000098',
+			current_setting('qorpera_test.nas_profile')::uuid,
+			repeat('9', 64),
+			23,
+			'nas-object-gateway'
+		);
+	exception when object_not_in_prerequisite_state then
+		v_denied := true;
+	end;
+	if not v_denied then
+		raise exception 'unknown deletion authorization was accepted for a catalogued object';
+	end if;
+	v_denied := false;
+	begin
+		perform public.qorpera_authorize_profile_object_deletion(
+			current_setting('qorpera_test.nas_profile')::uuid,
+			repeat('9', 64),
+			23,
+			'nas-object-gateway',
+			'99000000-0000-4000-8000-000000000099'
+		);
+	exception when serialization_failure then
+		v_denied := true;
+	end;
+	if not v_denied then
+		raise exception 'stale cleanup lease authorized physical deletion';
+	end if;
+	v_authorization := public.qorpera_authorize_profile_object_deletion(
 		current_setting('qorpera_test.nas_profile')::uuid,
 		repeat('9', 64),
 		23,
 		'nas-object-gateway',
 		'99000000-0000-4000-8000-000000000001'
+	);
+	v_authorization_id := (v_authorization ->> 'authorization_id')::uuid;
+	if v_authorization ->> 'state' <> 'authorized' or v_authorization_id is null then
+		raise exception 'live cleanup lease did not create durable deletion authority: %', v_authorization;
+	end if;
+	if not exists (
+		select 1 from public.qorpera_profile_objects as object
+		where object.profile_id = current_setting('qorpera_test.nas_profile')::uuid
+			and object.sha256 = repeat('9', 64)
 	) then
-		raise exception 'live cleanup lease did not delete the NAS catalog row';
+		raise exception 'deletion authorization removed the catalog before storage confirmation';
+	end if;
+	if not public.qorpera_finalize_profile_object_deletion(
+		v_authorization_id,
+		current_setting('qorpera_test.nas_profile')::uuid,
+		repeat('9', 64),
+		23,
+		'nas-object-gateway'
+	) then
+		raise exception 'authorized physical deletion did not finalize the NAS catalog row';
+	end if;
+	if public.qorpera_finalize_profile_object_deletion(
+		v_authorization_id,
+		current_setting('qorpera_test.nas_profile')::uuid,
+		repeat('9', 64),
+		23,
+		'nas-object-gateway'
+	) then
+		raise exception 'deletion finalization was not idempotent';
 	end if;
 end
 $$;

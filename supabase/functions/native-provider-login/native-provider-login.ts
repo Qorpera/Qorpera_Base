@@ -15,7 +15,8 @@ function jsonResponse(value: unknown, status: number): Response {
 function upstreamLoginUrl(value: string): string {
 	const base = new URL(value);
 	if (
-		(base.protocol !== "https:" && base.hostname !== "127.0.0.1" && base.hostname !== "localhost") ||
+		(base.protocol !== "https:" &&
+			!(base.protocol === "http:" && (base.hostname === "127.0.0.1" || base.hostname === "localhost"))) ||
 		base.username ||
 		base.password ||
 		base.search ||

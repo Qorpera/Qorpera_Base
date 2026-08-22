@@ -94,10 +94,14 @@ describe("process cloud runner provider", () => {
 			"utf-8",
 		);
 		await writeFile(nativeProviderMasterKeyFile, `${"b".repeat(43)}\n`, { mode: 0o600 });
-		const requests: Array<{ url: string; body?: unknown }> = [];
+		const requests: Array<{ url: string; body?: unknown; headers: Headers }> = [];
 		const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 			const url = String(input);
-			requests.push({ url, ...(init?.body ? { body: JSON.parse(String(init.body)) as unknown } : {}) });
+			requests.push({
+				url,
+				headers: new Headers(init?.headers),
+				...(init?.body ? { body: JSON.parse(String(init.body)) as unknown } : {}),
+			});
 			if (url.includes("/rest/v1/rpc/qorpera_provision_execution_runner")) {
 				return new Response(
 					JSON.stringify({
@@ -124,7 +128,7 @@ describe("process cloud runner provider", () => {
 			{
 				adapterId: "process",
 				supabaseUrl: "https://example.supabase.co",
-				supabaseServiceKey: "service-key",
+				supabaseServiceKey: "sb_secret_private",
 				supabasePublishableKey: "publishable-key",
 				runnerModulePath: runnerModule,
 				nativeProviderModulePath: nativeProviderModule,
@@ -145,6 +149,9 @@ describe("process cloud runner provider", () => {
 		const request = work();
 		const runner = await backend.acquire(runId, request, new AbortController().signal);
 		expect(runner).toMatchObject({ runnerId, computeIdentityId: request.computeIdentityId });
+		const provisioning = requests.find((entry) => entry.url.includes("qorpera_provision_execution_runner"));
+		expect(provisioning?.headers.get("apikey")).toBe("sb_secret_private");
+		expect(provisioning?.headers.get("authorization")).toBeNull();
 		let nativeEnvironment: { masterKey?: string; masterKeyFile?: string; executionBoundary?: string } | undefined;
 		for (let attempt = 0; attempt < 100 && !nativeEnvironment; attempt++) {
 			try {

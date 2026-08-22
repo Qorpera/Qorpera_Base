@@ -130,7 +130,10 @@ export class HttpCloudRunnerProviderAdapter implements CloudRunnerProviderAdapte
 
 	constructor(baseUrl: string, adapterId: string, token: string, fetchImplementation: typeof fetch = fetch) {
 		const url = new URL("/v1/qorpera-runner-provider", baseUrl);
-		if (url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+		if (
+			url.protocol !== "https:" &&
+			!(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost"))
+		) {
 			throw new Error("Runner provider URL must use HTTPS");
 		}
 		if (!ADAPTER_PATTERN.test(adapterId)) throw new Error("Runner provider adapter id is invalid");

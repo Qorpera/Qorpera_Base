@@ -326,6 +326,12 @@ describe("native provider computer bridge", () => {
 		expect(fetchImplementation).not.toHaveBeenCalled();
 	});
 
+	it("rejects non-HTTP loopback bridge URLs", () => {
+		expect(() => new HttpNativeProviderComputerBridge("file://localhost/private", "d".repeat(43))).toThrow(
+			"loopback transport",
+		);
+	});
+
 	it("rejects credential material returned across the execution bridge", async () => {
 		const bridge = new HttpNativeProviderComputerBridge(
 			"https://native-runner.example.test/",
@@ -335,6 +341,21 @@ describe("native provider computer bridge", () => {
 					schema: "qorpera.native-provider-result/v1",
 					lease_id: authority.leaseId,
 					result: { schema: "qorpera.native-harness-result/v1", provider_state: { refresh_token: "no" } },
+				}),
+		);
+		const process = await bridge.start(authority, request);
+		await expect(process.result).rejects.toThrow("credential boundary");
+	});
+
+	it("rejects a generic token field returned across the execution bridge", async () => {
+		const bridge = new HttpNativeProviderComputerBridge(
+			"https://native-runner.example.test/",
+			"i".repeat(43),
+			async () =>
+				Response.json({
+					schema: "qorpera.native-provider-result/v1",
+					lease_id: authority.leaseId,
+					result: { schema: "qorpera.native-harness-result/v1", provider_state: { token: "no" } },
 				}),
 		);
 		const process = await bridge.start(authority, request);
@@ -378,7 +399,7 @@ describe("native provider computer bridge", () => {
 				provider: "anthropic",
 				nativeHarness: "claude-code",
 				capability: "f".repeat(43),
-				expiresAt: "2026-08-21T12:15:00.000Z",
+				expiresAt: "2099-08-21T12:15:00.000Z",
 			}),
 		).resolves.toEqual({
 			loginId: authority.runId,
@@ -412,8 +433,32 @@ describe("native provider computer bridge", () => {
 				provider: "openai",
 				nativeHarness: "codex-cli",
 				capability: "h".repeat(43),
-				expiresAt: "2026-08-21T12:15:00.000Z",
+				expiresAt: "2099-08-21T12:15:00.000Z",
 			}),
 		).rejects.toThrow("credential boundary");
+	});
+
+	it("rejects expired login capabilities before contacting the bridge", async () => {
+		const fetchImplementation = vi.fn<typeof fetch>();
+		const bridge = new HttpNativeProviderComputerBridge(
+			"https://native-runner.example.test/",
+			"g".repeat(43),
+			fetchImplementation,
+		);
+		await expect(
+			bridge.beginLogin({
+				loginId: authority.runId,
+				clientLoginId: "10000000-0000-4000-8000-000000000011",
+				clientConnectionId: "10000000-0000-4000-8000-000000000012",
+				computeIdentityId: authority.computeIdentityId,
+				computeIdentityOwnershipKind: "member",
+				computeIdentityOwnerUserId: authority.computeIdentityOwnerUserId,
+				provider: "openai",
+				nativeHarness: "codex-cli",
+				capability: "h".repeat(43),
+				expiresAt: "2000-01-01T00:00:00.000Z",
+			}),
+		).rejects.toThrow("authority is invalid");
+		expect(fetchImplementation).not.toHaveBeenCalled();
 	});
 });

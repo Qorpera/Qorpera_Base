@@ -57,4 +57,24 @@ describe("native provider login proxy", () => {
 		);
 		assert.equal(unavailable.status, 503);
 	});
+
+	it("rejects a non-HTTP loopback URL without contacting it", async () => {
+		let called = false;
+		const response = await forwardNativeProviderLogin(
+			new Request("https://project.example/functions/v1/native-provider-login/login", {
+				method: "POST",
+				headers: { authorization: `Bearer ${capability}` },
+				body: "{}",
+			}),
+			{
+				upstreamUrl: "file://localhost/private",
+				fetchImplementation: async () => {
+					called = true;
+					throw new Error("must not be called");
+				},
+			},
+		);
+		assert.equal(response.status, 503);
+		assert.equal(called, false);
+	});
 });

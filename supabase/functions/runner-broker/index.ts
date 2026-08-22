@@ -14,6 +14,14 @@ import {
 const OBJECT_BUCKET = "qorpera-profile-objects";
 const MODEL_GATEWAY_INPUT_TOKEN_OVERHEAD = 16_384;
 
+function internalServiceHeaders(serviceKey: string): Record<string, string> {
+	const headers: Record<string, string> = { apikey: serviceKey };
+	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3) {
+		headers.authorization = `Bearer ${serviceKey}`;
+	}
+	return headers;
+}
+
 function jsonResponse(value: unknown, status = 200): Response {
 	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
 }
@@ -98,7 +106,8 @@ function modelGatewayConfiguration(): { url: string; token: string } | undefined
 	try {
 		const url = new URL(rawUrl);
 		if (
-			(url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") ||
+			(url.protocol !== "https:" &&
+				!(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost"))) ||
 			url.username ||
 			url.password ||
 			url.hash
@@ -326,8 +335,7 @@ Deno.serve(async (request) => {
 					method: "POST",
 					headers: {
 						accept: "application/json",
-						apikey: serviceKey,
-						authorization: `Bearer ${serviceKey}`,
+						...internalServiceHeaders(serviceKey),
 						"content-type": "application/json",
 					},
 					body: JSON.stringify({

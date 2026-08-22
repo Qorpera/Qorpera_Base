@@ -21,6 +21,14 @@ const MAX_REQUEST_BYTES = 256 * 1024;
 const MAX_CAPSULE_BYTES = 64 * 1024 * 1024 + 1024 * 1024;
 const CAPSULE_BUCKET = "qorpera-native-compute-capsules";
 
+function supabaseServiceHeaders(serviceKey: string): Record<string, string> {
+	const headers: Record<string, string> = { apikey: serviceKey };
+	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3) {
+		headers.authorization = `Bearer ${serviceKey}`;
+	}
+	return headers;
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
 	return value as Record<string, unknown>;
@@ -166,7 +174,10 @@ export class SupabaseNativeProviderControlPlane implements NativeProviderControl
 
 	constructor(baseUrl: string, serviceKey: string, fetchImplementation: typeof fetch = fetch) {
 		const url = new URL("/rest/v1/rpc/", baseUrl);
-		if (url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+		if (
+			url.protocol !== "https:" &&
+			!(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost"))
+		) {
 			throw new Error("Native control-plane URL must use HTTPS");
 		}
 		if (!serviceKey.trim() || /[\0\r\n]/.test(serviceKey)) throw new Error("Native service key is invalid");
@@ -254,8 +265,7 @@ export class SupabaseNativeProviderControlPlane implements NativeProviderControl
 		const response = await this.#fetch(new URL(name, this.#rpcUrl), {
 			method: "POST",
 			headers: {
-				apikey: this.#serviceKey,
-				authorization: `Bearer ${this.#serviceKey}`,
+				...supabaseServiceHeaders(this.#serviceKey),
 				"content-type": "application/json",
 			},
 			body: JSON.stringify(body),
@@ -273,7 +283,10 @@ export class SupabaseNativeCredentialCapsuleStore implements NativeCredentialCap
 
 	constructor(baseUrl: string, serviceKey: string, fetchImplementation: typeof fetch = fetch) {
 		const url = new URL(`/storage/v1/object/${CAPSULE_BUCKET}/`, baseUrl);
-		if (url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+		if (
+			url.protocol !== "https:" &&
+			!(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost"))
+		) {
 			throw new Error("Native capsule storage URL must use HTTPS");
 		}
 		if (!serviceKey.trim() || /[\0\r\n]/.test(serviceKey)) throw new Error("Native capsule service key is invalid");
@@ -287,8 +300,7 @@ export class SupabaseNativeCredentialCapsuleStore implements NativeCredentialCap
 		const response = await this.#fetch(this.#url(reference), {
 			method: "POST",
 			headers: {
-				apikey: this.#serviceKey,
-				authorization: `Bearer ${this.#serviceKey}`,
+				...supabaseServiceHeaders(this.#serviceKey),
 				"content-type": "application/octet-stream",
 				"x-upsert": "true",
 			},
@@ -300,7 +312,7 @@ export class SupabaseNativeCredentialCapsuleStore implements NativeCredentialCap
 
 	async get(reference: string, signal?: AbortSignal): Promise<Uint8Array> {
 		const response = await this.#fetch(this.#url(reference), {
-			headers: { apikey: this.#serviceKey, authorization: `Bearer ${this.#serviceKey}` },
+			headers: supabaseServiceHeaders(this.#serviceKey),
 			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
 		});
 		if (!response.ok) throw new Error(`Native capsule download failed (${response.status})`);

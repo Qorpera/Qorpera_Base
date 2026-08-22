@@ -93,6 +93,12 @@ function jobRecord(status: "leased" | "completed") {
 }
 
 describe("disposable cloud runner", () => {
+	it("rejects non-HTTP loopback control URLs", () => {
+		expect(() => new SupabaseCloudRunnerControlTransport("file://localhost/private", "publishable-key")).toThrow(
+			"must use HTTPS",
+		);
+	});
+
 	it("reuses secrets and assignment identity after ambiguous activation, heartbeat, acceptance, and completion", async () => {
 		const pairing = createCloudRunnerPairingSecret();
 		expect(pairing.activationToken).toMatch(/^[A-Za-z0-9_-]{43}$/);

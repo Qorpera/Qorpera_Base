@@ -422,7 +422,10 @@ export class SupabaseCloudRunnerControlTransport implements CloudRunnerControlTr
 		options: { signal?: AbortSignal; requestTimeoutMs?: number } = {},
 	) {
 		const url = new URL("/functions/v1/runner-control", baseUrl);
-		if (url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+		if (
+			url.protocol !== "https:" &&
+			!(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost"))
+		) {
 			throw new Error("Runner control URL must use HTTPS");
 		}
 		if (!publishableKey.trim()) throw new Error("Runner control publishable key is required");

@@ -47,6 +47,8 @@ set role service_role;
 do $$
 declare
 	v_job jsonb;
+	v_authorization jsonb;
+	v_authorization_id uuid;
 	v_hashes text[] := array[repeat('6', 64)];
 begin
 	v_job := public.qorpera_claim_deleted_profile_object_gc(
@@ -83,23 +85,34 @@ begin
 		'99000000-0000-4000-8000-000000000002',
 		v_hashes
 	);
-	if not public.qorpera_confirm_profile_object_deletion(
+	v_authorization := public.qorpera_authorize_profile_object_deletion(
 		current_setting('qorpera_test.deleted_nas_profile')::uuid,
 		repeat('6', 64),
 		37,
 		'nas-object-gateway',
 		'99000000-0000-4000-8000-000000000002'
-	) then
-		raise exception 'deleted profile cleanup did not remove the catalog row';
+	);
+	v_authorization_id := (v_authorization ->> 'authorization_id')::uuid;
+	if v_authorization ->> 'state' <> 'authorized' or v_authorization_id is null then
+		raise exception 'deleted profile cleanup did not authorize physical deletion';
 	end if;
-	if public.qorpera_confirm_profile_object_deletion(
+	if not public.qorpera_finalize_profile_object_deletion(
+		v_authorization_id,
 		current_setting('qorpera_test.deleted_nas_profile')::uuid,
 		repeat('6', 64),
 		37,
-		'nas-object-gateway',
-		'99000000-0000-4000-8000-000000000002'
+		'nas-object-gateway'
 	) then
-		raise exception 'retrying a confirmed deleted profile object reported a second deletion';
+		raise exception 'deleted profile cleanup did not finalize the catalog row';
+	end if;
+	if public.qorpera_finalize_profile_object_deletion(
+		v_authorization_id,
+		current_setting('qorpera_test.deleted_nas_profile')::uuid,
+		repeat('6', 64),
+		37,
+		'nas-object-gateway'
+	) then
+		raise exception 'retrying a finalized deleted profile object reported a second deletion';
 	end if;
 	if public.qorpera_complete_deleted_profile_object_gc(
 		current_setting('qorpera_test.deleted_nas_profile')::uuid,

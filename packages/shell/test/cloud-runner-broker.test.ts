@@ -503,6 +503,12 @@ afterEach(async () => {
 });
 
 describe("cloud runner object broker", () => {
+	it("rejects non-HTTP loopback broker URLs", () => {
+		expect(() => new SupabaseCloudRunnerBrokerTransport("file://localhost/private", "publishable-key")).toThrow(
+			"must use HTTPS",
+		);
+	});
+
 	it("resolves only the leased substrate and refreshes credentials for every broker call", async () => {
 		const memory = new MemoryBrokerTransport();
 		let currentSessionToken = sessionToken;

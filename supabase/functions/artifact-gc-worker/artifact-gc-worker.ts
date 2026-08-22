@@ -15,6 +15,11 @@ export interface ArtifactGcWorkerObject {
 	backend: "missing" | "nas-object-gateway" | "supabase-storage";
 }
 
+export interface AuthorizedArtifactGcWorkerObject extends ArtifactGcWorkerObject {
+	authorizationId: string;
+	profileId: string;
+}
+
 export interface CompanyObjectGcWorkerJob {
 	profileId: string;
 	leaseId: string;
@@ -58,16 +63,13 @@ export function resolveArtifactGcWorkerAuthorization(options: {
 }
 
 export function createRoutedArtifactGcStorageProvider(options: {
-	removeSupabase(paths: readonly string[]): Promise<void>;
+	removeSupabase(object: ArtifactGcWorkerObject, leaseId: string): Promise<void>;
 	removeNas(object: ArtifactGcWorkerObject, leaseId: string): Promise<void>;
 }): ArtifactGcStorageProvider {
 	return {
 		remove: async (objects, leaseId) => {
-			const supabasePaths = objects
-				.filter((object) => object.backend === "supabase-storage")
-				.map((object) => object.path);
-			if (supabasePaths.length > 0) await options.removeSupabase(supabasePaths);
 			for (const object of objects) {
+				if (object.backend === "supabase-storage") await options.removeSupabase(object, leaseId);
 				if (object.backend === "nas-object-gateway") await options.removeNas(object, leaseId);
 			}
 		},
@@ -152,6 +154,38 @@ export function parseCompanyObjectGcWorkerJob(value: unknown): CompanyObjectGcWo
 	const objects = parseArtifactGcWorkerObjects(input.objects, job);
 	if (objects.length === 0) throw new Error("Invalid empty company object cleanup job");
 	return { profileId, leaseId, objects };
+}
+
+export function parseAuthorizedArtifactGcWorkerObjects(value: unknown): AuthorizedArtifactGcWorkerObject[] {
+	if (!Array.isArray(value) || value.length > 100) throw new Error("Invalid authorized object cleanup list");
+	const seen = new Set<string>();
+	return value.map((entry) => {
+		const input = record(entry, "authorized object cleanup");
+		const authorizationId = uuid(input.authorization_id, "object deletion authorization id");
+		const profileId = uuid(input.profile_id, "authorized object cleanup profile id");
+		const parsed = parseArtifactGcWorkerObjects(
+			[
+				{
+					sha256: input.sha256,
+					bytes: input.bytes,
+					path: input.path,
+					backend: input.backend,
+				},
+			],
+			{ planId: authorizationId, profileId, leaseId: authorizationId, attemptCount: 1 },
+		)[0];
+		if (!parsed || seen.has(authorizationId)) throw new Error("Invalid object deletion authorization list");
+		seen.add(authorizationId);
+		return { ...parsed, authorizationId, profileId };
+	});
+}
+
+export async function reconcileAuthorizedArtifactGcWorkerObjects(
+	objects: readonly AuthorizedArtifactGcWorkerObject[],
+	remove: (object: AuthorizedArtifactGcWorkerObject) => Promise<void>,
+): Promise<number> {
+	for (const object of objects) await remove(object);
+	return objects.length;
 }
 
 function cleanupError(error: unknown): string {
