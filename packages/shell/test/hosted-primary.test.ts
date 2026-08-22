@@ -430,6 +430,7 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		updateMemberRole: vi.fn(async (input) => ({ ...memberRecord(), role: input.p_role })),
 		removeMember: vi.fn(async () => true),
 		listStaff: vi.fn(async () => [staffRecord()]),
+		deleteStaff: vi.fn(async () => true),
 		leaveProfile: vi.fn(async () => true),
 		deleteProfile: vi.fn(async () => true),
 		ensureStaffSession: vi.fn(async () => sessionRecord()),
@@ -942,7 +943,7 @@ describe("Qorpera hosted primary", () => {
 		);
 	});
 
-	it("lists and writes authoritative staff with optimistic versions", async () => {
+	it("lists, writes, and deletes authoritative staff with optimistic versions", async () => {
 		const fake = transport();
 		const primary = new QorperaHostedPrimary(fake);
 		const [staff] = await primary.listStaff(profileId);
@@ -969,6 +970,12 @@ describe("Qorpera hosted primary", () => {
 			p_employment_status: "active",
 			p_lifecycle_state: "active",
 			p_created_at: createdAt,
+			p_expected_version: 1,
+		});
+		await expect(primary.deleteStaff(profileId, staffAgentId, 1)).resolves.toBeUndefined();
+		expect(fake.deleteStaff).toHaveBeenCalledWith({
+			p_profile_id: profileId,
+			p_staff_agent_id: staffAgentId,
 			p_expected_version: 1,
 		});
 	});

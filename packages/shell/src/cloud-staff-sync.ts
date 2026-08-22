@@ -6,7 +6,7 @@ import type { HostedStaffAgent, QorperaHostedPrimary } from "./hosted-primary.ts
 
 const CLOUD_STAFF_STATE_SCHEMA = "qorpera.cloud-staff-sync/v1";
 
-type CloudStaffPrimary = Pick<QorperaHostedPrimary, "listStaff" | "putStaff">;
+type CloudStaffPrimary = Pick<QorperaHostedPrimary, "deleteStaff" | "listStaff" | "putStaff">;
 
 interface StaffSyncStateEntry {
 	version: number;
@@ -147,7 +147,8 @@ function conflict(id: string): Error {
 export class CloudStaffSynchronizer {
 	readonly #options: CloudStaffSynchronizerOptions;
 	readonly #statePath: string;
-	#inFlight?: Promise<CloudStaffSyncResult>;
+	#operationTail: Promise<void> = Promise.resolve();
+	#syncInFlight?: Promise<CloudStaffSyncResult>;
 
 	constructor(options: CloudStaffSynchronizerOptions) {
 		this.#options = options;
@@ -159,12 +160,50 @@ export class CloudStaffSynchronizer {
 	}
 
 	sync(): Promise<CloudStaffSyncResult> {
-		if (this.#inFlight) return this.#inFlight;
-		const operation = this.#syncOnce().finally(() => {
-			if (this.#inFlight === operation) this.#inFlight = undefined;
+		if (this.#syncInFlight) return this.#syncInFlight;
+		const operation = this.#operationTail.then(() => this.#syncOnce());
+		this.#operationTail = operation.then(
+			() => undefined,
+			() => undefined,
+		);
+		const tracked = operation.finally(() => {
+			if (this.#syncInFlight === tracked) this.#syncInFlight = undefined;
 		});
-		this.#inFlight = operation;
+		this.#syncInFlight = tracked;
+		return tracked;
+	}
+
+	deleteStaff(staffAgentId: string): Promise<void> {
+		const operation = this.#operationTail.then(() => this.#deleteStaffOnce(staffAgentId));
+		this.#operationTail = operation.then(
+			() => undefined,
+			() => undefined,
+		);
 		return operation;
+	}
+
+	async #deleteStaffOnce(staffAgentId: string): Promise<void> {
+		if (!this.#options.canWrite()) throw new Error(`Shared staff is read-only on this profile: ${staffAgentId}`);
+		const state = readState(this.#statePath, this.#options);
+		const local = readStaffAgents(this.#options.root).find((staff) => staff.id === staffAgentId);
+		const hosted = (await this.#options.primary.listStaff(this.#options.profileId)).find(
+			(staff) => staff.id === staffAgentId,
+		);
+		if (!hosted) {
+			if (!state.agents[staffAgentId] && local) {
+				state.agents[staffAgentId] = { version: 1, contentHash: contentHash(local) };
+			}
+			writeState(this.#statePath, state);
+			return;
+		}
+		const previous = state.agents[staffAgentId];
+		const hostedHash = contentHash(localStaff(hosted));
+		if (previous && (hosted.version !== previous.version || hostedHash !== previous.contentHash)) {
+			throw conflict(staffAgentId);
+		}
+		await this.#options.primary.deleteStaff(this.#options.profileId, staffAgentId, hosted.version);
+		state.agents[staffAgentId] = { version: hosted.version, contentHash: hostedHash };
+		writeState(this.#statePath, state);
 	}
 
 	async #syncOnce(): Promise<CloudStaffSyncResult> {
@@ -205,13 +244,16 @@ export class CloudStaffSynchronizer {
 					}
 				}
 			} else if (local) {
-				if (previous) throw new Error(`Shared staff is missing from the cloud: ${id}`);
-				if (!this.#options.canWrite()) throw new Error(`Shared staff is read-only on this profile: ${id}`);
-				hosted = await this.#options.primary.putStaff(this.#options.profileId, local);
-				hostedById.set(id, hosted);
-				state.agents[id] = { version: hosted.version, contentHash: contentHash(localStaff(hosted)) };
-				writeState(this.#statePath, state);
-				result.created++;
+				if (previous) {
+					result.downloaded++;
+				} else {
+					if (!this.#options.canWrite()) throw new Error(`Shared staff is read-only on this profile: ${id}`);
+					hosted = await this.#options.primary.putStaff(this.#options.profileId, local);
+					hostedById.set(id, hosted);
+					state.agents[id] = { version: hosted.version, contentHash: contentHash(localStaff(hosted)) };
+					writeState(this.#statePath, state);
+					result.created++;
+				}
 			} else if (hosted) {
 				result.downloaded++;
 			}

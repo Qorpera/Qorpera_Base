@@ -463,6 +463,7 @@ import {
 	type SessionRuntimeEventInput,
 } from "./session-control-plane.ts";
 import { isStaffCharacterId, staffCharacterForTemplate } from "./staff-characters.ts";
+import { removeStaffWorkspace } from "./staff-deletion.ts";
 import { applyStaffRoutineOperation, type StaffRoutineOperation } from "./staff-routines.ts";
 import {
 	claimStaffIntro,
@@ -8854,6 +8855,26 @@ const STAFF_AVATAR_COLORS = new Set([
 ]);
 const STAFF_AVATAR_SHAPES = new Set(["soft-square", "round", "wide", "gem", "tilted", "drop"]);
 
+function parsedStaffAppearance(value: unknown): StaffAgent["appearance"] {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid staff appearance");
+	const record = value as Record<string, unknown>;
+	if (
+		Object.keys(record).some((key) => key !== "color" && key !== "shape" && key !== "creature") ||
+		typeof record.color !== "string" ||
+		typeof record.shape !== "string" ||
+		(record.creature !== undefined && !isStaffCharacterId(record.creature)) ||
+		!STAFF_AVATAR_COLORS.has(record.color) ||
+		!STAFF_AVATAR_SHAPES.has(record.shape)
+	) {
+		throw new Error("invalid staff appearance");
+	}
+	return {
+		color: record.color,
+		shape: record.shape,
+		...(typeof record.creature === "string" ? { creature: record.creature } : {}),
+	};
+}
+
 function parsedStaffCreateInput(value: unknown): {
 	templateId?: string;
 	displayName?: string;
@@ -8877,22 +8898,7 @@ function parsedStaffCreateInput(value: unknown): {
 	if (input.templateId === undefined && !displayName) throw new Error("custom staff requires a display name");
 	let appearance: StaffAgent["appearance"] | undefined;
 	if (input.appearance !== undefined) {
-		const record = input.appearance as Record<string, unknown>;
-		if (
-			Object.keys(record).some((key) => key !== "color" && key !== "shape" && key !== "creature") ||
-			typeof record.color !== "string" ||
-			typeof record.shape !== "string" ||
-			(record.creature !== undefined && !isStaffCharacterId(record.creature)) ||
-			!STAFF_AVATAR_COLORS.has(record.color) ||
-			!STAFF_AVATAR_SHAPES.has(record.shape)
-		) {
-			throw new Error("invalid staff appearance");
-		}
-		appearance = {
-			color: record.color,
-			shape: record.shape,
-			...(typeof record.creature === "string" ? { creature: record.creature } : {}),
-		};
+		appearance = parsedStaffAppearance(input.appearance);
 	}
 	return {
 		...(typeof input.templateId === "string" ? { templateId: input.templateId } : {}),
@@ -9158,20 +9164,26 @@ async function createStaffMember(
 function parsedStaffUpdateInput(value: unknown): {
 	displayName?: string;
 	role?: string;
+	appearance?: StaffAgent["appearance"];
 	model?: StaffAgentModel | null;
 } {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid staff update");
 	const input = value as Record<string, unknown>;
 	if (
 		Object.keys(input).length === 0 ||
-		Object.keys(input).some((key) => key !== "displayName" && key !== "role" && key !== "model") ||
+		Object.keys(input).some(
+			(key) => key !== "displayName" && key !== "role" && key !== "appearance" && key !== "model",
+		) ||
 		(input.displayName !== undefined && typeof input.displayName !== "string") ||
-		(input.role !== undefined && typeof input.role !== "string")
+		(input.role !== undefined && typeof input.role !== "string") ||
+		(input.appearance !== undefined &&
+			(!input.appearance || typeof input.appearance !== "object" || Array.isArray(input.appearance)))
 	) {
 		throw new Error("invalid staff update");
 	}
 	const displayName = typeof input.displayName === "string" ? input.displayName.trim() : undefined;
 	const role = typeof input.role === "string" ? input.role.trim() : undefined;
+	const appearance = input.appearance === undefined ? undefined : parsedStaffAppearance(input.appearance);
 	if (displayName !== undefined && (!displayName || Buffer.byteLength(displayName, "utf-8") > 160)) {
 		throw new Error("invalid staff display name");
 	}
@@ -9200,6 +9212,7 @@ function parsedStaffUpdateInput(value: unknown): {
 	return {
 		...(displayName ? { displayName } : {}),
 		...(role ? { role } : {}),
+		...(appearance ? { appearance } : {}),
 		...(model !== undefined ? { model } : {}),
 	};
 }
@@ -9345,11 +9358,27 @@ async function archiveStaffMember(
 async function permanentlyDeleteStaffMember(
 	slot: Slot,
 	staffAgentId: string,
+	keepArtifacts: boolean,
 ): Promise<{ ok: true; staff: StaffAgent } | { ok: false; error: string }> {
 	const archived = await archiveStaffMember(slot, staffAgentId);
 	if (!archived.ok) return archived;
 	const runtime = slot.runtime;
 	if (!runtime) return { ok: false, error: "company runtime closed after archiving the agent" };
+	if (profileAttachment(runtime.root).profileType === "cloud") {
+		runtime.cloudStaffSync ??= createCloudStaffSynchronizer(runtime.root);
+		try {
+			if (!runtime.cloudStaffSync) throw new Error("Cloud staff deletion is unavailable.");
+			await runtime.cloudStaffSync.deleteStaff(staffAgentId);
+		} catch (error) {
+			const restored = await restoreStaffMember(slot, staffAgentId);
+			if (restored.ok && slot.runtime === runtime && !runtime.closing) {
+				triggerCloudStaffSync(runtime);
+			} else if (!restored.ok) {
+				console.error(`staff deletion rollback failed: ${restored.error}`);
+			}
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	}
 	return enqueueRuntimeTransition<{ ok: true; staff: StaffAgent } | { ok: false; error: string }>(
 		runtime,
 		async () => {
@@ -9359,9 +9388,11 @@ async function permanentlyDeleteStaffMember(
 					.filter((artifact) => artifact.stewardAgentId === staffAgentId)
 					.map((artifact) => artifact.relativePath);
 				snapshotFounderGitState(runtime.root, "founder permanent staff deletion");
-				const deleted = deleteStaffAgent(runtime.root, staffAgentId);
+				const deleted = readStaffAgents(runtime.root).some((staff) => staff.id === staffAgentId)
+					? deleteStaffAgent(runtime.root, staffAgentId)
+					: archived.staff;
 				const agentDirectory = staffAgentDirectoryPath(runtime.root, staffAgentId);
-				if (existsSync(agentDirectory)) rmSync(agentDirectory, { recursive: true, force: true });
+				removeStaffWorkspace(agentDirectory, keepArtifacts);
 				commitCompanyMaterialization(runtime.root, [
 					join(".qorpera", "staff.json"),
 					relative(runtime.root, agentDirectory),
@@ -9383,6 +9414,7 @@ async function permanentlyDeleteStaffMember(
 				} catch (error) {
 					console.error(`staff computer cleanup failed: ${(error as Error).message}`);
 				}
+				triggerCloudStaffSync(runtime);
 				return { ok: true, staff: deleted };
 			} catch (error) {
 				return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -11696,10 +11728,21 @@ app.whenReady().then(async () => {
 		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		return archiveStaffMember(slot, staffAgentId);
 	});
-	ipcMain.handle("staff:delete", (event, staffAgentId: unknown) => {
+	ipcMain.handle("staff:delete", (event, staffAgentId: unknown, options: unknown) => {
 		const slot = slotOf(event.sender);
 		if (!slot || typeof staffAgentId !== "string") return { ok: false, error: "invalid staff identity" };
-		return permanentlyDeleteStaffMember(slot, staffAgentId);
+		if (
+			!options ||
+			typeof options !== "object" ||
+			Array.isArray(options) ||
+			Object.keys(options).length !== 1 ||
+			!("keepArtifacts" in options) ||
+			typeof options.keepArtifacts !== "boolean"
+		) {
+			return { ok: false, error: "invalid staff deletion options" };
+		}
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
+		return permanentlyDeleteStaffMember(slot, staffAgentId, options.keepArtifacts);
 	});
 	ipcMain.handle("staff:restore", (event, staffAgentId: unknown) => {
 		const slot = slotOf(event.sender);

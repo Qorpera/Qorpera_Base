@@ -7,6 +7,7 @@ const userland = join(shell, "userland");
 const rendererSource = readFileSync(join(userland, "renderer.js"), "utf-8");
 const indexSource = readFileSync(join(userland, "index.html"), "utf-8");
 const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
+const characterMotionSource = readFileSync(join(userland, "character-motion.css"), "utf-8");
 const preloadSource = readFileSync(join(shell, "src", "preload.cjs"), "utf-8");
 const mainSource = readFileSync(join(shell, "src", "main.ts"), "utf-8");
 
@@ -170,5 +171,34 @@ describe("userland wiring", () => {
 		expect(mainSource).not.toContain("childBrokerOutputCheckpoints");
 		expect(mainSource).toContain("Cloud company publication is waiting for the active agent run to finish");
 		expect(mainSource).toContain("requireDurableExecution,");
+	});
+
+	it("renders agent details from the titlebar with only supported figure controls", () => {
+		expect(indexSource).toContain('id="agentSettingsPopover"');
+		expect(rendererSource).toContain("function openAgentSettingsPopover()");
+		expect(rendererSource).toContain('title.textContent = "Responsibility map"');
+		expect(rendererSource).not.toContain('className = "agent-settings-fullscreen-button"');
+		expect(rendererSource).not.toContain('className = "agent-settings-escape"');
+		const picker = rendererSource.slice(
+			rendererSource.indexOf("function renderAgentFigurePicker"),
+			rendererSource.indexOf("function renderResponsibilityPreview"),
+		);
+		expect(picker).toContain("STAFF_CREATURE_IDS");
+		expect(picker).toContain("STAFF_AVATAR_COLORS");
+		expect(picker).toContain(
+			'makeStaffAvatar({ appearance: { color: staffColor(staff), creature, shape: "round" } }, "idle")',
+		);
+		expect(picker).not.toContain("Generate");
+		expect(picker).not.toContain("Upload");
+		expect(rendererSource).toContain("STAFF_CREATURE_FILTERS[staffColor(staffOrTemplate)]");
+		expect(baseCssSource).toMatch(/\.agent-figure-grid \{[^}]*justify-content: center/s);
+		expect(characterMotionSource).toContain(".staff-avatar > .staff-face i:first-child");
+		expect(characterMotionSource).toContain(".staff-creature-choice:has(> .staff-avatar)::before");
+		expect(baseCssSource).not.toContain("--creature-eye-top");
+		expect(rendererSource).toContain("figurePicker.hidden = true");
+		expect(rendererSource).toContain('figureTrigger?.setAttribute("aria-expanded", "false")');
+		expect(baseCssSource).toContain('filter: url("./staff-creature-colors.svg#gray") !important;');
+		expect(baseCssSource).toContain(".agent-settings-popover.is-fullscreen");
+		expect(mainSource).toContain('key !== "appearance"');
 	});
 });

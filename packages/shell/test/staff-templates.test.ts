@@ -96,10 +96,28 @@ describe("shell starter staff templates", () => {
 		expect(motion).toContain("@keyframes creature-eye-one-blink");
 		expect(motion).toContain("@keyframes creature-working");
 		expect(motion).toContain("@keyframes creature-writing");
+		expect(motion).toContain("@keyframes creature-writing-dots");
+		expect(motion).toContain("@keyframes creature-writing-eye-one");
+		expect(motion).toContain("@keyframes creature-writing-eye-two");
+		expect(motion).toContain(".staff-avatar::before {");
+		expect(motion).toContain(".staff-avatar::after {");
+		expect(motion).toContain(".staff-avatar.writing::before");
+		expect(motion).toContain(".staff-avatar.writing::after");
+		expect(motion).not.toContain("creature-writing-cloud");
+		expect(motion).not.toContain("creature-writing-dots-visibility");
+		expect(motion).not.toContain("creature-writing-marks");
 		expect(motion).toContain("@keyframes creature-attention");
 		expect(motion).toContain(".staff-avatar.writing");
 		expect(motion).toContain(".staff-avatar.needs-attention");
 		expect(motion).toContain('.staff-avatar[data-creature="folio"]');
+		expect(motion).toContain('.staff-avatar[data-creature="folio"].working > .staff-creature-image');
+		expect(motion).toContain('.staff-avatar[data-creature="folio"].working::before');
+		expect(motion).toContain('.staff-avatar[data-creature="folio"].working::after');
+		expect(motion).toContain('.staff-avatar[data-creature="folio"].stowing');
+		expect(motion).toContain("@keyframes folio-page-enter");
+		expect(motion).toContain("@keyframes folio-read-scan");
+		expect(motion).not.toMatch(/data-creature="folio"\]\.(?:writing|needs-attention)/);
+		expect(motion).not.toMatch(/data-creature="folio"\]\s*>\s*\.staff-creature-image/);
 		expect(motion).not.toContain("lantern");
 		expect(motion).toContain('filter: url("./staff-creature-colors.svg#cobalt")');
 		expect(motion).toContain(".staff-appearance-picker .staff-color-picker");
@@ -110,6 +128,12 @@ describe("shell starter staff templates", () => {
 		expect(renderer).not.toContain("lantern");
 		expect(renderer).toContain('if (staffNeedsAttention(staff, runtime)) return "needs-attention";');
 		expect(renderer).toContain('runtime.activity?.kind === "writing"');
+		expect(renderer).toContain("function setAvatarMotionState(avatar, status, actualStatus = status)");
+		expect(renderer).toContain("staffWorkElapsed(avatar.dataset.staffId, motion, actualMotion)");
+		expect(renderer).toContain('if (motion !== actualMotion) return "0ms";');
+		expect(renderer).toContain(
+			"const actualStatus = staffId(staffOrTemplate) ? staffStatus(staffOrTemplate) : status;",
+		);
 		expect(renderer).not.toContain('showThreadActivity("typing")');
 		expect(renderer).not.toContain('showThreadActivity("thinking")');
 	});

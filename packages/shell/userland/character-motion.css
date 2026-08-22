@@ -10,6 +10,8 @@ html[data-staff-avatar-style="creatures"] .staff-avatar {
 	--creature-eye-width: 4%;
 	--creature-eye-height: 7.5%;
 	--creature-motion-delay: var(--staff-motion-delay, 0s);
+	--creature-writing-thought-top: 2.1%;
+	--creature-writing-thought-right: -23.6%;
 	border-color: transparent;
 	background: transparent;
 }
@@ -124,6 +126,8 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"] {
 	--creature-eye-two-r: 6deg;
 	--creature-eye-width: 5%;
 	--creature-eye-height: 8%;
+	--creature-writing-thought-top: 3.5%;
+	--creature-writing-thought-right: -34.5%;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="brain"] {
@@ -133,6 +137,7 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="brain"] {
 	--creature-eye-two-y: 33%;
 	--creature-eye-width: 5%;
 	--creature-eye-height: 9%;
+	--creature-writing-thought-right: -34.5%;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="halo"] {
@@ -142,6 +147,8 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="halo"] {
 	--creature-eye-two-y: 53%;
 	--creature-eye-width: 3.5%;
 	--creature-eye-height: 6%;
+	--creature-writing-thought-top: 3.5%;
+	--creature-writing-thought-right: -22.3%;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="wisp"] {
@@ -153,6 +160,7 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="wisp"] {
 	--creature-eye-two-r: 10deg;
 	--creature-eye-width: 4%;
 	--creature-eye-height: 8%;
+	--creature-writing-thought-right: -19.6%;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="ribbon"] {
@@ -162,6 +170,8 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="ribbon"] 
 	--creature-eye-two-y: 35.5%;
 	--creature-eye-width: 4%;
 	--creature-eye-height: 8%;
+	--creature-writing-thought-top: -4.2%;
+	--creature-writing-thought-right: -25.7%;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="bloom"] {
@@ -171,6 +181,8 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="bloom"] {
 	--creature-eye-two-y: 46%;
 	--creature-eye-width: 4%;
 	--creature-eye-height: 8%;
+	--creature-writing-thought-top: .7%;
+	--creature-writing-thought-right: -31.1%;
 }
 
 /* Picker thumbnails use the same eyeless assets without a face node, so the
@@ -266,6 +278,14 @@ html[data-staff-avatar-style="creatures"] .staff-creature-choice::after {
 	transform: rotate(var(--picker-eye-two-r));
 }
 
+/* Picker options now render the complete avatar so they share its calibrated,
+ * animated eye layer. The legacy pseudo-eyes only remain for older bare-image
+ * pickers elsewhere in the shell. */
+html[data-staff-avatar-style="creatures"] .staff-creature-choice:has(> .staff-avatar)::before,
+html[data-staff-avatar-style="creatures"] .staff-creature-choice:has(> .staff-avatar)::after {
+	content: none;
+}
+
 html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face {
 	position: absolute;
 	inset: -6%;
@@ -321,7 +341,67 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.working > .staff-face {
 
 html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-creature-image,
 html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face {
-	animation: creature-writing 1.8s cubic-bezier(.34, .05, .3, 1) var(--creature-motion-delay) infinite;
+	animation: creature-writing 3s ease-in-out var(--creature-motion-delay) infinite;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face i:first-child {
+	animation: creature-writing-eye-one 3s ease-in-out var(--creature-motion-delay) infinite;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face i:last-child {
+	animation: creature-writing-eye-two 3s ease-in-out var(--creature-motion-delay) infinite;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar::before {
+	content: "";
+	position: absolute;
+	z-index: 4;
+	top: var(--creature-writing-thought-top);
+	right: var(--creature-writing-thought-right);
+	width: 43.2%;
+	aspect-ratio: 64 / 51;
+	background: center / contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 76 60'%3E%3Cpath d='M15 40C7 40 2 35 2 28C2 21 7 16 14 15C14 9 19 4 26 5C32 1 40 2 44 8C51 5 59 9 61 15C69 15 74 20 74 27C74 34 68 39 60 39C56 39 53 38 50 36C45 42 35 43 28 39C24 41 19 41 15 40Z' fill='%23fff' stroke='%2320242b' stroke-width='2' stroke-linejoin='round'/%3E%3Ccircle cx='15' cy='48' r='4.5' fill='%23fff' stroke='%2320242b' stroke-width='2'/%3E%3Ccircle cx='7' cy='56' r='2.8' fill='%23fff' stroke='%2320242b' stroke-width='2'/%3E%3C/svg%3E");
+	filter: drop-shadow(0 2px 3px rgb(31 38 49 / 18%));
+	opacity: 0;
+	transform: translate(8%, 6%) scale(.64);
+	transform-origin: 12% 88%;
+	transition:
+		opacity .2s ease-in,
+		transform .26s cubic-bezier(.4, 0, .8, .2);
+	forced-color-adjust: none;
+	pointer-events: none;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar::after {
+	content: "";
+	position: absolute;
+	z-index: 5;
+	top: calc(var(--creature-writing-thought-top) + 13.4%);
+	right: calc(var(--creature-writing-thought-right) + 12.8%);
+	width: 16.9%;
+	height: 3.4%;
+	background:
+		radial-gradient(circle, #20242b 0 66%, transparent 70%) left center / 20% 100% no-repeat,
+		radial-gradient(circle, #20242b 0 66%, transparent 70%) center / 20% 100% no-repeat,
+		radial-gradient(circle, #20242b 0 66%, transparent 70%) right center / 20% 100% no-repeat;
+	opacity: 0;
+	transition: opacity .12s ease-out;
+	forced-color-adjust: none;
+	pointer-events: none;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar.writing::before {
+	opacity: 1;
+	transform: translate(0) scale(1);
+	transition:
+		opacity .16s ease-out,
+		transform .38s cubic-bezier(.2, .78, .25, 1);
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar.writing::after {
+	opacity: 1;
+	transition: opacity .16s ease-out .18s;
+	animation: creature-writing-dots 1.05s ease-in-out var(--creature-motion-delay) infinite;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar.needs-attention > .staff-creature-image,
@@ -352,18 +432,6 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.working > .staff-face::b
 	animation: creature-focus-dots 3.2s ease-in-out var(--creature-motion-delay) infinite;
 }
 
-html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::after {
-	top: 17%;
-	right: 7%;
-	width: 14%;
-	height: 3.8%;
-	border-radius: 999px;
-	background: #ffd166;
-	box-shadow: .42em 1.05em 0 -.08em #ffd166, -.12em 2.05em 0 -.16em #ffd166;
-	transform: rotate(-12deg);
-	animation: creature-writing-marks 1.8s ease-in-out var(--creature-motion-delay) infinite;
-}
-
 @keyframes creature-eye-one-blink {
 	0%, 45%, 54%, 100% { transform: rotate(var(--creature-eye-one-r)) scaleX(1) scaleY(1); }
 	48%, 52% { transform: rotate(var(--creature-eye-one-r)) scaleX(1.12) scaleY(.12); }
@@ -382,10 +450,47 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::a
 }
 
 @keyframes creature-writing {
-	0%, 100% { transform: translateX(0) rotate(0deg) scale(1); }
-	30% { transform: translateX(-1.5%) rotate(-1.2deg) scaleX(1.012) scaleY(.99); }
-	58% { transform: translateX(1%) rotate(.8deg) scaleX(.996) scaleY(1.006); }
-	78% { transform: translateX(-.4%) rotate(-.3deg) scale(1); }
+	0%, 8%, 100% { transform: rotate(0deg) scale(1); }
+	25% { transform: rotate(-.6deg) scale(.997, 1.003); }
+	52% { transform: rotate(.6deg) scale(1.004, .996); }
+	77% { transform: rotate(-.4deg) scale(.998, 1.002); }
+	92% { transform: rotate(0deg) scale(1); }
+}
+
+@keyframes creature-writing-eye-one {
+	0%, 11%, 95%, 100% { transform: translate(0) rotate(var(--creature-eye-one-r)) scale(1); }
+	22%, 82% { transform: translate(14%, -8%) rotate(var(--creature-eye-one-r)) scaleY(.78); }
+	87% { transform: translate(14%, -8%) rotate(var(--creature-eye-one-r)) scaleX(1.08) scaleY(.16); }
+}
+
+@keyframes creature-writing-eye-two {
+	0%, 11%, 95%, 100% { transform: translate(0) rotate(var(--creature-eye-two-r)) scale(1); }
+	22%, 82% { transform: translate(14%, -8%) rotate(var(--creature-eye-two-r)) scaleY(.78); }
+	87% { transform: translate(14%, -8%) rotate(var(--creature-eye-two-r)) scaleX(1.08) scaleY(.16); }
+}
+
+@keyframes creature-writing-dots {
+	0%, 100% {
+		background:
+			radial-gradient(circle, rgb(32 36 43 / 42%) 0 66%, transparent 70%) left 65% / 20% 100% no-repeat,
+			radial-gradient(circle, rgb(32 36 43 / 65%) 0 66%, transparent 70%) center / 20% 100% no-repeat,
+			radial-gradient(circle, #20242b 0 66%, transparent 70%) right 35% / 20% 100% no-repeat;
+		transform: translateY(20%) scale(.82);
+	}
+	33% {
+		background:
+			radial-gradient(circle, #20242b 0 66%, transparent 70%) left 35% / 20% 100% no-repeat,
+			radial-gradient(circle, rgb(32 36 43 / 42%) 0 66%, transparent 70%) center 65% / 20% 100% no-repeat,
+			radial-gradient(circle, rgb(32 36 43 / 65%) 0 66%, transparent 70%) right center / 20% 100% no-repeat;
+		transform: translateY(-40%) scale(1);
+	}
+	66% {
+		background:
+			radial-gradient(circle, rgb(32 36 43 / 65%) 0 66%, transparent 70%) left center / 20% 100% no-repeat,
+			radial-gradient(circle, #20242b 0 66%, transparent 70%) center 35% / 20% 100% no-repeat,
+			radial-gradient(circle, rgb(32 36 43 / 42%) 0 66%, transparent 70%) right 65% / 20% 100% no-repeat;
+		transform: translateY(0) scale(.9);
+	}
 }
 
 @keyframes creature-attention {
@@ -403,18 +508,243 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::a
 	68% { opacity: 1; transform: scale(.96); }
 }
 
-@keyframes creature-writing-marks {
-	0%, 12%, 76%, 100% { opacity: 0; translate: -8% 0; }
-	30%, 60% { opacity: 1; translate: 0 0; }
+/* ---------------------------------------------------------------------------
+ * Folio reads a page while he works.
+ *
+ * The art is one flat PNG, so the raised right hand is redrawn as a second copy
+ * of the same file clipped to the arm alone and pivoted at the low corner of the
+ * shoulder joint. The base image is clipped just past the body's leftmost pixel
+ * (22%) so the static arm underneath never shows through the moving one, and the
+ * arm sits behind that image so its root stays tucked under the silhouette. The
+ * pivot has to be the bottom of the joint: every point of the cut edge is then
+ * above it, so the reach sweeps the seam further under the body instead of
+ * opening a gap beside it.
+ *
+ * The sheet is a background image on the avatar's ::after. A fixed clip-path
+ * traces the front flap's top contour, so only the part of the page that has
+ * cleared the mouth is painted and the sheet reads as sitting between the back
+ * cover and the foreground flap. Sliding background-position rather than the
+ * element itself keeps that clip anchored to the folder while the page travels.
+ *
+ * Working is one unbroken read. The reach and the lift play once, the hold then
+ * loops for as long as the state lasts, and putting the page away is an exit
+ * beat the renderer triggers with `stowing` — CSS cannot animate on class
+ * removal. Both working phases are anchored to --staff-work-elapsed, the
+ * negative offset the renderer writes for how long this agent has been working,
+ * so an avatar rebuilt by a re-render resumes the read at the right frame
+ * instead of grabbing for the page again.
+ * ------------------------------------------------------------------------- */
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working > .staff-creature-image,
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing > .staff-creature-image {
+	position: relative;
+	z-index: 1;
+	clip-path: inset(0 0 0 22%);
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::before,
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::before {
+	content: "";
+	position: absolute;
+	inset: 0;
+	z-index: 0;
+	width: auto;
+	height: auto;
+	aspect-ratio: auto;
+	background: url("./staff-creatures/folio.png") 0 0 / 100% 100% no-repeat;
+	clip-path: inset(41% 77.7% 45% 0);
+	filter: var(--staff-creature-filter, none);
+	opacity: 1;
+	transform: none;
+	transform-origin: 22.3% 54.5%;
+	transition: none;
+	rotate: 0deg;
+	pointer-events: none;
+}
+
+/* The working page temporarily owns the same generated layer used by the
+ * universal writing dots. Every inherited writing-layer property is reset so
+ * the page is full-size while working and returns cleanly to the cloud later. */
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::after,
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	z-index: 1;
+	width: auto;
+	height: auto;
+	border: 0;
+	border-radius: 0;
+	background-color: transparent;
+	background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 40'><g transform='rotate(6.5 56 23)'><rect x='35' y='5' width='42' height='36' rx='2.6' fill='%23fdfdfc' stroke='%23111110' stroke-opacity='.28' stroke-width='.9'/><rect x='39' y='8.8' width='17' height='2.6' rx='1.3' fill='%238e8e87'/><rect x='39' y='13.8' width='33' height='1.6' rx='.8' fill='%23c4c4be'/><rect x='39' y='18' width='33' height='1.6' rx='.8' fill='%23c4c4be'/><rect x='39' y='22.2' width='27' height='1.6' rx='.8' fill='%23c4c4be'/><rect x='39' y='26.4' width='33' height='1.6' rx='.8' fill='%23c4c4be'/><rect x='39' y='30.6' width='19' height='1.6' rx='.8' fill='%23c4c4be'/></g></svg>");
+	background-repeat: no-repeat;
+	background-size: 100% 40%;
+	background-position: 0% 53%;
+	clip-path: polygon(30% 0%, 80% 0%, 80% 39%, 78.5% 35.8%, 74% 33.4%, 68% 32.3%, 60% 31.5%, 54% 30.7%, 52% 27.4%, 49% 22%, 40% 20.8%, 34% 20.8%, 30% 22.5%);
+	opacity: 1;
+	transform: none;
+	transition: none;
+	pointer-events: none;
+}
+
+/* Every layer has to travel as one rig, so Folio carries his state motion on
+ * the avatar itself instead of on the image and face separately. */
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working > .staff-creature-image,
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working > .staff-face,
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing > .staff-creature-image,
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing > .staff-face {
+	animation: none;
+}
+
+/* The page and the scanning eyes carry the read, so the generic focus dots
+ * would only crowd the same corner. */
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working > .staff-face::before {
+	content: none;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working {
+	animation:
+		folio-body-enter 2.6s cubic-bezier(.4, .05, .35, 1) var(--staff-work-elapsed, 0ms) 1 normal both,
+		folio-body-read 5.2s ease-in-out calc(2.6s + var(--staff-work-elapsed, 0ms)) infinite;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::before {
+	animation:
+		folio-arm-enter 2.6s cubic-bezier(.34, .05, .3, 1) var(--staff-work-elapsed, 0ms) 1 normal both,
+		folio-arm-read 6.4s ease-in-out calc(2.6s + var(--staff-work-elapsed, 0ms)) infinite;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::after {
+	animation:
+		folio-page-enter 2.6s cubic-bezier(.32, .06, .28, 1) var(--staff-work-elapsed, 0ms) 1 normal both,
+		folio-page-read 5.6s ease-in-out calc(2.6s + var(--staff-work-elapsed, 0ms)) infinite;
+}
+
+/* Eye travel is a share of the eye itself, so the scan keeps its size across
+ * every avatar scale. The blink keeps its own per-agent stagger and runs
+ * alongside, because the two animations drive different properties. */
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working > .staff-face i {
+	animation:
+		folio-eye-enter 2.6s ease-in-out var(--staff-work-elapsed, 0ms) 1 normal both,
+		folio-read-scan 4.6s linear calc(2.6s + var(--staff-work-elapsed, 0ms)) infinite,
+		creature-eye-one-blink 6.4s steps(1, end) var(--creature-motion-delay) infinite;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working > .staff-face i:last-child {
+	animation:
+		folio-eye-enter 2.6s ease-in-out var(--staff-work-elapsed, 0ms) 1 normal both,
+		folio-read-scan 4.6s linear calc(2.6s + var(--staff-work-elapsed, 0ms)) infinite,
+		creature-eye-two-blink 6.4s steps(1, end) var(--creature-motion-delay) infinite;
+}
+
+/* Leaving `working` — for writing, or for anything else — plays the read out
+ * once. These rules follow the state rules above so they win the tie while both
+ * `stowing` and the incoming state class sit on the element. */
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing {
+	animation: folio-body-exit .82s cubic-bezier(.36, .02, .3, 1) 0s 1 normal both;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::before {
+	animation: folio-arm-exit .82s cubic-bezier(.36, .02, .3, 1) 0s 1 normal both;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::after {
+	animation: folio-page-exit .82s cubic-bezier(.36, .02, .3, 1) 0s 1 normal both;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing > .staff-face i {
+	animation: folio-eye-exit .44s ease-in-out 0s 1 normal both;
+}
+
+@keyframes folio-body-enter {
+	0%, 12% { transform: translateY(0) rotate(0deg); }
+	30% { transform: translateY(.5%) rotate(-.55deg); }
+	82% { transform: translateY(-.9%) rotate(.5deg); }
+	100% { transform: translateY(-.5%) rotate(.28deg); }
+}
+
+@keyframes folio-arm-enter {
+	0%, 12% { rotate: 0deg; }
+	30% { rotate: 9.8deg; }
+	40% { rotate: 8.4deg; }
+	82% { rotate: 15.2deg; }
+	100% { rotate: 13.8deg; }
+}
+
+@keyframes folio-page-enter {
+	0%, 26% { background-position: 0% 53%; }
+	34% { background-position: 0% 51%; }
+	82% { background-position: 0% 12.5%; }
+	100% { background-position: 0% 15%; }
+}
+
+@keyframes folio-eye-enter {
+	0%, 46% { translate: 0 0; }
+	100% { translate: -26% -30%; }
+}
+
+/* The hold: three loops of deliberately different length, so the page, the hand
+ * and the body never settle into one visible pulse. */
+@keyframes folio-body-read {
+	0%, 100% { transform: translateY(-.5%) rotate(.28deg); }
+	34% { transform: translateY(-.78%) rotate(.14deg); }
+	68% { transform: translateY(-.34%) rotate(.4deg); }
+}
+
+@keyframes folio-arm-read {
+	0%, 100% { rotate: 13.8deg; }
+	36% { rotate: 13deg; }
+	72% { rotate: 14.4deg; }
+}
+
+@keyframes folio-page-read {
+	0%, 100% { background-position: 0% 15%; }
+	40% { background-position: 0% 14.1%; }
+	74% { background-position: 0% 15.4%; }
+}
+
+/* Three lines, then back up to the top of the page. */
+@keyframes folio-read-scan {
+	0% { translate: -26% -30%; }
+	22% { translate: 30% -30%; }
+	24% { translate: -26% -18%; }
+	46% { translate: 30% -18%; }
+	48% { translate: -26% -6%; }
+	70% { translate: 30% -6%; }
+	78% { translate: 6% -16%; }
+	100% { translate: -26% -30%; }
+}
+
+@keyframes folio-body-exit {
+	from { transform: translateY(-.5%) rotate(.28deg); }
+	to { transform: translateY(0) rotate(0deg); }
+}
+
+@keyframes folio-arm-exit {
+	0% { rotate: 13.8deg; }
+	24% { rotate: 15.2deg; }
+	100% { rotate: 0deg; }
+}
+
+@keyframes folio-page-exit {
+	from { background-position: 0% 15%; }
+	to { background-position: 0% 53%; }
+}
+
+@keyframes folio-eye-exit {
+	from { translate: 0 -20%; }
+	to { translate: 0 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
+	html[data-staff-avatar-style="creatures"] .staff-avatar::before,
+	html[data-staff-avatar-style="creatures"] .staff-avatar::after,
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-creature-image,
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face,
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face i,
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face::before,
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face::after {
 		animation: none !important;
+		transition: none !important;
 	}
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face i:first-child {
 		transform: rotate(var(--creature-eye-one-r)) scale(1);
@@ -425,6 +755,21 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::a
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face::before,
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face::after {
 		opacity: 0;
+	}
+	/* Folio keeps the read as a still pose: page out, hand up, nothing moving. */
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working,
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing,
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::before,
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::after,
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::before,
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::after {
+		animation: none !important;
+	}
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::before {
+		rotate: 13.8deg;
+	}
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::after {
+		background-position: 0% 15%;
 	}
 }
 
@@ -438,8 +783,10 @@ html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::a
 		background: CanvasText;
 		box-shadow: .95em .8em 0 CanvasText, 1.65em 1.8em 0 CanvasText;
 	}
-	html[data-staff-avatar-style="creatures"] .staff-avatar.writing > .staff-face::after {
-		background: Highlight;
-		box-shadow: .42em 1.05em 0 -.08em Highlight, -.12em 2.05em 0 -.16em Highlight;
+	/* The sheet art is fixed paper white, which has no meaning in a forced
+	 * palette, so Folio reads with the hand motion alone. */
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].working::after,
+	html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].stowing::after {
+		background-image: none;
 	}
 }

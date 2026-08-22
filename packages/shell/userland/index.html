@@ -3,11 +3,13 @@
 <head>
 <meta charset="utf-8">
 <title>Qorpera Base</title>
+<link rel="icon" type="image/png" href="../assets/qorpera.png">
 <link rel="stylesheet" href="./tokens.css">
 <link rel="stylesheet" href="./base.css">
 <link rel="stylesheet" href="./character-motion.css">
 <link rel="stylesheet" href="./artifacts.css">
 <link rel="stylesheet" href="./rail-resize.css">
+<link rel="stylesheet" href="./onboarding.css">
 </head>
 <body>
 <header id="titlebar">
@@ -42,17 +44,17 @@
 		<h1 id="accountTitle">Qorpera</h1>
 		<p>Sign in to keep your companies and agents connected to you.</p>
 		<div class="provider-grid" id="accountProviders" aria-label="Qorpera sign-in methods">
-			<button class="provider-option" type="button" data-account-provider="google"><span class="provider-mark"><img src="./provider-google.svg" alt=""></span><span class="provider-option-copy"><strong>Continue with Google</strong></span><span class="provider-option-arrow" aria-hidden="true">→</span></button>
-			<button class="provider-option" type="button" data-account-provider="email" aria-expanded="false"><span class="provider-mark"><img src="./provider-email.svg" alt=""></span><span class="provider-option-copy"><strong>Continue with email</strong></span><span class="provider-option-arrow" aria-hidden="true">→</span></button>
-			<button class="provider-option" type="button" data-account-provider="github"><span class="provider-mark"><img src="./provider-github.svg" alt=""></span><span class="provider-option-copy"><strong>Continue with GitHub</strong></span><span class="provider-option-arrow" aria-hidden="true">→</span></button>
+			<button class="provider-option" type="button" data-account-provider="google"><span class="provider-mark"><img src="./provider-google.svg" alt=""></span><span class="provider-option-copy"><strong>Google</strong></span></button>
+			<button class="provider-option" type="button" data-account-provider="github"><span class="provider-mark"><img src="./provider-github.svg" alt=""></span><span class="provider-option-copy"><strong>GitHub</strong></span></button>
 		</div>
-		<form id="accountEmailForm" class="account-email-form" hidden>
+		<div class="account-divider" aria-hidden="true"><span>or</span></div>
+		<form id="accountEmailForm" class="account-email-form">
 			<label for="accountEmail">Email address</label>
 			<div><input id="accountEmail" type="email" autocomplete="email" required placeholder="you@company.com"><button type="submit">Continue</button></div>
 		</form>
 		<label class="account-remember" for="accountRemember">
 			<input id="accountRemember" type="checkbox" checked>
-			<span><strong>Remember me locally</strong><small>Keep this session on this device and restore this account’s saved connections.</small></span>
+			<strong>Remember me</strong>
 		</label>
 		<div id="accountStatus" class="welcome-status" role="status" aria-live="polite"></div>
 	</div>
@@ -97,7 +99,6 @@
 		<div class="hub-inner">
 			<div class="hub-hero">
 					<h1>Select a company</h1>
-					<p>Each company keeps its agents, connector recipes, and work together.</p>
 			</div>
 			<div id="hubCompanies" class="hub-grid"></div>
 			<div id="hubError" class="hub-error" role="status" aria-live="polite"></div>
@@ -168,6 +169,9 @@
 	</div>
 	<div id="view-panel"></div>
 	<div id="status" role="status" aria-live="polite"></div>
+	<section id="agentSettingsPopover" class="agent-settings-popover" role="dialog" aria-label="Agent details" aria-modal="false" hidden>
+		<div id="agentSettingsPopoverContent" class="agent-settings-popover-content"></div>
+	</section>
 </main>
 	<aside id="agentSidepanel" class="agent-sidepanel" aria-label="Agent details" hidden>
 		<div id="agentSidepanelContent" class="agent-sidepanel-content"></div>
@@ -289,6 +293,13 @@
 	<section class="confirm-modal staff-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="staffDeleteTitle" aria-describedby="staffDeleteDescription">
 		<header><h2 id="staffDeleteTitle">Archive agent?</h2></header>
 		<p id="staffDeleteDescription"></p>
+		<label class="staff-delete-option" for="staffDeleteKeepArtifacts">
+			<input id="staffDeleteKeepArtifacts" type="checkbox" checked>
+			<span>
+				<strong>Keep this agent’s artifacts</strong>
+				<small>If permanently deleted, preserve its artifact files in the company without an active owner.</small>
+			</span>
+		</label>
 		<footer>
 			<button class="secondary-button" id="staffDeleteCancel" type="button">Cancel</button>
 			<button class="danger-button" id="staffDeletePermanent" type="button">Delete permanently</button>
