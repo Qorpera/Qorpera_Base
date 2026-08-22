@@ -15,10 +15,11 @@ import {
 	type SessionRuntimeSource,
 	type SessionRuntimeUpdate,
 } from "../src/core/app-server.ts";
-import { discoverAuthority, evaluateToolCall, readAuthorityConfig } from "../src/core/authority.ts";
+import { discoverAuthority, evaluateToolCall } from "../src/core/authority.ts";
 import { COMPANY_MANIFEST_RELATIVE_PATH, scaffoldCompany, scaffoldProductDepartment } from "../src/core/company.ts";
 import type { CompanyArtifactRecord } from "../src/core/company-artifacts.ts";
 import type { CompanyConnectorManifestRecord } from "../src/core/company-connectors.ts";
+import { parseCompanyPolicy } from "../src/core/company-policy.ts";
 import type { StaffAgent, StaffAgentMessage } from "../src/core/company-staff.ts";
 import { LITELLM_RATES_URL, parseUsageRateTable, type UsageRateCatalog } from "../src/core/usage-pricing.ts";
 
@@ -1433,6 +1434,7 @@ describe("company app server", () => {
 		for (const [path, payload] of [
 			["/api/gate", { file: gateFile, action: "approved" }],
 			["/api/inbox/respond", { file: gateFile, response: "yes" }],
+			["/api/authority/config", { policy: { spending: "act" } }],
 			["/api/authority", { content: `[irreversible]\nmode = "auto"\n` }],
 			["/api/artifact/update", { id: "customer-health", update: {} }],
 		] as const) {
@@ -1452,17 +1454,21 @@ describe("company app server", () => {
 		).toBe("block");
 	});
 
-	it("structured authority config: reads toggles, saves surgically, preserves [tools]", async () => {
-		// Seed a custom [tools] section the structured editor must not clobber.
+	it("structured policy config auto-saves instructions without changing technical authority", async () => {
 		writeFileSync(
 			join(root, "authority.toml"),
-			`[irreversible]\nmode = "gate"\n\n[tools]\ndeploy = "irreversible"\n`,
+			`# Founder policy\n[irreversible]\nmode = "gate"\n\n# Keep this mapping\n[tools]\ndeploy = "irreversible"\n`,
 			"utf-8",
 		);
 		const cfg = (await (await fetch(`${base}/api/authority/config`)).json()) as {
-			classes: Record<string, { mode: string }>;
+			policy: Record<string, string>;
 		};
-		expect(cfg.classes.irreversible.mode).toBe("gate");
+		expect(cfg.policy).toEqual({
+			spending: "ask",
+			external_communication: "ask",
+			hard_to_reverse_changes: "ask",
+			information_sharing: "ask",
+		});
 
 		const save = await fetch(`${base}/api/authority/config`, {
 			method: "POST",
@@ -1471,20 +1477,36 @@ describe("company app server", () => {
 				"x-qorpera-token": "test-token",
 			},
 			body: JSON.stringify({
-				classes: {
-					irreversible: { mode: "notify" },
-					money: { mode: "gate", limitUsd: 100 },
+				policy: {
+					spending: "act",
+					external_communication: "auto",
 				},
 			}),
 		});
 		expect(save.status).toBe(200);
 		const written = readFileSync(join(root, "authority.toml"), "utf-8");
-		expect(written).toContain('deploy = "irreversible"'); // [tools] survived
-		const authority = discoverAuthority(root)!;
-		const config = readAuthorityConfig(authority);
-		expect(config.classes.irreversible.mode).toBe("notify");
-		expect(config.classes.money.limitUsd).toBe(100);
-		expect(config.classes.authority.mode).toBe("gate"); // never configurable
+		expect(written).toContain("# Founder policy");
+		expect(written).toContain("# Keep this mapping");
+		expect(written).toContain('[tools]\ndeploy = "irreversible"');
+		expect(written).toContain('[irreversible]\nmode = "gate"');
+		expect(parseCompanyPolicy(written)).toEqual({
+			spending: "act",
+			external_communication: "auto",
+			hard_to_reverse_changes: "ask",
+			information_sharing: "ask",
+		});
+
+		const beforeInvalid = written;
+		const invalid = await fetch(`${base}/api/authority/config`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				"x-qorpera-token": "test-token",
+			},
+			body: JSON.stringify({ policy: { spending: "notify" } }),
+		});
+		expect(invalid.status).toBe(400);
+		expect(readFileSync(join(root, "authority.toml"), "utf-8")).toBe(beforeInvalid);
 	});
 
 	it("authority editor endpoint: reads, rejects invalid TOML, applies valid edits", async () => {

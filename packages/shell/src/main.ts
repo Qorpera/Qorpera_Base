@@ -12193,7 +12193,7 @@ app.whenReady().then(async () => {
 			const actions = new Map([
 				["/api/gate", "resolve an authority gate"],
 				["/api/inbox/respond", "send a founder inbox response"],
-				["/api/authority/config", "change company authority modes"],
+				["/api/authority/config", "change company policy instructions"],
 				["/api/authority", "replace the company authority policy"],
 				["/api/artifact/update", "edit an agent artifact definition"],
 			]);
@@ -12231,12 +12231,18 @@ app.whenReady().then(async () => {
 			}
 			const exactReview = gateDocument ? `${gateDocument}\nRequested transition:\n${serialized}` : serialized;
 			const trailBinding = childBindings.get(reviewedChild);
-			const approved = await confirmKernelReview(slot.window, {
-				title: "Authorize company mutation",
-				summary: `Authorize this exact host action: ${action}?`,
-				exactText: exactReview,
-				metadata: `Endpoint: ${path}`,
-			});
+			// Choosing an instruction in Settings is already an explicit founder
+			// action. Save it directly; technical authority mutations retain the
+			// separate exact-review confirmation below.
+			const requiresExactReview = path !== "/api/authority/config";
+			const approved = requiresExactReview
+				? await confirmKernelReview(slot.window, {
+						title: "Authorize company mutation",
+						summary: `Authorize this exact host action: ${action}?`,
+						exactText: exactReview,
+						metadata: `Endpoint: ${path}`,
+					})
+				: true;
 			if (!isCurrentRuntimeChild(slot, runtime, reviewedChild)) {
 				return {
 					ok: false,
@@ -12265,7 +12271,7 @@ app.whenReady().then(async () => {
 			) {
 				return { ok: false, status: 409, text: "gate changed after review" };
 			}
-			if (trailBinding) {
+			if (trailBinding && requiresExactReview) {
 				appendKernelMutationObservation(trailBinding, {
 					operation: path,
 					exactReview,
