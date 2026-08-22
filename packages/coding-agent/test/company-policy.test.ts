@@ -63,6 +63,30 @@ describe("company policy instructions", () => {
 		expect(updated).toContain('[tools]\ndeploy = "irreversible"');
 	});
 
+	it("updates quoted policy tables and keys without creating duplicate TOML fields", () => {
+		const source = `["policy"]\n"spending" = "ask"\n'external_communication' = "ask"\n`;
+		const updated = updateCompanyPolicySource(source, {
+			spending: "auto",
+			external_communication: "act",
+			hard_to_reverse_changes: "ask",
+			information_sharing: "ask",
+		});
+
+		expect(parseCompanyPolicy(updated)).toEqual({
+			spending: "auto",
+			external_communication: "act",
+			hard_to_reverse_changes: "ask",
+			information_sharing: "ask",
+		});
+		expect(updated.match(/"spending"\s*=/g)).toHaveLength(1);
+		expect(updated.match(/external_communication'\s*=/g)).toHaveLength(1);
+	});
+
+	it("refuses valid TOML shapes that cannot be updated without redefining the policy table", () => {
+		const source = `policy = { spending = "ask" }\n`;
+		expect(() => updateCompanyPolicySource(source, DEFAULT_COMPANY_POLICY)).toThrow();
+	});
+
 	it("refuses to overwrite malformed TOML", () => {
 		expect(() => updateCompanyPolicySource("not [valid toml", DEFAULT_COMPANY_POLICY)).toThrow();
 	});

@@ -86,7 +86,7 @@ export function updateCompanyPolicySource(source: string, policy: CompanyPolicyC
 	const newline = source.includes("\r\n") ? "\r\n" : "\n";
 	const lines = source.split(/\r?\n/);
 	const tablePattern = /^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?$/;
-	const policyHeaderPattern = /^\s*\[policy\]\s*(?:#.*)?$/;
+	const policyHeaderPattern = /^\s*\[(?:policy|"policy"|'policy')\]\s*(?:#.*)?$/;
 	const start = lines.findIndex((line) => policyHeaderPattern.test(line));
 
 	if (start === -1) {
@@ -97,7 +97,9 @@ export function updateCompanyPolicySource(source: string, policy: CompanyPolicyC
 			: source.endsWith(newline)
 				? newline
 				: `${newline}${newline}`;
-		return `${source}${separator}${block}${newline}`;
+		const updated = `${source}${separator}${block}${newline}`;
+		parseToml(updated);
+		return updated;
 	}
 
 	let end = lines.length;
@@ -110,7 +112,7 @@ export function updateCompanyPolicySource(source: string, policy: CompanyPolicyC
 
 	const missing: CompanyPolicyKey[] = [];
 	for (const key of COMPANY_POLICY_KEYS) {
-		const assignmentPattern = new RegExp(`^(\\s*)${key}\\s*=`);
+		const assignmentPattern = new RegExp(`^(\\s*)(${key}|"${key}"|'${key}')\\s*=`);
 		const index = lines.findIndex(
 			(line, candidate) => candidate > start && candidate < end && assignmentPattern.test(line),
 		);
@@ -118,13 +120,17 @@ export function updateCompanyPolicySource(source: string, policy: CompanyPolicyC
 			missing.push(key);
 			continue;
 		}
-		const indentation = lines[index].match(assignmentPattern)?.[1] ?? "";
+		const assignment = lines[index].match(assignmentPattern);
+		const indentation = assignment?.[1] ?? "";
+		const renderedKey = assignment?.[2] ?? key;
 		const comment = lines[index].match(/\s+#.*$/)?.[0] ?? "";
-		lines[index] = `${indentation}${key} = "${policy[key]}"${comment}`;
+		lines[index] = `${indentation}${renderedKey} = "${policy[key]}"${comment}`;
 	}
 
 	let insertion = end;
 	while (insertion > start + 1 && lines[insertion - 1].trim() === "") insertion -= 1;
 	lines.splice(insertion, 0, ...missing.map((key) => `${key} = "${policy[key]}"`));
-	return lines.join(newline);
+	const updated = lines.join(newline);
+	parseToml(updated);
+	return updated;
 }
