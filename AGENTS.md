@@ -121,7 +121,7 @@ Attribution:
 
 **Lockstep versioning**: all packages share one version; every release updates all together. `patch` = fixes + additions, `minor` = breaking changes. No major releases.
 
-1. **Update CHANGELOGs**: ask the user whether they ran the `/cl` prompt on the latest commit on `main`. If not, they must run `/cl` first to audit and update each package's `[Unreleased]` section before releasing.
+1. **Review CHANGELOGs**: inspect every package's `[Unreleased]` section against the commits since the latest release and correct missing or misclassified entries before releasing. Perform this review directly; no slash-command invocation or user confirmation is required.
 
 2. **Local smoke test**: build an unpublished release and smoke test from outside the repo (so it can't resolve workspace files):
    ```bash
