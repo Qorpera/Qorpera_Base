@@ -67,6 +67,7 @@ import {
 	shouldCompact,
 } from "./compaction/index.ts";
 import { setCompanyOperationBrokerIntent } from "./company-operation-broker-client.ts";
+import { formatCompanyPolicyInstructions, readCompanyPolicy } from "./company-policy.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
@@ -1332,11 +1333,17 @@ export class AgentSession {
 			}
 			this._pendingNextTurnMessages = [];
 
+			// Policy is read for every turn so auto-saved instruction changes apply
+			// to existing staff sessions without pretending to be an access control.
+			const turnSystemPrompt = this._authority
+				? `${this._baseSystemPrompt}\n\n${formatCompanyPolicyInstructions(readCompanyPolicy(this._authority))}`
+				: this._baseSystemPrompt;
+
 			// Emit before_agent_start extension event
 			const result = await this._extensionRunner.emitBeforeAgentStart(
 				expandedText,
 				currentImages,
-				this._baseSystemPrompt,
+				turnSystemPrompt,
 				this._baseSystemPromptOptions,
 			);
 			// Add all custom messages from extensions
@@ -1360,7 +1367,7 @@ export class AgentSession {
 			} else {
 				// Ensure we're using the base prompt (in case previous turn had modifications)
 				this._systemPromptOverride = undefined;
-				this.agent.state.systemPrompt = this._baseSystemPrompt;
+				this.agent.state.systemPrompt = turnSystemPrompt;
 			}
 		} catch (error) {
 			preflightResult?.(false);

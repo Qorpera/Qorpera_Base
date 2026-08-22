@@ -10293,7 +10293,7 @@ function summarizeArgs(args) {
 
 // ---- company settings -------------------------------------------------------
 
-const SETTINGS_TABS = new Set(["general", "company", "connections", "authority"]);
+const SETTINGS_TABS = new Set(["general", "company", "connections", "policy"]);
 let settingsTab = "general";
 let connectingConnection = null;
 let disconnectingConnection = null;
@@ -10389,17 +10389,6 @@ function setRow(content, label, small, control) {
 	if (control) row.appendChild(control);
 	content.appendChild(row);
 	return row;
-}
-function modeSelect(value) {
-	const sel = document.createElement("select");
-	for (const mode of ["auto", "notify", "gate"]) {
-		const o = document.createElement("option");
-		o.value = mode;
-		o.textContent = mode;
-		if (mode === value) o.selected = true;
-		sel.appendChild(o);
-	}
-	return sel;
 }
 
 const CONNECTION_LOGOS = {
@@ -11830,59 +11819,107 @@ async function renderSettingsTab() {
 		return;
 	}
 
-	if (settingsTab === "authority") {
-		setHeading(content, "Authority — the gates");
+	if (settingsTab === "policy") {
+		const heading = document.createElement("header");
+		heading.className = "policy-settings-heading";
+		const title = document.createElement("h1");
+		title.textContent = "Policy";
+		const note = document.createElement("span");
+		note.className = "policy-settings-note";
+		note.innerHTML =
+			'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg><span>Instructions, not permissions</span>';
+		heading.append(title, note);
+		content.appendChild(heading);
 		if (!backendUrl) {
-			content.insertAdjacentHTML("beforeend", '<div class="sess-meta">Open a company to edit its gates.</div>');
+			content.insertAdjacentHTML("beforeend", '<div class="sess-meta">Open a company to edit its policy.</div>');
 			return;
 		}
-		const cfg = await (await fetch(`${backendUrl}/api/authority/config`)).json();
+		let cfg;
+		try {
+			const response = await fetch(`${backendUrl}/api/authority/config`);
+			if (!response.ok) throw new Error(await response.text());
+			cfg = await response.json();
+		} catch (error) {
+			if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
+			const message = document.createElement("div");
+			message.className = "sess-meta policy-settings-error";
+			message.textContent = error instanceof Error && error.message ? error.message : "Policy could not be loaded.";
+			content.appendChild(message);
+			return;
+		}
 		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
-		const note = document.createElement("div");
-		note.className = "sess-meta";
-
-		const money = modeSelect(cfg.classes.money.mode);
-		const limit = document.createElement("input");
-		limit.type = "number";
-		limit.value = cfg.classes.money.limitUsd ?? 50;
-		const moneyRow = setRow(content, "Money", "spending and financial commitments", money);
-		moneyRow.appendChild(limit);
-		moneyRow.appendChild(document.createTextNode("USD notify-limit"));
-
-		const identity = modeSelect(cfg.classes.identity.mode);
-		setRow(content, "Identity", "acting AS the company externally: sending, posting, signing", identity);
-		const irreversible = modeSelect(cfg.classes.irreversible.mode);
-		setRow(content, "Irreversible", "prod deploys, deletions, legal commitments", irreversible);
-		setRow(
-			content,
-			"Product code",
-			"company agents are read-only here; product-workers can modify only their assigned worktree — not configurable",
-		);
-
-		setRow(content, "Authority itself", "editing gates, protected company files, or the inbox — always gated, not configurable");
-
-		const save = document.createElement("button");
-		save.className = "save";
-		save.textContent = "Save gates";
+		const categories = [
+			{
+				key: "spending",
+				label: "Spending",
+				icon: '<circle cx="12" cy="12" r="9"/><path d="M15.2 8.8c-.7-.5-1.7-.8-2.7-.8-1.5 0-2.7.7-2.7 1.8 0 2.8 5.6 1.3 5.6 4.3 0 1.1-1.1 1.9-2.8 1.9-1.2 0-2.3-.4-3.1-1M12.5 6.3v11.4"/>',
+			},
+			{
+				key: "external_communication",
+				label: "External Communication",
+				icon: '<path d="m21 3-7.2 18-3.7-7.1L3 10.2zM10.1 13.9 21 3"/>',
+			},
+			{
+				key: "hard_to_reverse_changes",
+				label: "Hard-to-reverse Changes",
+				icon: '<path d="m9 7-5 5 5 5M4 12h10a6 6 0 0 1 6 6"/>',
+			},
+			{
+				key: "information_sharing",
+				label: "Information Sharing",
+				icon: '<circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8.3 10.9 7.4-4.8M8.3 13.1l7.4 4.8"/>',
+			},
+		];
+		const list = document.createElement("section");
+		list.className = "policy-settings-list";
+		list.setAttribute("aria-label", "Policy instructions");
 		const canAuthorize = canUseProfile("authorize");
-		money.disabled = !canAuthorize;
-		limit.disabled = !canAuthorize;
-		identity.disabled = !canAuthorize;
-		irreversible.disabled = !canAuthorize;
-		save.disabled = !canAuthorize;
-		save.onclick = async () => {
-			const res = await authorizedPost("/api/authority/config", {
-				classes: {
-					money: { mode: money.value, limitUsd: Number(limit.value) || 50 },
-					identity: { mode: identity.value },
-					irreversible: { mode: irreversible.value },
-				},
-			});
-			const result = await res.json().catch(() => ({ ok: false }));
-			note.textContent = result.ok ? "saved — gates apply immediately" : `rejected: ${result.error ?? "error"}`;
-		};
-		content.appendChild(save);
-		content.appendChild(note);
+		for (const category of categories) {
+			const row = document.createElement("div");
+			row.className = "policy-settings-row";
+			const icon = document.createElement("span");
+			icon.className = "policy-settings-icon";
+			icon.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${category.icon}</svg>`;
+			const label = document.createElement("label");
+			const select = document.createElement("select");
+			select.id = `policy-${category.key}`;
+			select.className = "policy-settings-select";
+			select.disabled = !canAuthorize;
+			for (const [value, text] of [
+				["ask", "Ask"],
+				["act", "Act"],
+				["auto", "Auto"],
+			]) {
+				select.appendChild(new Option(text, value));
+			}
+			select.value = cfg.policy?.[category.key] ?? "ask";
+			label.htmlFor = select.id;
+			label.textContent = category.label;
+			let savedValue = select.value;
+			select.onchange = async () => {
+				const requestedValue = select.value;
+				select.disabled = true;
+				try {
+					const response = await authorizedPost("/api/authority/config", {
+						policy: { [category.key]: requestedValue },
+					});
+					const result = await response.json().catch(() => ({ ok: false }));
+					if (!response.ok || !result.ok) {
+						throw new Error(result.error ?? (await response.text()) ?? "Policy could not be saved.");
+					}
+					savedValue = result.policy?.[category.key] ?? requestedValue;
+					select.value = savedValue;
+				} catch (error) {
+					select.value = savedValue;
+					showToast(error instanceof Error && error.message ? error.message : "Policy could not be saved.");
+				} finally {
+					select.disabled = !canAuthorize;
+				}
+			};
+			row.append(icon, label, select);
+			list.appendChild(row);
+		}
+		content.appendChild(list);
 		return;
 	}
 

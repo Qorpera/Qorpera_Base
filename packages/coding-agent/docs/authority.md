@@ -30,11 +30,23 @@ mode = "gate"          # ALWAYS gate — this line is decorative; the engine
 [tools]                # optional per-tool overrides
 deploy = "irreversible"
 bash = "none"          # opt a tool out of built-in classification
+
+[policy]               # behavioral instructions, not permissions
+spending = "ask"       # ask | act | auto
+external_communication = "ask"
+hard_to_reverse_changes = "ask"
+information_sharing = "ask"
 ```
 
 Modes: `auto` (proceed silently) · `notify` (proceed, record a line in
 `inbox/notices.md`) · `gate` (block the effect, file a request). A malformed
 file fails **closed** — every class gates.
+
+The `[policy]` table is a separate instruction layer. `ask` tells staff to
+ask before acting, `act` allows action when the founder directly requests or
+clearly authorizes it, and `auto` allows proactive action when it advances the
+request. The settings UI auto-saves these values and staff read them on every
+turn. They never grant access, relax a gate, or bypass a safeguard.
 
 ## Built-in classification
 
@@ -181,11 +193,12 @@ approved file must be paired with a one-shot capability created by local
 native review. A copied or cloned approval therefore cannot authorize an
 effect on another machine or in a later child session.
 
-## What this is not
+## What the authority layer is not
 
-Prompt-tier guidance. Enforcement is code at the tool-call boundary and the
-extension loader; the system prompt only explains the rules. Known limits of
-v1: the bash screen is string-level (no shell parsing), and `limit_usd` is
-parsed but not yet enforced because Base has no money-moving tools. Native
-founder reviews, child effect assertions, gate transitions, and broker-observed
-model usage are recorded as distinct provenance events.
+The technical authority layer is not prompt-tier guidance. Enforcement is
+code at the tool-call boundary and the extension loader; `[policy]` is the
+explicitly non-enforcing instruction layer. Known limits of v1: the bash
+screen is string-level (no shell parsing), and `limit_usd` is parsed but not
+yet enforced because Base has no money-moving tools. Native founder reviews,
+child effect assertions, gate transitions, and broker-observed model usage
+are recorded as distinct provenance events.

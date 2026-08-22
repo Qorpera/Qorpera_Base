@@ -23,8 +23,8 @@ import {
 } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
-import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
-import { discoverAuthority, readAuthorityConfig } from "./authority.ts";
+import { parse as parseToml } from "smol-toml";
+import { discoverAuthority } from "./authority.ts";
 import { canonicalCompanyRoot, listProductDepartments, readCompanyManifest } from "./company.ts";
 import type { CompanyArtifactRecord } from "./company-artifacts.ts";
 import {
@@ -35,9 +35,21 @@ import {
 	type ScheduledJobEffort,
 } from "./company-connections.ts";
 import type { CompanyConnectorManifestRecord } from "./company-connectors.ts";
+import {
+	COMPANY_POLICY_KEYS,
+	isCompanyPolicyMode,
+	parseCompanyPolicy,
+	readCompanyPolicy,
+	updateCompanyPolicySource,
+} from "./company-policy.ts";
 import type { CompanyRoom } from "./company-rooms.ts";
 import type { StaffAgent, StaffAgentMessage } from "./company-staff.ts";
-import { readFounderIdentity, signAuthorityPolicy, signGateApproval } from "./founder-identity.ts";
+import {
+	readFounderIdentity,
+	signAuthorityPolicy,
+	signGateApproval,
+	verifyAuthorityPolicy,
+} from "./founder-identity.ts";
 import { isPublicSessionGroup, isPublicSessionRuntime, publicSessionRuntimeSnapshot } from "./session-visibility.ts";
 import { FIXED_SHELL_NAVIGATION, type ShellNavigationState } from "./shell-navigation.ts";
 import { readUsageRateCatalog, type UsageRateCatalog } from "./usage-pricing.ts";
@@ -403,6 +415,14 @@ mode = "gate"
 
 [authority]
 mode = "gate"
+
+# Behavioral instructions only. These do not grant permissions or replace
+# the technical safeguards above.
+[policy]
+spending = "ask"
+external_communication = "ask"
+hard_to_reverse_changes = "ask"
+information_sharing = "ask"
 `;
 
 function physicalDirectoryWithin(directory: string, entry = "."): string | undefined {
@@ -1786,22 +1806,16 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			return;
 		}
 		if (url.pathname === "/api/authority/config" && request.method === "GET") {
-			// Structured view for the settings UI (toggles, not prose).
+			// The settings UI exposes behavioral policy only. Technical authority
+			// remains a separate, non-configurable kernel concern here.
 			const authority = discoverAuthority(root);
 			if (!authority) {
 				response.writeHead(404).end("no authority.toml");
 				return;
 			}
-			const config = readAuthorityConfig(authority);
-			response.writeHead(200, { "content-type": "application/json" }).end(
-				JSON.stringify({
-					classes: {
-						money: config.classes.money,
-						identity: config.classes.identity,
-						irreversible: config.classes.irreversible,
-					},
-				}),
-			);
+			response
+				.writeHead(200, { "content-type": "application/json" })
+				.end(JSON.stringify({ policy: readCompanyPolicy(authority) }));
 			return;
 		}
 		if (url.pathname === "/api/authority/config" && request.method === "POST") {
@@ -1815,40 +1829,42 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			});
 			request.on("end", () => {
 				try {
-					const update = JSON.parse(body) as {
-						classes?: Record<string, { mode?: string; limitUsd?: number }>;
-					};
-					// Surgical merge into the existing file so [tools] and any
-					// custom sections survive; comments do not (Advanced tab
-					// exists for comment-preserving edits).
+					const update = JSON.parse(body) as { policy?: unknown };
+					if (!update.policy || typeof update.policy !== "object" || Array.isArray(update.policy)) {
+						throw new Error("policy must be an object");
+					}
+					const incoming = update.policy as Record<string, unknown>;
+					if (Object.keys(incoming).length === 0) throw new Error("policy update is empty");
+					if (Object.keys(incoming).some((key) => !(COMPANY_POLICY_KEYS as readonly string[]).includes(key))) {
+						throw new Error("policy contains an unknown category");
+					}
+
 					const source = readCompanyFile(root, "authority.toml");
-					let existing: Record<string, unknown> = {};
-					try {
-						existing = parseToml(source?.content.toString("utf-8") ?? BASE_AUTHORITY_POLICY) as Record<
-							string,
-							unknown
-						>;
-					} catch {
-						existing = {};
+					if (source) {
+						const provenance = verifyAuthorityPolicy(root);
+						if (provenance !== "no-identity" && provenance !== "valid") {
+							throw new Error("authority.toml must be ratified before changing policy instructions");
+						}
 					}
-					const modes = new Set(["auto", "notify", "gate"]);
-					for (const name of ["money", "identity", "irreversible"]) {
-						const incoming = update.classes?.[name];
-						if (!incoming) continue;
-						const section = {
-							...((existing[name] as Record<string, unknown>) ?? {}),
-						};
-						if (incoming.mode && modes.has(incoming.mode)) section.mode = incoming.mode;
-						if (name === "money" && typeof incoming.limitUsd === "number") section.limit_usd = incoming.limitUsd;
-						existing[name] = section;
+					const sourceText = source?.content.toString("utf-8") ?? BASE_AUTHORITY_POLICY;
+					const policy = parseCompanyPolicy(sourceText);
+					for (const key of COMPANY_POLICY_KEYS) {
+						const value = incoming[key];
+						if (value === undefined) continue;
+						if (!isCompanyPolicyMode(value)) throw new Error(`invalid policy mode for ${key}`);
+						policy[key] = value;
 					}
-					existing.authority = {
-						...((existing.authority as Record<string, unknown>) ?? {}),
-						mode: "gate",
-					};
-					writeOptionalAuthorityPolicy(root, `${stringifyToml(existing)}\n`);
+					const current = readCompanyFile(root, "authority.toml");
+					if (source && (!current || !current.content.equals(source.content))) {
+						throw new Error("authority.toml changed while policy instructions were being saved");
+					}
+					writeOptionalAuthorityPolicy(root, updateCompanyPolicySource(sourceText, policy));
 					ratifyPolicyIfFounder(root);
-					response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+					const authority = discoverAuthority(root);
+					const effectivePolicy = authority ? readCompanyPolicy(authority) : policy;
+					response
+						.writeHead(200, { "content-type": "application/json" })
+						.end(JSON.stringify({ ok: true, policy: effectivePolicy }));
 				} catch (error) {
 					response
 						.writeHead(400, { "content-type": "application/json" })
