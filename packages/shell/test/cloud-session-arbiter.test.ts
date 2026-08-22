@@ -12,6 +12,7 @@ const CLIENT_INPUT = "712716cc-b232-4c66-a393-009415296ee8";
 const EXECUTION_PIN = { companySnapshotId: COMPANY_SNAPSHOT, staffVersion: 3 };
 
 interface FakeCalls {
+	listPages: Array<Record<string, unknown>>;
 	ensure: Array<Record<string, unknown>>;
 	append: Array<Record<string, unknown>>;
 	claim: Array<Record<string, unknown>>;
@@ -21,6 +22,7 @@ interface FakeCalls {
 
 function fakePrimary(overrides: {
 	created?: boolean;
+	existingSession?: boolean;
 	claimResult?: () => unknown;
 	renewResult?: () => unknown;
 	completeResult?: () => unknown;
@@ -29,7 +31,7 @@ function fakePrimary(overrides: {
 	primary: QorperaHostedPrimary;
 	calls: FakeCalls;
 } {
-	const calls: FakeCalls = { ensure: [], append: [], claim: [], renew: [], complete: [] };
+	const calls: FakeCalls = { listPages: [], ensure: [], append: [], claim: [], renew: [], complete: [] };
 	const transport = {
 		async ensureStaffSession(input: Record<string, unknown>) {
 			calls.ensure.push(input);
@@ -59,6 +61,31 @@ function fakePrimary(overrides: {
 					updated_at: "2026-08-18T14:00:00.000Z",
 				},
 			];
+		},
+		async listSessionsPage(input: Record<string, unknown>) {
+			calls.listPages.push(input);
+			return {
+				items:
+					overrides.existingSession === false
+						? []
+						: [
+								{
+									session_id: HOSTED_SESSION,
+									client_session_id: CLOUD_CLIENT_SESSION,
+									profile_id: AUTHOR,
+									environment_id: ENVIRONMENT,
+									title: "Financial Officer",
+									staff_agent_id: "staff-1",
+									status: "open",
+									created_by_user_id: AUTHOR,
+									created_at: "2026-08-18T14:00:00.000Z",
+									updated_at: "2026-08-18T14:00:00.000Z",
+								},
+							],
+				has_more: false,
+				next_updated_at: null,
+				next_id: null,
+			};
 		},
 		async appendSessionInput(input: Record<string, unknown>) {
 			calls.append.push(input);
@@ -129,6 +156,28 @@ describe("CloudSessionArbiter", () => {
 		const ref = await arbiter.ensureSession("staff-1", "Financial Officer", AUTHOR);
 		expect(ref.created).toBe(false);
 		expect(ref.clientSessionId).toBe(CLOUD_CLIENT_SESSION);
+	});
+
+	it("adopts an existing session without invoking the creating ensure path", async () => {
+		const { primary, calls } = fakePrimary({ existingSession: true });
+		const arbiter = new CloudSessionArbiter(primary, ENVIRONMENT);
+		const ref = await arbiter.adoptExistingSession("staff-1");
+		expect(ref).toMatchObject({
+			hostedSessionId: HOSTED_SESSION,
+			clientSessionId: CLOUD_CLIENT_SESSION,
+			created: false,
+		});
+		expect(calls.listPages).toHaveLength(1);
+		expect(calls.ensure).toHaveLength(0);
+	});
+
+	it("does not create a session when an agent is opened without cloud history", async () => {
+		const { primary, calls } = fakePrimary({ existingSession: false });
+		const arbiter = new CloudSessionArbiter(primary, ENVIRONMENT);
+		expect(await arbiter.adoptExistingSession("staff-1")).toBeUndefined();
+		expect(arbiter.sessionForStaff("staff-1")).toBeUndefined();
+		expect(calls.listPages).toHaveLength(1);
+		expect(calls.ensure).toHaveLength(0);
 	});
 
 	it("holds one claim at a time and refuses a second locally", async () => {

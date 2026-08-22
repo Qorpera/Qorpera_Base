@@ -342,6 +342,7 @@ import {
 } from "./github-company-connector.ts";
 import { connectGitHubCli, readGitHubCliStatus } from "./github-connection.ts";
 import {
+	type HostedAccountEntitlement,
 	type HostedCompanyFile,
 	type HostedCompanyProposal,
 	type HostedCompanySnapshot,
@@ -382,6 +383,7 @@ import {
 	readLocalExecutionPermission,
 	writeLocalExecutionPermission,
 } from "./local-execution.ts";
+import { alignCloudCompanyManifestName } from "./managed-company-identity.ts";
 import { ModelAccountStore, type ModelAccountView } from "./model-accounts.ts";
 import { hostedProfileAccess } from "./profile-collaboration.ts";
 import {
@@ -1441,12 +1443,6 @@ function runtimeCloudSessionArbiter(runtime: CompanyRuntime): CloudSessionArbite
 	if (!primary || !currentQorperaAccountId) return undefined;
 	runtime.cloudSessionArbiter = new CloudSessionArbiter(primary, attachment.environmentId);
 	return runtime.cloudSessionArbiter;
-}
-
-/** The trail file name is `${timestamp}_${sessionId}.jsonl` for both minted
- * and materialized sessions; the id is the shared trail identity. */
-function trailFileSessionId(file: string): string | undefined {
-	return /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(file)?.[1];
 }
 
 /** The local trail file carrying the arbiter session's shared identity,
@@ -2649,6 +2645,11 @@ function ownedCloudCacheStaging(root: string, profile: HostedProfile): boolean {
 	}
 }
 
+function alignManagedCloudCompanyName(root: string, profile: HostedProfile): void {
+	if (!alignCloudCompanyManifestName(root, profile.profileName)) return;
+	commitCompanyMaterialization(root, [COMPANY_MANIFEST_RELATIVE_PATH]);
+}
+
 async function materializeManagedCloudCache(
 	root: string,
 	profile: HostedProfile,
@@ -2662,6 +2663,7 @@ async function materializeManagedCloudCache(
 			throw new Error(`The managed Company File staging path is already in use: ${staging.parent}`);
 		}
 		if (existsSync(target) && isCompanyRoot(target)) {
+			alignManagedCloudCompanyName(target, profile);
 			return target;
 		}
 		rmSync(staging.parent, { recursive: true, force: true });
@@ -2688,6 +2690,7 @@ async function materializeManagedCloudCache(
 	}
 	const scaffolded = scaffoldCompany(staging.tree);
 	if (resolve(scaffolded.root) !== resolve(staging.tree)) throw new Error("Cloud cache scaffold moved unexpectedly");
+	alignManagedCloudCompanyName(scaffolded.root, profile);
 	renameSync(staging.tree, target);
 	return target;
 }
@@ -7689,6 +7692,8 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 	try {
 		const openingAttachment = profileAttachment(root);
 		if (openingAttachment.profileType === "cloud") {
+			const openingProfile = hostedProfilesById.get(openingAttachment.profileId);
+			if (openingProfile) alignManagedCloudCompanyName(root, openingProfile);
 			const primary = qorperaAccountAuth?.hostedPrimary();
 			const objects = qorperaAccountAuth?.hostedObjects();
 			if (!primary || !objects) throw new Error("The cloud Company File is unavailable.");
@@ -8979,11 +8984,9 @@ async function openStaffMember(
 		try {
 			let existingTrail = introState?.trailFile ?? latestStaffTrailFile(runtime, staff.id);
 			const cloudCompany = profileAttachment(runtime.root).profileType === "cloud";
-			// Cloud companies adopt the hosted session instead of minting a local
-			// one: the arbiter answers with the one open session for this agent
-			// (creating it — and its single kickoff row — atomically when none
-			// exists). If arbitration is unreachable, opening stops instead of
-			// creating a second machine-local conversation.
+			// Cloud companies adopt an existing hosted session without creating
+			// cloud state. A new session (and its kickoff row) is created atomically
+			// only when the member submits the first durable input.
 			let cloudAdopted = false;
 			const sessionArbiter = slotHasProfileCapability(slot, "write")
 				? runtimeCloudSessionArbiter(runtime)
@@ -8993,13 +8996,13 @@ async function openStaffMember(
 			}
 			if (sessionArbiter) {
 				try {
-					const preferred = existingTrail ? trailFileSessionId(existingTrail) : undefined;
 					const ref =
-						sessionArbiter.sessionForStaff(staff.id) ??
-						(await sessionArbiter.ensureSession(staff.id, staff.displayName, preferred));
+						sessionArbiter.sessionForStaff(staff.id) ?? (await sessionArbiter.adoptExistingSession(staff.id));
 					if (slot.runtime !== runtime || runtime.closing) return { ok: false, error: "company runtime changed" };
-					existingTrail = localTrailForArbiterRef(runtime, staff, ref);
-					cloudAdopted = true;
+					if (ref) {
+						existingTrail = localTrailForArbiterRef(runtime, staff, ref);
+						cloudAdopted = true;
+					}
 					recordCloudSessionArbiterOutcome(runtime, { ok: true });
 				} catch (error) {
 					recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
@@ -11756,6 +11759,7 @@ app.whenReady().then(async () => {
 		let access: ProfileAccess | undefined;
 		let hostedProfile: HostedProfile | undefined;
 		let companyFile: HostedCompanyFile | undefined;
+		let accountEntitlement: HostedAccountEntitlement | undefined;
 		let companyProposals: HostedCompanyProposal[] = [];
 		let settingsRefreshError: string | undefined;
 		let nativeExecution:
@@ -11769,6 +11773,7 @@ app.whenReady().then(async () => {
 					team = await refreshHostedTeam(attachment.profileId);
 					access = hostedProfileAccess(team);
 					const primary = qorperaAccountAuth?.hostedPrimary();
+					accountEntitlement = await primary?.getAccountEntitlement();
 					companyFile = await primary?.getCompanyFile(attachment.environmentId);
 					companyProposals =
 						(await primary?.listCompanyProposals(attachment.environmentId, "open", 100))?.items ?? [];
@@ -11778,6 +11783,7 @@ app.whenReady().then(async () => {
 				} catch (error) {
 					settingsRefreshError = error instanceof Error ? error.message : String(error);
 					console.error(`Cloud profile settings refresh failed: ${settingsRefreshError}`);
+					hostedProfile = hostedProfilesById.get(attachment.profileId);
 					team = effectiveHostedTeam(attachment.profileId);
 					access = team ? hostedProfileAccess(team) : undefined;
 				}
@@ -11830,12 +11836,13 @@ app.whenReady().then(async () => {
 				fileConflictPaths === 0,
 		);
 		return {
-			account,
+			account: account && accountEntitlement ? { ...account, entitlement: accountEntitlement } : account,
 			company:
 				slot?.runtime && account?.user
 					? {
 							root: slot.runtime.root,
 							companyIcon: readCompanyIcon(app.getPath("userData"), account.user.id, slot.runtime.root),
+							...(hostedProfile ? { name: hostedProfile.profileName } : {}),
 						}
 					: undefined,
 			profile:

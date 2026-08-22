@@ -223,6 +223,36 @@ afterEach(() => {
 });
 
 describe("cloud trail synchronization", () => {
+	it("does not create cloud authority for a metadata-only window until durable content exists", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const live = bindTrailSession(machine, machine, {
+			actor: "company-agent",
+			attended: true,
+			staffAgentId: "financial-officer",
+		});
+		appendKernelSessionInfo(live, "Financial Officer");
+		const primary = new FakeHostedPrimary();
+		const sync = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => true,
+			liveBindings: () => [live],
+		});
+
+		await expect(sync.sync()).resolves.toMatchObject({ sessionsCreated: 0, eventsUploaded: 0 });
+		expect(primary.sessions).toHaveLength(0);
+
+		appendMessage(live, "first-message", null, "user", "Create the durable conversation now.");
+		await expect(sync.sync()).resolves.toMatchObject({ sessionsCreated: 1 });
+		expect(primary.sessions).toHaveLength(1);
+		expect(primary.events.get(hostedSessionId)?.length).toBeGreaterThan(0);
+	});
+
 	it("persists an immutable execution binding across restart and stamps every uploaded entry part", async () => {
 		const machine = join(root, "machine", "company");
 		const userData = join(root, "machine", "user-data");
@@ -857,6 +887,7 @@ describe("cloud trail synchronization", () => {
 		mkdirSync(join(machine, "trail"), { recursive: true });
 		const live = bindTrailSession(machine, machine, { actor: "company-agent", attended: true });
 		appendKernelSessionInfo(live, "Recovery test");
+		appendMessage(live, "recovery-message", null, "user", "Persist this conversation.");
 		const primary = new FakeHostedPrimary();
 		primary.failAfterNextAppend = true;
 		const sync = new CloudTrailSynchronizer({

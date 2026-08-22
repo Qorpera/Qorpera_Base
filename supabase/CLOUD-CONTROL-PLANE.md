@@ -27,6 +27,11 @@ transport. It authenticates member requests against Supabase, hashes uploads
 server-side, and confirms the catalog only after durable storage. It is part of
 the cloud data layer, not the execution-computer layer.
 
+The Company File is the cloud-authoritative data plane for the company's
+durable digital body, not a desktop folder or NAS share. Its content scope,
+projection semantics, repository/worktree boundary, and recovery-admission
+contract are defined in `COMPANY-FILE.md`.
+
 The control plane never assumes an Electron path, a member's local credential
 store, a particular physical computer, or a writable shared NAS filesystem.
 
@@ -69,7 +74,9 @@ A logical computer is a durable machine policy identity: template,
 capabilities, permissions, compute-identity reference, optional encrypted
 volume, and runtime history. A physical VM or container is a disposable or
 suspendable realization of that identity. Its Company File checkout,
-repository worktrees, process state, and local disk are caches.
+repository worktree directory, process state, and local disk are caches. The
+repository objects, refs, unmerged work, and recovery checkpoints required to
+reconstruct durable company work belong to the Company File data plane.
 
 ### Execution sponsor
 

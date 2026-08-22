@@ -1,5 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import { type Dirent, existsSync, type FSWatcher, readFileSync, watch } from "node:fs";
+import {
+	type Dirent,
+	existsSync,
+	type FSWatcher,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	watch,
+	writeFileSync,
+} from "node:fs";
 import { chmod, lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { type CompanyRuntimeLock, canonicalCompanyRoot } from "@qorpera/company/company-runtime-lock";
@@ -9,6 +19,8 @@ import { type CloudSyncHealth, DurableCloudSyncLoop } from "./cloud-sync-loop.ts
 const PROJECTION_STATE_SCHEMA = "qorpera.company-file-projection/v1";
 const PROJECTION_REFRESH_SCHEMA = "qorpera.company-file-projection-refresh/v1";
 const PROJECTION_IMPORT_SCHEMA = "qorpera.company-file-projection-import/v1";
+const PROJECTION_DIRECTORY_NAME = "Company File (synced copy)";
+const LEGACY_PROJECTION_DIRECTORY_NAME = "Company File";
 
 interface ProjectionEntry {
 	kind: "directory" | "file";
@@ -78,7 +90,69 @@ function statePath(userData: string, profileId: string, companyRoot: string): st
 }
 
 export function cloudCompanyProjectionRoot(userData: string, profileId: string): string {
-	return join(userData, "company-file-projections", profileId, "Company File");
+	return join(userData, "company-file-projections", profileId, PROJECTION_DIRECTORY_NAME);
+}
+
+function writeJsonAtomicSync(path: string, value: object): void {
+	mkdirSync(dirname(path), { recursive: true });
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(temporary, `${JSON.stringify(value)}\n`, { encoding: "utf-8", mode: 0o600, flag: "wx" });
+		renameSync(temporary, path);
+	} catch (error) {
+		rmSync(temporary, { force: true });
+		throw error;
+	}
+}
+
+function projectionRootWithHonestName(
+	userData: string,
+	profileId: string,
+	companyRoot: string,
+	requestedRoot: string,
+): string {
+	const requested = resolve(requestedRoot);
+	if (basename(requested) !== PROJECTION_DIRECTORY_NAME) return requested;
+	const legacy = join(dirname(requested), LEGACY_PROJECTION_DIRECTORY_NAME);
+	const path = statePath(userData, profileId, companyRoot);
+	const interrupted = existsSync(`${path}.refresh.json`) || existsSync(`${path}.import.json`);
+	let state: Partial<ProjectionState> | undefined;
+	let unreadableState = false;
+	if (existsSync(path)) {
+		try {
+			state = JSON.parse(readFileSync(path, "utf-8")) as Partial<ProjectionState>;
+		} catch {
+			unreadableState = true;
+		}
+	}
+
+	if (existsSync(requested)) {
+		if (existsSync(legacy)) throw new Error("Both current and legacy Company File synced copies exist");
+		// Recover a process stop after the directory rename but before the state
+		// rewrite. The preserved old base proves this is the same projection.
+		if (
+			!interrupted &&
+			state &&
+			!parseState(state, profileId, companyRoot, requested) &&
+			parseState(state, profileId, companyRoot, legacy)
+		) {
+			writeJsonAtomicSync(path, { ...state, projectionRoot: requested });
+		}
+		return requested;
+	}
+	if (!existsSync(legacy)) return requested;
+	// Let the old path finish crash recovery first. A later open migrates it.
+	if (interrupted || unreadableState) return legacy;
+	if (state && !parseState(state, profileId, companyRoot, legacy)) return legacy;
+
+	try {
+		renameSync(legacy, requested);
+	} catch (error) {
+		if (new Set(["EACCES", "EPERM"]).has((error as NodeJS.ErrnoException).code ?? "")) return legacy;
+		throw error;
+	}
+	if (state) writeJsonAtomicSync(path, { ...state, projectionRoot: requested });
+	return requested;
 }
 
 function sameEntry(left: ProjectionEntry | undefined, right: ProjectionEntry | undefined): boolean {
@@ -365,8 +439,13 @@ export class CloudCompanyProjection {
 		runtimeLock: CompanyRuntimeLock;
 	}) {
 		this.#companyRoot = canonicalCompanyRoot(options.companyRoot);
-		this.#projectionRoot = resolve(options.projectionRoot);
 		this.#profileId = options.profileId;
+		this.#projectionRoot = projectionRootWithHonestName(
+			options.userData,
+			this.#profileId,
+			this.#companyRoot,
+			options.projectionRoot,
+		);
 		this.#statePath = statePath(options.userData, options.profileId, this.#companyRoot);
 		this.#refreshStatePath = `${this.#statePath}.refresh.json`;
 		this.#importStatePath = `${this.#statePath}.import.json`;
@@ -859,7 +938,12 @@ export async function cloudCompanyProjectionHasPersistedChanges(options: {
 	profileId: string;
 }): Promise<boolean> {
 	const companyRoot = canonicalCompanyRoot(options.companyRoot);
-	const projectionRoot = resolve(options.projectionRoot);
+	const projectionRoot = projectionRootWithHonestName(
+		options.userData,
+		options.profileId,
+		companyRoot,
+		options.projectionRoot,
+	);
 	if (!existsSync(projectionRoot)) return false;
 	const current = await inspect(projectionRoot, false);
 	const path = statePath(options.userData, options.profileId, companyRoot);

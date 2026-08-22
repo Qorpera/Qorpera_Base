@@ -98,7 +98,20 @@ adding.
 Steps 1–5 passed against the clean hosted project and physical NAS. The
 migration correctly found zero legacy objects. The dedicated named tunnel at
 `objects.qorpera.com` passed Windows, Mac, and Edge-worker checks after the
-temporary test tunnel was retired.
+temporary test tunnel was retired. Production desktop clients default to this
+gateway when connected to the hosted Qorpera Supabase project; explicit gateway
+configuration remains available for non-production and self-hosted projects.
+
+Storage usage and plan allocation apply only to product objects confirmed in
+the authoritative catalog. Operator recovery archives stored elsewhere on the
+same NAS are excluded from the displayed count only while they remain outside
+the product catalog: they are not yet addressable or authorizable Company File
+objects. That exclusion is not a product boundary. A company-owned recovery
+archive is Company File admission input and must enter through the trusted
+gateway with an explicit owner, provenance, verified object graph, and
+retention root before it contributes to product usage. The original archive
+remains immutable until an independent restore of the published revision has
+passed. See `COMPANY-FILE.md`.
 
 ## Constraints this must not break
 

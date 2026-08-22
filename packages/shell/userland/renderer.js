@@ -10837,7 +10837,7 @@ function renderCompanyTab(content, info) {
 	// Every action in this tab reports failures there and IPC rejections are
 	// caught too — a silently swallowed failure is exactly how invitations went
 	// missing in 0.20.5.
-	setHeading(content, info.company?.name || state.name || "Company");
+	setHeading(content, info.profile?.name || info.company?.name || state.name || "Company");
 	const errorBox = document.createElement("div");
 	errorBox.className = "hub-error team-error";
 	errorBox.setAttribute("role", "status");
@@ -11300,6 +11300,7 @@ async function renderSettingsTab() {
 		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
 		currentProfileAccess = info.profile?.access ?? info.profile?.team ?? currentProfileAccess;
 		setHeading(content, "General");
+		const displayedCompanyName = info.profile?.name || info.company?.name || state.name || "Current company";
 
 		const companyGroup = document.createElement("section");
 		companyGroup.className = "settings-group general-settings-group";
@@ -11307,15 +11308,12 @@ async function renderSettingsTab() {
 		const companyCard = document.createElement("div");
 		companyCard.className = "general-company-card";
 		companyCard.appendChild(
-			makeCompanyIcon(
-				info.company?.companyIcon || currentCompanyIcon,
-				info.company?.name || state.name || "Current company",
-			),
+			makeCompanyIcon(info.company?.companyIcon || currentCompanyIcon, displayedCompanyName),
 		);
 		const companyCopy = document.createElement("div");
 		companyCopy.className = "general-account-copy";
 		const companyName = document.createElement("strong");
-		companyName.textContent = info.company?.name || state.name || "Current company";
+		companyName.textContent = displayedCompanyName;
 		const companyDetail = document.createElement("small");
 		companyDetail.textContent = info.profile
 			? (PROFILE_ROLE_LABELS[currentProfileAccess.role] ?? "Shared access")
@@ -11364,10 +11362,23 @@ async function renderSettingsTab() {
 		const companyFileCopy = document.createElement("div");
 		companyFileCopy.className = "general-account-copy";
 		const companyFileTitle = document.createElement("strong");
-		companyFileTitle.textContent = "Cloud storage";
-		const companyFileDetail = document.createElement("small");
 		const storage = info.profile?.companyFile;
-		const gibibytes = (bytes) => `${(Number(bytes || 0) / 1024 ** 3).toFixed(bytes >= 1024 ** 3 ? 1 : 2)} GB`;
+		const formatBytes = (value) => {
+			const bytes = Math.max(0, Number(value || 0));
+			if (bytes === 0) return "0 B";
+			const units = ["B", "KB", "MB", "GB", "TB"];
+			const unitIndex = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+			const amount = bytes / 1024 ** unitIndex;
+			return `${amount.toFixed(amount >= 10 || unitIndex === 0 ? 0 : 2)} ${units[unitIndex]}`;
+		};
+		const planKey = storage?.entitlement?.planKey ?? info.account?.entitlement?.planKey ?? "freemium";
+		const subscriptionLevel =
+			planKey === "internal"
+				? "Internal"
+				: planKey === "freemium"
+					? "Freemium"
+					: planKey.replace(/[-_]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
+		companyFileTitle.textContent = `Storage: ${storage ? formatBytes(storage.storageUsedBytes) : "Unavailable"} · ${subscriptionLevel}`;
 		const fileSyncState = info.profile?.status?.files;
 		const fileSyncError = info.profile?.status?.filesError;
 		const recoverableExecutions = Number(info.profile?.status?.recoverableExecutions || 0);
@@ -11383,21 +11394,25 @@ async function renderSettingsTab() {
 				: recoverableExecutions > 0
 				? `${recoverableExecutions} agent ${recoverableExecutions === 1 ? "change needs" : "changes need"} review`
 				: fileSyncState === "cloud"
-					? "Synced across the company"
+					? "Connected · synced across the company"
 					: fileSyncState === "offline"
 						? "Offline · changes are waiting to sync"
 						: fileSyncState === "attention"
 							? "Needs attention"
 							: "Syncing";
-		companyFileDetail.textContent = storage
-			? `${gibibytes(storage.storageUsedBytes)} of ${gibibytes(storage.storageLimitBytes)} stored · ${gibibytes(storage.retainedStorageBytes)} retained · ${syncText}`
-			: syncText;
-		if (fileSyncError) companyFileDetail.title = fileSyncError;
-		const companyFileProtection = document.createElement("small");
-		companyFileProtection.textContent = canUseProfile("write")
-			? "Opens the Company File in File Explorer. Native copy, move, rename, and delete actions sync; protected runtime and Git state are not exposed."
-			: "Opens a view-only Company File in File Explorer. Protected runtime and Git state are not exposed.";
-		companyFileCopy.append(companyFileTitle, companyFileDetail, companyFileProtection);
+		companyFileTitle.title = fileSyncError || syncText;
+		const projectionDetail = document.createElement("small");
+		projectionDetail.textContent =
+			info.profile?.profileType === "cloud"
+				? "Cloud-authoritative · File Explorer opens a synced copy on this computer"
+				: "Stored on this computer";
+		companyFileCopy.append(companyFileTitle, projectionDetail);
+		if (fileSyncError || fileConflictPaths > 0 || recoverableExecutions > 0 || fileSyncState !== "cloud") {
+			const companyFileDetail = document.createElement("small");
+			companyFileDetail.textContent = syncText;
+			if (fileSyncError) companyFileDetail.title = fileSyncError;
+			companyFileCopy.appendChild(companyFileDetail);
+		}
 		const proposalReviews = Array.isArray(companyFileProposal?.reviews) ? companyFileProposal.reviews : [];
 		if (proposalReviews.length > 0) {
 			const reviewDetail = document.createElement("small");
@@ -11417,12 +11432,19 @@ async function renderSettingsTab() {
 		companyFileActions.className = "general-company-actions";
 		const openCompanyFile = document.createElement("button");
 		openCompanyFile.type = "button";
-		openCompanyFile.textContent = "Open Company File";
+		openCompanyFile.textContent = info.profile?.profileType === "cloud" ? "Open synced copy" : "Open Company File";
 		openCompanyFile.onclick = async () => {
 			openCompanyFile.disabled = true;
 			try {
 				const result = await window.qorpera.openCompanyFile();
 				if (!result?.ok) throw new Error(result?.error ?? "The Company File could not be opened.");
+				if (info.profile?.profileType === "cloud") {
+					showToast(
+						result.readOnly
+							? "Opened a read-only synced copy. Cloud revisions remain authoritative."
+							: "Opened a synced copy. Cloud revisions remain authoritative.",
+					);
+				}
 			} catch (error) {
 				showToast(error instanceof Error ? error.message : "The Company File could not be opened.");
 			} finally {
@@ -11657,7 +11679,13 @@ async function renderSettingsTab() {
 		accountCopy.className = "general-account-copy";
 		const accountEmail = document.createElement("strong");
 		accountEmail.textContent = info.account?.user?.email || "Email unavailable";
-		accountCopy.appendChild(accountEmail);
+		const accountEntitlement = info.account?.entitlement;
+		const accountEntitlementDetail = document.createElement("small");
+		accountEntitlementDetail.textContent =
+			accountEntitlement?.planKey === "internal"
+				? "Company-owned internal account · Full access · Complimentary · No subscription"
+				: "Freemium · 50 GB NAS storage included";
+		accountCopy.append(accountEmail, accountEntitlementDetail);
 		const signOutButton = document.createElement("button");
 		signOutButton.type = "button";
 		signOutButton.textContent = "Sign out";

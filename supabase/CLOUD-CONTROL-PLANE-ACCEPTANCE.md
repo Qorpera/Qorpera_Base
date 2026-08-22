@@ -42,10 +42,13 @@ all-member-devices-offline model execution. Those are step 2.
 6. Company File publication uses immutable objects plus a validated
    compare-and-swap head transition; isolated checkouts never share a writable
    NAS filesystem.
-7. A runner cannot enumerate the global queue or become an authority.
-8. The control plane receives only opaque credential/capsule references and
+7. File Explorer is labeled as a synchronized local projection of the
+   cloud-authoritative Company File, and a physical runner receives only an
+   isolated checkout of a pinned revision.
+8. A runner cannot enumerate the global queue or become an authority.
+9. The control plane receives only opaque credential/capsule references and
    provenance, never plaintext subscription credentials.
-9. With no dispatcher or runner online, the first eight invariants continue to
+10. With no dispatcher or runner online, the first nine invariants continue to
    hold and work remains pending.
 
 ## Local proof record
@@ -53,8 +56,8 @@ all-member-devices-offline model execution. Those are step 2.
 The following gates passed from the repository root and were rerun after the
 merge-security review on 2026-08-22:
 
-- `npm run test:hosted-db`: all 54 migrations applied to a clean local Supabase
-  database and all 21 SQL contract files passed.
+- `npm run test:hosted-db`: all 58 migrations applied to a clean local Supabase
+  database and all 24 SQL contract files passed.
 - Edge-function unit tests: 38 passed across company-file verification, runner
   control/broker/orchestration, artifact GC, invitations, and native-login
   authority.
@@ -91,7 +94,7 @@ A new clean project was created expressly for Step 1:
 - project reference: `wovsmjvghnbcbfazdtvr` (`Qorpera Cloud Step 1`,
   `eu-central-1`);
 - health: `ACTIVE_HEALTHY`;
-- all 54 repository migrations are recorded remotely and `db push --dry-run`
+- all 58 repository migrations are recorded remotely and `db push --dry-run`
   reports that the hosted database is up to date;
 - Auth configuration as code preserves email confirmation and TOTP while
   allowlisting the desktop's dynamic `127.0.0.1` callback; email login is
@@ -148,6 +151,30 @@ A new clean project was created expressly for Step 1:
   database-triggered Edge-worker run reclaimed an exact physical test object
   through the stable hostname with its live lease before the temporary tunnel
   was retired;
+- the production Qorpera client now defaults immutable object traffic to
+  `https://objects.qorpera.com`; explicit object-gateway overrides and
+  self-hosted Supabase deployments retain their configured fallback behavior;
+- the default cloud entitlement is freemium with 50 GiB of metered NAS object
+  storage. The Company41-owned account has an explicit, audited internal
+  entitlement with full features, complimentary billing, unlimited allocation,
+  and no subscription dependency. The desktop reads this server-controlled
+  entitlement rather than selecting it by email;
+- the rebuilt Windows client opened Company41 without the prior object lookup
+  failure and displayed byte-accurate catalog usage, the internal plan level,
+  and the complimentary account status. An
+  authenticated follow-up query confirmed that no retired test sessions were
+  recreated;
+- Company41's structured recovery set was admitted as an explicit Company File
+  revision: 189 recovery files totaling 145,837,485 logical bytes. The complete
+  published tree contains 196 files and 145,838,097 logical bytes; its 158
+  deduplicated NAS objects occupy 145,957,560 physical bytes. Every admitted
+  recovery checksum matched, and `git bundle verify` proved the retained bundle
+  complete with 667 refs;
+- the separate cold source archive remains immutable on the NAS at exactly
+  38,623,779,183 bytes with SHA-256
+  `cf9da6afccceec71e366981741c439094e0b8f5654414ddab0f36111f18ab62a`.
+  It is deliberately excluded from Company File usage until the lazy archive
+  admission and independent restore path exist;
 - DSM has an enabled `Boot-up` task for the idempotent gateway/tunnel startup
   script. A controlled full stop/start through that exact script restored both
   services and passed Windows/Mac health checks. The task runs as

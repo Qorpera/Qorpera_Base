@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import {
+	type HostedSession,
 	type HostedSessionRecoveryPage,
 	type PendingSessionInput,
 	type QorperaHostedPrimary,
@@ -83,6 +84,28 @@ export class CloudSessionArbiter {
 
 	get lastClaimRefusal(): Extract<SessionTurnClaim, { claimed: false }>["reason"] | undefined {
 		return this.#lastClaimRefusal;
+	}
+
+	/** Adopt an existing open cloud conversation without creating one. Merely
+	 * opening an agent is a read operation; the first durable input remains the
+	 * point where ensureSession is allowed to create cloud state. */
+	async adoptExistingSession(staffAgentId: string): Promise<ArbiterSessionRef | undefined> {
+		const remembered = this.#byStaff.get(staffAgentId);
+		if (remembered) return remembered;
+		let cursor: { updatedAt: string; sessionId: string } | undefined;
+		for (;;) {
+			const page = await this.#primary.listSessionsPage(this.#environmentId, cursor, 100);
+			const hosted = page.items.find(
+				(session) => session.staffAgentId === staffAgentId && session.status === "open",
+			);
+			if (hosted) return this.#rememberHostedSession(staffAgentId, hosted);
+			if (!page.hasMore) return undefined;
+			const last = page.items.at(-1);
+			if (!last || !page.nextUpdatedAt || !page.nextId) {
+				throw new Error("hosted session discovery cursor did not advance");
+			}
+			cursor = { updatedAt: page.nextUpdatedAt, sessionId: page.nextId };
+		}
 	}
 
 	/** Adopt the staff agent's open hosted session, or create it (which also
@@ -244,6 +267,21 @@ export class CloudSessionArbiter {
 	 * it never offers an outcome-ambiguous operation to another machine. */
 	abandonClaim(): void {
 		this.#activeClaim = undefined;
+	}
+
+	#rememberHostedSession(staffAgentId: string, hosted: HostedSession): ArbiterSessionRef {
+		const ref: ArbiterSessionRef = {
+			hostedSessionId: hosted.sessionId,
+			clientSessionId: hosted.clientSessionId,
+			staffAgentId,
+			title: hosted.title,
+			createdAt: hosted.createdAt,
+			...(hosted.companySnapshotId ? { companySnapshotId: hosted.companySnapshotId } : {}),
+			...(hosted.staffVersion !== undefined ? { staffVersion: hosted.staffVersion } : {}),
+			created: false,
+		};
+		this.#byStaff.set(staffAgentId, ref);
+		return ref;
 	}
 
 	#requireSession(staffAgentId: string): ArbiterSessionRef {

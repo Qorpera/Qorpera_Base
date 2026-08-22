@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claimCompanyRuntimeLock, releaseCompanyRuntimeLock, scaffoldCompany } from "@qorpera/pi-coding-agent/company";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CloudCompanyProjection, cloudCompanyProjectionHasPersistedChanges } from "../src/cloud-company-projection.ts";
+import {
+	CloudCompanyProjection,
+	cloudCompanyProjectionHasPersistedChanges,
+	cloudCompanyProjectionRoot,
+} from "../src/cloud-company-projection.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -160,6 +164,59 @@ describe("cloud Company File projection", () => {
 				await expect(readFile(join(root, "company.md"), "utf-8")).resolves.toBe("survives restart\n");
 			} finally {
 				restarted.close();
+			}
+		} finally {
+			first.close();
+			releaseCompanyRuntimeLock(runtimeLock);
+		}
+	});
+
+	it("migrates the legacy folder name without losing a pending Explorer edit", async () => {
+		const parent = await temporaryDirectory();
+		const root = join(parent, "company");
+		const userData = await temporaryDirectory();
+		const profileId = "11111111-1111-4111-8111-111111111111";
+		const legacyRoot = join(userData, "company-file-projections", profileId, "Company File");
+		const projectionRoot = cloudCompanyProjectionRoot(userData, profileId);
+		scaffoldCompany(root);
+		await writeFile(join(root, "company.md"), "canonical\n", "utf-8");
+		const runtimeLock = claimCompanyRuntimeLock(root);
+		const first = new CloudCompanyProjection({
+			companyRoot: root,
+			projectionRoot: legacyRoot,
+			userData,
+			profileId,
+			canWrite: () => true,
+			onChanged: async () => undefined,
+			runtimeLock,
+		});
+		try {
+			await first.refresh();
+			first.close();
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			await writeFile(join(legacyRoot, "company.md"), "pending edit\n", "utf-8");
+
+			const migrated = new CloudCompanyProjection({
+				companyRoot: root,
+				projectionRoot,
+				userData,
+				profileId,
+				canWrite: () => true,
+				onChanged: async () => undefined,
+				runtimeLock,
+			});
+			try {
+				expect(migrated.path).toBe(projectionRoot);
+				expect(existsSync(legacyRoot)).toBe(false);
+				await migrated.refresh();
+				await expect(readFile(join(projectionRoot, "company.md"), "utf-8")).resolves.toBe("pending edit\n");
+				await expect(
+					cloudCompanyProjectionHasPersistedChanges({ companyRoot: root, projectionRoot, userData, profileId }),
+				).resolves.toBe(true);
+				await migrated.importChanges();
+				await expect(readFile(join(root, "company.md"), "utf-8")).resolves.toBe("pending edit\n");
+			} finally {
+				migrated.close();
 			}
 		} finally {
 			first.close();

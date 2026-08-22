@@ -49,6 +49,9 @@ describe("userland wiring", () => {
 
 	it("keeps the remaining company controls actionable and accessible", () => {
 		expect(rendererSource).toContain("window.qorpera.openCompanyFile()");
+		expect(rendererSource).toContain('"Cloud-authoritative · File Explorer opens a synced copy on this computer"');
+		expect(rendererSource).toContain('"Open synced copy"');
+		expect(rendererSource).toContain('info.profile?.name || info.company?.name || state.name || "Current company"');
 		expect(rendererSource).toContain('window.qorpera.resolveCompanyFileConflict("local")');
 		expect(rendererSource).toContain('window.qorpera.resolveCompanyFileConflict("cloud")');
 		expect(preloadSource).toContain('ipcRenderer.invoke("company-file:open-conflict-remote")');

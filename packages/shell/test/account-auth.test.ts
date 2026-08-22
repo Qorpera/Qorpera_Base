@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import {
 	accountAuthStoragePath,
 	FileAccountAuthStorage,
 	projectQorperaAccount,
+	QORPERA_OBJECT_GATEWAY_URL,
 	QorperaAccountAuth,
 	type QorperaAccountAuthOptions,
 } from "../src/account-auth.ts";
@@ -93,6 +95,59 @@ describe("Qorpera account auth", () => {
 			}),
 		).resolves.toMatchObject({ status: "awaiting_member", userCode: "ABCD-EFGH" });
 		expect(requestedUrl).toBe("https://project.test/functions/v1/native-provider-login/login");
+	});
+
+	it("routes production company objects through the self-owned NAS gateway by default", async () => {
+		const userData = temporaryRoot("production-object-gateway");
+		const userId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
+		const payload = Buffer.from(
+			JSON.stringify({
+				sub: userId,
+				aud: "authenticated",
+				role: "authenticated",
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			}),
+		).toString("base64url");
+		const accessToken = `eyJhbGciOiJIUzI1NiJ9.${payload}.signature`;
+		new FileAccountAuthStorage(accountAuthStoragePath(userData)).setItem(
+			"sb-wovsmjvghnbcbfazdtvr-auth-token",
+			JSON.stringify({
+				access_token: accessToken,
+				refresh_token: "refresh-token",
+				expires_at: Math.floor(Date.now() / 1000) + 3600,
+				expires_in: 3600,
+				token_type: "bearer",
+				user: {
+					id: userId,
+					email: "founder@qorpera.com",
+					aud: "authenticated",
+					role: "authenticated",
+					app_metadata: { provider: "github" },
+					user_metadata: { full_name: "Qorpera Founder" },
+					created_at: "2026-08-15T00:00:00.000Z",
+				},
+			}),
+		);
+		const profileId = "10000000-0000-4000-8000-000000000001";
+		const bytes = Buffer.from("company object", "utf-8");
+		const sha256 = createHash("sha256").update(bytes).digest("hex");
+		const requestedUrls: string[] = [];
+		const auth = new QorperaAccountAuth(userData, {
+			fetch: async (input) => {
+				requestedUrls.push(String(input));
+				return new Response(bytes);
+			},
+			openExternal: async () => {},
+		});
+
+		await expect(
+			auth.hostedObjects().getObject(profileId, {
+				sha256,
+				bytes: bytes.byteLength,
+				mediaType: "application/octet-stream",
+			}),
+		).resolves.toEqual(Uint8Array.from(bytes));
+		expect(requestedUrls).toEqual([`${QORPERA_OBJECT_GATEWAY_URL}/v1/profile-objects/${profileId}/${sha256}`]);
 	});
 
 	it("restores the last validated account when an expired session cannot refresh offline", async () => {

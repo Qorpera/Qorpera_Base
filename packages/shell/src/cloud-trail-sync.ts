@@ -27,6 +27,7 @@ const RAW_PART_BYTES = 128 * 1024;
 const MAX_PARTS = 128;
 const MAX_QUARANTINE_RECEIPTS = 1_000;
 const MAX_RECENT_ENTRY_IDS = 2_048;
+const TRAIL_METADATA_ONLY_TYPES = new Set(["session_info", "model_change", "thinking_level_change"]);
 
 type CloudTrailPrimary = Pick<
 	QorperaHostedPrimary,
@@ -95,6 +96,10 @@ export interface CloudTrailSynchronizerOptions {
 function normalizedRoot(root: string): string {
 	const normalized = resolve(root);
 	return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function hasDurableTrailContent(session: SharedTrailSession): boolean {
+	return session.entries.some((entry) => !TRAIL_METADATA_ONLY_TYPES.has(entry.type));
 }
 
 export function cloudTrailSyncStatePath(userData: string, root: string, profileId: string): string {
@@ -831,6 +836,10 @@ export class CloudTrailSynchronizer {
 					this.#options.environmentId,
 					local.localSessionId,
 				);
+				// A window open writes local session/runtime metadata so the UI has a
+				// trail to attach to. That cache is not a company conversation and must
+				// not create cloud authority before anyone submits a durable input.
+				if (!hosted && !hasDurableTrailContent(local)) continue;
 				if (!hosted) {
 					hosted = await this.#options.primary.createSession({
 						environmentId: this.#options.environmentId,

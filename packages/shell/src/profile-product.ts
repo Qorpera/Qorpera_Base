@@ -1,12 +1,13 @@
-export const INCLUDED_COMPANY_STORAGE_BYTES = 50 * 1024 * 1024 * 1024;
+export const FREEMIUM_COMPANY_STORAGE_BYTES = 50 * 1024 * 1024 * 1024;
 
 export interface ProductContext {
 	account: {
-		plan: "freemium";
+		defaultPlan: "freemium";
+		entitlementAuthority: "cloud";
 	};
 	company: {
 		authority: "cloud";
-		includedStorageBytes: number;
+		defaultIncludedStorageBytes: number;
 	};
 }
 
@@ -14,10 +15,10 @@ export interface ProductContext {
  * company state without describing itself as a placement or execution host. */
 export function productContext(): ProductContext {
 	return {
-		account: { plan: "freemium" },
+		account: { defaultPlan: "freemium", entitlementAuthority: "cloud" },
 		company: {
 			authority: "cloud",
-			includedStorageBytes: INCLUDED_COMPANY_STORAGE_BYTES,
+			defaultIncludedStorageBytes: FREEMIUM_COMPANY_STORAGE_BYTES,
 		},
 	};
 }
