@@ -12,6 +12,7 @@ const contentSha256 = "a".repeat(64);
 const temporaryDirectories: string[] = [];
 
 async function layout(): Promise<{
+	companyBaseRoot: string;
 	companyRoot: string;
 	substrateManifestPath: string;
 	operationsPath: string;
@@ -21,10 +22,12 @@ async function layout(): Promise<{
 	const root = await mkdtemp(join(tmpdir(), "qorpera-container-contract-test-"));
 	temporaryDirectories.push(root);
 	const input = join(root, "input");
-	const companyRoot = join(input, "company");
+	const companyBaseRoot = join(input, "company");
+	const companyRoot = join(root, "work", "company");
 	const artifactsRoot = join(input, "artifacts");
 	const outputRoot = join(root, "output");
 	await Promise.all([
+		mkdir(companyBaseRoot, { recursive: true }),
 		mkdir(companyRoot, { recursive: true }),
 		mkdir(artifactsRoot, { recursive: true }),
 		mkdir(outputRoot),
@@ -45,7 +48,7 @@ async function layout(): Promise<{
 		writeFile(operationsPath, '{"sequence":1}\n'),
 		writeFile(join(artifactsRoot, "index.json"), "[]\n"),
 	]);
-	return { companyRoot, substrateManifestPath, operationsPath, artifactsRoot, outputRoot };
+	return { companyBaseRoot, companyRoot, substrateManifestPath, operationsPath, artifactsRoot, outputRoot };
 }
 
 function request(): Record<string, unknown> {
@@ -60,7 +63,8 @@ function request(): Record<string, unknown> {
 		},
 		substrate: { versionId, contentSha256, operationSequence: 1, operationCount: 1, artifactCount: 0 },
 		paths: {
-			companyRoot: "/qorpera/input/company",
+			companyBaseRoot: "/qorpera/input/company",
+			companyRoot: "/qorpera/work/company",
 			substrateManifestPath: "/qorpera/input/substrate.json",
 			operationsPath: "/qorpera/input/operations.jsonl",
 			artifactsRoot: "/qorpera/input/artifacts",
@@ -108,7 +112,7 @@ describe("cloud runner container contract", () => {
 			jobType: "sandbox_probe",
 			requiredCapability: "company_substrate",
 			attemptCount: 1,
-			payload: { assertions: { input_read_only: true } },
+			payload: { assertions: { input_read_only: true, company_checkout_writable: true } },
 		};
 		await expect(runCloudRunnerContainerJob(value, hostPaths)).rejects.toThrow("Container input is writable");
 	});

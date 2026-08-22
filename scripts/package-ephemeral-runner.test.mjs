@@ -28,6 +28,14 @@ test("packages directly executable ephemeral runner bundles", async () => {
 		assert.equal(service.status, 1);
 		assert.equal(service.stderr.trim(), "QORPERA_RUNNER_CONFIG is required");
 
+		const nativeService = spawnSync(
+			process.execPath,
+			[join(outputRoot, "qorpera-native-provider-host.mjs")],
+			{ env: serviceEnvironment, encoding: "utf-8" },
+		);
+		assert.equal(nativeService.status, 1);
+		assert.equal(nativeService.stderr.trim(), "QORPERA_SUPABASE_URL is required");
+
 		const probe = spawnSync(process.execPath, [join(outputRoot, "qorpera-sandbox-probe.mjs")], {
 			input: "{}\n",
 			encoding: "utf-8",

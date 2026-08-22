@@ -6,6 +6,10 @@ const ENVIRONMENT = "5cd97efb-4318-4e21-9bd7-1a10c949fd65";
 const HOSTED_SESSION = "8f5773e2-effc-4702-ab48-90c080f92345";
 const CLOUD_CLIENT_SESSION = "75a4cfcd-0a14-4f5e-83c1-647d1f032713";
 const AUTHOR = "9d527ad0-e843-49cd-8430-6895ea6d6ce4";
+const COMPANY_SNAPSHOT = "7e87e5c7-f476-4e95-9e5e-1cc21a0fa4ae";
+const TURN = "83bce388-237f-4bff-ab1f-63c8b0773490";
+const CLIENT_INPUT = "712716cc-b232-4c66-a393-009415296ee8";
+const EXECUTION_PIN = { companySnapshotId: COMPANY_SNAPSHOT, staffVersion: 3 };
 
 interface FakeCalls {
 	ensure: Array<Record<string, unknown>>;
@@ -15,7 +19,13 @@ interface FakeCalls {
 	complete: Array<Record<string, unknown>>;
 }
 
-function fakePrimary(overrides: { created?: boolean; claimResult?: () => unknown }): {
+function fakePrimary(overrides: {
+	created?: boolean;
+	claimResult?: () => unknown;
+	renewResult?: () => unknown;
+	completeResult?: () => unknown;
+	pendingInputs?: () => unknown;
+}): {
 	primary: QorperaHostedPrimary;
 	calls: FakeCalls;
 } {
@@ -25,10 +35,13 @@ function fakePrimary(overrides: { created?: boolean; claimResult?: () => unknown
 			calls.ensure.push(input);
 			return {
 				session_id: HOSTED_SESSION,
+				client_session_id:
+					overrides.created === false ? CLOUD_CLIENT_SESSION : (input.p_client_session_id as string),
 				environment_id: ENVIRONMENT,
 				title: "Financial Officer",
 				created: overrides.created ?? true,
 				created_by_user_id: AUTHOR,
+				created_at: "2026-08-18T14:00:00.000Z",
 			};
 		},
 		async listSessions() {
@@ -51,18 +64,29 @@ function fakePrimary(overrides: { created?: boolean; claimResult?: () => unknown
 			calls.append.push(input);
 			return { input_id: CLOUD_CLIENT_SESSION, position: 1 };
 		},
+		async listSessionInputs() {
+			return {
+				items: overrides.pendingInputs?.() ?? [],
+				next_after_position: 0,
+				has_more: false,
+			};
+		},
 		async claimSessionTurn(input: Record<string, unknown>) {
 			calls.claim.push(input);
 			return overrides.claimResult
 				? overrides.claimResult()
 				: {
 						claimed: true,
+						turn_id: TURN,
+						company_snapshot_id: COMPANY_SNAPSHOT,
+						staff_version: 3,
 						inputs: [
 							{
 								input_id: CLOUD_CLIENT_SESSION,
 								position: 1,
 								kind: "user_message",
 								author_user_id: AUTHOR,
+								author_display_name: "Cloud Owner",
 								body: { text: "hello" },
 								created_at: "2026-08-18T14:00:01.000Z",
 							},
@@ -71,11 +95,11 @@ function fakePrimary(overrides: { created?: boolean; claimResult?: () => unknown
 		},
 		async renewSessionTurn(input: Record<string, unknown>) {
 			calls.renew.push(input);
-			return { renewed: 1 };
+			return overrides.renewResult?.() ?? { renewed: 1 };
 		},
 		async completeSessionTurn(input: Record<string, unknown>) {
 			calls.complete.push(input);
-			return { completed: 1 };
+			return overrides.completeResult?.() ?? { completed: 1 };
 		},
 	} as unknown as HostedPrimaryTransport;
 	return { primary: new QorperaHostedPrimary(transport), calls };
@@ -111,18 +135,23 @@ describe("CloudSessionArbiter", () => {
 		const { primary, calls } = fakePrimary({});
 		const arbiter = new CloudSessionArbiter(primary, ENVIRONMENT);
 		await arbiter.ensureSession("staff-1", "Financial Officer");
-		const claim = await arbiter.claimTurn("staff-1");
+		const claim = await arbiter.claimTurn("staff-1", EXECUTION_PIN);
 		expect(claim?.inputs).toHaveLength(1);
+		expect(claim).toMatchObject(EXECUTION_PIN);
 		expect(arbiter.activeClaim).toBeDefined();
-		expect(await arbiter.claimTurn("staff-1")).toBeUndefined();
+		expect(await arbiter.claimTurn("staff-1", EXECUTION_PIN)).toBeUndefined();
 		expect(calls.claim).toHaveLength(1);
+		expect(calls.claim[0]).toMatchObject({
+			p_company_snapshot_id: COMPANY_SNAPSHOT,
+			p_staff_version: 3,
+		});
 	});
 
 	it("returns nothing when the cloud refuses the turn", async () => {
 		const { primary } = fakePrimary({ claimResult: () => ({ claimed: false, reason: "turn-in-flight" }) });
 		const arbiter = new CloudSessionArbiter(primary, ENVIRONMENT);
 		await arbiter.ensureSession("staff-1", "Financial Officer");
-		expect(await arbiter.claimTurn("staff-1")).toBeUndefined();
+		expect(await arbiter.claimTurn("staff-1", EXECUTION_PIN)).toBeUndefined();
 		expect(arbiter.activeClaim).toBeUndefined();
 	});
 
@@ -130,9 +159,9 @@ describe("CloudSessionArbiter", () => {
 		const { primary, calls } = fakePrimary({});
 		const arbiter = new CloudSessionArbiter(primary, ENVIRONMENT);
 		await arbiter.ensureSession("staff-1", "Financial Officer");
-		await arbiter.claimTurn("staff-1");
-		await arbiter.completeTurn();
-		await arbiter.completeTurn();
+		await arbiter.claimTurn("staff-1", EXECUTION_PIN);
+		await arbiter.completeTurn(0);
+		await arbiter.completeTurn(0);
 		expect(calls.complete).toHaveLength(1);
 		expect(arbiter.activeClaim).toBeUndefined();
 	});
@@ -141,9 +170,9 @@ describe("CloudSessionArbiter", () => {
 		const { primary, calls } = fakePrimary({});
 		const arbiter = new CloudSessionArbiter(primary, ENVIRONMENT);
 		await arbiter.ensureSession("staff-1", "Financial Officer");
-		await arbiter.claimTurn("staff-1");
+		await arbiter.claimTurn("staff-1", EXECUTION_PIN);
 		arbiter.abandonClaim();
-		await arbiter.completeTurn();
+		await arbiter.completeTurn(0);
 		expect(calls.complete).toHaveLength(0);
 	});
 
@@ -153,7 +182,7 @@ describe("CloudSessionArbiter", () => {
 			const { primary, calls } = fakePrimary({});
 			const arbiter = new CloudSessionArbiter(primary, ENVIRONMENT);
 			await arbiter.ensureSession("staff-1", "Financial Officer");
-			await arbiter.claimTurn("staff-1");
+			await arbiter.claimTurn("staff-1", EXECUTION_PIN);
 			await arbiter.renewIfDue();
 			expect(calls.renew).toHaveLength(0);
 			vi.advanceTimersByTime(50_000);
@@ -166,15 +195,87 @@ describe("CloudSessionArbiter", () => {
 		}
 	});
 
+	it("keeps a claim through transient renewal errors until its local lease deadline", async () => {
+		vi.useFakeTimers();
+		try {
+			const { primary, calls } = fakePrimary({
+				renewResult: () => {
+					throw new Error("network unavailable");
+				},
+			});
+			const arbiter = new CloudSessionArbiter(primary, ENVIRONMENT);
+			await arbiter.ensureSession("staff-1", "Financial Officer");
+			const claim = await arbiter.claimTurn("staff-1", EXECUTION_PIN);
+			vi.advanceTimersByTime(50_000);
+			await expect(arbiter.renewIfDue()).rejects.toThrow("network unavailable");
+			expect(arbiter.activeClaim).toBe(claim);
+			vi.advanceTimersByTime(130_000);
+			await expect(arbiter.renewIfDue()).rejects.toThrow("ownership was lost");
+			expect(calls.renew).toHaveLength(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("appends user messages against the ensured session", async () => {
 		const { primary, calls } = fakePrimary({});
 		const arbiter = new CloudSessionArbiter(primary, ENVIRONMENT);
 		await arbiter.ensureSession("staff-1", "Financial Officer");
-		await arbiter.appendUserMessage("staff-1", "sync check");
+		await arbiter.appendPrompt("staff-1", CLIENT_INPUT, { text: "sync check" });
 		expect(calls.append[0]?.p_session_id).toBe(HOSTED_SESSION);
 		expect((calls.append[0]?.p_body as { text?: string })?.text).toBe("sync check");
-		await expect(arbiter.appendUserMessage("staff-2", "no session")).rejects.toThrow(
+		await expect(arbiter.appendPrompt("staff-2", CLIENT_INPUT, { text: "no session" })).rejects.toThrow(
 			"staff session has not been ensured",
 		);
+	});
+
+	it("keeps complete prompts and pending status durable together", async () => {
+		const { primary, calls } = fakePrimary({
+			pendingInputs: () => [
+				{
+					input_id: CLOUD_CLIENT_SESSION,
+					position: 2,
+					kind: "user_message",
+					author_user_id: AUTHOR,
+					author_display_name: "Cloud Owner",
+					body: { schema: "qorpera.session-prompt/v1", text: "review this", images: [{ sha256: "a" }] },
+					created_at: "2026-08-18T14:00:01.000Z",
+					status: "processing",
+				},
+			],
+		});
+		const arbiter = new CloudSessionArbiter(primary, ENVIRONMENT);
+		await arbiter.ensureSession("staff-1", "Financial Officer");
+		await arbiter.appendPrompt("staff-1", CLIENT_INPUT, {
+			schema: "qorpera.session-prompt/v1",
+			text: "review this",
+			images: [{ sha256: "a" }],
+		});
+		expect(calls.append[0]?.p_body).toMatchObject({ text: "review this", images: [{ sha256: "a" }] });
+		expect(await arbiter.pendingInputs("staff-1")).toMatchObject([
+			{ inputId: CLOUD_CLIENT_SESSION, status: "processing", authorDisplayName: "Cloud Owner" },
+		]);
+	});
+
+	it("does not consume or postpone retries after turn ownership is lost", async () => {
+		vi.useFakeTimers();
+		try {
+			let renewals = 0;
+			const { primary, calls } = fakePrimary({
+				renewResult: () => ({ renewed: renewals++ === 0 ? 0 : 1 }),
+				completeResult: () => ({ completed: 0 }),
+			});
+			const arbiter = new CloudSessionArbiter(primary, ENVIRONMENT);
+			await arbiter.ensureSession("staff-1", "Financial Officer");
+			await arbiter.claimTurn("staff-1", EXECUTION_PIN);
+			vi.advanceTimersByTime(50_000);
+			await expect(arbiter.renewIfDue()).rejects.toThrow("ownership was lost");
+			await expect(arbiter.renewIfDue()).resolves.toBeUndefined();
+			expect(calls.renew).toHaveLength(2);
+			await expect(arbiter.completeTurn(0)).rejects.toThrow("ownership was lost");
+			expect(arbiter.activeClaim).toBeDefined();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

@@ -1,41 +1,23 @@
-export const PROFILE_PLACEMENTS = ["local", "hosted"] as const;
-export type ProfilePlacement = (typeof PROFILE_PLACEMENTS)[number];
-
-export const EXECUTION_TARGETS = ["local", "cloud", "computer"] as const;
-export type ExecutionTarget = (typeof EXECUTION_TARGETS)[number];
-
-export type AccountEntitlementStatus = "not-connected";
-export type BillingSponsorStatus = "not-applicable" | "not-configured";
+export const INCLUDED_COMPANY_STORAGE_BYTES = 50 * 1024 * 1024 * 1024;
 
 export interface ProductContext {
 	account: {
-		entitlement: AccountEntitlementStatus;
+		plan: "freemium";
 	};
-	profile: {
-		placement: ProfilePlacement;
-		billingSponsor: BillingSponsorStatus;
-	};
-	execution: {
-		target: ExecutionTarget;
+	company: {
+		authority: "cloud";
+		includedStorageBytes: number;
 	};
 }
 
-export function isProfilePlacement(value: unknown): value is ProfilePlacement {
-	return PROFILE_PLACEMENTS.some((candidate) => candidate === value);
-}
-
-/**
- * Projects the product dimensions the current shell can prove. Placement is
- * profile-scoped; entitlement is account-scoped; execution is selected per
- * session; and hosted profile costs eventually belong to a billing sponsor.
- */
-export function productContext(profileType: "local" | "cloud"): ProductContext {
+/** A company is always cloud-authoritative. The desktop projects account and
+ * company state without describing itself as a placement or execution host. */
+export function productContext(): ProductContext {
 	return {
-		account: { entitlement: "not-connected" },
-		profile: {
-			placement: profileType === "cloud" ? "hosted" : "local",
-			billingSponsor: profileType === "cloud" ? "not-configured" : "not-applicable",
+		account: { plan: "freemium" },
+		company: {
+			authority: "cloud",
+			includedStorageBytes: INCLUDED_COMPANY_STORAGE_BYTES,
 		},
-		execution: { target: "local" },
 	};
 }

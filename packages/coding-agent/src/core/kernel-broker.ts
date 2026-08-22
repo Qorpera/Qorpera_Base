@@ -1,5 +1,5 @@
 import { createHash, createPublicKey, randomUUID, verify } from "node:crypto";
-import type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
+import type { KernelExecutionIdentity, KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
 import { writeRawStdout } from "./output-guard.ts";
 
 export type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
@@ -37,6 +37,7 @@ let kernelBindingNonce: string | undefined;
 let kernelBindingSessionId: string | undefined;
 let kernelBindingEstablished = false;
 let kernelBindingTimer: NodeJS.Timeout | undefined;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type KernelPublicKey = NonNullable<typeof kernelPublicKey>;
 
@@ -88,6 +89,7 @@ function intentPayload(intent: Omit<KernelIntentCapability, "signature">): strin
 		attended: intent.attended,
 		issuedAt: intent.issuedAt,
 		expiresAt: intent.expiresAt,
+		execution: intent.execution ?? null,
 		budget: {
 			maxCalls: intent.budget.maxCalls,
 			maxInputTokens: intent.budget.maxInputTokens,
@@ -116,6 +118,19 @@ function validBudget(value: unknown): value is KernelModelIntentBudget {
 	);
 }
 
+function validExecution(value: unknown): value is KernelExecutionIdentity {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const execution = value as Partial<KernelExecutionIdentity>;
+	return (
+		Object.keys(value).length === 3 &&
+		(execution.kind === "turn" || execution.kind === "wake") &&
+		typeof execution.id === "string" &&
+		UUID_PATTERN.test(execution.id) &&
+		typeof execution.claimantId === "string" &&
+		UUID_PATTERN.test(execution.claimantId)
+	);
+}
+
 function verifyKernelIntent(
 	frame: Record<string, unknown>,
 	publicKey: KernelPublicKey,
@@ -132,6 +147,7 @@ function verifyKernelIntent(
 		typeof intent.attended !== "boolean" ||
 		typeof intent.issuedAt !== "string" ||
 		typeof intent.expiresAt !== "string" ||
+		(intent.execution !== undefined && !validExecution(intent.execution)) ||
 		!validBudget(intent.budget) ||
 		typeof intent.signature !== "string" ||
 		consumedNonces.has(intent.nonce)
@@ -163,6 +179,7 @@ function verifyKernelIntent(
 				attended: intent.attended,
 				issuedAt: intent.issuedAt,
 				expiresAt: intent.expiresAt,
+				...(intent.execution ? { execution: intent.execution } : {}),
 				budget: intent.budget,
 			}),
 		),

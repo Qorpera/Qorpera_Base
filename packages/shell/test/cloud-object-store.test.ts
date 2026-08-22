@@ -1,5 +1,13 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
+import {
+	CloudContentAddressedStore,
+	type CloudObjectTransport,
+	HttpCloudObjectTransport,
+} from "../src/cloud-object-store.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 
@@ -22,6 +30,29 @@ class MemoryObjectTransport implements CloudObjectTransport {
 }
 
 describe("cloud content-addressed object store", () => {
+	it("uses the authenticated HTTP gateway without exposing storage credentials", async () => {
+		const requests: Request[] = [];
+		const bytes = Buffer.from("gateway object", "utf-8");
+		const transport = new HttpCloudObjectTransport({
+			baseUrl: "https://objects.example.test/",
+			accessToken: async () => "member-access-token",
+			fetch: async (input, init) => {
+				requests.push(new Request(input, init));
+				return requests.length === 1
+					? Response.json({ status: "stored" }, { status: 201 })
+					: new Response(bytes, { status: 200 });
+			},
+		});
+		expect(await transport.put(`${profileId}/${"a".repeat(64)}`, bytes, "text/plain")).toBe("stored");
+		expect(Buffer.from(await transport.get(`${profileId}/${"a".repeat(64)}`))).toEqual(bytes);
+		expect(requests.map((request) => request.url)).toEqual([
+			`https://objects.example.test/v1/profile-objects/${profileId}/${"a".repeat(64)}`,
+			`https://objects.example.test/v1/profile-objects/${profileId}/${"a".repeat(64)}`,
+		]);
+		expect(requests[0]?.headers.get("authorization")).toBe("Bearer member-access-token");
+		expect(requests[0]?.headers.get("content-length")).toBe(String(bytes.byteLength));
+	});
+
 	it("deduplicates immutable objects and verifies existing content", async () => {
 		const transport = new MemoryObjectTransport();
 		const store = new CloudContentAddressedStore(transport);
@@ -45,6 +76,31 @@ describe("cloud content-addressed object store", () => {
 		expect(Buffer.compare(Buffer.from(restored.bytes), bytes)).toBe(0);
 		expect(restored.objects).toHaveLength(3);
 		expect(restored.objects.reduce((total, object) => total + object.bytes, 0)).toBeGreaterThan(bytes.byteLength);
+	});
+
+	it("stages a file path as immutable chunks while checking its exact receipt identity", async () => {
+		const root = mkdtempSync(join(tmpdir(), "qorpera-object-stage-"));
+		try {
+			const path = join(root, "output.bin");
+			const bytes = Buffer.alloc(4 * 1024 * 1024 + 17, 9);
+			writeFileSync(path, bytes);
+			const transport = new MemoryObjectTransport();
+			const store = new CloudContentAddressedStore(transport);
+			const reference = await store.putFileFromPath(profileId, path, "application/octet-stream", {
+				bytes: bytes.byteLength,
+				sha256: createHash("sha256").update(bytes).digest("hex"),
+			});
+			expect(reference.objects).toHaveLength(3);
+			expect(Buffer.compare(Buffer.from(await store.getFile(profileId, reference)), bytes)).toBe(0);
+			await expect(
+				store.putFileFromPath(profileId, path, "application/octet-stream", {
+					bytes: bytes.byteLength,
+					sha256: "f".repeat(64),
+				}),
+			).rejects.toThrow("changed");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("rejects corrupted objects before materialization", async () => {

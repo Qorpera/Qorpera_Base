@@ -41,6 +41,8 @@ todo.md
 plans/
 .qorpera/hf-sessions/
 .qorpera/hf-sessions-backup/
+supabase/.branches/
+supabase/.temp/
 collect.sh
 build/
 output/

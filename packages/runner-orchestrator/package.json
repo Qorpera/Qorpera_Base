@@ -1,0 +1,57 @@
+{
+	"name": "@qorpera/runner-orchestrator",
+	"version": "0.83.0",
+	"private": true,
+	"description": "Qorpera cloud runner scheduling and provider-adapter service contracts.",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"bin": {
+		"qorpera-runner-orchestrator": "./dist/cli.js",
+		"qorpera-runner-provider": "./dist/provider-cli.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./service": {
+			"types": "./dist/service.d.ts",
+			"import": "./dist/service.js"
+		},
+		"./provider-service": {
+			"types": "./dist/provider-service.d.ts",
+			"import": "./dist/provider-service.js"
+		},
+		"./provider-web": {
+			"types": "./dist/provider-web.d.ts",
+			"import": "./dist/provider-web.js"
+		},
+		"./process-provider": {
+			"types": "./dist/process-provider.d.ts",
+			"import": "./dist/process-provider.js"
+		}
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"CHANGELOG.md"
+	],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsgo -p tsconfig.build.json",
+		"start": "node dist/cli.js",
+		"test": "vitest --run",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"dependencies": {
+		"@qorpera/pi-protocol": "^0.83.0"
+	},
+	"devDependencies": {
+		"shx": "0.4.0",
+		"vitest": "4.1.9"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

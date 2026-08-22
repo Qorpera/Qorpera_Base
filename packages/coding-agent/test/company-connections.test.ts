@@ -315,14 +315,12 @@ describe("agent routines", () => {
 		expect(updateScheduledJob(root, job.id, { placement: "requires-local" }).placement).toBe("requires-local");
 		expect(() => updateScheduledJob(root, job.id, { placement: "invalid" as "cloud" })).toThrow(/placement/);
 
-		const path = companyConnectionsPath(root);
-		const state = JSON.parse(readFileSync(path, "utf-8")) as {
-			scheduledJobs: Array<{ placement?: string }>;
-		};
-		delete state.scheduledJobs[0].placement;
+		const path = join(root, ".qorpera", "routines", `${job.id}.json`);
+		const state = JSON.parse(readFileSync(path, "utf-8")) as { placement?: string };
+		delete state.placement;
 		writeFileSync(path, JSON.stringify(state), "utf-8");
 		expect(readScheduledJobs(root)[0].placement).toBe("local");
-		expect(readFileSync(path, "utf-8")).toContain('"placement": "local"');
+		expect(readScheduledJobs(root)[0].publication).toEqual({ mode: "automatic" });
 	});
 
 	it("preserves founder-set placement across agent routine upserts", () => {
@@ -348,6 +346,27 @@ describe("agent routines", () => {
 		).toBe("local");
 	});
 
+	it("publishes operational routines automatically unless reviewers are explicitly configured", () => {
+		const reviewer = "7ca7b810-9dad-4d1d-80b4-00c04fd430c9";
+		const created = upsertStaffScheduledJob(root, staffAgentId, "directional-analysis", {
+			title: "Directional analysis",
+			prompt: "Prepare the recommendation.",
+			triggers: schedule(24 * 60),
+		});
+		expect(created.publication).toEqual({ mode: "automatic" });
+		const reviewed = updateScheduledJob(root, created.id, {
+			publication: { mode: "review", reviewerStaffIds: [reviewer] },
+		});
+		expect(reviewed.publication).toEqual({ mode: "review", reviewerStaffIds: [reviewer] });
+		expect(
+			upsertStaffScheduledJob(root, staffAgentId, "directional-analysis", {
+				title: "Directional analysis v2",
+				prompt: "Prepare the revised recommendation.",
+				triggers: schedule(24 * 60),
+			}).publication,
+		).toEqual(reviewed.publication);
+	});
+
 	it("migrates existing scheduled jobs to high effort", () => {
 		createScheduledJob(root, {
 			title: "Morning digest",
@@ -355,18 +374,12 @@ describe("agent routines", () => {
 			triggers: schedule(60),
 			effort: "low",
 		});
-		const path = companyConnectionsPath(root);
-		const state = JSON.parse(readFileSync(path, "utf-8")) as {
-			scheduledJobs: Array<{ effort?: string }>;
-		};
-		delete state.scheduledJobs[0].effort;
+		const path = join(root, ".qorpera", "routines", `${readScheduledJobs(root)[0].id}.json`);
+		const state = JSON.parse(readFileSync(path, "utf-8")) as { effort?: string };
+		delete state.effort;
 		writeFileSync(path, JSON.stringify(state), "utf-8");
 
 		expect(readScheduledJobs(root)[0].effort).toBe("high");
-		const migrated = JSON.parse(readFileSync(path, "utf-8")) as {
-			scheduledJobs: Array<{ effort?: string }>;
-		};
-		expect(migrated.scheduledJobs[0].effort).toBe("high");
 	});
 
 	it("rejects invalid staff ownership without guessing an assignment", () => {
@@ -388,11 +401,9 @@ describe("agent routines", () => {
 			triggers: schedule(60),
 			staffAgentId,
 		});
-		const path = companyConnectionsPath(root);
-		const state = JSON.parse(readFileSync(path, "utf-8")) as {
-			scheduledJobs: Array<{ staffAgentId?: string }>;
-		};
-		state.scheduledJobs[0].staffAgentId = "not-a-staff-identity";
+		const path = join(root, ".qorpera", "routines", `${readScheduledJobs(root)[0].id}.json`);
+		const state = JSON.parse(readFileSync(path, "utf-8")) as { staffAgentId?: string };
+		state.staffAgentId = "not-a-staff-identity";
 		writeFileSync(path, JSON.stringify(state), "utf-8");
 
 		expect(() => readScheduledJobs(root)).toThrow(/staffAgentId must be a lowercase UUID v4/);

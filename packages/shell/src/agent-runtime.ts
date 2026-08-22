@@ -24,7 +24,12 @@ import {
 	readAuthorityConfig,
 	requestHash,
 } from "@qorpera/pi-coding-agent/authority";
-import type { KernelIntentCapability, KernelModelIntentBudget, ModelIntentTerminalStatus } from "@qorpera/pi-protocol";
+import type {
+	KernelExecutionIdentity,
+	KernelIntentCapability,
+	KernelModelIntentBudget,
+	ModelIntentTerminalStatus,
+} from "@qorpera/pi-protocol";
 import type { ConnectionRequest } from "./connection-requests.ts";
 
 export type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
@@ -77,6 +82,9 @@ interface QorperaSessionAuthority {
 	 * link for future subagent trees. The kernel stamps it; children can
 	 * never claim a parent themselves. */
 	parentSession?: string;
+	/** Cloud revisions whose materialized state this executor actually used. */
+	companySnapshotId?: string;
+	staffVersion?: number;
 }
 
 interface SessionHeader {
@@ -116,6 +124,8 @@ export interface AgentScope {
 	worktree?: string;
 	group?: string;
 	parentSession?: string;
+	companySnapshotId?: string;
+	staffVersion?: number;
 }
 
 export interface TrailBinding {
@@ -128,11 +138,37 @@ export interface TrailBinding {
 	audit: { ids: Set<string>; sequence: number; lastHash: string };
 }
 
+const trailExecutions = new WeakMap<TrailBinding, KernelExecutionIdentity>();
+
+export function bindTrailExecution(binding: TrailBinding, execution?: KernelExecutionIdentity): void {
+	if (!execution) {
+		trailExecutions.delete(binding);
+		return;
+	}
+	if (
+		(execution.kind !== "turn" && execution.kind !== "wake") ||
+		!UUID_PATTERN.test(execution.id) ||
+		!UUID_PATTERN.test(execution.claimantId)
+	) {
+		throw new Error("Trail execution identity is invalid");
+	}
+	trailExecutions.set(binding, { ...execution });
+}
+
 export interface TrailAppendFrame {
 	type: "qorpera_trail_append";
 	token: string;
 	entry: SessionEntry;
 }
+
+export interface RunnerTrailExecutionIdentity {
+	kind: "run";
+	id: string;
+	claimantId: string;
+	runnerAssignmentId: string;
+}
+
+export type TrailExecutionIdentity = KernelExecutionIdentity | RunnerTrailExecutionIdentity;
 
 /** Portable conversation entry. Local kernel stamps are deliberately absent:
  * each machine verifies and re-stamps materialized events into its own trail. */
@@ -141,7 +177,19 @@ export interface SharedTrailEntry {
 	id: string;
 	parentId: string | null;
 	timestamp: string;
+	execution?: TrailExecutionIdentity;
 	[key: string]: unknown;
+}
+
+export interface SharedTrailScope {
+	attended: boolean;
+	staffAgentId?: string;
+	roomId?: string;
+	autonomousLabel?: string;
+	group?: string;
+	parentSession?: string;
+	companySnapshotId?: string;
+	staffVersion?: number;
 }
 
 export interface SharedTrailSession {
@@ -150,6 +198,7 @@ export interface SharedTrailSession {
 	createdAt: string;
 	title: string;
 	staffAgentId?: string;
+	scope?: SharedTrailScope;
 	entries: SharedTrailEntry[];
 }
 
@@ -158,6 +207,7 @@ export interface SharedTrailMaterialization {
 	createdAt: string;
 	title: string;
 	staffAgentId?: string;
+	scope?: SharedTrailScope;
 }
 
 interface KernelWriteFrame {
@@ -250,6 +300,15 @@ function authorityForScope(scope: AgentScope): QorperaSessionAuthority {
 	if (scope.roomId !== undefined && scope.staffAgentId === undefined) {
 		throw new Error("room sessions require a staff agent identity");
 	}
+	if ((scope.companySnapshotId === undefined) !== (scope.staffVersion === undefined)) {
+		throw new Error("cloud execution revisions must be provided together");
+	}
+	if (scope.companySnapshotId !== undefined && !UUID_PATTERN.test(scope.companySnapshotId)) {
+		throw new Error("company snapshot identity must be a UUID");
+	}
+	if (scope.staffVersion !== undefined && (!Number.isSafeInteger(scope.staffVersion) || scope.staffVersion < 1)) {
+		throw new Error("staff version must be a positive integer");
+	}
 	return {
 		actor: scope.actor,
 		attended: scope.attended,
@@ -261,12 +320,22 @@ function authorityForScope(scope: AgentScope): QorperaSessionAuthority {
 		worktree: scope.worktree,
 		group: scope.group,
 		parentSession: scope.parentSession,
+		companySnapshotId: scope.companySnapshotId,
+		staffVersion: scope.staffVersion,
 	};
 }
 
 function assertMatchingAuthority(actual: QorperaSessionAuthority | undefined, expected: QorperaSessionAuthority): void {
 	if (!actual) throw new Error("legacy trail sessions have no trusted host binding and cannot be resumed");
-	for (const key of ["actor", "staffAgentId", "roomId", "department", "worktree"] as const) {
+	for (const key of [
+		"actor",
+		"staffAgentId",
+		"roomId",
+		"department",
+		"worktree",
+		"companySnapshotId",
+		"staffVersion",
+	] as const) {
 		if (actual[key] !== expected[key]) {
 			throw new Error(`trail session authority does not match the requested ${key}`);
 		}
@@ -638,11 +707,10 @@ function trailHasAttendedInput(path: string): boolean {
 	return false;
 }
 
-/** Enumerate company-agent conversations with attended authority or a
- * verified attended input. Agent scopes are stamped unattended and attendance
- * arrives per turn, so a chat becomes shareable only once a person actually
- * writes in it. Autonomous runs, wake/job groups, subagent trees, and product
- * worktrees stay machine-local in this slice. */
+/** Enumerate the cloud-portable company-agent trail. Product worktrees remain
+ * under their own Git authority, but autonomous jobs, room deliveries, and
+ * child-agent work are company operations and therefore belong in the shared
+ * company history even when no person attended the turn. */
 export function listSharedTrailSessions(
 	root: string,
 	options?: {
@@ -663,18 +731,20 @@ export function listSharedTrailSessions(
 		const path = join(trailDir, file);
 		const header = readHeader(path);
 		const authority = header.qorpera;
+		const operational = Boolean(
+			authority?.autonomous || authority?.label || authority?.roomId || authority?.group || authority?.parentSession,
+		);
+		const attended = Boolean(
+			authority?.attended || options?.adoptedSessionIds?.has(header.id) || trailHasAttendedInput(path),
+		);
 		if (
 			header.version !== TRAIL_SESSION_VERSION ||
 			!UUID_PATTERN.test(header.id) ||
 			!authority ||
 			authority.actor !== "company-agent" ||
-			(!authority.attended && !options?.adoptedSessionIds?.has(header.id) && !trailHasAttendedInput(path)) ||
-			authority.autonomous ||
-			authority.label ||
+			(!operational && !attended) ||
 			authority.department ||
-			authority.worktree ||
-			authority.group ||
-			authority.parentSession
+			authority.worktree
 		) {
 			continue;
 		}
@@ -689,6 +759,16 @@ export function listSharedTrailSessions(
 			createdAt: header.timestamp,
 			title: sharedTrailTitle(entries, authority.staffAgentId),
 			staffAgentId: authority.staffAgentId,
+			scope: {
+				attended,
+				...(authority.staffAgentId ? { staffAgentId: authority.staffAgentId } : {}),
+				...(authority.roomId ? { roomId: authority.roomId } : {}),
+				...(authority.label ? { autonomousLabel: authority.label } : {}),
+				...(authority.group ? { group: authority.group } : {}),
+				...(authority.parentSession ? { parentSession: authority.parentSession } : {}),
+				...(authority.companySnapshotId ? { companySnapshotId: authority.companySnapshotId } : {}),
+				...(authority.staffVersion ? { staffVersion: authority.staffVersion } : {}),
+			},
 			entries,
 		});
 	}
@@ -751,16 +831,23 @@ export function materializeSharedTrailSession(
 ): TrailBinding {
 	if (!UUID_PATTERN.test(session.localSessionId)) throw new Error("shared trail session id must be a UUID");
 	if (!Number.isFinite(Date.parse(session.createdAt))) throw new Error("shared trail creation time is invalid");
-	// Materialized shared chats carry attended authority: only conversations a
-	// person actually wrote in are shareable, so the receiving machine's copy
-	// stays listable as shared without requiring a fresh local attended input.
-	// Resume matching compares actor/staff/department/worktree, never attended,
-	// so the runtime's unattended live scopes reattach to this header cleanly.
-	const scope: AgentScope = {
-		actor: "company-agent",
-		attended: true,
-		...(session.staffAgentId ? { staffAgentId: session.staffAgentId } : {}),
-	};
+	const scope: AgentScope = session.scope
+		? {
+				actor: "company-agent",
+				attended: session.scope.attended,
+				...(session.scope.staffAgentId ? { staffAgentId: session.scope.staffAgentId } : {}),
+				...(session.scope.roomId ? { roomId: session.scope.roomId } : {}),
+				...(session.scope.autonomousLabel ? { autonomousLabel: session.scope.autonomousLabel } : {}),
+				...(session.scope.group ? { group: session.scope.group } : {}),
+				...(session.scope.parentSession ? { parentSession: session.scope.parentSession } : {}),
+				...(session.scope.companySnapshotId ? { companySnapshotId: session.scope.companySnapshotId } : {}),
+				...(session.scope.staffVersion ? { staffVersion: session.scope.staffVersion } : {}),
+			}
+		: {
+				actor: "company-agent",
+				attended: true,
+				...(session.staffAgentId ? { staffAgentId: session.staffAgentId } : {}),
+			};
 	let binding = liveBinding;
 	if (binding && binding.sessionId !== session.localSessionId) {
 		throw new Error("live trail binding does not match the shared session");
@@ -861,7 +948,11 @@ export function pruneEmptyTrailSessions(root: string): number {
 	return removed;
 }
 
-export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): TrailAppendFrame | undefined {
+export function parseTrailAppendFrame(
+	value: unknown,
+	binding: TrailBinding,
+	execution?: KernelExecutionIdentity,
+): TrailAppendFrame | undefined {
 	if (!value || typeof value !== "object") return undefined;
 	const frame = value as Partial<TrailAppendFrame>;
 	if (frame.type !== "qorpera_trail_append" || frame.token !== binding.token) return undefined;
@@ -870,11 +961,23 @@ export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): Tr
 	const record = entry as SessionEntry;
 	if (Buffer.byteLength(JSON.stringify(record), "utf-8") > MAX_TRAIL_ENTRY_BYTES) return undefined;
 	if (!validTrailEntry(record, binding.audit.ids)) return undefined;
+	const durableExecution = execution ?? trailExecutions.get(binding);
+	if (
+		durableExecution &&
+		((durableExecution.kind !== "turn" && durableExecution.kind !== "wake") ||
+			!UUID_PATTERN.test(durableExecution.id) ||
+			!UUID_PATTERN.test(durableExecution.claimantId))
+	) {
+		return undefined;
+	}
 	const receivedAt = new Date().toISOString();
+	const unsigned = unsignedTrailEntry(record);
+	delete unsigned.execution;
 	const stamped: SessionEntry = {
-		...unsignedTrailEntry(record),
+		...unsigned,
 		timestamp: receivedAt,
 		provenance: { source: "child", trust: "assertion" },
+		...(durableExecution ? { execution: { ...durableExecution } } : {}),
 	};
 	stamped.kernel = {
 		sequence: binding.audit.sequence + 1,
@@ -888,10 +991,12 @@ export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): Tr
 
 function stampKernelEntry(binding: TrailBinding, entry: SessionEntry): TrailAppendFrame {
 	const receivedAt = new Date().toISOString();
+	const execution = trailExecutions.get(binding);
 	const stamped: SessionEntry = {
 		...unsignedTrailEntry(entry),
 		timestamp: receivedAt,
 		provenance: { source: "kernel", trust: "observed" },
+		...(execution ? { execution: { ...execution } } : {}),
 	};
 	stamped.kernel = {
 		sequence: binding.audit.sequence + 1,
@@ -1577,6 +1682,7 @@ function kernelIntentPayload(intent: Omit<KernelIntentCapability, "signature">):
 		attended: intent.attended,
 		issuedAt: intent.issuedAt,
 		expiresAt: intent.expiresAt,
+		execution: intent.execution ?? null,
 		budget: {
 			maxCalls: intent.budget.maxCalls,
 			maxInputTokens: intent.budget.maxInputTokens,
@@ -1631,7 +1737,11 @@ export function createKernelResponseSigner(options: {
 	publicKey: string;
 	signResponse: (response: KernelGateResponseBody) => SignedKernelGateResponse;
 	signBinding: (response: { nonce: string; sessionId: string }) => SignedKernelBindingResponse;
-	signIntent: (frame: Record<string, unknown>, attended: boolean) => KernelIntentCapability;
+	signIntent: (
+		frame: Record<string, unknown>,
+		attended: boolean,
+		execution?: KernelExecutionIdentity,
+	) => KernelIntentCapability;
 } {
 	if (!options.sessionId) throw new Error("host intent signer requires a session id");
 	const budget = checkedModelIntentBudget(options.modelBudget ?? DEFAULT_MODEL_INTENT_BUDGET);
@@ -1653,7 +1763,7 @@ export function createKernelResponseSigner(options: {
 			...response,
 			signature: sign(null, Buffer.from(kernelBindingPayload(response)), pair.privateKey).toString("base64"),
 		}),
-		signIntent: (frame, attended) => {
+		signIntent: (frame, attended, execution) => {
 			const issuedAtMs = Date.now();
 			const intent = {
 				nonce: randomUUID(),
@@ -1662,6 +1772,7 @@ export function createKernelResponseSigner(options: {
 				attended,
 				issuedAt: new Date(issuedAtMs).toISOString(),
 				expiresAt: new Date(issuedAtMs + lifetimeMs).toISOString(),
+				...(execution ? { execution: { ...execution } } : {}),
 				budget: { ...budget },
 			};
 			return {
@@ -2039,6 +2150,8 @@ export function protectedCompanyAgentPaths(
 		join(root, ".git"),
 		join(root, "trail"),
 		join(root, "authority.toml"),
+		join(root, "AGENTS.md"),
+		join(root, "CLAUDE.md"),
 		join(root, ".qorpera"),
 		join(root, "inbox"),
 		...productPaths.flatMap((product) => [join(root, product.repository), join(root, product.worktrees)]),

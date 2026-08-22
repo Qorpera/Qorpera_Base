@@ -22,6 +22,7 @@ export type ObjectReachabilityPrimary = Pick<
 	| "beginObjectReachabilityGraph"
 	| "completeObjectReachabilityGraph"
 	| "createObjectRestoreProof"
+	| "verifyCompanySnapshotClosure"
 >;
 
 export interface PublishedObjectRestoreProof {
@@ -129,7 +130,7 @@ export async function publishCompanySnapshotRestoreProof(
 ): Promise<PublishedObjectRestoreProof> {
 	const reference = currentCloudCompanyTreeReference(snapshot.tree);
 	const restored = await verifyCloudCompanyTreeRestore(snapshot.profileId, reference, store);
-	return publishVerifiedRoot(
+	const published = await publishVerifiedRoot(
 		{
 			rootKind: "company_snapshot",
 			rootId: snapshot.snapshotId,
@@ -138,6 +139,10 @@ export async function publishCompanySnapshotRestoreProof(
 		},
 		primary,
 	);
+	if (reference.contractVersion === 3) {
+		await primary.verifyCompanySnapshotClosure(snapshot.snapshotId, published.graph.graphId);
+	}
+	return published;
 }
 
 export async function publishCompanySnapshotRestoreProofIfDue(

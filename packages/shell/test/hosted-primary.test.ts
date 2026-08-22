@@ -1,3 +1,4 @@
+import type { JsonValue } from "@qorpera/pi-protocol";
 import { describe, expect, it, vi } from "vitest";
 import {
 	type HostedPrimaryTransport,
@@ -11,10 +12,13 @@ const sessionId = "a17381c2-3508-4573-b351-a5394adbd1f4";
 const clientSessionId = "5b07e271-c030-422c-a3ef-ad10830c393d";
 const eventId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
 const actorUserId = "c98d600e-654a-40da-a07f-f1d54f93cc6c";
+const runId = "e7c5380d-a213-460e-9c6d-35c6da9fa9f0";
+const runnerAssignmentId = "46651b43-5769-45a5-bc1c-8fba94a52712";
 const memberUserId = "509eb21f-981a-4c39-9f64-5fa1b121f367";
 const createdAt = "2026-08-16T12:00:00.000Z";
 const eventHash = "a".repeat(64);
 const promotionId = "4a9d13d1-89fe-4896-a39e-67fc33db67d1";
+const companyCreationId = "4a9d13d1-89fe-4896-a39e-67fc33db67d2";
 const staffAgentId = "11111111-1111-4111-8111-111111111111";
 const workspaceId = "22222222-2222-4222-8222-222222222222";
 const clientWorkspaceId = "33333333-3333-4333-8333-333333333333";
@@ -58,6 +62,8 @@ function sessionRecord() {
 		title: "Financial Officer",
 		staff_agent_id: "financial-officer",
 		parent_session_id: null,
+		company_snapshot_id: snapshotId,
+		staff_version: 3,
 		status: "open",
 		created_by_user_id: actorUserId,
 		created_at: createdAt,
@@ -153,6 +159,22 @@ function snapshotRecord() {
 		total_bytes: 4096,
 		created_by_user_id: actorUserId,
 		created_at: createdAt,
+	};
+}
+
+function companyFileRecord(headSnapshotId: string | null = snapshotId) {
+	return {
+		profile_id: profileId,
+		environment_id: environmentId,
+		canonical_workspace_id: workspaceId,
+		head_snapshot_id: headSnapshotId,
+		state: headSnapshotId ? "ready" : "provisioning",
+		logical_bytes: headSnapshotId ? 4096 : 0,
+		retained_storage_bytes: headSnapshotId ? 1024 : 0,
+		storage_used_bytes: 5120,
+		storage_limit_bytes: 50 * 1024 * 1024 * 1024,
+		created_at: createdAt,
+		updated_at: createdAt,
 	};
 }
 
@@ -300,8 +322,68 @@ function companyOperationRecord() {
 	};
 }
 
+function companyProposalRecord(status: "open" | "accepted" | "rejected" = "open") {
+	return {
+		proposal_id: objectGraphId,
+		profile_id: profileId,
+		environment_id: environmentId,
+		client_proposal_id: clientArtifactId,
+		base_snapshot_id: snapshotId,
+		proposal_snapshot: {
+			...snapshotRecord(),
+			snapshot_id: artifactId,
+			parent_snapshot_id: snapshotId,
+			tree_contract_version: 3,
+			publication_state: "prepared",
+		},
+		execution_kind: "turn",
+		execution_id: eventId,
+		execution_claimant_id: objectProofId,
+		session_id: sessionId,
+		trail_end_sequence: 4,
+		reason: "policy",
+		policy_key: "directional-research",
+		title: "Review directional research",
+		reviewer_staff_ids: [artifactIndexId],
+		review_revision: 1,
+		reviews: [
+			{
+				assignment_id: objectProofId,
+				proposal_revision: 1,
+				reviewer_staff_agent_id: artifactIndexId,
+				reviewer_name: "Legal reviewer",
+				status: "approved",
+				run_id: eventId,
+				comment_id: artifactGcPlanId,
+				failure_reason: null,
+				created_at: createdAt,
+				started_at: createdAt,
+				completed_at: createdAt,
+			},
+		],
+		status,
+		created_by_user_id: actorUserId,
+		created_by_name: "Jonas",
+		created_at: createdAt,
+		resolved_by_user_id: status === "open" ? null : actorUserId,
+		resolved_at: status === "open" ? null : createdAt,
+	};
+}
+
+function companyProposalCommentRecord() {
+	return {
+		comment_id: artifactGcPlanId,
+		proposal_id: objectGraphId,
+		body: "Verify the volume assumptions.",
+		author_user_id: actorUserId,
+		author_name: "Jonas",
+		created_at: createdAt,
+	};
+}
+
 function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrimaryTransport {
 	return {
+		createCompany: vi.fn(async () => ({ ...profileRecord(), company_file: companyFileRecord(null) })),
 		createProfile: vi.fn(async () => profileRecord()),
 		promoteProfile: vi.fn(async () => profileRecord()),
 		listProfiles: vi.fn(async () => [profileRecord()]),
@@ -351,19 +433,97 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		deleteStaff: vi.fn(async () => true),
 		leaveProfile: vi.fn(async () => true),
 		deleteProfile: vi.fn(async () => true),
-		ensureStaffSession: vi.fn(async () => ({})),
-		appendSessionInput: vi.fn(async () => ({})),
+		ensureStaffSession: vi.fn(async () => sessionRecord()),
+		appendSessionInput: vi.fn(async () => ({ input_id: eventId, position: 1 })),
+		listSessionInputs: vi.fn(async () => ({ items: [], next_after_position: 0, has_more: false })),
+		listSessionRecoveries: vi.fn(async () => ({
+			items: [],
+			has_more: false,
+			next_completed_at: null,
+			next_id: null,
+		})),
+		listSessionExecutionRunRecoveries: vi.fn(async () => []),
+		listStaffExecutionActivity: vi.fn(async () => []),
+		resolveFailedExecutionRun: vi.fn(async (input) => ({
+			resolved: true,
+			run_id: input.p_run_id,
+			action: input.p_action,
+		})),
+		resolveSessionRecovery: vi.fn(async (input) => ({
+			resolved: true,
+			resolution: input.p_resolution,
+			input_count: 1,
+		})),
+		getSessionTurnStatus: vi.fn(async () => ({ status: "completed", input_count: 0, remaining_input_count: 0 })),
 		claimSessionTurn: vi.fn(async () => ({ claimed: false, reason: "queue-empty" })),
 		renewSessionTurn: vi.fn(async () => ({ renewed: 0 })),
 		completeSessionTurn: vi.fn(async () => ({ completed: 0 })),
+		quarantineSessionTurn: vi.fn(async () => ({ quarantined: 1 })),
 		claimWake: vi.fn(async () => ({ claimed: true })),
 		renewWake: vi.fn(async () => ({ renewed: 1 })),
 		completeWake: vi.fn(async () => ({ completed: 1 })),
+		beginOperationReceipt: vi.fn(async () => ({ started: true, status: "executing", result: null })),
+		stageOperationReceiptObjects: vi.fn(async (input) => ({ staged: (input.p_objects as JsonValue[]).length })),
+		completeOperationReceipt: vi.fn(async (input) => input.p_result),
+		resolveOperationReceipt: vi.fn(async (input) => ({
+			operation_id: input.p_operation_id,
+			status: input.p_resolution === "confirmed_completed" ? "completed" : "cancelled",
+			resolution: input.p_resolution,
+			result: input.p_result,
+		})),
+		resolveRunOperationReceipt: vi.fn(async (input) => ({
+			receipt_id: input.p_receipt_id,
+			status: input.p_resolution === "confirmed_completed" ? "completed" : "cancelled",
+			recovery_resolution: input.p_resolution,
+		})),
+		registerPresenceDevice: vi.fn(async (input) => ({
+			client_id: input.p_client_id,
+			user_id: actorUserId,
+			name: "Jonas",
+		})),
+		listPresenceDevices: vi.fn(async () => []),
+		unregisterPresenceDevice: vi.fn(async () => null),
 		putStaff: vi.fn(async () => staffRecord()),
-		createSession: vi.fn(async () => sessionRecord()),
+		createSession: vi.fn(async (input) => ({ ...sessionRecord(), execution_scope: input.p_execution_scope })),
+		closeSession: vi.fn(async () => true),
 		listSessions: vi.fn(async () => [sessionRecord()]),
+		listSessionsPage: vi.fn(async () => ({
+			items: [sessionRecord()],
+			has_more: false,
+			next_updated_at: createdAt,
+			next_id: sessionId,
+		})),
+		getSessionByClient: vi.fn(async () => sessionRecord()),
 		appendAccountEvent: vi.fn(async (input) => eventRecord(input.p_event_type)),
 		readSessionEvents: vi.fn(async () => [eventRecord()]),
+		getCompanyFile: vi.fn(async () => companyFileRecord()),
+		prepareCompanyFileRevision: vi.fn(async () => ({ ...snapshotRecord(), tree_contract_version: 3 })),
+		prepareCompanyFileProposal: vi.fn(async () => companyProposalRecord().proposal_snapshot),
+		publishCompanyFileRevision: vi.fn(async () => ({ ...snapshotRecord(), tree_contract_version: 3 })),
+		submitCompanyProposal: vi.fn(async () => companyProposalRecord()),
+		listCompanyProposals: vi.fn(async () => ({
+			items: [companyProposalRecord()],
+			has_more: false,
+			next_created_at: createdAt,
+			next_id: objectGraphId,
+		})),
+		rebaseCompanyProposal: vi.fn(async () => companyProposalRecord()),
+		acceptCompanyProposal: vi.fn(async () => companyProposalRecord("accepted")),
+		retryCompanyProposalReview: vi.fn(async (input) => ({
+			assignment_id: input.p_assignment_id,
+			proposal_id: objectGraphId,
+			proposal_revision: 1,
+			status: "queued",
+		})),
+		rejectCompanyProposal: vi.fn(async () => companyProposalRecord("rejected")),
+		getCompanyProposal: vi.fn(async () => companyProposalRecord()),
+		appendCompanyProposalComment: vi.fn(async () => companyProposalCommentRecord()),
+		listCompanyProposalComments: vi.fn(async () => ({
+			items: [companyProposalCommentRecord()],
+			has_more: false,
+			next_created_at: createdAt,
+			next_id: artifactGcPlanId,
+		})),
 		ensureCompanyWorkspace: vi.fn(async () => workspaceRecord()),
 		commitCompanySnapshot: vi.fn(async () => snapshotRecord()),
 		getCompanySnapshot: vi.fn(async () => snapshotRecord()),
@@ -404,6 +564,7 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		appendObjectReachabilityEntries: vi.fn(async () => 2),
 		completeObjectReachabilityGraph: vi.fn(async () => objectGraphRecord()),
 		getObjectReachabilityGraph: vi.fn(async () => objectGraphRecord()),
+		verifyCompanySnapshotClosure: vi.fn(async () => ({ verified: true })),
 		createObjectRestoreProof: vi.fn(async () => objectProofRecord()),
 		captureCompanySubstrateVersion: vi.fn(async () => substrateVersionRecord()),
 		getCompanySubstrateVersion: vi.fn(async () => substrateVersionRecord()),
@@ -413,6 +574,46 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 }
 
 describe("Qorpera hosted primary", () => {
+	it("creates one idempotent cloud company with its freemium Company File", async () => {
+		const fake = transport();
+		const primary = new QorperaHostedPrimary(fake);
+		await expect(
+			primary.createCompany({
+				clientCreationId: companyCreationId,
+				companyName: " Qorpera ",
+				contractVersion: 2,
+			}),
+		).resolves.toEqual({
+			profile: {
+				profileType: "cloud",
+				profileId,
+				environmentId,
+				profileName: "Qorpera",
+				environmentName: "Qorpera Company",
+				role: "owner",
+				contractVersion: 1,
+				createdAt,
+			},
+			companyFile: {
+				profileId,
+				environmentId,
+				canonicalWorkspaceId: workspaceId,
+				state: "provisioning",
+				logicalBytes: 0,
+				retainedStorageBytes: 0,
+				storageUsedBytes: 5120,
+				storageLimitBytes: 50 * 1024 * 1024 * 1024,
+				createdAt,
+				updatedAt: createdAt,
+			},
+		});
+		expect(fake.createCompany).toHaveBeenCalledWith({
+			p_client_creation_id: companyCreationId,
+			p_company_name: "Qorpera",
+			p_contract_version: 2,
+		});
+	});
+
 	it("creates and projects a stable hosted profile and environment identity", async () => {
 		const fake = transport();
 		const primary = new QorperaHostedPrimary(fake);
@@ -534,6 +735,10 @@ describe("Qorpera hosted primary", () => {
 				clientSessionId,
 				title: "Financial Officer",
 				staffAgentId: "financial-officer",
+				executionScope: {
+					attended: false,
+					autonomousLabel: "Daily finance close",
+				},
 			}),
 		).resolves.toEqual({
 			sessionId,
@@ -542,6 +747,9 @@ describe("Qorpera hosted primary", () => {
 			environmentId,
 			title: "Financial Officer",
 			staffAgentId: "financial-officer",
+			executionScope: { attended: false, autonomousLabel: "Daily finance close" },
+			companySnapshotId: snapshotId,
+			staffVersion: 3,
 			status: "open",
 			createdByUserId: actorUserId,
 			createdAt,
@@ -553,7 +761,186 @@ describe("Qorpera hosted primary", () => {
 			p_title: "Financial Officer",
 			p_staff_agent_id: "financial-officer",
 			p_parent_session_id: null,
+			p_execution_scope: { attended: false, autonomousLabel: "Daily finance close" },
+			p_company_snapshot_id: null,
+			p_staff_version: null,
 		});
+	});
+
+	it("parses durable session queues, revision pins, and ownership loss", async () => {
+		const input = {
+			input_id: eventId,
+			position: 1,
+			kind: "user_message",
+			author_user_id: actorUserId,
+			author_display_name: "Jonas",
+			body: { schema: "qorpera.session-prompt/v1", text: "Review this", images: [] },
+			created_at: createdAt,
+			status: "processing",
+		};
+		const listSessionInputs = vi.fn(async (request: { p_after_position: number }) =>
+			request.p_after_position === 0
+				? { items: [input], next_after_position: 1, has_more: true }
+				: { items: [{ ...input, position: 2 }], next_after_position: 2, has_more: false },
+		);
+		const fake = transport({
+			listSessionInputs,
+			listSessionRecoveries: vi.fn(async () => ({
+				items: [
+					{
+						turn_id: objectGraphId,
+						company_snapshot_id: snapshotId,
+						staff_version: 3,
+						trail_start_sequence: 1,
+						trail_end_sequence: 2,
+						failure_reason: "executor lease expired",
+						claimed_at: createdAt,
+						failed_at: createdAt,
+						operation_receipts: [
+							{
+								operation_id: objectProofId,
+								operation_kind: "http_request",
+								status: "ambiguous",
+								created_at: createdAt,
+							},
+						],
+						inputs: [input],
+					},
+				],
+				has_more: false,
+				next_completed_at: createdAt,
+				next_id: objectGraphId,
+			})),
+			listSessionExecutionRunRecoveries: vi.fn(async () => [
+				{
+					run: { run_id: runId, session_id: sessionId, source_kind: "session_turn" },
+					job: { status: "failed", last_error: "runner lease expired", finished_at: createdAt },
+					proposal_id: null,
+					inputs: [input],
+					operations: [
+						{
+							operation_id: objectProofId,
+							operation_kind: "http_request",
+							status: "ambiguous",
+							recovery_resolution: null,
+							created_at: createdAt,
+						},
+					],
+				},
+			]),
+			listStaffExecutionActivity: vi.fn(async () => [
+				{
+					run_id: runId,
+					staff_agent_id: artifactIndexId,
+					source_kind: "session_turn",
+					job_status: "leased",
+					activity: "working",
+					updated_at: createdAt,
+				},
+			]),
+			claimSessionTurn: vi.fn(async () => ({
+				claimed: true,
+				turn_id: objectGraphId,
+				company_snapshot_id: snapshotId,
+				staff_version: 3,
+				inputs: [input],
+			})),
+			renewSessionTurn: vi.fn(async () => ({ renewed: 0 })),
+			completeSessionTurn: vi.fn(async () => ({ completed: 0 })),
+		});
+		const primary = new QorperaHostedPrimary(fake);
+		await expect(primary.listSessionInputs(sessionId)).resolves.toMatchObject([
+			{ inputId: eventId, authorDisplayName: "Jonas", status: "processing" },
+			{ inputId: eventId, authorDisplayName: "Jonas", status: "processing", position: 2 },
+		]);
+		expect(listSessionInputs).toHaveBeenNthCalledWith(2, {
+			p_session_id: sessionId,
+			p_after_position: 1,
+			p_limit: 100,
+		});
+		await expect(primary.claimSessionTurn(sessionId, eventId, snapshotId, 3)).resolves.toMatchObject({
+			claimed: true,
+			companySnapshotId: snapshotId,
+			staffVersion: 3,
+		});
+		expect(fake.claimSessionTurn).toHaveBeenCalledWith({
+			p_session_id: sessionId,
+			p_claimant_id: eventId,
+			p_lease_seconds: 120,
+			p_company_snapshot_id: snapshotId,
+			p_staff_version: 3,
+		});
+		await expect(primary.renewSessionTurn(sessionId, objectGraphId, eventId)).rejects.toThrow("ownership was lost");
+		await expect(primary.completeSessionTurn(sessionId, objectGraphId, eventId, 0)).rejects.toThrow(
+			"ownership was lost",
+		);
+		await expect(primary.listSessionRecoveries(sessionId)).resolves.toMatchObject({
+			items: [
+				{
+					turnId: objectGraphId,
+					failureReason: "executor lease expired",
+					operationReceipts: [{ operationId: objectProofId, status: "ambiguous" }],
+					inputs: [{ inputId: eventId, authorDisplayName: "Jonas" }],
+				},
+			],
+		});
+		await expect(primary.listSessionExecutionRunRecoveries(sessionId)).resolves.toMatchObject([
+			{
+				runId,
+				sessionId,
+				failureReason: "runner lease expired",
+				inputs: [{ inputId: eventId }],
+				operationReceipts: [{ operationId: objectProofId, status: "ambiguous" }],
+			},
+		]);
+		await expect(primary.listStaffExecutionActivity(environmentId)).resolves.toEqual([
+			{
+				runId,
+				staffAgentId: artifactIndexId,
+				sourceKind: "session_turn",
+				jobStatus: "leased",
+				activity: "working",
+				updatedAt: createdAt,
+			},
+		]);
+		await expect(primary.resolveFailedExecutionRun(runId, "discard")).resolves.toBeUndefined();
+		await expect(primary.resolveSessionRecovery(sessionId, objectGraphId, "discard")).resolves.toEqual({
+			resolution: "discard",
+			inputCount: 1,
+		});
+		await expect(primary.resolveOperationReceipt(objectProofId, "confirmed_not_run")).resolves.toEqual({
+			status: "cancelled",
+			resolution: "confirmed_not_run",
+		});
+		expect(fake.resolveOperationReceipt).toHaveBeenCalledWith({
+			p_operation_id: objectProofId,
+			p_resolution: "confirmed_not_run",
+			p_result: null,
+		});
+		await expect(primary.resolveRunOperationReceipt(objectProofId, "confirmed_not_run")).resolves.toEqual({
+			status: "cancelled",
+			recoveryResolution: "confirmed_not_run",
+		});
+		expect(fake.resolveSessionRecovery).toHaveBeenCalledWith({
+			p_session_id: sessionId,
+			p_turn_id: objectGraphId,
+			p_resolution: "discard",
+		});
+	});
+
+	it("rejects wake renewal and completion after cloud ownership is lost", async () => {
+		const primary = new QorperaHostedPrimary(
+			transport({
+				renewWake: vi.fn(async () => ({ renewed: 0 })),
+				completeWake: vi.fn(async () => ({ completed: 0 })),
+			}),
+		);
+		await expect(primary.renewWake(environmentId, "job:demo:slot:1", eventId)).rejects.toThrow(
+			"Wake ownership was lost before renew",
+		);
+		await expect(primary.completeWake(environmentId, "job:demo:slot:1", eventId)).rejects.toThrow(
+			"Wake ownership was lost before complete",
+		);
 	});
 
 	it("lists, writes, and deletes authoritative staff with optimistic versions", async () => {
@@ -620,6 +1007,9 @@ describe("Qorpera hosted primary", () => {
 			p_event_type: "message",
 			p_body: { text: "What is our runway?" },
 			p_expected_sequence: 0,
+			p_execution_kind: null,
+			p_execution_id: null,
+			p_execution_claimant_id: null,
 		});
 	});
 
@@ -674,6 +1064,123 @@ describe("Qorpera hosted primary", () => {
 		expect(fake.getCompanySnapshot).toHaveBeenCalledWith({ p_snapshot_id: snapshotId });
 		await expect(primary.listCompanySnapshots(workspaceId, 50)).resolves.toHaveLength(1);
 		expect(fake.listCompanySnapshots).toHaveBeenCalledWith({ p_workspace_id: workspaceId, p_limit: 50 });
+	});
+
+	it("reads and advances the one canonical Company File head", async () => {
+		const fake = transport();
+		const primary = new QorperaHostedPrimary(fake);
+		await expect(primary.getCompanyFile(environmentId)).resolves.toMatchObject({
+			canonicalWorkspaceId: workspaceId,
+			headSnapshotId: snapshotId,
+			state: "ready",
+			storageLimitBytes: 50 * 1024 * 1024 * 1024,
+		});
+		await expect(
+			primary.prepareCompanyFileRevision({
+				environmentId,
+				clientRevisionId: clientSnapshotId,
+				expectedHeadSnapshotId: snapshotId,
+				tree: {
+					manifestSha256: treeManifestSha256,
+					manifestBytes: 1024,
+					contractVersion: 3,
+					fileCount: 3,
+					totalBytes: 4096,
+				},
+			}),
+		).resolves.toMatchObject({ snapshotId, workspaceId });
+		expect(fake.prepareCompanyFileRevision).toHaveBeenCalledWith({
+			p_environment_id: environmentId,
+			p_client_revision_id: clientSnapshotId,
+			p_expected_head_snapshot_id: snapshotId,
+			p_tree_manifest_sha256: treeManifestSha256,
+			p_tree_manifest_bytes: 1024,
+			p_tree_contract_version: 3,
+			p_file_count: 3,
+			p_total_bytes: 4096,
+		});
+		await expect(primary.publishCompanyFileRevision(environmentId, snapshotId, snapshotId)).resolves.toMatchObject({
+			snapshotId,
+			workspaceId,
+		});
+		expect(fake.publishCompanyFileRevision).toHaveBeenCalledWith({
+			p_environment_id: environmentId,
+			p_snapshot_id: snapshotId,
+			p_expected_head_snapshot_id: snapshotId,
+		});
+	});
+
+	it("prepares and submits a cloud-durable reviewed Company File proposal", async () => {
+		const fake = transport();
+		const primary = new QorperaHostedPrimary(fake);
+		await expect(
+			primary.prepareCompanyFileProposal({
+				environmentId,
+				clientRevisionId: clientSnapshotId,
+				baseSnapshotId: snapshotId,
+				tree: {
+					manifestSha256: treeManifestSha256,
+					manifestBytes: 1024,
+					contractVersion: 3,
+					fileCount: 3,
+					totalBytes: 4096,
+				},
+			}),
+		).resolves.toMatchObject({ snapshotId: artifactId, parentSnapshotId: snapshotId });
+		await expect(
+			primary.submitCompanyProposal({
+				environmentId,
+				clientProposalId: clientArtifactId,
+				proposalSnapshotId: artifactId,
+				execution: { kind: "turn", id: eventId, claimantId: objectProofId },
+				sessionId,
+				trailEndSequence: 4,
+				reason: "policy",
+				policyKey: "directional-research",
+				title: "Review directional research",
+				reviewerStaffIds: [artifactIndexId],
+			}),
+		).resolves.toMatchObject({
+			proposalId: objectGraphId,
+			status: "open",
+			proposalSnapshot: { snapshotId: artifactId },
+		});
+		await expect(primary.listCompanyProposals(environmentId)).resolves.toMatchObject({
+			items: [
+				{
+					proposalId: objectGraphId,
+					reviews: [{ reviewerName: "Legal reviewer", status: "approved" }],
+				},
+			],
+			hasMore: false,
+		});
+		await expect(
+			primary.rebaseCompanyProposal(objectGraphId, artifactId, snapshotId, clientSnapshotId),
+		).resolves.toMatchObject({ proposalId: objectGraphId, status: "open" });
+		await expect(primary.acceptCompanyProposal(objectGraphId, artifactId)).resolves.toMatchObject({
+			status: "accepted",
+		});
+		expect(fake.acceptCompanyProposal).toHaveBeenCalledWith({
+			p_proposal_id: objectGraphId,
+			p_expected_proposal_snapshot_id: artifactId,
+		});
+		await expect(primary.retryCompanyProposalReview(objectProofId)).resolves.toBeUndefined();
+		expect(fake.retryCompanyProposalReview).toHaveBeenCalledWith({ p_assignment_id: objectProofId });
+		await expect(primary.rejectCompanyProposal(objectGraphId, artifactId)).resolves.toMatchObject({
+			status: "rejected",
+		});
+		expect(fake.rejectCompanyProposal).toHaveBeenCalledWith({
+			p_proposal_id: objectGraphId,
+			p_expected_proposal_snapshot_id: artifactId,
+		});
+		await expect(primary.getCompanyProposal(objectGraphId)).resolves.toMatchObject({ proposalId: objectGraphId });
+		await expect(
+			primary.appendCompanyProposalComment(objectGraphId, clientArtifactGcPlanId, "Verify the volume assumptions."),
+		).resolves.toMatchObject({ commentId: artifactGcPlanId, authorName: "Jonas" });
+		await expect(primary.listCompanyProposalComments(objectGraphId)).resolves.toMatchObject({
+			items: [{ commentId: artifactGcPlanId, body: "Verify the volume assumptions." }],
+			hasMore: false,
+		});
 	});
 
 	it("captures and resolves immutable cross-layer substrate versions", async () => {
@@ -815,7 +1322,12 @@ describe("Qorpera hosted primary", () => {
 	});
 
 	it("uploads bounded reachability entries and records a restore proof", async () => {
-		const fake = transport();
+		const verifyCompanySnapshotClosure = vi
+			.fn()
+			.mockResolvedValueOnce({ verified: false, pending: true })
+			.mockResolvedValueOnce({ verified: false, pending: true })
+			.mockResolvedValueOnce({ verified: true });
+		const fake = transport({ verifyCompanySnapshotClosure });
 		const primary = new QorperaHostedPrimary(fake);
 		await expect(
 			primary.beginObjectReachabilityGraph({
@@ -851,6 +1363,9 @@ describe("Qorpera hosted primary", () => {
 		await expect(primary.getObjectReachabilityGraph(objectGraphId)).resolves.toMatchObject({
 			graphId: objectGraphId,
 		});
+		await expect(primary.verifyCompanySnapshotClosure(snapshotId, objectGraphId)).resolves.toBeUndefined();
+		expect(fake.verifyCompanySnapshotClosure).toHaveBeenCalledWith({ snapshotId, graphId: objectGraphId });
+		expect(fake.verifyCompanySnapshotClosure).toHaveBeenCalledTimes(3);
 		await expect(
 			primary.createObjectRestoreProof(objectGraphId, artifactId, artifactContentSha256, 4096),
 		).resolves.toMatchObject({ proofId: objectProofId, graphId: objectGraphId, restoredBytes: 4096 });
@@ -879,5 +1394,31 @@ describe("Qorpera hosted primary", () => {
 			transport({ listProfiles: vi.fn(async () => [{ ...profileRecord(), role: "root" }]) }),
 		);
 		await expect(malformed.listProfiles()).rejects.toThrow("profile role");
+	});
+
+	it("parses immutable runner execution provenance on hosted transcript events", async () => {
+		const fake = transport({
+			readSessionEvents: vi.fn(async () => [
+				{
+					...eventRecord(),
+					execution_kind: "run",
+					execution_id: runId,
+					execution_claimant_id: runId,
+					runner_assignment_id: runnerAssignmentId,
+				},
+			]),
+		});
+		const primary = new QorperaHostedPrimary(fake);
+
+		await expect(primary.readSessionEvents(sessionId, 0, 50)).resolves.toEqual([
+			expect.objectContaining({
+				execution: {
+					kind: "run",
+					id: runId,
+					claimantId: runId,
+					runnerAssignmentId,
+				},
+			}),
+		]);
 	});
 });

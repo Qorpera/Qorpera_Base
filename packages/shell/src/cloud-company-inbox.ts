@@ -64,7 +64,7 @@ function validTree(value: unknown): value is CloudCompanyTreeReference {
 		SHA256_PATTERN.test(tree.manifestSha256 ?? "") &&
 		Number.isSafeInteger(tree.manifestBytes) &&
 		(tree.manifestBytes ?? -1) > 0 &&
-		(tree.contractVersion === 1 || tree.contractVersion === 2) &&
+		(tree.contractVersion === 1 || tree.contractVersion === 2 || tree.contractVersion === 3) &&
 		Number.isSafeInteger(tree.fileCount) &&
 		(tree.fileCount ?? -1) >= 0 &&
 		Number.isSafeInteger(tree.totalBytes) &&
@@ -255,7 +255,7 @@ export class CloudCompanyWorkspaceInboxSync {
 	}
 
 	handleRealtimeChange(change: CloudRealtimeChange): void {
-		if (change.resource === "workspace") void this.#loop.trigger();
+		if (change.resource === "company-file") void this.#loop.trigger();
 	}
 
 	refreshNow(): Promise<CloudSyncHealth> {

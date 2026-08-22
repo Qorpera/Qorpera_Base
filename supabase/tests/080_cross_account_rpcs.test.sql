@@ -34,7 +34,7 @@ do $$
 declare
 	v_a text := current_setting('qorpera_test.rpc_profile_a');
 	v_env text := current_setting('qorpera_test.rpc_environment_a');
-	v_expected integer := 16;
+	v_expected integer := 18;
 	v_case record;
 	v_sql text;
 	v_retset boolean;
@@ -70,10 +70,12 @@ begin
 			('qorpera_profile_object_writes_allowed(uuid)', format('public.qorpera_profile_object_writes_allowed(%L)', v_a)),
 			-- environment-keyed reads
 			('qorpera_list_company_workspaces(uuid)', format('public.qorpera_list_company_workspaces(%L)', v_env)),
+			('qorpera_get_company_file(uuid)', format('public.qorpera_get_company_file(%L)', v_env)),
 			('qorpera_list_shared_sessions(uuid)', format('public.qorpera_list_shared_sessions(%L)', v_env)),
 			-- writes
 			('qorpera_invite_profile_member(uuid, text, public.qorpera_profile_role)', format('public.qorpera_invite_profile_member(%L, %L, ''contributor'')', v_a, 'cross-account@example.test')),
 			('qorpera_ensure_company_workspace(uuid, uuid, text, uuid)', format('public.qorpera_ensure_company_workspace(%L, ''88000000-0000-4000-8000-000000000001'', ''Hijack'', null)', v_env)),
+			('qorpera_prepare_company_file_revision(uuid, uuid, uuid, text, integer, integer, integer, bigint)', format('public.qorpera_prepare_company_file_revision(%L, ''88000000-0000-4000-8000-000000000002'', null, repeat(''a'', 64), 3, 2, 0, 0)', v_env)),
 			('qorpera_create_shared_session(uuid, text, text, uuid)', format('public.qorpera_create_shared_session(%L, ''Hijack'', null, null)', v_env))
 		) as t(sig, call)
 	loop
@@ -155,6 +157,7 @@ begin
 	-- Exercised for reachability, not row count: a fresh environment may hold
 	-- no workspaces, and asserting a count here would be the vacuous kind.
 	perform count(*) from public.qorpera_list_company_workspaces(v_env);
+	perform public.qorpera_get_company_file(v_env);
 end
 $$;
 

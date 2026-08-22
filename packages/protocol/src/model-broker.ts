@@ -11,6 +11,12 @@ export interface KernelModelIntentBudget {
 	maxCostUsd: number;
 }
 
+export interface KernelExecutionIdentity {
+	kind: "turn" | "wake";
+	id: string;
+	claimantId: string;
+}
+
 export interface KernelIntentCapability {
 	nonce: string;
 	sessionId: string;
@@ -19,6 +25,7 @@ export interface KernelIntentCapability {
 	issuedAt: string;
 	expiresAt: string;
 	budget: KernelModelIntentBudget;
+	execution?: KernelExecutionIdentity;
 	signature: string;
 }
 

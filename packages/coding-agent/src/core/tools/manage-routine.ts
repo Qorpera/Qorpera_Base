@@ -1,5 +1,5 @@
 /** Agent-owned routine management intent. The desktop host applies successful
- * calls to the attached agent's machine-local routine definitions. */
+ * calls to synchronized Company File routine definitions. */
 
 import type { AgentTool } from "@qorpera/pi-agent-core";
 import { type Static, Type } from "typebox";
@@ -23,6 +23,19 @@ const effort = Type.Optional(
 		Type.Literal("xhigh"),
 		Type.Literal("max"),
 	]),
+);
+const reviewerStaffIds = Type.Optional(
+	Type.Array(
+		Type.String({
+			pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+		}),
+		{
+			maxItems: 20,
+			uniqueItems: true,
+			description:
+				"Staff agents who must review this routine's Company File output before publication. Omit to preserve the current policy; use an empty list to publish automatically.",
+		},
+	),
 );
 const routineWeekday = Type.Union([
 	Type.Literal("sunday"),
@@ -59,6 +72,7 @@ const manageRoutineSchema = Type.Union([
 				}),
 			),
 			effort,
+			reviewerStaffIds,
 		},
 		{ additionalProperties: false },
 	),
@@ -81,6 +95,7 @@ const manageRoutineSchema = Type.Union([
 				}),
 			),
 			effort,
+			reviewerStaffIds,
 		},
 		{ additionalProperties: false },
 	),
@@ -96,6 +111,7 @@ const manageRoutineSchema = Type.Union([
 			),
 			checkEveryMinutes: Type.Optional(Type.Integer({ minimum: 5, maximum: 10_080 })),
 			effort,
+			reviewerStaffIds,
 		},
 		{ additionalProperties: false },
 	),
@@ -139,6 +155,20 @@ function validTimeZone(value: unknown): value is string | undefined {
 	}
 }
 
+function validReviewerStaffIds(value: unknown): value is string[] | undefined {
+	return (
+		value === undefined ||
+		(Array.isArray(value) &&
+			value.length <= 20 &&
+			new Set(value).size === value.length &&
+			value.every(
+				(id) =>
+					typeof id === "string" &&
+					/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id),
+			))
+	);
+}
+
 function normalizeWeekdays(value: unknown): unknown {
 	if (typeof value !== "string") return value;
 	try {
@@ -168,7 +198,16 @@ function assertManageRoutineInput(input: unknown): asserts input is ManageRoutin
 		if (
 			Object.keys(value).some(
 				(key) =>
-					!["action", "routineKey", "title", "instructions", "intervalMinutes", "startAt", "effort"].includes(key),
+					![
+						"action",
+						"routineKey",
+						"title",
+						"instructions",
+						"intervalMinutes",
+						"startAt",
+						"effort",
+						"reviewerStaffIds",
+					].includes(key),
 			) ||
 			!boundedText(value.title, 160) ||
 			!boundedText(value.instructions, 32 * 1024) ||
@@ -177,7 +216,8 @@ function assertManageRoutineInput(input: unknown): asserts input is ManageRoutin
 			value.intervalMinutes < 5 ||
 			value.intervalMinutes > 10_080 ||
 			!validStartAt(value.startAt) ||
-			(value.effort !== undefined && (typeof value.effort !== "string" || !EFFORTS.has(value.effort)))
+			(value.effort !== undefined && (typeof value.effort !== "string" || !EFFORTS.has(value.effort))) ||
+			!validReviewerStaffIds(value.reviewerStaffIds)
 		) {
 			throw new Error("manage_routine upsert input is invalid");
 		}
@@ -196,6 +236,7 @@ function assertManageRoutineInput(input: unknown): asserts input is ManageRoutin
 						"localTime",
 						"timeZone",
 						"effort",
+						"reviewerStaffIds",
 					].includes(key),
 			) ||
 			!boundedText(value.title, 160) ||
@@ -208,7 +249,8 @@ function assertManageRoutineInput(input: unknown): asserts input is ManageRoutin
 			typeof value.localTime !== "string" ||
 			!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value.localTime) ||
 			!validTimeZone(value.timeZone) ||
-			(value.effort !== undefined && (typeof value.effort !== "string" || !EFFORTS.has(value.effort)))
+			(value.effort !== undefined && (typeof value.effort !== "string" || !EFFORTS.has(value.effort))) ||
+			!validReviewerStaffIds(value.reviewerStaffIds)
 		) {
 			throw new Error("manage_routine weekly input is invalid");
 		}
@@ -227,6 +269,7 @@ function assertManageRoutineInput(input: unknown): asserts input is ManageRoutin
 						"sourceHints",
 						"checkEveryMinutes",
 						"effort",
+						"reviewerStaffIds",
 					].includes(key),
 			) ||
 			!boundedText(value.title, 160) ||
@@ -242,7 +285,8 @@ function assertManageRoutineInput(input: unknown): asserts input is ManageRoutin
 					!Number.isInteger(value.checkEveryMinutes) ||
 					value.checkEveryMinutes < 5 ||
 					value.checkEveryMinutes > 10_080)) ||
-			(value.effort !== undefined && (typeof value.effort !== "string" || !EFFORTS.has(value.effort)))
+			(value.effort !== undefined && (typeof value.effort !== "string" || !EFFORTS.has(value.effort))) ||
+			!validReviewerStaffIds(value.reviewerStaffIds)
 		) {
 			throw new Error("manage_routine event input is invalid");
 		}

@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
-import type { QorperaHostedPrimary, SessionTurnInput } from "./hosted-primary.ts";
+import type { JsonValue } from "@qorpera/pi-protocol";
+import {
+	type HostedSessionRecoveryPage,
+	type PendingSessionInput,
+	type QorperaHostedPrimary,
+	type SessionInputReceipt,
+	type SessionTurnClaim,
+	type SessionTurnInput,
+	SessionTurnOwnershipError,
+} from "./hosted-primary.ts";
 
 /**
  * Per-company client of the hosted session arbiter (migration 20260818007000,
@@ -12,10 +21,9 @@ import type { QorperaHostedPrimary, SessionTurnInput } from "./hosted-primary.ts
  * claim, and nothing else; timers, children, and dispatch stay in main.ts
  * where the runtime lifecycle already lives.
  *
- * Every method that talks to the cloud can reject. Callers degrade to
- * today's solo behaviour on failure — the arbiter makes multiplayer
- * coherent when the cloud is reachable, and must never make solo work
- * impossible when it is not.
+ * Every method that talks to the cloud can reject. Cloud companies keep
+ * the prompt in the composer on failure; they never fork the authoritative
+ * conversation into a machine-local fallback.
  */
 
 export interface ArbiterSessionRef {
@@ -25,15 +33,26 @@ export interface ArbiterSessionRef {
 	staffAgentId: string;
 	title: string;
 	createdAt: string;
+	companySnapshotId?: string;
+	staffVersion?: number;
 	/** True when this machine's ensure created the session (and its kickoff row). */
 	created: boolean;
 }
 
+export interface ArbiterExecutionPin {
+	companySnapshotId: string;
+	staffVersion: number;
+}
+
 export interface ArbiterClaim {
+	turnId: string;
 	hostedSessionId: string;
 	staffAgentId: string;
+	companySnapshotId: string;
+	staffVersion: number;
 	inputs: SessionTurnInput[];
 	claimedAt: number;
+	leaseExpiresAt: number;
 }
 
 const RENEW_INTERVAL_MS = 45_000;
@@ -46,6 +65,7 @@ export class CloudSessionArbiter {
 	readonly #byStaff = new Map<string, ArbiterSessionRef>();
 	#activeClaim: ArbiterClaim | undefined;
 	#lastRenewAt = 0;
+	#lastClaimRefusal?: Extract<SessionTurnClaim, { claimed: false }>["reason"];
 
 	constructor(primary: QorperaHostedPrimary, environmentId: string, claimantId: string = randomUUID()) {
 		this.#primary = primary;
@@ -59,6 +79,10 @@ export class CloudSessionArbiter {
 
 	get activeClaim(): ArbiterClaim | undefined {
 		return this.#activeClaim;
+	}
+
+	get lastClaimRefusal(): Extract<SessionTurnClaim, { claimed: false }>["reason"] | undefined {
+		return this.#lastClaimRefusal;
 	}
 
 	/** Adopt the staff agent's open hosted session, or create it (which also
@@ -77,25 +101,23 @@ export class CloudSessionArbiter {
 		if (handle.created) {
 			ref = {
 				hostedSessionId: handle.sessionId,
-				clientSessionId,
+				clientSessionId: handle.clientSessionId,
 				staffAgentId,
 				title: handle.title,
-				createdAt: new Date().toISOString(),
+				createdAt: handle.createdAt,
+				...(handle.companySnapshotId ? { companySnapshotId: handle.companySnapshotId } : {}),
+				...(handle.staffVersion ? { staffVersion: handle.staffVersion } : {}),
 				created: true,
 			};
 		} else {
-			// The ensure result carries the hosted id; the trail identity other
-			// machines share comes from the session listing.
-			const hosted = (await this.#primary.listSessions(this.#environmentId)).find(
-				(session) => session.sessionId === handle.sessionId,
-			);
-			if (!hosted) throw new Error("adopted staff session is not listable");
 			ref = {
-				hostedSessionId: hosted.sessionId,
-				clientSessionId: hosted.clientSessionId,
+				hostedSessionId: handle.sessionId,
+				clientSessionId: handle.clientSessionId,
 				staffAgentId,
-				title: hosted.title,
-				createdAt: hosted.createdAt,
+				title: handle.title,
+				createdAt: handle.createdAt,
+				...(handle.companySnapshotId ? { companySnapshotId: handle.companySnapshotId } : {}),
+				...(handle.staffVersion ? { staffVersion: handle.staffVersion } : {}),
 				created: false,
 			};
 		}
@@ -103,27 +125,69 @@ export class CloudSessionArbiter {
 		return ref;
 	}
 
-	/** Enqueue a user message. Idempotent server-side by the minted input id. */
-	async appendUserMessage(staffAgentId: string, text: string): Promise<void> {
+	/** Enqueue a complete reviewed prompt. Binary attachments are already
+	 * content-addressed cloud references; the queue row is therefore the
+	 * durable authority for text and images together. */
+	async appendPrompt(staffAgentId: string, clientInputId: string, body: JsonValue): Promise<SessionInputReceipt> {
 		const ref = this.#requireSession(staffAgentId);
-		await this.#primary.appendSessionInput(ref.hostedSessionId, randomUUID(), { text });
+		return this.#primary.appendSessionInput(ref.hostedSessionId, clientInputId, body);
+	}
+
+	async pendingInputs(staffAgentId: string): Promise<PendingSessionInput[]> {
+		return this.#primary.listSessionInputs(this.#requireSession(staffAgentId).hostedSessionId);
+	}
+
+	async recoveries(staffAgentId: string, limit = 10): Promise<HostedSessionRecoveryPage> {
+		return this.#primary.listSessionRecoveries(this.#requireSession(staffAgentId).hostedSessionId, undefined, limit);
+	}
+
+	async executionRecoveries(staffAgentId: string, limit = 20) {
+		return this.#primary.listSessionExecutionRunRecoveries(this.#requireSession(staffAgentId).hostedSessionId, limit);
+	}
+
+	async resolveExecutionRecovery(staffAgentId: string, runId: string, action: "retry" | "discard"): Promise<void> {
+		this.#requireSession(staffAgentId);
+		await this.#primary.resolveFailedExecutionRun(runId, action);
+	}
+
+	async resolveRecovery(staffAgentId: string, turnId: string, resolution: "retry" | "discard"): Promise<void> {
+		await this.#primary.resolveSessionRecovery(
+			this.#requireSession(staffAgentId).hostedSessionId,
+			turnId,
+			resolution,
+		);
 	}
 
 	/** Try to become the executor for the staff agent's pending turn. Returns
 	 * the claimed inputs (kickoff first when present), or undefined when the
 	 * queue is empty or another executor's turn is in flight. */
-	async claimTurn(staffAgentId: string): Promise<ArbiterClaim | undefined> {
+	async claimTurn(staffAgentId: string, pin: ArbiterExecutionPin): Promise<ArbiterClaim | undefined> {
 		const ref = this.#requireSession(staffAgentId);
 		if (this.#activeClaim) return undefined;
-		const claim = await this.#primary.claimSessionTurn(ref.hostedSessionId, this.claimantId, TURN_LEASE_SECONDS);
-		if (!claim.claimed) return undefined;
+		const claim = await this.#primary.claimSessionTurn(
+			ref.hostedSessionId,
+			this.claimantId,
+			pin.companySnapshotId,
+			pin.staffVersion,
+			TURN_LEASE_SECONDS,
+		);
+		if (!claim.claimed) {
+			this.#lastClaimRefusal = claim.reason;
+			return undefined;
+		}
+		this.#lastClaimRefusal = undefined;
+		const claimedAt = Date.now();
 		this.#activeClaim = {
+			turnId: claim.turnId,
 			hostedSessionId: ref.hostedSessionId,
 			staffAgentId,
+			companySnapshotId: claim.companySnapshotId,
+			staffVersion: claim.staffVersion,
 			inputs: claim.inputs,
-			claimedAt: Date.now(),
+			claimedAt,
+			leaseExpiresAt: claimedAt + TURN_LEASE_SECONDS * 1_000,
 		};
-		this.#lastRenewAt = Date.now();
+		this.#lastRenewAt = claimedAt;
 		return this.#activeClaim;
 	}
 
@@ -134,21 +198,50 @@ export class CloudSessionArbiter {
 		if (!claim) return;
 		const now = Date.now();
 		if (now - this.#lastRenewAt < RENEW_INTERVAL_MS) return;
-		this.#lastRenewAt = now;
-		await this.#primary.renewSessionTurn(claim.hostedSessionId, this.claimantId, TURN_LEASE_SECONDS);
+		try {
+			await this.#primary.renewSessionTurn(claim.hostedSessionId, claim.turnId, this.claimantId, TURN_LEASE_SECONDS);
+		} catch (error) {
+			if (Date.now() >= claim.leaseExpiresAt) throw new SessionTurnOwnershipError("renew");
+			throw error;
+		}
+		if (this.#activeClaim === claim) {
+			this.#lastRenewAt = now;
+			claim.leaseExpiresAt = Date.now() + TURN_LEASE_SECONDS * 1_000;
+		}
 	}
 
 	/** The turn ran to completion: mark its inputs consumed. */
-	async completeTurn(): Promise<void> {
+	async completeTurn(trailEndSequence: number, expectedClaim?: ArbiterClaim): Promise<void> {
 		const claim = this.#activeClaim;
-		if (!claim) return;
-		this.#activeClaim = undefined;
-		await this.#primary.completeSessionTurn(claim.hostedSessionId, this.claimantId);
+		if (!claim) {
+			if (expectedClaim) throw new SessionTurnOwnershipError("complete");
+			return;
+		}
+		if (expectedClaim && claim !== expectedClaim) throw new SessionTurnOwnershipError("complete");
+		await this.#primary.completeSessionTurn(claim.hostedSessionId, claim.turnId, this.claimantId, trailEndSequence);
+		if (this.#activeClaim === claim) this.#activeClaim = undefined;
+	}
+
+	async quarantineTurn(reason: string, expectedClaim?: ArbiterClaim): Promise<void> {
+		const claim = this.#activeClaim;
+		if (!claim) {
+			if (expectedClaim) throw new SessionTurnOwnershipError("complete");
+			return;
+		}
+		if (expectedClaim && claim !== expectedClaim) throw new SessionTurnOwnershipError("complete");
+		await this.#primary.quarantineSessionTurn(claim.hostedSessionId, claim.turnId, this.claimantId, reason);
+		if (this.#activeClaim === claim) this.#activeClaim = undefined;
+	}
+
+	async turnStatus(
+		claim: ArbiterClaim,
+	): Promise<"active" | "completed" | "quarantined" | "review_pending" | "unavailable"> {
+		return (await this.#primary.getSessionTurnStatus(claim.hostedSessionId, claim.turnId, this.claimantId)).status;
 	}
 
 	/** The executor died or the turn failed before running: never mark the
-	 * inputs consumed — drop the local claim and let the lease expire so
-	 * another machine (or this one, later) takes the turn over. */
+	 * inputs consumed. The server quarantines an expired execution for review;
+	 * it never offers an outcome-ambiguous operation to another machine. */
 	abandonClaim(): void {
 		this.#activeClaim = undefined;
 	}

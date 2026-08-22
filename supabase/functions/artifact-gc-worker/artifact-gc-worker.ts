@@ -12,6 +12,24 @@ export interface ArtifactGcWorkerObject {
 	sha256: string;
 	bytes: number;
 	path: string;
+	backend: "missing" | "nas-object-gateway" | "supabase-storage";
+}
+
+export interface AuthorizedArtifactGcWorkerObject extends ArtifactGcWorkerObject {
+	authorizationId: string;
+	profileId: string;
+}
+
+export interface CompanyObjectGcWorkerJob {
+	profileId: string;
+	leaseId: string;
+	objects: ArtifactGcWorkerObject[];
+}
+
+export interface CompanyObjectGcWorkerStore {
+	renewLease(job: CompanyObjectGcWorkerJob): Promise<void>;
+	complete(job: CompanyObjectGcWorkerJob): Promise<void>;
+	release(job: CompanyObjectGcWorkerJob): Promise<void>;
 }
 
 export interface ArtifactGcWorkerStore {
@@ -23,7 +41,39 @@ export interface ArtifactGcWorkerStore {
 }
 
 export interface ArtifactGcStorageProvider {
-	remove(objects: readonly ArtifactGcWorkerObject[]): Promise<void>;
+	remove(objects: readonly ArtifactGcWorkerObject[], leaseId: string): Promise<void>;
+}
+
+export type ArtifactGcWorkerAuthorization =
+	| { status: "authorized"; serviceKey: string }
+	| { status: "unauthorized" }
+	| { status: "unconfigured" };
+
+export function resolveArtifactGcWorkerAuthorization(options: {
+	presentedKey: string | undefined;
+	workerKey: string | undefined;
+	serviceKeys: readonly (string | undefined)[];
+}): ArtifactGcWorkerAuthorization {
+	if (!options.workerKey) return { status: "unconfigured" };
+	if (!options.presentedKey || options.presentedKey !== options.workerKey) {
+		return { status: "unauthorized" };
+	}
+	const serviceKey = options.serviceKeys.find((value): value is string => Boolean(value));
+	return serviceKey ? { status: "authorized", serviceKey } : { status: "unconfigured" };
+}
+
+export function createRoutedArtifactGcStorageProvider(options: {
+	removeSupabase(object: ArtifactGcWorkerObject, leaseId: string): Promise<void>;
+	removeNas(object: ArtifactGcWorkerObject, leaseId: string): Promise<void>;
+}): ArtifactGcStorageProvider {
+	return {
+		remove: async (objects, leaseId) => {
+			for (const object of objects) {
+				if (object.backend === "supabase-storage") await options.removeSupabase(object, leaseId);
+				if (object.backend === "nas-object-gateway") await options.removeNas(object, leaseId);
+			}
+		},
+	};
 }
 
 export interface ArtifactGcWorkerResult {
@@ -32,6 +82,12 @@ export interface ArtifactGcWorkerResult {
 	retrying: number;
 	failed: number;
 	failurePending: number;
+}
+
+export interface CompanyObjectGcWorkerResult {
+	claimed: number;
+	completed: number;
+	failed: number;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -73,6 +129,7 @@ export function parseArtifactGcWorkerObjects(
 		const sha256 = input.sha256;
 		const bytes = input.bytes;
 		const path = input.path;
+		const backend = input.backend;
 		if (typeof sha256 !== "string" || !SHA256_PATTERN.test(sha256) || seen.has(sha256)) {
 			throw new Error("Invalid artifact cleanup object hash");
 		}
@@ -80,9 +137,55 @@ export function parseArtifactGcWorkerObjects(
 			throw new Error("Invalid artifact cleanup object size");
 		}
 		if (path !== `${job.profileId}/${sha256}`) throw new Error("Invalid artifact cleanup object path");
+		if (backend !== "missing" && backend !== "nas-object-gateway" && backend !== "supabase-storage") {
+			throw new Error("Invalid artifact cleanup object backend");
+		}
 		seen.add(sha256);
-		return { sha256, bytes: bytes as number, path };
+		return { sha256, bytes: bytes as number, path, backend };
 	});
+}
+
+export function parseCompanyObjectGcWorkerJob(value: unknown): CompanyObjectGcWorkerJob | undefined {
+	if (value === null) return undefined;
+	const input = record(value, "company object cleanup job");
+	const profileId = uuid(input.profile_id, "company object cleanup profile id");
+	const leaseId = uuid(input.lease_id, "company object cleanup lease id");
+	const job = { planId: leaseId, profileId, leaseId, attemptCount: 1 };
+	const objects = parseArtifactGcWorkerObjects(input.objects, job);
+	if (objects.length === 0) throw new Error("Invalid empty company object cleanup job");
+	return { profileId, leaseId, objects };
+}
+
+export function parseAuthorizedArtifactGcWorkerObjects(value: unknown): AuthorizedArtifactGcWorkerObject[] {
+	if (!Array.isArray(value) || value.length > 100) throw new Error("Invalid authorized object cleanup list");
+	const seen = new Set<string>();
+	return value.map((entry) => {
+		const input = record(entry, "authorized object cleanup");
+		const authorizationId = uuid(input.authorization_id, "object deletion authorization id");
+		const profileId = uuid(input.profile_id, "authorized object cleanup profile id");
+		const parsed = parseArtifactGcWorkerObjects(
+			[
+				{
+					sha256: input.sha256,
+					bytes: input.bytes,
+					path: input.path,
+					backend: input.backend,
+				},
+			],
+			{ planId: authorizationId, profileId, leaseId: authorizationId, attemptCount: 1 },
+		)[0];
+		if (!parsed || seen.has(authorizationId)) throw new Error("Invalid object deletion authorization list");
+		seen.add(authorizationId);
+		return { ...parsed, authorizationId, profileId };
+	});
+}
+
+export async function reconcileAuthorizedArtifactGcWorkerObjects(
+	objects: readonly AuthorizedArtifactGcWorkerObject[],
+	remove: (object: AuthorizedArtifactGcWorkerObject) => Promise<void>,
+): Promise<number> {
+	for (const object of objects) await remove(object);
+	return objects.length;
 }
 
 function cleanupError(error: unknown): string {
@@ -111,7 +214,7 @@ export async function runArtifactGcWorkerBatch(
 					job,
 					objects.map((object) => object.sha256),
 				);
-				await storage.remove(objects);
+				await storage.remove(objects, job.leaseId);
 				await store.acknowledgeObjects(
 					job,
 					objects.map((object) => object.sha256),
@@ -129,4 +232,25 @@ export async function runArtifactGcWorkerBatch(
 		}
 	}
 	return result;
+}
+
+export async function runCompanyObjectGcWorkerJob(
+	job: CompanyObjectGcWorkerJob | undefined,
+	storage: ArtifactGcStorageProvider,
+	store: CompanyObjectGcWorkerStore,
+): Promise<CompanyObjectGcWorkerResult> {
+	if (!job) return { claimed: 0, completed: 0, failed: 0 };
+	try {
+		await store.renewLease(job);
+		await storage.remove(job.objects, job.leaseId);
+		await store.complete(job);
+		return { claimed: job.objects.length, completed: job.objects.length, failed: 0 };
+	} catch {
+		try {
+			await store.release(job);
+		} catch {
+			// The lease expires server-side; a later invocation can safely reclaim it.
+		}
+		return { claimed: job.objects.length, completed: 0, failed: job.objects.length };
+	}
 }

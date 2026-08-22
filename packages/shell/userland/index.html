@@ -20,6 +20,7 @@
 	<div id="threadHeader" class="thread-header" hidden>
 		<button id="staffIdentityButton" class="staff-identity-button" type="button" aria-label="Open agent settings" aria-expanded="false"><span id="threadAvatar" class="staff-avatar" aria-hidden="true"></span><strong id="threadTitle">Qorpera</strong></button>
 		<nav id="staffArtifactTabs" class="staff-artifact-tabs" aria-label="Agent artifacts"></nav>
+		<span id="threadSponsorProvenance" class="thread-sponsor-provenance" hidden></span>
 		<div class="staff-header-actions">
 			<button id="staffSidepanelButton" type="button" aria-label="Open agent computer and routines" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="12" rx="1.8"/><path d="M8.5 20h7M12 16.5V20"/></svg></button>
 		</div>
@@ -143,6 +144,7 @@
 						<button id="scopeBtn" class="stripchip" title="Company or product-development department" aria-haspopup="menu" aria-expanded="false">…</button>
 						<div id="scopeMenu" class="chipmenu"></div>
 					</div>
+					<select id="cloudSponsorSelect" class="cloud-sponsor-select" aria-label="Execution sponsor" title="Execution sponsor" hidden></select>
 					<span class="composer-spacer"></span>
 					<div id="modelCtlMenu" class="chipmenu modelctl" role="menu" aria-label="Model control">
 						<div class="mc-effort-heading"><span class="sr-only">Reasoning effort</span><output id="mcEffortLabel">Medium</output></div>
@@ -429,14 +431,7 @@
 		<p class="company-picture-note">PNG, JPEG, or WebP. The picture is private to your account on this computer.</p>
 		<label class="sr-only" for="companyName">Company name</label>
 		<input class="company-name-input" id="companyName" type="text" autocomplete="off" spellcheck="false" maxlength="64" aria-describedby="companyFormError">
-		<fieldset class="company-placement-picker">
-			<legend>Where should this profile live?</legend>
-			<div class="department-type-grid" id="companyPlacementPicker">
-				<button class="choice-card selected" type="button" data-profile-placement="local" aria-pressed="true"><strong>On this computer</strong><small>Keep the profile and its history local.</small></button>
-				<button class="choice-card" type="button" data-profile-placement="hosted" aria-pressed="false"><strong>Hosted for sharing</strong><small>Sync profile identity, team access, staff, and attended chats.</small></button>
-			</div>
-			<p id="companyPlacementNote">Execution is chosen separately for each session or worktree.</p>
-		</fieldset>
+		<p class="company-picture-note">Your company and Company File are created in the cloud. The first 50 GB is included.</p>
 		<div id="companyFormError" class="company-form-error" role="status" aria-live="polite"></div>
 		<footer>
 			<button class="secondary-button" id="companyCancel" type="button">Cancel</button>

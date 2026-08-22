@@ -18,6 +18,8 @@ const runnerId = "5b07e271-c030-422c-a3ef-ad10830c393d";
 const substrateVersionId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
 const clientJobId = "c98d600e-654a-40da-a07f-f1d54f93cc6c";
 const jobId = "509eb21f-981a-4c39-9f64-5fa1b121f367";
+const assignmentId = "509eb21f-981a-4c39-9f64-5fa1b121f368";
+const assignmentCapability = "z".repeat(43);
 const actorUserId = "4a9d13d1-89fe-4896-a39e-67fc33db67d1";
 const createdAt = "2026-08-16T12:00:00.000Z";
 
@@ -153,10 +155,10 @@ class DisposableRunnerService implements CloudRunnerAdminTransport, CloudRunnerC
 			this.#sessionToken = body.nextSessionToken;
 			return this.#runnerRecord();
 		}
-		if (body.action === "claim") {
+		if (body.action === "accept") {
 			if (this.#jobStatus !== "queued") return null;
 			this.#jobStatus = "leased";
-			this.#leaseToken = body.leaseToken;
+			this.#leaseToken = body.assignmentCapability;
 			return this.#jobRecord();
 		}
 		if (body.leaseToken !== this.#leaseToken || this.#jobStatus !== "leased") {
@@ -192,7 +194,9 @@ describe("cloud runner lifecycle", () => {
 
 		const runner = new DisposableCloudRunner(service, registration.runner.runnerId, registration.activationToken);
 		await expect(runner.activate("linux-x64", "0.1.0")).resolves.toMatchObject({ status: "active" });
-		await expect(runner.claim()).resolves.toMatchObject({
+		await expect(
+			runner.acceptAssignment({ assignmentId, jobId, capability: assignmentCapability }),
+		).resolves.toMatchObject({
 			jobId,
 			substrateVersionId,
 			status: "leased",

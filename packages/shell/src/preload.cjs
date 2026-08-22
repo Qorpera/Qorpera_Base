@@ -70,9 +70,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	friendsRespond: (userId, accept) => ipcRenderer.invoke("friends:respond", userId, accept),
 	friendsRemove: (userId) => ipcRenderer.invoke("friends:remove", userId),
 	materializeCloudProfile: (profileId) => ipcRenderer.invoke("profile:materialize-cloud", profileId),
-	cloudProfileOptions: () => ipcRenderer.invoke("profile:cloud-options"),
-	enableCloudProfile: () => ipcRenderer.invoke("profile:enable-cloud"),
-	attachCloudProfile: (profileId) => ipcRenderer.invoke("profile:attach-cloud", profileId),
+	migrateLocalCompany: (root) => ipcRenderer.invoke("profile:migrate-local", root),
 	inviteProfileMember: (value) => ipcRenderer.invoke("profile-team:invite", value),
 	cancelProfileInvitation: (invitationId) =>
 		ipcRenderer.invoke("profile-team:cancel-invitation", invitationId),
@@ -82,19 +80,53 @@ contextBridge.exposeInMainWorld("qorpera", {
 		ipcRenderer.invoke("profile-team:update-role", memberUserId, role),
 	removeProfileMember: (memberUserId) => ipcRenderer.invoke("profile-team:remove-member", memberUserId),
 	openCompany: (root) => ipcRenderer.invoke("company:open", root),
-	newCompany: (dir, companyIcon, placement) => ipcRenderer.invoke("company:new", dir, companyIcon, placement),
+	pendingCompanyCreation: () => ipcRenderer.invoke("company:pending-creation"),
+	newCompany: (name, companyIcon, clientCreationId) =>
+		ipcRenderer.invoke("company:new", name, companyIcon, clientCreationId),
 	setCompanyIcon: (companyIcon) => ipcRenderer.invoke("company:set-icon", companyIcon),
-	integrateCompany: (dir, from) => ipcRenderer.invoke("company:integrate", dir, from),
+	openCompanyFile: () => ipcRenderer.invoke("company-file:open"),
+	openCompanyFileConflictRemote: () => ipcRenderer.invoke("company-file:open-conflict-remote"),
+	resolveCompanyFileConflict: (resolution) => ipcRenderer.invoke("company-file:resolve-conflict", resolution),
+	openCompanyFileReview: (checkoutId, proposalHead, expectedCanonicalHead) =>
+		ipcRenderer.invoke("company-file:open-review", checkoutId, proposalHead, expectedCanonicalHead),
+	acceptCompanyFileReview: (checkoutId, proposalHead, expectedCanonicalHead) =>
+		ipcRenderer.invoke("company-file:accept-review", checkoutId, proposalHead, expectedCanonicalHead),
+	rejectCompanyFileReview: (checkoutId, proposalHead, expectedCanonicalHead) =>
+		ipcRenderer.invoke("company-file:reject-review", checkoutId, proposalHead, expectedCanonicalHead),
+	openCompanyProposal: (proposalId, proposalSnapshotId) =>
+		ipcRenderer.invoke("company-file:open-proposal", proposalId, proposalSnapshotId),
+	acceptCompanyProposal: (proposalId, proposalSnapshotId) =>
+		ipcRenderer.invoke("company-file:accept-proposal", proposalId, proposalSnapshotId),
+	retryCompanyProposalReview: (proposalId, proposalSnapshotId, assignmentId, proposalRevision) =>
+		ipcRenderer.invoke(
+			"company-file:retry-proposal-review",
+			proposalId,
+			proposalSnapshotId,
+			assignmentId,
+			proposalRevision,
+		),
+	rejectCompanyProposal: (proposalId, proposalSnapshotId) =>
+		ipcRenderer.invoke("company-file:reject-proposal", proposalId, proposalSnapshotId),
+	commentCompanyProposal: (proposalId, body, clientCommentId) =>
+		ipcRenderer.invoke("company-file:comment-proposal", proposalId, body, clientCommentId),
+	companyProposalComments: (proposalId) => ipcRenderer.invoke("company-file:proposal-comments", proposalId),
+	stagePromptSend: (id, frame) => ipcRenderer.invoke("prompt-send:stage", id, frame),
+	pendingPromptSend: () => ipcRenderer.invoke("prompt-send:pending"),
+	acknowledgePromptSend: (id) => ipcRenderer.invoke("prompt-send:ack", id),
+	resolveSessionRecovery: (staffAgentId, turnId, resolution) =>
+		ipcRenderer.invoke("staff-session:resolve-recovery", staffAgentId, turnId, resolution),
+	resolveExecutionRecovery: (staffAgentId, runId, action) =>
+		ipcRenderer.invoke("staff-session:resolve-execution-recovery", staffAgentId, runId, action),
+	resolveOperationRecovery: (staffAgentId, operationId, resolution) =>
+		ipcRenderer.invoke("staff-session:resolve-operation", staffAgentId, operationId, resolution),
+	resolveRunOperationRecovery: (staffAgentId, operationId, resolution) =>
+		ipcRenderer.invoke("staff-session:resolve-run-operation", staffAgentId, operationId, resolution),
 	addProduct: (product, from) => ipcRenderer.invoke("company:product-add", product, from),
 	chooseProductSource: () => ipcRenderer.invoke("company:product-source-choose"),
 	createScheduledJob: (input) => ipcRenderer.invoke("company:scheduled-job-create", input),
 	updateScheduledJob: (id, input) => ipcRenderer.invoke("company:scheduled-job-update", id, input),
 	deleteScheduledJob: (id) => ipcRenderer.invoke("company:scheduled-job-delete", id),
 	runScheduledJob: (id) => ipcRenderer.invoke("company:scheduled-job-run", id),
-	cloudCompanyWorkspaces: () => ipcRenderer.invoke("company-cloud:workspaces"),
-	previewCloudCompanyWorkspace: (workspaceId) => ipcRenderer.invoke("company-cloud:preview", workspaceId),
-	inspectCloudCompanyMerge: (workspaceId) => ipcRenderer.invoke("company-cloud:inspect-merge", workspaceId),
-	mergeCloudCompanyWorkspace: (workspaceId) => ipcRenderer.invoke("company-cloud:merge", workspaceId),
 	closeCompany: () => ipcRenderer.invoke("company:close"),
 	openChat,
 	staffCatalog: () => ipcRenderer.invoke("staff:catalog"),
@@ -120,6 +152,19 @@ contextBridge.exposeInMainWorld("qorpera", {
 	settingsInfo: () => ipcRenderer.invoke("settings:info"),
 	setBackgroundEnabled: (enabled) => ipcRenderer.invoke("settings:background", enabled),
 	setLocalExecution: (permission) => ipcRenderer.invoke("settings:local-execution", permission),
+	nativeExecutionInfo: () => ipcRenderer.invoke("native-execution:info"),
+	createMemberComputeIdentity: () => ipcRenderer.invoke("native-execution:create-member-identity"),
+	beginNativeProviderLogin: (provider) => ipcRenderer.invoke("native-execution:begin-login", provider),
+	createMemberExecutionSponsor: (providerConnectionId, providerConnectionVersion) =>
+		ipcRenderer.invoke(
+			"native-execution:create-member-sponsor",
+			providerConnectionId,
+			providerConnectionVersion,
+		),
+	revokeNativeProviderConnection: (providerConnectionId) =>
+		ipcRenderer.invoke("native-execution:revoke", providerConnectionId),
+	nativeSessionTurnProvenance: (staffAgentId) =>
+		ipcRenderer.invoke("native-execution:session-provenance", staffAgentId),
 	modelAccountUsage: () => ipcRenderer.invoke("model-accounts:usage"),
 	connectAccount: (connectionId) => ipcRenderer.invoke("connection:connect", connectionId),
 	disconnectAccount: (connectionId, accountId) =>
@@ -139,15 +184,18 @@ contextBridge.exposeInMainWorld("qorpera", {
 	onUpdateReady: (handler) => ipcRenderer.on("update-ready", (_event, version) => handler(version)),
 	onStaffSessionRefreshed: (handler) =>
 		ipcRenderer.on("staff-session-refreshed", (_event, payload) => handler(payload)),
+	onStaffSessionQueue: (handler) =>
+		ipcRenderer.on("staff-session-queue", (_event, payload) => handler(payload)),
 	onProfileAccessChanged: (handler) =>
 		ipcRenderer.on("profile-access-changed", (_event, access) => handler(access)),
 	presenceThread: (staffAgentId) => ipcRenderer.send("presence:thread", staffAgentId ?? null),
 	presenceTyping: (staffAgentId) => ipcRenderer.send("presence:typing", staffAgentId),
 	onPresenceMembers: (handler) => ipcRenderer.on("presence-members", (_event, members) => handler(members)),
 	onPresenceTyping: (handler) => ipcRenderer.on("presence-typing", (_event, event) => handler(event)),
+	onPresenceActivity: (handler) => ipcRenderer.on("presence-activity", (_event, event) => handler(event)),
+	onRunnerActivity: (handler) => ipcRenderer.on("runner-activity", (_event, activity) => handler(activity)),
 	onConnectionStatus: (handler) => ipcRenderer.on("connection-status", (_event, status) => handler(status)),
 	onOpenCompany: (handler) => ipcRenderer.on("open-company", (_event, root) => handler(root)),
-	onCloudCompanyInbox: (handler) => ipcRenderer.on("cloud-company-inbox", (_event, inbox) => handler(inbox)),
 	rpcSend: (frame, expectedTrailFile) =>
 		ipcRenderer.invoke("rpc:send", frame, expectedTrailFile ?? activeTrailFile),
 	onRpcEvent: (handler) => ipcRenderer.on("rpc-event", (_event, frame) => handler(frame)),

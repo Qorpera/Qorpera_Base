@@ -1,6 +1,14 @@
 # Self-owned object backend
 
-**Status:** Design. No code in this slice.
+**Status:** Catalog cutover, trusted gateway, client transport, mixed-backend
+cleanup, two-phase deletion recovery, deleted-profile reclamation, and
+resumable migration are implemented.
+The clean hosted schema and physical NAS gateway passed Windows/Mac upload,
+download, deduplication, corruption refusal, cleanup, service restart, and
+same-NAS restore tests. Stable named TLS ingress and an enabled DSM boot task
+are configured and cloud-to-NAS cleanup passed through the stable hostname. A
+NAS reboot proof, dedicated non-administrator service identity, and independent
+backup target remain production operations gates.
 **Goal:** company file objects live on Qorpera-owned storage (the NAS) while
 account identity, membership, and trails stay on managed infrastructure.
 
@@ -40,9 +48,11 @@ backend, created_at, confirmed_by)` table becomes the authoritative record of
 what exists. The twelve sites query the catalog instead of `storage.objects`,
 behind one predicate function so the join shape lives in a single place.
 
-**2. Gateway.** A trusted service accepts uploads, **hashes the bytes
-server-side**, writes them to the configured backend, and only then inserts
-the catalog row. The catalog is never writable by clients.
+**2. Gateway.** The standalone `packages/object-gateway` service accepts
+uploads, **hashes the bytes server-side**, writes them to its configured
+NAS-mounted root, and only then confirms the catalog row through a service-only
+RPC. The catalog is never writable by clients. Downloads are rehashed before
+release, and legacy Supabase Storage objects remain readable during migration.
 
 That second point is not optional, and it is the reason this needs a design
 slice rather than a patch. The original review found a critical defect of
@@ -64,18 +74,31 @@ which must consult the same predicate before accepting an upload — including
 the GC fence, or a cleanup plan could delete objects a concurrent upload is
 adding.
 
-## Sequencing
+## Implementation and deployment sequence
 
-1. **Catalog behind a predicate.** Introduce the table and one function; keep
-   Supabase Storage authoritative and dual-write. No behavior change.
-2. **Cut the twelve sites over** to the predicate. The account-separation and
-   GC suites already exercise these paths, so equivalence is testable in CI.
-3. **Build the gateway** with server-side hashing and the authorization
-   checks, still writing to Supabase Storage. Verifiable without new hardware.
-4. **Add the NAS backend**, migrate existing objects, flip `backend` per
-   profile. Reversible per profile.
+1. **Catalog behind a predicate.** Complete in migrations `20260818003000`
+   through `20260818005000`.
+2. **Cut server-side trust reads over to the catalog.** Complete and covered by
+   the object-catalog regression suites.
+3. **Build the trusted gateway and NAS backend.** Complete locally in
+   `packages/object-gateway` and migration `20260821006000`. Member clients use
+   only their Supabase access token; NAS filesystem authority and the Supabase
+   secret key stay in the gateway service.
+4. **Route cleanup by catalog backend.** Complete locally. Supabase and NAS
+   deletion both commit an exact, service-only authorization while the GC lease
+   is live, remove bytes second, and finalize the catalog last. The private NAS
+   gateway control token cannot bypass that authorization, and an interrupted
+   deletion is durably reconcilable before later work is claimed.
+5. **Deploy and migrate.** Mount the verified NAS data root, deploy the gateway
+   behind TLS, apply the migration, configure clients and the cleanup worker,
+   then run `qorpera-object-gateway migrate`. The command pages only legacy
+   catalog rows, rehashes downloaded bytes, writes them to the NAS, and flips
+   each row only after durable storage succeeds.
 
-Steps 1–3 need no NAS and are the honest place to start.
+Steps 1–5 passed against the clean hosted project and physical NAS. The
+migration correctly found zero legacy objects. The dedicated named tunnel at
+`objects.qorpera.com` passed Windows, Mac, and Edge-worker checks after the
+temporary test tunnel was retired.
 
 ## Constraints this must not break
 

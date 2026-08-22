@@ -61,6 +61,40 @@ describe("Qorpera account auth", () => {
 		});
 	});
 
+	it("uses the hosted credential-blind native login bridge without desktop configuration", async () => {
+		let requestedUrl = "";
+		const auth = new QorperaAccountAuth(temporaryRoot("native-login-bridge"), {
+			projectUrl: "https://project.test",
+			publishableKey: "sb_publishable_test",
+			fetch: async (input) => {
+				requestedUrl = String(input);
+				return Response.json({
+					schema: "qorpera.native-provider-login-result/v1",
+					login_id: "10000000-0000-4000-8000-000000000001",
+					status: "awaiting_member",
+					interaction_url: "https://auth.openai.com/device",
+					user_code: "ABCD-EFGH",
+				});
+			},
+			openExternal: async () => {},
+		});
+		await expect(
+			auth.nativeProviderIdentityBridge().beginLogin({
+				loginId: "10000000-0000-4000-8000-000000000001",
+				clientLoginId: "10000000-0000-4000-8000-000000000002",
+				clientConnectionId: "10000000-0000-4000-8000-000000000003",
+				computeIdentityId: "10000000-0000-4000-8000-000000000004",
+				computeIdentityOwnershipKind: "member",
+				computeIdentityOwnerUserId: "10000000-0000-4000-8000-000000000005",
+				provider: "openai",
+				nativeHarness: "codex-cli",
+				capability: "a".repeat(43),
+				expiresAt: "2099-08-21T12:15:00.000Z",
+			}),
+		).resolves.toMatchObject({ status: "awaiting_member", userCode: "ABCD-EFGH" });
+		expect(requestedUrl).toBe("https://project.test/functions/v1/native-provider-login/login");
+	});
+
 	it("restores the last validated account when an expired session cannot refresh offline", async () => {
 		const userData = temporaryRoot("account-offline");
 		const storage = new FileAccountAuthStorage(accountAuthStoragePath(userData));

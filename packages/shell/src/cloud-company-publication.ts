@@ -1,24 +1,20 @@
 import { type FSWatcher, watch } from "node:fs";
-import { cloudCompanyPathBelongsToLogicalTree } from "./cloud-company-snapshot.ts";
 import {
-	type CheckpointCloudCompanyWorkspaceInput,
-	checkpointCloudCompanyWorkspace,
-} from "./cloud-company-workspace.ts";
+	type CheckpointCloudCompanyFileInput,
+	type CloudCompanyFileCheckpointResult,
+	checkpointCloudCompanyFile,
+} from "./cloud-company-file.ts";
+import { cloudCompanyPathBelongsToLogicalTree } from "./cloud-company-snapshot.ts";
 import type { CloudSyncHealth } from "./cloud-sync-loop.ts";
 import { DurableCloudSyncLoop } from "./cloud-sync-loop.ts";
-import type { HostedCompanySnapshot, HostedCompanyWorkspace } from "./hosted-primary.ts";
 
 interface CompanyTreeWatcher {
 	close(): void;
 }
 
-export interface CloudCompanyCheckpointResult {
-	changed: boolean;
-	workspace: HostedCompanyWorkspace;
-	snapshot: HostedCompanySnapshot;
-}
+export type CloudCompanyCheckpointResult = CloudCompanyFileCheckpointResult;
 
-export interface CloudCompanyPublicationOptions extends CheckpointCloudCompanyWorkspaceInput {
+export interface CloudCompanyPublicationOptions extends CheckpointCloudCompanyFileInput {
 	debounceMs?: number;
 	steadyDelayMs?: number;
 	onCheckpoint?: (result: CloudCompanyCheckpointResult) => void | Promise<void>;
@@ -46,6 +42,8 @@ export class CloudCompanyPublication {
 	#watcher?: CompanyTreeWatcher;
 	#debounceTimer?: ReturnType<typeof setTimeout>;
 	#lastCheckpoint?: CloudCompanyCheckpointResult;
+	#dirty = true;
+	#generation = 0;
 	#started = false;
 
 	constructor(options: CloudCompanyPublicationOptions) {
@@ -60,12 +58,15 @@ export class CloudCompanyPublication {
 			steadyDelayMs: options.steadyDelayMs ?? 5 * 60_000,
 			onHealth: options.onHealth,
 			sync: async () => {
+				const generation = this.#generation;
 				const checkpoint = await (options.runCheckpoint ?? ((run) => run()))(() =>
-					checkpointCloudCompanyWorkspace(options),
+					checkpointCloudCompanyFile(options),
 				);
 				if (!checkpoint) return;
 				this.#lastCheckpoint = checkpoint;
 				await options.onCheckpoint?.(checkpoint);
+				this.#dirty = this.#generation !== generation;
+				if (this.#dirty) void this.#loop.trigger();
 			},
 		});
 	}
@@ -78,10 +79,14 @@ export class CloudCompanyPublication {
 		return this.#lastCheckpoint
 			? {
 					...this.#lastCheckpoint,
-					workspace: { ...this.#lastCheckpoint.workspace },
+					companyFile: { ...this.#lastCheckpoint.companyFile },
 					snapshot: { ...this.#lastCheckpoint.snapshot, tree: { ...this.#lastCheckpoint.snapshot.tree } },
 				}
 			: undefined;
+	}
+
+	hasPendingWork(): boolean {
+		return this.#dirty || this.#debounceTimer !== undefined;
 	}
 
 	start(): void {
@@ -108,6 +113,8 @@ export class CloudCompanyPublication {
 
 	notifyPathChanged(relativePath?: string): void {
 		if (relativePath !== undefined && !cloudCompanyPathBelongsToLogicalTree(relativePath)) return;
+		this.#generation += 1;
+		this.#dirty = true;
 		if (this.#debounceTimer) this.#clearDebounceTimer(this.#debounceTimer);
 		this.#debounceTimer = this.#setDebounceTimer(() => {
 			this.#debounceTimer = undefined;
@@ -116,7 +123,18 @@ export class CloudCompanyPublication {
 		this.#debounceTimer.unref?.();
 	}
 
-	publishNow(): Promise<CloudSyncHealth> {
-		return this.#loop.syncNow();
+	async publishNow(): Promise<CloudSyncHealth> {
+		if (this.#debounceTimer) this.#clearDebounceTimer(this.#debounceTimer);
+		this.#debounceTimer = undefined;
+		let health = await this.#loop.syncNow();
+		for (let attempt = 0; health.phase === "healthy" && this.#dirty && attempt < 7; attempt += 1) {
+			if (this.#debounceTimer) this.#clearDebounceTimer(this.#debounceTimer);
+			this.#debounceTimer = undefined;
+			health = await this.#loop.syncNow();
+		}
+		if (health.phase === "healthy" && this.#dirty) {
+			return { ...health, phase: "retrying", lastError: "Company File kept changing while it was synchronizing" };
+		}
+		return health;
 	}
 }

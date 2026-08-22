@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { JsonValue } from "@qorpera/pi-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CloudRunnerModelSocketFactory } from "../src/cloud-runner-model-socket.ts";
@@ -92,16 +92,23 @@ async function sandboxRequest(): Promise<CloudRunnerSandboxRequest> {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-podman-test-"));
 	temporaryDirectories.push(root);
 	const inputRoot = join(root, "input");
-	const companyRoot = join(inputRoot, "company");
+	const companyBaseRoot = join(inputRoot, "company");
+	const companyRoot = join(root, "work", "company");
 	const artifactsRoot = join(inputRoot, "artifacts");
+	const attachmentsRoot = join(inputRoot, "attachments");
 	const outputRoot = join(root, "output");
 	await mkdir(inputRoot, { recursive: true });
 	await Promise.all([
+		mkdir(companyBaseRoot, { recursive: true }),
 		mkdir(companyRoot, { recursive: true }),
 		mkdir(artifactsRoot, { recursive: true }),
+		mkdir(attachmentsRoot, { recursive: true }),
 		mkdir(outputRoot, { recursive: true }),
 		writeFile(join(inputRoot, "substrate.json"), "{}\n", "utf-8"),
 		writeFile(join(inputRoot, "operations.jsonl"), "", "utf-8"),
+		writeFile(join(inputRoot, "execution.json"), "{}\n", "utf-8"),
+		writeFile(join(inputRoot, "inputs.jsonl"), "", "utf-8"),
+		writeFile(join(inputRoot, "transcript.jsonl"), "", "utf-8"),
 	]);
 	return {
 		job: {
@@ -119,10 +126,15 @@ async function sandboxRequest(): Promise<CloudRunnerSandboxRequest> {
 			artifactCount: 2,
 		},
 		input: {
+			companyBaseRoot,
 			companyRoot,
+			executionContextPath: join(inputRoot, "execution.json"),
+			queuedInputsPath: join(inputRoot, "inputs.jsonl"),
+			transcriptPath: join(inputRoot, "transcript.jsonl"),
 			substrateManifestPath: join(inputRoot, "substrate.json"),
 			operationsPath: join(inputRoot, "operations.jsonl"),
 			artifactsRoot,
+			attachmentsRoot,
 		},
 		outputRoot,
 		environment: { QORPERA_JOB_MODE: "ephemeral" },
@@ -211,12 +223,19 @@ describe("rootless Podman cloud runner", () => {
 		expect(run.args).toContain(
 			"type=tmpfs,destination=/qorpera/output,tmpfs-size=2097152,tmpfs-mode=0700,notmpcopyup,U=true",
 		);
+		expect(run.args).toContain(
+			`type=bind,src=${dirname(request.input.companyRoot)},dst=/qorpera/work,rw=true,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
+		);
 		expect(run.args.join(" ")).not.toContain(`src=${request.outputRoot},dst=/qorpera/output`);
 		expect(run.args.join(" ")).not.toContain("private founder request");
 		expect(JSON.parse(run.input) as JsonValue).toMatchObject({
 			schema: "qorpera.ephemeral-container-request/v1",
 			job: { jobId, payload: { prompt: "private founder request" } },
-			paths: { companyRoot: "/qorpera/input/company", outputRoot: "/qorpera/output" },
+			paths: {
+				companyBaseRoot: "/qorpera/input/company",
+				companyRoot: "/qorpera/work/company",
+				outputRoot: "/qorpera/output",
+			},
 		});
 		expect(run.limits).toEqual({ stdoutBytes: 4097, stderrBytes: 16 * 1024, timeoutMs: 90_000 });
 		expect(commands.calls[3]?.args).toEqual([

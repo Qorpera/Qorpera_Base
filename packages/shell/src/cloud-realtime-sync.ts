@@ -3,7 +3,7 @@ import type { HostedPrimaryDatabase } from "./hosted-primary.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type CloudRealtimeResource = "access" | "staff" | "trail" | "workspace";
+export type CloudRealtimeResource = "access" | "staff" | "trail" | "company-file";
 export type CloudRealtimePhase = "idle" | "connecting" | "connected" | "degraded" | "stopped";
 
 export interface CloudRealtimeHealth {
@@ -21,7 +21,7 @@ export interface CloudRealtimeFilter {
 	event: "*";
 	schema: "public";
 	table:
-		| "qorpera_company_workspaces"
+		| "qorpera_company_files"
 		| "qorpera_profile_access_state"
 		| "qorpera_profile_staff"
 		| "qorpera_shared_sessions";
@@ -76,10 +76,10 @@ export function cloudProfileRealtimeFilters(profileId: string): CloudRealtimeFil
 			filter: `profile_id=eq.${profileId}`,
 		},
 		{
-			resource: "workspace",
+			resource: "company-file",
 			event: "*",
 			schema: "public",
-			table: "qorpera_company_workspaces",
+			table: "qorpera_company_files",
 			filter: `profile_id=eq.${profileId}`,
 		},
 	];

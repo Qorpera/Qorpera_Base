@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { QorperaHostedPrimary } from "./hosted-primary.ts";
+import type { ArbiterExecutionPin } from "./cloud-session-arbiter.ts";
+import { type QorperaHostedPrimary, WakeOwnershipError } from "./hosted-primary.ts";
 
 /**
  * Per-company client of the hosted wake claims (migration 20260819012000,
@@ -9,17 +10,21 @@ import type { QorperaHostedPrimary } from "./hosted-primary.ts";
  * derives the same deterministic key for a due wake occurrence, and exactly
  * one machine's claim succeeds — the winner runs the wake, a loser consumes
  * the occurrence locally without running. Completion makes the occurrence
- * final everywhere; an abandoned claim (executor died, spawn failed) simply
- * lets the lease expire so another machine takes the occurrence over.
+ * final everywhere; an abandoned claim is quarantined after lease expiry so
+ * a possibly completed external action is never run twice.
  *
- * Every method that talks to the cloud can reject. Callers degrade to
- * today's solo behaviour on failure — arbitration deduplicates wakes when
- * the cloud is reachable, and must never make solo work impossible when it
- * is not. Wakes are single-flight per company, so one active claim is all
- * this class ever holds.
+ * Every method that talks to the cloud can reject. A cloud company leaves
+ * the wake pending on failure; it never executes an unclaimed local copy.
+ * Wakes are single-flight per company, so one active claim is all this class
+ * ever holds.
  */
 
-export type WakeClaimOutcome = "claimed" | "lost-in-flight" | "lost-already-run";
+export type WakeClaimOutcome =
+	| "claimed"
+	| "lost-in-flight"
+	| "lost-already-run"
+	| "lost-stale-revision"
+	| "lost-requires-review";
 
 const RENEW_INTERVAL_MS = 60_000;
 const WAKE_LEASE_SECONDS = 300;
@@ -29,7 +34,9 @@ export class CloudWakeArbiter {
 	readonly #primary: QorperaHostedPrimary;
 	readonly #environmentId: string;
 	#activeKey: string | undefined;
+	#activeExecutionId: string | undefined;
 	#lastRenewAt = 0;
+	#leaseExpiresAt = 0;
 
 	constructor(primary: QorperaHostedPrimary, environmentId: string, claimantId: string = randomUUID()) {
 		this.#primary = primary;
@@ -41,16 +48,32 @@ export class CloudWakeArbiter {
 		return this.#activeKey;
 	}
 
+	get activeExecutionId(): string | undefined {
+		return this.#activeExecutionId;
+	}
+
 	/** Try to become the executor for the wake occurrence. Re-claiming the
 	 * key this machine already holds refreshes the lease (idempotent retry
 	 * after a failed spawn). */
-	async claim(wakeKey: string): Promise<WakeClaimOutcome> {
-		const result = await this.#primary.claimWake(this.#environmentId, wakeKey, this.claimantId, WAKE_LEASE_SECONDS);
+	async claim(wakeKey: string, staffAgentId: string, pin: ArbiterExecutionPin): Promise<WakeClaimOutcome> {
+		const result = await this.#primary.claimWake(
+			this.#environmentId,
+			wakeKey,
+			this.claimantId,
+			staffAgentId,
+			pin.companySnapshotId,
+			pin.staffVersion,
+			WAKE_LEASE_SECONDS,
+		);
 		if (!result.claimed) {
-			return result.reason === "already-run" ? "lost-already-run" : "lost-in-flight";
+			if (result.reason === "already-run") return "lost-already-run";
+			if (result.reason === "requires-review") return "lost-requires-review";
+			return result.reason === "stale-revision" ? "lost-stale-revision" : "lost-in-flight";
 		}
 		this.#activeKey = wakeKey;
+		this.#activeExecutionId = result.executionId;
 		this.#lastRenewAt = Date.now();
+		this.#leaseExpiresAt = this.#lastRenewAt + WAKE_LEASE_SECONDS * 1_000;
 		return "claimed";
 	}
 
@@ -61,22 +84,32 @@ export class CloudWakeArbiter {
 		if (!key) return;
 		const now = Date.now();
 		if (now - this.#lastRenewAt < RENEW_INTERVAL_MS) return;
-		this.#lastRenewAt = now;
-		await this.#primary.renewWake(this.#environmentId, key, this.claimantId, WAKE_LEASE_SECONDS);
+		try {
+			await this.#primary.renewWake(this.#environmentId, key, this.claimantId, WAKE_LEASE_SECONDS);
+		} catch (error) {
+			if (Date.now() >= this.#leaseExpiresAt) throw new WakeOwnershipError("renew");
+			throw error;
+		}
+		if (this.#activeKey === key) {
+			this.#lastRenewAt = now;
+			this.#leaseExpiresAt = Date.now() + WAKE_LEASE_SECONDS * 1_000;
+		}
 	}
 
 	/** The wake ran to completion: the occurrence is final on every machine. */
 	async complete(): Promise<void> {
 		const key = this.#activeKey;
 		if (!key) return;
-		this.#activeKey = undefined;
 		await this.#primary.completeWake(this.#environmentId, key, this.claimantId);
+		if (this.#activeKey === key) this.#activeKey = undefined;
+		this.#activeExecutionId = undefined;
 	}
 
-	/** The executor died or the wake failed: never mark the occurrence final —
-	 * drop the local claim and let the lease expire so another machine (or
-	 * this one, later) takes the occurrence over. */
+	/** The executor died or the wake failed: drop the local handle. The server
+	 * quarantines the occurrence after lease expiry for explicit review. */
 	abandon(): void {
 		this.#activeKey = undefined;
+		this.#activeExecutionId = undefined;
+		this.#leaseExpiresAt = 0;
 	}
 }

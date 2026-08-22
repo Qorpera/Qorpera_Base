@@ -66,12 +66,13 @@ Deno.serve(async (request) => {
 				p_renewal_id: action.renewalId,
 			};
 			break;
-		case "claim":
+		case "accept":
 			args = {
 				p_runner_id: action.runnerId,
 				p_session_token_sha256: currentTokenSha256,
-				p_client_lease_id: action.clientLeaseId,
-				p_lease_token_sha256: await sha256(action.leaseToken),
+				p_assignment_id: action.assignmentId,
+				p_job_id: action.jobId,
+				p_assignment_capability_sha256: await sha256(action.assignmentCapability),
 			};
 			break;
 		case "renew":
@@ -90,6 +91,7 @@ Deno.serve(async (request) => {
 				p_lease_token_sha256: await sha256(action.leaseToken),
 				p_client_artifact_index_id: action.clientArtifactIndexId,
 				p_client_substrate_version_id: action.clientSubstrateVersionId,
+				p_output_snapshot_id: action.outputSnapshotId ?? null,
 				p_result: action.result,
 			};
 			break;

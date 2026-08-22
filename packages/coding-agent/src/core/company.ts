@@ -138,6 +138,7 @@ product department UI reads these records; credentials never belong here.
 const PRODUCT_DEPARTMENT_KIND = "product-development";
 const PRODUCT_REGISTRY_PATH = join(".qorpera", "products.json");
 const PRODUCT_WORKTREE_ASSIGNMENTS_PATH = join(".qorpera", "product-worktrees");
+const PRODUCT_SOURCE_REFERENCES_PATH = join(".qorpera", "product-sources");
 
 function normalizedPath(path: string): string {
 	const resolved = resolve(path);
@@ -611,6 +612,8 @@ function checkpointProductKit(root: string, id: string): void {
 	);
 	const integrationRecord = join(".qorpera", "product-integrations", `${id}.json`);
 	if (existsSync(join(root, integrationRecord))) paths.push(integrationRecord);
+	const sourceReference = join(PRODUCT_SOURCE_REFERENCES_PATH, `${id}.json`);
+	if (existsSync(join(root, sourceReference))) paths.push(sourceReference);
 	// The product storage roots are deliberately ignored once populated. Force
 	// their explicit placeholders into the company history without ever adding
 	// product repository or worktree content.
@@ -984,12 +987,18 @@ export function readProductStorageExpectations(rootDir: string): ProductStorageE
 		const department = productDepartmentFromEntry(root, id);
 		if (!department) throw new Error(`Registered product department is invalid: ${id}`);
 		const integration = readProductIntegrationRecord(productIntegrationRecordPath(root, id));
-		if (integration?.status === "completed") {
+		const sourceReference = readProductSourceReference(root, id);
+		const repositorySource =
+			integration?.status === "completed"
+				? (integration.portableSource ?? integration.source)
+				: sourceReference?.remote;
+		const repositoryHead = integration?.status === "completed" ? integration.sourceHead : sourceReference?.head;
+		if (repositorySource) {
 			expectations.push({
 				path: join("departments", id, "repository"),
 				kind: "repository",
-				remote: integration.source,
-				...(integration.sourceHead ? { head: integration.sourceHead } : {}),
+				remote: repositorySource,
+				...(repositoryHead ? { head: repositoryHead } : {}),
 			});
 		}
 		const assignmentDir = join(root, PRODUCT_WORKTREE_ASSIGNMENTS_PATH, id);
@@ -2214,6 +2223,49 @@ interface ProductIntegrationRecord {
 	}>;
 }
 
+interface ProductSourceReference {
+	version: 1;
+	productId: string;
+	remote?: string;
+	head?: string;
+	updatedAt: string;
+}
+
+function productSourceReferencePath(root: string, productId: string): string {
+	if (!PRODUCT_ID_PATTERN.test(productId)) throw new Error("Product source reference id is invalid");
+	return join(root, PRODUCT_SOURCE_REFERENCES_PATH, `${productId}.json`);
+}
+
+function readProductSourceReference(root: string, productId: string): ProductSourceReference | undefined {
+	const path = productSourceReferencePath(root, productId);
+	if (!existsSync(path)) return undefined;
+	const value = JSON.parse(readFileSync(path, "utf-8")) as Partial<ProductSourceReference>;
+	if (
+		value.version !== 1 ||
+		value.productId !== productId ||
+		(value.remote !== undefined && !repositorySourceAllowed(value.remote)) ||
+		(value.head !== undefined && (typeof value.head !== "string" || !/^[0-9a-f]{40,64}$/i.test(value.head))) ||
+		typeof value.updatedAt !== "string" ||
+		!Number.isFinite(Date.parse(value.updatedAt))
+	) {
+		throw new Error(`Product source reference is invalid: ${relative(root, path)}`);
+	}
+	return value as ProductSourceReference;
+}
+
+function writeProductSourceReference(root: string, transaction: ProductIntegrationRecord): void {
+	const reference: ProductSourceReference = {
+		version: 1,
+		productId: transaction.productId,
+		...(transaction.portableSource ? { remote: transaction.portableSource } : {}),
+		...(transaction.sourceHead ? { head: transaction.sourceHead } : {}),
+		updatedAt: new Date().toISOString(),
+	};
+	const path = productSourceReferencePath(root, transaction.productId);
+	mkdirSync(dirname(path), { recursive: true });
+	writeAtomicText(path, `${JSON.stringify(reference, null, "\t")}\n`);
+}
+
 function normalizedRepositorySource(source: string): string {
 	try {
 		return normalizedPath(realpathSync(resolve(source)));
@@ -2478,6 +2530,7 @@ function integrateRepoUnlocked(
 			transaction.status = "completed";
 			transaction.sourceHead = gitOutput(destination, ["rev-parse", "HEAD"]);
 			writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+			writeProductSourceReference(root, transaction);
 			checkpointProductKit(root, department.id);
 		}
 		console.log(`  kept    ${department.repositoryPath} (verified source)`);
@@ -2546,6 +2599,7 @@ function integrateRepoUnlocked(
 	transaction.status = "completed";
 	transaction.sourceHead = gitOutput(destination, ["rev-parse", "HEAD"]);
 	writeAtomicText(transactionPath, `${JSON.stringify(transaction, null, "\t")}\n`);
+	writeProductSourceReference(root, transaction);
 	checkpointProductKit(root, department.id);
 	console.log(`  cloned  ${from} -> ${department.repositoryPath}`);
 	return true;

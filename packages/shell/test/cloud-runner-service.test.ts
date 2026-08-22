@@ -95,6 +95,22 @@ describe("ephemeral cloud runner service", () => {
 				environment: { MODEL_API_KEY: "must-not-cross-the-boundary" },
 			}),
 		).toThrow("invalid entry");
+		expect(() =>
+			parseEphemeralCloudRunnerServiceConfig({
+				...configValue(root),
+				native_bridge_url: "http://127.0.0.1:8082/",
+			}),
+		).toThrow("explicit production isolation boundary");
+		expect(
+			parseEphemeralCloudRunnerServiceConfig({
+				...configValue(root),
+				native_bridge_url: "http://127.0.0.1:8082/",
+				native_bridge_boundary: "virtual_machine",
+			}),
+		).toMatchObject({
+			nativeBridgeUrl: "http://127.0.0.1:8082/",
+			nativeBridgeBoundary: "virtual_machine",
+		});
 	});
 
 	it("uses the systemd activation credential once, then restores authority without it", async () => {
@@ -126,7 +142,7 @@ describe("ephemeral cloud runner service", () => {
 
 		expect(starts).toBe(2);
 		const stored = JSON.parse(await readFile(config.authorityStatePath, "utf-8")) as Record<string, unknown>;
-		expect(stored).toMatchObject({ schema: "qorpera.runner-authority/v1", runner_id: runnerId });
+		expect(stored).toMatchObject({ schema: "qorpera.runner-authority/v3", runner_id: runnerId });
 	});
 
 	it("does not initialize authority without the one-time credential", async () => {
@@ -171,7 +187,7 @@ describe("ephemeral cloud runner service", () => {
 
 		const stored = JSON.parse(await readFile(config.authorityStatePath, "utf-8")) as Record<string, unknown>;
 		expect(stored).toMatchObject({
-			schema: "qorpera.runner-authority/v1",
+			schema: "qorpera.runner-authority/v3",
 			runner_id: runnerId,
 			activation_token: repairToken,
 			session_token: null,

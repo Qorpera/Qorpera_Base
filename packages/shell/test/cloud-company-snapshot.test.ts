@@ -5,7 +5,9 @@ import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	captureCloudCompanyTree,
+	cloudCompanyPathIsAuthorityCritical,
 	materializeCloudCompanyTree,
+	validateCloudCompanyTreeEntries,
 	verifyCloudCompanyTreeRestore,
 } from "../src/cloud-company-snapshot.ts";
 import {
@@ -98,7 +100,7 @@ describe("cloud company snapshots", () => {
 		await expect(readFile(join(target, ".git", "HEAD"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
-	it("publishes agent work product while omitting instructions and the operational inbox", async () => {
+	it("publishes agent memory and operational handoffs while omitting generated instructions", async () => {
 		const root = await companyFixture();
 		const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 		await mkdir(join(root, "agents", agentId, "artifacts"), { recursive: true });
@@ -107,6 +109,11 @@ describe("cloud company snapshots", () => {
 		await writeFile(join(root, "agents", agentId, "memory.md"), "# Memory\n", "utf-8");
 		await writeFile(join(root, "agents", agentId, "skills", "digest.md"), "# Skill\n", "utf-8");
 		await writeFile(join(root, ".qorpera", "agent-messages.json"), "{}\n", "utf-8");
+		await writeFile(join(root, ".qorpera", "products.json"), '{"version":1,"products":[]}\n', "utf-8");
+		await mkdir(join(root, ".qorpera", "routines"), { recursive: true });
+		await writeFile(join(root, ".qorpera", "routines", "daily.json"), "{}\n", "utf-8");
+		await mkdir(join(root, ".qorpera", "product-sources"), { recursive: true });
+		await writeFile(join(root, ".qorpera", "product-sources", "app.json"), "{}\n", "utf-8");
 		await writeFile(join(root, "agents", agentId, "artifacts", "runway.json"), "{}\n", "utf-8");
 		await mkdir(join(root, "connectors", "github"), { recursive: true });
 		await writeFile(join(root, "connectors", "github", "manifest.json"), "{}\n", "utf-8");
@@ -119,7 +126,7 @@ describe("cloud company snapshots", () => {
 		const store = new CloudContentAddressedStore(transport);
 
 		const reference = await captureCloudCompanyTree(root, profileId, store);
-		expect(reference.contractVersion).toBe(2);
+		expect(reference.contractVersion).toBe(3);
 		const target = join(await temporaryDirectory(), "materialized");
 		await materializeCloudCompanyTree(target, profileId, reference, store);
 		await expect(readFile(join(target, "agents", agentId, "artifacts", "runway.json"), "utf-8")).resolves.toBe(
@@ -133,16 +140,13 @@ describe("cloud company snapshots", () => {
 		await expect(readFile(join(target, "agents", agentId, "instructions.md"), "utf-8")).rejects.toMatchObject({
 			code: "ENOENT",
 		});
-		await expect(readFile(join(target, "agents", agentId, "memory.md"), "utf-8")).rejects.toMatchObject({
-			code: "ENOENT",
-		});
-		await expect(readFile(join(target, ".qorpera", "agent-messages.json"), "utf-8")).rejects.toMatchObject({
-			code: "ENOENT",
-		});
-		await expect(readFile(join(target, "inbox", "messages", "msg-1.json"), "utf-8")).rejects.toMatchObject({
-			code: "ENOENT",
-		});
-		await expect(readFile(join(target, "inbox", "gate-1.md"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(readFile(join(target, "agents", agentId, "memory.md"), "utf-8")).resolves.toBe("# Memory\n");
+		await expect(readFile(join(target, ".qorpera", "agent-messages.json"), "utf-8")).resolves.toBe("{}\n");
+		await expect(readFile(join(target, ".qorpera", "products.json"), "utf-8")).resolves.toContain('"version"');
+		await expect(readFile(join(target, ".qorpera", "routines", "daily.json"), "utf-8")).resolves.toBe("{}\n");
+		await expect(readFile(join(target, ".qorpera", "product-sources", "app.json"), "utf-8")).resolves.toBe("{}\n");
+		await expect(readFile(join(target, "inbox", "messages", "msg-1.json"), "utf-8")).resolves.toBe("{}\n");
+		await expect(readFile(join(target, "inbox", "gate-1.md"), "utf-8")).resolves.toBe("authority gate\n");
 	});
 
 	it("rejects aliased company files instead of silently changing their semantics", async () => {
@@ -150,6 +154,20 @@ describe("cloud company snapshots", () => {
 		await link(join(root, "company.md"), join(root, "company-copy.md"));
 		const store = new CloudContentAddressedStore(new MemoryObjectTransport());
 		await expect(captureCloudCompanyTree(root, profileId, store)).rejects.toThrow("physical files");
+	});
+
+	it("rejects noncanonical Unicode paths and case-folds authority names", () => {
+		expect(() => validateCloudCompanyTreeEntries([{ kind: "directory", path: "e\u0301.txt" }])).toThrow(
+			"path is invalid",
+		);
+		expect(() =>
+			validateCloudCompanyTreeEntries([
+				{ kind: "directory", path: "ς.txt" },
+				{ kind: "directory", path: "σ.txt" },
+			]),
+		).toThrow("paths are invalid or collide");
+		expect(cloudCompanyPathIsAuthorityCritical("agents.md")).toBe(true);
+		expect(cloudCompanyPathIsAuthorityCritical(".QORPERA/AUTHORITY.SIG.JSON")).toBe(true);
 	});
 
 	it.each(["CON", "nested/COM1.txt", "notes.md:hidden", "trailing. ", "COM¹", "nested/LPT².log"])(

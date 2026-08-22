@@ -42,6 +42,7 @@
 			"@qorpera/pi-coding-agent/*": ["./packages/coding-agent/src/*"],
 			"@qorpera/pi-protocol": ["./packages/protocol/src/index.ts"],
 			"@qorpera/pi-protocol/*": ["./packages/protocol/src/*"],
+			"@qorpera/runner-orchestrator": ["./packages/runner-orchestrator/src/index.ts"],
 			"@qorpera/pi-client": ["./packages/client/src/index.ts"],
 			"@qorpera/pi-client/*": ["./packages/client/src/*"],
 			"@qorpera/pi-server": ["./packages/server/src/index.ts"],

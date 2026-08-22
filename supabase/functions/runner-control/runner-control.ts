@@ -12,7 +12,13 @@ export type RunnerControlRequest =
 			runnerVersion: string;
 	  }
 	| { action: "heartbeat"; runnerId: string; nextSessionToken: string; renewalId: string }
-	| { action: "claim"; runnerId: string; clientLeaseId: string; leaseToken: string }
+	| {
+			action: "accept";
+			runnerId: string;
+			assignmentId: string;
+			jobId: string;
+			assignmentCapability: string;
+	  }
 	| { action: "renew"; runnerId: string; jobId: string; leaseToken: string }
 	| {
 			action: "complete";
@@ -21,6 +27,7 @@ export type RunnerControlRequest =
 			leaseToken: string;
 			clientArtifactIndexId: string;
 			clientSubstrateVersionId: string;
+			outputSnapshotId?: string;
 			result: Record<string, unknown>;
 	  }
 	| {
@@ -38,12 +45,12 @@ export function runnerControlRpcName(action: RunnerControlRequest["action"]): st
 			return "qorpera_activate_runner";
 		case "heartbeat":
 			return "qorpera_heartbeat_runner";
-		case "claim":
-			return "qorpera_claim_runner_job";
+		case "accept":
+			return "qorpera_accept_runner_assignment";
 		case "renew":
 			return "qorpera_renew_runner_job";
 		case "complete":
-			return "qorpera_complete_runner_job_v4";
+			return "qorpera_complete_runner_job_v6";
 		case "fail":
 			return "qorpera_fail_runner_job";
 	}
@@ -120,12 +127,13 @@ export function parseRunnerControlRequest(value: unknown): RunnerControlRequest 
 				nextSessionToken: token(input.nextSessionToken, "next runner session token"),
 				renewalId: uuid(input.renewalId, "runner renewal id"),
 			};
-		case "claim":
+		case "accept":
 			return {
 				action,
 				runnerId,
-				clientLeaseId: uuid(input.clientLeaseId, "runner client lease id"),
-				leaseToken: token(input.leaseToken, "runner lease token"),
+				assignmentId: uuid(input.assignmentId, "runner assignment id"),
+				jobId: uuid(input.jobId, "runner job id"),
+				assignmentCapability: token(input.assignmentCapability, "runner assignment capability"),
 			};
 		case "renew":
 			return {
@@ -142,6 +150,9 @@ export function parseRunnerControlRequest(value: unknown): RunnerControlRequest 
 				leaseToken: token(input.leaseToken, "runner lease token"),
 				clientArtifactIndexId: uuid(input.clientArtifactIndexId, "runner output artifact index id"),
 				clientSubstrateVersionId: uuid(input.clientSubstrateVersionId, "runner output substrate version id"),
+				...(input.outputSnapshotId === null || input.outputSnapshotId === undefined
+					? {}
+					: { outputSnapshotId: uuid(input.outputSnapshotId, "runner output Company File snapshot id") }),
 				result: objectPayload(input.result, "runner job result"),
 			};
 		case "fail": {

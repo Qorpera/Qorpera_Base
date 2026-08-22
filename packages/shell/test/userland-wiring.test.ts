@@ -36,13 +36,29 @@ describe("userland wiring", () => {
 	});
 
 	it("keeps non-actionable hosting internals out of settings", () => {
-		for (const label of ["Product and execution", "Profile placement", "Company workspaces"]) {
+		for (const label of [
+			"Product and execution",
+			"Profile placement",
+			"Company workspaces",
+			"Execution on local computer",
+			"Keep running in the background",
+		]) {
 			expect(rendererSource).not.toContain(label);
 		}
 	});
 
 	it("keeps the remaining company controls actionable and accessible", () => {
-		expect(rendererSource).toContain("window.qorpera.enableCloudProfile()");
+		expect(rendererSource).toContain("window.qorpera.openCompanyFile()");
+		expect(rendererSource).toContain('window.qorpera.resolveCompanyFileConflict("local")');
+		expect(rendererSource).toContain('window.qorpera.resolveCompanyFileConflict("cloud")');
+		expect(preloadSource).toContain('ipcRenderer.invoke("company-file:open-conflict-remote")');
+		expect(rendererSource).not.toContain("window.qorpera.enableCloudProfile()");
+		expect(indexSource).not.toContain("data-profile-placement");
+		expect(rendererSource).toContain("companyCreatorCreationId");
+		expect(preloadSource).toContain('ipcRenderer.invoke("company:pending-creation")');
+		expect(mainSource).toContain('schema: "qorpera.pending-company-creation/v1"');
+		expect(rendererSource).toContain("pending?.clientCreationId ?? crypto.randomUUID()");
+		expect(indexSource).toContain("The first 50 GB is included");
 		expect(rendererSource).toContain('event.key !== "Tab"');
 		expect(rendererSource).toMatch(/item\.setAttribute\("aria-label", `\$\{name\}, \$\{role\}`\)/);
 		expect(rendererSource).toContain("Pick from your friends or add someone first");
@@ -57,6 +73,104 @@ describe("userland wiring", () => {
 		expect(baseCssSource).toMatch(
 			/html\[data-platform="darwin"\] #titlebar \.thread-header \{ padding-right: 10px; \}/,
 		);
+	});
+
+	it("renders durable queued prompts and remote staff activity", () => {
+		expect(preloadSource).toContain('ipcRenderer.on("staff-session-queue"');
+		expect(rendererSource).toContain("pendingSessionQueueByStaff");
+		expect(rendererSource).toContain(
+			'input.status === "processing" ? "Processing" : input.status === "failed" ? "Needs review" : "Queued"',
+		);
+		expect(rendererSource).toContain("result.queued");
+		expect(rendererSource).toContain("displayText: text");
+		expect(rendererSource).toContain("const pendingPromptSendFallbacks = new Map()");
+		expect(rendererSource).toContain("window.qorpera.stagePromptSend(pending.id, frame)");
+		expect(rendererSource).toContain("window.qorpera.pendingPromptSend()");
+		expect(preloadSource).toContain('ipcRenderer.invoke("prompt-send:ack", id)');
+		expect(preloadSource).toContain('ipcRenderer.invoke("staff-session:resolve-recovery"');
+		expect(preloadSource).toContain('ipcRenderer.invoke("staff-session:resolve-execution-recovery"');
+		expect(preloadSource).toContain('ipcRenderer.invoke("staff-session:resolve-operation"');
+		expect(preloadSource).toContain('ipcRenderer.invoke("staff-session:resolve-run-operation"');
+		expect(preloadSource).toContain('ipcRenderer.on("runner-activity"');
+		expect(mainSource).toContain('ipcMain.handle("prompt-send:stage"');
+		expect(mainSource).toContain('"staff-session:resolve-recovery"');
+		expect(mainSource).toContain('"staff-session:resolve-execution-recovery"');
+		expect(mainSource).toContain('"staff-session:resolve-operation"');
+		expect(mainSource).toContain('"staff-session:resolve-run-operation"');
+		expect(mainSource).toContain('"runner-activity"');
+		expect(mainSource).toContain("body?.displayText ?? body?.text");
+		expect(mainSource).toContain("text: reviewed.displayText ?? reviewed.message");
+		expect(baseCssSource).toContain(".msg.user.session-queued");
+		expect(preloadSource).toContain('ipcRenderer.on("presence-activity"');
+		expect(rendererSource).toContain("remoteStaffActivity");
+		expect(rendererSource).toContain("remoteStaffDoingLine");
+		expect(rendererSource).toContain("presencePeers.map((member) => member.clientId)");
+		expect(mainSource).not.toContain("continuing solo");
+		expect(mainSource).toContain("qorpera.staff-intro-retry/v1");
+		expect(mainSource).toContain("await checkpointCloudCompanyFile({");
+		expect(preloadSource).toContain('ipcRenderer.invoke(\n\t\t\t"company-file:retry-proposal-review"');
+		expect(mainSource).toContain('"company-file:retry-proposal-review"');
+		expect(rendererSource).toContain("Waiting for the configured agent reviews.");
+		expect(rendererSource).toContain(
+			'publishProposal.textContent = requestedChanges.length > 0 ? "Revise" : "Publish"',
+		);
+	});
+
+	it("routes personal subscription turns without requiring a ready local agent runtime", () => {
+		expect(indexSource).toContain('id="cloudSponsorSelect"');
+		expect(indexSource).toContain('id="threadSponsorProvenance"');
+		expect(preloadSource).toContain('ipcRenderer.invoke("native-execution:begin-login", provider)');
+		expect(preloadSource).toContain('ipcRenderer.invoke("native-execution:revoke", providerConnectionId)');
+		expect(mainSource).toContain("const cloudSponsoredPrompt = reviewedCloudPrompt?.executionSponsor !== undefined;");
+		expect(mainSource).toContain("runtime.wakeChild && !cloudSponsoredPrompt");
+		expect(mainSource).toContain(
+			"!cloudSponsoredPrompt && runtime.childOptions.staffAgentId && !childRuntimeReady.has(reviewedChild)",
+		);
+		expect(mainSource).toContain("await control.requestSessionTurn({");
+		expect(rendererSource).toContain("const executionSponsor = selectedNativeExecutionSponsor()");
+		expect(rendererSource).toContain("message.qorperaRunId");
+		expect(rendererSource).toContain("nativeTurnProvenanceByRun.get(message.dataset.qorperaRunId)");
+		expect(baseCssSource).toContain(".native-turn-provenance");
+		const sendPrompt = rendererSource.slice(
+			rendererSource.indexOf("async function sendPrompt("),
+			rendererSource.indexOf("function modelFailureInfo", rendererSource.indexOf("async function sendPrompt(")),
+		);
+		expect(sendPrompt.indexOf("const executionSponsor = selectedNativeExecutionSponsor()")).toBeLessThan(
+			sendPrompt.indexOf("if (agentExited && !executionSponsor)"),
+		);
+	});
+
+	it("finalizes clean cloud wakes without re-entering their owning transition", () => {
+		const handlerStart = mainSource.indexOf("const wakeSessionId = childBindings.get(child)?.sessionId;");
+		const handlerEnd = mainSource.indexOf("if (!(await waitForChildReadiness(child)))", handlerStart);
+		expect(handlerStart).toBeGreaterThan(-1);
+		expect(handlerEnd).toBeGreaterThan(handlerStart);
+		const closeHandler = mainSource.slice(handlerStart, handlerEnd);
+		expect(closeHandler).toMatch(
+			/const cloudCompletion = await enqueueRuntimeTransition[\s\S]+?\n\s*}\);\n\s*if \(!cloudCompletion\) return;[\s\S]+?await completeActiveCloudWake/,
+		);
+		expect(mainSource).toContain("liveWake?.exitCode === null");
+		expect(mainSource).toContain("liveWake.signalCode === null");
+		expect(mainSource).toContain(
+			"return completeActiveCloudWake(runtime, arbiter, wakeKey, clientSessionId, attempt + 1);",
+		);
+	});
+
+	it("binds immediate cloud claims and never publishes a live agent tree mid-turn", () => {
+		const immediateStart = mainSource.indexOf("let sendClaim: Awaited<ReturnType<CloudSessionArbiter");
+		const immediateEnd = mainSource.indexOf("if (cloudStaffConversation && frame.type", immediateStart);
+		expect(immediateStart).toBeGreaterThan(-1);
+		expect(immediateEnd).toBeGreaterThan(immediateStart);
+		const immediate = mainSource.slice(immediateStart, immediateEnd);
+		const binding = immediate.indexOf("bindChildDurableExecution(reviewedChild");
+		const dispatch = immediate.indexOf("sendKernelPrompt(reviewedChild");
+		expect(binding).toBeGreaterThan(-1);
+		expect(dispatch).toBeGreaterThan(binding);
+		expect(immediate).toContain("abandonCloudSessionClaim(sendArbiter, reviewedChild, sendClaim)");
+		expect(mainSource).not.toContain("withBrokerOutputCheckpoint(");
+		expect(mainSource).not.toContain("childBrokerOutputCheckpoints");
+		expect(mainSource).toContain("Cloud company publication is waiting for the active agent run to finish");
+		expect(mainSource).toContain("requireDurableExecution,");
 	});
 
 	it("renders agent details from the titlebar with only supported figure controls", () => {
