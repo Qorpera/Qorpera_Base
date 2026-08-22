@@ -13,6 +13,8 @@
 	},
 	"dependencies": {
 		"@openai/codex": "0.147.0",
+		"@qorpera/company": "^0.83.0",
+		"@qorpera/contracts": "^0.83.0",
 		"@qorpera/pi-ai": "^0.83.0",
 		"@qorpera/pi-coding-agent": "^0.83.0",
 		"@qorpera/pi-protocol": "^0.83.0",

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
 	CLOUD_RUNNER_CAPABILITIES,

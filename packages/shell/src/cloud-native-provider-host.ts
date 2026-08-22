@@ -4,7 +4,7 @@ import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 
 const CAPSULE_SCHEMA = "qorpera.native-credential-capsule/v1";
 const LOGIN_RESULT_SCHEMA = "qorpera.native-provider-login-result/v1";

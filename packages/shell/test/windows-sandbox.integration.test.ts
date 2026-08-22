@@ -13,7 +13,7 @@ import {
 	sandboxRuntimeDir,
 	writeSandboxProfile,
 } from "../src/agent-runtime.ts";
-import { type ModelRequestRuntime, startModelRequestBroker } from "../src/model-request-broker.ts";
+import { type ModelRequestRuntime, startModelRequestBroker } from "../src/legacy-local-model-request-broker.ts";
 
 vi.mock("@qorpera/pi-coding-agent", () => ({
 	ModelRuntime: {

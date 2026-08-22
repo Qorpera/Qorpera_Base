@@ -1,4 +1,4 @@
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 
 export const CLOUD_RUNNER_USAGE_SCHEMA = "qorpera.runner-usage/v1";
 

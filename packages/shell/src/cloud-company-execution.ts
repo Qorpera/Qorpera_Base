@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { KernelExecutionIdentity } from "@qorpera/pi-protocol";
+import type { ExecutionIdentity } from "@qorpera/contracts";
 import {
 	captureCloudCompanyTree,
 	cloudCompanyPathBelongsToLogicalTree,
@@ -29,7 +29,7 @@ interface ExecutionState {
 	hostInstanceId: string;
 	baseHead: string;
 	status: ExecutionStateStatus;
-	execution?: KernelExecutionIdentity;
+	execution?: ExecutionIdentity;
 	proposalHead?: string;
 	cloudProposalId?: string;
 	cloudProposalSnapshotId?: string;
@@ -63,7 +63,7 @@ export type CloudCompanyExecutionPromotion =
 export interface RecoverableCloudCompanyExecution extends CloudCompanyExecutionCheckout {
 	status: "proposed" | "requires_review";
 	proposalHead: string;
-	execution?: KernelExecutionIdentity;
+	execution?: ExecutionIdentity;
 	cloudProposalId?: string;
 	cloudProposalSnapshotId?: string;
 	updatedAt: string;
@@ -267,10 +267,7 @@ export function createCloudCompanyExecutionCheckout(options: {
 	return { profileId: options.profileId, checkoutId, companyRoot, checkoutRoot, statePath };
 }
 
-export function bindCloudCompanyExecution(
-	checkout: CloudCompanyExecutionCheckout,
-	execution: KernelExecutionIdentity,
-): void {
+export function bindCloudCompanyExecution(checkout: CloudCompanyExecutionCheckout, execution: ExecutionIdentity): void {
 	if (!UUID_PATTERN.test(execution.id) || !UUID_PATTERN.test(execution.claimantId)) {
 		throw new Error("Company execution identity is invalid");
 	}
@@ -506,7 +503,7 @@ export async function publishCloudCompanyExecutionProposal(options: {
 	environmentId: string;
 	baseSnapshotId: string;
 	checkout: CloudCompanyExecutionCheckout;
-	execution: KernelExecutionIdentity;
+	execution: ExecutionIdentity;
 	sessionId: string;
 	trailEndSequence: number;
 	reason: HostedCompanyProposalReason;

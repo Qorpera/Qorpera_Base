@@ -1,5 +1,5 @@
-import type { StaffAgent } from "@qorpera/pi-coding-agent/company-staff";
-import type { JsonValue, KernelExecutionIdentity } from "@qorpera/pi-protocol";
+import type { StaffAgent } from "@qorpera/company/company-staff";
+import type { ExecutionIdentity, JsonValue } from "@qorpera/contracts";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -150,7 +150,7 @@ export interface HostedRunnerExecutionIdentity {
 	runnerAssignmentId: string;
 }
 
-export type HostedSessionExecutionIdentity = KernelExecutionIdentity | HostedRunnerExecutionIdentity;
+export type HostedSessionExecutionIdentity = ExecutionIdentity | HostedRunnerExecutionIdentity;
 
 export interface HostedSessionEvent {
 	sessionId: string;
@@ -236,7 +236,7 @@ export interface HostedCompanyProposalReview {
 	completedAt?: string;
 }
 
-export type HostedCompanyProposalExecution = KernelExecutionIdentity | { kind: "run"; id: string; claimantId: string };
+export type HostedCompanyProposalExecution = ExecutionIdentity | { kind: "run"; id: string; claimantId: string };
 
 export interface HostedCompanyProposal {
 	proposalId: string;
@@ -503,7 +503,7 @@ export interface AppendHostedSessionEventInput {
 	body: JsonValue;
 	/** Last sequence observed by the caller. The append fails if the trail advanced. */
 	expectedSequence?: number;
-	execution?: KernelExecutionIdentity;
+	execution?: ExecutionIdentity;
 }
 
 export interface EnsureHostedCompanyWorkspaceInput {
@@ -544,7 +544,7 @@ export interface SubmitHostedCompanyProposalInput {
 	environmentId: string;
 	clientProposalId: string;
 	proposalSnapshotId: string;
-	execution: KernelExecutionIdentity;
+	execution: ExecutionIdentity;
 	sessionId: string;
 	trailEndSequence: number;
 	reason: HostedCompanyProposalReason;
@@ -779,7 +779,7 @@ export interface HostedPrimaryTransport {
 		p_event_type: HostedSessionEventType;
 		p_body: JsonValue;
 		p_expected_sequence: number | null;
-		p_execution_kind: KernelExecutionIdentity["kind"] | null;
+		p_execution_kind: ExecutionIdentity["kind"] | null;
 		p_execution_id: string | null;
 		p_execution_claimant_id: string | null;
 	}): Promise<unknown>;
@@ -814,7 +814,7 @@ export interface HostedPrimaryTransport {
 		p_environment_id: string;
 		p_client_proposal_id: string;
 		p_proposal_snapshot_id: string;
-		p_execution_kind: KernelExecutionIdentity["kind"];
+		p_execution_kind: ExecutionIdentity["kind"];
 		p_execution_id: string;
 		p_execution_claimant_id: string;
 		p_session_id: string;
@@ -1210,7 +1210,7 @@ export interface HostedPrimaryDatabase {
 					p_event_type: HostedSessionEventType;
 					p_body: JsonValue;
 					p_expected_sequence: number | null;
-					p_execution_kind: KernelExecutionIdentity["kind"] | null;
+					p_execution_kind: ExecutionIdentity["kind"] | null;
 					p_execution_id: string | null;
 					p_execution_claimant_id: string | null;
 				};
@@ -1260,7 +1260,7 @@ export interface HostedPrimaryDatabase {
 					p_environment_id: string;
 					p_client_proposal_id: string;
 					p_proposal_snapshot_id: string;
-					p_execution_kind: KernelExecutionIdentity["kind"];
+					p_execution_kind: ExecutionIdentity["kind"];
 					p_execution_id: string;
 					p_execution_claimant_id: string;
 					p_session_id: string;

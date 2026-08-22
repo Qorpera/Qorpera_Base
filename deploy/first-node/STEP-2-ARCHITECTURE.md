@@ -139,6 +139,14 @@ Merged Step 1 already provides:
 - job-scoped runner control/broker capabilities and immutable Company File object contracts;
 - an explicit acceptance specification in `supabase/NATIVE-SUBSCRIPTION-ACCEPTANCE.md`.
 
+Step 1.5, the release gate immediately before this phase, additionally:
+
+- owns cloud execution and company-domain types in `@qorpera/contracts` and `@qorpera/company` rather than Pi packages;
+- prevents the desktop from claiming or executing cloud turns and wakes through the inherited local runtime;
+- requires an explicit sponsor/provider connection for every cloud turn;
+- retains Pi only behind an explicitly named legacy-local boundary for local-company compatibility; and
+- enforces the separation with `npm run check:cloud-boundaries`.
+
 The older unpublished Company Computer prototype is not authoritative. It currently blocks the required subscription path in several places:
 
 - its authentication-mode union omits personal native subscription OAuth;

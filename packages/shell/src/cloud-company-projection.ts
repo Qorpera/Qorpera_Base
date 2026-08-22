@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { type Dirent, existsSync, type FSWatcher, readFileSync, watch } from "node:fs";
 import { chmod, lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { type CompanyRuntimeLock, canonicalCompanyRoot } from "@qorpera/pi-coding-agent/company";
+import { type CompanyRuntimeLock, canonicalCompanyRoot } from "@qorpera/company/company-runtime-lock";
 import { cloudCompanyPathBelongsToLogicalTree, cloudCompanyPathIsAuthorityCritical } from "./cloud-company-snapshot.ts";
 import { type CloudSyncHealth, DurableCloudSyncLoop } from "./cloud-sync-loop.ts";
 

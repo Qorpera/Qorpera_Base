@@ -1,28 +1,30 @@
 # Qorpera Base
 
-**Qorpera Base is the open-source base of an agentic company-controller
-platform.** A company forks it; its AI builds the company's own controller from
-it — surfaces, substrates, routines, and tools that fit that company alone. The
-design spec lives in the Qorpera repositories
-(`artifacts/qorpera-base/spec-v0.md`); the self-evolution and signature-rule
-design is in [EVOLUTION.md](EVOLUTION.md); fork provenance and policy are in
-[FORK.md](FORK.md).
+**Qorpera Base is the cloud-first control plane and client for agent-operated companies.**
 
-Qorpera Base is a hard fork of the [PI coding agent](https://github.com/earendil-works/pi)
-by Mario Zechner (MIT) — forked 2026-08-04 at v0.83.0. The agent harness
-machinery documented below is PI's, and that documentation remains accurate;
-identity, scope (`@qorpera/*`), binary (`qorpera`), and config home
-(`~/.qorpera/`) are Qorpera's.
+- Supabase is authoritative for companies, memberships, sessions, inputs, jobs, runs, leases, sponsor/provider bindings, provenance, and transcript order.
+- The NAS object gateway stores immutable Company File objects, attachments, artifacts, encrypted Compute Identity capsules, and checkpoints.
+- The standalone Runner Orchestrator claims durable jobs and controls isolated execution workers. Supabase notifications are wake hints, not scheduling authority.
+- Provider-native workers run the official Codex or Claude harness under one explicit execution sponsor and provider connection. Subscription traffic never passes through Pi or a generic Qorpera model gateway.
+- Desktops observe and mutate durable cloud state. They are not required for cloud authority and cannot execute cloud turns through the legacy local model runtime.
 
-* **[@qorpera/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
-* **[@qorpera/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
-* **[@qorpera/pi-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)
+The cloud control plane is implemented and tested, but autonomous all-devices-offline execution is not complete until the Step 2 runner infrastructure is deployed and passes the acceptance gate in [deploy/first-node/STEP-2-ARCHITECTURE.md](deploy/first-node/STEP-2-ARCHITECTURE.md).
+
+Primary packages:
+
+- **[@qorpera/contracts](packages/contracts)**: provider-neutral cloud and execution contracts
+- **[@qorpera/company](packages/company)**: provider-neutral Company File and company-domain primitives
+- **[@qorpera/runner-orchestrator](packages/runner-orchestrator)**: durable job reconciliation and provider boundary
+- **[@qorpera/object-gateway](packages/object-gateway)**: immutable NAS/object-storage authority
+- **[@qorpera/shell](packages/shell)**: desktop client, cloud synchronization, and explicit legacy-local execution boundary
+
+Qorpera Base retains a hard-forked [PI coding agent](https://github.com/earendil-works/pi) harness by Mario Zechner (MIT), forked 2026-08-04 at v0.83.0, for local-company compatibility. It is not the cloud execution architecture and does not handle personal native-subscription traffic.
 
 ---
 
-## Upstream technical documentation (PI Agent Harness)
+## Legacy local PI harness
 
-## All Packages
+These packages remain for the explicit local-company compatibility lane:
 
 | Package | Description |
 |---------|-------------|
@@ -31,11 +33,9 @@ identity, scope (`@qorpera/*`), binary (`qorpera`), and config home
 | **[@qorpera/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
 | **[@qorpera/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
 
-For Slack/chat automation and workflows see [earendil-works/pi-chat](https://github.com/earendil-works/pi-chat).
-
 ## Permissions & Containerization
 
-Pi does not include a built-in permission system for restricting filesystem, process, network, or credential access. By default, it runs with the permissions of the user and process that launched it.
+The legacy local PI harness does not include a built-in permission system for restricting filesystem, process, network, or credential access. By default, it runs with the permissions of the user and process that launched it.
 
 If you need stronger boundaries, containerize or sandbox Pi. See [packages/coding-agent/docs/containerization.md](packages/coding-agent/docs/containerization.md) for three patterns:
 

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { CompanyRuntimeLock } from "@qorpera/pi-coding-agent/company";
+import type { CompanyRuntimeLock } from "@qorpera/company/company-runtime-lock";
 import { reconcileCloudCompanyCache, recoverInterruptedCloudCompanyMerges } from "./cloud-company-merge.ts";
 import {
 	type CloudCompanyTreeReference,

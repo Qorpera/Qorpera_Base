@@ -1,4 +1,4 @@
-import type { CompanyArtifactMetricDirection, StarterArtifactDefinition } from "@qorpera/pi-coding-agent/company-staff";
+import type { CompanyArtifactMetricDirection, StarterArtifactDefinition } from "@qorpera/company/company-staff";
 
 export const STAFF_TEMPLATE_IDS = Object.freeze([
 	"agent-manager",

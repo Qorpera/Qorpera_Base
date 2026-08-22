@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, readdir, realpath, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import type { CloudRunnerCapability } from "./cloud-runner-control.ts";
 import { type CloudRunnerModelSocketFactory, startCloudRunnerModelSocketServer } from "./cloud-runner-model-socket.ts";
 import type {

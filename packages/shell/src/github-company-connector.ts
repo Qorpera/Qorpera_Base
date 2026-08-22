@@ -5,7 +5,7 @@ import {
 	COMPANY_CONNECTOR_SCHEMA,
 	type CompanyConnectorManifestRecord,
 	readCompanyConnectorManifests,
-} from "@qorpera/pi-coding-agent/company-connectors";
+} from "@qorpera/company/company-connectors";
 
 export const BUILT_IN_GITHUB_CONNECTOR_ID = "qorpera.github";
 export const GITHUB_CONNECTION_DESTINATIONS = [

@@ -92,6 +92,8 @@
 		"prepublishOnly": "npm run clean && npm run build && npm run shrinkwrap"
 	},
 	"dependencies": {
+		"@qorpera/company": "^0.83.0",
+		"@qorpera/contracts": "^0.83.0",
 		"@qorpera/pi-agent-core": "^0.83.0",
 		"@qorpera/pi-ai": "^0.83.0",
 		"@qorpera/pi-client": "^0.83.0",

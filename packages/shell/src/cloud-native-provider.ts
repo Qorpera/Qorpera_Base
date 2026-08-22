@@ -1,4 +1,4 @@
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import type { NativeProviderLoginAuthorization } from "./cloud-native-subscription-control.ts";
 import type {
 	AppendCloudRunnerTranscriptEventInput,
