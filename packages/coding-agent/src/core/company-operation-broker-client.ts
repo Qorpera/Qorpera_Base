@@ -7,24 +7,11 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { COMPANY_OPERATION_KINDS, type CompanyOperationKind } from "@qorpera/contracts";
 import type { KernelIntentCapability } from "@qorpera/pi-protocol";
 import { isModelBrokerInstalled } from "./model-broker-client.ts";
 
-export const COMPANY_OPERATION_KINDS = [
-	"request_connection",
-	"authorize_connector_http",
-	"manage_routine",
-	"assess_artifact_source",
-	"record_artifact_observation",
-	"report_artifact_source_issue",
-	"complete_setup",
-	"finish_trigger_build",
-	"finish_trigger_check",
-	"send_agent_message",
-	"delegate_to_staff",
-] as const;
-
-export type CompanyOperationKind = (typeof COMPANY_OPERATION_KINDS)[number];
+export { COMPANY_OPERATION_KINDS, type CompanyOperationKind };
 
 export interface CompanyOperationResponse {
 	message: string;

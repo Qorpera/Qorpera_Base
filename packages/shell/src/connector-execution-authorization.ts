@@ -5,7 +5,7 @@ import {
 	companyConnectorMatchesRequest,
 	companyConnectorSecretNames,
 	readCompanyConnectorManifests,
-} from "@qorpera/pi-coding-agent/company-connectors";
+} from "@qorpera/company/company-connectors";
 import { readConnectionRequests } from "./connection-requests.ts";
 import { builtInGitHubNativeGrantMatches } from "./github-company-connector.ts";
 

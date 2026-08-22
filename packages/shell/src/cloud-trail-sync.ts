@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { JsonValue, KernelExecutionIdentity } from "@qorpera/pi-protocol";
+import type { ExecutionIdentity, JsonValue } from "@qorpera/contracts";
 import {
 	listSharedTrailSessions,
 	materializeSharedTrailSession,
@@ -692,7 +692,7 @@ export class CloudTrailSynchronizer {
 		event: UploadEvent,
 		bindings: Map<string, TrailBinding>,
 		result: CloudTrailSyncResult,
-		execution?: KernelExecutionIdentity,
+		execution?: ExecutionIdentity,
 	): Promise<void> {
 		for (let attempt = 0; attempt < 3; attempt++) {
 			try {

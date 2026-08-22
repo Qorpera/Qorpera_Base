@@ -6,6 +6,10 @@
 		"moduleResolution": "NodeNext",
 		"paths": {
 			"*": ["./*"],
+			"@qorpera/contracts": ["./packages/contracts/src/index.ts"],
+			"@qorpera/contracts/*": ["./packages/contracts/src/*"],
+			"@qorpera/company": ["./packages/company/src/index.ts"],
+			"@qorpera/company/*": ["./packages/company/src/*.ts"],
 			"@qorpera/pi-ai": ["./packages/ai/src/index.ts"],
 			"@qorpera/pi-ai/oauth": ["./packages/ai/src/oauth.ts"],
 			"@qorpera/pi-ai/*": ["./packages/ai/src/*.ts", "./packages/ai/src/providers/*.ts"],

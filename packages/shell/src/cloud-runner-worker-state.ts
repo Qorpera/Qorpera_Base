@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, type FileHandle, lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import type { CloudRunnerAuthorityStore } from "./cloud-runner-control.ts";
 
 const MAX_AUTHORITY_STATE_BYTES = 256 * 1024;

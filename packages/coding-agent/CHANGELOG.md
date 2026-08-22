@@ -107,6 +107,7 @@
 
 ### Changed
 
+- Extracted provider-neutral staff, artifact, room, and connector persistence into `@qorpera/company`; legacy coding-agent subpaths now explicitly re-export those Qorpera-owned domain modules.
 - Completing a connector's protected sign-in now authorizes the remaining setup within the exact selected scope. Staff continue without a redundant chat approval, provider-generated client secrets are captured directly into the local company vault without entering model context or the trail, and subsequent OAuth consent stays in the same managed Chrome profile.
 - Agent model choice is no longer implied by identity configuration: fresh conversation work defaults to low reasoning effort, scheduled and other autonomous work defaults to high, and every scheduled job can override its own effort.
 - The controller now runs founder-first (founder call 2026-08-13): sending a prompt no longer raises a native confirmation dialog — typing in the composer is the founder acting, and the kernel still stamps the exact input into the trail as attended founder direction (the tradeoff, stated plainly: "attended" now trusts the local renderer rather than an OS dialog, the same posture as the founder's other local coding tools). Default model-intent budgets are effectively unlimited — no call, token, or dollar ceilings on the founder's own machine; the signed-intent lane and full trail observability are unchanged, and bounded budgets remain available programmatically.

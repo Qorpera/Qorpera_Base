@@ -2,7 +2,7 @@ import { chmod, lstat, rm } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { isAbsolute } from "node:path";
 
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 
 import {
 	type CloudRunnerModelRequest,

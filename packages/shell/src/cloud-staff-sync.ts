@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { readStaffAgents, replaceStaffAgents, type StaffAgent } from "@qorpera/pi-coding-agent/company-staff";
+import { readStaffAgents, replaceStaffAgents, type StaffAgent } from "@qorpera/company/company-staff";
 import type { HostedStaffAgent, QorperaHostedPrimary } from "./hosted-primary.ts";
 
 const CLOUD_STAFF_STATE_SCHEMA = "qorpera.cloud-staff-sync/v1";

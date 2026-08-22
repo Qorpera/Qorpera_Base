@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 
 export type CloudRunnerCapability = "agent_turn" | "git_worktree" | "company_substrate";
 export type CloudComputeIdentityOwnershipKind = "member" | "company" | "department" | "security_boundary";

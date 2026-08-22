@@ -1,6 +1,6 @@
 import { lstat, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import type { CloudRunnerModelRequest } from "./cloud-runner-model.ts";
 import { validateCloudRunnerModelRequest } from "./cloud-runner-model.ts";
 import { requestCloudRunnerModelSocket } from "./cloud-runner-model-socket.ts";

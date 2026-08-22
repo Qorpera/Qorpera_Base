@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { cp, lstat, mkdir, mkdtemp, open, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import { currentCloudCompanyTreeReference, materializeCloudCompanyTree } from "./cloud-company-snapshot.ts";
 import type { ResolvedCompanySubstrateReference } from "./cloud-company-substrate.ts";
 import type { CloudContentAddressedStore } from "./cloud-object-store.ts";

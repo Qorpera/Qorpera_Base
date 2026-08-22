@@ -7,7 +7,7 @@ import {
 	canonicalCompanyRoot,
 	claimCompanyRuntimeLock,
 	releaseCompanyRuntimeLock,
-} from "@qorpera/pi-coding-agent/company";
+} from "@qorpera/company/company-runtime-lock";
 import {
 	type CloudCompanyTreeEntry,
 	type CloudCompanyTreeManifest,

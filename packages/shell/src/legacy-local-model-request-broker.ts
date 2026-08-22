@@ -1,3 +1,9 @@
+/**
+ * Legacy local-company model execution only.
+ *
+ * Cloud turns are durable runner jobs executed by a provider-native harness;
+ * they must never reach this broker or its Pi model runtime.
+ */
 import { createHash } from "node:crypto";
 import { ModelRuntime } from "@qorpera/pi-coding-agent";
 import type {

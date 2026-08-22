@@ -28,6 +28,63 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import {
+	type CompanyConnectorManifestRecord,
+	companyConnectorMatchesRequest,
+	companyConnectorSecretNames,
+	readCompanyConnectorManifests,
+} from "@qorpera/company/company-connectors";
+import {
+	appendCompanyRoomMessage,
+	archiveCompanyRoom,
+	type CompanyRoom,
+	type CompanyRoomMessage,
+	createCompanyRoom,
+	type QueuedCompanyRoomDelivery,
+	queueCompanyRoomDelivery,
+	readCompanyRoom,
+	readCompanyRoomMessage,
+	readCompanyRoomMessages,
+	readCompanyRooms,
+	readQueuedCompanyRoomDeliveries,
+	removeQueuedCompanyRoomDeliveries,
+	rescheduleCompanyRoomDelivery,
+	restoreCompanyRoom,
+	updateCompanyRoom,
+} from "@qorpera/company/company-rooms";
+import {
+	activateStaffAgent,
+	archiveStaffAgent,
+	assessCompanyArtifactSource,
+	type CompanyArtifactObservationUpdate,
+	type CompanyArtifactSourceAssessmentUpdate,
+	type CompanyArtifactSourceIssueUpdate,
+	createStaffAgent,
+	createStaffAgents,
+	createStarterCompanyArtifact,
+	deleteStaffAgent,
+	markStaffAgentMessagesDelivered,
+	pendingStaffAgentMessages,
+	queueStaffAgentMessage,
+	readCompanyArtifacts,
+	readStaffAgentMemory,
+	readStaffAgentMessages,
+	readStaffAgents,
+	recentDeliveredStaffAgentMessages,
+	recordCompanyArtifactObservation,
+	reportCompanyArtifactSourceIssue,
+	restoreStaffAgent,
+	type StaffAgent,
+	type StaffAgentMessage,
+	type StaffAgentModel,
+	staffAgentDirectoryPath,
+	staffAgentInstructionsPath,
+	staffAgentSkillsPath,
+	transitionCompanyArtifactConnection,
+	updateCompanyArtifact,
+	updateStaffAgent,
+} from "@qorpera/company/company-staff";
+import type { CompanyOperationKind } from "@qorpera/contracts";
 import { ModelRuntime } from "@qorpera/pi-coding-agent";
 // Deep imports from the coding agent (the foundation's own machinery).
 import { companyPort, createCompanyAppServer } from "@qorpera/pi-coding-agent/app-server";
@@ -87,63 +144,6 @@ import {
 	updateScheduledJob,
 	upsertStaffScheduledJob,
 } from "@qorpera/pi-coding-agent/company-connections";
-import {
-	type CompanyConnectorManifestRecord,
-	companyConnectorMatchesRequest,
-	companyConnectorSecretNames,
-	readCompanyConnectorManifests,
-} from "@qorpera/pi-coding-agent/company-connectors";
-import type { CompanyOperationKind } from "@qorpera/pi-coding-agent/company-operation-broker";
-import {
-	appendCompanyRoomMessage,
-	archiveCompanyRoom,
-	type CompanyRoom,
-	type CompanyRoomMessage,
-	createCompanyRoom,
-	type QueuedCompanyRoomDelivery,
-	queueCompanyRoomDelivery,
-	readCompanyRoom,
-	readCompanyRoomMessage,
-	readCompanyRoomMessages,
-	readCompanyRooms,
-	readQueuedCompanyRoomDeliveries,
-	removeQueuedCompanyRoomDeliveries,
-	rescheduleCompanyRoomDelivery,
-	restoreCompanyRoom,
-	updateCompanyRoom,
-} from "@qorpera/pi-coding-agent/company-rooms";
-import {
-	activateStaffAgent,
-	archiveStaffAgent,
-	assessCompanyArtifactSource,
-	type CompanyArtifactObservationUpdate,
-	type CompanyArtifactSourceAssessmentUpdate,
-	type CompanyArtifactSourceIssueUpdate,
-	createStaffAgent,
-	createStaffAgents,
-	createStarterCompanyArtifact,
-	deleteStaffAgent,
-	markStaffAgentMessagesDelivered,
-	pendingStaffAgentMessages,
-	queueStaffAgentMessage,
-	readCompanyArtifacts,
-	readStaffAgentMemory,
-	readStaffAgentMessages,
-	readStaffAgents,
-	recentDeliveredStaffAgentMessages,
-	recordCompanyArtifactObservation,
-	reportCompanyArtifactSourceIssue,
-	restoreStaffAgent,
-	type StaffAgent,
-	type StaffAgentMessage,
-	type StaffAgentModel,
-	staffAgentDirectoryPath,
-	staffAgentInstructionsPath,
-	staffAgentSkillsPath,
-	transitionCompanyArtifactConnection,
-	updateCompanyArtifact,
-	updateStaffAgent,
-} from "@qorpera/pi-coding-agent/company-staff";
 import { FOUNDER_PUBLIC_FILE, founderPublicRecord } from "@qorpera/pi-coding-agent/founder-identity";
 import { runOAuthOnboarding } from "@qorpera/pi-coding-agent/oauth-onboarding";
 import type { JsonValue, KernelExecutionIdentity } from "@qorpera/pi-protocol";
@@ -210,9 +210,7 @@ import { readBackgroundCompanyRoots, setBackgroundCompanyEnabled } from "./backg
 import { CloudProfileAccessRefresh } from "./cloud-access-refresh.ts";
 import {
 	acceptReviewedCloudCompanyExecution,
-	bindCloudCompanyExecution,
 	type CloudCompanyExecutionCheckout,
-	cloudCompanyExecutionMatchesCanonical,
 	cloudCompanyExecutionTouchesAuthorityCritical,
 	createCloudCompanyExecutionCheckout,
 	discardCleanCloudCompanyExecution,
@@ -254,12 +252,7 @@ import {
 	stageCloudPromptOutbox,
 } from "./cloud-prompt-outbox.ts";
 import { CloudProfileRealtimeSync, type CloudRealtimeChange, type CloudRealtimeHealth } from "./cloud-realtime-sync.ts";
-import {
-	type ArbiterClaim,
-	type ArbiterExecutionPin,
-	type ArbiterSessionRef,
-	CloudSessionArbiter,
-} from "./cloud-session-arbiter.ts";
+import { type ArbiterClaim, type ArbiterSessionRef, CloudSessionArbiter } from "./cloud-session-arbiter.ts";
 import { CloudStaffSynchronizer } from "./cloud-staff-sync.ts";
 import {
 	type CloudSyncHealth,
@@ -269,7 +262,6 @@ import {
 	persistCloudSyncHealth,
 } from "./cloud-sync-loop.ts";
 import { CloudTrailSynchronizer } from "./cloud-trail-sync.ts";
-import { CloudWakeArbiter } from "./cloud-wake-arbiter.ts";
 import {
 	type CompanyIconId,
 	DEFAULT_COMPANY_ICON_ID,
@@ -282,7 +274,6 @@ import {
 	captureCompanyGitBaseline,
 	checkpointCompanyGit,
 	checkpointProductWorktreeGit,
-	commitCloudCompanyLogicalMaterializationAsync,
 	commitCompanyMaterialization,
 	commitCompanyMaterializationAsync,
 	finishPendingCompanyCheckpoint,
@@ -358,9 +349,7 @@ import {
 	type HostedProfile,
 	type HostedProfileTeam,
 	type PendingSessionInput,
-	type SessionTurnInput,
 	SessionTurnOwnershipError,
-	WakeOwnershipError,
 } from "./hosted-primary.ts";
 import {
 	cacheHostedProfiles,
@@ -381,6 +370,11 @@ import {
 	isIntelligenceProviderId,
 	resolveIntelligenceReadiness,
 } from "./intelligence-onboarding.ts";
+import {
+	type BrokeredCredentials,
+	type ModelRequestBroker,
+	startModelRequestBroker,
+} from "./legacy-local-model-request-broker.ts";
 import { createLocalCompanySecretStore } from "./local-company-secret-store.ts";
 import {
 	type LocalExecutionPermission,
@@ -389,7 +383,6 @@ import {
 	writeLocalExecutionPermission,
 } from "./local-execution.ts";
 import { ModelAccountStore, type ModelAccountView } from "./model-accounts.ts";
-import { type BrokeredCredentials, type ModelRequestBroker, startModelRequestBroker } from "./model-request-broker.ts";
 import { hostedProfileAccess } from "./profile-collaboration.ts";
 import {
 	attachCloudProfile,
@@ -479,7 +472,6 @@ import {
 	decideScheduledWake,
 	nextScheduledWakeAt,
 	readWakeRunState,
-	recordRemoteWakeConsumption,
 	recordWakeOutcome,
 	recordWakeStart,
 	removeScheduledJobRunState,
@@ -512,7 +504,7 @@ if (process.platform === "win32" && app.isPackaged && !process.argv.includes("--
 	app.disableHardwareAcceleration();
 }
 
-const RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
+const LEGACY_PI_RPC_ENTRY = fileURLToPath(import.meta.resolve("@qorpera/pi-coding-agent/rpc-entry"));
 const CODEX_ENTRY = resolveCodexEntry();
 
 /**
@@ -1251,7 +1243,6 @@ interface CompanyRuntime {
 	cloudSessionArbiter?: CloudSessionArbiter;
 	/** Hosted wake arbitration (SESSIONS.md): autonomous wakes as claimed
 	 * rows, so a due occurrence executes on exactly one machine. */
-	cloudWakeArbiter?: CloudWakeArbiter;
 	cloudSessionPump?: NodeJS.Timeout;
 	cloudSessionArbiterHealth?: CloudSyncHealth;
 	/** Why this machine is not claiming turns (affinity or freshness), for
@@ -1441,16 +1432,6 @@ function runtimeCloudSessionArbiter(runtime: CompanyRuntime): CloudSessionArbite
 	return runtime.cloudSessionArbiter;
 }
 
-function runtimeCloudWakeArbiter(runtime: CompanyRuntime): CloudWakeArbiter | undefined {
-	if (runtime.cloudWakeArbiter) return runtime.cloudWakeArbiter;
-	const attachment = profileAttachment(runtime.root);
-	if (attachment.profileType !== "cloud" || !attachment.environmentId) return undefined;
-	const primary = qorperaAccountAuth?.hostedPrimary();
-	if (!primary || !currentQorperaAccountId) return undefined;
-	runtime.cloudWakeArbiter = new CloudWakeArbiter(primary, attachment.environmentId);
-	return runtime.cloudWakeArbiter;
-}
-
 /** The trail file name is `${timestamp}_${sessionId}.jsonl` for both minted
  * and materialized sessions; the id is the shared trail identity. */
 function trailFileSessionId(file: string): string | undefined {
@@ -1568,79 +1549,13 @@ function startCloudSessionPump(slot: Slot, runtime: CompanyRuntime): void {
 	if (runtime.cloudSessionPump || runtime.closing) return;
 	if (!runtimeCloudSessionArbiter(runtime)) return;
 	const timer = setInterval(() => {
-		void emitActiveStaffQueue(slot, runtime);
-		void renewActiveCloudWake(slot, runtime);
-		void pumpCloudSessionTurn(slot, runtime).catch((error) => {
-			console.error(`cloud session pump failed: ${error instanceof Error ? error.message : String(error)}`);
+		void refreshCloudSessionQueue(slot, runtime).catch((error) => {
+			console.error(`cloud session queue refresh failed: ${error instanceof Error ? error.message : String(error)}`);
 		});
 	}, 10_000);
 	timer.unref();
 	runtime.cloudSessionPump = timer;
 }
-
-async function renewActiveCloudWake(slot: Slot, runtime: CompanyRuntime): Promise<void> {
-	const arbiter = runtime.cloudWakeArbiter;
-	const child = runtime.wakeChild;
-	if (!arbiter?.activeKey || !child || slot.runtime !== runtime || runtime.closing) return;
-	try {
-		await arbiter.renewIfDue();
-	} catch (error) {
-		if (error instanceof WakeOwnershipError) {
-			arbiter.abandon();
-			if (runtime.wakeChild === child && child.exitCode === null) {
-				intentionalKills.add(child);
-				killChildTree(child);
-			}
-			console.error(`wake lease was lost: ${error.message}`);
-		} else {
-			console.error(`wake lease renewal deferred: ${error instanceof Error ? error.message : String(error)}`);
-		}
-	}
-}
-
-async function completeActiveCloudWake(
-	runtime: CompanyRuntime,
-	arbiter: CloudWakeArbiter,
-	wakeKey: string,
-	clientSessionId: string,
-	attempt = 0,
-): Promise<void> {
-	if (runtime.closing || arbiter.activeKey !== wakeKey) return;
-	try {
-		await arbiter.renewIfDue();
-		const fileHealth = await runtime.cloudCompanyPublication?.publishNow();
-		const staffHealth = await runtime.cloudStaffSyncLoop?.trigger();
-		const trailHealth = await runtime.cloudTrailSyncLoop?.trigger();
-		if (runtime.cloudCompanyPublication && fileHealth?.phase !== "healthy") {
-			throw new Error(fileHealth?.lastError ?? "wake Company File output did not finish syncing");
-		}
-		if (runtime.cloudStaffSync && staffHealth?.phase !== "healthy") {
-			throw new Error(staffHealth?.lastError ?? "wake staff output did not finish syncing");
-		}
-		if (runtime.cloudTrailSync && trailHealth?.phase !== "healthy") {
-			throw new Error(trailHealth?.lastError ?? "wake conversation output did not finish syncing");
-		}
-		if (!runtime.cloudTrailSync) throw new Error("wake conversation synchronization is unavailable");
-		await runtime.cloudTrailSync.finalizeOperationalSession(clientSessionId);
-		await arbiter.complete();
-	} catch (error) {
-		if (error instanceof WakeOwnershipError) {
-			arbiter.abandon();
-			console.error(`wake ownership lost before completion: ${error.message}`);
-			return;
-		}
-		const delay = Math.min(10_000, 1_000 * 2 ** Math.min(attempt, 4));
-		if (attempt === 0) {
-			console.error(`wake completion deferred: ${error instanceof Error ? error.message : String(error)}`);
-		}
-		await new Promise<void>((resolve) => {
-			const timer = setTimeout(resolve, delay);
-			timer.unref();
-		});
-		return completeActiveCloudWake(runtime, arbiter, wakeKey, clientSessionId, attempt + 1);
-	}
-}
-
 const CLOUD_SESSION_PROMPT_SCHEMA = "qorpera.session-prompt/v1";
 const CLOUD_STAFF_INTRO_RETRY_SCHEMA = "qorpera.staff-intro-retry/v1";
 
@@ -1655,11 +1570,6 @@ interface CloudQueuedImageReference {
 	objectSha256: string;
 	bytes: number;
 	mediaType: string;
-}
-
-interface CloudTurnPrompt {
-	message: string;
-	images: NonNullable<ReviewedPromptFrame["images"]>;
 }
 
 interface ReviewedExecutionSponsor {
@@ -1749,55 +1659,6 @@ async function prepareCloudPromptBody(
 			mediaType: image.mediaType,
 		})),
 	};
-}
-
-async function enqueueCloudPrompt(
-	runtime: CompanyRuntime,
-	arbiter: CloudSessionArbiter,
-	staffAgentId: string,
-	prompt: ReviewedPromptFrame,
-): Promise<Awaited<ReturnType<CloudSessionArbiter["appendPrompt"]>>> {
-	if (!prompt.clientInputId) throw new Error("cloud prompt has no durable send id");
-	return arbiter.appendPrompt(
-		staffAgentId,
-		prompt.clientInputId,
-		(await prepareCloudPromptBody(runtime, prompt)) as unknown as JsonValue,
-	);
-}
-
-/** Compose one attended prompt from a claimed batch. Every message carries
- * its original company member identity, including singleton turns. Images
- * are restored from the content-addressed Company File object store only
- * after the exact queue rows have been claimed. */
-async function cloudTurnPrompt(runtime: CompanyRuntime, inputs: readonly SessionTurnInput[]): Promise<CloudTurnPrompt> {
-	const attachment = profileAttachment(runtime.root);
-	const objects = qorperaAccountAuth?.hostedObjects();
-	if (attachment.profileType !== "cloud" || !objects) throw new Error("cloud prompt storage is unavailable");
-	const parts: string[] = [];
-	const images: CloudTurnPrompt["images"] = [];
-	for (const input of inputs) {
-		if (input.kind !== "user_message") continue;
-		const current = cloudQueuedPromptBody(input.body);
-		const legacy = input.body as { text?: unknown };
-		const text = (current?.text ?? (typeof legacy.text === "string" ? legacy.text : "")).trim();
-		const references = current?.images ?? [];
-		if (text) parts.push(`${input.authorDisplayName}: ${text}`);
-		else if (references.length)
-			parts.push(`${input.authorDisplayName}: [attached ${references.length === 1 ? "image" : "images"}]`);
-		for (const reference of references) {
-			const bytes = await objects.getObject(attachment.profileId, {
-				sha256: reference.objectSha256,
-				bytes: reference.bytes,
-				mediaType: reference.mediaType,
-			});
-			images.push({
-				type: "image",
-				data: Buffer.from(bytes).toString("base64"),
-				mimeType: reference.mediaType,
-			});
-		}
-	}
-	return { message: parts.join("\n\n"), images };
 }
 
 function rendererSessionQueue(inputs: readonly PendingSessionInput[]): Array<Record<string, unknown>> {
@@ -1956,227 +1817,10 @@ async function readoptStaffCloudSession(
 	}
 }
 
-/** Become the executor for the attached staff agent's pending turn, if any.
- * Runs on a 10s cadence plus after every settled turn; every await is
- * followed by a re-check because the runtime may have moved underneath.
- * The pump is also arbitration's self-repair: when the open-time ensure
- * failed (cloud unreachable, auth mid-recovery), it keeps re-ensuring, and
- * when the chat is bound to the wrong trail it re-adopts — one transient
- * failure must never fork this machine for the rest of the app run. */
-/** Executor eligibility (SESSIONS.md): affinity — do not claim a turn for a
- * provider this machine holds no connection for (subscriptions never pool;
- * the sponsor's machine executes, and claiming anyway would flap the
- * agent's model); freshness — do not claim over a lagging trail (a forced
- * sync pass must succeed first, or the turn would run on partial context).
- * An ineligible machine leaves the turn queued for one that qualifies and
- * records why, so waiting is visible instead of silent. */
-async function cloudExecutorEligibility(
-	slot: Slot | undefined,
-	runtime: CompanyRuntime,
-	staff: StaffAgent,
-	synchronize: boolean,
-): Promise<{ waiting?: string; pin?: ArbiterExecutionPin }> {
-	const provider = staff.model?.provider;
-	if (provider) {
-		const connected = modelAccountStore?.views().some((view) => view.providerId === provider) ?? false;
-		if (!connected) return { waiting: `waiting for a computer with ${provider} access` };
-	}
-	if (synchronize) {
-		try {
-			await commitCloudCompanyLogicalMaterializationAsync(runtime.root);
-			await runtime.cloudCompanyPublication?.publishNow();
-			await commitCloudCompanyLogicalMaterializationAsync(runtime.root);
-			await runtime.cloudStaffSyncLoop?.trigger();
-			await runtime.cloudTrailSyncLoop?.trigger();
-		} catch {
-			// Channel health below decides.
-		}
-	}
-	if (runtime.staffThreadRefreshInFlight) await runtime.staffThreadRefreshInFlight;
-	if (runtime.trailContextStale) return { waiting: "waiting for the conversation runtime to reload" };
-	if (runtime.cloudCompanyPublication && runtime.cloudCompanyPublicationHealth?.phase !== "healthy") {
-		return { waiting: "waiting for the Company File to finish syncing" };
-	}
-	if (runtime.cloudStaffSync && runtime.cloudStaffSyncHealth?.phase !== "healthy") {
-		return { waiting: "waiting for staff configuration to finish syncing" };
-	}
-	if (runtime.cloudTrailSync && runtime.cloudTrailSyncHealth?.phase !== "healthy") {
-		return { waiting: "waiting for the conversation to finish syncing" };
-	}
-	const companySnapshotId = runtime.cloudCompanyPublication?.lastCheckpoint()?.snapshot.snapshotId;
-	const staffVersion = runtime.cloudStaffSync?.versionForStaff(staff.id);
-	const ref = runtime.cloudSessionArbiter?.sessionForStaff(staff.id);
-	if (ref && runtime.cloudTrailSync) {
-		const cursor = runtime.cloudTrailSync.cursorForHostedSession(ref.hostedSessionId);
-		if (
-			cursor === undefined ||
-			runtime.attachedTrailCursor?.hostedSessionId !== ref.hostedSessionId ||
-			runtime.attachedTrailCursor.cursor !== cursor
-		) {
-			return { waiting: "waiting for the conversation runtime to reload" };
-		}
-	}
-	if (!companySnapshotId || !staffVersion) return { waiting: "waiting for cloud revisions to finish syncing" };
-	const attachedChild = slot ? runtime.child : undefined;
-	const attachedExecution = attachedChild ? childCompanyExecutions.get(attachedChild) : undefined;
-	if (
-		slot &&
-		attachedChild &&
-		attachedExecution &&
-		runtime.childOptions.staffAgentId === staff.id &&
-		!cloudCompanyExecutionMatchesCanonical(attachedExecution)
-	) {
-		const binding = childBindings.get(attachedChild);
-		if (binding) await refreshAttachedStaffThread(slot, runtime, staff.id, binding.file);
-		return { waiting: "waiting for the agent checkout to load the current Company File" };
-	}
-	return { pin: { companySnapshotId, staffVersion } };
-}
-
-async function pumpCloudSessionTurn(slot: Slot, runtime: CompanyRuntime): Promise<void> {
-	if (slot.runtime !== runtime || runtime.closing) return;
-	const arbiter = runtime.cloudSessionArbiter;
-	const child = runtime.child;
-	const staffAgentId = runtime.childOptions.staffAgentId;
-	if (!arbiter || !child || !staffAgentId) return;
-	if (arbiter.activeClaim) {
-		try {
-			await arbiter.renewIfDue();
-		} catch (error) {
-			if (error instanceof SessionTurnOwnershipError) {
-				abandonCloudSessionClaim(arbiter, child, arbiter.activeClaim);
-				if (isCurrentRuntimeChild(slot, runtime, child)) {
-					intentionalKills.add(child);
-					child.kill();
-				}
-				console.error(`session turn lease was lost: ${error.message}`);
-			} else {
-				console.error(
-					`session turn lease renewal deferred: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			}
-		}
-		return;
-	}
-	if (runtime.wakeChild || isChildBusy(child) || !childRuntimeReady.has(child)) return;
-	const binding = childBindings.get(child);
-	if (!binding) return;
-	let ref = arbiter.sessionForStaff(staffAgentId);
-	if (!ref) {
-		const staff = activeStaffAgent(runtime.root, staffAgentId);
-		if (!staff || !slotHasProfileCapability(slot, "write")) return;
-		try {
-			ref = await arbiter.ensureSession(staffAgentId, staff.displayName, binding.sessionId);
-			recordAttachedTrailCursor(runtime, staffAgentId);
-			recordCloudSessionArbiterOutcome(runtime, { ok: true });
-		} catch (error) {
-			recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
-			return; // the next tick retries
-		}
-		if (slot.runtime !== runtime || runtime.closing || runtime.child !== child) return;
-		if (runtime.wakeChild || isChildBusy(child)) return;
-	}
-	if (binding.sessionId !== ref.clientSessionId) {
-		void readoptStaffCloudSession(slot, runtime, staffAgentId, ref);
-		return; // claim on the next tick, once the adopted trail is bound
-	}
-	let claim: Awaited<ReturnType<CloudSessionArbiter["claimTurn"]>>;
-	{
-		const staff = activeStaffAgent(runtime.root, staffAgentId);
-		if (!staff) return;
-		const eligibility = await cloudExecutorEligibility(slot, runtime, staff, true);
-		runtime.cloudSessionWaiting = eligibility.waiting;
-		if (!eligibility.pin) return; // the turn stays queued for an eligible, revision-current machine
-		if (slot.runtime !== runtime || runtime.closing || runtime.child !== child) return;
-		if (runtime.wakeChild || isChildBusy(child)) return;
-		if (runtime.attachedStaffVersion !== eligibility.pin.staffVersion) {
-			void refreshAttachedStaffThread(slot, runtime, staffAgentId, binding.file);
-			return;
-		}
-		try {
-			claim = await arbiter.claimTurn(staffAgentId, eligibility.pin);
-		} catch {
-			return; // cloud unreachable; the next tick retries
-		}
-	}
-	if (!claim) return;
-	if (
-		slot.runtime !== runtime ||
-		runtime.closing ||
-		runtime.child !== child ||
-		runtime.wakeChild ||
-		isChildBusy(child) ||
-		!isCurrentRuntimeChild(slot, runtime, child)
-	) {
-		abandonCloudSessionClaim(arbiter, child, claim);
-		return;
-	}
-	bindChildDurableExecution(child, {
-		kind: "turn",
-		id: claim.turnId,
-		claimantId: arbiter.claimantId,
-	});
-	if (claim.inputs.some((input) => input.kind === "user_message" && isCloudStaffIntroRetry(input.body))) {
-		const staff = activeStaffAgent(runtime.root, staffAgentId);
-		if (!staff) {
-			abandonCloudSessionClaim(arbiter, child, claim);
-			return;
-		}
-		const started = beginAttachedStaffIntro(slot, runtime, staff, child, binding.file, true);
-		if (!started.ok) abandonCloudSessionClaim(arbiter, child, claim);
-		return;
-	}
-	const hasMessages = claim.inputs.some((input) => input.kind === "user_message");
-	if (!hasMessages && claim.inputs.some((input) => input.kind === "kickoff")) {
-		const staff = activeStaffAgent(runtime.root, staffAgentId);
-		if (!staff) {
-			abandonCloudSessionClaim(arbiter, child, claim);
-			return;
-		}
-		// The queue claim is the authority; the machine-local intro record is
-		// seeded so the existing intro machinery (status, retry, completion)
-		// keeps working as the local mirror of the remote claim.
-		const statePath = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
-		const existingIntro = readStaffRuntimeState(statePath).intros[staff.id];
-		if (existingIntro && (existingIntro.trailFile !== binding.file || existingIntro.status !== "pending")) {
-			// A migrated cache may already carry the completed introduction.
-			// Consume the historical kickoff without introducing twice.
-			void completeCloudSessionClaim(slot, runtime, arbiter, claim);
-			return;
-		}
-		writeStaffRuntimeState(
-			statePath,
-			recordStaffIntroPending(readStaffRuntimeState(statePath), staff.id, binding.file, Date.now()),
-		);
-		const started = beginAttachedStaffIntro(slot, runtime, staff, child, binding.file, false);
-		if (!started.ok) abandonCloudSessionClaim(arbiter, child, claim);
-		return;
-	}
-	let prompt: CloudTurnPrompt;
-	try {
-		prompt = await cloudTurnPrompt(runtime, claim.inputs);
-	} catch (error) {
-		const reason = `queued prompt restore failed: ${error instanceof Error ? error.message : String(error)}`;
-		try {
-			await arbiter.quarantineTurn(reason, claim);
-		} catch (quarantineError) {
-			console.error(
-				`session turn quarantine failed: ${quarantineError instanceof Error ? quarantineError.message : String(quarantineError)}`,
-			);
-		}
-		clearChildDurableTurn(child, claim);
-		console.error(reason);
-		await emitActiveStaffQueue(slot, runtime);
-		return;
-	}
-	if (!prompt.message && !prompt.images.length) {
-		// Nothing dispatchable (empty legacy bodies); consume so the queue drains.
-		void completeCloudSessionClaim(slot, runtime, arbiter, claim);
-		return;
-	}
-	const frame = reviewedPromptFrame({ type: "prompt", message: prompt.message, images: prompt.images });
-	const sent = frame ? sendKernelPrompt(child, frame, true, `arbiter:${arbiter.claimantId}`) : false;
-	if (!sent) abandonCloudSessionClaim(arbiter, child, claim);
+async function refreshCloudSessionQueue(slot: Slot, runtime: CompanyRuntime): Promise<void> {
+	// Durable cloud turns are claimed only by the Runner Orchestrator. The
+	// desktop observes the queue; it never becomes an executor.
+	await emitActiveStaffQueue(slot, runtime);
 }
 
 function startCloudTrailSync(runtime: CompanyRuntime): void {
@@ -2439,7 +2083,6 @@ async function completeCloudSessionClaim(
 			abandonCloudSessionClaim(arbiter, runtime.child, claim);
 			if (!completedRemotely) console.error(`session turn ownership lost: ${error.message}`);
 			await emitActiveStaffQueue(slot, runtime);
-			await pumpCloudSessionTurn(slot, runtime);
 			return;
 		}
 		const delay = Math.min(10_000, 1_000 * 2 ** Math.min(attempt, 4));
@@ -2453,7 +2096,6 @@ async function completeCloudSessionClaim(
 	}
 	clearChildDurableTurn(runtime.child, claim);
 	await emitActiveStaffQueue(slot, runtime);
-	await pumpCloudSessionTurn(slot, runtime);
 }
 
 interface ExecutionReviewPolicy {
@@ -2573,90 +2215,7 @@ async function submitCloudSessionProposal(
 	}
 	abandonCloudSessionClaim(arbiter, child, claim);
 	await emitActiveStaffQueue(slot, runtime);
-	await pumpCloudSessionTurn(slot, runtime);
 }
-
-async function submitCloudWakeProposal(
-	runtime: CompanyRuntime,
-	checkout: CloudCompanyExecutionCheckout,
-	proposalHead: string,
-	arbiter: CloudWakeArbiter,
-	clientSessionId: string,
-	baseSnapshotId: string,
-	reviewPolicy?: ExecutionReviewPolicy,
-	attempt = 0,
-): Promise<void> {
-	const executionId = arbiter.activeExecutionId;
-	const wakeKey = arbiter.activeKey;
-	if (!executionId || !wakeKey || runtime.closing) return;
-	try {
-		await arbiter.renewIfDue();
-		const staffHealth = await runtime.cloudStaffSyncLoop?.trigger();
-		const trailHealth = await runtime.cloudTrailSyncLoop?.trigger();
-		if (runtime.cloudStaffSync && staffHealth?.phase !== "healthy") {
-			throw new Error(staffHealth?.lastError ?? "wake staff output did not finish syncing");
-		}
-		if (runtime.cloudTrailSync && trailHealth?.phase !== "healthy") {
-			throw new Error(trailHealth?.lastError ?? "wake conversation output did not finish syncing");
-		}
-		if (!runtime.cloudTrailSync) throw new Error("wake conversation synchronization is unavailable");
-		const hostedSession = await runtime.cloudTrailSync.hostedSessionForClient(clientSessionId);
-		const trailEndSequence = runtime.cloudTrailSync.cursorForHostedSession(hostedSession.sessionId);
-		if (trailEndSequence === undefined) throw new Error("wake output has no durable cloud cursor");
-		const attachment = profileAttachment(runtime.root);
-		const primary = qorperaAccountAuth?.hostedPrimary();
-		const objects = qorperaAccountAuth?.hostedObjects();
-		if (attachment.profileType !== "cloud" || !primary || !objects) {
-			throw new Error("cloud Company File proposal services are unavailable");
-		}
-		const authorityCritical = await cloudCompanyExecutionTouchesAuthorityCritical({
-			checkoutRoot: checkout.checkoutRoot,
-			proposalHead,
-		});
-		await publishCloudCompanyExecutionProposal({
-			userData: app.getPath("userData"),
-			environmentId: attachment.environmentId,
-			baseSnapshotId,
-			checkout,
-			execution: { kind: "wake", id: executionId, claimantId: arbiter.claimantId },
-			sessionId: hostedSession.sessionId,
-			trailEndSequence,
-			reason: reviewPolicy ? "policy" : authorityCritical ? "authority" : "conflict",
-			...(reviewPolicy ? { policyKey: reviewPolicy.policyKey } : {}),
-			title: reviewPolicy?.title ?? `${authorityCritical ? "Authorize" : "Review"} autonomous Company File changes`,
-			...(reviewPolicy ? { reviewerStaffIds: reviewPolicy.reviewerStaffIds } : {}),
-			objects,
-			primary,
-		});
-		await runtime.cloudTrailSync.finalizeOperationalSession(clientSessionId);
-		arbiter.abandon();
-	} catch (error) {
-		if (error instanceof WakeOwnershipError) {
-			arbiter.abandon();
-			throw error;
-		}
-		if (runtime.closing || arbiter.activeKey !== wakeKey) return;
-		const delay = Math.min(10_000, 1_000 * 2 ** Math.min(attempt, 4));
-		if (attempt === 0) {
-			console.error(`wake proposal submission deferred: ${error instanceof Error ? error.message : String(error)}`);
-		}
-		await new Promise<void>((resolvePromise) => {
-			const timer = setTimeout(resolvePromise, delay);
-			timer.unref();
-		});
-		return submitCloudWakeProposal(
-			runtime,
-			checkout,
-			proposalHead,
-			arbiter,
-			clientSessionId,
-			baseSnapshotId,
-			reviewPolicy,
-			attempt + 1,
-		);
-	}
-}
-
 function startCloudRealtimeSync(slot: Slot, runtime: CompanyRuntime): void {
 	if (runtime.cloudRealtimeSync || runtime.closing) return;
 	const attachment = profileAttachment(runtime.root);
@@ -2670,7 +2229,6 @@ function startCloudRealtimeSync(slot: Slot, runtime: CompanyRuntime): void {
 			if (change.resource === "trail") {
 				triggerCloudTrailSync(runtime);
 				void emitActiveStaffQueue(slot, runtime);
-				void pumpCloudSessionTurn(slot, runtime);
 			} else if (change.resource === "staff") triggerCloudStaffSync(runtime);
 			else if (change.resource === "company-file") void runtime.cloudCompanyPublication?.publishNow();
 			else triggerHostedAccessRefresh(attachment.profileId, change.subjectUserId);
@@ -2766,6 +2324,7 @@ const intentionalKills = new WeakSet<ChildProcessWithoutNullStreams>();
  * synchronously because window-close teardown is async and quit won't wait. */
 const liveChildren = new Set<ChildProcessWithoutNullStreams>();
 const childBindings = new WeakMap<ChildProcessWithoutNullStreams, TrailBinding>();
+const childProfileTypes = new WeakMap<ChildProcessWithoutNullStreams, ProfileAttachment["profileType"]>();
 const childIntentSigners = new WeakMap<
 	ChildProcessWithoutNullStreams,
 	(frame: Record<string, unknown>, attended: boolean, execution?: KernelExecutionIdentity) => KernelIntentCapability
@@ -3705,14 +3264,6 @@ function isChildBusy(child: ChildProcessWithoutNullStreams | undefined): boolean
 	return child ? childBusy.get(child) === true : false;
 }
 
-function bindChildDurableExecution(child: ChildProcessWithoutNullStreams, execution: KernelExecutionIdentity): void {
-	childDurableExecutions.set(child, execution);
-	const binding = childBindings.get(child);
-	if (binding) bindTrailExecution(binding, execution);
-	const checkout = childCompanyExecutions.get(child);
-	if (checkout) bindCloudCompanyExecution(checkout, execution);
-}
-
 function clearChildDurableExecution(child: ChildProcessWithoutNullStreams): void {
 	childDurableExecutions.delete(child);
 	const binding = childBindings.get(child);
@@ -3996,7 +3547,16 @@ function staffSkillArgs(root: string, staffAgentId: string): string[] {
 	}
 }
 
-function startChild(slot: Slot, root: string, options: ChildOptions = {}): ChildProcessWithoutNullStreams {
+/**
+ * Transitional Pi RPC attachment used by local companies and by the current
+ * desktop transcript projection. Cloud profiles may attach for projection,
+ * but sendLegacyLocalPrompt rejects every cloud prompt before authorization.
+ */
+function startLegacyPiSessionAttachment(
+	slot: Slot,
+	root: string,
+	options: ChildOptions = {},
+): ChildProcessWithoutNullStreams {
 	const {
 		sessionFile,
 		sessionName,
@@ -4201,7 +3761,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			env,
 		});
 		const rpcArgs = [
-			RPC_ENTRY,
+			LEGACY_PI_RPC_ENTRY,
 			"--mode",
 			"rpc",
 			"--session",
@@ -4365,6 +3925,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		if (!silent) send(win(), "rpc-log", `child stdin ${error.code ?? error.message}: frame dropped`);
 	});
 	childBindings.set(child, binding);
+	childProfileTypes.set(child, profileAttachment(root).profileType);
 	if (companyExecution) childCompanyExecutions.set(child, companyExecution);
 	childExecutorIds.set(child, executorId);
 	if (attachmentSequence !== undefined) childAttachmentSequences.set(child, attachmentSequence);
@@ -4436,24 +3997,6 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 					reviewProposalHead,
 					activeArbiter,
 					activeClaim,
-					options.reviewPolicy,
-				);
-			} else if (
-				runtime?.wakeChild === child &&
-				companyExecution &&
-				reviewProposalHead &&
-				runtime.cloudWakeArbiter?.activeExecutionId &&
-				options.companySnapshotId
-			) {
-				const clientSessionId = childBindings.get(child)?.sessionId;
-				if (!clientSessionId) throw new Error("wake proposal has no durable trail session");
-				await submitCloudWakeProposal(
-					runtime,
-					companyExecution,
-					reviewProposalHead,
-					runtime.cloudWakeArbiter,
-					clientSessionId,
-					options.companySnapshotId,
 					options.reviewPolicy,
 				);
 			}
@@ -4854,7 +4397,7 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	return child;
 }
 
-function sendKernelPrompt(
+function sendLegacyLocalPrompt(
 	child: ChildProcessWithoutNullStreams,
 	frame: ReviewedPromptFrame,
 	attended: boolean,
@@ -4863,6 +4406,10 @@ function sendKernelPrompt(
 	const binding = childBindings.get(child);
 	const signIntent = childIntentSigners.get(child);
 	if (!binding || !signIntent || child.exitCode !== null) return false;
+	if (childProfileTypes.get(child) === "cloud") {
+		console.error("legacy local executor rejected a cloud prompt; cloud turns require a sponsored runner job");
+		return false;
+	}
 	const unsignedFrame = { ...frame };
 	delete unsignedFrame.displayText;
 	const kernelIntent = signIntent(unsignedFrame, attended, childDurableExecutions.get(child));
@@ -4960,7 +4507,7 @@ function reconcileInterruptedStaffIntros(root: string): void {
 /** The only kernel path that can start an employee's proactive first turn.
  * Its RPC command persists hidden custom context instead of a visible user
  * message; the renderer receives only the employee's response stream. */
-function sendKernelStaffIntro(
+function sendLegacyLocalStaffDirective(
 	child: ChildProcessWithoutNullStreams,
 	message: string,
 	origin = "kernel-staff-intro",
@@ -4968,6 +4515,12 @@ function sendKernelStaffIntro(
 	const binding = childBindings.get(child);
 	const signIntent = childIntentSigners.get(child);
 	if (!binding || !signIntent || child.exitCode !== null) return false;
+	if (childProfileTypes.get(child) === "cloud") {
+		console.error(
+			"legacy local executor rejected a cloud staff directive; cloud turns require a sponsored runner job",
+		);
+		return false;
+	}
 	const frame = { type: "staff_intro" as const, message };
 	const kernelIntent = signIntent(frame, false, childDurableExecutions.get(child));
 	if (!childModelCapabilities.get(child)?.authorizeIntent(kernelIntent)) return false;
@@ -5024,7 +4577,7 @@ async function replaceRuntimeChild(slot: Slot, runtime: CompanyRuntime, options:
 	runtime.child = undefined;
 	try {
 		runtime.childOptions = { ...options };
-		runtime.child = startChild(slot, runtime.root, runtime.childOptions);
+		runtime.child = startLegacyPiSessionAttachment(slot, runtime.root, runtime.childOptions);
 		// startChild durably stamps the creation-time name before spawning. It is
 		// therefore safe—and necessary—to keep reconnects from appending it again.
 		delete runtime.childOptions.sessionName;
@@ -5556,7 +5109,7 @@ function scheduleRuntimeReconnect(
 			model: model ?? runtime.childOptions.model,
 		};
 		runtime.childOptions = resumeOptions;
-		runtime.child = startChild(slot, runtime.root, resumeOptions);
+		runtime.child = startLegacyPiSessionAttachment(slot, runtime.root, resumeOptions);
 	}).catch((error) => {
 		console.error(`agent runtime reconnect failed: ${(error as Error).message}`);
 		if (slot.runtime !== runtime || runtime.closing || runtime.child !== exitedChild) return;
@@ -6833,7 +6386,7 @@ async function resumeStaffAfterConnection(
 		: "";
 	const staff = activeStaffAgent(runtime.root, request.staffAgentId);
 	if (staff) runtime.childOptions.staffContext = staffSystemContext(runtime.root, staff);
-	sendKernelStaffIntro(
+	sendLegacyLocalStaffDirective(
 		child,
 		`Connection ready: the founder connected ${request.displayName} for ${target}.${execution} Verify that the granted source actually supports the intended work before relying on it. Then update the artifact's sourceRefs, evidence, data-need status, metrics, and updatedAt from observed data, and tell the founder what is now usable or still missing.`,
 		"kernel-connection-ready",
@@ -6926,7 +6479,7 @@ async function startCustomTriggerBuilderExclusive(slot: Slot, runtime: CompanyRu
 	if (slot.runtime !== runtime || runtime.closing) return false;
 	let child: ChildProcessWithoutNullStreams;
 	try {
-		child = startChild(slot, runtime.root, {
+		child = startLegacyPiSessionAttachment(slot, runtime.root, {
 			autonomousName: `custom-trigger builder — ${build.title}`,
 			group: `infrastructure:trigger-build:${build.id}`,
 			parentSession: resumeOptions.sessionFile,
@@ -6997,7 +6550,7 @@ async function startCustomTriggerBuilderExclusive(slot: Slot, runtime: CompanyRu
 		"A ready result must give precise read-only monitor instructions that another fresh agent can execute repeatedly, name every connector id it relies on, and state a short human event label. If there is no executable source, report the exact blocker.",
 		`Call finish_trigger_build exactly once with buildId ${build.id}. Do not finish with ordinary prose.`,
 	].join("\n");
-	if (!sendKernelPrompt(child, { type: "prompt", message: prompt }, false, "host-trigger-builder")) {
+	if (!sendLegacyLocalPrompt(child, { type: "prompt", message: prompt }, false, "host-trigger-builder")) {
 		await stopChild(child);
 		return false;
 	}
@@ -7029,7 +6582,7 @@ async function startCustomTriggerCheckExclusive(slot: Slot, runtime: CompanyRunt
 	if (slot.runtime !== runtime || runtime.closing) return false;
 	let child: ChildProcessWithoutNullStreams;
 	try {
-		child = startChild(slot, runtime.root, {
+		child = startLegacyPiSessionAttachment(slot, runtime.root, {
 			autonomousName: `custom-trigger check — ${due.job.title}`,
 			group: `infrastructure:trigger-check:${due.job.id}:${due.trigger.id}`,
 			parentSession: resumeOptions.sessionFile,
@@ -7108,7 +6661,7 @@ async function startCustomTriggerCheckExclusive(slot: Slot, runtime: CompanyRunt
 		"Read only the required company files or connector operations. Determine whether one new event since the previous check satisfies the instructions. Do not perform the routine itself and do not mutate artifacts.",
 		"Call finish_trigger_check exactly once: no_match when nothing new qualifies; matched with the source's stable event id and a short factual summary; failed with a concrete blocker. On no_match or matched, include a compact checkpoint string when the next check needs cursor or comparison state; it replaces the previous checkpoint. Do not finish with ordinary prose.",
 	].join("\n");
-	if (!sendKernelPrompt(child, { type: "prompt", message: prompt }, false, "host-trigger-check")) {
+	if (!sendLegacyLocalPrompt(child, { type: "prompt", message: prompt }, false, "host-trigger-check")) {
 		await stopChild(child);
 		return false;
 	}
@@ -7166,7 +6719,7 @@ async function startWakeChildExclusive(
 	const attendedStaff = runtime.childOptions.staffAgentId
 		? activeStaffAgent(runtime.root, runtime.childOptions.staffAgentId)
 		: undefined;
-	let wakeStaff = assignedStaff ?? messageRecipient ?? attendedStaff;
+	const wakeStaff = assignedStaff ?? messageRecipient ?? attendedStaff;
 	if (!wakeStaff) return false;
 	// Wake arbitration (SESSIONS.md): occurrences with a deterministic,
 	// machine-independent identity are claimed rows — exactly one machine with
@@ -7198,55 +6751,14 @@ async function startWakeChildExclusive(
 						: occurrenceKey
 							? `${cause}:${occurrenceKey}`
 							: undefined;
-	const wakeArbiter =
-		wakeKey && slotHasProfileCapability(slot, "write") ? runtimeCloudWakeArbiter(runtime) : undefined;
 	const cloudCompany = profileAttachment(runtime.root).profileType === "cloud";
 	if (cloudCompany && !wakeKey) {
 		console.error(`cloud ${cause} wake has no durable occurrence identity`);
 		return false;
 	}
-	let executionPin: ArbiterExecutionPin | undefined;
 	if (cloudCompany) {
-		const eligibility = await cloudExecutorEligibility(undefined, runtime, wakeStaff, true);
-		if (!eligibility.pin || (wakeKey && !wakeArbiter)) return false;
-		executionPin = eligibility.pin;
-		const synchronizedStaff = activeStaffAgent(runtime.root, wakeStaff.id);
-		if (
-			!synchronizedStaff ||
-			runtime.cloudStaffSync?.versionForStaff(synchronizedStaff.id) !== executionPin.staffVersion
-		) {
-			return false;
-		}
-		wakeStaff = synchronizedStaff;
-		if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild || isChildBusy(runtime.child)) return false;
-	}
-	let wakeClaimed = false;
-	if (wakeArbiter && wakeKey) {
-		try {
-			if (!executionPin) return false;
-			const outcome = await wakeArbiter.claim(wakeKey, wakeStaff.id, executionPin);
-			recordCloudSessionArbiterOutcome(runtime, { ok: true });
-			if (outcome !== "claimed") {
-				if (cause === "schedule" && job) {
-					const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
-					writeWakeRunState(
-						statePath,
-						recordRemoteWakeConsumption(readWakeRunState(statePath), job.id, Date.now()),
-					);
-				} else if (cause === "inbound_event" && trigger) {
-					const path = routineTriggerStatePath(app.getPath("userData"), runtime.root);
-					writeRoutineTriggerState(path, completePendingRoutineTrigger(readRoutineTriggerState(path), trigger.id));
-				}
-				return false;
-			}
-			wakeClaimed = true;
-		} catch (error) {
-			recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
-			if (cloudCompany) {
-				console.error(`wake claim unavailable: ${error instanceof Error ? error.message : String(error)}`);
-				return false;
-			}
-		}
+		console.error(`cloud ${cause} wake is waiting for the runner orchestrator`);
+		return false;
 	}
 	const wakeId = randomUUID();
 	const attendedChild = runtime.child;
@@ -7257,17 +6769,14 @@ async function startWakeChildExclusive(
 			: runtime.childOptions.sessionFile,
 	};
 	if (attendedChild) await stopChild(attendedChild);
-	if (slot.runtime !== runtime || runtime.closing) {
-		if (wakeClaimed) wakeArbiter?.abandon();
-		return false;
-	}
+	if (slot.runtime !== runtime || runtime.closing) return false;
 	let started = false;
 	let settledCleanly = false;
 	let failed = false;
 	let promptSent = false;
 	let child: ChildProcessWithoutNullStreams;
 	try {
-		child = startChild(slot, runtime.root, {
+		child = startLegacyPiSessionAttachment(slot, runtime.root, {
 			autonomousName:
 				cause === "schedule" && job
 					? `wake — scheduled-job:${job.id} — ${job.title}`
@@ -7281,8 +6790,6 @@ async function startWakeChildExclusive(
 			group: job ? `job:${job.id}` : `wake:${cause}`,
 			staffAgentId: wakeStaff.id,
 			staffContext: staffSystemContext(runtime.root, wakeStaff),
-			companySnapshotId: executionPin?.companySnapshotId,
-			staffVersion: executionPin?.staffVersion,
 			...(job?.publication.mode === "review"
 				? {
 						reviewPolicy: {
@@ -7304,7 +6811,6 @@ async function startWakeChildExclusive(
 			onRpcEvent: (frame) => {
 				if (frame.type === "agent_start") started = true;
 				if (wakeFrameFailed(frame)) failed = true;
-				if (wakeClaimed) void renewActiveCloudWake(slot, runtime);
 				if (frame.type === "agent_settled") {
 					settledCleanly = started && !failed;
 					intentionalKills.add(child);
@@ -7314,7 +6820,6 @@ async function startWakeChildExclusive(
 		});
 	} catch (error) {
 		console.error(`wake child failed to start: ${(error as Error).message}`);
-		if (wakeClaimed) wakeArbiter?.abandon();
 		if (attendedChild && slot.runtime === runtime && !runtime.closing) {
 			await restoreAttendedChild(slot, runtime, resumeOptions, "wake-start chat restore failed");
 		}
@@ -7322,19 +6827,11 @@ async function startWakeChildExclusive(
 	}
 	runtime.wakeChild = child;
 	runtime.wakeJobId = job?.id;
-	if (wakeClaimed && wakeArbiter?.activeExecutionId) {
-		bindChildDurableExecution(child, {
-			kind: "wake",
-			id: wakeArbiter.activeExecutionId,
-			claimantId: wakeArbiter.claimantId,
-		});
-	}
 	const trailFile = childBindings.get(child)?.file;
-	const wakeSessionId = childBindings.get(child)?.sessionId;
 	child.on("close", () => {
 		void (async () => {
 			await childCheckpointCompletion.get(child);
-			const cloudCompletion = await enqueueRuntimeTransition(runtime, async () => {
+			await enqueueRuntimeTransition(runtime, async () => {
 				if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild !== child) return;
 				try {
 					if (job && promptSent) {
@@ -7343,33 +6840,6 @@ async function startWakeChildExclusive(
 				} catch (error) {
 					console.error(`wake bookkeeping failed: ${(error as Error).message}`);
 				}
-				if (wakeClaimed && wakeArbiter && promptSent && settledCleanly && !childOutputsRequireReview.has(child)) {
-					const activeWakeKey = wakeArbiter.activeKey;
-					if (activeWakeKey && wakeSessionId) {
-						return { arbiter: wakeArbiter, wakeKey: activeWakeKey, clientSessionId: wakeSessionId };
-					}
-				}
-				if (wakeClaimed) {
-					// Failed or incomplete claimed work is released locally. The server
-					// quarantines it after lease expiry instead of executing it again.
-					wakeArbiter?.abandon();
-				}
-				runtime.wakeChild = undefined;
-				runtime.wakeJobId = undefined;
-				if (attendedChild)
-					await restoreAttendedChild(slot, runtime, resumeOptions, "post-wake chat restore failed");
-			});
-			if (!cloudCompletion) return;
-			// Publication itself acquires the runtime transition. Keep it outside
-			// the transition above so finalization cannot wait on its own queue.
-			await completeActiveCloudWake(
-				runtime,
-				cloudCompletion.arbiter,
-				cloudCompletion.wakeKey,
-				cloudCompletion.clientSessionId,
-			);
-			await enqueueRuntimeTransition(runtime, async () => {
-				if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild !== child) return;
 				runtime.wakeChild = undefined;
 				runtime.wakeJobId = undefined;
 				if (attendedChild)
@@ -7383,7 +6853,7 @@ async function startWakeChildExclusive(
 		return false;
 	}
 	if (
-		!sendKernelPrompt(
+		!sendLegacyLocalPrompt(
 			child,
 			{ type: "prompt", message: wakePrompt(cause, coalesced, job, trigger) },
 			false,
@@ -7800,7 +7270,7 @@ async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due:
 	let settledCleanly = false;
 	let child: ChildProcessWithoutNullStreams;
 	try {
-		child = startChild(slot, runtime.root, {
+		child = startLegacyPiSessionAttachment(slot, runtime.root, {
 			sessionFile: latestRoomTrailFile(runtime, room.id, target.id),
 			autonomousName: `room — ${roomDisplayTitle(runtime.root, room)} — ${target.displayName}`,
 			group: `room:${room.id}`,
@@ -7951,7 +7421,7 @@ async function startRoomChildExclusive(slot: Slot, runtime: CompanyRuntime, due:
 		await stopChild(child);
 		return false;
 	}
-	if (!sendKernelPrompt(child, { type: "prompt", message: prompt }, false, "host-room-delivery")) {
+	if (!sendLegacyLocalPrompt(child, { type: "prompt", message: prompt }, false, "host-room-delivery")) {
 		await stopChild(child);
 		return false;
 	}
@@ -7986,7 +7456,7 @@ async function restoreAttendedChild(
 		if (slot.runtime !== runtime || runtime.closing) return false;
 		try {
 			runtime.childOptions = options;
-			runtime.child = startChild(slot, runtime.root, options);
+			runtime.child = startLegacyPiSessionAttachment(slot, runtime.root, options);
 			runtime.runtimeReconnectAttempts = 0;
 			runtime.lastUnexpectedRuntimeExitAt = undefined;
 			return true;
@@ -8811,7 +8281,7 @@ async function attachStaffChild(
 				runtime.childOptions.model,
 			...(autoStartStaffIntro ? { autoStartStaffIntro: true, freshStaffTrail: true } : {}),
 		};
-		child = startChild(slot, runtime.root, options);
+		child = startLegacyPiSessionAttachment(slot, runtime.root, options);
 		const binding = childBindings.get(child);
 		if (!binding) throw new Error("staff runtime did not receive a trail binding");
 		deliverQueuedStaffMessages(runtime.root, agent.id);
@@ -9029,7 +8499,7 @@ async function bootstrapStaffTeam(
 				freshStaffTrail: true,
 				...(!cloudSessionAuthority ? { autoStartStaffIntro: true } : {}),
 			};
-			staffChild = startChild(slot, runtime.root, options);
+			staffChild = startLegacyPiSessionAttachment(slot, runtime.root, options);
 			runtime.childOptions = options;
 			delete runtime.childOptions.freshStaffTrail;
 			delete runtime.childOptions.autoStartStaffIntro;
@@ -9042,7 +8512,7 @@ async function bootstrapStaffTeam(
 				runtimeCloudSessionArbiter(runtime);
 				startCloudSessionPump(slot, runtime);
 				setTimeout(() => {
-					void pumpCloudSessionTurn(slot, runtime).catch(() => undefined);
+					void refreshCloudSessionQueue(slot, runtime).catch(() => undefined);
 				}, 0).unref();
 			}
 			return {
@@ -9135,7 +8605,7 @@ async function createStaffMember(
 				staffContext: staffSystemContext(runtime.root, staff),
 				model: resumeOptions.model,
 			};
-			staffChild = startChild(slot, runtime.root, options);
+			staffChild = startLegacyPiSessionAttachment(slot, runtime.root, options);
 			const binding = childBindings.get(staffChild);
 			if (!binding) throw new Error("staff runtime did not receive a trail binding");
 			const statePath = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
@@ -9322,7 +8792,7 @@ async function archiveStaffMember(
 							staffContext: staffSystemContext(runtime.root, next),
 							model: next.model ?? previousOptions.model,
 						};
-						runtime.child = startChild(slot, runtime.root, options);
+						runtime.child = startLegacyPiSessionAttachment(slot, runtime.root, options);
 						runtime.childOptions = { ...options };
 						delete runtime.childOptions.sessionName;
 						delete runtime.childOptions.freshStaffTrail;
@@ -9534,7 +9004,7 @@ async function openStaffMember(
 				// prompt or introduction is ever dispatched on a local fallback.
 				startCloudSessionPump(slot, runtime);
 				setTimeout(() => {
-					void pumpCloudSessionTurn(slot, runtime).catch(() => undefined);
+					void refreshCloudSessionQueue(slot, runtime).catch(() => undefined);
 				}, 1_500).unref();
 			}
 			return {
@@ -9582,26 +9052,13 @@ async function staffIntroReady(
 			const arbiter = runtimeCloudSessionArbiter(runtime);
 			if (!arbiter) return { ok: false, error: "cloud conversation is unavailable" };
 			if (retry) {
-				if (!arbiter.sessionForStaff(staff.id)) {
-					return { ok: false, error: "cloud conversation is still being attached" };
-				}
-				try {
-					const pending = await arbiter.pendingInputs(staff.id);
-					if (pending.some((input) => isCloudStaffIntroRetry(input.body))) {
-						return { ok: true, status: "pending" };
-					}
-					if (pending.some((input) => input.kind === "user_message")) {
-						return { ok: false, error: "wait for the queued conversation before retrying the introduction" };
-					}
-					await arbiter.appendPrompt(staff.id, randomUUID(), { schema: CLOUD_STAFF_INTRO_RETRY_SCHEMA });
-					recordCloudSessionArbiterOutcome(runtime, { ok: true });
-				} catch (error) {
-					recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
-					return { ok: false, error: error instanceof Error ? error.message : String(error) };
-				}
+				return {
+					ok: false,
+					error: "Retry the introduction by sending a cloud message with an explicit execution sponsor.",
+				};
 			}
 			setTimeout(() => {
-				void pumpCloudSessionTurn(slot, runtime).catch(() => undefined);
+				void refreshCloudSessionQueue(slot, runtime).catch(() => undefined);
 			}, 0).unref();
 			return { ok: true, status: "pending" };
 		}
@@ -9699,7 +9156,10 @@ function beginAttachedStaffIntro(
 	}
 	writeStaffRuntimeState(path, claim.state);
 	if (
-		!sendKernelStaffIntro(child, staffIntroMessage(runtime.root, staff, claim.state.intros[staff.id]?.orientation))
+		!sendLegacyLocalStaffDirective(
+			child,
+			staffIntroMessage(runtime.root, staff, claim.state.intros[staff.id]?.orientation),
+		)
 	) {
 		finishStaffIntroDurably(runtime.root, staff.id, trailFile, false, "staff intro dispatch failed");
 		return { ok: false, status: "failed", error: "staff introduction could not be started" };
@@ -9751,7 +9211,7 @@ function schedulePendingConnectorSetupResume(
 			const connector = companyConnectorForRequest(runtime.root, request);
 			if (!connector || !companyConnectorNeedsRegistration(runtime.root, connector)) return;
 			runtime.resumedConnectionSetupIds.add(request.id);
-			const sent = sendKernelStaffIntro(
+			const sent = sendLegacyLocalStaffDirective(
 				expectedChild,
 				[
 					`Resume the durable ${connector.displayName} setup that the founder already selected and authorized.`,
@@ -9804,7 +9264,7 @@ function scheduleNextQueuedStaffIntro(slot: Slot, expectedChild: ChildProcessWit
 				);
 				if (cloudSessionAuthority) {
 					setTimeout(() => {
-						void pumpCloudSessionTurn(slot, runtime).catch(() => undefined);
+						void refreshCloudSessionQueue(slot, runtime).catch(() => undefined);
 					}, 0).unref();
 				}
 				return;
@@ -13000,7 +12460,7 @@ app.whenReady().then(async () => {
 				const queue = await readRendererSessionQueue(arbiter, staffAgentId);
 				if (runtime.childOptions.staffAgentId === staffAgentId) {
 					send(slot.window, "staff-session-queue", { staffAgentId, queue });
-					if (resolution === "retry") void pumpCloudSessionTurn(slot, runtime);
+					if (resolution === "retry") void refreshCloudSessionQueue(slot, runtime);
 				}
 				return { ok: true, queue };
 			} catch (error) {
@@ -13356,114 +12816,15 @@ app.whenReady().then(async () => {
 							};
 						}
 					}
-					let receipt: Awaited<ReturnType<CloudSessionArbiter["appendPrompt"]>>;
-					try {
-						receipt = await enqueueCloudPrompt(runtime, sendArbiter, sendStaffId, reviewed);
-						recordCloudSessionArbiterOutcome(runtime, { ok: true });
-					} catch (error) {
-						recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
-						console.error(
-							`session input enqueue failed: ${error instanceof Error ? error.message : String(error)}`,
-						);
-						return { ok: false, error: "message could not be saved to the cloud; your draft was preserved" };
-					}
-					const attachment = profileAttachment(runtime.root);
-					const team = attachment.profileType === "cloud" ? effectiveHostedTeam(attachment.profileId) : undefined;
-					const author = team?.members.find((member) => member.userId === currentQorperaAccountId);
-					const fallbackQueue = [
-						{
-							inputId: receipt.inputId,
-							position: receipt.position,
-							status: "queued",
-							authorUserId: currentQorperaAccountId,
-							authorDisplayName: author?.displayName ?? author?.email ?? "Company member",
-							text: reviewed.displayText ?? reviewed.message,
-							attachmentCount: reviewed.images?.length ?? 0,
-							createdAt: new Date().toISOString(),
-						},
-					];
-					let queue = await readRendererSessionQueue(sendArbiter, sendStaffId, fallbackQueue);
-					if (sendArbiter.activeClaim || isChildBusy(reviewedChild)) return { ok: true, queued: true, queue };
-					const sendStaff = activeStaffAgent(runtime.root, sendStaffId);
-					const eligibility = sendStaff
-						? await cloudExecutorEligibility(slot, runtime, sendStaff, true)
-						: { waiting: "staff member is unavailable" };
-					runtime.cloudSessionWaiting = eligibility.waiting;
-					// Ineligible: the message is durably queued; an eligible
-					// machine claims and executes the complete prompt.
-					if (!eligibility.pin || runtime.attachedStaffVersion !== eligibility.pin.staffVersion) {
-						return { ok: true, queued: true, queue };
-					}
-					let sendClaim: Awaited<ReturnType<CloudSessionArbiter["claimTurn"]>>;
-					try {
-						sendClaim = await sendArbiter.claimTurn(sendStaffId, eligibility.pin);
-					} catch {
-						sendClaim = undefined;
-					}
-					queue = await readRendererSessionQueue(sendArbiter, sendStaffId, queue);
-					// Unclaimed: the message is durably queued and another machine's
-					// executor owns the turn in flight — it will consume ours too.
-					if (!sendClaim) return { ok: true, queued: true, queue };
-					if (
-						!isCurrentRuntimeChild(slot, runtime, reviewedChild) ||
-						!attachedTo(reviewedChild) ||
-						isChildBusy(reviewedChild)
-					) {
-						abandonCloudSessionClaim(sendArbiter, reviewedChild, sendClaim);
-						return { ok: true, queued: true, queue };
-					}
-					bindChildDurableExecution(reviewedChild, {
-						kind: "turn",
-						id: sendClaim.turnId,
-						claimantId: sendArbiter.claimantId,
-					});
-					if (
-						sendClaim.inputs.some((input) => input.kind === "user_message" && isCloudStaffIntroRetry(input.body))
-					) {
-						const staff = activeStaffAgent(runtime.root, sendStaffId);
-						const started = staff
-							? beginAttachedStaffIntro(slot, runtime, staff, reviewedChild, sendBinding.file, true)
-							: { ok: false };
-						if (!started.ok) abandonCloudSessionClaim(sendArbiter, reviewedChild, sendClaim);
-						return { ok: true, queued: true, queue };
-					}
-					// The claim may carry more than our own message: other members'
-					// queued inputs, or the never-run kickoff (a member speaking
-					// first supersedes the scripted intro). Compose one attributed
-					// turn from the whole batch.
-					let combined: CloudTurnPrompt;
-					try {
-						combined = await cloudTurnPrompt(runtime, sendClaim.inputs);
-					} catch (error) {
-						const reason = `queued attachments could not be restored: ${error instanceof Error ? error.message : String(error)}`;
-						try {
-							await sendArbiter.quarantineTurn(reason, sendClaim);
-						} catch (quarantineError) {
-							console.error(
-								`session turn quarantine failed: ${quarantineError instanceof Error ? quarantineError.message : String(quarantineError)}`,
-							);
-						}
-						clearChildDurableTurn(reviewedChild, sendClaim);
-						return {
-							ok: false,
-							error: reason,
-						};
-					}
-					const combinedFrame = reviewedPromptFrame({
-						type: "prompt",
-						message: combined.message,
-						images: combined.images,
-					});
-					const okSend = combinedFrame
-						? sendKernelPrompt(reviewedChild, combinedFrame, true, promptOrigin)
-						: false;
-					if (!okSend) abandonCloudSessionClaim(sendArbiter, reviewedChild, sendClaim);
-					return { ok: okSend, queued: true, queue };
+					return {
+						ok: false,
+						error: "Select an active execution sponsor before sending. Cloud turns never use the desktop model runtime.",
+					};
 				}
 				if (cloudStaffConversation && frame.type === "prompt") {
 					return { ok: false, error: "cloud conversation is not attached; your message was not sent" };
 				}
-				return { ok: sendKernelPrompt(reviewedChild, reviewed, true, promptOrigin) };
+				return { ok: sendLegacyLocalPrompt(reviewedChild, reviewed, true, promptOrigin) };
 			});
 		}
 		if (!safeControlTypes.has(frame.type)) return { ok: false };

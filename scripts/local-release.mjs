@@ -6,6 +6,8 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const packages = [
+	{ directory: "packages/company", name: "@qorpera/company" },
+	{ directory: "packages/contracts", name: "@qorpera/contracts" },
 	{ directory: "packages/ai", name: "@qorpera/pi-ai" },
 	{ directory: "packages/tui", name: "@qorpera/pi-tui" },
 	{ directory: "packages/agent", name: "@qorpera/pi-agent-core" },
@@ -201,7 +203,7 @@ const options = parseArgs();
 const repoRoot = process.cwd();
 const rootPackageJson = readPackageJson(repoRoot);
 
-if (rootPackageJson.name !== "pi-monorepo") {
+if (rootPackageJson.name !== "qorpera-base-monorepo") {
 	throw new Error("Run this script from the repository root");
 }
 

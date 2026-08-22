@@ -76,7 +76,7 @@ import {
 	type ModelRequestAccountRouter,
 	type ModelRequestRuntime,
 	startModelRequestBroker,
-} from "../src/model-request-broker.ts";
+} from "../src/legacy-local-model-request-broker.ts";
 import { brokerCredentialProjection } from "../src/model-request-scope.ts";
 
 const DEFAULT_BUDGET: KernelModelIntentBudget = {

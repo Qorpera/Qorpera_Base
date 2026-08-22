@@ -1,0 +1,48 @@
+{
+	"name": "@qorpera/company",
+	"version": "0.83.0",
+	"description": "Provider-neutral Qorpera company domain and Company File primitives.",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./company-artifacts": {
+			"types": "./dist/company-artifacts.d.ts",
+			"import": "./dist/company-artifacts.js"
+		},
+		"./company-connectors": {
+			"types": "./dist/company-connectors.d.ts",
+			"import": "./dist/company-connectors.js"
+		},
+		"./company-rooms": {
+			"types": "./dist/company-rooms.d.ts",
+			"import": "./dist/company-rooms.js"
+		},
+		"./company-runtime-lock": {
+			"types": "./dist/company-runtime-lock.d.ts",
+			"import": "./dist/company-runtime-lock.js"
+		},
+		"./company-staff": {
+			"types": "./dist/company-staff.d.ts",
+			"import": "./dist/company-staff.js"
+		}
+	},
+	"files": ["dist", "README.md", "CHANGELOG.md"],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsgo -p tsconfig.build.json",
+		"test": "vitest --run",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"devDependencies": {
+		"shx": "0.4.0",
+		"vitest": "4.1.9"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

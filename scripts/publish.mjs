@@ -5,6 +5,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const packages = [
+	{ directory: "packages/company", name: "@qorpera/company" },
+	{ directory: "packages/contracts", name: "@qorpera/contracts" },
 	{ directory: "packages/ai", name: "@qorpera/pi-ai" },
 	{ directory: "packages/agent", name: "@qorpera/pi-agent-core" },
 	{ directory: "packages/protocol", name: "@qorpera/pi-protocol" },
@@ -90,7 +92,7 @@ if (versions.length !== 1) {
 	throw new Error(`Publish packages are not lockstep versioned: ${versions.join(", ")}`);
 }
 
-console.log(`Publishing pi packages at ${versions[0]}${dryRun ? " (dry run)" : ""}\n`);
+console.log(`Publishing Qorpera packages at ${versions[0]}${dryRun ? " (dry run)" : ""}\n`);
 
 const packageStates = packages.map((pkg) => ({
 	...pkg,

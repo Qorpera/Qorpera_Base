@@ -1,8 +1,12 @@
 /** Desktop-host boundary for transactional agent-owned company operations. */
 
 import { createHash } from "node:crypto";
-import { COMPANY_OPERATION_KINDS, type CompanyOperationKind } from "@qorpera/pi-coding-agent/company-operation-broker";
-import type { KernelExecutionIdentity, KernelIntentCapability } from "@qorpera/pi-protocol";
+import {
+	COMPANY_OPERATION_KINDS,
+	type CompanyOperationKind,
+	type ExecutionIdentity,
+	type ExecutionIntentCapability,
+} from "@qorpera/contracts";
 
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_INTENT_LIFETIME_MS = 4 * 60 * 60 * 1000;
@@ -13,18 +17,18 @@ interface CompanyOperationRequestFrame {
 	requestId: string;
 	kind: CompanyOperationKind;
 	input: unknown;
-	intent: KernelIntentCapability;
+	intent: ExecutionIntentCapability;
 }
 
 interface IntentState {
-	capability: KernelIntentCapability;
+	capability: ExecutionIntentCapability;
 	operations: number;
 	status: "active" | "ended";
 	expiryTimer: NodeJS.Timeout;
 }
 
 export interface CompanyOperationBroker {
-	authorizeIntent: (capability: KernelIntentCapability) => boolean;
+	authorizeIntent: (capability: ExecutionIntentCapability) => boolean;
 	handleFrame: (value: unknown, send: (frame: object) => void) => boolean;
 	endTurn: () => void;
 	release: () => void;
@@ -35,7 +39,7 @@ export type CompanyOperationReceiptBegin =
 	| { started: false; status: "executing" }
 	| { started: false; status: "completed"; result: { message: string } };
 
-function validIntent(value: unknown): value is KernelIntentCapability {
+function validIntent(value: unknown): value is ExecutionIntentCapability {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const intent = value as Record<string, unknown>;
 	const execution = intent.execution;
@@ -102,15 +106,15 @@ function inputSha256(kind: CompanyOperationKind, input: unknown): string {
 export function createCompanyOperationBroker(options: {
 	sessionId: string;
 	requireDurableExecution?: boolean;
-	execution: () => KernelExecutionIdentity | undefined;
+	execution: () => ExecutionIdentity | undefined;
 	beginReceipt: (
-		execution: KernelExecutionIdentity,
+		execution: ExecutionIdentity,
 		operationId: string,
 		operationKind: CompanyOperationKind,
 		inputSha256: string,
 	) => Promise<CompanyOperationReceiptBegin>;
 	completeReceipt: (
-		execution: KernelExecutionIdentity,
+		execution: ExecutionIdentity,
 		operationId: string,
 		result: { message: string },
 	) => Promise<{ message: string }>;
@@ -164,7 +168,7 @@ export function createCompanyOperationBroker(options: {
 				return false;
 			}
 			const state: IntentState = {
-				capability: JSON.parse(JSON.stringify(capability)) as KernelIntentCapability,
+				capability: JSON.parse(JSON.stringify(capability)) as ExecutionIntentCapability,
 				operations: 0,
 				status: "active",
 				expiryTimer: setTimeout(() => endIntent(state), Math.max(1, expiresAt - now)),

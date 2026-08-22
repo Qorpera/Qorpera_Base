@@ -140,33 +140,31 @@ describe("userland wiring", () => {
 		);
 	});
 
-	it("finalizes clean cloud wakes without re-entering their owning transition", () => {
-		const handlerStart = mainSource.indexOf("const wakeSessionId = childBindings.get(child)?.sessionId;");
-		const handlerEnd = mainSource.indexOf("if (!(await waitForChildReadiness(child)))", handlerStart);
-		expect(handlerStart).toBeGreaterThan(-1);
-		expect(handlerEnd).toBeGreaterThan(handlerStart);
-		const closeHandler = mainSource.slice(handlerStart, handlerEnd);
-		expect(closeHandler).toMatch(
-			/const cloudCompletion = await enqueueRuntimeTransition[\s\S]+?\n\s*}\);\n\s*if \(!cloudCompletion\) return;[\s\S]+?await completeActiveCloudWake/,
-		);
-		expect(mainSource).toContain("liveWake?.exitCode === null");
-		expect(mainSource).toContain("liveWake.signalCode === null");
-		expect(mainSource).toContain(
-			"return completeActiveCloudWake(runtime, arbiter, wakeKey, clientSessionId, attempt + 1);",
-		);
+	it("leaves cloud wakes to the runner orchestrator", () => {
+		expect(mainSource).toMatch(/cloud \$\{cause\} wake is waiting for the runner orchestrator/);
+		expect(mainSource).not.toContain("runtimeCloudWakeArbiter(");
+		expect(mainSource).not.toContain("completeActiveCloudWake(");
+		expect(mainSource).not.toContain("submitCloudWakeProposal(");
 	});
 
-	it("binds immediate cloud claims and never publishes a live agent tree mid-turn", () => {
-		const immediateStart = mainSource.indexOf("let sendClaim: Awaited<ReturnType<CloudSessionArbiter");
-		const immediateEnd = mainSource.indexOf("if (cloudStaffConversation && frame.type", immediateStart);
-		expect(immediateStart).toBeGreaterThan(-1);
-		expect(immediateEnd).toBeGreaterThan(immediateStart);
-		const immediate = mainSource.slice(immediateStart, immediateEnd);
-		const binding = immediate.indexOf("bindChildDurableExecution(reviewedChild");
-		const dispatch = immediate.indexOf("sendKernelPrompt(reviewedChild");
-		expect(binding).toBeGreaterThan(-1);
-		expect(dispatch).toBeGreaterThan(binding);
-		expect(immediate).toContain("abandonCloudSessionClaim(sendArbiter, reviewedChild, sendClaim)");
+	it("requires a sponsored runner job and rejects desktop execution for cloud turns", () => {
+		const cloudStart = mainSource.indexOf("const cloudSponsoredPrompt = reviewedCloudPrompt?.executionSponsor");
+		const cloudEnd = mainSource.indexOf('if (cloudStaffConversation && frame.type === "prompt")', cloudStart);
+		expect(cloudStart).toBeGreaterThan(-1);
+		expect(cloudEnd).toBeGreaterThan(cloudStart);
+		const cloudComposer = mainSource.slice(cloudStart, cloudEnd);
+		expect(cloudComposer).toContain("await control.requestSessionTurn({");
+		expect(cloudComposer).toContain("Cloud turns never use the desktop model runtime.");
+		expect(cloudComposer).not.toContain("enqueueCloudPrompt(");
+		expect(cloudComposer).not.toContain("sendLegacyLocalPrompt(");
+		const legacyStart = mainSource.indexOf("function sendLegacyLocalPrompt(");
+		const legacyEnd = mainSource.indexOf("function ", legacyStart + 1);
+		const legacyPrompt = mainSource.slice(legacyStart, legacyEnd);
+		expect(legacyPrompt).toContain('childProfileTypes.get(child) === "cloud"');
+		expect(legacyPrompt).toContain("legacy local executor rejected a cloud prompt");
+		expect(mainSource).toContain("function sendLegacyLocalStaffDirective(");
+		expect(mainSource).toContain("legacy local executor rejected a cloud staff directive");
+		expect(mainSource).not.toContain(".appendPrompt(");
 		expect(mainSource).not.toContain("withBrokerOutputCheckpoint(");
 		expect(mainSource).not.toContain("childBrokerOutputCheckpoints");
 		expect(mainSource).toContain("Cloud company publication is waiting for the active agent run to finish");

@@ -1,0 +1,26 @@
+{
+	"name": "@qorpera/contracts",
+	"version": "0.83.0",
+	"description": "Provider-neutral Qorpera cloud control-plane and execution contracts.",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": ["dist", "README.md", "CHANGELOG.md"],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsgo -p tsconfig.build.json",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"devDependencies": {
+		"shx": "0.4.0"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

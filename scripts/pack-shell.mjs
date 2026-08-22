@@ -47,6 +47,8 @@ const codexPlatformPackage = `codex-${isMac ? "darwin" : "win32"}-${process.arch
 
 // Workspace packages are copied as {package.json, dist} from their source dirs.
 const workspaceDirs = {
+	"@qorpera/company": "packages/company",
+	"@qorpera/contracts": "packages/contracts",
 	"@qorpera/pi-coding-agent": "packages/coding-agent",
 	"@qorpera/pi-agent-core": "packages/agent",
 	"@qorpera/pi-ai": "packages/ai",

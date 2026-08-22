@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { basename, relative, resolve, sep } from "node:path";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import {
 	type CapturedCloudCompanyTree,
 	type CloudCompanyTreeReference,
