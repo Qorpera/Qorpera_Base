@@ -48,6 +48,27 @@ describe("Supabase object authority", () => {
 		expect(header(calls[0]!.request, calls[0]!.init, "authorization")).toBeNull();
 	});
 
+	it("authorizes verifier reads with the service key and no member bearer", async () => {
+		const calls: Array<{ request: FetchInput; init: RequestInit | undefined }> = [];
+		const authority = new SupabaseObjectAuthority({
+			projectUrl: "https://project.supabase.co",
+			publishableKey: "sb_publishable_public",
+			secretKey: "sb_secret_private",
+			fetch: async (request, init) => {
+				calls.push({ request, init });
+				return Response.json({ backend: "nas-object-gateway", bytes: 12 });
+			},
+		});
+
+		await expect(authority.authorizeServiceDownload(profileId, sha256)).resolves.toEqual({
+			backend: "nas-object-gateway",
+			bytes: 12,
+		});
+		expect(calls).toHaveLength(1);
+		expect(header(calls[0]!.request, calls[0]!.init, "apikey")).toBe("sb_secret_private");
+		expect(header(calls[0]!.request, calls[0]!.init, "authorization")).toBeNull();
+	});
+
 	it("authorizes and finalizes deletion in separate privileged calls", async () => {
 		const calls: Array<{ request: FetchInput; init: RequestInit | undefined }> = [];
 		const authority = new SupabaseObjectAuthority({

@@ -30,6 +30,7 @@ const handler = createObjectGatewayHandler({
 	store,
 	authority,
 	controlToken: required(process.env, "QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN"),
+	verifierToken: required(process.env, "QORPERA_OBJECT_GATEWAY_VERIFIER_TOKEN"),
 });
 if (process.argv[2] === "migrate") {
 	const migrated = await migrateLegacyObjects(authority, store);

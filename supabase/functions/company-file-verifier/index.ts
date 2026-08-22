@@ -5,6 +5,7 @@ import {
 	CompanySnapshotVerificationPending,
 	verifyCompanySnapshotClosure,
 } from "./company-file-verifier.ts";
+import { createCompanyFileObjectLoader } from "./object-loader.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OBJECT_BUCKET = "qorpera-profile-objects";
@@ -74,6 +75,27 @@ Deno.serve(async (request) => {
 		verifiedUserId = userData.user.id;
 	}
 	if (!verifiedUserId) return jsonResponse({ error: "Unauthorized" }, 401);
+	let loadObject: (profileId: string, sha256: string) => Promise<Uint8Array>;
+	try {
+		loadObject = createCompanyFileObjectLoader({
+			gatewayUrl: Deno.env.get("QORPERA_OBJECT_GATEWAY_URL"),
+			internalServiceRequest,
+			memberToken: bearerToken,
+			verifierToken: Deno.env.get("QORPERA_OBJECT_GATEWAY_VERIFIER_TOKEN"),
+			storageDownload: async (profileId, sha256) => {
+				const { data, error } = await (internalServiceRequest ? serviceClient : userClient).storage
+					.from(OBJECT_BUCKET)
+					.download(`${profileId}/${sha256}`);
+				if (error) throw new Error("Company File object is unavailable");
+				return new Uint8Array(await data.arrayBuffer());
+			},
+		});
+	} catch (error) {
+		return jsonResponse(
+			{ error: error instanceof Error ? error.message : "Company File verification is not configured" },
+			503,
+		);
+	}
 	const [snapshotResult, graphResult] = internalServiceRequest
 		? await Promise.all([
 				serviceClient.from("qorpera_company_snapshots").select("*").eq("id", snapshotId).maybeSingle(),
@@ -102,13 +124,7 @@ Deno.serve(async (request) => {
 				fileCount: Number(snapshot.file_count),
 				totalBytes: Number(snapshot.total_bytes),
 			},
-			async (objectProfileId, sha256) => {
-				const { data, error } = await (internalServiceRequest ? serviceClient : userClient).storage
-					.from(OBJECT_BUCKET)
-					.download(`${objectProfileId}/${sha256}`);
-				if (error) throw new Error("Company File object is unavailable");
-				return new Uint8Array(await data.arrayBuffer());
-			},
+			loadObject,
 			{
 				maxNewFileBytes: 64 * 1024 * 1024,
 				load: async (objectProfileId, manifestSha256) => {

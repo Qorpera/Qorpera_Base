@@ -101,6 +101,21 @@ test("verifies the exact tree and derives its complete reachable object set", as
 	});
 });
 
+test("does not depend on a runtime-global Buffer", async () => {
+	const input = fixture();
+	const runtimeBuffer = globalThis.Buffer;
+	assert.equal(Reflect.deleteProperty(globalThis, "Buffer"), true);
+	try {
+		await verifyCompanySnapshotClosure(input.reference, async (_profileId, sha) => {
+			const bytes = input.objects.get(sha);
+			if (!bytes) throw new Error("missing");
+			return bytes;
+		});
+	} finally {
+		globalThis.Buffer = runtimeBuffer;
+	}
+});
+
 test("derives an authority-only tree fingerprint for publish permission checks", async () => {
 	const input = fixture();
 	const treeBytes = input.objects.get(input.reference.manifestSha256);

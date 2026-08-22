@@ -20,12 +20,15 @@ Required configuration:
 - `QORPERA_SUPABASE_SECRET_KEY`
 - `QORPERA_OBJECT_GATEWAY_STORAGE_ROOT` (an absolute NAS-mounted directory)
 - `QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN`
+- `QORPERA_OBJECT_GATEWAY_VERIFIER_TOKEN` (distinct from the cleanup control token)
 
 `QORPERA_OBJECT_GATEWAY_HOST` defaults to `127.0.0.1` and
 `QORPERA_OBJECT_GATEWAY_PORT` defaults to `8090`. Production exposure requires
 an authenticated TLS reverse proxy, a dedicated service account, a private
-storage mount with no client filesystem access, and verified NAS backup and
-restore. Do not run this service on an execution worker.
+storage mount with no client filesystem access, distinct cleanup and verifier
+tokens, and verified NAS backup and restore. The verifier token grants
+integrity-checked reads to the trusted Company File verifier, but cannot upload
+or delete objects. Do not run this service on an execution worker.
 
 After the schema is deployed and the NAS mount is validated, run
 `qorpera-object-gateway migrate` under the same configuration. The command

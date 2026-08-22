@@ -16,6 +16,7 @@ export type ObjectDeletionAuthorization = { state: "authorized"; authorizationId
 export interface ObjectGatewayAuthority {
 	authorizeUpload(userToken: string, profileId: string, sha256: string, bytes: number): Promise<void>;
 	authorizeDownload(userToken: string, profileId: string, sha256: string): Promise<AuthorizedObject>;
+	authorizeServiceDownload(profileId: string, sha256: string): Promise<AuthorizedObject>;
 	confirmUpload(profileId: string, sha256: string, bytes: number): Promise<void>;
 	authorizeDelete(
 		profileId: string,
@@ -81,23 +82,37 @@ export class SupabaseObjectAuthority implements ObjectGatewayAuthority {
 	}
 
 	async authorizeDownload(userToken: string, profileId: string, sha256: string): Promise<AuthorizedObject> {
-		const value = record(
+		return this.#authorizedObject(
 			await this.#rpc(
 				"qorpera_authorize_profile_object_download",
 				{ p_profile_id: profileId, p_sha256: sha256 },
 				userToken,
 				this.#publishableKey,
 			),
-			"object download authority",
 		);
+	}
+
+	async authorizeServiceDownload(profileId: string, sha256: string): Promise<AuthorizedObject> {
+		return this.#authorizedObject(
+			await this.#rpc(
+				"qorpera_authorize_profile_object_download",
+				{ p_profile_id: profileId, p_sha256: sha256 },
+				undefined,
+				this.#secretKey,
+			),
+		);
+	}
+
+	#authorizedObject(value: unknown): AuthorizedObject {
+		const object = record(value, "object download authority");
 		if (
-			(value.backend !== "nas-object-gateway" && value.backend !== "supabase-storage") ||
-			!Number.isSafeInteger(value.bytes) ||
-			(value.bytes as number) < 0
+			(object.backend !== "nas-object-gateway" && object.backend !== "supabase-storage") ||
+			!Number.isSafeInteger(object.bytes) ||
+			(object.bytes as number) < 0
 		) {
 			throw new Error("Invalid object download authority");
 		}
-		return { backend: value.backend, bytes: value.bytes as number };
+		return { backend: object.backend, bytes: object.bytes as number };
 	}
 
 	async confirmUpload(profileId: string, sha256: string, bytes: number): Promise<void> {
