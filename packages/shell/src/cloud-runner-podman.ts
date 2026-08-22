@@ -17,7 +17,11 @@ const IMAGE_PATTERN = /^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/;
 const JOB_TYPE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CONTAINER_PATHS = Object.freeze({
-	companyRoot: "/qorpera/input/company",
+	companyBaseRoot: "/qorpera/input/company",
+	companyRoot: "/qorpera/work/company",
+	executionContextPath: "/qorpera/input/execution.json",
+	queuedInputsPath: "/qorpera/input/inputs.jsonl",
+	transcriptPath: "/qorpera/input/transcript.jsonl",
 	substrateManifestPath: "/qorpera/input/substrate.json",
 	operationsPath: "/qorpera/input/operations.jsonl",
 	artifactsRoot: "/qorpera/input/artifacts",
@@ -274,43 +278,91 @@ function assertRequest(request: CloudRunnerSandboxRequest): void {
 
 async function verifiedMounts(
 	request: CloudRunnerSandboxRequest,
-): Promise<{ inputRoot: string; outputRoot: string; brokerRoot?: string }> {
-	const [companyRoot, substrateManifestPath, operationsPath, artifactsRoot, outputRoot] = await Promise.all([
+): Promise<{ inputRoot: string; workRoot: string; outputRoot: string; brokerRoot?: string }> {
+	const [
+		companyBaseRoot,
+		companyRoot,
+		executionContextPath,
+		queuedInputsPath,
+		transcriptPath,
+		substrateManifestPath,
+		operationsPath,
+		artifactsRoot,
+		attachmentsRoot,
+		outputRoot,
+	] = await Promise.all([
+		realpath(request.input.companyBaseRoot),
 		realpath(request.input.companyRoot),
+		realpath(request.input.executionContextPath),
+		realpath(request.input.queuedInputsPath),
+		realpath(request.input.transcriptPath),
 		realpath(request.input.substrateManifestPath),
 		realpath(request.input.operationsPath),
 		realpath(request.input.artifactsRoot),
+		realpath(request.input.attachmentsRoot),
 		realpath(request.outputRoot),
 	]);
-	const inputRoot = dirname(companyRoot);
+	const inputRoot = dirname(companyBaseRoot);
+	const workRoot = dirname(companyRoot);
 	if (
-		companyRoot !== join(inputRoot, "company") ||
+		companyBaseRoot !== join(inputRoot, "company") ||
+		companyRoot !== join(workRoot, "company") ||
+		workRoot !== join(dirname(inputRoot), "work") ||
+		executionContextPath !== join(inputRoot, "execution.json") ||
+		queuedInputsPath !== join(inputRoot, "inputs.jsonl") ||
+		transcriptPath !== join(inputRoot, "transcript.jsonl") ||
 		substrateManifestPath !== join(inputRoot, "substrate.json") ||
 		operationsPath !== join(inputRoot, "operations.jsonl") ||
 		artifactsRoot !== join(inputRoot, "artifacts") ||
+		attachmentsRoot !== join(inputRoot, "attachments") ||
 		outputRoot !== join(dirname(inputRoot), "output")
 	) {
 		throw new Error("Podman sandbox paths do not match the disposable job layout");
 	}
-	const [company, manifest, operations, artifacts, output] = await Promise.all([
+	const [
+		companyBase,
+		company,
+		executionContext,
+		queuedInputs,
+		transcript,
+		manifest,
+		operations,
+		artifacts,
+		attachments,
+		output,
+	] = await Promise.all([
+		stat(companyBaseRoot),
 		stat(companyRoot),
+		stat(executionContextPath),
+		stat(queuedInputsPath),
+		stat(transcriptPath),
 		stat(substrateManifestPath),
 		stat(operationsPath),
 		stat(artifactsRoot),
+		stat(attachmentsRoot),
 		stat(outputRoot),
 	]);
 	if (
+		!companyBase.isDirectory() ||
 		!company.isDirectory() ||
+		!executionContext.isFile() ||
+		!queuedInputs.isFile() ||
+		!transcript.isFile() ||
 		!manifest.isFile() ||
 		!operations.isFile() ||
 		!artifacts.isDirectory() ||
+		!attachments.isDirectory() ||
 		!output.isDirectory()
 	) {
 		throw new Error("Podman sandbox layout has invalid filesystem entries");
 	}
 	if ((await readdir(outputRoot)).length > 0) throw new Error("Podman sandbox output directory must start empty");
 	if (!request.hostBroker) {
-		return { inputRoot: safeHostPath(inputRoot), outputRoot: safeHostPath(outputRoot) };
+		return {
+			inputRoot: safeHostPath(inputRoot),
+			workRoot: safeHostPath(workRoot),
+			outputRoot: safeHostPath(outputRoot),
+		};
 	}
 	const brokerRoot = await realpath(request.hostBroker.root);
 	const broker = await lstat(request.hostBroker.root);
@@ -324,6 +376,7 @@ async function verifiedMounts(
 	}
 	return {
 		inputRoot: safeHostPath(inputRoot),
+		workRoot: safeHostPath(workRoot),
 		outputRoot: safeHostPath(outputRoot),
 		brokerRoot: safeHostPath(brokerRoot),
 	};
@@ -335,6 +388,7 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 		boundary: "rootless_container",
 		hostFilesystem: "none",
 		inputFilesystem: "read_only",
+		companyCheckout: "job_private",
 		outputFilesystem: "job_private",
 		network: "deny_by_default",
 		environment: "allowlist_only",
@@ -395,6 +449,10 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 				? CONTAINER_PATHS
 				: {
 						companyRoot: CONTAINER_PATHS.companyRoot,
+						companyBaseRoot: CONTAINER_PATHS.companyBaseRoot,
+						executionContextPath: CONTAINER_PATHS.executionContextPath,
+						queuedInputsPath: CONTAINER_PATHS.queuedInputsPath,
+						transcriptPath: CONTAINER_PATHS.transcriptPath,
 						substrateManifestPath: CONTAINER_PATHS.substrateManifestPath,
 						operationsPath: CONTAINER_PATHS.operationsPath,
 						artifactsRoot: CONTAINER_PATHS.artifactsRoot,
@@ -449,6 +507,8 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 			this.#entrypoint,
 			"--mount",
 			`type=bind,src=${mounts.inputRoot},dst=/qorpera/input,ro=true,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
+			"--mount",
+			`type=bind,src=${mounts.workRoot},dst=/qorpera/work,rw=true,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
 			"--mount",
 			`type=tmpfs,destination=${CONTAINER_PATHS.outputRoot},tmpfs-size=${request.limits.maxOutputBytes + OUTPUT_TMPFS_OVERHEAD_BYTES},tmpfs-mode=0700,notmpcopyup,U=true`,
 		];

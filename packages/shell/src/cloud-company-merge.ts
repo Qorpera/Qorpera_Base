@@ -16,6 +16,7 @@ import {
 	currentCloudCompanyTreeReference,
 	materializeCloudCompanyTree,
 	readCloudCompanyTreeManifest,
+	validateCloudCompanyTreeEntries,
 } from "./cloud-company-snapshot.ts";
 import type { CompanyWorkspacePrimary } from "./cloud-company-workspace.ts";
 import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
@@ -93,6 +94,7 @@ export interface ReplaceCloudCompanyCacheInput {
 	environmentId: string;
 	localTree: CloudCompanyTreeReference;
 	remoteSnapshot: HostedCompanySnapshot;
+	conflictPaths: readonly string[];
 	objects: CloudContentAddressedStore;
 	runtimeLock?: CompanyRuntimeLock;
 }
@@ -179,20 +181,6 @@ function buildMergePlan(
 			if (!path.startsWith(prefix)) continue;
 			addConflict(conflicts, entry.path, "structural");
 			addConflict(conflicts, path, "structural");
-		}
-	}
-	if (conflicts.size > 0) {
-		const conflictRoot = `Company File Conflicts/${remoteSnapshotId}`;
-		for (const conflict of conflicts.values()) {
-			const remoteEntry = remote.get(conflict.path);
-			if (!remoteEntry || remoteEntry.kind !== "file") continue;
-			const copyPath = `${conflictRoot}/${remoteEntry.path}`;
-			const segments = copyPath.split("/");
-			for (let index = 1; index < segments.length; index += 1) {
-				const directoryPath = segments.slice(0, index).join("/");
-				if (!result.has(directoryPath)) result.set(directoryPath, { kind: "directory", path: directoryPath });
-			}
-			result.set(copyPath, { ...remoteEntry, path: copyPath });
 		}
 	}
 	const finalResultEntries = [...result.values()].sort((left, right) => comparePath(left.path, right.path));
@@ -587,6 +575,7 @@ async function applyPlannedMerge(
 ): Promise<void> {
 	const root = canonicalCompanyRoot(input.companyRoot);
 	await recoverInterruptedCloudCompanyMerges(root, input.runtimeLock);
+	validateCloudCompanyTreeEntries(planned.resultEntries);
 	const local = entryMap(planned.localManifest.entries);
 	const result = entryMap(planned.resultEntries);
 	const transaction = await stageChangedFiles(root, input.profileId, local, result, input.objects);
@@ -716,6 +705,19 @@ export async function mergeCloudCompanySnapshots(
 	return { applied: true, plan: planned.plan };
 }
 
+/** Materializes the complete three-way result for an explicit human review.
+ * Conflicting proposal bytes stay in place. Immutable conflict evidence is
+ * materialized by the proposal-review layer outside the logical Company File,
+ * so review metadata can never collide with or publish as company content. */
+export async function mergeCloudCompanySnapshotsForReview(
+	input: MergeCloudCompanySnapshotsInput,
+): Promise<MergeCloudCompanySnapshotsResult> {
+	const planned = await planCloudCompanyMerge(input);
+	if (planned.plan.changedPaths.length === 0) return { applied: false, plan: planned.plan };
+	await applyPlannedMerge(input, planned);
+	return { applied: true, plan: planned.plan };
+}
+
 /** Three-way reconciles unpublished cache changes against a newer canonical
  * Company File head. This is deliberately separate from workspace merging:
  * the local candidate is a content-addressed tree, not another cloud head. */
@@ -746,9 +748,6 @@ export async function reconcileCloudCompanyCache(
 		localManifest,
 		remoteManifest,
 	);
-	if (planned.plan.conflicts.length > 0) {
-		return { applied: false, plan: planned.plan };
-	}
 	if (planned.plan.changedPaths.length === 0) {
 		return { applied: false, plan: planned.plan };
 	}
@@ -768,11 +767,14 @@ export async function reconcileCloudCompanyCache(
 	return { applied: true, plan: planned.plan };
 }
 
-/** Installs the reviewed canonical version over a conflicting local cache.
- * The stored local tree is an exact precondition, so edits made after the
- * conflict was recorded can never be discarded by this action. */
+/** Applies the reviewed cloud side only at paths that actually conflicted.
+ * The stored merged local tree is an exact precondition, so unrelated local
+ * and cloud changes survive either conflict decision. */
 export async function replaceCloudCompanyCacheWithSnapshot(input: ReplaceCloudCompanyCacheInput): Promise<void> {
 	assertSnapshotScope(input.remoteSnapshot, input.profileId, input.environmentId);
+	if (input.conflictPaths.length < 1 || input.conflictPaths.some((path) => !path || path.startsWith("/"))) {
+		throw new Error("Company File conflict paths are invalid");
+	}
 	const [localManifest, remoteManifest] = await Promise.all([
 		readCloudCompanyTreeManifest(input.profileId, input.localTree, input.objects),
 		readCloudCompanyTreeManifest(
@@ -783,6 +785,20 @@ export async function replaceCloudCompanyCacheWithSnapshot(input: ReplaceCloudCo
 	]);
 	const localEntries = entryMap(localManifest.entries);
 	const remoteEntries = entryMap(remoteManifest.entries);
+	const resultEntries = new Map(localEntries);
+	for (const conflictPath of [...new Set(input.conflictPaths)]) {
+		for (const path of resultEntries.keys()) {
+			if (path === conflictPath || path.startsWith(`${conflictPath}/`)) resultEntries.delete(path);
+		}
+		for (const [path, entry] of remoteEntries) {
+			if (path === conflictPath || path.startsWith(`${conflictPath}/`)) resultEntries.set(path, entry);
+		}
+	}
+	const result = [...resultEntries.values()].sort((left, right) => comparePath(left.path, right.path));
+	const changedPaths = [...new Set([...localEntries.keys(), ...resultEntries.keys()])]
+		.filter((path) => !sameEntry(localEntries.get(path), resultEntries.get(path)))
+		.sort(comparePath);
+	if (changedPaths.length === 0) return;
 	await applyPlannedMerge(
 		{
 			companyRoot: input.companyRoot,
@@ -801,13 +817,11 @@ export async function replaceCloudCompanyCacheWithSnapshot(input: ReplaceCloudCo
 				ancestorSnapshotId: input.remoteSnapshot.parentSnapshotId ?? input.remoteSnapshot.snapshotId,
 				localSnapshotId: input.localTree.manifestSha256,
 				remoteSnapshotId: input.remoteSnapshot.snapshotId,
-				changedPaths: [...new Set([...localManifest.entries, ...remoteManifest.entries].map((entry) => entry.path))]
-					.filter((path) => !sameEntry(localEntries.get(path), remoteEntries.get(path)))
-					.sort(comparePath),
+				changedPaths,
 				conflicts: [],
 			},
 			localManifest,
-			resultEntries: remoteManifest.entries,
+			resultEntries: result,
 		},
 	);
 }

@@ -377,6 +377,11 @@ export async function commitCompanyMaterializationAsync(root: string, paths: str
 	}
 }
 
+export async function commitCloudCompanyLogicalMaterializationAsync(root: string): Promise<void> {
+	const paths = [...dirtyPaths(root).keys()].filter(cloudCompanyPathBelongsToLogicalTree);
+	if (paths.length > 0) await commitCompanyMaterializationAsync(root, paths);
+}
+
 function checkpointGit(
 	root: string,
 	baseline: CompanyGitBaseline,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import {
+	type CachedCompanyFileVerificationProgress,
 	type CachedVerifiedCompanyFile,
 	CompanySnapshotVerificationPending,
 	verifyCompanySnapshotClosure,
@@ -96,7 +97,107 @@ test("verifies the exact tree and derives its complete reachable object set", as
 		storageBytes: canonical.reduce((total, [, bytes]) => total + bytes, 0),
 		restoredContentSha256: input.reference.manifestSha256,
 		restoredBytes: 5,
+		restrictedContentSha256: sha256(""),
 	});
+});
+
+test("derives an authority-only tree fingerprint for publish permission checks", async () => {
+	const input = fixture();
+	const treeBytes = input.objects.get(input.reference.manifestSha256);
+	assert.ok(treeBytes);
+	const tree = JSON.parse(Buffer.from(treeBytes).toString("utf8")) as {
+		entries: Array<{
+			path: string;
+			executable: boolean;
+			file: { manifestSha256: string; fileSha256: string; bytes: number };
+		}>;
+	};
+	tree.entries[0].path = "authority.toml";
+	const changedTree = encoded(tree);
+	const changedSha256 = sha256(changedTree);
+	input.objects.set(changedSha256, changedTree);
+	const result = await verifyCompanySnapshotClosure(
+		{ ...input.reference, manifestSha256: changedSha256, manifestBytes: changedTree.byteLength },
+		async (_profileId, sha) => {
+			const bytes = input.objects.get(sha);
+			if (!bytes) throw new Error("missing");
+			return bytes;
+		},
+	);
+	assert.equal(
+		result.restrictedContentSha256,
+		sha256(`f:authority.toml:-:${input.fileManifestSha256}:${input.chunkSha256}:5`),
+	);
+});
+
+test("rejects noncanonical Unicode paths and protects authority names case-insensitively", async () => {
+	const input = fixture();
+	const original = input.objects.get(input.reference.manifestSha256);
+	assert.ok(original);
+	const tree = JSON.parse(Buffer.from(original).toString("utf8")) as {
+		entries: Array<{
+			path: string;
+			executable: boolean;
+			file: { manifestSha256: string; fileSha256: string; bytes: number };
+		}>;
+	};
+	tree.entries[0].path = "e\u0301.txt";
+	let changedTree = encoded(tree);
+	let changedSha256 = sha256(changedTree);
+	input.objects.set(changedSha256, changedTree);
+	await assert.rejects(
+		verifyCompanySnapshotClosure(
+			{ ...input.reference, manifestSha256: changedSha256, manifestBytes: changedTree.byteLength },
+			async (_profileId, sha) => {
+				const bytes = input.objects.get(sha);
+				if (!bytes) throw new Error("missing");
+				return bytes;
+			},
+		),
+		/Invalid Company File path/,
+	);
+
+	tree.entries = [
+		{ ...tree.entries[0], path: "ς.txt" },
+		{ ...tree.entries[0], path: "σ.txt" },
+	];
+	changedTree = encoded(tree);
+	changedSha256 = sha256(changedTree);
+	input.objects.set(changedSha256, changedTree);
+	await assert.rejects(
+		verifyCompanySnapshotClosure(
+			{
+				...input.reference,
+				manifestSha256: changedSha256,
+				manifestBytes: changedTree.byteLength,
+				fileCount: 2,
+				totalBytes: 10,
+			},
+			async (_profileId, sha) => {
+				const bytes = input.objects.get(sha);
+				if (!bytes) throw new Error("missing");
+				return bytes;
+			},
+		),
+		/paths are invalid or collide/,
+	);
+
+	tree.entries = [{ ...tree.entries[0], path: "agents.md" }];
+	changedTree = encoded(tree);
+	changedSha256 = sha256(changedTree);
+	input.objects.set(changedSha256, changedTree);
+	const result = await verifyCompanySnapshotClosure(
+		{ ...input.reference, manifestSha256: changedSha256, manifestBytes: changedTree.byteLength },
+		async (_profileId, sha) => {
+			const bytes = input.objects.get(sha);
+			if (!bytes) throw new Error("missing");
+			return bytes;
+		},
+	);
+	assert.equal(
+		result.restrictedContentSha256,
+		sha256(`f:agents.md:-:${input.fileManifestSha256}:${input.chunkSha256}:5`),
+	);
 });
 
 test("rejects a tree object whose bytes do not match the prepared revision", async () => {
@@ -188,6 +289,7 @@ test("resumes verification from durable per-file proofs and reuses them across c
 		totalBytes: 10,
 	};
 	const cache = new Map<string, CachedVerifiedCompanyFile>();
+	const progress = new Map<string, CachedCompanyFileVerificationProgress>();
 	let objectLoads = 0;
 	const loader = async (_profileId: string, objectSha256: string): Promise<Uint8Array> => {
 		objectLoads++;
@@ -198,8 +300,15 @@ test("resumes verification from durable per-file proofs and reuses them across c
 	const verificationCache = {
 		maxNewFileBytes: 5,
 		load: async (_profileId: string, manifestSha256: string) => cache.get(manifestSha256),
+		loadProgress: async (_profileId: string, manifestSha256: string) => progress.get(manifestSha256),
 		save: async (_profileId: string, file: CachedVerifiedCompanyFile) => {
 			cache.set(file.manifestSha256, file);
+		},
+		saveProgress: async (_profileId: string, file: CachedCompanyFileVerificationProgress) => {
+			progress.set(file.manifestSha256, structuredClone(file));
+		},
+		clearProgress: async (_profileId: string, manifestSha256: string) => {
+			progress.delete(manifestSha256);
 		},
 	};
 	await assert.rejects(
@@ -212,4 +321,80 @@ test("resumes verification from durable per-file proofs and reuses them across c
 	const beforeReuse = objectLoads;
 	await verifyCompanySnapshotClosure(reference, loader, verificationCache);
 	assert.equal(objectLoads - beforeReuse, 1, "a fully cached checkpoint should download only its tree manifest");
+});
+
+test("never verifies more than the configured chunk-byte budget for the first uncached file", async () => {
+	const input = fixture();
+	const first = Buffer.alloc(4 * 1024 * 1024, "a");
+	const second = Buffer.from("world", "utf8");
+	const firstSha = sha256(first);
+	const secondSha = sha256(second);
+	input.objects.set(firstSha, first);
+	input.objects.set(secondSha, second);
+	const fileBytes = Buffer.concat([first, second]);
+	const manifest = encoded({
+		schema: "qorpera.cloud-file-manifest/v1",
+		fileSha256: sha256(fileBytes),
+		bytes: fileBytes.byteLength,
+		mediaType: "application/octet-stream",
+		chunks: [
+			{ sha256: firstSha, bytes: first.byteLength },
+			{ sha256: secondSha, bytes: second.byteLength },
+		],
+	});
+	const manifestSha = sha256(manifest);
+	input.objects.set(manifestSha, manifest);
+	const treeBytes = input.objects.get(input.reference.manifestSha256);
+	assert.ok(treeBytes);
+	const tree = JSON.parse(Buffer.from(treeBytes).toString("utf8")) as {
+		entries: Array<{ file: { manifestSha256: string; fileSha256: string; bytes: number } }>;
+	};
+	tree.entries[0].file = {
+		...tree.entries[0].file,
+		manifestSha256: manifestSha,
+		fileSha256: sha256(fileBytes),
+		bytes: fileBytes.byteLength,
+	};
+	const changedTree = encoded(tree);
+	const changedTreeSha = sha256(changedTree);
+	input.objects.set(changedTreeSha, changedTree);
+	const reference = {
+		...input.reference,
+		manifestSha256: changedTreeSha,
+		manifestBytes: changedTree.byteLength,
+		totalBytes: fileBytes.byteLength,
+	};
+	const cache = new Map<string, CachedVerifiedCompanyFile>();
+	const progress = new Map<string, CachedCompanyFileVerificationProgress>();
+	let invocationChunkBytes = 0;
+	const verificationCache = {
+		maxNewFileBytes: first.byteLength,
+		load: async (_profileId: string, objectManifestSha: string) => cache.get(objectManifestSha),
+		loadProgress: async (_profileId: string, objectManifestSha: string) => progress.get(objectManifestSha),
+		save: async (_profileId: string, file: CachedVerifiedCompanyFile) => {
+			cache.set(file.manifestSha256, structuredClone(file));
+		},
+		saveProgress: async (_profileId: string, file: CachedCompanyFileVerificationProgress) => {
+			progress.set(file.manifestSha256, structuredClone(file));
+		},
+		clearProgress: async (_profileId: string, objectManifestSha: string) => {
+			progress.delete(objectManifestSha);
+		},
+	};
+	const loader = async (_profileId: string, objectSha: string): Promise<Uint8Array> => {
+		const bytes = input.objects.get(objectSha);
+		if (!bytes) throw new Error("missing");
+		if (objectSha === firstSha || objectSha === secondSha) invocationChunkBytes += bytes.byteLength;
+		return bytes;
+	};
+	await assert.rejects(
+		verifyCompanySnapshotClosure(reference, loader, verificationCache),
+		CompanySnapshotVerificationPending,
+	);
+	assert.equal(invocationChunkBytes, first.byteLength);
+	invocationChunkBytes = 0;
+	await verifyCompanySnapshotClosure(reference, loader, verificationCache);
+	assert.equal(invocationChunkBytes, second.byteLength);
+	assert.equal(cache.size, 1);
+	assert.equal(progress.size, 0);
 });

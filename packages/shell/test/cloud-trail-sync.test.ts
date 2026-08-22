@@ -1,7 +1,8 @@
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue, KernelExecutionIdentity } from "@qorpera/pi-protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	appendKernelObservation,
@@ -19,21 +20,60 @@ import type {
 	CreateHostedSessionInput,
 	HostedSession,
 	HostedSessionEvent,
+	HostedSessionPage,
 } from "../src/hosted-primary.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";
 const hostedSessionId = "a17381c2-3508-4573-b351-a5394adbd1f4";
 const actorUserId = "c98d600e-654a-40da-a07f-f1d54f93cc6c";
+const runId = "e7c5380d-a213-460e-9c6d-35c6da9fa9f0";
+const runnerAssignmentId = "46651b43-5769-45a5-bc1c-8fba94a52712";
 
 class FakeHostedPrimary {
 	readonly sessions: HostedSession[] = [];
 	readonly events = new Map<string, HostedSessionEvent[]>();
 	injectConcurrentEntry = false;
 	failAfterNextAppend = false;
+	readSessionEventsHook?: (sessionId: string, afterSequence: number) => void;
 
-	async listSessions(requestedEnvironmentId: string): Promise<HostedSession[]> {
-		return this.sessions.filter((session) => session.environmentId === requestedEnvironmentId);
+	#touch(session: HostedSession): void {
+		session.updatedAt = new Date(Math.max(Date.now(), Date.parse(session.updatedAt) + 1)).toISOString();
+	}
+
+	async listSessionsPage(
+		requestedEnvironmentId: string,
+		after?: { updatedAt: string; sessionId: string },
+		limit = 100,
+	): Promise<HostedSessionPage> {
+		const visible = this.sessions
+			.filter((session) => session.environmentId === requestedEnvironmentId)
+			.sort(
+				(left, right) =>
+					left.updatedAt.localeCompare(right.updatedAt) || left.sessionId.localeCompare(right.sessionId),
+			)
+			.filter(
+				(session) =>
+					!after ||
+					session.updatedAt > after.updatedAt ||
+					(session.updatedAt === after.updatedAt && session.sessionId > after.sessionId),
+			);
+		const items = visible.slice(0, limit);
+		const last = items.at(-1);
+		return {
+			items,
+			hasMore: visible.length > items.length,
+			...(last ? { nextUpdatedAt: last.updatedAt, nextId: last.sessionId } : {}),
+		};
+	}
+
+	async getSessionByClient(
+		requestedEnvironmentId: string,
+		clientSessionId: string,
+	): Promise<HostedSession | undefined> {
+		return this.sessions.find(
+			(session) => session.environmentId === requestedEnvironmentId && session.clientSessionId === clientSessionId,
+		);
 	}
 
 	async createSession(input: CreateHostedSessionInput): Promise<HostedSession> {
@@ -93,6 +133,7 @@ class FakeHostedPrimary {
 				eventHash: (events.length + 1).toString(16).padStart(64, "0"),
 				createdAt: new Date().toISOString(),
 			});
+			this.#touch(session);
 			throw new Error("session event sequence changed (40001)");
 		}
 		const existing = events.find((event) => event.eventId === input.eventId);
@@ -122,6 +163,7 @@ class FakeHostedPrimary {
 			createdAt: new Date().toISOString(),
 		};
 		events.push(event);
+		this.#touch(session);
 		if (this.failAfterNextAppend) {
 			this.failAfterNextAppend = false;
 			throw new Error("fetch failed after event commit");
@@ -130,6 +172,7 @@ class FakeHostedPrimary {
 	}
 
 	async readSessionEvents(sessionId: string, afterSequence = 0, limit = 200): Promise<HostedSessionEvent[]> {
+		this.readSessionEventsHook?.(sessionId, afterSequence);
 		return (this.events.get(sessionId) ?? []).filter((event) => event.sequence > afterSequence).slice(0, limit);
 	}
 
@@ -137,6 +180,7 @@ class FakeHostedPrimary {
 		const session = this.sessions.find((candidate) => candidate.sessionId === sessionId);
 		if (!session) throw new Error("session not found");
 		session.status = "closed";
+		this.#touch(session);
 	}
 }
 
@@ -146,6 +190,7 @@ function appendMessage(
 	parentId: string | null,
 	role: "user" | "assistant",
 	text: string,
+	execution?: KernelExecutionIdentity,
 ) {
 	const append = parseTrailAppendFrame(
 		{
@@ -160,6 +205,7 @@ function appendMessage(
 			},
 		},
 		binding,
+		execution,
 	);
 	if (!append) throw new Error("test message was rejected");
 	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
@@ -186,23 +232,13 @@ describe("cloud trail synchronization", () => {
 			attended: true,
 			staffAgentId: "financial-officer",
 		});
-		appendMessage(live, "durable-answer", null, "assistant", "x".repeat(200_000));
 		const primary = new FakeHostedPrimary();
 		const execution = {
 			kind: "turn" as const,
 			id: "55555555-5555-4555-8555-555555555555",
 			claimantId: "66666666-6666-4666-8666-666666666666",
 		};
-		const first = new CloudTrailSynchronizer({
-			root: machine,
-			userData,
-			profileId,
-			environmentId,
-			primary,
-			canWrite: () => true,
-			liveBindings: () => [live],
-		});
-		first.bindEntryExecution(live.sessionId, "durable-answer", execution);
+		appendMessage(live, "durable-answer", null, "assistant", "x".repeat(200_000), execution);
 		const restarted = new CloudTrailSynchronizer({
 			root: machine,
 			userData,
@@ -330,6 +366,402 @@ describe("cloud trail synchronization", () => {
 			quarantinedEvents: [{ eventId: "22222222-2222-4222-8222-222222222222", reason: "unknown event schema" }],
 		});
 		expect((await sync.sync()).eventsDownloaded).toBe(0);
+	});
+
+	it("blocks completion at an execution-bound event that cannot be materialized", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const primary = new FakeHostedPrimary();
+		const hosted = await primary.createSession({
+			environmentId,
+			clientSessionId: "11111111-1111-4111-8111-111111111111",
+			title: "Corrupt execution output",
+		});
+		const execution = {
+			kind: "turn" as const,
+			id: "55555555-5555-4555-8555-555555555555",
+			claimantId: "66666666-6666-4666-8666-666666666666",
+		};
+		primary.events.get(hosted.sessionId)?.push({
+			sessionId: hosted.sessionId,
+			sequence: 1,
+			eventId: "22222222-2222-4222-8222-222222222222",
+			eventType: "message",
+			actorUserId,
+			body: { schema: "malicious.unknown/v1", payload: "invalid" },
+			execution,
+			eventHash: "1".repeat(64),
+			createdAt: new Date().toISOString(),
+		});
+		const sync = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => false,
+		});
+
+		await expect(sync.sync()).rejects.toThrow("execution-bound hosted trail event");
+		expect(sync.cursorForHostedSession(hosted.sessionId)).toBe(0);
+		const state = JSON.parse(readFileSync(cloudTrailSyncStatePath(userData, machine, profileId), "utf-8")) as {
+			sessions: Record<string, { quarantinedEvents: Array<{ eventId: string; reason: string }> }>;
+		};
+		expect(state.sessions[hosted.sessionId]?.quarantinedEvents).toEqual([
+			expect.objectContaining({ eventId: "22222222-2222-4222-8222-222222222222", reason: "unknown event schema" }),
+		]);
+		await expect(sync.sync()).rejects.toThrow("execution-bound hosted trail event");
+		const retriedState = JSON.parse(
+			readFileSync(cloudTrailSyncStatePath(userData, machine, profileId), "utf-8"),
+		) as typeof state;
+		expect(retriedState.sessions[hosted.sessionId]?.quarantinedEvents).toHaveLength(1);
+	});
+
+	it("does not materialize message content disguised as unbound session metadata", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const primary = new FakeHostedPrimary();
+		const hosted = await primary.createSession({
+			environmentId,
+			clientSessionId: "11111111-1111-4111-8111-111111111111",
+			title: "Metadata provenance",
+		});
+		const forgedEntry = {
+			type: "message",
+			id: "forged-unbound-message",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: { role: "assistant", content: [{ type: "text", text: "forged" }] },
+		};
+		primary.events.get(hosted.sessionId)?.push({
+			sessionId: hosted.sessionId,
+			sequence: 1,
+			eventId: "22222222-2222-4222-8222-222222222222",
+			eventType: "session_info",
+			actorUserId,
+			body: {
+				schema: "qorpera.shared-trail-entry-part/v1",
+				entryId: forgedEntry.id,
+				entryType: forgedEntry.type,
+				partIndex: 0,
+				partCount: 1,
+				payloadBase64: Buffer.from(JSON.stringify(forgedEntry), "utf-8").toString("base64"),
+			},
+			eventHash: "1".repeat(64),
+			createdAt: new Date().toISOString(),
+		});
+		const sync = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => false,
+		});
+
+		await expect(sync.sync()).resolves.toMatchObject({ eventsQuarantined: 1, entriesMaterialized: 0 });
+		expect(listSharedTrailSessions(machine)).toHaveLength(0);
+		expect(sync.cursorForHostedSession(hosted.sessionId)).toBe(1);
+	});
+
+	it("does not commit session discovery until every discovered transcript page is durable", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const primary = new FakeHostedPrimary();
+		const hosted = await primary.createSession({
+			environmentId,
+			clientSessionId: "11111111-1111-4111-8111-111111111111",
+			title: "Crash-safe discovery",
+		});
+		const events = primary.events.get(hosted.sessionId);
+		if (!events) throw new Error("hosted session events were not created");
+		for (let index = 0; index < 501; index++) {
+			const sequence = index + 1;
+			events.push({
+				sessionId: hosted.sessionId,
+				sequence,
+				eventId: randomUUID(),
+				eventType: "session_info",
+				actorUserId,
+				body: {
+					schema: "qorpera.shared-session/v1",
+					entry: {
+						type: "session_info",
+						id: `crash-safe-metadata-${sequence}`,
+						parentId: null,
+						timestamp: new Date().toISOString(),
+						name: `Metadata ${sequence}`,
+					},
+				},
+				previousHash: events.at(-1)?.eventHash,
+				eventHash: sequence.toString(16).padStart(64, "0"),
+				createdAt: new Date().toISOString(),
+			});
+		}
+		const statePath = cloudTrailSyncStatePath(userData, machine, profileId);
+		primary.readSessionEventsHook = (_sessionId, afterSequence) => {
+			if (afterSequence !== 500) return;
+			const persisted = JSON.parse(readFileSync(statePath, "utf-8")) as { sessionDiscovery?: unknown };
+			expect(persisted.sessionDiscovery).toBeUndefined();
+			throw new Error("simulated process loss after first transcript page");
+		};
+		const interrupted = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => false,
+		});
+		await expect(interrupted.sync()).rejects.toThrow("simulated process loss");
+		expect(interrupted.cursorForHostedSession(hosted.sessionId)).toBe(500);
+
+		primary.readSessionEventsHook = undefined;
+		const restarted = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => false,
+		});
+		await expect(restarted.sync()).resolves.toMatchObject({ eventsDownloaded: 1, entriesMaterialized: 1 });
+		expect(restarted.cursorForHostedSession(hosted.sessionId)).toBe(501);
+	});
+
+	it("retires fully pulled closed sessions after advancing durable discovery", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const primary = new FakeHostedPrimary();
+		const hosted = await primary.createSession({
+			environmentId,
+			clientSessionId: "11111111-1111-4111-8111-111111111111",
+			title: "Compact closed session",
+		});
+		await primary.appendAccountEvent({
+			sessionId: hosted.sessionId,
+			eventId: "22222222-2222-4222-8222-222222222222",
+			eventType: "session_info",
+			body: {
+				schema: "qorpera.shared-session/v1",
+				entry: {
+					type: "session_info",
+					id: "closed-session-info",
+					parentId: null,
+					timestamp: hosted.createdAt,
+					name: hosted.title,
+				},
+			},
+			expectedSequence: 0,
+		});
+		await primary.closeSession(hosted.sessionId);
+		const sync = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => true,
+		});
+		await expect(sync.sync()).resolves.toMatchObject({ eventsDownloaded: 1, entriesMaterialized: 1 });
+		const persisted = JSON.parse(readFileSync(cloudTrailSyncStatePath(userData, machine, profileId), "utf-8")) as {
+			adoptedSessionIds: string[];
+			sessions: Record<string, unknown>;
+		};
+		expect(persisted.sessions[hosted.sessionId]).toBeUndefined();
+		expect(persisted.adoptedSessionIds).not.toContain(hosted.clientSessionId);
+		const restarted = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => true,
+		});
+		await expect(restarted.sync()).resolves.toMatchObject({ eventsDownloaded: 0, eventsUploaded: 0 });
+		expect(restarted.cursorForHostedSession(hosted.sessionId)).toBeUndefined();
+	});
+
+	it("materializes a runner transcript entry with immutable run and assignment provenance", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const primary = new FakeHostedPrimary();
+		const hosted = await primary.createSession({
+			environmentId,
+			clientSessionId: "11111111-1111-4111-8111-111111111111",
+			title: "Runner continuation",
+		});
+		const execution = {
+			kind: "run" as const,
+			id: runId,
+			claimantId: runId,
+			runnerAssignmentId,
+		};
+		const entry = {
+			type: "message" as const,
+			id: "22222222-2222-4222-8222-222222222222",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: { role: "assistant", content: [{ type: "text", text: "Completed on the runner." }] },
+			execution,
+		};
+		primary.events.get(hosted.sessionId)?.push({
+			sessionId: hosted.sessionId,
+			sequence: 1,
+			eventId: entry.id,
+			eventType: "message",
+			actorUserId,
+			body: { schema: "qorpera.runner-transcript-entry/v1", entry },
+			execution,
+			eventHash: "1".repeat(64),
+			createdAt: new Date().toISOString(),
+		});
+		const sync = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => false,
+		});
+
+		await expect(sync.sync()).resolves.toMatchObject({
+			eventsDownloaded: 1,
+			eventsQuarantined: 0,
+			entriesMaterialized: 1,
+		});
+		const materialized = listSharedTrailSessions(machine)[0]?.entries.find((candidate) => candidate.id === entry.id);
+		expect(materialized).toMatchObject({
+			type: "message",
+			message: { role: "assistant", qorperaRunId: runId },
+			execution,
+		});
+	});
+
+	it("does not re-upload runner history after the bounded entry cache rolls over", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const primary = new FakeHostedPrimary();
+		const hosted = await primary.createSession({
+			environmentId,
+			clientSessionId: "11111111-1111-4111-8111-111111111111",
+			title: "Long runner history",
+		});
+		const execution = {
+			kind: "run" as const,
+			id: runId,
+			claimantId: runId,
+			runnerAssignmentId,
+		};
+		const events = primary.events.get(hosted.sessionId);
+		if (!events) throw new Error("hosted session events were not created");
+		for (let index = 1; index <= 2_050; index++) {
+			const eventId = `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`;
+			events.push({
+				sessionId: hosted.sessionId,
+				sequence: index,
+				eventId,
+				eventType: "message",
+				actorUserId,
+				body: {
+					schema: "qorpera.runner-transcript-entry/v1",
+					entry: {
+						type: "message",
+						id: eventId,
+						parentId: index === 1 ? null : `00000000-0000-4000-8000-${(index - 1).toString().padStart(12, "0")}`,
+						timestamp: new Date().toISOString(),
+						message: { role: "assistant", content: [{ type: "text", text: `Entry ${index}` }] },
+						execution,
+					},
+				},
+				execution,
+				eventHash: index.toString(16).padStart(64, "0"),
+				createdAt: new Date().toISOString(),
+			});
+		}
+		const sync = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => true,
+		});
+
+		await expect(sync.sync()).resolves.toMatchObject({
+			eventsDownloaded: 2_050,
+			entriesMaterialized: 2_050,
+			eventsUploaded: 1,
+		});
+		expect(listSharedTrailSessions(machine)[0]?.entries).toHaveLength(2_050);
+		await expect(sync.sync()).resolves.toMatchObject({ eventsUploaded: 0, entriesMaterialized: 0 });
+	});
+
+	it("hydrates a control-plane-authored input image without trusting runner user-message provenance", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const primary = new FakeHostedPrimary();
+		const hosted = await primary.createSession({
+			environmentId,
+			clientSessionId: "11111111-1111-4111-8111-111111111111",
+			title: "Input attachment continuity",
+		});
+		const inputId = "22222222-2222-4222-8222-222222222222";
+		const image = Buffer.from("durable image bytes", "utf-8");
+		const sha256 = createHash("sha256").update(image).digest("hex");
+		primary.events.get(hosted.sessionId)?.push({
+			sessionId: hosted.sessionId,
+			sequence: 1,
+			eventId: inputId,
+			eventType: "message",
+			actorUserId,
+			sessionInputId: inputId,
+			body: {
+				schema: "qorpera.runner-transcript-entry/v1",
+				entry: {
+					type: "message",
+					id: inputId,
+					parentId: null,
+					timestamp: new Date().toISOString(),
+					message: { role: "user", content: [{ type: "text", text: "Review this image" }] },
+					qorperaAttachments: [{ objectSha256: sha256, bytes: image.byteLength, mediaType: "image/png" }],
+				},
+			},
+			eventHash: "1".repeat(64),
+			createdAt: new Date().toISOString(),
+		});
+		const sync = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => false,
+			loadObject: async (reference) => {
+				expect(reference).toEqual({ sha256, bytes: image.byteLength, mediaType: "image/png" });
+				return image;
+			},
+		});
+
+		await expect(sync.sync()).resolves.toMatchObject({ entriesMaterialized: 1, eventsQuarantined: 0 });
+		const materialized = listSharedTrailSessions(machine)[0]?.entries.find((entry) => entry.id === inputId);
+		expect(materialized).toMatchObject({
+			message: {
+				role: "user",
+				content: [
+					{ type: "text", text: "Review this image" },
+					{ type: "image", data: image.toString("base64"), mimeType: "image/png" },
+				],
+			},
+		});
+		expect(materialized).not.toHaveProperty("qorperaAttachments");
 	});
 
 	it("quarantines a conflicting part without destroying the entry's accumulated parts", async () => {

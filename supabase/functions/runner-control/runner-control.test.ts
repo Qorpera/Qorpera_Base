@@ -10,8 +10,10 @@ import {
 const runnerId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
 const jobId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const renewalId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";
+const assignmentId = "33333333-3333-4333-8333-333333333333";
 const clientArtifactIndexId = "11111111-1111-4111-8111-111111111111";
 const clientSubstrateVersionId = "22222222-2222-4222-8222-222222222222";
+const outputSnapshotId = "44444444-4444-4444-8444-444444444444";
 const token = "a".repeat(43);
 const nextToken = "b".repeat(43);
 
@@ -49,19 +51,20 @@ describe("runner control boundary", () => {
 		});
 	});
 
-	it("bounds claim, completion, and failure payloads", () => {
-		assert.equal(runnerControlRpcName("complete"), "qorpera_complete_runner_job_v4");
+	it("bounds assignment acceptance, completion, and failure payloads", () => {
+		assert.equal(runnerControlRpcName("complete"), "qorpera_complete_runner_job_v6");
 		assert.equal(runnerControlRpcStatus({ code: "40001" }), 409);
 		assert.equal(runnerControlRpcStatus({ code: "23505" }), 409);
 		assert.equal(runnerControlRpcStatus({ code: "55000" }), 423);
 		assert.deepEqual(
 			parseRunnerControlRequest({
-				action: "claim",
+				action: "accept",
 				runnerId,
-				clientLeaseId: renewalId,
-				leaseToken: token,
+				assignmentId,
+				jobId,
+				assignmentCapability: token,
 			}),
-			{ action: "claim", runnerId, clientLeaseId: renewalId, leaseToken: token },
+			{ action: "accept", runnerId, assignmentId, jobId, assignmentCapability: token },
 		);
 		assert.deepEqual(
 			parseRunnerControlRequest({
@@ -71,6 +74,7 @@ describe("runner control boundary", () => {
 				leaseToken: token,
 				clientArtifactIndexId,
 				clientSubstrateVersionId,
+				outputSnapshotId,
 				result: { ok: true },
 			}),
 			{
@@ -80,6 +84,7 @@ describe("runner control boundary", () => {
 				leaseToken: token,
 				clientArtifactIndexId,
 				clientSubstrateVersionId,
+				outputSnapshotId,
 				result: { ok: true },
 			},
 		);

@@ -17,6 +17,7 @@ export type StaffRoutineOperation =
 			intervalMinutes: number;
 			startAt?: string;
 			effort?: ScheduledJobEffort;
+			reviewerStaffIds?: string[];
 	  }
 	| {
 			action: "upsert_event";
@@ -27,6 +28,7 @@ export type StaffRoutineOperation =
 			sourceHints: string[];
 			checkEveryMinutes: number;
 			effort?: ScheduledJobEffort;
+			reviewerStaffIds?: string[];
 	  }
 	| {
 			action: "upsert_weekly";
@@ -37,6 +39,7 @@ export type StaffRoutineOperation =
 			localTime: string;
 			timeZone?: string;
 			effort?: ScheduledJobEffort;
+			reviewerStaffIds?: string[];
 	  }
 	| { action: "pause" | "resume" | "remove"; routineKey: string };
 
@@ -81,6 +84,14 @@ export function applyStaffRoutineOperation(
 							],
 				enabled: true,
 				effort: operation.effort ?? "high",
+				...(operation.reviewerStaffIds === undefined
+					? {}
+					: {
+							publication:
+								operation.reviewerStaffIds.length === 0
+									? ({ mode: "automatic" } as const)
+									: ({ mode: "review", reviewerStaffIds: operation.reviewerStaffIds } as const),
+						}),
 			}),
 		};
 	}

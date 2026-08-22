@@ -263,8 +263,39 @@ describe("canonical Company File cache", () => {
 		await writeFile(join(root, "files", "report.txt"), "second\n");
 		primary.loseNextCommitResponse = true;
 		await expect(checkpointCloudCompanyFile(input)).rejects.toThrow("network response lost");
+		await writeFile(join(root, "files", "report.txt"), "third\n");
+		const recovered = await checkpointCloudCompanyFile(input);
+		expect(recovered).toMatchObject({ changed: true, merged: false });
+		expect(primary.commitCount).toBe(3);
+		const manifest = await readCloudCompanyTreeManifest(
+			profileId,
+			currentCloudCompanyTreeReference(recovered.snapshot.tree),
+			objects,
+		);
+		const report = manifest.entries.find((entry) => entry.path === "files/report.txt");
+		expect(report?.kind).toBe("file");
+		if (!report || report.kind !== "file") throw new Error("report was not captured");
+		expect(Buffer.from(await objects.getFile(profileId, report.file)).toString("utf-8")).toBe("third\n");
+	});
+
+	it("re-uploads an aged-out pending revision before resuming publication", async () => {
+		const root = join(await temporaryDirectory(), "company");
+		const userData = await temporaryDirectory();
+		scaffoldCompany(root);
+		await mkdir(join(root, "files"), { recursive: true });
+		await writeFile(join(root, "files", "report.txt"), "durable\n");
+		const primary = new MemoryCompanyFilePrimary();
+		const transport = new MemoryObjectTransport();
+		const objects = new CloudContentAddressedStore(transport);
+		const input = { userData, companyRoot: root, profileId, environmentId, primary, objects };
+
+		primary.loseNextCommitResponse = true;
+		await expect(checkpointCloudCompanyFile(input)).rejects.toThrow("network response lost");
+		transport.objects.clear();
+
 		await expect(checkpointCloudCompanyFile(input)).resolves.toMatchObject({ changed: true, merged: false });
-		expect(primary.commitCount).toBe(2);
+		expect(transport.objects.size).toBeGreaterThan(0);
+		expect(primary.commitCount).toBe(1);
 	});
 
 	it("automatically combines non-conflicting local and canonical changes", async () => {
@@ -312,6 +343,7 @@ describe("canonical Company File cache", () => {
 		await cp(root, remoteRoot, { recursive: true });
 		await writeFile(join(root, "files", "direction.txt"), "local recommendation\n");
 		await writeFile(join(remoteRoot, "files", "direction.txt"), "remote recommendation\n");
+		await writeFile(join(remoteRoot, "files", "remote-note.txt"), "remote context\n");
 		const remote = await primary.commitCompanyFileRevision({
 			environmentId,
 			clientRevisionId: "99999999-9999-4999-8999-999999999999",
@@ -321,6 +353,7 @@ describe("canonical Company File cache", () => {
 
 		await expect(checkpointCloudCompanyFile(input)).rejects.toThrow("change conflict(s) waiting for review");
 		expect(await readFile(join(root, "files", "direction.txt"), "utf-8")).toBe("local recommendation\n");
+		expect(await readFile(join(root, "files", "remote-note.txt"), "utf-8")).toBe("remote context\n");
 		const state = CloudCompanyFileCacheState.open(userData, profileId, environmentId, root);
 		expect(state.binding.conflict).toMatchObject({
 			baseSnapshotId: base,
@@ -332,6 +365,7 @@ describe("canonical Company File cache", () => {
 		state.resolveConflictAgainst(remote);
 		await expect(checkpointCloudCompanyFile(input)).resolves.toMatchObject({ changed: true, merged: false });
 		expect(await readFile(join(root, "files", "direction.txt"), "utf-8")).toBe("local recommendation\n");
+		expect(await readFile(join(root, "files", "remote-note.txt"), "utf-8")).toBe("remote context\n");
 		expect(primary.commitCount).toBe(3);
 	});
 
@@ -350,7 +384,9 @@ describe("canonical Company File cache", () => {
 
 		await cp(root, remoteRoot, { recursive: true });
 		await writeFile(join(root, "files", "direction.txt"), "local recommendation\n");
+		await writeFile(join(root, "files", "local-context.txt"), "keep this local context\n");
 		await writeFile(join(remoteRoot, "files", "direction.txt"), "remote recommendation\n");
+		await writeFile(join(remoteRoot, "files", "remote-note.txt"), "keep this cloud context\n");
 		const remote = await primary.commitCompanyFileRevision({
 			environmentId,
 			clientRevisionId: "77777777-7777-4777-8777-777777777777",
@@ -362,6 +398,8 @@ describe("canonical Company File cache", () => {
 		const conflict = state.binding.conflict;
 		expect(conflict).toBeDefined();
 		if (!conflict) throw new Error("expected a durable Company File conflict");
+		expect(await readFile(join(root, "files", "local-context.txt"), "utf-8")).toBe("keep this local context\n");
+		expect(await readFile(join(root, "files", "remote-note.txt"), "utf-8")).toBe("keep this cloud context\n");
 
 		await replaceCloudCompanyCacheWithSnapshot({
 			companyRoot: root,
@@ -369,11 +407,14 @@ describe("canonical Company File cache", () => {
 			environmentId,
 			localTree: conflict.localTree,
 			remoteSnapshot: remote,
+			conflictPaths: conflict.paths,
 			objects,
 		});
 		state.resolveConflictAgainst(remote);
-		await expect(checkpointCloudCompanyFile(input)).resolves.toMatchObject({ changed: false, merged: false });
+		await expect(checkpointCloudCompanyFile(input)).resolves.toMatchObject({ changed: true, merged: false });
 		expect(await readFile(join(root, "files", "direction.txt"), "utf-8")).toBe("remote recommendation\n");
-		expect(primary.commitCount).toBe(2);
+		expect(await readFile(join(root, "files", "local-context.txt"), "utf-8")).toBe("keep this local context\n");
+		expect(await readFile(join(root, "files", "remote-note.txt"), "utf-8")).toBe("keep this cloud context\n");
+		expect(primary.commitCount).toBe(3);
 	});
 });

@@ -44,6 +44,12 @@ export interface CloudObjectTransport {
 	get(path: string): Promise<Uint8Array>;
 }
 
+export interface HttpCloudObjectTransportOptions {
+	baseUrl: string;
+	accessToken: () => Promise<string>;
+	fetch?: typeof fetch;
+}
+
 interface CloudFileChunk {
 	sha256: string;
 	bytes: number;
@@ -118,6 +124,48 @@ export class SupabaseCloudObjectTransport implements CloudObjectTransport {
 	}
 }
 
+export class HttpCloudObjectTransport implements CloudObjectTransport {
+	readonly #baseUrl: string;
+	readonly #accessToken: () => Promise<string>;
+	readonly #fetch: typeof fetch;
+
+	constructor(options: HttpCloudObjectTransportOptions) {
+		this.#baseUrl = new URL(options.baseUrl).href.replace(/\/$/, "");
+		this.#accessToken = options.accessToken;
+		this.#fetch = options.fetch ?? fetch;
+	}
+
+	async put(path: string, bytes: Uint8Array, mediaType: string): Promise<"exists" | "stored"> {
+		const response = await this.#fetch(`${this.#baseUrl}/v1/profile-objects/${path}`, {
+			method: "PUT",
+			headers: {
+				authorization: `Bearer ${await this.#accessToken()}`,
+				"content-length": String(bytes.byteLength),
+				"content-type": mediaType,
+			},
+			body: Uint8Array.from(bytes),
+		});
+		if (response.status !== 200 && response.status !== 201) throw new Error("Cloud object upload failed");
+		const value: unknown = await response.json();
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			throw new Error("Cloud object gateway returned an invalid upload receipt");
+		}
+		const status = (value as Record<string, unknown>).status;
+		if (status !== "exists" && status !== "stored") {
+			throw new Error("Cloud object gateway returned an invalid upload receipt");
+		}
+		return status;
+	}
+
+	async get(path: string): Promise<Uint8Array> {
+		const response = await this.#fetch(`${this.#baseUrl}/v1/profile-objects/${path}`, {
+			headers: { authorization: `Bearer ${await this.#accessToken()}` },
+		});
+		if (!response.ok) throw new Error("Cloud object download failed");
+		return new Uint8Array(await response.arrayBuffer());
+	}
+}
+
 export class CloudContentAddressedStore {
 	readonly #transport: CloudObjectTransport;
 
@@ -155,6 +203,16 @@ export class CloudContentAddressedStore {
 	}
 
 	async putFile(profileId: string, bytes: Uint8Array, mediaType: string): Promise<CloudFileReference> {
+		const staged = await this.stageFile(profileId, bytes, mediaType);
+		return {
+			manifestSha256: staged.manifestSha256,
+			fileSha256: staged.fileSha256,
+			bytes: staged.bytes,
+			mediaType: staged.mediaType,
+		};
+	}
+
+	async stageFile(profileId: string, bytes: Uint8Array, mediaType: string): Promise<StagedCloudFileReference> {
 		requiredProfileId(profileId);
 		if (bytes.byteLength > MAX_FILE_BYTES) throw new Error("Cloud file exceeds the 256 MiB in-memory limit");
 		const normalizedMediaType = requiredMediaType(mediaType);
@@ -178,6 +236,14 @@ export class CloudContentAddressedStore {
 			fileSha256: manifest.fileSha256,
 			bytes: manifest.bytes,
 			mediaType: manifest.mediaType,
+			objects: [
+				...new Map(
+					[
+						...chunks.map((chunk) => ({ sha256: chunk.sha256, bytes: chunk.bytes })),
+						{ sha256: manifestReference.sha256, bytes: manifestReference.bytes },
+					].map((object) => [object.sha256, object]),
+				).values(),
+			],
 		};
 	}
 
@@ -318,12 +384,13 @@ export class CloudContentAddressedStore {
 			requiredMediaType(manifest.mediaType) !== manifest.mediaType ||
 			!Array.isArray(manifest.chunks) ||
 			manifest.chunks.some(
-				(chunk) =>
+				(chunk, index) =>
 					!chunk ||
 					!OBJECT_SHA256_PATTERN.test(chunk.sha256) ||
 					!Number.isSafeInteger(chunk.bytes) ||
 					chunk.bytes < 1 ||
-					chunk.bytes > FILE_CHUNK_BYTES,
+					chunk.bytes > FILE_CHUNK_BYTES ||
+					(index < (manifest.chunks?.length ?? 0) - 1 && chunk.bytes !== FILE_CHUNK_BYTES),
 			) ||
 			manifest.chunks.reduce((total, chunk) => total + chunk.bytes, 0) !== manifest.bytes
 		) {

@@ -7,6 +7,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_JSON_BYTES = 64 * 1024;
+const CONTROL_REQUEST_TIMEOUT_MS = 30_000;
 
 export const CLOUD_RUNNER_CAPABILITIES = ["agent_turn", "git_worktree", "company_substrate"] as const;
 export type CloudRunnerCapability = (typeof CLOUD_RUNNER_CAPABILITIES)[number];
@@ -38,11 +39,13 @@ export interface CloudRunner {
 
 export interface CloudRunnerJob {
 	jobId: string;
+	runId?: string;
 	profileId: string;
 	environmentId: string;
 	sessionId?: string;
 	substrateVersionId: string;
 	clientJobId: string;
+	assignmentId?: string;
 	requiredCapability: CloudRunnerCapability;
 	jobType: string;
 	payload: JsonValue;
@@ -102,7 +105,13 @@ export type CloudRunnerControlRequest =
 			runnerVersion: string;
 	  }
 	| { action: "heartbeat"; runnerId: string; nextSessionToken: string; renewalId: string }
-	| { action: "claim"; runnerId: string; clientLeaseId: string; leaseToken: string }
+	| {
+			action: "accept";
+			runnerId: string;
+			assignmentId: string;
+			jobId: string;
+			assignmentCapability: string;
+	  }
 	| { action: "renew"; runnerId: string; jobId: string; leaseToken: string }
 	| {
 			action: "complete";
@@ -111,6 +120,7 @@ export type CloudRunnerControlRequest =
 			leaseToken: string;
 			clientArtifactIndexId: string;
 			clientSubstrateVersionId: string;
+			outputSnapshotId?: string;
 			result: JsonValue;
 	  }
 	| {
@@ -124,6 +134,12 @@ export type CloudRunnerControlRequest =
 
 export interface CloudRunnerControlTransport {
 	request(token: string, body: CloudRunnerControlRequest): Promise<unknown>;
+}
+
+export interface CloudRunnerAssignmentAcceptance {
+	assignmentId: string;
+	jobId: string;
+	capability: string;
 }
 
 export class CloudRunnerControlRequestError extends Error {
@@ -301,6 +317,9 @@ export function parseCloudRunnerJob(value: unknown): CloudRunnerJob {
 	}
 	return {
 		jobId: uuid(input.job_id, "runner job id"),
+		...(optionalUuid(input.run_id, "runner execution run id")
+			? { runId: uuid(input.run_id, "runner execution run id") }
+			: {}),
 		profileId: uuid(input.profile_id, "runner job profile id"),
 		environmentId: uuid(input.environment_id, "runner job environment id"),
 		...(optionalUuid(input.session_id, "runner job session id")
@@ -308,6 +327,9 @@ export function parseCloudRunnerJob(value: unknown): CloudRunnerJob {
 			: {}),
 		substrateVersionId: uuid(input.substrate_version_id, "runner job substrate id"),
 		clientJobId: uuid(input.client_job_id, "runner client job id"),
+		...(optionalUuid(input.assignment_id, "runner assignment id")
+			? { assignmentId: uuid(input.assignment_id, "runner assignment id") }
+			: {}),
 		requiredCapability: capability(input.required_capability),
 		jobType: input.job_type,
 		payload: objectJson(input.payload, "runner job payload"),
@@ -390,8 +412,15 @@ export class SupabaseCloudRunnerControlTransport implements CloudRunnerControlTr
 	readonly #url: string;
 	readonly #publishableKey: string;
 	readonly #fetch: typeof fetch;
+	readonly #signal?: AbortSignal;
+	readonly #requestTimeoutMs: number;
 
-	constructor(baseUrl: string, publishableKey: string, fetchImplementation: typeof fetch = fetch) {
+	constructor(
+		baseUrl: string,
+		publishableKey: string,
+		fetchImplementation: typeof fetch = fetch,
+		options: { signal?: AbortSignal; requestTimeoutMs?: number } = {},
+	) {
 		const url = new URL("/functions/v1/runner-control", baseUrl);
 		if (url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
 			throw new Error("Runner control URL must use HTTPS");
@@ -400,10 +429,16 @@ export class SupabaseCloudRunnerControlTransport implements CloudRunnerControlTr
 		this.#url = url.href;
 		this.#publishableKey = publishableKey;
 		this.#fetch = fetchImplementation;
+		this.#signal = options.signal;
+		this.#requestTimeoutMs = options.requestTimeoutMs ?? CONTROL_REQUEST_TIMEOUT_MS;
+		if (!Number.isSafeInteger(this.#requestTimeoutMs) || this.#requestTimeoutMs < 1) {
+			throw new Error("Runner control request timeout is invalid");
+		}
 	}
 
 	async request(token: string, body: CloudRunnerControlRequest): Promise<unknown> {
 		requiredToken(token, "Runner token");
+		const timeout = AbortSignal.timeout(this.#requestTimeoutMs);
 		const response = await this.#fetch(this.#url, {
 			method: "POST",
 			headers: {
@@ -413,6 +448,7 @@ export class SupabaseCloudRunnerControlTransport implements CloudRunnerControlTr
 				authorization: `Bearer ${token}`,
 			},
 			body: JSON.stringify(body),
+			signal: this.#signal ? AbortSignal.any([this.#signal, timeout]) : timeout,
 		});
 		if (!response.ok) throw new CloudRunnerControlRequestError(response.status);
 		const envelope = record(await response.json(), "response");
@@ -425,15 +461,21 @@ interface PendingHeartbeat {
 	renewalId: string;
 }
 
-interface PendingClaim {
-	clientLeaseId: string;
-	leaseToken: string;
+interface PendingAssignment {
+	assignmentId: string;
+	jobId: string;
+	capability: string;
 }
 
 interface ActiveRunnerLease {
 	job: CloudRunnerJob;
 	leaseToken: string;
-	pendingCompletion?: JsonValue;
+	pendingCompletion?: CloudRunnerCompletion;
+}
+
+export interface CloudRunnerCompletion {
+	result: JsonValue;
+	outputSnapshotId?: string;
 }
 
 interface RestoredRunnerAuthority {
@@ -441,7 +483,7 @@ interface RestoredRunnerAuthority {
 	sessionToken?: string;
 	pendingActivationToken?: string;
 	pendingHeartbeat?: PendingHeartbeat;
-	pendingClaim?: PendingClaim;
+	pendingAssignment?: PendingAssignment;
 	runner?: CloudRunner;
 	leases: ActiveRunnerLease[];
 	consumedRepairSha256?: string;
@@ -514,7 +556,7 @@ function storedJob(job: CloudRunnerJob): JsonValue {
 
 function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRunnerAuthority {
 	const input = record(value, "authority state");
-	if (input.schema !== "qorpera.runner-authority/v1" || uuid(input.runner_id, "authority runner id") !== runnerId) {
+	if (input.schema !== "qorpera.runner-authority/v3" || uuid(input.runner_id, "authority runner id") !== runnerId) {
 		throw new Error("Runner authority state has an invalid identity");
 	}
 	const activationToken = optionalToken(input.activation_token, "activation token");
@@ -528,12 +570,13 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 			renewalId: uuid(pending.renewal_id, "pending heartbeat renewal id"),
 		};
 	}
-	let pendingClaim: PendingClaim | undefined;
-	if (input.pending_claim !== null && input.pending_claim !== undefined) {
-		const pending = record(input.pending_claim, "pending claim");
-		pendingClaim = {
-			clientLeaseId: uuid(pending.client_lease_id, "pending claim lease id"),
-			leaseToken: stateToken(pending.lease_token, "pending claim lease token"),
+	let pendingAssignment: PendingAssignment | undefined;
+	if (input.pending_assignment !== null && input.pending_assignment !== undefined) {
+		const pending = record(input.pending_assignment, "pending assignment");
+		pendingAssignment = {
+			assignmentId: uuid(pending.assignment_id, "pending assignment id"),
+			jobId: uuid(pending.job_id, "pending assignment job id"),
+			capability: stateToken(pending.capability, "pending assignment capability"),
 		};
 	}
 	let consumedRepairSha256: string | undefined;
@@ -548,10 +591,16 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 	const leases = input.leases.map((value): ActiveRunnerLease => {
 		const lease = record(value, "stored lease");
 		const job = parseCloudRunnerJob(lease.job);
-		const pendingCompletion =
-			lease.pending_completion === null || lease.pending_completion === undefined
-				? undefined
-				: objectJson(lease.pending_completion, "stored completion");
+		let pendingCompletion: CloudRunnerCompletion | undefined;
+		if (lease.pending_completion !== null && lease.pending_completion !== undefined) {
+			const pending = record(lease.pending_completion, "stored completion");
+			pendingCompletion = {
+				result: objectJson(pending.result, "stored completion result"),
+				...(optionalUuid(pending.output_snapshot_id, "stored completion snapshot id")
+					? { outputSnapshotId: uuid(pending.output_snapshot_id, "stored completion snapshot id") }
+					: {}),
+			};
+		}
 		return {
 			job,
 			leaseToken: stateToken(lease.lease_token, "stored lease token"),
@@ -561,7 +610,7 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 	if (
 		Boolean(activationToken) === Boolean(sessionToken) ||
 		(Boolean(pendingActivationToken) && !activationToken) ||
-		(Boolean(pendingHeartbeat) || Boolean(pendingClaim) || Boolean(runner) || leases.length > 0) !==
+		(Boolean(pendingHeartbeat) || Boolean(pendingAssignment) || Boolean(runner) || leases.length > 0) !==
 			Boolean(sessionToken) ||
 		(runner !== undefined && runner.runnerId !== runnerId) ||
 		new Set(leases.map((lease) => lease.job.jobId)).size !== leases.length ||
@@ -580,7 +629,7 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 		...(sessionToken ? { sessionToken } : {}),
 		...(pendingActivationToken ? { pendingActivationToken } : {}),
 		...(pendingHeartbeat ? { pendingHeartbeat } : {}),
-		...(pendingClaim ? { pendingClaim } : {}),
+		...(pendingAssignment ? { pendingAssignment } : {}),
 		...(runner ? { runner } : {}),
 		leases,
 		...(consumedRepairSha256 ? { consumedRepairSha256 } : {}),
@@ -602,7 +651,7 @@ export class DisposableCloudRunner {
 	#sessionToken?: string;
 	#pendingActivationToken?: string;
 	#pendingHeartbeat?: PendingHeartbeat;
-	#pendingClaim?: PendingClaim;
+	#pendingAssignment?: PendingAssignment;
 	#runner?: CloudRunner;
 	#consumedRepairSha256?: string;
 	readonly #leases = new Map<string, ActiveRunnerLease>();
@@ -648,7 +697,7 @@ export class DisposableCloudRunner {
 		instance.#sessionToken = restored.sessionToken;
 		instance.#pendingActivationToken = restored.pendingActivationToken;
 		instance.#pendingHeartbeat = restored.pendingHeartbeat;
-		instance.#pendingClaim = restored.pendingClaim;
+		instance.#pendingAssignment = restored.pendingAssignment;
 		instance.#runner = restored.runner;
 		instance.#consumedRepairSha256 = restored.consumedRepairSha256;
 		for (const lease of restored.leases) instance.#leases.set(lease.job.jobId, lease);
@@ -772,61 +821,52 @@ export class DisposableCloudRunner {
 		}
 	}
 
-	async claim(): Promise<CloudRunnerJob | undefined> {
+	async acceptAssignment(assignment: CloudRunnerAssignmentAcceptance): Promise<CloudRunnerJob> {
 		const token = this.#sessionToken;
 		if (!token) throw new Error("Runner is not active");
-		let replaceExpiredReplay = true;
-		while (true) {
-			if (!this.#pendingClaim) {
-				this.#pendingClaim = { clientLeaseId: randomUUID(), leaseToken: createToken() };
-				await this.#persist();
-			}
-			const pendingClaim = this.#pendingClaim;
-			let value: unknown;
-			try {
-				value = await this.#transport.request(token, {
-					action: "claim",
-					runnerId: this.#runnerId,
-					clientLeaseId: pendingClaim.clientLeaseId,
-					leaseToken: pendingClaim.leaseToken,
-				});
-			} catch (error) {
-				if (!replaceExpiredReplay || cloudRunnerControlRequestStatus(error) !== 409) throw error;
-				this.#pendingClaim = undefined;
-				try {
-					await this.#persist();
-				} catch (persistError) {
-					this.#pendingClaim = pendingClaim;
-					throw persistError;
-				}
-				replaceExpiredReplay = false;
-				continue;
-			}
-			if (value === null) {
-				this.#pendingClaim = undefined;
-				try {
-					await this.#persist();
-				} catch (error) {
-					this.#pendingClaim = pendingClaim;
-					throw error;
-				}
-				return undefined;
-			}
-			const job = parseCloudRunnerJob(value);
-			if (job.runnerId !== this.#runnerId || job.status !== "leased") {
-				throw new Error("Runner claim returned an inconsistent lease");
-			}
-			this.#leases.set(job.jobId, { job, leaseToken: pendingClaim.leaseToken });
-			this.#pendingClaim = undefined;
-			try {
-				await this.#persist();
-			} catch (error) {
-				this.#leases.delete(job.jobId);
-				this.#pendingClaim = pendingClaim;
-				throw error;
-			}
-			return job;
+		if (!UUID_PATTERN.test(assignment.assignmentId) || !UUID_PATTERN.test(assignment.jobId)) {
+			throw new Error("Runner assignment is invalid");
 		}
+		requiredToken(assignment.capability, "Runner assignment capability");
+		const received: PendingAssignment = {
+			assignmentId: assignment.assignmentId,
+			jobId: assignment.jobId,
+			capability: assignment.capability,
+		};
+		if (this.#pendingAssignment && !isDeepStrictEqual(this.#pendingAssignment, received)) {
+			throw new Error("Runner already has another assignment awaiting acceptance");
+		}
+		if (!this.#pendingAssignment) {
+			this.#pendingAssignment = received;
+			await this.#persist();
+		}
+		const job = parseCloudRunnerJob(
+			await this.#transport.request(token, {
+				action: "accept",
+				runnerId: this.#runnerId,
+				assignmentId: received.assignmentId,
+				jobId: received.jobId,
+				assignmentCapability: received.capability,
+			}),
+		);
+		if (job.jobId !== received.jobId || job.runnerId !== this.#runnerId || job.status !== "leased") {
+			throw new Error("Runner assignment returned an inconsistent lease");
+		}
+		const prior = this.#leases.get(job.jobId);
+		if (prior && prior.leaseToken !== received.capability) {
+			throw new Error("Runner assignment conflicts with retained job authority");
+		}
+		this.#leases.set(job.jobId, { job, leaseToken: received.capability });
+		this.#pendingAssignment = undefined;
+		try {
+			await this.#persist();
+		} catch (error) {
+			if (prior) this.#leases.set(job.jobId, prior);
+			else this.#leases.delete(job.jobId);
+			this.#pendingAssignment = received;
+			throw error;
+		}
+		return job;
 	}
 
 	async renew(jobId: string): Promise<CloudRunnerJob> {
@@ -844,7 +884,7 @@ export class DisposableCloudRunner {
 		return job;
 	}
 
-	broker(job: CloudRunnerJob, transport: CloudRunnerBrokerTransport): CloudRunnerJobBroker {
+	broker(job: CloudRunnerJob, transport: CloudRunnerBrokerTransport, signal?: AbortSignal): CloudRunnerJobBroker {
 		if (job.runnerId !== this.#runnerId || job.status !== "leased" || !this.#leases.has(job.jobId)) {
 			throw new Error("Runner job lease is unavailable");
 		}
@@ -852,6 +892,7 @@ export class DisposableCloudRunner {
 			job,
 			runnerId: this.#runnerId,
 			transport,
+			...(signal ? { signal } : {}),
 			credentials: () => {
 				const sessionToken = this.#sessionToken;
 				const lease = this.#leases.get(job.jobId);
@@ -861,7 +902,7 @@ export class DisposableCloudRunner {
 		});
 	}
 
-	async complete(jobId: string, result: JsonValue): Promise<CloudRunnerJob> {
+	async complete(jobId: string, result: JsonValue, outputSnapshotId?: string): Promise<CloudRunnerJob> {
 		const encoded = JSON.stringify(result);
 		if (
 			!result ||
@@ -872,14 +913,21 @@ export class DisposableCloudRunner {
 		) {
 			throw new Error("Runner job result is invalid");
 		}
+		if (outputSnapshotId !== undefined && !UUID_PATTERN.test(outputSnapshotId)) {
+			throw new Error("Runner output Company File snapshot is invalid");
+		}
 		const active = this.#leases.get(jobId);
 		if (!active) throw new Error("Runner job lease is unavailable");
+		const completion: CloudRunnerCompletion = {
+			result: structuredClone(result),
+			...(outputSnapshotId ? { outputSnapshotId } : {}),
+		};
 		if (active.pendingCompletion) {
-			if (!isDeepStrictEqual(active.pendingCompletion, result)) {
+			if (!isDeepStrictEqual(active.pendingCompletion, completion)) {
 				throw new Error("Runner job completion changed after it was staged");
 			}
 		} else {
-			active.pendingCompletion = structuredClone(result);
+			active.pendingCompletion = completion;
 			try {
 				await this.#persist();
 			} catch (error) {
@@ -889,7 +937,7 @@ export class DisposableCloudRunner {
 		}
 		const stagedCompletion = active.pendingCompletion;
 		if (!stagedCompletion) throw new Error("Runner job completion could not be staged");
-		const job = await this.#jobRequest("complete", jobId, { result: stagedCompletion });
+		const job = await this.#jobRequest("complete", jobId, stagedCompletion);
 		this.#leases.delete(jobId);
 		try {
 			await this.#persist();
@@ -923,8 +971,13 @@ export class DisposableCloudRunner {
 	}
 
 	pendingCompletion(jobId: string): JsonValue | undefined {
-		const value = this.#leases.get(jobId)?.pendingCompletion;
-		return value === undefined ? undefined : structuredClone(value);
+		const completion = this.#leases.get(jobId)?.pendingCompletion;
+		return completion === undefined ? undefined : structuredClone(completion.result);
+	}
+
+	stagedCompletion(jobId: string): CloudRunnerCompletion | undefined {
+		const completion = this.#leases.get(jobId)?.pendingCompletion;
+		return completion === undefined ? undefined : structuredClone(completion);
 	}
 
 	async discardJobAuthority(jobId: string): Promise<void> {
@@ -951,7 +1004,7 @@ export class DisposableCloudRunner {
 	async #jobRequest(
 		action: "renew" | "complete" | "fail",
 		jobId: string,
-		extra: { result: JsonValue } | { error: string; retryable: boolean } | undefined = undefined,
+		extra: CloudRunnerCompletion | { error: string; retryable: boolean } | undefined = undefined,
 	): Promise<CloudRunnerJob> {
 		const token = this.#sessionToken;
 		const lease = this.#leases.get(jobId);
@@ -959,6 +1012,7 @@ export class DisposableCloudRunner {
 		const leaseToken = lease.leaseToken;
 		let request: CloudRunnerControlRequest;
 		if (action === "complete") {
+			const completion = extra as CloudRunnerCompletion;
 			request = {
 				action,
 				runnerId: this.#runnerId,
@@ -966,7 +1020,8 @@ export class DisposableCloudRunner {
 				leaseToken,
 				clientArtifactIndexId: deterministicCompletionUuid("artifact-index", jobId),
 				clientSubstrateVersionId: deterministicCompletionUuid("substrate-version", jobId),
-				result: (extra as { result: JsonValue }).result,
+				...(completion.outputSnapshotId ? { outputSnapshotId: completion.outputSnapshotId } : {}),
+				result: completion.result,
 			};
 		} else if (action === "fail") {
 			const failure = extra as { error: string; retryable: boolean };
@@ -989,7 +1044,7 @@ export class DisposableCloudRunner {
 	async #persist(): Promise<void> {
 		if (!this.#authorityStore) return;
 		const state: JsonValue = {
-			schema: "qorpera.runner-authority/v1",
+			schema: "qorpera.runner-authority/v3",
 			runner_id: this.#runnerId,
 			activation_token: this.#activationToken ?? null,
 			session_token: this.#sessionToken ?? null,
@@ -1000,10 +1055,11 @@ export class DisposableCloudRunner {
 						renewal_id: this.#pendingHeartbeat.renewalId,
 					}
 				: null,
-			pending_claim: this.#pendingClaim
+			pending_assignment: this.#pendingAssignment
 				? {
-						client_lease_id: this.#pendingClaim.clientLeaseId,
-						lease_token: this.#pendingClaim.leaseToken,
+						assignment_id: this.#pendingAssignment.assignmentId,
+						job_id: this.#pendingAssignment.jobId,
+						capability: this.#pendingAssignment.capability,
 					}
 				: null,
 			runner: this.#runner ? storedRunner(this.#runner) : null,
@@ -1014,7 +1070,12 @@ export class DisposableCloudRunner {
 					job: storedJob(lease.job),
 					lease_token: lease.leaseToken,
 					pending_completion:
-						lease.pendingCompletion !== undefined ? structuredClone(lease.pendingCompletion) : null,
+						lease.pendingCompletion !== undefined
+							? {
+									result: structuredClone(lease.pendingCompletion.result),
+									output_snapshot_id: lease.pendingCompletion.outputSnapshotId ?? null,
+								}
+							: null,
 				})),
 		};
 		const store = this.#authorityStore;

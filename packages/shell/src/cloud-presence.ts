@@ -1,8 +1,19 @@
-import { randomUUID } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, randomUUID, sign, verify } from "node:crypto";
 import { REALTIME_SUBSCRIBE_STATES, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
 import type { HostedPresenceIdentity, HostedPrimaryDatabase, QorperaHostedPrimary } from "./hosted-primary.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function broadcastBytes(
+	profileId: string,
+	clientId: string,
+	sequence: number,
+	event: "typing" | "agent_activity" | "open_thread",
+	staffAgentId: string,
+	activity?: PresenceAgentActivityEvent["activity"],
+): Buffer {
+	return Buffer.from(JSON.stringify([profileId, clientId, sequence, event, staffAgentId, activity ?? null]), "utf-8");
+}
 
 /** Presence rides the lossy lane (SESSIONS.md): fire-and-forget pub/sub over
  * the profile's realtime channel, never stored, never durable. Two signals:
@@ -73,10 +84,22 @@ export class SupabaseCloudPresenceTransport {
 		let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 		let reconnectAttempts = 0;
 		const clientId = randomUUID();
+		const keyPair = generateKeyPairSync("ed25519");
+		const publicKey = keyPair.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+		let broadcastSequence = 0;
+		let presenceGeneration = 0;
 		const identities = new Map<string, HostedPresenceIdentity>();
+		const lastBroadcastSequence = new Map<string, number>();
+		const lastPresenceSequence = new Map<string, number>();
 		const track = () => {
 			if (!subscribed || !channel) return;
-			void channel.track({ staff_agent_id: openThread });
+			const sequence = ++broadcastSequence;
+			const signature = sign(
+				null,
+				broadcastBytes(profileId, clientId, sequence, "open_thread", openThread ?? ""),
+				keyPair.privateKey,
+			).toString("base64");
+			void channel.track({ staff_agent_id: openThread, sequence, signature });
 		};
 		const resolveIdentities = async (clientIds: string[]): Promise<Map<string, HostedPresenceIdentity>> => {
 			const requested = [...new Set(clientIds)].filter((id) => UUID_PATTERN.test(id));
@@ -90,15 +113,56 @@ export class SupabaseCloudPresenceTransport {
 		};
 		const broadcastMemberEvent = (
 			payload: unknown,
+			event: "typing" | "agent_activity",
 			accept: (data: Record<string, unknown>, identity: HostedPresenceIdentity) => void,
 		): void => {
 			const data = payload as Record<string, unknown> | undefined;
-			if (!data || typeof data.client_id !== "string" || typeof data.staff_agent_id !== "string") return;
-			if (data.client_id === clientId) return;
-			void resolveIdentities([data.client_id])
+			if (
+				!data ||
+				typeof data.client_id !== "string" ||
+				typeof data.staff_agent_id !== "string" ||
+				typeof data.sequence !== "number" ||
+				!Number.isSafeInteger(data.sequence) ||
+				data.sequence < 1 ||
+				typeof data.signature !== "string" ||
+				!/^[A-Za-z0-9+/]{40,240}={0,2}$/.test(data.signature)
+			)
+				return;
+			const remoteClientId = data.client_id;
+			const staffAgentId = data.staff_agent_id;
+			const signature = data.signature;
+			if (remoteClientId === clientId) return;
+			void resolveIdentities([remoteClientId])
 				.then((resolved) => {
-					const identity = resolved.get(data.client_id as string);
-					if (identity && !stopped) accept(data, identity);
+					const identity = resolved.get(remoteClientId);
+					if (!identity || stopped) return;
+					const sequence = data.sequence as number;
+					if (sequence <= (lastBroadcastSequence.get(identity.clientId) ?? 0)) return;
+					const activity =
+						event === "agent_activity" &&
+						(data.activity === "working" || data.activity === "writing" || data.activity === "idle")
+							? data.activity
+							: undefined;
+					if (event === "agent_activity" && !activity) return;
+					try {
+						if (
+							!verify(
+								null,
+								broadcastBytes(profileId, identity.clientId, sequence, event, staffAgentId, activity),
+								createPublicKey({
+									key: Buffer.from(identity.publicKey, "base64"),
+									format: "der",
+									type: "spki",
+								}),
+								Buffer.from(signature, "base64"),
+							)
+						)
+							return;
+					} catch {
+						return;
+					}
+					lastBroadcastSequence.set(identity.clientId, sequence);
+					accept(data, identity);
 				})
 				.catch(() => undefined);
 		};
@@ -121,7 +185,7 @@ export class SupabaseCloudPresenceTransport {
 		const connect = (): void => {
 			if (stopped) return;
 			void this.#primary
-				.registerPresenceDevice(profileId, clientId)
+				.registerPresenceDevice(profileId, clientId, publicKey)
 				.then((self) => {
 					if (stopped) return;
 					identities.set(clientId, self);
@@ -131,36 +195,85 @@ export class SupabaseCloudPresenceTransport {
 					channel = next;
 					next.on("presence", { event: "sync" }, () => {
 						if (next !== channel) return;
-						const state = next.presenceState<{ staff_agent_id?: unknown }>();
+						const generation = ++presenceGeneration;
+						const state = next.presenceState<{
+							staff_agent_id?: unknown;
+							sequence?: unknown;
+							signature?: unknown;
+						}>();
 						const visible = Object.entries(state).flatMap(([remoteClientId, metas]) => {
 							if (remoteClientId === clientId || !UUID_PATTERN.test(remoteClientId)) return [];
-							const meta = metas.find(
-								(candidate) =>
-									typeof candidate.staff_agent_id === "string" || candidate.staff_agent_id === null,
-							);
-							return meta
-								? [
+							return metas.flatMap((candidate) => {
+								if (
+									(typeof candidate.staff_agent_id === "string" || candidate.staff_agent_id === null) &&
+									typeof candidate.sequence === "number" &&
+									Number.isSafeInteger(candidate.sequence) &&
+									candidate.sequence > 0 &&
+									typeof candidate.signature === "string"
+								) {
+									return [
 										{
 											clientId: remoteClientId,
-											staffAgentId: typeof meta.staff_agent_id === "string" ? meta.staff_agent_id : null,
+											staffAgentId:
+												typeof candidate.staff_agent_id === "string" ? candidate.staff_agent_id : null,
+											sequence: candidate.sequence as number,
+											signature: candidate.signature as string,
 										},
-									]
-								: [];
+									];
+								}
+								return [];
+							});
 						});
 						void resolveIdentities(visible.map((member) => member.clientId))
 							.then((resolved) => {
-								if (next !== channel || stopped) return;
-								onMembers(
-									visible.flatMap((member) => {
-										const identity = resolved.get(member.clientId);
-										return identity ? [{ ...member, userId: identity.userId, name: identity.name }] : [];
-									}),
-								);
+								if (next !== channel || stopped || generation !== presenceGeneration) return;
+								const newest = new Map<string, PresenceMember & { sequence: number }>();
+								for (const member of visible) {
+									const identity = resolved.get(member.clientId);
+									if (!identity || member.sequence < (lastPresenceSequence.get(member.clientId) ?? 0))
+										continue;
+									try {
+										if (
+											!verify(
+												null,
+												broadcastBytes(
+													profileId,
+													member.clientId,
+													member.sequence,
+													"open_thread",
+													member.staffAgentId ?? "",
+												),
+												createPublicKey({
+													key: Buffer.from(identity.publicKey, "base64"),
+													format: "der",
+													type: "spki",
+												}),
+												Buffer.from(member.signature, "base64"),
+											)
+										)
+											continue;
+									} catch {
+										continue;
+									}
+									const prior = newest.get(member.clientId);
+									if (prior && prior.sequence >= member.sequence) continue;
+									newest.set(member.clientId, {
+										clientId: member.clientId,
+										staffAgentId: member.staffAgentId,
+										userId: identity.userId,
+										name: identity.name,
+										sequence: member.sequence,
+									});
+								}
+								for (const member of newest.values()) {
+									lastPresenceSequence.set(member.clientId, member.sequence);
+								}
+								onMembers([...newest.values()].map(({ sequence: _sequence, ...member }) => member));
 							})
 							.catch(() => undefined);
 					});
 					next.on("broadcast", { event: "typing" }, ({ payload }) => {
-						broadcastMemberEvent(payload, (data, identity) => {
+						broadcastMemberEvent(payload, "typing", (data, identity) => {
 							onTyping({
 								clientId: identity.clientId,
 								userId: identity.userId,
@@ -170,7 +283,7 @@ export class SupabaseCloudPresenceTransport {
 						});
 					});
 					next.on("broadcast", { event: "agent_activity" }, ({ payload }) => {
-						broadcastMemberEvent(payload, (data, identity) => {
+						broadcastMemberEvent(payload, "agent_activity", (data, identity) => {
 							if (data.activity !== "working" && data.activity !== "writing" && data.activity !== "idle") return;
 							onActivity({
 								clientId: identity.clientId,
@@ -217,7 +330,7 @@ export class SupabaseCloudPresenceTransport {
 		connect();
 		heartbeatTimer = setInterval(() => {
 			if (stopped) return;
-			void this.#primary.registerPresenceDevice(profileId, clientId).catch((error: unknown) => {
+			void this.#primary.registerPresenceDevice(profileId, clientId, publicKey).catch((error: unknown) => {
 				if (channel)
 					scheduleReconnect(channel, error instanceof Error ? error.message : "Presence heartbeat failed");
 			});
@@ -230,21 +343,35 @@ export class SupabaseCloudPresenceTransport {
 			},
 			sendTyping: (staffAgentId) => {
 				if (!subscribed || !channel) return;
+				const sequence = ++broadcastSequence;
+				const signature = sign(
+					null,
+					broadcastBytes(profileId, clientId, sequence, "typing", staffAgentId),
+					keyPair.privateKey,
+				).toString("base64");
 				void channel.send({
 					type: "broadcast",
 					event: "typing",
-					payload: { client_id: clientId, staff_agent_id: staffAgentId },
+					payload: { client_id: clientId, sequence, staff_agent_id: staffAgentId, signature },
 				});
 			},
 			sendActivity: (staffAgentId, activity) => {
 				if (!subscribed || !channel) return;
+				const sequence = ++broadcastSequence;
+				const signature = sign(
+					null,
+					broadcastBytes(profileId, clientId, sequence, "agent_activity", staffAgentId, activity),
+					keyPair.privateKey,
+				).toString("base64");
 				void channel.send({
 					type: "broadcast",
 					event: "agent_activity",
 					payload: {
 						client_id: clientId,
+						sequence,
 						staff_agent_id: staffAgentId,
 						activity,
+						signature,
 					},
 				});
 			},

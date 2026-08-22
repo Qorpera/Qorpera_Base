@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claimCompanyRuntimeLock, releaseCompanyRuntimeLock, scaffoldCompany } from "@qorpera/pi-coding-agent/company";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CloudCompanyProjection } from "../src/cloud-company-projection.ts";
+import { CloudCompanyProjection, cloudCompanyProjectionHasPersistedChanges } from "../src/cloud-company-projection.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -27,6 +27,9 @@ describe("cloud Company File projection", () => {
 		await writeFile(join(root, "company.md"), "company\n", "utf-8");
 		await mkdir(join(root, "trail"), { recursive: true });
 		await writeFile(join(root, "trail", "runtime.jsonl"), "private\n", "utf-8");
+		await writeFile(join(root, "authority.toml"), "[tools]\n", "utf-8");
+		await mkdir(join(root, "inbox"), { recursive: true });
+		await writeFile(join(root, "inbox", "event.json"), "operational\n", "utf-8");
 		const runtimeLock = claimCompanyRuntimeLock(root);
 		const userData = await temporaryDirectory();
 		const projection = new CloudCompanyProjection({
@@ -43,6 +46,8 @@ describe("cloud Company File projection", () => {
 			await expect(readFile(join(projectionRoot, "company.md"), "utf-8")).resolves.toBe("company\n");
 			expect(existsSync(join(projectionRoot, "trail"))).toBe(false);
 			expect(existsSync(join(projectionRoot, ".git"))).toBe(false);
+			expect(existsSync(join(projectionRoot, "authority.toml"))).toBe(false);
+			await expect(readFile(join(projectionRoot, "inbox", "event.json"), "utf-8")).resolves.toBe("operational\n");
 			await writeFile(join(projectionRoot, "company.md"), "edited\n", "utf-8");
 			await writeFile(join(projectionRoot, "new-file.md"), "new\n", "utf-8");
 			await projection.importChanges();
@@ -107,7 +112,7 @@ describe("cloud Company File projection", () => {
 			await projection.refresh();
 			await writeFile(join(projectionRoot, "company.md"), "pending native edit\n", "utf-8");
 			await vi.waitFor(() => expect(projection.hasPendingChanges()).toBe(true));
-			await expect(projection.refresh()).rejects.toThrow("pending Explorer changes");
+			await projection.refresh();
 			await expect(readFile(join(projectionRoot, "company.md"), "utf-8")).resolves.toBe("pending native edit\n");
 			await projection.importChanges();
 			await expect(readFile(join(root, "company.md"), "utf-8")).resolves.toBe("pending native edit\n");
@@ -141,8 +146,16 @@ describe("cloud Company File projection", () => {
 			first.close();
 			const restarted = new CloudCompanyProjection(options);
 			try {
-				await expect(restarted.refresh()).rejects.toThrow("pending Explorer changes");
+				await restarted.refresh();
 				await expect(readFile(join(projectionRoot, "company.md"), "utf-8")).resolves.toBe("survives restart\n");
+				await expect(
+					cloudCompanyProjectionHasPersistedChanges({
+						companyRoot: root,
+						projectionRoot,
+						userData,
+						profileId: "11111111-1111-4111-8111-111111111111",
+					}),
+				).resolves.toBe(true);
 				await restarted.importChanges();
 				await expect(readFile(join(root, "company.md"), "utf-8")).resolves.toBe("survives restart\n");
 			} finally {
@@ -231,6 +244,46 @@ describe("cloud Company File projection", () => {
 		}
 	});
 
+	it("rolls back a partially installed Explorer import and retries the durable delta", async () => {
+		const parent = await temporaryDirectory();
+		const root = join(parent, "company");
+		const projectionRoot = join(parent, "projection", "Company File");
+		const userData = await temporaryDirectory();
+		scaffoldCompany(root);
+		await writeFile(join(root, "a.md"), "base a\n", "utf-8");
+		await writeFile(join(root, "b.md"), "base b\n", "utf-8");
+		const runtimeLock = claimCompanyRuntimeLock(root);
+		let interrupt = true;
+		const projection = new CloudCompanyProjection({
+			companyRoot: root,
+			projectionRoot,
+			userData,
+			profileId: "11111111-1111-4111-8111-111111111111",
+			canWrite: () => true,
+			onChanged: async () => undefined,
+			afterImportRootApply: async () => {
+				if (interrupt) throw new Error("simulated process stop during Explorer import");
+			},
+			runtimeLock,
+		});
+		try {
+			await projection.refresh();
+			await writeFile(join(projectionRoot, "a.md"), "edited a\n", "utf-8");
+			await writeFile(join(projectionRoot, "b.md"), "edited b\n", "utf-8");
+			await expect(projection.importChanges()).rejects.toThrow("simulated process stop");
+			await expect(readFile(join(root, "a.md"), "utf-8")).resolves.toBe("base a\n");
+			await expect(readFile(join(root, "b.md"), "utf-8")).resolves.toBe("base b\n");
+			expect(projection.hasPendingChanges()).toBe(true);
+			interrupt = false;
+			await projection.importChanges();
+			await expect(readFile(join(root, "a.md"), "utf-8")).resolves.toBe("edited a\n");
+			await expect(readFile(join(root, "b.md"), "utf-8")).resolves.toBe("edited b\n");
+		} finally {
+			projection.close();
+			releaseCompanyRuntimeLock(runtimeLock);
+		}
+	});
+
 	it("reports a same-path conflict without overwriting either side", async () => {
 		const parent = await temporaryDirectory();
 		const root = join(parent, "company");
@@ -255,6 +308,183 @@ describe("cloud Company File projection", () => {
 			await expect(projection.importChanges()).rejects.toThrow("conflict");
 			await expect(readFile(join(projectionRoot, "company.md"), "utf-8")).resolves.toBe("explorer\n");
 			await expect(readFile(join(root, "company.md"), "utf-8")).resolves.toBe("agent\n");
+		} finally {
+			projection.close();
+			releaseCompanyRuntimeLock(runtimeLock);
+		}
+	});
+
+	it("handles file and directory kind changes in both directions", async () => {
+		const parent = await temporaryDirectory();
+		const root = join(parent, "company");
+		const projectionRoot = join(parent, "projection", "Company File");
+		const userData = await temporaryDirectory();
+		scaffoldCompany(root);
+		await mkdir(join(root, "records"), { recursive: true });
+		await writeFile(join(root, "records", "old.md"), "old\n", "utf-8");
+		const runtimeLock = claimCompanyRuntimeLock(root);
+		const projection = new CloudCompanyProjection({
+			companyRoot: root,
+			projectionRoot,
+			userData,
+			profileId: "11111111-1111-4111-8111-111111111111",
+			canWrite: () => true,
+			onChanged: async () => undefined,
+			runtimeLock,
+		});
+		try {
+			await projection.refresh();
+			await rm(join(projectionRoot, "records"), { recursive: true });
+			await writeFile(join(projectionRoot, "records"), "now a file\n", "utf-8");
+			await projection.importChanges();
+			await expect(readFile(join(root, "records"), "utf-8")).resolves.toBe("now a file\n");
+
+			await rm(join(projectionRoot, "records"));
+			await mkdir(join(projectionRoot, "records"));
+			await writeFile(join(projectionRoot, "records", "new.md"), "now a folder\n", "utf-8");
+			await projection.importChanges();
+			await expect(readFile(join(root, "records", "new.md"), "utf-8")).resolves.toBe("now a folder\n");
+		} finally {
+			projection.close();
+			releaseCompanyRuntimeLock(runtimeLock);
+		}
+	});
+
+	it("does not import its own partial refresh while the mirror is in progress", async () => {
+		const parent = await temporaryDirectory();
+		const root = join(parent, "company");
+		const projectionRoot = join(parent, "projection", "Company File");
+		const userData = await temporaryDirectory();
+		scaffoldCompany(root);
+		await writeFile(join(root, "company.md"), "base\n", "utf-8");
+		const runtimeLock = claimCompanyRuntimeLock(root);
+		let blockRefresh = false;
+		let releaseRefresh: (() => void) | undefined;
+		let reachedRefresh: (() => void) | undefined;
+		const refreshGate = new Promise<void>((resolve) => {
+			releaseRefresh = resolve;
+		});
+		const refreshReached = new Promise<void>((resolve) => {
+			reachedRefresh = resolve;
+		});
+		const onChanged = vi.fn(async () => undefined);
+		const projection = new CloudCompanyProjection({
+			companyRoot: root,
+			projectionRoot,
+			userData,
+			profileId: "11111111-1111-4111-8111-111111111111",
+			canWrite: () => true,
+			onChanged,
+			beforeRefreshCommit: async () => {
+				if (!blockRefresh) return;
+				reachedRefresh?.();
+				await refreshGate;
+			},
+			runtimeLock,
+		});
+		try {
+			await projection.refresh();
+			await writeFile(join(root, "company.md"), "new canonical\n", "utf-8");
+			await writeFile(join(root, "second.md"), "new file\n", "utf-8");
+			blockRefresh = true;
+			const refreshing = projection.refresh();
+			await refreshReached;
+			await new Promise((resolve) => setTimeout(resolve, 750));
+			expect(onChanged).not.toHaveBeenCalled();
+			await expect(readFile(join(root, "second.md"), "utf-8")).resolves.toBe("new file\n");
+			releaseRefresh?.();
+			await refreshing;
+			await expect(readFile(join(projectionRoot, "second.md"), "utf-8")).resolves.toBe("new file\n");
+		} finally {
+			releaseRefresh?.();
+			projection.close();
+			releaseCompanyRuntimeLock(runtimeLock);
+		}
+	});
+
+	it("preserves an Explorer edit that lands while a staged refresh is waiting", async () => {
+		const parent = await temporaryDirectory();
+		const root = join(parent, "company");
+		const projectionRoot = join(parent, "projection", "Company File");
+		const userData = await temporaryDirectory();
+		scaffoldCompany(root);
+		await writeFile(join(root, "company.md"), "base\n", "utf-8");
+		const runtimeLock = claimCompanyRuntimeLock(root);
+		let blockRefresh = false;
+		let releaseRefresh: (() => void) | undefined;
+		let reachedRefresh: (() => void) | undefined;
+		const refreshGate = new Promise<void>((resolve) => {
+			releaseRefresh = resolve;
+		});
+		const refreshReached = new Promise<void>((resolve) => {
+			reachedRefresh = resolve;
+		});
+		const projection = new CloudCompanyProjection({
+			companyRoot: root,
+			projectionRoot,
+			userData,
+			profileId: "11111111-1111-4111-8111-111111111111",
+			canWrite: () => true,
+			onChanged: async () => undefined,
+			beforeRefreshCommit: async () => {
+				if (!blockRefresh) return;
+				reachedRefresh?.();
+				await refreshGate;
+			},
+			runtimeLock,
+		});
+		try {
+			await projection.refresh();
+			await writeFile(join(root, "remote.md"), "remote\n", "utf-8");
+			blockRefresh = true;
+			const refreshing = projection.refresh();
+			await refreshReached;
+			await writeFile(join(projectionRoot, "company.md"), "native edit\n", "utf-8");
+			releaseRefresh?.();
+			await refreshing;
+			await expect(readFile(join(projectionRoot, "company.md"), "utf-8")).resolves.toBe("native edit\n");
+			expect(projection.hasPendingChanges()).toBe(true);
+			await projection.importChanges();
+			await expect(readFile(join(root, "company.md"), "utf-8")).resolves.toBe("native edit\n");
+			await expect(readFile(join(root, "remote.md"), "utf-8")).resolves.toBe("remote\n");
+		} finally {
+			releaseRefresh?.();
+			projection.close();
+			releaseCompanyRuntimeLock(runtimeLock);
+		}
+	});
+
+	it("recovers a refresh stopped after prepare without reclassifying cloud changes as Explorer edits", async () => {
+		const parent = await temporaryDirectory();
+		const root = join(parent, "company");
+		const projectionRoot = join(parent, "projection", "Company File");
+		const userData = await temporaryDirectory();
+		scaffoldCompany(root);
+		await writeFile(join(root, "company.md"), "base\n", "utf-8");
+		const runtimeLock = claimCompanyRuntimeLock(root);
+		let interrupt = false;
+		const projection = new CloudCompanyProjection({
+			companyRoot: root,
+			projectionRoot,
+			userData,
+			profileId: "11111111-1111-4111-8111-111111111111",
+			canWrite: () => true,
+			onChanged: async () => undefined,
+			beforeRefreshInstall: async () => {
+				if (interrupt) throw new Error("simulated stop before projection install");
+			},
+			runtimeLock,
+		});
+		try {
+			await projection.refresh();
+			await writeFile(join(root, "company.md"), "new cloud bytes\n", "utf-8");
+			interrupt = true;
+			await expect(projection.refresh()).rejects.toThrow("simulated stop");
+			expect(projection.hasPendingChanges()).toBe(false);
+			await expect(readFile(join(projectionRoot, "company.md"), "utf-8")).resolves.toBe("base\n");
+			interrupt = false;
+			await projection.refresh();
+			await expect(readFile(join(projectionRoot, "company.md"), "utf-8")).resolves.toBe("new cloud bytes\n");
 		} finally {
 			projection.close();
 			releaseCompanyRuntimeLock(runtimeLock);

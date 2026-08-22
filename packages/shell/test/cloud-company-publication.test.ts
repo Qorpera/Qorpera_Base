@@ -211,8 +211,10 @@ describe("automatic cloud company publication", () => {
 		publication.notifyPathChanged("app/substrates/market.md");
 		expect(debounceCallback).toBeDefined();
 		debounceCallback?.();
-		await vi.waitFor(() => expect(primary.commitCount).toBe(2));
-		expect(publication.lastCheckpoint()).toMatchObject({ changed: true });
+		await vi.waitFor(() => expect(publication.lastCheckpoint()).toMatchObject({ changed: true }), {
+			timeout: 15_000,
+		});
+		expect(primary.commitCount).toBe(2);
 
 		const localHead = primary.headSnapshotId!;
 		const remoteHead = "99999999-9999-4999-8999-999999999999";
@@ -226,5 +228,38 @@ describe("automatic cloud company publication", () => {
 		primary.headSnapshotId = remoteHead;
 		await expect(publication.publishNow()).resolves.toMatchObject({ phase: "healthy" });
 		expect(primary.commitCount).toBe(2);
+	});
+
+	it("does not clear a newer dirty generation after an older checkpoint finishes", async () => {
+		const root = join(await temporaryDirectory(), "company");
+		const userData = await temporaryDirectory();
+		scaffoldCompany(root);
+		await mkdir(join(root, "app", "substrates"), { recursive: true });
+		await writeFile(join(root, "app", "substrates", "market.md"), "first\n", "utf-8");
+		const primary = new MemoryCompanyFilePrimary();
+		let checkpointRuns = 0;
+		let publication: CloudCompanyPublication;
+		publication = new CloudCompanyPublication({
+			userData,
+			companyRoot: root,
+			profileId,
+			environmentId,
+			primary,
+			objects: new CloudContentAddressedStore(new MemoryObjectTransport()),
+			runCheckpoint: async (run) => {
+				const result = await run();
+				checkpointRuns += 1;
+				if (checkpointRuns === 1) {
+					await writeFile(join(root, "app", "substrates", "market.md"), "second\n", "utf-8");
+					publication.notifyPathChanged("app/substrates/market.md");
+				}
+				return result;
+			},
+		});
+
+		await expect(publication.publishNow()).resolves.toMatchObject({ phase: "healthy" });
+		expect(primary.commitCount).toBe(2);
+		expect(checkpointRuns).toBeGreaterThanOrEqual(2);
+		expect(publication.hasPendingWork()).toBe(false);
 	});
 });

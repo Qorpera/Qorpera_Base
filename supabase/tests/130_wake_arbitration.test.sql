@@ -54,7 +54,8 @@ select public.qorpera_verify_company_snapshot_closure(
 	current_setting('qorpera_test.wk_graph')::uuid,
 	'b0000000-0000-4000-8000-0000000000ba',
 	encode(extensions.digest(convert_to(repeat('9', 64) || ':128', 'utf8'), 'sha256'), 'hex'),
-	1, 128, repeat('9', 64), 4
+	1, 128, repeat('9', 64), 4,
+	'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
 );
 reset role;
 select set_config('request.jwt.claims', '{"sub":"b0000000-0000-4000-8000-0000000000ba","email":"wake-owner@example.test","role":"authenticated","user_metadata":{}}', false);
@@ -234,7 +235,8 @@ begin
 end
 $$;
 
--- Retention: a claim completed long ago is swept by the next claim call.
+-- Idempotency tombstones outlive heavy artifact retention so a delayed duplicate
+-- occurrence cannot be executed again under a fresh receipt namespace.
 insert into public.qorpera_wake_claims (profile_id, wake_key, claimant_id, claimed_at, claim_expires_at, completed_at)
 values (current_setting('qorpera_test.wk_profile')::uuid, 'job:demo:ancient',
 	'c1000000-0000-4000-8000-00000000000a',
@@ -257,7 +259,7 @@ begin
 	select count(*) into v_seen from public.qorpera_wake_claims
 	where profile_id = current_setting('qorpera_test.wk_profile')::uuid
 		and wake_key = 'job:demo:ancient';
-	if v_seen <> 0 then raise exception 'ancient completed claim survived retention'; end if;
+	if v_seen <> 1 then raise exception 'completed wake tombstone was not retained'; end if;
 end
 $$;
 

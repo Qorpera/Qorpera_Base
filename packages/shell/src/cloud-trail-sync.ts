@@ -9,6 +9,7 @@ import {
 	type SharedTrailScope,
 	type SharedTrailSession,
 	type TrailBinding,
+	type TrailExecutionIdentity,
 } from "./agent-runtime.ts";
 import type {
 	HostedSession,
@@ -17,22 +18,31 @@ import type {
 	QorperaHostedPrimary,
 } from "./hosted-primary.ts";
 
-const CLOUD_TRAIL_STATE_SCHEMA = "qorpera.cloud-trail-sync/v1";
+const CLOUD_TRAIL_STATE_SCHEMA = "qorpera.cloud-trail-sync/v3";
+const LEGACY_CLOUD_TRAIL_STATE_SCHEMA = "qorpera.cloud-trail-sync/v2";
 const SESSION_METADATA_SCHEMA = "qorpera.shared-session/v1";
 const ENTRY_PART_SCHEMA = "qorpera.shared-trail-entry-part/v1";
+const RUNNER_ENTRY_SCHEMA = "qorpera.runner-transcript-entry/v1";
 const RAW_PART_BYTES = 128 * 1024;
 const MAX_PARTS = 128;
 const MAX_QUARANTINE_RECEIPTS = 1_000;
+const MAX_RECENT_ENTRY_IDS = 2_048;
 
 type CloudTrailPrimary = Pick<
 	QorperaHostedPrimary,
-	"appendAccountEvent" | "closeSession" | "createSession" | "listSessions" | "readSessionEvents"
+	| "appendAccountEvent"
+	| "closeSession"
+	| "createSession"
+	| "getSessionByClient"
+	| "listSessionsPage"
+	| "readSessionEvents"
 >;
 
 interface PendingEntryParts {
 	entryType: string;
 	partCount: number;
 	parts: Array<string | null>;
+	execution?: TrailExecutionIdentity;
 }
 
 interface QuarantinedHostedEvent {
@@ -45,6 +55,8 @@ interface QuarantinedHostedEvent {
 interface SessionSyncState {
 	cursor: number;
 	knownEntryIds: string[];
+	metadataUploaded: boolean;
+	lastUploadedEntryId?: string;
 	pending: Record<string, PendingEntryParts>;
 	quarantinedEvents: QuarantinedHostedEvent[];
 }
@@ -54,8 +66,9 @@ interface CloudTrailState {
 	profileId: string;
 	environmentId: string;
 	root: string;
+	sessionDiscovery?: { updatedAt: string; sessionId: string };
+	adoptedSessionIds: string[];
 	sessions: Record<string, SessionSyncState>;
-	entryExecutions: Record<string, KernelExecutionIdentity>;
 }
 
 export interface CloudTrailSyncResult {
@@ -72,6 +85,7 @@ export interface CloudTrailSynchronizerOptions {
 	profileId: string;
 	environmentId: string;
 	primary: CloudTrailPrimary;
+	loadObject?: (reference: { sha256: string; bytes: number; mediaType: string }) => Promise<Uint8Array>;
 	canWrite: () => boolean;
 	liveBindings?: () => Iterable<TrailBinding>;
 	onMaterialized?: (binding: TrailBinding) => void;
@@ -94,8 +108,8 @@ function emptyState(options: CloudTrailSynchronizerOptions): CloudTrailState {
 		profileId: options.profileId,
 		environmentId: options.environmentId,
 		root: normalizedRoot(options.root),
+		adoptedSessionIds: [],
 		sessions: {},
-		entryExecutions: {},
 	};
 }
 
@@ -109,7 +123,8 @@ function validPending(value: unknown): value is PendingEntryParts {
 		(pending.partCount ?? 0) <= MAX_PARTS &&
 		Array.isArray(pending.parts) &&
 		pending.parts.length === pending.partCount &&
-		pending.parts.every((part) => part === null || typeof part === "string")
+		pending.parts.every((part) => part === null || typeof part === "string") &&
+		(pending.execution === undefined || validExecution(pending.execution))
 	);
 }
 
@@ -128,29 +143,33 @@ function validQuarantineReceipt(value: unknown): value is QuarantinedHostedEvent
 	);
 }
 
-function validExecution(value: unknown): value is KernelExecutionIdentity {
+function validExecution(value: unknown): value is TrailExecutionIdentity {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-	const execution = value as Partial<KernelExecutionIdentity>;
+	const execution = value as Partial<TrailExecutionIdentity> & { runnerAssignmentId?: unknown };
 	return (
-		(execution.kind === "turn" || execution.kind === "wake") &&
+		(execution.kind === "turn" || execution.kind === "wake" || execution.kind === "run") &&
 		typeof execution.id === "string" &&
 		/^[0-9a-f-]{36}$/i.test(execution.id) &&
 		typeof execution.claimantId === "string" &&
-		/^[0-9a-f-]{36}$/i.test(execution.claimantId)
+		/^[0-9a-f-]{36}$/i.test(execution.claimantId) &&
+		(execution.kind === "run"
+			? typeof execution.runnerAssignmentId === "string" && /^[0-9a-f-]{36}$/i.test(execution.runnerAssignmentId)
+			: execution.runnerAssignmentId === undefined)
 	);
 }
 
-function entryExecutionKey(clientSessionId: string, entryId: string): string {
-	return `${clientSessionId}:${entryId}`;
+function sameExecution(left: TrailExecutionIdentity | undefined, right: TrailExecutionIdentity | undefined): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function readState(path: string, options: CloudTrailSynchronizerOptions): CloudTrailState {
 	try {
 		const value: unknown = JSON.parse(readFileSync(path, "utf-8"));
 		if (!value || typeof value !== "object" || Array.isArray(value)) return emptyState(options);
+		const rawSchema = (value as { schema?: unknown }).schema;
 		const input = value as Partial<CloudTrailState>;
 		if (
-			input.schema !== CLOUD_TRAIL_STATE_SCHEMA ||
+			(rawSchema !== CLOUD_TRAIL_STATE_SCHEMA && rawSchema !== LEGACY_CLOUD_TRAIL_STATE_SCHEMA) ||
 			input.profileId !== options.profileId ||
 			input.environmentId !== options.environmentId ||
 			input.root !== normalizedRoot(options.root) ||
@@ -184,18 +203,34 @@ function readState(path: string, options: CloudTrailSynchronizerOptions): CloudT
 				: [];
 			sessions[sessionId] = {
 				cursor: session.cursor as number,
-				knownEntryIds: [...new Set(session.knownEntryIds)],
+				knownEntryIds:
+					rawSchema === LEGACY_CLOUD_TRAIL_STATE_SCHEMA
+						? [...new Set(session.knownEntryIds)]
+						: [...new Set(session.knownEntryIds)].slice(-MAX_RECENT_ENTRY_IDS),
+				metadataUploaded:
+					session.metadataUploaded === true ||
+					session.knownEntryIds.some((entryId) => entryId.startsWith("cloud-session-info:")),
+				...(typeof session.lastUploadedEntryId === "string"
+					? { lastUploadedEntryId: session.lastUploadedEntryId }
+					: {}),
 				pending,
 				quarantinedEvents,
 			};
 		}
-		const entryExecutions = Object.fromEntries(
-			Object.entries(input.entryExecutions ?? {}).filter(
-				(entry): entry is [string, KernelExecutionIdentity] =>
-					typeof entry[0] === "string" && entry[0].includes(":") && validExecution(entry[1]),
-			),
-		);
-		return { ...emptyState(options), sessions, entryExecutions };
+		const discovery = input.sessionDiscovery;
+		return {
+			...emptyState(options),
+			...(discovery &&
+			typeof discovery.updatedAt === "string" &&
+			Number.isFinite(Date.parse(discovery.updatedAt)) &&
+			typeof discovery.sessionId === "string"
+				? { sessionDiscovery: { updatedAt: discovery.updatedAt, sessionId: discovery.sessionId } }
+				: {}),
+			adoptedSessionIds: Array.isArray(input.adoptedSessionIds)
+				? [...new Set(input.adoptedSessionIds.filter((id) => typeof id === "string"))]
+				: [],
+			sessions,
+		};
 	} catch {
 		return emptyState(options);
 	}
@@ -216,9 +251,29 @@ function writeState(path: string, state: CloudTrailState): void {
 function sessionState(state: CloudTrailState, hostedSessionId: string): SessionSyncState {
 	const existing = state.sessions[hostedSessionId];
 	if (existing) return existing;
-	const created: SessionSyncState = { cursor: 0, knownEntryIds: [], pending: {}, quarantinedEvents: [] };
+	const created: SessionSyncState = {
+		cursor: 0,
+		knownEntryIds: [],
+		metadataUploaded: false,
+		pending: {},
+		quarantinedEvents: [],
+	};
 	state.sessions[hostedSessionId] = created;
 	return created;
+}
+
+function rememberEntryId(state: SessionSyncState, entryId: string): void {
+	state.knownEntryIds = [...state.knownEntryIds.filter((known) => known !== entryId), entryId].slice(
+		-MAX_RECENT_ENTRY_IDS,
+	);
+}
+
+function retireClosedSessionState(hosted: HostedSession, state: CloudTrailState): void {
+	if (hosted.status !== "closed") return;
+	const session = state.sessions[hosted.sessionId];
+	if (!session || Object.keys(session.pending).length > 0) return;
+	delete state.sessions[hosted.sessionId];
+	state.adoptedSessionIds = state.adoptedSessionIds.filter((id) => id !== hosted.clientSessionId);
 }
 
 function deterministicEventId(sessionId: string, identity: string): string {
@@ -329,11 +384,35 @@ function sharedEntry(value: JsonValue | undefined): SharedTrailEntry | undefined
 		typeof entry.type !== "string" ||
 		typeof entry.id !== "string" ||
 		(entry.parentId !== null && typeof entry.parentId !== "string") ||
-		typeof entry.timestamp !== "string"
+		typeof entry.timestamp !== "string" ||
+		(entry.execution !== undefined && !validExecution(entry.execution))
 	) {
 		return undefined;
 	}
 	return entry as SharedTrailEntry;
+}
+
+function runnerInputAttachments(entry: SharedTrailEntry): Array<{ sha256: string; bytes: number; mediaType: string }> {
+	const value = entry.qorperaAttachments;
+	if (!Array.isArray(value) || value.length > 5) throw new HostedTrailEventError("invalid runner input attachments");
+	return value.map((candidate) => {
+		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+			throw new HostedTrailEventError("invalid runner input attachment");
+		}
+		const input = candidate as Record<string, unknown>;
+		if (
+			typeof input.objectSha256 !== "string" ||
+			!/^[0-9a-f]{64}$/.test(input.objectSha256) ||
+			!Number.isSafeInteger(input.bytes) ||
+			(input.bytes as number) < 1 ||
+			(input.bytes as number) > 8 * 1024 * 1024 ||
+			typeof input.mediaType !== "string" ||
+			!/^image\/[a-z0-9.+-]{1,64}$/i.test(input.mediaType)
+		) {
+			throw new HostedTrailEventError("invalid runner input attachment");
+		}
+		return { sha256: input.objectSha256, bytes: input.bytes as number, mediaType: input.mediaType };
+	});
 }
 
 class HostedTrailEventError extends Error {
@@ -355,10 +434,50 @@ function consumeHostedEvent(event: HostedSessionEvent, state: SessionSyncState):
 	if (!body) throw new HostedTrailEventError("invalid event body");
 	if (body.schema === SESSION_METADATA_SCHEMA) {
 		const entry = sharedEntry(body.entry);
-		if (!entry || entry.type !== "session_info") throw new HostedTrailEventError("invalid session metadata");
+		if (event.eventType !== "session_info" || event.sessionInputId || !entry || entry.type !== "session_info") {
+			throw new HostedTrailEventError("invalid session metadata");
+		}
+		return entry;
+	}
+	if (body.schema === RUNNER_ENTRY_SCHEMA) {
+		const entry = sharedEntry(body.entry);
+		const expectedEntryType = event.eventType === "message" ? "message" : "custom";
+		const message = entry?.message as { role?: unknown; qorperaRunId?: unknown } | undefined;
+		if (
+			!entry ||
+			entry.id !== event.eventId ||
+			entry.type !== expectedEntryType ||
+			(event.eventType !== "message" && entry.customType !== event.eventType) ||
+			(event.sessionInputId
+				? event.sessionInputId !== event.eventId ||
+					event.execution !== undefined ||
+					entry.execution !== undefined ||
+					message?.role !== "user"
+				: event.execution?.kind !== "run" || !sameExecution(entry.execution, event.execution))
+		) {
+			throw new HostedTrailEventError("invalid runner transcript entry");
+		}
+		if (event.sessionInputId) {
+			if (!message || typeof message !== "object") {
+				throw new HostedTrailEventError("runner input message is invalid");
+			}
+			runnerInputAttachments(entry);
+		} else if (message && event.execution?.kind === "run") {
+			if (message.qorperaRunId !== undefined && message.qorperaRunId !== event.execution.id) {
+				throw new HostedTrailEventError("runner message provenance conflicts with its execution");
+			}
+			// AgentMessage is the renderer-facing projection and otherwise loses
+			// the outer trail execution identity. Derive this join key from the
+			// authoritative hosted event so each response can display its exact
+			// sponsor/provider provenance on every device.
+			message.qorperaRunId = event.execution.id;
+		}
 		return entry;
 	}
 	if (body.schema !== ENTRY_PART_SCHEMA) throw new HostedTrailEventError("unknown event schema");
+	if (event.execution !== undefined && !validExecution(event.execution)) {
+		throw new HostedTrailEventError("invalid event execution identity");
+	}
 	const { entryId, entryType, partIndex, partCount, payloadBase64 } = body;
 	if (
 		typeof entryId !== "string" ||
@@ -370,7 +489,10 @@ function consumeHostedEvent(event: HostedSessionEvent, state: SessionSyncState):
 		(partCount as number) < 1 ||
 		(partCount as number) > MAX_PARTS ||
 		(partIndex as number) >= (partCount as number) ||
-		typeof payloadBase64 !== "string"
+		typeof payloadBase64 !== "string" ||
+		(event.eventType === "message" && entryType !== "message") ||
+		(event.eventType === "session_info" && entryType === "message") ||
+		(!["message", "session_info"].includes(event.eventType) && entryType !== "custom")
 	) {
 		throw new HostedTrailEventError("invalid entry part", typeof entryId === "string" ? entryId : undefined);
 	}
@@ -380,11 +502,15 @@ function consumeHostedEvent(event: HostedSessionEvent, state: SessionSyncState):
 			entryType,
 			partCount: partCount as number,
 			parts: Array.from({ length: partCount as number }, () => null),
+			...(event.execution ? { execution: { ...event.execution } } : {}),
 		};
 		state.pending[entryId] = pending;
 	}
 	if (pending.entryType !== entryType || pending.partCount !== partCount) {
 		throw new HostedTrailEventError("entry parts conflict", entryId);
+	}
+	if (!sameExecution(pending.execution, event.execution)) {
+		throw new HostedTrailEventError("entry execution parts conflict", entryId, true);
 	}
 	const index = partIndex as number;
 	if (pending.parts[index] !== null && pending.parts[index] !== payloadBase64) {
@@ -400,7 +526,7 @@ function consumeHostedEvent(event: HostedSessionEvent, state: SessionSyncState):
 		throw new HostedTrailEventError("entry payload is invalid JSON", entryId, true);
 	}
 	const entry = sharedEntry(parsed);
-	if (!entry || entry.id !== entryId || entry.type !== entryType) {
+	if (!entry || entry.id !== entryId || entry.type !== entryType || !sameExecution(entry.execution, event.execution)) {
 		throw new HostedTrailEventError("entry payload identity is invalid", entryId, true);
 	}
 	delete state.pending[entryId];
@@ -439,26 +565,15 @@ export class CloudTrailSynchronizer {
 		return readState(this.#statePath, this.#options).sessions[hostedSessionId]?.cursor;
 	}
 
-	bindEntryExecution(clientSessionId: string, entryId: string, execution: KernelExecutionIdentity): void {
-		if (!validExecution(execution) || !clientSessionId || !entryId) {
-			throw new Error("Trail entry execution identity is invalid");
-		}
-		const state = readState(this.#statePath, this.#options);
-		const key = entryExecutionKey(clientSessionId, entryId);
-		const existing = state.entryExecutions[key];
-		if (existing && JSON.stringify(existing) !== JSON.stringify(execution)) {
-			throw new Error("Trail entry is already bound to another durable execution");
-		}
-		state.entryExecutions[key] = { ...execution };
-		writeState(this.#statePath, state);
+	async hostedSessionForClient(clientSessionId: string): Promise<HostedSession> {
+		await this.sync();
+		const hosted = await this.#options.primary.getSessionByClient(this.#options.environmentId, clientSessionId);
+		if (!hosted) throw new Error("operational trail session was not uploaded");
+		return hosted;
 	}
 
 	async finalizeOperationalSession(clientSessionId: string): Promise<void> {
-		await this.sync();
-		const hosted = (await this.#options.primary.listSessions(this.#options.environmentId)).find(
-			(session) => session.clientSessionId === clientSessionId,
-		);
-		if (!hosted) throw new Error("operational trail session was not uploaded");
+		const hosted = await this.hostedSessionForClient(clientSessionId);
 		if (hosted.status === "open") await this.#options.primary.closeSession(hosted.sessionId);
 	}
 
@@ -480,6 +595,30 @@ export class CloudTrailSynchronizer {
 				let entry: SharedTrailEntry | undefined;
 				try {
 					entry = consumeHostedEvent(event, state);
+					if (entry && event.sessionInputId) {
+						const attachments = runnerInputAttachments(entry);
+						if (attachments.length > 0 && !this.#options.loadObject) {
+							throw new HostedTrailEventError("runner input attachment storage is unavailable");
+						}
+						const message = entry.message as { content?: unknown };
+						if (!Array.isArray(message.content)) {
+							throw new HostedTrailEventError("runner input message content is invalid");
+						}
+						const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
+						for (const attachment of attachments) {
+							const bytes = await this.#options.loadObject!(attachment);
+							images.push({
+								type: "image",
+								data: Buffer.from(bytes).toString("base64"),
+								mimeType: attachment.mediaType,
+							});
+						}
+						const { qorperaAttachments: _attachments, ...hydrated } = entry;
+						entry = {
+							...hydrated,
+							message: { ...message, content: [...message.content, ...images] },
+						};
+					}
 				} catch (error) {
 					if (!(error instanceof HostedTrailEventError)) throw error;
 					if (error.entryId && error.discardsPending) delete state.pending[error.entryId];
@@ -489,15 +628,25 @@ export class CloudTrailSynchronizer {
 						reason: error.message.slice(0, 256),
 						quarantinedAt: new Date().toISOString(),
 					});
-					state.quarantinedEvents = state.quarantinedEvents.slice(-MAX_QUARANTINE_RECEIPTS);
+					state.quarantinedEvents = state.quarantinedEvents
+						.filter(
+							(receipt, index, receipts) =>
+								!receipts.slice(index + 1).some((candidate) => candidate.eventId === receipt.eventId),
+						)
+						.slice(-MAX_QUARANTINE_RECEIPTS);
 					result.eventsQuarantined++;
+					if (event.execution || event.sessionInputId) {
+						writeState(this.#statePath, cloudState);
+						throw new Error(
+							`execution-bound hosted trail event ${event.eventId} could not be materialized: ${error.message}`,
+						);
+					}
 				}
 				state.cursor = event.sequence;
 				result.eventsDownloaded++;
 				if (entry) {
 					if (!state.knownEntryIds.includes(entry.id)) materialized.push(entry);
-					state.knownEntryIds.push(entry.id);
-					state.knownEntryIds = [...new Set(state.knownEntryIds)];
+					rememberEntryId(state, entry.id);
 				}
 			}
 			if (materialized.length > 0) {
@@ -575,37 +724,53 @@ export class CloudTrailSynchronizer {
 		result: CloudTrailSyncResult,
 	): Promise<void> {
 		const metadataId = metadataEntryId(hosted.clientSessionId);
-		if (!state.knownEntryIds.includes(metadataId)) {
-			await this.#append(
-				hosted,
-				cloudState,
-				state,
-				{
-					eventId: deterministicEventId(hosted.sessionId, "metadata"),
-					eventType: "session_info",
-					body: metadataBody(hosted),
-				},
-				bindings,
-				result,
-			);
-			state.knownEntryIds.push(metadataId);
-			writeState(this.#statePath, cloudState);
-			this.#options.onCursorAdvanced?.({
-				hostedSessionId: hosted.sessionId,
-				cursor: state.cursor,
-				requiresReload: false,
-			});
+		const sessionExecutionCandidate = local.entries.find((entry) => entry.execution)?.execution;
+		const sessionExecution = sessionExecutionCandidate?.kind === "run" ? undefined : sessionExecutionCandidate;
+		if (!state.metadataUploaded) {
+			if (state.knownEntryIds.includes(metadataId)) {
+				state.metadataUploaded = true;
+			} else {
+				await this.#append(
+					hosted,
+					cloudState,
+					state,
+					{
+						eventId: deterministicEventId(hosted.sessionId, "metadata"),
+						eventType: "session_info",
+						body: metadataBody(hosted),
+					},
+					bindings,
+					result,
+					sessionExecution,
+				);
+				state.metadataUploaded = true;
+				rememberEntryId(state, metadataId);
+				writeState(this.#statePath, cloudState);
+				this.#options.onCursorAdvanced?.({
+					hostedSessionId: hosted.sessionId,
+					cursor: state.cursor,
+					requiresReload: false,
+				});
+			}
 		}
-		for (const entry of local.entries) {
+		let firstUploadIndex = 0;
+		if (state.lastUploadedEntryId) {
+			const lastUploadedIndex = local.entries.findIndex((entry) => entry.id === state.lastUploadedEntryId);
+			if (lastUploadedIndex < 0) throw new Error(`shared trail upload cursor is unavailable: ${hosted.sessionId}`);
+			firstUploadIndex = lastUploadedIndex + 1;
+		}
+		for (const entry of local.entries.slice(firstUploadIndex)) {
 			if (state.knownEntryIds.includes(entry.id)) continue;
-			const executionKey = entryExecutionKey(local.localSessionId, entry.id);
-			const execution = cloudState.entryExecutions[executionKey];
+			// Runner transcript entries are authored directly through the hosted runner
+			// broker. They are pull-only here, including after sync-state recovery when
+			// their ids have rolled out of the bounded recent-entry cache.
+			if (entry.execution?.kind === "run") continue;
 			for (const event of uploadEvents(hosted.sessionId, entry)) {
-				await this.#append(hosted, cloudState, state, event, bindings, result, execution);
+				await this.#append(hosted, cloudState, state, event, bindings, result, entry.execution);
 			}
 			delete state.pending[entry.id];
-			delete cloudState.entryExecutions[executionKey];
-			state.knownEntryIds.push(entry.id);
+			state.lastUploadedEntryId = entry.id;
+			rememberEntryId(state, entry.id);
 			writeState(this.#statePath, cloudState);
 			this.#options.onCursorAdvanced?.({
 				hostedSessionId: hosted.sessionId,
@@ -613,6 +778,8 @@ export class CloudTrailSynchronizer {
 				requiresReload: false,
 			});
 		}
+		if (local.entries.length > 0) state.lastUploadedEntryId = local.entries.at(-1)?.id;
+		state.knownEntryIds = state.knownEntryIds.slice(-MAX_RECENT_ENTRY_IDS);
 	}
 
 	async #syncOnce(): Promise<CloudTrailSyncResult> {
@@ -625,34 +792,66 @@ export class CloudTrailSynchronizer {
 		};
 		const state = readState(this.#statePath, this.#options);
 		const bindings = liveBindingMap(this.#options);
-		const hostedSessions = await this.#options.primary.listSessions(this.#options.environmentId);
-		for (const hosted of hostedSessions) {
-			await this.#pullSession(hosted, state, sessionState(state, hosted.sessionId), bindings, result);
+		const changedHostedSessions: HostedSession[] = [];
+		let discovery = state.sessionDiscovery;
+		for (;;) {
+			const page = await this.#options.primary.listSessionsPage(this.#options.environmentId, discovery, 100);
+			for (const hosted of page.items) {
+				changedHostedSessions.push(hosted);
+				const executionScope = bodyRecord(hosted.executionScope ?? null);
+				if (
+					hosted.staffAgentId &&
+					!["autonomousLabel", "roomId", "group", "parentSession"].some(
+						(key) => executionScope?.[key] !== undefined,
+					)
+				) {
+					state.adoptedSessionIds = [...new Set([...state.adoptedSessionIds, hosted.clientSessionId])];
+				}
+				discovery = { updatedAt: hosted.updatedAt, sessionId: hosted.sessionId };
+			}
+			if (!page.hasMore) break;
+			if (!page.items.length) throw new Error("hosted session discovery cursor did not advance");
 		}
+		for (const hosted of changedHostedSessions) {
+			const hostedState = sessionState(state, hosted.sessionId);
+			await this.#pullSession(hosted, state, hostedState, bindings, result);
+			retireClosedSessionState(hosted, state);
+		}
+		if (discovery) state.sessionDiscovery = discovery;
+		writeState(this.#statePath, state);
 
 		const localSessions = listSharedTrailSessions(this.#options.root, {
-			adoptedSessionIds: new Set(hostedSessions.map((session) => session.clientSessionId)),
+			adoptedSessionIds: new Set(state.adoptedSessionIds),
 		});
 		if (this.#options.canWrite()) {
-			const hostedByClientId = new Map(hostedSessions.map((session) => [session.clientSessionId, session]));
+			const hostedByClientId = new Map(changedHostedSessions.map((session) => [session.clientSessionId, session]));
 			for (const local of localSessions) {
-				if (hostedByClientId.has(local.localSessionId)) continue;
-				const hosted = await this.#options.primary.createSession({
-					environmentId: this.#options.environmentId,
-					clientSessionId: local.localSessionId,
-					title: local.title,
-					staffAgentId: local.staffAgentId,
-					...(local.scope ? { executionScope: local.scope as unknown as JsonValue } : {}),
-					...(local.scope?.companySnapshotId
-						? { companySnapshotId: local.scope.companySnapshotId, staffVersion: local.scope.staffVersion }
-						: {}),
-				});
+				let hosted = hostedByClientId.get(local.localSessionId);
+				hosted ??= await this.#options.primary.getSessionByClient(
+					this.#options.environmentId,
+					local.localSessionId,
+				);
+				if (!hosted) {
+					hosted = await this.#options.primary.createSession({
+						environmentId: this.#options.environmentId,
+						clientSessionId: local.localSessionId,
+						title: local.title,
+						staffAgentId: local.staffAgentId,
+						...(local.scope ? { executionScope: local.scope as unknown as JsonValue } : {}),
+						...(local.scope?.companySnapshotId
+							? { companySnapshotId: local.scope.companySnapshotId, staffVersion: local.scope.staffVersion }
+							: {}),
+					});
+					result.sessionsCreated++;
+				}
 				hostedByClientId.set(local.localSessionId, hosted);
-				hostedSessions.push(hosted);
-				result.sessionsCreated++;
+				if (hosted.staffAgentId) {
+					state.adoptedSessionIds = [...new Set([...state.adoptedSessionIds, hosted.clientSessionId])];
+				}
 			}
 			const localById = new Map(localSessions.map((session) => [session.localSessionId, session]));
-			for (const hosted of hostedSessions) {
+			for (const hosted of hostedByClientId.values()) {
+				if (hosted.status !== "open") continue;
 				const local = localById.get(hosted.clientSessionId);
 				if (local) {
 					await this.#uploadSession(hosted, local, state, sessionState(state, hosted.sessionId), bindings, result);

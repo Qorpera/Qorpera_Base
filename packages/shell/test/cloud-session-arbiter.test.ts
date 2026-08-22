@@ -35,10 +35,13 @@ function fakePrimary(overrides: {
 			calls.ensure.push(input);
 			return {
 				session_id: HOSTED_SESSION,
+				client_session_id:
+					overrides.created === false ? CLOUD_CLIENT_SESSION : (input.p_client_session_id as string),
 				environment_id: ENVIRONMENT,
 				title: "Financial Officer",
 				created: overrides.created ?? true,
 				created_by_user_id: AUTHOR,
+				created_at: "2026-08-18T14:00:00.000Z",
 			};
 		},
 		async listSessions() {

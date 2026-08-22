@@ -16,6 +16,7 @@ export interface CustomTriggerBuild {
 	sourceHints: string[];
 	checkEveryMinutes: number;
 	effort: ScheduledJobEffort;
+	reviewerStaffIds?: string[];
 	status: CustomTriggerBuildStatus;
 	requestedAt: string;
 	updatedAt: string;

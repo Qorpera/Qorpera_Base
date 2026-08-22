@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, open, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { JsonValue } from "@qorpera/pi-protocol";
@@ -14,16 +14,26 @@ import type {
 	HostedArtifactIndex,
 	HostedArtifactIndexEntry,
 	HostedCompanyOperation,
+	HostedCompanySnapshot,
 	HostedCompanySubstrateVersion,
+	HostedSessionEventType,
+	HostedSessionExecutionIdentity,
 } from "./hosted-primary.ts";
 
 const EXECUTION_INPUT_SCHEMA = "qorpera.runner-input/v1";
+const EXECUTION_CONTEXT_SCHEMA = "qorpera.runner-execution-context/v1";
 const EXECUTION_RESULT_SCHEMA = "qorpera.runner-result/v1";
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const BACKEND_ID_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
 const JOB_TYPE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const MAX_OUTPUT_ENTRIES = 10_000;
 const MAX_OPERATION_LINE_BYTES = 64 * 1024;
+const MAX_TRANSCRIPT_LINE_BYTES = 512 * 1024;
+const MAX_QUEUED_INPUT_LINE_BYTES = 256 * 1024;
+const MAX_QUEUED_INPUT_IMAGES = 5;
+const MAX_QUEUED_INPUT_IMAGE_BYTES = 8 * 1024 * 1024;
+const CONTAINER_INPUT_ROOT = "/qorpera/input";
 
 export interface CloudRunnerSandboxLimits {
 	wallTimeMs: number;
@@ -46,9 +56,10 @@ export const DEFAULT_CLOUD_RUNNER_SANDBOX_LIMITS: Readonly<CloudRunnerSandboxLim
 });
 
 export interface CloudRunnerSandboxGuarantees {
-	boundary: "test" | "rootless_container" | "microvm";
+	boundary: "test" | "rootless_container" | "virtual_machine" | "microvm";
 	hostFilesystem: "none";
 	inputFilesystem: "read_only";
+	companyCheckout: "job_private";
 	outputFilesystem: "job_private";
 	network: "deny_by_default";
 	environment: "allowlist_only";
@@ -58,10 +69,92 @@ export interface CloudRunnerSandboxGuarantees {
 }
 
 export interface CloudRunnerSandboxInput {
+	companyBaseRoot: string;
 	companyRoot: string;
+	proposalRoot?: string;
+	executionContextPath: string;
+	queuedInputsPath: string;
+	transcriptPath: string;
 	substrateManifestPath: string;
 	operationsPath: string;
 	artifactsRoot: string;
+	attachmentsRoot: string;
+}
+
+export interface ResolvedCloudRunnerExecutionRun {
+	runId: string;
+	profileId: string;
+	environmentId: string;
+	sourceKind: "session_turn" | "wake" | "manual" | "room_delivery" | "proposal_review" | "system";
+	sourceId: string;
+	sessionId?: string;
+	jobId: string;
+	substrateVersionId: string;
+	companySnapshotId: string;
+	staffAgentId: string;
+	staffVersion: number;
+	inputIds: readonly string[];
+	sponsorBindingId: string;
+	sponsorVersion: number;
+	requiredCapability: CloudRunnerCapability;
+	jobType: string;
+	payloadSha256: string;
+	publicationMode: "automatic" | "review";
+	reviewPolicyKey?: string;
+	reviewerStaffIds: readonly string[];
+	logicalComputerId?: string;
+	computeIdentityId?: string;
+	computeIdentityOwnershipKind?: "member" | "company" | "department" | "security_boundary";
+	computeIdentityOwnerUserId?: string;
+	computeIdentityOwnerScopeKey?: string;
+	workerClass?: "managed_sandbox" | "company_computer";
+	transcriptStartSequence: number;
+	status: string;
+	createdByUserId: string;
+	requestedByUserId?: string;
+	sponsoredByUserId?: string;
+	createdAt: string;
+}
+
+export interface ResolvedCloudRunnerExecutionSponsor {
+	bindingId: string;
+	version: number;
+	kind: "member_connection" | "company_service_account" | "company_api_billing";
+	providerConnectionId: string;
+	providerConnectionVersion: number;
+	provider: string;
+	authenticationMode: "native_subscription" | "enterprise_access_token" | "api_key" | "cloud_service_account";
+	nativeHarness: string;
+	allowAutonomous: boolean;
+}
+
+export interface ResolvedCloudRunnerExecutionContext {
+	run: ResolvedCloudRunnerExecutionRun;
+	sponsor: ResolvedCloudRunnerExecutionSponsor;
+	proposalSnapshot?: HostedCompanySnapshot;
+}
+
+export interface CloudRunnerCanonicalTranscriptEvent {
+	sessionId: string;
+	sequence: number;
+	eventId: string;
+	eventType: HostedSessionEventType;
+	actorUserId: string;
+	body: JsonValue;
+	eventHash: string;
+	previousHash?: string;
+	execution?: HostedSessionExecutionIdentity;
+	createdAt: string;
+}
+
+export interface CloudRunnerQueuedInput {
+	inputId: string;
+	position: number;
+	kind: "kickoff" | "user_message";
+	authorUserId: string;
+	authorDisplayName: string;
+	body: JsonValue;
+	createdAt: string;
 }
 
 export interface CloudRunnerSandboxRequest {
@@ -104,6 +197,9 @@ export interface CloudRunnerSandboxBackend {
 }
 
 export interface CloudRunnerSubstrateResolver {
+	resolveExecution(job: CloudRunnerJob): Promise<ResolvedCloudRunnerExecutionContext>;
+	listInputs(): Promise<CloudRunnerQueuedInput[]>;
+	listTranscript(afterSequence?: number, limit?: number): Promise<CloudRunnerCanonicalTranscriptEvent[]>;
 	resolve(versionId: string): Promise<ResolvedCompanySubstrateReference>;
 	listOperations(
 		version: HostedCompanySubstrateVersion,
@@ -137,6 +233,19 @@ export interface CloudRunnerOutputPublisher {
 	publish(input: CloudRunnerOutputPublicationInput): Promise<JsonValue>;
 }
 
+export interface CloudRunnerCompanyFilePublicationInput {
+	profileId: string;
+	environmentId: string;
+	jobId: string;
+	baseSnapshot: HostedCompanySnapshot;
+	companyRoot: string;
+	signal?: AbortSignal;
+}
+
+export interface CloudRunnerCompanyFilePublisher {
+	publish(input: CloudRunnerCompanyFilePublicationInput): Promise<string | undefined>;
+}
+
 export interface ExecuteCloudRunnerJobOptions {
 	job: CloudRunnerJob;
 	substrate: CloudRunnerSubstrateResolver;
@@ -144,6 +253,7 @@ export interface ExecuteCloudRunnerJobOptions {
 	backend: CloudRunnerSandboxBackend;
 	modelBroker?: CloudRunnerModelBroker;
 	outputPublisher?: CloudRunnerOutputPublisher;
+	companyFilePublisher?: CloudRunnerCompanyFilePublisher;
 	limits?: Partial<CloudRunnerSandboxLimits>;
 	environment?: Readonly<Record<string, string>>;
 	temporaryRoot?: string;
@@ -157,11 +267,14 @@ export interface CloudRunnerExecutionResult {
 	outputFiles: readonly CloudRunnerOutputFile[];
 	outputBytes: number;
 	usage: CloudRunnerExecutionUsage;
+	outputSnapshotId?: string;
 }
 
 interface MaterializedCloudRunnerInput {
 	input: CloudRunnerSandboxInput;
 	version: HostedCompanySubstrateVersion;
+	snapshot: HostedCompanySnapshot;
+	sourceKind: ResolvedCloudRunnerExecutionRun["sourceKind"];
 	artifactCount: number;
 	inputBytes: number;
 }
@@ -215,6 +328,7 @@ function assertBackend(options: ExecuteCloudRunnerJobOptions): void {
 	if (
 		guarantees.hostFilesystem !== "none" ||
 		guarantees.inputFilesystem !== "read_only" ||
+		guarantees.companyCheckout !== "job_private" ||
 		guarantees.outputFilesystem !== "job_private" ||
 		guarantees.network !== "deny_by_default" ||
 		guarantees.environment !== "allowlist_only" ||
@@ -228,7 +342,11 @@ function assertBackend(options: ExecuteCloudRunnerJobOptions): void {
 		if (!options.allowTestBackend) throw new Error("Test sandbox backend cannot execute untrusted runner work");
 		return;
 	}
-	if (guarantees.boundary !== "rootless_container" && guarantees.boundary !== "microvm") {
+	if (
+		guarantees.boundary !== "rootless_container" &&
+		guarantees.boundary !== "virtual_machine" &&
+		guarantees.boundary !== "microvm"
+	) {
 		throw new Error("Sandbox backend does not provide a supported containment boundary");
 	}
 }
@@ -315,6 +433,138 @@ async function writeOperationJournal(
 		await file.close();
 	}
 	if (count !== version.operationCount) throw new Error("Runner substrate operation count is inconsistent");
+	return inputBytes;
+}
+
+async function writeCanonicalTranscript(
+	path: string,
+	context: ResolvedCloudRunnerExecutionContext,
+	resolver: CloudRunnerSubstrateResolver,
+	initialInputBytes: number,
+	maxInputBytes: number,
+): Promise<number> {
+	const file = await open(path, "wx", 0o400);
+	let inputBytes = initialInputBytes;
+	let sequence = 0;
+	try {
+		while (sequence < context.run.transcriptStartSequence) {
+			const page = await resolver.listTranscript(sequence, 200);
+			if (page.length === 0) throw new Error("Runner canonical transcript is incomplete");
+			for (const event of page) {
+				if (
+					context.run.sessionId === undefined ||
+					event.sessionId !== context.run.sessionId ||
+					event.sequence !== sequence + 1 ||
+					event.sequence > context.run.transcriptStartSequence
+				) {
+					throw new Error("Runner canonical transcript is outside its immutable run prefix");
+				}
+				const line = `${JSON.stringify(event)}\n`;
+				const lineBytes = Buffer.byteLength(line);
+				if (lineBytes > MAX_TRANSCRIPT_LINE_BYTES) {
+					throw new Error("Runner canonical transcript event exceeds its byte limit");
+				}
+				inputBytes = assertInputBudget(inputBytes, lineBytes, maxInputBytes);
+				await file.write(line);
+				sequence = event.sequence;
+			}
+		}
+	} finally {
+		await file.close();
+	}
+	return inputBytes;
+}
+
+async function writeQueuedInputs(
+	path: string,
+	attachmentsRoot: string,
+	profileId: string,
+	context: ResolvedCloudRunnerExecutionContext,
+	resolver: CloudRunnerSubstrateResolver,
+	objects: Pick<CloudContentAddressedStore, "getObject">,
+	initialInputBytes: number,
+	maxInputBytes: number,
+): Promise<number> {
+	const inputs = await resolver.listInputs();
+	if (
+		inputs.length !== context.run.inputIds.length ||
+		inputs.some((input, index) => input.inputId !== context.run.inputIds[index])
+	) {
+		throw new Error("Runner queued inputs do not match the immutable run");
+	}
+	await mkdir(attachmentsRoot, { recursive: true });
+	const file = await open(path, "wx", 0o400);
+	let inputBytes = initialInputBytes;
+	let previousPosition = 0;
+	try {
+		for (const input of inputs) {
+			if (
+				input.position <= previousPosition ||
+				(input.kind !== "kickoff" && input.kind !== "user_message") ||
+				!Number.isFinite(Date.parse(input.createdAt))
+			) {
+				throw new Error("Runner queued inputs are invalid");
+			}
+			const body =
+				input.body && typeof input.body === "object" && !Array.isArray(input.body)
+					? (input.body as Record<string, JsonValue>)
+					: undefined;
+			const images = body?.images ?? (input.kind === "kickoff" ? [] : undefined);
+			if (!Array.isArray(images) || images.length > MAX_QUEUED_INPUT_IMAGES) {
+				throw new Error("Runner queued input images are invalid");
+			}
+			const materializedImages: Array<{
+				objectSha256: string;
+				bytes: number;
+				mediaType: string;
+				path: string;
+			}> = [];
+			for (let index = 0; index < images.length; index++) {
+				const candidate = images[index];
+				if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+					throw new Error("Runner queued input image is invalid");
+				}
+				const image = candidate as Record<string, JsonValue>;
+				if (
+					typeof image.objectSha256 !== "string" ||
+					!SHA256_PATTERN.test(image.objectSha256) ||
+					!Number.isSafeInteger(image.bytes) ||
+					(image.bytes as number) < 1 ||
+					(image.bytes as number) > MAX_QUEUED_INPUT_IMAGE_BYTES ||
+					typeof image.mediaType !== "string" ||
+					!/^image\/[a-z0-9.+-]{1,64}$/i.test(image.mediaType)
+				) {
+					throw new Error("Runner queued input image is invalid");
+				}
+				const relativePath = `${input.inputId}/${String(index + 1).padStart(2, "0")}-${image.objectSha256}`;
+				const content = await objects.getObject(profileId, {
+					sha256: image.objectSha256,
+					bytes: image.bytes as number,
+					mediaType: image.mediaType,
+				});
+				inputBytes = assertInputBudget(inputBytes, content.byteLength, maxInputBytes);
+				const physicalPath = join(attachmentsRoot, ...relativePath.split("/"));
+				await mkdir(dirname(physicalPath), { recursive: true });
+				await writeFile(physicalPath, content, { mode: 0o400, flag: "wx" });
+				materializedImages.push({
+					objectSha256: image.objectSha256,
+					bytes: image.bytes as number,
+					mediaType: image.mediaType,
+					path: `${CONTAINER_INPUT_ROOT}/attachments/${relativePath}`,
+				});
+			}
+			const line = `${JSON.stringify({ ...input, materializedImages })}\n`;
+			const lineBytes = Buffer.byteLength(line);
+			if (lineBytes > MAX_QUEUED_INPUT_LINE_BYTES) {
+				throw new Error("Runner queued input exceeds its byte limit");
+			}
+			inputBytes = assertInputBudget(inputBytes, lineBytes, maxInputBytes);
+			await file.write(line);
+			previousPosition = input.position;
+		}
+	} finally {
+		await file.close();
+	}
 	return inputBytes;
 }
 
@@ -406,9 +656,89 @@ async function materializeInput(
 	limits: CloudRunnerSandboxLimits,
 ): Promise<MaterializedCloudRunnerInput> {
 	const { job } = options;
-	const resolvedSubstrate = await options.substrate.resolve(job.substrateVersionId);
+	const [resolvedSubstrate, execution] = await Promise.all([
+		options.substrate.resolve(job.substrateVersionId),
+		options.substrate.resolveExecution(job),
+	]);
 	const { version, snapshot, artifactIndex } = resolvedSubstrate;
+	const proposalSnapshot = execution.proposalSnapshot;
+	const jobPayload = job.payload as Record<string, JsonValue>;
+	const proposalPayload =
+		jobPayload.proposal_snapshot &&
+		typeof jobPayload.proposal_snapshot === "object" &&
+		!Array.isArray(jobPayload.proposal_snapshot)
+			? (jobPayload.proposal_snapshot as Record<string, JsonValue>)
+			: undefined;
+	const computeOwnershipIsValid =
+		execution.run.computeIdentityId === undefined
+			? execution.run.computeIdentityOwnershipKind === undefined &&
+				execution.run.computeIdentityOwnerUserId === undefined &&
+				execution.run.computeIdentityOwnerScopeKey === undefined
+			: execution.run.computeIdentityOwnershipKind === "member"
+				? execution.run.computeIdentityOwnerUserId !== undefined &&
+					execution.run.computeIdentityOwnerScopeKey === undefined &&
+					execution.sponsor.kind === "member_connection" &&
+					execution.run.sponsoredByUserId === execution.run.computeIdentityOwnerUserId
+				: execution.run.computeIdentityOwnershipKind === "company"
+					? execution.run.computeIdentityOwnerUserId === undefined &&
+						execution.run.computeIdentityOwnerScopeKey === undefined &&
+						execution.sponsor.kind !== "member_connection"
+					: (execution.run.computeIdentityOwnershipKind === "department" ||
+							execution.run.computeIdentityOwnershipKind === "security_boundary") &&
+						execution.run.computeIdentityOwnerUserId === undefined &&
+						execution.run.computeIdentityOwnerScopeKey !== undefined &&
+						execution.sponsor.kind !== "member_connection";
 	if (
+		job.runId === undefined ||
+		job.assignmentId === undefined ||
+		execution.run.runId !== job.runId ||
+		execution.run.jobId !== job.jobId ||
+		execution.run.profileId !== job.profileId ||
+		execution.run.environmentId !== job.environmentId ||
+		execution.run.sessionId !== job.sessionId ||
+		execution.run.substrateVersionId !== job.substrateVersionId ||
+		execution.run.companySnapshotId !== snapshot.snapshotId ||
+		!UUID_PATTERN.test(execution.run.staffAgentId) ||
+		new Set(execution.run.inputIds).size !== execution.run.inputIds.length ||
+		execution.run.inputIds.some((inputId) => !UUID_PATTERN.test(inputId)) ||
+		(execution.run.sourceKind === "session_turn") !== execution.run.inputIds.length > 0 ||
+		execution.run.requiredCapability !== job.requiredCapability ||
+		execution.run.jobType !== job.jobType ||
+		execution.run.sponsorBindingId !== execution.sponsor.bindingId ||
+		execution.run.sponsorVersion !== execution.sponsor.version ||
+		!SHA256_PATTERN.test(execution.run.payloadSha256) ||
+		(execution.run.publicationMode !== "automatic" && execution.run.publicationMode !== "review") ||
+		(execution.run.publicationMode === "automatic" &&
+			(execution.run.reviewPolicyKey !== undefined || execution.run.reviewerStaffIds.length > 0)) ||
+		(execution.run.publicationMode === "review" &&
+			(!execution.run.reviewPolicyKey || execution.run.reviewerStaffIds.length === 0)) ||
+		new Set(execution.run.reviewerStaffIds).size !== execution.run.reviewerStaffIds.length ||
+		execution.run.reviewerStaffIds.some((staffAgentId) => !UUID_PATTERN.test(staffAgentId)) ||
+		(execution.run.logicalComputerId !== undefined && !UUID_PATTERN.test(execution.run.logicalComputerId)) ||
+		(execution.run.computeIdentityId !== undefined && !UUID_PATTERN.test(execution.run.computeIdentityId)) ||
+		(execution.run.computeIdentityOwnerUserId !== undefined &&
+			!UUID_PATTERN.test(execution.run.computeIdentityOwnerUserId)) ||
+		!computeOwnershipIsValid ||
+		(execution.run.workerClass !== undefined &&
+			execution.run.workerClass !== "managed_sandbox" &&
+			execution.run.workerClass !== "company_computer") ||
+		(execution.run.requestedByUserId !== undefined && !UUID_PATTERN.test(execution.run.requestedByUserId)) ||
+		(execution.run.sponsoredByUserId !== undefined && !UUID_PATTERN.test(execution.run.sponsoredByUserId)) ||
+		(execution.sponsor.authenticationMode === "native_subscription" &&
+			(execution.run.computeIdentityId === undefined || execution.run.requestedByUserId === undefined)) ||
+		!Number.isSafeInteger(execution.run.transcriptStartSequence) ||
+		execution.run.transcriptStartSequence < 0 ||
+		(execution.run.sessionId === undefined && execution.run.transcriptStartSequence !== 0) ||
+		(execution.run.sourceKind === "session_turn" && execution.run.sessionId === undefined) ||
+		(execution.run.sourceKind === "proposal_review") !== (proposalSnapshot !== undefined) ||
+		(execution.run.sourceKind === "proposal_review" &&
+			(jobPayload.schema !== "qorpera.company-proposal-review/v1" ||
+				proposalPayload?.snapshot_id !== proposalSnapshot?.snapshotId)) ||
+		(proposalSnapshot !== undefined &&
+			(proposalSnapshot.profileId !== job.profileId ||
+				proposalSnapshot.environmentId !== job.environmentId ||
+				proposalSnapshot.tree.contractVersion !== 3)) ||
+		(execution.run.sourceKind !== "session_turn" && !execution.sponsor.allowAutonomous) ||
 		version.versionId !== job.substrateVersionId ||
 		version.profileId !== job.profileId ||
 		version.environmentId !== job.environmentId ||
@@ -426,17 +756,33 @@ async function materializeInput(
 	}
 	let inputBytes = assertInputBudget(0, snapshot.tree.totalBytes, limits.maxInputBytes);
 	const inputRoot = join(executionRoot, "input");
-	const companyRoot = join(inputRoot, "company");
+	const companyBaseRoot = join(inputRoot, "company");
+	const companyRoot = join(executionRoot, "work", "company");
+	const proposalRoot = proposalSnapshot ? join(inputRoot, "proposal") : undefined;
 	const artifactsRoot = join(inputRoot, "artifacts");
+	const attachmentsRoot = join(inputRoot, "attachments");
+	const executionContextPath = join(inputRoot, "execution.json");
+	const queuedInputsPath = join(inputRoot, "inputs.jsonl");
+	const transcriptPath = join(inputRoot, "transcript.jsonl");
 	const operationsPath = join(inputRoot, "operations.jsonl");
 	const substrateManifestPath = join(inputRoot, "substrate.json");
 	await mkdir(inputRoot, { recursive: true });
 	await materializeCloudCompanyTree(
-		companyRoot,
+		companyBaseRoot,
 		job.profileId,
 		currentCloudCompanyTreeReference(snapshot.tree),
 		options.objects,
 	);
+	await cp(companyBaseRoot, companyRoot, { recursive: true, force: false, errorOnExist: true });
+	if (proposalSnapshot && proposalRoot) {
+		inputBytes = assertInputBudget(inputBytes, proposalSnapshot.tree.totalBytes, limits.maxInputBytes);
+		await materializeCloudCompanyTree(
+			proposalRoot,
+			job.profileId,
+			currentCloudCompanyTreeReference(proposalSnapshot.tree),
+			options.objects,
+		);
+	}
 	inputBytes = await writeOperationJournal(
 		operationsPath,
 		version,
@@ -454,6 +800,26 @@ async function materializeInput(
 		inputBytes,
 		limits.maxInputBytes,
 	);
+	inputBytes = await writeQueuedInputs(
+		queuedInputsPath,
+		attachmentsRoot,
+		job.profileId,
+		execution,
+		options.substrate,
+		options.objects,
+		artifacts.inputBytes,
+		limits.maxInputBytes,
+	);
+	inputBytes = await writeCanonicalTranscript(
+		transcriptPath,
+		execution,
+		options.substrate,
+		inputBytes,
+		limits.maxInputBytes,
+	);
+	const encodedExecution = `${JSON.stringify({ schema: EXECUTION_CONTEXT_SCHEMA, ...execution })}\n`;
+	inputBytes = assertInputBudget(inputBytes, Buffer.byteLength(encodedExecution), limits.maxInputBytes);
+	await writeFile(executionContextPath, encodedExecution, { encoding: "utf-8", mode: 0o400, flag: "wx" });
 	const manifest = {
 		schema: EXECUTION_INPUT_SCHEMA,
 		profileId: job.profileId,
@@ -467,13 +833,28 @@ async function materializeInput(
 		operationCount: version.operationCount,
 		artifactIndexId: artifactIndex?.indexId ?? null,
 		artifactCount: artifacts.artifactCount,
+		proposalSnapshotId: proposalSnapshot?.snapshotId ?? null,
+		proposalTreeManifestSha256: proposalSnapshot?.tree.manifestSha256 ?? null,
 	};
 	const encodedManifest = `${JSON.stringify(manifest)}\n`;
-	inputBytes = assertInputBudget(artifacts.inputBytes, Buffer.byteLength(encodedManifest), limits.maxInputBytes);
+	inputBytes = assertInputBudget(inputBytes, Buffer.byteLength(encodedManifest), limits.maxInputBytes);
 	await writeFile(substrateManifestPath, encodedManifest, { encoding: "utf-8", mode: 0o400, flag: "wx" });
 	return {
-		input: { companyRoot, substrateManifestPath, operationsPath, artifactsRoot },
+		input: {
+			companyBaseRoot,
+			companyRoot,
+			...(proposalRoot ? { proposalRoot } : {}),
+			executionContextPath,
+			queuedInputsPath,
+			transcriptPath,
+			substrateManifestPath,
+			operationsPath,
+			artifactsRoot,
+			attachmentsRoot,
+		},
 		version,
+		snapshot,
+		sourceKind: execution.run.sourceKind,
 		artifactCount: artifacts.artifactCount,
 		inputBytes,
 	};
@@ -651,6 +1032,9 @@ export async function executeCloudRunnerJob(
 		assertJsonBytes(backendResult, "Sandbox result", limits.maxResultBytes);
 		const resultBytes = Buffer.byteLength(JSON.stringify(backendResult));
 		const outputFiles = await collectOutputs(outputRoot, limits.maxOutputBytes);
+		if (materialized.sourceKind === "proposal_review" && outputFiles.length > 0) {
+			throw new Error("Proposal review executions cannot publish artifacts");
+		}
 		const outputBytes = outputFiles.reduce((total, file) => total + file.bytes, 0);
 		const publication = options.outputPublisher
 			? await options.outputPublisher.publish({
@@ -662,6 +1046,17 @@ export async function executeCloudRunnerJob(
 					files: outputFiles,
 				})
 			: null;
+		const outputSnapshotId =
+			materialized.sourceKind !== "proposal_review" && options.companyFilePublisher
+				? await options.companyFilePublisher.publish({
+						profileId: options.job.profileId,
+						environmentId: options.job.environmentId,
+						jobId: options.job.jobId,
+						baseSnapshot: materialized.snapshot,
+						companyRoot: materialized.input.companyRoot,
+						...(options.signal ? { signal: options.signal } : {}),
+					})
+				: undefined;
 		const usage: CloudRunnerExecutionUsage = {
 			executionMs: Math.max(1, Math.ceil(executionFinishedAt - executionStartedAt)),
 			inputBytes: materialized.inputBytes,
@@ -688,7 +1083,7 @@ export async function executeCloudRunnerJob(
 			usage: serializeCloudRunnerExecutionUsage(usage),
 		};
 		assertJsonBytes(result, "Runner completion result", 64 * 1024);
-		return { result, outputFiles, outputBytes, usage };
+		return { result, outputFiles, outputBytes, usage, ...(outputSnapshotId ? { outputSnapshotId } : {}) };
 	} finally {
 		assertDisposableRoot(temporaryBase, executionRoot);
 		await rm(executionRoot, { recursive: true, force: true });

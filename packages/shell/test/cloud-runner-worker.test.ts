@@ -20,11 +20,14 @@ const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const clientRunnerId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";
 const actorUserId = "ec30142e-47c8-4532-a6c4-10612d02c619";
 const jobId = "b953532a-c4f0-4b81-b901-d4bb21237001";
+const assignmentId = "b953532a-c4f0-4b81-b901-d4bb21237005";
+const assignment = { assignmentId, jobId, capability: "z".repeat(43) };
 const environmentId = "b953532a-c4f0-4b81-b901-d4bb21237002";
 const substrateVersionId = "b953532a-c4f0-4b81-b901-d4bb21237003";
 const clientJobId = "b953532a-c4f0-4b81-b901-d4bb21237004";
 const createdAt = "2026-08-17T00:00:00.000Z";
 const activationToken = "a".repeat(43);
+const outputSnapshotId = "b953532a-c4f0-4b81-b901-d4bb21237006";
 
 function runnerRecord(activeLeases: number) {
 	return {
@@ -91,7 +94,7 @@ class RunnerService implements CloudRunnerControlTransport {
 		if (body.action === "activate" || body.action === "heartbeat") {
 			return runnerRecord(this.status === "leased" ? 1 : 0);
 		}
-		if (body.action === "claim") {
+		if (body.action === "accept") {
 			if (this.status !== "queued") return null;
 			this.status = "leased";
 			return jobRecord("leased");
@@ -110,6 +113,7 @@ class RunnerService implements CloudRunnerControlTransport {
 			}
 			return jobRecord("completed", body.result);
 		}
+		if (body.action !== "fail") throw new Error("unexpected runner action");
 		this.status = body.retryable ? "queued" : "failed";
 		return jobRecord(this.status);
 	}
@@ -119,6 +123,7 @@ const guarantees: CloudRunnerSandboxGuarantees = {
 	boundary: "rootless_container",
 	hostFilesystem: "none",
 	inputFilesystem: "read_only",
+	companyCheckout: "job_private",
 	outputFilesystem: "job_private",
 	network: "deny_by_default",
 	environment: "allowlist_only",
@@ -143,12 +148,23 @@ function backend() {
 function brokerTransport(): CloudRunnerBrokerTransport {
 	return {
 		describe: vi.fn(async () => ({})),
+		listInputs: vi.fn(async () => []),
+		listTranscript: vi.fn(async () => []),
 		listOperations: vi.fn(async () => []),
 		listArtifacts: vi.fn(async () => []),
 		getObject: vi.fn(async () => new Uint8Array()),
 		putObject: vi.fn(async () => "stored" as const),
 		registerArtifact: vi.fn(async () => ({})),
 		requestModel: vi.fn(async () => ({})),
+		beginOperation: vi.fn(async () => ({})),
+		completeOperation: vi.fn(async () => ({})),
+		bindProviderSession: vi.fn(async () => ({})),
+		prepareCompanyRevision: vi.fn(async () => ({})),
+		beginCompanyRevisionGraph: vi.fn(async () => ({})),
+		appendCompanyRevisionGraph: vi.fn(async () => 1),
+		completeCompanyRevisionGraph: vi.fn(async () => ({})),
+		verifyCompanyRevision: vi.fn(async () => ({ verified: true, pending: false })),
+		appendTranscriptEvent: vi.fn(async () => ({})),
 	};
 }
 
@@ -199,15 +215,16 @@ function worker(
 }
 
 describe("ephemeral cloud runner worker", () => {
-	it("claims, executes, publishes through the broker boundary, and completes", async () => {
+	it("accepts assigned work, executes through the broker boundary, and completes", async () => {
 		const service = new RunnerService();
 		const runner = await activeRunner(service);
 		const serviceBackend = backend();
-		const executeJob = vi.fn(async (_options: ExecuteCloudRunnerJobOptions) =>
-			successfulExecution({ outcome: "built" }),
-		);
+		const executeJob = vi.fn(async (_options: ExecuteCloudRunnerJobOptions) => ({
+			...successfulExecution({ outcome: "built" }),
+			outputSnapshotId,
+		}));
 
-		const result = await worker(runner, serviceBackend, executeJob).runNext();
+		const result = await worker(runner, serviceBackend, executeJob).runNext(assignment);
 
 		expect(result).toMatchObject({ status: "completed", job: { jobId, status: "completed" } });
 		expect(serviceBackend.prepare).toHaveBeenCalledOnce();
@@ -217,7 +234,8 @@ describe("ephemeral cloud runner worker", () => {
 			backend: serviceBackend,
 			modelBroker: { requestModel: expect.any(Function) },
 		});
-		expect(service.requests.map((request) => request.action)).toEqual(["activate", "claim", "complete"]);
+		expect(service.requests.map((request) => request.action)).toEqual(["activate", "accept", "complete"]);
+		expect(service.requests.at(-1)).toMatchObject({ action: "complete", outputSnapshotId });
 		expect(runner.leasedJobs()).toEqual([]);
 	});
 
@@ -231,7 +249,7 @@ describe("ephemeral cloud runner worker", () => {
 				}),
 		);
 
-		await worker(runner, backend(), executeJob, { leaseRenewalMs: 10, heartbeatMs: 20 }).runNext();
+		await worker(runner, backend(), executeJob, { leaseRenewalMs: 10, heartbeatMs: 20 }).runNext(assignment);
 
 		const actions = service.requests.map((request) => request.action);
 		expect(actions.filter((action) => action === "renew").length).toBeGreaterThanOrEqual(2);
@@ -244,7 +262,7 @@ describe("ephemeral cloud runner worker", () => {
 		const runner = await activeRunner(service);
 		const result = await worker(runner, backend(), async () => {
 			throw new Error("Runner substrate is inconsistent");
-		}).runNext();
+		}).runNext(assignment);
 
 		expect(result).toMatchObject({ status: "failed", job: { status: "failed" } });
 		expect(service.requests.at(-1)).toMatchObject({ action: "fail", retryable: false });
@@ -263,6 +281,7 @@ describe("ephemeral cloud runner worker", () => {
 				}),
 		);
 		const running = worker(runner, backend(), executeJob, { leaseRenewalMs: 50, heartbeatMs: 50 }).runNext(
+			assignment,
 			controller.signal,
 		);
 		await vi.waitFor(() => expect(executeJob).toHaveBeenCalledOnce());
@@ -277,16 +296,20 @@ describe("ephemeral cloud runner worker", () => {
 		const service = new RunnerService();
 		const runner = await activeRunner(service);
 		service.failCompletionOnce = true;
-		const executeJob = vi.fn(async () => successfulExecution({ outcome: "durable" }));
+		const executeJob = vi.fn(async () => ({
+			...successfulExecution({ outcome: "durable" }),
+			outputSnapshotId,
+		}));
 		const ephemeralWorker = worker(runner, backend(), executeJob);
-		await expect(ephemeralWorker.runNext()).rejects.toThrow("completion response lost");
+		await expect(ephemeralWorker.runNext(assignment)).rejects.toThrow("completion response lost");
 		expect(runner.pendingCompletion(jobId)).toEqual({ outcome: "durable" });
 
-		await expect(ephemeralWorker.runNext()).resolves.toMatchObject({ status: "completed" });
+		await expect(ephemeralWorker.runNext(undefined)).resolves.toMatchObject({ status: "completed" });
 		expect(executeJob).toHaveBeenCalledOnce();
 		const completions = service.requests.filter((request) => request.action === "complete");
 		expect(completions).toHaveLength(2);
 		expect(completions[0]).toEqual(completions[1]);
+		expect(completions[0]).toMatchObject({ outputSnapshotId });
 	});
 
 	it("discards a staged completion after the hosted lease is definitively unavailable", async () => {
@@ -295,11 +318,11 @@ describe("ephemeral cloud runner worker", () => {
 		service.failCompletionOnce = true;
 		const executeJob = vi.fn(async () => successfulExecution({ outcome: "staged" }));
 		const ephemeralWorker = worker(runner, backend(), executeJob);
-		await expect(ephemeralWorker.runNext()).rejects.toThrow("completion response lost");
+		await expect(ephemeralWorker.runNext(assignment)).rejects.toThrow("completion response lost");
 		expect(runner.pendingCompletion(jobId)).toEqual({ outcome: "staged" });
 		service.completionErrorStatus = 409;
 
-		await expect(ephemeralWorker.runNext()).resolves.toEqual({ status: "idle" });
+		await expect(ephemeralWorker.runNext(undefined)).resolves.toEqual({ status: "idle" });
 		expect(runner.leasedJobs()).toEqual([]);
 		expect(executeJob).toHaveBeenCalledOnce();
 	});
@@ -310,10 +333,10 @@ describe("ephemeral cloud runner worker", () => {
 		service.failCompletionOnce = true;
 		const executeJob = vi.fn(async () => successfulExecution({ outcome: "waiting" }));
 		const ephemeralWorker = worker(runner, backend(), executeJob);
-		await expect(ephemeralWorker.runNext()).rejects.toThrow("completion response lost");
+		await expect(ephemeralWorker.runNext(assignment)).rejects.toThrow("completion response lost");
 		service.completionErrorStatus = 423;
 
-		await expect(ephemeralWorker.runNext()).rejects.toThrow("Runner control request failed (423)");
+		await expect(ephemeralWorker.runNext(undefined)).rejects.toThrow("Runner control request failed (423)");
 		expect(runner.pendingCompletion(jobId)).toEqual({ outcome: "waiting" });
 		expect(runner.leasedJobs()).toHaveLength(1);
 		expect(executeJob).toHaveBeenCalledOnce();
@@ -324,10 +347,14 @@ describe("ephemeral cloud runner worker", () => {
 		const runner = await activeRunner(service);
 		service.failCompletionOnce = true;
 		const executeJob = vi.fn(async () => successfulExecution({ outcome: "expired" }));
-		await expect(worker(runner, backend(), executeJob).runNext()).rejects.toThrow("completion response lost");
+		await expect(worker(runner, backend(), executeJob).runNext(assignment)).rejects.toThrow(
+			"completion response lost",
+		);
 		const leaseExpiry = Date.parse(runner.leasedJobs()[0]?.leaseExpiresAt as string);
 
-		await expect(worker(runner, backend(), executeJob, { now: () => leaseExpiry + 1 }).runNext()).resolves.toEqual({
+		await expect(
+			worker(runner, backend(), executeJob, { now: () => leaseExpiry + 1 }).runNext(undefined),
+		).resolves.toEqual({
 			status: "idle",
 		});
 		expect(service.requests.filter((request) => request.action === "complete")).toHaveLength(1);

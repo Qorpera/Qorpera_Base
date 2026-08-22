@@ -17,6 +17,8 @@ const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const clientRunnerId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";
 const actorUserId = "ec30142e-47c8-4532-a6c4-10612d02c619";
 const jobId = "b953532a-c4f0-4b81-b901-d4bb21237001";
+const assignmentId = "b953532a-c4f0-4b81-b901-d4bb21237005";
+const assignmentCapability = "z".repeat(43);
 const environmentId = "b953532a-c4f0-4b81-b901-d4bb21237002";
 const substrateVersionId = "b953532a-c4f0-4b81-b901-d4bb21237003";
 const clientJobId = "b953532a-c4f0-4b81-b901-d4bb21237004";
@@ -91,7 +93,7 @@ function jobRecord(status: "leased" | "completed") {
 }
 
 describe("disposable cloud runner", () => {
-	it("reuses secrets and idempotency ids after ambiguous activation, heartbeat, claim, and completion", async () => {
+	it("reuses secrets and assignment identity after ambiguous activation, heartbeat, acceptance, and completion", async () => {
 		const pairing = createCloudRunnerPairingSecret();
 		expect(pairing.activationToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
 		expect(pairing.activationTokenSha256).toMatch(/^[0-9a-f]{64}$/);
@@ -101,11 +103,11 @@ describe("disposable cloud runner", () => {
 				const entries = attempts.get(body.action) ?? [];
 				entries.push({ token, body });
 				attempts.set(body.action, entries);
-				if (["activate", "heartbeat", "claim", "complete"].includes(body.action) && entries.length === 1) {
+				if (["activate", "heartbeat", "accept", "complete"].includes(body.action) && entries.length === 1) {
 					throw new Error("response lost");
 				}
 				if (body.action === "activate" || body.action === "heartbeat") return runnerRecord();
-				if (body.action === "claim" || body.action === "renew") return jobRecord("leased");
+				if (body.action === "accept" || body.action === "renew") return jobRecord("leased");
 				if (body.action === "complete") return jobRecord("completed");
 				return { ...jobRecord("leased"), status: "queued", runner_id: null, lease_expires_at: null };
 			}),
@@ -120,14 +122,17 @@ describe("disposable cloud runner", () => {
 		await expect(runner.heartbeat()).resolves.toMatchObject({ runnerId, online: true });
 		expect(attempts.get("heartbeat")?.[0]).toEqual(attempts.get("heartbeat")?.[1]);
 
-		await expect(runner.claim()).rejects.toThrow("response lost");
-		const claimedJob = await runner.claim();
+		const assignment = { assignmentId, jobId, capability: assignmentCapability };
+		await expect(runner.acceptAssignment(assignment)).rejects.toThrow("response lost");
+		const claimedJob = await runner.acceptAssignment(assignment);
 		expect(claimedJob).toMatchObject({ jobId, status: "leased" });
-		expect(attempts.get("claim")?.[0]).toEqual(attempts.get("claim")?.[1]);
+		expect(attempts.get("accept")?.[0]).toEqual(attempts.get("accept")?.[1]);
 		expect(runner.snapshot()).toMatchObject({ active: true, activeJobIds: [jobId] });
 		const brokerAuthorities: CloudRunnerBrokerAuthority[] = [];
 		const brokerTransport: CloudRunnerBrokerTransport = {
 			describe: vi.fn(async () => ({})),
+			listInputs: vi.fn(async () => []),
+			listTranscript: vi.fn(async () => []),
 			listOperations: vi.fn(async () => []),
 			listArtifacts: vi.fn(async () => []),
 			getObject: vi.fn(async (authority) => {
@@ -137,6 +142,15 @@ describe("disposable cloud runner", () => {
 			putObject: vi.fn(async () => "stored" as const),
 			registerArtifact: vi.fn(async () => ({})),
 			requestModel: vi.fn(async () => ({})),
+			beginOperation: vi.fn(async () => ({})),
+			completeOperation: vi.fn(async () => ({})),
+			bindProviderSession: vi.fn(async () => ({})),
+			prepareCompanyRevision: vi.fn(async () => ({})),
+			beginCompanyRevisionGraph: vi.fn(async () => ({})),
+			appendCompanyRevisionGraph: vi.fn(async () => 1),
+			completeCompanyRevisionGraph: vi.fn(async () => ({})),
+			verifyCompanyRevision: vi.fn(async () => ({ verified: true, pending: false })),
+			appendTranscriptEvent: vi.fn(async () => ({})),
 		};
 		const broker = runner.broker(claimedJob as NonNullable<typeof claimedJob>, brokerTransport);
 		await broker.readObject("f".repeat(64));
@@ -164,7 +178,7 @@ describe("disposable cloud runner", () => {
 		const pairing = createCloudRunnerPairingSecret();
 		const store = new MemoryAuthorityStore();
 		const attempts = new Map<string, Array<{ token: string; body: CloudRunnerControlRequest }>>();
-		const failures = new Set(["activate", "claim", "complete"]);
+		const failures = new Set(["activate", "accept", "complete"]);
 		const transport: CloudRunnerControlTransport = {
 			request: vi.fn(async (token, body) => {
 				const entries = attempts.get(body.action) ?? [];
@@ -172,7 +186,7 @@ describe("disposable cloud runner", () => {
 				attempts.set(body.action, entries);
 				if (failures.delete(body.action)) throw new Error("response lost");
 				if (body.action === "activate") return runnerRecord();
-				if (body.action === "claim") return jobRecord("leased");
+				if (body.action === "accept") return jobRecord("leased");
 				if (body.action === "complete") return jobRecord("completed");
 				throw new Error("unexpected runner action");
 			}),
@@ -184,10 +198,11 @@ describe("disposable cloud runner", () => {
 		await expect(runner.activate("linux-x64", "0.1.0")).resolves.toMatchObject({ runnerId });
 		expect(attempts.get("activate")?.[0]).toEqual(attempts.get("activate")?.[1]);
 
-		await expect(runner.claim()).rejects.toThrow("response lost");
+		const assignment = { assignmentId, jobId, capability: assignmentCapability };
+		await expect(runner.acceptAssignment(assignment)).rejects.toThrow("response lost");
 		runner = await DisposableCloudRunner.open(transport, runnerId, store);
-		await expect(runner.claim()).resolves.toMatchObject({ jobId, status: "leased" });
-		expect(attempts.get("claim")?.[0]).toEqual(attempts.get("claim")?.[1]);
+		await expect(runner.acceptAssignment(assignment)).resolves.toMatchObject({ jobId, status: "leased" });
+		expect(attempts.get("accept")?.[0]).toEqual(attempts.get("accept")?.[1]);
 		expect(runner.leasedJobs()).toMatchObject([{ jobId, substrateVersionId }]);
 
 		await expect(runner.complete(jobId, { outcome: "ok" })).rejects.toThrow("response lost");
@@ -240,33 +255,38 @@ describe("disposable cloud runner", () => {
 		expect(heartbeats[2]?.body).not.toEqual(heartbeats[0]?.body);
 	});
 
-	it("replaces an expired ambiguous claim identity and claims again", async () => {
+	it("does not replace an orchestrator assignment after an ambiguous response", async () => {
 		const pairing = createCloudRunnerPairingSecret();
-		const claims: Array<Extract<CloudRunnerControlRequest, { action: "claim" }>> = [];
-		let firstClientLeaseId: string | undefined;
+		const acceptances: Array<Extract<CloudRunnerControlRequest, { action: "accept" }>> = [];
+		let loseResponse = true;
 		const transport: CloudRunnerControlTransport = {
 			request: vi.fn(async (_token, body) => {
 				if (body.action === "activate") return runnerRecord();
-				if (body.action !== "claim") throw new Error("unexpected runner action");
-				claims.push(structuredClone(body));
-				if (!firstClientLeaseId) {
-					firstClientLeaseId = body.clientLeaseId;
-					throw new Error("claim response lost");
+				if (body.action !== "accept") throw new Error("unexpected runner action");
+				acceptances.push(structuredClone(body));
+				if (loseResponse) {
+					loseResponse = false;
+					throw new Error("acceptance response lost");
 				}
-				if (body.clientLeaseId === firstClientLeaseId) throw new CloudRunnerControlRequestError(409);
 				return jobRecord("leased");
 			}),
 		};
 		const runner = new DisposableCloudRunner(transport, runnerId, pairing.activationToken);
 		await runner.activate("linux-x64", "0.1.0");
 
-		await expect(runner.claim()).rejects.toThrow("claim response lost");
-		await expect(runner.claim()).resolves.toMatchObject({ jobId, status: "leased" });
+		const assignment = { assignmentId, jobId, capability: assignmentCapability };
+		await expect(runner.acceptAssignment(assignment)).rejects.toThrow("acceptance response lost");
+		await expect(
+			runner.acceptAssignment({
+				assignmentId: clientRunnerId,
+				jobId,
+				capability: assignmentCapability,
+			}),
+		).rejects.toThrow("another assignment");
+		await expect(runner.acceptAssignment(assignment)).resolves.toMatchObject({ jobId, status: "leased" });
 
-		expect(claims).toHaveLength(3);
-		expect(claims[1]).toEqual(claims[0]);
-		expect(claims[2]?.clientLeaseId).not.toBe(claims[0]?.clientLeaseId);
-		expect(claims[2]?.leaseToken).not.toBe(claims[0]?.leaseToken);
+		expect(acceptances).toHaveLength(2);
+		expect(acceptances[1]).toEqual(acceptances[0]);
 	});
 
 	it("sends only the publishable key and custom short-lived bearer to the control function", async () => {
@@ -300,6 +320,33 @@ describe("disposable cloud runner", () => {
 				},
 			},
 		});
+	});
+
+	it("aborts a stalled control request when the runner service stops", async () => {
+		const stop = new AbortController();
+		const fakeFetch = vi.fn(
+			async (_url: string | URL | Request, init?: RequestInit): Promise<Response> =>
+				new Promise((_resolve, reject) => {
+					const signal = init?.signal;
+					if (!signal) return reject(new Error("missing request signal"));
+					if (signal.aborted) return reject(signal.reason);
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				}),
+		);
+		const transport = new SupabaseCloudRunnerControlTransport(
+			"https://project.supabase.co",
+			"publishable-key",
+			fakeFetch as typeof fetch,
+			{ signal: stop.signal, requestTimeoutMs: 1_000 },
+		);
+		const request = transport.request("a".repeat(43), {
+			action: "heartbeat",
+			runnerId,
+			nextSessionToken: "b".repeat(43),
+			renewalId: clientRunnerId,
+		});
+		stop.abort(new Error("service stopped"));
+		await expect(request).rejects.toThrow("service stopped");
 	});
 
 	it("rejects non-object work payloads and inconsistent terminal projections", () => {

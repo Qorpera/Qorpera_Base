@@ -14,7 +14,8 @@ const MAX_MANIFEST_BYTES = 64 * 1024;
 const MAX_ARTIFACT_INDEX_BYTES = 1024 * 1024;
 
 export const CLOUD_RUNNER_CONTAINER_PATHS = Object.freeze({
-	companyRoot: "/qorpera/input/company",
+	companyBaseRoot: "/qorpera/input/company",
+	companyRoot: "/qorpera/work/company",
 	substrateManifestPath: "/qorpera/input/substrate.json",
 	operationsPath: "/qorpera/input/operations.jsonl",
 	artifactsRoot: "/qorpera/input/artifacts",
@@ -23,6 +24,7 @@ export const CLOUD_RUNNER_CONTAINER_PATHS = Object.freeze({
 });
 
 export interface CloudRunnerContainerHostPaths {
+	companyBaseRoot: string;
 	companyRoot: string;
 	substrateManifestPath: string;
 	operationsPath: string;
@@ -43,6 +45,7 @@ interface SandboxProbeRequest {
 	modelRequest?: CloudRunnerModelRequest;
 	assertions: {
 		inputReadOnly: boolean;
+		companyCheckoutWritable: boolean;
 		rootReadOnly: boolean;
 		networkIsolated: boolean;
 		resourceLimits: boolean;
@@ -84,7 +87,14 @@ function parseRequest(value: unknown): SandboxProbeRequest {
 		payload.assertions === undefined ? {} : record(payload.assertions, "Container assertions");
 	exactKeys(
 		requestedAssertions,
-		["input_read_only", "root_read_only", "network_isolated", "resource_limits", "model_broker"],
+		[
+			"input_read_only",
+			"company_checkout_writable",
+			"root_read_only",
+			"network_isolated",
+			"resource_limits",
+			"model_broker",
+		],
 		"Container assertions",
 	);
 	if (
@@ -105,6 +115,7 @@ function parseRequest(value: unknown): SandboxProbeRequest {
 		throw new Error("Container job payload is invalid");
 	}
 	if (
+		paths.companyBaseRoot !== CLOUD_RUNNER_CONTAINER_PATHS.companyBaseRoot ||
 		paths.companyRoot !== CLOUD_RUNNER_CONTAINER_PATHS.companyRoot ||
 		paths.substrateManifestPath !== CLOUD_RUNNER_CONTAINER_PATHS.substrateManifestPath ||
 		paths.operationsPath !== CLOUD_RUNNER_CONTAINER_PATHS.operationsPath ||
@@ -173,6 +184,10 @@ function parseRequest(value: unknown): SandboxProbeRequest {
 		...(modelRequest ? { modelRequest } : {}),
 		assertions: {
 			inputReadOnly: assertion(requestedAssertions.input_read_only, "Input read-only assertion"),
+			companyCheckoutWritable: assertion(
+				requestedAssertions.company_checkout_writable,
+				"Company checkout writable assertion",
+			),
 			rootReadOnly: assertion(requestedAssertions.root_read_only, "Root read-only assertion"),
 			networkIsolated: assertion(requestedAssertions.network_isolated, "Network isolation assertion"),
 			resourceLimits: assertion(requestedAssertions.resource_limits, "Resource-limit assertion"),
@@ -225,6 +240,16 @@ async function assertWriteDenied(path: string, label: string): Promise<void> {
 	throw new Error(`${label} is writable`);
 }
 
+async function assertWriteAllowed(path: string, label: string): Promise<void> {
+	try {
+		await writeFile(path, "boundary probe\n", { encoding: "utf-8", flag: "wx", mode: 0o600 });
+		await rm(path, { force: false });
+	} catch (error) {
+		await rm(path, { force: true });
+		throw new Error(`${label} is not writable`, { cause: error });
+	}
+}
+
 function assertNetworkIsolated(): void {
 	for (const addresses of Object.values(networkInterfaces())) {
 		if (addresses?.some((address) => !address.internal)) throw new Error("Container network is not isolated");
@@ -260,6 +285,7 @@ export async function runCloudRunnerContainerJob(
 ): Promise<JsonValue> {
 	const request = parseRequest(value);
 	await Promise.all([
+		physicalDirectory(hostPaths.companyBaseRoot, "Company base input"),
 		physicalDirectory(hostPaths.companyRoot, "Company input"),
 		physicalDirectory(hostPaths.artifactsRoot, "Artifact input"),
 		physicalDirectory(hostPaths.outputRoot, "Runner output"),
@@ -282,7 +308,10 @@ export async function runCloudRunnerContainerJob(
 	const artifactIndexPath = `${hostPaths.artifactsRoot}/index.json`;
 	const artifactIndexBytes = await regularFile(artifactIndexPath, MAX_ARTIFACT_INDEX_BYTES, "Artifact index");
 	if (request.assertions.inputReadOnly) {
-		await assertWriteDenied(`${hostPaths.companyRoot}/.qorpera-boundary-${request.jobId}`, "Container input");
+		await assertWriteDenied(`${hostPaths.companyBaseRoot}/.qorpera-boundary-${request.jobId}`, "Container input");
+	}
+	if (request.assertions.companyCheckoutWritable) {
+		await assertWriteAllowed(`${hostPaths.companyRoot}/.qorpera-boundary-${request.jobId}`, "Company checkout");
 	}
 	if (request.assertions.rootReadOnly) {
 		await assertWriteDenied(`/qorpera-boundary-${request.jobId}`, "Container root filesystem");
@@ -303,6 +332,7 @@ export async function runCloudRunnerContainerJob(
 		operation_journal_bytes: operationJournalBytes,
 		artifact_index_bytes: artifactIndexBytes,
 		input_read_only: request.assertions.inputReadOnly ? true : null,
+		company_checkout_writable: request.assertions.companyCheckoutWritable ? true : null,
 		root_read_only: request.assertions.rootReadOnly ? true : null,
 		network_isolated: request.assertions.networkIsolated ? true : null,
 		resource_limits: request.assertions.resourceLimits ? true : null,

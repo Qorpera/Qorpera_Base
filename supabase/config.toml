@@ -1,12 +1,25 @@
+[auth]
+site_url = "https://qorpera.com"
+additional_redirect_urls = ["http://127.0.0.1:*/auth/callback"]
+
+[auth.email]
+enable_confirmations = true
+max_frequency = "1m0s"
+otp_length = 8
+
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
+
 [functions.profile-invitation-email]
 verify_jwt = false
 
-# The cleanup worker is invoked by the scheduled job with a service key, so
-# the platform JWT gate is satisfiable and kept as defense in depth on top of
-# the function's own shared-secret check. The other functions are reached by
-# runners and mail delivery that hold no JWT and authenticate themselves.
+# The cleanup worker accepts a modern non-JWT Supabase secret key through its
+# own exact-key boundary. The platform JWT gate cannot
+# parse sb_secret keys, so it is disabled here and the handler remains the
+# authority. The other functions authenticate their own runner/mail callers.
 [functions.artifact-gc-worker]
-verify_jwt = true
+verify_jwt = false
 
 [functions.company-file-verifier]
 verify_jwt = true
@@ -14,5 +27,11 @@ verify_jwt = true
 [functions.runner-control]
 verify_jwt = false
 
+[functions.runner-orchestrator]
+verify_jwt = false
+
 [functions.runner-broker]
+verify_jwt = false
+
+[functions.native-provider-login]
 verify_jwt = false

@@ -54,7 +54,8 @@ select public.qorpera_verify_company_snapshot_closure(
 	current_setting('qorpera_test.sa_graph')::uuid,
 	'80000000-0000-4000-8000-00000000000a',
 	encode(extensions.digest(convert_to(repeat('a', 64) || ':128', 'utf8'), 'sha256'), 'hex'),
-	1, 128, repeat('a', 64), 4
+	1, 128, repeat('a', 64), 4,
+	'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
 );
 reset role;
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
@@ -190,6 +191,7 @@ declare
 	v_stale jsonb;
 	v_receipt jsonb;
 	v_receipt_result jsonb;
+	v_trail_body jsonb;
 	v_ok boolean := false;
 begin
 	-- Duplicate append with the same client id must be idempotent.
@@ -262,6 +264,25 @@ begin
 	if v_claim -> 'inputs' -> 0 ->> 'kind' is distinct from 'kickoff' then
 		raise exception 'kickoff was not first in the turn';
 	end if;
+	v_trail_body := jsonb_build_object(
+		'schema', 'qorpera.shared-trail-entry-part/v1',
+		'entryId', 'claimed-output',
+		'entryType', 'message',
+		'partIndex', 0,
+		'partCount', 1,
+		'payloadBase64', replace(encode(convert_to(jsonb_build_object(
+			'type', 'message',
+			'id', 'claimed-output',
+			'parentId', null,
+			'timestamp', '2026-08-20T00:00:00.000Z',
+			'execution', jsonb_build_object(
+				'kind', 'turn',
+				'id', v_claim ->> 'turn_id',
+				'claimantId', 'c1000000-0000-4000-8000-000000000001'
+			),
+			'message', jsonb_build_object('role', 'assistant', 'content', jsonb_build_array())
+		)::text, 'utf8'), 'base64'), E'\n', '')
+	);
 	v_ok := false;
 	begin
 		perform public.qorpera_append_account_event(
@@ -273,14 +294,14 @@ begin
 	if not v_ok then raise exception 'unbound trail event entered an active turn'; end if;
 	perform public.qorpera_append_account_event(
 		v_session, 'a1000000-0000-4000-8000-000000000071',
-		'message', '{"role":"assistant","content":"claimed output"}'::jsonb, 0,
+		'message', v_trail_body, 0,
 		'turn', (v_claim ->> 'turn_id')::uuid, 'c1000000-0000-4000-8000-000000000001'
 	);
 	v_ok := false;
 	begin
 		perform public.qorpera_append_account_event(
 			v_session, 'a1000000-0000-4000-8000-000000000072',
-			'message', '{"role":"assistant","content":"spoofed"}'::jsonb, 1,
+			'message', v_trail_body, 1,
 			'turn', (v_claim ->> 'turn_id')::uuid, 'c2000000-0000-4000-8000-000000000002'
 		);
 	exception when insufficient_privilege then v_ok := true;
@@ -408,6 +429,12 @@ select set_config('qorpera_test.sa_expired_turn',
 		current_setting('qorpera_test.sa_session')::uuid,
 		'c1000000-0000-4000-8000-000000000001', 120,
 		current_setting('qorpera_test.sa_snapshot')::uuid, 1) ->> 'turn_id', false);
+select public.qorpera_begin_operation_receipt(
+	'turn', current_setting('qorpera_test.sa_expired_turn')::uuid,
+	'c1000000-0000-4000-8000-000000000001',
+	'a1000000-0000-4000-8000-000000000063',
+	'http_request', repeat('b', 64)
+);
 reset role;
 select set_config('request.jwt.claims', '', false);
 
@@ -425,6 +452,8 @@ do $$
 declare
 	v_claim jsonb;
 	v_expired_completion jsonb;
+	v_failed_list jsonb;
+	v_recoveries jsonb;
 	v_second_batch jsonb;
 	v_index integer;
 	v_trail_end bigint;
@@ -446,6 +475,21 @@ begin
 	if (v_claim ->> 'claimed')::boolean is distinct from false
 		or v_claim ->> 'reason' is distinct from 'queue-empty' then
 		raise exception 'expired ambiguous input was offered for re-execution: %', v_claim;
+	end if;
+	select public.qorpera_list_session_inputs(
+		current_setting('qorpera_test.sa_session')::uuid, 0, 100
+	) into v_failed_list;
+	if jsonb_array_length(v_failed_list -> 'items') <> 0 then
+		raise exception 'terminal failed inputs crowded the active queue: %', v_failed_list;
+	end if;
+	select public.qorpera_list_session_recoveries(
+		current_setting('qorpera_test.sa_session')::uuid, null, null, 10
+	) into v_recoveries;
+	if jsonb_array_length(v_recoveries -> 'items') <> 1
+		or v_recoveries -> 'items' -> 0 ->> 'turn_id' is distinct from current_setting('qorpera_test.sa_expired_turn')
+		or v_recoveries -> 'items' -> 0 -> 'inputs' -> 0 -> 'body' ->> 'text' is distinct from 'orphaned'
+		or v_recoveries -> 'items' -> 0 -> 'operation_receipts' -> 0 ->> 'status' is distinct from 'ambiguous' then
+		raise exception 'expired turn was not exposed for recovery: %', v_recoveries;
 	end if;
 	perform public.qorpera_append_session_input(
 		current_setting('qorpera_test.sa_session')::uuid,
@@ -541,10 +585,56 @@ begin
 end
 $$;
 
+-- Enqueue is durably capped per session, while a retry of an existing client
+-- input remains idempotent even when the queue is full.
+reset role;
+insert into public.qorpera_session_inputs (
+	session_id, client_input_id, kind, author_user_id, body
+)
+select
+	current_setting('qorpera_test.sa_session')::uuid,
+	case when fixture.index = 1
+		then 'a1000000-0000-4000-8000-000000000048'::uuid
+		else extensions.gen_random_uuid()
+	end,
+	'user_message',
+	'80000000-0000-4000-8000-00000000000a',
+	jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', 'queue-cap-fixture', 'images', '[]'::jsonb)
+from generate_series(1, 512) as fixture(index);
+select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
+set role authenticated;
+select public.qorpera_append_session_input(
+	current_setting('qorpera_test.sa_session')::uuid,
+	'a1000000-0000-4000-8000-000000000048', 'user_message',
+	'{"schema":"qorpera.session-prompt/v1","text":"queue-cap-fixture","images":[]}');
+do $$
+declare
+	v_rejected boolean := false;
+begin
+	begin
+		perform public.qorpera_append_session_input(
+			current_setting('qorpera_test.sa_session')::uuid,
+			'a1000000-0000-4000-8000-000000000049', 'user_message',
+			'{"schema":"qorpera.session-prompt/v1","text":"beyond durable cap","images":[]}');
+	exception when sqlstate '54000' then
+		v_rejected := true;
+	end;
+	if not v_rejected then raise exception 'session queue exceeded its durable cap'; end if;
+end
+$$;
+reset role;
+delete from public.qorpera_session_inputs
+where session_id = current_setting('qorpera_test.sa_session')::uuid
+	and body ->> 'text' = 'queue-cap-fixture';
+select set_config('request.jwt.claims', '', false);
+
+select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
+set role authenticated;
 do $$
 declare
 	v_session jsonb;
 	v_closed boolean := false;
+	v_forgery_rejected boolean := false;
 begin
 	v_session := public.qorpera_create_shared_session_v4(
 		current_setting('qorpera_test.sa_environment')::uuid,
@@ -566,17 +656,68 @@ begin
 		or (v_session ->> 'staff_version')::bigint <> 1 then
 		raise exception 'operational session lost its execution revisions: %', v_session;
 	end if;
+	begin
+		perform public.qorpera_append_account_event(
+			(v_session ->> 'session_id')::uuid,
+			'a1000000-0000-4000-8000-000000000053',
+			'session_info',
+			jsonb_build_object(
+				'schema', 'qorpera.shared-trail-entry-part/v1',
+				'entryId', 'forged-message',
+				'entryType', 'message',
+				'partIndex', 0,
+				'partCount', 1,
+				'payloadBase64', 'e30='
+			),
+			0
+		);
+	exception when insufficient_privilege then
+		v_forgery_rejected := true;
+	end;
+	if not v_forgery_rejected then
+		raise exception 'unbound session metadata smuggled content into the trail';
+	end if;
+	perform set_config(
+		'request.jwt.claims',
+		'{"sub":"80000000-0000-4000-8000-00000000000b","email":"sep-owner-b@example.test","role":"authenticated","user_metadata":{}}',
+		true
+	);
+	-- A second member can finish the exact row-derived metadata upload if the
+	-- session creator disappears before its desktop submits the redundant event.
 	perform public.qorpera_append_account_event(
 		(v_session ->> 'session_id')::uuid,
 		'a1000000-0000-4000-8000-000000000051',
-		'message', '{"role":"assistant","content":"wake output"}'::jsonb, 0
+		'session_info', jsonb_build_object(
+			'schema', 'qorpera.shared-session/v1',
+			'entry', jsonb_build_object(
+				'type', 'session_info',
+				'id', 'cloud-session-info:a1000000-0000-4000-8000-000000000050',
+				'parentId', null,
+				'timestamp', v_session ->> 'created_at',
+				'name', 'Pinned operational wake'
+			)
+		), 0
+	);
+	perform set_config(
+		'request.jwt.claims',
+		'{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}',
+		true
 	);
 	perform public.qorpera_close_shared_session((v_session ->> 'session_id')::uuid);
 	begin
 		perform public.qorpera_append_account_event(
 			(v_session ->> 'session_id')::uuid,
 			'a1000000-0000-4000-8000-000000000052',
-			'message', '{"role":"assistant","content":"late output"}'::jsonb, 1
+			'session_info', jsonb_build_object(
+				'schema', 'qorpera.shared-session/v1',
+				'entry', jsonb_build_object(
+					'type', 'session_info',
+					'id', 'cloud-session-info:a1000000-0000-4000-8000-000000000050',
+					'parentId', null,
+					'timestamp', v_session ->> 'created_at',
+					'name', 'Pinned operational wake'
+				)
+			), 1
 		);
 	exception when sqlstate '55000' then v_closed := true;
 	end;
@@ -586,6 +727,39 @@ begin
 end
 $$;
 
+reset role;
+select set_config('request.jwt.claims', '', false);
+
+-- An authorized member can explicitly discard the quarantined execution;
+-- it then leaves the recovery lane without crowding the active FIFO.
+select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
+set role authenticated;
+do $$
+declare
+	v_resolved jsonb;
+	v_recoveries jsonb;
+begin
+	perform public.qorpera_resolve_operation_receipt(
+		'a1000000-0000-4000-8000-000000000063',
+		'confirmed_not_run', null
+	);
+	v_resolved := public.qorpera_resolve_session_recovery(
+		current_setting('qorpera_test.sa_session')::uuid,
+		current_setting('qorpera_test.sa_expired_turn')::uuid,
+		'discard'
+	);
+	if v_resolved ->> 'resolution' is distinct from 'discard'
+		or (v_resolved ->> 'input_count')::integer <> 1 then
+		raise exception 'quarantined turn was not discarded: %', v_resolved;
+	end if;
+	v_recoveries := public.qorpera_list_session_recoveries(
+		current_setting('qorpera_test.sa_session')::uuid, null, null, 10
+	);
+	if jsonb_array_length(v_recoveries -> 'items') <> 0 then
+		raise exception 'resolved turn remained in recovery lane: %', v_recoveries;
+	end if;
+end
+$$;
 reset role;
 select set_config('request.jwt.claims', '', false);
 

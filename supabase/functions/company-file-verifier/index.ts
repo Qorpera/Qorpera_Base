@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import {
+	type CachedCompanyFileVerificationProgress,
 	type CachedVerifiedCompanyFile,
 	CompanySnapshotVerificationPending,
 	verifyCompanySnapshotClosure,
@@ -39,29 +40,49 @@ Deno.serve(async (request) => {
 
 	let snapshotId: string;
 	let graphId: string;
+	let requestedVerifiedUserId: string | undefined;
 	try {
 		const body = record(await request.json());
 		if (typeof body.snapshotId !== "string" || !UUID_PATTERN.test(body.snapshotId)) throw new Error();
 		if (typeof body.graphId !== "string" || !UUID_PATTERN.test(body.graphId)) throw new Error();
 		snapshotId = body.snapshotId;
 		graphId = body.graphId;
+		if (body.verifiedUserId !== undefined) {
+			if (typeof body.verifiedUserId !== "string" || !UUID_PATTERN.test(body.verifiedUserId)) throw new Error();
+			requestedVerifiedUserId = body.verifiedUserId;
+		}
 	} catch {
 		return jsonResponse({ error: "Invalid Company File verification request" }, 400);
 	}
 
+	const bearerToken = authorization.slice("Bearer ".length).trim();
+	const internalServiceRequest = bearerToken === serviceKey;
+	if (internalServiceRequest !== (requestedVerifiedUserId !== undefined)) {
+		return jsonResponse({ error: "Invalid Company File verification authority" }, 400);
+	}
 	const userClient = createClient(supabaseUrl, anonKey, {
 		auth: { autoRefreshToken: false, persistSession: false },
 		global: { headers: { Authorization: authorization } },
 	});
-	const { data: userData, error: userError } = await userClient.auth.getUser();
-	if (userError || !userData.user) return jsonResponse({ error: "Unauthorized" }, 401);
 	const serviceClient = createClient(supabaseUrl, serviceKey, {
 		auth: { autoRefreshToken: false, persistSession: false },
 	});
-	const [snapshotResult, graphResult] = await Promise.all([
-		userClient.rpc("qorpera_get_company_snapshot", { p_snapshot_id: snapshotId }),
-		userClient.rpc("qorpera_get_object_reachability_graph", { p_graph_id: graphId }),
-	]);
+	let verifiedUserId = requestedVerifiedUserId;
+	if (!internalServiceRequest) {
+		const { data: userData, error: userError } = await userClient.auth.getUser();
+		if (userError || !userData.user) return jsonResponse({ error: "Unauthorized" }, 401);
+		verifiedUserId = userData.user.id;
+	}
+	if (!verifiedUserId) return jsonResponse({ error: "Unauthorized" }, 401);
+	const [snapshotResult, graphResult] = internalServiceRequest
+		? await Promise.all([
+				serviceClient.from("qorpera_company_snapshots").select("*").eq("id", snapshotId).maybeSingle(),
+				serviceClient.from("qorpera_object_reachability_graphs").select("*").eq("id", graphId).maybeSingle(),
+			])
+		: await Promise.all([
+				userClient.rpc("qorpera_get_company_snapshot", { p_snapshot_id: snapshotId }),
+				userClient.rpc("qorpera_get_object_reachability_graph", { p_graph_id: graphId }),
+			]);
 	if (snapshotResult.error || graphResult.error) return jsonResponse({ error: "Company File verification access was denied" }, 403);
 
 	try {
@@ -82,7 +103,7 @@ Deno.serve(async (request) => {
 				totalBytes: Number(snapshot.total_bytes),
 			},
 			async (objectProfileId, sha256) => {
-				const { data, error } = await userClient.storage
+				const { data, error } = await (internalServiceRequest ? serviceClient : userClient).storage
 					.from(OBJECT_BUCKET)
 					.download(`${objectProfileId}/${sha256}`);
 				if (error) throw new Error("Company File object is unavailable");
@@ -110,6 +131,31 @@ Deno.serve(async (request) => {
 						objects: cached.objects as CachedVerifiedCompanyFile["objects"],
 					};
 				},
+				loadProgress: async (objectProfileId, manifestSha256) => {
+					const { data, error } = await serviceClient
+						.from("qorpera_company_file_verification_progress")
+						.select(
+							"manifest_sha256,manifest_bytes,file_sha256,bytes,media_type,next_chunk_index,verified_bytes,sha256_state,objects",
+						)
+						.eq("profile_id", objectProfileId)
+						.eq("manifest_sha256", manifestSha256)
+						.eq("verifier_version", 1)
+						.maybeSingle();
+					if (error) throw new Error("Company File verification progress is unavailable");
+					if (!data) return undefined;
+					const cached = record(data);
+					return {
+						manifestSha256: String(cached.manifest_sha256 ?? ""),
+						manifestBytes: Number(cached.manifest_bytes),
+						fileSha256: String(cached.file_sha256 ?? ""),
+						bytes: Number(cached.bytes),
+						mediaType: String(cached.media_type ?? ""),
+						nextChunkIndex: Number(cached.next_chunk_index),
+						verifiedBytes: Number(cached.verified_bytes),
+						sha256: cached.sha256_state as CachedCompanyFileVerificationProgress["sha256"],
+						objects: cached.objects as CachedCompanyFileVerificationProgress["objects"],
+					};
+				},
 				save: async (objectProfileId, file) => {
 					const { error } = await serviceClient.from("qorpera_verified_company_file_objects").upsert(
 						{
@@ -127,17 +173,47 @@ Deno.serve(async (request) => {
 					);
 					if (error) throw new Error("Company File verification cache could not be saved");
 				},
+				saveProgress: async (objectProfileId, progress) => {
+					const { error } = await serviceClient.from("qorpera_company_file_verification_progress").upsert(
+						{
+							profile_id: objectProfileId,
+							manifest_sha256: progress.manifestSha256,
+							verifier_version: 1,
+							manifest_bytes: progress.manifestBytes,
+							file_sha256: progress.fileSha256,
+							bytes: progress.bytes,
+							media_type: progress.mediaType,
+							next_chunk_index: progress.nextChunkIndex,
+							verified_bytes: progress.verifiedBytes,
+							sha256_state: progress.sha256,
+							objects: progress.objects,
+							updated_at: new Date().toISOString(),
+						},
+						{ onConflict: "profile_id,manifest_sha256,verifier_version" },
+					);
+					if (error) throw new Error("Company File verification progress could not be saved");
+				},
+				clearProgress: async (objectProfileId, manifestSha256) => {
+					const { error } = await serviceClient
+						.from("qorpera_company_file_verification_progress")
+						.delete()
+						.eq("profile_id", objectProfileId)
+						.eq("manifest_sha256", manifestSha256)
+						.eq("verifier_version", 1);
+					if (error) throw new Error("Company File verification progress could not be cleared");
+				},
 			},
 		);
 		const { error } = await serviceClient.rpc("qorpera_verify_company_snapshot_closure", {
 			p_snapshot_id: snapshotId,
 			p_graph_id: graphId,
-			p_verified_user_id: userData.user.id,
+			p_verified_user_id: verifiedUserId,
 			p_reachable_content_sha256: verified.reachableContentSha256,
 			p_object_count: verified.objectCount,
 			p_storage_bytes: verified.storageBytes,
 			p_restored_content_sha256: verified.restoredContentSha256,
 			p_restored_bytes: verified.restoredBytes,
+			p_restricted_content_sha256: verified.restrictedContentSha256,
 		});
 		if (error) throw new Error("Company File graph did not match server verification");
 		return jsonResponse({ verified: true });

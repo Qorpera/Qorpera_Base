@@ -25,7 +25,7 @@ import {
 	watch,
 	writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { ModelRuntime } from "@qorpera/pi-coding-agent";
@@ -69,6 +69,7 @@ import {
 	ROUTINE_PLACEMENTS,
 	ROUTINE_WEEKDAYS,
 	type RoutinePlacement,
+	type RoutinePublicationPolicy,
 	type RoutineTriggerInput,
 	type RoutineWeekday,
 	readCompanyConnections,
@@ -176,6 +177,7 @@ import {
 	appendKernelSessionInfo,
 	appendKernelWakeObservation,
 	applyKernelWriteFrame,
+	bindTrailExecution,
 	bindTrailSession,
 	brokeredChildEnvironment,
 	codexSpawn,
@@ -210,13 +212,19 @@ import {
 	acceptReviewedCloudCompanyExecution,
 	bindCloudCompanyExecution,
 	type CloudCompanyExecutionCheckout,
+	cloudCompanyExecutionMatchesCanonical,
+	cloudCompanyExecutionTouchesAuthorityCritical,
 	createCloudCompanyExecutionCheckout,
 	discardCleanCloudCompanyExecution,
+	findRecoverableCloudCompanyExecution,
 	listRecoverableCloudCompanyExecutions,
 	promoteCloudCompanyExecution,
+	publishCloudCompanyExecutionProposal,
 	quarantineCloudCompanyExecution,
-	recoverableCloudCompanyExecutions,
+	recoverInterruptedCloudCompanyReviewAcceptance,
+	recoverOrphanedCloudCompanyExecutions,
 	rejectReviewedCloudCompanyExecution,
+	resolvePublishedCloudCompanyExecution,
 } from "./cloud-company-execution.ts";
 import {
 	CloudCompanyFileCacheState,
@@ -224,13 +232,27 @@ import {
 	readCloudCompanyFileConflict,
 } from "./cloud-company-file.ts";
 import { previewCloudCompanySnapshot, replaceCloudCompanyCacheWithSnapshot } from "./cloud-company-merge.ts";
-import { CloudCompanyProjection } from "./cloud-company-projection.ts";
+import {
+	CloudCompanyProjection,
+	cloudCompanyProjectionHasPersistedChanges,
+	cloudCompanyProjectionRoot,
+} from "./cloud-company-projection.ts";
+import {
+	discardCompanyProposalReviews,
+	finalizeCompanyProposalReview,
+	prepareCompanyProposalReview,
+} from "./cloud-company-proposal-review.ts";
 import { CloudCompanyPublication } from "./cloud-company-publication.ts";
 import { currentCloudCompanyTreeReference, materializeCloudCompanyTree } from "./cloud-company-snapshot.ts";
 import { CloudCompanySubstrate } from "./cloud-company-substrate.ts";
 import { publishCompanySnapshotRestoreProofIfDue } from "./cloud-object-reachability.ts";
 import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
 import type { CloudPresenceHandle } from "./cloud-presence.ts";
+import {
+	acknowledgeCloudPromptOutbox,
+	pendingCloudPromptOutbox,
+	stageCloudPromptOutbox,
+} from "./cloud-prompt-outbox.ts";
 import { CloudProfileRealtimeSync, type CloudRealtimeChange, type CloudRealtimeHealth } from "./cloud-realtime-sync.ts";
 import {
 	type ArbiterClaim,
@@ -260,6 +282,7 @@ import {
 	captureCompanyGitBaseline,
 	checkpointCompanyGit,
 	checkpointProductWorktreeGit,
+	commitCloudCompanyLogicalMaterializationAsync,
 	commitCompanyMaterialization,
 	commitCompanyMaterializationAsync,
 	finishPendingCompanyCheckpoint,
@@ -329,6 +352,7 @@ import {
 import { connectGitHubCli, readGitHubCliStatus } from "./github-connection.ts";
 import {
 	type HostedCompanyFile,
+	type HostedCompanyProposal,
 	type HostedCompanySnapshot,
 	type HostedIncomingProfileInvitation,
 	type HostedProfile,
@@ -1198,7 +1222,7 @@ interface CompanyRuntime {
 	/** Closes the inbound webhook listener (optional kernel module). */
 	webhookClose?: () => void;
 	/** An inbound event arrived while the company was busy; the wake ticker owes it a wake. */
-	pendingInboundWake?: boolean;
+	pendingInboundWakeKeys?: Set<string>;
 	/** Prevent overlapping GitHub event polls for this open company. */
 	routineTriggerPolling?: boolean;
 	inventoryWatcher?: ReturnType<typeof watch>;
@@ -1213,6 +1237,8 @@ interface CompanyRuntime {
 	/** Last renderer-declared open thread, retained while Presence connects. */
 	cloudPresenceThread?: string | null;
 	cloudPresenceHeartbeat?: NodeJS.Timeout;
+	cloudRunnerActivityTimer?: NodeJS.Timeout;
+	cloudRunnerActivityPolling?: boolean;
 	cloudRealtimeHealth?: CloudRealtimeHealth;
 	cloudCompanyPublication?: CloudCompanyPublication;
 	cloudCompanyPublicationHealth?: CloudSyncHealth;
@@ -1274,13 +1300,20 @@ function createCloudTrailSynchronizer(
 ): CloudTrailSynchronizer | undefined {
 	const attachment = profileAttachment(root);
 	const primary = qorperaAccountAuth?.hostedPrimary();
-	if (attachment.profileType !== "cloud" || !primary || !currentQorperaAccountId) return undefined;
+	const objects = qorperaAccountAuth?.hostedObjects();
+	if (attachment.profileType !== "cloud" || !primary || !objects || !currentQorperaAccountId) return undefined;
 	return new CloudTrailSynchronizer({
 		root,
 		userData: app.getPath("userData"),
 		profileId: attachment.profileId,
 		environmentId: attachment.environmentId,
 		primary,
+		loadObject: (reference) =>
+			objects.getObject(attachment.profileId, {
+				sha256: reference.sha256,
+				bytes: reference.bytes,
+				mediaType: reference.mediaType,
+			}),
 		canWrite: () => activeProfileAccess(root)?.capabilities.write === true,
 		liveBindings,
 		onMaterialized,
@@ -1628,6 +1661,13 @@ interface CloudTurnPrompt {
 	images: NonNullable<ReviewedPromptFrame["images"]>;
 }
 
+interface ReviewedExecutionSponsor {
+	sponsorBindingId: string;
+	sponsorVersion: number;
+	computeIdentityId: string;
+	workerClass: "managed_sandbox" | "company_computer";
+}
+
 function isCloudStaffIntroRetry(value: unknown): boolean {
 	return Boolean(
 		value &&
@@ -1680,16 +1720,13 @@ function cloudQueuedPromptBody(value: unknown): CloudQueuedPromptBody | undefine
 	};
 }
 
-async function enqueueCloudPrompt(
+async function prepareCloudPromptBody(
 	runtime: CompanyRuntime,
-	arbiter: CloudSessionArbiter,
-	staffAgentId: string,
 	prompt: ReviewedPromptFrame,
-): Promise<Awaited<ReturnType<CloudSessionArbiter["appendPrompt"]>>> {
+): Promise<CloudQueuedPromptBody> {
 	const attachment = profileAttachment(runtime.root);
 	const objects = qorperaAccountAuth?.hostedObjects();
 	if (attachment.profileType !== "cloud" || !objects) throw new Error("cloud prompt storage is unavailable");
-	if (!prompt.clientInputId) throw new Error("cloud prompt has no durable send id");
 	const images: CloudQueuedImageReference[] = [];
 	let totalImageBytes = 0;
 	for (const image of prompt.images ?? []) {
@@ -1699,7 +1736,7 @@ async function enqueueCloudPrompt(
 		const reference = await objects.putObject(attachment.profileId, bytes, image.mimeType);
 		images.push({ objectSha256: reference.sha256, bytes: reference.bytes, mediaType: reference.mediaType });
 	}
-	return arbiter.appendPrompt(staffAgentId, prompt.clientInputId, {
+	return {
 		schema: CLOUD_SESSION_PROMPT_SCHEMA,
 		text: prompt.message,
 		...(prompt.displayText !== undefined && prompt.displayText !== prompt.message
@@ -1709,8 +1746,22 @@ async function enqueueCloudPrompt(
 			objectSha256: image.objectSha256,
 			bytes: image.bytes,
 			mediaType: image.mediaType,
-		})) as JsonValue[],
-	});
+		})),
+	};
+}
+
+async function enqueueCloudPrompt(
+	runtime: CompanyRuntime,
+	arbiter: CloudSessionArbiter,
+	staffAgentId: string,
+	prompt: ReviewedPromptFrame,
+): Promise<Awaited<ReturnType<CloudSessionArbiter["appendPrompt"]>>> {
+	if (!prompt.clientInputId) throw new Error("cloud prompt has no durable send id");
+	return arbiter.appendPrompt(
+		staffAgentId,
+		prompt.clientInputId,
+		(await prepareCloudPromptBody(runtime, prompt)) as unknown as JsonValue,
+	);
 }
 
 /** Compose one attended prompt from a claimed batch. Every message carries
@@ -1768,16 +1819,107 @@ function rendererSessionQueue(inputs: readonly PendingSessionInput[]): Array<Rec
 		});
 }
 
+function rendererSessionRecoveries(
+	recoveries: Awaited<ReturnType<CloudSessionArbiter["recoveries"]>>["items"],
+): Array<Record<string, unknown>> {
+	return recoveries.map((recovery) => {
+		const messages = recovery.inputs
+			.filter((input) => input.kind === "user_message" && !isCloudStaffIntroRetry(input.body))
+			.map((input) => {
+				const body = cloudQueuedPromptBody(input.body);
+				const legacy = input.body as { text?: unknown };
+				return {
+					author: input.authorDisplayName,
+					text: body?.displayText ?? body?.text ?? (typeof legacy.text === "string" ? legacy.text : ""),
+					attachmentCount: body?.images.length ?? 0,
+				};
+			});
+		return {
+			inputId: `recovery:${recovery.turnId}`,
+			recoveryTurnId: recovery.turnId,
+			status: "failed",
+			authorDisplayName:
+				messages.length === 1
+					? messages[0]?.author
+					: `${new Set(messages.map((message) => message.author)).size} members`,
+			text: messages
+				.map((message) => message.text)
+				.filter(Boolean)
+				.join("\n\n"),
+			attachmentCount: messages.reduce((total, message) => total + message.attachmentCount, 0),
+			failureReason: recovery.failureReason,
+			operationCount: recovery.operationReceipts.length,
+			operationReceipts: recovery.operationReceipts,
+			canRetry: recovery.operationReceipts.every((receipt) => receipt.status === "cancelled"),
+			createdAt: recovery.failedAt,
+		};
+	});
+}
+
+function rendererExecutionRunRecoveries(
+	recoveries: Awaited<ReturnType<CloudSessionArbiter["executionRecoveries"]>>,
+): Array<Record<string, unknown>> {
+	return recoveries.map((recovery) => {
+		const messages = recovery.inputs
+			.filter((input) => input.kind === "user_message" && !isCloudStaffIntroRetry(input.body))
+			.map((input) => {
+				const body = cloudQueuedPromptBody(input.body);
+				const legacy = input.body as { text?: unknown };
+				return {
+					author: input.authorDisplayName,
+					text: body?.displayText ?? body?.text ?? (typeof legacy.text === "string" ? legacy.text : ""),
+					attachmentCount: body?.images.length ?? 0,
+				};
+			});
+		const canRetry =
+			!recovery.proposalId && recovery.operationReceipts.every((receipt) => receipt.status === "cancelled");
+		return {
+			inputId: `run-recovery:${recovery.runId}`,
+			recoveryRunId: recovery.runId,
+			status: "failed",
+			authorDisplayName:
+				messages.length === 1
+					? messages[0]?.author
+					: `${new Set(messages.map((message) => message.author)).size} members`,
+			text: messages
+				.map((message) => message.text)
+				.filter(Boolean)
+				.join("\n\n"),
+			attachmentCount: messages.reduce((total, message) => total + message.attachmentCount, 0),
+			failureReason: recovery.failureReason,
+			operationCount: recovery.operationReceipts.length,
+			operationReceipts: recovery.operationReceipts,
+			canRetry,
+			...(!canRetry
+				? {
+						canRetryReason: recovery.proposalId
+							? "Resolve the Company File proposal before deciding what to do with this prompt."
+							: "A prior operation has a durable outcome, so this prompt cannot be run again automatically.",
+					}
+				: {}),
+			createdAt: recovery.failedAt,
+		};
+	});
+}
+
 async function readRendererSessionQueue(
 	arbiter: CloudSessionArbiter,
 	staffAgentId: string,
 	fallback: Array<Record<string, unknown>> = [],
 ): Promise<Array<Record<string, unknown>>> {
-	try {
-		return rendererSessionQueue(await arbiter.pendingInputs(staffAgentId));
-	} catch {
-		return fallback;
-	}
+	const queue = await arbiter
+		.pendingInputs(staffAgentId)
+		.then(rendererSessionQueue)
+		.catch(() => fallback);
+	const recoveries = await arbiter
+		.recoveries(staffAgentId)
+		.then((page) => rendererSessionRecoveries(page.items))
+		.catch(() => []);
+	const executionRecoveries = await arbiter
+		.executionRecoveries(staffAgentId)
+		.then(rendererExecutionRunRecoveries)
+		.catch(() => []);
+	return [...queue, ...recoveries, ...executionRecoveries];
 }
 
 /** The pump found the attended chat bound to a trail other than the
@@ -1828,6 +1970,7 @@ async function readoptStaffCloudSession(
  * An ineligible machine leaves the turn queued for one that qualifies and
  * records why, so waiting is visible instead of silent. */
 async function cloudExecutorEligibility(
+	slot: Slot | undefined,
 	runtime: CompanyRuntime,
 	staff: StaffAgent,
 	synchronize: boolean,
@@ -1839,7 +1982,9 @@ async function cloudExecutorEligibility(
 	}
 	if (synchronize) {
 		try {
+			await commitCloudCompanyLogicalMaterializationAsync(runtime.root);
 			await runtime.cloudCompanyPublication?.publishNow();
+			await commitCloudCompanyLogicalMaterializationAsync(runtime.root);
 			await runtime.cloudStaffSyncLoop?.trigger();
 			await runtime.cloudTrailSyncLoop?.trigger();
 		} catch {
@@ -1871,6 +2016,19 @@ async function cloudExecutorEligibility(
 		}
 	}
 	if (!companySnapshotId || !staffVersion) return { waiting: "waiting for cloud revisions to finish syncing" };
+	const attachedChild = slot ? runtime.child : undefined;
+	const attachedExecution = attachedChild ? childCompanyExecutions.get(attachedChild) : undefined;
+	if (
+		slot &&
+		attachedChild &&
+		attachedExecution &&
+		runtime.childOptions.staffAgentId === staff.id &&
+		!cloudCompanyExecutionMatchesCanonical(attachedExecution)
+	) {
+		const binding = childBindings.get(attachedChild);
+		if (binding) await refreshAttachedStaffThread(slot, runtime, staff.id, binding.file);
+		return { waiting: "waiting for the agent checkout to load the current Company File" };
+	}
 	return { pin: { companySnapshotId, staffVersion } };
 }
 
@@ -1925,7 +2083,7 @@ async function pumpCloudSessionTurn(slot: Slot, runtime: CompanyRuntime): Promis
 	{
 		const staff = activeStaffAgent(runtime.root, staffAgentId);
 		if (!staff) return;
-		const eligibility = await cloudExecutorEligibility(runtime, staff, true);
+		const eligibility = await cloudExecutorEligibility(slot, runtime, staff, true);
 		runtime.cloudSessionWaiting = eligibility.waiting;
 		if (!eligibility.pin) return; // the turn stays queued for an eligible, revision-current machine
 		if (slot.runtime !== runtime || runtime.closing || runtime.child !== child) return;
@@ -2091,6 +2249,17 @@ function installCloudCompanySync(runtime: CompanyRuntime): void {
 					if (wakeIsWriting || attendedIsWriting) {
 						throw new Error("Cloud company publication is waiting for the active agent run to finish");
 					}
+					if (
+						runtime.cloudCompanyProjection?.hasPendingChanges() ||
+						(await cloudCompanyProjectionHasPersistedChanges({
+							companyRoot: runtime.root,
+							projectionRoot: cloudCompanyProjectionRoot(app.getPath("userData"), attachment.profileId),
+							userData: app.getPath("userData"),
+							profileId: attachment.profileId,
+						}))
+					) {
+						throw new Error("Company File Explorer changes must be recovered before cloud publication");
+					}
 					return checkpoint();
 				}),
 			onCheckpoint: async (checkpoint) => {
@@ -2167,6 +2336,38 @@ async function startCloudPresence(slot: Slot, runtime: CompanyRuntime): Promise<
 		heartbeat.unref();
 		runtime.cloudPresenceHeartbeat = heartbeat;
 	}
+}
+
+async function refreshCloudRunnerActivity(slot: Slot, runtime: CompanyRuntime): Promise<void> {
+	if (runtime.closing || slot.runtime !== runtime || runtime.cloudRunnerActivityPolling) return;
+	const attachment = profileAttachment(runtime.root);
+	const primary = qorperaAccountAuth?.hostedPrimary();
+	if (attachment.profileType !== "cloud" || !primary) return;
+	runtime.cloudRunnerActivityPolling = true;
+	try {
+		const activity = await primary.listStaffExecutionActivity(attachment.environmentId);
+		if (!runtime.closing && slot.runtime === runtime) {
+			send(slot.window, "runner-activity", { activity, healthy: true });
+		}
+	} catch (error) {
+		if (!runtime.closing && slot.runtime === runtime) {
+			send(slot.window, "runner-activity", {
+				activity: [],
+				healthy: false,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	} finally {
+		runtime.cloudRunnerActivityPolling = false;
+	}
+}
+
+function startCloudRunnerActivity(slot: Slot, runtime: CompanyRuntime): void {
+	if (runtime.cloudRunnerActivityTimer || profileAttachment(runtime.root).profileType !== "cloud") return;
+	void refreshCloudRunnerActivity(slot, runtime);
+	const timer = setInterval(() => void refreshCloudRunnerActivity(slot, runtime), 5_000);
+	timer.unref();
+	runtime.cloudRunnerActivityTimer = timer;
 }
 
 async function emitActiveStaffQueue(slot: Slot, runtime: CompanyRuntime): Promise<void> {
@@ -2252,6 +2453,207 @@ async function completeCloudSessionClaim(
 	clearChildDurableTurn(runtime.child, claim);
 	await emitActiveStaffQueue(slot, runtime);
 	await pumpCloudSessionTurn(slot, runtime);
+}
+
+interface ExecutionReviewPolicy {
+	policyKey: string;
+	title: string;
+	reviewerStaffIds: string[];
+}
+
+async function submitCloudSessionProposal(
+	slot: Slot,
+	runtime: CompanyRuntime,
+	child: ChildProcessWithoutNullStreams,
+	checkout: CloudCompanyExecutionCheckout,
+	proposalHead: string,
+	arbiter: CloudSessionArbiter,
+	claim: ArbiterClaim,
+	reviewPolicy?: ExecutionReviewPolicy,
+	attempt = 0,
+): Promise<void> {
+	if (slot.runtime !== runtime || runtime.closing || arbiter.activeClaim !== claim) return;
+	childOutputsRequireReview.add(child);
+	let renewalTimer: NodeJS.Timeout | undefined;
+	let renewalError: unknown;
+	try {
+		const turnStatus = await arbiter.turnStatus(claim);
+		if (turnStatus !== "active" && turnStatus !== "review_pending") {
+			abandonCloudSessionClaim(arbiter, child, claim);
+			console.error(`Company File proposal stopped because the turn is ${turnStatus}`);
+			await emitActiveStaffQueue(slot, runtime);
+			return;
+		}
+		if (turnStatus === "active") {
+			await arbiter.renewIfDue();
+			renewalTimer = setInterval(() => {
+				void arbiter.renewIfDue().catch((error) => {
+					renewalError = error;
+				});
+			}, 15_000);
+			renewalTimer.unref();
+		}
+		const staffHealth = await runtime.cloudStaffSyncLoop?.trigger();
+		const trailHealth = await runtime.cloudTrailSyncLoop?.trigger();
+		if (runtime.cloudStaffSync && staffHealth?.phase !== "healthy") {
+			throw new Error(staffHealth?.lastError ?? "staff output did not finish syncing");
+		}
+		if (runtime.cloudTrailSync && trailHealth?.phase !== "healthy") {
+			throw new Error(trailHealth?.lastError ?? "conversation output did not finish syncing");
+		}
+		if (renewalError) throw renewalError;
+		const trailEndSequence = runtime.cloudTrailSync?.cursorForHostedSession(claim.hostedSessionId);
+		if (trailEndSequence === undefined) throw new Error("conversation output has no durable cloud cursor");
+		const attachment = profileAttachment(runtime.root);
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		const objects = qorperaAccountAuth?.hostedObjects();
+		if (attachment.profileType !== "cloud" || !primary || !objects) {
+			throw new Error("cloud Company File proposal services are unavailable");
+		}
+		const authorityCritical = await cloudCompanyExecutionTouchesAuthorityCritical({
+			checkoutRoot: checkout.checkoutRoot,
+			proposalHead,
+		});
+		await publishCloudCompanyExecutionProposal({
+			userData: app.getPath("userData"),
+			environmentId: attachment.environmentId,
+			baseSnapshotId: claim.companySnapshotId,
+			checkout,
+			execution: { kind: "turn", id: claim.turnId, claimantId: arbiter.claimantId },
+			sessionId: claim.hostedSessionId,
+			trailEndSequence,
+			reason: reviewPolicy ? "policy" : authorityCritical ? "authority" : "conflict",
+			...(reviewPolicy ? { policyKey: reviewPolicy.policyKey } : {}),
+			title:
+				reviewPolicy?.title ??
+				`${authorityCritical ? "Authorize" : "Review"} ${activeStaffAgent(runtime.root, claim.staffAgentId)?.displayName ?? "agent"} Company File changes`,
+			...(reviewPolicy ? { reviewerStaffIds: reviewPolicy.reviewerStaffIds } : {}),
+			objects,
+			primary,
+		});
+	} catch (error) {
+		if (renewalTimer) clearInterval(renewalTimer);
+		let status: Awaited<ReturnType<CloudSessionArbiter["turnStatus"]>> | undefined;
+		try {
+			status = await arbiter.turnStatus(claim);
+		} catch {
+			// Retry once the hosted control plane is reachable again.
+		}
+		if (status && status !== "active" && status !== "review_pending") {
+			abandonCloudSessionClaim(arbiter, child, claim);
+			console.error(
+				`Company File proposal could not be retained after the turn became ${status}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			await emitActiveStaffQueue(slot, runtime);
+			return;
+		}
+		const delay = Math.min(10_000, 1_000 * 2 ** Math.min(attempt, 4));
+		if (attempt === 0) {
+			console.error(
+				`Company File proposal submission deferred: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		setTimeout(() => {
+			void submitCloudSessionProposal(
+				slot,
+				runtime,
+				child,
+				checkout,
+				proposalHead,
+				arbiter,
+				claim,
+				reviewPolicy,
+				attempt + 1,
+			);
+		}, delay).unref();
+		return;
+	} finally {
+		if (renewalTimer) clearInterval(renewalTimer);
+	}
+	abandonCloudSessionClaim(arbiter, child, claim);
+	await emitActiveStaffQueue(slot, runtime);
+	await pumpCloudSessionTurn(slot, runtime);
+}
+
+async function submitCloudWakeProposal(
+	runtime: CompanyRuntime,
+	checkout: CloudCompanyExecutionCheckout,
+	proposalHead: string,
+	arbiter: CloudWakeArbiter,
+	clientSessionId: string,
+	baseSnapshotId: string,
+	reviewPolicy?: ExecutionReviewPolicy,
+	attempt = 0,
+): Promise<void> {
+	const executionId = arbiter.activeExecutionId;
+	const wakeKey = arbiter.activeKey;
+	if (!executionId || !wakeKey || runtime.closing) return;
+	try {
+		await arbiter.renewIfDue();
+		const staffHealth = await runtime.cloudStaffSyncLoop?.trigger();
+		const trailHealth = await runtime.cloudTrailSyncLoop?.trigger();
+		if (runtime.cloudStaffSync && staffHealth?.phase !== "healthy") {
+			throw new Error(staffHealth?.lastError ?? "wake staff output did not finish syncing");
+		}
+		if (runtime.cloudTrailSync && trailHealth?.phase !== "healthy") {
+			throw new Error(trailHealth?.lastError ?? "wake conversation output did not finish syncing");
+		}
+		if (!runtime.cloudTrailSync) throw new Error("wake conversation synchronization is unavailable");
+		const hostedSession = await runtime.cloudTrailSync.hostedSessionForClient(clientSessionId);
+		const trailEndSequence = runtime.cloudTrailSync.cursorForHostedSession(hostedSession.sessionId);
+		if (trailEndSequence === undefined) throw new Error("wake output has no durable cloud cursor");
+		const attachment = profileAttachment(runtime.root);
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		const objects = qorperaAccountAuth?.hostedObjects();
+		if (attachment.profileType !== "cloud" || !primary || !objects) {
+			throw new Error("cloud Company File proposal services are unavailable");
+		}
+		const authorityCritical = await cloudCompanyExecutionTouchesAuthorityCritical({
+			checkoutRoot: checkout.checkoutRoot,
+			proposalHead,
+		});
+		await publishCloudCompanyExecutionProposal({
+			userData: app.getPath("userData"),
+			environmentId: attachment.environmentId,
+			baseSnapshotId,
+			checkout,
+			execution: { kind: "wake", id: executionId, claimantId: arbiter.claimantId },
+			sessionId: hostedSession.sessionId,
+			trailEndSequence,
+			reason: reviewPolicy ? "policy" : authorityCritical ? "authority" : "conflict",
+			...(reviewPolicy ? { policyKey: reviewPolicy.policyKey } : {}),
+			title: reviewPolicy?.title ?? `${authorityCritical ? "Authorize" : "Review"} autonomous Company File changes`,
+			...(reviewPolicy ? { reviewerStaffIds: reviewPolicy.reviewerStaffIds } : {}),
+			objects,
+			primary,
+		});
+		await runtime.cloudTrailSync.finalizeOperationalSession(clientSessionId);
+		arbiter.abandon();
+	} catch (error) {
+		if (error instanceof WakeOwnershipError) {
+			arbiter.abandon();
+			throw error;
+		}
+		if (runtime.closing || arbiter.activeKey !== wakeKey) return;
+		const delay = Math.min(10_000, 1_000 * 2 ** Math.min(attempt, 4));
+		if (attempt === 0) {
+			console.error(`wake proposal submission deferred: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		await new Promise<void>((resolvePromise) => {
+			const timer = setTimeout(resolvePromise, delay);
+			timer.unref();
+		});
+		return submitCloudWakeProposal(
+			runtime,
+			checkout,
+			proposalHead,
+			arbiter,
+			clientSessionId,
+			baseSnapshotId,
+			reviewPolicy,
+			attempt + 1,
+		);
+	}
 }
 
 function startCloudRealtimeSync(slot: Slot, runtime: CompanyRuntime): void {
@@ -2590,6 +2992,59 @@ function newCompanyRoot(name: string): string {
 	if (!slug) throw new Error("Profile name is invalid.");
 	const home = process.platform === "win32" ? "C:\\Companies" : join(app.getPath("home"), "Companies");
 	return join(home, slug);
+}
+
+interface PendingCompanyCreationEnvelope {
+	schema: "qorpera.pending-company-creation/v1";
+	clientCreationId: string;
+	companyName: string;
+	companyIcon: CompanyIconId;
+	createdAt: string;
+}
+
+function pendingCompanyCreationPath(userData: string, accountId: string): string {
+	return join(userData, "pending-company-creations", `${accountId}.json`);
+}
+
+function readPendingCompanyCreation(userData: string, accountId: string): PendingCompanyCreationEnvelope | undefined {
+	try {
+		const value = JSON.parse(
+			readFileSync(pendingCompanyCreationPath(userData, accountId), "utf-8"),
+		) as Partial<PendingCompanyCreationEnvelope>;
+		if (
+			value.schema !== "qorpera.pending-company-creation/v1" ||
+			typeof value.clientCreationId !== "string" ||
+			!UUID_PATTERN.test(value.clientCreationId) ||
+			typeof value.companyName !== "string" ||
+			!value.companyName.trim() ||
+			value.companyName.length > 120 ||
+			!isCompanyIconId(value.companyIcon) ||
+			typeof value.createdAt !== "string" ||
+			!Number.isFinite(Date.parse(value.createdAt))
+		) {
+			return undefined;
+		}
+		return value as PendingCompanyCreationEnvelope;
+	} catch {
+		return undefined;
+	}
+}
+
+function persistPendingCompanyCreation(
+	userData: string,
+	accountId: string,
+	envelope: PendingCompanyCreationEnvelope,
+): void {
+	const path = pendingCompanyCreationPath(userData, accountId);
+	mkdirSync(dirname(path), { recursive: true });
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(temporary, `${JSON.stringify(envelope)}\n`, { encoding: "utf-8", mode: 0o600, flag: "wx" });
+		renameSync(temporary, path);
+	} catch (error) {
+		rmSync(temporary, { force: true });
+		throw error;
+	}
 }
 
 function cloudCompanyCacheRoot(profile: HostedProfile): string {
@@ -2967,6 +3422,7 @@ interface ReviewedPromptFrame {
 	images?: Array<{ type: "image"; data: string; mimeType: string }>;
 	streamingBehavior?: "steer" | "followUp";
 	clientInputId?: string;
+	executionSponsor?: ReviewedExecutionSponsor;
 }
 
 function reviewedPromptFrame(value: Record<string, unknown>): ReviewedPromptFrame | undefined {
@@ -2980,7 +3436,15 @@ function reviewedPromptFrame(value: Record<string, unknown>): ReviewedPromptFram
 	) {
 		return undefined;
 	}
-	const allowed = new Set(["type", "message", "displayText", "images", "streamingBehavior", "clientInputId"]);
+	const allowed = new Set([
+		"type",
+		"message",
+		"displayText",
+		"images",
+		"streamingBehavior",
+		"clientInputId",
+		"executionSponsor",
+	]);
 	if (Object.keys(value).some((key) => !allowed.has(key))) return undefined;
 	if (
 		value.clientInputId !== undefined &&
@@ -2994,6 +3458,38 @@ function reviewedPromptFrame(value: Record<string, unknown>): ReviewedPromptFram
 	)
 		return undefined;
 	let images: ReviewedPromptFrame["images"];
+	let executionSponsor: ReviewedExecutionSponsor | undefined;
+	if (value.executionSponsor !== undefined) {
+		if (value.type !== "prompt") return undefined;
+		if (
+			!value.executionSponsor ||
+			typeof value.executionSponsor !== "object" ||
+			Array.isArray(value.executionSponsor)
+		) {
+			return undefined;
+		}
+		const sponsor = value.executionSponsor as Record<string, unknown>;
+		if (
+			Object.keys(sponsor).some(
+				(key) => !["sponsorBindingId", "sponsorVersion", "computeIdentityId", "workerClass"].includes(key),
+			) ||
+			typeof sponsor.sponsorBindingId !== "string" ||
+			!UUID_PATTERN.test(sponsor.sponsorBindingId) ||
+			!Number.isSafeInteger(sponsor.sponsorVersion) ||
+			(sponsor.sponsorVersion as number) < 1 ||
+			typeof sponsor.computeIdentityId !== "string" ||
+			!UUID_PATTERN.test(sponsor.computeIdentityId) ||
+			(sponsor.workerClass !== "managed_sandbox" && sponsor.workerClass !== "company_computer")
+		) {
+			return undefined;
+		}
+		executionSponsor = {
+			sponsorBindingId: sponsor.sponsorBindingId,
+			sponsorVersion: sponsor.sponsorVersion as number,
+			computeIdentityId: sponsor.computeIdentityId,
+			workerClass: sponsor.workerClass,
+		};
+	}
 	if (value.images !== undefined) {
 		if (!Array.isArray(value.images) || value.images.length > MAX_PROMPT_IMAGES) return undefined;
 		images = [];
@@ -3039,6 +3535,7 @@ function reviewedPromptFrame(value: Record<string, unknown>): ReviewedPromptFram
 		...(images && images.length > 0 ? { images } : {}),
 		...(value.streamingBehavior ? { streamingBehavior: value.streamingBehavior } : {}),
 		...(typeof value.clientInputId === "string" ? { clientInputId: value.clientInputId } : {}),
+		...(executionSponsor ? { executionSponsor } : {}),
 	};
 }
 
@@ -3167,6 +3664,7 @@ async function closeCompany(slot: Slot): Promise<void> {
 		try {
 			if (runtime.cloudSessionPump) clearInterval(runtime.cloudSessionPump);
 			if (runtime.cloudPresenceHeartbeat) clearInterval(runtime.cloudPresenceHeartbeat);
+			if (runtime.cloudRunnerActivityTimer) clearInterval(runtime.cloudRunnerActivityTimer);
 			runtime.cloudStaffSyncLoop?.stop();
 			runtime.cloudTrailSyncLoop?.stop();
 			runtime.cloudCompanyPublication?.stop();
@@ -3208,12 +3706,16 @@ function isChildBusy(child: ChildProcessWithoutNullStreams | undefined): boolean
 
 function bindChildDurableExecution(child: ChildProcessWithoutNullStreams, execution: KernelExecutionIdentity): void {
 	childDurableExecutions.set(child, execution);
+	const binding = childBindings.get(child);
+	if (binding) bindTrailExecution(binding, execution);
 	const checkout = childCompanyExecutions.get(child);
 	if (checkout) bindCloudCompanyExecution(checkout, execution);
 }
 
 function clearChildDurableExecution(child: ChildProcessWithoutNullStreams): void {
 	childDurableExecutions.delete(child);
+	const binding = childBindings.get(child);
+	if (binding) bindTrailExecution(binding);
 }
 
 /** Write a frame to a child's stdin, tolerating a dead child. The child can
@@ -3267,6 +3769,9 @@ interface ChildOptions {
 	/** Cloud revisions materialized before this child was allowed to execute. */
 	companySnapshotId?: string;
 	staffVersion?: number;
+	/** Explicit founder-configured publication gate. Operational work omits it
+	 * and publishes automatically. */
+	reviewPolicy?: ExecutionReviewPolicy;
 	onRpcEvent?: (frame: Record<string, unknown>) => void;
 	/** Last model confirmed by this child, inherited by replacement and autonomous children. */
 	model?: RuntimeModelSelection;
@@ -3527,7 +4032,12 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	snapshotFounderGitState(root);
 	const companyExecution =
 		requireDurableExecution && !worktree
-			? createCloudCompanyExecutionCheckout({ userData, profileId: attachment.profileId, companyRoot: root })
+			? createCloudCompanyExecutionCheckout({
+					userData,
+					profileId: attachment.profileId,
+					companyRoot: root,
+					hostInstanceId: HOST_INSTANCE_ID,
+				})
 			: undefined;
 	const cwd = worktree ? join(root, worktree) : (companyExecution?.checkoutRoot ?? root);
 	const scope = {
@@ -3842,7 +4352,8 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 					}
 					return { message: completed.message };
 				},
-				apply: (kind, input) => applyStaffCompanyOperation(slot, root, child, staffAgentId, binding, kind, input),
+				apply: (kind, input) =>
+					applyStaffCompanyOperation(slot, root, agentCompanyRoot, child, staffAgentId, binding, kind, input),
 			})
 		: undefined;
 	trackChildReadiness(child);
@@ -3875,14 +4386,18 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 	const finalizeSettledCompanyOutput = async (): Promise<void> => {
 		const runtime = slot.runtime;
 		let requiresReview = false;
+		let reviewProposalHead: string | undefined;
 		const checkpoint = async (): Promise<void> => {
 			const result = checkpointCompanyGit(root, gitBaseline, binding.file);
 			gitBaseline = result.baseline;
 			savePendingCompanyCheckpoint(checkpointState, root, gitBaseline, binding.file);
 			if (!result.success) throw new Error("Company trail checkpoint did not settle cleanly");
 			if (companyExecution) {
-				const promotion = await promoteCloudCompanyExecution(companyExecution);
+				const promotion = await promoteCloudCompanyExecution(companyExecution, {
+					requireReview: options.reviewPolicy !== undefined,
+				});
 				requiresReview = promotion.status === "requires_review";
+				if (promotion.status === "requires_review") reviewProposalHead = promotion.proposalHead;
 			}
 			if (productWorktreeRoot && productGitBaseline) {
 				const productResult = checkpointProductWorktreeGit(
@@ -3911,8 +4426,35 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 		const activeClaim = activeArbiter?.activeClaim;
 		if (requiresReview) {
 			childOutputsRequireReview.add(child);
-			if (activeArbiter && activeClaim) {
-				await activeArbiter.quarantineTurn("Company File proposal requires review", activeClaim);
+			if (runtime && companyExecution && reviewProposalHead && activeArbiter && activeClaim) {
+				await submitCloudSessionProposal(
+					slot,
+					runtime,
+					child,
+					companyExecution,
+					reviewProposalHead,
+					activeArbiter,
+					activeClaim,
+					options.reviewPolicy,
+				);
+			} else if (
+				runtime?.wakeChild === child &&
+				companyExecution &&
+				reviewProposalHead &&
+				runtime.cloudWakeArbiter?.activeExecutionId &&
+				options.companySnapshotId
+			) {
+				const clientSessionId = childBindings.get(child)?.sessionId;
+				if (!clientSessionId) throw new Error("wake proposal has no durable trail session");
+				await submitCloudWakeProposal(
+					runtime,
+					companyExecution,
+					reviewProposalHead,
+					runtime.cloudWakeArbiter,
+					clientSessionId,
+					options.companySnapshotId,
+					options.reviewPolicy,
+				);
 			}
 			return;
 		}
@@ -4039,18 +4581,11 @@ function startChild(slot: Slot, root: string, options: ChildOptions = {}): Child
 			)
 				return;
 			if ((frame as { type?: unknown }).type === "qorpera_trail_append") {
-				const append = parseTrailAppendFrame(frame, binding);
+				const append = parseTrailAppendFrame(frame, binding, childDurableExecutions.get(child));
 				if (append) {
 					appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
 					commitTrailAppend(binding, append);
 					sessions.rememberAudit(binding);
-					const execution = childDurableExecutions.get(child);
-					if (execution) {
-						const runtime = slot.runtime;
-						if (runtime && normalizedRoot(runtime.root) === normalizedRoot(root)) {
-							runtime.cloudTrailSync?.bindEntryExecution(binding.sessionId, append.entry.id, execution);
-						}
-					}
 					if (append.entry.type === "message" || append.entry.type === "session_info") {
 						const runtime = slot.runtime;
 						if (runtime && normalizedRoot(runtime.root) === normalizedRoot(root)) triggerCloudTrailSync(runtime);
@@ -4433,7 +4968,7 @@ function sendKernelStaffIntro(
 	const signIntent = childIntentSigners.get(child);
 	if (!binding || !signIntent || child.exitCode !== null) return false;
 	const frame = { type: "staff_intro" as const, message };
-	const kernelIntent = signIntent(frame, false);
+	const kernelIntent = signIntent(frame, false, childDurableExecutions.get(child));
 	if (!childModelCapabilities.get(child)?.authorizeIntent(kernelIntent)) return false;
 	childHttpBrokers.get(child)?.authorizeIntent(kernelIntent);
 	childComputerBrokers.get(child)?.authorizeIntent(kernelIntent);
@@ -5198,11 +5733,34 @@ function parsedStaffRoutineOperation(value: unknown): StaffRoutineOperation | un
 	if (!input || typeof input.routineKey !== "string" || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(input.routineKey)) {
 		return undefined;
 	}
+	const reviewerStaffIds = input.reviewerStaffIds;
+	if (
+		reviewerStaffIds !== undefined &&
+		(!Array.isArray(reviewerStaffIds) ||
+			reviewerStaffIds.length > 20 ||
+			new Set(reviewerStaffIds).size !== reviewerStaffIds.length ||
+			!reviewerStaffIds.every(
+				(id) =>
+					typeof id === "string" &&
+					/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id),
+			))
+	) {
+		return undefined;
+	}
 	if (input.action === "upsert") {
 		if (
 			Object.keys(input).some(
 				(key) =>
-					!["action", "routineKey", "title", "instructions", "intervalMinutes", "startAt", "effort"].includes(key),
+					![
+						"action",
+						"routineKey",
+						"title",
+						"instructions",
+						"intervalMinutes",
+						"startAt",
+						"effort",
+						"reviewerStaffIds",
+					].includes(key),
 			) ||
 			typeof input.title !== "string" ||
 			!input.title.trim() ||
@@ -5233,6 +5791,7 @@ function parsedStaffRoutineOperation(value: unknown): StaffRoutineOperation | un
 			intervalMinutes: input.intervalMinutes,
 			...(typeof input.startAt === "string" ? { startAt: input.startAt } : {}),
 			...(input.effort !== undefined ? { effort: input.effort as ScheduledJobEffort } : {}),
+			...(reviewerStaffIds !== undefined ? { reviewerStaffIds: reviewerStaffIds as string[] } : {}),
 		};
 	}
 	if (input.action === "upsert_weekly") {
@@ -5249,6 +5808,7 @@ function parsedStaffRoutineOperation(value: unknown): StaffRoutineOperation | un
 						"localTime",
 						"timeZone",
 						"effort",
+						"reviewerStaffIds",
 					].includes(key),
 			) ||
 			typeof input.title !== "string" ||
@@ -5291,6 +5851,7 @@ function parsedStaffRoutineOperation(value: unknown): StaffRoutineOperation | un
 			localTime: input.localTime,
 			timeZone,
 			...(input.effort !== undefined ? { effort: input.effort as ScheduledJobEffort } : {}),
+			...(reviewerStaffIds !== undefined ? { reviewerStaffIds: reviewerStaffIds as string[] } : {}),
 		};
 	}
 	if (input.action === "upsert_event") {
@@ -5306,6 +5867,7 @@ function parsedStaffRoutineOperation(value: unknown): StaffRoutineOperation | un
 						"sourceHints",
 						"checkEveryMinutes",
 						"effort",
+						"reviewerStaffIds",
 					].includes(key),
 			) ||
 			typeof input.title !== "string" ||
@@ -5346,6 +5908,7 @@ function parsedStaffRoutineOperation(value: unknown): StaffRoutineOperation | un
 			sourceHints: Array.isArray(input.sourceHints) ? (input.sourceHints as string[]) : [],
 			checkEveryMinutes: typeof input.checkEveryMinutes === "number" ? input.checkEveryMinutes : 15,
 			...(input.effort !== undefined ? { effort: input.effort as ScheduledJobEffort } : {}),
+			...(reviewerStaffIds !== undefined ? { reviewerStaffIds: reviewerStaffIds as string[] } : {}),
 		};
 	}
 	if (
@@ -5355,6 +5918,25 @@ function parsedStaffRoutineOperation(value: unknown): StaffRoutineOperation | un
 		return { action: input.action, routineKey: input.routineKey };
 	}
 	return undefined;
+}
+
+function parsedRoutinePublicationPolicy(root: string, value: unknown): RoutinePublicationPolicy | null | undefined {
+	if (value === undefined) return undefined;
+	const policy = recordValue(value);
+	if (!policy) return null;
+	if (policy.mode === "automatic" && Object.keys(policy).length === 1) return { mode: "automatic" };
+	if (
+		policy.mode !== "review" ||
+		Object.keys(policy).some((key) => key !== "mode" && key !== "reviewerStaffIds") ||
+		!Array.isArray(policy.reviewerStaffIds) ||
+		policy.reviewerStaffIds.length < 1 ||
+		policy.reviewerStaffIds.length > 20 ||
+		new Set(policy.reviewerStaffIds).size !== policy.reviewerStaffIds.length ||
+		!policy.reviewerStaffIds.every((id) => typeof id === "string" && activeStaffAgent(root, id) !== undefined)
+	) {
+		return null;
+	}
+	return { mode: "review", reviewerStaffIds: [...policy.reviewerStaffIds] as string[] };
 }
 
 function parsedStaffArtifactObservation(value: unknown): StaffArtifactObservationToolInput | undefined {
@@ -5499,7 +6081,8 @@ function parsedStaffArtifactSourceIssue(value: unknown): StaffArtifactSourceIssu
 
 async function applyStaffCompanyOperation(
 	slot: Slot,
-	root: string,
+	companyRoot: string,
+	operationRoot: string,
 	child: ChildProcessWithoutNullStreams,
 	staffAgentId: string,
 	binding: TrailBinding,
@@ -5511,12 +6094,12 @@ async function applyStaffCompanyOperation(
 		runtime && isCurrentRuntimeChild(slot, runtime, child) && runtime.childOptions.staffAgentId === staffAgentId;
 	const background = runtime?.wakeChild === child && runtime.child !== child;
 	if (!runtime || (!attached && !background)) throw new Error("agent runtime is no longer attached to this company");
-	const staff = activeStaffAgent(root, staffAgentId);
+	const staff = activeStaffAgent(operationRoot, staffAgentId);
 	if (!staff) throw new Error("agent is unavailable or archived");
 	const triggerWorker = childTriggerWorkers.get(child);
 
 	if (kind === "authorize_connector_http") {
-		authorizeConnectorHttpExecution(app.getPath("userData"), root, value);
+		authorizeConnectorHttpExecution(app.getPath("userData"), companyRoot, value);
 		return { message: "Connector request is authorized by its completed connection grant." };
 	}
 
@@ -5530,7 +6113,7 @@ async function applyStaffCompanyOperation(
 		) {
 			throw new Error("custom-trigger build result is invalid");
 		}
-		const statePath = customTriggerBuildStatePath(app.getPath("userData"), root);
+		const statePath = customTriggerBuildStatePath(app.getPath("userData"), companyRoot);
 		const state = readCustomTriggerBuildState(statePath);
 		const build = state.builds.find((candidate) => candidate.id === triggerWorker.buildId);
 		if (!build || build.status !== "building" || build.staffAgentId !== staffAgentId) {
@@ -5543,7 +6126,7 @@ async function applyStaffCompanyOperation(
 			const finished = finishCustomTriggerBuild(state, build.id, { status: "failed", error: input.error.trim() });
 			writeCustomTriggerBuildState(statePath, finished.state);
 			writeFileSync(
-				join(inboxMessagesPath(root), `msg-trigger-build-failed-${Date.now()}.md`),
+				join(inboxMessagesPath(operationRoot), `msg-trigger-build-failed-${Date.now()}.md`),
 				`# Trigger could not be created\n\n**${build.title}**\n\n${input.error.trim()}\n`,
 				"utf-8",
 			);
@@ -5566,12 +6149,12 @@ async function applyStaffCompanyOperation(
 			throw new Error("custom-trigger monitor definition is invalid");
 		}
 		const connectorIds = [...new Set(input.connectorIds as string[])];
-		const installed = new Set(readCompanyConnectorManifests(root).map((connector) => connector.id));
+		const installed = new Set(readCompanyConnectorManifests(operationRoot).map((connector) => connector.id));
 		if (connectorIds.some((connectorId) => !installed.has(connectorId))) {
 			throw new Error("custom-trigger monitor references an unavailable connector");
 		}
 		const adapterHash = createHash("sha256").update(`${staffAgentId}:${build.routineKey}`).digest("hex").slice(0, 24);
-		const job = upsertStaffScheduledJob(root, staffAgentId, build.routineKey, {
+		const job = upsertStaffScheduledJob(operationRoot, staffAgentId, build.routineKey, {
 			title: build.title,
 			prompt: build.instructions,
 			triggers: [
@@ -5590,11 +6173,19 @@ async function applyStaffCompanyOperation(
 			],
 			enabled: true,
 			effort: build.effort,
+			...(build.reviewerStaffIds === undefined
+				? {}
+				: {
+						publication:
+							build.reviewerStaffIds.length === 0
+								? ({ mode: "automatic" } as const)
+								: ({ mode: "review", reviewerStaffIds: build.reviewerStaffIds } as const),
+					}),
 		});
 		const finished = finishCustomTriggerBuild(state, build.id, { status: "ready", jobId: job.id });
 		writeCustomTriggerBuildState(statePath, finished.state);
 		writeFileSync(
-			join(inboxMessagesPath(root), `msg-trigger-build-ready-${Date.now()}.md`),
+			join(inboxMessagesPath(operationRoot), `msg-trigger-build-ready-${Date.now()}.md`),
 			`# Trigger created\n\n**${job.title}** will run when ${input.eventLabel.trim()}.\n`,
 			"utf-8",
 		);
@@ -5608,7 +6199,7 @@ async function applyStaffCompanyOperation(
 		if (!input || (input.status !== "no_match" && input.status !== "matched" && input.status !== "failed")) {
 			throw new Error("custom-trigger check result is invalid");
 		}
-		const statePath = routineTriggerStatePath(app.getPath("userData"), root);
+		const statePath = routineTriggerStatePath(app.getPath("userData"), companyRoot);
 		let state = readRoutineTriggerState(statePath);
 		if (input.status === "failed") {
 			if (typeof input.error !== "string" || !input.error.trim() || input.error.length > 2_000) {
@@ -5620,9 +6211,13 @@ async function applyStaffCompanyOperation(
 			});
 			const failures = state.customChecks?.[`${triggerWorker.jobId}:${triggerWorker.triggerId}`]?.failureStreak ?? 0;
 			if (failures >= WAKE_FAILURE_SUSPENSION_THRESHOLD) {
-				suspendScheduledJob(root, triggerWorker.jobId, `${failures} consecutive custom-trigger check failures`);
+				suspendScheduledJob(
+					operationRoot,
+					triggerWorker.jobId,
+					`${failures} consecutive custom-trigger check failures`,
+				);
 				writeFileSync(
-					join(inboxMessagesPath(root), `msg-trigger-check-suspended-${Date.now()}.md`),
+					join(inboxMessagesPath(operationRoot), `msg-trigger-check-suspended-${Date.now()}.md`),
 					`# Trigger suspended\n\nA custom trigger was suspended after ${failures} failed checks.\n\n${input.error.trim()}\n`,
 					"utf-8",
 				);
@@ -5647,7 +6242,7 @@ async function applyStaffCompanyOperation(
 					success: true,
 					...(checkpoint !== undefined ? { checkpoint } : {}),
 				});
-				state = queueCustomRoutineTrigger(locallyPlacedScheduledJobs(root), state, {
+				state = queueCustomRoutineTrigger(locallyPlacedScheduledJobs(operationRoot), state, {
 					id: input.eventId.trim(),
 					source: triggerWorker.adapterId,
 					type: triggerWorker.event,
@@ -5671,7 +6266,7 @@ async function applyStaffCompanyOperation(
 		const input = parsedStaffConnectionRequestToolInput(value);
 		if (!input) throw new Error("connection proposal is invalid");
 		const linkedArtifact = input.artifactId
-			? readCompanyArtifacts(root).find(
+			? readCompanyArtifacts(operationRoot).find(
 					(artifact) =>
 						artifact.id === input.artifactId &&
 						artifact.stewardAgentId === staffAgentId &&
@@ -5688,7 +6283,7 @@ async function applyStaffCompanyOperation(
 		};
 		if (
 			input.recipeId?.startsWith("company:") &&
-			!companyConnectorForRequest(root, {
+			!companyConnectorForRequest(operationRoot, {
 				staffAgentId,
 				displayName: input.displayName,
 				destinations: input.destinations,
@@ -5700,7 +6295,7 @@ async function applyStaffCompanyOperation(
 		}
 		const userData = app.getPath("userData");
 		const preparedRequest = input.recipeId?.startsWith("company:")
-			? [...readConnectionRequests(userData, root)]
+			? [...readConnectionRequests(userData, companyRoot)]
 					.reverse()
 					.find(
 						(request) =>
@@ -5715,12 +6310,12 @@ async function applyStaffCompanyOperation(
 			: undefined;
 		const retry =
 			!preparedRequest && input.recipeId?.startsWith("company:")
-				? retryFailedConnectionRequest(userData, root, requestInput)
+				? retryFailedConnectionRequest(userData, companyRoot, requestInput)
 				: undefined;
 		const request = preparedRequest
 			? installPreparedConnectionRequestRecipe(
 					userData,
-					root,
+					companyRoot,
 					{
 						id: preparedRequest.id,
 						staffAgentId: preparedRequest.staffAgentId,
@@ -5728,38 +6323,38 @@ async function applyStaffCompanyOperation(
 					},
 					requestInput,
 				)
-			: (retry?.request ?? createConnectionRequest(userData, root, requestInput));
+			: (retry?.request ?? createConnectionRequest(userData, companyRoot, requestInput));
 		if (linkedArtifact && input.dataNeedId && !preparedRequest && !retry) {
 			const artifact = transitionCompanyArtifactConnection(
-				root,
+				operationRoot,
 				staffAgentId,
 				linkedArtifact.id,
 				input.dataNeedId,
 				request.id,
 				"suggested",
 			);
-			commitCompanyMaterialization(root, [artifact.relativePath]);
+			commitCompanyMaterialization(operationRoot, [artifact.relativePath]);
 		}
 		for (const superseded of retry?.superseded ?? []) publishConnectionRequest(slot, binding, superseded);
 		publishConnectionRequest(slot, binding, request);
 		if (retry) {
 			if (linkedArtifact && input.dataNeedId) {
 				const artifact = transitionCompanyArtifactConnection(
-					root,
+					operationRoot,
 					staffAgentId,
 					linkedArtifact.id,
 					input.dataNeedId,
 					request.id,
 					"selected",
 				);
-				commitCompanyMaterialization(root, [artifact.relativePath]);
+				commitCompanyMaterialization(operationRoot, [artifact.relativePath]);
 			}
-			const connector = companyConnectorForRequest(root, request);
+			const connector = companyConnectorForRequest(operationRoot, request);
 			if (!connector) throw new Error("retried company connector no longer matches its installed manifest");
-			const signInError = companyConnectorSignInError(root, connector);
+			const signInError = companyConnectorSignInError(companyRoot, connector);
 			if (signInError) throw new Error(signInError);
-			if (companyConnectorNeedsRegistration(root, connector)) {
-				publishComputerHandoff(slot, root, child, staffAgentId, binding);
+			if (companyConnectorNeedsRegistration(companyRoot, connector)) {
+				publishComputerHandoff(slot, companyRoot, child, staffAgentId, binding);
 				return {
 					message:
 						"The previous founder selection was reused. Continue the installed connector setup without another source choice.",
@@ -5770,31 +6365,31 @@ async function applyStaffCompanyOperation(
 				staffAgentId: request.staffAgentId,
 				sessionFile: request.sessionFile,
 			};
-			const connecting = beginConnectionRequest(userData, root, identity);
+			const connecting = beginConnectionRequest(userData, companyRoot, identity);
 			publishConnectionRequest(slot, binding, connecting);
 			const result = await connectCompanyConnector(slot.window.webContents, connector);
 			if (!result.ok || ("pendingSetup" in result && result.pendingSetup)) {
 				const failure = safeConnectionFailure(result.error);
 				const settled = result.cancelled
-					? cancelConnectionRequest(userData, root, identity)
-					: failConnectionRequest(userData, root, identity, failure);
+					? cancelConnectionRequest(userData, companyRoot, identity)
+					: failConnectionRequest(userData, companyRoot, identity, failure);
 				publishConnectionRequest(slot, binding, settled);
-				transitionLinkedArtifactRequest(root, request, "failed");
+				transitionLinkedArtifactRequest(operationRoot, request, "failed");
 				throw new Error(result.cancelled ? "Connector authorization was cancelled" : failure);
 			}
-			const verifying = verifyConnectionRequest(userData, root, identity);
+			const verifying = verifyConnectionRequest(userData, companyRoot, identity);
 			publishConnectionRequest(slot, binding, verifying);
-			const connected = completeConnectionRequest(userData, root, identity, `company:${connector.id}`);
+			const connected = completeConnectionRequest(userData, companyRoot, identity, `company:${connector.id}`);
 			publishConnectionRequest(slot, binding, connected);
-			const syncing = beginConnectionRequestSync(userData, root, identity);
+			const syncing = beginConnectionRequestSync(userData, companyRoot, identity);
 			publishConnectionRequest(slot, binding, syncing);
-			transitionLinkedArtifactRequest(root, request, "connected");
+			transitionLinkedArtifactRequest(operationRoot, request, "connected");
 			return {
 				message:
 					"The previously selected connector was authorized. Run its smallest read operation to verify data before marking it ready.",
 			};
 		}
-		publishComputerHandoff(slot, root, child, staffAgentId, binding);
+		publishComputerHandoff(slot, companyRoot, child, staffAgentId, binding);
 		return {
 			message:
 				"Source choice is ready for the founder. No provider access was requested and no service was connected.",
@@ -5806,7 +6401,7 @@ async function applyStaffCompanyOperation(
 		const operation = parsedStaffRoutineOperation(value);
 		if (!operation) throw new Error("routine operation is invalid");
 		if (operation.action === "upsert_event") {
-			const statePath = customTriggerBuildStatePath(app.getPath("userData"), root);
+			const statePath = customTriggerBuildStatePath(app.getPath("userData"), companyRoot);
 			const queued = queueCustomTriggerBuild(readCustomTriggerBuildState(statePath), {
 				staffAgentId,
 				routineKey: operation.routineKey,
@@ -5816,6 +6411,7 @@ async function applyStaffCompanyOperation(
 				sourceHints: operation.sourceHints,
 				checkEveryMinutes: operation.checkEveryMinutes,
 				effort: operation.effort ?? "high",
+				...(operation.reviewerStaffIds !== undefined ? { reviewerStaffIds: operation.reviewerStaffIds } : {}),
 			});
 			writeCustomTriggerBuildState(statePath, queued.state);
 			return {
@@ -5823,12 +6419,12 @@ async function applyStaffCompanyOperation(
 					"The event trigger definition was saved. A silent builder will validate the data path and install it, or return a concrete error.",
 			};
 		}
-		const result = applyStaffRoutineOperation(root, staffAgentId, operation, runtime.wakeJobId);
+		const result = applyStaffRoutineOperation(operationRoot, staffAgentId, operation, runtime.wakeJobId);
 		if (result.action === "remove") {
-			const path = wakeRunStatePath(app.getPath("userData"), root);
+			const path = wakeRunStatePath(app.getPath("userData"), companyRoot);
 			writeWakeRunState(path, removeScheduledJobRunState(readWakeRunState(path), result.removedJobId));
 		}
-		runtime.childOptions.staffContext = staffSystemContext(root, staff);
+		runtime.childOptions.staffContext = staffSystemContext(operationRoot, staff);
 		runtime.pendingStaffContextRestart = true;
 		return {
 			message:
@@ -5846,15 +6442,15 @@ async function applyStaffCompanyOperation(
 		const input = parsedStaffArtifactSourceAssessment(value);
 		if (!input) throw new Error("artifact source assessment is invalid");
 		const artifact = assessCompanyArtifactSource(
-			root,
+			operationRoot,
 			staffAgentId,
 			input.artifactId,
 			input.update,
 			background ? "worker" : "agent",
 		);
-		commitCompanyMaterialization(root, [artifact.relativePath]);
+		commitCompanyMaterialization(operationRoot, [artifact.relativePath]);
 		if (attached) {
-			runtime.childOptions.staffContext = staffSystemContext(root, staff);
+			runtime.childOptions.staffContext = staffSystemContext(operationRoot, staff);
 			runtime.pendingStaffContextRestart = true;
 		}
 		return { message: "Source validity was recorded for the specified datatype and measures." };
@@ -5863,10 +6459,10 @@ async function applyStaffCompanyOperation(
 	if (kind === "record_artifact_observation") {
 		const input = parsedStaffArtifactObservation(value);
 		if (!input) throw new Error("artifact observation is invalid");
-		const artifact = recordCompanyArtifactObservation(root, staffAgentId, input.artifactId, input.update);
-		commitCompanyMaterialization(root, [artifact.relativePath]);
+		const artifact = recordCompanyArtifactObservation(operationRoot, staffAgentId, input.artifactId, input.update);
+		commitCompanyMaterialization(operationRoot, [artifact.relativePath]);
 		if (attached) {
-			runtime.childOptions.staffContext = staffSystemContext(root, staff);
+			runtime.childOptions.staffContext = staffSystemContext(operationRoot, staff);
 			runtime.pendingStaffContextRestart = true;
 		}
 		return { message: "Artifact evidence was recorded from the verified source." };
@@ -5875,10 +6471,10 @@ async function applyStaffCompanyOperation(
 	if (kind === "report_artifact_source_issue") {
 		const input = parsedStaffArtifactSourceIssue(value);
 		if (!input) throw new Error("artifact source issue is invalid");
-		const artifact = reportCompanyArtifactSourceIssue(root, staffAgentId, input.artifactId, input.update);
-		commitCompanyMaterialization(root, [artifact.relativePath]);
+		const artifact = reportCompanyArtifactSourceIssue(operationRoot, staffAgentId, input.artifactId, input.update);
+		commitCompanyMaterialization(operationRoot, [artifact.relativePath]);
 		if (attached) {
-			runtime.childOptions.staffContext = staffSystemContext(root, staff);
+			runtime.childOptions.staffContext = staffSystemContext(operationRoot, staff);
 			runtime.pendingStaffContextRestart = true;
 		}
 		return { message: "Artifact source health was updated without discarding its last valid evidence." };
@@ -5896,15 +6492,15 @@ async function applyStaffCompanyOperation(
 			throw new Error("coworker message is invalid");
 		}
 		if (input.toAgentId === staffAgentId) throw new Error("a coworker message cannot target its own sender");
-		const recipient = activeStaffAgent(root, input.toAgentId);
+		const recipient = activeStaffAgent(operationRoot, input.toAgentId);
 		if (!recipient) throw new Error("the addressed coworker is unavailable or archived");
-		const message = queueStaffAgentMessage(root, {
+		const message = queueStaffAgentMessage(operationRoot, {
 			fromAgentId: staffAgentId,
 			toAgentId: recipient.id,
 			...(input.subject?.trim() ? { subject: input.subject.trim() } : {}),
 			body: input.message.trim(),
 		});
-		commitCompanyMaterialization(root, [join(".qorpera", "agent-messages.json")]);
+		commitCompanyMaterialization(operationRoot, [join(".qorpera", "agent-messages.json")]);
 		return {
 			message: `Message ${message.id} was queued for ${recipient.displayName}. They will read it in their own next session and may reply the same way; do not wait for a live response.`,
 		};
@@ -5914,9 +6510,9 @@ async function applyStaffCompanyOperation(
 		if (!attached) throw new Error("setup can only finish from the attended agent conversation");
 		const input = recordValue(value);
 		if (!input || Object.keys(input).length !== 0) throw new Error("complete_setup takes no arguments");
-		const activated = activateStaffAgent(root, staffAgentId);
-		commitCompanyMaterialization(root, [join(".qorpera", "staff.json")]);
-		runtime.childOptions.staffContext = staffSystemContext(root, activated);
+		const activated = activateStaffAgent(operationRoot, staffAgentId);
+		commitCompanyMaterialization(operationRoot, [join(".qorpera", "staff.json")]);
+		runtime.childOptions.staffContext = staffSystemContext(operationRoot, activated);
 		runtime.pendingStaffContextRestart = true;
 		return { message: "Continue normally without announcing this internal transition." };
 	}
@@ -5941,7 +6537,7 @@ async function applyStaffCompanyOperation(
 			throw new Error("delegation requires a room participant and bounded message");
 		}
 		if (staff.templateId !== "agent-manager") throw new Error("only the Agent Manager can delegate room work");
-		const room = readCompanyRoom(root, roomId);
+		const room = readCompanyRoom(operationRoot, roomId);
 		if (!room || room.status !== "active") throw new Error("this group chat is no longer active");
 		if (!room.participantIds.includes(staffAgentId)) {
 			throw new Error("the delegating manager is no longer a participant in this room");
@@ -5949,18 +6545,18 @@ async function applyStaffCompanyOperation(
 		if (!room.participantIds.includes(input.staffAgentId)) {
 			throw new Error("delegation target is not a participant in this room");
 		}
-		const target = activeStaffAgent(root, input.staffAgentId);
+		const target = activeStaffAgent(operationRoot, input.staffAgentId);
 		if (!target) throw new Error("delegation target is unavailable or archived");
 		const context = childRoomDelegationContexts.get(child) ?? rootRoomDelegationContext(staffAgentId);
 		const planned = planRoomDelegation(context, staffAgentId, input.staffAgentId);
-		const message = appendCompanyRoomMessage(root, room.id, {
+		const message = appendCompanyRoomMessage(operationRoot, room.id, {
 			speaker: { kind: "staff", staffAgentId },
 			text: input.message,
 			targetStaffAgentIds: [target.id],
 			sourceTrailFile: binding.file,
 		});
 		try {
-			queueCompanyRoomDelivery(root, room.id, {
+			queueCompanyRoomDelivery(operationRoot, room.id, {
 				messageId: message.id,
 				targetStaffAgentIds: [target.id],
 				delegation: {
@@ -5971,7 +6567,7 @@ async function applyStaffCompanyOperation(
 		} catch (error) {
 			// The delegation message is already durable in the transcript; a retry
 			// would append a duplicate assignment, so report instead of rethrowing.
-			commitCompanyMaterialization(root, roomMaterializationPaths(room.id));
+			commitCompanyMaterialization(operationRoot, roomMaterializationPaths(room.id));
 			sendRoomEvent(slot, { kind: "message", roomId: room.id, message });
 			const detail = error instanceof Error ? error.message : String(error);
 			return {
@@ -5979,7 +6575,7 @@ async function applyStaffCompanyOperation(
 			};
 		}
 		childRoomDelegationContexts.set(child, planned.source);
-		commitCompanyMaterialization(root, roomMaterializationPaths(room.id));
+		commitCompanyMaterialization(operationRoot, roomMaterializationPaths(room.id));
 		sendRoomEvent(slot, { kind: "message", roomId: room.id, message });
 		sendRoomEvent(slot, {
 			kind: "delegation",
@@ -6303,6 +6899,10 @@ function recordCustomTriggerCheckFailure(
 }
 
 async function startCustomTriggerBuilderExclusive(slot: Slot, runtime: CompanyRuntime): Promise<boolean> {
+	if (profileAttachment(runtime.root).profileType === "cloud") {
+		console.error("custom trigger builders require a durable cloud execution lane");
+		return false;
+	}
 	if (runtime.wakeChild || runtime.closing || isChildBusy(runtime.child)) return false;
 	const statePath = customTriggerBuildStatePath(app.getPath("userData"), runtime.root);
 	const claimed = claimNextCustomTriggerBuild(readCustomTriggerBuildState(statePath));
@@ -6404,6 +7004,10 @@ async function startCustomTriggerBuilderExclusive(slot: Slot, runtime: CompanyRu
 }
 
 async function startCustomTriggerCheckExclusive(slot: Slot, runtime: CompanyRuntime): Promise<boolean> {
+	if (profileAttachment(runtime.root).profileType === "cloud") {
+		console.error("custom trigger checks require a durable cloud execution lane");
+		return false;
+	}
 	if (runtime.wakeChild || runtime.closing || isChildBusy(runtime.child)) return false;
 	const statePath = routineTriggerStatePath(app.getPath("userData"), runtime.root);
 	const due = dueCustomRoutineCheck(locallyPlacedScheduledJobs(runtime.root), readRoutineTriggerState(statePath));
@@ -6540,6 +7144,7 @@ async function startWakeChildExclusive(
 	manual = false,
 	trigger?: PendingRoutineTrigger,
 	messageRecipient?: StaffAgent,
+	occurrenceKey?: string,
 ): Promise<boolean> {
 	if (runtime.wakeChild || runtime.closing) return false;
 	// Never preempt a founder turn in flight: the wake defers to the next tick.
@@ -6568,33 +7173,40 @@ async function startWakeChildExclusive(
 	// running. Manual runs are founder intent on THIS machine and identity-less
 	// events are machine-local, so both run unarbitrated. A cloud occurrence
 	// with a deterministic key never falls back to an unclaimed local run.
-	const wakeKey = manual
-		? undefined
-		: cause === "schedule" && job
-			? (() => {
-					const occurrence = scheduledWakeOccurrenceKey(job, Date.now());
-					return occurrence ? `job:${job.id}:${occurrence}` : undefined;
-				})()
-			: cause === "inbound_event" && job && trigger
-				? `trigger:${job.id}:${trigger.event.id}`
-				: cause === "agent_message" && messageRecipient
-					? (() => {
-							try {
-								const queued = readStaffAgentMessages(runtime.root).find(
-									(message) => message.status === "queued" && message.toAgentId === messageRecipient.id,
-								);
-								return queued ? `mail:${queued.id}` : undefined;
-							} catch {
-								return undefined;
-							}
-						})()
-					: undefined;
+	const wakeKey =
+		manual && job
+			? `manual:${job.id}:${occurrenceKey ?? randomUUID()}`
+			: cause === "schedule" && job
+				? (() => {
+						const occurrence = scheduledWakeOccurrenceKey(job, Date.now());
+						return occurrence ? `job:${job.id}:${occurrence}` : undefined;
+					})()
+				: cause === "inbound_event" && job && trigger
+					? `trigger:${job.id}:${trigger.event.id}`
+					: cause === "agent_message" && messageRecipient
+						? (() => {
+								try {
+									const queued = readStaffAgentMessages(runtime.root).find(
+										(message) => message.status === "queued" && message.toAgentId === messageRecipient.id,
+									);
+									return queued ? `mail:${queued.id}` : undefined;
+								} catch {
+									return undefined;
+								}
+							})()
+						: occurrenceKey
+							? `${cause}:${occurrenceKey}`
+							: undefined;
 	const wakeArbiter =
 		wakeKey && slotHasProfileCapability(slot, "write") ? runtimeCloudWakeArbiter(runtime) : undefined;
 	const cloudCompany = profileAttachment(runtime.root).profileType === "cloud";
+	if (cloudCompany && !wakeKey) {
+		console.error(`cloud ${cause} wake has no durable occurrence identity`);
+		return false;
+	}
 	let executionPin: ArbiterExecutionPin | undefined;
 	if (cloudCompany) {
-		const eligibility = await cloudExecutorEligibility(runtime, wakeStaff, true);
+		const eligibility = await cloudExecutorEligibility(undefined, runtime, wakeStaff, true);
 		if (!eligibility.pin || (wakeKey && !wakeArbiter)) return false;
 		executionPin = eligibility.pin;
 		const synchronizedStaff = activeStaffAgent(runtime.root, wakeStaff.id);
@@ -6670,6 +7282,15 @@ async function startWakeChildExclusive(
 			staffContext: staffSystemContext(runtime.root, wakeStaff),
 			companySnapshotId: executionPin?.companySnapshotId,
 			staffVersion: executionPin?.staffVersion,
+			...(job?.publication.mode === "review"
+				? {
+						reviewPolicy: {
+							policyKey: `routine:${job.id}`,
+							title: `Review ${job.title}`,
+							reviewerStaffIds: job.publication.reviewerStaffIds,
+						},
+					}
+				: {}),
 			silent: true,
 			model: wakeStaff.model ?? resumeOptions.model,
 			thinkingLevel: job?.effort ?? "high",
@@ -6792,9 +7413,10 @@ function startWakeChild(
 	manual = false,
 	trigger?: PendingRoutineTrigger,
 	messageRecipient?: StaffAgent,
+	occurrenceKey?: string,
 ): Promise<boolean> {
 	return enqueueRuntimeTransition(runtime, () =>
-		startWakeChildExclusive(slot, runtime, cause, coalesced, job, manual, trigger, messageRecipient),
+		startWakeChildExclusive(slot, runtime, cause, coalesced, job, manual, trigger, messageRecipient, occurrenceKey),
 	);
 }
 
@@ -6858,15 +7480,29 @@ function startWakeTicker(): void {
 			}
 			// Inbound events that arrived mid-turn come first: their files are
 			// already durable, they just never got their wake.
-			if (runtime.pendingInboundWake) {
-				runtime.pendingInboundWake = false;
-				void startWakeChild(slot, runtime, "inbound_event", 0)
+			if (runtime.pendingInboundWakeKeys?.size) {
+				const pendingKeys = [...runtime.pendingInboundWakeKeys].sort();
+				const occurrenceKey = createHash("sha256").update(pendingKeys.join("\n")).digest("hex");
+				runtime.pendingInboundWakeKeys = undefined;
+				void startWakeChild(
+					slot,
+					runtime,
+					"inbound_event",
+					0,
+					undefined,
+					false,
+					undefined,
+					undefined,
+					occurrenceKey,
+				)
 					.then((started) => {
-						if (!started && slot.runtime === runtime && !runtime.closing) runtime.pendingInboundWake = true;
+						if (!started && slot.runtime === runtime && !runtime.closing)
+							runtime.pendingInboundWakeKeys = new Set(pendingKeys);
 					})
 					.catch((error) => {
 						console.error(`inbound wake failed for ${runtime.root}: ${(error as Error).message}`);
-						if (slot.runtime === runtime && !runtime.closing) runtime.pendingInboundWake = true;
+						if (slot.runtime === runtime && !runtime.closing)
+							runtime.pendingInboundWakeKeys = new Set(pendingKeys);
 					});
 				continue;
 			}
@@ -7568,6 +8204,11 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 			const primary = qorperaAccountAuth?.hostedPrimary();
 			const objects = qorperaAccountAuth?.hostedObjects();
 			if (!primary || !objects) throw new Error("The cloud Company File is unavailable.");
+			await recoverInterruptedCloudCompanyReviewAcceptance({
+				userData: app.getPath("userData"),
+				profileId: openingAttachment.profileId,
+				companyRoot: root,
+			});
 			// The cache is never the authority. Pull/merge the canonical head
 			// before host upgrades, staff synchronization, or any executor can
 			// observe and mutate this company.
@@ -7581,6 +8222,16 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 				runtimeLock,
 				canWrite: activeProfileAccess(root)?.capabilities.write === true,
 			});
+			const recovered = await recoverOrphanedCloudCompanyExecutions({
+				userData: app.getPath("userData"),
+				profileId: openingAttachment.profileId,
+				companyRoot: root,
+				hostInstanceId: HOST_INSTANCE_ID,
+				exclusiveHost: HAS_SINGLE_INSTANCE_LOCK,
+			});
+			if (recovered.reviewable > 0) {
+				console.error(`${recovered.reviewable} interrupted Company File execution(s) recovered for review`);
+			}
 		}
 		// The scaffold is how host upgrades reach existing companies: an
 		// idempotent spine fill (never overwriting company content) so a
@@ -7728,6 +8379,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		void startCloudPresence(slot, runtime).catch((error: unknown) => {
 			console.error(`cloud presence unavailable: ${error instanceof Error ? error.message : String(error)}`);
 		});
+		startCloudRunnerActivity(slot, runtime);
 		startCloudSessionPump(slot, runtime);
 		pendingBackendClose = undefined;
 		pendingSessions = undefined;
@@ -7744,9 +8396,10 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 				root,
 				token: webhookBinding.token,
 				port: webhookBinding.port,
-				onEvent: (_file, triggerEvent) => {
+				onEvent: (file, triggerEvent) => {
 					const live = slot.runtime;
 					if (!live || live.closing) return;
+					const occurrenceKey = basename(file);
 					if (triggerEvent) {
 						const path = routineTriggerStatePath(app.getPath("userData"), live.root);
 						const previous = readRoutineTriggerState(path);
@@ -7773,11 +8426,25 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 						if (cloudMatched.pending.length > previous.pending.length) return;
 					}
 					if (live.wakeChild || isChildBusy(live.child)) {
-						live.pendingInboundWake = true;
+						if (!live.pendingInboundWakeKeys) live.pendingInboundWakeKeys = new Set();
+						live.pendingInboundWakeKeys.add(occurrenceKey);
 						return;
 					}
-					void startWakeChild(slot, live, "inbound_event", 0).then((started) => {
-						if (!started && slot.runtime === live && !live.closing) live.pendingInboundWake = true;
+					void startWakeChild(
+						slot,
+						live,
+						"inbound_event",
+						0,
+						undefined,
+						false,
+						undefined,
+						undefined,
+						occurrenceKey,
+					).then((started) => {
+						if (!started && slot.runtime === live && !live.closing) {
+							if (!live.pendingInboundWakeKeys) live.pendingInboundWakeKeys = new Set();
+							live.pendingInboundWakeKeys.add(occurrenceKey);
+						}
 					});
 				},
 			})
@@ -9299,6 +9966,7 @@ function beginRendererWindowSwap(slot: Slot, partition: string): RendererWindowS
 // and must not join or disturb a live instance — they contend for the same
 // lock below and refuse to boot when they lose it.
 const IS_SMOKE = process.argv.some((arg) => arg.startsWith("--smoke"));
+const HOST_INSTANCE_ID = randomUUID();
 
 // Electron's default uncaughtException behavior is a blocking native "Error"
 // dialog — under headless smokes and autonomous kernels there is nobody to
@@ -9377,6 +10045,9 @@ app.whenReady().then(async () => {
 	);
 	qorperaAccountAuth = new QorperaAccountAuth(app.getPath("userData"), {
 		openExternal: (url) => electronShell.openExternal(url),
+		...(process.env.QORPERA_NATIVE_PROVIDER_URL?.trim()
+			? { nativeProviderUrl: process.env.QORPERA_NATIVE_PROVIDER_URL.trim() }
+			: {}),
 	});
 	try {
 		rememberAuthenticatedAccount(await qorperaAccountAuth.info());
@@ -9409,6 +10080,30 @@ app.whenReady().then(async () => {
 	});
 	void modelAccountUsageInfo(false).catch(() => []);
 	startWakeTicker();
+	const exactCompanyProposal = async (
+		runtime: CompanyRuntime,
+		proposalId: unknown,
+		proposalSnapshotId: unknown,
+	): Promise<{
+		proposal: HostedCompanyProposal;
+		attachment: Extract<ProfileAttachment, { profileType: "cloud" }>;
+	}> => {
+		if (typeof proposalId !== "string" || typeof proposalSnapshotId !== "string") {
+			throw new Error("Company proposal identity is invalid.");
+		}
+		const attachment = profileAttachment(runtime.root);
+		if (attachment.profileType !== "cloud") throw new Error("This company has no cloud review queue.");
+		const primary = qorperaAccountAuth?.hostedPrimary();
+		if (!primary) throw new Error("Cloud Company File access is unavailable.");
+		const proposal = await primary.getCompanyProposal(proposalId);
+		if (
+			proposal.environmentId !== attachment.environmentId ||
+			proposal.proposalSnapshot.snapshotId !== proposalSnapshotId
+		) {
+			throw new Error("The Company File proposal changed; review the current version first.");
+		}
+		return { proposal, attachment };
+	};
 	ipcMain.handle("account:info", async (event): Promise<QorperaAccountInfo> => {
 		if (!slotOf(event.sender) || !qorperaAccountAuth) return { authenticated: false };
 		try {
@@ -9973,6 +10668,15 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		if (slot) return openCompany(slot, root);
 	});
+	ipcMain.handle("company:pending-creation", async (event) => {
+		if (!isTrustedHubSender(event.sender)) return { ok: false, error: "Company selector is unavailable." };
+		const account = await authenticatedAccount();
+		if (!account?.user) return { ok: false, error: "Sign in before creating a company." };
+		return {
+			ok: true,
+			pending: readPendingCompanyCreation(app.getPath("userData"), account.user.id),
+		};
+	});
 	ipcMain.handle("company:new", async (event, name: unknown, companyIcon: unknown, clientCreationId: unknown) => {
 		if (
 			!isTrustedHubSender(event.sender) ||
@@ -9980,7 +10684,8 @@ app.whenReady().then(async () => {
 			!name.trim() ||
 			name.trim().length > 120 ||
 			!isCompanyIconId(companyIcon) ||
-			typeof clientCreationId !== "string"
+			typeof clientCreationId !== "string" ||
+			!UUID_PATTERN.test(clientCreationId)
 		) {
 			return { ok: false, error: "invalid company creation" };
 		}
@@ -9991,6 +10696,23 @@ app.whenReady().then(async () => {
 			return { ok: false, error: "Sign in before creating a company." };
 		}
 		try {
+			const userData = app.getPath("userData");
+			const pending = readPendingCompanyCreation(userData, account.user.id);
+			if (
+				pending &&
+				(pending.clientCreationId !== clientCreationId ||
+					pending.companyName !== name.trim() ||
+					pending.companyIcon !== companyIcon)
+			) {
+				throw new Error("Another company creation is waiting to resume.");
+			}
+			persistPendingCompanyCreation(userData, account.user.id, {
+				schema: "qorpera.pending-company-creation/v1",
+				clientCreationId,
+				companyName: name.trim(),
+				companyIcon,
+				createdAt: pending?.createdAt ?? new Date().toISOString(),
+			});
 			const created = await primary.createCompany({
 				clientCreationId,
 				companyName: name.trim(),
@@ -10046,6 +10768,7 @@ app.whenReady().then(async () => {
 			finishManagedCloudCacheMaterialization(root, created.profile);
 			writeCompanyIcon(app.getPath("userData"), account.user.id, root, companyIcon);
 			registerCompany(root);
+			rmSync(pendingCompanyCreationPath(userData, account.user.id), { force: true });
 			return {
 				ok: true,
 				root,
@@ -10088,21 +10811,10 @@ app.whenReady().then(async () => {
 				attachment.environmentId,
 				runtime.root,
 			);
-			if (!conflict) {
-				const health = await runtime.cloudCompanyPublication?.publishNow();
-				if (health && health.phase !== "healthy") {
-					return { ok: false, error: health.lastError ?? "The Company File could not be synchronized." };
-				}
-			}
 			if (!runtime.cloudCompanyProjection) {
 				const projection = new CloudCompanyProjection({
 					companyRoot: runtime.root,
-					projectionRoot: join(
-						app.getPath("userData"),
-						"company-file-projections",
-						attachment.profileId,
-						"Company File",
-					),
+					projectionRoot: cloudCompanyProjectionRoot(app.getPath("userData"), attachment.profileId),
 					userData: app.getPath("userData"),
 					profileId: attachment.profileId,
 					runtimeLock: runtime.runtimeLock,
@@ -10118,7 +10830,8 @@ app.whenReady().then(async () => {
 							if (runtime.wakeChild || isChildBusy(runtime.child)) {
 								throw new Error("Company File Explorer import is waiting for the active agent run to finish");
 							}
-							await projection.importChanges();
+							const importedPaths = await projection.importChanges();
+							await commitCompanyMaterializationAsync(runtime.root, importedPaths);
 							runtime.cloudCompanyPublication?.notifyPathChanged();
 						});
 						const publicationHealth = await runtime.cloudCompanyPublication?.publishNow();
@@ -10132,6 +10845,12 @@ app.whenReady().then(async () => {
 				runtime.cloudCompanyProjection = projection;
 			}
 			await runtime.cloudCompanyProjection.refresh();
+			if (!conflict && !runtime.cloudCompanyProjection.hasPendingChanges()) {
+				const health = await runtime.cloudCompanyPublication?.publishNow();
+				if (health && health.phase !== "healthy") {
+					return { ok: false, error: health.lastError ?? "The Company File could not be synchronized." };
+				}
+			}
 			const openError = await electronShell.openPath(runtime.cloudCompanyProjection.path);
 			if (openError) throw new Error(openError);
 			return {
@@ -10218,6 +10937,7 @@ app.whenReady().then(async () => {
 						environmentId: attachment.environmentId,
 						localTree: conflict.localTree,
 						remoteSnapshot: remote,
+						conflictPaths: conflict.paths,
 						objects,
 						runtimeLock: runtime.runtimeLock,
 					});
@@ -10235,72 +10955,375 @@ app.whenReady().then(async () => {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
 	});
-	ipcMain.handle("company-file:open-review", async (event) => {
+	ipcMain.handle(
+		"company-file:open-review",
+		async (event, checkoutId: unknown, proposalHead: unknown, expectedCanonicalHead: unknown) => {
+			const slot = slotOf(event.sender);
+			const runtime = slot?.runtime;
+			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+			try {
+				const attachment = profileAttachment(runtime.root);
+				if (attachment.profileType !== "cloud") throw new Error("This company has no cloud review queue.");
+				const review =
+					typeof checkoutId === "string" &&
+					typeof proposalHead === "string" &&
+					typeof expectedCanonicalHead === "string"
+						? findRecoverableCloudCompanyExecution(
+								app.getPath("userData"),
+								attachment.profileId,
+								checkoutId,
+								proposalHead,
+								expectedCanonicalHead,
+							)
+						: undefined;
+				if (!review || normalizedRoot(review.companyRoot) !== normalizedRoot(runtime.root)) {
+					throw new Error("There is no agent work waiting for review.");
+				}
+				const openError = await electronShell.openPath(review.checkoutRoot);
+				if (openError) throw new Error(openError);
+				return { ok: true, path: review.checkoutRoot };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+	ipcMain.handle(
+		"company-file:accept-review",
+		async (event, checkoutId: unknown, proposalHead: unknown, expectedCanonicalHead: unknown) => {
+			const slot = slotOf(event.sender);
+			const runtime = slot?.runtime;
+			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+			try {
+				const attachment = profileAttachment(runtime.root);
+				if (attachment.profileType !== "cloud") throw new Error("This company has no cloud review queue.");
+				await enqueueRuntimeTransition(runtime, async () => {
+					if (runtime.wakeChild || isChildBusy(runtime.child)) {
+						throw new Error("Wait for the active agent run before publishing reviewed work.");
+					}
+					const review =
+						typeof checkoutId === "string" &&
+						typeof proposalHead === "string" &&
+						typeof expectedCanonicalHead === "string"
+							? findRecoverableCloudCompanyExecution(
+									app.getPath("userData"),
+									attachment.profileId,
+									checkoutId,
+									proposalHead,
+									expectedCanonicalHead,
+								)
+							: undefined;
+					if (!review || normalizedRoot(review.companyRoot) !== normalizedRoot(runtime.root)) {
+						throw new Error("There is no agent work waiting for review.");
+					}
+					if (
+						(await cloudCompanyExecutionTouchesAuthorityCritical(review)) &&
+						!slotHasProfileCapability(slot, "authorize")
+					) {
+						throw new Error("Company authority changes require an Owner or Admin reviewer.");
+					}
+					await acceptReviewedCloudCompanyExecution(review);
+					runtime.cloudCompanyPublication?.notifyPathChanged();
+				});
+				const health = await runtime.cloudCompanyPublication?.publishNow();
+				if (health && health.phase !== "healthy") {
+					throw new Error(health.lastError ?? "Reviewed work is waiting to sync.");
+				}
+				return { ok: true };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+	ipcMain.handle(
+		"company-file:reject-review",
+		async (event, checkoutId: unknown, proposalHead: unknown, expectedCanonicalHead: unknown) => {
+			const slot = slotOf(event.sender);
+			const runtime = slot?.runtime;
+			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+			try {
+				const attachment = profileAttachment(runtime.root);
+				if (attachment.profileType !== "cloud") throw new Error("This company has no cloud review queue.");
+				await enqueueRuntimeTransition(runtime, async () => {
+					if (runtime.wakeChild || isChildBusy(runtime.child)) {
+						throw new Error("Wait for the active agent run before discarding reviewed work.");
+					}
+					const review =
+						typeof checkoutId === "string" &&
+						typeof proposalHead === "string" &&
+						typeof expectedCanonicalHead === "string"
+							? findRecoverableCloudCompanyExecution(
+									app.getPath("userData"),
+									attachment.profileId,
+									checkoutId,
+									proposalHead,
+									expectedCanonicalHead,
+								)
+							: undefined;
+					if (!review || normalizedRoot(review.companyRoot) !== normalizedRoot(runtime.root)) {
+						throw new Error("There is no agent work waiting for review.");
+					}
+					await rejectReviewedCloudCompanyExecution(review);
+				});
+				return { ok: true };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+	ipcMain.handle("company-file:open-proposal", async (event, proposalId: unknown, proposalSnapshotId: unknown) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
-		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 		try {
-			const attachment = profileAttachment(runtime.root);
-			if (attachment.profileType !== "cloud") throw new Error("This company has no cloud review queue.");
-			const review = listRecoverableCloudCompanyExecutions(app.getPath("userData"), attachment.profileId)[0];
-			if (!review || normalizedRoot(review.companyRoot) !== normalizedRoot(runtime.root)) {
-				throw new Error("There is no agent work waiting for review.");
-			}
-			const openError = await electronShell.openPath(review.checkoutRoot);
+			const { proposal, attachment } = await exactCompanyProposal(runtime, proposalId, proposalSnapshotId);
+			if (proposal.status !== "open") throw new Error("This Company File proposal is no longer awaiting review.");
+			const objects = qorperaAccountAuth?.hostedObjects();
+			if (!objects) throw new Error("Cloud Company File access is unavailable.");
+			const preview = await previewCloudCompanySnapshot({
+				userData: app.getPath("userData"),
+				profileId: attachment.profileId,
+				snapshot: proposal.proposalSnapshot,
+				objects,
+			});
+			const openError = await electronShell.openPath(preview.path);
 			if (openError) throw new Error(openError);
-			return { ok: true, path: review.checkoutRoot };
+			return { ok: true, path: preview.path };
 		} catch (error) {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
 	});
-	ipcMain.handle("company-file:accept-review", async (event) => {
+	ipcMain.handle("company-file:accept-proposal", async (event, proposalId: unknown, proposalSnapshotId: unknown) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
-		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		try {
-			const attachment = profileAttachment(runtime.root);
-			if (attachment.profileType !== "cloud") throw new Error("This company has no cloud review queue.");
-			await enqueueRuntimeTransition(runtime, async () => {
-				if (runtime.wakeChild || isChildBusy(runtime.child)) {
-					throw new Error("Wait for the active agent run before publishing reviewed work.");
-				}
-				const review = listRecoverableCloudCompanyExecutions(app.getPath("userData"), attachment.profileId)[0];
-				if (!review || normalizedRoot(review.companyRoot) !== normalizedRoot(runtime.root)) {
-					throw new Error("There is no agent work waiting for review.");
-				}
-				await acceptReviewedCloudCompanyExecution(review);
-				runtime.cloudCompanyPublication?.notifyPathChanged();
-			});
-			const health = await runtime.cloudCompanyPublication?.publishNow();
-			if (health && health.phase !== "healthy") {
-				throw new Error(health.lastError ?? "Reviewed work is waiting to sync.");
+			const { proposal, attachment } = await exactCompanyProposal(runtime, proposalId, proposalSnapshotId);
+			if (proposal.status !== "open") throw new Error("This Company File proposal is no longer awaiting review.");
+			const waitingReviews = proposal.reviews.filter(
+				(review) => review.status === "queued" || review.status === "running",
+			);
+			const failedReviews = proposal.reviews.filter((review) => review.status === "failed");
+			const requestedChanges = proposal.reviews.filter((review) => review.status === "changes_requested");
+			if (
+				proposal.execution.kind === "run" &&
+				proposal.reviewerStaffIds.length > 0 &&
+				proposal.reviews.length !== proposal.reviewerStaffIds.length
+			) {
+				throw new Error("The configured proposal reviews are still being prepared.");
 			}
+			if (requestedChanges.length === 0 && waitingReviews.length > 0) {
+				throw new Error("Wait for the configured agent reviews before publishing this proposal.");
+			}
+			if (requestedChanges.length === 0 && failedReviews.length > 0) {
+				throw new Error("Retry the failed agent review before publishing this proposal.");
+			}
+			if (runtime.wakeChild || isChildBusy(runtime.child)) {
+				throw new Error("Wait for the active agent run before publishing reviewed work.");
+			}
+			if (runtime.cloudCompanyProjection?.hasPendingChanges()) {
+				throw new Error("Wait for File Explorer changes to finish syncing before publishing reviewed work.");
+			}
+			const before = await runtime.cloudCompanyPublication?.publishNow();
+			if (before && before.phase !== "healthy") {
+				throw new Error(before.lastError ?? "The current Company File has not finished syncing.");
+			}
+			const primary = qorperaAccountAuth?.hostedPrimary();
+			const objects = qorperaAccountAuth?.hostedObjects();
+			if (!primary || !objects) throw new Error("Cloud Company File access is unavailable.");
+			let reviewedProposal = proposal;
+			const companyFile = await primary.getCompanyFile(attachment.environmentId);
+			if (!companyFile.headSnapshotId) throw new Error("The current Company File has no published revision.");
+			if (companyFile.headSnapshotId !== proposal.baseSnapshotId || requestedChanges.length > 0) {
+				const head = await primary.getCompanySnapshot(companyFile.headSnapshotId);
+				const review = await prepareCompanyProposalReview({
+					userData: app.getPath("userData"),
+					profileId: attachment.profileId,
+					environmentId: attachment.environmentId,
+					proposal,
+					head,
+					primary,
+					objects,
+				});
+				if (requestedChanges.length > 0 && !review.existing) {
+					const openError = await electronShell.openPath(review.path);
+					if (openError) throw new Error(openError);
+					return {
+						ok: true,
+						needsEdits: true,
+						path: review.path,
+						message: "Make the requested changes inside Company File, then click Submit revision.",
+					};
+				}
+				if (review.hasUnresolvedConflicts) {
+					const openError = await electronShell.openPath(review.path);
+					if (openError) throw new Error(openError);
+					return {
+						ok: true,
+						needsEdits: true,
+						path: review.path,
+						message: `Resolve the ${review.conflictCount} conflicting path${review.conflictCount === 1 ? "" : "s"} using Conflict Review, delete each resolved JSON marker, then click Submit revision.`,
+					};
+				}
+				reviewedProposal = await finalizeCompanyProposalReview({
+					userData: app.getPath("userData"),
+					profileId: attachment.profileId,
+					environmentId: attachment.environmentId,
+					proposal,
+					head,
+					primary,
+					objects,
+				});
+				if (reviewedProposal.reviews.some((review) => review.status !== "approved")) {
+					return { ok: true, reviewPending: true };
+				}
+			}
+			const acceptedProposal = await primary.acceptCompanyProposal(
+				reviewedProposal.proposalId,
+				reviewedProposal.proposalSnapshot.snapshotId,
+			);
+			if (
+				acceptedProposal.status !== "accepted" ||
+				acceptedProposal.proposalSnapshot.snapshotId !== reviewedProposal.proposalSnapshot.snapshotId
+			) {
+				throw new Error("The expected Company File proposal revision was not published.");
+			}
+			runtime.cloudCompanyPublication?.notifyPathChanged();
+			const after = await runtime.cloudCompanyPublication?.publishNow();
+			if (after && after.phase !== "healthy") {
+				throw new Error(after.lastError ?? "The accepted Company File proposal is waiting to synchronize.");
+			}
+			await resolvePublishedCloudCompanyExecution({
+				userData: app.getPath("userData"),
+				profileId: attachment.profileId,
+				companyRoot: runtime.root,
+				proposalId: acceptedProposal.proposalId,
+				proposalSnapshotId: acceptedProposal.proposalSnapshot.snapshotId,
+			});
+			await discardCompanyProposalReviews(app.getPath("userData"), attachment.profileId, proposal.proposalId);
+			await runtime.cloudCompanyProjection?.refresh();
 			return { ok: true };
 		} catch (error) {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
 	});
-	ipcMain.handle("company-file:reject-review", async (event) => {
+	ipcMain.handle(
+		"company-file:retry-proposal-review",
+		async (
+			event,
+			proposalId: unknown,
+			proposalSnapshotId: unknown,
+			assignmentId: unknown,
+			proposalRevision: unknown,
+		) => {
+			const slot = slotOf(event.sender);
+			const runtime = slot?.runtime;
+			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
+			try {
+				if (
+					typeof assignmentId !== "string" ||
+					typeof proposalRevision !== "number" ||
+					!Number.isSafeInteger(proposalRevision)
+				) {
+					throw new Error("Company proposal review identity is invalid.");
+				}
+				const { proposal } = await exactCompanyProposal(runtime, proposalId, proposalSnapshotId);
+				if (proposal.status !== "open" || proposal.reviewRevision !== proposalRevision) {
+					throw new Error("This Company File proposal changed before the review was retried.");
+				}
+				const review = proposal.reviews.find(
+					(candidate) =>
+						candidate.assignmentId === assignmentId &&
+						candidate.proposalRevision === proposalRevision &&
+						candidate.status === "failed",
+				);
+				if (!review) throw new Error("This failed Company File review is no longer available.");
+				const primary = qorperaAccountAuth?.hostedPrimary();
+				if (!primary) throw new Error("Cloud Company File access is unavailable.");
+				await primary.retryCompanyProposalReview(review.assignmentId);
+				return { ok: true };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+	ipcMain.handle("company-file:reject-proposal", async (event, proposalId: unknown, proposalSnapshotId: unknown) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
-		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		try {
-			const attachment = profileAttachment(runtime.root);
-			if (attachment.profileType !== "cloud") throw new Error("This company has no cloud review queue.");
-			await enqueueRuntimeTransition(runtime, async () => {
-				if (runtime.wakeChild || isChildBusy(runtime.child)) {
-					throw new Error("Wait for the active agent run before discarding reviewed work.");
-				}
-				const review = listRecoverableCloudCompanyExecutions(app.getPath("userData"), attachment.profileId)[0];
-				if (!review || normalizedRoot(review.companyRoot) !== normalizedRoot(runtime.root)) {
-					throw new Error("There is no agent work waiting for review.");
-				}
-				await rejectReviewedCloudCompanyExecution(review);
+			const { proposal, attachment } = await exactCompanyProposal(runtime, proposalId, proposalSnapshotId);
+			if (proposal.status !== "open") throw new Error("This Company File proposal is no longer awaiting review.");
+			if (runtime.wakeChild || isChildBusy(runtime.child)) {
+				throw new Error("Wait for the active agent run before rejecting reviewed work.");
+			}
+			const primary = qorperaAccountAuth?.hostedPrimary();
+			if (!primary) throw new Error("Cloud Company File access is unavailable.");
+			const rejectedProposal = await primary.rejectCompanyProposal(
+				proposal.proposalId,
+				proposal.proposalSnapshot.snapshotId,
+			);
+			if (
+				rejectedProposal.status !== "rejected" ||
+				rejectedProposal.proposalSnapshot.snapshotId !== proposal.proposalSnapshot.snapshotId
+			) {
+				throw new Error("The expected Company File proposal revision was not discarded.");
+			}
+			await discardCompanyProposalReviews(app.getPath("userData"), attachment.profileId, proposal.proposalId);
+			await resolvePublishedCloudCompanyExecution({
+				userData: app.getPath("userData"),
+				profileId: attachment.profileId,
+				companyRoot: runtime.root,
+				proposalId: proposal.proposalId,
+				proposalSnapshotId: proposal.proposalSnapshot.snapshotId,
 			});
 			return { ok: true };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle(
+		"company-file:comment-proposal",
+		async (event, proposalId: unknown, body: unknown, clientCommentId: unknown) => {
+			const slot = slotOf(event.sender);
+			const runtime = slot?.runtime;
+			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			try {
+				if (typeof proposalId !== "string" || typeof body !== "string" || typeof clientCommentId !== "string") {
+					throw new Error("Company proposal comment is invalid.");
+				}
+				const attachment = profileAttachment(runtime.root);
+				if (attachment.profileType !== "cloud") throw new Error("This company has no cloud review queue.");
+				const primary = qorperaAccountAuth?.hostedPrimary();
+				if (!primary) throw new Error("Cloud Company File access is unavailable.");
+				const proposal = await primary.getCompanyProposal(proposalId);
+				if (proposal.environmentId !== attachment.environmentId)
+					throw new Error("Company proposal is unavailable.");
+				const comment = await primary.appendCompanyProposalComment(proposalId, clientCommentId, body);
+				return { ok: true, comment };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+	ipcMain.handle("company-file:proposal-comments", async (event, proposalId: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		try {
+			if (typeof proposalId !== "string") throw new Error("Company proposal identity is invalid.");
+			const attachment = profileAttachment(runtime.root);
+			if (attachment.profileType !== "cloud") throw new Error("This company has no cloud review queue.");
+			const primary = qorperaAccountAuth?.hostedPrimary();
+			if (!primary) throw new Error("Cloud Company File access is unavailable.");
+			const proposal = await primary.getCompanyProposal(proposalId);
+			if (proposal.environmentId !== attachment.environmentId) throw new Error("Company proposal is unavailable.");
+			return { ok: true, comments: (await primary.listCompanyProposalComments(proposalId)).items };
 		} catch (error) {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
@@ -10419,6 +11442,7 @@ app.whenReady().then(async () => {
 		}
 		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		const input = value as Record<string, unknown>;
+		const publication = parsedRoutinePublicationPolicy(runtime.root, input.publication);
 		if (
 			typeof input.title !== "string" ||
 			typeof input.prompt !== "string" ||
@@ -10427,8 +11451,19 @@ app.whenReady().then(async () => {
 			(input.effort !== undefined && !SCHEDULED_JOB_EFFORTS.includes(input.effort as ScheduledJobEffort)) ||
 			(input.placement !== undefined && !ROUTINE_PLACEMENTS.includes(input.placement as RoutinePlacement)) ||
 			(input.staffAgentId !== undefined && typeof input.staffAgentId !== "string") ||
+			publication === null ||
 			Object.keys(input).some(
-				(key) => !["title", "prompt", "triggers", "enabled", "effort", "placement", "staffAgentId"].includes(key),
+				(key) =>
+					![
+						"title",
+						"prompt",
+						"triggers",
+						"enabled",
+						"effort",
+						"placement",
+						"staffAgentId",
+						"publication",
+					].includes(key),
 			)
 		) {
 			return { ok: false, error: "invalid scheduled job" };
@@ -10453,6 +11488,7 @@ app.whenReady().then(async () => {
 					...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
 					...(typeof input.effort === "string" ? { effort: input.effort as ScheduledJobEffort } : {}),
 					...(typeof input.placement === "string" ? { placement: input.placement as RoutinePlacement } : {}),
+					...(publication ? { publication } : {}),
 					...(assignedStaff ? { staffAgentId: assignedStaff.id } : {}),
 				}),
 			};
@@ -10471,6 +11507,7 @@ app.whenReady().then(async () => {
 		}
 		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		const input = value as Record<string, unknown>;
+		const publication = parsedRoutinePublicationPolicy(runtime.root, input.publication);
 		if (
 			(input.title !== undefined && typeof input.title !== "string") ||
 			(input.prompt !== undefined && typeof input.prompt !== "string") ||
@@ -10479,8 +11516,19 @@ app.whenReady().then(async () => {
 			(input.effort !== undefined && !SCHEDULED_JOB_EFFORTS.includes(input.effort as ScheduledJobEffort)) ||
 			(input.placement !== undefined && !ROUTINE_PLACEMENTS.includes(input.placement as RoutinePlacement)) ||
 			(input.staffAgentId !== undefined && input.staffAgentId !== null && typeof input.staffAgentId !== "string") ||
+			publication === null ||
 			Object.keys(input).some(
-				(key) => !["title", "prompt", "triggers", "enabled", "effort", "placement", "staffAgentId"].includes(key),
+				(key) =>
+					![
+						"title",
+						"prompt",
+						"triggers",
+						"enabled",
+						"effort",
+						"placement",
+						"staffAgentId",
+						"publication",
+					].includes(key),
 			)
 		) {
 			return { ok: false, error: "invalid scheduled-job update" };
@@ -10512,6 +11560,7 @@ app.whenReady().then(async () => {
 					...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
 					...(typeof input.effort === "string" ? { effort: input.effort as ScheduledJobEffort } : {}),
 					...(typeof input.placement === "string" ? { placement: input.placement as RoutinePlacement } : {}),
+					...(publication ? { publication } : {}),
 					...(input.staffAgentId === null
 						? { staffAgentId: null }
 						: typeof input.staffAgentId === "string"
@@ -10994,6 +12043,189 @@ app.whenReady().then(async () => {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
 	});
+	ipcMain.handle("native-execution:info", async (event) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		const attachment = runtime ? profileAttachment(runtime.root) : undefined;
+		if (!slot || !runtime || attachment?.profileType !== "cloud" || !qorperaAccountAuth) {
+			return { ok: false, error: "Native cloud execution is available only inside a cloud company." };
+		}
+		try {
+			return {
+				ok: true,
+				profileId: attachment.profileId,
+				...(await qorperaAccountAuth.nativeSubscriptionControl().listConnections(attachment.profileId)),
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("native-execution:create-member-identity", async (event) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		const attachment = runtime ? profileAttachment(runtime.root) : undefined;
+		const account = await authenticatedAccount();
+		if (!slot || !runtime || attachment?.profileType !== "cloud" || !qorperaAccountAuth || !account?.user) {
+			return { ok: false, error: "A signed-in cloud company is required." };
+		}
+		try {
+			const control = qorperaAccountAuth.nativeSubscriptionControl();
+			const existing = await control.listConnections(attachment.profileId);
+			const computeIdentity =
+				existing.computeIdentity ??
+				(await control.createMemberComputeIdentity({
+					profileId: attachment.profileId,
+					displayName: `${account.user.displayName}'s cloud computer`,
+					policy: {
+						credentialExport: false,
+						operatorBlindnessClaimed: false,
+					},
+				}));
+			return { ok: true, computeIdentity };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("native-execution:begin-login", async (event, provider: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		const attachment = runtime ? profileAttachment(runtime.root) : undefined;
+		const account = await authenticatedAccount();
+		if (
+			!slot ||
+			!runtime ||
+			attachment?.profileType !== "cloud" ||
+			!qorperaAccountAuth ||
+			!account?.user ||
+			(provider !== "openai" && provider !== "anthropic")
+		) {
+			return { ok: false, error: "Native provider login request is invalid." };
+		}
+		try {
+			const bridge = qorperaAccountAuth.nativeProviderIdentityBridge();
+			const control = qorperaAccountAuth.nativeSubscriptionControl();
+			const existing = await control.listConnections(attachment.profileId);
+			const computeIdentity =
+				existing.computeIdentity ??
+				(await control.createMemberComputeIdentity({
+					profileId: attachment.profileId,
+					displayName: `${account.user.displayName}'s cloud computer`,
+					policy: {
+						credentialExport: false,
+						operatorBlindnessClaimed: false,
+					},
+				}));
+			const authorization = await control.beginNativeProviderLogin({
+				profileId: attachment.profileId,
+				computeIdentityId: computeIdentity.computeIdentityId,
+				provider,
+				nativeHarness: provider === "openai" ? "codex-cli" : "claude-code",
+			});
+			const login = await bridge.beginLogin(authorization);
+			if (login.interactionUrl) await electronShell.openExternal(login.interactionUrl);
+			return {
+				ok: true,
+				login: {
+					loginId: login.loginId,
+					status: login.status,
+					...(login.userCode ? { userCode: login.userCode } : {}),
+					expiresAt: authorization.expiresAt,
+				},
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle(
+		"native-execution:create-member-sponsor",
+		async (event, providerConnectionId: unknown, providerConnectionVersion: unknown) => {
+			const slot = slotOf(event.sender);
+			const runtime = slot?.runtime;
+			const attachment = runtime ? profileAttachment(runtime.root) : undefined;
+			if (
+				!slot ||
+				!runtime ||
+				attachment?.profileType !== "cloud" ||
+				!qorperaAccountAuth ||
+				typeof providerConnectionId !== "string" ||
+				!UUID_PATTERN.test(providerConnectionId) ||
+				!Number.isSafeInteger(providerConnectionVersion) ||
+				(providerConnectionVersion as number) < 1
+			) {
+				return { ok: false, error: "Native sponsor request is invalid." };
+			}
+			try {
+				const control = qorperaAccountAuth.nativeSubscriptionControl();
+				const available = await control.listConnections(attachment.profileId);
+				const connection = available.connections.find(
+					(item) =>
+						item.connectionId === providerConnectionId && item.connectionVersion === providerConnectionVersion,
+				);
+				if (
+					!available.computeIdentity ||
+					!connection ||
+					connection.connectionStatus !== "active" ||
+					connection.authorizationState !== "active" ||
+					connection.policy.implementationStatus !== "supported" ||
+					connection.policy.enablementStatus !== "enabled"
+				) {
+					throw new Error("This native provider connection is not available for execution.");
+				}
+				const sponsor = connection.sponsorBindingId
+					? { bindingId: connection.sponsorBindingId, version: connection.sponsorVersion }
+					: await control.createMemberSponsor({
+							profileId: attachment.profileId,
+							clientBindingId: connection.connectionId,
+							providerConnectionId: connection.connectionId,
+							providerConnectionVersion: connection.connectionVersion,
+						});
+				if (!sponsor.version) throw new Error("Native sponsor version is unavailable.");
+				return { ok: true, sponsor };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+	ipcMain.handle("native-execution:revoke", async (event, providerConnectionId: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		const attachment = runtime ? profileAttachment(runtime.root) : undefined;
+		if (
+			!slot ||
+			!runtime ||
+			attachment?.profileType !== "cloud" ||
+			!qorperaAccountAuth ||
+			typeof providerConnectionId !== "string" ||
+			!UUID_PATTERN.test(providerConnectionId)
+		) {
+			return { ok: false, error: "Native connection revocation is invalid." };
+		}
+		try {
+			const result = await qorperaAccountAuth.nativeSubscriptionControl().revokeConnection({
+				profileId: attachment.profileId,
+				providerConnectionId,
+			});
+			return { ok: true, ...result };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("native-execution:session-provenance", async (event, staffAgentId: unknown) => {
+		const runtime = slotOf(event.sender)?.runtime;
+		const arbiter = runtime?.cloudSessionArbiter;
+		const ref = typeof staffAgentId === "string" ? arbiter?.sessionForStaff(staffAgentId) : undefined;
+		if (!runtime || !ref || !qorperaAccountAuth) return { ok: true, provenance: [] };
+		try {
+			return {
+				ok: true,
+				provenance: await qorperaAccountAuth
+					.nativeSubscriptionControl()
+					.listSessionTurnProvenance(ref.hostedSessionId, 100),
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
 	ipcMain.handle("settings:info", async (event) => {
 		const slot = slotOf(event.sender);
 		const account = await authenticatedAccount();
@@ -11003,6 +12235,11 @@ app.whenReady().then(async () => {
 		let access: ProfileAccess | undefined;
 		let hostedProfile: HostedProfile | undefined;
 		let companyFile: HostedCompanyFile | undefined;
+		let companyProposals: HostedCompanyProposal[] = [];
+		let settingsRefreshError: string | undefined;
+		let nativeExecution:
+			| Awaited<ReturnType<ReturnType<QorperaAccountAuth["nativeSubscriptionControl"]>["listConnections"]>>
+			| undefined;
 		if (root && attachment && account?.user) {
 			if (attachment.profileType === "cloud") {
 				try {
@@ -11010,11 +12247,16 @@ app.whenReady().then(async () => {
 					hostedProfile = hostedProfilesById.get(attachment.profileId);
 					team = await refreshHostedTeam(attachment.profileId);
 					access = hostedProfileAccess(team);
-					companyFile = await qorperaAccountAuth?.hostedPrimary().getCompanyFile(attachment.environmentId);
+					const primary = qorperaAccountAuth?.hostedPrimary();
+					companyFile = await primary?.getCompanyFile(attachment.environmentId);
+					companyProposals =
+						(await primary?.listCompanyProposals(attachment.environmentId, "open", 100))?.items ?? [];
+					nativeExecution = await qorperaAccountAuth
+						?.nativeSubscriptionControl()
+						.listConnections(attachment.profileId);
 				} catch (error) {
-					console.error(
-						`Cloud profile settings refresh failed: ${error instanceof Error ? error.message : String(error)}`,
-					);
+					settingsRefreshError = error instanceof Error ? error.message : String(error);
+					console.error(`Cloud profile settings refresh failed: ${settingsRefreshError}`);
 					team = effectiveHostedTeam(attachment.profileId);
 					access = team ? hostedProfileAccess(team) : undefined;
 				}
@@ -11027,10 +12269,28 @@ app.whenReady().then(async () => {
 		const fileHealth = slot?.runtime?.cloudCompanyPublicationHealth;
 		const projectionHealth = slot?.runtime?.cloudCompanyProjectionHealth;
 		const fileCheckpoint = filePublication?.lastCheckpoint();
-		const recoverableExecutions =
+		let projectionHasPendingChanges = slot?.runtime?.cloudCompanyProjection?.hasPendingChanges() ?? false;
+		if (!slot?.runtime?.cloudCompanyProjection && attachment?.profileType === "cloud" && root) {
+			try {
+				projectionHasPendingChanges = await cloudCompanyProjectionHasPersistedChanges({
+					companyRoot: root,
+					projectionRoot: cloudCompanyProjectionRoot(app.getPath("userData"), attachment.profileId),
+					userData: app.getPath("userData"),
+					profileId: attachment.profileId,
+				});
+			} catch {
+				projectionHasPendingChanges = true;
+			}
+		}
+		const recoverableReviews =
 			attachment?.profileType === "cloud"
-				? recoverableCloudCompanyExecutions(app.getPath("userData"), attachment.profileId)
-				: 0;
+				? listRecoverableCloudCompanyExecutions(app.getPath("userData"), attachment.profileId).filter(
+						(review) =>
+							!review.cloudProposalId && (!root || normalizedRoot(review.companyRoot) === normalizedRoot(root)),
+					)
+				: [];
+		const localRecoverableExecutions = recoverableReviews.length;
+		const recoverableExecutions = localRecoverableExecutions + companyProposals.length;
 		const fileConflictPaths =
 			attachment?.profileType === "cloud" && root
 				? (readCloudCompanyFileConflict(
@@ -11044,8 +12304,8 @@ app.whenReady().then(async () => {
 			companyFile?.headSnapshotId &&
 				fileCheckpoint?.companyFile.headSnapshotId === companyFile.headSnapshotId &&
 				!filePublication?.hasPendingWork() &&
-				!slot?.runtime?.cloudCompanyProjection?.hasPendingChanges() &&
-				recoverableExecutions === 0 &&
+				!projectionHasPendingChanges &&
+				localRecoverableExecutions === 0 &&
 				fileConflictPaths === 0,
 		);
 		return {
@@ -11070,7 +12330,19 @@ app.whenReady().then(async () => {
 							...(hostedProfile ? { name: hostedProfile.profileName } : {}),
 							...(companyFile ? { companyFile } : {}),
 							status: {
+								...(settingsRefreshError ? { filesError: settingsRefreshError } : {}),
 								recoverableExecutions,
+								companyFileProposals: companyProposals,
+								...(recoverableReviews[0]
+									? {
+											companyFileReview: {
+												checkoutId: recoverableReviews[0].checkoutId,
+												proposalHead: recoverableReviews[0].proposalHead,
+												expectedCanonicalHead: recoverableReviews[0].expectedCanonicalHead,
+												updatedAt: recoverableReviews[0].updatedAt,
+											},
+										}
+									: {}),
 								fileConflictPaths,
 								identity: attachment.profileType,
 								sharedStaff:
@@ -11108,7 +12380,8 @@ app.whenReady().then(async () => {
 								files:
 									attachment.profileType === "local"
 										? "local"
-										: recoverableExecutions > 0 ||
+										: settingsRefreshError ||
+												recoverableExecutions > 0 ||
 												fileConflictPaths > 0 ||
 												fileHealth?.phase === "attention" ||
 												projectionHealth?.phase === "attention"
@@ -11126,6 +12399,7 @@ app.whenReady().then(async () => {
 			localExecution: root ? readLocalExecutionPermission(app.getPath("userData"), root) : "always",
 			backgroundEnabled: root ? backgroundCompanyEnabled(root) : false,
 			connections: [await githubConnectionInfo(root), ...modelConnectionInfo()],
+			nativeExecution,
 		};
 	});
 	ipcMain.handle("settings:background", (event, enabled: unknown) => {
@@ -11567,11 +12841,250 @@ app.whenReady().then(async () => {
 		if (!slot?.runtime || typeof staffAgentId !== "string" || !staffAgentId) return;
 		slot.runtime.cloudPresence?.sendTyping(staffAgentId);
 	});
-
-	ipcMain.handle("rpc:send", async (event, frame: unknown, expectedTrailFile: unknown) => {
+	ipcMain.handle("prompt-send:stage", async (event, id: unknown, frame: unknown) => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
-		if (!slot || !runtime || runtime.wakeChild) {
+		if (!slot || !runtime || typeof id !== "string" || !UUID_PATTERN.test(id)) {
+			return { ok: false, error: "Prompt outbox identity is invalid." };
+		}
+		if (!frame || typeof frame !== "object" || Array.isArray(frame)) {
+			return { ok: false, error: "Prompt outbox message is invalid." };
+		}
+		const reviewed = reviewedPromptFrame({ ...(frame as Record<string, unknown>), clientInputId: id });
+		if (!reviewed || reviewed.type !== "prompt") {
+			return { ok: false, error: "Prompt outbox message is invalid." };
+		}
+		const attachment = profileAttachment(runtime.root);
+		const staffAgentId = runtime.childOptions.staffAgentId;
+		const sessionId = runtime.child ? childBindings.get(runtime.child)?.sessionId : undefined;
+		if (attachment.profileType !== "cloud" || !staffAgentId || !sessionId) {
+			return { ok: true, id, staged: false };
+		}
+		try {
+			const record = await stageCloudPromptOutbox({
+				userData: app.getPath("userData"),
+				profileId: attachment.profileId,
+				staffAgentId,
+				sessionId,
+				id,
+				envelope: {
+					message: reviewed.message,
+					...(reviewed.displayText !== undefined ? { displayText: reviewed.displayText } : {}),
+					...(reviewed.images ? { images: reviewed.images } : {}),
+					...(reviewed.executionSponsor ? { executionSponsor: reviewed.executionSponsor } : {}),
+				},
+			});
+			return { ok: true, id: record.id, staged: true };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("prompt-send:pending", async (event) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime) return { ok: true, pending: null };
+		const attachment = profileAttachment(runtime.root);
+		const staffAgentId = runtime.childOptions.staffAgentId;
+		const sessionId = runtime.child ? childBindings.get(runtime.child)?.sessionId : undefined;
+		if (attachment.profileType !== "cloud" || !staffAgentId || !sessionId) {
+			return { ok: true, pending: null };
+		}
+		try {
+			const pending = await pendingCloudPromptOutbox({
+				userData: app.getPath("userData"),
+				profileId: attachment.profileId,
+				staffAgentId,
+			});
+			return pending
+				? {
+						ok: true,
+						pending: {
+							id: pending.id,
+							digest: pending.digest,
+							requiresSessionConfirmation: pending.sessionId !== sessionId,
+							frame: { type: "prompt", ...pending.envelope, clientInputId: pending.id },
+						},
+					}
+				: { ok: true, pending: null };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle("prompt-send:ack", async (event, id: unknown) => {
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || typeof id !== "string" || !UUID_PATTERN.test(id)) return { ok: false };
+		const attachment = profileAttachment(runtime.root);
+		const staffAgentId = runtime.childOptions.staffAgentId;
+		const sessionId = runtime.child ? childBindings.get(runtime.child)?.sessionId : undefined;
+		if (attachment.profileType !== "cloud" || !staffAgentId || !sessionId) return { ok: true };
+		try {
+			return {
+				ok: await acknowledgeCloudPromptOutbox({
+					userData: app.getPath("userData"),
+					profileId: attachment.profileId,
+					staffAgentId,
+					sessionId,
+					id,
+				}),
+			};
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	});
+	ipcMain.handle(
+		"staff-session:resolve-recovery",
+		async (event, staffAgentId: unknown, turnId: unknown, resolution: unknown) => {
+			const slot = slotOf(event.sender);
+			const runtime = slot?.runtime;
+			if (
+				!slot ||
+				!runtime ||
+				typeof staffAgentId !== "string" ||
+				typeof turnId !== "string" ||
+				!UUID_PATTERN.test(turnId) ||
+				(resolution !== "retry" && resolution !== "discard")
+			) {
+				return { ok: false, error: "Conversation recovery request is invalid." };
+			}
+			if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
+			const arbiter = runtime.cloudSessionArbiter;
+			if (!arbiter?.sessionForStaff(staffAgentId)) {
+				return { ok: false, error: "The shared staff conversation is unavailable." };
+			}
+			try {
+				await arbiter.resolveRecovery(staffAgentId, turnId, resolution);
+				const queue = await readRendererSessionQueue(arbiter, staffAgentId);
+				if (runtime.childOptions.staffAgentId === staffAgentId) {
+					send(slot.window, "staff-session-queue", { staffAgentId, queue });
+					if (resolution === "retry") void pumpCloudSessionTurn(slot, runtime);
+				}
+				return { ok: true, queue };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+	ipcMain.handle(
+		"staff-session:resolve-execution-recovery",
+		async (event, staffAgentId: unknown, runId: unknown, action: unknown) => {
+			const slot = slotOf(event.sender);
+			const runtime = slot?.runtime;
+			if (
+				!slot ||
+				!runtime ||
+				typeof staffAgentId !== "string" ||
+				typeof runId !== "string" ||
+				!UUID_PATTERN.test(runId) ||
+				(action !== "retry" && action !== "discard")
+			) {
+				return { ok: false, error: "Hosted conversation recovery request is invalid." };
+			}
+			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+			const arbiter = runtime.cloudSessionArbiter;
+			if (!arbiter?.sessionForStaff(staffAgentId)) {
+				return { ok: false, error: "The shared staff conversation is unavailable." };
+			}
+			try {
+				const available = await arbiter.executionRecoveries(staffAgentId);
+				if (!available.some((recovery) => recovery.runId === runId)) {
+					throw new Error("This hosted conversation recovery changed; refresh and review it again.");
+				}
+				await arbiter.resolveExecutionRecovery(staffAgentId, runId, action);
+				const queue = await readRendererSessionQueue(arbiter, staffAgentId);
+				if (runtime.childOptions.staffAgentId === staffAgentId) {
+					send(slot.window, "staff-session-queue", { staffAgentId, queue });
+				}
+				return { ok: true, queue };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+	ipcMain.handle(
+		"staff-session:resolve-operation",
+		async (event, staffAgentId: unknown, operationId: unknown, resolution: unknown) => {
+			const slot = slotOf(event.sender);
+			const runtime = slot?.runtime;
+			if (
+				!slot ||
+				!runtime ||
+				typeof staffAgentId !== "string" ||
+				typeof operationId !== "string" ||
+				!UUID_PATTERN.test(operationId) ||
+				(resolution !== "confirmed_completed" && resolution !== "confirmed_not_run")
+			) {
+				return { ok: false, error: "Operation recovery request is invalid." };
+			}
+			if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
+			const arbiter = runtime.cloudSessionArbiter;
+			const primary = qorperaAccountAuth?.hostedPrimary();
+			if (!arbiter?.sessionForStaff(staffAgentId) || !primary) {
+				return { ok: false, error: "The shared operation recovery is unavailable." };
+			}
+			try {
+				await primary.resolveOperationReceipt(operationId, resolution);
+				const queue = await readRendererSessionQueue(arbiter, staffAgentId);
+				if (runtime.childOptions.staffAgentId === staffAgentId) {
+					send(slot.window, "staff-session-queue", { staffAgentId, queue });
+				}
+				return { ok: true, queue };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+	ipcMain.handle(
+		"staff-session:resolve-run-operation",
+		async (event, staffAgentId: unknown, operationId: unknown, resolution: unknown) => {
+			const slot = slotOf(event.sender);
+			const runtime = slot?.runtime;
+			if (
+				!slot ||
+				!runtime ||
+				typeof staffAgentId !== "string" ||
+				typeof operationId !== "string" ||
+				!UUID_PATTERN.test(operationId) ||
+				(resolution !== "confirmed_completed" && resolution !== "confirmed_not_run")
+			) {
+				return { ok: false, error: "Hosted operation recovery request is invalid." };
+			}
+			if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
+			const arbiter = runtime.cloudSessionArbiter;
+			const primary = qorperaAccountAuth?.hostedPrimary();
+			if (!arbiter?.sessionForStaff(staffAgentId) || !primary) {
+				return { ok: false, error: "The hosted operation recovery is unavailable." };
+			}
+			try {
+				const available = await arbiter.executionRecoveries(staffAgentId);
+				if (
+					!available.some((recovery) =>
+						recovery.operationReceipts.some((receipt) => receipt.operationId === operationId),
+					)
+				) {
+					throw new Error("This hosted operation recovery changed; refresh and review it again.");
+				}
+				await primary.resolveRunOperationReceipt(operationId, resolution);
+				const queue = await readRendererSessionQueue(arbiter, staffAgentId);
+				if (runtime.childOptions.staffAgentId === staffAgentId) {
+					send(slot.window, "staff-session-queue", { staffAgentId, queue });
+				}
+				return { ok: true, queue };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+
+	ipcMain.handle("rpc:send", async (event, frame: unknown, expectedTrailFile: unknown) => {
+		const reviewedCloudPrompt =
+			frame && typeof frame === "object" && "type" in frame && frame.type === "prompt"
+				? reviewedPromptFrame(frame as Record<string, unknown>)
+				: undefined;
+		const cloudSponsoredPrompt = reviewedCloudPrompt?.executionSponsor !== undefined;
+		const slot = slotOf(event.sender);
+		const runtime = slot?.runtime;
+		if (!slot || !runtime || (runtime.wakeChild && !cloudSponsoredPrompt)) {
 			// Every silent ok:false here previously cost a debugging session;
 			// a rejection that keeps the founder's draft must at least say why.
 			// Read-only polls (get_state etc.) reject quietly — they retry.
@@ -11647,7 +13160,9 @@ app.whenReady().then(async () => {
 					return { ok: false, error: "session changed before command" };
 				}
 				const reviewedChild = runtime.child;
-				if (runtime.childOptions.staffAgentId && !childRuntimeReady.has(reviewedChild)) {
+				const reviewed = reviewedCloudPrompt ?? reviewedPromptFrame(frame as Record<string, unknown>);
+				if (!reviewed || (!reviewed.message && !reviewed.images?.length)) return { ok: false };
+				if (!cloudSponsoredPrompt && runtime.childOptions.staffAgentId && !childRuntimeReady.has(reviewedChild)) {
 					console.error("rpc:send reject: staff child not ready");
 					return { ok: false, error: "staff member is still getting ready" };
 				}
@@ -11655,8 +13170,6 @@ app.whenReady().then(async () => {
 					console.error("rpc:send reject: prompt bound to a different session file");
 					return { ok: false, error: "session changed before command" };
 				}
-				const reviewed = reviewedPromptFrame(frame as Record<string, unknown>);
-				if (!reviewed || (!reviewed.message && !reviewed.images?.length)) return { ok: false };
 				// Founder call (2026-08-13): typing in the composer IS the founder
 				// acting — a native dialog re-confirming their own words was pure
 				// friction and is gone. The kernel still observes the exact input
@@ -11725,6 +13238,81 @@ app.whenReady().then(async () => {
 					sendBinding.sessionId === sendRef.clientSessionId &&
 					frame.type === "prompt"
 				) {
+					const executionSponsor = reviewed.executionSponsor;
+					if (executionSponsor) {
+						if (!reviewed.clientInputId || !qorperaAccountAuth) {
+							return { ok: false, error: "cloud-sponsored message has no durable execution identity" };
+						}
+						const attachment = profileAttachment(runtime.root);
+						if (attachment.profileType !== "cloud") {
+							return { ok: false, error: "native subscription execution requires a cloud company" };
+						}
+						try {
+							const control = qorperaAccountAuth.nativeSubscriptionControl();
+							const available = await control.listConnections(attachment.profileId);
+							const selected = available.connections.find(
+								(connection) =>
+									connection.sponsorBindingId === executionSponsor.sponsorBindingId &&
+									connection.sponsorVersion === executionSponsor.sponsorVersion,
+							);
+							if (
+								!available.computeIdentity ||
+								available.computeIdentity.computeIdentityId !== executionSponsor.computeIdentityId ||
+								!selected ||
+								selected.connectionStatus !== "active" ||
+								selected.authorizationState !== "active" ||
+								selected.policy.implementationStatus !== "supported" ||
+								selected.policy.enablementStatus !== "enabled"
+							) {
+								throw new Error("The selected personal subscription is unavailable or was revoked.");
+							}
+							const body = await prepareCloudPromptBody(runtime, reviewed);
+							const request = await control.requestSessionTurn({
+								sessionId: sendRef.hostedSessionId,
+								clientInputId: reviewed.clientInputId,
+								clientRequestId: reviewed.clientInputId,
+								body: body as unknown as JsonValue,
+								sponsorMode: "member_connection",
+								sponsorBindingId: executionSponsor.sponsorBindingId,
+								sponsorVersion: executionSponsor.sponsorVersion,
+								computeIdentityId: executionSponsor.computeIdentityId,
+								workerClass: executionSponsor.workerClass,
+							});
+							const team = effectiveHostedTeam(attachment.profileId);
+							const author = team?.members.find((member) => member.userId === currentQorperaAccountId);
+							const queue = await readRendererSessionQueue(sendArbiter, sendStaffId, [
+								{
+									inputId: request.inputId,
+									position: 0,
+									status: request.status === "failed" ? "failed" : "queued",
+									authorUserId: currentQorperaAccountId,
+									authorDisplayName: author?.displayName ?? author?.email ?? "Company member",
+									text: reviewed.displayText ?? reviewed.message,
+									attachmentCount: reviewed.images?.length ?? 0,
+									createdAt: new Date().toISOString(),
+								},
+							]);
+							recordCloudSessionArbiterOutcome(runtime, { ok: true });
+							return {
+								ok: true,
+								queued: true,
+								queue,
+								nativeExecution: {
+									turnRequestId: request.turnRequestId,
+									provider: selected.provider,
+									nativeHarness: selected.nativeHarness,
+									sponsorBindingId: executionSponsor.sponsorBindingId,
+									sponsorVersion: executionSponsor.sponsorVersion,
+								},
+							};
+						} catch (error) {
+							recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
+							return {
+								ok: false,
+								error: `cloud subscription turn was not queued: ${error instanceof Error ? error.message : String(error)}`,
+							};
+						}
+					}
 					let receipt: Awaited<ReturnType<CloudSessionArbiter["appendPrompt"]>>;
 					try {
 						receipt = await enqueueCloudPrompt(runtime, sendArbiter, sendStaffId, reviewed);
@@ -11755,7 +13343,7 @@ app.whenReady().then(async () => {
 					if (sendArbiter.activeClaim || isChildBusy(reviewedChild)) return { ok: true, queued: true, queue };
 					const sendStaff = activeStaffAgent(runtime.root, sendStaffId);
 					const eligibility = sendStaff
-						? await cloudExecutorEligibility(runtime, sendStaff, true)
+						? await cloudExecutorEligibility(slot, runtime, sendStaff, true)
 						: { waiting: "staff member is unavailable" };
 					runtime.cloudSessionWaiting = eligibility.waiting;
 					// Ineligible: the message is durably queued; an eligible

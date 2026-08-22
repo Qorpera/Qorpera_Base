@@ -16,7 +16,7 @@ import type { HostedCompanyFile, HostedCompanySnapshot } from "./hosted-primary.
 const COMPANY_FILE_CACHE_SCHEMA = "qorpera.cloud-company-file-cache/v1";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-const MAX_RECONCILE_ATTEMPTS = 4;
+const MAX_RECONCILE_ATTEMPTS = 8;
 
 interface PendingCompanyFileRevision {
 	clientRevisionId: string;
@@ -310,6 +310,19 @@ function isHeadConflict(error: unknown): boolean {
 	return error instanceof Error && /\(PT409\)$/.test(error.message);
 }
 
+function isMissingCloudObject(error: unknown): boolean {
+	if (!error || typeof error !== "object") return false;
+	const candidate = error as { message?: unknown; status?: unknown; statusCode?: unknown };
+	return (
+		candidate.status === 404 ||
+		candidate.statusCode === "404" ||
+		(typeof candidate.message === "string" &&
+			/(?:object|manifest|chunk).*(?:not found|missing)|(?:not found|missing).*(?:object|manifest|chunk)/i.test(
+				candidate.message,
+			))
+	);
+}
+
 function canWrite(input: CheckpointCloudCompanyFileInput): boolean {
 	return typeof input.canWrite === "function" ? input.canWrite() : input.canWrite !== false;
 }
@@ -327,7 +340,9 @@ export async function checkpointCloudCompanyFile(
 	if (state.binding.conflict) {
 		throw new Error(`Company File has ${state.binding.conflict.paths.length} change conflict(s) waiting for review`);
 	}
+	let changed = false;
 	let merged = false;
+	let reuploadedPendingRevisionId: string | undefined;
 	for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
 		let companyFile = await input.primary.getCompanyFile(input.environmentId);
 		requireCompanyFileScope(companyFile, input);
@@ -347,10 +362,32 @@ export async function checkpointCloudCompanyFile(
 					pending.expectedHeadSnapshotId,
 				);
 				state.complete(pending.clientRevisionId, snapshot);
+				changed = true;
 				companyFile = await input.primary.getCompanyFile(input.environmentId);
 				requireCompanyFileScope(companyFile, input);
-				return { changed: true, merged, companyFile, snapshot };
+				// A durable pending revision can predate newer local bytes. Publishing
+				// it repairs the interrupted transaction, but it is not a checkpoint
+				// of the current checkout until the loop captures and compares again.
+				continue;
 			} catch (error) {
+				if (isMissingCloudObject(error) && reuploadedPendingRevisionId !== pending.clientRevisionId) {
+					// Prepared revisions are intentionally resumable, but their abandoned
+					// object upload may have aged out while this device was offline. Capture
+					// re-uploads the exact closure when the checkout is unchanged. If newer
+					// bytes exist, the old pending transaction is obsolete and a fresh
+					// revision will be staged from those current bytes on the next pass.
+					const current = await captureCloudCompanyTree(input.companyRoot, input.profileId, input.objects, {
+						...(input.runtimeLock ? { runtimeLock: input.runtimeLock } : {}),
+						userData: input.userData,
+						forceFullVerification: true,
+					});
+					if (sameTree(current, pending.tree)) {
+						reuploadedPendingRevisionId = pending.clientRevisionId;
+						continue;
+					}
+					state.discard(pending.clientRevisionId);
+					continue;
+				}
 				if (!isHeadConflict(error)) throw error;
 				state.discard(pending.clientRevisionId);
 			}
@@ -368,7 +405,7 @@ export async function checkpointCloudCompanyFile(
 					throw new Error("This cache was not materialized from the canonical Company File revision");
 				}
 				state.adopt(remote);
-				return { changed: false, merged, companyFile, snapshot: remote };
+				return { changed, merged, companyFile, snapshot: remote };
 			}
 			if (!canWrite(input)) throw new Error("This Company File is read-only for your account");
 			state.stage(tree);
@@ -378,7 +415,7 @@ export async function checkpointCloudCompanyFile(
 		if (companyFile.headSnapshotId === applied.snapshotId) {
 			if (sameTree(applied.tree, tree)) {
 				return {
-					changed: false,
+					changed,
 					merged,
 					companyFile,
 					snapshot: await input.primary.getCompanySnapshot(applied.snapshotId),
@@ -405,11 +442,17 @@ export async function checkpointCloudCompanyFile(
 			...(input.runtimeLock ? { runtimeLock: input.runtimeLock } : {}),
 		});
 		if (reconciliation.plan.conflicts.length > 0) {
+			const reviewedTree = reconciliation.applied
+				? await captureCloudCompanyTree(input.companyRoot, input.profileId, input.objects, {
+						...(input.runtimeLock ? { runtimeLock: input.runtimeLock } : {}),
+						userData: input.userData,
+					})
+				: tree;
 			state.recordConflict({
 				baseSnapshotId: applied.snapshotId,
 				remoteSnapshotId: remote.snapshotId,
 				paths: reconciliation.plan.conflicts.map((conflict) => conflict.path),
-				localTree: tree,
+				localTree: reviewedTree,
 			});
 			throw new Error(
 				`Company File has ${reconciliation.plan.conflicts.length} change conflict(s) waiting for review`,

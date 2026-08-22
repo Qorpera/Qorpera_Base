@@ -18,6 +18,7 @@
 	<div id="threadHeader" class="thread-header" hidden>
 		<button id="staffIdentityButton" class="staff-identity-button" type="button" aria-label="Open agent settings" aria-expanded="false"><span id="threadAvatar" class="staff-avatar" aria-hidden="true"></span><strong id="threadTitle">Qorpera</strong></button>
 		<nav id="staffArtifactTabs" class="staff-artifact-tabs" aria-label="Agent artifacts"></nav>
+		<span id="threadSponsorProvenance" class="thread-sponsor-provenance" hidden></span>
 		<div class="staff-header-actions">
 			<button id="staffSidepanelButton" type="button" aria-label="Open agent computer and routines" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="12" rx="1.8"/><path d="M8.5 20h7M12 16.5V20"/></svg></button>
 		</div>
@@ -142,6 +143,7 @@
 						<button id="scopeBtn" class="stripchip" title="Company or product-development department" aria-haspopup="menu" aria-expanded="false">…</button>
 						<div id="scopeMenu" class="chipmenu"></div>
 					</div>
+					<select id="cloudSponsorSelect" class="cloud-sponsor-select" aria-label="Execution sponsor" title="Execution sponsor" hidden></select>
 					<span class="composer-spacer"></span>
 					<div id="modelCtlMenu" class="chipmenu modelctl" role="menu" aria-label="Model control">
 						<div class="mc-effort-heading"><span class="sr-only">Reasoning effort</span><output id="mcEffortLabel">Medium</output></div>

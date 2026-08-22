@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+	createRoutedArtifactGcStorageProvider,
 	parseArtifactGcWorkerJobs,
 	parseArtifactGcWorkerObjects,
 	parseCompanyObjectGcWorkerJob,
+	resolveArtifactGcWorkerAuthorization,
 	runArtifactGcWorkerBatch,
 	runCompanyObjectGcWorkerJob,
 	type ArtifactGcStorageProvider,
@@ -23,6 +25,68 @@ function job(): ArtifactGcWorkerJob {
 }
 
 describe("artifact cleanup worker", () => {
+	it("keeps worker authentication separate from its privileged database credential", () => {
+		assert.deepEqual(
+			resolveArtifactGcWorkerAuthorization({
+				presentedKey: "worker-key",
+				workerKey: "worker-key",
+				serviceKeys: [undefined, "database-service-key"],
+			}),
+			{ status: "authorized", serviceKey: "database-service-key" },
+		);
+		assert.deepEqual(
+			resolveArtifactGcWorkerAuthorization({
+				presentedKey: "database-service-key",
+				workerKey: "worker-key",
+				serviceKeys: ["database-service-key"],
+			}),
+			{ status: "unauthorized" },
+		);
+		assert.deepEqual(
+			resolveArtifactGcWorkerAuthorization({
+				presentedKey: "worker-key",
+				workerKey: "worker-key",
+				serviceKeys: [],
+			}),
+			{ status: "unconfigured" },
+		);
+	});
+
+	it("routes each object to its declared backend and carries the exact cleanup lease", async () => {
+		const events: string[] = [];
+		const storage = createRoutedArtifactGcStorageProvider({
+			removeSupabase: async (paths) => events.push(`supabase:${paths.join(",")}`),
+			removeNas: async (object, cleanupLeaseId) => events.push(`nas:${object.path}:${cleanupLeaseId}`),
+		});
+		await storage.remove(
+			[
+				{
+					sha256: firstSha256,
+					bytes: 42,
+					path: `${profileId}/${firstSha256}`,
+					backend: "supabase-storage",
+				},
+				{
+					sha256: secondSha256,
+					bytes: 84,
+					path: `${profileId}/${secondSha256}`,
+					backend: "nas-object-gateway",
+				},
+				{
+					sha256: "c".repeat(64),
+					bytes: 1,
+					path: `${profileId}/${"c".repeat(64)}`,
+					backend: "missing",
+				},
+			],
+			leaseId,
+		);
+		assert.deepEqual(events, [
+			`supabase:${profileId}/${firstSha256}`,
+			`nas:${profileId}/${secondSha256}:${leaseId}`,
+		]);
+	});
+
 	it("validates service jobs and refuses paths outside the claimed profile", () => {
 		assert.deepEqual(
 			parseArtifactGcWorkerJobs([
@@ -32,15 +96,36 @@ describe("artifact cleanup worker", () => {
 		);
 		assert.deepEqual(
 			parseArtifactGcWorkerObjects(
-				[{ sha256: firstSha256, bytes: 42, path: `${profileId}/${firstSha256}` }],
+				[
+					{
+						sha256: firstSha256,
+						bytes: 42,
+						path: `${profileId}/${firstSha256}`,
+						backend: "nas-object-gateway",
+					},
+				],
 				job(),
 			),
-			[{ sha256: firstSha256, bytes: 42, path: `${profileId}/${firstSha256}` }],
+			[
+				{
+					sha256: firstSha256,
+					bytes: 42,
+					path: `${profileId}/${firstSha256}`,
+					backend: "nas-object-gateway",
+				},
+			],
 		);
 		assert.throws(
 			() =>
 				parseArtifactGcWorkerObjects(
-					[{ sha256: firstSha256, bytes: 42, path: `another-profile/${firstSha256}` }],
+					[
+						{
+							sha256: firstSha256,
+							bytes: 42,
+							path: `another-profile/${firstSha256}`,
+							backend: "supabase-storage",
+						},
+					],
 					job(),
 				),
 			/path/,
@@ -49,8 +134,22 @@ describe("artifact cleanup worker", () => {
 
 	it("deletes bounded batches, acknowledges them, and completes the plan", async () => {
 		const claimed = [
-			[{ sha256: firstSha256, bytes: 42, path: `${profileId}/${firstSha256}` }],
-			[{ sha256: secondSha256, bytes: 84, path: `${profileId}/${secondSha256}` }],
+			[
+				{
+					sha256: firstSha256,
+					bytes: 42,
+					path: `${profileId}/${firstSha256}`,
+					backend: "supabase-storage" as const,
+				},
+			],
+			[
+				{
+					sha256: secondSha256,
+					bytes: 84,
+					path: `${profileId}/${secondSha256}`,
+					backend: "nas-object-gateway" as const,
+				},
+			],
 			[],
 		];
 		const removed: string[][] = [];
@@ -88,7 +187,14 @@ describe("artifact cleanup worker", () => {
 	it("records a retry without exposing object paths in the failure", async () => {
 		let failure = "";
 		const store: ArtifactGcWorkerStore = {
-			claimObjects: async () => [{ sha256: firstSha256, bytes: 42, path: `${profileId}/${firstSha256}` }],
+			claimObjects: async () => [
+				{
+					sha256: firstSha256,
+					bytes: 42,
+					path: `${profileId}/${firstSha256}`,
+					backend: "supabase-storage",
+				},
+			],
 			renewLease: async () => {},
 			acknowledgeObjects: async () => {},
 			complete: async () => {},
@@ -113,7 +219,14 @@ describe("artifact cleanup worker", () => {
 		let removed = false;
 		let failure = "";
 		const store: ArtifactGcWorkerStore = {
-			claimObjects: async () => [{ sha256: firstSha256, bytes: 42, path: `${profileId}/${firstSha256}` }],
+			claimObjects: async () => [
+				{
+					sha256: firstSha256,
+					bytes: 42,
+					path: `${profileId}/${firstSha256}`,
+					backend: "supabase-storage",
+				},
+			],
 			renewLease: async () => Promise.reject(new Error("Lease expired")),
 			acknowledgeObjects: async () => {},
 			complete: async () => {},
@@ -139,7 +252,14 @@ describe("artifact cleanup worker", () => {
 		const parsed = parseCompanyObjectGcWorkerJob({
 			profile_id: profileId,
 			lease_id: leaseId,
-			objects: [{ sha256: firstSha256, bytes: 42, path: `${profileId}/${firstSha256}` }],
+			objects: [
+				{
+					sha256: firstSha256,
+					bytes: 42,
+					path: `${profileId}/${firstSha256}`,
+					backend: "nas-object-gateway",
+				},
+			],
 		});
 		assert.ok(parsed);
 		const events: string[] = [];
@@ -173,7 +293,14 @@ describe("artifact cleanup worker", () => {
 		const parsed = parseCompanyObjectGcWorkerJob({
 			profile_id: profileId,
 			lease_id: leaseId,
-			objects: [{ sha256: firstSha256, bytes: 42, path: `${profileId}/${firstSha256}` }],
+			objects: [
+				{
+					sha256: firstSha256,
+					bytes: 42,
+					path: `${profileId}/${firstSha256}`,
+					backend: "nas-object-gateway",
+				},
+			],
 		});
 		assert.ok(parsed);
 		let released = false;

@@ -47,9 +47,15 @@ begin
 	) returning * into v_workspace;
 
 	insert into public.qorpera_company_files (
-		environment_id, profile_id, canonical_workspace_id, created_by_user_id
+		environment_id, profile_id, canonical_workspace_id, storage_used_bytes, created_by_user_id
 	) values (
-		new.id, new.profile_id, v_workspace.id, new.created_by_user_id
+		new.id, new.profile_id, v_workspace.id,
+		coalesce((
+			select sum(object.bytes)
+			from public.qorpera_profile_objects as object
+			where object.profile_id = new.profile_id
+		), 0),
+		new.created_by_user_id
 	);
 	return new;
 end
@@ -248,6 +254,7 @@ $$;
 create table public.qorpera_company_snapshot_publications (
 	snapshot_id uuid primary key references public.qorpera_company_snapshots(id) on delete cascade,
 	expected_head_snapshot_id uuid references public.qorpera_company_snapshots(id) on delete restrict,
+	restricted_content_sha256 text check (restricted_content_sha256 ~ '^[0-9a-f]{64}$'),
 	status text not null default 'prepared' check (status in ('prepared', 'published')),
 	prepared_at timestamptz not null default statement_timestamp(),
 	published_at timestamptz,
@@ -256,6 +263,95 @@ create table public.qorpera_company_snapshot_publications (
 
 alter table public.qorpera_company_snapshot_publications enable row level security;
 revoke all on public.qorpera_company_snapshot_publications from anon, authenticated;
+
+create table public.qorpera_company_proposals (
+	id uuid primary key default extensions.gen_random_uuid(),
+	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
+	environment_id uuid not null references public.qorpera_company_environments(id) on delete cascade,
+	client_proposal_id uuid not null,
+	base_snapshot_id uuid references public.qorpera_company_snapshots(id) on delete restrict,
+	proposal_snapshot_id uuid not null unique references public.qorpera_company_snapshots(id) on delete restrict,
+	execution_kind text not null check (execution_kind in ('turn', 'wake', 'run')),
+	execution_id uuid not null,
+	execution_claimant_id uuid not null,
+	session_id uuid references public.qorpera_shared_sessions(id) on delete set null,
+	trail_end_sequence bigint not null check (trail_end_sequence >= 0),
+	reason text not null check (reason in ('policy', 'authority', 'conflict', 'recovery')),
+	policy_key text check (policy_key is null or char_length(policy_key) between 1 and 128),
+	title text not null check (char_length(btrim(title)) between 1 and 256),
+	reviewer_staff_ids uuid[] not null default '{}'::uuid[] check (cardinality(reviewer_staff_ids) <= 20),
+	status text not null default 'open' check (status in ('open', 'accepted', 'rejected')),
+	created_by_user_id uuid not null references auth.users(id) on delete restrict,
+	created_at timestamptz not null default statement_timestamp(),
+	resolved_by_user_id uuid references auth.users(id) on delete restrict,
+	resolved_at timestamptz,
+	unique (profile_id, client_proposal_id),
+	unique (execution_kind, execution_id),
+	check ((status = 'open') = (resolved_at is null)),
+	check ((resolved_at is null) = (resolved_by_user_id is null))
+);
+
+create index qorpera_company_proposals_open
+	on public.qorpera_company_proposals (profile_id, created_at, id)
+	where status = 'open';
+
+alter table public.qorpera_company_proposals enable row level security;
+revoke all on public.qorpera_company_proposals from anon, authenticated;
+
+create table public.qorpera_company_proposal_comments (
+	id uuid primary key default extensions.gen_random_uuid(),
+	proposal_id uuid not null references public.qorpera_company_proposals(id) on delete cascade,
+	client_comment_id uuid not null,
+	body text not null check (char_length(btrim(body)) between 1 and 16384),
+	author_user_id uuid not null references auth.users(id) on delete restrict,
+	created_at timestamptz not null default statement_timestamp(),
+	unique (proposal_id, client_comment_id)
+);
+
+create index qorpera_company_proposal_comments_page
+	on public.qorpera_company_proposal_comments (proposal_id, created_at, id);
+
+alter table public.qorpera_company_proposal_comments enable row level security;
+revoke all on public.qorpera_company_proposal_comments from anon, authenticated;
+
+create table public.qorpera_company_proposal_revisions (
+	proposal_id uuid not null references public.qorpera_company_proposals(id) on delete cascade,
+	revision bigint not null check (revision > 0),
+	base_snapshot_id uuid references public.qorpera_company_snapshots(id) on delete restrict,
+	proposal_snapshot_id uuid not null references public.qorpera_company_snapshots(id) on delete restrict,
+	change_kind text not null check (change_kind in ('submitted', 'rebased')),
+	created_by_user_id uuid not null references auth.users(id) on delete restrict,
+	created_at timestamptz not null default statement_timestamp(),
+	primary key (proposal_id, revision),
+	unique (proposal_id, proposal_snapshot_id)
+);
+
+alter table public.qorpera_company_proposal_revisions enable row level security;
+revoke all on public.qorpera_company_proposal_revisions from anon, authenticated;
+
+create function public.qorpera_record_company_proposal_submission()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+	insert into public.qorpera_company_proposal_revisions (
+		proposal_id, revision, base_snapshot_id, proposal_snapshot_id,
+		change_kind, created_by_user_id
+	) values (
+		new.id, 1, new.base_snapshot_id, new.proposal_snapshot_id,
+		'submitted', new.created_by_user_id
+	);
+	return new;
+end
+$$;
+
+create trigger qorpera_record_company_proposal_submission
+after insert on public.qorpera_company_proposals
+for each row execute function public.qorpera_record_company_proposal_submission();
+
+revoke all on function public.qorpera_record_company_proposal_submission() from public;
 
 create function public.qorpera_company_snapshot_json(p_snapshot public.qorpera_company_snapshots)
 returns jsonb
@@ -382,6 +478,106 @@ begin
 end
 $$;
 
+-- Review proposals use the same immutable snapshot/object contract as a
+-- canonical revision, but may be based on an older pinned execution snapshot.
+-- They cannot advance the head through the ordinary publish RPC.
+create function public.qorpera_prepare_company_file_proposal(
+	p_environment_id uuid,
+	p_client_revision_id uuid,
+	p_base_snapshot_id uuid,
+	p_tree_manifest_sha256 text,
+	p_tree_manifest_bytes integer,
+	p_tree_contract_version integer,
+	p_file_count integer,
+	p_total_bytes bigint
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_user_id uuid := auth.uid();
+	v_file public.qorpera_company_files%rowtype;
+	v_snapshot public.qorpera_company_snapshots%rowtype;
+	v_manifest_bytes bigint;
+begin
+	if v_user_id is null then
+		raise exception 'authentication required' using errcode = '42501';
+	end if;
+	select file.* into v_file
+	from public.qorpera_company_files as file
+	where file.environment_id = p_environment_id
+	for share;
+	if not found or not public.qorpera_can_write_profile(v_file.profile_id) then
+		raise exception 'company file write access is required' using errcode = '42501';
+	end if;
+	if p_client_revision_id is null
+		or p_tree_manifest_sha256 !~ '^[0-9a-f]{64}$'
+		or p_tree_manifest_bytes not between 1 and 8388608
+		or p_tree_contract_version is distinct from 3
+		or p_file_count not between 0 and 50000
+		or p_total_bytes < 0 then
+		raise exception 'company file proposal is invalid' using errcode = '22023';
+	end if;
+	if p_base_snapshot_id is null or not exists (
+		select 1
+		from public.qorpera_company_snapshots as snapshot
+		where snapshot.id = p_base_snapshot_id
+			and snapshot.profile_id = v_file.profile_id
+			and snapshot.environment_id = v_file.environment_id
+	) then
+		raise exception 'company file proposal base is invalid' using errcode = '22023';
+	end if;
+	select object.bytes into v_manifest_bytes
+	from public.qorpera_profile_objects as object
+	where object.profile_id = v_file.profile_id and object.sha256 = p_tree_manifest_sha256;
+	if v_manifest_bytes is distinct from p_tree_manifest_bytes::bigint then
+		raise exception 'company file manifest is unavailable or has the wrong size' using errcode = '22023';
+	end if;
+	select snapshot.* into v_snapshot
+	from public.qorpera_company_snapshots as snapshot
+	where snapshot.profile_id = v_file.profile_id
+		and snapshot.client_snapshot_id = p_client_revision_id;
+	if found then
+		if v_snapshot.workspace_id <> v_file.canonical_workspace_id
+			or v_snapshot.parent_snapshot_id is distinct from p_base_snapshot_id
+			or v_snapshot.tree_manifest_sha256 <> p_tree_manifest_sha256
+			or v_snapshot.tree_manifest_bytes <> p_tree_manifest_bytes
+			or v_snapshot.tree_contract_version <> p_tree_contract_version
+			or v_snapshot.file_count <> p_file_count
+			or v_snapshot.total_bytes <> p_total_bytes then
+			raise exception 'company file proposal revision id is already bound to different content' using errcode = '23505';
+		end if;
+		if not exists (
+			select 1 from public.qorpera_company_snapshot_publications as publication
+			where publication.snapshot_id = v_snapshot.id
+		) then
+			raise exception 'company file proposal revision belongs to migration history' using errcode = '23505';
+		end if;
+		return public.qorpera_company_snapshot_json(v_snapshot);
+	end if;
+
+	insert into public.qorpera_company_snapshots (
+		profile_id, environment_id, workspace_id, client_snapshot_id, parent_snapshot_id,
+		tree_manifest_sha256, tree_manifest_bytes, tree_contract_version, file_count,
+		total_bytes, created_by_user_id
+	) values (
+		v_file.profile_id, v_file.environment_id, v_file.canonical_workspace_id,
+		p_client_revision_id, p_base_snapshot_id, p_tree_manifest_sha256,
+		p_tree_manifest_bytes, p_tree_contract_version, p_file_count, p_total_bytes, v_user_id
+	) returning * into v_snapshot;
+
+	insert into public.qorpera_company_snapshot_publications (
+		snapshot_id, expected_head_snapshot_id
+	) values (
+		v_snapshot.id, p_base_snapshot_id
+	);
+
+	return public.qorpera_company_snapshot_json(v_snapshot);
+end
+$$;
+
 -- Finalization is the only operation that advances the canonical head. The
 -- graph/proof checks are re-evaluated while the Company File row is locked so
 -- object loss or a competing revision cannot create an unreadable head.
@@ -399,6 +595,7 @@ declare
 	v_file public.qorpera_company_files%rowtype;
 	v_snapshot public.qorpera_company_snapshots%rowtype;
 	v_publication public.qorpera_company_snapshot_publications%rowtype;
+	v_head_restricted_content_sha256 text;
 begin
 	if auth.uid() is null then
 		raise exception 'authentication required' using errcode = '42501';
@@ -430,11 +627,28 @@ begin
 	if v_publication.status = 'published' then
 		return public.qorpera_company_snapshot_json(v_snapshot);
 	end if;
+	if exists (
+		select 1
+		from public.qorpera_company_proposals as proposal
+		where proposal.proposal_snapshot_id = v_snapshot.id and proposal.status = 'open'
+	) then
+		raise exception 'company file proposal requires an explicit review decision' using errcode = '55000';
+	end if;
 	if v_file.head_snapshot_id is distinct from p_expected_head_snapshot_id then
 		raise sqlstate 'PT409' using message = 'company file head changed';
 	end if;
 	if not public.qorpera_object_root_has_current_proof('company_snapshot', v_snapshot.id) then
 		raise exception 'company file reachability and restore proof are incomplete' using errcode = '55000';
+	end if;
+	if v_publication.restricted_content_sha256 is null then
+		raise exception 'company file authority paths were not server-verified' using errcode = '55000';
+	end if;
+	select publication.restricted_content_sha256 into v_head_restricted_content_sha256
+	from public.qorpera_company_snapshot_publications as publication
+	where publication.snapshot_id = v_file.head_snapshot_id;
+	if v_publication.restricted_content_sha256 is distinct from v_head_restricted_content_sha256
+		and not public.qorpera_can_authorize_profile(v_file.profile_id) then
+		raise exception 'company authority changes require authorize access' using errcode = '42501';
 	end if;
 
 	update public.qorpera_company_snapshot_publications
@@ -541,7 +755,8 @@ create function public.qorpera_verify_company_snapshot_closure(
 	p_object_count integer,
 	p_storage_bytes bigint,
 	p_restored_content_sha256 text,
-	p_restored_bytes bigint
+	p_restored_bytes bigint,
+	p_restricted_content_sha256 text
 )
 returns jsonb
 language plpgsql
@@ -577,8 +792,16 @@ begin
 		or v_graph.storage_bytes <> p_storage_bytes
 		or p_restored_content_sha256 <> v_snapshot.tree_manifest_sha256
 		or p_restored_bytes <> v_snapshot.total_bytes
+		or p_restricted_content_sha256 !~ '^[0-9a-f]{64}$'
 		or not public.qorpera_object_graph_objects_available(v_graph.id) then
 		raise exception 'company snapshot server verification does not match its graph' using errcode = '22023';
+	end if;
+	update public.qorpera_company_snapshot_publications
+	set restricted_content_sha256 = p_restricted_content_sha256
+	where snapshot_id = v_snapshot.id
+		and (restricted_content_sha256 is null or restricted_content_sha256 = p_restricted_content_sha256);
+	if not found then
+		raise exception 'company snapshot authority proof changed' using errcode = '22023';
 	end if;
 
 	update public.qorpera_object_reachability_graphs
@@ -608,6 +831,7 @@ declare
 	v_identity record;
 	v_limit bigint;
 	v_used bigint;
+	v_existing_bytes bigint;
 begin
 	select * into v_identity
 	from public.qorpera_profile_object_identity(new.bucket_id, new.name, new.metadata);
@@ -619,7 +843,8 @@ begin
 	from public.qorpera_company_files as file
 	where file.profile_id = v_identity.profile_id
 	for update;
-	select min(file.storage_limit_bytes) into v_limit
+	select min(file.storage_limit_bytes), max(file.storage_used_bytes)
+	into v_limit, v_used
 	from public.qorpera_company_files as file
 	where file.profile_id = v_identity.profile_id;
 	if v_limit is null then
@@ -627,11 +852,10 @@ begin
 		-- Quota authority begins only when a Company File owns the profile id.
 		return new;
 	end if;
-	select coalesce(sum(object.bytes), 0) into v_used
+	select object.bytes into v_existing_bytes
 	from public.qorpera_profile_objects as object
-	where object.profile_id = v_identity.profile_id
-		and object.sha256 <> v_identity.sha256;
-	if v_used + v_identity.bytes > v_limit then
+	where object.profile_id = v_identity.profile_id and object.sha256 = v_identity.sha256;
+	if v_used + v_identity.bytes - coalesce(v_existing_bytes, 0) > v_limit then
 		raise exception 'company storage allowance exceeded' using errcode = '23514';
 	end if;
 	return new;
@@ -652,15 +876,30 @@ set search_path = ''
 as $$
 declare
 	v_profile_id uuid := case when tg_op = 'DELETE' then old.profile_id else new.profile_id end;
+	v_delta bigint;
 begin
-	update public.qorpera_company_files as file
-	set storage_used_bytes = (
-			select coalesce(sum(object.bytes), 0)
-			from public.qorpera_profile_objects as object
-			where object.profile_id = v_profile_id
-		),
-		updated_at = statement_timestamp()
-	where file.profile_id = v_profile_id;
+	if tg_op = 'UPDATE' and old.profile_id <> new.profile_id then
+		update public.qorpera_company_files
+		set storage_used_bytes = storage_used_bytes - old.bytes,
+			updated_at = statement_timestamp()
+		where profile_id = old.profile_id;
+		update public.qorpera_company_files
+		set storage_used_bytes = storage_used_bytes + new.bytes,
+			updated_at = statement_timestamp()
+		where profile_id = new.profile_id;
+		return new;
+	end if;
+	v_delta := case tg_op
+		when 'INSERT' then new.bytes
+		when 'DELETE' then -old.bytes
+		else new.bytes - old.bytes
+	end;
+	if v_delta <> 0 then
+		update public.qorpera_company_files
+		set storage_used_bytes = storage_used_bytes + v_delta,
+			updated_at = statement_timestamp()
+		where profile_id = v_profile_id;
+	end if;
 	return case when tg_op = 'DELETE' then old else new end;
 end
 $$;
@@ -736,6 +975,110 @@ create trigger qorpera_pin_session_revisions
 before insert on public.qorpera_shared_sessions
 for each row execute function public.qorpera_pin_session_revisions();
 
+create function public.qorpera_shared_session_json(p_session public.qorpera_shared_sessions)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	select jsonb_build_object(
+		'session_id', p_session.id,
+		'client_session_id', p_session.client_session_id,
+		'profile_id', p_session.profile_id,
+		'environment_id', p_session.environment_id,
+		'title', p_session.title,
+		'staff_agent_id', p_session.staff_agent_id,
+		'parent_session_id', p_session.parent_session_id,
+		'execution_scope', p_session.execution_scope,
+		'company_snapshot_id', p_session.company_snapshot_id,
+		'staff_version', p_session.staff_version,
+		'status', p_session.status,
+		'created_by_user_id', p_session.created_by_user_id,
+		'created_at', p_session.created_at,
+		'updated_at', p_session.updated_at
+	)
+$$;
+
+revoke all on function public.qorpera_shared_session_json(public.qorpera_shared_sessions)
+	from public, anon, authenticated;
+
+create function public.qorpera_list_shared_sessions_page(
+	p_environment_id uuid,
+	p_after_updated_at timestamptz default null,
+	p_after_id uuid default null,
+	p_limit integer default 100
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+	v_profile_id uuid;
+begin
+	select environment.profile_id into v_profile_id
+	from public.qorpera_company_environments as environment
+	where environment.id = p_environment_id;
+	if v_profile_id is null or not public.qorpera_can_read_profile(v_profile_id) then
+		raise exception 'shared session read access is required' using errcode = '42501';
+	end if;
+	if p_limit not between 1 and 100
+		or ((p_after_updated_at is null) is distinct from (p_after_id is null)) then
+		raise exception 'shared session page is invalid' using errcode = '22023';
+	end if;
+	return (
+		with visible as (
+			select session.*
+			from public.qorpera_shared_sessions as session
+			where session.environment_id = p_environment_id
+				and (
+					p_after_updated_at is null
+					or (session.updated_at, session.id) > (p_after_updated_at, p_after_id)
+				)
+			order by session.updated_at, session.id
+			limit p_limit + 1
+		), page as (
+			select * from visible order by updated_at, id limit p_limit
+		)
+		select jsonb_build_object(
+			'items', coalesce((select jsonb_agg(public.qorpera_shared_session_json(session)
+				order by session.updated_at, session.id) from page as session), '[]'::jsonb),
+			'has_more', (select count(*) > p_limit from visible),
+			'next_updated_at', (select max(updated_at) from page),
+			'next_id', (select id from page order by updated_at desc, id desc limit 1)
+		)
+	);
+end
+$$;
+
+create function public.qorpera_get_shared_session_by_client(
+	p_environment_id uuid,
+	p_client_session_id uuid
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+	v_session public.qorpera_shared_sessions%rowtype;
+begin
+	select session.* into v_session
+	from public.qorpera_shared_sessions as session
+	where session.environment_id = p_environment_id
+		and session.client_session_id = p_client_session_id;
+	if not found or not public.qorpera_can_read_profile(v_session.profile_id) then
+		return null;
+	end if;
+	return public.qorpera_shared_session_json(v_session);
+end
+$$;
+
+-- Bound the legacy aggregate for older clients. New clients use the keyset
+-- page above, so routine sync never constructs company-lifetime JSON.
 create or replace function public.qorpera_list_shared_sessions(p_environment_id uuid)
 returns jsonb
 language sql
@@ -743,42 +1086,7 @@ stable
 security definer
 set search_path = ''
 as $$
-	select coalesce(
-		(
-			select case
-				when not public.qorpera_can_read_profile(environment.profile_id) then '[]'::jsonb
-				else coalesce(
-					(
-						select jsonb_agg(
-							jsonb_build_object(
-								'session_id', session.id,
-								'client_session_id', session.client_session_id,
-								'profile_id', session.profile_id,
-								'environment_id', session.environment_id,
-								'title', session.title,
-								'staff_agent_id', session.staff_agent_id,
-								'parent_session_id', session.parent_session_id,
-								'execution_scope', session.execution_scope,
-								'company_snapshot_id', session.company_snapshot_id,
-								'staff_version', session.staff_version,
-								'status', session.status,
-								'created_by_user_id', session.created_by_user_id,
-								'created_at', session.created_at,
-								'updated_at', session.updated_at
-							)
-							order by session.updated_at desc
-						)
-						from public.qorpera_shared_sessions as session
-						where session.environment_id = p_environment_id
-					),
-					'[]'::jsonb
-				)
-			end
-			from public.qorpera_company_environments as environment
-			where environment.id = p_environment_id
-		),
-		'[]'::jsonb
-	)
+	select coalesce(public.qorpera_list_shared_sessions_page(p_environment_id, null, null, 100) -> 'items', '[]'::jsonb)
 $$;
 
 create function public.qorpera_create_shared_session_v3(
@@ -911,6 +1219,21 @@ begin
 	for update;
 	if not (v_session.execution_scope ?| array['autonomousLabel', 'roomId', 'group', 'parentSession']) then
 		raise exception 'only operational trail sessions can be finalized' using errcode = '22023';
+	end if;
+	if v_session.created_by_user_id <> auth.uid() then
+		raise exception 'operational trail session belongs to another executor' using errcode = '42501';
+	end if;
+	if exists (
+		select 1
+		from public.qorpera_session_events as event
+		where event.session_id = v_session.id
+			and event.body ->> 'schema' = 'qorpera.shared-trail-entry-part/v1'
+		group by event.body ->> 'entryId', (event.body ->> 'partCount')::integer
+		having count(*) <> (event.body ->> 'partCount')::integer
+			or count(distinct (event.body ->> 'partIndex')::integer)
+				<> (event.body ->> 'partCount')::integer
+	) then
+		raise exception 'operational trail session has an incomplete multipart entry' using errcode = '55000';
 	end if;
 	update public.qorpera_shared_sessions
 	set status = 'closed', updated_at = statement_timestamp()
@@ -1053,12 +1376,14 @@ begin
 
 	return jsonb_build_object(
 		'session_id', v_session.id,
+		'client_session_id', v_session.client_session_id,
 		'environment_id', v_session.environment_id,
 		'title', v_session.title,
 		'company_snapshot_id', v_session.company_snapshot_id,
 		'staff_version', v_session.staff_version,
 		'created', v_created,
-		'created_by_user_id', v_session.created_by_user_id
+		'created_by_user_id', v_session.created_by_user_id,
+		'created_at', v_session.created_at
 	);
 end
 $$;
@@ -1067,18 +1392,25 @@ create table public.qorpera_session_turns (
 	id uuid primary key default extensions.gen_random_uuid(),
 	session_id uuid not null references public.qorpera_shared_sessions(id) on delete cascade,
 	claimant_id uuid not null,
+	claimed_by_user_id uuid not null references auth.users(id) on delete restrict,
 	company_snapshot_id uuid not null references public.qorpera_company_snapshots(id) on delete restrict,
 	staff_version bigint not null check (staff_version > 0),
 	input_ids uuid[] not null check (cardinality(input_ids) > 0),
-	status text not null default 'active' check (status in ('active', 'completed', 'quarantined')),
+	status text not null default 'active' check (status in ('active', 'completed', 'review_pending', 'quarantined')),
 	claimed_at timestamptz not null default statement_timestamp(),
 	lease_expires_at timestamptz not null,
 	trail_start_sequence bigint not null check (trail_start_sequence >= 0),
 	trail_end_sequence bigint check (trail_end_sequence is null or trail_end_sequence >= trail_start_sequence),
 	completed_at timestamptz,
 	failure_reason text check (failure_reason is null or char_length(failure_reason) between 1 and 2048),
+	review_resolution text check (review_resolution is null or review_resolution in ('retry', 'discard')),
+	review_resolved_by_user_id uuid references auth.users(id) on delete restrict,
+	review_resolved_at timestamptz,
 	check ((status = 'active') = (completed_at is null)),
-	check ((status = 'quarantined') = (failure_reason is not null))
+	check ((status = 'quarantined') = (failure_reason is not null)),
+	check ((review_resolution is null) = (review_resolved_at is null)),
+	check ((review_resolution is null) = (review_resolved_by_user_id is null)),
+	check (review_resolution is null or status = 'quarantined')
 );
 
 create unique index qorpera_session_turns_one_active
@@ -1095,6 +1427,10 @@ alter table public.qorpera_session_inputs
 	add column failed_at timestamptz,
 	add column failure_reason text check (failure_reason is null or char_length(failure_reason) between 1 and 2048),
 	add check ((failed_at is null) = (failure_reason is null));
+
+create index qorpera_session_inputs_claimable
+	on public.qorpera_session_inputs (session_id, position)
+	where completed_at is null and failed_at is null;
 
 -- Claiming selects and marks the bounded input batch before it can construct
 -- the immutable turn row. Defer this single reference until the RPC's
@@ -1120,6 +1456,8 @@ declare
 	v_image jsonb;
 	v_image_bytes bigint;
 	v_total_image_bytes bigint := 0;
+	v_pending_inputs integer;
+	v_pending_body_bytes bigint;
 begin
 	v_profile_id := public.qorpera_session_profile_for_write(p_session_id);
 	perform public.qorpera_lock_profile_gc_fence(v_profile_id);
@@ -1184,20 +1522,37 @@ begin
 		raise exception 'input body schema is invalid' using errcode = '22023';
 	end if;
 
-	insert into public.qorpera_session_inputs (session_id, client_input_id, kind, author_user_id, body)
-	values (p_session_id, p_client_input_id, 'user_message', v_user_id, p_body)
-	on conflict (session_id, client_input_id) do nothing
-	returning * into v_input;
-	if not found then
-		select input.* into v_input
-		from public.qorpera_session_inputs as input
-		where input.session_id = p_session_id and input.client_input_id = p_client_input_id;
+	-- Serialize producers for this session so the pending row/byte limits are
+	-- durable rather than a client-side estimate. Idempotent retries return the
+	-- original input before consuming queue capacity.
+	perform 1
+	from public.qorpera_shared_sessions as session
+	where session.id = p_session_id
+	for update;
+	select input.* into v_input
+	from public.qorpera_session_inputs as input
+	where input.session_id = p_session_id and input.client_input_id = p_client_input_id;
+	if found then
 		if v_input.author_user_id <> v_user_id
 			or v_input.kind <> 'user_message'
 			or v_input.body <> p_body then
 			raise exception 'client input id is already bound to different content' using errcode = '23505';
 		end if;
+		return jsonb_build_object('input_id', v_input.id, 'position', v_input.position);
 	end if;
+	select count(*), coalesce(sum(pg_column_size(input.body)), 0)
+	into v_pending_inputs, v_pending_body_bytes
+	from public.qorpera_session_inputs as input
+	where input.session_id = p_session_id
+		and input.completed_at is null
+		and input.failed_at is null;
+	if v_pending_inputs >= 512 or v_pending_body_bytes + pg_column_size(p_body) > 16777216 then
+		raise exception 'session queue capacity is reached' using errcode = '54000';
+	end if;
+
+	insert into public.qorpera_session_inputs (session_id, client_input_id, kind, author_user_id, body)
+	values (p_session_id, p_client_input_id, 'user_message', v_user_id, p_body)
+	returning * into v_input;
 	update public.qorpera_shared_sessions
 	set updated_at = statement_timestamp()
 	where id = p_session_id;
@@ -1233,6 +1588,7 @@ begin
 				on member.profile_id = v_profile_id and member.user_id = input.author_user_id
 			where input.session_id = p_session_id
 				and input.completed_at is null
+				and input.failed_at is null
 				and input.position > p_after_position
 			order by input.position
 			limit p_limit + 1
@@ -1254,6 +1610,12 @@ begin
 						when input.failed_at is not null then 'failed'
 						when input.claimant_id is not null and input.claim_expires_at > statement_timestamp()
 							then 'processing'
+						when input.execution_run_id is not null and exists (
+							select 1
+							from public.qorpera_execution_runs as run
+							join public.qorpera_runner_jobs as job on job.id = run.job_id
+							where run.id = input.execution_run_id and job.status in ('queued', 'leased')
+						) then 'processing'
 						else 'queued'
 					end
 				) order by input.position) from page as input
@@ -1280,6 +1642,7 @@ security definer
 set search_path = ''
 as $$
 declare
+	v_user_id uuid := auth.uid();
 	v_session public.qorpera_shared_sessions%rowtype;
 	v_file public.qorpera_company_files%rowtype;
 	v_current_staff_version bigint;
@@ -1328,13 +1691,21 @@ begin
 	if v_expired_turn_id is not null then
 		update public.qorpera_session_turns
 		set status = 'quarantined', completed_at = statement_timestamp(),
-			failure_reason = 'executor lease expired; review the prior run before retrying'
+			failure_reason = 'executor lease expired; review the prior run before retrying',
+			trail_end_sequence = (
+				select coalesce(max(event.sequence), 0)
+				from public.qorpera_session_events as event
+				where event.session_id = p_session_id
+			)
 		where id = v_expired_turn_id;
 		update public.qorpera_session_inputs
 		set failed_at = statement_timestamp(),
 			failure_reason = 'executor lease expired; review the prior run before retrying',
 			claim_expires_at = null
 		where turn_id = v_expired_turn_id and completed_at is null;
+		update public.qorpera_operation_receipts
+		set status = 'ambiguous', completed_at = statement_timestamp()
+		where execution_kind = 'turn' and execution_id = v_expired_turn_id and status = 'executing';
 	end if;
 
 	if exists (
@@ -1358,6 +1729,8 @@ begin
 		where input.session_id = p_session_id
 			and input.completed_at is null
 			and input.failed_at is null
+		order by input.position
+		limit 33
 	), marked as (
 		select pending.*,
 			min(pending.position) over () as first_position,
@@ -1422,10 +1795,10 @@ begin
 	from public.qorpera_session_events as event
 	where event.session_id = p_session_id;
 	insert into public.qorpera_session_turns (
-		id, session_id, claimant_id, company_snapshot_id, staff_version,
+		id, session_id, claimant_id, claimed_by_user_id, company_snapshot_id, staff_version,
 		input_ids, lease_expires_at, trail_start_sequence
 	) values (
-		v_turn_id, p_session_id, p_claimant_id, p_company_snapshot_id, p_staff_version,
+		v_turn_id, p_session_id, p_claimant_id, v_user_id, p_company_snapshot_id, p_staff_version,
 		v_input_ids, statement_timestamp() + make_interval(secs => p_lease_seconds),
 		v_trail_start_sequence
 	);
@@ -1456,6 +1829,7 @@ security definer
 set search_path = ''
 as $$
 declare
+	v_user_id uuid := auth.uid();
 	v_renewed integer;
 begin
 	perform public.qorpera_session_profile_for_write(p_session_id);
@@ -1467,6 +1841,7 @@ begin
 	where turn.id = p_turn_id
 		and turn.session_id = p_session_id
 		and turn.claimant_id = p_claimant_id
+		and turn.claimed_by_user_id = v_user_id
 		and turn.status = 'active'
 		and turn.lease_expires_at > statement_timestamp();
 	get diagnostics v_renewed = row_count;
@@ -1485,15 +1860,24 @@ create table public.qorpera_operation_receipts (
 	execution_kind text not null check (execution_kind in ('turn', 'wake')),
 	execution_id uuid not null,
 	claimant_id uuid not null,
+	claimed_by_user_id uuid not null references auth.users(id) on delete restrict,
 	operation_kind text not null check (operation_kind ~ '^[a-z][a-z0-9_]{0,63}$'),
 	input_sha256 text not null check (input_sha256 ~ '^[0-9a-f]{64}$'),
-	status text not null default 'executing' check (status in ('executing', 'completed')),
+	status text not null default 'executing' check (status in ('executing', 'completed', 'ambiguous', 'cancelled')),
 	result jsonb,
 	created_at timestamptz not null default statement_timestamp(),
 	completed_at timestamptz,
+	recovery_resolution text check (
+		recovery_resolution is null or recovery_resolution in ('confirmed_completed', 'confirmed_not_run')
+	),
+	recovery_resolved_by_user_id uuid references auth.users(id) on delete restrict,
+	recovery_resolved_at timestamptz,
 	unique (profile_id, execution_id, id),
-	check ((status = 'completed') = (completed_at is not null)),
-	check ((status = 'completed') = (result is not null))
+	check ((status = 'executing') = (completed_at is null)),
+	check ((status = 'completed') = (result is not null)),
+	check ((recovery_resolution is null) = (recovery_resolved_at is null)),
+	check ((recovery_resolution is null) = (recovery_resolved_by_user_id is null)),
+	check (recovery_resolution is null or status in ('completed', 'cancelled'))
 );
 
 create index qorpera_operation_receipts_execution
@@ -1545,6 +1929,7 @@ security definer
 set search_path = ''
 as $$
 declare
+	v_user_id uuid := auth.uid();
 	v_completed integer;
 	v_turn public.qorpera_session_turns%rowtype;
 begin
@@ -1554,6 +1939,7 @@ begin
 	where turn.id = p_turn_id and turn.session_id = p_session_id
 	for update;
 	if not found or v_turn.claimant_id <> p_claimant_id
+		or v_turn.claimed_by_user_id <> v_user_id
 		or v_turn.status <> 'active'
 		or v_turn.lease_expires_at <= statement_timestamp() then
 		return jsonb_build_object('completed', 0);
@@ -1627,6 +2013,7 @@ security definer
 set search_path = ''
 as $$
 declare
+	v_user_id uuid := auth.uid();
 	v_reason text := left(btrim(p_reason), 2048);
 	v_quarantined integer;
 begin
@@ -1635,10 +2022,16 @@ begin
 		raise exception 'quarantine reason is required' using errcode = '22023';
 	end if;
 	update public.qorpera_session_turns as turn
-	set status = 'quarantined', completed_at = statement_timestamp(), failure_reason = v_reason
+	set status = 'quarantined', completed_at = statement_timestamp(), failure_reason = v_reason,
+		trail_end_sequence = (
+			select coalesce(max(event.sequence), 0)
+			from public.qorpera_session_events as event
+			where event.session_id = p_session_id
+		)
 	where turn.id = p_turn_id
 		and turn.session_id = p_session_id
 		and turn.claimant_id = p_claimant_id
+		and turn.claimed_by_user_id = v_user_id
 		and turn.status = 'active'
 		and turn.lease_expires_at > statement_timestamp();
 	get diagnostics v_quarantined = row_count;
@@ -1647,8 +2040,261 @@ begin
 		set failed_at = statement_timestamp(), failure_reason = v_reason,
 			claim_expires_at = null
 		where turn_id = p_turn_id and completed_at is null;
+		update public.qorpera_operation_receipts
+		set status = 'ambiguous', completed_at = statement_timestamp()
+		where execution_kind = 'turn' and execution_id = p_turn_id and status = 'executing';
 	end if;
 	return jsonb_build_object('quarantined', v_quarantined);
+end
+$$;
+
+create function public.qorpera_list_session_recoveries(
+	p_session_id uuid,
+	p_after_completed_at timestamptz default null,
+	p_after_id uuid default null,
+	p_limit integer default 10
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+	v_profile_id uuid := public.qorpera_session_profile_id(p_session_id);
+begin
+	if v_profile_id is null or not public.qorpera_can_read_profile(v_profile_id) then
+		raise exception 'session recovery read access is required' using errcode = '42501';
+	end if;
+	if p_limit not between 1 and 20
+		or ((p_after_completed_at is null) is distinct from (p_after_id is null)) then
+		raise exception 'session recovery page is invalid' using errcode = '22023';
+	end if;
+	return (
+		with visible as (
+			select turn.*
+			from public.qorpera_session_turns as turn
+			where turn.session_id = p_session_id
+				and turn.status = 'quarantined'
+				and turn.review_resolution is null
+				and (
+					p_after_completed_at is null
+					or (turn.completed_at, turn.id) < (p_after_completed_at, p_after_id)
+				)
+			order by turn.completed_at desc, turn.id desc
+			limit p_limit + 1
+		), page as (
+			select * from visible order by completed_at desc, id desc limit p_limit
+		)
+		select jsonb_build_object(
+			'items', coalesce((
+				select jsonb_agg(jsonb_build_object(
+					'turn_id', turn.id,
+					'company_snapshot_id', turn.company_snapshot_id,
+					'staff_version', turn.staff_version,
+					'trail_start_sequence', turn.trail_start_sequence,
+					'trail_end_sequence', turn.trail_end_sequence,
+					'failure_reason', turn.failure_reason,
+					'claimed_at', turn.claimed_at,
+					'failed_at', turn.completed_at,
+					'operation_receipts', coalesce((
+						select jsonb_agg(jsonb_build_object(
+							'operation_id', receipt.id,
+							'operation_kind', receipt.operation_kind,
+							'status', receipt.status,
+							'recovery_resolution', receipt.recovery_resolution,
+							'created_at', receipt.created_at
+						) order by receipt.created_at, receipt.id)
+						from public.qorpera_operation_receipts as receipt
+						where receipt.profile_id = v_profile_id
+							and receipt.execution_kind = 'turn'
+							and receipt.execution_id = turn.id
+					), '[]'::jsonb),
+					'inputs', coalesce((
+						select jsonb_agg(jsonb_build_object(
+							'input_id', input.id,
+							'position', input.position,
+							'kind', input.kind,
+							'author_user_id', input.author_user_id,
+							'author_display_name', coalesce(member.display_name, 'Former company member'),
+							'body', input.body,
+							'created_at', input.created_at
+						) order by input.position)
+						from public.qorpera_session_inputs as input
+						left join public.qorpera_profile_members as member
+							on member.profile_id = v_profile_id and member.user_id = input.author_user_id
+						where input.turn_id = turn.id
+					), '[]'::jsonb)
+				) order by turn.completed_at desc, turn.id desc)
+				from page as turn
+			), '[]'::jsonb),
+			'has_more', (select count(*) > p_limit from visible),
+			'next_completed_at', (select min(completed_at) from page),
+			'next_id', (select id from page order by completed_at, id limit 1)
+		)
+	);
+end
+$$;
+
+create function public.qorpera_resolve_session_recovery(
+	p_session_id uuid,
+	p_turn_id uuid,
+	p_resolution text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_user_id uuid := auth.uid();
+	v_profile_id uuid := public.qorpera_session_profile_id(p_session_id);
+	v_turn public.qorpera_session_turns%rowtype;
+	v_input_count integer;
+begin
+	if v_profile_id is null or not public.qorpera_can_authorize_profile(v_profile_id) then
+		raise exception 'session recovery authorization is required' using errcode = '42501';
+	end if;
+	if p_resolution not in ('retry', 'discard') then
+		raise exception 'session recovery resolution is invalid' using errcode = '22023';
+	end if;
+	select turn.* into v_turn
+	from public.qorpera_session_turns as turn
+	where turn.id = p_turn_id and turn.session_id = p_session_id
+	for update;
+	if not found or v_turn.status <> 'quarantined' then
+		raise exception 'session recovery is unavailable' using errcode = '55000';
+	end if;
+	if v_turn.review_resolution is not null then
+		return jsonb_build_object('resolved', true, 'resolution', v_turn.review_resolution, 'input_count', 0);
+	end if;
+	if p_resolution = 'retry' and exists (
+		select 1 from public.qorpera_operation_receipts as receipt
+		where receipt.profile_id = v_profile_id
+			and receipt.execution_kind = 'turn'
+			and receipt.execution_id = p_turn_id
+			and receipt.status <> 'cancelled'
+	) then
+		raise exception 'session recovery has operation receipts; resolve or discard the prior effects before retrying'
+			using errcode = '55000';
+	end if;
+	if p_resolution = 'retry' then
+		update public.qorpera_session_inputs
+		set turn_id = null, claimant_id = null, claimed_at = null, claim_expires_at = null,
+			failed_at = null, failure_reason = null
+		where turn_id = p_turn_id and completed_at is null;
+		get diagnostics v_input_count = row_count;
+	else
+		update public.qorpera_session_inputs
+		set completed_at = statement_timestamp(), claim_expires_at = null
+		where turn_id = p_turn_id and completed_at is null;
+		get diagnostics v_input_count = row_count;
+		update public.qorpera_operation_receipts
+		set status = 'cancelled', completed_at = coalesce(completed_at, statement_timestamp())
+		where profile_id = v_profile_id
+			and execution_kind = 'turn'
+			and execution_id = p_turn_id
+			and status in ('executing', 'ambiguous');
+	end if;
+	update public.qorpera_session_turns
+	set review_resolution = p_resolution,
+		review_resolved_by_user_id = v_user_id,
+		review_resolved_at = statement_timestamp()
+	where id = p_turn_id;
+	update public.qorpera_shared_sessions
+	set updated_at = statement_timestamp()
+	where id = p_session_id;
+	return jsonb_build_object('resolved', true, 'resolution', p_resolution, 'input_count', v_input_count);
+end
+$$;
+
+create function public.qorpera_resolve_operation_receipt(
+	p_operation_id uuid,
+	p_resolution text,
+	p_result jsonb default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_user_id uuid := auth.uid();
+	v_receipt public.qorpera_operation_receipts%rowtype;
+	v_execution_terminal boolean := false;
+begin
+	select receipt.* into v_receipt
+	from public.qorpera_operation_receipts as receipt
+	where receipt.id = p_operation_id
+	for update;
+	if not found or not public.qorpera_can_authorize_profile(v_receipt.profile_id) then
+		raise exception 'operation recovery authorization is required' using errcode = '42501';
+	end if;
+	if p_resolution not in ('confirmed_completed', 'confirmed_not_run') then
+		raise exception 'operation recovery resolution is invalid' using errcode = '22023';
+	end if;
+	if v_receipt.recovery_resolution is not null then
+		if v_receipt.recovery_resolution <> p_resolution
+			or (p_resolution = 'confirmed_completed' and p_result is not null and v_receipt.result <> p_result) then
+			raise exception 'operation recovery is already bound to a different resolution' using errcode = '23505';
+		end if;
+		return jsonb_build_object(
+			'operation_id', v_receipt.id,
+			'status', v_receipt.status,
+			'resolution', v_receipt.recovery_resolution,
+			'result', v_receipt.result
+		);
+	end if;
+	if v_receipt.status not in ('executing', 'ambiguous') then
+		raise exception 'operation receipt does not require recovery' using errcode = '55000';
+	end if;
+	if v_receipt.execution_kind = 'turn' then
+		select turn.status = 'quarantined' into v_execution_terminal
+		from public.qorpera_session_turns as turn
+		where turn.id = v_receipt.execution_id;
+	else
+		select claim.failed_at is not null into v_execution_terminal
+		from public.qorpera_wake_claims as claim
+		where claim.execution_id = v_receipt.execution_id;
+	end if;
+	if coalesce(v_execution_terminal, false) is not true then
+		raise exception 'operation execution is still active' using errcode = '55000';
+	end if;
+	if p_resolution = 'confirmed_completed' then
+		if p_result is not null and (jsonb_typeof(p_result) <> 'object' or pg_column_size(p_result) > 524288) then
+			raise exception 'operation recovery result is invalid' using errcode = '22023';
+		end if;
+		update public.qorpera_operation_receipts
+		set status = 'completed',
+			result = coalesce(p_result, jsonb_build_object(
+				'message', 'An authorized reviewer confirmed that the operation completed.',
+				'recovered', true
+			)),
+			completed_at = coalesce(completed_at, statement_timestamp()),
+			recovery_resolution = p_resolution,
+			recovery_resolved_by_user_id = v_user_id,
+			recovery_resolved_at = statement_timestamp()
+		where id = p_operation_id
+		returning * into v_receipt;
+	else
+		if p_result is not null then
+			raise exception 'a confirmed-not-run operation cannot have a result' using errcode = '22023';
+		end if;
+		update public.qorpera_operation_receipts
+		set status = 'cancelled', result = null,
+			completed_at = coalesce(completed_at, statement_timestamp()),
+			recovery_resolution = p_resolution,
+			recovery_resolved_by_user_id = v_user_id,
+			recovery_resolved_at = statement_timestamp()
+		where id = p_operation_id
+		returning * into v_receipt;
+	end if;
+	return jsonb_build_object(
+		'operation_id', v_receipt.id,
+		'status', v_receipt.status,
+		'resolution', v_receipt.recovery_resolution,
+		'result', v_receipt.result
+	);
 end
 $$;
 
@@ -1664,6 +2310,7 @@ security definer
 set search_path = ''
 as $$
 declare
+	v_user_id uuid := auth.uid();
 	v_turn public.qorpera_session_turns%rowtype;
 begin
 	perform public.qorpera_session_profile_for_write(p_session_id);
@@ -1671,7 +2318,8 @@ begin
 	from public.qorpera_session_turns as turn
 	where turn.id = p_turn_id
 		and turn.session_id = p_session_id
-		and turn.claimant_id = p_claimant_id;
+		and turn.claimant_id = p_claimant_id
+		and turn.claimed_by_user_id = v_user_id;
 	if not found then
 		return jsonb_build_object('status', 'unavailable');
 	end if;
@@ -1692,6 +2340,7 @@ alter table public.qorpera_wake_claims
 	add column staff_agent_id uuid,
 	add column staff_version bigint check (staff_version is null or staff_version > 0),
 	add column execution_id uuid not null default extensions.gen_random_uuid(),
+	add column claimed_by_user_id uuid references auth.users(id) on delete restrict,
 	add column failed_at timestamptz,
 	add column failure_reason text check (failure_reason is null or char_length(failure_reason) between 1 and 2048),
 	add check ((failed_at is null) = (failure_reason is null));
@@ -1711,6 +2360,7 @@ security definer
 set search_path = ''
 as $$
 declare
+	v_user_id uuid := auth.uid();
 	v_profile_id uuid := public.qorpera_wake_profile_for_write(p_environment_id);
 	v_wake_key text := btrim(p_wake_key);
 	v_current_snapshot_id uuid;
@@ -1744,18 +2394,13 @@ begin
 		return jsonb_build_object('claimed', false, 'reason', 'stale-revision');
 	end if;
 
-	delete from public.qorpera_wake_claims
-	where profile_id = v_profile_id
-		and completed_at is not null
-		and completed_at < statement_timestamp() - interval '30 days';
-
 	insert into public.qorpera_wake_claims (
 		profile_id, wake_key, claimant_id, claim_expires_at,
-		company_snapshot_id, staff_agent_id, staff_version
+		company_snapshot_id, staff_agent_id, staff_version, claimed_by_user_id
 	) values (
 		v_profile_id, v_wake_key, p_claimant_id,
 		statement_timestamp() + make_interval(secs => p_lease_seconds),
-		p_company_snapshot_id, p_staff_agent_id, p_staff_version
+		p_company_snapshot_id, p_staff_agent_id, p_staff_version, v_user_id
 	)
 	on conflict (profile_id, wake_key) do nothing
 	returning * into v_existing;
@@ -1779,7 +2424,8 @@ begin
 		return jsonb_build_object('claimed', false, 'reason', 'already-run');
 	end if;
 	if v_existing.claim_expires_at > statement_timestamp() then
-		if v_existing.claimant_id is distinct from p_claimant_id then
+		if v_existing.claimant_id is distinct from p_claimant_id
+			or v_existing.claimed_by_user_id is distinct from v_user_id then
 			return jsonb_build_object('claimed', false, 'reason', 'in-flight');
 		end if;
 		if v_existing.company_snapshot_id is distinct from p_company_snapshot_id
@@ -1798,6 +2444,7 @@ begin
 
 	update public.qorpera_wake_claims
 	set claimant_id = p_claimant_id,
+		claimed_by_user_id = v_user_id,
 		claimed_at = statement_timestamp(),
 		claim_expires_at = statement_timestamp() + make_interval(secs => p_lease_seconds),
 		company_snapshot_id = p_company_snapshot_id,
@@ -1827,6 +2474,7 @@ security definer
 set search_path = ''
 as $$
 declare
+	v_user_id uuid := auth.uid();
 	v_profile_id uuid;
 	v_receipt public.qorpera_operation_receipts%rowtype;
 	v_started boolean := false;
@@ -1836,11 +2484,13 @@ begin
 		from public.qorpera_session_turns as turn
 		join public.qorpera_shared_sessions as session on session.id = turn.session_id
 		where turn.id = p_execution_id and turn.claimant_id = p_claimant_id
+			and turn.claimed_by_user_id = v_user_id
 			and turn.status = 'active' and turn.lease_expires_at > statement_timestamp();
 	elsif p_execution_kind = 'wake' then
 		select claim.profile_id into v_profile_id
 		from public.qorpera_wake_claims as claim
 		where claim.execution_id = p_execution_id and claim.claimant_id = p_claimant_id
+			and claim.claimed_by_user_id = v_user_id
 			and claim.completed_at is null and claim.claim_expires_at > statement_timestamp();
 	else
 		raise exception 'operation execution kind is invalid' using errcode = '22023';
@@ -1886,10 +2536,10 @@ begin
 		raise exception 'execution has an unresolved operation receipt' using errcode = '55000';
 	end if;
 	insert into public.qorpera_operation_receipts (
-		id, profile_id, execution_kind, execution_id, claimant_id, operation_kind, input_sha256
+		id, profile_id, execution_kind, execution_id, claimant_id, claimed_by_user_id, operation_kind, input_sha256
 	) values (
 		p_operation_id, v_profile_id, p_execution_kind, p_execution_id,
-		p_claimant_id, p_operation_kind, p_input_sha256
+		p_claimant_id, v_user_id, p_operation_kind, p_input_sha256
 	)
 	returning * into v_receipt;
 	v_started := true;
@@ -1913,6 +2563,7 @@ security definer
 set search_path = ''
 as $$
 declare
+	v_user_id uuid := auth.uid();
 	v_receipt public.qorpera_operation_receipts%rowtype;
 	v_object_count integer;
 	v_inserted_count integer;
@@ -1936,7 +2587,9 @@ begin
 	where receipt.id = p_operation_id and receipt.execution_id = p_execution_id
 	for update;
 	if not found or not public.qorpera_can_write_profile(v_receipt.profile_id)
-		or v_receipt.claimant_id <> p_claimant_id or v_receipt.status <> 'executing' then
+		or v_receipt.claimant_id <> p_claimant_id
+		or v_receipt.claimed_by_user_id <> v_user_id
+		or v_receipt.status <> 'executing' then
 		raise exception 'live operation receipt ownership is required' using errcode = '42501';
 	end if;
 	select count(distinct item.value ->> 'sha256') into v_object_count
@@ -1972,6 +2625,7 @@ security definer
 set search_path = ''
 as $$
 declare
+	v_user_id uuid := auth.uid();
 	v_receipt public.qorpera_operation_receipts%rowtype;
 begin
 	if p_result is null or jsonb_typeof(p_result) <> 'object' or pg_column_size(p_result) > 524288 then
@@ -1981,7 +2635,8 @@ begin
 	from public.qorpera_operation_receipts as receipt
 	where receipt.id = p_operation_id and receipt.execution_id = p_execution_id
 	for update;
-	if not found or not public.qorpera_can_write_profile(v_receipt.profile_id) then
+	if not found or not public.qorpera_can_write_profile(v_receipt.profile_id)
+		or v_receipt.claimed_by_user_id <> v_user_id then
 		raise exception 'operation receipt access is required' using errcode = '42501';
 	end if;
 	if v_receipt.status = 'completed' then
@@ -2034,6 +2689,7 @@ security definer
 set search_path = ''
 as $$
 declare
+	v_user_id uuid := auth.uid();
 	v_profile_id uuid := public.qorpera_wake_profile_for_write(p_environment_id);
 	v_renewed integer;
 begin
@@ -2046,6 +2702,7 @@ begin
 	where claim.profile_id = v_profile_id
 		and claim.wake_key = btrim(p_wake_key)
 		and claim.claimant_id = p_claimant_id
+		and claim.claimed_by_user_id = v_user_id
 		and claim.completed_at is null
 		and claim.claim_expires_at > statement_timestamp()
 		and staff.profile_id = claim.profile_id
@@ -2067,6 +2724,7 @@ security definer
 set search_path = ''
 as $$
 declare
+	v_user_id uuid := auth.uid();
 	v_profile_id uuid := public.qorpera_wake_profile_for_write(p_environment_id);
 	v_completed integer;
 begin
@@ -2080,6 +2738,7 @@ begin
 		where claim.profile_id = v_profile_id
 			and claim.wake_key = btrim(p_wake_key)
 			and claim.claimant_id = p_claimant_id
+			and claim.claimed_by_user_id = v_user_id
 			and receipt.status = 'executing'
 	) then
 		raise exception 'wake has an unresolved operation receipt' using errcode = '55000';
@@ -2090,6 +2749,7 @@ begin
 	where claim.profile_id = v_profile_id
 		and claim.wake_key = btrim(p_wake_key)
 		and claim.claimant_id = p_claimant_id
+		and claim.claimed_by_user_id = v_user_id
 		and claim.completed_at is null
 		and claim.claim_expires_at > statement_timestamp()
 		and staff.profile_id = claim.profile_id
@@ -2126,6 +2786,9 @@ declare
 	v_event_hash text;
 	v_created_at timestamptz := statement_timestamp();
 	v_execution_valid boolean := false;
+	v_body_schema text;
+	v_entry jsonb;
+	v_entry_type text;
 begin
 	if v_user_id is null then
 		raise exception 'authentication required' using errcode = '42501';
@@ -2140,13 +2803,96 @@ begin
 	) then
 		raise exception 'session event type is invalid' using errcode = '22023';
 	end if;
-	if p_body is null or octet_length(convert_to(p_body::text, 'utf8')) > 262144 then
+	if p_body is null
+		or jsonb_typeof(p_body) <> 'object'
+		or octet_length(convert_to(p_body::text, 'utf8')) > 262144 then
 		raise exception 'session event body is invalid or too large' using errcode = '22023';
 	end if;
 	if (p_execution_kind is null) is distinct from (p_execution_id is null)
 		or (p_execution_kind is null) is distinct from (p_execution_claimant_id is null)
 		or (p_execution_kind is not null and p_execution_kind not in ('turn', 'wake')) then
 		raise exception 'session event execution identity is invalid' using errcode = '22023';
+	end if;
+	if p_execution_kind is null and p_event_type <> 'session_info' then
+		raise exception 'content-bearing session events require a durable execution' using errcode = '42501';
+	end if;
+
+	-- Account-authored trail events use one of two closed envelopes. Session
+	-- metadata is the only unbound event, and multipart content must be tied to
+	-- a live execution. In particular, an outer session_info event must never
+	-- smuggle an assembled message past the execution fence.
+	v_body_schema := p_body ->> 'schema';
+	if v_body_schema = 'qorpera.shared-session/v1' then
+		v_entry := p_body -> 'entry';
+		if jsonb_typeof(v_entry) <> 'object' then
+			raise exception 'session metadata body is invalid' using errcode = '22023';
+		end if;
+		if p_event_type <> 'session_info'
+			or not (p_body ?& array['schema', 'entry'])
+			or (p_body - 'schema' - 'entry') <> '{}'::jsonb
+			or not (v_entry ?& array['type', 'id', 'parentId', 'timestamp', 'name'])
+			or (v_entry - 'type' - 'id' - 'parentId' - 'timestamp' - 'name') <> '{}'::jsonb
+			or v_entry ->> 'type' <> 'session_info'
+			or jsonb_typeof(v_entry -> 'id') <> 'string'
+			or char_length(v_entry ->> 'id') not between 1 and 512
+			or jsonb_typeof(v_entry -> 'parentId') not in ('null', 'string')
+			or jsonb_typeof(v_entry -> 'timestamp') <> 'string'
+			or char_length(v_entry ->> 'timestamp') not between 1 and 64
+			or jsonb_typeof(v_entry -> 'name') <> 'string'
+			or char_length(v_entry ->> 'name') not between 1 and 256 then
+			raise exception 'session metadata body is invalid' using errcode = '22023';
+		end if;
+	elsif v_body_schema = 'qorpera.shared-trail-entry-part/v1' then
+		v_entry_type := p_body ->> 'entryType';
+		if p_execution_kind is null then
+			raise exception 'multipart session events require a durable execution' using errcode = '42501';
+		end if;
+		if not (p_body ?& array['schema', 'entryId', 'entryType', 'partIndex', 'partCount', 'payloadBase64'])
+			or (p_body - 'schema' - 'entryId' - 'entryType' - 'partIndex' - 'partCount' - 'payloadBase64') <> '{}'::jsonb
+			or jsonb_typeof(p_body -> 'entryId') <> 'string'
+			or char_length(p_body ->> 'entryId') not between 1 and 512
+			or jsonb_typeof(p_body -> 'entryType') <> 'string'
+			or char_length(v_entry_type) not between 1 and 128
+			or jsonb_typeof(p_body -> 'partIndex') <> 'number'
+			or (p_body ->> 'partIndex') !~ '^(0|[1-9][0-9]*)$'
+			or jsonb_typeof(p_body -> 'partCount') <> 'number'
+			or (p_body ->> 'partCount') !~ '^[1-9][0-9]*$'
+			or jsonb_typeof(p_body -> 'payloadBase64') <> 'string'
+			or char_length(p_body ->> 'payloadBase64') not between 4 and 240000
+			or char_length(p_body ->> 'payloadBase64') % 4 <> 0
+			or (p_body ->> 'payloadBase64') !~ '^[A-Za-z0-9+/]*={0,2}$'
+			or (p_event_type = 'message' and v_entry_type <> 'message')
+			or (p_event_type = 'session_info' and v_entry_type = 'message')
+			or (p_event_type not in ('message', 'session_info') and v_entry_type <> 'custom') then
+			raise exception 'session entry part body is invalid' using errcode = '22023';
+		end if;
+		if (p_body ->> 'partIndex')::numeric < 0
+			or (p_body ->> 'partCount')::numeric > 128
+			or (p_body ->> 'partIndex')::numeric >= (p_body ->> 'partCount')::numeric then
+			raise exception 'session entry part body is invalid' using errcode = '22023';
+		end if;
+	else
+		raise exception 'session event schema is invalid' using errcode = '22023';
+	end if;
+	if p_execution_kind is null then
+		select session.* into v_session
+		from public.qorpera_shared_sessions as session
+		where session.id = p_session_id;
+		if not found or not public.qorpera_can_write_profile(v_session.profile_id) then
+			raise exception 'profile write access is required' using errcode = '42501';
+		end if;
+		if p_body #>> '{entry,id}' <> 'cloud-session-info:' || v_session.client_session_id::text
+			or p_body #>> '{entry,name}' <> v_session.title
+			or jsonb_typeof(p_body #> '{entry,parentId}') <> 'null' then
+			raise exception 'session metadata does not match the hosted session' using errcode = '22023';
+		end if;
+		begin
+			if (p_body #>> '{entry,timestamp}')::timestamptz is distinct from v_session.created_at then
+				raise exception 'session metadata does not match the hosted session' using errcode = '22023';
+			end if;
+		exception when invalid_datetime_format or datetime_field_overflow then
+			raise exception 'session metadata does not match the hosted session' using errcode = '22023';
+		end;
 	end if;
 
 	select event.* into v_existing
@@ -2160,6 +2906,9 @@ begin
 			or v_existing.execution_id is distinct from p_execution_id
 			or v_existing.execution_claimant_id is distinct from p_execution_claimant_id then
 			raise exception 'event id is already bound to different content' using errcode = '23505';
+		end if;
+		if v_existing.actor_user_id <> v_user_id and p_execution_kind is not null then
+			raise exception 'session event belongs to another member' using errcode = '42501';
 		end if;
 		if not public.qorpera_can_write_profile(public.qorpera_session_profile_id(p_session_id)) then
 			raise exception 'profile write access is required' using errcode = '42501';
@@ -2205,8 +2954,11 @@ begin
 			where turn.id = p_execution_id
 				and turn.session_id = p_session_id
 				and turn.claimant_id = p_execution_claimant_id
+				and turn.claimed_by_user_id = v_user_id
 				and turn.status = 'active'
 				and turn.lease_expires_at > statement_timestamp()
+				and turn.company_snapshot_id = v_session.company_snapshot_id
+				and turn.staff_version = v_session.staff_version
 		) into v_execution_valid;
 	elsif p_execution_kind = 'wake' then
 		select exists (
@@ -2215,21 +2967,18 @@ begin
 			where claim.execution_id = p_execution_id
 				and claim.profile_id = v_session.profile_id
 				and claim.claimant_id = p_execution_claimant_id
+				and claim.claimed_by_user_id = v_user_id
 				and claim.completed_at is null
 				and claim.claim_expires_at > statement_timestamp()
+				and claim.company_snapshot_id = v_session.company_snapshot_id
+				and claim.staff_version = v_session.staff_version
 				and (
 					v_session.staff_agent_id is null
 					or v_session.staff_agent_id = claim.staff_agent_id::text
 				)
 		) into v_execution_valid;
 	else
-		v_execution_valid := not exists (
-			select 1
-			from public.qorpera_session_turns as turn
-			where turn.session_id = p_session_id
-				and turn.status = 'active'
-				and turn.lease_expires_at > statement_timestamp()
-		);
+		v_execution_valid := p_event_type = 'session_info';
 	end if;
 	if not v_execution_valid then
 		raise exception 'live trail execution claim is required' using errcode = '42501';
@@ -2296,6 +3045,604 @@ begin
 end
 $$;
 
+create function public.qorpera_company_proposal_json(p_proposal public.qorpera_company_proposals)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	select jsonb_build_object(
+		'proposal_id', p_proposal.id,
+		'profile_id', p_proposal.profile_id,
+		'environment_id', p_proposal.environment_id,
+		'client_proposal_id', p_proposal.client_proposal_id,
+		'base_snapshot_id', p_proposal.base_snapshot_id,
+		'proposal_snapshot', public.qorpera_company_snapshot_json(snapshot),
+		'execution_kind', p_proposal.execution_kind,
+		'execution_id', p_proposal.execution_id,
+		'session_id', p_proposal.session_id,
+		'trail_end_sequence', p_proposal.trail_end_sequence,
+		'reason', p_proposal.reason,
+		'policy_key', p_proposal.policy_key,
+		'title', p_proposal.title,
+		'reviewer_staff_ids', to_jsonb(p_proposal.reviewer_staff_ids),
+		'status', p_proposal.status,
+		'created_by_user_id', p_proposal.created_by_user_id,
+		'created_by_name', coalesce(member.display_name, 'Former company member'),
+		'created_at', p_proposal.created_at,
+		'resolved_by_user_id', p_proposal.resolved_by_user_id,
+		'resolved_at', p_proposal.resolved_at
+	)
+	from public.qorpera_company_snapshots as snapshot
+	left join public.qorpera_profile_members as member
+		on member.profile_id = p_proposal.profile_id and member.user_id = p_proposal.created_by_user_id
+	where snapshot.id = p_proposal.proposal_snapshot_id
+$$;
+
+revoke all on function public.qorpera_company_proposal_json(public.qorpera_company_proposals)
+	from public, anon, authenticated;
+
+create function public.qorpera_submit_company_proposal(
+	p_environment_id uuid,
+	p_client_proposal_id uuid,
+	p_proposal_snapshot_id uuid,
+	p_execution_kind text,
+	p_execution_id uuid,
+	p_execution_claimant_id uuid,
+	p_session_id uuid,
+	p_trail_end_sequence bigint,
+	p_reason text,
+	p_policy_key text,
+	p_title text,
+	p_reviewer_staff_ids uuid[] default '{}'::uuid[]
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_user_id uuid := auth.uid();
+	v_file public.qorpera_company_files%rowtype;
+	v_snapshot public.qorpera_company_snapshots%rowtype;
+	v_publication public.qorpera_company_snapshot_publications%rowtype;
+	v_turn public.qorpera_session_turns%rowtype;
+	v_wake public.qorpera_wake_claims%rowtype;
+	v_session public.qorpera_shared_sessions%rowtype;
+	v_proposal public.qorpera_company_proposals%rowtype;
+	v_base_snapshot_id uuid;
+	v_completed integer;
+begin
+	select file.* into v_file
+	from public.qorpera_company_files as file
+	where file.environment_id = p_environment_id
+	for share;
+	if v_user_id is null or not found or not public.qorpera_can_write_profile(v_file.profile_id) then
+		raise exception 'company proposal write access is required' using errcode = '42501';
+	end if;
+	if p_client_proposal_id is null or p_proposal_snapshot_id is null
+		or p_execution_kind not in ('turn', 'wake')
+		or p_execution_id is null or p_execution_claimant_id is null
+		or p_session_id is null or p_trail_end_sequence < 0
+		or p_reason not in ('policy', 'authority', 'conflict', 'recovery')
+		or char_length(btrim(p_title)) not between 1 and 256
+		or (p_policy_key is not null and char_length(btrim(p_policy_key)) not between 1 and 128)
+		or cardinality(coalesce(p_reviewer_staff_ids, '{}'::uuid[])) > 20 then
+		raise exception 'company proposal is invalid' using errcode = '22023';
+	end if;
+	-- A committed submission may have transitioned the execution before its
+	-- response reached the client. Resolve exact replays before requiring the
+	-- now-finished lease so retry remains idempotent after process/network loss.
+	select proposal.* into v_proposal
+	from public.qorpera_company_proposals as proposal
+	where proposal.profile_id = v_file.profile_id
+		and proposal.client_proposal_id = p_client_proposal_id;
+	if found then
+		if v_proposal.proposal_snapshot_id <> p_proposal_snapshot_id
+			or v_proposal.execution_kind <> p_execution_kind
+			or v_proposal.execution_id <> p_execution_id
+			or v_proposal.execution_claimant_id <> p_execution_claimant_id
+			or v_proposal.session_id <> p_session_id
+			or v_proposal.trail_end_sequence <> p_trail_end_sequence
+			or v_proposal.reason <> p_reason
+			or v_proposal.policy_key is distinct from nullif(btrim(p_policy_key), '')
+			or v_proposal.title <> btrim(p_title)
+			or v_proposal.reviewer_staff_ids is distinct from coalesce(p_reviewer_staff_ids, '{}'::uuid[])
+			or v_proposal.created_by_user_id <> v_user_id then
+			raise exception 'company proposal id is already bound to different content' using errcode = '23505';
+		end if;
+		return public.qorpera_company_proposal_json(v_proposal);
+	end if;
+	if exists (
+		select 1 from unnest(coalesce(p_reviewer_staff_ids, '{}'::uuid[])) as requested(staff_agent_id)
+		where not exists (
+			select 1 from public.qorpera_profile_staff as staff
+			where staff.profile_id = v_file.profile_id
+				and staff.staff_agent_id = requested.staff_agent_id
+				and staff.employment_status = 'active'
+		)
+	) then
+		raise exception 'company proposal reviewer is unavailable' using errcode = '22023';
+	end if;
+	select snapshot.* into v_snapshot
+	from public.qorpera_company_snapshots as snapshot
+	join public.qorpera_company_snapshot_publications as publication on publication.snapshot_id = snapshot.id
+	where snapshot.id = p_proposal_snapshot_id
+		and snapshot.profile_id = v_file.profile_id
+		and snapshot.environment_id = v_file.environment_id
+		and snapshot.workspace_id = v_file.canonical_workspace_id
+		and publication.status = 'prepared';
+	if not found then
+		raise exception 'company proposal snapshot is not durably verified' using errcode = '55000';
+	end if;
+	select publication.* into strict v_publication
+	from public.qorpera_company_snapshot_publications as publication
+	where publication.snapshot_id = v_snapshot.id;
+	if not public.qorpera_object_root_has_current_proof('company_snapshot', v_snapshot.id)
+		or v_publication.restricted_content_sha256 is null then
+		raise exception 'company proposal snapshot is not durably verified' using errcode = '55000';
+	end if;
+	select session.* into v_session
+	from public.qorpera_shared_sessions as session
+	where session.id = p_session_id and session.profile_id = v_file.profile_id;
+	if not found then
+		raise exception 'company proposal session is invalid' using errcode = '22023';
+	end if;
+
+	if p_execution_kind = 'turn' then
+		select turn.* into v_turn
+		from public.qorpera_session_turns as turn
+		where turn.id = p_execution_id and turn.session_id = p_session_id
+		for update;
+		if not found or v_turn.claimant_id <> p_execution_claimant_id
+			or v_turn.claimed_by_user_id <> v_user_id
+			or v_turn.status <> 'active'
+			or v_turn.lease_expires_at <= statement_timestamp() then
+			raise exception 'live proposal execution is required' using errcode = '42501';
+		end if;
+		v_base_snapshot_id := v_turn.company_snapshot_id;
+		if p_trail_end_sequence < v_turn.trail_start_sequence
+			or (p_trail_end_sequence > 0 and not exists (
+				select 1 from public.qorpera_session_events as event
+				where event.session_id = p_session_id and event.sequence = p_trail_end_sequence
+			))
+			or exists (
+				select 1 from public.qorpera_session_events as event
+				where event.session_id = p_session_id
+					and event.sequence > v_turn.trail_start_sequence
+					and event.sequence <= p_trail_end_sequence
+					and (
+						event.execution_kind is distinct from 'turn'
+						or event.execution_id is distinct from v_turn.id
+						or event.execution_claimant_id is distinct from v_turn.claimant_id
+					)
+			)
+			or (
+				select count(*) from public.qorpera_session_events as event
+				where event.session_id = p_session_id
+					and event.sequence > v_turn.trail_start_sequence
+					and event.sequence <= p_trail_end_sequence
+			) <> p_trail_end_sequence - v_turn.trail_start_sequence then
+			raise exception 'company proposal trail boundary is invalid' using errcode = '22023';
+		end if;
+	else
+		select claim.* into v_wake
+		from public.qorpera_wake_claims as claim
+		where claim.execution_id = p_execution_id and claim.profile_id = v_file.profile_id
+		for update;
+		if not found or v_wake.claimant_id <> p_execution_claimant_id
+			or v_wake.claimed_by_user_id <> v_user_id
+			or v_wake.completed_at is not null
+			or v_wake.claim_expires_at <= statement_timestamp() then
+			raise exception 'live proposal execution is required' using errcode = '42501';
+		end if;
+		v_base_snapshot_id := v_wake.company_snapshot_id;
+		if exists (
+			select 1 from public.qorpera_session_events as event
+			where event.session_id = p_session_id and event.sequence <= p_trail_end_sequence
+				and event.event_type <> 'session_info'
+				and (
+					event.execution_kind is distinct from 'wake'
+					or event.execution_id is distinct from v_wake.execution_id
+					or event.execution_claimant_id is distinct from v_wake.claimant_id
+				)
+		) then
+			raise exception 'company proposal trail boundary is invalid' using errcode = '22023';
+		end if;
+	end if;
+	if v_snapshot.parent_snapshot_id is distinct from v_base_snapshot_id
+		or v_publication.expected_head_snapshot_id is distinct from v_base_snapshot_id then
+		raise exception 'company proposal does not match its execution snapshot' using errcode = '22023';
+	end if;
+	if exists (
+		select 1 from public.qorpera_operation_receipts as receipt
+		where receipt.profile_id = v_file.profile_id
+			and receipt.execution_kind = p_execution_kind
+			and receipt.execution_id = p_execution_id
+			and receipt.status = 'executing'
+	) then
+		raise exception 'company proposal has an unresolved operation receipt' using errcode = '55000';
+	end if;
+
+	insert into public.qorpera_company_proposals (
+		profile_id, environment_id, client_proposal_id, base_snapshot_id,
+		proposal_snapshot_id, execution_kind, execution_id, execution_claimant_id,
+		session_id, trail_end_sequence, reason, policy_key, title,
+		reviewer_staff_ids, created_by_user_id
+	) values (
+		v_file.profile_id, v_file.environment_id, p_client_proposal_id, v_base_snapshot_id,
+		v_snapshot.id, p_execution_kind, p_execution_id, p_execution_claimant_id,
+		p_session_id, p_trail_end_sequence, p_reason, nullif(btrim(p_policy_key), ''),
+		btrim(p_title), coalesce(p_reviewer_staff_ids, '{}'::uuid[]), v_user_id
+	)
+	on conflict (profile_id, client_proposal_id) do nothing
+	returning * into v_proposal;
+	if not found then
+		select proposal.* into strict v_proposal
+		from public.qorpera_company_proposals as proposal
+		where proposal.profile_id = v_file.profile_id and proposal.client_proposal_id = p_client_proposal_id;
+		if v_proposal.proposal_snapshot_id <> p_proposal_snapshot_id
+			or v_proposal.execution_kind <> p_execution_kind
+			or v_proposal.execution_id <> p_execution_id
+			or v_proposal.execution_claimant_id <> p_execution_claimant_id
+			or v_proposal.session_id <> p_session_id
+			or v_proposal.trail_end_sequence <> p_trail_end_sequence
+			or v_proposal.reason <> p_reason
+			or v_proposal.policy_key is distinct from nullif(btrim(p_policy_key), '')
+			or v_proposal.title <> btrim(p_title)
+			or v_proposal.reviewer_staff_ids is distinct from coalesce(p_reviewer_staff_ids, '{}'::uuid[])
+			or v_proposal.created_by_user_id <> v_user_id then
+			raise exception 'company proposal id is already bound to different content' using errcode = '23505';
+		end if;
+		return public.qorpera_company_proposal_json(v_proposal);
+	end if;
+
+	if p_execution_kind = 'turn' then
+		update public.qorpera_session_inputs
+		set completed_at = statement_timestamp(), claim_expires_at = null
+		where turn_id = p_execution_id and completed_at is null and failed_at is null;
+		get diagnostics v_completed = row_count;
+		if v_completed <> cardinality(v_turn.input_ids) then
+			raise exception 'company proposal inputs changed before submission' using errcode = '40001';
+		end if;
+		update public.qorpera_session_turns
+		set status = 'review_pending', completed_at = statement_timestamp(),
+			trail_end_sequence = p_trail_end_sequence
+		where id = p_execution_id;
+	else
+		update public.qorpera_wake_claims
+		set completed_at = statement_timestamp()
+		where execution_id = p_execution_id;
+	end if;
+	return public.qorpera_company_proposal_json(v_proposal);
+end
+$$;
+
+create function public.qorpera_list_company_proposals(
+	p_environment_id uuid,
+	p_status text default 'open',
+	p_after_created_at timestamptz default null,
+	p_after_id uuid default null,
+	p_limit integer default 50
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+	v_profile_id uuid;
+begin
+	select file.profile_id into v_profile_id
+	from public.qorpera_company_files as file where file.environment_id = p_environment_id;
+	if v_profile_id is null or not public.qorpera_can_read_profile(v_profile_id) then
+		raise exception 'company proposal read access is required' using errcode = '42501';
+	end if;
+	if p_status not in ('open', 'accepted', 'rejected') or p_limit not between 1 and 100
+		or ((p_after_created_at is null) is distinct from (p_after_id is null)) then
+		raise exception 'company proposal page is invalid' using errcode = '22023';
+	end if;
+	return (
+		with visible as (
+			select proposal.*
+			from public.qorpera_company_proposals as proposal
+			where proposal.environment_id = p_environment_id and proposal.status = p_status
+				and (p_after_created_at is null or (proposal.created_at, proposal.id) < (p_after_created_at, p_after_id))
+			order by proposal.created_at desc, proposal.id desc
+			limit p_limit + 1
+		), page as (
+			select * from visible order by created_at desc, id desc limit p_limit
+		)
+		select jsonb_build_object(
+			'items', coalesce((select jsonb_agg(public.qorpera_company_proposal_json(proposal)
+				order by proposal.created_at desc, proposal.id desc) from page as proposal), '[]'::jsonb),
+			'has_more', (select count(*) > p_limit from visible),
+			'next_created_at', (select min(created_at) from page),
+			'next_id', (select id from page order by created_at, id limit 1)
+		)
+	);
+end
+$$;
+
+create function public.qorpera_accept_company_proposal(
+	p_proposal_id uuid,
+	p_expected_proposal_snapshot_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_user_id uuid := auth.uid();
+	v_proposal public.qorpera_company_proposals%rowtype;
+begin
+	select proposal.* into v_proposal
+	from public.qorpera_company_proposals as proposal
+	where proposal.id = p_proposal_id
+	for update;
+	if not found or not public.qorpera_can_authorize_profile(v_proposal.profile_id) then
+		raise exception 'company proposal authorization is required' using errcode = '42501';
+	end if;
+	if v_proposal.proposal_snapshot_id is distinct from p_expected_proposal_snapshot_id then
+		raise exception 'company proposal changed before acceptance' using errcode = '40001';
+	end if;
+	if v_proposal.status = 'accepted' then
+		return public.qorpera_company_proposal_json(v_proposal);
+	end if;
+	if v_proposal.status <> 'open' then
+		raise exception 'company proposal was resolved before acceptance' using errcode = '40001';
+	end if;
+	update public.qorpera_company_proposals
+	set status = 'accepted', resolved_by_user_id = v_user_id, resolved_at = statement_timestamp()
+	where id = v_proposal.id
+	returning * into v_proposal;
+	perform public.qorpera_publish_company_file_revision(
+		v_proposal.environment_id, v_proposal.proposal_snapshot_id, v_proposal.base_snapshot_id
+	);
+	return public.qorpera_company_proposal_json(v_proposal);
+end
+$$;
+
+create function public.qorpera_rebase_company_proposal(
+	p_proposal_id uuid,
+	p_expected_proposal_snapshot_id uuid,
+	p_expected_head_snapshot_id uuid,
+	p_replacement_snapshot_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_user_id uuid := auth.uid();
+	v_proposal public.qorpera_company_proposals%rowtype;
+	v_file public.qorpera_company_files%rowtype;
+	v_snapshot public.qorpera_company_snapshots%rowtype;
+	v_publication public.qorpera_company_snapshot_publications%rowtype;
+	v_revision bigint;
+begin
+	select proposal.* into v_proposal
+	from public.qorpera_company_proposals as proposal
+	where proposal.id = p_proposal_id for update;
+	if v_user_id is null or not found or not public.qorpera_can_authorize_profile(v_proposal.profile_id) then
+		raise exception 'company proposal rebase authorization is required' using errcode = '42501';
+	end if;
+	if v_proposal.status <> 'open'
+		or v_proposal.proposal_snapshot_id is distinct from p_expected_proposal_snapshot_id
+		or p_replacement_snapshot_id is null
+		or p_replacement_snapshot_id = v_proposal.proposal_snapshot_id then
+		raise exception 'company proposal changed before rebase' using errcode = '40001';
+	end if;
+	select file.* into strict v_file
+	from public.qorpera_company_files as file
+	where file.profile_id = v_proposal.profile_id
+		and file.environment_id = v_proposal.environment_id
+	for update;
+	if v_file.head_snapshot_id is distinct from p_expected_head_snapshot_id then
+		raise exception 'company head changed before proposal rebase' using errcode = '40001';
+	end if;
+	select snapshot.* into v_snapshot
+	from public.qorpera_company_snapshots as snapshot
+	where snapshot.id = p_replacement_snapshot_id
+		and snapshot.profile_id = v_proposal.profile_id
+		and snapshot.environment_id = v_proposal.environment_id
+		and snapshot.workspace_id = v_file.canonical_workspace_id;
+	select publication.* into v_publication
+	from public.qorpera_company_snapshot_publications as publication
+	where publication.snapshot_id = p_replacement_snapshot_id;
+	if v_snapshot.id is null or v_publication.snapshot_id is null
+		or v_snapshot.parent_snapshot_id is distinct from v_file.head_snapshot_id
+		or v_publication.expected_head_snapshot_id is distinct from v_file.head_snapshot_id
+		or v_publication.status <> 'prepared'
+		or v_publication.restricted_content_sha256 is null
+		or not public.qorpera_object_root_has_current_proof('company_snapshot', v_snapshot.id) then
+		raise exception 'rebased company proposal is not durably verified' using errcode = '55000';
+	end if;
+	select coalesce(max(revision), 0) + 1 into v_revision
+	from public.qorpera_company_proposal_revisions
+	where proposal_id = v_proposal.id;
+	insert into public.qorpera_company_proposal_revisions (
+		proposal_id, revision, base_snapshot_id, proposal_snapshot_id,
+		change_kind, created_by_user_id
+	) values (
+		v_proposal.id, v_revision, v_file.head_snapshot_id, v_snapshot.id,
+		'rebased', v_user_id
+	);
+	update public.qorpera_company_proposals
+	set base_snapshot_id = v_file.head_snapshot_id,
+		proposal_snapshot_id = v_snapshot.id
+	where id = v_proposal.id
+	returning * into v_proposal;
+	return public.qorpera_company_proposal_json(v_proposal);
+end
+$$;
+
+create function public.qorpera_get_company_proposal(p_proposal_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+	v_proposal public.qorpera_company_proposals%rowtype;
+begin
+	select proposal.* into v_proposal
+	from public.qorpera_company_proposals as proposal where proposal.id = p_proposal_id;
+	if not found or not public.qorpera_can_read_profile(v_proposal.profile_id) then
+		raise exception 'company proposal read access is required' using errcode = '42501';
+	end if;
+	return public.qorpera_company_proposal_json(v_proposal);
+end
+$$;
+
+create function public.qorpera_reject_company_proposal(
+	p_proposal_id uuid,
+	p_expected_proposal_snapshot_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_user_id uuid := auth.uid();
+	v_proposal public.qorpera_company_proposals%rowtype;
+begin
+	select proposal.* into v_proposal
+	from public.qorpera_company_proposals as proposal
+	where proposal.id = p_proposal_id
+	for update;
+	if not found or not public.qorpera_can_authorize_profile(v_proposal.profile_id) then
+		raise exception 'company proposal authorization is required' using errcode = '42501';
+	end if;
+	if v_proposal.proposal_snapshot_id is distinct from p_expected_proposal_snapshot_id then
+		raise exception 'company proposal changed before rejection' using errcode = '40001';
+	end if;
+	if v_proposal.status = 'rejected' then
+		return public.qorpera_company_proposal_json(v_proposal);
+	end if;
+	if v_proposal.status <> 'open' then
+		raise exception 'company proposal was resolved before rejection' using errcode = '40001';
+	end if;
+	update public.qorpera_company_proposals
+	set status = 'rejected', resolved_by_user_id = v_user_id, resolved_at = statement_timestamp()
+	where id = v_proposal.id
+	returning * into v_proposal;
+	return public.qorpera_company_proposal_json(v_proposal);
+end
+$$;
+
+create function public.qorpera_append_company_proposal_comment(
+	p_proposal_id uuid,
+	p_client_comment_id uuid,
+	p_body text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_user_id uuid := auth.uid();
+	v_proposal public.qorpera_company_proposals%rowtype;
+	v_comment public.qorpera_company_proposal_comments%rowtype;
+begin
+	select proposal.* into v_proposal
+	from public.qorpera_company_proposals as proposal where proposal.id = p_proposal_id;
+	if v_user_id is null or not found or not public.qorpera_can_read_profile(v_proposal.profile_id) then
+		raise exception 'company proposal comment access is required' using errcode = '42501';
+	end if;
+	if p_client_comment_id is null or char_length(btrim(p_body)) not between 1 and 16384 then
+		raise exception 'company proposal comment is invalid' using errcode = '22023';
+	end if;
+	insert into public.qorpera_company_proposal_comments (
+		proposal_id, client_comment_id, body, author_user_id
+	) values (
+		v_proposal.id, p_client_comment_id, btrim(p_body), v_user_id
+	)
+	on conflict (proposal_id, client_comment_id) do nothing
+	returning * into v_comment;
+	if not found then
+		select comment.* into strict v_comment
+		from public.qorpera_company_proposal_comments as comment
+		where comment.proposal_id = v_proposal.id and comment.client_comment_id = p_client_comment_id;
+		if v_comment.author_user_id <> v_user_id or v_comment.body <> btrim(p_body) then
+			raise exception 'company proposal comment id is already bound to different content' using errcode = '23505';
+		end if;
+	end if;
+	return jsonb_build_object(
+		'comment_id', v_comment.id,
+		'proposal_id', v_comment.proposal_id,
+		'body', v_comment.body,
+		'author_user_id', v_comment.author_user_id,
+		'author_name', coalesce((
+			select member.display_name
+			from public.qorpera_profile_members as member
+			where member.profile_id = v_proposal.profile_id and member.user_id = v_comment.author_user_id
+		), 'Former company member'),
+		'created_at', v_comment.created_at
+	);
+end
+$$;
+
+create function public.qorpera_list_company_proposal_comments(
+	p_proposal_id uuid,
+	p_after_created_at timestamptz default null,
+	p_after_id uuid default null,
+	p_limit integer default 100
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+	v_profile_id uuid;
+begin
+	select proposal.profile_id into v_profile_id
+	from public.qorpera_company_proposals as proposal where proposal.id = p_proposal_id;
+	if v_profile_id is null or not public.qorpera_can_read_profile(v_profile_id) then
+		raise exception 'company proposal comment access is required' using errcode = '42501';
+	end if;
+	if p_limit not between 1 and 100 or ((p_after_created_at is null) is distinct from (p_after_id is null)) then
+		raise exception 'company proposal comment page is invalid' using errcode = '22023';
+	end if;
+	return (
+		with visible as (
+			select comment.*, coalesce(member.display_name, 'Former company member') as author_name
+			from public.qorpera_company_proposal_comments as comment
+			left join public.qorpera_profile_members as member
+				on member.profile_id = v_profile_id and member.user_id = comment.author_user_id
+			where comment.proposal_id = p_proposal_id
+				and (p_after_created_at is null or (comment.created_at, comment.id) > (p_after_created_at, p_after_id))
+			order by comment.created_at, comment.id
+			limit p_limit + 1
+		), page as (
+			select * from visible order by created_at, id limit p_limit
+		)
+		select jsonb_build_object(
+			'items', coalesce((select jsonb_agg(jsonb_build_object(
+				'comment_id', comment.id,
+				'proposal_id', comment.proposal_id,
+				'body', comment.body,
+				'author_user_id', comment.author_user_id,
+				'author_name', comment.author_name,
+				'created_at', comment.created_at
+			) order by comment.created_at, comment.id) from page as comment), '[]'::jsonb),
+			'has_more', (select count(*) > p_limit from visible),
+			'next_created_at', (select max(created_at) from page),
+			'next_id', (select id from page order by created_at desc, id desc limit 1)
+		)
+	);
+end
+$$;
+
 -- Realtime presence payloads carry only an opaque device id. This registry is
 -- the authenticated binding from that device id to the current profile member;
 -- display identity is always resolved from membership, never client claims.
@@ -2303,6 +3650,7 @@ create table public.qorpera_presence_devices (
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
 	client_id uuid not null,
 	user_id uuid not null references auth.users(id) on delete cascade,
+	public_key text not null check (public_key ~ '^[A-Za-z0-9+/]{40,240}={0,2}$'),
 	last_seen_at timestamptz not null default statement_timestamp(),
 	primary key (profile_id, client_id)
 );
@@ -2312,7 +3660,7 @@ create index qorpera_presence_devices_expiry
 alter table public.qorpera_presence_devices enable row level security;
 revoke all on public.qorpera_presence_devices from anon, authenticated;
 
-create function public.qorpera_register_presence_device(p_profile_id uuid, p_client_id uuid)
+create function public.qorpera_register_presence_device(p_profile_id uuid, p_client_id uuid, p_public_key text)
 returns jsonb
 language plpgsql
 security definer
@@ -2323,17 +3671,17 @@ declare
 	v_name text;
 	v_registered integer;
 begin
-	if v_user_id is null or p_client_id is null
+	if v_user_id is null or p_client_id is null or p_public_key !~ '^[A-Za-z0-9+/]{40,240}={0,2}$'
 		or not public.qorpera_can_read_profile(p_profile_id) then
 		raise exception 'profile presence access is required' using errcode = '42501';
 	end if;
 	select coalesce(member.display_name, 'Company member') into v_name
 	from public.qorpera_profile_members as member
 	where member.profile_id = p_profile_id and member.user_id = v_user_id;
-	insert into public.qorpera_presence_devices (profile_id, client_id, user_id)
-	values (p_profile_id, p_client_id, v_user_id)
+	insert into public.qorpera_presence_devices (profile_id, client_id, user_id, public_key)
+	values (p_profile_id, p_client_id, v_user_id, p_public_key)
 	on conflict (profile_id, client_id) do update
-	set user_id = excluded.user_id, last_seen_at = statement_timestamp()
+	set user_id = excluded.user_id, public_key = excluded.public_key, last_seen_at = statement_timestamp()
 	where qorpera_presence_devices.user_id = excluded.user_id
 		or qorpera_presence_devices.last_seen_at < statement_timestamp() - interval '5 minutes';
 	get diagnostics v_registered = row_count;
@@ -2342,7 +3690,12 @@ begin
 	end if;
 	delete from public.qorpera_presence_devices
 	where last_seen_at < statement_timestamp() - interval '5 minutes';
-	return jsonb_build_object('client_id', p_client_id, 'user_id', v_user_id, 'name', v_name);
+	return jsonb_build_object(
+		'client_id', p_client_id,
+		'user_id', v_user_id,
+		'name', v_name,
+		'public_key', p_public_key
+	);
 end
 $$;
 
@@ -2362,7 +3715,8 @@ begin
 		select jsonb_agg(jsonb_build_object(
 			'client_id', device.client_id,
 			'user_id', device.user_id,
-			'name', coalesce(member.display_name, 'Company member')
+			'name', coalesce(member.display_name, 'Company member'),
+			'public_key', device.public_key
 		) order by device.client_id)
 		from public.qorpera_presence_devices as device
 		join public.qorpera_profile_members as member
@@ -2408,11 +3762,49 @@ create table public.qorpera_verified_company_file_objects (
 alter table public.qorpera_verified_company_file_objects enable row level security;
 revoke all on public.qorpera_verified_company_file_objects from anon, authenticated;
 
+create table public.qorpera_company_file_verification_progress (
+	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
+	manifest_sha256 text not null check (manifest_sha256 ~ '^[0-9a-f]{64}$'),
+	verifier_version integer not null default 1 check (verifier_version = 1),
+	manifest_bytes bigint not null check (manifest_bytes between 1 and 8388608),
+	file_sha256 text not null check (file_sha256 ~ '^[0-9a-f]{64}$'),
+	bytes bigint not null check (bytes between 0 and 268435456),
+	media_type text not null check (media_type = 'application/octet-stream'),
+	next_chunk_index integer not null check (next_chunk_index between 0 and 64),
+	verified_bytes bigint not null check (verified_bytes between 0 and 268435456),
+	sha256_state jsonb not null check (jsonb_typeof(sha256_state) = 'object' and pg_column_size(sha256_state) <= 2048),
+	objects jsonb not null check (
+		jsonb_typeof(objects) = 'array'
+		and jsonb_array_length(objects) between 1 and 65
+		and pg_column_size(objects) <= 32768
+	),
+	updated_at timestamptz not null default statement_timestamp(),
+	primary key (profile_id, manifest_sha256, verifier_version),
+	foreign key (profile_id, manifest_sha256)
+		references public.qorpera_profile_objects(profile_id, sha256) on delete cascade
+);
+
+alter table public.qorpera_company_file_verification_progress enable row level security;
+revoke all on public.qorpera_company_file_verification_progress from anon, authenticated;
+
 -- Profile storage is physical and content addressed. Logical Company File
 -- bytes describe only the current tree; retained bytes additionally include
 -- revision history, immutable execution pins, queued attachments, artifacts,
 -- and runner substrates that must remain replayable. The retained set is also
 -- the authority for reclaiming abandoned uploads and expired history.
+create function public.qorpera_company_additional_retained_object_hashes(p_profile_id uuid)
+returns table (object_sha256 text)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	select null::text as object_sha256 where false
+$$;
+
+revoke all on function public.qorpera_company_additional_retained_object_hashes(uuid)
+	from public, anon, authenticated;
+
 create function public.qorpera_company_retained_object_hashes(p_profile_id uuid)
 returns table (object_sha256 text)
 language sql
@@ -2429,6 +3821,10 @@ as $$
 				or exists (
 					select 1 from public.qorpera_company_files as file
 					where file.profile_id = p_profile_id and file.head_snapshot_id = snapshot.id
+				)
+				or exists (
+					select 1 from public.qorpera_company_workspaces as workspace
+					where workspace.profile_id = p_profile_id and workspace.head_snapshot_id = snapshot.id
 				)
 				or exists (
 					select 1 from public.qorpera_company_snapshot_publications as publication
@@ -2450,6 +3846,15 @@ as $$
 						and (
 							wake.completed_at is null
 							or wake.completed_at >= statement_timestamp() - interval '30 days'
+						)
+				)
+				or exists (
+					select 1 from public.qorpera_company_proposals as proposal
+					where proposal.profile_id = p_profile_id
+						and snapshot.id in (proposal.base_snapshot_id, proposal.proposal_snapshot_id)
+						and (
+							proposal.status = 'open'
+							or proposal.resolved_at >= statement_timestamp() - interval '30 days'
 						)
 				)
 				or exists (
@@ -2551,6 +3956,8 @@ as $$
 	union select object_sha256 from operation_outputs
 	union select object_sha256 from direct_roots
 	union select object_sha256 from conservative_profile
+	union select object_sha256
+		from public.qorpera_company_additional_retained_object_hashes(p_profile_id)
 $$;
 
 revoke all on function public.qorpera_company_retained_object_hashes(uuid) from public, anon, authenticated;
@@ -2765,12 +4172,12 @@ revoke all on function public.qorpera_claim_company_object_gc(integer, uuid) fro
 revoke all on function public.qorpera_renew_company_object_gc(uuid, uuid, text[]) from public, anon, authenticated;
 revoke all on function public.qorpera_complete_company_object_gc(uuid, uuid, text[]) from public, anon, authenticated;
 revoke all on function public.qorpera_release_company_object_gc(uuid, uuid) from public, anon, authenticated;
-revoke all on function public.qorpera_verify_company_snapshot_closure(uuid, uuid, uuid, text, integer, bigint, text, bigint) from public, anon, authenticated;
+revoke all on function public.qorpera_verify_company_snapshot_closure(uuid, uuid, uuid, text, integer, bigint, text, bigint, text) from public, anon, authenticated;
 grant execute on function public.qorpera_claim_company_object_gc(integer, uuid) to service_role;
 grant execute on function public.qorpera_renew_company_object_gc(uuid, uuid, text[]) to service_role;
 grant execute on function public.qorpera_complete_company_object_gc(uuid, uuid, text[]) to service_role;
 grant execute on function public.qorpera_release_company_object_gc(uuid, uuid) to service_role;
-grant execute on function public.qorpera_verify_company_snapshot_closure(uuid, uuid, uuid, text, integer, bigint, text, bigint) to service_role;
+grant execute on function public.qorpera_verify_company_snapshot_closure(uuid, uuid, uuid, text, integer, bigint, text, bigint, text) to service_role;
 
 create or replace function public.qorpera_company_file_json(p_file public.qorpera_company_files)
 returns jsonb
@@ -2806,24 +4213,38 @@ $$;
 revoke all on function public.qorpera_create_cloud_company(uuid, text, integer) from public, anon;
 revoke all on function public.qorpera_get_company_file(uuid) from public, anon;
 revoke all on function public.qorpera_prepare_company_file_revision(uuid, uuid, uuid, text, integer, integer, integer, bigint) from public, anon;
+revoke all on function public.qorpera_prepare_company_file_proposal(uuid, uuid, uuid, text, integer, integer, integer, bigint) from public, anon;
 revoke all on function public.qorpera_publish_company_file_revision(uuid, uuid, uuid) from public, anon;
 revoke all on function public.qorpera_list_session_inputs(uuid, bigint, integer) from public, anon;
 revoke all on function public.qorpera_claim_session_turn(uuid, uuid, integer, uuid, bigint) from public, anon;
 revoke all on function public.qorpera_renew_session_turn_v2(uuid, uuid, uuid, integer) from public, anon;
 revoke all on function public.qorpera_complete_session_turn_v2(uuid, uuid, uuid, bigint) from public, anon;
 revoke all on function public.qorpera_quarantine_session_turn(uuid, uuid, uuid, text) from public, anon;
+revoke all on function public.qorpera_list_session_recoveries(uuid, timestamptz, uuid, integer) from public, anon;
+revoke all on function public.qorpera_resolve_session_recovery(uuid, uuid, text) from public, anon;
+revoke all on function public.qorpera_resolve_operation_receipt(uuid, text, jsonb) from public, anon;
 revoke all on function public.qorpera_get_session_turn_status(uuid, uuid, uuid) from public, anon;
 revoke all on function public.qorpera_create_shared_session_v3(uuid, uuid, text, text, uuid, jsonb) from public, anon;
 revoke all on function public.qorpera_create_shared_session_v4(uuid, uuid, text, text, uuid, jsonb, uuid, bigint) from public, anon;
 revoke all on function public.qorpera_close_shared_session(uuid) from public, anon;
+revoke all on function public.qorpera_list_shared_sessions_page(uuid, timestamptz, uuid, integer) from public, anon;
+revoke all on function public.qorpera_get_shared_session_by_client(uuid, uuid) from public, anon;
 revoke all on function public.qorpera_claim_wake_v2(uuid, text, uuid, integer, uuid, uuid, bigint) from public, anon;
 revoke all on function public.qorpera_begin_operation_receipt(text, uuid, uuid, uuid, text, text) from public, anon;
 revoke all on function public.qorpera_stage_operation_receipt_objects(uuid, uuid, uuid, jsonb) from public, anon;
 revoke all on function public.qorpera_complete_operation_receipt(uuid, uuid, uuid, jsonb) from public, anon;
-revoke all on function public.qorpera_register_presence_device(uuid, uuid) from public, anon;
+revoke all on function public.qorpera_register_presence_device(uuid, uuid, text) from public, anon;
 revoke all on function public.qorpera_list_presence_devices(uuid, uuid[]) from public, anon;
 revoke all on function public.qorpera_unregister_presence_device(uuid, uuid) from public, anon;
 revoke all on function public.qorpera_append_account_event(uuid, uuid, text, jsonb, bigint, text, uuid, uuid) from public, anon;
+revoke all on function public.qorpera_submit_company_proposal(uuid, uuid, uuid, text, uuid, uuid, uuid, bigint, text, text, text, uuid[]) from public, anon;
+revoke all on function public.qorpera_list_company_proposals(uuid, text, timestamptz, uuid, integer) from public, anon;
+revoke all on function public.qorpera_accept_company_proposal(uuid, uuid) from public, anon;
+revoke all on function public.qorpera_rebase_company_proposal(uuid, uuid, uuid, uuid) from public, anon;
+revoke all on function public.qorpera_reject_company_proposal(uuid, uuid) from public, anon;
+revoke all on function public.qorpera_get_company_proposal(uuid) from public, anon;
+revoke all on function public.qorpera_append_company_proposal_comment(uuid, uuid, text) from public, anon;
+revoke all on function public.qorpera_list_company_proposal_comments(uuid, timestamptz, uuid, integer) from public, anon;
 revoke execute on function public.qorpera_claim_wake(uuid, text, uuid, integer) from authenticated;
 revoke execute on function public.qorpera_renew_session_turn(uuid, uuid, integer) from authenticated;
 revoke execute on function public.qorpera_complete_session_turn(uuid, uuid) from authenticated;
@@ -2834,23 +4255,37 @@ revoke execute on function public.qorpera_commit_company_snapshot(uuid, uuid, uu
 grant execute on function public.qorpera_create_cloud_company(uuid, text, integer) to authenticated;
 grant execute on function public.qorpera_get_company_file(uuid) to authenticated;
 grant execute on function public.qorpera_prepare_company_file_revision(uuid, uuid, uuid, text, integer, integer, integer, bigint) to authenticated;
+grant execute on function public.qorpera_prepare_company_file_proposal(uuid, uuid, uuid, text, integer, integer, integer, bigint) to authenticated;
 grant execute on function public.qorpera_publish_company_file_revision(uuid, uuid, uuid) to authenticated;
 grant execute on function public.qorpera_list_session_inputs(uuid, bigint, integer) to authenticated;
 grant execute on function public.qorpera_claim_session_turn(uuid, uuid, integer, uuid, bigint) to authenticated;
 grant execute on function public.qorpera_renew_session_turn_v2(uuid, uuid, uuid, integer) to authenticated;
 grant execute on function public.qorpera_complete_session_turn_v2(uuid, uuid, uuid, bigint) to authenticated;
 grant execute on function public.qorpera_quarantine_session_turn(uuid, uuid, uuid, text) to authenticated;
+grant execute on function public.qorpera_list_session_recoveries(uuid, timestamptz, uuid, integer) to authenticated;
+grant execute on function public.qorpera_resolve_session_recovery(uuid, uuid, text) to authenticated;
+grant execute on function public.qorpera_resolve_operation_receipt(uuid, text, jsonb) to authenticated;
 grant execute on function public.qorpera_get_session_turn_status(uuid, uuid, uuid) to authenticated;
 grant execute on function public.qorpera_create_shared_session_v4(uuid, uuid, text, text, uuid, jsonb, uuid, bigint) to authenticated;
 grant execute on function public.qorpera_close_shared_session(uuid) to authenticated;
+grant execute on function public.qorpera_list_shared_sessions_page(uuid, timestamptz, uuid, integer) to authenticated;
+grant execute on function public.qorpera_get_shared_session_by_client(uuid, uuid) to authenticated;
 grant execute on function public.qorpera_claim_wake_v2(uuid, text, uuid, integer, uuid, uuid, bigint) to authenticated;
 grant execute on function public.qorpera_begin_operation_receipt(text, uuid, uuid, uuid, text, text) to authenticated;
 grant execute on function public.qorpera_stage_operation_receipt_objects(uuid, uuid, uuid, jsonb) to authenticated;
 grant execute on function public.qorpera_complete_operation_receipt(uuid, uuid, uuid, jsonb) to authenticated;
-grant execute on function public.qorpera_register_presence_device(uuid, uuid) to authenticated;
+grant execute on function public.qorpera_register_presence_device(uuid, uuid, text) to authenticated;
 grant execute on function public.qorpera_list_presence_devices(uuid, uuid[]) to authenticated;
 grant execute on function public.qorpera_unregister_presence_device(uuid, uuid) to authenticated;
 grant execute on function public.qorpera_append_account_event(uuid, uuid, text, jsonb, bigint, text, uuid, uuid) to authenticated;
+grant execute on function public.qorpera_submit_company_proposal(uuid, uuid, uuid, text, uuid, uuid, uuid, bigint, text, text, text, uuid[]) to authenticated;
+grant execute on function public.qorpera_list_company_proposals(uuid, text, timestamptz, uuid, integer) to authenticated;
+grant execute on function public.qorpera_accept_company_proposal(uuid, uuid) to authenticated;
+grant execute on function public.qorpera_rebase_company_proposal(uuid, uuid, uuid, uuid) to authenticated;
+grant execute on function public.qorpera_reject_company_proposal(uuid, uuid) to authenticated;
+grant execute on function public.qorpera_get_company_proposal(uuid) to authenticated;
+grant execute on function public.qorpera_append_company_proposal_comment(uuid, uuid, text) to authenticated;
+grant execute on function public.qorpera_list_company_proposal_comments(uuid, timestamptz, uuid, integer) to authenticated;
 
 do $$
 begin

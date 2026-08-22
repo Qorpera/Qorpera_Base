@@ -1,7 +1,10 @@
 # Session arbitration
 
-**Status:** Implemented. Migration `20260820001000` binds the queue to immutable
-Company File and staff revisions; the shell adopts, renders, and executes it.
+**Status:** Control-plane contracts implemented. Migrations `20260820001000`
+and `20260820002000` bind queued input to immutable Company File, staff,
+sponsor, and run revisions. The desktop adopts and renders the company session;
+Supabase owns orchestration, and a future execution dispatcher delivers assigned
+work to Qorpera-managed computers.
 **Problem it solves:** on 2026-08-18, two machines opening the same staff agent
 minutes apart each minted a session and ran a duplicate kickoff — one agent,
 two diverging conversations. Trail replication was healthy; nothing consulted
@@ -39,9 +42,10 @@ require membership, so the anon key alone can neither watch nor spoof.
 
 ## Primary and backup
 
-Durable session state lives on the primary (managed Postgres today; the NAS
-when it takes that role) and replicates asynchronously to the backup cloud
-(Cloudflare). Clients hold a connection to exactly one of them.
+Durable session metadata lives in the authoritative Supabase/Postgres control
+plane. Immutable attachments, artifacts, Company File objects, and encrypted
+checkpoints live in object storage/NAS. The object store never becomes a SQL
+primary, and neither authority requires an open desktop.
 
 Failover is automatic but **never client-decided**. A client that fails ten
 consecutive retries against the primary does not promote anything — it
@@ -86,13 +90,11 @@ wake to newer state.
 ## Wake arbitration (20260819012000)
 
 Autonomous wakes — scheduled routines, trigger events, durable coworker mail —
-fire on every machine that has the company open, so without arbitration two
-machines run duplicate autonomous sessions: the fork bug, on the proactive
-lane. Wakes are therefore claimed rows, the same primitive as session turns.
+are admitted as durable control-plane occurrences before compute is selected.
+Wakes are claimed execution runs, not per-desktop timers.
 
 Each wake occurrence has one **deterministic key**, derived from the work
-itself and never from local run state, so every machine names the same
-occurrence identically: scheduled jobs key on the schedule's occurrence
+itself and never from physical runner state: scheduled jobs key on the schedule's occurrence
 (weekly instant, anchored slot index, or the epoch grid for unanchored
 intervals), trigger wakes on the source's stable event id, mail wakes on the
 message id. Claiming is atomic with a short lease, renewed while the wake
@@ -111,51 +113,31 @@ claimable again.
 - `qorpera_renew_wake` / `qorpera_complete_wake` — lease upkeep and
   completion, claimant-scoped.
 
-Manual "run now" is founder intent on that machine and has no competing
-occurrence to deduplicate, but it still waits for and records the exact cloud
-Company File and staff revisions it executes. Every deterministic autonomous
-occurrence must additionally be claimed in the cloud. Renewal and completion
-are fenced if either revision changes during a wake. An unreachable cloud
-leaves that occurrence pending; it never executes an unclaimed local copy.
-Completed rows are swept after 30 days, long past any machine's chance to
-re-derive the same key.
+Manual "run now" is founder intent recorded as its own cloud run. Every
+autonomous occurrence is likewise admitted in the cloud before a computer is
+selected. An unreachable control plane leaves the occurrence pending; it never
+executes an unclaimed local copy.
+Completed occurrence keys retain compact tombstones so a delayed duplicate can
+never become new work after artifact/history retention expires.
 
-## Executor eligibility (sponsorship, affinity, freshness)
+## Execution dispatch
 
-Adopted 2026-08-19 after the first arbitrated two-machine run.
+The session-turn and wake claim RPCs above remain compatibility primitives for
+the temporary desktop adapter. They are not the deployed cloud scheduler. The
+normative architecture is [CLOUD-CONTROL-PLANE.md](CLOUD-CONTROL-PLANE.md), and
+provider authorization is tracked separately in
+[PROVIDER-CAPABILITY-MATRIX.md](PROVIDER-CAPABILITY-MATRIX.md).
 
-**Subscriptions are the design center.** API-key pricing is roughly a 40x
-multiple on subscription intelligence and would flatten the use case, so the
-architecture must run on consumer subscriptions permanently — which providers
-permit for one user's own agents on that user's own machines, and forbid to
-pool across users. Model credentials therefore stay **per member, never a
-company pool**: the vault maps each member to their own connections and hands
-tokens only to executors acting on that member's behalf.
+Every runnable input/occurrence must become an immutable execution run with a
+versioned sponsor, Company File snapshot, staff revision, and transcript
+boundary before dispatch. Supabase—not Electron, the dispatcher, or a runner—
+is the orchestration authority that claims the work and records one compatible
+runner assignment. A runner that disappears can be replaced without changing
+the company session or run identity.
 
-**Every agent has a sponsor**: the member whose subscription its configured
-model (staff registry `model_provider`/`model_id`, already company state)
-runs on. An agent's turns execute only on machines holding its sponsor's
-connection for that provider; usage draws down the sponsor's plan limits
-exactly as if they ran it by hand.
-
-Three predicates gate a claim, and a machine that fails any of them simply
-does not claim — the queue holds the turn for a machine that passes:
-
-1. **Affinity** — this machine can execute the agent's configured provider.
-   No claim, no model flapping: the agent keeps one mind regardless of who
-   is typing. (The API layer is already replay-safe across executors and
-   providers — openai-codex falls back to full input whenever its
-   connection-scoped continuation does not prefix-match, and the messages
-   API is stateless — so affinity is about identity and terms, not about
-   context survival.)
-2. **Freshness** — this machine's local trail for the session matches the
-   cloud's event head. Claiming with a lagging trail would execute on
-   partial context: the silent-clearing failure, moved one layer down.
-   Sync first, claim after.
-3. **Capability** — write access and a ready, idle child, as today.
-
-A queued turn with no eligible executor online is a **visible** state, not a
-silent one: the thread shows who the session is waiting for ("waiting for
-<sponsor>'s computer"). Degraded arbitration is likewise surfaced through
-the same health channel as the other cloud sync loops — a fallback nobody
-can see is a fork factory with better manners.
+The temporary local adapter is permitted only behind the same assignment
+interface. It may execute while a member desktop is open, but it cannot select
+work or establish machine ownership of a company session. Until the future
+dispatcher and a Qorpera-managed computer provider are deployed and tested,
+queued work with no temporary adapter online remains visibly pending; the
+product does not claim all-machines-offline execution.

@@ -1,6 +1,8 @@
 import { constants } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { HttpNativeProviderComputerBridge, type NativeProviderExecutionBoundary } from "./cloud-native-provider.ts";
+import { HttpCloudRunnerAssignmentInbox } from "./cloud-runner-assignment-inbox.ts";
 import { SupabaseCloudRunnerBrokerTransport } from "./cloud-runner-broker.ts";
 import {
 	CLOUD_RUNNER_CAPABILITIES,
@@ -10,12 +12,14 @@ import {
 } from "./cloud-runner-control.ts";
 import { RootlessPodmanSandboxBackend } from "./cloud-runner-podman.ts";
 import type { CloudRunnerSandboxLimits } from "./cloud-runner-sandbox.ts";
-import { EphemeralCloudRunnerWorker } from "./cloud-runner-worker.ts";
+import { type CloudRunnerAssignmentSource, EphemeralCloudRunnerWorker } from "./cloud-runner-worker.ts";
 import { FileCloudRunnerAuthorityStore } from "./cloud-runner-worker-state.ts";
 
 const CONFIG_SCHEMA = "qorpera.ephemeral-runner-service/v1";
 const ACTIVATION_CREDENTIAL_NAME = "qorpera-runner-activation";
 const REPAIR_CREDENTIAL_NAME = "qorpera-runner-repair";
+const NATIVE_BRIDGE_CREDENTIAL_NAME = "qorpera-native-bridge";
+const ASSIGNMENT_CREDENTIAL_NAME = "qorpera-runner-assignment";
 const MAX_CONFIG_BYTES = 64 * 1024;
 const MAX_CREDENTIAL_BYTES = 256;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -37,6 +41,11 @@ export interface EphemeralCloudRunnerServiceConfig {
 	jobTypes: readonly string[];
 	platform: string;
 	runnerVersion: string;
+	nativeBridgeUrl?: string;
+	nativeBridgeBoundary?: Exclude<NativeProviderExecutionBoundary, "test">;
+	assignmentHost?: string;
+	assignmentPort?: number;
+	maxAssignments?: number;
 	environment: Readonly<Record<string, string>>;
 	limits?: Partial<CloudRunnerSandboxLimits>;
 	idlePollMs?: number;
@@ -47,6 +56,7 @@ export interface EphemeralCloudRunnerServiceConfig {
 export interface RunEphemeralCloudRunnerServiceOptions {
 	config: EphemeralCloudRunnerServiceConfig;
 	credentialsDirectory?: string;
+	assignmentSource?: CloudRunnerAssignmentSource;
 	signal: AbortSignal;
 	runWorker?: (worker: EphemeralCloudRunnerWorker, signal: AbortSignal) => Promise<void>;
 }
@@ -202,6 +212,11 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 			"job_types",
 			"platform",
 			"runner_version",
+			"native_bridge_url",
+			"native_bridge_boundary",
+			"assignment_host",
+			"assignment_port",
+			"max_assignments",
 			"environment",
 			"limits",
 			"idle_poll_ms",
@@ -218,7 +233,32 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 	const idlePollMs = optionalInteger(input.idle_poll_ms, "Runner idle poll", 10, 60_000);
 	const leaseRenewalMs = optionalInteger(input.lease_renewal_ms, "Runner lease renewal", 10, 90_000);
 	const heartbeatMs = optionalInteger(input.heartbeat_ms, "Runner heartbeat", 10, 10 * 60_000);
+	const assignmentPort = optionalInteger(input.assignment_port, "Runner assignment port", 1, 65_535);
+	const maxAssignments = optionalInteger(input.max_assignments, "Runner assignment limit", 1, 1_000);
+	const assignmentHost =
+		input.assignment_host === undefined
+			? undefined
+			: requiredText(input.assignment_host, "Runner assignment host", 64);
+	if ((assignmentHost === undefined) !== (assignmentPort === undefined)) {
+		throw new Error("Runner assignment listener requires both host and port");
+	}
 	const parsedLimits = limits(input.limits);
+	const nativeBridgeUrl =
+		input.native_bridge_url === undefined
+			? undefined
+			: requiredText(input.native_bridge_url, "Native provider bridge URL", 2048);
+	const nativeBridgeBoundary =
+		input.native_bridge_boundary === "rootless_container" ||
+		input.native_bridge_boundary === "virtual_machine" ||
+		input.native_bridge_boundary === "microvm"
+			? input.native_bridge_boundary
+			: undefined;
+	if (input.native_bridge_boundary !== undefined && nativeBridgeBoundary === undefined) {
+		throw new Error("Native provider bridge isolation boundary is invalid");
+	}
+	if ((nativeBridgeUrl === undefined) !== (nativeBridgeBoundary === undefined)) {
+		throw new Error("Native provider bridge requires an explicit production isolation boundary");
+	}
 	return {
 		schema: CONFIG_SCHEMA,
 		baseUrl: requiredText(input.base_url, "Runner base URL", 2048),
@@ -233,6 +273,10 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 		jobTypes: jobTypes(input.job_types),
 		platform: requiredText(input.platform, "Runner platform", 80),
 		runnerVersion: requiredText(input.runner_version, "Runner version", 80),
+		...(nativeBridgeUrl ? { nativeBridgeUrl } : {}),
+		...(nativeBridgeBoundary ? { nativeBridgeBoundary } : {}),
+		...(assignmentHost !== undefined && assignmentPort !== undefined ? { assignmentHost, assignmentPort } : {}),
+		...(maxAssignments !== undefined ? { maxAssignments } : {}),
 		environment: environment(input.environment),
 		...(parsedLimits ? { limits: parsedLimits } : {}),
 		...(idlePollMs !== undefined ? { idlePollMs } : {}),
@@ -326,7 +370,23 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 	if (storedAuthority === undefined && !activationToken) {
 		throw new Error("Runner activation credential is required for initial setup");
 	}
-	const control = new SupabaseCloudRunnerControlTransport(config.baseUrl, config.publishableKey);
+	const nativeBridgeToken = config.nativeBridgeUrl
+		? await runnerCredential(
+				options.credentialsDirectory,
+				NATIVE_BRIDGE_CREDENTIAL_NAME,
+				"Native provider bridge capability",
+			)
+		: undefined;
+	if (config.nativeBridgeUrl && !nativeBridgeToken) {
+		throw new Error("Native provider bridge capability is required when native execution is configured");
+	}
+	const assignmentToken = config.assignmentHost
+		? await runnerCredential(options.credentialsDirectory, ASSIGNMENT_CREDENTIAL_NAME, "Runner assignment credential")
+		: undefined;
+	if (config.assignmentHost && !assignmentToken) {
+		throw new Error("Runner assignment credential is required when the assignment inbox is configured");
+	}
+	const control = new SupabaseCloudRunnerControlTransport(config.baseUrl, config.publishableKey, fetch, { signal });
 	const runner = repairToken
 		? await DisposableCloudRunner.repair(control, config.runnerId, authorityStore, repairToken)
 		: await DisposableCloudRunner.open(control, config.runnerId, authorityStore, activationToken);
@@ -340,8 +400,18 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 	});
 	const worker = new EphemeralCloudRunnerWorker({
 		runner,
-		brokerTransport: new SupabaseCloudRunnerBrokerTransport(config.baseUrl, config.publishableKey),
+		brokerTransport: new SupabaseCloudRunnerBrokerTransport(config.baseUrl, config.publishableKey, fetch, { signal }),
 		backend,
+		...(config.nativeBridgeUrl && config.nativeBridgeBoundary && nativeBridgeToken
+			? {
+					nativeProviderBridge: new HttpNativeProviderComputerBridge(
+						config.nativeBridgeUrl,
+						nativeBridgeToken,
+						fetch,
+						{ signal, executionBoundary: config.nativeBridgeBoundary },
+					),
+				}
+			: {}),
 		platform: config.platform,
 		runnerVersion: config.runnerVersion,
 		temporaryRoot: config.temporaryRoot,
@@ -351,5 +421,27 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 		...(config.leaseRenewalMs !== undefined ? { leaseRenewalMs: config.leaseRenewalMs } : {}),
 		...(config.heartbeatMs !== undefined ? { heartbeatMs: config.heartbeatMs } : {}),
 	});
-	await (options.runWorker ? options.runWorker(worker, signal) : worker.run(signal));
+	if (options.runWorker) {
+		await options.runWorker(worker, signal);
+		return;
+	}
+	let inbox: HttpCloudRunnerAssignmentInbox | undefined;
+	let assignmentSource = options.assignmentSource;
+	if (!assignmentSource && config.assignmentHost && config.assignmentPort && assignmentToken) {
+		inbox = new HttpCloudRunnerAssignmentInbox(config.assignmentHost, config.assignmentPort, assignmentToken);
+		await inbox.start();
+		assignmentSource = inbox;
+	}
+	if (!assignmentSource) {
+		throw new Error("Runner orchestrator assignment source is not configured");
+	}
+	try {
+		await worker.run(
+			assignmentSource,
+			signal,
+			config.maxAssignments === undefined ? undefined : { maxAssignments: config.maxAssignments },
+		);
+	} finally {
+		await inbox?.close();
+	}
 }

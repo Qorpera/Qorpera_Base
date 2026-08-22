@@ -12,6 +12,7 @@ export interface ArtifactGcWorkerObject {
 	sha256: string;
 	bytes: number;
 	path: string;
+	backend: "missing" | "nas-object-gateway" | "supabase-storage";
 }
 
 export interface CompanyObjectGcWorkerJob {
@@ -35,7 +36,42 @@ export interface ArtifactGcWorkerStore {
 }
 
 export interface ArtifactGcStorageProvider {
-	remove(objects: readonly ArtifactGcWorkerObject[]): Promise<void>;
+	remove(objects: readonly ArtifactGcWorkerObject[], leaseId: string): Promise<void>;
+}
+
+export type ArtifactGcWorkerAuthorization =
+	| { status: "authorized"; serviceKey: string }
+	| { status: "unauthorized" }
+	| { status: "unconfigured" };
+
+export function resolveArtifactGcWorkerAuthorization(options: {
+	presentedKey: string | undefined;
+	workerKey: string | undefined;
+	serviceKeys: readonly (string | undefined)[];
+}): ArtifactGcWorkerAuthorization {
+	if (!options.workerKey) return { status: "unconfigured" };
+	if (!options.presentedKey || options.presentedKey !== options.workerKey) {
+		return { status: "unauthorized" };
+	}
+	const serviceKey = options.serviceKeys.find((value): value is string => Boolean(value));
+	return serviceKey ? { status: "authorized", serviceKey } : { status: "unconfigured" };
+}
+
+export function createRoutedArtifactGcStorageProvider(options: {
+	removeSupabase(paths: readonly string[]): Promise<void>;
+	removeNas(object: ArtifactGcWorkerObject, leaseId: string): Promise<void>;
+}): ArtifactGcStorageProvider {
+	return {
+		remove: async (objects, leaseId) => {
+			const supabasePaths = objects
+				.filter((object) => object.backend === "supabase-storage")
+				.map((object) => object.path);
+			if (supabasePaths.length > 0) await options.removeSupabase(supabasePaths);
+			for (const object of objects) {
+				if (object.backend === "nas-object-gateway") await options.removeNas(object, leaseId);
+			}
+		},
+	};
 }
 
 export interface ArtifactGcWorkerResult {
@@ -91,6 +127,7 @@ export function parseArtifactGcWorkerObjects(
 		const sha256 = input.sha256;
 		const bytes = input.bytes;
 		const path = input.path;
+		const backend = input.backend;
 		if (typeof sha256 !== "string" || !SHA256_PATTERN.test(sha256) || seen.has(sha256)) {
 			throw new Error("Invalid artifact cleanup object hash");
 		}
@@ -98,8 +135,11 @@ export function parseArtifactGcWorkerObjects(
 			throw new Error("Invalid artifact cleanup object size");
 		}
 		if (path !== `${job.profileId}/${sha256}`) throw new Error("Invalid artifact cleanup object path");
+		if (backend !== "missing" && backend !== "nas-object-gateway" && backend !== "supabase-storage") {
+			throw new Error("Invalid artifact cleanup object backend");
+		}
 		seen.add(sha256);
-		return { sha256, bytes: bytes as number, path };
+		return { sha256, bytes: bytes as number, path, backend };
 	});
 }
 
@@ -140,7 +180,7 @@ export async function runArtifactGcWorkerBatch(
 					job,
 					objects.map((object) => object.sha256),
 				);
-				await storage.remove(objects);
+				await storage.remove(objects, job.leaseId);
 				await store.acknowledgeObjects(
 					job,
 					objects.map((object) => object.sha256),
@@ -168,7 +208,7 @@ export async function runCompanyObjectGcWorkerJob(
 	if (!job) return { claimed: 0, completed: 0, failed: 0 };
 	try {
 		await store.renewLease(job);
-		await storage.remove(job.objects);
+		await storage.remove(job.objects, job.leaseId);
 		await store.complete(job);
 		return { claimed: job.objects.length, completed: job.objects.length, failed: 0 };
 	} catch {

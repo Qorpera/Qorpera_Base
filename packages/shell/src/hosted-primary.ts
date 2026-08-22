@@ -15,6 +15,7 @@ const MAX_TREE_BYTES = 1024 * 1024 * 1024 * 1024;
 const MAX_ARTIFACT_INDEX_ENTRIES = 5_000;
 const MAX_REACHABILITY_OBJECTS = 400_000;
 const MAX_REACHABILITY_STORAGE_BYTES = 2 * 1024 * 1024 * 1024 * 1024;
+const MAX_COMPANY_VERIFICATION_TRANCHES = Math.ceil(MAX_TREE_BYTES / (64 * 1024 * 1024)) + MAX_TREE_FILES + 1;
 
 export const HOSTED_PROFILE_ROLES = ["owner", "admin", "contributor", "viewer"] as const;
 export type HostedProfileRole = (typeof HOSTED_PROFILE_ROLES)[number];
@@ -135,6 +136,22 @@ export interface HostedSession {
 	updatedAt: string;
 }
 
+export interface HostedSessionPage {
+	items: HostedSession[];
+	hasMore: boolean;
+	nextUpdatedAt?: string;
+	nextId?: string;
+}
+
+export interface HostedRunnerExecutionIdentity {
+	kind: "run";
+	id: string;
+	claimantId: string;
+	runnerAssignmentId: string;
+}
+
+export type HostedSessionExecutionIdentity = KernelExecutionIdentity | HostedRunnerExecutionIdentity;
+
 export interface HostedSessionEvent {
 	sessionId: string;
 	sequence: number;
@@ -144,7 +161,8 @@ export interface HostedSessionEvent {
 	body: JsonValue;
 	previousHash?: string;
 	eventHash: string;
-	execution?: KernelExecutionIdentity;
+	execution?: HostedSessionExecutionIdentity;
+	sessionInputId?: string;
 	createdAt: string;
 }
 
@@ -197,6 +215,75 @@ export interface HostedCompanyFile {
 	storageLimitBytes: number;
 	createdAt: string;
 	updatedAt: string;
+}
+
+export const HOSTED_COMPANY_PROPOSAL_STATUSES = ["open", "accepted", "rejected"] as const;
+export type HostedCompanyProposalStatus = (typeof HOSTED_COMPANY_PROPOSAL_STATUSES)[number];
+export const HOSTED_COMPANY_PROPOSAL_REASONS = ["policy", "authority", "conflict", "recovery"] as const;
+export type HostedCompanyProposalReason = (typeof HOSTED_COMPANY_PROPOSAL_REASONS)[number];
+
+export interface HostedCompanyProposalReview {
+	assignmentId: string;
+	proposalRevision: number;
+	reviewerStaffAgentId: string;
+	reviewerName: string;
+	status: "queued" | "running" | "approved" | "changes_requested" | "failed";
+	runId?: string;
+	commentId?: string;
+	failureReason?: string;
+	createdAt: string;
+	startedAt?: string;
+	completedAt?: string;
+}
+
+export type HostedCompanyProposalExecution = KernelExecutionIdentity | { kind: "run"; id: string; claimantId: string };
+
+export interface HostedCompanyProposal {
+	proposalId: string;
+	profileId: string;
+	environmentId: string;
+	clientProposalId: string;
+	baseSnapshotId: string;
+	proposalSnapshot: HostedCompanySnapshot;
+	execution: HostedCompanyProposalExecution;
+	sessionId?: string;
+	trailEndSequence: number;
+	reason: HostedCompanyProposalReason;
+	policyKey?: string;
+	title: string;
+	reviewerStaffIds: string[];
+	reviewRevision: number;
+	reviews: HostedCompanyProposalReview[];
+	status: HostedCompanyProposalStatus;
+	createdByUserId: string;
+	createdByName: string;
+	createdAt: string;
+	resolvedByUserId?: string;
+	resolvedAt?: string;
+}
+
+export interface HostedCompanyProposalPage {
+	items: HostedCompanyProposal[];
+	hasMore: boolean;
+	nextCreatedAt?: string;
+	nextId?: string;
+}
+
+export interface HostedCompanyProposalComment {
+	commentId: string;
+	proposalId: string;
+	body: string;
+	authorUserId?: string;
+	authorStaffAgentId?: string;
+	authorName: string;
+	createdAt: string;
+}
+
+export interface HostedCompanyProposalCommentPage {
+	items: HostedCompanyProposalComment[];
+	hasMore: boolean;
+	nextCreatedAt?: string;
+	nextId?: string;
 }
 
 export interface CreatedHostedCompany {
@@ -390,6 +477,7 @@ export interface HostedPresenceIdentity {
 	clientId: string;
 	userId: string;
 	name: string;
+	publicKey: string;
 }
 
 export type HostedOperationReceiptBegin =
@@ -443,6 +531,26 @@ export interface PrepareHostedCompanyFileRevisionInput {
 	clientRevisionId: string;
 	expectedHeadSnapshotId?: string;
 	tree: CommitHostedCompanySnapshotInput["tree"];
+}
+
+export interface PrepareHostedCompanyProposalInput {
+	environmentId: string;
+	clientRevisionId: string;
+	baseSnapshotId: string;
+	tree: CommitHostedCompanySnapshotInput["tree"];
+}
+
+export interface SubmitHostedCompanyProposalInput {
+	environmentId: string;
+	clientProposalId: string;
+	proposalSnapshotId: string;
+	execution: KernelExecutionIdentity;
+	sessionId: string;
+	trailEndSequence: number;
+	reason: HostedCompanyProposalReason;
+	policyKey?: string;
+	title: string;
+	reviewerStaffIds: string[];
 }
 
 export interface CaptureHostedCompanySubstrateVersionInput {
@@ -549,6 +657,13 @@ export interface HostedPrimaryTransport {
 	}): Promise<unknown>;
 	closeSession(input: { p_session_id: string }): Promise<unknown>;
 	listSessions(input: { p_environment_id: string }): Promise<unknown>;
+	listSessionsPage(input: {
+		p_environment_id: string;
+		p_after_updated_at: string | null;
+		p_after_id: string | null;
+		p_limit: number;
+	}): Promise<unknown>;
+	getSessionByClient(input: { p_environment_id: string; p_client_session_id: string }): Promise<unknown>;
 	ensureStaffSession(input: {
 		p_environment_id: string;
 		p_staff_agent_id: string;
@@ -587,6 +702,20 @@ export interface HostedPrimaryTransport {
 		p_claimant_id: string;
 		p_reason: string;
 	}): Promise<unknown>;
+	listSessionRecoveries(input: {
+		p_session_id: string;
+		p_after_completed_at: string | null;
+		p_after_id: string | null;
+		p_limit: number;
+	}): Promise<unknown>;
+	listSessionExecutionRunRecoveries(input: { p_session_id: string; p_limit: number }): Promise<unknown>;
+	listStaffExecutionActivity(input: { p_environment_id: string }): Promise<unknown>;
+	resolveFailedExecutionRun(input: { p_run_id: string; p_action: "retry" | "discard" }): Promise<unknown>;
+	resolveSessionRecovery(input: {
+		p_session_id: string;
+		p_turn_id: string;
+		p_resolution: "retry" | "discard";
+	}): Promise<unknown>;
 	getSessionTurnStatus(input: { p_session_id: string; p_turn_id: string; p_claimant_id: string }): Promise<unknown>;
 	claimWake(input: {
 		p_environment_id: string;
@@ -624,7 +753,19 @@ export interface HostedPrimaryTransport {
 		p_operation_id: string;
 		p_result: JsonValue;
 	}): Promise<unknown>;
-	registerPresenceDevice(input: { p_profile_id: string; p_client_id: string }): Promise<unknown>;
+	resolveOperationReceipt(input: {
+		p_operation_id: string;
+		p_resolution: "confirmed_completed" | "confirmed_not_run";
+		p_result: JsonValue | null;
+	}): Promise<unknown>;
+	resolveRunOperationReceipt(input: {
+		p_receipt_id: string;
+		p_resolution: "confirmed_completed" | "confirmed_not_run";
+		p_result: JsonValue | null;
+		p_output_snapshot_id: string | null;
+		p_proposal_id: string | null;
+	}): Promise<unknown>;
+	registerPresenceDevice(input: { p_profile_id: string; p_client_id: string; p_public_key: string }): Promise<unknown>;
 	listPresenceDevices(input: { p_profile_id: string; p_client_ids: string[] }): Promise<unknown>;
 	unregisterPresenceDevice(input: { p_profile_id: string; p_client_id: string }): Promise<unknown>;
 	sendFriendRequest(input: { p_email: string }): Promise<unknown>;
@@ -653,10 +794,62 @@ export interface HostedPrimaryTransport {
 		p_file_count: number;
 		p_total_bytes: number;
 	}): Promise<unknown>;
+	prepareCompanyFileProposal(input: {
+		p_environment_id: string;
+		p_client_revision_id: string;
+		p_base_snapshot_id: string;
+		p_tree_manifest_sha256: string;
+		p_tree_manifest_bytes: number;
+		p_tree_contract_version: number;
+		p_file_count: number;
+		p_total_bytes: number;
+	}): Promise<unknown>;
 	publishCompanyFileRevision(input: {
 		p_environment_id: string;
 		p_snapshot_id: string;
 		p_expected_head_snapshot_id: string | null;
+	}): Promise<unknown>;
+	submitCompanyProposal(input: {
+		p_environment_id: string;
+		p_client_proposal_id: string;
+		p_proposal_snapshot_id: string;
+		p_execution_kind: KernelExecutionIdentity["kind"];
+		p_execution_id: string;
+		p_execution_claimant_id: string;
+		p_session_id: string;
+		p_trail_end_sequence: number;
+		p_reason: HostedCompanyProposalReason;
+		p_policy_key: string | null;
+		p_title: string;
+		p_reviewer_staff_ids: string[];
+	}): Promise<unknown>;
+	listCompanyProposals(input: {
+		p_environment_id: string;
+		p_status: HostedCompanyProposalStatus;
+		p_after_created_at: string | null;
+		p_after_id: string | null;
+		p_limit: number;
+	}): Promise<unknown>;
+	rebaseCompanyProposal(input: {
+		p_proposal_id: string;
+		p_expected_proposal_snapshot_id: string;
+		p_expected_head_snapshot_id: string;
+		p_replacement_snapshot_id: string;
+	}): Promise<unknown>;
+	acceptCompanyProposal(input: { p_proposal_id: string; p_expected_proposal_snapshot_id: string }): Promise<unknown>;
+	retryCompanyProposalReview(input: { p_assignment_id: string }): Promise<unknown>;
+	rejectCompanyProposal(input: { p_proposal_id: string; p_expected_proposal_snapshot_id: string }): Promise<unknown>;
+	getCompanyProposal(input: { p_proposal_id: string }): Promise<unknown>;
+	appendCompanyProposalComment(input: {
+		p_proposal_id: string;
+		p_client_comment_id: string;
+		p_body: string;
+	}): Promise<unknown>;
+	listCompanyProposalComments(input: {
+		p_proposal_id: string;
+		p_after_created_at: string | null;
+		p_after_id: string | null;
+		p_limit: number;
 	}): Promise<unknown>;
 	ensureCompanyWorkspace(input: {
 		p_environment_id: string;
@@ -845,6 +1038,19 @@ export interface HostedPrimaryDatabase {
 			};
 			qorpera_close_shared_session: { Args: { p_session_id: string }; Returns: JsonValue };
 			qorpera_list_shared_sessions: { Args: { p_environment_id: string }; Returns: JsonValue };
+			qorpera_list_shared_sessions_page: {
+				Args: {
+					p_environment_id: string;
+					p_after_updated_at: string | null;
+					p_after_id: string | null;
+					p_limit: number;
+				};
+				Returns: JsonValue;
+			};
+			qorpera_get_shared_session_by_client: {
+				Args: { p_environment_id: string; p_client_session_id: string };
+				Returns: JsonValue;
+			};
 			qorpera_ensure_staff_session: {
 				Args: { p_environment_id: string; p_staff_agent_id: string; p_client_session_id: string; p_title: string };
 				Returns: JsonValue;
@@ -882,6 +1088,31 @@ export interface HostedPrimaryDatabase {
 			};
 			qorpera_quarantine_session_turn: {
 				Args: { p_session_id: string; p_turn_id: string; p_claimant_id: string; p_reason: string };
+				Returns: JsonValue;
+			};
+			qorpera_list_session_recoveries: {
+				Args: {
+					p_session_id: string;
+					p_after_completed_at: string | null;
+					p_after_id: string | null;
+					p_limit: number;
+				};
+				Returns: JsonValue;
+			};
+			qorpera_list_session_execution_run_recoveries: {
+				Args: { p_session_id: string; p_limit: number };
+				Returns: JsonValue;
+			};
+			qorpera_list_staff_execution_activity: {
+				Args: { p_environment_id: string };
+				Returns: JsonValue;
+			};
+			qorpera_resolve_failed_execution_run: {
+				Args: { p_run_id: string; p_action: string };
+				Returns: JsonValue;
+			};
+			qorpera_resolve_session_recovery: {
+				Args: { p_session_id: string; p_turn_id: string; p_resolution: string };
 				Returns: JsonValue;
 			};
 			qorpera_get_session_turn_status: {
@@ -937,8 +1168,22 @@ export interface HostedPrimaryDatabase {
 				};
 				Returns: JsonValue;
 			};
+			qorpera_resolve_operation_receipt: {
+				Args: { p_operation_id: string; p_resolution: string; p_result: JsonValue | null };
+				Returns: JsonValue;
+			};
+			qorpera_resolve_run_operation_receipt: {
+				Args: {
+					p_receipt_id: string;
+					p_resolution: string;
+					p_result: JsonValue | null;
+					p_output_snapshot_id: string | null;
+					p_proposal_id: string | null;
+				};
+				Returns: JsonValue;
+			};
 			qorpera_register_presence_device: {
-				Args: { p_profile_id: string; p_client_id: string };
+				Args: { p_profile_id: string; p_client_id: string; p_public_key: string };
 				Returns: JsonValue;
 			};
 			qorpera_list_presence_devices: {
@@ -984,11 +1229,83 @@ export interface HostedPrimaryDatabase {
 				};
 				Returns: JsonValue;
 			};
+			qorpera_prepare_company_file_proposal: {
+				Args: {
+					p_environment_id: string;
+					p_client_revision_id: string;
+					p_base_snapshot_id: string;
+					p_tree_manifest_sha256: string;
+					p_tree_manifest_bytes: number;
+					p_tree_contract_version: number;
+					p_file_count: number;
+					p_total_bytes: number;
+				};
+				Returns: JsonValue;
+			};
 			qorpera_publish_company_file_revision: {
 				Args: {
 					p_environment_id: string;
 					p_snapshot_id: string;
 					p_expected_head_snapshot_id: string | null;
+				};
+				Returns: JsonValue;
+			};
+			qorpera_submit_company_proposal: {
+				Args: {
+					p_environment_id: string;
+					p_client_proposal_id: string;
+					p_proposal_snapshot_id: string;
+					p_execution_kind: KernelExecutionIdentity["kind"];
+					p_execution_id: string;
+					p_execution_claimant_id: string;
+					p_session_id: string;
+					p_trail_end_sequence: number;
+					p_reason: HostedCompanyProposalReason;
+					p_policy_key: string | null;
+					p_title: string;
+					p_reviewer_staff_ids: string[];
+				};
+				Returns: JsonValue;
+			};
+			qorpera_list_company_proposals: {
+				Args: {
+					p_environment_id: string;
+					p_status: HostedCompanyProposalStatus;
+					p_after_created_at: string | null;
+					p_after_id: string | null;
+					p_limit: number;
+				};
+				Returns: JsonValue;
+			};
+			qorpera_rebase_company_proposal: {
+				Args: {
+					p_proposal_id: string;
+					p_expected_proposal_snapshot_id: string;
+					p_expected_head_snapshot_id: string;
+					p_replacement_snapshot_id: string;
+				};
+				Returns: JsonValue;
+			};
+			qorpera_accept_company_proposal: {
+				Args: { p_proposal_id: string; p_expected_proposal_snapshot_id: string };
+				Returns: JsonValue;
+			};
+			qorpera_retry_company_proposal_review: { Args: { p_assignment_id: string }; Returns: JsonValue };
+			qorpera_reject_company_proposal: {
+				Args: { p_proposal_id: string; p_expected_proposal_snapshot_id: string };
+				Returns: JsonValue;
+			};
+			qorpera_get_company_proposal: { Args: { p_proposal_id: string }; Returns: JsonValue };
+			qorpera_append_company_proposal_comment: {
+				Args: { p_proposal_id: string; p_client_comment_id: string; p_body: string };
+				Returns: JsonValue;
+			};
+			qorpera_list_company_proposal_comments: {
+				Args: {
+					p_proposal_id: string;
+					p_after_created_at: string | null;
+					p_after_id: string | null;
+					p_limit: number;
 				};
 				Returns: JsonValue;
 			};
@@ -1245,6 +1562,46 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		return data;
 	}
 
+	async listSessionRecoveries(
+		input: Parameters<HostedPrimaryTransport["listSessionRecoveries"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_list_session_recoveries", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async listSessionExecutionRunRecoveries(
+		input: Parameters<HostedPrimaryTransport["listSessionExecutionRunRecoveries"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_list_session_execution_run_recoveries", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async listStaffExecutionActivity(
+		input: Parameters<HostedPrimaryTransport["listStaffExecutionActivity"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_list_staff_execution_activity", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async resolveFailedExecutionRun(
+		input: Parameters<HostedPrimaryTransport["resolveFailedExecutionRun"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_resolve_failed_execution_run", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async resolveSessionRecovery(
+		input: Parameters<HostedPrimaryTransport["resolveSessionRecovery"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_resolve_session_recovery", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
 	async getSessionTurnStatus(input: Parameters<HostedPrimaryTransport["getSessionTurnStatus"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_get_session_turn_status", input);
 		if (error) throw rpcError(error);
@@ -1289,6 +1646,22 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		input: Parameters<HostedPrimaryTransport["completeOperationReceipt"]>[0],
 	): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_complete_operation_receipt", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async resolveOperationReceipt(
+		input: Parameters<HostedPrimaryTransport["resolveOperationReceipt"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_resolve_operation_receipt", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async resolveRunOperationReceipt(
+		input: Parameters<HostedPrimaryTransport["resolveRunOperationReceipt"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_resolve_run_operation_receipt", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -1401,6 +1774,18 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		return data;
 	}
 
+	async listSessionsPage(input: Parameters<HostedPrimaryTransport["listSessionsPage"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_list_shared_sessions_page", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async getSessionByClient(input: Parameters<HostedPrimaryTransport["getSessionByClient"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_get_shared_session_by_client", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
 	async appendAccountEvent(input: Parameters<HostedPrimaryTransport["appendAccountEvent"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_append_account_event", input);
 		if (error) throw rpcError(error);
@@ -1427,10 +1812,86 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		return data;
 	}
 
+	async prepareCompanyFileProposal(
+		input: Parameters<HostedPrimaryTransport["prepareCompanyFileProposal"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_prepare_company_file_proposal", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
 	async publishCompanyFileRevision(
 		input: Parameters<HostedPrimaryTransport["publishCompanyFileRevision"]>[0],
 	): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_publish_company_file_revision", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async submitCompanyProposal(
+		input: Parameters<HostedPrimaryTransport["submitCompanyProposal"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_submit_company_proposal", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async listCompanyProposals(input: Parameters<HostedPrimaryTransport["listCompanyProposals"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_list_company_proposals", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async acceptCompanyProposal(
+		input: Parameters<HostedPrimaryTransport["acceptCompanyProposal"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_accept_company_proposal", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async retryCompanyProposalReview(
+		input: Parameters<HostedPrimaryTransport["retryCompanyProposalReview"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_retry_company_proposal_review", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async rebaseCompanyProposal(
+		input: Parameters<HostedPrimaryTransport["rebaseCompanyProposal"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_rebase_company_proposal", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async rejectCompanyProposal(
+		input: Parameters<HostedPrimaryTransport["rejectCompanyProposal"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_reject_company_proposal", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async getCompanyProposal(input: Parameters<HostedPrimaryTransport["getCompanyProposal"]>[0]): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_get_company_proposal", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async appendCompanyProposalComment(
+		input: Parameters<HostedPrimaryTransport["appendCompanyProposalComment"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_append_company_proposal_comment", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async listCompanyProposalComments(
+		input: Parameters<HostedPrimaryTransport["listCompanyProposalComments"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_list_company_proposal_comments", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -2010,11 +2471,19 @@ function parseEvent(value: unknown): HostedSessionEvent {
 	const executionKind = input.execution_kind;
 	const executionId = input.execution_id;
 	const executionClaimantId = input.execution_claimant_id;
+	const runnerAssignmentId = input.runner_assignment_id;
+	const sessionInputId = input.session_input_id;
 	if (
 		(executionKind === null || executionKind === undefined) !== (executionId === null || executionId === undefined) ||
 		(executionKind === null || executionKind === undefined) !==
 			(executionClaimantId === null || executionClaimantId === undefined) ||
-		(executionKind !== null && executionKind !== undefined && executionKind !== "turn" && executionKind !== "wake")
+		(executionKind !== null &&
+			executionKind !== undefined &&
+			executionKind !== "turn" &&
+			executionKind !== "wake" &&
+			executionKind !== "run") ||
+		(executionKind === "run") !== (runnerAssignmentId !== null && runnerAssignmentId !== undefined) ||
+		(sessionInputId !== null && sessionInputId !== undefined && executionKind !== null && executionKind !== undefined)
 	) {
 		throw new Error("Hosted primary returned invalid event execution identity");
 	}
@@ -2027,15 +2496,27 @@ function parseEvent(value: unknown): HostedSessionEvent {
 		body: jsonValue(input.body),
 		...(typeof previousHash === "string" ? { previousHash } : {}),
 		eventHash: input.event_hash,
-		...(executionKind === "turn" || executionKind === "wake"
+		...(executionKind === "run"
 			? {
 					execution: {
-						kind: executionKind,
+						kind: "run" as const,
 						id: uuid(executionId, "event execution id"),
 						claimantId: uuid(executionClaimantId, "event execution claimant id"),
+						runnerAssignmentId: uuid(runnerAssignmentId, "event runner assignment id"),
 					},
 				}
-			: {}),
+			: executionKind === "turn" || executionKind === "wake"
+				? {
+						execution: {
+							kind: executionKind,
+							id: uuid(executionId, "event execution id"),
+							claimantId: uuid(executionClaimantId, "event execution claimant id"),
+						},
+					}
+				: {}),
+		...(sessionInputId === null || sessionInputId === undefined
+			? {}
+			: { sessionInputId: uuid(sessionInputId, "event session input id") }),
 		createdAt: timestamp(input.created_at, "event creation time"),
 	};
 }
@@ -2104,6 +2585,149 @@ function parseCompanySnapshot(value: unknown): HostedCompanySnapshot {
 		createdByUserId: uuid(input.created_by_user_id, "company snapshot creator id"),
 		createdAt: timestamp(input.created_at, "company snapshot creation time"),
 		...(publicationState === "prepared" || publicationState === "published" ? { publicationState } : {}),
+	};
+}
+
+function parseCompanyProposal(value: unknown): HostedCompanyProposal {
+	const input = record(value, "company proposal");
+	if (
+		!HOSTED_COMPANY_PROPOSAL_REASONS.includes(input.reason as HostedCompanyProposalReason) ||
+		!HOSTED_COMPANY_PROPOSAL_STATUSES.includes(input.status as HostedCompanyProposalStatus) ||
+		(input.execution_kind !== "turn" && input.execution_kind !== "wake" && input.execution_kind !== "run")
+	) {
+		throw new Error("Hosted primary returned invalid company proposal state");
+	}
+	const policyKey = input.policy_key;
+	const resolvedByUserId = input.resolved_by_user_id;
+	const resolvedAt = input.resolved_at;
+	const sessionId = input.session_id;
+	if (policyKey !== null && policyKey !== undefined && typeof policyKey !== "string") {
+		throw new Error("Hosted primary returned invalid company proposal policy");
+	}
+	if (typeof input.title !== "string" || typeof input.created_by_name !== "string") {
+		throw new Error("Hosted primary returned invalid company proposal text");
+	}
+	return {
+		proposalId: uuid(input.proposal_id, "company proposal id"),
+		profileId: uuid(input.profile_id, "company proposal profile id"),
+		environmentId: uuid(input.environment_id, "company proposal environment id"),
+		clientProposalId: uuid(input.client_proposal_id, "company client proposal id"),
+		baseSnapshotId: uuid(input.base_snapshot_id, "company proposal base snapshot id"),
+		proposalSnapshot: parseCompanySnapshot(input.proposal_snapshot),
+		execution: {
+			kind: input.execution_kind,
+			id: uuid(input.execution_id, "company proposal execution id"),
+			claimantId: uuid(input.execution_claimant_id, "company proposal execution claimant id"),
+		},
+		...(sessionId === null || sessionId === undefined
+			? {}
+			: { sessionId: uuid(sessionId, "company proposal session id") }),
+		trailEndSequence: boundedInteger(
+			input.trail_end_sequence,
+			"company proposal trail sequence",
+			0,
+			Number.MAX_SAFE_INTEGER,
+		),
+		reason: input.reason as HostedCompanyProposalReason,
+		...(policyKey === null || policyKey === undefined
+			? {}
+			: { policyKey: requiredText(policyKey, "Company proposal policy", 128) }),
+		title: requiredText(input.title, "Company proposal title", MAX_SESSION_TITLE_LENGTH),
+		reviewerStaffIds: array(input.reviewer_staff_ids, "company proposal reviewers").map((reviewer) =>
+			uuid(reviewer, "company proposal reviewer id"),
+		),
+		reviewRevision: boundedInteger(
+			input.review_revision,
+			"company proposal review revision",
+			1,
+			Number.MAX_SAFE_INTEGER,
+		),
+		reviews: array(input.reviews, "company proposal reviews").map((value) => {
+			const review = record(value, "company proposal review");
+			if (
+				typeof review.reviewer_name !== "string" ||
+				(review.status !== "queued" &&
+					review.status !== "running" &&
+					review.status !== "approved" &&
+					review.status !== "changes_requested" &&
+					review.status !== "failed")
+			) {
+				throw new Error("Hosted primary returned invalid company proposal review status");
+			}
+			if (
+				review.failure_reason !== null &&
+				review.failure_reason !== undefined &&
+				typeof review.failure_reason !== "string"
+			) {
+				throw new Error("Hosted primary returned invalid company proposal review failure");
+			}
+			return {
+				assignmentId: uuid(review.assignment_id, "company proposal review assignment id"),
+				proposalRevision: boundedInteger(
+					review.proposal_revision,
+					"company proposal review revision",
+					1,
+					Number.MAX_SAFE_INTEGER,
+				),
+				reviewerStaffAgentId: uuid(review.reviewer_staff_agent_id, "company proposal reviewer staff id"),
+				reviewerName: requiredText(review.reviewer_name, "Company proposal reviewer name", 256),
+				status: review.status,
+				...(review.run_id === null || review.run_id === undefined
+					? {}
+					: { runId: uuid(review.run_id, "company proposal review run id") }),
+				...(review.comment_id === null || review.comment_id === undefined
+					? {}
+					: { commentId: uuid(review.comment_id, "company proposal review comment id") }),
+				...(review.failure_reason === null || review.failure_reason === undefined
+					? {}
+					: { failureReason: requiredText(review.failure_reason, "Company proposal review failure", 1000) }),
+				createdAt: timestamp(review.created_at, "company proposal review creation time"),
+				...(review.started_at === null || review.started_at === undefined
+					? {}
+					: { startedAt: timestamp(review.started_at, "company proposal review start time") }),
+				...(review.completed_at === null || review.completed_at === undefined
+					? {}
+					: { completedAt: timestamp(review.completed_at, "company proposal review completion time") }),
+			};
+		}),
+		status: input.status as HostedCompanyProposalStatus,
+		createdByUserId: uuid(input.created_by_user_id, "company proposal creator id"),
+		createdByName: requiredText(input.created_by_name, "Company proposal creator name", 256),
+		createdAt: timestamp(input.created_at, "company proposal creation time"),
+		...(resolvedByUserId === null || resolvedByUserId === undefined
+			? {}
+			: { resolvedByUserId: uuid(resolvedByUserId, "company proposal resolver id") }),
+		...(resolvedAt === null || resolvedAt === undefined
+			? {}
+			: { resolvedAt: timestamp(resolvedAt, "company proposal resolution time") }),
+	};
+}
+
+function parseCompanyProposalComment(value: unknown): HostedCompanyProposalComment {
+	const input = record(value, "company proposal comment");
+	if (typeof input.body !== "string" || typeof input.author_name !== "string") {
+		throw new Error("Hosted primary returned invalid company proposal comment text");
+	}
+	const authorUserId = input.author_user_id;
+	const authorStaffAgentId = input.author_staff_agent_id;
+	if (
+		(authorUserId === null || authorUserId === undefined) ===
+		(authorStaffAgentId === null || authorStaffAgentId === undefined)
+	) {
+		throw new Error("Hosted primary returned invalid company proposal comment author");
+	}
+	return {
+		commentId: uuid(input.comment_id, "company proposal comment id"),
+		proposalId: uuid(input.proposal_id, "company proposal comment proposal id"),
+		body: requiredText(input.body, "Company proposal comment", 16_384),
+		...(authorUserId === null || authorUserId === undefined
+			? {}
+			: { authorUserId: uuid(authorUserId, "company proposal comment author id") }),
+		...(authorStaffAgentId === null || authorStaffAgentId === undefined
+			? {}
+			: { authorStaffAgentId: uuid(authorStaffAgentId, "company proposal comment staff author id") }),
+		authorName: requiredText(input.author_name, "Company proposal comment author", 256),
+		createdAt: timestamp(input.created_at, "company proposal comment creation time"),
 	};
 }
 
@@ -2511,12 +3135,14 @@ function requiredText(value: string, label: string, maxLength: number): string {
 
 export interface StaffSessionHandle {
 	sessionId: string;
+	clientSessionId: string;
 	environmentId: string;
 	title: string;
 	companySnapshotId?: string;
 	staffVersion?: number;
 	created: boolean;
 	createdByUserId: string;
+	createdAt: string;
 }
 
 export interface SessionTurnInput {
@@ -2545,13 +3171,64 @@ export interface PendingSessionInputPage {
 	hasMore: boolean;
 }
 
+export interface HostedOperationRecoveryReceipt {
+	operationId: string;
+	operationKind: string;
+	status: "executing" | "completed" | "ambiguous" | "cancelled";
+	recoveryResolution?: "confirmed_completed" | "confirmed_not_run";
+	createdAt: string;
+}
+
+export interface HostedSessionRecovery {
+	turnId: string;
+	companySnapshotId: string;
+	staffVersion: number;
+	trailStartSequence: number;
+	trailEndSequence: number;
+	failureReason: string;
+	claimedAt: string;
+	failedAt: string;
+	operationReceipts: HostedOperationRecoveryReceipt[];
+	inputs: SessionTurnInput[];
+}
+
+export interface HostedSessionRecoveryPage {
+	items: HostedSessionRecovery[];
+	hasMore: boolean;
+	nextCompletedAt?: string;
+	nextId?: string;
+}
+
+export interface HostedExecutionRunRecovery {
+	runId: string;
+	sessionId: string;
+	failureReason: string;
+	failedAt: string;
+	operationReceipts: HostedOperationRecoveryReceipt[];
+	inputs: SessionTurnInput[];
+	proposalId?: string;
+}
+
+export interface HostedStaffExecutionActivity {
+	runId: string;
+	staffAgentId: string;
+	sourceKind: "session_turn" | "wake" | "manual" | "room_delivery" | "proposal_review" | "system";
+	jobStatus: "queued" | "leased" | "completed" | "failed" | "cancelled";
+	activity: "waiting" | "working" | "needs_attention";
+	updatedAt: string;
+}
+
 export type SessionTurnClaim =
 	| { claimed: true; turnId: string; companySnapshotId: string; staffVersion: number; inputs: SessionTurnInput[] }
 	| { claimed: false; reason: "turn-in-flight" | "queue-empty" | "stale-revision" };
 
 export type SessionTurnStatus =
 	| { status: "unavailable" }
-	| { status: "active" | "completed" | "quarantined"; inputCount: number; remainingInputCount: number };
+	| {
+			status: "active" | "completed" | "quarantined" | "review_pending";
+			inputCount: number;
+			remainingInputCount: number;
+	  };
 
 export class SessionTurnOwnershipError extends Error {
 	constructor(action: "renew" | "complete") {
@@ -2573,6 +3250,7 @@ function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
 	const staffVersion = payload.staff_version;
 	return {
 		sessionId: uuid(payload.session_id, "Session id"),
+		clientSessionId: uuid(payload.client_session_id, "Client session id"),
 		environmentId: uuid(payload.environment_id, "Environment id"),
 		title: String(payload.title ?? ""),
 		...(companySnapshotId === null || companySnapshotId === undefined
@@ -2583,6 +3261,7 @@ function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
 			: { staffVersion: boundedInteger(staffVersion, "Session staff version", 1, Number.MAX_SAFE_INTEGER) }),
 		created: payload.created === true,
 		createdByUserId: uuid(payload.created_by_user_id, "Session creator"),
+		createdAt: timestamp(payload.created_at, "Session creation time"),
 	};
 }
 
@@ -2624,6 +3303,7 @@ function parsePresenceIdentity(value: unknown): HostedPresenceIdentity {
 		clientId: uuid(identity.client_id, "Presence client id"),
 		userId: uuid(identity.user_id, "Presence user id"),
 		name: nonEmptyString(identity.name, "Presence display name", 256),
+		publicKey: nonEmptyString(identity.public_key, "Presence public key", 256),
 	};
 }
 
@@ -2667,6 +3347,136 @@ function parsePendingSessionInputs(value: unknown): PendingSessionInputPage {
 			Number.MAX_SAFE_INTEGER,
 		),
 		hasMore: page.has_more === true,
+	};
+}
+
+function parseSessionRecoveryPage(value: unknown): HostedSessionRecoveryPage {
+	const page = record(value, "session recovery page");
+	const items = array(page.items, "session recoveries").map((entry) => {
+		const recovery = record(entry, "session recovery");
+		const operationReceipts = array(recovery.operation_receipts, "session recovery operation receipts").map(
+			(entry) => {
+				const receipt = record(entry, "session recovery operation receipt");
+				const recoveryResolution = receipt.recovery_resolution;
+				const parsedRecoveryResolution: HostedOperationRecoveryReceipt["recoveryResolution"] =
+					recoveryResolution === "confirmed_completed" || recoveryResolution === "confirmed_not_run"
+						? recoveryResolution
+						: undefined;
+				if (!["executing", "completed", "ambiguous", "cancelled"].includes(String(receipt.status))) {
+					throw new Error("Hosted primary returned invalid session recovery receipt status");
+				}
+				return {
+					operationId: uuid(receipt.operation_id, "Session recovery operation id"),
+					operationKind: nonEmptyString(receipt.operation_kind, "Session recovery operation kind", 64),
+					status: receipt.status as HostedOperationRecoveryReceipt["status"],
+					...(parsedRecoveryResolution ? { recoveryResolution: parsedRecoveryResolution } : {}),
+					createdAt: timestamp(receipt.created_at, "Session recovery operation creation time"),
+				};
+			},
+		);
+		return {
+			turnId: uuid(recovery.turn_id, "Session recovery turn id"),
+			companySnapshotId: uuid(recovery.company_snapshot_id, "Session recovery Company File revision"),
+			staffVersion: boundedInteger(
+				recovery.staff_version,
+				"Session recovery staff version",
+				1,
+				Number.MAX_SAFE_INTEGER,
+			),
+			trailStartSequence: boundedInteger(
+				recovery.trail_start_sequence,
+				"Session recovery trail start",
+				0,
+				Number.MAX_SAFE_INTEGER,
+			),
+			trailEndSequence: boundedInteger(
+				recovery.trail_end_sequence,
+				"Session recovery trail end",
+				0,
+				Number.MAX_SAFE_INTEGER,
+			),
+			failureReason: nonEmptyString(recovery.failure_reason, "Session recovery reason", 2048),
+			claimedAt: timestamp(recovery.claimed_at, "Session recovery claim time"),
+			failedAt: timestamp(recovery.failed_at, "Session recovery failure time"),
+			operationReceipts,
+			inputs: parseSessionInputs(recovery.inputs, "session recovery inputs"),
+		};
+	});
+	const nextCompletedAt = page.next_completed_at;
+	const nextId = page.next_id;
+	return {
+		items,
+		hasMore: page.has_more === true,
+		...(nextCompletedAt === null || nextCompletedAt === undefined
+			? {}
+			: { nextCompletedAt: timestamp(nextCompletedAt, "Session recovery next cursor time") }),
+		...(nextId === null || nextId === undefined ? {} : { nextId: uuid(nextId, "Session recovery next cursor id") }),
+	};
+}
+
+function parseExecutionRunRecovery(value: unknown): HostedExecutionRunRecovery {
+	const recovery = record(value, "execution run recovery");
+	const run = record(recovery.run, "execution run recovery run");
+	const job = record(recovery.job, "execution run recovery job");
+	if (run.source_kind !== "session_turn" || (job.status !== "failed" && job.status !== "cancelled")) {
+		throw new Error("Hosted primary returned an invalid execution run recovery");
+	}
+	const operationReceipts: HostedOperationRecoveryReceipt[] = array(
+		recovery.operations,
+		"execution run recovery operations",
+	).map((entry) => {
+		const receipt = record(entry, "execution run recovery operation");
+		if (!["executing", "completed", "ambiguous", "cancelled"].includes(String(receipt.status))) {
+			throw new Error("Hosted primary returned an invalid execution run recovery operation");
+		}
+		const recoveryResolution = receipt.recovery_resolution;
+		return {
+			operationId: uuid(receipt.operation_id, "Execution run recovery operation id"),
+			operationKind: nonEmptyString(receipt.operation_kind, "Execution run recovery operation kind", 64),
+			status: receipt.status as HostedOperationRecoveryReceipt["status"],
+			...(recoveryResolution === "confirmed_completed" || recoveryResolution === "confirmed_not_run"
+				? { recoveryResolution }
+				: {}),
+			createdAt: timestamp(receipt.created_at, "Execution run recovery operation creation time"),
+		};
+	});
+	const proposalId = recovery.proposal_id;
+	return {
+		runId: uuid(run.run_id, "Execution run recovery id"),
+		sessionId: uuid(run.session_id, "Execution run recovery session id"),
+		failureReason:
+			typeof job.last_error === "string"
+				? nonEmptyString(job.last_error, "Execution run recovery reason", 2048)
+				: "Cloud runner execution was cancelled.",
+		failedAt: timestamp(job.finished_at ?? job.cancelled_at, "Execution run recovery failure time"),
+		operationReceipts,
+		inputs: parseSessionInputs(recovery.inputs, "execution run recovery inputs"),
+		...(proposalId === null || proposalId === undefined
+			? {}
+			: { proposalId: uuid(proposalId, "Execution run recovery proposal id") }),
+	};
+}
+
+function parseStaffExecutionActivity(value: unknown): HostedStaffExecutionActivity {
+	const activity = record(value, "staff execution activity");
+	if (
+		!["session_turn", "wake", "manual", "room_delivery", "proposal_review", "system"].includes(
+			String(activity.source_kind),
+		) ||
+		!["queued", "leased", "completed", "failed", "cancelled"].includes(String(activity.job_status)) ||
+		!(["waiting", "working", "needs_attention"] as const).includes(
+			activity.activity as "waiting" | "working" | "needs_attention",
+		)
+	) {
+		throw new Error("Hosted primary returned invalid staff execution activity");
+	}
+	return {
+		runId: uuid(activity.run_id, "Staff execution activity run id"),
+		staffAgentId: uuid(activity.staff_agent_id, "Staff execution activity staff id"),
+		sourceKind: activity.source_kind as HostedStaffExecutionActivity["sourceKind"],
+		jobStatus: activity.job_status as HostedStaffExecutionActivity["jobStatus"],
+		activity: activity.activity as HostedStaffExecutionActivity["activity"],
+		updatedAt: timestamp(activity.updated_at, "Staff execution activity time"),
 	};
 }
 
@@ -2860,7 +3670,18 @@ export class QorperaHostedPrimary {
 	}
 
 	async listSessionInputs(sessionId: string): Promise<PendingSessionInput[]> {
-		return (await this.listSessionInputsPage(sessionId)).items;
+		const items: PendingSessionInput[] = [];
+		let afterPosition = 0;
+		for (let pageNumber = 0; pageNumber < 6; pageNumber += 1) {
+			const page = await this.listSessionInputsPage(sessionId, afterPosition, 100);
+			items.push(...page.items);
+			if (!page.hasMore) return items;
+			if (page.nextAfterPosition <= afterPosition || items.length > 512) {
+				throw new Error("Session input pagination did not advance within its bounded queue");
+			}
+			afterPosition = page.nextAfterPosition;
+		}
+		throw new Error("Session input queue exceeded its bounded read contract");
 	}
 
 	async claimSessionTurn(
@@ -2945,6 +3766,84 @@ export class QorperaHostedPrimary {
 		}
 	}
 
+	async listSessionRecoveries(
+		sessionId: string,
+		after?: { completedAt: string; turnId: string },
+		limit = 10,
+	): Promise<HostedSessionRecoveryPage> {
+		requiredUuid(sessionId, "Session id");
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
+			throw new Error("Session recovery page size is invalid");
+		}
+		if (after) {
+			timestamp(after.completedAt, "Session recovery cursor time");
+			requiredUuid(after.turnId, "Session recovery cursor id");
+		}
+		return parseSessionRecoveryPage(
+			await this.transport.listSessionRecoveries({
+				p_session_id: sessionId,
+				p_after_completed_at: after?.completedAt ?? null,
+				p_after_id: after?.turnId ?? null,
+				p_limit: limit,
+			}),
+		);
+	}
+
+	async listSessionExecutionRunRecoveries(sessionId: string, limit = 20): Promise<HostedExecutionRunRecovery[]> {
+		requiredUuid(sessionId, "Session id");
+		boundedInteger(limit, "Execution run recovery limit", 1, 20);
+		return array(
+			await this.transport.listSessionExecutionRunRecoveries({
+				p_session_id: sessionId,
+				p_limit: limit,
+			}),
+			"execution run recoveries",
+		).map(parseExecutionRunRecovery);
+	}
+
+	async listStaffExecutionActivity(environmentId: string): Promise<HostedStaffExecutionActivity[]> {
+		requiredUuid(environmentId, "Environment id");
+		return array(
+			await this.transport.listStaffExecutionActivity({ p_environment_id: environmentId }),
+			"staff execution activity",
+		).map(parseStaffExecutionActivity);
+	}
+
+	async resolveFailedExecutionRun(runId: string, action: "retry" | "discard"): Promise<void> {
+		requiredUuid(runId, "Execution run recovery id");
+		const result = record(
+			await this.transport.resolveFailedExecutionRun({ p_run_id: runId, p_action: action }),
+			"execution run recovery resolution",
+		);
+		if (result.resolved !== true || result.action !== action || result.run_id !== runId) {
+			throw new Error("Hosted primary returned an invalid execution run recovery resolution");
+		}
+	}
+
+	async resolveSessionRecovery(
+		sessionId: string,
+		turnId: string,
+		resolution: "retry" | "discard",
+	): Promise<{ resolution: "retry" | "discard"; inputCount: number }> {
+		requiredUuid(sessionId, "Session id");
+		requiredUuid(turnId, "Session recovery turn id");
+		const result = record(
+			await this.transport.resolveSessionRecovery({
+				p_session_id: sessionId,
+				p_turn_id: turnId,
+				p_resolution: resolution,
+			}),
+			"session recovery resolution",
+		);
+		if (result.resolved !== true || (result.resolution !== "retry" && result.resolution !== "discard")) {
+			throw new Error("Hosted primary returned invalid session recovery resolution");
+		}
+		return {
+			resolution: result.resolution,
+			inputCount: boundedInteger(result.input_count, "Session recovery input count", 0, 32),
+		};
+	}
+
 	async getSessionTurnStatus(sessionId: string, turnId: string, claimantId: string): Promise<SessionTurnStatus> {
 		requiredUuid(sessionId, "Session id");
 		requiredUuid(turnId, "Turn id");
@@ -2958,7 +3857,12 @@ export class QorperaHostedPrimary {
 			"session turn status",
 		);
 		if (result.status === "unavailable") return { status: "unavailable" };
-		if (result.status !== "active" && result.status !== "completed" && result.status !== "quarantined") {
+		if (
+			result.status !== "active" &&
+			result.status !== "completed" &&
+			result.status !== "quarantined" &&
+			result.status !== "review_pending"
+		) {
 			throw new Error("Hosted primary returned invalid session turn status");
 		}
 		return {
@@ -3101,11 +4005,68 @@ export class QorperaHostedPrimary {
 		boundedInteger(result.staged, "Staged operation object count", objects.length, objects.length);
 	}
 
-	async registerPresenceDevice(profileId: string, clientId: string): Promise<HostedPresenceIdentity> {
+	async resolveOperationReceipt(
+		operationId: string,
+		resolution: "confirmed_completed" | "confirmed_not_run",
+		result?: JsonValue,
+	): Promise<{ status: "completed" | "cancelled"; resolution: typeof resolution; result?: JsonValue }> {
+		requiredUuid(operationId, "Operation id");
+		const value = record(
+			await this.transport.resolveOperationReceipt({
+				p_operation_id: operationId,
+				p_resolution: resolution,
+				p_result: result ?? null,
+			}),
+			"operation recovery result",
+		);
+		if (
+			(value.status !== "completed" && value.status !== "cancelled") ||
+			(value.resolution !== "confirmed_completed" && value.resolution !== "confirmed_not_run")
+		) {
+			throw new Error("Hosted primary returned invalid operation recovery result");
+		}
+		return {
+			status: value.status,
+			resolution: value.resolution,
+			...(value.result === null || value.result === undefined ? {} : { result: jsonValue(value.result) }),
+		};
+	}
+
+	async resolveRunOperationReceipt(
+		operationId: string,
+		resolution: "confirmed_completed" | "confirmed_not_run",
+	): Promise<{ status: "completed" | "cancelled"; recoveryResolution: typeof resolution }> {
+		requiredUuid(operationId, "Run operation id");
+		const value = record(
+			await this.transport.resolveRunOperationReceipt({
+				p_receipt_id: operationId,
+				p_resolution: resolution,
+				p_result: resolution === "confirmed_completed" ? { recovered: true } : null,
+				p_output_snapshot_id: null,
+				p_proposal_id: null,
+			}),
+			"run operation recovery result",
+		);
+		if ((value.status !== "completed" && value.status !== "cancelled") || value.recovery_resolution !== resolution) {
+			throw new Error("Hosted primary returned invalid run operation recovery result");
+		}
+		return { status: value.status, recoveryResolution: resolution };
+	}
+
+	async registerPresenceDevice(
+		profileId: string,
+		clientId: string,
+		publicKey: string,
+	): Promise<HostedPresenceIdentity> {
 		requiredUuid(profileId, "Presence profile id");
 		requiredUuid(clientId, "Presence client id");
+		if (!/^[A-Za-z0-9+/]{40,240}={0,2}$/.test(publicKey)) throw new Error("Presence public key is invalid");
 		return parsePresenceIdentity(
-			await this.transport.registerPresenceDevice({ p_profile_id: profileId, p_client_id: clientId }),
+			await this.transport.registerPresenceDevice({
+				p_profile_id: profileId,
+				p_client_id: clientId,
+				p_public_key: publicKey,
+			}),
 		);
 	}
 
@@ -3234,6 +4195,29 @@ export class QorperaHostedPrimary {
 		);
 	}
 
+	async prepareCompanyFileProposal(input: PrepareHostedCompanyProposalInput): Promise<HostedCompanySnapshot> {
+		requiredUuid(input.environmentId, "Environment id");
+		requiredUuid(input.clientRevisionId, "Client revision id");
+		requiredUuid(input.baseSnapshotId, "Proposal base snapshot id");
+		if (!SHA256_PATTERN.test(input.tree.manifestSha256)) throw new Error("Tree manifest SHA-256 is invalid");
+		boundedInteger(input.tree.manifestBytes, "tree manifest bytes", 1, MAX_TREE_MANIFEST_BYTES);
+		if (input.tree.contractVersion !== 3) throw new Error("Company File tree contract version must be 3");
+		boundedInteger(input.tree.fileCount, "tree file count", 0, MAX_TREE_FILES);
+		boundedInteger(input.tree.totalBytes, "tree total bytes", 0, MAX_TREE_BYTES);
+		return parseCompanySnapshot(
+			await this.transport.prepareCompanyFileProposal({
+				p_environment_id: input.environmentId,
+				p_client_revision_id: input.clientRevisionId,
+				p_base_snapshot_id: input.baseSnapshotId,
+				p_tree_manifest_sha256: input.tree.manifestSha256,
+				p_tree_manifest_bytes: input.tree.manifestBytes,
+				p_tree_contract_version: input.tree.contractVersion,
+				p_file_count: input.tree.fileCount,
+				p_total_bytes: input.tree.totalBytes,
+			}),
+		);
+	}
+
 	async publishCompanyFileRevision(
 		environmentId: string,
 		snapshotId: string,
@@ -3249,6 +4233,196 @@ export class QorperaHostedPrimary {
 				p_expected_head_snapshot_id: expectedHeadSnapshotId ?? null,
 			}),
 		);
+	}
+
+	async submitCompanyProposal(input: SubmitHostedCompanyProposalInput): Promise<HostedCompanyProposal> {
+		requiredUuid(input.environmentId, "Environment id");
+		requiredUuid(input.clientProposalId, "Client proposal id");
+		requiredUuid(input.proposalSnapshotId, "Proposal snapshot id");
+		requiredUuid(input.execution.id, "Proposal execution id");
+		requiredUuid(input.execution.claimantId, "Proposal execution claimant id");
+		requiredUuid(input.sessionId, "Proposal session id");
+		boundedInteger(input.trailEndSequence, "proposal trail end sequence", 0, Number.MAX_SAFE_INTEGER);
+		if (!HOSTED_COMPANY_PROPOSAL_REASONS.includes(input.reason)) throw new Error("Proposal reason is invalid");
+		if (input.policyKey) requiredText(input.policyKey, "Proposal policy", 128);
+		if (input.reviewerStaffIds.length > 20) throw new Error("Proposal has too many reviewers");
+		for (const reviewer of input.reviewerStaffIds) requiredUuid(reviewer, "Proposal reviewer id");
+		return parseCompanyProposal(
+			await this.transport.submitCompanyProposal({
+				p_environment_id: input.environmentId,
+				p_client_proposal_id: input.clientProposalId,
+				p_proposal_snapshot_id: input.proposalSnapshotId,
+				p_execution_kind: input.execution.kind,
+				p_execution_id: input.execution.id,
+				p_execution_claimant_id: input.execution.claimantId,
+				p_session_id: input.sessionId,
+				p_trail_end_sequence: input.trailEndSequence,
+				p_reason: input.reason,
+				p_policy_key: input.policyKey ?? null,
+				p_title: requiredText(input.title, "Proposal title", MAX_SESSION_TITLE_LENGTH),
+				p_reviewer_staff_ids: input.reviewerStaffIds,
+			}),
+		);
+	}
+
+	async listCompanyProposals(
+		environmentId: string,
+		status: HostedCompanyProposalStatus = "open",
+		limit = 50,
+		after?: { createdAt: string; proposalId: string },
+	): Promise<HostedCompanyProposalPage> {
+		requiredUuid(environmentId, "Environment id");
+		if (!HOSTED_COMPANY_PROPOSAL_STATUSES.includes(status)) throw new Error("Proposal status is invalid");
+		boundedInteger(limit, "proposal page size", 1, 100);
+		if (after) {
+			timestamp(after.createdAt, "proposal page cursor time");
+			requiredUuid(after.proposalId, "Proposal page cursor id");
+		}
+		const value = record(
+			await this.transport.listCompanyProposals({
+				p_environment_id: environmentId,
+				p_status: status,
+				p_after_created_at: after?.createdAt ?? null,
+				p_after_id: after?.proposalId ?? null,
+				p_limit: limit,
+			}),
+			"company proposal page",
+		);
+		const nextCreatedAt = value.next_created_at;
+		const nextId = value.next_id;
+		return {
+			items: array(value.items, "company proposals").map(parseCompanyProposal),
+			hasMore: value.has_more === true,
+			...(nextCreatedAt === null || nextCreatedAt === undefined
+				? {}
+				: { nextCreatedAt: timestamp(nextCreatedAt, "proposal next cursor time") }),
+			...(nextId === null || nextId === undefined ? {} : { nextId: uuid(nextId, "proposal next cursor id") }),
+		};
+	}
+
+	async acceptCompanyProposal(proposalId: string, expectedProposalSnapshotId: string): Promise<HostedCompanyProposal> {
+		requiredUuid(proposalId, "Proposal id");
+		requiredUuid(expectedProposalSnapshotId, "Expected proposal snapshot id");
+		const proposal = parseCompanyProposal(
+			await this.transport.acceptCompanyProposal({
+				p_proposal_id: proposalId,
+				p_expected_proposal_snapshot_id: expectedProposalSnapshotId,
+			}),
+		);
+		if (
+			proposal.proposalId !== proposalId ||
+			proposal.proposalSnapshot.snapshotId !== expectedProposalSnapshotId ||
+			proposal.status !== "accepted"
+		) {
+			throw new Error("Hosted primary did not accept the expected Company File proposal revision");
+		}
+		return proposal;
+	}
+
+	async retryCompanyProposalReview(assignmentId: string): Promise<void> {
+		requiredUuid(assignmentId, "Company proposal review assignment id");
+		const result = record(
+			await this.transport.retryCompanyProposalReview({ p_assignment_id: assignmentId }),
+			"company proposal review retry",
+		);
+		if (uuid(result.assignment_id, "Company proposal review retry assignment id") !== assignmentId) {
+			throw new Error("Hosted primary returned another proposal review assignment");
+		}
+		if (result.status !== "queued") throw new Error("Hosted primary did not queue the proposal review retry");
+	}
+
+	async rebaseCompanyProposal(
+		proposalId: string,
+		expectedProposalSnapshotId: string,
+		expectedHeadSnapshotId: string,
+		replacementSnapshotId: string,
+	): Promise<HostedCompanyProposal> {
+		requiredUuid(proposalId, "Proposal id");
+		requiredUuid(expectedProposalSnapshotId, "Expected proposal snapshot id");
+		requiredUuid(expectedHeadSnapshotId, "Expected Company File head snapshot id");
+		requiredUuid(replacementSnapshotId, "Replacement proposal snapshot id");
+		return parseCompanyProposal(
+			await this.transport.rebaseCompanyProposal({
+				p_proposal_id: proposalId,
+				p_expected_proposal_snapshot_id: expectedProposalSnapshotId,
+				p_expected_head_snapshot_id: expectedHeadSnapshotId,
+				p_replacement_snapshot_id: replacementSnapshotId,
+			}),
+		);
+	}
+
+	async rejectCompanyProposal(proposalId: string, expectedProposalSnapshotId: string): Promise<HostedCompanyProposal> {
+		requiredUuid(proposalId, "Proposal id");
+		requiredUuid(expectedProposalSnapshotId, "Expected proposal snapshot id");
+		const proposal = parseCompanyProposal(
+			await this.transport.rejectCompanyProposal({
+				p_proposal_id: proposalId,
+				p_expected_proposal_snapshot_id: expectedProposalSnapshotId,
+			}),
+		);
+		if (
+			proposal.proposalId !== proposalId ||
+			proposal.proposalSnapshot.snapshotId !== expectedProposalSnapshotId ||
+			proposal.status !== "rejected"
+		) {
+			throw new Error("Hosted primary did not reject the expected Company File proposal revision");
+		}
+		return proposal;
+	}
+
+	async getCompanyProposal(proposalId: string): Promise<HostedCompanyProposal> {
+		requiredUuid(proposalId, "Proposal id");
+		return parseCompanyProposal(await this.transport.getCompanyProposal({ p_proposal_id: proposalId }));
+	}
+
+	async appendCompanyProposalComment(
+		proposalId: string,
+		clientCommentId: string,
+		body: string,
+	): Promise<HostedCompanyProposalComment> {
+		requiredUuid(proposalId, "Proposal id");
+		requiredUuid(clientCommentId, "Proposal comment id");
+		return parseCompanyProposalComment(
+			await this.transport.appendCompanyProposalComment({
+				p_proposal_id: proposalId,
+				p_client_comment_id: clientCommentId,
+				p_body: requiredText(body, "Proposal comment", 16_384),
+			}),
+		);
+	}
+
+	async listCompanyProposalComments(
+		proposalId: string,
+		limit = 100,
+		after?: { createdAt: string; commentId: string },
+	): Promise<HostedCompanyProposalCommentPage> {
+		requiredUuid(proposalId, "Proposal id");
+		boundedInteger(limit, "proposal comment page size", 1, 100);
+		if (after) {
+			timestamp(after.createdAt, "proposal comment page cursor time");
+			requiredUuid(after.commentId, "Proposal comment page cursor id");
+		}
+		const value = record(
+			await this.transport.listCompanyProposalComments({
+				p_proposal_id: proposalId,
+				p_after_created_at: after?.createdAt ?? null,
+				p_after_id: after?.commentId ?? null,
+				p_limit: limit,
+			}),
+			"company proposal comment page",
+		);
+		const nextCreatedAt = value.next_created_at;
+		const nextId = value.next_id;
+		return {
+			items: array(value.items, "company proposal comments").map(parseCompanyProposalComment),
+			hasMore: value.has_more === true,
+			...(nextCreatedAt === null || nextCreatedAt === undefined
+				? {}
+				: { nextCreatedAt: timestamp(nextCreatedAt, "proposal comment next cursor time") }),
+			...(nextId === null || nextId === undefined
+				? {}
+				: { nextId: uuid(nextId, "proposal comment next cursor id") }),
+		};
 	}
 
 	async ensureCompanyWorkspace(input: EnsureHostedCompanyWorkspaceInput): Promise<HostedCompanyWorkspace> {
@@ -3535,9 +4709,14 @@ export class QorperaHostedPrimary {
 	async verifyCompanySnapshotClosure(snapshotId: string, graphId: string): Promise<void> {
 		requiredUuid(snapshotId, "Company snapshot id");
 		requiredUuid(graphId, "Object graph id");
-		const result = await this.transport.verifyCompanySnapshotClosure({ snapshotId, graphId });
-		const value = record(result, "Company snapshot verification");
-		if (value.verified !== true) throw new Error("Company snapshot server verification did not complete");
+		for (let tranche = 0; tranche < MAX_COMPANY_VERIFICATION_TRANCHES; tranche += 1) {
+			const result = await this.transport.verifyCompanySnapshotClosure({ snapshotId, graphId });
+			const value = record(result, "Company snapshot verification");
+			if (value.verified === true) return;
+			if (value.pending !== true) throw new Error("Company snapshot server verification did not complete");
+			await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
+		}
+		throw new Error("Company snapshot server verification exceeded the supported Company File limits");
 	}
 
 	async createObjectRestoreProof(
@@ -3669,6 +4848,48 @@ export class QorperaHostedPrimary {
 		return array(await this.transport.listSessions({ p_environment_id: environmentId }), "session list").map(
 			parseSession,
 		);
+	}
+
+	async listSessionsPage(
+		environmentId: string,
+		after?: { updatedAt: string; sessionId: string },
+		limit = 100,
+	): Promise<HostedSessionPage> {
+		requiredUuid(environmentId, "Environment id");
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Session page size is invalid");
+		if (after) {
+			timestamp(after.updatedAt, "Session page cursor time");
+			requiredUuid(after.sessionId, "Session page cursor id");
+		}
+		const value = record(
+			await this.transport.listSessionsPage({
+				p_environment_id: environmentId,
+				p_after_updated_at: after?.updatedAt ?? null,
+				p_after_id: after?.sessionId ?? null,
+				p_limit: limit,
+			}),
+			"session page",
+		);
+		const nextUpdatedAt = value.next_updated_at;
+		const nextId = value.next_id;
+		return {
+			items: array(value.items, "session page items").map(parseSession),
+			hasMore: value.has_more === true,
+			...(nextUpdatedAt === null || nextUpdatedAt === undefined
+				? {}
+				: { nextUpdatedAt: timestamp(nextUpdatedAt, "Session page next cursor time") }),
+			...(nextId === null || nextId === undefined ? {} : { nextId: uuid(nextId, "Session page next cursor id") }),
+		};
+	}
+
+	async getSessionByClient(environmentId: string, clientSessionId: string): Promise<HostedSession | undefined> {
+		requiredUuid(environmentId, "Environment id");
+		requiredUuid(clientSessionId, "Client session id");
+		const value = await this.transport.getSessionByClient({
+			p_environment_id: environmentId,
+			p_client_session_id: clientSessionId,
+		});
+		return value === null || value === undefined ? undefined : parseSession(value);
 	}
 
 	async closeSession(sessionId: string): Promise<void> {

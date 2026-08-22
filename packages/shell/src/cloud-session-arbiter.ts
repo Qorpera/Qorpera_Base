@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/pi-protocol";
 import {
+	type HostedSessionRecoveryPage,
 	type PendingSessionInput,
 	type QorperaHostedPrimary,
 	type SessionInputReceipt,
@@ -100,29 +101,23 @@ export class CloudSessionArbiter {
 		if (handle.created) {
 			ref = {
 				hostedSessionId: handle.sessionId,
-				clientSessionId,
+				clientSessionId: handle.clientSessionId,
 				staffAgentId,
 				title: handle.title,
-				createdAt: new Date().toISOString(),
+				createdAt: handle.createdAt,
 				...(handle.companySnapshotId ? { companySnapshotId: handle.companySnapshotId } : {}),
 				...(handle.staffVersion ? { staffVersion: handle.staffVersion } : {}),
 				created: true,
 			};
 		} else {
-			// The ensure result carries the hosted id; the trail identity other
-			// machines share comes from the session listing.
-			const hosted = (await this.#primary.listSessions(this.#environmentId)).find(
-				(session) => session.sessionId === handle.sessionId,
-			);
-			if (!hosted) throw new Error("adopted staff session is not listable");
 			ref = {
-				hostedSessionId: hosted.sessionId,
-				clientSessionId: hosted.clientSessionId,
+				hostedSessionId: handle.sessionId,
+				clientSessionId: handle.clientSessionId,
 				staffAgentId,
-				title: hosted.title,
-				createdAt: hosted.createdAt,
-				...(hosted.companySnapshotId ? { companySnapshotId: hosted.companySnapshotId } : {}),
-				...(hosted.staffVersion ? { staffVersion: hosted.staffVersion } : {}),
+				title: handle.title,
+				createdAt: handle.createdAt,
+				...(handle.companySnapshotId ? { companySnapshotId: handle.companySnapshotId } : {}),
+				...(handle.staffVersion ? { staffVersion: handle.staffVersion } : {}),
 				created: false,
 			};
 		}
@@ -140,6 +135,27 @@ export class CloudSessionArbiter {
 
 	async pendingInputs(staffAgentId: string): Promise<PendingSessionInput[]> {
 		return this.#primary.listSessionInputs(this.#requireSession(staffAgentId).hostedSessionId);
+	}
+
+	async recoveries(staffAgentId: string, limit = 10): Promise<HostedSessionRecoveryPage> {
+		return this.#primary.listSessionRecoveries(this.#requireSession(staffAgentId).hostedSessionId, undefined, limit);
+	}
+
+	async executionRecoveries(staffAgentId: string, limit = 20) {
+		return this.#primary.listSessionExecutionRunRecoveries(this.#requireSession(staffAgentId).hostedSessionId, limit);
+	}
+
+	async resolveExecutionRecovery(staffAgentId: string, runId: string, action: "retry" | "discard"): Promise<void> {
+		this.#requireSession(staffAgentId);
+		await this.#primary.resolveFailedExecutionRun(runId, action);
+	}
+
+	async resolveRecovery(staffAgentId: string, turnId: string, resolution: "retry" | "discard"): Promise<void> {
+		await this.#primary.resolveSessionRecovery(
+			this.#requireSession(staffAgentId).hostedSessionId,
+			turnId,
+			resolution,
+		);
 	}
 
 	/** Try to become the executor for the staff agent's pending turn. Returns
@@ -217,7 +233,9 @@ export class CloudSessionArbiter {
 		if (this.#activeClaim === claim) this.#activeClaim = undefined;
 	}
 
-	async turnStatus(claim: ArbiterClaim): Promise<"active" | "completed" | "quarantined" | "unavailable"> {
+	async turnStatus(
+		claim: ArbiterClaim,
+	): Promise<"active" | "completed" | "quarantined" | "review_pending" | "unavailable"> {
 		return (await this.#primary.getSessionTurnStatus(claim.hostedSessionId, claim.turnId, this.claimantId)).status;
 	}
 

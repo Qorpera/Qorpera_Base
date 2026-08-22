@@ -35,7 +35,13 @@ describe("userland wiring", () => {
 	});
 
 	it("keeps non-actionable hosting internals out of settings", () => {
-		for (const label of ["Product and execution", "Profile placement", "Company workspaces"]) {
+		for (const label of [
+			"Product and execution",
+			"Profile placement",
+			"Company workspaces",
+			"Execution on local computer",
+			"Keep running in the background",
+		]) {
 			expect(rendererSource).not.toContain(label);
 		}
 	});
@@ -48,6 +54,9 @@ describe("userland wiring", () => {
 		expect(rendererSource).not.toContain("window.qorpera.enableCloudProfile()");
 		expect(indexSource).not.toContain("data-profile-placement");
 		expect(rendererSource).toContain("companyCreatorCreationId");
+		expect(preloadSource).toContain('ipcRenderer.invoke("company:pending-creation")');
+		expect(mainSource).toContain('schema: "qorpera.pending-company-creation/v1"');
+		expect(rendererSource).toContain("pending?.clientCreationId ?? crypto.randomUUID()");
 		expect(indexSource).toContain("The first 50 GB is included");
 		expect(rendererSource).toContain('event.key !== "Tab"');
 		expect(rendererSource).toMatch(/item\.setAttribute\("aria-label", `\$\{name\}, \$\{role\}`\)/);
@@ -74,7 +83,20 @@ describe("userland wiring", () => {
 		expect(rendererSource).toContain("result.queued");
 		expect(rendererSource).toContain("displayText: text");
 		expect(rendererSource).toContain("const pendingPromptSendFallbacks = new Map()");
-		expect(rendererSource).toContain("return { ...existing, storageKey }");
+		expect(rendererSource).toContain("window.qorpera.stagePromptSend(pending.id, frame)");
+		expect(rendererSource).toContain("window.qorpera.pendingPromptSend()");
+		expect(preloadSource).toContain('ipcRenderer.invoke("prompt-send:ack", id)');
+		expect(preloadSource).toContain('ipcRenderer.invoke("staff-session:resolve-recovery"');
+		expect(preloadSource).toContain('ipcRenderer.invoke("staff-session:resolve-execution-recovery"');
+		expect(preloadSource).toContain('ipcRenderer.invoke("staff-session:resolve-operation"');
+		expect(preloadSource).toContain('ipcRenderer.invoke("staff-session:resolve-run-operation"');
+		expect(preloadSource).toContain('ipcRenderer.on("runner-activity"');
+		expect(mainSource).toContain('ipcMain.handle("prompt-send:stage"');
+		expect(mainSource).toContain('"staff-session:resolve-recovery"');
+		expect(mainSource).toContain('"staff-session:resolve-execution-recovery"');
+		expect(mainSource).toContain('"staff-session:resolve-operation"');
+		expect(mainSource).toContain('"staff-session:resolve-run-operation"');
+		expect(mainSource).toContain('"runner-activity"');
 		expect(mainSource).toContain("body?.displayText ?? body?.text");
 		expect(mainSource).toContain("text: reviewed.displayText ?? reviewed.message");
 		expect(baseCssSource).toContain(".msg.user.session-queued");
@@ -85,6 +107,36 @@ describe("userland wiring", () => {
 		expect(mainSource).not.toContain("continuing solo");
 		expect(mainSource).toContain("qorpera.staff-intro-retry/v1");
 		expect(mainSource).toContain("await checkpointCloudCompanyFile({");
+		expect(preloadSource).toContain('ipcRenderer.invoke(\n\t\t\t"company-file:retry-proposal-review"');
+		expect(mainSource).toContain('"company-file:retry-proposal-review"');
+		expect(rendererSource).toContain("Waiting for the configured agent reviews.");
+		expect(rendererSource).toContain(
+			'publishProposal.textContent = requestedChanges.length > 0 ? "Revise" : "Publish"',
+		);
+	});
+
+	it("routes personal subscription turns without requiring a ready local agent runtime", () => {
+		expect(indexSource).toContain('id="cloudSponsorSelect"');
+		expect(indexSource).toContain('id="threadSponsorProvenance"');
+		expect(preloadSource).toContain('ipcRenderer.invoke("native-execution:begin-login", provider)');
+		expect(preloadSource).toContain('ipcRenderer.invoke("native-execution:revoke", providerConnectionId)');
+		expect(mainSource).toContain("const cloudSponsoredPrompt = reviewedCloudPrompt?.executionSponsor !== undefined;");
+		expect(mainSource).toContain("runtime.wakeChild && !cloudSponsoredPrompt");
+		expect(mainSource).toContain(
+			"!cloudSponsoredPrompt && runtime.childOptions.staffAgentId && !childRuntimeReady.has(reviewedChild)",
+		);
+		expect(mainSource).toContain("await control.requestSessionTurn({");
+		expect(rendererSource).toContain("const executionSponsor = selectedNativeExecutionSponsor()");
+		expect(rendererSource).toContain("message.qorperaRunId");
+		expect(rendererSource).toContain("nativeTurnProvenanceByRun.get(message.dataset.qorperaRunId)");
+		expect(baseCssSource).toContain(".native-turn-provenance");
+		const sendPrompt = rendererSource.slice(
+			rendererSource.indexOf("async function sendPrompt("),
+			rendererSource.indexOf("function modelFailureInfo", rendererSource.indexOf("async function sendPrompt(")),
+		);
+		expect(sendPrompt.indexOf("const executionSponsor = selectedNativeExecutionSponsor()")).toBeLessThan(
+			sendPrompt.indexOf("if (agentExited && !executionSponsor)"),
+		);
 	});
 
 	it("finalizes clean cloud wakes without re-entering their owning transition", () => {

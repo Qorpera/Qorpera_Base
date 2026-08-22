@@ -28,6 +28,8 @@ let state = {
 const sessionCache = {}; // session file -> rendered messages HTML
 const pendingSessionQueueByStaff = new Map();
 const remoteStaffActivity = new Map(); // staff id -> Map(client id -> { activity, name, until })
+const hostedStaffActivity = new Map(); // staff id -> authoritative hosted run state
+let hostedStaffActivityHealthy = true;
 
 async function authorizedPost(path, body) {
 	const response = await window.qorpera.authorizedBackendPost(path, body);
@@ -129,9 +131,142 @@ let currentProfileAccess = {
 	role: "owner",
 	capabilities: { read: true, write: true, authorize: true, manageMembers: true },
 };
+let nativeExecution = null;
+let nativeExecutionRefreshInFlight = null;
+let nativeProvenanceRefreshedAt = 0;
+const nativeTurnProvenanceByRun = new Map();
+let nativeLoginPollingUntil = 0;
 
 function canUseProfile(capability) {
 	return currentProfileAccess?.capabilities?.[capability] === true;
+}
+
+function nativeExecutionStorageKey() {
+	return `qorpera.native-execution-sponsor/v1:${currentCompanyRoot || companyId || "company"}`;
+}
+
+function nativeExecutionChoices() {
+	const identity = nativeExecution?.computeIdentity;
+	if (!identity || identity.status !== "active") return [];
+	return (nativeExecution?.connections ?? []).filter(
+		(connection) =>
+			connection.connectionStatus === "active" &&
+			connection.authorizationState === "active" &&
+			connection.policy?.implementationStatus === "supported" &&
+			connection.policy?.enablementStatus === "enabled" &&
+			connection.sponsorBindingId &&
+			Number.isSafeInteger(connection.sponsorVersion),
+	);
+}
+
+function syncNativeExecutionSelector() {
+	const select = $("cloudSponsorSelect");
+	if (!select) return;
+	const choices = nativeExecutionChoices();
+	select.replaceChildren(new Option("This computer", "local"));
+	for (const connection of choices) {
+		const provider = connection.provider === "openai" ? "Codex" : connection.provider === "anthropic" ? "Claude" : connection.provider;
+		select.appendChild(
+			new Option(
+				`${provider} subscription · cloud`,
+				`${connection.sponsorBindingId}:${connection.sponsorVersion}`,
+			),
+		);
+	}
+	const remembered = localStorage.getItem(nativeExecutionStorageKey()) ?? "local";
+	select.value = [...select.options].some((option) => option.value === remembered) ? remembered : "local";
+	select.hidden = !currentStaffId || currentRoomId || choices.length === 0;
+	select.onchange = () => localStorage.setItem(nativeExecutionStorageKey(), select.value);
+}
+
+function selectedNativeExecutionSponsor() {
+	const select = $("cloudSponsorSelect");
+	if (!select || select.hidden || select.value === "local") return undefined;
+	const identity = nativeExecution?.computeIdentity;
+	const connection = nativeExecutionChoices().find(
+		(candidate) => `${candidate.sponsorBindingId}:${candidate.sponsorVersion}` === select.value,
+	);
+	if (!identity || !connection) return undefined;
+	return {
+		sponsorBindingId: connection.sponsorBindingId,
+		sponsorVersion: connection.sponsorVersion,
+		computeIdentityId: identity.computeIdentityId,
+		workerClass: "managed_sandbox",
+	};
+}
+
+async function refreshNativeExecution() {
+	if (!currentCompanyRoot || typeof window.qorpera.nativeExecutionInfo !== "function") {
+		nativeExecution = null;
+		syncNativeExecutionSelector();
+		return null;
+	}
+	if (nativeExecutionRefreshInFlight) return nativeExecutionRefreshInFlight;
+	nativeExecutionRefreshInFlight = window.qorpera
+		.nativeExecutionInfo()
+		.then((result) => {
+			nativeExecution = result?.ok ? result : null;
+			syncNativeExecutionSelector();
+			return nativeExecution;
+		})
+		.catch(() => {
+			nativeExecution = null;
+			syncNativeExecutionSelector();
+			return null;
+		})
+		.finally(() => {
+			nativeExecutionRefreshInFlight = null;
+		});
+	return nativeExecutionRefreshInFlight;
+}
+
+async function refreshNativeTurnProvenance(force = false) {
+	const label = $("threadSponsorProvenance");
+	if (!label) return;
+	if (!currentStaffId || currentRoomId || typeof window.qorpera.nativeSessionTurnProvenance !== "function") {
+		label.hidden = true;
+		return;
+	}
+	if (!force && Date.now() - nativeProvenanceRefreshedAt < 10_000) return;
+	nativeProvenanceRefreshedAt = Date.now();
+	const result = await window.qorpera.nativeSessionTurnProvenance(currentStaffId).catch(() => ({ ok: false }));
+	if (!result?.ok || !Array.isArray(result.provenance) || result.provenance.length === 0) {
+		nativeTurnProvenanceByRun.clear();
+		syncNativeMessageProvenance();
+		label.hidden = true;
+		return;
+	}
+	nativeTurnProvenanceByRun.clear();
+	for (const turn of result.provenance) {
+		if (typeof turn?.runId === "string") nativeTurnProvenanceByRun.set(turn.runId, turn);
+	}
+	syncNativeMessageProvenance();
+	const turn = result.provenance[0];
+	const provider = turn.provider === "openai" ? "Codex" : turn.provider === "anthropic" ? "Claude" : turn.provider;
+	const sponsor = turn.sponsoredByName ?? "company sponsor";
+	const status = turn.runStatus ?? turn.status;
+	label.textContent = `${provider ?? "Provider"} · sponsored by ${sponsor} · ${status}`;
+	label.title = `This turn uses provider connection ${turn.providerConnectionId ?? "pending"} version ${turn.providerConnectionVersion ?? "pending"}.`;
+	label.hidden = false;
+}
+
+function nativeTurnProvenanceLabel(turn) {
+	const provider = turn.provider === "openai" ? "Codex" : turn.provider === "anthropic" ? "Claude" : turn.provider;
+	const sponsor = turn.sponsoredByName ?? "company sponsor";
+	return `${provider ?? "Provider"} · sponsored by ${sponsor}`;
+}
+
+function syncNativeMessageProvenance() {
+	for (const message of document.querySelectorAll(".msg.assistant[data-qorpera-run-id]")) {
+		message.querySelector(":scope > .native-turn-provenance")?.remove();
+		const turn = nativeTurnProvenanceByRun.get(message.dataset.qorperaRunId);
+		if (!turn) continue;
+		const provenance = document.createElement("div");
+		provenance.className = "native-turn-provenance";
+		provenance.textContent = nativeTurnProvenanceLabel(turn);
+		provenance.title = `Provider connection ${turn.providerConnectionId ?? "pending"} version ${turn.providerConnectionVersion ?? "pending"}; run ${turn.runId}.`;
+		message.append(provenance);
+	}
 }
 
 const STAFF_AVATAR_COLORS = [
@@ -728,12 +863,19 @@ async function saveCurrentCompanyIcon(companyIconId) {
 	return true;
 }
 
-function openCompanyModal() {
-	companyCreatorIcon = "anonymous";
-	companyCreatorCreationId = crypto.randomUUID();
-	$("companyName").value = "";
+async function openCompanyModal() {
+	let pending;
+	try {
+		const result = await window.qorpera.pendingCompanyCreation();
+		pending = result?.ok ? result.pending : undefined;
+	} catch {
+		pending = undefined;
+	}
+	companyCreatorIcon = pending?.companyIcon ?? "anonymous";
+	companyCreatorCreationId = pending?.clientCreationId ?? crypto.randomUUID();
+	$("companyName").value = pending?.companyName ?? "";
 	$("companyFormError").textContent = "";
-	$("companyCreate").disabled = true;
+	$("companyCreate").disabled = !companySlug($("companyName").value.trim());
 	renderCompanyPicturePreview();
 	$("companyModal").hidden = false;
 	$("companyName").focus();
@@ -838,6 +980,7 @@ async function enterCompany(active) {
 	// reload the chrome), so the live thread must come back with it. A fresh
 	// child answers with an empty history — harmless.
 	await refreshState();
+	void refreshNativeExecution();
 	const routedRoomId = roomIdFromRoute();
 	const routedRoom = (state.rooms ?? []).find((room) => room.id === routedRoomId && room.status !== "archived");
 	if (routedRoomId && !routedRoom) {
@@ -855,6 +998,8 @@ async function enterCompany(active) {
 		hydratedExecutorId = runtimeForTrail(currentSession)?.executorId ?? "";
 	}
 	connectSessionRuntime();
+	if (currentStaffId) void recoverPendingPromptSend();
+	if (currentStaffId) void refreshNativeTurnProvenance(true);
 	document.title = state.name || "Qorpera Base";
 	$("wordmark").hidden = true;
 	if (poller) clearInterval(poller);
@@ -1665,6 +1810,7 @@ function staffRuntime(staff) {
 
 function staffNeedsAttention(staff, runtime) {
 	if (runtime?.status === "interrupted") return true;
+	if (hostedStaffActivity.get(staffId(staff))?.activity === "needs_attention") return true;
 	if (staffId(staff) === currentStaffId && currentStaffIntroStatus === "failed") return true;
 	if (
 		!runtime?.live &&
@@ -1689,6 +1835,7 @@ function staffStatus(staff) {
 	if (staffId(staff) === currentStaffId && avatarActionPhase) return avatarActionPhase;
 	if (runtime?.status === "running" && runtime.activity?.kind === "writing") return "writing";
 	if (["starting", "running", "finishing"].includes(runtime?.status)) return "working";
+	if (hostedStaffActivity.get(staffId(staff))?.activity === "working") return "working";
 	const remote = [...(remoteStaffActivity.get(staffId(staff))?.values() ?? [])];
 	if (remote.some((entry) => entry.activity === "writing")) return "writing";
 	if (remote.some((entry) => entry.activity === "working")) return "working";
@@ -1696,6 +1843,11 @@ function staffStatus(staff) {
 }
 
 function remoteStaffDoingLine(staff) {
+	const hosted = hostedStaffActivity.get(staffId(staff));
+	const stale = hosted && !hostedStaffActivityHealthy ? " · status delayed" : "";
+	if (hosted?.activity === "working") return `Cloud runner · working${stale}`;
+	if (hosted?.activity === "waiting") return `Cloud run · queued${stale}`;
+	if (hosted?.activity === "needs_attention") return `Cloud run · needs attention${stale}`;
 	const activity = [...(remoteStaffActivity.get(staffId(staff))?.values() ?? [])].find(
 		(entry) => entry.activity === "writing" || entry.activity === "working",
 	);
@@ -2212,6 +2364,9 @@ function activateStaffSession(id, sessionFile, result = {}) {
 	syncScopeChrome();
 	hydrateAgentState(true);
 	renderPendingSessionQueue();
+	void recoverPendingPromptSend();
+	syncNativeExecutionSelector();
+	void refreshNativeTurnProvenance(true);
 }
 
 async function openStaff(id) {
@@ -2668,6 +2823,8 @@ function renderThreadHeader() {
 	$("staffSidepanelButton").setAttribute("aria-expanded", String(Boolean(staff && agentSidepanelMode === "computer")));
 	renderStaffHeaderNavigation(room ? null : staff);
 	$("modelCtlBtn").hidden = Boolean(room);
+	syncNativeExecutionSelector();
+	if (!staff || room) $("threadSponsorProvenance").hidden = true;
 	composerMore.sync();
 	syncConversationAccess();
 }
@@ -2864,6 +3021,67 @@ function scheduledJobPlacementSelect(value, onChange) {
 	return select;
 }
 
+function scheduledJobPublicationEditor(draft, onChange) {
+	const field = document.createElement("fieldset");
+	field.className = "routine-publication-field";
+	const legend = document.createElement("legend");
+	legend.textContent = "Publishing";
+	const mode = document.createElement("select");
+	for (const [value, label] of [
+		["automatic", "Publish automatically"],
+		["review", "Request review before publishing"],
+	]) {
+		const option = document.createElement("option");
+		option.value = value;
+		option.textContent = label;
+		mode.appendChild(option);
+	}
+	mode.value = draft.publication?.mode === "review" ? "review" : "automatic";
+	mode.onchange = () => {
+		draft.publication =
+			mode.value === "review"
+				? { mode: "review", reviewerStaffIds: draft.publication?.reviewerStaffIds ?? [] }
+				: { mode: "automatic" };
+		onChange(true);
+	};
+	const help = document.createElement("small");
+	help.textContent =
+		mode.value === "review"
+			? "The work stays proposed until one of the selected staff has reviewed it."
+			: "Routine work becomes part of the Company File as soon as it completes safely.";
+	field.append(legend, mode, help);
+	if (mode.value === "review") {
+		const reviewers = document.createElement("div");
+		reviewers.className = "routine-publication-reviewers";
+		const reviewerTitle = document.createElement("span");
+		reviewerTitle.textContent = "Reviewers";
+		reviewers.appendChild(reviewerTitle);
+		const staff = activeStaffMembers();
+		for (const member of staff) {
+			const choice = document.createElement("label");
+			const checkbox = document.createElement("input");
+			checkbox.type = "checkbox";
+			checkbox.checked = draft.publication.reviewerStaffIds.includes(staffId(member));
+			checkbox.onchange = () => {
+				const selected = new Set(draft.publication.reviewerStaffIds);
+				if (checkbox.checked) selected.add(staffId(member));
+				else selected.delete(staffId(member));
+				draft.publication = { mode: "review", reviewerStaffIds: [...selected] };
+				onChange(false);
+			};
+			choice.append(checkbox, document.createTextNode(staffDisplayName(member)));
+			reviewers.appendChild(choice);
+		}
+		if (!staff.length) {
+			const empty = document.createElement("small");
+			empty.textContent = "Add a staff member before requiring review.";
+			reviewers.appendChild(empty);
+		}
+		field.appendChild(reviewers);
+	}
+	return field;
+}
+
 function scheduledJobEffortLabel(value) {
 	return SCHEDULED_JOB_EFFORT_OPTIONS.find(([optionValue]) => optionValue === value)?.[1] ?? "High";
 }
@@ -2972,6 +3190,12 @@ function renderAgentRoutineEditor(content, staff) {
 			placement,
 			"Cloud placement is fail-closed: this computer never runs a cloud-placed routine, and it stays parked until hosted routine execution exists.",
 		),
+	);
+	form.appendChild(
+		scheduledJobPublicationEditor(editor.draft, (rerender) => {
+			editor.dirty = true;
+			if (rerender) renderAgentComputerPanel(staff, true);
+		}),
 	);
 
 	const triggerSection = document.createElement("section");
@@ -3169,6 +3393,11 @@ function renderAgentRoutineEditor(content, staff) {
 			renderAgentComputerPanel(staff, true);
 			return;
 		}
+		if (editor.draft.publication.mode === "review" && !editor.draft.publication.reviewerStaffIds.length) {
+			editor.error = "Choose at least one reviewer, or publish automatically.";
+			renderAgentComputerPanel(staff, true);
+			return;
+		}
 		editor.pending = true;
 		editor.error = "";
 		const draft = {
@@ -3178,6 +3407,7 @@ function renderAgentRoutineEditor(content, staff) {
 			enabled: Boolean(editor.draft.enabled),
 			effort: editor.draft.effort,
 			placement: editor.draft.placement,
+			publication: editor.draft.publication,
 			staffAgentId: staffId(staff),
 		};
 		const result = await scheduledJobRequest(
@@ -3228,10 +3458,10 @@ function renderAgentComputerPanel(staff, force = false) {
 				? "Working"
 				: motion === "needs-attention"
 					? "Needs your attention"
-					: "Local computer is idle";
+					: "Agent computer is idle";
 	screen.append(avatar, screenCopy);
 	const caption = document.createElement("small");
-	caption.textContent = `This computer · ${staffDisplayName(staff)}`;
+	caption.textContent = `Agent computer · ${staffDisplayName(staff)}`;
 	computer.append(screen, caption);
 	content.appendChild(computer);
 
@@ -4638,6 +4868,7 @@ async function refreshState() {
 				void openNavigationNode(currentNodeId, false);
 			}
 		}
+		if (currentStaffId) void refreshNativeTurnProvenance();
 	} catch {
 		/* backend briefly unavailable */
 	}
@@ -4664,6 +4895,7 @@ function hydrateAgentState(withHistory) {
 	askState();
 	setTimeout(askState, 900);
 	applyCurrentSessionRuntime();
+	if (currentStaffId) void recoverPendingPromptSend();
 }
 
 function cacheCurrentSession() {
@@ -4823,8 +5055,11 @@ function renderHistory(messages) {
 				historyFailureShown = false;
 				historyToolCalls.clear();
 			}
-			} else if (message.role === "assistant") {
-				appendAssistantMessages(assistantTextPartsFromMessage(message), false, message.timestamp);
+		} else if (message.role === "assistant") {
+			const rendered = appendAssistantMessages(assistantTextPartsFromMessage(message), false, message.timestamp);
+			if (typeof message.qorperaRunId === "string" && rendered.length > 0) {
+				rendered.at(-1).dataset.qorperaRunId = message.qorperaRunId;
+			}
 			for (const part of message.content ?? []) {
 				if (part.type === "toolCall") {
 					if (part.id)
@@ -4848,6 +5083,7 @@ function renderHistory(messages) {
 			recordCompletedTool(historyProgress, tool.name, tool.args);
 		}
 	}
+	syncNativeMessageProvenance();
 	activeRunProgress = historyProgress;
 	syncConnectionRequestCards();
 	renderPendingSessionQueue();
@@ -7152,6 +7388,10 @@ function scheduledJobDraft(job) {
 		enabled: job?.enabled ?? true,
 		effort: job?.effort ?? "high",
 		placement: job?.placement ?? "local",
+		publication:
+			job?.publication?.mode === "review"
+				? { mode: "review", reviewerStaffIds: [...job.publication.reviewerStaffIds] }
+				: { mode: "automatic" },
 	};
 }
 
@@ -7482,6 +7722,12 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 			"Cloud placement is fail-closed until hosted routine execution exists; this computer never runs a cloud-placed job.",
 		),
 	);
+	form.appendChild(
+		scheduledJobPublicationEditor(scheduledJobPanel.draft, (rerender) => {
+			scheduledJobPanel.dirty = true;
+			if (rerender) void renderActivity(true);
+		}),
+	);
 	const interval = document.createElement("input");
 	interval.type = "number";
 	interval.min = "5";
@@ -7616,6 +7862,14 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 	form.appendChild(actions);
 	form.onsubmit = async (event) => {
 		event.preventDefault();
+		if (
+			scheduledJobPanel.draft.publication.mode === "review" &&
+			!scheduledJobPanel.draft.publication.reviewerStaffIds.length
+		) {
+			scheduledJobPanel.error = "Choose at least one reviewer, or publish automatically.";
+			void renderActivity(true);
+			return;
+		}
 		scheduledJobPanel.pending = true;
 		scheduledJobPanel.error = "";
 		save.disabled = true;
@@ -7628,6 +7882,7 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 			enabled: Boolean(scheduledJobPanel.draft.enabled),
 			effort: scheduledJobPanel.draft.effort,
 			placement: scheduledJobPanel.draft.placement,
+			publication: scheduledJobPanel.draft.publication,
 			...(activityStaffId ? { staffAgentId: activityStaffId } : {}),
 		};
 		const result = await scheduledJobRequest(
@@ -8286,6 +8541,89 @@ function renderPendingSessionQueue() {
 		const failure = typeof input.failureReason === "string" ? input.failureReason.trim() : "";
 		status.textContent = `${stateLabel}${author ? ` · ${author}` : ""}${failure ? ` · ${failure}` : ""}`;
 		bubble.append(body, status);
+		const isExecutionRecovery = typeof input.recoveryRunId === "string";
+		if (
+			input.status === "failed" &&
+			(typeof input.recoveryTurnId === "string" || isExecutionRecovery)
+		) {
+			const receipts = Array.isArray(input.operationReceipts) ? input.operationReceipts : [];
+			if (receipts.length) {
+				const receiptList = document.createElement("div");
+				receiptList.className = "session-recovery-receipts";
+				for (const receipt of receipts) {
+					if (!receipt || typeof receipt.operationId !== "string") continue;
+					const row = document.createElement("div");
+					const label = document.createElement("small");
+					const kind = typeof receipt.operationKind === "string" ? receipt.operationKind.replaceAll("_", " ") : "operation";
+					label.textContent = `${kind} · ${receipt.status === "completed" ? "confirmed ran" : receipt.status === "cancelled" ? "confirmed not run" : "outcome unknown"}`;
+					row.append(label);
+					if (receipt.status === "ambiguous" || receipt.status === "executing") {
+						const ran = document.createElement("button");
+						ran.type = "button";
+						ran.textContent = "It ran";
+						const didNotRun = document.createElement("button");
+						didNotRun.type = "button";
+						didNotRun.textContent = "It did not run";
+						const resolveOperation = async (resolution) => {
+							ran.disabled = true;
+							didNotRun.disabled = true;
+							const result = await window.qorpera
+								[
+									isExecutionRecovery ? "resolveRunOperationRecovery" : "resolveOperationRecovery"
+								](currentStaffId, receipt.operationId, resolution)
+								.catch((error) => ({ ok: false, error: String(error?.message ?? error) }));
+							if (result?.ok) applySessionQueue(result.queue);
+							else {
+								ran.disabled = false;
+								didNotRun.disabled = false;
+								showToast(result?.error ?? "Operation recovery could not be resolved.");
+							}
+						};
+						ran.onclick = () => void resolveOperation("confirmed_completed");
+						didNotRun.onclick = () => void resolveOperation("confirmed_not_run");
+						row.append(ran, didNotRun);
+					}
+					receiptList.append(row);
+				}
+				bubble.append(receiptList);
+			}
+			const actions = document.createElement("div");
+			actions.className = "session-recovery-actions";
+			const retry = document.createElement("button");
+			retry.type = "button";
+			retry.textContent = "Retry";
+			retry.disabled = input.canRetry !== true;
+			if (retry.disabled) {
+				retry.title =
+					typeof input.canRetryReason === "string"
+						? input.canRetryReason
+						: `${input.operationCount || 1} prior operation ${input.operationCount === 1 ? "receipt needs" : "receipts need"} review before retrying.`;
+			}
+			const discard = document.createElement("button");
+			discard.type = "button";
+			discard.textContent = "Discard";
+			const resolve = async (resolution) => {
+				retry.disabled = true;
+				discard.disabled = true;
+				const result = await window.qorpera
+					[isExecutionRecovery ? "resolveExecutionRecovery" : "resolveSessionRecovery"](
+						currentStaffId,
+						isExecutionRecovery ? input.recoveryRunId : input.recoveryTurnId,
+						resolution,
+					)
+					.catch((error) => ({ ok: false, error: String(error?.message ?? error) }));
+				if (result?.ok) applySessionQueue(result.queue);
+				else {
+					retry.disabled = input.canRetry !== true;
+					discard.disabled = false;
+					showToast(result?.error ?? "Conversation recovery could not be resolved.");
+				}
+			};
+			retry.onclick = () => void resolve("retry");
+			discard.onclick = () => void resolve("discard");
+			actions.append(retry, discard);
+			bubble.append(actions);
+		}
 		appendConversationEntry(bubble);
 	}
 	$("messages").scrollTop = $("messages").scrollHeight;
@@ -8420,11 +8758,16 @@ function renderCompletedAssistantBlock(contentIndex, content) {
 
 function reconcileCompletedAssistantMessage(message) {
 	const blocks = assistantTextBlocksFromMessage(message);
-	for (const block of blocks) renderCompletedAssistantBlock(block.contentIndex, block.text);
+	let rendered = [];
+	for (const block of blocks) rendered = [...rendered, ...renderCompletedAssistantBlock(block.contentIndex, block.text)];
 	if (!blocks.length) {
 		for (const [contentIndex, text] of pendingAssistantTextByIndex) {
-			renderCompletedAssistantBlock(contentIndex, text);
+			rendered = [...rendered, ...renderCompletedAssistantBlock(contentIndex, text)];
 		}
+	}
+	if (typeof message?.qorperaRunId === "string" && rendered.length > 0) {
+		rendered.at(-1).dataset.qorperaRunId = message.qorperaRunId;
+		syncNativeMessageProvenance();
 	}
 }
 
@@ -8684,12 +9027,32 @@ function promptSendStorageKey() {
 	return `qorpera.pending-cloud-send/v1:${currentCompanyRoot}:${currentStaffId ?? "company"}`;
 }
 
+function persistPromptSendFallback(storageKey, value) {
+	pendingPromptSendFallbacks.set(storageKey, value);
+	try {
+		localStorage.setItem(storageKey, JSON.stringify(value));
+	} catch {
+		// The in-memory fallback still protects this renderer run.
+	}
+}
+
+function removePromptSendFallback(storageKey, id) {
+	if (pendingPromptSendFallbacks.get(storageKey)?.id === id) pendingPromptSendFallbacks.delete(storageKey);
+	try {
+		const current = JSON.parse(localStorage.getItem(storageKey) ?? "null");
+		if (current?.id === id) localStorage.removeItem(storageKey);
+	} catch {
+		// The host outbox remains the crash-recovery authority.
+	}
+}
+
 async function durablePromptSend(frame) {
 	const storageKey = promptSendStorageKey();
 	const serialized = JSON.stringify({
 		message: frame.message,
 		displayText: frame.displayText,
 		images: frame.images ?? [],
+		executionSponsor: frame.executionSponsor ?? null,
 	});
 	const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serialized)))]
 		.map((value) => value.toString(16).padStart(2, "0"))
@@ -8700,26 +9063,104 @@ async function durablePromptSend(frame) {
 	} catch {
 		// The in-memory fallback still protects retries in this renderer run.
 	}
-	if (existing?.digest === digest && typeof existing.id === "string") return { ...existing, storageKey };
-	const pending = { id: crypto.randomUUID(), digest, storageKey };
-	pendingPromptSendFallbacks.set(storageKey, pending);
-	try {
-		localStorage.setItem(storageKey, JSON.stringify({ id: pending.id, digest: pending.digest }));
-	} catch {
-		// A storage-disabled renderer retains the id until this window closes.
+	if (existing?.accepted === true && typeof existing.id === "string") {
+		const retired = await window.qorpera
+			.acknowledgePromptSend(existing.id)
+			.catch(() => ({ ok: false }));
+		if (!retired?.ok) {
+			throw new Error("The previous sent message is still being retired. Try again in a moment.");
+		}
+		removePromptSendFallback(storageKey, existing.id);
+		existing = null;
+	}
+	const pending =
+		existing?.digest === digest && typeof existing.id === "string"
+			? { id: existing.id, digest, storageKey }
+			: { id: crypto.randomUUID(), digest, storageKey };
+	if (pending.id !== existing?.id) {
+		persistPromptSendFallback(storageKey, { id: pending.id, digest: pending.digest });
+	}
+	const staged = await window.qorpera.stagePromptSend(pending.id, frame);
+	if (staged?.ok === false || typeof staged?.id !== "string") {
+		throw new Error(staged?.error ?? "The message could not be saved before sending.");
+	}
+	if (staged.id !== pending.id) {
+		pending.id = staged.id;
+		persistPromptSendFallback(storageKey, { id: pending.id, digest: pending.digest });
 	}
 	return pending;
 }
 
-function clearDurablePromptSend(pending) {
-	if (pendingPromptSendFallbacks.get(pending.storageKey)?.id === pending.id) {
-		pendingPromptSendFallbacks.delete(pending.storageKey);
+async function clearDurablePromptSend(pending) {
+	// Retire the renderer fallback before acknowledging the authoritative host
+	// outbox. If the renderer crashes after the host ack, a later identical
+	// message must receive a fresh client id rather than replaying this send.
+	removePromptSendFallback(pending.storageKey, pending.id);
+	const acknowledged = await window.qorpera
+		.acknowledgePromptSend(pending.id)
+		.catch(() => ({ ok: false }));
+	if (acknowledged?.ok) return true;
+	if (typeof pending.digest === "string") {
+		persistPromptSendFallback(pending.storageKey, {
+			id: pending.id,
+			digest: pending.digest,
+			accepted: true,
+		});
 	}
+	return false;
+}
+
+let recoveringPromptSendId = "";
+let pendingSessionRecoveryWaiting = false;
+
+async function recoverPendingPromptSend() {
+	if (!currentStaffId || currentRoomId) return;
+	const result = await window.qorpera.pendingPromptSend().catch(() => ({ ok: false }));
+	const pending = result?.ok ? result.pending : null;
+	if (!pending?.id || !pending.frame || recoveringPromptSendId === pending.id) return;
+	recoveringPromptSendId = pending.id;
+	let keepRecoveryFence = false;
 	try {
-		const current = JSON.parse(localStorage.getItem(pending.storageKey) ?? "null");
-		if (current?.id === pending.id) localStorage.removeItem(pending.storageKey);
-	} catch {
-		// Nothing else is required after an acknowledged enqueue.
+		if (pending.requiresSessionConfirmation) {
+			if (!$("input").value && !pendingImages.length) {
+				$("input").value = pending.frame.displayText ?? pending.frame.message ?? "";
+				pendingImages = (pending.frame.images ?? []).map((image) => ({
+					mimeType: image.mimeType,
+					dataUrl: `data:${image.mimeType};base64,${image.data}`,
+				}));
+				renderAttachStrip();
+				syncComposer();
+				pendingSessionRecoveryWaiting = false;
+				keepRecoveryFence = true;
+				showToast("An unsent message from the previous conversation was restored. Send it again to move it here.");
+				return;
+			}
+			pendingSessionRecoveryWaiting = true;
+			showToast("An unsent message from the previous conversation is waiting. Clear this draft to restore it.");
+			return;
+		}
+		const sent = await sendRpc(pending.frame);
+		if (sent?.ok) {
+			await clearDurablePromptSend({
+				id: pending.id,
+				digest: pending.digest,
+				storageKey: promptSendStorageKey(),
+			});
+			if (sent.queued) applySessionQueue(sent.queue);
+			return;
+		}
+		if (!$("input").value && !pendingImages.length) {
+			$("input").value = pending.frame.displayText ?? pending.frame.message ?? "";
+			pendingImages = (pending.frame.images ?? []).map((image) => ({
+				mimeType: image.mimeType,
+				dataUrl: `data:${image.mimeType};base64,${image.data}`,
+			}));
+			renderAttachStrip();
+			syncComposer();
+		}
+		showToast(sent?.error ?? "Your unsent message was restored to the composer.");
+	} finally {
+		if (!keepRecoveryFence) recoveringPromptSendId = "";
 	}
 }
 
@@ -8737,13 +9178,15 @@ async function sendPrompt(promptContext = "") {
 		await sendRoomPrompt(text, images);
 		return false;
 	}
-	if (agentExited) {
+	const executionSponsor = selectedNativeExecutionSponsor();
+	if (agentExited && !executionSponsor) {
 		showToast("agent stopped — reopen this saved chat to attach a new runtime");
 		return false;
 	}
 	const hiddenContext = typeof promptContext === "string" ? promptContext.trim() : "";
 	const message = hiddenContext ? `${hiddenContext}\n\n${text}` : text;
 	const frame = { type: "prompt", message, displayText: text };
+	if (executionSponsor) frame.executionSponsor = executionSponsor;
 	if (images.length) {
 		frame.images = images.map((image) => ({
 			type: "image",
@@ -8751,7 +9194,13 @@ async function sendPrompt(promptContext = "") {
 			mimeType: image.mimeType,
 		}));
 	}
-	const durableSend = await durablePromptSend(frame);
+	let durableSend;
+	try {
+		durableSend = await durablePromptSend(frame);
+	} catch (error) {
+		showToast(error instanceof Error ? error.message : "The message could not be saved before sending.");
+		return false;
+	}
 	frame.clientInputId = durableSend.id;
 	activeRunProgress = createRunProgress();
 	turnFailureCard = null;
@@ -8773,7 +9222,8 @@ async function sendPrompt(promptContext = "") {
 		return false;
 	}
 	setCurrentAvatarAction("working", 1200);
-	clearDurablePromptSend(durableSend);
+	const retired = await clearDurablePromptSend(durableSend);
+	if (!retired) showToast("Message sent. Local recovery cleanup will retry before the next message.");
 	input.value = "";
 	lastSubmittedPrompt = {
 		text,
@@ -8792,6 +9242,7 @@ async function sendPrompt(promptContext = "") {
 			images.map((image) => image.dataUrl),
 		);
 	}
+	if (result.nativeExecution) void refreshNativeTurnProvenance(true);
 	return true;
 }
 
@@ -9007,6 +9458,10 @@ function syncComposer() {
 	shell.classList.toggle("composer-expanded", expanded);
 	shell.classList.toggle("composer-has-attachments", pendingImages.length > 0);
 	$("sendBtn").dataset.active = input.value.trim() || pendingImages.length ? "true" : "false";
+	if (!input.value && !pendingImages.length && pendingSessionRecoveryWaiting) {
+		pendingSessionRecoveryWaiting = false;
+		queueMicrotask(() => void recoverPendingPromptSend());
+	}
 }
 
 $("input").addEventListener("input", syncComposer);
@@ -9766,6 +10221,170 @@ function renderConnections(content, connections, accountUsageById) {
 	}
 }
 
+function renderNativeExecutionConnections(content, execution) {
+	const group = document.createElement("section");
+	group.className = "settings-group";
+	const header = document.createElement("header");
+	const title = document.createElement("h2");
+	title.textContent = "Cloud subscription compute";
+	const description = document.createElement("p");
+	description.textContent =
+		"Run the official Codex or Claude harness in your cloud compute identity. Qorpera application and control-plane code receive capsule references and provenance, not plaintext provider credentials. Until attested compute is deployed, infrastructure administrators may still have VM-level access.";
+	header.append(title, description);
+	group.appendChild(header);
+	const identity = execution?.computeIdentity;
+	if (!identity) {
+		const create = document.createElement("button");
+		create.type = "button";
+		create.className = "connection-action";
+		create.textContent = "Create Member Compute Identity";
+		create.onclick = async () => {
+			create.disabled = true;
+			const result = await window.qorpera.createMemberComputeIdentity();
+			if (!result?.ok) {
+				showToast(result?.error ?? "Member Compute Identity could not be created.");
+				create.disabled = false;
+				return;
+			}
+			await refreshNativeExecution();
+			await renderSettingsTab();
+		};
+		group.appendChild(create);
+		content.appendChild(group);
+		return;
+	}
+	const identityCard = document.createElement("article");
+	identityCard.className = "connection-card";
+	identityCard.appendChild(connectionLogo("cloud-computer"));
+	const identityCopy = document.createElement("div");
+	identityCopy.className = "connection-copy";
+	const identityName = document.createElement("strong");
+	identityName.textContent = identity.displayName;
+	const identityDetail = document.createElement("small");
+	identityDetail.textContent = `Member-owned · ${identity.templateKey} ${identity.templateVersion} · ${identity.status}`;
+	identityCopy.append(identityName, identityDetail);
+	identityCard.appendChild(identityCopy);
+	group.appendChild(identityCard);
+
+	const loginActions = document.createElement("div");
+	loginActions.className = "appearance-actions";
+	for (const [provider, label] of [
+		["openai", "Connect ChatGPT / Codex"],
+		["anthropic", "Connect Claude"],
+	]) {
+		const connect = document.createElement("button");
+		connect.type = "button";
+		connect.textContent = label;
+		connect.onclick = async () => {
+			connect.disabled = true;
+			const result = await window.qorpera.beginNativeProviderLogin(provider);
+			if (!result?.ok) {
+				showToast(result?.error ?? `${label} login could not start.`);
+				connect.disabled = false;
+				return;
+			}
+			nativeLoginPollingUntil = Date.now() + 2 * 60_000;
+			showToast(
+				result.login?.userCode
+					? `Official login opened. Enter code ${result.login.userCode}.`
+					: "Official provider login opened in your browser.",
+			);
+			setTimeout(() => {
+				void refreshNativeExecution().then(() => {
+					if ($("settingsView").classList.contains("open") && settingsTab === "connections") {
+						void renderSettingsTab();
+					}
+				});
+			}, 2500);
+		};
+		loginActions.appendChild(connect);
+	}
+	const refresh = document.createElement("button");
+	refresh.type = "button";
+	refresh.textContent = "Refresh";
+	refresh.onclick = async () => {
+		refresh.disabled = true;
+		await refreshNativeExecution();
+		await renderSettingsTab();
+	};
+	loginActions.appendChild(refresh);
+	group.appendChild(loginActions);
+
+	const list = document.createElement("div");
+	list.className = "connection-list";
+	for (const connection of execution.connections ?? []) {
+		const card = document.createElement("article");
+		card.className = "connection-card";
+		card.appendChild(connectionLogo(connection.provider === "openai" ? "openai-codex" : "anthropic"));
+		const copy = document.createElement("div");
+		copy.className = "connection-copy";
+		const name = document.createElement("strong");
+		name.textContent = connection.provider === "openai" ? "ChatGPT / Codex subscription" : "Claude subscription";
+		const detail = document.createElement("small");
+		const policy = connection.policy?.enablementStatus === "enabled" ? "enabled" : "deployment disabled";
+		detail.textContent = `${connection.nativeHarness} · ${connection.authorizationState} · ${policy} · exclusive concurrency ${connection.maxNativeConcurrency}`;
+		copy.append(name, detail);
+		card.appendChild(copy);
+		const actions = document.createElement("div");
+		actions.className = "general-company-actions";
+		if (
+			connection.connectionStatus === "active" &&
+			connection.authorizationState === "active" &&
+			connection.policy?.enablementStatus === "enabled" &&
+			!connection.sponsorBindingId
+		) {
+			const use = document.createElement("button");
+			use.type = "button";
+			use.textContent = "Enable for turns";
+			use.onclick = async () => {
+				use.disabled = true;
+				const result = await window.qorpera.createMemberExecutionSponsor(
+					connection.connectionId,
+					connection.connectionVersion,
+				);
+				if (!result?.ok) {
+					showToast(result?.error ?? "The subscription sponsor could not be created.");
+					use.disabled = false;
+					return;
+				}
+				await refreshNativeExecution();
+				await renderSettingsTab();
+			};
+			actions.appendChild(use);
+		}
+		if (connection.sponsorBindingId) {
+			const ready = document.createElement("span");
+			ready.className = "sess-meta";
+			ready.textContent = "Available in the composer";
+			actions.appendChild(ready);
+		}
+		if (connection.connectionStatus !== "revoked") {
+			const revoke = document.createElement("button");
+			revoke.type = "button";
+			revoke.className = "danger-button";
+			revoke.textContent = "Revoke";
+			revoke.onclick = async () => {
+				if (!window.confirm("Revoke this personal provider connection and stop its active cloud execution?")) return;
+				revoke.disabled = true;
+				const result = await window.qorpera.revokeNativeProviderConnection(connection.connectionId);
+				if (!result?.ok) {
+					showToast(result?.error ?? "The provider connection could not be revoked.");
+					revoke.disabled = false;
+					return;
+				}
+				localStorage.removeItem(nativeExecutionStorageKey());
+				await refreshNativeExecution();
+				await renderSettingsTab();
+			};
+			actions.appendChild(revoke);
+		}
+		card.appendChild(actions);
+		list.appendChild(card);
+	}
+	group.appendChild(list);
+	content.appendChild(group);
+}
+
 const PROFILE_ROLE_LABELS = {
 	owner: "Owner",
 	admin: "Full access",
@@ -10361,7 +10980,13 @@ async function renderSettingsTab() {
 		const storage = info.profile?.companyFile;
 		const gibibytes = (bytes) => `${(Number(bytes || 0) / 1024 ** 3).toFixed(bytes >= 1024 ** 3 ? 1 : 2)} GB`;
 		const fileSyncState = info.profile?.status?.files;
+		const fileSyncError = info.profile?.status?.filesError;
 		const recoverableExecutions = Number(info.profile?.status?.recoverableExecutions || 0);
+		const companyFileProposals = Array.isArray(info.profile?.status?.companyFileProposals)
+			? info.profile.status.companyFileProposals
+			: [];
+		const companyFileProposal = companyFileProposals[0];
+		const companyFileReview = info.profile?.status?.companyFileReview;
 		const fileConflictPaths = Number(info.profile?.status?.fileConflictPaths || 0);
 		const syncText =
 			fileConflictPaths > 0
@@ -10378,11 +11003,27 @@ async function renderSettingsTab() {
 		companyFileDetail.textContent = storage
 			? `${gibibytes(storage.storageUsedBytes)} of ${gibibytes(storage.storageLimitBytes)} stored · ${gibibytes(storage.retainedStorageBytes)} retained · ${syncText}`
 			: syncText;
+		if (fileSyncError) companyFileDetail.title = fileSyncError;
 		const companyFileProtection = document.createElement("small");
 		companyFileProtection.textContent = canUseProfile("write")
 			? "Opens the Company File in File Explorer. Native copy, move, rename, and delete actions sync; protected runtime and Git state are not exposed."
 			: "Opens a view-only Company File in File Explorer. Protected runtime and Git state are not exposed.";
 		companyFileCopy.append(companyFileTitle, companyFileDetail, companyFileProtection);
+		const proposalReviews = Array.isArray(companyFileProposal?.reviews) ? companyFileProposal.reviews : [];
+		if (proposalReviews.length > 0) {
+			const reviewDetail = document.createElement("small");
+			const reviewStatusLabels = {
+				queued: "waiting",
+				running: "reviewing",
+				approved: "approved",
+				changes_requested: "requested changes",
+				failed: "needs retry",
+			};
+			reviewDetail.textContent = `Review · ${proposalReviews
+				.map((review) => `${review.reviewerName}: ${reviewStatusLabels[review.status] || review.status}`)
+				.join(" · ")}`;
+			companyFileCopy.appendChild(reviewDetail);
+		}
 		const companyFileActions = document.createElement("div");
 		companyFileActions.className = "general-company-actions";
 		const openCompanyFile = document.createElement("button");
@@ -10438,12 +11079,143 @@ async function renderSettingsTab() {
 			};
 			companyFileActions.append(openCloudVersion, useLocalVersion, useCloudVersion);
 		}
-		if (recoverableExecutions > 0 && canUseProfile("write")) {
+		if (companyFileProposal) {
+			const proposalSnapshotId = companyFileProposal.proposalSnapshot?.snapshotId;
+			const waitingReviews = proposalReviews.filter(
+				(review) => review.status === "queued" || review.status === "running",
+			);
+			const requestedChanges = proposalReviews.filter((review) => review.status === "changes_requested");
+			const failedReviews = proposalReviews.filter((review) => review.status === "failed");
+			const reviewsPreparing =
+				companyFileProposal.execution?.kind === "run" &&
+				Array.isArray(companyFileProposal.reviewerStaffIds) &&
+				companyFileProposal.reviewerStaffIds.length > proposalReviews.length;
+			const openProposal = document.createElement("button");
+			openProposal.type = "button";
+			openProposal.textContent = "Open proposed version";
+			openProposal.title = `${companyFileProposal.title} · proposed by ${companyFileProposal.createdByName}`;
+			openProposal.onclick = async () => {
+				const result = await window.qorpera.openCompanyProposal(
+					companyFileProposal.proposalId,
+					proposalSnapshotId,
+				);
+				if (!result?.ok) showToast(result?.error || "The proposed Company File version could not be opened.");
+			};
+			const comments = document.createElement("button");
+			comments.type = "button";
+			comments.textContent = "Comments";
+			comments.onclick = async () => {
+				const result = await window.qorpera.companyProposalComments(companyFileProposal.proposalId);
+				if (!result?.ok) {
+					showToast(result?.error || "Proposal comments could not be loaded.");
+					return;
+				}
+				const history = (result.comments || [])
+					.map((comment) => `${comment.authorName}: ${comment.body}`)
+					.join("\n\n");
+				const body = window.prompt(
+					`${companyFileProposal.title}${history ? `\n\n${history}` : "\n\nNo comments yet."}\n\nAdd a comment:`,
+					"",
+				);
+				if (!body?.trim()) return;
+				const saved = await window.qorpera.commentCompanyProposal(
+					companyFileProposal.proposalId,
+					body.trim(),
+					crypto.randomUUID(),
+				);
+				if (!saved?.ok) showToast(saved?.error || "The proposal comment could not be saved.");
+			};
+			companyFileActions.append(openProposal, comments);
+			if (canUseProfile("authorize")) {
+				if (requestedChanges.length === 0) {
+					for (const failedReview of failedReviews) {
+						const retryReview = document.createElement("button");
+						retryReview.type = "button";
+						retryReview.textContent = `Retry ${failedReview.reviewerName}`;
+						retryReview.onclick = async () => {
+							retryReview.disabled = true;
+							const result = await window.qorpera.retryCompanyProposalReview(
+								companyFileProposal.proposalId,
+								proposalSnapshotId,
+								failedReview.assignmentId,
+								companyFileProposal.reviewRevision,
+							);
+							if (!result?.ok) {
+								showToast(result?.error || "The agent review could not be retried.");
+								retryReview.disabled = false;
+								return;
+							}
+							await renderSettingsTab();
+						};
+						companyFileActions.appendChild(retryReview);
+					}
+				}
+				const publishProposal = document.createElement("button");
+				publishProposal.type = "button";
+				publishProposal.textContent = requestedChanges.length > 0 ? "Revise" : "Publish";
+				publishProposal.disabled =
+					requestedChanges.length === 0 && (waitingReviews.length > 0 || failedReviews.length > 0 || reviewsPreparing);
+				if (publishProposal.disabled) {
+					publishProposal.title = failedReviews.length > 0
+						? "Retry the failed agent review before publishing."
+						: "Waiting for the configured agent reviews.";
+				}
+				publishProposal.onclick = async () => {
+					if (
+						requestedChanges.length === 0 &&
+						!window.confirm(`Publish “${companyFileProposal.title}” to the Company File?`)
+					)
+						return;
+					publishProposal.disabled = true;
+					const result = await window.qorpera.acceptCompanyProposal(
+						companyFileProposal.proposalId,
+						proposalSnapshotId,
+					);
+					if (!result?.ok) {
+						showToast(result?.error || "The proposal could not be published.");
+						publishProposal.disabled = false;
+						return;
+					}
+					if (result.needsEdits) {
+						showToast(result.message || "Edit the review folder, then submit the revision.");
+						publishProposal.textContent = "Submit revision";
+						publishProposal.disabled = false;
+						return;
+					}
+					if (result.reviewPending) {
+						showToast("Revision submitted for the configured agent reviews.");
+					}
+					await renderSettingsTab();
+				};
+				const rejectProposal = document.createElement("button");
+				rejectProposal.type = "button";
+				rejectProposal.textContent = "Discard";
+				rejectProposal.onclick = async () => {
+					if (!window.confirm(`Discard “${companyFileProposal.title}”?`)) return;
+					rejectProposal.disabled = true;
+					const result = await window.qorpera.rejectCompanyProposal(
+						companyFileProposal.proposalId,
+						proposalSnapshotId,
+					);
+					if (!result?.ok) {
+						showToast(result?.error || "The proposal could not be discarded.");
+						rejectProposal.disabled = false;
+						return;
+					}
+					await renderSettingsTab();
+				};
+				companyFileActions.append(publishProposal, rejectProposal);
+			}
+		} else if (recoverableExecutions > 0 && companyFileReview && canUseProfile("write")) {
 			const openReview = document.createElement("button");
 			openReview.type = "button";
 			openReview.textContent = "Open review";
 			openReview.onclick = async () => {
-				const result = await window.qorpera.openCompanyFileReview();
+				const result = await window.qorpera.openCompanyFileReview(
+					companyFileReview.checkoutId,
+					companyFileReview.proposalHead,
+					companyFileReview.expectedCanonicalHead,
+				);
 				if (!result?.ok) showToast(result?.error || "Agent work could not be opened.");
 			};
 			const publishReview = document.createElement("button");
@@ -10451,7 +11223,11 @@ async function renderSettingsTab() {
 			publishReview.textContent = "Publish reviewed work";
 			publishReview.onclick = async () => {
 				publishReview.disabled = true;
-				const result = await window.qorpera.acceptCompanyFileReview();
+				const result = await window.qorpera.acceptCompanyFileReview(
+					companyFileReview.checkoutId,
+					companyFileReview.proposalHead,
+					companyFileReview.expectedCanonicalHead,
+				);
 				if (!result?.ok) {
 					showToast(result?.error || "Reviewed work could not be published.");
 					publishReview.disabled = false;
@@ -10465,7 +11241,11 @@ async function renderSettingsTab() {
 			discardReview.onclick = async () => {
 				if (!window.confirm("Discard this agent's unpublished Company File changes?")) return;
 				discardReview.disabled = true;
-				const result = await window.qorpera.rejectCompanyFileReview();
+				const result = await window.qorpera.rejectCompanyFileReview(
+					companyFileReview.checkoutId,
+					companyFileReview.proposalHead,
+					companyFileReview.expectedCanonicalHead,
+				);
 				if (!result?.ok) {
 					showToast(result?.error || "Agent work could not be discarded.");
 					discardReview.disabled = false;
@@ -10518,77 +11298,6 @@ async function renderSettingsTab() {
 		setRow(appearanceGroup, "Theme", "", theme);
 		content.appendChild(appearanceGroup);
 
-		const executionGroup = document.createElement("section");
-		executionGroup.className = "settings-group general-settings-group";
-		executionGroup.innerHTML = "<header><h2>Agents</h2></header>";
-		const execution = document.createElement("select");
-		execution.setAttribute("aria-label", "Execution on local computer");
-		for (const [value, label] of [["always", "Always allow"], ["never", "Don’t allow"]]) {
-			const option = document.createElement("option");
-			option.value = value;
-			option.textContent = label;
-			execution.appendChild(option);
-		}
-		execution.value = info.localExecution === "never" ? "never" : "always";
-		execution.disabled = !canUseProfile("authorize");
-		const executionStatus = document.createElement("small");
-		executionStatus.className = "general-setting-status";
-		execution.onchange = async () => {
-			execution.disabled = true;
-			executionStatus.textContent = "Saving…";
-			const result = await window.qorpera.setLocalExecution(execution.value);
-			if (!result?.ok) {
-				execution.value = info.localExecution === "never" ? "never" : "always";
-				executionStatus.textContent = result?.error ?? "Permission could not be saved.";
-			} else {
-				executionStatus.textContent = result.applies === "next-run" ? "Applies after the current run." : "";
-			}
-			execution.disabled = false;
-		};
-		const executionRow = setRow(
-			executionGroup,
-			"Execution on local computer",
-			"Let agents open files and run tasks here. Qorpera’s sandbox and authority gates still apply.",
-			execution,
-		);
-		executionRow.appendChild(executionStatus);
-		const background = document.createElement("button");
-		background.type = "button";
-		background.className = "settings-toggle";
-		background.setAttribute("role", "switch");
-		background.setAttribute("aria-label", "Keep running in the background");
-		let backgroundEnabled = Boolean(info.backgroundEnabled);
-		const syncBackground = () => {
-			background.classList.toggle("active", backgroundEnabled);
-			background.setAttribute("aria-checked", String(backgroundEnabled));
-		};
-		syncBackground();
-		background.disabled = !info.company || !canUseProfile("authorize");
-		const backgroundStatus = document.createElement("small");
-		backgroundStatus.className = "general-setting-status";
-		background.onclick = async () => {
-			background.disabled = true;
-			backgroundStatus.textContent = "Saving…";
-			const result = await window.qorpera.setBackgroundEnabled(!backgroundEnabled);
-			if (result?.ok) {
-				backgroundEnabled = Boolean(result.backgroundEnabled);
-				backgroundStatus.textContent = backgroundEnabled
-					? "Closing this window keeps the company running in the tray."
-					: "";
-			} else {
-				backgroundStatus.textContent = result?.error ?? "Background preference could not be saved.";
-			}
-			syncBackground();
-			background.disabled = !info.company || !canUseProfile("authorize");
-		};
-		const backgroundRow = setRow(
-			executionGroup,
-			"Keep running in the background",
-			"Closing this company’s window hides it to the system tray while routines, group-chat deliveries, and coworker mail keep running. Qorpera also starts at login while any company is opted in.",
-			background,
-		);
-		backgroundRow.appendChild(backgroundStatus);
-		content.appendChild(executionGroup);
 		return;
 	}
 
@@ -10786,6 +11495,9 @@ async function renderSettingsTab() {
 			connections.flatMap((connection) => connection.accounts ?? []).map((account) => [account.id, account]),
 		);
 		renderConnections(content, connections, cachedUsageById);
+		nativeExecution = info.nativeExecution ? { ok: true, ...info.nativeExecution } : nativeExecution;
+		renderNativeExecutionConnections(content, nativeExecution);
+		syncNativeExecutionSelector();
 		void window.qorpera
 			.modelAccountUsage()
 			.then((accountUsage) => {
@@ -10799,9 +11511,17 @@ async function renderSettingsTab() {
 				const scrollTop = content.scrollTop;
 				content.replaceChildren();
 				renderConnections(content, connections, new Map(accountUsage.map((account) => [account.id, account])));
+				renderNativeExecutionConnections(content, nativeExecution);
 				content.scrollTop = scrollTop;
 			})
 			.catch(() => {});
+		if (nativeLoginPollingUntil > Date.now()) {
+			setTimeout(() => {
+				if ($("settingsView").classList.contains("open") && settingsTab === "connections") {
+					void refreshNativeExecution().then(() => renderSettingsTab());
+				}
+			}, 3000);
+		}
 		return;
 	}
 
@@ -10938,6 +11658,28 @@ window.qorpera.onPresenceActivity?.((event) => {
 		});
 	}
 	if (!byUser.size) remoteStaffActivity.delete(event.staffAgentId);
+	syncVisibleStaffAvatars();
+	try {
+		renderRosterRail();
+		if (currentView === "roster") renderStaffHome();
+	} catch {
+		/* pre-company views have no rail */
+	}
+});
+window.qorpera.onRunnerActivity?.((payload) => {
+	if (payload?.healthy === true) {
+		hostedStaffActivityHealthy = true;
+		hostedStaffActivity.clear();
+		for (const activity of Array.isArray(payload.activity) ? payload.activity : []) {
+			if (
+				activity &&
+				typeof activity.staffAgentId === "string" &&
+				["waiting", "working", "needs_attention"].includes(activity.activity)
+			) {
+				hostedStaffActivity.set(activity.staffAgentId, activity);
+			}
+		}
+	} else hostedStaffActivityHealthy = false;
 	syncVisibleStaffAvatars();
 	try {
 		renderRosterRail();

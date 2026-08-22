@@ -20,18 +20,25 @@ async function request(): Promise<CloudRunnerSandboxRequest> {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-podman-linux-test-"));
 	temporaryDirectories.push(root);
 	const inputRoot = join(root, "input");
-	const companyRoot = join(inputRoot, "company");
+	const companyBaseRoot = join(inputRoot, "company");
+	const companyRoot = join(root, "work", "company");
 	const artifactsRoot = join(inputRoot, "artifacts");
+	const attachmentsRoot = join(inputRoot, "attachments");
 	const outputRoot = join(root, "output");
 	const brokerRoot = join(root, "broker");
 	await Promise.all([
+		mkdir(companyBaseRoot, { recursive: true }),
 		mkdir(companyRoot, { recursive: true }),
 		mkdir(artifactsRoot, { recursive: true }),
+		mkdir(attachmentsRoot, { recursive: true }),
 		mkdir(outputRoot),
 		mkdir(brokerRoot, { mode: 0o700 }),
 	]);
 	const substrateManifestPath = join(inputRoot, "substrate.json");
 	const operationsPath = join(inputRoot, "operations.jsonl");
+	const executionContextPath = join(inputRoot, "execution.json");
+	const queuedInputsPath = join(inputRoot, "inputs.jsonl");
+	const transcriptPath = join(inputRoot, "transcript.jsonl");
 	await Promise.all([
 		writeFile(
 			substrateManifestPath,
@@ -45,6 +52,9 @@ async function request(): Promise<CloudRunnerSandboxRequest> {
 			{ mode: 0o400 },
 		),
 		writeFile(operationsPath, '{"sequence":1}\n', { mode: 0o400 }),
+		writeFile(executionContextPath, "{}\n", { mode: 0o400 }),
+		writeFile(queuedInputsPath, "", { mode: 0o400 }),
+		writeFile(transcriptPath, "", { mode: 0o400 }),
 		writeFile(join(artifactsRoot, "index.json"), "[]\n", { mode: 0o400 }),
 	]);
 	return {
@@ -56,6 +66,7 @@ async function request(): Promise<CloudRunnerSandboxRequest> {
 			payload: {
 				assertions: {
 					input_read_only: true,
+					company_checkout_writable: true,
 					root_read_only: true,
 					network_isolated: true,
 					resource_limits: true,
@@ -71,7 +82,17 @@ async function request(): Promise<CloudRunnerSandboxRequest> {
 			},
 		},
 		substrate: { versionId, contentSha256, operationSequence: 1, operationCount: 1, artifactCount: 0 },
-		input: { companyRoot, substrateManifestPath, operationsPath, artifactsRoot },
+		input: {
+			companyBaseRoot,
+			companyRoot,
+			executionContextPath,
+			queuedInputsPath,
+			transcriptPath,
+			substrateManifestPath,
+			operationsPath,
+			artifactsRoot,
+			attachmentsRoot,
+		},
 		outputRoot,
 		hostBroker: {
 			root: brokerRoot,
@@ -127,6 +148,7 @@ describe.skipIf(!enabled)("rootless Podman Linux boundary", () => {
 		const proof = JSON.parse(await readFile(join(sandboxRequest.outputRoot, "sandbox-proof.json"), "utf-8"));
 		expect(proof).toMatchObject({
 			input_read_only: true,
+			company_checkout_writable: true,
 			root_read_only: true,
 			network_isolated: true,
 			resource_limits: true,

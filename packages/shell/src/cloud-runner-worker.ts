@@ -1,5 +1,11 @@
-import { CloudRunnerBrokerOutputPublisher, type CloudRunnerBrokerTransport } from "./cloud-runner-broker.ts";
+import { executeNativeCloudRunnerJob, type NativeProviderComputerBridge } from "./cloud-native-provider.ts";
 import {
+	CloudRunnerBrokerCompanyFilePublisher,
+	CloudRunnerBrokerOutputPublisher,
+	type CloudRunnerBrokerTransport,
+} from "./cloud-runner-broker.ts";
+import {
+	type CloudRunnerAssignmentAcceptance,
 	type CloudRunnerJob,
 	cloudRunnerControlRequestStatus,
 	type DisposableCloudRunner,
@@ -25,6 +31,7 @@ export interface EphemeralCloudRunnerWorkerOptions {
 	runner: DisposableCloudRunner;
 	brokerTransport: CloudRunnerBrokerTransport;
 	backend: CloudRunnerSandboxBackend;
+	nativeProviderBridge?: NativeProviderComputerBridge;
 	platform: string;
 	runnerVersion: string;
 	temporaryRoot?: string;
@@ -36,6 +43,10 @@ export interface EphemeralCloudRunnerWorkerOptions {
 	now?: () => number;
 	retryable?: (error: unknown) => boolean;
 	executeJob?: (options: ExecuteCloudRunnerJobOptions) => Promise<CloudRunnerExecutionResult>;
+}
+
+export interface CloudRunnerAssignmentSource {
+	next(signal: AbortSignal): Promise<CloudRunnerAssignmentAcceptance | undefined>;
 }
 
 function requiredInterval(value: number, label: string, minimum: number, maximum: number): number {
@@ -87,6 +98,7 @@ export class EphemeralCloudRunnerWorker {
 	readonly #heartbeatMs: number;
 	readonly #now: () => number;
 	readonly #executeJob: (options: ExecuteCloudRunnerJobOptions) => Promise<CloudRunnerExecutionResult>;
+	readonly #injectedExecuteJob: boolean;
 
 	constructor(options: EphemeralCloudRunnerWorkerOptions) {
 		if (
@@ -115,9 +127,13 @@ export class EphemeralCloudRunnerWorker {
 		);
 		this.#now = options.now ?? Date.now;
 		this.#executeJob = options.executeJob ?? executeCloudRunnerJob;
+		this.#injectedExecuteJob = options.executeJob !== undefined;
 	}
 
-	async runNext(signal: AbortSignal = new AbortController().signal): Promise<EphemeralCloudRunnerWorkerResult> {
+	async runNext(
+		assignment: CloudRunnerAssignmentAcceptance | undefined,
+		signal: AbortSignal = new AbortController().signal,
+	): Promise<EphemeralCloudRunnerWorkerResult> {
 		if (signal.aborted) throw workerStopped();
 		const retained = this.#options.runner.leasedJobs();
 		if (retained.length > 1) throw new Error("Single-lane ephemeral worker restored multiple active jobs");
@@ -127,10 +143,17 @@ export class EphemeralCloudRunnerWorker {
 			job = undefined;
 		}
 		if (job) {
-			const pendingCompletion = this.#options.runner.pendingCompletion(job.jobId);
+			const pendingCompletion = this.#options.runner.stagedCompletion(job.jobId);
 			if (pendingCompletion) {
 				try {
-					return { status: "completed", job: await this.#options.runner.complete(job.jobId, pendingCompletion) };
+					return {
+						status: "completed",
+						job: await this.#options.runner.complete(
+							job.jobId,
+							pendingCompletion.result,
+							pendingCompletion.outputSnapshotId,
+						),
+					};
 				} catch (error) {
 					if (cloudRunnerControlRequestStatus(error) !== 409) throw error;
 					await this.#options.runner.discardJobAuthority(job.jobId);
@@ -138,29 +161,49 @@ export class EphemeralCloudRunnerWorker {
 				}
 			}
 		}
-		await this.#options.backend.prepare?.();
-		if (job) job = await this.#options.runner.renew(job.jobId);
-		else job = await this.#options.runner.claim();
+		if (job) {
+			if (assignment && assignment.jobId !== job.jobId) {
+				throw new Error("Runner received an assignment while retained work is unresolved");
+			}
+			job = await this.#options.runner.renew(job.jobId);
+		} else if (assignment) {
+			job = await this.#options.runner.acceptAssignment(assignment);
+		}
 		if (!job) return { status: "idle" };
 		return this.#execute(job, signal);
 	}
 
-	async run(signal: AbortSignal): Promise<void> {
+	async run(
+		assignments: CloudRunnerAssignmentSource,
+		signal: AbortSignal,
+		options: { maxAssignments?: number } = {},
+	): Promise<void> {
 		if (signal.aborted) return;
+		const maxAssignments = options.maxAssignments;
+		if (maxAssignments !== undefined && (!Number.isSafeInteger(maxAssignments) || maxAssignments < 1)) {
+			throw new Error("Worker assignment limit is invalid");
+		}
 		if (this.#options.runner.snapshot().active) {
 			await this.#options.runner.heartbeat();
 		} else {
-			await this.#options.backend.prepare?.();
 			await this.#options.runner.activate(this.#options.platform, this.#options.runnerVersion);
 		}
 		let nextHeartbeat = this.#now() + this.#heartbeatMs;
+		let handledAssignments = 0;
 		while (!signal.aborted) {
 			if (this.#now() >= nextHeartbeat) {
 				await this.#options.runner.heartbeat();
 				nextHeartbeat = this.#now() + this.#heartbeatMs;
 			}
-			const result = await this.runNext(signal);
+			const retained = this.#options.runner.leasedJobs().length > 0;
+			const assignment = retained ? undefined : await assignments.next(signal);
 			if (signal.aborted) return;
+			const result = await this.runNext(assignment, signal);
+			if (signal.aborted) return;
+			if (result.status !== "idle") {
+				handledAssignments++;
+				if (maxAssignments !== undefined && handledAssignments >= maxAssignments) return;
+			}
 			if (result.status === "idle" || result.status === "requeued" || result.status === "failed") {
 				const untilHeartbeat = Math.max(10, nextHeartbeat - this.#now());
 				if (!(await wait(Math.min(this.#idlePollMs, untilHeartbeat), signal))) return;
@@ -172,6 +215,8 @@ export class EphemeralCloudRunnerWorker {
 		const executionAbort = new AbortController();
 		const maintenanceAbort = new AbortController();
 		let maintenanceError: unknown;
+		let renewNativeAuthority: (() => Promise<void>) | undefined;
+		let nativeRenewalInFlight: Promise<void> | undefined;
 		const externalAbort = (): void => executionAbort.abort(workerStopped());
 		if (signal.aborted) externalAbort();
 		else signal.addEventListener("abort", externalAbort, { once: true });
@@ -180,6 +225,15 @@ export class EphemeralCloudRunnerWorker {
 			while (await wait(this.#leaseRenewalMs, maintenanceAbort.signal)) {
 				try {
 					await this.#options.runner.renew(job.jobId);
+					if (renewNativeAuthority) {
+						const renewal = renewNativeAuthority();
+						nativeRenewalInFlight = renewal;
+						try {
+							await renewal;
+						} finally {
+							if (nativeRenewalInFlight === renewal) nativeRenewalInFlight = undefined;
+						}
+					}
 					if (this.#now() >= nextHeartbeat) {
 						await this.#options.runner.heartbeat();
 						nextHeartbeat = this.#now() + this.#heartbeatMs;
@@ -199,21 +253,58 @@ export class EphemeralCloudRunnerWorker {
 			await maintenance;
 		};
 		try {
-			const broker = this.#options.runner.broker(job, this.#options.brokerTransport);
+			const broker = this.#options.runner.broker(job, this.#options.brokerTransport, executionAbort.signal);
 			let execution: CloudRunnerExecutionResult;
 			try {
-				execution = await this.#executeJob({
+				const shared = {
 					job,
 					substrate: broker,
 					objects: broker.objects,
-					backend: this.#options.backend,
-					modelBroker: broker,
 					outputPublisher: new CloudRunnerBrokerOutputPublisher(broker),
+					companyFilePublisher: new CloudRunnerBrokerCompanyFilePublisher(broker),
 					...(this.#options.limits ? { limits: this.#options.limits } : {}),
 					...(this.#options.environment ? { environment: this.#options.environment } : {}),
 					...(this.#options.temporaryRoot ? { temporaryRoot: this.#options.temporaryRoot } : {}),
 					signal: executionAbort.signal,
-				});
+				};
+				if (this.#injectedExecuteJob) {
+					await this.#options.backend.prepare?.();
+					execution = await this.#executeJob({
+						...shared,
+						backend: this.#options.backend,
+						modelBroker: broker,
+					});
+				} else {
+					const description = await broker.describe();
+					if (description.sponsor.authenticationMode === "native_subscription") {
+						if (!this.#options.nativeProviderBridge) {
+							throw new Error("Native subscription execution bridge is not configured");
+						}
+						const authority = await broker.acquireNativeAuthority();
+						renewNativeAuthority = async () => {
+							await broker.renewNativeAuthority();
+						};
+						try {
+							execution = await executeNativeCloudRunnerJob({
+								...shared,
+								authority,
+								bridge: this.#options.nativeProviderBridge,
+								nativeBroker: broker,
+							});
+						} finally {
+							renewNativeAuthority = undefined;
+							await nativeRenewalInFlight?.catch(() => undefined);
+							await broker.releaseNativeAuthority(executionAbort.signal.aborted ? "revoked" : "released");
+						}
+					} else {
+						await this.#options.backend.prepare?.();
+						execution = await this.#executeJob({
+							...shared,
+							backend: this.#options.backend,
+							modelBroker: broker,
+						});
+					}
+				}
 			} catch (error) {
 				await stopMaintenance();
 				if (maintenanceError) throw maintenanceError;
@@ -228,7 +319,10 @@ export class EphemeralCloudRunnerWorker {
 			await stopMaintenance();
 			if (maintenanceError) throw maintenanceError;
 			if (signal.aborted) throw workerStopped();
-			return { status: "completed", job: await this.#options.runner.complete(job.jobId, execution.result) };
+			return {
+				status: "completed",
+				job: await this.#options.runner.complete(job.jobId, execution.result, execution.outputSnapshotId),
+			};
 		} finally {
 			await stopMaintenance();
 			signal.removeEventListener("abort", externalAbort);

@@ -9,7 +9,16 @@ import {
 	type SupportedStorage,
 	type User,
 } from "@supabase/supabase-js";
-import { CloudContentAddressedStore, SupabaseCloudObjectTransport } from "./cloud-object-store.ts";
+import { HttpNativeProviderComputerBridge, type NativeProviderIdentityBridge } from "./cloud-native-provider.ts";
+import {
+	NativeSubscriptionControlPlane,
+	SupabaseNativeSubscriptionControlTransport,
+} from "./cloud-native-subscription-control.ts";
+import {
+	CloudContentAddressedStore,
+	HttpCloudObjectTransport,
+	SupabaseCloudObjectTransport,
+} from "./cloud-object-store.ts";
 import { SupabaseCloudPresenceTransport } from "./cloud-presence.ts";
 import { SupabaseCloudRealtimeTransport } from "./cloud-realtime-sync.ts";
 import {
@@ -18,8 +27,8 @@ import {
 	type QorperaHostedPrimary,
 } from "./hosted-primary.ts";
 
-export const QORPERA_AUTH_URL = "https://bzbvxthyjcgcrwpcvdpj.supabase.co";
-export const QORPERA_AUTH_PUBLISHABLE_KEY = "sb_publishable_WXcmU0LTzmvkAHImRnczdQ_fzIOImTx";
+export const QORPERA_AUTH_URL = "https://wovsmjvghnbcbfazdtvr.supabase.co";
+export const QORPERA_AUTH_PUBLISHABLE_KEY = "sb_publishable_nOLb65dGcfMmfiEJHVPuEg_aS2uzVjS";
 export const QORPERA_AUTH_REDIRECT_PATTERN = "http://127.0.0.1:*/auth/callback";
 
 const ACCOUNT_AUTH_FILE = "account-auth.json";
@@ -48,6 +57,8 @@ export interface QorperaAccountAuthOptions {
 	fetch?: typeof fetch;
 	projectUrl?: string;
 	publishableKey?: string;
+	objectGatewayUrl?: string;
+	nativeProviderUrl?: string;
 	timeoutMs?: number;
 }
 
@@ -294,6 +305,8 @@ export class QorperaAccountAuth {
 	private readonly realtime: SupabaseCloudRealtimeTransport;
 	private readonly presence: SupabaseCloudPresenceTransport;
 	private readonly objects: CloudContentAddressedStore;
+	private readonly nativeSubscriptions: NativeSubscriptionControlPlane;
+	private readonly nativeIdentityBridge?: NativeProviderIdentityBridge;
 	private readonly openExternal: (url: string) => Promise<void>;
 	private readonly storage: FileAccountAuthStorage;
 	private readonly timeoutMs: number;
@@ -323,7 +336,32 @@ export class QorperaAccountAuth {
 		this.primary = createSupabaseHostedPrimary(this.client);
 		this.realtime = new SupabaseCloudRealtimeTransport(this.client);
 		this.presence = new SupabaseCloudPresenceTransport(this.client, this.primary);
-		this.objects = new CloudContentAddressedStore(new SupabaseCloudObjectTransport(this.client));
+		const objectGatewayUrl = options.objectGatewayUrl?.trim() || process.env.QORPERA_OBJECT_GATEWAY_URL?.trim();
+		this.objects = new CloudContentAddressedStore(
+			objectGatewayUrl
+				? new HttpCloudObjectTransport({
+						baseUrl: objectGatewayUrl,
+						fetch: options.fetch,
+						accessToken: async () => {
+							const { data, error } = await this.client.auth.getSession();
+							if (error) throw error;
+							if (!data.session) throw new Error("Qorpera object access requires sign-in");
+							return data.session.access_token;
+						},
+					})
+				: new SupabaseCloudObjectTransport(this.client),
+		);
+		this.nativeSubscriptions = new NativeSubscriptionControlPlane(
+			new SupabaseNativeSubscriptionControlTransport(async (name, args) => {
+				const { data, error } = await this.client.rpc(name as never, args as never);
+				return { data, error };
+			}),
+		);
+		this.nativeIdentityBridge = new HttpNativeProviderComputerBridge(
+			options.nativeProviderUrl ?? new URL("/functions/v1/native-provider-login/", projectUrl).href,
+			undefined,
+			options.fetch ?? fetch,
+		);
 	}
 
 	hostedPrimary(): QorperaHostedPrimary {
@@ -340,6 +378,15 @@ export class QorperaAccountAuth {
 
 	hostedObjects(): CloudContentAddressedStore {
 		return this.objects;
+	}
+
+	nativeSubscriptionControl(): NativeSubscriptionControlPlane {
+		return this.nativeSubscriptions;
+	}
+
+	nativeProviderIdentityBridge(): NativeProviderIdentityBridge {
+		if (!this.nativeIdentityBridge) throw new Error("Cloud native provider login is not configured");
+		return this.nativeIdentityBridge;
 	}
 
 	async info(): Promise<QorperaAccountInfo> {

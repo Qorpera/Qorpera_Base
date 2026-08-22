@@ -17,7 +17,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getAgentDir } from "../config.ts";
 
@@ -183,19 +183,21 @@ export const SCHEDULED_JOB_EFFORTS = Object.freeze(["low", "medium", "high", "xh
 export type ScheduledJobEffort = (typeof SCHEDULED_JOB_EFFORTS)[number];
 
 /**
- * Where a routine is allowed to execute. "local" runs on this machine,
- * "cloud" declares hosted-runner execution and is fail-closed (the local
- * kernel never runs it, and it stays parked until a hosted lane exists),
- * and "requires-local" asserts host-only needs (filesystem, connectors,
- * computer use) so the job must never be enqueued to a runner.
+ * Transitional placement values. "cloud" targets the Runner Orchestrator.
+ * "local" and "requires-local" describe compatibility work that still needs
+ * the temporary desktop adapter; they are not durable company ownership and
+ * must not be presented as all-machines-offline execution.
  */
 export const ROUTINE_PLACEMENTS = Object.freeze(["local", "cloud", "requires-local"] as const);
 export type RoutinePlacement = (typeof ROUTINE_PLACEMENTS)[number];
 
+export type RoutinePublicationPolicy = { mode: "automatic" } | { mode: "review"; reviewerStaffIds: string[] };
+
 /**
- * A founder-bound unit of recurring agent work. Definitions stay in the
- * machine-local connection store because enabling unattended work is standing
- * authority; the resulting runs and artifacts still land in the company trail.
+ * A founder-bound unit of recurring agent work. Its portable definition lives
+ * in the cloud-synchronized Company File and is registered with the control
+ * plane before the Runner Orchestrator may admit occurrences. Credentials and
+ * explicitly machine-bound compatibility state remain outside this record.
  */
 export interface ScheduledJob {
 	id: string;
@@ -210,6 +212,9 @@ export interface ScheduledJob {
 	effort: ScheduledJobEffort;
 	/** Explicit execution placement. Missing legacy values migrate to local. */
 	placement: RoutinePlacement;
+	/** Operational work publishes automatically unless the founder explicitly
+	 * configured this routine as a review pipeline. */
+	publication: RoutinePublicationPolicy;
 	/** Explicit staff ownership. Absence means Unassigned. */
 	staffAgentId?: string;
 	createdAt: string;
@@ -225,6 +230,7 @@ export interface ScheduledJobInput {
 	enabled?: boolean;
 	effort?: ScheduledJobEffort;
 	placement?: RoutinePlacement;
+	publication?: RoutinePublicationPolicy;
 	staffAgentId?: string;
 	agentKey?: string;
 }
@@ -236,6 +242,7 @@ export interface ScheduledJobUpdate {
 	enabled?: boolean;
 	effort?: ScheduledJobEffort;
 	placement?: RoutinePlacement;
+	publication?: RoutinePublicationPolicy;
 	/** A string assigns the job; null explicitly returns it to Unassigned. */
 	staffAgentId?: string | null;
 }
@@ -256,16 +263,18 @@ interface CompanyConnectionsState {
 	webhook?: WebhookBinding;
 }
 
-interface LegacyScheduledJob extends Omit<ScheduledJob, "triggers" | "effort" | "placement"> {
+interface LegacyScheduledJob extends Omit<ScheduledJob, "triggers" | "effort" | "placement" | "publication"> {
 	intervalMinutes: number;
 	triggers?: RoutineTrigger[];
 	effort?: ScheduledJobEffort;
 	placement?: RoutinePlacement;
+	publication?: RoutinePublicationPolicy;
 }
 
 const FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
 const STAFF_AGENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const AGENT_ROUTINE_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+const ROUTINES_DIRECTORY = join(".qorpera", "routines");
 
 function normalizedRoot(root: string): string {
 	const resolved = resolve(root);
@@ -539,6 +548,29 @@ function validRoutinePlacement(value: unknown): RoutinePlacement {
 	return value as RoutinePlacement;
 }
 
+function validRoutinePublicationPolicy(value: unknown): RoutinePublicationPolicy {
+	if (value === undefined) return { mode: "automatic" };
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Scheduled job publication policy is invalid");
+	}
+	const policy = value as Partial<RoutinePublicationPolicy>;
+	if (policy.mode === "automatic" && Object.keys(value).length === 1) return { mode: "automatic" };
+	if (
+		policy.mode !== "review" ||
+		Object.keys(value).some((key) => key !== "mode" && key !== "reviewerStaffIds") ||
+		!Array.isArray(policy.reviewerStaffIds) ||
+		policy.reviewerStaffIds.length < 1 ||
+		policy.reviewerStaffIds.length > 20
+	) {
+		throw new Error("Scheduled job review policy is invalid");
+	}
+	const reviewers = [...new Set(policy.reviewerStaffIds.map(validScheduledJobStaffAgentId))].sort();
+	if (reviewers.length !== policy.reviewerStaffIds.length) {
+		throw new Error("Scheduled job review policy contains duplicate reviewers");
+	}
+	return { mode: "review", reviewerStaffIds: reviewers };
+}
+
 const GITHUB_REPOSITORY_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9])?\/[a-z0-9._-]{1,100}$/i;
 const ROUTINE_ADAPTER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
@@ -675,6 +707,7 @@ function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 				enabled: job.enabled,
 				effort: job.effort === undefined ? "high" : validScheduledJobEffort(job.effort),
 				placement: job.placement === undefined ? "local" : validRoutinePlacement(job.placement),
+				publication: validRoutinePublicationPolicy((job as Partial<ScheduledJob>).publication),
 				createdAt: job.createdAt,
 				updatedAt: job.updatedAt,
 				...(job.staffAgentId === undefined
@@ -696,6 +729,7 @@ function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 			enabled: state.wake.enabled,
 			effort: "high",
 			placement: "local",
+			publication: { mode: "automatic" },
 			createdAt: now,
 			updatedAt: now,
 			...(state.wake.suspendedReason ? { suspendedReason: state.wake.suspendedReason } : {}),
@@ -703,28 +737,58 @@ function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 	];
 }
 
+function routineDefinitionPath(root: string, id: string): string {
+	if (!/^[a-z0-9][a-z0-9-]{0,127}$/i.test(id)) throw new Error("Scheduled job id is invalid");
+	return join(root, ROUTINES_DIRECTORY, `${id}.json`);
+}
+
+function writeRoutineDefinition(root: string, job: ScheduledJob): void {
+	const path = routineDefinitionPath(root, job.id);
+	mkdirSync(join(path, ".."), { recursive: true });
+	const temporary = `${path}.${randomUUID()}.tmp`;
+	writeFileSync(temporary, `${JSON.stringify(job, null, "\t")}\n`, FILE_WRITE_OPTIONS);
+	try {
+		renameSync(temporary, path);
+	} catch (error) {
+		rmSync(temporary, { force: true });
+		throw error;
+	}
+}
+
+function readRoutineDefinitions(root: string): ScheduledJob[] {
+	const directory = join(root, ROUTINES_DIRECTORY);
+	if (!existsSync(directory)) return [];
+	return readdirSync(directory, { withFileTypes: true })
+		.filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+		.map((entry) => {
+			const value = JSON.parse(readFileSync(join(directory, entry.name), "utf-8")) as LegacyScheduledJob;
+			const state: CompanyConnectionsState = {
+				...emptyState(root),
+				scheduledJobs: [value as ScheduledJob],
+			};
+			const job = migrateScheduledJobs(state)[0];
+			if (!job || entry.name !== `${job.id}.json`) {
+				throw new Error(`Scheduled job definition is invalid: ${entry.name}`);
+			}
+			return job;
+		})
+		.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+}
+
 export function readScheduledJobs(root: string): ScheduledJob[] {
 	const state = readState(root);
-	const jobs = migrateScheduledJobs(state);
-	if (
-		(!state.scheduledJobs && state.wake) ||
-		state.scheduledJobs?.some(
-			(job) =>
-				!Array.isArray((job as ScheduledJob).triggers) ||
-				(job as Partial<ScheduledJob>).effort === undefined ||
-				(job as Partial<ScheduledJob>).placement === undefined,
-		)
-	) {
-		state.scheduledJobs = jobs;
+	if (state.scheduledJobs || state.wake) {
+		const jobs = migrateScheduledJobs(state);
+		for (const job of jobs) writeRoutineDefinition(root, job);
+		delete state.scheduledJobs;
 		delete state.wake;
 		writeState(root, state);
 	}
-	return jobs;
+	return readRoutineDefinitions(root);
 }
 
 export function createScheduledJob(root: string, input: ScheduledJobInput): ScheduledJob {
-	const state = readState(root);
-	const jobs = migrateScheduledJobs(state);
+	const jobs = readScheduledJobs(root);
 	const now = new Date().toISOString();
 	const staffAgentId =
 		input.staffAgentId === undefined ? undefined : validScheduledJobStaffAgentId(input.staffAgentId);
@@ -742,13 +806,12 @@ export function createScheduledJob(root: string, input: ScheduledJobInput): Sche
 		enabled: input.enabled ?? true,
 		effort: input.effort === undefined ? "high" : validScheduledJobEffort(input.effort),
 		placement: input.placement === undefined ? "local" : validRoutinePlacement(input.placement),
+		publication: validRoutinePublicationPolicy(input.publication),
 		...(staffAgentId ? { staffAgentId } : {}),
 		createdAt: now,
 		updatedAt: now,
 	};
-	state.scheduledJobs = [...jobs, job];
-	delete state.wake;
-	writeState(root, state);
+	writeRoutineDefinition(root, job);
 	return job;
 }
 
@@ -781,8 +844,7 @@ export function upsertStaffScheduledJob(
 }
 
 export function updateScheduledJob(root: string, id: string, update: ScheduledJobUpdate): ScheduledJob {
-	const state = readState(root);
-	const jobs = migrateScheduledJobs(state);
+	const jobs = readScheduledJobs(root);
 	const index = jobs.findIndex((job) => job.id === id);
 	if (index < 0) throw new Error(`Unknown scheduled job: ${id}`);
 	const current = jobs[index];
@@ -794,6 +856,7 @@ export function updateScheduledJob(root: string, id: string, update: ScheduledJo
 		...(update.triggers !== undefined ? { triggers: validRoutineTriggers(update.triggers) } : {}),
 		...(update.effort !== undefined ? { effort: validScheduledJobEffort(update.effort) } : {}),
 		...(update.placement !== undefined ? { placement: validRoutinePlacement(update.placement) } : {}),
+		...(update.publication !== undefined ? { publication: validRoutinePublicationPolicy(update.publication) } : {}),
 		...(update.staffAgentId === null
 			? { staffAgentId: undefined }
 			: update.staffAgentId !== undefined
@@ -804,33 +867,22 @@ export function updateScheduledJob(root: string, id: string, update: ScheduledJo
 		...(update.enabled === true ? { suspendedReason: undefined } : {}),
 	};
 	if (next.staffAgentId === undefined) delete next.staffAgentId;
-	jobs[index] = next;
-	state.scheduledJobs = jobs;
-	delete state.wake;
-	writeState(root, state);
+	writeRoutineDefinition(root, next);
 	return next;
 }
 
 export function deleteScheduledJob(root: string, id: string): boolean {
-	const state = readState(root);
-	const jobs = migrateScheduledJobs(state);
-	const remaining = jobs.filter((job) => job.id !== id);
-	if (remaining.length === jobs.length) return false;
-	state.scheduledJobs = remaining;
-	delete state.wake;
-	writeState(root, state);
+	const path = routineDefinitionPath(root, id);
+	if (!existsSync(path)) return false;
+	rmSync(path, { force: true });
 	return true;
 }
 
 export function suspendScheduledJob(root: string, id: string, reason: string): void {
-	const state = readState(root);
-	const jobs = migrateScheduledJobs(state);
+	const jobs = readScheduledJobs(root);
 	const index = jobs.findIndex((job) => job.id === id);
 	if (index < 0) return;
-	jobs[index] = { ...jobs[index], suspendedReason: reason, updatedAt: new Date().toISOString() };
-	state.scheduledJobs = jobs;
-	delete state.wake;
-	writeState(root, state);
+	writeRoutineDefinition(root, { ...jobs[index], suspendedReason: reason, updatedAt: new Date().toISOString() });
 }
 
 /**

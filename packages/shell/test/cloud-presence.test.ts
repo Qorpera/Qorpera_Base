@@ -8,7 +8,7 @@ type ChannelStatus = "SUBSCRIBED" | "CHANNEL_ERROR" | "TIMED_OUT" | "CLOSED";
 class FakeChannel {
 	readonly sent: Array<Record<string, unknown>> = [];
 	readonly tracked: Array<Record<string, unknown>> = [];
-	state: Record<string, Array<{ staff_agent_id?: unknown }>> = {};
+	state: Record<string, Array<{ staff_agent_id?: unknown; sequence?: unknown; signature?: unknown }>> = {};
 	#status?: (status: ChannelStatus, error?: Error) => void;
 	#presence?: () => void;
 	readonly #broadcasts = new Map<string, (value: { payload: unknown }) => void>();
@@ -76,15 +76,23 @@ describe("cloud presence", () => {
 		const health: string[] = [];
 		const remoteOwner = "10000000-0000-4000-8000-000000000001";
 		const remoteTeammate = "10000000-0000-4000-8000-000000000002";
-		const registerPresenceDevice = vi.fn(async (_profileId: string, clientId: string) => ({
+		const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
+		const ownerKeys = generateKeyPairSync("ed25519");
+		const teammateKeys = generateKeyPairSync("ed25519");
+		const ownerPublicKey = ownerKeys.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+		const teammatePublicKey = teammateKeys.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+		const registerPresenceDevice = vi.fn(async (_profileId: string, clientId: string, publicKey: string) => ({
 			clientId,
 			userId: "owner",
 			name: "Owner",
+			publicKey,
 		}));
 		const listPresenceDevices = vi.fn(async (_profileId: string, clientIds: string[]) =>
 			clientIds.flatMap((clientId) => {
-				if (clientId === remoteOwner) return [{ clientId, userId: "owner", name: "Owner" }];
-				if (clientId === remoteTeammate) return [{ clientId, userId: "teammate", name: "Teammate" }];
+				if (clientId === remoteOwner)
+					return [{ clientId, userId: "owner", name: "Owner", publicKey: ownerPublicKey }];
+				if (clientId === remoteTeammate)
+					return [{ clientId, userId: "teammate", name: "Teammate", publicKey: teammatePublicKey }];
 				return [];
 			}),
 		);
@@ -95,7 +103,7 @@ describe("cloud presence", () => {
 			unregisterPresenceDevice,
 		} as unknown as QorperaHostedPrimary;
 		const handle = new SupabaseCloudPresenceTransport(client, primary).join(
-			"9ec79fc8-a1a7-4eb6-a764-4bc704d4103f",
+			profileId,
 			(value) => members.push(value),
 			() => undefined,
 			(event) => activities.push(`${event.staffAgentId}:${event.activity}`),
@@ -106,14 +114,34 @@ describe("cloud presence", () => {
 		channels[0].emitStatus("SUBSCRIBED");
 		handle.setOpenThread("legal-agent");
 		handle.sendActivity("legal-agent", "working");
-		expect(channels[0].tracked.at(-1)).toEqual({ staff_agent_id: "legal-agent" });
+		expect(channels[0].tracked.at(-1)).toMatchObject({ staff_agent_id: "legal-agent" });
 		expect(channels[0].sent.at(-1)).toMatchObject({ event: "agent_activity" });
 		const sentPayload = channels[0].sent.at(-1)?.payload as { client_id?: unknown };
 		expect(typeof sentPayload.client_id).toBe("string");
 		channels[0].state = {
 			[String(sentPayload.client_id)]: [{ staff_agent_id: "legal-agent" }],
-			[remoteOwner]: [{ staff_agent_id: "legal-agent" }],
-			[remoteTeammate]: [{ staff_agent_id: "legal-agent" }],
+			[remoteOwner]: [
+				{
+					staff_agent_id: "legal-agent",
+					sequence: 1,
+					signature: sign(
+						null,
+						Buffer.from(JSON.stringify([profileId, remoteOwner, 1, "open_thread", "legal-agent", null])),
+						ownerKeys.privateKey,
+					).toString("base64"),
+				},
+			],
+			[remoteTeammate]: [
+				{
+					staff_agent_id: "legal-agent",
+					sequence: 1,
+					signature: sign(
+						null,
+						Buffer.from(JSON.stringify([profileId, remoteTeammate, 1, "open_thread", "legal-agent", null])),
+						teammateKeys.privateKey,
+					).toString("base64"),
+				},
+			],
 		};
 		channels[0].emitPresence();
 		await vi.waitFor(() =>
@@ -121,6 +149,24 @@ describe("cloud presence", () => {
 				{ clientId: remoteOwner, userId: "owner" },
 				{ clientId: remoteTeammate, userId: "teammate" },
 			]),
+		);
+		channels[0].state[remoteOwner] = [
+			...(channels[0].state[remoteOwner] ?? []),
+			{
+				staff_agent_id: "finance-agent",
+				sequence: 2,
+				signature: sign(
+					null,
+					Buffer.from(JSON.stringify([profileId, remoteOwner, 2, "open_thread", "finance-agent", null])),
+					ownerKeys.privateKey,
+				).toString("base64"),
+			},
+		];
+		channels[0].emitPresence();
+		await vi.waitFor(() =>
+			expect(members.at(-1)).toContainEqual(
+				expect.objectContaining({ clientId: remoteOwner, staffAgentId: "finance-agent" }),
+			),
 		);
 
 		channels[0].emitStatus("CLOSED");
@@ -141,17 +187,25 @@ describe("cloud presence", () => {
 		});
 		channels[1].emitBroadcast("agent_activity", {
 			client_id: remoteOwner,
-			user_id: "spoofed",
-			name: "Spoofed",
+			sequence: 1,
 			staff_agent_id: "legal-agent",
 			activity: "working",
+			signature: sign(
+				null,
+				Buffer.from(JSON.stringify([profileId, remoteOwner, 1, "agent_activity", "legal-agent", "working"])),
+				ownerKeys.privateKey,
+			).toString("base64"),
 		});
 		channels[1].emitBroadcast("agent_activity", {
 			client_id: remoteTeammate,
-			user_id: "spoofed",
-			name: "Spoofed",
+			sequence: 1,
 			staff_agent_id: "legal-agent",
 			activity: "writing",
+			signature: sign(
+				null,
+				Buffer.from(JSON.stringify([profileId, remoteTeammate, 1, "agent_activity", "legal-agent", "writing"])),
+				teammateKeys.privateKey,
+			).toString("base64"),
 		});
 		await vi.waitFor(() => expect(activities).toEqual(["legal-agent:working", "legal-agent:writing"]));
 
@@ -160,3 +214,5 @@ describe("cloud presence", () => {
 		expect(health.at(-1)).toBe("stopped");
 	});
 });
+
+import { generateKeyPairSync, sign } from "node:crypto";

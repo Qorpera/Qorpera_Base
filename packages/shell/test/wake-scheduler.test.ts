@@ -31,6 +31,7 @@ const schedule = (intervalMinutes: number, extra?: object, startAt?: string) => 
 	enabled: true,
 	effort: "high" as const,
 	placement: "local" as const,
+	publication: { mode: "automatic" as const },
 	createdAt: "2026-08-10T10:00:00Z",
 	updatedAt: "2026-08-10T10:00:00Z",
 	...extra,

@@ -1,5 +1,9 @@
 # Qorpera Hosted Primary v1
 
+> Historical record through 2026-08-17. The current clean Step 1 project and
+> its remaining NAS deployment gate are recorded in
+> [`supabase/CLOUD-CONTROL-PLANE-ACCEPTANCE.md`](supabase/CLOUD-CONTROL-PLANE-ACCEPTANCE.md).
+
 **Status:** Desktop profile binding, orthogonal account/placement/execution/sponsor product projection, durable attended-chat synchronization, restricted offline recovery, realtime sync wake-ups, online access revocation, profile-scoped content-addressed objects, immutable company-tree workspace heads, automatic publication/workspace inbox, explicit preview/merge UX, composite substrate versions, immutable artifact indexes, conservative retention analysis, verified reachability graphs, expiring restore proofs, recoverable service-owned cleanup, outbound runner registration with short-lived leases, disposable runner execution, the job-scoped runner object broker, atomic runner-output substrate publication, immutable runner and model usage observations, the leased-job model gateway authority and job-private socket handoff, the rootless Podman execution backend, restart-safe single-lane worker orchestration, standalone worker packaging, and the sandbox-probe image contract implemented
 **Date:** 2026-08-17
 **Scope:** Shared company control plane with local execution
@@ -85,13 +89,13 @@ Each machine stores a company-folder attachment under the shell's user-data dire
 
 ## Validation status
 
-- The baseline and profile-management migrations are deployed to the current Qorpera Auth project.
+- The baseline and profile-management migrations were deployed to the prior Qorpera Auth project.
 - Six hosted-primary tables have RLS enabled and authenticated clients have no direct write grants.
 - All profile, membership, environment, session, and event mutations are exposed through security-definer RPCs with an empty search path.
 - Typed client and per-profile attachment tests pass.
 - Profile attachment schema v2 stores identity and promotion state without embedding a product plan. The desktop setup and Settings surfaces now present account entitlement, profile placement, per-session execution target, and billing sponsorship independently; v1 `free`/`cloud`/`computer`/`hq` attachment records migrate without treating those legacy labels as authority.
 - A two-machine integration test round-trips chunked messages through the hosted event stream, materializes them into verified local trails, exercises viewer pull-only access, and continues appending through live audit bindings.
-- The client-session identity migration is deployed to the current Qorpera Auth project. A transactional hosted smoke test verified idempotent session creation, client-identity listing, event append/retry/read, and stale-sequence rejection without leaving test data behind.
+- The client-session identity migration was deployed to the prior Qorpera Auth project. A transactional hosted smoke test verified idempotent session creation, client-identity listing, event append/retry/read, and stale-sequence rejection without leaving test data behind.
 - A real cross-account test passed between an owner on Windows and an invited contributor on a physical Mac. The contributor accepted an explicit partial-access invitation, attached a local checkout to the same cloud profile, read the shared staff trail, and appended a message that appeared in the owner's live Windows trail.
 - Account-bound profile and team caches now survive hosted-primary outages for up to 30 days. Cached roles preserve reading and contribution, while authorization and member management fail closed until the server is reachable.
 - Staff and attended-trail synchronizers checkpoint after each durable unit, persist exponential retry state across restarts, coalesce concurrent triggers, and reuse deterministic event IDs after ambiguous remote commits.
@@ -126,7 +130,7 @@ Each machine stores a company-folder attachment under the shell's user-data dire
 - A leased-job model gateway authority now separates the networkless runner from provider credentials. An owner or admin can bind exact provider/model pairs and cumulative token/call ceilings to one queued job; the Edge broker reserves against the live lease, forwards a credential-free request to a controlled gateway, and records one immutable provider-usage observation. The job actor and policy authorizer remain separate from the future billing account. The database, Edge, host transport, replay, and fake-gateway tests are local; production deployment and account-entitlement enforcement remain.
 - The networkless Linux sandbox now receives model access only through a mode-`0600`, job-private Unix-domain socket owned by the trusted worker. Windows named pipes are rejected because this implementation does not establish an equivalent per-job ACL boundary. The bounded single-frame protocol routes to the current leased `CloudRunnerJobBroker`, limits concurrent and total requests, returns generic failures, exposes no authority or provider credential, and closes with the container. Protocol validation, workspace lifecycle, worker, and exact Podman-command tests pass on Windows; Unix socket and container-client coverage runs on Linux, and the updated real Linux containment probe remains to be run.
 - Durable invitation email delivery is deployed as a Postgres outbox plus a secret-authenticated Supabase Edge Function using Resend idempotency keys. Sender-domain verification, provider secret, and the one-minute worker are configured; live delivery and the HTTPS-to-desktop invitation handoff were verified.
-- The migrations were applied through the SQL editor because no management credential or Supabase CLI is configured locally. The project did not yet contain Supabase CLI migration history, so these versions must be marked as already applied when CLI-based deployment is introduced.
+- These historical migrations were applied to the prior project through the SQL editor because no management credential or Supabase CLI was configured locally. That project did not contain Supabase CLI migration history. The clean Step 1 project instead records all repository migrations normally through the CLI.
 
 ## Shared event rules
 

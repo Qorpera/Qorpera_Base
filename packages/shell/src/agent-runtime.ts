@@ -138,11 +138,37 @@ export interface TrailBinding {
 	audit: { ids: Set<string>; sequence: number; lastHash: string };
 }
 
+const trailExecutions = new WeakMap<TrailBinding, KernelExecutionIdentity>();
+
+export function bindTrailExecution(binding: TrailBinding, execution?: KernelExecutionIdentity): void {
+	if (!execution) {
+		trailExecutions.delete(binding);
+		return;
+	}
+	if (
+		(execution.kind !== "turn" && execution.kind !== "wake") ||
+		!UUID_PATTERN.test(execution.id) ||
+		!UUID_PATTERN.test(execution.claimantId)
+	) {
+		throw new Error("Trail execution identity is invalid");
+	}
+	trailExecutions.set(binding, { ...execution });
+}
+
 export interface TrailAppendFrame {
 	type: "qorpera_trail_append";
 	token: string;
 	entry: SessionEntry;
 }
+
+export interface RunnerTrailExecutionIdentity {
+	kind: "run";
+	id: string;
+	claimantId: string;
+	runnerAssignmentId: string;
+}
+
+export type TrailExecutionIdentity = KernelExecutionIdentity | RunnerTrailExecutionIdentity;
 
 /** Portable conversation entry. Local kernel stamps are deliberately absent:
  * each machine verifies and re-stamps materialized events into its own trail. */
@@ -151,6 +177,7 @@ export interface SharedTrailEntry {
 	id: string;
 	parentId: string | null;
 	timestamp: string;
+	execution?: TrailExecutionIdentity;
 	[key: string]: unknown;
 }
 
@@ -921,7 +948,11 @@ export function pruneEmptyTrailSessions(root: string): number {
 	return removed;
 }
 
-export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): TrailAppendFrame | undefined {
+export function parseTrailAppendFrame(
+	value: unknown,
+	binding: TrailBinding,
+	execution?: KernelExecutionIdentity,
+): TrailAppendFrame | undefined {
 	if (!value || typeof value !== "object") return undefined;
 	const frame = value as Partial<TrailAppendFrame>;
 	if (frame.type !== "qorpera_trail_append" || frame.token !== binding.token) return undefined;
@@ -930,11 +961,23 @@ export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): Tr
 	const record = entry as SessionEntry;
 	if (Buffer.byteLength(JSON.stringify(record), "utf-8") > MAX_TRAIL_ENTRY_BYTES) return undefined;
 	if (!validTrailEntry(record, binding.audit.ids)) return undefined;
+	const durableExecution = execution ?? trailExecutions.get(binding);
+	if (
+		durableExecution &&
+		((durableExecution.kind !== "turn" && durableExecution.kind !== "wake") ||
+			!UUID_PATTERN.test(durableExecution.id) ||
+			!UUID_PATTERN.test(durableExecution.claimantId))
+	) {
+		return undefined;
+	}
 	const receivedAt = new Date().toISOString();
+	const unsigned = unsignedTrailEntry(record);
+	delete unsigned.execution;
 	const stamped: SessionEntry = {
-		...unsignedTrailEntry(record),
+		...unsigned,
 		timestamp: receivedAt,
 		provenance: { source: "child", trust: "assertion" },
+		...(durableExecution ? { execution: { ...durableExecution } } : {}),
 	};
 	stamped.kernel = {
 		sequence: binding.audit.sequence + 1,
@@ -948,10 +991,12 @@ export function parseTrailAppendFrame(value: unknown, binding: TrailBinding): Tr
 
 function stampKernelEntry(binding: TrailBinding, entry: SessionEntry): TrailAppendFrame {
 	const receivedAt = new Date().toISOString();
+	const execution = trailExecutions.get(binding);
 	const stamped: SessionEntry = {
 		...unsignedTrailEntry(entry),
 		timestamp: receivedAt,
 		provenance: { source: "kernel", trust: "observed" },
+		...(execution ? { execution: { ...execution } } : {}),
 	};
 	stamped.kernel = {
 		sequence: binding.audit.sequence + 1,
@@ -2105,6 +2150,8 @@ export function protectedCompanyAgentPaths(
 		join(root, ".git"),
 		join(root, "trail"),
 		join(root, "authority.toml"),
+		join(root, "AGENTS.md"),
+		join(root, "CLAUDE.md"),
 		join(root, ".qorpera"),
 		join(root, "inbox"),
 		...productPaths.flatMap((product) => [join(root, product.repository), join(root, product.worktrees)]),
