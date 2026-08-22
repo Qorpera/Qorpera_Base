@@ -55,6 +55,15 @@ class MemoryCompanyFilePrimary implements CompanyFilePrimary {
 			retainedStorageBytes: 0,
 			storageUsedBytes: 0,
 			storageLimitBytes: 50 * 1024 * 1024 * 1024,
+			objectBackends: [],
+			entitlement: {
+				planKey: "freemium",
+				billingMode: "free",
+				featureSet: "standard",
+				storageAllocation: "metered",
+				storageAllocationBytes: 50 * 1024 * 1024 * 1024,
+				source: "default",
+			},
 			createdAt,
 			updatedAt: createdAt,
 		};

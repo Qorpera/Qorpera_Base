@@ -30,6 +30,7 @@ import {
 export const QORPERA_AUTH_URL = "https://wovsmjvghnbcbfazdtvr.supabase.co";
 export const QORPERA_AUTH_PUBLISHABLE_KEY = "sb_publishable_nOLb65dGcfMmfiEJHVPuEg_aS2uzVjS";
 export const QORPERA_AUTH_REDIRECT_PATTERN = "http://127.0.0.1:*/auth/callback";
+export const QORPERA_OBJECT_GATEWAY_URL = "https://objects.qorpera.com";
 
 const ACCOUNT_AUTH_FILE = "account-auth.json";
 const ACCOUNT_PROJECTION_STORAGE_KEY = "qorpera-account-projection/v1";
@@ -336,7 +337,11 @@ export class QorperaAccountAuth {
 		this.primary = createSupabaseHostedPrimary(this.client);
 		this.realtime = new SupabaseCloudRealtimeTransport(this.client);
 		this.presence = new SupabaseCloudPresenceTransport(this.client, this.primary);
-		const objectGatewayUrl = options.objectGatewayUrl?.trim() || process.env.QORPERA_OBJECT_GATEWAY_URL?.trim();
+		const configuredObjectGatewayUrl =
+			options.objectGatewayUrl?.trim() || process.env.QORPERA_OBJECT_GATEWAY_URL?.trim();
+		const objectGatewayUrl =
+			configuredObjectGatewayUrl ||
+			(new URL(projectUrl).origin === new URL(QORPERA_AUTH_URL).origin ? QORPERA_OBJECT_GATEWAY_URL : undefined);
 		this.objects = new CloudContentAddressedStore(
 			objectGatewayUrl
 				? new HttpCloudObjectTransport({

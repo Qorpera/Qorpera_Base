@@ -203,6 +203,16 @@ export interface HostedCompanySnapshot {
 	publicationState?: "prepared" | "published";
 }
 
+export interface HostedAccountEntitlement {
+	planKey: "freemium" | "internal";
+	billingMode: "free" | "complimentary";
+	featureSet: "standard" | "all";
+	storageAllocation: "metered" | "unlimited";
+	storageAllocationBytes?: number;
+	source: "default" | "explicit";
+	updatedAt?: string;
+}
+
 export interface HostedCompanyFile {
 	profileId: string;
 	environmentId: string;
@@ -213,6 +223,8 @@ export interface HostedCompanyFile {
 	retainedStorageBytes: number;
 	storageUsedBytes: number;
 	storageLimitBytes: number;
+	objectBackends: string[];
+	entitlement: HostedAccountEntitlement;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -607,6 +619,7 @@ export interface HostedPrimaryTransport {
 		p_contract_version: number;
 	}): Promise<unknown>;
 	listProfiles(): Promise<unknown>;
+	getAccountEntitlement(): Promise<unknown>;
 	inviteMember(input: {
 		p_profile_id: string;
 		p_email: string;
@@ -968,6 +981,7 @@ export interface HostedPrimaryDatabase {
 				Returns: JsonValue;
 			};
 			qorpera_list_hosted_profiles: { Args: Record<never, never>; Returns: JsonValue };
+			qorpera_get_account_entitlement: { Args: Record<never, never>; Returns: JsonValue };
 			qorpera_invite_profile_member: {
 				Args: {
 					p_profile_id: string;
@@ -1483,6 +1497,12 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 
 	async listProfiles(): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_list_hosted_profiles", {});
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async getAccountEntitlement(): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_get_account_entitlement", {});
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -2230,8 +2250,69 @@ function parseCompanyFile(value: unknown): HostedCompanyFile {
 			1,
 			MAX_REACHABILITY_STORAGE_BYTES,
 		),
+		objectBackends: array(input.object_backends, "company file object backends").map((backend) =>
+			nonEmptyString(backend, "company file object backend", 128),
+		),
+		entitlement: parseAccountEntitlement(input.entitlement),
 		createdAt: timestamp(input.created_at, "company file creation time"),
 		updatedAt: timestamp(input.updated_at, "company file update time"),
+	};
+}
+
+function parseAccountEntitlement(value: unknown): HostedAccountEntitlement {
+	const input = record(value, "account entitlement");
+	const planKey = input.plan_key;
+	const billingMode = input.billing_mode;
+	const featureSet = input.feature_set;
+	const storageAllocation = input.storage_allocation;
+	const source = input.source;
+	if (planKey !== "freemium" && planKey !== "internal") {
+		throw new Error("Hosted primary returned invalid account plan");
+	}
+	if (billingMode !== "free" && billingMode !== "complimentary") {
+		throw new Error("Hosted primary returned invalid account billing mode");
+	}
+	if (featureSet !== "standard" && featureSet !== "all") {
+		throw new Error("Hosted primary returned invalid account feature set");
+	}
+	if (storageAllocation !== "metered" && storageAllocation !== "unlimited") {
+		throw new Error("Hosted primary returned invalid account storage allocation");
+	}
+	if (source !== "default" && source !== "explicit") {
+		throw new Error("Hosted primary returned invalid account entitlement source");
+	}
+	const isFreemium =
+		planKey === "freemium" && billingMode === "free" && featureSet === "standard" && storageAllocation === "metered";
+	const isInternal =
+		planKey === "internal" &&
+		billingMode === "complimentary" &&
+		featureSet === "all" &&
+		storageAllocation === "unlimited";
+	if (!isFreemium && !isInternal) {
+		throw new Error("Hosted primary returned inconsistent account entitlement");
+	}
+	const storageAllocationBytes = input.storage_allocation_bytes;
+	const updatedAt = input.updated_at;
+	if (storageAllocation === "unlimited" && storageAllocationBytes !== null) {
+		throw new Error("Hosted primary returned a limit for unlimited account storage");
+	}
+	return {
+		planKey,
+		billingMode,
+		featureSet,
+		storageAllocation,
+		...(storageAllocation === "metered"
+			? {
+					storageAllocationBytes: boundedInteger(
+						storageAllocationBytes,
+						"account storage allocation",
+						1,
+						MAX_REACHABILITY_STORAGE_BYTES,
+					),
+				}
+			: {}),
+		source,
+		...(typeof updatedAt === "string" ? { updatedAt: timestamp(updatedAt, "account entitlement update time") } : {}),
 	};
 }
 
@@ -3581,6 +3662,10 @@ export class QorperaHostedPrimary {
 
 	async listProfiles(): Promise<HostedProfile[]> {
 		return array(await this.transport.listProfiles(), "profile list").map(parseProfile);
+	}
+
+	async getAccountEntitlement(): Promise<HostedAccountEntitlement> {
+		return parseAccountEntitlement(await this.transport.getAccountEntitlement());
 	}
 
 	async inviteMember(

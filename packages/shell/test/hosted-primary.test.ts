@@ -173,8 +173,22 @@ function companyFileRecord(headSnapshotId: string | null = snapshotId) {
 		retained_storage_bytes: headSnapshotId ? 1024 : 0,
 		storage_used_bytes: 5120,
 		storage_limit_bytes: 50 * 1024 * 1024 * 1024,
+		object_backends: ["nas-object-gateway"],
+		entitlement: accountEntitlementRecord(),
 		created_at: createdAt,
 		updated_at: createdAt,
+	};
+}
+
+function accountEntitlementRecord() {
+	return {
+		plan_key: "freemium",
+		billing_mode: "free",
+		feature_set: "standard",
+		storage_allocation: "metered",
+		storage_allocation_bytes: 50 * 1024 * 1024 * 1024,
+		source: "default",
+		updated_at: null,
 	};
 }
 
@@ -387,6 +401,7 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		createProfile: vi.fn(async () => profileRecord()),
 		promoteProfile: vi.fn(async () => profileRecord()),
 		listProfiles: vi.fn(async () => [profileRecord()]),
+		getAccountEntitlement: vi.fn(async () => accountEntitlementRecord()),
 		inviteMember: vi.fn(async (input) => ({
 			id: eventId,
 			profile_id: input.p_profile_id,
@@ -603,6 +618,15 @@ describe("Qorpera hosted primary", () => {
 				retainedStorageBytes: 0,
 				storageUsedBytes: 5120,
 				storageLimitBytes: 50 * 1024 * 1024 * 1024,
+				objectBackends: ["nas-object-gateway"],
+				entitlement: {
+					planKey: "freemium",
+					billingMode: "free",
+					featureSet: "standard",
+					storageAllocation: "metered",
+					storageAllocationBytes: 50 * 1024 * 1024 * 1024,
+					source: "default",
+				},
 				createdAt,
 				updatedAt: createdAt,
 			},
@@ -635,6 +659,14 @@ describe("Qorpera hosted primary", () => {
 			p_contract_version: 1,
 		});
 		await expect(primary.listProfiles()).resolves.toHaveLength(1);
+		await expect(primary.getAccountEntitlement()).resolves.toEqual({
+			planKey: "freemium",
+			billingMode: "free",
+			featureSet: "standard",
+			storageAllocation: "metered",
+			storageAllocationBytes: 50 * 1024 * 1024 * 1024,
+			source: "default",
+		});
 	});
 
 	it("uses a stable promotion identity for resumable local-to-cloud creation", async () => {
