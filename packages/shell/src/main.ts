@@ -940,7 +940,18 @@ const hostedTeamsByProfileId = new Map<string, HostedProfileTeam>();
 const freshHostedTeamProfileIds = new Set<string>();
 const restrictedHostedAccessProfileIds = new Set<string>();
 const hostedAccessRefreshes = new Map<string, CloudProfileAccessRefresh>();
+type FoundationUpdatePhase = "idle" | "checking" | "downloading" | "current" | "ready" | "error" | "unavailable";
+type FoundationUpdateState = {
+	phase: FoundationUpdatePhase;
+	message: string;
+	version?: string;
+};
+
 let downloadedUpdateVersion: string | undefined;
+let foundationUpdateState: FoundationUpdateState = {
+	phase: "idle",
+	message: "Check for updates",
+};
 let pendingProfileInvitationId = profileInvitationIdFromArgv(process.argv);
 let profileInvitationHandoffInFlight = false;
 
@@ -3108,6 +3119,12 @@ function send(win: BrowserWindow, channel: string, payload: unknown): void {
 
 function sendAll(channel: string, payload: unknown): void {
 	for (const slot of slots.values()) send(slot.window, channel, payload);
+}
+
+function setFoundationUpdateState(state: FoundationUpdateState): void {
+	foundationUpdateState = state;
+	sendAll("update-state", state);
+	sendAll("update-status", state.message);
 }
 
 function invitationRoleDescription(role: HostedIncomingProfileInvitation["role"]): string {
@@ -9329,6 +9346,7 @@ function createRendererWindow(
 				"body::before{content:'';position:fixed;top:0;left:0;right:150px;height:12px;z-index:2147483647;-webkit-app-region:drag;}",
 			)
 			.catch(() => {});
+		send(win, "update-state", foundationUpdateState);
 		if (downloadedUpdateVersion) send(win, "update-ready", downloadedUpdateVersion);
 	});
 	win.webContents.setWindowOpenHandler(({ url }) => {
@@ -12858,17 +12876,62 @@ app.whenReady().then(async () => {
 	// is deliberately static, so this stays quiet almost always.
 	if (app.isPackaged) {
 		const { autoUpdater } = electronUpdater;
-		autoUpdater.on("checking-for-update", () => sendAll("update-status", "checking…"));
-		autoUpdater.on("update-available", (info) => sendAll("update-status", `downloading ${info.version}…`));
-		autoUpdater.on("update-not-available", () => sendAll("update-status", "up to date"));
-		autoUpdater.on("error", (error) => sendAll("update-status", `update error: ${error.message.slice(0, 80)}`));
+		let updateCheckInFlight: Promise<void> | undefined;
+		autoUpdater.on("checking-for-update", () => {
+			setFoundationUpdateState({ phase: "checking", message: "Checking for updates…" });
+		});
+		autoUpdater.on("update-available", (info) => {
+			setFoundationUpdateState({
+				phase: "downloading",
+				message: `Downloading v${info.version}…`,
+				version: info.version,
+			});
+		});
+		autoUpdater.on("update-not-available", () => {
+			setFoundationUpdateState({ phase: "current", message: "Qorpera Base is up to date" });
+		});
+		autoUpdater.on("error", (error) => {
+			setFoundationUpdateState({
+				phase: "error",
+				message: `Update check failed: ${error.message.slice(0, 80)}`,
+			});
+		});
 		autoUpdater.on("update-downloaded", (info) => {
 			downloadedUpdateVersion = info.version;
+			setFoundationUpdateState({
+				phase: "ready",
+				message: `v${info.version} downloaded — restart to update`,
+				version: info.version,
+			});
 			sendAll("update-ready", info.version);
 		});
-		autoUpdater.checkForUpdatesAndNotify().catch((error: Error) => {
-			console.error(`update check failed: ${error.message}`);
+		const checkForFoundationUpdate = (): Promise<void> => {
+			if (downloadedUpdateVersion) return Promise.resolve();
+			if (updateCheckInFlight) return updateCheckInFlight;
+			updateCheckInFlight = autoUpdater
+				.checkForUpdatesAndNotify()
+				.then(() => undefined)
+				.catch((error: Error) => {
+					console.error(`update check failed: ${error.message}`);
+					setFoundationUpdateState({
+						phase: "error",
+						message: `Update check failed: ${error.message.slice(0, 80)}`,
+					});
+				})
+				.finally(() => {
+					updateCheckInFlight = undefined;
+				});
+			return updateCheckInFlight;
+		};
+		ipcMain.handle("update:state", (event) => {
+			return slotOf(event.sender) ? foundationUpdateState : undefined;
 		});
+		ipcMain.handle("update:check", async (event) => {
+			if (!slotOf(event.sender)) return undefined;
+			await checkForFoundationUpdate();
+			return foundationUpdateState;
+		});
+		void checkForFoundationUpdate();
 		ipcMain.handle("update:install", (event) => {
 			const slot = slotOf(event.sender);
 			if (!slot || !downloadedUpdateVersion) return false;
@@ -12881,7 +12944,19 @@ app.whenReady().then(async () => {
 			return true;
 		});
 	} else {
-		ipcMain.handle("update:install", () => {});
+		foundationUpdateState = IS_SMOKE
+			? { phase: "idle", message: "Check for updates" }
+			: {
+					phase: "unavailable",
+					message: "Updates are checked by installed builds",
+				};
+		ipcMain.handle("update:state", (event) => {
+			return slotOf(event.sender) ? foundationUpdateState : undefined;
+		});
+		ipcMain.handle("update:check", (event) => {
+			return slotOf(event.sender) ? foundationUpdateState : undefined;
+		});
+		ipcMain.handle("update:install", () => false);
 
 		// In development, reload the fixed renderer after the copied shell files
 		// settle. Main-process changes still require an app restart.
