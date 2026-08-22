@@ -75,6 +75,20 @@ describe("userland wiring", () => {
 		);
 	});
 
+	it("always exposes updater state and a manual check on the company hub", () => {
+		expect(indexSource).toContain('id="hubUpdateButton"');
+		expect(preloadSource).toContain('ipcRenderer.invoke("update:state")');
+		expect(preloadSource).toContain('ipcRenderer.invoke("update:check")');
+		expect(preloadSource).toContain('ipcRenderer.on("update-state"');
+		expect(mainSource).toContain('ipcMain.handle("update:state"');
+		expect(mainSource).toContain('ipcMain.handle("update:check"');
+		expect(mainSource).toContain('sendAll("update-state", state)');
+		expect(rendererSource).toContain('"Check for updates"');
+		expect(rendererSource).toContain("Downloading v");
+		expect(rendererSource).toContain("Restart to update v");
+		expect(baseCssSource).toContain('.hub-foot .hub-update-button[data-phase="ready"]');
+	});
+
 	it("renders durable queued prompts and remote staff activity", () => {
 		expect(preloadSource).toContain('ipcRenderer.on("staff-session-queue"');
 		expect(rendererSource).toContain("pendingSessionQueueByStaff");

@@ -179,7 +179,10 @@ contextBridge.exposeInMainWorld("qorpera", {
 		ipcRenderer.on("connection-requests-changed", (_event, request) => handler(request)),
 	appInfo,
 	authorizedBackendPost: (path, body) => ipcRenderer.invoke("backend:authorized-post", path, body),
+	updateState: () => ipcRenderer.invoke("update:state"),
+	updateCheck: () => ipcRenderer.invoke("update:check"),
 	updateInstall: () => ipcRenderer.invoke("update:install"),
+	onUpdateState: (handler) => ipcRenderer.on("update-state", (_event, state) => handler(state)),
 	onUpdateStatus: (handler) => ipcRenderer.on("update-status", (_event, text) => handler(text)),
 	onUpdateReady: (handler) => ipcRenderer.on("update-ready", (_event, version) => handler(version)),
 	onStaffSessionRefreshed: (handler) =>

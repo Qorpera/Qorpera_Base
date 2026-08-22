@@ -1528,6 +1528,15 @@ body.hub-opening .hub-card:not(.loading) { opacity: 0.4; pointer-events: none; t
 	color: var(--text-muted); font-size: 11px;
 }
 .hub-sign-out:hover:not(:disabled), .hub-sign-out:focus-visible { border: 0; background: transparent; color: var(--text); }
+.hub-foot .hub-update-button {
+	min-height: 28px; padding: 0 10px; border: 1px solid rgba(35, 38, 44, .2);
+	border-radius: var(--radius-pill); background: rgba(255, 255, 255, .44);
+}
+.hub-foot .hub-update-button:hover:not(:disabled), .hub-foot .hub-update-button:focus-visible {
+	border: 1px solid rgba(35, 38, 44, .36); background: rgba(255, 255, 255, .72);
+}
+.hub-foot .hub-update-button[data-phase="ready"] { border-color: #066fd1; color: #066fd1; font-weight: 620; }
+.hub-foot .hub-update-button:disabled { opacity: .64; }
 
 /* ---- company modal: founding flow (window.prompt is unsupported) ---------- */
 .company-modal { width: min(360px, 100%); padding: 28px; border-color: var(--border); border-radius: 14px; }

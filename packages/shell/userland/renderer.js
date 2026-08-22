@@ -94,7 +94,7 @@ let staffDeleteTarget = null;
 let hiddenStaffTrigger = null;
 let archiveTarget = null;
 let toastTimeout = null;
-let foundationUpdateVersion = "";
+let foundationUpdateState = { phase: "idle", message: "Check for updates" };
 let departmentWizard = {
 	step: 1,
 	type: null,
@@ -11932,26 +11932,80 @@ async function renderSettingsTab() {
 function renderUpdateButton() {
 	const button = $("updateButton");
 	const label = button.querySelector("span");
-	if (foundationUpdateVersion) {
+	const hubButton = $("hubUpdateButton");
+	const phase = foundationUpdateState.phase;
+	const version = foundationUpdateState.version ?? "";
+	if (phase === "ready" && version) {
 		button.hidden = false;
 		button.disabled = false;
-		label.textContent = `Update v${foundationUpdateVersion}`;
-		button.title = `Restart and install Qorpera Base v${foundationUpdateVersion}`;
+		label.textContent = `Update v${version}`;
+		button.title = `Restart and install Qorpera Base v${version}`;
 		button.onclick = async () => {
 			button.disabled = true;
+			hubButton.disabled = true;
 			const installed = await window.qorpera.updateInstall();
-			if (!installed) button.disabled = false;
+			if (!installed) {
+				button.disabled = false;
+				hubButton.disabled = false;
+			}
 		};
-		return;
+	} else {
+		button.hidden = true;
+		button.disabled = false;
+		button.onclick = null;
 	}
-	button.hidden = true;
-	button.disabled = false;
-	button.onclick = null;
+
+	hubButton.dataset.phase = phase;
+	hubButton.disabled = phase === "checking" || phase === "downloading" || phase === "unavailable";
+	hubButton.textContent =
+		phase === "ready" && version
+			? `Restart to update v${version}`
+			: phase === "checking"
+				? "Checking…"
+				: phase === "downloading"
+					? version
+						? `Downloading v${version}…`
+						: "Downloading update…"
+					: phase === "current"
+						? "Check again"
+						: phase === "error"
+							? "Retry update"
+							: phase === "unavailable"
+								? "Updates unavailable"
+								: "Check for updates";
+	hubButton.title = foundationUpdateState.message;
+	hubButton.onclick = async () => {
+		if (foundationUpdateState.phase === "ready") {
+			hubButton.disabled = true;
+			const installed = await window.qorpera.updateInstall();
+			if (!installed) hubButton.disabled = false;
+			return;
+		}
+		foundationUpdateState = { phase: "checking", message: "Checking for updates…" };
+		renderUpdateButton();
+		try {
+			const state = await window.qorpera.updateCheck();
+			if (state) foundationUpdateState = state;
+		} catch (error) {
+			foundationUpdateState = {
+				phase: "error",
+				message: error instanceof Error ? error.message : "Update check failed",
+			};
+		}
+		renderUpdateButton();
+	};
+}
+
+function applyFoundationUpdateState(state) {
+	if (!state || typeof state !== "object" || typeof state.phase !== "string") return;
+	foundationUpdateState = state;
+	renderUpdateButton();
 }
 
 window.qorpera.onUpdateStatus((text) => {
 	$("status").textContent = text;
 });
+window.qorpera.onUpdateState?.((state) => applyFoundationUpdateState(state));
 // A remote member's turn synced into the thread on screen: main respawned
 // the child from the updated trail; reload the transcript the same way a
 // manual thread swap does. The composer is untouched.
@@ -12131,8 +12185,11 @@ window.qorpera.onStaffSessionQueue?.((payload) => {
 });
 
 window.qorpera.onUpdateReady((version) => {
-	foundationUpdateVersion = version;
-	renderUpdateButton();
+	applyFoundationUpdateState({
+		phase: "ready",
+		message: `v${version} downloaded — restart to update`,
+		version,
+	});
 	$("status").textContent = `v${version} downloaded — ready to install`;
 });
 window.qorpera.onConnectionStatus((event) => {
@@ -12165,6 +12222,11 @@ applyStaffAvatarStyle();
 async function bootWorkspace() {
 	const info = await window.qorpera.appInfo();
 	$("hubVersion").textContent = `the foundation · v${info.version}`;
+	try {
+		applyFoundationUpdateState(await window.qorpera.updateState?.());
+	} catch (error) {
+		console.warn("Update state could not be read", error);
+	}
 	if (info.activeCompany) {
 		await enterCompany(info.activeCompany);
 	} else if (info.pendingCompany) {
