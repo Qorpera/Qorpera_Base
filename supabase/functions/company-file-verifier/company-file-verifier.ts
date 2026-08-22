@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -458,7 +459,7 @@ export async function verifyCompanySnapshotClosure(
 	try {
 		parsed = JSON.parse(Buffer.from(treeBytes).toString("utf8"));
 	} catch {
-		throw new Error("Invalid Company File tree manifest");
+		throw new Error("Invalid Company File tree manifest JSON");
 	}
 	const tree = record(parsed, "Company File tree manifest");
 	if (
@@ -471,7 +472,7 @@ export async function verifyCompanySnapshotClosure(
 		!Array.isArray(tree.entries) ||
 		tree.entries.length > MAX_TREE_ENTRIES
 	) {
-		throw new Error("Invalid Company File tree manifest");
+		throw new Error("Invalid Company File tree manifest contract");
 	}
 
 	const reachable = new Map<string, number>([[reference.manifestSha256, reference.manifestBytes]]);

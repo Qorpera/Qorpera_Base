@@ -12,6 +12,7 @@ export interface ObjectGatewayServiceOptions {
 	store: FileSystemObjectStore;
 	authority: ObjectGatewayAuthority;
 	controlToken: string;
+	verifierToken: string;
 }
 
 class HttpError extends Error {
@@ -81,6 +82,9 @@ function verified(bytes: Uint8Array, sha256: string, expectedBytes: number): Uin
 }
 
 export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions): RequestListener {
+	if (secureEqual(options.controlToken, options.verifierToken)) {
+		throw new Error("Object gateway control and verifier tokens must be distinct");
+	}
 	return (request, response) => {
 		void (async () => {
 			try {
@@ -103,7 +107,10 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					return;
 				}
 				if (request.method === "GET") {
-					const authority = await options.authority.authorizeDownload(bearer(request), profileId, sha256);
+					const token = bearer(request);
+					const authority = secureEqual(token, options.verifierToken)
+						? await options.authority.authorizeServiceDownload(profileId, sha256)
+						: await options.authority.authorizeDownload(token, profileId, sha256);
 					const bytes = verified(
 						authority.backend === "nas-object-gateway"
 							? await options.store.get(profileId, sha256, authority.bytes)

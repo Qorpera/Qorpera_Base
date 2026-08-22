@@ -17,6 +17,7 @@ const leaseId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";
 const authorizationId = "83dc6943-b71c-4ba4-a38d-78da0861e0dc";
 const userToken = "member-token";
 const controlToken = "gateway-control-token";
+const verifierToken = "gateway-verifier-token";
 const roots: string[] = [];
 
 class FakeAuthority implements ObjectGatewayAuthority {
@@ -32,6 +33,13 @@ class FakeAuthority implements ObjectGatewayAuthority {
 
 	async authorizeDownload(token: string, profile: string, sha256: string): Promise<AuthorizedObject> {
 		if (token !== userToken || profile !== profileId) throw new Error("denied");
+		const object = this.objects.get(sha256);
+		if (!object) throw new Error("missing");
+		return object;
+	}
+
+	async authorizeServiceDownload(profile: string, sha256: string): Promise<AuthorizedObject> {
+		if (profile !== profileId) throw new Error("denied");
 		const object = this.objects.get(sha256);
 		if (!object) throw new Error("missing");
 		return object;
@@ -112,7 +120,12 @@ async function gateway(): Promise<{
 	roots.push(root);
 	const authority = new FakeAuthority();
 	const server = createServer(
-		createObjectGatewayHandler({ store: new FileSystemObjectStore(root), authority, controlToken }),
+		createObjectGatewayHandler({
+			store: new FileSystemObjectStore(root),
+			authority,
+			controlToken,
+			verifierToken,
+		}),
 	);
 	await new Promise<void>((resolvePromise, rejectPromise) => {
 		server.once("error", rejectPromise);
@@ -200,6 +213,79 @@ describe("object gateway", () => {
 		} finally {
 			await service.close();
 		}
+	});
+
+	it("serves integrity-checked objects to the distinct verifier boundary", async () => {
+		const service = await gateway();
+		try {
+			const bytes = Buffer.from("verify company file", "utf-8");
+			const sha256 = objectSha256(bytes);
+			service.authority.objects.set(sha256, { backend: "nas-object-gateway", bytes: bytes.byteLength });
+			await mkdir(join(service.root, profileId), { recursive: true });
+			await writeFile(join(service.root, profileId, sha256), bytes);
+			const response = await fetch(`${service.baseUrl}/v1/profile-objects/${profileId}/${sha256}`, {
+				headers: { authorization: `Bearer ${verifierToken}` },
+			});
+			expect(response.status).toBe(200);
+			expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+		} finally {
+			await service.close();
+		}
+	});
+
+	it("does not let the verifier credential upload or delete objects", async () => {
+		const service = await gateway();
+		try {
+			const bytes = Buffer.from("verifier is read only", "utf-8");
+			const sha256 = objectSha256(bytes);
+			const url = `${service.baseUrl}/v1/profile-objects/${profileId}/${sha256}`;
+			expect(
+				(
+					await fetch(url, {
+						method: "PUT",
+						headers: { authorization: `Bearer ${verifierToken}` },
+						body: bytes,
+					})
+				).status,
+			).toBe(503);
+
+			await fetch(url, {
+				method: "PUT",
+				headers: { authorization: `Bearer ${userToken}` },
+				body: bytes,
+			});
+			expect(
+				(
+					await fetch(url, {
+						method: "DELETE",
+						headers: {
+							authorization: `Bearer ${verifierToken}`,
+							"x-qorpera-gc-lease-id": leaseId,
+							"x-qorpera-object-bytes": String(bytes.byteLength),
+						},
+					})
+				).status,
+			).toBe(401);
+
+			const downloaded = await fetch(url, { headers: { authorization: `Bearer ${userToken}` } });
+			expect(downloaded.status).toBe(200);
+			expect(Buffer.from(await downloaded.arrayBuffer())).toEqual(bytes);
+		} finally {
+			await service.close();
+		}
+	});
+
+	it("requires distinct cleanup and verifier credentials", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-object-gateway-"));
+		roots.push(root);
+		expect(() =>
+			createObjectGatewayHandler({
+				store: new FileSystemObjectStore(root),
+				authority: new FakeAuthority(),
+				controlToken,
+				verifierToken: controlToken,
+			}),
+		).toThrow("must be distinct");
 	});
 
 	it("requires the private control token and a live cleanup lease before catalog deletion", async () => {
