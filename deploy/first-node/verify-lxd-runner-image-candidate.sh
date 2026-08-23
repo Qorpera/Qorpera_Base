@@ -2,7 +2,7 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_PACKAGE_MANIFEST_SHA256="0a6940c8c4d925093398bae1c67a34055e446111d260f92a176ec3fe16eb74df"
+EXPECTED_PACKAGE_MANIFEST_SHA256="b9a9b932c91347025afe8315d9c3fb6dda5be20c5735c11a735225df46146758"
 EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:867361c0412e4396becc89c0ecd2a98319e0ef97@sha256:24977e5ab3905a6dfb3d8909419e5e5006b8395cdb562cd28ec89ed9dfa9987a"
 LXD_PROJECT="qorpera-runners"
 LXD_IMAGE_PROJECT="default"
@@ -138,6 +138,7 @@ lxc exec "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" -- \
 	id -G qorpera-runner | tr " " "\n" | grep -Fxq 42041
 	[[ $(DISABLE_AUTOUPDATER=1 /usr/local/bin/codex --version) == *0.147.0* ]]
 	[[ $(DISABLE_AUTOUPDATER=1 /usr/local/bin/claude --version) == 2.1.231* ]]
+	cd /var/lib/qorpera-runner
 	runuser -u qorpera-runner -- env HOME=/var/lib/qorpera-runner XDG_RUNTIME_DIR=/var/lib/qorpera-runner/tmp \
 		/usr/bin/podman image exists "${EXPECTED_RUNNER_IMAGE}"
 	[[ ! -e /var/lib/qorpera-runner/.config/containers/auth.json ]]

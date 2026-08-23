@@ -204,14 +204,23 @@ const { join } = require("node:path");
 const contract = JSON.parse(readFileSync(join(process.env.PACKAGE_ROOT, "runner-image/contract.json"), "utf8"));
 process.stdout.write(contract.image);
 ')
-runuser -u "${RUNNER_USER}" -- env \
-	HOME=/var/lib/qorpera-runner \
-	XDG_RUNTIME_DIR=/run/qorpera-runner \
-	/usr/bin/podman load --input "${PACKAGE_ROOT}/runner-image/qorpera-sandbox-probe.oci.tar"
-if ! runuser -u "${RUNNER_USER}" -- env \
-	HOME=/var/lib/qorpera-runner \
-	XDG_RUNTIME_DIR=/run/qorpera-runner \
-	/usr/bin/podman image exists "${runner_image}"; then
+if ! /usr/bin/cat "${PACKAGE_ROOT}/runner-image/qorpera-sandbox-probe.oci.tar" | (
+	cd /var/lib/qorpera-runner
+	runuser -u "${RUNNER_USER}" -- env \
+		HOME=/var/lib/qorpera-runner \
+		XDG_RUNTIME_DIR=/run/qorpera-runner \
+		/usr/bin/podman load
+); then
+	echo "The signed runner image archive could not be loaded by the runner account." >&2
+	exit 1
+fi
+if ! (
+	cd /var/lib/qorpera-runner
+	runuser -u "${RUNNER_USER}" -- env \
+		HOME=/var/lib/qorpera-runner \
+		XDG_RUNTIME_DIR=/run/qorpera-runner \
+		/usr/bin/podman image exists "${runner_image}"
+); then
 	echo "The signed runner image archive did not load under its immutable digest." >&2
 	exit 1
 fi
