@@ -34,28 +34,39 @@ if [ "$base_digest" = "$QORPERA_LINUX_BASE_IMAGE" ] || [ "${#base_digest}" -ne 6
 fi
 case "$base_digest" in *[!0-9a-f]*) echo "Linux base image digest is invalid" >&2; exit 2 ;; esac
 command -v cosign >/dev/null
+command -v jq >/dev/null
 command -v node >/dev/null
 command -v podman >/dev/null
 command -v sha256sum >/dev/null
-
-image_digest=$(podman image inspect --format '{{.Digest}}' "$local_image")
-digest_value=${image_digest#sha256:}
-if [ "$digest_value" = "$image_digest" ] || [ "${#digest_value}" -ne 64 ]; then
-	echo "Built probe image does not have a valid local digest" >&2
-	exit 1
-fi
-case "$digest_value" in *[!0-9a-f]*) echo "Built probe image digest is invalid" >&2; exit 1 ;; esac
+command -v tar >/dev/null
 
 target_tag="localhost/qorpera/sandbox-probe:$source_commit"
-immutable_image="$target_tag@$image_digest"
 podman tag "$local_image" "$target_tag"
-podman image exists "$immutable_image"
 
 mkdir -m 0700 "$output_root"
 archive="$output_root/qorpera-sandbox-probe.oci.tar"
 bundle="$output_root/qorpera-sandbox-probe.cosign-bundle.json"
 manifest="$output_root/manifest.json"
-podman save --format oci-archive --output "$archive" "$immutable_image"
+podman save --format oci-archive --output "$archive" "$target_tag"
+archive_index=$(tar -xOf "$archive" index.json)
+archive_reference=$(printf '%s' "$archive_index" | jq -er '
+	if .schemaVersion == 2 and (.manifests | length) == 1
+	then .manifests[0].annotations["org.opencontainers.image.ref.name"]
+	else error("OCI archive must contain exactly one manifest")
+	end
+')
+archive_image_digest=$(printf '%s' "$archive_index" | jq -er '.manifests[0].digest')
+digest_value=${archive_image_digest#sha256:}
+if [ "$archive_reference" != "$target_tag" ] ||
+	[ "$digest_value" = "$archive_image_digest" ] ||
+	[ "${#digest_value}" -ne 64 ]; then
+	echo "Exported OCI archive does not have the expected tagged manifest" >&2
+	exit 1
+fi
+case "$digest_value" in *[!0-9a-f]*) echo "Exported OCI archive manifest digest is invalid" >&2; exit 1 ;; esac
+immutable_image="$target_tag@$archive_image_digest"
+podman load --input "$archive" >/dev/null
+podman image exists "$immutable_image"
 cosign sign-blob --yes --bundle "$bundle" "$archive" >/dev/null
 cosign verify-blob \
 	--bundle "$bundle" \
