@@ -58,6 +58,10 @@ test("packages and pins the management VM Runner Orchestrator", async () => {
 		]) {
 			assert.ok(provisioner.includes(expected), `provisioner is missing checksum pin ${expected}`);
 		}
+		assert.ok(provisioner.includes("cloud_init_ready_without_devlxd"));
+		assert.ok(provisioner.includes('status.get("extended_status") != "degraded done"'));
+		assert.ok(provisioner.includes('allowed_warnings = {"/dev/lxd/sock does not exist.", "Used fallback datasource"}'));
+		assert.ok(!provisioner.includes("cloud-init status --wait >/dev/null"));
 		for (const expected of [
 			"ConditionPathExists=/etc/qorpera/runner-orchestrator.env",
 			"User=qorpera-orchestrator",

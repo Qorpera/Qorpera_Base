@@ -62,6 +62,52 @@ verify_sha256 "${INSTALLER_SOURCE}" "${EXPECTED_INSTALLER_SHA256}"
 verify_sha256 "${UNIT_SOURCE}" "${EXPECTED_UNIT_SHA256}"
 verify_sha256 "${ENV_EXAMPLE_SOURCE}" "${EXPECTED_ENV_EXAMPLE_SHA256}"
 
+cloud_init_ready_without_devlxd() {
+	local vm=$1
+	local encoded
+	local cloud_init_exit
+	set +e
+	encoded=$(lxc exec "${vm}" --project "${LXD_PROJECT}" -- /usr/bin/cloud-init status --wait --format json 2>/dev/null)
+	cloud_init_exit=$?
+	set -e
+	if [[ ${cloud_init_exit} -ne 2 ]]; then
+		return 1
+	fi
+	CLOUD_INIT_STATUS="${encoded}" python3 - <<'PY'
+import json
+import os
+
+try:
+    status = json.loads(os.environ["CLOUD_INIT_STATUS"])
+except (KeyError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+allowed_warnings = {"/dev/lxd/sock does not exist.", "Used fallback datasource"}
+warnings = status.get("recoverable_errors", {}).get("WARNING")
+if (
+    status.get("status") != "done"
+    or status.get("extended_status") != "degraded done"
+    or status.get("datasource") != "none"
+    or status.get("detail") != "DataSourceNone"
+    or status.get("errors") != []
+    or set(status.get("recoverable_errors", {})) != {"WARNING"}
+    or not isinstance(warnings, list)
+    or set(warnings) != allowed_warnings
+):
+    raise SystemExit(1)
+
+for stage_name in ("init-local", "init", "modules-config", "modules-final"):
+    stage = status.get(stage_name)
+    if not isinstance(stage, dict) or stage.get("errors") != []:
+        raise SystemExit(1)
+    recoverable = stage.get("recoverable_errors", {})
+    if set(recoverable) - {"WARNING"}:
+        raise SystemExit(1)
+    if any(warning not in allowed_warnings for warning in recoverable.get("WARNING", [])):
+        raise SystemExit(1)
+PY
+}
+
 if [[ ! -x ${PROVENANCE_TOOL} || ! -r ${PROVENANCE_FILE} || ! -r ${PROVENANCE_PUBLIC_KEY} ]]; then
 	echo "Signed LXD image provenance is not installed on the host." >&2
 	exit 1
@@ -140,7 +186,7 @@ if [[ $(lxc info "${VM_NAME}" --project "${LXD_PROJECT}" | awk '/^Status:/ { pri
 fi
 guest_ready=false
 for _attempt in $(seq 1 180); do
-	if lxc exec "${VM_NAME}" --project "${LXD_PROJECT}" -- /usr/bin/cloud-init status --wait >/dev/null 2>&1; then
+	if cloud_init_ready_without_devlxd "${VM_NAME}"; then
 		guest_ready=true
 		break
 	fi
