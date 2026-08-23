@@ -28,7 +28,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install --yes ca-certificates dbus-user-session fuse-overlayfs nodejs npm podman slirp4netns uidmap
+apt-get install --yes ca-certificates crun dbus-user-session fuse-overlayfs nodejs npm podman slirp4netns uidmap
 
 node_version=$(node --version | sed 's/^v//')
 if ! dpkg --compare-versions "${node_version}" ge 22.19.0; then
@@ -38,6 +38,10 @@ fi
 podman_version=$(podman --version | awk '{ print $3 }')
 if ! dpkg --compare-versions "${podman_version}" ge 5.0.0; then
 	echo "Podman ${podman_version} is older than the guest minimum." >&2
+	exit 1
+fi
+if [[ ! -x /usr/bin/crun ]]; then
+	echo "The pinned rootless Podman OCI runtime is unavailable." >&2
 	exit 1
 fi
 if [[ ! -f /sys/fs/cgroup/cgroup.controllers ]]; then
@@ -212,6 +216,16 @@ if ! /usr/bin/cat "${PACKAGE_ROOT}/runner-image/qorpera-sandbox-probe.oci.tar" |
 		/usr/bin/podman load
 ); then
 	echo "The signed runner image archive could not be loaded by the runner account." >&2
+	exit 1
+fi
+if ! (
+	cd /var/lib/qorpera-runner
+	runuser -u "${RUNNER_USER}" -- env \
+		HOME=/var/lib/qorpera-runner \
+		XDG_RUNTIME_DIR=/run/qorpera-runner \
+		/usr/bin/podman info >/dev/null
+); then
+	echo "Rootless Podman cannot initialize its pinned OCI runtime." >&2
 	exit 1
 fi
 if ! (

@@ -2,14 +2,14 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_PACKAGE_MANIFEST_SHA256="684a5126f767c7259e35e9bc371bcd0dffb38a5fc1c6b944bebdb36466a38fd8"
+EXPECTED_PACKAGE_MANIFEST_SHA256="601ce1edb531a4a30f339e97727bee8804cd535047922c28e38a52339e4b1c6a"
 EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:96c2e17ec75cc0a1d5ed7a4e7c582ecd53ce2954@sha256:bc4b4543cd7c3a048188458eeab11bfa4b183aa1686b9c89fc012fc3e2c8987e"
 LXD_PROJECT="qorpera-runners"
 LXD_IMAGE_PROJECT="default"
 LXD_POOL="qorpera-vm"
 LXD_PROFILE="qorpera-job-v1"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v3-unsigned"
-ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v3"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v4-unsigned"
+ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v4"
 ACCEPTANCE_MARKER="qorpera.lxd-runner-image-acceptance/v1"
 STATE_LOG="/var/log/qorpera-lxd-runner-image-acceptance.txt"
 
@@ -136,10 +136,12 @@ lxc exec "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" -- \
 	env EXPECTED_RUNNER_IMAGE="${EXPECTED_RUNNER_IMAGE}" bash -euo pipefail -c '
 	[[ $(id -g qorpera-native-provider) == 42041 ]]
 	id -G qorpera-runner | tr " " "\n" | grep -Fxq 42041
+	[[ -x /usr/bin/crun ]]
 	[[ $(DISABLE_AUTOUPDATER=1 /usr/local/bin/codex --version) == *0.147.0* ]]
 	[[ $(DISABLE_AUTOUPDATER=1 /usr/local/bin/claude --version) == 2.1.231* ]]
+	install -d -o qorpera-runner -g qorpera-runner -m 0700 /run/qorpera-runner
 	cd /var/lib/qorpera-runner
-	runuser -u qorpera-runner -- env HOME=/var/lib/qorpera-runner XDG_RUNTIME_DIR=/var/lib/qorpera-runner/tmp \
+	runuser -u qorpera-runner -- env HOME=/var/lib/qorpera-runner XDG_RUNTIME_DIR=/run/qorpera-runner \
 		/usr/bin/podman image exists "${EXPECTED_RUNNER_IMAGE}"
 	[[ ! -e /var/lib/qorpera-runner/.config/containers/auth.json ]]
 	[[ $(systemctl is-enabled qorpera-lxd-runner-bootstrap.service) == enabled ]]

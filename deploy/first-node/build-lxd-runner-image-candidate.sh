@@ -3,14 +3,14 @@ set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
 EXPECTED_BASE_FINGERPRINT="7ef31bed9834094a06517d63b93434588049efcbe2ab5d67419a6167988b7d4f"
-EXPECTED_PACKAGE_MANIFEST_SHA256="684a5126f767c7259e35e9bc371bcd0dffb38a5fc1c6b944bebdb36466a38fd8"
+EXPECTED_PACKAGE_MANIFEST_SHA256="601ce1edb531a4a30f339e97727bee8804cd535047922c28e38a52339e4b1c6a"
 EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:96c2e17ec75cc0a1d5ed7a4e7c582ecd53ce2954@sha256:bc4b4543cd7c3a048188458eeab11bfa4b183aa1686b9c89fc012fc3e2c8987e"
 STAGING_ROOT="/home/company41-admin/step2-lxd/lxd-runner-guest"
 LXD_POOL="qorpera-vm"
 LXD_NETWORK="qorpera0"
 LXD_BUILDER_PROJECT="default"
-BUILDER_INSTANCE="qorpera-runner-image-build-v3"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v3-unsigned"
+BUILDER_INSTANCE="qorpera-runner-image-build-v4"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v4-unsigned"
 STATE_LOG="/var/log/qorpera-lxd-runner-image-candidate.txt"
 
 if [[ ${EUID} -ne 0 ]]; then

@@ -62,6 +62,10 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			"deploy/first-node/verify-lxd-runner-image-candidate.sh",
 		);
 		const acceptance = await readFile(acceptancePath, "utf-8");
+		const installer = await readFile(
+			join(repositoryRoot, "deploy/lxd-runner-guest/install-image-contract.sh"),
+			"utf-8",
+		);
 		const manifestSha256 = createHash("sha256").update(manifestEncoded).digest("hex");
 		for (const recipe of [builder, acceptance]) {
 			assert.ok(
@@ -70,6 +74,11 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			);
 		}
 		assert.ok(builder.includes('LXD_BUILDER_PROJECT="default"'));
+		assert.match(installer, /apt-get install --yes[^\n]*\bcrun\b/);
+		assert.ok(installer.includes("/usr/bin/podman info >/dev/null"));
+		assert.ok(acceptance.includes("install -d -o qorpera-runner -g qorpera-runner -m 0700 /run/qorpera-runner"));
+		assert.ok(acceptance.includes("XDG_RUNTIME_DIR=/run/qorpera-runner"));
+		assert.ok(!acceptance.includes("XDG_RUNTIME_DIR=/var/lib/qorpera-runner/tmp"));
 		const syntax = spawnSync("/usr/bin/env", ["bash", "-n", builderPath, acceptancePath], {
 			cwd: repositoryRoot,
 			encoding: "utf-8",
