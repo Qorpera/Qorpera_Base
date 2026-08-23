@@ -34,6 +34,15 @@ mandatory assertion below has passed against a deployed environment.
 
 ## Deployment prerequisites
 
+This functional acceptance may run while the NAS is disconnected. In that
+case, configure clients and `company-file-verifier` with
+`QORPERA_OBJECT_STORAGE_PRIMARY=supabase`, keep admitted catalog rows on the
+`supabase-storage` backend, and run artifact cleanup through that backend. The
+objects are real content-addressed Supabase Storage objects, not fixtures. Do
+not configure a fake NAS gateway. Production remains NAS-primary with Supabase
+backup and requires separate replication, restore, failover, and failback
+evidence.
+
 Record immutable image, package, migration, and source commit identifiers for
 each deployed component before starting.
 
@@ -257,10 +266,11 @@ orchestration, the generic runner-provider boundary, the local process test
 adapter, encrypted capsules, and product controls. Local SQL and deterministic
 process-provider tests exercise those contracts without a real subscription.
 
-The Company Computer provisioner and execution layer are intentionally not
-implemented in this phase. They will run on Qorpera-owned infrastructure and
-connect through the generic runner-provider contract; the NAS remains object
-storage rather than a shared execution filesystem. The release gate remains
-open until that layer and the native login host are deployed, real Codex and
-Claude login/provider requests execute through it, the Windows/macOS builds run
-this procedure, and all-member-devices-offline behavior is observed.
+The branch now contains the first-node LXD host/provider contract, a signed-image
+provenance gate, a credential-free clean-boot guest image contract, post-boot
+credential injection, and an explicit Supabase-primary object acceptance path.
+The release gate remains open until the management deployment and native login
+host are complete, the provider is enabled from a reviewed signed image, real
+Codex and Claude login/provider requests execute through it, the Windows/macOS
+builds run this procedure, and all-member-devices-offline behavior is observed.
+NAS-primary replication and recovery remain a separate production-storage gate.

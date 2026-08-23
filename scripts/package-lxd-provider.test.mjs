@@ -1,0 +1,142 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+function sha256(content) {
+	return createHash("sha256").update(content).digest("hex");
+}
+
+test("packages and pins the first-node LXD provider", async () => {
+	const outputRoot = await mkdtemp(join(tmpdir(), "qorpera-lxd-provider-package-test-"));
+	try {
+		const packaged = spawnSync(process.execPath, ["scripts/package-lxd-provider.mjs", "--out", outputRoot], {
+			cwd: repositoryRoot,
+			encoding: "utf-8",
+		});
+		assert.equal(packaged.status, 0, packaged.stderr);
+
+		const manifest = JSON.parse(await readFile(join(outputRoot, "manifest.json"), "utf-8"));
+		assert.equal(manifest.schema, "qorpera.lxd-provider-package/v1");
+		assert.deepEqual(manifest.runtime, { node: ">=22.19.0" });
+		assert.equal(manifest.artifacts.length, 2);
+		const providerArtifact = await readFile(join(outputRoot, "qorpera-lxd-provider.mjs"));
+		const provenanceArtifact = await readFile(join(outputRoot, "qorpera-lxd-image-provenance.mjs"));
+		assert.deepEqual(manifest.artifacts[0], {
+			file: "qorpera-lxd-provider.mjs",
+			bytes: providerArtifact.byteLength,
+			sha256: sha256(providerArtifact),
+		});
+		assert.deepEqual(manifest.artifacts[1], {
+			file: "qorpera-lxd-image-provenance.mjs",
+			bytes: provenanceArtifact.byteLength,
+			sha256: sha256(provenanceArtifact),
+		});
+
+		const installerPath = join(repositoryRoot, "deploy/first-node/install-lxd-provider-host.sh");
+		const installer = await readFile(installerPath, "utf-8");
+		const unit = await readFile(join(repositoryRoot, "deploy/first-node/qorpera-lxd-provider.service"));
+		const environmentExample = await readFile(
+			join(repositoryRoot, "deploy/first-node/lxd-provider.env.example"),
+		);
+		for (const expected of [
+			`EXPECTED_ARTIFACT_SHA256="${sha256(providerArtifact)}"`,
+			`EXPECTED_PROVENANCE_TOOL_SHA256="${sha256(provenanceArtifact)}"`,
+			`EXPECTED_UNIT_SHA256="${sha256(unit)}"`,
+			`EXPECTED_ENV_EXAMPLE_SHA256="${sha256(environmentExample)}"`,
+		]) {
+			assert.ok(installer.includes(expected), `installer is missing checksum pin ${expected}`);
+		}
+		const syntax = spawnSync("/usr/bin/env", ["bash", "-n", installerPath], {
+			cwd: repositoryRoot,
+			encoding: "utf-8",
+		});
+		assert.equal(syntax.status, 0, syntax.stderr);
+
+		const statement = join(outputRoot, "statement.json");
+		const privateKey = join(outputRoot, "private.pem");
+		const publicKey = join(outputRoot, "public.pem");
+		const provenance = join(outputRoot, "provenance.json");
+		const keyPair = generateKeyPairSync("ed25519");
+		const passphrase = "package-test-passphrase";
+		await writeFile(
+			privateKey,
+			keyPair.privateKey.export({ type: "pkcs8", format: "pem", cipher: "aes-256-cbc", passphrase }),
+		);
+		await writeFile(publicKey, keyPair.publicKey.export({ type: "spki", format: "pem" }));
+		const create = spawnSync(
+			process.execPath,
+			[
+				join(outputRoot, "qorpera-lxd-image-provenance.mjs"),
+				"create",
+				"--image-server",
+				"local",
+				"--image-fingerprint",
+				"a".repeat(64),
+				"--base-image-fingerprint",
+				"b".repeat(64),
+				"--guest-package-manifest-sha256",
+				"c".repeat(64),
+				"--source-repository",
+				"https://github.com/Qorpera/Qorpera_Base.git",
+				"--source-commit",
+				"d".repeat(40),
+				"--source-tree",
+				"clean",
+				"--tested-at",
+				"2026-08-23T11:09:32.000Z",
+				"--acceptance-evidence-sha256",
+				"e".repeat(64),
+				"--output",
+				statement,
+			],
+			{ cwd: repositoryRoot, encoding: "utf-8" },
+		);
+		assert.equal(create.status, 0, create.stderr);
+		const signed = spawnSync(
+			process.execPath,
+			[
+				join(outputRoot, "qorpera-lxd-image-provenance.mjs"),
+				"sign",
+				"--statement",
+				statement,
+				"--private-key",
+				privateKey,
+				"--private-key-passphrase-stdin",
+				"true",
+				"--output",
+				provenance,
+			],
+			{ cwd: repositoryRoot, encoding: "utf-8", input: `${passphrase}\n` },
+		);
+		assert.equal(signed.status, 0, signed.stderr);
+		const verified = spawnSync(
+			process.execPath,
+			[
+				join(outputRoot, "qorpera-lxd-image-provenance.mjs"),
+				"verify",
+				"--provenance",
+				provenance,
+				"--public-key",
+				publicKey,
+				"--image-server",
+				"local",
+				"--image-fingerprint",
+				"a".repeat(64),
+				"--guest-package-manifest-sha256",
+				"c".repeat(64),
+			],
+			{ cwd: repositoryRoot, encoding: "utf-8" },
+		);
+		assert.equal(verified.status, 0, verified.stderr);
+		assert.match(verified.stdout, /LXD_IMAGE_PROVENANCE_VERIFIED/);
+	} finally {
+		await rm(outputRoot, { recursive: true, force: true });
+	}
+});

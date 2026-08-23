@@ -150,6 +150,31 @@ describe("Qorpera account auth", () => {
 		expect(requestedUrls).toEqual([`${QORPERA_OBJECT_GATEWAY_URL}/v1/profile-objects/${profileId}/${sha256}`]);
 	});
 
+	it("can explicitly use Supabase Storage for production acceptance while the NAS is offline", async () => {
+		const profileId = "10000000-0000-4000-8000-000000000001";
+		const bytes = Buffer.from("acceptance object", "utf-8");
+		const sha256 = createHash("sha256").update(bytes).digest("hex");
+		const requestedUrls: string[] = [];
+		const auth = new QorperaAccountAuth(temporaryRoot("supabase-object-primary"), {
+			objectStoragePrimary: "supabase",
+			fetch: async (input) => {
+				requestedUrls.push(String(input));
+				return new Response(bytes, { headers: { "content-type": "application/octet-stream" } });
+			},
+			openExternal: async () => {},
+		});
+
+		await expect(
+			auth.hostedObjects().getObject(profileId, {
+				sha256,
+				bytes: bytes.byteLength,
+				mediaType: "application/octet-stream",
+			}),
+		).resolves.toEqual(Uint8Array.from(bytes));
+		expect(requestedUrls).toHaveLength(1);
+		expect(requestedUrls[0]).toContain(`/storage/v1/object/qorpera-profile-objects/${profileId}/${sha256}`);
+	});
+
 	it("restores the last validated account when an expired session cannot refresh offline", async () => {
 		const userData = temporaryRoot("account-offline");
 		const storage = new FileAccountAuthStorage(accountAuthStoragePath(userData));

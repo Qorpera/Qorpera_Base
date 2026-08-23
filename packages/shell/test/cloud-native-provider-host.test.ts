@@ -104,6 +104,7 @@ describe("native provider host", () => {
 				'const path = require("node:path");',
 				"const [action] = process.argv.slice(2);",
 				'if (process.env.TERM === "dumb") process.exit(4);',
+				'if (process.env.DISABLE_AUTOUPDATER !== "1") process.exit(6);',
 				'if (action === "--device-auth") {',
 				"  fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });",
 				'  fs.writeFileSync(path.join(process.env.CODEX_HOME, "auth.json"), JSON.stringify({ refresh_token: "private" }));',

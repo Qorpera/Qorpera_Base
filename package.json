@@ -63,6 +63,8 @@
 		"shell": "electron packages/shell/dist/main.js",
 		"pack:shell": "npm run build:offline && node scripts/pack-shell.mjs",
 		"pack:ephemeral-runner": "node scripts/package-ephemeral-runner.mjs",
+		"pack:lxd-runner-guest": "node scripts/package-lxd-runner-guest.mjs",
+		"pack:lxd-provider": "node scripts/package-lxd-provider.mjs",
 		"publish:shell": "node scripts/publish-shell-release.mjs"
 	},
 	"devDependencies": {

@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCloudRunnerContainerJob } from "./cloud-runner-container.ts";
@@ -30,7 +31,7 @@ export async function runCloudRunnerContainerMain(): Promise<void> {
 }
 
 const executablePath = process.argv[1];
-if (executablePath && resolve(executablePath) === fileURLToPath(import.meta.url)) {
+if (executablePath && realpathSync(resolve(executablePath)) === realpathSync(fileURLToPath(import.meta.url))) {
 	runCloudRunnerContainerMain().catch((error: unknown) => {
 		const message = (error instanceof Error ? error.message : String(error)).slice(0, 1000);
 		process.stderr.write(`${message || "Container execution failed"}\n`);

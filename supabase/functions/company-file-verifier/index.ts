@@ -30,6 +30,12 @@ function configuredServiceKey(): string {
 	}
 }
 
+function configuredObjectStoragePrimary(): "nas" | "supabase" {
+	const value = Deno.env.get("QORPERA_OBJECT_STORAGE_PRIMARY")?.trim();
+	if (value === "nas" || value === "supabase") return value;
+	throw new Error("Company File object storage primary is not configured");
+}
+
 Deno.serve(async (request) => {
 	if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 	const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
@@ -78,6 +84,7 @@ Deno.serve(async (request) => {
 	let loadObject: (profileId: string, sha256: string) => Promise<Uint8Array>;
 	try {
 		loadObject = createCompanyFileObjectLoader({
+			primary: configuredObjectStoragePrimary(),
 			gatewayUrl: Deno.env.get("QORPERA_OBJECT_GATEWAY_URL"),
 			internalServiceRequest,
 			memberToken: bearerToken,

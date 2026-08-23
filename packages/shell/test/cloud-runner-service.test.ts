@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -37,7 +37,7 @@ class FakeSignalHost {
 }
 
 async function serviceRoot(): Promise<string> {
-	const root = await mkdtemp(join(tmpdir(), "qorpera-runner-service-test-"));
+	const root = await mkdtemp(join(await realpath(tmpdir()), "qorpera-runner-service-test-"));
 	temporaryDirectories.push(root);
 	await mkdir(join(root, "tmp"));
 	return root;
@@ -110,6 +110,25 @@ describe("ephemeral cloud runner service", () => {
 		).toMatchObject({
 			nativeBridgeUrl: "http://127.0.0.1:8082/",
 			nativeBridgeBoundary: "virtual_machine",
+		});
+		expect(() =>
+			parseEphemeralCloudRunnerServiceConfig({
+				...configValue(root),
+				assignment_host: "0.0.0.0",
+				assignment_port: 8082,
+			}),
+		).toThrow("trusted VM-network source");
+		expect(
+			parseEphemeralCloudRunnerServiceConfig({
+				...configValue(root),
+				assignment_host: "0.0.0.0",
+				assignment_port: 8082,
+				assignment_trusted_source: "10.41.0.1",
+			}),
+		).toMatchObject({
+			assignmentHost: "0.0.0.0",
+			assignmentPort: 8082,
+			assignmentTrustedSource: "10.41.0.1",
 		});
 	});
 

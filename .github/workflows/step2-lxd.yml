@@ -1,0 +1,92 @@
+name: Step 2 LXD contracts
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/step2-lxd.yml'
+      - 'deploy/first-node/**'
+      - 'deploy/lxd-runner-guest/**'
+      - 'packages/runner-orchestrator/src/lxd-*.ts'
+      - 'packages/runner-orchestrator/test/lxd-*.test.ts'
+      - 'packages/runner-orchestrator/package.json'
+      - 'packages/shell/src/cloud-native-provider*.ts'
+      - 'packages/shell/src/cloud-runner-*.ts'
+      - 'packages/shell/src/lxd-runner-*.ts'
+      - 'packages/shell/src/account-auth.ts'
+      - 'packages/shell/src/cloud-object-store.ts'
+      - 'packages/shell/test/account-auth.test.ts'
+      - 'packages/shell/test/cloud-native-provider*.test.ts'
+      - 'packages/shell/test/cloud-runner-*.test.ts'
+      - 'packages/shell/test/lxd-runner-*.test.ts'
+      - 'scripts/package-lxd-*.mjs'
+      - 'scripts/package-lxd-*.test.mjs'
+      - 'supabase/functions/company-file-verifier/object-loader.ts'
+      - 'supabase/functions/company-file-verifier/object-loader.test.ts'
+      - 'package-lock.json'
+      - 'package.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: step2-lxd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: Provider, guest, and package contracts
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    env:
+      TMPDIR: /tmp
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Validate deployment shell
+        run: bash -n deploy/first-node/*.sh deploy/lxd-runner-guest/*.sh
+
+      - name: Test LXD provider contracts
+        working-directory: packages/runner-orchestrator
+        run: >-
+          node ../../node_modules/vitest/dist/cli.js --run
+          test/lxd-client.test.ts
+          test/lxd-image-provenance.test.ts
+          test/lxd-provider.test.ts
+
+      - name: Test runner guest contracts
+        working-directory: packages/shell
+        run: >-
+          node ../../node_modules/vitest/dist/cli.js --run
+          test/cloud-native-provider-host.test.ts
+          test/cloud-native-provider.test.ts
+          test/account-auth.test.ts
+          test/cloud-runner-assignment-inbox.test.ts
+          test/cloud-runner-service.test.ts
+          test/cloud-runner-worker.test.ts
+          test/lxd-runner-bootstrap.test.ts
+
+      - name: Test deterministic packaging
+        run: >-
+          node --test
+          scripts/package-lxd-provider.test.mjs
+          scripts/package-lxd-runner-guest.test.mjs
+
+      - name: Test acceptance storage selection
+        run: node --test supabase/functions/company-file-verifier/object-loader.test.ts
+
+      - name: Validate cloud and import boundaries
+        run: |
+          npm run check:cloud-boundaries
+          npm run check:ts-imports
+          npm run check:pinned-deps

@@ -32,6 +32,7 @@ export interface EphemeralCloudRunnerWorkerOptions {
 	brokerTransport: CloudRunnerBrokerTransport;
 	backend: CloudRunnerSandboxBackend;
 	nativeProviderBridge?: NativeProviderComputerBridge;
+	nativeWorkspaceGid?: number;
 	platform: string;
 	runnerVersion: string;
 	temporaryRoot?: string;
@@ -128,6 +129,12 @@ export class EphemeralCloudRunnerWorker {
 		this.#now = options.now ?? Date.now;
 		this.#executeJob = options.executeJob ?? executeCloudRunnerJob;
 		this.#injectedExecuteJob = options.executeJob !== undefined;
+		if (
+			options.nativeWorkspaceGid !== undefined &&
+			(!Number.isSafeInteger(options.nativeWorkspaceGid) || options.nativeWorkspaceGid < 1)
+		) {
+			throw new Error("Native workspace group is invalid");
+		}
 	}
 
 	async runNext(
@@ -290,6 +297,9 @@ export class EphemeralCloudRunnerWorker {
 								authority,
 								bridge: this.#options.nativeProviderBridge,
 								nativeBroker: broker,
+								...(this.#options.nativeWorkspaceGid !== undefined
+									? { nativeWorkspaceGid: this.#options.nativeWorkspaceGid }
+									: {}),
 							});
 						} finally {
 							renewNativeAuthority = undefined;

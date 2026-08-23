@@ -194,6 +194,7 @@ function cleanHarnessEnvironment(identityRoot: string): NodeJS.ProcessEnv {
 		PATH: process.env.PATH ?? "",
 		NO_COLOR: "1",
 		BROWSER: "echo",
+		DISABLE_AUTOUPDATER: "1",
 	};
 	for (const key of ["SystemRoot", "ComSpec", "PATHEXT", "WINDIR"]) {
 		if (process.env[key]) environment[key] = process.env[key];

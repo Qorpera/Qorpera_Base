@@ -1,4 +1,5 @@
 export interface CompanyFileObjectLoaderOptions {
+	primary?: "nas" | "supabase";
 	gatewayUrl?: string;
 	internalServiceRequest: boolean;
 	memberToken: string;
@@ -10,8 +11,12 @@ export interface CompanyFileObjectLoaderOptions {
 export function createCompanyFileObjectLoader(
 	options: CompanyFileObjectLoaderOptions,
 ): (profileId: string, sha256: string) => Promise<Uint8Array> {
+	if (options.primary === "supabase") return options.storageDownload;
+	if (options.primary !== "nas") {
+		throw new Error("Company File object storage primary is not configured");
+	}
 	const configuredGatewayUrl = options.gatewayUrl?.trim();
-	if (!configuredGatewayUrl) return options.storageDownload;
+	if (!configuredGatewayUrl) throw new Error("Company File NAS gateway is not configured");
 	const gatewayUrl = new URL(configuredGatewayUrl).href.replace(/\/$/, "");
 	const token = options.internalServiceRequest ? options.verifierToken?.trim() : options.memberToken;
 	if (!token) throw new Error("Company File verification gateway is not configured");

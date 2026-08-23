@@ -1,5 +1,6 @@
 import { constants } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
+import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { HttpNativeProviderComputerBridge, type NativeProviderExecutionBoundary } from "./cloud-native-provider.ts";
 import { HttpCloudRunnerAssignmentInbox } from "./cloud-runner-assignment-inbox.ts";
@@ -43,8 +44,10 @@ export interface EphemeralCloudRunnerServiceConfig {
 	runnerVersion: string;
 	nativeBridgeUrl?: string;
 	nativeBridgeBoundary?: Exclude<NativeProviderExecutionBoundary, "test">;
+	nativeBridgeSharedGid?: number;
 	assignmentHost?: string;
 	assignmentPort?: number;
+	assignmentTrustedSource?: string;
 	maxAssignments?: number;
 	environment: Readonly<Record<string, string>>;
 	limits?: Partial<CloudRunnerSandboxLimits>;
@@ -214,8 +217,10 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 			"runner_version",
 			"native_bridge_url",
 			"native_bridge_boundary",
+			"native_bridge_shared_gid",
 			"assignment_host",
 			"assignment_port",
+			"assignment_trusted_source",
 			"max_assignments",
 			"environment",
 			"limits",
@@ -242,6 +247,22 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 	if ((assignmentHost === undefined) !== (assignmentPort === undefined)) {
 		throw new Error("Runner assignment listener requires both host and port");
 	}
+	const assignmentTrustedSource =
+		input.assignment_trusted_source === undefined
+			? undefined
+			: requiredText(input.assignment_trusted_source, "Runner assignment trusted source", 64);
+	const loopbackAssignmentHost =
+		assignmentHost === undefined ||
+		assignmentHost === "127.0.0.1" ||
+		assignmentHost === "::1" ||
+		assignmentHost === "localhost";
+	if (
+		(loopbackAssignmentHost && assignmentTrustedSource !== undefined) ||
+		(!loopbackAssignmentHost &&
+			(assignmentHost !== "0.0.0.0" || !assignmentTrustedSource || isIP(assignmentTrustedSource) !== 4))
+	) {
+		throw new Error("Runner assignment listener must be loopback-only or name one trusted VM-network source");
+	}
 	const parsedLimits = limits(input.limits);
 	const nativeBridgeUrl =
 		input.native_bridge_url === undefined
@@ -259,6 +280,15 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 	if ((nativeBridgeUrl === undefined) !== (nativeBridgeBoundary === undefined)) {
 		throw new Error("Native provider bridge requires an explicit production isolation boundary");
 	}
+	const nativeBridgeSharedGid = optionalInteger(
+		input.native_bridge_shared_gid,
+		"Native provider shared group",
+		1,
+		2_147_483_647,
+	);
+	if (nativeBridgeSharedGid !== undefined && nativeBridgeUrl === undefined) {
+		throw new Error("Native provider shared group requires the native execution bridge");
+	}
 	return {
 		schema: CONFIG_SCHEMA,
 		baseUrl: requiredText(input.base_url, "Runner base URL", 2048),
@@ -275,7 +305,9 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 		runnerVersion: requiredText(input.runner_version, "Runner version", 80),
 		...(nativeBridgeUrl ? { nativeBridgeUrl } : {}),
 		...(nativeBridgeBoundary ? { nativeBridgeBoundary } : {}),
+		...(nativeBridgeSharedGid !== undefined ? { nativeBridgeSharedGid } : {}),
 		...(assignmentHost !== undefined && assignmentPort !== undefined ? { assignmentHost, assignmentPort } : {}),
+		...(assignmentTrustedSource ? { assignmentTrustedSource } : {}),
 		...(maxAssignments !== undefined ? { maxAssignments } : {}),
 		environment: environment(input.environment),
 		...(parsedLimits ? { limits: parsedLimits } : {}),
@@ -412,6 +444,7 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 					),
 				}
 			: {}),
+		...(config.nativeBridgeSharedGid !== undefined ? { nativeWorkspaceGid: config.nativeBridgeSharedGid } : {}),
 		platform: config.platform,
 		runnerVersion: config.runnerVersion,
 		temporaryRoot: config.temporaryRoot,
@@ -428,7 +461,12 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 	let inbox: HttpCloudRunnerAssignmentInbox | undefined;
 	let assignmentSource = options.assignmentSource;
 	if (!assignmentSource && config.assignmentHost && config.assignmentPort && assignmentToken) {
-		inbox = new HttpCloudRunnerAssignmentInbox(config.assignmentHost, config.assignmentPort, assignmentToken);
+		inbox = new HttpCloudRunnerAssignmentInbox(
+			config.assignmentHost,
+			config.assignmentPort,
+			assignmentToken,
+			config.assignmentTrustedSource,
+		);
 		await inbox.start();
 		assignmentSource = inbox;
 	}

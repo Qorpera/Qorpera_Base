@@ -63,4 +63,16 @@ describe("cloud runner assignment inbox", () => {
 			await inbox.close();
 		}
 	});
+
+	it("requires one explicit trusted source for a private VM-network listener", async () => {
+		expect(() => new HttpCloudRunnerAssignmentInbox("0.0.0.0", 0, token)).toThrow("trust one VM-network source");
+		const inbox = new HttpCloudRunnerAssignmentInbox("0.0.0.0", 0, token, "127.0.0.1");
+		const port = await inbox.start();
+		try {
+			const health = await fetch(`http://127.0.0.1:${port}/healthz`);
+			expect(health.status).toBe(200);
+		} finally {
+			await inbox.close();
+		}
+	});
 });

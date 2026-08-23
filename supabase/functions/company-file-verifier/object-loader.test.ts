@@ -10,6 +10,7 @@ test("forwards member authority to the NAS gateway", async () => {
 	let authorization = "";
 	let storageDownloads = 0;
 	const loader = createCompanyFileObjectLoader({
+		primary: "nas",
 		gatewayUrl: "https://objects.qorpera.com/",
 		internalServiceRequest: false,
 		memberToken: "member-token",
@@ -34,6 +35,7 @@ test("forwards member authority to the NAS gateway", async () => {
 test("uses only the verifier token for internal service reads", async () => {
 	let authorization = "";
 	const loader = createCompanyFileObjectLoader({
+		primary: "nas",
 		gatewayUrl: "https://objects.qorpera.com",
 		internalServiceRequest: true,
 		memberToken: "service-key-must-not-be-forwarded",
@@ -53,6 +55,7 @@ test("fails closed when internal gateway authority is missing", () => {
 	assert.throws(
 		() =>
 			createCompanyFileObjectLoader({
+				primary: "nas",
 				gatewayUrl: "https://objects.qorpera.com",
 				internalServiceRequest: true,
 				memberToken: "service-key",
@@ -62,9 +65,11 @@ test("fails closed when internal gateway authority is missing", () => {
 	);
 });
 
-test("retains the Supabase Storage fallback when no gateway is configured", async () => {
+test("uses the explicitly configured Supabase Storage primary", async () => {
 	let downloaded = "";
 	const loader = createCompanyFileObjectLoader({
+		primary: "supabase",
+		gatewayUrl: "https://stale-gateway-must-not-be-used.invalid",
 		internalServiceRequest: false,
 		memberToken: "member-token",
 		storageDownload: async (objectProfileId, objectSha256) => {
@@ -77,9 +82,35 @@ test("retains the Supabase Storage fallback when no gateway is configured", asyn
 	assert.equal(downloaded, `${profileId}/${sha256}`);
 });
 
+test("fails closed when the object storage primary is not explicit", () => {
+	assert.throws(
+		() =>
+			createCompanyFileObjectLoader({
+				internalServiceRequest: false,
+				memberToken: "member-token",
+				storageDownload: async () => new Uint8Array(),
+			}),
+		/object storage primary is not configured/,
+	);
+});
+
+test("fails closed when the NAS primary has no gateway", () => {
+	assert.throws(
+		() =>
+			createCompanyFileObjectLoader({
+				primary: "nas",
+				internalServiceRequest: false,
+				memberToken: "member-token",
+				storageDownload: async () => new Uint8Array(),
+			}),
+		/NAS gateway is not configured/,
+	);
+});
+
 test("does not fall back after a gateway read is rejected", async () => {
 	let storageDownloads = 0;
 	const loader = createCompanyFileObjectLoader({
+		primary: "nas",
 		gatewayUrl: "https://objects.qorpera.com",
 		internalServiceRequest: false,
 		memberToken: "member-token",
