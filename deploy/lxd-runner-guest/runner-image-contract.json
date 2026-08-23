@@ -1,20 +1,20 @@
 {
   "schema": "qorpera.ephemeral-runner-image-contract/v1",
-  "source_commit": "867361c0412e4396becc89c0ecd2a98319e0ef97",
+  "source_commit": "96c2e17ec75cc0a1d5ed7a4e7c582ecd53ce2954",
   "base_image": "docker.io/library/node@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
-  "image": "localhost/qorpera/sandbox-probe:867361c0412e4396becc89c0ecd2a98319e0ef97@sha256:24977e5ab3905a6dfb3d8909419e5e5006b8395cdb562cd28ec89ed9dfa9987a",
+  "image": "localhost/qorpera/sandbox-probe:96c2e17ec75cc0a1d5ed7a4e7c582ecd53ce2954@sha256:bc4b4543cd7c3a048188458eeab11bfa4b183aa1686b9c89fc012fc3e2c8987e",
   "archive": {
     "file": "runner-image/qorpera-sandbox-probe.oci.tar",
     "bytes": 84122624,
-    "sha256": "cf4a9c9c4249af6e017a8947414d7354b4f243067053f6e936c4da06a0231090"
+    "sha256": "7db6aba5f8dadb102b95580ac69df03296e0c908bad018392dea7e89fa2d4d90"
   },
   "cosign_bundle": {
     "file": "runner-image/qorpera-sandbox-probe.cosign-bundle.json",
-    "bytes": 11071,
-    "sha256": "dcf69fa0e671d84e95617ce3e7c61ce08bf4381b34ee8e498de718befdd422e2",
+    "bytes": 11119,
+    "sha256": "e3d684b88885941b78006f8bda97ba5a08387b953c8f598f4a269cbfaf9080ff",
     "certificate_identity": "https://github.com/Qorpera/Qorpera_Base/.github/workflows/ephemeral-runner-linux.yml@refs/heads/codex/step2-first-node",
     "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
-    "workflow_sha": "867361c0412e4396becc89c0ecd2a98319e0ef97",
+    "workflow_sha": "96c2e17ec75cc0a1d5ed7a4e7c582ecd53ce2954",
     "workflow_trigger": "workflow_dispatch"
   }
 }
