@@ -97,6 +97,8 @@ The process provider additionally requires:
 - `QORPERA_RUNNER_PROVIDER_STATE_ROOT`
 - `QORPERA_RUNNER_PROVIDER_TEMPORARY_ROOT`
 - `QORPERA_EPHEMERAL_RUNNER_IMAGE`
+- `QORPERA_EPHEMERAL_RUNNER_IMAGE_ARCHIVE_SHA256`
+- `QORPERA_EPHEMERAL_RUNNER_IMAGE_COSIGN_BUNDLE_SHA256`
 - `QORPERA_EPHEMERAL_RUNNER_PODMAN`
 - `QORPERA_EPHEMERAL_RUNNER_ENTRYPOINT`
 
@@ -128,12 +130,13 @@ enable the unit with placeholders.
 
 The LXD backend will not start unless an Ed25519-signed provenance envelope and
 its separately provisioned public trust root authorize the exact configured
-image fingerprint and locked guest-package manifest. The statement also binds
-the base image, clean source commit, retained clean-boot evidence, KVM, UEFI
-Secure Boot, and the no-credential fail-closed acceptance conditions. Mutable
-LXD aliases and image properties are not authorization. The signing private key
-must remain off the compute node. See `deploy/first-node/README.md` for the
-activation and recovery gates.
+image fingerprint, locked guest-package manifest, immutable nested OCI runner
+image, private archive digest, and retained Cosign-bundle digest. The statement
+also binds the base image, clean source commit, retained clean-boot evidence,
+KVM, UEFI Secure Boot, and the no-credential fail-closed acceptance conditions.
+Mutable LXD aliases and image properties are not authorization. The signing
+private key must remain off the compute node. See
+`deploy/first-node/README.md` for the activation and recovery gates.
 
 `deploy/first-node/verify-lxd-vm-boundary.sh` is a disposable hardware smoke
 test. It downloads an official Ubuntu 26.04 image, boots one 2-vCPU full VM on
@@ -142,7 +145,10 @@ subnet, DNS egress, and the LXD guest agent, records the exact base-image
 fingerprint, then removes only its marker-owned smoke VM. Passing this test does
 not turn that mutable official image alias into the signed Qorpera guest image.
 
-`npm run pack:lxd-runner-guest` builds the locked guest payload.
+`npm run pack:lxd-runner-guest -- --signed-runner-image <artifact-directory>`
+builds the locked guest payload and embeds the previously verified private OCI
+archive. The guest preloads the immutable image into the rootless runner store;
+runtime uses `--pull=never` and does not retain registry credentials.
 `deploy/first-node/build-lxd-runner-image-candidate.sh` installs it into a
 temporary full VM and publishes a local immutable `unsigned-candidate` image.
 `deploy/first-node/verify-lxd-runner-image-candidate.sh` clean-boots that exact

@@ -1,11 +1,12 @@
 import { createHash, createPrivateKey, createPublicKey, type KeyObject, sign, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-export const LXD_IMAGE_PROVENANCE_SCHEMA = "qorpera.lxd-runner-image-provenance/v1";
-export const LXD_IMAGE_PROVENANCE_ENVELOPE_SCHEMA = "qorpera.lxd-runner-image-provenance-envelope/v1";
+export const LXD_IMAGE_PROVENANCE_SCHEMA = "qorpera.lxd-runner-image-provenance/v2";
+export const LXD_IMAGE_PROVENANCE_ENVELOPE_SCHEMA = "qorpera.lxd-runner-image-provenance-envelope/v2";
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const GIT_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const OCI_IMAGE_PATTERN = /^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/;
 
 export interface LxdImageProvenanceStatement {
 	schema: typeof LXD_IMAGE_PROVENANCE_SCHEMA;
@@ -14,6 +15,9 @@ export interface LxdImageProvenanceStatement {
 		fingerprint: string;
 		baseFingerprint: string;
 		guestPackageManifestSha256: string;
+		runnerImage: string;
+		runnerImageArchiveSha256: string;
+		runnerImageCosignBundleSha256: string;
 	};
 	source: {
 		repository: string;
@@ -46,6 +50,9 @@ export interface LxdImageProvenanceExpectation {
 	imageServer: string;
 	imageFingerprint: string;
 	guestPackageManifestSha256: string;
+	runnerImage: string;
+	runnerImageArchiveSha256: string;
+	runnerImageCosignBundleSha256: string;
 }
 
 export interface LxdImageProvenanceSigningKey {
@@ -122,6 +129,12 @@ function repository(value: unknown): string {
 	return encoded;
 }
 
+function runnerImage(value: unknown): string {
+	const encoded = text(value, "Provenance runner image");
+	if (!OCI_IMAGE_PATTERN.test(encoded)) throw new Error("Provenance runner image is invalid");
+	return encoded;
+}
+
 function testedAt(value: unknown): string {
 	const encoded = text(value, "Provenance acceptance time");
 	const parsed = new Date(encoded);
@@ -153,6 +166,9 @@ export function parseLxdImageProvenanceStatement(value: unknown): LxdImageProven
 		"fingerprint",
 		"baseFingerprint",
 		"guestPackageManifestSha256",
+		"runnerImage",
+		"runnerImageArchiveSha256",
+		"runnerImageCosignBundleSha256",
 	]);
 	const source = exactRecord(input.source, "LXD image provenance source", ["repository", "commit", "tree"]);
 	const acceptance = exactRecord(input.acceptance, "LXD image provenance acceptance", [
@@ -188,6 +204,12 @@ export function parseLxdImageProvenanceStatement(value: unknown): LxdImageProven
 			guestPackageManifestSha256: sha256(
 				image.guestPackageManifestSha256,
 				"Provenance guest-package manifest digest",
+			),
+			runnerImage: runnerImage(image.runnerImage),
+			runnerImageArchiveSha256: sha256(image.runnerImageArchiveSha256, "Provenance runner-image archive digest"),
+			runnerImageCosignBundleSha256: sha256(
+				image.runnerImageCosignBundleSha256,
+				"Provenance runner-image Cosign bundle digest",
 			),
 		},
 		source: {
@@ -300,7 +322,12 @@ export function verifyLxdImageProvenance(
 		envelope.statement.image.server !== imageServer(expectation.imageServer) ||
 		envelope.statement.image.fingerprint !== sha256(expectation.imageFingerprint, "Expected LXD image fingerprint") ||
 		envelope.statement.image.guestPackageManifestSha256 !==
-			sha256(expectation.guestPackageManifestSha256, "Expected guest-package manifest digest")
+			sha256(expectation.guestPackageManifestSha256, "Expected guest-package manifest digest") ||
+		envelope.statement.image.runnerImage !== runnerImage(expectation.runnerImage) ||
+		envelope.statement.image.runnerImageArchiveSha256 !==
+			sha256(expectation.runnerImageArchiveSha256, "Expected runner-image archive digest") ||
+		envelope.statement.image.runnerImageCosignBundleSha256 !==
+			sha256(expectation.runnerImageCosignBundleSha256, "Expected runner-image Cosign bundle digest")
 	) {
 		throw new Error("LXD image provenance does not authorize the configured image contract");
 	}

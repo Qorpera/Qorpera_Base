@@ -2,10 +2,10 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_ARTIFACT_SHA256="044cde0a0ac87b2bb170e416cb3e32f50f32a747bcbb34d30ee8eb2d3e020224"
-EXPECTED_PROVENANCE_TOOL_SHA256="7f89fd19f9030261a8564037088a3f168d4f468b31fc6b9abc02ca879e5b1406"
+EXPECTED_ARTIFACT_SHA256="23115f3c938973d38f19da92a7da34e9d3e3d24db4f33e03d49741f37d0912a5"
+EXPECTED_PROVENANCE_TOOL_SHA256="316006ebe6d263cb716ebf0fbed0917d170f47e777d25838b5720706f787dcec"
 EXPECTED_UNIT_SHA256="0066ceb7bed93550a0feb521ba0722a37c86834b2de72ed8a8eafde12ddec3d8"
-EXPECTED_ENV_EXAMPLE_SHA256="0ce94220dd03dc92b6ae5549039f3de4bfc074626e4bb59e5a08cb12624b60d2"
+EXPECTED_ENV_EXAMPLE_SHA256="7d6741faa1e61db80ccd8adb16d8242a6a9534f1045a3370b4f54a3cb5398bfb"
 STAGING_ROOT="/home/company41-admin/step2-lxd"
 ARTIFACT_SOURCE="${STAGING_ROOT}/qorpera-lxd-provider.mjs"
 PROVENANCE_TOOL_SOURCE="${STAGING_ROOT}/qorpera-lxd-image-provenance.mjs"
@@ -105,6 +105,9 @@ if [[ ! -e /etc/qorpera/lxd-provider.env ]]; then
 	preflight_fingerprint=$(printf 'a%.0s' {1..64})
 	preflight_base_fingerprint=$(printf 'b%.0s' {1..64})
 	preflight_manifest=$(printf 'c%.0s' {1..64})
+	preflight_runner_image="registry.invalid/qorpera@sha256:$(printf 'b%.0s' {1..64})"
+	preflight_runner_archive=$(printf 'f%.0s' {1..64})
+	preflight_runner_bundle=$(printf '0%.0s' {1..64})
 	preflight_private_key="${preflight_root}/private.pem"
 	preflight_public_key="${preflight_root}/public.pem"
 	preflight_statement="${preflight_root}/statement.json"
@@ -122,6 +125,9 @@ if [[ ! -e /etc/qorpera/lxd-provider.env ]]; then
 		--image-fingerprint "${preflight_fingerprint}" \
 		--base-image-fingerprint "${preflight_base_fingerprint}" \
 		--guest-package-manifest-sha256 "${preflight_manifest}" \
+		--runner-image "${preflight_runner_image}" \
+		--runner-image-archive-sha256 "${preflight_runner_archive}" \
+		--runner-image-cosign-bundle-sha256 "${preflight_runner_bundle}" \
 		--source-repository https://preflight.invalid/qorpera-base.git \
 		--source-commit "$(printf 'd%.0s' {1..40})" \
 		--source-tree clean \
@@ -142,7 +148,10 @@ if [[ ! -e /etc/qorpera/lxd-provider.env ]]; then
 		--public-key "${preflight_public_key}" \
 		--image-server local \
 		--image-fingerprint "${preflight_fingerprint}" \
-		--guest-package-manifest-sha256 "${preflight_manifest}"
+		--guest-package-manifest-sha256 "${preflight_manifest}" \
+		--runner-image "${preflight_runner_image}" \
+		--runner-image-archive-sha256 "${preflight_runner_archive}" \
+		--runner-image-cosign-bundle-sha256 "${preflight_runner_bundle}"
 	install -o root -g root -m 0600 /dev/null "${preflight_config}"
 	printf '%s\n' \
 		'QORPERA_RUNNER_PROVIDER_BACKEND=lxd' \
@@ -181,7 +190,9 @@ if [[ ! -e /etc/qorpera/lxd-provider.env ]]; then
 		'QORPERA_LXD_LOGIN_GATEWAY_HOST=127.0.0.1' \
 		"QORPERA_LXD_LOGIN_GATEWAY_PORT=${PREFLIGHT_LOGIN_PORT}" \
 		'QORPERA_LXD_LOGIN_BOOTSTRAP_SERVICE=qorpera-lxd-native-login-bootstrap.service' \
-		"QORPERA_EPHEMERAL_RUNNER_IMAGE=registry.invalid/qorpera@sha256:$(printf 'b%.0s' {1..64})" \
+		"QORPERA_EPHEMERAL_RUNNER_IMAGE=${preflight_runner_image}" \
+		"QORPERA_EPHEMERAL_RUNNER_IMAGE_ARCHIVE_SHA256=${preflight_runner_archive}" \
+		"QORPERA_EPHEMERAL_RUNNER_IMAGE_COSIGN_BUNDLE_SHA256=${preflight_runner_bundle}" \
 		'QORPERA_EPHEMERAL_RUNNER_PODMAN=/usr/bin/podman' \
 		'QORPERA_EPHEMERAL_RUNNER_ENTRYPOINT=/qorpera/bin/run-job' \
 		'QORPERA_EPHEMERAL_RUNNER_VERSION=preflight' \

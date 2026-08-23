@@ -2,13 +2,14 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_PACKAGE_MANIFEST_SHA256="e1f65bbcfd32ee325b4165a045cfdabfe051ea34ba435e9d39105c7e3a921050"
+EXPECTED_PACKAGE_MANIFEST_SHA256="0a6940c8c4d925093398bae1c67a34055e446111d260f92a176ec3fe16eb74df"
+EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:867361c0412e4396becc89c0ecd2a98319e0ef97@sha256:24977e5ab3905a6dfb3d8909419e5e5006b8395cdb562cd28ec89ed9dfa9987a"
 LXD_PROJECT="qorpera-runners"
 LXD_IMAGE_PROJECT="default"
 LXD_POOL="qorpera-vm"
 LXD_PROFILE="qorpera-job-v1"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v2-unsigned"
-ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v2"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v3-unsigned"
+ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v3"
 ACCEPTANCE_MARKER="qorpera.lxd-runner-image-acceptance/v1"
 STATE_LOG="/var/log/qorpera-lxd-runner-image-acceptance.txt"
 
@@ -33,7 +34,8 @@ if [[ ! ${image_fingerprint} =~ ^[0-9a-f]{64}$ ]]; then
 fi
 if [[ $(awk '$1 == "user.qorpera.schema:" { print $2 }' <<<"${image_info}") != qorpera.lxd-runner-image/v1 ]] ||
 	[[ $(awk '$1 == "user.qorpera.provenance:" { print $2 }' <<<"${image_info}") != unsigned-candidate ]] ||
-	[[ $(awk '$1 == "user.qorpera.guest_package_manifest_sha256:" { print $2 }' <<<"${image_info}") != "${EXPECTED_PACKAGE_MANIFEST_SHA256}" ]]; then
+	[[ $(awk '$1 == "user.qorpera.guest_package_manifest_sha256:" { print $2 }' <<<"${image_info}") != "${EXPECTED_PACKAGE_MANIFEST_SHA256}" ]] ||
+	[[ $(awk '$1 == "user.qorpera.runner_image:" { print $2 }' <<<"${image_info}") != "${EXPECTED_RUNNER_IMAGE}" ]]; then
 	echo "The local candidate image properties do not match the acceptance recipe." >&2
 	exit 1
 fi
@@ -108,7 +110,7 @@ if [[ ${secure_boot} != 01 ]] ||
 fi
 
 contract=$(lxc exec "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" -- cat /etc/qorpera/lxd-runner-image.json)
-CONTRACT="${contract}" EXPECTED_MANIFEST="${EXPECTED_PACKAGE_MANIFEST_SHA256}" python3 - <<'PY'
+CONTRACT="${contract}" EXPECTED_MANIFEST="${EXPECTED_PACKAGE_MANIFEST_SHA256}" EXPECTED_RUNNER_IMAGE="${EXPECTED_RUNNER_IMAGE}" python3 - <<'PY'
 import json
 import os
 
@@ -120,6 +122,7 @@ expected = {
     "guest_package_manifest_sha256": os.environ["EXPECTED_MANIFEST"],
     "codex_version": "0.147.0",
     "claude_code_version": "2.1.231",
+    "runner_image": os.environ["EXPECTED_RUNNER_IMAGE"],
     "native_execution_gid": 42041,
 }
 for key, value in expected.items():
@@ -129,11 +132,15 @@ if set(contract) != set(expected) | {"node_version", "podman_version"}:
     raise SystemExit("candidate image contract contains unexpected fields")
 PY
 
-lxc exec "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" -- bash -euo pipefail -c '
+lxc exec "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" -- \
+	env EXPECTED_RUNNER_IMAGE="${EXPECTED_RUNNER_IMAGE}" bash -euo pipefail -c '
 	[[ $(id -g qorpera-native-provider) == 42041 ]]
 	id -G qorpera-runner | tr " " "\n" | grep -Fxq 42041
 	[[ $(DISABLE_AUTOUPDATER=1 /usr/local/bin/codex --version) == *0.147.0* ]]
 	[[ $(DISABLE_AUTOUPDATER=1 /usr/local/bin/claude --version) == 2.1.231* ]]
+	runuser -u qorpera-runner -- env HOME=/var/lib/qorpera-runner XDG_RUNTIME_DIR=/var/lib/qorpera-runner/tmp \
+		/usr/bin/podman image exists "${EXPECTED_RUNNER_IMAGE}"
+	[[ ! -e /var/lib/qorpera-runner/.config/containers/auth.json ]]
 	[[ $(systemctl is-enabled qorpera-lxd-runner-bootstrap.service) == enabled ]]
 	[[ $(systemctl is-enabled qorpera-lxd-native-login-bootstrap.service) == disabled ]]
 	[[ $(systemctl is-enabled qorpera-ephemeral-runner.service) == disabled ]]
@@ -157,6 +164,7 @@ state_tmp=$(mktemp)
 	echo "image_alias=${IMAGE_ALIAS}"
 	echo "image_fingerprint=${image_fingerprint}"
 	echo "guest_package_manifest_sha256=${EXPECTED_PACKAGE_MANIFEST_SHA256}"
+	echo "runner_image=${EXPECTED_RUNNER_IMAGE}"
 	echo "instance_type=${instance_type}"
 	echo "virtualization=kvm"
 	echo "boot_mode=uefi-secureboot"

@@ -40,6 +40,9 @@ function createStatement(values: Map<string, string>): void {
 		"--image-fingerprint",
 		"--base-image-fingerprint",
 		"--guest-package-manifest-sha256",
+		"--runner-image",
+		"--runner-image-archive-sha256",
+		"--runner-image-cosign-bundle-sha256",
 		"--source-repository",
 		"--source-commit",
 		"--source-tree",
@@ -55,6 +58,9 @@ function createStatement(values: Map<string, string>): void {
 			fingerprint: required(values, "--image-fingerprint"),
 			baseFingerprint: required(values, "--base-image-fingerprint"),
 			guestPackageManifestSha256: required(values, "--guest-package-manifest-sha256"),
+			runnerImage: required(values, "--runner-image"),
+			runnerImageArchiveSha256: required(values, "--runner-image-archive-sha256"),
+			runnerImageCosignBundleSha256: required(values, "--runner-image-cosign-bundle-sha256"),
 		},
 		source: {
 			repository: required(values, "--source-repository"),
@@ -109,6 +115,9 @@ function verifyEnvelope(values: Map<string, string>): void {
 		"--image-server",
 		"--image-fingerprint",
 		"--guest-package-manifest-sha256",
+		"--runner-image",
+		"--runner-image-archive-sha256",
+		"--runner-image-cosign-bundle-sha256",
 	] as const;
 	exact(values, names);
 	const statement = verifyLxdImageProvenanceFiles(
@@ -118,6 +127,9 @@ function verifyEnvelope(values: Map<string, string>): void {
 			imageServer: required(values, "--image-server"),
 			imageFingerprint: required(values, "--image-fingerprint"),
 			guestPackageManifestSha256: required(values, "--guest-package-manifest-sha256"),
+			runnerImage: required(values, "--runner-image"),
+			runnerImageArchiveSha256: required(values, "--runner-image-archive-sha256"),
+			runnerImageCosignBundleSha256: required(values, "--runner-image-cosign-bundle-sha256"),
 		},
 	);
 	console.log("LXD_IMAGE_PROVENANCE_VERIFIED");

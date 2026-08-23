@@ -1,21 +1,39 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-function outputDirectory(args) {
-	if (args.length === 0) return resolve(repositoryRoot, ".artifacts/lxd-runner-guest");
-	if (args.length !== 2 || args[0] !== "--out" || !args[1]) {
-		throw new Error("Usage: node scripts/package-lxd-runner-guest.mjs [--out <directory>]");
+function options(args) {
+	let outputRoot = resolve(repositoryRoot, ".artifacts/lxd-runner-guest");
+	let signedImageRoot = process.env.QORPERA_SIGNED_RUNNER_IMAGE_ROOT
+		? resolve(process.env.QORPERA_SIGNED_RUNNER_IMAGE_ROOT)
+		: undefined;
+	let contractOnly = false;
+	for (let index = 0; index < args.length; index += 1) {
+		const argument = args[index];
+		if (argument === "--out" && args[index + 1]) {
+			outputRoot = resolve(args[++index]);
+		} else if (argument === "--signed-runner-image" && args[index + 1]) {
+			signedImageRoot = resolve(args[++index]);
+		} else if (argument === "--contract-only") {
+			contractOnly = true;
+		} else {
+			throw new Error(
+				"Usage: node scripts/package-lxd-runner-guest.mjs [--out <directory>] [--signed-runner-image <directory> | --contract-only]",
+			);
+		}
 	}
-	return resolve(args[1]);
+	if (contractOnly === Boolean(signedImageRoot)) {
+		throw new Error("Choose exactly one signed runner image directory or --contract-only");
+	}
+	return { outputRoot, signedImageRoot };
 }
 
-const outputRoot = outputDirectory(process.argv.slice(2));
+const { outputRoot, signedImageRoot } = options(process.argv.slice(2));
 const temporaryRoot = await mkdtemp(join(tmpdir(), "qorpera-lxd-runner-package-"));
 try {
 	const runnerRoot = join(temporaryRoot, "runner");
@@ -28,6 +46,7 @@ try {
 
 	await rm(outputRoot, { recursive: true, force: true });
 	await mkdir(join(outputRoot, "harness"), { recursive: true });
+	await mkdir(join(outputRoot, "runner-image"), { recursive: true });
 	const sources = new Map([
 		["qorpera-ephemeral-runner.mjs", join(runnerRoot, "qorpera-ephemeral-runner.mjs")],
 		["qorpera-native-provider-host.mjs", join(runnerRoot, "qorpera-native-provider-host.mjs")],
@@ -58,6 +77,10 @@ try {
 			"install-image-contract.sh",
 			resolve(repositoryRoot, "deploy/lxd-runner-guest/install-image-contract.sh"),
 		],
+		[
+			"runner-image/contract.json",
+			resolve(repositoryRoot, "deploy/lxd-runner-guest/runner-image-contract.json"),
+		],
 		["harness/package.json", resolve(repositoryRoot, "deploy/lxd-runner-guest/harness/package.json")],
 		[
 			"harness/package-lock.json",
@@ -66,6 +89,31 @@ try {
 	]);
 
 	for (const [file, source] of sources) await copyFile(source, join(outputRoot, file));
+	const runnerImageContract = JSON.parse(await readFile(sources.get("runner-image/contract.json"), "utf-8"));
+	if (
+		runnerImageContract.schema !== "qorpera.ephemeral-runner-image-contract/v1" ||
+		!runnerImageContract.archive ||
+		!runnerImageContract.cosign_bundle
+	) {
+		throw new Error("Runner image contract is invalid");
+	}
+	const externalArtifacts = [runnerImageContract.archive, runnerImageContract.cosign_bundle];
+	if (signedImageRoot) {
+		for (const artifact of externalArtifacts) {
+			const source = join(signedImageRoot, artifact.file.split("/").at(-1));
+			const metadata = await lstat(source);
+			const content = await readFile(source);
+			if (
+				!metadata.isFile() ||
+				metadata.isSymbolicLink() ||
+				content.byteLength !== artifact.bytes ||
+				createHash("sha256").update(content).digest("hex") !== artifact.sha256
+			) {
+				throw new Error(`Signed runner image artifact does not match its contract: ${artifact.file}`);
+			}
+			await copyFile(source, join(outputRoot, artifact.file));
+		}
+	}
 	await chmod(join(outputRoot, "run-job"), 0o555);
 	await chmod(join(outputRoot, "install-image-contract.sh"), 0o555);
 
@@ -78,6 +126,8 @@ try {
 			sha256: createHash("sha256").update(content).digest("hex"),
 		});
 	}
+	artifacts.push(...externalArtifacts.map(({ file, bytes, sha256 }) => ({ file, bytes, sha256 })));
+	artifacts.sort((left, right) => left.file.localeCompare(right.file, "en"));
 	await writeFile(
 		join(outputRoot, "manifest.json"),
 		`${JSON.stringify(
@@ -86,6 +136,7 @@ try {
 				platform: "linux-x64",
 				runtime: { node: ">=22.19.0", podman: ">=5.0.0", cgroups: "v2" },
 				nativeHarnesses: { codex: "0.147.0", claudeCode: "2.1.231" },
+				runnerImage: runnerImageContract,
 				artifacts,
 			},
 			null,

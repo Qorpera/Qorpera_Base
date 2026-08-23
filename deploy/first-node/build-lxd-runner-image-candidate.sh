@@ -3,13 +3,14 @@ set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
 EXPECTED_BASE_FINGERPRINT="7ef31bed9834094a06517d63b93434588049efcbe2ab5d67419a6167988b7d4f"
-EXPECTED_PACKAGE_MANIFEST_SHA256="e1f65bbcfd32ee325b4165a045cfdabfe051ea34ba435e9d39105c7e3a921050"
+EXPECTED_PACKAGE_MANIFEST_SHA256="0a6940c8c4d925093398bae1c67a34055e446111d260f92a176ec3fe16eb74df"
+EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:867361c0412e4396becc89c0ecd2a98319e0ef97@sha256:24977e5ab3905a6dfb3d8909419e5e5006b8395cdb562cd28ec89ed9dfa9987a"
 STAGING_ROOT="/home/company41-admin/step2-lxd/lxd-runner-guest"
 LXD_POOL="qorpera-vm"
 LXD_NETWORK="qorpera0"
 LXD_BUILDER_PROJECT="default"
-BUILDER_INSTANCE="qorpera-runner-image-build-v2"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v2-unsigned"
+BUILDER_INSTANCE="qorpera-runner-image-build-v3"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v3-unsigned"
 STATE_LOG="/var/log/qorpera-lxd-runner-image-candidate.txt"
 
 if [[ ${EUID} -ne 0 ]]; then
@@ -28,6 +29,31 @@ if [[ $(sha256sum "${STAGING_ROOT}/manifest.json" | awk '{ print $1 }') != "${EX
 	echo "The staged guest package manifest checksum does not match the candidate recipe." >&2
 	exit 1
 fi
+PACKAGE_ROOT=${STAGING_ROOT} EXPECTED_RUNNER_IMAGE=${EXPECTED_RUNNER_IMAGE} node <<'NODE'
+const { createHash } = require("node:crypto");
+const { lstatSync, readFileSync, realpathSync } = require("node:fs");
+const { join, resolve } = require("node:path");
+
+const root = realpathSync(process.env.PACKAGE_ROOT);
+const manifest = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8"));
+if (
+  manifest.schema !== "qorpera.lxd-runner-guest-package/v1" ||
+  manifest.runnerImage?.image !== process.env.EXPECTED_RUNNER_IMAGE ||
+  !Array.isArray(manifest.artifacts)
+) {
+  throw new Error("Staged guest package contract is invalid");
+}
+for (const artifact of manifest.artifacts) {
+  const path = resolve(root, artifact.file);
+  if (!path.startsWith(`${root}/`)) throw new Error("Guest package artifact escapes its root");
+  const metadata = lstatSync(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size !== artifact.bytes) {
+    throw new Error(`Guest package artifact metadata is invalid: ${artifact.file}`);
+  }
+  const digest = createHash("sha256").update(readFileSync(path)).digest("hex");
+  if (digest !== artifact.sha256) throw new Error(`Guest package artifact checksum mismatch: ${artifact.file}`);
+}
+NODE
 if lxc image info "${IMAGE_ALIAS}" --project "${LXD_BUILDER_PROJECT}" >/dev/null 2>&1; then
 	echo "Refusing to replace existing local image alias ${IMAGE_ALIAS}." >&2
 	exit 1
@@ -107,6 +133,7 @@ lxc publish "${BUILDER_INSTANCE}" \
 	release=26.04 \
 	user.qorpera.schema=qorpera.lxd-runner-image/v1 \
 	user.qorpera.guest_package_manifest_sha256="${EXPECTED_PACKAGE_MANIFEST_SHA256}" \
+	user.qorpera.runner_image="${EXPECTED_RUNNER_IMAGE}" \
 	user.qorpera.provenance=unsigned-candidate
 
 fingerprint=$(lxc image info "${IMAGE_ALIAS}" --project "${LXD_BUILDER_PROJECT}" | awk '/^Fingerprint:/ { print $2 }')
@@ -122,6 +149,7 @@ state_tmp=$(mktemp)
 	echo "hostname=$(hostname)"
 	echo "base_fingerprint=${EXPECTED_BASE_FINGERPRINT}"
 	echo "guest_package_manifest_sha256=${EXPECTED_PACKAGE_MANIFEST_SHA256}"
+	echo "runner_image=${EXPECTED_RUNNER_IMAGE}"
 	echo "image_alias=${IMAGE_ALIAS}"
 	echo "image_project=${LXD_BUILDER_PROJECT}"
 	echo "image_fingerprint=${fingerprint}"

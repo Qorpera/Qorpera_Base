@@ -35,6 +35,8 @@ strict Ed25519 envelope. The signed statement binds:
 
 - the exact LXD image server, image fingerprint, base fingerprint, and locked
   guest-package manifest;
+- the immutable nested OCI runner image plus the exact private archive and
+  keyless Cosign bundle digests;
 - the reviewed HTTPS repository, clean source commit, and clean-tree claim;
 - the SHA-256 digest of the retained clean-boot evidence; and
 - KVM, UEFI Secure Boot, absent credentials, absent identity volume, and
@@ -60,6 +62,9 @@ node .artifacts/lxd-provider/qorpera-lxd-image-provenance.mjs create \
   --image-fingerprint REPLACE_IMAGE_FINGERPRINT \
   --base-image-fingerprint REPLACE_BASE_FINGERPRINT \
   --guest-package-manifest-sha256 REPLACE_GUEST_MANIFEST_SHA256 \
+  --runner-image REPLACE_IMAGE_REFERENCE@sha256:REPLACE_IMAGE_DIGEST \
+  --runner-image-archive-sha256 REPLACE_OCI_ARCHIVE_SHA256 \
+  --runner-image-cosign-bundle-sha256 REPLACE_COSIGN_BUNDLE_SHA256 \
   --source-repository https://github.com/Qorpera/Qorpera_Base.git \
   --source-commit "$(git rev-parse HEAD)" \
   --source-tree clean \
@@ -87,7 +92,10 @@ node .artifacts/lxd-provider/qorpera-lxd-image-provenance.mjs verify \
   --public-key lxd-image-provenance.pub \
   --image-server local \
   --image-fingerprint REPLACE_IMAGE_FINGERPRINT \
-  --guest-package-manifest-sha256 REPLACE_GUEST_MANIFEST_SHA256
+  --guest-package-manifest-sha256 REPLACE_GUEST_MANIFEST_SHA256 \
+  --runner-image REPLACE_IMAGE_REFERENCE@sha256:REPLACE_IMAGE_DIGEST \
+  --runner-image-archive-sha256 REPLACE_OCI_ARCHIVE_SHA256 \
+  --runner-image-cosign-bundle-sha256 REPLACE_COSIGN_BUNDLE_SHA256
 ```
 
 Install only the public material as root, readable by the provider account but

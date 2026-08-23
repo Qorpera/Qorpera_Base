@@ -9,6 +9,9 @@ import {
 
 const fingerprint = "a".repeat(64);
 const manifest = "b".repeat(64);
+const runnerImage = `localhost/qorpera/sandbox-probe:test@sha256:${"1".repeat(64)}`;
+const runnerImageArchive = "2".repeat(64);
+const runnerImageBundle = "3".repeat(64);
 
 function statement(): LxdImageProvenanceStatement {
 	return {
@@ -18,6 +21,9 @@ function statement(): LxdImageProvenanceStatement {
 			fingerprint,
 			baseFingerprint: "c".repeat(64),
 			guestPackageManifestSha256: manifest,
+			runnerImage,
+			runnerImageArchiveSha256: runnerImageArchive,
+			runnerImageCosignBundleSha256: runnerImageBundle,
 		},
 		source: {
 			repository: "https://github.com/Qorpera/Qorpera_Base.git",
@@ -47,6 +53,9 @@ describe("LXD image provenance", () => {
 				imageServer: "local",
 				imageFingerprint: fingerprint,
 				guestPackageManifestSha256: manifest,
+				runnerImage,
+				runnerImageArchiveSha256: runnerImageArchive,
+				runnerImageCosignBundleSha256: runnerImageBundle,
 			}),
 		).toEqual(statement());
 	});
@@ -67,6 +76,9 @@ describe("LXD image provenance", () => {
 				imageServer: "local",
 				imageFingerprint: fingerprint,
 				guestPackageManifestSha256: manifest,
+				runnerImage,
+				runnerImageArchiveSha256: runnerImageArchive,
+				runnerImageCosignBundleSha256: runnerImageBundle,
 			}),
 		).toEqual(statement());
 	});
@@ -79,6 +91,9 @@ describe("LXD image provenance", () => {
 			imageServer: "local",
 			imageFingerprint: fingerprint,
 			guestPackageManifestSha256: manifest,
+			runnerImage,
+			runnerImageArchiveSha256: runnerImageArchive,
+			runnerImageCosignBundleSha256: runnerImageBundle,
 		};
 
 		expect(() => verifyLxdImageProvenance(envelope, other.publicKey, expected)).toThrow("configured trust root");
@@ -101,6 +116,12 @@ describe("LXD image provenance", () => {
 				guestPackageManifestSha256: "0".repeat(64),
 			}),
 		).toThrow("does not authorize");
+		expect(() =>
+			verifyLxdImageProvenance(envelope, keyPair.publicKey, {
+				...expected,
+				runnerImageArchiveSha256: "4".repeat(64),
+			}),
+		).toThrow("does not authorize");
 	});
 
 	it("rejects extra fields and anything weaker than the accepted clean full-VM recipe", () => {
@@ -110,6 +131,9 @@ describe("LXD image provenance", () => {
 			imageServer: "local",
 			imageFingerprint: fingerprint,
 			guestPackageManifestSha256: manifest,
+			runnerImage,
+			runnerImageArchiveSha256: runnerImageArchive,
+			runnerImageCosignBundleSha256: runnerImageBundle,
 		};
 
 		expect(() =>

@@ -56,6 +56,29 @@ const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 if (manifest.schema !== "qorpera.lxd-runner-guest-package/v1" || !Array.isArray(manifest.artifacts)) {
   throw new Error("Guest package manifest is invalid");
 }
+const runnerImage = manifest.runnerImage;
+if (
+  !runnerImage ||
+  runnerImage.schema !== "qorpera.ephemeral-runner-image-contract/v1" ||
+  !/^[0-9a-f]{40}$/.test(runnerImage.source_commit) ||
+  !/^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/.test(runnerImage.base_image) ||
+  !/^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/.test(runnerImage.image) ||
+  !runnerImage.archive ||
+  !runnerImage.cosign_bundle ||
+  runnerImage.archive.file !== "runner-image/qorpera-sandbox-probe.oci.tar" ||
+  runnerImage.cosign_bundle.file !== "runner-image/qorpera-sandbox-probe.cosign-bundle.json" ||
+  !Number.isSafeInteger(runnerImage.archive.bytes) ||
+  !Number.isSafeInteger(runnerImage.cosign_bundle.bytes) ||
+  !/^[0-9a-f]{64}$/.test(runnerImage.archive.sha256) ||
+  !/^[0-9a-f]{64}$/.test(runnerImage.cosign_bundle.sha256) ||
+  runnerImage.cosign_bundle.workflow_sha !== runnerImage.source_commit ||
+  runnerImage.cosign_bundle.workflow_trigger !== "workflow_dispatch" ||
+  runnerImage.cosign_bundle.certificate_oidc_issuer !== "https://token.actions.githubusercontent.com" ||
+  runnerImage.cosign_bundle.certificate_identity !==
+    `https://github.com/Qorpera/Qorpera_Base/.github/workflows/ephemeral-runner-linux.yml@refs/heads/codex/step2-first-node`
+) {
+  throw new Error("Runner image contract is invalid");
+}
 const expected = new Set([
   "harness/package-lock.json",
   "harness/package.json",
@@ -68,6 +91,9 @@ const expected = new Set([
   "qorpera-lxd-native-login-bootstrap.service",
   "qorpera-native-provider-host.mjs",
   "qorpera-native-provider-host.service",
+  "runner-image/contract.json",
+  "runner-image/qorpera-sandbox-probe.cosign-bundle.json",
+  "runner-image/qorpera-sandbox-probe.oci.tar",
   "qorpera-sandbox-probe.mjs",
   "run-job",
 ]);
@@ -138,7 +164,8 @@ fi
 install -d -o root -g root -m 0755 /opt/qorpera-runner /opt/qorpera-harnesses /etc/qorpera
 install -d -o root -g root -m 0700 /var/lib/qorpera-bootstrap /var/lib/qorpera-bootstrap/credentials
 install -d -o root -g root -m 0700 /var/lib/qorpera /var/lib/qorpera/identity
-install -d -o "${RUNNER_USER}" -g "${RUNNER_USER}" -m 0700 /var/lib/qorpera-runner /var/lib/qorpera-runner/tmp
+install -d -o "${RUNNER_USER}" -g "${RUNNER_USER}" -m 0700 \
+	/var/lib/qorpera-runner /var/lib/qorpera-runner/tmp /run/qorpera-runner
 install -d -o "${NATIVE_USER}" -g "${NATIVE_EXECUTION_GROUP}" -m 0700 \
 	/var/lib/qorpera-native-provider /var/lib/qorpera-native-provider/tmp
 
@@ -171,6 +198,33 @@ if [[ ${codex_version} != *"0.147.0"* || ${claude_version} != 2.1.231* ]]; then
 	exit 1
 fi
 
+runner_image=$(PACKAGE_ROOT=${PACKAGE_ROOT} node -e '
+const { readFileSync } = require("node:fs");
+const { join } = require("node:path");
+const contract = JSON.parse(readFileSync(join(process.env.PACKAGE_ROOT, "runner-image/contract.json"), "utf8"));
+process.stdout.write(contract.image);
+')
+runuser -u "${RUNNER_USER}" -- env \
+	HOME=/var/lib/qorpera-runner \
+	XDG_RUNTIME_DIR=/run/qorpera-runner \
+	/usr/bin/podman load --input "${PACKAGE_ROOT}/runner-image/qorpera-sandbox-probe.oci.tar"
+if ! runuser -u "${RUNNER_USER}" -- env \
+	HOME=/var/lib/qorpera-runner \
+	XDG_RUNTIME_DIR=/run/qorpera-runner \
+	/usr/bin/podman image exists "${runner_image}"; then
+	echo "The signed runner image archive did not load under its immutable digest." >&2
+	exit 1
+fi
+if [[ -e /var/lib/qorpera-runner/.config/containers/auth.json ]]; then
+	echo "The published guest image would contain a registry credential." >&2
+	exit 1
+fi
+install -o root -g root -m 0644 \
+	"${PACKAGE_ROOT}/runner-image/contract.json" /etc/qorpera/ephemeral-runner-image.json
+install -o root -g root -m 0644 \
+	"${PACKAGE_ROOT}/runner-image/qorpera-sandbox-probe.cosign-bundle.json" \
+	/etc/qorpera/ephemeral-runner-image.cosign-bundle.json
+
 systemd-analyze verify \
 	/etc/systemd/system/qorpera-ephemeral-runner.service \
 	/etc/systemd/system/qorpera-native-provider-host.service \
@@ -195,6 +249,7 @@ printf '%s\n' \
 	"  \"podman_version\": \"${podman_version}\"," \
 	'  "codex_version": "0.147.0",' \
 	'  "claude_code_version": "2.1.231",' \
+	"  \"runner_image\": \"${runner_image}\"," \
 	"  \"native_execution_gid\": ${NATIVE_EXECUTION_GID}" \
 	'}' > /etc/qorpera/lxd-runner-image.json
 chmod 0644 /etc/qorpera/lxd-runner-image.json

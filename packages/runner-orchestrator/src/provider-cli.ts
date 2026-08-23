@@ -179,6 +179,9 @@ function runtime(): ProviderRuntime {
 				imageServer: config.imageServer,
 				imageFingerprint: config.imageFingerprint,
 				guestPackageManifestSha256: required("QORPERA_LXD_GUEST_PACKAGE_MANIFEST_SHA256"),
+				runnerImage: config.runnerImage,
+				runnerImageArchiveSha256: required("QORPERA_EPHEMERAL_RUNNER_IMAGE_ARCHIVE_SHA256"),
+				runnerImageCosignBundleSha256: required("QORPERA_EPHEMERAL_RUNNER_IMAGE_COSIGN_BUNDLE_SHA256"),
 			},
 		);
 		const client = new LxdUnixClient(

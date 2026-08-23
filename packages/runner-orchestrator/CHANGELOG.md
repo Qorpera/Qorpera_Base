@@ -13,6 +13,7 @@
 - Added a TLS-only, source-fenced provider network boundary for the dedicated management VM.
 - Added a checksum-verified Runner Orchestrator package and fail-closed management-VM systemd installer.
 - Added a signed-image-gated, static-address management VM provisioner with no LXD authority.
+- Added nested OCI runner-image provenance binding for the immutable image reference, private archive, and retained keyless Cosign bundle.
 
 ### Changed
 

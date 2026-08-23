@@ -14,7 +14,7 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 	try {
 		const packaged = spawnSync(
 			process.execPath,
-			["scripts/package-lxd-runner-guest.mjs", "--out", outputRoot],
+			["scripts/package-lxd-runner-guest.mjs", "--out", outputRoot, "--contract-only"],
 			{ cwd: repositoryRoot, encoding: "utf-8" },
 		);
 		assert.equal(packaged.status, 0, packaged.stderr);
@@ -22,6 +22,8 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		const manifest = JSON.parse(manifestEncoded);
 		assert.equal(manifest.schema, "qorpera.lxd-runner-guest-package/v1");
 		assert.deepEqual(manifest.nativeHarnesses, { codex: "0.147.0", claudeCode: "2.1.231" });
+		assert.equal(manifest.runnerImage.schema, "qorpera.ephemeral-runner-image-contract/v1");
+		assert.match(manifest.runnerImage.image, /@sha256:[0-9a-f]{64}$/);
 		assert.deepEqual(
 			manifest.artifacts.map((artifact) => artifact.file),
 			[
@@ -38,9 +40,15 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 				"qorpera-native-provider-host.service",
 				"qorpera-sandbox-probe.mjs",
 				"run-job",
+				"runner-image/contract.json",
+				"runner-image/qorpera-sandbox-probe.cosign-bundle.json",
+				"runner-image/qorpera-sandbox-probe.oci.tar",
 			],
 		);
 		for (const artifact of manifest.artifacts) {
+			if (artifact.file === manifest.runnerImage.archive.file || artifact.file === manifest.runnerImage.cosign_bundle.file) {
+				continue;
+			}
 			const content = await readFile(join(outputRoot, artifact.file));
 			assert.equal(content.byteLength, artifact.bytes);
 			assert.equal(createHash("sha256").update(content).digest("hex"), artifact.sha256);

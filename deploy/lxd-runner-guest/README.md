@@ -2,13 +2,31 @@
 
 This directory defines the Step 2 job-VM payload. It is a full Ubuntu 26.04 VM contract, not a system-container image and not a long-lived Company Computer.
 
-`npm run pack:lxd-runner-guest` emits a checksum manifest containing:
+Package the deployable payload by supplying the directory containing the
+workflow-produced private OCI archive and Cosign bundle:
+
+```sh
+npm run pack:lxd-runner-guest -- \
+  --signed-runner-image /absolute/path/to/private-signed-runner-artifact
+```
+
+`--contract-only` is reserved for the package-contract test: it emits the
+manifest without the two large external files and is not deployable. A real
+package emits a checksum manifest containing:
 
 - the assignment-scoped runner, native-provider sidecar, sandbox probe, and root bootstrap bundles;
 - three system units with separate `qorpera-runner` and `qorpera-native-provider` identities;
 - a fixed shared execution group (`qorpera-native-execution`, GID 42041) used only for the disposable job workspace;
 - locked official Codex CLI 0.147.0 and Claude Code 2.1.231 package graphs; and
-- the fail-closed image-contract installer.
+- the fail-closed image-contract installer; and
+- the exact keyless-signed OCI runner archive, its retained Cosign bundle, and
+  a contract binding their hashes to the originating workflow identity and
+  commit.
+
+The archive is loaded into the `qorpera-runner` rootless Podman store while the
+guest image is built. No registry credential is retained. Job execution uses
+the immutable `name@sha256` reference with Podman's `--pull=never`, so a job VM
+cannot substitute or fetch a different runner image at runtime.
 
 The root bootstrap accepts credentials only after boot through the authenticated local LXD agent file API. The provider writes root-owned mode-0600 bootstrap inputs only after the VM is running; no secret is placed in cloud-init or persisted in LXD instance configuration. The bootstrap verifies that `/var/lib/qorpera/identity` is a distinct custom-volume mount bound to the requested Compute Identity, creates that identity's capsule master key there, installs the runner configuration under the runner account, then starts the native sidecar before the single-lane runner. The native sidecar receives the Supabase service key, bridge capability, and capsule key through systemd credentials. The runner receives only its activation, assignment, and loopback bridge capabilities.
 

@@ -6,6 +6,9 @@ EXPECTED_ARTIFACT_SHA256="ec88e276629b5c789b6d583719473fc96ee5ac37aa440e04c9ae5c
 EXPECTED_INSTALLER_SHA256="98e35bc88c34a69adc3f2b186c79f5329ec81cf5f5ce2e41406d415401316f36"
 EXPECTED_UNIT_SHA256="12128aaf4be23d759e940407bf32c99b145aa8e927fe31f730a15ce7c447f4df"
 EXPECTED_ENV_EXAMPLE_SHA256="d931b488ad444978b62b0c91797418d553641d235015889646bde7d1b6fc8850"
+EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:867361c0412e4396becc89c0ecd2a98319e0ef97@sha256:24977e5ab3905a6dfb3d8909419e5e5006b8395cdb562cd28ec89ed9dfa9987a"
+EXPECTED_RUNNER_IMAGE_ARCHIVE_SHA256="cf4a9c9c4249af6e017a8947414d7354b4f243067053f6e936c4da06a0231090"
+EXPECTED_RUNNER_IMAGE_COSIGN_BUNDLE_SHA256="dcf69fa0e671d84e95617ce3e7c61ce08bf4381b34ee8e498de718befdd422e2"
 STAGING_ROOT="/home/company41-admin/step2-lxd"
 ARTIFACT_SOURCE="${STAGING_ROOT}/qorpera-runner-orchestrator.mjs"
 INSTALLER_SOURCE="${STAGING_ROOT}/install-runner-orchestrator-guest.sh"
@@ -68,7 +71,10 @@ fi
 	--public-key "${PROVENANCE_PUBLIC_KEY}" \
 	--image-server local \
 	--image-fingerprint "${image_fingerprint}" \
-	--guest-package-manifest-sha256 "${guest_manifest_sha256}"
+	--guest-package-manifest-sha256 "${guest_manifest_sha256}" \
+	--runner-image "${EXPECTED_RUNNER_IMAGE}" \
+	--runner-image-archive-sha256 "${EXPECTED_RUNNER_IMAGE_ARCHIVE_SHA256}" \
+	--runner-image-cosign-bundle-sha256 "${EXPECTED_RUNNER_IMAGE_COSIGN_BUNDLE_SHA256}"
 
 if ! lxc profile show "${LXD_PROFILE}" --project "${LXD_PROJECT}" >/dev/null 2>&1; then
 	echo "The dedicated management VM profile is missing; rerun the controlled host bootstrap." >&2
@@ -178,6 +184,9 @@ state_tmp=$(mktemp)
 	echo "profile=${LXD_PROFILE}"
 	echo "image_fingerprint=${image_fingerprint}"
 	echo "guest_package_manifest_sha256=${guest_manifest_sha256}"
+	echo "runner_image=${EXPECTED_RUNNER_IMAGE}"
+	echo "runner_image_archive_sha256=${EXPECTED_RUNNER_IMAGE_ARCHIVE_SHA256}"
+	echo "runner_image_cosign_bundle_sha256=${EXPECTED_RUNNER_IMAGE_COSIGN_BUNDLE_SHA256}"
 	echo "ipv4_address=${VM_ADDRESS}"
 	echo "service=installed-disabled"
 	echo "lxd_authority=absent"
