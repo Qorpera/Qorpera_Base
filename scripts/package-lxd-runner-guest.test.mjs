@@ -22,7 +22,24 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		const manifest = JSON.parse(manifestEncoded);
 		assert.equal(manifest.schema, "qorpera.lxd-runner-guest-package/v1");
 		assert.deepEqual(manifest.nativeHarnesses, { codex: "0.147.0", claudeCode: "2.1.231" });
-		assert.equal(manifest.artifacts.length, 11);
+		assert.deepEqual(
+			manifest.artifacts.map((artifact) => artifact.file),
+			[
+				"harness/package-lock.json",
+				"harness/package.json",
+				"install-image-contract.sh",
+				"qorpera-ephemeral-runner.mjs",
+				"qorpera-ephemeral-runner.service",
+				"qorpera-lxd-native-login-bootstrap.mjs",
+				"qorpera-lxd-native-login-bootstrap.service",
+				"qorpera-lxd-runner-bootstrap.mjs",
+				"qorpera-lxd-runner-bootstrap.service",
+				"qorpera-native-provider-host.mjs",
+				"qorpera-native-provider-host.service",
+				"qorpera-sandbox-probe.mjs",
+				"run-job",
+			],
+		);
 		for (const artifact of manifest.artifacts) {
 			const content = await readFile(join(outputRoot, artifact.file));
 			assert.equal(content.byteLength, artifact.bytes);

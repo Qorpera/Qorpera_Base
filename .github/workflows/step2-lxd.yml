@@ -23,6 +23,8 @@ on:
       - 'scripts/package-lxd-*.test.mjs'
       - 'supabase/functions/company-file-verifier/object-loader.ts'
       - 'supabase/functions/company-file-verifier/object-loader.test.ts'
+      - 'supabase/functions/native-provider-login/**'
+      - 'supabase/functions/runner-orchestrator/**'
       - 'package-lock.json'
       - 'package.json'
 
@@ -62,6 +64,7 @@ jobs:
           node ../../node_modules/vitest/dist/cli.js --run
           test/lxd-client.test.ts
           test/lxd-image-provenance.test.ts
+          test/lxd-login-gateway.test.ts
           test/lxd-provider.test.ts
 
       - name: Test runner guest contracts
@@ -84,6 +87,12 @@ jobs:
 
       - name: Test acceptance storage selection
         run: node --test supabase/functions/company-file-verifier/object-loader.test.ts
+
+      - name: Test hosted orchestration boundaries
+        run: >-
+          node --test
+          supabase/functions/native-provider-login/native-provider-login.test.ts
+          supabase/functions/runner-orchestrator/runner-orchestrator.test.ts
 
       - name: Validate cloud and import boundaries
         run: |
