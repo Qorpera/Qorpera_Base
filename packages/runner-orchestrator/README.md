@@ -80,6 +80,13 @@ Required service configuration:
 - `QORPERA_RUNNER_PROVIDER_ADAPTER`
 - `QORPERA_RUNNER_PROVIDER_TOKEN`
 
+`npm run pack:runner-orchestrator` emits the standalone service as a
+checksum-manifested single-file artifact. The first-node installer places it in
+the dedicated management VM under a hardened systemd unit and leaves it
+disabled until the root-owned environment file and provider CA certificate are
+installed. The management VM connects to the host provider over HTTPS; the
+provider independently source-fences the VM's anti-spoofed bridge address.
+
 The process provider additionally requires:
 
 - `QORPERA_SUPABASE_SERVICE_KEY`

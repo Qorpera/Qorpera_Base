@@ -65,6 +65,7 @@
 		"pack:ephemeral-runner": "node scripts/package-ephemeral-runner.mjs",
 		"pack:lxd-runner-guest": "node scripts/package-lxd-runner-guest.mjs",
 		"pack:lxd-provider": "node scripts/package-lxd-provider.mjs",
+		"pack:runner-orchestrator": "node scripts/package-runner-orchestrator.mjs",
 		"publish:shell": "node scripts/publish-shell-release.mjs"
 	},
 	"devDependencies": {

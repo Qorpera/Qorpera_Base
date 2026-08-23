@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { isIP } from "node:net";
+import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LxdUnixClient } from "./lxd-client.ts";
 import { verifyLxdImageProvenanceFiles } from "./lxd-image-provenance.ts";
@@ -11,7 +12,11 @@ import {
 } from "./lxd-login-gateway.ts";
 import { LxdCloudRunnerProviderBackend, type LxdCloudRunnerProviderConfig } from "./lxd-provider.ts";
 import { ProcessCloudRunnerProviderBackend, type ProcessCloudRunnerProviderConfig } from "./process-provider.ts";
-import { type CloudRunnerProviderServiceBackend, HttpCloudRunnerProviderService } from "./provider-service.ts";
+import {
+	type CloudRunnerProviderServiceBackend,
+	type CloudRunnerProviderServiceNetworkOptions,
+	HttpCloudRunnerProviderService,
+} from "./provider-service.ts";
 
 function required(name: string): string {
 	const value = process.env[name];
@@ -33,6 +38,42 @@ function integer(name: string, fallback?: number): number {
 	const value = Number(encoded);
 	if (!Number.isSafeInteger(value)) throw new Error(`${name} is invalid`);
 	return value;
+}
+
+function optionalAbsoluteFile(name: string): Buffer | undefined {
+	const value = process.env[name];
+	if (value === undefined) return undefined;
+	if (!value || !isAbsolute(value) || value !== value.trim() || /[\0\r\n]/.test(value)) {
+		throw new Error(`${name} must be an absolute path`);
+	}
+	return readFileSync(value);
+}
+
+function providerNetwork(): { host: string; options: CloudRunnerProviderServiceNetworkOptions } {
+	const host = process.env.QORPERA_RUNNER_PROVIDER_HOST ?? "127.0.0.1";
+	const trustedSource = process.env.QORPERA_RUNNER_PROVIDER_TRUSTED_SOURCE;
+	const certificate = optionalAbsoluteFile("QORPERA_RUNNER_PROVIDER_TLS_CERT");
+	const privateKey = optionalAbsoluteFile("QORPERA_RUNNER_PROVIDER_TLS_KEY");
+	if ((certificate === undefined) !== (privateKey === undefined)) {
+		throw new Error("Runner provider TLS requires both certificate and private key files");
+	}
+	const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+	if (!loopback) {
+		if (isIP(host) !== 4) throw new Error("Non-loopback runner provider host must be an IPv4 address");
+		if (!trustedSource || isIP(trustedSource) !== 4) {
+			throw new Error("Non-loopback runner provider host requires one trusted IPv4 source");
+		}
+		if (!certificate || !privateKey) {
+			throw new Error("Non-loopback runner provider host requires TLS");
+		}
+	}
+	return {
+		host,
+		options: {
+			...(trustedSource ? { trustedSource } : {}),
+			...(certificate && privateKey ? { tls: { certificate, privateKey } } : {}),
+		},
+	};
 }
 
 function processConfig(): ProcessCloudRunnerProviderConfig {
@@ -158,11 +199,13 @@ function runtime(): ProviderRuntime {
 
 async function main(): Promise<void> {
 	const current = runtime();
+	const network = providerNetwork();
 	const service = new HttpCloudRunnerProviderService(
 		current.backend,
 		required("QORPERA_RUNNER_PROVIDER_TOKEN"),
-		process.env.QORPERA_RUNNER_PROVIDER_HOST ?? "127.0.0.1",
+		network.host,
 		port(),
+		network.options,
 	);
 	const shutdown = new AbortController();
 	const stop = (): void => shutdown.abort();

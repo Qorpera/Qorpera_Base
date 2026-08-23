@@ -100,6 +100,30 @@ sudo install -o root -g qorpera-provider -m 0640 \
   lxd-image-provenance.pub /etc/qorpera/lxd-image-provenance.pub
 ```
 
+## Management VM service boundary
+
+`npm run pack:runner-orchestrator` emits one checksum-manifested service
+artifact. `install-runner-orchestrator-guest.sh` installs that artifact only
+inside the dedicated `company41-orchestrator-01` full VM and leaves it disabled
+while `/etc/qorpera/runner-orchestrator.env` is absent. Its rotated control
+capability state is private to the `qorpera-orchestrator` account under
+`/var/lib/qorpera-orchestrator`.
+
+The provider listens on the host bridge address over TLS and accepts every
+endpoint only from the management VM's anti-spoofed static address. For the
+first node those addresses are `10.41.0.1` and `10.41.0.2`. The bridge profile
+must retain LXD MAC and IPv4 filtering. Install the private CA certificate in
+the management VM and configure `NODE_EXTRA_CA_CERTS`; install only the
+server certificate and private key on the host. A bearer capability remains
+required in addition to both network controls. Job and login VMs must receive
+`403` from the provider even if they learn its URL.
+
+The management VM has no LXD socket, `lxd` group membership, Supabase service
+role secret, native-provider credential, capsule key, or object-storage
+authority. It receives only its orchestrator control capability, the
+orchestrator-to-provider capability, the Supabase publishable key, and the
+provider CA certificate.
+
 ## Common activation gate
 
 Do not create the real environment file or enable the provider until all of

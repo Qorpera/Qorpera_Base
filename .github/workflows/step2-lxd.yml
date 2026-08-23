@@ -8,7 +8,12 @@ on:
       - 'deploy/first-node/**'
       - 'deploy/lxd-runner-guest/**'
       - 'packages/runner-orchestrator/src/lxd-*.ts'
+      - 'packages/runner-orchestrator/src/provider-cli.ts'
+      - 'packages/runner-orchestrator/src/provider-service.ts'
+      - 'packages/runner-orchestrator/src/service.ts'
       - 'packages/runner-orchestrator/test/lxd-*.test.ts'
+      - 'packages/runner-orchestrator/test/provider-service.test.ts'
+      - 'packages/runner-orchestrator/test/service.test.ts'
       - 'packages/runner-orchestrator/package.json'
       - 'packages/shell/src/cloud-native-provider*.ts'
       - 'packages/shell/src/cloud-runner-*.ts'
@@ -66,6 +71,8 @@ jobs:
           test/lxd-image-provenance.test.ts
           test/lxd-login-gateway.test.ts
           test/lxd-provider.test.ts
+          test/provider-service.test.ts
+          test/service.test.ts
 
       - name: Test runner guest contracts
         working-directory: packages/shell
@@ -84,6 +91,7 @@ jobs:
           node --test
           scripts/package-lxd-provider.test.mjs
           scripts/package-lxd-runner-guest.test.mjs
+          scripts/package-runner-orchestrator.test.mjs
 
       - name: Test acceptance storage selection
         run: node --test supabase/functions/company-file-verifier/object-loader.test.ts

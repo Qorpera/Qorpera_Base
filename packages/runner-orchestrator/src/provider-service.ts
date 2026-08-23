@@ -1,5 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+	createServer as createHttpServer,
+	type Server as HttpServer,
+	type IncomingMessage,
+	type ServerResponse,
+} from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
+import { isIP } from "node:net";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
 import { validateCloudRunnerWork } from "./orchestrator.ts";
 
@@ -20,6 +27,16 @@ export interface CloudRunnerProviderServiceBackend {
 		signal?: AbortSignal,
 	): Promise<void>;
 	close?(): Promise<void>;
+}
+
+export interface CloudRunnerProviderServiceTlsConfig {
+	certificate: Buffer;
+	privateKey: Buffer;
+}
+
+export interface CloudRunnerProviderServiceNetworkOptions {
+	trustedSource?: string;
+	tls?: CloudRunnerProviderServiceTlsConfig;
 }
 
 type ProviderRequest =
@@ -224,29 +241,58 @@ function tokenMatches(expected: string, authorization: string | undefined): bool
 	return received.length === wanted.length && timingSafeEqual(received, wanted);
 }
 
+function sourceMatches(expected: string, received: string | undefined): boolean {
+	return received === expected || received === `::ffff:${expected}`;
+}
+
 export class HttpCloudRunnerProviderService {
 	readonly #backend: CloudRunnerProviderServiceBackend;
 	readonly #token: string;
 	readonly #host: string;
 	readonly #port: number;
-	#server?: Server;
+	readonly #trustedSource?: string;
+	readonly #tls?: CloudRunnerProviderServiceTlsConfig;
+	#server?: HttpServer | HttpsServer;
 
-	constructor(backend: CloudRunnerProviderServiceBackend, token: string, host = "127.0.0.1", port = 0) {
+	constructor(
+		backend: CloudRunnerProviderServiceBackend,
+		token: string,
+		host = "127.0.0.1",
+		port = 0,
+		options: CloudRunnerProviderServiceNetworkOptions = {},
+	) {
 		if (!ADAPTER_PATTERN.test(backend.adapterId)) throw new Error("Provider adapter id is invalid");
 		if (!token.trim() || token.length > 4096 || /[\0\r\n]/.test(token)) throw new Error("Provider token is invalid");
 		if (!host.trim() || host.length > 255 || /[\0\r\n]/.test(host)) throw new Error("Provider host is invalid");
 		if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) throw new Error("Provider port is invalid");
+		if (options.trustedSource !== undefined && isIP(options.trustedSource) !== 4) {
+			throw new Error("Provider trusted source must be an IPv4 address");
+		}
+		if (
+			options.tls &&
+			(options.tls.certificate.byteLength < 1 ||
+				options.tls.certificate.byteLength > 1024 * 1024 ||
+				options.tls.privateKey.byteLength < 1 ||
+				options.tls.privateKey.byteLength > 1024 * 1024)
+		) {
+			throw new Error("Provider TLS material is invalid");
+		}
 		this.#backend = backend;
 		this.#token = token;
 		this.#host = host;
 		this.#port = port;
+		this.#trustedSource = options.trustedSource;
+		this.#tls = options.tls;
 	}
 
 	async start(): Promise<number> {
 		if (this.#server) throw new Error("Runner provider service is already started");
-		const server = createServer((request, response) => {
+		const handle = (request: IncomingMessage, response: ServerResponse): void => {
 			void this.#handle(request, response);
-		});
+		};
+		const server = this.#tls
+			? createHttpsServer({ cert: this.#tls.certificate, key: this.#tls.privateKey }, handle)
+			: createHttpServer(handle);
 		this.#server = server;
 		await new Promise<void>((resolve, reject) => {
 			server.once("error", reject);
@@ -272,6 +318,10 @@ export class HttpCloudRunnerProviderService {
 
 	async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		response.setHeader("cache-control", "no-store");
+		if (this.#trustedSource && !sourceMatches(this.#trustedSource, request.socket.remoteAddress)) {
+			response.writeHead(403).end();
+			return;
+		}
 		if (request.method === "GET" && request.url === "/healthz") {
 			response.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}\n');
 			return;

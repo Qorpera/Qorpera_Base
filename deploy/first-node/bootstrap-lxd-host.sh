@@ -14,6 +14,7 @@ LXD_NETWORK="qorpera0"
 LXD_SUBNET="10.41.0.1/24"
 JOB_PROFILE="qorpera-job-v1"
 LOGIN_PROFILE="qorpera-login-v1"
+MANAGEMENT_PROFILE="qorpera-management-v1"
 PROVIDER_USER="qorpera-provider"
 HOST_STATE_LOG="/var/log/qorpera-lxd-host-state.txt"
 
@@ -170,7 +171,7 @@ if lxc project show "${LXD_PROJECT}" >/dev/null 2>&1; then
 		project_json=$(lxc query "/1.0/projects/${LXD_PROJECT}")
 		if ! PROJECT_JSON="${project_json}" \
 			LXD_PROJECT="${LXD_PROJECT}" \
-			EXPECTED_PROFILES="default,${JOB_PROFILE},${LOGIN_PROFILE}" \
+			EXPECTED_PROFILES="default,${JOB_PROFILE},${LOGIN_PROFILE},${MANAGEMENT_PROFILE}" \
 			python3 - <<'PY'
 import json
 import os
@@ -248,6 +249,8 @@ create_profile() {
 
 create_profile "${JOB_PROFILE}"
 create_profile "${LOGIN_PROFILE}"
+create_profile "${MANAGEMENT_PROFILE}"
+lxc profile set "${MANAGEMENT_PROFILE}" security.devlxd=false --project "${LXD_PROJECT}"
 
 if [[ $(stat -c %G /var/snap/lxd/common/lxd/unix.socket) != lxd ]]; then
 	systemctl restart snap.lxd.daemon.service
@@ -287,6 +290,9 @@ state_tmp=$(mktemp)
 	echo "[login-profile]"
 	lxc profile show "${LOGIN_PROFILE}" --project "${LXD_PROJECT}"
 	echo
+	echo "[management-profile]"
+	lxc profile show "${MANAGEMENT_PROFILE}" --project "${LXD_PROJECT}"
+	echo
 	echo "[instances]"
 	lxc list --project "${LXD_PROJECT}" --format compact
 	echo
@@ -305,4 +311,4 @@ rm -f "${state_tmp}"
 echo "LXD_HOST_READY"
 echo "version=${EXPECTED_LXD_VERSION} revision=${EXPECTED_LXD_REVISION} channel=${LXD_CHANNEL} held=forever"
 echo "project=${LXD_PROJECT} pool=${LXD_POOL} network=${LXD_NETWORK}"
-echo "profiles=${JOB_PROFILE},${LOGIN_PROFILE} provider_user=${PROVIDER_USER}"
+echo "profiles=${JOB_PROFILE},${LOGIN_PROFILE},${MANAGEMENT_PROFILE} provider_user=${PROVIDER_USER}"

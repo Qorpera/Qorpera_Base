@@ -10,6 +10,9 @@
 - Added a disposable first-node KVM, Secure Boot, storage, and private-network boundary smoke test.
 - Added a locked full-VM guest package, unsigned local-image candidate builder, and fail-closed clean-boot acceptance test.
 - Added strict Ed25519 image-provenance tooling and a provider startup gate binding the exact LXD fingerprint, guest package, clean source, and acceptance evidence.
+- Added a TLS-only, source-fenced provider network boundary for the dedicated management VM.
+- Added a checksum-verified Runner Orchestrator package and fail-closed management-VM systemd installer.
+- Added a signed-image-gated, static-address management VM provisioner with no LXD authority.
 
 ### Changed
 
