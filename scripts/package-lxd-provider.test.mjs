@@ -53,6 +53,9 @@ test("packages and pins the first-node LXD provider", async () => {
 		]) {
 			assert.ok(installer.includes(expected), `installer is missing checksum pin ${expected}`);
 		}
+		assert.ok(installer.includes("const payload = await response.json()"));
+		assert.ok(installer.includes("payload.ok !== true || Object.keys(payload).length !== 1"));
+		assert.ok(!installer.includes("(await response.text()) !=="));
 		const syntax = spawnSync("/usr/bin/env", ["bash", "-n", installerPath], {
 			cwd: repositoryRoot,
 			encoding: "utf-8",

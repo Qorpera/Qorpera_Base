@@ -208,7 +208,7 @@ if [[ ! -e /etc/qorpera/lxd-provider.env ]]; then
 	health_ready=false
 	for _attempt in $(seq 1 30); do
 		if /usr/bin/node -e \
-			"Promise.all([${PREFLIGHT_PORT}, ${PREFLIGHT_LOGIN_PORT}].map(port => fetch('http://127.0.0.1:' + port + '/healthz').then(async response => { if (!response.ok || (await response.text()) !== '{\\\"ok\\\":true}\\n') throw new Error('health') }))).catch(() => process.exit(1))"; then
+			"Promise.all([${PREFLIGHT_PORT}, ${PREFLIGHT_LOGIN_PORT}].map(port => fetch('http://127.0.0.1:' + port + '/healthz').then(async response => { const payload = await response.json(); if (!response.ok || !payload || typeof payload !== 'object' || Array.isArray(payload) || payload.ok !== true || Object.keys(payload).length !== 1) throw new Error('health') }))).catch(() => process.exit(1))"; then
 			health_ready=true
 			break
 		fi
