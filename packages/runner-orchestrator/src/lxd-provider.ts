@@ -842,6 +842,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		const nativeProviderEnvironment = [
 			`QORPERA_SUPABASE_URL=${this.#config.supabaseUrl}`,
 			"QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY=virtual_machine",
+			`QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID=${authority.computeIdentityId}`,
 			"QORPERA_NATIVE_PROVIDER_HOST=127.0.0.1",
 			`QORPERA_NATIVE_PROVIDER_PORT=${this.#config.nativeBridgePort}`,
 			"QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT=/var/lib/qorpera-native-provider/tmp",

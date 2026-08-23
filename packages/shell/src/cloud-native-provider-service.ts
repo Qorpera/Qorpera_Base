@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import type { JsonValue } from "@qorpera/contracts";
 import type {
 	CompleteNativeProviderLoginInput,
@@ -165,6 +166,12 @@ function tokenMatches(expected: string, authorization: string | undefined): bool
 	const left = Buffer.from(expected, "utf-8");
 	const right = Buffer.from(authorization.slice("Bearer ".length), "utf-8");
 	return left.byteLength === right.byteLength && timingSafeEqual(left, right);
+}
+
+function sourceMatches(expected: string | undefined, remoteAddress: string | undefined): boolean {
+	if (!expected) return true;
+	const normalized = remoteAddress?.startsWith("::ffff:") ? remoteAddress.slice("::ffff:".length) : remoteAddress;
+	return normalized === expected;
 }
 
 export class SupabaseNativeProviderControlPlane implements NativeProviderControlPlane {
@@ -337,16 +344,21 @@ export class HttpNativeProviderHostService {
 	readonly #token: string;
 	readonly #listenHost: string;
 	readonly #port: number;
+	readonly #trustedSource?: string;
 	readonly #executions = new Map<string, AbortController>();
 	#server?: Server;
 
-	constructor(host: NativeProviderHost, token: string, listenHost = "127.0.0.1", port = 0) {
+	constructor(host: NativeProviderHost, token: string, listenHost = "127.0.0.1", port = 0, trustedSource?: string) {
 		if (!TOKEN_PATTERN.test(token)) throw new Error("Native provider host token is invalid");
 		if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) throw new Error("Native provider port is invalid");
+		if (trustedSource !== undefined && isIP(trustedSource) !== 4) {
+			throw new Error("Native provider trusted source is invalid");
+		}
 		this.#host = host;
 		this.#token = token;
 		this.#listenHost = listenHost;
 		this.#port = port;
+		this.#trustedSource = trustedSource;
 	}
 
 	async start(): Promise<number> {
@@ -382,6 +394,10 @@ export class HttpNativeProviderHostService {
 		}
 		if (request.method !== "POST" || !["/login", "/execute", "/cancel"].includes(request.url ?? "")) {
 			response.writeHead(404).end();
+			return;
+		}
+		if (!sourceMatches(this.#trustedSource, request.socket.remoteAddress)) {
+			response.writeHead(403).end();
 			return;
 		}
 		try {

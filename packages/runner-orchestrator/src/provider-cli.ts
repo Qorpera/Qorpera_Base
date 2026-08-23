@@ -4,6 +4,11 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LxdUnixClient } from "./lxd-client.ts";
 import { verifyLxdImageProvenanceFiles } from "./lxd-image-provenance.ts";
+import {
+	HttpLxdNativeLoginGateway,
+	LxdNativeLoginGateway,
+	type LxdNativeLoginGatewayConfig,
+} from "./lxd-login-gateway.ts";
 import { LxdCloudRunnerProviderBackend, type LxdCloudRunnerProviderConfig } from "./lxd-provider.ts";
 import { ProcessCloudRunnerProviderBackend, type ProcessCloudRunnerProviderConfig } from "./process-provider.ts";
 import { type CloudRunnerProviderServiceBackend, HttpCloudRunnerProviderService } from "./provider-service.ts";
@@ -89,9 +94,41 @@ function lxdConfig(): LxdCloudRunnerProviderConfig {
 	};
 }
 
-function backend(): CloudRunnerProviderServiceBackend {
+function lxdLoginConfig(config: LxdCloudRunnerProviderConfig): LxdNativeLoginGatewayConfig {
+	return {
+		adapterId: config.adapterId,
+		supabaseUrl: config.supabaseUrl,
+		supabaseServiceKey: config.supabaseServiceKey,
+		stateRoot: resolve(required("QORPERA_LXD_LOGIN_STATE_ROOT")),
+		project: config.project,
+		loginProfile: required("QORPERA_LXD_LOGIN_PROFILE"),
+		networkInterface: config.networkInterface,
+		imageServer: config.imageServer,
+		imageFingerprint: config.imageFingerprint,
+		storagePool: config.storagePool,
+		identityVolumePrefix: config.identityVolumePrefix,
+		identityVolumeSize: config.identityVolumeSize,
+		rootDiskSize: config.rootDiskSize,
+		cpuLimit: config.cpuLimit,
+		memoryLimit: config.memoryLimit,
+		nativeBridgePort: config.nativeBridgePort,
+		guestTrustedSource: config.guestAssignmentSource,
+		guestReadyTimeoutMs: config.guestReadyTimeoutMs,
+		codexPath: config.codexPath,
+		claudePath: config.claudePath,
+		loginBootstrapService:
+			process.env.QORPERA_LXD_LOGIN_BOOTSTRAP_SERVICE ?? "qorpera-lxd-native-login-bootstrap.service",
+	};
+}
+
+interface ProviderRuntime {
+	backend: CloudRunnerProviderServiceBackend;
+	loginGateway?: HttpLxdNativeLoginGateway;
+}
+
+function runtime(): ProviderRuntime {
 	const kind = process.env.QORPERA_RUNNER_PROVIDER_BACKEND ?? "process";
-	if (kind === "process") return new ProcessCloudRunnerProviderBackend(processConfig());
+	if (kind === "process") return { backend: new ProcessCloudRunnerProviderBackend(processConfig()) };
 	if (kind === "lxd") {
 		const config = lxdConfig();
 		verifyLxdImageProvenanceFiles(
@@ -107,14 +144,22 @@ function backend(): CloudRunnerProviderServiceBackend {
 			process.env.QORPERA_LXD_SOCKET ?? "/var/snap/lxd/common/lxd/unix.socket",
 			integer("QORPERA_LXD_OPERATION_TIMEOUT_SECONDS", 120),
 		);
-		return new LxdCloudRunnerProviderBackend(config, client);
+		return {
+			backend: new LxdCloudRunnerProviderBackend(config, client),
+			loginGateway: new HttpLxdNativeLoginGateway(
+				new LxdNativeLoginGateway(lxdLoginConfig(config), client),
+				process.env.QORPERA_LXD_LOGIN_GATEWAY_HOST ?? "127.0.0.1",
+				integer("QORPERA_LXD_LOGIN_GATEWAY_PORT", 18082),
+			),
+		};
 	}
 	throw new Error("QORPERA_RUNNER_PROVIDER_BACKEND must be process or lxd");
 }
 
 async function main(): Promise<void> {
+	const current = runtime();
 	const service = new HttpCloudRunnerProviderService(
-		backend(),
+		current.backend,
 		required("QORPERA_RUNNER_PROVIDER_TOKEN"),
 		process.env.QORPERA_RUNNER_PROVIDER_HOST ?? "127.0.0.1",
 		port(),
@@ -125,12 +170,14 @@ async function main(): Promise<void> {
 	process.once("SIGTERM", stop);
 	try {
 		await service.start();
+		await current.loginGateway?.start();
 		await new Promise<void>((resolveWait) =>
 			shutdown.signal.addEventListener("abort", () => resolveWait(), { once: true }),
 		);
 	} finally {
 		process.removeListener("SIGINT", stop);
 		process.removeListener("SIGTERM", stop);
+		await current.loginGateway?.close();
 		await service.close();
 	}
 }

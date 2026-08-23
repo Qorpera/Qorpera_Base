@@ -64,6 +64,8 @@ const expected = new Set([
   "qorpera-ephemeral-runner.service",
   "qorpera-lxd-runner-bootstrap.mjs",
   "qorpera-lxd-runner-bootstrap.service",
+  "qorpera-lxd-native-login-bootstrap.mjs",
+  "qorpera-lxd-native-login-bootstrap.service",
   "qorpera-native-provider-host.mjs",
   "qorpera-native-provider-host.service",
   "qorpera-sandbox-probe.mjs",
@@ -140,11 +142,19 @@ install -d -o "${RUNNER_USER}" -g "${RUNNER_USER}" -m 0700 /var/lib/qorpera-runn
 install -d -o "${NATIVE_USER}" -g "${NATIVE_EXECUTION_GROUP}" -m 0700 \
 	/var/lib/qorpera-native-provider /var/lib/qorpera-native-provider/tmp
 
-for artifact in qorpera-ephemeral-runner.mjs qorpera-native-provider-host.mjs qorpera-lxd-runner-bootstrap.mjs; do
+for artifact in \
+	qorpera-ephemeral-runner.mjs \
+	qorpera-native-provider-host.mjs \
+	qorpera-lxd-runner-bootstrap.mjs \
+	qorpera-lxd-native-login-bootstrap.mjs; do
 	install -o root -g root -m 0555 "${PACKAGE_ROOT}/${artifact}" "/opt/qorpera-runner/${artifact}"
 	node --check "/opt/qorpera-runner/${artifact}"
 done
-for unit in qorpera-ephemeral-runner.service qorpera-native-provider-host.service qorpera-lxd-runner-bootstrap.service; do
+for unit in \
+	qorpera-ephemeral-runner.service \
+	qorpera-native-provider-host.service \
+	qorpera-lxd-runner-bootstrap.service \
+	qorpera-lxd-native-login-bootstrap.service; do
 	install -o root -g root -m 0644 "${PACKAGE_ROOT}/${unit}" "/etc/systemd/system/${unit}"
 done
 
@@ -164,9 +174,14 @@ fi
 systemd-analyze verify \
 	/etc/systemd/system/qorpera-ephemeral-runner.service \
 	/etc/systemd/system/qorpera-native-provider-host.service \
-	/etc/systemd/system/qorpera-lxd-runner-bootstrap.service
+	/etc/systemd/system/qorpera-lxd-runner-bootstrap.service \
+	/etc/systemd/system/qorpera-lxd-native-login-bootstrap.service
 systemctl daemon-reload
-systemctl disable qorpera-ephemeral-runner.service qorpera-native-provider-host.service >/dev/null 2>&1 || true
+systemctl disable \
+	qorpera-ephemeral-runner.service \
+	qorpera-native-provider-host.service \
+	qorpera-lxd-native-login-bootstrap.service \
+	>/dev/null 2>&1 || true
 systemctl enable qorpera-lxd-runner-bootstrap.service
 
 manifest_sha256=$(sha256sum "${PACKAGE_ROOT}/manifest.json" | awk '{ print $1 }')

@@ -567,6 +567,7 @@ export class NativeProviderHost {
 	readonly #capsules: NativeCredentialCapsuleStore;
 	readonly #harness: NativeHarnessDriver;
 	readonly #masterKey: string;
+	readonly #computeIdentityId: string;
 	readonly #temporaryRoot: string;
 	readonly #logins = new Map<string, LoginState>();
 
@@ -575,13 +576,16 @@ export class NativeProviderHost {
 		capsules: NativeCredentialCapsuleStore;
 		harness: NativeHarnessDriver;
 		masterKey: string;
+		computeIdentityId: string;
 		temporaryRoot?: string;
 	}) {
 		capsuleKey(options.masterKey);
+		requiredUuid(options.computeIdentityId, "Native host Compute Identity id");
 		this.#controlPlane = options.controlPlane;
 		this.#capsules = options.capsules;
 		this.#harness = options.harness;
 		this.#masterKey = options.masterKey;
+		this.#computeIdentityId = options.computeIdentityId;
 		this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
 	}
 
@@ -589,6 +593,9 @@ export class NativeProviderHost {
 		requiredUuid(request.loginId, "Native login id");
 		requiredUuid(request.clientConnectionId, "Native client connection id");
 		requiredUuid(request.computeIdentityId, "Native compute identity id");
+		if (request.computeIdentityId !== this.#computeIdentityId) {
+			throw new Error("Native login names another Compute Identity");
+		}
 		if (
 			!TOKEN_PATTERN.test(request.capability) ||
 			!Number.isFinite(Date.parse(request.expiresAt)) ||
@@ -654,6 +661,9 @@ export class NativeProviderHost {
 			["Native job id", request.job.jobId],
 		] as const)
 			requiredUuid(value, label);
+		if (authority.computeIdentityId !== this.#computeIdentityId) {
+			throw new Error("Native execution names another Compute Identity");
+		}
 		if (
 			request.job.jobType !== "agent_turn" ||
 			request.job.requiredCapability !== "agent_turn" ||

@@ -2,10 +2,10 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_ARTIFACT_SHA256="8da0d52d5e8be73e6ffeaff97f566a60e4ce9af5581974e0734659b952369ab7"
+EXPECTED_ARTIFACT_SHA256="76c281a6f5773e28a69108217ac5bae0502b35adf2804fdd97c372f37f93ea42"
 EXPECTED_PROVENANCE_TOOL_SHA256="7f89fd19f9030261a8564037088a3f168d4f468b31fc6b9abc02ca879e5b1406"
 EXPECTED_UNIT_SHA256="0066ceb7bed93550a0feb521ba0722a37c86834b2de72ed8a8eafde12ddec3d8"
-EXPECTED_ENV_EXAMPLE_SHA256="e1bbaea1f5308e417bf893eb6262354e734c271243c3333a45394bfae22b378a"
+EXPECTED_ENV_EXAMPLE_SHA256="90a373f2001b75ef8cd52ff0a064461153302f70b06ff3da42103c5f3ea7dd00"
 STAGING_ROOT="/home/company41-admin/step2-lxd"
 ARTIFACT_SOURCE="${STAGING_ROOT}/qorpera-lxd-provider.mjs"
 PROVENANCE_TOOL_SOURCE="${STAGING_ROOT}/qorpera-lxd-image-provenance.mjs"
@@ -17,6 +17,7 @@ INSTALL_LOG="/var/log/qorpera-lxd-provider-install.log"
 STATE_LOG="/var/log/qorpera-lxd-provider-host-state.txt"
 PROVIDER_USER="qorpera-provider"
 PREFLIGHT_PORT=18081
+PREFLIGHT_LOGIN_PORT=18082
 
 if [[ ${EUID} -ne 0 ]]; then
 	echo "Run this script through sudo." >&2
@@ -157,6 +158,7 @@ if [[ ! -e /etc/qorpera/lxd-provider.env ]]; then
 		'QORPERA_LXD_OPERATION_TIMEOUT_SECONDS=10' \
 		'QORPERA_LXD_PROJECT=qorpera-runners' \
 		'QORPERA_LXD_JOB_PROFILE=qorpera-job-v1' \
+		'QORPERA_LXD_LOGIN_PROFILE=qorpera-login-v1' \
 		'QORPERA_LXD_NETWORK_INTERFACE=eth0' \
 		'QORPERA_LXD_IMAGE_SERVER=local' \
 		"QORPERA_LXD_IMAGE_FINGERPRINT=${preflight_fingerprint}" \
@@ -175,6 +177,10 @@ if [[ ! -e /etc/qorpera/lxd-provider.env ]]; then
 		'QORPERA_LXD_NATIVE_EXECUTION_GID=42041' \
 		'QORPERA_LXD_GUEST_READY_TIMEOUT_MS=300000' \
 		'QORPERA_LXD_GUEST_BOOTSTRAP_SERVICE=qorpera-lxd-runner-bootstrap.service' \
+		'QORPERA_LXD_LOGIN_STATE_ROOT=/var/lib/qorpera-provider/logins' \
+		'QORPERA_LXD_LOGIN_GATEWAY_HOST=127.0.0.1' \
+		"QORPERA_LXD_LOGIN_GATEWAY_PORT=${PREFLIGHT_LOGIN_PORT}" \
+		'QORPERA_LXD_LOGIN_BOOTSTRAP_SERVICE=qorpera-lxd-native-login-bootstrap.service' \
 		"QORPERA_EPHEMERAL_RUNNER_IMAGE=registry.invalid/qorpera@sha256:$(printf 'b%.0s' {1..64})" \
 		'QORPERA_EPHEMERAL_RUNNER_PODMAN=/usr/bin/podman' \
 		'QORPERA_EPHEMERAL_RUNNER_ENTRYPOINT=/qorpera/bin/run-job' \
@@ -191,7 +197,7 @@ if [[ ! -e /etc/qorpera/lxd-provider.env ]]; then
 	health_ready=false
 	for _attempt in $(seq 1 30); do
 		if /usr/bin/node -e \
-			"fetch('http://127.0.0.1:${PREFLIGHT_PORT}/healthz').then(async response => { if (!response.ok || (await response.text()) !== '{\\\"ok\\\":true}\\n') process.exit(1) }).catch(() => process.exit(1))"; then
+			"Promise.all([${PREFLIGHT_PORT}, ${PREFLIGHT_LOGIN_PORT}].map(port => fetch('http://127.0.0.1:' + port + '/healthz').then(async response => { if (!response.ok || (await response.text()) !== '{\\\"ok\\\":true}\\n') throw new Error('health') }))).catch(() => process.exit(1))"; then
 			health_ready=true
 			break
 		fi

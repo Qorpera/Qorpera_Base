@@ -2,13 +2,13 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_PACKAGE_MANIFEST_SHA256="0425306167392328ff7d31573621973869a6a8b26d7b168d3b75855829fefb44"
+EXPECTED_PACKAGE_MANIFEST_SHA256="e1f65bbcfd32ee325b4165a045cfdabfe051ea34ba435e9d39105c7e3a921050"
 LXD_PROJECT="qorpera-runners"
 LXD_IMAGE_PROJECT="default"
 LXD_POOL="qorpera-vm"
 LXD_PROFILE="qorpera-job-v1"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v1-unsigned"
-ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v1"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v2-unsigned"
+ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v2"
 ACCEPTANCE_MARKER="qorpera.lxd-runner-image-acceptance/v1"
 STATE_LOG="/var/log/qorpera-lxd-runner-image-acceptance.txt"
 
@@ -135,12 +135,15 @@ lxc exec "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" -- bash -euo pipefa
 	[[ $(DISABLE_AUTOUPDATER=1 /usr/local/bin/codex --version) == *0.147.0* ]]
 	[[ $(DISABLE_AUTOUPDATER=1 /usr/local/bin/claude --version) == 2.1.231* ]]
 	[[ $(systemctl is-enabled qorpera-lxd-runner-bootstrap.service) == enabled ]]
+	[[ $(systemctl is-enabled qorpera-lxd-native-login-bootstrap.service) == disabled ]]
 	[[ $(systemctl is-enabled qorpera-ephemeral-runner.service) == disabled ]]
 	[[ $(systemctl is-enabled qorpera-native-provider-host.service) == disabled ]]
 	[[ $(systemctl is-active qorpera-lxd-runner-bootstrap.service) == inactive ]]
+	[[ $(systemctl is-active qorpera-lxd-native-login-bootstrap.service) == inactive ]]
 	[[ $(systemctl is-active qorpera-ephemeral-runner.service) == inactive ]]
 	[[ $(systemctl is-active qorpera-native-provider-host.service) == inactive ]]
 	[[ ! -e /var/lib/qorpera-bootstrap/bootstrap.json ]]
+	[[ ! -e /var/lib/qorpera-bootstrap/login-bootstrap.json ]]
 	[[ ! -e /var/lib/qorpera-bootstrap/runner-config.json ]]
 	[[ ! -e /var/lib/qorpera-bootstrap/native-provider.env ]]
 	! find /var/lib/qorpera-bootstrap/credentials -mindepth 1 -print -quit | grep -q .

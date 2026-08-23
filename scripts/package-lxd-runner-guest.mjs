@@ -33,6 +33,10 @@ try {
 		["qorpera-native-provider-host.mjs", join(runnerRoot, "qorpera-native-provider-host.mjs")],
 		["qorpera-sandbox-probe.mjs", join(runnerRoot, "qorpera-sandbox-probe.mjs")],
 		["qorpera-lxd-runner-bootstrap.mjs", join(runnerRoot, "qorpera-lxd-runner-bootstrap.mjs")],
+		[
+			"qorpera-lxd-native-login-bootstrap.mjs",
+			join(runnerRoot, "qorpera-lxd-native-login-bootstrap.mjs"),
+		],
 		["run-job", join(runnerRoot, "run-job")],
 		[
 			"qorpera-ephemeral-runner.service",
@@ -45,6 +49,10 @@ try {
 		[
 			"qorpera-lxd-runner-bootstrap.service",
 			resolve(repositoryRoot, "deploy/lxd-runner-guest/qorpera-lxd-runner-bootstrap.service"),
+		],
+		[
+			"qorpera-lxd-native-login-bootstrap.service",
+			resolve(repositoryRoot, "deploy/lxd-runner-guest/qorpera-lxd-native-login-bootstrap.service"),
 		],
 		[
 			"install-image-contract.sh",

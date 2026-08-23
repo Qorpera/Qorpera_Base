@@ -42,6 +42,11 @@ Supabase control plane + backup storage        NAS object gateway
                    Company41 physical node
                    Ubuntu Server 26.04 LTS
                      |
+                     +-- loopback native-login gateway
+                     |     one-time capability + live Supabase authority check
+                     |     Tailscale Funnel is the only permitted public ingress
+                     |     routes to identity-pinned private login VMs
+                     |
                      +-- host provider service
                      |     sole LXD administrator
                      |     narrow qorpera.runner-provider/v1 API
@@ -66,7 +71,7 @@ Supabase control plane + backup storage        NAS object gateway
 
 The management VM is a small, autostarted infrastructure guest and is not acquired through the job-provider path it controls. The host provider service has the minimum local authority needed to operate LXD; the orchestrator has only the Qorpera provider capability. Later nodes can run their own provider services, and the orchestrator can be made redundant without changing job or runner contracts.
 
-Host SSH and any remote LXD management endpoint are reachable only over Tailscale or the local management network. The Qorpera provider normally uses the local LXD Unix socket; direct LXD access is never exposed to a runner. Workload guests have no public inbound route. Their egress is limited to the exact Supabase functions, NAS object gateway, provider endpoints, and approved repository endpoints required by the assignment.
+Host SSH and any remote LXD management endpoint are reachable only over Tailscale or the local management network. The Qorpera provider normally uses the local LXD Unix socket; direct LXD access is never exposed to a runner. The native-login Edge Function may reach only a Tailscale Funnel that terminates at the provider's IPv4-loopback login gateway. That gateway revalidates the one-time capability against Supabase before creating or addressing a VM, while the guest independently repeats the same durable-authority check. Login and job guests have no public inbound route; the login listener accepts POST requests only from the host bridge address. Guest egress is limited to the exact Supabase functions, NAS object gateway, provider endpoints, and approved repository endpoints required by the assignment.
 
 For the NAS-disconnected acceptance run, the object route in that last sentence is Supabase Storage. For production it is the NAS gateway plus the separately verified Supabase backup path. The mode is deployment configuration, not an automatic runtime fallback.
 
@@ -77,7 +82,7 @@ LXD projects provide quotas and an additional administrative grouping, but Qorpe
 Personal Codex and Claude subscriptions are a primary Step 2 path, not a compatibility option.
 
 1. A member creates a cloud-only Member Compute Identity.
-2. Qorpera provisions or resumes an isolated login VM for that logical identity.
+2. The Edge Function forwards the opaque login envelope through Tailscale Funnel to a loopback-only host gateway. The gateway validates the one-time capability against Supabase, then provisions or resumes the isolated login VM pinned to that logical identity.
 3. The member completes the provider's official native login flow. The provider-native harness receives plaintext inside the authorized execution boundary; Qorpera application/control-plane code does not.
 4. The login host publishes only an encrypted capsule/checkpoint plus opaque connection identity, ownership, consent, policy, lease, revocation, and provenance records.
 5. A turn names exactly one sponsor, provider connection, Compute Identity, native harness, and immutable Company File revision.
@@ -168,7 +173,7 @@ Useful provisioning, workspace, receipt, transcript, and virtual-machine concept
 2. Deploy and verify the native-provider-login Edge Function and current client configuration.
 3. Add the missing owner/admin runner registration entry point with ambiguity-safe activation-token persistence.
 4. Rebuild the accepted guest image from a reviewed clean commit, sign its exact provenance off-node, install the reviewed provider package, and deploy the still-disabled service configuration.
-5. Build the isolated login-host bridge for official `codex login` and `claude auth login`, capsule encryption/publication, resume, and revocation.
+5. Deploy the implemented loopback login gateway and identity-pinned login guest bootstrap, then complete live official `codex login` and `claude auth login`, capsule publication, resume, and revocation acceptance.
 6. Finish deployed end-to-end wiring for the isolated job runner/native sidecar, including transcript streaming, receipt fencing, output staging, and real assignment delivery through the post-boot credential boundary.
 7. Package and deploy the management orchestrator, provider configuration, login VM, and job VM as versioned systemd services/templates with redacted logs and outbound-only networking.
 8. Add current desktop surfaces for Compute Identity creation, login status, explicit sponsor/connection selection, provenance display, reauthentication, and revocation.

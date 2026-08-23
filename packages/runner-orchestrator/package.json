@@ -40,6 +40,10 @@
 			"types": "./dist/lxd-image-provenance.d.ts",
 			"import": "./dist/lxd-image-provenance.js"
 		},
+		"./lxd-login-gateway": {
+			"types": "./dist/lxd-login-gateway.d.ts",
+			"import": "./dist/lxd-login-gateway.js"
+		},
 		"./lxd-provider": {
 			"types": "./dist/lxd-provider.d.ts",
 			"import": "./dist/lxd-provider.js"

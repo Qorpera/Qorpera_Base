@@ -2,11 +2,13 @@ import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, chown, lstat, mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { parseEphemeralCloudRunnerServiceConfig } from "./cloud-runner-service.ts";
 
 const BOOTSTRAP_SCHEMA = "qorpera.lxd-runner-bootstrap/v1";
+const LOGIN_BOOTSTRAP_SCHEMA = "qorpera.lxd-native-login-bootstrap/v1";
 const IDENTITY_SCHEMA = "qorpera.compute-identity-volume/v1";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -51,6 +53,36 @@ export interface LxdRunnerBootstrapServiceIdentity {
 	gid: number;
 }
 
+export interface LxdNativeLoginBootstrapConfig {
+	schema: typeof LOGIN_BOOTSTRAP_SCHEMA;
+	computeIdentityId: string;
+	supabaseUrl: string;
+	nativeBridgeUrl: string;
+	trustedSource: string;
+	nativeProviderEnvironmentPath: string;
+	credentialSource: string;
+	identityVolumePath: string;
+}
+
+export interface LxdNativeLoginBootstrapPaths {
+	bootstrapConfig: string;
+	nativeProviderEnvironment: string;
+	credentialSource: string;
+	identityVolume: string;
+	identityMarker: string;
+	identityMasterKey: string;
+	nativeProviderTemporaryDirectory: string;
+	mountInfo: string;
+}
+
+export interface RunLxdNativeLoginBootstrapOptions {
+	paths?: LxdNativeLoginBootstrapPaths;
+	expectedRootUid?: number;
+	expectedRootGid?: number;
+	nativeServiceIdentity?: LxdRunnerBootstrapServiceIdentity;
+	startService?: (service: string) => Promise<void>;
+}
+
 export interface RunLxdRunnerBootstrapOptions {
 	paths?: LxdRunnerBootstrapPaths;
 	expectedRootUid?: number;
@@ -72,6 +104,17 @@ const PRODUCTION_PATHS: LxdRunnerBootstrapPaths = {
 	runnerConfigDestination: "/var/lib/qorpera-runner/.config/qorpera-runner/config.json",
 	runnerStateDirectory: "/var/lib/qorpera-runner/.local/state/qorpera-runner",
 	runnerTemporaryDirectory: "/var/lib/qorpera-runner/tmp",
+	nativeProviderTemporaryDirectory: "/var/lib/qorpera-native-provider/tmp",
+	mountInfo: "/proc/self/mountinfo",
+};
+
+const PRODUCTION_LOGIN_PATHS: LxdNativeLoginBootstrapPaths = {
+	bootstrapConfig: "/var/lib/qorpera-bootstrap/login-bootstrap.json",
+	nativeProviderEnvironment: "/var/lib/qorpera-bootstrap/native-provider.env",
+	credentialSource: "/var/lib/qorpera-bootstrap/credentials",
+	identityVolume: "/var/lib/qorpera/identity",
+	identityMarker: "/var/lib/qorpera/identity/qorpera-compute-identity.json",
+	identityMasterKey: "/var/lib/qorpera/identity/qorpera-native-provider-master-key",
 	nativeProviderTemporaryDirectory: "/var/lib/qorpera-native-provider/tmp",
 	mountInfo: "/proc/self/mountinfo",
 };
@@ -127,6 +170,56 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 		nativeProviderEnvironmentPath: PRODUCTION_PATHS.nativeProviderEnvironment,
 		credentialSource: PRODUCTION_PATHS.credentialSource,
 		identityVolumePath: PRODUCTION_PATHS.identityVolume,
+	};
+}
+
+export function parseLxdNativeLoginBootstrapConfig(value: unknown): LxdNativeLoginBootstrapConfig {
+	const input = record(value, "LXD native login bootstrap configuration");
+	exactKeys(
+		input,
+		[
+			"schema",
+			"compute_identity_id",
+			"supabase_url",
+			"native_bridge_url",
+			"trusted_source",
+			"native_provider_environment_path",
+			"credential_source",
+			"identity_volume_path",
+		],
+		"LXD native login bootstrap configuration",
+	);
+	if (input.schema !== LOGIN_BOOTSTRAP_SCHEMA) {
+		throw new Error("LXD native login bootstrap schema is unsupported");
+	}
+	if (
+		input.native_provider_environment_path !== PRODUCTION_LOGIN_PATHS.nativeProviderEnvironment ||
+		input.credential_source !== PRODUCTION_LOGIN_PATHS.credentialSource ||
+		input.identity_volume_path !== PRODUCTION_LOGIN_PATHS.identityVolume
+	) {
+		throw new Error("LXD native login bootstrap paths are outside the guest-image contract");
+	}
+	const supabaseUrl = text(input.supabase_url, "Supabase URL", /^https:\/\/[A-Za-z0-9.-]+(?::[0-9]+)?\/?$/);
+	const nativeBridgeUrl = text(
+		input.native_bridge_url,
+		"Native bridge URL",
+		/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}\/$/,
+	);
+	const nativePort = Number(new URL(nativeBridgeUrl).port);
+	if (!Number.isSafeInteger(nativePort) || nativePort < 1024 || nativePort > 65_535) {
+		throw new Error("Native bridge URL is invalid");
+	}
+	const trustedSource = text(input.trusted_source, "Native login trusted source", /^[0-9.]+$/);
+	if (isIP(trustedSource) !== 4) throw new Error("Native login trusted source is invalid");
+	return {
+		schema: LOGIN_BOOTSTRAP_SCHEMA,
+		computeIdentityId: text(input.compute_identity_id, "Compute Identity id", UUID_PATTERN),
+		supabaseUrl: new URL(supabaseUrl).origin,
+		nativeBridgeUrl,
+		trustedSource,
+		nativeProviderEnvironmentPath: PRODUCTION_LOGIN_PATHS.nativeProviderEnvironment,
+		credentialSource: PRODUCTION_LOGIN_PATHS.credentialSource,
+		identityVolumePath: PRODUCTION_LOGIN_PATHS.identityVolume,
 	};
 }
 
@@ -241,7 +334,13 @@ async function ensureIdentityMasterKey(path: string, expectedUid: number, expect
 	await chmod(path, 0o600);
 }
 
-function nativeProviderEnvironment(encoded: string, baseUrl: string, nativeBridgeUrl: string): void {
+function nativeProviderEnvironment(
+	encoded: string,
+	baseUrl: string,
+	nativeBridgeUrl: string,
+	computeIdentityId: string,
+	trustedSource?: string,
+): void {
 	const environment = new Map<string, string>();
 	for (const line of encoded.split(/\r?\n/)) {
 		if (!line) continue;
@@ -257,20 +356,24 @@ function nativeProviderEnvironment(encoded: string, baseUrl: string, nativeBridg
 	const expectedKeys = [
 		"QORPERA_CLAUDE_PATH",
 		"QORPERA_CODEX_PATH",
+		"QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID",
 		"QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY",
 		"QORPERA_NATIVE_PROVIDER_HOST",
 		"QORPERA_NATIVE_PROVIDER_PORT",
 		"QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT",
 		"QORPERA_SUPABASE_URL",
+		...(trustedSource ? ["QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE"] : []),
 	];
-	if (JSON.stringify([...environment.keys()].sort()) !== JSON.stringify(expectedKeys)) {
+	if (JSON.stringify([...environment.keys()].sort()) !== JSON.stringify(expectedKeys.sort())) {
 		throw new Error("Native provider environment contains unexpected settings");
 	}
 	const bridge = new URL(nativeBridgeUrl);
 	if (
 		environment.get("QORPERA_SUPABASE_URL") !== baseUrl ||
+		environment.get("QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID") !== computeIdentityId ||
 		environment.get("QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY") !== "virtual_machine" ||
-		environment.get("QORPERA_NATIVE_PROVIDER_HOST") !== "127.0.0.1" ||
+		environment.get("QORPERA_NATIVE_PROVIDER_HOST") !== (trustedSource ? "0.0.0.0" : "127.0.0.1") ||
+		(trustedSource !== undefined && environment.get("QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE") !== trustedSource) ||
 		environment.get("QORPERA_NATIVE_PROVIDER_PORT") !== bridge.port ||
 		environment.get("QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT") !== PRODUCTION_PATHS.nativeProviderTemporaryDirectory ||
 		bridge.protocol !== "http:" ||
@@ -287,19 +390,26 @@ function nativeProviderEnvironment(encoded: string, baseUrl: string, nativeBridg
 	}
 }
 
-async function verifyCredentialSource(path: string, expectedUid: number): Promise<void> {
+async function verifyCredentialSource(
+	path: string,
+	expectedUid: number,
+	boundary: "runner" | "native-login",
+): Promise<void> {
 	const metadata = await lstat(path);
 	if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== expectedUid) {
 		throw new Error("LXD runner credential source is unsafe");
 	}
 	await chmod(path, 0o700);
 	const entries = (await readdir(path)).sort();
-	const expected = [
-		"qorpera-native-bridge",
-		"qorpera-runner-activation",
-		"qorpera-runner-assignment",
-		"qorpera-supabase-service-key",
-	];
+	const expected =
+		boundary === "runner"
+			? [
+					"qorpera-native-bridge",
+					"qorpera-runner-activation",
+					"qorpera-runner-assignment",
+					"qorpera-supabase-service-key",
+				]
+			: ["qorpera-native-bridge", "qorpera-supabase-service-key"];
 	if (JSON.stringify(entries) !== JSON.stringify(expected)) {
 		throw new Error("LXD runner credential source contains unexpected entries");
 	}
@@ -455,9 +565,15 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 		expectedRootUid,
 		true,
 	);
-	nativeProviderEnvironment(nativeProviderEnvironmentEncoded, runnerConfig.baseUrl, runnerConfig.nativeBridgeUrl);
+	nativeProviderEnvironment(
+		nativeProviderEnvironmentEncoded,
+		runnerConfig.baseUrl,
+		runnerConfig.nativeBridgeUrl,
+		bootstrap.computeIdentityId,
+		undefined,
+	);
 
-	await verifyCredentialSource(paths.credentialSource, expectedRootUid);
+	await verifyCredentialSource(paths.credentialSource, expectedRootUid, "runner");
 	const identityMetadata = await lstat(paths.identityVolume);
 	if (
 		!identityMetadata.isDirectory() ||
@@ -489,4 +605,65 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 	const start = options.startService ?? startRunnerService;
 	await start(NATIVE_PROVIDER_SERVICE);
 	await start(RUNNER_SERVICE);
+}
+
+export async function runLxdNativeLoginBootstrap(options: RunLxdNativeLoginBootstrapOptions = {}): Promise<void> {
+	const paths = options.paths ?? PRODUCTION_LOGIN_PATHS;
+	const expectedRootUid = options.expectedRootUid ?? 0;
+	const expectedRootGid = options.expectedRootGid ?? 0;
+	if ((process.getuid?.() ?? -1) !== expectedRootUid) {
+		throw new Error("LXD native login bootstrap must run as root");
+	}
+
+	const bootstrapEncoded = await readOwnedFile(
+		paths.bootstrapConfig,
+		MAX_BOOTSTRAP_BYTES,
+		"LXD native login bootstrap configuration",
+		expectedRootUid,
+		true,
+	);
+	const bootstrap = parseLxdNativeLoginBootstrapConfig(
+		parseJson(bootstrapEncoded, "LXD native login bootstrap configuration"),
+	);
+	if (
+		bootstrap.nativeProviderEnvironmentPath !== PRODUCTION_LOGIN_PATHS.nativeProviderEnvironment ||
+		bootstrap.credentialSource !== PRODUCTION_LOGIN_PATHS.credentialSource ||
+		bootstrap.identityVolumePath !== PRODUCTION_LOGIN_PATHS.identityVolume
+	) {
+		throw new Error("LXD native login bootstrap configuration is inconsistent");
+	}
+
+	const nativeProviderEnvironmentEncoded = await readOwnedFile(
+		paths.nativeProviderEnvironment,
+		MAX_BOOTSTRAP_BYTES,
+		"Native provider environment",
+		expectedRootUid,
+		true,
+	);
+	nativeProviderEnvironment(
+		nativeProviderEnvironmentEncoded,
+		bootstrap.supabaseUrl,
+		bootstrap.nativeBridgeUrl,
+		bootstrap.computeIdentityId,
+		bootstrap.trustedSource,
+	);
+	await verifyCredentialSource(paths.credentialSource, expectedRootUid, "native-login");
+
+	const identityMetadata = await lstat(paths.identityVolume);
+	if (
+		!identityMetadata.isDirectory() ||
+		identityMetadata.isSymbolicLink() ||
+		identityMetadata.uid !== expectedRootUid
+	) {
+		throw new Error("Compute Identity volume mount is unsafe");
+	}
+	verifyMountedIdentityVolume(await readFile(paths.mountInfo, "utf-8"), paths.identityVolume);
+	await chmod(paths.identityVolume, 0o700);
+	await ensureIdentityMarker(paths.identityMarker, bootstrap.computeIdentityId, expectedRootUid, expectedRootGid);
+	await ensureIdentityMasterKey(paths.identityMasterKey, expectedRootUid, expectedRootGid);
+
+	const nativeIdentity = options.nativeServiceIdentity ?? (await serviceIdentity("qorpera-native-provider"));
+	const nativeHome = dirname(paths.nativeProviderTemporaryDirectory);
+	await ensureOwnedDirectoryTree(nativeHome, paths.nativeProviderTemporaryDirectory, nativeIdentity);
+	await (options.startService ?? startRunnerService)(NATIVE_PROVIDER_SERVICE);
 }

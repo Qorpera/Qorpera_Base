@@ -8,6 +8,7 @@ import {
 	type CompleteNativeProviderLoginInput,
 	type NativeCredentialCapsuleStore,
 	type NativeHarnessDriver,
+	type NativeProviderExecutionRequest,
 	NativeProviderHost,
 	type NativeProviderLoginDescription,
 	OfficialCliNativeHarnessDriver,
@@ -25,6 +26,7 @@ const masterKey = randomBytes(32).toString("base64url");
 const loginId = "10000000-0000-4000-8000-000000000001";
 const connectionId = "10000000-0000-4000-8000-000000000002";
 const computeIdentityId = "10000000-0000-4000-8000-000000000003";
+const otherComputeIdentityId = "10000000-0000-4000-8000-000000000013";
 const ownerUserId = "10000000-0000-4000-8000-000000000004";
 const profileId = "10000000-0000-4000-8000-000000000005";
 const runnerId = "10000000-0000-4000-8000-000000000011";
@@ -209,6 +211,36 @@ describe("native provider host", () => {
 		}
 	});
 
+	it("rejects native requests that did not arrive from the configured infrastructure source", async () => {
+		const describeLogin = vi.fn();
+		const host = new NativeProviderHost({
+			controlPlane: { describeLogin, completeLogin: vi.fn(), validateExecution: vi.fn() },
+			capsules: new MemoryCapsules(),
+			harness: { beginLogin: vi.fn(), execute: vi.fn() },
+			masterKey,
+			computeIdentityId,
+		});
+		const service = new HttpNativeProviderHostService(
+			host,
+			randomBytes(32).toString("base64url"),
+			"127.0.0.1",
+			0,
+			"192.0.2.1",
+		);
+		const port = await service.start();
+		try {
+			const response = await fetch(`http://127.0.0.1:${port}/login`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${capability}`, "content-type": "application/json" },
+				body: "{}",
+			});
+			expect(response.status).toBe(403);
+			expect(describeLogin).not.toHaveBeenCalled();
+		} finally {
+			await service.close();
+		}
+	});
+
 	it("runs official login inside the identity and returns only interaction metadata", async () => {
 		const root = await temporaryRoot("qorpera-native-host-");
 		const capsules = new MemoryCapsules();
@@ -242,6 +274,7 @@ describe("native provider host", () => {
 			capsules,
 			harness,
 			masterKey,
+			computeIdentityId,
 			temporaryRoot: root,
 		});
 		const request = {
@@ -255,6 +288,9 @@ describe("native provider host", () => {
 			capability,
 			expiresAt,
 		};
+		await expect(host.beginLogin({ ...request, computeIdentityId: otherComputeIdentityId })).rejects.toThrow(
+			"another Compute Identity",
+		);
 		await expect(host.beginLogin(request)).resolves.toEqual({
 			schema: "qorpera.native-provider-login-result/v1",
 			login_id: loginId,
@@ -301,9 +337,10 @@ describe("native provider host", () => {
 			capsules,
 			harness: { beginLogin: vi.fn(), execute },
 			masterKey,
+			computeIdentityId,
 			temporaryRoot: root,
 		});
-		const result = await host.execute({
+		const executionRequest: NativeProviderExecutionRequest = {
 			authority: {
 				leaseId: "10000000-0000-4000-8000-000000000007",
 				runId: "10000000-0000-4000-8000-000000000008",
@@ -332,7 +369,14 @@ describe("native provider host", () => {
 				transcriptPath: join(input, "transcript.jsonl"),
 			},
 			outputRoot: join(root, "output"),
-		});
+		};
+		await expect(
+			host.execute({
+				...executionRequest,
+				authority: { ...executionRequest.authority, computeIdentityId: otherComputeIdentityId },
+			}),
+		).rejects.toThrow("another Compute Identity");
+		const result = await host.execute(executionRequest);
 		expect(result).toMatchObject({
 			schema: "qorpera.native-harness-result/v1",
 			assistant_entry: {
@@ -389,6 +433,7 @@ describe("native provider host", () => {
 			capsules,
 			harness,
 			masterKey,
+			computeIdentityId,
 			temporaryRoot: root,
 		});
 		const bridgeToken = randomBytes(32).toString("base64url");

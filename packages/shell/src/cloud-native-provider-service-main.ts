@@ -79,6 +79,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		"QORPERA_NATIVE_PROVIDER_BRIDGE_TOKEN",
 	);
 	const executionBoundary = required(environment, "QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY");
+	const computeIdentityId = required(environment, "QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID");
 	if (executionBoundary !== "virtual_machine" && executionBoundary !== "microvm") {
 		throw new Error("QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY must name the dedicated machine boundary");
 	}
@@ -93,6 +94,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			environment.QORPERA_CLAUDE_PATH ?? "claude",
 		),
 		masterKey,
+		computeIdentityId,
 		...(environment.QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT
 			? { temporaryRoot: environment.QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT }
 			: {}),
@@ -102,6 +104,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		bridgeToken,
 		environment.QORPERA_NATIVE_PROVIDER_HOST ?? "127.0.0.1",
 		optionalPort(environment.QORPERA_NATIVE_PROVIDER_PORT),
+		environment.QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE,
 	);
 	const shutdown = new AbortController();
 	const stop = (): void => shutdown.abort();

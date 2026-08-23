@@ -21,6 +21,7 @@ await build({
 		"qorpera-native-provider-host": "packages/shell/src/cloud-native-provider-service-main.ts",
 		"qorpera-sandbox-probe": "packages/shell/src/cloud-runner-container-main.ts",
 		"qorpera-lxd-runner-bootstrap": "packages/shell/src/lxd-runner-bootstrap-main.ts",
+		"qorpera-lxd-native-login-bootstrap": "packages/shell/src/lxd-native-login-bootstrap-main.ts",
 	},
 	outdir: outputRoot,
 	outExtension: { ".js": ".mjs" },
@@ -41,6 +42,7 @@ const files = [
 	"qorpera-native-provider-host.mjs",
 	"qorpera-sandbox-probe.mjs",
 	"qorpera-lxd-runner-bootstrap.mjs",
+	"qorpera-lxd-native-login-bootstrap.mjs",
 	"run-job",
 ];
 const artifacts = [];

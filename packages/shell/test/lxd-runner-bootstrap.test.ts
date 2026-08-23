@@ -3,8 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	type LxdNativeLoginBootstrapPaths,
 	type LxdRunnerBootstrapPaths,
+	parseLxdNativeLoginBootstrapConfig,
 	parseLxdRunnerBootstrapConfig,
+	runLxdNativeLoginBootstrap,
 	runLxdRunnerBootstrap,
 } from "../src/lxd-runner-bootstrap.ts";
 
@@ -87,6 +90,7 @@ async function fixture(): Promise<{
 		[
 			"QORPERA_SUPABASE_URL=https://project.test",
 			"QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY=virtual_machine",
+			`QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID=${computeIdentityId}`,
 			"QORPERA_NATIVE_PROVIDER_HOST=127.0.0.1",
 			"QORPERA_NATIVE_PROVIDER_PORT=8083",
 			"QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT=/var/lib/qorpera-native-provider/tmp",
@@ -107,6 +111,60 @@ async function fixture(): Promise<{
 	const escapedMount = paths.identityVolume.replaceAll(" ", "\\040");
 	await writeFile(paths.mountInfo, `42 1 0:99 / ${escapedMount} rw - virtiofs identity rw\n`);
 	return { root, paths, sharedGid };
+}
+
+async function loginFixture(): Promise<{ root: string; paths: LxdNativeLoginBootstrapPaths }> {
+	const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-native-login-bootstrap-"));
+	roots.push(root);
+	const paths: LxdNativeLoginBootstrapPaths = {
+		bootstrapConfig: join(root, "login-bootstrap.json"),
+		nativeProviderEnvironment: join(root, "native-provider.env"),
+		credentialSource: join(root, "credentials"),
+		identityVolume: join(root, "identity"),
+		identityMarker: join(root, "identity", "qorpera-compute-identity.json"),
+		identityMasterKey: join(root, "identity", "qorpera-native-provider-master-key"),
+		nativeProviderTemporaryDirectory: join(root, "native", "tmp"),
+		mountInfo: join(root, "mountinfo"),
+	};
+	await mkdir(paths.credentialSource, { recursive: true, mode: 0o700 });
+	await mkdir(paths.identityVolume, { recursive: true, mode: 0o700 });
+	await writeFile(
+		paths.bootstrapConfig,
+		`${JSON.stringify({
+			schema: "qorpera.lxd-native-login-bootstrap/v1",
+			compute_identity_id: computeIdentityId,
+			supabase_url: "https://project.test",
+			native_bridge_url: "http://127.0.0.1:8083/",
+			trusted_source: "10.41.0.1",
+			native_provider_environment_path: "/var/lib/qorpera-bootstrap/native-provider.env",
+			credential_source: "/var/lib/qorpera-bootstrap/credentials",
+			identity_volume_path: "/var/lib/qorpera/identity",
+		})}\n`,
+		{ mode: 0o600 },
+	);
+	await writeFile(
+		paths.nativeProviderEnvironment,
+		[
+			"QORPERA_SUPABASE_URL=https://project.test",
+			"QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY=virtual_machine",
+			`QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID=${computeIdentityId}`,
+			"QORPERA_NATIVE_PROVIDER_HOST=0.0.0.0",
+			"QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE=10.41.0.1",
+			"QORPERA_NATIVE_PROVIDER_PORT=8083",
+			"QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT=/var/lib/qorpera-native-provider/tmp",
+			"QORPERA_CODEX_PATH=/usr/local/bin/codex",
+			"QORPERA_CLAUDE_PATH=/usr/local/bin/claude",
+			"",
+		].join("\n"),
+		{ mode: 0o600 },
+	);
+	await writeFile(join(paths.credentialSource, "qorpera-native-bridge"), `${"c".repeat(43)}\n`, { mode: 0o600 });
+	await writeFile(join(paths.credentialSource, "qorpera-supabase-service-key"), "service-key-test\n", {
+		mode: 0o600,
+	});
+	const escapedMount = paths.identityVolume.replaceAll(" ", "\\040");
+	await writeFile(paths.mountInfo, `42 1 0:99 / ${escapedMount} rw - virtiofs identity rw\n`);
+	return { root, paths };
 }
 
 describe("LXD runner guest bootstrap", () => {
@@ -187,5 +245,62 @@ describe("LXD runner guest bootstrap", () => {
 		expect(() => parseLxdRunnerBootstrapConfig({ ...base, identity_volume_path: "/tmp/identity" })).toThrow(
 			"outside the guest-image contract",
 		);
+	});
+});
+
+describe("LXD native login guest bootstrap", () => {
+	it("pins one Compute Identity, initializes its key inside the volume and starts only the native host", async () => {
+		const { root, paths } = await loginFixture();
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		const started: string[] = [];
+
+		await runLxdNativeLoginBootstrap({
+			paths,
+			expectedRootUid: uid,
+			expectedRootGid: gid,
+			nativeServiceIdentity: { uid, gid },
+			startService: async (service) => {
+				started.push(service);
+			},
+		});
+
+		expect(started).toEqual(["qorpera-native-provider-host.service"]);
+		expect(JSON.parse(await readFile(paths.identityMarker, "utf-8"))).toEqual({
+			schema: "qorpera.compute-identity-volume/v1",
+			compute_identity_id: computeIdentityId,
+		});
+		expect((await readFile(paths.identityMasterKey, "utf-8")).trim()).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect((await stat(join(root, "native"))).mode & 0o777).toBe(0o700);
+	});
+
+	it("rejects unknown configuration fields and extra guest credentials", async () => {
+		const base = {
+			schema: "qorpera.lxd-native-login-bootstrap/v1",
+			compute_identity_id: computeIdentityId,
+			supabase_url: "https://project.test",
+			native_bridge_url: "http://127.0.0.1:8083/",
+			trusted_source: "10.41.0.1",
+			native_provider_environment_path: "/var/lib/qorpera-bootstrap/native-provider.env",
+			credential_source: "/var/lib/qorpera-bootstrap/credentials",
+			identity_volume_path: "/var/lib/qorpera/identity",
+		};
+		expect(() => parseLxdNativeLoginBootstrapConfig({ ...base, typo: true })).toThrow("unknown field");
+
+		const { paths } = await loginFixture();
+		await writeFile(join(paths.credentialSource, "qorpera-runner-assignment"), `${"d".repeat(43)}\n`, {
+			mode: 0o600,
+		});
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		await expect(
+			runLxdNativeLoginBootstrap({
+				paths,
+				expectedRootUid: uid,
+				expectedRootGid: gid,
+				nativeServiceIdentity: { uid, gid },
+				startService: async () => undefined,
+			}),
+		).rejects.toThrow("unexpected entries");
 	});
 });
