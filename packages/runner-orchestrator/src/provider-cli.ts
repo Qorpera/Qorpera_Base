@@ -10,7 +10,12 @@ import {
 	LxdNativeLoginGateway,
 	type LxdNativeLoginGatewayConfig,
 } from "./lxd-login-gateway.ts";
-import { LxdCloudRunnerProviderBackend, type LxdCloudRunnerProviderConfig } from "./lxd-provider.ts";
+import {
+	HttpLxdGuestTransport,
+	LxdCloudRunnerProviderBackend,
+	type LxdCloudRunnerProviderConfig,
+} from "./lxd-provider.ts";
+import { nodeHttpFetch } from "./node-http-fetch.ts";
 import { ProcessCloudRunnerProviderBackend, type ProcessCloudRunnerProviderConfig } from "./process-provider.ts";
 import {
 	type CloudRunnerProviderServiceBackend,
@@ -169,7 +174,7 @@ interface ProviderRuntime {
 
 function runtime(): ProviderRuntime {
 	const kind = process.env.QORPERA_RUNNER_PROVIDER_BACKEND ?? "process";
-	if (kind === "process") return { backend: new ProcessCloudRunnerProviderBackend(processConfig()) };
+	if (kind === "process") return { backend: new ProcessCloudRunnerProviderBackend(processConfig(), nodeHttpFetch) };
 	if (kind === "lxd") {
 		const config = lxdConfig();
 		verifyLxdImageProvenanceFiles(
@@ -189,9 +194,14 @@ function runtime(): ProviderRuntime {
 			integer("QORPERA_LXD_OPERATION_TIMEOUT_SECONDS", 120),
 		);
 		return {
-			backend: new LxdCloudRunnerProviderBackend(config, client),
+			backend: new LxdCloudRunnerProviderBackend(
+				config,
+				client,
+				new HttpLxdGuestTransport(client, nodeHttpFetch),
+				nodeHttpFetch,
+			),
 			loginGateway: new HttpLxdNativeLoginGateway(
-				new LxdNativeLoginGateway(lxdLoginConfig(config), client),
+				new LxdNativeLoginGateway(lxdLoginConfig(config), client, nodeHttpFetch),
 				process.env.QORPERA_LXD_LOGIN_GATEWAY_HOST ?? "127.0.0.1",
 				integer("QORPERA_LXD_LOGIN_GATEWAY_PORT", 18082),
 			),
