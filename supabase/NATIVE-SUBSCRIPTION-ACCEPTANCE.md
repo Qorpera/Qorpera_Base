@@ -47,8 +47,9 @@ Record immutable image, package, migration, and source commit identifiers for
 each deployed component before starting.
 
 1. Apply the cloud control-plane, runner-orchestrator, native Compute Identity,
-   runner provisioning, native execution lease, and orchestrator token-rotation
-   migrations through `20260821004000_runner_orchestrator_control_rotation.sql`.
+   runner provisioning, native execution lease, orchestrator token-rotation,
+   and explicit Supabase object-promotion migrations through
+   `20260823000000_supabase_object_promotion.sql`.
 2. Deploy the `runner-control`, `runner-broker`, `runner-orchestrator`, and
    `native-provider-login` Edge functions with their documented authentication
    settings.

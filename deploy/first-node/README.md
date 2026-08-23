@@ -153,6 +153,41 @@ after all common checks pass and every object consumer explicitly uses
 remain `supabase-storage`. Do not configure a fake gateway and do not relabel
 this as a NAS topology test.
 
+When an already-published Company File is NAS-backed, run the explicit
+promotion workflow before acceptance. The preflight hashes the local checkout
+and requires an exact match with the current verified snapshot and reachability
+graph. `--apply` then uploads every immutable object to Supabase Storage,
+downloads and re-hashes the complete closure, and only afterward invokes the
+service-only, GC-fenced catalog promotion RPC:
+
+```sh
+export QORPERA_SUPABASE_SECRET_KEY="$(security find-generic-password -w \
+  -s com.qorpera.company41.supabase-project-secret -a "$USER")"
+
+node_modules/.bin/tsx scripts/promote-company-file-snapshot-to-supabase.ts \
+  --supabase-url https://REPLACE_PROJECT.supabase.co \
+  --profile-id REPLACE_PROFILE_UUID \
+  --company-root REPLACE_COMPANY_FILE_ROOT \
+  --snapshot-id REPLACE_CURRENT_HEAD_UUID \
+  --graph-id REPLACE_VERIFIED_GRAPH_UUID
+
+node_modules/.bin/tsx scripts/promote-company-file-snapshot-to-supabase.ts \
+  --supabase-url https://REPLACE_PROJECT.supabase.co \
+  --profile-id REPLACE_PROFILE_UUID \
+  --company-root REPLACE_COMPANY_FILE_ROOT \
+  --snapshot-id REPLACE_CURRENT_HEAD_UUID \
+  --graph-id REPLACE_VERIFIED_GRAPH_UUID \
+  --apply
+
+unset QORPERA_SUPABASE_SECRET_KEY
+```
+
+This is an explicit authority change, never a runtime fallback. It leaves the
+NAS bytes untouched. When the NAS returns, the existing
+`qorpera-object-gateway migrate` path re-hashes the Supabase objects, writes
+them to the NAS, and moves catalog authority back only after durable
+confirmation.
+
 ## Production activation gate
 
 Production additionally requires:
