@@ -11263,73 +11263,24 @@ async function renderSettingsTab() {
 	const content = $("settingsContent");
 	content.innerHTML = "";
 
-	if (settingsTab === "general") {
+	if (settingsTab === "company") {
 		const info = await window.qorpera.settingsInfo();
 		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
 		currentProfileAccess = info.profile?.access ?? info.profile?.team ?? currentProfileAccess;
-		setHeading(content, "General");
-		const displayedCompanyName = info.profile?.name || info.company?.name || state.name || "Current company";
-
-		const companyGroup = document.createElement("section");
-		companyGroup.className = "settings-group general-settings-group";
-		companyGroup.innerHTML = "<header><h2>Company</h2></header>";
-		const companyCard = document.createElement("div");
-		companyCard.className = "general-company-card";
-		companyCard.appendChild(
-			makeCompanyIcon(info.company?.companyIcon || currentCompanyIcon, displayedCompanyName),
-		);
-		const companyCopy = document.createElement("div");
-		companyCopy.className = "general-account-copy";
-		const companyName = document.createElement("strong");
-		companyName.textContent = displayedCompanyName;
-		const companyDetail = document.createElement("small");
-		companyDetail.textContent = info.profile
-			? (PROFILE_ROLE_LABELS[currentProfileAccess.role] ?? "Shared access")
-			: "Agents, connector recipes, and work for this company";
-		companyCopy.append(companyName, companyDetail);
-		const companyActions = document.createElement("div");
-		companyActions.className = "general-company-actions";
-		const changePicture = document.createElement("button");
-		changePicture.type = "button";
-		changePicture.textContent = "Choose picture";
-		changePicture.onclick = () =>
-			chooseCompanyPicture(async (picture) => {
-				changePicture.disabled = true;
-				if (await saveCurrentCompanyIcon(picture)) await renderSettingsTab();
-				else changePicture.disabled = false;
-			});
-		companyActions.appendChild(changePicture);
-		if (currentCompanyIcon.startsWith("data:image/")) {
-			const useAnonymous = document.createElement("button");
-			useAnonymous.type = "button";
-			useAnonymous.textContent = "Use anonymous icon";
-			useAnonymous.onclick = async () => {
-				useAnonymous.disabled = true;
-				if (await saveCurrentCompanyIcon("anonymous")) await renderSettingsTab();
-				else useAnonymous.disabled = false;
-			};
-			companyActions.appendChild(useAnonymous);
-		}
-		const switchCompany = document.createElement("button");
-		switchCompany.type = "button";
-		switchCompany.textContent = "Switch company";
-		switchCompany.onclick = async () => {
-			switchCompany.disabled = true;
-			await window.qorpera.showHub();
-		};
-		companyActions.appendChild(switchCompany);
-		companyCard.append(companyCopy, companyActions);
-		companyGroup.appendChild(companyCard);
-		content.appendChild(companyGroup);
+		renderCompanyTab(content, info);
 
 		const companyFileGroup = document.createElement("section");
-		companyFileGroup.className = "settings-group general-settings-group";
-		companyFileGroup.innerHTML = "<header><h2>Company File</h2></header>";
-		const companyFileCard = document.createElement("div");
-		companyFileCard.className = "general-account-card";
+		companyFileGroup.className = "settings-group general-settings-group company-file-settings";
+		const companyFileCard = document.createElement("button");
+		companyFileCard.type = "button";
+		companyFileCard.className = "company-file-card";
+		const companyFileMark = document.createElement("span");
+		companyFileMark.className = "company-file-mark";
+		companyFileMark.innerHTML = navGlyphSvg("folder", "company-file-glyph");
 		const companyFileCopy = document.createElement("div");
-		companyFileCopy.className = "general-account-copy";
+		companyFileCopy.className = "company-file-copy";
 		const companyFileTitle = document.createElement("strong");
+		companyFileTitle.textContent = "Company File";
 		const storage = info.profile?.companyFile;
 		const formatBytes = (value) => {
 			const bytes = Math.max(0, Number(value || 0));
@@ -11339,14 +11290,6 @@ async function renderSettingsTab() {
 			const amount = bytes / 1024 ** unitIndex;
 			return `${amount.toFixed(amount >= 10 || unitIndex === 0 ? 0 : 2)} ${units[unitIndex]}`;
 		};
-		const planKey = storage?.entitlement?.planKey ?? info.account?.entitlement?.planKey ?? "freemium";
-		const subscriptionLevel =
-			planKey === "internal"
-				? "Internal"
-				: planKey === "freemium"
-					? "Freemium"
-					: planKey.replace(/[-_]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
-		companyFileTitle.textContent = `Storage: ${storage ? formatBytes(storage.storageUsedBytes) : "Unavailable"} · ${subscriptionLevel}`;
 		const fileSyncState = info.profile?.status?.files;
 		const fileSyncError = info.profile?.status?.filesError;
 		const recoverableExecutions = Number(info.profile?.status?.recoverableExecutions || 0);
@@ -11370,11 +11313,20 @@ async function renderSettingsTab() {
 							: "Syncing";
 		companyFileTitle.title = fileSyncError || syncText;
 		const projectionDetail = document.createElement("small");
-		projectionDetail.textContent =
-			info.profile?.profileType === "cloud"
-				? "Cloud-authoritative · File Explorer opens a synced copy on this computer"
-				: "Stored on this computer";
+		const storageUsed = storage ? formatBytes(storage.storageUsedBytes) : "Unavailable";
+		const storageLimit = storage?.storageLimitBytes ? formatBytes(storage.storageLimitBytes) : undefined;
+		projectionDetail.textContent = `${storageUsed}${storageLimit ? ` of ${storageLimit}` : ""} · ${
+			info.profile?.profileType === "cloud" ? "Cloud-authoritative" : "Stored on this computer"
+		}`;
 		companyFileCopy.append(companyFileTitle, projectionDetail);
+		let companyFileStorageTrack;
+		if (storage?.storageLimitBytes) {
+			companyFileStorageTrack = document.createElement("span");
+			companyFileStorageTrack.className = "company-file-storage-track";
+			const storageFill = document.createElement("span");
+			storageFill.style.width = `${Math.min(100, Math.max(0, storage.storageUsedBytes / storage.storageLimitBytes * 100))}%`;
+			companyFileStorageTrack.appendChild(storageFill);
+		}
 		if (fileSyncError || fileConflictPaths > 0 || recoverableExecutions > 0 || fileSyncState !== "cloud") {
 			const companyFileDetail = document.createElement("small");
 			companyFileDetail.textContent = syncText;
@@ -11398,11 +11350,8 @@ async function renderSettingsTab() {
 		}
 		const companyFileActions = document.createElement("div");
 		companyFileActions.className = "general-company-actions";
-		const openCompanyFile = document.createElement("button");
-		openCompanyFile.type = "button";
-		openCompanyFile.textContent = info.profile?.profileType === "cloud" ? "Open synced copy" : "Open Company File";
-		openCompanyFile.onclick = async () => {
-			openCompanyFile.disabled = true;
+		companyFileCard.onclick = async () => {
+			companyFileCard.disabled = true;
 			try {
 				const result = await window.qorpera.openCompanyFile();
 				if (!result?.ok) throw new Error(result?.error ?? "The Company File could not be opened.");
@@ -11416,10 +11365,9 @@ async function renderSettingsTab() {
 			} catch (error) {
 				showToast(error instanceof Error ? error.message : "The Company File could not be opened.");
 			} finally {
-				openCompanyFile.disabled = false;
+				companyFileCard.disabled = false;
 			}
 		};
-		companyFileActions.appendChild(openCompanyFile);
 		if (fileConflictPaths > 0 && canUseProfile("write")) {
 			const openCloudVersion = document.createElement("button");
 			openCloudVersion.type = "button";
@@ -11634,9 +11582,19 @@ async function renderSettingsTab() {
 			};
 			companyFileActions.append(openReview, publishReview, discardReview);
 		}
-		companyFileCard.append(companyFileCopy, companyFileActions);
+		companyFileCard.append(companyFileMark, companyFileCopy);
+		if (companyFileStorageTrack) companyFileCard.appendChild(companyFileStorageTrack);
 		companyFileGroup.appendChild(companyFileCard);
+		if (companyFileActions.children.length) companyFileGroup.appendChild(companyFileActions);
 		content.appendChild(companyFileGroup);
+		return;
+	}
+
+	if (settingsTab === "general") {
+		const info = await window.qorpera.settingsInfo();
+		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
+		currentProfileAccess = info.profile?.access ?? info.profile?.team ?? currentProfileAccess;
+		setHeading(content, "General");
 
 		const accountGroup = document.createElement("section");
 		accountGroup.className = "settings-group general-settings-group";
@@ -11651,8 +11609,8 @@ async function renderSettingsTab() {
 		const accountEntitlementDetail = document.createElement("small");
 		accountEntitlementDetail.textContent =
 			accountEntitlement?.planKey === "internal"
-				? "Company-owned internal account · Full access · Complimentary · No subscription"
-				: "Freemium · 50 GB NAS storage included";
+				? "Company-owned internal account · Full access"
+				: "Personal account · Full access";
 		accountCopy.append(accountEmail, accountEntitlementDetail);
 		const signOutButton = document.createElement("button");
 		signOutButton.type = "button";
@@ -11672,6 +11630,30 @@ async function renderSettingsTab() {
 		accountCard.append(accountCopy, signOutButton);
 		accountGroup.appendChild(accountCard);
 		content.appendChild(accountGroup);
+
+		const planGroup = document.createElement("section");
+		planGroup.className = "settings-group general-settings-group";
+		planGroup.innerHTML = "<header><h2>Plan &amp; billing</h2></header>";
+		const planCard = document.createElement("div");
+		planCard.className = "general-account-card plan-settings-card";
+		const planCopy = document.createElement("div");
+		planCopy.className = "general-account-copy";
+		const planEyebrow = document.createElement("small");
+		planEyebrow.className = "plan-settings-eyebrow";
+		planEyebrow.textContent = "Current plan";
+		const planName = document.createElement("strong");
+		planName.textContent = accountEntitlement?.planKey === "internal" ? "Complimentary" : "Freemium";
+		const planDetail = document.createElement("small");
+		planDetail.textContent =
+			accountEntitlement?.planKey === "internal" ? "No active subscription" : "50 GB company storage included";
+		planCopy.append(planEyebrow, planName, planDetail);
+		const viewPlans = document.createElement("button");
+		viewPlans.type = "button";
+		viewPlans.textContent = "View plans";
+		viewPlans.onclick = () => showToast("Plan management is not available during private beta.");
+		planCard.append(planCopy, viewPlans);
+		planGroup.appendChild(planCard);
+		content.appendChild(planGroup);
 
 		const appearanceGroup = document.createElement("section");
 		appearanceGroup.className = "settings-group general-settings-group";
@@ -11696,14 +11678,6 @@ async function renderSettingsTab() {
 		setRow(languageGroup, "Language", "System default follows your computer's language.", language);
 		content.appendChild(languageGroup);
 
-		return;
-	}
-
-	if (settingsTab === "company") {
-		const info = await window.qorpera.settingsInfo();
-		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
-		currentProfileAccess = info.profile?.access ?? info.profile?.team ?? currentProfileAccess;
-		renderCompanyTab(content, info);
 		return;
 	}
 
