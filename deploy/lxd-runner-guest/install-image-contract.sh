@@ -28,7 +28,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install --yes ca-certificates crun dbus-user-session fuse-overlayfs nodejs npm podman slirp4netns uidmap
+apt-get install --yes ca-certificates crun dbus-user-session fuse-overlayfs git nodejs npm podman slirp4netns uidmap
 
 node_version=$(node --version | sed 's/^v//')
 if ! dpkg --compare-versions "${node_version}" ge 22.19.0; then

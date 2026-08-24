@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { cp, lstat, mkdir, mkdtemp, open, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
@@ -34,6 +35,52 @@ const MAX_QUEUED_INPUT_LINE_BYTES = 256 * 1024;
 const MAX_QUEUED_INPUT_IMAGES = 5;
 const MAX_QUEUED_INPUT_IMAGE_BYTES = 8 * 1024 * 1024;
 const CONTAINER_INPUT_ROOT = "/qorpera/input";
+
+async function initializeEphemeralCompanyRepository(companyRoot: string): Promise<void> {
+	const environment = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: "/dev/null",
+		GIT_CONFIG_NOSYSTEM: "1",
+		GIT_TERMINAL_PROMPT: "0",
+	};
+	const run = (args: readonly string[]): Promise<void> =>
+		new Promise((resolvePromise, rejectPromise) => {
+			execFile(
+				"git",
+				[...args],
+				{
+					cwd: companyRoot,
+					env: environment,
+					encoding: "utf-8",
+					maxBuffer: 1024 * 1024,
+					timeout: 120_000,
+					windowsHide: true,
+				},
+				(error) => (error ? rejectPromise(error) : resolvePromise()),
+			);
+		});
+	try {
+		await run(["init", "--quiet", "--initial-branch=qorpera-runner"]);
+		await run(["add", "--force", "--all", "--", "."]);
+		await run([
+			"-c",
+			"user.name=Qorpera Runner",
+			"-c",
+			"user.email=runner@qorpera.invalid",
+			"-c",
+			"commit.gpgSign=false",
+			"-c",
+			"core.hooksPath=/dev/null",
+			"commit",
+			"--quiet",
+			"--allow-empty",
+			"--message",
+			"Qorpera cloud snapshot",
+		]);
+	} catch (error) {
+		throw new Error("Runner Company File Git bootstrap failed", { cause: error });
+	}
+}
 
 export interface CloudRunnerSandboxLimits {
 	wallTimeMs: number;
@@ -774,6 +821,7 @@ async function materializeInput(
 		options.objects,
 	);
 	await cp(companyBaseRoot, companyRoot, { recursive: true, force: false, errorOnExist: true });
+	await initializeEphemeralCompanyRepository(companyRoot);
 	if (proposalSnapshot && proposalRoot) {
 		inputBytes = assertInputBudget(inputBytes, proposalSnapshot.tree.totalBytes, limits.maxInputBytes);
 		await materializeCloudCompanyTree(

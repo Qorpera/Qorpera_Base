@@ -364,6 +364,12 @@ describe("cloud runner execution sandboxes", () => {
 		let executionRoot = "";
 		const backend = new TestSandboxBackend(async (request) => {
 			executionRoot = dirname(dirname(request.input.companyRoot));
+			await expect(readFile(join(request.input.companyRoot, ".git", "HEAD"), "utf-8")).resolves.toBe(
+				"ref: refs/heads/qorpera-runner\n",
+			);
+			await expect(
+				readFile(join(request.input.companyRoot, ".git", "refs", "heads", "qorpera-runner"), "utf-8"),
+			).resolves.toMatch(/^[0-9a-f]{40}\n$/);
 			await expect(readFile(join(request.input.companyBaseRoot, "company.md"), "utf-8")).resolves.toBe(
 				"# Exact company\n",
 			);
