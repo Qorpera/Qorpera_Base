@@ -97,7 +97,7 @@ lxc start "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}"
 
 guest_ready=false
 for _attempt in $(seq 1 180); do
-	if lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/cloud-init status --wait >/dev/null 2>&1; then
+	if lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/cloud-init status --wait </dev/null >/dev/null 2>&1; then
 		guest_ready=true
 		break
 	fi
@@ -108,21 +108,21 @@ if [[ ${guest_ready} != true ]]; then
 	exit 1
 fi
 
-lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/install -d -o root -g root -m 0700 /root/qorpera-lxd-runner-guest
+lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/install -d -o root -g root -m 0700 /root/qorpera-lxd-runner-guest </dev/null
 lxc file push "${archive}" "${BUILDER_INSTANCE}/root/qorpera-lxd-runner-guest/package.tar.gz" --project "${LXD_BUILDER_PROJECT}"
 lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/tar \
 	--extract --gzip --file /root/qorpera-lxd-runner-guest/package.tar.gz \
-	--directory /root/qorpera-lxd-runner-guest
+	--directory /root/qorpera-lxd-runner-guest </dev/null
 lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/bash \
 	/root/qorpera-lxd-runner-guest/install-image-contract.sh \
-	/root/qorpera-lxd-runner-guest
+	/root/qorpera-lxd-runner-guest </dev/null
 
-lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/rm -rf -- /root/qorpera-lxd-runner-guest
-lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/cloud-init clean --logs --machine-id
+lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/rm -rf -- /root/qorpera-lxd-runner-guest </dev/null
+lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/cloud-init clean --logs --machine-id </dev/null
 lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/rm -f -- /etc/ssh/ssh_host_ecdsa_key /etc/ssh/ssh_host_ecdsa_key.pub \
 	/etc/ssh/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key.pub \
-	/etc/ssh/ssh_host_rsa_key /etc/ssh/ssh_host_rsa_key.pub
-lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/sync
+	/etc/ssh/ssh_host_rsa_key /etc/ssh/ssh_host_rsa_key.pub </dev/null
+lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/sync </dev/null
 lxc stop "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" --timeout 120
 
 lxc publish "${BUILDER_INSTANCE}" \
