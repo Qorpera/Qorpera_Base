@@ -880,7 +880,7 @@ function parseOperation(value: unknown): HostedCompanyOperation {
 		...(environmentId ? { environmentId } : {}),
 		operationType: operationType(input.operation_type),
 		entityId: uuid(input.entity_id, "company operation entity id"),
-		entityVersion: integer(input.entity_version, "company operation entity version", 1, Number.MAX_SAFE_INTEGER),
+		entityVersion: integer(input.entity_version, "company operation entity version", 0, Number.MAX_SAFE_INTEGER),
 		contentSha256: sha256(input.content_sha256, "company operation content hash"),
 		payload: json(input.payload, "company operation payload"),
 		actorUserId: uuid(input.actor_user_id, "company operation actor id"),

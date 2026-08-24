@@ -266,7 +266,7 @@ class MemoryBrokerTransport implements CloudRunnerBrokerTransport {
 				environment_id: environmentId,
 				operation_type: "session_event",
 				entity_id: "12121212-1212-4212-8212-121212121212",
-				entity_version: 1,
+				entity_version: 0,
 				content_sha256: "e".repeat(64),
 				payload: { message: "immutable" },
 				actor_user_id: actorUserId,
@@ -536,7 +536,7 @@ describe("cloud runner object broker", () => {
 		]);
 		currentSessionToken = "n".repeat(43);
 		await expect(current.listOperations((await current.describe()).version)).resolves.toMatchObject([
-			{ sequence: 2, payload: { message: "immutable" } },
+			{ sequence: 2, entityVersion: 0, payload: { message: "immutable" } },
 		]);
 		expect(memory.authorities).toMatchObject([
 			{ sessionToken, leaseToken, runnerId, jobId },
