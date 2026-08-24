@@ -60,3 +60,38 @@ The post-fix full and focused comparison found no further P0, P1, or P2 issues.
 - `connection-requests.test.ts` and `staff-templates.test.ts`: 10 tests passed.
 
 final result: passed
+
+---
+
+# Settings simplification design QA
+
+## Comparison inputs
+
+- Selected source mockup: `/Users/jonas/.codex/generated_images/01a034c2-8b32-7df3-ab81-3ba4b566ec12/exec-a3419bf1-1d5a-4dee-ab59-de58cdfb3b5e.png`
+- General implementation: `/Users/jonas/.codex/visualizations/2026/08/24/01a034c2-8b32-7df3-ab81-3ba4b566ec12/general-settings-implementation.png`
+- Company implementation: `/Users/jonas/.codex/visualizations/2026/08/24/01a034c2-8b32-7df3-ab81-3ba4b566ec12/company-settings-implementation.png`
+- Combined comparison: `/Users/jonas/.codex/visualizations/2026/08/24/01a034c2-8b32-7df3-ab81-3ba4b566ec12/settings-comparison.png`
+- Viewport: 958 x 843 CSS pixels per settings page at 1x density
+- States: General selected; Company selected
+
+## Full-page review
+
+- The General page now contains Account, Plan & billing, and Appearance only. The removed Company summary no longer competes with account settings.
+- The Company page retains the plain company-name heading and staff content. Company File sits below Staff at work with enough separation to read as a distinct storage destination.
+- Both pages preserve the existing settings shell, sidebar, typography, neutral palette, spacing system, and responsive content width.
+- No content is cropped, overflowing, or visually misaligned at the comparison viewport.
+
+## Focused component review
+
+- Plan & billing presents the current plan, subscription state, and a single plan-management action in one compact row.
+- Company File is a single full-width interactive storage row. The folder mark, storage description, and usage bar read as one click target without a redundant open button.
+- Exceptional Company File recovery and review actions remain available outside the primary storage row when those states occur.
+- Interactive rows and buttons retain visible hover and keyboard-focus states.
+
+## Iteration history
+
+1. Captured both implementation states at 1280 x 720 to check the overall hierarchy and spacing.
+2. Re-captured both states at the source mockup's 958 x 843 per-page viewport and compared them with the selected mockup in one input.
+3. Confirmed the final hierarchy, spacing, clipping, and action placement without additional visual corrections.
+
+Final result: passed
