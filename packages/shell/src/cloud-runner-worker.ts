@@ -295,6 +295,7 @@ export class EphemeralCloudRunnerWorker {
 							execution = await executeNativeCloudRunnerJob({
 								...shared,
 								authority,
+								refreshAuthority: () => broker.renewNativeAuthority(),
 								bridge: this.#options.nativeProviderBridge,
 								nativeBroker: broker,
 								...(this.#options.nativeWorkspaceGid !== undefined

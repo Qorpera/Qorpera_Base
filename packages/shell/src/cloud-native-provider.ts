@@ -70,6 +70,7 @@ export interface NativeProviderIdentityBridge {
 export interface ExecuteNativeCloudRunnerJobOptions
 	extends Omit<ExecuteCloudRunnerJobOptions, "backend" | "modelBroker"> {
 	authority: CloudRunnerNativeAuthority;
+	refreshAuthority: () => Promise<CloudRunnerNativeAuthority>;
 	bridge: NativeProviderComputerBridge;
 	nativeWorkspaceGid?: number;
 	nativeBroker: {
@@ -416,17 +417,20 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 	readonly capabilities = Object.freeze(["agent_turn"] as const);
 	readonly jobTypes = Object.freeze(["agent_turn"] as const);
 	readonly #authority: CloudRunnerNativeAuthority;
+	readonly #refreshAuthority: () => Promise<CloudRunnerNativeAuthority>;
 	readonly #bridge: NativeProviderComputerBridge;
 	readonly #nativeWorkspaceGid?: number;
 	readonly #nativeWorkspaceRoot?: string;
 
 	constructor(
 		authority: CloudRunnerNativeAuthority,
+		refreshAuthority: () => Promise<CloudRunnerNativeAuthority>,
 		bridge: NativeProviderComputerBridge,
 		nativeWorkspaceGid?: number,
 		nativeWorkspaceRoot?: string,
 	) {
 		this.#authority = authority;
+		this.#refreshAuthority = refreshAuthority;
 		this.#bridge = bridge;
 		this.#nativeWorkspaceGid = nativeWorkspaceGid;
 		this.#nativeWorkspaceRoot = nativeWorkspaceRoot ? resolve(nativeWorkspaceRoot) : undefined;
@@ -484,14 +488,22 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 			await shareNativeWorkspaceTree(workRoot, this.#nativeWorkspaceGid, true);
 			await shareNativeWorkspaceTree(request.outputRoot, this.#nativeWorkspaceGid, true);
 		}
-		return this.#bridge.start(this.#authority, request);
+		const authority = await this.#refreshAuthority();
+		if (
+			authority.leaseId !== this.#authority.leaseId ||
+			authority.runId !== this.#authority.runId ||
+			authority.assignmentId !== this.#authority.assignmentId
+		) {
+			throw new Error("Native provider authority refresh returned another execution");
+		}
+		return this.#bridge.start(authority, request);
 	}
 }
 
 export async function executeNativeCloudRunnerJob(
 	options: ExecuteNativeCloudRunnerJobOptions,
 ): Promise<CloudRunnerExecutionResult> {
-	const { authority, bridge, nativeBroker, nativeWorkspaceGid, ...execution } = options;
+	const { authority, refreshAuthority, bridge, nativeBroker, nativeWorkspaceGid, ...execution } = options;
 	if (
 		authority.authenticationMode !== "native_subscription" ||
 		(authority.nativeHarness !== "codex-cli" && authority.nativeHarness !== "claude-code")
@@ -502,6 +514,7 @@ export async function executeNativeCloudRunnerJob(
 		...execution,
 		backend: new NativeProviderSandboxBackend(
 			authority,
+			refreshAuthority,
 			bridge,
 			nativeWorkspaceGid,
 			nativeWorkspaceGid === undefined ? undefined : execution.temporaryRoot,

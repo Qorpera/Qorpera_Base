@@ -219,7 +219,10 @@ describe("native provider computer bridge", () => {
 			const bridge: NativeProviderComputerBridge = {
 				executionGuarantees: nativeProviderExecutionGuarantees("virtual_machine"),
 				start: vi.fn(async (receivedAuthority, receivedRequest): Promise<CloudRunnerSandboxProcess> => {
-					expect(receivedAuthority).toEqual(authority);
+					expect(receivedAuthority).toEqual({
+						...authority,
+						expiresAt: "2026-08-21T12:10:00.000Z",
+					});
 					expect(receivedRequest.hostBroker).toBeUndefined();
 					if (nativeWorkspaceGid !== undefined) {
 						const [workspaceDirectory, inputDirectory, inputFile, workFile, outputDirectory] = await Promise.all([
@@ -258,16 +261,24 @@ describe("native provider computer bridge", () => {
 			};
 			const appendTranscriptEvent = vi.fn(async () => ({}));
 			const bindProviderSession = vi.fn(async () => ({}));
+			const refreshedAuthority = {
+				...authority,
+				expiresAt: "2026-08-21T12:10:00.000Z",
+			};
+			const refreshAuthority = vi.fn(async () => refreshedAuthority);
 			const completed = await executeNativeCloudRunnerJob({
 				job,
 				substrate,
 				objects,
 				authority,
+				refreshAuthority,
 				bridge,
 				nativeBroker: { appendTranscriptEvent, bindProviderSession },
 				...(nativeWorkspaceGid !== undefined ? { nativeWorkspaceGid } : {}),
 				temporaryRoot,
 			});
+			expect(refreshAuthority).toHaveBeenCalledOnce();
+			expect(bridge.start).toHaveBeenCalledWith(refreshedAuthority, expect.any(Object));
 			expect(completed.result).toMatchObject({
 				backend: "native-provider-computer",
 				backend_result: { provider_session_id: "official-session-1" },
