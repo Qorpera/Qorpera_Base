@@ -388,6 +388,9 @@ describe("native provider host", () => {
 		const execute = vi.fn(async ({ identityRoot, prompt }) => {
 			expect(await readFile(join(identityRoot, "codex", "auth.json"), "utf-8")).toContain("private");
 			expect(prompt).toContain("canonical-transcript");
+			await writeFile(join(identityRoot, "codex", "auth.json"), '{"access_token":"refreshed-private"}\n');
+			await mkdir(join(identityRoot, "codex", "sessions"), { recursive: true });
+			await writeFile(join(identityRoot, "codex", "sessions", "transient.jsonl"), "runtime-only\n");
 			return { text: "native response", providerSessionId: "session-1" };
 		});
 		const validateExecution = vi.fn();
@@ -446,6 +449,10 @@ describe("native provider host", () => {
 		});
 		expect(JSON.stringify(result)).not.toContain("private");
 		expect(validateExecution).toHaveBeenCalledTimes(2);
+		const refreshedIdentity = await temporaryRoot("qorpera-native-refreshed-identity-");
+		await openNativeCredentialCapsule(await capsules.get(reference), refreshedIdentity, masterKey, capsuleId);
+		expect(await readFile(join(refreshedIdentity, "codex", "auth.json"), "utf-8")).toContain("refreshed-private");
+		await expect(lstat(join(refreshedIdentity, "codex", "sessions"))).rejects.toMatchObject({ code: "ENOENT" });
 
 		validateExecution.mockReset();
 		validateExecution.mockResolvedValueOnce(undefined);

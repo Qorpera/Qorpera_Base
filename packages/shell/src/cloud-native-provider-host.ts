@@ -211,9 +211,12 @@ async function prepareHarnessEnvironment(identityRoot: string): Promise<NodeJS.P
 	return cleanHarnessEnvironment(identityRoot);
 }
 
-async function collectCapsuleFiles(root: string): Promise<CapsuleArchive> {
+async function collectCapsuleFiles(root: string, durablePaths?: ReadonlySet<string>): Promise<CapsuleArchive> {
 	const files: CapsuleFile[] = [];
 	let totalBytes = 0;
+	const durablePathList = durablePaths === undefined ? undefined : [...durablePaths];
+	const containsDurableFile = (path: string): boolean =>
+		durablePathList === undefined || durablePathList.some((durablePath) => durablePath.startsWith(`${path}/`));
 	const visit = async (directory: string): Promise<void> => {
 		const entries = await readdir(directory, { withFileTypes: true });
 		entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
@@ -227,10 +230,12 @@ async function collectCapsuleFiles(root: string): Promise<CapsuleArchive> {
 			// credential directory is already captured as ordinary files.
 			if (metadata.isSymbolicLink()) continue;
 			if (metadata.isDirectory()) {
+				if (!containsDurableFile(relativePath)) continue;
 				await visit(absolute);
 				continue;
 			}
 			if (!metadata.isFile()) throw new Error("Credential capsule contains an unsupported entry");
+			if (durablePaths !== undefined && !durablePaths.has(relativePath)) continue;
 			totalBytes += metadata.size;
 			if (files.length >= MAX_CAPSULE_FILES || totalBytes > MAX_CAPSULE_PLAINTEXT_BYTES) {
 				throw new Error("Credential capsule exceeds its storage budget");
@@ -299,9 +304,10 @@ export async function sealNativeCredentialCapsule(
 	root: string,
 	keyValue: string,
 	capsuleId: string,
+	durablePaths?: ReadonlySet<string>,
 ): Promise<Uint8Array> {
 	requiredUuid(capsuleId, "Credential capsule id");
-	const archive = await collectCapsuleFiles(requiredAbsolutePath(root, "Credential capsule root"));
+	const archive = await collectCapsuleFiles(requiredAbsolutePath(root, "Credential capsule root"), durablePaths);
 	const plaintext = Buffer.from(JSON.stringify(archive), "utf-8");
 	if (plaintext.byteLength > MAX_CAPSULE_PLAINTEXT_BYTES)
 		throw new Error("Credential capsule exceeds its storage budget");
@@ -801,6 +807,7 @@ export class NativeProviderHost {
 			const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
 			stage = "credential-opening";
 			await openNativeCredentialCapsule(capsule, root, this.#masterKey, authority.credentialCapsuleId);
+			const durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
 			stage = "prompt-materialization";
 			const context = await executionPrompt(request);
 			stage = "harness-execution";
@@ -820,6 +827,7 @@ export class NativeProviderHost {
 				root,
 				this.#masterKey,
 				authority.credentialCapsuleId,
+				durableCredentialPaths,
 			);
 			stage = "credential-upload";
 			await this.#capsules.put(authority.encryptedCapsuleReference, refreshedCapsule, executionAbort.signal);
