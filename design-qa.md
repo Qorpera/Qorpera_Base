@@ -108,7 +108,7 @@ Final result: passed
 - Implementation screenshot: `/Users/jonas/.codex/visualizations/2026/08/24/01a034c5-251f-7483-aae8-dad4ccc1da22/feedback-pipeline/feedback-implementation.png`
 - Full-view comparison: `/Users/jonas/.codex/visualizations/2026/08/24/01a034c5-251f-7483-aae8-dad4ccc1da22/feedback-pipeline/feedback-qa-comparison.png`
 - Focused modal comparison: `/Users/jonas/.codex/visualizations/2026/08/24/01a034c5-251f-7483-aae8-dad4ccc1da22/feedback-pipeline/feedback-qa-focus.png`
-- State: feedback modal open, empty details, diagnostics enabled, no category selected.
+- State: feedback modal open, empty details, no category selected.
 
 ## Normalization
 
@@ -121,16 +121,16 @@ Final result: passed
 ## Fidelity review
 
 - Fonts and typography: both use a neutral system UI family with closely matched title weight, form-label size, and compact control text. The implementation intentionally uses Qorpera's existing font tokens.
-- Spacing and layout rhythm: modal width, centered placement, header spacing, chip row, textarea, diagnostic row, privacy copy, and full-width submit action align with the reference. Radius and shadow remain consistent with Qorpera's existing modal grammar.
+- Spacing and layout rhythm: modal width, centered placement, header spacing, chip row, textarea, and full-width submit action align with the reference. Radius and shadow remain consistent with Qorpera's existing modal grammar.
 - Colors and visual tokens: white surface, soft gray overlay, neutral borders, blue focus ring, black active controls, and disabled gray submit state match the source while using existing Qorpera tokens.
 - Image quality and asset fidelity: the modal contains no raster imagery, logos, or bespoke illustration assets. Existing native form and close controls remain sharp at the captured density.
-- Copy and content: the information architecture matches the source. Categories and diagnostic disclosure are intentionally Qorpera-specific. Conversation content, files, and browser history are explicitly excluded.
+- Copy and content: the final product direction removes diagnostic and privacy disclosure rows from the modal, leaving categories, required details, and the submit action. The submitted diagnostics remain restricted to app version, platform, architecture, and company type; conversation content, files, and browser history remain excluded by the implementation.
 
 ## Interaction and accessibility checks
 
 - Category selection changes `aria-pressed` and is reversible.
 - Required details enable the submit action only after non-whitespace input.
-- Basic diagnostics are selected by default and can be disabled.
+- Basic diagnostics are sent automatically without adding a decision to the feedback form.
 - Focus moves into the textarea on open, remains trapped inside the modal, and returns to the invoking control on close.
 - Escape and backdrop click close the modal; close is suppressed during submission.
 - Submission exposes pending, success, and retry states through an `aria-live` status region.
@@ -141,6 +141,7 @@ Final result: passed
 - Initial P2: the implementation modal was roughly 95 px taller than the normalized reference, the overlay was too dark, and the submit action did not span the form width.
 - Fix: removed the extra subtitle and character count, reduced textarea and vertical spacing, matched the reference width, softened the overlay, and made Submit full-width.
 - Post-fix evidence: `feedback-qa-comparison.png` and `feedback-qa-focus.png` show matched modal proportions, hierarchy, density, and control placement. No actionable P0, P1, or P2 differences remain.
+- Product simplification after the captured comparison removed the diagnostic toggle and privacy paragraph. The modal is therefore intentionally shorter than the comparison evidence while preserving its established width, hierarchy, and control styling.
 
 ## Residual test gap
 

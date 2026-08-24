@@ -93,8 +93,6 @@
 		"Feedback is invalid. Please reopen the form and try again.":
 			"Feedbacken er ugyldig. Åbn formularen igen, og prøv på ny.",
 		"Feedback is invalid. Please try again.": "Feedbacken er ugyldig. Prøv igen.",
-		"Feedback is sent securely to Qorpera and is never posted publicly. Conversation content and files are not included.":
-			"Feedback sendes sikkert til Qorpera og offentliggøres aldrig. Samtaleindhold og filer medtages ikke.",
 		"Feedback is unavailable from this window.": "Feedback er ikke tilgængelig fra dette vindue.",
 		"Feedback must be 10,000 characters or fewer.": "Feedback må højst indeholde 10.000 tegn.",
 		"Feedback sent. Thank you.": "Feedback sendt. Tak.",
@@ -113,8 +111,6 @@
 		"Inbox, issue handling, feedback, and service quality.":
 			"Indbakke, håndtering af henvendelser, feedback og servicekvalitet.",
 		"Install Qorpera Base update": "Installér opdatering til Qorpera Base",
-		"Include basic diagnostic data (app version, operating system, and company type)":
-			"Medtag grundlæggende diagnosticeringsdata (appversion, operativsystem og virksomhedstype)",
 		"Keep this agent’s artifacts": "Behold denne agents artefakter",
 		"Intelligence providers": "Intelligensudbydere",
 		Language: "Sprog",

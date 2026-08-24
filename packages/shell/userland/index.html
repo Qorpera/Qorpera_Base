@@ -477,7 +477,7 @@
 
 <div class="app-toast" id="appToast" role="status" hidden></div>
 <div class="modal-backdrop feedback-backdrop" id="feedbackModal" hidden>
-	<form class="feedback-modal" id="feedbackForm" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle" aria-describedby="feedbackDescription">
+	<form class="feedback-modal" id="feedbackForm" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle">
 		<header>
 			<div>
 				<h2 id="feedbackTitle">Share feedback</h2>
@@ -498,11 +498,6 @@
 				<span class="sr-only">Feedback details</span>
 				<textarea id="feedbackDetails" maxlength="10000" placeholder="Share details (required)" required></textarea>
 			</label>
-			<label class="feedback-diagnostics" for="feedbackDiagnostics">
-				<input id="feedbackDiagnostics" type="checkbox" checked>
-				<span>Include basic diagnostic data (app version, operating system, and company type)</span>
-			</label>
-			<p class="feedback-privacy" id="feedbackDescription">Feedback is sent securely to Qorpera and is never posted publicly. Conversation content and files are not included.</p>
 		</div>
 		<footer>
 			<p class="feedback-status" id="feedbackStatus" role="status" aria-live="polite"></p>

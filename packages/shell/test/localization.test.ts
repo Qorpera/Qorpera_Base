@@ -132,8 +132,6 @@ describe("shell localization", () => {
 			"+ Other",
 			"Feedback details",
 			"Share details (required)",
-			"Include basic diagnostic data (app version, operating system, and company type)",
-			"Feedback is sent securely to Qorpera and is never posted publicly. Conversation content and files are not included.",
 			"Submit",
 			"Sending…",
 			"Feedback could not be sent.",

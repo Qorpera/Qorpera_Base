@@ -125,6 +125,9 @@ describe("userland wiring", () => {
 		expect(feedbackSource).toContain('!previousFocus.closest?.("[hidden]")');
 		expect(feedbackSource).toContain("window.qorpera.submitFeedback({");
 		expect(feedbackSource).toContain('category: selectedCategory ?? "other"');
+		expect(feedbackSource).toContain("includeDiagnostics: true");
+		expect(indexSource).not.toContain('id="feedbackDiagnostics"');
+		expect(indexSource).not.toContain('id="feedbackDescription"');
 		expect(feedbackCssSource).toContain(".feedback-modal");
 		expect(preloadSource).toContain('ipcRenderer.invoke("feedback:submit", input)');
 		expect(mainSource).toContain('ipcMain.handle("feedback:submit"');

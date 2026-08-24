@@ -3,7 +3,6 @@
 	const form = document.getElementById("feedbackForm");
 	const closeButton = document.getElementById("feedbackClose");
 	const details = document.getElementById("feedbackDetails");
-	const diagnostics = document.getElementById("feedbackDiagnostics");
 	const status = document.getElementById("feedbackStatus");
 	const submit = document.getElementById("feedbackSubmit");
 	const categories = [...document.querySelectorAll(".feedback-category")];
@@ -39,7 +38,6 @@
 		clientFeedbackId = crypto.randomUUID();
 		submitting = false;
 		form.reset();
-		diagnostics.checked = true;
 		selectCategory(null);
 		status.textContent = "";
 		status.dataset.state = "";
@@ -91,7 +89,7 @@
 				clientFeedbackId,
 				category: selectedCategory ?? "other",
 				details: details.value,
-				includeDiagnostics: diagnostics.checked,
+				includeDiagnostics: true,
 			});
 			if (!result?.ok) throw new Error(result?.error ?? "Feedback could not be sent.");
 			status.dataset.state = "success";
