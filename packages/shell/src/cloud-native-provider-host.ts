@@ -296,8 +296,7 @@ function credentialSealingFailure(error: unknown): string {
 	] as const) {
 		if (error.message === message) return reason;
 	}
-	const code = (error as NodeJS.ErrnoException).code;
-	return code && /^[A-Z0-9_]{2,32}$/.test(code) ? code.toLowerCase() : "unknown";
+	return harnessExecutionFailureCategory(error);
 }
 
 function harnessExecutionFailureCategory(error: unknown): string {
