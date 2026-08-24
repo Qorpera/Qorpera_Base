@@ -65,11 +65,10 @@
 		const activeIndex = centeredIndex(carouselItems);
 		for (const [index, item] of carouselItems.entries()) {
 			item.classList.toggle("is-centered", index === activeIndex);
-			item.setAttribute("aria-posinset", String(index + 1));
-			item.setAttribute("aria-setsize", String(carouselItems.length));
 		}
 		for (const [index, dot] of [...pagination.children].entries()) {
-			dot.toggleAttribute("aria-current", index === activeIndex);
+			if (index === activeIndex) dot.setAttribute("aria-current", "true");
+			else dot.removeAttribute("aria-current");
 		}
 		previous.disabled = activeIndex === 0;
 		next.disabled = activeIndex === carouselItems.length - 1;

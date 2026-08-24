@@ -408,7 +408,18 @@ body.hub .company-card strong {
 
 body.hub .company-card .profile-type-label { display: none; }
 
-body.hub .company-card .profile-setup-label { display: none; }
+body.hub .company-card .profile-setup-label {
+	position: relative;
+	z-index: 1;
+	display: block;
+	margin-top: 3px;
+	color: rgba(35, 38, 44, 0.58);
+	font-family: "Source Sans 3", var(--font-sans);
+	font-size: 12px;
+	font-weight: 620;
+	line-height: 1.25;
+	letter-spacing: 0.005em;
+}
 
 body.hub .company-add-card .plus {
 	position: relative;
@@ -490,21 +501,32 @@ body.hub .company-card-menu {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	gap: 7px;
 }
 
 .hub-carousel-pagination button {
-	width: 7px;
-	height: 7px;
-	min-height: 7px;
+	display: grid;
+	place-items: center;
+	width: 24px;
+	height: 24px;
+	min-height: 24px;
 	padding: 0;
 	border: 0;
 	border-radius: 999px;
+	background: transparent;
+}
+
+.hub-carousel-pagination button::before {
+	width: 7px;
+	height: 7px;
+	border-radius: 999px;
 	background: rgba(35, 38, 44, 0.23);
+	content: "";
 	transition: width 180ms ease, background 180ms ease;
 }
 
-.hub-carousel-pagination button[aria-current] {
+.hub-carousel-pagination button:focus-visible { outline-offset: 0; }
+
+.hub-carousel-pagination button[aria-current="true"]::before {
 	width: 24px;
 	background: rgba(35, 38, 44, 0.78);
 }

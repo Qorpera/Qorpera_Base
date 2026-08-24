@@ -65,6 +65,12 @@ describe("userland wiring", () => {
 		expect(hubCarouselSource).toContain('window.matchMedia("(prefers-reduced-motion: reduce)")');
 		expect(hubCarouselSource).toContain('grid.addEventListener("keydown"');
 		expect(hubCarouselSource).toContain("status.textContent = announcement");
+		expect(hubCarouselSource).toContain('dot.setAttribute("aria-current", "true")');
+		expect(hubCarouselSource).toContain('dot.removeAttribute("aria-current")');
+		expect(hubCarouselSource).not.toContain('item.setAttribute("aria-posinset"');
+		expect(hubCarouselSource).not.toContain('item.setAttribute("aria-setsize"');
+		expect(onboardingCssSource).toMatch(/\.profile-setup-label \{[^}]*display: block;/s);
+		expect(onboardingCssSource).toMatch(/\.hub-carousel-pagination button \{[^}]*width: 24px;[^}]*height: 24px;/s);
 		expect(onboardingCssSource).toContain("@media (prefers-reduced-motion: reduce)");
 	});
 

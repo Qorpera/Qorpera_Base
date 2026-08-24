@@ -601,10 +601,14 @@ async function renderHub() {
 				? "Moving Company File to the cloud"
 				: `Cloud company${role ? ` · ${role}` : ""}`;
 		card.append(avatar, label, type);
-		if (company.invitationPending || company.setupRequired) {
+		if (company.invitationPending || company.migrationRequired || company.setupRequired) {
 			const setup = document.createElement("small");
 			setup.className = "profile-setup-label";
-			setup.textContent = company.invitationPending ? "Accept invitation" : "Connect Company File";
+			setup.textContent = company.invitationPending
+				? "Invitation pending"
+				: company.migrationRequired
+					? "Moving to cloud"
+					: "Setup required";
 			card.appendChild(setup);
 		}
 		card.setAttribute(
