@@ -53,6 +53,14 @@ describe("userland wiring", () => {
 		);
 	});
 
+	it("keeps settings above the full-screen staff creator", () => {
+		const settingsLayer = baseCssSource.match(/#settingsView \{\s*position: fixed; z-index: (\d+);/);
+		const staffCreatorLayer = baseCssSource.match(/#staffModal \{\s*position: fixed; z-index: (\d+);/);
+		expect(settingsLayer).not.toBeNull();
+		expect(staffCreatorLayer).not.toBeNull();
+		expect(Number(settingsLayer?.[1])).toBeGreaterThan(Number(staffCreatorLayer?.[1]));
+	});
+
 	it("keeps non-actionable hosting internals out of settings", () => {
 		for (const label of [
 			"Product and execution",
@@ -81,7 +89,7 @@ describe("userland wiring", () => {
 		expect(rendererSource).toContain("pending?.clientCreationId ?? crypto.randomUUID()");
 		expect(indexSource).toContain("The first 50 GB is included");
 		expect(rendererSource).toContain('event.key !== "Tab"');
-		expect(rendererSource).toMatch(/item\.setAttribute\("aria-label", `\$\{name\}, \$\{role\}`\)/);
+		expect(rendererSource).toMatch(/item\.setAttribute\("aria-label", `\$\{name\}, \$\{description\}`\)/);
 		expect(rendererSource).toContain("Pick from your friends or add someone first");
 		expect(baseCssSource).not.toMatch(/\.company-person-actions \{[^}]*visibility:\s*hidden/s);
 		expect(baseCssSource).toMatch(/\.company-person-actions \{[^}]*opacity:\s*0/s);
@@ -250,6 +258,7 @@ describe("userland wiring", () => {
 		expect(picker).not.toContain("Upload");
 		expect(rendererSource).toContain("STAFF_CREATURE_FILTERS[staffColor(staffOrTemplate)]");
 		expect(baseCssSource).toMatch(/\.agent-figure-grid \{[^}]*justify-content: center/s);
+		expect(baseCssSource).toMatch(/\.agent-figure-color-grid \{[^}]*display: flex;[^}]*justify-content: center/s);
 		expect(characterMotionSource).toContain(".staff-avatar > .staff-face i:first-child");
 		expect(characterMotionSource).toContain(".staff-creature-choice:has(> .staff-avatar)::before");
 		expect(baseCssSource).not.toContain("--creature-eye-top");
@@ -258,5 +267,53 @@ describe("userland wiring", () => {
 		expect(baseCssSource).toContain('filter: url("./staff-creature-colors.svg#gray") !important;');
 		expect(baseCssSource).toContain(".agent-settings-popover.is-fullscreen");
 		expect(mainSource).toContain('key !== "appearance"');
+	});
+
+	it("creates agents from the centered original layout with one responsibility description", () => {
+		expect(indexSource).toContain('class="staff-creator-center"');
+		expect(indexSource).not.toContain('id="staffCreatorRole"');
+		expect(indexSource).not.toContain('id="staffCreatorDescription"');
+		expect(indexSource).not.toContain('id="staffRoleInput"');
+		expect(indexSource).toContain('id="staffDisplayName" class="staff-inline-name"');
+		expect(indexSource).toContain('id="staffDescriptionInput" class="staff-inline-description"');
+		expect(indexSource).toContain('placeholder="Description" aria-label="Description"');
+		expect(indexSource).not.toContain('class="staff-creator-fields"');
+		expect(indexSource).not.toContain("<span>Title</span>");
+		expect(indexSource).not.toContain('id="staffResponsibilityPreview"');
+		const creator = rendererSource.slice(
+			rendererSource.indexOf("async function createStaffMember()"),
+			rendererSource.indexOf("async function openConversationRecipients()"),
+		);
+		expect(creator).toContain('const description = $("staffDescriptionInput").value.trim()');
+		expect(creator).toContain("window.qorpera.staffUpdate(id, { role: description })");
+		expect(creator).toMatch(/localStorage\.setItem\(`qorpera\.staff-description\.\$\{companyId\}\.\$\{id\}`/);
+		const colors = rendererSource.match(/const STAFF_AVATAR_COLORS = \[(.*?)\];/s);
+		expect(colors).not.toBeNull();
+		expect(colors?.[1].match(/"#[0-9a-f]{6}"/g)).toHaveLength(11);
+		expect(baseCssSource).toMatch(
+			/body\.staff-creator-open \.staff-appearance-picker \.staff-creature-picker \{[^}]*display: flex;[^}]*flex-wrap: wrap;[^}]*justify-content: center;[^}]*width: 205px/s,
+		);
+		expect(baseCssSource).toMatch(
+			/body\.staff-creator-open \.staff-appearance-picker \.staff-color-picker \{[^}]*display: flex;[^}]*flex-wrap: wrap;[^}]*justify-content: center;[^}]*width: 229px/s,
+		);
+		expect(baseCssSource).toMatch(
+			/\.staff-configure-view \.staff-creator-center \{[^}]*justify-content: flex-start/s,
+		);
+		expect(baseCssSource).toMatch(/\.staff-inline-name, \.staff-inline-description \{[^}]*text-align: center/s);
+		expect(baseCssSource).toContain(".staff-inline-name:focus, .staff-inline-description:focus");
+		expect(baseCssSource).toContain("--inline-edit-icon:");
+		expect(baseCssSource).toMatch(
+			/\.staff-inline-name, \.staff-inline-description \{[^}]*background-image: var\(--inline-edit-icon\)/s,
+		);
+		expect(baseCssSource).toMatch(/\.agent-metadata-input \{[^}]*background-image: var\(--inline-edit-icon\)/s);
+		expect(rendererSource).toContain(
+			'document.createElement(className === "agent-description" ? "textarea" : "input")',
+		);
+		expect(rendererSource).toContain('input.className = "agent-metadata-input"');
+		expect(rendererSource).toContain("input.onchange = () => void finish()");
+		expect(rendererSource).not.toContain('display.className = "agent-metadata-display"');
+		expect(baseCssSource).not.toContain(".agent-metadata-display");
+		expect(rendererSource).not.toContain('renderAgentMetadataField(metadata, "agent-title"');
+		expect(rendererSource).toContain('{ role: description },\n\t\t\t"The agent description could not be saved."');
 	});
 });

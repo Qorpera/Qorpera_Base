@@ -456,15 +456,14 @@
 				<div class="staff-creator-center">
 					<div class="staff-creator-stage">
 						<span id="staffCreatorAvatar" class="staff-avatar shape-round" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></span>
-						<h3 id="staffCreatorRole">New Agent</h3>
-						<p id="staffCreatorDescription"></p>
+						<input id="staffDisplayName" class="staff-inline-name" type="text" maxlength="64" autocomplete="off" placeholder="New Agent" aria-label="Name" required>
+						<textarea id="staffDescriptionInput" class="staff-inline-description" maxlength="320" rows="2" placeholder="Description" aria-label="Description" required></textarea>
 					</div>
 					<div class="staff-appearance-picker">
 						<div id="staffCreaturePicker" class="staff-creature-picker" role="radiogroup" aria-label="Agent character"></div>
 						<div id="staffShapePicker" class="staff-shape-picker" role="radiogroup" aria-label="Agent face shape"></div>
 						<div id="staffColorPicker" class="staff-color-picker" role="radiogroup" aria-label="Agent color"></div>
 					</div>
-					<label class="staff-name-field"><span>Name</span><input id="staffDisplayName" type="text" maxlength="64" autocomplete="off" placeholder="Agent name"><small>This becomes their persistent identity in the company.</small></label>
 					<div id="staffCreateStatus" class="staff-create-status" role="status" aria-live="polite"></div>
 					<footer class="staff-modal-actions"><button class="secondary-button" id="staffCancel" type="button">Cancel</button><button class="primary-button" id="staffCreateButton" type="submit" disabled>Create</button></footer>
 				</div>

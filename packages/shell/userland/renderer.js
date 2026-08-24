@@ -286,7 +286,6 @@ const STAFF_AVATAR_COLORS = [
 	"#8a4dff",
 	"#ff2994",
 	"#7c7c7a",
-	"#5367e8",
 ];
 const STAFF_CREATURE_FILTERS = Object.freeze({
 	"#171716": "charcoal",
@@ -1767,10 +1766,6 @@ function staffDescription(staffOrTemplate) {
 	return staffOrTemplate?.description ?? source?.description ?? "Works alongside you and keeps this responsibility moving.";
 }
 
-function staffRoleLabel(staff) {
-	return staff?.role ?? staffTemplate(staff)?.name ?? "Staff member";
-}
-
 function currentStaff() {
 	return activeStaffMembers().find((staff) => staffId(staff) === currentStaffId);
 }
@@ -2093,17 +2088,14 @@ function configureSuggestedAgent(template = null, proposedName = "") {
 	staffCreatorShape = template ? staffShape(template) : "round";
 	staffCreatorCreature = template ? STAFF_CREATURE_BY_TEMPLATE[templateId(template)] ?? "pebble" : "pebble";
 	$("staffDisplayName").value = proposedName || (template ? template.displayName ?? templateName(template) : "");
-	$("staffCreatorRole").textContent = template ? templateName(template) : "New Agent";
-	$("staffCreatorDescription").textContent = template
-		? staffDescription(template)
-		: "A blank persistent agent whose responsibility you define together.";
+	$("staffDescriptionInput").value = template ? staffDescription(template) : "";
 	paintStaffAvatar($("staffCreatorAvatar"), {
 		...(template ?? {}),
 		appearance: { color: staffCreatorColor, shape: staffCreatorShape, creature: staffCreatorCreature },
 	});
 	renderStaffAppearancePickers();
 	$("staffCreateStatus").textContent = "";
-	$("staffCreateButton").disabled = !$("staffDisplayName").value.trim();
+	updateStaffCreateAction();
 	requestAnimationFrame(() => $("staffDisplayName").focus());
 }
 
@@ -2154,7 +2146,7 @@ function renderConversationRecipientMenu() {
 	create.onclick = () => configureSuggestedAgent(null, $("conversationRecipientSearch").value.trim());
 	menu.appendChild(create);
 	for (const staff of activeStaffMembers().filter((candidate) => {
-		const haystack = `${staffDisplayName(candidate)} ${staffRoleLabel(candidate)}`.toLowerCase();
+		const haystack = `${staffDisplayName(candidate)} ${staffDescription(candidate)}`.toLowerCase();
 		return !query || haystack.includes(query);
 	})) {
 		const id = staffId(staff);
@@ -2167,9 +2159,9 @@ function renderConversationRecipientMenu() {
 		const copy = document.createElement("span");
 		const name = document.createElement("strong");
 		name.textContent = staffDisplayName(staff);
-		const role = document.createElement("small");
-		role.textContent = staffRoleLabel(staff);
-		copy.append(name, role);
+		const description = document.createElement("small");
+		description.textContent = staffDescription(staff);
+		copy.append(name, description);
 		const stateLabel = document.createElement("small");
 		stateLabel.textContent = conversationRecipients.has(id) ? "Added" : "Add";
 		option.append(copy, stateLabel);
@@ -2191,6 +2183,11 @@ function showConversationPicker() {
 	renderConversationSuggestions();
 	renderConversationRecipientChips();
 	updateConversationOpenAction();
+}
+
+function updateStaffCreateAction() {
+	$("staffCreateButton").disabled =
+		staffCreatorPending || !$("staffDisplayName").value.trim() || !$("staffDescriptionInput").value.trim();
 }
 
 async function openStaffCreator() {
@@ -2304,8 +2301,13 @@ function closeStaffCreator() {
 async function createStaffMember() {
 	if (staffCreatorPending) return;
 	const displayName = $("staffDisplayName").value.trim();
+	const description = $("staffDescriptionInput").value.trim();
 	if (!displayName) {
 		$("staffDisplayName").focus();
+		return;
+	}
+	if (!description) {
+		$("staffDescriptionInput").focus();
 		return;
 	}
 	staffCreatorPending = true;
@@ -2323,14 +2325,21 @@ async function createStaffMember() {
 		const id = staffId(created) || result?.staffAgentId;
 		const sessionFile = result?.sessionFile ?? created?.sessionFile ?? created?.primarySessionFile;
 		if (!id || !sessionFile) throw new Error("The staff member was created without a conversation session.");
+		const update = await window.qorpera.staffUpdate(id, { role: description });
+		localStorage.setItem(`qorpera.staff-description.${companyId}.${id}`, description);
+		const descriptionSaveError =
+			update?.ok === false ? String(update.error ?? "The agent description could not be saved.") : "";
+		const updatedStaff = descriptionSaveError ? created : (update?.staff ?? { ...created, role: description });
 		if (created && typeof created === "object" && !(state.staff ?? []).some((staff) => staffId(staff) === id)) {
-			state.staff = [...(state.staff ?? []), { ...created, id, sessionFile }];
+			state.staff = [...(state.staff ?? []), { ...created, ...updatedStaff, id, sessionFile }];
 		}
 		staffCreatorPending = false;
 		await refreshState();
 		conversationRecipients.add(id);
 		showConversationPicker();
-		$("conversationStatus").textContent = `${staffDisplayName(created)} added. Select another agent to make this a group.`;
+		$("conversationStatus").textContent = descriptionSaveError
+			? `${staffDisplayName(updatedStaff)} added, but ${descriptionSaveError.toLowerCase()}`
+			: `${staffDisplayName(updatedStaff)} added. Select another agent to make this a group.`;
 		// The introduction must start even when the founder never opens the 1:1
 		// chat — e.g. when this agent flows straight into a group. The kernel
 		// attached the fresh staff session during creation; kick the intro now.
@@ -2350,7 +2359,7 @@ async function createStaffMember() {
 		if ($("staffModal").hidden) showToast(message);
 	} finally {
 		$("staffCreateButton").textContent = "Create";
-		$("staffCreateButton").disabled = staffCreatorPending || !$("staffDisplayName").value.trim();
+		updateStaffCreateAction();
 		updateConversationOpenAction();
 	}
 }
@@ -2725,9 +2734,9 @@ function renderRoomParticipantSettings(room) {
 		const copy = document.createElement("span");
 		const name = document.createElement("strong");
 		name.textContent = staffDisplayName(staff);
-		const role = document.createElement("small");
-		role.textContent = staffRoleLabel(staff);
-		copy.append(name, role);
+		const description = document.createElement("small");
+		description.textContent = staffDescription(staff);
+		copy.append(name, description);
 		row.appendChild(copy);
 		list.appendChild(row);
 	}
@@ -3623,48 +3632,35 @@ async function saveAgentStaffUpdate(staff, update, fallbackMessage) {
 function renderAgentMetadataField(container, className, value, ariaLabel, save) {
 	const field = document.createElement("div");
 	field.className = `agent-metadata-field ${className}`;
-	const display = document.createElement("button");
-	display.type = "button";
-	display.className = "agent-metadata-display";
-	display.disabled = !canUseProfile("write") || agentSettingsPending;
-	display.setAttribute("aria-label", `Edit ${ariaLabel}`);
-	const copy = document.createElement(className === "agent-name" ? "strong" : "span");
-	copy.textContent = value;
-	const edit = agentSettingsSvg('<path d="M4 20h4L19 9a2.1 2.1 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>', "agent-metadata-edit");
-	display.append(copy, edit);
-	display.onclick = () => {
-		const input = document.createElement("input");
-		input.type = "text";
-		input.className = "agent-metadata-input";
-		input.value = value;
-		input.setAttribute("aria-label", ariaLabel);
-		field.replaceChildren(input);
-		let finished = false;
-		const finish = async (commit) => {
-			if (finished) return;
-			finished = true;
-			const next = input.value.trim();
-			if (!commit || !next || next === value) {
-				if (!next && commit) setAgentSettingsStatus(`${ariaLabel} is required.`);
-				renderAgentSettingsPopover();
-				return;
-			}
-			await save(next);
-		};
-		input.onkeydown = (event) => {
-			if (event.key === "Enter") {
-				event.preventDefault();
-				void finish(true);
-			} else if (event.key === "Escape") {
-				event.preventDefault();
-				void finish(false);
-			}
-		};
-		input.onblur = () => void finish(true);
-		input.focus();
-		input.select();
+	const input = document.createElement(className === "agent-description" ? "textarea" : "input");
+	if (input instanceof HTMLInputElement) input.type = "text";
+	else input.rows = 2;
+	input.className = "agent-metadata-input";
+	input.value = value;
+	input.disabled = !canUseProfile("write") || agentSettingsPending;
+	input.setAttribute("aria-label", ariaLabel);
+	const finish = async () => {
+		const next = input.value.trim();
+		if (!next || next === value) {
+			input.value = value;
+			if (!next) setAgentSettingsStatus(`${ariaLabel} is required.`);
+			return;
+		}
+		input.disabled = true;
+		if (!(await save(next))) input.value = value;
 	};
-	field.appendChild(display);
+	input.onchange = () => void finish();
+	input.onkeydown = (event) => {
+		if (event.key === "Enter") {
+			event.preventDefault();
+			input.blur();
+		} else if (event.key === "Escape") {
+			event.preventDefault();
+			input.value = value;
+			input.blur();
+		}
+	};
+	field.appendChild(input);
 	container.appendChild(field);
 }
 
@@ -3820,7 +3816,7 @@ function renderResponsibilityMap(container, staff) {
 		renderResponsibilityCard(
 			"owns",
 			"OWNS",
-			staffRoleLabel(staff),
+			"Primary responsibility",
 			staffDescription(staff),
 			["Code changes", "Testing", "Maintenance"],
 		),
@@ -3869,9 +3865,9 @@ function renderAgentSettingsPopover() {
 		const identityCopy = document.createElement("span");
 		const name = document.createElement("strong");
 		name.textContent = staffDisplayName(staff);
-		const role = document.createElement("small");
-		role.textContent = staffRoleLabel(staff);
-		identityCopy.append(name, role);
+		const description = document.createElement("small");
+		description.textContent = staffDescription(staff);
+		identityCopy.append(name, description);
 		const details = document.createElement("button");
 		details.type = "button";
 		details.textContent = "Agent details";
@@ -3915,10 +3911,13 @@ function renderAgentSettingsPopover() {
 	renderAgentMetadataField(metadata, "agent-name", staffDisplayName(staff), "Name", (displayName) =>
 		saveAgentStaffUpdate(staff, { displayName }, "The agent name could not be saved."),
 	);
-	renderAgentMetadataField(metadata, "agent-title", staffRoleLabel(staff), "Title", (role) =>
-		saveAgentStaffUpdate(staff, { role }, "The agent title could not be saved."),
-	);
 	renderAgentMetadataField(metadata, "agent-description", staffDescription(staff), "Description", async (description) => {
+		const saved = await saveAgentStaffUpdate(
+			staff,
+			{ role: description },
+			"The agent description could not be saved.",
+		);
+		if (!saved) return false;
 		localStorage.setItem(`qorpera.staff-description.${companyId}.${staffId(staff)}`, description);
 		agentSettingsStatus = "Saved";
 		renderAgentSettingsPopover();
@@ -4131,7 +4130,7 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 			"active",
 			$("staffModal").hidden && currentView === "chat" && !currentRoomId && currentStaffId === id,
 		);
-		row.dataset.searchText = `${staffDisplayName(staff)} ${staffRoleLabel(staff)}`.toLowerCase();
+		row.dataset.searchText = `${staffDisplayName(staff)} ${staffDescription(staff)}`.toLowerCase();
 		row.appendChild(makeStaffAvatar(staff, staffStatus(staff)));
 		const copy = document.createElement("span");
 		copy.className = "staff-nav-copy";
@@ -4169,10 +4168,12 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 							: messageDate.toLocaleDateString([], { month: "short", day: "numeric" });
 			heading.appendChild(time);
 		}
-		const role = document.createElement("small");
+		const description = document.createElement("small");
 		const runtime = staffRuntime(staff);
-		role.textContent = runtime ? runtimeDoingLine(runtime) : remoteStaffDoingLine(staff) || staffRoleLabel(staff);
-		copy.append(heading, role);
+		description.textContent = runtime
+			? runtimeDoingLine(runtime)
+			: remoteStaffDoingLine(staff) || staffDescription(staff);
+		copy.append(heading, description);
 		const viewingPeers = peersOnStaff(id);
 		if (viewingPeers.length) {
 			row.classList.add("peer-open");
@@ -4593,8 +4594,9 @@ function renderStaffHome() {
 		description.textContent = staffDescription(staff);
 		const meta = document.createElement("small");
 		const runtime = staffRuntime(staff);
-		meta.textContent = runtime ? runtimeDoingLine(runtime) : remoteStaffDoingLine(staff) || staffRoleLabel(staff);
-		card.append(name, description, meta);
+		meta.textContent = runtime ? runtimeDoingLine(runtime) : remoteStaffDoingLine(staff);
+		card.append(name, description);
+		if (meta.textContent) card.appendChild(meta);
 		const viewingPeers = peersOnStaff(staffId(staff));
 		if (viewingPeers.length) {
 			card.classList.add("peer-open");
@@ -7332,9 +7334,8 @@ function setupCompanyNavigation() {
 	);
 	$("staffTemplateGrid").addEventListener("scroll", syncStaffTemplateScrollbar, { passive: true });
 	window.addEventListener("resize", syncStaffTemplateScrollbar);
-	$("staffDisplayName").oninput = () => {
-		$("staffCreateButton").disabled = staffCreatorPending || !$("staffDisplayName").value.trim();
-	};
+	$("staffDisplayName").oninput = updateStaffCreateAction;
+	$("staffDescriptionInput").oninput = updateStaffCreateAction;
 	$("staffForm").onsubmit = (event) => {
 		event.preventDefault();
 		// Enter in the picker's recipient search targets the picker's action;
@@ -10889,13 +10890,13 @@ function renderCompanyTab(content, info) {
 		staffRow.setAttribute("role", "list");
 		for (const member of staff) {
 			const name = staffDisplayName(member);
-			const role = staffRoleLabel(member);
+			const description = staffDescription(member);
 			const item = document.createElement("div");
 			item.className = "company-staff-member";
 			item.setAttribute("role", "listitem");
-			item.setAttribute("aria-label", `${name}, ${role}`);
+			item.setAttribute("aria-label", `${name}, ${description}`);
 			const avatar = makeStaffAvatar(member, staffStatus(member));
-			avatar.title = `${name} · ${role}`;
+			avatar.title = `${name} · ${description}`;
 			item.appendChild(avatar);
 			staffRow.appendChild(item);
 		}
