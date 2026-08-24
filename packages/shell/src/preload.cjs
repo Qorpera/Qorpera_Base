@@ -53,7 +53,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	accountSignIn: (input) =>
 		ipcRenderer.invoke("account:sign-in", input, document.getElementById("accountRemember")?.checked === true),
 	accountSignOut: () => ipcRenderer.invoke("account:sign-out"),
-	openFeedback: () => ipcRenderer.invoke("feedback:open"),
+	submitFeedback: (input) => ipcRenderer.invoke("feedback:submit", input),
 	onAccountStatus: (handler) => ipcRenderer.on("account-status", (_event, message) => handler(message)),
 	intelligenceInfo: () => ipcRenderer.invoke("intelligence:info"),
 	configureIntelligence: (providerId) => ipcRenderer.invoke("intelligence:configure", providerId),
