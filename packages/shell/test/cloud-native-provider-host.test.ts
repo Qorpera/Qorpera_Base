@@ -329,7 +329,9 @@ describe("native provider host", () => {
 				}),
 			});
 			expect(response.status).toBe(422);
-			expect(logged).toHaveBeenCalledWith("Native provider request rejected: internal rejection (error)");
+			expect(logged).toHaveBeenCalledWith(
+				`Native provider request rejected: internal rejection (error; message-sha256=${createHash("sha256").update(privateDiagnostic).digest("hex").slice(0, 16)})`,
+			);
 			expect(logged.mock.calls.flat().join("\n")).not.toContain(privateDiagnostic);
 		} finally {
 			logged.mockRestore();

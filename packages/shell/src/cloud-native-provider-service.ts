@@ -95,7 +95,8 @@ function safeRequestDiagnostic(error: unknown): string {
 	) {
 		return message;
 	}
-	return `internal rejection (${internalRejectionCategory(error)})`;
+	const messageSha256 = createHash("sha256").update(message).digest("hex").slice(0, 16);
+	return `internal rejection (${internalRejectionCategory(error)}; message-sha256=${messageSha256})`;
 }
 
 function ownership(
