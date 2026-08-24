@@ -775,7 +775,12 @@ export class NativeProviderHost {
 		const externalAbort = (): void => executionAbort.abort(signal?.reason ?? new Error("Native execution stopped"));
 		if (signal?.aborted) externalAbort();
 		else signal?.addEventListener("abort", externalAbort, { once: true });
-		await this.#controlPlane.validateExecution(request, executionAbort.signal);
+		let stage = "initial-authority-validation";
+		try {
+			await this.#controlPlane.validateExecution(request, executionAbort.signal);
+		} catch (error) {
+			throw new Error(`Native provider execution ${stage} stage failed`, { cause: error });
+		}
 		const validationStop = new AbortController();
 		let validationError: unknown;
 		const validationSignal = AbortSignal.any([executionAbort.signal, validationStop.signal]);
@@ -792,13 +797,13 @@ export class NativeProviderHost {
 		})();
 		const root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
 		try {
-			await openNativeCredentialCapsule(
-				await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal),
-				root,
-				this.#masterKey,
-				authority.credentialCapsuleId,
-			);
+			stage = "credential-download";
+			const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
+			stage = "credential-opening";
+			await openNativeCredentialCapsule(capsule, root, this.#masterKey, authority.credentialCapsuleId);
+			stage = "prompt-materialization";
 			const context = await executionPrompt(request);
+			stage = "harness-execution";
 			const result = await this.#harness.execute({
 				harness: authority.nativeHarness,
 				model: authority.model,
@@ -807,13 +812,17 @@ export class NativeProviderHost {
 				prompt: context.prompt,
 				signal: executionAbort.signal,
 			});
+			stage = "completion-authority-validation";
 			if (validationError) throw validationError;
 			await this.#controlPlane.validateExecution(request, executionAbort.signal);
-			await this.#capsules.put(
-				authority.encryptedCapsuleReference,
-				await sealNativeCredentialCapsule(root, this.#masterKey, authority.credentialCapsuleId),
-				executionAbort.signal,
+			stage = "credential-sealing";
+			const refreshedCapsule = await sealNativeCredentialCapsule(
+				root,
+				this.#masterKey,
+				authority.credentialCapsuleId,
 			);
+			stage = "credential-upload";
+			await this.#capsules.put(authority.encryptedCapsuleReference, refreshedCapsule, executionAbort.signal);
 			return {
 				schema: HARNESS_RESULT_SCHEMA,
 				assistant_entry: {
@@ -828,6 +837,10 @@ export class NativeProviderHost {
 				},
 				provider_session_id: result.providerSessionId ?? null,
 			};
+		} catch (error) {
+			if (stage === "harness-execution") throw error;
+			const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
+			throw new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
 		} finally {
 			validationStop.abort();
 			await monitor;

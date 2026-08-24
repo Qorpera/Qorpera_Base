@@ -446,6 +446,30 @@ describe("native provider host", () => {
 		});
 		expect(JSON.stringify(result)).not.toContain("private");
 		expect(validateExecution).toHaveBeenCalledTimes(2);
+
+		validateExecution.mockReset();
+		validateExecution.mockResolvedValueOnce(undefined);
+		validateExecution.mockRejectedValueOnce(new Error("private revoked authority"));
+		await expect(host.execute(executionRequest)).rejects.toThrow(
+			"Native provider execution completion-authority-validation stage failed",
+		);
+
+		const uploadFailureHost = new NativeProviderHost({
+			controlPlane: { describeLogin: vi.fn(), completeLogin: vi.fn(), validateExecution: vi.fn() },
+			capsules: {
+				get: async (capsuleReference) => capsules.get(capsuleReference),
+				put: async () => {
+					throw new Error("private storage response");
+				},
+			},
+			harness: { beginLogin: vi.fn(), execute },
+			masterKey,
+			computeIdentityId,
+			temporaryRoot: root,
+		});
+		await expect(uploadFailureHost.execute(executionRequest)).rejects.toThrow(
+			"Native provider execution credential-upload stage failed",
+		);
 	});
 
 	it("runs login and execution through the standalone cloud bridge and fences revoked authority", async () => {
