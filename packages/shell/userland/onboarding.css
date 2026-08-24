@@ -566,6 +566,16 @@ body.hub .hub-foot {
 	.hub-carousel-arrow { display: none; }
 }
 
+@media (prefers-reduced-motion: reduce) {
+	body.hub .hub-grid { scroll-behavior: auto; }
+	body.hub .hub-grid > *,
+	body.hub .company-card,
+	body.hub .company-card .company-avatar,
+	.hub-carousel-pagination button {
+		transition: none;
+	}
+}
+
 @media (forced-colors: active) {
 	#accountView,
 	#welcomeView,

@@ -7,10 +7,12 @@ const userland = join(shell, "userland");
 const rendererSource = readFileSync(join(userland, "renderer.js"), "utf-8");
 const indexSource = readFileSync(join(userland, "index.html"), "utf-8");
 const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
+const onboardingCssSource = readFileSync(join(userland, "onboarding.css"), "utf-8");
 const characterMotionSource = readFileSync(join(userland, "character-motion.css"), "utf-8");
 const railResizeCssSource = readFileSync(join(userland, "rail-resize.css"), "utf-8");
 const feedbackSource = readFileSync(join(userland, "feedback.js"), "utf-8");
 const feedbackCssSource = readFileSync(join(userland, "feedback.css"), "utf-8");
+const hubCarouselSource = readFileSync(join(userland, "hub-carousel.js"), "utf-8");
 const preloadSource = readFileSync(join(shell, "src", "preload.cjs"), "utf-8");
 const mainSource = readFileSync(join(shell, "src", "main.ts"), "utf-8");
 
@@ -51,6 +53,19 @@ describe("userland wiring", () => {
 		expect(baseCssSource).toMatch(
 			/\.company-switcher-switch-company \.company-switcher-menu-icon \{[^}]*justify-self: center;/s,
 		);
+	});
+
+	it("keeps company avatars and carousel behavior in their owning render paths", () => {
+		expect(rendererSource).toContain("const COMPANY_AVATARS = [");
+		expect(rendererSource).toContain("function renderCompanyAvatarChoices(");
+		expect(rendererSource).toContain("companyAvatarSettingsSection()");
+		expect(indexSource).not.toContain("company-avatars.js");
+		expect(indexSource).toContain('aria-roledescription="carousel"');
+		expect(indexSource).toContain('id="hubCarouselStatus" class="sr-only" aria-live="polite"');
+		expect(hubCarouselSource).toContain('window.matchMedia("(prefers-reduced-motion: reduce)")');
+		expect(hubCarouselSource).toContain('grid.addEventListener("keydown"');
+		expect(hubCarouselSource).toContain("status.textContent = announcement");
+		expect(onboardingCssSource).toContain("@media (prefers-reduced-motion: reduce)");
 	});
 
 	it("keeps non-actionable hosting internals out of settings", () => {
