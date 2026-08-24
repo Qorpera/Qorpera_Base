@@ -36,6 +36,21 @@ describe("userland wiring", () => {
 		}
 	});
 
+	it("routes the company menu through settings and the company hub", () => {
+		const switcherStart = rendererSource.indexOf("function openCompanySwitcher()");
+		const switcherEnd = rendererSource.indexOf("function renderCompanySwitcher()", switcherStart);
+		const switcher = rendererSource.slice(switcherStart, switcherEnd);
+		expect(switcher).toContain('openSettings("company")');
+		expect(switcher).toContain('"switch-company"');
+		expect(switcher).toContain('"company-switcher-switch-company"');
+		expect(switcher).toContain("await window.qorpera.showHub()");
+		expect(switcher).not.toContain("window.qorpera.listCompanies()");
+		expect(baseCssSource).toMatch(/\.rail-bottom \.company-switcher-menu \{[^}]*width: 100%;/s);
+		expect(baseCssSource).toMatch(
+			/\.company-switcher-switch-company \.company-switcher-menu-icon \{[^}]*justify-self: center;/s,
+		);
+	});
+
 	it("keeps non-actionable hosting internals out of settings", () => {
 		for (const label of [
 			"Product and execution",

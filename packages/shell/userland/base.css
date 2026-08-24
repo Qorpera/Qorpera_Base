@@ -1654,37 +1654,16 @@ body.welcome #titlebar { border-bottom-color: transparent; background: var(--bg)
 .company-switcher-menu button:hover, .company-switcher-menu button:focus-visible { background: #f0f0ee; }
 .company-switcher-menu button > span { overflow: hidden; font-size: 13px; font-weight: 480; text-overflow: ellipsis; white-space: nowrap; }
 .company-switcher-menu-icon { width: 16px; height: 16px; color: #4f4f4c; }
-.company-switcher-profile-section {
+.company-switcher-company-section {
 	display: grid; gap: 1px; margin-bottom: 4px; padding-bottom: 5px;
 	border-bottom: 1px solid #e5e5e2;
 }
-.company-switcher-menu .company-switcher-profile-trigger {
-	grid-template-columns: 18px minmax(0, 1fr) 14px;
+.company-switcher-menu .company-switcher-current-company {
+	grid-template-columns: 28px minmax(0, 1fr); min-height: 40px;
 }
-.company-switcher-menu-profile-icon,
-.company-switcher-profile-option-icon {
-	display: block; width: 18px; height: 18px;
-}
-.company-switcher-profile-caret {
-	display: block; overflow: visible !important; color: #777773;
-	font-size: 17px !important; line-height: 1; text-align: center;
-	transition: transform 140ms cubic-bezier(.2,.8,.2,1);
-}
-.company-switcher-profile-section.open .company-switcher-profile-caret { transform: rotate(90deg); }
-.company-switcher-profile-list {
-	display: grid; gap: 1px; max-height: 176px; overflow-y: auto; padding: 2px 0 2px 18px;
-}
-.company-switcher-profile-list[hidden] { display: none; }
-.company-switcher-menu .company-switcher-profile-option {
-	grid-template-columns: 18px minmax(0, 1fr) 14px; min-height: 32px; padding-block: 5px;
-}
-.company-switcher-profile-option.selected { background: #f0f0ee; }
-.company-switcher-profile-check {
-	display: block; overflow: visible !important; color: transparent;
-	font-size: 12px !important; line-height: 1; text-align: center;
-}
-.company-switcher-profile-option.selected .company-switcher-profile-check { color: #292927; }
-.company-switcher-profile-empty { padding: 6px 8px; color: #858581; font-size: 11.5px; }
+.company-switcher-menu-company-icon { display: block; width: 28px; height: 28px; }
+.company-switcher-menu .company-switcher-switch-company { grid-template-columns: 28px minmax(0, 1fr); }
+.company-switcher-switch-company .company-switcher-menu-icon { justify-self: center; }
 .company-switcher-menu-logout { margin-top: 5px; padding-top: 10px !important; border-top: 1px solid #e5e5e2 !important; border-radius: 0 0 7px 7px !important; }
 .rail-primary-actions { display: grid; gap: 7px; padding: 5px 12px 10px; }
 .rail-add-staff { width: 100%; min-height: 38px; border: 0; border-radius: 11px; background: var(--text); color: #fff; text-align: left; font-weight: 620; }
@@ -1884,7 +1863,7 @@ nav button:hover, nav button.active { background: var(--hover); color: var(--tex
 .rail-bottom { position: relative; }
 .rail-bottom .rail-company-switcher { position: relative; padding: 0; }
 .rail-bottom #companySwitcherButton { min-height: 48px; border: 1px solid var(--border); border-radius: 12px; }
-.rail-bottom .company-switcher-menu { top: auto; bottom: calc(100% + 4px); left: 0; right: auto; width: 226px; }
+.rail-bottom .company-switcher-menu { top: auto; bottom: calc(100% + 4px); left: 0; right: auto; width: 100%; }
 .rail-connection { min-height: 44px; padding-inline: 9px; border: 1px solid var(--border) !important; border-radius: 12px; }
 .company-switcher-menu button { min-height: 34px; border-radius: 7px; }
 

@@ -177,6 +177,7 @@
 		"Start from scratch": "Start fra bunden",
 		"Stop the agent": "Stop agenten",
 		"Suggested agents": "Foreslåede agenter",
+		"Switch company": "Skift virksomhed",
 		"Switch company or open company settings": "Skift virksomhed eller åbn virksomhedsindstillinger",
 		"System default": "Systemstandard",
 		"System default follows your computer's language.": "Systemstandarden følger sproget på din computer.",

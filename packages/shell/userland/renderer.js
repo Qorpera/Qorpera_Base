@@ -4615,7 +4615,7 @@ function filterRosterRail(value) {
 	}
 }
 
-async function openCompanySwitcher() {
+function openCompanySwitcher() {
 	const menu = $("companySwitcherMenu");
 	const button = $("companySwitcherButton");
 	if (!menu.hidden) {
@@ -4647,77 +4647,30 @@ async function openCompanySwitcher() {
 		return option;
 	};
 	const companySection = document.createElement("div");
-	companySection.className = "company-switcher-profile-section";
-	const companyTrigger = document.createElement("button");
-	companyTrigger.type = "button";
-	companyTrigger.className = "company-switcher-profile-trigger";
-	companyTrigger.setAttribute("role", "menuitem");
-	companyTrigger.setAttribute("aria-haspopup", "menu");
-	companyTrigger.setAttribute("aria-expanded", "false");
-	companyTrigger.appendChild(makeCompanyIcon(currentCompanyIcon, "", "company-switcher-menu-profile-icon"));
+	companySection.className = "company-switcher-company-section";
+	const currentCompany = document.createElement("button");
+	currentCompany.type = "button";
+	currentCompany.className = "company-switcher-current-company";
+	currentCompany.setAttribute("role", "menuitem");
+	currentCompany.appendChild(makeCompanyIcon(currentCompanyIcon, "", "company-switcher-menu-company-icon"));
 	const companyLabel = document.createElement("span");
-	companyLabel.textContent = "Companies";
-	const companyCaret = document.createElement("span");
-	companyCaret.className = "company-switcher-profile-caret";
-	companyCaret.setAttribute("aria-hidden", "true");
-	companyCaret.textContent = "›";
-	companyTrigger.append(companyLabel, companyCaret);
-	const companyList = document.createElement("div");
-	companyList.className = "company-switcher-profile-list";
-	companyList.setAttribute("role", "menu");
-	companyList.setAttribute("aria-label", "Companies");
-	companyList.hidden = true;
-	let companies = [];
-	try {
-		companies = await window.qorpera.listCompanies();
-	} catch {
-		// Keep the rest of the account menu available if company discovery fails.
-	}
-	const normalizeRoot = (root) => String(root ?? "").replace(/\//g, "\\").replace(/\\+$/g, "").toLowerCase();
-	for (const company of companies) {
-		const selected = normalizeRoot(company.root) === normalizeRoot(currentCompanyRoot);
-		const option = document.createElement("button");
-		option.type = "button";
-		option.className = "company-switcher-profile-option";
-		option.classList.toggle("selected", selected);
-		option.setAttribute("role", "menuitemradio");
-		option.setAttribute("aria-checked", String(selected));
-		option.appendChild(makeCompanyIcon(company.companyIcon, "", "company-switcher-profile-option-icon"));
-		const name = document.createElement("span");
-		name.textContent = company.name;
-		const check = document.createElement("span");
-		check.className = "company-switcher-profile-check";
-		check.setAttribute("aria-hidden", "true");
-		check.textContent = "✓";
-		option.append(name, check);
-		option.onclick = async (event) => {
-			event.stopPropagation();
-			if (selected) {
-				close();
-				button.focus();
-				return;
-			}
-			close();
-			const opened = await openCompany(company.root, null);
-			if (!opened) showToast(`Could not switch to ${company.name}.`);
-		};
-		companyList.appendChild(option);
-	}
-	if (!companies.length) {
-		const unavailable = document.createElement("div");
-		unavailable.className = "company-switcher-profile-empty";
-		unavailable.textContent = "Companies unavailable";
-		companyList.appendChild(unavailable);
-	}
-	companyTrigger.onclick = (event) => {
-		event.stopPropagation();
-		const opening = companyList.hidden;
-		companyList.hidden = !opening;
-		companyTrigger.setAttribute("aria-expanded", String(opening));
-		companySection.classList.toggle("open", opening);
-		if (opening) companyList.querySelector("button")?.focus();
+	companyLabel.textContent = state.name || "Company";
+	currentCompany.appendChild(companyLabel);
+	currentCompany.onclick = () => {
+		close();
+		openSettings("company");
 	};
-	companySection.append(companyTrigger, companyList);
+	companySection.append(
+		currentCompany,
+		item(
+			"Switch company",
+			"switch-company",
+			async () => {
+				await window.qorpera.showHub();
+			},
+			"company-switcher-switch-company",
+		),
+	);
 	menu.append(
 		companySection,
 		item("Settings", "settings", () => openSettings("general")),
