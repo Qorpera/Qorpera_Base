@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	COMPANY_ICON_IDS,
 	DEFAULT_COMPANY_ICON_ID,
 	forgetCompanyIcon,
 	isCompanyIconId,
@@ -38,7 +39,7 @@ describe("company appearance", () => {
 		expect(readCompanyIcon(userData, founder, company)).toBe(DEFAULT_COMPANY_ICON_ID);
 	});
 
-	it("replaces a custom picture with the anonymous icon", () => {
+	it("replaces a custom picture with the default portrait", () => {
 		const userData = temporaryRoot();
 		const company = join(userData, "company-a");
 		writeCompanyIcon(userData, founder, company, picture);
@@ -47,8 +48,9 @@ describe("company appearance", () => {
 	});
 
 	it("accepts supported pictures and rejects malformed or oversized data", () => {
-		expect(isCompanyIconId(DEFAULT_COMPANY_ICON_ID)).toBe(true);
+		for (const iconId of COMPANY_ICON_IDS) expect(isCompanyIconId(iconId)).toBe(true);
 		expect(isCompanyIconId(picture)).toBe(true);
+		expect(isCompanyIconId("agent-unknown")).toBe(false);
 		expect(isCompanyIconId("data:image/svg+xml;base64,PHN2Zz4=")).toBe(false);
 		expect(isCompanyIconId("data:image/png;base64,PHN2Zz4=")).toBe(false);
 		expect(isCompanyIconId(`data:image/png;base64,${Buffer.alloc(1024 * 1024 + 1).toString("base64")}`)).toBe(false);

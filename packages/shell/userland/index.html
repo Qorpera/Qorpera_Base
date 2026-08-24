@@ -100,9 +100,21 @@
 	<div id="view-hub">
 		<div class="hub-inner">
 			<div class="hub-hero">
-					<h1>Select a company</h1>
+				<h1>Companies</h1>
 			</div>
-			<div id="hubCompanies" class="hub-grid"></div>
+			<div class="hub-carousel-shell">
+				<button class="hub-carousel-arrow hub-carousel-previous" id="hubCarouselPrevious" type="button" aria-label="Previous company">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+				</button>
+				<div id="hubCompanies" class="hub-grid" role="region" aria-label="Company carousel" aria-roledescription="carousel"></div>
+				<button class="hub-carousel-arrow hub-carousel-next" id="hubCarouselNext" type="button" aria-label="Next company">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+				</button>
+			</div>
+			<div class="hub-carousel-meta">
+				<div id="hubCarouselPagination" class="hub-carousel-pagination" aria-label="Choose a company"></div>
+				<span id="hubCarouselStatus" class="sr-only" aria-live="polite"></span>
+			</div>
 			<div id="hubError" class="hub-error" role="status" aria-live="polite"></div>
 			<div id="friendsPanel" class="friends-panel" hidden>
 				<header>
@@ -424,13 +436,14 @@
 		<header>
 			<h2 id="companyModalTitle">Create a company</h2>
 		</header>
-		<div class="company-icon-stage" aria-hidden="true"><span id="companyIconPreview" class="company-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="8" r="3.25"/><path d="M5.5 19c.8-3.2 3-5 6.5-5s5.7 1.8 6.5 5"/></svg></span></div>
+		<div class="company-icon-stage" aria-hidden="true"><span id="companyIconPreview" class="company-icon"><span class="company-agent-avatar company-agent-avatar-halo"></span></span></div>
+		<div id="companyAvatarPicker" class="company-avatar-picker" role="group" aria-label="Choose a company avatar"></div>
 		<div class="company-picture-actions">
-			<button class="secondary-button" id="companyPictureUpload" type="button">Choose picture</button>
-			<button class="secondary-button" id="companyPictureAnonymous" type="button" hidden>Use anonymous icon</button>
+			<button class="secondary-button" id="companyPictureUpload" type="button">Upload picture</button>
+			<button class="secondary-button" id="companyPictureAnonymous" type="button" hidden>Use an agent avatar</button>
 			<input id="companyPictureFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
 		</div>
-		<p class="company-picture-note">PNG, JPEG, or WebP. The picture is private to your account on this computer.</p>
+		<p class="company-picture-note">Choose an agent avatar or upload a private PNG, JPEG, or WebP.</p>
 		<label class="sr-only" for="companyName">Company name</label>
 		<input class="company-name-input" id="companyName" type="text" autocomplete="off" spellcheck="false" maxlength="64" aria-describedby="companyFormError">
 		<p class="company-picture-note">Your company and Company File are created in the cloud. The first 50 GB is included.</p>
@@ -511,6 +524,8 @@
 <script src="./localization.js"></script>
 <script src="./feedback.js"></script>
 <script src="./renderer.js"></script>
+<script src="./company-avatars.js"></script>
+<script src="./hub-carousel.js"></script>
 <script src="./rail-resize.js"></script>
 </body>
 </html>
