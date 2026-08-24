@@ -418,24 +418,30 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 	readonly #authority: CloudRunnerNativeAuthority;
 	readonly #bridge: NativeProviderComputerBridge;
 	readonly #nativeWorkspaceGid?: number;
+	readonly #nativeWorkspaceRoot?: string;
 
 	constructor(
 		authority: CloudRunnerNativeAuthority,
 		bridge: NativeProviderComputerBridge,
 		nativeWorkspaceGid?: number,
+		nativeWorkspaceRoot?: string,
 	) {
 		this.#authority = authority;
 		this.#bridge = bridge;
 		this.#nativeWorkspaceGid = nativeWorkspaceGid;
+		this.#nativeWorkspaceRoot = nativeWorkspaceRoot ? resolve(nativeWorkspaceRoot) : undefined;
 		this.guarantees = bridge.executionGuarantees;
 	}
 
 	async start(request: CloudRunnerSandboxRequest): Promise<CloudRunnerSandboxProcess> {
 		if (this.#nativeWorkspaceGid !== undefined) {
 			const executionRoot = dirname(resolve(request.outputRoot));
+			const nativeWorkspaceRoot = this.#nativeWorkspaceRoot;
 			const inputRoot = dirname(resolve(request.input.companyBaseRoot));
 			const workRoot = dirname(resolve(request.input.companyRoot));
 			if (
+				!nativeWorkspaceRoot ||
+				dirname(executionRoot) !== nativeWorkspaceRoot ||
 				relative(executionRoot, inputRoot) !== "input" ||
 				relative(executionRoot, workRoot) !== "work" ||
 				relative(executionRoot, resolve(request.outputRoot)) !== "output"
@@ -457,10 +463,21 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 			]) {
 				assertWorkspaceChild(executionRoot, path);
 			}
-			const rootMetadata = await lstat(executionRoot);
+			const [nativeWorkspaceMetadata, rootMetadata] = await Promise.all([
+				lstat(nativeWorkspaceRoot),
+				lstat(executionRoot),
+			]);
+			if (!nativeWorkspaceMetadata.isDirectory() || nativeWorkspaceMetadata.isSymbolicLink()) {
+				throw new Error("Native provider workspace root contains an unsupported entry");
+			}
 			if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
 				throw new Error("Native provider workspace contains an unsupported entry");
 			}
+			// The provider receives the exact disposable child path, so it needs only
+			// traverse permission on the configured ancestor. Do not grant directory
+			// listing or write access to sibling jobs.
+			await chown(nativeWorkspaceRoot, -1, this.#nativeWorkspaceGid);
+			await chmod(nativeWorkspaceRoot, (nativeWorkspaceMetadata.mode & 0o7707) | 0o10);
 			await chown(executionRoot, -1, this.#nativeWorkspaceGid);
 			await chmod(executionRoot, 0o2750);
 			await shareNativeWorkspaceTree(inputRoot, this.#nativeWorkspaceGid, false);
@@ -483,7 +500,12 @@ export async function executeNativeCloudRunnerJob(
 	}
 	const completed = await executeCloudRunnerJob({
 		...execution,
-		backend: new NativeProviderSandboxBackend(authority, bridge, nativeWorkspaceGid),
+		backend: new NativeProviderSandboxBackend(
+			authority,
+			bridge,
+			nativeWorkspaceGid,
+			nativeWorkspaceGid === undefined ? undefined : execution.temporaryRoot,
+		),
 	});
 	const runnerResult = record(completed.result, "Native runner completion");
 	const harnessResult = record(runnerResult.backend_result, "Native harness result");

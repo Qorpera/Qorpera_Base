@@ -222,12 +222,15 @@ describe("native provider computer bridge", () => {
 					expect(receivedAuthority).toEqual(authority);
 					expect(receivedRequest.hostBroker).toBeUndefined();
 					if (nativeWorkspaceGid !== undefined) {
-						const [inputDirectory, inputFile, workFile, outputDirectory] = await Promise.all([
+						const [workspaceDirectory, inputDirectory, inputFile, workFile, outputDirectory] = await Promise.all([
+							stat(temporaryRoot),
 							stat(dirname(receivedRequest.input.companyBaseRoot)),
 							stat(join(receivedRequest.input.companyBaseRoot, "company.md")),
 							stat(join(receivedRequest.input.companyRoot, "company.md")),
 							stat(receivedRequest.outputRoot),
 						]);
+						expect(workspaceDirectory.gid).toBe(nativeWorkspaceGid);
+						expect(workspaceDirectory.mode & 0o070).toBe(0o010);
 						expect(inputDirectory.gid).toBe(nativeWorkspaceGid);
 						expect(inputDirectory.mode & 0o7777).toBe(0o2750);
 						expect(inputFile.mode & 0o777).toBe(0o640);
