@@ -2,7 +2,7 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_PACKAGE_MANIFEST_SHA256="e05375e8fd4f0fd5fffed85a4de8286d4b5392bddefa58a5a2bafbeab4889144"
+EXPECTED_PACKAGE_MANIFEST_SHA256="ff2ebbe5ff52c822cf07e382ef32519e95a2e2cc9bf1a4d1bfc8e0c47a6f2e49"
 EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:96c2e17ec75cc0a1d5ed7a4e7c582ecd53ce2954@sha256:bc4b4543cd7c3a048188458eeab11bfa4b183aa1686b9c89fc012fc3e2c8987e"
 LXD_PROJECT="qorpera-runners"
 LXD_IMAGE_PROJECT="default"
