@@ -252,7 +252,7 @@
 	}
 
 	function translateAttribute(element, name) {
-		if (!name) return;
+		if (!name || excluded(element)) return;
 		const value = element.getAttribute(name);
 		if (!value) return;
 		let sources = attributeSources.get(element);

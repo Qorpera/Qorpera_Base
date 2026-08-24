@@ -10,6 +10,7 @@ const rendererSource = readFileSync(join(userland, "renderer.js"), "utf-8");
 
 function loadLocalization(languages: string[], storedLanguage?: string) {
 	const storage = new Map<string, string>();
+	let mutationCallback: ((records: object[]) => void) | undefined;
 	if (storedLanguage) storage.set("qorpera-language", storedLanguage);
 	const textNode = { data: "Settings", nodeType: 3, parentElement: undefined as object | undefined };
 	const textContainer = {
@@ -24,9 +25,9 @@ function loadLocalization(languages: string[], storedLanguage?: string) {
 	const chatContainer = {
 		childNodes: [chatTextNode],
 		closest: (selector: string) => (selector.includes("#messages") ? chatContainer : null),
-		getAttribute: () => null,
+		getAttribute: (_name: string) => null as string | null,
 		nodeType: 1,
-		setAttribute: () => undefined,
+		setAttribute: (_name: string, _value: string) => undefined,
 	};
 	chatTextNode.parentElement = chatContainer;
 	const attachmentTextNode = { data: "Settings", nodeType: 3, parentElement: undefined as object | undefined };
@@ -59,6 +60,9 @@ function loadLocalization(languages: string[], storedLanguage?: string) {
 			| undefined,
 	};
 	class TestMutationObserver {
+		constructor(callback: (records: object[]) => void) {
+			mutationCallback = callback;
+		}
 		observe() {}
 		takeRecords() {
 			return [];
@@ -75,7 +79,16 @@ function loadLocalization(languages: string[], storedLanguage?: string) {
 		navigator: { language: languages[0], languages },
 		window,
 	});
-	return { attachmentTextNode, chatTextNode, documentElement, i18n: window.qorperaI18n, storage, textNode };
+	return {
+		attachmentTextNode,
+		chatContainer,
+		chatTextNode,
+		documentElement,
+		i18n: window.qorperaI18n,
+		mutationCallback,
+		storage,
+		textNode,
+	};
 }
 
 describe("shell localization", () => {
@@ -106,10 +119,18 @@ describe("shell localization", () => {
 	});
 
 	it("leaves chat bubbles and attachment blobs unchanged", () => {
-		const { attachmentTextNode, chatTextNode, i18n } = loadLocalization(["da-DK"]);
+		const { attachmentTextNode, chatContainer, chatTextNode, i18n, mutationCallback } = loadLocalization(["da-DK"]);
 		expect(i18n?.locale).toBe("da");
 		expect(chatTextNode.data).toBe("Settings");
 		expect(attachmentTextNode.data).toBe("Settings");
+
+		const attributes = new Map([["aria-label", "Settings"]]);
+		chatContainer.getAttribute = (name: string) => attributes.get(name) ?? null;
+		chatContainer.setAttribute = (name: string, value: string) => {
+			attributes.set(name, value);
+		};
+		mutationCallback?.([{ attributeName: "aria-label", target: chatContainer, type: "attributes" }]);
+		expect(attributes.get("aria-label")).toBe("Settings");
 	});
 
 	it("loads localization before the renderer and exposes all language choices", () => {
