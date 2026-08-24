@@ -136,17 +136,16 @@
 				<textarea id="input" rows="1" aria-label="Message" placeholder="Message…"></textarea>
 				<div class="composer-strip">
 					<input id="attachFileInput" type="file" accept="image/*" multiple hidden>
-					<button id="composerMoreButton" class="composer-more" type="button" title="Chat settings and more" aria-label="Chat settings and more" aria-haspopup="menu" aria-expanded="false"><span aria-hidden="true">•••</span></button>
+					<button id="composerMoreButton" class="composer-more" type="button" style="padding: 0" title="Chat settings and more" aria-label="Chat settings and more" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>
 					<div id="composerMoreMenu" class="composer-more-menu" role="menu" aria-label="Chat settings and more">
 						<button id="composerAddFilesButton" class="composer-more-action" type="button" role="menuitem"><img src="./icon-attach.svg" alt=""><span>Attach files</span></button>
 						<button id="modelCtlBtn" class="composer-more-action composer-model-action" type="button" role="menuitem" title="Model and effort" aria-haspopup="menu" aria-expanded="false"><img src="./icon-brain.svg" alt=""><span>Model &amp; effort</span></button>
-						<button id="composerNewWorktree" class="composer-more-action" type="button" role="menuitem"><img src="./icon-git-branch.svg" alt=""><span>New worktree</span></button>
+						<select id="cloudSponsorSelect" class="cloud-sponsor-select" style="width: 100%" aria-label="Execution sponsor" title="Execution sponsor" hidden></select>
 					</div>
 					<div class="chipwrap compatibility-control" hidden>
 						<button id="scopeBtn" class="stripchip" title="Company or product-development department" aria-haspopup="menu" aria-expanded="false">…</button>
 						<div id="scopeMenu" class="chipmenu"></div>
 					</div>
-					<select id="cloudSponsorSelect" class="cloud-sponsor-select" aria-label="Execution sponsor" title="Execution sponsor" hidden></select>
 					<span class="composer-spacer"></span>
 					<div id="modelCtlMenu" class="chipmenu modelctl" role="menu" aria-label="Model control">
 						<div class="mc-effort-heading"><span class="sr-only">Reasoning effort</span><output id="mcEffortLabel">Medium</output></div>

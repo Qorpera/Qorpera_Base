@@ -1572,25 +1572,13 @@ function reassertPreferredModel() {
 // moments of the spawn.
 modelCtl.sync();
 
-// ---- composer More: attachments, intelligence, and worktree ----------------
+// ---- composer More: attachments and intelligence ---------------------------
 
-const composerMore = (() => {
+(() => {
 	const button = $("composerMoreButton");
 	const menu = $("composerMoreMenu");
 	const addFiles = $("composerAddFilesButton");
-	const worktree = $("composerNewWorktree");
 	document.body.appendChild(menu);
-
-	const worktreeAvailable = () => Boolean(!currentStaffId && currentDepartment);
-	const sync = () => {
-		const available = worktreeAvailable();
-		worktree.setAttribute("aria-disabled", String(!available));
-		worktree.title = available
-			? `Create a fresh ${departmentName(currentDepartment)} worktree`
-			: currentStaffId
-				? "Choose a product artifact before creating one"
-				: "Available for product work";
-	};
 
 	const close = () => {
 		if (openChipMenu?.menu === menu) closeOpenChipMenu();
@@ -1602,7 +1590,6 @@ const composerMore = (() => {
 			return;
 		}
 		closeOpenChipMenu();
-		sync();
 		const rect = button.getBoundingClientRect();
 		menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 222))}px`;
 		menu.style.bottom = `${window.innerHeight - rect.top + 8}px`;
@@ -1614,24 +1601,6 @@ const composerMore = (() => {
 		close();
 		$("attachFileInput").click();
 	};
-	worktree.onclick = () => {
-		if (!worktreeAvailable()) {
-			showToast(
-				currentStaffId
-					? "Open a product artifact before creating an isolated worktree."
-					: "New worktrees are available from a product conversation.",
-			);
-			return;
-		}
-		const department = (state.departments ?? []).find((entry) => entry.path === currentDepartment);
-		if (!department) {
-			showToast("The product workspace is not available.");
-			return;
-		}
-		close();
-		void openDepartmentChat(department, currentNodeId ?? "q:chats");
-	};
-	return { sync };
 })();
 
 // ---- company vs product-worker scope selector -------------------------------
@@ -2925,7 +2894,6 @@ function renderThreadHeader() {
 	$("modelCtlBtn").hidden = Boolean(room);
 	syncNativeExecutionSelector();
 	if (!staff || room) $("threadSponsorProvenance").hidden = true;
-	composerMore.sync();
 	syncConversationAccess();
 }
 
