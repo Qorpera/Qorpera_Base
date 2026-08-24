@@ -169,7 +169,7 @@ install -d -o root -g root -m 0755 /opt/qorpera-runner /opt/qorpera-harnesses /e
 install -d -o root -g root -m 0700 /var/lib/qorpera-bootstrap /var/lib/qorpera-bootstrap/credentials
 install -d -o root -g root -m 0700 /var/lib/qorpera /var/lib/qorpera/identity
 install -d -o "${RUNNER_USER}" -g "${RUNNER_USER}" -m 0700 \
-	/var/lib/qorpera-runner /var/lib/qorpera-runner/tmp /run/qorpera-runner
+	/var/lib/qorpera-runner /var/lib/qorpera-native-workspace /run/qorpera-runner
 install -d -o "${NATIVE_USER}" -g "${NATIVE_EXECUTION_GROUP}" -m 0700 \
 	/var/lib/qorpera-native-provider /var/lib/qorpera-native-provider/tmp
 

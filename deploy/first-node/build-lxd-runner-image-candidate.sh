@@ -3,14 +3,14 @@ set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
 EXPECTED_BASE_FINGERPRINT="7ef31bed9834094a06517d63b93434588049efcbe2ab5d67419a6167988b7d4f"
-EXPECTED_PACKAGE_MANIFEST_SHA256="0ab740d9099c20be1e648f3635770307442323b901c8ef12a793e13420c40051"
+EXPECTED_PACKAGE_MANIFEST_SHA256="e813369c734aebaa28b1148a21d11e9a52e969209d3d409dc3a00c5f7cbe3fbd"
 EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:96c2e17ec75cc0a1d5ed7a4e7c582ecd53ce2954@sha256:bc4b4543cd7c3a048188458eeab11bfa4b183aa1686b9c89fc012fc3e2c8987e"
-STAGING_ROOT="/home/company41-admin/step2-lxd/lxd-runner-guest-v10"
+STAGING_ROOT="/home/company41-admin/step2-lxd/lxd-runner-guest-v11"
 LXD_POOL="qorpera-vm"
 LXD_NETWORK="qorpera0"
 LXD_BUILDER_PROJECT="default"
-BUILDER_INSTANCE="qorpera-runner-image-build-v10"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v10-unsigned"
+BUILDER_INSTANCE="qorpera-runner-image-build-v11"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v11-unsigned"
 STATE_LOG="/var/log/qorpera-lxd-runner-image-candidate.txt"
 
 if [[ ${EUID} -ne 0 ]]; then

@@ -804,7 +804,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				publishable_key: this.#config.supabasePublishableKey,
 				runner_id: authority.runner.runnerId,
 				authority_state_path: "/var/lib/qorpera-runner/.local/state/qorpera-runner/authority.json",
-				temporary_root: "/var/lib/qorpera-runner/tmp",
+				temporary_root: "/var/lib/qorpera-native-workspace",
 				image: this.#config.runnerImage,
 				podman_path: this.#config.runnerPodmanPath,
 				entrypoint: this.#config.runnerEntrypoint,

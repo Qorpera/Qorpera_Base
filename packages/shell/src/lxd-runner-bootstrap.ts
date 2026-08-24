@@ -41,6 +41,7 @@ export interface LxdRunnerBootstrapPaths {
 	identityVolume: string;
 	identityMarker: string;
 	identityMasterKey: string;
+	runnerHomeDirectory: string;
 	runnerConfigDestination: string;
 	runnerStateDirectory: string;
 	runnerTemporaryDirectory: string;
@@ -101,9 +102,10 @@ const PRODUCTION_PATHS: LxdRunnerBootstrapPaths = {
 	identityVolume: "/var/lib/qorpera/identity",
 	identityMarker: "/var/lib/qorpera/identity/qorpera-compute-identity.json",
 	identityMasterKey: "/var/lib/qorpera/identity/qorpera-native-provider-master-key",
+	runnerHomeDirectory: "/var/lib/qorpera-runner",
 	runnerConfigDestination: "/var/lib/qorpera-runner/.config/qorpera-runner/config.json",
 	runnerStateDirectory: "/var/lib/qorpera-runner/.local/state/qorpera-runner",
-	runnerTemporaryDirectory: "/var/lib/qorpera-runner/tmp",
+	runnerTemporaryDirectory: "/var/lib/qorpera-native-workspace",
 	nativeProviderTemporaryDirectory: "/var/lib/qorpera-native-provider/tmp",
 	mountInfo: "/proc/self/mountinfo",
 };
@@ -489,6 +491,20 @@ async function ensureOwnedDirectoryTree(
 	}
 }
 
+async function ensureOwnedDirectory(path: string, identity: LxdRunnerBootstrapServiceIdentity): Promise<void> {
+	try {
+		await mkdir(path, { mode: 0o700 });
+	} catch (error) {
+		if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+	}
+	const metadata = await lstat(path);
+	if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+		throw new Error("Service state path contains an unsupported entry");
+	}
+	await chown(path, identity.uid, identity.gid);
+	await chmod(path, 0o700);
+}
+
 async function installRunnerConfig(
 	encoded: string,
 	path: string,
@@ -547,7 +563,8 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 	if (
 		runnerConfig.assignmentHost !== "0.0.0.0" ||
 		!runnerConfig.assignmentTrustedSource ||
-		runnerConfig.maxAssignments !== 1
+		runnerConfig.maxAssignments !== 1 ||
+		runnerConfig.temporaryRoot !== paths.runnerTemporaryDirectory
 	) {
 		throw new Error("LXD runner configuration does not enforce the single-lane private assignment boundary");
 	}
@@ -596,10 +613,10 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 	) {
 		throw new Error("Native execution group does not match the signed guest-image accounts");
 	}
-	const runnerHome = dirname(paths.runnerTemporaryDirectory);
+	const runnerHome = paths.runnerHomeDirectory;
 	const nativeHome = dirname(paths.nativeProviderTemporaryDirectory);
 	await ensureOwnedDirectoryTree(runnerHome, paths.runnerStateDirectory, runnerIdentity);
-	await ensureOwnedDirectoryTree(runnerHome, paths.runnerTemporaryDirectory, runnerIdentity);
+	await ensureOwnedDirectory(paths.runnerTemporaryDirectory, runnerIdentity);
 	await ensureOwnedDirectoryTree(nativeHome, paths.nativeProviderTemporaryDirectory, nativeIdentity);
 	await installRunnerConfig(runnerConfigEncoded, paths.runnerConfigDestination, runnerHome, runnerIdentity);
 	const start = options.startService ?? startRunnerService;

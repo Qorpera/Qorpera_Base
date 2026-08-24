@@ -33,9 +33,10 @@ async function fixture(): Promise<{
 		identityVolume: join(root, "identity"),
 		identityMarker: join(root, "identity", "qorpera-compute-identity.json"),
 		identityMasterKey: join(root, "identity", "qorpera-native-provider-master-key"),
+		runnerHomeDirectory: join(root, "runner"),
 		runnerConfigDestination: join(root, "runner", ".config", "qorpera-runner", "config.json"),
 		runnerStateDirectory: join(root, "runner", ".local", "state", "qorpera-runner"),
-		runnerTemporaryDirectory: join(root, "runner", "tmp"),
+		runnerTemporaryDirectory: join(root, "native-workspace"),
 		nativeProviderTemporaryDirectory: join(root, "native", "tmp"),
 		mountInfo: join(root, "mountinfo"),
 	};
@@ -197,10 +198,31 @@ describe("LXD runner guest bootstrap", () => {
 			native_bridge_shared_gid: sharedGid,
 		});
 		expect((await stat(paths.runnerConfigDestination)).mode & 0o777).toBe(0o600);
+		expect((await stat(paths.runnerTemporaryDirectory)).mode & 0o777).toBe(0o700);
+		expect((await stat(paths.runnerTemporaryDirectory)).uid).toBe(uid);
 		for (const directory of [join(root, "runner", ".local"), join(root, "runner", ".config"), join(root, "native")]) {
 			expect((await stat(directory)).mode & 0o777).toBe(0o700);
 			expect((await stat(directory)).uid).toBe(uid);
 		}
+	});
+
+	it("refuses a runner temporary root outside the dedicated native workspace", async () => {
+		const { root, paths, sharedGid } = await fixture();
+		const config = JSON.parse(await readFile(paths.runnerConfig, "utf-8")) as Record<string, unknown>;
+		config.temporary_root = join(root, "runner", "tmp");
+		await writeFile(paths.runnerConfig, `${JSON.stringify(config)}\n`, { mode: 0o600 });
+
+		await expect(
+			runLxdRunnerBootstrap({
+				paths,
+				expectedRootUid: process.getuid?.() ?? 0,
+				expectedRootGid: process.getgid?.() ?? 0,
+				serviceIdentity: { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 },
+				nativeServiceIdentity: { uid: process.getuid?.() ?? 0, gid: sharedGid },
+				runnerSupplementaryGids: [sharedGid],
+				startService: async () => undefined,
+			}),
+		).rejects.toThrow("does not enforce the single-lane private assignment boundary");
 	});
 
 	it("refuses an identity volume already bound to another Compute Identity", async () => {
