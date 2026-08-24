@@ -1240,11 +1240,15 @@ export class CloudRunnerOrchestrator {
 		}
 	}
 
-	async #claimBatch(limit: number, signal?: AbortSignal): Promise<readonly CloudRunnerOrchestrationClaim[]> {
+	async #claimBatch(
+		limit: number,
+		signal?: AbortSignal,
+		excludedClaimIds: ReadonlySet<string> = new Set(),
+	): Promise<readonly CloudRunnerOrchestrationClaim[]> {
 		const retained = signal
 			? await this.#controlPlane.retainedClaims(this.#orchestratorId, signal)
 			: await this.#controlPlane.retainedClaims(this.#orchestratorId);
-		const claims = retained.slice(0, limit);
+		const claims = retained.filter((claim) => !excludedClaimIds.has(claim.claimId)).slice(0, limit);
 		while (claims.length < limit) {
 			const clientClaimId = this.#clientClaimId();
 			const claim = signal
@@ -1398,18 +1402,24 @@ export class CloudRunnerOrchestrator {
 			throw new Error("Orchestrator shutdown grace is outside the supported range");
 		}
 		const inFlight = new Set<Promise<void>>();
+		const inFlightClaimIds = new Set<string>();
 		while (!signal.aborted) {
 			try {
 				await this.#reconcileControlPlane(signal);
 				const available = this.#dispatchConcurrency - inFlight.size;
 				if (available > 0) {
-					const claims = await this.#claimBatch(available, signal);
+					const claims = await this.#claimBatch(available, signal, inFlightClaimIds);
 					for (const claim of claims) {
+						if (inFlightClaimIds.has(claim.claimId)) continue;
+						inFlightClaimIds.add(claim.claimId);
 						let dispatch: Promise<void>;
 						dispatch = this.#dispatchClaim(claim, signal)
 							.then(() => undefined)
 							.catch((error: unknown) => options.onError?.(error))
-							.finally(() => inFlight.delete(dispatch));
+							.finally(() => {
+								inFlight.delete(dispatch);
+								inFlightClaimIds.delete(claim.claimId);
+							});
 						inFlight.add(dispatch);
 					}
 				}

@@ -729,6 +729,32 @@ describe("cloud runner orchestrator", () => {
 		expect(control.listRoutineScheduleHeads).toHaveBeenCalledOnce();
 	});
 
+	it("does not redispatch a retained claim while its first provider lane is still in flight", async () => {
+		const retained = claim();
+		const control = controlPlane(undefined);
+		vi.mocked(control.retainedClaims).mockResolvedValue([retained]);
+		vi.mocked(control.claimNext).mockResolvedValue(undefined);
+		const controller = new AbortController();
+		vi.mocked(control.reconcileExpired).mockImplementation(async () => {
+			if (vi.mocked(control.reconcileExpired).mock.calls.length >= 3) controller.abort();
+		});
+		const local = localAdapter();
+		local.acquire.mockImplementation(() => new Promise(() => undefined));
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			dispatchConcurrency: 2,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		await orchestrator.run(controller.signal, { pollIntervalMs: 10, shutdownGraceMs: 10 });
+
+		expect(local.acquire).toHaveBeenCalledOnce();
+		expect(control.assign).not.toHaveBeenCalled();
+	});
+
 	it("continues reconciliation while a provider delivery lane is hung", async () => {
 		const control = controlPlane();
 		vi.mocked(control.claimNext).mockResolvedValueOnce(claim()).mockResolvedValue(undefined);
