@@ -2,14 +2,14 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_PACKAGE_MANIFEST_SHA256="ff2ebbe5ff52c822cf07e382ef32519e95a2e2cc9bf1a4d1bfc8e0c47a6f2e49"
-EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:96c2e17ec75cc0a1d5ed7a4e7c582ecd53ce2954@sha256:bc4b4543cd7c3a048188458eeab11bfa4b183aa1686b9c89fc012fc3e2c8987e"
+EXPECTED_PACKAGE_MANIFEST_SHA256="36aa29c8b5f8fd823e88d8cce6b74f3ae72c1944aa69b5f525f24c2e38e0b045"
+EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1"
 LXD_PROJECT="qorpera-runners"
 LXD_IMAGE_PROJECT="default"
 LXD_POOL="qorpera-vm"
 LXD_PROFILE="qorpera-job-v1"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v14-unsigned"
-ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v14"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v21-unsigned"
+ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v21"
 ACCEPTANCE_MARKER="qorpera.lxd-runner-image-acceptance/v1"
 STATE_LOG="/var/log/qorpera-lxd-runner-image-acceptance.txt"
 
