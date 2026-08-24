@@ -26,6 +26,7 @@ import {
 	type HostedPrimaryDatabase,
 	type QorperaHostedPrimary,
 } from "./hosted-primary.ts";
+import type { ProductFeedbackSubmission } from "./product-feedback.ts";
 
 export const QORPERA_AUTH_URL = "https://wovsmjvghnbcbfazdtvr.supabase.co";
 export const QORPERA_AUTH_PUBLISHABLE_KEY = "sb_publishable_nOLb65dGcfMmfiEJHVPuEg_aS2uzVjS";
@@ -392,6 +393,22 @@ export class QorperaAccountAuth {
 	nativeProviderIdentityBridge(): NativeProviderIdentityBridge {
 		if (!this.nativeIdentityBridge) throw new Error("Cloud native provider login is not configured");
 		return this.nativeIdentityBridge;
+	}
+
+	async submitProductFeedback(input: ProductFeedbackSubmission): Promise<string> {
+		const { data, error } = await this.client.rpc(
+			"qorpera_submit_product_feedback" as never,
+			{
+				p_client_feedback_id: input.clientFeedbackId,
+				p_category: input.category,
+				p_details: input.details,
+				p_include_diagnostics: input.includeDiagnostics,
+				p_diagnostics: input.diagnostics,
+			} as never,
+		);
+		if (error) throw error;
+		if (typeof data !== "string" || !data) throw new Error("Qorpera did not confirm the feedback submission");
+		return data;
 	}
 
 	async info(): Promise<QorperaAccountInfo> {

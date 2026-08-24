@@ -4674,10 +4674,7 @@ function openCompanySwitcher() {
 	menu.append(
 		companySection,
 		item("Settings", "settings", () => openSettings("general")),
-		item("Feedback", "feedback", async () => {
-			const result = await window.qorpera.openFeedback();
-			if (!result?.ok) showToast(result?.error ?? "Feedback could not be opened.");
-		}),
+		item("Feedback", "feedback", () => window.qorperaFeedback.open($("companySwitcherButton"))),
 		item(
 			"Log out",
 			"log-out",

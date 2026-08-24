@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="./artifacts.css">
 <link rel="stylesheet" href="./rail-resize.css">
 <link rel="stylesheet" href="./onboarding.css">
+<link rel="stylesheet" href="./feedback.css">
 </head>
 <body>
 <header id="titlebar">
@@ -475,10 +476,40 @@
 </div>
 
 <div class="app-toast" id="appToast" role="status" hidden></div>
+<div class="modal-backdrop feedback-backdrop" id="feedbackModal" hidden>
+	<form class="feedback-modal" id="feedbackForm" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle">
+		<header>
+			<div>
+				<h2 id="feedbackTitle">Share feedback</h2>
+			</div>
+			<button class="feedback-close" id="feedbackClose" type="button" aria-label="Close feedback">×</button>
+		</header>
+		<div class="feedback-body">
+			<fieldset class="feedback-categories">
+				<legend>Feedback category</legend>
+				<button class="feedback-category" type="button" data-feedback-category="bug" aria-pressed="false">+ Bug</button>
+				<button class="feedback-category" type="button" data-feedback-category="bad-result" aria-pressed="false">+ Bad result</button>
+				<button class="feedback-category" type="button" data-feedback-category="good-result" aria-pressed="false">+ Good result</button>
+				<button class="feedback-category" type="button" data-feedback-category="feature-request" aria-pressed="false">+ Feature request</button>
+				<button class="feedback-category" type="button" data-feedback-category="performance" aria-pressed="false">+ Performance</button>
+				<button class="feedback-category" type="button" data-feedback-category="other" aria-pressed="false">+ Other</button>
+			</fieldset>
+			<label class="feedback-details-wrap" for="feedbackDetails">
+				<span class="sr-only">Feedback details</span>
+				<textarea id="feedbackDetails" maxlength="10000" placeholder="Share details (required)" required></textarea>
+			</label>
+		</div>
+		<footer>
+			<p class="feedback-status" id="feedbackStatus" role="status" aria-live="polite"></p>
+			<button class="feedback-submit" id="feedbackSubmit" type="submit" disabled>Submit</button>
+		</footer>
+	</form>
+</div>
 <script src="./marked.umd.js"></script>
 <script src="./artifact-dashboard.js"></script>
 <script src="./model-selection.js"></script>
 <script src="./localization.js"></script>
+<script src="./feedback.js"></script>
 <script src="./renderer.js"></script>
 <script src="./rail-resize.js"></script>
 </body>

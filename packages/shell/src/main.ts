@@ -385,6 +385,7 @@ import {
 } from "./local-execution.ts";
 import { alignCloudCompanyManifestName } from "./managed-company-identity.ts";
 import { ModelAccountStore, type ModelAccountView } from "./model-accounts.ts";
+import { parseProductFeedbackRequest } from "./product-feedback.ts";
 import { hostedProfileAccess } from "./profile-collaboration.ts";
 import {
 	attachCloudProfile,
@@ -9685,11 +9686,27 @@ app.whenReady().then(async () => {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
 	});
-	ipcMain.handle("feedback:open", async (event) => {
-		if (!slotOf(event.sender)) return { ok: false, error: "Feedback is unavailable from this window." };
+	ipcMain.handle("feedback:submit", async (event, input: unknown) => {
+		const slot = slotOf(event.sender);
+		if (!slot || !qorperaAccountAuth) {
+			return { ok: false, error: "Feedback is unavailable from this window." };
+		}
 		try {
-			await electronShell.openExternal("https://github.com/Qorpera/Qorpera_Base/issues/new");
-			return { ok: true };
+			const request = parseProductFeedbackRequest(input);
+			const profileType = slot.runtime ? profileAttachment(slot.runtime.root).profileType : "none";
+			const feedbackId = await qorperaAccountAuth.submitProductFeedback({
+				...request,
+				diagnostics: request.includeDiagnostics
+					? {
+							schema: "qorpera.product-feedback-diagnostics/v1",
+							appVersion: shellVersion(),
+							platform: process.platform,
+							architecture: process.arch,
+							profileType,
+						}
+					: {},
+			});
+			return { ok: true, feedbackId };
 		} catch (error) {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}

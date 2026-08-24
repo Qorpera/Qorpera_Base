@@ -95,3 +95,56 @@ final result: passed
 3. Confirmed the final hierarchy, spacing, clipping, and action placement without additional visual corrections.
 
 Final result: passed
+
+---
+
+# Feedback modal design QA
+
+## Comparison target
+
+- Source visual truth: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_zdnMJk/Screenshot 2026-08-24 at 19.14.12.png`
+- Normalized source: `/Users/jonas/.codex/visualizations/2026/08/24/01a034c5-251f-7483-aae8-dad4ccc1da22/feedback-pipeline/feedback-reference.png`
+- Implementation: `http://127.0.0.1:4187/#feedback-preview`
+- Implementation screenshot: `/Users/jonas/.codex/visualizations/2026/08/24/01a034c5-251f-7483-aae8-dad4ccc1da22/feedback-pipeline/feedback-implementation.png`
+- Full-view comparison: `/Users/jonas/.codex/visualizations/2026/08/24/01a034c5-251f-7483-aae8-dad4ccc1da22/feedback-pipeline/feedback-qa-comparison.png`
+- Focused modal comparison: `/Users/jonas/.codex/visualizations/2026/08/24/01a034c5-251f-7483-aae8-dad4ccc1da22/feedback-pipeline/feedback-qa-focus.png`
+- State: feedback modal open, empty details, no category selected.
+
+## Normalization
+
+- Source pixels: 3594 × 2250.
+- Normalized source pixels: 1600 × 1000.
+- Implementation pixels: 1600 × 1000.
+- CSS viewport: 1600 × 1000 for full-view capture and 1600 × 500 for the focused crop.
+- Density: the source was downsampled to the implementation pixel dimensions; the browser capture used the in-app browser's default density.
+
+## Fidelity review
+
+- Fonts and typography: both use a neutral system UI family with closely matched title weight, form-label size, and compact control text. The implementation intentionally uses Qorpera's existing font tokens.
+- Spacing and layout rhythm: modal width, centered placement, header spacing, chip row, textarea, and full-width submit action align with the reference. Radius and shadow remain consistent with Qorpera's existing modal grammar.
+- Colors and visual tokens: white surface, soft gray overlay, neutral borders, blue focus ring, black active controls, and disabled gray submit state match the source while using existing Qorpera tokens.
+- Image quality and asset fidelity: the modal contains no raster imagery, logos, or bespoke illustration assets. Existing native form and close controls remain sharp at the captured density.
+- Copy and content: the final product direction removes diagnostic and privacy disclosure rows from the modal, leaving categories, required details, and the submit action. The submitted diagnostics remain restricted to app version, platform, architecture, and company type; conversation content, files, and browser history remain excluded by the implementation.
+
+## Interaction and accessibility checks
+
+- Category selection changes `aria-pressed` and is reversible.
+- Required details enable the submit action only after non-whitespace input.
+- Basic diagnostics are sent automatically without adding a decision to the feedback form.
+- Focus moves into the textarea on open, remains trapped inside the modal, and returns to the invoking control on close.
+- Escape and backdrop click close the modal; close is suppressed during submission.
+- Submission exposes pending, success, and retry states through an `aria-live` status region.
+- No feedback-specific console warnings or errors were present in the browser preview. The static preview's main renderer reports its expected missing Electron bridge because it is running outside Electron; that does not affect the isolated feedback flow.
+
+## Comparison history
+
+- Initial P2: the implementation modal was roughly 95 px taller than the normalized reference, the overlay was too dark, and the submit action did not span the form width.
+- Fix: removed the extra subtitle and character count, reduced textarea and vertical spacing, matched the reference width, softened the overlay, and made Submit full-width.
+- Post-fix evidence: `feedback-qa-comparison.png` and `feedback-qa-focus.png` show matched modal proportions, hierarchy, density, and control placement. No actionable P0, P1, or P2 differences remain.
+- Product simplification after the captured comparison removed the diagnostic toggle and privacy paragraph. The modal is therefore intentionally shorter than the comparison evidence while preserving its established width, hierarchy, and control styling.
+
+## Residual test gap
+
+- The browser preview validates presentation and client-side interaction. The Electron IPC and hosted RPC wiring are covered by focused source-level tests; a live hosted submission was not made during visual QA because it would create production feedback data and requires the migration to be deployed.
+
+final result: passed

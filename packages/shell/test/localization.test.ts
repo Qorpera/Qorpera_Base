@@ -118,6 +118,31 @@ describe("shell localization", () => {
 		expect(loadLocalization(["en-US", "da-DK"]).i18n?.locale).toBe("en");
 	});
 
+	it("translates the complete feedback flow into Danish", () => {
+		const i18n = loadLocalization(["da-DK"]).i18n;
+		for (const source of [
+			"Share feedback",
+			"Close feedback",
+			"Feedback category",
+			"+ Bug",
+			"+ Bad result",
+			"+ Good result",
+			"+ Feature request",
+			"+ Performance",
+			"+ Other",
+			"Feedback details",
+			"Share details (required)",
+			"Submit",
+			"Sending…",
+			"Feedback could not be sent.",
+			"Feedback sent. Thank you.",
+			"Sent",
+			"Try again",
+		]) {
+			expect(i18n?.t(source), source).not.toBe(source);
+		}
+	});
+
 	it("leaves chat bubbles and attachment blobs unchanged", () => {
 		const { attachmentTextNode, chatContainer, chatTextNode, i18n, mutationCallback } = loadLocalization(["da-DK"]);
 		expect(i18n?.locale).toBe("da");

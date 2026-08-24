@@ -9,6 +9,8 @@ const indexSource = readFileSync(join(userland, "index.html"), "utf-8");
 const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
 const characterMotionSource = readFileSync(join(userland, "character-motion.css"), "utf-8");
 const railResizeCssSource = readFileSync(join(userland, "rail-resize.css"), "utf-8");
+const feedbackSource = readFileSync(join(userland, "feedback.js"), "utf-8");
+const feedbackCssSource = readFileSync(join(userland, "feedback.css"), "utf-8");
 const preloadSource = readFileSync(join(shell, "src", "preload.cjs"), "utf-8");
 const mainSource = readFileSync(join(shell, "src", "main.ts"), "utf-8");
 
@@ -65,9 +67,9 @@ describe("userland wiring", () => {
 
 	it("keeps the remaining company controls actionable and accessible", () => {
 		expect(rendererSource).toContain("window.qorpera.openCompanyFile()");
-		expect(rendererSource).toContain('"Cloud-authoritative · File Explorer opens a synced copy on this computer"');
-		expect(rendererSource).toContain('"Open synced copy"');
-		expect(rendererSource).toContain('info.profile?.name || info.company?.name || state.name || "Current company"');
+		expect(rendererSource).toContain('? "Cloud-authoritative" : "Stored on this computer"');
+		expect(rendererSource).toContain('"Opened a synced copy. Cloud revisions remain authoritative."');
+		expect(rendererSource).toContain('info.profile?.name || info.company?.name || state.name || "Company"');
 		expect(rendererSource).toContain('window.qorpera.resolveCompanyFileConflict("local")');
 		expect(rendererSource).toContain('window.qorpera.resolveCompanyFileConflict("cloud")');
 		expect(preloadSource).toContain('ipcRenderer.invoke("company-file:open-conflict-remote")');
@@ -113,6 +115,24 @@ describe("userland wiring", () => {
 		expect(rendererSource).toContain("Downloading v");
 		expect(rendererSource).toContain("Restart to update v");
 		expect(baseCssSource).toContain('.hub-foot .hub-update-button[data-phase="ready"]');
+	});
+
+	it("keeps product feedback private and in-app", () => {
+		expect(indexSource).toContain('id="feedbackModal"');
+		expect(indexSource).toContain('src="./feedback.js"');
+		expect(indexSource).toContain('href="./feedback.css"');
+		expect(rendererSource).toContain('window.qorperaFeedback.open($("companySwitcherButton"))');
+		expect(feedbackSource).toContain('!previousFocus.closest?.("[hidden]")');
+		expect(feedbackSource).toContain("window.qorpera.submitFeedback({");
+		expect(feedbackSource).toContain('category: selectedCategory ?? "other"');
+		expect(feedbackSource).toContain("includeDiagnostics: true");
+		expect(indexSource).not.toContain('id="feedbackDiagnostics"');
+		expect(indexSource).not.toContain('id="feedbackDescription"');
+		expect(feedbackCssSource).toContain(".feedback-modal");
+		expect(preloadSource).toContain('ipcRenderer.invoke("feedback:submit", input)');
+		expect(mainSource).toContain('ipcMain.handle("feedback:submit"');
+		expect(mainSource).toContain("parseProductFeedbackRequest(input)");
+		expect(mainSource).not.toContain("Qorpera/Qorpera_Base/issues/new");
 	});
 
 	it("renders durable queued prompts and remote staff activity", () => {
