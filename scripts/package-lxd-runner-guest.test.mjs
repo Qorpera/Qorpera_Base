@@ -27,6 +27,7 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		assert.deepEqual(
 			manifest.artifacts.map((artifact) => artifact.file),
 			[
+				"company-lock-heartbeat.mjs",
 				"harness/package-lock.json",
 				"harness/package.json",
 				"install-image-contract.sh",

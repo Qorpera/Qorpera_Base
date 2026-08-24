@@ -84,7 +84,8 @@ if (
   throw new Error("Runner image contract is invalid");
 }
 const expected = new Set([
-  "harness/package-lock.json",
+	"company-lock-heartbeat.mjs",
+	"harness/package-lock.json",
   "harness/package.json",
   "install-image-contract.sh",
   "qorpera-ephemeral-runner.mjs",
@@ -174,6 +175,7 @@ install -d -o "${NATIVE_USER}" -g "${NATIVE_EXECUTION_GROUP}" -m 0700 \
 	/var/lib/qorpera-native-provider /var/lib/qorpera-native-provider/tmp
 
 for artifact in \
+	company-lock-heartbeat.mjs \
 	qorpera-ephemeral-runner.mjs \
 	qorpera-native-provider-host.mjs \
 	qorpera-lxd-runner-bootstrap.mjs \

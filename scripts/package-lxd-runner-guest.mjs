@@ -48,6 +48,7 @@ try {
 	await mkdir(join(outputRoot, "harness"), { recursive: true });
 	await mkdir(join(outputRoot, "runner-image"), { recursive: true });
 	const sources = new Map([
+		["company-lock-heartbeat.mjs", join(runnerRoot, "company-lock-heartbeat.mjs")],
 		["qorpera-ephemeral-runner.mjs", join(runnerRoot, "qorpera-ephemeral-runner.mjs")],
 		["qorpera-native-provider-host.mjs", join(runnerRoot, "qorpera-native-provider-host.mjs")],
 		["qorpera-sandbox-probe.mjs", join(runnerRoot, "qorpera-sandbox-probe.mjs")],

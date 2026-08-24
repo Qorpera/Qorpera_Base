@@ -17,6 +17,7 @@ await mkdir(outputRoot, { recursive: true });
 
 await build({
 	entryPoints: {
+		"company-lock-heartbeat": "packages/company/src/company-lock-heartbeat.ts",
 		"qorpera-ephemeral-runner": "packages/shell/src/cloud-runner-service-main.ts",
 		"qorpera-native-provider-host": "packages/shell/src/cloud-native-provider-service-main.ts",
 		"qorpera-sandbox-probe": "packages/shell/src/cloud-runner-container-main.ts",
@@ -38,6 +39,7 @@ await build({
 await copyFile("deploy/ephemeral-runner/image/run-job", resolve(outputRoot, "run-job"));
 
 const files = [
+	"company-lock-heartbeat.mjs",
 	"qorpera-ephemeral-runner.mjs",
 	"qorpera-native-provider-host.mjs",
 	"qorpera-sandbox-probe.mjs",
