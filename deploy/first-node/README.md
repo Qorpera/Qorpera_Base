@@ -1,5 +1,9 @@
 # Company41 first-node Step 2 runbook
 
+For the exact deployed checkpoint, current blocker, and continuation order, see
+[`STEP-2-HANDOFF.md`](STEP-2-HANDOFF.md). The architecture and release gate
+remain authoritative; the handoff does not narrow their scope.
+
 This directory provisions the first Ubuntu compute node as a fail-closed LXD
 full-VM host. It does not make the node an authority for Company File objects,
 Compute Identity recovery, checkpoints, or publication. Those authorities stay
@@ -7,25 +11,25 @@ outside the provider. The production target is NAS-primary with Supabase
 Storage backup; the NAS-disconnected acceptance profile explicitly makes
 Supabase Storage active instead of silently failing over at runtime.
 
-## Current non-authorizing checkpoint
+## Current deployed acceptance checkpoint
 
 The first node has passed the host, KVM, UEFI Secure Boot, private bridge,
-locked guest-package, and credential-free clean-boot checks. The accepted local
-candidate is still deliberately unsigned:
+locked guest-package, credential-free clean-boot, signed-provenance, and
+fail-closed activation checks for image v20:
 
 - node: `company41-node-01`
-- image fingerprint: `ad36141eb7956a5be17a82946dc901ace7a2576bfe20b64efb4151e3dfb8a947`
+- deployed source: `e98f7ac5624fe20bccd4e6e242cb070b30c25e32`
+- image fingerprint: `6bac8e025d6e8209129bba729844ee43dc67c5753bdb85c3873f4e55fd03d35d`
 - base fingerprint: `7ef31bed9834094a06517d63b93434588049efcbe2ab5d67419a6167988b7d4f`
-- guest-package manifest: `0425306167392328ff7d31573621973869a6a8b26d7b168d3b75855829fefb44`
-- clean-boot evidence: `4a42d6c70729df169642e2e219e72b6485fcdcc8bf5513238cf6c5b31f2c1e24`
+- guest-package manifest: `e05375e8fd4f0fd5fffed85a4de8286d4b5392bddefa58a5a2bafbeab4889144`
+- clean-boot evidence: `f0d36ff369993c3cf1d24e152694aa3f1dd8019c66abffc6cd489224cc7b23e7`
 
-That candidate was produced during an uncommitted implementation checkout. It
-is useful evidence that the boundary works, but it must not receive production
-provenance. Rebuild and re-run acceptance from a reviewed clean commit before
-signing; the fingerprints and manifest digest will change.
-
-The provider service must remain disabled and `/etc/qorpera/lxd-provider.env`
-must remain absent at this checkpoint.
+The provider is enabled and has provisioned a real isolated Codex execution.
+That v20 run failed at final Company File verification because private helper
+metadata leaked into the public tree reference. The correction is committed
+after the deployed source but has not been rebuilt, accepted, signed, or
+activated. Consequently v20 is valid boundary evidence but not successful
+end-to-end execution or production approval.
 
 ## Signed image provenance
 

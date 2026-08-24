@@ -1,6 +1,9 @@
 # Company41 Step 2 first-node architecture
 
-**Status:** implementation plan. This document does not claim that native subscription execution is deployed or production-ready.
+**Status:** authoritative architecture and completion gate. The deployed v20
+boundary has run one real Codex job but has not completed the functional or
+production-storage gates. See [`STEP-2-HANDOFF.md`](STEP-2-HANDOFF.md) for the
+current checkpoint.
 
 ## Decision
 

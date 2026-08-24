@@ -270,8 +270,16 @@ process-provider tests exercise those contracts without a real subscription.
 The branch now contains the first-node LXD host/provider contract, a signed-image
 provenance gate, a credential-free clean-boot guest image contract, post-boot
 credential injection, and an explicit Supabase-primary object acceptance path.
-The release gate remains open until the management deployment and native login
-host are complete, the provider is enabled from a reviewed signed image, real
-Codex and Claude login/provider requests execute through it, the Windows/macOS
-builds run this procedure, and all-member-devices-offline behavior is observed.
-NAS-primary replication and recovery remain a separate production-storage gate.
+The v20 image passed clean-boot and signed-provenance checks, the provider is
+active, and one real member-owned Codex job traversed orchestration, isolated VM
+execution, Company File reconstruction, and candidate upload. It failed final
+Company File verification and did not append a canonical assistant response.
+The source correction is committed but not deployed.
+
+The release gate therefore remains open. A corrected Codex run must complete,
+then the two-member Codex/Claude, shared-session, sponsor-switch, concurrency,
+revocation, cross-device, and all-member-devices-offline procedure above must
+pass. NAS-primary replication and recovery remain a separate production-storage
+gate. See
+[`../deploy/first-node/STEP-2-HANDOFF.md`](../deploy/first-node/STEP-2-HANDOFF.md)
+for the exact checkpoint and continuation order.
