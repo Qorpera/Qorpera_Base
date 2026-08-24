@@ -84,6 +84,18 @@ body.company-shell.rail-compact .titlebar-rail {
 	padding: 2px 0 3px;
 }
 
+/* In the compact macOS rail, the titlebar is narrower than the native
+ * traffic-light inset. Put the add-agent control in its own row below the
+ * window controls and reserve the same space above the agent list. */
+html[data-platform="darwin"] body.company-shell.rail-compact .titlebar-rail {
+	z-index: 160;
+	transform: translateY(var(--titlebar-height));
+}
+
+html[data-platform="darwin"] body.company-shell.rail-compact .rail-scroll {
+	padding-top: calc(var(--titlebar-height) + 9px);
+}
+
 body.company-shell.rail-compact .titlebar-rail .rail-search {
 	display: none;
 }
