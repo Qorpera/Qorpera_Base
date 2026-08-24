@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
+import { createRunnerBrokerObjectLoader } from "./object-loader.ts";
 import {
 	executeRunnerModelGateway,
 	MAX_RUNNER_BROKER_OBJECT_BYTES,
@@ -38,6 +39,12 @@ function configuredServiceKey(): string | undefined {
 		// Fall through to the legacy project secret when configured.
 	}
 	return legacyServiceRoleKey || undefined;
+}
+
+function configuredObjectStoragePrimary(): "nas" | "supabase" {
+	const value = Deno.env.get("QORPERA_OBJECT_STORAGE_PRIMARY")?.trim();
+	if (value === "nas" || value === "supabase") return value;
+	throw new Error("Runner broker object storage primary is not configured");
 }
 
 async function sha256(value: string | Uint8Array): Promise<string> {
@@ -459,11 +466,24 @@ Deno.serve(async (request) => {
 		if (!Number.isSafeInteger(expectedBytes) || (expectedBytes as number) < 0 || typeof profileId !== "string") {
 			return jsonResponse({ error: "Runner broker returned invalid authority" }, 503);
 		}
-		const { data: blob, error: storageError } = await client.storage
-			.from(OBJECT_BUCKET)
-			.download(`${profileId}/${objectRequest.objectSha256}`);
-		if (storageError) return jsonResponse({ error: "Runner input object is unavailable" }, 503);
-		const bytes = new Uint8Array(await blob.arrayBuffer());
+		let bytes: Uint8Array;
+		try {
+			const loadObject = createRunnerBrokerObjectLoader({
+				primary: configuredObjectStoragePrimary(),
+				gatewayUrl: Deno.env.get("QORPERA_OBJECT_GATEWAY_URL"),
+				verifierToken: Deno.env.get("QORPERA_OBJECT_GATEWAY_VERIFIER_TOKEN"),
+				storageDownload: async (profileId, sha256) => {
+					const { data: blob, error: storageError } = await client.storage
+						.from(OBJECT_BUCKET)
+						.download(`${profileId}/${sha256}`);
+					if (storageError) throw new Error("Runner input object is unavailable");
+					return new Uint8Array(await blob.arrayBuffer());
+				},
+			});
+			bytes = await loadObject(profileId, objectRequest.objectSha256);
+		} catch {
+			return jsonResponse({ error: "Runner input object is unavailable" }, 503);
+		}
 		if (bytes.byteLength !== expectedBytes || (await sha256(bytes)) !== objectRequest.objectSha256) {
 			return jsonResponse({ error: "Runner input object failed integrity verification" }, 503);
 		}
