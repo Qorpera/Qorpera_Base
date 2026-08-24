@@ -20,12 +20,16 @@ on:
       - 'packages/shell/src/lxd-runner-*.ts'
       - 'packages/shell/src/account-auth.ts'
       - 'packages/shell/src/cloud-object-store.ts'
+      - 'packages/shell/src/cloud-company-snapshot.ts'
       - 'packages/shell/test/account-auth.test.ts'
       - 'packages/shell/test/cloud-native-provider*.test.ts'
       - 'packages/shell/test/cloud-runner-*.test.ts'
+      - 'packages/shell/test/cloud-company-file-contract.test.ts'
       - 'packages/shell/test/lxd-runner-*.test.ts'
       - 'scripts/package-lxd-*.mjs'
       - 'scripts/package-lxd-*.test.mjs'
+      - 'supabase/functions/company-file-verifier/company-file-verifier.ts'
+      - 'supabase/functions/company-file-verifier/company-file-verifier.test.ts'
       - 'supabase/functions/company-file-verifier/object-loader.ts'
       - 'supabase/functions/company-file-verifier/object-loader.test.ts'
       - 'supabase/functions/native-provider-login/**'
@@ -84,6 +88,7 @@ jobs:
           test/cloud-runner-assignment-inbox.test.ts
           test/cloud-runner-service.test.ts
           test/cloud-runner-worker.test.ts
+          test/cloud-company-file-contract.test.ts
           test/lxd-runner-bootstrap.test.ts
 
       - name: Test deterministic packaging
@@ -93,8 +98,11 @@ jobs:
           scripts/package-lxd-runner-guest.test.mjs
           scripts/package-runner-orchestrator.test.mjs
 
-      - name: Test acceptance storage selection
-        run: node --test supabase/functions/company-file-verifier/object-loader.test.ts
+      - name: Test acceptance storage and verifier contracts
+        run: >-
+          node --test
+          supabase/functions/company-file-verifier/object-loader.test.ts
+          supabase/functions/company-file-verifier/company-file-verifier.test.ts
 
       - name: Test hosted orchestration boundaries
         run: >-
