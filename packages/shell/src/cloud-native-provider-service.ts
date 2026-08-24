@@ -64,7 +64,7 @@ function safeRequestDiagnostic(error: unknown): string {
 		/^Codex returned no assistant response(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
 			message,
 		) ||
-		/^Native provider execution (?:initial-authority-validation|credential-download|credential-opening|prompt-materialization|completion-authority-validation|credential-sealing|credential-upload) stage failed(?: \((?:storage-budget|unsupported-entry|filesystem|unknown)\))?$/.test(
+		/^Native provider execution (?:initial-authority-validation|credential-download|credential-opening|prompt-materialization|harness-execution|completion-authority-validation|credential-sealing|credential-upload) stage failed(?: \((?:storage-budget|unsupported-entry|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/.test(
 			message,
 		) ||
 		message === "Provider harness output exceeded its byte limit"

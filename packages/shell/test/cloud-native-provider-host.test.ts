@@ -618,6 +618,23 @@ describe("native provider host", () => {
 			const revoked = await bridge.start({ ...nativeAuthority, leaseId: loginId }, request);
 			await expect(revoked.result).rejects.toThrow("Native provider bridge request failed (422)");
 			expect(harness.execute).toHaveBeenCalledTimes(1);
+
+			authorized = true;
+			const privateDiagnostic = "opaque private-token-must-not-leak";
+			vi.mocked(harness.execute).mockRejectedValueOnce(
+				Object.assign(new Error(privateDiagnostic), { code: "EACCES" }),
+			);
+			const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				const rejected = await bridge.start({ ...nativeAuthority, leaseId: otherComputeIdentityId }, request);
+				await expect(rejected.result).rejects.toThrow("Native provider bridge request failed (422)");
+				expect(logged).toHaveBeenCalledWith(
+					"Native provider request rejected: Native provider execution harness-execution stage failed (filesystem-permission)",
+				);
+				expect(logged.mock.calls.flat().join("\n")).not.toContain(privateDiagnostic);
+			} finally {
+				logged.mockRestore();
+			}
 		} finally {
 			await service.close();
 		}

@@ -300,6 +300,47 @@ function credentialSealingFailure(error: unknown): string {
 	return code && /^[A-Z0-9_]{2,32}$/.test(code) ? code.toLowerCase() : "unknown";
 }
 
+function harnessExecutionFailureCategory(error: unknown): string {
+	if (!(error instanceof Error)) return "unknown";
+	const code = (error as NodeJS.ErrnoException).code;
+	if (
+		error.name === "AbortError" ||
+		code === "ABORT_ERR" ||
+		["Native execution cancelled", "Native execution stopped", "Native provider host stopped"].includes(error.message)
+	) {
+		return "cancelled";
+	}
+	if (error.name === "TimeoutError" || code === "ETIMEDOUT") return "timeout";
+	if (code === "ENOENT" || code === "ENOTDIR") return "filesystem-not-found";
+	if (code === "EACCES" || code === "EPERM") return "filesystem-permission";
+	if (code === "EROFS") return "filesystem-read-only";
+	if (code === "EISDIR" || code === "ENOTEMPTY") return "filesystem-layout";
+	if (code === "ENOSPC") return "resource-capacity";
+	if (code === "EMFILE" || code === "ENFILE") return "resource-file-descriptors";
+	if (code === "ENOMEM") return "resource-memory";
+	if (code === "EPIPE" || code === "ERR_STREAM_WRITE_AFTER_END") return "process-pipe";
+	return "unknown";
+}
+
+function safeHarnessExecutionFailure(error: unknown): Error {
+	if (
+		error instanceof Error &&
+		(/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
+			error.message,
+		) ||
+			/^Codex returned no assistant response(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
+				error.message,
+			) ||
+			error.message === "Provider harness output exceeded its byte limit")
+	) {
+		return error;
+	}
+	return new Error(
+		`Native provider execution harness-execution stage failed (${harnessExecutionFailureCategory(error)})`,
+		{ cause: error },
+	);
+}
+
 export async function sealNativeCredentialCapsule(
 	root: string,
 	keyValue: string,
@@ -846,7 +887,14 @@ export class NativeProviderHost {
 				provider_session_id: result.providerSessionId ?? null,
 			};
 		} catch (error) {
-			if (stage === "harness-execution") throw error;
+			if (stage === "harness-execution") {
+				if (validationError) {
+					throw new Error("Native provider execution completion-authority-validation stage failed", {
+						cause: validationError,
+					});
+				}
+				throw safeHarnessExecutionFailure(error);
+			}
 			const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
 			throw new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
 		} finally {
