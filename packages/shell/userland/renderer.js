@@ -11715,6 +11715,19 @@ async function renderSettingsTab() {
 		setRow(appearanceGroup, "Theme", "", theme);
 		content.appendChild(appearanceGroup);
 
+		const languageGroup = document.createElement("section");
+		languageGroup.className = "settings-group general-settings-group";
+		languageGroup.innerHTML = "<header><h2>Language &amp; region</h2></header>";
+		const language = document.createElement("select");
+		language.setAttribute("aria-label", "Language");
+		language.appendChild(new Option("System default", "system"));
+		language.appendChild(new Option("Dansk", "da"));
+		language.appendChild(new Option("English", "en"));
+		language.value = window.qorperaI18n.preference;
+		language.onchange = () => window.qorperaI18n.setPreference(language.value);
+		setRow(languageGroup, "Language", "System default follows your computer's language.", language);
+		content.appendChild(languageGroup);
+
 		return;
 	}
 
