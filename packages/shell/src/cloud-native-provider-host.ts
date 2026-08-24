@@ -202,6 +202,15 @@ function cleanHarnessEnvironment(identityRoot: string): NodeJS.ProcessEnv {
 	return environment;
 }
 
+async function prepareHarnessEnvironment(identityRoot: string): Promise<NodeJS.ProcessEnv> {
+	await Promise.all(
+		["home", "codex", "claude", join("xdg", "config"), join("xdg", "data"), join("xdg", "cache")].map((path) =>
+			mkdir(join(identityRoot, path), { recursive: true, mode: 0o700 }),
+		),
+	);
+	return cleanHarnessEnvironment(identityRoot);
+}
+
 async function collectCapsuleFiles(root: string): Promise<CapsuleArchive> {
 	const files: CapsuleFile[] = [];
 	let totalBytes = 0;
@@ -213,7 +222,10 @@ async function collectCapsuleFiles(root: string): Promise<CapsuleArchive> {
 			const relativePath = relative(root, absolute).split(sep).join("/");
 			if (!safeRelativePath(relativePath)) throw new Error("Credential capsule contains an invalid path");
 			const metadata = await lstat(absolute);
-			if (metadata.isSymbolicLink()) throw new Error("Credential capsule cannot contain symbolic links");
+			// Official CLIs may create compatibility aliases such as ~/.codex ->
+			// $CODEX_HOME. Never follow or reproduce those links: the canonical
+			// credential directory is already captured as ordinary files.
+			if (metadata.isSymbolicLink()) continue;
 			if (metadata.isDirectory()) {
 				await visit(absolute);
 				continue;
@@ -267,6 +279,20 @@ function capsuleKey(value: string): Buffer {
 	const key = Buffer.from(value, "base64url");
 	if (key.byteLength !== 32) throw new Error("Native credential capsule key must contain 32 bytes");
 	return key;
+}
+
+function credentialSealingFailure(error: unknown): string {
+	if (!(error instanceof Error)) return "unknown";
+	for (const [message, reason] of [
+		["Credential capsule contains an invalid path", "invalid-path"],
+		["Credential capsule cannot contain symbolic links", "symbolic-link"],
+		["Credential capsule contains an unsupported entry", "unsupported-entry"],
+		["Credential capsule exceeds its storage budget", "storage-budget"],
+	] as const) {
+		if (error.message === message) return reason;
+	}
+	const code = (error as NodeJS.ErrnoException).code;
+	return code && /^[A-Z0-9_]{2,32}$/.test(code) ? code.toLowerCase() : "unknown";
 }
 
 export async function sealNativeCredentialCapsule(
@@ -341,8 +367,15 @@ function collectChildOutput(child: NativeHarnessChild): {
 }
 
 function interactionFromOutput(output: string): NativeHarnessLoginPrompt {
-	const interactionUrl = output.match(/https:\/\/[^\s<>'"`]+/i)?.[0]?.replace(/[),.;]+$/, "");
-	const explicitCode = output.match(/(?:code|enter)\s*[:=]?\s*([A-Z0-9-]{4,64})/i)?.[1];
+	const ansiCsiPattern = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
+	const plainOutput = output.replace(ansiCsiPattern, "");
+	const interactionUrl = plainOutput.match(/https:\/\/[^\s<>'"`]+/i)?.[0]?.replace(/[),.;]+$/, "");
+	const standaloneCode = plainOutput
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.find((line) => /^[A-Z0-9]{2,32}(?:-[A-Z0-9]{2,32})+$/.test(line));
+	const labeledCode = plainOutput.match(/(?:code|enter)\s*[:=]\s*([A-Z0-9-]{4,64})/i)?.[1];
+	const explicitCode = standaloneCode ?? labeledCode;
 	return {
 		...(interactionUrl ? { interactionUrl } : {}),
 		...(explicitCode ? { userCode: explicitCode } : {}),
@@ -379,12 +412,12 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 		signal?: AbortSignal,
 	): Promise<NativeHarnessLoginHandle> {
 		const root = requiredAbsolutePath(identityRoot, "Native identity root");
-		await mkdir(join(root, "home"), { recursive: true, mode: 0o700 });
+		const environment = await prepareHarnessEnvironment(root);
 		const command = harness === "codex-cli" ? this.#codexPath : this.#claudePath;
 		const args = harness === "codex-cli" ? ["login", "--device-auth"] : ["auth", "login", "--claudeai"];
 		const child = spawn(command, args, {
 			cwd: root,
-			env: cleanHarnessEnvironment(root),
+			env: environment,
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
 		});
@@ -414,7 +447,7 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			const statusArgs = harness === "codex-cli" ? ["login", "status"] : ["auth", "status"];
 			const status = spawn(command, statusArgs, {
 				cwd: root,
-				env: cleanHarnessEnvironment(root),
+				env: environment,
 				stdio: ["ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});
@@ -435,6 +468,7 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 	async execute(input: NativeHarnessExecutionInput): Promise<{ text: string; providerSessionId?: string }> {
 		const root = requiredAbsolutePath(input.identityRoot, "Native identity root");
 		const companyRoot = requiredAbsolutePath(input.companyRoot, "Native Company File root");
+		const environment = await prepareHarnessEnvironment(root);
 		if (!input.model.trim() || input.model.length > 160 || /[\0\r\n]/.test(input.model)) {
 			throw new Error("Native model is invalid");
 		}
@@ -460,7 +494,7 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 				: ["--print", "--output-format", "json", "--permission-mode", "auto", "--safe-mode", ...modelArgs];
 		const child = spawn(command, args, {
 			cwd: companyRoot,
-			env: cleanHarnessEnvironment(root),
+			env: environment,
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
 		});
@@ -639,6 +673,7 @@ export class NativeProviderHost {
 		void this.#finishLogin(state).catch((error: unknown) => {
 			state.status = "failed";
 			state.error = error instanceof Error ? error : new Error(String(error));
+			console.error(state.error.message);
 		});
 		return {
 			schema: LOGIN_RESULT_SCHEMA,
@@ -741,11 +776,16 @@ export class NativeProviderHost {
 	}
 
 	async #finishLogin(state: LoginState): Promise<void> {
+		let stage = "harness-completion";
 		try {
 			const completed = await state.handle.completed;
 			const capsuleId = randomUUID();
 			const reference = `native-capsule/${capsuleId}`;
-			await this.#capsules.put(reference, await sealNativeCredentialCapsule(state.root, this.#masterKey, capsuleId));
+			stage = "credential-sealing";
+			const capsule = await sealNativeCredentialCapsule(state.root, this.#masterKey, capsuleId);
+			stage = "credential-upload";
+			await this.#capsules.put(reference, capsule);
+			stage = "control-plane-commit";
 			await this.#controlPlane.completeLogin({
 				loginId: state.request.loginId,
 				capability: state.request.capability,
@@ -757,6 +797,9 @@ export class NativeProviderHost {
 					: {}),
 			});
 			state.status = "completed";
+		} catch (error) {
+			const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
+			throw new Error(`Native provider login ${stage} stage failed${reason}`, { cause: error });
 		} finally {
 			await rm(state.root, { recursive: true, force: true });
 		}

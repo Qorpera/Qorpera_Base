@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -86,11 +86,14 @@ describe("native provider host", () => {
 		const restored = await temporaryRoot("qorpera-capsule-restored-");
 		const capsuleId = "10000000-0000-4000-8000-000000000006";
 		await mkdir(join(source, "codex"), { recursive: true });
+		await mkdir(join(source, "home"), { recursive: true });
 		await writeFile(join(source, "codex", "auth.json"), '{"access_token":"secret"}\n', { mode: 0o600 });
+		await symlink(join(source, "codex"), join(source, "home", ".codex"), "dir");
 		const sealed = await sealNativeCredentialCapsule(source, masterKey, capsuleId);
 		expect(Buffer.from(sealed).toString("utf-8")).not.toContain("access_token");
 		await openNativeCredentialCapsule(sealed, restored, masterKey, capsuleId);
 		await expect(readFile(join(restored, "codex", "auth.json"), "utf-8")).resolves.toContain("secret");
+		await expect(lstat(join(restored, "home", ".codex"))).rejects.toMatchObject({ code: "ENOENT" });
 		await expect(openNativeCredentialCapsule(sealed, restored, masterKey, loginId)).rejects.toThrow(
 			"authenticated decryption",
 		);
@@ -108,9 +111,11 @@ describe("native provider host", () => {
 				'if (process.env.TERM === "dumb") process.exit(4);',
 				'if (process.env.DISABLE_AUTOUPDATER !== "1") process.exit(6);',
 				'if (action === "--device-auth") {',
-				"  fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });",
+				"  for (const directory of [process.env.HOME, process.env.CODEX_HOME, process.env.CLAUDE_CONFIG_DIR, process.env.XDG_CONFIG_HOME, process.env.XDG_DATA_HOME, process.env.XDG_CACHE_HOME]) {",
+				"    if (!fs.statSync(directory).isDirectory()) process.exit(7);",
+				"  }",
 				'  fs.writeFileSync(path.join(process.env.CODEX_HOME, "auth.json"), JSON.stringify({ refresh_token: "private" }));',
-				'  console.log("Open https://auth.openai.com/device. Code: TEST-CODE");',
+				'  console.log("Follow these steps to sign in with ChatGPT using device code authorization:\\n1. Open this link in your browser\\n   \\u001b[4mhttps://auth.openai.com/device\\u001b[0m\\n2. Enter this one-time code (expires in 15 minutes)\\n   \\u001b[1mABCD-EFGHI\\u001b[0m");',
 				'} else if (action === "status") {',
 				'  console.log("ChatGPT subscription test account");',
 				"} else { process.exitCode = 2; }",
@@ -139,7 +144,7 @@ describe("native provider host", () => {
 		const login = await driver.beginLogin("codex-cli", identity);
 		await expect(login.prompt).resolves.toEqual({
 			interactionUrl: "https://auth.openai.com/device",
-			userCode: "TEST-CODE",
+			userCode: "ABCD-EFGHI",
 		});
 		await expect(login.completed).resolves.toEqual({
 			providerAccountReference: `codex-cli:${createHash("sha256")

@@ -253,7 +253,7 @@ describe("LXD Unix client", () => {
 				command: ["/usr/bin/systemctl", "enable", "--now", "qorpera-lxd-runner-bootstrap.service"],
 				interactive: false,
 				"wait-for-websocket": false,
-				"record-output": false,
+				"record-output": true,
 				user: 0,
 				group: 0,
 			},

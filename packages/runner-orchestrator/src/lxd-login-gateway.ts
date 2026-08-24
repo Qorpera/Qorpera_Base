@@ -41,6 +41,7 @@ interface NativeLoginRequest {
 
 interface NativeLoginDescription extends Omit<NativeLoginRequest, "capability" | "encoded"> {
 	profileId: string;
+	status: "pending" | "completed";
 }
 
 interface NativeLoginResult {
@@ -220,9 +221,13 @@ function description(value: unknown): NativeLoginDescription {
 			"provider",
 			"native_harness",
 			"expires_at",
+			"status",
 		],
 		"Native login description",
 	);
+	if (input.status !== "pending" && input.status !== "completed") {
+		throw new Error("Native login status is invalid");
+	}
 	return {
 		loginId: uuid(input.login_id, "Native login id"),
 		profileId: uuid(input.profile_id, "Native login profile id"),
@@ -236,6 +241,7 @@ function description(value: unknown): NativeLoginDescription {
 		provider: provider(input.provider),
 		nativeHarness: harness(input.native_harness),
 		expiresAt: new Date(text(input.expires_at, "Native login expiry", 64)).toISOString(),
+		status: input.status,
 	};
 }
 
@@ -408,23 +414,27 @@ export class LxdNativeLoginGateway {
 			return json({ error: "Invalid native login request" }, 400);
 		}
 
+		let authority: NativeLoginDescription;
 		try {
-			const authority = await this.#describe(login, request.signal);
+			authority = await this.#describe(login, request.signal);
 			if (!sameLogin(login, authority)) throw new Error("Native login request does not match durable authority");
 		} catch {
 			return json({ error: "Native login is unavailable" }, 403);
 		}
 
 		try {
-			return await this.#exclusive(login.computeIdentityId, () => this.#route(login, request.signal));
-		} catch {
+			return await this.#exclusive(login.computeIdentityId, () =>
+				this.#route(login, authority.status, request.signal),
+			);
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : "LXD native login route failed");
 			return json({ error: "Native provider login is unavailable" }, 503);
 		}
 	}
 
 	async #describe(login: NativeLoginRequest, signal?: AbortSignal): Promise<NativeLoginDescription> {
 		const response = await this.#fetch(
-			new URL("/rest/v1/rpc/qorpera_describe_native_provider_login", this.#config.supabaseUrl),
+			new URL("/rest/v1/rpc/qorpera_describe_native_provider_login_route", this.#config.supabaseUrl),
 			{
 				method: "POST",
 				headers: { ...supabaseHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
@@ -439,33 +449,74 @@ export class LxdNativeLoginGateway {
 		return description(await response.json());
 	}
 
-	async #route(login: NativeLoginRequest, signal?: AbortSignal): Promise<Response> {
-		const bridgeToken = await this.#bridgeToken(login.computeIdentityId);
-		const files = this.#bootstrapFiles(login.computeIdentityId, bridgeToken);
-		const bootstrapDigest = bootstrapSha256(files);
-		await this.#ensureIdentityVolume(login.computeIdentityId, signal);
-		const instanceName = this.#instanceName(login.computeIdentityId);
-		let instance = await this.#lxd.getInstance(this.#config.project, instanceName, signal);
-		if (!instance) {
-			await this.#lxd.createInstance(
-				this.#config.project,
-				this.#createRequest(login.computeIdentityId, bootstrapDigest),
-				signal,
-			);
-			instance = await this.#lxd.getInstance(this.#config.project, instanceName, signal);
-			if (!instance) throw new Error("LXD did not persist the native login guest");
+	async #route(
+		login: NativeLoginRequest,
+		loginStatus: NativeLoginDescription["status"],
+		signal?: AbortSignal,
+	): Promise<Response> {
+		let stage = "bridge-token";
+		try {
+			const bridgeToken = await this.#bridgeToken(login.computeIdentityId);
+			const files = this.#bootstrapFiles(login.computeIdentityId, bridgeToken);
+			const bootstrapDigest = bootstrapSha256(files);
+			const instanceName = this.#instanceName(login.computeIdentityId);
+			if (loginStatus === "completed") {
+				stage = "instance-read";
+				const completedInstance = await this.#lxd.getInstance(this.#config.project, instanceName, signal);
+				if (completedInstance) {
+					stage = "instance-authority";
+					this.#assertInstanceAuthority(completedInstance, login.computeIdentityId, bootstrapDigest);
+					if (completedInstance.status === "Running") {
+						stage = "instance-stop";
+						await this.#lxd.setInstancePower(this.#config.project, instanceName, "stop", signal);
+					}
+				}
+				return json(
+					{
+						schema: LOGIN_RESULT_SCHEMA,
+						login_id: login.loginId,
+						status: "completed",
+						interaction_url: null,
+						user_code: null,
+					},
+					200,
+				);
+			}
+			stage = "identity-volume";
+			await this.#ensureIdentityVolume(login.computeIdentityId, signal);
+			stage = "instance-read";
+			let instance = await this.#lxd.getInstance(this.#config.project, instanceName, signal);
+			if (!instance) {
+				stage = "instance-create";
+				await this.#lxd.createInstance(
+					this.#config.project,
+					this.#createRequest(login.computeIdentityId, bootstrapDigest),
+					signal,
+				);
+				stage = "instance-reread";
+				instance = await this.#lxd.getInstance(this.#config.project, instanceName, signal);
+				if (!instance) throw new Error("LXD did not persist the native login guest");
+			}
+			stage = "instance-authority";
+			this.#assertInstanceAuthority(instance, login.computeIdentityId, bootstrapDigest);
+			if (instance.status !== "Running") {
+				stage = "instance-start";
+				await this.#lxd.setInstancePower(this.#config.project, instanceName, "start", signal);
+			}
+			stage = "guest-bootstrap";
+			await this.#installBootstrap(instanceName, files, signal);
+			stage = "guest-readiness";
+			const address = await this.#waitReady(instanceName, signal);
+			stage = "guest-forward";
+			const result = await this.#forward(address, login, signal);
+			if (result.status === "completed") {
+				stage = "instance-stop";
+				await this.#lxd.setInstancePower(this.#config.project, instanceName, "stop", signal);
+			}
+			return json(result, 200);
+		} catch (error) {
+			throw new Error(`LXD native login ${stage} stage failed`, { cause: error });
 		}
-		this.#assertInstanceAuthority(instance, login.computeIdentityId, bootstrapDigest);
-		if (instance.status !== "Running") {
-			await this.#lxd.setInstancePower(this.#config.project, instanceName, "start", signal);
-		}
-		await this.#installBootstrap(instanceName, files, signal);
-		const address = await this.#waitReady(instanceName, signal);
-		const result = await this.#forward(address, login, signal);
-		if (result.status === "completed") {
-			await this.#lxd.setInstancePower(this.#config.project, instanceName, "stop", signal);
-		}
-		return json(result, 200);
 	}
 
 	async #ensureIdentityVolume(computeIdentityId: string, signal?: AbortSignal): Promise<void> {
@@ -620,20 +671,44 @@ export class LxdNativeLoginGateway {
 	}
 
 	async #installBootstrap(instanceName: string, files: readonly LoginBootstrapFile[], signal?: AbortSignal) {
-		await this.#waitForGuestAgent(instanceName, signal);
-		for (const file of files) {
-			await this.#lxd.pushInstanceFile(this.#config.project, instanceName, file.path, file.content, 0o600, signal);
+		try {
+			await this.#waitForGuestAgent(instanceName, signal);
+		} catch (error) {
+			console.error("LXD native login bootstrap guest-agent probe failed");
+			throw error;
 		}
-		await this.#lxd.execInstance(
-			this.#config.project,
-			instanceName,
-			[
-				"/usr/bin/systemctl",
-				"restart",
-				this.#config.loginBootstrapService ?? "qorpera-lxd-native-login-bootstrap.service",
-			],
-			signal,
-		);
+		for (const [index, file] of files.entries()) {
+			try {
+				await this.#lxd.pushInstanceFile(
+					this.#config.project,
+					instanceName,
+					file.path,
+					file.content,
+					0o600,
+					signal,
+				);
+			} catch (error) {
+				console.error(`LXD native login bootstrap file ${index + 1} write failed`);
+				throw error;
+			}
+		}
+		try {
+			await this.#lxd.execInstance(
+				this.#config.project,
+				instanceName,
+				[
+					"/usr/bin/systemctl",
+					"restart",
+					this.#config.loginBootstrapService ?? "qorpera-lxd-native-login-bootstrap.service",
+				],
+				signal,
+			);
+		} catch (error) {
+			console.error(
+				`LXD native login bootstrap service restart failed (${signal?.aborted ? "request-cancelled" : "request-active"}; ${error instanceof Error ? error.message : "unknown error"})`,
+			);
+			throw error;
+		}
 	}
 
 	async #waitForGuestAgent(instanceName: string, signal?: AbortSignal): Promise<void> {
@@ -778,6 +853,7 @@ export class HttpLxdNativeLoginGateway {
 		const controller = new AbortController();
 		const abort = (): void => controller.abort(new Error("Native login gateway request disconnected"));
 		request.once("aborted", abort);
+		response.once("close", abort);
 		try {
 			let encoded = "";
 			for await (const chunk of request) {
@@ -806,6 +882,7 @@ export class HttpLxdNativeLoginGateway {
 			}
 		} finally {
 			request.off("aborted", abort);
+			response.off("close", abort);
 		}
 	}
 }

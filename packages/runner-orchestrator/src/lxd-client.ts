@@ -352,7 +352,7 @@ export class LxdUnixClient implements LxdClient {
 				command: [...command],
 				interactive: false,
 				"wait-for-websocket": false,
-				"record-output": false,
+				"record-output": true,
 				user: 0,
 				group: 0,
 			},

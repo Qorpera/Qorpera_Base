@@ -157,7 +157,10 @@ function loginRequest(body = loginBody(), bearerCapability = capability): Reques
 	});
 }
 
-function fetchBoundary(logins: NativeLoginResponse[]): {
+function fetchBoundary(
+	logins: NativeLoginResponse[],
+	statuses: Array<"pending" | "completed"> = [],
+): {
 	fetchImplementation: typeof fetch;
 	requests: Array<{ url: string; authorization: string | null; body: string }>;
 } {
@@ -179,6 +182,7 @@ function fetchBoundary(logins: NativeLoginResponse[]): {
 				provider: "openai",
 				native_harness: "codex-cli",
 				expires_at: expiresAt,
+				status: statuses.shift() ?? "pending",
 			});
 		}
 		if (url.endsWith("/healthz")) return Response.json({ ok: true });
@@ -208,10 +212,13 @@ describe("LXD native login gateway", () => {
 	it("validates durable authority, routes through one identity-pinned VM and stops it after completion", async () => {
 		const root = await stateRoot();
 		const lxd = new FakeLxd();
-		const boundary = fetchBoundary([
-			{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "ABCD-EFGH" },
-			{ status: "completed", interactionUrl: null, userCode: null },
-		]);
+		const boundary = fetchBoundary(
+			[
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "ABCD-EFGH" },
+				{ status: "completed", interactionUrl: null, userCode: null },
+			],
+			["pending", "completed"],
+		);
 		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
 
 		await expect(gateway.handle(loginRequest()).then((response) => response.json())).resolves.toMatchObject({
@@ -261,7 +268,7 @@ describe("LXD native login gateway", () => {
 			"qorpera-lxd-native-login-bootstrap.service",
 		]);
 		const forwarded = boundary.requests.filter((request) => request.url.endsWith("/login"));
-		expect(forwarded).toHaveLength(2);
+		expect(forwarded).toHaveLength(1);
 		expect(forwarded.every((request) => request.authorization === `Bearer ${capability}`)).toBe(true);
 	});
 

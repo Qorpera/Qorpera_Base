@@ -12,6 +12,29 @@ import {
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_CREDENTIAL_BYTES = 8192;
 
+export interface SystemdCredentialMetadata {
+	isFile: boolean;
+	size: number;
+	uid: number;
+	gid: number;
+	mode: number;
+}
+
+export function systemdCredentialMetadataIsSafe(
+	metadata: SystemdCredentialMetadata,
+	currentUid: number | undefined,
+	platform: NodeJS.Platform = process.platform,
+): boolean {
+	if (!metadata.isFile || metadata.size > MAX_CREDENTIAL_BYTES) return false;
+	if (platform !== "linux") return true;
+	if (currentUid === undefined) return false;
+	const permissions = metadata.mode & 0o777;
+	const serviceOwned = metadata.uid === currentUid && (permissions & 0o077) === 0;
+	const systemdOwned =
+		metadata.uid === 0 && metadata.gid === 0 && (permissions & 0o440) !== 0 && (permissions & 0o337) === 0;
+	return serviceOwned || systemdOwned;
+}
+
 function required(environment: NodeJS.ProcessEnv, name: string): string {
 	const value = environment[name];
 	if (!value || value !== value.trim() || /[\0\r\n]/.test(value)) throw new Error(`${name} is required`);
@@ -37,10 +60,16 @@ async function systemdCredential(environment: NodeJS.ProcessEnv, name: string): 
 		const metadata = await handle.stat();
 		const currentUid = process.getuid?.();
 		if (
-			!metadata.isFile() ||
-			metadata.size > MAX_CREDENTIAL_BYTES ||
-			(process.platform === "linux" &&
-				(currentUid === undefined || metadata.uid !== currentUid || (metadata.mode & 0o077) !== 0))
+			!systemdCredentialMetadataIsSafe(
+				{
+					isFile: metadata.isFile(),
+					size: metadata.size,
+					uid: metadata.uid,
+					gid: metadata.gid,
+					mode: metadata.mode,
+				},
+				currentUid,
+			)
 		) {
 			throw new Error(`Systemd credential ${name} is unsafe`);
 		}
