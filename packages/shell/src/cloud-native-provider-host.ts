@@ -359,11 +359,60 @@ function collectChildOutput(child: NativeHarnessChild): {
 			child.once("error", reject);
 			child.once("close", (code, signal) => {
 				if (exceeded) reject(new Error("Provider harness output exceeded its byte limit"));
-				else if (code !== 0) reject(new Error(`Provider harness exited with ${code ?? signal ?? "failure"}`));
-				else resolveChild();
+				else if (code !== 0) {
+					const category = nativeHarnessFailureCategory(output);
+					reject(
+						new Error(
+							`Provider harness exited with ${code ?? signal ?? "failure"}${category ? ` (${category})` : ""}`,
+						),
+					);
+				} else resolveChild();
 			});
 		}),
 	};
+}
+
+function nativeHarnessFailureCategory(output: string): string | undefined {
+	const diagnostics: string[] = [];
+	for (const line of output.split(/\r?\n/)) {
+		if (!line.trim()) continue;
+		try {
+			const event = JSON.parse(line) as Record<string, unknown>;
+			if (event.type === "error" && typeof event.message === "string") diagnostics.push(event.message);
+			if (event.type === "turn.failed" && event.error && typeof event.error === "object") {
+				const message = (event.error as Record<string, unknown>).message;
+				if (typeof message === "string") diagnostics.push(message);
+			}
+			if (event.type === "item.completed" && event.item && typeof event.item === "object") {
+				const item = event.item as Record<string, unknown>;
+				if (item.type === "error" && typeof item.message === "string") diagnostics.push(item.message);
+			}
+		} catch {
+			// Startup failures can be plain stderr. The text is classified below but is never emitted.
+			diagnostics.push(line);
+		}
+	}
+	const detail = diagnostics.join("\n").toLowerCase();
+	if (!detail) return undefined;
+	if (/unauthori[sz]ed|authentication|not logged in|login required|status(?: code)? 401|\b401\b/.test(detail)) {
+		return "authentication unavailable";
+	}
+	if (/model .*(?:not found|unsupported|unavailable)|unknown model|invalid model/.test(detail)) {
+		return "model unavailable";
+	}
+	if (/rate.?limit|quota|insufficient_quota|too many requests|status(?: code)? 429|\b429\b/.test(detail)) {
+		return "provider capacity unavailable";
+	}
+	if (/network|timed? out|timeout|connection|dns|tls|certificate|socket|status(?: code)? 50[234]/.test(detail)) {
+		return "provider network unavailable";
+	}
+	if (/sandbox|workspace|permission denied|operation not permitted|read-only file system/.test(detail)) {
+		return "local sandbox unavailable";
+	}
+	if (/bad request|invalid request|unprocessable|status(?: code)? 4(?:00|04|22)/.test(detail)) {
+		return "provider request unavailable";
+	}
+	return undefined;
 }
 
 function interactionFromOutput(output: string): NativeHarnessLoginPrompt {

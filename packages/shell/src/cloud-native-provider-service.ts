@@ -55,6 +55,19 @@ function nullableText(value: unknown, label: string, maximum = 512): string | un
 	return value === null || value === undefined ? undefined : text(value, label, maximum);
 }
 
+function safeRequestDiagnostic(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	if (
+		/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
+			message,
+		) ||
+		message === "Provider harness output exceeded its byte limit"
+	) {
+		return message;
+	}
+	return "internal rejection";
+}
+
 function ownership(
 	value: unknown,
 	ownerUserId: unknown,
@@ -446,7 +459,8 @@ export class HttpNativeProviderHostService {
 				value = { cancelled: true };
 			}
 			response.writeHead(200, { "content-type": "application/json" }).end(`${JSON.stringify(value)}\n`);
-		} catch {
+		} catch (error) {
+			console.error(`Native provider request rejected: ${safeRequestDiagnostic(error)}`);
 			response.writeHead(422, { "content-type": "application/json" }).end('{"error":"request rejected"}\n');
 		}
 	}

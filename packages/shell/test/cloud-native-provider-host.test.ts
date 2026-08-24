@@ -132,6 +132,14 @@ describe("native provider host", () => {
 				'process.stdin.setEncoding("utf8");',
 				'process.stdin.on("data", (chunk) => { prompt += chunk; });',
 				'process.stdin.on("end", () => {',
+				'  if (prompt.includes("diagnostic authentication failure")) {',
+				'    console.log(JSON.stringify({ type: "error", message: "401 Unauthorized private-token-must-not-leak" }));',
+				"    process.exit(9);",
+				"  }",
+				'  if (prompt.includes("diagnostic opaque failure")) {',
+				'    console.log(JSON.stringify({ type: "error", message: "opaque private-token-must-not-leak" }));',
+				"    process.exit(8);",
+				"  }",
 				'  if (!prompt.includes("canonical transcript")) process.exit(3);',
 				'  if (prompt.includes("provider default") && args.includes("--model")) process.exit(5);',
 				'  fs.writeFileSync(output, "official Codex response\\n");',
@@ -176,6 +184,24 @@ describe("native provider host", () => {
 			text: "official Codex response",
 			providerSessionId: "official-thread-1",
 		});
+		await expect(
+			driver.execute({
+				harness: "codex-cli",
+				model: "provider-default",
+				identityRoot: identity,
+				companyRoot: company,
+				prompt: "diagnostic authentication failure",
+			}),
+		).rejects.toThrow("Provider harness exited with 9 (authentication unavailable)");
+		await expect(
+			driver.execute({
+				harness: "codex-cli",
+				model: "provider-default",
+				identityRoot: identity,
+				companyRoot: company,
+				prompt: "diagnostic opaque failure",
+			}),
+		).rejects.toThrow(/^Provider harness exited with 8$/);
 	});
 
 	it("keeps modern Supabase secret keys out of bearer authorization", async () => {
