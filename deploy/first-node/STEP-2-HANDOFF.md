@@ -1,7 +1,8 @@
 # Step 2 implementation handoff
 
-**Handoff state:** deployed image v20; source fixes after v20 are committed but
-not deployed. Step 2 is not complete and no v21 image build was started.
+**Handoff state:** deployed image v20; the v21 candidate is packaged, contract
+tested, and signed-export backed, but not yet built, accepted, signed, or
+activated on the node. Step 2 is not complete.
 
 This file is the operational handoff for continuing Step 2. It does not replace
 the architecture or acceptance specifications. Read these files in order:
@@ -25,22 +26,25 @@ contracts rather than replace them.
 - branch: `codex/step2-first-node`
 - draft pull request: [#81](https://github.com/Qorpera/Qorpera_Base/pull/81)
 - deployed v20 source commit: `e98f7ac5624fe20bccd4e6e242cb070b30c25e32`
-- handoff source commit before this document: `e9a83b03fb2828a133224fc94583038f091c21ed`
 - source commits after v20:
   - `2eb7a15436fb9de47af64fb7898069943b27da00` fixes strict Company
     File references and adds regression coverage;
   - `e9a83b03fb2828a133224fc94583038f091c21ed` pins that corrected
-    runner guest package in the image recipes.
+    runner guest package in the image recipes;
+  - `135b4fc7b40f70a0fd6859fb9400fbb42d820ebc` adds the shared
+    producer-verifier golden contract test and runs it plus the full
+    verifier suite in step2-lxd CI;
+  - `ce721cb02` pins the v21 candidate recipe: the real keyless-signed
+    runner image export and the v21 staging, builder, alias, and
+    acceptance names.
 
-At handoff, the branch is clean and synchronized with its remote. Pull request
-#81 is open, draft, and mergeable. Its migration, SQL, LXD contract, and rootless
-Podman checks pass. The private keyless-signed image export check is skipped in
-ordinary pull-request CI and therefore is not release evidence.
-
-The `.artifacts/lxd-image-v21` and `.artifacts/lxd-runner-guest-v21` directories
-are local staging residue only. They do not identify a built, accepted, signed,
-or deployed image. Preserve v20 as the deployed boundary until the next
-candidate completes every image gate.
+The branch is clean and synchronized with its remote. Pull request #81 is
+open, draft, and mergeable, and its checks pass. The private keyless-signed
+image export ran for real via `workflow_dispatch`
+([run 32775544896](https://github.com/Qorpera/Qorpera_Base/actions/runs/32775544896))
+against source `135b4fc7b`; its Cosign bundle was independently verified
+off-node with `cosign verify-blob`. Preserve v20 as the deployed boundary
+until the v21 candidate completes every image gate.
 
 ## Intended architecture that must remain intact
 
@@ -129,51 +133,69 @@ strict public reference permits exactly:
 
 Commit `2eb7a1543` separates the private reachability helper data from the
 serialized public reference. Commit `e9a83b03f` pins the resulting guest
-package. Focused Company File tests, verifier tests, package tests,
-`npm run check`, and pull-request CI pass.
+package. Commit `135b4fc7b` adds the shared golden contract test
+(`packages/shell/test/cloud-company-file-contract.test.ts`) that feeds the
+producer's exact serialized tree through the deployed verifier closure and
+asserts the v20 leak shape is rejected with `Invalid Company File reference`;
+step2-lxd CI runs it and the full verifier suite on every pull request.
+Focused Company File tests, verifier tests, package tests, `npm run check`,
+and pull-request CI pass.
 
-This correction is not deployed. The next action is not another architecture
-change: it is a new immutable image candidate containing these commits, followed
-by the same clean-boot, signing, activation, and live-turn evidence gates.
+This correction is not deployed. The v21 candidate containing these commits
+is packaged and staged off-node; the remaining work is the node build,
+credential-free clean-boot acceptance, off-node signing, activation, and
+live-turn evidence gates.
 
 ## Deterministic continuation sequence
 
 Do not enable a candidate merely because it builds. Execute these gates in
 order and retain redacted evidence for each one.
 
-### 1. Reconfirm source and tests
+### 1. Reconfirm source and tests — done for v21
+
+`npm run check`, the step2 focused vitest batches, the packaging tests, and
+the verifier `node --test` suites pass at `ce721cb02`. The mandated shared
+golden contract test exists (`cloud-company-file-contract.test.ts`) and runs
+in step2-lxd CI, so the v20 serialization defect is rejected before any image
+build.
+
+### 2. Package and stage a fresh candidate — packaged for v21
+
+The real signed export (run 32775544896) was downloaded, Cosign-verified
+off-node, and pinned into `deploy/lxd-runner-guest/runner-image-contract.json`.
+The v21 packages rebuild deterministically from the clean tree:
+
+| Artifact | Value |
+| --- | --- |
+| Guest package manifest SHA-256 | `36aa29c8b5f8fd823e88d8cce6b74f3ae72c1944aa69b5f525f24c2e38e0b045` |
+| Runner OCI archive SHA-256 | `c9370c825bdbd589bf0c1391e567b8f5ea8ba36161cc554b32fcfb235f046239` (84,122,624 bytes) |
+| Cosign bundle SHA-256 | `98a00fefd625c9aceeadd746ee610682a8787e5ce85ec0a6ac513a354a7491ce` (10,639 bytes) |
+| Nested runner image | `localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1` |
+| Provider package | unchanged from deployed pins (`cb1efa25…`, provenance tool `316006eb…`) |
+| Orchestrator package | unchanged from deployed pins (`ec1378d2…`) |
+
+The provider and orchestrator digests match the already-installed node pins,
+so only the guest package changes for v21. The staged copy set (guest package,
+v21-pinned build and verify scripts, `SHA256SUMS.v21`) is assembled under
+`.artifacts/step2-lxd-staging-v21` on the Mac. Copy it to
+`/home/company41-admin/step2-lxd` on `company41-node-01`, replacing any stale
+`lxd-runner-guest-v21` directory, and re-verify `SHA256SUMS.v21` on the node.
+Never overwrite or relabel v20.
+
+### 3. Build and accept without credentials — next action
+
+On the node, after the staged `SHA256SUMS.v21` re-verifies, run the reviewed
+v21-pinned scripts through interactive `sudo`:
 
 ```sh
-git status --short --branch
-git log -3 --oneline
-npm run check
+cd /home/company41-admin/step2-lxd
+shasum -a 256 -c SHA256SUMS.v21
+sudo bash build-lxd-runner-image-candidate.sh
+sudo bash verify-lxd-runner-image-candidate.sh
 ```
 
-Run the focused tests touched by `2eb7a1543` and the Company File verifier tests
-before packaging. Use the repository test commands described in `AGENTS.md`.
-
-Add a shared golden contract test between the Company File producer and
-verifier before release if one does not already exercise the exact serialized
-tree. This specific defect should be rejected before an image build.
-
-### 2. Package and stage a fresh candidate
-
-```sh
-npm run pack:lxd-runner-guest
-npm run pack:lxd-provider
-npm run pack:runner-orchestrator
-```
-
-Inspect every generated manifest and digest. The checked-in image scripts still
-use explicit candidate names; assign a new unused alias, builder VM, acceptance
-VM, staging directory, and manifest digest. Never overwrite or relabel v20.
-Copy only the reviewed artifacts and scripts to
-`/home/company41-admin/step2-lxd` on `company41-node-01`.
-
-### 3. Build and accept without credentials
-
-On the node, run the reviewed build and verifier scripts through interactive
-`sudo`. The acceptance VM must prove:
+Both scripts fail closed on a wrong hostname, staging digest, runner-image
+reference, or an existing v21 alias. The acceptance VM must prove:
 
 - full QEMU/KVM VM;
 - UEFI Secure Boot;
@@ -191,6 +213,26 @@ The statement must bind the clean source commit, exact image fingerprint, guest
 manifest, nested OCI image, keyless Cosign bundle, and retained clean-boot
 evidence. Install only the public key and signed envelope on the node. Activate
 only after independent verification succeeds.
+
+For v21 the statement values are fixed except the two node build outputs
+(image fingerprint and acceptance evidence digest):
+
+```sh
+node .artifacts/lxd-provider/qorpera-lxd-image-provenance.mjs create \
+  --image-server local \
+  --image-fingerprint REPLACE_V21_IMAGE_FINGERPRINT \
+  --base-image-fingerprint 7ef31bed9834094a06517d63b93434588049efcbe2ab5d67419a6167988b7d4f \
+  --guest-package-manifest-sha256 36aa29c8b5f8fd823e88d8cce6b74f3ae72c1944aa69b5f525f24c2e38e0b045 \
+  --runner-image localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1 \
+  --runner-image-archive-sha256 c9370c825bdbd589bf0c1391e567b8f5ea8ba36161cc554b32fcfb235f046239 \
+  --runner-image-cosign-bundle-sha256 98a00fefd625c9aceeadd746ee610682a8787e5ce85ec0a6ac513a354a7491ce \
+  --source-repository https://github.com/Qorpera/Qorpera_Base.git \
+  --source-commit "$(git rev-parse HEAD)" \
+  --source-tree clean \
+  --tested-at REPLACE_CANONICAL_UTC_TIMESTAMP \
+  --acceptance-evidence-sha256 REPLACE_V21_ACCEPTANCE_EVIDENCE_SHA256 \
+  --output lxd-image-statement.json
+```
 
 ### 5. Repeat the live Codex turn
 
