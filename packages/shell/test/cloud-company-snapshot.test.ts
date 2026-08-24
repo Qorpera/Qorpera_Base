@@ -5,6 +5,7 @@ import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	captureCloudCompanyTree,
+	captureCloudCompanyTreeWithReachability,
 	cloudCompanyPathIsAuthorityCritical,
 	materializeCloudCompanyTree,
 	validateCloudCompanyTreeEntries,
@@ -98,6 +99,29 @@ describe("cloud company snapshots", () => {
 			readFile(join(target, "app", "tools", "example", "node_modules", "dependency", "index.js"), "utf-8"),
 		).rejects.toMatchObject({ code: "ENOENT" });
 		await expect(readFile(join(target, ".git", "HEAD"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("keeps reachability metadata out of the public tree file-reference contract", async () => {
+		const root = await companyFixture();
+		const transport = new MemoryObjectTransport();
+		const store = new CloudContentAddressedStore(transport);
+		const captured = await captureCloudCompanyTreeWithReachability(root, profileId, store);
+		const manifestBytes = transport.objects.get(`${profileId}/${captured.tree.manifestSha256}`);
+		expect(manifestBytes).toBeDefined();
+		const manifest = JSON.parse(Buffer.from(manifestBytes as Uint8Array).toString("utf-8")) as {
+			entries: Array<{ kind: string; file?: Record<string, unknown> }>;
+		};
+		const fileEntries = manifest.entries.filter(
+			(entry): entry is { kind: string; file: Record<string, unknown> } => entry.kind === "file" && !!entry.file,
+		);
+		expect(fileEntries.length).toBeGreaterThan(0);
+		for (const entry of fileEntries) {
+			expect(Object.keys(entry.file).sort()).toEqual(["bytes", "fileSha256", "manifestSha256", "mediaType"].sort());
+		}
+		expect(captured.restore.objects).toContainEqual({
+			sha256: captured.tree.manifestSha256,
+			bytes: captured.tree.manifestBytes,
+		});
 	});
 
 	it("publishes agent memory and operational handoffs while omitting generated instructions", async () => {
