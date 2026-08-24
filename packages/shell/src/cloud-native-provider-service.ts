@@ -55,6 +55,30 @@ function nullableText(value: unknown, label: string, maximum = 512): string | un
 	return value === null || value === undefined ? undefined : text(value, label, maximum);
 }
 
+function internalRejectionCategory(error: unknown): string {
+	let current = error;
+	for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+		const code = (current as NodeJS.ErrnoException).code;
+		if (current.name === "AbortError" || code === "ABORT_ERR") return "cancelled";
+		if (current.name === "TimeoutError" || code === "ETIMEDOUT") return "timeout";
+		if (["ENOENT", "ENOTDIR", "EACCES", "EPERM", "EROFS", "EISDIR", "ENOTEMPTY"].includes(code ?? "")) {
+			return "filesystem";
+		}
+		if (["ENOSPC", "EMFILE", "ENFILE", "ENOMEM"].includes(code ?? "")) return "resource";
+		if (["EPIPE", "ERR_STREAM_WRITE_AFTER_END"].includes(code ?? "")) return "process";
+		if (current.cause instanceof Error) {
+			current = current.cause;
+			continue;
+		}
+		if (current.name === "TypeError") return "type-error";
+		if (current.name === "SyntaxError") return "syntax-error";
+		if (current.name === "RangeError") return "range-error";
+		if (current.name === "AggregateError") return "aggregate-error";
+		return "error";
+	}
+	return "unknown";
+}
+
 function safeRequestDiagnostic(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
 	if (
@@ -64,14 +88,14 @@ function safeRequestDiagnostic(error: unknown): string {
 		/^Codex returned no assistant response(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
 			message,
 		) ||
-		/^Native provider execution (?:initial-authority-validation|credential-download|credential-opening|prompt-materialization|harness-execution|completion-authority-validation|credential-sealing|credential-upload) stage failed(?: \((?:storage-budget|unsupported-entry|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/.test(
+		/^Native provider execution (?:initial-authority-validation|temporary-workspace|credential-download|credential-opening|prompt-materialization|harness-execution|completion-authority-validation|credential-sealing|credential-upload|authority-monitor|cleanup|internal-completion) stage failed(?: \((?:storage-budget|unsupported-entry|invalid-path|symbolic-link|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/.test(
 			message,
 		) ||
 		message === "Provider harness output exceeded its byte limit"
 	) {
 		return message;
 	}
-	return "internal rejection";
+	return `internal rejection (${internalRejectionCategory(error)})`;
 }
 
 function ownership(

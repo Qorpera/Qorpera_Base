@@ -300,6 +300,43 @@ describe("native provider host", () => {
 		}
 	});
 
+	it("redacts unexpected service errors to a fixed safe class", async () => {
+		const privateDiagnostic = "opaque private-token-must-not-leak";
+		const host = {
+			beginLogin: vi.fn(async () => {
+				throw new Error(privateDiagnostic);
+			}),
+		} as unknown as NativeProviderHost;
+		const service = new HttpNativeProviderHostService(host, randomBytes(32).toString("base64url"));
+		const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const port = await service.start();
+		try {
+			const response = await fetch(`http://127.0.0.1:${port}/login`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${capability}`, "content-type": "application/json" },
+				body: JSON.stringify({
+					schema: "qorpera.native-provider-login/v1",
+					login_id: loginId,
+					client_connection_id: connectionId,
+					compute_identity_id: computeIdentityId,
+					compute_identity_ownership_kind: "member",
+					compute_identity_owner_user_id: ownerUserId,
+					compute_identity_owner_scope_key: null,
+					provider: "openai",
+					native_harness: "codex-cli",
+					login_capability: capability,
+					expires_at: expiresAt,
+				}),
+			});
+			expect(response.status).toBe(422);
+			expect(logged).toHaveBeenCalledWith("Native provider request rejected: internal rejection (error)");
+			expect(logged.mock.calls.flat().join("\n")).not.toContain(privateDiagnostic);
+		} finally {
+			logged.mockRestore();
+			await service.close();
+		}
+	});
+
 	it("runs official login inside the identity and returns only interaction metadata", async () => {
 		const root = await temporaryRoot("qorpera-native-host-");
 		const capsules = new MemoryCapsules();

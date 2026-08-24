@@ -842,8 +842,12 @@ export class NativeProviderHost {
 				}
 			}
 		})();
-		const root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
+		let root: string | undefined;
+		let output: JsonValue | undefined;
+		let failure: Error | undefined;
 		try {
+			stage = "temporary-workspace";
+			root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
 			stage = "credential-download";
 			const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
 			stage = "credential-opening";
@@ -872,7 +876,7 @@ export class NativeProviderHost {
 			);
 			stage = "credential-upload";
 			await this.#capsules.put(authority.encryptedCapsuleReference, refreshedCapsule, executionAbort.signal);
-			return {
+			output = {
 				schema: HARNESS_RESULT_SCHEMA,
 				assistant_entry: {
 					type: "message",
@@ -889,20 +893,41 @@ export class NativeProviderHost {
 		} catch (error) {
 			if (stage === "harness-execution") {
 				if (validationError) {
-					throw new Error("Native provider execution completion-authority-validation stage failed", {
+					failure = new Error("Native provider execution completion-authority-validation stage failed", {
 						cause: validationError,
 					});
+				} else {
+					failure = safeHarnessExecutionFailure(error);
 				}
-				throw safeHarnessExecutionFailure(error);
+			} else {
+				const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
+				failure = new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
 			}
-			const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
-			throw new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
 		} finally {
 			validationStop.abort();
-			await monitor;
+			try {
+				await monitor;
+			} catch (error) {
+				failure ??= new Error(
+					`Native provider execution authority-monitor stage failed (${harnessExecutionFailureCategory(error)})`,
+					{ cause: error },
+				);
+			}
 			signal?.removeEventListener("abort", externalAbort);
-			await rm(root, { recursive: true, force: true });
+			if (root) {
+				try {
+					await rm(root, { recursive: true, force: true });
+				} catch (error) {
+					failure ??= new Error(
+						`Native provider execution cleanup stage failed (${harnessExecutionFailureCategory(error)})`,
+						{ cause: error },
+					);
+				}
+			}
 		}
+		if (failure) throw failure;
+		if (!output) throw new Error("Native provider execution internal-completion stage failed");
+		return output;
 	}
 
 	async #finishLogin(state: LoginState): Promise<void> {
