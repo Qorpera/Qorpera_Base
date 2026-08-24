@@ -1,4 +1,4 @@
-import { link, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
@@ -45,7 +45,7 @@ class MemoryObjectTransport implements CloudObjectTransport {
 }
 
 async function temporaryDirectory(): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "qorpera-cloud-company-"));
+	const directory = await mkdtemp(join(await realpath(tmpdir()), "qorpera-cloud-company-"));
 	temporaryDirectories.push(directory);
 	return directory;
 }
@@ -282,12 +282,73 @@ describe("cloud company snapshots", () => {
 		expect(pendingSnapshotId).toBeDefined();
 		const putsAfterFailure = transport.putCalls;
 
+		const objectCountAfterFailure = transport.objects.size;
 		const result = await checkpointCloudCompanyWorkspace(input);
 		expect(result.changed).toBe(true);
 		expect(result.snapshot.clientSnapshotId).toBe(pendingSnapshotId);
-		expect(transport.putCalls).toBe(putsAfterFailure);
+		expect(transport.putCalls).toBeGreaterThan(putsAfterFailure);
+		expect(transport.objects.size).toBe(objectCountAfterFailure);
 		const finalState = CloudCompanyWorkspaceState.open(userData, profileId, environmentId, root);
 		expect(finalState.binding.clientWorkspaceId).toBe(stateAfterFailure.binding.clientWorkspaceId);
+		expect(finalState.binding.pending).toBeUndefined();
+	});
+
+	it("re-stages lost object uploads before resuming an interrupted checkpoint", async () => {
+		const root = await companyFixture();
+		const userData = await temporaryDirectory();
+		const transport = new MemoryObjectTransport();
+		const objects = new CloudContentAddressedStore(transport);
+		let commitAttempt = 0;
+		const primary: CompanyWorkspacePrimary = {
+			ensureCompanyWorkspace: vi.fn(async (ensureInput) => ({
+				workspaceId,
+				profileId,
+				environmentId,
+				clientWorkspaceId: ensureInput.clientWorkspaceId,
+				name: ensureInput.name,
+				createdByUserId: actorUserId,
+				createdAt,
+				updatedAt: createdAt,
+			})),
+			commitCompanySnapshot: vi.fn(async (commitInput) => {
+				commitAttempt++;
+				if (commitAttempt === 1) throw new Error("response lost after commit");
+				return {
+					snapshotId,
+					profileId,
+					environmentId,
+					workspaceId,
+					clientSnapshotId: commitInput.clientSnapshotId,
+					tree: commitInput.tree,
+					createdByUserId: actorUserId,
+					createdAt,
+				};
+			}),
+			getCompanySnapshot: vi.fn(async () => {
+				throw new Error("no hosted snapshot expected");
+			}),
+		};
+		const input = {
+			userData,
+			companyRoot: root,
+			profileId,
+			environmentId,
+			workspaceName: "Jonas MacBook",
+			primary,
+			objects,
+		};
+		await expect(checkpointCloudCompanyWorkspace(input)).rejects.toThrow("response lost");
+		const stateAfterFailure = CloudCompanyWorkspaceState.open(userData, profileId, environmentId, root);
+		const pendingSnapshotId = stateAfterFailure.binding.pending?.clientSnapshotId;
+		expect(pendingSnapshotId).toBeDefined();
+		expect(transport.objects.size).toBeGreaterThan(0);
+		transport.objects.clear();
+
+		const result = await checkpointCloudCompanyWorkspace(input);
+		expect(result.changed).toBe(true);
+		expect(result.snapshot.clientSnapshotId).toBe(pendingSnapshotId);
+		expect(transport.objects.size).toBeGreaterThan(0);
+		const finalState = CloudCompanyWorkspaceState.open(userData, profileId, environmentId, root);
 		expect(finalState.binding.pending).toBeUndefined();
 	});
 

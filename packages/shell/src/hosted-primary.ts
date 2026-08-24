@@ -2073,7 +2073,16 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		const { data, error } = await this.client.functions.invoke("company-file-verifier", {
 			body: input,
 		});
-		if (error) throw new Error(error.message);
+		if (error) {
+			const context = (error as { context?: Response }).context;
+			if (context instanceof Response) {
+				const body = await context.text().catch(() => "");
+				throw new Error(
+					`Company File verification returned ${context.status}: ${body.slice(0, 500) || error.message}`,
+				);
+			}
+			throw new Error(error.message);
+		}
 		return data;
 	}
 
