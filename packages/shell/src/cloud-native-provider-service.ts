@@ -61,6 +61,9 @@ function safeRequestDiagnostic(error: unknown): string {
 		/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
 			message,
 		) ||
+		/^Codex returned no assistant response(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
+			message,
+		) ||
 		message === "Provider harness output exceeded its byte limit"
 	) {
 		return message;

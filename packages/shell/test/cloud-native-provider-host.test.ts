@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -140,6 +140,14 @@ describe("native provider host", () => {
 				'    console.log(JSON.stringify({ type: "error", message: "opaque private-token-must-not-leak" }));',
 				"    process.exit(8);",
 				"  }",
+				'  if (prompt.includes("diagnostic zero-exit model failure")) {',
+				'    console.log(JSON.stringify({ type: "turn.failed", error: { message: "prompt_cache_retention is not supported on this model private-token-must-not-leak" } }));',
+				"    return;",
+				"  }",
+				'  if (prompt.includes("diagnostic zero-exit opaque failure")) {',
+				'    console.log(JSON.stringify({ type: "error", message: "opaque private-token-must-not-leak" }));',
+				"    return;",
+				"  }",
 				'  if (!prompt.includes("canonical transcript")) process.exit(3);',
 				'  if (prompt.includes("provider default") && args.includes("--model")) process.exit(5);',
 				'  fs.writeFileSync(output, "official Codex response\\n");',
@@ -172,6 +180,7 @@ describe("native provider host", () => {
 			text: "official Codex response",
 			providerSessionId: "official-thread-1",
 		});
+		expect((await readdir(identity)).some((name) => name.startsWith(".qorpera-last-message-"))).toBe(false);
 		await expect(
 			driver.execute({
 				harness: "codex-cli",
@@ -202,6 +211,25 @@ describe("native provider host", () => {
 				prompt: "diagnostic opaque failure",
 			}),
 		).rejects.toThrow(/^Provider harness exited with 8$/);
+		await expect(
+			driver.execute({
+				harness: "codex-cli",
+				model: "provider-default",
+				identityRoot: identity,
+				companyRoot: company,
+				prompt: "diagnostic zero-exit model failure",
+			}),
+		).rejects.toThrow("Codex returned no assistant response (model unavailable)");
+		await expect(
+			driver.execute({
+				harness: "codex-cli",
+				model: "provider-default",
+				identityRoot: identity,
+				companyRoot: company,
+				prompt: "diagnostic zero-exit opaque failure",
+			}),
+		).rejects.toThrow(/^Codex returned no assistant response$/);
+		expect((await readdir(identity)).some((name) => name.startsWith(".qorpera-last-message-"))).toBe(false);
 	});
 
 	it("keeps modern Supabase secret keys out of bearer authorization", async () => {

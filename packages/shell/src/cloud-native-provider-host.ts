@@ -400,6 +400,9 @@ function nativeHarnessFailureCategory(output: string): string | undefined {
 	if (/model .*(?:not found|unsupported|unavailable)|unknown model|invalid model/.test(detail)) {
 		return "model unavailable";
 	}
+	if (/not supported (?:for|on) (?:this )?model|unsupported (?:parameter|option)/.test(detail)) {
+		return "model unavailable";
+	}
 	if (/rate.?limit|quota|insufficient_quota|too many requests|status(?: code)? 429|\b429\b/.test(detail)) {
 		return "provider capacity unavailable";
 	}
@@ -522,7 +525,7 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			throw new Error("Native model is invalid");
 		}
 		if (Buffer.byteLength(input.prompt) > MAX_PROMPT_BYTES) throw new Error("Native prompt exceeds its byte limit");
-		const lastMessagePath = join(root, "last-message.txt");
+		const lastMessagePath = join(root, `.qorpera-last-message-${randomUUID()}.txt`);
 		const command = input.harness === "codex-cli" ? this.#codexPath : this.#claudePath;
 		const modelArgs = input.model === PROVIDER_DEFAULT_MODEL ? [] : ["--model", input.model];
 		const args =
@@ -555,11 +558,22 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 		child.stdin.end(input.prompt, "utf-8");
 		try {
 			await capture.completed;
-		} finally {
-			input.signal?.removeEventListener("abort", abort);
-		}
-		if (input.harness === "codex-cli") {
-			const text = (await readFile(lastMessagePath, "utf-8")).trim();
+			if (input.harness !== "codex-cli") {
+				const output = JSON.parse(capture.output()) as Record<string, unknown>;
+				if (typeof output.result !== "string" || !output.result.trim()) {
+					throw new Error("Claude Code returned no assistant response");
+				}
+				return {
+					text: output.result.trim(),
+					...(typeof output.session_id === "string" ? { providerSessionId: output.session_id } : {}),
+				};
+			}
+			let text = "";
+			try {
+				text = (await readFile(lastMessagePath, "utf-8")).trim();
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
 			let providerSessionId: string | undefined;
 			for (const line of capture.output().split(/\r?\n/)) {
 				if (!line.trim()) continue;
@@ -572,17 +586,15 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 					// The official CLI may emit non-JSON diagnostics alongside JSONL events.
 				}
 			}
-			if (!text) throw new Error("Codex returned no assistant response");
+			if (!text) {
+				const category = nativeHarnessFailureCategory(capture.output());
+				throw new Error(`Codex returned no assistant response${category ? ` (${category})` : ""}`);
+			}
 			return { text, ...(providerSessionId ? { providerSessionId } : {}) };
+		} finally {
+			input.signal?.removeEventListener("abort", abort);
+			await rm(lastMessagePath, { force: true });
 		}
-		const output = JSON.parse(capture.output()) as Record<string, unknown>;
-		if (typeof output.result !== "string" || !output.result.trim()) {
-			throw new Error("Claude Code returned no assistant response");
-		}
-		return {
-			text: output.result.trim(),
-			...(typeof output.session_id === "string" ? { providerSessionId: output.session_id } : {}),
-		};
 	}
 }
 
