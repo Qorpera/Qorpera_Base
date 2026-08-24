@@ -121,7 +121,8 @@ describe("userland wiring", () => {
 		expect(indexSource).toContain('id="feedbackModal"');
 		expect(indexSource).toContain('src="./feedback.js"');
 		expect(indexSource).toContain('href="./feedback.css"');
-		expect(rendererSource).toContain("window.qorperaFeedback.open()");
+		expect(rendererSource).toContain('window.qorperaFeedback.open($("companySwitcherButton"))');
+		expect(feedbackSource).toContain('!previousFocus.closest?.("[hidden]")');
 		expect(feedbackSource).toContain("window.qorpera.submitFeedback({");
 		expect(feedbackSource).toContain('category: selectedCategory ?? "other"');
 		expect(feedbackCssSource).toContain(".feedback-modal");

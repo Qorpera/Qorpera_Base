@@ -26,12 +26,16 @@
 	function close() {
 		if (submitting || backdrop.hidden) return;
 		backdrop.hidden = true;
-		previousFocus?.focus?.();
+		const focusTarget =
+			previousFocus?.isConnected && !previousFocus.closest?.("[hidden]")
+				? previousFocus
+				: document.getElementById("companySwitcherButton");
 		previousFocus = null;
+		focusTarget?.focus?.();
 	}
 
-	function open() {
-		previousFocus = document.activeElement;
+	function open(returnFocus = document.activeElement) {
+		previousFocus = returnFocus;
 		clientFeedbackId = crypto.randomUUID();
 		submitting = false;
 		form.reset();
