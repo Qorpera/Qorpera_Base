@@ -15,6 +15,7 @@ import { RootlessPodmanSandboxBackend } from "./cloud-runner-podman.ts";
 import type { CloudRunnerSandboxLimits } from "./cloud-runner-sandbox.ts";
 import { type CloudRunnerAssignmentSource, EphemeralCloudRunnerWorker } from "./cloud-runner-worker.ts";
 import { FileCloudRunnerAuthorityStore } from "./cloud-runner-worker-state.ts";
+import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
 
 const CONFIG_SCHEMA = "qorpera.ephemeral-runner-service/v1";
 const ACTIVATION_CREDENTIAL_NAME = "qorpera-runner-activation";
@@ -333,14 +334,22 @@ async function readBoundedFile(path: string, maximum: number, label: string, pri
 		if (!metadata.isFile() || metadata.size > maximum) throw new Error(`${label} is invalid`);
 		if (process.platform === "linux") {
 			const currentUid = process.getuid?.();
-			if (
-				currentUid === undefined ||
-				metadata.uid !== currentUid ||
-				(privateFile && (metadata.mode & 0o077) !== 0)
-			) {
+			const metadataSafe = privateFile
+				? systemdCredentialMetadataIsSafe(
+						{
+							isFile: metadata.isFile(),
+							size: metadata.size,
+							uid: metadata.uid,
+							gid: metadata.gid,
+							mode: metadata.mode,
+						},
+						currentUid,
+						maximum,
+					)
+				: currentUid !== undefined && metadata.uid === currentUid && (metadata.mode & 0o022) === 0;
+			if (!metadataSafe) {
 				throw new Error(`${label} has unsafe ownership or permissions`);
 			}
-			if (!privateFile && (metadata.mode & 0o022) !== 0) throw new Error(`${label} is writable by another account`);
 		}
 		const encoded = await handle.readFile({ encoding: "utf-8" });
 		if (Buffer.byteLength(encoded) > maximum) throw new Error(`${label} exceeds its byte limit`);

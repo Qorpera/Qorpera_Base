@@ -8,31 +8,20 @@ import {
 	SupabaseNativeCredentialCapsuleStore,
 	SupabaseNativeProviderControlPlane,
 } from "./cloud-native-provider-service.ts";
+import {
+	systemdCredentialMetadataIsSafe as credentialMetadataIsSafe,
+	type SystemdCredentialMetadata,
+} from "./systemd-credential.ts";
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_CREDENTIAL_BYTES = 8192;
-
-export interface SystemdCredentialMetadata {
-	isFile: boolean;
-	size: number;
-	uid: number;
-	gid: number;
-	mode: number;
-}
 
 export function systemdCredentialMetadataIsSafe(
 	metadata: SystemdCredentialMetadata,
 	currentUid: number | undefined,
 	platform: NodeJS.Platform = process.platform,
 ): boolean {
-	if (!metadata.isFile || metadata.size > MAX_CREDENTIAL_BYTES) return false;
-	if (platform !== "linux") return true;
-	if (currentUid === undefined) return false;
-	const permissions = metadata.mode & 0o777;
-	const serviceOwned = metadata.uid === currentUid && (permissions & 0o077) === 0;
-	const systemdOwned =
-		metadata.uid === 0 && metadata.gid === 0 && (permissions & 0o440) !== 0 && (permissions & 0o337) === 0;
-	return serviceOwned || systemdOwned;
+	return credentialMetadataIsSafe(metadata, currentUid, MAX_CREDENTIAL_BYTES, platform);
 }
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {

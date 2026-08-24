@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { systemdCredentialMetadataIsSafe } from "../src/cloud-native-provider-service-main.ts";
+import { systemdCredentialMetadataIsSafe } from "../src/systemd-credential.ts";
 
 const serviceUid = 997;
 
@@ -18,14 +18,14 @@ function credential(
 
 describe("systemd credential metadata", () => {
 	it("accepts service-owned private credentials", () => {
-		expect(systemdCredentialMetadataIsSafe(credential(), serviceUid, "linux")).toBe(true);
-		expect(systemdCredentialMetadataIsSafe(credential({ mode: 0o100600 }), serviceUid, "linux")).toBe(true);
+		expect(systemdCredentialMetadataIsSafe(credential(), serviceUid, 8192, "linux")).toBe(true);
+		expect(systemdCredentialMetadataIsSafe(credential({ mode: 0o100600 }), serviceUid, 8192, "linux")).toBe(true);
 	});
 
 	it("accepts root-owned read-only credentials projected by systemd", () => {
-		expect(systemdCredentialMetadataIsSafe(credential({ uid: 0, gid: 0, mode: 0o100440 }), serviceUid, "linux")).toBe(
-			true,
-		);
+		expect(
+			systemdCredentialMetadataIsSafe(credential({ uid: 0, gid: 0, mode: 0o100440 }), serviceUid, 8192, "linux"),
+		).toBe(true);
 	});
 
 	it("rejects writable, world-readable, foreign, oversized, and non-file credentials", () => {
@@ -36,7 +36,7 @@ describe("systemd credential metadata", () => {
 			credential({ size: 8193 }),
 			credential({ isFile: false }),
 		]) {
-			expect(systemdCredentialMetadataIsSafe(metadata, serviceUid, "linux")).toBe(false);
+			expect(systemdCredentialMetadataIsSafe(metadata, serviceUid, 8192, "linux")).toBe(false);
 		}
 	});
 });
