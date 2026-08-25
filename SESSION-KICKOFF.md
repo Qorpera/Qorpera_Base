@@ -18,11 +18,14 @@ Read first, in order:
    founder-approved design goal. Every decision traces to it.
 2. `deploy/first-node/STEP-2-ARCHITECTURE.md` — the contracts Step 3 must
    extend, never replace.
-3. `STEP-3-SESSION-REPORT-2026-08-25.md` — the background agent's complete
-   wrap-up: scopes 1 and 2 are BUILT and pushed (`9493c7698`); scope 3 (the
-   delta-sync agent) is designed but unbuilt; its "NEXT SESSION PICKUP"
-   list is your literal starting point, and it flags one open founder
-   decision (member subscriptions on the shared machine).
+3. `STEP-3-SESSION-REPORT-2026-08-26.md` — the latest wrap-up: scopes 1-3
+   are BUILT and pushed (`5fabd89d3`), including the delta-sync agent, the
+   NAS dataset snapshot window, and member read policies; the screens slice
+   is blocked on the founder ratifying
+   `deploy/first-node/STEP-3-SCREENS-DECISION.md`, and the member-
+   subscription contract extension stays blocked until Step 2 acceptance
+   closes. Its "NEXT SESSION PICKUP" list is your literal starting point.
+   (`STEP-3-SESSION-REPORT-2026-08-25.md` is the prior session's record.)
 
 Scope (from the charter's "Step 3 adds"):
 - `qorpera_logical_computers` control-plane contract as draft migration
