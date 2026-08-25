@@ -548,7 +548,7 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 			return removal;
 		};
 		const result = (async (): Promise<JsonValue> => {
-			let attemptSucceeded = false;
+			let parsed: JsonValue;
 			try {
 				const line = await Promise.race([
 					container.firstStdoutLine,
@@ -563,30 +563,33 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 				} catch (error) {
 					throw new Error("Podman runner returned invalid JSON", { cause: error });
 				}
-				const parsed = record(value, "runner result") as JsonValue;
+				parsed = record(value, "runner result") as JsonValue;
 				await this.#assertContainerRunning(containerName);
 				await this.#copyContainerOutputs(containerName, mounts.outputRoot);
-				attemptSucceeded = true;
-				return parsed;
-			} finally {
+			} catch (error) {
 				try {
 					await remove();
-					/* The harness writes as an isolated in-container uid under
-					 * umask 077, so entries it creates map to foreign subuids
-					 * outside. Once the container and its credential tmpfs are
-					 * gone, map the work tree back to the runner through the
-					 * user namespace so capture and review can read every
-					 * created entry. A reclamation failure fails a successful
-					 * attempt loudly; it never masks an earlier failure. */
-					try {
-						await this.#reclaimWorkspaceOwnership(mounts.workRoot);
-					} catch (error) {
-						if (attemptSucceeded) throw error;
-					}
+					await this.#reclaimWorkspaceOwnership(mounts.workRoot).catch(() => undefined);
+				} catch {
+					/* cleanup must not mask the attempt failure */
 				} finally {
 					await modelSocket?.close();
 				}
+				throw error;
 			}
+			/* The harness writes as an isolated in-container uid under umask
+			 * 077, so entries it creates map to foreign subuids outside. Once
+			 * the container and its credential tmpfs are gone, map the work
+			 * tree back to the runner through the user namespace so capture
+			 * and review can read every created entry. On a successful attempt
+			 * a reclamation failure fails loudly. */
+			try {
+				await remove();
+				await this.#reclaimWorkspaceOwnership(mounts.workRoot);
+			} finally {
+				await modelSocket?.close();
+			}
+			return parsed;
 		})();
 		return {
 			result,
