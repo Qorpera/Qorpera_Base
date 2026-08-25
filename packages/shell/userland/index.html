@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="./artifacts.css">
 <link rel="stylesheet" href="./rail-resize.css">
 <link rel="stylesheet" href="./onboarding.css">
+<link rel="stylesheet" href="./feedback.css">
 </head>
 <body>
 <header id="titlebar">
@@ -136,17 +137,16 @@
 				<textarea id="input" rows="1" aria-label="Message" placeholder="Message…"></textarea>
 				<div class="composer-strip">
 					<input id="attachFileInput" type="file" accept="image/*" multiple hidden>
-					<button id="composerMoreButton" class="composer-more" type="button" title="Chat settings and more" aria-label="Chat settings and more" aria-haspopup="menu" aria-expanded="false"><span aria-hidden="true">•••</span></button>
+					<button id="composerMoreButton" class="composer-more" type="button" style="padding: 0" title="Chat settings and more" aria-label="Chat settings and more" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>
 					<div id="composerMoreMenu" class="composer-more-menu" role="menu" aria-label="Chat settings and more">
 						<button id="composerAddFilesButton" class="composer-more-action" type="button" role="menuitem"><img src="./icon-attach.svg" alt=""><span>Attach files</span></button>
 						<button id="modelCtlBtn" class="composer-more-action composer-model-action" type="button" role="menuitem" title="Model and effort" aria-haspopup="menu" aria-expanded="false"><img src="./icon-brain.svg" alt=""><span>Model &amp; effort</span></button>
-						<button id="composerNewWorktree" class="composer-more-action" type="button" role="menuitem"><img src="./icon-git-branch.svg" alt=""><span>New worktree</span></button>
+						<select id="cloudSponsorSelect" class="cloud-sponsor-select" style="width: 100%" aria-label="Execution sponsor" title="Execution sponsor" hidden></select>
 					</div>
 					<div class="chipwrap compatibility-control" hidden>
 						<button id="scopeBtn" class="stripchip" title="Company or product-development department" aria-haspopup="menu" aria-expanded="false">…</button>
 						<div id="scopeMenu" class="chipmenu"></div>
 					</div>
-					<select id="cloudSponsorSelect" class="cloud-sponsor-select" aria-label="Execution sponsor" title="Execution sponsor" hidden></select>
 					<span class="composer-spacer"></span>
 					<div id="modelCtlMenu" class="chipmenu modelctl" role="menu" aria-label="Model control">
 						<div class="mc-effort-heading"><span class="sr-only">Reasoning effort</span><output id="mcEffortLabel">Medium</output></div>
@@ -183,10 +183,10 @@
 	<section class="settings-dialog" role="dialog" aria-modal="true" aria-label="Settings">
 		<nav aria-label="Settings sections">
 			<input id="settingsSearch" class="settings-search" type="search" placeholder="Search settings" autocomplete="off" aria-label="Search settings">
-			<button class="stab" data-tab="general" data-search="general account company theme appearance agent characters on off animated creatures simple figures local computer execution permission sign out" onclick="openSettings('general')">General</button>
-			<button class="stab" data-tab="company" data-search="company team members people friends invite invitation email role access owner admin contributor viewer staff workers" onclick="openSettings('company')">Company</button>
-			<button class="stab" data-tab="connections" data-search="connections accounts services github openai anthropic xai models usage allowance limits disconnect" onclick="openSettings('connections')">Connections</button>
-			<button class="stab" data-tab="policy" data-search="policy instructions ask act auto spending external communication hard-to-reverse changes information sharing" onclick="openSettings('policy')">Policy</button>
+			<button class="stab" data-tab="general" data-search="general generelt account konto company virksomhed theme tema appearance udseende language sprog danish dansk agent characters on off animated creatures simple figures local computer execution permission sign out log ud" onclick="openSettings('general')">General</button>
+			<button class="stab" data-tab="company" data-search="company virksomhed team members medlemmer people personer friends venner invite invitation email role rolle access adgang owner ejer admin administrator contributor viewer staff workers agenter medarbejdere" onclick="openSettings('company')">Company</button>
+			<button class="stab" data-tab="connections" data-search="connections forbindelser accounts konti services tjenester github openai anthropic xai models modeller usage forbrug allowance limits grænser disconnect afbryd" onclick="openSettings('connections')">Connections</button>
+			<button class="stab" data-tab="policy" data-search="policy retningslinjer instructions instruktioner ask spørg act handl auto automatisk spending forbrug external ekstern communication kommunikation hard-to-reverse changes ændringer information sharing informationsdeling" onclick="openSettings('policy')">Policy</button>
 			<p id="settingsSearchEmpty" class="settings-search-empty" hidden>No settings found</p>
 		</nav>
 		<div id="settingsContent"></div>
@@ -476,9 +476,40 @@
 </div>
 
 <div class="app-toast" id="appToast" role="status" hidden></div>
+<div class="modal-backdrop feedback-backdrop" id="feedbackModal" hidden>
+	<form class="feedback-modal" id="feedbackForm" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle">
+		<header>
+			<div>
+				<h2 id="feedbackTitle">Share feedback</h2>
+			</div>
+			<button class="feedback-close" id="feedbackClose" type="button" aria-label="Close feedback">×</button>
+		</header>
+		<div class="feedback-body">
+			<fieldset class="feedback-categories">
+				<legend>Feedback category</legend>
+				<button class="feedback-category" type="button" data-feedback-category="bug" aria-pressed="false">+ Bug</button>
+				<button class="feedback-category" type="button" data-feedback-category="bad-result" aria-pressed="false">+ Bad result</button>
+				<button class="feedback-category" type="button" data-feedback-category="good-result" aria-pressed="false">+ Good result</button>
+				<button class="feedback-category" type="button" data-feedback-category="feature-request" aria-pressed="false">+ Feature request</button>
+				<button class="feedback-category" type="button" data-feedback-category="performance" aria-pressed="false">+ Performance</button>
+				<button class="feedback-category" type="button" data-feedback-category="other" aria-pressed="false">+ Other</button>
+			</fieldset>
+			<label class="feedback-details-wrap" for="feedbackDetails">
+				<span class="sr-only">Feedback details</span>
+				<textarea id="feedbackDetails" maxlength="10000" placeholder="Share details (required)" required></textarea>
+			</label>
+		</div>
+		<footer>
+			<p class="feedback-status" id="feedbackStatus" role="status" aria-live="polite"></p>
+			<button class="feedback-submit" id="feedbackSubmit" type="submit" disabled>Submit</button>
+		</footer>
+	</form>
+</div>
 <script src="./marked.umd.js"></script>
 <script src="./artifact-dashboard.js"></script>
 <script src="./model-selection.js"></script>
+<script src="./localization.js"></script>
+<script src="./feedback.js"></script>
 <script src="./renderer.js"></script>
 <script src="./rail-resize.js"></script>
 </body>

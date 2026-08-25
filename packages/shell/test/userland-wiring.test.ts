@@ -8,6 +8,9 @@ const rendererSource = readFileSync(join(userland, "renderer.js"), "utf-8");
 const indexSource = readFileSync(join(userland, "index.html"), "utf-8");
 const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
 const characterMotionSource = readFileSync(join(userland, "character-motion.css"), "utf-8");
+const railResizeCssSource = readFileSync(join(userland, "rail-resize.css"), "utf-8");
+const feedbackSource = readFileSync(join(userland, "feedback.js"), "utf-8");
+const feedbackCssSource = readFileSync(join(userland, "feedback.css"), "utf-8");
 const preloadSource = readFileSync(join(shell, "src", "preload.cjs"), "utf-8");
 const mainSource = readFileSync(join(shell, "src", "main.ts"), "utf-8");
 
@@ -35,6 +38,21 @@ describe("userland wiring", () => {
 		}
 	});
 
+	it("routes the company menu through settings and the company hub", () => {
+		const switcherStart = rendererSource.indexOf("function openCompanySwitcher()");
+		const switcherEnd = rendererSource.indexOf("function renderCompanySwitcher()", switcherStart);
+		const switcher = rendererSource.slice(switcherStart, switcherEnd);
+		expect(switcher).toContain('openSettings("company")');
+		expect(switcher).toContain('"switch-company"');
+		expect(switcher).toContain('"company-switcher-switch-company"');
+		expect(switcher).toContain("await window.qorpera.showHub()");
+		expect(switcher).not.toContain("window.qorpera.listCompanies()");
+		expect(baseCssSource).toMatch(/\.rail-bottom \.company-switcher-menu \{[^}]*width: 100%;/s);
+		expect(baseCssSource).toMatch(
+			/\.company-switcher-switch-company \.company-switcher-menu-icon \{[^}]*justify-self: center;/s,
+		);
+	});
+
 	it("keeps non-actionable hosting internals out of settings", () => {
 		for (const label of [
 			"Product and execution",
@@ -49,9 +67,9 @@ describe("userland wiring", () => {
 
 	it("keeps the remaining company controls actionable and accessible", () => {
 		expect(rendererSource).toContain("window.qorpera.openCompanyFile()");
-		expect(rendererSource).toContain('"Cloud-authoritative · File Explorer opens a synced copy on this computer"');
-		expect(rendererSource).toContain('"Open synced copy"');
-		expect(rendererSource).toContain('info.profile?.name || info.company?.name || state.name || "Current company"');
+		expect(rendererSource).toContain('? "Cloud-authoritative" : "Stored on this computer"');
+		expect(rendererSource).toContain('"Opened a synced copy. Cloud revisions remain authoritative."');
+		expect(rendererSource).toContain('info.profile?.name || info.company?.name || state.name || "Company"');
 		expect(rendererSource).toContain('window.qorpera.resolveCompanyFileConflict("local")');
 		expect(rendererSource).toContain('window.qorpera.resolveCompanyFileConflict("cloud")');
 		expect(preloadSource).toContain('ipcRenderer.invoke("company-file:open-conflict-remote")');
@@ -72,9 +90,16 @@ describe("userland wiring", () => {
 
 	it("keeps macOS native window controls clear of titlebar actions", () => {
 		expect(preloadSource).toContain("document.documentElement.dataset.platform = process.platform");
+		expect(baseCssSource).toMatch(/#titlebar \.thread-header \{[^}]*padding: 2px 142px 3px 7px;/s);
 		expect(baseCssSource).toMatch(/html\[data-platform="darwin"\] \.titlebar-rail \{ padding-left: 78px; \}/);
 		expect(baseCssSource).toMatch(
 			/html\[data-platform="darwin"\] #titlebar \.thread-header \{ padding-right: 10px; \}/,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.titlebar-rail \{[^}]*transform: translateY\(var\(--titlebar-height\)\);/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.rail-scroll \{[^}]*padding-top: calc\(var\(--titlebar-height\) \+ 9px\);/s,
 		);
 	});
 
@@ -90,6 +115,24 @@ describe("userland wiring", () => {
 		expect(rendererSource).toContain("Downloading v");
 		expect(rendererSource).toContain("Restart to update v");
 		expect(baseCssSource).toContain('.hub-foot .hub-update-button[data-phase="ready"]');
+	});
+
+	it("keeps product feedback private and in-app", () => {
+		expect(indexSource).toContain('id="feedbackModal"');
+		expect(indexSource).toContain('src="./feedback.js"');
+		expect(indexSource).toContain('href="./feedback.css"');
+		expect(rendererSource).toContain('window.qorperaFeedback.open($("companySwitcherButton"))');
+		expect(feedbackSource).toContain('!previousFocus.closest?.("[hidden]")');
+		expect(feedbackSource).toContain("window.qorpera.submitFeedback({");
+		expect(feedbackSource).toContain('category: selectedCategory ?? "other"');
+		expect(feedbackSource).toContain("includeDiagnostics: true");
+		expect(indexSource).not.toContain('id="feedbackDiagnostics"');
+		expect(indexSource).not.toContain('id="feedbackDescription"');
+		expect(feedbackCssSource).toContain(".feedback-modal");
+		expect(preloadSource).toContain('ipcRenderer.invoke("feedback:submit", input)');
+		expect(mainSource).toContain('ipcMain.handle("feedback:submit"');
+		expect(mainSource).toContain("parseProductFeedbackRequest(input)");
+		expect(mainSource).not.toContain("Qorpera/Qorpera_Base/issues/new");
 	});
 
 	it("renders durable queued prompts and remote staff activity", () => {
