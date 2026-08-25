@@ -128,9 +128,17 @@ let artifactEditor = null; // { id, expectedUpdatedAt, draft, dirty, error, pend
 const dismissedConnectionRequestGroups = new Map();
 const autoStartedConnectionRequestIds = new Set();
 let agentSidepanelMotionTimer = null;
-let companyCreatorIcon = "anonymous";
+const COMPANY_AVATARS = [
+	{ id: "agent-halo", label: "Halo", className: "company-agent-avatar-halo" },
+	{ id: "agent-bloom", label: "Bloom", className: "company-agent-avatar-bloom" },
+	{ id: "agent-folio", label: "Folio", className: "company-agent-avatar-folio" },
+	{ id: "agent-pebble", label: "Pebble", className: "company-agent-avatar-pebble" },
+];
+const DEFAULT_COMPANY_AVATAR_ID = COMPANY_AVATARS[0].id;
+const COMPANY_AVATAR_BY_ID = new Map(COMPANY_AVATARS.map((avatar) => [avatar.id, avatar]));
+let companyCreatorIcon = DEFAULT_COMPANY_AVATAR_ID;
 let companyCreatorCreationId = crypto.randomUUID();
-let currentCompanyIcon = "anonymous";
+let currentCompanyIcon = DEFAULT_COMPANY_AVATAR_ID;
 let currentCompanyRoot = "";
 let currentProfileAccess = {
 	role: "owner",
@@ -593,10 +601,14 @@ async function renderHub() {
 				? "Moving Company File to the cloud"
 				: `Cloud company${role ? ` · ${role}` : ""}`;
 		card.append(avatar, label, type);
-		if (company.invitationPending || company.setupRequired) {
+		if (company.invitationPending || company.migrationRequired || company.setupRequired) {
 			const setup = document.createElement("small");
 			setup.className = "profile-setup-label";
-			setup.textContent = company.invitationPending ? "Accept invitation" : "Connect Company File";
+			setup.textContent = company.invitationPending
+				? "Invitation pending"
+				: company.migrationRequired
+					? "Moving to cloud"
+					: "Setup required";
 			card.appendChild(setup);
 		}
 		card.setAttribute(
@@ -777,10 +789,20 @@ function companySlug(name) {
 		.replace(/^-+|-+$/g, "");
 }
 
+function normalizedCompanyAvatarId(iconId) {
+	return iconId === "anonymous" ? DEFAULT_COMPANY_AVATAR_ID : iconId;
+}
+
 function makeCompanyIcon(iconId, label, className = "") {
 	const shell = document.createElement("span");
 	shell.className = `company-icon ${className}`.trim();
-	if (typeof iconId === "string" && iconId.startsWith("data:image/")) {
+	const avatar = COMPANY_AVATAR_BY_ID.get(normalizedCompanyAvatarId(iconId));
+	if (avatar) {
+		const agentAvatar = document.createElement("span");
+		agentAvatar.className = `company-agent-avatar ${avatar.className}`;
+		agentAvatar.setAttribute("aria-hidden", "true");
+		shell.appendChild(agentAvatar);
+	} else if (typeof iconId === "string" && iconId.startsWith("data:image/")) {
 		const image = document.createElement("img");
 		image.src = iconId;
 		image.alt = "";
@@ -806,11 +828,30 @@ function makeCompanyIcon(iconId, label, className = "") {
 	return shell;
 }
 
+function renderCompanyAvatarChoices(container, selectedIconId, onSelect) {
+	const selected = normalizedCompanyAvatarId(selectedIconId);
+	container.replaceChildren();
+	for (const avatar of COMPANY_AVATARS) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "company-avatar-option";
+		button.setAttribute("aria-label", `${avatar.label} agent avatar`);
+		button.setAttribute("aria-pressed", String(avatar.id === selected));
+		button.appendChild(makeCompanyIcon(avatar.id, ""));
+		button.onclick = () => onSelect(avatar.id, button);
+		container.appendChild(button);
+	}
+}
+
 function renderCompanyPicturePreview() {
 	const preview = makeCompanyIcon(companyCreatorIcon, "", "company-icon-preview");
 	preview.id = "companyIconPreview";
 	$("companyIconPreview").replaceWith(preview);
 	$("companyPictureAnonymous").hidden = !companyCreatorIcon.startsWith("data:image/");
+	renderCompanyAvatarChoices($("companyAvatarPicker"), companyCreatorIcon, (avatarId) => {
+		companyCreatorIcon = avatarId;
+		renderCompanyPicturePreview();
+	});
 }
 
 async function prepareCompanyPicture(file) {
@@ -874,6 +915,40 @@ async function saveCurrentCompanyIcon(companyIconId) {
 	return true;
 }
 
+function companyAvatarSettingsSection() {
+	const section = document.createElement("section");
+	section.className = "company-avatar-settings";
+	const heading = document.createElement("div");
+	heading.className = "company-avatar-settings-heading";
+	const title = document.createElement("strong");
+	title.textContent = "Company avatar";
+	const upload = document.createElement("button");
+	upload.type = "button";
+	upload.className = "secondary-button";
+	upload.textContent = "Upload picture";
+	heading.append(title, upload);
+	const picker = document.createElement("div");
+	picker.className = "company-avatar-picker company-avatar-picker-settings";
+	picker.setAttribute("role", "group");
+	picker.setAttribute("aria-label", "Choose a company agent avatar");
+
+	const paint = () => {
+		renderCompanyAvatarChoices(picker, currentCompanyIcon, async (avatarId, button) => {
+			for (const choice of picker.querySelectorAll("button")) choice.disabled = true;
+			if (await saveCurrentCompanyIcon(avatarId)) paint();
+			else for (const choice of picker.querySelectorAll("button")) choice.disabled = false;
+			button.blur();
+		});
+	};
+	upload.onclick = () =>
+		chooseCompanyPicture(async (picture) => {
+			if (await saveCurrentCompanyIcon(picture)) paint();
+		});
+	paint();
+	section.append(heading, picker);
+	return section;
+}
+
 async function openCompanyModal() {
 	let pending;
 	try {
@@ -882,7 +957,7 @@ async function openCompanyModal() {
 	} catch {
 		pending = undefined;
 	}
-	companyCreatorIcon = pending?.companyIcon ?? "anonymous";
+	companyCreatorIcon = normalizedCompanyAvatarId(pending?.companyIcon ?? DEFAULT_COMPANY_AVATAR_ID);
 	companyCreatorCreationId = pending?.clientCreationId ?? crypto.randomUUID();
 	$("companyName").value = pending?.companyName ?? "";
 	$("companyFormError").textContent = "";
@@ -904,7 +979,7 @@ function setupCompanyModal() {
 			renderCompanyPicturePreview();
 		}, $("companyFormError"));
 	$("companyPictureAnonymous").onclick = () => {
-		companyCreatorIcon = "anonymous";
+		companyCreatorIcon = DEFAULT_COMPANY_AVATAR_ID;
 		renderCompanyPicturePreview();
 	};
 	input.addEventListener("input", () => {
@@ -10873,6 +10948,7 @@ function renderCompanyTab(content, info) {
 		launch.onclick = () => openCompanyInvitePopup({ cloudProfile, actorIsOwner });
 		people.appendChild(launch);
 	}
+	content.appendChild(companyAvatarSettingsSection());
 	content.appendChild(people);
 	content.appendChild(errorBox);
 
