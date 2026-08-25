@@ -1,10 +1,36 @@
 # Step 2 implementation handoff
 
-**Handoff state:** image v21 is built, clean-boot accepted, signed, and
-active, and a live member-sponsored Codex turn completed end to end through
-the deployed boundary on 2026-08-25. Step 2's remaining gates are the
-functional acceptance matrix (second member, Claude login, sponsor switching,
-revocation, offline devices) and the storage/recovery production gate.
+**Handoff state:** v22 is built, signed, and active; the first live
+member-sponsored Codex turn completed end to end on v21 (see evidence
+below). The v23 candidate (guest manifest
+`4e98cc509031c528958340b00457ac21d8e0f23b4ddd92286e95e9834f0cced2`) is
+staged on the node awaiting its build, acceptance, signing, and
+activation. Step 2's remaining gates are the file-changing publication
+turn (twice fenced on v21/v22 by the native workspace permission defect
+that v23 fixes), the functional acceptance matrix (second member, Claude
+login, sponsor switching, revocation, offline devices), and the
+storage/recovery production gate.
+
+Publication-probe findings (2026-08-25): a turn that creates a company
+file executed correctly but its output capture failed
+`EACCES scandir .../work/company/step2-acceptance` and fenced as
+`review_pending/partial_attempt_output` — correct fail-closed behavior
+against a real defect. Root cause: the native harness runs as the
+provider host's user and shares the workspace with the runner only
+through the shared execution group, and entries the harness creates
+carry no group bits. Fixes on this branch: the sandbox (podman) lane
+reclaims workspace ownership through the user namespace after container
+removal, and the native lane's provider host grants group read/traversal
+over the company root after harness execution (and best-effort after a
+failure so fenced review output stays readable). Both are in the v23
+guest. Migration history is now in parity with the hosted project (the
+pre-handoff product-feedback hotfixes are fetched into the repository,
+and the lease-renewal migration content that had been applied without a
+version row is recorded); runner lease renewal is confirmed live by
+`job_lease_renewed` audit receipts. Three fenced `review_pending` runs
+(the v20 smoke and both publication probes) await explicit
+resolve-or-discard, and per-run VM cleanup verification on the node
+(`lxc list` for lingering `qorpera-*` workers) is still owed.
 
 Live-turn evidence (2026-08-25T00:28-00:33Z): turn/run
 `489bfbae-5917-4e5d-b370-053696095c5b`, job `315ddd56`, session `14ea9baa`,
