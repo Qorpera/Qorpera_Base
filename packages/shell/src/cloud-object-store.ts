@@ -3,6 +3,13 @@ import { open } from "node:fs/promises";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { HostedPrimaryDatabase } from "./hosted-primary.ts";
 
+/* The object gateway sits behind Cloudflare, whose bot rules 1010-ban
+ * non-browser user agents before the origin is reached; the main process's
+ * fetch presents one. The UA satisfies the edge — authentication is still
+ * the bearer token. */
+const GATEWAY_EDGE_USER_AGENT =
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+
 export const QORPERA_PROFILE_OBJECT_BUCKET = "qorpera-profile-objects";
 const OBJECT_SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -142,6 +149,7 @@ export class HttpCloudObjectTransport implements CloudObjectTransport {
 				authorization: `Bearer ${await this.#accessToken()}`,
 				"content-length": String(bytes.byteLength),
 				"content-type": mediaType,
+				"user-agent": GATEWAY_EDGE_USER_AGENT,
 			},
 			body: Uint8Array.from(bytes),
 		});
@@ -159,7 +167,7 @@ export class HttpCloudObjectTransport implements CloudObjectTransport {
 
 	async get(path: string): Promise<Uint8Array> {
 		const response = await this.#fetch(`${this.#baseUrl}/v1/profile-objects/${path}`, {
-			headers: { authorization: `Bearer ${await this.#accessToken()}` },
+			headers: { authorization: `Bearer ${await this.#accessToken()}`, "user-agent": GATEWAY_EDGE_USER_AGENT },
 		});
 		if (!response.ok) throw new Error("Cloud object download failed");
 		return new Uint8Array(await response.arrayBuffer());
