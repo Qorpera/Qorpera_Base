@@ -113,11 +113,11 @@ interface PhysicalTreeEntry {
 	bytes?: number;
 }
 
-function comparePath(left: string, right: string): number {
+export function comparePath(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function sameEntry(left: CloudCompanyTreeEntry | undefined, right: CloudCompanyTreeEntry | undefined): boolean {
+export function sameEntry(left: CloudCompanyTreeEntry | undefined, right: CloudCompanyTreeEntry | undefined): boolean {
 	if (!left || !right) return left === right;
 	if (left.kind !== right.kind || left.path !== right.path) return false;
 	if (left.kind === "directory" || right.kind === "directory") return true;
@@ -129,7 +129,7 @@ function sameEntry(left: CloudCompanyTreeEntry | undefined, right: CloudCompanyT
 	);
 }
 
-function entryMap(entries: CloudCompanyTreeEntry[]): Map<string, CloudCompanyTreeEntry> {
+export function entryMap(entries: readonly CloudCompanyTreeEntry[]): Map<string, CloudCompanyTreeEntry> {
 	return new Map(entries.map((entry) => [entry.path, entry]));
 }
 
