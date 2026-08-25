@@ -8,6 +8,9 @@ export const workspaceSourcePaths = {
 	aiProviders: fileURLToPath(new URL("./packages/ai/src/providers", import.meta.url)),
 	agentIndex: fileURLToPath(new URL("./packages/agent/src/index.ts", import.meta.url)),
 	codingAgentIndex: fileURLToPath(new URL("./packages/coding-agent/src/index.ts", import.meta.url)),
+	companyIndex: fileURLToPath(new URL("./packages/company/src/index.ts", import.meta.url)),
+	companySource: fileURLToPath(new URL("./packages/company/src", import.meta.url)),
+	contractsIndex: fileURLToPath(new URL("./packages/contracts/src/index.ts", import.meta.url)),
 	tuiIndex: fileURLToPath(new URL("./packages/tui/src/index.ts", import.meta.url)),
 } as const;
 
@@ -23,6 +26,12 @@ export default defineConfig({
 			},
 			{ find: /^@qorpera\/pi-agent-core$/, replacement: workspaceSourcePaths.agentIndex },
 			{ find: /^@qorpera\/pi-tui$/, replacement: workspaceSourcePaths.tuiIndex },
+			{ find: /^@qorpera\/company$/, replacement: workspaceSourcePaths.companyIndex },
+			{
+				find: /^@qorpera\/company\/(.+)$/,
+				replacement: `${workspaceSourcePaths.companySource}/$1.ts`,
+			},
+			{ find: /^@qorpera\/contracts$/, replacement: workspaceSourcePaths.contractsIndex },
 		],
 	},
 });
