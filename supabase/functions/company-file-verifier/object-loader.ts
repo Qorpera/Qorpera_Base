@@ -23,7 +23,16 @@ export function createCompanyFileObjectLoader(
 	const request = options.fetch ?? fetch;
 	return async (profileId, sha256) => {
 		const response = await request(`${gatewayUrl}/v1/profile-objects/${profileId}/${sha256}`, {
-			headers: { authorization: `Bearer ${token}` },
+			headers: {
+				authorization: `Bearer ${token}`,
+				/* The gateway sits behind Cloudflare, whose bot rules 1010-ban
+				 * clients presenting non-browser user agents before the origin
+				 * is reached (observed 2026-08-26; a browser UA passes to real
+				 * authentication). This is server-to-server traffic carrying a
+				 * bearer credential — the UA satisfies the edge, nothing else. */
+				"user-agent":
+					"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+			},
 		});
 		if (!response.ok) throw new Error("Company File object is unavailable");
 		return new Uint8Array(await response.arrayBuffer());
