@@ -1335,22 +1335,42 @@ export class CloudRunnerOrchestrator {
 		let assignment: CloudRunnerAssignment;
 		try {
 			const capabilitySha256 = cloudRunnerAssignmentCapabilitySha256(capability);
-			assignment = signal
-				? await this.#controlPlane.assign(
-						claim,
-						runner,
-						clientAssignmentId,
-						capabilitySha256,
-						this.#assignmentSeconds,
-						signal,
-					)
-				: await this.#controlPlane.assign(
-						claim,
-						runner,
-						clientAssignmentId,
-						capabilitySha256,
-						this.#assignmentSeconds,
-					);
+			/* The guest activates its runner session concurrently with
+			 * acquisition, so an assign issued immediately after acquire can
+			 * race the activation and fail its prerequisite check (423). The
+			 * worker is healthy and freshly booted; retry inside the claim
+			 * window instead of destroying it. */
+			for (let assignAttempt = 1; ; assignAttempt++) {
+				try {
+					assignment = signal
+						? await this.#controlPlane.assign(
+								claim,
+								runner,
+								clientAssignmentId,
+								capabilitySha256,
+								this.#assignmentSeconds,
+								signal,
+							)
+						: await this.#controlPlane.assign(
+								claim,
+								runner,
+								clientAssignmentId,
+								capabilitySha256,
+								this.#assignmentSeconds,
+							);
+					break;
+				} catch (error) {
+					if (
+						!(error instanceof CloudRunnerOrchestratorRequestError) ||
+						error.status !== 423 ||
+						assignAttempt >= 10 ||
+						signal?.aborted
+					) {
+						throw error;
+					}
+					await waitForPoll(3_000, signal ?? new AbortController().signal);
+				}
+			}
 		} catch (error) {
 			await this.#providerAdapter.stop(runner, "delivery_failed");
 			await this.#controlPlane
