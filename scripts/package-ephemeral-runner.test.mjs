@@ -45,6 +45,18 @@ test("packages directly executable ephemeral runner bundles", async () => {
 
 		const manifest = JSON.parse(await readFile(join(outputRoot, "manifest.json"), "utf-8"));
 		assert.equal(manifest.schema, "qorpera.ephemeral-runner-package/v1");
+		assert.deepEqual(
+			manifest.artifacts.map((artifact) => artifact.file),
+			[
+				"company-lock-heartbeat.mjs",
+				"qorpera-ephemeral-runner.mjs",
+				"qorpera-native-provider-host.mjs",
+				"qorpera-sandbox-probe.mjs",
+				"qorpera-lxd-runner-bootstrap.mjs",
+				"qorpera-lxd-native-login-bootstrap.mjs",
+				"run-job",
+			],
+		);
 		for (const artifact of manifest.artifacts) {
 			const content = await readFile(join(outputRoot, artifact.file));
 			assert.equal(content.byteLength, artifact.bytes);

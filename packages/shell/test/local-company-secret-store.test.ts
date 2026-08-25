@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
@@ -18,7 +18,7 @@ describe("local company credential portability", () => {
 	let previousAgentDir: string | undefined;
 
 	beforeEach(() => {
-		root = mkdtempSync(join(tmpdir(), "qorpera-local-secret-store-"));
+		root = mkdtempSync(join(realpathSync(tmpdir()), "qorpera-local-secret-store-"));
 		previousAgentDir = process.env.QORPERA_CODING_AGENT_DIR;
 		process.env.QORPERA_CODING_AGENT_DIR = join(root, "agent-home");
 		setCompanySecretStore(

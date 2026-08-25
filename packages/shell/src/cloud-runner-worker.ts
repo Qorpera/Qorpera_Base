@@ -32,6 +32,7 @@ export interface EphemeralCloudRunnerWorkerOptions {
 	brokerTransport: CloudRunnerBrokerTransport;
 	backend: CloudRunnerSandboxBackend;
 	nativeProviderBridge?: NativeProviderComputerBridge;
+	nativeWorkspaceGid?: number;
 	platform: string;
 	runnerVersion: string;
 	temporaryRoot?: string;
@@ -128,6 +129,12 @@ export class EphemeralCloudRunnerWorker {
 		this.#now = options.now ?? Date.now;
 		this.#executeJob = options.executeJob ?? executeCloudRunnerJob;
 		this.#injectedExecuteJob = options.executeJob !== undefined;
+		if (
+			options.nativeWorkspaceGid !== undefined &&
+			(!Number.isSafeInteger(options.nativeWorkspaceGid) || options.nativeWorkspaceGid < 1)
+		) {
+			throw new Error("Native workspace group is invalid");
+		}
 	}
 
 	async runNext(
@@ -221,10 +228,30 @@ export class EphemeralCloudRunnerWorker {
 		if (signal.aborted) externalAbort();
 		else signal.addEventListener("abort", externalAbort, { once: true });
 		let nextHeartbeat = this.#now() + this.#heartbeatMs;
+		let leaseDeadline = Date.parse(job.leaseExpiresAt ?? "") || this.#now() + 120_000;
 		const maintenance = (async () => {
 			while (await wait(this.#leaseRenewalMs, maintenanceAbort.signal)) {
 				try {
-					await this.#options.runner.renew(job.jobId);
+					/* One slow or shed control plane response must not abort a
+					 * healthy execution mid-flight; platform incidents last
+					 * minutes, so keep retrying transient renewal failures
+					 * until the lease itself is nearly gone rather than for a
+					 * fixed attempt count. Only a definitive rejection or the
+					 * lease's own expiry treats the lease as lost. */
+					for (;;) {
+						try {
+							const renewed = await this.#options.runner.renew(job.jobId);
+							leaseDeadline = Date.parse(renewed.leaseExpiresAt ?? "") || leaseDeadline;
+							break;
+						} catch (renewError) {
+							const status = cloudRunnerControlRequestStatus(renewError);
+							const transient = status === undefined || status === 429 || status >= 500;
+							if (!transient || maintenanceAbort.signal.aborted || this.#now() + 10_000 >= leaseDeadline) {
+								throw renewError;
+							}
+							if (!(await wait(10_000, maintenanceAbort.signal))) throw renewError;
+						}
+					}
 					if (renewNativeAuthority) {
 						const renewal = renewNativeAuthority();
 						nativeRenewalInFlight = renewal;
@@ -288,8 +315,12 @@ export class EphemeralCloudRunnerWorker {
 							execution = await executeNativeCloudRunnerJob({
 								...shared,
 								authority,
+								refreshAuthority: () => broker.renewNativeAuthority(),
 								bridge: this.#options.nativeProviderBridge,
 								nativeBroker: broker,
+								...(this.#options.nativeWorkspaceGid !== undefined
+									? { nativeWorkspaceGid: this.#options.nativeWorkspaceGid }
+									: {}),
 							});
 						} finally {
 							renewNativeAuthority = undefined;

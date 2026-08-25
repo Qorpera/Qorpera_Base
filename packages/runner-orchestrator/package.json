@@ -7,6 +7,7 @@
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"bin": {
+		"qorpera-lxd-image-provenance": "./dist/lxd-image-provenance-cli.js",
 		"qorpera-runner-orchestrator": "./dist/cli.js",
 		"qorpera-runner-provider": "./dist/provider-cli.js"
 	},
@@ -30,6 +31,22 @@
 		"./process-provider": {
 			"types": "./dist/process-provider.d.ts",
 			"import": "./dist/process-provider.js"
+		},
+		"./lxd-client": {
+			"types": "./dist/lxd-client.d.ts",
+			"import": "./dist/lxd-client.js"
+		},
+		"./lxd-image-provenance": {
+			"types": "./dist/lxd-image-provenance.d.ts",
+			"import": "./dist/lxd-image-provenance.js"
+		},
+		"./lxd-login-gateway": {
+			"types": "./dist/lxd-login-gateway.d.ts",
+			"import": "./dist/lxd-login-gateway.js"
+		},
+		"./lxd-provider": {
+			"types": "./dist/lxd-provider.d.ts",
+			"import": "./dist/lxd-provider.js"
 		}
 	},
 	"files": [

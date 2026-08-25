@@ -182,4 +182,39 @@ describe("runner provider HTTP service", () => {
 		).toBe(422);
 		expect(provider.acquire).not.toHaveBeenCalled();
 	});
+
+	it("rejects every endpoint outside the configured management VM source", async () => {
+		const provider = backend();
+		const denied = new HttpCloudRunnerProviderService(provider, token, "127.0.0.1", 0, {
+			trustedSource: "192.0.2.10",
+		});
+		services.push(denied);
+		const deniedPort = await denied.start();
+		expect((await fetch(`http://127.0.0.1:${deniedPort}/healthz`)).status).toBe(403);
+		expect(provider.acquire).not.toHaveBeenCalled();
+
+		const allowed = new HttpCloudRunnerProviderService(provider, token, "127.0.0.1", 0, {
+			trustedSource: "127.0.0.1",
+		});
+		services.push(allowed);
+		const allowedPort = await allowed.start();
+		await expect(
+			fetch(`http://127.0.0.1:${allowedPort}/healthz`).then((response) => response.json()),
+		).resolves.toEqual({
+			ok: true,
+		});
+	});
+
+	it("rejects an invalid source fence or empty TLS material", () => {
+		const provider = backend();
+		expect(
+			() => new HttpCloudRunnerProviderService(provider, token, "127.0.0.1", 0, { trustedSource: "localhost" }),
+		).toThrow("trusted source");
+		expect(
+			() =>
+				new HttpCloudRunnerProviderService(provider, token, "127.0.0.1", 0, {
+					tls: { certificate: Buffer.alloc(0), privateKey: Buffer.from("key") },
+				}),
+		).toThrow("TLS material");
+	});
 });

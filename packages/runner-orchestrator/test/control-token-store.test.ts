@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,7 +12,7 @@ afterEach(async () => {
 
 describe("runner orchestrator control token store", () => {
 	it("persists bootstrap and ambiguous rotation state across restarts", async () => {
-		const directory = await mkdtemp(join(tmpdir(), "qorpera-orchestrator-control-"));
+		const directory = await mkdtemp(join(await realpath(tmpdir()), "qorpera-orchestrator-control-"));
 		temporaryDirectories.push(directory);
 		const path = join(directory, "control.json");
 		const current = "a".repeat(43);

@@ -37,6 +37,15 @@ sh deploy/ephemeral-runner/build-and-sign-image.sh \
 
 Signing is not tested on Windows and requires a real registry plus an OIDC-capable Linux/CI environment.
 
+For the first-node acceptance run, manually dispatching
+`.github/workflows/ephemeral-runner-linux.yml` produces a private workflow
+artifact instead of publishing the probe publicly. The second job rebuilds the
+already-tested local image, exports an OCI archive, keyless-signs the exact
+archive with the workflow identity, verifies the Sigstore bundle, and uploads
+the archive, bundle, and checksum manifest. That artifact is suitable for
+checksum-pinned preloading into the reviewed LXD image; it contains no registry
+credential and the runner continues to use `--pull=never`.
+
 ## Install the dedicated user service
 
 These commands are a Linux-VM runbook, not commands to run on the current Windows machine or an unprepared NAS.

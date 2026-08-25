@@ -3759,6 +3759,14 @@ function startLegacyPiSessionAttachment(
 	try {
 		agentDir = prepareBrokeredAgentDir(configDir, root, brokeredCredentials.credentials);
 		shareWindowsSandboxState(userData, configDir);
+		/* Packaged builds run runtime children as the signed app binary in
+		 * node mode. A source checkout's unsigned Electron fails the child
+		 * codesign check inside the sandbox, so development may point the
+		 * children at a signed system Node; its install tree then needs read
+		 * access inside the sandbox to be executable. */
+		const runtimeNodeExecutable = process.env.QORPERA_RUNTIME_NODE?.trim() || process.execPath;
+		const runtimeNodeReadPaths =
+			runtimeNodeExecutable === process.execPath ? [] : [dirname(dirname(realpathSync(runtimeNodeExecutable)))];
 		writeSandboxProfile(
 			configDir,
 			runtimeDir,
@@ -3767,6 +3775,7 @@ function startLegacyPiSessionAttachment(
 			protectedCompanyAgentPaths(agentCompanyRoot, products),
 			[
 				...FOUNDATION_READ_PATHS,
+				...runtimeNodeReadPaths,
 				...(companyExecution ? [join(root, ".git")] : []),
 				join(configDir, "config.toml"),
 				join(agentDir, "auth.json"),
@@ -3778,7 +3787,7 @@ function startLegacyPiSessionAttachment(
 			codexEntry: CODEX_ENTRY,
 			configDir,
 			runtimeDir,
-			nodeExecutable: process.execPath,
+			nodeExecutable: runtimeNodeExecutable,
 			env,
 		});
 		const rpcArgs = [
@@ -3802,8 +3811,8 @@ function startLegacyPiSessionAttachment(
 		];
 		invocation = codexSpawn(
 			CODEX_ENTRY,
-			process.execPath,
-			sandboxCommandArgs(CODEX_ENTRY, runtimeDir, process.execPath, rpcArgs),
+			runtimeNodeExecutable,
+			sandboxCommandArgs(CODEX_ENTRY, runtimeDir, runtimeNodeExecutable, rpcArgs),
 		);
 		kernelSigner = createKernelResponseSigner({ sessionId: binding.sessionId });
 	} catch (error) {

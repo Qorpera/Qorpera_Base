@@ -1,0 +1,20 @@
+{
+  "schema": "qorpera.ephemeral-runner-image-contract/v1",
+  "source_commit": "135b4fc7b40f70a0fd6859fb9400fbb42d820ebc",
+  "base_image": "docker.io/library/node@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
+  "image": "localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1",
+  "archive": {
+    "file": "runner-image/qorpera-sandbox-probe.oci.tar",
+    "bytes": 84122624,
+    "sha256": "c9370c825bdbd589bf0c1391e567b8f5ea8ba36161cc554b32fcfb235f046239"
+  },
+  "cosign_bundle": {
+    "file": "runner-image/qorpera-sandbox-probe.cosign-bundle.json",
+    "bytes": 10639,
+    "sha256": "98a00fefd625c9aceeadd746ee610682a8787e5ce85ec0a6ac513a354a7491ce",
+    "certificate_identity": "https://github.com/Qorpera/Qorpera_Base/.github/workflows/ephemeral-runner-linux.yml@refs/heads/codex/step2-first-node",
+    "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
+    "workflow_sha": "135b4fc7b40f70a0fd6859fb9400fbb42d820ebc",
+    "workflow_trigger": "workflow_dispatch"
+  }
+}

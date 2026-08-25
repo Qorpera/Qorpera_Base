@@ -34,12 +34,22 @@ mandatory assertion below has passed against a deployed environment.
 
 ## Deployment prerequisites
 
+This functional acceptance may run while the NAS is disconnected. In that
+case, configure clients and `company-file-verifier` with
+`QORPERA_OBJECT_STORAGE_PRIMARY=supabase`, keep admitted catalog rows on the
+`supabase-storage` backend, and run artifact cleanup through that backend. The
+objects are real content-addressed Supabase Storage objects, not fixtures. Do
+not configure a fake NAS gateway. Production remains NAS-primary with Supabase
+backup and requires separate replication, restore, failover, and failback
+evidence.
+
 Record immutable image, package, migration, and source commit identifiers for
 each deployed component before starting.
 
 1. Apply the cloud control-plane, runner-orchestrator, native Compute Identity,
-   runner provisioning, native execution lease, and orchestrator token-rotation
-   migrations through `20260821004000_runner_orchestrator_control_rotation.sql`.
+   runner provisioning, native execution lease, orchestrator token-rotation,
+   and explicit Supabase object-promotion migrations through
+   `20260823000000_supabase_object_promotion.sql`.
 2. Deploy the `runner-control`, `runner-broker`, `runner-orchestrator`, and
    `native-provider-login` Edge functions with their documented authentication
    settings.
@@ -257,10 +267,19 @@ orchestration, the generic runner-provider boundary, the local process test
 adapter, encrypted capsules, and product controls. Local SQL and deterministic
 process-provider tests exercise those contracts without a real subscription.
 
-The Company Computer provisioner and execution layer are intentionally not
-implemented in this phase. They will run on Qorpera-owned infrastructure and
-connect through the generic runner-provider contract; the NAS remains object
-storage rather than a shared execution filesystem. The release gate remains
-open until that layer and the native login host are deployed, real Codex and
-Claude login/provider requests execute through it, the Windows/macOS builds run
-this procedure, and all-member-devices-offline behavior is observed.
+The branch now contains the first-node LXD host/provider contract, a signed-image
+provenance gate, a credential-free clean-boot guest image contract, post-boot
+credential injection, and an explicit Supabase-primary object acceptance path.
+The v20 image passed clean-boot and signed-provenance checks, the provider is
+active, and one real member-owned Codex job traversed orchestration, isolated VM
+execution, Company File reconstruction, and candidate upload. It failed final
+Company File verification and did not append a canonical assistant response.
+The source correction is committed but not deployed.
+
+The release gate therefore remains open. A corrected Codex run must complete,
+then the two-member Codex/Claude, shared-session, sponsor-switch, concurrency,
+revocation, cross-device, and all-member-devices-offline procedure above must
+pass. NAS-primary replication and recovery remain a separate production-storage
+gate. See
+[`../deploy/first-node/STEP-2-HANDOFF.md`](../deploy/first-node/STEP-2-HANDOFF.md)
+for the exact checkpoint and continuation order.

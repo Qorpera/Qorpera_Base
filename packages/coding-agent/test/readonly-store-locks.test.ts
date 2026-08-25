@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,7 +27,7 @@ let tempDir: string;
 beforeEach(() => {
 	lockSync.mockReset();
 	lockAsync.mockReset();
-	tempDir = join(tmpdir(), `readonly-store-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	tempDir = join(realpathSync(tmpdir()), `readonly-store-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
 });
 

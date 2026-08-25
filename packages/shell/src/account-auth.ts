@@ -16,6 +16,7 @@ import {
 } from "./cloud-native-subscription-control.ts";
 import {
 	CloudContentAddressedStore,
+	type CloudObjectTransport,
 	HttpCloudObjectTransport,
 	SupabaseCloudObjectTransport,
 } from "./cloud-object-store.ts";
@@ -59,9 +60,19 @@ export interface QorperaAccountAuthOptions {
 	fetch?: typeof fetch;
 	projectUrl?: string;
 	publishableKey?: string;
+	objectStoragePrimary?: "nas" | "supabase";
 	objectGatewayUrl?: string;
 	nativeProviderUrl?: string;
 	timeoutMs?: number;
+}
+
+function configuredObjectStoragePrimary(projectUrl: string, configured: string | undefined): "nas" | "supabase" {
+	if (configured !== undefined) {
+		const value = configured.trim();
+		if (value === "nas" || value === "supabase") return value;
+		throw new Error("Qorpera object storage primary must be 'nas' or 'supabase'");
+	}
+	return new URL(projectUrl).origin === new URL(QORPERA_AUTH_URL).origin ? "nas" : "supabase";
 }
 
 export class FileAccountAuthStorage implements SupportedStorage {
@@ -338,25 +349,32 @@ export class QorperaAccountAuth {
 		this.primary = createSupabaseHostedPrimary(this.client);
 		this.realtime = new SupabaseCloudRealtimeTransport(this.client);
 		this.presence = new SupabaseCloudPresenceTransport(this.client, this.primary);
+		const objectStoragePrimary = configuredObjectStoragePrimary(
+			projectUrl,
+			options.objectStoragePrimary ?? process.env.QORPERA_OBJECT_STORAGE_PRIMARY,
+		);
 		const configuredObjectGatewayUrl =
 			options.objectGatewayUrl?.trim() || process.env.QORPERA_OBJECT_GATEWAY_URL?.trim();
 		const objectGatewayUrl =
 			configuredObjectGatewayUrl ||
 			(new URL(projectUrl).origin === new URL(QORPERA_AUTH_URL).origin ? QORPERA_OBJECT_GATEWAY_URL : undefined);
-		this.objects = new CloudContentAddressedStore(
-			objectGatewayUrl
-				? new HttpCloudObjectTransport({
-						baseUrl: objectGatewayUrl,
-						fetch: options.fetch,
-						accessToken: async () => {
-							const { data, error } = await this.client.auth.getSession();
-							if (error) throw error;
-							if (!data.session) throw new Error("Qorpera object access requires sign-in");
-							return data.session.access_token;
-						},
-					})
-				: new SupabaseCloudObjectTransport(this.client),
-		);
+		let objectTransport: CloudObjectTransport;
+		if (objectStoragePrimary === "supabase") {
+			objectTransport = new SupabaseCloudObjectTransport(this.client);
+		} else {
+			if (!objectGatewayUrl) throw new Error("Qorpera NAS object gateway is not configured");
+			objectTransport = new HttpCloudObjectTransport({
+				baseUrl: objectGatewayUrl,
+				fetch: options.fetch,
+				accessToken: async () => {
+					const { data, error } = await this.client.auth.getSession();
+					if (error) throw error;
+					if (!data.session) throw new Error("Qorpera object access requires sign-in");
+					return data.session.access_token;
+				},
+			});
+		}
+		this.objects = new CloudContentAddressedStore(objectTransport);
 		this.nativeSubscriptions = new NativeSubscriptionControlPlane(
 			new SupabaseNativeSubscriptionControlTransport(async (name, args) => {
 				const { data, error } = await this.client.rpc(name as never, args as never);

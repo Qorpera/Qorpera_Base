@@ -1,6 +1,6 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
 import { describe, expect, it, vi } from "vitest";
 import { captureCloudCompanyTree } from "../src/cloud-company-snapshot.ts";
@@ -101,7 +101,8 @@ class MemoryObjectTransport implements CloudObjectTransport {
 
 describe("native provider computer bridge", () => {
 	it("materializes the canonical run through the native harness and synchronizes its provider result", async () => {
-		const temporaryRoot = await mkdtemp(join(tmpdir(), "qorpera-native-run-test-"));
+		const temporaryRoot = await mkdtemp(join(await realpath(tmpdir()), "qorpera-native-run-test-"));
+		const nativeWorkspaceGid = process.platform === "linux" ? Math.max(1, process.getgid?.() ?? 1) : undefined;
 		try {
 			const companyRoot = join(temporaryRoot, "company");
 			scaffoldCompany(companyRoot);
@@ -218,8 +219,27 @@ describe("native provider computer bridge", () => {
 			const bridge: NativeProviderComputerBridge = {
 				executionGuarantees: nativeProviderExecutionGuarantees("virtual_machine"),
 				start: vi.fn(async (receivedAuthority, receivedRequest): Promise<CloudRunnerSandboxProcess> => {
-					expect(receivedAuthority).toEqual(authority);
+					expect(receivedAuthority).toEqual({
+						...authority,
+						expiresAt: "2026-08-21T12:10:00.000Z",
+					});
 					expect(receivedRequest.hostBroker).toBeUndefined();
+					if (nativeWorkspaceGid !== undefined) {
+						const [workspaceDirectory, inputDirectory, inputFile, workFile, outputDirectory] = await Promise.all([
+							stat(temporaryRoot),
+							stat(dirname(receivedRequest.input.companyBaseRoot)),
+							stat(join(receivedRequest.input.companyBaseRoot, "company.md")),
+							stat(join(receivedRequest.input.companyRoot, "company.md")),
+							stat(receivedRequest.outputRoot),
+						]);
+						expect(workspaceDirectory.gid).toBe(nativeWorkspaceGid);
+						expect(workspaceDirectory.mode & 0o070).toBe(0o010);
+						expect(inputDirectory.gid).toBe(nativeWorkspaceGid);
+						expect(inputDirectory.mode & 0o7777).toBe(0o2750);
+						expect(inputFile.mode & 0o777).toBe(0o640);
+						expect(workFile.mode & 0o777).toBe(0o660);
+						expect(outputDirectory.mode & 0o7777).toBe(0o2770);
+					}
 					return {
 						result: Promise.resolve({
 							schema: "qorpera.native-harness-result/v1",
@@ -241,15 +261,24 @@ describe("native provider computer bridge", () => {
 			};
 			const appendTranscriptEvent = vi.fn(async () => ({}));
 			const bindProviderSession = vi.fn(async () => ({}));
+			const refreshedAuthority = {
+				...authority,
+				expiresAt: "2026-08-21T12:10:00.000Z",
+			};
+			const refreshAuthority = vi.fn(async () => refreshedAuthority);
 			const completed = await executeNativeCloudRunnerJob({
 				job,
 				substrate,
 				objects,
 				authority,
+				refreshAuthority,
 				bridge,
 				nativeBroker: { appendTranscriptEvent, bindProviderSession },
+				...(nativeWorkspaceGid !== undefined ? { nativeWorkspaceGid } : {}),
 				temporaryRoot,
 			});
+			expect(refreshAuthority).toHaveBeenCalledOnce();
+			expect(bridge.start).toHaveBeenCalledWith(refreshedAuthority, expect.any(Object));
 			expect(completed.result).toMatchObject({
 				backend: "native-provider-computer",
 				backend_result: { provider_session_id: "official-session-1" },

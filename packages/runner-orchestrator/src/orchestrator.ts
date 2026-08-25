@@ -303,6 +303,15 @@ function requiredSeconds(value: number, label: string, maximum: number): number 
 	return value;
 }
 
+/* A rejection that carries a numeric status came back as an actual response
+ * from the provider or control plane and is definitive; timeouts, aborts, and
+ * transport faults carry none and leave the operation's outcome unknown. */
+function definitiveRejectionStatus(error: unknown): number | undefined {
+	if (!error || typeof error !== "object") return undefined;
+	const status = (error as { status?: unknown }).status;
+	return typeof status === "number" ? status : undefined;
+}
+
 function safeDeliveryFailure(error: unknown): string {
 	return (
 		(error instanceof Error ? error.message : String(error))
@@ -1240,11 +1249,15 @@ export class CloudRunnerOrchestrator {
 		}
 	}
 
-	async #claimBatch(limit: number, signal?: AbortSignal): Promise<readonly CloudRunnerOrchestrationClaim[]> {
+	async #claimBatch(
+		limit: number,
+		signal?: AbortSignal,
+		excludedClaimIds: ReadonlySet<string> = new Set(),
+	): Promise<readonly CloudRunnerOrchestrationClaim[]> {
 		const retained = signal
 			? await this.#controlPlane.retainedClaims(this.#orchestratorId, signal)
 			: await this.#controlPlane.retainedClaims(this.#orchestratorId);
-		const claims = retained.slice(0, limit);
+		const claims = retained.filter((claim) => !excludedClaimIds.has(claim.claimId)).slice(0, limit);
 		while (claims.length < limit) {
 			const clientClaimId = this.#clientClaimId();
 			const claim = signal
@@ -1277,14 +1290,25 @@ export class CloudRunnerOrchestrator {
 			while (!acquisitionController.signal.aborted) {
 				await waitForPoll(this.#claimRenewalIntervalMs, acquisitionController.signal);
 				if (acquisitionController.signal.aborted) return;
-				try {
-					claim = signal
-						? await this.#controlPlane.renewClaim(claim, this.#claimLeaseSeconds, signal)
-						: await this.#controlPlane.renewClaim(claim, this.#claimLeaseSeconds);
-				} catch (error) {
-					acquisitionController.abort();
-					rejectRenewal(error);
-					return;
+				/* A guest boot can briefly saturate the host and stall one
+				 * renewal round trip; the lease outlives the renewal interval
+				 * by design, so retry inside the current lease window before
+				 * abandoning an otherwise healthy acquisition. */
+				for (let renewAttempt = 1; ; renewAttempt++) {
+					try {
+						claim = signal
+							? await this.#controlPlane.renewClaim(claim, this.#claimLeaseSeconds, signal)
+							: await this.#controlPlane.renewClaim(claim, this.#claimLeaseSeconds);
+						break;
+					} catch (error) {
+						if (renewAttempt >= 3 || acquisitionController.signal.aborted) {
+							acquisitionController.abort();
+							rejectRenewal(error);
+							return;
+						}
+						await waitForPoll(5_000, acquisitionController.signal);
+						if (acquisitionController.signal.aborted) return;
+					}
 				}
 			}
 		})();
@@ -1331,27 +1355,56 @@ export class CloudRunnerOrchestrator {
 		let assignment: CloudRunnerAssignment;
 		try {
 			const capabilitySha256 = cloudRunnerAssignmentCapabilitySha256(capability);
-			assignment = signal
-				? await this.#controlPlane.assign(
-						claim,
-						runner,
-						clientAssignmentId,
-						capabilitySha256,
-						this.#assignmentSeconds,
-						signal,
-					)
-				: await this.#controlPlane.assign(
-						claim,
-						runner,
-						clientAssignmentId,
-						capabilitySha256,
-						this.#assignmentSeconds,
-					);
+			/* The guest activates its runner session concurrently with
+			 * acquisition, so an assign issued immediately after acquire can
+			 * race the activation and fail its prerequisite check (423). The
+			 * worker is healthy and freshly booted; retry inside the claim
+			 * window instead of destroying it. */
+			for (let assignAttempt = 1; ; assignAttempt++) {
+				try {
+					assignment = signal
+						? await this.#controlPlane.assign(
+								claim,
+								runner,
+								clientAssignmentId,
+								capabilitySha256,
+								this.#assignmentSeconds,
+								signal,
+							)
+						: await this.#controlPlane.assign(
+								claim,
+								runner,
+								clientAssignmentId,
+								capabilitySha256,
+								this.#assignmentSeconds,
+							);
+					break;
+				} catch (error) {
+					if (
+						!(error instanceof CloudRunnerOrchestratorRequestError) ||
+						error.status !== 423 ||
+						assignAttempt >= 10 ||
+						signal?.aborted
+					) {
+						throw error;
+					}
+					await waitForPoll(3_000, signal ?? new AbortController().signal);
+				}
+			}
 		} catch (error) {
-			await this.#providerAdapter.stop(runner, "delivery_failed");
-			await this.#controlPlane
-				.releaseClaim(claim, clientAssignmentId, safeDeliveryFailure(error))
-				.catch(() => undefined);
+			/* A rejection that carries a status is definitive: the control
+			 * plane refused the assignment and the worker is provably idle,
+			 * so reclaim it. A timeout or transport fault leaves the outcome
+			 * unknown — the assignment may be recorded server-side — so the
+			 * worker must stay up: an unclaimed assignment expires and
+			 * reconciliation requeues the job, and the provider replays the
+			 * still-live acquisition on the next dispatch. */
+			if (definitiveRejectionStatus(error) !== undefined) {
+				await this.#providerAdapter.stop(runner, "delivery_failed");
+				await this.#controlPlane
+					.releaseClaim(claim, clientAssignmentId, safeDeliveryFailure(error))
+					.catch(() => undefined);
+			}
 			throw error;
 		}
 		if (
@@ -1374,9 +1427,20 @@ export class CloudRunnerOrchestrator {
 			if (signal) await this.#providerAdapter.deliver(runner, delivery, signal);
 			else await this.#providerAdapter.deliver(runner, delivery);
 		} catch (error) {
+			/* A definitive provider rejection proves the guest never received
+			 * the assignment capability, so the worker is idle and safe to
+			 * reclaim. A timeout or transport fault proves nothing: the guest
+			 * can already be executing under the recorded assignment while
+			 * only the acknowledgment leg was lost — destroying the worker
+			 * then kills a live attempt (observed as lease expiries with zero
+			 * renewals). On unknown outcomes leave the worker running; an
+			 * undelivered assignment expires server-side and reconciliation
+			 * requeues the job, while a delivered one simply keeps going. */
 			const failure = safeDeliveryFailure(error);
-			await this.#controlPlane.releaseClaim(claim, clientAssignmentId, failure);
-			await this.#providerAdapter.stop(runner, "delivery_failed");
+			if (definitiveRejectionStatus(error) !== undefined) {
+				await this.#controlPlane.releaseClaim(claim, clientAssignmentId, failure);
+				await this.#providerAdapter.stop(runner, "delivery_failed");
+			}
 			throw new Error(failure, { cause: error });
 		}
 		return { status: "assigned", claim, runner, assignment };
@@ -1398,18 +1462,24 @@ export class CloudRunnerOrchestrator {
 			throw new Error("Orchestrator shutdown grace is outside the supported range");
 		}
 		const inFlight = new Set<Promise<void>>();
+		const inFlightClaimIds = new Set<string>();
 		while (!signal.aborted) {
 			try {
 				await this.#reconcileControlPlane(signal);
 				const available = this.#dispatchConcurrency - inFlight.size;
 				if (available > 0) {
-					const claims = await this.#claimBatch(available, signal);
+					const claims = await this.#claimBatch(available, signal, inFlightClaimIds);
 					for (const claim of claims) {
+						if (inFlightClaimIds.has(claim.claimId)) continue;
+						inFlightClaimIds.add(claim.claimId);
 						let dispatch: Promise<void>;
 						dispatch = this.#dispatchClaim(claim, signal)
 							.then(() => undefined)
 							.catch((error: unknown) => options.onError?.(error))
-							.finally(() => inFlight.delete(dispatch));
+							.finally(() => {
+								inFlight.delete(dispatch);
+								inFlightClaimIds.delete(claim.claimId);
+							});
 						inFlight.add(dispatch);
 					}
 				}

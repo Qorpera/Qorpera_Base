@@ -4,7 +4,7 @@
  * signature rule (EVOLUTION.md §3) via the authority layer.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -16,7 +16,10 @@ import { createCompanyToolDefinition } from "../src/core/tools/company-tool.ts";
 let root: string;
 
 beforeEach(() => {
-	root = join(tmpdir(), `qorpera-company-tool-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	root = join(
+		realpathSync(tmpdir()),
+		`qorpera-company-tool-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+	);
 	scaffoldCompany(root);
 });
 

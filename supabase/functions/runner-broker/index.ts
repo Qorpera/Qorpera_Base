@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
+import { createRunnerBrokerObjectLoader } from "./object-loader.ts";
 import {
 	executeRunnerModelGateway,
 	MAX_RUNNER_BROKER_OBJECT_BYTES,
@@ -27,7 +28,13 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 function configuredServiceKey(): string | undefined {
+	/* Prefer the legacy service-role JWT: it is verified locally at the
+	 * gateway, while new-format secret keys resolve through the platform's
+	 * key-management service — a dependency that has shed requests for
+	 * minutes at a time during platform incidents and turned every broker
+	 * action into a 503. Both keys address the same hosted project. */
 	const legacyServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+	if (legacyServiceRoleKey) return legacyServiceRoleKey;
 	try {
 		const parsed: unknown = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
 		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -35,9 +42,15 @@ function configuredServiceKey(): string | undefined {
 			if (key) return key;
 		}
 	} catch {
-		// Fall through to the legacy project secret when configured.
+		// No configured service credential.
 	}
-	return legacyServiceRoleKey || undefined;
+	return undefined;
+}
+
+function configuredObjectStoragePrimary(): "nas" | "supabase" {
+	const value = Deno.env.get("QORPERA_OBJECT_STORAGE_PRIMARY")?.trim();
+	if (value === "nas" || value === "supabase") return value;
+	throw new Error("Runner broker object storage primary is not configured");
 }
 
 async function sha256(value: string | Uint8Array): Promise<string> {
@@ -459,11 +472,48 @@ Deno.serve(async (request) => {
 		if (!Number.isSafeInteger(expectedBytes) || (expectedBytes as number) < 0 || typeof profileId !== "string") {
 			return jsonResponse({ error: "Runner broker returned invalid authority" }, 503);
 		}
-		const { data: blob, error: storageError } = await client.storage
-			.from(OBJECT_BUCKET)
-			.download(`${profileId}/${objectRequest.objectSha256}`);
-		if (storageError) return jsonResponse({ error: "Runner input object is unavailable" }, 503);
-		const bytes = new Uint8Array(await blob.arrayBuffer());
+		/* Proxying object bytes through this function multiplies a company
+		 * materialization into hundreds of full-size responses on the
+		 * project's shared compute. When the caller opts in and the primary
+		 * store can sign URLs, hand back a short-lived signed URL instead;
+		 * the client verifies the content hash it addressed, so the bytes
+		 * need no trusted channel. */
+		if (
+			request.headers.get("x-qorpera-object-transport") === "signed-url" &&
+			configuredObjectStoragePrimary() === "supabase"
+		) {
+			const { data: signed, error: signError } = await client.storage
+				.from(OBJECT_BUCKET)
+				.createSignedUrl(`${profileId}/${objectRequest.objectSha256}`, 300);
+			if (!signError && signed && typeof signed.signedUrl === "string" && signed.signedUrl) {
+				return jsonResponse({
+					value: {
+						transport: "signed-url",
+						signedUrl: signed.signedUrl,
+						bytes: expectedBytes,
+						sha256: objectRequest.objectSha256,
+					},
+				});
+			}
+		}
+		let bytes: Uint8Array;
+		try {
+			const loadObject = createRunnerBrokerObjectLoader({
+				primary: configuredObjectStoragePrimary(),
+				gatewayUrl: Deno.env.get("QORPERA_OBJECT_GATEWAY_URL"),
+				verifierToken: Deno.env.get("QORPERA_OBJECT_GATEWAY_VERIFIER_TOKEN"),
+				storageDownload: async (profileId, sha256) => {
+					const { data: blob, error: storageError } = await client.storage
+						.from(OBJECT_BUCKET)
+						.download(`${profileId}/${sha256}`);
+					if (storageError) throw new Error("Runner input object is unavailable");
+					return new Uint8Array(await blob.arrayBuffer());
+				},
+			});
+			bytes = await loadObject(profileId, objectRequest.objectSha256);
+		} catch {
+			return jsonResponse({ error: "Runner input object is unavailable" }, 503);
+		}
 		if (bytes.byteLength !== expectedBytes || (await sha256(bytes)) !== objectRequest.objectSha256) {
 			return jsonResponse({ error: "Runner input object failed integrity verification" }, 503);
 		}

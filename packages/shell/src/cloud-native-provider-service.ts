@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import type { JsonValue } from "@qorpera/contracts";
 import type {
 	CompleteNativeProviderLoginInput,
@@ -52,6 +53,50 @@ function nullableUuid(value: unknown, label: string): string | undefined {
 
 function nullableText(value: unknown, label: string, maximum = 512): string | undefined {
 	return value === null || value === undefined ? undefined : text(value, label, maximum);
+}
+
+function internalRejectionCategory(error: unknown): string {
+	let current = error;
+	for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+		const code = (current as NodeJS.ErrnoException).code;
+		if (current.name === "AbortError" || code === "ABORT_ERR") return "cancelled";
+		if (current.name === "TimeoutError" || code === "ETIMEDOUT") return "timeout";
+		if (["ENOENT", "ENOTDIR", "EACCES", "EPERM", "EROFS", "EISDIR", "ENOTEMPTY"].includes(code ?? "")) {
+			return "filesystem";
+		}
+		if (["ENOSPC", "EMFILE", "ENFILE", "ENOMEM"].includes(code ?? "")) return "resource";
+		if (["EPIPE", "ERR_STREAM_WRITE_AFTER_END"].includes(code ?? "")) return "process";
+		if (current.cause instanceof Error) {
+			current = current.cause;
+			continue;
+		}
+		if (current.name === "TypeError") return "type-error";
+		if (current.name === "SyntaxError") return "syntax-error";
+		if (current.name === "RangeError") return "range-error";
+		if (current.name === "AggregateError") return "aggregate-error";
+		return "error";
+	}
+	return "unknown";
+}
+
+function safeRequestDiagnostic(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	if (
+		/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
+			message,
+		) ||
+		/^Codex returned no assistant response(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
+			message,
+		) ||
+		/^Native provider execution (?:initial-authority-validation|temporary-workspace|credential-download|credential-opening|prompt-materialization|harness-execution|workspace-normalization|completion-authority-validation|credential-sealing|credential-upload|authority-monitor|cleanup|internal-completion) stage failed(?: \((?:storage-budget|unsupported-entry|invalid-path|symbolic-link|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/.test(
+			message,
+		) ||
+		message === "Provider harness output exceeded its byte limit"
+	) {
+		return message;
+	}
+	const messageSha256 = createHash("sha256").update(message).digest("hex").slice(0, 16);
+	return `internal rejection (${internalRejectionCategory(error)}; message-sha256=${messageSha256})`;
 }
 
 function ownership(
@@ -165,6 +210,12 @@ function tokenMatches(expected: string, authorization: string | undefined): bool
 	const left = Buffer.from(expected, "utf-8");
 	const right = Buffer.from(authorization.slice("Bearer ".length), "utf-8");
 	return left.byteLength === right.byteLength && timingSafeEqual(left, right);
+}
+
+function sourceMatches(expected: string | undefined, remoteAddress: string | undefined): boolean {
+	if (!expected) return true;
+	const normalized = remoteAddress?.startsWith("::ffff:") ? remoteAddress.slice("::ffff:".length) : remoteAddress;
+	return normalized === expected;
 }
 
 export class SupabaseNativeProviderControlPlane implements NativeProviderControlPlane {
@@ -337,16 +388,21 @@ export class HttpNativeProviderHostService {
 	readonly #token: string;
 	readonly #listenHost: string;
 	readonly #port: number;
+	readonly #trustedSource?: string;
 	readonly #executions = new Map<string, AbortController>();
 	#server?: Server;
 
-	constructor(host: NativeProviderHost, token: string, listenHost = "127.0.0.1", port = 0) {
+	constructor(host: NativeProviderHost, token: string, listenHost = "127.0.0.1", port = 0, trustedSource?: string) {
 		if (!TOKEN_PATTERN.test(token)) throw new Error("Native provider host token is invalid");
 		if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) throw new Error("Native provider port is invalid");
+		if (trustedSource !== undefined && isIP(trustedSource) !== 4) {
+			throw new Error("Native provider trusted source is invalid");
+		}
 		this.#host = host;
 		this.#token = token;
 		this.#listenHost = listenHost;
 		this.#port = port;
+		this.#trustedSource = trustedSource;
 	}
 
 	async start(): Promise<number> {
@@ -382,6 +438,10 @@ export class HttpNativeProviderHostService {
 		}
 		if (request.method !== "POST" || !["/login", "/execute", "/cancel"].includes(request.url ?? "")) {
 			response.writeHead(404).end();
+			return;
+		}
+		if (!sourceMatches(this.#trustedSource, request.socket.remoteAddress)) {
+			response.writeHead(403).end();
 			return;
 		}
 		try {
@@ -430,7 +490,8 @@ export class HttpNativeProviderHostService {
 				value = { cancelled: true };
 			}
 			response.writeHead(200, { "content-type": "application/json" }).end(`${JSON.stringify(value)}\n`);
-		} catch {
+		} catch (error) {
+			console.error(`Native provider request rejected: ${safeRequestDiagnostic(error)}`);
 			response.writeHead(422, { "content-type": "application/json" }).end('{"error":"request rejected"}\n');
 		}
 	}

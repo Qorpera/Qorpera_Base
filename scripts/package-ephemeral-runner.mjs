@@ -17,9 +17,12 @@ await mkdir(outputRoot, { recursive: true });
 
 await build({
 	entryPoints: {
+		"company-lock-heartbeat": "packages/company/src/company-lock-heartbeat.ts",
 		"qorpera-ephemeral-runner": "packages/shell/src/cloud-runner-service-main.ts",
 		"qorpera-native-provider-host": "packages/shell/src/cloud-native-provider-service-main.ts",
 		"qorpera-sandbox-probe": "packages/shell/src/cloud-runner-container-main.ts",
+		"qorpera-lxd-runner-bootstrap": "packages/shell/src/lxd-runner-bootstrap-main.ts",
+		"qorpera-lxd-native-login-bootstrap": "packages/shell/src/lxd-native-login-bootstrap-main.ts",
 	},
 	outdir: outputRoot,
 	outExtension: { ".js": ".mjs" },
@@ -36,9 +39,12 @@ await build({
 await copyFile("deploy/ephemeral-runner/image/run-job", resolve(outputRoot, "run-job"));
 
 const files = [
+	"company-lock-heartbeat.mjs",
 	"qorpera-ephemeral-runner.mjs",
 	"qorpera-native-provider-host.mjs",
 	"qorpera-sandbox-probe.mjs",
+	"qorpera-lxd-runner-bootstrap.mjs",
+	"qorpera-lxd-native-login-bootstrap.mjs",
 	"run-job",
 ];
 const artifacts = [];

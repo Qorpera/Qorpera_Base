@@ -1,4 +1,4 @@
-import { link, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
@@ -164,7 +164,7 @@ interface SandboxFixture {
 }
 
 async function temporaryDirectory(): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "qorpera-runner-sandbox-test-"));
+	const directory = await mkdtemp(join(await realpath(tmpdir()), "qorpera-runner-sandbox-test-"));
 	temporaryDirectories.push(directory);
 	return directory;
 }
@@ -364,6 +364,12 @@ describe("cloud runner execution sandboxes", () => {
 		let executionRoot = "";
 		const backend = new TestSandboxBackend(async (request) => {
 			executionRoot = dirname(dirname(request.input.companyRoot));
+			await expect(readFile(join(request.input.companyRoot, ".git", "HEAD"), "utf-8")).resolves.toBe(
+				"ref: refs/heads/qorpera-runner\n",
+			);
+			await expect(
+				readFile(join(request.input.companyRoot, ".git", "refs", "heads", "qorpera-runner"), "utf-8"),
+			).resolves.toMatch(/^[0-9a-f]{40}\n$/);
 			await expect(readFile(join(request.input.companyBaseRoot, "company.md"), "utf-8")).resolves.toBe(
 				"# Exact company\n",
 			);

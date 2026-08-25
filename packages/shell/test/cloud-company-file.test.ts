@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -198,7 +199,7 @@ class MemoryCompanyFilePrimary implements CompanyFilePrimary {
 }
 
 async function temporaryDirectory(): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "qorpera-company-file-"));
+	const directory = await mkdtemp(join(realpathSync(tmpdir()), "qorpera-company-file-"));
 	temporaryDirectories.push(directory);
 	return directory;
 }

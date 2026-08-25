@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -76,7 +76,7 @@ describe("connector to artifact vertical", () => {
 	let capturedRequests: Array<Record<string, unknown>>;
 
 	beforeEach(() => {
-		root = mkdtempSync(join(tmpdir(), "qorpera-connector-artifact-"));
+		root = mkdtempSync(join(realpathSync(tmpdir()), "qorpera-connector-artifact-"));
 		scaffoldCompany(root);
 		writeFileSync(join(root, "authority.toml"), `[tools]\nhttp_request = "none"\n`, "utf-8");
 		capturedRequests = [];

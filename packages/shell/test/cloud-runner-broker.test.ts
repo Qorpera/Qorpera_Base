@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
@@ -266,7 +266,7 @@ class MemoryBrokerTransport implements CloudRunnerBrokerTransport {
 				environment_id: environmentId,
 				operation_type: "session_event",
 				entity_id: "12121212-1212-4212-8212-121212121212",
-				entity_version: 1,
+				entity_version: 0,
 				content_sha256: "e".repeat(64),
 				payload: { message: "immutable" },
 				actor_user_id: actorUserId,
@@ -493,7 +493,7 @@ function broker(transport = new MemoryBrokerTransport()): {
 }
 
 async function temporaryDirectory(): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "qorpera-runner-broker-test-"));
+	const directory = await mkdtemp(join(await realpath(tmpdir()), "qorpera-runner-broker-test-"));
 	temporaryDirectories.push(directory);
 	return directory;
 }
@@ -536,7 +536,7 @@ describe("cloud runner object broker", () => {
 		]);
 		currentSessionToken = "n".repeat(43);
 		await expect(current.listOperations((await current.describe()).version)).resolves.toMatchObject([
-			{ sequence: 2, payload: { message: "immutable" } },
+			{ sequence: 2, entityVersion: 0, payload: { message: "immutable" } },
 		]);
 		expect(memory.authorities).toMatchObject([
 			{ sessionToken, leaseToken, runnerId, jobId },
@@ -801,5 +801,231 @@ describe("cloud runner object broker", () => {
 		const request = transport.describe({ runnerId, jobId, sessionToken, leaseToken, signal: execution.signal });
 		execution.abort(new Error("job lease lost"));
 		await expect(request).rejects.toThrow("job lease lost");
+	});
+});
+
+describe("cloud runner broker transient retries", () => {
+	it("retries transient action statuses briefly and returns the recovered response", async () => {
+		vi.useFakeTimers();
+		try {
+			const statuses = [503, 429, 200];
+			let calls = 0;
+			const fetchImplementation = (async () => {
+				calls++;
+				const status = statuses.shift() ?? 200;
+				if (status !== 200) return new Response("shed", { status });
+				return Response.json({ value: { recovered: true } });
+			}) as typeof fetch;
+			const transport = new SupabaseCloudRunnerBrokerTransport(
+				"https://qorpera.example",
+				"publishable-key",
+				fetchImplementation,
+			);
+			const pending = transport.describe({ runnerId, jobId, sessionToken, leaseToken });
+			await vi.advanceTimersByTimeAsync(2_000);
+			await vi.advanceTimersByTimeAsync(4_000);
+			await expect(pending).resolves.toEqual({ recovered: true });
+			expect(calls).toBe(3);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("fails definitive action statuses without retrying", async () => {
+		let calls = 0;
+		const fetchImplementation = (async () => {
+			calls++;
+			return new Response("rejected", { status: 400 });
+		}) as typeof fetch;
+		const transport = new SupabaseCloudRunnerBrokerTransport(
+			"https://qorpera.example",
+			"publishable-key",
+			fetchImplementation,
+		);
+		await expect(transport.describe({ runnerId, jobId, sessionToken, leaseToken })).rejects.toThrow(
+			"Runner broker request (describe) failed (400)",
+		);
+		expect(calls).toBe(1);
+	});
+
+	it("retries transient object write statuses briefly", async () => {
+		vi.useFakeTimers();
+		try {
+			const bytes = new TextEncoder().encode("retried-write");
+			const sha = createHash("sha256").update(bytes).digest("hex");
+			const statuses = [502, 200];
+			let calls = 0;
+			const fetchImplementation = (async () => {
+				calls++;
+				const status = statuses.shift() ?? 200;
+				if (status !== 200) return new Response("shed", { status });
+				return Response.json({ value: { status: "stored", sha256: sha, bytes: bytes.byteLength } });
+			}) as typeof fetch;
+			const transport = new SupabaseCloudRunnerBrokerTransport(
+				"https://qorpera.example",
+				"publishable-key",
+				fetchImplementation,
+			);
+			const pending = transport.putObject(
+				{ runnerId, jobId, sessionToken, leaseToken },
+				sha,
+				bytes,
+				"application/octet-stream",
+				"company_file",
+			);
+			await vi.advanceTimersByTimeAsync(2_000);
+			await expect(pending).resolves.toBe("stored");
+			expect(calls).toBe(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not resend objects it has already proven durable in this run", async () => {
+		const current = broker();
+		const bytes = new TextEncoder().encode("durable-object");
+		const sha = createHash("sha256").update(bytes).digest("hex");
+		current.transport.objects.set(sha, Uint8Array.from(bytes));
+		const putsBefore = current.transport.objectPurposes.length;
+		await expect(current.broker.readObject(sha)).resolves.toEqual(Uint8Array.from(bytes));
+		await expect(current.broker.writeObject(sha, bytes, "application/octet-stream", "company_file")).resolves.toBe(
+			"stored",
+		);
+		expect(current.transport.objectPurposes.length).toBe(putsBefore);
+		const fresh = new TextEncoder().encode("fresh-object");
+		const freshSha = createHash("sha256").update(fresh).digest("hex");
+		await expect(
+			current.broker.writeObject(freshSha, fresh, "application/octet-stream", "company_file"),
+		).resolves.toBe("stored");
+		await expect(
+			current.broker.writeObject(freshSha, fresh, "application/octet-stream", "company_file"),
+		).resolves.toBe("stored");
+		expect(current.transport.objectPurposes.length).toBe(putsBefore + 1);
+	});
+});
+
+describe("cloud runner broker signed object reads", () => {
+	it("follows a broker signed URL and verifies the content hash it addressed", async () => {
+		const bytes = new TextEncoder().encode("signed-object-bytes");
+		const sha = createHash("sha256").update(bytes).digest("hex");
+		const urls: string[] = [];
+		const fetchImplementation = (async (url: unknown) => {
+			urls.push(String(url));
+			if (String(url).startsWith("https://storage.example/")) {
+				return new Response(Uint8Array.from(bytes).buffer, {
+					status: 200,
+					headers: { "content-type": "application/octet-stream" },
+				});
+			}
+			return Response.json({
+				value: {
+					transport: "signed-url",
+					signedUrl: "https://storage.example/object?token=opaque",
+					bytes: bytes.byteLength,
+					sha256: sha,
+				},
+			});
+		}) as typeof fetch;
+		const transport = new SupabaseCloudRunnerBrokerTransport(
+			"https://qorpera.example",
+			"publishable-key",
+			fetchImplementation,
+		);
+		await expect(transport.getObject({ runnerId, jobId, sessionToken, leaseToken }, sha)).resolves.toEqual(
+			Uint8Array.from(bytes),
+		);
+		expect(urls).toHaveLength(2);
+		expect(urls[1]).toBe("https://storage.example/object?token=opaque");
+	});
+
+	it("rejects signed URL downloads whose bytes do not match the addressed hash", async () => {
+		const bytes = new TextEncoder().encode("signed-object-bytes");
+		const sha = createHash("sha256").update(bytes).digest("hex");
+		const fetchImplementation = (async (url: unknown) => {
+			if (String(url).startsWith("https://storage.example/")) {
+				return new Response(new TextEncoder().encode("tampered").buffer as ArrayBuffer, {
+					status: 200,
+					headers: { "content-type": "application/octet-stream" },
+				});
+			}
+			return Response.json({
+				value: { transport: "signed-url", signedUrl: "https://storage.example/object", bytes: 8, sha256: sha },
+			});
+		}) as typeof fetch;
+		const transport = new SupabaseCloudRunnerBrokerTransport(
+			"https://qorpera.example",
+			"publishable-key",
+			fetchImplementation,
+		);
+		await expect(transport.getObject({ runnerId, jobId, sessionToken, leaseToken }, sha)).rejects.toThrow(
+			"SHA-256 integrity verification",
+		);
+	});
+});
+
+describe("cloud runner broker incident-scale retry budgets", () => {
+	it("rides out minutes of shedding on the durable object path", async () => {
+		vi.useFakeTimers();
+		try {
+			const bytes = new TextEncoder().encode("incident-survivor");
+			const sha = createHash("sha256").update(bytes).digest("hex");
+			let calls = 0;
+			const fetchImplementation = (async () => {
+				calls++;
+				if (calls <= 6) return new Response("shed", { status: 503 });
+				return Response.json({ value: { status: "stored", sha256: sha, bytes: bytes.byteLength } });
+			}) as typeof fetch;
+			const transport = new SupabaseCloudRunnerBrokerTransport(
+				"https://qorpera.example",
+				"publishable-key",
+				fetchImplementation,
+			);
+			const pending = transport.putObject(
+				{ runnerId, jobId, sessionToken, leaseToken },
+				sha,
+				bytes,
+				"application/octet-stream",
+				"company_file",
+			);
+			for (const delay of [2_000, 4_000, 6_000, 8_000, 10_000, 10_000]) {
+				await vi.advanceTimersByTimeAsync(delay);
+			}
+			await expect(pending).resolves.toBe("stored");
+			expect(calls).toBe(7);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps cadence-sensitive actions inside the short budget", async () => {
+		vi.useFakeTimers();
+		try {
+			let calls = 0;
+			const fetchImplementation = (async () => {
+				calls++;
+				return new Response("shed", { status: 503 });
+			}) as typeof fetch;
+			const transport = new SupabaseCloudRunnerBrokerTransport(
+				"https://qorpera.example",
+				"publishable-key",
+				fetchImplementation,
+			);
+			const pending = transport
+				.renewNativeAuthority(
+					{ runnerId, jobId, sessionToken, leaseToken },
+					"55555555-5555-4555-8555-555555555555",
+					120,
+				)
+				.then(
+					() => "resolved",
+					(error: unknown) => String(error),
+				);
+			await vi.advanceTimersByTimeAsync(30_000);
+			const outcome = await pending;
+			expect(outcome).toContain("Runner broker request (renew_native_authority) failed (503)");
+			expect(calls).toBeLessThanOrEqual(4);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

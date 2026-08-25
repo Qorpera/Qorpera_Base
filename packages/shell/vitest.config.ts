@@ -7,6 +7,12 @@ export default defineConfig({
 	},
 	resolve: {
 		alias: {
+			"@qorpera/company/company-runtime-lock": fileURLToPath(
+				new URL("../company/src/company-runtime-lock.ts", import.meta.url),
+			),
+			"@qorpera/pi-coding-agent/company": fileURLToPath(
+				new URL("../coding-agent/src/core/company.ts", import.meta.url),
+			),
 			"@qorpera/pi-coding-agent/company-operation-broker": fileURLToPath(
 				new URL("../coding-agent/src/core/company-operation-broker-client.ts", import.meta.url),
 			),
