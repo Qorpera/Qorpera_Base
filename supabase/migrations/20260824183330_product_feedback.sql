@@ -14,13 +14,10 @@ create table public.qorpera_product_feedback (
   updated_at timestamptz not null default now(),
   unique (user_id, client_feedback_id)
 );
-
 create index qorpera_product_feedback_status_created_idx
   on public.qorpera_product_feedback (status, created_at desc);
-
 alter table public.qorpera_product_feedback enable row level security;
 revoke all on table public.qorpera_product_feedback from anon, authenticated;
-
 create or replace function public.qorpera_submit_product_feedback(
   p_client_feedback_id uuid,
   p_category text,
@@ -89,6 +86,5 @@ begin
   return feedback_id;
 end;
 $$;
-
 revoke all on function public.qorpera_submit_product_feedback(uuid, text, text, boolean, jsonb) from public;
 grant execute on function public.qorpera_submit_product_feedback(uuid, text, text, boolean, jsonb) to authenticated;

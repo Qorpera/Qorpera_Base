@@ -271,8 +271,21 @@ export async function checkpointCloudCompanyWorkspace(
 		name: input.workspaceName,
 		...(input.baseSnapshotId ? { baseSnapshotId: input.baseSnapshotId } : {}),
 	});
+	const tree = await captureCloudCompanyTree(input.companyRoot, input.profileId, input.objects, {
+		...(input.runtimeLock ? { runtimeLock: input.runtimeLock } : {}),
+		userData: input.userData,
+	});
 	if (state.binding.pending) {
-		const pending = state.binding.pending;
+		/* An interrupted checkpoint may have staged its pending tree without
+		 * completing every object upload. The capture above re-stages the
+		 * current tree content-addressed, so committing is safe again; a
+		 * pending tree that no longer matches the local files is replaced
+		 * rather than published over newer local work. */
+		let pending = state.binding.pending;
+		if (!sameTree(pending.tree, tree)) {
+			state.discard(pending.clientSnapshotId);
+			pending = state.stage(tree, workspace.headSnapshotId);
+		}
 		try {
 			const snapshot = await input.primary.commitCompanySnapshot({
 				workspaceId: workspace.workspaceId,
@@ -292,10 +305,6 @@ export async function checkpointCloudCompanyWorkspace(
 			throw new Error("Cloud company workspace head changed on another computer", { cause: error });
 		}
 	}
-	const tree = await captureCloudCompanyTree(input.companyRoot, input.profileId, input.objects, {
-		...(input.runtimeLock ? { runtimeLock: input.runtimeLock } : {}),
-		userData: input.userData,
-	});
 	const completed = state.binding.lastCheckpoint;
 	if (completed) {
 		if (workspace.headSnapshotId !== completed.snapshotId) {

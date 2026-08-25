@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -19,7 +20,7 @@ async function layout(): Promise<{
 	artifactsRoot: string;
 	outputRoot: string;
 }> {
-	const root = await mkdtemp(join(tmpdir(), "qorpera-container-contract-test-"));
+	const root = await mkdtemp(join(realpathSync(tmpdir()), "qorpera-container-contract-test-"));
 	temporaryDirectories.push(root);
 	const input = join(root, "input");
 	const companyBaseRoot = join(input, "company");
@@ -122,7 +123,12 @@ describe("cloud runner container contract", () => {
 		async () => {
 			const hostPaths = await layout();
 			const requestId = "34343434-3434-4434-8434-343434343434";
-			const socketPath = join(dirname(hostPaths.outputRoot), "model.sock");
+			/* The layout root resolves under /private/var/folders, which is too
+			 * long for the portable Unix socket limit; the socket gets its own
+			 * short-lived directory under /tmp instead. */
+			const socketRoot = await mkdtemp(join(realpathSync("/tmp"), "q-sock-"));
+			temporaryDirectories.push(socketRoot);
+			const socketPath = join(socketRoot, "model.sock");
 			const modelSocket = await startCloudRunnerModelSocketServer({
 				socketPath,
 				broker: {

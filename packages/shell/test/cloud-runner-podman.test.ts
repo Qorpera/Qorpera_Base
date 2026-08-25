@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { JsonValue } from "@qorpera/pi-protocol";
@@ -89,7 +89,7 @@ function runtimeInfo(rootless = true): string {
 }
 
 async function sandboxRequest(): Promise<CloudRunnerSandboxRequest> {
-	const root = await mkdtemp(join(tmpdir(), "qorpera-podman-test-"));
+	const root = await mkdtemp(join(await realpath(tmpdir()), "qorpera-podman-test-"));
 	temporaryDirectories.push(root);
 	const inputRoot = join(root, "input");
 	const companyBaseRoot = join(inputRoot, "company");
@@ -180,11 +180,12 @@ describe("rootless Podman cloud runner", () => {
 			completed(commandResult("true\n")),
 			completed(commandResult()),
 			completed(commandResult()),
+			completed(commandResult()),
 		);
 		const processHandle = await backend(commands).start(request);
 
 		await expect(processHandle.result).resolves.toEqual({ status: "ok" });
-		expect(commands.calls).toHaveLength(6);
+		expect(commands.calls).toHaveLength(7);
 		expect(commands.calls[0]?.args).toEqual(["info", "--format", "json"]);
 		expect(commands.calls[1]?.args).toEqual([
 			"ps",
@@ -257,6 +258,7 @@ describe("rootless Podman cloud runner", () => {
 			"--ignore",
 			expect.stringMatching(/^qorpera-job-[0-9a-f-]{36}$/),
 		]);
+		expect(commands.calls[6]?.args.slice(0, 3)).toEqual(["unshare", "chown", "-R"]);
 	});
 
 	it("force-removes the container before cancellation completes", async () => {
@@ -267,6 +269,7 @@ describe("rootless Podman cloud runner", () => {
 			completed(commandResult(runtimeInfo())),
 			completed(commandResult()),
 			running,
+			completed(commandResult()),
 			completed(commandResult()),
 		);
 		const processHandle = await backend(commands).start(request);
@@ -295,6 +298,7 @@ describe("rootless Podman cloud runner", () => {
 			completed(commandResult("true\n")),
 			completed(commandResult()),
 			completed(commandResult()),
+			completed(commandResult()),
 		);
 		const close = vi.fn(async () => undefined);
 		const modelSocketFactory = vi.fn(async (options: Parameters<CloudRunnerModelSocketFactory>[0]) => ({
@@ -319,7 +323,7 @@ describe("rootless Podman cloud runner", () => {
 	});
 
 	it("removes only owned stale containers and workspaces during startup", async () => {
-		const temporaryRoot = await mkdtemp(join(tmpdir(), "qorpera-podman-cleanup-test-"));
+		const temporaryRoot = await mkdtemp(join(await realpath(tmpdir()), "qorpera-podman-cleanup-test-"));
 		temporaryDirectories.push(temporaryRoot);
 		const staleWorkspace = join(temporaryRoot, "qorpera-runner-AbC123");
 		const unrelatedWorkspace = join(temporaryRoot, "keep-me");

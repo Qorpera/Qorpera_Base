@@ -1,5 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
 import { FileRunnerOrchestratorControlTokenStore } from "./control-token-store.ts";
+import { nodeHttpFetch } from "./node-http-fetch.ts";
 import { CloudRunnerOrchestrator, SupabaseCloudRunnerOrchestratorControlPlane } from "./orchestrator.ts";
 import { HttpCloudRunnerProviderAdapter } from "./provider-http.ts";
 
@@ -93,7 +94,7 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 }
 
 export async function runCloudRunnerOrchestratorService(options: CloudRunnerOrchestratorServiceOptions): Promise<void> {
-	const transport = options.fetchImplementation ?? fetch;
+	const transport = options.fetchImplementation ?? nodeHttpFetch;
 	const controlTokenStore = new FileRunnerOrchestratorControlTokenStore(options.config.orchestratorControlStatePath);
 	const controlTokens = await controlTokenStore.load(options.config.orchestratorControlToken);
 	const controlPlane = new SupabaseCloudRunnerOrchestratorControlPlane(

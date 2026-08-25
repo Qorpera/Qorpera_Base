@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEphemeralCloudRunnerServiceConfig, runEphemeralCloudRunnerService } from "./cloud-runner-service.ts";
@@ -48,7 +49,7 @@ export async function runEphemeralCloudRunnerServiceMain(environment: NodeJS.Pro
 }
 
 const executablePath = process.argv[1];
-if (executablePath && resolve(executablePath) === fileURLToPath(import.meta.url)) {
+if (executablePath && realpathSync(resolve(executablePath)) === realpathSync(fileURLToPath(import.meta.url))) {
 	runEphemeralCloudRunnerServiceMain().catch((error: unknown) => {
 		console.error(safeCloudRunnerServiceError(error));
 		process.exitCode = 1;

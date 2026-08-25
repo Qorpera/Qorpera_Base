@@ -143,6 +143,41 @@ interface LoginState {
 
 type NativeHarnessChild = ChildProcessByStdio<null, Readable, Readable> | ChildProcessWithoutNullStreams;
 
+async function grantWorkspaceGroupAccess(root: string): Promise<void> {
+	/* The workspace mixes runner-owned materialized entries with entries the
+	 * harness created as this process's user. Only the latter need (or
+	 * permit) a mode change; chmod on a foreign-owned entry raises EPERM,
+	 * so restrict the walk to entries this process owns. */
+	/* The host service umask already lands harness output group-shared;
+	 * this walk only repairs stragglers, so no single entry — vanished,
+	 * foreign-owned, or unreadable — may fail the attempt. */
+	const ownUid = process.getuid?.();
+	const pending = [root];
+	while (pending.length > 0) {
+		const current = pending.pop() as string;
+		let metadata: Awaited<ReturnType<typeof lstat>>;
+		try {
+			metadata = await lstat(current);
+		} catch {
+			continue;
+		}
+		if (metadata.isSymbolicLink()) continue;
+		const owned = ownUid === undefined || metadata.uid === ownUid;
+		if (metadata.isDirectory()) {
+			if (owned) await chmod(current, metadata.mode | 0o050).catch(() => undefined);
+			let entries: string[];
+			try {
+				entries = await readdir(current);
+			} catch {
+				continue;
+			}
+			for (const entry of entries) pending.push(join(current, entry));
+			continue;
+		}
+		if (metadata.isFile() && owned) await chmod(current, metadata.mode | 0o040).catch(() => undefined);
+	}
+}
+
 function requiredUuid(value: string, label: string): void {
 	if (!UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
 }
@@ -194,6 +229,7 @@ function cleanHarnessEnvironment(identityRoot: string): NodeJS.ProcessEnv {
 		PATH: process.env.PATH ?? "",
 		NO_COLOR: "1",
 		BROWSER: "echo",
+		DISABLE_AUTOUPDATER: "1",
 	};
 	for (const key of ["SystemRoot", "ComSpec", "PATHEXT", "WINDIR"]) {
 		if (process.env[key]) environment[key] = process.env[key];
@@ -201,9 +237,21 @@ function cleanHarnessEnvironment(identityRoot: string): NodeJS.ProcessEnv {
 	return environment;
 }
 
-async function collectCapsuleFiles(root: string): Promise<CapsuleArchive> {
+async function prepareHarnessEnvironment(identityRoot: string): Promise<NodeJS.ProcessEnv> {
+	await Promise.all(
+		["home", "codex", "claude", join("xdg", "config"), join("xdg", "data"), join("xdg", "cache")].map((path) =>
+			mkdir(join(identityRoot, path), { recursive: true, mode: 0o700 }),
+		),
+	);
+	return cleanHarnessEnvironment(identityRoot);
+}
+
+async function collectCapsuleFiles(root: string, durablePaths?: ReadonlySet<string>): Promise<CapsuleArchive> {
 	const files: CapsuleFile[] = [];
 	let totalBytes = 0;
+	const durablePathList = durablePaths === undefined ? undefined : [...durablePaths];
+	const containsDurableFile = (path: string): boolean =>
+		durablePathList === undefined || durablePathList.some((durablePath) => durablePath.startsWith(`${path}/`));
 	const visit = async (directory: string): Promise<void> => {
 		const entries = await readdir(directory, { withFileTypes: true });
 		entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
@@ -212,12 +260,17 @@ async function collectCapsuleFiles(root: string): Promise<CapsuleArchive> {
 			const relativePath = relative(root, absolute).split(sep).join("/");
 			if (!safeRelativePath(relativePath)) throw new Error("Credential capsule contains an invalid path");
 			const metadata = await lstat(absolute);
-			if (metadata.isSymbolicLink()) throw new Error("Credential capsule cannot contain symbolic links");
+			// Official CLIs may create compatibility aliases such as ~/.codex ->
+			// $CODEX_HOME. Never follow or reproduce those links: the canonical
+			// credential directory is already captured as ordinary files.
+			if (metadata.isSymbolicLink()) continue;
 			if (metadata.isDirectory()) {
+				if (!containsDurableFile(relativePath)) continue;
 				await visit(absolute);
 				continue;
 			}
 			if (!metadata.isFile()) throw new Error("Credential capsule contains an unsupported entry");
+			if (durablePaths !== undefined && !durablePaths.has(relativePath)) continue;
 			totalBytes += metadata.size;
 			if (files.length >= MAX_CAPSULE_FILES || totalBytes > MAX_CAPSULE_PLAINTEXT_BYTES) {
 				throw new Error("Credential capsule exceeds its storage budget");
@@ -268,13 +321,68 @@ function capsuleKey(value: string): Buffer {
 	return key;
 }
 
+function credentialSealingFailure(error: unknown): string {
+	if (!(error instanceof Error)) return "unknown";
+	for (const [message, reason] of [
+		["Credential capsule contains an invalid path", "invalid-path"],
+		["Credential capsule cannot contain symbolic links", "symbolic-link"],
+		["Credential capsule contains an unsupported entry", "unsupported-entry"],
+		["Credential capsule exceeds its storage budget", "storage-budget"],
+	] as const) {
+		if (error.message === message) return reason;
+	}
+	return harnessExecutionFailureCategory(error);
+}
+
+function harnessExecutionFailureCategory(error: unknown): string {
+	if (!(error instanceof Error)) return "unknown";
+	const code = (error as NodeJS.ErrnoException).code;
+	if (
+		error.name === "AbortError" ||
+		code === "ABORT_ERR" ||
+		["Native execution cancelled", "Native execution stopped", "Native provider host stopped"].includes(error.message)
+	) {
+		return "cancelled";
+	}
+	if (error.name === "TimeoutError" || code === "ETIMEDOUT") return "timeout";
+	if (code === "ENOENT" || code === "ENOTDIR") return "filesystem-not-found";
+	if (code === "EACCES" || code === "EPERM") return "filesystem-permission";
+	if (code === "EROFS") return "filesystem-read-only";
+	if (code === "EISDIR" || code === "ENOTEMPTY") return "filesystem-layout";
+	if (code === "ENOSPC") return "resource-capacity";
+	if (code === "EMFILE" || code === "ENFILE") return "resource-file-descriptors";
+	if (code === "ENOMEM") return "resource-memory";
+	if (code === "EPIPE" || code === "ERR_STREAM_WRITE_AFTER_END") return "process-pipe";
+	return "unknown";
+}
+
+function safeHarnessExecutionFailure(error: unknown): Error {
+	if (
+		error instanceof Error &&
+		(/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
+			error.message,
+		) ||
+			/^Codex returned no assistant response(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
+				error.message,
+			) ||
+			error.message === "Provider harness output exceeded its byte limit")
+	) {
+		return error;
+	}
+	return new Error(
+		`Native provider execution harness-execution stage failed (${harnessExecutionFailureCategory(error)})`,
+		{ cause: error },
+	);
+}
+
 export async function sealNativeCredentialCapsule(
 	root: string,
 	keyValue: string,
 	capsuleId: string,
+	durablePaths?: ReadonlySet<string>,
 ): Promise<Uint8Array> {
 	requiredUuid(capsuleId, "Credential capsule id");
-	const archive = await collectCapsuleFiles(requiredAbsolutePath(root, "Credential capsule root"));
+	const archive = await collectCapsuleFiles(requiredAbsolutePath(root, "Credential capsule root"), durablePaths);
 	const plaintext = Buffer.from(JSON.stringify(archive), "utf-8");
 	if (plaintext.byteLength > MAX_CAPSULE_PLAINTEXT_BYTES)
 		throw new Error("Credential capsule exceeds its storage budget");
@@ -332,16 +440,75 @@ function collectChildOutput(child: NativeHarnessChild): {
 			child.once("error", reject);
 			child.once("close", (code, signal) => {
 				if (exceeded) reject(new Error("Provider harness output exceeded its byte limit"));
-				else if (code !== 0) reject(new Error(`Provider harness exited with ${code ?? signal ?? "failure"}`));
-				else resolveChild();
+				else if (code !== 0) {
+					const category = nativeHarnessFailureCategory(output);
+					reject(
+						new Error(
+							`Provider harness exited with ${code ?? signal ?? "failure"}${category ? ` (${category})` : ""}`,
+						),
+					);
+				} else resolveChild();
 			});
 		}),
 	};
 }
 
+function nativeHarnessFailureCategory(output: string): string | undefined {
+	const diagnostics: string[] = [];
+	for (const line of output.split(/\r?\n/)) {
+		if (!line.trim()) continue;
+		try {
+			const event = JSON.parse(line) as Record<string, unknown>;
+			if (event.type === "error" && typeof event.message === "string") diagnostics.push(event.message);
+			if (event.type === "turn.failed" && event.error && typeof event.error === "object") {
+				const message = (event.error as Record<string, unknown>).message;
+				if (typeof message === "string") diagnostics.push(message);
+			}
+			if (event.type === "item.completed" && event.item && typeof event.item === "object") {
+				const item = event.item as Record<string, unknown>;
+				if (item.type === "error" && typeof item.message === "string") diagnostics.push(item.message);
+			}
+		} catch {
+			// Startup failures can be plain stderr. The text is classified below but is never emitted.
+			diagnostics.push(line);
+		}
+	}
+	const detail = diagnostics.join("\n").toLowerCase();
+	if (!detail) return undefined;
+	if (/unauthori[sz]ed|authentication|not logged in|login required|status(?: code)? 401|\b401\b/.test(detail)) {
+		return "authentication unavailable";
+	}
+	if (/model .*(?:not found|unsupported|unavailable)|unknown model|invalid model/.test(detail)) {
+		return "model unavailable";
+	}
+	if (/not supported (?:for|on) (?:this )?model|unsupported (?:parameter|option)/.test(detail)) {
+		return "model unavailable";
+	}
+	if (/rate.?limit|quota|insufficient_quota|too many requests|status(?: code)? 429|\b429\b/.test(detail)) {
+		return "provider capacity unavailable";
+	}
+	if (/network|timed? out|timeout|connection|dns|tls|certificate|socket|status(?: code)? 50[234]/.test(detail)) {
+		return "provider network unavailable";
+	}
+	if (/sandbox|workspace|permission denied|operation not permitted|read-only file system/.test(detail)) {
+		return "local sandbox unavailable";
+	}
+	if (/bad request|invalid request|unprocessable|status(?: code)? 4(?:00|04|22)/.test(detail)) {
+		return "provider request unavailable";
+	}
+	return undefined;
+}
+
 function interactionFromOutput(output: string): NativeHarnessLoginPrompt {
-	const interactionUrl = output.match(/https:\/\/[^\s<>'"`]+/i)?.[0]?.replace(/[),.;]+$/, "");
-	const explicitCode = output.match(/(?:code|enter)\s*[:=]?\s*([A-Z0-9-]{4,64})/i)?.[1];
+	const ansiCsiPattern = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
+	const plainOutput = output.replace(ansiCsiPattern, "");
+	const interactionUrl = plainOutput.match(/https:\/\/[^\s<>'"`]+/i)?.[0]?.replace(/[),.;]+$/, "");
+	const standaloneCode = plainOutput
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.find((line) => /^[A-Z0-9]{2,32}(?:-[A-Z0-9]{2,32})+$/.test(line));
+	const labeledCode = plainOutput.match(/(?:code|enter)\s*[:=]\s*([A-Z0-9-]{4,64})/i)?.[1];
+	const explicitCode = standaloneCode ?? labeledCode;
 	return {
 		...(interactionUrl ? { interactionUrl } : {}),
 		...(explicitCode ? { userCode: explicitCode } : {}),
@@ -378,12 +545,12 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 		signal?: AbortSignal,
 	): Promise<NativeHarnessLoginHandle> {
 		const root = requiredAbsolutePath(identityRoot, "Native identity root");
-		await mkdir(join(root, "home"), { recursive: true, mode: 0o700 });
+		const environment = await prepareHarnessEnvironment(root);
 		const command = harness === "codex-cli" ? this.#codexPath : this.#claudePath;
 		const args = harness === "codex-cli" ? ["login", "--device-auth"] : ["auth", "login", "--claudeai"];
 		const child = spawn(command, args, {
 			cwd: root,
-			env: cleanHarnessEnvironment(root),
+			env: environment,
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
 		});
@@ -413,7 +580,7 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			const statusArgs = harness === "codex-cli" ? ["login", "status"] : ["auth", "status"];
 			const status = spawn(command, statusArgs, {
 				cwd: root,
-				env: cleanHarnessEnvironment(root),
+				env: environment,
 				stdio: ["ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});
@@ -434,11 +601,12 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 	async execute(input: NativeHarnessExecutionInput): Promise<{ text: string; providerSessionId?: string }> {
 		const root = requiredAbsolutePath(input.identityRoot, "Native identity root");
 		const companyRoot = requiredAbsolutePath(input.companyRoot, "Native Company File root");
+		const environment = await prepareHarnessEnvironment(root);
 		if (!input.model.trim() || input.model.length > 160 || /[\0\r\n]/.test(input.model)) {
 			throw new Error("Native model is invalid");
 		}
 		if (Buffer.byteLength(input.prompt) > MAX_PROMPT_BYTES) throw new Error("Native prompt exceeds its byte limit");
-		const lastMessagePath = join(root, "last-message.txt");
+		const lastMessagePath = join(root, `.qorpera-last-message-${randomUUID()}.txt`);
 		const command = input.harness === "codex-cli" ? this.#codexPath : this.#claudePath;
 		const modelArgs = input.model === PROVIDER_DEFAULT_MODEL ? [] : ["--model", input.model];
 		const args =
@@ -459,7 +627,7 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 				: ["--print", "--output-format", "json", "--permission-mode", "auto", "--safe-mode", ...modelArgs];
 		const child = spawn(command, args, {
 			cwd: companyRoot,
-			env: cleanHarnessEnvironment(root),
+			env: environment,
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
 		});
@@ -471,11 +639,22 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 		child.stdin.end(input.prompt, "utf-8");
 		try {
 			await capture.completed;
-		} finally {
-			input.signal?.removeEventListener("abort", abort);
-		}
-		if (input.harness === "codex-cli") {
-			const text = (await readFile(lastMessagePath, "utf-8")).trim();
+			if (input.harness !== "codex-cli") {
+				const output = JSON.parse(capture.output()) as Record<string, unknown>;
+				if (typeof output.result !== "string" || !output.result.trim()) {
+					throw new Error("Claude Code returned no assistant response");
+				}
+				return {
+					text: output.result.trim(),
+					...(typeof output.session_id === "string" ? { providerSessionId: output.session_id } : {}),
+				};
+			}
+			let text = "";
+			try {
+				text = (await readFile(lastMessagePath, "utf-8")).trim();
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
 			let providerSessionId: string | undefined;
 			for (const line of capture.output().split(/\r?\n/)) {
 				if (!line.trim()) continue;
@@ -488,17 +667,15 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 					// The official CLI may emit non-JSON diagnostics alongside JSONL events.
 				}
 			}
-			if (!text) throw new Error("Codex returned no assistant response");
+			if (!text) {
+				const category = nativeHarnessFailureCategory(capture.output());
+				throw new Error(`Codex returned no assistant response${category ? ` (${category})` : ""}`);
+			}
 			return { text, ...(providerSessionId ? { providerSessionId } : {}) };
+		} finally {
+			input.signal?.removeEventListener("abort", abort);
+			await rm(lastMessagePath, { force: true });
 		}
-		const output = JSON.parse(capture.output()) as Record<string, unknown>;
-		if (typeof output.result !== "string" || !output.result.trim()) {
-			throw new Error("Claude Code returned no assistant response");
-		}
-		return {
-			text: output.result.trim(),
-			...(typeof output.session_id === "string" ? { providerSessionId: output.session_id } : {}),
-		};
 	}
 }
 
@@ -566,6 +743,7 @@ export class NativeProviderHost {
 	readonly #capsules: NativeCredentialCapsuleStore;
 	readonly #harness: NativeHarnessDriver;
 	readonly #masterKey: string;
+	readonly #computeIdentityId: string;
 	readonly #temporaryRoot: string;
 	readonly #logins = new Map<string, LoginState>();
 
@@ -574,13 +752,16 @@ export class NativeProviderHost {
 		capsules: NativeCredentialCapsuleStore;
 		harness: NativeHarnessDriver;
 		masterKey: string;
+		computeIdentityId: string;
 		temporaryRoot?: string;
 	}) {
 		capsuleKey(options.masterKey);
+		requiredUuid(options.computeIdentityId, "Native host Compute Identity id");
 		this.#controlPlane = options.controlPlane;
 		this.#capsules = options.capsules;
 		this.#harness = options.harness;
 		this.#masterKey = options.masterKey;
+		this.#computeIdentityId = options.computeIdentityId;
 		this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
 	}
 
@@ -588,6 +769,9 @@ export class NativeProviderHost {
 		requiredUuid(request.loginId, "Native login id");
 		requiredUuid(request.clientConnectionId, "Native client connection id");
 		requiredUuid(request.computeIdentityId, "Native compute identity id");
+		if (request.computeIdentityId !== this.#computeIdentityId) {
+			throw new Error("Native login names another Compute Identity");
+		}
 		if (
 			!TOKEN_PATTERN.test(request.capability) ||
 			!Number.isFinite(Date.parse(request.expiresAt)) ||
@@ -631,6 +815,7 @@ export class NativeProviderHost {
 		void this.#finishLogin(state).catch((error: unknown) => {
 			state.status = "failed";
 			state.error = error instanceof Error ? error : new Error(String(error));
+			console.error(state.error.message);
 		});
 		return {
 			schema: LOGIN_RESULT_SCHEMA,
@@ -653,6 +838,9 @@ export class NativeProviderHost {
 			["Native job id", request.job.jobId],
 		] as const)
 			requiredUuid(value, label);
+		if (authority.computeIdentityId !== this.#computeIdentityId) {
+			throw new Error("Native execution names another Compute Identity");
+		}
 		if (
 			request.job.jobType !== "agent_turn" ||
 			request.job.requiredCapability !== "agent_turn" ||
@@ -668,7 +856,12 @@ export class NativeProviderHost {
 		const externalAbort = (): void => executionAbort.abort(signal?.reason ?? new Error("Native execution stopped"));
 		if (signal?.aborted) externalAbort();
 		else signal?.addEventListener("abort", externalAbort, { once: true });
-		await this.#controlPlane.validateExecution(request, executionAbort.signal);
+		let stage = "initial-authority-validation";
+		try {
+			await this.#controlPlane.validateExecution(request, executionAbort.signal);
+		} catch (error) {
+			throw new Error(`Native provider execution ${stage} stage failed`, { cause: error });
+		}
 		const validationStop = new AbortController();
 		let validationError: unknown;
 		const validationSignal = AbortSignal.any([executionAbort.signal, validationStop.signal]);
@@ -683,15 +876,20 @@ export class NativeProviderHost {
 				}
 			}
 		})();
-		const root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
+		let root: string | undefined;
+		let output: JsonValue | undefined;
+		let failure: Error | undefined;
 		try {
-			await openNativeCredentialCapsule(
-				await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal),
-				root,
-				this.#masterKey,
-				authority.credentialCapsuleId,
-			);
+			stage = "temporary-workspace";
+			root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
+			stage = "credential-download";
+			const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
+			stage = "credential-opening";
+			await openNativeCredentialCapsule(capsule, root, this.#masterKey, authority.credentialCapsuleId);
+			const durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
+			stage = "prompt-materialization";
 			const context = await executionPrompt(request);
+			stage = "harness-execution";
 			const result = await this.#harness.execute({
 				harness: authority.nativeHarness,
 				model: authority.model,
@@ -700,14 +898,26 @@ export class NativeProviderHost {
 				prompt: context.prompt,
 				signal: executionAbort.signal,
 			});
+			/* The harness runs as this host's user; entries it creates carry
+			 * no group bits, and the runner reads the shared workspace only
+			 * through the shared execution group. Grant group traversal on
+			 * everything under the company root so output capture and review
+			 * can read every created entry. */
+			stage = "workspace-normalization";
+			await grantWorkspaceGroupAccess(request.input.companyRoot);
+			stage = "completion-authority-validation";
 			if (validationError) throw validationError;
 			await this.#controlPlane.validateExecution(request, executionAbort.signal);
-			await this.#capsules.put(
-				authority.encryptedCapsuleReference,
-				await sealNativeCredentialCapsule(root, this.#masterKey, authority.credentialCapsuleId),
-				executionAbort.signal,
+			stage = "credential-sealing";
+			const refreshedCapsule = await sealNativeCredentialCapsule(
+				root,
+				this.#masterKey,
+				authority.credentialCapsuleId,
+				durableCredentialPaths,
 			);
-			return {
+			stage = "credential-upload";
+			await this.#capsules.put(authority.encryptedCapsuleReference, refreshedCapsule, executionAbort.signal);
+			output = {
 				schema: HARNESS_RESULT_SCHEMA,
 				assistant_entry: {
 					type: "message",
@@ -721,20 +931,61 @@ export class NativeProviderHost {
 				},
 				provider_session_id: result.providerSessionId ?? null,
 			};
+		} catch (error) {
+			if (stage === "harness-execution") {
+				if (validationError) {
+					failure = new Error("Native provider execution completion-authority-validation stage failed", {
+						cause: validationError,
+					});
+				} else {
+					failure = safeHarnessExecutionFailure(error);
+				}
+			} else {
+				const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
+				failure = new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
+			}
 		} finally {
 			validationStop.abort();
-			await monitor;
+			try {
+				await monitor;
+			} catch (error) {
+				failure ??= new Error(
+					`Native provider execution authority-monitor stage failed (${harnessExecutionFailureCategory(error)})`,
+					{ cause: error },
+				);
+			}
 			signal?.removeEventListener("abort", externalAbort);
-			await rm(root, { recursive: true, force: true });
+			/* A failed or fenced attempt still leaves partial output that the
+			 * durable review path must be able to read; normalize best-effort
+			 * without masking the original failure. */
+			if (failure) await grantWorkspaceGroupAccess(request.input.companyRoot).catch(() => undefined);
+			if (root) {
+				try {
+					await rm(root, { recursive: true, force: true });
+				} catch (error) {
+					failure ??= new Error(
+						`Native provider execution cleanup stage failed (${harnessExecutionFailureCategory(error)})`,
+						{ cause: error },
+					);
+				}
+			}
 		}
+		if (failure) throw failure;
+		if (!output) throw new Error("Native provider execution internal-completion stage failed");
+		return output;
 	}
 
 	async #finishLogin(state: LoginState): Promise<void> {
+		let stage = "harness-completion";
 		try {
 			const completed = await state.handle.completed;
 			const capsuleId = randomUUID();
 			const reference = `native-capsule/${capsuleId}`;
-			await this.#capsules.put(reference, await sealNativeCredentialCapsule(state.root, this.#masterKey, capsuleId));
+			stage = "credential-sealing";
+			const capsule = await sealNativeCredentialCapsule(state.root, this.#masterKey, capsuleId);
+			stage = "credential-upload";
+			await this.#capsules.put(reference, capsule);
+			stage = "control-plane-commit";
 			await this.#controlPlane.completeLogin({
 				loginId: state.request.loginId,
 				capability: state.request.capability,
@@ -746,6 +997,9 @@ export class NativeProviderHost {
 					: {}),
 			});
 			state.status = "completed";
+		} catch (error) {
+			const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
+			throw new Error(`Native provider login ${stage} stage failed${reason}`, { cause: error });
 		} finally {
 			await rm(state.root, { recursive: true, force: true });
 		}

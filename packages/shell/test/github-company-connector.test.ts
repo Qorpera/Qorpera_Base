@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
@@ -18,7 +18,7 @@ describe("built-in GitHub company connector", () => {
 	let root: string;
 
 	beforeEach(() => {
-		root = mkdtempSync(join(tmpdir(), "qorpera-github-connector-"));
+		root = mkdtempSync(join(realpathSync(tmpdir()), "qorpera-github-connector-"));
 		scaffoldCompany(root);
 	});
 

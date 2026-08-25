@@ -48,6 +48,13 @@ const RUNNER_TRANSCRIPT_ENTRY_SCHEMA = "qorpera.runner-transcript-entry/v1";
 const REACHABILITY_BATCH_SIZE = 500;
 const VERIFICATION_RETRY_DELAY_MS = 25;
 const BROKER_REQUEST_TIMEOUT_MS = 5 * 60_000;
+/* Wall-clock budgets for transient broker retries. The short budget keeps
+ * cadence-sensitive calls (renewals, listings) inside their renewal rhythm;
+ * the durable budget lets object transfer and the completion path ride out a
+ * platform incident measured in minutes rather than losing a finished
+ * attempt to it. */
+const TRANSIENT_RETRY_BUDGET_MS = 20_000;
+const DURABLE_RETRY_BUDGET_MS = 150_000;
 
 export interface CloudRunnerBrokerAuthority {
 	runnerId: string;
@@ -880,7 +887,7 @@ function parseOperation(value: unknown): HostedCompanyOperation {
 		...(environmentId ? { environmentId } : {}),
 		operationType: operationType(input.operation_type),
 		entityId: uuid(input.entity_id, "company operation entity id"),
-		entityVersion: integer(input.entity_version, "company operation entity version", 1, Number.MAX_SAFE_INTEGER),
+		entityVersion: integer(input.entity_version, "company operation entity version", 0, Number.MAX_SAFE_INTEGER),
 		contentSha256: sha256(input.content_sha256, "company operation content hash"),
 		payload: json(input.payload, "company operation payload"),
 		actorUserId: uuid(input.actor_user_id, "company operation actor id"),
@@ -1169,16 +1176,55 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 	async getObject(authority: CloudRunnerBrokerAuthority, objectSha256: string): Promise<Uint8Array> {
 		requiredAuthority(authority);
 		sha256(objectSha256, "object hash");
-		const response = await this.#fetch(this.#url, {
-			method: "GET",
-			headers: this.#headers(authority, objectSha256),
-			signal: this.#requestSignal(authority),
-		});
-		if (!response.ok) throw new Error(`Runner broker object read failed (${response.status})`);
-		if (response.headers.get("x-qorpera-object-sha256") !== objectSha256) {
-			throw new Error("Runner broker object read returned an inconsistent hash");
+		const response = await this.#transientFetch(
+			"Runner broker object read",
+			authority,
+			() =>
+				this.#fetch(this.#url, {
+					method: "GET",
+					headers: { ...this.#headers(authority, objectSha256), "x-qorpera-object-transport": "signed-url" },
+					signal: this.#requestSignal(authority),
+				}),
+			DURABLE_RETRY_BUDGET_MS,
+		);
+		let bytes: Uint8Array;
+		if ((response.headers.get("content-type") ?? "").includes("application/json")) {
+			/* The broker authorized the read and answered with a short-lived
+			 * signed URL instead of proxying the bytes; the content hash we
+			 * addressed is verified below, so the download needs no trusted
+			 * channel. */
+			const envelope = record(await response.json(), "object read response");
+			const value = record(envelope.value, "object read authority");
+			if (typeof value.signedUrl !== "string" || !value.signedUrl) {
+				throw new Error("Runner broker object read returned an invalid signed URL");
+			}
+			const signedUrl = new URL(value.signedUrl);
+			if (
+				signedUrl.protocol !== "https:" &&
+				!(
+					signedUrl.protocol === "http:" &&
+					(signedUrl.hostname === "127.0.0.1" || signedUrl.hostname === "localhost")
+				)
+			) {
+				throw new Error("Runner broker object read returned an invalid signed URL");
+			}
+			const download = await this.#transientFetch(
+				"Runner broker object download",
+				authority,
+				() => this.#fetch(signedUrl.href, { method: "GET", signal: this.#requestSignal(authority) }),
+				DURABLE_RETRY_BUDGET_MS,
+			);
+			bytes = new Uint8Array(await download.arrayBuffer());
+		} else {
+			if (response.headers.get("x-qorpera-object-sha256") !== objectSha256) {
+				throw new Error("Runner broker object read returned an inconsistent hash");
+			}
+			bytes = new Uint8Array(await response.arrayBuffer());
 		}
-		return new Uint8Array(await response.arrayBuffer());
+		if (createHash("sha256").update(bytes).digest("hex") !== objectSha256) {
+			throw new Error("Runner broker object read failed SHA-256 integrity verification");
+		}
+		return bytes;
 	}
 
 	async putObject(
@@ -1191,18 +1237,23 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		requiredAuthority(authority);
 		sha256(objectSha256, "object hash");
 		if (bytes.byteLength > MAX_OBJECT_BYTES) throw new Error("Runner broker output object exceeds 8 MiB");
-		const response = await this.#fetch(this.#url, {
-			method: "PUT",
-			headers: {
-				...this.#headers(authority, objectSha256),
-				"content-length": String(bytes.byteLength),
-				"content-type": requiredMediaType(mediaType),
-				"x-qorpera-object-purpose": purpose,
-			},
-			body: Uint8Array.from(bytes).buffer,
-			signal: this.#requestSignal(authority),
-		});
-		if (!response.ok) throw new Error(`Runner broker object write failed (${response.status})`);
+		const response = await this.#transientFetch(
+			"Runner broker object write",
+			authority,
+			() =>
+				this.#fetch(this.#url, {
+					method: "PUT",
+					headers: {
+						...this.#headers(authority, objectSha256),
+						"content-length": String(bytes.byteLength),
+						"content-type": requiredMediaType(mediaType),
+						"x-qorpera-object-purpose": purpose,
+					},
+					body: Uint8Array.from(bytes).buffer,
+					signal: this.#requestSignal(authority),
+				}),
+			DURABLE_RETRY_BUDGET_MS,
+		);
 		const envelope = record(await response.json(), "object write response");
 		const value = record(envelope.value, "object write result");
 		if (value.status !== "exists" && value.status !== "stored") {
@@ -1441,14 +1492,66 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 	}
 
 	async #post(authority: CloudRunnerBrokerAuthority, body: Record<string, unknown>): Promise<unknown> {
-		const response = await this.#fetch(this.#url, {
-			method: "POST",
-			headers: { ...this.#headers(authority), "content-type": "application/json" },
-			body: JSON.stringify({ ...body, runnerId: authority.runnerId, jobId: authority.jobId }),
-			signal: this.#requestSignal(authority),
-		});
-		if (!response.ok) throw new Error(`Runner broker request failed (${response.status})`);
+		/* Authority renewals must fail fast enough to keep their renewal
+		 * cadence; every other action sits on an execution or completion
+		 * path where losing a live attempt costs far more than waiting out
+		 * a platform incident. The action name rides in the failure message
+		 * so a terminal error attributes the exact call that died. */
+		const action = String(body.action);
+		const cadenceSensitive =
+			action === "native_authority" || action === "renew_native_authority" || action === "release_native_authority";
+		const response = await this.#transientFetch(
+			`Runner broker request (${action})`,
+			authority,
+			() =>
+				this.#fetch(this.#url, {
+					method: "POST",
+					headers: { ...this.#headers(authority), "content-type": "application/json" },
+					body: JSON.stringify({ ...body, runnerId: authority.runnerId, jobId: authority.jobId }),
+					signal: this.#requestSignal(authority),
+				}),
+			cadenceSensitive ? TRANSIENT_RETRY_BUDGET_MS : DURABLE_RETRY_BUDGET_MS,
+		);
 		return record(await response.json(), "response").value;
+	}
+
+	/* Every broker action proxies through an Edge Function whose upstream can
+	 * shed load transiently mid-attempt, and every mutating action carries a
+	 * client-generated identity the control plane dedupes on, so bounded
+	 * retries of transient statuses are safe end-to-end. The budget is wall
+	 * clock, not an attempt count: platform incidents last minutes, and an
+	 * attempt that has already produced durable output must ride them out on
+	 * the completion path, while cadence-sensitive calls (lease and authority
+	 * renewals) must instead fail fast enough to keep their renewal rhythm. */
+	async #transientFetch(
+		label: string,
+		authority: CloudRunnerBrokerAuthority,
+		perform: () => Promise<Response>,
+		budgetMs = TRANSIENT_RETRY_BUDGET_MS,
+	): Promise<Response> {
+		const deadline = Date.now() + budgetMs;
+		for (let attempt = 1; ; attempt++) {
+			let response: Response | undefined;
+			let transportError: unknown;
+			try {
+				response = await perform();
+			} catch (error) {
+				transportError = error;
+			}
+			if (response?.ok) return response;
+			const status = response?.status;
+			const transient =
+				transportError !== undefined || status === 502 || status === 503 || status === 504 || status === 429;
+			const delayMs = Math.min(attempt * 2_000, 10_000);
+			if (!transient || Date.now() + delayMs >= deadline || this.#requestSignal(authority)?.aborted) {
+				if (transportError) {
+					if (this.#requestSignal(authority)?.aborted) throw transportError;
+					throw new Error(`${label} failed`, { cause: transportError });
+				}
+				throw new Error(`${label} failed (${status})`);
+			}
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+		}
 	}
 
 	#requestSignal(authority: CloudRunnerBrokerAuthority): AbortSignal {
@@ -1464,6 +1567,7 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 	#description?: CloudRunnerBrokerDescription;
 	#nativeAuthority?: CloudRunnerNativeAuthority;
 	readonly #canonicalReceiptIds = new Map<string, string>();
+	readonly #durableObjectShas = new Set<string>();
 	readonly objects: CloudContentAddressedStore;
 	readonly companyFileObjects: CloudContentAddressedStore;
 
@@ -1900,7 +2004,9 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 	}
 
 	async readObject(objectSha256: string): Promise<Uint8Array> {
-		return this.#options.transport.getObject(this.#authority(), objectSha256);
+		const bytes = await this.#options.transport.getObject(this.#authority(), objectSha256);
+		this.#durableObjectShas.add(objectSha256);
+		return bytes;
 	}
 
 	async writeObject(
@@ -1909,7 +2015,22 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 		mediaType: string,
 		purpose: "artifact" | "company_file",
 	): Promise<"exists" | "stored"> {
-		return this.#options.transport.putObject(this.#authority(), objectSha256, bytes, mediaType, purpose);
+		/* A capture restages every reachable object, but most of them were
+		 * just materialized from the broker and content-verified against
+		 * this same hash; resending those bytes through the broker function
+		 * multiplies publication traffic by the whole company size. Server
+		 * side revision verification still proves durable reachability of
+		 * every published object, so the skip cannot forge durability. */
+		if (this.#durableObjectShas.has(objectSha256)) return "stored";
+		const result = await this.#options.transport.putObject(
+			this.#authority(),
+			objectSha256,
+			bytes,
+			mediaType,
+			purpose,
+		);
+		this.#durableObjectShas.add(objectSha256);
+		return result;
 	}
 
 	#authority(): CloudRunnerBrokerAuthority {

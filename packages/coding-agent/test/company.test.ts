@@ -11,6 +11,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -56,7 +57,7 @@ let root: string;
 let previousAgentDir: string | undefined;
 
 beforeEach(() => {
-	root = join(tmpdir(), `qorpera-company-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	root = join(realpathSync(tmpdir()), `qorpera-company-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	previousAgentDir = process.env.QORPERA_CODING_AGENT_DIR;
 	process.env.QORPERA_CODING_AGENT_DIR = join(root, "agent-home");
 });

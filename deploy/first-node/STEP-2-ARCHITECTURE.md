@@ -1,6 +1,9 @@
 # Company41 Step 2 first-node architecture
 
-**Status:** implementation plan. This document does not claim that native subscription execution is deployed or production-ready.
+**Status:** authoritative architecture and completion gate. The deployed v20
+boundary has run one real Codex job but has not completed the functional or
+production-storage gates. See [`STEP-2-HANDOFF.md`](STEP-2-HANDOFF.md) for the
+current checkpoint.
 
 ## Decision
 
@@ -12,8 +15,10 @@ The LXD daemon is not part of the Qorpera control plane. A narrow host provider 
 
 This is not a change to the cloud authority model:
 
-- Supabase remains authoritative for companies, memberships, sessions, turns, jobs, runs, claims, leases, sponsor/provider bindings, transcript order, receipts, and runner state.
-- The NAS object gateway remains authoritative for immutable Company File objects, attachments, artifacts, encrypted compute-identity capsules, and encrypted checkpoints.
+- Supabase remains authoritative for companies, memberships, sessions, turns, jobs, runs, claims, leases, sponsor/provider bindings, transcript order, receipts, runner state, and the immutable object catalog.
+- The production storage target is NAS-primary with a durable Supabase Storage backup for immutable Company File objects, attachments, artifacts, encrypted compute-identity capsules, and encrypted checkpoints.
+- The NAS-disconnected acceptance profile explicitly selects Supabase Storage as the active object backend. It exercises the same hashes, manifests, catalog rows, capabilities, verifier, runner broker, and cleanup workflow; it does not claim to have tested NAS transport, replication, failover, failback, or recovery performance.
+- Storage selection is explicit. A production NAS read or write failure must fail closed rather than silently changing authority to the Supabase backup.
 - The standalone Runner Orchestrator continuously reconciles Supabase jobs with provider state. Supabase notifications are wake hints, not scheduling authority.
 - Physical nodes and guests are replaceable compute. Their Company File checkouts, repositories, provider-runtime state, and workspaces are caches.
 
@@ -29,8 +34,9 @@ Official references:
 ## First-node topology
 
 ```text
-Supabase control plane                         NAS object gateway
-  durable jobs, leases, transcript              immutable objects/capsules
+Supabase control plane + backup storage        NAS object gateway
+  durable jobs, leases, transcript              production primary bytes
+  immutable catalog + backup bytes
                |                                           |
                +----------------+--------------------------+
                                 |
@@ -38,6 +44,11 @@ Supabase control plane                         NAS object gateway
                                 |
                    Company41 physical node
                    Ubuntu Server 26.04 LTS
+                     |
+                     +-- loopback native-login gateway
+                     |     one-time capability + live Supabase authority check
+                     |     Tailscale Funnel is the only permitted public ingress
+                     |     routes to identity-pinned private login VMs
                      |
                      +-- host provider service
                      |     sole LXD administrator
@@ -63,7 +74,9 @@ Supabase control plane                         NAS object gateway
 
 The management VM is a small, autostarted infrastructure guest and is not acquired through the job-provider path it controls. The host provider service has the minimum local authority needed to operate LXD; the orchestrator has only the Qorpera provider capability. Later nodes can run their own provider services, and the orchestrator can be made redundant without changing job or runner contracts.
 
-Host SSH and any remote LXD management endpoint are reachable only over Tailscale or the local management network. The Qorpera provider normally uses the local LXD Unix socket; direct LXD access is never exposed to a runner. Workload guests have no public inbound route. Their egress is limited to the exact Supabase functions, NAS object gateway, provider endpoints, and approved repository endpoints required by the assignment.
+Host SSH and any remote LXD management endpoint are reachable only over Tailscale or the local management network. The Qorpera provider normally uses the local LXD Unix socket; direct LXD access is never exposed to a runner. The native-login Edge Function may reach only a Tailscale Funnel that terminates at the provider's IPv4-loopback login gateway. That gateway revalidates the one-time capability against Supabase before creating or addressing a VM, while the guest independently repeats the same durable-authority check. Login and job guests have no public inbound route; the login listener accepts POST requests only from the host bridge address. Guest egress is limited to the exact Supabase functions, NAS object gateway, provider endpoints, and approved repository endpoints required by the assignment.
+
+For the NAS-disconnected acceptance run, the object route in that last sentence is Supabase Storage. For production it is the NAS gateway plus the separately verified Supabase backup path. The mode is deployment configuration, not an automatic runtime fallback.
 
 LXD projects provide quotas and an additional administrative grouping, but Qorpera does not treat an LXD project as the durable ownership or authorization record. Compute Identity ownership, sponsor authority, execution leases, and security-boundary membership remain canonical in Supabase. Full VM boundaries are used for member subscription identities even where a system container would be cheaper.
 
@@ -72,7 +85,7 @@ LXD projects provide quotas and an additional administrative grouping, but Qorpe
 Personal Codex and Claude subscriptions are a primary Step 2 path, not a compatibility option.
 
 1. A member creates a cloud-only Member Compute Identity.
-2. Qorpera provisions or resumes an isolated login VM for that logical identity.
+2. The Edge Function forwards the opaque login envelope through Tailscale Funnel to a loopback-only host gateway. The gateway validates the one-time capability against Supabase, then provisions or resumes the isolated login VM pinned to that logical identity.
 3. The member completes the provider's official native login flow. The provider-native harness receives plaintext inside the authorized execution boundary; Qorpera application/control-plane code does not.
 4. The login host publishes only an encrypted capsule/checkpoint plus opaque connection identity, ownership, consent, policy, lease, revocation, and provenance records.
 5. A turn names exactly one sponsor, provider connection, Compute Identity, native harness, and immutable Company File revision.
@@ -116,6 +129,7 @@ Step 2 includes:
 - exact sponsor/provider provenance and exclusive connection concurrency;
 - canonical transcript reconstruction across sponsor changes and devices;
 - revocation and crash/retry proof;
+- an explicit Supabase-primary acceptance profile that runs without the NAS;
 - a two-member, two-subscription, all-member-devices-offline acceptance test.
 
 Step 2 does not include:
@@ -161,12 +175,13 @@ Useful provisioning, workspace, receipt, transcript, and virtual-machine concept
 1. Create and verify the real Company41 account/profile in the clean Supabase project, then import a pinned Company File revision.
 2. Deploy and verify the native-provider-login Edge Function and current client configuration.
 3. Add the missing owner/admin runner registration entry point with ambiguity-safe activation-token persistence.
-4. Implement the Ubuntu/LXD provider service behind the existing orchestrator provider contract.
-5. Build the isolated login-host bridge for official `codex login` and `claude auth login`, capsule encryption/publication, resume, and revocation.
-6. Build the isolated job runner/native sidecar with pinned official harness versions, transcript streaming, receipt fencing, and output staging.
-7. Package the orchestrator, provider service, login VM, and job VM as versioned systemd services/templates with redacted logs and outbound-only networking.
+4. Rebuild the accepted guest image from a reviewed clean commit, sign its exact provenance off-node, install the reviewed provider package, and deploy the still-disabled service configuration.
+5. Deploy the implemented loopback login gateway and identity-pinned login guest bootstrap, then complete live official `codex login` and `claude auth login`, capsule publication, resume, and revocation acceptance.
+6. Finish deployed end-to-end wiring for the isolated job runner/native sidecar, including transcript streaming, receipt fencing, output staging, and real assignment delivery through the post-boot credential boundary.
+7. Package and deploy the management orchestrator, provider configuration, login VM, and job VM as versioned systemd services/templates with redacted logs and outbound-only networking.
 8. Add current desktop surfaces for Compute Identity creation, login status, explicit sponsor/connection selection, provenance display, reauthentication, and revocation.
 9. Execute the deployed two-member acceptance test with every physical member device offline during the actual turns.
+10. Before production launch, implement and test NAS-primary publication plus Supabase backup replication, restore, failover authorization, and failback without weakening the explicit storage boundary.
 
 ## Reimage gate
 
@@ -182,6 +197,8 @@ Do not erase the Windows installation until all of these are true:
 The current node has one internal 2 TB NVMe. The first proof may use single-disk local VM storage because node-local state is non-authoritative, but it must not claim disk redundancy. A second internal NVMe and tested node-restore automation are production hardening before relying on this as the sole execution host.
 
 ## Step 2 completion gate
+
+The functional gate below may run with `QORPERA_OBJECT_STORAGE_PRIMARY=supabase` while the NAS is disconnected. That proves the complete cloud execution and object workflow without substituting mocks. It does not satisfy the separate production-storage gate for NAS-primary replication, restore, failover, and failback.
 
 Step 2 is complete only when two real members can:
 

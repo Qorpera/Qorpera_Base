@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import type { CloudRunnerAssignmentAcceptance } from "./cloud-runner-control.ts";
 import type { CloudRunnerAssignmentSource } from "./cloud-runner-worker.ts";
 
@@ -43,21 +44,26 @@ function sameAssignment(left: CloudRunnerAssignmentAcceptance, right: CloudRunne
 	);
 }
 
-/** Single-lane, loopback-only assignment delivery for an ephemeral runner.
- * The provider process and runner may be separate processes, but the raw
- * assignment capability never crosses a public listener. */
+/** Single-lane assignment delivery for an ephemeral runner. Process providers
+ * use loopback. VM providers can bind the guest's private interface only when
+ * they pin the one trusted host-bridge source in addition to the bearer token. */
 export class HttpCloudRunnerAssignmentInbox implements CloudRunnerAssignmentSource {
 	readonly #token: string;
 	readonly #host: string;
 	readonly #port: number;
+	readonly #trustedSource?: string;
 	#server?: Server;
 	#queued?: CloudRunnerAssignmentAcceptance;
 	#lastAccepted?: CloudRunnerAssignmentAcceptance;
 	#pending?: PendingNext;
 
-	constructor(host: string, port: number, token: string) {
-		if (host !== "127.0.0.1" && host !== "::1" && host !== "localhost") {
-			throw new Error("Runner assignment inbox must use a loopback listener");
+	constructor(host: string, port: number, token: string, trustedSource?: string) {
+		const loopback = host === "127.0.0.1" || host === "::1" || host === "localhost";
+		if (
+			(loopback && trustedSource !== undefined) ||
+			(!loopback && (host !== "0.0.0.0" || !trustedSource || isIP(trustedSource) !== 4))
+		) {
+			throw new Error("Runner assignment inbox must be loopback-only or trust one VM-network source");
 		}
 		if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) {
 			throw new Error("Runner assignment inbox port is invalid");
@@ -66,6 +72,7 @@ export class HttpCloudRunnerAssignmentInbox implements CloudRunnerAssignmentSour
 		this.#host = host;
 		this.#port = port;
 		this.#token = token;
+		this.#trustedSource = trustedSource;
 	}
 
 	async start(): Promise<number> {
@@ -123,6 +130,11 @@ export class HttpCloudRunnerAssignmentInbox implements CloudRunnerAssignmentSour
 
 	async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		response.setHeader("cache-control", "no-store");
+		const source = request.socket.remoteAddress?.replace(/^::ffff:/, "");
+		if (this.#trustedSource && source !== this.#trustedSource) {
+			response.writeHead(403).end();
+			return;
+		}
 		if (request.method === "GET" && request.url === "/healthz") {
 			response.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}\n');
 			return;

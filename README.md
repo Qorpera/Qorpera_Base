@@ -8,7 +8,7 @@
 - Provider-native workers run the official Codex or Claude harness under one explicit execution sponsor and provider connection. Subscription traffic never passes through Pi or a generic Qorpera model gateway.
 - Desktops observe and mutate durable cloud state. They are not required for cloud authority and cannot execute cloud turns through the legacy local model runtime.
 
-The cloud control plane is implemented and tested, but autonomous all-devices-offline execution is not complete until the Step 2 runner infrastructure is deployed and passes the acceptance gate in [deploy/first-node/STEP-2-ARCHITECTURE.md](deploy/first-node/STEP-2-ARCHITECTURE.md).
+The cloud control plane is implemented and tested, but autonomous all-devices-offline execution is not complete until the Step 2 runner infrastructure passes the acceptance gate in [deploy/first-node/STEP-2-ARCHITECTURE.md](deploy/first-node/STEP-2-ARCHITECTURE.md). The exact deployed checkpoint and continuation order are recorded in [deploy/first-node/STEP-2-HANDOFF.md](deploy/first-node/STEP-2-HANDOFF.md).
 
 Primary packages:
 

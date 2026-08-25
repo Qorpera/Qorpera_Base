@@ -1,6 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveGate } from "@qorpera/pi-coding-agent/app-server";
@@ -46,7 +55,7 @@ import {
 let root: string;
 
 beforeEach(() => {
-	root = join(tmpdir(), `qorpera-agent-runtime-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	root = join(realpathSync(tmpdir()), `qorpera-agent-runtime-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(join(root, "company", "trail"), { recursive: true });
 	mkdirSync(join(root, "company", "inbox", "messages"), { recursive: true });
 });

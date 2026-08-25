@@ -729,6 +729,32 @@ describe("cloud runner orchestrator", () => {
 		expect(control.listRoutineScheduleHeads).toHaveBeenCalledOnce();
 	});
 
+	it("does not redispatch a retained claim while its first provider lane is still in flight", async () => {
+		const retained = claim();
+		const control = controlPlane(undefined);
+		vi.mocked(control.retainedClaims).mockResolvedValue([retained]);
+		vi.mocked(control.claimNext).mockResolvedValue(undefined);
+		const controller = new AbortController();
+		vi.mocked(control.reconcileExpired).mockImplementation(async () => {
+			if (vi.mocked(control.reconcileExpired).mock.calls.length >= 3) controller.abort();
+		});
+		const local = localAdapter();
+		local.acquire.mockImplementation(() => new Promise(() => undefined));
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			dispatchConcurrency: 2,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		await orchestrator.run(controller.signal, { pollIntervalMs: 10, shutdownGraceMs: 10 });
+
+		expect(local.acquire).toHaveBeenCalledOnce();
+		expect(control.assign).not.toHaveBeenCalled();
+	});
+
 	it("continues reconciliation while a provider delivery lane is hung", async () => {
 		const control = controlPlane();
 		vi.mocked(control.claimNext).mockResolvedValueOnce(claim()).mockResolvedValue(undefined);
@@ -756,7 +782,7 @@ describe("cloud runner orchestrator", () => {
 		const control = controlPlane();
 		const local = localAdapter(
 			vi.fn(async () => {
-				throw new Error(`provisioning failed for ${capability}`);
+				throw Object.assign(new Error(`provisioning failed for ${capability}`), { status: 422 });
 			}),
 		);
 		const orchestrator = new CloudRunnerOrchestrator({
@@ -775,6 +801,27 @@ describe("cloud runner orchestrator", () => {
 			expect.not.stringContaining(capability),
 		);
 		expect(local.stop).toHaveBeenCalledWith(expect.objectContaining({ runnerId }), "delivery_failed");
+	});
+
+	it("keeps the worker alive when a delivery acknowledgment times out with an unknown outcome", async () => {
+		const control = controlPlane();
+		const local = localAdapter(
+			vi.fn(async () => {
+				throw new Error("The operation was aborted due to timeout");
+			}),
+		);
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		await expect(orchestrator.runOnce()).rejects.toThrow("aborted due to timeout");
+		expect(control.releaseClaim).not.toHaveBeenCalled();
+		expect(local.stop).not.toHaveBeenCalled();
 	});
 
 	it("keeps autonomous work queued when its sponsor does not permit it", async () => {

@@ -10,6 +10,7 @@ on:
       - 'packages/shell/test/cloud-runner-*.test.ts'
       - 'scripts/package-ephemeral-runner.mjs'
       - 'scripts/package-ephemeral-runner.test.mjs'
+      - 'scripts/export-signed-ephemeral-runner-archive.sh'
       - 'scripts/test-ephemeral-runner-linux.sh'
 
 permissions:
@@ -24,6 +25,8 @@ jobs:
     name: Rootless Podman containment
     runs-on: ubuntu-26.04
     timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,3 +56,52 @@ jobs:
       - name: Report retained containers
         if: always()
         run: podman ps --all --filter name=qorpera-job-
+
+  signed-export:
+    name: Private keyless-signed image export
+    if: github.event_name == 'workflow_dispatch'
+    needs: containment
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Build the already-tested image locally
+        env:
+          QORPERA_LINUX_BASE_IMAGE: docker.io/library/node@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
+        run: sh scripts/test-ephemeral-runner-linux.sh
+
+      - name: Export the image with keyless provenance
+        env:
+          QORPERA_LINUX_BASE_IMAGE: docker.io/library/node@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
+          COSIGN_CERTIFICATE_IDENTITY_REGEXP: '^https://github\.com/Qorpera/Qorpera_Base/\.github/workflows/ephemeral-runner-linux\.yml@refs/heads/.+$'
+          COSIGN_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+        run: >-
+          sh scripts/export-signed-ephemeral-runner-archive.sh
+          localhost/qorpera/sandbox-probe:linux-test
+          "${GITHUB_SHA}"
+          .artifacts/signed-ephemeral-runner
+
+      - name: Upload the private signed image archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-ephemeral-runner-${{ github.sha }}
+          path: .artifacts/signed-ephemeral-runner/
+          if-no-files-found: error
+          retention-days: 30

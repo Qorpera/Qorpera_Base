@@ -30,13 +30,31 @@ function configuredServiceKey(): string {
 	}
 }
 
+/** Storage rejects the retired legacy anon JWT that the platform still
+ * injects as SUPABASE_ANON_KEY; member-context clients must use a current
+ * publishable key so their storage downloads keep the member's RLS. */
+function configuredUserKey(): string {
+	return (
+		Deno.env.get("QORPERA_SUPABASE_PUBLISHABLE_KEY")?.trim() ||
+		Deno.env.get("SUPABASE_PUBLISHABLE_KEY")?.trim() ||
+		Deno.env.get("SUPABASE_ANON_KEY") ||
+		""
+	);
+}
+
+function configuredObjectStoragePrimary(): "nas" | "supabase" {
+	const value = Deno.env.get("QORPERA_OBJECT_STORAGE_PRIMARY")?.trim();
+	if (value === "nas" || value === "supabase") return value;
+	throw new Error("Company File object storage primary is not configured");
+}
+
 Deno.serve(async (request) => {
 	if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 	const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-	const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+	const userKey = configuredUserKey();
 	const serviceKey = configuredServiceKey();
 	const authorization = request.headers.get("authorization")?.trim() ?? "";
-	if (!supabaseUrl || !anonKey || !serviceKey) return jsonResponse({ error: "Company File verification is not configured" }, 503);
+	if (!supabaseUrl || !userKey || !serviceKey) return jsonResponse({ error: "Company File verification is not configured" }, 503);
 	if (!authorization.startsWith("Bearer ")) return jsonResponse({ error: "Unauthorized" }, 401);
 
 	let snapshotId: string;
@@ -61,7 +79,7 @@ Deno.serve(async (request) => {
 	if (internalServiceRequest !== (requestedVerifiedUserId !== undefined)) {
 		return jsonResponse({ error: "Invalid Company File verification authority" }, 400);
 	}
-	const userClient = createClient(supabaseUrl, anonKey, {
+	const userClient = createClient(supabaseUrl, userKey, {
 		auth: { autoRefreshToken: false, persistSession: false },
 		global: { headers: { Authorization: authorization } },
 	});
@@ -78,6 +96,7 @@ Deno.serve(async (request) => {
 	let loadObject: (profileId: string, sha256: string) => Promise<Uint8Array>;
 	try {
 		loadObject = createCompanyFileObjectLoader({
+			primary: configuredObjectStoragePrimary(),
 			gatewayUrl: Deno.env.get("QORPERA_OBJECT_GATEWAY_URL"),
 			internalServiceRequest,
 			memberToken: bearerToken,

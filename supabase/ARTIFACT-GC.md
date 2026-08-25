@@ -33,6 +33,9 @@ Artifact cleanup is a recoverable, service-owned workflow. Desktop clients can c
    the function. The control token authorizes deletion requests only; the
    gateway still requires the exact durable authorization derived from a live
    database GC lease before removing bytes and finalizing a catalog deletion.
+   A NAS-disconnected acceptance run may contain only `supabase-storage` rows;
+   the worker then exercises the same authorization and receipt workflow through
+   Supabase Storage and requires no gateway URL or control token.
 5. After a zero-job dry run, schedule the worker every five minutes. Keep the
    project URL and dedicated worker key in Vault:
 

@@ -61,7 +61,7 @@ const COMPANY_LOCK_STALE_MS = 30_000;
 const COMPANY_LOCK_HEARTBEAT_MS = 1_000;
 
 function startCompanyLockHeartbeat(path: string, token: string): Worker {
-	const extension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+	const extension = import.meta.url.endsWith(".ts") ? ".ts" : import.meta.url.endsWith(".mjs") ? ".mjs" : ".js";
 	const worker = new Worker(new URL(`./company-lock-heartbeat${extension}`, import.meta.url), {
 		workerData: { path, token, intervalMs: COMPANY_LOCK_HEARTBEAT_MS },
 	});

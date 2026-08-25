@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -18,7 +18,7 @@ describe("company agent message ledger", () => {
 	let root: string;
 
 	beforeEach(() => {
-		root = mkdtempSync(join(tmpdir(), "qorpera-agent-messages-"));
+		root = mkdtempSync(join(realpathSync(tmpdir()), "qorpera-agent-messages-"));
 	});
 
 	afterEach(() => {

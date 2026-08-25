@@ -828,6 +828,28 @@ begin
 		(v_native_authority ->> 'compute_identity_id')::uuid,
 		'openai', 'codex-cli'
 	);
+	update public.qorpera_runner_assignments
+	set expires_at = statement_timestamp() - interval '1 second'
+	where id = (v_assignment ->> 'assignment_id')::uuid;
+	perform public.qorpera_renew_runner_job(v_runner_id, repeat('2', 64), v_job_id, repeat('3', 64));
+	if not exists (
+		select 1
+		from public.qorpera_runner_assignments as assignment
+		join public.qorpera_runner_jobs as job on job.id = assignment.job_id
+		where assignment.id = (v_assignment ->> 'assignment_id')::uuid
+			and assignment.status = 'accepted'
+			and assignment.expires_at = job.lease_expires_at
+			and assignment.expires_at > statement_timestamp()
+	) then
+		raise exception 'runner renewal did not extend its accepted assignment capability';
+	end if;
+	perform public.qorpera_validate_native_provider_execution_lease(
+		(v_native_authority ->> 'lease_id')::uuid, v_run_id, v_job_id, v_runner_id,
+		(v_assignment ->> 'assignment_id')::uuid,
+		(v_native_authority ->> 'credential_capsule_id')::uuid,
+		(v_native_authority ->> 'compute_identity_id')::uuid,
+		'openai', 'codex-cli'
+	);
 
 	v_transcript := public.qorpera_append_runner_transcript_event(
 		v_runner_id, repeat('2', 64), v_job_id, repeat('3', 64),

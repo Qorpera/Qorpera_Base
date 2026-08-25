@@ -1,0 +1,9 @@
+{
+	"name": "qorpera-native-harnesses",
+	"version": "1.0.0",
+	"private": true,
+	"dependencies": {
+		"@anthropic-ai/claude-code": "2.1.231",
+		"@openai/codex": "0.147.0"
+	}
+}

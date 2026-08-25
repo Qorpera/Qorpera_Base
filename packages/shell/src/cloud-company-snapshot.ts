@@ -598,7 +598,12 @@ async function captureCloudCompanyTreeInternal(
 					file = previous.file;
 				} else if (options.reachableObjects) {
 					const staged = await store.stageFile(profileId, bytes as Uint8Array, "application/octet-stream");
-					file = staged;
+					file = {
+						manifestSha256: staged.manifestSha256,
+						fileSha256: staged.fileSha256,
+						bytes: staged.bytes,
+						mediaType: staged.mediaType,
+					};
 					for (const object of staged.objects) {
 						const existingBytes = options.reachableObjects.get(object.sha256);
 						if (existingBytes !== undefined && existingBytes !== object.bytes) {

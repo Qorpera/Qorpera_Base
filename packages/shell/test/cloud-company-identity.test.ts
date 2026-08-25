@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +14,7 @@ afterEach(async () => {
 
 describe("cloud company identity", () => {
 	it("replaces a staging-folder name without changing company identity", async () => {
-		const root = await mkdtemp(join(tmpdir(), "qorpera-company-file-stage-"));
+		const root = await mkdtemp(join(realpathSync(tmpdir()), "qorpera-company-file-stage-"));
 		temporaryDirectories.push(root);
 		scaffoldCompany(root);
 		const before = readCompanyManifest(root);
@@ -24,7 +25,7 @@ describe("cloud company identity", () => {
 	});
 
 	it("refuses an invalid hosted profile name before changing the manifest", async () => {
-		const root = await mkdtemp(join(tmpdir(), "qorpera-company-file-stage-"));
+		const root = await mkdtemp(join(realpathSync(tmpdir()), "qorpera-company-file-stage-"));
 		temporaryDirectories.push(root);
 		scaffoldCompany(root);
 		const before = readCompanyManifest(root);

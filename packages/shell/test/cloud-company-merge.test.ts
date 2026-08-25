@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,7 +51,7 @@ class MemoryObjectTransport implements CloudObjectTransport {
 }
 
 async function temporaryDirectory(): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "qorpera-company-merge-"));
+	const directory = await mkdtemp(join(realpathSync(tmpdir()), "qorpera-company-merge-"));
 	temporaryDirectories.push(directory);
 	return directory;
 }

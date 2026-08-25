@@ -67,6 +67,7 @@ const notesFile = argValue("--notes-file");
 const dryRun = process.argv.includes("--dry-run");
 const allowUnsynced = process.argv.includes("--allow-unsynced");
 const allowRapid = process.argv.includes("--allow-rapid");
+const macOnly = process.argv.includes("--mac-only");
 
 if (!title) fail("--title is required");
 if (!notes && !notesFile) fail("one of --notes or --notes-file is required");
@@ -107,9 +108,19 @@ function parseUpdaterManifest(path) {
 	return { version, entries };
 }
 
+/* A release normally requires the Windows manifest so Windows auto-update
+ * never silently loses its lane. --mac-only is the deliberate exception for
+ * when no Windows build machine exists (the previous one was converted into
+ * a Linux node, 2026-08-25): the release ships mac assets alone and Windows
+ * clients stall on the previous version — visible and recoverable — until a
+ * Windows pack ships again. */
 const latestYmlPath = join(outDir, "latest.yml");
-if (!existsSync(latestYmlPath)) fail(`${latestYmlPath} not found — run pack-shell.mjs first`);
-const { version, entries: fileEntries } = parseUpdaterManifest(latestYmlPath);
+if (!macOnly && !existsSync(latestYmlPath)) fail(`${latestYmlPath} not found — run pack-shell.mjs first`);
+if (macOnly && existsSync(latestYmlPath)) {
+	fail("--mac-only was passed but latest.yml exists — drop the flag and publish the full release");
+}
+const windowsManifest = macOnly ? undefined : parseUpdaterManifest(latestYmlPath);
+const fileEntries = windowsManifest?.entries ?? [];
 
 // The mac manifest rides in the same outDir when a mac pack's artifacts have
 // been dropped there (CI builds them; this machine cannot). Optional on
@@ -117,8 +128,11 @@ const { version, entries: fileEntries } = parseUpdaterManifest(latestYmlPath);
 // present they are verified and published with the same rigour, under one
 // release, so both updaters resolve the same version.
 const latestMacYmlPath = join(outDir, "latest-mac.yml");
+if (macOnly && !existsSync(latestMacYmlPath)) fail(`${latestMacYmlPath} not found — run pack-shell.mjs first`);
 const macManifest = existsSync(latestMacYmlPath) ? parseUpdaterManifest(latestMacYmlPath) : undefined;
-if (macManifest && macManifest.version !== version) {
+const version = windowsManifest?.version ?? macManifest?.version;
+if (!version) fail("no updater manifest found in build/shell-dist");
+if (windowsManifest && macManifest && macManifest.version !== version) {
 	fail(`latest-mac.yml is for ${macManifest.version} but latest.yml is for ${version} — mixed-version release refused`);
 }
 
@@ -193,7 +207,8 @@ function locateSource(wantedName) {
 	return match ? join(outDir, match) : undefined;
 }
 
-const assets = [latestYmlPath];
+const assets = [];
+if (windowsManifest) assets.push(latestYmlPath);
 if (macManifest) assets.push(latestMacYmlPath);
 
 async function stageAndVerify(entry, manifestName) {

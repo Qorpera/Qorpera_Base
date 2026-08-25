@@ -194,6 +194,7 @@ export class ProcessCloudRunnerProviderBackend implements CloudRunnerProviderSer
 	async acquire(acquisitionId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
 		validateCloudRunnerWork(work);
 		if (acquisitionId !== work.runId) throw new Error("Provider acquisition must use the immutable run id");
+		if (!work.computeIdentityId) throw new Error("Native provider acquisition requires a Compute Identity");
 		const current = this.#runtimes.get(acquisitionId);
 		if (current && current.child.exitCode === null && current.child.signalCode === null) {
 			if (JSON.stringify(current.work) !== JSON.stringify(work)) {
@@ -243,6 +244,7 @@ export class ProcessCloudRunnerProviderBackend implements CloudRunnerProviderSer
 				QORPERA_NATIVE_PROVIDER_MASTER_KEY_FILE: this.#config.nativeProviderMasterKeyFile,
 				QORPERA_NATIVE_PROVIDER_BRIDGE_TOKEN: nativeBridgeToken,
 				QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY: this.#config.nativeExecutionBoundary,
+				QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID: work.computeIdentityId,
 				QORPERA_NATIVE_PROVIDER_HOST: "127.0.0.1",
 				QORPERA_NATIVE_PROVIDER_PORT: String(nativePort),
 				QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT: nativeTemporaryRoot,

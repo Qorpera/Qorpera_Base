@@ -7,7 +7,11 @@ import type {
 } from "./orchestrator.ts";
 
 const PROVIDER_RESPONSE_LIMIT_BYTES = 64 * 1024;
-const PROVIDER_REQUEST_TIMEOUT_MS = 30_000;
+// A full-VM provider may legitimately spend up to five minutes booting and
+// proving guest readiness before acquire returns. Keep the transport boundary
+// above that backend contract so the orchestrator can renew its durable claim
+// instead of releasing a healthy but still-booting machine.
+const PROVIDER_REQUEST_TIMEOUT_MS = 10 * 60_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ADAPTER_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
