@@ -58,6 +58,22 @@ const workspaceDirs = {
 	"@qorpera/pi-storage-sqlite-node": "packages/storage/sqlite-node",
 };
 
+/* The assembly below copies each workspace package's dist as it exists on
+ * disk, so packing without rebuilding ships whatever was last compiled —
+ * v0.20.15 shipped days-old dists this way and none of that release's
+ * renderer changes reached users. Build the workspaces first; --no-build
+ * (assembly only) remains for iterating on the packaging itself. */
+if (!process.argv.includes("--no-build")) {
+	const workspaceBuild = spawnSync("npm", ["run", "build", "--workspaces", "--if-present"], {
+		cwd: repoRoot,
+		stdio: "inherit",
+	});
+	if (workspaceBuild.status !== 0) {
+		console.error("pack-shell: workspace build failed");
+		process.exit(1);
+	}
+}
+
 rmSync(appDir, { recursive: true, force: true });
 mkdirSync(join(appDir, "node_modules"), { recursive: true });
 
