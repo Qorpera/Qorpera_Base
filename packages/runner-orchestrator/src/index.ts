@@ -1,5 +1,6 @@
 export * from "./control-token-store.ts";
 export * from "./lxd-client.ts";
+export * from "./lxd-company-computer-provider.ts";
 export * from "./lxd-image-provenance.ts";
 export * from "./lxd-login-gateway.ts";
 export * from "./lxd-provider.ts";

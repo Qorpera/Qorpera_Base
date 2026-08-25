@@ -64,6 +64,13 @@ export interface LxdCreateInstanceRequest {
 		  };
 }
 
+/** Step 3 extension surface: the persistent company-computer lane needs
+ * instance snapshots on top of the Step 2 client contract. A separate
+ * interface keeps every existing LxdClient implementer valid unchanged. */
+export interface LxdInstanceSnapshotClient extends LxdClient {
+	createInstanceSnapshot(project: string, name: string, snapshotName: string, signal?: AbortSignal): Promise<void>;
+}
+
 export interface LxdClient {
 	getInstance(project: string, name: string, signal?: AbortSignal): Promise<LxdInstanceRecord | undefined>;
 	getInstanceState(project: string, name: string, signal?: AbortSignal): Promise<LxdInstanceStateRecord>;
@@ -290,6 +297,25 @@ export class LxdUnixClient implements LxdClient {
 	async createInstance(project: string, request: LxdCreateInstanceRequest, signal?: AbortSignal): Promise<void> {
 		if (request.type !== "virtual-machine") throw new Error("LXD provider only creates full virtual machines");
 		const result = await this.#request("POST", projectPath("/1.0/instances", project), request, signal);
+		await this.#waitForOperation(result, signal);
+	}
+
+	async createInstanceSnapshot(
+		project: string,
+		name: string,
+		snapshotName: string,
+		signal?: AbortSignal,
+	): Promise<void> {
+		/* Stateless snapshots only: the VM is near-stateless by design and its
+		 * working world lives on the NAS dataset, so capturing guest RAM would
+		 * record nothing durable. */
+		if (!/^[a-z][a-z0-9-]{0,62}$/.test(snapshotName)) throw new Error("LXD snapshot name is invalid");
+		const result = await this.#request(
+			"POST",
+			projectPath(`/1.0/instances/${encodeURIComponent(name)}/snapshots`, project),
+			{ name: snapshotName, stateful: false },
+			signal,
+		);
 		await this.#waitForOperation(result, signal);
 	}
 
