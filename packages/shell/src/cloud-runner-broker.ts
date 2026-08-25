@@ -54,7 +54,12 @@ const BROKER_REQUEST_TIMEOUT_MS = 5 * 60_000;
  * platform incident measured in minutes rather than losing a finished
  * attempt to it. */
 const TRANSIENT_RETRY_BUDGET_MS = 20_000;
-const DURABLE_RETRY_BUDGET_MS = 150_000;
+/* Sized from the 2026-08-25 incident record: platform shedding waves ran two
+ * to five minutes, and a verify_company_revision call that had survived the
+ * whole pipeline died after exhausting a 150-second budget mid-wave. Six
+ * minutes spans every observed wave and stays serviceable because lease
+ * renewals run in parallel against the six-minute rolling job lease. */
+const DURABLE_RETRY_BUDGET_MS = 360_000;
 
 export interface CloudRunnerBrokerAuthority {
 	runnerId: string;
