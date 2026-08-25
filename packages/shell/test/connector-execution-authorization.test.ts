@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
@@ -26,8 +26,8 @@ describe("connector execution authorization", () => {
 	let implementationPath: string;
 
 	beforeEach(() => {
-		root = mkdtempSync(join(tmpdir(), "qorpera-connector-execution-"));
-		userData = mkdtempSync(join(tmpdir(), "qorpera-connector-execution-state-"));
+		root = mkdtempSync(join(realpathSync(tmpdir()), "qorpera-connector-execution-"));
+		userData = mkdtempSync(join(realpathSync(tmpdir()), "qorpera-connector-execution-state-"));
 		scaffoldCompany(root);
 		const directory = join(root, "connectors", "ledger-api");
 		mkdirSync(directory, { recursive: true });

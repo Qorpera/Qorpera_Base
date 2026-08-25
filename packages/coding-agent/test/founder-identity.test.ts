@@ -3,7 +3,7 @@
  * lifecycle, policy ratification and verification, public-only records,
  * and the authority layer's fail-closed enforcement.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -28,7 +28,7 @@ function useAgentDir(name: string): void {
 }
 
 beforeEach(() => {
-	base = join(tmpdir(), `qorpera-founder-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	base = join(realpathSync(tmpdir()), `qorpera-founder-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	root = join(base, "company");
 	prevAgentDir = process.env.QORPERA_CODING_AGENT_DIR;
 	useAgentDir("agent-a");

@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +9,7 @@ import { FileCloudRunnerAuthorityStore } from "../src/cloud-runner-worker-state.
 const temporaryDirectories: string[] = [];
 
 async function authorityPath(): Promise<string> {
-	const root = await mkdtemp(join(tmpdir(), "qorpera-runner-state-test-"));
+	const root = await mkdtemp(join(realpathSync(tmpdir()), "qorpera-runner-state-test-"));
 	temporaryDirectories.push(root);
 	return join(root, "private", "authority.json");
 }

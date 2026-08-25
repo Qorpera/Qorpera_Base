@@ -5,7 +5,7 @@
  * adapter targets. Covers lifecycle + trail normalization, the authority
  * bridge (approvals evaluate as bash), and approval consumption.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -19,7 +19,7 @@ const FAKE = resolve(__dirname, "fakes", "fake-codex-app-server.mjs");
 let root: string;
 
 beforeEach(() => {
-	root = join(tmpdir(), `qorpera-codex-engine-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	root = join(realpathSync(tmpdir()), `qorpera-codex-engine-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(root, { recursive: true });
 });
 

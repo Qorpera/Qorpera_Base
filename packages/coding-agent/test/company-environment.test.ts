@@ -5,7 +5,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -28,7 +28,7 @@ let root: string;
 let prevAgentDir: string | undefined;
 
 beforeEach(() => {
-	root = join(tmpdir(), `qorpera-env-ops-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	root = join(realpathSync(tmpdir()), `qorpera-env-ops-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	prevAgentDir = process.env.QORPERA_CODING_AGENT_DIR;
 	process.env.QORPERA_CODING_AGENT_DIR = `${root}-agent-home`;
 	scaffoldCompany(root);
@@ -108,7 +108,7 @@ describe("erase", () => {
 	});
 
 	it("refuses to erase anything that is not a company", () => {
-		const plain = join(tmpdir(), `qorpera-env-plain-${Date.now()}`);
+		const plain = join(realpathSync(tmpdir()), `qorpera-env-plain-${Date.now()}`);
 		mkdirSync(plain, { recursive: true });
 		try {
 			expect(() => eraseCompany(plain)).toThrow();

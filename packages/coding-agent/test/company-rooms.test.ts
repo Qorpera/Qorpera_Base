@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -27,7 +27,7 @@ describe("company room registry and transcript", () => {
 	let root: string;
 
 	beforeEach(() => {
-		root = mkdtempSync(join(tmpdir(), "qorpera-company-rooms-"));
+		root = mkdtempSync(join(realpathSync(tmpdir()), "qorpera-company-rooms-"));
 	});
 
 	afterEach(() => {

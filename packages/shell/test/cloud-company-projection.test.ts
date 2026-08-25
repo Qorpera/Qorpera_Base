@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ import {
 const temporaryDirectories: string[] = [];
 
 async function temporaryDirectory(): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "qorpera-company-projection-"));
+	const directory = await mkdtemp(join(realpathSync(tmpdir()), "qorpera-company-projection-"));
 	temporaryDirectories.push(directory);
 	return directory;
 }

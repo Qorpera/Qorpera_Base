@@ -2,7 +2,16 @@
  * Per-company app server: fixed-shell state, runtime streams, and authorized
  * user actions. Company-authored UI files are deliberately not executable.
  */
-import { appendFileSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	linkSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,8 +70,11 @@ const TEST_USAGE_RATE_CATALOG: UsageRateCatalog = {
 };
 
 beforeEach(async () => {
-	root = join(tmpdir(), `qorpera-app-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-	fixedShell = join(tmpdir(), `qorpera-fixed-shell-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	root = join(realpathSync(tmpdir()), `qorpera-app-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	fixedShell = join(
+		realpathSync(tmpdir()),
+		`qorpera-fixed-shell-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+	);
 	scaffoldCompany(root);
 	mkdirSync(fixedShell, { recursive: true });
 	writeFileSync(join(fixedShell, "index.html"), "<h1>Qorpera staff shell</h1>", "utf-8");
