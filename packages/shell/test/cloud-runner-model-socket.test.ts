@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +23,10 @@ function portableSocketPath(root: string): string {
 	return join(root, "model.sock");
 }
 
+function createSocketRoot(): Promise<string> {
+	return mkdtemp("/tmp/qms-");
+}
+
 describe("cloud runner model socket", () => {
 	const servers: CloudRunnerModelSocketServer[] = [];
 
@@ -34,7 +37,7 @@ describe("cloud runner model socket", () => {
 	it.runIf(process.platform !== "win32")(
 		"carries one bounded request through the host broker without credentials",
 		async () => {
-			const root = await mkdtemp(join(tmpdir(), "qorpera-model-socket-"));
+			const root = await createSocketRoot();
 			const broker = {
 				requestModel: vi.fn(async (input: typeof request) => ({
 					requestId: input.requestId,
@@ -65,7 +68,7 @@ describe("cloud runner model socket", () => {
 	it.runIf(process.platform !== "win32")(
 		"enforces the job request limit and returns only a generic rejection",
 		async () => {
-			const root = await mkdtemp(join(tmpdir(), "qorpera-model-socket-"));
+			const root = await createSocketRoot();
 			const broker = {
 				requestModel: vi.fn(async (input: typeof request) => ({
 					requestId: input.requestId,
@@ -91,7 +94,7 @@ describe("cloud runner model socket", () => {
 	);
 
 	it.runIf(process.platform !== "win32")("does not expose broker failures to the sandbox client", async () => {
-		const root = await mkdtemp(join(tmpdir(), "qorpera-model-socket-"));
+		const root = await createSocketRoot();
 		const server = await startCloudRunnerModelSocketServer({
 			socketPath: portableSocketPath(root),
 			broker: {
@@ -109,7 +112,7 @@ describe("cloud runner model socket", () => {
 	});
 
 	it.runIf(process.platform !== "win32")("closes idempotently and removes a Unix socket", async () => {
-		const root = await mkdtemp(join(tmpdir(), "qorpera-model-socket-"));
+		const root = await createSocketRoot();
 		const server = await startCloudRunnerModelSocketServer({
 			socketPath: portableSocketPath(root),
 			broker: {
@@ -125,7 +128,7 @@ describe("cloud runner model socket", () => {
 	});
 
 	it.runIf(process.platform !== "win32")("refuses to replace an existing filesystem entry", async () => {
-		const root = await mkdtemp(join(tmpdir(), "qorpera-model-socket-"));
+		const root = await createSocketRoot();
 		const socketPath = join(root, "model.sock");
 		await writeFile(socketPath, "keep me", "utf-8");
 

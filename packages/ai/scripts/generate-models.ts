@@ -1513,6 +1513,39 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
+		// Cloudflare AI Gateway can proxy every Workers AI model through its
+		// OpenAI-compatible endpoint. models.dev sometimes omits those gateway
+		// aliases even while the direct Workers AI catalog still exposes them,
+		// so derive the aliases from that authoritative source.
+		if (data["cloudflare-workers-ai"]?.models) {
+			for (const [modelId, model] of Object.entries(data["cloudflare-workers-ai"].models)) {
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true) continue;
+				const id = `workers-ai/${modelId}`;
+				if (models.some((candidate) => candidate.provider === "cloudflare-ai-gateway" && candidate.id === id)) continue;
+
+				models.push({
+					id,
+					name: m.name || id,
+					api: "openai-completions",
+					provider: "cloudflare-ai-gateway",
+					baseUrl: CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL,
+					reasoning: m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: {
+						input: m.cost?.input || 0,
+						output: m.cost?.output || 0,
+						cacheRead: m.cost?.cache_read || 0,
+						cacheWrite: m.cost?.cache_write || 0,
+					},
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+					compat: { sendSessionAffinityHeaders: true },
+				});
+				recordModelsDevReasoningOptions("cloudflare-ai-gateway", id, m);
+			}
+		}
+
 		// Process xAi models
 		if (data.xai?.models) {
 			for (const [modelId, model] of Object.entries(data.xai.models)) {

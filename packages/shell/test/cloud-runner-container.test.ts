@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCloudRunnerContainerJob } from "../src/cloud-runner-container.ts";
 import { readCloudRunnerContainerRequest } from "../src/cloud-runner-container-main.ts";
