@@ -1172,14 +1172,45 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		const response = await this.#transientFetch("Runner broker object read", authority, () =>
 			this.#fetch(this.#url, {
 				method: "GET",
-				headers: this.#headers(authority, objectSha256),
+				headers: { ...this.#headers(authority, objectSha256), "x-qorpera-object-transport": "signed-url" },
 				signal: this.#requestSignal(authority),
 			}),
 		);
-		if (response.headers.get("x-qorpera-object-sha256") !== objectSha256) {
-			throw new Error("Runner broker object read returned an inconsistent hash");
+		let bytes: Uint8Array;
+		if ((response.headers.get("content-type") ?? "").includes("application/json")) {
+			/* The broker authorized the read and answered with a short-lived
+			 * signed URL instead of proxying the bytes; the content hash we
+			 * addressed is verified below, so the download needs no trusted
+			 * channel. */
+			const envelope = record(await response.json(), "object read response");
+			const value = record(envelope.value, "object read authority");
+			if (typeof value.signedUrl !== "string" || !value.signedUrl) {
+				throw new Error("Runner broker object read returned an invalid signed URL");
+			}
+			const signedUrl = new URL(value.signedUrl);
+			if (
+				signedUrl.protocol !== "https:" &&
+				!(
+					signedUrl.protocol === "http:" &&
+					(signedUrl.hostname === "127.0.0.1" || signedUrl.hostname === "localhost")
+				)
+			) {
+				throw new Error("Runner broker object read returned an invalid signed URL");
+			}
+			const download = await this.#transientFetch("Runner broker object download", authority, () =>
+				this.#fetch(signedUrl.href, { method: "GET", signal: this.#requestSignal(authority) }),
+			);
+			bytes = new Uint8Array(await download.arrayBuffer());
+		} else {
+			if (response.headers.get("x-qorpera-object-sha256") !== objectSha256) {
+				throw new Error("Runner broker object read returned an inconsistent hash");
+			}
+			bytes = new Uint8Array(await response.arrayBuffer());
 		}
-		return new Uint8Array(await response.arrayBuffer());
+		if (createHash("sha256").update(bytes).digest("hex") !== objectSha256) {
+			throw new Error("Runner broker object read failed SHA-256 integrity verification");
+		}
+		return bytes;
 	}
 
 	async putObject(

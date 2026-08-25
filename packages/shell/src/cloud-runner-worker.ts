@@ -231,7 +231,21 @@ export class EphemeralCloudRunnerWorker {
 		const maintenance = (async () => {
 			while (await wait(this.#leaseRenewalMs, maintenanceAbort.signal)) {
 				try {
-					await this.#options.runner.renew(job.jobId);
+					/* One slow or shed control plane response must not abort a
+					 * healthy execution mid-flight; the lease outlives the
+					 * renewal interval by design, so retry transient renewal
+					 * failures briefly before treating the lease as lost. */
+					for (let renewAttempt = 1; ; renewAttempt++) {
+						try {
+							await this.#options.runner.renew(job.jobId);
+							break;
+						} catch (renewError) {
+							const status = cloudRunnerControlRequestStatus(renewError);
+							const transient = status === undefined || status === 429 || status >= 500;
+							if (!transient || renewAttempt >= 3 || maintenanceAbort.signal.aborted) throw renewError;
+							if (!(await wait(5_000, maintenanceAbort.signal))) throw renewError;
+						}
+					}
 					if (renewNativeAuthority) {
 						const renewal = renewNativeAuthority();
 						nativeRenewalInFlight = renewal;

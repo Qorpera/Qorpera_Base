@@ -466,6 +466,30 @@ Deno.serve(async (request) => {
 		if (!Number.isSafeInteger(expectedBytes) || (expectedBytes as number) < 0 || typeof profileId !== "string") {
 			return jsonResponse({ error: "Runner broker returned invalid authority" }, 503);
 		}
+		/* Proxying object bytes through this function multiplies a company
+		 * materialization into hundreds of full-size responses on the
+		 * project's shared compute. When the caller opts in and the primary
+		 * store can sign URLs, hand back a short-lived signed URL instead;
+		 * the client verifies the content hash it addressed, so the bytes
+		 * need no trusted channel. */
+		if (
+			request.headers.get("x-qorpera-object-transport") === "signed-url" &&
+			configuredObjectStoragePrimary() === "supabase"
+		) {
+			const { data: signed, error: signError } = await client.storage
+				.from(OBJECT_BUCKET)
+				.createSignedUrl(`${profileId}/${objectRequest.objectSha256}`, 300);
+			if (!signError && signed && typeof signed.signedUrl === "string" && signed.signedUrl) {
+				return jsonResponse({
+					value: {
+						transport: "signed-url",
+						signedUrl: signed.signedUrl,
+						bytes: expectedBytes,
+						sha256: objectRequest.objectSha256,
+					},
+				});
+			}
+		}
 		let bytes: Uint8Array;
 		try {
 			const loadObject = createRunnerBrokerObjectLoader({

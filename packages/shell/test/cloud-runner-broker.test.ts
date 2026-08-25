@@ -903,3 +903,62 @@ describe("cloud runner broker transient retries", () => {
 		expect(current.transport.objectPurposes.length).toBe(putsBefore + 1);
 	});
 });
+
+describe("cloud runner broker signed object reads", () => {
+	it("follows a broker signed URL and verifies the content hash it addressed", async () => {
+		const bytes = new TextEncoder().encode("signed-object-bytes");
+		const sha = createHash("sha256").update(bytes).digest("hex");
+		const urls: string[] = [];
+		const fetchImplementation = (async (url: unknown) => {
+			urls.push(String(url));
+			if (String(url).startsWith("https://storage.example/")) {
+				return new Response(Uint8Array.from(bytes).buffer, {
+					status: 200,
+					headers: { "content-type": "application/octet-stream" },
+				});
+			}
+			return Response.json({
+				value: {
+					transport: "signed-url",
+					signedUrl: "https://storage.example/object?token=opaque",
+					bytes: bytes.byteLength,
+					sha256: sha,
+				},
+			});
+		}) as typeof fetch;
+		const transport = new SupabaseCloudRunnerBrokerTransport(
+			"https://qorpera.example",
+			"publishable-key",
+			fetchImplementation,
+		);
+		await expect(transport.getObject({ runnerId, jobId, sessionToken, leaseToken }, sha)).resolves.toEqual(
+			Uint8Array.from(bytes),
+		);
+		expect(urls).toHaveLength(2);
+		expect(urls[1]).toBe("https://storage.example/object?token=opaque");
+	});
+
+	it("rejects signed URL downloads whose bytes do not match the addressed hash", async () => {
+		const bytes = new TextEncoder().encode("signed-object-bytes");
+		const sha = createHash("sha256").update(bytes).digest("hex");
+		const fetchImplementation = (async (url: unknown) => {
+			if (String(url).startsWith("https://storage.example/")) {
+				return new Response(new TextEncoder().encode("tampered").buffer as ArrayBuffer, {
+					status: 200,
+					headers: { "content-type": "application/octet-stream" },
+				});
+			}
+			return Response.json({
+				value: { transport: "signed-url", signedUrl: "https://storage.example/object", bytes: 8, sha256: sha },
+			});
+		}) as typeof fetch;
+		const transport = new SupabaseCloudRunnerBrokerTransport(
+			"https://qorpera.example",
+			"publishable-key",
+			fetchImplementation,
+		);
+		await expect(transport.getObject({ runnerId, jobId, sessionToken, leaseToken }, sha)).rejects.toThrow(
+			"SHA-256 integrity verification",
+		);
+	});
+});
