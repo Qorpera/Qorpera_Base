@@ -150,7 +150,11 @@ the architecture or acceptance specifications. Read these files in order:
 Do not collapse the documented architecture into a desktop runner, a generic
 model gateway, a shared provider credential, a mutable NAS checkout, or a
 container-only boundary to shorten the remaining work. Step 3 must extend these
-contracts rather than replace them.
+contracts rather than replace them. The ratified design goal for Step 3's
+Company Computers — company-level tenancy, NAS-carried storage holding the
+whole working Company File, shared agent visibility with per-identity
+credential capsules, cloud-authoritative publication — is recorded in
+[STEP-3-COMPANY-COMPUTERS.md](STEP-3-COMPANY-COMPUTERS.md).
 
 ## Repository checkpoint
 
