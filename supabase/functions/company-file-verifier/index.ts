@@ -105,7 +105,9 @@ Deno.serve(async (request) => {
 				const { data, error } = await (internalServiceRequest ? serviceClient : userClient).storage
 					.from(OBJECT_BUCKET)
 					.download(`${profileId}/${sha256}`);
-				if (error) throw new Error("Company File object is unavailable");
+				if (error) {
+					throw new Error("Company File object is unavailable");
+				}
 				return new Uint8Array(await data.arrayBuffer());
 			},
 		});

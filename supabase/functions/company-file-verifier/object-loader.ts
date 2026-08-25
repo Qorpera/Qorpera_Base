@@ -34,7 +34,9 @@ export function createCompanyFileObjectLoader(
 					"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
 			},
 		});
-		if (!response.ok) throw new Error("Company File object is unavailable");
+		if (!response.ok) {
+			throw new Error("Company File object is unavailable");
+		}
 		return new Uint8Array(await response.arrayBuffer());
 	};
 }
