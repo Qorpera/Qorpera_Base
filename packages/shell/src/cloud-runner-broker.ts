@@ -48,6 +48,13 @@ const RUNNER_TRANSCRIPT_ENTRY_SCHEMA = "qorpera.runner-transcript-entry/v1";
 const REACHABILITY_BATCH_SIZE = 500;
 const VERIFICATION_RETRY_DELAY_MS = 25;
 const BROKER_REQUEST_TIMEOUT_MS = 5 * 60_000;
+/* Wall-clock budgets for transient broker retries. The short budget keeps
+ * cadence-sensitive calls (renewals, listings) inside their renewal rhythm;
+ * the durable budget lets object transfer and the completion path ride out a
+ * platform incident measured in minutes rather than losing a finished
+ * attempt to it. */
+const TRANSIENT_RETRY_BUDGET_MS = 20_000;
+const DURABLE_RETRY_BUDGET_MS = 150_000;
 
 export interface CloudRunnerBrokerAuthority {
 	runnerId: string;
@@ -1169,12 +1176,16 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 	async getObject(authority: CloudRunnerBrokerAuthority, objectSha256: string): Promise<Uint8Array> {
 		requiredAuthority(authority);
 		sha256(objectSha256, "object hash");
-		const response = await this.#transientFetch("Runner broker object read", authority, () =>
-			this.#fetch(this.#url, {
-				method: "GET",
-				headers: { ...this.#headers(authority, objectSha256), "x-qorpera-object-transport": "signed-url" },
-				signal: this.#requestSignal(authority),
-			}),
+		const response = await this.#transientFetch(
+			"Runner broker object read",
+			authority,
+			() =>
+				this.#fetch(this.#url, {
+					method: "GET",
+					headers: { ...this.#headers(authority, objectSha256), "x-qorpera-object-transport": "signed-url" },
+					signal: this.#requestSignal(authority),
+				}),
+			DURABLE_RETRY_BUDGET_MS,
 		);
 		let bytes: Uint8Array;
 		if ((response.headers.get("content-type") ?? "").includes("application/json")) {
@@ -1197,8 +1208,11 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 			) {
 				throw new Error("Runner broker object read returned an invalid signed URL");
 			}
-			const download = await this.#transientFetch("Runner broker object download", authority, () =>
-				this.#fetch(signedUrl.href, { method: "GET", signal: this.#requestSignal(authority) }),
+			const download = await this.#transientFetch(
+				"Runner broker object download",
+				authority,
+				() => this.#fetch(signedUrl.href, { method: "GET", signal: this.#requestSignal(authority) }),
+				DURABLE_RETRY_BUDGET_MS,
 			);
 			bytes = new Uint8Array(await download.arrayBuffer());
 		} else {
@@ -1223,18 +1237,22 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		requiredAuthority(authority);
 		sha256(objectSha256, "object hash");
 		if (bytes.byteLength > MAX_OBJECT_BYTES) throw new Error("Runner broker output object exceeds 8 MiB");
-		const response = await this.#transientFetch("Runner broker object write", authority, () =>
-			this.#fetch(this.#url, {
-				method: "PUT",
-				headers: {
-					...this.#headers(authority, objectSha256),
-					"content-length": String(bytes.byteLength),
-					"content-type": requiredMediaType(mediaType),
-					"x-qorpera-object-purpose": purpose,
-				},
-				body: Uint8Array.from(bytes).buffer,
-				signal: this.#requestSignal(authority),
-			}),
+		const response = await this.#transientFetch(
+			"Runner broker object write",
+			authority,
+			() =>
+				this.#fetch(this.#url, {
+					method: "PUT",
+					headers: {
+						...this.#headers(authority, objectSha256),
+						"content-length": String(bytes.byteLength),
+						"content-type": requiredMediaType(mediaType),
+						"x-qorpera-object-purpose": purpose,
+					},
+					body: Uint8Array.from(bytes).buffer,
+					signal: this.#requestSignal(authority),
+				}),
+			DURABLE_RETRY_BUDGET_MS,
 		);
 		const envelope = record(await response.json(), "object write response");
 		const value = record(envelope.value, "object write result");
@@ -1251,15 +1269,19 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		authority: CloudRunnerBrokerAuthority,
 		input: RegisterCloudRunnerArtifactInput,
 	): Promise<unknown> {
-		return this.#post(authority, {
-			action: "register_artifact",
-			clientArtifactId: input.clientArtifactId,
-			artifactType: input.artifactType,
-			name: input.name,
-			objectSha256: input.objectSha256,
-			bytes: input.bytes,
-			mediaType: input.mediaType,
-		});
+		return this.#post(
+			authority,
+			{
+				action: "register_artifact",
+				clientArtifactId: input.clientArtifactId,
+				artifactType: input.artifactType,
+				name: input.name,
+				objectSha256: input.objectSha256,
+				bytes: input.bytes,
+				mediaType: input.mediaType,
+			},
+			DURABLE_RETRY_BUDGET_MS,
+		);
 	}
 
 	async requestModel(authority: CloudRunnerBrokerAuthority, input: CloudRunnerModelRequest): Promise<unknown> {
@@ -1289,16 +1311,20 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		if (typeof input.requiresCompanyRevision !== "boolean") {
 			throw new Error("Runner broker Company File operation flag is invalid");
 		}
-		return this.#post(authority, {
-			action: "begin_operation",
-			assignmentId,
-			receiptId: input.receiptId,
-			logicalOperationKey,
-			operationKind,
-			inputSha256: input.inputSha256,
-			downstreamIdempotencyKey,
-			requiresCompanyRevision: input.requiresCompanyRevision,
-		});
+		return this.#post(
+			authority,
+			{
+				action: "begin_operation",
+				assignmentId,
+				receiptId: input.receiptId,
+				logicalOperationKey,
+				operationKind,
+				inputSha256: input.inputSha256,
+				downstreamIdempotencyKey,
+				requiresCompanyRevision: input.requiresCompanyRevision,
+			},
+			DURABLE_RETRY_BUDGET_MS,
+		);
 	}
 
 	async completeOperation(
@@ -1315,15 +1341,19 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		if (input.outputSnapshotId && input.proposalId) {
 			throw new Error("Runner broker operation cannot publish a snapshot and proposal together");
 		}
-		return this.#post(authority, {
-			action: "complete_operation",
-			assignmentId,
-			receiptId: input.receiptId,
-			inputSha256: input.inputSha256,
-			result,
-			...(input.outputSnapshotId ? { outputSnapshotId: input.outputSnapshotId } : {}),
-			...(input.proposalId ? { proposalId: input.proposalId } : {}),
-		});
+		return this.#post(
+			authority,
+			{
+				action: "complete_operation",
+				assignmentId,
+				receiptId: input.receiptId,
+				inputSha256: input.inputSha256,
+				result,
+				...(input.outputSnapshotId ? { outputSnapshotId: input.outputSnapshotId } : {}),
+				...(input.proposalId ? { proposalId: input.proposalId } : {}),
+			},
+			DURABLE_RETRY_BUDGET_MS,
+		);
 	}
 
 	async bindProviderSession(
@@ -1334,13 +1364,17 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		if (input.contextCheckpointObjectSha256) {
 			sha256(input.contextCheckpointObjectSha256, "provider context checkpoint hash");
 		}
-		return this.#post(authority, {
-			action: "bind_provider_session",
-			providerSessionId,
-			...(input.contextCheckpointObjectSha256
-				? { contextCheckpointObjectSha256: input.contextCheckpointObjectSha256 }
-				: {}),
-		});
+		return this.#post(
+			authority,
+			{
+				action: "bind_provider_session",
+				providerSessionId,
+				...(input.contextCheckpointObjectSha256
+					? { contextCheckpointObjectSha256: input.contextCheckpointObjectSha256 }
+					: {}),
+			},
+			DURABLE_RETRY_BUDGET_MS,
+		);
 	}
 
 	async prepareCompanyRevision(
@@ -1355,16 +1389,20 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		integer(input.treeContractVersion, "tree contract version", 3, 3);
 		integer(input.fileCount, "tree file count", 0, 50_000);
 		integer(input.totalBytes, "tree total bytes", 0, 1_099_511_627_776);
-		return this.#post(authority, {
-			action: "prepare_company_revision",
-			assignmentId,
-			clientRevisionId: input.clientRevisionId,
-			treeManifestSha256: input.treeManifestSha256,
-			treeManifestBytes: input.treeManifestBytes,
-			treeContractVersion: input.treeContractVersion,
-			fileCount: input.fileCount,
-			totalBytes: input.totalBytes,
-		});
+		return this.#post(
+			authority,
+			{
+				action: "prepare_company_revision",
+				assignmentId,
+				clientRevisionId: input.clientRevisionId,
+				treeManifestSha256: input.treeManifestSha256,
+				treeManifestBytes: input.treeManifestBytes,
+				treeContractVersion: input.treeContractVersion,
+				fileCount: input.fileCount,
+				totalBytes: input.totalBytes,
+			},
+			DURABLE_RETRY_BUDGET_MS,
+		);
 	}
 
 	async beginCompanyRevisionGraph(
@@ -1379,7 +1417,11 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		sha256(input.contentSha256, "Company File graph content hash");
 		integer(input.objectCount, "Company File graph object count", 1, 400_000);
 		integer(input.storageBytes, "Company File graph storage bytes", 0, 2_199_023_255_552);
-		return this.#post(authority, { action: "begin_company_revision_graph", assignmentId, ...input });
+		return this.#post(
+			authority,
+			{ action: "begin_company_revision_graph", assignmentId, ...input },
+			DURABLE_RETRY_BUDGET_MS,
+		);
 	}
 
 	async appendCompanyRevisionGraph(
@@ -1396,12 +1438,16 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 			sha256: sha256(entry.sha256, "Company File graph object hash"),
 			bytes: integer(entry.bytes, "Company File graph object bytes", 0, MAX_OBJECT_BYTES),
 		}));
-		return this.#post(authority, {
-			action: "append_company_revision_graph",
-			assignmentId,
-			graphId: input.graphId,
-			entries,
-		});
+		return this.#post(
+			authority,
+			{
+				action: "append_company_revision_graph",
+				assignmentId,
+				graphId: input.graphId,
+				entries,
+			},
+			DURABLE_RETRY_BUDGET_MS,
+		);
 	}
 
 	async completeCompanyRevisionGraph(
@@ -1409,11 +1455,15 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		assignmentId: string,
 		graphId: string,
 	): Promise<unknown> {
-		return this.#post(authority, {
-			action: "complete_company_revision_graph",
-			assignmentId: uuid(assignmentId, "assignment id"),
-			graphId: uuid(graphId, "Company File graph id"),
-		});
+		return this.#post(
+			authority,
+			{
+				action: "complete_company_revision_graph",
+				assignmentId: uuid(assignmentId, "assignment id"),
+				graphId: uuid(graphId, "Company File graph id"),
+			},
+			DURABLE_RETRY_BUDGET_MS,
+		);
 	}
 
 	async verifyCompanyRevision(
@@ -1422,12 +1472,16 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		snapshotId: string,
 		graphId: string,
 	): Promise<unknown> {
-		return this.#post(authority, {
-			action: "verify_company_revision",
-			assignmentId: uuid(assignmentId, "assignment id"),
-			snapshotId: uuid(snapshotId, "Company File snapshot id"),
-			graphId: uuid(graphId, "Company File graph id"),
-		});
+		return this.#post(
+			authority,
+			{
+				action: "verify_company_revision",
+				assignmentId: uuid(assignmentId, "assignment id"),
+				snapshotId: uuid(snapshotId, "Company File snapshot id"),
+				graphId: uuid(graphId, "Company File graph id"),
+			},
+			DURABLE_RETRY_BUDGET_MS,
+		);
 	}
 
 	async appendTranscriptEvent(
@@ -1450,14 +1504,18 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		if (input.expectedSequence !== undefined) {
 			integer(input.expectedSequence, "transcript event sequence", 0, Number.MAX_SAFE_INTEGER);
 		}
-		return this.#post(authority, {
-			action: "append_transcript",
-			assignmentId,
-			eventId: input.eventId,
-			eventType: input.eventType,
-			entry,
-			...(input.expectedSequence === undefined ? {} : { expectedSequence: input.expectedSequence }),
-		});
+		return this.#post(
+			authority,
+			{
+				action: "append_transcript",
+				assignmentId,
+				eventId: input.eventId,
+				eventType: input.eventType,
+				entry,
+				...(input.expectedSequence === undefined ? {} : { expectedSequence: input.expectedSequence }),
+			},
+			DURABLE_RETRY_BUDGET_MS,
+		);
 	}
 
 	#headers(authority: CloudRunnerBrokerAuthority, objectSha256?: string): Record<string, string> {
@@ -1473,14 +1531,22 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		};
 	}
 
-	async #post(authority: CloudRunnerBrokerAuthority, body: Record<string, unknown>): Promise<unknown> {
-		const response = await this.#transientFetch("Runner broker request", authority, () =>
-			this.#fetch(this.#url, {
-				method: "POST",
-				headers: { ...this.#headers(authority), "content-type": "application/json" },
-				body: JSON.stringify({ ...body, runnerId: authority.runnerId, jobId: authority.jobId }),
-				signal: this.#requestSignal(authority),
-			}),
+	async #post(
+		authority: CloudRunnerBrokerAuthority,
+		body: Record<string, unknown>,
+		budgetMs = TRANSIENT_RETRY_BUDGET_MS,
+	): Promise<unknown> {
+		const response = await this.#transientFetch(
+			"Runner broker request",
+			authority,
+			() =>
+				this.#fetch(this.#url, {
+					method: "POST",
+					headers: { ...this.#headers(authority), "content-type": "application/json" },
+					body: JSON.stringify({ ...body, runnerId: authority.runnerId, jobId: authority.jobId }),
+					signal: this.#requestSignal(authority),
+				}),
+			budgetMs,
 		);
 		return record(await response.json(), "response").value;
 	}
@@ -1488,13 +1554,18 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 	/* Every broker action proxies through an Edge Function whose upstream can
 	 * shed load transiently mid-attempt, and every mutating action carries a
 	 * client-generated identity the control plane dedupes on, so bounded
-	 * retries of transient statuses are safe end-to-end. A durable attempt
-	 * must not be lost to one 503. */
+	 * retries of transient statuses are safe end-to-end. The budget is wall
+	 * clock, not an attempt count: platform incidents last minutes, and an
+	 * attempt that has already produced durable output must ride them out on
+	 * the completion path, while cadence-sensitive calls (lease and authority
+	 * renewals) must instead fail fast enough to keep their renewal rhythm. */
 	async #transientFetch(
 		label: string,
 		authority: CloudRunnerBrokerAuthority,
 		perform: () => Promise<Response>,
+		budgetMs = TRANSIENT_RETRY_BUDGET_MS,
 	): Promise<Response> {
+		const deadline = Date.now() + budgetMs;
 		for (let attempt = 1; ; attempt++) {
 			let response: Response | undefined;
 			let transportError: unknown;
@@ -1507,14 +1578,15 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 			const status = response?.status;
 			const transient =
 				transportError !== undefined || status === 502 || status === 503 || status === 504 || status === 429;
-			if (!transient || attempt >= 4 || this.#requestSignal(authority)?.aborted) {
+			const delayMs = Math.min(attempt * 2_000, 10_000);
+			if (!transient || Date.now() + delayMs >= deadline || this.#requestSignal(authority)?.aborted) {
 				if (transportError) {
 					if (this.#requestSignal(authority)?.aborted) throw transportError;
 					throw new Error(`${label} failed`, { cause: transportError });
 				}
 				throw new Error(`${label} failed (${status})`);
 			}
-			await new Promise((resolveDelay) => setTimeout(resolveDelay, attempt * 2_000));
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
 		}
 	}
 

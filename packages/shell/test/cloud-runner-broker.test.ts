@@ -962,3 +962,70 @@ describe("cloud runner broker signed object reads", () => {
 		);
 	});
 });
+
+describe("cloud runner broker incident-scale retry budgets", () => {
+	it("rides out minutes of shedding on the durable object path", async () => {
+		vi.useFakeTimers();
+		try {
+			const bytes = new TextEncoder().encode("incident-survivor");
+			const sha = createHash("sha256").update(bytes).digest("hex");
+			let calls = 0;
+			const fetchImplementation = (async () => {
+				calls++;
+				if (calls <= 6) return new Response("shed", { status: 503 });
+				return Response.json({ value: { status: "stored", sha256: sha, bytes: bytes.byteLength } });
+			}) as typeof fetch;
+			const transport = new SupabaseCloudRunnerBrokerTransport(
+				"https://qorpera.example",
+				"publishable-key",
+				fetchImplementation,
+			);
+			const pending = transport.putObject(
+				{ runnerId, jobId, sessionToken, leaseToken },
+				sha,
+				bytes,
+				"application/octet-stream",
+				"company_file",
+			);
+			for (const delay of [2_000, 4_000, 6_000, 8_000, 10_000, 10_000]) {
+				await vi.advanceTimersByTimeAsync(delay);
+			}
+			await expect(pending).resolves.toBe("stored");
+			expect(calls).toBe(7);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps cadence-sensitive actions inside the short budget", async () => {
+		vi.useFakeTimers();
+		try {
+			let calls = 0;
+			const fetchImplementation = (async () => {
+				calls++;
+				return new Response("shed", { status: 503 });
+			}) as typeof fetch;
+			const transport = new SupabaseCloudRunnerBrokerTransport(
+				"https://qorpera.example",
+				"publishable-key",
+				fetchImplementation,
+			);
+			const pending = transport
+				.renewNativeAuthority(
+					{ runnerId, jobId, sessionToken, leaseToken },
+					"55555555-5555-4555-8555-555555555555",
+					120,
+				)
+				.then(
+					() => "resolved",
+					(error: unknown) => String(error),
+				);
+			await vi.advanceTimersByTimeAsync(30_000);
+			const outcome = await pending;
+			expect(outcome).toContain("Runner broker request failed (503)");
+			expect(calls).toBeLessThanOrEqual(4);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
