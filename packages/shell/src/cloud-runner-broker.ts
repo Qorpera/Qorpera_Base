@@ -1269,19 +1269,15 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		authority: CloudRunnerBrokerAuthority,
 		input: RegisterCloudRunnerArtifactInput,
 	): Promise<unknown> {
-		return this.#post(
-			authority,
-			{
-				action: "register_artifact",
-				clientArtifactId: input.clientArtifactId,
-				artifactType: input.artifactType,
-				name: input.name,
-				objectSha256: input.objectSha256,
-				bytes: input.bytes,
-				mediaType: input.mediaType,
-			},
-			DURABLE_RETRY_BUDGET_MS,
-		);
+		return this.#post(authority, {
+			action: "register_artifact",
+			clientArtifactId: input.clientArtifactId,
+			artifactType: input.artifactType,
+			name: input.name,
+			objectSha256: input.objectSha256,
+			bytes: input.bytes,
+			mediaType: input.mediaType,
+		});
 	}
 
 	async requestModel(authority: CloudRunnerBrokerAuthority, input: CloudRunnerModelRequest): Promise<unknown> {
@@ -1311,20 +1307,16 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		if (typeof input.requiresCompanyRevision !== "boolean") {
 			throw new Error("Runner broker Company File operation flag is invalid");
 		}
-		return this.#post(
-			authority,
-			{
-				action: "begin_operation",
-				assignmentId,
-				receiptId: input.receiptId,
-				logicalOperationKey,
-				operationKind,
-				inputSha256: input.inputSha256,
-				downstreamIdempotencyKey,
-				requiresCompanyRevision: input.requiresCompanyRevision,
-			},
-			DURABLE_RETRY_BUDGET_MS,
-		);
+		return this.#post(authority, {
+			action: "begin_operation",
+			assignmentId,
+			receiptId: input.receiptId,
+			logicalOperationKey,
+			operationKind,
+			inputSha256: input.inputSha256,
+			downstreamIdempotencyKey,
+			requiresCompanyRevision: input.requiresCompanyRevision,
+		});
 	}
 
 	async completeOperation(
@@ -1341,19 +1333,15 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		if (input.outputSnapshotId && input.proposalId) {
 			throw new Error("Runner broker operation cannot publish a snapshot and proposal together");
 		}
-		return this.#post(
-			authority,
-			{
-				action: "complete_operation",
-				assignmentId,
-				receiptId: input.receiptId,
-				inputSha256: input.inputSha256,
-				result,
-				...(input.outputSnapshotId ? { outputSnapshotId: input.outputSnapshotId } : {}),
-				...(input.proposalId ? { proposalId: input.proposalId } : {}),
-			},
-			DURABLE_RETRY_BUDGET_MS,
-		);
+		return this.#post(authority, {
+			action: "complete_operation",
+			assignmentId,
+			receiptId: input.receiptId,
+			inputSha256: input.inputSha256,
+			result,
+			...(input.outputSnapshotId ? { outputSnapshotId: input.outputSnapshotId } : {}),
+			...(input.proposalId ? { proposalId: input.proposalId } : {}),
+		});
 	}
 
 	async bindProviderSession(
@@ -1364,17 +1352,13 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		if (input.contextCheckpointObjectSha256) {
 			sha256(input.contextCheckpointObjectSha256, "provider context checkpoint hash");
 		}
-		return this.#post(
-			authority,
-			{
-				action: "bind_provider_session",
-				providerSessionId,
-				...(input.contextCheckpointObjectSha256
-					? { contextCheckpointObjectSha256: input.contextCheckpointObjectSha256 }
-					: {}),
-			},
-			DURABLE_RETRY_BUDGET_MS,
-		);
+		return this.#post(authority, {
+			action: "bind_provider_session",
+			providerSessionId,
+			...(input.contextCheckpointObjectSha256
+				? { contextCheckpointObjectSha256: input.contextCheckpointObjectSha256 }
+				: {}),
+		});
 	}
 
 	async prepareCompanyRevision(
@@ -1389,20 +1373,16 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		integer(input.treeContractVersion, "tree contract version", 3, 3);
 		integer(input.fileCount, "tree file count", 0, 50_000);
 		integer(input.totalBytes, "tree total bytes", 0, 1_099_511_627_776);
-		return this.#post(
-			authority,
-			{
-				action: "prepare_company_revision",
-				assignmentId,
-				clientRevisionId: input.clientRevisionId,
-				treeManifestSha256: input.treeManifestSha256,
-				treeManifestBytes: input.treeManifestBytes,
-				treeContractVersion: input.treeContractVersion,
-				fileCount: input.fileCount,
-				totalBytes: input.totalBytes,
-			},
-			DURABLE_RETRY_BUDGET_MS,
-		);
+		return this.#post(authority, {
+			action: "prepare_company_revision",
+			assignmentId,
+			clientRevisionId: input.clientRevisionId,
+			treeManifestSha256: input.treeManifestSha256,
+			treeManifestBytes: input.treeManifestBytes,
+			treeContractVersion: input.treeContractVersion,
+			fileCount: input.fileCount,
+			totalBytes: input.totalBytes,
+		});
 	}
 
 	async beginCompanyRevisionGraph(
@@ -1417,11 +1397,7 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		sha256(input.contentSha256, "Company File graph content hash");
 		integer(input.objectCount, "Company File graph object count", 1, 400_000);
 		integer(input.storageBytes, "Company File graph storage bytes", 0, 2_199_023_255_552);
-		return this.#post(
-			authority,
-			{ action: "begin_company_revision_graph", assignmentId, ...input },
-			DURABLE_RETRY_BUDGET_MS,
-		);
+		return this.#post(authority, { action: "begin_company_revision_graph", assignmentId, ...input });
 	}
 
 	async appendCompanyRevisionGraph(
@@ -1438,16 +1414,12 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 			sha256: sha256(entry.sha256, "Company File graph object hash"),
 			bytes: integer(entry.bytes, "Company File graph object bytes", 0, MAX_OBJECT_BYTES),
 		}));
-		return this.#post(
-			authority,
-			{
-				action: "append_company_revision_graph",
-				assignmentId,
-				graphId: input.graphId,
-				entries,
-			},
-			DURABLE_RETRY_BUDGET_MS,
-		);
+		return this.#post(authority, {
+			action: "append_company_revision_graph",
+			assignmentId,
+			graphId: input.graphId,
+			entries,
+		});
 	}
 
 	async completeCompanyRevisionGraph(
@@ -1455,15 +1427,11 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		assignmentId: string,
 		graphId: string,
 	): Promise<unknown> {
-		return this.#post(
-			authority,
-			{
-				action: "complete_company_revision_graph",
-				assignmentId: uuid(assignmentId, "assignment id"),
-				graphId: uuid(graphId, "Company File graph id"),
-			},
-			DURABLE_RETRY_BUDGET_MS,
-		);
+		return this.#post(authority, {
+			action: "complete_company_revision_graph",
+			assignmentId: uuid(assignmentId, "assignment id"),
+			graphId: uuid(graphId, "Company File graph id"),
+		});
 	}
 
 	async verifyCompanyRevision(
@@ -1472,16 +1440,12 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		snapshotId: string,
 		graphId: string,
 	): Promise<unknown> {
-		return this.#post(
-			authority,
-			{
-				action: "verify_company_revision",
-				assignmentId: uuid(assignmentId, "assignment id"),
-				snapshotId: uuid(snapshotId, "Company File snapshot id"),
-				graphId: uuid(graphId, "Company File graph id"),
-			},
-			DURABLE_RETRY_BUDGET_MS,
-		);
+		return this.#post(authority, {
+			action: "verify_company_revision",
+			assignmentId: uuid(assignmentId, "assignment id"),
+			snapshotId: uuid(snapshotId, "Company File snapshot id"),
+			graphId: uuid(graphId, "Company File graph id"),
+		});
 	}
 
 	async appendTranscriptEvent(
@@ -1504,18 +1468,14 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		if (input.expectedSequence !== undefined) {
 			integer(input.expectedSequence, "transcript event sequence", 0, Number.MAX_SAFE_INTEGER);
 		}
-		return this.#post(
-			authority,
-			{
-				action: "append_transcript",
-				assignmentId,
-				eventId: input.eventId,
-				eventType: input.eventType,
-				entry,
-				...(input.expectedSequence === undefined ? {} : { expectedSequence: input.expectedSequence }),
-			},
-			DURABLE_RETRY_BUDGET_MS,
-		);
+		return this.#post(authority, {
+			action: "append_transcript",
+			assignmentId,
+			eventId: input.eventId,
+			eventType: input.eventType,
+			entry,
+			...(input.expectedSequence === undefined ? {} : { expectedSequence: input.expectedSequence }),
+		});
 	}
 
 	#headers(authority: CloudRunnerBrokerAuthority, objectSha256?: string): Record<string, string> {
@@ -1531,13 +1491,17 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		};
 	}
 
-	async #post(
-		authority: CloudRunnerBrokerAuthority,
-		body: Record<string, unknown>,
-		budgetMs = TRANSIENT_RETRY_BUDGET_MS,
-	): Promise<unknown> {
+	async #post(authority: CloudRunnerBrokerAuthority, body: Record<string, unknown>): Promise<unknown> {
+		/* Authority renewals must fail fast enough to keep their renewal
+		 * cadence; every other action sits on an execution or completion
+		 * path where losing a live attempt costs far more than waiting out
+		 * a platform incident. The action name rides in the failure message
+		 * so a terminal error attributes the exact call that died. */
+		const action = String(body.action);
+		const cadenceSensitive =
+			action === "native_authority" || action === "renew_native_authority" || action === "release_native_authority";
 		const response = await this.#transientFetch(
-			"Runner broker request",
+			`Runner broker request (${action})`,
 			authority,
 			() =>
 				this.#fetch(this.#url, {
@@ -1546,7 +1510,7 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 					body: JSON.stringify({ ...body, runnerId: authority.runnerId, jobId: authority.jobId }),
 					signal: this.#requestSignal(authority),
 				}),
-			budgetMs,
+			cadenceSensitive ? TRANSIENT_RETRY_BUDGET_MS : DURABLE_RETRY_BUDGET_MS,
 		);
 		return record(await response.json(), "response").value;
 	}

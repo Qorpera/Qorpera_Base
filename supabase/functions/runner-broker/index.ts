@@ -28,7 +28,13 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 function configuredServiceKey(): string | undefined {
+	/* Prefer the legacy service-role JWT: it is verified locally at the
+	 * gateway, while new-format secret keys resolve through the platform's
+	 * key-management service — a dependency that has shed requests for
+	 * minutes at a time during platform incidents and turned every broker
+	 * action into a 503. Both keys address the same hosted project. */
 	const legacyServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+	if (legacyServiceRoleKey) return legacyServiceRoleKey;
 	try {
 		const parsed: unknown = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
 		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -36,9 +42,9 @@ function configuredServiceKey(): string | undefined {
 			if (key) return key;
 		}
 	} catch {
-		// Fall through to the legacy project secret when configured.
+		// No configured service credential.
 	}
-	return legacyServiceRoleKey || undefined;
+	return undefined;
 }
 
 function configuredObjectStoragePrimary(): "nas" | "supabase" {

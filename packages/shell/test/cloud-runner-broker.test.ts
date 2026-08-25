@@ -843,7 +843,7 @@ describe("cloud runner broker transient retries", () => {
 			fetchImplementation,
 		);
 		await expect(transport.describe({ runnerId, jobId, sessionToken, leaseToken })).rejects.toThrow(
-			"Runner broker request failed (400)",
+			"Runner broker request (describe) failed (400)",
 		);
 		expect(calls).toBe(1);
 	});
@@ -1022,7 +1022,7 @@ describe("cloud runner broker incident-scale retry budgets", () => {
 				);
 			await vi.advanceTimersByTimeAsync(30_000);
 			const outcome = await pending;
-			expect(outcome).toContain("Runner broker request failed (503)");
+			expect(outcome).toContain("Runner broker request (renew_native_authority) failed (503)");
 			expect(calls).toBeLessThanOrEqual(4);
 		} finally {
 			vi.useRealTimers();
