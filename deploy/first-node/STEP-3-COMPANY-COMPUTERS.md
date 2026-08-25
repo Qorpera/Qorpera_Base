@@ -139,7 +139,9 @@ hard isolation.
 ## Open questions (decide during Step 3 planning, not silently)
 
 - Screen transport (Wayland/RDP/SPICE/VNC) and how sessions are recorded
-  into the audit trail.
+  into the audit trail. Options and a recommendation are prepared in
+  [STEP-3-SCREENS-DECISION.md](STEP-3-SCREENS-DECISION.md); pending founder
+  ratification.
 - Publication cadence from the working copy: per task, per explicit "commit"
   action, or continuous proposals.
 - Verified-snapshot bounds: the snapshot contract currently caps 50,000
