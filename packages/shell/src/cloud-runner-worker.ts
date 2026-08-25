@@ -228,22 +228,28 @@ export class EphemeralCloudRunnerWorker {
 		if (signal.aborted) externalAbort();
 		else signal.addEventListener("abort", externalAbort, { once: true });
 		let nextHeartbeat = this.#now() + this.#heartbeatMs;
+		let leaseDeadline = Date.parse(job.leaseExpiresAt ?? "") || this.#now() + 120_000;
 		const maintenance = (async () => {
 			while (await wait(this.#leaseRenewalMs, maintenanceAbort.signal)) {
 				try {
 					/* One slow or shed control plane response must not abort a
-					 * healthy execution mid-flight; the lease outlives the
-					 * renewal interval by design, so retry transient renewal
-					 * failures briefly before treating the lease as lost. */
-					for (let renewAttempt = 1; ; renewAttempt++) {
+					 * healthy execution mid-flight; platform incidents last
+					 * minutes, so keep retrying transient renewal failures
+					 * until the lease itself is nearly gone rather than for a
+					 * fixed attempt count. Only a definitive rejection or the
+					 * lease's own expiry treats the lease as lost. */
+					for (;;) {
 						try {
-							await this.#options.runner.renew(job.jobId);
+							const renewed = await this.#options.runner.renew(job.jobId);
+							leaseDeadline = Date.parse(renewed.leaseExpiresAt ?? "") || leaseDeadline;
 							break;
 						} catch (renewError) {
 							const status = cloudRunnerControlRequestStatus(renewError);
 							const transient = status === undefined || status === 429 || status >= 500;
-							if (!transient || renewAttempt >= 3 || maintenanceAbort.signal.aborted) throw renewError;
-							if (!(await wait(5_000, maintenanceAbort.signal))) throw renewError;
+							if (!transient || maintenanceAbort.signal.aborted || this.#now() + 10_000 >= leaseDeadline) {
+								throw renewError;
+							}
+							if (!(await wait(10_000, maintenanceAbort.signal))) throw renewError;
 						}
 					}
 					if (renewNativeAuthority) {
