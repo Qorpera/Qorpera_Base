@@ -1169,16 +1169,37 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 	async getObject(authority: CloudRunnerBrokerAuthority, objectSha256: string): Promise<Uint8Array> {
 		requiredAuthority(authority);
 		sha256(objectSha256, "object hash");
-		const response = await this.#fetch(this.#url, {
-			method: "GET",
-			headers: this.#headers(authority, objectSha256),
-			signal: this.#requestSignal(authority),
-		});
-		if (!response.ok) throw new Error(`Runner broker object read failed (${response.status})`);
-		if (response.headers.get("x-qorpera-object-sha256") !== objectSha256) {
-			throw new Error("Runner broker object read returned an inconsistent hash");
+		/* Object reads proxy through the broker function and are immutable and
+		 * idempotent; a materialization moves hundreds of objects, so one
+		 * transient upstream failure must not fail a multi-minute attempt.
+		 * Retry only transient statuses, briefly and boundedly. */
+		for (let attempt = 1; ; attempt++) {
+			let response: Response | undefined;
+			let transportError: unknown;
+			try {
+				response = await this.#fetch(this.#url, {
+					method: "GET",
+					headers: this.#headers(authority, objectSha256),
+					signal: this.#requestSignal(authority),
+				});
+			} catch (error) {
+				transportError = error;
+			}
+			if (response?.ok) {
+				if (response.headers.get("x-qorpera-object-sha256") !== objectSha256) {
+					throw new Error("Runner broker object read returned an inconsistent hash");
+				}
+				return new Uint8Array(await response.arrayBuffer());
+			}
+			const status = response?.status;
+			const transient =
+				transportError !== undefined || status === 502 || status === 503 || status === 504 || status === 429;
+			if (!transient || attempt >= 4 || this.#requestSignal(authority)?.aborted) {
+				if (transportError) throw new Error("Runner broker object read failed", { cause: transportError });
+				throw new Error(`Runner broker object read failed (${status})`);
+			}
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, attempt * 2_000));
 		}
-		return new Uint8Array(await response.arrayBuffer());
 	}
 
 	async putObject(

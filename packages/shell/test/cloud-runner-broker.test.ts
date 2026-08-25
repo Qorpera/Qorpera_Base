@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
@@ -493,7 +493,7 @@ function broker(transport = new MemoryBrokerTransport()): {
 }
 
 async function temporaryDirectory(): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "qorpera-runner-broker-test-"));
+	const directory = await mkdtemp(join(await realpath(tmpdir()), "qorpera-runner-broker-test-"));
 	temporaryDirectories.push(directory);
 	return directory;
 }
