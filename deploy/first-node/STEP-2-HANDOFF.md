@@ -1,8 +1,32 @@
 # Step 2 implementation handoff
 
-**Handoff state:** deployed image v20; the v21 candidate is packaged, contract
-tested, and signed-export backed, but not yet built, accepted, signed, or
-activated on the node. Step 2 is not complete.
+**Handoff state:** image v21 is built, clean-boot accepted, signed, and
+active, and a live member-sponsored Codex turn completed end to end through
+the deployed boundary on 2026-08-25. Step 2's remaining gates are the
+functional acceptance matrix (second member, Claude login, sponsor switching,
+revocation, offline devices) and the storage/recovery production gate.
+
+Live-turn evidence (2026-08-25T00:28-00:33Z): turn/run
+`489bfbae-5917-4e5d-b370-053696095c5b`, job `315ddd56`, session `14ea9baa`,
+marker `STEP2_LXD_OPENAI_SMOKE_V21_RETRY_20260825`. Queued -> claimed ->
+runner assigned (+17s, surviving the activation race via the new assign
+retry) -> official Codex response -> canonical transcript sequence 4 with
+execution provenance -> run and job `completed` on attempt 1 -> connection
+lease released. Company disposition `unchanged`, so the output-publication
+verifier path was not exercised by this turn; it is covered by the
+producer-verifier golden contract test and by direct member and service
+closure verifications of the head snapshot.
+
+Defects found and fixed while reaching this state (all on this branch):
+the verifier's user client authenticated storage with the retired legacy
+anon key; interrupted checkpoint resumes never re-staged objects; upload
+registration left phantom catalog rows when a byte upload died mid-stream
+(manual heal applied; durable fix still open); the v21 activation script did
+not rewrite the ephemeral runner image env pins; the orchestrator destroyed
+freshly booted workers when assignment raced guest activation; and every
+boundary redacted failures down to bare status codes, which repeatedly made
+diagnosis needlessly hard. The remaining redaction, catalog-before-bytes,
+and upload-retry work is listed below.
 
 This file is the operational handoff for continuing Step 2. It does not replace
 the architecture or acceptance specifications. Read these files in order:
