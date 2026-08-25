@@ -209,6 +209,7 @@ body.hub #view-hub {
 	background: transparent;
 }
 
+body.hub #titlebar,
 body.hub main {
 	background:
 		radial-gradient(ellipse 54% 58% at 50% 50%, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.28) 62%, transparent 82%),
@@ -386,6 +387,16 @@ body.hub .company-card .company-avatar img {
 	clip-path: circle(50%);
 }
 
+body.hub .company-card .company-avatar .hub-spinner {
+	top: calc(50% - 21px);
+	left: calc(50% - 21px);
+	z-index: 3;
+	width: 42px;
+	height: 42px;
+	border: 4px solid rgba(17, 17, 17, 0.2);
+	border-top-color: #111;
+}
+
 body.hub .company-card:hover .company-avatar,
 body.hub .company-card:focus-visible .company-avatar {
 	box-shadow:
@@ -440,8 +451,14 @@ body.hub .company-card-actions {
 	bottom: auto;
 	z-index: 4;
 	opacity: 1;
-	background: rgba(255, 255, 255, 0.58);
-	backdrop-filter: blur(10px);
+	background: transparent;
+	backdrop-filter: none;
+}
+
+body.hub .company-card-actions:hover,
+body.hub .company-card-actions:focus-visible,
+body.hub .company-card-actions:active {
+	background: transparent;
 }
 
 body.hub .company-card-menu {
