@@ -12,10 +12,11 @@
  * and backend; a company is never open in two windows at once.
  */
 
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	appendFileSync,
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
@@ -951,6 +952,49 @@ type FoundationUpdateState = {
 };
 
 let downloadedUpdateVersion: string | undefined;
+let downloadedUpdateFile: string | undefined;
+
+/* Squirrel.Mac validates an update against the running app's designated
+ * requirement; an ad-hoc signature's requirement is its own cdhash, which a
+ * newer build can never satisfy, so ad-hoc macOS builds cannot install
+ * updates through Squirrel at all. Until Developer ID signing exists, an
+ * ad-hoc build installs its (sha512-verified) downloaded archive by
+ * replacing its own bundle. Detection is live so this path retires itself
+ * the moment builds are properly signed. */
+function isAdhocSignedMacBuild(): boolean {
+	if (process.platform !== "darwin") return false;
+	const bundle = resolve(dirname(app.getPath("exe")), "..", "..");
+	const result = spawnSync("codesign", ["-dv", bundle], { encoding: "utf8" });
+	return /Signature=adhoc/.test(`${result.stderr ?? ""}${result.stdout ?? ""}`);
+}
+
+function installMacUpdateBySelfReplace(archivePath: string): boolean {
+	const bundle = resolve(dirname(app.getPath("exe")), "..", "..");
+	if (!bundle.endsWith(".app") || !existsSync(archivePath)) return false;
+	const script = join(app.getPath("temp"), `qorpera-self-update-${process.pid}.sh`);
+	writeFileSync(
+		script,
+		[
+			"#!/bin/sh",
+			'while kill -0 "$1" 2>/dev/null; do sleep 0.3; done',
+			'STAGE="$(mktemp -d)" || exit 1',
+			'ditto -xk "$2" "$STAGE" || exit 1',
+			'NEW="$(find "$STAGE" -maxdepth 1 -name "*.app" | head -1)"',
+			'[ -d "$NEW" ] || exit 1',
+			'rm -rf "$3" && mv "$NEW" "$3" || exit 1',
+			'xattr -dr com.apple.quarantine "$3" 2>/dev/null',
+			'rm -rf "$STAGE"',
+			'open "$3"',
+			"",
+		].join("\n"),
+	);
+	chmodSync(script, 0o700);
+	spawn("/bin/sh", [script, String(process.pid), archivePath, bundle], {
+		detached: true,
+		stdio: "ignore",
+	}).unref();
+	return true;
+}
 let foundationUpdateState: FoundationUpdateState = {
 	phase: "idle",
 	message: "Check for updates",
@@ -12937,6 +12981,7 @@ app.whenReady().then(async () => {
 		});
 		autoUpdater.on("update-downloaded", (info) => {
 			downloadedUpdateVersion = info.version;
+			downloadedUpdateFile = info.downloadedFile;
 			setFoundationUpdateState({
 				phase: "ready",
 				message: `v${info.version} downloaded — restart to update`,
@@ -12979,6 +13024,11 @@ app.whenReady().then(async () => {
 			// mutations, not a signed application update already verified by the
 			// packaged updater.
 			sendAll("update-status", `restarting to install ${downloadedUpdateVersion}…`);
+			if (downloadedUpdateFile && isAdhocSignedMacBuild()) {
+				if (!installMacUpdateBySelfReplace(downloadedUpdateFile)) return false;
+				app.quit();
+				return true;
+			}
 			autoUpdater.quitAndInstall(false, true);
 			return true;
 		});
