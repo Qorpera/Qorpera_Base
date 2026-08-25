@@ -26,6 +26,11 @@ if [[ $(uname -m) != x86_64 ]]; then
 	exit 1
 fi
 
+# Failed executions must keep their service journals for post-mortem review;
+# the default volatile journal loses the evidence with the guest.
+install -d -o root -g root -m 0755 /etc/systemd/journald.conf.d
+printf '[Journal]\nStorage=persistent\nSystemMaxUse=256M\n' > /etc/systemd/journald.conf.d/qorpera-persistent.conf
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install --yes ca-certificates crun dbus-user-session fuse-overlayfs git nodejs npm podman slirp4netns uidmap
