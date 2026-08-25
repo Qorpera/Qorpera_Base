@@ -144,17 +144,23 @@ interface LoginState {
 type NativeHarnessChild = ChildProcessByStdio<null, Readable, Readable> | ChildProcessWithoutNullStreams;
 
 async function grantWorkspaceGroupAccess(root: string): Promise<void> {
+	/* The workspace mixes runner-owned materialized entries with entries the
+	 * harness created as this process's user. Only the latter need (or
+	 * permit) a mode change; chmod on a foreign-owned entry raises EPERM,
+	 * so restrict the walk to entries this process owns. */
+	const ownUid = process.getuid?.();
 	const pending = [root];
 	while (pending.length > 0) {
 		const current = pending.pop() as string;
 		const metadata = await lstat(current);
 		if (metadata.isSymbolicLink()) continue;
+		const owned = ownUid === undefined || metadata.uid === ownUid;
 		if (metadata.isDirectory()) {
-			await chmod(current, metadata.mode | 0o050);
+			if (owned) await chmod(current, metadata.mode | 0o050);
 			for (const entry of await readdir(current)) pending.push(join(current, entry));
 			continue;
 		}
-		if (metadata.isFile()) await chmod(current, metadata.mode | 0o040);
+		if (metadata.isFile() && owned) await chmod(current, metadata.mode | 0o040);
 	}
 }
 
