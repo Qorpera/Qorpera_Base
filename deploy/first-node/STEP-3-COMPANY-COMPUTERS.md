@@ -121,6 +121,21 @@ hard isolation.
 - Placement and multi-node: which node hosts which Company Computer, GPU
   scheduling, and migration by share reattachment.
 
+## Ratified decisions
+
+- **2026-08-25 (founder): members share one computer, and the computer is
+  the interface into the entire company.** Different members' staff agents
+  all work on the same Company Computer; member-connection sponsorship
+  (personal Codex/Claude subscriptions) must therefore be able to drive
+  work on company-owned compute identities. This requires deliberately
+  extending Step 2's two enforcement points — the turn RPC's
+  capsule-ownership rule (capsule matched to the sponsoring member's
+  identity rather than the computer's pinned identity) and
+  `validateCloudRunnerWork`'s ownership/sponsor check — sequenced strictly
+  after Step 2 acceptance closes. The payment structure for shared-computer
+  work is explicitly not yet decided and must not be baked into these
+  contracts prematurely.
+
 ## Open questions (decide during Step 3 planning, not silently)
 
 - Screen transport (Wayland/RDP/SPICE/VNC) and how sessions are recorded

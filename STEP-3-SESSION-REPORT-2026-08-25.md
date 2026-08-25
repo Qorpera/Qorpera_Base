@@ -124,7 +124,9 @@ paths until Step 2 acceptance closes.
 3. The provider bootstrap already emits the sync agent's config block
    (`sync.company_root`, `sync.state_path`, `sync.poll_seconds` in
    `qorpera.company-computer-bootstrap/v1`) — consume exactly that.
-4. Put the member-subscription-on-Company-Computer question to the founder;
-   if approved, extend the turn RPC capsule rule + `validateCloudRunnerWork`
-   in a new migration/PR after Step 2 acceptance closes.
+4. ANSWERED by the founder (2026-08-25): members share one computer and it
+   is the interface into the entire company — see "Ratified decisions" in
+   the charter. Extend the turn RPC capsule rule + `validateCloudRunnerWork`
+   in a new migration/PR strictly after Step 2 acceptance closes; keep the
+   payment structure out of the contracts (explicitly undecided).
 5. Then: NAS dataset-snapshot integration, screens slice, RLS read policies.
