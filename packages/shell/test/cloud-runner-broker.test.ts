@@ -803,3 +803,103 @@ describe("cloud runner object broker", () => {
 		await expect(request).rejects.toThrow("job lease lost");
 	});
 });
+
+describe("cloud runner broker transient retries", () => {
+	it("retries transient action statuses briefly and returns the recovered response", async () => {
+		vi.useFakeTimers();
+		try {
+			const statuses = [503, 429, 200];
+			let calls = 0;
+			const fetchImplementation = (async () => {
+				calls++;
+				const status = statuses.shift() ?? 200;
+				if (status !== 200) return new Response("shed", { status });
+				return Response.json({ value: { recovered: true } });
+			}) as typeof fetch;
+			const transport = new SupabaseCloudRunnerBrokerTransport(
+				"https://qorpera.example",
+				"publishable-key",
+				fetchImplementation,
+			);
+			const pending = transport.describe({ runnerId, jobId, sessionToken, leaseToken });
+			await vi.advanceTimersByTimeAsync(2_000);
+			await vi.advanceTimersByTimeAsync(4_000);
+			await expect(pending).resolves.toEqual({ recovered: true });
+			expect(calls).toBe(3);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("fails definitive action statuses without retrying", async () => {
+		let calls = 0;
+		const fetchImplementation = (async () => {
+			calls++;
+			return new Response("rejected", { status: 400 });
+		}) as typeof fetch;
+		const transport = new SupabaseCloudRunnerBrokerTransport(
+			"https://qorpera.example",
+			"publishable-key",
+			fetchImplementation,
+		);
+		await expect(transport.describe({ runnerId, jobId, sessionToken, leaseToken })).rejects.toThrow(
+			"Runner broker request failed (400)",
+		);
+		expect(calls).toBe(1);
+	});
+
+	it("retries transient object write statuses briefly", async () => {
+		vi.useFakeTimers();
+		try {
+			const bytes = new TextEncoder().encode("retried-write");
+			const sha = createHash("sha256").update(bytes).digest("hex");
+			const statuses = [502, 200];
+			let calls = 0;
+			const fetchImplementation = (async () => {
+				calls++;
+				const status = statuses.shift() ?? 200;
+				if (status !== 200) return new Response("shed", { status });
+				return Response.json({ value: { status: "stored", sha256: sha, bytes: bytes.byteLength } });
+			}) as typeof fetch;
+			const transport = new SupabaseCloudRunnerBrokerTransport(
+				"https://qorpera.example",
+				"publishable-key",
+				fetchImplementation,
+			);
+			const pending = transport.putObject(
+				{ runnerId, jobId, sessionToken, leaseToken },
+				sha,
+				bytes,
+				"application/octet-stream",
+				"company_file",
+			);
+			await vi.advanceTimersByTimeAsync(2_000);
+			await expect(pending).resolves.toBe("stored");
+			expect(calls).toBe(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not resend objects it has already proven durable in this run", async () => {
+		const current = broker();
+		const bytes = new TextEncoder().encode("durable-object");
+		const sha = createHash("sha256").update(bytes).digest("hex");
+		current.transport.objects.set(sha, Uint8Array.from(bytes));
+		const putsBefore = current.transport.objectPurposes.length;
+		await expect(current.broker.readObject(sha)).resolves.toEqual(Uint8Array.from(bytes));
+		await expect(current.broker.writeObject(sha, bytes, "application/octet-stream", "company_file")).resolves.toBe(
+			"stored",
+		);
+		expect(current.transport.objectPurposes.length).toBe(putsBefore);
+		const fresh = new TextEncoder().encode("fresh-object");
+		const freshSha = createHash("sha256").update(fresh).digest("hex");
+		await expect(
+			current.broker.writeObject(freshSha, fresh, "application/octet-stream", "company_file"),
+		).resolves.toBe("stored");
+		await expect(
+			current.broker.writeObject(freshSha, fresh, "application/octet-stream", "company_file"),
+		).resolves.toBe("stored");
+		expect(current.transport.objectPurposes.length).toBe(putsBefore + 1);
+	});
+});

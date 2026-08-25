@@ -1281,14 +1281,25 @@ export class CloudRunnerOrchestrator {
 			while (!acquisitionController.signal.aborted) {
 				await waitForPoll(this.#claimRenewalIntervalMs, acquisitionController.signal);
 				if (acquisitionController.signal.aborted) return;
-				try {
-					claim = signal
-						? await this.#controlPlane.renewClaim(claim, this.#claimLeaseSeconds, signal)
-						: await this.#controlPlane.renewClaim(claim, this.#claimLeaseSeconds);
-				} catch (error) {
-					acquisitionController.abort();
-					rejectRenewal(error);
-					return;
+				/* A guest boot can briefly saturate the host and stall one
+				 * renewal round trip; the lease outlives the renewal interval
+				 * by design, so retry inside the current lease window before
+				 * abandoning an otherwise healthy acquisition. */
+				for (let renewAttempt = 1; ; renewAttempt++) {
+					try {
+						claim = signal
+							? await this.#controlPlane.renewClaim(claim, this.#claimLeaseSeconds, signal)
+							: await this.#controlPlane.renewClaim(claim, this.#claimLeaseSeconds);
+						break;
+					} catch (error) {
+						if (renewAttempt >= 3 || acquisitionController.signal.aborted) {
+							acquisitionController.abort();
+							rejectRenewal(error);
+							return;
+						}
+						await waitForPoll(5_000, acquisitionController.signal);
+						if (acquisitionController.signal.aborted) return;
+					}
 				}
 			}
 		})();
