@@ -1,4 +1,4 @@
-import { link, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
@@ -164,7 +164,7 @@ interface SandboxFixture {
 }
 
 async function temporaryDirectory(): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "qorpera-runner-sandbox-test-"));
+	const directory = await mkdtemp(join(await realpath(tmpdir()), "qorpera-runner-sandbox-test-"));
 	temporaryDirectories.push(directory);
 	return directory;
 }
