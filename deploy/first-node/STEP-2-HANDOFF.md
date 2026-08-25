@@ -32,6 +32,31 @@ version row is recorded); runner lease renewal is confirmed live by
 resolve-or-discard, and per-run VM cleanup verification on the node
 (`lxc list` for lingering `qorpera-*` workers) is still owed.
 
+Image-cycle log for the publication turn (2026-08-25, all signed and
+activated in sequence): v23 fixed nothing observable because the host's
+group-access walk died EPERM on runner-owned entries; v24 restricted the
+walk to host-owned entries but the walk had already been dying on
+unreadable runner-owned directories; v25 fixed the actual root cause —
+the provider host service ran with UMask=0077, stripping the group bits
+the setgid workspace sharing depends on — and made the walk tolerate
+unreadable directories; v26 adds persistent guest journals (256M cap)
+because volatile journald kept destroying the evidence for an
+intermittent early runner exit that still kills roughly half of probe
+attempts before the first 45s lease renewal (discovered at the 2-minute
+lease expiry by the reconciler). The v26 journals are the instrument for
+that remaining defect.
+
+Also on 2026-08-25: the node's accumulated job-VM graveyard (about 25
+instances, a dozen still running since 2026-08-24) was deleted, which
+also exercised the recovery boundary in anger — the login VM was
+destroyed, the per-identity volume survived instance deletion as
+designed, a fresh login VM was provisioned against the surviving master
+key, and a member re-login resealed the credential capsule (first
+attempt lost a race with the 15-minute login expiry; second attempt
+completed). Cleanup policy remains unfinished: completed-run VMs were
+stopped but kept, fenced-run VMs kept running indefinitely, and nothing
+reclaims them.
+
 Live-turn evidence (2026-08-25T00:28-00:33Z): turn/run
 `489bfbae-5917-4e5d-b370-053696095c5b`, job `315ddd56`, session `14ea9baa`,
 marker `STEP2_LXD_OPENAI_SMOKE_V21_RETRY_20260825`. Queued -> claimed ->
