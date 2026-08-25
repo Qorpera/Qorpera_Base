@@ -303,6 +303,15 @@ function requiredSeconds(value: number, label: string, maximum: number): number 
 	return value;
 }
 
+/* A rejection that carries a numeric status came back as an actual response
+ * from the provider or control plane and is definitive; timeouts, aborts, and
+ * transport faults carry none and leave the operation's outcome unknown. */
+function definitiveRejectionStatus(error: unknown): number | undefined {
+	if (!error || typeof error !== "object") return undefined;
+	const status = (error as { status?: unknown }).status;
+	return typeof status === "number" ? status : undefined;
+}
+
 function safeDeliveryFailure(error: unknown): string {
 	return (
 		(error instanceof Error ? error.message : String(error))
@@ -1383,10 +1392,19 @@ export class CloudRunnerOrchestrator {
 				}
 			}
 		} catch (error) {
-			await this.#providerAdapter.stop(runner, "delivery_failed");
-			await this.#controlPlane
-				.releaseClaim(claim, clientAssignmentId, safeDeliveryFailure(error))
-				.catch(() => undefined);
+			/* A rejection that carries a status is definitive: the control
+			 * plane refused the assignment and the worker is provably idle,
+			 * so reclaim it. A timeout or transport fault leaves the outcome
+			 * unknown — the assignment may be recorded server-side — so the
+			 * worker must stay up: an unclaimed assignment expires and
+			 * reconciliation requeues the job, and the provider replays the
+			 * still-live acquisition on the next dispatch. */
+			if (definitiveRejectionStatus(error) !== undefined) {
+				await this.#providerAdapter.stop(runner, "delivery_failed");
+				await this.#controlPlane
+					.releaseClaim(claim, clientAssignmentId, safeDeliveryFailure(error))
+					.catch(() => undefined);
+			}
 			throw error;
 		}
 		if (
@@ -1409,9 +1427,20 @@ export class CloudRunnerOrchestrator {
 			if (signal) await this.#providerAdapter.deliver(runner, delivery, signal);
 			else await this.#providerAdapter.deliver(runner, delivery);
 		} catch (error) {
+			/* A definitive provider rejection proves the guest never received
+			 * the assignment capability, so the worker is idle and safe to
+			 * reclaim. A timeout or transport fault proves nothing: the guest
+			 * can already be executing under the recorded assignment while
+			 * only the acknowledgment leg was lost — destroying the worker
+			 * then kills a live attempt (observed as lease expiries with zero
+			 * renewals). On unknown outcomes leave the worker running; an
+			 * undelivered assignment expires server-side and reconciliation
+			 * requeues the job, while a delivered one simply keeps going. */
 			const failure = safeDeliveryFailure(error);
-			await this.#controlPlane.releaseClaim(claim, clientAssignmentId, failure);
-			await this.#providerAdapter.stop(runner, "delivery_failed");
+			if (definitiveRejectionStatus(error) !== undefined) {
+				await this.#controlPlane.releaseClaim(claim, clientAssignmentId, failure);
+				await this.#providerAdapter.stop(runner, "delivery_failed");
+			}
 			throw new Error(failure, { cause: error });
 		}
 		return { status: "assigned", claim, runner, assignment };
