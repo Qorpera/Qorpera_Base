@@ -148,27 +148,33 @@ async function grantWorkspaceGroupAccess(root: string): Promise<void> {
 	 * harness created as this process's user. Only the latter need (or
 	 * permit) a mode change; chmod on a foreign-owned entry raises EPERM,
 	 * so restrict the walk to entries this process owns. */
+	/* The host service umask already lands harness output group-shared;
+	 * this walk only repairs stragglers, so no single entry — vanished,
+	 * foreign-owned, or unreadable — may fail the attempt. */
 	const ownUid = process.getuid?.();
 	const pending = [root];
 	while (pending.length > 0) {
 		const current = pending.pop() as string;
-		const metadata = await lstat(current);
+		let metadata: Awaited<ReturnType<typeof lstat>>;
+		try {
+			metadata = await lstat(current);
+		} catch {
+			continue;
+		}
 		if (metadata.isSymbolicLink()) continue;
 		const owned = ownUid === undefined || metadata.uid === ownUid;
 		if (metadata.isDirectory()) {
-			if (owned) await chmod(current, metadata.mode | 0o050);
+			if (owned) await chmod(current, metadata.mode | 0o050).catch(() => undefined);
 			let entries: string[];
 			try {
 				entries = await readdir(current);
 			} catch {
-				/* Runner-owned directories may exclude this process; the runner
-				 * can already read its own entries. */
 				continue;
 			}
 			for (const entry of entries) pending.push(join(current, entry));
 			continue;
 		}
-		if (metadata.isFile() && owned) await chmod(current, metadata.mode | 0o040);
+		if (metadata.isFile() && owned) await chmod(current, metadata.mode | 0o040).catch(() => undefined);
 	}
 }
 
