@@ -1,15 +1,27 @@
 # Step 2 implementation handoff
 
-**Handoff state:** v22 is built, signed, and active; the first live
+**Handoff state:** v30 (image
+`c7726739ed5b1d9963410a6867dc229328722955528f2b0ff04bd937e394c8b4`,
+guest manifest
+`2412eb43533f9d3b7d9486627e192a9985d786ae354a4c989f763e25a6754fcc`,
+source commit `52fbe71d7ae3f1592d8749b309222d521a20a5f3`) is built,
+signed, and active, and the image cycle now runs fully autonomously
+through the pinned sudoers entries (build, verify, activate, journal
+reads, and `lxc` on the node need no operator). The first live
 member-sponsored Codex turn completed end to end on v21 (see evidence
-below). The v23 candidate (guest manifest
-`4e98cc509031c528958340b00457ac21d8e0f23b4ddd92286e95e9834f0cced2`) is
-staged on the node awaiting its build, acceptance, signing, and
-activation. Step 2's remaining gates are the file-changing publication
-turn (twice fenced on v21/v22 by the native workspace permission defect
-that v23 fixes), the functional acceptance matrix (second member, Claude
-login, sponsor switching, revocation, offline devices), and the
-storage/recovery production gate.
+below). The file-changing publication probe on v28 proved the whole
+execution half of the publication gate: Codex executed, the v28
+workspace normalization passed, and the captured candidate tree was
+exactly the base plus the one probe file (parent 196 files /
+145,838,097 bytes, candidate 197 / 145,838,135) — the attempt then lost
+its durable-completion sequence to a single unretried broker 503 and
+fenced as `partial_attempt_output`, which drove the v29/v30 transport
+hardening described below. A v30 publication probe (turn request
+`738b581d-24fe-41f1-b779-d2302bf325c4`) is queued and waiting out a
+Supabase platform auth incident. Step 2's remaining gates are that
+publication turn completing, the functional acceptance matrix (second
+member, Claude login, sponsor switching, revocation, offline devices),
+and the storage/recovery production gate.
 
 Publication-probe findings (2026-08-25): a turn that creates a company
 file executed correctly but its output capture failed
@@ -45,6 +57,51 @@ intermittent early runner exit that still kills roughly half of probe
 attempts before the first 45s lease renewal (discovered at the 2-minute
 lease expiry by the reconciler). The v26 journals are the instrument for
 that remaining defect.
+
+Continuation of the cycle log (2026-08-25, later): v27 gave broker
+object reads a bounded transient retry; v28 made the provider host's
+group-access walk fully per-entry tolerant and added its
+`workspace-normalization` stage to the native service's safe-diagnostic
+allowlist (every redacted bridge 422 since v23 had been that stage's own
+failure hidden by its absence from the allowlist). The v28 probe then
+established that execution, normalization, and capture are correct (see
+handoff state) and that the remaining failures were all transport: a
+single broker 503 after the candidate snapshot row destroyed the
+attempt. v29 extended the same bounded transient retry to every broker
+action and object write (safe because every mutating broker action
+carries a client-generated identity the control plane dedupes on),
+stopped resending object bytes the runner already proved durable in-run
+(hash-verified materialization or completed upload; server-side revision
+verification still proves reachability before publication), gave
+orchestration claim renewals an in-lease retry, and added an image
+pre-warm to activation (`lxc init` + delete of a throwaway instance) so
+the first lane from a fresh image no longer pays the multi-minute unpack
+that had been saturating the node and starving renewals. v30 moved
+broker object reads onto short-lived signed URLs (opt-in header;
+Supabase-storage primary only; the client verifies the SHA-256 it
+addressed) so materializations no longer proxy every object's bytes
+through the Edge Function — the load that repeatedly degraded the shared
+project compute mid-attempt — and gave the guest runner's job-lease
+renewals the same in-lease transient retry. The ephemeral-runner worker
+change also ships in the v30 guest; the orchestrator changes are
+installed in the management VM (bundle digest
+`f4979b60b4b66d374a49c3ec014be45c3584dead93224f76d7f5b4d332013258`).
+
+Poisoned-acquisition postmortem (2026-08-25): when a leased job's
+renewals fail, the reconciler's pristine retry requeues the job, but the
+LXD provider enforces one acquisition per immutable run id, so every
+re-dispatch of the same run answers 422 until the dispatcher's terminal
+attempt — runs `197b6745` and `0ba947a3` died this way (the second also
+left its instance behind, and its wedged 10-minute dispatch held the
+session row lock that blocked new turn submissions until the
+orchestrator was restarted). The renewal retries remove the common
+trigger, but the design tension between pristine requeue and
+one-acquisition-per-run is unresolved; re-keying acquisitions by
+assignment would change the runner-identity binding and must not be done
+casually. All four fenced `review_pending` runs (v20 smoke, both v21/v22
+probes, and `f118f945`) were resolved with
+`qorpera_resolve_failed_execution_run(..., 'discard')`, and the node's
+leftover run VMs were deleted.
 
 Also on 2026-08-25: the node's accumulated job-VM graveyard (about 25
 instances, a dozen still running since 2026-08-24) was deleted, which
