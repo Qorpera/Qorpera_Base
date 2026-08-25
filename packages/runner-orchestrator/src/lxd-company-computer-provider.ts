@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -20,6 +21,7 @@ const PROFILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const NODE_KEY_PATTERN = /^[a-z][a-z0-9-]{0,62}$/;
 const STORAGE_SIZE_PATTERN = /^[1-9][0-9]*(?:KiB|MiB|GiB|TiB)$/;
 const DATASET_PATTERN = /^[a-z0-9][a-z0-9._-]{0,180}(?:\/[a-z0-9][a-z0-9._-]{0,180}){0,7}$/;
+const SNAPSHOT_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,119}$/;
 const JOURNAL_SCHEMA = "qorpera.lxd-company-computer-journal/v1";
 const BOOTSTRAP_SCHEMA = "qorpera.company-computer-bootstrap/v1";
 const IDENTITY_VOLUME_SCHEMA = "qorpera.compute-identity-volume/v1";
@@ -79,6 +81,76 @@ export interface LxdCompanyComputerControlPlane {
 		detail: Record<string, unknown>,
 		signal?: AbortSignal,
 	): Promise<void>;
+}
+
+/** Captures the working world: a point-in-time snapshot of the per-company
+ * NAS dataset, taken inside the control-plane snapshotting window. The
+ * stateless LXD snapshot beside it covers only the disposable VM root. */
+export interface CompanyDatasetSnapshotClient {
+	snapshotDataset(dataset: string, snapshotName: string, signal?: AbortSignal): Promise<void>;
+}
+
+export type CompanyDatasetSnapshotExec = (
+	command: string,
+	args: readonly string[],
+	signal?: AbortSignal,
+) => Promise<{ code: number | null; stderr: string }>;
+
+const defaultDatasetSnapshotExec: CompanyDatasetSnapshotExec = (command, args, signal) =>
+	new Promise((resolveExec, rejectExec) => {
+		const child = spawn(command, [...args], {
+			stdio: ["ignore", "ignore", "pipe"],
+			shell: false,
+			...(signal ? { signal } : {}),
+		});
+		let stderr = "";
+		child.stderr.on("data", (chunk: Buffer) => {
+			if (stderr.length < 4_096) stderr += chunk.toString("utf-8");
+		});
+		child.on("error", rejectExec);
+		child.on("close", (code) => resolveExec({ code, stderr }));
+	});
+
+/** Runs the deployment's dataset-snapshot command — zfs on a storage host,
+ * ssh to the NAS, or a vendor CLI — with {dataset} and {snapshot} substituted
+ * per argument and no shell in between. Both substituted values are
+ * pattern-locked so the template can never be steered outside snapshot
+ * naming. */
+export class ExecCompanyDatasetSnapshotClient implements CompanyDatasetSnapshotClient {
+	readonly #command: readonly string[];
+	readonly #exec: CompanyDatasetSnapshotExec;
+
+	constructor(command: readonly string[], exec: CompanyDatasetSnapshotExec = defaultDatasetSnapshotExec) {
+		const joined = command.join(" ");
+		if (
+			command.length < 1 ||
+			command.some((argument) => !argument.trim()) ||
+			!joined.includes("{dataset}") ||
+			!joined.includes("{snapshot}")
+		) {
+			throw new Error("Company dataset snapshot command must reference {dataset} and {snapshot}");
+		}
+		this.#command = [...command];
+		this.#exec = exec;
+	}
+
+	async snapshotDataset(dataset: string, snapshotName: string, signal?: AbortSignal): Promise<void> {
+		if (!DATASET_PATTERN.test(dataset) || dataset.includes("..")) {
+			throw new Error("Company dataset name is invalid");
+		}
+		if (!SNAPSHOT_NAME_PATTERN.test(snapshotName)) {
+			throw new Error("Company dataset snapshot name is invalid");
+		}
+		const [command, ...args] = this.#command.map((argument) =>
+			argument.replaceAll("{dataset}", dataset).replaceAll("{snapshot}", snapshotName),
+		);
+		const result = await this.#exec(command as string, args, signal);
+		if (result.code !== 0) {
+			throw new Error(
+				`Company dataset snapshot command failed (${result.code ?? "signal"}): ${result.stderr.slice(0, 512).trim()}`,
+			);
+		}
+	}
 }
 
 export interface LxdCompanyComputerProviderConfig {
@@ -608,6 +680,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 	readonly #lxd: LxdInstanceSnapshotClient;
 	readonly #controlPlane: LxdCompanyComputerControlPlane;
 	readonly #guest: LxdGuestTransport;
+	readonly #datasetSnapshots?: CompanyDatasetSnapshotClient;
 	#serial: Promise<void> = Promise.resolve();
 
 	constructor(
@@ -615,6 +688,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 		lxd: LxdInstanceSnapshotClient,
 		controlPlane?: LxdCompanyComputerControlPlane,
 		guest: LxdGuestTransport = new HttpLxdGuestTransport(lxd),
+		datasetSnapshots?: CompanyDatasetSnapshotClient,
 	) {
 		validateConfig(config);
 		this.adapterId = config.adapterId;
@@ -628,6 +702,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 			controlPlane ??
 			new SupabaseLxdCompanyComputerControlPlane(config.supabaseUrl, config.supabaseServiceKey, config.adapterId);
 		this.#guest = guest;
+		if (datasetSnapshots) this.#datasetSnapshots = datasetSnapshots;
 	}
 
 	async reconcile(signal?: AbortSignal): Promise<void> {
@@ -827,10 +902,11 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 	}
 
 	/** Coordinated snapshot: the control-plane snapshotting window is the
-	 * fence, the stateless LXD snapshot covers the disposable VM root, and
-	 * the NAS dataset snapshot that actually captures the working world is
-	 * the storage layer's job inside the same window (deferred to the NAS
-	 * tooling contract). */
+	 * fence. Inside it the NAS dataset snapshot captures the working world
+	 * and the stateless LXD snapshot covers the disposable VM root; the
+	 * closing lifecycle event records whether the dataset was captured so a
+	 * deployment without storage tooling never presents a root-only snapshot
+	 * as a recovery point. */
 	async snapshotComputer(logicalComputerId: string, signal?: AbortSignal): Promise<string> {
 		return this.#exclusive(async () => {
 			const current = await this.#readJournal(logicalComputerId);
@@ -850,14 +926,21 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 				{ snapshot: snapshotName },
 				signal,
 			);
+			let datasetCaptured = false;
 			try {
+				/* Dataset first: if the working world cannot be captured, fail
+				 * before producing a root snapshot that would pose as one. */
+				if (this.#datasetSnapshots) {
+					await this.#datasetSnapshots.snapshotDataset(current.nasDataset, snapshotName, signal);
+					datasetCaptured = true;
+				}
 				await this.#lxd.createInstanceSnapshot(current.lxd.project, current.instanceName, snapshotName, signal);
 			} finally {
 				await this.#controlPlane.transitionLifecycle(
 					authority.companyComputerId,
 					"active",
 					undefined,
-					{ snapshot: snapshotName },
+					{ snapshot: snapshotName, dataset_captured: datasetCaptured },
 					signal,
 				);
 			}

@@ -13,6 +13,8 @@ import type {
 } from "../src/lxd-client.ts";
 import {
 	COMPANY_COMPUTER_GUEST_DATASET_PATH,
+	type CompanyDatasetSnapshotClient,
+	ExecCompanyDatasetSnapshotClient,
 	type LxdCompanyComputerAuthority,
 	type LxdCompanyComputerControlPlane,
 	type LxdCompanyComputerLifecycleState,
@@ -196,6 +198,7 @@ class FakeControlPlane implements LxdCompanyComputerControlPlane {
 	nodeKey?: string;
 	provisionCalls: Array<{ runId: string; clientRunnerId: string }> = [];
 	transitions: Array<{ state: LxdCompanyComputerLifecycleState; nodeKey?: string }> = [];
+	transitionDetails: Array<Record<string, unknown>> = [];
 
 	async describeCompanyComputer(): Promise<LxdCompanyComputerAuthority> {
 		return {
@@ -236,8 +239,10 @@ class FakeControlPlane implements LxdCompanyComputerControlPlane {
 		_companyComputerId: string,
 		state: LxdCompanyComputerLifecycleState,
 		nodeKey: string | undefined,
+		detail: Record<string, unknown>,
 	): Promise<void> {
 		this.transitions.push({ state, ...(nodeKey === undefined ? {} : { nodeKey }) });
+		this.transitionDetails.push(detail);
 		this.lifecycle = state;
 		if (state === "active" && nodeKey !== undefined) this.nodeKey = nodeKey;
 	}
@@ -276,7 +281,7 @@ function delivery(runId: string, assignmentId: string, expiresAt: string): Cloud
 	};
 }
 
-async function backend(): Promise<{
+async function backend(datasetSnapshots?: CompanyDatasetSnapshotClient): Promise<{
 	backend: LxdCompanyComputerProviderBackend;
 	lxd: FakeLxd;
 	controlPlane: FakeControlPlane;
@@ -285,7 +290,13 @@ async function backend(): Promise<{
 	const lxd = new FakeLxd();
 	const controlPlane = new FakeControlPlane();
 	const guest = new FakeGuest();
-	const provider = new LxdCompanyComputerProviderBackend(config(await stateRoot()), lxd, controlPlane, guest);
+	const provider = new LxdCompanyComputerProviderBackend(
+		config(await stateRoot()),
+		lxd,
+		controlPlane,
+		guest,
+		datasetSnapshots,
+	);
 	return { backend: provider, lxd, controlPlane, guest };
 }
 
@@ -372,5 +383,79 @@ describe("LxdCompanyComputerProviderBackend", () => {
 		expect(lxd.snapshotCalls).toEqual([snapshotName]);
 		expect(controlPlane.transitions.slice(1)).toEqual([{ state: "snapshotting" }, { state: "active" }]);
 		expect(controlPlane.lifecycle).toBe("active");
+		expect(controlPlane.transitionDetails.at(-1)).toEqual({ snapshot: snapshotName, dataset_captured: false });
+	});
+
+	it("captures the NAS dataset inside the snapshotting window", async () => {
+		const datasetCalls: Array<{ dataset: string; snapshot: string }> = [];
+		const {
+			backend: provider,
+			lxd,
+			controlPlane,
+		} = await backend({
+			async snapshotDataset(dataset, snapshot) {
+				datasetCalls.push({ dataset, snapshot });
+			},
+		});
+		const runId = "30000000-0000-4000-8000-000000000108";
+		await provider.acquire(runId, work(runId), new AbortController().signal);
+		const snapshotName = await provider.snapshotComputer(logicalComputerId);
+		expect(datasetCalls).toEqual([{ dataset: `companies/${environmentId}`, snapshot: snapshotName }]);
+		expect(lxd.snapshotCalls).toEqual([snapshotName]);
+		expect(controlPlane.lifecycle).toBe("active");
+		expect(controlPlane.transitionDetails.at(-1)).toEqual({ snapshot: snapshotName, dataset_captured: true });
+	});
+
+	it("fails the snapshot closed when the working world cannot be captured", async () => {
+		const {
+			backend: provider,
+			lxd,
+			controlPlane,
+		} = await backend({
+			async snapshotDataset() {
+				throw new Error("nas unreachable");
+			},
+		});
+		const runId = "30000000-0000-4000-8000-000000000109";
+		await provider.acquire(runId, work(runId), new AbortController().signal);
+		await expect(provider.snapshotComputer(logicalComputerId)).rejects.toThrow("nas unreachable");
+		expect(lxd.snapshotCalls).toEqual([]);
+		expect(controlPlane.lifecycle).toBe("active");
+		expect(controlPlane.transitionDetails.at(-1)).toMatchObject({ dataset_captured: false });
+	});
+
+	it("substitutes the dataset and snapshot into the exec template without a shell", async () => {
+		const invocations: Array<{ command: string; args: readonly string[] }> = [];
+		const client = new ExecCompanyDatasetSnapshotClient(
+			["ssh", "qorpera-nas", "zfs", "snapshot", "{dataset}@{snapshot}"],
+			async (command, args) => {
+				invocations.push({ command, args });
+				return { code: 0, stderr: "" };
+			},
+		);
+		await client.snapshotDataset(`companies/${environmentId}`, "qorpera-cc-2026-08-26");
+		expect(invocations).toEqual([
+			{
+				command: "ssh",
+				args: ["qorpera-nas", "zfs", "snapshot", `companies/${environmentId}@qorpera-cc-2026-08-26`],
+			},
+		]);
+	});
+
+	it("rejects exec templates and values outside the snapshot contract", async () => {
+		expect(() => new ExecCompanyDatasetSnapshotClient(["zfs", "snapshot", "tank@{snapshot}"])).toThrow(
+			"must reference {dataset} and {snapshot}",
+		);
+		const client = new ExecCompanyDatasetSnapshotClient(["zfs", "snapshot", "{dataset}@{snapshot}"], async () => ({
+			code: 0,
+			stderr: "",
+		}));
+		await expect(client.snapshotDataset("Bad Dataset", "qorpera-cc-1")).rejects.toThrow("dataset name is invalid");
+		await expect(client.snapshotDataset("companies/a", "Bad Name!")).rejects.toThrow("snapshot name is invalid");
+		const failing = new ExecCompanyDatasetSnapshotClient(["zfs", "snapshot", "{dataset}@{snapshot}"], async () => ({
+			code: 1,
+			stderr: "dataset does not exist",
+		}));
+		await expect(failing.snapshotDataset("companies/a", "qorpera-cc-1")).rejects.toThrow("dataset does not exist");
 	});
 });
