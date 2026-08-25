@@ -1,27 +1,42 @@
 # Step 2 implementation handoff
 
-**Handoff state:** v30 (image
-`c7726739ed5b1d9963410a6867dc229328722955528f2b0ff04bd937e394c8b4`,
+**Handoff state:** v33 (image
+`6cc1ae8b5d8e2b7bc13856a7d31747f7c4598cb80464bee2c34c2509f1385f75`,
 guest manifest
-`2412eb43533f9d3b7d9486627e192a9985d786ae354a4c989f763e25a6754fcc`,
-source commit `52fbe71d7ae3f1592d8749b309222d521a20a5f3`) is built,
-signed, and active, and the image cycle now runs fully autonomously
-through the pinned sudoers entries (build, verify, activate, journal
-reads, and `lxc` on the node need no operator). The first live
-member-sponsored Codex turn completed end to end on v21 (see evidence
-below). The file-changing publication probe on v28 proved the whole
-execution half of the publication gate: Codex executed, the v28
-workspace normalization passed, and the captured candidate tree was
-exactly the base plus the one probe file (parent 196 files /
-145,838,097 bytes, candidate 197 / 145,838,135) — the attempt then lost
-its durable-completion sequence to a single unretried broker 503 and
-fenced as `partial_attempt_output`, which drove the v29/v30 transport
-hardening described below. A v30 publication probe (turn request
-`738b581d-24fe-41f1-b779-d2302bf325c4`) is queued and waiting out a
-Supabase platform auth incident. Step 2's remaining gates are that
-publication turn completing, the functional acceptance matrix (second
-member, Claude login, sponsor switching, revocation, offline devices),
-and the storage/recovery production gate.
+`4d50d5c5eadd13f6f06eefa2f3ab7d8e5e3512d0da98351ac7bc6940e0d6bb27`,
+source commit `c3f1125b5cefbef4b1e1e9c09cac7f8cd6739bdf`) is built,
+signed, and active, and the image cycle runs fully autonomously through
+the pinned sudoers entries. The first live member-sponsored Codex turn
+completed end to end on v21 (see evidence below). The 2026-08-25
+Supabase platform incident then became an involuntary resilience
+acceptance campaign: successive publication probes each exposed exactly
+one infrastructure defect, all fixed on this branch — v28 proved the
+execution half (normalization passed; candidate tree byte-exact at
+parent+1 file) and died to an unretried broker 503; v31 introduced
+wall-clock retry budgets (cadence-sensitive actions fail fast, object
+and completion paths ride out ~150s) and died to the broker function's
+own internal credential resolving through the platform's shedding
+key-management service; the runner-broker, runner-control, and
+runner-orchestrator functions now prefer the locally-verified legacy
+service-role JWT; v32 exposed the orchestrator destroying live workers
+when only the delivery acknowledgment timed out (the long-standing
+"lease expired with zero renewals" intermittent, caught by the v26
+persistent guest journals and the host audit trail) — unknown-outcome
+delivery failures now leave the worker running; v32c then executed and
+captured **through** an active shedding wave and lost only its
+two-minute job lease, so renewed leases now span six minutes
+(migration `20260825211000`) and the guest retries renewals until the
+lease itself is nearly gone. The v33 publication probe (turn request
+`f4fe5078-6991-4a24-bdab-9a580a524e58`) is executing at handoff time:
+candidate snapshot `b2f5e3c3` captured byte-exact, lease renewing on
+the six-minute window through continuing platform waves, completion
+sequence in flight. Step 2's remaining gates are that publication turn
+completing, the functional acceptance matrix (second member, Claude
+login, sponsor switching, revocation, offline devices), and the
+storage/recovery production gate. Fenced `review_pending` runs from the
+probe campaign (`86fd6d01`, plus any the campaign adds) and their kept
+VMs on the node still need discard-and-delete once their evidence is no
+longer wanted.
 
 Publication-probe findings (2026-08-25): a turn that creates a company
 file executed correctly but its output capture failed
