@@ -1,5 +1,20 @@
 # Step 2 implementation handoff
 
+**GATE CLOSED (2026-08-26):** the file-changing publication turn completed
+end to end. Run `632b71e2-199d-42d1-9a8f-2fa1e893ee73` (marker
+STEP2_V34E_PUBLICATION_PROBE_20260826, v34 image, attempt 1, no retries):
+`company_disposition=published`, output snapshot
+`0ede039c-5d14-4110-9c7d-c335b1647ee6` byte-exact at parent
+`aea619f8` + 1 file / 38 bytes, publication row `published`, workspace head
+advanced to the output snapshot, transcript sealed at sequence 33, lease
+released. The final defect was the broker's internal call to the verifier
+omitting its Authorization bearer for new-format service keys — the
+runner-side verify had structurally never succeeded before this fix. The
+remaining Step 2 gates are the functional acceptance matrix (second member,
+Claude login, sponsor switching, revocation, offline devices) and the
+storage/recovery production gate; the object-store divergence note below
+(NAS-primary clients must dual-write or the stores drift) joins them.
+
 **Handoff state:** v33 (image
 `6cc1ae8b5d8e2b7bc13856a7d31747f7c4598cb80464bee2c34c2509f1385f75`,
 guest manifest
