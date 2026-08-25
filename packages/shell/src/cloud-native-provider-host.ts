@@ -143,6 +143,21 @@ interface LoginState {
 
 type NativeHarnessChild = ChildProcessByStdio<null, Readable, Readable> | ChildProcessWithoutNullStreams;
 
+async function grantWorkspaceGroupAccess(root: string): Promise<void> {
+	const pending = [root];
+	while (pending.length > 0) {
+		const current = pending.pop() as string;
+		const metadata = await lstat(current);
+		if (metadata.isSymbolicLink()) continue;
+		if (metadata.isDirectory()) {
+			await chmod(current, metadata.mode | 0o050);
+			for (const entry of await readdir(current)) pending.push(join(current, entry));
+			continue;
+		}
+		if (metadata.isFile()) await chmod(current, metadata.mode | 0o040);
+	}
+}
+
 function requiredUuid(value: string, label: string): void {
 	if (!UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
 }
@@ -863,6 +878,13 @@ export class NativeProviderHost {
 				prompt: context.prompt,
 				signal: executionAbort.signal,
 			});
+			/* The harness runs as this host's user; entries it creates carry
+			 * no group bits, and the runner reads the shared workspace only
+			 * through the shared execution group. Grant group traversal on
+			 * everything under the company root so output capture and review
+			 * can read every created entry. */
+			stage = "workspace-normalization";
+			await grantWorkspaceGroupAccess(request.input.companyRoot);
 			stage = "completion-authority-validation";
 			if (validationError) throw validationError;
 			await this.#controlPlane.validateExecution(request, executionAbort.signal);
@@ -913,6 +935,10 @@ export class NativeProviderHost {
 				);
 			}
 			signal?.removeEventListener("abort", externalAbort);
+			/* A failed or fenced attempt still leaves partial output that the
+			 * durable review path must be able to read; normalize best-effort
+			 * without masking the original failure. */
+			if (failure) await grantWorkspaceGroupAccess(request.input.companyRoot).catch(() => undefined);
 			if (root) {
 				try {
 					await rm(root, { recursive: true, force: true });

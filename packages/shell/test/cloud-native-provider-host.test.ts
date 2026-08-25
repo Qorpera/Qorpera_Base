@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -544,8 +544,12 @@ describe("native provider host", () => {
 					cancel: async () => undefined,
 				};
 			}),
-			execute: vi.fn(async ({ identityRoot }) => {
+			execute: vi.fn(async ({ identityRoot, companyRoot }) => {
 				expect(await readFile(join(identityRoot, "codex", "auth.json"), "utf-8")).toContain("private");
+				await mkdir(join(companyRoot, "step2-acceptance"), { recursive: true });
+				await writeFile(join(companyRoot, "step2-acceptance", "PROBE.md"), "probe\n");
+				await chmod(join(companyRoot, "step2-acceptance"), 0o700);
+				await chmod(join(companyRoot, "step2-acceptance", "PROBE.md"), 0o600);
 				return { text: "cloud-native response", providerSessionId: "native-session-1" };
 			}),
 		};
@@ -653,6 +657,8 @@ describe("native provider host", () => {
 				schema: "qorpera.native-harness-result/v1",
 				provider_session_id: "native-session-1",
 			});
+			expect((await lstat(join(company, "step2-acceptance"))).mode & 0o050).toBe(0o050);
+			expect((await lstat(join(company, "step2-acceptance", "PROBE.md"))).mode & 0o040).toBe(0o040);
 			authorized = false;
 			const revoked = await bridge.start({ ...nativeAuthority, leaseId: loginId }, request);
 			await expect(revoked.result).rejects.toThrow("Native provider bridge request failed (422)");
