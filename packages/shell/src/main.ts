@@ -5088,7 +5088,6 @@ function scheduleRuntimeReconnect(
 	code: number | null,
 	detail: string,
 ): void {
-	console.error(`runtime child exited: code=${code} detail=${detail}`);
 	const binding = childBindings.get(exitedChild);
 	const sessions = childSessionPlanes.get(exitedChild);
 	const executorId = childExecutorIds.get(exitedChild);
