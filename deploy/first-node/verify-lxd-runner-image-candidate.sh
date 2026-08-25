@@ -2,14 +2,14 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_PACKAGE_MANIFEST_SHA256="d61b444eae7f39cabd0f3fc3f1a3a20ddf96943fff9c504d5d7dd218c2ffbbb2"
+EXPECTED_PACKAGE_MANIFEST_SHA256="f26e1c4c15e32059a0118111f0358c7a32c6e41a75fa20fa8189089c85241ca9"
 EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1"
 LXD_PROJECT="qorpera-runners"
 LXD_IMAGE_PROJECT="default"
 LXD_POOL="qorpera-vm"
 LXD_PROFILE="qorpera-job-v1"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v31-unsigned"
-ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v31"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v32-unsigned"
+ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v32"
 ACCEPTANCE_MARKER="qorpera.lxd-runner-image-acceptance/v1"
 STATE_LOG="/var/log/qorpera-lxd-runner-image-acceptance.txt"
 
