@@ -157,7 +157,15 @@ async function grantWorkspaceGroupAccess(root: string): Promise<void> {
 		const owned = ownUid === undefined || metadata.uid === ownUid;
 		if (metadata.isDirectory()) {
 			if (owned) await chmod(current, metadata.mode | 0o050);
-			for (const entry of await readdir(current)) pending.push(join(current, entry));
+			let entries: string[];
+			try {
+				entries = await readdir(current);
+			} catch {
+				/* Runner-owned directories may exclude this process; the runner
+				 * can already read its own entries. */
+				continue;
+			}
+			for (const entry of entries) pending.push(join(current, entry));
 			continue;
 		}
 		if (metadata.isFile() && owned) await chmod(current, metadata.mode | 0o040);
