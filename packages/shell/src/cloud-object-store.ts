@@ -142,17 +142,43 @@ export class HttpCloudObjectTransport implements CloudObjectTransport {
 		this.#fetch = options.fetch ?? fetch;
 	}
 
+	async #request(path: string, init: RequestInit, label: string): Promise<Response> {
+		/* The gateway rides a consumer NAS behind a tunnel and flaps for
+		 * seconds at a time; an untimed fetch turns each flap into a
+		 * permanently hung company open. Bound every request and retry
+		 * transient failures; definitive statuses return immediately. */
+		let lastError: unknown;
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			try {
+				const response = await this.#fetch(`${this.#baseUrl}/v1/profile-objects/${path}`, {
+					...init,
+					signal: AbortSignal.timeout(30_000),
+				});
+				if (response.status < 500 && response.status !== 429) return response;
+				lastError = new Error(`${label} responded ${response.status}`);
+			} catch (error) {
+				lastError = error;
+			}
+			if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+		}
+		throw lastError instanceof Error ? lastError : new Error(`${label} failed`);
+	}
+
 	async put(path: string, bytes: Uint8Array, mediaType: string): Promise<"exists" | "stored"> {
-		const response = await this.#fetch(`${this.#baseUrl}/v1/profile-objects/${path}`, {
-			method: "PUT",
-			headers: {
-				authorization: `Bearer ${await this.#accessToken()}`,
-				"content-length": String(bytes.byteLength),
-				"content-type": mediaType,
-				"user-agent": GATEWAY_EDGE_USER_AGENT,
+		const response = await this.#request(
+			path,
+			{
+				method: "PUT",
+				headers: {
+					authorization: `Bearer ${await this.#accessToken()}`,
+					"content-length": String(bytes.byteLength),
+					"content-type": mediaType,
+					"user-agent": GATEWAY_EDGE_USER_AGENT,
+				},
+				body: Uint8Array.from(bytes),
 			},
-			body: Uint8Array.from(bytes),
-		});
+			"Cloud object upload",
+		);
 		if (response.status !== 200 && response.status !== 201) throw new Error("Cloud object upload failed");
 		const value: unknown = await response.json();
 		if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -166,9 +192,11 @@ export class HttpCloudObjectTransport implements CloudObjectTransport {
 	}
 
 	async get(path: string): Promise<Uint8Array> {
-		const response = await this.#fetch(`${this.#baseUrl}/v1/profile-objects/${path}`, {
-			headers: { authorization: `Bearer ${await this.#accessToken()}`, "user-agent": GATEWAY_EDGE_USER_AGENT },
-		});
+		const response = await this.#request(
+			path,
+			{ headers: { authorization: `Bearer ${await this.#accessToken()}`, "user-agent": GATEWAY_EDGE_USER_AGENT } },
+			"Cloud object download",
+		);
 		if (!response.ok) throw new Error("Cloud object download failed");
 		return new Uint8Array(await response.arrayBuffer());
 	}
