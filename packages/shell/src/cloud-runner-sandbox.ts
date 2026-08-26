@@ -37,6 +37,13 @@ const MAX_QUEUED_INPUT_IMAGE_BYTES = 8 * 1024 * 1024;
 const CONTAINER_INPUT_ROOT = "/qorpera/input";
 
 async function initializeEphemeralCompanyRepository(companyRoot: string): Promise<void> {
+	// A live company root keeps its repository across turns; re-initializing
+	// would churn history the agents rely on.
+	try {
+		if ((await stat(join(companyRoot, ".git"))).isDirectory()) return;
+	} catch {
+		/* no repository yet — initialize below */
+	}
 	const environment = {
 		...process.env,
 		GIT_CONFIG_GLOBAL: "/dev/null",
@@ -801,10 +808,32 @@ async function materializeInput(
 	) {
 		throw new Error("Runner job substrate is outside its immutable profile environment");
 	}
-	let inputBytes = assertInputBudget(0, snapshot.tree.totalBytes, limits.maxInputBytes);
+	/* Live company file (founder ruling 2026-08-26): when the provider mounts
+	 * the company's one authoritative tree into this machine, a session turn
+	 * works directly on it — no copy-in, no copy-out, cost proportional to
+	 * what the agent touches rather than to company size. Hard-isolation
+	 * lanes (proposal review) and foreign profiles keep the immutable
+	 * copy-in path. */
+	const runnerEnvironment = options.environment ?? {};
+	const declaredLiveRoot = runnerEnvironment.QORPERA_LIVE_COMPANY_ROOT;
+	let liveCompanyRoot: string | undefined;
+	if (
+		typeof declaredLiveRoot === "string" &&
+		declaredLiveRoot &&
+		runnerEnvironment.QORPERA_LIVE_COMPANY_PROFILE_ID === job.profileId &&
+		execution.run.sourceKind === "session_turn" &&
+		proposalSnapshot === undefined
+	) {
+		try {
+			if ((await stat(declaredLiveRoot)).isDirectory()) liveCompanyRoot = resolve(declaredLiveRoot);
+		} catch {
+			/* mount absent: fall back to the immutable copy-in path */
+		}
+	}
+	let inputBytes = liveCompanyRoot ? 0 : assertInputBudget(0, snapshot.tree.totalBytes, limits.maxInputBytes);
 	const inputRoot = join(executionRoot, "input");
 	const companyBaseRoot = join(inputRoot, "company");
-	const companyRoot = join(executionRoot, "work", "company");
+	const companyRoot = liveCompanyRoot ?? join(executionRoot, "work", "company");
 	const proposalRoot = proposalSnapshot ? join(inputRoot, "proposal") : undefined;
 	const artifactsRoot = join(inputRoot, "artifacts");
 	const attachmentsRoot = join(inputRoot, "attachments");
@@ -814,13 +843,15 @@ async function materializeInput(
 	const operationsPath = join(inputRoot, "operations.jsonl");
 	const substrateManifestPath = join(inputRoot, "substrate.json");
 	await mkdir(inputRoot, { recursive: true });
-	await materializeCloudCompanyTree(
-		companyBaseRoot,
-		job.profileId,
-		currentCloudCompanyTreeReference(snapshot.tree),
-		options.objects,
-	);
-	await cp(companyBaseRoot, companyRoot, { recursive: true, force: false, errorOnExist: true });
+	if (!liveCompanyRoot) {
+		await materializeCloudCompanyTree(
+			companyBaseRoot,
+			job.profileId,
+			currentCloudCompanyTreeReference(snapshot.tree),
+			options.objects,
+		);
+		await cp(companyBaseRoot, companyRoot, { recursive: true, force: false, errorOnExist: true });
+	}
 	await initializeEphemeralCompanyRepository(companyRoot);
 	if (proposalSnapshot && proposalRoot) {
 		inputBytes = assertInputBudget(inputBytes, proposalSnapshot.tree.totalBytes, limits.maxInputBytes);
