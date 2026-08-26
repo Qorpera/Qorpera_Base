@@ -5,6 +5,7 @@
  * reconstructed in-process, written to a 0600 temp file for the CLI, and
  * removed immediately after. Nothing secret is printed. */
 import { execFileSync, spawnSync } from "node:child_process";
+import { createPrivateKey } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -29,7 +30,9 @@ const body = execFileSync(
 	{ encoding: "utf-8" },
 ).trim();
 const der = Buffer.from(body.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-const pem = `-----BEGIN PRIVATE KEY-----\n${der.toString("base64")}\n-----END PRIVATE KEY-----\n`;
+const pem = createPrivateKey({ key: der, format: "der", type: "pkcs8" })
+	.export({ type: "pkcs8", format: "pem" })
+	.toString();
 
 const work = mkdtempSync(join(tmpdir(), "qorpera-provenance-"));
 try {
