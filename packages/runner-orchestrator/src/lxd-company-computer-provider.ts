@@ -975,6 +975,28 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 		});
 	}
 
+	/** Attachment target for the host-side screen viewer gateway: where the
+	 * guest's viewer listener lives and the per-computer viewer token that
+	 * opens it. Same-process trusted consumer only — the token never leaves
+	 * the provider host. */
+	async screenViewerTarget(
+		logicalComputerId: string,
+	): Promise<{ guestAddress: string; viewerPort: number; viewerToken: string }> {
+		return this.#exclusive(async () => {
+			const current = await this.#readJournal(logicalComputerId);
+			if (!current || current.physicalState !== "ready" || !current.guestAddress) {
+				throw new Error("Company computer guest is not ready for screen viewing");
+			}
+			const credentials = await this.#credentials(logicalComputerId);
+			this.#validateCredentialHashes(current, credentials);
+			return {
+				guestAddress: current.guestAddress,
+				viewerPort: this.#config.guestScreenViewerPort ?? COMPANY_COMPUTER_SCREEN_VIEWER_PORT,
+				viewerToken: credentials.screenViewerToken,
+			};
+		});
+	}
+
 	#assertWorkAuthority(
 		work: CloudRunnerWork & { logicalComputerId: string; computeIdentityId: string },
 		authority: LxdCompanyComputerAuthority,

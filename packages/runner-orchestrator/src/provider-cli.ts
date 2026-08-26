@@ -4,6 +4,11 @@ import { isIP } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LxdUnixClient } from "./lxd-client.ts";
+import {
+	ExecCompanyDatasetSnapshotClient,
+	LxdCompanyComputerProviderBackend,
+	type LxdCompanyComputerProviderConfig,
+} from "./lxd-company-computer-provider.ts";
 import { verifyLxdImageProvenanceFiles } from "./lxd-image-provenance.ts";
 import {
 	HttpLxdNativeLoginGateway,
@@ -15,6 +20,7 @@ import {
 	LxdCloudRunnerProviderBackend,
 	type LxdCloudRunnerProviderConfig,
 } from "./lxd-provider.ts";
+import { LxdCompanyComputerScreenViewerGateway, SupabaseScreenViewControlPlane } from "./lxd-screen-viewer-gateway.ts";
 import { nodeHttpFetch } from "./node-http-fetch.ts";
 import { ProcessCloudRunnerProviderBackend, type ProcessCloudRunnerProviderConfig } from "./process-provider.ts";
 import {
@@ -167,14 +173,112 @@ function lxdLoginConfig(config: LxdCloudRunnerProviderConfig): LxdNativeLoginGat
 	};
 }
 
+function companyComputerConfig(): LxdCompanyComputerProviderConfig {
+	return {
+		adapterId: required("QORPERA_RUNNER_PROVIDER_ADAPTER"),
+		nodeKey: required("QORPERA_LXD_NODE_KEY"),
+		supabaseUrl: required("QORPERA_SUPABASE_URL"),
+		supabaseServiceKey: required("QORPERA_SUPABASE_SERVICE_KEY"),
+		supabasePublishableKey: required("QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+		stateRoot: resolve(required("QORPERA_RUNNER_PROVIDER_STATE_ROOT")),
+		project: required("QORPERA_LXD_PROJECT"),
+		computerProfile: required("QORPERA_LXD_COMPUTER_PROFILE"),
+		networkInterface: required("QORPERA_LXD_NETWORK_INTERFACE"),
+		imageServer: required("QORPERA_LXD_IMAGE_SERVER"),
+		imageFingerprint: required("QORPERA_LXD_IMAGE_FINGERPRINT"),
+		storagePool: required("QORPERA_LXD_STORAGE_POOL"),
+		identityVolumePrefix: process.env.QORPERA_LXD_IDENTITY_VOLUME_PREFIX ?? "identity-",
+		identityVolumeSize: required("QORPERA_LXD_IDENTITY_VOLUME_SIZE"),
+		rootDiskSize: required("QORPERA_LXD_ROOT_DISK_SIZE"),
+		cpuLimit: integer("QORPERA_LXD_CPU_LIMIT"),
+		memoryLimit: required("QORPERA_LXD_MEMORY_LIMIT"),
+		nasDatasetRoot: resolve(required("QORPERA_LXD_NAS_DATASET_ROOT")),
+		...(process.env.QORPERA_LXD_GUEST_DATASET_PATH
+			? { guestDatasetPath: process.env.QORPERA_LXD_GUEST_DATASET_PATH }
+			: {}),
+		guestAssignmentPort: integer("QORPERA_LXD_GUEST_ASSIGNMENT_PORT", 8082),
+		guestAssignmentSource: required("QORPERA_LXD_GUEST_ASSIGNMENT_SOURCE"),
+		nativeBridgePort: integer("QORPERA_LXD_NATIVE_BRIDGE_PORT", 8083),
+		nativeExecutionGid: integer("QORPERA_LXD_NATIVE_EXECUTION_GID", 42041),
+		guestReadyTimeoutMs: integer("QORPERA_LXD_GUEST_READY_TIMEOUT_MS", 300_000),
+		guestScreenViewerPort: integer("QORPERA_LXD_GUEST_SCREEN_VIEWER_PORT", 8446),
+		syncPollSeconds: integer("QORPERA_LXD_SYNC_POLL_SECONDS", 30),
+		screenPollSeconds: integer("QORPERA_LXD_SCREEN_POLL_SECONDS", 30),
+		runnerImage: required("QORPERA_EPHEMERAL_RUNNER_IMAGE"),
+		runnerPodmanPath: required("QORPERA_EPHEMERAL_RUNNER_PODMAN"),
+		runnerEntrypoint: required("QORPERA_EPHEMERAL_RUNNER_ENTRYPOINT"),
+		runnerVersion: process.env.QORPERA_EPHEMERAL_RUNNER_VERSION ?? "dev",
+		codexPath: process.env.QORPERA_CODEX_PATH ?? "/usr/local/bin/codex",
+		claudePath: process.env.QORPERA_CLAUDE_PATH ?? "/usr/local/bin/claude",
+		guestBootstrapService:
+			process.env.QORPERA_LXD_GUEST_BOOTSTRAP_SERVICE ?? "qorpera-company-computer-bootstrap.service",
+	};
+}
+
+function datasetSnapshotCommand(): readonly string[] | undefined {
+	const encoded = process.env.QORPERA_LXD_DATASET_SNAPSHOT_COMMAND;
+	if (encoded === undefined) return undefined;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(encoded);
+	} catch (error) {
+		throw new Error("QORPERA_LXD_DATASET_SNAPSHOT_COMMAND must be a JSON array", { cause: error });
+	}
+	if (!Array.isArray(parsed) || parsed.length < 1 || parsed.some((entry) => typeof entry !== "string")) {
+		throw new Error("QORPERA_LXD_DATASET_SNAPSHOT_COMMAND must be a JSON array of strings");
+	}
+	return parsed as string[];
+}
+
 interface ProviderRuntime {
 	backend: CloudRunnerProviderServiceBackend;
 	loginGateway?: HttpLxdNativeLoginGateway;
+	screenViewerGateway?: LxdCompanyComputerScreenViewerGateway;
 }
 
 function runtime(): ProviderRuntime {
 	const kind = process.env.QORPERA_RUNNER_PROVIDER_BACKEND ?? "process";
 	if (kind === "process") return { backend: new ProcessCloudRunnerProviderBackend(processConfig(), nodeHttpFetch) };
+	if (kind === "lxd-company-computer") {
+		const config = companyComputerConfig();
+		verifyLxdImageProvenanceFiles(
+			resolve(required("QORPERA_LXD_IMAGE_PROVENANCE")),
+			resolve(required("QORPERA_LXD_IMAGE_PROVENANCE_PUBLIC_KEY")),
+			{
+				imageServer: config.imageServer,
+				imageFingerprint: config.imageFingerprint,
+				guestPackageManifestSha256: required("QORPERA_LXD_GUEST_PACKAGE_MANIFEST_SHA256"),
+				runnerImage: config.runnerImage,
+				runnerImageArchiveSha256: required("QORPERA_EPHEMERAL_RUNNER_IMAGE_ARCHIVE_SHA256"),
+				runnerImageCosignBundleSha256: required("QORPERA_EPHEMERAL_RUNNER_IMAGE_COSIGN_BUNDLE_SHA256"),
+			},
+		);
+		const client = new LxdUnixClient(
+			process.env.QORPERA_LXD_SOCKET ?? "/var/snap/lxd/common/lxd/unix.socket",
+			integer("QORPERA_LXD_OPERATION_TIMEOUT_SECONDS", 120),
+		);
+		const snapshotCommand = datasetSnapshotCommand();
+		const backend = new LxdCompanyComputerProviderBackend(
+			config,
+			client,
+			undefined,
+			new HttpLxdGuestTransport(client, nodeHttpFetch),
+			snapshotCommand ? new ExecCompanyDatasetSnapshotClient(snapshotCommand) : undefined,
+		);
+		const viewerTrustedSource = process.env.QORPERA_LXD_SCREEN_VIEWER_GATEWAY_TRUSTED_SOURCE;
+		return {
+			backend,
+			screenViewerGateway: new LxdCompanyComputerScreenViewerGateway(
+				{
+					host: process.env.QORPERA_LXD_SCREEN_VIEWER_GATEWAY_HOST ?? "127.0.0.1",
+					port: integer("QORPERA_LXD_SCREEN_VIEWER_GATEWAY_PORT", 18_446),
+					...(viewerTrustedSource ? { trustedSource: viewerTrustedSource } : {}),
+				},
+				new SupabaseScreenViewControlPlane(config.supabaseUrl, config.supabaseServiceKey, nodeHttpFetch),
+				backend,
+			),
+		};
+	}
 	if (kind === "lxd") {
 		const config = lxdConfig();
 		verifyLxdImageProvenanceFiles(
@@ -207,7 +311,7 @@ function runtime(): ProviderRuntime {
 			),
 		};
 	}
-	throw new Error("QORPERA_RUNNER_PROVIDER_BACKEND must be process or lxd");
+	throw new Error("QORPERA_RUNNER_PROVIDER_BACKEND must be process, lxd, or lxd-company-computer");
 }
 
 async function main(): Promise<void> {
@@ -224,15 +328,18 @@ async function main(): Promise<void> {
 	const stop = (): void => shutdown.abort();
 	process.once("SIGINT", stop);
 	process.once("SIGTERM", stop);
+	let runningScreenViewer: Awaited<ReturnType<LxdCompanyComputerScreenViewerGateway["start"]>> | undefined;
 	try {
 		await service.start();
 		await current.loginGateway?.start();
+		runningScreenViewer = await current.screenViewerGateway?.start();
 		await new Promise<void>((resolveWait) =>
 			shutdown.signal.addEventListener("abort", () => resolveWait(), { once: true }),
 		);
 	} finally {
 		process.removeListener("SIGINT", stop);
 		process.removeListener("SIGTERM", stop);
+		await runningScreenViewer?.close();
 		await current.loginGateway?.close();
 		await service.close();
 	}
