@@ -27,7 +27,9 @@ KillSignal=SIGTERM
 UMask=0007
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/qorpera-native-provider /var/lib/qorpera-native-workspace
+# The official harness edits the optional live Company File through this
+# service; ProtectSystem=strict must not remount that device read-only.
+ReadWritePaths=/var/lib/qorpera-native-provider /var/lib/qorpera-native-workspace /qorpera/company-live
 ProtectHome=yes
 ProtectHostname=yes
 ProtectClock=yes

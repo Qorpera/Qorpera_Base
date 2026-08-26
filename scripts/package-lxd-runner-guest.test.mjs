@@ -55,6 +55,24 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			assert.equal(createHash("sha256").update(content).digest("hex"), artifact.sha256);
 		}
 		assert.equal((await stat(join(outputRoot, "install-image-contract.sh"))).mode & 0o111, 0o111);
+		const ephemeralRunnerService = await readFile(
+			join(outputRoot, "qorpera-ephemeral-runner.service"),
+			"utf-8",
+		);
+		const nativeProviderService = await readFile(
+			join(outputRoot, "qorpera-native-provider-host.service"),
+			"utf-8",
+		);
+		assert.match(
+			ephemeralRunnerService,
+			/^ReadWritePaths=.*(?:^|\s)\/qorpera\/company-live(?:\s|$)/m,
+			"ProtectSystem=strict must leave the live Company File writable for the runner",
+		);
+		assert.match(
+			nativeProviderService,
+			/^ReadWritePaths=.*(?:^|\s)\/qorpera\/company-live(?:\s|$)/m,
+			"ProtectSystem=strict must leave the live Company File writable for the native harness",
+		);
 
 		const builderPath = join(repositoryRoot, "deploy/first-node/build-lxd-runner-image-candidate.sh");
 		const builder = await readFile(builderPath, "utf-8");
