@@ -1,5 +1,32 @@
 # Step 2 implementation handoff
 
+**CONVERSATIONS RENDER WHOLE — closeout item 1 done, founder's UI list
+verified (2026-08-26, ~08:00 UTC+2, releases 0.20.29–0.20.32).** Trail
+materialization is now LINEAR per the founder's transcripts-are-simple-
+chats ruling: hosted sequence order IS the conversation, every entry
+chains onto the local leaf (`materializeSharedTrailSession`), runner/
+peer-authored parent ids are ignored (they fragmented sessions into
+parallel roots — the pane showed only the newest fragment, which was the
+whole "replies don't render" bug), and identity dedupe compares content
+without parentId. Verified live on released 0.20.32 by driving the app:
+full New Agent history renders (4-bubble conversation including the
+formerly quarantined entry), a fresh composer prompt showed exactly one
+clean bubble, the avatar ran its working animation in BOTH sidebar and
+thread header with "Working…", and the cloud reply ("Pong pong", Codex-
+only provenance) rendered on completion with presence back to "Ready".
+Hardening shipped alongside: `appendBoundTrailEntry` refuses to mint a
+missing trail file from a live binding (a lingering pre-update process
+recreated a session headerless during a cache heal — that class is now
+impossible); the queued-prompt bubble hides once its durable copy
+renders (compare against message text sans the rewind affordance).
+Local trail caches for company41 were rebuilt from hosted truth (old
+files + sync state + sessions-v3 read-model caches backed up in
+`~/Companies/company41-88227549/trail-prelinear-backup/`); a fresh
+device rebuild is exactly this path and produces the linear
+conversation. Remaining ledger: items 2–7 below (childless anchors
+next — the residual local child still spawns at open/boot and appends
+runtime noise; it must go entirely).
+
 **STEP 2 EXECUTION ARCHITECTURE COMPLETE (2026-08-26, 06:00 UTC+2).**
 Per the founder's definition — cloud runners and headless execution as the
 only execution — the architecture is delivered and verified end to end:
