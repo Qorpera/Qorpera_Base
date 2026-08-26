@@ -111,6 +111,8 @@ describe("userland wiring", () => {
 
 	it("keeps macOS native window controls clear of titlebar actions", () => {
 		expect(preloadSource).toContain("document.documentElement.dataset.platform = process.platform");
+		expect(indexSource.indexOf('id="railSearch"')).toBeGreaterThan(indexSource.indexOf('id="conav"'));
+		expect(indexSource.indexOf('id="railSearch"')).toBeGreaterThan(indexSource.indexOf("</header>"));
 		expect(baseCssSource).toMatch(/#titlebar \.thread-header \{[^}]*padding: 2px 142px 3px 7px;/s);
 		expect(baseCssSource).toMatch(/html\[data-platform="darwin"\] \.titlebar-rail \{ padding-left: 78px; \}/);
 		expect(baseCssSource).toMatch(
@@ -122,6 +124,17 @@ describe("userland wiring", () => {
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.rail-scroll \{[^}]*padding-top: calc\(var\(--titlebar-height\) \+ 9px\);/s,
 		);
+	});
+
+	it("keeps the translucent sidebar preference persistent and accessible", () => {
+		expect(rendererSource).toContain('const SIDEBAR_TRANSLUCENCY_KEY = "qorpera.sidebar-translucency/v1"');
+		expect(rendererSource).toContain('sidebarTranslucency.setAttribute("role", "switch")');
+		expect(rendererSource).toContain('sidebarTranslucency.setAttribute("aria-checked", String(enabled))');
+		expect(baseCssSource).toContain('html[data-sidebar-translucency="off"] #primaryNavigation');
+		expect(mainSource).toContain('vibrancy: "sidebar" as const');
+		expect(mainSource).toContain('ipcMain.handle("settings:sidebar-translucency"');
+		expect(mainSource).toContain('slot.window.setVibrancy(enabled ? "sidebar" : null)');
+		expect(preloadSource).toContain('ipcRenderer.invoke("settings:sidebar-translucency", enabled)');
 	});
 
 	it("always exposes updater state and a manual check on the company hub", () => {

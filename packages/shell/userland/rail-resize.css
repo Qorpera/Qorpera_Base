@@ -100,6 +100,10 @@ body.company-shell.rail-compact .titlebar-rail .rail-search {
 	display: none;
 }
 
+body.company-shell.rail-compact .rail-search-row {
+	display: none;
+}
+
 body.company-shell.rail-compact .titlebar-rail .rail-add-staff,
 body.company-shell.rail-compact .titlebar-rail .rail-add-staff:hover:not(:disabled),
 body.company-shell.rail-compact .titlebar-rail .rail-add-staff:active {
@@ -161,10 +165,13 @@ body.company-shell.rail-compact .company-runtime-row {
 }
 
 body.company-shell.rail-compact .staff-nav-row:hover,
-body.company-shell.rail-compact .staff-nav-row.active,
-body.company-shell.rail-compact .company-runtime-row:hover,
-body.company-shell.rail-compact .company-runtime-row.active {
+body.company-shell.rail-compact .company-runtime-row:hover {
 	background: #e8e8e6;
+}
+
+body.company-shell.rail-compact .staff-nav-row.active,
+body.company-shell.rail-compact .company-runtime-row.active {
+	background: #0a84ff;
 }
 
 body.company-shell.rail-compact .staff-nav-row .staff-avatar,

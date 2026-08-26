@@ -149,6 +149,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	onRoomEvent: (handler) => ipcRenderer.on("room-event", (_event, value) => handler(value)),
 	showHub: () => ipcRenderer.invoke("hub:show"),
 	setSettingsOverlayActive: (active) => ipcRenderer.send("settings:overlay", active),
+	setSidebarTranslucency: (enabled) => ipcRenderer.invoke("settings:sidebar-translucency", enabled),
 	settingsInfo: () => ipcRenderer.invoke("settings:info"),
 	setBackgroundEnabled: (enabled) => ipcRenderer.invoke("settings:background", enabled),
 	setLocalExecution: (permission) => ipcRenderer.invoke("settings:local-execution", permission),

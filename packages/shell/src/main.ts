@@ -167,6 +167,7 @@ import {
 import electronUpdater from "electron-updater";
 import { QorperaAccountAuth, type QorperaAccountInfo, type QorperaAccountProvider } from "./account-auth.ts";
 import {
+	appendBoundTrailEntry,
 	appendKernelComputerObservation,
 	appendKernelConnectionObservation,
 	appendKernelHttpObservation,
@@ -191,7 +192,6 @@ import {
 	killChildTree,
 	killChildTreeSync,
 	materializeSharedTrailSession,
-	appendBoundTrailEntry,
 	migrateLegacyCompanyAgentTrails,
 	migrateLegacyTrailSession,
 	parseTrailAppendFrame,
@@ -2395,7 +2395,7 @@ function readHiddenCloudProfiles(userData: string, accountId: string): Set<strin
 // Window/taskbar icon: company appearance is machine-local account state,
 // never company-authored executable or UI content.
 const DEFAULT_ICON = join(DIRNAME, "assets", process.platform === "win32" ? "qorpera.ico" : "qorpera.png");
-const TITLE_BAR_OVERLAY = { color: "#ffffff", symbolColor: "#111111", height: 40 } as const;
+const TITLE_BAR_OVERLAY = { color: "#ffffff", symbolColor: "#111111", height: 48 } as const;
 
 function companyWindowIcon(root: string): string | NativeImage {
 	if (!currentQorperaAccountId) return DEFAULT_ICON;
@@ -9768,7 +9768,8 @@ function createRendererWindow(
 		height: 860,
 		show: options.show ?? true,
 		title: "Qorpera Base",
-		backgroundColor: "#ffffff",
+		backgroundColor: process.platform === "darwin" ? "#00ffffff" : "#ffffff",
+		...(process.platform === "darwin" ? { vibrancy: "sidebar" as const, visualEffectState: "active" as const } : {}),
 		// Frameless, Desktop-style chrome: the fixed shell draws the titlebar
 		// (a -webkit-app-region: drag header), the OS overlays min/max/close.
 		titleBarStyle: "hidden",
@@ -11898,6 +11899,14 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		if (!slot || typeof active !== "boolean") return;
 		setSettingsTitleBarOverlay(slot.window, active);
+	});
+	ipcMain.handle("settings:sidebar-translucency", (event, enabled: unknown) => {
+		const slot = slotOf(event.sender);
+		if (!slot || typeof enabled !== "boolean") {
+			return { ok: false, error: "invalid sidebar translucency preference" };
+		}
+		if (process.platform === "darwin") slot.window.setVibrancy(enabled ? "sidebar" : null);
+		return { ok: true, enabled };
 	});
 	ipcMain.handle("profile-team:invite", async (event, value: unknown) => {
 		const slot = slotOf(event.sender);

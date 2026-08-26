@@ -16,7 +16,6 @@
 <body>
 <header id="titlebar">
 	<div class="titlebar-rail">
-		<label class="rail-search"><span class="sr-only">Search staff</span><input id="railSearch" type="search" placeholder="Search" autocomplete="off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></label>
 		<button id="addStaffButton" class="rail-add-staff" type="button" aria-label="Add agent" title="Add agent"><span aria-hidden="true">+</span></button>
 	</div>
 	<div id="threadHeader" class="thread-header" hidden>
@@ -76,6 +75,9 @@
 	     This stub stays because enterCompany() addresses it by id. -->
 	<div id="hubnav" style="display:none"></div>
 	<div id="conav" style="display:none">
+		<div class="rail-search-row">
+			<label class="rail-search"><span class="sr-only">Search staff</span><input id="railSearch" type="search" placeholder="Search" autocomplete="off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></label>
+		</div>
 		<div id="railScroll" class="rail-scroll">
 			<section class="rail-section" id="staffSection" aria-labelledby="staffSectionTitle">
 				<h2 id="staffSectionTitle">Staff</h2>
