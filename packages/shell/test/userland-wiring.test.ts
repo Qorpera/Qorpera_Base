@@ -213,8 +213,12 @@ describe("userland wiring", () => {
 		expect(mainSource).toContain("await control.requestSessionTurn({");
 		expect(rendererSource).toContain("const executionSponsor = selectedNativeExecutionSponsor()");
 		expect(rendererSource).toContain("message.qorperaRunId");
-		expect(rendererSource).toContain("nativeTurnProvenanceByRun.get(message.dataset.qorperaRunId)");
-		expect(baseCssSource).toContain(".native-turn-provenance");
+		/* Founder ruling (2026-08-26): the thread shows the conversation, not
+		 * the machinery — no provider tags on bubbles or in the header, and no
+		 * visible sponsor selector; the first active connection sponsors. */
+		expect(rendererSource).not.toContain("nativeTurnProvenanceLabel");
+		expect(rendererSource).toContain('".msg.assistant .native-turn-provenance"');
+		expect(rendererSource).toContain("select.hidden = true");
 		const sendPrompt = rendererSource.slice(
 			rendererSource.indexOf("async function sendPrompt("),
 			rendererSource.indexOf("function modelFailureInfo", rendererSource.indexOf("async function sendPrompt(")),

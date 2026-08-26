@@ -67,6 +67,7 @@ let activityRenderGeneration = 0;
 let currentModelKey = "";
 let preferredModelKey = "";
 let currentEffort = "";
+let effortExplicitlyChosen = false;
 let currentSpeed = "standard";
 let speedAsserted = false; // one re-assert of the remembered speed per child spawn
 let modelFallbackAsserted = false; // one same-provider model fallback per child spawn
@@ -191,7 +192,9 @@ function syncNativeExecutionSelector() {
 	const remembered = localStorage.getItem(nativeExecutionStorageKey());
 	const values = [...select.options].map((option) => option.value);
 	select.value = remembered && values.includes(remembered) ? remembered : (values[0] ?? "");
-	select.hidden = !currentStaffId || currentRoomId || choices.length === 0;
+	// Founder ruling (2026-08-26): sponsoring is not a visible concept — the
+	// first active connection carries execution and the control stays hidden.
+	select.hidden = true;
 	select.onchange = () => localStorage.setItem(nativeExecutionStorageKey(), select.value);
 }
 
@@ -239,49 +242,22 @@ async function refreshNativeExecution() {
 	return nativeExecutionRefreshInFlight;
 }
 
-async function refreshNativeTurnProvenance(force = false) {
+async function refreshNativeTurnProvenance() {
+	// Founder ruling (2026-08-26): the thread shows the conversation, not the
+	// machinery — no provider tag in the header or on bubbles. Provenance
+	// stays durable in the execution records for anyone who audits.
 	const label = $("threadSponsorProvenance");
-	if (!label) return;
-	if (!currentStaffId || currentRoomId || typeof window.qorpera.nativeSessionTurnProvenance !== "function") {
+	if (label) {
 		label.hidden = true;
-		return;
-	}
-	if (!force && Date.now() - nativeProvenanceRefreshedAt < 10_000) return;
-	nativeProvenanceRefreshedAt = Date.now();
-	const result = await window.qorpera.nativeSessionTurnProvenance(currentStaffId).catch(() => ({ ok: false }));
-	if (!result?.ok || !Array.isArray(result.provenance) || result.provenance.length === 0) {
-		nativeTurnProvenanceByRun.clear();
-		syncNativeMessageProvenance();
-		label.hidden = true;
-		return;
+		label.textContent = "";
 	}
 	nativeTurnProvenanceByRun.clear();
-	for (const turn of result.provenance) {
-		if (typeof turn?.runId === "string") nativeTurnProvenanceByRun.set(turn.runId, turn);
-	}
 	syncNativeMessageProvenance();
-	const turn = result.provenance[0];
-	const provider = turn.provider === "openai" ? "Codex" : turn.provider === "anthropic" ? "Claude" : turn.provider;
-	label.textContent = provider ?? "Provider";
-	label.title = `This turn uses provider connection ${turn.providerConnectionId ?? "pending"} version ${turn.providerConnectionVersion ?? "pending"}.`;
-	label.hidden = false;
-}
-
-function nativeTurnProvenanceLabel(turn) {
-	const provider = turn.provider === "openai" ? "Codex" : turn.provider === "anthropic" ? "Claude" : turn.provider;
-	return provider ?? "Provider";
 }
 
 function syncNativeMessageProvenance() {
-	for (const message of document.querySelectorAll(".msg.assistant[data-qorpera-run-id]")) {
-		message.querySelector(":scope > .native-turn-provenance")?.remove();
-		const turn = nativeTurnProvenanceByRun.get(message.dataset.qorperaRunId);
-		if (!turn) continue;
-		const provenance = document.createElement("div");
-		provenance.className = "native-turn-provenance";
-		provenance.textContent = nativeTurnProvenanceLabel(turn);
-		provenance.title = `Provider connection ${turn.providerConnectionId ?? "pending"} version ${turn.providerConnectionVersion ?? "pending"}; run ${turn.runId}.`;
-		message.append(provenance);
+	for (const provenance of document.querySelectorAll(".msg.assistant .native-turn-provenance")) {
+		provenance.remove();
 	}
 }
 
@@ -1411,11 +1387,18 @@ const modelCtl = (() => {
 			currentModelKey = cached.modelKey;
 			preferredModelKey = cached.modelKey;
 		}
-		if (!currentEffort && typeof cached?.effort === "string") currentEffort = cached.effort;
+		if (!currentEffort && typeof cached?.effort === "string" && cached?.effortChosen === true) {
+			currentEffort = cached.effort;
+			effortExplicitlyChosen = true;
+		}
 		if (cached?.speed === "fast" || cached?.speed === "standard") currentSpeed = cached.speed;
 	} catch {
 		// unreadable cache: start empty, the live child fills it in
 	}
+	// Snappy by default (founder, 2026-08-26): effort routes low unless the
+	// member explicitly raises it. Cached levels that were never chosen by
+	// hand (session replay drift) do not count as a choice.
+	if (!currentEffort) currentEffort = "low";
 	const persist = () => {
 		try {
 			localStorage.setItem(
@@ -1425,6 +1408,7 @@ const modelCtl = (() => {
 					levels,
 					modelKey: preferredModelKey || currentModelKey,
 					effort: currentEffort,
+					effortChosen: effortExplicitlyChosen,
 					speed: currentSpeed,
 				}),
 			);
@@ -1550,6 +1534,7 @@ const modelCtl = (() => {
 			slider.value = String(target);
 			paintTrack();
 			currentEffort = level;
+			effortExplicitlyChosen = true;
 			persist();
 			sendRpc({ type: "set_thinking_level", level });
 		};
@@ -9039,6 +9024,7 @@ function renderPendingSessionQueue() {
 		appendConversationEntry(bubble);
 	}
 	$("messages").scrollTop = $("messages").scrollHeight;
+	syncThreadActivityFromCloud();
 }
 
 function applySessionQueue(queue) {
@@ -9190,7 +9176,7 @@ function threadActivityLabel(mode) {
 	return `${name} ${action}`;
 }
 
-function showThreadActivity(mode) {
+function showThreadActivity(mode, autoScroll = true) {
 	if (currentView !== "chat") return;
 	const staff = currentStaff();
 	const activityStaffId = staffId(staff);
@@ -9202,7 +9188,7 @@ function showThreadActivity(mode) {
 	}
 	const label = threadActivityLabel(mode);
 	if (threadActivityEl.dataset.mode === mode && threadActivityEl.dataset.staffId === activityStaffId) {
-		$("messages").scrollTop = $("messages").scrollHeight;
+		if (autoScroll) $("messages").scrollTop = $("messages").scrollHeight;
 		return;
 	}
 	threadActivityEl.className = `agent-thread-activity is-${mode}`;
@@ -9218,6 +9204,26 @@ function showThreadActivity(mode) {
 function hideThreadActivity() {
 	threadActivityEl?.remove();
 	threadActivityEl = null;
+}
+
+/** The in-thread avatar row for cloud execution. The local RPC stream drives
+ * showThreadActivity directly while a child streams; cloud turns have no
+ * stream, so the hosted read model (waiting/working) and the durable prompt
+ * queue decide whether the agent is visibly at work in the open thread. */
+function syncThreadActivityFromCloud() {
+	if (currentView !== "chat" || !currentStaffId || currentRoomId) return;
+	if (activeRunProgress) return;
+	const hosted = hostedStaffActivity.get(currentStaffId)?.activity;
+	const queue = pendingSessionQueueByStaff.get(currentStaffId) ?? [];
+	const queuedPending = queue.some((input) => input && input.status !== "failed");
+	if (hosted === "working" || hosted === "waiting" || queuedPending) {
+		showThreadActivity("working", threadActivityEl === null);
+	} else if (threadActivityEl?.dataset.cloudDriven === "true") {
+		hideThreadActivity();
+	}
+	if (threadActivityEl && (hosted === "working" || hosted === "waiting" || queuedPending)) {
+		threadActivityEl.dataset.cloudDriven = "true";
+	}
 }
 
 // ---- image attachments: paste or drop into the composer ----------------------
@@ -10252,7 +10258,9 @@ window.qorpera.onRpcEvent((frame) => {
 				const model = frame.data?.model;
 				if (model?.id) currentModelKey = `${model.provider}::${model.id}`;
 				modelStateHydrated = true;
-				if (frame.data?.thinkingLevel) currentEffort = frame.data.thinkingLevel;
+				// The runtime's replayed level is legacy-local session state;
+				// it must not displace the low default unless the member chose.
+				if (frame.data?.thinkingLevel && effortExplicitlyChosen) currentEffort = frame.data.thinkingLevel;
 				const reported = frame.data?.responseSpeed;
 				if (reported) {
 					// Speed is session-local in the runtime; the chrome carries the
@@ -12200,6 +12208,7 @@ window.qorpera.onRunnerActivity?.((payload) => {
 		}
 	} else hostedStaffActivityHealthy = false;
 	syncVisibleStaffAvatars();
+	syncThreadActivityFromCloud();
 	try {
 		renderRosterRail();
 		if (currentView === "roster") renderStaffHome();
