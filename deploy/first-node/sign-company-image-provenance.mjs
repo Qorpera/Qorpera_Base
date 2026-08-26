@@ -14,7 +14,7 @@ const [fingerprint, evidenceSha, testedAt] = process.argv.slice(2);
 if (!/^[0-9a-f]{64}$/.test(fingerprint ?? "") || !/^[0-9a-f]{64}$/.test(evidenceSha ?? "") || !testedAt) {
 	throw new Error("usage: sign-provenance.mjs <fingerprint> <evidence-sha256> <tested-at>");
 }
-const repo = dirname(dirname(fileURLToPath(new URL(import.meta.url))));
+const repo = dirname(dirname(dirname(fileURLToPath(new URL(import.meta.url)))));
 /* Build the tool first: npm run pack:lxd-provider */
 const tool = process.env.QORPERA_PROVENANCE_TOOL ?? join(repo, ".artifacts/lxd-provider/qorpera-lxd-image-provenance.mjs");
 const commit = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf-8" }).trim();
