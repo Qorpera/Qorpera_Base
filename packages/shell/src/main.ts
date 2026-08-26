@@ -961,6 +961,15 @@ let downloadedUpdateFile: string | undefined;
  * ad-hoc build installs its (sha512-verified) downloaded archive by
  * replacing its own bundle. Detection is live so this path retires itself
  * the moment builds are properly signed. */
+let bundledRuntimeNodeCache: string | null | undefined;
+function bundledRuntimeNodeForAdhocBuild(): string | undefined {
+	if (process.platform !== "darwin" || !app.isPackaged) return undefined;
+	if (bundledRuntimeNodeCache !== undefined) return bundledRuntimeNodeCache ?? undefined;
+	const candidate = join(app.getAppPath(), "node_modules", ".qorpera-runtime-node", "bin", "node");
+	bundledRuntimeNodeCache = existsSync(candidate) && isAdhocSignedMacBuild() ? candidate : null;
+	return bundledRuntimeNodeCache ?? undefined;
+}
+
 function isAdhocSignedMacBuild(): boolean {
 	if (process.platform !== "darwin") return false;
 	const bundle = resolve(dirname(app.getPath("exe")), "..", "..");
@@ -3803,12 +3812,15 @@ function startLegacyPiSessionAttachment(
 	try {
 		agentDir = prepareBrokeredAgentDir(configDir, root, brokeredCredentials.credentials);
 		shareWindowsSandboxState(userData, configDir);
-		/* Packaged builds run runtime children as the signed app binary in
-		 * node mode. A source checkout's unsigned Electron fails the child
-		 * codesign check inside the sandbox, so development may point the
-		 * children at a signed system Node; its install tree then needs read
-		 * access inside the sandbox to be executable. */
-		const runtimeNodeExecutable = process.env.QORPERA_RUNTIME_NODE?.trim() || process.execPath;
+		/* Runtime children must run as a properly signed binary: an ad-hoc
+		 * signature fails the child codesign check inside the sandbox
+		 * (task_name_for_pid failure 5) and the child dies before its first
+		 * message — true for source checkouts AND for ad-hoc packaged
+		 * builds. Until Developer ID signing lands, packaged builds bundle
+		 * the officially signed Node and fall back to it automatically;
+		 * development keeps the explicit override. */
+		const runtimeNodeExecutable =
+			process.env.QORPERA_RUNTIME_NODE?.trim() || bundledRuntimeNodeForAdhocBuild() || process.execPath;
 		const runtimeNodeReadPaths =
 			runtimeNodeExecutable === process.execPath ? [] : [dirname(dirname(realpathSync(runtimeNodeExecutable)))];
 		writeSandboxProfile(

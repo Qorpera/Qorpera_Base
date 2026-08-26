@@ -79,6 +79,17 @@ mkdirSync(join(appDir, "node_modules"), { recursive: true });
 
 // 1. Shell code + product identity.
 cpSync(join(repoRoot, "packages", "shell", "dist"), join(appDir, "dist"), { recursive: true });
+
+/* Ad-hoc-signed builds cannot run their own binary as a sandboxed runtime
+ * child (the child codesign check fails), so the app bundles the officially
+ * signed Node and main falls back to it automatically until Developer ID
+ * signing exists. */
+const runtimeNode = join(repoRoot, "node_modules", ".qorpera-runtime-node", "bin", "node");
+if (existsSync(runtimeNode)) {
+	cpSync(runtimeNode, join(appDir, "node_modules", ".qorpera-runtime-node", "bin", "node"));
+} else {
+	console.warn("pack-shell: signed runtime node missing — ad-hoc builds will fail local execution");
+}
 writeFileSync(
 	join(appDir, "package.json"),
 	`${JSON.stringify(
