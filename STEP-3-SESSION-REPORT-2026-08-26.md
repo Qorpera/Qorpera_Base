@@ -2,7 +2,7 @@
 
 Produced by the dedicated Step 3 session continuing from
 `STEP-3-SESSION-REPORT-2026-08-25.md`. Branch `step3/company-computers` at
-`eefaee298` (19 commits on `439fadc1c`, all pushed to `github`); tsgo clean,
+`8975d0146` (21 commits on `439fadc1c`, all pushed to `github`); tsgo clean,
 biome clean; the four company-computer shell suites hold 36 tests (12 sync +
 12 screens + 8 guest composition + 4 member view), the full
 runner-orchestrator suite is 66 passing, and `npm run test:scripts` is green
@@ -188,6 +188,20 @@ D-Bus. The shell resolves the node's viewer gateway from the registry
 end to end in a browser harness: live RFB framebuffer pixels through the
 real guest listener → gateway → member connect → WebSocket bridge → noVNC.
 
+**13. Chrome in the dock; per-agent creature wallpapers.** `8975d0146`
+(founder-directed). google-chrome-stable installs from Google's signed apt
+repository with the repository key shipped pinned in the guest package and
+its primary fingerprint asserted at install; the dock defaults are Chrome /
+files / terminal, and qorpera-chrome keeps one browser profile per screen
+on the NAS dataset. Every screen's desktop wallpaper carries its owning
+agent's creature — the cast is generated at package time from the shell's
+own creature art, the derivation (template mapping, else stable identity
+hash) is shared with the renderer via staffCharacterForIdentity, the
+service screen listing carries the roster's template id (draft migration
+20260826100000), and the screen agent keeps per-screen wallpaper files on
+the dataset current with attachments; unowned screens get a stable
+pseudo-random creature.
+
 ## Design decisions (charter trace)
 
 - Sync is strictly one-directional; the working copy is never authority
@@ -219,10 +233,9 @@ real guest listener → gateway → member connect → WebSocket bridge → noVN
   the publication-cadence founder decision (charter open question) plus
   runtime-lock/capture semantics in the execution pipeline. Deliberately
   not decided silently.
-- A browser is not yet in the desktop stack: Ubuntu 26.04 ships Firefox
-  and Chromium as snaps only, so the image needs a deliberate packaging
-  decision (snap seeding in the builder VM vs a vendor apt repository with
-  pinned provenance) rather than an apt one-liner.
+- The image build now reaches dl.google.com for Chrome; the candidate
+  recipe's builder VM already has network for apt, so no recipe change,
+  but a fully offline build would need a vendored .deb.
 - **Runner session re-activation after VM reboot past `pending`** — deferred
   deliberately this session: it changes runner-registration lease semantics
   shared with the Step 2 acceptance currently in flight in the parallel
@@ -238,9 +251,8 @@ real guest listener → gateway → member connect → WebSocket bridge → noVN
    shared machine, the host viewer leg wired into the provider service, the
    one-task-per-screen fence + keyframe audit, and the member watch/drive
    path down to a tested local noVNC bridge URL.
-2. Browser in the desktop image (snap vs vendor-repo packaging decision),
-   and harness-side computer-use DISPLAY integration via the occupancy
-   broker.
+2. Harness-side computer-use DISPLAY integration via the occupancy
+   broker; Chrome and the dock are in.
 3. If Step 2 acceptance has closed: the capsule rule + work validator
    extension as its own migration/PR (payment structure excluded), and
    runner reboot re-activation.
