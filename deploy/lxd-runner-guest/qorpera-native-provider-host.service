@@ -9,6 +9,9 @@ RequiresMountsFor=/var/lib/qorpera/identity
 Type=exec
 User=qorpera-native-provider
 Group=qorpera-native-execution
+# The live NAS export is squash-owned by GID 100 (users); the native harness
+# must read and update files left by earlier ephemeral guest identities.
+SupplementaryGroups=users
 WorkingDirectory=/var/lib/qorpera-native-provider
 Environment=HOME=/var/lib/qorpera-native-provider
 # Same squash-ownership trust for git run by the provider harness.

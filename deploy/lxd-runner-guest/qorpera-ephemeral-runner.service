@@ -10,7 +10,9 @@ RequiresMountsFor=/var/lib/qorpera/identity
 Type=exec
 User=qorpera-runner
 Group=qorpera-runner
-SupplementaryGroups=qorpera-native-execution
+# Synology maps the live export to GID 100 (users). Successive guest VMs use
+# different service UIDs, so group access is the stable sharing contract.
+SupplementaryGroups=qorpera-native-execution users
 WorkingDirectory=/var/lib/qorpera-runner
 Environment=HOME=/var/lib/qorpera-runner
 Environment=XDG_RUNTIME_DIR=/run/qorpera-runner
@@ -30,7 +32,8 @@ Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=45s
 KillSignal=SIGTERM
-UMask=0077
+# Preserve group access for files that later guest identities must capture.
+UMask=0007
 Delegate=yes
 PrivateTmp=yes
 ProtectSystem=strict

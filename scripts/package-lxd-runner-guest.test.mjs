@@ -73,6 +73,17 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			/^ReadWritePaths=.*(?:^|\s)\/qorpera\/company-live(?:\s|$)/m,
 			"ProtectSystem=strict must leave the live Company File writable for the native harness",
 		);
+		for (const [serviceName, service] of [
+			["ephemeral runner", ephemeralRunnerService],
+			["native provider", nativeProviderService],
+		]) {
+			assert.match(
+				service,
+				/^SupplementaryGroups=.*\busers\b.*$/m,
+				`${serviceName} must join the NAS-mapped sharing group`,
+			);
+			assert.match(service, /^UMask=0007$/m, `${serviceName} must preserve group access to shared files`);
+		}
 
 		const builderPath = join(repositoryRoot, "deploy/first-node/build-lxd-runner-image-candidate.sh");
 		const builder = await readFile(builderPath, "utf-8");
