@@ -194,6 +194,15 @@ describe("userland wiring", () => {
 		);
 	});
 
+	it("preserves system avatar colors in forced-color mode", () => {
+		expect(baseCssSource).toMatch(
+			/@media \(forced-colors: active\) \{\s*\.staff-avatar \{ --staff-creature-filter: none !important; \}\s*\.staff-creature-image \{ filter: none !important; \}/s,
+		);
+		expect(baseCssSource).toMatch(
+			/@media \(forced-colors: none\) \{\s*#staffNavigation \.staff-nav-row\.active \.staff-avatar,[\s\S]*?--staff-creature-filter: brightness\(0\) invert\(1\) !important;[\s\S]*?#staffNavigation \.staff-nav-row\.active \.staff-creature-image,[\s\S]*?filter: brightness\(0\) invert\(1\) !important;[\s\S]*?#staffNavigation \.staff-nav-row\.active \.staff-face i,[\s\S]*?background: var\(--sidebar-selection\);/,
+		);
+	});
+
 	it("keeps the translucent sidebar preference persistent and accessible", () => {
 		const themeRow = rendererSource.indexOf('setRow(appearanceGroup, "Theme", "", theme)');
 		const translucencyRow = rendererSource.indexOf('sidebarTranslucency.id = "sidebarTranslucencyToggle"');
