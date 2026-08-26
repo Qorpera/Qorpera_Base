@@ -8921,9 +8921,19 @@ function renderPendingSessionQueue() {
 	for (const element of document.querySelectorAll("#messages > .session-queued")) element.remove();
 	if (!currentStaffId || currentRoomId || currentView !== "chat") return;
 	const queue = pendingSessionQueueByStaff.get(currentStaffId) ?? [];
+	// The queue bubble exists so a sent message is visible before it is
+	// durable. Once the same message has synchronized into the thread, the
+	// durable copy wins — rendering both shows the prompt twice for the whole
+	// turn. Failures stay visible regardless: they are actionable.
+	const materializedUserTexts = new Set(
+		[...document.querySelectorAll("#messages > .msg.user:not(.session-queued)")].map((element) =>
+			(element.textContent ?? "").trim(),
+		),
+	);
 	for (const input of queue) {
 		if (!input || typeof input.inputId !== "string") continue;
 		const text = typeof input.text === "string" ? input.text.trim() : "";
+		if (text && input.status !== "failed" && materializedUserTexts.has(text)) continue;
 		const attachmentCount = Number.isSafeInteger(input.attachmentCount) ? input.attachmentCount : 0;
 		const bubble = document.createElement("div");
 		bubble.className = "msg user session-queued";
