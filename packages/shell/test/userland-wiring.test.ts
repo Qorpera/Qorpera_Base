@@ -113,6 +113,8 @@ describe("userland wiring", () => {
 		expect(preloadSource).toContain("document.documentElement.dataset.platform = process.platform");
 		expect(indexSource.indexOf('id="railSearch"')).toBeGreaterThan(indexSource.indexOf('id="conav"'));
 		expect(indexSource.indexOf('id="railSearch"')).toBeGreaterThan(indexSource.indexOf("</header>"));
+		expect(baseCssSource).toContain("#f9f8f4 var(--rail-width) 100%");
+		expect(baseCssSource).toMatch(/body\.company-shell #titlebar::before \{[^}]*background: #d9d9d9;/s);
 		expect(baseCssSource).toMatch(/#titlebar \.thread-header \{[^}]*padding: 2px 142px 3px 7px;/s);
 		expect(baseCssSource).toMatch(/html\[data-platform="darwin"\] \.titlebar-rail \{ padding-left: 78px; \}/);
 		expect(baseCssSource).toMatch(

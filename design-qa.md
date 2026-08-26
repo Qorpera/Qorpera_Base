@@ -158,6 +158,7 @@ final result: passed
 - Messages target: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_LqccQa/Screenshot 2026-08-26 at 17.39.25.png`
 - Messages row-alignment target: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_MklIur/Screenshot 2026-08-26 at 18.11.09.png`
 - Messages label target: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_zrWv7p/Screenshot 2026-08-26 at 18.53.16.png`
+- Messages thread-header target: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_Ezpj1D/Screenshot 2026-08-26 at 19.24.10.png`
 - Existing Qorpera state: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_5wooqk/Screenshot 2026-08-26 at 17.39.41.png`
 - Browser-rendered implementation: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/qorpera-shell-font-metrics-final.jpg`
 - Original-versus-revised comparison: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/qorpera-shell-original-vs-revised.png`
@@ -165,6 +166,8 @@ final result: passed
 - Focused row-alignment comparison: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/messages-vs-qorpera-row-alignment-final.png`
 - Focused typography/icon comparison: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/messages-vs-qorpera-type-icons-final.png`
 - Focused label-metrics comparison: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/messages-font-metrics-final.png`
+- Browser-rendered thread header: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/qorpera-thread-header-surface-final.jpg`
+- Focused thread-header comparison: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/messages-vs-qorpera-thread-header-final.png`
 
 ## Viewport and normalization
 
@@ -179,7 +182,7 @@ No actionable P0, P1, or P2 differences remain for the requested styling scope.
 
 - Fonts and typography: macOS rail controls now resolve through `-apple-system`/`BlinkMacSystemFont` before cross-platform fallbacks, with native text rendering instead of forced geometric precision. Names use 13 px/600, Search is 13 px/400, and subtitles remain 10.5 px/400. Direct analysis of the shared `New` run gives the same 26 × 10 px bright-glyph footprint in the Messages source and corrected system-font candidate; the previous 13.5 px name rule was measurably too wide.
 - Spacing and layout rhythm: Search begins at x=14, y=54 with a 28 px height and 7 px radius, directly below the 48 px titlebar. The selected row now uses 10/11 px rail margins, a 64 px height, and a 6 px radius. Its avatar remains 44 px, centered on the reference avatar's centerline; its name starts at x=74 and y=9 within the row, matching the reference.
-- Colors and visual tokens: the selected row and scoped focus/switch states use macOS system blue. On macOS the rail and agent panel are transparent CSS surfaces over Electron's native `sidebar` vibrancy; the earlier warm CSS wash was removed. Turning translucency off disables native vibrancy and restores the neutral `#f3f3f1` rail surface.
+- Colors and visual tokens: the selected row and scoped focus/switch states use macOS system blue. On macOS the rail and agent panel are transparent CSS surfaces over Electron's native `sidebar` vibrancy; the earlier warm CSS wash was removed. Turning translucency off disables native vibrancy and restores the neutral `#f3f3f1` rail surface. The thread/new-conversation header is deliberately opaque, matching the reference's `#f9f8f4` surface and `#d9d9d9` bottom divider independently of the sidebar material setting.
 - Image quality and asset fidelity: the existing staff-character PNGs, filters, sizes, and motion wiring are unchanged. Only their rail backing is transparent so the original figures do not acquire pale square tiles on the blue or translucent surfaces.
 - Copy and content: existing product copy remains unchanged. The new General setting is labeled `Translucent sidebar` and explains its effect.
 - Icons: the existing Search vector remains the same product icon but now renders with rounded joins/caps, a 2.2-unit stroke, and pixel-aligned 14 px geometry. The existing `+` control remains text-based and functional but uses the native macOS font at 20 px/400 with an integer line-height and a one-pixel optical lift.
@@ -190,7 +193,7 @@ The existing Qorpera state and revised render keep the same rail width, avatar s
 
 ## Focused comparison evidence
 
-The Messages target and revised rail align the titlebar/search sequence within 3 px vertically: Messages Search begins at y=57 and Qorpera at y=54. Both use 14 px Search insets. In the focused row comparison, both selected rows start at x=10, measure 64 px high, and place the name at x=74 and 9–10 px below the row top. The final computed name style is the native macOS system stack at 13 px/600 with a 15.34 px line height, and the label remains exactly 9 px below the selected-row top. Qorpera intentionally preserves its narrower 304 px rail and its existing 44 px character identities. The production window supplies native macOS traffic lights and AppKit material; the browser harness cannot render either.
+The Messages target and revised rail align the titlebar/search sequence within 3 px vertically: Messages Search begins at y=57 and Qorpera at y=54. Both use 14 px Search insets. In the focused row comparison, both selected rows start at x=10, measure 64 px high, and place the name at x=74 and 9–10 px below the row top. The final computed name style is the native macOS system stack at 13 px/600 with a 15.34 px line height, and the label remains exactly 9 px below the selected-row top. The focused header comparison confirms the right-hand header region uses the same opaque `#f9f8f4` fill and `#d9d9d9` divider as Messages while leaving the rail region available for native translucency. Qorpera intentionally preserves its narrower 304 px rail and its existing 44 px character identities. The production window supplies native macOS traffic lights and AppKit material; the browser harness cannot render either.
 
 ## Comparison history
 
@@ -213,6 +216,9 @@ The Messages target and revised rail align the titlebar/search sequence within 3
    - Fix: reduced macOS staff names to 13 px/600 while preserving the native system stack, native text rendering, and the matched 9 px row-relative baseline.
 6. Font-metrics implementation: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/qorpera-shell-font-metrics-final.jpg`
    - The focused label comparison measures the Messages reference's shared `New` bright-glyph run at 26 × 10 px and the corrected 13 px/600 candidate at the same 26 × 10 px footprint. The implementation's computed style confirms 13 px/600 and unchanged row alignment. No P0/P1/P2 findings remain.
+7. Thread-header implementation: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/qorpera-thread-header-surface-final.jpg`
+   - [P2] The main thread/new-conversation header remained white while Messages uses an opaque warm `#f9f8f4` surface with a `#d9d9d9` bottom divider.
+   - Fix: applied the opaque warm surface only to the right-hand titlebar region in both translucent-sidebar states and added the matched divider without changing the translucent rail. The focused comparison confirms the corrected colors; no P0/P1/P2 findings remain.
 
 ## Primary interactions and diagnostics
 
@@ -224,5 +230,6 @@ The Messages target and revised rail align the titlebar/search sequence within 3
 ## Follow-up polish
 
 - P3: validate the exact native material response against light and dark real-world wallpapers after the next normal application build; browser rendering cannot reproduce AppKit vibrancy or native traffic lights.
+- P3: the source header crop is 52 px including its divider while the established Qorpera titlebar remains 48 px; the requested surface correction preserves the already accepted shell geometry.
 
 final result: passed
