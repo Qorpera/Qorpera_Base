@@ -1,9 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer as createHttpServer, type IncomingMessage } from "node:http";
 import { connect, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { HostedPrimaryDatabase } from "./hosted-primary.ts";
+import { registerRendererLoopbackWebSocketUrl } from "./renderer-boundary.ts";
 
 /** Member-device side of the screen watch/drive surface. The shell mints a
  * short-lived single-use view capability with the member's own session,
@@ -336,17 +337,25 @@ function websocketDecoder(): WebsocketDecoder {
  * refused rather than splitting one screen session across viewers. */
 export function startLocalScreenViewWebSocketBridge(view: ConnectedScreenView): Promise<LocalScreenViewBridge> {
 	let attached: Duplex | undefined;
+	const route = `/${randomBytes(32).toString("base64url")}`;
+	let unregisterRendererUrl = (): void => {};
 	const server = createHttpServer((_request, response) => {
 		response.writeHead(426, { "content-type": "text/plain" });
 		response.end("WebSocket upgrade required\n");
 	});
 	server.on("upgrade", (request: IncomingMessage, socket: Duplex) => {
 		const key = request.headers["sec-websocket-key"];
-		if (attached || typeof key !== "string" || request.headers.upgrade?.toLowerCase() !== "websocket") {
+		if (
+			attached ||
+			request.url !== route ||
+			typeof key !== "string" ||
+			request.headers.upgrade?.toLowerCase() !== "websocket"
+		) {
 			socket.destroy();
 			return;
 		}
 		attached = socket;
+		unregisterRendererUrl();
 		socket.write(
 			[
 				"HTTP/1.1 101 Switching Protocols",
@@ -359,6 +368,7 @@ export function startLocalScreenViewWebSocketBridge(view: ConnectedScreenView): 
 		);
 		const decoder = websocketDecoder();
 		const teardown = (): void => {
+			unregisterRendererUrl();
 			socket.destroy();
 			view.socket.destroy();
 			server.close();
@@ -398,11 +408,15 @@ export function startLocalScreenViewWebSocketBridge(view: ConnectedScreenView): 
 		server.listen(0, "127.0.0.1", () => {
 			const address = server.address();
 			const port = typeof address === "object" && address ? address.port : 0;
+			const url = `ws://127.0.0.1:${port}${route}`;
+			unregisterRendererUrl = registerRendererLoopbackWebSocketUrl(url);
 			resolveStart({
 				port,
-				url: `ws://127.0.0.1:${port}/`,
+				url,
 				close: () =>
 					new Promise<void>((resolveClose) => {
+						unregisterRendererUrl();
+						unregisterRendererUrl = (): void => {};
 						attached?.destroy();
 						view.socket.destroy();
 						server.close(() => resolveClose());

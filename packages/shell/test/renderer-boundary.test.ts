@@ -8,6 +8,7 @@ import {
 	isRendererRequestAllowed,
 	lockDownRendererSession,
 	lockDownRendererWebContents,
+	registerRendererLoopbackWebSocketUrl,
 	rendererPartitionForCompany,
 } from "../src/renderer-boundary.ts";
 
@@ -41,6 +42,34 @@ describe("renderer request boundary", () => {
 		expect(isRendererRequestAllowed("ws://127.0.0.1:4700/socket", options)).toBe(false);
 		expect(isRendererRequestAllowed("http://localhost:4700/api/state", options)).toBe(false);
 		expect(isRendererRequestAllowed("blob:https://example.com/asset", options)).toBe(false);
+	});
+
+	it("allows one exact capability-bearing loopback WebSocket URL", () => {
+		const token = "V".repeat(43);
+		const url = `ws://127.0.0.1:49152/${token}`;
+		const release = registerRendererLoopbackWebSocketUrl(url);
+		const options = { backendOrigin: "http://127.0.0.1:4700", trustedFileRoot: root };
+		try {
+			expect(isRendererRequestAllowed(url, options)).toBe(true);
+			expect(isRendererRequestAllowed(`ws://127.0.0.1:49153/${token}`, options)).toBe(false);
+			expect(isRendererRequestAllowed(`ws://127.0.0.1:49152/${"W".repeat(43)}`, options)).toBe(false);
+			expect(isRendererRequestAllowed(`ws://localhost:49152/${token}`, options)).toBe(false);
+			expect(isRendererRequestAllowed(`${url}?reuse=true`, options)).toBe(false);
+		} finally {
+			release();
+		}
+		expect(isRendererRequestAllowed(url, options)).toBe(false);
+	});
+
+	it("refuses malformed loopback WebSocket registrations", () => {
+		for (const bad of [
+			"ws://127.0.0.1:49152/short",
+			`ws://localhost:49152/${"V".repeat(43)}`,
+			`wss://127.0.0.1:49152/${"V".repeat(43)}`,
+			`ws://127.0.0.1:49152/${"V".repeat(43)}?extra=true`,
+		]) {
+			expect(() => registerRendererLoopbackWebSocketUrl(bad)).toThrow("URL is invalid");
+		}
 	});
 
 	it("limits hub file reads to physical files under the trusted userland", () => {

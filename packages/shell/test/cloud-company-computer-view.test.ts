@@ -8,6 +8,7 @@ import {
 	startLocalScreenViewWebSocketBridge,
 } from "../src/cloud-company-computer-view.ts";
 import type { HostedPrimaryDatabase } from "../src/hosted-primary.ts";
+import { isRendererRequestAllowed } from "../src/renderer-boundary.ts";
 
 const environmentId = "30000000-0000-4000-8000-000000000004";
 const screenId = "30000000-0000-4000-8000-000000000031";
@@ -168,6 +169,8 @@ describe("cloud company computer view", () => {
 				capability,
 			});
 			const bridge = await startLocalScreenViewWebSocketBridge(view);
+			const rendererBoundary = { backendOrigin: "http://127.0.0.1:4700", trustedFileRoot: "/unused" };
+			expect(isRendererRequestAllowed(bridge.url, rendererBoundary)).toBe(true);
 			const websocket = new WebSocket(bridge.url);
 			websocket.binaryType = "arraybuffer";
 			const received: Buffer[] = [];
@@ -180,6 +183,7 @@ describe("cloud company computer view", () => {
 				websocket.addEventListener("open", () => resolveOpen());
 				websocket.addEventListener("error", () => rejectOpen(new Error("bridge websocket failed")));
 			});
+			expect(isRendererRequestAllowed(bridge.url, rendererBoundary)).toBe(false);
 			const until = (predicate: () => boolean): Promise<void> =>
 				new Promise((resolveUntil) => {
 					const check = (): void => {

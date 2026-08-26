@@ -28,76 +28,69 @@ provisioning), which also sidesteps the frozen lease-semantics follow-up.
    runner image nested, archive sha `c9370c82…46239` verified), provider
    artifact, unit, env example, installer, and the image build script.
 
-## LIVE STATE at handoff (updated 2026-08-26 ~20:55Z — READ THIS FIRST)
+## LIVE STATE at handoff (updated 2026-08-26 ~21:35Z — READ THIS FIRST)
 
-The old diagnostic VM is still running on `company41-node-01` as
-`qorpera-cc-6d9da3a0f09b4d63b79b8a3aad7919d9` at `10.41.0.217`, from
-image `efe890d30817243af4466b7a4b00d802c46d55514e3eb7a5ffcb4e9d05229b2f`.
-It was hot-patched only to prove the diagnosis and must not be presented as
-the immutable result. The provider service remains active.
+The full first-machine watch proof passed. The immutable replacement is live
+on `company41-node-01` as
+`qorpera-cc-6d9da3a0f09b4d63b79b8a3aad7919d9`, at `10.41.0.218` while
+running, from signed image
+`b75114594b82a76a57585f7c626855788b2be378d816c7e95d1ff788953bb1b0`.
+The old diagnostic VM root was deleted by the guarded activation; its image,
+identity volume, dataset, credentials, and provider-journal backup remain.
 
-### Root cause and fixes completed
+### Signed immutable result
 
-1. The identity volume is writable. The apparent `EROFS` came from the
-   bootstrap unit's `ProtectSystem=strict`; its `ReadWritePaths` omitted
-   `/var/lib/qorpera/identity`, `/var/lib/qorpera-runner`, and
-   `/var/lib/qorpera-native-provider`.
-2. Bootstrap synchronously started units ordered `After=bootstrap`, creating
-   a systemd job deadlock. Service starts now use `systemctl start --no-block`.
-3. Runner, sync, and screens imported a helper from the executable bootstrap
-   entrypoint, so bundled services also ran bootstrap. The error formatter
-   now lives in the side-effect-free guest module.
-4. The Company Computer runner also imported its signal helper from the
-   standalone executable runner entrypoint. It now owns a local signal
-   wrapper and bundles no second main program.
-5. The sync bundle requires `company-lock-heartbeat.mjs` beside it. The
-   company package, installer, manifest, and tests now carry that artifact.
-6. The clean-boot operator script now creates the 80 GiB verifier root
-   atomically and treats systemd's nonzero `disabled` result as the expected
-   state after the guest agent answers.
-
-### Immutable replacement ready
-
+- Source commit: `e21a78e504396e823ff70cb6825baa2068465a65`.
 - Guest package manifest:
   `93d06dc159d162e0bb50d433000b51f32aa44f616ea42ebeb5c6f4f2db0bb3a9`.
-- New image fingerprint:
-  `b75114594b82a76a57585f7c626855788b2be378d816c7e95d1ff788953bb1b0`.
-  It exists in both the default and `qorpera-runners` LXD projects; the old
-  image remains available for rollback.
-- Clean-boot acceptance passed for the final script: all four guest services
-  are disabled. Evidence is
+- Clean-boot evidence:
   `deploy/first-node/evidence-first-machine-clean-boot.log`, SHA-256
   `f6b8463a31f04de502a8573c2ca4ff95ece984fbbc155fa799e963dcec904f08`,
   tested at `2026-08-26T20:48:00.000Z`.
-- The diagnostic hot patch proved bootstrap, native provider, sync, screens,
-  and a full Company File poll. Sync applied snapshot
-  `11e7e3dd-d08e-490a-bbf6-cb5f00a10966` (`282 applied, 0 skipped`). The
-  runner now reaches only the expected dormant-lane `401` because operator
-  provisioning intentionally registers no runner session.
-- `op-d-activate.sh` now performs a guarded replacement. It stops the
-  provider, refuses a live assignment or unexpected image, backs up the
-  journal, deletes only the disposable old VM root, preserves the identity
-  volume, dataset, credentials, and rollback image, then provisions before
-  restarting the service.
+- Signed provenance SHA-256:
+  `717d2927972e24c98d73027caee7a048b826be7f411e6b37a571bc30d1aaecb8`.
+- Bootstrap, native provider, sync, and screens are active after boot. The
+  runner reaches only the expected dormant-lane `401`; operator provisioning
+  intentionally registers no runner session.
 
-### Validation and current gate
+### Screen and lifecycle proof
 
-- Focused shell tests: 16 passed.
-- Packaging/script tests: 13 passed.
-- Bash syntax, pinned dependencies, import boundaries, shrinkwrap,
-  install-lock, and browser smoke passed.
-- `npm run check` is not green on this inherited branch. It stops on five
-  pre-existing unrelated Biome warnings; a direct typecheck then exposes the
-  branch's pre-existing generated model-catalog failures (`ModelCatalog`/
-  provider model data becoming `unknown`/`never`). No Step 3 file appears in
-  either failure set.
-- Signed provenance is the next gate. The signer correctly refuses a dirty
-  tree and must name the commit containing these fixes. Repository rules
-  require explicit user permission before committing. After permission:
-  commit the explicit Step 3 paths (force-add the intentionally tracked
-  `.log` evidence), run `npm run pack:lxd-provider`, sign with the fingerprint,
-  evidence SHA, and tested-at above, copy the final `op-d-activate.sh` to the
-  node, run it, then perform the watch-proof below.
+- Screen `a34c0c41-4e6a-45af-85bc-3035b9942abe` (Screen 1) is attached to
+  Research Lead `73757922-d355-4eba-91aa-edf808a3124e`.
+- The app resolved the assignment, redeemed a single-use view capability,
+  and rendered live XFCE pixels through `100.75.4.70:18446`. The viewer title
+  was `Research Lead's screen · Live · you can take over at any time`.
+- A renderer-boundary defect initially canceled the main process's own random
+  loopback WebSocket. The bridge now registers one exact 256-bit path URL,
+  consumes it on the first upgrade, and leaves every other local request
+  blocked. The focused boundary/view tests pass (11 tests).
+- At `2026-08-26T21:26:18.349365Z`, the 15-minute idle sweep emitted
+  `company_computer_screen_closed` with `source=idle`; Xvnc exited.
+- At `2026-08-26T21:31:52Z`, five minutes later, LXD reported the VM
+  `STOPPED` without an operator power command.
+- The app emitted `company_computer_screen_opened` at
+  `2026-08-26T21:32:42.685576Z`; LXD reported `RUNNING` at `21:33:51Z`,
+  Screen 1 relaunched, and the live viewer reconnected at `21:33:53Z`.
+- Migration `20260826230000_company_computer_screen_power_events.sql` is
+  applied to hosted project `wovsmjvghnbcbfazdtvr`. It restores the complete
+  Company Computer audit-event constraint after the earlier view/keyframe
+  migrations accidentally omitted the later open/close event types.
+
+### Validation and remaining cleanup
+
+- Original focused shell tests: 16 passed; packaging/script tests: 13 passed.
+- Viewer-boundary regression tests: 11 passed across two focused files.
+- `npm run check` still stops on the same five unrelated inherited Biome
+  warnings. Direct typecheck still exposes only the inherited generated
+  model-catalog `unknown`/`never` failures; neither changed Step 3 file appears
+  in the error output.
+- The temporary sudoers grant still needs an interactive owner removal:
+  `sudo rm /etc/sudoers.d/qorpera-step3-first-machine` on
+  `company41-node-01`.
+- The proof used the current Step 3 development shell because the installed
+  `/Applications/Qorpera Base.app` predates the screen IPC handlers. Package
+  and install a fresh shell build before treating the installed app as the
+  shipped surface.
 
 ### Durable identifiers and access
 
@@ -107,8 +100,7 @@ the immutable result. The provider service remains active.
 - Compute identity: `50b6456a-3f13-4cd7-a671-a8619eb758d0`.
 - Dataset: `companies/0d2053f0-c1a8-444d-99a8-68c8214e5414`.
 - Screen viewer endpoint: `100.75.4.70:18446` over Tailscale.
-- The temporary sudoers grant is
-  `/etc/sudoers.d/qorpera-step3-first-machine`; remove it after the arc.
+- Current state: VM running and the rewoken Research Lead viewer left open.
 
 The original operator plan below is historical. Use the live scripts in
 `deploy/first-node/first-machine-ops/`, not the stale literal digests in the
