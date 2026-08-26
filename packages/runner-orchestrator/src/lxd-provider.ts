@@ -61,7 +61,18 @@ export interface LxdCloudRunnerProviderConfig {
 	codexPath: string;
 	claudePath: string;
 	guestBootstrapService?: string;
+	/** Host path of the company's one live tree (a NAS mount). When present
+	 * and healthy it is passed into each runner VM as a read/write disk, and
+	 * the guest works on it directly instead of copying the company file in
+	 * and out per turn (founder ruling 2026-08-26). */
+	liveCompanyRoot?: string;
+	/** Profile the live tree belongs to; the guest refuses the mount for any
+	 * other profile's job. Required together with liveCompanyRoot. */
+	liveCompanyProfileId?: string;
 }
+
+/** Where the live company tree appears inside a runner VM. */
+export const LXD_LIVE_COMPANY_GUEST_PATH = "/qorpera/company-live";
 
 export interface LxdGuestTransport {
 	waitReady(
@@ -768,6 +779,21 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					pool: current.lxd.storagePool,
 					source: current.lxd.identityVolume,
 				},
+				/* No uid shifting: idmapped mounts are unreliable over NFS. The
+				 * NAS export squashes every writer to one owner and the tree
+				 * carries open modes, so guest uids need no translation. No
+				 * fallback either: a configured live tree whose host mount is
+				 * gone fails instance creation loudly (founder ruling — the
+				 * copy model must not silently come back). */
+				...(this.#config.liveCompanyRoot && this.#config.liveCompanyProfileId
+					? {
+							"company-live": {
+								type: "disk",
+								source: this.#config.liveCompanyRoot,
+								path: LXD_LIVE_COMPANY_GUEST_PATH,
+							},
+						}
+					: {}),
 			},
 			source:
 				current.lxd.imageServer === "local"
@@ -819,7 +845,13 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				assignment_port: this.#config.guestAssignmentPort,
 				assignment_trusted_source: this.#config.guestAssignmentSource,
 				max_assignments: 1,
-				environment: {},
+				environment:
+					this.#config.liveCompanyRoot && this.#config.liveCompanyProfileId
+						? {
+								QORPERA_LIVE_COMPANY_ROOT: LXD_LIVE_COMPANY_GUEST_PATH,
+								QORPERA_LIVE_COMPANY_PROFILE_ID: this.#config.liveCompanyProfileId,
+							}
+						: {},
 			},
 			null,
 			2,

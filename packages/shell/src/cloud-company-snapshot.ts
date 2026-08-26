@@ -701,6 +701,34 @@ export async function captureCloudCompanyTreeWithReachability(
 	};
 }
 
+/** Bounded-concurrency worker pool. Sequential per-file transfers made a
+ * ~200-file checkout cost minutes of round-trip latency inside a runner turn;
+ * a small pool collapses that to roughly the raw transfer time. */
+async function forEachWithConcurrency<T>(
+	items: readonly T[],
+	limit: number,
+	work: (item: T) => Promise<void>,
+): Promise<void> {
+	let next = 0;
+	let failure: unknown;
+	const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+		while (failure === undefined) {
+			const index = next++;
+			if (index >= items.length) return;
+			try {
+				await work(items[index]!);
+			} catch (error) {
+				failure ??= error;
+				return;
+			}
+		}
+	});
+	await Promise.all(workers);
+	if (failure !== undefined) throw failure;
+}
+
+const TREE_TRANSFER_CONCURRENCY = 12;
+
 export async function materializeCloudCompanyTree(
 	destination: string,
 	profileId: string,
@@ -712,6 +740,7 @@ export async function materializeCloudCompanyTree(
 	await mkdir(target, { recursive: true });
 	const manifest = await readCloudCompanyTreeManifest(profileId, reference, store);
 	const physicalTarget = await realpath(target);
+	const files: Array<{ absolutePath: string; entry: Extract<CloudCompanyTreeEntry, { kind: "file" }> }> = [];
 	for (const entry of manifest.entries) {
 		const absolutePath = resolve(target, ...entry.path.split("/"));
 		const targetRelative = relative(physicalTarget, absolutePath);
@@ -723,9 +752,12 @@ export async function materializeCloudCompanyTree(
 			continue;
 		}
 		await mkdir(dirname(absolutePath), { recursive: true });
+		files.push({ absolutePath, entry });
+	}
+	await forEachWithConcurrency(files, TREE_TRANSFER_CONCURRENCY, async ({ absolutePath, entry }) => {
 		await writeFile(absolutePath, await store.getFile(profileId, entry.file), { flag: "wx" });
 		if (entry.executable && process.platform !== "win32") await chmod(absolutePath, 0o755);
-	}
+	});
 }
 
 export function newCloudCompanySnapshotId(): string {

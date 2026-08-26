@@ -1,5 +1,84 @@
 # Step 2 implementation handoff
 
+**LIVE COMPANY FILE — built, staged, awaiting the NAS share (2026-08-26
+night).** Founder ruling sharpened: no copy-in/copy-out at all — "a
+company file that is 3TB would be non-functional". Implemented: the
+provider passes a host-mounted live tree into each runner VM as a rw
+disk device (`company-live` → `/qorpera/company-live`, offered only
+while the host path is a present directory; no uid shifting — the NAS
+export squashes all writers to admin and the tree carries open modes),
+declares it via runner env (QORPERA_LIVE_COMPANY_ROOT +
+_PROFILE_ID), and the runner uses it directly for matching-profile
+session turns: no materialize, no cp, no input-budget charge, git
+repository persists across turns; proposal-review/foreign-profile/
+mount-absent all degrade to the immutable copy-in path. Turn-end
+capture still publishes snapshots from the live root (member-device
+sync unchanged; backgrounding that capture is the next latency step).
+Provider env: QORPERA_LXD_LIVE_COMPANY_ROOT=/mnt/qorpera-companies/
+company41/live, .._PROFILE_ID=88227549-…. Image v37 built+accepted
+(fingerprint `da6268b8…`, manifest `d6758b4b…`, provenance signed
+`51f734cf…`); provider bundle v37 staged (sha `403b47cd…`); company
+seed (284M, sans trail) staged; activation script v37 (installs
+provider bundle, apt nfs-common, showmount-discovers the export,
+fstab+mount, seeds once, env keys, restart, healthz) staged at
+~/step2-lxd/activate-signed-image-v37.sh — copy over the pinned name
+and run once the founder creates the `qorpera-companies` NFS export
+(DSM instructions sent: enable NFS, share, rw for 192.168.0.206,
+squash Map-all-to-admin). NODE HYGIENE: root disk hit 100% — 34 stale
+unsigned image candidates deleted (72GB freed, now 25%); the build
+script should delete the previous unsigned alias going forward. Also
+moved trail-prelinear-backup out of the company tree on the founder
+Mac (it was riding into snapshots) to ~/Companies/company41-backups/.
+
+
+**TURN LATENCY CUT 190s→53s — image v36 + release 0.20.40 (2026-08-26 evening).**
+Founder timed a ~20s queue, then minutes of silence, then everything at
+once. Measured breakdown (runner_jobs created→started→finished): claim
++17s constant (LXD VM boot), finish +170-190s — with only 6s of CPU:
+the runner spent ~97% waiting on network. Root cause: EVERY company
+tree file fetched strictly sequentially (manifest GET + chunk GETs per
+file, ~500 round trips through the guest→host-gateway double hop).
+Fix: `materializeCloudCompanyTree` now fetches with a 12-worker bounded
+pool (image v36, fingerprint `c51c2c94…`, manifest `eb914065…`,
+provenance `e95db4fe…`). The publication capture side was already fine
+(writeObject skips shas seen at checkout). App side (0.20.40): a staff
+leaving the busy set on the 5s activity poll triggers an immediate
+trail pull, so replies paint on completion instead of a sync tick
+later. Verified live: probe turn created 16:11:58 → started +16.5s →
+finished +53.2s, reply rendered seconds after settle. REMAINING: the
+~17s claim is VM boot — a warm-standby VM needs a real design pass
+(per-run bootstrap credentials are pinned pre-boot in the provenance
+journal; injecting post-boot changes the trust story). Also recommend
+the founder move `Recovery/` (139MB, 189 files — a pre-reimage dump)
+out of the live company file: it is 99% of the tree bytes and the
+agents keep getting distracted mapping it.
+
+
+**CHILDLESS SESSION ANCHORS — ledger item 2 done for the attended lane
+(2026-08-26, ~10:30 UTC+2, releases 0.20.35–0.20.39).** Opening a cloud
+staff thread spawns NOTHING: `attachStaffChild` binds a process-less
+`runtime.sessionAnchor` (a live TrailBinding — sync materializes
+through it), `anchoredSessionRpc` answers the renderer's whole session
+surface from the trail file (get_messages/get_fork_messages via
+`trailSessionMessages` — active-chain walk; get_state from recorded
+selections; set_model/set_thinking_level/set_session_name append to the
+trail; prompts route through the shared `requestSponsoredCloudTurn`),
+and `scheduleStaffThreadRefresh` tells the pane to reload when a cloud
+reply materializes — no respawn, since there is no process holding
+stale session state. Staff create/bootstrap/archive-next and the
+wake/room restore path all anchor instead of spawning for cloud
+profiles; `activeCompanyInfo`, the prompt-outbox trio, and connection
+request identity derive their session from `attendedSessionBinding`.
+Verified hands-off on released 0.20.39: thread history renders, a
+composer prompt became cloud turn → "Release" reply auto-rendered, and
+`ps` shows zero agent processes throughout. Protocol gotchas burned
+into 0.20.36–0.20.38: anchor responses must ride the `rpc-event`
+channel with a `type: "response"` envelope, and CDP-side monkey-patching
+during verification can mask working signals — clean-boot verification
+only. REMAINING of the local executor: wake/rooms/product-worker lanes
+and non-cloud profiles still spawn `startLegacyPiSessionAttachment`;
+they retire with the outbox consumer (ledger 3) and cloud wakes.
+
 **THREAD IS THE CONVERSATION — founder's second cleanup list shipped
 (2026-08-26, ~08:45 UTC+2, releases 0.20.33–0.20.34; image v35 cycle in
 flight).** Per founder: the in-thread working avatar now runs for cloud

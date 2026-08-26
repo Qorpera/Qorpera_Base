@@ -32,6 +32,7 @@ import {
 	reconcileKernelGateCreations,
 	sandboxCommandArgs,
 	sandboxRuntimeDir,
+	trailSessionMessages,
 	writeSandboxProfile,
 } from "../src/agent-runtime.ts";
 import {
@@ -156,6 +157,29 @@ it("kernel-stamps a fresh agent session name before an executor is attached", ()
 });
 
 describe("kernel-bound agent runtime", () => {
+	it("serves the active conversation from the trail file without a child", () => {
+		const company = join(root, "company");
+		mkdirSync(join(company, "trail"), { recursive: true });
+		const file = "2099-02-01T00-00-00-000Z_chainless.jsonl";
+		const stamp = "2099-02-01T00:00:00.000Z";
+		const rows = [
+			{ type: "session", version: 5, id: "chainless", timestamp: stamp, cwd: company, qorpera: { actor: "company-agent", attended: true } },
+			{ type: "session_info", id: "s", parentId: null, timestamp: stamp, name: "Agent" },
+			{ type: "message", id: "m1", parentId: null, timestamp: stamp, message: { role: "user", content: [{ type: "text", text: "first" }] } },
+			{ type: "message", id: "m2", parentId: "m1", timestamp: stamp, message: { role: "assistant", content: [{ type: "text", text: "reply" }], qorperaRunId: "run-1" } },
+			{ type: "thinking_level_change", id: "t1", parentId: "m2", timestamp: stamp, thinkingLevel: "low" },
+			// Runtime noise minted as a parentless root after the conversation
+			// must not blank the thread: the newest message-bearing chain wins.
+			{ type: "custom", id: "c1", parentId: null, timestamp: stamp, customType: "qorpera_kernel_session_runtime", data: {} },
+		];
+		writeFileSync(join(company, "trail", file), `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`, "utf-8");
+		const messages = trailSessionMessages(company, file);
+		expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+		expect(messages[0]).toMatchObject({ content: [{ type: "text", text: "first" }], timestamp: stamp });
+		expect(messages[1]).toMatchObject({ qorperaRunId: "run-1" });
+		expect(() => trailSessionMessages(company, "missing.jsonl")).toThrow("does not exist");
+	});
+
 	it("prunes contentless unnamed sessions at company open", () => {
 		const company = join(root, "company");
 		// A real conversation the founder should return to — appended through
