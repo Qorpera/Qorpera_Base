@@ -162,7 +162,9 @@ describe("userland wiring", () => {
 		/* Queued bubbles read as ordinary sent messages: no author, no
 		 * Processing/Queued meta — only a failure surfaces, as Needs review. */
 		expect(rendererSource).toContain(
-			'status.textContent = input.status === "failed" ? `Needs review${failure ? ` · ${failure}` : ""}` : ""',
+			'status.textContent = input.status === "failed" ? `Needs review$' +
+				"{failure ? ` · $" +
+				'{failure}` : ""}` : ""',
 		);
 		expect(rendererSource).not.toContain('? "Processing"');
 		expect(rendererSource).toContain("result.queued");
@@ -198,6 +200,34 @@ describe("userland wiring", () => {
 		expect(rendererSource).toContain(
 			'publishProposal.textContent = requestedChanges.length > 0 ? "Revise" : "Publish"',
 		);
+	});
+
+	it("builds historical conversations off-DOM before one visible attachment", () => {
+		const renderHistory = rendererSource.slice(
+			rendererSource.indexOf("function renderHistory("),
+			rendererSource.indexOf("function navigationNode(", rendererSource.indexOf("function renderHistory(")),
+		);
+		expect(renderHistory).toContain("document.createDocumentFragment()");
+		expect(renderHistory).toContain("conversationRenderTarget = fragment");
+		expect(renderHistory).toContain("messagesElement.appendChild(fragment)");
+		expect(rendererSource).toContain("function scrollConversationToEnd()");
+		expect(rendererSource).toContain("if (conversationRenderTarget) return;");
+	});
+
+	it("presents large agent sidepanels before attaching the complete routine list", () => {
+		const sidepanelRenderer = rendererSource.slice(
+			rendererSource.indexOf("function createAgentRoutineRow("),
+			rendererSource.indexOf(
+				"function agentSettingsSvg(",
+				rendererSource.indexOf("function createAgentRoutineRow("),
+			),
+		);
+		expect(sidepanelRenderer).toContain("document.createDocumentFragment()");
+		expect(sidepanelRenderer).toContain('routines.setAttribute("aria-busy", "true")');
+		expect(sidepanelRenderer).toContain("requestAnimationFrame(() => {");
+		expect(sidepanelRenderer).toContain("routines.appendChild(fragment)");
+		expect(sidepanelRenderer).toContain('routines.removeAttribute("aria-busy")');
+		expect(rendererSource).toContain("renderGeneration !== agentSidepanelRenderGeneration");
 	});
 
 	it("routes personal subscription turns without requiring a ready local agent runtime", () => {
