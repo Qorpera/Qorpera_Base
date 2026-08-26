@@ -1307,6 +1307,9 @@ interface CompanyRuntime {
 	cloudPresenceHeartbeat?: NodeJS.Timeout;
 	cloudRunnerActivityTimer?: NodeJS.Timeout;
 	cloudRunnerActivityPolling?: boolean;
+	/** Staff busy on the last runner-activity poll; a departure triggers an
+	 * immediate trail pull so the finished turn's reply paints right away. */
+	lastBusyStaff?: Set<string>;
 	cloudRealtimeHealth?: CloudRealtimeHealth;
 	cloudCompanyPublication?: CloudCompanyPublication;
 	cloudCompanyPublicationHealth?: CloudSyncHealth;
@@ -2083,6 +2086,17 @@ async function refreshCloudRunnerActivity(slot: Slot, runtime: CompanyRuntime): 
 		const activity = await primary.listStaffExecutionActivity(attachment.environmentId);
 		if (!runtime.closing && slot.runtime === runtime) {
 			send(slot.window, "runner-activity", { activity, healthy: true });
+			// A staff leaving the busy set means its turn just finished — pull
+			// the trail immediately so the reply paints now, not a sync tick
+			// later.
+			const busy = new Set(
+				activity
+					.filter((entry) => entry.activity === "working" || entry.activity === "waiting")
+					.map((entry) => entry.staffAgentId),
+			);
+			const finished = [...(runtime.lastBusyStaff ?? [])].some((staffAgentId) => !busy.has(staffAgentId));
+			runtime.lastBusyStaff = busy;
+			if (finished) triggerCloudTrailSync(runtime);
 		}
 	} catch (error) {
 		if (!runtime.closing && slot.runtime === runtime) {
