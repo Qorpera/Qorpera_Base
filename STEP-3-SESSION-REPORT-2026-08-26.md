@@ -202,6 +202,30 @@ service screen listing carries the roster's template id (draft migration
 the dataset current with attachments; unowned screens get a stable
 pseudo-random creature.
 
+**14. Harness computer-use via the occupancy broker.** `ecac1c78e`
+(founder-directed). A turn executing on the shared machine gets `DISPLAY`
+(plus `QORPERA_SCREEN_ORDINAL`/`QORPERA_SCREEN_VNC_PORT`) automatically
+whenever its staff agent has a screen attached. The chain: the worker
+grew an optional `screenLease` provider seam (acquire after run
+description is available, release in the outer finally);
+`CompanyComputerScreenLeaseClient` occupies through the loopback broker,
+renews every 4 minutes against the 10-minute fence TTL, and treats every
+failure as headless (`undefined`) rather than failing the turn; the
+native bridge serializes an `environment` field omit-when-empty so
+ephemeral wire bytes are unchanged; the native provider service
+validates it (uppercase names, ≤32 entries, values ≤4096 bytes, nothing
+credential-shaped — the tolerant parser means old services ignore the
+field, new services accept old requests); and the harness driver merges
+it under an identity-boundary rule — any collision with HOME, the
+capsule directories, or PATH is a hard error, never a shadow. Wired only
+in the company runner main; the ephemeral lane has no lease provider and
+is byte-identical. Runner-guest and company-computer image manifest pins
+moved in lockstep (repin now covers build+verify runner recipes). Gate
+battery: scripts 13/13, tsgo clean, 69 shell tests across the touched
+suites, 66 runner-orchestrator, biome clean on shell src+test except one
+pre-existing warning in `cloud-runner-container.test.ts` untouched by
+this branch.
+
 ## Design decisions (charter trace)
 
 - Sync is strictly one-directional; the working copy is never authority
@@ -251,8 +275,11 @@ pseudo-random creature.
    shared machine, the host viewer leg wired into the provider service, the
    one-task-per-screen fence + keyframe audit, and the member watch/drive
    path down to a tested local noVNC bridge URL.
-2. Harness-side computer-use DISPLAY integration via the occupancy
-   broker; Chrome and the dock are in.
+2. Harness computer-use is in (stage 14): DISPLAY lands in the turn's
+   environment via the occupancy broker lease; Chrome and the dock are in.
+   Remaining in-image niceties only (vendored Chrome .deb for offline
+   builds; the nested native-host unit's PrivateTmp setting if X-socket
+   access from that unit is ever needed).
 3. If Step 2 acceptance has closed: the capsule rule + work validator
    extension as its own migration/PR (payment structure excluded), and
    runner reboot re-activation.
