@@ -143,6 +143,8 @@ describe("userland wiring", () => {
 			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.rail-scroll \{[^}]*padding-top: calc\(var\(--titlebar-height\) \+ 9px\);/s,
 		);
 		expect(railResizeSource).toContain('getPropertyValue("--rail-compact-width")');
+		expect(railResizeSource).toContain("Math.floor(window.innerWidth * 0.4)");
+		expect(railResizeSource).not.toContain("MAX_WIDTH");
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.rail-company-switcher \{[^}]*top: auto;[^}]*bottom: 9px;[^}]*left: 23px;[^}]*width: 34px;[^}]*height: 34px;/s,
 		);
