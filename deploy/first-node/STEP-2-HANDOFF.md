@@ -1,5 +1,36 @@
 # Step 2 implementation handoff
 
+**LIVE COMPANY FILE — built, staged, awaiting the NAS share (2026-08-26
+night).** Founder ruling sharpened: no copy-in/copy-out at all — "a
+company file that is 3TB would be non-functional". Implemented: the
+provider passes a host-mounted live tree into each runner VM as a rw
+disk device (`company-live` → `/qorpera/company-live`, offered only
+while the host path is a present directory; no uid shifting — the NAS
+export squashes all writers to admin and the tree carries open modes),
+declares it via runner env (QORPERA_LIVE_COMPANY_ROOT +
+_PROFILE_ID), and the runner uses it directly for matching-profile
+session turns: no materialize, no cp, no input-budget charge, git
+repository persists across turns; proposal-review/foreign-profile/
+mount-absent all degrade to the immutable copy-in path. Turn-end
+capture still publishes snapshots from the live root (member-device
+sync unchanged; backgrounding that capture is the next latency step).
+Provider env: QORPERA_LXD_LIVE_COMPANY_ROOT=/mnt/qorpera-companies/
+company41/live, .._PROFILE_ID=88227549-…. Image v37 built+accepted
+(fingerprint `da6268b8…`, manifest `d6758b4b…`, provenance signed
+`51f734cf…`); provider bundle v37 staged (sha `403b47cd…`); company
+seed (284M, sans trail) staged; activation script v37 (installs
+provider bundle, apt nfs-common, showmount-discovers the export,
+fstab+mount, seeds once, env keys, restart, healthz) staged at
+~/step2-lxd/activate-signed-image-v37.sh — copy over the pinned name
+and run once the founder creates the `qorpera-companies` NFS export
+(DSM instructions sent: enable NFS, share, rw for 192.168.0.206,
+squash Map-all-to-admin). NODE HYGIENE: root disk hit 100% — 34 stale
+unsigned image candidates deleted (72GB freed, now 25%); the build
+script should delete the previous unsigned alias going forward. Also
+moved trail-prelinear-backup out of the company tree on the founder
+Mac (it was riding into snapshots) to ~/Companies/company41-backups/.
+
+
 **TURN LATENCY CUT 190s→53s — image v36 + release 0.20.40 (2026-08-26 evening).**
 Founder timed a ~20s queue, then minutes of silence, then everything at
 once. Measured breakdown (runner_jobs created→started→finished): claim
