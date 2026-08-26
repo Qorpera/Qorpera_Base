@@ -1,5 +1,29 @@
 # Step 2 implementation handoff
 
+**NO-FALLBACK LIVE FILE (v38) — active in interim copy mode; live flip
+is one command awaiting the NAS export (2026-08-26 late night).**
+Founder rejected the fallback: a DECLARED live tree that is missing now
+FAILS the run loudly (runner) and instance creation (provider injects
+the device unconditionally when configured); with NO declaration the
+copy path is the legitimate mode, which is how v38 runs tonight
+(fingerprint `6c97fcac…`, manifest `59d3edd2…`, provider bundle
+`47be87ce…`, provenance signed; probe turn +16.6s/+52.9s). Every lane
+uses the live tree when declared; proposal_review copies BY DESIGN
+(hard isolation). NAS: 192.168.0.91 (Synology, SMB+DSM up, NFS OFF) —
+no SSH key trust, founder Chrome extension not connected, so DSM
+remains founder-clicks: enable NFS + share `qorpera-companies` + rw
+for 192.168.0.206 squash map-all-to-admin. THEN:
+`sudo -n ~/step2-lxd/activate-signed-image.sh` (the pinned script is
+the FULL v38 activation: apt nfs-common done, showmount-discovers
+export, fstab-mounts /mnt/qorpera-companies, seeds company41/live from
+staged 284M, sets QORPERA_LXD_LIVE_COMPANY_ROOT+_PROFILE_ID, restarts,
+healthz). Ops notes: deleting the previous unsigned image alias must
+happen AFTER the next activation (I retired v36 early and briefly
+broke turns — bridged with an interim v38 activation sans live keys);
+node root disk was 100%% (34 stale candidates, 72GB freed); completed
+runs still leak VMs (10 more deleted).
+
+
 **LIVE COMPANY FILE — built, staged, awaiting the NAS share (2026-08-26
 night).** Founder ruling sharpened: no copy-in/copy-out at all — "a
 company file that is 3TB would be non-functional". Implemented: the
