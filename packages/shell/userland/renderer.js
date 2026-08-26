@@ -4200,6 +4200,22 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 			requestAnimationFrame(() => create.classList.remove("is-entering"));
 		}
 	}
+	const pinned = storedStaffIds("staff-pinned");
+	const hidden = storedStaffIds("staff-hidden");
+	const order = new Map(readStoredArray("staff-order").map((id, index) => [id, index]));
+	const staffMembers = activeStaffMembers()
+		.filter((staff) => !hidden.has(staffId(staff)))
+		.sort((left, right) => {
+			const pinRank = Number(pinned.has(staffId(right))) - Number(pinned.has(staffId(left)));
+			if (pinRank) return pinRank;
+			return (order.get(staffId(left)) ?? Number.MAX_SAFE_INTEGER) -
+				(order.get(staffId(right)) ?? Number.MAX_SAFE_INTEGER);
+		});
+	const pinnedGrid = document.createElement("div");
+	pinnedGrid.className = "staff-pinned-grid";
+	pinnedGrid.setAttribute("role", "group");
+	pinnedGrid.setAttribute("aria-label", "Pinned agents");
+	container.appendChild(pinnedGrid);
 	const activeRooms = (state.rooms ?? [])
 		.filter((room) => room.status !== "archived")
 		.sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
@@ -4225,16 +4241,18 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		row.onclick = () => void openRoom(room.id);
 		container.appendChild(row);
 	}
-	const pinned = storedStaffIds("staff-pinned");
-	const hidden = storedStaffIds("staff-hidden");
-	const staffMembers = activeStaffMembers()
-		.filter((staff) => !hidden.has(staffId(staff)))
-		.sort((left, right) => Number(pinned.has(staffId(right))) - Number(pinned.has(staffId(left))));
+	const staffList = document.createElement("div");
+	staffList.className = "staff-unpinned-list";
+	staffList.setAttribute("role", "group");
+	staffList.setAttribute("aria-label", "Agents");
+	container.appendChild(staffList);
 	for (const staff of staffMembers) {
 		const id = staffId(staff);
 		const row = document.createElement("button");
 		row.type = "button";
 		row.className = "staff-nav-row";
+		row.classList.toggle("staff-pinned-card", pinned.has(id));
+		row.dataset.staffId = id;
 		row.classList.toggle(
 			"active",
 			$("staffModal").hidden && currentView === "chat" && !currentRoomId && currentStaffId === id,
@@ -4302,7 +4320,7 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 			const bounds = row.getBoundingClientRect();
 			openStaffContext(event, staff, { x: bounds.left + 32, y: bounds.top + 24 });
 		};
-		container.appendChild(row);
+		(pinned.has(id) ? pinnedGrid : staffList).appendChild(row);
 	}
 	const hiddenStaff = activeStaffMembers().filter((staff) => hidden.has(staffId(staff)));
 	const archivedStaff = (state.staff ?? []).filter((staff) => staff?.employmentStatus === "archived");
@@ -4342,6 +4360,19 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		container.appendChild(empty);
 	}
 	filterRosterRail(railSearchQuery);
+	window.qorperaStaffDrag?.wire({
+		root: container,
+		pinnedZone: pinnedGrid,
+		listZone: staffList,
+		onMove: (move) => {
+			const nextPinned = storedStaffIds("staff-pinned");
+			if (move.pinned) nextPinned.add(move.id);
+			else nextPinned.delete(move.id);
+			storeStaffIds("staff-pinned", nextPinned);
+			localStorage.setItem(navStorageKey("staff-order"), JSON.stringify(move.order));
+			renderRosterRail();
+		},
+	});
 }
 
 function storedStaffIds(name) {
@@ -4721,6 +4752,8 @@ function filterRosterRail(value) {
 	for (const row of document.querySelectorAll("#staffNavigation [data-search-text]")) {
 		row.hidden = Boolean(railSearchQuery) && !row.dataset.searchText.includes(railSearchQuery);
 	}
+	const pinnedGrid = document.querySelector("#staffNavigation .staff-pinned-grid");
+	if (pinnedGrid) pinnedGrid.hidden = ![...pinnedGrid.children].some((row) => !row.hidden);
 }
 
 function openCompanySwitcher() {

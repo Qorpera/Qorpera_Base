@@ -148,3 +148,146 @@ Final result: passed
 - The browser preview validates presentation and client-side interaction. The Electron IPC and hosted RPC wiring are covered by focused source-level tests; a live hosted submission was not made during visual QA because it would create production feedback data and requires the migration to be deployed.
 
 final result: passed
+
+---
+
+# Pinned agents design QA
+
+**Source visual truth**
+
+- `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/codex-clipboard-a0b3ba77-3093-4750-bbf3-0e4bf3280818.png`
+- `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/codex-clipboard-305fe514-7fae-4a4c-981e-ec86bf1d5c75.png`
+- `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_69ZLHO/Screenshot 2026-08-26 at 20.32.30.png`
+
+**Implementation evidence**
+
+- Browser-rendered implementation: `/Users/jonas/.codex/visualizations/2026/08/26/01a03f58-a5b1-7b53-9c8c-e61dd4f13d03/pinned-agent-implementation.png`
+- Combined source/implementation comparison: `/Users/jonas/.codex/visualizations/2026/08/26/01a03f58-a5b1-7b53-9c8c-e61dd4f13d03/pinned-agent-comparison.png`
+- Single pinned-agent state: `/Users/jonas/.codex/visualizations/2026/08/26/01a03f58-a5b1-7b53-9c8c-e61dd4f13d03/pinned-agent-single.png`
+
+**Viewport and state**
+
+- Implementation viewport: 600 × 460 CSS px at browser density 1; screenshot: 600 × 460 px.
+- Primary reference: 322 × 486 px at source capture density 1.
+- Comparison normalized by preserving each source's 1:1 CSS-pixel scale and aligning the 287 px sidebar region rather than stretching either capture.
+- State: three pinned agents above one ordinary conversation, with a selected pinned agent. A second capture verifies the single pinned-agent state.
+
+**Full-view comparison evidence**
+
+- The pinned area sits directly below search, uses three centered tracks at the reference spacing, and leaves the ordinary conversation list in its existing full-width row layout.
+- A one-item grid centers its 72 px card within the 287 px rail; measured center offset is -0.5 px.
+- Selection and hover use the existing rail surface color and 10 px radius, matching the references' quiet rounded highlight.
+- Search filtering removes the pinned container when no pinned result remains. Compact rail rules return pinned cards to the existing vertical icon-only layout.
+
+**Focused region comparison evidence**
+
+- The sidebar itself is the focused region and is readable at 1:1 scale in the combined comparison. No additional crop was needed.
+
+**Required fidelity surfaces**
+
+- Fonts and typography: existing Segoe/system stack is preserved; pinned labels use 11 px/14 px, medium weight, one-line ellipsis as in the reference.
+- Spacing and layout rhythm: 72 px cards, 56 px avatar slots, centered auto-fit tracks, 7 × 10 px grid gaps, and 15/12 px vertical padding reproduce the reference density.
+- Colors and tokens: existing chrome, text, hover, selection, and agent colors are reused; no new palette was introduced.
+- Image quality and asset fidelity: the implementation reuses the product's existing staff creature assets and face system at native scale; no replacement or generated placeholder asset is used.
+- Copy and content: pinned cards show only the agent name; ordinary rows retain name, activity, and timestamp.
+
+**Findings**
+
+- No actionable P0, P1, or P2 visual differences in the pinned-agent feature.
+
+**Open Questions**
+
+- None. Differences in exact avatar artwork across the three references are covered by the app's existing selectable agent-character system and are outside this layout change.
+
+**Primary interactions tested**
+
+- Existing pin/unpin preference rerenders the roster into or out of the grid through the unchanged context-menu action.
+- Multi-item and single-item grid states render correctly.
+- Selected-card state and search-empty behavior are represented.
+- Browser console warnings/errors checked: none.
+
+**Comparison history**
+
+- Initial comparison found no P0/P1/P2 issue, so no fix-and-recapture iteration was required.
+
+**Implementation checklist**
+
+- [x] Pinned agents render above rooms and ordinary agent rows.
+- [x] Single and multiple pinned-agent layouts center correctly.
+- [x] Active, hover, search, context menu, and compact rail behavior remain intact.
+- [x] The ordinary conversation list remains unchanged.
+
+**Follow-up polish**
+
+- None required for this pass.
+
+final result: passed
+
+---
+
+# Pinned agent drag-and-drop design QA
+
+**Source visual truth**
+
+- `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_jL5a1I/Screenshot 2026-08-26 at 20.46.35.png`
+
+**Implementation evidence**
+
+- Browser-rendered drag state: `/Users/jonas/.codex/visualizations/2026/08/26/01a03f58-a5b1-7b53-9c8c-e61dd4f13d03/pinned-agent-drag-implementation.png`
+- Combined source/implementation comparison: `/Users/jonas/.codex/visualizations/2026/08/26/01a03f58-a5b1-7b53-9c8c-e61dd4f13d03/pinned-agent-drag-comparison.png`
+- Interactive QA harness: `http://127.0.0.1:4173/visualizations/2026/08/26/01a03f58-a5b1-7b53-9c8c-e61dd4f13d03/pinned-agent-qa.html`
+
+**Viewport and state**
+
+- Source pixels: 299 × 370 at source capture density 1.
+- Implementation pixels: 299 × 370 at browser density 1.
+- CSS viewport: 299 × 370. The comparison uses a content-region capture with the persistent search header excluded to match the reference crop without rescaling.
+- State: one pinned agent is being reordered in a four-item pinned grid; the floating preview overlaps the source slot and the ordinary agent list remains below.
+
+**Full-view comparison evidence**
+
+- The pinned region expands to a two-row, three-column grid and uses the same soft gray rounded container as the reference.
+- The implementation measures 268 × 204 px at x=9, closely matching the reference's approximately 273 × 205 px pinned surface while preserving the product's existing 9 px rail inset.
+- The floating preview is an 80 × 92 px elevated card at x=52 and remains readable above the dimmed source.
+- The ordinary list resumes immediately below the pinned drop region with the existing 69 px row height and no overlap or clipping.
+
+**Focused region comparison evidence**
+
+- The full 299 × 370 sidebar is readable at 1:1 scale in the combined comparison, including avatar scale, source opacity, ghost elevation, card label, grid wrap, and list-row text. No additional focused crop was needed.
+
+**Required fidelity surfaces**
+
+- Fonts and typography: existing system UI type, 11 px pinned labels, 13 px list names, compact timestamps, truncation, and weights are preserved.
+- Spacing and layout rhythm: the three-column grid, 204 px two-row drop surface, rail inset, row spacing, 10 px radius, and floating-card offset match the reference intent.
+- Colors and visual tokens: the implementation reuses the existing chrome, border, shadow, text, selection, and per-agent color tokens. Dragging dims the source to 0.28 opacity.
+- Image quality and asset fidelity: existing staff creature raster assets remain sharp and correctly masked; the drag preview clones the real agent card rather than substituting a placeholder or CSS drawing.
+- Copy and content: pinned cards retain the agent name only; ordinary rows keep name, timestamp, and activity text.
+
+**Findings**
+
+- No actionable P0, P1, or P2 differences remain.
+- P3: the reference crop places the pinned surface flush to the left edge, while the implementation keeps the product's established 9 px rail inset. This is intentional consistency with the existing sidebar rather than a drag-state defect.
+
+**Primary interactions tested**
+
+- Dragged an ordinary agent into the pinned region; the resulting order was persisted as `p1,p2,p3,l1,l2`.
+- Dragged a pinned agent back into the ordinary list; the resulting order was persisted as `p1,p3,l1,p2,l2`.
+- Pure ordering tests cover list reordering, insertion at a pinned-grid position, and unpinning into a specific list position.
+- Click suppression after a completed drag and cleanup on rerender are implemented in the pointer interaction layer.
+- No visible browser failure occurred. The selected browser surface does not expose a historical console-message reader for this static harness.
+
+**Comparison history**
+
+- Initial visual evidence showed the core drag treatment but represented list-to-pinned movement with a one-row grid, while the reference represented a two-row pinned reorder.
+- The QA fixture was normalized to the same 299 × 370 content crop and four-item pinned state. The post-fix comparison confirms the rounded drop container, source dimming, floating preview, grid wrap, and list hierarchy with no P0/P1/P2 difference.
+
+**Implementation checklist**
+
+- [x] Reorder agents within the ordinary list.
+- [x] Reorder agents within the pinned grid.
+- [x] Drag an ordinary agent into the pinned region to pin it.
+- [x] Drag a pinned agent into the list to unpin it.
+- [x] Persist the unified agent order and existing pinned preference.
+- [x] Preserve click behavior when no drag threshold is crossed.
+
+final result: passed
