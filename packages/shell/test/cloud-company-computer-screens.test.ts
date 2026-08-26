@@ -19,6 +19,7 @@ import {
 	SupabaseCompanyComputerScreensControlPlane,
 	startCompanyComputerScreenBroker,
 	startCompanyComputerScreenViewer,
+	waitForCompanyComputerScreenReady,
 } from "../src/cloud-company-computer-screens.ts";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
 
@@ -169,7 +170,26 @@ describe("cloud company computer screens", () => {
 			viewerPort: 8446,
 			viewerTrustedSource: "10.41.0.1",
 			pollSeconds: 30,
+			maxScreens: 8,
 		});
+		expect(
+			parseCloudCompanyComputerScreensConfig({
+				viewer_host: "0.0.0.0",
+				viewer_port: 8446,
+				viewer_trusted_source: "10.41.0.1",
+				poll_seconds: 30,
+				max_screens: 12,
+			}).maxScreens,
+		).toBe(12);
+		expect(() =>
+			parseCloudCompanyComputerScreensConfig({
+				viewer_host: "0.0.0.0",
+				viewer_port: 8446,
+				viewer_trusted_source: "10.41.0.1",
+				poll_seconds: 30,
+				max_screens: 0,
+			}),
+		).toThrow("capacity is invalid");
 		expect(() =>
 			parseCloudCompanyComputerScreensConfig({
 				viewer_host: "not-an-ip",
@@ -466,7 +486,7 @@ describe("cloud company computer screens", () => {
 		});
 		const controller = new AbortController();
 		const agent = runCloudCompanyComputerScreenAgent({
-			config: { viewerHost: "127.0.0.1", viewerPort: 0, viewerTrustedSource: "127.0.0.1", pollSeconds: 30 },
+			config: { viewerHost: "127.0.0.1", viewerPort: 0, viewerTrustedSource: "127.0.0.1", pollSeconds: 30, maxScreens: 8 },
 			companyComputerId,
 			viewerToken,
 			controlPlane: {
@@ -535,7 +555,7 @@ describe("cloud company computer screens", () => {
 		) => {
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			calls.push({ url: String(url), body });
-			if (String(url).includes("claim")) {
+			if (String(url).includes("claim") || String(url).includes("ensure")) {
 				return new Response(
 					JSON.stringify({
 						screen_id: screenId,
@@ -543,7 +563,7 @@ describe("cloud company computer screens", () => {
 						display_name: "Screen 2",
 						status: "active",
 						attached_staff_agent_id: staffAgentId,
-						occupying_run_id: body.p_run_id,
+						...(String(url).includes("claim") ? { occupying_run_id: body.p_run_id } : {}),
 					}),
 					{ status: 200 },
 				);
@@ -562,11 +582,20 @@ describe("cloud company computer screens", () => {
 			contentSha256: "b".repeat(64),
 			bytes: 9,
 		});
+		const ensured = await service.ensure(companyComputerId, staffAgentId, 8);
+		expect(ensured.screenOrdinal).toBe(2);
+		expect(ensured.attachedStaffAgentId).toBe(staffAgentId);
 		expect(calls.map((call) => call.url)).toEqual([
 			"https://control.example.com/rest/v1/rpc/qorpera_claim_company_computer_screen",
 			"https://control.example.com/rest/v1/rpc/qorpera_release_company_computer_screen",
 			"https://control.example.com/rest/v1/rpc/qorpera_record_company_computer_screen_keyframe",
+			"https://control.example.com/rest/v1/rpc/qorpera_ensure_company_computer_screen",
 		]);
+		expect(calls[3].body).toEqual({
+			p_company_computer_id: companyComputerId,
+			p_staff_agent_id: staffAgentId,
+			p_max_screens: 8,
+		});
 		expect(calls[2].body).toEqual({
 			p_screen_id: screenId,
 			p_run_id: runId,
@@ -692,6 +721,100 @@ describe("cloud company computer screens", () => {
 		}
 	});
 
+	it("provisions a screen on demand when the requesting agent has none", async () => {
+		const runId = "30000000-0000-4000-8000-000000000100";
+		const newcomerStaffAgentId = "30000000-0000-4000-8000-000000000042";
+		const freshScreenId = "30000000-0000-4000-8000-000000000033";
+		const provisioned: string[] = [];
+		let records: CompanyComputerScreenRecord[] = [{ ...screenRecord(2), attachedStaffAgentId: staffAgentId }];
+		const claims: string[] = [];
+		const broker = await startCompanyComputerScreenBroker({
+			port: 0,
+			occupancy: {
+				claim: async (claimedScreenId, claimedRunId) => {
+					claims.push(claimedScreenId);
+					const claimed = records.find((candidate) => candidate.screenId === claimedScreenId);
+					if (!claimed) throw new Error("claimed screen is unknown to the test registry");
+					return { ...claimed, occupyingRunId: claimedRunId };
+				},
+				release: async () => {},
+			},
+			records: () => records,
+			attachOnDemand: async (requestingStaffAgentId) => {
+				provisioned.push(requestingStaffAgentId);
+				const fresh: CompanyComputerScreenRecord = {
+					...screenRecord(3),
+					screenId: freshScreenId,
+					attachedStaffAgentId: requestingStaffAgentId,
+				};
+				records = [...records, fresh];
+				return fresh;
+			},
+		});
+		try {
+			const occupied = await fetch(`http://127.0.0.1:${broker.port}/v1/screens/occupy`, {
+				method: "POST",
+				body: JSON.stringify({ run_id: runId, staff_agent_id: newcomerStaffAgentId }),
+			});
+			expect(occupied.status).toBe(200);
+			const grant = (await occupied.json()) as Record<string, unknown>;
+			expect(grant.screen_ordinal).toBe(3);
+			expect(grant.display).toBe(":3");
+			expect(grant.vnc_port).toBe(5903);
+			expect(provisioned).toEqual([newcomerStaffAgentId]);
+			expect(claims).toEqual([freshScreenId]);
+
+			const again = await fetch(`http://127.0.0.1:${broker.port}/v1/screens/occupy`, {
+				method: "POST",
+				body: JSON.stringify({ run_id: runId, staff_agent_id: newcomerStaffAgentId }),
+			});
+			expect(again.status).toBe(200);
+			expect(provisioned).toHaveLength(1);
+		} finally {
+			await broker.close();
+		}
+	});
+
+	it("answers headless when on-demand provisioning cannot offer a screen", async () => {
+		const runId = "30000000-0000-4000-8000-000000000100";
+		const broker = await startCompanyComputerScreenBroker({
+			port: 0,
+			occupancy: {
+				claim: async () => {
+					throw new Error("claim must not run without a screen");
+				},
+				release: async () => {},
+			},
+			records: () => [],
+			attachOnDemand: async () => undefined,
+		});
+		try {
+			const occupied = await fetch(`http://127.0.0.1:${broker.port}/v1/screens/occupy`, {
+				method: "POST",
+				body: JSON.stringify({ run_id: runId, staff_agent_id: staffAgentId }),
+			});
+			expect(occupied.status).toBe(409);
+		} finally {
+			await broker.close();
+		}
+	});
+
+	it("reports a screen ready only once its loopback socket accepts", async () => {
+		const listener = createServer();
+		await new Promise<void>((resolveListen) => {
+			listener.listen(0, "127.0.0.1", () => resolveListen());
+		});
+		const address = listener.address();
+		if (typeof address !== "object" || !address) throw new Error("listener address is unavailable");
+		await expect(waitForCompanyComputerScreenReady(address.port, new AbortController().signal)).resolves.toBe(true);
+		await new Promise<void>((resolveClose) => {
+			listener.close(() => resolveClose());
+		});
+		await expect(waitForCompanyComputerScreenReady(address.port, new AbortController().signal, 400)).resolves.toBe(
+			false,
+		);
+	});
+
 	it("publishes a keyframe for each occupied live screen on the poll tick", async () => {
 		const runId = "30000000-0000-4000-8000-000000000100";
 		const launcher = new FakeLauncher();
@@ -703,7 +826,7 @@ describe("cloud company computer screens", () => {
 		});
 		const controller = new AbortController();
 		const agent = runCloudCompanyComputerScreenAgent({
-			config: { viewerHost: "127.0.0.1", viewerPort: 0, viewerTrustedSource: "127.0.0.1", pollSeconds: 30 },
+			config: { viewerHost: "127.0.0.1", viewerPort: 0, viewerTrustedSource: "127.0.0.1", pollSeconds: 30, maxScreens: 8 },
 			companyComputerId,
 			viewerToken,
 			controlPlane: {
@@ -749,7 +872,7 @@ describe("cloud company computer screens", () => {
 		};
 		const controller = new AbortController();
 		const agent = runCloudCompanyComputerScreenAgent({
-			config: { viewerHost: "127.0.0.1", viewerPort: 0, viewerTrustedSource: "127.0.0.1", pollSeconds: 30 },
+			config: { viewerHost: "127.0.0.1", viewerPort: 0, viewerTrustedSource: "127.0.0.1", pollSeconds: 30, maxScreens: 8 },
 			companyComputerId,
 			viewerToken,
 			controlPlane: { listScreens: async () => [screenRecord(2)] },

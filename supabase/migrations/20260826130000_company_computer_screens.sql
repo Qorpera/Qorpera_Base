@@ -23,17 +23,20 @@ create table public.qorpera_company_computer_screens (
 	-- qorpera_profile_staff in the RPCs rather than by foreign key because
 	-- roster rows archive instead of deleting.
 	attached_staff_agent_id uuid,
+	-- Null actor columns mean the execution plane registered or attached the
+	-- screen on demand: any agent may take a screen when its work needs one,
+	-- so screens are not exclusively member-provisioned.
 	attached_by_user_id uuid references auth.users(id) on delete restrict,
 	attached_at timestamptz,
 	occupying_run_id uuid references public.qorpera_execution_runs(id) on delete restrict,
 	occupancy_expires_at timestamptz,
-	created_by_user_id uuid not null references auth.users(id) on delete restrict,
+	created_by_user_id uuid references auth.users(id) on delete restrict,
 	created_at timestamptz not null default statement_timestamp(),
 	updated_at timestamptz not null default statement_timestamp(),
 	unique (company_computer_id, screen_ordinal),
 	unique (id, profile_id),
 	check ((attached_staff_agent_id is null) = (attached_at is null)),
-	check ((attached_staff_agent_id is null) = (attached_by_user_id is null)),
+	check (attached_by_user_id is null or attached_staff_agent_id is not null),
 	check ((occupying_run_id is null) = (occupancy_expires_at is null)),
 	check (attached_staff_agent_id is not null or occupying_run_id is null),
 	check (status = 'active' or (attached_staff_agent_id is null and occupying_run_id is null))

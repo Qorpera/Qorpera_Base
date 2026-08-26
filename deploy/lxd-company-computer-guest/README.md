@@ -51,10 +51,20 @@ harness environment automatically whenever its staff agent has a screen
 attached — the runner leases the screen through the loopback occupancy
 broker (`127.0.0.1:8447`), renews it while the job runs, and releases it at
 the end; the control plane's claim RPC enforces the one-task-per-screen
-fence. Agents simply use X tooling against `DISPLAY`; no screen means the
-variables are absent and the turn runs headless. The identity boundary's
-own environment (HOME, capsule directories, PATH) can never be overridden
-by this path.
+fence. Agents simply use X tooling against `DISPLAY`; the identity
+boundary's own environment (HOME, capsule directories, PATH) can never be
+overridden by this path.
+
+**Screens on demand**: an agent without a screen is not turned away. When
+the broker finds no screen for the requesting staff agent, the screen agent
+asks the control plane to provide one (`qorpera_ensure_company_computer_screen`,
+service-role): an existing free screen is attached to the agent, or a new
+one is registered up to the machine's declared capacity (bootstrap
+`screens.max_screens`, default 8). The desktop is converged live and the
+grant is answered only once the display's loopback socket accepts, so the
+turn never races the X server. Only when the machine genuinely cannot offer
+a screen — capacity exhausted, cloud unreachable — does the turn run
+headless.
 
 The published image starts nothing on its own: all three units are
 installed disabled (the ephemeral runner bootstrap entry inherited from the

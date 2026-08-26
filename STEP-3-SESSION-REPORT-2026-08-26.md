@@ -226,6 +226,36 @@ suites, 66 runner-orchestrator, biome clean on shell src+test except one
 pre-existing warning in `cloud-runner-container.test.ts` untouched by
 this branch.
 
+**15. Master merge + screens on demand.** `2868b1fa9`, then this stage
+(founder-directed: "make sure any agent can use their computer/screen as
+they need to"). First the merge: `github/master` landed the Step 2
+session's cloud-only execution arc (releases 0.20.17–0.20.27, local
+executor removal, live-file rulings recorded); only the two runner-image
+pin lines conflicted (recomputed from the merged tree), and master's
+applied trail migrations had taken 20260826020000/040000, so the
+branch's draft migrations — applied nowhere — moved to
+20260826110000–200000 keeping their internal order. Then the feature:
+an agent without a screen is no longer turned away. The broker's occupy
+path falls back to on-demand provisioning — new service-role
+`qorpera_ensure_company_computer_screen`
+(migration 20260826210000, draft): an existing attachment is returned,
+a free screen is attached, or a new screen is registered directly
+attached, bounded by the machine's declared capacity
+(`screens.max_screens` in the bootstrap block, default 8, ordinals never
+reused after retirement). On-demand attachments carry no member actor —
+the registry's actor columns went nullable to model the execution plane
+acting (base screens migration revised in place; it is a draft). The
+screen agent provisions, converges the desktop inside a serialized
+converge lock shared with the poll loop, and answers the grant only
+once the display's loopback VNC socket accepts
+(`waitForCompanyComputerScreenReady`, 10s bound), so a turn handed
+DISPLAY never races the X server. Every failure — capacity, cloud,
+session — still degrades to headless, never fails the turn. Wallpaper
+identity follows automatically: the attachment makes the screen the
+agent's, so the next converge dresses it in the agent's creature. 18
+screens-suite tests (4 new), scripts 13/13, tsgo clean, company image
+pin repinned.
+
 ## Design decisions (charter trace)
 
 - Sync is strictly one-directional; the working copy is never authority

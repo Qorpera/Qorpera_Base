@@ -112,6 +112,7 @@ export async function runCloudCompanyComputerScreenServiceMain(
 		launcher: new ExecCompanyComputerScreenLauncher(screenSessionCommand(environment)),
 		signal: controller.signal,
 		occupancy: screenService,
+		provisioner: screenService,
 		keyframes: {
 			capturer: new ExecCompanyComputerScreenKeyframeCapturer(screenCaptureCommand(environment)),
 			store: new CloudContentAddressedStore(transport),

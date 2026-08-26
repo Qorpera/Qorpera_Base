@@ -143,7 +143,12 @@ export interface CloudCompanyComputerScreensConfig {
 	viewerPort: number;
 	viewerTrustedSource: string;
 	pollSeconds: number;
+	maxScreens: number;
 }
+
+/** Default parallel-work capacity when the provider does not declare one:
+ * displays :1 through :8 on the shared machine. */
+export const DEFAULT_COMPANY_COMPUTER_MAX_SCREENS = 8;
 
 export function parseCloudCompanyComputerScreensConfig(value: unknown): CloudCompanyComputerScreensConfig {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -154,6 +159,7 @@ export function parseCloudCompanyComputerScreensConfig(value: unknown): CloudCom
 	const viewerPort = input.viewer_port;
 	const viewerTrustedSource = input.viewer_trusted_source;
 	const pollSeconds = input.poll_seconds;
+	const maxScreens = input.max_screens ?? DEFAULT_COMPANY_COMPUTER_MAX_SCREENS;
 	if (typeof viewerHost !== "string" || isIP(viewerHost) === 0) {
 		throw new Error("Company computer screens viewer host is invalid");
 	}
@@ -170,11 +176,15 @@ export function parseCloudCompanyComputerScreensConfig(value: unknown): CloudCom
 	) {
 		throw new Error("Company computer screens poll interval is invalid");
 	}
+	if (!Number.isSafeInteger(maxScreens) || (maxScreens as number) < 1 || (maxScreens as number) > 32) {
+		throw new Error("Company computer screens capacity is invalid");
+	}
 	return {
 		viewerHost,
 		viewerPort: viewerPort as number,
 		viewerTrustedSource,
 		pollSeconds: pollSeconds as number,
+		maxScreens: maxScreens as number,
 	};
 }
 
@@ -539,6 +549,13 @@ export interface CompanyComputerScreenOccupancy {
 	release(screenId: string, runId: string): Promise<void>;
 }
 
+/** Screens on demand: any agent can take a screen when its work needs one.
+ * The control plane attaches a free screen to the requesting staff agent or
+ * registers a new one within the machine's declared capacity. */
+export interface CompanyComputerScreenProvisioner {
+	ensure(companyComputerId: string, staffAgentId: string, maxScreens: number): Promise<CompanyComputerScreenRecord>;
+}
+
 function serviceHeaders(serviceKey: string): Record<string, string> {
 	const headers: Record<string, string> = { apikey: serviceKey, "content-type": "application/json" };
 	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3) {
@@ -548,7 +565,7 @@ function serviceHeaders(serviceKey: string): Record<string, string> {
 }
 
 export class SupabaseCompanyComputerScreenService
-	implements CompanyComputerScreenKeyframeRecorder, CompanyComputerScreenOccupancy
+	implements CompanyComputerScreenKeyframeRecorder, CompanyComputerScreenOccupancy, CompanyComputerScreenProvisioner
 {
 	readonly #supabaseUrl: string;
 	readonly #serviceKey: string;
@@ -607,6 +624,18 @@ export class SupabaseCompanyComputerScreenService
 			p_run_id: runId,
 		});
 	}
+
+	async ensure(companyComputerId: string, staffAgentId: string, maxScreens: number): Promise<CompanyComputerScreenRecord> {
+		const record = parseCompanyComputerScreenRecords([
+			await this.#rpc("qorpera_ensure_company_computer_screen", {
+				p_company_computer_id: companyComputerId,
+				p_staff_agent_id: staffAgentId,
+				p_max_screens: maxScreens,
+			}),
+		])[0];
+		if (!record) throw new Error("Company computer screen provisioning returned no screen");
+		return record;
+	}
 }
 
 export interface CompanyComputerScreenBroker {
@@ -618,6 +647,10 @@ export interface StartCompanyComputerScreenBrokerInput {
 	port: number;
 	occupancy: CompanyComputerScreenOccupancy;
 	records: () => readonly CompanyComputerScreenRecord[];
+	/** Called when no screen is attached to the requesting staff agent; the
+	 * agent loop provisions one, converges the desktop live, and returns the
+	 * fresh record — or undefined when the machine cannot offer a screen. */
+	attachOnDemand?: (staffAgentId: string) => Promise<CompanyComputerScreenRecord | undefined>;
 	leaseMs?: number;
 }
 
@@ -675,9 +708,12 @@ export function startCompanyComputerScreenBroker(
 					respond(response, 400, { ok: false, error: "screen broker staff agent id is invalid" });
 					return;
 				}
-				const screen = input
+				let screen = input
 					.records()
 					.find((candidate) => candidate.status === "active" && candidate.attachedStaffAgentId === staffAgentId);
+				if (!screen && input.attachOnDemand) {
+					screen = await input.attachOnDemand(staffAgentId);
+				}
 				if (!screen) {
 					respond(response, 409, { ok: false, error: "no screen is attached to this staff agent" });
 					return;
@@ -931,6 +967,35 @@ function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void
 	});
 }
 
+const SCREEN_READY_TIMEOUT_MS = 10_000;
+const SCREEN_READY_PROBE_INTERVAL_MS = 250;
+
+/** A freshly launched desktop is ready once its loopback VNC socket accepts:
+ * the display exists from that moment, so a turn handed DISPLAY never races
+ * the X server's boot. */
+export async function waitForCompanyComputerScreenReady(
+	port: number,
+	signal: AbortSignal,
+	timeoutMs: number = SCREEN_READY_TIMEOUT_MS,
+): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (!signal.aborted && Date.now() < deadline) {
+		const accepted = await new Promise<boolean>((resolveProbe) => {
+			const socket = connect({ host: "127.0.0.1", port });
+			const finish = (value: boolean): void => {
+				socket.destroy();
+				resolveProbe(value);
+			};
+			socket.once("connect", () => finish(true));
+			socket.once("error", () => finish(false));
+			socket.setTimeout(SCREEN_READY_TIMEOUT_MS, () => finish(false));
+		});
+		if (accepted) return true;
+		await abortableDelay(SCREEN_READY_PROBE_INTERVAL_MS, signal);
+	}
+	return false;
+}
+
 export interface RunCloudCompanyComputerScreenAgentInput {
 	config: CloudCompanyComputerScreensConfig;
 	companyComputerId: string;
@@ -939,6 +1004,7 @@ export interface RunCloudCompanyComputerScreenAgentInput {
 	launcher: CompanyComputerScreenLauncher;
 	signal: AbortSignal;
 	occupancy?: CompanyComputerScreenOccupancy;
+	provisioner?: CompanyComputerScreenProvisioner;
 	brokerPort?: number;
 	keyframes?: CompanyComputerScreenKeyframes;
 	wallpapers?: CompanyComputerScreenWallpapers;
@@ -957,6 +1023,28 @@ export async function runCloudCompanyComputerScreenAgent(
 	const manager = new CloudCompanyComputerScreenManager(input.launcher);
 	let latestRecords: readonly CompanyComputerScreenRecord[] = [];
 	const appliedWallpapers = new Map<number, string>();
+	/* The poll loop and on-demand provisioning both converge the desktops;
+	 * chaining them through one lock keeps the manager single-writer. */
+	let convergeChain: Promise<unknown> = Promise.resolve();
+	const serialized = <T>(work: () => Promise<T>): Promise<T> => {
+		const next = convergeChain.then(work);
+		convergeChain = next.then(
+			() => undefined,
+			() => undefined,
+		);
+		return next;
+	};
+	const converge = async (): Promise<void> => {
+		const records = await input.controlPlane.listScreens(input.companyComputerId, input.signal);
+		latestRecords = records;
+		if (input.wallpapers) {
+			/* Wallpapers land before sessions launch so a fresh desktop
+			 * wears its agent's creature from the first frame. */
+			await applyScreenWallpapers(records, input.wallpapers, appliedWallpapers, input.onError);
+		}
+		await manager.reconcile(records);
+	};
+	const provisioner = input.provisioner;
 	const viewer = await startCompanyComputerScreenViewer({
 		host: input.config.viewerHost,
 		port: input.config.viewerPort,
@@ -969,21 +1057,42 @@ export async function runCloudCompanyComputerScreenAgent(
 				port: input.brokerPort ?? COMPANY_COMPUTER_SCREEN_BROKER_PORT,
 				occupancy: input.occupancy,
 				records: () => latestRecords,
+				...(provisioner
+					? {
+							attachOnDemand: async (staffAgentId: string) => {
+								/* Screens on demand: attach or register through the
+								 * control plane, converge the desktop live, and only
+								 * answer once the display actually accepts. Failures —
+								 * capacity exhausted, cloud unreachable, a session that
+								 * never comes up — mean the turn runs headless, never
+								 * that it fails. */
+								try {
+									await provisioner.ensure(input.companyComputerId, staffAgentId, input.config.maxScreens);
+									await serialized(converge);
+									const screen = latestRecords.find(
+										(candidate) =>
+											candidate.status === "active" && candidate.attachedStaffAgentId === staffAgentId,
+									);
+									if (!screen) return undefined;
+									const vncPort = manager.liveVncPort(screen.screenOrdinal);
+									if (vncPort === undefined) return undefined;
+									if (!(await waitForCompanyComputerScreenReady(vncPort, input.signal))) return undefined;
+									return screen;
+								} catch (error) {
+									input.onError?.(error);
+									return undefined;
+								}
+							},
+						}
+					: {}),
 			})
 		: undefined;
 	try {
 		while (!input.signal.aborted) {
 			try {
-				const records = await input.controlPlane.listScreens(input.companyComputerId, input.signal);
-				latestRecords = records;
-				if (input.wallpapers) {
-					/* Wallpapers land before sessions launch so a fresh desktop
-					 * wears its agent's creature from the first frame. */
-					await applyScreenWallpapers(records, input.wallpapers, appliedWallpapers, input.onError);
-				}
-				await manager.reconcile(records);
+				await serialized(converge);
 				if (input.keyframes && !input.signal.aborted) {
-					await publishScreenKeyframes(records, manager, input.keyframes, input.onError);
+					await publishScreenKeyframes(latestRecords, manager, input.keyframes, input.onError);
 				}
 			} catch (error) {
 				if (!input.signal.aborted) input.onError?.(error);
