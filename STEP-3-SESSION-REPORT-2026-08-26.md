@@ -2,7 +2,7 @@
 
 Produced by the dedicated Step 3 session continuing from
 `STEP-3-SESSION-REPORT-2026-08-25.md`. Branch `step3/company-computers` at
-`5fabd89d3` (4 commits on `439fadc1c`, all pushed to `github`); tsgo clean,
+`2cf3145b4` (7 commits on `439fadc1c`, all pushed to `github`); tsgo clean,
 biome clean; 12 new shell sync tests, provider suite grown 6 → 10, full
 runner-orchestrator suite 61 passing, targeted shell suites (sync + merge +
 snapshot) 34 passing. Nothing applied to any Supabase project, no PR opened.
@@ -52,13 +52,29 @@ member SELECT on `qorpera_company_computers` and
 shared-visibility default); writes stay behind the RPCs; the node registry
 stays service-plane only.
 
-**4. Screens decision material (no implementation).** `5fabd89d3`
-`deploy/first-node/STEP-3-SCREENS-DECISION.md` — transport options (per-screen
-TigerVNC/XFCE + noVNC recommended; Wayland/wayvnc, xrdp, LXD console
-evaluated) and audit options (transcript events + periodic content-addressed
-keyframes recommended) with fixed constraints and the unblock list. Charter's
-open question now points at it. **PENDING FOUNDER DECISION** — the screens
-slice stays unbuilt until ratified.
+**4. Screens decision — prepared, then RATIFIED.** `5fabd89d3`, `d61cc2afe`
+`deploy/first-node/STEP-3-SCREENS-DECISION.md` laid out transport and audit
+options; the founder ratified the Grok model the same day (2026-08-26):
+shared computer, individual screen per staff agent — transport option A
+(per-screen TigerVNC/XFCE + noVNC embedding over capability-gated paths,
+never public) and audit option 2 (transcript events + periodic
+content-addressed keyframes). The audit option constrains only the durable
+record: members always keep the direct, real-time watch-and-take-over path
+into every screen. Mirrored in the charter's "Ratified decisions".
+
+**5. Screens registry (first slice of the ratified build).** `2cf3145b4`
+`supabase/migrations/20260826030000_company_computer_screens.sql` — draft
+migration, applied nowhere: `qorpera_company_computer_screens` (one screen
+per staff agent per computer, partial unique index), member RPCs
+register/attach/detach/retire (staff validated against the
+`qorpera_profile_staff` roster; unknown ids and missing authority answer
+identically), and service-role `qorpera_claim_company_computer_screen` /
+`qorpera_release_company_computer_screen` — the one-task-per-screen fence:
+the claiming run must belong to the attached staff agent and target the
+screen's computer; re-claims renew expiry silently; expired fences are
+replaceable; release is goal-state idempotent. Registry events extend the
+company-computer audit trail. Dispatch admission is untouched — the claim
+RPC is the runtime fence, to be wired by the execution path.
 
 ## Design decisions (charter trace)
 
@@ -82,7 +98,12 @@ slice stays unbuilt until ratified.
   `20260821001000` ~lines 1024/1039) and `validateCloudRunnerWork`
   (orchestrator.ts ~line 1117) — **strictly after Step 2 acceptance closes**;
   payment structure stays out of the contracts.
-- **Screens slice implementation** — blocked on the founder decision above.
+- **Screens slice, remaining stages** (unblocked, in order): guest screen
+  agent in the image (per-screen Xvnc/XFCE session lifecycle, loopback-only
+  viewer sockets, brokered capability check on attach); shell watch/drive
+  surface over the broker path; keyframe artifact publication on the run
+  transcript; execution-path wiring of the claim/release fence for desktop
+  tasks.
 - **Guest service wiring for the sync agent**: the module, config parser, and
   poll loop exist; the guest systemd unit that reads
   `/var/lib/qorpera-bootstrap/company-computer.json` and composes the hosted
@@ -98,15 +119,16 @@ slice stays unbuilt until ratified.
 
 ## NEXT SESSION PICKUP
 
-1. Read this report; charter and Step 2 architecture as before.
-2. If the founder has ratified STEP-3-SCREENS-DECISION.md: build the screens
-   slice in its "What a decision unblocks" order (screens registry migration
-   → guest screen agent in the image → shell watch/drive surface → keyframe
-   artifacts).
-3. If Step 2 acceptance has closed: implement pickup item 4 (capsule rule +
-   work validator extension) as its own migration/PR, payment structure
-   explicitly excluded.
-4. Otherwise: guest service wiring for the sync agent (systemd unit + store/
+1. Read this report; charter and Step 2 architecture as before. The screens
+   decision is RATIFIED and the registry migration exists — the registry
+   stage of the screens slice is done.
+2. Continue the screens slice: guest screen agent in the image → shell
+   watch/drive surface → keyframe artifacts → execution-path claim/release
+   wiring (see "Blocked / deferred" for the stage details).
+3. If Step 2 acceptance has closed: implement the capsule rule + work
+   validator extension as its own migration/PR, payment structure explicitly
+   excluded.
+4. Also open: guest service wiring for the sync agent (systemd unit + store/
    resolver composition), then runner reboot re-activation once the Step 2
    acceptance freeze lifts.
 5. Consider folding `github/master` (10 commits ahead) into the branch before
