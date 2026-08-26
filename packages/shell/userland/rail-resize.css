@@ -4,12 +4,6 @@
 	--rail-compact-width: 80px;
 }
 
-html[data-platform="darwin"] {
-	/* Keep the titlebar account control inside the compact rail while it remains
-	 * beside the native traffic lights. */
-	--rail-compact-width: 116px;
-}
-
 body.company-shell #primaryNavigation,
 body.company-shell #titlebar,
 body.company-shell #titlebar::after,
@@ -356,9 +350,16 @@ html[data-platform="darwin"] body.company-shell .rail-bottom #companySwitcherBut
 	background: transparent;
 }
 
-html[data-platform="darwin"] body.company-shell.rail-compact .rail-company-switcher,
+html[data-platform="darwin"] body.company-shell.rail-compact .rail-company-switcher {
+	top: auto;
+	bottom: 9px;
+	left: 23px;
+	width: 34px;
+	height: 34px;
+	min-height: 34px;
+}
+
 html[data-platform="darwin"] body.company-shell.rail-compact .rail-bottom #companySwitcherButton {
-	top: 7px;
 	width: 34px;
 	height: 34px;
 	min-height: 34px;
@@ -397,6 +398,12 @@ html[data-platform="darwin"] body.company-shell .company-switcher-menu {
 	backdrop-filter: blur(28px) saturate(1.25);
 	font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
 	-webkit-font-smoothing: auto;
+}
+
+html[data-platform="darwin"] body.company-shell.rail-compact .company-switcher-menu {
+	top: auto;
+	bottom: calc(100% + 5px);
+	left: 0;
 }
 
 html[data-platform="darwin"] body.company-shell .company-switcher-menu button {
