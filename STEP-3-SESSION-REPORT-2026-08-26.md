@@ -2,7 +2,7 @@
 
 Produced by the dedicated Step 3 session continuing from
 `STEP-3-SESSION-REPORT-2026-08-25.md`. Branch `step3/company-computers` at
-`eb46ccb39` (17 commits on `439fadc1c`, all pushed to `github`); tsgo clean,
+`eefaee298` (19 commits on `439fadc1c`, all pushed to `github`); tsgo clean,
 biome clean; the four company-computer shell suites hold 36 tests (12 sync +
 12 screens + 8 guest composition + 4 member view), the full
 runner-orchestrator suite is 66 passing, and `npm run test:scripts` is green
@@ -173,6 +173,21 @@ VNC session, and a loopback single-connection WebSocket bridge (hand-rolled
 RFC 6455 server side) so a stock noVNC client can attach at a local URL.
 The renderer embed itself is the remaining UI pass.
 
+**12. Renderer UI pass: screen cards, live noVNC viewer, wallpaper.**
+`eefaee298` (founder-directed). The agent sidepanel's computer section
+upgrades to a screen card — the guest desktop's own wallpaper surface (grey
+field, the agent's creature debossed letterpress-style), task dot, hover
+Open pill, and a one-click attach card for agents without a screen. Opening
+runs mint→gateway→bridge in the main process (screens:* IPC, per-window
+bridge lifecycle) and the vendored noVNC (@novnc/novnc 1.7.0, MPL license
+shipped) renders the live take-over session in a near-borderless overlay.
+Guest desktops wear the matching qorpera-screen-wallpaper.svg (folio
+debossed), rasterized at image build and applied inside each session's
+D-Bus. The shell resolves the node's viewer gateway from the registry
+(qorpera_compute_nodes.screen_viewer_endpoint, draft migration). Verified
+end to end in a browser harness: live RFB framebuffer pixels through the
+real guest listener → gateway → member connect → WebSocket bridge → noVNC.
+
 ## Design decisions (charter trace)
 
 - Sync is strictly one-directional; the working copy is never authority
@@ -195,21 +210,19 @@ The renderer embed itself is the remaining UI pass.
   `20260821001000` ~lines 1024/1039) and `validateCloudRunnerWork`
   (orchestrator.ts ~line 1117) — **strictly after Step 2 acceptance closes**;
   payment structure stays out of the contracts.
-- **Screens slice remainder — the renderer UI pass**: the shell's screens
-  panel + noVNC embed on top of the tested local bridge URL. Needs the
-  noVNC dependency decision (pinned-deps policy) and the shell UI's own
-  conventions with visual verification; everything below the renderer is
-  contract-tested. Harness-side computer-use integration (the harness
-  resolving DISPLAY through the guest occupancy broker at
-  127.0.0.1:8447) is the matching execution-side follow-on.
+- **Harness-side computer-use integration**: the harness resolving DISPLAY
+  through the guest occupancy broker at 127.0.0.1:8447 is the matching
+  execution-side follow-on to the now-complete member watch/drive surface.
 - **Standing-checkout execution mode**: running turns inside the live
   `company/` checkout (instead of per-job workspaces on the workbench)
   removes per-turn materialization per charter principle 4, but requires
   the publication-cadence founder decision (charter open question) plus
   runtime-lock/capture semantics in the execution pipeline. Deliberately
   not decided silently.
-- A browser is not yet in the desktop stack (image apt addition when the
-  UI pass lands).
+- A browser is not yet in the desktop stack: Ubuntu 26.04 ships Firefox
+  and Chromium as snaps only, so the image needs a deliberate packaging
+  decision (snap seeding in the builder VM vs a vendor apt repository with
+  pinned provenance) rather than an apt one-liner.
 - **Runner session re-activation after VM reboot past `pending`** — deferred
   deliberately this session: it changes runner-registration lease semantics
   shared with the Step 2 acceptance currently in flight in the parallel
@@ -225,8 +238,9 @@ The renderer embed itself is the remaining UI pass.
    shared machine, the host viewer leg wired into the provider service, the
    one-task-per-screen fence + keyframe audit, and the member watch/drive
    path down to a tested local noVNC bridge URL.
-2. Renderer UI pass: screens panel + noVNC embed in the shell (see
-   "Blocked / deferred"), then a browser in the desktop image.
+2. Browser in the desktop image (snap vs vendor-repo packaging decision),
+   and harness-side computer-use DISPLAY integration via the occupancy
+   broker.
 3. If Step 2 acceptance has closed: the capsule rule + work validator
    extension as its own migration/PR (payment structure excluded), and
    runner reboot re-activation.
