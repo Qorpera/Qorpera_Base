@@ -12,6 +12,7 @@ import {
 	parseCompanyComputerServiceBaseUrl,
 } from "./cloud-company-computer-guest.ts";
 import {
+	COMPANY_COMPUTER_WALLPAPER_SOURCE_PREFIX,
 	ExecCompanyComputerScreenKeyframeCapturer,
 	ExecCompanyComputerScreenLauncher,
 	runCloudCompanyComputerScreenAgent,
@@ -116,6 +117,10 @@ export async function runCloudCompanyComputerScreenServiceMain(
 			store: new CloudContentAddressedStore(transport),
 			recorder: screenService,
 			profileId: bootstrap.profileId,
+		},
+		wallpapers: {
+			directory: join(bootstrap.datasetPath, bootstrap.datasetLayout.stateDirectory, "wallpapers"),
+			sourceFor: (creature) => `${COMPANY_COMPUTER_WALLPAPER_SOURCE_PREFIX}${creature}.png`,
 		},
 		onError: (error) => console.error(safeCompanyComputerGuestError(error)),
 	});

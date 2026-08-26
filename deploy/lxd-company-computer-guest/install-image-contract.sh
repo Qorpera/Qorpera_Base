@@ -49,7 +49,10 @@ if (
   throw new Error("Nested runner guest package does not match the company manifest pin");
 }
 const expected = new Set([
+  "google-chrome-signing-key.asc",
   "install-image-contract.sh",
+  "qorpera-chrome",
+  "qorpera-chrome.desktop",
   "qorpera-company-computer-bootstrap.mjs",
   "qorpera-company-computer-bootstrap.service",
   "qorpera-company-computer-runner.mjs",
@@ -59,7 +62,14 @@ const expected = new Set([
   "qorpera-company-computer-sync.mjs",
   "qorpera-company-computer-sync.service",
   "qorpera-screen-session",
-  "qorpera-screen-wallpaper.svg",
+  "xfce4-panel.xml",
+  "wallpapers/pebble.svg",
+  "wallpapers/folio.svg",
+  "wallpapers/brain.svg",
+  "wallpapers/wisp.svg",
+  "wallpapers/halo.svg",
+  "wallpapers/ribbon.svg",
+  "wallpapers/bloom.svg",
 ]);
 for (const artifact of manifest.artifacts) {
   if (!artifact || typeof artifact.file !== "string" || !expected.delete(artifact.file)) {
@@ -114,11 +124,89 @@ for artifact in \
 done
 install -o root -g root -m 0555 "${PACKAGE_ROOT}/qorpera-screen-session" /usr/local/bin/qorpera-screen-session
 bash -n /usr/local/bin/qorpera-screen-session
-# The desktop wallpaper every screen wears: rasterized once at install so
-# the running guest never needs the SVG toolchain.
+# One wallpaper per creature, rasterized once at install so the running
+# guest never needs the SVG toolchain; the screen agent dresses each screen
+# with its owning agent's creature, folio standing in as the default seed.
 install -d -o root -g root -m 0755 /usr/share/backgrounds
-rsvg-convert "${PACKAGE_ROOT}/qorpera-screen-wallpaper.svg" -w 2560 -h 1600 -o /usr/share/backgrounds/qorpera-screen.png
+for creature in pebble folio brain wisp halo ribbon bloom; do
+	rsvg-convert "${PACKAGE_ROOT}/wallpapers/${creature}.svg" -w 2560 -h 1600 \
+		-o "/usr/share/backgrounds/qorpera-screen-${creature}.png"
+	chmod 0644 "/usr/share/backgrounds/qorpera-screen-${creature}.png"
+done
+cp /usr/share/backgrounds/qorpera-screen-folio.png /usr/share/backgrounds/qorpera-screen.png
 chmod 0644 /usr/share/backgrounds/qorpera-screen.png
+
+# Chrome in the dock, from Google's signed apt repository. Provenance: the
+# repository signing key ships pinned in this package and its primary
+# fingerprint is asserted before it is trusted; the installed version is
+# recorded in the image marker. The dock launcher goes through
+# qorpera-chrome, which keeps every screen's browser profile on the NAS
+# dataset.
+PACKAGE_ROOT=${PACKAGE_ROOT} node <<'NODE'
+const { createHash } = require("node:crypto");
+const { readFileSync } = require("node:fs");
+const { join } = require("node:path");
+
+const EXPECTED_PRIMARY_FINGERPRINT = "EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796";
+const armored = readFileSync(join(process.env.PACKAGE_ROOT, "google-chrome-signing-key.asc"), "utf8");
+const body = armored.split(/\r?\n\r?\n/)[1].split("=")[0].replace(/-----[^]*?-----/g, "").replace(/\s+/g, "");
+const data = Buffer.from(body, "base64");
+let offset = 0;
+const primaries = [];
+while (offset < data.length) {
+  const header = data[offset];
+  if ((header & 0x80) === 0) break;
+  let tag, length, lengthBytes;
+  if (header & 0x40) {
+    tag = header & 0x3f;
+    const first = data[offset + 1];
+    if (first < 192) { length = first; lengthBytes = 1; }
+    else if (first < 224) { length = (first - 192) * 256 + data[offset + 2] + 192; lengthBytes = 2; }
+    else if (first === 255) { length = data.readUInt32BE(offset + 2); lengthBytes = 5; }
+    else break;
+    offset += 1 + lengthBytes;
+  } else {
+    tag = (header >> 2) & 0x0f;
+    const lengthType = header & 0x03;
+    if (lengthType === 0) { length = data[offset + 1]; lengthBytes = 1; }
+    else if (lengthType === 1) { length = data.readUInt16BE(offset + 1); lengthBytes = 2; }
+    else if (lengthType === 2) { length = data.readUInt32BE(offset + 1); lengthBytes = 4; }
+    else break;
+    offset += 1 + lengthBytes;
+  }
+  if (tag === 6) {
+    const packet = data.subarray(offset, offset + length);
+    const prefix = Buffer.alloc(3);
+    prefix[0] = 0x99;
+    prefix.writeUInt16BE(length, 1);
+    primaries.push(createHash("sha1").update(Buffer.concat([prefix, packet])).digest("hex").toUpperCase());
+  }
+  offset += length;
+}
+if (!primaries.includes(EXPECTED_PRIMARY_FINGERPRINT)) {
+  throw new Error(`Google signing key fingerprint mismatch: ${primaries.join(", ")}`);
+}
+NODE
+install -d -o root -g root -m 0755 /etc/apt/keyrings
+install -o root -g root -m 0644 "${PACKAGE_ROOT}/google-chrome-signing-key.asc" /etc/apt/keyrings/google-chrome.asc
+printf '%s\n' \
+	"deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main" \
+	> /etc/apt/sources.list.d/google-chrome.list
+apt-get update
+apt-get install --yes google-chrome-stable
+if [[ ! -x /usr/bin/google-chrome-stable ]]; then
+	echo "Google Chrome did not install." >&2
+	exit 1
+fi
+chrome_version=$(/usr/bin/google-chrome-stable --version | awk '{ print $3 }')
+install -o root -g root -m 0555 "${PACKAGE_ROOT}/qorpera-chrome" /usr/local/bin/qorpera-chrome
+bash -n /usr/local/bin/qorpera-chrome
+install -o root -g root -m 0644 "${PACKAGE_ROOT}/qorpera-chrome.desktop" /usr/share/applications/qorpera-chrome.desktop
+
+# The dock every screen starts with: Chrome, files, terminal.
+install -d -o root -g root -m 0755 /etc/xdg/xfce4/xfconf/xfce-perchannel-xml
+install -o root -g root -m 0644 "${PACKAGE_ROOT}/xfce4-panel.xml" \
+	/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
 for unit in \
 	qorpera-company-computer-bootstrap.service \
 	qorpera-company-computer-runner.service \
@@ -155,7 +243,8 @@ printf '%s\n' \
 	'  "architecture": "x86_64",' \
 	"  \"guest_package_manifest_sha256\": \"${manifest_sha256}\"," \
 	"  \"runner_package_manifest_sha256\": \"${runner_manifest_sha256}\"," \
-	'  "desktop_stack": "xfce4-tigervnc"' \
+	"  \"chrome_version\": \"${chrome_version}\"," \
+	'  "desktop_stack": "xfce4-tigervnc-chrome"' \
 	'}' > /etc/qorpera/lxd-company-computer-image.json
 chmod 0644 /etc/qorpera/lxd-company-computer-image.json
 

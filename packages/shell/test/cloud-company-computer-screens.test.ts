@@ -6,6 +6,7 @@ import {
 	type CompanyComputerScreenLaunch,
 	type CompanyComputerScreenLauncher,
 	type CompanyComputerScreenRecord,
+	companyComputerScreenCreature,
 	companyComputerScreenDisplay,
 	companyComputerScreenVncPort,
 	ExecCompanyComputerScreenKeyframeCapturer,
@@ -423,6 +424,78 @@ describe("cloud company computer screens", () => {
 				liveVncPort: () => undefined,
 			}),
 		).rejects.toThrow("viewer token is invalid");
+	});
+
+	it("dresses each screen with its owning agent's creature, seeded randomly when unowned", async () => {
+		const templated = {
+			...screenRecord(2),
+			attachedStaffAgentId: staffAgentId,
+			attachedStaffTemplateId: "product-manager",
+		};
+		expect(companyComputerScreenCreature(templated)).toBe("folio");
+		const untemplated = { ...screenRecord(2), attachedStaffAgentId: staffAgentId };
+		expect(companyComputerScreenCreature(untemplated)).toBe(companyComputerScreenCreature(untemplated));
+		const unowned = screenRecord(3);
+		expect(companyComputerScreenCreature(unowned)).toBe(companyComputerScreenCreature(unowned));
+		expect(["pebble", "folio", "brain", "wisp", "halo", "ribbon", "bloom"]).toContain(
+			companyComputerScreenCreature(unowned),
+		);
+
+		const parsed = parseCompanyComputerScreenRecords([
+			{
+				screen_id: screenId,
+				screen_ordinal: 2,
+				display_name: "Screen 2",
+				status: "active",
+				attached_staff_agent_id: staffAgentId,
+				attached_staff_template_id: "product-manager",
+				attached_staff_display_name: "Grok Bot Teacher",
+			},
+		])[0];
+		expect(parsed?.attachedStaffTemplateId).toBe("product-manager");
+		expect(parsed?.attachedStaffDisplayName).toBe("Grok Bot Teacher");
+	});
+
+	it("keeps the per-screen wallpapers current with the attachment", async () => {
+		const launcher = new FakeLauncher();
+		const copies: Array<{ source: string; destination: string }> = [];
+		let firstCopy!: () => void;
+		const copied = new Promise<void>((resolveCopy) => {
+			firstCopy = resolveCopy;
+		});
+		const controller = new AbortController();
+		const agent = runCloudCompanyComputerScreenAgent({
+			config: { viewerHost: "127.0.0.1", viewerPort: 0, viewerTrustedSource: "127.0.0.1", pollSeconds: 30 },
+			companyComputerId,
+			viewerToken,
+			controlPlane: {
+				listScreens: async () => [
+					{ ...screenRecord(2), attachedStaffAgentId: staffAgentId, attachedStaffTemplateId: "product-manager" },
+				],
+			},
+			launcher,
+			signal: controller.signal,
+			wallpapers: {
+				directory: "/tmp/qorpera-test-wallpapers",
+				sourceFor: (creature) => `/usr/share/backgrounds/qorpera-screen-${creature}.png`,
+				copy: async (source, destination) => {
+					copies.push({ source, destination });
+					firstCopy();
+				},
+			},
+			onError: (error) => {
+				throw error;
+			},
+		});
+		await copied;
+		controller.abort();
+		await agent;
+		expect(copies).toEqual([
+			{
+				source: "/usr/share/backgrounds/qorpera-screen-folio.png",
+				destination: "/tmp/qorpera-test-wallpapers/screen-2.png",
+			},
+		]);
 	});
 
 	it("captures keyframes with the substituted command and DISPLAY exported", async () => {

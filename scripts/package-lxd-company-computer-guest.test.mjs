@@ -25,7 +25,10 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 		assert.deepEqual(
 			manifest.artifacts.map((artifact) => artifact.file),
 			[
+				"google-chrome-signing-key.asc",
 				"install-image-contract.sh",
+				"qorpera-chrome",
+				"qorpera-chrome.desktop",
 				"qorpera-company-computer-bootstrap.mjs",
 				"qorpera-company-computer-bootstrap.service",
 				"qorpera-company-computer-runner.mjs",
@@ -35,7 +38,14 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 				"qorpera-company-computer-sync.mjs",
 				"qorpera-company-computer-sync.service",
 				"qorpera-screen-session",
-				"qorpera-screen-wallpaper.svg",
+				"xfce4-panel.xml",
+				"wallpapers/pebble.svg",
+				"wallpapers/folio.svg",
+				"wallpapers/brain.svg",
+				"wallpapers/wisp.svg",
+				"wallpapers/halo.svg",
+				"wallpapers/ribbon.svg",
+				"wallpapers/bloom.svg",
 			],
 		);
 		for (const artifact of manifest.artifacts) {
@@ -77,7 +87,9 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 		);
 		const installer = await readFile(installerPath, "utf-8");
 		assert.match(installer, /apt-get install --yes[^\n]*\btigervnc-standalone-server\b/);
-		assert.match(installer, /rsvg-convert[^\n]*qorpera-screen-wallpaper\.svg/);
+		assert.match(installer, /rsvg-convert[^\n]*wallpapers\/\$\{creature\}\.svg/);
+		assert.ok(installer.includes("google-chrome-stable"), "the image must install Chrome from the pinned-key repository");
+		assert.ok(installer.includes('EXPECTED_PRIMARY_FINGERPRINT = "EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796"'));
 		assert.match(installer, /apt-get install --yes[^\n]*\bxfce4\b/);
 		assert.ok(installer.includes('bash "${PACKAGE_ROOT}/runner/install-image-contract.sh"'));
 		const wrapperPath = join(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-screen-session");

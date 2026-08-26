@@ -68,16 +68,25 @@ if [[ ${ready} != true ]]; then
 	exit 1
 fi
 
-# The Qorpera wallpaper is applied from inside the session's own D-Bus
-# (xfconf lives there); best-effort so a slow desktop start never kills the
+# Each screen wears its owning agent's creature: the screen agent keeps a
+# per-screen wallpaper on the dataset current with the attachment, and the
+# session points xfconf at that file (xfdesktop reloads when it changes).
+# Seed it with the default before first use; applied from inside the
+# session's own D-Bus, best-effort so a slow desktop start never kills the
 # screen itself.
-DISPLAY=${display} /usr/bin/dbus-run-session -- /bin/bash -c '
+wallpaper_dir=${QORPERA_WALLPAPER_DIR:-/srv/qorpera/dataset/.qorpera-computer/wallpapers}
+wallpaper="${wallpaper_dir}/screen-${ordinal}.png"
+if [[ ! -f ${wallpaper} ]]; then
+	mkdir -p "${wallpaper_dir}"
+	cp /usr/share/backgrounds/qorpera-screen.png "${wallpaper}" 2>/dev/null || true
+fi
+DISPLAY=${display} QORPERA_SCREEN_WALLPAPER=${wallpaper} /usr/bin/dbus-run-session -- /bin/bash -c '
 	(
 		for _attempt in $(seq 1 40); do
 			mapfile -t props < <(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep "/last-image$")
 			if [[ ${#props[@]} -gt 0 ]]; then
 				for prop in "${props[@]}"; do
-					xfconf-query -c xfce4-desktop -p "${prop}" -s /usr/share/backgrounds/qorpera-screen.png || true
+					xfconf-query -c xfce4-desktop -p "${prop}" -s "${QORPERA_SCREEN_WALLPAPER}" || true
 				done
 				break
 			fi

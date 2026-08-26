@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Chrome for Company Computer screens. The browser profile lives on the NAS
+# dataset (charter: browser state is part of the working world and migrates
+# with the share), one profile per screen because Chrome's singleton would
+# otherwise open every window on whichever display launched first. Every
+# member and agent on the machine can open any screen's profile — screens
+# are parallel work surfaces, never boundaries.
+profiles_root=${QORPERA_CHROME_PROFILES:-/srv/qorpera/dataset/profiles/chrome}
+screen=${DISPLAY#:}
+screen=${screen%%.*}
+profile="${profiles_root}/screen-${screen:-0}"
+mkdir -p "${profile}"
+exec /usr/bin/google-chrome-stable \
+	--user-data-dir="${profile}" \
+	--no-first-run \
+	--no-default-browser-check \
+	"$@"

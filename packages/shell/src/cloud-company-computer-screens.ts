@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
 import {
 	createServer as createHttpServer,
 	type Server as HttpServer,
@@ -11,6 +11,7 @@ import { connect, createServer, isIP, type Server, type Socket } from "node:net"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
+import { type StaffCharacterId, staffCharacterForIdentity } from "./staff-characters.ts";
 
 /** Guest screen agent for the Company Computer (transport ratified
  * 2026-08-26, deploy/first-node/STEP-3-SCREENS-DECISION.md): one desktop
@@ -50,6 +51,8 @@ export interface CompanyComputerScreenRecord {
 	displayName: string;
 	status: "active" | "retired";
 	attachedStaffAgentId?: string;
+	attachedStaffTemplateId?: string;
+	attachedStaffDisplayName?: string;
 	occupyingRunId?: string;
 }
 
@@ -66,6 +69,8 @@ export function parseCompanyComputerScreenRecords(value: unknown): CompanyComput
 		const input = entry as Record<string, unknown>;
 		const attached = input.attached_staff_agent_id;
 		const occupying = input.occupying_run_id;
+		const attachedTemplate = input.attached_staff_template_id;
+		const attachedName = input.attached_staff_display_name;
 		if (
 			typeof input.screen_id !== "string" ||
 			!UUID_PATTERN.test(input.screen_id) ||
@@ -89,6 +94,12 @@ export function parseCompanyComputerScreenRecords(value: unknown): CompanyComput
 			displayName: input.display_name,
 			status: input.status,
 			...(typeof attached === "string" ? { attachedStaffAgentId: attached } : {}),
+			...(typeof attachedTemplate === "string" && attachedTemplate.length <= 256
+				? { attachedStaffTemplateId: attachedTemplate }
+				: {}),
+			...(typeof attachedName === "string" && attachedName.length <= 160
+				? { attachedStaffDisplayName: attachedName }
+				: {}),
 			...(typeof occupying === "string" ? { occupyingRunId: occupying } : {}),
 		};
 	});
@@ -727,6 +738,60 @@ export interface CompanyComputerScreenKeyframes {
 	profileId: string;
 }
 
+/** The image bakes one wallpaper per creature at this prefix. */
+export const COMPANY_COMPUTER_WALLPAPER_SOURCE_PREFIX = "/usr/share/backgrounds/qorpera-screen-";
+
+/** A screen wears its owning agent's creature — derived exactly as the
+ * shell derives it, so the desktop and the sidepanel card always match. A
+ * screen with no single owner gets a stable pseudo-random creature seeded
+ * by its own identity. */
+export function companyComputerScreenCreature(record: CompanyComputerScreenRecord): StaffCharacterId {
+	if (record.attachedStaffAgentId) {
+		return staffCharacterForIdentity(record.attachedStaffTemplateId, record.attachedStaffAgentId);
+	}
+	return staffCharacterForIdentity(undefined, record.screenId);
+}
+
+export interface CompanyComputerScreenWallpapers {
+	/** Per-screen wallpaper files the desktop sessions point xfconf at,
+	 * carried on the dataset so they migrate with the share. */
+	directory: string;
+	sourceFor(creature: StaffCharacterId): string;
+	copy?: (source: string, destination: string) => Promise<void>;
+}
+
+async function atomicCopy(source: string, destination: string): Promise<void> {
+	const temporary = `${destination}.${randomUUID()}.tmp`;
+	try {
+		await copyFile(source, temporary);
+		await rename(temporary, destination);
+	} catch (error) {
+		await rm(temporary, { force: true });
+		throw error;
+	}
+}
+
+async function applyScreenWallpapers(
+	records: readonly CompanyComputerScreenRecord[],
+	wallpapers: CompanyComputerScreenWallpapers,
+	applied: Map<number, string>,
+	onError?: (error: unknown) => void,
+): Promise<void> {
+	for (const screen of records) {
+		if (screen.status !== "active") continue;
+		const creature = companyComputerScreenCreature(screen);
+		if (applied.get(screen.screenOrdinal) === creature) continue;
+		try {
+			await mkdir(wallpapers.directory, { recursive: true });
+			const copy = wallpapers.copy ?? atomicCopy;
+			await copy(wallpapers.sourceFor(creature), join(wallpapers.directory, `screen-${screen.screenOrdinal}.png`));
+			applied.set(screen.screenOrdinal, creature);
+		} catch (error) {
+			onError?.(error);
+		}
+	}
+}
+
 async function publishScreenKeyframes(
 	records: readonly CompanyComputerScreenRecord[],
 	manager: CloudCompanyComputerScreenManager,
@@ -782,6 +847,7 @@ export interface RunCloudCompanyComputerScreenAgentInput {
 	occupancy?: CompanyComputerScreenOccupancy;
 	brokerPort?: number;
 	keyframes?: CompanyComputerScreenKeyframes;
+	wallpapers?: CompanyComputerScreenWallpapers;
 	onError?: (error: unknown) => void;
 }
 
@@ -796,6 +862,7 @@ export async function runCloudCompanyComputerScreenAgent(
 ): Promise<void> {
 	const manager = new CloudCompanyComputerScreenManager(input.launcher);
 	let latestRecords: readonly CompanyComputerScreenRecord[] = [];
+	const appliedWallpapers = new Map<number, string>();
 	const viewer = await startCompanyComputerScreenViewer({
 		host: input.config.viewerHost,
 		port: input.config.viewerPort,
@@ -815,6 +882,11 @@ export async function runCloudCompanyComputerScreenAgent(
 			try {
 				const records = await input.controlPlane.listScreens(input.companyComputerId, input.signal);
 				latestRecords = records;
+				if (input.wallpapers) {
+					/* Wallpapers land before sessions launch so a fresh desktop
+					 * wears its agent's creature from the first frame. */
+					await applyScreenWallpapers(records, input.wallpapers, appliedWallpapers, input.onError);
+				}
 				await manager.reconcile(records);
 				if (input.keyframes && !input.signal.aborted) {
 					await publishScreenKeyframes(records, manager, input.keyframes, input.onError);
