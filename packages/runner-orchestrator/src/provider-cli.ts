@@ -204,6 +204,9 @@ function companyComputerConfig(): LxdCompanyComputerProviderConfig {
 		guestScreenViewerPort: integer("QORPERA_LXD_GUEST_SCREEN_VIEWER_PORT", 8446),
 		syncPollSeconds: integer("QORPERA_LXD_SYNC_POLL_SECONDS", 30),
 		screenPollSeconds: integer("QORPERA_LXD_SCREEN_POLL_SECONDS", 30),
+		...(process.env.QORPERA_LXD_IDLE_POWER_OFF_SECONDS !== undefined
+			? { idlePowerOffSeconds: integer("QORPERA_LXD_IDLE_POWER_OFF_SECONDS") }
+			: {}),
 		runnerImage: required("QORPERA_EPHEMERAL_RUNNER_IMAGE"),
 		runnerPodmanPath: required("QORPERA_EPHEMERAL_RUNNER_PODMAN"),
 		runnerEntrypoint: required("QORPERA_EPHEMERAL_RUNNER_ENTRYPOINT"),

@@ -1,0 +1,46 @@
+[Unit]
+Description=Qorpera host LXD Company Computer provider
+Documentation=https://github.com/Qorpera/Qorpera_Base
+Wants=network-online.target snap.lxd.daemon.service
+After=network-online.target snap.lxd.daemon.service
+ConditionPathExists=/etc/qorpera/lxd-company-provider.env
+
+[Service]
+Type=exec
+User=qorpera-provider
+Group=qorpera-provider
+SupplementaryGroups=lxd
+EnvironmentFile=-/etc/qorpera/lxd-company-provider.env
+ExecStartPre=/usr/bin/test -S /var/snap/lxd/common/lxd/unix.socket
+ExecStart=/usr/bin/node --jitless /opt/qorpera/company-provider/qorpera-lxd-provider.mjs
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/qorpera-company-provider
+
+[Install]
+WantedBy=multi-user.target
