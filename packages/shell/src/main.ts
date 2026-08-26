@@ -3821,8 +3821,16 @@ function startLegacyPiSessionAttachment(
 		 * development keeps the explicit override. */
 		const runtimeNodeExecutable =
 			process.env.QORPERA_RUNTIME_NODE?.trim() || bundledRuntimeNodeForAdhocBuild() || process.execPath;
+		/* The official Node build reads the system OpenSSL configuration at
+		 * startup and aborts when the sandbox denies it, so an external
+		 * runtime node needs that path readable alongside its install tree. */
 		const runtimeNodeReadPaths =
-			runtimeNodeExecutable === process.execPath ? [] : [dirname(dirname(realpathSync(runtimeNodeExecutable)))];
+			runtimeNodeExecutable === process.execPath
+				? []
+				: [
+						dirname(dirname(realpathSync(runtimeNodeExecutable))),
+						...(process.platform === "darwin" ? ["/System/Library/OpenSSL"] : []),
+					];
 		writeSandboxProfile(
 			configDir,
 			runtimeDir,
