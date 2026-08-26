@@ -52,6 +52,7 @@ await build({
 		"qorpera-company-computer-bootstrap": "packages/shell/src/cloud-company-computer-bootstrap-main.ts",
 		"qorpera-company-computer-sync": "packages/shell/src/cloud-company-computer-sync-main.ts",
 		"qorpera-company-computer-screens": "packages/shell/src/cloud-company-computer-screens-main.ts",
+		"qorpera-company-computer-runner": "packages/shell/src/cloud-company-computer-runner-main.ts",
 	},
 	outdir: outputRoot,
 	outExtension: { ".js": ".mjs" },
@@ -80,6 +81,10 @@ const sources = new Map([
 		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-company-computer-screens.service"),
 	],
 	[
+		"qorpera-company-computer-runner.service",
+		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-company-computer-runner.service"),
+	],
+	[
 		"qorpera-screen-session",
 		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-screen-session"),
 	],
@@ -96,6 +101,8 @@ const files = [
 	"install-image-contract.sh",
 	"qorpera-company-computer-bootstrap.mjs",
 	"qorpera-company-computer-bootstrap.service",
+	"qorpera-company-computer-runner.mjs",
+	"qorpera-company-computer-runner.service",
 	"qorpera-company-computer-screens.mjs",
 	"qorpera-company-computer-screens.service",
 	"qorpera-company-computer-sync.mjs",

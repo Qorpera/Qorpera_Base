@@ -1,14 +1,19 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { safeCompanyComputerGuestError } from "../src/cloud-company-computer-bootstrap-main.ts";
 import {
+	COMPANY_COMPUTER_NATIVE_PROVIDER_SERVICE,
+	COMPANY_COMPUTER_RUNNER_SERVICE,
 	COMPANY_COMPUTER_SCREENS_SERVICE,
 	COMPANY_COMPUTER_SYNC_SERVICE,
+	type CompanyComputerGuestBootstrapPaths,
 	companyComputerObjectTransport,
 	parseCompanyComputerGuestBootstrap,
+	parseCompanyComputerRunnerServiceConfig,
 	parseCompanyComputerServiceBaseUrl,
+	type RunCompanyComputerGuestBootstrapOptions,
 	runCompanyComputerGuestBootstrap,
 	SupabaseCompanyComputerSyncHeadResolver,
 } from "../src/cloud-company-computer-guest.ts";
@@ -25,14 +30,20 @@ async function temporaryDirectory(): Promise<string> {
 	return directory;
 }
 
-function bootstrapFixture(datasetPath: string, credentialSource: string): Record<string, unknown> {
+const computeIdentityId = "30000000-0000-4000-8000-000000000005";
+
+function bootstrapFixture(
+	datasetPath: string,
+	credentialSource: string,
+	overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
 	return {
 		schema: "qorpera.company-computer-bootstrap/v1",
 		company_computer_id: companyComputerId,
 		logical_computer_id: "30000000-0000-4000-8000-000000000001",
 		profile_id: "30000000-0000-4000-8000-000000000003",
 		environment_id: "30000000-0000-4000-8000-000000000004",
-		compute_identity_id: "30000000-0000-4000-8000-000000000005",
+		compute_identity_id: computeIdentityId,
 		compute_template_key: "qorpera-company-computer-linux",
 		compute_template_version: "v1",
 		compute_policy_sha256: "e".repeat(64),
@@ -58,6 +69,136 @@ function bootstrapFixture(datasetPath: string, credentialSource: string): Record
 		native_provider_environment_path: "/var/lib/qorpera-bootstrap/native-provider.env",
 		credential_source: credentialSource,
 		identity_volume_path: "/var/lib/qorpera/identity",
+		...overrides,
+	};
+}
+
+function companyRunnerConfigFixture(workbenchRoot: string, sharedGid: number): Record<string, unknown> {
+	return {
+		schema: "qorpera.company-computer-service/v1",
+		base_url: "https://control.example.com",
+		publishable_key: "publishable-key",
+		runner_id: "30000000-0000-4000-8000-000000000006",
+		authority_state_path: "/var/lib/qorpera-runner/.local/state/qorpera-runner/authority.json",
+		workbench_root: workbenchRoot,
+		image: `ghcr.io/qorpera/runner@sha256:${"b".repeat(64)}`,
+		podman_path: "/usr/bin/podman",
+		entrypoint: "/usr/local/bin/qorpera-runner",
+		capabilities: ["agent_turn"],
+		platform: "linux-x64",
+		runner_version: "v1",
+		native_bridge_url: "http://127.0.0.1:8445/",
+		native_bridge_boundary: "virtual_machine",
+		native_bridge_shared_gid: sharedGid,
+		assignment_host: "0.0.0.0",
+		assignment_port: 8444,
+		assignment_trusted_source: "10.41.0.1",
+		max_assignments: 1,
+		environment: {},
+	};
+}
+
+interface BootstrapEnvironment {
+	paths: CompanyComputerGuestBootstrapPaths;
+	options: RunCompanyComputerGuestBootstrapOptions;
+	datasetPath: string;
+	credentialSource: string;
+	identityVolume: string;
+	runnerHome: string;
+	runnerConfig: Record<string, unknown>;
+	restoreMountInfo: () => Promise<void>;
+}
+
+async function bootstrapEnvironment(): Promise<BootstrapEnvironment> {
+	const root = await temporaryDirectory();
+	const uid = process.getuid?.() ?? 0;
+	const gid = process.getgid?.() ?? 0;
+	const datasetPath = join(root, "dataset");
+	await mkdir(datasetPath);
+	const identityVolume = join(root, "identity");
+	await mkdir(identityVolume, { mode: 0o700 });
+	const runnerHome = join(root, "runner-home");
+	await mkdir(runnerHome, { mode: 0o700 });
+	const nativeProviderHome = join(root, "native-provider");
+	await mkdir(nativeProviderHome, { mode: 0o700 });
+	const credentialSource = join(root, "credentials");
+	await mkdir(credentialSource, { mode: 0o700 });
+	for (const name of [
+		"qorpera-native-bridge",
+		"qorpera-runner-activation",
+		"qorpera-runner-assignment",
+		"qorpera-screen-viewer",
+	]) {
+		await writeFile(join(credentialSource, name), `${"A".repeat(43)}\n`, { mode: 0o600 });
+	}
+	await writeFile(join(credentialSource, "qorpera-supabase-service-key"), "service-key\n", { mode: 0o600 });
+	const paths: CompanyComputerGuestBootstrapPaths = {
+		bootstrapConfig: join(root, "company-computer.json"),
+		credentialSource,
+		runnerConfig: join(root, "runner-config.json"),
+		nativeProviderEnvironment: join(root, "native-provider.env"),
+		identityVolume,
+		identityMarker: join(identityVolume, "qorpera-compute-identity.json"),
+		identityMasterKey: join(identityVolume, "qorpera-native-provider-master-key"),
+		runnerHomeDirectory: runnerHome,
+		runnerConfigDestination: join(runnerHome, ".config", "qorpera-runner", "config.json"),
+		nativeProviderTemporaryDirectory: join(nativeProviderHome, "tmp"),
+		mountInfo: join(root, "mountinfo"),
+	};
+	await writeFile(
+		paths.bootstrapConfig,
+		JSON.stringify(
+			bootstrapFixture(datasetPath, credentialSource, {
+				runner_config_path: paths.runnerConfig,
+				native_provider_environment_path: paths.nativeProviderEnvironment,
+				identity_volume_path: identityVolume,
+			}),
+		),
+		{ mode: 0o600 },
+	);
+	const runnerConfig = {
+		...companyRunnerConfigFixture(join(datasetPath, "workbench"), gid),
+		authority_state_path: join(runnerHome, ".local", "state", "qorpera-runner", "authority.json"),
+	};
+	await writeFile(paths.runnerConfig, JSON.stringify(runnerConfig), { mode: 0o600 });
+	await writeFile(
+		paths.nativeProviderEnvironment,
+		[
+			"QORPERA_SUPABASE_URL=https://control.example.com",
+			"QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY=virtual_machine",
+			`QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID=${computeIdentityId}`,
+			"QORPERA_NATIVE_PROVIDER_HOST=127.0.0.1",
+			"QORPERA_NATIVE_PROVIDER_PORT=8445",
+			`QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT=${paths.nativeProviderTemporaryDirectory}`,
+			"QORPERA_CODEX_PATH=/usr/local/bin/codex",
+			"QORPERA_CLAUDE_PATH=/usr/local/bin/claude",
+			"",
+		].join("\n"),
+		{ mode: 0o600 },
+	);
+	const mountInfoContent = [
+		`36 25 0:32 / ${datasetPath} rw,relatime shared:7 - zfs pool/company rw`,
+		`37 25 0:33 / ${identityVolume} rw,relatime shared:8 - ext4 /dev/sdb rw`,
+		"",
+	].join("\n");
+	await writeFile(paths.mountInfo, mountInfoContent, "utf-8");
+	return {
+		paths,
+		options: {
+			paths,
+			expectedRootUid: uid,
+			expectedRootGid: gid,
+			workIdentity: { uid, gid },
+			nativeIdentity: { uid, gid },
+			workSupplementaryGids: [gid],
+			startService: async () => {},
+		},
+		datasetPath,
+		credentialSource,
+		identityVolume,
+		runnerHome,
+		runnerConfig,
+		restoreMountInfo: () => writeFile(paths.mountInfo, mountInfoContent, "utf-8"),
 	};
 }
 
@@ -199,78 +340,93 @@ describe("cloud company computer guest composition", () => {
 		).toThrow("missing or unsupported");
 	});
 
-	it("prepares the dataset working world and starts both agents", async () => {
-		const root = await temporaryDirectory();
-		const datasetPath = join(root, "dataset");
-		await mkdir(datasetPath);
-		const credentialSource = join(root, "credentials");
-		await mkdir(credentialSource, { mode: 0o700 });
-		for (const name of [
-			"qorpera-native-bridge",
-			"qorpera-runner-activation",
-			"qorpera-runner-assignment",
-			"qorpera-screen-viewer",
-		]) {
-			await writeFile(join(credentialSource, name), `${"A".repeat(43)}\n`, { mode: 0o600 });
-		}
-		await writeFile(join(credentialSource, "qorpera-supabase-service-key"), "service-key\n", { mode: 0o600 });
-		const bootstrapConfig = join(root, "company-computer.json");
-		await writeFile(bootstrapConfig, JSON.stringify(bootstrapFixture(datasetPath, credentialSource)), {
-			mode: 0o600,
+	it("maps the company runner service configuration onto the ephemeral pipeline", () => {
+		const parsed = parseCompanyComputerRunnerServiceConfig({
+			...companyRunnerConfigFixture("/srv/qorpera/dataset/workbench", 42_041),
+			future_field: true,
 		});
-		const mountInfo = join(root, "mountinfo");
-		await writeFile(mountInfo, `36 25 0:32 / ${datasetPath} rw,relatime shared:7 - zfs pool/company rw\n`, "utf-8");
+		expect(parsed.schema).toBe("qorpera.ephemeral-runner-service/v1");
+		expect(parsed.temporaryRoot).toBe("/srv/qorpera/dataset/workbench");
+		expect(parsed.jobTypes).toEqual(["agent_turn"]);
+		expect(parsed.maxAssignments).toBe(1);
+		expect(parsed.nativeBridgeBoundary).toBe("virtual_machine");
+		expect(() =>
+			parseCompanyComputerRunnerServiceConfig({
+				...companyRunnerConfigFixture("/srv/qorpera/dataset/workbench", 42_041),
+				schema: "qorpera.ephemeral-runner-service/v1",
+			}),
+		).toThrow("schema is not supported");
+	});
+
+	it("prepares the dataset, the runner lane, and starts every standing service", async () => {
+		const fixture = await bootstrapEnvironment();
 		const started: string[] = [];
-		const uid = process.getuid?.() ?? 0;
-		const gid = process.getgid?.() ?? 0;
 		await runCompanyComputerGuestBootstrap({
-			paths: { bootstrapConfig, credentialSource, mountInfo },
-			expectedRootUid: uid,
-			workIdentity: { uid, gid },
+			...fixture.options,
 			startService: async (service) => {
 				started.push(service);
 			},
 		});
-		expect(started).toEqual([COMPANY_COMPUTER_SYNC_SERVICE, COMPANY_COMPUTER_SCREENS_SERVICE]);
+		expect(started).toEqual([
+			COMPANY_COMPUTER_NATIVE_PROVIDER_SERVICE,
+			COMPANY_COMPUTER_RUNNER_SERVICE,
+			COMPANY_COMPUTER_SYNC_SERVICE,
+			COMPANY_COMPUTER_SCREENS_SERVICE,
+		]);
 		for (const directory of ["workbench", "profiles", ".qorpera-computer"]) {
-			await expect(mkdir(join(datasetPath, directory))).rejects.toMatchObject({ code: "EEXIST" });
+			await expect(mkdir(join(fixture.datasetPath, directory))).rejects.toMatchObject({ code: "EEXIST" });
 		}
+		const installed = JSON.parse(
+			await readFile(join(fixture.runnerHome, ".config", "qorpera-runner", "config.json"), "utf-8"),
+		) as Record<string, unknown>;
+		expect(installed.schema).toBe("qorpera.company-computer-service/v1");
+		const marker = JSON.parse(
+			await readFile(join(fixture.identityVolume, "qorpera-compute-identity.json"), "utf-8"),
+		) as Record<string, unknown>;
+		expect(marker).toEqual({ schema: "qorpera.compute-identity-volume/v1", compute_identity_id: computeIdentityId });
+		await expect(
+			readFile(join(fixture.identityVolume, "qorpera-native-provider-master-key"), "utf-8"),
+		).resolves.toMatch(/^[A-Za-z0-9_-]{43}\n$/);
+
+		const restarted: string[] = [];
+		await runCompanyComputerGuestBootstrap({
+			...fixture.options,
+			startService: async (service) => {
+				restarted.push(service);
+			},
+		});
+		expect(restarted).toHaveLength(4);
 	});
 
-	it("fails closed when the dataset is not mounted or credentials drift", async () => {
-		const root = await temporaryDirectory();
-		const datasetPath = join(root, "dataset");
-		await mkdir(datasetPath);
-		const credentialSource = join(root, "credentials");
-		await mkdir(credentialSource, { mode: 0o700 });
-		for (const name of [
-			"qorpera-native-bridge",
-			"qorpera-runner-activation",
-			"qorpera-runner-assignment",
-			"qorpera-screen-viewer",
-		]) {
-			await writeFile(join(credentialSource, name), `${"A".repeat(43)}\n`, { mode: 0o600 });
-		}
-		await writeFile(join(credentialSource, "qorpera-supabase-service-key"), "service-key\n", { mode: 0o600 });
-		const bootstrapConfig = join(root, "company-computer.json");
-		await writeFile(bootstrapConfig, JSON.stringify(bootstrapFixture(datasetPath, credentialSource)), {
+	it("fails closed when the dataset is unmounted, credentials drift, or the runner boundary weakens", async () => {
+		const fixture = await bootstrapEnvironment();
+		await writeFile(
+			fixture.paths.mountInfo,
+			`36 25 0:32 / ${fixture.identityVolume} rw shared:7 - ext4 /dev/sdb rw\n`,
+			"utf-8",
+		);
+		await expect(runCompanyComputerGuestBootstrap(fixture.options)).rejects.toThrow(
+			"Company computer dataset is not a mounted filesystem",
+		);
+		await fixture.restoreMountInfo();
+
+		await writeFile(join(fixture.credentialSource, "unexpected-secret"), "nope\n", { mode: 0o600 });
+		await expect(runCompanyComputerGuestBootstrap(fixture.options)).rejects.toThrow("unexpected entries");
+		await rm(join(fixture.credentialSource, "unexpected-secret"));
+
+		await writeFile(fixture.paths.runnerConfig, JSON.stringify({ ...fixture.runnerConfig, max_assignments: 2 }), {
 			mode: 0o600,
 		});
-		const mountInfo = join(root, "mountinfo");
-		await writeFile(mountInfo, "36 25 0:32 / /somewhere/else rw,relatime shared:7 - zfs pool rw\n", "utf-8");
-		const uid = process.getuid?.() ?? 0;
-		const gid = process.getgid?.() ?? 0;
-		const options = {
-			paths: { bootstrapConfig, credentialSource, mountInfo },
-			expectedRootUid: uid,
-			workIdentity: { uid, gid },
-			startService: async () => {},
-		};
-		await expect(runCompanyComputerGuestBootstrap(options)).rejects.toThrow("not a mounted filesystem");
+		await expect(runCompanyComputerGuestBootstrap(fixture.options)).rejects.toThrow("private assignment boundary");
 
-		await writeFile(mountInfo, `36 25 0:32 / ${datasetPath} rw shared:7 - zfs pool rw\n`, "utf-8");
-		await writeFile(join(credentialSource, "unexpected-secret"), "nope\n", { mode: 0o600 });
-		await expect(runCompanyComputerGuestBootstrap(options)).rejects.toThrow("unexpected entries");
+		await writeFile(
+			fixture.paths.runnerConfig,
+			JSON.stringify({ ...fixture.runnerConfig, workbench_root: join(fixture.datasetPath, "elsewhere") }),
+			{ mode: 0o600 },
+		);
+		await expect(runCompanyComputerGuestBootstrap(fixture.options)).rejects.toThrow(
+			"execution root must be the dataset workbench",
+		);
 	});
 
 	it("keeps the screen session command overridable and redacts tokens from errors", () => {

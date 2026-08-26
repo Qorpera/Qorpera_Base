@@ -28,6 +28,8 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 				"install-image-contract.sh",
 				"qorpera-company-computer-bootstrap.mjs",
 				"qorpera-company-computer-bootstrap.service",
+				"qorpera-company-computer-runner.mjs",
+				"qorpera-company-computer-runner.service",
 				"qorpera-company-computer-screens.mjs",
 				"qorpera-company-computer-screens.service",
 				"qorpera-company-computer-sync.mjs",
@@ -50,6 +52,7 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 		assert.equal((await stat(join(outputRoot, "qorpera-screen-session"))).mode & 0o111, 0o111);
 		for (const bundle of [
 			"qorpera-company-computer-bootstrap.mjs",
+			"qorpera-company-computer-runner.mjs",
 			"qorpera-company-computer-sync.mjs",
 			"qorpera-company-computer-screens.mjs",
 		]) {

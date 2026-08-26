@@ -52,6 +52,8 @@ const expected = new Set([
   "install-image-contract.sh",
   "qorpera-company-computer-bootstrap.mjs",
   "qorpera-company-computer-bootstrap.service",
+  "qorpera-company-computer-runner.mjs",
+  "qorpera-company-computer-runner.service",
   "qorpera-company-computer-screens.mjs",
   "qorpera-company-computer-screens.service",
   "qorpera-company-computer-sync.mjs",
@@ -103,6 +105,7 @@ fi
 install -d -o root -g root -m 0755 /opt/qorpera-company-computer
 for artifact in \
 	qorpera-company-computer-bootstrap.mjs \
+	qorpera-company-computer-runner.mjs \
 	qorpera-company-computer-sync.mjs \
 	qorpera-company-computer-screens.mjs; do
 	install -o root -g root -m 0555 "${PACKAGE_ROOT}/${artifact}" "/opt/qorpera-company-computer/${artifact}"
@@ -112,6 +115,7 @@ install -o root -g root -m 0555 "${PACKAGE_ROOT}/qorpera-screen-session" /usr/lo
 bash -n /usr/local/bin/qorpera-screen-session
 for unit in \
 	qorpera-company-computer-bootstrap.service \
+	qorpera-company-computer-runner.service \
 	qorpera-company-computer-sync.service \
 	qorpera-company-computer-screens.service; do
 	install -o root -g root -m 0644 "${PACKAGE_ROOT}/${unit}" "/etc/systemd/system/${unit}"
@@ -123,6 +127,7 @@ install -d -o root -g root -m 0755 /srv/qorpera /srv/qorpera/dataset
 
 systemd-analyze verify \
 	/etc/systemd/system/qorpera-company-computer-bootstrap.service \
+	/etc/systemd/system/qorpera-company-computer-runner.service \
 	/etc/systemd/system/qorpera-company-computer-sync.service \
 	/etc/systemd/system/qorpera-company-computer-screens.service
 systemctl daemon-reload
@@ -130,6 +135,7 @@ systemctl daemon-reload
 # bootstrap files; the published image starts nothing on its own.
 systemctl disable \
 	qorpera-company-computer-bootstrap.service \
+	qorpera-company-computer-runner.service \
 	qorpera-company-computer-sync.service \
 	qorpera-company-computer-screens.service \
 	>/dev/null 2>&1 || true
