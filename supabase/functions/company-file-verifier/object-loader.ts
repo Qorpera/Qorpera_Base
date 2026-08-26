@@ -31,6 +31,8 @@ export function createCompanyFileObjectLoader(
 
 type ObjectLoader = (profileId: string, sha256: string) => Promise<Uint8Array>;
 
+class ObjectLoaderAuthorityError extends Error {}
+
 function chainLoaders(primary: ObjectLoader, fallback: ObjectLoader | undefined): ObjectLoader {
 	const resilientPrimary = withTransientRetry(primary);
 	if (!fallback) return resilientPrimary;
@@ -38,7 +40,8 @@ function chainLoaders(primary: ObjectLoader, fallback: ObjectLoader | undefined)
 	return async (profileId, sha256) => {
 		try {
 			return await resilientPrimary(profileId, sha256);
-		} catch {
+		} catch (error) {
+			if (error instanceof ObjectLoaderAuthorityError) throw error;
 			return await resilientFallback(profileId, sha256);
 		}
 	};
@@ -55,6 +58,7 @@ function withTransientRetry(loader: ObjectLoader): ObjectLoader {
 			try {
 				return await loader(profileId, sha256);
 			} catch (error) {
+				if (error instanceof ObjectLoaderAuthorityError) throw error;
 				lastError = error;
 				if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 1_500));
 			}
@@ -85,6 +89,9 @@ function createGatewayLoader(options: CompanyFileObjectLoaderOptions): ObjectLoa
 			},
 		});
 		if (!response.ok) {
+			if (response.status === 401 || response.status === 403) {
+				throw new ObjectLoaderAuthorityError("Company File object is unavailable");
+			}
 			throw new Error("Company File object is unavailable");
 		}
 		return new Uint8Array(await response.arrayBuffer());
