@@ -53,9 +53,7 @@ export class WebCloudRunnerProviderService {
 		} catch (error) {
 			/* The 422 body stays generic (the caller is a remote control plane),
 			 * but the operator needs the actual refusal in the journal. */
-			console.error(
-				`provider request rejected: ${error instanceof Error ? error.message : String(error)}`,
-			);
+			console.error(`provider request rejected: ${error instanceof Error ? error.message : String(error)}`);
 			return json({ error: error instanceof SyntaxError ? "Invalid JSON" : "Request rejected" }, 422);
 		}
 	}

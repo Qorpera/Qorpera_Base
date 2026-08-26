@@ -62,9 +62,9 @@ export interface LxdCloudRunnerProviderConfig {
 	claudePath: string;
 	guestBootstrapService?: string;
 	/** Host path of the company's one live tree (a NAS mount). When present
-	 * and healthy it is passed into each runner VM as a read/write disk, and
-	 * the guest works on it directly instead of copying the company file in
-	 * and out per turn (founder ruling 2026-08-26). */
+	 * and healthy it is passed into ordinary turn runner VMs as a read/write
+	 * disk, and the guest works on it directly instead of copying the company
+	 * file in and out per turn. Proposal reviews remain copy-isolated. */
 	liveCompanyRoot?: string;
 	/** Profile the live tree belongs to; the guest refuses the mount for any
 	 * other profile's job. Required together with liveCompanyRoot. */
@@ -143,6 +143,16 @@ interface LxdGuestBootstrapAuthority {
 interface LxdGuestBootstrapFile {
 	path: string;
 	content: string;
+}
+
+interface LiveCompanyAuthority {
+	root: string;
+	profileId: string;
+}
+
+function liveCompanyAuthority(config: LxdCloudRunnerProviderConfig, jobType: string): LiveCompanyAuthority | undefined {
+	if (jobType === "proposal_review" || !config.liveCompanyRoot || !config.liveCompanyProfileId) return undefined;
+	return { root: config.liveCompanyRoot, profileId: config.liveCompanyProfileId };
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -760,6 +770,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	}
 
 	#createRequest(current: LxdProviderJournal): LxdCreateInstanceRequest {
+		const liveCompany = liveCompanyAuthority(this.#config, current.jobType);
 		return {
 			name: current.instanceName,
 			type: "virtual-machine",
@@ -792,11 +803,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				 * fallback either: a configured live tree whose host mount is
 				 * gone fails instance creation loudly (founder ruling — the
 				 * copy model must not silently come back). */
-				...(this.#config.liveCompanyRoot && this.#config.liveCompanyProfileId
+				...(liveCompany
 					? {
 							"company-live": {
 								type: "disk",
-								source: this.#config.liveCompanyRoot,
+								source: liveCompany.root,
 								path: LXD_LIVE_COMPANY_GUEST_PATH,
 							},
 						}
@@ -830,6 +841,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	}
 
 	#bootstrapFiles(authority: LxdGuestBootstrapAuthority, credentials: ProviderCredentials): LxdGuestBootstrapFile[] {
+		const liveCompany = liveCompanyAuthority(this.#config, authority.jobType);
 		const runnerConfig = JSON.stringify(
 			{
 				schema: "qorpera.ephemeral-runner-service/v1",
@@ -852,13 +864,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				assignment_port: this.#config.guestAssignmentPort,
 				assignment_trusted_source: this.#config.guestAssignmentSource,
 				max_assignments: 1,
-				environment:
-					this.#config.liveCompanyRoot && this.#config.liveCompanyProfileId
-						? {
-								QORPERA_LIVE_COMPANY_ROOT: LXD_LIVE_COMPANY_GUEST_PATH,
-								QORPERA_LIVE_COMPANY_PROFILE_ID: this.#config.liveCompanyProfileId,
-							}
-						: {},
+				environment: liveCompany
+					? {
+							QORPERA_LIVE_COMPANY_ROOT: LXD_LIVE_COMPANY_GUEST_PATH,
+							QORPERA_LIVE_COMPANY_PROFILE_ID: liveCompany.profileId,
+						}
+					: {},
 			},
 			null,
 			2,
@@ -969,6 +980,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	#assertInstanceAuthority(journal: LxdProviderJournal, instance: LxdInstanceRecord): void {
 		const root = instance.devices.root;
 		const identity = instance.devices["compute-identity"];
+		const liveCompany = liveCompanyAuthority(this.#config, journal.jobType);
+		const liveCompanyDevice = instance.devices["company-live"];
+		const expectedLiveCompanyDevice = liveCompany
+			? { type: "disk", source: liveCompany.root, path: LXD_LIVE_COMPANY_GUEST_PATH }
+			: undefined;
 		if (
 			instance.name !== journal.instanceName ||
 			instance.type !== "virtual-machine" ||
@@ -986,7 +1002,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			identity?.type !== "disk" ||
 			identity.path !== "/var/lib/qorpera/identity" ||
 			identity.pool !== journal.lxd.storagePool ||
-			identity.source !== journal.lxd.identityVolume
+			identity.source !== journal.lxd.identityVolume ||
+			JSON.stringify(canonical(liveCompanyDevice)) !== JSON.stringify(canonical(expectedLiveCompanyDevice))
 		) {
 			throw new Error("LXD guest drifted from immutable provider authority");
 		}
