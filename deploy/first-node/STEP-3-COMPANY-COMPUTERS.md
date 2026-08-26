@@ -123,6 +123,14 @@ hard isolation.
 
 ## Ratified decisions
 
+- **2026-08-26 (founder): screens follow the Grok bot-computer model —
+  shared computer, individual screen per staff agent.** Transport is
+  per-screen TigerVNC/XFCE desktops with noVNC-style embedding over the
+  existing capability-gated paths (never public); the audit trail is
+  transcript events plus periodic content-addressed keyframes, not
+  continuous video. Details and rejected alternatives:
+  [STEP-3-SCREENS-DECISION.md](STEP-3-SCREENS-DECISION.md).
+
 - **2026-08-25 (founder): members share one computer, and the computer is
   the interface into the entire company.** Different members' staff agents
   all work on the same Company Computer; member-connection sponsorship
@@ -138,10 +146,8 @@ hard isolation.
 
 ## Open questions (decide during Step 3 planning, not silently)
 
-- Screen transport (Wayland/RDP/SPICE/VNC) and how sessions are recorded
-  into the audit trail. Options and a recommendation are prepared in
-  [STEP-3-SCREENS-DECISION.md](STEP-3-SCREENS-DECISION.md); pending founder
-  ratification.
+- ~~Screen transport and audit recording~~ — decided 2026-08-26, see
+  "Ratified decisions" and [STEP-3-SCREENS-DECISION.md](STEP-3-SCREENS-DECISION.md).
 - Publication cadence from the working copy: per task, per explicit "commit"
   action, or continuous proposals.
 - Verified-snapshot bounds: the snapshot contract currently caps 50,000

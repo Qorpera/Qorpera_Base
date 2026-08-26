@@ -1,11 +1,12 @@
 # Step 3 screens: transport and audit-trail decision
 
-**Status: PENDING FOUNDER DECISION.** The charter lists screen transport and
-session recording as open questions to decide during Step 3 planning, not
-silently ([STEP-3-COMPANY-COMPUTERS.md](STEP-3-COMPANY-COMPUTERS.md), "Open
-questions"). This document lays out the options and a recommendation; the
-screens slice is not implemented until a decision is recorded here and in the
-charter.
+**Status: RATIFIED, 2026-08-26 (founder).** The founder confirmed the Grok
+bot-computer model: one shared Company Computer, an individual screen per
+staff agent — transport option A (per-screen TigerVNC/XFCE desktops with
+noVNC-style embedding over the existing capability-gated paths). The audit
+trail follows the recommended option 2 (transcript events plus periodic
+content-addressed keyframes; no continuous video). The screens slice builds
+in the "What a decision unblocks" order below.
 
 ## What is being decided
 
@@ -67,6 +68,12 @@ Stays available to operators as a break-glass maintenance surface.
 
 ## Audit-trail options
 
+The audit decision constrains only what is durably RECORDED into company
+history. It never limits the live surface: members always have the direct,
+real-time, interactive path into every screen — seeing exactly what the
+agent sees and taking over input at will — through the ratified transport
+above.
+
 **1. Control-plane events only.** Attach/detach/task-occupancy in the
 existing event contracts. Cheapest; no visual record of what happened on the
 screen. Insufficient alone for the charter's audit posture.
@@ -110,6 +117,8 @@ every new byte inside contracts that already exist.
 
 ## Decision record
 
-- (pending) Founder ratification of transport option and audit option, to be
-  recorded here and mirrored in STEP-3-COMPANY-COMPUTERS.md "Ratified
-  decisions".
+- **2026-08-26 (founder):** the Grok bot-computer model — shared computer,
+  individual screen per staff agent. Transport option A (per-screen
+  TigerVNC/XFCE + noVNC embedding, capability-gated, never public) and audit
+  option 2 (transcript events + periodic content-addressed keyframes) are
+  ratified. Mirrored in STEP-3-COMPANY-COMPUTERS.md "Ratified decisions".
