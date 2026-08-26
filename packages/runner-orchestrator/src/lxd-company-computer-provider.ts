@@ -40,6 +40,11 @@ export const COMPANY_COMPUTER_DATASET_LAYOUT = {
 
 export const COMPANY_COMPUTER_GUEST_DATASET_PATH = "/srv/qorpera/dataset";
 
+/** Default guest port for the screen agent's viewer listener; like the
+ * assignment listener it accepts connections only from the trusted host
+ * bridge address and is never publicly routable. */
+export const COMPANY_COMPUTER_SCREEN_VIEWER_PORT = 8_446;
+
 export type LxdCompanyComputerLifecycleState =
 	| "provisioning"
 	| "active"
@@ -185,6 +190,8 @@ export interface LxdCompanyComputerProviderConfig {
 	codexPath: string;
 	claudePath: string;
 	syncPollSeconds?: number;
+	guestScreenViewerPort?: number;
+	screenPollSeconds?: number;
 	guestBootstrapService?: string;
 }
 
@@ -218,6 +225,7 @@ interface LxdCompanyComputerJournal {
 		activationSha256: string;
 		assignmentSha256: string;
 		nativeBridgeSha256: string;
+		screenViewerSha256: string;
 	};
 	createdAt: string;
 	updatedAt: string;
@@ -227,6 +235,7 @@ interface ProviderCredentials {
 	activationToken: string;
 	assignmentToken: string;
 	nativeBridgeToken: string;
+	screenViewerToken: string;
 }
 
 interface CompanyComputerBootstrapFile {
@@ -456,6 +465,20 @@ function validateConfig(config: LxdCompanyComputerProviderConfig): void {
 	if (!Number.isSafeInteger(syncPollSeconds) || syncPollSeconds < 5 || syncPollSeconds > 3_600) {
 		throw new Error("Company computer sync poll interval is invalid");
 	}
+	const screenViewerPort = config.guestScreenViewerPort ?? COMPANY_COMPUTER_SCREEN_VIEWER_PORT;
+	if (
+		!Number.isSafeInteger(screenViewerPort) ||
+		screenViewerPort < 1_024 ||
+		screenViewerPort > 65_535 ||
+		screenViewerPort === config.guestAssignmentPort ||
+		screenViewerPort === config.nativeBridgePort
+	) {
+		throw new Error("Company computer screen viewer port is invalid");
+	}
+	const screenPollSeconds = config.screenPollSeconds ?? 30;
+	if (!Number.isSafeInteger(screenPollSeconds) || screenPollSeconds < 5 || screenPollSeconds > 3_600) {
+		throw new Error("Company computer screen poll interval is invalid");
+	}
 	if (
 		!config.supabaseUrl.trim() ||
 		!config.supabaseServiceKey.trim() ||
@@ -607,6 +630,8 @@ function journalFromJson(value: unknown): LxdCompanyComputerJournal {
 		!SHA256_PATTERN.test(credentials.assignmentSha256) ||
 		typeof credentials.nativeBridgeSha256 !== "string" ||
 		!SHA256_PATTERN.test(credentials.nativeBridgeSha256) ||
+		typeof credentials.screenViewerSha256 !== "string" ||
+		!SHA256_PATTERN.test(credentials.screenViewerSha256) ||
 		typeof input.createdAt !== "string" ||
 		!Number.isFinite(Date.parse(input.createdAt)) ||
 		typeof input.updatedAt !== "string" ||
@@ -657,6 +682,7 @@ function journalFromJson(value: unknown): LxdCompanyComputerJournal {
 			activationSha256: credentials.activationSha256,
 			assignmentSha256: credentials.assignmentSha256,
 			nativeBridgeSha256: credentials.nativeBridgeSha256,
+			screenViewerSha256: credentials.screenViewerSha256,
 		},
 		createdAt: new Date(input.createdAt).toISOString(),
 		updatedAt: new Date(input.updatedAt).toISOString(),
@@ -770,6 +796,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 						activationSha256: sha256(credentials.activationToken),
 						assignmentSha256: sha256(credentials.assignmentToken),
 						nativeBridgeSha256: sha256(credentials.nativeBridgeToken),
+						screenViewerSha256: sha256(credentials.screenViewerToken),
 					},
 					createdAt: now,
 					updatedAt: now,
@@ -1139,6 +1166,12 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 					state_path: `${datasetPath}/${COMPANY_COMPUTER_DATASET_LAYOUT.stateDirectory}/company-sync.json`,
 					poll_seconds: this.#config.syncPollSeconds ?? 30,
 				},
+				screens: {
+					viewer_host: "0.0.0.0",
+					viewer_port: this.#config.guestScreenViewerPort ?? COMPANY_COMPUTER_SCREEN_VIEWER_PORT,
+					viewer_trusted_source: this.#config.guestAssignmentSource,
+					poll_seconds: this.#config.screenPollSeconds ?? 30,
+				},
 				runner_config_path: "/var/lib/qorpera-bootstrap/runner-config.json",
 				native_provider_environment_path: "/var/lib/qorpera-bootstrap/native-provider.env",
 				credential_source: "/var/lib/qorpera-bootstrap/credentials",
@@ -1176,6 +1209,10 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 			{
 				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge",
 				content: `${credentials.nativeBridgeToken}\n`,
+			},
+			{
+				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-screen-viewer",
+				content: `${credentials.screenViewerToken}\n`,
 			},
 			{
 				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
@@ -1326,6 +1363,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 			activationToken: await this.#privateToken(join(root, "qorpera-runner-activation")),
 			assignmentToken: await this.#privateToken(join(root, "qorpera-runner-assignment")),
 			nativeBridgeToken: await this.#privateToken(join(root, "qorpera-native-bridge")),
+			screenViewerToken: await this.#privateToken(join(root, "qorpera-screen-viewer")),
 		};
 	}
 
@@ -1346,7 +1384,8 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 		if (
 			sha256(credentials.activationToken) !== journal.credentials.activationSha256 ||
 			sha256(credentials.assignmentToken) !== journal.credentials.assignmentSha256 ||
-			sha256(credentials.nativeBridgeToken) !== journal.credentials.nativeBridgeSha256
+			sha256(credentials.nativeBridgeToken) !== journal.credentials.nativeBridgeSha256 ||
+			sha256(credentials.screenViewerToken) !== journal.credentials.screenViewerSha256
 		) {
 			throw new Error("Company computer credentials do not match their durable journal");
 		}

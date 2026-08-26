@@ -184,7 +184,11 @@ class FakeLxd implements LxdInstanceSnapshotClient {
 		if (this.instance) this.instance = { ...this.instance, status: action === "start" ? "Running" : "Stopped" };
 	}
 
-	async pushInstanceFile(): Promise<void> {}
+	pushedFiles: Array<{ path: string; content: string }> = [];
+
+	async pushInstanceFile(_project: string, _name: string, path: string, content: string): Promise<void> {
+		this.pushedFiles.push({ path, content });
+	}
 
 	async execInstance(): Promise<void> {}
 
@@ -384,6 +388,30 @@ describe("LxdCompanyComputerProviderBackend", () => {
 		expect(controlPlane.transitions.slice(1)).toEqual([{ state: "snapshotting" }, { state: "active" }]);
 		expect(controlPlane.lifecycle).toBe("active");
 		expect(controlPlane.transitionDetails.at(-1)).toEqual({ snapshot: snapshotName, dataset_captured: false });
+	});
+
+	it("bootstraps the screen agent config block and its viewer credential", async () => {
+		const { backend: provider, lxd } = await backend();
+		const runId = "30000000-0000-4000-8000-000000000112";
+		await provider.acquire(runId, work(runId), new AbortController().signal);
+		const bootstrap = lxd.pushedFiles.find(
+			(file) => file.path === "/var/lib/qorpera-bootstrap/company-computer.json",
+		);
+		expect(bootstrap).toBeDefined();
+		const parsed = JSON.parse((bootstrap as { content: string }).content) as {
+			screens: Record<string, unknown>;
+		};
+		expect(parsed.screens).toEqual({
+			viewer_host: "0.0.0.0",
+			viewer_port: 8446,
+			viewer_trusted_source: "10.41.0.1",
+			poll_seconds: 30,
+		});
+		const viewerCredential = lxd.pushedFiles.find(
+			(file) => file.path === "/var/lib/qorpera-bootstrap/credentials/qorpera-screen-viewer",
+		);
+		expect(viewerCredential).toBeDefined();
+		expect((viewerCredential as { content: string }).content.trim()).toMatch(/^[A-Za-z0-9_-]{43}$/);
 	});
 
 	it("captures the NAS dataset inside the snapshotting window", async () => {
