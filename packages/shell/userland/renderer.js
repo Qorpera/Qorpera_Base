@@ -129,6 +129,7 @@ let artifactEditor = null; // { id, expectedUpdatedAt, draft, dirty, error, pend
 const dismissedConnectionRequestGroups = new Map();
 const autoStartedConnectionRequestIds = new Set();
 let agentSidepanelMotionTimer = null;
+let agentSidepanelRenderGeneration = 0;
 const COMPANY_AVATARS = [
 	{ id: "agent-halo", label: "Halo", className: "company-agent-avatar-halo" },
 	{ id: "agent-bloom", label: "Bloom", className: "company-agent-avatar-bloom" },
@@ -2671,7 +2672,7 @@ function renderRoomDelivery(delivery, status = "queued") {
 		card.append(title, detail);
 		roomDeliveryCards.set(delivery.id, card);
 		appendConversationEntry(card);
-		$("messages").scrollTop = $("messages").scrollHeight;
+		scrollConversationToEnd();
 	}
 	const title = card.querySelector(".room-delivery-title");
 	const detail = card.querySelector(".room-delivery-detail");
@@ -2694,15 +2695,24 @@ function renderRoomError(message) {
 	card.className = "room-error-card";
 	card.textContent = message || "A group-chat operation failed.";
 	appendConversationEntry(card);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 }
 
 function renderRoomHistory(messages, deliveries) {
 	currentRoomMessages = [];
 	roomDeliveryCards.clear();
-	$("messages").replaceChildren();
-	for (const message of messages ?? []) renderRoomMessage(message);
-	for (const delivery of deliveries ?? []) renderRoomDelivery(delivery);
+	const messagesElement = $("messages");
+	messagesElement.replaceChildren();
+	const fragment = document.createDocumentFragment();
+	conversationRenderTarget = fragment;
+	try {
+		for (const message of messages ?? []) renderRoomMessage(message);
+		for (const delivery of deliveries ?? []) renderRoomDelivery(delivery);
+	} finally {
+		conversationRenderTarget = null;
+		messagesElement.appendChild(fragment);
+	}
+	scrollConversationToEnd();
 }
 
 async function openRoom(id) {
@@ -3042,6 +3052,7 @@ function closeAgentSidepanel(restoreFocus = true) {
 	if (panel.hidden) return;
 	const previousMode = agentSidepanelMode;
 	agentSidepanelMode = null;
+	agentSidepanelRenderGeneration += 1;
 	agentRoutineEditor = null;
 	$("staffIdentityButton").setAttribute("aria-expanded", "false");
 	$("staffSidepanelButton").setAttribute("aria-expanded", "false");
@@ -3566,9 +3577,35 @@ function renderAgentRoutineEditor(content, staff) {
 	content.appendChild(section);
 }
 
+function createAgentRoutineRow(staff, job) {
+	const row = document.createElement("button");
+	row.type = "button";
+	row.className = "agent-routine-row";
+	row.onclick = () => openAgentRoutineEditor(staff, job);
+	const copy = document.createElement("span");
+	const title = document.createElement("strong");
+	title.textContent = job.title;
+	const meta = document.createElement("small");
+	meta.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)}`;
+	copy.append(title, meta);
+	const stateLabel = document.createElement("small");
+	stateLabel.textContent = job.running ? "Running" : job.enabled && !job.suspendedReason ? "On" : "Off";
+	row.append(copy, stateLabel);
+	return row;
+}
+
+function appendAgentRoutineRows(routines, staff, jobs, renderGeneration) {
+	if (renderGeneration !== agentSidepanelRenderGeneration || !routines.isConnected) return;
+	const fragment = document.createDocumentFragment();
+	for (const job of jobs) fragment.appendChild(createAgentRoutineRow(staff, job));
+	routines.appendChild(fragment);
+	routines.removeAttribute("aria-busy");
+}
+
 function renderAgentComputerPanel(staff, force = false) {
 	const content = $("agentSidepanelContent");
 	if (!force && agentRoutineEditor?.dirty && content.contains(document.activeElement)) return;
+	const renderGeneration = ++agentSidepanelRenderGeneration;
 	content.replaceChildren();
 	if (agentRoutineEditor) {
 		renderAgentRoutineEditor(content, staff);
@@ -3617,21 +3654,16 @@ function renderAgentComputerPanel(staff, force = false) {
 		heading.textContent = "Routines";
 		head.append(heading, create);
 		routines.appendChild(head);
-		for (const job of jobs) {
-			const row = document.createElement("button");
-			row.type = "button";
-			row.className = "agent-routine-row";
-			row.onclick = () => openAgentRoutineEditor(staff, job);
-			const copy = document.createElement("span");
-			const title = document.createElement("strong");
-			title.textContent = job.title;
-			const meta = document.createElement("small");
-			meta.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)}`;
-			copy.append(title, meta);
-			const stateLabel = document.createElement("small");
-			stateLabel.textContent = job.running ? "Running" : job.enabled && !job.suspendedReason ? "On" : "Off";
-			row.append(copy, stateLabel);
-			routines.appendChild(row);
+		if (jobs.length <= 100) {
+			for (const job of jobs) routines.appendChild(createAgentRoutineRow(staff, job));
+		} else {
+			routines.classList.add("is-large");
+			routines.setAttribute("aria-busy", "true");
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => {
+					setTimeout(() => appendAgentRoutineRows(routines, staff, jobs, renderGeneration), 0);
+				});
+			});
 		}
 	}
 	content.appendChild(routines);
@@ -5373,7 +5405,8 @@ async function newChat() {
 }
 
 function renderHistory(messages) {
-	$("messages").innerHTML = "";
+	const messagesElement = $("messages");
+	messagesElement.replaceChildren();
 	resetWorkGroup();
 	resetAssistantStreamState();
 	lastSubmittedPrompt = null;
@@ -5382,66 +5415,73 @@ function renderHistory(messages) {
 	let historyPrompt = null;
 	let historyFailureShown = false;
 	const historyToolCalls = new Map();
-	for (const message of messages ?? []) {
-		if (message.role === "user") {
-			const parts = message.content ?? [];
-			const raw = parts
-				.filter((p) => p.type === "text")
-				.map((p) => p.text)
-				.join("\n");
-			// Context preambles are runtime plumbing, not something the
-			// founder typed — show the message as they wrote it.
-			const text = raw.replace(/^(?:\[(?:Sidechat|Connection choice) context:[^\]]*\]\s*)+/, "");
-			const imageUrls = parts
-				.filter((p) => p.type === "image" && p.data)
-				.map((p) => `data:${p.mimeType};base64,${p.data}`);
-			if (text || imageUrls.length) {
-				appendMsgImages(decorateUserMsg(addMsg("user", text, message.timestamp), text), imageUrls);
-				historyPrompt = {
-					text,
-					images: imageUrls.map((dataUrl, index) => ({
-						mimeType: parts.filter((p) => p.type === "image" && p.data)[index]?.mimeType,
-						dataUrl,
-					})),
-				};
-				lastSubmittedPrompt = historyPrompt;
-				historyProgress = createRunProgress();
-				historyFailureShown = false;
-				historyToolCalls.clear();
-			}
-		} else if (message.role === "assistant") {
-			const rendered = appendAssistantMessages(assistantTextPartsFromMessage(message), false, message.timestamp);
-			if (typeof message.qorperaRunId === "string" && rendered.length > 0) {
-				rendered.at(-1).dataset.qorperaRunId = message.qorperaRunId;
-			}
-			for (const part of message.content ?? []) {
-				if (part.type === "toolCall") {
-					if (part.id)
-						historyToolCalls.set(part.id, {
-							name: part.name,
-							args: part.arguments,
-						});
+	const fragment = document.createDocumentFragment();
+	conversationRenderTarget = fragment;
+	try {
+		for (const message of messages ?? []) {
+			if (message.role === "user") {
+				const parts = message.content ?? [];
+				const raw = parts
+					.filter((p) => p.type === "text")
+					.map((p) => p.text)
+					.join("\n");
+				// Context preambles are runtime plumbing, not something the
+				// founder typed — show the message as they wrote it.
+				const text = raw.replace(/^(?:\[(?:Sidechat|Connection choice) context:[^\]]*\]\s*)+/, "");
+				const imageUrls = parts
+					.filter((p) => p.type === "image" && p.data)
+					.map((p) => `data:${p.mimeType};base64,${p.data}`);
+				if (text || imageUrls.length) {
+					appendMsgImages(decorateUserMsg(addMsg("user", text, message.timestamp), text), imageUrls);
+					historyPrompt = {
+						text,
+						images: imageUrls.map((dataUrl, index) => ({
+							mimeType: parts.filter((p) => p.type === "image" && p.data)[index]?.mimeType,
+							dataUrl,
+						})),
+					};
+					lastSubmittedPrompt = historyPrompt;
+					historyProgress = createRunProgress();
+					historyFailureShown = false;
+					historyToolCalls.clear();
 				}
+			} else if (message.role === "assistant") {
+				const rendered = appendAssistantMessages(assistantTextPartsFromMessage(message), false, message.timestamp);
+				if (typeof message.qorperaRunId === "string" && rendered.length > 0) {
+					rendered.at(-1).dataset.qorperaRunId = message.qorperaRunId;
+				}
+				for (const part of message.content ?? []) {
+					if (part.type === "toolCall") {
+						if (part.id)
+							historyToolCalls.set(part.id, {
+								name: part.name,
+								args: part.arguments,
+							});
+					}
+				}
+				if (message.stopReason === "error" && !historyFailureShown) {
+					addModelFailureCard(message.errorMessage, historyProgress, historyPrompt, {
+						historical: true,
+					});
+					historyFailureShown = true;
+				}
+			} else if (message.role === "toolResult" && message.isError === false) {
+				const tool = historyToolCalls.get(message.toolCallId) ?? {
+					name: message.toolName,
+					args: undefined,
+				};
+				recordCompletedTool(historyProgress, tool.name, tool.args);
 			}
-			if (message.stopReason === "error" && !historyFailureShown) {
-				addModelFailureCard(message.errorMessage, historyProgress, historyPrompt, {
-					historical: true,
-				});
-				historyFailureShown = true;
-			}
-		} else if (message.role === "toolResult" && message.isError === false) {
-			const tool = historyToolCalls.get(message.toolCallId) ?? {
-				name: message.toolName,
-				args: undefined,
-			};
-			recordCompletedTool(historyProgress, tool.name, tool.args);
 		}
+	} finally {
+		conversationRenderTarget = null;
+		messagesElement.appendChild(fragment);
 	}
 	syncNativeMessageProvenance();
 	activeRunProgress = historyProgress;
 	syncConnectionRequestCards();
 	renderPendingSessionQueue();
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 }
 
 function navigationNode(id) {
@@ -8895,8 +8935,20 @@ function renderInbox() {
 
 // ---- chat over the RPC pipe --------------------------------------------------
 
+let conversationRenderTarget = null;
+
+function scrollConversationToEnd() {
+	if (conversationRenderTarget) return;
+	const messages = $("messages");
+	messages.scrollTop = messages.scrollHeight;
+}
+
 function appendConversationEntry(element) {
 	const messages = $("messages");
+	if (conversationRenderTarget) {
+		conversationRenderTarget.appendChild(element);
+		return element;
+	}
 	if (threadActivityEl?.isConnected && element !== threadActivityEl) messages.insertBefore(element, threadActivityEl);
 	else if (element.parentNode !== messages || messages.lastElementChild !== element) messages.appendChild(element);
 	return element;
@@ -9023,7 +9075,7 @@ function renderPendingSessionQueue() {
 		}
 		appendConversationEntry(bubble);
 	}
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 	syncThreadActivityFromCloud();
 }
 
@@ -9039,7 +9091,7 @@ function addMsg(cls, text, timestamp) {
 	div.textContent = text;
 	if (Number.isFinite(timestamp)) div.dataset.messageTimestamp = String(timestamp);
 	appendConversationEntry(div);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 	return div;
 }
 
@@ -9128,7 +9180,7 @@ function appendAssistantMessages(parts, animate = false, timestamp) {
 		renderMarkdown(message, text);
 		messages.push(message);
 	}
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 	return messages;
 }
 
@@ -9188,7 +9240,7 @@ function showThreadActivity(mode, autoScroll = true) {
 	}
 	const label = threadActivityLabel(mode);
 	if (threadActivityEl.dataset.mode === mode && threadActivityEl.dataset.staffId === activityStaffId) {
-		if (autoScroll) $("messages").scrollTop = $("messages").scrollHeight;
+		if (autoScroll) scrollConversationToEnd();
 		return;
 	}
 	threadActivityEl.className = `agent-thread-activity is-${mode}`;
@@ -9198,7 +9250,7 @@ function showThreadActivity(mode, autoScroll = true) {
 	threadActivityEl.setAttribute("aria-label", label);
 	threadActivityEl.replaceChildren(makeStaffAvatar(staff, mode));
 	$("messages").appendChild(threadActivityEl);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 }
 
 function hideThreadActivity() {
@@ -9350,7 +9402,7 @@ function appendMsgImages(div, dataUrls) {
 		wrap.appendChild(img);
 	}
 	div.appendChild(wrap);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 }
 
 /** The Stop square next to Send: aborts the streaming run in place. */
@@ -9803,7 +9855,7 @@ function addModelFailureCard(
 	if (historical) card.appendChild(historyNote);
 	card.appendChild(actions);
 	appendConversationEntry(card);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 	return card;
 }
 
@@ -9948,7 +10000,7 @@ function ensureWorkGroup() {
 	if (workGroup) return workGroup;
 	workGroup = makeWorkGroup(true);
 	appendConversationEntry(workGroup.el);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 	return workGroup;
 }
 
@@ -9959,7 +10011,7 @@ function workMsg(cls, text) {
 	div.className = `msg ${cls}`;
 	div.textContent = text;
 	group.body.appendChild(div);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 	return div;
 }
 
