@@ -256,6 +256,36 @@ agent's, so the next converge dresses it in the agent's creature. 18
 screens-suite tests (4 new), scripts 13/13, tsgo clean, company image
 pin repinned.
 
+**16. Screen power, machine power.** `7ae33c823` (founder model, this
+stage: "they don't power on/off the company computer, but their own
+screen/computer. when no screen is open, the company computer powers
+off... agents work headlessly and can open their computer whenever they
+want"). Screens gained a power state: `open` means the desktop session
+should be live, `closed` keeps the row, attachment, and identity while
+the desktop is down — nothing is lost across a close. The guest
+converges desktops for open screens only, and every poll tick sweeps
+untouched screens closed after the idle window
+(`screens.idle_close_seconds`, default 900;
+`qorpera_sweep_idle_company_computer_screens`, draft migration
+20260826220000 alongside member `qorpera_open_company_computer_screen` /
+`qorpera_close_company_computer_screen`; base screens draft revised for
+the power columns, the claim fence now requires an open screen, and the
+ensure RPC reopens on demand). On the host, the provider's reconcile
+derives the machine's power from its screens: any open screen or live
+assignment keeps the VM up; after `idlePowerOffSeconds` (default 300) of
+none it stops with journal reason `idle`; a screen opening later powers
+it back on, and a maintenance stop stays down until the operator acts —
+power is a node-local physical fact in the journal, placement lifecycle
+untouched. In the app, a closed screen's card dims with an Off chip, and
+Open wakes it: power-open RPC, then the viewer keeps dialing while the
+machine boots (up to 90s) before connecting. Suites: shell 618
+(21 screens tests), orchestrator 68 (2 new power tests), scripts 13/13,
+tsgo clean; orchestrator artifact and both image pins repinned. Noted
+gap, deliberately untouched: runner-session re-activation across power
+cycles rides the frozen runner-registration lease semantics — the
+screens/viewer path is unaffected, but turn execution after a power
+cycle needs that follow-up once Step 2 acceptance closes.
+
 ## Design decisions (charter trace)
 
 - Sync is strictly one-directional; the working copy is never authority
