@@ -1,5 +1,109 @@
 # Step 2 implementation handoff
 
+# CODEX TAKEOVER — exact state and next actions (2026-08-26 ~21:30 UTC+2)
+
+**Claude's Step 2 session is handing off here (usage cap). Everything below
+is pushed. The founder's standing rulings: cloud-only execution (no local
+executor, no fallback architectures), the live company file on the NAS is
+THE model (no per-turn copying), transcripts are simple synced chats.**
+
+## In flight RIGHT NOW — finish the live-file cutover (one step left)
+
+Image v41 (adds git `safe.directory` trust to both guest units — the last
+of five live-tree defects, see log below) is building on the node after an
+LXD daemon restart cleared repeated `lxc init` hangs. To finish:
+
+1. Wait for build+verify on the node (logs: `/tmp/b41.log`, `/tmp/v41.log`;
+   evidence log `/var/log/qorpera-lxd-runner-image-acceptance.txt`). The
+   build script is `~/step2-lxd/build-lxd-runner-image-candidate.sh`
+   (pinned sudo -n, pins already set to v41, manifest
+   `01aeb5ba3cad0d596a64584693dd75a143025f2c28e54d1950e0d0d7250856ca`).
+   If `lxc init` hangs >5 min again: it is the LXD wedge — restart
+   `snap.lxd.daemon` (needs founder sudo) and rerun; a pkill sweep for
+   stray `lxc init .* qorpera-runner-image-build-` clients is already at
+   the top of the build script.
+2. Sign provenance from the founder Mac (key
+   `~/Library/Application Support/Qorpera/keys/company41-lxd-image-provenance-ed25519.pem`,
+   passphrase in Keychain `com.qorpera.company41.lxd-image-provenance`,
+   CLI `packages/runner-orchestrator/dist/lxd-image-provenance-cli.js`
+   create+sign; copy the exact argument set used for v40 in this repo's
+   history / prior activation scripts in the session scratchpad — the
+   invariant pins are base `7ef31bed…`, runner image
+   `localhost/qorpera/sandbox-probe:135b4fc7…@sha256:adda31f…`, archive
+   `c9370c82…`, bundle `98a00fef…`, source-tree `clean`, tested-at/evidence
+   from the acceptance log mtime+sha).
+3. Author `activate-signed-image-v41.sh` from the v40 one on the node
+   (`~/step2-lxd/activate-signed-image-v40.sh`): swap fingerprint,
+   manifest, provenance sha/filenames, imagewarm name; keep the NAS mount
+   + seed + live env sections; `cp` over the pinned name
+   `~/step2-lxd/activate-signed-image.sh`; run with `sudo -n`.
+4. PROOF TURN: send "create a file named live-check.txt in the workspace
+   root containing exactly: LIVE ON NAS. then reply with one word:
+   created" to any staff from the app, then verify
+   `cat /mnt/qorpera-companies/company41/live/live-check.txt` on the node
+   and time the job (`qorpera_runner_jobs` created/started/finished).
+   Expect start +17s (VM boot), finish well under a minute.
+
+## The five live-tree defects already fixed (commits on master)
+1. `24f6d3673` parallel tree fetch (12-worker pool) — 190s→53s turns.
+2. `92a281490` live mount sanctioned in the native layout guard; provider
+   journal digest excludes the control plane's `attempt` annotation
+   (retries of a run are the same immutable work); provider requests log
+   their real refusal instead of bare 422.
+3. `41d1b1471` skip the group-share chown sweep for the live tree.
+4. `0f746edf8` git safe.directory in both guest units (v41 content).
+5. Operational: needrestart pin for the provider is INSTALLED (founder ran
+   it); NAS NFS share `qorpera-companies` exists (rw for 192.168.0.206,
+   squash map-all-to-admin, path `/volume1/qorpera-companies`); node
+   mounts it at `/mnt/qorpera-companies` (fstab), live tree seeded 283M at
+   `/mnt/qorpera-companies/company41/live`.
+
+## Current active state
+- Node provider: v41-era provider bundle INSTALLED (with refusal logging +
+  digest fix); image active = v40 (`efa317eb…`) with live env DECLARED —
+  so turns currently FAIL on the git-trust defect until v41 activates.
+  If the founder needs working turns before v41: rerun the v39-style
+  interim activation (no live env keys) — but the founder rejected
+  fallbacks, so prefer finishing v41.
+- App: released 0.20.40 (auto-update). Attended staff threads are fully
+  childless (session anchors); replies paint on completion.
+- Trail model: linear materialization; conversations render whole.
+- Zombie runner VMs: completed runs never delete their VM (LxdClient has
+  no delete op) — sweep with
+  `sudo -n lxc list --project qorpera-runners` + `lxc delete --force`,
+  keep `company41-orchestrator-01`. Implementing the delete op in the
+  provider is a high-value small fix.
+
+## Ranked remainder of Step 2 (closeout ledger)
+1. Finish v41 activation + proof turn (above).
+2. Background the turn-end capture (async snapshot from the live root;
+   today it still blocks completion — fine at 283M, wrong at 3TB).
+3. Warm-standby VM to kill the ~17s claim (needs design: per-run bootstrap
+   credentials are pinned pre-boot in the provenance journal).
+4. Prompt outbox consumer (turns execute with the founder's laptop
+   closed) + retire the local child from wake/rooms/product lanes.
+5. Conception (staff intro) as a cloud turn.
+6. Acceptance matrix: Claude login live, second member, sponsor switch,
+   revocation, offline devices, storage/recovery gate.
+7. Recommend to founder: move `Recovery/` (139M, 99% of tree bytes) out of
+   the live company file — it slows syncs and distracts agents.
+
+## Access notes for the next operator
+- Node: `ssh company41-node-01` (key auth). Pinned NOPASSWD sudo: the three
+  `~/step2-lxd/*.sh` scripts, `journalctl`, `lxc`. Nothing else.
+- Supabase project `wovsmjvghnbcbfazdtvr`; legacy service/anon JWTs are the
+  reliable path (platform key-management sheds under load).
+- Never use the app's refresh token; drive the packaged app via
+  `--remote-debugging-port` for verification; never claim something works
+  without a driven proof.
+- LXD flake signature: `lxc init` hangs forever while the daemon answers
+  queries — sweep stray clients, restart `snap.lxd.daemon` (founder sudo),
+  rerun. Two wedged clients may still exist from tonight (one is the Step 3
+  session's `qorpera-cc-verify` init — leave it to that lane, but tell
+  them).
+
+
+
 **NO-FALLBACK LIVE FILE (v38) — active in interim copy mode; live flip
 is one command awaiting the NAS export (2026-08-26 late night).**
 Founder rejected the fallback: a DECLARED live tree that is missing now
