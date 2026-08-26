@@ -10,6 +10,7 @@ const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
 const onboardingCssSource = readFileSync(join(userland, "onboarding.css"), "utf-8");
 const characterMotionSource = readFileSync(join(userland, "character-motion.css"), "utf-8");
 const railResizeCssSource = readFileSync(join(userland, "rail-resize.css"), "utf-8");
+const railResizeSource = readFileSync(join(userland, "rail-resize.js"), "utf-8");
 const feedbackSource = readFileSync(join(userland, "feedback.js"), "utf-8");
 const feedbackCssSource = readFileSync(join(userland, "feedback.css"), "utf-8");
 const hubCarouselSource = readFileSync(join(userland, "hub-carousel.js"), "utf-8");
@@ -111,10 +112,29 @@ describe("userland wiring", () => {
 
 	it("keeps macOS native window controls clear of titlebar actions", () => {
 		expect(preloadSource).toContain("document.documentElement.dataset.platform = process.platform");
+		expect(indexSource.indexOf('id="railSearch"')).toBeGreaterThan(indexSource.indexOf('id="conav"'));
+		expect(indexSource.indexOf('id="railSearch"')).toBeGreaterThan(indexSource.indexOf("</header>"));
+		expect(baseCssSource).toContain("#f9f8f4 var(--rail-width) 100%");
+		expect(baseCssSource).toMatch(/body\.company-shell #titlebar::before \{[^}]*background: #d9d9d9;/s);
 		expect(baseCssSource).toMatch(/#titlebar \.thread-header \{[^}]*padding: 2px 142px 3px 7px;/s);
 		expect(baseCssSource).toMatch(/html\[data-platform="darwin"\] \.titlebar-rail \{ padding-left: 78px; \}/);
 		expect(baseCssSource).toMatch(
 			/html\[data-platform="darwin"\] #titlebar \.thread-header \{ padding-right: 10px; \}/,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell \.rail-company-switcher \{[^}]*position: fixed;[^}]*top: 9px;[^}]*left: 78px;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell \.rail-bottom #companySwitcherButton > strong \{[^}]*display: none;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell \.company-switcher-menu \{[^}]*top: calc\(100% \+ 5px\);[^}]*bottom: auto;[^}]*width: 218px;[^}]*backdrop-filter: blur\(28px\) saturate\(1\.25\);/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell \.company-switcher-mark \{[^}]*width: 18px;[^}]*height: 18px;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell \.company-switcher-menu button:hover,[^}]*background: #0a84ff;[^}]*color: #fff;/s,
 		);
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.titlebar-rail \{[^}]*transform: translateY\(var\(--titlebar-height\)\);/s,
@@ -122,6 +142,34 @@ describe("userland wiring", () => {
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.rail-scroll \{[^}]*padding-top: calc\(var\(--titlebar-height\) \+ 9px\);/s,
 		);
+		expect(railResizeSource).toContain('getPropertyValue("--rail-compact-width")');
+		expect(railResizeSource).toContain("Math.floor(window.innerWidth * 0.4)");
+		expect(railResizeSource).not.toContain("MAX_WIDTH");
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.rail-company-switcher \{[^}]*top: auto;[^}]*bottom: 9px;[^}]*left: 23px;[^}]*width: 34px;[^}]*height: 34px;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.company-switcher-menu \{[^}]*top: auto;[^}]*bottom: calc\(100% \+ 5px\);[^}]*left: 0;/s,
+		);
+	});
+
+	it("keeps the translucent sidebar preference persistent and accessible", () => {
+		const themeRow = rendererSource.indexOf('setRow(appearanceGroup, "Theme", "", theme)');
+		const translucencyRow = rendererSource.indexOf('sidebarTranslucency.id = "sidebarTranslucencyToggle"');
+		expect(themeRow).toBeGreaterThan(-1);
+		expect(translucencyRow).toBeGreaterThan(themeRow);
+		expect(rendererSource).not.toContain("SIDEBAR_TRANSLUCENCY_KEY");
+		expect(rendererSource).toContain('dataset.platform === "darwin"');
+		expect(rendererSource).toContain('sidebarTranslucency.id = "sidebarTranslucencyToggle"');
+		expect(rendererSource).toContain('sidebarTranslucency.setAttribute("role", "switch")');
+		expect(rendererSource).toContain('toggle.setAttribute("aria-checked", String(enabled))');
+		expect(baseCssSource).toContain('html[data-sidebar-translucency="off"] #primaryNavigation');
+		expect(mainSource).toContain('readSidebarTranslucency(app.getPath("userData"))');
+		expect(mainSource).toContain("additionalArguments: [`--qorpera-sidebar-translucency=");
+		expect(mainSource).toContain('ipcMain.handle("settings:sidebar-translucency"');
+		expect(mainSource).toContain('current.window.setVibrancy(enabled ? "sidebar" : null)');
+		expect(preloadSource).toContain('ipcRenderer.invoke("settings:sidebar-translucency", enabled)');
+		expect(preloadSource).toContain('ipcRenderer.on("sidebar-translucency"');
 	});
 
 	it("always exposes updater state and a manual check on the company hub", () => {

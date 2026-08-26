@@ -4,11 +4,11 @@
 	const search = document.getElementById("railSearch");
 	if (!(handle instanceof HTMLElement) || !(rail instanceof HTMLElement)) return;
 
-	const COMPACT_WIDTH = 80;
+	const COMPACT_WIDTH =
+		Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--rail-compact-width")) || 80;
 	const SNAP_WIDTH = 168;
 	const MIN_EXPANDED_WIDTH = 176;
 	const DEFAULT_WIDTH = 304;
-	const MAX_WIDTH = 380;
 	const WIDTH_KEY = "qorpera:agent-rail-width";
 	const COMPACT_KEY = "qorpera:agent-rail-compact";
 	let lastExpandedWidth = DEFAULT_WIDTH;
@@ -37,7 +37,7 @@
 	}
 
 	function maximumWidth() {
-		return Math.max(MIN_EXPANDED_WIDTH, Math.min(MAX_WIDTH, Math.floor(window.innerWidth * 0.44)));
+		return Math.max(MIN_EXPANDED_WIDTH, Math.floor(window.innerWidth * 0.4));
 	}
 
 	function clampExpanded(width) {

@@ -15,7 +15,6 @@
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
-	appendFileSync,
 	chmodSync,
 	existsSync,
 	mkdirSync,
@@ -167,6 +166,7 @@ import {
 import electronUpdater from "electron-updater";
 import { QorperaAccountAuth, type QorperaAccountInfo, type QorperaAccountProvider } from "./account-auth.ts";
 import {
+	appendBoundTrailEntry,
 	appendKernelComputerObservation,
 	appendKernelConnectionObservation,
 	appendKernelHttpObservation,
@@ -191,14 +191,12 @@ import {
 	killChildTree,
 	killChildTreeSync,
 	materializeSharedTrailSession,
-	appendBoundTrailEntry,
 	migrateLegacyCompanyAgentTrails,
 	migrateLegacyTrailSession,
 	parseTrailAppendFrame,
 	protectedCompanyAgentPaths,
 	provisionSandbox,
 	pruneEmptyTrailSessions,
-	trailSessionMessages,
 	reconcileKernelGateCreations,
 	sandboxCommandArgs,
 	sandboxConfigDir,
@@ -206,6 +204,7 @@ import {
 	sandboxRuntimeDir,
 	shareWindowsSandboxState,
 	type TrailBinding,
+	trailSessionMessages,
 	writeSandboxProfile,
 } from "./agent-runtime.ts";
 import { migrateCompanyToAgentsOnly } from "./agents-only-company-migration.ts";
@@ -461,6 +460,7 @@ import {
 	type SessionRuntimeActivity,
 	type SessionRuntimeEventInput,
 } from "./session-control-plane.ts";
+import { readSidebarTranslucency, writeSidebarTranslucency } from "./shell-appearance.ts";
 import { isStaffCharacterId, staffCharacterForTemplate } from "./staff-characters.ts";
 import { removeStaffWorkspace } from "./staff-deletion.ts";
 import { applyStaffRoutineOperation, type StaffRoutineOperation } from "./staff-routines.ts";
@@ -2395,7 +2395,7 @@ function readHiddenCloudProfiles(userData: string, accountId: string): Set<strin
 // Window/taskbar icon: company appearance is machine-local account state,
 // never company-authored executable or UI content.
 const DEFAULT_ICON = join(DIRNAME, "assets", process.platform === "win32" ? "qorpera.ico" : "qorpera.png");
-const TITLE_BAR_OVERLAY = { color: "#ffffff", symbolColor: "#111111", height: 40 } as const;
+const TITLE_BAR_OVERLAY = { color: "#ffffff", symbolColor: "#111111", height: 48 } as const;
 
 function companyWindowIcon(root: string): string | NativeImage {
 	if (!currentQorperaAccountId) return DEFAULT_ICON;
@@ -8616,11 +8616,17 @@ function trailSessionLeafEntryId(path: string): string | null {
 function anchoredSessionState(root: string, sessionFile: string): Record<string, unknown> {
 	const state: Record<string, unknown> = { responseSpeed: "standard" };
 	try {
-		const lines = readFileSync(join(root, "trail", sessionFile), "utf-8").split(/\r?\n/).filter(Boolean);
+		const lines = readFileSync(join(root, "trail", sessionFile), "utf-8")
+			.split(/\r?\n/)
+			.filter(Boolean);
 		for (const line of lines.slice(1)) {
 			try {
 				const entry = JSON.parse(line) as Record<string, unknown>;
-				if (entry.type === "model_change" && typeof entry.provider === "string" && typeof entry.modelId === "string") {
+				if (
+					entry.type === "model_change" &&
+					typeof entry.provider === "string" &&
+					typeof entry.modelId === "string"
+				) {
 					state.model = { provider: entry.provider, id: entry.modelId };
 				} else if (entry.type === "thinking_level_change" && typeof entry.thinkingLevel === "string") {
 					state.thinkingLevel = entry.thinkingLevel;
@@ -8653,10 +8659,7 @@ async function anchoredSessionRpc(
 	const sessions = sessionControlPlanes.get(normalizedRoot(runtime.root));
 	const appendSelection = (entry: Record<string, unknown>): Record<string, unknown> => {
 		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
-		const append = parseTrailAppendFrame(
-			{ type: "qorpera_trail_append", token: binding.token, entry },
-			binding,
-		);
+		const append = parseTrailAppendFrame({ type: "qorpera_trail_append", token: binding.token, entry }, binding);
 		if (!append) return { ok: false, error: "selection could not be recorded" };
 		appendBoundTrailEntry(binding, append.entry);
 		commitTrailAppend(binding, append);
@@ -9763,12 +9766,14 @@ function createRendererWindow(
 	options: { bounds?: Electron.Rectangle; show?: boolean } = {},
 ): { window: BrowserWindow; rendererSession: Session } {
 	const rendererSession = rendererSessionFor(partition);
+	const sidebarTranslucency = process.platform === "darwin" && readSidebarTranslucency(app.getPath("userData"));
 	const win = new BrowserWindow({
 		width: 1360,
 		height: 860,
 		show: options.show ?? true,
 		title: "Qorpera Base",
-		backgroundColor: "#ffffff",
+		backgroundColor: sidebarTranslucency ? "#00ffffff" : "#ffffff",
+		...(sidebarTranslucency ? { vibrancy: "sidebar" as const, visualEffectState: "active" as const } : {}),
 		// Frameless, Desktop-style chrome: the fixed shell draws the titlebar
 		// (a -webkit-app-region: drag header), the OS overlays min/max/close.
 		titleBarStyle: "hidden",
@@ -9776,6 +9781,7 @@ function createRendererWindow(
 		icon: DEFAULT_ICON,
 		webPreferences: {
 			preload: join(DIRNAME, "preload.cjs"),
+			additionalArguments: [`--qorpera-sidebar-translucency=${sidebarTranslucency ? "on" : "off"}`],
 			contextIsolation: true,
 			nodeIntegration: false,
 			sandbox: true,
@@ -11899,6 +11905,23 @@ app.whenReady().then(async () => {
 		if (!slot || typeof active !== "boolean") return;
 		setSettingsTitleBarOverlay(slot.window, active);
 	});
+	ipcMain.handle("settings:sidebar-translucency", (event, enabled: unknown) => {
+		const slot = slotOf(event.sender);
+		if (!slot || typeof enabled !== "boolean") {
+			return { ok: false, error: "invalid sidebar translucency preference" };
+		}
+		if (!writeSidebarTranslucency(app.getPath("userData"), enabled)) {
+			return { ok: false, error: "Sidebar translucency preference could not be saved." };
+		}
+		for (const current of slots.values()) {
+			if (process.platform === "darwin" && !current.window.isDestroyed()) {
+				current.window.setBackgroundColor(enabled ? "#00ffffff" : "#ffffff");
+				current.window.setVibrancy(enabled ? "sidebar" : null);
+			}
+			send(current.window, "sidebar-translucency", enabled);
+		}
+		return { ok: true, enabled };
+	});
 	ipcMain.handle("profile-team:invite", async (event, value: unknown) => {
 		const slot = slotOf(event.sender);
 		const root = slot?.runtime?.root;
@@ -12395,6 +12418,7 @@ app.whenReady().then(async () => {
 						}
 					: undefined,
 			localExecution: root ? readLocalExecutionPermission(app.getPath("userData"), root) : "always",
+			sidebarTranslucency: readSidebarTranslucency(app.getPath("userData")),
 			backgroundEnabled: root ? backgroundCompanyEnabled(root) : false,
 			connections: [await githubConnectionInfo(root), ...modelConnectionInfo()],
 			nativeExecution,

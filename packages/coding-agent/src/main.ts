@@ -44,12 +44,7 @@ import { ModelRuntime } from "./core/model-runtime.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
-import {
-	formatMissingSessionCwdPrompt,
-	getMissingSessionCwdIssue,
-	MissingSessionCwdError,
-	type SessionCwdIssue,
-} from "./core/session-cwd.ts";
+import { formatMissingSessionCwdPrompt, getMissingSessionCwdIssue, type SessionCwdIssue } from "./core/session-cwd.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";

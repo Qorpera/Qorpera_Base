@@ -100,6 +100,10 @@ body.company-shell.rail-compact .titlebar-rail .rail-search {
 	display: none;
 }
 
+body.company-shell.rail-compact .rail-search-row {
+	display: none;
+}
+
 body.company-shell.rail-compact .titlebar-rail .rail-add-staff,
 body.company-shell.rail-compact .titlebar-rail .rail-add-staff:hover:not(:disabled),
 body.company-shell.rail-compact .titlebar-rail .rail-add-staff:active {
@@ -161,10 +165,13 @@ body.company-shell.rail-compact .company-runtime-row {
 }
 
 body.company-shell.rail-compact .staff-nav-row:hover,
-body.company-shell.rail-compact .staff-nav-row.active,
-body.company-shell.rail-compact .company-runtime-row:hover,
-body.company-shell.rail-compact .company-runtime-row.active {
+body.company-shell.rail-compact .company-runtime-row:hover {
 	background: #e8e8e6;
+}
+
+body.company-shell.rail-compact .staff-nav-row.active,
+body.company-shell.rail-compact .company-runtime-row.active {
+	background: #0a84ff;
 }
 
 body.company-shell.rail-compact .staff-nav-row .staff-avatar,
@@ -306,4 +313,164 @@ body.rail-pop-expanded .company-switcher-mark {
 @media (forced-colors: active) {
 	.rail-resize-handle::after { background: CanvasText; }
 	body.company-shell.rail-compact .staff-nav-row.active { outline: 2px solid Highlight; }
+}
+
+/* On macOS the company account is a titlebar control beside the native
+ * traffic lights. The same button and menu remain in the rail DOM so its
+ * behavior and the non-macOS bottom-row layout stay unchanged. */
+html[data-platform="darwin"] body.company-shell .rail-bottom {
+	position: static;
+	padding: 0;
+}
+
+html[data-platform="darwin"] body.company-shell .rail-company-switcher {
+	position: fixed;
+	z-index: 170;
+	top: 9px;
+	left: 78px;
+	display: grid;
+	place-items: center;
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	-webkit-app-region: no-drag;
+}
+
+html[data-platform="darwin"] body.company-shell .rail-bottom #companySwitcherButton {
+	display: grid;
+	grid-template-columns: 1fr;
+	place-items: center;
+	gap: 0;
+	width: 30px;
+	height: 30px;
+	min-height: 30px;
+	padding: 2px;
+	border: 0 !important;
+	border-radius: 7px;
+	background: transparent;
+}
+
+html[data-platform="darwin"] body.company-shell.rail-compact .rail-company-switcher {
+	top: auto;
+	bottom: 9px;
+	left: 23px;
+	width: 34px;
+	height: 34px;
+	min-height: 34px;
+}
+
+html[data-platform="darwin"] body.company-shell.rail-compact .rail-bottom #companySwitcherButton {
+	width: 34px;
+	height: 34px;
+	min-height: 34px;
+}
+
+html[data-platform="darwin"] body.company-shell .rail-bottom #companySwitcherButton:hover:not(:disabled),
+html[data-platform="darwin"] body.company-shell .rail-bottom #companySwitcherButton:focus-visible,
+html[data-platform="darwin"] body.company-shell .rail-bottom #companySwitcherButton[aria-expanded="true"] {
+	background: rgba(118, 118, 128, .18);
+}
+
+html[data-platform="darwin"] body.company-shell .rail-bottom #companySwitcherButton > strong {
+	display: none;
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-mark {
+	width: 18px;
+	height: 18px;
+	border-radius: 5px;
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-menu {
+	top: calc(100% + 5px);
+	right: auto;
+	bottom: auto;
+	left: 0;
+	gap: 1px;
+	width: 218px;
+	padding: 4px;
+	border-color: rgba(60, 60, 67, .24);
+	border-radius: 9px;
+	background: rgba(246, 244, 240, .9);
+	color: #1d1d1f;
+	box-shadow: 0 12px 28px rgba(0, 0, 0, .2), 0 2px 7px rgba(0, 0, 0, .12);
+	-webkit-backdrop-filter: blur(28px) saturate(1.25);
+	backdrop-filter: blur(28px) saturate(1.25);
+	font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+	-webkit-font-smoothing: auto;
+}
+
+html[data-platform="darwin"] body.company-shell.rail-compact .company-switcher-menu {
+	top: auto;
+	bottom: calc(100% + 5px);
+	left: 0;
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-menu button {
+	grid-template-columns: 16px minmax(0, 1fr);
+	gap: 7px;
+	min-height: 25px;
+	padding: 3px 7px;
+	border-radius: 5px;
+	color: inherit;
+	font-size: 13px;
+	font-weight: 400;
+	line-height: 18px;
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-menu button:hover,
+html[data-platform="darwin"] body.company-shell .company-switcher-menu button:focus-visible {
+	background: #0a84ff;
+	color: #fff;
+	outline: 0;
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-menu button:hover .company-switcher-menu-icon,
+html[data-platform="darwin"] body.company-shell .company-switcher-menu button:focus-visible .company-switcher-menu-icon {
+	filter: brightness(0) invert(1);
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-menu button > span {
+	font-size: inherit;
+	font-weight: inherit;
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-menu-icon {
+	width: 15px;
+	height: 15px;
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-company-section {
+	gap: 1px;
+	margin-bottom: 3px;
+	padding-bottom: 3px;
+	border-bottom-color: rgba(60, 60, 67, .2);
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-menu .company-switcher-current-company {
+	grid-template-columns: 20px minmax(0, 1fr);
+	min-height: 27px;
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-menu-company-icon {
+	width: 20px;
+	height: 20px;
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-menu .company-switcher-switch-company {
+	grid-template-columns: 20px minmax(0, 1fr);
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-menu-logout {
+	min-height: 29px;
+	margin-top: 3px;
+	padding-top: 5px !important;
+	border-top: 0 !important;
+	border-radius: 5px !important;
+	box-shadow: inset 0 1px rgba(60, 60, 67, .2);
+}
+
+html[data-platform="darwin"] body.company-shell .company-switcher-menu-logout:hover,
+html[data-platform="darwin"] body.company-shell .company-switcher-menu-logout:focus-visible {
+	box-shadow: none;
 }

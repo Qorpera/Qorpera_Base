@@ -163,14 +163,40 @@ describe("kernel-bound agent runtime", () => {
 		const file = "2099-02-01T00-00-00-000Z_chainless.jsonl";
 		const stamp = "2099-02-01T00:00:00.000Z";
 		const rows = [
-			{ type: "session", version: 5, id: "chainless", timestamp: stamp, cwd: company, qorpera: { actor: "company-agent", attended: true } },
+			{
+				type: "session",
+				version: 5,
+				id: "chainless",
+				timestamp: stamp,
+				cwd: company,
+				qorpera: { actor: "company-agent", attended: true },
+			},
 			{ type: "session_info", id: "s", parentId: null, timestamp: stamp, name: "Agent" },
-			{ type: "message", id: "m1", parentId: null, timestamp: stamp, message: { role: "user", content: [{ type: "text", text: "first" }] } },
-			{ type: "message", id: "m2", parentId: "m1", timestamp: stamp, message: { role: "assistant", content: [{ type: "text", text: "reply" }], qorperaRunId: "run-1" } },
+			{
+				type: "message",
+				id: "m1",
+				parentId: null,
+				timestamp: stamp,
+				message: { role: "user", content: [{ type: "text", text: "first" }] },
+			},
+			{
+				type: "message",
+				id: "m2",
+				parentId: "m1",
+				timestamp: stamp,
+				message: { role: "assistant", content: [{ type: "text", text: "reply" }], qorperaRunId: "run-1" },
+			},
 			{ type: "thinking_level_change", id: "t1", parentId: "m2", timestamp: stamp, thinkingLevel: "low" },
 			// Runtime noise minted as a parentless root after the conversation
 			// must not blank the thread: the newest message-bearing chain wins.
-			{ type: "custom", id: "c1", parentId: null, timestamp: stamp, customType: "qorpera_kernel_session_runtime", data: {} },
+			{
+				type: "custom",
+				id: "c1",
+				parentId: null,
+				timestamp: stamp,
+				customType: "qorpera_kernel_session_runtime",
+				data: {},
+			},
 		];
 		writeFileSync(join(company, "trail", file), `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`, "utf-8");
 		const messages = trailSessionMessages(company, file);
