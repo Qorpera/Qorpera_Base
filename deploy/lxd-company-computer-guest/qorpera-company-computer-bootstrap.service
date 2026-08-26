@@ -1,0 +1,29 @@
+[Unit]
+Description=Qorpera Company Computer guest bootstrap
+Documentation=https://github.com/Qorpera/Qorpera_Base
+Wants=network-online.target
+After=local-fs.target network-online.target
+ConditionPathExists=/var/lib/qorpera-bootstrap/company-computer.json
+RequiresMountsFor=/srv/qorpera/dataset
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/node /opt/qorpera-company-computer/qorpera-company-computer-bootstrap.mjs
+RemainAfterExit=yes
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/qorpera-bootstrap /srv/qorpera/dataset
+ProtectHome=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+
+[Install]
+WantedBy=multi-user.target

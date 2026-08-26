@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# One Company Computer screen: TigerVNC Xvnc on the given display with an
+# XFCE session inside, invoked by the screen agent as
+#   qorpera-screen-session <ordinal> <display> <vnc_port>
+#
+# The VNC socket binds to guest loopback only; the token-gated viewer
+# listener is the sole remote path in. -SecurityTypes None is deliberate:
+# every local process already lives inside the company's one trust domain
+# (screens are parallel work surfaces, never security boundaries), and the
+# shared HOME on the NAS dataset is the point — every screen sees the same
+# working world.
+
+if [[ $# -ne 3 ]]; then
+	echo "usage: qorpera-screen-session <ordinal> <display> <vnc_port>" >&2
+	exit 64
+fi
+ordinal=$1
+display=$2
+rfbport=$3
+if [[ ! ${ordinal} =~ ^[1-9][0-9]?$ || ${display} != ":${ordinal}" || ! ${rfbport} =~ ^[0-9]{4,5}$ ]]; then
+	echo "qorpera-screen-session arguments are outside the screen contract" >&2
+	exit 64
+fi
+
+workbench=${QORPERA_WORKBENCH_ROOT:-/srv/qorpera/dataset/workbench}
+if [[ ! -d ${workbench} ]]; then
+	echo "The Company Computer dataset workbench is not mounted; refusing to fabricate one." >&2
+	exit 1
+fi
+export HOME=${workbench}
+runtime_dir="/tmp/qorpera-screen-runtime-${ordinal}"
+install -d -m 0700 "${runtime_dir}"
+export XDG_RUNTIME_DIR=${runtime_dir}
+
+xvnc_pid=""
+session_pid=""
+cleanup() {
+	[[ -n ${session_pid} ]] && kill "${session_pid}" 2>/dev/null || true
+	[[ -n ${xvnc_pid} ]] && kill "${xvnc_pid}" 2>/dev/null || true
+}
+trap cleanup EXIT TERM INT
+
+/usr/bin/Xvnc "${display}" \
+	-localhost \
+	-rfbport "${rfbport}" \
+	-SecurityTypes None \
+	-geometry 1920x1080 \
+	-depth 24 \
+	-desktop "Qorpera Screen ${ordinal}" &
+xvnc_pid=$!
+
+ready=false
+for _attempt in $(seq 1 50); do
+	if DISPLAY=${display} /usr/bin/xset q >/dev/null 2>&1; then
+		ready=true
+		break
+	fi
+	if ! kill -0 "${xvnc_pid}" 2>/dev/null; then
+		echo "Xvnc exited before the display became ready." >&2
+		exit 1
+	fi
+	sleep 0.2
+done
+if [[ ${ready} != true ]]; then
+	echo "The screen display did not become ready." >&2
+	exit 1
+fi
+
+DISPLAY=${display} /usr/bin/dbus-run-session -- /usr/bin/xfce4-session &
+session_pid=$!
+
+# The screen lives exactly as long as both halves: if either the display or
+# the desktop session dies, exit so the agent's reconcile relaunches cleanly.
+wait -n "${xvnc_pid}" "${session_pid}"
+exit_code=$?
+exit "${exit_code}"

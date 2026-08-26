@@ -1,0 +1,43 @@
+[Unit]
+Description=Qorpera Company Computer screen agent
+Documentation=https://github.com/Qorpera/Qorpera_Base
+Wants=network-online.target
+After=network-online.target qorpera-company-computer-bootstrap.service
+ConditionPathExists=/var/lib/qorpera-bootstrap/company-computer.json
+RequiresMountsFor=/srv/qorpera/dataset
+
+[Service]
+Type=exec
+User=qorpera-runner
+Group=qorpera-runner
+WorkingDirectory=/srv/qorpera/dataset
+Environment=HOME=/srv/qorpera/dataset/workbench
+LoadCredential=company-computer.json:/var/lib/qorpera-bootstrap/company-computer.json
+LoadCredential=runner-config.json:/var/lib/qorpera-bootstrap/runner-config.json
+LoadCredential=qorpera-supabase-service-key:/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key
+LoadCredential=qorpera-screen-viewer:/var/lib/qorpera-bootstrap/credentials/qorpera-screen-viewer
+ExecStart=/usr/bin/node /opt/qorpera-company-computer/qorpera-company-computer-screens.mjs
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=yes
+# Computer-use tasks in the runner lane reach a screen through its X socket
+# in the shared /tmp/.X11-unix; a private /tmp would wall the desktops off
+# from the rest of the one-trust-domain machine.
+PrivateTmp=no
+ProtectSystem=strict
+ReadWritePaths=/srv/qorpera/dataset /tmp
+ProtectHome=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
