@@ -186,6 +186,12 @@ describe("userland wiring", () => {
 		expect(baseCssSource).toMatch(
 			/#staffNavigation \.staff-nav-row\.active \.staff-face i,[^}]*background: var\(--sidebar-selection\);/s,
 		);
+		expect(railResizeCssSource).toMatch(
+			/body\.company-shell \.titlebar-rail \.rail-add-staff \{[^}]*justify-self: center;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/body\.company-shell \.staff-create-row \.staff-create-mark \{[^}]*justify-self: center;[^}]*padding: 0;/s,
+		);
 	});
 
 	it("keeps the translucent sidebar preference persistent and accessible", () => {
