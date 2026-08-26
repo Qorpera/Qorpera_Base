@@ -872,17 +872,34 @@ export function materializeSharedTrailSession(
 	}
 
 	const existing = new Map(portableTrailEntries(binding.path).map((entry) => [entry.id, entry]));
+	/* Hosted sequence order is the conversation; lineage is client-derived.
+	 * Every materialized entry chains onto the local leaf, because runner and
+	 * peer devices author parent ids against histories this file never saw —
+	 * honoring them fragments the session into parallel roots and the pane
+	 * shows only the newest fragment. session_info metadata stays off-chain
+	 * (its hosted form pins a null parent). */
+	/* The leaf must be a physical file entry: the portable projection also
+	 * synthesizes shared-input ids that exist only in the shared view. */
+	let leafId: string | null = null;
+	for (const entry of existing.values()) {
+		if (entry.type !== "session_info" && binding.audit.ids.has(entry.id)) leafId = entry.id;
+	}
+	const sansParent = (entry: SharedTrailEntry): Record<string, unknown> => {
+		const { parentId: _parentId, ...content } = entry;
+		return content;
+	};
 	for (const input of entries) {
 		const candidate = { ...input };
 		delete candidate.kernel;
 		delete candidate.provenance;
 		const previous = existing.get(candidate.id);
 		if (previous) {
-			if (JSON.stringify(previous) !== JSON.stringify(candidate)) {
+			if (JSON.stringify(sansParent(previous)) !== JSON.stringify(sansParent(candidate))) {
 				throw new Error(`shared trail entry identity conflict: ${candidate.id}`);
 			}
 			continue;
 		}
+		if (candidate.type !== "session_info") candidate.parentId = leafId;
 		if (Buffer.byteLength(JSON.stringify(candidate), "utf-8") > MAX_TRAIL_ENTRY_BYTES) {
 			throw new Error(`shared trail entry is too large: ${candidate.id}`);
 		}
@@ -893,6 +910,7 @@ export function materializeSharedTrailSession(
 		appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
 		commitTrailAppend(binding, append);
 		existing.set(candidate.id, candidate);
+		if (candidate.type !== "session_info") leafId = candidate.id;
 	}
 	return binding;
 }
