@@ -4,6 +4,15 @@ set -euo pipefail
 # start the company provider, provision the machine.
 if [[ ${EUID} -ne 0 ]]; then echo "Run through sudo." >&2; exit 1; fi
 
+# Refresh the provider artifact (the nodeHttpFetch control-plane fix),
+# fail-closed on its checksum exactly like the installer.
+staged_artifact=/home/company41-admin/step3-lxd/qorpera-lxd-provider.mjs
+if [[ $(sha256sum "${staged_artifact}" | awk '{ print $1 }') != "212f2d2c0582831b45b187c22454df4c11f4348839492858d5eb1f5ed3b45b7e" ]]; then
+	echo "Staged provider artifact checksum mismatch." >&2
+	exit 1
+fi
+install -o root -g root -m 0555 "${staged_artifact}" /opt/qorpera/company-provider/qorpera-lxd-provider.mjs
+
 # The stuck op-c never patched the environment; the image facts land here.
 sed -i "s|REPLACE_AFTER_IMAGE_SIGNING|efe890d30817243af4466b7a4b00d802c46d55514e3eb7a5ffcb4e9d05229b2f|; s|3f142af55d20862413dc03143a384d8329802b732d03549fa2fbd760fcfcb89f|acd2cd013361a66fdd56e61b30ecaa3807c8da0610db33ba48b3c6a660fbb1f0|" /etc/qorpera/lxd-company-provider.env
 install -o root -g qorpera-provider -m 0640 /home/company41-admin/step3-lxd/lxd-company-image-provenance.json /etc/qorpera/lxd-company-image-provenance.json

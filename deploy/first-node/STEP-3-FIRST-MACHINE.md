@@ -28,71 +28,134 @@ provisioning), which also sidesteps the frozen lease-semantics follow-up.
    runner image nested, archive sha `c9370c82…46239` verified), provider
    artifact, unit, env example, installer, and the image build script.
 
-## LIVE STATE at handoff (2026-08-26 ~16:00Z — read this first)
+## LIVE STATE at handoff (2026-08-26 ~20:20Z — READ THIS FIRST)
 
-The deployment is mid-flight and hands-free. Everything below the operator
-section describes the original plan; this block is what has ACTUALLY
-happened and exactly what remains.
+**The first Company Computer VM EXISTS and is RUNNING** on
+`company41-node-01`:
+`qorpera-cc-6d9da3a0f09b4d63b79b8a3aad7919d9` at `10.41.0.217`, built
+from image `efe890d30817243af4466b7a4b00d802c46d55514e3eb7a5ffcb4e9d05229b2f`
+with signed provenance installed and the provider service active.
+One defect blocks the guest agents from starting. Everything below the
+operator section is the original plan; this block is ground truth.
 
-**Done:**
-1. Control plane applied + seeded (see "Already done" below; ids there).
-2. Rounds A ran clean: dataset root, provider service installed
-   (`qorpera-lxd-company-provider.service`, disabled until provenance),
-   `/etc/qorpera/lxd-company-provider.env` filled — fingerprint and the
-   corrected manifest sha are patched in by op-c when it succeeds.
-3. **Image built**: fingerprint
-   `efe890d30817243af4466b7a4b00d802c46d55514e3eb7a5ffcb4e9d05229b2f`,
-   built at commit `ccd357180` (the install-ordering fix: the nested
-   runner layer installs node BEFORE the node-based verification — found
-   by the first real build).
-4. Guest package manifest is now
-   `acd2cd013361a66fdd56e61b30ecaa3807c8da0610db33ba48b3c6a660fbb1f0`
-   (recipe pin, env pin, and signer all updated).
-5. **Sudo grant is live**: `/etc/sudoers.d/qorpera-step3-first-machine`
-   lets `company41-admin` run the three op scripts NOPASSWD (the Step 2
-   flow's grant also allows `/usr/sbin/lxc` and `journalctl` as root).
-   Remove after activation:
-   `sudo rm /etc/sudoers.d/qorpera-step3-first-machine`.
+### Green (verified live)
 
-**In flight / remaining (in order):**
-1. `sudo -n bash ~/step3-lxd/op-c-image.sh` — clean-boot acceptance
-   (was running at handoff; check
-   `/var/log/qorpera-cc-image-verify.log` and rerun if needed — it is
-   idempotent). Success ends with `evidence sha256: <64hex>` and
-   `OP-C-DONE`, and patches fingerprint+manifest sha into the env file.
-   First fix applied mid-flight: the verify instance now declares its own
-   root disk (the NIC-only profile has none; the provider adds root
-   itself).
-2. Sign the provenance from the Mac (clean committed tree required):
-   `npm run pack:lxd-provider` then
-   `node deploy/first-node/sign-company-image-provenance.mjs <fingerprint> <evidence-sha256> <tested-at-iso>`
-   — reads the Ed25519 key from Keychain
-   `com.qorpera.company41.lxd-image-provenance` (the stored value is
-   base64url PKCS8 DER, reconstructed in-process), signs, and scp's the
-   envelope to `~/step3-lxd/lxd-company-image-provenance.json` on the
-   node.
-3. `sudo -n bash ~/step3-lxd/op-d-activate.sh` — installs provenance,
-   enables the service, provisions logical computer
-   `6d9da3a0-f09b-4d63-b79b-8a3aad7919d9` via systemd-run, lists the VM.
-4. The watch-proof below ("The proof").
+1. **Control plane**: all 12 draft migrations applied to hosted
+   `wovsmjvghnbcbfazdtvr` (first try, history parity checked first).
+2. **Registry seeded**: node `company41-node-01`
+   (`screen_viewer_endpoint=100.75.4.70:18446`, Tailscale), company
+   compute identity `50b6456a-3f13-4cd7-a671-a8619eb758d0`, logical
+   computer `6d9da3a0-f09b-4d63-b79b-8a3aad7919d9`, company computer
+   `b13c3dc2-2bf0-4be0-8675-52bece89ee1a`, dataset
+   `companies/0d2053f0-c1a8-444d-99a8-68c8214e5414`.
+3. **Image built** at commit `ccd357180`, fingerprint `efe890d3…29b2f`,
+   guest package manifest
+   `acd2cd013361a66fdd56e61b30ecaa3807c8da0610db33ba48b3c6a660fbb1f0`.
+4. **Clean-boot acceptance passed**: all four guest services report
+   `disabled` on a fresh boot — evidence committed at
+   `deploy/first-node/evidence-first-machine-clean-boot.log`,
+   sha256 `4a9526ecd9eae9ddb326a91c235520df3fcaf345b1f6bf407badf03514bc9260`,
+   tested-at `2026-08-26T20:08:33.000Z`.
+5. **Provenance signed and installed** at
+   `/etc/qorpera/lxd-company-image-provenance.json`; the provider
+   verifies it at startup (service is `active (running)`).
+6. **Provisioning reaches deep**: identity volume
+   `qorpera-identity-50b6456a-…` created, VM created and started, all
+   four bootstrap files pushed to `/var/lib/qorpera-bootstrap/`, and the
+   NAS dataset is mounted in the guest over virtiofs at
+   `/srv/qorpera/dataset`.
 
-**Session-local knowledge now committed:**
-- `scripts/repin-deploy.mjs` — recomputes every deploy pin after any
-  bundle-affecting change (run it, then `npm run test:scripts`).
-- `deploy/first-node/first-machine-ops/` — the three op scripts (also
-  staged on the node at `~/step3-lxd/`).
+### The one blocker (exact root cause, reproducible)
+
+`qorpera-company-computer-bootstrap.service` fails inside the guest:
+
+```
+EROFS: read-only file system, chmod '/var/lib/qorpera/identity'
+```
+
+The compute-identity volume is mounted **read-only** in the guest, but
+the bootstrap hardens and writes it:
+`packages/shell/src/cloud-company-computer-guest.ts:694` (`chmod 0o700`),
+immediately followed by `ensureIdentityMarker` and
+`ensureIdentityMasterKey`, which must write. So making the chmod
+tolerant is NOT enough — the volume has to be writable.
+
+Next session, in order:
+1. Compare with the ephemeral runner lane, which uses the same identity
+   volume mechanism successfully (`lxd-provider.ts` create request vs
+   `lxd-company-computer-provider.ts` `#createRequest`, and the volume
+   config written by `#ensureIdentityVolume`). The difference is likely
+   a device/volume property (LXD attaches custom filesystem volumes to
+   VMs over virtiofs; a `readonly` or shared-volume property, or
+   `security.shared`, is the suspect).
+2. Fix in the provider's device/volume config, restage the artifact,
+   rerun `op-d-activate.sh`. The whole loop is hands-free.
+3. Then the watch-proof ("The proof" below).
+
+### How to drive it (no human typing needed)
+
+A sudoers grant is live: `/etc/sudoers.d/qorpera-step3-first-machine`
+lets `company41-admin` run the three op scripts NOPASSWD; the Step 2
+grant also allows `/usr/sbin/lxc` and `/usr/bin/journalctl` as root, so
+the guest can be inspected directly:
+
+```bash
+ssh company41-node-01 'sudo -n /usr/sbin/lxc exec qorpera-cc-6d9da3a0f09b4d63b79b8a3aad7919d9 --project qorpera-runners -- /usr/bin/journalctl -u qorpera-company-computer-bootstrap.service --no-pager -n 20'
+```
+
+Re-running activation after any provider change (it refreshes the
+artifact against a pinned checksum, then provisions):
+
+```bash
+ssh company41-node-01 'sudo -n bash /home/company41-admin/step3-lxd/op-d-activate.sh'
+```
+
+**Remove the grant when the arc is done:**
+`sudo rm /etc/sudoers.d/qorpera-step3-first-machine`
+
+### Defects found and fixed during this deployment
+
+- Install ordering: the company install script ran node-based
+  verification before the nested runner layer installed node
+  (`ccd357180`).
+- The verify profile had no root disk; the profile now carries one
+  (provider-created instances still declare their own).
+- The company control plane used Node's global `fetch`, which cannot
+  reach the hosted project from the node — now `nodeHttpFetch`, like the
+  ephemeral lane (`19bd0c034`).
+- The provider CLI now prints the whole error cause chain, not just the
+  outermost message.
+- The provenance signer had three bugs (repo root depth, non-canonical
+  timestamp, and hand-wrapped key material). It now follows the
+  documented flow: encrypted PEM at
+  `~/Library/Application Support/Qorpera/keys/company41-lxd-image-provenance-ed25519.pem`
+  with the Keychain item as its **passphrase** piped to stdin.
+
+### Session tooling now in the repo
+
+- `scripts/repin-deploy.mjs` — recompute every deploy pin after a
+  bundle-affecting change, then `npm run test:scripts`.
+- `deploy/first-node/first-machine-ops/` — the three operator scripts
+  (mirrored on the node at `~/step3-lxd/`).
 - `deploy/first-node/sign-company-image-provenance.mjs` — the signer.
-- Supabase apply path: the CLI's own keyring login works
-  (`npx supabase@latest …` with NO SUPABASE_ACCESS_TOKEN env — the
-  Keychain item `supabase-cli-step2-temporary` is STALE and overrides the
-  working login if exported). Management SQL endpoint works with the CLI
-  keyring token (`api.supabase.com/v1/projects/wovsmjvghnbcbfazdtvr/database/query`).
-- The Step 2 session works the same node concurrently (built runner v35
-  during this arc); builds coexist but watch disk/load.
+- Supabase: use the CLI's own keyring login (`npx supabase@latest …`
+  with **no** `SUPABASE_ACCESS_TOKEN` exported — the Keychain item
+  `supabase-cli-step2-temporary` is stale and shadows it). Management SQL
+  works at
+  `api.supabase.com/v1/projects/wovsmjvghnbcbfazdtvr/database/query`
+  with the CLI keyring token.
 - Dev app for the visual proof: `packages/shell/dist` is built on this
-  branch; run per the Step 2 dev-client convention
-  (`QORPERA_RUNTIME_NODE=$(command -v node) npx electron dist/main.js`
-  from `packages/shell`).
+  branch (`QORPERA_RUNTIME_NODE=$(command -v node) npx electron dist/main.js`).
+
+### NAS note (founder question, 2026-08-26)
+
+Nothing is wrong with the NAS — the node simply has no mount to it, so
+this first machine uses `/srv/qorpera-nas` on local disk. The plan Jonas
+described works: cable the NAS's second port to the node, fix addresses
+on that link, export the share, mount it at `/srv/qorpera-nas`. The
+provider config does not change (`QORPERA_LXD_NAS_DATASET_ROOT`), moving
+data is one copy, and NAS-side snapshots then back
+`QORPERA_LXD_DATASET_SNAPSHOT_COMMAND`.
 
 ## Operator steps on the node (need sudo — Jonas)
 

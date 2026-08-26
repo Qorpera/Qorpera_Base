@@ -411,8 +411,13 @@ async function main(): Promise<void> {
 const executablePath = process.argv[1];
 if (executablePath && realpathSync(resolve(executablePath)) === realpathSync(fileURLToPath(import.meta.url))) {
 	main().catch((error: unknown) => {
+		const chain = [];
+		for (let current = error; current instanceof Error; current = current.cause) {
+			chain.push(current.message);
+			if (chain.length >= 4) break;
+		}
 		console.error(
-			(error instanceof Error ? error.message : String(error)).replace(/[A-Za-z0-9_-]{43}/g, "[redacted]"),
+			(chain.join(" <- ") || String(error)).replace(/[A-Za-z0-9_-]{43}/g, "[redacted]"),
 		);
 		process.exitCode = 1;
 	});
