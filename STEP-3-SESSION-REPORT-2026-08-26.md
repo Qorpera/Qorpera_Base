@@ -2,13 +2,14 @@
 
 Produced by the dedicated Step 3 session continuing from
 `STEP-3-SESSION-REPORT-2026-08-25.md`. Branch `step3/company-computers` at
-`8754e8d9e` (9 commits on `439fadc1c`, all pushed to `github`); tsgo clean,
-biome clean; shell gained 20 new tests (12 sync + 8 screens), the provider
-suite grew 6 → 11, full runner-orchestrator suite 62 passing, targeted shell
-suites (sync + screens + merge + snapshot) 42 passing. Nothing applied to
-any Supabase project, no PR opened. `github/master` moved ahead during the
-session (10 commits, none touching the scope-3 base files); the branch was
-deliberately not rebased mid-work.
+`ce0d9a925` (12 commits on `439fadc1c`, all pushed to `github`); tsgo clean,
+biome clean; shell gained 27 new tests (12 sync + 8 screens + 7 guest
+composition), the provider suite grew 6 → 11, full runner-orchestrator suite
+62 passing, and `npm run test:scripts` is green again (13 passing — two
+package-pin tests were failing at this branch's base and are repinned).
+Nothing applied to any Supabase project, no PR opened. `github/master` moved
+ahead during the session (10 commits, none touching the scope-3 base files);
+the branch was deliberately not rebased mid-work.
 
 ## What was built
 
@@ -98,6 +99,37 @@ RPC is the runtime fence, to be wired by the execution path.
   ports), plus a fourth per-computer credential `qorpera-screen-viewer`
   journaled and delivered like the assignment token.
 
+**7. Image packaging pass (third stage of the ratified build).** `ce0d9a925`
+(+ `a726ee2d5` repinning the provider/orchestrator install checksums that
+were already stale at the branch base).
+- The Company Computer image is a strict superset of the runner image:
+  `scripts/package-lxd-company-computer-guest.mjs` nests the complete runner
+  guest package under `runner/` (pinned by manifest hash) and layers the
+  XFCE/TigerVNC desktop stack plus the guest services;
+  `deploy/first-node/build-lxd-company-computer-image-candidate.sh` mirrors
+  the runner candidate recipe, pin enforced in lockstep by the packer test.
+- `packages/shell/src/cloud-company-computer-guest.ts` + three bundled
+  mains: a root bootstrap oneshot (verifies delivered authority, refuses an
+  unmounted dataset, hands working directories to the work account, starts
+  the agents — the single entry point the provider enables), and the sync
+  and screen agents running unprivileged with every input delivered through
+  systemd `LoadCredential=`.
+- Head resolution for the standing guest: new service-role
+  `qorpera_company_computer_sync_head` RPC
+  (`supabase/migrations/20260826050000_...`, draft, applied nowhere) —
+  member head RPCs require a member session the guest does not have; the
+  RPC is computer-scoped and published-only, and the agent re-checks.
+- Object backend selection is explicit and fails closed:
+  `QORPERA_OBJECT_STORAGE_PRIMARY=supabase` (service-key storage client,
+  shipped in the unit for the acceptance profile) or `nas` (gateway URL +
+  token via drop-in); anything else refuses.
+- One deliberate sharing decision: the screens unit does NOT use PrivateTmp
+  so runner-lane computer-use tasks can reach the screens' X sockets in
+  `/tmp/.X11-unix` — one trust domain, per charter principle 2. The
+  per-screen wrapper binds VNC to loopback only with `SecurityTypes None`
+  inside that boundary; the token-gated viewer listener stays the sole
+  remote path.
+
 ## Design decisions (charter trace)
 
 - Sync is strictly one-directional; the working copy is never authority
@@ -120,20 +152,20 @@ RPC is the runtime fence, to be wired by the execution path.
   `20260821001000` ~lines 1024/1039) and `validateCloudRunnerWork`
   (orchestrator.ts ~line 1117) — **strictly after Step 2 acceptance closes**;
   payment structure stays out of the contracts.
-- **Screens slice, remaining stages** (unblocked, in order): image packaging
-  pass — the Xvnc/XFCE desktop stack in the guest image plus the systemd
-  service mains composing BOTH guest agents (sync and screens) from the
-  bootstrap file and credentials; the host-side viewer leg (member
-  capability check where member traffic terminates, then the guest attach
-  handshake); shell watch/drive surface (noVNC embedding); keyframe artifact
-  publication on the run transcript; execution-path wiring of the
-  claim/release fence for desktop tasks.
-- **Guest service wiring for the sync agent**: the module, config parser, and
-  poll loop exist; the guest systemd unit that reads
-  `/var/lib/qorpera-bootstrap/company-computer.json` and composes the hosted
-  primary head resolver + broker signed-URL object store from the bootstrap
-  credentials is the remaining integration, best built alongside the image
-  packaging pass.
+- **Screens slice, remaining stages** (unblocked, in order): host-side
+  viewer leg (member capability check where member traffic terminates, then
+  the guest attach handshake); shell watch/drive surface (noVNC embedding);
+  keyframe artifact publication on the run transcript; execution-path
+  wiring of the claim/release fence for desktop tasks. The image packaging
+  pass — desktop stack, guest composition, service mains and units for both
+  agents, packer, and image-candidate recipe — is DONE (`ce0d9a925`).
+- **Company-flavor runner-lane bootstrap**: the ephemeral runner bootstrap
+  validates the ephemeral schemas (`bootstrap.json`,
+  `qorpera.runner-service/v1`) and exactly four credentials, so turn
+  execution on the shared machine still needs its own bootstrap step that
+  understands `qorpera.company-computer-service/v1` and the five-credential
+  set; recorded in deploy/lxd-company-computer-guest/README.md. A browser
+  is also not yet in the desktop stack.
 - **Runner session re-activation after VM reboot past `pending`** — deferred
   deliberately this session: it changes runner-registration lease semantics
   shared with the Step 2 acceptance currently in flight in the parallel
@@ -144,17 +176,16 @@ RPC is the runtime fence, to be wired by the execution path.
 ## NEXT SESSION PICKUP
 
 1. Read this report; charter and Step 2 architecture as before. The screens
-   decision is RATIFIED; the registry migration AND the guest screen agent
-   module are done.
-2. Continue the screens slice: image packaging pass (desktop stack + service
-   mains for both guest agents) → host-side viewer leg → shell watch/drive
+   decision is RATIFIED; the registry migration, both guest agents, and the
+   image packaging pass are done.
+2. Continue the screens slice: host-side viewer leg → shell watch/drive
    surface → keyframe artifacts → execution-path claim/release wiring (see
-   "Blocked / deferred" for the stage details).
+   "Blocked / deferred" for the stage details). The company-flavor
+   runner-lane bootstrap belongs with the execution-path stage.
 3. If Step 2 acceptance has closed: implement the capsule rule + work
    validator extension as its own migration/PR, payment structure explicitly
    excluded.
-4. Also open: guest service wiring for the sync agent (systemd unit + store/
-   resolver composition), then runner reboot re-activation once the Step 2
-   acceptance freeze lifts.
+4. Also open: runner reboot re-activation once the Step 2 acceptance freeze
+   lifts; a browser in the desktop image.
 5. Consider folding `github/master` (10 commits ahead) into the branch before
    the next build block; nothing upstream conflicts with scope-3 files today.
