@@ -808,27 +808,30 @@ async function materializeInput(
 	) {
 		throw new Error("Runner job substrate is outside its immutable profile environment");
 	}
-	/* Live company file (founder ruling 2026-08-26): when the provider mounts
-	 * the company's one authoritative tree into this machine, a session turn
+	/* Live company file (founder ruling 2026-08-26): the company's one
+	 * authoritative tree is mounted into this machine and a session turn
 	 * works directly on it — no copy-in, no copy-out, cost proportional to
-	 * what the agent touches rather than to company size. Hard-isolation
-	 * lanes (proposal review) and foreign profiles keep the immutable
-	 * copy-in path. */
+	 * what the agent touches rather than to company size. There is no
+	 * fallback: a declared live tree that is missing fails the turn loudly
+	 * instead of silently resurrecting the copy model. Proposal review is
+	 * not a fallback — hard isolation copies by design. */
 	const runnerEnvironment = options.environment ?? {};
 	const declaredLiveRoot = runnerEnvironment.QORPERA_LIVE_COMPANY_ROOT;
 	let liveCompanyRoot: string | undefined;
-	if (
-		typeof declaredLiveRoot === "string" &&
-		declaredLiveRoot &&
-		runnerEnvironment.QORPERA_LIVE_COMPANY_PROFILE_ID === job.profileId &&
-		execution.run.sourceKind === "session_turn" &&
-		proposalSnapshot === undefined
-	) {
-		try {
-			if ((await stat(declaredLiveRoot)).isDirectory()) liveCompanyRoot = resolve(declaredLiveRoot);
-		} catch {
-			/* mount absent: fall back to the immutable copy-in path */
+	if (typeof declaredLiveRoot === "string" && declaredLiveRoot && proposalSnapshot === undefined) {
+		if (runnerEnvironment.QORPERA_LIVE_COMPANY_PROFILE_ID !== job.profileId) {
+			throw new Error("The live company file belongs to another profile");
 		}
+		try {
+			if (!(await stat(declaredLiveRoot)).isDirectory()) {
+				throw new Error("The live company file mount is not a directory");
+			}
+		} catch (error) {
+			throw new Error(
+				`The live company file is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		liveCompanyRoot = resolve(declaredLiveRoot);
 	}
 	let inputBytes = liveCompanyRoot ? 0 : assertInputBudget(0, snapshot.tree.totalBytes, limits.maxInputBytes);
 	const inputRoot = join(executionRoot, "input");

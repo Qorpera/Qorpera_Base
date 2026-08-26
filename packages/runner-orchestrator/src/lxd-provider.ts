@@ -1,5 +1,4 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
@@ -782,12 +781,15 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				},
 				/* No uid shifting: idmapped mounts are unreliable over NFS. The
 				 * NAS export squashes every writer to one owner and the tree
-				 * carries open modes, so guest uids need no translation. */
-				...(this.#liveCompanyMount()
+				 * carries open modes, so guest uids need no translation. No
+				 * fallback either: a configured live tree whose host mount is
+				 * gone fails instance creation loudly (founder ruling — the
+				 * copy model must not silently come back). */
+				...(this.#config.liveCompanyRoot && this.#config.liveCompanyProfileId
 					? {
 							"company-live": {
 								type: "disk",
-								source: this.#config.liveCompanyRoot!,
+								source: this.#config.liveCompanyRoot,
 								path: LXD_LIVE_COMPANY_GUEST_PATH,
 							},
 						}
@@ -804,19 +806,6 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 							fingerprint: current.lxd.imageFingerprint,
 						},
 		};
-	}
-
-	/** Live mount is offered only when the host path is a present directory —
-	 * a dropped NAS mount degrades that turn to the immutable copy-in path
-	 * instead of handing the guest an empty tree. */
-	#liveCompanyMount(): boolean {
-		const root = this.#config.liveCompanyRoot;
-		if (!root || !this.#config.liveCompanyProfileId) return false;
-		try {
-			return statSync(root).isDirectory();
-		} catch {
-			return false;
-		}
 	}
 
 	#bootstrapAuthority(journal: LxdProviderJournal): LxdGuestBootstrapAuthority {
