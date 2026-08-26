@@ -10,6 +10,7 @@ const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
 const onboardingCssSource = readFileSync(join(userland, "onboarding.css"), "utf-8");
 const characterMotionSource = readFileSync(join(userland, "character-motion.css"), "utf-8");
 const railResizeCssSource = readFileSync(join(userland, "rail-resize.css"), "utf-8");
+const pinnedAgentsCssSource = readFileSync(join(userland, "pinned-agents.css"), "utf-8");
 const railResizeSource = readFileSync(join(userland, "rail-resize.js"), "utf-8");
 const feedbackSource = readFileSync(join(userland, "feedback.js"), "utf-8");
 const feedbackCssSource = readFileSync(join(userland, "feedback.css"), "utf-8");
@@ -150,6 +151,18 @@ describe("userland wiring", () => {
 		);
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.company-switcher-menu \{[^}]*top: auto;[^}]*bottom: calc\(100% \+ 5px\);[^}]*left: 0;/s,
+		);
+	});
+
+	it("keeps active agent selection blue across hover and pinned layouts", () => {
+		expect(baseCssSource).toMatch(
+			/#staffNavigation \.staff-nav-row\.active,[^}]*#staffNavigation \.staff-nav-row\.active:hover[^}]*\{[^}]*background: #0a84ff;[^}]*color: #fff;/s,
+		);
+		expect(pinnedAgentsCssSource).toMatch(
+			/\.staff-pinned-grid \.staff-pinned-card\.active,[^}]*\.staff-pinned-grid \.staff-pinned-card\.active:hover[^}]*\{[^}]*background: #0a84ff;[^}]*color: #fff;/s,
+		);
+		expect(pinnedAgentsCssSource).not.toMatch(
+			/\.staff-pinned-grid \.staff-pinned-card\.active[^}]*\{[^}]*background: #e9e9e7;/s,
 		);
 	});
 

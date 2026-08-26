@@ -36,9 +36,14 @@
 	text-align: center;
 }
 
-.staff-pinned-grid .staff-pinned-card:hover,
-.staff-pinned-grid .staff-pinned-card.active {
+.staff-pinned-grid .staff-pinned-card:hover {
 	background: #e9e9e7;
+}
+
+.staff-pinned-grid .staff-pinned-card.active,
+.staff-pinned-grid .staff-pinned-card.active:hover {
+	background: #0a84ff;
+	color: #fff;
 }
 
 .staff-pinned-grid .staff-pinned-card .staff-avatar {

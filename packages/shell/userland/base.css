@@ -3855,8 +3855,10 @@ html[data-platform="darwin"] .titlebar-rail .rail-add-staff span {
 	margin-top: 4px;
 }
 
-.staff-nav-row.active,
-.company-runtime-row.active {
+#staffNavigation .staff-nav-row.active,
+#staffNavigation .staff-nav-row.active:hover,
+#staffNavigation .company-runtime-row.active,
+#staffNavigation .company-runtime-row.active:hover {
 	background: #0a84ff;
 	color: #fff;
 }
