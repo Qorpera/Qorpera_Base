@@ -59,6 +59,7 @@ const expected = new Set([
   "qorpera-company-computer-sync.mjs",
   "qorpera-company-computer-sync.service",
   "qorpera-screen-session",
+  "qorpera-screen-wallpaper.svg",
 ]);
 for (const artifact of manifest.artifacts) {
   if (!artifact || typeof artifact.file !== "string" || !expected.delete(artifact.file)) {
@@ -89,7 +90,7 @@ bash "${PACKAGE_ROOT}/runner/install-image-contract.sh" "${PACKAGE_ROOT}/runner"
 systemctl disable qorpera-lxd-runner-bootstrap.service >/dev/null 2>&1 || true
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get install --yes dbus-x11 scrot tigervnc-standalone-server x11-xserver-utils xauth xfce4 xfce4-terminal
+apt-get install --yes dbus-x11 librsvg2-bin scrot tigervnc-standalone-server x11-xserver-utils xauth xfce4 xfce4-terminal
 
 for binary in /usr/bin/Xvnc /usr/bin/xfce4-session /usr/bin/dbus-run-session /usr/bin/xset /usr/bin/scrot; do
 	if [[ ! -x ${binary} ]]; then
@@ -113,6 +114,11 @@ for artifact in \
 done
 install -o root -g root -m 0555 "${PACKAGE_ROOT}/qorpera-screen-session" /usr/local/bin/qorpera-screen-session
 bash -n /usr/local/bin/qorpera-screen-session
+# The desktop wallpaper every screen wears: rasterized once at install so
+# the running guest never needs the SVG toolchain.
+install -d -o root -g root -m 0755 /usr/share/backgrounds
+rsvg-convert "${PACKAGE_ROOT}/qorpera-screen-wallpaper.svg" -w 2560 -h 1600 -o /usr/share/backgrounds/qorpera-screen.png
+chmod 0644 /usr/share/backgrounds/qorpera-screen.png
 for unit in \
 	qorpera-company-computer-bootstrap.service \
 	qorpera-company-computer-runner.service \

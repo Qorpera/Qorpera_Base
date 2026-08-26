@@ -68,7 +68,24 @@ if [[ ${ready} != true ]]; then
 	exit 1
 fi
 
-DISPLAY=${display} /usr/bin/dbus-run-session -- /usr/bin/xfce4-session &
+# The Qorpera wallpaper is applied from inside the session's own D-Bus
+# (xfconf lives there); best-effort so a slow desktop start never kills the
+# screen itself.
+DISPLAY=${display} /usr/bin/dbus-run-session -- /bin/bash -c '
+	(
+		for _attempt in $(seq 1 40); do
+			mapfile -t props < <(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep "/last-image$")
+			if [[ ${#props[@]} -gt 0 ]]; then
+				for prop in "${props[@]}"; do
+					xfconf-query -c xfce4-desktop -p "${prop}" -s /usr/share/backgrounds/qorpera-screen.png || true
+				done
+				break
+			fi
+			sleep 0.5
+		done
+	) &
+	exec /usr/bin/xfce4-session
+' &
 session_pid=$!
 
 # The screen lives exactly as long as both halves: if either the display or

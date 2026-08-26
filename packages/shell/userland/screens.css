@@ -1,0 +1,78 @@
+/* Company Computer screens: the sidepanel screen card and the live viewer.
+   The card wallpaper mirrors the guest desktop's own wallpaper — a quiet
+   grey field with the agent's creature debossed into it, letterpress style —
+   so the placeholder and the real screen read as the same surface. */
+
+.screen-card {
+	position: relative; display: block; width: 100%; aspect-ratio: 16 / 10; padding: 0;
+	border: 1px solid var(--border); border-radius: 10px; overflow: hidden; cursor: pointer;
+	background:
+		radial-gradient(120% 95% at 50% 38%, #f4f5f6 0%, #e6e8ea 52%, #d3d6da 100%);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 1px 2px rgba(17, 20, 24, 0.06);
+}
+.screen-card:focus-visible { outline: 2px solid var(--accent, #5367e8); outline-offset: 2px; }
+
+.screen-card-emboss { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.screen-card-emboss i {
+	position: absolute; width: 38%; aspect-ratio: 1 / 1;
+	-webkit-mask: var(--screen-creature) center / contain no-repeat;
+	mask: var(--screen-creature) center / contain no-repeat;
+}
+/* Letterpress: a soft light edge just below, the mark itself a shade deeper
+   than the field — the shape reads as pressed in, never printed on. */
+.screen-card-emboss i:first-child { background: rgba(255, 255, 255, 0.85); transform: translateY(1.5px); filter: blur(0.6px); }
+.screen-card-emboss i:last-child { background: rgba(96, 102, 110, 0.34); }
+
+.screen-card-open {
+	position: absolute; inset: 0; display: grid; place-items: center;
+	opacity: 0; transition: opacity 120ms ease; background: rgba(17, 20, 24, 0.14);
+}
+.screen-card:hover .screen-card-open, .screen-card:focus-visible .screen-card-open { opacity: 1; }
+.screen-card-open span {
+	display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px; border-radius: 999px;
+	background: rgba(20, 22, 26, 0.78); color: #fff; font-size: 12px; font-weight: 600;
+	backdrop-filter: blur(6px); box-shadow: 0 4px 14px rgba(10, 12, 16, 0.35);
+}
+.screen-card-open svg { width: 13px; height: 13px; }
+
+.screen-card-status {
+	position: absolute; right: 10px; top: 10px; width: 8px; height: 8px; border-radius: 50%;
+	background: #34c759; box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.22);
+}
+
+.screen-card-connect {
+	display: grid; place-items: center; align-content: center; gap: 10px;
+}
+.screen-card-connect p { margin: 0; max-width: 220px; color: var(--text-soft); font-size: 12px; text-align: center; }
+.screen-card-connect button {
+	width: auto; min-height: 32px; padding: 0 14px; border: 1px solid var(--border-strong);
+	border-radius: 999px; background: #ffffff; font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+
+.screen-card-error { margin: 8px 0 0; color: #b3261e; font-size: 11.5px; }
+
+/* The live viewer: a near-borderless dark surface, the session itself is
+   the interface — one close control and the screen's name, nothing else. */
+.screen-viewer-overlay {
+	position: fixed; inset: 0; z-index: 240; display: grid;
+	background: rgba(12, 13, 15, 0.94); animation: screen-viewer-in 140ms ease;
+}
+@keyframes screen-viewer-in { from { opacity: 0; } to { opacity: 1; } }
+.screen-viewer-frame { position: relative; display: grid; grid-template-rows: 44px 1fr; height: 100%; }
+.screen-viewer-titlebar {
+	display: flex; align-items: center; justify-content: space-between; padding: 0 14px;
+	color: rgba(255, 255, 255, 0.82); font-size: 12.5px; font-weight: 600;
+	-webkit-app-region: no-drag;
+}
+.screen-viewer-titlebar small { color: rgba(255, 255, 255, 0.45); font-weight: 500; }
+.screen-viewer-close {
+	display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0;
+	border-radius: 8px; background: rgba(255, 255, 255, 0.12); color: #fff; font-size: 15px; cursor: pointer;
+}
+.screen-viewer-close:hover { background: rgba(255, 255, 255, 0.22); }
+.screen-viewer-stage { position: relative; overflow: hidden; }
+.screen-viewer-stage > div { position: absolute; inset: 0; }
+.screen-viewer-status {
+	position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none;
+	color: rgba(255, 255, 255, 0.6); font-size: 13px; letter-spacing: 0.02em;
+}

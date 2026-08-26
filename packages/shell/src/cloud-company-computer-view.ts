@@ -32,7 +32,22 @@ export interface CompanyComputerScreensView {
 	companyComputerId: string;
 	logicalComputerId: string;
 	lifecycleState: string;
+	/** host:port of the node's viewer gateway, from the registry; absent
+	 * until node operations publish it. */
+	viewerEndpoint?: string;
 	screens: CompanyComputerScreenSummary[];
+}
+
+const VIEWER_ENDPOINT_PATTERN = /^[a-z0-9][a-z0-9.-]{0,253}:[0-9]{2,5}$/;
+
+export function parseViewerEndpoint(value: string): { host: string; port: number } {
+	if (!VIEWER_ENDPOINT_PATTERN.test(value)) throw new Error("Screen viewer endpoint is invalid");
+	const separator = value.lastIndexOf(":");
+	const port = Number(value.slice(separator + 1));
+	if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+		throw new Error("Screen viewer endpoint is invalid");
+	}
+	return { host: value.slice(0, separator), port };
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -58,10 +73,17 @@ export async function describeCompanyComputerScreens(
 	const computer = record(input.computer, "Company computer description computer");
 	const screens = input.screens;
 	if (!Array.isArray(screens)) throw new Error("Company computer description screens are invalid");
+	const viewerEndpoint = input.viewer_endpoint;
+	if (viewerEndpoint !== null && viewerEndpoint !== undefined) {
+		if (typeof viewerEndpoint !== "string" || !VIEWER_ENDPOINT_PATTERN.test(viewerEndpoint)) {
+			throw new Error("Company computer viewer endpoint is invalid");
+		}
+	}
 	return {
 		companyComputerId: uuid(computer.company_computer_id, "Company computer id"),
 		logicalComputerId: uuid(computer.logical_computer_id, "Company computer logical computer id"),
 		lifecycleState: String(computer.lifecycle_state),
+		...(typeof viewerEndpoint === "string" ? { viewerEndpoint } : {}),
 		screens: screens.map((entry): CompanyComputerScreenSummary => {
 			const screen = record(entry, "Company computer screen");
 			if (
@@ -114,6 +136,20 @@ export async function mintCompanyComputerScreenView(
 		expiresAt: input.expires_at,
 		screenOrdinal: screen.screen_ordinal as number,
 	};
+}
+
+/** Attaches a staff agent to a screen with the member's own session; the
+ * control plane enforces roster membership and one screen per agent. */
+export async function attachCompanyComputerScreen(
+	client: SupabaseClient<HostedPrimaryDatabase>,
+	screenId: string,
+	staffAgentId: string,
+): Promise<void> {
+	const { error } = await client.rpc("qorpera_attach_company_computer_screen", {
+		p_screen_id: screenId,
+		p_staff_agent_id: staffAgentId,
+	});
+	if (error) throw new Error(`Company computer screen attachment failed: ${error.message}`);
 }
 
 export interface ConnectCompanyComputerScreenViewInput {

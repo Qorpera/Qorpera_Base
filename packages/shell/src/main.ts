@@ -209,6 +209,14 @@ import { migrateCompanyToAgentsOnly } from "./agents-only-company-migration.ts";
 import { readBackgroundCompanyRoots, setBackgroundCompanyEnabled } from "./background-companies.ts";
 import { CloudProfileAccessRefresh } from "./cloud-access-refresh.ts";
 import {
+	attachCompanyComputerScreen,
+	connectCompanyComputerScreenView,
+	describeCompanyComputerScreens,
+	mintCompanyComputerScreenView,
+	parseViewerEndpoint,
+	startLocalScreenViewWebSocketBridge,
+} from "./cloud-company-computer-view.ts";
+import {
 	acceptReviewedCloudCompanyExecution,
 	type CloudCompanyExecutionCheckout,
 	cloudCompanyExecutionTouchesAuthorityCritical,
@@ -9627,6 +9635,100 @@ app.whenReady().then(async () => {
 		}
 		return { proposal, attachment };
 	};
+	/* Company Computer screens: describe/attach ride the member's own
+	 * session; open mints a single-use capability, dials the node's viewer
+	 * gateway, and re-serves the live VNC session at a loopback WebSocket
+	 * URL for the renderer's noVNC. One live view per (window, screen);
+	 * bridges die with the window. */
+	const screenViewSessions = new Map<string, { close: () => Promise<void> }>();
+	const screenViewKey = (sender: WebContents, screenId: string): string => `${sender.id}:${screenId}`;
+	const closeScreenView = async (key: string): Promise<void> => {
+		const session = screenViewSessions.get(key);
+		if (!session) return;
+		screenViewSessions.delete(key);
+		await session.close().catch(() => undefined);
+	};
+	const safeScreenError = (error: unknown): string =>
+		(error instanceof Error ? error.message : String(error))
+			.replace(/[A-Za-z0-9_-]{43}/g, "[redacted]")
+			.slice(0, 300);
+	const screenEnvironment = (sender: WebContents): string => {
+		const root = slotOf(sender)?.runtime?.root;
+		if (!root) throw new Error("Open a company before using Company Computer screens.");
+		const attachment = profileAttachment(root);
+		if (attachment.profileType !== "cloud" || !attachment.environmentId) {
+			throw new Error("Company Computer screens require a cloud company.");
+		}
+		return attachment.environmentId;
+	};
+	ipcMain.handle("screens:describe", async (event) => {
+		try {
+			const client = qorperaAccountAuth?.hostedClient();
+			if (!client) return { ok: false as const, error: "Sign in to view Company Computer screens." };
+			const view = await describeCompanyComputerScreens(client, screenEnvironment(event.sender));
+			return { ok: true as const, view: view ?? null };
+		} catch (error) {
+			return { ok: false as const, error: safeScreenError(error) };
+		}
+	});
+	ipcMain.handle("screens:attach", async (event, screenId: unknown, staffAgentId: unknown) => {
+		try {
+			if (
+				typeof screenId !== "string" ||
+				!UUID_PATTERN.test(screenId) ||
+				typeof staffAgentId !== "string" ||
+				!UUID_PATTERN.test(staffAgentId)
+			) {
+				return { ok: false as const, error: "Screen attachment identity is invalid." };
+			}
+			const client = qorperaAccountAuth?.hostedClient();
+			if (!client) return { ok: false as const, error: "Sign in to attach Company Computer screens." };
+			screenEnvironment(event.sender);
+			await attachCompanyComputerScreen(client, screenId, staffAgentId);
+			return { ok: true as const };
+		} catch (error) {
+			return { ok: false as const, error: safeScreenError(error) };
+		}
+	});
+	ipcMain.handle("screens:open", async (event, screenId: unknown) => {
+		try {
+			if (typeof screenId !== "string" || !UUID_PATTERN.test(screenId)) {
+				return { ok: false as const, error: "Screen identity is invalid." };
+			}
+			const client = qorperaAccountAuth?.hostedClient();
+			if (!client) return { ok: false as const, error: "Sign in to open Company Computer screens." };
+			const view = await describeCompanyComputerScreens(client, screenEnvironment(event.sender));
+			if (!view || !view.screens.some((screen) => screen.screenId === screenId)) {
+				return { ok: false as const, error: "This screen is not part of your Company Computer." };
+			}
+			const endpoint = process.env.QORPERA_SCREEN_VIEWER_GATEWAY?.trim() || view.viewerEndpoint;
+			if (!endpoint) {
+				return {
+					ok: false as const,
+					error: "The Company Computer's viewer gateway is not published yet.",
+				};
+			}
+			const { host, port } = parseViewerEndpoint(endpoint);
+			const minted = await mintCompanyComputerScreenView(client, screenId);
+			const connected = await connectCompanyComputerScreenView({ host, port, capability: minted.capability });
+			const bridge = await startLocalScreenViewWebSocketBridge(connected);
+			const key = screenViewKey(event.sender, screenId);
+			await closeScreenView(key);
+			screenViewSessions.set(key, { close: bridge.close });
+			const sender = event.sender;
+			sender.once("destroyed", () => {
+				void closeScreenView(key);
+			});
+			return { ok: true as const, url: bridge.url, screenOrdinal: connected.screenOrdinal };
+		} catch (error) {
+			return { ok: false as const, error: safeScreenError(error) };
+		}
+	});
+	ipcMain.handle("screens:close", async (event, screenId: unknown) => {
+		if (typeof screenId !== "string" || !UUID_PATTERN.test(screenId)) return { ok: false as const };
+		await closeScreenView(screenViewKey(event.sender, screenId));
+		return { ok: true as const };
+	});
 	ipcMain.handle("account:info", async (event): Promise<QorperaAccountInfo> => {
 		if (!slotOf(event.sender) || !qorperaAccountAuth) return { authenticated: false };
 		try {

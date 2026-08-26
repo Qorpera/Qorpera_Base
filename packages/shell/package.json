@@ -12,6 +12,7 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
+		"@novnc/novnc": "1.7.0",
 		"@openai/codex": "0.147.0",
 		"@qorpera/company": "^0.83.0",
 		"@qorpera/contracts": "^0.83.0",

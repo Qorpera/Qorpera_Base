@@ -35,6 +35,7 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 				"qorpera-company-computer-sync.mjs",
 				"qorpera-company-computer-sync.service",
 				"qorpera-screen-session",
+				"qorpera-screen-wallpaper.svg",
 			],
 		);
 		for (const artifact of manifest.artifacts) {
@@ -76,6 +77,7 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 		);
 		const installer = await readFile(installerPath, "utf-8");
 		assert.match(installer, /apt-get install --yes[^\n]*\btigervnc-standalone-server\b/);
+		assert.match(installer, /rsvg-convert[^\n]*qorpera-screen-wallpaper\.svg/);
 		assert.match(installer, /apt-get install --yes[^\n]*\bxfce4\b/);
 		assert.ok(installer.includes('bash "${PACKAGE_ROOT}/runner/install-image-contract.sh"'));
 		const wrapperPath = join(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-screen-session");

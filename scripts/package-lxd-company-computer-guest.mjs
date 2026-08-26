@@ -89,6 +89,10 @@ const sources = new Map([
 		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-screen-session"),
 	],
 	[
+		"qorpera-screen-wallpaper.svg",
+		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-screen-wallpaper.svg"),
+	],
+	[
 		"install-image-contract.sh",
 		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/install-image-contract.sh"),
 	],
@@ -108,6 +112,7 @@ const files = [
 	"qorpera-company-computer-sync.mjs",
 	"qorpera-company-computer-sync.service",
 	"qorpera-screen-session",
+	"qorpera-screen-wallpaper.svg",
 ];
 const artifacts = [];
 for (const file of files) {

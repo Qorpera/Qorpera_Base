@@ -3531,6 +3531,7 @@ function renderAgentComputerPanel(staff, force = false) {
 	caption.textContent = `Agent computer · ${staffDisplayName(staff)}`;
 	computer.append(screen, caption);
 	content.appendChild(computer);
+	void hydrateAgentScreenCard(computer, staff, ++agentScreenCardToken);
 
 	const routines = document.createElement("section");
 	routines.className = "agent-routines-section";
@@ -3572,6 +3573,105 @@ function renderAgentComputerPanel(staff, force = false) {
 		}
 	}
 	content.appendChild(routines);
+}
+
+// Company Computer screens in the agent sidepanel. The card is the screen's
+// standing surface: the same quiet wallpaper the guest desktop wears, with
+// the agent's creature debossed into it; opening it is the live
+// watch-and-take-over session.
+let agentScreenCardToken = 0;
+
+function screenCardWallpaper(staff, screenSummary) {
+	const card = document.createElement("button");
+	card.type = "button";
+	card.className = "screen-card";
+	card.setAttribute("aria-label", `Open ${staffDisplayName(staff)}'s screen`);
+	const creature = STAFF_CREATURE_CATALOG[staffCreatureId(staff)];
+	const emboss = document.createElement("span");
+	emboss.className = "screen-card-emboss";
+	emboss.style.setProperty("--screen-creature", `url("${creature.asset}")`);
+	emboss.append(document.createElement("i"), document.createElement("i"));
+	card.appendChild(emboss);
+	if (screenSummary.occupyingRunId) {
+		const status = document.createElement("span");
+		status.className = "screen-card-status";
+		status.title = "A task is on this screen";
+		card.appendChild(status);
+	}
+	const open = document.createElement("span");
+	open.className = "screen-card-open";
+	const pill = document.createElement("span");
+	pill.appendChild(
+		window.qorperaScreenViewer?.expandSvg?.('<path d="M15 4h5v5M9 20H4v-5M20 4l-6 6M4 20l6-6"/>') ??
+			document.createTextNode(""),
+	);
+	pill.appendChild(document.createTextNode("Open"));
+	open.appendChild(pill);
+	card.appendChild(open);
+	return card;
+}
+
+async function hydrateAgentScreenCard(section, staff, token) {
+	const result = await window.qorpera.screensDescribe?.().catch(() => undefined);
+	if (token !== agentScreenCardToken || !section.isConnected) return;
+	if (!result?.ok || !result.view) return;
+	const view = result.view;
+	const mine = view.screens.find((candidate) => candidate.attachedStaffAgentId === staffId(staff));
+	const unattached = view.screens.find((candidate) => !candidate.attachedStaffAgentId);
+	const caption = section.querySelector("small");
+	const placeholder = section.querySelector(".agent-computer-screen");
+	if (mine) {
+		const card = screenCardWallpaper(staff, mine);
+		card.onclick = () => void openAgentScreenViewer(section, staff, mine);
+		placeholder?.replaceWith(card);
+		if (caption) caption.textContent = `${staffDisplayName(staff)}'s screen`;
+		return;
+	}
+	if (unattached) {
+		const connect = document.createElement("div");
+		connect.className = "agent-computer-screen screen-card-connect";
+		const copy = document.createElement("p");
+		copy.textContent = `${staffDisplayName(staff)} has no screen on the Company Computer yet.`;
+		const button = document.createElement("button");
+		button.type = "button";
+		button.textContent = `Give ${staffDisplayName(staff)} a screen`;
+		button.onclick = async () => {
+			button.disabled = true;
+			const attached = await window.qorpera.screensAttach(unattached.screenId, staffId(staff));
+			if (token !== agentScreenCardToken || !section.isConnected) return;
+			if (attached?.ok) {
+				void hydrateAgentScreenCard(section, staff, token);
+			} else {
+				button.disabled = false;
+				reportAgentScreenError(section, attached?.error || "The screen could not be attached.");
+			}
+		};
+		connect.replaceChildren(copy, button);
+		placeholder?.replaceWith(connect);
+	}
+}
+
+function reportAgentScreenError(section, message) {
+	let error = section.querySelector(".screen-card-error");
+	if (!error) {
+		error = document.createElement("p");
+		error.className = "screen-card-error";
+		section.appendChild(error);
+	}
+	error.textContent = message;
+}
+
+async function openAgentScreenViewer(section, staff, screenSummary) {
+	const opened = await window.qorpera.screensOpen(screenSummary.screenId);
+	if (!opened?.ok) {
+		if (section.isConnected) reportAgentScreenError(section, opened?.error || "The screen could not be opened.");
+		return;
+	}
+	window.qorperaScreenViewer?.open({
+		url: opened.url,
+		title: `${staffDisplayName(staff)}'s screen`,
+		onClosed: () => void window.qorpera.screensClose(screenSummary.screenId),
+	});
 }
 
 function agentSettingsSvg(path, className = "") {
