@@ -65,13 +65,13 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		);
 		assert.match(
 			ephemeralRunnerService,
-			/^ReadWritePaths=.*(?:^|\s)\/qorpera\/company-live(?:\s|$)/m,
-			"ProtectSystem=strict must leave the live Company File writable for the runner",
+			/^ReadWritePaths=.*(?:^|\s)-\/qorpera\/company-live(?:\s|$)/m,
+			"ProtectSystem=strict must leave the optional live Company File writable for the runner",
 		);
 		assert.match(
 			nativeProviderService,
-			/^ReadWritePaths=.*(?:^|\s)\/qorpera\/company-live(?:\s|$)/m,
-			"ProtectSystem=strict must leave the live Company File writable for the native harness",
+			/^ReadWritePaths=.*(?:^|\s)-\/qorpera\/company-live(?:\s|$)/m,
+			"ProtectSystem=strict must leave the optional live Company File writable for the native harness",
 		);
 		for (const [serviceName, service] of [
 			["ephemeral runner", ephemeralRunnerService],
