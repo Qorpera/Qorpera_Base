@@ -314,7 +314,36 @@ function runtime(): ProviderRuntime {
 	throw new Error("QORPERA_RUNNER_PROVIDER_BACKEND must be process, lxd, or lxd-company-computer");
 }
 
+const OPERATOR_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** `qorpera-runner-provider provision <logical-computer-id>` — operator
+ * provisioning of a standing Company Computer, run once on the node with the
+ * service's own environment. No network service is started. */
+async function provisionMain(logicalComputerId: string): Promise<void> {
+	if (!OPERATOR_UUID_PATTERN.test(logicalComputerId)) {
+		throw new Error("provision requires a logical computer id");
+	}
+	const current = runtime();
+	if (!(current.backend instanceof LxdCompanyComputerProviderBackend)) {
+		throw new Error("provision requires QORPERA_RUNNER_PROVIDER_BACKEND=lxd-company-computer");
+	}
+	await current.backend.provisionComputer(logicalComputerId);
+	console.log(`provisioned ${logicalComputerId}`);
+}
+
+function reconcileSeconds(): number {
+	const value = integer("QORPERA_RUNNER_PROVIDER_RECONCILE_SECONDS", 0);
+	if (value !== 0 && (value < 15 || value > 3_600)) {
+		throw new Error("QORPERA_RUNNER_PROVIDER_RECONCILE_SECONDS is invalid");
+	}
+	return value;
+}
+
 async function main(): Promise<void> {
+	if (process.argv[2] === "provision") {
+		await provisionMain(process.argv[3] ?? "");
+		return;
+	}
 	const current = runtime();
 	const network = providerNetwork();
 	const service = new HttpCloudRunnerProviderService(
@@ -329,6 +358,28 @@ async function main(): Promise<void> {
 	process.once("SIGINT", stop);
 	process.once("SIGTERM", stop);
 	let runningScreenViewer: Awaited<ReturnType<LxdCompanyComputerScreenViewerGateway["start"]>> | undefined;
+	/* Self-ticking reconcile makes the provider power-autonomous: the
+	 * machine's screens-derived power needs nobody else calling in. Off by
+	 * default so deployed orchestrator-driven lanes keep their behavior. */
+	const tickSeconds = reconcileSeconds();
+	let ticker: NodeJS.Timeout | undefined;
+	if (tickSeconds > 0) {
+		let ticking = false;
+		ticker = setInterval(() => {
+			if (ticking) return;
+			ticking = true;
+			void current.backend
+				.reconcile()
+				.catch((error: unknown) => {
+					console.error(
+						(error instanceof Error ? error.message : String(error)).replace(/[A-Za-z0-9_-]{43}/g, "[redacted]"),
+					);
+				})
+				.finally(() => {
+					ticking = false;
+				});
+		}, tickSeconds * 1_000);
+	}
 	try {
 		await service.start();
 		await current.loginGateway?.start();
@@ -337,6 +388,7 @@ async function main(): Promise<void> {
 			shutdown.signal.addEventListener("abort", () => resolveWait(), { once: true }),
 		);
 	} finally {
+		if (ticker) clearInterval(ticker);
 		process.removeListener("SIGINT", stop);
 		process.removeListener("SIGTERM", stop);
 		await runningScreenViewer?.close();

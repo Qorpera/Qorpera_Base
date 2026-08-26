@@ -213,6 +213,17 @@ interface LxdCompanyComputerJournal {
 	environmentId: string;
 	instanceName: string;
 	nasDataset: string;
+	/** The machine's compute identity as adopted from the control plane at
+	 * journal creation; the runner session, when present, must agree. Lets
+	 * an operator-provisioned machine reach readiness before any work has
+	 * ever registered a runner. */
+	machine: {
+		computeIdentityId: string;
+		templateKey: string;
+		templateVersion: string;
+		policySha256: string;
+		capabilities: readonly CloudRunnerCapability[];
+	};
 	runner?: CloudRunnerInstance;
 	physicalState: LxdCompanyComputerPhysicalState;
 	guestAddress?: string;
@@ -622,6 +633,7 @@ function physicalState(value: unknown): LxdCompanyComputerPhysicalState {
 
 function journalFromJson(value: unknown): LxdCompanyComputerJournal {
 	const input = record(value, "Company computer journal");
+	const machine = record(input.machine, "Company computer journal machine identity");
 	const lxd = record(input.lxd, "Company computer journal identity");
 	const credentials = record(input.credentials, "Company computer journal credentials");
 	const assignment =
@@ -644,6 +656,12 @@ function journalFromJson(value: unknown): LxdCompanyComputerJournal {
 			(typeof input.screensIdleSince !== "string" || !Number.isFinite(Date.parse(input.screensIdleSince)))) ||
 		(assignment !== undefined &&
 			(typeof assignment.expiresAt !== "string" || !Number.isFinite(Date.parse(assignment.expiresAt)))) ||
+		typeof machine.templateKey !== "string" ||
+		typeof machine.templateVersion !== "string" ||
+		typeof machine.policySha256 !== "string" ||
+		!SHA256_PATTERN.test(machine.policySha256) ||
+		!Array.isArray(machine.capabilities) ||
+		!machine.capabilities.every((capability) => typeof capability === "string") ||
 		lxd.type !== "virtual-machine" ||
 		typeof lxd.project !== "string" ||
 		typeof lxd.imageServer !== "string" ||
@@ -683,6 +701,13 @@ function journalFromJson(value: unknown): LxdCompanyComputerJournal {
 		environmentId: uuid(input.environmentId, "Company computer journal environment id"),
 		instanceName: input.instanceName,
 		nasDataset: input.nasDataset,
+		machine: {
+			computeIdentityId: uuid(machine.computeIdentityId, "Company computer journal compute identity"),
+			templateKey: machine.templateKey,
+			templateVersion: machine.templateVersion,
+			policySha256: machine.policySha256,
+			capabilities: machine.capabilities as CloudRunnerCapability[],
+		},
 		...(input.runner === undefined ? {} : { runner: runnerFromJournal(input.runner) }),
 		physicalState: physicalState(input.physicalState),
 		...(typeof input.guestAddress === "string" ? { guestAddress: input.guestAddress } : {}),
@@ -840,6 +865,81 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 		await this.#writeJournal(next);
 	}
 
+	/** Operator provisioning: create and start the standing machine from the
+	 * control plane's placement without any work acquisition — the first
+	 * machine is proven by watching it, not by executing turns. Idempotent:
+	 * an existing journal re-ensures readiness instead. No runner session is
+	 * registered, so the machine carries screens, sync, and the viewer, and
+	 * the runner lane stays dormant until work first arrives via acquire. */
+	async provisionComputer(logicalComputerId: string, signal?: AbortSignal): Promise<void> {
+		await this.#exclusive(async () => {
+			const authority = await this.#controlPlane.describeCompanyComputer(logicalComputerId, signal);
+			if (authority.nodeKey !== undefined && authority.nodeKey !== this.#config.nodeKey) {
+				throw new Error("Company computer is placed on another node");
+			}
+			if (authority.lifecycleState !== "provisioning" && authority.lifecycleState !== "active") {
+				throw new Error(`Company computer is ${authority.lifecycleState} and cannot be provisioned`);
+			}
+			const credentials = await this.#credentials(authority.logicalComputerId);
+			let current = await this.#readJournal(authority.logicalComputerId);
+			if (current) {
+				this.#assertJournalAuthority(current, authority);
+				this.#validateCredentialHashes(current, credentials);
+			} else {
+				const now = new Date().toISOString();
+				current = {
+					schema: JOURNAL_SCHEMA,
+					logicalComputerId: authority.logicalComputerId,
+					companyComputerId: authority.companyComputerId,
+					profileId: authority.profileId,
+					environmentId: authority.environmentId,
+					instanceName: this.#instanceName(authority.logicalComputerId),
+					nasDataset: authority.nasDataset,
+					machine: {
+						computeIdentityId: authority.computeIdentityId,
+						templateKey: authority.templateKey,
+						templateVersion: authority.templateVersion,
+						policySha256: authority.computePolicySha256,
+						capabilities: authority.capabilities,
+					},
+					physicalState: "creating",
+					lxd: {
+						project: this.#config.project,
+						type: "virtual-machine",
+						imageServer: this.#config.imageServer,
+						imageFingerprint: this.#config.imageFingerprint,
+						profiles: [this.#config.computerProfile],
+						storagePool: this.#config.storagePool,
+						identityVolume: `${this.#config.identityVolumePrefix}${authority.computeIdentityId}`,
+						identityVolumeSize: this.#config.identityVolumeSize,
+						rootDiskSize: this.#config.rootDiskSize,
+						datasetSource: this.#datasetSource(authority.nasDataset),
+						policySha256: authority.computePolicySha256,
+					},
+					credentials: {
+						activationSha256: sha256(credentials.activationToken),
+						assignmentSha256: sha256(credentials.assignmentToken),
+						nativeBridgeSha256: sha256(credentials.nativeBridgeToken),
+						screenViewerSha256: sha256(credentials.screenViewerToken),
+					},
+					createdAt: now,
+					updatedAt: now,
+				};
+				await this.#writeJournal(current);
+			}
+			await this.#ensureReady(current, signal, credentials);
+			if (authority.lifecycleState === "provisioning") {
+				await this.#controlPlane.transitionLifecycle(
+					authority.companyComputerId,
+					"active",
+					this.#config.nodeKey,
+					{ reason: "operator_provision" },
+					signal,
+				);
+			}
+		});
+	}
+
 	async acquire(acquisitionId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
 		return this.#exclusive(async () => {
 			ensureCompanyComputerWork(work);
@@ -871,6 +971,13 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 					environmentId: authority.environmentId,
 					instanceName: this.#instanceName(authority.logicalComputerId),
 					nasDataset: authority.nasDataset,
+					machine: {
+						computeIdentityId: authority.computeIdentityId,
+						templateKey: authority.templateKey,
+						templateVersion: authority.templateVersion,
+						policySha256: authority.computePolicySha256,
+						capabilities: authority.capabilities,
+					},
 					physicalState: "creating",
 					lxd: {
 						project: this.#config.project,
@@ -1130,8 +1237,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 	): Promise<LxdCompanyComputerJournal> {
 		const resolvedCredentials = credentials ?? (await this.#credentials(current.logicalComputerId));
 		this.#validateCredentialHashes(current, resolvedCredentials);
-		if (!current.runner) throw new Error("Company computer journal has no durable runner registration");
-		await this.#ensureIdentityVolume(current, current.runner.computeIdentityId as string, signal);
+		await this.#ensureIdentityVolume(current, current.machine.computeIdentityId, signal);
 		let instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		if (!instance) {
 			if (current.physicalState === "ready" || current.physicalState === "stopped") {
@@ -1233,22 +1339,27 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 
 	#bootstrapFiles(
 		journal: LxdCompanyComputerJournal,
-		runner: CloudRunnerInstance,
 		credentials: ProviderCredentials,
 	): CompanyComputerBootstrapFile[] {
 		const datasetPath = this.#guestDatasetPath();
+		/* Before any work has registered a runner session, the runner config
+		 * carries the logical computer id as its runner id: the guest runner
+		 * service cannot activate without a registered session either way,
+		 * and the first real acquire rewrites these files with the session's
+		 * id. Screens, sync, and the viewer never depend on it. */
+		const runnerId = journal.runner ? (journal.runner.runnerId as string) : journal.logicalComputerId;
 		const runnerConfig = JSON.stringify(
 			{
 				schema: "qorpera.company-computer-service/v1",
 				base_url: this.#config.supabaseUrl,
 				publishable_key: this.#config.supabasePublishableKey,
-				runner_id: runner.runnerId,
+				runner_id: runnerId,
 				authority_state_path: "/var/lib/qorpera-runner/.local/state/qorpera-runner/authority.json",
 				workbench_root: `${datasetPath}/${COMPANY_COMPUTER_DATASET_LAYOUT.workbenchDirectory}`,
 				image: this.#config.runnerImage,
 				podman_path: this.#config.runnerPodmanPath,
 				entrypoint: this.#config.runnerEntrypoint,
-				capabilities: [...runner.capabilities],
+				capabilities: [...journal.machine.capabilities],
 				platform: "linux-x64",
 				runner_version: this.#config.runnerVersion,
 				native_bridge_url: `http://127.0.0.1:${this.#config.nativeBridgePort}/`,
@@ -1270,10 +1381,10 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 				logical_computer_id: journal.logicalComputerId,
 				profile_id: journal.profileId,
 				environment_id: journal.environmentId,
-				compute_identity_id: runner.computeIdentityId,
-				compute_template_key: runner.templateKey,
-				compute_template_version: runner.templateVersion,
-				compute_policy_sha256: runner.policySha256,
+				compute_identity_id: journal.machine.computeIdentityId,
+				compute_template_key: journal.machine.templateKey,
+				compute_template_version: journal.machine.templateVersion,
+				compute_policy_sha256: journal.machine.policySha256,
 				dataset_path: datasetPath,
 				dataset_layout: COMPANY_COMPUTER_DATASET_LAYOUT,
 				sync: {
@@ -1301,7 +1412,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 		const nativeProviderEnvironment = [
 			`QORPERA_SUPABASE_URL=${this.#config.supabaseUrl}`,
 			"QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY=virtual_machine",
-			`QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID=${runner.computeIdentityId}`,
+			`QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID=${journal.machine.computeIdentityId}`,
 			"QORPERA_NATIVE_PROVIDER_HOST=127.0.0.1",
 			`QORPERA_NATIVE_PROVIDER_PORT=${this.#config.nativeBridgePort}`,
 			"QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT=/var/lib/qorpera-native-provider/tmp",
@@ -1341,8 +1452,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 		credentials: ProviderCredentials,
 		signal?: AbortSignal,
 	): Promise<void> {
-		if (!journal.runner) throw new Error("Company computer journal has no durable runner registration");
-		const files = this.#bootstrapFiles(journal, journal.runner, credentials);
+		const files = this.#bootstrapFiles(journal, credentials);
 		await this.#waitForGuestAgent(journal, signal);
 		for (const file of files) {
 			await this.#lxd.pushInstanceFile(

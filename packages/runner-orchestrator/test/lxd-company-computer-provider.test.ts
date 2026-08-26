@@ -390,6 +390,20 @@ describe("LxdCompanyComputerProviderBackend", () => {
 		expect(guest.deliveries).toHaveLength(2);
 	});
 
+	it("provisions the standing machine for the operator without any work", async () => {
+		const { backend: provider, lxd, controlPlane } = await backend();
+		await provider.provisionComputer(logicalComputerId);
+		expect(lxd.createCalls).toHaveLength(1);
+		expect(lxd.instance?.status).toBe("Running");
+		expect(controlPlane.provisionCalls).toHaveLength(0);
+		expect(controlPlane.transitions).toEqual([{ state: "active", nodeKey: "company41-node-01" }]);
+		expect(controlPlane.transitionDetails).toEqual([{ reason: "operator_provision" }]);
+		/* Idempotent: a second provision re-ensures instead of recreating. */
+		await provider.provisionComputer(logicalComputerId);
+		expect(lxd.createCalls).toHaveLength(1);
+		expect(controlPlane.transitions).toHaveLength(1);
+	});
+
 	it("powers the machine off after the screens go idle and back on when one opens", async () => {
 		const { backend: provider, lxd, controlPlane, root } = await backend();
 		const runId = "30000000-0000-4000-8000-000000000112";
