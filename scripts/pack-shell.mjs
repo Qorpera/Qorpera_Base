@@ -86,7 +86,10 @@ cpSync(join(repoRoot, "packages", "shell", "dist"), join(appDir, "dist"), { recu
  * signing exists. */
 const runtimeNode = join(repoRoot, "node_modules", ".qorpera-runtime-node", "bin", "node");
 if (existsSync(runtimeNode)) {
-	cpSync(runtimeNode, join(appDir, "node_modules", ".qorpera-runtime-node", "bin", "node"));
+	/* Outside node_modules on purpose: electron-builder prunes node_modules
+	 * against the dependency list and silently dropped the binary when it
+	 * lived there. */
+	cpSync(runtimeNode, join(appDir, "runtime-node", "bin", "node"));
 } else {
 	console.warn("pack-shell: signed runtime node missing — ad-hoc builds will fail local execution");
 }

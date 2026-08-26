@@ -965,7 +965,7 @@ let bundledRuntimeNodeCache: string | null | undefined;
 function bundledRuntimeNodeForAdhocBuild(): string | undefined {
 	if (process.platform !== "darwin" || !app.isPackaged) return undefined;
 	if (bundledRuntimeNodeCache !== undefined) return bundledRuntimeNodeCache ?? undefined;
-	const candidate = join(app.getAppPath(), "node_modules", ".qorpera-runtime-node", "bin", "node");
+	const candidate = join(app.getAppPath(), "runtime-node", "bin", "node");
 	bundledRuntimeNodeCache = existsSync(candidate) && isAdhocSignedMacBuild() ? candidate : null;
 	return bundledRuntimeNodeCache ?? undefined;
 }
