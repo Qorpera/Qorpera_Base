@@ -9,7 +9,7 @@ any Supabase project, no PR opened.
 ## What was built
 
 **1. Control-plane registry migration (scope 1 — complete).**
-`supabase/migrations/20260826010000_company_computers.sql` — design
+`supabase/migrations/20260826110000_company_computers.sql` — design
 artifact, applied nowhere.
 - `qorpera_compute_nodes` — cluster-scoped node registry (placement
   targets; active/draining/retired).

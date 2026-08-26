@@ -48,7 +48,7 @@ the scope-3 base files); the branch was deliberately not rebased mid-work.
   without it is unchanged byte-for-byte.
 
 **3. Member read policies (draft migration, applied nowhere).** `763d8cf35`
-`supabase/migrations/20260826020000_company_computer_read_policies.sql` —
+`supabase/migrations/20260826120000_company_computer_read_policies.sql` —
 member SELECT on `qorpera_company_computers` and
 `qorpera_company_computer_events` via `qorpera_can_read_profile` (charter's
 shared-visibility default); writes stay behind the RPCs; the node registry
@@ -65,7 +65,7 @@ record: members always keep the direct, real-time watch-and-take-over path
 into every screen. Mirrored in the charter's "Ratified decisions".
 
 **5. Screens registry (first slice of the ratified build).** `2cf3145b4`
-`supabase/migrations/20260826030000_company_computer_screens.sql` — draft
+`supabase/migrations/20260826130000_company_computer_screens.sql` — draft
 migration, applied nowhere: `qorpera_company_computer_screens` (one screen
 per staff agent per computer, partial unique index), member RPCs
 register/attach/detach/retire (staff validated against the
@@ -82,7 +82,7 @@ RPC is the runtime fence, to be wired by the execution path.
 `packages/shell/src/cloud-company-computer-screens.ts` + 8 colocated tests.
 - `CloudCompanyComputerScreenManager` converges live desktop sessions to the
   registry via the new service-role `qorpera_list_company_computer_screens`
-  RPC (`supabase/migrations/20260826040000_...`, draft, applied nowhere);
+  RPC (`supabase/migrations/20260826140000_...`, draft, applied nowhere);
   crashed sessions relaunch on the next reconcile.
 - `ExecCompanyComputerScreenLauncher` runs the image's per-screen desktop
   command ({ordinal}/{display}/{vnc_port} substituted per argument, no
@@ -116,7 +116,7 @@ were already stale at the branch base).
   systemd `LoadCredential=`.
 - Head resolution for the standing guest: new service-role
   `qorpera_company_computer_sync_head` RPC
-  (`supabase/migrations/20260826050000_...`, draft, applied nowhere) —
+  (`supabase/migrations/20260826150000_...`, draft, applied nowhere) —
   member head RPCs require a member session the guest does not have; the
   RPC is computer-scoped and published-only, and the agent re-checks.
 - Object backend selection is explicit and fails closed:
@@ -198,7 +198,7 @@ agent's creature — the cast is generated at package time from the shell's
 own creature art, the derivation (template mapping, else stable identity
 hash) is shared with the renderer via staffCharacterForIdentity, the
 service screen listing carries the roster's template id (draft migration
-20260826100000), and the screen agent keeps per-screen wallpaper files on
+20260826200000), and the screen agent keeps per-screen wallpaper files on
 the dataset current with attachments; unowned screens get a stable
 pseudo-random creature.
 
