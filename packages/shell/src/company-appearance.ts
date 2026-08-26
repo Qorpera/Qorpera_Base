@@ -8,13 +8,13 @@ const USER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f
 const COMPANY_ICON_DATA_URL_PATTERN = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
 const MAX_COMPANY_ICON_BYTES = 1024 * 1024;
 
-export const COMPANY_ICON_IDS = ["anonymous"] as const;
+export const COMPANY_ICON_IDS = ["agent-halo", "agent-bloom", "agent-folio", "agent-pebble", "anonymous"] as const;
 
 type CompanyIconMediaType = "image/jpeg" | "image/png" | "image/webp";
 
 export type CompanyIconId = (typeof COMPANY_ICON_IDS)[number] | `data:${CompanyIconMediaType};base64,${string}`;
 
-export const DEFAULT_COMPANY_ICON_ID: CompanyIconId = "anonymous";
+export const DEFAULT_COMPANY_ICON_ID: CompanyIconId = "agent-halo";
 
 interface CompanyAppearanceRecord {
 	userId: string;
@@ -40,7 +40,7 @@ function emptyAppearances(): CompanyAppearances {
 }
 
 export function isCompanyIconId(value: unknown): value is CompanyIconId {
-	if (value === DEFAULT_COMPANY_ICON_ID) return true;
+	if (typeof value === "string" && COMPANY_ICON_IDS.includes(value as (typeof COMPANY_ICON_IDS)[number])) return true;
 	if (typeof value !== "string" || value.length > Math.ceil((MAX_COMPANY_ICON_BYTES * 4) / 3) + 64) return false;
 	const match = COMPANY_ICON_DATA_URL_PATTERN.exec(value);
 	if (!match) return false;

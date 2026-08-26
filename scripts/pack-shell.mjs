@@ -58,11 +58,41 @@ const workspaceDirs = {
 	"@qorpera/pi-storage-sqlite-node": "packages/storage/sqlite-node",
 };
 
+/* The assembly below copies each workspace package's dist as it exists on
+ * disk, so packing without rebuilding ships whatever was last compiled —
+ * v0.20.15 shipped days-old dists this way and none of that release's
+ * renderer changes reached users. Build the workspaces first; --no-build
+ * (assembly only) remains for iterating on the packaging itself. */
+if (!process.argv.includes("--no-build")) {
+	const workspaceBuild = spawnSync("npm", ["run", "build", "--workspaces", "--if-present"], {
+		cwd: repoRoot,
+		stdio: "inherit",
+	});
+	if (workspaceBuild.status !== 0) {
+		console.error("pack-shell: workspace build failed");
+		process.exit(1);
+	}
+}
+
 rmSync(appDir, { recursive: true, force: true });
 mkdirSync(join(appDir, "node_modules"), { recursive: true });
 
 // 1. Shell code + product identity.
 cpSync(join(repoRoot, "packages", "shell", "dist"), join(appDir, "dist"), { recursive: true });
+
+/* Ad-hoc-signed builds cannot run their own binary as a sandboxed runtime
+ * child (the child codesign check fails), so the app bundles the officially
+ * signed Node and main falls back to it automatically until Developer ID
+ * signing exists. */
+const runtimeNode = join(repoRoot, "node_modules", ".qorpera-runtime-node", "bin", "node");
+if (existsSync(runtimeNode)) {
+	/* Outside node_modules on purpose: electron-builder prunes node_modules
+	 * against the dependency list and silently dropped the binary when it
+	 * lived there. */
+	cpSync(runtimeNode, join(appDir, "runtime-node", "bin", "node"));
+} else {
+	console.warn("pack-shell: signed runtime node missing — ad-hoc builds will fail local execution");
+}
 writeFileSync(
 	join(appDir, "package.json"),
 	`${JSON.stringify(

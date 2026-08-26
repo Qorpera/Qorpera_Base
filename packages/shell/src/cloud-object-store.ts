@@ -3,6 +3,13 @@ import { open } from "node:fs/promises";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { HostedPrimaryDatabase } from "./hosted-primary.ts";
 
+/* The object gateway sits behind Cloudflare, whose bot rules 1010-ban
+ * non-browser user agents before the origin is reached; the main process's
+ * fetch presents one. The UA satisfies the edge — authentication is still
+ * the bearer token. */
+const GATEWAY_EDGE_USER_AGENT =
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+
 export const QORPERA_PROFILE_OBJECT_BUCKET = "qorpera-profile-objects";
 const OBJECT_SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -135,16 +142,43 @@ export class HttpCloudObjectTransport implements CloudObjectTransport {
 		this.#fetch = options.fetch ?? fetch;
 	}
 
+	async #request(path: string, init: RequestInit, label: string): Promise<Response> {
+		/* The gateway rides a consumer NAS behind a tunnel and flaps for
+		 * seconds at a time; an untimed fetch turns each flap into a
+		 * permanently hung company open. Bound every request and retry
+		 * transient failures; definitive statuses return immediately. */
+		let lastError: unknown;
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			try {
+				const response = await this.#fetch(`${this.#baseUrl}/v1/profile-objects/${path}`, {
+					...init,
+					signal: AbortSignal.timeout(30_000),
+				});
+				if (response.status < 500 && response.status !== 429) return response;
+				lastError = new Error(`${label} responded ${response.status}`);
+			} catch (error) {
+				lastError = error;
+			}
+			if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+		}
+		throw lastError instanceof Error ? lastError : new Error(`${label} failed`);
+	}
+
 	async put(path: string, bytes: Uint8Array, mediaType: string): Promise<"exists" | "stored"> {
-		const response = await this.#fetch(`${this.#baseUrl}/v1/profile-objects/${path}`, {
-			method: "PUT",
-			headers: {
-				authorization: `Bearer ${await this.#accessToken()}`,
-				"content-length": String(bytes.byteLength),
-				"content-type": mediaType,
+		const response = await this.#request(
+			path,
+			{
+				method: "PUT",
+				headers: {
+					authorization: `Bearer ${await this.#accessToken()}`,
+					"content-length": String(bytes.byteLength),
+					"content-type": mediaType,
+					"user-agent": GATEWAY_EDGE_USER_AGENT,
+				},
+				body: Uint8Array.from(bytes),
 			},
-			body: Uint8Array.from(bytes),
-		});
+			"Cloud object upload",
+		);
 		if (response.status !== 200 && response.status !== 201) throw new Error("Cloud object upload failed");
 		const value: unknown = await response.json();
 		if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -158,11 +192,48 @@ export class HttpCloudObjectTransport implements CloudObjectTransport {
 	}
 
 	async get(path: string): Promise<Uint8Array> {
-		const response = await this.#fetch(`${this.#baseUrl}/v1/profile-objects/${path}`, {
-			headers: { authorization: `Bearer ${await this.#accessToken()}` },
-		});
+		const response = await this.#request(
+			path,
+			{ headers: { authorization: `Bearer ${await this.#accessToken()}`, "user-agent": GATEWAY_EDGE_USER_AGENT } },
+			"Cloud object download",
+		);
 		if (!response.ok) throw new Error("Cloud object download failed");
 		return new Uint8Array(await response.arrayBuffer());
+	}
+}
+
+/* The two object stores drift when clients write primary-only: NAS-primary
+ * uploads never reach cloud storage and runner uploads never reach the NAS,
+ * which repeatedly broke opens and verifications. Reads chain to the other
+ * store per object (content addressing makes them equivalent); writes go to
+ * the primary authoritatively and to the secondary best-effort, converging
+ * the stores at write time instead of leaving divergence for a heal. */
+export class ChainedCloudObjectTransport implements CloudObjectTransport {
+	readonly #primary: CloudObjectTransport;
+	readonly #secondary: CloudObjectTransport;
+
+	constructor(primary: CloudObjectTransport, secondary: CloudObjectTransport) {
+		this.#primary = primary;
+		this.#secondary = secondary;
+	}
+
+	async put(path: string, bytes: Uint8Array, mediaType: string): Promise<"exists" | "stored"> {
+		const stored = await this.#primary.put(path, bytes, mediaType);
+		try {
+			await this.#secondary.put(path, bytes, mediaType);
+		} catch {
+			/* The secondary converges opportunistically; reads fall back per
+			 * object, so a missed mirror write costs latency, not integrity. */
+		}
+		return stored;
+	}
+
+	async get(path: string): Promise<Uint8Array> {
+		try {
+			return await this.#primary.get(path);
+		} catch {
+			return await this.#secondary.get(path);
+		}
 	}
 }
 

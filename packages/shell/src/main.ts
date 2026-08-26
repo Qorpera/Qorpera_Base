@@ -12,10 +12,11 @@
  * and backend; a company is never open in two windows at once.
  */
 
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	appendFileSync,
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
@@ -959,6 +960,58 @@ type FoundationUpdateState = {
 };
 
 let downloadedUpdateVersion: string | undefined;
+let downloadedUpdateFile: string | undefined;
+
+/* Squirrel.Mac validates an update against the running app's designated
+ * requirement; an ad-hoc signature's requirement is its own cdhash, which a
+ * newer build can never satisfy, so ad-hoc macOS builds cannot install
+ * updates through Squirrel at all. Until Developer ID signing exists, an
+ * ad-hoc build installs its (sha512-verified) downloaded archive by
+ * replacing its own bundle. Detection is live so this path retires itself
+ * the moment builds are properly signed. */
+let bundledRuntimeNodeCache: string | null | undefined;
+function bundledRuntimeNodeForAdhocBuild(): string | undefined {
+	if (process.platform !== "darwin" || !app.isPackaged) return undefined;
+	if (bundledRuntimeNodeCache !== undefined) return bundledRuntimeNodeCache ?? undefined;
+	const candidate = join(app.getAppPath(), "runtime-node", "bin", "node");
+	bundledRuntimeNodeCache = existsSync(candidate) && isAdhocSignedMacBuild() ? candidate : null;
+	return bundledRuntimeNodeCache ?? undefined;
+}
+
+function isAdhocSignedMacBuild(): boolean {
+	if (process.platform !== "darwin") return false;
+	const bundle = resolve(dirname(app.getPath("exe")), "..", "..");
+	const result = spawnSync("codesign", ["-dv", bundle], { encoding: "utf8" });
+	return /Signature=adhoc/.test(`${result.stderr ?? ""}${result.stdout ?? ""}`);
+}
+
+function installMacUpdateBySelfReplace(archivePath: string): boolean {
+	const bundle = resolve(dirname(app.getPath("exe")), "..", "..");
+	if (!bundle.endsWith(".app") || !existsSync(archivePath)) return false;
+	const script = join(app.getPath("temp"), `qorpera-self-update-${process.pid}.sh`);
+	writeFileSync(
+		script,
+		[
+			"#!/bin/sh",
+			'while kill -0 "$1" 2>/dev/null; do sleep 0.3; done',
+			'STAGE="$(mktemp -d)" || exit 1',
+			'ditto -xk "$2" "$STAGE" || exit 1',
+			'NEW="$(find "$STAGE" -maxdepth 1 -name "*.app" | head -1)"',
+			'[ -d "$NEW" ] || exit 1',
+			'rm -rf "$3" && mv "$NEW" "$3" || exit 1',
+			'xattr -dr com.apple.quarantine "$3" 2>/dev/null',
+			'rm -rf "$STAGE"',
+			'open "$3"',
+			"",
+		].join("\n"),
+	);
+	chmodSync(script, 0o700);
+	spawn("/bin/sh", [script, String(process.pid), archivePath, bundle], {
+		detached: true,
+		stdio: "ignore",
+	}).unref();
+	return true;
+}
 let foundationUpdateState: FoundationUpdateState = {
 	phase: "idle",
 	message: "Check for updates",
@@ -3767,14 +3820,25 @@ function startLegacyPiSessionAttachment(
 	try {
 		agentDir = prepareBrokeredAgentDir(configDir, root, brokeredCredentials.credentials);
 		shareWindowsSandboxState(userData, configDir);
-		/* Packaged builds run runtime children as the signed app binary in
-		 * node mode. A source checkout's unsigned Electron fails the child
-		 * codesign check inside the sandbox, so development may point the
-		 * children at a signed system Node; its install tree then needs read
-		 * access inside the sandbox to be executable. */
-		const runtimeNodeExecutable = process.env.QORPERA_RUNTIME_NODE?.trim() || process.execPath;
+		/* Runtime children must run as a properly signed binary: an ad-hoc
+		 * signature fails the child codesign check inside the sandbox
+		 * (task_name_for_pid failure 5) and the child dies before its first
+		 * message — true for source checkouts AND for ad-hoc packaged
+		 * builds. Until Developer ID signing lands, packaged builds bundle
+		 * the officially signed Node and fall back to it automatically;
+		 * development keeps the explicit override. */
+		const runtimeNodeExecutable =
+			process.env.QORPERA_RUNTIME_NODE?.trim() || bundledRuntimeNodeForAdhocBuild() || process.execPath;
+		/* The official Node build reads the system OpenSSL configuration at
+		 * startup and aborts when the sandbox denies it, so an external
+		 * runtime node needs that path readable alongside its install tree. */
 		const runtimeNodeReadPaths =
-			runtimeNodeExecutable === process.execPath ? [] : [dirname(dirname(realpathSync(runtimeNodeExecutable)))];
+			runtimeNodeExecutable === process.execPath
+				? []
+				: [
+						dirname(dirname(realpathSync(runtimeNodeExecutable))),
+						...(process.platform === "darwin" ? ["/System/Library/OpenSSL"] : []),
+					];
 		writeSandboxProfile(
 			configDir,
 			runtimeDir,
@@ -3784,7 +3848,12 @@ function startLegacyPiSessionAttachment(
 			[
 				...FOUNDATION_READ_PATHS,
 				...runtimeNodeReadPaths,
-				...(companyExecution ? [join(root, ".git")] : []),
+				/* Cloud-company staff children run confined to their execution
+				 * worktree, but the session binding hands them a --session path
+				 * in the live company root; without read access to that trail
+				 * the child dies EPERM opening its own session history. Appends
+				 * still flow through the kernel broker, never direct writes. */
+				...(companyExecution ? [join(root, ".git"), join(root, "trail")] : []),
 				join(configDir, "config.toml"),
 				join(agentDir, "auth.json"),
 				join(agentDir, "trust.json"),
@@ -12983,6 +13052,15 @@ app.whenReady().then(async () => {
 				if (cloudStaffConversation && frame.type === "prompt") {
 					return { ok: false, error: "cloud conversation is not attached; your message was not sent" };
 				}
+				/* Cloud-only execution (founder ruling 2026-08-26): the local
+				 * executor is removed. A prompt that cannot become a cloud turn
+				 * fails honestly instead of running inside the app. */
+				if (frame.type === "prompt" && runtime.childOptions.staffAgentId) {
+					return {
+						ok: false,
+						error: "Agents execute in the cloud. This conversation has no active cloud session yet — reopen the thread or check the company's subscription connection.",
+					};
+				}
 				return { ok: sendLegacyLocalPrompt(reviewedChild, reviewed, true, promptOrigin) };
 			});
 		}
@@ -13039,6 +13117,7 @@ app.whenReady().then(async () => {
 		});
 		autoUpdater.on("update-downloaded", (info) => {
 			downloadedUpdateVersion = info.version;
+			downloadedUpdateFile = info.downloadedFile;
 			setFoundationUpdateState({
 				phase: "ready",
 				message: `v${info.version} downloaded — restart to update`,
@@ -13081,6 +13160,11 @@ app.whenReady().then(async () => {
 			// mutations, not a signed application update already verified by the
 			// packaged updater.
 			sendAll("update-status", `restarting to install ${downloadedUpdateVersion}…`);
+			if (downloadedUpdateFile && isAdhocSignedMacBuild()) {
+				if (!installMacUpdateBySelfReplace(downloadedUpdateFile)) return false;
+				app.quit();
+				return true;
+			}
 			autoUpdater.quitAndInstall(false, true);
 			return true;
 		});

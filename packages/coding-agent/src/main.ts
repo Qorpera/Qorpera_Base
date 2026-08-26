@@ -680,8 +680,16 @@ export async function main(args: string[], options?: MainOptions) {
 			}
 			sessionManager = SessionManager.open(missingSessionCwdIssue.sessionFile!, sessionDir, selectedCwd);
 		} else {
-			console.error(chalk.red(new MissingSessionCwdError(missingSessionCwdIssue).message));
-			process.exit(1);
+			/* Embedded (rpc) sessions run under an orchestrating shell that
+			 * launches every execution in a fresh working directory — for
+			 * cloud companies an ephemeral worktree that outlives no run.
+			 * The stored cwd pointing at a vanished worktree is therefore
+			 * expected across executions, and the launcher-provided cwd is
+			 * the designated replacement; dying here put staff runtimes
+			 * into a permanent crash loop after their first worktree was
+			 * cleaned up. */
+			console.error(`session cwd missing (${missingSessionCwdIssue.sessionCwd}); continuing in launcher cwd ${cwd}`);
+			sessionManager = SessionManager.open(missingSessionCwdIssue.sessionFile!, sessionDir, cwd);
 		}
 	}
 	if (parsed.name !== undefined) {

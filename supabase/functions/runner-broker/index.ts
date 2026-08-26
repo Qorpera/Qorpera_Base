@@ -16,11 +16,12 @@ const OBJECT_BUCKET = "qorpera-profile-objects";
 const MODEL_GATEWAY_INPUT_TOKEN_OVERHEAD = 16_384;
 
 function internalServiceHeaders(serviceKey: string): Record<string, string> {
-	const headers: Record<string, string> = { apikey: serviceKey };
-	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3) {
-		headers.authorization = `Bearer ${serviceKey}`;
-	}
-	return headers;
+	/* The verifier authenticates internal calls by comparing the bearer token
+	 * against its own service key, so the Authorization header must be sent
+	 * for every key format. Sending it only for legacy JWTs left new-format
+	 * keys with a bare apikey and turned every internal verification into a
+	 * 401 before the verifier did any work. */
+	return { apikey: serviceKey, authorization: `Bearer ${serviceKey}` };
 }
 
 function jsonResponse(value: unknown, status = 200): Response {

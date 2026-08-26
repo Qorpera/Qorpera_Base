@@ -1,5 +1,74 @@
 # Step 2 implementation handoff
 
+**STEP 2 EXECUTION ARCHITECTURE COMPLETE (2026-08-26, 06:00 UTC+2).**
+Per the founder's definition — cloud runners and headless execution as the
+only execution — the architecture is delivered and verified end to end:
+the publication turn closed the gate (run `632b71e2`, published, head
+advanced); an attended prompt typed into the released 0.20.27 app became
+cloud turn `f69e5228`, executed on the node under the member's Codex
+subscription capsule with no local model runtime, completed with
+transcript sequence 3, and surfaced as `completed` with presence `Ready`;
+the local executor can no longer execute (the composer's local target is
+removed, every staff prompt carries a cloud sponsor, and unsendable
+prompts fail closed). Closeout list, in order: (1) cloud-turn replies
+materializing into the thread pane (sync-down path; control plane and
+header already show the truth); (2) childless session anchors — delete
+the residual non-executing local child; (3) a control-plane prompt outbox
+consumer for device-off staging; (4) conception as a cloud turn;
+(5) presence fully cloud-derived; (6) the original acceptance matrix
+(Claude login, second member, sponsor switching, revocation, offline
+devices, storage/recovery gate); (7) the ratified live-company-file
+model. Items 1–5 are the cloud-only ruling's mechanical completion;
+6 validates; 7 is the next architecture step.
+
+**FOUNDER RULINGS (2026-08-26, late): cloud-only execution and the live
+company file.** (1) The local executor is removed entirely, not demoted:
+an agent exists and works whether or not anyone has the app open; the app
+is a window onto the agents, never their engine. Every attended prompt
+becomes a cloud turn, presence reflects cloud runtime state, and prompts
+staged with no device attached execute through a standing cloud consumer.
+Headless cloud execution IS Step 2's identity. (2) The light file model is
+ratified: agents work live on the company file; continuous background
+snapshots (every turn end plus a timer) build the verified chain behind
+the work with verification running asynchronously and alerting instead of
+blocking; the publication gate survives only at outward effects,
+member-device sync anchors, and hard-isolation lanes. The per-turn
+materialize/copy/verify/stamp cycle for ordinary work retires. Sequencing:
+the gate model remains in force through the remaining acceptance items;
+the live model implements immediately after.
+
+**GATE CLOSED (2026-08-26):** the file-changing publication turn completed
+end to end. Run `632b71e2-199d-42d1-9a8f-2fa1e893ee73` (marker
+STEP2_V34E_PUBLICATION_PROBE_20260826, v34 image, attempt 1, no retries):
+`company_disposition=published`, output snapshot
+`0ede039c-5d14-4110-9c7d-c335b1647ee6` byte-exact at parent
+`aea619f8` + 1 file / 38 bytes, publication row `published`, workspace head
+advanced to the output snapshot, transcript sealed at sequence 33, lease
+released. The final defect was the broker's internal call to the verifier
+omitting its Authorization bearer for new-format service keys — the
+runner-side verify had structurally never succeeded before this fix. The
+remaining Step 2 gates are the functional acceptance matrix (second member,
+Claude login, sponsor switching, revocation, offline devices) and the
+storage/recovery production gate; the object-store divergence note below
+(NAS-primary clients must dual-write or the stores drift) joins them.
+
+**OPEN DESIGN QUESTION (2026-08-26, founder decision needed): the trail
+execution fence vs unbound local content.** The control plane (migration
+`20260820001000`) rejects every `shared-trail-entry-part` event lacking a
+durable execution, with an explicit anti-smuggling rationale. The client
+and its round-trip tests expect the opposite: attended chat drafts and
+kernel-signed audit observations upload unbound (they have no execution by
+nature). Both intents are deliberate and they contradict; since the fence
+landed, every unbound upload has failed in production, and until tonight
+the failure jammed all trail synchronization (the client now defers the
+affected session's uploads instead — containment, not resolution).
+Options: (a) narrow the fence to multi-part assembly only, letting
+single-part unbound messages through under event-level validation;
+(b) bind all attended turns through the session arbiter and give
+kernel audits their own validated envelope, keeping the fence absolute;
+(c) keep the fence and accept that unexecuted content stays local-only.
+(b) is the strongest long-term shape; (a) is the pragmatic bridge.
+
 **Handoff state:** v33 (image
 `6cc1ae8b5d8e2b7bc13856a7d31747f7c4598cb80464bee2c34c2509f1385f75`,
 guest manifest

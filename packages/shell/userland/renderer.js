@@ -128,9 +128,17 @@ let artifactEditor = null; // { id, expectedUpdatedAt, draft, dirty, error, pend
 const dismissedConnectionRequestGroups = new Map();
 const autoStartedConnectionRequestIds = new Set();
 let agentSidepanelMotionTimer = null;
-let companyCreatorIcon = "anonymous";
+const COMPANY_AVATARS = [
+	{ id: "agent-halo", label: "Halo", className: "company-agent-avatar-halo" },
+	{ id: "agent-bloom", label: "Bloom", className: "company-agent-avatar-bloom" },
+	{ id: "agent-folio", label: "Folio", className: "company-agent-avatar-folio" },
+	{ id: "agent-pebble", label: "Pebble", className: "company-agent-avatar-pebble" },
+];
+const DEFAULT_COMPANY_AVATAR_ID = COMPANY_AVATARS[0].id;
+const COMPANY_AVATAR_BY_ID = new Map(COMPANY_AVATARS.map((avatar) => [avatar.id, avatar]));
+let companyCreatorIcon = DEFAULT_COMPANY_AVATAR_ID;
 let companyCreatorCreationId = crypto.randomUUID();
-let currentCompanyIcon = "anonymous";
+let currentCompanyIcon = DEFAULT_COMPANY_AVATAR_ID;
 let currentCompanyRoot = "";
 let currentProfileAccess = {
 	role: "owner",
@@ -168,7 +176,9 @@ function syncNativeExecutionSelector() {
 	const select = $("cloudSponsorSelect");
 	if (!select) return;
 	const choices = nativeExecutionChoices();
-	select.replaceChildren(new Option("This computer", "local"));
+	// Cloud-only execution (founder ruling 2026-08-26): agents live in the
+	// cloud, never inside this app. There is no local execution target.
+	select.replaceChildren();
 	for (const connection of choices) {
 		const provider = connection.provider === "openai" ? "Codex" : connection.provider === "anthropic" ? "Claude" : connection.provider;
 		select.appendChild(
@@ -178,19 +188,23 @@ function syncNativeExecutionSelector() {
 			),
 		);
 	}
-	const remembered = localStorage.getItem(nativeExecutionStorageKey()) ?? "local";
-	select.value = [...select.options].some((option) => option.value === remembered) ? remembered : "local";
+	const remembered = localStorage.getItem(nativeExecutionStorageKey());
+	const values = [...select.options].map((option) => option.value);
+	select.value = remembered && values.includes(remembered) ? remembered : (values[0] ?? "");
 	select.hidden = !currentStaffId || currentRoomId || choices.length === 0;
 	select.onchange = () => localStorage.setItem(nativeExecutionStorageKey(), select.value);
 }
 
 function selectedNativeExecutionSponsor() {
 	const select = $("cloudSponsorSelect");
-	if (!select || select.hidden || select.value === "local") return undefined;
 	const identity = nativeExecution?.computeIdentity;
-	const connection = nativeExecutionChoices().find(
-		(candidate) => `${candidate.sponsorBindingId}:${candidate.sponsorVersion}` === select.value,
-	);
+	const choices = nativeExecutionChoices();
+	// Every staff prompt executes in the cloud; when the selector has no
+	// explicit choice yet, the first active connection sponsors the turn.
+	const selectedValue = select && !select.hidden && select.value ? select.value : undefined;
+	const connection =
+		choices.find((candidate) => `${candidate.sponsorBindingId}:${candidate.sponsorVersion}` === selectedValue) ??
+		choices[0];
 	if (!identity || !connection) return undefined;
 	return {
 		sponsorBindingId: connection.sponsorBindingId,
@@ -593,10 +607,14 @@ async function renderHub() {
 				? "Moving Company File to the cloud"
 				: `Cloud company${role ? ` · ${role}` : ""}`;
 		card.append(avatar, label, type);
-		if (company.invitationPending || company.setupRequired) {
+		if (company.invitationPending || company.migrationRequired || company.setupRequired) {
 			const setup = document.createElement("small");
 			setup.className = "profile-setup-label";
-			setup.textContent = company.invitationPending ? "Accept invitation" : "Connect Company File";
+			setup.textContent = company.invitationPending
+				? "Invitation pending"
+				: company.migrationRequired
+					? "Moving to cloud"
+					: "Setup required";
 			card.appendChild(setup);
 		}
 		card.setAttribute(
@@ -617,7 +635,7 @@ async function renderHub() {
 			card.classList.add("loading");
 			const spinner = document.createElement("span");
 			spinner.className = "hub-spinner";
-			card.appendChild(spinner);
+			avatar.appendChild(spinner);
 			if (company.migrationRequired) {
 				const migrated = await window.qorpera.migrateLocalCompany(company.root);
 				document.body.classList.remove("hub-opening");
@@ -701,7 +719,7 @@ async function renderHub() {
 						: "remove";
 			remove.textContent = {
 				decline: "Decline invitation",
-				delete: "Delete from cloud",
+				delete: "Delete Company",
 				leave: "Leave company",
 				remove: "Remove from Qorpera",
 			}[dismissal];
@@ -777,10 +795,20 @@ function companySlug(name) {
 		.replace(/^-+|-+$/g, "");
 }
 
+function normalizedCompanyAvatarId(iconId) {
+	return iconId === "anonymous" ? DEFAULT_COMPANY_AVATAR_ID : iconId;
+}
+
 function makeCompanyIcon(iconId, label, className = "") {
 	const shell = document.createElement("span");
 	shell.className = `company-icon ${className}`.trim();
-	if (typeof iconId === "string" && iconId.startsWith("data:image/")) {
+	const avatar = COMPANY_AVATAR_BY_ID.get(normalizedCompanyAvatarId(iconId));
+	if (avatar) {
+		const agentAvatar = document.createElement("span");
+		agentAvatar.className = `company-agent-avatar ${avatar.className}`;
+		agentAvatar.setAttribute("aria-hidden", "true");
+		shell.appendChild(agentAvatar);
+	} else if (typeof iconId === "string" && iconId.startsWith("data:image/")) {
 		const image = document.createElement("img");
 		image.src = iconId;
 		image.alt = "";
@@ -806,11 +834,30 @@ function makeCompanyIcon(iconId, label, className = "") {
 	return shell;
 }
 
+function renderCompanyAvatarChoices(container, selectedIconId, onSelect) {
+	const selected = normalizedCompanyAvatarId(selectedIconId);
+	container.replaceChildren();
+	for (const avatar of COMPANY_AVATARS) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "company-avatar-option";
+		button.setAttribute("aria-label", `${avatar.label} agent avatar`);
+		button.setAttribute("aria-pressed", String(avatar.id === selected));
+		button.appendChild(makeCompanyIcon(avatar.id, ""));
+		button.onclick = () => onSelect(avatar.id, button);
+		container.appendChild(button);
+	}
+}
+
 function renderCompanyPicturePreview() {
 	const preview = makeCompanyIcon(companyCreatorIcon, "", "company-icon-preview");
 	preview.id = "companyIconPreview";
 	$("companyIconPreview").replaceWith(preview);
 	$("companyPictureAnonymous").hidden = !companyCreatorIcon.startsWith("data:image/");
+	renderCompanyAvatarChoices($("companyAvatarPicker"), companyCreatorIcon, (avatarId) => {
+		companyCreatorIcon = avatarId;
+		renderCompanyPicturePreview();
+	});
 }
 
 async function prepareCompanyPicture(file) {
@@ -874,6 +921,40 @@ async function saveCurrentCompanyIcon(companyIconId) {
 	return true;
 }
 
+function companyAvatarSettingsSection() {
+	const section = document.createElement("section");
+	section.className = "company-avatar-settings";
+	const heading = document.createElement("div");
+	heading.className = "company-avatar-settings-heading";
+	const title = document.createElement("strong");
+	title.textContent = "Company avatar";
+	const upload = document.createElement("button");
+	upload.type = "button";
+	upload.className = "secondary-button";
+	upload.textContent = "Upload picture";
+	heading.append(title, upload);
+	const picker = document.createElement("div");
+	picker.className = "company-avatar-picker company-avatar-picker-settings";
+	picker.setAttribute("role", "group");
+	picker.setAttribute("aria-label", "Choose a company agent avatar");
+
+	const paint = () => {
+		renderCompanyAvatarChoices(picker, currentCompanyIcon, async (avatarId, button) => {
+			for (const choice of picker.querySelectorAll("button")) choice.disabled = true;
+			if (await saveCurrentCompanyIcon(avatarId)) paint();
+			else for (const choice of picker.querySelectorAll("button")) choice.disabled = false;
+			button.blur();
+		});
+	};
+	upload.onclick = () =>
+		chooseCompanyPicture(async (picture) => {
+			if (await saveCurrentCompanyIcon(picture)) paint();
+		});
+	paint();
+	section.append(heading, picker);
+	return section;
+}
+
 async function openCompanyModal() {
 	let pending;
 	try {
@@ -882,7 +963,7 @@ async function openCompanyModal() {
 	} catch {
 		pending = undefined;
 	}
-	companyCreatorIcon = pending?.companyIcon ?? "anonymous";
+	companyCreatorIcon = normalizedCompanyAvatarId(pending?.companyIcon ?? DEFAULT_COMPANY_AVATAR_ID);
 	companyCreatorCreationId = pending?.clientCreationId ?? crypto.randomUUID();
 	$("companyName").value = pending?.companyName ?? "";
 	$("companyFormError").textContent = "";
@@ -904,7 +985,7 @@ function setupCompanyModal() {
 			renderCompanyPicturePreview();
 		}, $("companyFormError"));
 	$("companyPictureAnonymous").onclick = () => {
-		companyCreatorIcon = "anonymous";
+		companyCreatorIcon = DEFAULT_COMPANY_AVATAR_ID;
 		renderCompanyPicturePreview();
 	};
 	input.addEventListener("input", () => {
@@ -10973,6 +11054,7 @@ function renderCompanyTab(content, info) {
 		launch.onclick = () => openCompanyInvitePopup({ cloudProfile, actorIsOwner });
 		people.appendChild(launch);
 	}
+	content.appendChild(companyAvatarSettingsSection());
 	content.appendChild(people);
 	content.appendChild(errorBox);
 
