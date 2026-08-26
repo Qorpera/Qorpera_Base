@@ -117,6 +117,10 @@ Deno.serve(async (request) => {
 			503,
 		);
 	}
+	/* One line per verification request: the ids and caller class are the
+	 * minimum needed to attribute a failed open or publication to its exact
+	 * snapshot and graph without redeploying diagnostics. */
+	console.log(`verify request snapshot=${snapshotId} graph=${graphId} internal=${internalServiceRequest}`);
 	const [snapshotResult, graphResult] = internalServiceRequest
 		? await Promise.all([
 				serviceClient.from("qorpera_company_snapshots").select("*").eq("id", snapshotId).maybeSingle(),

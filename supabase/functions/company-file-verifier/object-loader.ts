@@ -32,13 +32,34 @@ export function createCompanyFileObjectLoader(
 type ObjectLoader = (profileId: string, sha256: string) => Promise<Uint8Array>;
 
 function chainLoaders(primary: ObjectLoader, fallback: ObjectLoader | undefined): ObjectLoader {
-	if (!fallback) return primary;
+	const resilientPrimary = withTransientRetry(primary);
+	if (!fallback) return resilientPrimary;
+	const resilientFallback = withTransientRetry(fallback);
 	return async (profileId, sha256) => {
 		try {
-			return await primary(profileId, sha256);
+			return await resilientPrimary(profileId, sha256);
 		} catch {
-			return await fallback(profileId, sha256);
+			return await resilientFallback(profileId, sha256);
 		}
+	};
+}
+
+/* Object stores flap for seconds at a time — the gateway rides a consumer
+ * NAS and storage rides shared platform compute — and a single dropped
+ * fetch must not fail a whole closure verification. Three bounded attempts
+ * per store, then the chain's other store takes over. */
+function withTransientRetry(loader: ObjectLoader): ObjectLoader {
+	return async (profileId, sha256) => {
+		let lastError: unknown;
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			try {
+				return await loader(profileId, sha256);
+			} catch (error) {
+				lastError = error;
+				if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 1_500));
+			}
+		}
+		throw lastError;
 	};
 }
 
@@ -51,6 +72,7 @@ function createGatewayLoader(options: CompanyFileObjectLoaderOptions): ObjectLoa
 	const request = options.fetch ?? fetch;
 	return async (profileId, sha256) => {
 		const response = await request(`${gatewayUrl}/v1/profile-objects/${profileId}/${sha256}`, {
+			signal: AbortSignal.timeout(20_000),
 			headers: {
 				authorization: `Bearer ${token}`,
 				/* The gateway sits behind Cloudflare, whose bot rules 1010-ban
