@@ -907,7 +907,7 @@ export function materializeSharedTrailSession(
 			throw new Error(`shared trail entry graph is invalid: ${candidate.id}`);
 		}
 		const append = stampSharedTrailEntry(binding, candidate);
-		appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+		appendBoundTrailEntry(binding, append.entry);
 		commitTrailAppend(binding, append);
 		existing.set(candidate.id, candidate);
 		if (candidate.type !== "session_info") leafId = candidate.id;
@@ -1026,6 +1026,17 @@ function stampKernelEntry(binding: TrailBinding, entry: SessionEntry): TrailAppe
 	return { type: "qorpera_trail_append", token: binding.token, entry: stamped };
 }
 
+/** Append a stamped entry to a bound trail file. Appends must never mint a
+ * file: a binding whose file vanished is stale, and appendFileSync would
+ * otherwise recreate the session headerless — poisoning every future reader.
+ * Callers treat the throw as an ordinary persistence failure. */
+export function appendBoundTrailEntry(binding: TrailBinding, entry: unknown): void {
+	if (!existsSync(binding.path)) {
+		throw new Error(`trail session file is missing for a live binding: ${binding.file}`);
+	}
+	appendFileSync(binding.path, `${JSON.stringify(entry)}\n`);
+}
+
 function appendKernelCustomObservation(binding: TrailBinding, customType: string, data: unknown): void {
 	const append = stampKernelEntry(binding, {
 		type: "custom",
@@ -1035,7 +1046,7 @@ function appendKernelCustomObservation(binding: TrailBinding, customType: string
 		customType,
 		data,
 	});
-	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+	appendBoundTrailEntry(binding, append.entry);
 	commitTrailAppend(binding, append);
 }
 
@@ -1053,7 +1064,7 @@ export function appendKernelSessionInfo(binding: TrailBinding, name: string): vo
 		timestamp: "",
 		name: sanitizedName,
 	});
-	appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+	appendBoundTrailEntry(binding, append.entry);
 	commitTrailAppend(binding, append);
 }
 
