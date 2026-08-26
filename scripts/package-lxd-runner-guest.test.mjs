@@ -68,10 +68,15 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			"utf-8",
 		);
 		const manifestSha256 = createHash("sha256").update(manifestEncoded).digest("hex");
-		for (const recipe of [builder, acceptance]) {
-			assert.ok(
-				recipe.includes(`EXPECTED_PACKAGE_MANIFEST_SHA256="${manifestSha256}"`),
-				"each image candidate recipe must pin this exact package manifest",
+		const builderPin = builder.match(/EXPECTED_PACKAGE_MANIFEST_SHA256="([0-9a-f]{64})"/)?.[1];
+		const acceptancePin = acceptance.match(/EXPECTED_PACKAGE_MANIFEST_SHA256="([0-9a-f]{64})"/)?.[1];
+		assert.ok(builderPin, "image candidate builder must pin a package manifest");
+		assert.equal(acceptancePin, builderPin, "image candidate recipes must pin the same package manifest");
+		if (process.platform === "linux" && process.arch === "x64") {
+			assert.equal(
+				builderPin,
+				manifestSha256,
+				`image candidate recipes must pin the Linux x64 package manifest ${manifestSha256}`,
 			);
 		}
 		assert.ok(builder.includes('LXD_BUILDER_PROJECT="default"'));
