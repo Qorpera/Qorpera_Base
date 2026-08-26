@@ -461,6 +461,7 @@ import {
 	type SessionRuntimeActivity,
 	type SessionRuntimeEventInput,
 } from "./session-control-plane.ts";
+import { readSidebarTranslucency, writeSidebarTranslucency } from "./shell-appearance.ts";
 import { isStaffCharacterId, staffCharacterForTemplate } from "./staff-characters.ts";
 import { removeStaffWorkspace } from "./staff-deletion.ts";
 import { applyStaffRoutineOperation, type StaffRoutineOperation } from "./staff-routines.ts";
@@ -9763,13 +9764,14 @@ function createRendererWindow(
 	options: { bounds?: Electron.Rectangle; show?: boolean } = {},
 ): { window: BrowserWindow; rendererSession: Session } {
 	const rendererSession = rendererSessionFor(partition);
+	const sidebarTranslucency = process.platform === "darwin" && readSidebarTranslucency(app.getPath("userData"));
 	const win = new BrowserWindow({
 		width: 1360,
 		height: 860,
 		show: options.show ?? true,
 		title: "Qorpera Base",
-		backgroundColor: process.platform === "darwin" ? "#00ffffff" : "#ffffff",
-		...(process.platform === "darwin" ? { vibrancy: "sidebar" as const, visualEffectState: "active" as const } : {}),
+		backgroundColor: sidebarTranslucency ? "#00ffffff" : "#ffffff",
+		...(sidebarTranslucency ? { vibrancy: "sidebar" as const, visualEffectState: "active" as const } : {}),
 		// Frameless, Desktop-style chrome: the fixed shell draws the titlebar
 		// (a -webkit-app-region: drag header), the OS overlays min/max/close.
 		titleBarStyle: "hidden",
@@ -9777,6 +9779,7 @@ function createRendererWindow(
 		icon: DEFAULT_ICON,
 		webPreferences: {
 			preload: join(DIRNAME, "preload.cjs"),
+			additionalArguments: [`--qorpera-sidebar-translucency=${sidebarTranslucency ? "on" : "off"}`],
 			contextIsolation: true,
 			nodeIntegration: false,
 			sandbox: true,
@@ -11905,7 +11908,16 @@ app.whenReady().then(async () => {
 		if (!slot || typeof enabled !== "boolean") {
 			return { ok: false, error: "invalid sidebar translucency preference" };
 		}
-		if (process.platform === "darwin") slot.window.setVibrancy(enabled ? "sidebar" : null);
+		if (!writeSidebarTranslucency(app.getPath("userData"), enabled)) {
+			return { ok: false, error: "Sidebar translucency preference could not be saved." };
+		}
+		for (const current of slots.values()) {
+			if (process.platform === "darwin" && !current.window.isDestroyed()) {
+				current.window.setBackgroundColor(enabled ? "#00ffffff" : "#ffffff");
+				current.window.setVibrancy(enabled ? "sidebar" : null);
+			}
+			send(current.window, "sidebar-translucency", enabled);
+		}
 		return { ok: true, enabled };
 	});
 	ipcMain.handle("profile-team:invite", async (event, value: unknown) => {
@@ -12404,6 +12416,7 @@ app.whenReady().then(async () => {
 						}
 					: undefined,
 			localExecution: root ? readLocalExecutionPermission(app.getPath("userData"), root) : "always",
+			sidebarTranslucency: readSidebarTranslucency(app.getPath("userData")),
 			backgroundEnabled: root ? backgroundCompanyEnabled(root) : false,
 			connections: [await githubConnectionInfo(root), ...modelConnectionInfo()],
 			nativeExecution,

@@ -2,19 +2,19 @@
  * backend read models; the RPC pipe carries the attached provider's content
  * stream and direct commands. */
 const $ = (id) => document.getElementById(id);
-const SIDEBAR_TRANSLUCENCY_KEY = "qorpera.sidebar-translucency/v1";
 
 function sidebarTranslucencyEnabled() {
-	return localStorage.getItem(SIDEBAR_TRANSLUCENCY_KEY) !== "off";
+	return document.documentElement.dataset.sidebarTranslucency !== "off";
 }
 
 function applySidebarTranslucency(enabled) {
 	document.documentElement.dataset.sidebarTranslucency = enabled ? "on" : "off";
-	localStorage.setItem(SIDEBAR_TRANSLUCENCY_KEY, enabled ? "on" : "off");
-	void window.qorpera.setSidebarTranslucency(enabled).catch(() => undefined);
+	const toggle = $("sidebarTranslucencyToggle");
+	if (!toggle) return;
+	toggle.classList.toggle("active", enabled);
+	toggle.setAttribute("aria-checked", String(enabled));
+	toggle.setAttribute("aria-label", `Translucent sidebar ${enabled ? "on" : "off"}`);
 }
-
-applySidebarTranslucency(sidebarTranslucencyEnabled());
 let backendUrl = "";
 // Stable company identity from the desktop host (appInfo). Storage is keyed by
 // this, never by backendUrl: the backend port is hash-derived from a small
@@ -11733,27 +11733,29 @@ async function renderSettingsTab() {
 		theme.appendChild(new Option("Light", "light"));
 		theme.value = "light";
 		setRow(appearanceGroup, "Theme", "", theme);
-		const sidebarTranslucency = document.createElement("button");
-		sidebarTranslucency.type = "button";
-		sidebarTranslucency.className = "settings-toggle";
-		sidebarTranslucency.setAttribute("role", "switch");
-		const syncSidebarTranslucency = () => {
-			const enabled = sidebarTranslucencyEnabled();
-			sidebarTranslucency.classList.toggle("active", enabled);
-			sidebarTranslucency.setAttribute("aria-checked", String(enabled));
-			sidebarTranslucency.setAttribute("aria-label", `Translucent sidebar ${enabled ? "on" : "off"}`);
-		};
-		sidebarTranslucency.onclick = () => {
-			applySidebarTranslucency(!sidebarTranslucencyEnabled());
-			syncSidebarTranslucency();
-		};
-		syncSidebarTranslucency();
-		setRow(
-			appearanceGroup,
-			"Translucent sidebar",
-			"Let the desktop color show softly through the navigation and agent side panel.",
-			sidebarTranslucency,
-		);
+		if (document.documentElement.dataset.platform === "darwin") {
+			applySidebarTranslucency(info.sidebarTranslucency !== false);
+			const sidebarTranslucency = document.createElement("button");
+			sidebarTranslucency.id = "sidebarTranslucencyToggle";
+			sidebarTranslucency.type = "button";
+			sidebarTranslucency.className = "settings-toggle";
+			sidebarTranslucency.setAttribute("role", "switch");
+			sidebarTranslucency.onclick = async () => {
+				const result = await window.qorpera.setSidebarTranslucency(!sidebarTranslucencyEnabled());
+				if (!result?.ok) {
+					showToast(result?.error || "Sidebar translucency could not be changed.");
+					return;
+				}
+				applySidebarTranslucency(result.enabled);
+			};
+			setRow(
+				appearanceGroup,
+				"Translucent sidebar",
+				"Let the desktop color show softly through the navigation and agent side panel.",
+				sidebarTranslucency,
+			);
+			applySidebarTranslucency(info.sidebarTranslucency !== false);
+		}
 		content.appendChild(appearanceGroup);
 
 		const languageGroup = document.createElement("section");
@@ -12323,6 +12325,7 @@ window.qorpera.onAccountStatus((message) => {
 	if (typeof message === "string" && !$("accountView").hidden) $("accountStatus").textContent = message;
 });
 window.qorpera.onOpenCompany((root) => openCompany(root));
+window.qorpera.onSidebarTranslucency?.((enabled) => applySidebarTranslucency(enabled === true));
 
 setupCompanyNavigation();
 setupSidebarToggle();

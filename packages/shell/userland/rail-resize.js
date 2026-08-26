@@ -4,7 +4,8 @@
 	const search = document.getElementById("railSearch");
 	if (!(handle instanceof HTMLElement) || !(rail instanceof HTMLElement)) return;
 
-	const COMPACT_WIDTH = 80;
+	const COMPACT_WIDTH =
+		Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--rail-compact-width")) || 80;
 	const SNAP_WIDTH = 168;
 	const MIN_EXPANDED_WIDTH = 176;
 	const DEFAULT_WIDTH = 304;

@@ -10,6 +10,7 @@ const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
 const onboardingCssSource = readFileSync(join(userland, "onboarding.css"), "utf-8");
 const characterMotionSource = readFileSync(join(userland, "character-motion.css"), "utf-8");
 const railResizeCssSource = readFileSync(join(userland, "rail-resize.css"), "utf-8");
+const railResizeSource = readFileSync(join(userland, "rail-resize.js"), "utf-8");
 const feedbackSource = readFileSync(join(userland, "feedback.js"), "utf-8");
 const feedbackCssSource = readFileSync(join(userland, "feedback.css"), "utf-8");
 const hubCarouselSource = readFileSync(join(userland, "hub-carousel.js"), "utf-8");
@@ -141,17 +142,30 @@ describe("userland wiring", () => {
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.rail-scroll \{[^}]*padding-top: calc\(var\(--titlebar-height\) \+ 9px\);/s,
 		);
+		expect(railResizeSource).toContain('getPropertyValue("--rail-compact-width")');
+		expect(railResizeCssSource).toMatch(/html\[data-platform="darwin"\] \{[^}]*--rail-compact-width: 116px;/s);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.rail-company-switcher,[^}]*width: 34px;[^}]*height: 34px;/s,
+		);
 	});
 
 	it("keeps the translucent sidebar preference persistent and accessible", () => {
-		expect(rendererSource).toContain('const SIDEBAR_TRANSLUCENCY_KEY = "qorpera.sidebar-translucency/v1"');
+		const themeRow = rendererSource.indexOf('setRow(appearanceGroup, "Theme", "", theme)');
+		const translucencyRow = rendererSource.indexOf('sidebarTranslucency.id = "sidebarTranslucencyToggle"');
+		expect(themeRow).toBeGreaterThan(-1);
+		expect(translucencyRow).toBeGreaterThan(themeRow);
+		expect(rendererSource).not.toContain("SIDEBAR_TRANSLUCENCY_KEY");
+		expect(rendererSource).toContain('dataset.platform === "darwin"');
+		expect(rendererSource).toContain('sidebarTranslucency.id = "sidebarTranslucencyToggle"');
 		expect(rendererSource).toContain('sidebarTranslucency.setAttribute("role", "switch")');
-		expect(rendererSource).toContain('sidebarTranslucency.setAttribute("aria-checked", String(enabled))');
+		expect(rendererSource).toContain('toggle.setAttribute("aria-checked", String(enabled))');
 		expect(baseCssSource).toContain('html[data-sidebar-translucency="off"] #primaryNavigation');
-		expect(mainSource).toContain('vibrancy: "sidebar" as const');
+		expect(mainSource).toContain('readSidebarTranslucency(app.getPath("userData"))');
+		expect(mainSource).toContain("additionalArguments: [`--qorpera-sidebar-translucency=");
 		expect(mainSource).toContain('ipcMain.handle("settings:sidebar-translucency"');
-		expect(mainSource).toContain('slot.window.setVibrancy(enabled ? "sidebar" : null)');
+		expect(mainSource).toContain('current.window.setVibrancy(enabled ? "sidebar" : null)');
 		expect(preloadSource).toContain('ipcRenderer.invoke("settings:sidebar-translucency", enabled)');
+		expect(preloadSource).toContain('ipcRenderer.on("sidebar-translucency"');
 	});
 
 	it("always exposes updater state and a manual check on the company hub", () => {
