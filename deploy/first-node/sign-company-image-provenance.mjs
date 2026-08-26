@@ -5,7 +5,6 @@
  * reconstructed in-process, written to a 0600 temp file for the CLI, and
  * removed immediately after. Nothing secret is printed. */
 import { execFileSync, spawnSync } from "node:child_process";
-import { createPrivateKey } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -24,20 +23,20 @@ const dirty = execFileSync("git", ["-C", repo, "status", "--porcelain=v1", "--un
 }).trim();
 if (dirty) throw new Error("The tree is not clean; commit before signing");
 
-const body = execFileSync(
+/* The documented flow: the encrypted Ed25519 PEM lives off-node under the
+ * user's Application Support keys directory, and the Keychain item holds
+ * the passphrase, piped to the CLI's stdin — never an argument or file. */
+const keyPath =
+	process.env.QORPERA_PROVENANCE_KEY ??
+	`${process.env.HOME}/Library/Application Support/Qorpera/keys/company41-lxd-image-provenance-ed25519.pem`;
+const passphrase = execFileSync(
 	"security",
 	["find-generic-password", "-w", "-s", "com.qorpera.company41.lxd-image-provenance", "-a", "jonas"],
 	{ encoding: "utf-8" },
 ).trim();
-const der = Buffer.from(body.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-const pem = createPrivateKey({ key: der, format: "der", type: "pkcs8" })
-	.export({ type: "pkcs8", format: "pem" })
-	.toString();
 
 const work = mkdtempSync(join(tmpdir(), "qorpera-provenance-"));
 try {
-	const keyPath = join(work, "signing-key.pem");
-	writeFileSync(keyPath, pem, { mode: 0o600 });
 	const statementPath = join(work, "statement.json");
 	const outputPath = join(work, "lxd-company-image-provenance.json");
 	const run = (args) => {
@@ -61,7 +60,14 @@ try {
 		"--acceptance-evidence-sha256", evidenceSha,
 		"--output", statementPath,
 	]);
-	run(["sign", "--statement", statementPath, "--private-key", keyPath, "--output", outputPath]);
+	{
+		const result = spawnSync(
+			"node",
+			[tool, "sign", "--statement", statementPath, "--private-key", keyPath, "--private-key-passphrase-stdin", "true", "--output", outputPath],
+			{ encoding: "utf-8", input: `${passphrase}\n` },
+		);
+		if (result.status !== 0) throw new Error(`sign failed: ${result.stderr.slice(0, 500)}`);
+	}
 	const scp = spawnSync("scp", ["-q", outputPath, "company41-node-01:step3-lxd/lxd-company-image-provenance.json"], {
 		encoding: "utf-8",
 	});
