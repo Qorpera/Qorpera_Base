@@ -351,6 +351,9 @@ export class HttpCloudRunnerProviderService {
 			response.writeHead(200, { "content-type": "application/json" }).end(`${JSON.stringify({ value })}\n`);
 		} catch (error) {
 			if (controller.signal.aborted) return;
+			/* The body stays generic (the caller is a remote control plane), but
+			 * the operator needs the real refusal in the journal. */
+			console.error(`provider request rejected: ${error instanceof Error ? error.message : String(error)}`);
 			const status = error instanceof SyntaxError ? 400 : 422;
 			response.writeHead(status, { "content-type": "application/json" }).end('{"error":"request rejected"}\n');
 		} finally {

@@ -421,6 +421,7 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 	readonly #bridge: NativeProviderComputerBridge;
 	readonly #nativeWorkspaceGid?: number;
 	readonly #nativeWorkspaceRoot?: string;
+	readonly #liveCompanyRoot?: string;
 
 	constructor(
 		authority: CloudRunnerNativeAuthority,
@@ -428,12 +429,14 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 		bridge: NativeProviderComputerBridge,
 		nativeWorkspaceGid?: number,
 		nativeWorkspaceRoot?: string,
+		liveCompanyRoot?: string,
 	) {
 		this.#authority = authority;
 		this.#refreshAuthority = refreshAuthority;
 		this.#bridge = bridge;
 		this.#nativeWorkspaceGid = nativeWorkspaceGid;
 		this.#nativeWorkspaceRoot = nativeWorkspaceRoot ? resolve(nativeWorkspaceRoot) : undefined;
+		this.#liveCompanyRoot = liveCompanyRoot ? resolve(liveCompanyRoot) : undefined;
 		this.guarantees = bridge.executionGuarantees;
 	}
 
@@ -443,18 +446,24 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 			const nativeWorkspaceRoot = this.#nativeWorkspaceRoot;
 			const inputRoot = dirname(resolve(request.input.companyBaseRoot));
 			const workRoot = dirname(resolve(request.input.companyRoot));
+			/* The company root is either the disposable work layout, or exactly
+			 * the declared live company tree (founder ruling 2026-08-26): the
+			 * harness works on the one authoritative file, so the live mount is
+			 * a sanctioned workspace, never a layout violation. */
+			const liveMode =
+				this.#liveCompanyRoot !== undefined && resolve(request.input.companyRoot) === this.#liveCompanyRoot;
 			if (
 				!nativeWorkspaceRoot ||
 				dirname(executionRoot) !== nativeWorkspaceRoot ||
 				relative(executionRoot, inputRoot) !== "input" ||
-				relative(executionRoot, workRoot) !== "work" ||
+				(!liveMode && relative(executionRoot, workRoot) !== "work") ||
 				relative(executionRoot, resolve(request.outputRoot)) !== "output"
 			) {
 				throw new Error("Native provider workspace does not match the disposable execution layout");
 			}
 			for (const path of [
 				request.input.companyBaseRoot,
-				request.input.companyRoot,
+				...(liveMode ? [] : [request.input.companyRoot]),
 				...(request.input.proposalRoot ? [request.input.proposalRoot] : []),
 				request.input.executionContextPath,
 				request.input.queuedInputsPath,
@@ -518,6 +527,7 @@ export async function executeNativeCloudRunnerJob(
 			bridge,
 			nativeWorkspaceGid,
 			nativeWorkspaceGid === undefined ? undefined : execution.temporaryRoot,
+			execution.environment?.QORPERA_LIVE_COMPANY_ROOT,
 		),
 	});
 	const runnerResult = record(completed.result, "Native runner completion");

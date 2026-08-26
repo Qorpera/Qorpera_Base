@@ -166,7 +166,11 @@ function sha256(value: string): string {
 }
 
 function workSha256(work: CloudRunnerWork): string {
-	return sha256(JSON.stringify(canonical(work)));
+	/* The control plane annotates each dispatch with attempt-scoped fields; a
+	 * retry is the same immutable run, so the journal digest must not vary
+	 * with them — or every second attempt is refused as foreign work. */
+	const { attempt: _attempt, ...immutable } = work as CloudRunnerWork & { attempt?: unknown };
+	return sha256(JSON.stringify(canonical(immutable)));
 }
 
 function token(): string {
@@ -570,6 +574,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			let current = await this.#readJournal(acquisitionId);
 			if (current) {
 				if (current.workSha256 !== digest) {
+					console.error(
+						`acquire refusal: acquisition=${acquisitionId} journaled=${current.workSha256.slice(0, 12)} incoming=${digest.slice(0, 12)} state=${current.physicalState} createdAt=${current.createdAt} work=${JSON.stringify(canonical(work)).slice(0, 2000)}`,
+					);
 					throw new Error("LXD provider acquisition id is bound to another immutable work request");
 				}
 				this.#validateCredentialHashes(current, credentials);
