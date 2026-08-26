@@ -159,6 +159,8 @@ final result: passed
 - Messages row-alignment target: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_MklIur/Screenshot 2026-08-26 at 18.11.09.png`
 - Messages label target: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_zrWv7p/Screenshot 2026-08-26 at 18.53.16.png`
 - Messages thread-header target: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_Ezpj1D/Screenshot 2026-08-26 at 19.24.10.png`
+- Messages macOS-titlebar target: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_xSIVko/Screenshot 2026-08-26 at 19.39.37.png`
+- Existing account-row target: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_ReV1T6/Screenshot 2026-08-26 at 19.35.50.png`
 - Existing Qorpera state: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_5wooqk/Screenshot 2026-08-26 at 17.39.41.png`
 - Browser-rendered implementation: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/qorpera-shell-font-metrics-final.jpg`
 - Original-versus-revised comparison: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/qorpera-shell-original-vs-revised.png`
@@ -168,13 +170,18 @@ final result: passed
 - Focused label-metrics comparison: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/messages-font-metrics-final.png`
 - Browser-rendered thread header: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/qorpera-thread-header-surface-final.jpg`
 - Focused thread-header comparison: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/messages-vs-qorpera-thread-header-final.png`
+- Browser-rendered macOS account button: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/qorpera-macos-account-button-closed.png`
+- Browser-rendered open account menu: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/qorpera-macos-account-button-menu-final.png`
+- Focused account-button comparison: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/messages-vs-qorpera-account-button-final.png`
 
 ## Viewport and normalization
 
 - Browser viewport: 1363 × 862 CSS px at device scale factor 1.
+- Focused macOS account-button viewport: 764 × 360 CSS px at device scale factor 1.
+- Account-button source: 396 × 284 px. Implementation: 764 × 360 px at 1×. The focused comparison uses equal 325 × 170 px native-scale crops with no density normalization.
 - Existing Qorpera source and implementation: 1363 × 862 px with no density normalization.
 - Messages sidebar source crop: 325 × 775 px. Implementation sidebar crop: 304 × 775 px. Both are shown at native scale in the focused comparison so the rail-width difference remains explicit.
-- State: light appearance, expanded navigation rail, active `New Agent` conversation, idle composer, translucent sidebar enabled.
+- State: light appearance, expanded navigation rail, active `New Agent` conversation, idle composer, translucent sidebar enabled. The account-button pass additionally covers the closed button and open menu states.
 
 ## Findings
 
@@ -182,6 +189,7 @@ No actionable P0, P1, or P2 differences remain for the requested styling scope.
 
 - Fonts and typography: macOS rail controls now resolve through `-apple-system`/`BlinkMacSystemFont` before cross-platform fallbacks, with native text rendering instead of forced geometric precision. Names use 13 px/600, Search is 13 px/400, and subtitles remain 10.5 px/400. Direct analysis of the shared `New` run gives the same 26 × 10 px bright-glyph footprint in the Messages source and corrected system-font candidate; the previous 13.5 px name rule was measurably too wide.
 - Spacing and layout rhythm: Search begins at x=14, y=54 with a 28 px height and 7 px radius, directly below the 48 px titlebar. The selected row now uses 10/11 px rail margins, a 64 px height, and a 6 px radius. Its avatar remains 44 px, centered on the reference avatar's centerline; its name starts at x=74 and y=9 within the row, matching the reference.
+- Account control: on macOS the bottom account row contributes zero layout height. Its existing logo and behavior are reused in a 30 × 30 px titlebar button at x=78, y=9, with a centered 26 × 26 px company mark. The account name is visually hidden, and the same menu opens below at x=78, y=44 with a 230 px width. Non-macOS retains the bottom account row.
 - Colors and visual tokens: the selected row and scoped focus/switch states use macOS system blue. On macOS the rail and agent panel are transparent CSS surfaces over Electron's native `sidebar` vibrancy; the earlier warm CSS wash was removed. Turning translucency off disables native vibrancy and restores the neutral `#f3f3f1` rail surface. The thread/new-conversation header is deliberately opaque, matching the reference's `#f9f8f4` surface and `#d9d9d9` bottom divider independently of the sidebar material setting.
 - Image quality and asset fidelity: the existing staff-character PNGs, filters, sizes, and motion wiring are unchanged. Only their rail backing is transparent so the original figures do not acquire pale square tiles on the blue or translucent surfaces.
 - Copy and content: existing product copy remains unchanged. The new General setting is labeled `Translucent sidebar` and explains its effect.
@@ -193,7 +201,7 @@ The existing Qorpera state and revised render keep the same rail width, avatar s
 
 ## Focused comparison evidence
 
-The Messages target and revised rail align the titlebar/search sequence within 3 px vertically: Messages Search begins at y=57 and Qorpera at y=54. Both use 14 px Search insets. In the focused row comparison, both selected rows start at x=10, measure 64 px high, and place the name at x=74 and 9–10 px below the row top. The final computed name style is the native macOS system stack at 13 px/600 with a 15.34 px line height, and the label remains exactly 9 px below the selected-row top. The focused header comparison confirms the right-hand header region uses the same opaque `#f9f8f4` fill and `#d9d9d9` divider as Messages while leaving the rail region available for native translucency. Qorpera intentionally preserves its narrower 304 px rail and its existing 44 px character identities. The production window supplies native macOS traffic lights and AppKit material; the browser harness cannot render either.
+The Messages target and revised rail align the titlebar/search sequence within 3 px vertically: Messages Search begins at y=57 and Qorpera at y=54. Both use 14 px Search insets. In the focused row comparison, both selected rows start at x=10, measure 64 px high, and place the name at x=74 and 9–10 px below the row top. The final computed name style is the native macOS system stack at 13 px/600 with a 15.34 px line height, and the label remains exactly 9 px below the selected-row top. The focused header comparison confirms the right-hand header region uses the same opaque `#f9f8f4` fill and `#d9d9d9` divider as Messages while leaving the rail region available for native translucency. The account-button comparison confirms the full-width bottom row is gone and the logo starts at x=80, leaving a 9 px visual gap after the reference traffic-light cluster's right edge. Qorpera intentionally preserves its narrower 304 px rail and its existing 44 px character identities. The production window supplies native macOS traffic lights and AppKit material; the browser harness cannot render either.
 
 ## Comparison history
 
@@ -219,17 +227,22 @@ The Messages target and revised rail align the titlebar/search sequence within 3
 7. Thread-header implementation: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/qorpera-thread-header-surface-final.jpg`
    - [P2] The main thread/new-conversation header remained white while Messages uses an opaque warm `#f9f8f4` surface with a `#d9d9d9` bottom divider.
    - Fix: applied the opaque warm surface only to the right-hand titlebar region in both translucent-sidebar states and added the matched divider without changing the translucent rail. The focused comparison confirms the corrected colors; no P0/P1/P2 findings remain.
+8. macOS account-button implementation: `/Users/jonas/.codex/visualizations/2026/08/26/01a03ebc-9da3-7213-98f8-53c561be0367/qorpera-macos-account-button-closed.png`
+   - [P2] The account control occupied a full-width row at the bottom of the rail, adding persistent visual weight that is absent from the Messages titlebar treatment.
+   - Fix: on macOS only, moved the existing control visually to the titlebar inset as an icon-only 30 px button, removed the bottom-row layout height, and repositioned the unchanged menu below it. The closed and open captures confirm the button and menu states; no P0/P1/P2 findings remain.
 
 ## Primary interactions and diagnostics
 
 - Search focus and text entry were exercised in the in-app browser; the focused field uses the scoped system-blue ring and accepts/clears text.
 - The focused shell regression verifies Search remains wired below the titlebar and the translucency preference remains a persistent accessible switch that calls the native material IPC.
+- The icon-only account control was clicked in the browser harness; `aria-expanded` changed to `true`, and the 230 px account menu opened directly below the button without clipping.
 - Browser console: no warnings or errors.
 - Native material configuration uses Electron `sidebar` vibrancy with `active` visual effect state; the off state calls `setVibrancy(null)`.
 
 ## Follow-up polish
 
 - P3: validate the exact native material response against light and dark real-world wallpapers after the next normal application build; browser rendering cannot reproduce AppKit vibrancy or native traffic lights.
+- P3: confirm the final optical gap between the native traffic lights and the x=78 account control in the next Electron run; the browser harness verifies geometry but cannot draw the native controls.
 - P3: the source header crop is 52 px including its divider while the established Qorpera titlebar remains 48 px; the requested surface correction preserves the already accepted shell geometry.
 
 final result: passed
