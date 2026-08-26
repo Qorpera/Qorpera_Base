@@ -2,7 +2,6 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { safeCompanyComputerGuestError } from "../src/cloud-company-computer-bootstrap-main.ts";
 import {
 	COMPANY_COMPUTER_NATIVE_PROVIDER_SERVICE,
 	COMPANY_COMPUTER_RUNNER_SERVICE,
@@ -16,6 +15,7 @@ import {
 	type RunCompanyComputerGuestBootstrapOptions,
 	runCompanyComputerGuestBootstrap,
 	SupabaseCompanyComputerSyncHeadResolver,
+	safeCompanyComputerGuestError,
 } from "../src/cloud-company-computer-guest.ts";
 import { screenSessionCommand } from "../src/cloud-company-computer-screens-main.ts";
 import { HttpCloudObjectTransport, SupabaseCloudObjectTransport } from "../src/cloud-object-store.ts";

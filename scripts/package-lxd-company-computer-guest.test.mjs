@@ -25,6 +25,7 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 		assert.deepEqual(
 			manifest.artifacts.map((artifact) => artifact.file),
 			[
+				"company-lock-heartbeat.mjs",
 				"google-chrome-signing-key.asc",
 				"install-image-contract.sh",
 				"qorpera-chrome",
@@ -53,6 +54,16 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 			assert.equal(content.byteLength, artifact.bytes);
 			assert.equal(createHash("sha256").update(content).digest("hex"), artifact.sha256);
 		}
+		const bootstrapUnit = await readFile(
+			join(outputRoot, "qorpera-company-computer-bootstrap.service"),
+			"utf-8",
+		);
+		assert.ok(
+			bootstrapUnit.includes(
+				"ReadWritePaths=/var/lib/qorpera-bootstrap /var/lib/qorpera/identity /var/lib/qorpera-runner /var/lib/qorpera-native-provider /srv/qorpera/dataset",
+			),
+			"the bootstrap sandbox must allow writes to every prepared guest state root",
+		);
 		const runnerManifest = await readFile(join(outputRoot, "runner/manifest.json"));
 		assert.equal(
 			createHash("sha256").update(runnerManifest).digest("hex"),
@@ -70,6 +81,27 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 			const syntax = spawnSync(process.execPath, ["--check", join(outputRoot, bundle)], { encoding: "utf-8" });
 			assert.equal(syntax.status, 0, syntax.stderr);
 		}
+		const bootstrapBundle = await readFile(join(outputRoot, "qorpera-company-computer-bootstrap.mjs"), "utf-8");
+		assert.ok(
+			bootstrapBundle.includes('["start", "--no-block", service]'),
+			"the bootstrap must enqueue services that are ordered after it without waiting on their jobs",
+		);
+		for (const serviceBundle of [
+			"qorpera-company-computer-runner.mjs",
+			"qorpera-company-computer-sync.mjs",
+			"qorpera-company-computer-screens.mjs",
+		]) {
+			assert.ok(
+				!(await readFile(join(outputRoot, serviceBundle), "utf-8")).includes("COMPANY_COMPUTER_BOOTSTRAP_READY"),
+				`${serviceBundle} must not execute the bootstrap entrypoint`,
+			);
+		}
+		assert.ok(
+			!(await readFile(join(outputRoot, "qorpera-company-computer-runner.mjs"), "utf-8")).includes(
+				"runEphemeralCloudRunnerServiceMain",
+			),
+			"the Company Computer runner bundle must not execute the standalone runner entrypoint",
+		);
 
 		const builderPath = join(
 			repositoryRoot,
@@ -80,6 +112,14 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 		assert.ok(
 			builder.includes(`EXPECTED_PACKAGE_MANIFEST_SHA256="${manifestSha256}"`),
 			"the image candidate recipe must pin this exact package manifest",
+		);
+		const signer = await readFile(
+			join(repositoryRoot, "deploy/first-node/sign-company-image-provenance.mjs"),
+			"utf-8",
+		);
+		assert.ok(
+			signer.includes(`"--guest-package-manifest-sha256", "${manifestSha256}"`),
+			"the provenance signer must pin this exact package manifest",
 		);
 		const installerPath = join(
 			repositoryRoot,

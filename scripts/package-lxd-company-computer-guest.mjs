@@ -70,6 +70,7 @@ await build({
 });
 
 const sources = new Map([
+	["company-lock-heartbeat.mjs", join(outputRoot, "runner", "company-lock-heartbeat.mjs")],
 	[
 		"qorpera-company-computer-bootstrap.service",
 		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-company-computer-bootstrap.service"),
@@ -150,6 +151,7 @@ for (const creature of STAFF_CREATURES) {
 }
 
 const files = [
+	"company-lock-heartbeat.mjs",
 	"google-chrome-signing-key.asc",
 	"install-image-contract.sh",
 	"qorpera-chrome",

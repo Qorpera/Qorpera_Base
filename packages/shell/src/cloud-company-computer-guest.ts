@@ -51,6 +51,7 @@ export const COMPANY_COMPUTER_GUEST_CREDENTIALS = [
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const REDACTED_TOKEN_PATTERN = /[A-Za-z0-9_-]{43}/g;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const LAYOUT_DIRECTORY_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 const MAX_BOOTSTRAP_BYTES = 64 * 1024;
@@ -207,6 +208,15 @@ export function guestToken(value: string, label: string): string {
 	const token = value.trim();
 	if (!TOKEN_PATTERN.test(token)) throw new Error(`${label} is invalid`);
 	return token;
+}
+
+export function safeCompanyComputerGuestError(error: unknown): string {
+	return (
+		(error instanceof Error ? error.message : String(error))
+			.replace(REDACTED_TOKEN_PATTERN, "[redacted]")
+			.slice(0, 1_000)
+			.trim() || "Company computer guest service failed"
+	);
 }
 
 /** Resolves the verified head through the computer-scoped service RPC; the
@@ -587,7 +597,7 @@ async function serviceIdentity(account: string): Promise<CompanyComputerGuestIde
 }
 
 async function startGuestService(service: string): Promise<void> {
-	await execFileAsync("/usr/bin/systemctl", ["start", service]);
+	await execFileAsync("/usr/bin/systemctl", ["start", "--no-block", service]);
 }
 
 async function serviceGroups(account: string): Promise<readonly number[]> {

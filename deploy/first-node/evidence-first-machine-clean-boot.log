@@ -1,0 +1,6 @@
+clean-boot acceptance for image b75114594b82a76a57585f7c626855788b2be378d816c7e95d1ff788953bb1b0 at 2026-08-26T20:48:00+00:00
+Creating qorpera-cc-verify
+qorpera-company-computer-bootstrap.service: disabled
+qorpera-company-computer-runner.service: disabled
+qorpera-company-computer-sync.service: disabled
+qorpera-company-computer-screens.service: disabled

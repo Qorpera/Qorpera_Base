@@ -65,6 +65,7 @@ if (
   throw new Error("Nested runner guest package does not match the company manifest pin");
 }
 const expected = new Set([
+  "company-lock-heartbeat.mjs",
   "google-chrome-signing-key.asc",
   "install-image-contract.sh",
   "qorpera-chrome",
@@ -127,6 +128,7 @@ fi
 
 install -d -o root -g root -m 0755 /opt/qorpera-company-computer
 for artifact in \
+	company-lock-heartbeat.mjs \
 	qorpera-company-computer-bootstrap.mjs \
 	qorpera-company-computer-runner.mjs \
 	qorpera-company-computer-sync.mjs \

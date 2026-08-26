@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /* Creates and signs the Company Computer image provenance from the Mac.
  * Usage: node sign-provenance.mjs <image-fingerprint> <evidence-sha256> <tested-at-iso>
- * The Keychain item holds the Ed25519 key as base64url PKCS8 DER; it is
- * reconstructed in-process, written to a 0600 temp file for the CLI, and
- * removed immediately after. Nothing secret is printed. */
+ * The encrypted Ed25519 PEM stays under Application Support; Keychain holds
+ * only its passphrase, which is piped to the signer. Nothing secret is
+ * printed. */
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,7 +48,7 @@ try {
 		"--image-server", "local",
 		"--image-fingerprint", fingerprint,
 		"--base-image-fingerprint", "7ef31bed9834094a06517d63b93434588049efcbe2ab5d67419a6167988b7d4f",
-		"--guest-package-manifest-sha256", "acd2cd013361a66fdd56e61b30ecaa3807c8da0610db33ba48b3c6a660fbb1f0",
+		"--guest-package-manifest-sha256", "93d06dc159d162e0bb50d433000b51f32aa44f616ea42ebeb5c6f4f2db0bb3a9",
 		"--runner-image",
 		"localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1",
 		"--runner-image-archive-sha256", "c9370c825bdbd589bf0c1391e567b8f5ea8ba36161cc554b32fcfb235f046239",

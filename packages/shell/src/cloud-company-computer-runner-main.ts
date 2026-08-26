@@ -3,11 +3,25 @@ import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { safeCompanyComputerGuestError } from "./cloud-company-computer-bootstrap-main.ts";
-import { parseCompanyComputerRunnerServiceConfig } from "./cloud-company-computer-guest.ts";
+import {
+	parseCompanyComputerRunnerServiceConfig,
+	safeCompanyComputerGuestError,
+} from "./cloud-company-computer-guest.ts";
 import { CompanyComputerScreenLeaseClient } from "./cloud-company-computer-screens.ts";
 import { runEphemeralCloudRunnerService } from "./cloud-runner-service.ts";
-import { withCloudRunnerShutdownSignals } from "./cloud-runner-service-main.ts";
+
+async function withCompanyComputerRunnerShutdownSignals(run: (signal: AbortSignal) => Promise<void>): Promise<void> {
+	const shutdown = new AbortController();
+	const stop = (): void => shutdown.abort(new Error("Company Computer runner service stopped"));
+	process.once("SIGINT", stop);
+	process.once("SIGTERM", stop);
+	try {
+		await run(shutdown.signal);
+	} finally {
+		process.removeListener("SIGINT", stop);
+		process.removeListener("SIGTERM", stop);
+	}
+}
 
 /** Standing runner service for the Company Computer guest: the reviewed
  * ephemeral execution pipeline, composed from the company-flavor service
@@ -21,7 +35,7 @@ export async function runCloudCompanyComputerRunnerServiceMain(
 	const configPath = environment.QORPERA_RUNNER_CONFIG;
 	if (!configPath) throw new Error("QORPERA_RUNNER_CONFIG is required");
 	const config = parseCompanyComputerRunnerServiceConfig(JSON.parse(await readFile(resolve(configPath), "utf-8")));
-	await withCloudRunnerShutdownSignals((signal) =>
+	await withCompanyComputerRunnerShutdownSignals((signal) =>
 		runEphemeralCloudRunnerService({
 			config,
 			credentialsDirectory: environment.CREDENTIALS_DIRECTORY,

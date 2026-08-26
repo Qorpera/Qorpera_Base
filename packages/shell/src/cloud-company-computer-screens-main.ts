@@ -3,13 +3,13 @@ import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { safeCompanyComputerGuestError } from "./cloud-company-computer-bootstrap-main.ts";
 import {
 	companyComputerObjectTransport,
 	guestServiceKey,
 	guestToken,
 	parseCompanyComputerGuestBootstrap,
 	parseCompanyComputerServiceBaseUrl,
+	safeCompanyComputerGuestError,
 } from "./cloud-company-computer-guest.ts";
 import {
 	COMPANY_COMPUTER_WALLPAPER_SOURCE_PREFIX,

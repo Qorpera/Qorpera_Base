@@ -3,7 +3,6 @@ import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { safeCompanyComputerGuestError } from "./cloud-company-computer-bootstrap-main.ts";
 import {
 	type CompanyComputerGuestBootstrap,
 	companyComputerObjectTransport,
@@ -11,6 +10,7 @@ import {
 	parseCompanyComputerGuestBootstrap,
 	parseCompanyComputerServiceBaseUrl,
 	SupabaseCompanyComputerSyncHeadResolver,
+	safeCompanyComputerGuestError,
 } from "./cloud-company-computer-guest.ts";
 import { runCloudCompanyComputerSyncAgent } from "./cloud-company-computer-sync.ts";
 import { CloudContentAddressedStore } from "./cloud-object-store.ts";
