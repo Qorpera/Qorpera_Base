@@ -2,14 +2,14 @@
 
 Produced by the dedicated Step 3 session continuing from
 `STEP-3-SESSION-REPORT-2026-08-25.md`. Branch `step3/company-computers` at
-`ce0d9a925` (12 commits on `439fadc1c`, all pushed to `github`); tsgo clean,
-biome clean; shell gained 27 new tests (12 sync + 8 screens + 7 guest
-composition), the provider suite grew 6 → 11, full runner-orchestrator suite
-62 passing, and `npm run test:scripts` is green again (13 passing — two
-package-pin tests were failing at this branch's base and are repinned).
-Nothing applied to any Supabase project, no PR opened. `github/master` moved
-ahead during the session (10 commits, none touching the scope-3 base files);
-the branch was deliberately not rebased mid-work.
+`eb46ccb39` (17 commits on `439fadc1c`, all pushed to `github`); tsgo clean,
+biome clean; the four company-computer shell suites hold 36 tests (12 sync +
+12 screens + 8 guest composition + 4 member view), the full
+runner-orchestrator suite is 66 passing, and `npm run test:scripts` is green
+(13 passing — two package-pin tests were failing at this branch's base and
+are repinned). Nothing applied to any Supabase project, no PR opened.
+`github/master` moved ahead during the session (10 commits, none touching
+the scope-3 base files); the branch was deliberately not rebased mid-work.
 
 ## What was built
 
@@ -130,6 +130,49 @@ were already stale at the branch base).
   inside that boundary; the token-gated viewer listener stays the sole
   remote path.
 
+**8. Host-side screen viewer leg.** `8e0f022d3`
+Members mint short-lived single-use view capabilities
+(`qorpera_mint_company_computer_screen_view`, write access — the live
+screen is take-over-able by design; hashed at rest, 120s expiry, redemption
+audited). The host viewer gateway
+(`packages/runner-orchestrator/src/lxd-screen-viewer-gateway.ts`) redeems
+with provider authority, resolves the guest target from the provider
+journal, opens the guest attach leg with the per-computer viewer token, and
+pipes. The company-computer lane is now wired into the provider service:
+`QORPERA_RUNNER_PROVIDER_BACKEND=lxd-company-computer` composes backend +
+dataset-snapshot client + viewer gateway behind the same provenance checks.
+
+**9. Turn execution on the shared machine.** `4f51c82de`
+`parseCompanyComputerRunnerServiceConfig` maps the company service flavor
+onto the reviewed ephemeral pipeline (dataset workbench as execution root —
+per-job workspaces shared-visible and NAS-carried; job types default
+`agent_turn`); `qorpera-company-computer-runner.service` runs it
+LoadCredential-fed. The bootstrap oneshot prepares the full runner lane
+(boundary enforcement, native-provider environment against the computer's
+own compute identity, Compute Identity volume marker + master key, runner
+config install) and starts native provider → runner → sync → screens.
+Executing turns directly inside the standing checkout stays a deliberate
+later execution-mode decision, entangled with the open publication-cadence
+question — recorded, not silently decided.
+
+**10. One-task-per-screen fence wiring + keyframe audit.** `13d9e9824`
+A loopback occupancy broker on the guest hands the execution side its staff
+agent's screen (DISPLAY coordinates; renewable lease; the control plane's
+claim RPC stays the enforcement point). Each screen-agent poll tick
+captures one screenshot per occupied live screen (scrot, no shell) and
+records it via service-role
+`qorpera_record_company_computer_screen_keyframe` as an ordinary artifact —
+inheriting artifact retention/GC, attributed to the occupying run's
+requesting user, bound run↔screen↔artifact in the registry trail.
+
+**11. Member watch/drive path (below the renderer).** `eb46ccb39`
+`packages/shell/src/cloud-company-computer-view.ts`:
+`qorpera_describe_company_computer_screens` member RPC, capability mint
+with the member session, the gateway view handshake handing over the raw
+VNC session, and a loopback single-connection WebSocket bridge (hand-rolled
+RFC 6455 server side) so a stock noVNC client can attach at a local URL.
+The renderer embed itself is the remaining UI pass.
+
 ## Design decisions (charter trace)
 
 - Sync is strictly one-directional; the working copy is never authority
@@ -152,20 +195,21 @@ were already stale at the branch base).
   `20260821001000` ~lines 1024/1039) and `validateCloudRunnerWork`
   (orchestrator.ts ~line 1117) — **strictly after Step 2 acceptance closes**;
   payment structure stays out of the contracts.
-- **Screens slice, remaining stages** (unblocked, in order): host-side
-  viewer leg (member capability check where member traffic terminates, then
-  the guest attach handshake); shell watch/drive surface (noVNC embedding);
-  keyframe artifact publication on the run transcript; execution-path
-  wiring of the claim/release fence for desktop tasks. The image packaging
-  pass — desktop stack, guest composition, service mains and units for both
-  agents, packer, and image-candidate recipe — is DONE (`ce0d9a925`).
-- **Company-flavor runner-lane bootstrap**: the ephemeral runner bootstrap
-  validates the ephemeral schemas (`bootstrap.json`,
-  `qorpera.runner-service/v1`) and exactly four credentials, so turn
-  execution on the shared machine still needs its own bootstrap step that
-  understands `qorpera.company-computer-service/v1` and the five-credential
-  set; recorded in deploy/lxd-company-computer-guest/README.md. A browser
-  is also not yet in the desktop stack.
+- **Screens slice remainder — the renderer UI pass**: the shell's screens
+  panel + noVNC embed on top of the tested local bridge URL. Needs the
+  noVNC dependency decision (pinned-deps policy) and the shell UI's own
+  conventions with visual verification; everything below the renderer is
+  contract-tested. Harness-side computer-use integration (the harness
+  resolving DISPLAY through the guest occupancy broker at
+  127.0.0.1:8447) is the matching execution-side follow-on.
+- **Standing-checkout execution mode**: running turns inside the live
+  `company/` checkout (instead of per-job workspaces on the workbench)
+  removes per-turn materialization per charter principle 4, but requires
+  the publication-cadence founder decision (charter open question) plus
+  runtime-lock/capture semantics in the execution pipeline. Deliberately
+  not decided silently.
+- A browser is not yet in the desktop stack (image apt addition when the
+  UI pass lands).
 - **Runner session re-activation after VM reboot past `pending`** — deferred
   deliberately this session: it changes runner-registration lease semantics
   shared with the Step 2 acceptance currently in flight in the parallel
@@ -175,17 +219,23 @@ were already stale at the branch base).
 
 ## NEXT SESSION PICKUP
 
-1. Read this report; charter and Step 2 architecture as before. The screens
-   decision is RATIFIED; the registry migration, both guest agents, and the
-   image packaging pass are done.
-2. Continue the screens slice: host-side viewer leg → shell watch/drive
-   surface → keyframe artifacts → execution-path claim/release wiring (see
-   "Blocked / deferred" for the stage details). The company-flavor
-   runner-lane bootstrap belongs with the execution-path stage.
-3. If Step 2 acceptance has closed: implement the capsule rule + work
-   validator extension as its own migration/PR, payment structure explicitly
-   excluded.
-4. Also open: runner reboot re-activation once the Step 2 acceptance freeze
-   lifts; a browser in the desktop image.
+1. Read this report; charter and Step 2 architecture as before. Built and
+   pushed this session: delta-sync agent, dataset snapshots, screens
+   registry + guest screen agent, image packaging, the runner lane on the
+   shared machine, the host viewer leg wired into the provider service, the
+   one-task-per-screen fence + keyframe audit, and the member watch/drive
+   path down to a tested local noVNC bridge URL.
+2. Renderer UI pass: screens panel + noVNC embed in the shell (see
+   "Blocked / deferred"), then a browser in the desktop image.
+3. If Step 2 acceptance has closed: the capsule rule + work validator
+   extension as its own migration/PR (payment structure excluded), and
+   runner reboot re-activation.
+4. With the founder: the publication-cadence decision, which unlocks the
+   standing-checkout execution mode.
 5. Consider folding `github/master` (10 commits ahead) into the branch before
    the next build block; nothing upstream conflicts with scope-3 files today.
+6. Deployment note: the first Company Computer image candidate can now be
+   built end to end (package → stage → build-lxd-company-computer-image-
+   candidate.sh) once a signed runner image directory is available; the
+   provider service runs the lane with
+   QORPERA_RUNNER_PROVIDER_BACKEND=lxd-company-computer.
