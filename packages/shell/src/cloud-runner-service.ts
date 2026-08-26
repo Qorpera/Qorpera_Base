@@ -13,7 +13,11 @@ import {
 } from "./cloud-runner-control.ts";
 import { RootlessPodmanSandboxBackend } from "./cloud-runner-podman.ts";
 import type { CloudRunnerSandboxLimits } from "./cloud-runner-sandbox.ts";
-import { type CloudRunnerAssignmentSource, EphemeralCloudRunnerWorker } from "./cloud-runner-worker.ts";
+import {
+	type CloudRunnerAssignmentSource,
+	type CloudRunnerScreenLeaseProvider,
+	EphemeralCloudRunnerWorker,
+} from "./cloud-runner-worker.ts";
 import { FileCloudRunnerAuthorityStore } from "./cloud-runner-worker-state.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
 
@@ -62,6 +66,9 @@ export interface RunEphemeralCloudRunnerServiceOptions {
 	credentialsDirectory?: string;
 	assignmentSource?: CloudRunnerAssignmentSource;
 	signal: AbortSignal;
+	/** Company Computer lane only: the per-job work-surface lease that puts
+	 * DISPLAY on the job's own screen. Absent on the ephemeral lane. */
+	screenLease?: CloudRunnerScreenLeaseProvider;
 	runWorker?: (worker: EphemeralCloudRunnerWorker, signal: AbortSignal) => Promise<void>;
 }
 
@@ -458,6 +465,7 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 		runnerVersion: config.runnerVersion,
 		temporaryRoot: config.temporaryRoot,
 		environment: config.environment,
+		...(options.screenLease ? { screenLease: options.screenLease } : {}),
 		...(config.limits ? { limits: config.limits } : {}),
 		...(config.idlePollMs !== undefined ? { idlePollMs: config.idlePollMs } : {}),
 		...(config.leaseRenewalMs !== undefined ? { leaseRenewalMs: config.leaseRenewalMs } : {}),

@@ -5,6 +5,7 @@ import {
 	CloudCompanyComputerScreenManager,
 	type CompanyComputerScreenLaunch,
 	type CompanyComputerScreenLauncher,
+	CompanyComputerScreenLeaseClient,
 	type CompanyComputerScreenRecord,
 	companyComputerScreenCreature,
 	companyComputerScreenDisplay,
@@ -574,6 +575,63 @@ describe("cloud company computer screens", () => {
 			p_content_sha256: "b".repeat(64),
 			p_bytes: 9,
 		});
+	});
+
+	it("leases a screen for a job through the loopback broker, renews, and releases", async () => {
+		const runId = "30000000-0000-4000-8000-000000000100";
+		const jobId = "30000000-0000-4000-8000-000000000010";
+		const occupations: string[] = [];
+		const releases: string[] = [];
+		const broker = await startCompanyComputerScreenBroker({
+			port: 0,
+			occupancy: {
+				claim: async (claimedScreenId, claimedRunId) => {
+					occupations.push(claimedRunId);
+					return { ...screenRecord(2), screenId: claimedScreenId, occupyingRunId: claimedRunId };
+				},
+				release: async (_releasedScreenId, releasedRunId) => {
+					releases.push(releasedRunId);
+				},
+			},
+			records: () => [{ ...screenRecord(2), screenId, attachedStaffAgentId: staffAgentId }],
+		});
+		try {
+			const client = new CompanyComputerScreenLeaseClient({
+				brokerUrl: `http://127.0.0.1:${broker.port}/`,
+				renewIntervalMs: 40,
+				onError: (error) => {
+					throw error;
+				},
+			});
+			const lease = await client.acquire({
+				jobId,
+				describeRun: async () => ({ runId, staffAgentId }),
+			});
+			expect(lease?.environment).toEqual({
+				DISPLAY: ":2",
+				QORPERA_SCREEN_ORDINAL: "2",
+				QORPERA_SCREEN_VNC_PORT: "5902",
+			});
+			await new Promise((resolveWait) => setTimeout(resolveWait, 120));
+			expect(occupations.length).toBeGreaterThanOrEqual(2);
+			await lease?.release();
+			expect(releases).toEqual([runId]);
+			const renewalsAtRelease = occupations.length;
+			await new Promise((resolveWait) => setTimeout(resolveWait, 90));
+			expect(occupations.length).toBe(renewalsAtRelease);
+
+			const unattached = await client.acquire({
+				jobId,
+				describeRun: async () => ({ runId, staffAgentId: "30000000-0000-4000-8000-000000000099" }),
+			});
+			expect(unattached).toBeUndefined();
+		} finally {
+			await broker.close();
+		}
+		const downClient = new CompanyComputerScreenLeaseClient({ brokerUrl: `http://127.0.0.1:${broker.port}/` });
+		await expect(
+			downClient.acquire({ jobId, describeRun: async () => ({ runId, staffAgentId }) }),
+		).resolves.toBeUndefined();
 	});
 
 	it("brokers screen occupancy for the attached staff agent over loopback", async () => {

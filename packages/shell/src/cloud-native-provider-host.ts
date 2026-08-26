@@ -76,6 +76,7 @@ export interface NativeHarnessExecutionInput {
 	identityRoot: string;
 	companyRoot: string;
 	prompt: string;
+	environment?: Readonly<Record<string, string>>;
 	signal?: AbortSignal;
 }
 
@@ -119,6 +120,9 @@ export interface NativeProviderExecutionRequest {
 		transcriptPath: string;
 	};
 	outputRoot: string;
+	/** Extra harness environment from the runner (DISPLAY on the Company
+	 * Computer's screens); never allowed to touch the identity boundary. */
+	environment?: Readonly<Record<string, string>>;
 }
 
 interface CapsuleFile {
@@ -602,6 +606,18 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 		const root = requiredAbsolutePath(input.identityRoot, "Native identity root");
 		const companyRoot = requiredAbsolutePath(input.companyRoot, "Native Company File root");
 		const environment = await prepareHarnessEnvironment(root);
+		if (input.environment) {
+			/* Runner-supplied variables ride alongside the clean harness
+			 * environment; the identity boundary's own variables are never
+			 * overridable, so a work-surface hint can't repoint HOME or the
+			 * capsule directories. */
+			for (const [key, value] of Object.entries(input.environment)) {
+				if (key in environment) {
+					throw new Error("Native harness environment cannot override the identity boundary");
+				}
+				environment[key] = value;
+			}
+		}
 		if (!input.model.trim() || input.model.length > 160 || /[\0\r\n]/.test(input.model)) {
 			throw new Error("Native model is invalid");
 		}
@@ -896,6 +912,7 @@ export class NativeProviderHost {
 				identityRoot: root,
 				companyRoot: request.input.companyRoot,
 				prompt: context.prompt,
+				...(request.environment ? { environment: request.environment } : {}),
 				signal: executionAbort.signal,
 			});
 			/* The harness runs as this host's user; entries it creates carry

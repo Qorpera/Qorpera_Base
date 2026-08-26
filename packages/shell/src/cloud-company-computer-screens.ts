@@ -738,6 +738,100 @@ export interface CompanyComputerScreenKeyframes {
 	profileId: string;
 }
 
+const SCREEN_LEASE_RENEW_INTERVAL_MS = 4 * 60_000;
+
+export interface AcquiredCompanyComputerScreenLease {
+	environment: Readonly<Record<string, string>>;
+	release(): Promise<void>;
+}
+
+export interface CompanyComputerScreenLeaseClientOptions {
+	brokerUrl?: string;
+	fetchImplementation?: typeof fetch;
+	renewIntervalMs?: number;
+	onError?: (error: unknown) => void;
+}
+
+/** The runner side of the one-task-per-screen fence: before a job executes,
+ * ask the loopback occupancy broker for the screen attached to the job's
+ * staff agent and put DISPLAY on it; renew quietly while the job runs and
+ * release when it ends. Every failure degrades to headless — a screen is a
+ * work surface, never a precondition, so a busy fence, an unattached agent,
+ * or a down screen agent must never fail the turn. */
+export class CompanyComputerScreenLeaseClient {
+	readonly #brokerUrl: string;
+	readonly #fetch: typeof fetch;
+	readonly #renewIntervalMs: number;
+	readonly #onError?: (error: unknown) => void;
+
+	constructor(options: CompanyComputerScreenLeaseClientOptions = {}) {
+		this.#brokerUrl = options.brokerUrl ?? `http://127.0.0.1:${COMPANY_COMPUTER_SCREEN_BROKER_PORT}/`;
+		this.#fetch = options.fetchImplementation ?? fetch;
+		this.#renewIntervalMs = options.renewIntervalMs ?? SCREEN_LEASE_RENEW_INTERVAL_MS;
+		if (options.onError) this.#onError = options.onError;
+	}
+
+	async #occupy(runId: string, staffAgentId: string): Promise<Record<string, unknown> | undefined> {
+		const response = await this.#fetch(new URL("/v1/screens/occupy", this.#brokerUrl), {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ run_id: runId, staff_agent_id: staffAgentId }),
+			signal: AbortSignal.timeout(15_000),
+		});
+		const body = (await response.json().catch(() => undefined)) as Record<string, unknown> | undefined;
+		if (!response.ok || !body || body.ok !== true) return undefined;
+		return body;
+	}
+
+	async acquire(context: {
+		jobId: string;
+		describeRun(): Promise<{ runId: string; staffAgentId: string }>;
+	}): Promise<AcquiredCompanyComputerScreenLease | undefined> {
+		let runId: string;
+		let staffAgentId: string;
+		let grant: Record<string, unknown> | undefined;
+		try {
+			({ runId, staffAgentId } = await context.describeRun());
+			grant = await this.#occupy(runId, staffAgentId);
+		} catch (error) {
+			this.#onError?.(error);
+			return undefined;
+		}
+		if (
+			!grant ||
+			typeof grant.display !== "string" ||
+			!Number.isSafeInteger(grant.screen_ordinal) ||
+			!Number.isSafeInteger(grant.vnc_port)
+		) {
+			return undefined;
+		}
+		const ordinal = grant.screen_ordinal as number;
+		const renewal = setInterval(() => {
+			void this.#occupy(runId, staffAgentId).catch((error: unknown) => this.#onError?.(error));
+		}, this.#renewIntervalMs);
+		return {
+			environment: Object.freeze({
+				DISPLAY: grant.display,
+				QORPERA_SCREEN_ORDINAL: String(ordinal),
+				QORPERA_SCREEN_VNC_PORT: String(grant.vnc_port as number),
+			}),
+			release: async () => {
+				clearInterval(renewal);
+				try {
+					await this.#fetch(new URL("/v1/screens/release", this.#brokerUrl), {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ run_id: runId, screen_ordinal: ordinal }),
+						signal: AbortSignal.timeout(15_000),
+					});
+				} catch (error) {
+					this.#onError?.(error);
+				}
+			},
+		};
+	}
+}
+
 /** The image bakes one wallpaper per creature at this prefix. */
 export const COMPANY_COMPUTER_WALLPAPER_SOURCE_PREFIX = "/usr/share/backgrounds/qorpera-screen-";
 

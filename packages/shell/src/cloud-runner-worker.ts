@@ -27,6 +27,26 @@ export type EphemeralCloudRunnerWorkerResult =
 	| { status: "completed"; job: CloudRunnerJob }
 	| { status: "requeued" | "failed"; job: CloudRunnerJob };
 
+export interface CloudRunnerScreenLease {
+	/** Merged into the job's execution environment (DISPLAY and friends). */
+	environment: Readonly<Record<string, string>>;
+	release(): Promise<void>;
+}
+
+export interface CloudRunnerScreenLeaseContext {
+	jobId: string;
+	describeRun(): Promise<{ runId: string; staffAgentId: string }>;
+}
+
+/** Optional per-job work-surface lease (the Company Computer's
+ * one-task-per-screen fence). Absent on the ephemeral lane; when
+ * configured, an undefined acquisition means "no screen for this job" and
+ * the job runs headless — a screen is a work surface, never a
+ * precondition. */
+export interface CloudRunnerScreenLeaseProvider {
+	acquire(context: CloudRunnerScreenLeaseContext): Promise<CloudRunnerScreenLease | undefined>;
+}
+
 export interface EphemeralCloudRunnerWorkerOptions {
 	runner: DisposableCloudRunner;
 	brokerTransport: CloudRunnerBrokerTransport;
@@ -37,6 +57,7 @@ export interface EphemeralCloudRunnerWorkerOptions {
 	runnerVersion: string;
 	temporaryRoot?: string;
 	environment?: Readonly<Record<string, string>>;
+	screenLease?: CloudRunnerScreenLeaseProvider;
 	limits?: Partial<CloudRunnerSandboxLimits>;
 	idlePollMs?: number;
 	leaseRenewalMs?: number;
@@ -279,10 +300,23 @@ export class EphemeralCloudRunnerWorker {
 			maintenanceAbort.abort();
 			await maintenance;
 		};
+		let screenLease: CloudRunnerScreenLease | undefined;
 		try {
 			const broker = this.#options.runner.broker(job, this.#options.brokerTransport, executionAbort.signal);
 			let execution: CloudRunnerExecutionResult;
 			try {
+				if (this.#options.screenLease) {
+					screenLease = await this.#options.screenLease.acquire({
+						jobId: job.jobId,
+						describeRun: async () => {
+							const description = await broker.describe();
+							return { runId: description.run.runId, staffAgentId: description.run.staffAgentId };
+						},
+					});
+				}
+				const environment = screenLease
+					? { ...(this.#options.environment ?? {}), ...screenLease.environment }
+					: this.#options.environment;
 				const shared = {
 					job,
 					substrate: broker,
@@ -290,7 +324,7 @@ export class EphemeralCloudRunnerWorker {
 					outputPublisher: new CloudRunnerBrokerOutputPublisher(broker),
 					companyFilePublisher: new CloudRunnerBrokerCompanyFilePublisher(broker),
 					...(this.#options.limits ? { limits: this.#options.limits } : {}),
-					...(this.#options.environment ? { environment: this.#options.environment } : {}),
+					...(environment ? { environment } : {}),
 					...(this.#options.temporaryRoot ? { temporaryRoot: this.#options.temporaryRoot } : {}),
 					signal: executionAbort.signal,
 				};
@@ -355,6 +389,10 @@ export class EphemeralCloudRunnerWorker {
 				job: await this.#options.runner.complete(job.jobId, execution.result, execution.outputSnapshotId),
 			};
 		} finally {
+			/* The screen fence outlives failure paths too; release is
+			 * goal-state idempotent on the control plane, so cleanup can
+			 * never fail the job. */
+			await screenLease?.release().catch(() => undefined);
 			await stopMaintenance();
 			signal.removeEventListener("abort", externalAbort);
 		}

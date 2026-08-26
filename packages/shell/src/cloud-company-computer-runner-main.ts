@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { safeCompanyComputerGuestError } from "./cloud-company-computer-bootstrap-main.ts";
 import { parseCompanyComputerRunnerServiceConfig } from "./cloud-company-computer-guest.ts";
+import { CompanyComputerScreenLeaseClient } from "./cloud-company-computer-screens.ts";
 import { runEphemeralCloudRunnerService } from "./cloud-runner-service.ts";
 import { withCloudRunnerShutdownSignals } from "./cloud-runner-service-main.ts";
 
@@ -24,6 +25,13 @@ export async function runCloudCompanyComputerRunnerServiceMain(
 		runEphemeralCloudRunnerService({
 			config,
 			credentialsDirectory: environment.CREDENTIALS_DIRECTORY,
+			/* Every job on the shared machine gets its staff agent's screen as
+			 * DISPLAY when one is attached; the loopback occupancy broker and
+			 * the control plane's claim RPC enforce the fence, and everything
+			 * degrades to headless rather than failing the turn. */
+			screenLease: new CompanyComputerScreenLeaseClient({
+				onError: (error) => console.error(safeCompanyComputerGuestError(error)),
+			}),
 			signal,
 		}),
 	);

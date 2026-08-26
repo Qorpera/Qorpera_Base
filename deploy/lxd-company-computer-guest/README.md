@@ -45,6 +45,17 @@ What this layer adds on top of the runner contract:
   tasks in the runner lane can reach the screens' X sockets — screens are
   parallel work surfaces on one trust domain, never boundaries.
 
+**Computer use on a screen**: a turn executing on the shared machine gets
+`DISPLAY` (plus `QORPERA_SCREEN_ORDINAL` / `QORPERA_SCREEN_VNC_PORT`) in its
+harness environment automatically whenever its staff agent has a screen
+attached — the runner leases the screen through the loopback occupancy
+broker (`127.0.0.1:8447`), renews it while the job runs, and releases it at
+the end; the control plane's claim RPC enforces the one-task-per-screen
+fence. Agents simply use X tooling against `DISPLAY`; no screen means the
+variables are absent and the turn runs headless. The identity boundary's
+own environment (HOME, capsule directories, PATH) can never be overridden
+by this path.
+
 The published image starts nothing on its own: all three units are
 installed disabled (the ephemeral runner bootstrap entry inherited from the
 nested contract is disabled too), and the provider's

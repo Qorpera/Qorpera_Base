@@ -202,6 +202,7 @@ function bridgeProjection(authority: CloudRunnerNativeAuthority, request: CloudR
 			attachments_root: request.input.attachmentsRoot,
 			output_root: request.outputRoot,
 		},
+		...(Object.keys(request.environment).length > 0 ? { environment: { ...request.environment } } : {}),
 		limits: {
 			wall_time_ms: request.limits.wallTimeMs,
 			memory_bytes: request.limits.memoryBytes,
