@@ -15,7 +15,6 @@
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
-	appendFileSync,
 	chmodSync,
 	existsSync,
 	mkdirSync,
@@ -198,7 +197,6 @@ import {
 	protectedCompanyAgentPaths,
 	provisionSandbox,
 	pruneEmptyTrailSessions,
-	trailSessionMessages,
 	reconcileKernelGateCreations,
 	sandboxCommandArgs,
 	sandboxConfigDir,
@@ -206,6 +204,7 @@ import {
 	sandboxRuntimeDir,
 	shareWindowsSandboxState,
 	type TrailBinding,
+	trailSessionMessages,
 	writeSandboxProfile,
 } from "./agent-runtime.ts";
 import { migrateCompanyToAgentsOnly } from "./agents-only-company-migration.ts";
@@ -8617,11 +8616,17 @@ function trailSessionLeafEntryId(path: string): string | null {
 function anchoredSessionState(root: string, sessionFile: string): Record<string, unknown> {
 	const state: Record<string, unknown> = { responseSpeed: "standard" };
 	try {
-		const lines = readFileSync(join(root, "trail", sessionFile), "utf-8").split(/\r?\n/).filter(Boolean);
+		const lines = readFileSync(join(root, "trail", sessionFile), "utf-8")
+			.split(/\r?\n/)
+			.filter(Boolean);
 		for (const line of lines.slice(1)) {
 			try {
 				const entry = JSON.parse(line) as Record<string, unknown>;
-				if (entry.type === "model_change" && typeof entry.provider === "string" && typeof entry.modelId === "string") {
+				if (
+					entry.type === "model_change" &&
+					typeof entry.provider === "string" &&
+					typeof entry.modelId === "string"
+				) {
 					state.model = { provider: entry.provider, id: entry.modelId };
 				} else if (entry.type === "thinking_level_change" && typeof entry.thinkingLevel === "string") {
 					state.thinkingLevel = entry.thinkingLevel;
@@ -8654,10 +8659,7 @@ async function anchoredSessionRpc(
 	const sessions = sessionControlPlanes.get(normalizedRoot(runtime.root));
 	const appendSelection = (entry: Record<string, unknown>): Record<string, unknown> => {
 		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
-		const append = parseTrailAppendFrame(
-			{ type: "qorpera_trail_append", token: binding.token, entry },
-			binding,
-		);
+		const append = parseTrailAppendFrame({ type: "qorpera_trail_append", token: binding.token, entry }, binding);
 		if (!append) return { ok: false, error: "selection could not be recorded" };
 		appendBoundTrailEntry(binding, append.entry);
 		commitTrailAppend(binding, append);

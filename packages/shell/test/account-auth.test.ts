@@ -7,7 +7,6 @@ import {
 	accountAuthStoragePath,
 	FileAccountAuthStorage,
 	projectQorperaAccount,
-	QORPERA_OBJECT_GATEWAY_URL,
 	QorperaAccountAuth,
 	type QorperaAccountAuthOptions,
 } from "../src/account-auth.ts";

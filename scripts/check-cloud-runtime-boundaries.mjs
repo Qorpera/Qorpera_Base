@@ -41,17 +41,31 @@ if (existsSync(oldBrokerPath)) failures.push("packages/shell/src/model-request-b
 
 const mainPath = join(repositoryRoot, "packages/shell/src/main.ts");
 const mainSource = readFileSync(mainPath, "utf-8");
+const sponsoredTurnStart = mainSource.indexOf("async function requestSponsoredCloudTurn(");
+const sponsoredTurnEnd = mainSource.indexOf("function trailSessionLeafEntryId(", sponsoredTurnStart);
+if (sponsoredTurnStart < 0 || sponsoredTurnEnd <= sponsoredTurnStart) {
+	failures.push("packages/shell/src/main.ts: sponsored cloud turn boundary was not found");
+} else {
+	const sponsoredTurn = mainSource.slice(sponsoredTurnStart, sponsoredTurnEnd);
+	if (!sponsoredTurn.includes("await control.requestSessionTurn({")) {
+		failures.push("packages/shell/src/main.ts: sponsored cloud turns must enqueue a runner job");
+	}
+	if (!sponsoredTurn.includes("Cloud turns never use the desktop model runtime.")) {
+		failures.push("packages/shell/src/main.ts: cloud turns must reject an absent execution sponsor");
+	}
+	if (sponsoredTurn.includes("enqueueCloudPrompt(") || sponsoredTurn.includes("sendLegacyLocalPrompt(")) {
+		failures.push("packages/shell/src/main.ts: sponsored cloud turns may not fall back to the legacy local executor");
+	}
+}
+
 const composerStart = mainSource.indexOf("const cloudSponsoredPrompt = reviewedCloudPrompt?.executionSponsor !== undefined;");
 const composerEnd = mainSource.indexOf('if (cloudStaffConversation && frame.type === "prompt")', composerStart);
 if (composerStart < 0 || composerEnd <= composerStart) {
 	failures.push("packages/shell/src/main.ts: cloud composer boundary was not found");
 } else {
 	const composer = mainSource.slice(composerStart, composerEnd);
-	if (!composer.includes("await control.requestSessionTurn({")) {
-		failures.push("packages/shell/src/main.ts: sponsored cloud turns must enqueue a runner job");
-	}
-	if (!composer.includes("Cloud turns never use the desktop model runtime.")) {
-		failures.push("packages/shell/src/main.ts: cloud turns must reject an absent execution sponsor");
+	if (!composer.includes("requestSponsoredCloudTurn(runtime, sendArbiter, sendStaffId, sendRef, reviewed)")) {
+		failures.push("packages/shell/src/main.ts: cloud composer must use the sponsored turn boundary");
 	}
 	if (composer.includes("enqueueCloudPrompt(") || composer.includes("sendLegacyLocalPrompt(")) {
 		failures.push("packages/shell/src/main.ts: cloud composer may not fall back to the legacy local executor");

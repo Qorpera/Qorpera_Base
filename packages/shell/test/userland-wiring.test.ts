@@ -210,7 +210,9 @@ describe("userland wiring", () => {
 		/* Queued bubbles read as ordinary sent messages: no author, no
 		 * Processing/Queued meta — only a failure surfaces, as Needs review. */
 		expect(rendererSource).toContain(
-			'status.textContent = input.status === "failed" ? `Needs review${failure ? ` · ${failure}` : ""}` : ""',
+			'status.textContent = input.status === "failed" ? `Needs review$' +
+				"{failure ? ` · $" +
+				'{failure}` : ""}` : ""',
 		);
 		expect(rendererSource).not.toContain('? "Processing"');
 		expect(rendererSource).toContain("result.queued");
@@ -299,7 +301,9 @@ describe("userland wiring", () => {
 		expect(cloudStart).toBeGreaterThan(-1);
 		expect(cloudEnd).toBeGreaterThan(cloudStart);
 		const cloudComposer = mainSource.slice(cloudStart, cloudEnd);
-		expect(cloudComposer).toContain("requestSponsoredCloudTurn(runtime, sendArbiter, sendStaffId, sendRef, reviewed)");
+		expect(cloudComposer).toContain(
+			"requestSponsoredCloudTurn(runtime, sendArbiter, sendStaffId, sendRef, reviewed)",
+		);
 		expect(cloudComposer).not.toContain("sendLegacyLocalPrompt(");
 		/* The childless anchor answers the whole session surface. */
 		expect(mainSource).toContain("async function anchoredSessionRpc(");
