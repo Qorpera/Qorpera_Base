@@ -494,7 +494,11 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 			await chown(executionRoot, -1, this.#nativeWorkspaceGid);
 			await chmod(executionRoot, 0o2750);
 			await shareNativeWorkspaceTree(inputRoot, this.#nativeWorkspaceGid, false);
-			await shareNativeWorkspaceTree(workRoot, this.#nativeWorkspaceGid, true);
+			/* The live company tree is not group-shared: its NAS export squashes
+			 * every writer to one owner and the tree carries open modes, so a
+			 * chown sweep is both impossible (read-only mount parent) and
+			 * unnecessary. */
+			if (!liveMode) await shareNativeWorkspaceTree(workRoot, this.#nativeWorkspaceGid, true);
 			await shareNativeWorkspaceTree(request.outputRoot, this.#nativeWorkspaceGid, true);
 		}
 		const authority = await this.#refreshAuthority();
