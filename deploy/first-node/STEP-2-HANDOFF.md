@@ -1,5 +1,21 @@
 # Step 2 implementation handoff
 
+**FOUNDER RULINGS (2026-08-26, late): cloud-only execution and the live
+company file.** (1) The local executor is removed entirely, not demoted:
+an agent exists and works whether or not anyone has the app open; the app
+is a window onto the agents, never their engine. Every attended prompt
+becomes a cloud turn, presence reflects cloud runtime state, and prompts
+staged with no device attached execute through a standing cloud consumer.
+Headless cloud execution IS Step 2's identity. (2) The light file model is
+ratified: agents work live on the company file; continuous background
+snapshots (every turn end plus a timer) build the verified chain behind
+the work with verification running asynchronously and alerting instead of
+blocking; the publication gate survives only at outward effects,
+member-device sync anchors, and hard-isolation lanes. The per-turn
+materialize/copy/verify/stamp cycle for ordinary work retires. Sequencing:
+the gate model remains in force through the remaining acceptance items;
+the live model implements immediately after.
+
 **GATE CLOSED (2026-08-26):** the file-changing publication turn completed
 end to end. Run `632b71e2-199d-42d1-9a8f-2fa1e893ee73` (marker
 STEP2_V34E_PUBLICATION_PROBE_20260826, v34 image, attempt 1, no retries):
