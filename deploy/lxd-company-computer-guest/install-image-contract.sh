@@ -27,6 +27,22 @@ if [[ $(uname -m) != x86_64 ]]; then
 	exit 1
 fi
 
+# Node arrives with the nested runner contract, so before it runs the nested
+# pin is checked with shell tools alone; the full artifact verification
+# (which already ran host-side in the build recipe) re-runs below the moment
+# node exists.
+runner_manifest_sha=$(sha256sum "${PACKAGE_ROOT}/runner/manifest.json" | awk '{ print $1 }')
+pinned_runner_sha=$(grep -o '"manifestSha256": *"[0-9a-f]\{64\}"' "${PACKAGE_ROOT}/manifest.json" | grep -o '[0-9a-f]\{64\}' | head -1)
+if [[ -z ${pinned_runner_sha} || ${runner_manifest_sha} != "${pinned_runner_sha}" ]]; then
+	echo "Nested runner guest package does not match the company manifest pin." >&2
+	exit 1
+fi
+
+# The runner contract first: it installs the pinned runtime, the service
+# accounts, the native harnesses, and the signed sandbox image the shared
+# machine's execution lane uses unchanged.
+bash "${PACKAGE_ROOT}/runner/install-image-contract.sh" "${PACKAGE_ROOT}/runner"
+
 PACKAGE_ROOT=${PACKAGE_ROOT} node <<'NODE'
 const { createHash } = require("node:crypto");
 const { lstatSync, readFileSync, realpathSync } = require("node:fs");
@@ -89,10 +105,6 @@ for (const artifact of manifest.artifacts) {
 if (expected.size !== 0) throw new Error("Company computer guest package is incomplete");
 NODE
 
-# The runner contract first: it installs the pinned runtime, the service
-# accounts, the native harnesses, and the signed sandbox image the shared
-# machine's execution lane uses unchanged.
-bash "${PACKAGE_ROOT}/runner/install-image-contract.sh" "${PACKAGE_ROOT}/runner"
 
 # The ephemeral bootstrap entry stays installed but never fires on a Company
 # Computer (its condition file is bootstrap.json, not company-computer.json);
