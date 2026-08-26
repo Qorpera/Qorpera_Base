@@ -2,12 +2,13 @@
 
 Produced by the dedicated Step 3 session continuing from
 `STEP-3-SESSION-REPORT-2026-08-25.md`. Branch `step3/company-computers` at
-`2cf3145b4` (7 commits on `439fadc1c`, all pushed to `github`); tsgo clean,
-biome clean; 12 new shell sync tests, provider suite grown 6 → 10, full
-runner-orchestrator suite 61 passing, targeted shell suites (sync + merge +
-snapshot) 34 passing. Nothing applied to any Supabase project, no PR opened.
-`github/master` moved ahead during the session (10 commits, none touching the
-scope-3 base files); the branch was deliberately not rebased mid-work.
+`8754e8d9e` (9 commits on `439fadc1c`, all pushed to `github`); tsgo clean,
+biome clean; shell gained 20 new tests (12 sync + 8 screens), the provider
+suite grew 6 → 11, full runner-orchestrator suite 62 passing, targeted shell
+suites (sync + screens + merge + snapshot) 42 passing. Nothing applied to
+any Supabase project, no PR opened. `github/master` moved ahead during the
+session (10 commits, none touching the scope-3 base files); the branch was
+deliberately not rebased mid-work.
 
 ## What was built
 
@@ -76,6 +77,27 @@ replaceable; release is goal-state idempotent. Registry events extend the
 company-computer audit trail. Dispatch admission is untouched — the claim
 RPC is the runtime fence, to be wired by the execution path.
 
+**6. Guest screen agent (second stage of the ratified build).** `8754e8d9e`
+`packages/shell/src/cloud-company-computer-screens.ts` + 8 colocated tests.
+- `CloudCompanyComputerScreenManager` converges live desktop sessions to the
+  registry via the new service-role `qorpera_list_company_computer_screens`
+  RPC (`supabase/migrations/20260826040000_...`, draft, applied nowhere);
+  crashed sessions relaunch on the next reconcile.
+- `ExecCompanyComputerScreenLauncher` runs the image's per-screen desktop
+  command ({ordinal}/{display}/{vnc_port} substituted per argument, no
+  shell, SIGTERM with SIGKILL escalation); VNC convention: display :N,
+  loopback port 5900+N.
+- The viewer listener is the guest's only way in: raw TCP, one JSON attach
+  handshake, connections accepted solely from the trusted host bridge
+  address holding the provider-delivered viewer token (timing-safe compare),
+  then a byte-for-byte pipe to the screen's loopback VNC socket. Live
+  attachments are severed on shutdown so close never hangs.
+- Provider: `screens` block added to `qorpera.company-computer-bootstrap/v1`
+  (viewer_host/viewer_port/viewer_trusted_source/poll_seconds; viewer port
+  default 8446, validated distinct from the assignment and native-bridge
+  ports), plus a fourth per-computer credential `qorpera-screen-viewer`
+  journaled and delivered like the assignment token.
+
 ## Design decisions (charter trace)
 
 - Sync is strictly one-directional; the working copy is never authority
@@ -98,12 +120,14 @@ RPC is the runtime fence, to be wired by the execution path.
   `20260821001000` ~lines 1024/1039) and `validateCloudRunnerWork`
   (orchestrator.ts ~line 1117) — **strictly after Step 2 acceptance closes**;
   payment structure stays out of the contracts.
-- **Screens slice, remaining stages** (unblocked, in order): guest screen
-  agent in the image (per-screen Xvnc/XFCE session lifecycle, loopback-only
-  viewer sockets, brokered capability check on attach); shell watch/drive
-  surface over the broker path; keyframe artifact publication on the run
-  transcript; execution-path wiring of the claim/release fence for desktop
-  tasks.
+- **Screens slice, remaining stages** (unblocked, in order): image packaging
+  pass — the Xvnc/XFCE desktop stack in the guest image plus the systemd
+  service mains composing BOTH guest agents (sync and screens) from the
+  bootstrap file and credentials; the host-side viewer leg (member
+  capability check where member traffic terminates, then the guest attach
+  handshake); shell watch/drive surface (noVNC embedding); keyframe artifact
+  publication on the run transcript; execution-path wiring of the
+  claim/release fence for desktop tasks.
 - **Guest service wiring for the sync agent**: the module, config parser, and
   poll loop exist; the guest systemd unit that reads
   `/var/lib/qorpera-bootstrap/company-computer.json` and composes the hosted
@@ -120,11 +144,12 @@ RPC is the runtime fence, to be wired by the execution path.
 ## NEXT SESSION PICKUP
 
 1. Read this report; charter and Step 2 architecture as before. The screens
-   decision is RATIFIED and the registry migration exists — the registry
-   stage of the screens slice is done.
-2. Continue the screens slice: guest screen agent in the image → shell
-   watch/drive surface → keyframe artifacts → execution-path claim/release
-   wiring (see "Blocked / deferred" for the stage details).
+   decision is RATIFIED; the registry migration AND the guest screen agent
+   module are done.
+2. Continue the screens slice: image packaging pass (desktop stack + service
+   mains for both guest agents) → host-side viewer leg → shell watch/drive
+   surface → keyframe artifacts → execution-path claim/release wiring (see
+   "Blocked / deferred" for the stage details).
 3. If Step 2 acceptance has closed: implement the capsule rule + work
    validator extension as its own migration/PR, payment structure explicitly
    excluded.
