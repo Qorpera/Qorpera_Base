@@ -1,5 +1,26 @@
 # Step 2 implementation handoff
 
+**STEP 2 EXECUTION ARCHITECTURE COMPLETE (2026-08-26, 06:00 UTC+2).**
+Per the founder's definition — cloud runners and headless execution as the
+only execution — the architecture is delivered and verified end to end:
+the publication turn closed the gate (run `632b71e2`, published, head
+advanced); an attended prompt typed into the released 0.20.27 app became
+cloud turn `f69e5228`, executed on the node under the member's Codex
+subscription capsule with no local model runtime, completed with
+transcript sequence 3, and surfaced as `completed` with presence `Ready`;
+the local executor can no longer execute (the composer's local target is
+removed, every staff prompt carries a cloud sponsor, and unsendable
+prompts fail closed). Closeout list, in order: (1) cloud-turn replies
+materializing into the thread pane (sync-down path; control plane and
+header already show the truth); (2) childless session anchors — delete
+the residual non-executing local child; (3) a control-plane prompt outbox
+consumer for device-off staging; (4) conception as a cloud turn;
+(5) presence fully cloud-derived; (6) the original acceptance matrix
+(Claude login, second member, sponsor switching, revocation, offline
+devices, storage/recovery gate); (7) the ratified live-company-file
+model. Items 1–5 are the cloud-only ruling's mechanical completion;
+6 validates; 7 is the next architecture step.
+
 **FOUNDER RULINGS (2026-08-26, late): cloud-only execution and the live
 company file.** (1) The local executor is removed entirely, not demoted:
 an agent exists and works whether or not anyone has the app open; the app
