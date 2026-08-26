@@ -20,11 +20,19 @@ interface StaffDragApi {
 }
 
 const context: { window: { qorperaStaffDrag?: StaffDragApi } } = { window: {} };
-runInNewContext(readFileSync(new URL("../userland/staff-drag.js", import.meta.url), "utf8"), context);
+const source = readFileSync(new URL("../userland/staff-drag.js", import.meta.url), "utf8");
+runInNewContext(source, context);
 const drag = context.window.qorperaStaffDrag;
 if (!drag) throw new Error("staff drag API did not initialize");
 
 describe("staff drag ordering", () => {
+	it("previews the reordered layout instead of marking a swap target", () => {
+		expect(source).toContain("animateLayout(root");
+		expect(source).toContain("applyOrder(pinnedZone, listZone");
+		expect(source).not.toContain("staff-drop-before");
+		expect(source).not.toContain("staff-drop-after");
+	});
+
 	it("reorders agents within the ordinary list", () => {
 		expect(drag.moveOrder(["p1"], ["a", "b", "c"], "c", false, "a")).toEqual({
 			pinned: ["p1"],
