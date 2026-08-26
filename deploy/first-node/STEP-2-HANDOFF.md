@@ -1,5 +1,30 @@
 # Step 2 implementation handoff
 
+**CHILDLESS SESSION ANCHORS — ledger item 2 done for the attended lane
+(2026-08-26, ~10:30 UTC+2, releases 0.20.35–0.20.39).** Opening a cloud
+staff thread spawns NOTHING: `attachStaffChild` binds a process-less
+`runtime.sessionAnchor` (a live TrailBinding — sync materializes
+through it), `anchoredSessionRpc` answers the renderer's whole session
+surface from the trail file (get_messages/get_fork_messages via
+`trailSessionMessages` — active-chain walk; get_state from recorded
+selections; set_model/set_thinking_level/set_session_name append to the
+trail; prompts route through the shared `requestSponsoredCloudTurn`),
+and `scheduleStaffThreadRefresh` tells the pane to reload when a cloud
+reply materializes — no respawn, since there is no process holding
+stale session state. Staff create/bootstrap/archive-next and the
+wake/room restore path all anchor instead of spawning for cloud
+profiles; `activeCompanyInfo`, the prompt-outbox trio, and connection
+request identity derive their session from `attendedSessionBinding`.
+Verified hands-off on released 0.20.39: thread history renders, a
+composer prompt became cloud turn → "Release" reply auto-rendered, and
+`ps` shows zero agent processes throughout. Protocol gotchas burned
+into 0.20.36–0.20.38: anchor responses must ride the `rpc-event`
+channel with a `type: "response"` envelope, and CDP-side monkey-patching
+during verification can mask working signals — clean-boot verification
+only. REMAINING of the local executor: wake/rooms/product-worker lanes
+and non-cloud profiles still spawn `startLegacyPiSessionAttachment`;
+they retire with the outbox consumer (ledger 3) and cloud wakes.
+
 **THREAD IS THE CONVERSATION — founder's second cleanup list shipped
 (2026-08-26, ~08:45 UTC+2, releases 0.20.33–0.20.34; image v35 cycle in
 flight).** Per founder: the in-thread working avatar now runs for cloud
