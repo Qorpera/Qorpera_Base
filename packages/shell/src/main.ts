@@ -1571,7 +1571,17 @@ function scheduleStaffThreadRefresh(slot: Slot, runtime: CompanyRuntime, binding
 	if (!staffAgentId || runtime.closing || slot.runtime !== runtime) return;
 	if (runtime.childOptions.staffAgentId !== staffAgentId) return;
 	const child = runtime.child;
-	if (!child) return;
+	if (!child) {
+		// A childless anchor needs no respawn: sync just materialized through
+		// the live binding, so the file is already current — the renderer only
+		// needs to hear that the thread moved.
+		const anchor = runtime.sessionAnchor;
+		if (anchor && anchor.binding.sessionId === binding.sessionId) {
+			recordAttachedTrailCursor(runtime, staffAgentId);
+			send(slot.window, "staff-session-refreshed", { staffAgentId, sessionFile: anchor.binding.file });
+		}
+		return;
+	}
 	const current = childBindings.get(child);
 	if (!current || current.sessionId !== binding.sessionId) return;
 	runtime.trailContextStale = true;
