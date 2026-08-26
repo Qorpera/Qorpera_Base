@@ -780,13 +780,15 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					pool: current.lxd.storagePool,
 					source: current.lxd.identityVolume,
 				},
+				/* No uid shifting: idmapped mounts are unreliable over NFS. The
+				 * NAS export squashes every writer to one owner and the tree
+				 * carries open modes, so guest uids need no translation. */
 				...(this.#liveCompanyMount()
 					? {
 							"company-live": {
 								type: "disk",
 								source: this.#config.liveCompanyRoot!,
 								path: LXD_LIVE_COMPANY_GUEST_PATH,
-								shift: "true",
 							},
 						}
 					: {}),
