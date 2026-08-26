@@ -15,6 +15,11 @@ WorkingDirectory=/var/lib/qorpera-runner
 Environment=HOME=/var/lib/qorpera-runner
 Environment=XDG_RUNTIME_DIR=/run/qorpera-runner
 Environment=QORPERA_RUNNER_CONFIG=/var/lib/qorpera-runner/.config/qorpera-runner/config.json
+# The live company tree arrives squash-owned by one NAS uid; git must trust
+# it or every company transaction fails as an invalid repository.
+Environment=GIT_CONFIG_COUNT=1
+Environment=GIT_CONFIG_KEY_0=safe.directory
+Environment=GIT_CONFIG_VALUE_0=*
 RuntimeDirectory=qorpera-runner
 RuntimeDirectoryMode=0700
 LoadCredential=qorpera-runner-activation:/var/lib/qorpera-bootstrap/credentials/qorpera-runner-activation

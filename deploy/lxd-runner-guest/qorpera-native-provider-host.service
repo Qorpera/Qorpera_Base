@@ -11,6 +11,10 @@ User=qorpera-native-provider
 Group=qorpera-native-execution
 WorkingDirectory=/var/lib/qorpera-native-provider
 Environment=HOME=/var/lib/qorpera-native-provider
+# Same squash-ownership trust for git run by the provider harness.
+Environment=GIT_CONFIG_COUNT=1
+Environment=GIT_CONFIG_KEY_0=safe.directory
+Environment=GIT_CONFIG_VALUE_0=*
 EnvironmentFile=/var/lib/qorpera-bootstrap/native-provider.env
 LoadCredential=qorpera-supabase-service-key:/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key
 LoadCredential=qorpera-native-bridge:/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge
