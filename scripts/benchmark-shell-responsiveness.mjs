@@ -1,8 +1,8 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
 const DEFAULT_RUNS = 5;
@@ -230,6 +230,7 @@ async function terminateProcessTree(child) {
 
 const RENDERER_BENCHMARK = String.raw`(async () => {
 	const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+	const paintedFrame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 	const summarize = (values) => {
 		const sorted = [...values].sort((left, right) => left - right);
 		const pick = (quantile) => sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * quantile) - 1)] ?? 0;
@@ -376,14 +377,18 @@ const RENDERER_BENCHMARK = String.raw`(async () => {
 	const sidepanelOpenPaint = summarize([await timed(async () => {
 		resetSidepanel();
 		openAgentSidepanel("computer");
-		await frame();
+		await paintedFrame();
 	})]);
 	const sidepanelComplete = summarize([await timed(async () => {
+		resetSidepanel();
+		openAgentSidepanel("computer");
 		const deadline = performance.now() + 15000;
 		while (sidepanelContent.querySelectorAll(".agent-routine-row").length < 5000) {
 			if (performance.now() >= deadline) throw new Error("sidepanel completion timed out");
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
+		sidepanelContent.getBoundingClientRect();
+		await paintedFrame();
 	})]);
 	const sidepanelCapabilityFingerprint = {
 		title: document.getElementById("agentSidepanelTitle").textContent,
@@ -534,9 +539,7 @@ function aggregate(runs) {
 		"sidepanel-open-5000-handler": runs.map((run) => run.renderer.sidepanelOpenHandler.p95),
 		"sidepanel-open-5000-paint": runs.map((run) => run.renderer.sidepanelOpenPaint.p95),
 		"sidepanel-complete-5000": runs.map((run) => run.renderer.sidepanelComplete.p95),
-		"sidepanel-full-5000": runs.map(
-			(run) => run.renderer.sidepanelOpenPaint.p95 + run.renderer.sidepanelComplete.p95,
-		),
+		"sidepanel-full-5000": runs.map((run) => run.renderer.sidepanelComplete.p95),
 		"sidepanel-close-handler": runs.map((run) => run.renderer.sidepanelCloseHandler.p95),
 		"append-1000": runs.map((run) => run.renderer.append1000),
 		"idle-event-loop-lag": runs.map((run) => run.renderer.idleEventLoopLag.p95),
@@ -674,5 +677,9 @@ if (options.baseline) {
 	report.comparison = compareWithBaseline(report, baseline);
 }
 printReport(report);
-if (options.output) writeFileSync(resolve(options.output), `${JSON.stringify(report, null, "\t")}\n`);
+if (options.output) {
+	const outputPath = resolve(options.output);
+	mkdirSync(dirname(outputPath), { recursive: true });
+	writeFileSync(outputPath, `${JSON.stringify(report, null, "\t")}\n`);
+}
 if (report.comparison && !report.comparison.accepted) process.exitCode = 1;

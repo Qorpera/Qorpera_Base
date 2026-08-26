@@ -3594,23 +3594,10 @@ function createAgentRoutineRow(staff, job) {
 	return row;
 }
 
-function appendAgentRoutineRows(
-	routines,
-	staff,
-	jobs,
-	renderGeneration,
-	startIndex = 0,
-	fragment = document.createDocumentFragment(),
-) {
+function appendAgentRoutineRows(routines, staff, jobs, renderGeneration) {
 	if (renderGeneration !== agentSidepanelRenderGeneration || !routines.isConnected) return;
-	const endIndex = Math.min(startIndex + 1000, jobs.length);
-	for (let index = startIndex; index < endIndex; index += 1) {
-		fragment.appendChild(createAgentRoutineRow(staff, jobs[index]));
-	}
-	if (endIndex < jobs.length) {
-		setTimeout(() => appendAgentRoutineRows(routines, staff, jobs, renderGeneration, endIndex, fragment), 0);
-		return;
-	}
+	const fragment = document.createDocumentFragment();
+	for (const job of jobs) fragment.appendChild(createAgentRoutineRow(staff, job));
 	routines.appendChild(fragment);
 	routines.removeAttribute("aria-busy");
 }
@@ -3670,9 +3657,12 @@ function renderAgentComputerPanel(staff, force = false) {
 		if (jobs.length <= 100) {
 			for (const job of jobs) routines.appendChild(createAgentRoutineRow(staff, job));
 		} else {
+			routines.classList.add("is-large");
 			routines.setAttribute("aria-busy", "true");
 			requestAnimationFrame(() => {
-				setTimeout(() => appendAgentRoutineRows(routines, staff, jobs, renderGeneration), 0);
+				requestAnimationFrame(() => {
+					setTimeout(() => appendAgentRoutineRows(routines, staff, jobs, renderGeneration), 0);
+				});
 			});
 		}
 	}

@@ -17,9 +17,9 @@ Every latency is reported as min, p50, p95, p99, and max. Acceptance requires at
 
 ## Latest-release baseline
 
-The baseline is the published Qorpera Base 0.20.33 arm64 macOS application, release asset SHA-256 `fb5091a81431b6132a79f6b9445f7e2b2ba548fc303f85bbd7e2985a5241d689`, measured in five isolated runs on 2026-08-26.
+The baseline is the published Qorpera Base 0.20.40 arm64 macOS application, release asset SHA-256 `4c2ad4e2f8a4d0673cf9e48e3d21b83c4e5259db646ae987f24a86f27b12c241`, measured in five isolated runs on 2026-08-26.
 
-The slowest interactive path was a visible 2,000-message history render: 5,459.2 ms p95. The 10× target is 545.92 ms. Other p95 results were 251.2 ms for 500 messages, 997.6 ms for 1,000 messages, 260.3 ms for appending 1,000 messages, 0.5 ms for the composer handler, and 1.1 ms idle event-loop lag. Renderer-ready startup was 2,400.8 ms p95.
+The slowest interactive path was a visible 2,000-message history render: 10,784.5 ms p95. The 10× target is 1,078.45 ms. Other p95 results were 347.2 ms for 500 messages, 1,568.1 ms for 1,000 messages, 1,067.7 ms for appending 1,000 messages, 1.3 ms for the composer handler, and 1.1 ms idle event-loop lag. Renderer-ready startup was 3,759.0 ms p95.
 
 ## Run the loop
 
@@ -34,10 +34,10 @@ The comparison exits nonzero until all acceptance conditions pass. Failed Electr
 
 Historical rendering appended each message to the visible transcript and immediately read `scrollHeight`, forcing layout after every insertion. The optimized renderer constructs the identical transcript in a detached `DocumentFragment`, attaches it once, runs live-DOM synchronization, and scrolls once.
 
-In the final five-run comparison, the visible 2,000-message p95 fell from 5,459.2 ms to 79.2 ms: a 68.9× speedup. Both capability fingerprints passed unchanged. Median renderer-ready startup changed from 2,298.0 ms to 1,865.6 ms, so the startup guard also passed.
+In the final five-run comparison, the visible 2,000-message p95 fell from 10,784.5 ms to 85.0 ms: a 126.9× speedup. Exact capability fingerprints passed unchanged. Median renderer-ready startup changed from 2,827.7 ms to 2,596.8 ms, so the startup guard also passed.
 
 ## Agent surfaces
 
-The second five-run release baseline measured full agent-thread presentation at 4,187.0 ms p95, sidepanel open-handler response at 176.0 ms p95, and sidepanel first-frame response at 201.2 ms p95. Their 10× targets were 418.7 ms, 17.6 ms, and 20.12 ms respectively.
+The v0.20.40 release baseline measured full agent-thread presentation at 10,784.5 ms p95, sidepanel open-handler response at 272.6 ms p95, and sidepanel first-painted-frame response at 334.0 ms p95. Their 10× targets were 1,078.45 ms, 27.26 ms, and 33.4 ms respectively.
 
-The optimized five-run candidate measured 65.0 ms, 6.7 ms, and 15.3 ms p95: 64.4×, 26.3×, and 13.2× faster. Exact thread and sidepanel capability fingerprints passed. Large sidepanels now present their shell before constructing routine rows in detached, cancellable batches; ordinary panels with at most 100 routines remain synchronous. Full 5,000-row completion stayed within the material-regression guard, while work is split so the first frame is no longer blocked by the complete list.
+The optimized five-run candidate measured 85.0 ms, 12.2 ms, and 29.2 ms p95: 126.9×, 22.3×, and 11.4× faster. Exact thread and sidepanel capability fingerprints passed. Large sidepanels now present their shell before constructing routine rows in a deferred detached pass; ordinary panels with at most 100 routines remain synchronous. Browser-native content visibility preserves all 5,000 routine rows while avoiding work for offscreen rows. Median complete sidepanel presentation improved from 261.3 ms to 222.4 ms, so the material-regression guard also passed.

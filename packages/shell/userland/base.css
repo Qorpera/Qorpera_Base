@@ -2483,6 +2483,9 @@ main { border-left: 0; }
 	width: 100%; padding: 10px 2px; border: 0; border-top: 1px solid var(--border);
 	border-radius: 0; background: transparent; color: var(--text); text-align: left;
 }
+.agent-routines-section.is-large .agent-routine-row {
+	content-visibility: auto; contain-intrinsic-block-size: 47px;
+}
 .agent-routine-row:hover:not(:disabled) { border-color: var(--border); background: transparent; }
 .agent-routine-row > span { display: grid; gap: 2px; min-width: 0; }
 .agent-routine-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }

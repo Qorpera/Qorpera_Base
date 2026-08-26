@@ -228,6 +228,8 @@ describe("userland wiring", () => {
 		expect(sidepanelRenderer).toContain("routines.appendChild(fragment)");
 		expect(sidepanelRenderer).toContain('routines.removeAttribute("aria-busy")');
 		expect(rendererSource).toContain("renderGeneration !== agentSidepanelRenderGeneration");
+		expect(baseCssSource).toContain("content-visibility: auto");
+		expect(baseCssSource).toContain("contain-intrinsic-block-size: 47px");
 	});
 
 	it("routes personal subscription turns without requiring a ready local agent runtime", () => {
@@ -281,7 +283,9 @@ describe("userland wiring", () => {
 		expect(cloudStart).toBeGreaterThan(-1);
 		expect(cloudEnd).toBeGreaterThan(cloudStart);
 		const cloudComposer = mainSource.slice(cloudStart, cloudEnd);
-		expect(cloudComposer).toContain("requestSponsoredCloudTurn(runtime, sendArbiter, sendStaffId, sendRef, reviewed)");
+		expect(cloudComposer).toContain(
+			"requestSponsoredCloudTurn(runtime, sendArbiter, sendStaffId, sendRef, reviewed)",
+		);
 		expect(cloudComposer).not.toContain("sendLegacyLocalPrompt(");
 		/* The childless anchor answers the whole session surface. */
 		expect(mainSource).toContain("async function anchoredSessionRpc(");
