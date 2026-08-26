@@ -12950,6 +12950,15 @@ app.whenReady().then(async () => {
 				if (cloudStaffConversation && frame.type === "prompt") {
 					return { ok: false, error: "cloud conversation is not attached; your message was not sent" };
 				}
+				/* Cloud-only execution (founder ruling 2026-08-26): the local
+				 * executor is removed. A prompt that cannot become a cloud turn
+				 * fails honestly instead of running inside the app. */
+				if (frame.type === "prompt" && runtime.childOptions.staffAgentId) {
+					return {
+						ok: false,
+						error: "Agents execute in the cloud. This conversation has no active cloud session yet — reopen the thread or check the company's subscription connection.",
+					};
+				}
 				return { ok: sendLegacyLocalPrompt(reviewedChild, reviewed, true, promptOrigin) };
 			});
 		}

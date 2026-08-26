@@ -176,7 +176,9 @@ function syncNativeExecutionSelector() {
 	const select = $("cloudSponsorSelect");
 	if (!select) return;
 	const choices = nativeExecutionChoices();
-	select.replaceChildren(new Option("This computer", "local"));
+	// Cloud-only execution (founder ruling 2026-08-26): agents live in the
+	// cloud, never inside this app. There is no local execution target.
+	select.replaceChildren();
 	for (const connection of choices) {
 		const provider = connection.provider === "openai" ? "Codex" : connection.provider === "anthropic" ? "Claude" : connection.provider;
 		select.appendChild(
@@ -186,19 +188,23 @@ function syncNativeExecutionSelector() {
 			),
 		);
 	}
-	const remembered = localStorage.getItem(nativeExecutionStorageKey()) ?? "local";
-	select.value = [...select.options].some((option) => option.value === remembered) ? remembered : "local";
+	const remembered = localStorage.getItem(nativeExecutionStorageKey());
+	const values = [...select.options].map((option) => option.value);
+	select.value = remembered && values.includes(remembered) ? remembered : (values[0] ?? "");
 	select.hidden = !currentStaffId || currentRoomId || choices.length === 0;
 	select.onchange = () => localStorage.setItem(nativeExecutionStorageKey(), select.value);
 }
 
 function selectedNativeExecutionSponsor() {
 	const select = $("cloudSponsorSelect");
-	if (!select || select.hidden || select.value === "local") return undefined;
 	const identity = nativeExecution?.computeIdentity;
-	const connection = nativeExecutionChoices().find(
-		(candidate) => `${candidate.sponsorBindingId}:${candidate.sponsorVersion}` === select.value,
-	);
+	const choices = nativeExecutionChoices();
+	// Every staff prompt executes in the cloud; when the selector has no
+	// explicit choice yet, the first active connection sponsors the turn.
+	const selectedValue = select && !select.hidden && select.value ? select.value : undefined;
+	const connection =
+		choices.find((candidate) => `${candidate.sponsorBindingId}:${candidate.sponsorVersion}` === selectedValue) ??
+		choices[0];
 	if (!identity || !connection) return undefined;
 	return {
 		sponsorBindingId: connection.sponsorBindingId,
