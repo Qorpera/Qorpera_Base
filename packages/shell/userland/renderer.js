@@ -9212,7 +9212,11 @@ function hideThreadActivity() {
  * queue decide whether the agent is visibly at work in the open thread. */
 function syncThreadActivityFromCloud() {
 	if (currentView !== "chat" || !currentStaffId || currentRoomId) return;
-	if (activeRunProgress) return;
+	/* No activeRunProgress guard: history replay leaves it truthy for any
+	 * thread whose legacy-local run never settled, which suppressed the row
+	 * for every cloud turn. Cloud conditions and the local stream agree on
+	 * "working" whenever both exist, and the hide path only removes rows this
+	 * function created. */
 	const hosted = hostedStaffActivity.get(currentStaffId)?.activity;
 	const queue = pendingSessionQueueByStaff.get(currentStaffId) ?? [];
 	const queuedPending = queue.some((input) => input && input.status !== "failed");
