@@ -290,6 +290,62 @@ describe("cloud trail synchronization", () => {
 		expect(answerEvents.every((event) => JSON.stringify(event.execution) === JSON.stringify(execution))).toBe(true);
 	});
 
+	it("defers a session's uploads when the control plane's execution fence rejects an unbound entry", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const live = bindTrailSession(machine, machine, {
+			actor: "company-agent",
+			attended: true,
+			staffAgentId: "financial-officer",
+		});
+		const execution = {
+			kind: "turn" as const,
+			id: "55555555-5555-4555-8555-555555555555",
+			claimantId: "66666666-6666-4666-8666-666666666666",
+		};
+		appendMessage(live, "bound-answer", null, "assistant", "answered inside a turn", execution);
+		appendMessage(live, "unbound-draft", "bound-answer", "user", "hello?", undefined);
+		/* Production enforces the execution fence the permissive fake does
+		 * not: reject any entry part appended without an execution. */
+		const primary = new FakeHostedPrimary();
+		const permissiveAppend = primary.appendAccountEvent.bind(primary);
+		primary.appendAccountEvent = async (input) => {
+			const body = input.body as Record<string, JsonValue> | null;
+			if (
+				body &&
+				body.schema === "qorpera.shared-trail-entry-part/v1" &&
+				!("execution" in input && input.execution)
+			) {
+				throw new Error("multipart session events require a durable execution (42501)");
+			}
+			return permissiveAppend(input);
+		};
+		const sync = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => true,
+			liveBindings: () => [live],
+		});
+		const result = await sync.sync();
+		expect(result.eventsUploaded).toBeGreaterThan(0);
+		const uploadedEntryIds = new Set(
+			(primary.events.get(hostedSessionId) ?? [])
+				.map((event) =>
+					event.body && typeof event.body === "object" && !Array.isArray(event.body)
+						? (event.body as Record<string, JsonValue>).entryId
+						: undefined,
+				)
+				.filter((value): value is string => typeof value === "string"),
+		);
+		expect(uploadedEntryIds.has("bound-answer")).toBe(true);
+		expect(uploadedEntryIds.has("unbound-draft")).toBe(false);
+		await expect(sync.sync()).resolves.toBeDefined();
+	});
+
 	it("reports a durable cursor advance without requiring a reload for a quarantine-only batch", async () => {
 		const machine = join(root, "machine", "company");
 		const userData = join(root, "machine", "user-data");

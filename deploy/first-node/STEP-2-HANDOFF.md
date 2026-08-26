@@ -15,6 +15,23 @@ Claude login, sponsor switching, revocation, offline devices) and the
 storage/recovery production gate; the object-store divergence note below
 (NAS-primary clients must dual-write or the stores drift) joins them.
 
+**OPEN DESIGN QUESTION (2026-08-26, founder decision needed): the trail
+execution fence vs unbound local content.** The control plane (migration
+`20260820001000`) rejects every `shared-trail-entry-part` event lacking a
+durable execution, with an explicit anti-smuggling rationale. The client
+and its round-trip tests expect the opposite: attended chat drafts and
+kernel-signed audit observations upload unbound (they have no execution by
+nature). Both intents are deliberate and they contradict; since the fence
+landed, every unbound upload has failed in production, and until tonight
+the failure jammed all trail synchronization (the client now defers the
+affected session's uploads instead — containment, not resolution).
+Options: (a) narrow the fence to multi-part assembly only, letting
+single-part unbound messages through under event-level validation;
+(b) bind all attended turns through the session arbiter and give
+kernel audits their own validated envelope, keeping the fence absolute;
+(c) keep the fence and accept that unexecuted content stays local-only.
+(b) is the strongest long-term shape; (a) is the pragmatic bridge.
+
 **Handoff state:** v33 (image
 `6cc1ae8b5d8e2b7bc13856a7d31747f7c4598cb80464bee2c34c2509f1385f75`,
 guest manifest

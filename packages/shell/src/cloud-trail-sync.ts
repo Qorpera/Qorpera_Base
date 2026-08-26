@@ -163,6 +163,11 @@ function validExecution(value: unknown): value is TrailExecutionIdentity {
 	);
 }
 
+function isExecutionFenceRejection(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	return /durable execution/i.test(error.message) || /42501/.test(error.message);
+}
+
 function sameExecution(left: TrailExecutionIdentity | undefined, right: TrailExecutionIdentity | undefined): boolean {
 	/* Field comparison, never serialization: the runner writes its execution
 	 * identity with a different key order than the hosted event parser
@@ -776,14 +781,32 @@ export class CloudTrailSynchronizer {
 			if (lastUploadedIndex < 0) throw new Error(`shared trail upload cursor is unavailable: ${hosted.sessionId}`);
 			firstUploadIndex = lastUploadedIndex + 1;
 		}
+		let deferred = false;
 		for (const entry of local.entries.slice(firstUploadIndex)) {
 			if (state.knownEntryIds.includes(entry.id)) continue;
 			// Runner transcript entries are authored directly through the hosted runner
 			// broker. They are pull-only here, including after sync-state recovery when
 			// their ids have rolled out of the bounded recent-entry cache.
 			if (entry.execution?.kind === "run") continue;
-			for (const event of uploadEvents(hosted.sessionId, entry)) {
-				await this.#append(hosted, cloudState, state, event, bindings, result, entry.execution);
+			try {
+				for (const event of uploadEvents(hosted.sessionId, entry)) {
+					await this.#append(hosted, cloudState, state, event, bindings, result, entry.execution);
+				}
+			} catch (error) {
+				/* The control plane's execution fence (42501) rejects trail
+				 * entry parts without a durable execution — which unexecuted
+				 * local entries can never have. The client and the fence
+				 * currently disagree about whether such content belongs in
+				 * the hosted trail at all; until that design question is
+				 * settled, defer this session's remaining uploads instead of
+				 * failing the whole synchronization run behind one entry.
+				 * Everything already uploaded stays durable; pulls and other
+				 * sessions continue unaffected. */
+				if (isExecutionFenceRejection(error)) {
+					deferred = true;
+					break;
+				}
+				throw error;
 			}
 			delete state.pending[entry.id];
 			state.lastUploadedEntryId = entry.id;
@@ -795,7 +818,9 @@ export class CloudTrailSynchronizer {
 				requiresReload: false,
 			});
 		}
-		if (local.entries.length > 0) state.lastUploadedEntryId = local.entries.at(-1)?.id;
+		if (!deferred && local.entries.length > 0) {
+			state.lastUploadedEntryId = local.entries.at(-1)?.id;
+		}
 		state.knownEntryIds = state.knownEntryIds.slice(-MAX_RECENT_ENTRY_IDS);
 	}
 
