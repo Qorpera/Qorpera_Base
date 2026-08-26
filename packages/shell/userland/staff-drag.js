@@ -25,6 +25,25 @@
 		return left.length === right.length && left.every((id, index) => id === right[index]);
 	}
 
+	function nearestPlacement(items, clientX, clientY, horizontal) {
+		if (!items.length) return { targetId: null, after: false };
+		let nearest = items[0];
+		let nearestDistance = Number.POSITIVE_INFINITY;
+		for (const item of items) {
+			const xDistance = Math.max(item.left - clientX, 0, clientX - item.right);
+			const yDistance = Math.max(item.top - clientY, 0, clientY - item.bottom);
+			const distance = xDistance ** 2 + yDistance ** 2;
+			if (distance >= nearestDistance) continue;
+			nearest = item;
+			nearestDistance = distance;
+		}
+		const after = horizontal
+			? clientY > nearest.bottom ||
+				(clientY >= nearest.top && clientX >= nearest.left + (nearest.right - nearest.left) / 2)
+			: clientY >= nearest.top + (nearest.bottom - nearest.top) / 2;
+		return { targetId: nearest.id, after };
+	}
+
 	function applyOrder(pinnedZone, listZone, pinnedIds, listIds) {
 		const rows = new Map(
 			[...pinnedZone.children, ...listZone.children]
@@ -101,7 +120,7 @@
 			draggedRow?.classList.remove("is-dragging");
 			draggedRow?.removeAttribute("aria-grabbed");
 			preview?.remove();
-			pinnedZone.hidden = pinnedZone.children.length === 0;
+			pinnedZone.hidden = ![...pinnedZone.children].some((row) => !row.hidden);
 			draggedId = null;
 			draggedRow = null;
 			preview = null;
@@ -121,6 +140,25 @@
 			drop = { pinned: move.pinned.includes(draggedId), order: move.order };
 		};
 
+		const placementAt = (zone, event) =>
+			nearestPlacement(
+				[...zone.querySelectorAll(":scope > .staff-nav-row[data-staff-id]")]
+					.filter((row) => row.dataset.staffId !== draggedId && !row.hidden)
+					.map((row) => {
+						const bounds = row.getBoundingClientRect();
+						return {
+							id: row.dataset.staffId,
+							left: bounds.left,
+							right: bounds.right,
+							top: bounds.top,
+							bottom: bounds.bottom,
+						};
+					}),
+				event.clientX,
+				event.clientY,
+				zone === pinnedZone,
+			);
+
 		const begin = (row) => {
 			draggedId = row.dataset.staffId;
 			draggedRow = row;
@@ -138,37 +176,25 @@
 			const hit = document.elementFromPoint(event.clientX, event.clientY);
 			const targetRow = hit?.closest(".staff-nav-row[data-staff-id]");
 			if (targetRow?.dataset.staffId === draggedId) return;
-			if (targetRow && targetRow.dataset.staffId !== draggedId) {
-				const zone = targetRow.parentElement;
-				if (zone !== pinnedZone && zone !== listZone) {
-					drop = null;
-					return;
-				}
-				const bounds = targetRow.getBoundingClientRect();
-				const after = zone === pinnedZone
-					? event.clientX >= bounds.left + bounds.width / 2
-					: event.clientY >= bounds.top + bounds.height / 2;
-				const currentPinned = zoneIds(pinnedZone);
-				const currentList = zoneIds(listZone);
-				const move = moveOrder(
-					currentPinned,
-					currentList,
-					draggedId,
-					zone === pinnedZone,
-					targetRow.dataset.staffId,
-					after,
-				);
-				previewOrder(move, currentPinned, currentList);
-				return;
-			}
-			const zone = hit?.closest(".staff-pinned-grid, .staff-unpinned-list");
+			const rowZone = targetRow?.parentElement;
+			const zone = rowZone === pinnedZone || rowZone === listZone
+				? rowZone
+				: hit?.closest(".staff-pinned-grid, .staff-unpinned-list");
 			if (zone !== pinnedZone && zone !== listZone) {
 				drop = null;
 				return;
 			}
 			const currentPinned = zoneIds(pinnedZone);
 			const currentList = zoneIds(listZone);
-			const move = moveOrder(currentPinned, currentList, draggedId, zone === pinnedZone);
+			const placement = placementAt(zone, event);
+			const move = moveOrder(
+				currentPinned,
+				currentList,
+				draggedId,
+				zone === pinnedZone,
+				placement.targetId,
+				placement.after,
+			);
 			previewOrder(move, currentPinned, currentList);
 		};
 
@@ -239,5 +265,5 @@
 		};
 	}
 
-	window.qorperaStaffDrag = Object.freeze({ moveOrder, wire });
+	window.qorperaStaffDrag = Object.freeze({ moveOrder, nearestPlacement, wire });
 })();

@@ -8,6 +8,14 @@ interface StaffDragOrder {
 	order: string[];
 }
 
+interface PlacementItem {
+	id: string;
+	left: number;
+	right: number;
+	top: number;
+	bottom: number;
+}
+
 interface StaffDragApi {
 	moveOrder(
 		pinnedIds: string[],
@@ -17,6 +25,12 @@ interface StaffDragApi {
 		targetId?: string | null,
 		after?: boolean,
 	): StaffDragOrder;
+	nearestPlacement(
+		items: PlacementItem[],
+		clientX: number,
+		clientY: number,
+		horizontal: boolean,
+	): { targetId: string | null; after: boolean };
 }
 
 const context: { window: { qorperaStaffDrag?: StaffDragApi } } = { window: {} };
@@ -31,6 +45,19 @@ describe("staff drag ordering", () => {
 		expect(source).toContain("applyOrder(pinnedZone, listZone");
 		expect(source).not.toContain("staff-drop-before");
 		expect(source).not.toContain("staff-drop-after");
+	});
+
+	it("uses the nearest grid card when the pointer crosses a gap", () => {
+		const cards = [
+			{ id: "a", left: 0, right: 72, top: 0, bottom: 84 },
+			{ id: "b", left: 82, right: 154, top: 0, bottom: 84 },
+		];
+		expect(drag.nearestPlacement(cards, 77, 42, true)).toEqual({ targetId: "a", after: true });
+		expect(drag.nearestPlacement(cards, 78, 42, true)).toEqual({ targetId: "b", after: false });
+	});
+
+	it("keeps a filtered pinned region hidden after drag cleanup", () => {
+		expect(source).toContain("some((row) => !row.hidden)");
 	});
 
 	it("reorders agents within the ordinary list", () => {
