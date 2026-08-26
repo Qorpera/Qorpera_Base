@@ -673,6 +673,66 @@ describe("cloud trail synchronization", () => {
 		});
 	});
 
+	it("materializes a runner entry whose execution identity serializes with a different key order", async () => {
+		const machine = join(root, "machine", "company");
+		const userData = join(root, "machine", "user-data");
+		mkdirSync(join(machine, "trail"), { recursive: true });
+		const primary = new FakeHostedPrimary();
+		const hosted = await primary.createSession({
+			environmentId,
+			clientSessionId: "11111111-1111-4111-8111-111111111111",
+			title: "Runner key order",
+		});
+		/* Production shape: the runner writes id-first execution identity into
+		 * the transcript body while the hosted event parser constructs
+		 * kind-first. Equality must be field-based, not serialization-based. */
+		const entryExecution = {
+			id: runId,
+			kind: "run" as const,
+			claimantId: runId,
+			runnerAssignmentId,
+		};
+		const eventExecution = {
+			kind: "run" as const,
+			id: runId,
+			claimantId: runId,
+			runnerAssignmentId,
+		};
+		const entry = {
+			type: "message" as const,
+			id: "33333333-3333-4333-8333-333333333333",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: { role: "assistant", content: [{ type: "text", text: "Completed on the runner." }] },
+			execution: entryExecution,
+		};
+		primary.events.get(hosted.sessionId)?.push({
+			sessionId: hosted.sessionId,
+			sequence: 1,
+			eventId: entry.id,
+			eventType: "message",
+			actorUserId,
+			body: { schema: "qorpera.runner-transcript-entry/v1", entry },
+			execution: eventExecution,
+			eventHash: "1".repeat(64),
+			createdAt: new Date().toISOString(),
+		});
+		const sync = new CloudTrailSynchronizer({
+			root: machine,
+			userData,
+			profileId,
+			environmentId,
+			primary,
+			canWrite: () => false,
+		});
+
+		await expect(sync.sync()).resolves.toMatchObject({
+			eventsDownloaded: 1,
+			eventsQuarantined: 0,
+			entriesMaterialized: 1,
+		});
+	});
+
 	it("does not re-upload runner history after the bounded entry cache rolls over", async () => {
 		const machine = join(root, "machine", "company");
 		const userData = join(root, "machine", "user-data");

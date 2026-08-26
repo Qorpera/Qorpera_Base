@@ -164,7 +164,19 @@ function validExecution(value: unknown): value is TrailExecutionIdentity {
 }
 
 function sameExecution(left: TrailExecutionIdentity | undefined, right: TrailExecutionIdentity | undefined): boolean {
-	return JSON.stringify(left) === JSON.stringify(right);
+	/* Field comparison, never serialization: the runner writes its execution
+	 * identity with a different key order than the hosted event parser
+	 * constructs, and JSON.stringify equality rejected every runner-written
+	 * transcript entry — stalling trail sync at the first live-turn message. */
+	if (!left || !right) return left === right;
+	const leftAssignment = (left as { runnerAssignmentId?: string }).runnerAssignmentId;
+	const rightAssignment = (right as { runnerAssignmentId?: string }).runnerAssignmentId;
+	return (
+		left.kind === right.kind &&
+		left.id === right.id &&
+		left.claimantId === right.claimantId &&
+		leftAssignment === rightAssignment
+	);
 }
 
 function readState(path: string, options: CloudTrailSynchronizerOptions): CloudTrailState {
