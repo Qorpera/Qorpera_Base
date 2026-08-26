@@ -8926,9 +8926,13 @@ function renderPendingSessionQueue() {
 	// durable copy wins — rendering both shows the prompt twice for the whole
 	// turn. Failures stay visible regardless: they are actionable.
 	const materializedUserTexts = new Set(
-		[...document.querySelectorAll("#messages > .msg.user:not(.session-queued)")].map((element) =>
-			(element.textContent ?? "").trim(),
-		),
+		[...document.querySelectorAll("#messages > .msg.user:not(.session-queued)")].map((element) => {
+			// The bubble also carries the rewind affordance; only the message
+			// text identifies the durable copy.
+			const copy = element.cloneNode(true);
+			for (const control of copy.querySelectorAll(".msg-rewind")) control.remove();
+			return (copy.textContent ?? "").trim();
+		}),
 	);
 	for (const input of queue) {
 		if (!input || typeof input.inputId !== "string") continue;
