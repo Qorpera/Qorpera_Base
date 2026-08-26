@@ -127,7 +127,13 @@ describe("userland wiring", () => {
 			/html\[data-platform="darwin"\] body\.company-shell \.rail-bottom #companySwitcherButton > strong \{[^}]*display: none;/s,
 		);
 		expect(railResizeCssSource).toMatch(
-			/html\[data-platform="darwin"\] body\.company-shell \.company-switcher-menu \{[^}]*top: calc\(100% \+ 5px\);[^}]*bottom: auto;[^}]*width: 230px;/s,
+			/html\[data-platform="darwin"\] body\.company-shell \.company-switcher-menu \{[^}]*top: calc\(100% \+ 5px\);[^}]*bottom: auto;[^}]*width: 218px;[^}]*backdrop-filter: blur\(28px\) saturate\(1\.25\);/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell \.company-switcher-mark \{[^}]*width: 18px;[^}]*height: 18px;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell \.company-switcher-menu button:hover,[^}]*background: #0a84ff;[^}]*color: #fff;/s,
 		);
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.titlebar-rail \{[^}]*transform: translateY\(var\(--titlebar-height\)\);/s,
