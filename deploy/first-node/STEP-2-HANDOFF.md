@@ -13,7 +13,14 @@ connection sponsors); reasoning effort defaults to LOW — composer-side
 (explicit member choice tracked via `effortChosen`; replayed
 legacy-local levels no longer displace the default) and runner-side
 (`codex exec -c model_reasoning_effort=low` in the guest provider
-host → image v35).
+host → image v35). IMAGE v35 IS ACTIVE (fingerprint
+`684ed97f5c9f6b9c0bdba1740074d8b5201c08e4797a574cbbc3ceb95eb683f2`,
+manifest `65687d0d…`, provenance signed `18120bcc…`, activation script
+now restarts the provider itself since the env file is start-time):
+verified by live turn — run `12cecdf7` (job `84b13133`) booted from the
+v35 fingerprint and completed. Zombie VM hygiene: completed runs keep
+their VMs; deleted twice more today — the LxdClient delete op is the
+standing fix.
 
 **Incident 2026-08-26 06:03 UTC — apt-daily-upgrade bounced the
 provider mid-turn.** The founder's live turn (job `1f80d0b2`) leased,
