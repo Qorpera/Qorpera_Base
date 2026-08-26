@@ -8623,7 +8623,7 @@ async function anchoredSessionRpc(
 ): Promise<Record<string, unknown>> {
 	const binding = anchor.binding;
 	const respond = (command: string, data: Record<string, unknown>): { ok: true } => {
-		send(slot.window, "rpc", { command, success: true, data });
+		send(slot.window, "rpc", { type: "response", command, success: true, data });
 		return { ok: true };
 	};
 	const sessions = sessionControlPlanes.get(normalizedRoot(runtime.root));
