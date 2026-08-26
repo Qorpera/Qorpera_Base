@@ -159,9 +159,12 @@ describe("userland wiring", () => {
 	it("renders durable queued prompts and remote staff activity", () => {
 		expect(preloadSource).toContain('ipcRenderer.on("staff-session-queue"');
 		expect(rendererSource).toContain("pendingSessionQueueByStaff");
+		/* Queued bubbles read as ordinary sent messages: no author, no
+		 * Processing/Queued meta — only a failure surfaces, as Needs review. */
 		expect(rendererSource).toContain(
-			'input.status === "processing" ? "Processing" : input.status === "failed" ? "Needs review" : "Queued"',
+			'status.textContent = input.status === "failed" ? `Needs review${failure ? ` · ${failure}` : ""}` : ""',
 		);
+		expect(rendererSource).not.toContain('? "Processing"');
 		expect(rendererSource).toContain("result.queued");
 		expect(rendererSource).toContain("displayText: text");
 		expect(rendererSource).toContain("const pendingPromptSendFallbacks = new Map()");

@@ -191,6 +191,7 @@ import {
 	killChildTree,
 	killChildTreeSync,
 	materializeSharedTrailSession,
+	appendBoundTrailEntry,
 	migrateLegacyCompanyAgentTrails,
 	migrateLegacyTrailSession,
 	parseTrailAppendFrame,
@@ -4235,7 +4236,7 @@ function startLegacyPiSessionAttachment(
 			if ((frame as { type?: unknown }).type === "qorpera_trail_append") {
 				const append = parseTrailAppendFrame(frame, binding, childDurableExecutions.get(child));
 				if (append) {
-					appendFileSync(binding.path, `${JSON.stringify(append.entry)}\n`);
+					appendBoundTrailEntry(binding, append.entry);
 					commitTrailAppend(binding, append);
 					sessions.rememberAudit(binding);
 					if (append.entry.type === "message" || append.entry.type === "session_info") {

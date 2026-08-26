@@ -1775,8 +1775,7 @@ body.welcome #titlebar { border-bottom-color: transparent; background: var(--bg)
 	border-radius: 18px 18px 5px 18px; background: var(--text); color: #fff;
 }
 .msg.user.session-queued {
-	display: grid; gap: 4px; min-width: 130px; opacity: .72;
-	border: 1px dashed color-mix(in srgb, #fff 58%, transparent);
+	display: grid; gap: 4px; min-width: 130px;
 }
 .session-queued-body { white-space: pre-wrap; }
 .session-queued-status {

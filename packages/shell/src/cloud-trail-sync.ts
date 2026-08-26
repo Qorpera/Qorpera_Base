@@ -163,6 +163,16 @@ function validExecution(value: unknown): value is TrailExecutionIdentity {
 	);
 }
 
+function recordQuarantine(state: SessionSyncState, receipt: QuarantinedHostedEvent): void {
+	state.quarantinedEvents.push(receipt);
+	state.quarantinedEvents = state.quarantinedEvents
+		.filter(
+			(candidate, index, receipts) =>
+				!receipts.slice(index + 1).some((later) => later.eventId === candidate.eventId),
+		)
+		.slice(-MAX_QUARANTINE_RECEIPTS);
+}
+
 function isExecutionFenceRejection(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
 	return /durable execution/i.test(error.message) || /42501/.test(error.message);
@@ -681,21 +691,43 @@ export class CloudTrailSynchronizer {
 				) {
 					throw new Error("hosted session execution revisions conflict with its execution scope");
 				}
-				const binding = materializeSharedTrailSession(
-					this.#options.root,
-					{
-						localSessionId: hosted.clientSessionId,
-						createdAt: hosted.createdAt,
-						title: hosted.title,
-						staffAgentId: hosted.staffAgentId,
-						...(scope ? { scope } : {}),
-					},
-					materialized,
-					bindings.get(hosted.clientSessionId),
-				);
-				bindings.set(hosted.clientSessionId, binding);
-				this.#options.onMaterialized?.(binding);
-				result.entriesMaterialized += materialized.length;
+				const sessionIdentity = {
+					localSessionId: hosted.clientSessionId,
+					createdAt: hosted.createdAt,
+					title: hosted.title,
+					staffAgentId: hosted.staffAgentId,
+					...(scope ? { scope } : {}),
+				};
+				let binding = bindings.get(hosted.clientSessionId);
+				try {
+					binding = materializeSharedTrailSession(this.#options.root, sessionIdentity, materialized, binding);
+					result.entriesMaterialized += materialized.length;
+				} catch {
+					/* Local and hosted histories can diverge (a locally-grown
+					 * trail whose graph the hosted lineage never saw); one
+					 * structurally incompatible entry must not abort the whole
+					 * synchronization. Land every entry that fits and
+					 * quarantine the ones that do not — the hosted history is
+					 * the conversation's truth and the local file is a cache. */
+					for (const entry of materialized) {
+						try {
+							binding = materializeSharedTrailSession(this.#options.root, sessionIdentity, [entry], binding);
+							result.entriesMaterialized++;
+						} catch (entryError) {
+							recordQuarantine(state, {
+								eventId: entry.id,
+								sequence: state.cursor,
+								reason: (entryError instanceof Error ? entryError.message : String(entryError)).slice(0, 256),
+								quarantinedAt: new Date().toISOString(),
+							});
+							result.eventsQuarantined++;
+						}
+					}
+				}
+				if (binding) {
+					bindings.set(hosted.clientSessionId, binding);
+					this.#options.onMaterialized?.(binding);
+				}
 			}
 			writeState(this.#statePath, cloudState);
 			this.#options.onCursorAdvanced?.({
