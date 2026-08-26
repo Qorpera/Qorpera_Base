@@ -1,5 +1,28 @@
 # Step 2 implementation handoff
 
+**TURN LATENCY CUT 190s→53s — image v36 + release 0.20.40 (2026-08-26 evening).**
+Founder timed a ~20s queue, then minutes of silence, then everything at
+once. Measured breakdown (runner_jobs created→started→finished): claim
++17s constant (LXD VM boot), finish +170-190s — with only 6s of CPU:
+the runner spent ~97% waiting on network. Root cause: EVERY company
+tree file fetched strictly sequentially (manifest GET + chunk GETs per
+file, ~500 round trips through the guest→host-gateway double hop).
+Fix: `materializeCloudCompanyTree` now fetches with a 12-worker bounded
+pool (image v36, fingerprint `c51c2c94…`, manifest `eb914065…`,
+provenance `e95db4fe…`). The publication capture side was already fine
+(writeObject skips shas seen at checkout). App side (0.20.40): a staff
+leaving the busy set on the 5s activity poll triggers an immediate
+trail pull, so replies paint on completion instead of a sync tick
+later. Verified live: probe turn created 16:11:58 → started +16.5s →
+finished +53.2s, reply rendered seconds after settle. REMAINING: the
+~17s claim is VM boot — a warm-standby VM needs a real design pass
+(per-run bootstrap credentials are pinned pre-boot in the provenance
+journal; injecting post-boot changes the trust story). Also recommend
+the founder move `Recovery/` (139MB, 189 files — a pre-reimage dump)
+out of the live company file: it is 99% of the tree bytes and the
+agents keep getting distracted mapping it.
+
+
 **CHILDLESS SESSION ANCHORS — ledger item 2 done for the attended lane
 (2026-08-26, ~10:30 UTC+2, releases 0.20.35–0.20.39).** Opening a cloud
 staff thread spawns NOTHING: `attachStaffChild` binds a process-less
