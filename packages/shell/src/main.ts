@@ -198,6 +198,7 @@ import {
 	protectedCompanyAgentPaths,
 	provisionSandbox,
 	pruneEmptyTrailSessions,
+	trailSessionMessages,
 	reconcileKernelGateCreations,
 	sandboxCommandArgs,
 	sandboxConfigDir,
@@ -1266,6 +1267,12 @@ interface CompanyRuntime {
 	/** The named agent currently attached to the attended conversation. A
 	 * company with no selected agent is an idle host and has no model process. */
 	child?: ChildProcessWithoutNullStreams;
+	/** Childless attended attachment for cloud staff conversations (founder
+	 * ruling 2026-08-26: agents live in the cloud; the app is a window). The
+	 * anchor carries the session's trail binding so the thread renders,
+	 * selections persist, and prompts become cloud turns — with no local
+	 * agent process at all. Mutually exclusive with `child`. */
+	sessionAnchor?: { binding: TrailBinding; staffAgentId: string };
 	backendPort: number;
 	backendClose?: () => void;
 	backendToken: string;
@@ -1348,8 +1355,17 @@ function liveTrailBindings(runtime: CompanyRuntime): TrailBinding[] {
 	const bindings = [
 		runtime.child ? childBindings.get(runtime.child) : undefined,
 		runtime.wakeChild ? childBindings.get(runtime.wakeChild) : undefined,
+		// The childless anchor is a live binding: sync must materialize through
+		// it, or its audit cursor diverges from the file the anchor appends to.
+		runtime.sessionAnchor?.binding,
 	];
 	return bindings.filter((binding): binding is TrailBinding => binding !== undefined);
+}
+
+/** The attended conversation's trail binding, from the attached child or the
+ * childless cloud anchor. */
+function attendedSessionBinding(runtime: CompanyRuntime): TrailBinding | undefined {
+	return (runtime.child ? childBindings.get(runtime.child) : undefined) ?? runtime.sessionAnchor?.binding;
 }
 
 function createCloudTrailSynchronizer(
@@ -1864,9 +1880,11 @@ async function readoptStaffCloudSession(
 		await enqueueRuntimeTransition(runtime, async () => {
 			if (slot.runtime !== runtime || runtime.closing) return;
 			if (runtime.childOptions.staffAgentId !== staffAgentId) return;
-			const child = runtime.child;
-			if (!child || runtime.wakeChild || isChildBusy(child)) return;
-			const binding = childBindings.get(child);
+			// A childless anchor re-adopts the same way a live child does; only
+			// a busy or wake-owned runtime defers.
+			if (runtime.wakeChild || isChildBusy(runtime.child)) return;
+			if (!runtime.child && !runtime.sessionAnchor) return;
+			const binding = attendedSessionBinding(runtime);
 			if (!binding || binding.sessionId === ref.clientSessionId) return;
 			const staff = activeStaffAgent(runtime.root, staffAgentId);
 			if (!staff) return;
@@ -4675,6 +4693,7 @@ async function replaceRuntimeChild(slot: Slot, runtime: CompanyRuntime, options:
 	if (previousChild) await stopChild(previousChild);
 	if (slot.runtime !== runtime) return;
 	runtime.child = undefined;
+	runtime.sessionAnchor = undefined;
 	try {
 		runtime.childOptions = { ...options };
 		runtime.child = startLegacyPiSessionAttachment(slot, runtime.root, runtime.childOptions);
@@ -6390,7 +6409,7 @@ function rendererConnectionRequestIdentity(
 ): { identity: ConnectionRequestIdentity; binding: TrailBinding } | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const candidate = value as Record<string, unknown>;
-	const binding = runtime.child ? childBindings.get(runtime.child) : undefined;
+	const binding = attendedSessionBinding(runtime);
 	if (
 		Object.keys(candidate).some((key) => !["id", "staffAgentId", "sessionFile"].includes(key)) ||
 		typeof candidate.id !== "string" ||
@@ -7551,6 +7570,22 @@ async function restoreAttendedChild(
 	options: ChildOptions,
 	context: string,
 ): Promise<boolean> {
+	if (options.staffAgentId && profileAttachment(runtime.root).profileType === "cloud") {
+		// Cloud staff conversations restore as childless anchors — a wake or
+		// room lane finishing must never resurrect a local agent process for
+		// the attended thread.
+		const staff = activeStaffAgent(runtime.root, options.staffAgentId);
+		if (staff) {
+			try {
+				await attachStaffChild(slot, runtime, staff, options.sessionFile, false);
+				return true;
+			} catch (error) {
+				console.error(`${context}: ${(error as Error).message}`);
+			}
+		}
+		send(slot.window, "rpc-exit", null);
+		return false;
+	}
 	for (const delay of [0, 250, 750, 2_000]) {
 		if (delay) await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, delay));
 		if (slot.runtime !== runtime || runtime.closing) return false;
@@ -7713,7 +7748,7 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 		),
 		autonomousTrailFile: autonomousChild ? childBindings.get(autonomousChild)?.file : undefined,
 		scheduledJobs,
-		sessionFile: runtime.child ? childBindings.get(runtime.child)?.file : undefined,
+		sessionFile: attendedSessionBinding(runtime)?.file,
 	};
 }
 
@@ -8261,7 +8296,7 @@ async function openChat(
 	}
 	return {
 		ok: true,
-		sessionFile: runtime.child ? childBindings.get(runtime.child)?.file : undefined,
+		sessionFile: attendedSessionBinding(runtime)?.file,
 		department: department?.path,
 		worktree,
 	};
@@ -8355,34 +8390,68 @@ async function attachStaffChild(
 	autoStartStaffIntro = false,
 ): Promise<{ sessionFile: string }> {
 	const previousChild = runtime.child;
-	const currentBinding = previousChild ? childBindings.get(previousChild) : undefined;
+	const attachedBinding = attendedSessionBinding(runtime);
 	if (
 		runtime.childOptions.staffAgentId === agent.id &&
-		currentBinding !== undefined &&
-		currentBinding.file === sessionFile &&
-		isCurrentRuntimeChild(slot, runtime, runtime.child)
+		attachedBinding !== undefined &&
+		attachedBinding.file === sessionFile &&
+		(runtime.sessionAnchor !== undefined || isCurrentRuntimeChild(slot, runtime, runtime.child))
 	) {
-		return { sessionFile: currentBinding.file };
+		return { sessionFile: attachedBinding.file };
 	}
+	const currentBinding = previousChild ? childBindings.get(previousChild) : undefined;
 	const resumeOptions: ChildOptions = {
 		...runtime.childOptions,
 		sessionFile: currentBinding?.file ?? runtime.childOptions.sessionFile,
 	};
 	if (previousChild) await stopChild(previousChild);
 	if (slot.runtime !== runtime || runtime.closing) throw new Error("company runtime changed before staff attachment");
+	runtime.sessionAnchor = undefined;
+	const options: ChildOptions = {
+		sessionFile,
+		...(sessionFile ? {} : { sessionName: agent.displayName }),
+		staffAgentId: agent.id,
+		staffContext: staffSystemContext(runtime.root, agent),
+		model:
+			(sessionFile ? trailModelSelection(runtime.root, sessionFile) : undefined) ??
+			agent.model ??
+			runtime.childOptions.model,
+		...(autoStartStaffIntro ? { autoStartStaffIntro: true, freshStaffTrail: true } : {}),
+	};
+	if (profileAttachment(runtime.root).profileType === "cloud") {
+		// Founder ruling (2026-08-26): cloud staff conversations are childless.
+		// The thread is a synced view onto hosted truth, selections append to
+		// the trail directly, and every prompt is a cloud turn — no local
+		// agent process exists to spawn, crash, or pollute the conversation.
+		const sessions = sessionControlPlanes.get(normalizedRoot(runtime.root));
+		if (!sessions) throw new Error(`session control plane is unavailable for ${runtime.root}`);
+		const scope = { actor: "company-agent", attended: false, staffAgentId: agent.id } as const;
+		const binding = sessionFile
+			? bindTrailSession(runtime.root, runtime.root, scope, sessionFile, sessions.auditForTrail(sessionFile))
+			: bindTrailSession(runtime.root, runtime.root, scope);
+		if (!sessionFile) appendKernelSessionInfo(binding, agent.displayName);
+		sessions.rememberAudit(binding);
+		deliverQueuedStaffMessages(runtime.root, agent.id);
+		if (markIntroPending) {
+			const statePath = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
+			const pending = recordStaffIntroPending(readStaffRuntimeState(statePath), agent.id, binding.file, Date.now());
+			writeStaffRuntimeState(statePath, pending);
+		}
+		runtime.childOptions = options;
+		runtime.attachedStaffVersion = runtime.cloudStaffSync?.versionForStaff(agent.id);
+		recordAttachedTrailCursor(runtime, agent.id);
+		delete runtime.childOptions.sessionName;
+		delete runtime.childOptions.autoStartStaffIntro;
+		delete runtime.childOptions.freshStaffTrail;
+		runtime.sessionAnchor = { binding, staffAgentId: agent.id };
+		runtime.child = undefined;
+		runtime.productWorker = undefined;
+		runtime.runtimeReconnectAttempts = 0;
+		runtime.lastUnexpectedRuntimeExitAt = undefined;
+		return { sessionFile: binding.file };
+	}
 	let child: ChildProcessWithoutNullStreams | undefined;
 	try {
-		const options: ChildOptions = {
-			sessionFile,
-			...(sessionFile ? {} : { sessionName: agent.displayName }),
-			staffAgentId: agent.id,
-			staffContext: staffSystemContext(runtime.root, agent),
-			model:
-				(sessionFile ? trailModelSelection(runtime.root, sessionFile) : undefined) ??
-				agent.model ??
-				runtime.childOptions.model,
-			...(autoStartStaffIntro ? { autoStartStaffIntro: true, freshStaffTrail: true } : {}),
-		};
 		child = startLegacyPiSessionAttachment(slot, runtime.root, options);
 		const binding = childBindings.get(child);
 		if (!binding) throw new Error("staff runtime did not receive a trail binding");
@@ -8408,6 +8477,264 @@ async function attachStaffChild(
 		if (previousChild)
 			await restoreAttendedChild(slot, runtime, resumeOptions, "staff-attachment agent runtime restore failed");
 		throw error;
+	}
+}
+
+/** Queue an attended prompt as a member-sponsored cloud turn. Shared by the
+ * legacy child lane and the childless session anchor: validation of the
+ * sponsor connection, the turn request, and the renderer queue echo are
+ * identical either way. */
+async function requestSponsoredCloudTurn(
+	runtime: CompanyRuntime,
+	arbiter: CloudSessionArbiter,
+	staffAgentId: string,
+	sessionRef: ArbiterSessionRef,
+	reviewed: ReviewedPromptFrame,
+): Promise<Record<string, unknown>> {
+	const executionSponsor = reviewed.executionSponsor;
+	if (!executionSponsor) {
+		return {
+			ok: false,
+			error: "Select an active execution sponsor before sending. Cloud turns never use the desktop model runtime.",
+		};
+	}
+	if (!reviewed.clientInputId || !qorperaAccountAuth) {
+		return { ok: false, error: "cloud-sponsored message has no durable execution identity" };
+	}
+	const attachment = profileAttachment(runtime.root);
+	if (attachment.profileType !== "cloud") {
+		return { ok: false, error: "native subscription execution requires a cloud company" };
+	}
+	try {
+		const control = qorperaAccountAuth.nativeSubscriptionControl();
+		const available = await control.listConnections(attachment.profileId);
+		const selected = available.connections.find(
+			(connection) =>
+				connection.sponsorBindingId === executionSponsor.sponsorBindingId &&
+				connection.sponsorVersion === executionSponsor.sponsorVersion,
+		);
+		if (
+			!available.computeIdentity ||
+			available.computeIdentity.computeIdentityId !== executionSponsor.computeIdentityId ||
+			!selected ||
+			selected.connectionStatus !== "active" ||
+			selected.authorizationState !== "active" ||
+			selected.policy.implementationStatus !== "supported" ||
+			selected.policy.enablementStatus !== "enabled"
+		) {
+			throw new Error("The selected personal subscription is unavailable or was revoked.");
+		}
+		const body = await prepareCloudPromptBody(runtime, reviewed);
+		const request = await control.requestSessionTurn({
+			sessionId: sessionRef.hostedSessionId,
+			clientInputId: reviewed.clientInputId,
+			clientRequestId: reviewed.clientInputId,
+			body: body as unknown as JsonValue,
+			sponsorMode: "member_connection",
+			sponsorBindingId: executionSponsor.sponsorBindingId,
+			sponsorVersion: executionSponsor.sponsorVersion,
+			computeIdentityId: executionSponsor.computeIdentityId,
+			workerClass: executionSponsor.workerClass,
+		});
+		const team = effectiveHostedTeam(attachment.profileId);
+		const author = team?.members.find((member) => member.userId === currentQorperaAccountId);
+		const queue = await readRendererSessionQueue(arbiter, staffAgentId, [
+			{
+				inputId: request.inputId,
+				position: 0,
+				status: request.status === "failed" ? "failed" : "queued",
+				authorUserId: currentQorperaAccountId,
+				authorDisplayName: author?.displayName ?? author?.email ?? "Company member",
+				text: reviewed.displayText ?? reviewed.message,
+				attachmentCount: reviewed.images?.length ?? 0,
+				createdAt: new Date().toISOString(),
+			},
+		]);
+		recordCloudSessionArbiterOutcome(runtime, { ok: true });
+		return {
+			ok: true,
+			queued: true,
+			queue,
+			nativeExecution: {
+				turnRequestId: request.turnRequestId,
+				provider: selected.provider,
+				nativeHarness: selected.nativeHarness,
+				sponsorBindingId: executionSponsor.sponsorBindingId,
+				sponsorVersion: executionSponsor.sponsorVersion,
+			},
+		};
+	} catch (error) {
+		recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
+		return {
+			ok: false,
+			error: `cloud subscription turn was not queued: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+}
+
+/** Last physical entry id of a bound trail file — the parent for selections
+ * appended by the childless anchor, keeping the conversation one chain. */
+function trailSessionLeafEntryId(path: string): string | null {
+	const lines = readFileSync(path, "utf-8").split(/\r?\n/).filter(Boolean);
+	for (let index = lines.length - 1; index >= 1; index--) {
+		try {
+			const entry = JSON.parse(lines[index]!) as { id?: unknown; type?: unknown };
+			if (typeof entry.id === "string" && entry.type !== "session") return entry.id;
+		} catch {
+			/* a torn tail line never blocks a selection append */
+		}
+	}
+	return null;
+}
+
+/** Session state for the childless anchor's get_state surface: the last
+ * recorded model and thinking selections in the trail file. */
+function anchoredSessionState(root: string, sessionFile: string): Record<string, unknown> {
+	const state: Record<string, unknown> = { responseSpeed: "standard" };
+	try {
+		const lines = readFileSync(join(root, "trail", sessionFile), "utf-8").split(/\r?\n/).filter(Boolean);
+		for (const line of lines.slice(1)) {
+			try {
+				const entry = JSON.parse(line) as Record<string, unknown>;
+				if (entry.type === "model_change" && typeof entry.provider === "string" && typeof entry.modelId === "string") {
+					state.model = { provider: entry.provider, id: entry.modelId };
+				} else if (entry.type === "thinking_level_change" && typeof entry.thinkingLevel === "string") {
+					state.thinkingLevel = entry.thinkingLevel;
+				}
+			} catch {
+				/* skip torn lines */
+			}
+		}
+	} catch {
+		/* an unreadable file serves defaults */
+	}
+	return state;
+}
+
+/** Answer the renderer's session RPC surface for a childless cloud anchor.
+ * Reads come straight from the trail file, selections append to it, and a
+ * prompt becomes a member-sponsored cloud turn — no local process involved. */
+async function anchoredSessionRpc(
+	slot: Slot,
+	runtime: CompanyRuntime,
+	anchor: NonNullable<CompanyRuntime["sessionAnchor"]>,
+	frame: { type: string } & Record<string, unknown>,
+	reviewedCloudPrompt: ReviewedPromptFrame | undefined,
+): Promise<Record<string, unknown>> {
+	const binding = anchor.binding;
+	const respond = (command: string, data: Record<string, unknown>): { ok: true } => {
+		send(slot.window, "rpc", { command, success: true, data });
+		return { ok: true };
+	};
+	const sessions = sessionControlPlanes.get(normalizedRoot(runtime.root));
+	const appendSelection = (entry: Record<string, unknown>): Record<string, unknown> => {
+		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+		const append = parseTrailAppendFrame(
+			{ type: "qorpera_trail_append", token: binding.token, entry },
+			binding,
+		);
+		if (!append) return { ok: false, error: "selection could not be recorded" };
+		appendBoundTrailEntry(binding, append.entry);
+		commitTrailAppend(binding, append);
+		sessions?.rememberAudit(binding);
+		return { ok: true };
+	};
+	switch (frame.type) {
+		case "get_messages":
+		case "get_fork_messages":
+			try {
+				return respond(frame.type, { messages: trailSessionMessages(runtime.root, binding.file) });
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		case "get_state":
+			return respond("get_state", anchoredSessionState(runtime.root, binding.file));
+		case "set_thinking_level":
+			return typeof frame.level === "string" && frame.level
+				? appendSelection({
+						type: "thinking_level_change",
+						id: randomUUID(),
+						parentId: trailSessionLeafEntryId(binding.path),
+						timestamp: new Date().toISOString(),
+						thinkingLevel: frame.level,
+					})
+				: { ok: false };
+		case "set_model":
+			return typeof frame.provider === "string" && typeof frame.modelId === "string"
+				? appendSelection({
+						type: "model_change",
+						id: randomUUID(),
+						parentId: trailSessionLeafEntryId(binding.path),
+						timestamp: new Date().toISOString(),
+						provider: frame.provider,
+						modelId: frame.modelId,
+					})
+				: { ok: false };
+		case "set_session_name": {
+			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+			const name = typeof frame.name === "string" ? frame.name : "";
+			if (!name.trim()) return { ok: false };
+			try {
+				appendKernelSessionInfo(binding, name);
+				sessions?.rememberAudit(binding);
+				return { ok: true };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		}
+		case "set_response_speed":
+			return { ok: true };
+		case "abort":
+			return { ok: false, error: "cloud turns finish in the cloud; stopping one from here is not wired yet" };
+		case "prompt":
+			return enqueueRuntimeTransition(runtime, async () => {
+				if (slot.runtime !== runtime || runtime.closing || runtime.sessionAnchor !== anchor) {
+					return { ok: false, error: "session changed before command" };
+				}
+				const reviewed = reviewedCloudPrompt ?? reviewedPromptFrame(frame);
+				if (!reviewed || (!reviewed.message && !reviewed.images?.length)) return { ok: false };
+				if (!slotHasProfileCapability(slot, "write")) {
+					try {
+						await refreshProfileAccess(runtime.root);
+					} catch {
+						/* unreachable cloud: the recheck below decides */
+					}
+					send(slot.window, "profile-access-changed", activeProfileAccess(runtime.root));
+					if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+				}
+				const arbiter = runtime.cloudSessionArbiter;
+				if (!arbiter) return { ok: false, error: "cloud conversation is unavailable; your message was not sent" };
+				let ref = arbiter.sessionForStaff(anchor.staffAgentId);
+				if (!ref) {
+					const staff = activeStaffAgent(runtime.root, anchor.staffAgentId);
+					if (!staff) return { ok: false, error: "staff member is unavailable or archived" };
+					try {
+						ref = await arbiter.ensureSession(anchor.staffAgentId, staff.displayName, binding.sessionId);
+						recordAttachedTrailCursor(runtime, anchor.staffAgentId);
+						recordCloudSessionArbiterOutcome(runtime, { ok: true });
+					} catch (error) {
+						recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
+						return {
+							ok: false,
+							error: `cloud conversation could not be reached: ${error instanceof Error ? error.message : String(error)}`,
+						};
+					}
+					if (slot.runtime !== runtime || runtime.closing || runtime.sessionAnchor !== anchor) {
+						return { ok: false, error: "session changed before command" };
+					}
+				}
+				if (!ref) return { ok: false, error: "cloud conversation is unavailable; your message was not sent" };
+				if (binding.sessionId !== ref.clientSessionId) {
+					void readoptStaffCloudSession(slot, runtime, anchor.staffAgentId, ref);
+					return { ok: false, error: "conversation is rejoining its cloud history; retry in a moment" };
+				}
+				return requestSponsoredCloudTurn(runtime, arbiter, anchor.staffAgentId, ref, reviewed);
+			});
+		case "steer":
+		case "follow_up":
+			return { ok: false, error: "Steering is not available for cloud turns yet." };
+		default:
+			return { ok: false };
 	}
 }
 
@@ -8601,11 +8928,22 @@ async function bootstrapStaffTeam(
 				freshStaffTrail: true,
 				...(!cloudSessionAuthority ? { autoStartStaffIntro: true } : {}),
 			};
-			staffChild = startLegacyPiSessionAttachment(slot, runtime.root, options);
-			runtime.childOptions = options;
-			delete runtime.childOptions.freshStaffTrail;
-			delete runtime.childOptions.autoStartStaffIntro;
-			runtime.child = staffChild;
+			if (cloudSessionAuthority) {
+				// Cloud staff conversations are childless: anchor onto the
+				// pre-bound trail; the kickoff is a queue row the pump claims.
+				runtime.childOptions = options;
+				delete runtime.childOptions.freshStaffTrail;
+				delete runtime.childOptions.autoStartStaffIntro;
+				runtime.sessionAnchor = { binding: firstBinding, staffAgentId: first.id };
+				runtime.child = undefined;
+			} else {
+				staffChild = startLegacyPiSessionAttachment(slot, runtime.root, options);
+				runtime.childOptions = options;
+				delete runtime.childOptions.freshStaffTrail;
+				delete runtime.childOptions.autoStartStaffIntro;
+				runtime.sessionAnchor = undefined;
+				runtime.child = staffChild;
+			}
 			runtime.productWorker = undefined;
 			runtime.staffBootstrapReturn = { staffAgentId: first.id, trailFile: firstBinding.file };
 			runtime.runtimeReconnectAttempts = 0;
@@ -8701,6 +9039,11 @@ async function createStaffMember(
 				...(artifactPath ? [artifactPath] : []),
 			]);
 			triggerCloudStaffSync(runtime);
+			if (profileAttachment(runtime.root).profileType === "cloud") {
+				// Cloud staff conversations are childless from their first breath.
+				const attached = await attachStaffChild(slot, runtime, staff, undefined, true);
+				return { ok: true, staff, sessionFile: attached.sessionFile, introStatus: "pending" as const };
+			}
 			const options: ChildOptions = {
 				sessionName: staff.displayName,
 				staffAgentId: staff.id,
@@ -8719,6 +9062,7 @@ async function createStaffMember(
 			delete runtime.childOptions.sessionName;
 			delete runtime.childOptions.autoStartStaffIntro;
 			delete runtime.childOptions.freshStaffTrail;
+			runtime.sessionAnchor = undefined;
 			runtime.child = staffChild;
 			runtime.productWorker = undefined;
 			runtime.runtimeReconnectAttempts = 0;
@@ -8859,8 +9203,10 @@ async function archiveStaffMember(
 			const staff = activeStaffAgent(runtime.root, staffAgentId);
 			if (!staff) return { ok: false, error: "staff member is unavailable" };
 			const previousChild = runtime.child;
-			const attached = Boolean(previousChild && runtime.childOptions.staffAgentId === staff.id);
-			const previousBinding = previousChild ? childBindings.get(previousChild) : undefined;
+			const attached = Boolean(
+				(previousChild || runtime.sessionAnchor) && runtime.childOptions.staffAgentId === staff.id,
+			);
+			const previousBinding = attendedSessionBinding(runtime);
 			const previousOptions: ChildOptions = {
 				...runtime.childOptions,
 				sessionFile: previousBinding?.file ?? runtime.childOptions.sessionFile,
@@ -8869,6 +9215,7 @@ async function archiveStaffMember(
 			try {
 				snapshotFounderGitState(runtime.root, "founder staff archive");
 				if (attached && previousChild) await stopChild(previousChild);
+				if (attached) runtime.sessionAnchor = undefined;
 				const deleted = archiveStaffAgent(runtime.root, staff.id);
 				archived = true;
 				commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);
@@ -8886,7 +9233,9 @@ async function archiveStaffMember(
 						? (readStaffRuntimeState(staffRuntimeStatePath(app.getPath("userData"), runtime.root)).intros[next.id]
 								?.trailFile ?? latestStaffTrailFile(runtime, next.id))
 						: undefined;
-					if (next) {
+					if (next && profileAttachment(runtime.root).profileType === "cloud") {
+						await attachStaffChild(slot, runtime, next, nextTrail, !nextTrail);
+					} else if (next) {
 						const options: ChildOptions = {
 							sessionFile: nextTrail,
 							...(nextTrail ? {} : { sessionName: next.displayName, freshStaffTrail: true }),
@@ -8900,6 +9249,7 @@ async function archiveStaffMember(
 						delete runtime.childOptions.freshStaffTrail;
 					} else {
 						runtime.child = undefined;
+						runtime.sessionAnchor = undefined;
 						runtime.childOptions = { model: previousOptions.model };
 					}
 					runtime.productWorker = undefined;
@@ -9043,11 +9393,11 @@ async function openStaffMember(
 		const introState = readStaffRuntimeState(staffRuntimeStatePath(app.getPath("userData"), runtime.root)).intros[
 			staff.id
 		];
-		const currentBinding = runtime.child ? childBindings.get(runtime.child) : undefined;
+		const currentBinding = attendedSessionBinding(runtime);
 		if (
 			runtime.childOptions.staffAgentId === staff.id &&
 			currentBinding &&
-			isCurrentRuntimeChild(slot, runtime, runtime.child)
+			(runtime.sessionAnchor !== undefined || isCurrentRuntimeChild(slot, runtime, runtime.child))
 		) {
 			const arbiter = runtime.cloudSessionArbiter;
 			return {
@@ -12486,7 +12836,7 @@ app.whenReady().then(async () => {
 		}
 		const attachment = profileAttachment(runtime.root);
 		const staffAgentId = runtime.childOptions.staffAgentId;
-		const sessionId = runtime.child ? childBindings.get(runtime.child)?.sessionId : undefined;
+		const sessionId = attendedSessionBinding(runtime)?.sessionId;
 		if (attachment.profileType !== "cloud" || !staffAgentId || !sessionId) {
 			return { ok: true, id, staged: false };
 		}
@@ -12515,7 +12865,7 @@ app.whenReady().then(async () => {
 		if (!slot || !runtime) return { ok: true, pending: null };
 		const attachment = profileAttachment(runtime.root);
 		const staffAgentId = runtime.childOptions.staffAgentId;
-		const sessionId = runtime.child ? childBindings.get(runtime.child)?.sessionId : undefined;
+		const sessionId = attendedSessionBinding(runtime)?.sessionId;
 		if (attachment.profileType !== "cloud" || !staffAgentId || !sessionId) {
 			return { ok: true, pending: null };
 		}
@@ -12546,7 +12896,7 @@ app.whenReady().then(async () => {
 		if (!slot || !runtime || typeof id !== "string" || !UUID_PATTERN.test(id)) return { ok: false };
 		const attachment = profileAttachment(runtime.root);
 		const staffAgentId = runtime.childOptions.staffAgentId;
-		const sessionId = runtime.child ? childBindings.get(runtime.child)?.sessionId : undefined;
+		const sessionId = attendedSessionBinding(runtime)?.sessionId;
 		if (attachment.profileType !== "cloud" || !staffAgentId || !sessionId) return { ok: true };
 		try {
 			return {
@@ -12732,6 +13082,19 @@ app.whenReady().then(async () => {
 			console.error("rpc:send reject: no session attachment");
 			return { ok: false, error: "session attachment required" };
 		}
+		const anchor = !runtime.child ? runtime.sessionAnchor : undefined;
+		if (anchor) {
+			if (anchor.binding.file !== expectedTrailFile) {
+				return { ok: false, error: "session changed before command" };
+			}
+			return anchoredSessionRpc(
+				slot,
+				runtime,
+				anchor,
+				frame as { type: string } & Record<string, unknown>,
+				reviewedCloudPrompt,
+			);
+		}
 		const attachedTo = (child: ChildProcessWithoutNullStreams): boolean =>
 			childBindings.get(child)?.file === expectedTrailFile;
 		const promptTypes = new Set(["prompt", "steer", "follow_up"]);
@@ -12868,85 +13231,7 @@ app.whenReady().then(async () => {
 					sendBinding.sessionId === sendRef.clientSessionId &&
 					frame.type === "prompt"
 				) {
-					const executionSponsor = reviewed.executionSponsor;
-					if (executionSponsor) {
-						if (!reviewed.clientInputId || !qorperaAccountAuth) {
-							return { ok: false, error: "cloud-sponsored message has no durable execution identity" };
-						}
-						const attachment = profileAttachment(runtime.root);
-						if (attachment.profileType !== "cloud") {
-							return { ok: false, error: "native subscription execution requires a cloud company" };
-						}
-						try {
-							const control = qorperaAccountAuth.nativeSubscriptionControl();
-							const available = await control.listConnections(attachment.profileId);
-							const selected = available.connections.find(
-								(connection) =>
-									connection.sponsorBindingId === executionSponsor.sponsorBindingId &&
-									connection.sponsorVersion === executionSponsor.sponsorVersion,
-							);
-							if (
-								!available.computeIdentity ||
-								available.computeIdentity.computeIdentityId !== executionSponsor.computeIdentityId ||
-								!selected ||
-								selected.connectionStatus !== "active" ||
-								selected.authorizationState !== "active" ||
-								selected.policy.implementationStatus !== "supported" ||
-								selected.policy.enablementStatus !== "enabled"
-							) {
-								throw new Error("The selected personal subscription is unavailable or was revoked.");
-							}
-							const body = await prepareCloudPromptBody(runtime, reviewed);
-							const request = await control.requestSessionTurn({
-								sessionId: sendRef.hostedSessionId,
-								clientInputId: reviewed.clientInputId,
-								clientRequestId: reviewed.clientInputId,
-								body: body as unknown as JsonValue,
-								sponsorMode: "member_connection",
-								sponsorBindingId: executionSponsor.sponsorBindingId,
-								sponsorVersion: executionSponsor.sponsorVersion,
-								computeIdentityId: executionSponsor.computeIdentityId,
-								workerClass: executionSponsor.workerClass,
-							});
-							const team = effectiveHostedTeam(attachment.profileId);
-							const author = team?.members.find((member) => member.userId === currentQorperaAccountId);
-							const queue = await readRendererSessionQueue(sendArbiter, sendStaffId, [
-								{
-									inputId: request.inputId,
-									position: 0,
-									status: request.status === "failed" ? "failed" : "queued",
-									authorUserId: currentQorperaAccountId,
-									authorDisplayName: author?.displayName ?? author?.email ?? "Company member",
-									text: reviewed.displayText ?? reviewed.message,
-									attachmentCount: reviewed.images?.length ?? 0,
-									createdAt: new Date().toISOString(),
-								},
-							]);
-							recordCloudSessionArbiterOutcome(runtime, { ok: true });
-							return {
-								ok: true,
-								queued: true,
-								queue,
-								nativeExecution: {
-									turnRequestId: request.turnRequestId,
-									provider: selected.provider,
-									nativeHarness: selected.nativeHarness,
-									sponsorBindingId: executionSponsor.sponsorBindingId,
-									sponsorVersion: executionSponsor.sponsorVersion,
-								},
-							};
-						} catch (error) {
-							recordCloudSessionArbiterOutcome(runtime, { ok: false, error });
-							return {
-								ok: false,
-								error: `cloud subscription turn was not queued: ${error instanceof Error ? error.message : String(error)}`,
-							};
-						}
-					}
-					return {
-						ok: false,
-						error: "Select an active execution sponsor before sending. Cloud turns never use the desktop model runtime.",
-					};
+					return requestSponsoredCloudTurn(runtime, sendArbiter, sendStaffId, sendRef, reviewed);
 				}
 				if (cloudStaffConversation && frame.type === "prompt") {
 					return { ok: false, error: "cloud conversation is not attached; your message was not sent" };

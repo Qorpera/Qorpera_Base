@@ -793,6 +793,46 @@ export function trailSessionStaffAgentId(root: string, sessionFile: string): str
 	return header.qorpera?.staffAgentId;
 }
 
+/** The conversation a session file currently shows: message objects along the
+ * active chain (the newest entry whose parent-path carries any message,
+ * walked to its root), oldest first. Linear cloud materialization makes this
+ * the whole synced conversation; a legacy forked file resolves to its newest
+ * message-bearing branch, which is what the pane already showed. Serves the
+ * renderer's get_messages surface without an attached child process. */
+export function trailSessionMessages(root: string, sessionFile: string): Array<Record<string, unknown>> {
+	const trailDir = assertPhysicalCompanyTree(root, "trail");
+	if (basename(sessionFile) !== sessionFile || !sessionFile.endsWith(".jsonl")) {
+		throw new Error("trail session must be a JSONL filename inside the company trail");
+	}
+	const path = join(trailDir, sessionFile);
+	if (!existsSync(path)) throw new Error(`trail session does not exist: ${sessionFile}`);
+	const entries = readFileSync(path, "utf-8")
+		.split(/\r?\n/)
+		.slice(1)
+		.filter(Boolean)
+		.map((line) => JSON.parse(line) as SessionEntry);
+	const byId = new Map(entries.map((entry) => [entry.id, entry]));
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const chain: SessionEntry[] = [];
+		const seen = new Set<string>();
+		let cursor: SessionEntry | undefined = entries[index];
+		while (cursor && !seen.has(cursor.id) && chain.length <= entries.length) {
+			seen.add(cursor.id);
+			chain.push(cursor);
+			cursor = cursor.parentId === null ? undefined : byId.get(cursor.parentId);
+		}
+		const messages = chain
+			.reverse()
+			.filter((entry) => entry.type === "message" && entry.message && typeof entry.message === "object")
+			.map((entry) => {
+				const message = entry.message as Record<string, unknown>;
+				return { timestamp: entry.timestamp, ...message };
+			});
+		if (messages.length > 0) return messages;
+	}
+	return [];
+}
+
 export function existingTrailFileForSession(root: string, sessionId: string): string | undefined {
 	const trailDir = assertPhysicalCompanyTree(root, "trail");
 	let match: string | undefined;

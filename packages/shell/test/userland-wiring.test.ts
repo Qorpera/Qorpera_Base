@@ -236,15 +236,26 @@ describe("userland wiring", () => {
 	});
 
 	it("requires a sponsored runner job and rejects desktop execution for cloud turns", () => {
+		/* The sponsored-turn path lives in requestSponsoredCloudTurn, shared by
+		 * the legacy child lane and the childless session anchor. */
+		const turnStart = mainSource.indexOf("async function requestSponsoredCloudTurn(");
+		const turnEnd = mainSource.indexOf("function trailSessionLeafEntryId(", turnStart);
+		expect(turnStart).toBeGreaterThan(-1);
+		const turnLane = mainSource.slice(turnStart, turnEnd);
+		expect(turnLane).toContain("await control.requestSessionTurn({");
+		expect(turnLane).toContain("Cloud turns never use the desktop model runtime.");
+		expect(turnLane).not.toContain("enqueueCloudPrompt(");
+		expect(turnLane).not.toContain("sendLegacyLocalPrompt(");
 		const cloudStart = mainSource.indexOf("const cloudSponsoredPrompt = reviewedCloudPrompt?.executionSponsor");
 		const cloudEnd = mainSource.indexOf('if (cloudStaffConversation && frame.type === "prompt")', cloudStart);
 		expect(cloudStart).toBeGreaterThan(-1);
 		expect(cloudEnd).toBeGreaterThan(cloudStart);
 		const cloudComposer = mainSource.slice(cloudStart, cloudEnd);
-		expect(cloudComposer).toContain("await control.requestSessionTurn({");
-		expect(cloudComposer).toContain("Cloud turns never use the desktop model runtime.");
-		expect(cloudComposer).not.toContain("enqueueCloudPrompt(");
+		expect(cloudComposer).toContain("requestSponsoredCloudTurn(runtime, sendArbiter, sendStaffId, sendRef, reviewed)");
 		expect(cloudComposer).not.toContain("sendLegacyLocalPrompt(");
+		/* The childless anchor answers the whole session surface. */
+		expect(mainSource).toContain("async function anchoredSessionRpc(");
+		expect(mainSource).toContain("requestSponsoredCloudTurn(runtime, arbiter, anchor.staffAgentId, ref, reviewed)");
 		const legacyStart = mainSource.indexOf("function sendLegacyLocalPrompt(");
 		const legacyEnd = mainSource.indexOf("function ", legacyStart + 1);
 		const legacyPrompt = mainSource.slice(legacyStart, legacyEnd);
