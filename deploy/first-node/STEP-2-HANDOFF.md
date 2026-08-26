@@ -7,7 +7,20 @@ is pushed. The founder's standing rulings: cloud-only execution (no local
 executor, no fallback architectures), the live company file on the NAS is
 THE model (no per-turn copying), transcripts are simple synced chats.**
 
-## In flight RIGHT NOW — finish the live-file cutover (one step left)
+## UPDATE 21:50: v41 IS SIGNED AND ACTIVE (fingerprint ac192cb1…,
+provenance dd-signed, activation EXIT=0, LIVE_TREE_PRESENT,
+SIGNED_LXD_PROVIDER_ACTIVE). All five live-tree fixes are deployed.
+ONLY REMAINING PROOF: one attended turn from the founder app (Claude
+could not drive it — the founder relaunched the app without the debug
+port, and turn requests require the app session). Ask the founder to
+message any agent, then verify: the turn completes (qorpera_runner_jobs
+newest row completed, start ~+17s), and if the prompt asks for a file,
+it appears at /mnt/qorpera-companies/company41/live/ on the node. If a
+turn FAILS, read the run events (qorpera_execution_run_events newest)
+and the provider journal refusal lines — that is the sixth defect to
+fix.
+
+## Original in-flight notes (superseded above)
 
 Image v41 (adds git `safe.directory` trust to both guest units — the last
 of five live-tree defects, see log below) is building on the node after an
