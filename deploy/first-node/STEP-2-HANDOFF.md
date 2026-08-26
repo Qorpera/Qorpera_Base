@@ -1,5 +1,36 @@
 # Step 2 implementation handoff
 
+**THREAD IS THE CONVERSATION — founder's second cleanup list shipped
+(2026-08-26, ~08:45 UTC+2, releases 0.20.33–0.20.34; image v35 cycle in
+flight).** Per founder: the in-thread working avatar now runs for cloud
+turns (hosted read model waiting/working + durable prompt queue drive
+`syncThreadActivityFromCloud`; the activeRunProgress guard had to go —
+history replay leaves it truthy for threads whose legacy-local runs
+never settled, verified live via CDP before shipping); provider tags
+are gone from bubbles and the thread header (provenance stays in
+execution records); the sponsor selector is hidden (first active
+connection sponsors); reasoning effort defaults to LOW — composer-side
+(explicit member choice tracked via `effortChosen`; replayed
+legacy-local levels no longer displace the default) and runner-side
+(`codex exec -c model_reasoning_effort=low` in the guest provider
+host → image v35).
+
+**Incident 2026-08-26 06:03 UTC — apt-daily-upgrade bounced the
+provider mid-turn.** The founder's live turn (job `1f80d0b2`) leased,
+its VM was booting, and needrestart's service-restart wave (packagekit/
+fwupd/ssh/journald batch) stopped `qorpera-lxd-provider` at 06:03:40;
+the orphaned VM never renewed and the reaper failed the job with
+"Runner lease expired before durable completion" (correct fail-closed
+behavior; the durable output actually landed and the thread self-healed
+after retry/sync). Mitigations: (1) NEEDS FOUNDER SUDO — pin the
+provider against automatic restarts:
+`sudo tee /etc/needrestart/conf.d/qorpera.conf` with
+`$nrconf{override_rc}{qr(^qorpera-lxd-provider\.service$)} = 0;`
+(deploys restart it explicitly); (2) nine zombie runner VMs from
+completed/failed runs were deleted (`lxc delete --force --project
+qorpera-runners`) — the missing LxdClient delete op keeps minting
+these; the cleanup policy item is now urgent, not cosmetic.
+
 **CONVERSATIONS RENDER WHOLE — closeout item 1 done, founder's UI list
 verified (2026-08-26, ~08:00 UTC+2, releases 0.20.29–0.20.32).** Trail
 materialization is now LINEAR per the founder's transcripts-are-simple-
