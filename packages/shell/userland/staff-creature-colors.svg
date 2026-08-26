@@ -29,7 +29,7 @@
 			<feComposite in="color" in2="SourceAlpha" operator="in"/>
 		</filter>
 		<filter id="cobalt" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#1684ff" result="color"/>
+			<feFlood flood-color="#0071e3" result="color"/>
 			<feComposite in="color" in2="SourceAlpha" operator="in"/>
 		</filter>
 		<filter id="violet" color-interpolation-filters="sRGB">

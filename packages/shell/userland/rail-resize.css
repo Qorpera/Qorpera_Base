@@ -166,12 +166,12 @@ body.company-shell.rail-compact .company-runtime-row {
 
 body.company-shell.rail-compact .staff-nav-row:hover,
 body.company-shell.rail-compact .company-runtime-row:hover {
-	background: #e8e8e6;
+	background: var(--sidebar-hover);
 }
 
 body.company-shell.rail-compact .staff-nav-row.active,
 body.company-shell.rail-compact .company-runtime-row.active {
-	background: #0a84ff;
+	background: var(--sidebar-selection);
 }
 
 body.company-shell.rail-compact .staff-nav-row .staff-avatar,

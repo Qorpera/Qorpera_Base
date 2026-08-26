@@ -45,7 +45,7 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #00bfb3"] > .staff-creature-image {
 	filter: url("./staff-creature-colors.svg#teal");
 }
-html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #1684ff"] > .staff-creature-image {
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #0071e3"] > .staff-creature-image {
 	filter: url("./staff-creature-colors.svg#cobalt");
 }
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #8a4dff"] > .staff-creature-image {
@@ -101,7 +101,7 @@ html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-co
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #00bfb3"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
 	filter: url("./staff-creature-colors.svg#teal");
 }
-html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #1684ff"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #0071e3"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
 	filter: url("./staff-creature-colors.svg#cobalt");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #8a4dff"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {

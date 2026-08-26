@@ -3739,7 +3739,7 @@ html[data-platform="darwin"] .staff-nav-copy strong {
 body.company-shell #titlebar {
 	background: linear-gradient(
 		to right,
-		#f3f3f1 0 var(--rail-width),
+		var(--sidebar-surface) 0 var(--rail-width),
 		#f9f8f4 var(--rail-width) 100%
 	);
 }
@@ -3757,29 +3757,29 @@ body.company-shell #titlebar::before {
 }
 
 #primaryNavigation {
-	background: #f3f3f1;
+	background: var(--sidebar-surface);
 }
 
 html[data-platform="darwin"] body.company-shell #titlebar {
 	background: linear-gradient(
 		to right,
-		transparent 0 var(--rail-width),
+		var(--sidebar-vibrancy-tint) 0 var(--rail-width),
 		#f9f8f4 var(--rail-width) 100%
 	);
 }
 
 html[data-platform="darwin"] #primaryNavigation {
-	background: transparent;
+	background: var(--sidebar-vibrancy-tint);
 }
 
 html[data-sidebar-translucency="off"] #primaryNavigation {
-	background: #f3f3f1;
+	background: var(--sidebar-surface);
 }
 
 html[data-sidebar-translucency="off"] body.company-shell #titlebar {
 	background: linear-gradient(
 		to right,
-		#f3f3f1 0 var(--rail-width),
+		var(--sidebar-surface) 0 var(--rail-width),
 		#f9f8f4 var(--rail-width) 100%
 	);
 }
@@ -3842,7 +3842,7 @@ html[data-platform="darwin"] .titlebar-rail .rail-add-staff span {
 
 .staff-nav-row,
 .company-runtime-row {
-	grid-template-columns: 44px minmax(0, 1fr);
+	grid-template-columns: 50px minmax(0, 1fr);
 	gap: 6px;
 	min-height: 64px;
 	padding: 5px 10px 5px 14px;
@@ -3859,8 +3859,8 @@ html[data-platform="darwin"] .titlebar-rail .rail-add-staff span {
 #staffNavigation .staff-nav-row.active:hover,
 #staffNavigation .company-runtime-row.active,
 #staffNavigation .company-runtime-row.active:hover {
-	background: #0a84ff;
-	color: #fff;
+	background: var(--sidebar-selection);
+	color: var(--sidebar-selection-text);
 }
 
 .staff-nav-row.active .staff-nav-copy strong,
@@ -3869,7 +3869,7 @@ html[data-platform="darwin"] .titlebar-rail .rail-add-staff span {
 .company-runtime-row.active .staff-nav-copy strong,
 .company-runtime-row.active .staff-nav-copy small,
 .company-runtime-row.active .staff-nav-time {
-	color: #fff;
+	color: var(--sidebar-selection-text);
 }
 
 .staff-nav-row.active .staff-nav-copy small,
@@ -3881,7 +3881,30 @@ html[data-platform="darwin"] .titlebar-rail .rail-add-staff span {
 
 html[data-staff-avatar-style="creatures"] .staff-nav-row .staff-avatar,
 html[data-staff-avatar-style="creatures"] .company-runtime-row .staff-avatar {
+	width: 50px;
+	height: 50px;
 	background: transparent;
+}
+
+/* macOS selected rows use a single foreground palette. The silhouette stays
+ * distinct from the system-blue selection regardless of the agent's profile
+ * color, while blue eyes preserve the character's expression. */
+#staffNavigation .staff-nav-row.active .staff-avatar,
+#staffNavigation .company-runtime-row.active .staff-avatar,
+.staff-pinned-grid .staff-pinned-card.active .staff-avatar {
+	--staff-creature-filter: brightness(0) invert(1) !important;
+}
+
+#staffNavigation .staff-nav-row.active .staff-creature-image,
+#staffNavigation .company-runtime-row.active .staff-creature-image,
+.staff-pinned-grid .staff-pinned-card.active .staff-creature-image {
+	filter: brightness(0) invert(1) !important;
+}
+
+#staffNavigation .staff-nav-row.active .staff-face i,
+#staffNavigation .company-runtime-row.active .staff-face i,
+.staff-pinned-grid .staff-pinned-card.active .staff-face i {
+	background: var(--sidebar-selection);
 }
 
 .agent-sidepanel,

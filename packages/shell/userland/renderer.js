@@ -123,7 +123,7 @@ let staffCatalogCache = null;
 let staffCreatorSelection = null;
 let staffCreatorPending = false;
 let staffCreatorClosing = false;
-let staffCreatorColor = "#1684ff";
+let staffCreatorColor = "#0071e3";
 let staffCreatorShape = "round";
 let staffCreatorCreature = "pebble";
 let conversationRecipients = new Set();
@@ -283,7 +283,7 @@ const STAFF_AVATAR_COLORS = [
 	"#ffae00",
 	"#00c878",
 	"#00bfb3",
-	"#1684ff",
+	"#0071e3",
 	"#8a4dff",
 	"#ff2994",
 	"#7c7c7a",
@@ -297,6 +297,7 @@ const STAFF_CREATURE_FILTERS = Object.freeze({
 	"#ffae00": "amber",
 	"#00c878": "emerald",
 	"#00bfb3": "teal",
+	"#0071e3": "cobalt",
 	"#1684ff": "cobalt",
 	"#8a4dff": "violet",
 	"#ff2994": "pink",
@@ -329,7 +330,7 @@ const STAFF_CREATURE_BY_TEMPLATE = Object.freeze({
 });
 const STAFF_COLOR_TOKENS = {
 	"qorpera-terracotta": "#ff642e",
-	"qorpera-cobalt": "#1684ff",
+	"qorpera-cobalt": "#0071e3",
 	"qorpera-amber": "#ffae00",
 	"qorpera-emerald": "#00c878",
 	"qorpera-violet": "#8a4dff",
@@ -337,13 +338,14 @@ const STAFF_COLOR_TOKENS = {
 	"qorpera-pink": "#ff2994",
 	"qorpera-indigo": "#5367e8",
 	"qorpera-teal": "#00bfb3",
-	"qorpera-blue": "#1684ff",
+	"qorpera-blue": "#0071e3",
+	"#1684ff": "#0071e3",
 	"#cc7d5e": "#ff642e",
 	"#e9606f": "#ff365e",
 	"#d89b35": "#ffae00",
 	"#4caf83": "#00c878",
 	"#36a5a2": "#00bfb3",
-	"#3f88df": "#1684ff",
+	"#3f88df": "#0071e3",
 	"#8c6dd7": "#8a4dff",
 	"#d955a1": "#ff2994",
 	"#777772": "#5367e8",
@@ -387,7 +389,7 @@ const DEFAULT_STAFF_TEMPLATES = [
 		displayName: "Software Developer",
 		name: "Software Developer",
 		description: "Builds, tests, and maintains the company’s software.",
-		color: "#1684ff",
+		color: "#0071e3",
 		shape: "wide",
 	},
 	{
@@ -435,7 +437,7 @@ const DEFAULT_STAFF_TEMPLATES = [
 		displayName: "Outreaching Conversationalist",
 		name: "Outreaching Conversationalist",
 		description: "Starts useful conversations with prospects, partners, and other people outside the company.",
-		color: "#1684ff",
+		color: "#0071e3",
 		shape: "drop",
 	},
 ];
@@ -2166,7 +2168,7 @@ function configureSuggestedAgent(template = null, proposedName = "") {
 	$("conversationRecipientMenu").hidden = true;
 	$("conversationRecipientSearch").setAttribute("aria-expanded", "false");
 	staffCreatorSelection = template;
-	staffCreatorColor = template ? staffColor(template) : "#1684ff";
+	staffCreatorColor = template ? staffColor(template) : "#0071e3";
 	staffCreatorShape = template ? staffShape(template) : "round";
 	staffCreatorCreature = template ? STAFF_CREATURE_BY_TEMPLATE[templateId(template)] ?? "pebble" : "pebble";
 	$("staffDisplayName").value = proposedName || (template ? template.displayName ?? templateName(template) : "");
@@ -3796,7 +3798,7 @@ function renderAgentFigurePicker(container, staff) {
 					shape: staffShape(template),
 					creature: STAFF_CREATURE_BY_TEMPLATE[staffTemplateId(staff)] ?? staffCreatureId(template),
 				}
-			: { color: "#1684ff", shape: "round", creature: "pebble" };
+			: { color: "#0071e3", shape: "round", creature: "pebble" };
 		void saveAgentStaffUpdate(staff, { appearance }, "The agent figure could not be reset.");
 	};
 	picker.appendChild(reset);

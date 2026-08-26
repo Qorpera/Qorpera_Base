@@ -6,6 +6,7 @@ const shell = join(import.meta.dirname, "..");
 const userland = join(shell, "userland");
 const rendererSource = readFileSync(join(userland, "renderer.js"), "utf-8");
 const indexSource = readFileSync(join(userland, "index.html"), "utf-8");
+const tokensCssSource = readFileSync(join(userland, "tokens.css"), "utf-8");
 const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
 const onboardingCssSource = readFileSync(join(userland, "onboarding.css"), "utf-8");
 const characterMotionSource = readFileSync(join(userland, "character-motion.css"), "utf-8");
@@ -156,13 +157,34 @@ describe("userland wiring", () => {
 
 	it("keeps active agent selection blue across hover and pinned layouts", () => {
 		expect(baseCssSource).toMatch(
-			/#staffNavigation \.staff-nav-row\.active,[^}]*#staffNavigation \.staff-nav-row\.active:hover[^}]*\{[^}]*background: #0a84ff;[^}]*color: #fff;/s,
+			/#staffNavigation \.staff-nav-row\.active,[^}]*#staffNavigation \.staff-nav-row\.active:hover[^}]*\{[^}]*background: var\(--sidebar-selection\);[^}]*color: var\(--sidebar-selection-text\);/s,
 		);
 		expect(pinnedAgentsCssSource).toMatch(
-			/\.staff-pinned-grid \.staff-pinned-card\.active,[^}]*\.staff-pinned-grid \.staff-pinned-card\.active:hover[^}]*\{[^}]*background: #0a84ff;[^}]*color: #fff;/s,
+			/\.staff-pinned-grid \.staff-pinned-card\.active,[^}]*\.staff-pinned-grid \.staff-pinned-card\.active:hover[^}]*\{[^}]*background: var\(--sidebar-selection\);[^}]*color: var\(--sidebar-selection-text\);/s,
 		);
 		expect(pinnedAgentsCssSource).not.toMatch(
 			/\.staff-pinned-grid \.staff-pinned-card\.active[^}]*\{[^}]*background: #e9e9e7;/s,
+		);
+	});
+
+	it("matches the Messages rail scale, surface, and selected icon contrast", () => {
+		expect(tokensCssSource).toContain("--sidebar-surface: #eeedeb;");
+		expect(tokensCssSource).toContain("--sidebar-vibrancy-tint: rgba(232, 235, 240, 0.32);");
+		expect(rendererSource).toContain('"qorpera-cobalt": "#0071e3"');
+		expect(baseCssSource).toMatch(
+			/\.staff-nav-row,[^}]*\.company-runtime-row \{[^}]*grid-template-columns: 50px minmax\(0, 1fr\);/s,
+		);
+		expect(baseCssSource).toMatch(
+			/html\[data-staff-avatar-style="creatures"\] \.staff-nav-row \.staff-avatar,[^}]*width: 50px;[^}]*height: 50px;/s,
+		);
+		expect(pinnedAgentsCssSource).toMatch(
+			/\.staff-pinned-grid \.staff-pinned-card \.staff-avatar \{[^}]*width: 64px;[^}]*height: 64px;/s,
+		);
+		expect(baseCssSource).toMatch(
+			/#staffNavigation \.staff-nav-row\.active \.staff-creature-image,[^}]*filter: brightness\(0\) invert\(1\) !important;/s,
+		);
+		expect(baseCssSource).toMatch(
+			/#staffNavigation \.staff-nav-row\.active \.staff-face i,[^}]*background: var\(--sidebar-selection\);/s,
 		);
 	});
 
