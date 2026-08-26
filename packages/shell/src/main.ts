@@ -3840,7 +3840,12 @@ function startLegacyPiSessionAttachment(
 			[
 				...FOUNDATION_READ_PATHS,
 				...runtimeNodeReadPaths,
-				...(companyExecution ? [join(root, ".git")] : []),
+				/* Cloud-company staff children run confined to their execution
+				 * worktree, but the session binding hands them a --session path
+				 * in the live company root; without read access to that trail
+				 * the child dies EPERM opening its own session history. Appends
+				 * still flow through the kernel broker, never direct writes. */
+				...(companyExecution ? [join(root, ".git"), join(root, "trail")] : []),
 				join(configDir, "config.toml"),
 				join(agentDir, "auth.json"),
 				join(agentDir, "trust.json"),
