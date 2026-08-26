@@ -97,7 +97,7 @@ describe("Qorpera account auth", () => {
 		expect(requestedUrl).toBe("https://project.test/functions/v1/native-provider-login/login");
 	});
 
-	it("routes production company objects through the self-owned NAS gateway by default", async () => {
+	it("routes production company objects through cloud storage first by default", async () => {
 		const userData = temporaryRoot("production-object-gateway");
 		const userId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 		const payload = Buffer.from(
@@ -147,7 +147,10 @@ describe("Qorpera account auth", () => {
 				mediaType: "application/octet-stream",
 			}),
 		).resolves.toEqual(Uint8Array.from(bytes));
-		expect(requestedUrls).toEqual([`${QORPERA_OBJECT_GATEWAY_URL}/v1/profile-objects/${profileId}/${sha256}`]);
+		/* Cloud-first since the transports chained: the gateway remains the
+		 * per-object fallback and the dual-write keeps the NAS converged. */
+		expect(requestedUrls).toHaveLength(1);
+		expect(requestedUrls[0]).toContain(`/storage/v1/object/qorpera-profile-objects/${profileId}/${sha256}`);
 	});
 
 	it("can explicitly use Supabase Storage for production acceptance while the NAS is offline", async () => {

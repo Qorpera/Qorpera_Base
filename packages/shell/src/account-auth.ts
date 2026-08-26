@@ -73,7 +73,12 @@ function configuredObjectStoragePrimary(projectUrl: string, configured: string |
 		if (value === "nas" || value === "supabase") return value;
 		throw new Error("Qorpera object storage primary must be 'nas' or 'supabase'");
 	}
-	return new URL(projectUrl).origin === new URL(QORPERA_AUTH_URL).origin ? "nas" : "supabase";
+	/* Cloud-first since the transports chained (2026-08-26): storage answers
+	 * in milliseconds from anywhere while the gateway rides a consumer NAS
+	 * that has now failed twice in one night; the chain still reads
+	 * NAS-only objects through the gateway fallback and dual-writes keep
+	 * the NAS converged as the carrier and backup. */
+	return "supabase";
 }
 
 export class FileAccountAuthStorage implements SupportedStorage {
