@@ -19,6 +19,12 @@ create table public.qorpera_company_computer_screens (
 	screen_ordinal integer not null check (screen_ordinal between 1 and 32),
 	display_name text not null check (char_length(btrim(display_name)) between 1 and 120),
 	status text not null default 'active' check (status in ('active', 'retired')),
+	-- A screen is the agent's own computer: open means its desktop session
+	-- should be live on the shared machine; closed keeps the row, the
+	-- attachment, and the identity while the desktop is powered down. The
+	-- shared machine's own power follows: no open screens, no running VM.
+	power_state text not null default 'open' check (power_state in ('open', 'closed')),
+	power_changed_at timestamptz not null default statement_timestamp(),
 	-- Attachment names a roster staff agent; validated against
 	-- qorpera_profile_staff in the RPCs rather than by foreign key because
 	-- roster rows archive instead of deleting.
@@ -39,6 +45,7 @@ create table public.qorpera_company_computer_screens (
 	check (attached_by_user_id is null or attached_staff_agent_id is not null),
 	check ((occupying_run_id is null) = (occupancy_expires_at is null)),
 	check (attached_staff_agent_id is not null or occupying_run_id is null),
+	check (power_state = 'open' or occupying_run_id is null),
 	check (status = 'active' or (attached_staff_agent_id is null and occupying_run_id is null))
 );
 
@@ -65,7 +72,8 @@ alter table public.qorpera_company_computer_events
 		'company_computer_registered', 'company_computer_lifecycle',
 		'company_computer_screen_registered', 'company_computer_screen_attached',
 		'company_computer_screen_detached', 'company_computer_screen_retired',
-		'company_computer_screen_claimed', 'company_computer_screen_released'
+		'company_computer_screen_claimed', 'company_computer_screen_released',
+		'company_computer_screen_opened', 'company_computer_screen_closed'
 	));
 
 create function public.qorpera_company_computer_screen_json(
@@ -84,6 +92,7 @@ as $$
 		'screen_ordinal', p_screen.screen_ordinal,
 		'display_name', p_screen.display_name,
 		'status', p_screen.status,
+		'power_state', p_screen.power_state,
 		'attached_staff_agent_id', p_screen.attached_staff_agent_id,
 		'attached_at', p_screen.attached_at,
 		'occupying_run_id', p_screen.occupying_run_id,
@@ -306,6 +315,8 @@ begin
 	end if;
 	update public.qorpera_company_computer_screens
 	set status = 'retired',
+		power_state = 'closed',
+		power_changed_at = statement_timestamp(),
 		attached_staff_agent_id = null,
 		attached_by_user_id = null,
 		attached_at = null,
@@ -365,6 +376,9 @@ begin
 	end if;
 	if v_screen.status <> 'active' or v_screen.attached_staff_agent_id is null then
 		raise exception 'company computer screen is not attached' using errcode = '55000';
+	end if;
+	if v_screen.power_state <> 'open' then
+		raise exception 'company computer screen is closed' using errcode = '55000';
 	end if;
 	select registry.* into strict v_registry
 	from public.qorpera_company_computers as registry

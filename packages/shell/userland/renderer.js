@@ -3673,7 +3673,14 @@ function screenCardWallpaper(staff, screenSummary) {
 	emboss.style.setProperty("--screen-creature", `url("${creature.asset}")`);
 	emboss.append(document.createElement("i"), document.createElement("i"));
 	card.appendChild(emboss);
-	if (screenSummary.occupyingRunId) {
+	if (screenSummary.powerState === "closed") {
+		card.classList.add("screen-card-off");
+		card.setAttribute("aria-label", `Wake ${staffDisplayName(staff)}'s screen`);
+		const off = document.createElement("span");
+		off.className = "screen-card-power-off";
+		off.textContent = "Off";
+		card.appendChild(off);
+	} else if (screenSummary.occupyingRunId) {
 		const status = document.createElement("span");
 		status.className = "screen-card-status";
 		status.title = "A task is on this screen";
@@ -3705,7 +3712,12 @@ async function hydrateAgentScreenCard(section, staff, token) {
 		const card = screenCardWallpaper(staff, mine);
 		card.onclick = () => void openAgentScreenViewer(section, staff, mine);
 		placeholder?.replaceWith(card);
-		if (caption) caption.textContent = `${staffDisplayName(staff)}'s screen`;
+		if (caption) {
+			caption.textContent =
+				mine.powerState === "closed"
+					? `${staffDisplayName(staff)}'s screen is off`
+					: `${staffDisplayName(staff)}'s screen`;
+		}
 		return;
 	}
 	if (unattached) {
@@ -3743,10 +3755,31 @@ function reportAgentScreenError(section, message) {
 }
 
 async function openAgentScreenViewer(section, staff, screenSummary) {
-	const opened = await window.qorpera.screensOpen(screenSummary.screenId);
+	if (screenSummary.powerState === "closed") {
+		const woken = await window.qorpera.screensPowerOpen?.(screenSummary.screenId);
+		if (!woken?.ok) {
+			if (section.isConnected) reportAgentScreenError(section, woken?.error || "The screen could not be woken.");
+			return;
+		}
+	}
+	let opened = await window.qorpera.screensOpen(screenSummary.screenId);
+	if (!opened?.ok && screenSummary.powerState === "closed") {
+		// The machine itself may still be powering on; the gateway answers
+		// once the guest is back, so keep dialing while the card is on show.
+		reportAgentScreenError(section, "Waking the screen…");
+		const deadline = Date.now() + 90_000;
+		while (!opened?.ok && Date.now() < deadline && section.isConnected) {
+			await new Promise((resolveWait) => setTimeout(resolveWait, 3_000));
+			opened = await window.qorpera.screensOpen(screenSummary.screenId);
+		}
+		section.querySelector(".screen-card-error")?.remove();
+	}
 	if (!opened?.ok) {
 		if (section.isConnected) reportAgentScreenError(section, opened?.error || "The screen could not be opened.");
 		return;
+	}
+	if (screenSummary.powerState === "closed" && section.isConnected) {
+		void hydrateAgentScreenCard(section, staff, ++agentScreenCardToken);
 	}
 	window.qorperaScreenViewer?.open({
 		url: opened.url,

@@ -113,6 +113,7 @@ export async function runCloudCompanyComputerScreenServiceMain(
 		signal: controller.signal,
 		occupancy: screenService,
 		provisioner: screenService,
+		idleSweeper: screenService,
 		keyframes: {
 			capturer: new ExecCompanyComputerScreenKeyframeCapturer(screenCaptureCommand(environment)),
 			store: new CloudContentAddressedStore(transport),

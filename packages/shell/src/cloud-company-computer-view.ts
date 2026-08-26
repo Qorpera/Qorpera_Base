@@ -24,6 +24,8 @@ export interface CompanyComputerScreenSummary {
 	screenId: string;
 	screenOrdinal: number;
 	displayName: string;
+	/** Absent from an older control plane, which means open. */
+	powerState?: "open" | "closed";
 	attachedStaffAgentId?: string;
 	occupyingRunId?: string;
 }
@@ -96,10 +98,12 @@ export async function describeCompanyComputerScreens(
 			}
 			const attached = screen.attached_staff_agent_id;
 			const occupying = screen.occupying_run_id;
+			const power = screen.power_state;
 			return {
 				screenId: uuid(screen.screen_id, "Company computer screen id"),
 				screenOrdinal: screen.screen_ordinal as number,
 				displayName: screen.display_name,
+				...(power === "open" || power === "closed" ? { powerState: power } : {}),
 				...(typeof attached === "string" ? { attachedStaffAgentId: uuid(attached, "Screen staff agent") } : {}),
 				...(typeof occupying === "string" ? { occupyingRunId: uuid(occupying, "Screen occupying run") } : {}),
 			};
@@ -140,6 +144,17 @@ export async function mintCompanyComputerScreenView(
 
 /** Attaches a staff agent to a screen with the member's own session; the
  * control plane enforces roster membership and one screen per agent. */
+/** Powers a screen on: its desktop session comes up on the shared machine,
+ * and if the machine itself is sleeping the provider's power reconciliation
+ * starts it. Idempotent when the screen is already open. */
+export async function openCompanyComputerScreenPower(
+	client: SupabaseClient<HostedPrimaryDatabase>,
+	screenId: string,
+): Promise<void> {
+	const { error } = await client.rpc("qorpera_open_company_computer_screen", { p_screen_id: screenId });
+	if (error) throw new Error(`Company computer screen power failed: ${error.message}`);
+}
+
 export async function attachCompanyComputerScreen(
 	client: SupabaseClient<HostedPrimaryDatabase>,
 	screenId: string,

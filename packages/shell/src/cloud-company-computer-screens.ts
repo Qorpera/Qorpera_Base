@@ -50,6 +50,9 @@ export interface CompanyComputerScreenRecord {
 	screenOrdinal: number;
 	displayName: string;
 	status: "active" | "retired";
+	/** Absent on an older control plane, which means open: the machine never
+	 * powers a desktop down on missing information. */
+	powerState?: "open" | "closed";
 	attachedStaffAgentId?: string;
 	attachedStaffTemplateId?: string;
 	attachedStaffDisplayName?: string;
@@ -67,6 +70,7 @@ export function parseCompanyComputerScreenRecords(value: unknown): CompanyComput
 			throw new Error("Company computer screen record is invalid");
 		}
 		const input = entry as Record<string, unknown>;
+		const power = input.power_state;
 		const attached = input.attached_staff_agent_id;
 		const occupying = input.occupying_run_id;
 		const attachedTemplate = input.attached_staff_template_id;
@@ -79,6 +83,7 @@ export function parseCompanyComputerScreenRecords(value: unknown): CompanyComput
 			(input.screen_ordinal as number) > 32 ||
 			typeof input.display_name !== "string" ||
 			(input.status !== "active" && input.status !== "retired") ||
+			(power !== undefined && power !== null && power !== "open" && power !== "closed") ||
 			(attached !== null &&
 				attached !== undefined &&
 				(typeof attached !== "string" || !UUID_PATTERN.test(attached))) ||
@@ -93,6 +98,7 @@ export function parseCompanyComputerScreenRecords(value: unknown): CompanyComput
 			screenOrdinal: input.screen_ordinal as number,
 			displayName: input.display_name,
 			status: input.status,
+			...(power === "open" || power === "closed" ? { powerState: power } : {}),
 			...(typeof attached === "string" ? { attachedStaffAgentId: attached } : {}),
 			...(typeof attachedTemplate === "string" && attachedTemplate.length <= 256
 				? { attachedStaffTemplateId: attachedTemplate }
@@ -144,7 +150,13 @@ export interface CloudCompanyComputerScreensConfig {
 	viewerTrustedSource: string;
 	pollSeconds: number;
 	maxScreens: number;
+	/** Seconds without occupancy before an open screen closes itself; 0
+	 * disables the sweep. */
+	idleCloseSeconds: number;
 }
+
+/** Default idle window before an untouched screen closes itself. */
+export const DEFAULT_COMPANY_COMPUTER_SCREEN_IDLE_CLOSE_SECONDS = 900;
 
 /** Default parallel-work capacity when the provider does not declare one:
  * displays :1 through :8 on the shared machine. */
@@ -160,6 +172,7 @@ export function parseCloudCompanyComputerScreensConfig(value: unknown): CloudCom
 	const viewerTrustedSource = input.viewer_trusted_source;
 	const pollSeconds = input.poll_seconds;
 	const maxScreens = input.max_screens ?? DEFAULT_COMPANY_COMPUTER_MAX_SCREENS;
+	const idleCloseSeconds = input.idle_close_seconds ?? DEFAULT_COMPANY_COMPUTER_SCREEN_IDLE_CLOSE_SECONDS;
 	if (typeof viewerHost !== "string" || isIP(viewerHost) === 0) {
 		throw new Error("Company computer screens viewer host is invalid");
 	}
@@ -179,12 +192,20 @@ export function parseCloudCompanyComputerScreensConfig(value: unknown): CloudCom
 	if (!Number.isSafeInteger(maxScreens) || (maxScreens as number) < 1 || (maxScreens as number) > 32) {
 		throw new Error("Company computer screens capacity is invalid");
 	}
+	if (
+		!Number.isSafeInteger(idleCloseSeconds) ||
+		((idleCloseSeconds as number) !== 0 &&
+			((idleCloseSeconds as number) < 60 || (idleCloseSeconds as number) > 86_400))
+	) {
+		throw new Error("Company computer screens idle window is invalid");
+	}
 	return {
 		viewerHost,
 		viewerPort: viewerPort as number,
 		viewerTrustedSource,
 		pollSeconds: pollSeconds as number,
 		maxScreens: maxScreens as number,
+		idleCloseSeconds: idleCloseSeconds as number,
 	};
 }
 
@@ -290,7 +311,9 @@ export class CloudCompanyComputerScreenManager {
 
 	async reconcile(records: readonly CompanyComputerScreenRecord[]): Promise<void> {
 		const desired = new Set(
-			records.filter((record) => record.status === "active").map((record) => record.screenOrdinal),
+			records
+				.filter((record) => record.status === "active" && record.powerState !== "closed")
+				.map((record) => record.screenOrdinal),
 		);
 		for (const [ordinal, session] of [...this.#sessions]) {
 			if (desired.has(ordinal)) continue;
@@ -556,6 +579,16 @@ export interface CompanyComputerScreenProvisioner {
 	ensure(companyComputerId: string, staffAgentId: string, maxScreens: number): Promise<CompanyComputerScreenRecord>;
 }
 
+/** Screens close themselves when nobody has touched them for the idle
+ * window; when the last one closes, the provider powers the machine off. */
+export interface CompanyComputerScreenIdleSweeper {
+	sweepIdle(
+		companyComputerId: string,
+		idleSeconds: number,
+		signal?: AbortSignal,
+	): Promise<CompanyComputerScreenRecord[]>;
+}
+
 function serviceHeaders(serviceKey: string): Record<string, string> {
 	const headers: Record<string, string> = { apikey: serviceKey, "content-type": "application/json" };
 	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3) {
@@ -565,7 +598,11 @@ function serviceHeaders(serviceKey: string): Record<string, string> {
 }
 
 export class SupabaseCompanyComputerScreenService
-	implements CompanyComputerScreenKeyframeRecorder, CompanyComputerScreenOccupancy, CompanyComputerScreenProvisioner
+	implements
+		CompanyComputerScreenKeyframeRecorder,
+		CompanyComputerScreenOccupancy,
+		CompanyComputerScreenProvisioner,
+		CompanyComputerScreenIdleSweeper
 {
 	readonly #supabaseUrl: string;
 	readonly #serviceKey: string;
@@ -625,7 +662,20 @@ export class SupabaseCompanyComputerScreenService
 		});
 	}
 
-	async ensure(companyComputerId: string, staffAgentId: string, maxScreens: number): Promise<CompanyComputerScreenRecord> {
+	async sweepIdle(companyComputerId: string, idleSeconds: number): Promise<CompanyComputerScreenRecord[]> {
+		return parseCompanyComputerScreenRecords(
+			await this.#rpc("qorpera_sweep_idle_company_computer_screens", {
+				p_company_computer_id: companyComputerId,
+				p_idle_seconds: idleSeconds,
+			}),
+		);
+	}
+
+	async ensure(
+		companyComputerId: string,
+		staffAgentId: string,
+		maxScreens: number,
+	): Promise<CompanyComputerScreenRecord> {
 		const record = parseCompanyComputerScreenRecords([
 			await this.#rpc("qorpera_ensure_company_computer_screen", {
 				p_company_computer_id: companyComputerId,
@@ -710,7 +760,12 @@ export function startCompanyComputerScreenBroker(
 				}
 				let screen = input
 					.records()
-					.find((candidate) => candidate.status === "active" && candidate.attachedStaffAgentId === staffAgentId);
+					.find(
+						(candidate) =>
+							candidate.status === "active" &&
+							candidate.powerState !== "closed" &&
+							candidate.attachedStaffAgentId === staffAgentId,
+					);
 				if (!screen && input.attachOnDemand) {
 					screen = await input.attachOnDemand(staffAgentId);
 				}
@@ -1005,6 +1060,7 @@ export interface RunCloudCompanyComputerScreenAgentInput {
 	signal: AbortSignal;
 	occupancy?: CompanyComputerScreenOccupancy;
 	provisioner?: CompanyComputerScreenProvisioner;
+	idleSweeper?: CompanyComputerScreenIdleSweeper;
 	brokerPort?: number;
 	keyframes?: CompanyComputerScreenKeyframes;
 	wallpapers?: CompanyComputerScreenWallpapers;
@@ -1035,6 +1091,16 @@ export async function runCloudCompanyComputerScreenAgent(
 		return next;
 	};
 	const converge = async (): Promise<void> => {
+		if (input.idleSweeper && input.config.idleCloseSeconds > 0) {
+			/* Sweep before listing so a screen that just went idle is closed
+			 * in the same tick that stops its desktop. A shed cloud only
+			 * defers the sweep, never the converge. */
+			try {
+				await input.idleSweeper.sweepIdle(input.companyComputerId, input.config.idleCloseSeconds, input.signal);
+			} catch (error) {
+				if (!input.signal.aborted) input.onError?.(error);
+			}
+		}
 		const records = await input.controlPlane.listScreens(input.companyComputerId, input.signal);
 		latestRecords = records;
 		if (input.wallpapers) {
@@ -1071,7 +1137,9 @@ export async function runCloudCompanyComputerScreenAgent(
 									await serialized(converge);
 									const screen = latestRecords.find(
 										(candidate) =>
-											candidate.status === "active" && candidate.attachedStaffAgentId === staffAgentId,
+											candidate.status === "active" &&
+											candidate.powerState !== "closed" &&
+											candidate.attachedStaffAgentId === staffAgentId,
 									);
 									if (!screen) return undefined;
 									const vncPort = manager.liveVncPort(screen.screenOrdinal);

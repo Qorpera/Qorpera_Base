@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -200,9 +200,16 @@ class FakeLxd implements LxdInstanceSnapshotClient {
 class FakeControlPlane implements LxdCompanyComputerControlPlane {
 	lifecycle: LxdCompanyComputerLifecycleState = "provisioning";
 	nodeKey?: string;
+	openScreens = 1;
+	openScreenReads = 0;
 	provisionCalls: Array<{ runId: string; clientRunnerId: string }> = [];
 	transitions: Array<{ state: LxdCompanyComputerLifecycleState; nodeKey?: string }> = [];
 	transitionDetails: Array<Record<string, unknown>> = [];
+
+	async countOpenScreens(): Promise<number> {
+		this.openScreenReads += 1;
+		return this.openScreens;
+	}
 
 	async describeCompanyComputer(): Promise<LxdCompanyComputerAuthority> {
 		return {
@@ -290,18 +297,22 @@ async function backend(datasetSnapshots?: CompanyDatasetSnapshotClient): Promise
 	lxd: FakeLxd;
 	controlPlane: FakeControlPlane;
 	guest: FakeGuest;
+	root: string;
 }> {
 	const lxd = new FakeLxd();
 	const controlPlane = new FakeControlPlane();
 	const guest = new FakeGuest();
-	const provider = new LxdCompanyComputerProviderBackend(
-		config(await stateRoot()),
-		lxd,
-		controlPlane,
-		guest,
-		datasetSnapshots,
-	);
-	return { backend: provider, lxd, controlPlane, guest };
+	const root = await stateRoot();
+	const provider = new LxdCompanyComputerProviderBackend(config(root), lxd, controlPlane, guest, datasetSnapshots);
+	return { backend: provider, lxd, controlPlane, guest, root };
+}
+
+async function ageScreensIdleObservation(root: string, computerId: string, milliseconds: number): Promise<void> {
+	const journalPath = join(root, "computers", computerId, "journal.json");
+	const journal = JSON.parse(await readFile(journalPath, "utf-8")) as Record<string, unknown>;
+	if (typeof journal.screensIdleSince !== "string") throw new Error("journal holds no idle observation");
+	journal.screensIdleSince = new Date(Date.now() - milliseconds).toISOString();
+	await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf-8");
 }
 
 describe("LxdCompanyComputerProviderBackend", () => {
@@ -377,6 +388,38 @@ describe("LxdCompanyComputerProviderBackend", () => {
 		expect(lxd.instance?.status).toBe("Running");
 		await provider.deliver(runner, competing);
 		expect(guest.deliveries).toHaveLength(2);
+	});
+
+	it("powers the machine off after the screens go idle and back on when one opens", async () => {
+		const { backend: provider, lxd, controlPlane, root } = await backend();
+		const runId = "30000000-0000-4000-8000-000000000112";
+		await provider.acquire(runId, work(runId), new AbortController().signal);
+		controlPlane.openScreens = 1;
+		await provider.reconcile();
+		expect(lxd.powerCalls.filter((action) => action === "stop")).toHaveLength(0);
+		controlPlane.openScreens = 0;
+		await provider.reconcile();
+		/* First idle observation only starts the clock. */
+		expect(lxd.powerCalls.filter((action) => action === "stop")).toHaveLength(0);
+		await ageScreensIdleObservation(root, logicalComputerId, 10 * 60_000);
+		await provider.reconcile();
+		expect(lxd.powerCalls.filter((action) => action === "stop")).toHaveLength(1);
+		expect(lxd.instance?.status).toBe("Stopped");
+		/* A screen opening while the machine sleeps powers it back on. */
+		controlPlane.openScreens = 1;
+		await provider.reconcile();
+		expect(lxd.instance?.status).toBe("Running");
+	});
+
+	it("keeps a maintenance stop down even when screens open", async () => {
+		const { backend: provider, lxd, controlPlane } = await backend();
+		const runId = "30000000-0000-4000-8000-000000000113";
+		await provider.acquire(runId, work(runId), new AbortController().signal);
+		await provider.stopComputer(logicalComputerId);
+		expect(lxd.instance?.status).toBe("Stopped");
+		controlPlane.openScreens = 1;
+		await provider.reconcile();
+		expect(lxd.instance?.status).toBe("Stopped");
 	});
 
 	it("snapshots through the control-plane lifecycle window", async () => {

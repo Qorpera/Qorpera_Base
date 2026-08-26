@@ -66,6 +66,25 @@ turn never races the X server. Only when the machine genuinely cannot offer
 a screen — capacity exhausted, cloud unreachable — does the turn run
 headless.
 
+**Screen power, machine power** (founder model 2026-08-26): agents and
+members power their own screens on and off, never the machine — the
+Company Computer's power is derived from them. Each registry screen is
+`open` or `closed`; the screen agent runs desktops only for open screens,
+and each poll tick sweeps screens nobody has touched for the idle window
+(`screens.idle_close_seconds`, default 900; 0 disables) into `closed`
+(`qorpera_sweep_idle_company_computer_screens`). Closing loses nothing:
+the row, the attachment, and the identity persist for the next open. The
+on-demand path reopens the requesting agent's screen automatically, and
+members open a screen from the app (`qorpera_open_company_computer_screen`).
+On the host, the provider's reconcile derives machine power: any open
+screen (or live task assignment) keeps the VM up, and after
+`idlePowerOffSeconds` (default 300; 0 keeps the machine always on) of
+none, the VM stops with reason `idle` — a screen opening later powers it
+back on, while a maintenance stop stays down until the operator returns.
+Ordinary turns never depend on any of this: headless execution over the
+company file is the default, and a screen is something an agent opens
+when its work wants one.
+
 The published image starts nothing on its own: all three units are
 installed disabled (the ephemeral runner bootstrap entry inherited from the
 nested contract is disabled too), and the provider's

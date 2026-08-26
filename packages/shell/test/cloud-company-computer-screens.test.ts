@@ -171,7 +171,26 @@ describe("cloud company computer screens", () => {
 			viewerTrustedSource: "10.41.0.1",
 			pollSeconds: 30,
 			maxScreens: 8,
+			idleCloseSeconds: 900,
 		});
+		expect(
+			parseCloudCompanyComputerScreensConfig({
+				viewer_host: "0.0.0.0",
+				viewer_port: 8446,
+				viewer_trusted_source: "10.41.0.1",
+				poll_seconds: 30,
+				idle_close_seconds: 0,
+			}).idleCloseSeconds,
+		).toBe(0);
+		expect(() =>
+			parseCloudCompanyComputerScreensConfig({
+				viewer_host: "0.0.0.0",
+				viewer_port: 8446,
+				viewer_trusted_source: "10.41.0.1",
+				poll_seconds: 30,
+				idle_close_seconds: 30,
+			}),
+		).toThrow("idle window is invalid");
 		expect(
 			parseCloudCompanyComputerScreensConfig({
 				viewer_host: "0.0.0.0",
@@ -486,7 +505,14 @@ describe("cloud company computer screens", () => {
 		});
 		const controller = new AbortController();
 		const agent = runCloudCompanyComputerScreenAgent({
-			config: { viewerHost: "127.0.0.1", viewerPort: 0, viewerTrustedSource: "127.0.0.1", pollSeconds: 30, maxScreens: 8 },
+			config: {
+				viewerHost: "127.0.0.1",
+				viewerPort: 0,
+				viewerTrustedSource: "127.0.0.1",
+				pollSeconds: 30,
+				maxScreens: 8,
+				idleCloseSeconds: 0,
+			},
 			companyComputerId,
 			viewerToken,
 			controlPlane: {
@@ -555,6 +581,7 @@ describe("cloud company computer screens", () => {
 		) => {
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			calls.push({ url: String(url), body });
+			if (String(url).includes("sweep")) return new Response("[]", { status: 200 });
 			if (String(url).includes("claim") || String(url).includes("ensure")) {
 				return new Response(
 					JSON.stringify({
@@ -585,16 +612,22 @@ describe("cloud company computer screens", () => {
 		const ensured = await service.ensure(companyComputerId, staffAgentId, 8);
 		expect(ensured.screenOrdinal).toBe(2);
 		expect(ensured.attachedStaffAgentId).toBe(staffAgentId);
+		expect(await service.sweepIdle(companyComputerId, 900)).toEqual([]);
 		expect(calls.map((call) => call.url)).toEqual([
 			"https://control.example.com/rest/v1/rpc/qorpera_claim_company_computer_screen",
 			"https://control.example.com/rest/v1/rpc/qorpera_release_company_computer_screen",
 			"https://control.example.com/rest/v1/rpc/qorpera_record_company_computer_screen_keyframe",
 			"https://control.example.com/rest/v1/rpc/qorpera_ensure_company_computer_screen",
+			"https://control.example.com/rest/v1/rpc/qorpera_sweep_idle_company_computer_screens",
 		]);
 		expect(calls[3].body).toEqual({
 			p_company_computer_id: companyComputerId,
 			p_staff_agent_id: staffAgentId,
 			p_max_screens: 8,
+		});
+		expect(calls[4].body).toEqual({
+			p_company_computer_id: companyComputerId,
+			p_idle_seconds: 900,
 		});
 		expect(calls[2].body).toEqual({
 			p_screen_id: screenId,
@@ -815,6 +848,78 @@ describe("cloud company computer screens", () => {
 		);
 	});
 
+	it("parses the screen power state and keeps desktops down for closed screens", async () => {
+		const raw = {
+			screen_id: screenId,
+			screen_ordinal: 2,
+			display_name: "Screen 2",
+			status: "active",
+		};
+		expect(parseCompanyComputerScreenRecords([{ ...raw, power_state: "closed" }])[0].powerState).toBe("closed");
+		expect(parseCompanyComputerScreenRecords([raw])[0].powerState).toBeUndefined();
+		expect(() => parseCompanyComputerScreenRecords([{ ...raw, power_state: "sleeping" }])).toThrow(
+			"screen record is invalid",
+		);
+	});
+
+	it("converges desktops for open screens only and stops them on close", async () => {
+		const otherScreenId = "30000000-0000-4000-8000-000000000051";
+		const launcher = new FakeLauncher();
+		const manager = new CloudCompanyComputerScreenManager(launcher);
+		await manager.reconcile([
+			{ ...screenRecord(1), screenId: otherScreenId, powerState: "open" },
+			{ ...screenRecord(2), powerState: "closed" },
+		]);
+		expect(launcher.launches.map((launch) => launch.ordinal)).toEqual([1]);
+		await manager.reconcile([{ ...screenRecord(1), screenId: otherScreenId, powerState: "closed" }]);
+		expect(launcher.handles.get(1)?.stopped).toBe(true);
+		expect(manager.liveOrdinals()).toEqual([]);
+	});
+
+	it("sweeps idle screens each converge tick before listing", async () => {
+		const order: string[] = [];
+		const controller = new AbortController();
+		let firstList!: () => void;
+		const listed = new Promise<void>((resolveList) => {
+			firstList = resolveList;
+		});
+		const agent = runCloudCompanyComputerScreenAgent({
+			config: {
+				viewerHost: "127.0.0.1",
+				viewerPort: 0,
+				viewerTrustedSource: "127.0.0.1",
+				pollSeconds: 30,
+				maxScreens: 8,
+				idleCloseSeconds: 600,
+			},
+			companyComputerId,
+			viewerToken,
+			controlPlane: {
+				listScreens: async () => {
+					order.push("list");
+					firstList();
+					return [];
+				},
+			},
+			launcher: new FakeLauncher(),
+			idleSweeper: {
+				sweepIdle: async (sweptComputerId, idleSeconds) => {
+					order.push(`sweep:${sweptComputerId}:${idleSeconds}`);
+					return [];
+				},
+			},
+			signal: controller.signal,
+			onError: (error) => {
+				throw error;
+			},
+		});
+		await listed;
+		controller.abort();
+		await agent;
+		expect(order[0]).toBe(`sweep:${companyComputerId}:600`);
+		expect(order[1]).toBe("list");
+	});
+
 	it("publishes a keyframe for each occupied live screen on the poll tick", async () => {
 		const runId = "30000000-0000-4000-8000-000000000100";
 		const launcher = new FakeLauncher();
@@ -826,7 +931,14 @@ describe("cloud company computer screens", () => {
 		});
 		const controller = new AbortController();
 		const agent = runCloudCompanyComputerScreenAgent({
-			config: { viewerHost: "127.0.0.1", viewerPort: 0, viewerTrustedSource: "127.0.0.1", pollSeconds: 30, maxScreens: 8 },
+			config: {
+				viewerHost: "127.0.0.1",
+				viewerPort: 0,
+				viewerTrustedSource: "127.0.0.1",
+				pollSeconds: 30,
+				maxScreens: 8,
+				idleCloseSeconds: 0,
+			},
 			companyComputerId,
 			viewerToken,
 			controlPlane: {
@@ -872,7 +984,14 @@ describe("cloud company computer screens", () => {
 		};
 		const controller = new AbortController();
 		const agent = runCloudCompanyComputerScreenAgent({
-			config: { viewerHost: "127.0.0.1", viewerPort: 0, viewerTrustedSource: "127.0.0.1", pollSeconds: 30, maxScreens: 8 },
+			config: {
+				viewerHost: "127.0.0.1",
+				viewerPort: 0,
+				viewerTrustedSource: "127.0.0.1",
+				pollSeconds: 30,
+				maxScreens: 8,
+				idleCloseSeconds: 0,
+			},
 			companyComputerId,
 			viewerToken,
 			controlPlane: { listScreens: async () => [screenRecord(2)] },

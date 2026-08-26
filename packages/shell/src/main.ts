@@ -214,6 +214,7 @@ import {
 	connectCompanyComputerScreenView,
 	describeCompanyComputerScreens,
 	mintCompanyComputerScreenView,
+	openCompanyComputerScreenPower,
 	parseViewerEndpoint,
 	startLocalScreenViewWebSocketBridge,
 } from "./cloud-company-computer-view.ts";
@@ -9754,6 +9755,20 @@ app.whenReady().then(async () => {
 			if (!client) return { ok: false as const, error: "Sign in to attach Company Computer screens." };
 			screenEnvironment(event.sender);
 			await attachCompanyComputerScreen(client, screenId, staffAgentId);
+			return { ok: true as const };
+		} catch (error) {
+			return { ok: false as const, error: safeScreenError(error) };
+		}
+	});
+	ipcMain.handle("screens:power-open", async (event, screenId: unknown) => {
+		try {
+			if (typeof screenId !== "string" || !UUID_PATTERN.test(screenId)) {
+				return { ok: false as const, error: "Screen identity is invalid." };
+			}
+			const client = qorperaAccountAuth?.hostedClient();
+			if (!client) return { ok: false as const, error: "Sign in to open Company Computer screens." };
+			screenEnvironment(event.sender);
+			await openCompanyComputerScreenPower(client, screenId);
 			return { ok: true as const };
 		} catch (error) {
 			return { ok: false as const, error: safeScreenError(error) };

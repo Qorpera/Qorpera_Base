@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	screensDescribe: () => ipcRenderer.invoke("screens:describe"),
 	screensAttach: (screenId, staffAgentId) => ipcRenderer.invoke("screens:attach", screenId, staffAgentId),
 	screensOpen: (screenId) => ipcRenderer.invoke("screens:open", screenId),
+	screensPowerOpen: (screenId) => ipcRenderer.invoke("screens:power-open", screenId),
 	screensClose: (screenId) => ipcRenderer.invoke("screens:close", screenId),
 	onAccountStatus: (handler) => ipcRenderer.on("account-status", (_event, message) => handler(message)),
 	intelligenceInfo: () => ipcRenderer.invoke("intelligence:info"),

@@ -45,6 +45,9 @@ export const COMPANY_COMPUTER_GUEST_DATASET_PATH = "/srv/qorpera/dataset";
  * bridge address and is never publicly routable. */
 export const COMPANY_COMPUTER_SCREEN_VIEWER_PORT = 8_446;
 
+/** Default idle window before a machine with no open screens powers off. */
+export const COMPANY_COMPUTER_IDLE_POWER_OFF_SECONDS = 300;
+
 export type LxdCompanyComputerLifecycleState =
 	| "provisioning"
 	| "active"
@@ -73,6 +76,10 @@ export interface LxdCompanyComputerAuthority {
 
 export interface LxdCompanyComputerControlPlane {
 	describeCompanyComputer(logicalComputerId: string, signal?: AbortSignal): Promise<LxdCompanyComputerAuthority>;
+	/** How many screens are open on the machine: the input to derived power.
+	 * Screens without a power field (an older control plane) count as open so
+	 * the machine never powers off on missing information. */
+	countOpenScreens(companyComputerId: string, signal?: AbortSignal): Promise<number>;
 	provisionRunner(
 		runId: string,
 		clientRunnerId: string,
@@ -193,6 +200,9 @@ export interface LxdCompanyComputerProviderConfig {
 	guestScreenViewerPort?: number;
 	screenPollSeconds?: number;
 	guestBootstrapService?: string;
+	/** Seconds of zero open screens (and no live assignment) before the VM
+	 * powers off; 0 keeps the machine always on. Default 300. */
+	idlePowerOffSeconds?: number;
 }
 
 interface LxdCompanyComputerJournal {
@@ -208,6 +218,9 @@ interface LxdCompanyComputerJournal {
 	guestAddress?: string;
 	activeAssignment?: { assignmentId: string; runId: string; expiresAt: string };
 	lastStopReason?: "delivery_failed" | "idle" | "revoked" | "maintenance";
+	/** First reconcile observation of zero open screens; the idle window
+	 * counts from here and any open screen clears it. */
+	screensIdleSince?: string;
 	lxd: {
 		project: string;
 		type: "virtual-machine";
@@ -364,6 +377,20 @@ export class SupabaseLxdCompanyComputerControlPlane implements LxdCompanyCompute
 		);
 	}
 
+	async countOpenScreens(companyComputerId: string, signal?: AbortSignal): Promise<number> {
+		const listing = await this.#rpc(
+			"qorpera_list_company_computer_screens",
+			{ p_company_computer_id: companyComputerId },
+			signal,
+		);
+		if (!Array.isArray(listing)) throw new Error("Company computer screen listing is invalid");
+		return listing.filter((entry) => {
+			if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+			const screen = entry as Record<string, unknown>;
+			return screen.status === "active" && (screen.power_state === undefined || screen.power_state === "open");
+		}).length;
+	}
+
 	async transitionLifecycle(
 		companyComputerId: string,
 		state: LxdCompanyComputerLifecycleState,
@@ -403,6 +430,13 @@ function validateConfig(config: LxdCompanyComputerProviderConfig): void {
 	if (!/^[a-z][a-z0-9_-]{0,63}$/.test(config.adapterId)) throw new Error("Provider adapter id is invalid");
 	if (!NODE_KEY_PATTERN.test(config.nodeKey)) throw new Error("Company computer node key is invalid");
 	if (!isAbsolute(config.stateRoot)) throw new Error("Company computer provider state root must be absolute");
+	if (
+		config.idlePowerOffSeconds !== undefined &&
+		(!Number.isSafeInteger(config.idlePowerOffSeconds) ||
+			(config.idlePowerOffSeconds !== 0 && (config.idlePowerOffSeconds < 60 || config.idlePowerOffSeconds > 86_400)))
+	) {
+		throw new Error("Company computer idle power-off window is invalid");
+	}
 	if (!isAbsolute(config.nasDatasetRoot)) throw new Error("Company computer NAS dataset root must be absolute");
 	const guestDatasetPath = config.guestDatasetPath ?? COMPANY_COMPUTER_GUEST_DATASET_PATH;
 	if (!guestDatasetPath.startsWith("/") || /[\0\r\n]/.test(guestDatasetPath) || guestDatasetPath.includes("..")) {
@@ -606,6 +640,8 @@ function journalFromJson(value: unknown): LxdCompanyComputerJournal {
 			input.lastStopReason !== "idle" &&
 			input.lastStopReason !== "revoked" &&
 			input.lastStopReason !== "maintenance") ||
+		(input.screensIdleSince !== undefined &&
+			(typeof input.screensIdleSince !== "string" || !Number.isFinite(Date.parse(input.screensIdleSince)))) ||
 		(assignment !== undefined &&
 			(typeof assignment.expiresAt !== "string" || !Number.isFinite(Date.parse(assignment.expiresAt)))) ||
 		lxd.type !== "virtual-machine" ||
@@ -664,6 +700,9 @@ function journalFromJson(value: unknown): LxdCompanyComputerJournal {
 		input.lastStopReason === "revoked" ||
 		input.lastStopReason === "maintenance"
 			? { lastStopReason: input.lastStopReason }
+			: {}),
+		...(typeof input.screensIdleSince === "string"
+			? { screensIdleSince: new Date(input.screensIdleSince).toISOString() }
 			: {}),
 		lxd: {
 			project: lxd.project,
@@ -738,13 +777,67 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 			for (const entry of await readdir(this.#computersRoot(), { withFileTypes: true })) {
 				if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
 				const current = await this.#readJournal(entry.name);
-				if (!current || current.physicalState === "stopped" || current.physicalState === "lost") continue;
-				/* Persistent machines are meant to stay up: reconcile restarts
-				 * anything that should be ready, unlike the ephemeral lane where
-				 * a stopped guest is terminal. */
-				await this.#ensureReady(current, signal);
+				if (!current || current.physicalState === "lost") continue;
+				await this.#reconcilePower(current, signal);
 			}
 		});
+	}
+
+	/** The machine's power follows its screens (founder model 2026-08-26):
+	 * agents and members power their own screens, never the machine — it runs
+	 * while any screen is open or a task assignment is live, and powers off
+	 * after the idle window once none are. A screen opening while the machine
+	 * sleeps powers it back on; a maintenance stop stays down until the
+	 * operator returns. Power is a node-local physical fact recorded in the
+	 * journal — placement lifecycle in the control plane is untouched, and
+	 * the screen open/close events already carry the audit trail. */
+	async #reconcilePower(current: LxdCompanyComputerJournal, signal?: AbortSignal): Promise<void> {
+		const idleSeconds = this.#config.idlePowerOffSeconds ?? COMPANY_COMPUTER_IDLE_POWER_OFF_SECONDS;
+		if (current.physicalState === "stopped") {
+			if (current.lastStopReason !== "idle") return;
+			if ((await this.#controlPlane.countOpenScreens(current.companyComputerId, signal)) > 0) {
+				await this.#ensureReady({ ...current, physicalState: "starting" }, signal);
+			}
+			return;
+		}
+		if (idleSeconds === 0) {
+			/* Power management disabled: the classic persistent contract —
+			 * reconcile restarts anything that should be ready. */
+			await this.#ensureReady(current, signal);
+			return;
+		}
+		const openScreens = await this.#controlPlane.countOpenScreens(current.companyComputerId, signal);
+		const assignmentLive =
+			current.activeAssignment !== undefined && Date.parse(current.activeAssignment.expiresAt) > Date.now();
+		if (openScreens > 0 || assignmentLive) {
+			if (current.screensIdleSince !== undefined) {
+				const next = { ...current };
+				delete next.screensIdleSince;
+				await this.#writeJournal(next);
+				await this.#ensureReady(next, signal);
+				return;
+			}
+			await this.#ensureReady(current, signal);
+			return;
+		}
+		if (current.screensIdleSince === undefined) {
+			const next = { ...current, screensIdleSince: new Date().toISOString() };
+			await this.#writeJournal(next);
+			await this.#ensureReady(next, signal);
+			return;
+		}
+		if (Date.now() - Date.parse(current.screensIdleSince) < idleSeconds * 1_000) {
+			await this.#ensureReady(current, signal);
+			return;
+		}
+		const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
+		if (instance && instance.status !== "Stopped") {
+			await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "stop", signal);
+		}
+		const next = { ...current, physicalState: "stopped" as const, lastStopReason: "idle" as const };
+		delete next.activeAssignment;
+		delete next.screensIdleSince;
+		await this.#writeJournal(next);
 	}
 
 	async acquire(acquisitionId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {

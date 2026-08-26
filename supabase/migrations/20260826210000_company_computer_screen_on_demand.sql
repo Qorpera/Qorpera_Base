@@ -59,6 +59,22 @@ begin
 		and screen.attached_staff_agent_id = p_staff_agent_id
 	for update;
 	if found then
+		if v_screen.power_state <> 'open' then
+			update public.qorpera_company_computer_screens
+			set power_state = 'open',
+				power_changed_at = statement_timestamp(),
+				updated_at = statement_timestamp()
+			where id = v_screen.id
+			returning * into v_screen;
+			perform public.qorpera_append_company_computer_event(
+				v_screen.profile_id, v_screen.company_computer_id, 'company_computer_screen_opened',
+				jsonb_build_object(
+					'screen_id', v_screen.id,
+					'screen_ordinal', v_screen.screen_ordinal,
+					'source', 'on_demand'
+				)
+			);
+		end if;
 		return public.qorpera_company_computer_screen_json(v_screen);
 	end if;
 	select screen.* into v_screen
@@ -73,6 +89,8 @@ begin
 		update public.qorpera_company_computer_screens
 		set attached_staff_agent_id = p_staff_agent_id,
 			attached_at = statement_timestamp(),
+			power_state = 'open',
+			power_changed_at = case when power_state = 'open' then power_changed_at else statement_timestamp() end,
 			updated_at = statement_timestamp()
 		where id = v_screen.id
 		returning * into v_screen;
