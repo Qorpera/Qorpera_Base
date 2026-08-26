@@ -6,10 +6,12 @@ const shell = join(import.meta.dirname, "..");
 const userland = join(shell, "userland");
 const rendererSource = readFileSync(join(userland, "renderer.js"), "utf-8");
 const indexSource = readFileSync(join(userland, "index.html"), "utf-8");
+const tokensCssSource = readFileSync(join(userland, "tokens.css"), "utf-8");
 const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
 const onboardingCssSource = readFileSync(join(userland, "onboarding.css"), "utf-8");
 const characterMotionSource = readFileSync(join(userland, "character-motion.css"), "utf-8");
 const railResizeCssSource = readFileSync(join(userland, "rail-resize.css"), "utf-8");
+const pinnedAgentsCssSource = readFileSync(join(userland, "pinned-agents.css"), "utf-8");
 const railResizeSource = readFileSync(join(userland, "rail-resize.js"), "utf-8");
 const feedbackSource = readFileSync(join(userland, "feedback.js"), "utf-8");
 const feedbackCssSource = readFileSync(join(userland, "feedback.css"), "utf-8");
@@ -150,6 +152,54 @@ describe("userland wiring", () => {
 		);
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.company-switcher-menu \{[^}]*top: auto;[^}]*bottom: calc\(100% \+ 5px\);[^}]*left: 0;/s,
+		);
+	});
+
+	it("keeps active agent selection blue across hover and pinned layouts", () => {
+		expect(baseCssSource).toMatch(
+			/#staffNavigation \.staff-nav-row\.active,[^}]*#staffNavigation \.staff-nav-row\.active:hover[^}]*\{[^}]*background: var\(--sidebar-selection\);[^}]*color: var\(--sidebar-selection-text\);/s,
+		);
+		expect(pinnedAgentsCssSource).toMatch(
+			/\.staff-pinned-grid \.staff-pinned-card\.active,[^}]*\.staff-pinned-grid \.staff-pinned-card\.active:hover[^}]*\{[^}]*background: var\(--sidebar-selection\);[^}]*color: var\(--sidebar-selection-text\);/s,
+		);
+		expect(pinnedAgentsCssSource).not.toMatch(
+			/\.staff-pinned-grid \.staff-pinned-card\.active[^}]*\{[^}]*background: #e9e9e7;/s,
+		);
+	});
+
+	it("matches the Messages rail scale, surface, and selected icon contrast", () => {
+		expect(tokensCssSource).toContain("--sidebar-surface: #eeedeb;");
+		expect(tokensCssSource).toContain("--sidebar-vibrancy-tint: rgba(232, 235, 240, 0.32);");
+		expect(rendererSource).toContain('"qorpera-cobalt": "#0071e3"');
+		expect(baseCssSource).toMatch(
+			/\.staff-nav-row,[^}]*\.company-runtime-row \{[^}]*grid-template-columns: 50px minmax\(0, 1fr\);/s,
+		);
+		expect(baseCssSource).toMatch(
+			/html\[data-staff-avatar-style="creatures"\] \.staff-nav-row \.staff-avatar,[^}]*width: 50px;[^}]*height: 50px;/s,
+		);
+		expect(pinnedAgentsCssSource).toMatch(
+			/\.staff-pinned-grid \.staff-pinned-card \.staff-avatar \{[^}]*width: 64px;[^}]*height: 64px;/s,
+		);
+		expect(baseCssSource).toMatch(
+			/#staffNavigation \.staff-nav-row\.active \.staff-creature-image,[^}]*filter: brightness\(0\) invert\(1\) !important;/s,
+		);
+		expect(baseCssSource).toMatch(
+			/#staffNavigation \.staff-nav-row\.active \.staff-face i,[^}]*background: var\(--sidebar-selection\);/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/body\.company-shell \.titlebar-rail \.rail-add-staff \{[^}]*justify-self: center;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/body\.company-shell \.staff-create-row \.staff-create-mark \{[^}]*justify-self: center;[^}]*padding: 0;/s,
+		);
+	});
+
+	it("preserves system avatar colors in forced-color mode", () => {
+		expect(baseCssSource).toMatch(
+			/@media \(forced-colors: active\) \{\s*\.staff-avatar \{ --staff-creature-filter: none !important; \}\s*\.staff-creature-image \{ filter: none !important; \}/s,
+		);
+		expect(baseCssSource).toMatch(
+			/@media \(forced-colors: none\) \{\s*#staffNavigation \.staff-nav-row\.active \.staff-avatar,[\s\S]*?--staff-creature-filter: brightness\(0\) invert\(1\) !important;[\s\S]*?#staffNavigation \.staff-nav-row\.active \.staff-creature-image,[\s\S]*?filter: brightness\(0\) invert\(1\) !important;[\s\S]*?#staffNavigation \.staff-nav-row\.active \.staff-face i,[\s\S]*?background: var\(--sidebar-selection\);/,
 		);
 	});
 

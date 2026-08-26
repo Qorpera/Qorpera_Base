@@ -76,6 +76,18 @@ body.company-shell .rail-resize-handle {
 	outline-offset: -2px;
 }
 
+/* Keep add-agent controls centered within the same tracks used by agent
+ * figures. The expanded titlebar reserves 34px for its 30px button, while
+ * the create row reserves the full 50px avatar column for its 32px mark. */
+body.company-shell .titlebar-rail .rail-add-staff {
+	justify-self: center;
+}
+
+body.company-shell .staff-create-row .staff-create-mark {
+	justify-self: center;
+	padding: 0;
+}
+
 /* Compact, icon-only navigation. */
 body.company-shell.rail-compact .titlebar-rail {
 	display: grid;
@@ -166,12 +178,12 @@ body.company-shell.rail-compact .company-runtime-row {
 
 body.company-shell.rail-compact .staff-nav-row:hover,
 body.company-shell.rail-compact .company-runtime-row:hover {
-	background: #e8e8e6;
+	background: var(--sidebar-hover);
 }
 
 body.company-shell.rail-compact .staff-nav-row.active,
 body.company-shell.rail-compact .company-runtime-row.active {
-	background: #0a84ff;
+	background: var(--sidebar-selection);
 }
 
 body.company-shell.rail-compact .staff-nav-row .staff-avatar,

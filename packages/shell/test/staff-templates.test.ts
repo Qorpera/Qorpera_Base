@@ -123,6 +123,7 @@ describe("shell starter staff templates", () => {
 		expect(motion).toContain(".staff-appearance-picker .staff-color-picker");
 		expect(colors.match(/<filter id=/g)).toHaveLength(12);
 		expect(colors).toContain('flood-color="#ff365e"');
+		expect(colors).toContain('flood-color="#0071e3"');
 		expect(renderer).toContain('const STAFF_MOTION_STATES = ["idle", "working", "writing", "needs-attention"];');
 		expect(renderer).toContain('folio: Object.freeze({ label: "Folio", asset: "./staff-creatures/folio.png" })');
 		expect(renderer).not.toContain("lantern");

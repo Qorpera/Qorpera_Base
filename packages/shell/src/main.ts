@@ -8773,6 +8773,7 @@ const STAFF_AVATAR_COLORS = new Set([
 	"#ffae00",
 	"#00c878",
 	"#00bfb3",
+	"#0071e3",
 	"#1684ff",
 	"#8a4dff",
 	"#ff2994",
@@ -9052,7 +9053,7 @@ async function createStaffMember(
 					].join(" "),
 				...(template ? { templateId: template.id } : {}),
 				appearance: {
-					color: input.appearance?.color ?? template?.avatarColorToken ?? "#1684ff",
+					color: input.appearance?.color ?? template?.avatarColorToken ?? "#0071e3",
 					shape: input.appearance?.shape ?? template?.avatarShapeToken ?? "round",
 					creature: input.appearance?.creature ?? (template ? staffCharacterForTemplate(template.id) : "pebble"),
 				},

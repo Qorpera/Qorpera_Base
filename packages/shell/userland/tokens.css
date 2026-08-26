@@ -38,6 +38,11 @@
 	--text-soft: #92928e;
 	--border: rgba(18, 18, 17, 0.09);
 	--border-strong: rgba(18, 18, 17, 0.17);
+	--sidebar-surface: #eeedeb;
+	--sidebar-vibrancy-tint: rgba(232, 235, 240, 0.32);
+	--sidebar-hover: rgba(118, 118, 128, 0.12);
+	--sidebar-selection: #0a84ff;
+	--sidebar-selection-text: #ffffff;
 
 	/* action color — send, links, focus, slider fill */
 	--primary: #171716;
