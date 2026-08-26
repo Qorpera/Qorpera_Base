@@ -629,7 +629,7 @@ async function renderHub() {
 			card.classList.add("loading");
 			const spinner = document.createElement("span");
 			spinner.className = "hub-spinner";
-			card.appendChild(spinner);
+			avatar.appendChild(spinner);
 			if (company.migrationRequired) {
 				const migrated = await window.qorpera.migrateLocalCompany(company.root);
 				document.body.classList.remove("hub-opening");
@@ -713,7 +713,7 @@ async function renderHub() {
 						: "remove";
 			remove.textContent = {
 				decline: "Decline invitation",
-				delete: "Delete from cloud",
+				delete: "Delete Company",
 				leave: "Leave company",
 				remove: "Remove from Qorpera",
 			}[dismissal];
