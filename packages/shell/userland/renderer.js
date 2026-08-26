@@ -262,17 +262,14 @@ async function refreshNativeTurnProvenance(force = false) {
 	syncNativeMessageProvenance();
 	const turn = result.provenance[0];
 	const provider = turn.provider === "openai" ? "Codex" : turn.provider === "anthropic" ? "Claude" : turn.provider;
-	const sponsor = turn.sponsoredByName ?? "company sponsor";
-	const status = turn.runStatus ?? turn.status;
-	label.textContent = `${provider ?? "Provider"} · sponsored by ${sponsor} · ${status}`;
+	label.textContent = provider ?? "Provider";
 	label.title = `This turn uses provider connection ${turn.providerConnectionId ?? "pending"} version ${turn.providerConnectionVersion ?? "pending"}.`;
 	label.hidden = false;
 }
 
 function nativeTurnProvenanceLabel(turn) {
 	const provider = turn.provider === "openai" ? "Codex" : turn.provider === "anthropic" ? "Claude" : turn.provider;
-	const sponsor = turn.sponsoredByName ?? "company sponsor";
-	return `${provider ?? "Provider"} · sponsored by ${sponsor}`;
+	return provider ?? "Provider";
 }
 
 function syncNativeMessageProvenance() {
@@ -1911,9 +1908,9 @@ function staffStatus(staff) {
 function remoteStaffDoingLine(staff) {
 	const hosted = hostedStaffActivity.get(staffId(staff));
 	const stale = hosted && !hostedStaffActivityHealthy ? " · status delayed" : "";
-	if (hosted?.activity === "working") return `Cloud runner · working${stale}`;
-	if (hosted?.activity === "waiting") return `Cloud run · queued${stale}`;
-	if (hosted?.activity === "needs_attention") return `Cloud run · needs attention${stale}`;
+	if (hosted?.activity === "working") return `Working…${stale}`;
+	if (hosted?.activity === "waiting") return `Queued${stale}`;
+	if (hosted?.activity === "needs_attention") return `Needs attention${stale}`;
 	const activity = [...(remoteStaffActivity.get(staffId(staff))?.values() ?? [])].find(
 		(entry) => entry.activity === "writing" || entry.activity === "working",
 	);
@@ -4252,7 +4249,7 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		}
 		const role = document.createElement("small");
 		const runtime = staffRuntime(staff);
-		role.textContent = runtime ? runtimeDoingLine(runtime) : remoteStaffDoingLine(staff) || staffRoleLabel(staff);
+		role.textContent = remoteStaffDoingLine(staff) || (runtime ? runtimeDoingLine(runtime) : "") || staffRoleLabel(staff);
 		copy.append(heading, role);
 		const viewingPeers = peersOnStaff(id);
 		if (viewingPeers.length) {
@@ -4674,7 +4671,7 @@ function renderStaffHome() {
 		description.textContent = staffDescription(staff);
 		const meta = document.createElement("small");
 		const runtime = staffRuntime(staff);
-		meta.textContent = runtime ? runtimeDoingLine(runtime) : remoteStaffDoingLine(staff) || staffRoleLabel(staff);
+		meta.textContent = remoteStaffDoingLine(staff) || (runtime ? runtimeDoingLine(runtime) : "") || staffRoleLabel(staff);
 		card.append(name, description, meta);
 		const viewingPeers = peersOnStaff(staffId(staff));
 		if (viewingPeers.length) {
@@ -8341,11 +8338,12 @@ function trailRunMeta(session, displayedOutcome) {
 // updates change the narration in place; lifecycle changes rebuild the page.
 function runtimeDoingLine(runtime) {
 	const info = runtime?.activity;
-	if (runtime?.status === "starting") return "Waking up…";
-	if (runtime?.status === "reconnecting") return "Reconnecting to its saved session…";
+	// The residual local anchor's lifecycle is not agent presence; cloud
+	// activity and the role label speak instead (cloud-only ruling).
+	if (runtime?.status === "starting" || runtime?.status === "reconnecting") return "";
 	if (runtime?.status === "finishing") return "Saving its work…";
 	if (["idle", "ready", "waiting"].includes(runtime?.status)) return "Ready";
-	if (runtime?.status === "detached") return "Offline";
+	if (runtime?.status === "detached") return "";
 	if (runtime?.status === "interrupted") return "Needs attention";
 	if (!info) return "Working…";
 	if (info.kind === "starting") return "Waking up…";
@@ -8935,10 +8933,11 @@ function renderPendingSessionQueue() {
 		body.textContent = text || (attachmentCount === 1 ? "Attached image" : `${attachmentCount} attached images`);
 		const status = document.createElement("small");
 		status.className = "session-queued-status";
-		const author = typeof input.authorDisplayName === "string" ? input.authorDisplayName.trim() : "";
-		const stateLabel = input.status === "processing" ? "Processing" : input.status === "failed" ? "Needs review" : "Queued";
 		const failure = typeof input.failureReason === "string" ? input.failureReason.trim() : "";
-		status.textContent = `${stateLabel}${author ? ` · ${author}` : ""}${failure ? ` · ${failure}` : ""}`;
+		// A message bubble carries the message; queue mechanics stay out of it.
+		// Only a failure earns a line, because it is actionable.
+		status.textContent = input.status === "failed" ? `Needs review${failure ? ` · ${failure}` : ""}` : "";
+		status.hidden = input.status !== "failed";
 		bubble.append(body, status);
 		const isExecutionRecovery = typeof input.recoveryRunId === "string";
 		if (
