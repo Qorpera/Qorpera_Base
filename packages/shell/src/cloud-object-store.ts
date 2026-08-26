@@ -202,6 +202,41 @@ export class HttpCloudObjectTransport implements CloudObjectTransport {
 	}
 }
 
+/* The two object stores drift when clients write primary-only: NAS-primary
+ * uploads never reach cloud storage and runner uploads never reach the NAS,
+ * which repeatedly broke opens and verifications. Reads chain to the other
+ * store per object (content addressing makes them equivalent); writes go to
+ * the primary authoritatively and to the secondary best-effort, converging
+ * the stores at write time instead of leaving divergence for a heal. */
+export class ChainedCloudObjectTransport implements CloudObjectTransport {
+	readonly #primary: CloudObjectTransport;
+	readonly #secondary: CloudObjectTransport;
+
+	constructor(primary: CloudObjectTransport, secondary: CloudObjectTransport) {
+		this.#primary = primary;
+		this.#secondary = secondary;
+	}
+
+	async put(path: string, bytes: Uint8Array, mediaType: string): Promise<"exists" | "stored"> {
+		const stored = await this.#primary.put(path, bytes, mediaType);
+		try {
+			await this.#secondary.put(path, bytes, mediaType);
+		} catch {
+			/* The secondary converges opportunistically; reads fall back per
+			 * object, so a missed mirror write costs latency, not integrity. */
+		}
+		return stored;
+	}
+
+	async get(path: string): Promise<Uint8Array> {
+		try {
+			return await this.#primary.get(path);
+		} catch {
+			return await this.#secondary.get(path);
+		}
+	}
+}
+
 export class CloudContentAddressedStore {
 	readonly #transport: CloudObjectTransport;
 

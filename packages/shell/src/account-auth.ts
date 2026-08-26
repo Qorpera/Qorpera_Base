@@ -15,6 +15,7 @@ import {
 	SupabaseNativeSubscriptionControlTransport,
 } from "./cloud-native-subscription-control.ts";
 import {
+	ChainedCloudObjectTransport,
 	CloudContentAddressedStore,
 	type CloudObjectTransport,
 	HttpCloudObjectTransport,
@@ -358,21 +359,27 @@ export class QorperaAccountAuth {
 		const objectGatewayUrl =
 			configuredObjectGatewayUrl ||
 			(new URL(projectUrl).origin === new URL(QORPERA_AUTH_URL).origin ? QORPERA_OBJECT_GATEWAY_URL : undefined);
+		const storageTransport = new SupabaseCloudObjectTransport(this.client);
+		const gatewayTransport = objectGatewayUrl
+			? new HttpCloudObjectTransport({
+					baseUrl: objectGatewayUrl,
+					fetch: options.fetch,
+					accessToken: async () => {
+						const { data, error } = await this.client.auth.getSession();
+						if (error) throw error;
+						if (!data.session) throw new Error("Qorpera object access requires sign-in");
+						return data.session.access_token;
+					},
+				})
+			: undefined;
 		let objectTransport: CloudObjectTransport;
 		if (objectStoragePrimary === "supabase") {
-			objectTransport = new SupabaseCloudObjectTransport(this.client);
+			objectTransport = gatewayTransport
+				? new ChainedCloudObjectTransport(storageTransport, gatewayTransport)
+				: storageTransport;
 		} else {
-			if (!objectGatewayUrl) throw new Error("Qorpera NAS object gateway is not configured");
-			objectTransport = new HttpCloudObjectTransport({
-				baseUrl: objectGatewayUrl,
-				fetch: options.fetch,
-				accessToken: async () => {
-					const { data, error } = await this.client.auth.getSession();
-					if (error) throw error;
-					if (!data.session) throw new Error("Qorpera object access requires sign-in");
-					return data.session.access_token;
-				},
-			});
+			if (!gatewayTransport) throw new Error("Qorpera NAS object gateway is not configured");
+			objectTransport = new ChainedCloudObjectTransport(gatewayTransport, storageTransport);
 		}
 		this.objects = new CloudContentAddressedStore(objectTransport);
 		this.nativeSubscriptions = new NativeSubscriptionControlPlane(
