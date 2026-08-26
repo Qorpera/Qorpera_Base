@@ -28,6 +28,72 @@ provisioning), which also sidesteps the frozen lease-semantics follow-up.
    runner image nested, archive sha `c9370c82…46239` verified), provider
    artifact, unit, env example, installer, and the image build script.
 
+## LIVE STATE at handoff (2026-08-26 ~16:00Z — read this first)
+
+The deployment is mid-flight and hands-free. Everything below the operator
+section describes the original plan; this block is what has ACTUALLY
+happened and exactly what remains.
+
+**Done:**
+1. Control plane applied + seeded (see "Already done" below; ids there).
+2. Rounds A ran clean: dataset root, provider service installed
+   (`qorpera-lxd-company-provider.service`, disabled until provenance),
+   `/etc/qorpera/lxd-company-provider.env` filled — fingerprint and the
+   corrected manifest sha are patched in by op-c when it succeeds.
+3. **Image built**: fingerprint
+   `efe890d30817243af4466b7a4b00d802c46d55514e3eb7a5ffcb4e9d05229b2f`,
+   built at commit `ccd357180` (the install-ordering fix: the nested
+   runner layer installs node BEFORE the node-based verification — found
+   by the first real build).
+4. Guest package manifest is now
+   `acd2cd013361a66fdd56e61b30ecaa3807c8da0610db33ba48b3c6a660fbb1f0`
+   (recipe pin, env pin, and signer all updated).
+5. **Sudo grant is live**: `/etc/sudoers.d/qorpera-step3-first-machine`
+   lets `company41-admin` run the three op scripts NOPASSWD (the Step 2
+   flow's grant also allows `/usr/sbin/lxc` and `journalctl` as root).
+   Remove after activation:
+   `sudo rm /etc/sudoers.d/qorpera-step3-first-machine`.
+
+**In flight / remaining (in order):**
+1. `sudo -n bash ~/step3-lxd/op-c-image.sh` — clean-boot acceptance
+   (was running at handoff; check
+   `/var/log/qorpera-cc-image-verify.log` and rerun if needed — it is
+   idempotent). Success ends with `evidence sha256: <64hex>` and
+   `OP-C-DONE`, and patches fingerprint+manifest sha into the env file.
+   First fix applied mid-flight: the verify instance now declares its own
+   root disk (the NIC-only profile has none; the provider adds root
+   itself).
+2. Sign the provenance from the Mac (clean committed tree required):
+   `npm run pack:lxd-provider` then
+   `node deploy/first-node/sign-company-image-provenance.mjs <fingerprint> <evidence-sha256> <tested-at-iso>`
+   — reads the Ed25519 key from Keychain
+   `com.qorpera.company41.lxd-image-provenance` (the stored value is
+   base64url PKCS8 DER, reconstructed in-process), signs, and scp's the
+   envelope to `~/step3-lxd/lxd-company-image-provenance.json` on the
+   node.
+3. `sudo -n bash ~/step3-lxd/op-d-activate.sh` — installs provenance,
+   enables the service, provisions logical computer
+   `6d9da3a0-f09b-4d63-b79b-8a3aad7919d9` via systemd-run, lists the VM.
+4. The watch-proof below ("The proof").
+
+**Session-local knowledge now committed:**
+- `scripts/repin-deploy.mjs` — recomputes every deploy pin after any
+  bundle-affecting change (run it, then `npm run test:scripts`).
+- `deploy/first-node/first-machine-ops/` — the three op scripts (also
+  staged on the node at `~/step3-lxd/`).
+- `deploy/first-node/sign-company-image-provenance.mjs` — the signer.
+- Supabase apply path: the CLI's own keyring login works
+  (`npx supabase@latest …` with NO SUPABASE_ACCESS_TOKEN env — the
+  Keychain item `supabase-cli-step2-temporary` is STALE and overrides the
+  working login if exported). Management SQL endpoint works with the CLI
+  keyring token (`api.supabase.com/v1/projects/wovsmjvghnbcbfazdtvr/database/query`).
+- The Step 2 session works the same node concurrently (built runner v35
+  during this arc); builds coexist but watch disk/load.
+- Dev app for the visual proof: `packages/shell/dist` is built on this
+  branch; run per the Step 2 dev-client convention
+  (`QORPERA_RUNTIME_NODE=$(command -v node) npx electron dist/main.js`
+  from `packages/shell`).
+
 ## Operator steps on the node (need sudo — Jonas)
 
 Run in order; each is copy-paste.
