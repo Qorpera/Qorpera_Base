@@ -12,6 +12,9 @@ User=qorpera-runner
 Group=qorpera-runner
 WorkingDirectory=/srv/qorpera/dataset
 Environment=HOME=/srv/qorpera/dataset/workbench
+# Keyframe publication selects its object backend explicitly and fails
+# closed; production NAS-primary deployments override through a drop-in.
+Environment=QORPERA_OBJECT_STORAGE_PRIMARY=supabase
 LoadCredential=company-computer.json:/var/lib/qorpera-bootstrap/company-computer.json
 LoadCredential=runner-config.json:/var/lib/qorpera-bootstrap/runner-config.json
 LoadCredential=qorpera-supabase-service-key:/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key

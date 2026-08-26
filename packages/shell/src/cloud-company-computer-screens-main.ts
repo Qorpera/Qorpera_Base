@@ -5,16 +5,20 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { safeCompanyComputerGuestError } from "./cloud-company-computer-bootstrap-main.ts";
 import {
+	companyComputerObjectTransport,
 	guestServiceKey,
 	guestToken,
 	parseCompanyComputerGuestBootstrap,
 	parseCompanyComputerServiceBaseUrl,
 } from "./cloud-company-computer-guest.ts";
 import {
+	ExecCompanyComputerScreenKeyframeCapturer,
 	ExecCompanyComputerScreenLauncher,
 	runCloudCompanyComputerScreenAgent,
+	SupabaseCompanyComputerScreenService,
 	SupabaseCompanyComputerScreensControlPlane,
 } from "./cloud-company-computer-screens.ts";
+import { CloudContentAddressedStore } from "./cloud-object-store.ts";
 
 /** Standing screen service for the Company Computer guest. Inputs arrive
  * through systemd LoadCredential=; desktop sessions and the viewer listener
@@ -31,19 +35,36 @@ export const COMPANY_COMPUTER_SCREEN_SESSION_COMMAND = [
 	"{vnc_port}",
 ] as const;
 
-export function screenSessionCommand(environment: NodeJS.ProcessEnv): readonly string[] {
-	const override = environment.QORPERA_SCREEN_SESSION_COMMAND;
-	if (override === undefined) return COMPANY_COMPUTER_SCREEN_SESSION_COMMAND;
+export const COMPANY_COMPUTER_SCREEN_CAPTURE_COMMAND = ["/usr/bin/scrot", "--overwrite", "{output}"] as const;
+
+function commandOverride(encoded: string | undefined, fallback: readonly string[], label: string): readonly string[] {
+	if (encoded === undefined) return fallback;
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(override);
+		parsed = JSON.parse(encoded);
 	} catch (error) {
-		throw new Error("Company computer screen session command override is invalid JSON", { cause: error });
+		throw new Error(`${label} override is invalid JSON`, { cause: error });
 	}
 	if (!Array.isArray(parsed) || parsed.length < 1 || parsed.some((entry) => typeof entry !== "string")) {
-		throw new Error("Company computer screen session command override is invalid");
+		throw new Error(`${label} override is invalid`);
 	}
 	return parsed as string[];
+}
+
+export function screenSessionCommand(environment: NodeJS.ProcessEnv): readonly string[] {
+	return commandOverride(
+		environment.QORPERA_SCREEN_SESSION_COMMAND,
+		COMPANY_COMPUTER_SCREEN_SESSION_COMMAND,
+		"Company computer screen session command",
+	);
+}
+
+export function screenCaptureCommand(environment: NodeJS.ProcessEnv): readonly string[] {
+	return commandOverride(
+		environment.QORPERA_SCREEN_CAPTURE_COMMAND,
+		COMPANY_COMPUTER_SCREEN_CAPTURE_COMMAND,
+		"Company computer screen capture command",
+	);
 }
 
 export async function runCloudCompanyComputerScreenServiceMain(
@@ -66,6 +87,18 @@ export async function runCloudCompanyComputerScreenServiceMain(
 		await readFile(join(credentialsDirectory, "qorpera-screen-viewer"), "utf-8"),
 		"Company computer screen viewer token",
 	);
+	const transport = companyComputerObjectTransport({
+		storagePrimary: environment.QORPERA_OBJECT_STORAGE_PRIMARY ?? "",
+		supabaseUrl: baseUrl,
+		supabaseServiceKey: serviceKey,
+		...(environment.QORPERA_OBJECT_GATEWAY_URL ? { objectGatewayUrl: environment.QORPERA_OBJECT_GATEWAY_URL } : {}),
+		...(environment.QORPERA_OBJECT_GATEWAY_TOKEN_PATH
+			? {
+					objectGatewayToken: (await readFile(environment.QORPERA_OBJECT_GATEWAY_TOKEN_PATH, "utf-8")).trim(),
+				}
+			: {}),
+	});
+	const screenService = new SupabaseCompanyComputerScreenService(baseUrl, serviceKey);
 	const controller = new AbortController();
 	const stop = (): void => controller.abort();
 	process.once("SIGTERM", stop);
@@ -77,6 +110,13 @@ export async function runCloudCompanyComputerScreenServiceMain(
 		controlPlane: new SupabaseCompanyComputerScreensControlPlane(baseUrl, serviceKey),
 		launcher: new ExecCompanyComputerScreenLauncher(screenSessionCommand(environment)),
 		signal: controller.signal,
+		occupancy: screenService,
+		keyframes: {
+			capturer: new ExecCompanyComputerScreenKeyframeCapturer(screenCaptureCommand(environment)),
+			store: new CloudContentAddressedStore(transport),
+			recorder: screenService,
+			profileId: bootstrap.profileId,
+		},
 		onError: (error) => console.error(safeCompanyComputerGuestError(error)),
 	});
 }

@@ -8,13 +8,33 @@ import {
 	type CompanyComputerScreenRecord,
 	companyComputerScreenDisplay,
 	companyComputerScreenVncPort,
+	ExecCompanyComputerScreenKeyframeCapturer,
 	ExecCompanyComputerScreenLauncher,
 	parseCloudCompanyComputerScreensConfig,
 	parseCompanyComputerScreenRecords,
 	runCloudCompanyComputerScreenAgent,
+	SupabaseCompanyComputerScreenService,
 	SupabaseCompanyComputerScreensControlPlane,
+	startCompanyComputerScreenBroker,
 	startCompanyComputerScreenViewer,
 } from "../src/cloud-company-computer-screens.ts";
+import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
+
+class MemoryObjectTransport implements CloudObjectTransport {
+	readonly objects = new Map<string, Uint8Array>();
+
+	async put(path: string, bytes: Uint8Array): Promise<"exists" | "stored"> {
+		if (this.objects.has(path)) return "exists";
+		this.objects.set(path, Uint8Array.from(bytes));
+		return "stored";
+	}
+
+	async get(path: string): Promise<Uint8Array> {
+		const bytes = this.objects.get(path);
+		if (!bytes) throw new Error("object not found");
+		return Uint8Array.from(bytes);
+	}
+}
 
 const companyComputerId = "30000000-0000-4000-8000-000000000002";
 const screenId = "30000000-0000-4000-8000-000000000031";
@@ -403,6 +423,185 @@ describe("cloud company computer screens", () => {
 				liveVncPort: () => undefined,
 			}),
 		).rejects.toThrow("viewer token is invalid");
+	});
+
+	it("captures keyframes with the substituted command and DISPLAY exported", async () => {
+		const { writeFile } = await import("node:fs/promises");
+		const invocations: Array<{ command: string; args: readonly string[]; display: string | undefined }> = [];
+		const capturer = new ExecCompanyComputerScreenKeyframeCapturer(
+			["/usr/bin/scrot", "--overwrite", "{output}"],
+			async (command, args, environment) => {
+				invocations.push({ command, args, display: environment.DISPLAY });
+				const output = args.find((argument) => argument.endsWith("keyframe.png"));
+				if (!output) throw new Error("no output argument");
+				await writeFile(output, Buffer.from("png-bytes"));
+				return { code: 0, stderr: "" };
+			},
+		);
+		const bytes = await capturer.capture({ ordinal: 3, display: ":3" });
+		expect(Buffer.from(bytes).toString("utf-8")).toBe("png-bytes");
+		expect(invocations).toHaveLength(1);
+		expect(invocations[0].command).toBe("/usr/bin/scrot");
+		expect(invocations[0].display).toBe(":3");
+		expect(() => new ExecCompanyComputerScreenKeyframeCapturer(["/usr/bin/scrot"])).toThrow(
+			"must reference {output}",
+		);
+		const failing = new ExecCompanyComputerScreenKeyframeCapturer(["/usr/bin/scrot", "{output}"], async () => ({
+			code: 1,
+			stderr: "no display",
+		}));
+		await expect(failing.capture({ ordinal: 1, display: ":1" })).rejects.toThrow("no display");
+	});
+
+	it("speaks the occupancy and keyframe service RPCs with the provider header convention", async () => {
+		const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+		const service = new SupabaseCompanyComputerScreenService("https://control.example.com", "service-key", (async (
+			url: unknown,
+			init?: { body?: unknown },
+		) => {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			calls.push({ url: String(url), body });
+			if (String(url).includes("claim")) {
+				return new Response(
+					JSON.stringify({
+						screen_id: screenId,
+						screen_ordinal: 2,
+						display_name: "Screen 2",
+						status: "active",
+						attached_staff_agent_id: staffAgentId,
+						occupying_run_id: body.p_run_id,
+					}),
+					{ status: 200 },
+				);
+			}
+			return new Response("null", { status: 200 });
+		}) as typeof fetch);
+		const runId = "30000000-0000-4000-8000-000000000100";
+		const claimed = await service.claim(screenId, runId, "2026-08-26T13:00:00.000Z");
+		expect(claimed.occupyingRunId).toBe(runId);
+		await service.release(screenId, runId);
+		await service.recordKeyframe({
+			screenId,
+			runId,
+			clientArtifactId: "30000000-0000-4000-8000-000000000200",
+			rootObjectSha256: "a".repeat(64),
+			contentSha256: "b".repeat(64),
+			bytes: 9,
+		});
+		expect(calls.map((call) => call.url)).toEqual([
+			"https://control.example.com/rest/v1/rpc/qorpera_claim_company_computer_screen",
+			"https://control.example.com/rest/v1/rpc/qorpera_release_company_computer_screen",
+			"https://control.example.com/rest/v1/rpc/qorpera_record_company_computer_screen_keyframe",
+		]);
+		expect(calls[2].body).toEqual({
+			p_screen_id: screenId,
+			p_run_id: runId,
+			p_client_artifact_id: "30000000-0000-4000-8000-000000000200",
+			p_root_object_sha256: "a".repeat(64),
+			p_content_sha256: "b".repeat(64),
+			p_bytes: 9,
+		});
+	});
+
+	it("brokers screen occupancy for the attached staff agent over loopback", async () => {
+		const runId = "30000000-0000-4000-8000-000000000100";
+		const claims: Array<{ screenId: string; runId: string }> = [];
+		const releases: Array<{ screenId: string; runId: string }> = [];
+		const broker = await startCompanyComputerScreenBroker({
+			port: 0,
+			occupancy: {
+				claim: async (claimedScreenId, claimedRunId) => {
+					claims.push({ screenId: claimedScreenId, runId: claimedRunId });
+					return {
+						...screenRecord(2),
+						screenId,
+						attachedStaffAgentId: staffAgentId,
+						occupyingRunId: claimedRunId,
+					};
+				},
+				release: async (releasedScreenId, releasedRunId) => {
+					releases.push({ screenId: releasedScreenId, runId: releasedRunId });
+				},
+			},
+			records: () => [{ ...screenRecord(2), screenId, attachedStaffAgentId: staffAgentId }],
+		});
+		try {
+			const occupied = await fetch(`http://127.0.0.1:${broker.port}/v1/screens/occupy`, {
+				method: "POST",
+				body: JSON.stringify({ run_id: runId, staff_agent_id: staffAgentId }),
+			});
+			expect(occupied.status).toBe(200);
+			const grant = (await occupied.json()) as Record<string, unknown>;
+			expect(grant.ok).toBe(true);
+			expect(grant.screen_ordinal).toBe(2);
+			expect(grant.display).toBe(":2");
+			expect(grant.vnc_port).toBe(5902);
+			expect(claims).toEqual([{ screenId, runId }]);
+
+			const unattached = await fetch(`http://127.0.0.1:${broker.port}/v1/screens/occupy`, {
+				method: "POST",
+				body: JSON.stringify({ run_id: runId, staff_agent_id: "30000000-0000-4000-8000-000000000099" }),
+			});
+			expect(unattached.status).toBe(409);
+
+			const released = await fetch(`http://127.0.0.1:${broker.port}/v1/screens/release`, {
+				method: "POST",
+				body: JSON.stringify({ run_id: runId, screen_ordinal: 2 }),
+			});
+			expect(released.status).toBe(200);
+			expect(releases).toEqual([{ screenId, runId }]);
+
+			const invalid = await fetch(`http://127.0.0.1:${broker.port}/v1/screens/occupy`, {
+				method: "POST",
+				body: JSON.stringify({ run_id: "nope", staff_agent_id: staffAgentId }),
+			});
+			expect(invalid.status).toBe(400);
+		} finally {
+			await broker.close();
+		}
+	});
+
+	it("publishes a keyframe for each occupied live screen on the poll tick", async () => {
+		const runId = "30000000-0000-4000-8000-000000000100";
+		const launcher = new FakeLauncher();
+		const transport = new MemoryObjectTransport();
+		const recorded: Array<Record<string, unknown>> = [];
+		let firstKeyframe!: () => void;
+		const keyframed = new Promise<void>((resolveKeyframe) => {
+			firstKeyframe = resolveKeyframe;
+		});
+		const controller = new AbortController();
+		const agent = runCloudCompanyComputerScreenAgent({
+			config: { viewerHost: "127.0.0.1", viewerPort: 0, viewerTrustedSource: "127.0.0.1", pollSeconds: 30 },
+			companyComputerId,
+			viewerToken,
+			controlPlane: {
+				listScreens: async () => [{ ...screenRecord(2), occupyingRunId: runId }],
+			},
+			launcher,
+			signal: controller.signal,
+			keyframes: {
+				capturer: { capture: async () => new Uint8Array(Buffer.from("frame")) },
+				store: new CloudContentAddressedStore(transport),
+				recorder: {
+					recordKeyframe: async (input) => {
+						recorded.push(input as unknown as Record<string, unknown>);
+						firstKeyframe();
+					},
+				},
+				profileId: "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f",
+			},
+			onError: (error) => {
+				throw error;
+			},
+		});
+		await keyframed;
+		controller.abort();
+		await agent;
+		expect(recorded).toHaveLength(1);
+		expect(recorded[0].screenId).toBe(screenId);
+		expect(recorded[0].runId).toBe(runId);
+		expect(transport.objects.size).toBeGreaterThan(0);
 	});
 
 	it("runs the screen loop from the registry until aborted, then tears everything down", async () => {

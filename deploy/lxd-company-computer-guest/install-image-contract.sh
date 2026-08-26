@@ -89,9 +89,9 @@ bash "${PACKAGE_ROOT}/runner/install-image-contract.sh" "${PACKAGE_ROOT}/runner"
 systemctl disable qorpera-lxd-runner-bootstrap.service >/dev/null 2>&1 || true
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get install --yes dbus-x11 tigervnc-standalone-server x11-xserver-utils xauth xfce4 xfce4-terminal
+apt-get install --yes dbus-x11 scrot tigervnc-standalone-server x11-xserver-utils xauth xfce4 xfce4-terminal
 
-for binary in /usr/bin/Xvnc /usr/bin/xfce4-session /usr/bin/dbus-run-session /usr/bin/xset; do
+for binary in /usr/bin/Xvnc /usr/bin/xfce4-session /usr/bin/dbus-run-session /usr/bin/xset /usr/bin/scrot; do
 	if [[ ! -x ${binary} ]]; then
 		echo "The desktop stack is missing ${binary}." >&2
 		exit 1

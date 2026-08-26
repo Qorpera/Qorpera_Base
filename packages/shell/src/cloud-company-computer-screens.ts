@@ -1,6 +1,16 @@
 import { spawn } from "node:child_process";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+	createServer as createHttpServer,
+	type Server as HttpServer,
+	type IncomingMessage,
+	type ServerResponse,
+} from "node:http";
 import { connect, createServer, isIP, type Server, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
 
 /** Guest screen agent for the Company Computer (transport ratified
  * 2026-08-26, deploy/first-node/STEP-3-SCREENS-DECISION.md): one desktop
@@ -429,6 +439,323 @@ export function startCompanyComputerScreenViewer(
 	});
 }
 
+/** Guest-local occupancy broker port: the execution side asks here for the
+ * attached staff agent's screen instead of holding service credentials
+ * itself. Loopback-only by construction; the control plane's claim RPC is
+ * the enforcement point, so a mismatched local request fails there. */
+export const COMPANY_COMPUTER_SCREEN_BROKER_PORT = 8_447;
+
+const KEYFRAME_MEDIA_TYPE = "image/png";
+const OCCUPANCY_LEASE_MS = 10 * 60_000;
+const MAX_BROKER_BODY_BYTES = 4_096;
+
+export interface CompanyComputerScreenKeyframeCapturer {
+	capture(screen: { ordinal: number; display: string }): Promise<Uint8Array>;
+}
+
+export type CompanyComputerCaptureExec = (
+	command: string,
+	args: readonly string[],
+	environment: Readonly<Record<string, string>>,
+) => Promise<{ code: number | null; stderr: string }>;
+
+const defaultCaptureExec: CompanyComputerCaptureExec = (command, args, environment) =>
+	new Promise((resolveExec, rejectExec) => {
+		const child = spawn(command, [...args], {
+			stdio: ["ignore", "ignore", "pipe"],
+			shell: false,
+			env: { ...process.env, ...environment },
+		});
+		let stderr = "";
+		child.stderr.on("data", (chunk: Buffer) => {
+			if (stderr.length < 4_096) stderr += chunk.toString("utf-8");
+		});
+		child.on("error", rejectExec);
+		child.on("close", (code) => resolveExec({ code, stderr }));
+	});
+
+/** Runs the image's screenshot command — scrot by default — with {display}
+ * and {output} substituted per argument, DISPLAY exported, and no shell. */
+export class ExecCompanyComputerScreenKeyframeCapturer implements CompanyComputerScreenKeyframeCapturer {
+	readonly #command: readonly string[];
+	readonly #exec: CompanyComputerCaptureExec;
+
+	constructor(command: readonly string[], exec: CompanyComputerCaptureExec = defaultCaptureExec) {
+		if (
+			command.length < 1 ||
+			command.some((argument) => !argument.trim()) ||
+			!command.join(" ").includes("{output}")
+		) {
+			throw new Error("Company computer screen capture command must reference {output}");
+		}
+		this.#command = [...command];
+		this.#exec = exec;
+	}
+
+	async capture(screen: { ordinal: number; display: string }): Promise<Uint8Array> {
+		const directory = await mkdtemp(join(tmpdir(), "qorpera-screen-keyframe-"));
+		try {
+			const output = join(directory, "keyframe.png");
+			const [command, ...args] = this.#command.map((argument) =>
+				argument.replaceAll("{display}", screen.display).replaceAll("{output}", output),
+			);
+			const result = await this.#exec(command as string, args, { DISPLAY: screen.display });
+			if (result.code !== 0) {
+				throw new Error(
+					`Company computer screen capture failed (${result.code ?? "signal"}): ${result.stderr.slice(0, 512).trim()}`,
+				);
+			}
+			return new Uint8Array(await readFile(output));
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	}
+}
+
+export interface CompanyComputerScreenKeyframeRecorder {
+	recordKeyframe(input: {
+		screenId: string;
+		runId: string;
+		clientArtifactId: string;
+		rootObjectSha256: string;
+		contentSha256: string;
+		bytes: number;
+	}): Promise<void>;
+}
+
+export interface CompanyComputerScreenOccupancy {
+	claim(screenId: string, runId: string, expiresAt: string): Promise<CompanyComputerScreenRecord>;
+	release(screenId: string, runId: string): Promise<void>;
+}
+
+function serviceHeaders(serviceKey: string): Record<string, string> {
+	const headers: Record<string, string> = { apikey: serviceKey, "content-type": "application/json" };
+	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3) {
+		headers.authorization = `Bearer ${serviceKey}`;
+	}
+	return headers;
+}
+
+export class SupabaseCompanyComputerScreenService
+	implements CompanyComputerScreenKeyframeRecorder, CompanyComputerScreenOccupancy
+{
+	readonly #supabaseUrl: string;
+	readonly #serviceKey: string;
+	readonly #fetch: typeof fetch;
+
+	constructor(supabaseUrl: string, serviceKey: string, fetchImplementation: typeof fetch = fetch) {
+		this.#supabaseUrl = supabaseUrl;
+		this.#serviceKey = serviceKey;
+		this.#fetch = fetchImplementation;
+	}
+
+	async #rpc(name: string, body: Record<string, unknown>): Promise<unknown> {
+		const response = await this.#fetch(new URL(`/rest/v1/rpc/${name}`, this.#supabaseUrl), {
+			method: "POST",
+			headers: serviceHeaders(this.#serviceKey),
+			body: JSON.stringify(body),
+			signal: AbortSignal.timeout(30_000),
+		});
+		if (!response.ok) throw new Error(`Company computer screen service request failed (${response.status})`);
+		return response.json() as Promise<unknown>;
+	}
+
+	async recordKeyframe(input: {
+		screenId: string;
+		runId: string;
+		clientArtifactId: string;
+		rootObjectSha256: string;
+		contentSha256: string;
+		bytes: number;
+	}): Promise<void> {
+		await this.#rpc("qorpera_record_company_computer_screen_keyframe", {
+			p_screen_id: input.screenId,
+			p_run_id: input.runId,
+			p_client_artifact_id: input.clientArtifactId,
+			p_root_object_sha256: input.rootObjectSha256,
+			p_content_sha256: input.contentSha256,
+			p_bytes: input.bytes,
+		});
+	}
+
+	async claim(screenId: string, runId: string, expiresAt: string): Promise<CompanyComputerScreenRecord> {
+		const record = parseCompanyComputerScreenRecords([
+			await this.#rpc("qorpera_claim_company_computer_screen", {
+				p_screen_id: screenId,
+				p_run_id: runId,
+				p_expires_at: expiresAt,
+			}),
+		])[0];
+		if (!record) throw new Error("Company computer screen claim returned no screen");
+		return record;
+	}
+
+	async release(screenId: string, runId: string): Promise<void> {
+		await this.#rpc("qorpera_release_company_computer_screen", {
+			p_screen_id: screenId,
+			p_run_id: runId,
+		});
+	}
+}
+
+export interface CompanyComputerScreenBroker {
+	port: number;
+	close(): Promise<void>;
+}
+
+export interface StartCompanyComputerScreenBrokerInput {
+	port: number;
+	occupancy: CompanyComputerScreenOccupancy;
+	records: () => readonly CompanyComputerScreenRecord[];
+	leaseMs?: number;
+}
+
+function readBrokerBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+	return new Promise((resolveBody, rejectBody) => {
+		let buffered = Buffer.alloc(0);
+		request.on("data", (chunk: Buffer) => {
+			buffered = Buffer.concat([buffered, chunk]);
+			if (buffered.byteLength > MAX_BROKER_BODY_BYTES) {
+				rejectBody(new Error("screen broker request is too large"));
+				request.destroy();
+			}
+		});
+		request.on("end", () => {
+			try {
+				const parsed: unknown = JSON.parse(buffered.toString("utf-8"));
+				if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid");
+				resolveBody(parsed as Record<string, unknown>);
+			} catch {
+				rejectBody(new Error("screen broker request is invalid"));
+			}
+		});
+		request.on("error", rejectBody);
+	});
+}
+
+/** The one-task-per-screen fence's local doorway: a task asks for the
+ * screen attached to its staff agent and gets DISPLAY coordinates back; a
+ * re-request renews the lease. Loopback-only — everything local is already
+ * inside the company trust domain, and the control plane still verifies the
+ * run against the attached staff agent before granting the fence. */
+export function startCompanyComputerScreenBroker(
+	input: StartCompanyComputerScreenBrokerInput,
+): Promise<CompanyComputerScreenBroker> {
+	const leaseMs = input.leaseMs ?? OCCUPANCY_LEASE_MS;
+	const respond = (response: ServerResponse, status: number, body: Record<string, unknown>): void => {
+		response.writeHead(status, { "content-type": "application/json" });
+		response.end(`${JSON.stringify(body)}\n`);
+	};
+	const server: HttpServer = createHttpServer((request, response) => {
+		void (async () => {
+			if (request.method !== "POST") {
+				respond(response, 405, { ok: false, error: "screen broker accepts POST only" });
+				return;
+			}
+			const body = await readBrokerBody(request);
+			const runId = body.run_id;
+			if (typeof runId !== "string" || !UUID_PATTERN.test(runId)) {
+				respond(response, 400, { ok: false, error: "screen broker run id is invalid" });
+				return;
+			}
+			if (request.url === "/v1/screens/occupy") {
+				const staffAgentId = body.staff_agent_id;
+				if (typeof staffAgentId !== "string" || !UUID_PATTERN.test(staffAgentId)) {
+					respond(response, 400, { ok: false, error: "screen broker staff agent id is invalid" });
+					return;
+				}
+				const screen = input
+					.records()
+					.find((candidate) => candidate.status === "active" && candidate.attachedStaffAgentId === staffAgentId);
+				if (!screen) {
+					respond(response, 409, { ok: false, error: "no screen is attached to this staff agent" });
+					return;
+				}
+				const expiresAt = new Date(Date.now() + leaseMs).toISOString();
+				const claimed = await input.occupancy.claim(screen.screenId, runId, expiresAt);
+				respond(response, 200, {
+					ok: true,
+					screen_id: claimed.screenId,
+					screen_ordinal: claimed.screenOrdinal,
+					display: companyComputerScreenDisplay(claimed.screenOrdinal),
+					vnc_port: companyComputerScreenVncPort(claimed.screenOrdinal),
+					expires_at: expiresAt,
+				});
+				return;
+			}
+			if (request.url === "/v1/screens/release") {
+				const ordinal = body.screen_ordinal;
+				const screen = input
+					.records()
+					.find((candidate) => Number.isSafeInteger(ordinal) && candidate.screenOrdinal === ordinal);
+				if (!screen) {
+					respond(response, 409, { ok: false, error: "screen is unknown" });
+					return;
+				}
+				await input.occupancy.release(screen.screenId, runId);
+				respond(response, 200, { ok: true });
+				return;
+			}
+			respond(response, 404, { ok: false, error: "screen broker path is unknown" });
+		})().catch((error: unknown) => {
+			respond(response, 502, {
+				ok: false,
+				error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+			});
+		});
+	});
+	return new Promise((resolveStart, rejectStart) => {
+		server.once("error", rejectStart);
+		server.listen(input.port, "127.0.0.1", () => {
+			const address = server.address();
+			resolveStart({
+				port: typeof address === "object" && address ? address.port : input.port,
+				close: () =>
+					new Promise<void>((resolveClose) => {
+						server.close(() => resolveClose());
+						server.closeAllConnections();
+					}),
+			});
+		});
+	});
+}
+
+export interface CompanyComputerScreenKeyframes {
+	capturer: CompanyComputerScreenKeyframeCapturer;
+	store: CloudContentAddressedStore;
+	recorder: CompanyComputerScreenKeyframeRecorder;
+	profileId: string;
+}
+
+async function publishScreenKeyframes(
+	records: readonly CompanyComputerScreenRecord[],
+	manager: CloudCompanyComputerScreenManager,
+	keyframes: CompanyComputerScreenKeyframes,
+	onError?: (error: unknown) => void,
+): Promise<void> {
+	for (const screen of records) {
+		if (screen.status !== "active" || !screen.occupyingRunId) continue;
+		if (manager.liveVncPort(screen.screenOrdinal) === undefined) continue;
+		try {
+			const bytes = await keyframes.capturer.capture({
+				ordinal: screen.screenOrdinal,
+				display: companyComputerScreenDisplay(screen.screenOrdinal),
+			});
+			const file = await keyframes.store.putFile(keyframes.profileId, bytes, KEYFRAME_MEDIA_TYPE);
+			await keyframes.recorder.recordKeyframe({
+				screenId: screen.screenId,
+				runId: screen.occupyingRunId,
+				clientArtifactId: randomUUID(),
+				rootObjectSha256: file.manifestSha256,
+				contentSha256: file.fileSha256,
+				bytes: file.bytes,
+			});
+		} catch (error) {
+			onError?.(error);
+		}
+	}
+}
+
 function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
 	return new Promise((resolveDelay) => {
 		if (signal.aborted) {
@@ -452,17 +779,23 @@ export interface RunCloudCompanyComputerScreenAgentInput {
 	controlPlane: CompanyComputerScreensControlPlane;
 	launcher: CompanyComputerScreenLauncher;
 	signal: AbortSignal;
+	occupancy?: CompanyComputerScreenOccupancy;
+	brokerPort?: number;
+	keyframes?: CompanyComputerScreenKeyframes;
 	onError?: (error: unknown) => void;
 }
 
 /** The standing screen loop for the Company Computer guest. Control-plane
  * failures are reported and retried on the next tick: staff keep their live
  * desktops through a shed cloud, and the registry re-converges when it
- * returns. */
+ * returns. Each tick also captures one keyframe per occupied live screen —
+ * the ratified audit cadence — and the loop hosts the loopback occupancy
+ * broker when composed with occupancy authority. */
 export async function runCloudCompanyComputerScreenAgent(
 	input: RunCloudCompanyComputerScreenAgentInput,
 ): Promise<void> {
 	const manager = new CloudCompanyComputerScreenManager(input.launcher);
+	let latestRecords: readonly CompanyComputerScreenRecord[] = [];
 	const viewer = await startCompanyComputerScreenViewer({
 		host: input.config.viewerHost,
 		port: input.config.viewerPort,
@@ -470,16 +803,29 @@ export async function runCloudCompanyComputerScreenAgent(
 		viewerToken: input.viewerToken,
 		liveVncPort: (ordinal) => manager.liveVncPort(ordinal),
 	});
+	const broker = input.occupancy
+		? await startCompanyComputerScreenBroker({
+				port: input.brokerPort ?? COMPANY_COMPUTER_SCREEN_BROKER_PORT,
+				occupancy: input.occupancy,
+				records: () => latestRecords,
+			})
+		: undefined;
 	try {
 		while (!input.signal.aborted) {
 			try {
-				await manager.reconcile(await input.controlPlane.listScreens(input.companyComputerId, input.signal));
+				const records = await input.controlPlane.listScreens(input.companyComputerId, input.signal);
+				latestRecords = records;
+				await manager.reconcile(records);
+				if (input.keyframes && !input.signal.aborted) {
+					await publishScreenKeyframes(records, manager, input.keyframes, input.onError);
+				}
 			} catch (error) {
 				if (!input.signal.aborted) input.onError?.(error);
 			}
 			await abortableDelay(input.config.pollSeconds * 1_000, input.signal);
 		}
 	} finally {
+		await broker?.close();
 		await viewer.close();
 		await manager.stopAll();
 	}
