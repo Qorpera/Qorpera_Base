@@ -8,6 +8,7 @@ import {
 	ExecCompanyDatasetSnapshotClient,
 	LxdCompanyComputerProviderBackend,
 	type LxdCompanyComputerProviderConfig,
+	SupabaseLxdCompanyComputerControlPlane,
 } from "./lxd-company-computer-provider.ts";
 import { verifyLxdImageProvenanceFiles } from "./lxd-image-provenance.ts";
 import {
@@ -264,7 +265,14 @@ function runtime(): ProviderRuntime {
 		const backend = new LxdCompanyComputerProviderBackend(
 			config,
 			client,
-			undefined,
+			/* The same HTTP transport as the ephemeral lane: Node's global
+			 * fetch does not reach the control plane from this host. */
+			new SupabaseLxdCompanyComputerControlPlane(
+				config.supabaseUrl,
+				config.supabaseServiceKey,
+				config.adapterId,
+				nodeHttpFetch,
+			),
 			new HttpLxdGuestTransport(client, nodeHttpFetch),
 			snapshotCommand ? new ExecCompanyDatasetSnapshotClient(snapshotCommand) : undefined,
 		);

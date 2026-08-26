@@ -8,6 +8,7 @@ if [[ ${EUID} -ne 0 ]]; then echo "Run through sudo." >&2; exit 1; fi
 sed -i "s|REPLACE_AFTER_IMAGE_SIGNING|efe890d30817243af4466b7a4b00d802c46d55514e3eb7a5ffcb4e9d05229b2f|; s|3f142af55d20862413dc03143a384d8329802b732d03549fa2fbd760fcfcb89f|acd2cd013361a66fdd56e61b30ecaa3807c8da0610db33ba48b3c6a660fbb1f0|" /etc/qorpera/lxd-company-provider.env
 install -o root -g qorpera-provider -m 0640 /home/company41-admin/step3-lxd/lxd-company-image-provenance.json /etc/qorpera/lxd-company-image-provenance.json
 systemctl enable --now qorpera-lxd-company-provider.service
+systemctl restart qorpera-lxd-company-provider.service
 sleep 3
 systemctl --no-pager --full status qorpera-lxd-company-provider.service | head -12
 systemd-run --wait --pipe \
