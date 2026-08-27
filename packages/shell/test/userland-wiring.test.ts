@@ -115,6 +115,12 @@ describe("userland wiring", () => {
 
 	it("keeps macOS native window controls clear of titlebar actions", () => {
 		expect(preloadSource).toContain("document.documentElement.dataset.platform = process.platform");
+		expect(preloadSource).toContain("navigator.windowControlsOverlay?.visible === false");
+		expect(preloadSource).toContain(
+			'navigator.windowControlsOverlay?.addEventListener("geometrychange", syncWindowControlsVisibility)',
+		);
+		expect(preloadSource).not.toContain("window.outerWidth");
+		expect(mainSource).toContain("titleBarOverlay: TITLE_BAR_OVERLAY");
 		expect(indexSource.indexOf('id="railSearch"')).toBeGreaterThan(indexSource.indexOf('id="conav"'));
 		expect(indexSource.indexOf('id="railSearch"')).toBeGreaterThan(indexSource.indexOf("</header>"));
 		expect(baseCssSource).toContain("#f9f8f4 var(--rail-width) 100%");
@@ -126,6 +132,9 @@ describe("userland wiring", () => {
 		);
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell \.rail-company-switcher \{[^}]*position: fixed;[^}]*top: 9px;[^}]*left: 78px;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\]\[data-window-controls="hidden"\][^{]*\.rail-company-switcher \{[^}]*left: 10px;/s,
 		);
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell \.rail-bottom #companySwitcherButton > strong \{[^}]*display: none;/s,
@@ -154,6 +163,36 @@ describe("userland wiring", () => {
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.company-switcher-menu \{[^}]*top: auto;[^}]*bottom: calc\(100% \+ 5px\);[^}]*left: 0;/s,
 		);
+	});
+
+	it("tracks macOS native window-control visibility across overlay transitions", () => {
+		const geometryListeners = new Map<string, () => void>();
+		const dataset: Record<string, string> = {};
+		const windowControlsOverlay = {
+			visible: true,
+			addEventListener: (type: string, listener: () => void) => geometryListeners.set(type, listener),
+		};
+		runInNewContext(preloadSource, {
+			require: (id: string) => {
+				expect(id).toBe("electron");
+				return {
+					contextBridge: { exposeInMainWorld: () => undefined },
+					ipcRenderer: { invoke: () => Promise.resolve(undefined), on: () => undefined },
+				};
+			},
+			process: { platform: "darwin", argv: [] },
+			document: { documentElement: { dataset }, getElementById: () => null },
+			window: { addEventListener: () => undefined },
+			navigator: { windowControlsOverlay },
+		});
+
+		expect(dataset.windowControls).toBe("visible");
+		windowControlsOverlay.visible = false;
+		geometryListeners.get("geometrychange")?.();
+		expect(dataset.windowControls).toBe("hidden");
+		windowControlsOverlay.visible = true;
+		geometryListeners.get("geometrychange")?.();
+		expect(dataset.windowControls).toBe("visible");
 	});
 
 	it("keeps active agent selection blue across hover and pinned layouts", () => {
@@ -245,7 +284,7 @@ describe("userland wiring", () => {
 			/body\.company-shell \.titlebar-rail \.rail-add-staff \{[^}]*justify-self: center;/s,
 		);
 		expect(railResizeCssSource).toMatch(
-			/body\.company-shell \.staff-create-row \.staff-create-mark \{[^}]*justify-self: center;[^}]*padding: 0;/s,
+			/body\.company-shell \.staff-create-row \.staff-create-mark \{[^}]*justify-self: center;[^}]*padding: 0;[^}]*background: #ececea;/s,
 		);
 	});
 

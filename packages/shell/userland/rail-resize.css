@@ -86,6 +86,7 @@ body.company-shell .titlebar-rail .rail-add-staff {
 body.company-shell .staff-create-row .staff-create-mark {
 	justify-self: center;
 	padding: 0;
+	background: #ececea;
 }
 
 /* Compact, icon-only navigation. */
@@ -347,6 +348,11 @@ html[data-platform="darwin"] body.company-shell .rail-company-switcher {
 	height: 30px;
 	padding: 0;
 	-webkit-app-region: no-drag;
+}
+
+html[data-platform="darwin"][data-window-controls="hidden"]
+	body.company-shell:not(.rail-compact) .rail-company-switcher {
+	left: 10px;
 }
 
 html[data-platform="darwin"] body.company-shell .rail-bottom #companySwitcherButton {
