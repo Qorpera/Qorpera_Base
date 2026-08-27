@@ -369,23 +369,23 @@ function harnessExecutionFailureCategory(error: unknown): string {
 	return "unknown";
 }
 
-function safeHarnessExecutionFailure(error: unknown): Error {
+function safeHarnessExecutionFailure(error: unknown, mouthState: CloudAgentMouth["diagnosticState"]): Error {
+	let message: string;
 	if (
 		error instanceof Error &&
-		(/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
+		(/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|public message transport) unavailable\))?$/.test(
 			error.message,
 		) ||
-			/^Codex did not complete its turn(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
+			/^Codex did not complete its turn(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|public message transport) unavailable\))?$/.test(
 				error.message,
 			) ||
 			error.message === "Provider harness output exceeded its byte limit")
 	) {
-		return error;
+		message = error.message;
+	} else {
+		message = `Native provider execution harness-execution stage failed (${harnessExecutionFailureCategory(error)})`;
 	}
-	return new Error(
-		`Native provider execution harness-execution stage failed (${harnessExecutionFailureCategory(error)})`,
-		{ cause: error },
-	);
+	return new Error(`${message} [mouth=${mouthState}]`, { cause: error });
 }
 
 export async function sealNativeCredentialCapsule(
@@ -473,9 +473,12 @@ function nativeHarnessFailureCategory(output: string): string | undefined {
 		try {
 			const event = JSON.parse(line) as Record<string, unknown>;
 			if (event.type === "error" && typeof event.message === "string") diagnostics.push(event.message);
-			if (event.type === "turn.failed" && event.error && typeof event.error === "object") {
-				const message = (event.error as Record<string, unknown>).message;
+			if (event.error && typeof event.error === "object") {
+				const failure = event.error as Record<string, unknown>;
+				const message = failure.message;
 				if (typeof message === "string") diagnostics.push(message);
+				if (typeof failure.code === "string") diagnostics.push(failure.code);
+				if (typeof failure.type === "string") diagnostics.push(failure.type);
 			}
 			if (event.type === "item.completed" && event.item && typeof event.item === "object") {
 				const item = event.item as Record<string, unknown>;
@@ -488,8 +491,34 @@ function nativeHarnessFailureCategory(output: string): string | undefined {
 	}
 	const detail = diagnostics.join("\n").toLowerCase();
 	if (!detail) return undefined;
-	if (/unauthori[sz]ed|authentication|not logged in|login required|status(?: code)? 401|\b401\b/.test(detail)) {
+	if (
+		/(?:mcp|send_message|public mouth).*(?:fail|error|timed? ?out|timeout|unauthor|invalid|reject)|(?:fail|error|timed? ?out|timeout).*(?:mcp|public mouth)/.test(
+			detail,
+		)
+	) {
+		return "public message transport unavailable";
+	}
+	if (
+		/error loading config|failed to (?:load|read|parse) config|invalid configuration|config.*toml.*error/.test(detail)
+	) {
+		return "harness configuration unavailable";
+	}
+	if (
+		/invalid_function_parameters|invalid_json_schema|invalid.*(?:tool|function).*schema|schema.*(?:tool|function).*invalid/.test(
+			detail,
+		)
+	) {
+		return "provider tool schema unavailable";
+	}
+	if (
+		/unauthori[sz]ed|authentication|not logged in|login required|refresh.?token|status(?: code)? 401|\b401\b/.test(
+			detail,
+		)
+	) {
 		return "authentication unavailable";
+	}
+	if (/forbidden|insufficient_scope|status(?: code)? 403|\b403\b/.test(detail)) {
+		return "provider authorization unavailable";
 	}
 	if (/model .*(?:not found|unsupported|unavailable)|unknown model|invalid model/.test(detail)) {
 		return "model unavailable";
@@ -506,7 +535,7 @@ function nativeHarnessFailureCategory(output: string): string | undefined {
 	if (/sandbox|workspace|permission denied|operation not permitted|read-only file system/.test(detail)) {
 		return "local sandbox unavailable";
 	}
-	if (/bad request|invalid request|unprocessable|status(?: code)? 4(?:00|04|22)/.test(detail)) {
+	if (/bad request|invalid[_ ]request|unprocessable|status(?: code)? 4(?:00|04|22)/.test(detail)) {
 		return "provider request unavailable";
 	}
 	return undefined;
@@ -1007,7 +1036,7 @@ export class NativeProviderHost {
 						cause: validationError,
 					});
 				} else {
-					failure = safeHarnessExecutionFailure(error);
+					failure = safeHarnessExecutionFailure(error, mouth.diagnosticState);
 				}
 			} else {
 				const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";

@@ -87,17 +87,18 @@ function internalRejectionCategory(error: unknown): string {
 
 function safeRequestDiagnostic(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
+	const diagnostic = message.replace(/ \[mouth=(?:uninitialized|initialized|ready|send-unconfirmed|delivered)\]$/, "");
 	if (
-		/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
-			message,
+		/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|public message transport) unavailable\))?$/.test(
+			diagnostic,
 		) ||
-		/^Codex did not complete its turn(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
-			message,
+		/^Codex did not complete its turn(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|public message transport) unavailable\))?$/.test(
+			diagnostic,
 		) ||
 		/^Native provider execution (?:initial-authority-validation|temporary-workspace|credential-download|credential-opening|prompt-materialization|public-mouth-start|public-mouth-completion|harness-execution|workspace-normalization|completion-authority-validation|credential-sealing|credential-upload|authority-monitor|cleanup|internal-completion) stage failed(?: \((?:storage-budget|unsupported-entry|invalid-path|symbolic-link|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/.test(
-			message,
+			diagnostic,
 		) ||
-		message === "Provider harness output exceeded its byte limit"
+		diagnostic === "Provider harness output exceeded its byte limit"
 	) {
 		return message;
 	}

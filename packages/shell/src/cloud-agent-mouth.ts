@@ -93,6 +93,9 @@ export class CloudAgentMouth {
 	#connection?: CloudAgentMouthConnection;
 	#pending: Promise<void> = Promise.resolve();
 	#closed = false;
+	#initialized = false;
+	#toolsListed = false;
+	#sendAttempted = false;
 
 	constructor(
 		runId: string,
@@ -103,6 +106,14 @@ export class CloudAgentMouth {
 		this.#runId = runId;
 		this.#send = send;
 		this.#signal = signal;
+	}
+
+	/** Closed diagnostic vocabulary: never includes messages, arguments, credentials or endpoint details. */
+	get diagnosticState(): "uninitialized" | "initialized" | "ready" | "send-unconfirmed" | "delivered" {
+		if (this.#receipts.size > 0) return "delivered";
+		if (this.#sendAttempted) return "send-unconfirmed";
+		if (this.#toolsListed) return "ready";
+		return this.#initialized ? "initialized" : "uninitialized";
 	}
 
 	async start(): Promise<CloudAgentMouthConnection> {
@@ -211,6 +222,7 @@ export class CloudAgentMouth {
 			id = rpc.id as string | number;
 			let result: unknown;
 			if (rpc.method === "initialize") {
+				this.#initialized = true;
 				result = {
 					protocolVersion: PROTOCOL_VERSION,
 					capabilities: { tools: {} },
@@ -220,6 +232,7 @@ export class CloudAgentMouth {
 			} else if (rpc.method === "ping") {
 				result = {};
 			} else if (rpc.method === "tools/list") {
+				this.#toolsListed = true;
 				result = {
 					tools: [
 						{
@@ -262,6 +275,7 @@ export class CloudAgentMouth {
 			} else if (rpc.method === "tools/call") {
 				const params = rpc.params as Record<string, unknown> | undefined;
 				if (!params || params.name !== "send_message") throw new Error("Unknown tool");
+				this.#sendAttempted = true;
 				try {
 					const input = parseCloudAgentSendInput(params.arguments);
 					const delivery = this.#pending.then(async () => {

@@ -103,9 +103,13 @@ describe("cloud agent public mouth", () => {
 
 	it("exposes one run-scoped tool over authenticated loopback MCP", async () => {
 		const deliver = vi.fn(async (input: CloudAgentSendInput) => receipt(input));
-		const { connection } = await start(deliver);
+		const { mouth, connection } = await start(deliver);
+		expect(mouth.diagnosticState).toBe("uninitialized");
+		expect((await rpc(connection, "tools/list", {}, { authorization: "" })).status).toBe(403);
+		expect(mouth.diagnosticState).toBe("uninitialized");
 		expect(connection.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
 		const initialized = await rpc(connection, "initialize", { protocolVersion: "2025-06-18" });
+		expect(mouth.diagnosticState).toBe("initialized");
 		expect(await initialized.json()).toMatchObject({
 			result: {
 				protocolVersion: "2025-06-18",
@@ -113,6 +117,7 @@ describe("cloud agent public mouth", () => {
 			},
 		});
 		const listed = await rpc(connection, "tools/list");
+		expect(mouth.diagnosticState).toBe("ready");
 		expect(await listed.json()).toMatchObject({
 			result: {
 				tools: [
@@ -176,9 +181,11 @@ describe("cloud agent public mouth", () => {
 		const { mouth, connection } = await start(deliver);
 		const progress = { idempotencyKey: "progress-1", text: "Checking the Company File", phase: "progress" };
 		const failed = await send(connection, progress);
+		expect(mouth.diagnosticState).toBe("send-unconfirmed");
 		expect(failed).toMatchObject({ result: { isError: true } });
 		expect(JSON.stringify(failed)).not.toContain("private database");
 		const replayed = await send(connection, progress);
+		expect(mouth.diagnosticState).toBe("delivered");
 		expect(replayed).toMatchObject({ result: { structuredContent: { messageId, sequence: 1 } } });
 		expect(await send(connection, progress)).toEqual(replayed);
 		expect(durable.size).toBe(1);

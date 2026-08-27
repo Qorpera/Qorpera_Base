@@ -1,5 +1,14 @@
 begin;
 
+do $$
+begin
+	if has_function_privilege('anon', 'public.qorpera_terminalize_runner_attempt(uuid,text,text,boolean)', 'EXECUTE')
+		or has_function_privilege('authenticated', 'public.qorpera_terminalize_runner_attempt(uuid,text,text,boolean)', 'EXECUTE') then
+		raise exception 'API clients can bypass member-authorized cancellation';
+	end if;
+end
+$$;
+
 insert into auth.users (id, email)
 values
 	('16000000-0000-4000-8000-000000000001', 'native-owner@example.test'),
@@ -951,6 +960,39 @@ begin
 		raise exception 'acknowledgement satisfied final delivery';
 	exception when object_not_in_prerequisite_state then null;
 	end;
+	-- Exercise the real member cancellation RPC while a native lease is live.
+	-- Roll back only this probe so the same fixture can still test completion.
+	begin
+		perform set_config('request.jwt.claims',
+			'{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}', true);
+		set local role authenticated;
+		v_completion := public.qorpera_cancel_runner_job(v_job_id);
+		if v_completion ->> 'status' <> 'cancelled'
+			or v_completion -> 'finished_at' <> 'null'::jsonb
+			or v_completion -> 'cancelled_at' = 'null'::jsonb
+			or v_completion ->> 'cancelled_by_user_id' <> '16000000-0000-4000-8000-000000000001'
+			or v_completion -> 'lease_expires_at' <> 'null'::jsonb
+			or v_completion is distinct from public.qorpera_cancel_runner_job(v_job_id) then
+			raise exception 'native cancellation was not atomic and idempotent';
+		end if;
+		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+		set local role service_role;
+		begin
+			perform pg_temp.send_native('progress-1', 'I am checking the Company File.', 'progress');
+			raise exception 'cancelled native authority replayed an earlier send';
+		exception when insufficient_privilege then null;
+		end;
+		begin
+			perform pg_temp.send_native('cancelled-final', 'Do not deliver', 'final');
+			raise exception 'cancelled native authority delivered a new final send';
+		exception when insufficient_privilege then null;
+		end;
+		if (select count(*) from public.qorpera_session_events where execution_id = v_run_id) <> 1 then
+			raise exception 'cancellation mutated the already delivered conversation';
+		end if;
+		raise exception 'rollback cancellation probe' using errcode = 'QCP01';
+	exception when sqlstate 'QCP01' then null;
+	end;
 	v_transcript := pg_temp.send_native('final-1', 'native subscription acceptance response', 'final');
 	if v_transcript is distinct from pg_temp.send_native('final-1', 'native subscription acceptance response', 'final') then
 		raise exception 'final retry duplicated or changed delivery';
@@ -1194,6 +1236,47 @@ begin
 			and job.status = 'queued'
 	) then
 		raise exception 'one logical agent could not switch to its Anthropic subscription default';
+	end if;
+end
+$$;
+
+-- Member cancellation must also work before a runner is assigned, without
+-- granting a coworker permission to cancel somebody else's queued job.
+select set_config('qorpera_test.cancel_job_id', (
+	select job_id::text from public.qorpera_execution_runs
+	where id = (current_setting('qorpera_test.anthropic_turn')::jsonb ->> 'turn_request_id')::uuid
+), false);
+select set_config('request.jwt.claims',
+	'{"sub":"16000000-0000-4000-8000-000000000002","role":"authenticated"}', false);
+set role authenticated;
+
+do $$
+declare
+	v_job_id uuid := current_setting('qorpera_test.cancel_job_id')::uuid;
+begin
+	begin
+		perform public.qorpera_cancel_runner_job(v_job_id);
+		raise exception 'coworker cancelled another member''s queued job';
+	exception when insufficient_privilege then null;
+	end;
+end
+$$;
+
+select set_config('request.jwt.claims',
+	'{"sub":"16000000-0000-4000-8000-000000000001","role":"authenticated"}', false);
+
+do $$
+declare
+	v_job_id uuid := current_setting('qorpera_test.cancel_job_id')::uuid;
+	v_cancelled jsonb;
+begin
+	v_cancelled := public.qorpera_cancel_runner_job(v_job_id);
+	if v_cancelled ->> 'status' <> 'cancelled'
+		or v_cancelled -> 'finished_at' <> 'null'::jsonb
+		or v_cancelled -> 'cancelled_at' = 'null'::jsonb
+		or v_cancelled ->> 'cancelled_by_user_id' <> '16000000-0000-4000-8000-000000000001'
+		or v_cancelled is distinct from public.qorpera_cancel_runner_job(v_job_id) then
+		raise exception 'queued cancellation did not preserve its member and timestamp';
 	end if;
 end
 $$;

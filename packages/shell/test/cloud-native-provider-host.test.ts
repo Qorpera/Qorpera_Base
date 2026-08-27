@@ -185,6 +185,10 @@ describe("native provider host", () => {
 				'process.stdin.setEncoding("utf8");',
 				'process.stdin.on("data", (chunk) => { prompt += chunk; });',
 				'process.stdin.on("end", () => {',
+				'  if (prompt.startsWith("diagnostic fixture: ")) {',
+				'    console.error(prompt.slice("diagnostic fixture: ".length));',
+				"    process.exit(7);",
+				"  }",
 				'  if (prompt.includes("diagnostic authentication failure")) {',
 				'    console.log(JSON.stringify({ type: "error", message: "401 Unauthorized private-token-must-not-leak" }));',
 				"    process.exit(9);",
@@ -288,6 +292,28 @@ describe("native provider host", () => {
 				prompt: "diagnostic zero-exit opaque failure",
 			}),
 		).rejects.toThrow(/^Codex did not complete its turn$/);
+		for (const [diagnostic, category] of [
+			["MCP startup failed: connection timeout", "public message transport"],
+			["Error loading config.toml: invalid value", "harness configuration"],
+			[
+				JSON.stringify({ error: { code: "invalid_function_parameters", message: "invalid schema" } }),
+				"provider tool schema",
+			],
+			[JSON.stringify({ error: { type: "invalid_request_error", message: "invalid input" } }), "provider request"],
+			["403 Forbidden", "provider authorization"],
+			["Refresh token was already used", "authentication"],
+		] as const) {
+			await expect(
+				driver.execute({
+					mouth,
+					harness: "codex-cli",
+					model: "provider-default",
+					identityRoot: identity,
+					companyRoot: company,
+					prompt: `diagnostic fixture: ${diagnostic}\nprivate-token-must-not-leak`,
+				}),
+			).rejects.toThrow(`Provider harness exited with 7 (${category} unavailable)`);
+		}
 		expect((await readdir(identity)).some((name) => name.startsWith(".qorpera-last-message-"))).toBe(false);
 	});
 
@@ -402,8 +428,11 @@ describe("native provider host", () => {
 		}
 	});
 
-	it("redacts unexpected service errors to a fixed safe class", async () => {
-		const privateDiagnostic = "opaque private-token-must-not-leak";
+	it.each([
+		"opaque private-token-must-not-leak",
+		"Provider harness exited with 1 [mouth=private-token-must-not-leak]",
+		"private-token-must-not-leak [mouth=ready]",
+	])("redacts unexpected service errors to a fixed safe class: %s", async (privateDiagnostic) => {
 		const host = {
 			beginLogin: vi.fn(async () => {
 				throw new Error(privateDiagnostic);
@@ -811,11 +840,33 @@ describe("native provider host", () => {
 				const rejected = await bridge.start({ ...nativeAuthority, leaseId: otherComputeIdentityId }, request);
 				await expect(rejected.result).rejects.toThrow("Native provider bridge request failed (422)");
 				expect(logged).toHaveBeenCalledWith(
-					"Native provider request rejected: Native provider execution harness-execution stage failed (filesystem-permission)",
+					"Native provider request rejected: Native provider execution harness-execution stage failed (filesystem-permission) [mouth=uninitialized]",
 				);
 				expect(logged.mock.calls.flat().join("\n")).not.toContain(privateDiagnostic);
 			} finally {
 				logged.mockRestore();
+			}
+			vi.mocked(harness.execute).mockImplementationOnce(async ({ mouth }) => {
+				await fetch(mouth.url, {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						accept: "application/json, text/event-stream",
+						authorization: `Bearer ${mouth.bearerToken}`,
+					},
+					body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+				});
+				throw new Error("Provider harness exited with 1 (provider authorization unavailable)");
+			});
+			const startupLogged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				const rejected = await bridge.start({ ...nativeAuthority, leaseId: otherComputeIdentityId }, request);
+				await expect(rejected.result).rejects.toThrow("Native provider bridge request failed (422)");
+				expect(startupLogged).toHaveBeenCalledWith(
+					"Native provider request rejected: Provider harness exited with 1 (provider authorization unavailable) [mouth=ready]",
+				);
+			} finally {
+				startupLogged.mockRestore();
 			}
 		} finally {
 			await service.close();
