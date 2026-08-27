@@ -3,9 +3,11 @@
 Date: 2026-08-27
 
 Status: implemented and deployed to the production database and signed v47
-runner image. Desktop 0.20.42 is installed and opens Company41. Real-provider
-acceptance is blocked by the connected OpenAI provider's allowance/quota;
-the latest run delivered no public message. Step 1 is not yet accepted.
+runner image. Desktop 0.20.43 is installed; account and company access no longer
+depend on model readiness or allowance. Live company loading is currently
+stalled by separate Supabase timeouts. Real-provider acceptance remains blocked
+by the connected OpenAI provider's allowance/quota; the latest run delivered no
+public message. Step 1 is not yet accepted.
 
 This is step 1 of the cloud runtime implementation order,
 not the earlier infrastructure Step 1. The Company File is the live digital
@@ -286,6 +288,43 @@ absent from the canonical cloud tree, was removed by normal reconciliation
 after the update; the original remains in the private backup at
 `/tmp/qorpera-step1-client-release.JLmEex/archived-agent-before-update`.
 No archived NAS agent data was deleted to make the app open.
+
+### Desktop account-access repair and rollout, 0.20.43
+
+[Desktop 0.20.43](https://github.com/Qorpera/Qorpera_Base_Releases/releases/tag/v0.20.43)
+was published at `2026-08-27T20:42:25Z` from clean master commit
+`fcaa01588a73dbe51ce0913d945feecb71c13d0d`, with source tag `shell-v0.20.43`.
+It removes the model-readiness check from authenticated startup. Qorpera
+authentication and company membership checks remain required; model connection,
+quota and execution authority remain requirements for model work, not login.
+
+The launcher paints before company listing completes, reports slow cloud
+responses, retains existing cards during failed refreshes, and offers Retry
+after a failed request. Failed opens, migrations and invitation acceptance
+return control to the launcher. Gateway HTML becomes a readable cloud-service
+error. Late list/bootstrap responses cannot restore a signed-out account's UI.
+
+All 51 tests across `company-launcher`, `userland-wiring`, `account-auth` and
+`renderer-smoke` pass, including exhausted, disconnected, failing and stalled
+provider cases. The full repository check passes. An isolated Electron fixture
+with networking blocked verifies loading, cloud-error presentation, successful
+retry without another login, and recovery from a failed company open. It uses
+synthetic account/company data and makes no model requests.
+
+The normal installer build passes its packaged-renderer and runtime-file
+checks. The release script verifies updater asset names, sizes and SHA-512
+hashes. The app was installed through the existing updater, and strict
+code-signature verification passes with the same Apple Development identity;
+this is not a notarization claim. All four changed installed renderer assets
+match the committed source byte-for-byte. Windows remains on its prior release.
+
+The installed app retains the Qorpera session and displays the new loading and
+slow-response states. No provider was reconnected, no credit was redeemed, and
+no real inference was requested. The earlier live company-open failure was a
+Supabase HTTP 522 response, not a model-allowance error. After installation,
+the public-key Supabase auth health check still timed out after 15 seconds with
+no response, and company listing remained pending. This release does not claim
+to repair that separate backend outage or complete real cloud-mouth acceptance.
 
 ### Current v47 activation and acceptance blocker
 
