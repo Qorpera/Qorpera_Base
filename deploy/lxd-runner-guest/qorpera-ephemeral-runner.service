@@ -10,11 +10,15 @@ RequiresMountsFor=/var/lib/qorpera/identity
 Type=exec
 User=qorpera-runner
 Group=qorpera-runner
+# Synology maps the live export to GID 100 (users). Successive guest VMs use
+# different service UIDs, so group access is the stable sharing contract.
 SupplementaryGroups=qorpera-native-execution users
 WorkingDirectory=/var/lib/qorpera-runner
 Environment=HOME=/var/lib/qorpera-runner
 Environment=XDG_RUNTIME_DIR=/run/qorpera-runner
 Environment=QORPERA_RUNNER_CONFIG=/var/lib/qorpera-runner/.config/qorpera-runner/config.json
+# The live company tree arrives squash-owned by one NAS uid; git must trust
+# it or every company transaction fails as an invalid repository.
 Environment=GIT_CONFIG_COUNT=1
 Environment=GIT_CONFIG_KEY_0=safe.directory
 Environment=GIT_CONFIG_VALUE_0=*
@@ -28,10 +32,13 @@ Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=45s
 KillSignal=SIGTERM
+# Preserve group access for files that later guest identities must capture.
 UMask=0007
 Delegate=yes
 PrivateTmp=yes
 ProtectSystem=strict
+# The optional live Company File device is writable by contract. Without this
+# allowlist entry ProtectSystem=strict remounts it read-only in the service.
 ReadWritePaths=/var/lib/qorpera-runner /var/lib/qorpera-native-workspace /run/qorpera-runner -/qorpera/company-live -/srv/qorpera/dataset
 ProtectHome=yes
 ProtectHostname=yes

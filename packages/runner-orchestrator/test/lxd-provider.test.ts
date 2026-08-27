@@ -362,6 +362,94 @@ describe("LXD cloud runner provider", () => {
 		});
 	});
 
+	it("keeps proposal reviews isolated from the live Company File device", async () => {
+		const directory = await root();
+		const liveCompanyRoot = "/srv/qorpera/company-live";
+		const request = work();
+		const liveConfig: LxdCloudRunnerProviderConfig = {
+			...config(join(directory, "live-state")),
+			liveCompanyRoot,
+			liveCompanyProfileId: request.profileId,
+		};
+		const liveLxd = new FakeLxd();
+		const liveBackend = new LxdCloudRunnerProviderBackend(liveConfig, liveLxd, new FakeGuest(), fetchProvisioner([]));
+
+		await liveBackend.acquire(runId, request, new AbortController().signal);
+
+		expect(liveLxd.createCalls[0]?.devices["company-live"]).toEqual({
+			type: "disk",
+			source: liveCompanyRoot,
+			path: "/qorpera/company-live",
+		});
+		const liveRunnerConfig = liveLxd.filePushes.find(
+			(file) => file.path === "/var/lib/qorpera-bootstrap/runner-config.json",
+		);
+		if (!liveRunnerConfig) throw new Error("expected live runner config");
+		expect(JSON.parse(liveRunnerConfig.content)).toMatchObject({
+			environment: {
+				QORPERA_LIVE_COMPANY_ROOT: "/qorpera/company-live",
+				QORPERA_LIVE_COMPANY_PROFILE_ID: request.profileId,
+			},
+		});
+		if (!liveLxd.instance) throw new Error("expected live fake instance");
+		const liveCompanyDevice = liveLxd.instance.devices["company-live"];
+		if (!liveCompanyDevice) throw new Error("expected live Company File device");
+		liveLxd.instance = {
+			...liveLxd.instance,
+			devices: {
+				...liveLxd.instance.devices,
+				"company-live": {
+					...liveCompanyDevice,
+					readonly: "true",
+				},
+			},
+		};
+		await expect(liveBackend.reconcile()).rejects.toThrow("drifted from immutable provider authority");
+
+		const { sessionId: _sessionId, ...proposalBase } = work();
+		const proposalRequest: CloudRunnerWork = {
+			...proposalBase,
+			sourceKind: "proposal_review",
+			inputIds: [],
+			transcriptStartSequence: 0,
+			jobType: "proposal_review",
+			sponsor: { ...proposalBase.sponsor, allowAutonomous: true },
+		};
+		const proposalLxd = new FakeLxd();
+		const proposalBackend = new LxdCloudRunnerProviderBackend(
+			{
+				...config(join(directory, "proposal-state")),
+				liveCompanyRoot,
+				liveCompanyProfileId: proposalRequest.profileId,
+			},
+			proposalLxd,
+			new FakeGuest(),
+			fetchProvisioner([]),
+		);
+
+		await proposalBackend.acquire(runId, proposalRequest, new AbortController().signal);
+
+		expect(proposalLxd.createCalls[0]?.devices["company-live"]).toBeUndefined();
+		const proposalRunnerConfig = proposalLxd.filePushes.find(
+			(file) => file.path === "/var/lib/qorpera-bootstrap/runner-config.json",
+		);
+		if (!proposalRunnerConfig) throw new Error("expected proposal-review runner config");
+		expect(JSON.parse(proposalRunnerConfig.content)).toMatchObject({ environment: {} });
+		if (!proposalLxd.instance) throw new Error("expected proposal-review fake instance");
+		proposalLxd.instance = {
+			...proposalLxd.instance,
+			devices: {
+				...proposalLxd.instance.devices,
+				"company-live": {
+					type: "disk",
+					source: liveCompanyRoot,
+					path: "/qorpera/company-live",
+				},
+			},
+		};
+		await expect(proposalBackend.reconcile()).rejects.toThrow("drifted from immutable provider authority");
+	});
+
 	it("uses a pinned local image without a mutable remote image source", async () => {
 		const directory = await root();
 		const lxd = new FakeLxd();

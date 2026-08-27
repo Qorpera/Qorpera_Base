@@ -55,6 +55,35 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			assert.equal(createHash("sha256").update(content).digest("hex"), artifact.sha256);
 		}
 		assert.equal((await stat(join(outputRoot, "install-image-contract.sh"))).mode & 0o111, 0o111);
+		const ephemeralRunnerService = await readFile(
+			join(outputRoot, "qorpera-ephemeral-runner.service"),
+			"utf-8",
+		);
+		const nativeProviderService = await readFile(
+			join(outputRoot, "qorpera-native-provider-host.service"),
+			"utf-8",
+		);
+		assert.match(
+			ephemeralRunnerService,
+			/^ReadWritePaths=.*(?:^|\s)-\/qorpera\/company-live(?:\s|$)/m,
+			"ProtectSystem=strict must leave the optional live Company File writable for the runner",
+		);
+		assert.match(
+			nativeProviderService,
+			/^ReadWritePaths=.*(?:^|\s)-\/qorpera\/company-live(?:\s|$)/m,
+			"ProtectSystem=strict must leave the optional live Company File writable for the native harness",
+		);
+		for (const [serviceName, service] of [
+			["ephemeral runner", ephemeralRunnerService],
+			["native provider", nativeProviderService],
+		]) {
+			assert.match(
+				service,
+				/^SupplementaryGroups=.*\busers\b.*$/m,
+				`${serviceName} must join the NAS-mapped sharing group`,
+			);
+			assert.match(service, /^UMask=0007$/m, `${serviceName} must preserve group access to shared files`);
+		}
 
 		const builderPath = join(repositoryRoot, "deploy/first-node/build-lxd-runner-image-candidate.sh");
 		const builder = await readFile(builderPath, "utf-8");
@@ -68,10 +97,15 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			"utf-8",
 		);
 		const manifestSha256 = createHash("sha256").update(manifestEncoded).digest("hex");
-		for (const recipe of [builder, acceptance]) {
-			assert.ok(
-				recipe.includes(`EXPECTED_PACKAGE_MANIFEST_SHA256="${manifestSha256}"`),
-				"each image candidate recipe must pin this exact package manifest",
+		const builderPin = builder.match(/EXPECTED_PACKAGE_MANIFEST_SHA256="([0-9a-f]{64})"/)?.[1];
+		const acceptancePin = acceptance.match(/EXPECTED_PACKAGE_MANIFEST_SHA256="([0-9a-f]{64})"/)?.[1];
+		assert.ok(builderPin, "image candidate builder must pin a package manifest");
+		assert.equal(acceptancePin, builderPin, "image candidate recipes must pin the same package manifest");
+		if (process.platform === "linux" && process.arch === "x64") {
+			assert.equal(
+				builderPin,
+				manifestSha256,
+				`image candidate recipes must pin the Linux x64 package manifest ${manifestSha256}`,
 			);
 		}
 		assert.ok(builder.includes('LXD_BUILDER_PROJECT="default"'));

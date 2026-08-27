@@ -633,6 +633,10 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 						"--skip-git-repo-check",
 						"--sandbox",
 						"workspace-write",
+						// Snappy by default (founder, 2026-08-26): route reasoning
+						// effort low unless a turn explicitly raises it.
+						"-c",
+						"model_reasoning_effort=low",
 						...modelArgs,
 						"--cd",
 						companyRoot,

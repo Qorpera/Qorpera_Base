@@ -2,6 +2,19 @@
  * backend read models; the RPC pipe carries the attached provider's content
  * stream and direct commands. */
 const $ = (id) => document.getElementById(id);
+
+function sidebarTranslucencyEnabled() {
+	return document.documentElement.dataset.sidebarTranslucency !== "off";
+}
+
+function applySidebarTranslucency(enabled) {
+	document.documentElement.dataset.sidebarTranslucency = enabled ? "on" : "off";
+	const toggle = $("sidebarTranslucencyToggle");
+	if (!toggle) return;
+	toggle.classList.toggle("active", enabled);
+	toggle.setAttribute("aria-checked", String(enabled));
+	toggle.setAttribute("aria-label", `Translucent sidebar ${enabled ? "on" : "off"}`);
+}
 let backendUrl = "";
 // Stable company identity from the desktop host (appInfo). Storage is keyed by
 // this, never by backendUrl: the backend port is hash-derived from a small
@@ -67,6 +80,7 @@ let activityRenderGeneration = 0;
 let currentModelKey = "";
 let preferredModelKey = "";
 let currentEffort = "";
+let effortExplicitlyChosen = false;
 let currentSpeed = "standard";
 let speedAsserted = false; // one re-assert of the remembered speed per child spawn
 let modelFallbackAsserted = false; // one same-provider model fallback per child spawn
@@ -109,7 +123,7 @@ let staffCatalogCache = null;
 let staffCreatorSelection = null;
 let staffCreatorPending = false;
 let staffCreatorClosing = false;
-let staffCreatorColor = "#1684ff";
+let staffCreatorColor = "#0071e3";
 let staffCreatorShape = "round";
 let staffCreatorCreature = "pebble";
 let conversationRecipients = new Set();
@@ -128,6 +142,7 @@ let artifactEditor = null; // { id, expectedUpdatedAt, draft, dirty, error, pend
 const dismissedConnectionRequestGroups = new Map();
 const autoStartedConnectionRequestIds = new Set();
 let agentSidepanelMotionTimer = null;
+let agentSidepanelRenderGeneration = 0;
 const COMPANY_AVATARS = [
 	{ id: "agent-halo", label: "Halo", className: "company-agent-avatar-halo" },
 	{ id: "agent-bloom", label: "Bloom", className: "company-agent-avatar-bloom" },
@@ -191,7 +206,9 @@ function syncNativeExecutionSelector() {
 	const remembered = localStorage.getItem(nativeExecutionStorageKey());
 	const values = [...select.options].map((option) => option.value);
 	select.value = remembered && values.includes(remembered) ? remembered : (values[0] ?? "");
-	select.hidden = !currentStaffId || currentRoomId || choices.length === 0;
+	// Founder ruling (2026-08-26): sponsoring is not a visible concept — the
+	// first active connection carries execution and the control stays hidden.
+	select.hidden = true;
 	select.onchange = () => localStorage.setItem(nativeExecutionStorageKey(), select.value);
 }
 
@@ -239,49 +256,22 @@ async function refreshNativeExecution() {
 	return nativeExecutionRefreshInFlight;
 }
 
-async function refreshNativeTurnProvenance(force = false) {
+async function refreshNativeTurnProvenance() {
+	// Founder ruling (2026-08-26): the thread shows the conversation, not the
+	// machinery — no provider tag in the header or on bubbles. Provenance
+	// stays durable in the execution records for anyone who audits.
 	const label = $("threadSponsorProvenance");
-	if (!label) return;
-	if (!currentStaffId || currentRoomId || typeof window.qorpera.nativeSessionTurnProvenance !== "function") {
+	if (label) {
 		label.hidden = true;
-		return;
-	}
-	if (!force && Date.now() - nativeProvenanceRefreshedAt < 10_000) return;
-	nativeProvenanceRefreshedAt = Date.now();
-	const result = await window.qorpera.nativeSessionTurnProvenance(currentStaffId).catch(() => ({ ok: false }));
-	if (!result?.ok || !Array.isArray(result.provenance) || result.provenance.length === 0) {
-		nativeTurnProvenanceByRun.clear();
-		syncNativeMessageProvenance();
-		label.hidden = true;
-		return;
+		label.textContent = "";
 	}
 	nativeTurnProvenanceByRun.clear();
-	for (const turn of result.provenance) {
-		if (typeof turn?.runId === "string") nativeTurnProvenanceByRun.set(turn.runId, turn);
-	}
 	syncNativeMessageProvenance();
-	const turn = result.provenance[0];
-	const provider = turn.provider === "openai" ? "Codex" : turn.provider === "anthropic" ? "Claude" : turn.provider;
-	label.textContent = provider ?? "Provider";
-	label.title = `This turn uses provider connection ${turn.providerConnectionId ?? "pending"} version ${turn.providerConnectionVersion ?? "pending"}.`;
-	label.hidden = false;
-}
-
-function nativeTurnProvenanceLabel(turn) {
-	const provider = turn.provider === "openai" ? "Codex" : turn.provider === "anthropic" ? "Claude" : turn.provider;
-	return provider ?? "Provider";
 }
 
 function syncNativeMessageProvenance() {
-	for (const message of document.querySelectorAll(".msg.assistant[data-qorpera-run-id]")) {
-		message.querySelector(":scope > .native-turn-provenance")?.remove();
-		const turn = nativeTurnProvenanceByRun.get(message.dataset.qorperaRunId);
-		if (!turn) continue;
-		const provenance = document.createElement("div");
-		provenance.className = "native-turn-provenance";
-		provenance.textContent = nativeTurnProvenanceLabel(turn);
-		provenance.title = `Provider connection ${turn.providerConnectionId ?? "pending"} version ${turn.providerConnectionVersion ?? "pending"}; run ${turn.runId}.`;
-		message.append(provenance);
+	for (const provenance of document.querySelectorAll(".msg.assistant .native-turn-provenance")) {
+		provenance.remove();
 	}
 }
 
@@ -293,7 +283,7 @@ const STAFF_AVATAR_COLORS = [
 	"#ffae00",
 	"#00c878",
 	"#00bfb3",
-	"#1684ff",
+	"#0071e3",
 	"#8a4dff",
 	"#ff2994",
 	"#7c7c7a",
@@ -307,6 +297,7 @@ const STAFF_CREATURE_FILTERS = Object.freeze({
 	"#ffae00": "amber",
 	"#00c878": "emerald",
 	"#00bfb3": "teal",
+	"#0071e3": "cobalt",
 	"#1684ff": "cobalt",
 	"#8a4dff": "violet",
 	"#ff2994": "pink",
@@ -339,7 +330,7 @@ const STAFF_CREATURE_BY_TEMPLATE = Object.freeze({
 });
 const STAFF_COLOR_TOKENS = {
 	"qorpera-terracotta": "#ff642e",
-	"qorpera-cobalt": "#1684ff",
+	"qorpera-cobalt": "#0071e3",
 	"qorpera-amber": "#ffae00",
 	"qorpera-emerald": "#00c878",
 	"qorpera-violet": "#8a4dff",
@@ -347,13 +338,14 @@ const STAFF_COLOR_TOKENS = {
 	"qorpera-pink": "#ff2994",
 	"qorpera-indigo": "#5367e8",
 	"qorpera-teal": "#00bfb3",
-	"qorpera-blue": "#1684ff",
+	"qorpera-blue": "#0071e3",
+	"#1684ff": "#0071e3",
 	"#cc7d5e": "#ff642e",
 	"#e9606f": "#ff365e",
 	"#d89b35": "#ffae00",
 	"#4caf83": "#00c878",
 	"#36a5a2": "#00bfb3",
-	"#3f88df": "#1684ff",
+	"#3f88df": "#0071e3",
 	"#8c6dd7": "#8a4dff",
 	"#d955a1": "#ff2994",
 	"#777772": "#5367e8",
@@ -397,7 +389,7 @@ const DEFAULT_STAFF_TEMPLATES = [
 		displayName: "Software Developer",
 		name: "Software Developer",
 		description: "Builds, tests, and maintains the company’s software.",
-		color: "#1684ff",
+		color: "#0071e3",
 		shape: "wide",
 	},
 	{
@@ -445,7 +437,7 @@ const DEFAULT_STAFF_TEMPLATES = [
 		displayName: "Outreaching Conversationalist",
 		name: "Outreaching Conversationalist",
 		description: "Starts useful conversations with prospects, partners, and other people outside the company.",
-		color: "#1684ff",
+		color: "#0071e3",
 		shape: "drop",
 	},
 ];
@@ -1411,11 +1403,18 @@ const modelCtl = (() => {
 			currentModelKey = cached.modelKey;
 			preferredModelKey = cached.modelKey;
 		}
-		if (!currentEffort && typeof cached?.effort === "string") currentEffort = cached.effort;
+		if (!currentEffort && typeof cached?.effort === "string" && cached?.effortChosen === true) {
+			currentEffort = cached.effort;
+			effortExplicitlyChosen = true;
+		}
 		if (cached?.speed === "fast" || cached?.speed === "standard") currentSpeed = cached.speed;
 	} catch {
 		// unreadable cache: start empty, the live child fills it in
 	}
+	// Snappy by default (founder, 2026-08-26): effort routes low unless the
+	// member explicitly raises it. Cached levels that were never chosen by
+	// hand (session replay drift) do not count as a choice.
+	if (!currentEffort) currentEffort = "low";
 	const persist = () => {
 		try {
 			localStorage.setItem(
@@ -1425,6 +1424,7 @@ const modelCtl = (() => {
 					levels,
 					modelKey: preferredModelKey || currentModelKey,
 					effort: currentEffort,
+					effortChosen: effortExplicitlyChosen,
 					speed: currentSpeed,
 				}),
 			);
@@ -1550,6 +1550,7 @@ const modelCtl = (() => {
 			slider.value = String(target);
 			paintTrack();
 			currentEffort = level;
+			effortExplicitlyChosen = true;
 			persist();
 			sendRpc({ type: "set_thinking_level", level });
 		};
@@ -2167,7 +2168,7 @@ function configureSuggestedAgent(template = null, proposedName = "") {
 	$("conversationRecipientMenu").hidden = true;
 	$("conversationRecipientSearch").setAttribute("aria-expanded", "false");
 	staffCreatorSelection = template;
-	staffCreatorColor = template ? staffColor(template) : "#1684ff";
+	staffCreatorColor = template ? staffColor(template) : "#0071e3";
 	staffCreatorShape = template ? staffShape(template) : "round";
 	staffCreatorCreature = template ? STAFF_CREATURE_BY_TEMPLATE[templateId(template)] ?? "pebble" : "pebble";
 	$("staffDisplayName").value = proposedName || (template ? template.displayName ?? templateName(template) : "");
@@ -2686,7 +2687,7 @@ function renderRoomDelivery(delivery, status = "queued") {
 		card.append(title, detail);
 		roomDeliveryCards.set(delivery.id, card);
 		appendConversationEntry(card);
-		$("messages").scrollTop = $("messages").scrollHeight;
+		scrollConversationToEnd();
 	}
 	const title = card.querySelector(".room-delivery-title");
 	const detail = card.querySelector(".room-delivery-detail");
@@ -2709,15 +2710,24 @@ function renderRoomError(message) {
 	card.className = "room-error-card";
 	card.textContent = message || "A group-chat operation failed.";
 	appendConversationEntry(card);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 }
 
 function renderRoomHistory(messages, deliveries) {
 	currentRoomMessages = [];
 	roomDeliveryCards.clear();
-	$("messages").replaceChildren();
-	for (const message of messages ?? []) renderRoomMessage(message);
-	for (const delivery of deliveries ?? []) renderRoomDelivery(delivery);
+	const messagesElement = $("messages");
+	messagesElement.replaceChildren();
+	const fragment = document.createDocumentFragment();
+	conversationRenderTarget = fragment;
+	try {
+		for (const message of messages ?? []) renderRoomMessage(message);
+		for (const delivery of deliveries ?? []) renderRoomDelivery(delivery);
+	} finally {
+		conversationRenderTarget = null;
+		messagesElement.appendChild(fragment);
+	}
+	scrollConversationToEnd();
 }
 
 async function openRoom(id) {
@@ -3057,6 +3067,7 @@ function closeAgentSidepanel(restoreFocus = true) {
 	if (panel.hidden) return;
 	const previousMode = agentSidepanelMode;
 	agentSidepanelMode = null;
+	agentSidepanelRenderGeneration += 1;
 	agentRoutineEditor = null;
 	$("staffIdentityButton").setAttribute("aria-expanded", "false");
 	$("staffSidepanelButton").setAttribute("aria-expanded", "false");
@@ -3581,9 +3592,35 @@ function renderAgentRoutineEditor(content, staff) {
 	content.appendChild(section);
 }
 
+function createAgentRoutineRow(staff, job) {
+	const row = document.createElement("button");
+	row.type = "button";
+	row.className = "agent-routine-row";
+	row.onclick = () => openAgentRoutineEditor(staff, job);
+	const copy = document.createElement("span");
+	const title = document.createElement("strong");
+	title.textContent = job.title;
+	const meta = document.createElement("small");
+	meta.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)}`;
+	copy.append(title, meta);
+	const stateLabel = document.createElement("small");
+	stateLabel.textContent = job.running ? "Running" : job.enabled && !job.suspendedReason ? "On" : "Off";
+	row.append(copy, stateLabel);
+	return row;
+}
+
+function appendAgentRoutineRows(routines, staff, jobs, renderGeneration) {
+	if (renderGeneration !== agentSidepanelRenderGeneration || !routines.isConnected) return;
+	const fragment = document.createDocumentFragment();
+	for (const job of jobs) fragment.appendChild(createAgentRoutineRow(staff, job));
+	routines.appendChild(fragment);
+	routines.removeAttribute("aria-busy");
+}
+
 function renderAgentComputerPanel(staff, force = false) {
 	const content = $("agentSidepanelContent");
 	if (!force && agentRoutineEditor?.dirty && content.contains(document.activeElement)) return;
+	const renderGeneration = ++agentSidepanelRenderGeneration;
 	content.replaceChildren();
 	if (agentRoutineEditor) {
 		renderAgentRoutineEditor(content, staff);
@@ -3633,21 +3670,16 @@ function renderAgentComputerPanel(staff, force = false) {
 		heading.textContent = "Routines";
 		head.append(heading, create);
 		routines.appendChild(head);
-		for (const job of jobs) {
-			const row = document.createElement("button");
-			row.type = "button";
-			row.className = "agent-routine-row";
-			row.onclick = () => openAgentRoutineEditor(staff, job);
-			const copy = document.createElement("span");
-			const title = document.createElement("strong");
-			title.textContent = job.title;
-			const meta = document.createElement("small");
-			meta.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)}`;
-			copy.append(title, meta);
-			const stateLabel = document.createElement("small");
-			stateLabel.textContent = job.running ? "Running" : job.enabled && !job.suspendedReason ? "On" : "Off";
-			row.append(copy, stateLabel);
-			routines.appendChild(row);
+		if (jobs.length <= 100) {
+			for (const job of jobs) routines.appendChild(createAgentRoutineRow(staff, job));
+		} else {
+			routines.classList.add("is-large");
+			routines.setAttribute("aria-busy", "true");
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => {
+					setTimeout(() => appendAgentRoutineRows(routines, staff, jobs, renderGeneration), 0);
+				});
+			});
 		}
 	}
 	content.appendChild(routines);
@@ -3915,7 +3947,7 @@ function renderAgentFigurePicker(container, staff) {
 					shape: staffShape(template),
 					creature: STAFF_CREATURE_BY_TEMPLATE[staffTemplateId(staff)] ?? staffCreatureId(template),
 				}
-			: { color: "#1684ff", shape: "round", creature: "pebble" };
+			: { color: "#0071e3", shape: "round", creature: "pebble" };
 		void saveAgentStaffUpdate(staff, { appearance }, "The agent figure could not be reset.");
 	};
 	picker.appendChild(reset);
@@ -4319,6 +4351,22 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 			requestAnimationFrame(() => create.classList.remove("is-entering"));
 		}
 	}
+	const pinned = storedStaffIds("staff-pinned");
+	const hidden = storedStaffIds("staff-hidden");
+	const order = new Map(readStoredArray("staff-order").map((id, index) => [id, index]));
+	const staffMembers = activeStaffMembers()
+		.filter((staff) => !hidden.has(staffId(staff)))
+		.sort((left, right) => {
+			const pinRank = Number(pinned.has(staffId(right))) - Number(pinned.has(staffId(left)));
+			if (pinRank) return pinRank;
+			return (order.get(staffId(left)) ?? Number.MAX_SAFE_INTEGER) -
+				(order.get(staffId(right)) ?? Number.MAX_SAFE_INTEGER);
+		});
+	const pinnedGrid = document.createElement("div");
+	pinnedGrid.className = "staff-pinned-grid";
+	pinnedGrid.setAttribute("role", "group");
+	pinnedGrid.setAttribute("aria-label", "Pinned agents");
+	container.appendChild(pinnedGrid);
 	const activeRooms = (state.rooms ?? [])
 		.filter((room) => room.status !== "archived")
 		.sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
@@ -4344,16 +4392,18 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		row.onclick = () => void openRoom(room.id);
 		container.appendChild(row);
 	}
-	const pinned = storedStaffIds("staff-pinned");
-	const hidden = storedStaffIds("staff-hidden");
-	const staffMembers = activeStaffMembers()
-		.filter((staff) => !hidden.has(staffId(staff)))
-		.sort((left, right) => Number(pinned.has(staffId(right))) - Number(pinned.has(staffId(left))));
+	const staffList = document.createElement("div");
+	staffList.className = "staff-unpinned-list";
+	staffList.setAttribute("role", "group");
+	staffList.setAttribute("aria-label", "Agents");
+	container.appendChild(staffList);
 	for (const staff of staffMembers) {
 		const id = staffId(staff);
 		const row = document.createElement("button");
 		row.type = "button";
 		row.className = "staff-nav-row";
+		row.classList.toggle("staff-pinned-card", pinned.has(id));
+		row.dataset.staffId = id;
 		row.classList.toggle(
 			"active",
 			$("staffModal").hidden && currentView === "chat" && !currentRoomId && currentStaffId === id,
@@ -4421,7 +4471,7 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 			const bounds = row.getBoundingClientRect();
 			openStaffContext(event, staff, { x: bounds.left + 32, y: bounds.top + 24 });
 		};
-		container.appendChild(row);
+		(pinned.has(id) ? pinnedGrid : staffList).appendChild(row);
 	}
 	const hiddenStaff = activeStaffMembers().filter((staff) => hidden.has(staffId(staff)));
 	const archivedStaff = (state.staff ?? []).filter((staff) => staff?.employmentStatus === "archived");
@@ -4461,6 +4511,19 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		container.appendChild(empty);
 	}
 	filterRosterRail(railSearchQuery);
+	window.qorperaStaffDrag?.wire({
+		root: container,
+		pinnedZone: pinnedGrid,
+		listZone: staffList,
+		onMove: (move) => {
+			const nextPinned = storedStaffIds("staff-pinned");
+			if (move.pinned) nextPinned.add(move.id);
+			else nextPinned.delete(move.id);
+			storeStaffIds("staff-pinned", nextPinned);
+			localStorage.setItem(navStorageKey("staff-order"), JSON.stringify(move.order));
+			renderRosterRail();
+		},
+	});
 }
 
 function storedStaffIds(name) {
@@ -4840,6 +4903,8 @@ function filterRosterRail(value) {
 	for (const row of document.querySelectorAll("#staffNavigation [data-search-text]")) {
 		row.hidden = Boolean(railSearchQuery) && !row.dataset.searchText.includes(railSearchQuery);
 	}
+	const pinnedGrid = document.querySelector("#staffNavigation .staff-pinned-grid");
+	if (pinnedGrid) pinnedGrid.hidden = ![...pinnedGrid.children].some((row) => !row.hidden);
 }
 
 function openCompanySwitcher() {
@@ -5537,7 +5602,8 @@ async function newChat() {
 }
 
 function renderHistory(messages) {
-	$("messages").innerHTML = "";
+	const messagesElement = $("messages");
+	messagesElement.replaceChildren();
 	resetWorkGroup();
 	resetAssistantStreamState();
 	lastSubmittedPrompt = null;
@@ -5546,66 +5612,73 @@ function renderHistory(messages) {
 	let historyPrompt = null;
 	let historyFailureShown = false;
 	const historyToolCalls = new Map();
-	for (const message of messages ?? []) {
-		if (message.role === "user") {
-			const parts = message.content ?? [];
-			const raw = parts
-				.filter((p) => p.type === "text")
-				.map((p) => p.text)
-				.join("\n");
-			// Context preambles are runtime plumbing, not something the
-			// founder typed — show the message as they wrote it.
-			const text = raw.replace(/^(?:\[(?:Sidechat|Connection choice) context:[^\]]*\]\s*)+/, "");
-			const imageUrls = parts
-				.filter((p) => p.type === "image" && p.data)
-				.map((p) => `data:${p.mimeType};base64,${p.data}`);
-			if (text || imageUrls.length) {
-				appendMsgImages(decorateUserMsg(addMsg("user", text, message.timestamp), text), imageUrls);
-				historyPrompt = {
-					text,
-					images: imageUrls.map((dataUrl, index) => ({
-						mimeType: parts.filter((p) => p.type === "image" && p.data)[index]?.mimeType,
-						dataUrl,
-					})),
-				};
-				lastSubmittedPrompt = historyPrompt;
-				historyProgress = createRunProgress();
-				historyFailureShown = false;
-				historyToolCalls.clear();
-			}
-		} else if (message.role === "assistant") {
-			const rendered = appendAssistantMessages(assistantTextPartsFromMessage(message), false, message.timestamp);
-			if (typeof message.qorperaRunId === "string" && rendered.length > 0) {
-				rendered.at(-1).dataset.qorperaRunId = message.qorperaRunId;
-			}
-			for (const part of message.content ?? []) {
-				if (part.type === "toolCall") {
-					if (part.id)
-						historyToolCalls.set(part.id, {
-							name: part.name,
-							args: part.arguments,
-						});
+	const fragment = document.createDocumentFragment();
+	conversationRenderTarget = fragment;
+	try {
+		for (const message of messages ?? []) {
+			if (message.role === "user") {
+				const parts = message.content ?? [];
+				const raw = parts
+					.filter((p) => p.type === "text")
+					.map((p) => p.text)
+					.join("\n");
+				// Context preambles are runtime plumbing, not something the
+				// founder typed — show the message as they wrote it.
+				const text = raw.replace(/^(?:\[(?:Sidechat|Connection choice) context:[^\]]*\]\s*)+/, "");
+				const imageUrls = parts
+					.filter((p) => p.type === "image" && p.data)
+					.map((p) => `data:${p.mimeType};base64,${p.data}`);
+				if (text || imageUrls.length) {
+					appendMsgImages(decorateUserMsg(addMsg("user", text, message.timestamp), text), imageUrls);
+					historyPrompt = {
+						text,
+						images: imageUrls.map((dataUrl, index) => ({
+							mimeType: parts.filter((p) => p.type === "image" && p.data)[index]?.mimeType,
+							dataUrl,
+						})),
+					};
+					lastSubmittedPrompt = historyPrompt;
+					historyProgress = createRunProgress();
+					historyFailureShown = false;
+					historyToolCalls.clear();
 				}
+			} else if (message.role === "assistant") {
+				const rendered = appendAssistantMessages(assistantTextPartsFromMessage(message), false, message.timestamp);
+				if (typeof message.qorperaRunId === "string" && rendered.length > 0) {
+					rendered.at(-1).dataset.qorperaRunId = message.qorperaRunId;
+				}
+				for (const part of message.content ?? []) {
+					if (part.type === "toolCall") {
+						if (part.id)
+							historyToolCalls.set(part.id, {
+								name: part.name,
+								args: part.arguments,
+							});
+					}
+				}
+				if (message.stopReason === "error" && !historyFailureShown) {
+					addModelFailureCard(message.errorMessage, historyProgress, historyPrompt, {
+						historical: true,
+					});
+					historyFailureShown = true;
+				}
+			} else if (message.role === "toolResult" && message.isError === false) {
+				const tool = historyToolCalls.get(message.toolCallId) ?? {
+					name: message.toolName,
+					args: undefined,
+				};
+				recordCompletedTool(historyProgress, tool.name, tool.args);
 			}
-			if (message.stopReason === "error" && !historyFailureShown) {
-				addModelFailureCard(message.errorMessage, historyProgress, historyPrompt, {
-					historical: true,
-				});
-				historyFailureShown = true;
-			}
-		} else if (message.role === "toolResult" && message.isError === false) {
-			const tool = historyToolCalls.get(message.toolCallId) ?? {
-				name: message.toolName,
-				args: undefined,
-			};
-			recordCompletedTool(historyProgress, tool.name, tool.args);
 		}
+	} finally {
+		conversationRenderTarget = null;
+		messagesElement.appendChild(fragment);
 	}
 	syncNativeMessageProvenance();
 	activeRunProgress = historyProgress;
 	syncConnectionRequestCards();
 	renderPendingSessionQueue();
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 }
 
 function navigationNode(id) {
@@ -9059,8 +9132,20 @@ function renderInbox() {
 
 // ---- chat over the RPC pipe --------------------------------------------------
 
+let conversationRenderTarget = null;
+
+function scrollConversationToEnd() {
+	if (conversationRenderTarget) return;
+	const messages = $("messages");
+	messages.scrollTop = messages.scrollHeight;
+}
+
 function appendConversationEntry(element) {
 	const messages = $("messages");
+	if (conversationRenderTarget) {
+		conversationRenderTarget.appendChild(element);
+		return element;
+	}
 	if (threadActivityEl?.isConnected && element !== threadActivityEl) messages.insertBefore(element, threadActivityEl);
 	else if (element.parentNode !== messages || messages.lastElementChild !== element) messages.appendChild(element);
 	return element;
@@ -9070,9 +9155,23 @@ function renderPendingSessionQueue() {
 	for (const element of document.querySelectorAll("#messages > .session-queued")) element.remove();
 	if (!currentStaffId || currentRoomId || currentView !== "chat") return;
 	const queue = pendingSessionQueueByStaff.get(currentStaffId) ?? [];
+	// The queue bubble exists so a sent message is visible before it is
+	// durable. Once the same message has synchronized into the thread, the
+	// durable copy wins — rendering both shows the prompt twice for the whole
+	// turn. Failures stay visible regardless: they are actionable.
+	const materializedUserTexts = new Set(
+		[...document.querySelectorAll("#messages > .msg.user:not(.session-queued)")].map((element) => {
+			// The bubble also carries the rewind affordance; only the message
+			// text identifies the durable copy.
+			const copy = element.cloneNode(true);
+			for (const control of copy.querySelectorAll(".msg-rewind")) control.remove();
+			return (copy.textContent ?? "").trim();
+		}),
+	);
 	for (const input of queue) {
 		if (!input || typeof input.inputId !== "string") continue;
 		const text = typeof input.text === "string" ? input.text.trim() : "";
+		if (text && input.status !== "failed" && materializedUserTexts.has(text)) continue;
 		const attachmentCount = Number.isSafeInteger(input.attachmentCount) ? input.attachmentCount : 0;
 		const bubble = document.createElement("div");
 		bubble.className = "msg user session-queued";
@@ -9173,7 +9272,8 @@ function renderPendingSessionQueue() {
 		}
 		appendConversationEntry(bubble);
 	}
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
+	syncThreadActivityFromCloud();
 }
 
 function applySessionQueue(queue) {
@@ -9188,7 +9288,7 @@ function addMsg(cls, text, timestamp) {
 	div.textContent = text;
 	if (Number.isFinite(timestamp)) div.dataset.messageTimestamp = String(timestamp);
 	appendConversationEntry(div);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 	return div;
 }
 
@@ -9277,7 +9377,7 @@ function appendAssistantMessages(parts, animate = false, timestamp) {
 		renderMarkdown(message, text);
 		messages.push(message);
 	}
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 	return messages;
 }
 
@@ -9325,7 +9425,7 @@ function threadActivityLabel(mode) {
 	return `${name} ${action}`;
 }
 
-function showThreadActivity(mode) {
+function showThreadActivity(mode, autoScroll = true) {
 	if (currentView !== "chat") return;
 	const staff = currentStaff();
 	const activityStaffId = staffId(staff);
@@ -9337,7 +9437,7 @@ function showThreadActivity(mode) {
 	}
 	const label = threadActivityLabel(mode);
 	if (threadActivityEl.dataset.mode === mode && threadActivityEl.dataset.staffId === activityStaffId) {
-		$("messages").scrollTop = $("messages").scrollHeight;
+		if (autoScroll) scrollConversationToEnd();
 		return;
 	}
 	threadActivityEl.className = `agent-thread-activity is-${mode}`;
@@ -9347,12 +9447,36 @@ function showThreadActivity(mode) {
 	threadActivityEl.setAttribute("aria-label", label);
 	threadActivityEl.replaceChildren(makeStaffAvatar(staff, mode));
 	$("messages").appendChild(threadActivityEl);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 }
 
 function hideThreadActivity() {
 	threadActivityEl?.remove();
 	threadActivityEl = null;
+}
+
+/** The in-thread avatar row for cloud execution. The local RPC stream drives
+ * showThreadActivity directly while a child streams; cloud turns have no
+ * stream, so the hosted read model (waiting/working) and the durable prompt
+ * queue decide whether the agent is visibly at work in the open thread. */
+function syncThreadActivityFromCloud() {
+	if (currentView !== "chat" || !currentStaffId || currentRoomId) return;
+	/* No activeRunProgress guard: history replay leaves it truthy for any
+	 * thread whose legacy-local run never settled, which suppressed the row
+	 * for every cloud turn. Cloud conditions and the local stream agree on
+	 * "working" whenever both exist, and the hide path only removes rows this
+	 * function created. */
+	const hosted = hostedStaffActivity.get(currentStaffId)?.activity;
+	const queue = pendingSessionQueueByStaff.get(currentStaffId) ?? [];
+	const queuedPending = queue.some((input) => input && input.status !== "failed");
+	if (hosted === "working" || hosted === "waiting" || queuedPending) {
+		showThreadActivity("working", threadActivityEl === null);
+	} else if (threadActivityEl?.dataset.cloudDriven === "true") {
+		hideThreadActivity();
+	}
+	if (threadActivityEl && (hosted === "working" || hosted === "waiting" || queuedPending)) {
+		threadActivityEl.dataset.cloudDriven = "true";
+	}
 }
 
 // ---- image attachments: paste or drop into the composer ----------------------
@@ -9475,7 +9599,7 @@ function appendMsgImages(div, dataUrls) {
 		wrap.appendChild(img);
 	}
 	div.appendChild(wrap);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 }
 
 /** The Stop square next to Send: aborts the streaming run in place. */
@@ -9928,7 +10052,7 @@ function addModelFailureCard(
 	if (historical) card.appendChild(historyNote);
 	card.appendChild(actions);
 	appendConversationEntry(card);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 	return card;
 }
 
@@ -10073,7 +10197,7 @@ function ensureWorkGroup() {
 	if (workGroup) return workGroup;
 	workGroup = makeWorkGroup(true);
 	appendConversationEntry(workGroup.el);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 	return workGroup;
 }
 
@@ -10084,7 +10208,7 @@ function workMsg(cls, text) {
 	div.className = `msg ${cls}`;
 	div.textContent = text;
 	group.body.appendChild(div);
-	$("messages").scrollTop = $("messages").scrollHeight;
+	scrollConversationToEnd();
 	return div;
 }
 
@@ -10387,7 +10511,9 @@ window.qorpera.onRpcEvent((frame) => {
 				const model = frame.data?.model;
 				if (model?.id) currentModelKey = `${model.provider}::${model.id}`;
 				modelStateHydrated = true;
-				if (frame.data?.thinkingLevel) currentEffort = frame.data.thinkingLevel;
+				// The runtime's replayed level is legacy-local session state;
+				// it must not displace the low default unless the member chose.
+				if (frame.data?.thinkingLevel && effortExplicitlyChosen) currentEffort = frame.data.thinkingLevel;
 				const reported = frame.data?.responseSpeed;
 				if (reported) {
 					// Speed is session-local in the runtime; the chrome carries the
@@ -11843,6 +11969,29 @@ async function renderSettingsTab() {
 		theme.appendChild(new Option("Light", "light"));
 		theme.value = "light";
 		setRow(appearanceGroup, "Theme", "", theme);
+		if (document.documentElement.dataset.platform === "darwin") {
+			applySidebarTranslucency(info.sidebarTranslucency !== false);
+			const sidebarTranslucency = document.createElement("button");
+			sidebarTranslucency.id = "sidebarTranslucencyToggle";
+			sidebarTranslucency.type = "button";
+			sidebarTranslucency.className = "settings-toggle";
+			sidebarTranslucency.setAttribute("role", "switch");
+			sidebarTranslucency.onclick = async () => {
+				const result = await window.qorpera.setSidebarTranslucency(!sidebarTranslucencyEnabled());
+				if (!result?.ok) {
+					showToast(result?.error || "Sidebar translucency could not be changed.");
+					return;
+				}
+				applySidebarTranslucency(result.enabled);
+			};
+			setRow(
+				appearanceGroup,
+				"Translucent sidebar",
+				"Let the desktop color show softly through the navigation and agent side panel.",
+				sidebarTranslucency,
+			);
+			applySidebarTranslucency(info.sidebarTranslucency !== false);
+		}
 		content.appendChild(appearanceGroup);
 
 		const languageGroup = document.createElement("section");
@@ -12335,6 +12484,7 @@ window.qorpera.onRunnerActivity?.((payload) => {
 		}
 	} else hostedStaffActivityHealthy = false;
 	syncVisibleStaffAvatars();
+	syncThreadActivityFromCloud();
 	try {
 		renderRosterRail();
 		if (currentView === "roster") renderStaffHome();
@@ -12411,6 +12561,7 @@ window.qorpera.onAccountStatus((message) => {
 	if (typeof message === "string" && !$("accountView").hidden) $("accountStatus").textContent = message;
 });
 window.qorpera.onOpenCompany((root) => openCompany(root));
+window.qorpera.onSidebarTranslucency?.((enabled) => applySidebarTranslucency(enabled === true));
 
 setupCompanyNavigation();
 setupSidebarToggle();

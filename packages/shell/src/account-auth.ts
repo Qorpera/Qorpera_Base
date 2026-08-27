@@ -68,7 +68,7 @@ export interface QorperaAccountAuthOptions {
 	timeoutMs?: number;
 }
 
-function configuredObjectStoragePrimary(projectUrl: string, configured: string | undefined): "nas" | "supabase" {
+function configuredObjectStoragePrimary(configured: string | undefined): "nas" | "supabase" {
 	if (configured !== undefined) {
 		const value = configured.trim();
 		if (value === "nas" || value === "supabase") return value;
@@ -357,7 +357,6 @@ export class QorperaAccountAuth {
 		this.realtime = new SupabaseCloudRealtimeTransport(this.client);
 		this.presence = new SupabaseCloudPresenceTransport(this.client, this.primary);
 		const objectStoragePrimary = configuredObjectStoragePrimary(
-			projectUrl,
 			options.objectStoragePrimary ?? process.env.QORPERA_OBJECT_STORAGE_PRIMARY,
 		);
 		const configuredObjectGatewayUrl =

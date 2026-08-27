@@ -2483,6 +2483,9 @@ main { border-left: 0; }
 	width: 100%; padding: 10px 2px; border: 0; border-top: 1px solid var(--border);
 	border-radius: 0; background: transparent; color: var(--text); text-align: left;
 }
+.agent-routines-section.is-large .agent-routine-row {
+	content-visibility: auto; contain-intrinsic-block-size: 47px;
+}
 .agent-routine-row:hover:not(:disabled) { border-color: var(--border); background: transparent; }
 .agent-routine-row > span { display: grid; gap: 2px; min-width: 0; }
 .agent-routine-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
@@ -3546,7 +3549,8 @@ html[data-staff-avatar-style="simple"] #titlebar .thread-header .room-avatar .st
 }
 
 @media (forced-colors: active) {
-	.staff-creature-image { filter: none; }
+	.staff-avatar { --staff-creature-filter: none !important; }
+	.staff-creature-image { filter: none !important; }
 	.general-settings-group .setrow .settings-toggle { border: 1px solid ButtonText; }
 	.general-settings-group .setrow .settings-toggle.active { background: Highlight; }
 }
@@ -3705,4 +3709,228 @@ html[data-staff-avatar-style="simple"] #titlebar .thread-header .room-avatar .st
 }
 @media (prefers-reduced-motion: reduce) {
 	.staff-nav-row.peer-open, .roster-card.peer-open, .peer-typing-bubble i { animation: none; }
+}
+
+/* ---- Messages-inspired shell chrome ------------------------------------- */
+html[data-platform="darwin"] body,
+html[data-platform="darwin"] #shell,
+html[data-platform="darwin"] #titlebar {
+	background-color: transparent;
+}
+
+html[data-platform="darwin"] #primaryNavigation,
+html[data-platform="darwin"] .titlebar-rail {
+	font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+	-webkit-font-smoothing: auto;
+	text-rendering: auto;
+}
+
+html[data-platform="darwin"] .staff-nav-copy strong,
+html[data-platform="darwin"] .staff-nav-time,
+html[data-platform="darwin"] .rail-search input,
+html[data-platform="darwin"] .titlebar-rail .rail-add-staff span {
+	font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+
+html[data-platform="darwin"] .staff-nav-copy strong {
+	font-size: 13px;
+	font-weight: 600;
+}
+
+body.company-shell #titlebar {
+	background: linear-gradient(
+		to right,
+		var(--sidebar-surface) 0 var(--rail-width),
+		#f9f8f4 var(--rail-width) 100%
+	);
+}
+
+body.company-shell #titlebar::before {
+	content: "";
+	position: absolute;
+	z-index: 4;
+	right: 0;
+	bottom: 0;
+	left: var(--rail-width);
+	height: 1px;
+	background: #d9d9d9;
+	pointer-events: none;
+}
+
+#primaryNavigation {
+	background: var(--sidebar-surface);
+}
+
+html[data-platform="darwin"] body.company-shell #titlebar {
+	background: linear-gradient(
+		to right,
+		var(--sidebar-vibrancy-tint) 0 var(--rail-width),
+		#f9f8f4 var(--rail-width) 100%
+	);
+}
+
+html[data-platform="darwin"] #primaryNavigation {
+	background: var(--sidebar-vibrancy-tint);
+}
+
+html[data-sidebar-translucency="off"] #primaryNavigation {
+	background: var(--sidebar-surface);
+}
+
+html[data-sidebar-translucency="off"] body.company-shell #titlebar {
+	background: linear-gradient(
+		to right,
+		var(--sidebar-surface) 0 var(--rail-width),
+		#f9f8f4 var(--rail-width) 100%
+	);
+}
+
+.titlebar-rail {
+	grid-template-columns: minmax(0, 1fr) 34px;
+	padding-top: 5px;
+	padding-bottom: 3px;
+}
+
+.titlebar-rail .rail-add-staff { grid-column: 2; }
+
+.rail-search-row {
+	flex: 0 0 auto;
+	padding: 6px 14px 7px;
+}
+
+.rail-search-row .rail-search input {
+	height: 28px;
+	padding-left: 28px;
+	border: 0;
+	border-radius: 7px;
+	background: rgba(118, 118, 128, .14);
+	box-shadow: inset 0 0 0 .5px rgba(18, 18, 17, .08);
+	font-size: 13px;
+	font-weight: 400;
+	letter-spacing: 0;
+}
+
+.rail-search-row .rail-search input:focus {
+	background: rgba(118, 118, 128, .18);
+	box-shadow: 0 0 0 2px rgba(10, 132, 255, .18), inset 0 0 0 .5px rgba(10, 132, 255, .45);
+}
+
+.rail-search-row .rail-search svg {
+	top: 7px;
+	left: 8px;
+	width: 14px;
+	height: 14px;
+	color: #707074;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	stroke-width: 2.2;
+	shape-rendering: geometricPrecision;
+}
+
+html[data-platform="darwin"] .titlebar-rail .rail-add-staff span {
+	width: 16px;
+	font-size: 20px;
+	font-weight: 400;
+	line-height: 20px;
+	vertical-align: 0;
+	transform: translateY(-1px);
+}
+
+.rail-scroll {
+	padding-right: 10px;
+	padding-left: 10px;
+}
+
+.staff-nav-row,
+.company-runtime-row {
+	grid-template-columns: 50px minmax(0, 1fr);
+	gap: 6px;
+	min-height: 64px;
+	padding: 5px 10px 5px 14px;
+	border-radius: 6px;
+}
+
+.staff-nav-row .staff-nav-copy,
+.company-runtime-row .staff-nav-copy {
+	align-self: start;
+	margin-top: 4px;
+}
+
+#staffNavigation .staff-nav-row.active,
+#staffNavigation .staff-nav-row.active:hover,
+#staffNavigation .company-runtime-row.active,
+#staffNavigation .company-runtime-row.active:hover {
+	background: var(--sidebar-selection);
+	color: var(--sidebar-selection-text);
+}
+
+.staff-nav-row.active .staff-nav-copy strong,
+.staff-nav-row.active .staff-nav-copy small,
+.staff-nav-row.active .staff-nav-time,
+.company-runtime-row.active .staff-nav-copy strong,
+.company-runtime-row.active .staff-nav-copy small,
+.company-runtime-row.active .staff-nav-time {
+	color: var(--sidebar-selection-text);
+}
+
+.staff-nav-row.active .staff-nav-copy small,
+.staff-nav-row.active .staff-nav-time,
+.company-runtime-row.active .staff-nav-copy small,
+.company-runtime-row.active .staff-nav-time {
+	opacity: .78;
+}
+
+html[data-staff-avatar-style="creatures"] .staff-nav-row .staff-avatar,
+html[data-staff-avatar-style="creatures"] .company-runtime-row .staff-avatar {
+	width: 50px;
+	height: 50px;
+	background: transparent;
+}
+
+/* macOS selected rows use a single foreground palette. The silhouette stays
+ * distinct from the system-blue selection regardless of the agent's profile
+ * color, while blue eyes preserve the character's expression. */
+@media (forced-colors: none) {
+	#staffNavigation .staff-nav-row.active .staff-avatar,
+	#staffNavigation .company-runtime-row.active .staff-avatar,
+	.staff-pinned-grid .staff-pinned-card.active .staff-avatar {
+		--staff-creature-filter: brightness(0) invert(1) !important;
+	}
+
+	#staffNavigation .staff-nav-row.active .staff-creature-image,
+	#staffNavigation .company-runtime-row.active .staff-creature-image,
+	.staff-pinned-grid .staff-pinned-card.active .staff-creature-image {
+		filter: brightness(0) invert(1) !important;
+	}
+
+	#staffNavigation .staff-nav-row.active .staff-face i,
+	#staffNavigation .company-runtime-row.active .staff-face i,
+	.staff-pinned-grid .staff-pinned-card.active .staff-face i {
+		background: var(--sidebar-selection);
+	}
+}
+
+.agent-sidepanel,
+.agent-sidepanel-titlebar {
+	background: #f6f6f4;
+}
+
+html[data-platform="darwin"] .agent-sidepanel,
+html[data-platform="darwin"] .agent-sidepanel-titlebar {
+	background: transparent;
+}
+
+html[data-sidebar-translucency="off"] .agent-sidepanel,
+html[data-sidebar-translucency="off"] .agent-sidepanel-titlebar {
+	background: #f6f6f4;
+}
+
+.general-settings-group .setrow .settings-toggle.active,
+.agent-notification-toggle.active {
+	background: #0a84ff;
+}
+
+.composer-shell:focus-within {
+	border-color: rgba(10, 132, 255, .55);
+	box-shadow: 0 0 0 2px rgba(10, 132, 255, .1);
 }

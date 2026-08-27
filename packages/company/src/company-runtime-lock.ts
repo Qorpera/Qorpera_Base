@@ -60,6 +60,18 @@ const lockHeartbeats = new WeakMap<CompanyRuntimeLock, Worker>();
 const COMPANY_LOCK_STALE_MS = 30_000;
 const COMPANY_LOCK_HEARTBEAT_MS = 1_000;
 
+function withSharedCreationMode<T>(operation: () => T): T {
+	// NAS map-all ownership is reported as the NAS uid, not the guest uid.
+	// Creation modes therefore carry cross-VM access; service umasks must not
+	// turn the shared lock directory or record into private state.
+	const previousUmask = process.umask(0);
+	try {
+		return operation();
+	} finally {
+		process.umask(previousUmask);
+	}
+}
+
 function startCompanyLockHeartbeat(path: string, token: string): Worker {
 	const extension = import.meta.url.endsWith(".ts") ? ".ts" : import.meta.url.endsWith(".mjs") ? ".mjs" : ".js";
 	const worker = new Worker(new URL(`./company-lock-heartbeat${extension}`, import.meta.url), {
@@ -122,7 +134,7 @@ function processInstanceIdentity(pid: number): string | undefined {
 function acquireCompanyRuntimeLock(rootDir: string): CompanyRuntimeLock {
 	const root = canonicalCompanyRoot(rootDir);
 	const path = companyRuntimeLockPath(root);
-	mkdirSync(dirname(path), { recursive: true });
+	withSharedCreationMode(() => mkdirSync(dirname(path), { recursive: true, mode: 0o777 }));
 	const token = randomUUID();
 	const processInstance = processInstanceIdentity(process.pid);
 	if (!processInstance) throw new Error("Could not establish the company lock process identity");
@@ -137,7 +149,7 @@ function acquireCompanyRuntimeLock(rootDir: string): CompanyRuntimeLock {
 	for (let attempt = 0; attempt < 3; attempt++) {
 		let descriptor: number | undefined;
 		try {
-			descriptor = openSync(path, "wx");
+			descriptor = withSharedCreationMode(() => openSync(path, "wx", 0o666));
 			writeFileSync(descriptor, `${JSON.stringify(record)}\n`, "utf-8");
 			fsyncSync(descriptor);
 			closeSync(descriptor);

@@ -208,6 +208,9 @@
 		"System default": "Systemstandard",
 		"System default follows your computer's language.": "Systemstandarden følger sproget på din computer.",
 		"Template library or scratch": "Skabelonbibliotek eller tom afdeling",
+		"Translucent sidebar": "Gennemsigtigt sidepanel",
+		"Translucent sidebar off": "Gennemsigtigt sidepanel slået fra",
+		"Translucent sidebar on": "Gennemsigtigt sidepanel slået til",
 		"This becomes the department title in the navigation.": "Dette bliver afdelingens titel i navigationen.",
 		"This becomes their persistent identity in the company.":
 			"Dette bliver deres vedvarende identitet i virksomheden.",
@@ -217,6 +220,8 @@
 		Theme: "Tema",
 		"To:": "Til:",
 		Type: "Type",
+		"Let the desktop color show softly through the navigation and agent side panel.":
+			"Lad skrivebordets farve skinne diskret gennem navigationen og agentpanelet.",
 		"Unhide active agents or restore archived agents to the company roster.":
 			"Vis aktive agenter igen, eller gendan arkiverede agenter til virksomhedens agentliste.",
 		Update: "Opdater",

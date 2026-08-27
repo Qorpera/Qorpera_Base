@@ -42,6 +42,7 @@
 		"check:model-catalog": "node scripts/publish-model-catalog.mjs --input .artifacts/model-catalog --dry-run",
 		"profile:tui": "node scripts/profile-coding-agent-node.mjs --mode tui",
 		"profile:rpc": "node scripts/profile-coding-agent-node.mjs --mode rpc",
+		"profile:shell": "node scripts/benchmark-shell-responsiveness.mjs",
 		"test": "npm run test:scripts && npm run test --workspaces --if-present",
 		"test:hosted-db": "node scripts/test-hosted-db.mjs",
 		"test:scripts": "node --test scripts/*.test.mjs",

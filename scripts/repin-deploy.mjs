@@ -25,6 +25,18 @@ const setPin = (path, key, value) => {
 		console.log(`unchanged ${key} in ${path}`);
 	}
 };
+const setArgumentPin = (path, flag, value) => {
+	const file = readFileSync(path, "utf-8");
+	const pattern = new RegExp(`("${flag}",\\s*")[0-9a-f]{64}(")`);
+	if (!pattern.test(file)) throw new Error(`${path} has no argument pin ${flag}`);
+	const next = file.replace(pattern, (_match, prefix, suffix) => `${prefix}${value}${suffix}`);
+	if (next !== file) {
+		writeFileSync(path, next);
+		console.log(`updated ${flag} in ${path}`);
+	} else {
+		console.log(`unchanged ${flag} in ${path}`);
+	}
+};
 
 // 1. LXD provider package pins.
 const providerOut = mkdtempSync(join(tmpdir(), "repin-provider-"));
@@ -89,10 +101,16 @@ rmSync(runnerGuestOut, { recursive: true, force: true });
 // 3. Company computer guest package pin in its image-candidate recipe.
 const companyOut = mkdtempSync(join(tmpdir(), "repin-company-"));
 run("scripts/package-lxd-company-computer-guest.mjs", companyOut, ["--contract-only"]);
+const companyGuestSha = sha256(readFileSync(join(companyOut, "manifest.json")));
 setPin(
 	join(repo, "deploy/first-node/build-lxd-company-computer-image-candidate.sh"),
 	"EXPECTED_PACKAGE_MANIFEST_SHA256",
-	sha256(readFileSync(join(companyOut, "manifest.json"))),
+	companyGuestSha,
+);
+setArgumentPin(
+	join(repo, "deploy/first-node/sign-company-image-provenance.mjs"),
+	"--guest-package-manifest-sha256",
+	companyGuestSha,
 );
 rmSync(companyOut, { recursive: true, force: true });
 console.log("repin complete");

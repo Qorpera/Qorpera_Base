@@ -61,7 +61,18 @@ export interface LxdCloudRunnerProviderConfig {
 	codexPath: string;
 	claudePath: string;
 	guestBootstrapService?: string;
+	/** Host path of the company's one live tree (a NAS mount). When present
+	 * and healthy it is passed into ordinary turn runner VMs as a read/write
+	 * disk, and the guest works on it directly instead of copying the company
+	 * file in and out per turn. Proposal reviews remain copy-isolated. */
+	liveCompanyRoot?: string;
+	/** Profile the live tree belongs to; the guest refuses the mount for any
+	 * other profile's job. Required together with liveCompanyRoot. */
+	liveCompanyProfileId?: string;
 }
+
+/** Where the live company tree appears inside a runner VM. */
+export const LXD_LIVE_COMPANY_GUEST_PATH = "/qorpera/company-live";
 
 export interface LxdGuestTransport {
 	waitReady(
@@ -134,6 +145,16 @@ interface LxdGuestBootstrapFile {
 	content: string;
 }
 
+interface LiveCompanyAuthority {
+	root: string;
+	profileId: string;
+}
+
+function liveCompanyAuthority(config: LxdCloudRunnerProviderConfig, jobType: string): LiveCompanyAuthority | undefined {
+	if (jobType === "proposal_review" || !config.liveCompanyRoot || !config.liveCompanyProfileId) return undefined;
+	return { root: config.liveCompanyRoot, profileId: config.liveCompanyProfileId };
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
 	return value as Record<string, unknown>;
@@ -155,7 +176,11 @@ function sha256(value: string): string {
 }
 
 function workSha256(work: CloudRunnerWork): string {
-	return sha256(JSON.stringify(canonical(work)));
+	/* The control plane annotates each dispatch with attempt-scoped fields; a
+	 * retry is the same immutable run, so the journal digest must not vary
+	 * with them — or every second attempt is refused as foreign work. */
+	const { attempt: _attempt, ...immutable } = work as CloudRunnerWork & { attempt?: unknown };
+	return sha256(JSON.stringify(canonical(immutable)));
 }
 
 function token(): string {
@@ -559,6 +584,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			let current = await this.#readJournal(acquisitionId);
 			if (current) {
 				if (current.workSha256 !== digest) {
+					console.error(
+						`acquire refusal: acquisition=${acquisitionId} journaled=${current.workSha256.slice(0, 12)} incoming=${digest.slice(0, 12)} state=${current.physicalState} createdAt=${current.createdAt} work=${JSON.stringify(canonical(work)).slice(0, 2000)}`,
+					);
 					throw new Error("LXD provider acquisition id is bound to another immutable work request");
 				}
 				this.#validateCredentialHashes(current, credentials);
@@ -742,6 +770,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	}
 
 	#createRequest(current: LxdProviderJournal): LxdCreateInstanceRequest {
+		const liveCompany = liveCompanyAuthority(this.#config, current.jobType);
 		return {
 			name: current.instanceName,
 			type: "virtual-machine",
@@ -768,6 +797,21 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					pool: current.lxd.storagePool,
 					source: current.lxd.identityVolume,
 				},
+				/* No uid shifting: idmapped mounts are unreliable over NFS. The
+				 * NAS export squashes every writer to one owner and the tree
+				 * carries open modes, so guest uids need no translation. No
+				 * fallback either: a configured live tree whose host mount is
+				 * gone fails instance creation loudly (founder ruling — the
+				 * copy model must not silently come back). */
+				...(liveCompany
+					? {
+							"company-live": {
+								type: "disk",
+								source: liveCompany.root,
+								path: LXD_LIVE_COMPANY_GUEST_PATH,
+							},
+						}
+					: {}),
 			},
 			source:
 				current.lxd.imageServer === "local"
@@ -797,6 +841,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	}
 
 	#bootstrapFiles(authority: LxdGuestBootstrapAuthority, credentials: ProviderCredentials): LxdGuestBootstrapFile[] {
+		const liveCompany = liveCompanyAuthority(this.#config, authority.jobType);
 		const runnerConfig = JSON.stringify(
 			{
 				schema: "qorpera.ephemeral-runner-service/v1",
@@ -819,7 +864,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				assignment_port: this.#config.guestAssignmentPort,
 				assignment_trusted_source: this.#config.guestAssignmentSource,
 				max_assignments: 1,
-				environment: {},
+				environment: liveCompany
+					? {
+							QORPERA_LIVE_COMPANY_ROOT: LXD_LIVE_COMPANY_GUEST_PATH,
+							QORPERA_LIVE_COMPANY_PROFILE_ID: liveCompany.profileId,
+						}
+					: {},
 			},
 			null,
 			2,
@@ -930,6 +980,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	#assertInstanceAuthority(journal: LxdProviderJournal, instance: LxdInstanceRecord): void {
 		const root = instance.devices.root;
 		const identity = instance.devices["compute-identity"];
+		const liveCompany = liveCompanyAuthority(this.#config, journal.jobType);
+		const liveCompanyDevice = instance.devices["company-live"];
+		const expectedLiveCompanyDevice = liveCompany
+			? { type: "disk", source: liveCompany.root, path: LXD_LIVE_COMPANY_GUEST_PATH }
+			: undefined;
 		if (
 			instance.name !== journal.instanceName ||
 			instance.type !== "virtual-machine" ||
@@ -947,7 +1002,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			identity?.type !== "disk" ||
 			identity.path !== "/var/lib/qorpera/identity" ||
 			identity.pool !== journal.lxd.storagePool ||
-			identity.source !== journal.lxd.identityVolume
+			identity.source !== journal.lxd.identityVolume ||
+			JSON.stringify(canonical(liveCompanyDevice)) !== JSON.stringify(canonical(expectedLiveCompanyDevice))
 		) {
 			throw new Error("LXD guest drifted from immutable provider authority");
 		}

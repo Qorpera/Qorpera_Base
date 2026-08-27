@@ -1,5 +1,298 @@
 # Step 2 implementation handoff
 
+# CODEX TAKEOVER — exact state and next actions (2026-08-26 22:56 CEST)
+
+**The attended live-file proof gate is closed. Everything through source
+commit `dc171f3aba04f306883f9ad007946c97050a13a2` is pushed. The founder's
+standing rulings remain: cloud-only execution (no local executor or fallback
+architecture), the NAS live company file is THE model (no per-turn copying),
+and transcripts are simple synchronized chats.**
+
+## UPDATE 22:56: v44 IS SIGNED, ACTIVE, AND PROVEN FROM THE RELEASED APP
+
+The founder's packaged app submitted the final attended turn without a debug
+hook. It ran once, completed normally, wrote the actual NAS-backed live tree,
+and rendered the exact assistant reply `created v44`. No copy of the Company
+File was used as the workspace.
+
+Immutable v44 boundary:
+
+- image fingerprint:
+  `b3acd9e1ae7d690542648a17a8991ff2752eee819f85dada295330f97b9bdec4`;
+- guest manifest SHA-256:
+  `04d692b5badf07c50a32314cc6e368152e1f4a3f670cb9fe6368266bcb95f56e`;
+- clean source commit:
+  `dc171f3aba04f306883f9ad007946c97050a13a2`;
+- acceptance evidence: tested `2026-08-26T20:47:43.000Z`, SHA-256
+  `7289243771fa35c4904d3519538b48ebccf76d2cb571e500669017a5b6720718`;
+- signed provenance SHA-256:
+  `37b4f16172d91e9fef1b65366daa160663fbdff3c73ee22c853a29d385e88698`;
+- provenance public-key SHA-256:
+  `b62d24b8335468ef39cd7e16a50beb9d5ddab7343c4e5695273cd0a8d8bb1039`;
+- activation script SHA-256:
+  `4830974aeeb7640c19a50e9e7bdc2e282f51c9adfd207d3fe8cfb17ba6a60a45`.
+
+Activation verified the signature on-node, mounted the NAS, repaired inherited
+group permissions once with `chmod -R g+rwX`, prewarmed the image, restarted
+the provider, and ended with `SIGNED_LXD_PROVIDER_ACTIVE`. Post-proof checks
+still show the provider enabled and active, the NAS mounted, and orchestrator
+health `{"ok":true}`.
+
+Final proof evidence:
+
+- marker: `STEP2_V44_FINAL_PROOF_20260826T204912Z`;
+- run/acquisition: `bb838af4-e317-4b02-8a71-8ce9c9b5dc73`;
+- job: `a227f2fc-69c2-4030-afd5-fe7a6c29f0bd`;
+- runner: `24ca7b38-b77a-4cca-b216-1c08b6bf9de5`;
+- VM: `qorpera-bb838af4e3174b028a718ce9c9b5dc73`;
+- created `2026-08-26T20:49:57.008454Z`, started
+  `2026-08-26T20:50:14.728028Z`, completed
+  `2026-08-26T20:53:43.046214Z`, attempt 1, no dispatch failures or error;
+- durable events: queued 1205, claimed 1206, assigned 1207, started 1208,
+  provider session bound 1209, completed 1210;
+- NAS file:
+  `/mnt/qorpera-companies/company41/live/live-check-v44-20260826T204912Z.txt`;
+- exact bytes: `STEP2 V44 LIVE ON NAS 20260826T204912Z\n`;
+- expected and observed file SHA-256:
+  `24c0e310ed3b1018eaa892031826aded7bafd0d3790c28573d83aea16c4e3fa2`;
+- stat: 39 bytes, mode `0660`, owner `1024:100`, mtime
+  `2026-08-26 20:50:25.412068770 +0000`.
+
+The approximately 17.72-second created-to-start interval is still VM boot.
+Started-to-completed was 3 minutes 28.32 seconds because the 283 MB live tree
+is captured synchronously at turn end. That is direct evidence for making the
+snapshot asynchronous before the Company File grows toward 3 TB.
+
+## Live-file fixes deployed through v44
+
+1. `24f6d3673` parallel tree fetch (12-worker pool) reduced copy-mode turns
+   from roughly 190 seconds to 53 seconds.
+2. `92a281490` sanctioned the live mount in the native layout guard, made
+   retry journal digests stable, and exposed provider refusals.
+3. `41d1b1471` skipped the group-share ownership sweep for the live tree.
+4. `0f746edf8` trusted the NAS checkout through `git safe.directory` in both
+   guest units.
+5. Operationally, the provider needrestart pin and Synology NFS export are
+   installed; the node mounts the export at `/mnt/qorpera-companies` and the
+   283 MB live tree is seeded at `company41/live`.
+6. `31fe41ea6` added `/qorpera/company-live` to both services'
+   `ReadWritePaths`; v41 had exposed systemd `ProtectSystem=strict` as EROFS.
+7. `e684d0303` made cross-VM runtime directories and lock files explicitly
+   group-shareable; v42 had exposed a `0600` lock owned by the previous VM.
+8. `dc171f3ab` put both service identities in the NAS-mapped `users` group
+   (GID 100) and set `UMask=0007`; v43 could create a file but turn-end capture
+   could not read older `0660` NAS files. Acceptance also proved reciprocal
+   reads and writes between the native provider and ephemeral runner services.
+
+## Current active state
+
+- The node runs signed image v44 with the live-root environment declared.
+- The packaged app completed the final attended proof and rendered its reply.
+- Trail materialization is linear; attended staff threads are childless
+  session anchors.
+- All known Step 2 proof VMs were swept after their durable evidence was
+  recorded. Only `company41-orchestrator-01` and the separate Step 3 VM
+  `qorpera-cc-6d9da3a0f09b4d63b79b8a3aad7919d9` remain; do not delete either.
+- Automatic terminal-run VM deletion is still missing from `LxdClient`; the
+  manual sweep remains an operational workaround.
+
+## Ranked remainder after the live-file proof
+
+1. Background turn-end capture from the live root. It is acceptable at 283 MB
+   but the proof's 3-minute-28-second capture is incompatible with 3 TB.
+2. Design a warm-standby VM to remove the approximately 17-second boot delay
+   without weakening per-run bootstrap credential provenance.
+3. Add the prompt-outbox consumer so turns execute with the founder's laptop
+   closed, then retire the remaining local child in wake/rooms/product lanes.
+4. Run conception (staff introduction) as a cloud turn.
+5. Complete the functional acceptance matrix: live Claude login, second
+   member, sponsor switching, revocation, offline devices, and the
+   storage/recovery gate.
+6. Move `Recovery/` (139 MB, about 99% of tree bytes) out of the live Company
+   File so snapshots remain focused and fast.
+
+## Access notes for the next operator
+
+- Node: `ssh company41-node-01` (key auth). Pinned NOPASSWD sudo covers the
+  reviewed `~/step2-lxd/*.sh` scripts, `journalctl`, and `lxc` only.
+- Supabase project: `wovsmjvghnbcbfazdtvr`. Legacy service/anon JWTs remain
+  the reliable path while platform key management sheds under load.
+- Never use the app's refresh token. Do not claim a path works without a
+  driven proof from the packaged app.
+- LXD wedge signature: `lxc init` hangs while the daemon still answers
+  queries. Sweep only known stray build clients, ask the founder to restart
+  `snap.lxd.daemon`, then rerun the pinned script. Leave the Step 3 VM alone.
+
+
+
+**NO-FALLBACK LIVE FILE (v38) — active in interim copy mode; live flip
+is one command awaiting the NAS export (2026-08-26 late night).**
+Founder rejected the fallback: a DECLARED live tree that is missing now
+FAILS the run loudly (runner) and instance creation (provider injects
+the device unconditionally when configured); with NO declaration the
+copy path is the legitimate mode, which is how v38 runs tonight
+(fingerprint `6c97fcac…`, manifest `59d3edd2…`, provider bundle
+`47be87ce…`, provenance signed; probe turn +16.6s/+52.9s). Every lane
+uses the live tree when declared; proposal_review copies BY DESIGN
+(hard isolation). NAS: 192.168.0.91 (Synology, SMB+DSM up, NFS OFF) —
+no SSH key trust, founder Chrome extension not connected, so DSM
+remains founder-clicks: enable NFS + share `qorpera-companies` + rw
+for 192.168.0.206 squash map-all-to-admin. THEN:
+`sudo -n ~/step2-lxd/activate-signed-image.sh` (the pinned script is
+the FULL v38 activation: apt nfs-common done, showmount-discovers
+export, fstab-mounts /mnt/qorpera-companies, seeds company41/live from
+staged 284M, sets QORPERA_LXD_LIVE_COMPANY_ROOT+_PROFILE_ID, restarts,
+healthz). Ops notes: deleting the previous unsigned image alias must
+happen AFTER the next activation (I retired v36 early and briefly
+broke turns — bridged with an interim v38 activation sans live keys);
+node root disk was 100%% (34 stale candidates, 72GB freed); completed
+runs still leak VMs (10 more deleted).
+
+
+**LIVE COMPANY FILE — built, staged, awaiting the NAS share (2026-08-26
+night).** Founder ruling sharpened: no copy-in/copy-out at all — "a
+company file that is 3TB would be non-functional". Implemented: the
+provider passes a host-mounted live tree into each runner VM as a rw
+disk device (`company-live` → `/qorpera/company-live`, offered only
+while the host path is a present directory; no uid shifting — the NAS
+export squashes all writers to admin and the tree carries open modes),
+declares it via runner env (QORPERA_LIVE_COMPANY_ROOT +
+_PROFILE_ID), and the runner uses it directly for matching-profile
+session turns: no materialize, no cp, no input-budget charge, git
+repository persists across turns; proposal-review/foreign-profile/
+mount-absent all degrade to the immutable copy-in path. Turn-end
+capture still publishes snapshots from the live root (member-device
+sync unchanged; backgrounding that capture is the next latency step).
+Provider env: QORPERA_LXD_LIVE_COMPANY_ROOT=/mnt/qorpera-companies/
+company41/live, .._PROFILE_ID=88227549-…. Image v37 built+accepted
+(fingerprint `da6268b8…`, manifest `d6758b4b…`, provenance signed
+`51f734cf…`); provider bundle v37 staged (sha `403b47cd…`); company
+seed (284M, sans trail) staged; activation script v37 (installs
+provider bundle, apt nfs-common, showmount-discovers the export,
+fstab+mount, seeds once, env keys, restart, healthz) staged at
+~/step2-lxd/activate-signed-image-v37.sh — copy over the pinned name
+and run once the founder creates the `qorpera-companies` NFS export
+(DSM instructions sent: enable NFS, share, rw for 192.168.0.206,
+squash Map-all-to-admin). NODE HYGIENE: root disk hit 100% — 34 stale
+unsigned image candidates deleted (72GB freed, now 25%); the build
+script should delete the previous unsigned alias going forward. Also
+moved trail-prelinear-backup out of the company tree on the founder
+Mac (it was riding into snapshots) to ~/Companies/company41-backups/.
+
+
+**TURN LATENCY CUT 190s→53s — image v36 + release 0.20.40 (2026-08-26 evening).**
+Founder timed a ~20s queue, then minutes of silence, then everything at
+once. Measured breakdown (runner_jobs created→started→finished): claim
++17s constant (LXD VM boot), finish +170-190s — with only 6s of CPU:
+the runner spent ~97% waiting on network. Root cause: EVERY company
+tree file fetched strictly sequentially (manifest GET + chunk GETs per
+file, ~500 round trips through the guest→host-gateway double hop).
+Fix: `materializeCloudCompanyTree` now fetches with a 12-worker bounded
+pool (image v36, fingerprint `c51c2c94…`, manifest `eb914065…`,
+provenance `e95db4fe…`). The publication capture side was already fine
+(writeObject skips shas seen at checkout). App side (0.20.40): a staff
+leaving the busy set on the 5s activity poll triggers an immediate
+trail pull, so replies paint on completion instead of a sync tick
+later. Verified live: probe turn created 16:11:58 → started +16.5s →
+finished +53.2s, reply rendered seconds after settle. REMAINING: the
+~17s claim is VM boot — a warm-standby VM needs a real design pass
+(per-run bootstrap credentials are pinned pre-boot in the provenance
+journal; injecting post-boot changes the trust story). Also recommend
+the founder move `Recovery/` (139MB, 189 files — a pre-reimage dump)
+out of the live company file: it is 99% of the tree bytes and the
+agents keep getting distracted mapping it.
+
+
+**CHILDLESS SESSION ANCHORS — ledger item 2 done for the attended lane
+(2026-08-26, ~10:30 UTC+2, releases 0.20.35–0.20.39).** Opening a cloud
+staff thread spawns NOTHING: `attachStaffChild` binds a process-less
+`runtime.sessionAnchor` (a live TrailBinding — sync materializes
+through it), `anchoredSessionRpc` answers the renderer's whole session
+surface from the trail file (get_messages/get_fork_messages via
+`trailSessionMessages` — active-chain walk; get_state from recorded
+selections; set_model/set_thinking_level/set_session_name append to the
+trail; prompts route through the shared `requestSponsoredCloudTurn`),
+and `scheduleStaffThreadRefresh` tells the pane to reload when a cloud
+reply materializes — no respawn, since there is no process holding
+stale session state. Staff create/bootstrap/archive-next and the
+wake/room restore path all anchor instead of spawning for cloud
+profiles; `activeCompanyInfo`, the prompt-outbox trio, and connection
+request identity derive their session from `attendedSessionBinding`.
+Verified hands-off on released 0.20.39: thread history renders, a
+composer prompt became cloud turn → "Release" reply auto-rendered, and
+`ps` shows zero agent processes throughout. Protocol gotchas burned
+into 0.20.36–0.20.38: anchor responses must ride the `rpc-event`
+channel with a `type: "response"` envelope, and CDP-side monkey-patching
+during verification can mask working signals — clean-boot verification
+only. REMAINING of the local executor: wake/rooms/product-worker lanes
+and non-cloud profiles still spawn `startLegacyPiSessionAttachment`;
+they retire with the outbox consumer (ledger 3) and cloud wakes.
+
+**THREAD IS THE CONVERSATION — founder's second cleanup list shipped
+(2026-08-26, ~08:45 UTC+2, releases 0.20.33–0.20.34; image v35 cycle in
+flight).** Per founder: the in-thread working avatar now runs for cloud
+turns (hosted read model waiting/working + durable prompt queue drive
+`syncThreadActivityFromCloud`; the activeRunProgress guard had to go —
+history replay leaves it truthy for threads whose legacy-local runs
+never settled, verified live via CDP before shipping); provider tags
+are gone from bubbles and the thread header (provenance stays in
+execution records); the sponsor selector is hidden (first active
+connection sponsors); reasoning effort defaults to LOW — composer-side
+(explicit member choice tracked via `effortChosen`; replayed
+legacy-local levels no longer displace the default) and runner-side
+(`codex exec -c model_reasoning_effort=low` in the guest provider
+host → image v35). IMAGE v35 IS ACTIVE (fingerprint
+`684ed97f5c9f6b9c0bdba1740074d8b5201c08e4797a574cbbc3ceb95eb683f2`,
+manifest `65687d0d…`, provenance signed `18120bcc…`, activation script
+now restarts the provider itself since the env file is start-time):
+verified by live turn — run `12cecdf7` (job `84b13133`) booted from the
+v35 fingerprint and completed. Zombie VM hygiene: completed runs keep
+their VMs; deleted twice more today — the LxdClient delete op is the
+standing fix.
+
+**Incident 2026-08-26 06:03 UTC — apt-daily-upgrade bounced the
+provider mid-turn.** The founder's live turn (job `1f80d0b2`) leased,
+its VM was booting, and needrestart's service-restart wave (packagekit/
+fwupd/ssh/journald batch) stopped `qorpera-lxd-provider` at 06:03:40;
+the orphaned VM never renewed and the reaper failed the job with
+"Runner lease expired before durable completion" (correct fail-closed
+behavior; the durable output actually landed and the thread self-healed
+after retry/sync). Mitigations: (1) NEEDS FOUNDER SUDO — pin the
+provider against automatic restarts:
+`sudo tee /etc/needrestart/conf.d/qorpera.conf` with
+`$nrconf{override_rc}{qr(^qorpera-lxd-provider\.service$)} = 0;`
+(deploys restart it explicitly); (2) nine zombie runner VMs from
+completed/failed runs were deleted (`lxc delete --force --project
+qorpera-runners`) — the missing LxdClient delete op keeps minting
+these; the cleanup policy item is now urgent, not cosmetic.
+
+**CONVERSATIONS RENDER WHOLE — closeout item 1 done, founder's UI list
+verified (2026-08-26, ~08:00 UTC+2, releases 0.20.29–0.20.32).** Trail
+materialization is now LINEAR per the founder's transcripts-are-simple-
+chats ruling: hosted sequence order IS the conversation, every entry
+chains onto the local leaf (`materializeSharedTrailSession`), runner/
+peer-authored parent ids are ignored (they fragmented sessions into
+parallel roots — the pane showed only the newest fragment, which was the
+whole "replies don't render" bug), and identity dedupe compares content
+without parentId. Verified live on released 0.20.32 by driving the app:
+full New Agent history renders (4-bubble conversation including the
+formerly quarantined entry), a fresh composer prompt showed exactly one
+clean bubble, the avatar ran its working animation in BOTH sidebar and
+thread header with "Working…", and the cloud reply ("Pong pong", Codex-
+only provenance) rendered on completion with presence back to "Ready".
+Hardening shipped alongside: `appendBoundTrailEntry` refuses to mint a
+missing trail file from a live binding (a lingering pre-update process
+recreated a session headerless during a cache heal — that class is now
+impossible); the queued-prompt bubble hides once its durable copy
+renders (compare against message text sans the rewind affordance).
+Local trail caches for company41 were rebuilt from hosted truth (old
+files + sync state + sessions-v3 read-model caches backed up in
+`~/Companies/company41-88227549/trail-prelinear-backup/`); a fresh
+device rebuild is exactly this path and produces the linear
+conversation. Remaining ledger: items 2–7 below (childless anchors
+next — the residual local child still spawns at open/boot and appends
+runtime noise; it must go entirely).
+
 **STEP 2 EXECUTION ARCHITECTURE COMPLETE (2026-08-26, 06:00 UTC+2).**
 Per the founder's definition — cloud runners and headless execution as the
 only execution — the architecture is delivered and verified end to end:

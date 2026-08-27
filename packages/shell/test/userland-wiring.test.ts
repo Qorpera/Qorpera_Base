@@ -6,10 +6,13 @@ const shell = join(import.meta.dirname, "..");
 const userland = join(shell, "userland");
 const rendererSource = readFileSync(join(userland, "renderer.js"), "utf-8");
 const indexSource = readFileSync(join(userland, "index.html"), "utf-8");
+const tokensCssSource = readFileSync(join(userland, "tokens.css"), "utf-8");
 const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
 const onboardingCssSource = readFileSync(join(userland, "onboarding.css"), "utf-8");
 const characterMotionSource = readFileSync(join(userland, "character-motion.css"), "utf-8");
 const railResizeCssSource = readFileSync(join(userland, "rail-resize.css"), "utf-8");
+const pinnedAgentsCssSource = readFileSync(join(userland, "pinned-agents.css"), "utf-8");
+const railResizeSource = readFileSync(join(userland, "rail-resize.js"), "utf-8");
 const feedbackSource = readFileSync(join(userland, "feedback.js"), "utf-8");
 const feedbackCssSource = readFileSync(join(userland, "feedback.css"), "utf-8");
 const hubCarouselSource = readFileSync(join(userland, "hub-carousel.js"), "utf-8");
@@ -113,17 +116,112 @@ describe("userland wiring", () => {
 
 	it("keeps macOS native window controls clear of titlebar actions", () => {
 		expect(preloadSource).toContain("document.documentElement.dataset.platform = process.platform");
+		expect(indexSource.indexOf('id="railSearch"')).toBeGreaterThan(indexSource.indexOf('id="conav"'));
+		expect(indexSource.indexOf('id="railSearch"')).toBeGreaterThan(indexSource.indexOf("</header>"));
+		expect(baseCssSource).toContain("#f9f8f4 var(--rail-width) 100%");
+		expect(baseCssSource).toMatch(/body\.company-shell #titlebar::before \{[^}]*background: #d9d9d9;/s);
 		expect(baseCssSource).toMatch(/#titlebar \.thread-header \{[^}]*padding: 2px 142px 3px 7px;/s);
 		expect(baseCssSource).toMatch(/html\[data-platform="darwin"\] \.titlebar-rail \{ padding-left: 78px; \}/);
 		expect(baseCssSource).toMatch(
 			/html\[data-platform="darwin"\] #titlebar \.thread-header \{ padding-right: 10px; \}/,
 		);
 		expect(railResizeCssSource).toMatch(
-			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.titlebar-rail \{[^}]*transform: translateY\(var\(--titlebar-height\)\);/s,
+			/html\[data-platform="darwin"\] body\.company-shell \.rail-company-switcher \{[^}]*position: fixed;[^}]*top: 9px;[^}]*left: 78px;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell \.rail-bottom #companySwitcherButton > strong \{[^}]*display: none;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell \.company-switcher-menu \{[^}]*top: calc\(100% \+ 5px\);[^}]*bottom: auto;[^}]*width: 218px;[^}]*backdrop-filter: blur\(28px\) saturate\(1\.25\);/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell \.company-switcher-mark \{[^}]*width: 18px;[^}]*height: 18px;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell \.company-switcher-menu button:hover,[^}]*background: #0a84ff;[^}]*color: #fff;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.titlebar-rail \{[^}]*padding-inline: 0;[^}]*transform: translateY\(var\(--titlebar-height\)\);/s,
 		);
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.rail-scroll \{[^}]*padding-top: calc\(var\(--titlebar-height\) \+ 9px\);/s,
 		);
+		expect(railResizeSource).toContain('getPropertyValue("--rail-compact-width")');
+		expect(railResizeSource).toContain("Math.floor(window.innerWidth * 0.4)");
+		expect(railResizeSource).not.toContain("MAX_WIDTH");
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.rail-company-switcher \{[^}]*top: auto;[^}]*bottom: 9px;[^}]*left: 23px;[^}]*width: 34px;[^}]*height: 34px;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.company-switcher-menu \{[^}]*top: auto;[^}]*bottom: calc\(100% \+ 5px\);[^}]*left: 0;/s,
+		);
+	});
+
+	it("keeps active agent selection blue across hover and pinned layouts", () => {
+		expect(baseCssSource).toMatch(
+			/#staffNavigation \.staff-nav-row\.active,[^}]*#staffNavigation \.staff-nav-row\.active:hover[^}]*\{[^}]*background: var\(--sidebar-selection\);[^}]*color: var\(--sidebar-selection-text\);/s,
+		);
+		expect(pinnedAgentsCssSource).toMatch(
+			/\.staff-pinned-grid \.staff-pinned-card\.active,[^}]*\.staff-pinned-grid \.staff-pinned-card\.active:hover[^}]*\{[^}]*background: var\(--sidebar-selection\);[^}]*color: var\(--sidebar-selection-text\);/s,
+		);
+		expect(pinnedAgentsCssSource).not.toMatch(
+			/\.staff-pinned-grid \.staff-pinned-card\.active[^}]*\{[^}]*background: #e9e9e7;/s,
+		);
+	});
+
+	it("matches the Messages rail scale, surface, and selected icon contrast", () => {
+		expect(tokensCssSource).toContain("--sidebar-surface: #eeedeb;");
+		expect(tokensCssSource).toContain("--sidebar-vibrancy-tint: rgba(232, 235, 240, 0.32);");
+		expect(rendererSource).toContain('"qorpera-cobalt": "#0071e3"');
+		expect(baseCssSource).toMatch(
+			/\.staff-nav-row,[^}]*\.company-runtime-row \{[^}]*grid-template-columns: 50px minmax\(0, 1fr\);/s,
+		);
+		expect(baseCssSource).toMatch(
+			/html\[data-staff-avatar-style="creatures"\] \.staff-nav-row \.staff-avatar,[^}]*width: 50px;[^}]*height: 50px;/s,
+		);
+		expect(pinnedAgentsCssSource).toMatch(
+			/\.staff-pinned-grid \.staff-pinned-card \.staff-avatar \{[^}]*width: 64px;[^}]*height: 64px;/s,
+		);
+		expect(baseCssSource).toMatch(
+			/#staffNavigation \.staff-nav-row\.active \.staff-creature-image,[^}]*filter: brightness\(0\) invert\(1\) !important;/s,
+		);
+		expect(baseCssSource).toMatch(
+			/#staffNavigation \.staff-nav-row\.active \.staff-face i,[^}]*background: var\(--sidebar-selection\);/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/body\.company-shell \.titlebar-rail \.rail-add-staff \{[^}]*justify-self: center;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/body\.company-shell \.staff-create-row \.staff-create-mark \{[^}]*justify-self: center;[^}]*padding: 0;/s,
+		);
+	});
+
+	it("preserves system avatar colors in forced-color mode", () => {
+		expect(baseCssSource).toMatch(
+			/@media \(forced-colors: active\) \{\s*\.staff-avatar \{ --staff-creature-filter: none !important; \}\s*\.staff-creature-image \{ filter: none !important; \}/s,
+		);
+		expect(baseCssSource).toMatch(
+			/@media \(forced-colors: none\) \{\s*#staffNavigation \.staff-nav-row\.active \.staff-avatar,[\s\S]*?--staff-creature-filter: brightness\(0\) invert\(1\) !important;[\s\S]*?#staffNavigation \.staff-nav-row\.active \.staff-creature-image,[\s\S]*?filter: brightness\(0\) invert\(1\) !important;[\s\S]*?#staffNavigation \.staff-nav-row\.active \.staff-face i,[\s\S]*?background: var\(--sidebar-selection\);/,
+		);
+	});
+
+	it("keeps the translucent sidebar preference persistent and accessible", () => {
+		const themeRow = rendererSource.indexOf('setRow(appearanceGroup, "Theme", "", theme)');
+		const translucencyRow = rendererSource.indexOf('sidebarTranslucency.id = "sidebarTranslucencyToggle"');
+		expect(themeRow).toBeGreaterThan(-1);
+		expect(translucencyRow).toBeGreaterThan(themeRow);
+		expect(rendererSource).not.toContain("SIDEBAR_TRANSLUCENCY_KEY");
+		expect(rendererSource).toContain('dataset.platform === "darwin"');
+		expect(rendererSource).toContain('sidebarTranslucency.id = "sidebarTranslucencyToggle"');
+		expect(rendererSource).toContain('sidebarTranslucency.setAttribute("role", "switch")');
+		expect(rendererSource).toContain('toggle.setAttribute("aria-checked", String(enabled))');
+		expect(baseCssSource).toContain('html[data-sidebar-translucency="off"] #primaryNavigation');
+		expect(mainSource).toContain('readSidebarTranslucency(app.getPath("userData"))');
+		expect(mainSource).toContain("additionalArguments: [`--qorpera-sidebar-translucency=");
+		expect(mainSource).toContain('ipcMain.handle("settings:sidebar-translucency"');
+		expect(mainSource).toContain('current.window.setVibrancy(enabled ? "sidebar" : null)');
+		expect(preloadSource).toContain('ipcRenderer.invoke("settings:sidebar-translucency", enabled)');
+		expect(preloadSource).toContain('ipcRenderer.on("sidebar-translucency"');
 	});
 
 	it("always exposes updater state and a manual check on the company hub", () => {
@@ -223,6 +321,36 @@ describe("userland wiring", () => {
 		);
 	});
 
+	it("builds historical conversations off-DOM before one visible attachment", () => {
+		const renderHistory = rendererSource.slice(
+			rendererSource.indexOf("function renderHistory("),
+			rendererSource.indexOf("function navigationNode(", rendererSource.indexOf("function renderHistory(")),
+		);
+		expect(renderHistory).toContain("document.createDocumentFragment()");
+		expect(renderHistory).toContain("conversationRenderTarget = fragment");
+		expect(renderHistory).toContain("messagesElement.appendChild(fragment)");
+		expect(rendererSource).toContain("function scrollConversationToEnd()");
+		expect(rendererSource).toContain("if (conversationRenderTarget) return;");
+	});
+
+	it("presents large agent sidepanels before attaching the complete routine list", () => {
+		const sidepanelRenderer = rendererSource.slice(
+			rendererSource.indexOf("function createAgentRoutineRow("),
+			rendererSource.indexOf(
+				"function agentSettingsSvg(",
+				rendererSource.indexOf("function createAgentRoutineRow("),
+			),
+		);
+		expect(sidepanelRenderer).toContain("document.createDocumentFragment()");
+		expect(sidepanelRenderer).toContain('routines.setAttribute("aria-busy", "true")');
+		expect(sidepanelRenderer).toContain("requestAnimationFrame(() => {");
+		expect(sidepanelRenderer).toContain("routines.appendChild(fragment)");
+		expect(sidepanelRenderer).toContain('routines.removeAttribute("aria-busy")');
+		expect(rendererSource).toContain("renderGeneration !== agentSidepanelRenderGeneration");
+		expect(baseCssSource).toContain("content-visibility: auto");
+		expect(baseCssSource).toContain("contain-intrinsic-block-size: 47px");
+	});
+
 	it("routes personal subscription turns without requiring a ready local agent runtime", () => {
 		expect(indexSource).toContain('id="cloudSponsorSelect"');
 		expect(indexSource).toContain('id="threadSponsorProvenance"');
@@ -236,8 +364,12 @@ describe("userland wiring", () => {
 		expect(mainSource).toContain("await control.requestSessionTurn({");
 		expect(rendererSource).toContain("const executionSponsor = selectedNativeExecutionSponsor()");
 		expect(rendererSource).toContain("message.qorperaRunId");
-		expect(rendererSource).toContain("nativeTurnProvenanceByRun.get(message.dataset.qorperaRunId)");
-		expect(baseCssSource).toContain(".native-turn-provenance");
+		/* Founder ruling (2026-08-26): the thread shows the conversation, not
+		 * the machinery — no provider tags on bubbles or in the header, and no
+		 * visible sponsor selector; the first active connection sponsors. */
+		expect(rendererSource).not.toContain("nativeTurnProvenanceLabel");
+		expect(rendererSource).toContain('".msg.assistant .native-turn-provenance"');
+		expect(rendererSource).toContain("select.hidden = true");
 		const sendPrompt = rendererSource.slice(
 			rendererSource.indexOf("async function sendPrompt("),
 			rendererSource.indexOf("function modelFailureInfo", rendererSource.indexOf("async function sendPrompt(")),
@@ -255,15 +387,28 @@ describe("userland wiring", () => {
 	});
 
 	it("requires a sponsored runner job and rejects desktop execution for cloud turns", () => {
+		/* The sponsored-turn path lives in requestSponsoredCloudTurn, shared by
+		 * the legacy child lane and the childless session anchor. */
+		const turnStart = mainSource.indexOf("async function requestSponsoredCloudTurn(");
+		const turnEnd = mainSource.indexOf("function trailSessionLeafEntryId(", turnStart);
+		expect(turnStart).toBeGreaterThan(-1);
+		const turnLane = mainSource.slice(turnStart, turnEnd);
+		expect(turnLane).toContain("await control.requestSessionTurn({");
+		expect(turnLane).toContain("Cloud turns never use the desktop model runtime.");
+		expect(turnLane).not.toContain("enqueueCloudPrompt(");
+		expect(turnLane).not.toContain("sendLegacyLocalPrompt(");
 		const cloudStart = mainSource.indexOf("const cloudSponsoredPrompt = reviewedCloudPrompt?.executionSponsor");
 		const cloudEnd = mainSource.indexOf('if (cloudStaffConversation && frame.type === "prompt")', cloudStart);
 		expect(cloudStart).toBeGreaterThan(-1);
 		expect(cloudEnd).toBeGreaterThan(cloudStart);
 		const cloudComposer = mainSource.slice(cloudStart, cloudEnd);
-		expect(cloudComposer).toContain("await control.requestSessionTurn({");
-		expect(cloudComposer).toContain("Cloud turns never use the desktop model runtime.");
-		expect(cloudComposer).not.toContain("enqueueCloudPrompt(");
+		expect(cloudComposer).toContain(
+			"requestSponsoredCloudTurn(runtime, sendArbiter, sendStaffId, sendRef, reviewed)",
+		);
 		expect(cloudComposer).not.toContain("sendLegacyLocalPrompt(");
+		/* The childless anchor answers the whole session surface. */
+		expect(mainSource).toContain("async function anchoredSessionRpc(");
+		expect(mainSource).toContain("requestSponsoredCloudTurn(runtime, arbiter, anchor.staffAgentId, ref, reviewed)");
 		const legacyStart = mainSource.indexOf("function sendLegacyLocalPrompt(");
 		const legacyEnd = mainSource.indexOf("function ", legacyStart + 1);
 		const legacyPrompt = mainSource.slice(legacyStart, legacyEnd);

@@ -19,3 +19,7 @@
 ### Changed
 
 - Replaced the Pi protocol dependency with the provider-neutral `@qorpera/contracts` package.
+
+### Fixed
+
+- Kept the live Company File mount optional for copy-mode guests and excluded it from isolated proposal-review VMs.

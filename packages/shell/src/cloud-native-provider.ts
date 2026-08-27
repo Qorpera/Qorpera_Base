@@ -457,6 +457,10 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 			const nativeWorkspaceRoot = this.#nativeWorkspaceRoot;
 			const inputRoot = dirname(resolve(request.input.companyBaseRoot));
 			const workRoot = dirname(resolve(request.input.companyRoot));
+			/* The company root is either the disposable work layout, or exactly
+			 * the declared live company tree (founder ruling 2026-08-26): the
+			 * harness works on the one authoritative file, so the live mount is
+			 * a sanctioned workspace, never a layout violation. */
 			const liveMode =
 				this.#liveCompanyRoot !== undefined && resolve(request.input.companyRoot) === this.#liveCompanyRoot;
 			if (

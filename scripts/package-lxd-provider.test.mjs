@@ -45,12 +45,17 @@ test("packages and pins the first-node LXD provider", async () => {
 		const environmentExample = await readFile(
 			join(repositoryRoot, "deploy/first-node/lxd-provider.env.example"),
 		);
-		for (const expected of [
-			`EXPECTED_ARTIFACT_SHA256="${sha256(providerArtifact)}"`,
+		const expectedPins = [
 			`EXPECTED_PROVENANCE_TOOL_SHA256="${sha256(provenanceArtifact)}"`,
 			`EXPECTED_UNIT_SHA256="${sha256(unit)}"`,
 			`EXPECTED_ENV_EXAMPLE_SHA256="${sha256(environmentExample)}"`,
-		]) {
+		];
+		if (process.platform === "linux" && process.arch === "x64") {
+			expectedPins.unshift(`EXPECTED_ARTIFACT_SHA256="${sha256(providerArtifact)}"`);
+		} else {
+			assert.match(installer, /EXPECTED_ARTIFACT_SHA256="[0-9a-f]{64}"/);
+		}
+		for (const expected of expectedPins) {
 			assert.ok(installer.includes(expected), `installer is missing checksum pin ${expected}`);
 		}
 		assert.ok(installer.includes("const payload = await response.json()"));

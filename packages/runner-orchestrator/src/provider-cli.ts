@@ -144,7 +144,20 @@ function lxdConfig(): LxdCloudRunnerProviderConfig {
 		codexPath: process.env.QORPERA_CODEX_PATH ?? "/usr/local/bin/codex",
 		claudePath: process.env.QORPERA_CLAUDE_PATH ?? "/usr/local/bin/claude",
 		guestBootstrapService: process.env.QORPERA_LXD_GUEST_BOOTSTRAP_SERVICE ?? "qorpera-lxd-runner-bootstrap.service",
+		...liveCompanyConfig(),
 	};
+}
+
+/** The live company tree is opt-in and all-or-nothing: a host mount path and
+ * the profile it belongs to, or neither. */
+function liveCompanyConfig(): { liveCompanyRoot?: string; liveCompanyProfileId?: string } {
+	const root = process.env.QORPERA_LXD_LIVE_COMPANY_ROOT;
+	const profileId = process.env.QORPERA_LXD_LIVE_COMPANY_PROFILE_ID;
+	if (!root && !profileId) return {};
+	if (!root || !profileId) {
+		throw new Error("QORPERA_LXD_LIVE_COMPANY_ROOT and QORPERA_LXD_LIVE_COMPANY_PROFILE_ID are required together");
+	}
+	return { liveCompanyRoot: resolve(root), liveCompanyProfileId: profileId };
 }
 
 function lxdLoginConfig(config: LxdCloudRunnerProviderConfig): LxdNativeLoginGatewayConfig {

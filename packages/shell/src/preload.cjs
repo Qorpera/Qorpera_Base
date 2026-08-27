@@ -3,15 +3,18 @@
 // company/session state comes from the backend read model.
 const { contextBridge, ipcRenderer } = require("electron");
 
-// Platform-specific titlebar geometry must be available before the renderer
-// paints; macOS puts its native traffic-light controls on the left.
-if (document.documentElement) document.documentElement.dataset.platform = process.platform;
+// Platform-specific titlebar geometry and the persisted window material must
+// be available before the renderer paints.
+const sidebarTranslucency = process.argv.includes("--qorpera-sidebar-translucency=on") ? "on" : "off";
+function applyInitialShellAppearance() {
+	document.documentElement.dataset.platform = process.platform;
+	document.documentElement.dataset.sidebarTranslucency = sidebarTranslucency;
+}
+if (document.documentElement) applyInitialShellAppearance();
 else {
 	window.addEventListener(
 		"DOMContentLoaded",
-		() => {
-			document.documentElement.dataset.platform = process.platform;
-		},
+		applyInitialShellAppearance,
 		{ once: true },
 	);
 }
@@ -154,6 +157,8 @@ contextBridge.exposeInMainWorld("qorpera", {
 	onRoomEvent: (handler) => ipcRenderer.on("room-event", (_event, value) => handler(value)),
 	showHub: () => ipcRenderer.invoke("hub:show"),
 	setSettingsOverlayActive: (active) => ipcRenderer.send("settings:overlay", active),
+	setSidebarTranslucency: (enabled) => ipcRenderer.invoke("settings:sidebar-translucency", enabled),
+	onSidebarTranslucency: (handler) => ipcRenderer.on("sidebar-translucency", (_event, enabled) => handler(enabled)),
 	settingsInfo: () => ipcRenderer.invoke("settings:info"),
 	setBackgroundEnabled: (enabled) => ipcRenderer.invoke("settings:background", enabled),
 	setLocalExecution: (permission) => ipcRenderer.invoke("settings:local-execution", permission),

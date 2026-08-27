@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	claimCompanyRuntimeLock,
@@ -44,5 +44,19 @@ describe("company runtime lock", () => {
 
 		expect(() => releaseCompanyRuntimeLock(lock)).toThrow("ownership changed before release");
 		rmSync(lock.path, { force: true });
+	});
+
+	it("keeps shared lock state accessible across NAS-mapped guest uids", () => {
+		const root = repository();
+		const previousUmask = process.umask(0o077);
+		try {
+			const lock = claimCompanyRuntimeLock(root);
+			expect(statSync(dirname(lock.path)).mode & 0o777).toBe(0o777);
+			expect(statSync(lock.path).mode & 0o777).toBe(0o666);
+			expect(process.umask()).toBe(0o077);
+			releaseCompanyRuntimeLock(lock);
+		} finally {
+			process.umask(previousUmask);
+		}
 	});
 });

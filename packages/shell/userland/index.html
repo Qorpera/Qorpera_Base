@@ -10,14 +10,66 @@
 <link rel="stylesheet" href="./character-motion.css">
 <link rel="stylesheet" href="./artifacts.css">
 <link rel="stylesheet" href="./rail-resize.css">
+<link rel="stylesheet" href="./pinned-agents.css">
 <link rel="stylesheet" href="./onboarding.css">
 <link rel="stylesheet" href="./feedback.css">
 <link rel="stylesheet" href="./screens.css">
 </head>
 <body>
+<svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden">
+	<defs>
+		<filter id="staff-color-charcoal" color-interpolation-filters="sRGB">
+			<feFlood flood-color="#171716" result="color"/>
+			<feComposite in="color" in2="SourceAlpha" operator="in"/>
+		</filter>
+		<filter id="staff-color-brown" color-interpolation-filters="sRGB">
+			<feFlood flood-color="#9c7151" result="color"/>
+			<feComposite in="color" in2="SourceAlpha" operator="in"/>
+		</filter>
+		<filter id="staff-color-coral" color-interpolation-filters="sRGB">
+			<feFlood flood-color="#ff365e" result="color"/>
+			<feComposite in="color" in2="SourceAlpha" operator="in"/>
+		</filter>
+		<filter id="staff-color-orange" color-interpolation-filters="sRGB">
+			<feFlood flood-color="#ff642e" result="color"/>
+			<feComposite in="color" in2="SourceAlpha" operator="in"/>
+		</filter>
+		<filter id="staff-color-amber" color-interpolation-filters="sRGB">
+			<feFlood flood-color="#ffae00" result="color"/>
+			<feComposite in="color" in2="SourceAlpha" operator="in"/>
+		</filter>
+		<filter id="staff-color-emerald" color-interpolation-filters="sRGB">
+			<feFlood flood-color="#00c878" result="color"/>
+			<feComposite in="color" in2="SourceAlpha" operator="in"/>
+		</filter>
+		<filter id="staff-color-teal" color-interpolation-filters="sRGB">
+			<feFlood flood-color="#00bfb3" result="color"/>
+			<feComposite in="color" in2="SourceAlpha" operator="in"/>
+		</filter>
+		<filter id="staff-color-cobalt" color-interpolation-filters="sRGB">
+			<feFlood flood-color="#0071e3" result="color"/>
+			<feComposite in="color" in2="SourceAlpha" operator="in"/>
+		</filter>
+		<filter id="staff-color-violet" color-interpolation-filters="sRGB">
+			<feFlood flood-color="#8a4dff" result="color"/>
+			<feComposite in="color" in2="SourceAlpha" operator="in"/>
+		</filter>
+		<filter id="staff-color-pink" color-interpolation-filters="sRGB">
+			<feFlood flood-color="#ff2994" result="color"/>
+			<feComposite in="color" in2="SourceAlpha" operator="in"/>
+		</filter>
+		<filter id="staff-color-gray" color-interpolation-filters="sRGB">
+			<feFlood flood-color="#7c7c7a" result="color"/>
+			<feComposite in="color" in2="SourceAlpha" operator="in"/>
+		</filter>
+		<filter id="staff-color-indigo" color-interpolation-filters="sRGB">
+			<feFlood flood-color="#5367e8" result="color"/>
+			<feComposite in="color" in2="SourceAlpha" operator="in"/>
+		</filter>
+	</defs>
+</svg>
 <header id="titlebar">
 	<div class="titlebar-rail">
-		<label class="rail-search"><span class="sr-only">Search staff</span><input id="railSearch" type="search" placeholder="Search" autocomplete="off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></label>
 		<button id="addStaffButton" class="rail-add-staff" type="button" aria-label="Add agent" title="Add agent"><span aria-hidden="true">+</span></button>
 	</div>
 	<div id="threadHeader" class="thread-header" hidden>
@@ -77,6 +129,9 @@
 	     This stub stays because enterCompany() addresses it by id. -->
 	<div id="hubnav" style="display:none"></div>
 	<div id="conav" style="display:none">
+		<div class="rail-search-row">
+			<label class="rail-search"><span class="sr-only">Search staff</span><input id="railSearch" type="search" placeholder="Search" autocomplete="off"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></label>
+		</div>
 		<div id="railScroll" class="rail-scroll">
 			<section class="rail-section" id="staffSection" aria-labelledby="staffSectionTitle">
 				<h2 id="staffSectionTitle">Staff</h2>
@@ -524,6 +579,7 @@
 <script src="./model-selection.js"></script>
 <script src="./localization.js"></script>
 <script src="./feedback.js"></script>
+<script src="./staff-drag.js"></script>
 <script src="./renderer.js"></script>
 <script src="./hub-carousel.js"></script>
 <script src="./rail-resize.js"></script>

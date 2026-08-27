@@ -1,0 +1,192 @@
+/* Pinned agents become visual shortcuts above the conversation list. Their
+ * buttons keep the same click, context-menu, presence, and search behavior as
+ * ordinary staff rows; only the compact presentation changes. */
+.staff-pinned-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, 80px);
+	justify-content: center;
+	gap: 7px 8px;
+	padding: 15px 2px 12px;
+}
+
+.staff-unpinned-list {
+	display: grid;
+	gap: 1px;
+}
+
+.staff-unpinned-list:empty {
+	display: none;
+}
+
+.staff-pinned-grid[hidden],
+.staff-pinned-card[hidden] {
+	display: none;
+}
+
+.staff-pinned-grid .staff-pinned-card {
+	display: grid;
+	grid-template-columns: 1fr;
+	grid-template-rows: 64px minmax(14px, auto);
+	place-items: center;
+	gap: 4px;
+	width: 80px;
+	min-height: 92px;
+	padding: 5px 4px 4px;
+	border-radius: 10px;
+	text-align: center;
+}
+
+.staff-pinned-grid .staff-pinned-card:hover {
+	background: var(--sidebar-hover);
+}
+
+.staff-pinned-grid .staff-pinned-card.active,
+.staff-pinned-grid .staff-pinned-card.active:hover {
+	background: var(--sidebar-selection);
+	color: var(--sidebar-selection-text);
+}
+
+.staff-pinned-grid .staff-pinned-card .staff-avatar {
+	width: 64px;
+	height: 64px;
+}
+
+.staff-pinned-grid .staff-nav-copy {
+	display: block;
+	width: 100%;
+	min-width: 0;
+}
+
+.staff-pinned-grid .staff-nav-heading {
+	display: block;
+	min-width: 0;
+}
+
+.staff-pinned-grid .staff-nav-copy strong {
+	display: block;
+	overflow: hidden;
+	font-size: 11px;
+	font-weight: 500;
+	line-height: 14px;
+	text-align: center;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.staff-pinned-grid .staff-nav-copy small,
+.staff-pinned-grid .staff-nav-time,
+.staff-pinned-grid .staff-nav-arrow,
+.staff-pinned-grid .peer-open-badge {
+	display: none;
+}
+
+#staffNavigation .staff-nav-row[data-draggable="true"] {
+	cursor: grab;
+	user-select: none;
+}
+
+#staffNavigation.staff-reordering .staff-nav-row[data-draggable="true"] {
+	cursor: grabbing;
+}
+
+#staffNavigation.staff-reordering .staff-pinned-grid {
+	display: grid;
+	min-height: 99px;
+	border-radius: 11px;
+	background: #efefed;
+	transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+#staffNavigation.staff-reordering .staff-unpinned-list {
+	display: grid;
+	min-height: 54px;
+	border-radius: 9px;
+}
+
+#staffNavigation .staff-nav-row.is-dragging {
+	opacity: .28;
+}
+
+.staff-drag-preview {
+	position: fixed;
+	top: 0;
+	left: 0;
+	z-index: 10000;
+	display: grid;
+	grid-template-columns: 1fr;
+	grid-template-rows: 64px 14px;
+	place-items: center;
+	gap: 4px;
+	width: 80px;
+	height: 92px;
+	padding: 5px 4px 4px;
+	border-radius: 10px;
+	background: #fff;
+	box-shadow: 0 8px 22px rgba(18, 18, 17, .15);
+	pointer-events: none;
+}
+
+.staff-drag-preview.is-pointer-preview {
+	will-change: transform;
+}
+
+.staff-drag-preview .staff-avatar {
+	width: 64px;
+	height: 64px;
+}
+
+.staff-drag-preview .staff-nav-copy {
+	display: block;
+	width: 100%;
+	min-width: 0;
+	text-align: center;
+}
+
+.staff-drag-preview .staff-nav-heading,
+.staff-drag-preview .staff-nav-copy strong {
+	display: block;
+	overflow: hidden;
+	font-size: 11px;
+	font-weight: 500;
+	line-height: 14px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.staff-drag-preview .staff-nav-copy small,
+.staff-drag-preview .staff-nav-time,
+.staff-drag-preview .staff-nav-arrow,
+.staff-drag-preview .peer-open-badge {
+	display: none;
+}
+
+body.company-shell.rail-compact .staff-pinned-grid {
+	grid-template-columns: 1fr;
+	justify-items: center;
+	gap: 4px;
+	padding: 0;
+}
+
+body.company-shell.rail-compact #staffNavigation.staff-reordering .staff-pinned-grid {
+	min-height: 60px;
+	background: transparent;
+}
+
+body.company-shell.rail-compact .staff-pinned-grid .staff-pinned-card {
+	grid-template-rows: 1fr;
+	width: 62px;
+	height: 60px;
+	min-height: 60px;
+	padding: 9px;
+}
+
+body.company-shell.rail-compact .staff-pinned-grid .staff-pinned-card .staff-avatar {
+	width: 42px;
+	height: 42px;
+}
+
+@media (forced-colors: active) {
+	.staff-pinned-grid .staff-pinned-card.active {
+		outline: 2px solid Highlight;
+	}
+}
