@@ -14,10 +14,16 @@ import {
 	mergeCloudCompanySnapshots,
 	mergeCloudCompanySnapshotsForReview,
 	previewCloudCompanySnapshot,
+	reconcileCloudCompanyCache,
 	recoverInterruptedCloudCompanyMerges,
+	replaceCloudCompanyCacheWithSnapshot,
 } from "../src/cloud-company-merge.ts";
 import { prepareCompanyProposalReview } from "../src/cloud-company-proposal-review.ts";
-import { captureCloudCompanyTree, readCloudCompanyTreeManifest } from "../src/cloud-company-snapshot.ts";
+import {
+	captureCloudCompanyTree,
+	currentCloudCompanyTreeReference,
+	readCloudCompanyTreeManifest,
+} from "../src/cloud-company-snapshot.ts";
 import type { CompanyWorkspacePrimary } from "../src/cloud-company-workspace.ts";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
 import type { HostedCompanyProposal, HostedCompanySnapshot, QorperaHostedPrimary } from "../src/hosted-primary.ts";
@@ -105,6 +111,189 @@ afterEach(async () => {
 });
 
 describe("cloud company merge", () => {
+	it.each(["snapshot merge", "cache reconciliation"] as const)(
+		"preserves staff-owned instructions when %s removes an agent's logical tree",
+		async (operation) => {
+			const roots = await companyRoots();
+			const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
+			const agentPath = "agents/archived-agent";
+			for (const root of Object.values(roots)) {
+				await mkdir(join(root, agentPath, "artifacts"), { recursive: true });
+				await writeFile(join(root, agentPath, "instructions.md"), "Staff-owned archived instructions\n");
+				await writeFile(join(root, agentPath, "artifacts", "report.md"), "Old canonical report\n");
+			}
+			const base = snapshot(
+				baseSnapshotId,
+				baseWorkspaceId,
+				await captureCloudCompanyTree(roots.base, profileId, objects),
+			);
+			const local = snapshot(
+				localSnapshotId,
+				localWorkspaceId,
+				await captureCloudCompanyTree(roots.local, profileId, objects),
+				baseSnapshotId,
+			);
+			await rm(join(roots.remote, agentPath), { recursive: true });
+			await writeFile(join(roots.remote, "remote-plan.md"), "Current company work\n");
+			const remote = snapshot(
+				remoteSnapshotId,
+				remoteWorkspaceId,
+				await captureCloudCompanyTree(roots.remote, profileId, objects),
+				baseSnapshotId,
+			);
+			const snapshots = primary([base, local, remote]);
+			const input = {
+				companyRoot: roots.local,
+				profileId,
+				environmentId,
+				localSnapshotId,
+				remoteSnapshotId,
+				primary: snapshots,
+				objects,
+			};
+			if (operation === "snapshot merge") {
+				const preview = await inspectCloudCompanyMerge(input);
+				expect(preview.changedPaths).not.toContain(agentPath);
+			}
+			const result =
+				operation === "snapshot merge"
+					? await mergeCloudCompanySnapshots(input)
+					: await reconcileCloudCompanyCache({
+							...input,
+							baseSnapshotId,
+							localTree: currentCloudCompanyTreeReference(local.tree),
+						});
+			expect(result.applied).toBe(true);
+			expect(result.plan.conflicts).toEqual([]);
+			expect(result.plan.changedPaths).not.toContain(agentPath);
+			await expect(readFile(join(roots.local, agentPath, "instructions.md"), "utf-8")).resolves.toBe(
+				"Staff-owned archived instructions\n",
+			);
+			await expect(readdir(join(roots.local, agentPath, "artifacts"))).rejects.toMatchObject({ code: "ENOENT" });
+			await expect(readFile(join(roots.local, "remote-plan.md"), "utf-8")).resolves.toBe("Current company work\n");
+			const nextTree = await captureCloudCompanyTree(roots.local, profileId, objects);
+			const nextManifest = await readCloudCompanyTreeManifest(profileId, nextTree, objects);
+			const remoteManifest = await readCloudCompanyTreeManifest(
+				profileId,
+				currentCloudCompanyTreeReference(remote.tree),
+				objects,
+			);
+			expect(nextManifest.entries).toEqual(
+				[...remoteManifest.entries, { kind: "directory", path: agentPath }].sort((left, right) =>
+					left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+				),
+			);
+			await expect(
+				reconcileCloudCompanyCache({ ...input, baseSnapshotId: remoteSnapshotId, localTree: nextTree }),
+			).resolves.toMatchObject({ applied: false, plan: { changedPaths: [] } });
+			await writeFile(join(roots.local, agentPath, "proposal.md"), "Reviewed local proposal\n");
+			await replaceCloudCompanyCacheWithSnapshot({
+				companyRoot: roots.local,
+				profileId,
+				environmentId,
+				localTree: await captureCloudCompanyTree(roots.local, profileId, objects),
+				remoteSnapshot: remote,
+				conflictPaths: [agentPath],
+				objects,
+			});
+			await expect(readdir(join(roots.local, agentPath))).resolves.toEqual(["instructions.md"]);
+			await expect(readFile(join(roots.local, agentPath, "instructions.md"), "utf-8")).resolves.toBe(
+				"Staff-owned archived instructions\n",
+			);
+		},
+	);
+
+	it("retains ancestors of omitted dependency data while removing ordinary directories", async () => {
+		const roots = await companyRoots();
+		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
+		for (const root of Object.values(roots)) {
+			await mkdir(join(root, "work", "task", "node_modules", "package"), { recursive: true });
+			await writeFile(join(root, "work", "task", "node_modules", "package", "index.js"), "Preserved dependency\n");
+			await mkdir(join(root, "work", "ordinary-empty"), { recursive: true });
+			await writeFile(join(root, "work", "report.md"), "Old report\n");
+		}
+		const base = snapshot(
+			baseSnapshotId,
+			baseWorkspaceId,
+			await captureCloudCompanyTree(roots.base, profileId, objects),
+		);
+		const local = snapshot(
+			localSnapshotId,
+			localWorkspaceId,
+			await captureCloudCompanyTree(roots.local, profileId, objects),
+			baseSnapshotId,
+		);
+		await rm(join(roots.remote, "work"), { recursive: true });
+		const remote = snapshot(
+			remoteSnapshotId,
+			remoteWorkspaceId,
+			await captureCloudCompanyTree(roots.remote, profileId, objects),
+			baseSnapshotId,
+		);
+		const result = await mergeCloudCompanySnapshots({
+			companyRoot: roots.local,
+			profileId,
+			environmentId,
+			localSnapshotId,
+			remoteSnapshotId,
+			primary: primary([base, local, remote]),
+			objects,
+		});
+		expect(result.applied).toBe(true);
+		expect(result.plan.changedPaths).not.toContain("work");
+		expect(result.plan.changedPaths).not.toContain("work/task");
+		await expect(
+			readFile(join(roots.local, "work", "task", "node_modules", "package", "index.js"), "utf-8"),
+		).resolves.toBe("Preserved dependency\n");
+		await expect(readdir(join(roots.local, "work", "ordinary-empty"))).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(readFile(join(roots.local, "work", "report.md"))).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("rejects replacing a directory containing separately managed data with a file", async () => {
+		const roots = await companyRoots();
+		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
+		const agentPath = "agents/archived-agent";
+		for (const root of Object.values(roots)) {
+			await mkdir(join(root, agentPath), { recursive: true });
+			await writeFile(join(root, agentPath, "instructions.md"), "Staff-owned instructions\n");
+			await writeFile(join(root, agentPath, "memory.md"), "Original memory\n");
+		}
+		const base = snapshot(
+			baseSnapshotId,
+			baseWorkspaceId,
+			await captureCloudCompanyTree(roots.base, profileId, objects),
+		);
+		const local = snapshot(
+			localSnapshotId,
+			localWorkspaceId,
+			await captureCloudCompanyTree(roots.local, profileId, objects),
+			baseSnapshotId,
+		);
+		await rm(join(roots.remote, agentPath), { recursive: true });
+		await writeFile(join(roots.remote, agentPath), "Replacement file\n");
+		const remote = snapshot(
+			remoteSnapshotId,
+			remoteWorkspaceId,
+			await captureCloudCompanyTree(roots.remote, profileId, objects),
+			baseSnapshotId,
+		);
+		await expect(
+			mergeCloudCompanySnapshots({
+				companyRoot: roots.local,
+				profileId,
+				environmentId,
+				localSnapshotId,
+				remoteSnapshotId,
+				primary: primary([base, local, remote]),
+				objects,
+			}),
+		).rejects.toThrow("separately managed data");
+		await expect(readFile(join(roots.local, agentPath, "instructions.md"), "utf-8")).resolves.toBe(
+			"Staff-owned instructions\n",
+		);
+		await expect(readFile(join(roots.local, agentPath, "memory.md"), "utf-8")).resolves.toBe("Original memory\n");
+	});
+
 	it("previews a verified remote fork and explicitly applies a conflict-free three-way merge", async () => {
 		const roots = await companyRoots();
 		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());

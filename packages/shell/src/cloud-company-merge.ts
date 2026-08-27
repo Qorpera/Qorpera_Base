@@ -206,6 +206,82 @@ function assertSnapshotScope(snapshot: HostedCompanySnapshot, profileId: string,
 	}
 }
 
+/** A logical tree cannot delete the physical containers of another layer.
+ * Keep only the required directories, never publish or relocate their omitted
+ * contents. A replacement file cannot coexist with that data and must fail. */
+async function retainOmittedLayerDirectories(
+	companyRoot: string,
+	planned: PlannedCloudCompanyMerge,
+): Promise<PlannedCloudCompanyMerge> {
+	const local = entryMap(planned.localManifest.entries);
+	const result = entryMap(planned.resultEntries);
+	const removedDirectories = new Set(
+		planned.localManifest.entries
+			.filter((entry) => entry.kind === "directory" && result.get(entry.path)?.kind !== "directory")
+			.map((entry) => entry.path),
+	);
+	if (removedDirectories.size === 0) return planned;
+	const inspectedDirectories = new Set(removedDirectories);
+	for (const path of removedDirectories) {
+		let parent = path;
+		while (parent.includes("/")) {
+			parent = parent.slice(0, parent.lastIndexOf("/"));
+			inspectedDirectories.add(parent);
+		}
+	}
+	const root = canonicalCompanyRoot(companyRoot);
+	const requiredDirectories = new Set<string>();
+	const visit = async (directory: string, insideRemovedDirectory: boolean): Promise<void> => {
+		let children: Dirent[];
+		try {
+			children = await readdir(directory ? logicalPath(root, directory) : root, { withFileTypes: true });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw error;
+		}
+		for (const child of children) {
+			const path = directory ? `${directory}/${child.name}` : child.name;
+			if (!cloudCompanyPathBelongsToLogicalTree(path)) {
+				let parent = directory;
+				while (parent) {
+					if (removedDirectories.has(parent)) requiredDirectories.add(parent);
+					const separator = parent.lastIndexOf("/");
+					if (separator < 0) break;
+					parent = parent.slice(0, separator);
+				}
+				continue;
+			}
+			if (!insideRemovedDirectory && !inspectedDirectories.has(path)) continue;
+			if (child.isSymbolicLink()) throw new Error(`Cloud company tree cannot contain links: ${path}`);
+			if (child.isDirectory()) {
+				const entryStat = await lstat(logicalPath(root, path));
+				if (!entryStat.isDirectory() || entryStat.isSymbolicLink()) {
+					throw new Error(`Cloud company directory changed while planning a merge: ${path}`);
+				}
+				await visit(path, insideRemovedDirectory || removedDirectories.has(path));
+			}
+		}
+	};
+	await visit("", false);
+	if (requiredDirectories.size === 0) return planned;
+	for (const path of requiredDirectories) {
+		if (result.get(path)?.kind === "file") {
+			throw new Error(`Cannot replace a Company File directory containing separately managed data: ${path}`);
+		}
+		result.set(path, { kind: "directory", path });
+	}
+	return {
+		...planned,
+		resultEntries: [...result.values()].sort((left, right) => comparePath(left.path, right.path)),
+		plan: {
+			...planned.plan,
+			changedPaths: [...new Set([...local.keys(), ...result.keys()])]
+				.filter((path) => !sameEntry(local.get(path), result.get(path)))
+				.sort(comparePath),
+		},
+	};
+}
+
 async function snapshotLineage(
 	startId: string,
 	profileId: string,
@@ -250,13 +326,16 @@ async function planCloudCompanyMerge(input: MergeCloudCompanySnapshotsInput): Pr
 		readCloudCompanyTreeManifest(input.profileId, currentCloudCompanyTreeReference(local.tree), input.objects),
 		readCloudCompanyTreeManifest(input.profileId, currentCloudCompanyTreeReference(remote.tree), input.objects),
 	]);
-	return buildMergePlan(
-		ancestorSnapshotId,
-		input.localSnapshotId,
-		input.remoteSnapshotId,
-		baseManifest,
-		localManifest,
-		remoteManifest,
+	return retainOmittedLayerDirectories(
+		input.companyRoot,
+		buildMergePlan(
+			ancestorSnapshotId,
+			input.localSnapshotId,
+			input.remoteSnapshotId,
+			baseManifest,
+			localManifest,
+			remoteManifest,
+		),
 	);
 }
 
@@ -740,13 +819,16 @@ export async function reconcileCloudCompanyCache(
 		readCloudCompanyTreeManifest(input.profileId, input.localTree, input.objects),
 		readCloudCompanyTreeManifest(input.profileId, currentCloudCompanyTreeReference(remote.tree), input.objects),
 	]);
-	const planned = buildMergePlan(
-		ancestor.snapshotId,
-		input.localTree.manifestSha256,
-		remote.snapshotId,
-		baseManifest,
-		localManifest,
-		remoteManifest,
+	const planned = await retainOmittedLayerDirectories(
+		input.companyRoot,
+		buildMergePlan(
+			ancestor.snapshotId,
+			input.localTree.manifestSha256,
+			remote.snapshotId,
+			baseManifest,
+			localManifest,
+			remoteManifest,
+		),
 	);
 	if (planned.plan.changedPaths.length === 0) {
 		return { applied: false, plan: planned.plan };
@@ -812,7 +894,7 @@ export async function replaceCloudCompanyCacheWithSnapshot(input: ReplaceCloudCo
 			objects: input.objects,
 			...(input.runtimeLock ? { runtimeLock: input.runtimeLock } : {}),
 		},
-		{
+		await retainOmittedLayerDirectories(input.companyRoot, {
 			plan: {
 				ancestorSnapshotId: input.remoteSnapshot.parentSnapshotId ?? input.remoteSnapshot.snapshotId,
 				localSnapshotId: input.localTree.manifestSha256,
@@ -822,6 +904,6 @@ export async function replaceCloudCompanyCacheWithSnapshot(input: ReplaceCloudCo
 			},
 			localManifest,
 			resultEntries: result,
-		},
+		}),
 	);
 }
