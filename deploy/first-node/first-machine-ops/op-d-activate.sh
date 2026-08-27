@@ -24,6 +24,8 @@ STAGED_PROVENANCE="${STAGING_ROOT}/lxd-company-image-provenance.json"
 INSTALLED_PROVENANCE="/etc/qorpera/lxd-company-image-provenance.json"
 PROVIDER_ENV="/etc/qorpera/lxd-company-provider.env"
 PROVIDER_ARTIFACT="/opt/qorpera/company-provider/qorpera-lxd-provider.mjs"
+REFRESH_ARTIFACT="${STAGING_ROOT}/qorpera-lxd-provider.mjs"
+REFRESH_ARTIFACT_SHA256="0e46b330e88cef253d89ab5fa9605dde3316fe658e528d6c8917f5b21aede7e8"
 PROVIDER_SERVICE="qorpera-lxd-company-provider.service"
 PROVIDER_JOURNAL="/var/lib/qorpera-company-provider/computers/${LOGICAL_COMPUTER_ID}/journal.json"
 TEMPORARY_SUDOERS="/etc/sudoers.d/qorpera-step3-first-machine"
@@ -160,6 +162,21 @@ verify() {
 	echo "DIRECT_NAS_ACTIVATION_VERIFIED"
 }
 
+refresh_provider() {
+	require_installed_contract
+	require_regular_file "${REFRESH_ARTIFACT}"
+	[[ $(sha256sum "${REFRESH_ARTIFACT}" | awk '{ print $1 }') == "${REFRESH_ARTIFACT_SHA256}" ]] ||
+		fail "Staged Company Computer provider does not match the reviewed source."
+	systemctl stop "${PROVIDER_SERVICE}"
+	install -o root -g root -m 0755 "${REFRESH_ARTIFACT}" "${PROVIDER_ARTIFACT}"
+	/usr/bin/node --check "${PROVIDER_ARTIFACT}"
+	[[ $(sha256sum "${PROVIDER_ARTIFACT}" | awk '{ print $1 }') == "${REFRESH_ARTIFACT_SHA256}" ]] ||
+		fail "Installed Company Computer provider does not match the reviewed source."
+	systemctl enable --now "${PROVIDER_SERVICE}"
+	systemctl is-active --quiet "${PROVIDER_SERVICE}" || fail "The refreshed Company Computer provider is not active."
+	echo "DIRECT_NAS_PROVIDER_REFRESHED"
+}
+
 finalize() {
 	verify
 	if [[ -e ${TEMPORARY_SUDOERS} ]]; then
@@ -187,6 +204,7 @@ case ${phase} in
 		require_installed_contract
 		run_operator recover
 		;;
+	refresh) refresh_provider ;;
 	verify) verify ;;
 	finalize) finalize ;;
 	*) fail "The activation phase marker is invalid." ;;
