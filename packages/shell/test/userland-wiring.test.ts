@@ -114,6 +114,8 @@ describe("userland wiring", () => {
 
 	it("keeps macOS native window controls clear of titlebar actions", () => {
 		expect(preloadSource).toContain("document.documentElement.dataset.platform = process.platform");
+		expect(preloadSource).toContain('dataset.windowControls = fillsDisplay ? "hidden" : "visible"');
+		expect(preloadSource).toContain('window.addEventListener("resize", syncWindowControlsVisibility)');
 		expect(indexSource.indexOf('id="railSearch"')).toBeGreaterThan(indexSource.indexOf('id="conav"'));
 		expect(indexSource.indexOf('id="railSearch"')).toBeGreaterThan(indexSource.indexOf("</header>"));
 		expect(baseCssSource).toContain("#f9f8f4 var(--rail-width) 100%");
@@ -125,6 +127,9 @@ describe("userland wiring", () => {
 		);
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell \.rail-company-switcher \{[^}]*position: fixed;[^}]*top: 9px;[^}]*left: 78px;/s,
+		);
+		expect(railResizeCssSource).toMatch(
+			/html\[data-platform="darwin"\]\[data-window-controls="hidden"\][^{]*\.rail-company-switcher \{[^}]*left: 10px;/s,
 		);
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell \.rail-bottom #companySwitcherButton > strong \{[^}]*display: none;/s,
@@ -190,7 +195,7 @@ describe("userland wiring", () => {
 			/body\.company-shell \.titlebar-rail \.rail-add-staff \{[^}]*justify-self: center;/s,
 		);
 		expect(railResizeCssSource).toMatch(
-			/body\.company-shell \.staff-create-row \.staff-create-mark \{[^}]*justify-self: center;[^}]*padding: 0;/s,
+			/body\.company-shell \.staff-create-row \.staff-create-mark \{[^}]*justify-self: center;[^}]*padding: 0;[^}]*background: #ececea;/s,
 		);
 	});
 

@@ -6,9 +6,15 @@ const { contextBridge, ipcRenderer } = require("electron");
 // Platform-specific titlebar geometry and the persisted window material must
 // be available before the renderer paints.
 const sidebarTranslucency = process.argv.includes("--qorpera-sidebar-translucency=on") ? "on" : "off";
+function syncWindowControlsVisibility() {
+	if (process.platform !== "darwin" || !document.documentElement) return;
+	const fillsDisplay = window.outerWidth >= window.screen.width && window.outerHeight >= window.screen.height;
+	document.documentElement.dataset.windowControls = fillsDisplay ? "hidden" : "visible";
+}
 function applyInitialShellAppearance() {
 	document.documentElement.dataset.platform = process.platform;
 	document.documentElement.dataset.sidebarTranslucency = sidebarTranslucency;
+	syncWindowControlsVisibility();
 }
 if (document.documentElement) applyInitialShellAppearance();
 else {
@@ -18,6 +24,7 @@ else {
 		{ once: true },
 	);
 }
+window.addEventListener("resize", syncWindowControlsVisibility);
 
 // The preload learns attachment only from kernel-confirmed replies, so the
 // fixed renderer never receives an ambient "current child" capability.
