@@ -129,7 +129,9 @@ function pathIsWithin(root: string, candidate: string): boolean {
 
 /** Linux deployment verifier. `/proc/self/mountinfo` is used instead of
  * accepting any mountpoint: the backing filesystem must specifically be a
- * read-write NFS/NFS4 mount. */
+ * read-write NFS/NFS4 superblock. The provider's systemd namespace may
+ * deliberately expose that mount read-only; the guest bootstrap separately
+ * proves that the host-backed dataset is writable before agents start. */
 export class LinuxNfsCompanyDatasetSourceVerifier implements CompanyDatasetSourceVerifier {
 	readonly #mountInfoPath: string;
 
@@ -156,24 +158,24 @@ export class LinuxNfsCompanyDatasetSourceVerifier implements CompanyDatasetSourc
 		}
 		const mounts = mountInfo
 			.split("\n")
-			.flatMap((line): Array<{ mountPoint: string; mountOptions: string; fileSystemType: string }> => {
+			.flatMap((line): Array<{ mountPoint: string; superOptions: string; fileSystemType: string }> => {
 				const separator = line.indexOf(" - ");
 				if (separator < 0) return [];
 				const mountFields = line.slice(0, separator).split(" ");
 				const filesystemFields = line.slice(separator + 3).split(" ");
 				const encodedMountPoint = mountFields[4];
-				const mountOptions = mountFields[5];
 				const fileSystemType = filesystemFields[0];
-				if (!encodedMountPoint || !mountOptions || !fileSystemType) return [];
+				const superOptions = filesystemFields[2];
+				if (!encodedMountPoint || !fileSystemType || !superOptions) return [];
 				const mountPoint = resolve(decodeLinuxMountInfoPath(encodedMountPoint));
-				return pathIsWithin(mountPoint, resolvedRoot) ? [{ mountPoint, mountOptions, fileSystemType }] : [];
+				return pathIsWithin(mountPoint, resolvedRoot) ? [{ mountPoint, superOptions, fileSystemType }] : [];
 			})
 			.sort((left, right) => right.mountPoint.length - left.mountPoint.length);
 		const backingMount = mounts[0];
 		if (!backingMount || (backingMount.fileSystemType !== "nfs" && backingMount.fileSystemType !== "nfs4")) {
 			throw new Error("Company computer NAS dataset root is not backed by NFS");
 		}
-		if (!backingMount.mountOptions.split(",").includes("rw")) {
+		if (!backingMount.superOptions.split(",").includes("rw")) {
 			throw new Error("Company computer NAS dataset root is not mounted read-write");
 		}
 		/* The provider itself stays read-only to company data; guest bootstrap
