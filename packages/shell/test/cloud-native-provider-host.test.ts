@@ -302,6 +302,20 @@ describe("native provider host", () => {
 			[JSON.stringify({ error: { type: "invalid_request_error", message: "invalid input" } }), "provider request"],
 			["403 Forbidden", "provider authorization"],
 			["Refresh token was already used", "authentication"],
+			["Your access token could not be refreshed. Please log out and sign in again.", "authentication"],
+			["You've hit your usage limit. Try again later.", "provider allowance"],
+			["Your workspace is out of credits. Add credits to continue.", "provider allowance"],
+			["You hit your spend cap set in your workspace.", "provider allowance"],
+			[JSON.stringify({ error: { type: "usage_limit_reached" } }), "provider allowance"],
+			["Selected model is at capacity. Please try a different model.", "provider capacity"],
+			["We're currently experiencing high demand, which may cause temporary errors.", "provider capacity"],
+			["Codex ran out of room in the model's context window.", "provider context"],
+			["context_window_exceeded", "provider context"],
+			["content_filter", "provider policy"],
+			["stream disconnected before completion", "provider network"],
+			["internal error; agent loop died unexpectedly", "harness internal"],
+			["Missing environment variable: PRIVATE_NAME", "harness configuration"],
+			["duplicate tool: PRIVATE_NAME", "provider tool schema"],
 		] as const) {
 			await expect(
 				driver.execute({
@@ -312,7 +326,7 @@ describe("native provider host", () => {
 					companyRoot: company,
 					prompt: `diagnostic fixture: ${diagnostic}\nprivate-token-must-not-leak`,
 				}),
-			).rejects.toThrow(`Provider harness exited with 7 (${category} unavailable)`);
+			).rejects.toThrow(new RegExp(`^Provider harness exited with 7 \\(${category} unavailable\\)$`));
 		}
 		expect((await readdir(identity)).some((name) => name.startsWith(".qorpera-last-message-"))).toBe(false);
 	});
@@ -681,6 +695,102 @@ describe("native provider host", () => {
 			provider_session_id: "silent-job",
 		});
 	});
+
+	it.each(["provider_failed", "missing_final", "revoked", "cancelled"] as const)(
+		"preserves rotated credentials after %s only while the execution remains authorized",
+		async (outcome) => {
+			const root = await temporaryRoot("qorpera-native-failure-");
+			const identity = await temporaryRoot("qorpera-native-failure-identity-");
+			const company = await temporaryRoot("qorpera-native-failure-company-");
+			const input = await temporaryRoot("qorpera-native-failure-input-");
+			const capsules = new MemoryCapsules();
+			const capsuleId = "10000000-0000-4000-8000-000000000006";
+			const reference = `native-capsule/${capsuleId}`;
+			await mkdir(join(identity, "codex"));
+			await writeFile(join(identity, "codex", "auth.json"), '{"refresh_token":"original-private"}\n');
+			await capsules.put(reference, await sealNativeCredentialCapsule(identity, masterKey, capsuleId));
+			const put = vi.spyOn(capsules, "put");
+			await writeFile(join(input, "execution.json"), JSON.stringify(chatContext));
+			await writeFile(join(input, "inputs.jsonl"), '{"body":{"text":"hello"}}\n');
+			await writeFile(join(input, "transcript.jsonl"), "");
+			const controller = new AbortController();
+			let authorized = true;
+			const validateExecution = vi.fn(async () => {
+				if (!authorized) throw new Error("revoked-private");
+			});
+			const sendMessage = vi.fn(sendReceipt);
+			const host = new NativeProviderHost({
+				controlPlane: { describeLogin: vi.fn(), completeLogin: vi.fn(), validateExecution, sendMessage },
+				capsules,
+				harness: {
+					beginLogin: vi.fn(),
+					execute: vi.fn(async ({ identityRoot }) => {
+						await writeFile(join(identityRoot, "codex", "auth.json"), '{"refresh_token":"rotated-private"}\n');
+						await mkdir(join(identityRoot, "codex", "sessions"));
+						await writeFile(join(identityRoot, "codex", "sessions", "private.jsonl"), "PRIVATE_REASONING\n");
+						if (outcome === "revoked") authorized = false;
+						if (outcome === "cancelled") {
+							controller.abort(new Error("Native execution cancelled"));
+							controller.signal.throwIfAborted();
+						}
+						if (outcome === "missing_final") return {};
+						throw new Error("Provider harness exited with 1 (provider network unavailable)");
+					}),
+				},
+				masterKey,
+				computeIdentityId,
+				temporaryRoot: root,
+			});
+			const request: NativeProviderExecutionRequest = {
+				authority: {
+					leaseId: "10000000-0000-4000-8000-000000000007",
+					runId: chatContext.run.runId,
+					credentialCapsuleId: capsuleId,
+					encryptedCapsuleReference: reference,
+					attestationPolicySha256: "b".repeat(64),
+					computeIdentityId,
+					runnerId,
+					assignmentId,
+					provider: "openai",
+					nativeHarness: "codex-cli",
+					model: "provider-default",
+					expiresAt,
+				},
+				job: {
+					jobId: chatContext.run.jobId,
+					jobType: "agent_turn",
+					requiredCapability: "agent_turn",
+					attemptCount: 1,
+					payload: {},
+				},
+				input: {
+					companyRoot: company,
+					executionContextPath: join(input, "execution.json"),
+					queuedInputsPath: join(input, "inputs.jsonl"),
+					transcriptPath: join(input, "transcript.jsonl"),
+				},
+				outputRoot: join(root, "output"),
+			};
+			await expect(host.execute(request, controller.signal)).rejects.toThrow(
+				outcome === "missing_final"
+					? "Native provider execution public-mouth-completion stage failed"
+					: outcome === "cancelled"
+						? "Native provider execution harness-execution stage failed (cancelled) [mouth=uninitialized]"
+						: "Provider harness exited with 1 (provider network unavailable) [mouth=uninitialized]",
+			);
+			const shouldRefresh = outcome === "provider_failed" || outcome === "missing_final";
+			expect(put).toHaveBeenCalledTimes(shouldRefresh ? 1 : 0);
+			expect(validateExecution).toHaveBeenCalledTimes(outcome === "cancelled" ? 1 : 2);
+			expect(sendMessage).not.toHaveBeenCalled();
+			const restored = await temporaryRoot("qorpera-native-failure-restored-");
+			await openNativeCredentialCapsule(await capsules.get(reference), restored, masterKey, capsuleId);
+			expect(JSON.parse(await readFile(join(restored, "codex", "auth.json"), "utf-8"))).toEqual({
+				refresh_token: shouldRefresh ? "rotated-private" : "original-private",
+			});
+			await expect(lstat(join(restored, "codex", "sessions"))).rejects.toMatchObject({ code: "ENOENT" });
+			expect(await readdir(root)).toEqual([]);
+		},
+	);
 
 	it("runs login and execution through the standalone cloud bridge and fences revoked authority", async () => {
 		const root = await temporaryRoot("qorpera-native-service-");

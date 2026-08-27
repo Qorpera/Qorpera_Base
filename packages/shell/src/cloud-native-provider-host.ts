@@ -373,10 +373,10 @@ function safeHarnessExecutionFailure(error: unknown, mouthState: CloudAgentMouth
 	let message: string;
 	if (
 		error instanceof Error &&
-		(/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|public message transport) unavailable\))?$/.test(
+		(/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider allowance|provider capacity|provider context|provider network|provider policy|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|harness internal|public message transport) unavailable\))?$/.test(
 			error.message,
 		) ||
-			/^Codex did not complete its turn(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|public message transport) unavailable\))?$/.test(
+			/^Codex did not complete its turn(?: \((?:authentication|model|provider allowance|provider capacity|provider context|provider network|provider policy|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|harness internal|public message transport) unavailable\))?$/.test(
 				error.message,
 			) ||
 			error.message === "Provider harness output exceeded its byte limit")
@@ -499,19 +499,21 @@ function nativeHarnessFailureCategory(output: string): string | undefined {
 		return "public message transport unavailable";
 	}
 	if (
-		/error loading config|failed to (?:load|read|parse) config|invalid configuration|config.*toml.*error/.test(detail)
+		/error loading config|failed to (?:load|read|parse) config|invalid configuration|config.*toml.*error|missing environment variable/.test(
+			detail,
+		)
 	) {
 		return "harness configuration unavailable";
 	}
 	if (
-		/invalid_function_parameters|invalid_json_schema|invalid.*(?:tool|function).*schema|schema.*(?:tool|function).*invalid/.test(
+		/invalid_function_parameters|invalid_json_schema|invalid.*(?:tool|function).*schema|schema.*(?:tool|function).*invalid|duplicate tool:/.test(
 			detail,
 		)
 	) {
 		return "provider tool schema unavailable";
 	}
 	if (
-		/unauthori[sz]ed|authentication|not logged in|login required|refresh.?token|status(?: code)? 401|\b401\b/.test(
+		/unauthori[sz]ed|authentication|not logged in|login required|sign in again|refresh.?token|access.?token.*(?:refresh|expired|invalid)|status(?: code)? 401|\b401\b/.test(
 			detail,
 		)
 	) {
@@ -526,17 +528,37 @@ function nativeHarnessFailureCategory(output: string): string | undefined {
 	if (/not supported (?:for|on) (?:this )?model|unsupported (?:parameter|option)/.test(detail)) {
 		return "model unavailable";
 	}
-	if (/rate.?limit|quota|insufficient_quota|too many requests|status(?: code)? 429|\b429\b/.test(detail)) {
+	if (
+		/usage[_ ]limit|quota|out of credits|spend cap|upgrade to plus|shared rollout token budget exhausted/.test(detail)
+	) {
+		return "provider allowance unavailable";
+	}
+	if (/context[_ ]window|maximum context length|too many tokens/.test(detail)) {
+		return "provider context unavailable";
+	}
+	if (/content[_ ]filter|content policy|cyber[_ ]policy|misalignment[_ ]policy/.test(detail)) {
+		return "provider policy unavailable";
+	}
+	if (/rate.?limit|too many requests|at capacity|high demand|status(?: code)? 429|\b429\b/.test(detail)) {
 		return "provider capacity unavailable";
 	}
-	if (/network|timed? out|timeout|connection|dns|tls|certificate|socket|status(?: code)? 50[234]/.test(detail)) {
+	if (
+		/network|timed? out|timeout|connection|stream disconnected|dns|tls|certificate|socket|status(?: code)? 50[234]/.test(
+			detail,
+		)
+	) {
 		return "provider network unavailable";
 	}
 	if (/sandbox|workspace|permission denied|operation not permitted|read-only file system/.test(detail)) {
 		return "local sandbox unavailable";
 	}
-	if (/bad request|invalid[_ ]request|unprocessable|status(?: code)? 4(?:00|04|22)/.test(detail)) {
+	if (
+		/bad request|invalid[_ ]request|unprocessable|unsupported operation|status(?: code)? 4(?:00|04|22)/.test(detail)
+	) {
 		return "provider request unavailable";
+	}
+	if (/agent loop died|session configured event was not the first|spawn failed|thread .*panicked/.test(detail)) {
+		return "harness internal unavailable";
 	}
 	return undefined;
 }
@@ -971,6 +993,8 @@ export class NativeProviderHost {
 			}
 		})();
 		let root: string | undefined;
+		let durableCredentialPaths: ReadonlySet<string> | undefined;
+		let harnessStarted = false;
 		let output: JsonValue | undefined;
 		let failure: Error | undefined;
 		const mouth = new CloudAgentMouth(
@@ -985,12 +1009,13 @@ export class NativeProviderHost {
 			const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
 			stage = "credential-opening";
 			await openNativeCredentialCapsule(capsule, root, this.#masterKey, authority.credentialCapsuleId);
-			const durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
+			durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
 			stage = "prompt-materialization";
 			const context = await executionPrompt(request);
 			stage = "public-mouth-start";
 			const mouthConnection = await mouth.start();
 			stage = "harness-execution";
+			harnessStarted = true;
 			const result = await this.#harness.execute({
 				harness: authority.nativeHarness,
 				model: authority.model,
@@ -1010,18 +1035,6 @@ export class NativeProviderHost {
 			 * can read every created entry. */
 			stage = "workspace-normalization";
 			await grantWorkspaceGroupAccess(request.input.companyRoot);
-			stage = "completion-authority-validation";
-			if (validationError) throw validationError;
-			await this.#controlPlane.validateExecution(request, executionAbort.signal);
-			stage = "credential-sealing";
-			const refreshedCapsule = await sealNativeCredentialCapsule(
-				root,
-				this.#masterKey,
-				authority.credentialCapsuleId,
-				durableCredentialPaths,
-			);
-			stage = "credential-upload";
-			await this.#capsules.put(authority.encryptedCapsuleReference, refreshedCapsule, executionAbort.signal);
 			output = {
 				schema: HARNESS_RESULT_SCHEMA,
 				run_id: authority.runId,
@@ -1044,6 +1057,30 @@ export class NativeProviderHost {
 			}
 		} finally {
 			await mouth.close();
+			// A provider may rotate its login token before a later request fails.
+			// Preserve only the original credential paths, never transient sessions,
+			// and recheck live authority immediately before replacing the capsule.
+			if (root && durableCredentialPaths && harnessStarted) {
+				stage = "completion-authority-validation";
+				try {
+					executionAbort.signal.throwIfAborted();
+					stage = "credential-sealing";
+					const refreshedCapsule = await sealNativeCredentialCapsule(
+						root,
+						this.#masterKey,
+						authority.credentialCapsuleId,
+						durableCredentialPaths,
+					);
+					stage = "completion-authority-validation";
+					await this.#controlPlane.validateExecution(request, executionAbort.signal);
+					executionAbort.signal.throwIfAborted();
+					stage = "credential-upload";
+					await this.#capsules.put(authority.encryptedCapsuleReference, refreshedCapsule, executionAbort.signal);
+				} catch (error) {
+					const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
+					failure ??= new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
+				}
+			}
 			validationStop.abort();
 			try {
 				await monitor;
