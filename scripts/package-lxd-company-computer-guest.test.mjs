@@ -157,10 +157,20 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 			"desktop state must stay outside the visible Company File",
 		);
 		assert.ok(wrapper.includes("/desktop-icons/style"), "the desktop contract must suppress raw XFCE icons");
+		assert.ok(wrapper.includes("/desktop-menu/show"), "the desktop contract must preserve the native XFCE menu");
+		assert.ok(wrapper.includes("/general/show_dock_shadow"), "the transparent dock must not retain a compositor shadow");
+		assert.ok(wrapper.includes("-geometry 1920x1200"), "the desktop and viewer must share the 16:10 frame");
 		assert.ok(wrapper.includes("QORPERA_SCREEN_MONITOR"), "the wallpaper must target the display's real monitor");
 		const panel = await readFile(join(outputRoot, "xfce4-panel.xml"), "utf-8");
 		assert.match(panel, /<property name="length" type="uint" value="1"\/>/);
 		assert.doesNotMatch(panel, /<property name="length" type="double"/);
+		assert.match(panel, /<property name="icon-size" type="uint" value="60"\/>/);
+		assert.match(panel, /<property name="size" type="uint" value="78"\/>/);
+		assert.match(panel, /<property name="background-style" type="uint" value="1"\/>/);
+		assert.match(
+			panel,
+			/<property name="background-rgba" type="array">\s*(?:<value type="double" value="0"\/>\s*){4}<\/property>/,
+		);
 		assert.ok(panel.includes("qorpera-files.desktop"));
 		assert.ok(panel.includes("qorpera-terminal.desktop"));
 		assert.ok((await readFile(join(outputRoot, "qorpera-terminal"), "utf-8")).includes("--command=/bin/bash"));

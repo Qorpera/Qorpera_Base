@@ -65,7 +65,7 @@ trap cleanup EXIT TERM INT
 	-localhost \
 	-rfbport "${rfbport}" \
 	-SecurityTypes None \
-	-geometry 1920x1080 \
+	-geometry 1920x1200 \
 	-depth 24 \
 	-desktop "Qorpera Screen ${ordinal}" &
 xvnc_pid=$!
@@ -122,6 +122,8 @@ export QORPERA_SCREEN_WALLPAPER=${wallpaper}
 	set_xfce_property xfce4-desktop "${backdrop}/last-image" string "${QORPERA_SCREEN_WALLPAPER}"
 	set_xfce_property xfce4-desktop "${backdrop}/image-style" int 5
 	set_xfce_property xfce4-desktop /desktop-icons/style int 0
+	set_xfce_property xfce4-desktop /desktop-menu/show bool true
+	set_xfce_property xfwm4 /general/show_dock_shadow bool false
 	exec /usr/bin/xfce4-session
 ' &
 session_pid=$!

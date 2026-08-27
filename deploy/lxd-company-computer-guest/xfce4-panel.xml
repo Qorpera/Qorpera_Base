@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Company Computer screen panel defaults: one centered dock at the bottom
-     with Chrome, the file manager, and a terminal - the Grok bot-computer
-     dock shape. Applies to fresh sessions; the hidden desktop HOME keeps
-     whatever members change afterwards. -->
+<!-- Company Computer screen panel defaults: one large, transparent dock at
+     the bottom with Chrome, the file manager, and a terminal. Applies to
+     fresh sessions; the hidden desktop HOME keeps whatever members change
+     afterwards. -->
 <channel name="xfce4-panel" version="1.0">
 	<property name="configver" type="int" value="2"/>
 	<property name="panels" type="array">
@@ -13,9 +13,15 @@
 			<property name="length" type="uint" value="1"/>
 			<property name="autohide-behavior" type="uint" value="0"/>
 			<property name="position-locked" type="bool" value="true"/>
-			<property name="icon-size" type="uint" value="40"/>
-			<property name="size" type="uint" value="52"/>
-			<property name="background-style" type="uint" value="0"/>
+			<property name="icon-size" type="uint" value="60"/>
+			<property name="size" type="uint" value="78"/>
+			<property name="background-style" type="uint" value="1"/>
+			<property name="background-rgba" type="array">
+				<value type="double" value="0"/>
+				<value type="double" value="0"/>
+				<value type="double" value="0"/>
+				<value type="double" value="0"/>
+			</property>
 			<property name="plugin-ids" type="array">
 				<value type="int" value="1"/>
 				<value type="int" value="2"/>

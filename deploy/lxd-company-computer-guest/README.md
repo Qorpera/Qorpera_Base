@@ -28,10 +28,12 @@ What this layer adds on top of the runner contract:
   socket binds to guest loopback only; the token-gated viewer listener in
   the screen agent is the sole remote path in, and nothing is ever publicly
   routable. Each screen keeps its own persistent XDG state on the dataset,
-  wears its attached agent's wallpaper without raw desktop icons, and starts
-  with a bottom dock for Chrome, Files, and Terminal. The Files and Terminal
-  launchers enter the live Company File explicitly; Terminal starts a usable
-  Bash session even though the work account itself is non-login.
+  wears its attached agent's wallpaper on a 16:10 desktop without raw desktop
+  icons, keeps the native XFCE desktop menu available, and starts with a large
+  transparent, shadow-free bottom dock for Chrome, Files, and Terminal. The
+  Files and Terminal launchers enter the live Company File explicitly;
+  Terminal starts a usable Bash session even though the work account itself
+  is non-login.
 - **`qorpera-company-computer-bootstrap.service`** — root oneshot the
   provider enables after pushing `/var/lib/qorpera-bootstrap/company-computer.json`
   and the credential files. It verifies the delivered authority, refuses to

@@ -63,6 +63,62 @@ final result: passed
 
 ---
 
+# Design QA — Company Computer 16:10 borderless viewer
+
+## Comparison target
+
+- Source visual truth: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_2JTRLu/Screenshot 2026-08-27 at 04.16.24.png`
+- Source dock detail: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_JXRR9c/Screenshot 2026-08-27 at 04.15.15.png`
+- Initial implementation: `/tmp/qorpera-company-computer-pre-ratio.png`
+- Final implementation: `/tmp/qorpera-company-computer-16x10.png`
+- Full-view comparison: `/tmp/qorpera-company-computer-16x10-comparison.png`
+- Normalized stage comparison: `/tmp/qorpera-company-computer-stage-comparison.png`
+- Focused dock comparison: `/tmp/qorpera-company-computer-dock-comparison.png`
+- State: Research Lead's Company Computer connected and live, native XFCE dock visible.
+
+## Normalization
+
+- Source pixels: 1335 × 969; source desktop crop: approximately 1308 × 819.
+- Source dock detail: 335 × 169.
+- Implementation pixels and CSS viewport: 1308 × 768 at the desktop app capture surface's 1× output; implementation desktop crop: 1138 × 711.
+- Full-view comparison: both app views normalized to 768 px high without changing either aspect ratio.
+- Stage comparison: both 16:10 desktop regions normalized to 800 × 500 px.
+- Dock comparison: the 335 × 169 source crop is paired with an equal-size implementation crop.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing Qorpera title and live-status typography remain unchanged, readable, and clear of the macOS traffic lights. The XFCE tooltip and app labels remain native guest UI.
+- Spacing and layout rhythm: the desktop is centered with a fixed 16:10 ratio. Wide windows create even side gutters; tall windows create even top and bottom gutters. The 58 px safe header and 12 px outer inset remain intact.
+- Colors and visual tokens: the near-black viewer shell remains consistent with the reference. The desktop has no visible bezel, border highlight, or frame shadow.
+- Image quality and asset fidelity: noVNC renders the real 1920 × 1200 guest raster without stretching. The existing Qorpera wallpaper and native Chrome, Files, and Terminal icons remain the source assets.
+- Copy and content: the screen identity, live takeover hint, and close action are unchanged.
+
+## Findings
+
+- No actionable P0, P1, or P2 differences remain for the requested ratio and borderless treatment.
+- P3: the reference window is tall enough to letterbox the 16:10 desktop vertically, while the implementation capture is shorter and pillarboxes it horizontally. This is the expected responsive result of preserving the same ratio rather than stretching either desktop.
+- P3: wallpaper palette and exact app-icon artwork differ intentionally because the implementation keeps Qorpera's live agent wallpaper and installed guest applications.
+
+## Comparison history
+
+1. Initial P1: the guest and viewer used a 1920 × 1080 / 16:9 canvas while the selected source used a 16:10 desktop.
+2. Initial P2: the viewer added a visible 1 px highlight, 12 px radius, and two-layer frame shadow that read as a bezel absent from the source.
+3. Fix: changed the guest to 1920 × 1200, centered an 8:5 stage responsively, removed its border and shadow, and reduced its crop radius to 8 px.
+4. Post-fix evidence: the full, stage, and dock comparisons show an unstretched 16:10 raster, clean rounded clipping, and launchers floating without a dock surface.
+
+## Interaction and runtime checks
+
+- Opened the Research Lead computer from the agent side panel.
+- Verified the loading state remained centered inside the new 16:10 stage.
+- Verified the viewer reached `Live · you can take over at any time` with the real VNC session.
+- Verified the close action remains visible and accessibility-exposed.
+- Verified the current live VNC output at 1920 × 1200; the packaged screen-session contract now starts at that geometry.
+- The focused shell wiring suite passed 21 tests; the guest packaging contract passed; `npm run check` passed.
+
+final result: passed
+
+---
+
 # Settings simplification design QA
 
 ## Comparison inputs
@@ -289,5 +345,43 @@ final result: passed
 - [x] Drag a pinned agent into the list to unpin it.
 - [x] Persist the unified agent order and existing pinned preference.
 - [x] Preserve click behavior when no drag threshold is crossed.
+
+final result: passed
+
+---
+
+# Design QA — Company Computer viewer frame
+
+- Source visual truth: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_FGfIBP/Screenshot 2026-08-27 at 03.48.46.png`
+- Implementation capture: `/tmp/qorpera-company-computer-framed.png`
+- Full-view comparison: `/tmp/qorpera-company-computer-frame-comparison.png`
+- Focused header comparison: `/tmp/qorpera-company-computer-header-comparison.png`
+- State: Research Lead's Company Computer connected and live, with the native macOS traffic lights visible.
+- Viewport and normalization: the source raster is 1612 × 950 px; the implementation capture is 1301 × 768 px. The source was resampled to 1301 × 768 px for the comparison. The implementation capture represents a 1301 × 768 desktop-app window at the capture surface's 1:1 output. The source CSS viewport and DPR are unavailable because it is a system screenshot.
+
+## Findings
+
+No actionable P0, P1, or P2 differences remain for the requested correction.
+
+- Fonts and typography: the existing family, weights, copy, and hierarchy are preserved. The title and live hint remain legible and no longer collide with native controls.
+- Spacing and layout rhythm: the header is 58 px tall; macOS receives a dedicated 78 px left control gutter; the live desktop is inset by 12 px and contained by a consistent rounded frame.
+- Colors and visual tokens: the existing near-black viewer surface is preserved. The new low-contrast border and shadow distinguish the renderer without competing with it.
+- Image quality and asset fidelity: the noVNC desktop remains the original live raster at the viewer's scaled output; no placeholder or replacement asset was introduced.
+- Copy and content: the screen title, live-status hint, and close action are unchanged.
+
+## Comparison history
+
+1. Original findings: P1 title overlap with the macOS traffic lights; P2 renderer read as an unframed full-window layer.
+2. Fixes: added the platform-specific title gutter, increased the titlebar from 44 px to 58 px, added resilient heading overflow, and inset the stage inside a 12 px rounded border and shadow.
+3. Post-fix evidence: the full-view and focused header comparisons show clear separation between native controls and title text, plus an even renderer frame on all visible edges.
+
+## Interaction checks
+
+- Opened Research Lead's computer panel.
+- Woke the screen from its idle-off state.
+- Verified the viewer progressed from `Starting desktop` to `Live · you can take over at any time`.
+- Verified the close control remains visible and accessible.
+
+Focused-region evidence was required because the titlebar collision is too small to judge reliably from the full-view comparison alone.
 
 final result: passed

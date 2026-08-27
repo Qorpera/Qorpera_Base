@@ -251,8 +251,18 @@ describe("userland wiring", () => {
 		expect(screenViewerSource).toContain('statusCopy.textContent = "Starting desktop"');
 		expect(screenViewerSource).toContain('hint.textContent = "Starting desktop"');
 		expect(screenViewerSource).toContain('hint.textContent = "Live · you can take over at any time"');
+		expect(screenViewerSource).toContain('headingWrap.className = "screen-viewer-heading"');
 		expect(screenViewerSource).toContain("connect,");
 		expect(screenViewerSource).toContain("fail: showFailure");
+		expect(screensCssSource).toMatch(
+			/\.screen-viewer-frame \{[^}]*grid-template-rows: 58px minmax\(0, 1fr\);[^}]*padding: 0 12px 12px;/s,
+		);
+		expect(screensCssSource).toContain(
+			'html[data-platform="darwin"] .screen-viewer-titlebar { padding-left: 78px; }',
+		);
+		expect(screensCssSource).toMatch(
+			/\.screen-viewer-stage \{[^}]*place-self: center;[^}]*width: min\(100%, calc\(160vh - 112px\)\);[^}]*aspect-ratio: 8 \/ 5;[^}]*border: 0;[^}]*border-radius: 8px;[^}]*box-shadow: none;/s,
+		);
 		expect(screensCssSource).toContain("@keyframes screen-viewer-progress");
 		expect(screensCssSource).toContain("@media (prefers-reduced-motion: reduce)");
 	});
