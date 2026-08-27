@@ -280,6 +280,7 @@ export interface RunCompanyComputerGuestBootstrapOptions {
 	expectedRootUid?: number;
 	expectedRootGid?: number;
 	workIdentity?: CompanyComputerGuestIdentity;
+	alignWorkIdentity?: (account: string, datasetUid: number) => Promise<CompanyComputerGuestIdentity>;
 	nativeIdentity?: CompanyComputerGuestIdentity;
 	workSupplementaryGids?: readonly number[];
 	startService?: (service: string) => Promise<void>;
@@ -543,6 +544,42 @@ async function serviceIdentity(account: string): Promise<CompanyComputerGuestIde
 	return parsed;
 }
 
+const COMPANY_COMPUTER_LOCAL_WORK_ROOTS = [
+	"/var/lib/qorpera-runner",
+	"/var/lib/qorpera-native-workspace",
+	"/run/qorpera-runner",
+] as const;
+
+/** VirtioFS presents the NAS server's numeric owner unchanged inside a VM.
+ * The work account must therefore use that same non-privileged UID: group
+ * access is enough for Company File entries, but desktop applications also
+ * create private 0600 state that only its numeric owner can reopen. */
+async function alignServiceAccountWithDatasetOwner(
+	account: string,
+	datasetUid: number,
+): Promise<CompanyComputerGuestIdentity> {
+	if (!Number.isSafeInteger(datasetUid) || datasetUid < 1_000 || datasetUid > 65_535) {
+		throw new Error("Company computer NAS dataset owner is not a safe work-account UID");
+	}
+	const current = await serviceIdentity(account);
+	if (current.uid === datasetUid) return current;
+	await execFileAsync("/usr/sbin/usermod", ["--uid", String(datasetUid), account]);
+	for (const root of COMPANY_COMPUTER_LOCAL_WORK_ROOTS) {
+		try {
+			await lstat(root);
+		} catch (error) {
+			if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+			throw error;
+		}
+		await execFileAsync("/usr/bin/chown", ["--recursive", `--from=${current.uid}`, String(datasetUid), root]);
+	}
+	const aligned = await serviceIdentity(account);
+	if (aligned.uid !== datasetUid || aligned.gid !== current.gid) {
+		throw new Error("Company computer work account did not align with the NAS dataset owner");
+	}
+	return aligned;
+}
+
 async function startGuestService(service: string): Promise<void> {
 	await execFileAsync("/usr/bin/systemctl", ["start", "--no-block", service]);
 }
@@ -657,10 +694,13 @@ export async function runCompanyComputerGuestBootstrap(
 	await ensureIdentityMarker(paths.identityMarker, bootstrap.computeIdentityId, expectedRootUid, expectedRootGid);
 	await ensureIdentityMasterKey(paths.identityMasterKey, expectedRootUid, expectedRootGid);
 
-	const identity = options.workIdentity ?? (await serviceIdentity("qorpera-runner"));
+	const identity =
+		options.workIdentity ??
+		(await (options.alignWorkIdentity ?? alignServiceAccountWithDatasetOwner)("qorpera-runner", datasetMetadata.uid));
 	const nativeIdentity = options.nativeIdentity ?? (await serviceIdentity("qorpera-native-provider"));
 	const workGroups = options.workSupplementaryGids ?? (await serviceGroups("qorpera-runner"));
 	if (
+		identity.uid !== datasetMetadata.uid ||
 		nativeIdentity.gid !== runnerConfig.nativeBridgeSharedGid ||
 		!workGroups.includes(runnerConfig.nativeBridgeSharedGid) ||
 		!workGroups.includes(bootstrap.nasSharedGid)

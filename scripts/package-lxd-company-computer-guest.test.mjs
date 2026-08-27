@@ -141,6 +141,15 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 			wrapper.includes('screen_state="${screen_state_root}/screen-${ordinal}"'),
 			"each display must keep its own persistent XFCE state",
 		);
+		assert.ok(wrapper.includes("umask 0007"), "new screen state must remain group writable");
+		assert.ok(
+			wrapper.includes('mkdir -p "${screen_state}"'),
+			"the screen session must preserve modes on existing NAS-owned state",
+		);
+		assert.ok(
+			!wrapper.includes('install -d -m 2770 "${screen_state}"'),
+			"the screen session must not chmod existing NAS-owned state",
+		);
 		assert.ok(wrapper.includes("export XDG_CONFIG_HOME="), "XFCE must not share one config root across screens");
 		assert.ok(wrapper.includes('cd "${company_root}"'), "desktop applications must start inside the live Company File");
 		assert.ok(

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 0007
 
 # One Company Computer screen: TigerVNC Xvnc on the given display with an
 # XFCE session inside, invoked by the screen agent as
@@ -44,7 +45,10 @@ export XDG_RUNTIME_DIR=${runtime_dir}
 # the screens contend with each other.
 screen_state_root=${QORPERA_SCREEN_STATE_ROOT:-/srv/qorpera/dataset/.qorpera-computer/screens}
 screen_state="${screen_state_root}/screen-${ordinal}"
-install -d -m 2770 "${screen_state}" "${screen_state}/config" "${screen_state}/cache" "${screen_state}/data"
+# Existing state can be owned by the NAS-side mapped UID. The desktop user
+# has group write access but intentionally cannot chmod that owner’s paths,
+# so preserve existing modes and let the service umask shape new directories.
+mkdir -p "${screen_state}" "${screen_state}/config" "${screen_state}/cache" "${screen_state}/data"
 export XDG_CONFIG_HOME="${screen_state}/config"
 export XDG_CACHE_HOME="${screen_state}/cache"
 export XDG_DATA_HOME="${screen_state}/data"

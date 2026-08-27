@@ -1,5 +1,8 @@
 import { EventEmitter } from "node:events";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { connect, createServer, type Server, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	CloudCompanyComputerScreenManager,
@@ -543,6 +546,53 @@ describe("cloud company computer screens", () => {
 				destination: "/tmp/qorpera-test-wallpapers/screen-2.png",
 			},
 		]);
+	});
+
+	it("writes wallpapers atomically through the NAS-safe read/write path", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "qorpera-screen-wallpaper-"));
+		try {
+			const source = join(directory, "source.png");
+			const wallpapers = join(directory, "wallpapers");
+			await writeFile(source, "wallpaper-bytes");
+			const launcher = new FakeLauncher();
+			let firstLaunch!: () => void;
+			const launched = new Promise<void>((resolveLaunch) => {
+				firstLaunch = resolveLaunch;
+			});
+			const originalLaunch = launcher.launch.bind(launcher);
+			launcher.launch = async (screen) => {
+				const handle = await originalLaunch(screen);
+				firstLaunch();
+				return handle;
+			};
+			const controller = new AbortController();
+			const agent = runCloudCompanyComputerScreenAgent({
+				config: {
+					viewerHost: "127.0.0.1",
+					viewerPort: 0,
+					viewerTrustedSource: "127.0.0.1",
+					pollSeconds: 30,
+					maxScreens: 8,
+					idleCloseSeconds: 0,
+				},
+				companyComputerId,
+				viewerToken,
+				controlPlane: { listScreens: async () => [screenRecord(1)] },
+				launcher,
+				signal: controller.signal,
+				wallpapers: { directory: wallpapers, sourceFor: () => source },
+				onError: (error) => {
+					throw error;
+				},
+			});
+			await launched;
+			controller.abort();
+			await agent;
+			expect(await readFile(join(wallpapers, "screen-1.png"), "utf-8")).toBe("wallpaper-bytes");
+			expect(await readdir(wallpapers)).toEqual(["screen-1.png"]);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 
 	it("captures keyframes with the substituted command and DISPLAY exported", async () => {

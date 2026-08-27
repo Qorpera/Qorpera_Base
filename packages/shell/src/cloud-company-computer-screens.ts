@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import {
 	createServer as createHttpServer,
 	type Server as HttpServer,
@@ -948,7 +948,11 @@ export interface CompanyComputerScreenWallpapers {
 async function atomicCopy(source: string, destination: string): Promise<void> {
 	const temporary = `${destination}.${randomUUID()}.tmp`;
 	try {
-		await copyFile(source, temporary);
+		/* Do not replace this with fs.copyFile: Node maps that operation to a
+		 * copy syscall that VirtioFS rejects with EPERM when the image source
+		 * and NAS-backed destination are on different filesystems. An explicit
+		 * read/write follows the same path as cp and works across that boundary. */
+		await writeFile(temporary, await readFile(source), { mode: 0o660 });
 		await rename(temporary, destination);
 	} catch (error) {
 		await rm(temporary, { force: true });

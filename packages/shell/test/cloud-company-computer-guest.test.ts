@@ -351,6 +351,20 @@ describe("cloud company computer guest composition", () => {
 		expect(restarted).toHaveLength(3);
 	});
 
+	it("aligns the work account with the NAS dataset owner before starting services", async () => {
+		const fixture = await bootstrapEnvironment();
+		const { workIdentity: _workIdentity, ...options } = fixture.options;
+		const aligned: Array<{ account: string; datasetUid: number }> = [];
+		await runCompanyComputerGuestBootstrap({
+			...options,
+			alignWorkIdentity: async (account, datasetUid) => {
+				aligned.push({ account, datasetUid });
+				return { uid: datasetUid, gid: process.getgid?.() ?? 0 };
+			},
+		});
+		expect(aligned).toEqual([{ account: "qorpera-runner", datasetUid: process.getuid?.() ?? 0 }]);
+	});
+
 	it("fails closed when the dataset is unmounted, credentials drift, or the runner boundary weakens", async () => {
 		const fixture = await bootstrapEnvironment();
 		await writeFile(
