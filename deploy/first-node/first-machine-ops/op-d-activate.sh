@@ -205,6 +205,10 @@ case ${phase} in
 		run_operator recover
 		;;
 	refresh) refresh_provider ;;
+	wake)
+		require_installed_contract
+		run_operator provision
+		;;
 	verify) verify ;;
 	finalize) finalize ;;
 	*) fail "The activation phase marker is invalid." ;;
