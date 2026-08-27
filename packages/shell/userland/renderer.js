@@ -130,6 +130,8 @@ let conversationRecipients = new Set();
 let staffBootstrapSelections = new Set();
 let staffBootstrapPending = false;
 let railSearchQuery = "";
+let rosterRailRenderPending = false;
+let rosterRailRenderFrame = null;
 let activityStaffId = null;
 let agentSidepanelMode = null;
 let agentSettingsOpen = false;
@@ -4175,9 +4177,29 @@ function syncConversationAccess() {
 	document.querySelector(".composer-shell")?.classList.toggle("read-only", !canWrite);
 }
 
+function renderRosterRailWhenIdle() {
+	const container = $("staffNavigation");
+	if (!container) return;
+	if (container.matches(":hover") || container.classList.contains("staff-reordering")) {
+		rosterRailRenderPending = true;
+		return;
+	}
+	rosterRailRenderPending = false;
+	renderRosterRail();
+}
+
+function flushPendingRosterRailRender() {
+	if (!rosterRailRenderPending || rosterRailRenderFrame !== null) return;
+	rosterRailRenderFrame = requestAnimationFrame(() => {
+		rosterRailRenderFrame = null;
+		if (rosterRailRenderPending) renderRosterRailWhenIdle();
+	});
+}
+
 function renderRosterRail({ animateCreateRow = false } = {}) {
 	const container = $("staffNavigation");
 	if (!container) return;
+	rosterRailRenderPending = false;
 	container.replaceChildren();
 	if (!$("staffModal").hidden) {
 		const create = document.createElement("button");
@@ -4372,7 +4394,7 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 			else nextPinned.delete(move.id);
 			storeStaffIds("staff-pinned", nextPinned);
 			localStorage.setItem(navStorageKey("staff-order"), JSON.stringify(move.order));
-			renderRosterRail();
+			renderRosterRailWhenIdle();
 		},
 	});
 }
@@ -5268,7 +5290,7 @@ async function refreshState() {
 			}
 			applyCurrentSessionRuntime();
 			renderCompanyNav();
-			renderRosterRail();
+			renderRosterRailWhenIdle();
 			renderCompanyRow();
 			if (currentView === "roster") renderStaffHome();
 			if (currentView === "chat") syncConnectionRequestCards();
@@ -7458,6 +7480,9 @@ function setupCompanyNavigation() {
 		filterRosterRail($("railSearch").value);
 		renderRosterRail();
 	};
+	$("staffNavigation").addEventListener("pointerleave", flushPendingRosterRailRender);
+	window.addEventListener("pointerup", flushPendingRosterRailRender);
+	window.addEventListener("pointercancel", flushPendingRosterRailRender);
 	$("staffClose").onclick = closeStaffCreator;
 	$("staffCancel").onclick = showConversationPicker;
 	$("staffConfigureBack").onclick = showConversationPicker;
@@ -10146,7 +10171,7 @@ window.qorpera.onRoomEvent((event) => {
 			renderThreadHeader();
 			syncScopeChrome();
 		}
-		renderRosterRail();
+		renderRosterRailWhenIdle();
 		if (!$("archivedRoomsModal").hidden) renderArchivedRooms();
 		return;
 	}
@@ -10154,7 +10179,7 @@ window.qorpera.onRoomEvent((event) => {
 		const room = (state.rooms ?? []).find((candidate) => candidate.id === event.roomId);
 		if (room && event.message?.createdAt) room.updatedAt = event.message.createdAt;
 		if (currentRoomId === event.roomId) renderRoomMessage(event.message);
-		renderRosterRail();
+		renderRosterRailWhenIdle();
 		return;
 	}
 	if (event.kind === "activity" && event.staffAgentId) {
@@ -10165,7 +10190,7 @@ window.qorpera.onRoomEvent((event) => {
 			applyCurrentSessionRuntime();
 			renderThreadHeader();
 		}
-		renderRosterRail();
+		renderRosterRailWhenIdle();
 		return;
 	}
 	if (event.kind === "delegation" && currentRoomId === event.roomId) {
@@ -12281,7 +12306,7 @@ window.qorpera.onPresenceMembers?.((members) => {
 		if (!byUser.size) remoteStaffActivity.delete(staffAgentId);
 	}
 	try {
-		renderRosterRail();
+		renderRosterRailWhenIdle();
 		if (currentView === "roster") renderStaffHome();
 	} catch {
 		/* pre-company views have no rail */
@@ -12314,7 +12339,7 @@ window.qorpera.onPresenceActivity?.((event) => {
 	if (!byUser.size) remoteStaffActivity.delete(event.staffAgentId);
 	syncVisibleStaffAvatars();
 	try {
-		renderRosterRail();
+		renderRosterRailWhenIdle();
 		if (currentView === "roster") renderStaffHome();
 	} catch {
 		/* pre-company views have no rail */
@@ -12337,7 +12362,7 @@ window.qorpera.onRunnerActivity?.((payload) => {
 	syncVisibleStaffAvatars();
 	syncThreadActivityFromCloud();
 	try {
-		renderRosterRail();
+		renderRosterRailWhenIdle();
 		if (currentView === "roster") renderStaffHome();
 	} catch {
 		/* pre-company views have no rail */
@@ -12364,7 +12389,7 @@ setInterval(() => {
 		renderPeerTypingIndicator();
 		syncVisibleStaffAvatars();
 		try {
-			renderRosterRail();
+			renderRosterRailWhenIdle();
 			if (currentView === "roster") renderStaffHome();
 		} catch {
 			/* pre-company views have no rail */
