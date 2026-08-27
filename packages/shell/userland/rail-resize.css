@@ -101,6 +101,7 @@ body.company-shell.rail-compact .titlebar-rail {
  * window controls and reserve the same space above the agent list. */
 html[data-platform="darwin"] body.company-shell.rail-compact .titlebar-rail {
 	z-index: 160;
+	padding-inline: 0;
 	transform: translateY(var(--titlebar-height));
 }
 
