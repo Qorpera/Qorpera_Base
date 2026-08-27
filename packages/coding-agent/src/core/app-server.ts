@@ -566,6 +566,8 @@ interface SessionSummary {
 	/** Named scheduled-job identity parsed from the host-authenticated session label. */
 	scheduledJobId?: string;
 	scheduledJobTitle?: string;
+	/** Original routine instruction recovered from the scheduled wake prompt. */
+	scheduledJobPrompt?: string;
 	/** Host-stamped grouping identity ("job:<id>", "merge", a workflow run id). */
 	group?: string;
 	/** Trail filename of the session that caused this spawn (subagent parent link). */
@@ -589,6 +591,8 @@ interface SessionSummary {
 	partialChangeSummary?: string;
 	changedFiles?: string[];
 	completedSteps?: number;
+	/** Final assistant prose, bounded for projection into the owning agent chat. */
+	resultText?: string;
 	/** Canonical current lifecycle, when this historical session has a
 	 * projected runtime attachment. */
 	runtime?: SessionRuntimeView;
@@ -619,6 +623,7 @@ interface AutonomousRunSummary {
 	partialChangeSummary?: string;
 	changedFiles?: string[];
 	completedSteps?: number;
+	resultText?: string;
 }
 
 interface TrailToolCall {
@@ -746,6 +751,7 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 	const changedFiles = new Set<string>();
 	let completedSteps = 0;
 	let uncertainShellChanges = false;
+	let resultText: string | undefined;
 
 	for (const line of lines) {
 		if (!line.trim()) continue;
@@ -767,6 +773,7 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 					isError?: boolean;
 					content?: Array<{
 						type?: string;
+						text?: string;
 						id?: string;
 						name?: string;
 						arguments?: Record<string, unknown>;
@@ -803,6 +810,13 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 				if (entry.message.stopReason === "error" && typeof entry.message.errorMessage === "string") {
 					assistantErrors.push(entry.message.errorMessage);
 				}
+				const assistantText = (entry.message.content ?? [])
+					.filter((part) => part.type === "text" && typeof part.text === "string")
+					.map((part) => part.text?.trim() ?? "")
+					.filter(Boolean)
+					.join("\n\n")
+					.trim();
+				if (assistantText && entry.message.stopReason === "stop") resultText = assistantText.slice(0, 8_192);
 				for (const part of entry.message.content ?? []) {
 					if (part.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") {
 						toolCalls.set(part.id, {
@@ -896,6 +910,7 @@ function autonomousRunSummary(content: Buffer, mtimeMs: number): AutonomousRunSu
 		finishedAtMs: terminalAt,
 		calls,
 		costUsd: intentCostUsd ?? (sawRequestCost ? requestCostUsd : undefined),
+		resultText,
 		...(failure
 			? {
 					failureCause: failure.cause,
@@ -944,6 +959,7 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 			// one) is proof of content — tracked apart so wordless-but-real chats
 			// still list.
 			let sawUserMessage = false;
+			let scheduledJobPrompt = "";
 			let sessionAuthority:
 				| {
 						autonomous?: boolean;
@@ -992,12 +1008,18 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 					}
 					if (entry.type === "message" && entry.message?.role === "user") {
 						sawUserMessage = true;
+						const content = entry.message.content;
+						const text =
+							typeof content === "string"
+								? content
+								: (content?.find((part) => part.type === "text")?.text ?? "");
+						if (!scheduledJobPrompt && /^Scheduled job:[^\n]*\n\n/u.test(text)) {
+							scheduledJobPrompt = text
+								.replace(/^Scheduled job:[^\n]*\n\n/u, "")
+								.trim()
+								.slice(0, 8_192);
+						}
 						if (!title) {
-							const content = entry.message.content;
-							const text =
-								typeof content === "string"
-									? content
-									: (content?.find((part) => part.type === "text")?.text ?? "");
 							title = sessionTitleText(text);
 						}
 					}
@@ -1057,6 +1079,7 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 				worktree: sessionAuthority?.worktree,
 				scheduledJobId,
 				scheduledJobTitle,
+				...(scheduledJobId && scheduledJobPrompt ? { scheduledJobPrompt } : {}),
 				group: sessionAuthority?.group,
 				parentSession: sessionAuthority?.parentSession,
 				...run,
@@ -1389,14 +1412,30 @@ function stateFor(
 		// a malformed department record must not take company state down
 	}
 	const runtimeByTrail = new Map((publicRuntime?.sessions ?? []).map((session) => [session.trailFile, session]));
+	const routineChatFiles = new Set<string>();
+	const routineRunsByStaff = new Map<string, number>();
+	for (const session of projectedSessions) {
+		if (!session.staffAgentId || !session.scheduledJobId) continue;
+		const count = routineRunsByStaff.get(session.staffAgentId) ?? 0;
+		if (count >= 12) continue;
+		routineRunsByStaff.set(session.staffAgentId, count + 1);
+		routineChatFiles.add(session.file);
+	}
 	return {
 		name: companyName(root),
 		shellNavigation: readShellNavigation(),
 		inbox: readInbox(root),
-		sessions: projectedSessions.map((session) => ({
-			...session,
-			runtime: runtimeByTrail.get(session.file),
-		})),
+		sessions: projectedSessions.map((session) => {
+			const view = {
+				...session,
+				runtime: runtimeByTrail.get(session.file),
+			};
+			if (!routineChatFiles.has(session.file)) {
+				delete view.resultText;
+				delete view.scheduledJobPrompt;
+			}
+			return view;
+		}),
 		runtime: publicRuntime ?? { revision: 0, generatedAt: "", sessions: [] },
 		staff,
 		rooms,

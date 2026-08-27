@@ -17,6 +17,7 @@
 
 ### Changed
 
+- Extended routine reconciliation with weekday-anchored intervals and advanced month, weekday, time-window, and time-zone schedules.
 - Replaced the Pi protocol dependency with the provider-neutral `@qorpera/contracts` package.
 
 ### Fixed

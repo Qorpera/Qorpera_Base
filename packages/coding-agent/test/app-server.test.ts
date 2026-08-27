@@ -885,6 +885,10 @@ describe("company app server", () => {
 						provider: "openai-codex",
 						model: "gpt-5.6-sol",
 						stopReason: "stop",
+						content: [
+							{ type: "thinking", thinking: "Do not project private reasoning." },
+							{ type: "text", text: "The conception brief is ready." },
+						],
 					},
 				}),
 				JSON.stringify({
@@ -984,19 +988,55 @@ describe("company app server", () => {
 		);
 		writeFileSync(
 			join(root, "trail", "2026-08-04T11-45-00-000Z_legacy-wake.jsonl"),
-			JSON.stringify({
-				type: "session",
-				version: 3,
-				id: "legacy-wake",
-				timestamp: "2026-08-04T11:45:00.000Z",
-				cwd: root,
-				qorpera: {
-					actor: "company-agent",
-					attended: false,
-					autonomous: true,
-					label: "autonomous — wake — schedule",
-				},
-			}),
+			[
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "legacy-wake",
+					timestamp: "2026-08-04T11:45:00.000Z",
+					cwd: root,
+					qorpera: {
+						actor: "company-agent",
+						attended: false,
+						autonomous: true,
+						staffAgentId: "staff-night-shift",
+						label: "autonomous — wake — schedule",
+					},
+				}),
+				JSON.stringify({
+					type: "message",
+					timestamp: "2026-08-04T11:45:01.000Z",
+					message: {
+						role: "user",
+						content: [
+							{
+								type: "text",
+								text: "Scheduled job: Company orchestration.\n\nSummarize overnight company work.",
+							},
+						],
+					},
+				}),
+				JSON.stringify({
+					type: "message",
+					timestamp: "2026-08-04T11:45:05.000Z",
+					message: {
+						role: "assistant",
+						provider: "openai-codex",
+						model: "gpt-5.6-sol",
+						stopReason: "stop",
+						content: [
+							{ type: "thinking", thinking: "Do not project private reasoning." },
+							{ type: "text", text: "The company briefing is ready." },
+						],
+					},
+				}),
+				JSON.stringify({
+					type: "custom",
+					timestamp: "2026-08-04T11:45:06.000Z",
+					customType: "qorpera_kernel_model_request",
+					data: { event: "intent", status: "completed", usage: { calls: 1, costUsd: 0.01 } },
+				}),
+			].join("\n"),
 			"utf-8",
 		);
 
@@ -1183,6 +1223,7 @@ describe("company app server", () => {
 				page?: string;
 				scheduledJobId?: string;
 				scheduledJobTitle?: string;
+				scheduledJobPrompt?: string;
 				outcome?: string;
 				modelProvider?: string;
 				modelId?: string;
@@ -1196,6 +1237,7 @@ describe("company app server", () => {
 				partialChangeSummary?: string;
 				changedFiles?: string[];
 				completedSteps?: number;
+				resultText?: string;
 			}>;
 			inbox: Array<{ file: string; kind: string; status: string }>;
 		};
@@ -1225,6 +1267,7 @@ describe("company app server", () => {
 			calls: 3,
 			costUsd: 0.25,
 		});
+		expect(auto).not.toHaveProperty("resultText");
 		expect(failed).toMatchObject({
 			kind: "autonomous",
 			category: "wake",
@@ -1251,7 +1294,11 @@ describe("company app server", () => {
 			category: "wake",
 			scheduledJobId: "company-orchestration",
 			scheduledJobTitle: "Company orchestration",
+			scheduledJobPrompt: "Summarize overnight company work.",
+			staffAgentId: "staff-night-shift",
+			resultText: "The company briefing is ready.",
 		});
+		expect(legacyWake?.resultText).not.toContain("private reasoning");
 		expect(scoped?.kind).toBe("chat");
 		expect(scoped?.category).toBe("product");
 		expect(scoped?.staffAgentId).toBe("staff-launcher");

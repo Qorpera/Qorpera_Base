@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	decideScheduledWake,
+	nextScheduledWakeAt,
 	readWakeRunState,
 	recordRemoteWakeConsumption,
 	recordWakeOutcome,
@@ -97,6 +98,78 @@ describe("decideScheduledWake", () => {
 		const afterDstAtNine = Date.parse("2026-10-26T08:00:00.000Z");
 		expect(decideScheduledWake(job, state, afterDstBeforeNine).due).toBe(false);
 		expect(decideScheduledWake(job, state, afterDstAtNine)).toEqual({ due: true, coalesced: 0 });
+	});
+
+	it("anchors weekday intervals at the chosen time and skips weekends", () => {
+		const startAt = "2026-08-24T09:00:00.000Z";
+		const job = schedule(24 * 60, {
+			createdAt: "2026-08-21T08:00:00.000Z",
+			triggers: [
+				{
+					id: "weekday-1",
+					kind: "schedule" as const,
+					intervalMinutes: 24 * 60,
+					startAt,
+					weekdays: [
+						"monday" as const,
+						"tuesday" as const,
+						"wednesday" as const,
+						"thursday" as const,
+						"friday" as const,
+					],
+					localTime: "09:00",
+					timeZone: "UTC",
+				},
+			],
+		});
+		const start = Date.parse(startAt);
+		expect(decideScheduledWake(job, { failureStreak: 0 }, start - MINUTE)).toEqual({
+			due: false,
+			coalesced: 0,
+		});
+		expect(decideScheduledWake(job, { failureStreak: 0 }, start)).toEqual({ due: true, coalesced: 0 });
+
+		const friday = Date.parse("2026-08-28T09:00:00.000Z");
+		const fridayState = scheduledJobRunState(recordWakeStart({ version: 2, jobs: {} }, "job-1", friday), "job-1");
+		expect(nextScheduledWakeAt(job, fridayState, friday + MINUTE)).toBe("2026-08-31T09:00:00.000Z");
+	});
+
+	it("runs advanced intervals only inside their calendar window", () => {
+		const job = schedule(30, {
+			createdAt: "2026-08-17T08:55:00.000Z",
+			triggers: [
+				{
+					id: "office-hours",
+					kind: "schedule" as const,
+					intervalMinutes: 30,
+					months: [8],
+					weekdays: [
+						"monday" as const,
+						"tuesday" as const,
+						"wednesday" as const,
+						"thursday" as const,
+						"friday" as const,
+					],
+					windowStart: "09:00",
+					windowEnd: "17:00",
+					timeZone: "UTC",
+				},
+			],
+		});
+		const mondayNine = Date.parse("2026-08-17T09:00:00.000Z");
+		expect(decideScheduledWake(job, { failureStreak: 0 }, mondayNine - MINUTE).due).toBe(false);
+		expect(decideScheduledWake(job, { failureStreak: 0 }, mondayNine)).toEqual({ due: true, coalesced: 0 });
+
+		const state = scheduledJobRunState(recordWakeStart({ version: 2, jobs: {} }, "job-1", mondayNine), "job-1");
+		expect(decideScheduledWake(job, state, mondayNine + 29 * MINUTE).due).toBe(false);
+		expect(decideScheduledWake(job, state, mondayNine + 30 * MINUTE)).toEqual({ due: true, coalesced: 0 });
+		const endOfWindowState = scheduledJobRunState(
+			recordWakeStart({ version: 2, jobs: {} }, "job-1", Date.parse("2026-08-17T17:00:00.000Z")),
+			"job-1",
+		);
+		expect(nextScheduledWakeAt(job, endOfWindowState, Date.parse("2026-08-17T17:01:00.000Z"))).toBe(
+			"2026-08-18T09:00:00.000Z",
+		);
 	});
 
 	it("never fires when disabled, suspended, or unbound", () => {
@@ -261,6 +334,23 @@ describe("scheduledWakeOccurrenceKey", () => {
 		expect(scheduledWakeOccurrenceKey(job, monday + 7 * 24 * 60 * MINUTE)).toBe(
 			`weekly:${monday + 7 * 24 * 60 * MINUTE}`,
 		);
+	});
+
+	it("derives advanced-window keys from the latest allowed slot", () => {
+		const job = schedule(30, {
+			triggers: [
+				{
+					id: "office-hours",
+					kind: "schedule" as const,
+					intervalMinutes: 30,
+					windowStart: "09:00",
+					windowEnd: "17:00",
+					timeZone: "UTC",
+				},
+			],
+		});
+		const slot = Date.parse("2026-08-17T09:30:00.000Z");
+		expect(scheduledWakeOccurrenceKey(job, slot + 20 * MINUTE)).toBe(`window:${slot}`);
 	});
 
 	it("quantizes unanchored intervals onto the epoch grid", () => {

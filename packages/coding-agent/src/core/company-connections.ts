@@ -143,9 +143,15 @@ export type RoutineTrigger =
 			intervalMinutes: number;
 			/** Optional absolute anchor for the first and subsequent interval slots. */
 			startAt?: string;
-			/** Calendar fields are present together for wall-clock weekly schedules. */
+			/** Calendar fields may describe a wall-clock weekly schedule or filter an
+			 * advanced interval window. */
 			weekdays?: RoutineWeekday[];
 			localTime?: string;
+			/** Optional 1-based months for an advanced interval; absent means every month. */
+			months?: number[];
+			/** Inclusive local-time window for an advanced interval schedule. */
+			windowStart?: string;
+			windowEnd?: string;
 			/** `auto` follows the current computer; otherwise an IANA timezone. */
 			timeZone?: string;
 	  }
@@ -574,24 +580,89 @@ function validRoutinePublicationPolicy(value: unknown): RoutinePublicationPolicy
 const GITHUB_REPOSITORY_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9])?\/[a-z0-9._-]{1,100}$/i;
 const ROUTINE_ADAPTER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
+function validRoutineTimeZone(value: string, scheduleKind: string): string {
+	if (value !== "auto") {
+		try {
+			new Intl.DateTimeFormat("en-US", { timeZone: value }).format(0);
+		} catch {
+			throw new Error(`${scheduleKind} routine timeZone must be auto or an IANA timezone`);
+		}
+	}
+	return value;
+}
+
 function validRoutineTrigger(input: RoutineTriggerInput): RoutineTrigger {
 	const id = input.id?.trim() ? input.id.trim() : randomUUID();
 	if (Buffer.byteLength(id, "utf-8") > 160) throw new Error("Routine trigger id is too long");
 	if (input.kind === "schedule") {
-		const calendarFieldCount = [input.weekdays, input.localTime, input.timeZone].filter(
-			(value) => value !== undefined,
-		).length;
-		if (calendarFieldCount !== 0 && calendarFieldCount !== 3) {
-			throw new Error("Weekly routine schedules require weekdays, localTime, and timeZone together");
-		}
-		if (calendarFieldCount && input.startAt !== undefined) {
-			throw new Error("A routine schedule cannot combine startAt with a weekly wall-clock schedule");
-		}
 		let startAt: string | undefined;
 		if (input.startAt !== undefined) {
 			const parsed = Date.parse(input.startAt);
 			if (!Number.isFinite(parsed)) throw new Error("Routine schedule startAt must be an ISO 8601 timestamp");
 			startAt = new Date(parsed).toISOString();
+		}
+		const hasAdvancedWindow =
+			input.months !== undefined || input.windowStart !== undefined || input.windowEnd !== undefined;
+		if (hasAdvancedWindow) {
+			if (
+				startAt !== undefined ||
+				input.localTime !== undefined ||
+				typeof input.windowStart !== "string" ||
+				typeof input.windowEnd !== "string" ||
+				!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(input.windowStart) ||
+				!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(input.windowEnd) ||
+				typeof input.timeZone !== "string"
+			) {
+				throw new Error("Advanced interval schedules require windowStart, windowEnd, and timeZone together");
+			}
+			const [startHour, startMinute] = input.windowStart.split(":").map(Number);
+			const [endHour, endMinute] = input.windowEnd.split(":").map(Number);
+			if (startHour * 60 + startMinute > endHour * 60 + endMinute) {
+				throw new Error("Advanced interval windowStart must not be after windowEnd");
+			}
+			let months: number[] | undefined;
+			if (input.months !== undefined) {
+				months = [...new Set(input.months)].sort((left, right) => left - right);
+				if (
+					months.length < 1 ||
+					months.length > 12 ||
+					months.length !== input.months.length ||
+					months.some((month) => !Number.isInteger(month) || month < 1 || month > 12)
+				) {
+					throw new Error("Advanced interval months are invalid");
+				}
+			}
+			let weekdays: RoutineWeekday[] | undefined;
+			if (input.weekdays !== undefined) {
+				weekdays = ROUTINE_WEEKDAYS.filter((weekday) => input.weekdays?.includes(weekday));
+				if (
+					weekdays.length < 1 ||
+					weekdays.length !== input.weekdays.length ||
+					new Set(input.weekdays).size !== input.weekdays.length
+				) {
+					throw new Error("Advanced interval weekdays are invalid");
+				}
+			}
+			const timeZone = validRoutineTimeZone(input.timeZone, "Advanced interval");
+			if (timeZone === "auto") {
+				throw new Error("Advanced interval routine timeZone must be an IANA timezone");
+			}
+			return {
+				id,
+				kind: "schedule",
+				intervalMinutes: validScheduledJobInterval(input.intervalMinutes),
+				...(months ? { months } : {}),
+				...(weekdays ? { weekdays } : {}),
+				windowStart: input.windowStart,
+				windowEnd: input.windowEnd,
+				timeZone,
+			};
+		}
+		const calendarFieldCount = [input.weekdays, input.localTime, input.timeZone].filter(
+			(value) => value !== undefined,
+		).length;
+		if (calendarFieldCount !== 0 && calendarFieldCount !== 3) {
+			throw new Error("Weekly routine schedules require weekdays, localTime, and timeZone together");
 		}
 		let weekly: { weekdays: RoutineWeekday[]; localTime: string; timeZone: string } | undefined;
 		if (calendarFieldCount) {
@@ -606,17 +677,10 @@ function validRoutineTrigger(input: RoutineTriggerInput): RoutineTrigger {
 			) {
 				throw new Error("Weekly routine schedule is invalid");
 			}
-			if (input.timeZone !== "auto") {
-				try {
-					new Intl.DateTimeFormat("en-US", { timeZone: input.timeZone }).format(0);
-				} catch {
-					throw new Error("Weekly routine timeZone must be auto or an IANA timezone");
-				}
-			}
 			weekly = {
 				weekdays: ROUTINE_WEEKDAYS.filter((weekday) => weekdays.includes(weekday)),
 				localTime: input.localTime,
-				timeZone: input.timeZone,
+				timeZone: validRoutineTimeZone(input.timeZone, "Weekly"),
 			};
 		}
 		return {
