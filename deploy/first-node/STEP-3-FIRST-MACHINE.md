@@ -104,16 +104,25 @@ the complete product flow was repeated at `2026-08-26T22:37Z`:
 - the canonical `/usr/local/bin/qorpera-screen-session` was restored on the
   VM (no diagnostic wrapper remained) with SHA-256
   `a692db6ce579d86d52e3f731a4442f7d24de7a24dade8a94c06cf7fd384bb0e7`.
-  The direct-NAS source below supersedes that proof-point script and awaits
-  the new signed image.
+  The direct-NAS image below supersedes that historical proof-point script.
 
 The corrected guest package contract hashes to
 `a18cbb67634c6f6bd88235c25b858466bff4b786d39ae6f7fa265b4bf11e237e`. It is pinned in the candidate builder, provenance signer,
-and package test. It is source-ready but **not yet a new
-immutable image**: the active
-signed image and provenance remain the `e21a78e5` / `93d06dc1…` result above
-until these working-tree changes are committed, rebuilt, signed, and
-activated with explicit authorization.
+and package test. The replacement is built and signed, but not yet activated:
+
+- source commit:
+  `6854fb643551dc23e564cf606da342a7f11f46dd` (pushed to
+  `origin/step3/company-computers`);
+- image fingerprint:
+  `614dce363812ca0f32f39cb7eb7e6d2d4439a4c5b3fca633d2a2afa8f4a15ec2`;
+- clean-boot evidence SHA-256:
+  `8b4e085ecb0597d370a05456422fe08262038f3b0557df13249e53410a24bd57`;
+- signed provenance SHA-256:
+  `06791a4535f1d58d62a7c9f26df3cf637bf46ac7d496201f6c64daa9a1442412`.
+
+The provenance signature was verified off-node against the installed public
+key and binds the exact fingerprint, guest manifest, runner pins, evidence,
+and source commit above.
 
 ### Direct NAS correction (2026-08-27)
 
@@ -145,29 +154,33 @@ dataset rollback point. The concrete Synology snapshot command still needs
 to be configured on the node before automatic rollback points become active.
 
 Activation is intentionally atomic and still pending: apply migration
-`20260827000000_company_computer_live_nas.sql`, install a newly committed and
-signed provider/image, then run `relocate-dataset <logical-id> company41`.
+`20260827000000_company_computer_live_nas.sql`, prepare the signed provider,
+then run the guarded dataset relocation.
 Do not change the hosted registry to `company41` while the old signed guest is
 installed, because that guest still expects the retired sync/workbench
 layout.
 
-After the migration, signed image, provider artifact, provenance, and env
-pins are installed, the guarded node-side cutover is:
+The source-controlled `op-d-activate.sh` occupies the temporary, already
+granted sudo path. Run its phases separately so preparation cannot move the
+registry and verification happens before the grant removes itself:
 
 ```bash
-sudo systemctl stop qorpera-lxd-company-provider.service
-sudo systemd-run --wait --pipe \
-  --property=User=qorpera-provider --property=Group=qorpera-provider \
-  --property=SupplementaryGroups=lxd \
-  --property=EnvironmentFile=/etc/qorpera/lxd-company-provider.env \
-  /usr/bin/node --jitless /opt/qorpera/company-provider/qorpera-lxd-provider.mjs \
-  relocate-dataset 6d9da3a0-f09b-4d63-b79b-8a3aad7919d9 company41
-sudo systemctl start qorpera-lxd-company-provider.service
+cp ~/step3-lxd/op-d-phases/prepare ~/step3-lxd/op-d-phase
+sudo bash ~/step3-lxd/op-d-activate.sh
+# Apply and verify the hosted migration here.
+cp ~/step3-lxd/op-d-phases/relocate ~/step3-lxd/op-d-phase
+sudo bash ~/step3-lxd/op-d-activate.sh
+cp ~/step3-lxd/op-d-phases/verify ~/step3-lxd/op-d-phase
+sudo bash ~/step3-lxd/op-d-activate.sh
+# Configure and prove native NAS snapshots before final cleanup.
+cp ~/step3-lxd/op-d-phases/finalize ~/step3-lxd/op-d-phase
+sudo bash ~/step3-lxd/op-d-activate.sh
 ```
 
 If power or transport interrupts the replacement after the registry enters
-`recovering`, rerun the same one-shot with `recover` and the logical computer
-ID. Never edit the provider journal or delete the identity volume manually.
+`recovering`, select `op-d-phases/recover` in the same way and rerun the
+argument-free sudo command. Never edit the provider journal or delete the
+identity volume manually.
 
 ### Validation and remaining cleanup
 
@@ -180,9 +193,8 @@ ID. Never edit the provider journal or delete the identity volume manually.
   still reports 772 inherited generated model-catalog `unknown`/`never`
   diagnostics, with none under `packages/shell` or
   `packages/runner-orchestrator`.
-- The temporary sudoers grant still needs an interactive owner removal:
-  `sudo rm /etc/sudoers.d/qorpera-step3-first-machine` on
-  `company41-node-01`.
+- The guarded activation script removes the exact temporary sudoers file in
+  its final phase, after provider, journal, image, and dataset verification.
 - The proof used the current Step 3 development shell because the installed
   `/Applications/Qorpera Base.app` predates the screen IPC handlers. Package
   and install a fresh shell build before treating the installed app as the
@@ -199,11 +211,10 @@ ID. Never edit the provider journal or delete the identity volume manually.
 - Screen viewer endpoint: `100.75.4.70:18446` over Tailscale.
 - Current observed state during the correction audit: VM stopped.
 
-The original operator plan below is historical. `op-a-prepare.sh` and
-`op-d-activate.sh` now fail closed because they encode the obsolete local
-dataset/workbench cutover. After building and signing the corrected image,
-use the guarded `relocate-dataset` / `recover` commands in the Direct NAS
-correction section above.
+The original operator plan below is historical. `op-a-prepare.sh` still fails
+closed because it encodes the obsolete local dataset/workbench cutover.
+`op-d-activate.sh` has been replaced by the guarded direct-NAS phases in the
+Direct NAS correction section above.
 
 ## Historical operator transcript (do not run)
 
