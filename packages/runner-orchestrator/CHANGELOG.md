@@ -24,4 +24,5 @@
 
 ### Fixed
 
+- Restricted Company Computer image refresh to the service role even when hosted defaults grant function execution directly to client roles.
 - Kept the live Company File mount optional for copy-mode guests and excluded it from isolated proposal-review VMs.

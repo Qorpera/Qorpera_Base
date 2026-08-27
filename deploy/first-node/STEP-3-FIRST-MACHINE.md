@@ -135,7 +135,8 @@ They are now baked into the immutable v3 candidate:
 - clean-boot evidence:
   `deploy/first-node/evidence-first-machine-clean-boot-v3.log`, SHA-256
   `f7e46f4e97bd15550f603c7b0ad72b94bd9a2eac55874adefcdf144a00c92d51`,
-  tested at `2026-08-27T06:16:08+00:00`;
+  tested at `2026-08-27T06:16:08.000Z` (canonical provenance timestamp for
+  the same instant recorded with `+00:00` in the acceptance log);
 - the image marker binds the guest manifest above, nested runner manifest
   `a0990ae7ddce3312a0213782892c8f7aee554c9a8e7fca4d03b0444e716d6b42`,
   Chrome `152.0.7977.64`, and desktop stack `xfce4-tigervnc-chrome`.
@@ -144,8 +145,9 @@ The clean VM booted with no failed systemd units; bootstrap, runner, and
 screens remained disabled in the immutable image; Chrome, Thunar, Xfce
 Terminal, and all three Qorpera launchers were executable. The uniquely named
 verification VM was deleted after evidence capture. The live v2 VM remained
-stopped and untouched. The v3 candidate is still unsigned and is not yet the
-live machine root.
+stopped and untouched. The v3 candidate now has signed provenance staged at
+`~/step3-lxd/lxd-company-image-provenance.json`; it is not yet the live machine
+root. Re-sign after any further source commit before activation.
 
 The post-merge correction also adds a first-class `refresh-image` provider
 operation plus guarded `op-e-refresh-image.sh` procedure. It transitions an
@@ -156,7 +158,14 @@ and confirms the signed target image exists in the LXD project. The old
 `op-d` dataset relocation must not be replayed for this image update.
 Migration `20260827010000_company_computer_image_refresh.sql` makes the idle
 admission atomic against the existing screen-open and runner-lease row-lock
-guards; it must be applied before the refresh operator is staged.
+guards. It has been applied through the hosted SQL editor. The provider and
+`op-e` bundle are staged and hash-verified, but activation is paused for the
+follow-up `20260827011000_company_computer_image_refresh_acl.sql`: the hosted
+catalog revealed direct EXECUTE grants to `anon` and `authenticated` that
+the original PUBLIC-only revoke did not remove. The existing internal
+`auth.role()` guard still rejects those callers. Apply the scoped revoke,
+verify service-role-only execution, and reconcile migration history before
+running `op-e`; do not replay the original CREATE FUNCTION migration.
 
 ### Direct NAS correction (2026-08-27)
 
@@ -207,11 +216,16 @@ identity volume manually.
 - Automatic rollback points are active through the independent six-hour
   Synology Snapshot Replication schedule on `qorpera-companies`; the optional
   provider-side snapshot command remains intentionally unconfigured.
-- Signing and activating the clean-boot-accepted v3 immutable image remains
-  release work. The already-live v2 image and direct NAS dataset must stay
+- Provenance for the clean-boot-accepted v3 image is signed and staged.
+  Activation remains pending; the v2 image and direct NAS dataset must stay
   available until provenance verification and the guarded image refresh pass.
-- The new atomic image-refresh migration is local and reviewed but not yet
-  applied to hosted project `wovsmjvghnbcbfazdtvr`.
+- PR #106 integrates Step 3 onto master. The initial CI run found a stale
+  shared-provider artifact pin and two SQL fixtures expecting an obsolete
+  authorization error for malformed trail envelopes. The correction updates
+  pins and schema-error assertions without relaxing production validation.
+- The atomic image-refresh function exists in hosted project
+  `wovsmjvghnbcbfazdtvr`. Its follow-up ACL correction and migration-history
+  reconciliation remain pending explicit browser permission approval.
 - The proof used the current Step 3 development shell because the installed
   `/Applications/Qorpera Base.app` predates the screen IPC handlers. Package
   and install a fresh shell build before treating the installed app as the

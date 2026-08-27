@@ -58,6 +58,14 @@ test("packages and pins the first-node LXD provider", async () => {
 		for (const expected of expectedPins) {
 			assert.ok(installer.includes(expected), `installer is missing checksum pin ${expected}`);
 		}
+		const providerPin = installer.match(/EXPECTED_ARTIFACT_SHA256="([0-9a-f]{64})"/)?.[1];
+		for (const [script, pin] of [
+			["install-lxd-company-provider-host.sh", "EXPECTED_ARTIFACT_SHA256"],
+			["first-machine-ops/op-e-refresh-image.sh", "EXPECTED_PROVIDER_ARTIFACT_SHA256"],
+		]) {
+			const procedure = await readFile(join(repositoryRoot, "deploy/first-node", script), "utf-8");
+			assert.ok(procedure.includes(`${pin}="${providerPin}"`), `${script} pins a different provider artifact`);
+		}
 		assert.ok(installer.includes("const payload = await response.json()"));
 		assert.ok(installer.includes("payload.ok !== true || Object.keys(payload).length !== 1"));
 		assert.ok(!installer.includes("(await response.text()) !=="));

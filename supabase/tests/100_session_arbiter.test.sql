@@ -283,15 +283,16 @@ begin
 			'message', jsonb_build_object('role', 'assistant', 'content', jsonb_build_array())
 		)::text, 'utf8'), 'base64'), E'\n', '')
 	);
+	-- Execution provenance is optional, but the closed trail envelope is not.
 	v_ok := false;
 	begin
 		perform public.qorpera_append_account_event(
 			v_session, 'a1000000-0000-4000-8000-000000000070',
 			'message', '{"role":"assistant","content":"unbound"}'::jsonb, 0
 		);
-	exception when insufficient_privilege then v_ok := true;
+	exception when sqlstate '22023' then v_ok := true;
 	end;
-	if not v_ok then raise exception 'unbound trail event entered an active turn'; end if;
+	if not v_ok then raise exception 'malformed trail event entered an active turn'; end if;
 	perform public.qorpera_append_account_event(
 		v_session, 'a1000000-0000-4000-8000-000000000071',
 		'message', v_trail_body, 0,
@@ -671,11 +672,11 @@ begin
 			),
 			0
 		);
-	exception when insufficient_privilege then
+	exception when sqlstate '22023' then
 		v_forgery_rejected := true;
 	end;
 	if not v_forgery_rejected then
-		raise exception 'unbound session metadata smuggled content into the trail';
+		raise exception 'session metadata accepted a message-type envelope';
 	end if;
 	perform set_config(
 		'request.jwt.claims',
