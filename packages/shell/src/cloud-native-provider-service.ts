@@ -2,6 +2,12 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import type { JsonValue } from "@qorpera/contracts";
+import {
+	type CloudAgentSendInput,
+	type CloudAgentSendReceipt,
+	parseCloudAgentSendInput,
+	parseCloudAgentSendReceipt,
+} from "./cloud-agent-mouth.ts";
 import type {
 	CompleteNativeProviderLoginInput,
 	NativeCredentialCapsuleStore,
@@ -85,10 +91,10 @@ function safeRequestDiagnostic(error: unknown): string {
 		/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
 			message,
 		) ||
-		/^Codex returned no assistant response(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
+		/^Codex did not complete its turn(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
 			message,
 		) ||
-		/^Native provider execution (?:initial-authority-validation|temporary-workspace|credential-download|credential-opening|prompt-materialization|harness-execution|workspace-normalization|completion-authority-validation|credential-sealing|credential-upload|authority-monitor|cleanup|internal-completion) stage failed(?: \((?:storage-budget|unsupported-entry|invalid-path|symbolic-link|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/.test(
+		/^Native provider execution (?:initial-authority-validation|temporary-workspace|credential-download|credential-opening|prompt-materialization|public-mouth-start|public-mouth-completion|harness-execution|workspace-normalization|completion-authority-validation|credential-sealing|credential-upload|authority-monitor|cleanup|internal-completion) stage failed(?: \((?:storage-budget|unsupported-entry|invalid-path|symbolic-link|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/.test(
 			message,
 		) ||
 		message === "Provider harness output exceeded its byte limit"
@@ -310,6 +316,33 @@ export class SupabaseNativeProviderControlPlane implements NativeProviderControl
 			},
 			signal,
 		);
+	}
+
+	async sendMessage(
+		request: NativeProviderExecutionRequest,
+		input: CloudAgentSendInput,
+		signal?: AbortSignal,
+	): Promise<CloudAgentSendReceipt> {
+		const message = parseCloudAgentSendInput(input);
+		const receipt = await this.#rpc(
+			"qorpera_send_native_agent_message",
+			{
+				p_lease_id: request.authority.leaseId,
+				p_run_id: request.authority.runId,
+				p_job_id: request.job.jobId,
+				p_runner_id: request.authority.runnerId,
+				p_assignment_id: request.authority.assignmentId,
+				p_credential_capsule_id: request.authority.credentialCapsuleId,
+				p_compute_identity_id: request.authority.computeIdentityId,
+				p_provider: request.authority.provider,
+				p_native_harness: request.authority.nativeHarness,
+				p_idempotency_key: message.idempotencyKey,
+				p_text: message.text,
+				p_phase: message.phase,
+			},
+			signal,
+		);
+		return parseCloudAgentSendReceipt(receipt, request.authority.runId);
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
