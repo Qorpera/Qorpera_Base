@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.20.42] - 2026-08-27
+
 ### Added
 
 - Added a run-scoped cloud `send_message` channel for explicit progress and final delivery. Provider output and reasoning remain private; delivery receipts are authority-checked and idempotent.
