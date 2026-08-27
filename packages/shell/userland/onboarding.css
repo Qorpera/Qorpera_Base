@@ -556,6 +556,30 @@ body.hub .hub-foot {
 	color: rgba(35, 38, 44, 0.64);
 }
 
+.hub-feedback {
+	padding: 0 24px 16px;
+	text-align: center;
+}
+
+.hub-load-status {
+	color: #686b72;
+	font-size: 14px;
+	line-height: 1.45;
+}
+
+.hub-feedback .hub-error {
+	max-width: 560px;
+	margin-inline: auto;
+	color: #9b3026;
+	font-size: 14px;
+	line-height: 1.45;
+	overflow-wrap: anywhere;
+}
+
+.hub-feedback button {
+	margin-top: 12px;
+}
+
 @media (max-width: 560px) {
 	#accountView,
 	#welcomeView {

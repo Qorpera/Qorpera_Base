@@ -60,8 +60,14 @@
 	function update() {
 		updateFrame = undefined;
 		const carouselItems = items();
-		if (carouselItems.length === 0) return;
 		rebuildPagination(carouselItems);
+		if (carouselItems.length === 0) {
+			previous.disabled = true;
+			next.disabled = true;
+			announcedItem = undefined;
+			status.textContent = "";
+			return;
+		}
 		const activeIndex = centeredIndex(carouselItems);
 		for (const [index, item] of carouselItems.entries()) {
 			item.classList.toggle("is-centered", index === activeIndex);

@@ -2,8 +2,11 @@
 
 ## [Unreleased]
 
+## [0.20.43] - 2026-08-27
+
 ### Fixed
 
+- Decoupled Qorpera sign-in and company access from model connections, provider readiness, and allowance. The launcher now shows loading and retry states, keeps company cards during refresh failures, and replaces gateway HTML errors with actionable messages.
 - Fixed cloud job cancellation violating terminal-state constraints; cancellation now atomically records its actor and timestamp and rejects further sends from the revoked lease.
 - Added private-output-safe native startup diagnostics and a real Codex CLI regression covering progress delivery, lost-receipt retries, and private reasoning and output.
 - Preserve refreshed native credentials after a failed turn while its execution authority remains valid; distinguish provider allowance, context, and capacity failures without exposing private diagnostics.

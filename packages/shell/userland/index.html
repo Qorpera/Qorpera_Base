@@ -171,7 +171,11 @@
 				<div id="hubCarouselPagination" class="hub-carousel-pagination" aria-label="Choose a company"></div>
 				<span id="hubCarouselStatus" class="sr-only" aria-live="polite"></span>
 			</div>
-			<div id="hubError" class="hub-error" role="status" aria-live="polite"></div>
+			<div class="hub-feedback">
+				<div id="hubLoadStatus" class="hub-load-status" role="status" aria-live="polite"></div>
+				<div id="hubError" class="hub-error" role="status" aria-live="polite"></div>
+				<button id="hubRetry" class="secondary-button" type="button" hidden>Retry loading companies</button>
+			</div>
 			<div id="friendsPanel" class="friends-panel" hidden>
 				<header>
 					<h2>Friends</h2>

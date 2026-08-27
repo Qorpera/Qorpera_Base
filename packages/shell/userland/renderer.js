@@ -452,6 +452,21 @@ function setupSidebarToggle() {
 
 // ---- Qorpera account -------------------------------------------------------
 
+let hubLoadGeneration = 0;
+let hubCompaniesRequest = null;
+let workspaceBootGeneration = 0;
+
+function companyAccessError(error, fallback) {
+	const detail = typeof error === "string" ? error : error?.message;
+	if (typeof detail !== "string" || !detail.trim()) return fallback;
+	// IPC can forward an entire gateway error page. It is diagnostic data,
+	// not useful UI copy, and is unrelated to the model account's allowance.
+	if (/<[a-z!][^>]*>|fetch failed|failed to fetch|network|timed? out|timeout|connection (?:refused|reset)|\b50[0234]\b|\b52\d\b/i.test(detail)) {
+		return "Qorpera's cloud service could not be reached. Check your connection and try again.";
+	}
+	return detail.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, "").slice(0, 320);
+}
+
 function setAccountControlsDisabled(disabled) {
 	for (const button of $("accountProviders").querySelectorAll("button")) button.disabled = disabled;
 	$("accountEmail").disabled = disabled;
@@ -470,14 +485,21 @@ async function completeAccountSignIn(input) {
 		$("accountView").hidden = true;
 		await bootSignedInWorkspace();
 	} catch (error) {
-		$("accountStatus").textContent = error instanceof Error ? error.message : "Sign-in did not complete.";
+		$("accountStatus").textContent = companyAccessError(error, "Sign-in did not complete.");
 		setAccountControlsDisabled(false);
 	}
 }
 
 function renderAccountWelcome() {
+	// A late company-list response must not repaint a signed-out account or
+	// carry one account's cards into the next account's launcher.
+	hubLoadGeneration += 1;
+	workspaceBootGeneration += 1;
+	hubCompaniesRequest = null;
+	$("hubCompanies").replaceChildren();
+	$("friendsPanel").hidden = true;
 	document.body.classList.add("welcome");
-	document.body.classList.remove("hub", "company-shell");
+	document.body.classList.remove("hub", "company-shell", "hub-opening");
 	$("accountView").hidden = false;
 	$("welcomeView").hidden = true;
 	$("wordmark").hidden = false;
@@ -566,7 +588,7 @@ async function renderIntelligenceWelcome(info) {
 
 /** The hub is a full-screen launcher in <main> (#view-hub) — no sidebar,
  * no empty sheet. body.hub gates its visibility and hides the nav chrome. */
-async function renderHub() {
+function presentCompanyHub() {
 	renderUpdateButton();
 	document.body.classList.add("hub");
 	document.body.classList.remove("welcome", "company-shell");
@@ -574,11 +596,51 @@ async function renderHub() {
 	$("accountView").hidden = true;
 	$("wordmark").hidden = false;
 	document.title = "Qorpera Base";
-	$("hubError").textContent = "";
+	document.documentElement.dataset.qorperaReady = "hub";
 	wireFriendsPanel();
-	const companies = await window.qorpera.listCompanies();
+	if (!$("hubCompanies").children.length) renderHubCompanies([]);
+}
+
+async function renderHub({ errorMessage = "" } = {}) {
+	// Repeated refresh clicks share the in-flight request. Listing can also
+	// resume a legacy cloud migration, so do not race duplicate IPC calls.
+	if (hubCompaniesRequest) return;
+	presentCompanyHub();
+	const generation = ++hubLoadGeneration;
+	const isCurrent = () => generation === hubLoadGeneration && document.body.classList.contains("hub");
+	$("hubError").textContent = errorMessage;
+	$("hubLoadStatus").textContent = "Loading companies…";
+	$("hubCompanies").setAttribute("aria-busy", "true");
+	$("hubRetry").hidden = true;
+	$("hubRetry").onclick = () => void renderHub();
+	const slowLoad = setTimeout(() => {
+		if (isCurrent()) {
+			$("hubLoadStatus").textContent = "The cloud service is taking longer than expected. Still loading your companies…";
+		}
+	}, 10_000);
+	const request = Promise.resolve().then(() => window.qorpera.listCompanies());
+	hubCompaniesRequest = request;
+	try {
+		const companies = await request;
+		if (isCurrent()) renderHubCompanies(companies);
+	} catch (error) {
+		if (isCurrent()) {
+			$("hubError").textContent = companyAccessError(error, "Companies could not be loaded. Try again.");
+			$("hubRetry").hidden = false;
+		}
+	} finally {
+		clearTimeout(slowLoad);
+		if (hubCompaniesRequest === request) hubCompaniesRequest = null;
+		if (isCurrent()) {
+			$("hubLoadStatus").textContent = "";
+			$("hubCompanies").setAttribute("aria-busy", "false");
+		}
+	}
+}
+
+function renderHubCompanies(companies) {
 	const grid = $("hubCompanies");
-	grid.innerHTML = "";
+	grid.replaceChildren();
 	for (const company of companies) {
 		const shell = document.createElement("div");
 		shell.className = "company-card-shell";
@@ -619,64 +681,47 @@ async function renderHub() {
 						: `Open ${company.name} company`,
 		);
 		card.onclick = async () => {
-			// The click must visibly land: opening provisions the local sandbox,
-			// which can take seconds — spin the card and quiet the rest.
+			// Opening connects the cloud Company File and can take seconds.
 			if (document.body.classList.contains("hub-opening")) return;
 			document.body.classList.add("hub-opening");
 			card.classList.add("loading");
 			const spinner = document.createElement("span");
 			spinner.className = "hub-spinner";
 			avatar.appendChild(spinner);
-			if (company.migrationRequired) {
-				const migrated = await window.qorpera.migrateLocalCompany(company.root);
-				document.body.classList.remove("hub-opening");
-				card.classList.remove("loading");
-				spinner.remove();
-				if (!migrated?.ok) {
-					$("hubError").textContent = migrated?.error ?? company.migrationError ?? "Cloud migration failed.";
+			let opened = false;
+			try {
+				if (company.migrationRequired) {
+					const migrated = await window.qorpera.migrateLocalCompany(company.root);
+					if (!migrated?.ok) throw new Error(migrated?.error ?? company.migrationError ?? "Cloud migration failed.");
+					await renderHub();
 					return;
 				}
-				await renderHub();
-				return;
-			}
-			if (company.invitationPending) {
-				const accepted = await window.qorpera.acceptCloudInvitation(company.invitationId);
-				document.body.classList.remove("hub-opening");
-				card.classList.remove("loading");
-				spinner.remove();
-				if (!accepted?.ok) {
-					$("hubError").textContent = accepted?.error ?? "Invitation could not be accepted.";
+				if (company.invitationPending) {
+					const accepted = await window.qorpera.acceptCloudInvitation(company.invitationId);
+					if (!accepted?.ok) throw new Error(accepted?.error ?? "Invitation could not be accepted.");
+					await renderHub();
 					return;
 				}
-				await renderHub();
-				return;
-			}
-			const materializeAndOpen = async () => {
-				try {
-					let root = company.root;
-					if (company.setupRequired) {
-						const result = await window.qorpera.materializeCloudProfile(company.profileId);
-						if (!result?.ok || !result.root) {
-							throw new Error(result?.error ?? "The Company File could not be connected on this device.");
-						}
-						root = result.root;
+				let root = company.root;
+				if (company.setupRequired) {
+					const result = await window.qorpera.materializeCloudProfile(company.profileId);
+					if (!result?.ok || !result.root) {
+						throw new Error(result?.error ?? "The Company File could not be connected on this device.");
 					}
-					if (!root) throw new Error("The Company File is not connected on this device.");
-					return await openCompany(root);
-				} catch (error) {
-					$("hubError").textContent = error instanceof Error ? error.message : String(error);
-					return false;
+					root = result.root;
 				}
-			};
-			void materializeAndOpen().then((opened) => {
-				// Success reloads this window into the company; reaching here
-				// means the open failed — hand the hub back.
+				if (!root) throw new Error("The Company File is not connected on this device.");
+				opened = await openCompany(root);
+			} catch (error) {
+				$("hubError").textContent = companyAccessError(error, "The company could not be opened.");
+			} finally {
+				// Success reloads this window; a failure returns control to the hub.
 				if (!opened) {
 					document.body.classList.remove("hub-opening");
 					card.classList.remove("loading");
 					spinner.remove();
 				}
-			});
+			}
 		};
 		shell.appendChild(card);
 		if (company.invitationPending || company.setupRequired || company.access) {
@@ -769,7 +814,7 @@ async function signOut() {
 		renderAccountWelcome();
 		document.documentElement.dataset.qorperaReady = "account";
 	} catch (error) {
-		$("hubError").textContent = error instanceof Error ? error.message : "Could not sign out.";
+		$("hubError").textContent = companyAccessError(error, "Could not sign out.");
 	} finally {
 		button.disabled = false;
 		button.textContent = "Sign out";
@@ -1022,13 +1067,14 @@ async function openCompany(root, errorTarget = $("hubError")) {
 		await window.qorpera.openCompany(root);
 		return true;
 	} catch (error) {
-		if (errorTarget) errorTarget.textContent = `Could not open the company: ${(error && error.message) || error}`;
+		if (errorTarget) errorTarget.textContent = companyAccessError(error, "Could not open the company. Try again.");
 		return false;
 	}
 }
 
 /** Boot into an already-open company after the desktop host loads us. */
 async function enterCompany(active) {
+	hubLoadGeneration += 1;
 	backendUrl = active.backendUrl;
 	companyId = active.id || "";
 	currentCompanyRoot = active.root || "";
@@ -12446,38 +12492,46 @@ $("signOutButton").onclick = signOut;
 applyNavAppearance();
 applyStaffAvatarStyle();
 
-async function bootWorkspace() {
+async function bootWorkspace(generation = workspaceBootGeneration) {
 	const info = await window.qorpera.appInfo();
+	if (generation !== workspaceBootGeneration) return;
 	$("hubVersion").textContent = `the foundation · v${info.version}`;
-	try {
-		applyFoundationUpdateState(await window.qorpera.updateState?.());
-	} catch (error) {
-		console.warn("Update state could not be read", error);
-	}
+	// Updater state is independent of account and company access too.
+	void Promise.resolve().then(() => window.qorpera.updateState?.())
+		.then(applyFoundationUpdateState)
+		.catch((error) => console.warn("Update state could not be read", error));
 	if (info.activeCompany) {
 		await enterCompany(info.activeCompany);
 	} else if (info.pendingCompany) {
-		await openCompany(info.pendingCompany);
+		$("hubLoadStatus").textContent = "Opening company…";
+		const opened = await openCompany(info.pendingCompany);
+		if (!opened && generation === workspaceBootGeneration) {
+			await renderHub({ errorMessage: $("hubError").textContent });
+		}
 	} else {
 		await renderHub();
 	}
 }
 
 async function bootSignedInWorkspace() {
-	if (typeof window.qorpera.intelligenceInfo === "function") {
-		try {
-			const intelligence = await window.qorpera.intelligenceInfo();
-			if (!intelligenceIsConfigured(intelligence)) {
-				await renderIntelligenceWelcome(intelligence);
-				document.documentElement.dataset.qorperaReady = "welcome";
-				return;
-			}
-		} catch (error) {
-			console.warn("intelligence readiness could not be read; continuing with the existing bridge", error);
-		}
+	// Qorpera authentication grants workspace access. Provider connection,
+	// quota, and execution readiness are checked only when doing model work.
+	const generation = ++workspaceBootGeneration;
+	presentCompanyHub();
+	$("hubLoadStatus").textContent = "Loading companies…";
+	$("hubError").textContent = "";
+	$("hubRetry").hidden = true;
+	try {
+		await bootWorkspace(generation);
+	} catch (error) {
+		if (generation !== workspaceBootGeneration) return;
+		presentCompanyHub();
+		$("hubLoadStatus").textContent = "";
+		$("hubError").textContent = companyAccessError(error, "The workspace could not be loaded. Try again.");
+		$("hubRetry").hidden = false;
+		$("hubRetry").onclick = () => void bootSignedInWorkspace();
 	}
-	await bootWorkspace();
-	document.documentElement.dataset.qorperaReady = document.body.classList.contains("hub") ? "hub" : "company";
+	if (document.body.classList.contains("company-shell")) document.documentElement.dataset.qorperaReady = "company";
 }
 
 (async () => {
