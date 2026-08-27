@@ -787,6 +787,12 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].s
 }
 
 @media (forced-colors: active) {
+	html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color:"] {
+		--staff-creature-filter: none !important;
+	}
+	html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color:"] > .staff-creature-image {
+		filter: none !important;
+	}
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face i,
 	html[data-staff-avatar-style="creatures"] .staff-creature-choice::before,
 	html[data-staff-avatar-style="creatures"] .staff-creature-choice::after {

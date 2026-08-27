@@ -158,6 +158,9 @@ describe("shell starter staff templates", () => {
 		expect(index.indexOf('id="staff-color-charcoal"')).toBeLessThan(index.indexOf('<header id="titlebar">'));
 		expect(motion).toContain("filter: var(--staff-creature-filter, none) !important;");
 		expect(motion).not.toContain('url("./staff-creature-colors.svg#');
+		expect(motion).toMatch(
+			/@media \(forced-colors: active\) \{[\s\S]*?\.staff-avatar\[style\*="--staff-color:"\] \{\s*--staff-creature-filter: none !important;\s*\}[\s\S]*?\.staff-avatar\[style\*="--staff-color:"\] > \.staff-creature-image \{\s*filter: none !important;/,
+		);
 	});
 
 	it("keeps character identity independent from suggested role identity", () => {
