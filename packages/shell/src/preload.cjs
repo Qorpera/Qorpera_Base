@@ -8,8 +8,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 const sidebarTranslucency = process.argv.includes("--qorpera-sidebar-translucency=on") ? "on" : "off";
 function syncWindowControlsVisibility() {
 	if (process.platform !== "darwin" || !document.documentElement) return;
-	const fillsDisplay = window.outerWidth >= window.screen.width && window.outerHeight >= window.screen.height;
-	document.documentElement.dataset.windowControls = fillsDisplay ? "hidden" : "visible";
+	document.documentElement.dataset.windowControls =
+		navigator.windowControlsOverlay?.visible === false ? "hidden" : "visible";
 }
 function applyInitialShellAppearance() {
 	document.documentElement.dataset.platform = process.platform;
@@ -24,7 +24,7 @@ else {
 		{ once: true },
 	);
 }
-window.addEventListener("resize", syncWindowControlsVisibility);
+navigator.windowControlsOverlay?.addEventListener("geometrychange", syncWindowControlsVisibility);
 
 // The preload learns attachment only from kernel-confirmed replies, so the
 // fixed renderer never receives an ambient "current child" capability.
