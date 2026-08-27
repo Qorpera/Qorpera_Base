@@ -19,46 +19,59 @@ html[data-staff-avatar-style="creatures"] .staff-avatar {
 html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-creature-image {
 	width: 100%;
 	height: 100%;
+	filter: var(--staff-creature-filter, none) !important;
 }
 
-/* Character art is shipped with a transparent alpha channel. The SVG filters
- * replace its original teal pixels with the persisted profile color while
- * preserving the exact silhouette and anti-aliased edge. */
+/* Character art is shipped with a transparent alpha channel. Document-local
+ * SVG filters are available before the first roster paint, avoiding Chromium's
+ * intermittent fallback to the source teal while an external filter reloads. */
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #171716"],
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #171716"] > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#charcoal");
+	--staff-creature-filter: url("#staff-color-charcoal") !important;
 }
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #9c7151"],
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #9c7151"] > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#brown");
+	--staff-creature-filter: url("#staff-color-brown") !important;
 }
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #ff365e"],
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #ff365e"] > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#coral");
+	--staff-creature-filter: url("#staff-color-coral") !important;
 }
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #ff642e"],
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #ff642e"] > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#orange");
+	--staff-creature-filter: url("#staff-color-orange") !important;
 }
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #ffae00"],
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #ffae00"] > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#amber");
+	--staff-creature-filter: url("#staff-color-amber") !important;
 }
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #00c878"],
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #00c878"] > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#emerald");
+	--staff-creature-filter: url("#staff-color-emerald") !important;
 }
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #00bfb3"],
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #00bfb3"] > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#teal");
+	--staff-creature-filter: url("#staff-color-teal") !important;
 }
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #0071e3"],
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #0071e3"] > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#cobalt");
+	--staff-creature-filter: url("#staff-color-cobalt") !important;
 }
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #8a4dff"],
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #8a4dff"] > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#violet");
+	--staff-creature-filter: url("#staff-color-violet") !important;
 }
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #ff2994"],
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #ff2994"] > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#pink");
+	--staff-creature-filter: url("#staff-color-pink") !important;
 }
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #7c7c7a"],
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #7c7c7a"] > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#gray");
+	--staff-creature-filter: url("#staff-color-gray") !important;
 }
+html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #5367e8"],
 html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color: #5367e8"] > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#indigo");
+	--staff-creature-filter: url("#staff-color-indigo") !important;
 }
 
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker .staff-color-picker {
@@ -78,43 +91,43 @@ html[data-staff-avatar-style="creatures"] .staff-color-choice[aria-label="Use #5
 }
 
 html[data-staff-avatar-style="creatures"] .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#cobalt");
+	filter: url("#staff-color-cobalt");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #171716"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#charcoal");
+	filter: url("#staff-color-charcoal");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #9c7151"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#brown");
+	filter: url("#staff-color-brown");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #ff365e"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#coral");
+	filter: url("#staff-color-coral");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #ff642e"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#orange");
+	filter: url("#staff-color-orange");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #ffae00"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#amber");
+	filter: url("#staff-color-amber");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #00c878"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#emerald");
+	filter: url("#staff-color-emerald");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #00bfb3"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#teal");
+	filter: url("#staff-color-teal");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #0071e3"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#cobalt");
+	filter: url("#staff-color-cobalt");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #8a4dff"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#violet");
+	filter: url("#staff-color-violet");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #ff2994"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#pink");
+	filter: url("#staff-color-pink");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #7c7c7a"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#gray");
+	filter: url("#staff-color-gray");
 }
 html[data-staff-avatar-style="creatures"] .staff-appearance-picker:has(.staff-color-choice[aria-label="Use #5367e8"][aria-checked="true"]) .staff-creature-choice > .staff-creature-image {
-	filter: url("./staff-creature-colors.svg#indigo");
+	filter: url("#staff-color-indigo");
 }
 
 html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"] {
@@ -774,6 +787,12 @@ html[data-staff-avatar-style="creatures"] .staff-avatar[data-creature="folio"].s
 }
 
 @media (forced-colors: active) {
+	html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color:"] {
+		--staff-creature-filter: none !important;
+	}
+	html[data-staff-avatar-style="creatures"] .staff-avatar[style*="--staff-color:"] > .staff-creature-image {
+		filter: none !important;
+	}
 	html[data-staff-avatar-style="creatures"] .staff-avatar > .staff-face i,
 	html[data-staff-avatar-style="creatures"] .staff-creature-choice::before,
 	html[data-staff-avatar-style="creatures"] .staff-creature-choice::after {

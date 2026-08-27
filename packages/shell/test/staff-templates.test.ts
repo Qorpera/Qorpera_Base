@@ -119,7 +119,7 @@ describe("shell starter staff templates", () => {
 		expect(motion).not.toMatch(/data-creature="folio"\]\.(?:writing|needs-attention)/);
 		expect(motion).not.toMatch(/data-creature="folio"\]\s*>\s*\.staff-creature-image/);
 		expect(motion).not.toContain("lantern");
-		expect(motion).toContain('filter: url("./staff-creature-colors.svg#cobalt")');
+		expect(motion).toContain('--staff-creature-filter: url("#staff-color-cobalt") !important;');
 		expect(motion).toContain(".staff-appearance-picker .staff-color-picker");
 		expect(colors.match(/<filter id=/g)).toHaveLength(12);
 		expect(colors).toContain('flood-color="#ff365e"');
@@ -137,6 +137,30 @@ describe("shell starter staff templates", () => {
 		);
 		expect(renderer).not.toContain('showThreadActivity("typing")');
 		expect(renderer).not.toContain('showThreadActivity("thinking")');
+	});
+
+	it("keeps creature color filters document-local for stable roster paints", () => {
+		const index = readFileSync(new URL("../userland/index.html", import.meta.url), "utf8");
+		const motion = readFileSync(new URL("../userland/character-motion.css", import.meta.url), "utf8");
+		const colors = readFileSync(new URL("../userland/staff-creature-colors.svg", import.meta.url), "utf8");
+		const inlinePalette = Object.fromEntries(
+			[...index.matchAll(/<filter id="staff-color-([^"]+)"[^>]*>[\s\S]*?<feFlood flood-color="([^"]+)"/g)].map(
+				([, id, color]) => [id, color],
+			),
+		);
+		const assetPalette = Object.fromEntries(
+			[...colors.matchAll(/<filter id="([^"]+)"[^>]*>[\s\S]*?<feFlood flood-color="([^"]+)"/g)].map(
+				([, id, color]) => [id, color],
+			),
+		);
+		expect(Object.keys(inlinePalette)).toHaveLength(12);
+		expect(inlinePalette).toEqual(assetPalette);
+		expect(index.indexOf('id="staff-color-charcoal"')).toBeLessThan(index.indexOf('<header id="titlebar">'));
+		expect(motion).toContain("filter: var(--staff-creature-filter, none) !important;");
+		expect(motion).not.toContain('url("./staff-creature-colors.svg#');
+		expect(motion).toMatch(
+			/@media \(forced-colors: active\) \{[\s\S]*?\.staff-avatar\[style\*="--staff-color:"\] \{\s*--staff-creature-filter: none !important;\s*\}[\s\S]*?\.staff-avatar\[style\*="--staff-color:"\] > \.staff-creature-image \{\s*filter: none !important;/,
+		);
 	});
 
 	it("keeps character identity independent from suggested role identity", () => {
