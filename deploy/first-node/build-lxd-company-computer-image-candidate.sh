@@ -10,13 +10,13 @@ set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
 EXPECTED_BASE_FINGERPRINT="7ef31bed9834094a06517d63b93434588049efcbe2ab5d67419a6167988b7d4f"
-EXPECTED_PACKAGE_MANIFEST_SHA256="9b795e044910f0f848b70e00a499b755f052489219dad2bbc29cf8aff768e566"
+EXPECTED_PACKAGE_MANIFEST_SHA256="12a62029aa35bc610965ad57944cca0fa85b8d3b045eb9e66b18cec356aa8721"
 STAGING_ROOT="/home/company41-admin/step3-lxd/lxd-company-computer-guest-v1"
 LXD_POOL="qorpera-vm"
 LXD_NETWORK="qorpera0"
 LXD_BUILDER_PROJECT="default"
-BUILDER_INSTANCE="qorpera-company-computer-image-build-v2"
-IMAGE_ALIAS="qorpera-company-computer-ubuntu-26.04-v2-unsigned"
+BUILDER_INSTANCE="qorpera-company-computer-image-build-v3"
+IMAGE_ALIAS="qorpera-company-computer-ubuntu-26.04-v3-unsigned"
 STATE_LOG="/var/log/qorpera-lxd-company-computer-image-candidate.txt"
 
 if [[ ${EUID} -ne 0 ]]; then

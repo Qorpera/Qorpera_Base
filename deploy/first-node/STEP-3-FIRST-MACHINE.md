@@ -29,18 +29,19 @@ provisioning), which also sidesteps the frozen lease-semantics follow-up.
    runner image nested, archive sha `c9370c82…46239` verified), provider
    artifact, unit, env example, installer, and the image build script.
 
-## LIVE STATE at handoff (updated 2026-08-27 — READ THIS FIRST)
+## LIVE STATE at handoff (verified 2026-08-27 — READ THIS FIRST)
 
-The full first-machine watch proof passed. The immutable replacement exists
-on `company41-node-01` as
-`qorpera-cc-6d9da3a0f09b4d63b79b8a3aad7919d9`, at `10.41.0.218` while
-running, from signed image
-`b75114594b82a76a57585f7c626855788b2be378d816c7e95d1ff788953bb1b0`.
-The VM was observed stopped during the direct-NAS correction audit. The old
-diagnostic VM root was deleted by the guarded activation; its image,
-identity volume, dataset, credentials, and provider-journal backup remain.
+The full first-machine watch proof passed and the direct-NAS activation is
+complete. The current instance on `company41-node-01` is
+`qorpera-cc-6d9da3a0f09b4d63b79b8a3aad7919d9`; it was `STOPPED` at the latest
+read-only audit. Its expanded LXD configuration mounts
+`/mnt/qorpera-companies/company41` directly at `/srv/qorpera/dataset`, and
+its immutable base image is
+`614dce363812ca0f32f39cb7eb7e6d2d4439a4c5b3fca633d2a2afa8f4a15ec2`.
+The guarded relocation preserved the Compute Identity volume and deleted
+only the disposable prior VM root.
 
-### Signed immutable result
+### Historical first-machine signed result
 
 - Source commit: `e21a78e504396e823ff70cb6825baa2068465a65`.
 - Guest package manifest:
@@ -106,9 +107,9 @@ the complete product flow was repeated at `2026-08-26T22:37Z`:
   `a692db6ce579d86d52e3f731a4442f7d24de7a24dade8a94c06cf7fd384bb0e7`.
   The direct-NAS image below supersedes that historical proof-point script.
 
-The corrected guest package contract hashes to
-`a18cbb67634c6f6bd88235c25b858466bff4b786d39ae6f7fa265b4bf11e237e`. It is pinned in the candidate builder, provenance signer,
-and package test. The replacement is built and signed, but not yet activated:
+The direct-NAS guest package contract hashes to
+`a18cbb67634c6f6bd88235c25b858466bff4b786d39ae6f7fa265b4bf11e237e`.
+That generation was built, signed, and activated as the current image:
 
 - source commit:
   `6854fb643551dc23e564cf606da342a7f11f46dd` (pushed to
@@ -123,6 +124,16 @@ and package test. The replacement is built and signed, but not yet activated:
 The provenance signature was verified off-node against the installed public
 key and binds the exact fingerprint, guest manifest, runner pins, evidence,
 and source commit above.
+
+The later desktop and viewer corrections in the current PR produce guest
+manifest
+`12a62029aa35bc610965ad57944cca0fa85b8d3b045eb9e66b18cec356aa8721`.
+They were reviewed through the live hot-patched desktop and persistent
+per-screen NAS state, but they are not yet baked into another immutable
+image. The candidate builder therefore targets the fresh, intentionally
+unused alias `qorpera-company-computer-ubuntu-26.04-v3-unsigned`; that v3
+candidate still needs to be built, clean-boot verified, signed, and activated
+after this PR merges.
 
 ### Direct NAS correction (2026-08-27)
 
@@ -153,48 +164,24 @@ per-turn latency and never substitutes a VM-root-only snapshot for a real
 dataset rollback point. The concrete Synology snapshot command still needs
 to be configured on the node before automatic rollback points become active.
 
-Activation is intentionally atomic and still pending: apply migration
-`20260827000000_company_computer_live_nas.sql`, prepare the signed provider,
-then run the guarded dataset relocation.
-Do not change the hosted registry to `company41` while the old signed guest is
-installed, because that guest still expects the retired sync/workbench
-layout.
-
-The source-controlled `op-d-activate.sh` occupies the temporary, already
-granted sudo path. Run its phases separately so preparation cannot move the
-registry and verification happens before the grant removes itself:
-
-```bash
-cp ~/step3-lxd/op-d-phases/prepare ~/step3-lxd/op-d-phase
-sudo bash ~/step3-lxd/op-d-activate.sh
-# Apply and verify the hosted migration here.
-cp ~/step3-lxd/op-d-phases/relocate ~/step3-lxd/op-d-phase
-sudo bash ~/step3-lxd/op-d-activate.sh
-cp ~/step3-lxd/op-d-phases/verify ~/step3-lxd/op-d-phase
-sudo bash ~/step3-lxd/op-d-activate.sh
-# Configure and prove native NAS snapshots before final cleanup.
-cp ~/step3-lxd/op-d-phases/finalize ~/step3-lxd/op-d-phase
-sudo bash ~/step3-lxd/op-d-activate.sh
-```
-
-If power or transport interrupts the replacement after the registry enters
-`recovering`, select `op-d-phases/recover` in the same way and rerun the
-argument-free sudo command. Never edit the provider journal or delete the
+Migration `20260827000000_company_computer_live_nas.sql` and the guarded
+dataset relocation have already completed. The hosted registry and the live
+instance now use dataset `company41`; do not rerun the prepare or relocate
+phases. `op-d-phases/recover` remains a recovery procedure only for an
+interrupted future relocation. Never edit the provider journal or delete the
 identity volume manually.
 
 ### Validation and remaining cleanup
 
-- Final direct-NAS/sandbox/guest/viewer focus: 93 tests passed across eight
-  shell files; persistent-provider focus: 24 tests passed across two files.
-- Provider, orchestrator, runner-guest, and Company Computer guest packaging
-  and pin checks: all four passed.
-- `npm run check` still stops on four unrelated inherited Biome warnings.
-  Every remaining check stage passes when run separately. Direct typecheck
-  still reports 772 inherited generated model-catalog `unknown`/`never`
-  diagnostics, with none under `packages/shell` or
-  `packages/runner-orchestrator`.
-- The guarded activation script removes the exact temporary sudoers file in
-  its final phase, after provider, journal, image, and dataset verification.
+- Local review of the current correction passed `npm run check`, deployment
+  shell and workflow-YAML validation, 51 provider/viewer tests, 121
+  shell/desktop tests, and all four deterministic packaging contracts. The
+  expanded Step 2 LXD workflow must repeat those checks after the PR update.
+- Automatic rollback points are not active until the concrete Synology
+  snapshot command is configured and proved on the node.
+- Building and activating the v3 immutable image remains release work; the
+  already-live v2 image and direct NAS dataset must stay available until the
+  v3 clean-boot and provenance checks pass.
 - The proof used the current Step 3 development shell because the installed
   `/Applications/Qorpera Base.app` predates the screen IPC handlers. Package
   and install a fresh shell build before treating the installed app as the
@@ -206,15 +193,15 @@ identity volume manually.
 - Logical computer: `6d9da3a0-f09b-4d63-b79b-8a3aad7919d9`.
 - Company computer: `b13c3dc2-2bf0-4be0-8675-52bece89ee1a`.
 - Compute identity: `50b6456a-3f13-4cd7-a671-a8619eb758d0`.
-- Registry dataset today: `companies/0d2053f0-c1a8-444d-99a8-68c8214e5414`;
-  corrected activation target: `company41`.
+- Registry and instance dataset: `company41`, backed by
+  `/mnt/qorpera-companies/company41` on the NAS.
 - Screen viewer endpoint: `100.75.4.70:18446` over Tailscale.
 - Current observed state during the correction audit: VM stopped.
 
 The original operator plan below is historical. `op-a-prepare.sh` still fails
-closed because it encodes the obsolete local dataset/workbench cutover.
-`op-d-activate.sh` has been replaced by the guarded direct-NAS phases in the
-Direct NAS correction section above.
+closed because it encodes the obsolete local dataset/workbench cutover. The
+guarded `op-d-activate.sh` direct-NAS activation has completed and must not be
+replayed as an ordinary setup step.
 
 ## Historical operator transcript (do not run)
 

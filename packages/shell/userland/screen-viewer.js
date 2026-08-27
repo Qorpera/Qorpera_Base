@@ -34,6 +34,7 @@ function openScreenViewer({ url, title, onClosed }) {
 	close.setAttribute("aria-label", "Close screen");
 	close.textContent = "×";
 	const headingWrap = document.createElement("span");
+	headingWrap.className = "screen-viewer-heading";
 	headingWrap.append(heading, document.createTextNode("  "), hint);
 	titlebar.append(headingWrap, close);
 	const stage = document.createElement("div");

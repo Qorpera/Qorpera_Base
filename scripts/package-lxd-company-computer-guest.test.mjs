@@ -115,6 +115,16 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 			builder.includes(`EXPECTED_PACKAGE_MANIFEST_SHA256="${manifestSha256}"`),
 			"the image candidate recipe must pin this exact package manifest",
 		);
+		assert.match(
+			builder,
+			/BUILDER_INSTANCE="qorpera-company-computer-image-build-v3"/,
+			"the candidate builder must use a fresh immutable builder name",
+		);
+		assert.match(
+			builder,
+			/IMAGE_ALIAS="qorpera-company-computer-ubuntu-26\.04-v3-unsigned"/,
+			"the candidate builder must publish to the fresh v3 alias",
+		);
 		const signer = await readFile(
 			join(repositoryRoot, "deploy/first-node/sign-company-image-provenance.mjs"),
 			"utf-8",
@@ -157,10 +167,28 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 			"desktop state must stay outside the visible Company File",
 		);
 		assert.ok(wrapper.includes("/desktop-icons/style"), "the desktop contract must suppress raw XFCE icons");
+		assert.match(
+			wrapper,
+			/set_xfce_property xfce4-desktop \/desktop-menu\/show bool true/,
+			"the desktop contract must explicitly enable the native XFCE menu",
+		);
+		assert.match(
+			wrapper,
+			/set_xfce_property xfwm4 \/general\/show_dock_shadow bool false/,
+			"the transparent dock must explicitly disable its compositor shadow",
+		);
+		assert.ok(wrapper.includes("-geometry 1920x1200"), "the desktop and viewer must share the 16:10 frame");
 		assert.ok(wrapper.includes("QORPERA_SCREEN_MONITOR"), "the wallpaper must target the display's real monitor");
 		const panel = await readFile(join(outputRoot, "xfce4-panel.xml"), "utf-8");
 		assert.match(panel, /<property name="length" type="uint" value="1"\/>/);
 		assert.doesNotMatch(panel, /<property name="length" type="double"/);
+		assert.match(panel, /<property name="icon-size" type="uint" value="60"\/>/);
+		assert.match(panel, /<property name="size" type="uint" value="78"\/>/);
+		assert.match(panel, /<property name="background-style" type="uint" value="1"\/>/);
+		assert.match(
+			panel,
+			/<property name="background-rgba" type="array">\s*(?:<value type="double" value="0"\/>\s*){4}<\/property>/,
+		);
 		assert.ok(panel.includes("qorpera-files.desktop"));
 		assert.ok(panel.includes("qorpera-terminal.desktop"));
 		assert.ok((await readFile(join(outputRoot, "qorpera-terminal"), "utf-8")).includes("--command=/bin/bash"));
