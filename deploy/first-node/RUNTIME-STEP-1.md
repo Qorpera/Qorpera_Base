@@ -356,6 +356,7 @@ credential custody are unchanged. Deployment evidence remains in
 | v45 `a5c6cc96-ff31-45a7-a5ad-6361207195e4` | Provider exited before delivery; older diagnostic was unclassified. |
 | v46 `de24dff0-7b80-48ed-beb6-c274bfd6199d` | Provider exited after MCP initialization; no public send. |
 | v47 `12957817-d199-4e08-a6f6-e8ee55065697` | Provider allowance unavailable after MCP initialization; no public send. |
+| v47 retry `ff2f8b31-718e-493b-a825-06b36fb0be99` | Same provider allowance rejection; no public send or NAS proof file. |
 
 The v47 job is `5f172aeb-ed74-467e-9cdb-bc2bb8ab0ba4`, admitted through the
 installed app at `2026-08-27T10:50:43.858648Z`. The native host recorded:
@@ -372,6 +373,21 @@ The failed test was terminalized through the existing scoped operator helper
 and audit path at `2026-08-27T10:52:45.850195Z`; no member identity was forged.
 The send count is zero and `runtime-step1-v47-check.txt` is absent from the NAS.
 No billing setting, reset credit, account, or provider was changed.
+
+One fresh retry was submitted through the installed app at
+`2026-08-27T14:38:33.155497Z`, using the unchanged v47 runtime and connected
+OpenAI account. Its job is `d5ad6aa8-2f48-4d73-aaa1-579583ec1d55`.
+The native service started at `14:38:47Z` and reported the same allowance
+diagnostic with `[mouth=ready]` at `14:39:01Z`. The app displayed the failure;
+there was no committed progress or final message. The expected
+`runtime-step1-v47-retry.txt` is absent from the live NAS tree.
+
+The scoped operator helper closed only this failed acceptance retry at
+`2026-08-27T14:39:45.336013Z`, with a matching audit event. Verification found
+zero active native leases for this run and zero queued or leased Company41
+jobs. The dispatcher remains active. The receipt-replay check was not run,
+because no real send exists to replay. This retry did not change billing,
+reset credits, account selection, model selection, or deployment.
 
 Restore the connected provider's allowance, then finish real acceptance:
 progress before exit, one final receipt, NAS file contents, second-client
