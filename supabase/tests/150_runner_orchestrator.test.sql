@@ -353,6 +353,43 @@ select set_config(
 	false
 );
 
+reset role;
+do $$
+begin
+	if not public.qorpera_cloud_routine_trigger_valid(
+		'{"id":"weekday-anchor","kind":"schedule","intervalMinutes":1440,"startAt":"2026-08-24T09:00:00.000Z","weekdays":["monday","tuesday","wednesday","thursday","friday"],"localTime":"09:00","timeZone":"UTC"}'::jsonb
+	) then
+		raise exception 'cloud routine rejected an anchored weekday interval';
+	end if;
+	if public.qorpera_cloud_routine_trigger_valid(
+		'{"id":"weekday-anchor","kind":"schedule","intervalMinutes":1440,"startAt":"now","weekdays":["monday","tuesday","wednesday","thursday","friday"],"localTime":"09:00","timeZone":"UTC"}'::jsonb
+	) then
+		raise exception 'cloud routine accepted a relative weekday anchor';
+	end if;
+	if not public.qorpera_cloud_routine_trigger_valid(
+		'{"id":"office-hours","kind":"schedule","intervalMinutes":30,"months":[2,5],"weekdays":["monday","tuesday","wednesday","thursday","friday"],"windowStart":"09:00","windowEnd":"17:00","timeZone":"UTC"}'::jsonb
+	) then
+		raise exception 'cloud routine rejected an advanced interval window';
+	end if;
+	if public.qorpera_cloud_routine_trigger_valid(
+		'{"id":"bad-office-hours","kind":"schedule","intervalMinutes":30,"months":[2,2],"windowStart":"09:00","windowEnd":"17:00","timeZone":"UTC"}'::jsonb
+	) then
+		raise exception 'cloud routine accepted duplicate advanced months';
+	end if;
+	if public.qorpera_cloud_routine_trigger_valid(
+		'{"id":"bad-office-hours","kind":"schedule","intervalMinutes":30,"windowStart":"17:00","windowEnd":"09:00","timeZone":"UTC"}'::jsonb
+	) then
+		raise exception 'cloud routine accepted a reversed advanced window';
+	end if;
+	if public.qorpera_cloud_routine_trigger_valid(
+		'{"id":"bad-office-hours","kind":"schedule","intervalMinutes":30,"windowStart":"09:00","windowEnd":"17:00","timeZone":"auto"}'::jsonb
+	) then
+		raise exception 'cloud routine accepted an unresolved advanced timezone';
+	end if;
+end
+$$;
+set role authenticated;
+
 do $$
 begin
 	begin

@@ -431,6 +431,84 @@ describe("agent routines", () => {
 		expect(readScheduledJobs(root)).toEqual([]);
 	});
 
+	it("persists advanced interval windows with calendar filters", () => {
+		const job = createScheduledJob(root, {
+			title: "Office-hours review",
+			prompt: "Review the queue during office hours.",
+			triggers: [
+				{
+					kind: "schedule",
+					intervalMinutes: 30,
+					months: [2, 5],
+					weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+					windowStart: "09:00",
+					windowEnd: "17:00",
+					timeZone: "Europe/Copenhagen",
+				},
+			],
+		});
+		expect(readScheduledJobs(root)[0].triggers[0]).toMatchObject({
+			intervalMinutes: 30,
+			months: [2, 5],
+			weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+			windowStart: "09:00",
+			windowEnd: "17:00",
+			timeZone: "Europe/Copenhagen",
+		});
+		expect(() =>
+			updateScheduledJob(root, job.id, {
+				triggers: [
+					{
+						kind: "schedule",
+						intervalMinutes: 30,
+						windowStart: "17:00",
+						windowEnd: "09:00",
+						timeZone: "Europe/Copenhagen",
+					},
+				],
+			}),
+		).toThrow(/windowStart/);
+		expect(() =>
+			updateScheduledJob(root, job.id, {
+				triggers: [
+					{
+						kind: "schedule",
+						intervalMinutes: 30,
+						windowStart: "09:00",
+						windowEnd: "17:00",
+						timeZone: "auto",
+					},
+				],
+			}),
+		).toThrow(/IANA timezone/);
+	});
+
+	it("persists an anchored weekday interval", () => {
+		const startAt = "2026-08-24T09:00:00.000Z";
+		const job = createScheduledJob(root, {
+			title: "Weekday review",
+			prompt: "Review the weekday queue.",
+			triggers: [
+				{
+					kind: "schedule",
+					intervalMinutes: 24 * 60,
+					startAt,
+					weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+					localTime: "09:00",
+					timeZone: "Europe/Copenhagen",
+				},
+			],
+		});
+		expect(job.triggers[0]).toMatchObject({
+			intervalMinutes: 24 * 60,
+			startAt,
+			weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+			localTime: "09:00",
+			timeZone: "Europe/Copenhagen",
+		});
+		expect(readScheduledJobs(root)[0].triggers[0]).toEqual(job.triggers[0]);
+	});
+
 	it("keeps a kernel suspension until the founder explicitly resumes the job", () => {
 		const job = createScheduledJob(root, {
 			title: "Reliability sweep",

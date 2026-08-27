@@ -11,6 +11,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
+	ROUTINE_WEEKDAYS,
 	type RoutineTrigger,
 	type ScheduledJob,
 	scheduledJobIntervalMinutes,
@@ -117,7 +118,11 @@ function nearestWeeklyOccurrence(
 ): number | undefined {
 	if (!trigger.weekdays || !trigger.localTime || !trigger.timeZone) return undefined;
 	const timeZone = resolvedScheduleTimeZone(trigger);
-	const current = zonedDateTimeParts(timestampMs, timeZone);
+	const startAt = trigger.startAt ? Date.parse(trigger.startAt) : Number.NaN;
+	if (direction === "before-or-at" && Number.isFinite(startAt) && timestampMs < startAt) return undefined;
+	const searchFrom =
+		direction === "after" && Number.isFinite(startAt) && timestampMs < startAt ? startAt - 1 : timestampMs;
+	const current = zonedDateTimeParts(searchFrom, timeZone);
 	for (let distance = 0; distance <= 7; distance++) {
 		const date = shiftedLocalDate(current, direction === "before-or-at" ? -distance : distance);
 		const weekday = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][
@@ -126,6 +131,7 @@ function nearestWeeklyOccurrence(
 		if (!trigger.weekdays.includes(weekday as (typeof trigger.weekdays)[number])) continue;
 		const occurrence = localDateTimeInstant(date, trigger.localTime, timeZone);
 		if (occurrence === undefined) continue;
+		if (Number.isFinite(startAt) && occurrence < startAt) continue;
 		if (direction === "before-or-at" ? occurrence <= timestampMs : occurrence > timestampMs) return occurrence;
 	}
 	return undefined;
@@ -136,6 +142,75 @@ function weeklyOccurrencesAfter(trigger: ScheduleTrigger, afterMs: number, throu
 	let cursor = afterMs;
 	while (count < 10_000) {
 		const occurrence = nearestWeeklyOccurrence(trigger, cursor, "after");
+		if (occurrence === undefined || occurrence > throughMs) return count;
+		count++;
+		cursor = occurrence;
+	}
+	return count;
+}
+
+function advancedSchedule(
+	trigger: ScheduleTrigger,
+): trigger is ScheduleTrigger & { windowStart: string; windowEnd: string; timeZone: string } {
+	return Boolean(trigger.windowStart && trigger.windowEnd && trigger.timeZone && !trigger.localTime);
+}
+
+function localClockMinutes(value: string): number {
+	const [hour, minute] = value.split(":").map(Number);
+	return hour * 60 + minute;
+}
+
+function advancedDateMatches(trigger: ScheduleTrigger, date: LocalDateParts): boolean {
+	if (trigger.months && !trigger.months.includes(date.month)) return false;
+	if (!trigger.weekdays) return true;
+	const weekday = ROUTINE_WEEKDAYS[new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay()];
+	return weekday !== undefined && trigger.weekdays.includes(weekday);
+}
+
+function advancedDateOccurrences(trigger: ScheduleTrigger, date: LocalDateParts): number[] {
+	if (!advancedSchedule(trigger) || !advancedDateMatches(trigger, date)) return [];
+	const start = localClockMinutes(trigger.windowStart);
+	const end = localClockMinutes(trigger.windowEnd);
+	const timeZone = resolvedScheduleTimeZone(trigger);
+	const occurrences: number[] = [];
+	for (let minute = start; minute <= end; minute += trigger.intervalMinutes) {
+		const localTime = `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+		const occurrence = localDateTimeInstant(date, localTime, timeZone);
+		if (occurrence !== undefined) occurrences.push(occurrence);
+	}
+	return occurrences;
+}
+
+function nearestAdvancedOccurrence(
+	trigger: ScheduleTrigger,
+	timestampMs: number,
+	direction: "before-or-at" | "after",
+): number | undefined {
+	if (!advancedSchedule(trigger)) return undefined;
+	const timeZone = resolvedScheduleTimeZone(trigger);
+	const current = zonedDateTimeParts(timestampMs, timeZone);
+	for (let distance = 0; distance <= 370; distance++) {
+		const date = shiftedLocalDate(current, direction === "before-or-at" ? -distance : distance);
+		const occurrences = advancedDateOccurrences(trigger, date);
+		if (direction === "before-or-at") {
+			for (let index = occurrences.length - 1; index >= 0; index--) {
+				const occurrence = occurrences[index];
+				if (occurrence !== undefined && occurrence <= timestampMs) return occurrence;
+			}
+		} else {
+			for (const occurrence of occurrences) {
+				if (occurrence > timestampMs) return occurrence;
+			}
+		}
+	}
+	return undefined;
+}
+
+function advancedOccurrencesAfter(trigger: ScheduleTrigger, afterMs: number, throughMs: number): number {
+	let count = 0;
+	let cursor = afterMs;
+	while (count < 10_000) {
+		const occurrence = nearestAdvancedOccurrence(trigger, cursor, "after");
 		if (occurrence === undefined || occurrence > throughMs) return count;
 		count++;
 		cursor = occurrence;
@@ -222,6 +297,20 @@ export function decideScheduledWake(
 ): WakeDecision {
 	if (!job?.enabled || job.suspendedReason) return { due: false, coalesced: 0 };
 	const schedule = job.triggers.find((trigger): trigger is ScheduleTrigger => trigger.kind === "schedule");
+	if (schedule && advancedSchedule(schedule)) {
+		const latest = nearestAdvancedOccurrence(schedule, nowMs, "before-or-at");
+		if (latest === undefined) return { due: false, coalesced: 0 };
+		if (!state.lastWakeAt) {
+			const createdAt = Date.parse(job.createdAt);
+			return Number.isFinite(createdAt) && latest < createdAt
+				? { due: false, coalesced: 0 }
+				: { due: true, coalesced: 0 };
+		}
+		const last = Date.parse(state.lastWakeAt);
+		if (!Number.isFinite(last)) return { due: true, coalesced: 0 };
+		if (last >= latest) return { due: false, coalesced: 0 };
+		return { due: true, coalesced: Math.max(0, advancedOccurrencesAfter(schedule, last, nowMs) - 1) };
+	}
 	if (schedule?.weekdays && schedule.localTime && schedule.timeZone) {
 		const latest = nearestWeeklyOccurrence(schedule, nowMs, "before-or-at");
 		if (latest === undefined) return { due: false, coalesced: 0 };
@@ -271,6 +360,10 @@ export function decideScheduledWake(
  */
 export function scheduledWakeOccurrenceKey(job: ScheduledJob, nowMs: number): string | undefined {
 	const schedule = job.triggers.find((trigger): trigger is ScheduleTrigger => trigger.kind === "schedule");
+	if (schedule && advancedSchedule(schedule)) {
+		const latest = nearestAdvancedOccurrence(schedule, nowMs, "before-or-at");
+		return latest === undefined ? undefined : `window:${latest}`;
+	}
 	if (schedule?.weekdays && schedule.localTime && schedule.timeZone) {
 		const latest = nearestWeeklyOccurrence(schedule, nowMs, "before-or-at");
 		return latest === undefined ? undefined : `weekly:${latest}`;
@@ -301,6 +394,11 @@ export function nextScheduledWakeAt(job: ScheduledJob, state: ScheduledJobRunSta
 	if (!job.enabled || job.suspendedReason) return undefined;
 	const schedule = job.triggers.find((trigger): trigger is ScheduleTrigger => trigger.kind === "schedule");
 	if (!schedule) return undefined;
+	if (advancedSchedule(schedule)) {
+		if (decideScheduledWake(job, state, nowMs).due) return new Date(nowMs).toISOString();
+		const next = nearestAdvancedOccurrence(schedule, nowMs, "after");
+		return next === undefined ? undefined : new Date(next).toISOString();
+	}
 	if (schedule.weekdays && schedule.localTime && schedule.timeZone) {
 		if (decideScheduledWake(job, state, nowMs).due) return new Date(nowMs).toISOString();
 		const next = nearestWeeklyOccurrence(schedule, nowMs, "after");

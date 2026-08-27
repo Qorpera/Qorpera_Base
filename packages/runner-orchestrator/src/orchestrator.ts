@@ -657,8 +657,19 @@ type RoutineScheduleTrigger =
 			id: string;
 			kind: "schedule";
 			intervalMinutes: number;
+			startAt?: string;
 			weekdays: readonly string[];
 			localTime: string;
+			timeZone: string;
+	  }
+	| {
+			id: string;
+			kind: "schedule";
+			intervalMinutes: number;
+			months?: readonly number[];
+			weekdays?: readonly string[];
+			windowStart: string;
+			windowEnd: string;
 			timeZone: string;
 	  };
 
@@ -705,6 +716,70 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 	) {
 		return undefined;
 	}
+	const hasAdvancedWindow =
+		input.months !== undefined || input.windowStart !== undefined || input.windowEnd !== undefined;
+	if (hasAdvancedWindow) {
+		if (
+			Object.keys(input).some(
+				(key) =>
+					![
+						"id",
+						"kind",
+						"intervalMinutes",
+						"months",
+						"weekdays",
+						"windowStart",
+						"windowEnd",
+						"timeZone",
+					].includes(key),
+			) ||
+			input.startAt !== undefined ||
+			input.localTime !== undefined ||
+			(input.months !== undefined &&
+				(!Array.isArray(input.months) ||
+					input.months.length < 1 ||
+					input.months.length > 12 ||
+					new Set(input.months).size !== input.months.length ||
+					!input.months.every(
+						(month) => Number.isSafeInteger(month) && (month as number) >= 1 && (month as number) <= 12,
+					))) ||
+			(input.weekdays !== undefined &&
+				(!Array.isArray(input.weekdays) ||
+					input.weekdays.length < 1 ||
+					input.weekdays.length > 7 ||
+					new Set(input.weekdays).size !== input.weekdays.length ||
+					!input.weekdays.every(
+						(weekday) =>
+							typeof weekday === "string" && ROUTINE_WEEKDAYS.some((candidate) => candidate === weekday),
+					))) ||
+			typeof input.windowStart !== "string" ||
+			typeof input.windowEnd !== "string" ||
+			!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(input.windowStart) ||
+			!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(input.windowEnd) ||
+			typeof input.timeZone !== "string" ||
+			input.timeZone === "auto"
+		) {
+			return undefined;
+		}
+		const start = Number(input.windowStart.slice(0, 2)) * 60 + Number(input.windowStart.slice(3));
+		const end = Number(input.windowEnd.slice(0, 2)) * 60 + Number(input.windowEnd.slice(3));
+		if (start > end) return undefined;
+		try {
+			new Intl.DateTimeFormat("en-US", { timeZone: input.timeZone }).format(0);
+		} catch {
+			return undefined;
+		}
+		return {
+			id: input.id,
+			kind: "schedule",
+			intervalMinutes: input.intervalMinutes as number,
+			...(Array.isArray(input.months) ? { months: input.months as number[] } : {}),
+			...(Array.isArray(input.weekdays) ? { weekdays: input.weekdays as string[] } : {}),
+			windowStart: input.windowStart,
+			windowEnd: input.windowEnd,
+			timeZone: input.timeZone,
+		};
+	}
 	if (input.weekdays === undefined && input.localTime === undefined && input.timeZone === undefined) {
 		if (
 			Object.keys(input).some((key) => !["id", "kind", "intervalMinutes", "startAt"].includes(key)) ||
@@ -724,9 +799,12 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 	}
 	if (
 		Object.keys(input).some(
-			(key) => !["id", "kind", "intervalMinutes", "weekdays", "localTime", "timeZone"].includes(key),
+			(key) => !["id", "kind", "intervalMinutes", "startAt", "weekdays", "localTime", "timeZone"].includes(key),
 		) ||
-		input.startAt !== undefined ||
+		(input.startAt !== undefined &&
+			(typeof input.startAt !== "string" ||
+				!Number.isFinite(Date.parse(input.startAt)) ||
+				new Date(input.startAt).toISOString() !== input.startAt)) ||
 		!Array.isArray(input.weekdays) ||
 		input.weekdays.length < 1 ||
 		input.weekdays.length > 7 ||
@@ -750,6 +828,7 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 		id: input.id,
 		kind: "schedule",
 		intervalMinutes: input.intervalMinutes as number,
+		...(typeof input.startAt === "string" ? { startAt: new Date(input.startAt).toISOString() } : {}),
 		weekdays: input.weekdays as string[],
 		localTime: input.localTime,
 		timeZone: input.timeZone,
@@ -808,8 +887,70 @@ function zonedInstant(
 		: undefined;
 }
 
+function advancedCalendarDateMatches(
+	trigger: Extract<RoutineScheduleTrigger, { windowStart: string }>,
+	year: number,
+	month: number,
+	day: number,
+): boolean {
+	if (trigger.months && !trigger.months.includes(month)) return false;
+	if (!trigger.weekdays) return true;
+	const weekday = ROUTINE_WEEKDAYS[new Date(Date.UTC(year, month - 1, day)).getUTCDay()];
+	return weekday !== undefined && trigger.weekdays.includes(weekday);
+}
+
+function advancedCalendarOccurrences(
+	trigger: Extract<RoutineScheduleTrigger, { windowStart: string }>,
+	year: number,
+	month: number,
+	day: number,
+): Date[] {
+	if (!advancedCalendarDateMatches(trigger, year, month, day)) return [];
+	const start = Number(trigger.windowStart.slice(0, 2)) * 60 + Number(trigger.windowStart.slice(3));
+	const end = Number(trigger.windowEnd.slice(0, 2)) * 60 + Number(trigger.windowEnd.slice(3));
+	const occurrences: Date[] = [];
+	for (let minute = start; minute <= end; minute += trigger.intervalMinutes) {
+		const occurrence = zonedInstant(year, month, day, Math.floor(minute / 60), minute % 60, trigger.timeZone);
+		if (occurrence) occurrences.push(occurrence);
+	}
+	return occurrences;
+}
+
+function nearestAdvancedRoutineOccurrence(
+	trigger: Extract<RoutineScheduleTrigger, { windowStart: string }>,
+	instant: Date,
+	direction: "before-or-at" | "after",
+): Date | undefined {
+	const local = calendarParts(instant, trigger.timeZone);
+	for (let distance = 0; distance <= 370; distance += 1) {
+		const shifted = new Date(
+			Date.UTC(local.year, local.month - 1, local.day + (direction === "before-or-at" ? -distance : distance)),
+		);
+		const occurrences = advancedCalendarOccurrences(
+			trigger,
+			shifted.getUTCFullYear(),
+			shifted.getUTCMonth() + 1,
+			shifted.getUTCDate(),
+		);
+		if (direction === "before-or-at") {
+			for (let index = occurrences.length - 1; index >= 0; index -= 1) {
+				const occurrence = occurrences[index];
+				if (occurrence && occurrence.getTime() <= instant.getTime()) return occurrence;
+			}
+		} else {
+			for (const occurrence of occurrences) {
+				if (occurrence.getTime() > instant.getTime()) return occurrence;
+			}
+		}
+	}
+	return undefined;
+}
+
 function latestRoutineOccurrence(trigger: RoutineScheduleTrigger, now: Date): Date | undefined {
-	if ("weekdays" in trigger) {
+	if ("windowStart" in trigger) return nearestAdvancedRoutineOccurrence(trigger, now, "before-or-at");
+	if ("localTime" in trigger) {
+		const startAt = trigger.startAt ? Date.parse(trigger.startAt) : Number.NaN;
+		if (Number.isFinite(startAt) && now.getTime() < startAt) return undefined;
 		const localNow = calendarParts(now, trigger.timeZone);
 		const [hour, minute] = trigger.localTime.split(":").map(Number);
 		for (let offset = 0; offset <= 14; offset += 1) {
@@ -823,7 +964,13 @@ function latestRoutineOccurrence(trigger: RoutineScheduleTrigger, now: Date): Da
 				minute ?? 0,
 				trigger.timeZone,
 			);
-			if (candidate && candidate.getTime() <= now.getTime()) return candidate;
+			if (
+				candidate &&
+				candidate.getTime() <= now.getTime() &&
+				(!Number.isFinite(startAt) || candidate.getTime() >= startAt)
+			) {
+				return candidate;
+			}
 		}
 		return undefined;
 	}
@@ -835,8 +982,11 @@ function latestRoutineOccurrence(trigger: RoutineScheduleTrigger, now: Date): Da
 }
 
 function nextRoutineOccurrence(trigger: RoutineScheduleTrigger, after: Date): Date | undefined {
-	if ("weekdays" in trigger) {
-		const localAfter = calendarParts(after, trigger.timeZone);
+	if ("windowStart" in trigger) return nearestAdvancedRoutineOccurrence(trigger, after, "after");
+	if ("localTime" in trigger) {
+		const startAt = trigger.startAt ? Date.parse(trigger.startAt) : Number.NaN;
+		const searchAfter = Number.isFinite(startAt) && after.getTime() < startAt ? new Date(startAt - 1) : after;
+		const localAfter = calendarParts(searchAfter, trigger.timeZone);
 		const [hour, minute] = trigger.localTime.split(":").map(Number);
 		for (let offset = 0; offset <= 14; offset += 1) {
 			const day = new Date(Date.UTC(localAfter.year, localAfter.month - 1, localAfter.day + offset));
@@ -849,7 +999,13 @@ function nextRoutineOccurrence(trigger: RoutineScheduleTrigger, after: Date): Da
 				minute ?? 0,
 				trigger.timeZone,
 			);
-			if (candidate && candidate.getTime() > after.getTime()) return candidate;
+			if (
+				candidate &&
+				candidate.getTime() > after.getTime() &&
+				(!Number.isFinite(startAt) || candidate.getTime() >= startAt)
+			) {
+				return candidate;
+			}
 		}
 		return undefined;
 	}

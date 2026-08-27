@@ -387,6 +387,104 @@ describe("cloud runner orchestrator", () => {
 		expect(control.enqueueRoutineWake).not.toHaveBeenCalled();
 	});
 
+	it("starts weekday intervals at their explicit anchor", async () => {
+		const control = controlPlane(undefined);
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					routineId: "12121212-1212-4212-8212-121212121212",
+					profileId: "88888888-8888-4888-8888-888888888888",
+					environmentId: "99999999-9999-4999-8999-999999999999",
+					version: 1,
+					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+					triggers: [
+						{
+							id: "weekday-review",
+							kind: "schedule",
+							intervalMinutes: 1_440,
+							startAt: "2026-08-24T09:00:00.000Z",
+							weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+							localTime: "09:00",
+							timeZone: "UTC",
+						},
+					],
+					scheduleCursors: [{ triggerId: "weekday-review" }],
+					contentSha256: "a".repeat(64),
+					effectiveAt: "2026-08-21T08:00:00.000Z",
+					updatedAt: "2026-08-21T08:00:00.000Z",
+				},
+			],
+			hasMore: false,
+		});
+		let now = new Date("2026-08-21T12:00:00.000Z");
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now });
+
+		await reconciler.reconcile(control);
+		expect(control.enqueueRoutineWake).not.toHaveBeenCalled();
+
+		now = new Date("2026-08-24T09:30:00.000Z");
+		await reconciler.reconcile(control);
+		expect(control.enqueueRoutineWake).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls[0]?.[0]).toMatchObject({
+			scheduledFor: "2026-08-24T09:00:00.000Z",
+			nextDueAt: "2026-08-25T09:00:00.000Z",
+		});
+	});
+
+	it("reconciles advanced interval windows across excluded days", async () => {
+		const control = controlPlane(undefined);
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					routineId: "12121212-1212-4212-8212-121212121212",
+					profileId: "88888888-8888-4888-8888-888888888888",
+					environmentId: "99999999-9999-4999-8999-999999999999",
+					version: 1,
+					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+					triggers: [
+						{
+							id: "office-hours",
+							kind: "schedule",
+							intervalMinutes: 30,
+							months: [8],
+							weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+							windowStart: "09:00",
+							windowEnd: "10:00",
+							timeZone: "UTC",
+						},
+					],
+					scheduleCursors: [
+						{
+							triggerId: "office-hours",
+							lastScheduledFor: "2026-08-21T10:00:00.000Z",
+							nextDueAt: "2026-08-24T09:00:00.000Z",
+						},
+					],
+					contentSha256: "a".repeat(64),
+					effectiveAt: "2026-08-20T07:00:00.000Z",
+					updatedAt: "2026-08-21T10:00:00.000Z",
+				},
+			],
+			hasMore: false,
+		});
+		const reconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-08-24T09:45:00.000Z"),
+		});
+
+		await reconciler.reconcile(control);
+
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls.map(([input]) => input)).toMatchObject([
+			{
+				scheduledFor: "2026-08-24T09:00:00.000Z",
+				nextDueAt: "2026-08-24T09:30:00.000Z",
+			},
+			{
+				scheduledFor: "2026-08-24T09:30:00.000Z",
+				nextDueAt: "2026-08-24T10:00:00.000Z",
+			},
+		]);
+	});
+
 	it("rejects noncanonical interval start timestamps instead of silently parking them", async () => {
 		const control = controlPlane(undefined);
 		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
