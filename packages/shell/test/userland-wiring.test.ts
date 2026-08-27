@@ -139,7 +139,7 @@ describe("userland wiring", () => {
 			/html\[data-platform="darwin"\] body\.company-shell \.company-switcher-menu button:hover,[^}]*background: #0a84ff;[^}]*color: #fff;/s,
 		);
 		expect(railResizeCssSource).toMatch(
-			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.titlebar-rail \{[^}]*transform: translateY\(var\(--titlebar-height\)\);/s,
+			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.titlebar-rail \{[^}]*padding-inline: 0;[^}]*transform: translateY\(var\(--titlebar-height\)\);/s,
 		);
 		expect(railResizeCssSource).toMatch(
 			/html\[data-platform="darwin"\] body\.company-shell\.rail-compact \.rail-scroll \{[^}]*padding-top: calc\(var\(--titlebar-height\) \+ 9px\);/s,
