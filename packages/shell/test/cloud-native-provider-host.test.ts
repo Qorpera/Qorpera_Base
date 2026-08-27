@@ -99,6 +99,46 @@ describe("native provider host", () => {
 		);
 	});
 
+	it("passes the runner screen environment to the harness and protects the identity boundary", async () => {
+		const identity = await temporaryRoot("qorpera-official-env-identity-");
+		const company = await temporaryRoot("qorpera-official-env-company-");
+		await writeFile(
+			join(company, "exec"),
+			[
+				'const fs = require("node:fs");',
+				"const args = process.argv.slice(2);",
+				'const output = args[args.indexOf("--output-last-message") + 1];',
+				"process.stdin.resume();",
+				'process.stdin.on("end", () => {',
+				'  fs.writeFileSync(output, "display=" + (process.env.DISPLAY ?? "unset") + " ordinal=" + (process.env.QORPERA_SCREEN_ORDINAL ?? "unset"));',
+				'  console.log(JSON.stringify({ type: "thread.started", thread_id: "env-thread-1" }));',
+				"});",
+			].join("\n"),
+			"utf-8",
+		);
+		const driver = new OfficialCliNativeHarnessDriver(process.execPath, process.execPath);
+		await expect(
+			driver.execute({
+				harness: "codex-cli",
+				model: "gpt-test",
+				identityRoot: identity,
+				companyRoot: company,
+				prompt: "canonical transcript with a screen",
+				environment: { DISPLAY: ":7", QORPERA_SCREEN_ORDINAL: "7" },
+			}),
+		).resolves.toEqual({ text: "display=:7 ordinal=7", providerSessionId: "env-thread-1" });
+		await expect(
+			driver.execute({
+				harness: "codex-cli",
+				model: "gpt-test",
+				identityRoot: identity,
+				companyRoot: company,
+				prompt: "canonical transcript with a hostile environment",
+				environment: { HOME: "/somewhere-else" },
+			}),
+		).rejects.toThrow("cannot override the identity boundary");
+	});
+
 	it("drives the official Codex login and execution process contract inside the identity root", async () => {
 		const identity = await temporaryRoot("qorpera-official-codex-identity-");
 		const company = await temporaryRoot("qorpera-official-codex-company-");

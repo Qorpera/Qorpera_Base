@@ -1235,6 +1235,16 @@ export interface HostedPrimaryDatabase {
 				Returns: JsonValue;
 			};
 			qorpera_get_company_file: { Args: { p_environment_id: string }; Returns: JsonValue };
+			qorpera_describe_company_computer_screens: { Args: { p_environment_id: string }; Returns: JsonValue };
+			qorpera_mint_company_computer_screen_view: { Args: { p_screen_id: string }; Returns: JsonValue };
+			qorpera_attach_company_computer_screen: {
+				Args: { p_screen_id: string; p_staff_agent_id: string };
+				Returns: JsonValue;
+			};
+			qorpera_open_company_computer_screen: {
+				Args: { p_screen_id: string };
+				Returns: JsonValue;
+			};
 			qorpera_prepare_company_file_revision: {
 				Args: {
 					p_environment_id: string;

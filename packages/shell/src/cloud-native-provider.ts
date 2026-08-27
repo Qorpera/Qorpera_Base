@@ -46,7 +46,7 @@ export function nativeProviderExecutionGuarantees(
 		boundary,
 		hostFilesystem: "none",
 		inputFilesystem: "read_only",
-		companyCheckout: "job_private",
+		companyCheckout: "job_private_or_declared_live",
 		outputFilesystem: "job_private",
 		network: "deny_by_default",
 		environment: "allowlist_only",
@@ -156,6 +156,14 @@ function bridgeUrl(value: string): URL {
 	return url;
 }
 
+function nativeHarnessEnvironment(environment: Readonly<Record<string, string>>): Record<string, string> {
+	return Object.fromEntries(
+		Object.entries(environment).filter(
+			([key]) => key !== "QORPERA_LIVE_COMPANY_ROOT" && key !== "QORPERA_LIVE_COMPANY_PROFILE_ID",
+		),
+	);
+}
+
 function bridgeProjection(authority: CloudRunnerNativeAuthority, request: CloudRunnerSandboxRequest): JsonValue {
 	return {
 		schema: BRIDGE_REQUEST_SCHEMA,
@@ -202,6 +210,9 @@ function bridgeProjection(authority: CloudRunnerNativeAuthority, request: CloudR
 			attachments_root: request.input.attachmentsRoot,
 			output_root: request.outputRoot,
 		},
+		...(Object.keys(nativeHarnessEnvironment(request.environment)).length > 0
+			? { environment: nativeHarnessEnvironment(request.environment) }
+			: {}),
 		limits: {
 			wall_time_ms: request.limits.wallTimeMs,
 			memory_bytes: request.limits.memoryBytes,
@@ -494,10 +505,9 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 			await chown(executionRoot, -1, this.#nativeWorkspaceGid);
 			await chmod(executionRoot, 0o2750);
 			await shareNativeWorkspaceTree(inputRoot, this.#nativeWorkspaceGid, false);
-			/* The live company tree is not group-shared: its NAS export squashes
-			 * every writer to one owner and the tree carries open modes, so a
-			 * chown sweep is both impossible (read-only mount parent) and
-			 * unnecessary. */
+			// NAS permissions are the live tree's sharing contract. A recursive
+			// chown/chmod sweep would be both size-proportional and invalid on a
+			// squash-owned export.
 			if (!liveMode) await shareNativeWorkspaceTree(workRoot, this.#nativeWorkspaceGid, true);
 			await shareNativeWorkspaceTree(request.outputRoot, this.#nativeWorkspaceGid, true);
 		}

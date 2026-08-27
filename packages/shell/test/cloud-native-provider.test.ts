@@ -299,6 +299,7 @@ describe("native provider computer bridge", () => {
 	it("passes only opaque capsule authority to the trusted native boundary", async () => {
 		const fetchImplementation = vi.fn<typeof fetch>(async (_input, init) => {
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			expect(body.environment).toEqual({ DISPLAY: ":2" });
 			const projectedAuthority = body.authority as Record<string, unknown>;
 			expect(projectedAuthority.authentication_mode).toBe("native_subscription");
 			expect(projectedAuthority.native_harness).toBe("codex-cli");
@@ -334,7 +335,14 @@ describe("native provider computer bridge", () => {
 			fetchImplementation,
 			{ executionBoundary: "virtual_machine" },
 		);
-		const process = await bridge.start(authority, request);
+		const process = await bridge.start(authority, {
+			...request,
+			environment: {
+				DISPLAY: ":2",
+				QORPERA_LIVE_COMPANY_ROOT: "/srv/qorpera/dataset/live",
+				QORPERA_LIVE_COMPANY_PROFILE_ID: request.job.jobId,
+			},
+		});
 		await expect(process.result).resolves.toMatchObject({
 			schema: "qorpera.native-harness-result/v1",
 			provider_session_id: "codex-session-1",

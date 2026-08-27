@@ -14,6 +14,7 @@
 - Added a checksum-verified Runner Orchestrator package and fail-closed management-VM systemd installer.
 - Added a signed-image-gated, static-address management VM provisioner with no LXD authority.
 - Added nested OCI runner-image provenance binding for the immutable image reference, private archive, and retained keyless Cosign bundle.
+- Added the Step 3 persistent company-computer provider lane: a per-environment long-lived LXD VM journaled by logical computer with a pinned NAS-dataset disk device, stable runner reuse across runs, non-destructive stops, control-plane lifecycle activation, a coordinated snapshot window, and a stateless instance-snapshot LXD client extension.
 
 ### Changed
 

@@ -1,0 +1,47 @@
+[Unit]
+Description=Qorpera Company Computer runner inside the shared LXD VM
+Documentation=https://github.com/Qorpera/Qorpera_Base
+Wants=network-online.target
+Requires=qorpera-native-provider-host.service
+After=network-online.target qorpera-native-provider-host.service qorpera-company-computer-bootstrap.service
+RequiresMountsFor=/var/lib/qorpera/identity /srv/qorpera/dataset
+ConditionPathExists=/var/lib/qorpera-runner/.config/qorpera-runner/config.json
+
+[Service]
+Type=exec
+User=qorpera-runner
+Group=qorpera-runner
+SupplementaryGroups=qorpera-native-execution users
+WorkingDirectory=/var/lib/qorpera-runner
+Environment=HOME=/var/lib/qorpera-runner
+Environment=XDG_RUNTIME_DIR=/run/qorpera-runner
+Environment=QORPERA_RUNNER_CONFIG=/var/lib/qorpera-runner/.config/qorpera-runner/config.json
+Environment=GIT_CONFIG_COUNT=1
+Environment=GIT_CONFIG_KEY_0=safe.directory
+Environment=GIT_CONFIG_VALUE_0=*
+RuntimeDirectory=qorpera-runner
+RuntimeDirectoryMode=0700
+LoadCredential=qorpera-runner-activation:/var/lib/qorpera-bootstrap/credentials/qorpera-runner-activation
+LoadCredential=qorpera-runner-assignment:/var/lib/qorpera-bootstrap/credentials/qorpera-runner-assignment
+LoadCredential=qorpera-native-bridge:/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge
+ExecStart=/usr/bin/node /opt/qorpera-company-computer/qorpera-company-computer-runner.mjs
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+UMask=0007
+Delegate=yes
+PrivateTmp=no
+ProtectSystem=strict
+ReadWritePaths=/var/lib/qorpera-runner /srv/qorpera/dataset /run/qorpera-runner
+ProtectHome=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=no
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

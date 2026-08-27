@@ -63,6 +63,68 @@ final result: passed
 
 ---
 
+# Design QA — Company Computer 16:10 borderless viewer
+
+## Comparison target
+
+- Visual target: the 1335 × 969 Grok Bot viewer and 335 × 169 dock-detail
+  screenshots supplied in the 2026-08-27 product-review session.
+- Durable implementation evidence: `packages/shell/userland/screens.css`,
+  `packages/shell/userland/screen-viewer.js`, and the exact contract assertions
+  in `packages/shell/test/userland-wiring.test.ts`.
+- The review-session screenshots and generated comparison captures were
+  temporary inputs, not repository artifacts, so this record does not cite
+  their expired `/var/folders` or `/tmp` paths.
+- State: Research Lead's Company Computer connected and live, native XFCE dock visible.
+
+## Normalization
+
+- Source pixels: 1335 × 969; source desktop crop: approximately 1308 × 819.
+- Source dock detail: 335 × 169.
+- Implementation pixels and CSS viewport: 1308 × 768 at the desktop app
+  capture surface's 1× output. With the committed 58 px header, 12 px bottom
+  inset, and 8:5 aspect ratio, the stage measures 1116.8 × 698 CSS px
+  (1117 × 698 when rounded to whole pixels).
+- Full-view comparison: both app views normalized to 768 px high without changing either aspect ratio.
+- Stage comparison: both 16:10 desktop regions normalized to 800 × 500 px.
+- Dock comparison: the 335 × 169 source crop is paired with an equal-size implementation crop.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing Qorpera title and live-status typography remain unchanged, readable, and clear of the macOS traffic lights. The XFCE tooltip and app labels remain native guest UI.
+- Spacing and layout rhythm: the desktop is centered with a fixed 16:10 ratio. Wide windows create even side gutters; tall windows create even top and bottom gutters. The 58 px safe header and 12 px outer inset remain intact.
+- Colors and visual tokens: the near-black viewer shell remains consistent with the reference. The desktop has no visible bezel, border highlight, or frame shadow.
+- Image quality and asset fidelity: noVNC renders the real 1920 × 1200 guest raster without stretching. The existing Qorpera wallpaper and native Chrome, Files, and Terminal icons remain the source assets.
+- Copy and content: the screen identity, live takeover hint, and close action are unchanged.
+
+## Findings
+
+- No actionable P0, P1, or P2 differences remain for the requested ratio and borderless treatment.
+- P3: the reference window is tall enough to letterbox the 16:10 desktop vertically, while the implementation capture is shorter and pillarboxes it horizontally. This is the expected responsive result of preserving the same ratio rather than stretching either desktop.
+- P3: wallpaper palette and exact app-icon artwork differ intentionally because the implementation keeps Qorpera's live agent wallpaper and installed guest applications.
+
+## Comparison history
+
+1. Initial P1: the guest and viewer used a 1920 × 1080 / 16:9 canvas while the selected source used a 16:10 desktop.
+2. Initial P2: the viewer added a visible 1 px highlight, 12 px radius, and two-layer frame shadow that read as a bezel absent from the source.
+3. Fix: changed the guest to 1920 × 1200, centered an 8:5 stage responsively, removed its border and shadow, and reduced its crop radius to 8 px.
+4. Post-fix review: the live app showed an unstretched 16:10 raster, clean
+   8 px rounded clipping, no stage border or shadow, and launchers floating
+   without a dock surface.
+
+## Interaction and runtime checks
+
+- Opened the Research Lead computer from the agent side panel.
+- Verified the loading state remained centered inside the new 16:10 stage.
+- Verified the viewer reached `Live · you can take over at any time` with the real VNC session.
+- Verified the close action remains visible and accessibility-exposed.
+- Verified the current live VNC output at 1920 × 1200; the packaged screen-session contract now starts at that geometry.
+- The focused shell wiring suite passed 21 tests; the guest packaging contract passed; `npm run check` passed.
+
+final result: passed
+
+---
+
 # Settings simplification design QA
 
 ## Comparison inputs
@@ -291,3 +353,17 @@ final result: passed
 - [x] Preserve click behavior when no drag threshold is crossed.
 
 final result: passed
+
+---
+
+# Design QA — Company Computer viewer frame (superseded intermediate pass)
+
+This earlier pass established the 58 px header, the 78 px macOS traffic-light
+gutter, resilient heading overflow, and a 12 px renderer inset. Those header
+and spacing corrections remain in the final implementation.
+
+Its proposed low-contrast stage border, 12 px radius, and frame shadow were
+superseded by the later 16:10 borderless review above. The final stage has an
+8:5 ratio, an 8 px clipping radius, `border: 0`, and `box-shadow: none`.
+The temporary system screenshots and comparison captures used during this
+intermediate review are intentionally not cited as durable repository files.

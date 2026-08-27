@@ -453,6 +453,123 @@ describe("cloud runner execution sandboxes", () => {
 		await expect(stat(executionRoot)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
+	it("works directly in a declared live Company File without end-of-turn publication", async () => {
+		const fixture = await sandboxFixture();
+		const liveCompanyRoot = join(fixture.temporaryRoot, "live-company");
+		scaffoldCompany(liveCompanyRoot);
+		await writeFile(join(liveCompanyRoot, "company.md"), "# Live company\n", "utf-8");
+		const publishCompanyFile = vi.fn(async () => "46464646-4646-4646-8646-464646464646");
+		const backend = new TestSandboxBackend(
+			async (request) => {
+				expect(request.input.companyRoot).toBe(await realpath(liveCompanyRoot));
+				expect((await stat(request.input.companyBaseRoot)).isDirectory()).toBe(true);
+				await expect(readFile(join(request.input.companyRoot, "company.md"), "utf-8")).resolves.toBe(
+					"# Live company\n",
+				);
+				await writeFile(join(request.input.companyRoot, "company.md"), "# Shared revision\n", "utf-8");
+				return { status: "ok" };
+			},
+			{ ...testGuarantees, companyCheckout: "job_private_or_declared_live" },
+		);
+
+		const completed = await executeCloudRunnerJob({
+			...fixture,
+			backend,
+			allowTestBackend: true,
+			environment: {
+				QORPERA_LIVE_COMPANY_ROOT: liveCompanyRoot,
+				QORPERA_LIVE_COMPANY_PROFILE_ID: profileId,
+			},
+			companyFilePublisher: { publish: publishCompanyFile },
+		});
+
+		expect(completed.outputSnapshotId).toBeUndefined();
+		expect(publishCompanyFile).not.toHaveBeenCalled();
+		await expect(readFile(join(liveCompanyRoot, "company.md"), "utf-8")).resolves.toBe("# Shared revision\n");
+	});
+
+	it("keeps an explicit review-policy turn isolated from the live Company File", async () => {
+		const fixture = await sandboxFixture();
+		const liveCompanyRoot = join(fixture.temporaryRoot, "live-company");
+		scaffoldCompany(liveCompanyRoot);
+		await writeFile(join(liveCompanyRoot, "company.md"), "# Live company\n", "utf-8");
+		fixture.substrate.execution.run.publicationMode = "review";
+		fixture.substrate.execution.run.reviewPolicyKey = "explicit-review";
+		fixture.substrate.execution.run.reviewerStaffIds = [staffAgentId];
+		const publishCompanyFile = vi.fn(async () => "46464646-4646-4646-8646-464646464646");
+		const backend = new TestSandboxBackend(
+			async (request) => {
+				expect(request.input.companyRoot).not.toBe(await realpath(liveCompanyRoot));
+				await expect(readFile(join(request.input.companyRoot, "company.md"), "utf-8")).resolves.toBe(
+					"# Exact company\n",
+				);
+				await writeFile(join(request.input.companyRoot, "company.md"), "# Review candidate\n", "utf-8");
+				return { status: "ok" };
+			},
+			{ ...testGuarantees, companyCheckout: "job_private_or_declared_live" },
+		);
+
+		const completed = await executeCloudRunnerJob({
+			...fixture,
+			backend,
+			allowTestBackend: true,
+			environment: {
+				QORPERA_LIVE_COMPANY_ROOT: liveCompanyRoot,
+				QORPERA_LIVE_COMPANY_PROFILE_ID: profileId,
+			},
+			companyFilePublisher: { publish: publishCompanyFile },
+		});
+
+		expect(completed.outputSnapshotId).toBe("46464646-4646-4646-8646-464646464646");
+		expect(publishCompanyFile).toHaveBeenCalledOnce();
+		await expect(readFile(join(liveCompanyRoot, "company.md"), "utf-8")).resolves.toBe("# Live company\n");
+	});
+
+	it("fails closed when a declared live Company File is unavailable", async () => {
+		const fixture = await sandboxFixture();
+		const backend = new TestSandboxBackend(async () => ({ status: "not-run" }), {
+			...testGuarantees,
+			companyCheckout: "job_private_or_declared_live",
+		});
+		await expect(
+			executeCloudRunnerJob({
+				...fixture,
+				backend,
+				allowTestBackend: true,
+				environment: {
+					QORPERA_LIVE_COMPANY_ROOT: join(fixture.temporaryRoot, "missing-live-company"),
+					QORPERA_LIVE_COMPANY_PROFILE_ID: profileId,
+				},
+			}),
+		).rejects.toThrow("live Company File is unavailable");
+	});
+
+	it("fails closed on an incomplete live declaration or an unsupported backend", async () => {
+		const fixture = await sandboxFixture();
+		const liveCompanyRoot = join(fixture.temporaryRoot, "live-company");
+		scaffoldCompany(liveCompanyRoot);
+		const backend = new TestSandboxBackend(async () => ({ status: "not-run" }));
+		await expect(
+			executeCloudRunnerJob({
+				...fixture,
+				backend,
+				allowTestBackend: true,
+				environment: { QORPERA_LIVE_COMPANY_ROOT: liveCompanyRoot },
+			}),
+		).rejects.toThrow("live Company File declaration is incomplete");
+		await expect(
+			executeCloudRunnerJob({
+				...fixture,
+				backend,
+				allowTestBackend: true,
+				environment: {
+					QORPERA_LIVE_COMPANY_ROOT: liveCompanyRoot,
+					QORPERA_LIVE_COMPANY_PROFILE_ID: profileId,
+				},
+			}),
+		).rejects.toThrow("backend does not support a declared live Company File");
+	});
+
 	it("materializes the exact proposed Company File as read-only review input", async () => {
 		const fixture = await sandboxFixture();
 		const proposedRoot = join(fixture.temporaryRoot, "proposed-company");

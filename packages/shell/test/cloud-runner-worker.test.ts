@@ -13,7 +13,7 @@ import type {
 	CloudRunnerSandboxGuarantees,
 	ExecuteCloudRunnerJobOptions,
 } from "../src/cloud-runner-sandbox.ts";
-import { EphemeralCloudRunnerWorker } from "../src/cloud-runner-worker.ts";
+import { type CloudRunnerScreenLeaseProvider, EphemeralCloudRunnerWorker } from "../src/cloud-runner-worker.ts";
 
 const runnerId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
@@ -201,7 +201,12 @@ function worker(
 	runner: DisposableCloudRunner,
 	serviceBackend: CloudRunnerSandboxBackend,
 	executeJob: (options: ExecuteCloudRunnerJobOptions) => Promise<CloudRunnerExecutionResult>,
-	options: { leaseRenewalMs?: number; heartbeatMs?: number; now?: () => number } = {},
+	options: {
+		leaseRenewalMs?: number;
+		heartbeatMs?: number;
+		now?: () => number;
+		screenLease?: CloudRunnerScreenLeaseProvider;
+	} = {},
 ): EphemeralCloudRunnerWorker {
 	return new EphemeralCloudRunnerWorker({
 		runner,
@@ -215,6 +220,66 @@ function worker(
 }
 
 describe("ephemeral cloud runner worker", () => {
+	it("puts an acquired screen lease into the job environment and releases it after", async () => {
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		const released: string[] = [];
+		const acquired: string[] = [];
+		const executeJob = vi.fn(async (options: ExecuteCloudRunnerJobOptions) => {
+			expect(options.environment).toEqual({ DISPLAY: ":2", QORPERA_SCREEN_ORDINAL: "2" });
+			return successfulExecution();
+		});
+		const result = await worker(runner, backend(), executeJob, {
+			screenLease: {
+				acquire: async (context) => {
+					acquired.push(context.jobId);
+					return {
+						environment: { DISPLAY: ":2", QORPERA_SCREEN_ORDINAL: "2" },
+						release: async () => {
+							released.push(context.jobId);
+						},
+					};
+				},
+			},
+		}).runNext(assignment);
+		expect(result.status).toBe("completed");
+		expect(acquired).toEqual([jobId]);
+		expect(released).toEqual([jobId]);
+		expect(executeJob).toHaveBeenCalledOnce();
+	});
+
+	it("runs headless without a screen lease and still releases one on failure", async () => {
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		const headless = vi.fn(async (options: ExecuteCloudRunnerJobOptions) => {
+			expect(options.environment).toBeUndefined();
+			return successfulExecution();
+		});
+		const headlessResult = await worker(runner, backend(), headless, {
+			screenLease: { acquire: async () => undefined },
+		}).runNext(assignment);
+		expect(headlessResult.status).toBe("completed");
+
+		const secondService = new RunnerService();
+		const secondRunner = await activeRunner(secondService);
+		const released: string[] = [];
+		const failing = vi.fn(async () => {
+			throw new Error("execution is invalid");
+		});
+		const failure = await worker(secondRunner, backend(), failing, {
+			screenLease: {
+				acquire: async (context) => ({
+					environment: { DISPLAY: ":3" },
+					release: async () => {
+						released.push(context.jobId);
+					},
+				}),
+			},
+		}).runNext(assignment);
+		expect(failure.status).toBe("failed");
+		expect(released).toEqual([jobId]);
+	});
+
 	it("accepts assigned work, executes through the broker boundary, and completes", async () => {
 		const service = new RunnerService();
 		const runner = await activeRunner(service);

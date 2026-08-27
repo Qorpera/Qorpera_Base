@@ -1,0 +1,55 @@
+[Unit]
+Description=Qorpera Company Computer screen agent
+Documentation=https://github.com/Qorpera/Qorpera_Base
+Wants=network-online.target
+After=network-online.target qorpera-company-computer-bootstrap.service
+ConditionPathExists=/var/lib/qorpera-bootstrap/company-computer.json
+RequiresMountsFor=/srv/qorpera/dataset
+
+[Service]
+Type=exec
+User=qorpera-runner
+Group=qorpera-runner
+SupplementaryGroups=users
+WorkingDirectory=/srv/qorpera/dataset/live
+Environment=HOME=/srv/qorpera/dataset/.qorpera-computer/desktop-home
+Environment=QORPERA_LIVE_COMPANY_ROOT=/srv/qorpera/dataset/live
+Environment=QORPERA_DESKTOP_HOME=/srv/qorpera/dataset/.qorpera-computer/desktop-home
+Environment=GIT_CONFIG_COUNT=1
+Environment=GIT_CONFIG_KEY_0=safe.directory
+Environment=GIT_CONFIG_VALUE_0=*
+# Keyframe publication selects its object backend explicitly and fails
+# closed; production NAS-primary deployments override through a drop-in.
+Environment=QORPERA_OBJECT_STORAGE_PRIMARY=supabase
+LoadCredential=company-computer.json:/var/lib/qorpera-bootstrap/company-computer.json
+LoadCredential=runner-config.json:/var/lib/qorpera-bootstrap/runner-config.json
+LoadCredential=qorpera-supabase-service-key:/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key
+LoadCredential=qorpera-screen-viewer:/var/lib/qorpera-bootstrap/credentials/qorpera-screen-viewer
+ExecStart=/usr/bin/node /opt/qorpera-company-computer/qorpera-company-computer-screens.mjs
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+UMask=0007
+NoNewPrivileges=yes
+# Computer-use tasks in the runner lane reach a screen through its X socket
+# in the shared /tmp/.X11-unix; a private /tmp would wall the desktops off
+# from the rest of the one-trust-domain machine.
+PrivateTmp=no
+ProtectSystem=strict
+ReadWritePaths=/srv/qorpera/dataset /tmp
+ProtectHome=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+# GTK's isolated image loaders use bubblewrap to build a private sandbox.
+# Bubblewrap needs netlink while creating that sandbox; without it the XFCE
+# panel aborts as soon as it loads an icon.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

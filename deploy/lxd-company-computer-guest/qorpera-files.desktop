@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Files
+Comment=Open the live Company File
+Exec=/usr/local/bin/qorpera-files
+Icon=org.xfce.thunar
+Terminal=false
+Categories=System;FileTools;FileManager;
+StartupNotify=true

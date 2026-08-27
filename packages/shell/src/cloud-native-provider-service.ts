@@ -202,7 +202,31 @@ function parseExecution(value: unknown): NativeProviderExecutionRequest {
 			transcriptPath: text(paths.transcript_path, "Native transcript path", 4096),
 		},
 		outputRoot: text(paths.output_root, "Native output root", 4096),
+		...(input.environment !== undefined ? { environment: parseExecutionEnvironment(input.environment) } : {}),
 	};
+}
+
+/** Runner-supplied harness environment (DISPLAY on Company Computer
+ * screens). Same contract as the sandbox allowlist: uppercase names,
+ * bounded values, and never anything credential-shaped. */
+function parseExecutionEnvironment(value: unknown): Readonly<Record<string, string>> {
+	const input = record(value, "Native execution environment");
+	const entries = Object.entries(input);
+	if (entries.length > 32) throw new Error("Native execution environment is too large");
+	const environment: Record<string, string> = {};
+	for (const [key, entry] of entries) {
+		if (
+			!/^[A-Z][A-Z0-9_]{0,63}$/.test(key) ||
+			/TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|API_KEY/.test(key) ||
+			typeof entry !== "string" ||
+			entry.length > 4096 ||
+			/[\0\r\n]/.test(entry)
+		) {
+			throw new Error("Native execution environment contains an invalid entry");
+		}
+		environment[key] = entry;
+	}
+	return Object.freeze(environment);
 }
 
 function tokenMatches(expected: string, authorization: string | undefined): boolean {

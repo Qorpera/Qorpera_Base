@@ -6,6 +6,7 @@ import {
 	createClient,
 	isAuthRetryableFetchError,
 	type Session,
+	type SupabaseClient,
 	type SupportedStorage,
 	type User,
 } from "@supabase/supabase-js";
@@ -401,6 +402,10 @@ export class QorperaAccountAuth {
 
 	hostedPrimary(): QorperaHostedPrimary {
 		return this.primary;
+	}
+
+	hostedClient(): SupabaseClient<HostedPrimaryDatabase> {
+		return this.client;
 	}
 
 	hostedRealtime(): SupabaseCloudRealtimeTransport {

@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 0007
+
+# One Company Computer screen: TigerVNC Xvnc on the given display with an
+# XFCE session inside, invoked by the screen agent as
+#   qorpera-screen-session <ordinal> <display> <vnc_port>
+#
+# The VNC socket binds to guest loopback only; the token-gated viewer
+# listener is the sole remote path in. -SecurityTypes None is deliberate:
+# every local process already lives inside the company's one trust domain
+# (screens are parallel work surfaces, never security boundaries), and the
+# shared live Company File on the NAS dataset is the point — every screen
+# sees the same working world. Desktop dotfiles live in hidden machine state,
+# never inside the company's visible file tree.
+
+if [[ $# -ne 3 ]]; then
+	echo "usage: qorpera-screen-session <ordinal> <display> <vnc_port>" >&2
+	exit 64
+fi
+ordinal=$1
+display=$2
+rfbport=$3
+if [[ ! ${ordinal} =~ ^[1-9][0-9]?$ || ${display} != ":${ordinal}" || ! ${rfbport} =~ ^[0-9]{4,5}$ ]]; then
+	echo "qorpera-screen-session arguments are outside the screen contract" >&2
+	exit 64
+fi
+
+company_root=${QORPERA_LIVE_COMPANY_ROOT:-/srv/qorpera/dataset/live}
+desktop_home=${QORPERA_DESKTOP_HOME:-/srv/qorpera/dataset/.qorpera-computer/desktop-home}
+if [[ ! -d ${company_root} || ! -d ${desktop_home} ]]; then
+	echo "The live Company File or desktop home is unavailable; refusing to fabricate one." >&2
+	exit 1
+fi
+export HOME=${desktop_home}
+cd "${company_root}"
+runtime_dir="/tmp/qorpera-screen-runtime-${ordinal}"
+install -d -m 0700 "${runtime_dir}"
+export XDG_RUNTIME_DIR=${runtime_dir}
+
+# XFCE state belongs to the screen, not to the shared Company File. Sharing
+# one xfconf database between concurrent displays lets one session replace or
+# stop another session's panel. Keeping the config/cache/data roots on the
+# dataset preserves each desktop across machine replacement without making
+# the screens contend with each other.
+screen_state_root=${QORPERA_SCREEN_STATE_ROOT:-/srv/qorpera/dataset/.qorpera-computer/screens}
+screen_state="${screen_state_root}/screen-${ordinal}"
+# Existing state can be owned by the NAS-side mapped UID. The desktop user
+# has group write access but intentionally cannot chmod that owner’s paths,
+# so preserve existing modes and let the service umask shape new directories.
+mkdir -p "${screen_state}" "${screen_state}/config" "${screen_state}/cache" "${screen_state}/data"
+export XDG_CONFIG_HOME="${screen_state}/config"
+export XDG_CACHE_HOME="${screen_state}/cache"
+export XDG_DATA_HOME="${screen_state}/data"
+
+xvnc_pid=""
+session_pid=""
+cleanup() {
+	[[ -n ${session_pid} ]] && kill "${session_pid}" 2>/dev/null || true
+	[[ -n ${xvnc_pid} ]] && kill "${xvnc_pid}" 2>/dev/null || true
+}
+trap cleanup EXIT TERM INT
+
+/usr/bin/Xvnc "${display}" \
+	-localhost \
+	-rfbport "${rfbport}" \
+	-SecurityTypes None \
+	-geometry 1920x1200 \
+	-depth 24 \
+	-desktop "Qorpera Screen ${ordinal}" &
+xvnc_pid=$!
+
+ready=false
+for _attempt in $(seq 1 50); do
+	if DISPLAY=${display} /usr/bin/xset q >/dev/null 2>&1; then
+		ready=true
+		break
+	fi
+	if ! kill -0 "${xvnc_pid}" 2>/dev/null; then
+		echo "Xvnc exited before the display became ready." >&2
+		exit 1
+	fi
+	sleep 0.2
+done
+if [[ ${ready} != true ]]; then
+	echo "The screen display did not become ready." >&2
+	exit 1
+fi
+
+# Each screen wears its owning agent's creature: the screen agent keeps a
+# per-screen wallpaper on the dataset current with the attachment. Configure
+# xfconf before XFCE starts so the first rendered frame already has the
+# wallpaper, no desktop icons, and the image-owned bottom dock.
+wallpaper_dir=${QORPERA_WALLPAPER_DIR:-/srv/qorpera/dataset/.qorpera-computer/wallpapers}
+wallpaper="${wallpaper_dir}/screen-${ordinal}.png"
+if [[ ! -f ${wallpaper} ]]; then
+	mkdir -p "${wallpaper_dir}"
+	cp /usr/share/backgrounds/qorpera-screen.png "${wallpaper}" 2>/dev/null || true
+fi
+monitor=$(DISPLAY=${display} /usr/bin/xrandr --query | awk '$2 == "connected" { print $1; exit }')
+if [[ -z ${monitor} || ! ${monitor} =~ ^[A-Za-z0-9._-]+$ ]]; then
+	echo "The screen display did not publish a usable monitor." >&2
+	exit 1
+fi
+export DISPLAY=${display}
+export QORPERA_SCREEN_MONITOR=${monitor}
+export QORPERA_SCREEN_WALLPAPER=${wallpaper}
+/usr/bin/dbus-run-session -- /bin/bash -c '
+	set -euo pipefail
+	set_xfce_property() {
+		local channel=$1
+		local path=$2
+		local type=$3
+		local value=$4
+		if xfconf-query -c "${channel}" -p "${path}" >/dev/null 2>&1; then
+			xfconf-query -c "${channel}" -p "${path}" -s "${value}"
+		else
+			xfconf-query -c "${channel}" -p "${path}" -n -t "${type}" -s "${value}"
+		fi
+	}
+	backdrop="/backdrop/screen0/monitor${QORPERA_SCREEN_MONITOR}/workspace0"
+	set_xfce_property xfce4-desktop "${backdrop}/last-image" string "${QORPERA_SCREEN_WALLPAPER}"
+	set_xfce_property xfce4-desktop "${backdrop}/image-style" int 5
+	set_xfce_property xfce4-desktop /desktop-icons/style int 0
+	set_xfce_property xfce4-desktop /desktop-menu/show bool true
+	set_xfce_property xfwm4 /general/show_dock_shadow bool false
+	exec /usr/bin/xfce4-session
+' &
+session_pid=$!
+
+# The screen lives exactly as long as both halves: if either the display or
+# the desktop session dies, exit so the agent's reconcile relaunches cleanly.
+wait -n "${xvnc_pid}" "${session_pid}"
+exit_code=$?
+exit "${exit_code}"

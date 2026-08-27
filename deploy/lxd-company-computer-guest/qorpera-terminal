@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The inherited runner service account intentionally has a non-login shell.
+# A Company Computer desktop still needs a usable terminal, so launch Bash
+# explicitly without weakening the account's login policy.
+company_root=${QORPERA_LIVE_COMPANY_ROOT:-/srv/qorpera/dataset/live}
+exec /usr/bin/xfce4-terminal \
+	--disable-server \
+	--working-directory="${company_root}" \
+	--command=/bin/bash

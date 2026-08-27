@@ -261,6 +261,43 @@ describe("rootless Podman cloud runner", () => {
 		expect(commands.calls[6]?.args.slice(0, 3)).toEqual(["unshare", "chown", "-R"]);
 	});
 
+	it("mounts only the declared live Company File and never sweeps its ownership", async () => {
+		const request = await sandboxRequest();
+		const liveCompanyRoot = join(dirname(dirname(request.input.companyRoot)), "company41", "live");
+		await mkdir(liveCompanyRoot, { recursive: true });
+		await writeFile(join(liveCompanyRoot, "company.md"), "# Live company\n", "utf-8");
+		request.input.companyRoot = liveCompanyRoot;
+		request.environment = {
+			QORPERA_LIVE_COMPANY_ROOT: liveCompanyRoot,
+			QORPERA_LIVE_COMPANY_PROFILE_ID: jobId,
+			DISPLAY: ":2",
+		};
+		const commands = new FakePodmanCommands();
+		commands.responses.push(
+			completed(commandResult(runtimeInfo())),
+			completed(commandResult()),
+			completed(commandResult('{"status":"ok"}\n')),
+			completed(commandResult("true\n")),
+			completed(commandResult()),
+			completed(commandResult()),
+		);
+
+		const processHandle = await backend(commands).start(request);
+		await expect(processHandle.result).resolves.toEqual({ status: "ok" });
+
+		const run = commands.calls[2] as CapturedCommand;
+		expect(run.args).toContain(
+			`type=bind,src=${await realpath(liveCompanyRoot)},dst=/qorpera/work/company,rw=true,bind-propagation=rprivate,bind-nonrecursive`,
+		);
+		expect(run.args.join(" ")).not.toContain(
+			`src=${await realpath(liveCompanyRoot)},dst=/qorpera/work/company,rw=true,relabel=`,
+		);
+		expect(run.args).toContain("--umask=007");
+		expect(run.args).toContain("DISPLAY=:2");
+		expect(run.args.join(" ")).not.toContain("QORPERA_LIVE_COMPANY_ROOT");
+		expect(commands.calls.some((call) => call.args.slice(0, 3).join(" ") === "unshare chown -R")).toBe(false);
+	});
+
 	it("force-removes the container before cancellation completes", async () => {
 		const request = await sandboxRequest();
 		const commands = new FakePodmanCommands();

@@ -423,6 +423,103 @@ describe("cloud company merge", () => {
 		await expect(readFile(join(roots.local, "remote-plan.md"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
+	it("removes a separately-authoritative instruction file when its logical agent directory is deleted", async () => {
+		const roots = await companyRoots();
+		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
+		const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+		for (const root of [roots.base, roots.local, roots.remote]) {
+			await mkdir(join(root, "agents", agentId, "artifacts"), { recursive: true });
+			await mkdir(join(root, "agents", agentId, "skills"), { recursive: true });
+			await writeFile(join(root, "agents", agentId, "instructions.md"), "# Generated charter\n", "utf-8");
+			await writeFile(join(root, "agents", agentId, "memory.md"), "# Memory\n", "utf-8");
+		}
+		const base = snapshot(
+			baseSnapshotId,
+			baseWorkspaceId,
+			await captureCloudCompanyTree(roots.base, profileId, objects),
+		);
+		const local = snapshot(
+			localSnapshotId,
+			localWorkspaceId,
+			await captureCloudCompanyTree(roots.local, profileId, objects),
+			baseSnapshotId,
+		);
+		await rm(join(roots.remote, "agents", agentId), { recursive: true });
+		const remote = snapshot(
+			remoteSnapshotId,
+			remoteWorkspaceId,
+			await captureCloudCompanyTree(roots.remote, profileId, objects),
+			baseSnapshotId,
+		);
+
+		await expect(
+			mergeCloudCompanySnapshots({
+				companyRoot: roots.local,
+				profileId,
+				environmentId,
+				localSnapshotId,
+				remoteSnapshotId,
+				primary: primary([base, local, remote]),
+				objects,
+			}),
+		).resolves.toMatchObject({ applied: true });
+		await expect(readFile(join(roots.local, "agents", agentId, "instructions.md"), "utf-8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+		await expect(readFile(join(roots.local, "agents", agentId, "memory.md"), "utf-8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+		await expect(readdir(join(roots.local, ".qorpera", "w"))).resolves.toEqual([]);
+	});
+
+	it("restores a quarantined instruction file when an interrupted merge rolls back", async () => {
+		const roots = await companyRoots();
+		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
+		const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+		await mkdir(join(roots.local, "agents", agentId, "artifacts"), { recursive: true });
+		await mkdir(join(roots.local, "agents", agentId, "skills"), { recursive: true });
+		await writeFile(join(roots.local, "agents", agentId, "instructions.md"), "# Generated charter\n", "utf-8");
+		await writeFile(join(roots.local, "agents", agentId, "memory.md"), "# Memory\n", "utf-8");
+		const [localTree, remoteTree] = await Promise.all([
+			captureCloudCompanyTree(roots.local, profileId, objects),
+			captureCloudCompanyTree(roots.remote, profileId, objects),
+		]);
+		const [localManifest, remoteManifest] = await Promise.all([
+			readCloudCompanyTreeManifest(profileId, localTree, objects),
+			readCloudCompanyTreeManifest(profileId, remoteTree, objects),
+		]);
+		const transactionRoot = join(roots.local, ".qorpera", "w", "cloud-merge-crash-omitted");
+		const backupRoot = join(transactionRoot, "backup");
+		const omittedRoot = join(transactionRoot, "omitted");
+		await mkdir(join(backupRoot, "agents", agentId), { recursive: true });
+		await mkdir(join(omittedRoot, "agents"), { recursive: true });
+		await writeFile(
+			join(transactionRoot, "journal.json"),
+			`${JSON.stringify({
+				schema: "qorpera.cloud-company-merge-journal/v1",
+				companyRoot: canonicalCompanyRoot(roots.local),
+				localEntries: localManifest.entries,
+				resultEntries: remoteManifest.entries,
+				createdAt,
+			})}\n`,
+			"utf-8",
+		);
+		await rename(join(roots.local, "agents", agentId, "memory.md"), join(backupRoot, "agents", agentId, "memory.md"));
+		await rm(join(roots.local, "agents", agentId, "artifacts"), { recursive: true });
+		await rm(join(roots.local, "agents", agentId, "skills"), { recursive: true });
+		await rename(join(roots.local, "agents", agentId), join(omittedRoot, "agents", agentId));
+
+		await recoverInterruptedCloudCompanyMerges(roots.local);
+
+		await expect(readFile(join(roots.local, "agents", agentId, "instructions.md"), "utf-8")).resolves.toBe(
+			"# Generated charter\n",
+		);
+		await expect(readFile(join(roots.local, "agents", agentId, "memory.md"), "utf-8")).resolves.toBe("# Memory\n");
+		await expect(readdir(join(roots.local, "agents", agentId, "artifacts"))).resolves.toEqual([]);
+		await expect(readdir(join(roots.local, "agents", agentId, "skills"))).resolves.toEqual([]);
+		await expect(readFile(transactionRoot, "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
 	it.each(["after-backup", "after-install"] as const)(
 		"rolls back an interrupted merge %s before the next capture",
 		async (crashPoint) => {

@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { readStaffAgents, replaceStaffAgents, type StaffAgent } from "@qorpera/company/company-staff";
+import {
+	readStaffAgents,
+	repairMissingStaffAgentInstructions,
+	replaceStaffAgents,
+	type StaffAgent,
+} from "@qorpera/company/company-staff";
 import type { HostedStaffAgent, QorperaHostedPrimary } from "./hosted-primary.ts";
 
 const CLOUD_STAFF_STATE_SCHEMA = "qorpera.cloud-staff-sync/v1";
@@ -209,10 +214,13 @@ export class CloudStaffSynchronizer {
 	async #syncOnce(): Promise<CloudStaffSyncResult> {
 		const result: CloudStaffSyncResult = { created: 0, updated: 0, downloaded: 0 };
 		const state = readState(this.#statePath, this.#options);
-		const localById = new Map(readStaffAgents(this.#options.root).map((staff) => [staff.id, staff]));
 		const hostedById = new Map(
 			(await this.#options.primary.listStaff(this.#options.profileId)).map((staff) => [staff.id, staff]),
 		);
+		for (const hosted of hostedById.values()) {
+			repairMissingStaffAgentInstructions(this.#options.root, localStaff(hosted));
+		}
+		const localById = new Map(readStaffAgents(this.#options.root).map((staff) => [staff.id, staff]));
 		const ids = new Set([...localById.keys(), ...hostedById.keys()]);
 
 		for (const id of ids) {

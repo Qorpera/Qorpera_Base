@@ -39,7 +39,7 @@ PrivateTmp=yes
 ProtectSystem=strict
 # The optional live Company File device is writable by contract. Without this
 # allowlist entry ProtectSystem=strict remounts it read-only in the service.
-ReadWritePaths=/var/lib/qorpera-runner /var/lib/qorpera-native-workspace /run/qorpera-runner -/qorpera/company-live
+ReadWritePaths=/var/lib/qorpera-runner /var/lib/qorpera-native-workspace /run/qorpera-runner -/qorpera/company-live -/srv/qorpera/dataset
 ProtectHome=yes
 ProtectHostname=yes
 ProtectClock=yes

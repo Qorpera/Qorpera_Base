@@ -17,6 +17,8 @@ const railResizeSource = readFileSync(join(userland, "rail-resize.js"), "utf-8")
 const feedbackSource = readFileSync(join(userland, "feedback.js"), "utf-8");
 const feedbackCssSource = readFileSync(join(userland, "feedback.css"), "utf-8");
 const hubCarouselSource = readFileSync(join(userland, "hub-carousel.js"), "utf-8");
+const screenViewerSource = readFileSync(join(userland, "screen-viewer.js"), "utf-8");
+const screensCssSource = readFileSync(join(userland, "screens.css"), "utf-8");
 const preloadSource = readFileSync(join(shell, "src", "preload.cjs"), "utf-8");
 const mainSource = readFileSync(join(shell, "src", "main.ts"), "utf-8");
 
@@ -328,6 +330,35 @@ describe("userland wiring", () => {
 		expect(rendererSource).toContain("Downloading v");
 		expect(rendererSource).toContain("Restart to update v");
 		expect(baseCssSource).toContain('.hub-foot .hub-update-button[data-phase="ready"]');
+	});
+
+	it("shows desktop startup before dialing and hands the ready bridge to the viewer", () => {
+		const openStart = rendererSource.indexOf("async function openAgentScreenViewer(");
+		const openEnd = rendererSource.indexOf("function agentSettingsSvg", openStart);
+		const openScreen = rendererSource.slice(openStart, openEnd);
+		expect(openScreen.indexOf("window.qorperaScreenViewer?.open({")).toBeLessThan(
+			openScreen.indexOf("screensPowerOpen?.("),
+		);
+		expect(openScreen).toContain("!viewer.closed");
+		expect(openScreen).toContain("await abandonLateView(opened)");
+		expect(openScreen).toContain("viewer.connect(opened.url)");
+		expect(screenViewerSource).toContain('statusCopy.textContent = "Starting desktop"');
+		expect(screenViewerSource).toContain('hint.textContent = "Starting desktop"');
+		expect(screenViewerSource).toContain('hint.textContent = "Live · you can take over at any time"');
+		expect(screenViewerSource).toContain('headingWrap.className = "screen-viewer-heading"');
+		expect(screenViewerSource).toContain("connect,");
+		expect(screenViewerSource).toContain("fail: showFailure");
+		expect(screensCssSource).toMatch(
+			/\.screen-viewer-frame \{[^}]*grid-template-rows: 58px minmax\(0, 1fr\);[^}]*padding: 0 12px 12px;/s,
+		);
+		expect(screensCssSource).toContain(
+			'html[data-platform="darwin"] .screen-viewer-titlebar { padding-left: 78px; }',
+		);
+		expect(screensCssSource).toMatch(
+			/\.screen-viewer-stage \{[^}]*place-self: center;[^}]*width: min\(100%, calc\(160vh - 112px\)\);[^}]*aspect-ratio: 8 \/ 5;[^}]*border: 0;[^}]*border-radius: 8px;[^}]*box-shadow: none;/s,
+		);
+		expect(screensCssSource).toContain("@keyframes screen-viewer-progress");
+		expect(screensCssSource).toContain("@media (prefers-reduced-motion: reduce)");
 	});
 
 	it("keeps product feedback private and in-app", () => {

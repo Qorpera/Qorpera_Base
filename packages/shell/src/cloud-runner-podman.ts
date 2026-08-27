@@ -276,9 +276,13 @@ function assertRequest(request: CloudRunnerSandboxRequest): void {
 	assertEnvironment(request.environment);
 }
 
-async function verifiedMounts(
-	request: CloudRunnerSandboxRequest,
-): Promise<{ inputRoot: string; workRoot: string; outputRoot: string; brokerRoot?: string }> {
+async function verifiedMounts(request: CloudRunnerSandboxRequest): Promise<{
+	inputRoot: string;
+	workRoot: string;
+	outputRoot: string;
+	liveCompanyFile: boolean;
+	brokerRoot?: string;
+}> {
 	const [
 		companyBaseRoot,
 		companyRoot,
@@ -303,11 +307,13 @@ async function verifiedMounts(
 		realpath(request.outputRoot),
 	]);
 	const inputRoot = dirname(companyBaseRoot);
-	const workRoot = dirname(companyRoot);
+	const declaredLiveRoot = request.environment.QORPERA_LIVE_COMPANY_ROOT;
+	const liveCompanyFile = typeof declaredLiveRoot === "string" && companyRoot === (await realpath(declaredLiveRoot));
+	const workRoot = liveCompanyFile ? companyRoot : dirname(companyRoot);
 	if (
 		companyBaseRoot !== join(inputRoot, "company") ||
-		companyRoot !== join(workRoot, "company") ||
-		workRoot !== join(dirname(inputRoot), "work") ||
+		(!liveCompanyFile && companyRoot !== join(workRoot, "company")) ||
+		(!liveCompanyFile && workRoot !== join(dirname(inputRoot), "work")) ||
 		executionContextPath !== join(inputRoot, "execution.json") ||
 		queuedInputsPath !== join(inputRoot, "inputs.jsonl") ||
 		transcriptPath !== join(inputRoot, "transcript.jsonl") ||
@@ -362,6 +368,7 @@ async function verifiedMounts(
 			inputRoot: safeHostPath(inputRoot),
 			workRoot: safeHostPath(workRoot),
 			outputRoot: safeHostPath(outputRoot),
+			liveCompanyFile,
 		};
 	}
 	const brokerRoot = await realpath(request.hostBroker.root);
@@ -378,6 +385,7 @@ async function verifiedMounts(
 		inputRoot: safeHostPath(inputRoot),
 		workRoot: safeHostPath(workRoot),
 		outputRoot: safeHostPath(outputRoot),
+		liveCompanyFile,
 		brokerRoot: safeHostPath(brokerRoot),
 	};
 }
@@ -388,7 +396,7 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 		boundary: "rootless_container",
 		hostFilesystem: "none",
 		inputFilesystem: "read_only",
-		companyCheckout: "job_private",
+		companyCheckout: "job_private_or_declared_live",
 		outputFilesystem: "job_private",
 		network: "deny_by_default",
 		environment: "allowlist_only",
@@ -500,7 +508,7 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 			"--stop-timeout=0",
 			"--timeout",
 			String(Math.ceil(request.limits.wallTimeMs / 1000)),
-			"--umask=077",
+			`--umask=${mounts.liveCompanyFile ? "007" : "077"}`,
 			"--workdir",
 			CONTAINER_PATHS.companyRoot,
 			"--entrypoint",
@@ -508,7 +516,9 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 			"--mount",
 			`type=bind,src=${mounts.inputRoot},dst=/qorpera/input,ro=true,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
 			"--mount",
-			`type=bind,src=${mounts.workRoot},dst=/qorpera/work,rw=true,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
+			mounts.liveCompanyFile
+				? `type=bind,src=${mounts.workRoot},dst=${CONTAINER_PATHS.companyRoot},rw=true,bind-propagation=rprivate,bind-nonrecursive`
+				: `type=bind,src=${mounts.workRoot},dst=/qorpera/work,rw=true,relabel=private,bind-propagation=rprivate,bind-nonrecursive`,
 			"--mount",
 			`type=tmpfs,destination=${CONTAINER_PATHS.outputRoot},tmpfs-size=${request.limits.maxOutputBytes + OUTPUT_TMPFS_OVERHEAD_BYTES},tmpfs-mode=0700,notmpcopyup,U=true`,
 		];
@@ -521,6 +531,7 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 		for (const [key, value] of Object.entries(request.environment).sort(([left], [right]) =>
 			left.localeCompare(right, "en"),
 		)) {
+			if (key === "QORPERA_LIVE_COMPANY_ROOT" || key === "QORPERA_LIVE_COMPANY_PROFILE_ID") continue;
 			args.push("--env", `${key}=${value}`);
 		}
 		args.push(this.#image);
@@ -569,7 +580,9 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 			} catch (error) {
 				try {
 					await remove();
-					await this.#reclaimWorkspaceOwnership(mounts.workRoot).catch(() => undefined);
+					if (!mounts.liveCompanyFile) {
+						await this.#reclaimWorkspaceOwnership(mounts.workRoot).catch(() => undefined);
+					}
 				} catch {
 					/* cleanup must not mask the attempt failure */
 				} finally {
@@ -585,7 +598,7 @@ export class RootlessPodmanSandboxBackend implements CloudRunnerSandboxBackend {
 			 * a reclamation failure fails loudly. */
 			try {
 				await remove();
-				await this.#reclaimWorkspaceOwnership(mounts.workRoot);
+				if (!mounts.liveCompanyFile) await this.#reclaimWorkspaceOwnership(mounts.workRoot);
 			} finally {
 				await modelSocket?.close();
 			}

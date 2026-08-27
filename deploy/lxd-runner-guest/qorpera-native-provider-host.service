@@ -32,7 +32,7 @@ PrivateTmp=yes
 ProtectSystem=strict
 # The official harness edits the optional live Company File through this
 # service; ProtectSystem=strict must not remount that device read-only.
-ReadWritePaths=/var/lib/qorpera-native-provider /var/lib/qorpera-native-workspace -/qorpera/company-live
+ReadWritePaths=/var/lib/qorpera-native-provider /var/lib/qorpera-native-workspace -/qorpera/company-live -/srv/qorpera/dataset
 ProtectHome=yes
 ProtectHostname=yes
 ProtectClock=yes
