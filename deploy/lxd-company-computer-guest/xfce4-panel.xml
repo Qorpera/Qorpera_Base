@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Company Computer screen panel defaults: one centered dock at the bottom
      with Chrome, the file manager, and a terminal - the Grok bot-computer
-     dock shape. Applies to fresh sessions; the shared workbench HOME keeps
+     dock shape. Applies to fresh sessions; the hidden desktop HOME keeps
      whatever members change afterwards. -->
 <channel name="xfce4-panel" version="1.0">
 	<property name="configver" type="int" value="2"/>
@@ -10,7 +10,8 @@
 		<property name="dark-mode" type="bool" value="true"/>
 		<property name="panel-1" type="empty">
 			<property name="position" type="string" value="p=10;x=0;y=0"/>
-			<property name="length" type="double" value="1"/>
+			<property name="length" type="uint" value="1"/>
+			<property name="autohide-behavior" type="uint" value="0"/>
 			<property name="position-locked" type="bool" value="true"/>
 			<property name="icon-size" type="uint" value="40"/>
 			<property name="size" type="uint" value="52"/>
@@ -30,12 +31,12 @@
 		</property>
 		<property name="plugin-2" type="string" value="launcher">
 			<property name="items" type="array">
-				<value type="string" value="thunar.desktop"/>
+				<value type="string" value="qorpera-files.desktop"/>
 			</property>
 		</property>
 		<property name="plugin-3" type="string" value="launcher">
 			<property name="items" type="array">
-				<value type="string" value="xfce4-terminal.desktop"/>
+				<value type="string" value="qorpera-terminal.desktop"/>
 			</property>
 		</property>
 	</property>

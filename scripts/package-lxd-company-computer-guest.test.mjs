@@ -30,14 +30,16 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 				"install-image-contract.sh",
 				"qorpera-chrome",
 				"qorpera-chrome.desktop",
+				"qorpera-files",
+				"qorpera-files.desktop",
+				"qorpera-terminal",
+				"qorpera-terminal.desktop",
 				"qorpera-company-computer-bootstrap.mjs",
 				"qorpera-company-computer-bootstrap.service",
 				"qorpera-company-computer-runner.mjs",
 				"qorpera-company-computer-runner.service",
 				"qorpera-company-computer-screens.mjs",
 				"qorpera-company-computer-screens.service",
-				"qorpera-company-computer-sync.mjs",
-				"qorpera-company-computer-sync.service",
 				"qorpera-screen-session",
 				"xfce4-panel.xml",
 				"wallpapers/pebble.svg",
@@ -72,10 +74,11 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 		assert.equal(JSON.parse(runnerManifest.toString("utf-8")).schema, "qorpera.lxd-runner-guest-package/v1");
 		assert.equal((await stat(join(outputRoot, "install-image-contract.sh"))).mode & 0o111, 0o111);
 		assert.equal((await stat(join(outputRoot, "qorpera-screen-session"))).mode & 0o111, 0o111);
+		assert.equal((await stat(join(outputRoot, "qorpera-files"))).mode & 0o111, 0o111);
+		assert.equal((await stat(join(outputRoot, "qorpera-terminal"))).mode & 0o111, 0o111);
 		for (const bundle of [
 			"qorpera-company-computer-bootstrap.mjs",
 			"qorpera-company-computer-runner.mjs",
-			"qorpera-company-computer-sync.mjs",
 			"qorpera-company-computer-screens.mjs",
 		]) {
 			const syntax = spawnSync(process.execPath, ["--check", join(outputRoot, bundle)], { encoding: "utf-8" });
@@ -88,7 +91,6 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 		);
 		for (const serviceBundle of [
 			"qorpera-company-computer-runner.mjs",
-			"qorpera-company-computer-sync.mjs",
 			"qorpera-company-computer-screens.mjs",
 		]) {
 			assert.ok(
@@ -135,10 +137,57 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 		const wrapperPath = join(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-screen-session");
 		const wrapper = await readFile(wrapperPath, "utf-8");
 		assert.ok(wrapper.includes("-localhost"), "the screen session must bind its VNC socket to loopback only");
-		const syntax = spawnSync("/usr/bin/env", ["bash", "-n", builderPath, installerPath, wrapperPath], {
-			cwd: repositoryRoot,
-			encoding: "utf-8",
-		});
+		assert.ok(
+			wrapper.includes('screen_state="${screen_state_root}/screen-${ordinal}"'),
+			"each display must keep its own persistent XFCE state",
+		);
+		assert.ok(wrapper.includes("export XDG_CONFIG_HOME="), "XFCE must not share one config root across screens");
+		assert.ok(wrapper.includes('cd "${company_root}"'), "desktop applications must start inside the live Company File");
+		assert.ok(
+			wrapper.includes("/srv/qorpera/dataset/.qorpera-computer/desktop-home"),
+			"desktop state must stay outside the visible Company File",
+		);
+		assert.ok(wrapper.includes("/desktop-icons/style"), "the desktop contract must suppress raw XFCE icons");
+		assert.ok(wrapper.includes("QORPERA_SCREEN_MONITOR"), "the wallpaper must target the display's real monitor");
+		const panel = await readFile(join(outputRoot, "xfce4-panel.xml"), "utf-8");
+		assert.match(panel, /<property name="length" type="uint" value="1"\/>/);
+		assert.doesNotMatch(panel, /<property name="length" type="double"/);
+		assert.ok(panel.includes("qorpera-files.desktop"));
+		assert.ok(panel.includes("qorpera-terminal.desktop"));
+		assert.ok((await readFile(join(outputRoot, "qorpera-terminal"), "utf-8")).includes("--command=/bin/bash"));
+		const screenService = await readFile(join(outputRoot, "qorpera-company-computer-screens.service"), "utf-8");
+		assert.ok(screenService.includes("SupplementaryGroups=users"));
+		assert.ok(screenService.includes("WorkingDirectory=/srv/qorpera/dataset/live"));
+		assert.ok(screenService.includes("Environment=HOME=/srv/qorpera/dataset/.qorpera-computer/desktop-home"));
+		assert.ok(screenService.includes("UMask=0007"));
+		assert.ok(
+			screenService.includes("NoNewPrivileges=yes"),
+			"the screen service must retain its no-new-privileges boundary",
+		);
+		assert.ok(
+			screenService.includes("RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK"),
+			"desktop sandbox helpers need netlink while establishing their nested sandbox",
+		);
+		const runnerService = await readFile(join(outputRoot, "qorpera-company-computer-runner.service"), "utf-8");
+		assert.ok(runnerService.includes("SupplementaryGroups=qorpera-native-execution users"));
+		assert.ok(runnerService.includes("UMask=0007"));
+		assert.ok(installer.includes("systemctl disable --now qorpera-company-computer-sync.service"));
+		const syntax = spawnSync(
+			"/usr/bin/env",
+			[
+				"bash",
+				"-n",
+				builderPath,
+				installerPath,
+				wrapperPath,
+				join(outputRoot, "qorpera-files"),
+				join(outputRoot, "qorpera-terminal"),
+			],
+			{
+				cwd: repositoryRoot,
+				encoding: "utf-8",
+			},
+		);
 		assert.equal(syntax.status, 0, syntax.stderr);
 	} finally {
 		await rm(outputRoot, { recursive: true, force: true });

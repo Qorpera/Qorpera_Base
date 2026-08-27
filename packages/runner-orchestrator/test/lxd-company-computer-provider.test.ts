@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,14 +7,16 @@ import type {
 	LxdCreateStorageVolumeRequest,
 	LxdInstancePowerAction,
 	LxdInstanceRecord,
-	LxdInstanceSnapshotClient,
 	LxdInstanceStateRecord,
+	LxdPersistentInstanceClient,
 	LxdStorageVolumeRecord,
 } from "../src/lxd-client.ts";
 import {
 	COMPANY_COMPUTER_GUEST_DATASET_PATH,
 	type CompanyDatasetSnapshotClient,
+	type CompanyDatasetSourceVerifier,
 	ExecCompanyDatasetSnapshotClient,
+	LinuxNfsCompanyDatasetSourceVerifier,
 	type LxdCompanyComputerAuthority,
 	type LxdCompanyComputerControlPlane,
 	type LxdCompanyComputerLifecycleState,
@@ -32,6 +34,9 @@ const computeIdentityId = "30000000-0000-4000-8000-000000000005";
 const runnerId = "30000000-0000-4000-8000-000000000006";
 const policySha256 = "e".repeat(64);
 const roots: string[] = [];
+const availableDatasetSource: CompanyDatasetSourceVerifier = {
+	async verifyDatasetSource() {},
+};
 
 afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -119,6 +124,7 @@ function config(root: string): LxdCompanyComputerProviderConfig {
 		cpuLimit: 8,
 		memoryLimit: "16GiB",
 		nasDatasetRoot: "/srv/qorpera-nas",
+		nasSharedGid: 100,
 		guestAssignmentPort: 8444,
 		guestAssignmentSource: "10.41.0.1",
 		nativeBridgePort: 8445,
@@ -130,15 +136,17 @@ function config(root: string): LxdCompanyComputerProviderConfig {
 		runnerVersion: "v1",
 		codexPath: "/usr/local/bin/codex",
 		claudePath: "/usr/local/bin/claude",
+		datasetSnapshotIntervalSeconds: 0,
 	};
 }
 
-class FakeLxd implements LxdInstanceSnapshotClient {
+class FakeLxd implements LxdPersistentInstanceClient {
 	instance?: LxdInstanceRecord;
 	volume?: LxdStorageVolumeRecord;
 	createCalls: LxdCreateInstanceRequest[] = [];
 	powerCalls: LxdInstancePowerAction[] = [];
 	snapshotCalls: string[] = [];
+	deleteCalls: string[] = [];
 
 	async getInstance(): Promise<LxdInstanceRecord | undefined> {
 		return this.instance ? structuredClone(this.instance) : undefined;
@@ -195,6 +203,11 @@ class FakeLxd implements LxdInstanceSnapshotClient {
 	async createInstanceSnapshot(_project: string, _name: string, snapshotName: string): Promise<void> {
 		this.snapshotCalls.push(snapshotName);
 	}
+
+	async deleteInstance(_project: string, name: string): Promise<void> {
+		this.deleteCalls.push(name);
+		this.instance = undefined;
+	}
 }
 
 class FakeControlPlane implements LxdCompanyComputerControlPlane {
@@ -205,6 +218,10 @@ class FakeControlPlane implements LxdCompanyComputerControlPlane {
 	provisionCalls: Array<{ runId: string; clientRunnerId: string }> = [];
 	transitions: Array<{ state: LxdCompanyComputerLifecycleState; nodeKey?: string }> = [];
 	transitionDetails: Array<Record<string, unknown>> = [];
+	transitionErrorState?: LxdCompanyComputerLifecycleState;
+	nasDataset = "company41";
+	relocateCalls: Array<{ dataset: string; detail: Record<string, unknown> }> = [];
+	relocateError?: Error;
 
 	async countOpenScreens(): Promise<number> {
 		this.openScreenReads += 1;
@@ -218,7 +235,7 @@ class FakeControlPlane implements LxdCompanyComputerControlPlane {
 			environmentId,
 			logicalComputerId,
 			lifecycleState: this.lifecycle,
-			nasDataset: `companies/${environmentId}`,
+			nasDataset: this.nasDataset,
 			...(this.nodeKey === undefined ? {} : { nodeKey: this.nodeKey }),
 			logicalComputerStatus: "active",
 			computeIdentityId,
@@ -252,10 +269,23 @@ class FakeControlPlane implements LxdCompanyComputerControlPlane {
 		nodeKey: string | undefined,
 		detail: Record<string, unknown>,
 	): Promise<void> {
+		if (this.transitionErrorState === state) throw new Error(`transition ${state} unavailable`);
 		this.transitions.push({ state, ...(nodeKey === undefined ? {} : { nodeKey }) });
 		this.transitionDetails.push(detail);
 		this.lifecycle = state;
 		if (state === "active" && nodeKey !== undefined) this.nodeKey = nodeKey;
+	}
+
+	async relocateDataset(
+		_companyComputerId: string,
+		nasDataset: string,
+		detail: Record<string, unknown>,
+	): Promise<LxdCompanyComputerAuthority> {
+		if (this.relocateError) throw this.relocateError;
+		this.relocateCalls.push({ dataset: nasDataset, detail });
+		this.nasDataset = nasDataset;
+		this.lifecycle = "recovering";
+		return this.describeCompanyComputer();
 	}
 }
 
@@ -292,7 +322,10 @@ function delivery(runId: string, assignmentId: string, expiresAt: string): Cloud
 	};
 }
 
-async function backend(datasetSnapshots?: CompanyDatasetSnapshotClient): Promise<{
+async function backend(
+	datasetSnapshots?: CompanyDatasetSnapshotClient,
+	configOverrides: Partial<LxdCompanyComputerProviderConfig> = {},
+): Promise<{
 	backend: LxdCompanyComputerProviderBackend;
 	lxd: FakeLxd;
 	controlPlane: FakeControlPlane;
@@ -303,7 +336,14 @@ async function backend(datasetSnapshots?: CompanyDatasetSnapshotClient): Promise
 	const controlPlane = new FakeControlPlane();
 	const guest = new FakeGuest();
 	const root = await stateRoot();
-	const provider = new LxdCompanyComputerProviderBackend(config(root), lxd, controlPlane, guest, datasetSnapshots);
+	const provider = new LxdCompanyComputerProviderBackend(
+		{ ...config(root), ...configOverrides },
+		lxd,
+		controlPlane,
+		guest,
+		datasetSnapshots,
+		availableDatasetSource,
+	);
 	return { backend: provider, lxd, controlPlane, guest, root };
 }
 
@@ -312,6 +352,15 @@ async function ageScreensIdleObservation(root: string, computerId: string, milli
 	const journal = JSON.parse(await readFile(journalPath, "utf-8")) as Record<string, unknown>;
 	if (typeof journal.screensIdleSince !== "string") throw new Error("journal holds no idle observation");
 	journal.screensIdleSince = new Date(Date.now() - milliseconds).toISOString();
+	await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf-8");
+}
+
+async function ageDatasetSnapshotObservation(root: string, computerId: string, milliseconds: number): Promise<void> {
+	const journalPath = join(root, "computers", computerId, "journal.json");
+	const journal = JSON.parse(await readFile(journalPath, "utf-8")) as Record<string, unknown>;
+	journal.createdAt = new Date(Date.now() - milliseconds).toISOString();
+	delete journal.lastDatasetSnapshotAt;
+	delete journal.lastDatasetSnapshotName;
 	await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf-8");
 }
 
@@ -329,7 +378,7 @@ describe("LxdCompanyComputerProviderBackend", () => {
 		expect(request.devices["company-dataset"]).toEqual({
 			type: "disk",
 			path: COMPANY_COMPUTER_GUEST_DATASET_PATH,
-			source: `/srv/qorpera-nas/companies/${environmentId}`,
+			source: "/srv/qorpera-nas/company41",
 		});
 		expect(request.devices["compute-identity"]?.source).toBe(`qorpera-identity-${computeIdentityId}`);
 		expect(controlPlane.transitions).toEqual([{ state: "active", nodeKey: "company41-node-01" }]);
@@ -436,15 +485,14 @@ describe("LxdCompanyComputerProviderBackend", () => {
 		expect(lxd.instance?.status).toBe("Stopped");
 	});
 
-	it("snapshots through the control-plane lifecycle window", async () => {
+	it("refuses a root-only rollback point when NAS snapshot tooling is absent", async () => {
 		const { backend: provider, lxd, controlPlane } = await backend();
 		const runId = "30000000-0000-4000-8000-000000000107";
 		await provider.acquire(runId, work(runId), new AbortController().signal);
-		const snapshotName = await provider.snapshotComputer(logicalComputerId);
-		expect(lxd.snapshotCalls).toEqual([snapshotName]);
-		expect(controlPlane.transitions.slice(1)).toEqual([{ state: "snapshotting" }, { state: "active" }]);
+		await expect(provider.snapshotComputer(logicalComputerId)).rejects.toThrow("tooling is not configured");
+		expect(lxd.snapshotCalls).toEqual([]);
+		expect(controlPlane.transitions).toEqual([{ state: "active", nodeKey: "company41-node-01" }]);
 		expect(controlPlane.lifecycle).toBe("active");
-		expect(controlPlane.transitionDetails.at(-1)).toEqual({ snapshot: snapshotName, dataset_captured: false });
 	});
 
 	it("bootstraps the screen agent config block and its viewer credential", async () => {
@@ -456,8 +504,18 @@ describe("LxdCompanyComputerProviderBackend", () => {
 		);
 		expect(bootstrap).toBeDefined();
 		const parsed = JSON.parse((bootstrap as { content: string }).content) as {
+			schema: string;
+			nas_shared_gid: number;
+			dataset_layout: Record<string, unknown>;
 			screens: Record<string, unknown>;
 		};
+		expect(parsed.schema).toBe("qorpera.company-computer-bootstrap/v2");
+		expect(parsed.nas_shared_gid).toBe(100);
+		expect(parsed.dataset_layout).toEqual({
+			liveDirectory: "live",
+			profilesDirectory: "profiles",
+			stateDirectory: ".qorpera-computer",
+		});
 		expect(parsed.screens).toEqual({
 			viewer_host: "0.0.0.0",
 			viewer_port: 8446,
@@ -469,6 +527,17 @@ describe("LxdCompanyComputerProviderBackend", () => {
 		);
 		expect(viewerCredential).toBeDefined();
 		expect((viewerCredential as { content: string }).content.trim()).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		const runnerConfig = lxd.pushedFiles.find(
+			(file) => file.path === "/var/lib/qorpera-bootstrap/runner-config.json",
+		);
+		expect(runnerConfig).toBeDefined();
+		const runner = JSON.parse((runnerConfig as { content: string }).content) as Record<string, unknown>;
+		expect(runner.schema).toBe("qorpera.company-computer-service/v2");
+		expect(runner.temporary_root).toBe("/srv/qorpera/dataset/.qorpera-computer/runner");
+		expect(runner.environment).toEqual({
+			QORPERA_LIVE_COMPANY_ROOT: "/srv/qorpera/dataset/live",
+			QORPERA_LIVE_COMPANY_PROFILE_ID: profileId,
+		});
 	});
 
 	it("captures the NAS dataset inside the snapshotting window", async () => {
@@ -485,10 +554,156 @@ describe("LxdCompanyComputerProviderBackend", () => {
 		const runId = "30000000-0000-4000-8000-000000000108";
 		await provider.acquire(runId, work(runId), new AbortController().signal);
 		const snapshotName = await provider.snapshotComputer(logicalComputerId);
-		expect(datasetCalls).toEqual([{ dataset: `companies/${environmentId}`, snapshot: snapshotName }]);
-		expect(lxd.snapshotCalls).toEqual([snapshotName]);
+		expect(datasetCalls).toEqual([{ dataset: "company41", snapshot: snapshotName }]);
+		expect(lxd.snapshotCalls).toEqual([]);
 		expect(controlPlane.lifecycle).toBe("active");
 		expect(controlPlane.transitionDetails.at(-1)).toEqual({ snapshot: snapshotName, dataset_captured: true });
+	});
+
+	it("takes occasional NAS rollback snapshots without a publication pass", async () => {
+		const datasetCalls: Array<{ dataset: string; snapshot: string }> = [];
+		const {
+			backend: provider,
+			lxd,
+			controlPlane,
+			root,
+		} = await backend(
+			{
+				async snapshotDataset(dataset, snapshot) {
+					datasetCalls.push({ dataset, snapshot });
+				},
+			},
+			{ datasetSnapshotIntervalSeconds: 900 },
+		);
+		await provider.provisionComputer(logicalComputerId);
+		await ageDatasetSnapshotObservation(root, logicalComputerId, 901_000);
+		await provider.reconcile();
+		expect(datasetCalls).toHaveLength(1);
+		expect(datasetCalls[0]?.dataset).toBe("company41");
+		expect(datasetCalls[0]?.snapshot).toMatch(/^qorpera-data-/);
+		expect(lxd.snapshotCalls).toEqual([]);
+		expect(controlPlane.transitionDetails.slice(-2)).toEqual([
+			{ snapshot: datasetCalls[0]?.snapshot, reason: "scheduled_rollback" },
+			{
+				snapshot: datasetCalls[0]?.snapshot,
+				dataset_captured: true,
+				reason: "scheduled_rollback",
+			},
+		]);
+	});
+
+	it("relocates a stopped machine onto the existing live company root and preserves identity", async () => {
+		const { backend: provider, lxd, controlPlane, guest, root } = await backend();
+		controlPlane.nasDataset = `companies/${environmentId}`;
+		await provider.provisionComputer(logicalComputerId);
+		const identityVolume = lxd.createCalls[0]?.devices["compute-identity"]?.source;
+		await provider.stopComputer(logicalComputerId);
+		controlPlane.openScreens = 0;
+		const relocatedProvider = new LxdCompanyComputerProviderBackend(
+			{ ...config(root), nasDatasetRoot: "/mnt/qorpera-companies" },
+			lxd,
+			controlPlane,
+			guest,
+			undefined,
+			availableDatasetSource,
+		);
+		await relocatedProvider.relocateComputerDataset(logicalComputerId, "company41");
+		expect(controlPlane.relocateCalls).toEqual([
+			{
+				dataset: "company41",
+				detail: { reason: "adopt_existing_company_root", from: `companies/${environmentId}` },
+			},
+		]);
+		expect(lxd.deleteCalls).toEqual([`qorpera-cc-${logicalComputerId.replaceAll("-", "")}`]);
+		expect(lxd.createCalls).toHaveLength(2);
+		expect(lxd.createCalls[1]?.devices["company-dataset"]?.source).toBe("/mnt/qorpera-companies/company41");
+		expect(lxd.createCalls[1]?.devices["compute-identity"]?.source).toBe(identityVolume);
+		expect(controlPlane.lifecycle).toBe("active");
+		expect(controlPlane.nasDataset).toBe("company41");
+		expect(controlPlane.transitions.at(-1)).toEqual({ state: "active", nodeKey: "company41-node-01" });
+		expect(controlPlane.transitions).not.toContainEqual({ state: "recovering" });
+	});
+
+	it("leaves the active machine untouched when atomic dataset relocation is rejected", async () => {
+		const { backend: provider, lxd, controlPlane, guest, root } = await backend();
+		controlPlane.nasDataset = `companies/${environmentId}`;
+		await provider.provisionComputer(logicalComputerId);
+		await provider.stopComputer(logicalComputerId);
+		controlPlane.openScreens = 0;
+		controlPlane.relocateError = new Error("leased job raced relocation");
+		const relocatedProvider = new LxdCompanyComputerProviderBackend(
+			{ ...config(root), nasDatasetRoot: "/mnt/qorpera-companies" },
+			lxd,
+			controlPlane,
+			guest,
+			undefined,
+			availableDatasetSource,
+		);
+		await expect(relocatedProvider.relocateComputerDataset(logicalComputerId, "company41")).rejects.toThrow(
+			"leased job raced relocation",
+		);
+		expect(controlPlane.lifecycle).toBe("active");
+		expect(controlPlane.nasDataset).toBe(`companies/${environmentId}`);
+		expect(lxd.deleteCalls).toEqual([]);
+		expect(lxd.createCalls).toHaveLength(1);
+	});
+
+	it("resumes an already-created replacement when only the final lifecycle transition failed", async () => {
+		const { backend: provider, lxd, controlPlane, guest, root } = await backend();
+		controlPlane.nasDataset = `companies/${environmentId}`;
+		await provider.provisionComputer(logicalComputerId);
+		await provider.stopComputer(logicalComputerId);
+		controlPlane.openScreens = 0;
+		controlPlane.transitionErrorState = "active";
+		const relocatedProvider = new LxdCompanyComputerProviderBackend(
+			{ ...config(root), nasDatasetRoot: "/mnt/qorpera-companies" },
+			lxd,
+			controlPlane,
+			guest,
+			undefined,
+			availableDatasetSource,
+		);
+		await expect(relocatedProvider.relocateComputerDataset(logicalComputerId, "company41")).rejects.toThrow(
+			"transition active unavailable",
+		);
+		expect(controlPlane.lifecycle).toBe("recovering");
+		expect(lxd.deleteCalls).toHaveLength(1);
+		expect(lxd.createCalls).toHaveLength(2);
+
+		controlPlane.transitionErrorState = undefined;
+		await relocatedProvider.recoverComputer(logicalComputerId);
+		expect(controlPlane.lifecycle).toBe("active");
+		expect(lxd.deleteCalls).toHaveLength(1);
+		expect(lxd.createCalls).toHaveLength(2);
+	});
+
+	it("rejects dataset relocation before changing authority when the NAS target is unavailable", async () => {
+		const { backend: provider, lxd, controlPlane, guest, root } = await backend();
+		controlPlane.nasDataset = `companies/${environmentId}`;
+		await provider.provisionComputer(logicalComputerId);
+		await provider.stopComputer(logicalComputerId);
+		controlPlane.openScreens = 0;
+		const unavailableDatasetSource: CompanyDatasetSourceVerifier = {
+			async verifyDatasetSource() {
+				throw new Error("NAS mount unavailable");
+			},
+		};
+		const relocatedProvider = new LxdCompanyComputerProviderBackend(
+			{ ...config(root), nasDatasetRoot: "/mnt/qorpera-companies" },
+			lxd,
+			controlPlane,
+			guest,
+			undefined,
+			unavailableDatasetSource,
+		);
+		await expect(relocatedProvider.relocateComputerDataset(logicalComputerId, "company41")).rejects.toThrow(
+			"NAS mount unavailable",
+		);
+		expect(controlPlane.relocateCalls).toEqual([]);
+		expect(controlPlane.lifecycle).toBe("active");
+		expect(controlPlane.nasDataset).toBe(`companies/${environmentId}`);
+		expect(lxd.deleteCalls).toEqual([]);
+		expect(lxd.createCalls).toHaveLength(1);
 	});
 
 	it("fails the snapshot closed when the working world cannot be captured", async () => {
@@ -542,5 +757,31 @@ describe("LxdCompanyComputerProviderBackend", () => {
 			stderr: "dataset does not exist",
 		}));
 		await expect(failing.snapshotDataset("companies/a", "qorpera-cc-1")).rejects.toThrow("dataset does not exist");
+	});
+
+	it("proves the dataset source is a writable NFS mount instead of a local fallback directory", async () => {
+		const root = await stateRoot();
+		const nasRoot = join(root, "nas share");
+		const datasetSource = join(nasRoot, "company41");
+		const mountInfoPath = join(root, "mountinfo");
+		await mkdir(datasetSource, { recursive: true });
+		const encodedMountPoint = (await realpath(nasRoot)).replaceAll("\\", "\\134").replaceAll(" ", "\\040");
+		const verifier = new LinuxNfsCompanyDatasetSourceVerifier(mountInfoPath);
+		await writeFile(
+			mountInfoPath,
+			`36 25 0:32 / ${encodedMountPoint} rw,relatime - nfs4 192.0.2.1:/volume1/qorpera rw\n`,
+			"utf-8",
+		);
+		await expect(verifier.verifyDatasetSource(nasRoot, datasetSource)).resolves.toBeUndefined();
+
+		await writeFile(mountInfoPath, `36 25 0:32 / ${encodedMountPoint} rw,relatime - ext4 /dev/sda1 rw\n`, "utf-8");
+		await expect(verifier.verifyDatasetSource(nasRoot, datasetSource)).rejects.toThrow("not backed by NFS");
+
+		await writeFile(
+			mountInfoPath,
+			`36 25 0:32 / ${encodedMountPoint} ro,relatime - nfs4 192.0.2.1:/volume1/qorpera ro\n`,
+			"utf-8",
+		);
+		await expect(verifier.verifyDatasetSource(nasRoot, datasetSource)).rejects.toThrow("not mounted read-write");
 	});
 });

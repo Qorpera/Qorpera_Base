@@ -177,6 +177,48 @@ describe("LXD Unix client", () => {
 		expect(requests[0]).toMatchObject({ method: "POST", body: volumeRequest });
 	});
 
+	it("deletes a disposable instance root and waits for completion", async () => {
+		const requests: Array<{ method: string; url: string }> = [];
+		const socket = await unixServer((method, url) => {
+			requests.push({ method, url });
+			if (
+				method === "DELETE" &&
+				url === "/1.0/instances/qorpera-20000000000040008000000000000001?project=qorpera-runners"
+			) {
+				return {
+					body: {
+						type: "async",
+						status: "Operation created",
+						status_code: 100,
+						operation: "/1.0/operations/operation-delete",
+						metadata: {},
+					},
+				};
+			}
+			if (method === "GET" && url === "/1.0/operations/operation-delete/wait?timeout=30") {
+				return {
+					body: {
+						type: "sync",
+						status: "Success",
+						status_code: 200,
+						metadata: { status: "Success", status_code: 200, err: "" },
+					},
+				};
+			}
+			throw new Error(`unexpected request ${method} ${url}`);
+		});
+		const client = new LxdUnixClient(socket, 30);
+
+		await client.deleteInstance("qorpera-runners", "qorpera-20000000000040008000000000000001");
+		expect(requests).toEqual([
+			{
+				method: "DELETE",
+				url: "/1.0/instances/qorpera-20000000000040008000000000000001?project=qorpera-runners",
+			},
+			{ method: "GET", url: "/1.0/operations/operation-delete/wait?timeout=30" },
+		]);
+	});
+
 	it("pushes root-owned private files and starts bootstrap through the VM agent", async () => {
 		const requests: Array<{
 			method: string;

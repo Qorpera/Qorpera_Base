@@ -46,7 +46,7 @@ export function nativeProviderExecutionGuarantees(
 		boundary,
 		hostFilesystem: "none",
 		inputFilesystem: "read_only",
-		companyCheckout: "job_private",
+		companyCheckout: "job_private_or_declared_live",
 		outputFilesystem: "job_private",
 		network: "deny_by_default",
 		environment: "allowlist_only",
@@ -156,6 +156,14 @@ function bridgeUrl(value: string): URL {
 	return url;
 }
 
+function nativeHarnessEnvironment(environment: Readonly<Record<string, string>>): Record<string, string> {
+	return Object.fromEntries(
+		Object.entries(environment).filter(
+			([key]) => key !== "QORPERA_LIVE_COMPANY_ROOT" && key !== "QORPERA_LIVE_COMPANY_PROFILE_ID",
+		),
+	);
+}
+
 function bridgeProjection(authority: CloudRunnerNativeAuthority, request: CloudRunnerSandboxRequest): JsonValue {
 	return {
 		schema: BRIDGE_REQUEST_SCHEMA,
@@ -202,7 +210,9 @@ function bridgeProjection(authority: CloudRunnerNativeAuthority, request: CloudR
 			attachments_root: request.input.attachmentsRoot,
 			output_root: request.outputRoot,
 		},
-		...(Object.keys(request.environment).length > 0 ? { environment: { ...request.environment } } : {}),
+		...(Object.keys(nativeHarnessEnvironment(request.environment)).length > 0
+			? { environment: nativeHarnessEnvironment(request.environment) }
+			: {}),
 		limits: {
 			wall_time_ms: request.limits.wallTimeMs,
 			memory_bytes: request.limits.memoryBytes,
@@ -422,6 +432,7 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 	readonly #bridge: NativeProviderComputerBridge;
 	readonly #nativeWorkspaceGid?: number;
 	readonly #nativeWorkspaceRoot?: string;
+	readonly #liveCompanyRoot?: string;
 
 	constructor(
 		authority: CloudRunnerNativeAuthority,
@@ -429,12 +440,14 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 		bridge: NativeProviderComputerBridge,
 		nativeWorkspaceGid?: number,
 		nativeWorkspaceRoot?: string,
+		liveCompanyRoot?: string,
 	) {
 		this.#authority = authority;
 		this.#refreshAuthority = refreshAuthority;
 		this.#bridge = bridge;
 		this.#nativeWorkspaceGid = nativeWorkspaceGid;
 		this.#nativeWorkspaceRoot = nativeWorkspaceRoot ? resolve(nativeWorkspaceRoot) : undefined;
+		this.#liveCompanyRoot = liveCompanyRoot ? resolve(liveCompanyRoot) : undefined;
 		this.guarantees = bridge.executionGuarantees;
 	}
 
@@ -444,18 +457,20 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 			const nativeWorkspaceRoot = this.#nativeWorkspaceRoot;
 			const inputRoot = dirname(resolve(request.input.companyBaseRoot));
 			const workRoot = dirname(resolve(request.input.companyRoot));
+			const liveMode =
+				this.#liveCompanyRoot !== undefined && resolve(request.input.companyRoot) === this.#liveCompanyRoot;
 			if (
 				!nativeWorkspaceRoot ||
 				dirname(executionRoot) !== nativeWorkspaceRoot ||
 				relative(executionRoot, inputRoot) !== "input" ||
-				relative(executionRoot, workRoot) !== "work" ||
+				(!liveMode && relative(executionRoot, workRoot) !== "work") ||
 				relative(executionRoot, resolve(request.outputRoot)) !== "output"
 			) {
 				throw new Error("Native provider workspace does not match the disposable execution layout");
 			}
 			for (const path of [
 				request.input.companyBaseRoot,
-				request.input.companyRoot,
+				...(liveMode ? [] : [request.input.companyRoot]),
 				...(request.input.proposalRoot ? [request.input.proposalRoot] : []),
 				request.input.executionContextPath,
 				request.input.queuedInputsPath,
@@ -486,7 +501,10 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 			await chown(executionRoot, -1, this.#nativeWorkspaceGid);
 			await chmod(executionRoot, 0o2750);
 			await shareNativeWorkspaceTree(inputRoot, this.#nativeWorkspaceGid, false);
-			await shareNativeWorkspaceTree(workRoot, this.#nativeWorkspaceGid, true);
+			// NAS permissions are the live tree's sharing contract. A recursive
+			// chown/chmod sweep would be both size-proportional and invalid on a
+			// squash-owned export.
+			if (!liveMode) await shareNativeWorkspaceTree(workRoot, this.#nativeWorkspaceGid, true);
 			await shareNativeWorkspaceTree(request.outputRoot, this.#nativeWorkspaceGid, true);
 		}
 		const authority = await this.#refreshAuthority();
@@ -519,6 +537,7 @@ export async function executeNativeCloudRunnerJob(
 			bridge,
 			nativeWorkspaceGid,
 			nativeWorkspaceGid === undefined ? undefined : execution.temporaryRoot,
+			execution.environment?.QORPERA_LIVE_COMPANY_ROOT,
 		),
 	});
 	const runnerResult = record(completed.result, "Native runner completion");

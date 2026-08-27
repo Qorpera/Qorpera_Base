@@ -41,7 +41,6 @@ done
 for unit in \
 	qorpera-company-computer-bootstrap.service \
 	qorpera-company-computer-runner.service \
-	qorpera-company-computer-sync.service \
 	qorpera-company-computer-screens.service; do
 	state=$(lxc exec qorpera-cc-verify --project qorpera-runners -- \
 		/usr/bin/systemctl is-enabled "${unit}" 2>&1 || true)
@@ -53,7 +52,7 @@ for unit in \
 done
 lxc delete -f qorpera-cc-verify --project qorpera-runners
 sed -i -E \
-	"s|^QORPERA_LXD_IMAGE_FINGERPRINT=.*$|QORPERA_LXD_IMAGE_FINGERPRINT=${fp}|; s|^QORPERA_LXD_GUEST_PACKAGE_MANIFEST_SHA256=.*$|QORPERA_LXD_GUEST_PACKAGE_MANIFEST_SHA256=93d06dc159d162e0bb50d433000b51f32aa44f616ea42ebeb5c6f4f2db0bb3a9|" \
+	"s|^QORPERA_LXD_IMAGE_FINGERPRINT=.*$|QORPERA_LXD_IMAGE_FINGERPRINT=${fp}|; s|^QORPERA_LXD_GUEST_PACKAGE_MANIFEST_SHA256=.*$|QORPERA_LXD_GUEST_PACKAGE_MANIFEST_SHA256=a18cbb67634c6f6bd88235c25b858466bff4b786d39ae6f7fa265b4bf11e237e|" \
 	/etc/qorpera/lxd-company-provider.env
 echo "evidence sha256: $(sha256sum /var/log/qorpera-cc-image-verify.log | cut -d' ' -f1)"
 echo "OP-C-DONE"

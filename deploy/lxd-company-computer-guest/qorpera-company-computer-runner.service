@@ -11,11 +11,14 @@ ConditionPathExists=/var/lib/qorpera-runner/.config/qorpera-runner/config.json
 Type=exec
 User=qorpera-runner
 Group=qorpera-runner
-SupplementaryGroups=qorpera-native-execution
+SupplementaryGroups=qorpera-native-execution users
 WorkingDirectory=/var/lib/qorpera-runner
 Environment=HOME=/var/lib/qorpera-runner
 Environment=XDG_RUNTIME_DIR=/run/qorpera-runner
 Environment=QORPERA_RUNNER_CONFIG=/var/lib/qorpera-runner/.config/qorpera-runner/config.json
+Environment=GIT_CONFIG_COUNT=1
+Environment=GIT_CONFIG_KEY_0=safe.directory
+Environment=GIT_CONFIG_VALUE_0=*
 RuntimeDirectory=qorpera-runner
 RuntimeDirectoryMode=0700
 LoadCredential=qorpera-runner-activation:/var/lib/qorpera-bootstrap/credentials/qorpera-runner-activation
@@ -26,7 +29,7 @@ Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=45s
 KillSignal=SIGTERM
-UMask=0077
+UMask=0007
 Delegate=yes
 PrivateTmp=no
 ProtectSystem=strict

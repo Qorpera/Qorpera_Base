@@ -52,7 +52,6 @@ if (runnerPackaged.status !== 0) throw new Error(runnerPackaged.stderr || "Runne
 await build({
 	entryPoints: {
 		"qorpera-company-computer-bootstrap": "packages/shell/src/cloud-company-computer-bootstrap-main.ts",
-		"qorpera-company-computer-sync": "packages/shell/src/cloud-company-computer-sync-main.ts",
 		"qorpera-company-computer-screens": "packages/shell/src/cloud-company-computer-screens-main.ts",
 		"qorpera-company-computer-runner": "packages/shell/src/cloud-company-computer-runner-main.ts",
 	},
@@ -76,10 +75,6 @@ const sources = new Map([
 		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-company-computer-bootstrap.service"),
 	],
 	[
-		"qorpera-company-computer-sync.service",
-		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-company-computer-sync.service"),
-	],
-	[
 		"qorpera-company-computer-screens.service",
 		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-company-computer-screens.service"),
 	],
@@ -99,6 +94,16 @@ const sources = new Map([
 		"qorpera-chrome.desktop",
 		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-chrome.desktop"),
 	],
+	["qorpera-files", resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-files")],
+	[
+		"qorpera-files.desktop",
+		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-files.desktop"),
+	],
+	["qorpera-terminal", resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-terminal")],
+	[
+		"qorpera-terminal.desktop",
+		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/qorpera-terminal.desktop"),
+	],
 	[
 		"xfce4-panel.xml",
 		resolve(repositoryRoot, "deploy/lxd-company-computer-guest/xfce4-panel.xml"),
@@ -115,6 +120,8 @@ const sources = new Map([
 for (const [file, source] of sources) await copyFile(source, join(outputRoot, file));
 await chmod(join(outputRoot, "qorpera-screen-session"), 0o555);
 await chmod(join(outputRoot, "qorpera-chrome"), 0o555);
+await chmod(join(outputRoot, "qorpera-files"), 0o555);
+await chmod(join(outputRoot, "qorpera-terminal"), 0o555);
 await chmod(join(outputRoot, "install-image-contract.sh"), 0o555);
 
 // One wallpaper per creature: the screen agent dresses each screen with its
@@ -156,14 +163,16 @@ const files = [
 	"install-image-contract.sh",
 	"qorpera-chrome",
 	"qorpera-chrome.desktop",
+	"qorpera-files",
+	"qorpera-files.desktop",
+	"qorpera-terminal",
+	"qorpera-terminal.desktop",
 	"qorpera-company-computer-bootstrap.mjs",
 	"qorpera-company-computer-bootstrap.service",
 	"qorpera-company-computer-runner.mjs",
 	"qorpera-company-computer-runner.service",
 	"qorpera-company-computer-screens.mjs",
 	"qorpera-company-computer-screens.service",
-	"qorpera-company-computer-sync.mjs",
-	"qorpera-company-computer-sync.service",
 	"qorpera-screen-session",
 	"xfce4-panel.xml",
 	...STAFF_CREATURES.map((creature) => `wallpapers/${creature}.svg`),

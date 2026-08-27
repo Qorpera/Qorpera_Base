@@ -1,8 +1,8 @@
 [Unit]
 Description=Qorpera host LXD Company Computer provider
 Documentation=https://github.com/Qorpera/Qorpera_Base
-Wants=network-online.target snap.lxd.daemon.service
-After=network-online.target snap.lxd.daemon.service
+Wants=network-online.target remote-fs.target snap.lxd.daemon.service
+After=network-online.target remote-fs.target snap.lxd.daemon.service
 ConditionPathExists=/etc/qorpera/lxd-company-provider.env
 
 [Service]
@@ -12,6 +12,7 @@ Group=qorpera-provider
 SupplementaryGroups=lxd
 EnvironmentFile=-/etc/qorpera/lxd-company-provider.env
 ExecStartPre=/usr/bin/test -S /var/snap/lxd/common/lxd/unix.socket
+ExecStartPre=/usr/bin/mountpoint --quiet ${QORPERA_LXD_NAS_DATASET_ROOT}
 ExecStart=/usr/bin/node --jitless /opt/qorpera/company-provider/qorpera-lxd-provider.mjs
 Restart=on-failure
 RestartSec=5s

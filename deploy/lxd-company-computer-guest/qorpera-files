@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Always open the live Company File. The screen process is a service rather
+# than a login session, so relying on an inherited working directory can send
+# Thunar to an inaccessible root-owned directory.
+company_root=${QORPERA_LIVE_COMPANY_ROOT:-/srv/qorpera/dataset/live}
+exec /usr/bin/Thunar "${company_root}"

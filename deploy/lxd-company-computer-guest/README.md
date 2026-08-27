@@ -3,7 +3,7 @@
 The Company Computer image is a strict superset of the LXD runner guest
 image: the complete runner contract nests under `runner/` in the staged
 package (pinned by its manifest hash), and this layer adds the per-screen
-desktop stack plus the two standing agents the shared machine runs.
+desktop stack plus the standing screen and runner services.
 
 Build the staged package with:
 
@@ -20,25 +20,30 @@ pinned to the exact package manifest checksum in lockstep with
 What this layer adds on top of the runner contract:
 
 - **Desktop stack:** `xfce4`, `xfce4-terminal`, `tigervnc-standalone-server`,
-  `dbus-x11`, `x11-xserver-utils`, `xauth`. One screen is one TigerVNC
+  `dbus-x11`, `x11-xserver-utils`, `xauth`, and pinned Google Chrome. One screen is one TigerVNC
   display with an XFCE session, launched by `/usr/local/bin/qorpera-screen-session`
-  as the work account with the shared dataset workbench as HOME. Every VNC
+  as the work account. Its working directory is the mounted `live` Company
+  File, while HOME and all XFCE state live under the dataset's hidden
+  `.qorpera-computer/` directory. Every VNC
   socket binds to guest loopback only; the token-gated viewer listener in
   the screen agent is the sole remote path in, and nothing is ever publicly
-  routable.
+  routable. Each screen keeps its own persistent XDG state on the dataset,
+  wears its attached agent's wallpaper without raw desktop icons, and starts
+  with a bottom dock for Chrome, Files, and Terminal. The Files and Terminal
+  launchers enter the live Company File explicitly; Terminal starts a usable
+  Bash session even though the work account itself is non-login.
 - **`qorpera-company-computer-bootstrap.service`** — root oneshot the
   provider enables after pushing `/var/lib/qorpera-bootstrap/company-computer.json`
   and the credential files. It verifies the delivered authority, refuses to
-  run when the NAS dataset is not a mounted filesystem, hands the dataset's
-  working directories to the work account, and starts the two agents.
-- **`qorpera-company-computer-sync.service`** — the delta-sync agent keeping
-  the standing Company File checkout tracking the verified head. Runs as the
-  unprivileged work account; every input arrives through systemd
-  `LoadCredential=`. Object storage selection is explicit
-  (`QORPERA_OBJECT_STORAGE_PRIMARY`, shipped as `supabase` for the
-  acceptance profile); NAS-primary deployments override it through a
-  drop-in naming the object gateway URL and token, and anything else fails
-  closed.
+  run when the NAS dataset is not a mounted filesystem, verifies the `live`
+  tree and NAS sharing group, prepares hidden machine state, and starts the
+  native-provider, runner, and screen services. It never creates or chowns
+  the live Company File.
+- **Direct Company File:** `/srv/qorpera/dataset/live` is the existing NAS
+  tree, mounted straight into desktops and jobs. There is no publication-head
+  sync service and no per-turn copy/capture pass. Ordinary writes are durable
+  and visible to the company immediately. NAS filesystem snapshots provide
+  occasional rollback points outside the turn-completion path.
 - **`qorpera-company-computer-screens.service`** — the screen agent:
   converges live desktop sessions to the control-plane screens registry and
   serves the viewer listener. Deliberately shares `/tmp` so computer-use
@@ -91,8 +96,5 @@ nested contract is disabled too), and the provider's
 `systemctl enable --now qorpera-company-computer-bootstrap.service` after
 its file push is the single entry point.
 
-Not yet part of this contract: the company-flavor runner-lane bootstrap
-(the ephemeral runner bootstrap expects `bootstrap.json` and the ephemeral
-service schema, so turn execution on the shared machine still needs its own
-bootstrap step), the host-side viewer leg brokering member capabilities,
-and a browser in the desktop stack.
+The host-side viewer leg and app surface live in the provider and shell
+layers rather than in this image contract.

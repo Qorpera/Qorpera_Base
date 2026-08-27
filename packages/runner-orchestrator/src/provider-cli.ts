@@ -194,6 +194,7 @@ function companyComputerConfig(): LxdCompanyComputerProviderConfig {
 		cpuLimit: integer("QORPERA_LXD_CPU_LIMIT"),
 		memoryLimit: required("QORPERA_LXD_MEMORY_LIMIT"),
 		nasDatasetRoot: resolve(required("QORPERA_LXD_NAS_DATASET_ROOT")),
+		nasSharedGid: integer("QORPERA_LXD_NAS_SHARED_GID", 100),
 		...(process.env.QORPERA_LXD_GUEST_DATASET_PATH
 			? { guestDatasetPath: process.env.QORPERA_LXD_GUEST_DATASET_PATH }
 			: {}),
@@ -203,7 +204,7 @@ function companyComputerConfig(): LxdCompanyComputerProviderConfig {
 		nativeExecutionGid: integer("QORPERA_LXD_NATIVE_EXECUTION_GID", 42041),
 		guestReadyTimeoutMs: integer("QORPERA_LXD_GUEST_READY_TIMEOUT_MS", 300_000),
 		guestScreenViewerPort: integer("QORPERA_LXD_GUEST_SCREEN_VIEWER_PORT", 8446),
-		syncPollSeconds: integer("QORPERA_LXD_SYNC_POLL_SECONDS", 30),
+		datasetSnapshotIntervalSeconds: integer("QORPERA_LXD_DATASET_SNAPSHOT_INTERVAL_SECONDS", 21_600),
 		screenPollSeconds: integer("QORPERA_LXD_SCREEN_POLL_SECONDS", 30),
 		...(process.env.QORPERA_LXD_IDLE_POWER_OFF_SECONDS !== undefined
 			? { idlePowerOffSeconds: integer("QORPERA_LXD_IDLE_POWER_OFF_SECONDS") }
@@ -342,6 +343,30 @@ async function provisionMain(logicalComputerId: string): Promise<void> {
 	console.log(`provisioned ${logicalComputerId}`);
 }
 
+async function relocateDatasetMain(logicalComputerId: string, nasDataset: string): Promise<void> {
+	if (!OPERATOR_UUID_PATTERN.test(logicalComputerId) || !nasDataset) {
+		throw new Error("relocate-dataset requires a logical computer id and NAS dataset");
+	}
+	const current = runtime();
+	if (!(current.backend instanceof LxdCompanyComputerProviderBackend)) {
+		throw new Error("relocate-dataset requires QORPERA_RUNNER_PROVIDER_BACKEND=lxd-company-computer");
+	}
+	await current.backend.relocateComputerDataset(logicalComputerId, nasDataset);
+	console.log(`relocated ${logicalComputerId} to ${nasDataset}`);
+}
+
+async function recoverMain(logicalComputerId: string): Promise<void> {
+	if (!OPERATOR_UUID_PATTERN.test(logicalComputerId)) {
+		throw new Error("recover requires a logical computer id");
+	}
+	const current = runtime();
+	if (!(current.backend instanceof LxdCompanyComputerProviderBackend)) {
+		throw new Error("recover requires QORPERA_RUNNER_PROVIDER_BACKEND=lxd-company-computer");
+	}
+	await current.backend.recoverComputer(logicalComputerId);
+	console.log(`recovered ${logicalComputerId}`);
+}
+
 function reconcileSeconds(): number {
 	const value = integer("QORPERA_RUNNER_PROVIDER_RECONCILE_SECONDS", 0);
 	if (value !== 0 && (value < 15 || value > 3_600)) {
@@ -353,6 +378,14 @@ function reconcileSeconds(): number {
 async function main(): Promise<void> {
 	if (process.argv[2] === "provision") {
 		await provisionMain(process.argv[3] ?? "");
+		return;
+	}
+	if (process.argv[2] === "relocate-dataset") {
+		await relocateDatasetMain(process.argv[3] ?? "", process.argv[4] ?? "");
+		return;
+	}
+	if (process.argv[2] === "recover") {
+		await recoverMain(process.argv[3] ?? "");
 		return;
 	}
 	const current = runtime();
@@ -416,9 +449,7 @@ if (executablePath && realpathSync(resolve(executablePath)) === realpathSync(fil
 			chain.push(current.message);
 			if (chain.length >= 4) break;
 		}
-		console.error(
-			(chain.join(" <- ") || String(error)).replace(/[A-Za-z0-9_-]{43}/g, "[redacted]"),
-		);
+		console.error((chain.join(" <- ") || String(error)).replace(/[A-Za-z0-9_-]{43}/g, "[redacted]"));
 		process.exitCode = 1;
 	});
 }

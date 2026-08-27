@@ -37,6 +37,13 @@ const MAX_QUEUED_INPUT_IMAGE_BYTES = 8 * 1024 * 1024;
 const CONTAINER_INPUT_ROOT = "/qorpera/input";
 
 async function initializeEphemeralCompanyRepository(companyRoot: string): Promise<void> {
+	// A declared live Company File keeps its repository across turns. Do not
+	// replace that history with a fresh single-snapshot repository each time.
+	try {
+		if ((await stat(join(companyRoot, ".git"))).isDirectory()) return;
+	} catch {
+		// No repository exists yet; initialize it below.
+	}
 	const environment = {
 		...process.env,
 		GIT_CONFIG_GLOBAL: "/dev/null",
@@ -106,7 +113,7 @@ export interface CloudRunnerSandboxGuarantees {
 	boundary: "test" | "rootless_container" | "virtual_machine" | "microvm";
 	hostFilesystem: "none";
 	inputFilesystem: "read_only";
-	companyCheckout: "job_private";
+	companyCheckout: "job_private" | "job_private_or_declared_live";
 	outputFilesystem: "job_private";
 	network: "deny_by_default";
 	environment: "allowlist_only";
@@ -324,6 +331,7 @@ interface MaterializedCloudRunnerInput {
 	sourceKind: ResolvedCloudRunnerExecutionRun["sourceKind"];
 	artifactCount: number;
 	inputBytes: number;
+	liveCompanyFile: boolean;
 }
 
 function requiredSafeInteger(value: number, label: string, minimum: number, maximum: number): void {
@@ -375,7 +383,7 @@ function assertBackend(options: ExecuteCloudRunnerJobOptions): void {
 	if (
 		guarantees.hostFilesystem !== "none" ||
 		guarantees.inputFilesystem !== "read_only" ||
-		guarantees.companyCheckout !== "job_private" ||
+		(guarantees.companyCheckout !== "job_private" && guarantees.companyCheckout !== "job_private_or_declared_live") ||
 		guarantees.outputFilesystem !== "job_private" ||
 		guarantees.network !== "deny_by_default" ||
 		guarantees.environment !== "allowlist_only" ||
@@ -801,10 +809,56 @@ async function materializeInput(
 	) {
 		throw new Error("Runner job substrate is outside its immutable profile environment");
 	}
-	let inputBytes = assertInputBudget(0, snapshot.tree.totalBytes, limits.maxInputBytes);
+	/* The Company Computer declares the one authoritative company tree that is
+	 * already mounted into the guest. Ordinary work edits that tree in place:
+	 * no copy-in, no copy-out, and no cost proportional to company size.
+	 * Proposal review and explicit review-policy turns remain intentionally
+	 * isolated and therefore use the immutable snapshot path below. A declared
+	 * but unavailable live tree fails closed instead of silently resurrecting
+	 * the copy model. */
+	const runnerEnvironment = options.environment ?? {};
+	const declaredLiveRoot = runnerEnvironment.QORPERA_LIVE_COMPANY_ROOT;
+	const declaredLiveProfileId = runnerEnvironment.QORPERA_LIVE_COMPANY_PROFILE_ID;
+	const liveRootConfigured = Object.hasOwn(runnerEnvironment, "QORPERA_LIVE_COMPANY_ROOT");
+	const liveProfileConfigured = Object.hasOwn(runnerEnvironment, "QORPERA_LIVE_COMPANY_PROFILE_ID");
+	if (
+		liveRootConfigured !== liveProfileConfigured ||
+		(liveRootConfigured &&
+			(typeof declaredLiveRoot !== "string" ||
+				!declaredLiveRoot ||
+				typeof declaredLiveProfileId !== "string" ||
+				!declaredLiveProfileId))
+	) {
+		throw new Error("The live Company File declaration is incomplete");
+	}
+	if (liveRootConfigured && declaredLiveProfileId !== job.profileId) {
+		throw new Error("The live Company File belongs to another profile");
+	}
+	let liveCompanyRoot: string | undefined;
+	if (
+		typeof declaredLiveRoot === "string" &&
+		declaredLiveRoot &&
+		proposalSnapshot === undefined &&
+		execution.run.publicationMode === "automatic"
+	) {
+		try {
+			if (!(await stat(declaredLiveRoot)).isDirectory()) {
+				throw new Error("the mount is not a directory");
+			}
+		} catch (error) {
+			throw new Error(
+				`The live Company File is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		liveCompanyRoot = resolve(declaredLiveRoot);
+		if (options.backend.guarantees.companyCheckout !== "job_private_or_declared_live") {
+			throw new Error("The sandbox backend does not support a declared live Company File");
+		}
+	}
+	let inputBytes = liveCompanyRoot ? 0 : assertInputBudget(0, snapshot.tree.totalBytes, limits.maxInputBytes);
 	const inputRoot = join(executionRoot, "input");
 	const companyBaseRoot = join(inputRoot, "company");
-	const companyRoot = join(executionRoot, "work", "company");
+	const companyRoot = liveCompanyRoot ?? join(executionRoot, "work", "company");
 	const proposalRoot = proposalSnapshot ? join(inputRoot, "proposal") : undefined;
 	const artifactsRoot = join(inputRoot, "artifacts");
 	const attachmentsRoot = join(inputRoot, "attachments");
@@ -814,13 +868,19 @@ async function materializeInput(
 	const operationsPath = join(inputRoot, "operations.jsonl");
 	const substrateManifestPath = join(inputRoot, "substrate.json");
 	await mkdir(inputRoot, { recursive: true });
-	await materializeCloudCompanyTree(
-		companyBaseRoot,
-		job.profileId,
-		currentCloudCompanyTreeReference(snapshot.tree),
-		options.objects,
-	);
-	await cp(companyBaseRoot, companyRoot, { recursive: true, force: false, errorOnExist: true });
+	if (liveCompanyRoot) {
+		// Backends retain one stable read-only input layout even though the
+		// historical base tree itself is not copied for a live run.
+		await mkdir(companyBaseRoot);
+	} else {
+		await materializeCloudCompanyTree(
+			companyBaseRoot,
+			job.profileId,
+			currentCloudCompanyTreeReference(snapshot.tree),
+			options.objects,
+		);
+		await cp(companyBaseRoot, companyRoot, { recursive: true, force: false, errorOnExist: true });
+	}
 	await initializeEphemeralCompanyRepository(companyRoot);
 	if (proposalSnapshot && proposalRoot) {
 		inputBytes = assertInputBudget(inputBytes, proposalSnapshot.tree.totalBytes, limits.maxInputBytes);
@@ -905,6 +965,7 @@ async function materializeInput(
 		sourceKind: execution.run.sourceKind,
 		artifactCount: artifacts.artifactCount,
 		inputBytes,
+		liveCompanyFile: liveCompanyRoot !== undefined,
 	};
 }
 
@@ -1095,7 +1156,7 @@ export async function executeCloudRunnerJob(
 				})
 			: null;
 		const outputSnapshotId =
-			materialized.sourceKind !== "proposal_review" && options.companyFilePublisher
+			materialized.sourceKind !== "proposal_review" && !materialized.liveCompanyFile && options.companyFilePublisher
 				? await options.companyFilePublisher.publish({
 						profileId: options.job.profileId,
 						environmentId: options.job.environmentId,

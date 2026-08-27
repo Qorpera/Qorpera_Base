@@ -2,6 +2,9 @@
 set -euo pipefail
 # Step 3 first machine — operator round A: dataset root, provider install,
 # environment fill. Everything node-local; no secret leaves the machine.
+echo "RETIRED: this script creates the obsolete local candidate dataset. Follow STEP-3-FIRST-MACHINE.md Direct NAS correction." >&2
+exit 1
+
 if [[ ${EUID} -ne 0 ]]; then echo "Run through sudo." >&2; exit 1; fi
 
 install -d -o root -g root -m 0755 /srv/qorpera-nas /srv/qorpera-nas/companies /srv/qorpera-nas/companies/0d2053f0-c1a8-444d-99a8-68c8214e5414

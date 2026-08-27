@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Installs the Company Computer image contract inside the image-builder VM:
 # the complete runner guest contract (nested, verified against its own
-# manifest), the per-screen desktop stack, and the two standing guest agents.
+# manifest), the per-screen desktop stack, and the standing screen agent.
 # The Company Computer image is a strict superset of the runner image and is
 # built, signed, and activated through the same provenance cycle.
 
@@ -70,14 +70,16 @@ const expected = new Set([
   "install-image-contract.sh",
   "qorpera-chrome",
   "qorpera-chrome.desktop",
+  "qorpera-files",
+  "qorpera-files.desktop",
+  "qorpera-terminal",
+  "qorpera-terminal.desktop",
   "qorpera-company-computer-bootstrap.mjs",
   "qorpera-company-computer-bootstrap.service",
   "qorpera-company-computer-runner.mjs",
   "qorpera-company-computer-runner.service",
   "qorpera-company-computer-screens.mjs",
   "qorpera-company-computer-screens.service",
-  "qorpera-company-computer-sync.mjs",
-  "qorpera-company-computer-sync.service",
   "qorpera-screen-session",
   "xfce4-panel.xml",
   "wallpapers/pebble.svg",
@@ -115,7 +117,17 @@ systemctl disable qorpera-lxd-runner-bootstrap.service >/dev/null 2>&1 || true
 export DEBIAN_FRONTEND=noninteractive
 apt-get install --yes dbus-x11 librsvg2-bin scrot tigervnc-standalone-server x11-xserver-utils xauth xfce4 xfce4-terminal
 
-for binary in /usr/bin/Xvnc /usr/bin/xfce4-session /usr/bin/dbus-run-session /usr/bin/xset /usr/bin/scrot; do
+for binary in \
+	/usr/bin/Xvnc \
+	/usr/bin/Thunar \
+	/usr/bin/dbus-run-session \
+	/usr/bin/scrot \
+	/usr/bin/xfce4-panel \
+	/usr/bin/xfce4-session \
+	/usr/bin/xfce4-terminal \
+	/usr/bin/xfconf-query \
+	/usr/bin/xrandr \
+	/usr/bin/xset; do
 	if [[ ! -x ${binary} ]]; then
 		echo "The desktop stack is missing ${binary}." >&2
 		exit 1
@@ -125,13 +137,22 @@ if ! getent passwd "${WORK_USER}" >/dev/null; then
 	echo "The runner contract did not provide the ${WORK_USER} work account." >&2
 	exit 1
 fi
+if ! getent group users >/dev/null; then
+	echo "The image does not provide the NAS sharing group users." >&2
+	exit 1
+fi
+if [[ $(getent group users | cut -d: -f3) != 100 ]]; then
+	echo "The image's users group does not match the NAS sharing GID 100." >&2
+	exit 1
+fi
+usermod -a -G users qorpera-runner
+usermod -a -G users qorpera-native-provider
 
 install -d -o root -g root -m 0755 /opt/qorpera-company-computer
 for artifact in \
 	company-lock-heartbeat.mjs \
 	qorpera-company-computer-bootstrap.mjs \
 	qorpera-company-computer-runner.mjs \
-	qorpera-company-computer-sync.mjs \
 	qorpera-company-computer-screens.mjs; do
 	install -o root -g root -m 0555 "${PACKAGE_ROOT}/${artifact}" "/opt/qorpera-company-computer/${artifact}"
 	node --check "/opt/qorpera-company-computer/${artifact}"
@@ -216,6 +237,12 @@ chrome_version=$(/usr/bin/google-chrome-stable --version | awk '{ print $3 }')
 install -o root -g root -m 0555 "${PACKAGE_ROOT}/qorpera-chrome" /usr/local/bin/qorpera-chrome
 bash -n /usr/local/bin/qorpera-chrome
 install -o root -g root -m 0644 "${PACKAGE_ROOT}/qorpera-chrome.desktop" /usr/share/applications/qorpera-chrome.desktop
+for launcher in files terminal; do
+	install -o root -g root -m 0555 "${PACKAGE_ROOT}/qorpera-${launcher}" "/usr/local/bin/qorpera-${launcher}"
+	bash -n "/usr/local/bin/qorpera-${launcher}"
+	install -o root -g root -m 0644 "${PACKAGE_ROOT}/qorpera-${launcher}.desktop" \
+		"/usr/share/applications/qorpera-${launcher}.desktop"
+done
 
 # The dock every screen starts with: Chrome, files, terminal.
 install -d -o root -g root -m 0755 /etc/xdg/xfce4/xfconf/xfce-perchannel-xml
@@ -224,7 +251,6 @@ install -o root -g root -m 0644 "${PACKAGE_ROOT}/xfce4-panel.xml" \
 for unit in \
 	qorpera-company-computer-bootstrap.service \
 	qorpera-company-computer-runner.service \
-	qorpera-company-computer-sync.service \
 	qorpera-company-computer-screens.service; do
 	install -o root -g root -m 0644 "${PACKAGE_ROOT}/${unit}" "/etc/systemd/system/${unit}"
 done
@@ -236,15 +262,19 @@ install -d -o root -g root -m 0755 /srv/qorpera /srv/qorpera/dataset
 systemd-analyze verify \
 	/etc/systemd/system/qorpera-company-computer-bootstrap.service \
 	/etc/systemd/system/qorpera-company-computer-runner.service \
-	/etc/systemd/system/qorpera-company-computer-sync.service \
 	/etc/systemd/system/qorpera-company-computer-screens.service
+systemctl daemon-reload
+# Publication-head sync is retired: the mounted NAS tree is the Company File.
+# Remove any stale unit left by an older image-contract install.
+systemctl disable --now qorpera-company-computer-sync.service >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/qorpera-company-computer-sync.service \
+	/opt/qorpera-company-computer/qorpera-company-computer-sync.mjs
 systemctl daemon-reload
 # The provider enables the bootstrap oneshot explicitly after pushing the
 # bootstrap files; the published image starts nothing on its own.
 systemctl disable \
 	qorpera-company-computer-bootstrap.service \
 	qorpera-company-computer-runner.service \
-	qorpera-company-computer-sync.service \
 	qorpera-company-computer-screens.service \
 	>/dev/null 2>&1 || true
 

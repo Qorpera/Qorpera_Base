@@ -71,6 +71,12 @@ export interface LxdInstanceSnapshotClient extends LxdClient {
 	createInstanceSnapshot(project: string, name: string, snapshotName: string, signal?: AbortSignal): Promise<void>;
 }
 
+/** Persistent-machine recovery may replace a disposable VM root while
+ * deliberately retaining its separately managed identity volume. */
+export interface LxdPersistentInstanceClient extends LxdClient {
+	deleteInstance(project: string, name: string, signal?: AbortSignal): Promise<void>;
+}
+
 export interface LxdClient {
 	getInstance(project: string, name: string, signal?: AbortSignal): Promise<LxdInstanceRecord | undefined>;
 	getInstanceState(project: string, name: string, signal?: AbortSignal): Promise<LxdInstanceStateRecord>;
@@ -297,6 +303,16 @@ export class LxdUnixClient implements LxdClient {
 	async createInstance(project: string, request: LxdCreateInstanceRequest, signal?: AbortSignal): Promise<void> {
 		if (request.type !== "virtual-machine") throw new Error("LXD provider only creates full virtual machines");
 		const result = await this.#request("POST", projectPath("/1.0/instances", project), request, signal);
+		await this.#waitForOperation(result, signal);
+	}
+
+	async deleteInstance(project: string, name: string, signal?: AbortSignal): Promise<void> {
+		const result = await this.#request(
+			"DELETE",
+			projectPath(`/1.0/instances/${encodeURIComponent(name)}`, project),
+			undefined,
+			signal,
+		);
 		await this.#waitForOperation(result, signal);
 	}
 

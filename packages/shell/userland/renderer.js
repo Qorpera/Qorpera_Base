@@ -3752,37 +3752,53 @@ function reportAgentScreenError(section, message) {
 }
 
 async function openAgentScreenViewer(section, staff, screenSummary) {
+	const viewer = window.qorperaScreenViewer?.open({
+		title: `${staffDisplayName(staff)}'s screen`,
+		onClosed: () => void window.qorpera.screensClose(screenSummary.screenId),
+	});
+	if (!viewer) {
+		reportAgentScreenError(section, "The screen viewer is still loading. Try again in a moment.");
+		return;
+	}
+	const abandonLateView = async (opened) => {
+		if (!viewer.closed) return false;
+		if (opened?.ok) await window.qorpera.screensClose(screenSummary.screenId).catch(() => undefined);
+		return true;
+	};
 	if (screenSummary.powerState === "closed") {
 		const woken = await window.qorpera.screensPowerOpen?.(screenSummary.screenId);
+		if (viewer.closed) return;
 		if (!woken?.ok) {
-			if (section.isConnected) reportAgentScreenError(section, woken?.error || "The screen could not be woken.");
+			const message = woken?.error || "The screen could not be woken.";
+			if (section.isConnected) reportAgentScreenError(section, message);
+			viewer.fail(message);
 			return;
 		}
 	}
 	let opened = await window.qorpera.screensOpen(screenSummary.screenId);
+	if (await abandonLateView(opened)) return;
 	if (!opened?.ok && screenSummary.powerState === "closed") {
 		// The machine itself may still be powering on; the gateway answers
-		// once the guest is back, so keep dialing while the card is on show.
-		reportAgentScreenError(section, "Waking the screen…");
+		// once the guest is back, so keep dialing while the viewer is on show.
 		const deadline = Date.now() + 90_000;
-		while (!opened?.ok && Date.now() < deadline && section.isConnected) {
+		while (!opened?.ok && Date.now() < deadline && !viewer.closed) {
 			await new Promise((resolveWait) => setTimeout(resolveWait, 3_000));
+			if (viewer.closed) return;
 			opened = await window.qorpera.screensOpen(screenSummary.screenId);
+			if (await abandonLateView(opened)) return;
 		}
-		section.querySelector(".screen-card-error")?.remove();
 	}
 	if (!opened?.ok) {
-		if (section.isConnected) reportAgentScreenError(section, opened?.error || "The screen could not be opened.");
+		const message = opened?.error || "The screen could not be opened.";
+		if (section.isConnected) reportAgentScreenError(section, message);
+		viewer.fail(message);
 		return;
 	}
+	section.querySelector(".screen-card-error")?.remove();
 	if (screenSummary.powerState === "closed" && section.isConnected) {
 		void hydrateAgentScreenCard(section, staff, ++agentScreenCardToken);
 	}
-	window.qorperaScreenViewer?.open({
-		url: opened.url,
-		title: `${staffDisplayName(staff)}'s screen`,
-		onClosed: () => void window.qorpera.screensClose(screenSummary.screenId),
-	});
+	viewer.connect(opened.url);
 }
 
 function agentSettingsSvg(path, className = "") {

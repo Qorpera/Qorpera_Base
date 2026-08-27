@@ -2,6 +2,9 @@
 set -euo pipefail
 # Step 3 first machine — operator round D: install the signed provenance,
 # replace the diagnostic root, provision the machine, start the provider.
+echo "RETIRED: this script activates the obsolete workbench layout. Use the guarded relocate-dataset/recover flow in STEP-3-FIRST-MACHINE.md." >&2
+exit 1
+
 if [[ ${EUID} -ne 0 ]]; then echo "Run through sudo." >&2; exit 1; fi
 
 logical_computer_id=6d9da3a0-f09b-4d63-b79b-8a3aad7919d9

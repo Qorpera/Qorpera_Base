@@ -15,17 +15,16 @@ capabilities, checkpoints, runners — not replace them
 ## The shape in one paragraph
 
 One persistent virtual machine per company environment — the Company
-Computer — whose working storage is a per-company NAS dataset rather than a
-local disk, holding a standing working checkout of the entire Company File
-plus everything the company's staff agents accumulate: browser profiles,
-installed tooling, work in progress. Every staff agent of the company works
-on the same shared machine and sees the same state; each gets its own screen
-as a parallel work surface. Authority stays in the cloud: the control plane's
-verified snapshot chain remains the only authoritative Company File, and
-nothing on the Company Computer becomes company-durable without passing the
-publication verifier. Ephemeral execution lanes from Step 2 continue to exist
-alongside, unchanged, for verified publication turns and any work that needs
-hard isolation.
+Computer — whose working storage is the company's existing NAS `live` tree
+rather than a local disk. That tree is the Company File: it also sits beside
+browser profiles, hidden desktop state, installed tooling, and work in
+progress. Every staff agent of the company works on the same live tree and
+sees changes immediately; each gets its own screen as a parallel work
+surface. The cloud remains coordination authority for identities, leases,
+screens, and outward effects, but ordinary file durability does not require
+a publication pass. Occasional NAS snapshots provide rollback. Ephemeral
+execution lanes from Step 2 continue alongside for explicit immutable
+publication/review operations and work that needs hard isolation.
 
 ## Principles
 
@@ -51,24 +50,25 @@ hard isolation.
    Company Computer is near-stateless: its working world is a per-company
    dataset on the NAS, mounted into the VM. Growth is NAS pool growth —
    effectively unbounded, with nothing per-VM to resize. Recovery and
-   time-travel are dataset snapshots. Moving a Company Computer between
+   time-travel are occasional dataset snapshots, taken outside ordinary turn
+   completion. Moving a Company Computer between
    nodes is reattaching the share, which solves multi-node placement's data
    gravity before it exists. There are no per-machine storage silos of the
    kind the Grok bots delegate to each computer.
 
-4. **The Company Computer holds the entire Company File — as a working
-   copy.** A standing checkout of the Company File lives on the dataset and
-   syncs deltas from the verified head (the content-addressed signed-URL
-   transport built in Step 2 is the sync mechanism). This removes the
-   per-turn full rematerialization cost that repeatedly destabilized Step 2
-   acceptance. The working copy is never the authority: publication still
-   captures, uploads the delta, and passes closure verification, and the
-   verified snapshot chain in the control plane remains the only
-   authoritative Company File. Writing to the share is not publishing.
+4. **The NAS `live` tree is the Company File, not a cache of it.** Desktops
+   and Company Computer jobs mount the same directory and edit it in place.
+   There is no standing sync agent, per-turn rematerialization, copy-out, or
+   automatic publication verifier between a successful write and company
+   durability. This is what makes the company a smooth, continuous
+   workbench. The Step 2 content-addressed snapshot path remains available
+   when an operation explicitly needs an immutable input/output, review, or
+   outward-effect receipt; it is not the normal filesystem path.
 
-5. **Authority stays cloud; bytes and screens live on company iron.** The
-   control plane (turns, leases, fencing, verified snapshots) remains the
-   hosted cloud service and is the single writer for coordination state.
+5. **Coordination authority stays cloud; bytes and screens live on company
+   iron.** The control plane (turns, leases, fencing, identities, screens,
+   explicit outward-effect receipts) remains the hosted service and is the
+   single writer for coordination state.
    The NAS and the nodes carry working bytes, execution, and desktops. The
    NAS additionally serves as an object-bytes fallback when the cloud sheds
    (the object loader's `nas` primary mode already exists for this).
@@ -102,7 +102,8 @@ hard isolation.
 - Compute identities, sponsor bindings, sealed credential capsules, and the
   login-VM/identity-volume machinery — per-staff credential delivery.
 - Content-addressed company snapshots, signed-URL object transport, and the
-  closure verifier — the sync and publication mechanisms.
+  closure verifier — retained for explicit immutable/review/outward-effect
+  paths, not ordinary live Company Computer writes.
 - The provider contract and image provenance cycle — a Company Computer
   image is built, signed, and activated exactly like a runner image.
 - The proposal/review machinery — concurrent captures from a shared working
@@ -113,15 +114,22 @@ hard isolation.
 - A persistent VM class per company environment behind `logical_computer_id`,
   with lifecycle (create, snapshot, migrate, recover) driven from the
   control plane.
-- The NAS dataset layout and mount contract (working Company File checkout,
-  shared workbench, browser profiles), and the delta-sync agent that tracks
-  the verified head.
+- The NAS dataset layout and mount contract (`live`, browser profiles, and
+  hidden machine state), plus occasional NAS rollback snapshots. There is no
+  publication-head sync agent.
 - Screen attach/detach: per-staff desktop sessions, the shell UX for
   watching and driving them, and the one-task-per-screen scheduling rule.
 - Placement and multi-node: which node hosts which Company Computer, GPU
   scheduling, and migration by share reattachment.
 
 ## Ratified decisions
+
+- **2026-08-27 (founder): the existing NAS `company41/live` tree is the
+  Company File, with no ordinary publication pass.** Company Computer jobs
+  and desktops edit it directly. Successful ordinary turns do not capture,
+  upload, verify, or advance a second head. Rollback uses occasional NAS
+  snapshots; Step 2 immutable snapshot/publication machinery is reserved for
+  explicit operations that require it and for hard-isolation lanes.
 
 - **2026-08-26 (founder): screens follow the Grok bot-computer model —
   shared computer, individual screen per staff agent.** Transport is
@@ -148,8 +156,9 @@ hard isolation.
 
 - ~~Screen transport and audit recording~~ — decided 2026-08-26, see
   "Ratified decisions" and [STEP-3-SCREENS-DECISION.md](STEP-3-SCREENS-DECISION.md).
-- Publication cadence from the working copy: per task, per explicit "commit"
-  action, or continuous proposals.
+- ~~Publication cadence from the working copy~~ — decided 2026-08-27: none
+  for ordinary Company Computer work; occasional NAS snapshots are rollback
+  points, not publications.
 - Verified-snapshot bounds: the snapshot contract currently caps 50,000
   files / 1 TiB; the working store is unbounded, and raising the published
   bounds is a deliberate decision when a company approaches them.

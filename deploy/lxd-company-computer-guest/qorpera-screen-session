@@ -9,8 +9,9 @@ set -euo pipefail
 # listener is the sole remote path in. -SecurityTypes None is deliberate:
 # every local process already lives inside the company's one trust domain
 # (screens are parallel work surfaces, never security boundaries), and the
-# shared HOME on the NAS dataset is the point — every screen sees the same
-# working world.
+# shared live Company File on the NAS dataset is the point — every screen
+# sees the same working world. Desktop dotfiles live in hidden machine state,
+# never inside the company's visible file tree.
 
 if [[ $# -ne 3 ]]; then
 	echo "usage: qorpera-screen-session <ordinal> <display> <vnc_port>" >&2
@@ -24,15 +25,29 @@ if [[ ! ${ordinal} =~ ^[1-9][0-9]?$ || ${display} != ":${ordinal}" || ! ${rfbpor
 	exit 64
 fi
 
-workbench=${QORPERA_WORKBENCH_ROOT:-/srv/qorpera/dataset/workbench}
-if [[ ! -d ${workbench} ]]; then
-	echo "The Company Computer dataset workbench is not mounted; refusing to fabricate one." >&2
+company_root=${QORPERA_LIVE_COMPANY_ROOT:-/srv/qorpera/dataset/live}
+desktop_home=${QORPERA_DESKTOP_HOME:-/srv/qorpera/dataset/.qorpera-computer/desktop-home}
+if [[ ! -d ${company_root} || ! -d ${desktop_home} ]]; then
+	echo "The live Company File or desktop home is unavailable; refusing to fabricate one." >&2
 	exit 1
 fi
-export HOME=${workbench}
+export HOME=${desktop_home}
+cd "${company_root}"
 runtime_dir="/tmp/qorpera-screen-runtime-${ordinal}"
 install -d -m 0700 "${runtime_dir}"
 export XDG_RUNTIME_DIR=${runtime_dir}
+
+# XFCE state belongs to the screen, not to the shared Company File. Sharing
+# one xfconf database between concurrent displays lets one session replace or
+# stop another session's panel. Keeping the config/cache/data roots on the
+# dataset preserves each desktop across machine replacement without making
+# the screens contend with each other.
+screen_state_root=${QORPERA_SCREEN_STATE_ROOT:-/srv/qorpera/dataset/.qorpera-computer/screens}
+screen_state="${screen_state_root}/screen-${ordinal}"
+install -d -m 2770 "${screen_state}" "${screen_state}/config" "${screen_state}/cache" "${screen_state}/data"
+export XDG_CONFIG_HOME="${screen_state}/config"
+export XDG_CACHE_HOME="${screen_state}/cache"
+export XDG_DATA_HOME="${screen_state}/data"
 
 xvnc_pid=""
 session_pid=""
@@ -69,30 +84,40 @@ if [[ ${ready} != true ]]; then
 fi
 
 # Each screen wears its owning agent's creature: the screen agent keeps a
-# per-screen wallpaper on the dataset current with the attachment, and the
-# session points xfconf at that file (xfdesktop reloads when it changes).
-# Seed it with the default before first use; applied from inside the
-# session's own D-Bus, best-effort so a slow desktop start never kills the
-# screen itself.
+# per-screen wallpaper on the dataset current with the attachment. Configure
+# xfconf before XFCE starts so the first rendered frame already has the
+# wallpaper, no desktop icons, and the image-owned bottom dock.
 wallpaper_dir=${QORPERA_WALLPAPER_DIR:-/srv/qorpera/dataset/.qorpera-computer/wallpapers}
 wallpaper="${wallpaper_dir}/screen-${ordinal}.png"
 if [[ ! -f ${wallpaper} ]]; then
 	mkdir -p "${wallpaper_dir}"
 	cp /usr/share/backgrounds/qorpera-screen.png "${wallpaper}" 2>/dev/null || true
 fi
-DISPLAY=${display} QORPERA_SCREEN_WALLPAPER=${wallpaper} /usr/bin/dbus-run-session -- /bin/bash -c '
-	(
-		for _attempt in $(seq 1 40); do
-			mapfile -t props < <(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep "/last-image$")
-			if [[ ${#props[@]} -gt 0 ]]; then
-				for prop in "${props[@]}"; do
-					xfconf-query -c xfce4-desktop -p "${prop}" -s "${QORPERA_SCREEN_WALLPAPER}" || true
-				done
-				break
-			fi
-			sleep 0.5
-		done
-	) &
+monitor=$(DISPLAY=${display} /usr/bin/xrandr --query | awk '$2 == "connected" { print $1; exit }')
+if [[ -z ${monitor} || ! ${monitor} =~ ^[A-Za-z0-9._-]+$ ]]; then
+	echo "The screen display did not publish a usable monitor." >&2
+	exit 1
+fi
+export DISPLAY=${display}
+export QORPERA_SCREEN_MONITOR=${monitor}
+export QORPERA_SCREEN_WALLPAPER=${wallpaper}
+/usr/bin/dbus-run-session -- /bin/bash -c '
+	set -euo pipefail
+	set_xfce_property() {
+		local channel=$1
+		local path=$2
+		local type=$3
+		local value=$4
+		if xfconf-query -c "${channel}" -p "${path}" >/dev/null 2>&1; then
+			xfconf-query -c "${channel}" -p "${path}" -s "${value}"
+		else
+			xfconf-query -c "${channel}" -p "${path}" -n -t "${type}" -s "${value}"
+		fi
+	}
+	backdrop="/backdrop/screen0/monitor${QORPERA_SCREEN_MONITOR}/workspace0"
+	set_xfce_property xfce4-desktop "${backdrop}/last-image" string "${QORPERA_SCREEN_WALLPAPER}"
+	set_xfce_property xfce4-desktop "${backdrop}/image-style" int 5
+	set_xfce_property xfce4-desktop /desktop-icons/style int 0
 	exec /usr/bin/xfce4-session
 ' &
 session_pid=$!

@@ -81,5 +81,25 @@
 .screen-viewer-stage > div { position: absolute; inset: 0; }
 .screen-viewer-status {
 	position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none;
-	color: rgba(255, 255, 255, 0.6); font-size: 13px; letter-spacing: 0.02em;
+	background: #1d1e20; color: rgba(255, 255, 255, 0.88); font-size: 13px; letter-spacing: 0.01em;
+}
+.screen-viewer-status[hidden] { display: none; }
+.screen-viewer-status-content { display: grid; width: min(238px, calc(100vw - 64px)); gap: 12px; text-align: center; }
+.screen-viewer-progress {
+	position: relative; height: 5px; overflow: hidden; border-radius: 999px;
+	background: rgba(255, 255, 255, 0.16);
+}
+.screen-viewer-progress span {
+	position: absolute; inset: 0 auto 0 0; width: 34%; border-radius: inherit;
+	background: rgba(255, 255, 255, 0.88); animation: screen-viewer-progress 1.15s ease-in-out infinite;
+}
+.screen-viewer-status.is-error .screen-viewer-status-content { width: min(420px, calc(100vw - 64px)); }
+.screen-viewer-status.is-error .screen-viewer-progress { display: none; }
+@keyframes screen-viewer-progress {
+	0% { transform: translateX(-105%); }
+	55% { transform: translateX(195%); }
+	100% { transform: translateX(295%); }
+}
+@media (prefers-reduced-motion: reduce) {
+	.screen-viewer-progress span { animation: none; left: 33%; }
 }

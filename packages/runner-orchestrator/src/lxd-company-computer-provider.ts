@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, chmod, lstat, mkdir, readdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
-import type { LxdCreateInstanceRequest, LxdInstanceRecord, LxdInstanceSnapshotClient } from "./lxd-client.ts";
+import type { LxdCreateInstanceRequest, LxdInstanceRecord, LxdPersistentInstanceClient } from "./lxd-client.ts";
 import { HttpLxdGuestTransport, type LxdGuestTransport } from "./lxd-provider.ts";
 import type {
 	CloudRunnerAssignmentDelivery,
@@ -23,17 +24,14 @@ const STORAGE_SIZE_PATTERN = /^[1-9][0-9]*(?:KiB|MiB|GiB|TiB)$/;
 const DATASET_PATTERN = /^[a-z0-9][a-z0-9._-]{0,180}(?:\/[a-z0-9][a-z0-9._-]{0,180}){0,7}$/;
 const SNAPSHOT_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,119}$/;
 const JOURNAL_SCHEMA = "qorpera.lxd-company-computer-journal/v1";
-const BOOTSTRAP_SCHEMA = "qorpera.company-computer-bootstrap/v1";
+const BOOTSTRAP_SCHEMA = "qorpera.company-computer-bootstrap/v2";
 const IDENTITY_VOLUME_SCHEMA = "qorpera.compute-identity-volume/v1";
 
-/** Dataset layout carried by the per-company NAS dataset. The dataset, not
- * the VM disk, is the machine's working world: the standing Company File
- * checkout, the shared workbench every staff agent sees, browser profiles,
- * and the machine-local sync/state directory that must migrate with the
- * share. */
+/** Layout inside the existing company NAS root. `live` is the same tree used
+ * by Step 2 runners and every desktop; profiles and hidden machine state are
+ * siblings on the same share. There is no second checkout or sync head. */
 export const COMPANY_COMPUTER_DATASET_LAYOUT = {
-	companyDirectory: "company",
-	workbenchDirectory: "workbench",
+	liveDirectory: "live",
 	profilesDirectory: "profiles",
 	stateDirectory: ".qorpera-computer",
 } as const;
@@ -47,6 +45,13 @@ export const COMPANY_COMPUTER_SCREEN_VIEWER_PORT = 8_446;
 
 /** Default idle window before a machine with no open screens powers off. */
 export const COMPANY_COMPUTER_IDLE_POWER_OFF_SECONDS = 300;
+
+/** Synology's map-all-to-admin export exposes shared files through `users`. */
+export const COMPANY_COMPUTER_NAS_SHARED_GID = 100;
+
+/** Dataset rollback points are occasional background infrastructure work,
+ * not a synchronous turn-completion publication pass. */
+export const COMPANY_COMPUTER_DATASET_SNAPSHOT_INTERVAL_SECONDS = 6 * 60 * 60;
 
 export type LxdCompanyComputerLifecycleState =
 	| "provisioning"
@@ -93,13 +98,88 @@ export interface LxdCompanyComputerControlPlane {
 		detail: Record<string, unknown>,
 		signal?: AbortSignal,
 	): Promise<void>;
+	relocateDataset(
+		companyComputerId: string,
+		nasDataset: string,
+		detail: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<LxdCompanyComputerAuthority>;
 }
 
 /** Captures the working world: a point-in-time snapshot of the per-company
  * NAS dataset, taken inside the control-plane snapshotting window. The
- * stateless LXD snapshot beside it covers only the disposable VM root. */
+ * disposable VM root is recovered from its signed image, not snapshotted. */
 export interface CompanyDatasetSnapshotClient {
 	snapshotDataset(dataset: string, snapshotName: string, signal?: AbortSignal): Promise<void>;
+}
+
+/** Fail-closed proof that the configured source is the real, writable NAS
+ * filesystem rather than a local directory exposed after a missing mount. */
+export interface CompanyDatasetSourceVerifier {
+	verifyDatasetSource(datasetRoot: string, datasetSource: string): Promise<void>;
+}
+
+function decodeLinuxMountInfoPath(value: string): string {
+	return value.replaceAll("\\040", " ").replaceAll("\\011", "\t").replaceAll("\\012", "\n").replaceAll("\\134", "\\");
+}
+
+function pathIsWithin(root: string, candidate: string): boolean {
+	return candidate === root || (root === "/" ? candidate.startsWith("/") : candidate.startsWith(`${root}/`));
+}
+
+/** Linux deployment verifier. `/proc/self/mountinfo` is used instead of
+ * accepting any mountpoint: the backing filesystem must specifically be a
+ * read-write NFS/NFS4 mount. */
+export class LinuxNfsCompanyDatasetSourceVerifier implements CompanyDatasetSourceVerifier {
+	readonly #mountInfoPath: string;
+
+	constructor(mountInfoPath = "/proc/self/mountinfo") {
+		if (!isAbsolute(mountInfoPath)) throw new Error("Linux mountinfo path must be absolute");
+		this.#mountInfoPath = mountInfoPath;
+	}
+
+	async verifyDatasetSource(datasetRoot: string, datasetSource: string): Promise<void> {
+		const [rootInfo, sourceInfo] = await Promise.all([lstat(datasetRoot), lstat(datasetSource)]);
+		if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+			throw new Error("Company computer NAS dataset root is not a real directory");
+		}
+		if (!sourceInfo.isDirectory() || sourceInfo.isSymbolicLink()) {
+			throw new Error("Company computer NAS dataset source is not a real directory");
+		}
+		const [resolvedRoot, resolvedSource, mountInfo] = await Promise.all([
+			realpath(datasetRoot),
+			realpath(datasetSource),
+			readFile(this.#mountInfoPath, "utf-8"),
+		]);
+		if (!pathIsWithin(resolvedRoot, resolvedSource)) {
+			throw new Error("Company computer NAS dataset source escapes its real dataset root");
+		}
+		const mounts = mountInfo
+			.split("\n")
+			.flatMap((line): Array<{ mountPoint: string; mountOptions: string; fileSystemType: string }> => {
+				const separator = line.indexOf(" - ");
+				if (separator < 0) return [];
+				const mountFields = line.slice(0, separator).split(" ");
+				const filesystemFields = line.slice(separator + 3).split(" ");
+				const encodedMountPoint = mountFields[4];
+				const mountOptions = mountFields[5];
+				const fileSystemType = filesystemFields[0];
+				if (!encodedMountPoint || !mountOptions || !fileSystemType) return [];
+				const mountPoint = resolve(decodeLinuxMountInfoPath(encodedMountPoint));
+				return pathIsWithin(mountPoint, resolvedRoot) ? [{ mountPoint, mountOptions, fileSystemType }] : [];
+			})
+			.sort((left, right) => right.mountPoint.length - left.mountPoint.length);
+		const backingMount = mounts[0];
+		if (!backingMount || (backingMount.fileSystemType !== "nfs" && backingMount.fileSystemType !== "nfs4")) {
+			throw new Error("Company computer NAS dataset root is not backed by NFS");
+		}
+		if (!backingMount.mountOptions.split(",").includes("rw")) {
+			throw new Error("Company computer NAS dataset root is not mounted read-write");
+		}
+		/* The provider itself stays read-only to company data; guest bootstrap
+		 * separately proves the shared GID has write access before agents start. */
+		await access(resolvedSource, fsConstants.R_OK | fsConstants.X_OK);
+	}
 }
 
 export type CompanyDatasetSnapshotExec = (
@@ -113,6 +193,12 @@ const defaultDatasetSnapshotExec: CompanyDatasetSnapshotExec = (command, args, s
 		const child = spawn(command, [...args], {
 			stdio: ["ignore", "ignore", "pipe"],
 			shell: false,
+			env: Object.fromEntries(
+				["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ"].flatMap((key) => {
+					const value = process.env[key];
+					return value === undefined ? [] : [[key, value]];
+				}),
+			),
 			...(signal ? { signal } : {}),
 		});
 		let stderr = "";
@@ -184,6 +270,7 @@ export interface LxdCompanyComputerProviderConfig {
 	cpuLimit: number;
 	memoryLimit: string;
 	nasDatasetRoot: string;
+	nasSharedGid?: number;
 	guestDatasetPath?: string;
 	guestAssignmentPort: number;
 	guestAssignmentSource: string;
@@ -196,7 +283,7 @@ export interface LxdCompanyComputerProviderConfig {
 	runnerVersion: string;
 	codexPath: string;
 	claudePath: string;
-	syncPollSeconds?: number;
+	datasetSnapshotIntervalSeconds?: number;
 	guestScreenViewerPort?: number;
 	screenPollSeconds?: number;
 	guestBootstrapService?: string;
@@ -232,6 +319,8 @@ interface LxdCompanyComputerJournal {
 	/** First reconcile observation of zero open screens; the idle window
 	 * counts from here and any open screen clears it. */
 	screensIdleSince?: string;
+	lastDatasetSnapshotAt?: string;
+	lastDatasetSnapshotName?: string;
 	lxd: {
 		project: string;
 		type: "virtual-machine";
@@ -421,6 +510,25 @@ export class SupabaseLxdCompanyComputerControlPlane implements LxdCompanyCompute
 		);
 	}
 
+	async relocateDataset(
+		companyComputerId: string,
+		nasDataset: string,
+		detail: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<LxdCompanyComputerAuthority> {
+		return parseLxdCompanyComputerAuthority(
+			await this.#rpc(
+				"qorpera_relocate_company_computer_dataset",
+				{
+					p_company_computer_id: companyComputerId,
+					p_nas_dataset: nasDataset,
+					p_detail: detail,
+				},
+				signal,
+			),
+		);
+	}
+
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
 		const headers: Record<string, string> = { apikey: this.#serviceKey, "content-type": "application/json" };
 		if (this.#serviceKey.startsWith("eyJ") && this.#serviceKey.split(".").length === 3) {
@@ -449,6 +557,10 @@ function validateConfig(config: LxdCompanyComputerProviderConfig): void {
 		throw new Error("Company computer idle power-off window is invalid");
 	}
 	if (!isAbsolute(config.nasDatasetRoot)) throw new Error("Company computer NAS dataset root must be absolute");
+	const nasSharedGid = config.nasSharedGid ?? COMPANY_COMPUTER_NAS_SHARED_GID;
+	if (!Number.isSafeInteger(nasSharedGid) || nasSharedGid < 1 || nasSharedGid > 65_535) {
+		throw new Error("Company computer NAS shared group is invalid");
+	}
 	const guestDatasetPath = config.guestDatasetPath ?? COMPANY_COMPUTER_GUEST_DATASET_PATH;
 	if (!guestDatasetPath.startsWith("/") || /[\0\r\n]/.test(guestDatasetPath) || guestDatasetPath.includes("..")) {
 		throw new Error("Company computer guest dataset path is invalid");
@@ -506,9 +618,12 @@ function validateConfig(config: LxdCompanyComputerProviderConfig): void {
 	if (!Number.isSafeInteger(readyTimeout) || readyTimeout < 1_000 || readyTimeout > 900_000) {
 		throw new Error("LXD guest readiness timeout is invalid");
 	}
-	const syncPollSeconds = config.syncPollSeconds ?? 30;
-	if (!Number.isSafeInteger(syncPollSeconds) || syncPollSeconds < 5 || syncPollSeconds > 3_600) {
-		throw new Error("Company computer sync poll interval is invalid");
+	const snapshotInterval = config.datasetSnapshotIntervalSeconds ?? COMPANY_COMPUTER_DATASET_SNAPSHOT_INTERVAL_SECONDS;
+	if (
+		!Number.isSafeInteger(snapshotInterval) ||
+		(snapshotInterval !== 0 && (snapshotInterval < 900 || snapshotInterval > 7 * 24 * 60 * 60))
+	) {
+		throw new Error("Company computer dataset snapshot interval is invalid");
 	}
 	const screenViewerPort = config.guestScreenViewerPort ?? COMPANY_COMPUTER_SCREEN_VIEWER_PORT;
 	if (
@@ -654,6 +769,13 @@ function journalFromJson(value: unknown): LxdCompanyComputerJournal {
 			input.lastStopReason !== "maintenance") ||
 		(input.screensIdleSince !== undefined &&
 			(typeof input.screensIdleSince !== "string" || !Number.isFinite(Date.parse(input.screensIdleSince)))) ||
+		(input.lastDatasetSnapshotAt !== undefined &&
+			(typeof input.lastDatasetSnapshotAt !== "string" ||
+				!Number.isFinite(Date.parse(input.lastDatasetSnapshotAt)))) ||
+		(input.lastDatasetSnapshotName !== undefined &&
+			(typeof input.lastDatasetSnapshotName !== "string" ||
+				!SNAPSHOT_NAME_PATTERN.test(input.lastDatasetSnapshotName))) ||
+		(input.lastDatasetSnapshotAt === undefined) !== (input.lastDatasetSnapshotName === undefined) ||
 		(assignment !== undefined &&
 			(typeof assignment.expiresAt !== "string" || !Number.isFinite(Date.parse(assignment.expiresAt)))) ||
 		typeof machine.templateKey !== "string" ||
@@ -729,6 +851,12 @@ function journalFromJson(value: unknown): LxdCompanyComputerJournal {
 		...(typeof input.screensIdleSince === "string"
 			? { screensIdleSince: new Date(input.screensIdleSince).toISOString() }
 			: {}),
+		...(typeof input.lastDatasetSnapshotAt === "string" && typeof input.lastDatasetSnapshotName === "string"
+			? {
+					lastDatasetSnapshotAt: new Date(input.lastDatasetSnapshotAt).toISOString(),
+					lastDatasetSnapshotName: input.lastDatasetSnapshotName,
+				}
+			: {}),
 		lxd: {
 			project: lxd.project,
 			type: "virtual-machine",
@@ -767,18 +895,20 @@ function journalFromJson(value: unknown): LxdCompanyComputerJournal {
 export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderServiceBackend {
 	readonly adapterId: string;
 	readonly #config: LxdCompanyComputerProviderConfig;
-	readonly #lxd: LxdInstanceSnapshotClient;
+	readonly #lxd: LxdPersistentInstanceClient;
 	readonly #controlPlane: LxdCompanyComputerControlPlane;
 	readonly #guest: LxdGuestTransport;
 	readonly #datasetSnapshots?: CompanyDatasetSnapshotClient;
+	readonly #datasetSourceVerifier: CompanyDatasetSourceVerifier;
 	#serial: Promise<void> = Promise.resolve();
 
 	constructor(
 		config: LxdCompanyComputerProviderConfig,
-		lxd: LxdInstanceSnapshotClient,
+		lxd: LxdPersistentInstanceClient,
 		controlPlane?: LxdCompanyComputerControlPlane,
 		guest: LxdGuestTransport = new HttpLxdGuestTransport(lxd),
 		datasetSnapshots?: CompanyDatasetSnapshotClient,
+		datasetSourceVerifier: CompanyDatasetSourceVerifier = new LinuxNfsCompanyDatasetSourceVerifier(),
 	) {
 		validateConfig(config);
 		this.adapterId = config.adapterId;
@@ -793,6 +923,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 			new SupabaseLxdCompanyComputerControlPlane(config.supabaseUrl, config.supabaseServiceKey, config.adapterId);
 		this.#guest = guest;
 		if (datasetSnapshots) this.#datasetSnapshots = datasetSnapshots;
+		this.#datasetSourceVerifier = datasetSourceVerifier;
 	}
 
 	async reconcile(signal?: AbortSignal): Promise<void> {
@@ -801,11 +932,54 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 			await chmod(this.#computersRoot(), 0o700);
 			for (const entry of await readdir(this.#computersRoot(), { withFileTypes: true })) {
 				if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
-				const current = await this.#readJournal(entry.name);
+				let current = await this.#readJournal(entry.name);
 				if (!current || current.physicalState === "lost") continue;
+				current = await this.#reconcileDatasetSnapshot(current, signal);
 				await this.#reconcilePower(current, signal);
 			}
 		});
+	}
+
+	async #reconcileDatasetSnapshot(
+		current: LxdCompanyComputerJournal,
+		signal?: AbortSignal,
+	): Promise<LxdCompanyComputerJournal> {
+		const interval =
+			this.#config.datasetSnapshotIntervalSeconds ?? COMPANY_COMPUTER_DATASET_SNAPSHOT_INTERVAL_SECONDS;
+		if (!this.#datasetSnapshots || interval === 0) return current;
+		const previous = Date.parse(current.lastDatasetSnapshotAt ?? current.createdAt);
+		if (Date.now() - previous < interval * 1_000) return current;
+		const authority = await this.#controlPlane.describeCompanyComputer(current.logicalComputerId, signal);
+		this.#assertJournalAuthority(current, authority);
+		if (authority.lifecycleState !== "active") return current;
+		const snapshotName = this.#snapshotName("qorpera-data");
+		await this.#controlPlane.transitionLifecycle(
+			authority.companyComputerId,
+			"snapshotting",
+			undefined,
+			{ snapshot: snapshotName, reason: "scheduled_rollback" },
+			signal,
+		);
+		let datasetCaptured = false;
+		try {
+			await this.#datasetSnapshots.snapshotDataset(current.nasDataset, snapshotName, signal);
+			datasetCaptured = true;
+			const next = {
+				...current,
+				lastDatasetSnapshotAt: new Date().toISOString(),
+				lastDatasetSnapshotName: snapshotName,
+			};
+			await this.#writeJournal(next);
+			return next;
+		} finally {
+			await this.#controlPlane.transitionLifecycle(
+				authority.companyComputerId,
+				"active",
+				undefined,
+				{ snapshot: snapshotName, dataset_captured: datasetCaptured, reason: "scheduled_rollback" },
+				signal,
+			);
+		}
 	}
 
 	/** The machine's power follows its screens (founder model 2026-08-26):
@@ -869,7 +1043,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 	 * control plane's placement without any work acquisition — the first
 	 * machine is proven by watching it, not by executing turns. Idempotent:
 	 * an existing journal re-ensures readiness instead. No runner session is
-	 * registered, so the machine carries screens, sync, and the viewer, and
+	 * registered, so the machine carries screens and the viewer, and
 	 * the runner lane stays dormant until work first arrives via acquire. */
 	async provisionComputer(logicalComputerId: string, signal?: AbortSignal): Promise<void> {
 		await this.#exclusive(async () => {
@@ -1128,24 +1302,150 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 		});
 	}
 
-	/** Coordinated snapshot: the control-plane snapshotting window is the
-	 * fence. Inside it the NAS dataset snapshot captures the working world
-	 * and the stateless LXD snapshot covers the disposable VM root; the
-	 * closing lifecycle event records whether the dataset was captured so a
-	 * deployment without storage tooling never presents a root-only snapshot
-	 * as a recovery point. */
+	/** Rebinds a stopped Company Computer to another directory under the
+	 * configured NAS root. The disposable VM root is deleted and recreated
+	 * from the currently signed image; the Compute Identity volume is never
+	 * deleted or replaced. If the operation is interrupted, lifecycle remains
+	 * `recovering` and `recoverComputer` safely resumes it. */
+	async relocateComputerDataset(logicalComputerId: string, nasDataset: string, signal?: AbortSignal): Promise<void> {
+		await this.#exclusive(async () => {
+			if (!DATASET_PATTERN.test(nasDataset) || nasDataset.includes("..")) {
+				throw new Error("Company computer dataset name is invalid");
+			}
+			const current = await this.#readJournal(logicalComputerId);
+			if (!current) throw new Error("Company computer has no durable journal on this node");
+			const authority = await this.#controlPlane.describeCompanyComputer(logicalComputerId, signal);
+			this.#assertRelocationJournalAuthority(current, authority);
+			if (authority.lifecycleState !== "active") {
+				throw new Error(`Company computer is ${authority.lifecycleState} and cannot relocate its dataset`);
+			}
+			if (nasDataset === authority.nasDataset) return;
+			if (
+				(current.activeAssignment && Date.parse(current.activeAssignment.expiresAt) > Date.now()) ||
+				(await this.#controlPlane.countOpenScreens(current.companyComputerId, signal)) > 0
+			) {
+				throw new Error("Company computer dataset relocation requires no live assignment or open screen");
+			}
+			await this.#verifyDatasetSource(this.#datasetSource(nasDataset));
+			const relocated = await this.#controlPlane.relocateDataset(
+				authority.companyComputerId,
+				nasDataset,
+				{ reason: "adopt_existing_company_root", from: authority.nasDataset },
+				signal,
+			);
+			await this.#recoverComputer(current, relocated, signal);
+		});
+	}
+
+	async recoverComputer(logicalComputerId: string, signal?: AbortSignal): Promise<void> {
+		await this.#exclusive(async () => {
+			const current = await this.#readJournal(logicalComputerId);
+			if (!current) throw new Error("Company computer has no durable journal on this node");
+			const authority = await this.#controlPlane.describeCompanyComputer(logicalComputerId, signal);
+			await this.#recoverComputer(current, authority, signal);
+		});
+	}
+
+	async #recoverComputer(
+		current: LxdCompanyComputerJournal,
+		authority: LxdCompanyComputerAuthority,
+		signal?: AbortSignal,
+	): Promise<void> {
+		this.#assertRecoveryJournalAuthority(current, authority);
+		if (authority.lifecycleState !== "recovering") {
+			throw new Error(`Company computer is ${authority.lifecycleState} and cannot be recovered`);
+		}
+		const datasetSource = this.#datasetSource(authority.nasDataset);
+		/* Verify before touching the disposable root. A missing NAS mount must
+		 * never turn recovery into a VM backed by a same-named local directory. */
+		await this.#verifyDatasetSource(datasetSource);
+		const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
+		const replacementAlreadyRecorded =
+			current.nasDataset === authority.nasDataset &&
+			current.lxd.datasetSource === datasetSource &&
+			current.lxd.imageServer === this.#config.imageServer &&
+			current.lxd.imageFingerprint === this.#config.imageFingerprint &&
+			JSON.stringify(current.lxd.profiles) === JSON.stringify([this.#config.computerProfile]) &&
+			current.lxd.rootDiskSize === this.#config.rootDiskSize;
+		if (replacementAlreadyRecorded) {
+			/* A final control-plane transition may have failed after the new VM was
+			 * already ready. Resume that replacement instead of deleting it again. */
+			const resumed = { ...current };
+			delete resumed.activeAssignment;
+			delete resumed.screensIdleSince;
+			delete resumed.lastStopReason;
+			if (!instance) {
+				resumed.physicalState = "creating";
+				delete resumed.guestAddress;
+			}
+			await this.#writeJournal(resumed);
+			await this.#ensureReady(resumed, signal);
+			await this.#activateRecoveredComputer(authority, current.lxd.identityVolume, signal);
+			return;
+		}
+		if (instance && instance.status !== "Stopped") {
+			await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "stop", signal);
+		}
+		if (instance) await this.#lxd.deleteInstance(current.lxd.project, current.instanceName, signal);
+		const next: LxdCompanyComputerJournal = {
+			...current,
+			nasDataset: authority.nasDataset,
+			physicalState: "creating",
+			lxd: {
+				...current.lxd,
+				imageServer: this.#config.imageServer,
+				imageFingerprint: this.#config.imageFingerprint,
+				profiles: [this.#config.computerProfile],
+				rootDiskSize: this.#config.rootDiskSize,
+				datasetSource,
+			},
+		};
+		delete next.guestAddress;
+		delete next.activeAssignment;
+		delete next.screensIdleSince;
+		delete next.lastStopReason;
+		if (current.nasDataset !== authority.nasDataset) {
+			delete next.lastDatasetSnapshotAt;
+			delete next.lastDatasetSnapshotName;
+		}
+		await this.#writeJournal(next);
+		await this.#ensureReady(next, signal);
+		await this.#activateRecoveredComputer(authority, current.lxd.identityVolume, signal);
+	}
+
+	async #activateRecoveredComputer(
+		authority: LxdCompanyComputerAuthority,
+		identityVolume: string,
+		signal?: AbortSignal,
+	): Promise<void> {
+		await this.#controlPlane.transitionLifecycle(
+			authority.companyComputerId,
+			"active",
+			this.#config.nodeKey,
+			{
+				reason: "recovered_from_signed_image",
+				dataset: authority.nasDataset,
+				image_fingerprint: this.#config.imageFingerprint,
+				identity_volume: identityVolume,
+			},
+			signal,
+		);
+	}
+
+	/** Coordinated rollback point: inside the control-plane snapshotting
+	 * window, capture the NAS dataset that holds the entire mutable working
+	 * world. The disposable VM root is deliberately omitted; recovery always
+	 * recreates it from signed image provenance. */
 	async snapshotComputer(logicalComputerId: string, signal?: AbortSignal): Promise<string> {
 		return this.#exclusive(async () => {
 			const current = await this.#readJournal(logicalComputerId);
 			if (!current) throw new Error("Company computer has no durable journal on this node");
+			if (!this.#datasetSnapshots) {
+				throw new Error("Company computer dataset snapshot tooling is not configured");
+			}
 			const authority = await this.#controlPlane.describeCompanyComputer(logicalComputerId, signal);
 			this.#assertJournalAuthority(current, authority);
-			const snapshotName = `qorpera-cc-${new Date()
-				.toISOString()
-				.replaceAll(/[:.]/g, "-")
-				.replaceAll(/[TZ]/g, "-")
-				.replaceAll(/-+$/g, "")
-				.toLowerCase()}`;
+			const snapshotName = this.#snapshotName("qorpera-cc");
 			await this.#controlPlane.transitionLifecycle(
 				authority.companyComputerId,
 				"snapshotting",
@@ -1157,11 +1457,13 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 			try {
 				/* Dataset first: if the working world cannot be captured, fail
 				 * before producing a root snapshot that would pose as one. */
-				if (this.#datasetSnapshots) {
-					await this.#datasetSnapshots.snapshotDataset(current.nasDataset, snapshotName, signal);
-					datasetCaptured = true;
-				}
-				await this.#lxd.createInstanceSnapshot(current.lxd.project, current.instanceName, snapshotName, signal);
+				await this.#datasetSnapshots.snapshotDataset(current.nasDataset, snapshotName, signal);
+				datasetCaptured = true;
+				await this.#writeJournal({
+					...current,
+					lastDatasetSnapshotAt: new Date().toISOString(),
+					lastDatasetSnapshotName: snapshotName,
+				});
 			} finally {
 				await this.#controlPlane.transitionLifecycle(
 					authority.companyComputerId,
@@ -1230,6 +1532,29 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 		}
 	}
 
+	#assertRecoveryJournalAuthority(journal: LxdCompanyComputerJournal, authority: LxdCompanyComputerAuthority): void {
+		if (
+			journal.logicalComputerId !== authority.logicalComputerId ||
+			journal.companyComputerId !== authority.companyComputerId ||
+			journal.profileId !== authority.profileId ||
+			journal.environmentId !== authority.environmentId ||
+			journal.machine.computeIdentityId !== authority.computeIdentityId ||
+			journal.machine.templateKey !== authority.templateKey ||
+			journal.machine.templateVersion !== authority.templateVersion ||
+			journal.machine.policySha256 !== authority.computePolicySha256 ||
+			authority.nodeKey !== this.#config.nodeKey
+		) {
+			throw new Error("Company computer recovery authority does not match this node's durable identity");
+		}
+	}
+
+	#assertRelocationJournalAuthority(journal: LxdCompanyComputerJournal, authority: LxdCompanyComputerAuthority): void {
+		this.#assertRecoveryJournalAuthority(journal, authority);
+		if (journal.nasDataset !== authority.nasDataset || journal.lxd.policySha256 !== authority.computePolicySha256) {
+			throw new Error("Company computer relocation authority does not match its current dataset");
+		}
+	}
+
 	async #ensureReady(
 		current: LxdCompanyComputerJournal,
 		signal?: AbortSignal,
@@ -1237,6 +1562,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 	): Promise<LxdCompanyComputerJournal> {
 		const resolvedCredentials = credentials ?? (await this.#credentials(current.logicalComputerId));
 		this.#validateCredentialHashes(current, resolvedCredentials);
+		await this.#verifyDatasetSource(current.lxd.datasetSource);
 		await this.#ensureIdentityVolume(current, current.machine.computeIdentityId, signal);
 		let instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		if (!instance) {
@@ -1282,6 +1608,10 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 			throw new Error("Company computer dataset escapes the NAS dataset root");
 		}
 		return source;
+	}
+
+	async #verifyDatasetSource(datasetSource: string): Promise<void> {
+		await this.#datasetSourceVerifier.verifyDatasetSource(this.#config.nasDatasetRoot, datasetSource);
 	}
 
 	#createRequest(current: LxdCompanyComputerJournal): LxdCreateInstanceRequest {
@@ -1346,16 +1676,18 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 		 * carries the logical computer id as its runner id: the guest runner
 		 * service cannot activate without a registered session either way,
 		 * and the first real acquire rewrites these files with the session's
-		 * id. Screens, sync, and the viewer never depend on it. */
+		 * id. Screens and the viewer never depend on it. */
 		const runnerId = journal.runner ? (journal.runner.runnerId as string) : journal.logicalComputerId;
+		const liveCompanyRoot = `${datasetPath}/${COMPANY_COMPUTER_DATASET_LAYOUT.liveDirectory}`;
+		const stateRoot = `${datasetPath}/${COMPANY_COMPUTER_DATASET_LAYOUT.stateDirectory}`;
 		const runnerConfig = JSON.stringify(
 			{
-				schema: "qorpera.company-computer-service/v1",
+				schema: "qorpera.company-computer-service/v2",
 				base_url: this.#config.supabaseUrl,
 				publishable_key: this.#config.supabasePublishableKey,
 				runner_id: runnerId,
 				authority_state_path: "/var/lib/qorpera-runner/.local/state/qorpera-runner/authority.json",
-				workbench_root: `${datasetPath}/${COMPANY_COMPUTER_DATASET_LAYOUT.workbenchDirectory}`,
+				temporary_root: `${stateRoot}/runner`,
 				image: this.#config.runnerImage,
 				podman_path: this.#config.runnerPodmanPath,
 				entrypoint: this.#config.runnerEntrypoint,
@@ -1369,7 +1701,10 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 				assignment_port: this.#config.guestAssignmentPort,
 				assignment_trusted_source: this.#config.guestAssignmentSource,
 				max_assignments: 1,
-				environment: {},
+				environment: {
+					QORPERA_LIVE_COMPANY_ROOT: liveCompanyRoot,
+					QORPERA_LIVE_COMPANY_PROFILE_ID: journal.profileId,
+				},
 			},
 			null,
 			2,
@@ -1386,12 +1721,8 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 				compute_template_version: journal.machine.templateVersion,
 				compute_policy_sha256: journal.machine.policySha256,
 				dataset_path: datasetPath,
+				nas_shared_gid: this.#config.nasSharedGid ?? COMPANY_COMPUTER_NAS_SHARED_GID,
 				dataset_layout: COMPANY_COMPUTER_DATASET_LAYOUT,
-				sync: {
-					company_root: `${datasetPath}/${COMPANY_COMPUTER_DATASET_LAYOUT.companyDirectory}`,
-					state_path: `${datasetPath}/${COMPANY_COMPUTER_DATASET_LAYOUT.stateDirectory}/company-sync.json`,
-					poll_seconds: this.#config.syncPollSeconds ?? 30,
-				},
 				screens: {
 					viewer_host: "0.0.0.0",
 					viewer_port: this.#config.guestScreenViewerPort ?? COMPANY_COMPUTER_SCREEN_VIEWER_PORT,
@@ -1661,6 +1992,15 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 
 	#instanceName(logicalComputerId: string): string {
 		return `qorpera-cc-${logicalComputerId.replaceAll("-", "")}`;
+	}
+
+	#snapshotName(prefix: "qorpera-cc" | "qorpera-data"): string {
+		return `${prefix}-${new Date()
+			.toISOString()
+			.replaceAll(/[:.]/g, "-")
+			.replaceAll(/[TZ]/g, "-")
+			.replaceAll(/-+$/g, "")
+			.toLowerCase()}`;
 	}
 
 	async #exclusive<T>(action: () => Promise<T>): Promise<T> {

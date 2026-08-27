@@ -10,13 +10,6 @@ import {
 	parseCloudCompanyComputerScreensConfig,
 } from "./cloud-company-computer-screens.ts";
 import {
-	type CloudCompanyComputerHeadResolver,
-	type CloudCompanyComputerSyncConfig,
-	type CloudCompanyComputerSyncHead,
-	parseCloudCompanyComputerSyncConfig,
-} from "./cloud-company-computer-sync.ts";
-import { currentCloudCompanyTreeReference } from "./cloud-company-snapshot.ts";
-import {
 	type CloudObjectTransport,
 	HttpCloudObjectTransport,
 	SupabaseCloudObjectTransport,
@@ -32,9 +25,8 @@ import {
  * services never run privileged. The one root step is the bootstrap oneshot
  * below, which prepares the dataset's working world and starts the agents. */
 
-export const COMPANY_COMPUTER_BOOTSTRAP_SCHEMA = "qorpera.company-computer-bootstrap/v1";
-export const COMPANY_COMPUTER_SERVICE_SCHEMA = "qorpera.company-computer-service/v1";
-export const COMPANY_COMPUTER_SYNC_SERVICE = "qorpera-company-computer-sync.service";
+export const COMPANY_COMPUTER_BOOTSTRAP_SCHEMA = "qorpera.company-computer-bootstrap/v2";
+export const COMPANY_COMPUTER_SERVICE_SCHEMA = "qorpera.company-computer-service/v2";
 export const COMPANY_COMPUTER_SCREENS_SERVICE = "qorpera-company-computer-screens.service";
 export const COMPANY_COMPUTER_RUNNER_SERVICE = "qorpera-company-computer-runner.service";
 export const COMPANY_COMPUTER_NATIVE_PROVIDER_SERVICE = "qorpera-native-provider-host.service";
@@ -52,7 +44,6 @@ export const COMPANY_COMPUTER_GUEST_CREDENTIALS = [
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const REDACTED_TOKEN_PATTERN = /[A-Za-z0-9_-]{43}/g;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const LAYOUT_DIRECTORY_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 const MAX_BOOTSTRAP_BYTES = 64 * 1024;
 const MAX_CREDENTIAL_BYTES = 256;
@@ -66,13 +57,12 @@ export interface CompanyComputerGuestBootstrap {
 	environmentId: string;
 	computeIdentityId: string;
 	datasetPath: string;
+	nasSharedGid: number;
 	datasetLayout: {
-		companyDirectory: string;
-		workbenchDirectory: string;
+		liveDirectory: string;
 		profilesDirectory: string;
 		stateDirectory: string;
 	};
-	sync: CloudCompanyComputerSyncConfig;
 	screens: CloudCompanyComputerScreensConfig;
 	credentialSource: string;
 	runnerConfigPath: string;
@@ -104,8 +94,15 @@ function layoutDirectory(value: unknown, label: string): string {
 	return value;
 }
 
-/** Unknown top-level keys are tolerated for the same reason as the sync and
- * screens blocks: an older agent must keep starting under a newer provider. */
+function sharedGid(value: unknown): number {
+	if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 65_535) {
+		throw new Error("Company computer NAS shared group is invalid");
+	}
+	return value as number;
+}
+
+/** Unknown top-level keys are tolerated so an older guest can keep starting
+ * under a provider that adds unrelated forward-compatible fields. */
 export function parseCompanyComputerGuestBootstrap(value: unknown): CompanyComputerGuestBootstrap {
 	const input = record(value, "Company computer bootstrap");
 	if (input.schema !== COMPANY_COMPUTER_BOOTSTRAP_SCHEMA) {
@@ -119,13 +116,12 @@ export function parseCompanyComputerGuestBootstrap(value: unknown): CompanyCompu
 		environmentId: uuid(input.environment_id, "Company computer environment id"),
 		computeIdentityId: uuid(input.compute_identity_id, "Company computer compute identity id"),
 		datasetPath: absolutePath(input.dataset_path, "Company computer dataset path"),
+		nasSharedGid: sharedGid(input.nas_shared_gid),
 		datasetLayout: {
-			companyDirectory: layoutDirectory(layout.companyDirectory, "Company computer company directory"),
-			workbenchDirectory: layoutDirectory(layout.workbenchDirectory, "Company computer workbench directory"),
+			liveDirectory: layoutDirectory(layout.liveDirectory, "Company computer live directory"),
 			profilesDirectory: layoutDirectory(layout.profilesDirectory, "Company computer profiles directory"),
 			stateDirectory: layoutDirectory(layout.stateDirectory, "Company computer state directory"),
 		},
-		sync: parseCloudCompanyComputerSyncConfig(input.sync),
 		screens: parseCloudCompanyComputerScreensConfig(input.screens),
 		credentialSource: absolutePath(input.credential_source, "Company computer credential source"),
 		runnerConfigPath: absolutePath(input.runner_config_path, "Company computer runner config path"),
@@ -137,15 +133,10 @@ export function parseCompanyComputerGuestBootstrap(value: unknown): CompanyCompu
 	};
 }
 
-/** The runner lane on the shared machine runs the reviewed ephemeral
- * execution pipeline unchanged; only the config flavor differs. The
- * company's workbench on the NAS dataset becomes the execution root, so
- * per-job workspaces are shared-visible and NAS-carried while they live,
- * and job types default to the agent turn the computer's capabilities
- * admit. Executing turns directly inside the standing checkout is a
- * deliberate later execution-mode decision (it is entangled with the
- * charter's open publication-cadence question), not something this mapping
- * decides silently. */
+/** The runner lane keeps its small disposable execution metadata under the
+ * NAS state directory, while QORPERA_LIVE_COMPANY_ROOT points execution at
+ * the one shared company tree. The generic runner therefore retains its
+ * reviewed isolation machinery without copying the Company File per turn. */
 export function parseCompanyComputerRunnerServiceConfig(value: unknown): EphemeralCloudRunnerServiceConfig {
 	const input = record(value, "Company computer runner service configuration");
 	if (input.schema !== COMPANY_COMPUTER_SERVICE_SCHEMA) {
@@ -173,7 +164,7 @@ export function parseCompanyComputerRunnerServiceConfig(value: unknown): Ephemer
 	] as const;
 	const transformed: Record<string, unknown> = {
 		schema: "qorpera.ephemeral-runner-service/v1",
-		temporary_root: input.workbench_root,
+		temporary_root: input.temporary_root,
 		job_types: input.job_types ?? ["agent_turn"],
 	};
 	for (const key of carried) {
@@ -217,71 +208,6 @@ export function safeCompanyComputerGuestError(error: unknown): string {
 			.slice(0, 1_000)
 			.trim() || "Company computer guest service failed"
 	);
-}
-
-/** Resolves the verified head through the computer-scoped service RPC; the
- * control plane enforces published-only, and the agent re-checks rather than
- * trusting the wire. */
-export class SupabaseCompanyComputerSyncHeadResolver implements CloudCompanyComputerHeadResolver {
-	readonly #supabaseUrl: string;
-	readonly #serviceKey: string;
-	readonly #companyComputerId: string;
-	readonly #fetch: typeof fetch;
-
-	constructor(
-		supabaseUrl: string,
-		serviceKey: string,
-		companyComputerId: string,
-		fetchImplementation: typeof fetch = fetch,
-	) {
-		this.#supabaseUrl = supabaseUrl;
-		this.#serviceKey = serviceKey;
-		this.#companyComputerId = companyComputerId;
-		this.#fetch = fetchImplementation;
-	}
-
-	async resolveVerifiedHead(): Promise<CloudCompanyComputerSyncHead | undefined> {
-		const headers: Record<string, string> = { apikey: this.#serviceKey, "content-type": "application/json" };
-		if (this.#serviceKey.startsWith("eyJ") && this.#serviceKey.split(".").length === 3) {
-			headers.authorization = `Bearer ${this.#serviceKey}`;
-		}
-		const response = await this.#fetch(
-			new URL("/rest/v1/rpc/qorpera_company_computer_sync_head", this.#supabaseUrl),
-			{
-				method: "POST",
-				headers,
-				body: JSON.stringify({ p_company_computer_id: this.#companyComputerId }),
-				signal: AbortSignal.timeout(30_000),
-			},
-		);
-		if (!response.ok) throw new Error(`Company computer sync head request failed (${response.status})`);
-		const value: unknown = await response.json();
-		if (value === null || value === undefined) return undefined;
-		const snapshot = record(value, "Company computer sync head");
-		if (snapshot.publication_state !== "published") {
-			throw new Error("Company File head is not a published snapshot");
-		}
-		if (
-			typeof snapshot.tree_manifest_sha256 !== "string" ||
-			!SHA256_PATTERN.test(snapshot.tree_manifest_sha256) ||
-			!Number.isSafeInteger(snapshot.tree_manifest_bytes) ||
-			!Number.isSafeInteger(snapshot.tree_contract_version) ||
-			!Number.isSafeInteger(snapshot.file_count) ||
-			!Number.isSafeInteger(snapshot.total_bytes)
-		) {
-			throw new Error("Company computer sync head is invalid");
-		}
-		return {
-			snapshotId: uuid(snapshot.snapshot_id, "Company computer sync head snapshot id"),
-			tree: currentCloudCompanyTreeReference({
-				manifestSha256: snapshot.tree_manifest_sha256,
-				manifestBytes: snapshot.tree_manifest_bytes as number,
-				contractVersion: snapshot.tree_contract_version as number,
-				fileCount: snapshot.file_count as number,
-				totalBytes: snapshot.total_bytes as number,
-			}),
-		};
-	}
 }
 
 export interface CompanyComputerObjectTransportInput {
@@ -425,6 +351,27 @@ function verifyMountedPath(mountInfo: string, expectedPath: string, label: strin
 	throw new Error(`${label} is not a mounted filesystem`);
 }
 
+async function ensureSharedDirectory(path: string, gid: number, create: boolean): Promise<void> {
+	try {
+		if (create) await mkdir(path, { mode: 0o2770 });
+	} catch (error) {
+		if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+	}
+	const metadata = await lstat(path);
+	if (
+		!metadata.isDirectory() ||
+		metadata.isSymbolicLink() ||
+		metadata.gid !== gid ||
+		(!create && (metadata.mode & 0o070) !== 0o070)
+	) {
+		throw new Error("Company computer dataset layout contains an unsupported entry");
+	}
+	// The existing live tree is Step 2's storage authority. Validate it but do
+	// not rewrite its NAS-owned root metadata during every guest boot. Hidden
+	// state created by this contract uses an explicit setgid sharing mode.
+	if (create) await chmod(path, 0o2770);
+}
+
 async function ensureOwnedDirectory(path: string, identity: CompanyComputerGuestIdentity): Promise<void> {
 	try {
 		await mkdir(path, { mode: 0o700 });
@@ -433,7 +380,7 @@ async function ensureOwnedDirectory(path: string, identity: CompanyComputerGuest
 	}
 	const metadata = await lstat(path);
 	if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-		throw new Error("Company computer dataset layout contains an unsupported entry");
+		throw new Error("Company computer service state contains an unsupported entry");
 	}
 	await chown(path, identity.uid, identity.gid);
 	await chmod(path, 0o700);
@@ -612,11 +559,10 @@ async function serviceGroups(account: string): Promise<readonly number[]> {
 /** Root oneshot the provider enables after pushing bootstrap files. It
  * verifies the provider-delivered authority, refuses to fabricate a working
  * world on the VM disk when the NAS dataset is not mounted, hands the
- * dataset's working directories to the work account, prepares the runner
- * lane (company-flavor runner config, native-provider boundary, Compute
- * Identity volume), and starts the standing services. The company checkout
- * itself is initialized by the sync agent as the work account, never by
- * root. */
+ * dataset's shared directories, prepares the runner lane (company-flavor
+ * runner config, native-provider boundary, Compute Identity volume), and
+ * starts the standing services. The existing `live` tree is never fabricated
+ * on the VM disk or replaced from a publication head. */
 export async function runCompanyComputerGuestBootstrap(
 	options: RunCompanyComputerGuestBootstrapOptions = {},
 ): Promise<void> {
@@ -676,8 +622,14 @@ export async function runCompanyComputerGuestBootstrap(
 	) {
 		throw new Error("Company computer runner configuration does not enforce the native VM bridge boundary");
 	}
-	if (runnerConfig.temporaryRoot !== join(bootstrap.datasetPath, bootstrap.datasetLayout.workbenchDirectory)) {
-		throw new Error("Company computer execution root must be the dataset workbench");
+	const liveCompanyRoot = join(bootstrap.datasetPath, bootstrap.datasetLayout.liveDirectory);
+	const stateRoot = join(bootstrap.datasetPath, bootstrap.datasetLayout.stateDirectory);
+	if (
+		runnerConfig.temporaryRoot !== join(stateRoot, "runner") ||
+		runnerConfig.environment.QORPERA_LIVE_COMPANY_ROOT !== liveCompanyRoot ||
+		runnerConfig.environment.QORPERA_LIVE_COMPANY_PROFILE_ID !== bootstrap.profileId
+	) {
+		throw new Error("Company computer runner does not use the declared live Company File");
 	}
 	verifyNativeProviderEnvironment(
 		await readOwnedFile(
@@ -710,19 +662,21 @@ export async function runCompanyComputerGuestBootstrap(
 	const workGroups = options.workSupplementaryGids ?? (await serviceGroups("qorpera-runner"));
 	if (
 		nativeIdentity.gid !== runnerConfig.nativeBridgeSharedGid ||
-		!workGroups.includes(runnerConfig.nativeBridgeSharedGid)
+		!workGroups.includes(runnerConfig.nativeBridgeSharedGid) ||
+		!workGroups.includes(bootstrap.nasSharedGid)
 	) {
-		throw new Error("Native execution group does not match the signed guest-image accounts");
+		throw new Error("Company computer shared groups do not match the signed guest-image accounts");
 	}
-	await chown(bootstrap.datasetPath, identity.uid, identity.gid);
-	await chmod(bootstrap.datasetPath, 0o700);
-	for (const directory of [
-		bootstrap.datasetLayout.workbenchDirectory,
-		bootstrap.datasetLayout.profilesDirectory,
-		bootstrap.datasetLayout.stateDirectory,
-	]) {
-		await ensureOwnedDirectory(join(bootstrap.datasetPath, directory), identity);
-	}
+	await ensureSharedDirectory(liveCompanyRoot, bootstrap.nasSharedGid, false);
+	await ensureSharedDirectory(
+		join(bootstrap.datasetPath, bootstrap.datasetLayout.profilesDirectory),
+		bootstrap.nasSharedGid,
+		true,
+	);
+	await ensureSharedDirectory(stateRoot, bootstrap.nasSharedGid, true);
+	await ensureSharedDirectory(join(stateRoot, "desktop-home"), bootstrap.nasSharedGid, true);
+	await ensureSharedDirectory(join(stateRoot, "runner"), bootstrap.nasSharedGid, true);
+	await ensureSharedDirectory(join(stateRoot, "screens"), bootstrap.nasSharedGid, true);
 	if (
 		runnerConfig.authorityStatePath !== paths.runnerHomeDirectory &&
 		!runnerConfig.authorityStatePath.startsWith(`${paths.runnerHomeDirectory}/`)
@@ -740,6 +694,5 @@ export async function runCompanyComputerGuestBootstrap(
 	const start = options.startService ?? startGuestService;
 	await start(COMPANY_COMPUTER_NATIVE_PROVIDER_SERVICE);
 	await start(COMPANY_COMPUTER_RUNNER_SERVICE);
-	await start(COMPANY_COMPUTER_SYNC_SERVICE);
 	await start(COMPANY_COMPUTER_SCREENS_SERVICE);
 }

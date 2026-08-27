@@ -20,7 +20,8 @@ provisioning), which also sidesteps the frozen lease-semantics follow-up.
    - logical computer `6d9da3a0-f09b-4d63-b79b-8a3aad7919d9`
      (class `company_computer`, template `qorpera-company-computer-linux` v1)
    - company computer `b13c3dc2-2bf0-4be0-8675-52bece89ee1a`, lifecycle
-     `provisioning`, dataset `companies/0d2053f0-c1a8-444d-99a8-68c8214e5414`
+     `provisioning`, initially registered against the local candidate dataset
+     `companies/0d2053f0-c1a8-444d-99a8-68c8214e5414`
    - `qorpera_describe_company_computer` and the screens list RPC verified
      with the real service key.
 3. **Staged to `~/step3-lxd/` on the node**: complete guest package
@@ -28,14 +29,15 @@ provisioning), which also sidesteps the frozen lease-semantics follow-up.
    runner image nested, archive sha `c9370c82…46239` verified), provider
    artifact, unit, env example, installer, and the image build script.
 
-## LIVE STATE at handoff (updated 2026-08-26 ~21:35Z — READ THIS FIRST)
+## LIVE STATE at handoff (updated 2026-08-27 — READ THIS FIRST)
 
-The full first-machine watch proof passed. The immutable replacement is live
+The full first-machine watch proof passed. The immutable replacement exists
 on `company41-node-01` as
 `qorpera-cc-6d9da3a0f09b4d63b79b8a3aad7919d9`, at `10.41.0.218` while
 running, from signed image
 `b75114594b82a76a57585f7c626855788b2be378d816c7e95d1ff788953bb1b0`.
-The old diagnostic VM root was deleted by the guarded activation; its image,
+The VM was observed stopped during the direct-NAS correction audit. The old
+diagnostic VM root was deleted by the guarded activation; its image,
 identity volume, dataset, credentials, and provider-journal backup remain.
 
 ### Signed immutable result
@@ -49,7 +51,9 @@ identity volume, dataset, credentials, and provider-journal backup remain.
   tested at `2026-08-26T20:48:00.000Z`.
 - Signed provenance SHA-256:
   `717d2927972e24c98d73027caee7a048b826be7f411e6b37a571bc30d1aaecb8`.
-- Bootstrap, native provider, sync, and screens are active after boot. The
+- In that historical signed image, bootstrap, native provider, sync, and
+  screens are active after boot. The direct-NAS replacement described below
+  deliberately removes sync. The
   runner reaches only the expected dormant-lane `401`; operator provisioning
   intentionally registers no runner session.
 
@@ -76,14 +80,106 @@ identity volume, dataset, credentials, and provider-journal backup remain.
   Company Computer audit-event constraint after the earlier view/keyframe
   migrations accidentally omitted the later open/close event types.
 
+### Desktop correction and current proof
+
+The first live pixels above were only an XFCE background. That was not the
+intended Company Computer desktop: the panel had rejected its invalid
+`double` length value, GTK's image loader could not create its nested sandbox
+because the screen service omitted `AF_NETLINK`, all displays shared one XFCE
+state directory, and the stock terminal inherited a non-login account that
+exited immediately.
+
+The live machine is now hot-patched from the corrected source contract and
+the complete product flow was repeated at `2026-08-26T22:37Z`:
+
+- opening Research Lead's screen immediately renders the full-screen
+  `Starting desktop` surface with an indeterminate progress bar;
+- the exact-path loopback WebSocket allowlist hands that surface to the live
+  noVNC session once the guest is ready;
+- the resulting desktop has the attached Research Lead creature wallpaper,
+  no raw XFCE icons, and a bottom Chrome / Files / Terminal dock;
+- Chrome opened a real browser window and Files opened Thunar at the then-
+  current `/srv/qorpera/dataset/workbench/` candidate path in the same
+  viewer. The corrected image instead opens `/srv/qorpera/dataset/live`;
+- the canonical `/usr/local/bin/qorpera-screen-session` was restored on the
+  VM (no diagnostic wrapper remained) with SHA-256
+  `a692db6ce579d86d52e3f731a4442f7d24de7a24dade8a94c06cf7fd384bb0e7`.
+  The direct-NAS source below supersedes that proof-point script and awaits
+  the new signed image.
+
+The corrected guest package contract hashes to
+`a18cbb67634c6f6bd88235c25b858466bff4b786d39ae6f7fa265b4bf11e237e`. It is pinned in the candidate builder, provenance signer,
+and package test. It is source-ready but **not yet a new
+immutable image**: the active
+signed image and provenance remain the `e21a78e5` / `93d06dc1…` result above
+until these working-tree changes are committed, rebuilt, signed, and
+activated with explicit authorization.
+
+### Direct NAS correction (2026-08-27)
+
+Step 2's honest NAS path is already live; no new point-to-point Ethernet
+cable is required:
+
+- Synology `192.168.0.91:/volume1/qorpera-companies` is mounted over the
+  wired LAN on `company41-node-01` at `/mnt/qorpera-companies`;
+- the existing company tree is `/mnt/qorpera-companies/company41/live` on
+  the roughly 7 TB NAS volume;
+- the NFS export maps shared access through GID 100 (`users`), matching the
+  Step 2 service-account/`UMask=0007` contract.
+
+The corrected Step 3 contract adopts `company41` as the registry dataset and
+mounts that directory at `/srv/qorpera/dataset`; desktops, Thunar, terminals,
+Podman turns, and native-harness turns all work directly in its `live`
+subdirectory. The old publication-head sync service is retired, and ordinary
+turn completion skips Company File capture/publication; the correction
+migration also drops the obsolete service-only sync-head RPC. The provider has a
+recovery-only `relocate-dataset` operation that requires no open screen or
+live assignment, preserves the Compute Identity volume, deletes only the
+disposable VM root, and recreates it from the newly signed image against the
+existing NAS tree.
+
+Rollback protection is an optional provider-side NAS snapshot command,
+scheduled every six hours by default when configured. It creates no
+per-turn latency and never substitutes a VM-root-only snapshot for a real
+dataset rollback point. The concrete Synology snapshot command still needs
+to be configured on the node before automatic rollback points become active.
+
+Activation is intentionally atomic and still pending: apply migration
+`20260827000000_company_computer_live_nas.sql`, install a newly committed and
+signed provider/image, then run `relocate-dataset <logical-id> company41`.
+Do not change the hosted registry to `company41` while the old signed guest is
+installed, because that guest still expects the retired sync/workbench
+layout.
+
+After the migration, signed image, provider artifact, provenance, and env
+pins are installed, the guarded node-side cutover is:
+
+```bash
+sudo systemctl stop qorpera-lxd-company-provider.service
+sudo systemd-run --wait --pipe \
+  --property=User=qorpera-provider --property=Group=qorpera-provider \
+  --property=SupplementaryGroups=lxd \
+  --property=EnvironmentFile=/etc/qorpera/lxd-company-provider.env \
+  /usr/bin/node --jitless /opt/qorpera/company-provider/qorpera-lxd-provider.mjs \
+  relocate-dataset 6d9da3a0-f09b-4d63-b79b-8a3aad7919d9 company41
+sudo systemctl start qorpera-lxd-company-provider.service
+```
+
+If power or transport interrupts the replacement after the registry enters
+`recovering`, rerun the same one-shot with `recover` and the logical computer
+ID. Never edit the provider journal or delete the identity volume manually.
+
 ### Validation and remaining cleanup
 
-- Original focused shell tests: 16 passed; packaging/script tests: 13 passed.
-- Viewer-boundary regression tests: 11 passed across two focused files.
-- `npm run check` still stops on the same five unrelated inherited Biome
-  warnings. Direct typecheck still exposes only the inherited generated
-  model-catalog `unknown`/`never` failures; neither changed Step 3 file appears
-  in the error output.
+- Final direct-NAS/sandbox/guest/viewer focus: 93 tests passed across eight
+  shell files; persistent-provider focus: 24 tests passed across two files.
+- Provider, orchestrator, runner-guest, and Company Computer guest packaging
+  and pin checks: all four passed.
+- `npm run check` still stops on four unrelated inherited Biome warnings.
+  Every remaining check stage passes when run separately. Direct typecheck
+  still reports 772 inherited generated model-catalog `unknown`/`never`
+  diagnostics, with none under `packages/shell` or
+  `packages/runner-orchestrator`.
 - The temporary sudoers grant still needs an interactive owner removal:
   `sudo rm /etc/sudoers.d/qorpera-step3-first-machine` on
   `company41-node-01`.
@@ -98,20 +194,24 @@ identity volume, dataset, credentials, and provider-journal backup remain.
 - Logical computer: `6d9da3a0-f09b-4d63-b79b-8a3aad7919d9`.
 - Company computer: `b13c3dc2-2bf0-4be0-8675-52bece89ee1a`.
 - Compute identity: `50b6456a-3f13-4cd7-a671-a8619eb758d0`.
-- Dataset: `companies/0d2053f0-c1a8-444d-99a8-68c8214e5414`.
+- Registry dataset today: `companies/0d2053f0-c1a8-444d-99a8-68c8214e5414`;
+  corrected activation target: `company41`.
 - Screen viewer endpoint: `100.75.4.70:18446` over Tailscale.
-- Current state: VM running and the rewoken Research Lead viewer left open.
+- Current observed state during the correction audit: VM stopped.
 
-The original operator plan below is historical. Use the live scripts in
-`deploy/first-node/first-machine-ops/`, not the stale literal digests in the
-copy-paste examples.
+The original operator plan below is historical. `op-a-prepare.sh` and
+`op-d-activate.sh` now fail closed because they encode the obsolete local
+dataset/workbench cutover. After building and signing the corrected image,
+use the guarded `relocate-dataset` / `recover` commands in the Direct NAS
+correction section above.
 
-## Operator steps on the node (need sudo — Jonas)
+## Historical operator transcript (do not run)
 
-Run in order; each is copy-paste.
+These commands document the original candidate. They are not the corrected
+activation procedure.
 
-**1. Dataset root** (local disk stands in for the NAS on this candidate;
-moving to a real NAS later is rsync + one env change):
+**1. Historical candidate dataset root** (obsolete; do not recreate it for
+the corrected image — use the already-mounted `company41` NAS root):
 
 ```bash
 sudo install -d -o root -g root -m 0755 /srv/qorpera-nas /srv/qorpera-nas/companies /srv/qorpera-nas/companies/0d2053f0-c1a8-444d-99a8-68c8214e5414
@@ -139,7 +239,7 @@ sudo lxc profile create qorpera-company-computer-v1 --project qorpera-runners
 sudo lxc profile device add qorpera-company-computer-v1 eth0 nic network=qorpera0 name=enp5s0 --project qorpera-runners
 ```
 
-**4. Clean-boot acceptance evidence** (all four units must answer
+**4. Clean-boot acceptance evidence** (all three units must answer
 `disabled`; the log file becomes the provenance evidence):
 
 ```bash
@@ -147,7 +247,7 @@ sudo bash -c 'lxc launch <FP> qorpera-cc-verify --vm --project qorpera-runners -
 ```
 
 ```bash
-sleep 75 && sudo bash -c 'lxc exec qorpera-cc-verify --project qorpera-runners -- systemctl is-enabled qorpera-company-computer-bootstrap.service qorpera-company-computer-runner.service qorpera-company-computer-sync.service qorpera-company-computer-screens.service 2>&1 | tee -a /var/log/qorpera-cc-image-verify.log'
+sleep 75 && sudo bash -c 'lxc exec qorpera-cc-verify --project qorpera-runners -- systemctl is-enabled qorpera-company-computer-bootstrap.service qorpera-company-computer-runner.service qorpera-company-computer-screens.service 2>&1 | tee -a /var/log/qorpera-cc-image-verify.log'
 ```
 
 ```bash
@@ -204,7 +304,8 @@ lifecycle flips to `active` with `reason=operator_provision`.
 ## The proof (from the Mac, after provisioning)
 
 1. Registry shows lifecycle `active`; the guest's screen agent answers the
-   list RPC with `[]` and the sync agent starts tracking the head.
+   list RPC, and `/srv/qorpera/dataset/live` is the mounted `company41/live`
+   tree with no sync service.
 2. Open a screen (member RPC / app): the desktop launches, the wallpaper is
    the agent's creature, the viewer shows live pixels through
    `100.75.4.70:18446`.
@@ -218,9 +319,13 @@ lifecycle flips to `active` with `reason=operator_provision`.
 
 ## Watch-points
 
-- Dataset ownership over virtiofs: the guest bootstrap chowns the working
-  directories from inside the VM; if virtiofs refuses, this surfaces in the
-  bootstrap journal and we adjust host-side ownership.
+- Dataset sharing over the NFS-backed LXD disk device: the guest verifies GID
+  100 and group access but never chowns, chmods, or creates the existing live
+  tree. Hidden machine-state directories use setgid modes. Provider startup
+  requires the configured root to be a mountpoint, and each create/recovery
+  proves the target is an accessible read-write NFS directory before touching
+  the VM. Any mount or group mismatch fails closed instead of creating local
+  state.
 - The screen viewer gateway binds `0.0.0.0:18446`; reachability from the
   Mac is over Tailscale (probed, 3 ms).
 - The build script's builder needs outbound network (apt, Google's Chrome

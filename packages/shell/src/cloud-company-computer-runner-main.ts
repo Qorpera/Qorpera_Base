@@ -25,10 +25,11 @@ async function withCompanyComputerRunnerShutdownSignals(run: (signal: AbortSigna
 
 /** Standing runner service for the Company Computer guest: the reviewed
  * ephemeral execution pipeline, composed from the company-flavor service
- * configuration the bootstrap installed. Per-job workspaces live on the
- * dataset workbench; everything else — receipts, transcripts, sealed
- * capsules, publication through the verifier — is byte-for-byte the
- * ephemeral lane's behavior. */
+ * configuration the bootstrap installed. Small per-job metadata stays under
+ * hidden dataset state, while ordinary Company File access points directly
+ * at the mounted `live` tree. Receipts, transcripts, sealed capsules, and
+ * explicit outward-effect verification retain the ephemeral lane's reviewed
+ * contracts. */
 export async function runCloudCompanyComputerRunnerServiceMain(
 	environment: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {

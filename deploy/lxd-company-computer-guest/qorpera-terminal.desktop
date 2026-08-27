@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Terminal
+Comment=Open a shell in the live Company File
+Exec=/usr/local/bin/qorpera-terminal
+Icon=org.xfce.terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupNotify=true
