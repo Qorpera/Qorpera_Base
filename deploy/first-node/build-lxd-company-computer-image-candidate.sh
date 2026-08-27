@@ -15,8 +15,8 @@ STAGING_ROOT="/home/company41-admin/step3-lxd/lxd-company-computer-guest-v1"
 LXD_POOL="qorpera-vm"
 LXD_NETWORK="qorpera0"
 LXD_BUILDER_PROJECT="default"
-BUILDER_INSTANCE="qorpera-company-computer-image-build-v2"
-IMAGE_ALIAS="qorpera-company-computer-ubuntu-26.04-v2-unsigned"
+BUILDER_INSTANCE="qorpera-company-computer-image-build-v3"
+IMAGE_ALIAS="qorpera-company-computer-ubuntu-26.04-v3-unsigned"
 STATE_LOG="/var/log/qorpera-lxd-company-computer-image-candidate.txt"
 
 if [[ ${EUID} -ne 0 ]]; then

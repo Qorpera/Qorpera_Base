@@ -67,20 +67,24 @@ final result: passed
 
 ## Comparison target
 
-- Source visual truth: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_2JTRLu/Screenshot 2026-08-27 at 04.16.24.png`
-- Source dock detail: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_JXRR9c/Screenshot 2026-08-27 at 04.15.15.png`
-- Initial implementation: `/tmp/qorpera-company-computer-pre-ratio.png`
-- Final implementation: `/tmp/qorpera-company-computer-16x10.png`
-- Full-view comparison: `/tmp/qorpera-company-computer-16x10-comparison.png`
-- Normalized stage comparison: `/tmp/qorpera-company-computer-stage-comparison.png`
-- Focused dock comparison: `/tmp/qorpera-company-computer-dock-comparison.png`
+- Visual target: the 1335 × 969 Grok Bot viewer and 335 × 169 dock-detail
+  screenshots supplied in the 2026-08-27 product-review session.
+- Durable implementation evidence: `packages/shell/userland/screens.css`,
+  `packages/shell/userland/screen-viewer.js`, and the exact contract assertions
+  in `packages/shell/test/userland-wiring.test.ts`.
+- The review-session screenshots and generated comparison captures were
+  temporary inputs, not repository artifacts, so this record does not cite
+  their expired `/var/folders` or `/tmp` paths.
 - State: Research Lead's Company Computer connected and live, native XFCE dock visible.
 
 ## Normalization
 
 - Source pixels: 1335 × 969; source desktop crop: approximately 1308 × 819.
 - Source dock detail: 335 × 169.
-- Implementation pixels and CSS viewport: 1308 × 768 at the desktop app capture surface's 1× output; implementation desktop crop: 1138 × 711.
+- Implementation pixels and CSS viewport: 1308 × 768 at the desktop app
+  capture surface's 1× output. With the committed 58 px header, 12 px bottom
+  inset, and 8:5 aspect ratio, the stage measures 1116.8 × 698 CSS px
+  (1117 × 698 when rounded to whole pixels).
 - Full-view comparison: both app views normalized to 768 px high without changing either aspect ratio.
 - Stage comparison: both 16:10 desktop regions normalized to 800 × 500 px.
 - Dock comparison: the 335 × 169 source crop is paired with an equal-size implementation crop.
@@ -104,7 +108,9 @@ final result: passed
 1. Initial P1: the guest and viewer used a 1920 × 1080 / 16:9 canvas while the selected source used a 16:10 desktop.
 2. Initial P2: the viewer added a visible 1 px highlight, 12 px radius, and two-layer frame shadow that read as a bezel absent from the source.
 3. Fix: changed the guest to 1920 × 1200, centered an 8:5 stage responsively, removed its border and shadow, and reduced its crop radius to 8 px.
-4. Post-fix evidence: the full, stage, and dock comparisons show an unstretched 16:10 raster, clean rounded clipping, and launchers floating without a dock surface.
+4. Post-fix review: the live app showed an unstretched 16:10 raster, clean
+   8 px rounded clipping, no stage border or shadow, and launchers floating
+   without a dock surface.
 
 ## Interaction and runtime checks
 
@@ -350,38 +356,14 @@ final result: passed
 
 ---
 
-# Design QA — Company Computer viewer frame
+# Design QA — Company Computer viewer frame (superseded intermediate pass)
 
-- Source visual truth: `/var/folders/22/56b7j39x69jbd4453ydwk4n40000gn/T/TemporaryItems/NSIRD_screencaptureui_FGfIBP/Screenshot 2026-08-27 at 03.48.46.png`
-- Implementation capture: `/tmp/qorpera-company-computer-framed.png`
-- Full-view comparison: `/tmp/qorpera-company-computer-frame-comparison.png`
-- Focused header comparison: `/tmp/qorpera-company-computer-header-comparison.png`
-- State: Research Lead's Company Computer connected and live, with the native macOS traffic lights visible.
-- Viewport and normalization: the source raster is 1612 × 950 px; the implementation capture is 1301 × 768 px. The source was resampled to 1301 × 768 px for the comparison. The implementation capture represents a 1301 × 768 desktop-app window at the capture surface's 1:1 output. The source CSS viewport and DPR are unavailable because it is a system screenshot.
+This earlier pass established the 58 px header, the 78 px macOS traffic-light
+gutter, resilient heading overflow, and a 12 px renderer inset. Those header
+and spacing corrections remain in the final implementation.
 
-## Findings
-
-No actionable P0, P1, or P2 differences remain for the requested correction.
-
-- Fonts and typography: the existing family, weights, copy, and hierarchy are preserved. The title and live hint remain legible and no longer collide with native controls.
-- Spacing and layout rhythm: the header is 58 px tall; macOS receives a dedicated 78 px left control gutter; the live desktop is inset by 12 px and contained by a consistent rounded frame.
-- Colors and visual tokens: the existing near-black viewer surface is preserved. The new low-contrast border and shadow distinguish the renderer without competing with it.
-- Image quality and asset fidelity: the noVNC desktop remains the original live raster at the viewer's scaled output; no placeholder or replacement asset was introduced.
-- Copy and content: the screen title, live-status hint, and close action are unchanged.
-
-## Comparison history
-
-1. Original findings: P1 title overlap with the macOS traffic lights; P2 renderer read as an unframed full-window layer.
-2. Fixes: added the platform-specific title gutter, increased the titlebar from 44 px to 58 px, added resilient heading overflow, and inset the stage inside a 12 px rounded border and shadow.
-3. Post-fix evidence: the full-view and focused header comparisons show clear separation between native controls and title text, plus an even renderer frame on all visible edges.
-
-## Interaction checks
-
-- Opened Research Lead's computer panel.
-- Woke the screen from its idle-off state.
-- Verified the viewer progressed from `Starting desktop` to `Live · you can take over at any time`.
-- Verified the close control remains visible and accessible.
-
-Focused-region evidence was required because the titlebar collision is too small to judge reliably from the full-view comparison alone.
-
-final result: passed
+Its proposed low-contrast stage border, 12 px radius, and frame shadow were
+superseded by the later 16:10 borderless review above. The final stage has an
+8:5 ratio, an 8 px clipping radius, `border: 0`, and `box-shadow: none`.
+The temporary system screenshots and comparison captures used during this
+intermediate review are intentionally not cited as durable repository files.
