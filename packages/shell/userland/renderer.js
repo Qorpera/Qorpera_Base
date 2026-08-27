@@ -90,7 +90,6 @@ let modelCatalogHydrated = false;
 let agentWorking = false; // a run is streaming; the composer shows Stop
 let agentExited = false;
 let runtimeReconnecting = false;
-let pendingRewind = null; // { text } awaiting get_fork_messages for edit-and-resend
 let lastSubmittedPrompt = null; // { text, images } — retained so a failed model call can be retried
 let activeRunProgress = null; // completed steps and known file changes for the current founder turn
 let turnFailureCard = null;
@@ -2688,7 +2687,7 @@ function renderRoomMessage(message) {
 	const staff = founder
 		? null
 		: activeStaffMembers().find((candidate) => staffId(candidate) === message.speaker?.staffAgentId);
-	const row = addMsg(founder ? "user" : "assistant", "");
+	const row = addMsg(founder ? "user" : "assistant", "", Date.parse(message.createdAt));
 	row.classList.add("room-message");
 	row.dataset.roomMessageId = message.id;
 	const body = document.createElement("div");
@@ -2696,7 +2695,7 @@ function renderRoomMessage(message) {
 	if (founder) {
 		// The founder's bubble already sits alone on the right; no name needed.
 		body.textContent = message.text ?? "";
-		row.replaceChildren(body);
+		row.prepend(body);
 	} else {
 		const speaker = document.createElement("strong");
 		speaker.className = "room-speaker";
@@ -5548,7 +5547,7 @@ function renderHistory(messages) {
 					.filter((p) => p.type === "image" && p.data)
 					.map((p) => `data:${p.mimeType};base64,${p.data}`);
 				if (text || imageUrls.length) {
-					appendMsgImages(decorateUserMsg(addMsg("user", text, message.timestamp), text), imageUrls);
+					appendMsgImages(addMsg("user", text, message.timestamp), imageUrls);
 					historyPrompt = {
 						text,
 						images: imageUrls.map((dataUrl, index) => ({
@@ -9083,10 +9082,10 @@ function renderPendingSessionQueue() {
 	// turn. Failures stay visible regardless: they are actionable.
 	const materializedUserTexts = new Set(
 		[...document.querySelectorAll("#messages > .msg.user:not(.session-queued)")].map((element) => {
-			// The bubble also carries the rewind affordance; only the message
+			// The bubble also carries the send time; only the message
 			// text identifies the durable copy.
 			const copy = element.cloneNode(true);
-			for (const control of copy.querySelectorAll(".msg-rewind")) control.remove();
+			for (const time of copy.querySelectorAll(".msg-time")) time.remove();
 			return (copy.textContent ?? "").trim();
 		}),
 	);
@@ -9109,6 +9108,7 @@ function renderPendingSessionQueue() {
 		status.textContent = input.status === "failed" ? `Needs review${failure ? ` · ${failure}` : ""}` : "";
 		status.hidden = input.status !== "failed";
 		bubble.append(body, status);
+		appendMsgTime(bubble, Date.parse(input.createdAt));
 		const isExecutionRecovery = typeof input.recoveryRunId === "string";
 		if (
 			input.status === "failed" &&
@@ -9209,9 +9209,24 @@ function addMsg(cls, text, timestamp) {
 	div.className = `msg ${cls}`;
 	div.textContent = text;
 	if (Number.isFinite(timestamp)) div.dataset.messageTimestamp = String(timestamp);
+	if (cls === "user") appendMsgTime(div, timestamp);
 	appendConversationEntry(div);
 	scrollConversationToEnd();
 	return div;
+}
+
+function appendMsgTime(div, timestamp) {
+	if (!Number.isFinite(timestamp)) return;
+	const sentAt = new Date(timestamp);
+	if (!Number.isFinite(sentAt.getTime())) return;
+	const time = document.createElement("time");
+	time.className = "msg-time";
+	time.dateTime = sentAt.toISOString();
+	time.textContent = sentAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	time.title = sentAt.toLocaleString();
+	time.setAttribute("aria-label", `Sent ${time.title}`);
+	div.tabIndex = 0;
+	div.appendChild(time);
 }
 
 function assistantTextPartsFromMessage(message) {
@@ -9520,42 +9535,13 @@ function appendMsgImages(div, dataUrls) {
 		};
 		wrap.appendChild(img);
 	}
-	div.appendChild(wrap);
+	div.insertBefore(wrap, div.querySelector(":scope > .msg-time"));
 	scrollConversationToEnd();
 }
 
 /** The Stop square next to Send: aborts the streaming run in place. */
 function stopAgent() {
 	sendRpc({ type: "abort" });
-}
-
-/**
- * Edit & resend: rewind the session to just before a sent user message (pi's
- * fork), put its text back in the composer for editing, and re-render the
- * rewound thread. Matching is by exact text against the forkable user
- * messages (last occurrence wins), which holds for any thread the founder can
- * see; a collision between identical resent messages rewinds to the newest.
- */
-function rewindUserMessage(text) {
-	if (agentWorking) {
-		showToast("stop the run first, then rewind");
-		return;
-	}
-	pendingRewind = { text };
-	sendRpc({ type: "get_fork_messages" });
-}
-
-/** Attach the rewind affordance to a rendered user message row. */
-function decorateUserMsg(el, text) {
-	if (!text) return el;
-	const btn = document.createElement("button");
-	btn.type = "button";
-	btn.className = "msg-rewind";
-	btn.title = "Edit & resend from here";
-	btn.textContent = "↺";
-	btn.onclick = () => rewindUserMessage(text);
-	el.appendChild(btn);
-	return el;
 }
 
 /** @mention parsing narrows a room send to specific participants: @First (when
@@ -9797,6 +9783,7 @@ async function sendPrompt(promptContext = "") {
 	frame.clientInputId = durableSend.id;
 	activeRunProgress = createRunProgress();
 	turnFailureCard = null;
+	const sentAt = Date.now();
 	const result = await sendRpc(frame);
 	if (!result?.ok) {
 		activeRunProgress = null;
@@ -9831,7 +9818,7 @@ async function sendPrompt(promptContext = "") {
 	if (result.queued) applySessionQueue(result.queue);
 	else {
 		appendMsgImages(
-			decorateUserMsg(addMsg("user", text), text),
+			addMsg("user", text, sentAt),
 			images.map((image) => image.dataUrl),
 		);
 	}
@@ -10407,15 +10394,6 @@ window.qorpera.onRpcEvent((frame) => {
 					}
 				}
 				reassertPreferredModel();
-			} else if (frame.command === "get_fork_messages" && frame.success) {
-				if (pendingRewind) {
-					const wanted = pendingRewind.text.trim();
-					pendingRewind = null;
-					const candidates = (frame.data?.messages ?? []).filter((m) => (m.text ?? "").trim() === wanted);
-					const target = candidates[candidates.length - 1];
-					if (target) sendRpc({ type: "fork", entryId: target.entryId });
-					else showToast("could not find that message to rewind");
-				}
 			} else if (frame.command === "fork" && frame.success) {
 				if (!frame.data?.cancelled) {
 					// The session is rebound to the branch point: re-render the

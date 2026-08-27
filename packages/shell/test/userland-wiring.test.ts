@@ -20,6 +20,130 @@ const hubCarouselSource = readFileSync(join(userland, "hub-carousel.js"), "utf-8
 const preloadSource = readFileSync(join(shell, "src", "preload.cjs"), "utf-8");
 const mainSource = readFileSync(join(shell, "src", "main.ts"), "utf-8");
 
+interface MessageElement {
+	tagName: string;
+	className: string;
+	textContent: string;
+	dataset: Record<string, string>;
+	attributes: Record<string, string>;
+	children: MessageElement[];
+	dateTime?: string;
+	title?: string;
+	tabIndex?: number;
+	appendChild(child: MessageElement): void;
+	setAttribute(name: string, value: string): void;
+}
+
+describe("sent-message timestamps", () => {
+	const addMsgSource = rendererSource.match(/^function addMsg\([\s\S]*?^\}/m)?.[0];
+	if (!addMsgSource) throw new Error("addMsg is missing from the renderer");
+	const messages = { scrollTop: 0, scrollHeight: 100 };
+	const timeSource = rendererSource.match(/^function appendMsgTime\([\s\S]*?^\}/m)?.[0];
+	if (!timeSource) throw new Error("appendMsgTime is missing from the renderer");
+	const renderMessage = runInNewContext(`${timeSource}\n(${addMsgSource})`, {
+		document: {
+			createElement(tagName: string): MessageElement {
+				return {
+					tagName,
+					className: "",
+					textContent: "",
+					dataset: {},
+					attributes: {},
+					children: [],
+					appendChild(child) {
+						this.children.push(child);
+					},
+					setAttribute(name, value) {
+						this.attributes[name] = value;
+					},
+				};
+			},
+		},
+		appendConversationEntry() {},
+		scrollConversationToEnd() {
+			messages.scrollTop = messages.scrollHeight;
+		},
+		$: () => messages,
+	}) as (role: string, text: string, timestamp?: number | null) => MessageElement;
+
+	it.each(["Sent message", ""])("renders the recorded local time for user content %j", (text) => {
+		const sentAt = new Date("2026-08-27T22:59:50.000Z");
+		const message = renderMessage("user", text, sentAt.getTime());
+		expect(message.textContent).toBe(text);
+		expect(message.children).toHaveLength(1);
+		const time = message.children[0];
+		expect(time.tagName).toBe("time");
+		expect(time.className).toBe("msg-time");
+		expect(time.dateTime).toBe(sentAt.toISOString());
+		expect(time.textContent).toBe(sentAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+		expect(time.attributes["aria-label"]).toBe(`Sent ${sentAt.toLocaleString()}`);
+		expect(message.tabIndex).toBe(0);
+	});
+
+	it.each([undefined, null, Number.NaN, Number.POSITIVE_INFINITY, 1e20])(
+		"does not invent a send time for an absent or invalid timestamp (%s)",
+		(timestamp) => {
+			expect(renderMessage("user", "Older message", timestamp).children).toEqual([]);
+		},
+	);
+
+	it("leaves assistant messages without the sent-message affordance", () => {
+		expect(renderMessage("assistant", "Reply", Date.now()).children).toEqual([]);
+	});
+
+	it("uses send times for live, historical, and room messages instead of rewind controls", () => {
+		expect(rendererSource).toContain('addMsg("user", text, sentAt)');
+		expect(rendererSource).toContain('addMsg("user", text, message.timestamp)');
+		expect(rendererSource).toContain('addMsg(founder ? "user" : "assistant", "", Date.parse(message.createdAt))');
+		expect(rendererSource).toContain("appendMsgTime(bubble, Date.parse(input.createdAt))");
+		expect(rendererSource).not.toContain("decorateUserMsg");
+		expect(rendererSource).not.toContain("msg-rewind");
+		expect(baseCssSource).not.toContain("msg-rewind");
+		expect(baseCssSource).toMatch(/\.msg-time \{[^}]*opacity: 0;/s);
+		expect(baseCssSource).toMatch(
+			/\.msg\.user:hover \.msg-time,\s*\.msg\.user:focus-within \.msg-time \{ opacity: 1; \}/,
+		);
+	});
+
+	it("matches queued messages to durable text without including the send time", () => {
+		const queueSource = rendererSource.match(/^function renderPendingSessionQueue\([\s\S]*?^\}/m)?.[0];
+		if (!queueSource) throw new Error("renderPendingSessionQueue is missing from the renderer");
+		const copy = {
+			textContent: "Sent message12:59 AM",
+			querySelectorAll(selector: string) {
+				return selector === ".msg-time"
+					? [
+							{
+								remove: () => {
+									copy.textContent = "Sent message";
+								},
+							},
+						]
+					: [];
+			},
+		};
+		const durable = { textContent: "Sent message12:59 AM", cloneNode: () => copy };
+		runInNewContext(`${queueSource}\nrenderPendingSessionQueue()`, {
+			currentStaffId: "staff",
+			currentRoomId: null,
+			currentView: "chat",
+			pendingSessionQueueByStaff: new Map([
+				["staff", [{ inputId: "input", text: "Sent message", status: "processing" }]],
+			]),
+			document: {
+				querySelectorAll: (selector: string) => (selector.includes(":not(.session-queued)") ? [durable] : []),
+				createElement() {
+					throw new Error("A synchronized message must not get a duplicate queue bubble");
+				},
+			},
+			scrollConversationToEnd() {},
+			syncThreadActivityFromCloud() {},
+		});
+		expect(copy.textContent).toBe("Sent message");
+		expect(durable.textContent).toBe("Sent message12:59 AM");
+	});
+});
+
 describe("userland wiring", () => {
 	it("only calls toast helpers that renderer.js actually defines", () => {
 		// showControllerToast survived its own deletion as 19 call sites: every
