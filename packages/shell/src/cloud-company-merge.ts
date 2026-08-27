@@ -328,13 +328,14 @@ async function stageChangedFiles(
 	local: Map<string, CloudCompanyTreeEntry>,
 	result: Map<string, CloudCompanyTreeEntry>,
 	objects: CloudContentAddressedStore,
-): Promise<{ transactionRoot: string; stagedRoot: string; backupRoot: string }> {
+): Promise<{ transactionRoot: string; stagedRoot: string; backupRoot: string; omittedBackupRoot: string }> {
 	const transactionRoot = join(root, ".qorpera", "w", `cloud-merge-${randomUUID()}`);
 	if (cloudCompanyPathBelongsToLogicalTree(relative(root, transactionRoot))) {
 		throw new Error("Cloud company merge transaction path is not isolated");
 	}
 	const stagedRoot = join(transactionRoot, "staged");
 	const backupRoot = join(transactionRoot, "backup");
+	const omittedBackupRoot = join(transactionRoot, "omitted");
 	try {
 		await mkdir(stagedRoot, { recursive: true });
 		for (const [path, entry] of result) {
@@ -348,7 +349,7 @@ async function stageChangedFiles(
 		await rm(transactionRoot, { recursive: true, force: true });
 		throw error;
 	}
-	return { transactionRoot, stagedRoot, backupRoot };
+	return { transactionRoot, stagedRoot, backupRoot, omittedBackupRoot };
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -396,6 +397,40 @@ async function writeMergeCommitMarker(transactionRoot: string): Promise<void> {
 	}
 }
 
+async function moveOmittedDirectory(root: string, path: string, omittedBackupRoot: string): Promise<boolean> {
+	const source = logicalPath(root, path);
+	const children = await readdir(source, { withFileTypes: true });
+	for (const child of children) {
+		const relativePath = relative(root, join(source, child.name)).split(sep).join("/");
+		if (cloudCompanyPathBelongsToLogicalTree(relativePath)) return false;
+	}
+	const backup = logicalPath(omittedBackupRoot, path);
+	await mkdir(dirname(backup), { recursive: true });
+	await rename(source, backup);
+	return true;
+}
+
+async function restoreOmittedTree(sourceRoot: string, targetRoot: string): Promise<void> {
+	if (!(await pathExists(sourceRoot))) return;
+	const visit = async (sourceDirectory: string, relativeDirectory: string): Promise<void> => {
+		for (const child of await readdir(sourceDirectory, { withFileTypes: true })) {
+			const source = join(sourceDirectory, child.name);
+			const relativePath = relativeDirectory ? `${relativeDirectory}/${child.name}` : child.name;
+			const target = logicalPath(targetRoot, relativePath);
+			if (child.isDirectory()) {
+				await mkdir(target, { recursive: true });
+				await visit(source, relativePath);
+				continue;
+			}
+			if (await pathExists(target)) throw new Error("Omitted Company File layer changed during merge rollback");
+			await mkdir(dirname(target), { recursive: true });
+			await rename(source, target);
+		}
+		await rmdir(sourceDirectory);
+	};
+	await visit(sourceRoot, "");
+}
+
 async function readMergeJournal(path: string, root: string): Promise<CloudCompanyMergeJournal> {
 	const value: unknown = JSON.parse(await readFile(path, "utf-8"));
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Cloud merge journal is invalid");
@@ -422,6 +457,7 @@ async function readMergeJournal(path: string, root: string): Promise<CloudCompan
 async function rollbackMerge(
 	root: string,
 	backupRoot: string,
+	omittedBackupRoot: string,
 	installedFiles: string[],
 	localEntries: CloudCompanyTreeEntry[],
 	resultEntries: CloudCompanyTreeEntry[],
@@ -441,6 +477,7 @@ async function rollbackMerge(
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 	}
+	await restoreOmittedTree(omittedBackupRoot, root);
 	const localDirectories = localEntries
 		.filter((entry) => entry.kind === "directory")
 		.map((entry) => entry.path)
@@ -485,6 +522,7 @@ async function recoverMergeTransaction(
 			await rm(target, { recursive: true, force: true });
 		}
 	}
+	await restoreOmittedTree(join(transactionRoot, "omitted"), root);
 	const localDirectories = new Set(
 		journal.localEntries.filter((entry) => entry.kind === "directory").map((entry) => entry.path),
 	);
@@ -608,7 +646,20 @@ async function applyPlannedMerge(
 			.filter((entry) => entry.kind === "directory" && result.get(entry.path)?.kind !== "directory")
 			.map((entry) => entry.path)
 			.sort((left, right) => right.split("/").length - left.split("/").length);
-		for (const path of directoriesToRemove) await rmdir(logicalPath(root, path));
+		for (const path of directoriesToRemove) {
+			try {
+				await rmdir(logicalPath(root, path));
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (
+					result.has(path) ||
+					(code !== "ENOTEMPTY" && code !== "EEXIST") ||
+					!(await moveOmittedDirectory(root, path, transaction.omittedBackupRoot))
+				) {
+					throw error;
+				}
+			}
+		}
 		const directoriesToCreate = [...result.values()]
 			.filter((entry) => entry.kind === "directory" && local.get(entry.path)?.kind !== "directory")
 			.map((entry) => entry.path)
@@ -643,6 +694,7 @@ async function applyPlannedMerge(
 			await rollbackMerge(
 				root,
 				transaction.backupRoot,
+				transaction.omittedBackupRoot,
 				installedFiles,
 				planned.localManifest.entries,
 				planned.resultEntries,

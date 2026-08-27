@@ -77,6 +77,30 @@ describe("cloud staff sync", () => {
 		expect(readStaffAgents(friendRoot)).toEqual([created]);
 	});
 
+	it("repairs a missing generated instruction file from an unchanged cloud roster", async () => {
+		const created = createStaffAgent(ownerRoot, {
+			displayName: "Research Lead",
+			role: "Research lead",
+			charter: "Maintain the verified research baseline.",
+			appearance: { color: "blue", shape: "round" },
+		});
+		const owner = new CloudStaffSynchronizer({ root: ownerRoot, userData, profileId, primary, canWrite: () => true });
+		const friend = new CloudStaffSynchronizer({
+			root: friendRoot,
+			userData,
+			profileId,
+			primary,
+			canWrite: () => true,
+		});
+		await owner.sync();
+		await friend.sync();
+		rmSync(join(friendRoot, "agents", created.id, "instructions.md"));
+		expect(() => readStaffAgents(friendRoot)).toThrow(`Agent instructions are missing: ${created.id}`);
+
+		await expect(friend.sync()).resolves.toEqual({ created: 0, updated: 0, downloaded: 0 });
+		expect(readStaffAgents(friendRoot)).toEqual([created]);
+	});
+
 	it("uploads one-sided edits and rejects concurrent edits", async () => {
 		const created = createStaffAgent(ownerRoot, {
 			displayName: "Operator",

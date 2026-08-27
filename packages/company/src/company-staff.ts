@@ -475,6 +475,22 @@ export function readStaffAgents(root: string): StaffAgent[] {
 		.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
+/** Re-materialize a missing generated instruction file only when the local
+ * registry already matches the supplied authoritative staff record exactly.
+ * Existing files, divergent local records, and malformed workspaces are left
+ * untouched so sync cannot overwrite local work or conceal a storage error. */
+export function repairMissingStaffAgentInstructions(root: string, value: StaffAgent): boolean {
+	const record = value as unknown as Record<string, unknown>;
+	const id = typeof record.id === "string" ? record.id : "";
+	const expected = staffAgentValue(value, id);
+	const current = readRegistry(root).agents[id];
+	if (!current || JSON.stringify(current) !== JSON.stringify(expected)) return false;
+	const directory = physicalAgentDirectory(root, id, false);
+	if (directory && existsSync(join(directory, AGENT_INSTRUCTIONS_FILE))) return false;
+	writeAgentInstructions(root, id, current.charter);
+	return true;
+}
+
 /** Replace the local projection with an authoritative staff snapshot while
  * preserving every cloud-owned identity and timestamp. Charters live
  * authoritatively in each agent's instructions file, so the replacement must
