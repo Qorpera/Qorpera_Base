@@ -5,10 +5,17 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
 import type { JsonValue } from "@qorpera/contracts";
+import {
+	CLOUD_AGENT_SEND_INSTRUCTIONS,
+	CloudAgentMouth,
+	type CloudAgentMouthConnection,
+	type CloudAgentSendInput,
+	type CloudAgentSendReceipt,
+} from "./cloud-agent-mouth.ts";
 
 const CAPSULE_SCHEMA = "qorpera.native-credential-capsule/v1";
 const LOGIN_RESULT_SCHEMA = "qorpera.native-provider-login-result/v1";
-const HARNESS_RESULT_SCHEMA = "qorpera.native-harness-result/v1";
+const HARNESS_RESULT_SCHEMA = "qorpera.native-harness-result/v2";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -52,6 +59,11 @@ export interface NativeProviderControlPlane {
 	describeLogin(loginId: string, capability: string, signal?: AbortSignal): Promise<NativeProviderLoginDescription>;
 	completeLogin(input: CompleteNativeProviderLoginInput, signal?: AbortSignal): Promise<void>;
 	validateExecution(request: NativeProviderExecutionRequest, signal?: AbortSignal): Promise<void>;
+	sendMessage(
+		request: NativeProviderExecutionRequest,
+		input: CloudAgentSendInput,
+		signal?: AbortSignal,
+	): Promise<CloudAgentSendReceipt>;
 }
 
 export interface NativeCredentialCapsuleStore {
@@ -76,6 +88,7 @@ export interface NativeHarnessExecutionInput {
 	identityRoot: string;
 	companyRoot: string;
 	prompt: string;
+	mouth: CloudAgentMouthConnection;
 	signal?: AbortSignal;
 }
 
@@ -85,7 +98,7 @@ export interface NativeHarnessDriver {
 		identityRoot: string,
 		signal?: AbortSignal,
 	): Promise<NativeHarnessLoginHandle>;
-	execute(input: NativeHarnessExecutionInput): Promise<{ text: string; providerSessionId?: string }>;
+	execute(input: NativeHarnessExecutionInput): Promise<{ providerSessionId?: string }>;
 }
 
 export interface NativeProviderExecutionAuthority {
@@ -362,7 +375,7 @@ function safeHarnessExecutionFailure(error: unknown): Error {
 		(/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
 			error.message,
 		) ||
-			/^Codex returned no assistant response(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
+			/^Codex did not complete its turn(?: \((?:authentication|model|provider capacity|provider network|local sandbox|provider request) unavailable\))?$/.test(
 				error.message,
 			) ||
 			error.message === "Provider harness output exceeded its byte limit")
@@ -598,7 +611,7 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 		};
 	}
 
-	async execute(input: NativeHarnessExecutionInput): Promise<{ text: string; providerSessionId?: string }> {
+	async execute(input: NativeHarnessExecutionInput): Promise<{ providerSessionId?: string }> {
 		const root = requiredAbsolutePath(input.identityRoot, "Native identity root");
 		const companyRoot = requiredAbsolutePath(input.companyRoot, "Native Company File root");
 		const environment = await prepareHarnessEnvironment(root);
@@ -606,7 +619,20 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			throw new Error("Native model is invalid");
 		}
 		if (Buffer.byteLength(input.prompt) > MAX_PROMPT_BYTES) throw new Error("Native prompt exceeds its byte limit");
-		const lastMessagePath = join(root, `.qorpera-last-message-${randomUUID()}.txt`);
+		const mouthUrl = new URL(input.mouth.url);
+		if (
+			mouthUrl.protocol !== "http:" ||
+			mouthUrl.hostname !== "127.0.0.1" ||
+			mouthUrl.pathname !== "/mcp" ||
+			mouthUrl.username ||
+			mouthUrl.password ||
+			mouthUrl.search ||
+			mouthUrl.hash ||
+			!TOKEN_PATTERN.test(input.mouth.bearerToken)
+		) {
+			throw new Error("Native public mouth connection is invalid");
+		}
+		environment.QORPERA_AGENT_SEND_TOKEN = input.mouth.bearerToken;
 		const command = input.harness === "codex-cli" ? this.#codexPath : this.#claudePath;
 		const modelArgs = input.model === PROVIDER_DEFAULT_MODEL ? [] : ["--model", input.model];
 		const args =
@@ -614,6 +640,8 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 				? [
 						"exec",
 						"--json",
+						"--ephemeral",
+						"--ignore-user-config",
 						"--skip-git-repo-check",
 						"--sandbox",
 						"workspace-write",
@@ -621,14 +649,42 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 						// effort low unless a turn explicitly raises it.
 						"-c",
 						"model_reasoning_effort=low",
+						"-c",
+						`mcp_servers.qorpera={url=${JSON.stringify(input.mouth.url)},bearer_token_env_var="QORPERA_AGENT_SEND_TOKEN",required=true,enabled_tools=["send_message"]}`,
 						...modelArgs,
 						"--cd",
 						companyRoot,
-						"--output-last-message",
-						lastMessagePath,
 						"-",
 					]
-				: ["--print", "--output-format", "json", "--permission-mode", "auto", "--safe-mode", ...modelArgs];
+				: [
+						"--print",
+						"--output-format",
+						"json",
+						"--no-session-persistence",
+						"--permission-mode",
+						"auto",
+						// Safe mode disables even the explicit MCP mouth. Exclude file-based
+						// settings and executable hooks while retaining normal permissions.
+						"--setting-sources",
+						"",
+						"--settings",
+						JSON.stringify({ disableAllHooks: true }),
+						"--strict-mcp-config",
+						"--mcp-config",
+						JSON.stringify({
+							mcpServers: {
+								qorpera: {
+									type: "http",
+									url: input.mouth.url,
+									// biome-ignore lint/suspicious/noTemplateCurlyInString: Claude expands this MCP header from its environment.
+									headers: { Authorization: "Bearer ${QORPERA_AGENT_SEND_TOKEN}" },
+								},
+							},
+						}),
+						"--allowedTools",
+						"mcp__qorpera__send_message",
+						...modelArgs,
+					];
 		const child = spawn(command, args, {
 			cwd: companyRoot,
 			env: environment,
@@ -640,26 +696,23 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			void terminateChild(child);
 		};
 		input.signal?.addEventListener("abort", abort, { once: true });
+		if (input.signal?.aborted) abort();
 		child.stdin.end(input.prompt, "utf-8");
 		try {
 			await capture.completed;
+			input.signal?.throwIfAborted();
 			if (input.harness !== "codex-cli") {
 				const output = JSON.parse(capture.output()) as Record<string, unknown>;
-				if (typeof output.result !== "string" || !output.result.trim()) {
-					throw new Error("Claude Code returned no assistant response");
+				if (output.is_error === true || output.type !== "result" || output.subtype !== "success") {
+					throw new Error("Claude Code did not complete its turn");
 				}
 				return {
-					text: output.result.trim(),
 					...(typeof output.session_id === "string" ? { providerSessionId: output.session_id } : {}),
 				};
 			}
-			let text = "";
-			try {
-				text = (await readFile(lastMessagePath, "utf-8")).trim();
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			}
 			let providerSessionId: string | undefined;
+			let completed = false;
+			let failed = false;
 			for (const line of capture.output().split(/\r?\n/)) {
 				if (!line.trim()) continue;
 				try {
@@ -667,18 +720,20 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 					if (event.type === "thread.started" && typeof event.thread_id === "string") {
 						providerSessionId = event.thread_id;
 					}
+					if (event.type === "turn.completed") completed = true;
+					if (event.type === "turn.failed" || event.type === "error") failed = true;
 				} catch {
 					// The official CLI may emit non-JSON diagnostics alongside JSONL events.
 				}
 			}
-			if (!text) {
+			if (!completed || failed) {
 				const category = nativeHarnessFailureCategory(capture.output());
-				throw new Error(`Codex returned no assistant response${category ? ` (${category})` : ""}`);
+				throw new Error(`Codex did not complete its turn${category ? ` (${category})` : ""}`);
 			}
-			return { text, ...(providerSessionId ? { providerSessionId } : {}) };
+			input.signal?.throwIfAborted();
+			return { ...(providerSessionId ? { providerSessionId } : {}) };
 		} finally {
 			input.signal?.removeEventListener("abort", abort);
-			await rm(lastMessagePath, { force: true });
 		}
 	}
 }
@@ -707,16 +762,35 @@ async function boundedText(path: string, label: string): Promise<string> {
 
 async function executionPrompt(
 	request: NativeProviderExecutionRequest,
-): Promise<{ prompt: string; parentId?: string }> {
+): Promise<{ prompt: string; requireFinalSend: boolean }> {
 	const [context, inputs, transcript] = await Promise.all([
 		boundedText(request.input.executionContextPath, "Execution context"),
 		boundedText(request.input.queuedInputsPath, "Queued inputs"),
 		boundedText(request.input.transcriptPath, "Canonical transcript"),
 	]);
+	const execution = JSON.parse(context) as {
+		schema?: unknown;
+		run?: { runId?: unknown; jobId?: unknown; sessionId?: unknown };
+	};
+	if (
+		execution?.schema !== "qorpera.runner-execution-context/v1" ||
+		execution?.run?.runId !== request.authority.runId ||
+		execution.run.jobId !== request.job.jobId ||
+		(execution.run.sessionId !== undefined &&
+			(typeof execution.run.sessionId !== "string" || !UUID_PATTERN.test(execution.run.sessionId)))
+	) {
+		throw new Error("Native execution context does not match its run");
+	}
+	const requireFinalSend = execution.run.sessionId !== undefined;
 	const prompt = [
-		"You are executing one Qorpera agent turn inside an isolated cloud computer.",
+		"You are a Qorpera agent working in the cloud. No member desktop is needed to execute this turn.\n",
 		"The Qorpera transcript is canonical. Use it to reconstruct context; do not assume local provider-session continuity.",
-		"Work in the supplied Company File checkout. Return the assistant response for this turn.",
+		" The supplied Company File is the digital company you work over, not chat memory or a scratch directory. Work directly on its mounted live state; do not create a company checkout or a commit/merge workflow. Isolated review work, when explicitly designated by the execution context, must not modify live state.\n",
+		"Your identity is the run's staffAgentId in the execution context. Read agents/<staffAgentId>/instructions.md in the Company File when present for your job specification.\n",
+		CLOUD_AGENT_SEND_INSTRUCTIONS,
+		requireFinalSend
+			? " The send tool is already bound to this run's authorized conversation: you cannot choose another recipient or speak as another agent. A final send is required. A kickoff is a private startup instruction, not a message to quote.\n"
+			: " This job has no conversation recipient. Do the assigned work silently; do not call send_message or invent a human recipient.\n",
 		"\n<execution-context>\n",
 		context,
 		"\n</execution-context>\n<canonical-transcript>\n",
@@ -726,20 +800,7 @@ async function executionPrompt(
 		"\n</queued-inputs>\n",
 	].join("");
 	if (Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) throw new Error("Native turn context exceeds its byte limit");
-	let parentId: string | undefined;
-	for (const line of transcript.split(/\r?\n/)) {
-		if (!line.trim()) continue;
-		try {
-			const parsed = JSON.parse(line) as Record<string, unknown>;
-			const entry =
-				parsed.entry && typeof parsed.entry === "object" ? (parsed.entry as Record<string, unknown>) : parsed;
-			if (typeof entry.id === "string" && UUID_PATTERN.test(entry.id)) parentId = entry.id;
-		} catch {
-			// The runner already verified the canonical transcript; ignore only an
-			// unrecognized local projection line when choosing a parent id.
-		}
-	}
-	return { prompt, ...(parentId ? { parentId } : {}) };
+	return { prompt, requireFinalSend };
 }
 
 export class NativeProviderHost {
@@ -883,6 +944,11 @@ export class NativeProviderHost {
 		let root: string | undefined;
 		let output: JsonValue | undefined;
 		let failure: Error | undefined;
+		const mouth = new CloudAgentMouth(
+			authority.runId,
+			(input) => this.#controlPlane.sendMessage(request, input, executionAbort.signal),
+			executionAbort.signal,
+		);
 		try {
 			stage = "temporary-workspace";
 			root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
@@ -893,6 +959,8 @@ export class NativeProviderHost {
 			const durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
 			stage = "prompt-materialization";
 			const context = await executionPrompt(request);
+			stage = "public-mouth-start";
+			const mouthConnection = await mouth.start();
 			stage = "harness-execution";
 			const result = await this.#harness.execute({
 				harness: authority.nativeHarness,
@@ -900,8 +968,12 @@ export class NativeProviderHost {
 				identityRoot: root,
 				companyRoot: request.input.companyRoot,
 				prompt: context.prompt,
+				mouth: mouthConnection,
 				signal: executionAbort.signal,
 			});
+			stage = "public-mouth-completion";
+			const delivery = await mouth.finish(context.requireFinalSend);
+			await mouth.close();
 			/* The harness runs as this host's user; entries it creates carry
 			 * no group bits, and the runner reads the shared workspace only
 			 * through the shared execution group. Grant group traversal on
@@ -923,16 +995,9 @@ export class NativeProviderHost {
 			await this.#capsules.put(authority.encryptedCapsuleReference, refreshedCapsule, executionAbort.signal);
 			output = {
 				schema: HARNESS_RESULT_SCHEMA,
-				assistant_entry: {
-					type: "message",
-					id: randomUUID(),
-					parentId: context.parentId ?? null,
-					timestamp: new Date().toISOString(),
-					message: {
-						role: "assistant",
-						content: [{ type: "text", text: result.text }],
-					},
-				},
+				run_id: authority.runId,
+				message_count: delivery.messageCount,
+				final_message_id: delivery.finalMessageId,
 				provider_session_id: result.providerSessionId ?? null,
 			};
 		} catch (error) {
@@ -949,6 +1014,7 @@ export class NativeProviderHost {
 				failure = new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
 			}
 		} finally {
+			await mouth.close();
 			validationStop.abort();
 			try {
 				await monitor;

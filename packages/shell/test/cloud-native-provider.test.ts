@@ -10,6 +10,7 @@ import {
 	HttpNativeProviderComputerBridge,
 	type NativeProviderComputerBridge,
 	nativeProviderExecutionGuarantees,
+	parseNativeHarnessResult,
 } from "../src/cloud-native-provider.ts";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
 import type { CloudRunnerNativeAuthority } from "../src/cloud-runner-broker.ts";
@@ -242,17 +243,10 @@ describe("native provider computer bridge", () => {
 					}
 					return {
 						result: Promise.resolve({
-							schema: "qorpera.native-harness-result/v1",
-							assistant_entry: {
-								type: "message",
-								id: "10000000-0000-4000-8000-000000000020",
-								parentId: null,
-								timestamp: createdAt,
-								message: {
-									role: "assistant",
-									content: [{ type: "text", text: "Native subscription response" }],
-								},
-							},
+							schema: "qorpera.native-harness-result/v2",
+							run_id: authority.runId,
+							message_count: 2,
+							final_message_id: "10000000-0000-4000-8000-000000000020",
 							provider_session_id: "official-session-1",
 						}),
 						terminate: vi.fn(async () => undefined),
@@ -261,6 +255,7 @@ describe("native provider computer bridge", () => {
 			};
 			const appendTranscriptEvent = vi.fn(async () => ({}));
 			const bindProviderSession = vi.fn(async () => ({}));
+			const nativeBroker = { appendTranscriptEvent, bindProviderSession };
 			const refreshedAuthority = {
 				...authority,
 				expiresAt: "2026-08-21T12:10:00.000Z",
@@ -273,7 +268,7 @@ describe("native provider computer bridge", () => {
 				authority,
 				refreshAuthority,
 				bridge,
-				nativeBroker: { appendTranscriptEvent, bindProviderSession },
+				nativeBroker,
 				...(nativeWorkspaceGid !== undefined ? { nativeWorkspaceGid } : {}),
 				temporaryRoot,
 			});
@@ -283,13 +278,7 @@ describe("native provider computer bridge", () => {
 				backend: "native-provider-computer",
 				backend_result: { provider_session_id: "official-session-1" },
 			});
-			expect(appendTranscriptEvent).toHaveBeenCalledWith({
-				eventId: "10000000-0000-4000-8000-000000000020",
-				eventType: "message",
-				entry: expect.objectContaining({
-					message: { role: "assistant", content: [{ type: "text", text: "Native subscription response" }] },
-				}),
-			});
+			expect(appendTranscriptEvent).not.toHaveBeenCalled();
 			expect(bindProviderSession).toHaveBeenCalledWith({ providerSessionId: "official-session-1" });
 		} finally {
 			await rm(temporaryRoot, { recursive: true, force: true });
@@ -316,14 +305,10 @@ describe("native provider computer bridge", () => {
 				schema: "qorpera.native-provider-result/v1",
 				lease_id: authority.leaseId,
 				result: {
-					schema: "qorpera.native-harness-result/v1",
-					assistant_entry: {
-						type: "message",
-						id: "10000000-0000-4000-8000-000000000010",
-						parentId: null,
-						timestamp: "2026-08-21T12:00:00.000Z",
-						message: { role: "assistant", content: [{ type: "text", text: "done" }] },
-					},
+					schema: "qorpera.native-harness-result/v2",
+					run_id: authority.runId,
+					message_count: 1,
+					final_message_id: "10000000-0000-4000-8000-000000000010",
 					provider_session_id: "codex-session-1",
 				},
 			});
@@ -336,10 +321,33 @@ describe("native provider computer bridge", () => {
 		);
 		const process = await bridge.start(authority, request);
 		await expect(process.result).resolves.toMatchObject({
-			schema: "qorpera.native-harness-result/v1",
+			schema: "qorpera.native-harness-result/v2",
 			provider_session_id: "codex-session-1",
 		});
 		expect(fetchImplementation).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects private model output and legacy text results at the completion boundary", () => {
+		const receipt = {
+			schema: "qorpera.native-harness-result/v2",
+			run_id: authority.runId,
+			message_count: 1,
+			final_message_id: authority.assignmentId,
+			provider_session_id: null,
+		};
+		expect(parseNativeHarnessResult(receipt, authority.runId)).toEqual(receipt);
+		const silent = { ...receipt, message_count: 0, final_message_id: null };
+		expect(parseNativeHarnessResult(silent, authority.runId, false)).toEqual(silent);
+		expect(() => parseNativeHarnessResult(silent, authority.runId)).toThrow("private completion receipt");
+		for (const invalid of [
+			{ ...receipt, assistant_entry: { message: { content: [{ type: "thinking", thinking: "private" }] } } },
+			{ ...receipt, text: "private final text" },
+			{ ...receipt, message_count: 0 },
+			{ ...receipt, final_message_id: null },
+			{ ...receipt, run_id: authority.assignmentId },
+			{ schema: "qorpera.native-harness-result/v1", assistant_entry: { text: "legacy public fallback" } },
+		])
+			expect(() => parseNativeHarnessResult(invalid, authority.runId)).toThrow("private completion receipt");
 	});
 
 	it("rejects non-agent and non-native work before contacting the bridge", async () => {

@@ -2,11 +2,7 @@ import { chmod, chown, lstat, readdir } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { JsonValue } from "@qorpera/contracts";
 import type { NativeProviderLoginAuthorization } from "./cloud-native-subscription-control.ts";
-import type {
-	AppendCloudRunnerTranscriptEventInput,
-	BindCloudRunnerProviderSessionInput,
-	CloudRunnerNativeAuthority,
-} from "./cloud-runner-broker.ts";
+import type { BindCloudRunnerProviderSessionInput, CloudRunnerNativeAuthority } from "./cloud-runner-broker.ts";
 import {
 	type CloudRunnerExecutionResult,
 	type CloudRunnerSandboxBackend,
@@ -74,8 +70,46 @@ export interface ExecuteNativeCloudRunnerJobOptions
 	bridge: NativeProviderComputerBridge;
 	nativeWorkspaceGid?: number;
 	nativeBroker: {
-		appendTranscriptEvent(input: AppendCloudRunnerTranscriptEventInput): Promise<unknown>;
 		bindProviderSession(input: BindCloudRunnerProviderSessionInput): Promise<unknown>;
+	};
+}
+
+export function parseNativeHarnessResult(
+	value: unknown,
+	runId: string,
+	requireFinalSend = true,
+): {
+	schema: "qorpera.native-harness-result/v2";
+	run_id: string;
+	message_count: number;
+	final_message_id: string | null;
+	provider_session_id: string | null;
+} {
+	const result = record(value, "Native harness result");
+	if (
+		result.schema !== "qorpera.native-harness-result/v2" ||
+		result.run_id !== runId ||
+		!Number.isSafeInteger(result.message_count) ||
+		(result.message_count as number) < (requireFinalSend ? 1 : 0) ||
+		(result.message_count as number) > 2000 ||
+		(result.message_count === 0
+			? result.final_message_id !== null
+			: typeof result.final_message_id !== "string" || !UUID_PATTERN.test(result.final_message_id)) ||
+		(result.provider_session_id !== null &&
+			(typeof result.provider_session_id !== "string" ||
+				!PROVIDER_SESSION_PATTERN.test(result.provider_session_id))) ||
+		Object.keys(result).some(
+			(key) => !["schema", "run_id", "message_count", "final_message_id", "provider_session_id"].includes(key),
+		)
+	) {
+		throw new Error("Native harness returned an invalid private completion receipt");
+	}
+	return {
+		schema: "qorpera.native-harness-result/v2",
+		run_id: runId,
+		message_count: result.message_count as number,
+		final_message_id: result.final_message_id as string | null,
+		provider_session_id: result.provider_session_id as string | null,
 	};
 }
 
@@ -108,14 +142,6 @@ async function shareNativeWorkspaceTree(root: string, gid: number, writable: boo
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
 	return value as Record<string, unknown>;
-}
-
-function json(value: unknown, label: string): JsonValue {
-	const encoded = JSON.stringify(value);
-	if (encoded === undefined || Buffer.byteLength(encoded) > MAX_BRIDGE_RESPONSE_BYTES) {
-		throw new Error(`${label} is invalid`);
-	}
-	return value as JsonValue;
 }
 
 function assertNoCredentialMaterial(value: unknown, label: string): void {
@@ -360,7 +386,7 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 				throw new Error("Native provider bridge returned another execution");
 			}
 			assertNoCredentialMaterial(envelope.result, "Native provider result");
-			return json(envelope.result, "Native provider result");
+			return parseNativeHarnessResult(envelope.result, authority.runId, false);
 		});
 		let terminated = false;
 		return {
@@ -422,11 +448,13 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 	readonly #nativeWorkspaceGid?: number;
 	readonly #nativeWorkspaceRoot?: string;
 	readonly #liveCompanyRoot?: string;
+	readonly #requireFinalSend: boolean;
 
 	constructor(
 		authority: CloudRunnerNativeAuthority,
 		refreshAuthority: () => Promise<CloudRunnerNativeAuthority>,
 		bridge: NativeProviderComputerBridge,
+		requireFinalSend: boolean,
 		nativeWorkspaceGid?: number,
 		nativeWorkspaceRoot?: string,
 		liveCompanyRoot?: string,
@@ -434,6 +462,7 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 		this.#authority = authority;
 		this.#refreshAuthority = refreshAuthority;
 		this.#bridge = bridge;
+		this.#requireFinalSend = requireFinalSend;
 		this.#nativeWorkspaceGid = nativeWorkspaceGid;
 		this.#nativeWorkspaceRoot = nativeWorkspaceRoot ? resolve(nativeWorkspaceRoot) : undefined;
 		this.#liveCompanyRoot = liveCompanyRoot ? resolve(liveCompanyRoot) : undefined;
@@ -509,7 +538,13 @@ class NativeProviderSandboxBackend implements CloudRunnerSandboxBackend {
 		) {
 			throw new Error("Native provider authority refresh returned another execution");
 		}
-		return this.#bridge.start(authority, request);
+		const process = await this.#bridge.start(authority, request);
+		return {
+			result: process.result.then((value) =>
+				parseNativeHarnessResult(value, authority.runId, this.#requireFinalSend),
+			),
+			terminate: (reason) => process.terminate(reason),
+		};
 	}
 }
 
@@ -529,33 +564,18 @@ export async function executeNativeCloudRunnerJob(
 			authority,
 			refreshAuthority,
 			bridge,
+			execution.job.sessionId !== undefined,
 			nativeWorkspaceGid,
 			nativeWorkspaceGid === undefined ? undefined : execution.temporaryRoot,
 			execution.environment?.QORPERA_LIVE_COMPANY_ROOT,
 		),
 	});
 	const runnerResult = record(completed.result, "Native runner completion");
-	const harnessResult = record(runnerResult.backend_result, "Native harness result");
-	if (harnessResult.schema !== "qorpera.native-harness-result/v1") {
-		throw new Error("Native harness returned an unsupported result");
-	}
-	const entry = record(harnessResult.assistant_entry, "Native harness assistant entry");
-	const message = record(entry.message, "Native harness assistant message");
-	if (
-		entry.type !== "message" ||
-		typeof entry.id !== "string" ||
-		!UUID_PATTERN.test(entry.id) ||
-		message.role !== "assistant" ||
-		!Array.isArray(message.content) ||
-		message.content.length < 1
-	) {
-		throw new Error("Native harness assistant entry is invalid");
-	}
-	await nativeBroker.appendTranscriptEvent({
-		eventId: entry.id,
-		eventType: "message",
-		entry: json(entry, "Native harness assistant entry"),
-	});
+	const harnessResult = parseNativeHarnessResult(
+		runnerResult.backend_result,
+		authority.runId,
+		execution.job.sessionId !== undefined,
+	);
 	if (harnessResult.provider_session_id !== null && harnessResult.provider_session_id !== undefined) {
 		if (
 			typeof harnessResult.provider_session_id !== "string" ||

@@ -1052,31 +1052,14 @@ begin
 		raise exception 'runner transcript accepted a missing parent entry';
 	exception when insufficient_privilege then null;
 	end;
-	v_transcript_event := public.qorpera_append_runner_transcript_event(
+	v_transcript_event := public.qorpera_send_runner_agent_message(
 		'15000000-0000-4000-8000-000000000090', repeat('d', 64),
 		v_job_id, repeat('2', 64),
 		'15000000-0000-4000-8000-000000000104',
-		'15000000-0000-4000-8000-000000000107', 'message',
-		jsonb_build_object(
-			'schema', 'qorpera.runner-transcript-entry/v1',
-			'entry', jsonb_build_object(
-				'type', 'message',
-				'id', '15000000-0000-4000-8000-000000000107',
-				'parentId', null,
-				'timestamp', '2026-08-20T12:00:00.000Z',
-				'message', jsonb_build_object(
-					'role', 'assistant',
-					'content', jsonb_build_array(jsonb_build_object(
-						'type', 'text', 'text', 'durable runner output'
-					))
-				),
-				'execution', jsonb_build_object(
-					'kind', 'run', 'id', v_run_id, 'claimantId', v_run_id,
-					'runnerAssignmentId', '15000000-0000-4000-8000-000000000104'
-				)
-			)
-		), 2
+		'final-output', 'durable runner output', 'final'
 	);
+	select to_jsonb(event) into v_transcript_event from public.qorpera_session_events as event
+	where event.event_id = (v_transcript_event ->> 'messageId')::uuid;
 	if v_transcript_event ->> 'execution_kind' is distinct from 'run'
 		or (v_transcript_event ->> 'execution_id')::uuid is distinct from v_run_id
 		or v_transcript_event ->> 'runner_assignment_id' is distinct from '15000000-0000-4000-8000-000000000104' then
@@ -1463,30 +1446,11 @@ begin
 		'15000000-0000-4000-8000-000000000090', repeat('d', 64),
 		(v_assignment ->> 'assignment_id')::uuid, v_job_id, repeat('c', 64)
 	);
-	perform public.qorpera_append_runner_transcript_event(
+	perform public.qorpera_send_runner_agent_message(
 		'15000000-0000-4000-8000-000000000090', repeat('d', 64),
 		v_job_id, repeat('c', 64),
 		'15000000-0000-4000-8000-000000000143',
-		'15000000-0000-4000-8000-000000000144', 'message',
-		jsonb_build_object(
-			'schema', 'qorpera.runner-transcript-entry/v1',
-			'entry', jsonb_build_object(
-				'type', 'message',
-				'id', '15000000-0000-4000-8000-000000000144',
-				'parentId', null,
-				'timestamp', '2026-08-20T12:30:00.000Z',
-				'message', jsonb_build_object(
-					'role', 'assistant',
-					'content', jsonb_build_array(jsonb_build_object(
-						'type', 'text', 'text', 'partial durable attempt output'
-					))
-				),
-				'execution', jsonb_build_object(
-					'kind', 'run', 'id', v_run_id, 'claimantId', v_run_id,
-					'runnerAssignmentId', '15000000-0000-4000-8000-000000000143'
-				)
-			)
-		), null
+		'partial-output', 'partial durable attempt output', 'progress'
 	);
 	insert into storage.objects (bucket_id, name, metadata) values (
 		'qorpera-profile-objects',

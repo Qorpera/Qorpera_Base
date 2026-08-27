@@ -3,6 +3,11 @@ import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type {
+	CloudAgentMouthConnection,
+	CloudAgentSendInput,
+	CloudAgentSendReceipt,
+} from "../src/cloud-agent-mouth.ts";
 import { HttpNativeProviderComputerBridge } from "../src/cloud-native-provider.ts";
 import {
 	type CompleteNativeProviderLoginInput,
@@ -33,6 +38,51 @@ const runnerId = "10000000-0000-4000-8000-000000000011";
 const assignmentId = "10000000-0000-4000-8000-000000000012";
 const capability = "a".repeat(43);
 const expiresAt = "2099-08-21T12:15:00.000Z";
+const mouth = { url: "http://127.0.0.1:1/mcp", bearerToken: "m".repeat(43) };
+const chatContext = {
+	schema: "qorpera.runner-execution-context/v1",
+	run: {
+		runId: "10000000-0000-4000-8000-000000000008",
+		jobId: "10000000-0000-4000-8000-000000000010",
+		sessionId: loginId,
+	},
+};
+
+async function sendFinal(connection: CloudAgentMouthConnection): Promise<void> {
+	const response = await fetch(connection.url, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			accept: "application/json, text/event-stream",
+			authorization: `Bearer ${connection.bearerToken}`,
+		},
+		body: JSON.stringify({
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: {
+				name: "send_message",
+				arguments: { text: "Explicit public result", phase: "final", idempotencyKey: "result" },
+			},
+		}),
+	});
+	expect(response.status).toBe(200);
+	expect(await response.json()).toMatchObject({ result: { structuredContent: { phase: "final" } } });
+}
+
+function sendReceipt(
+	request: NativeProviderExecutionRequest,
+	input: CloudAgentSendInput,
+): Promise<CloudAgentSendReceipt> {
+	return Promise.resolve({
+		schema: "qorpera.agent-send/v1",
+		runId: request.authority.runId,
+		sessionId: loginId,
+		messageId: connectionId,
+		phase: input.phase,
+		sequence: 1,
+	});
+}
 
 afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -127,7 +177,10 @@ describe("native provider host", () => {
 			[
 				'const fs = require("node:fs");',
 				"const args = process.argv.slice(2);",
-				'const output = args[args.indexOf("--output-last-message") + 1];',
+				'if (args.includes("--output-last-message")) process.exit(10);',
+				'if (!args.includes("--ephemeral") || !args.includes("--ignore-user-config")) process.exit(11);',
+				'if (!args.some((arg) => arg.startsWith("mcp_servers.qorpera=") && arg.includes("required=true"))) process.exit(12);',
+				'if (process.env.QORPERA_AGENT_SEND_TOKEN !== "m".repeat(43)) process.exit(13);',
 				'let prompt = "";',
 				'process.stdin.setEncoding("utf8");',
 				'process.stdin.on("data", (chunk) => { prompt += chunk; });',
@@ -150,8 +203,10 @@ describe("native provider host", () => {
 				"  }",
 				'  if (!prompt.includes("canonical transcript")) process.exit(3);',
 				'  if (prompt.includes("provider default") && args.includes("--model")) process.exit(5);',
-				'  fs.writeFileSync(output, "official Codex response\\n");',
+				'  console.log(JSON.stringify({ type: "item.completed", item: { type: "reasoning", text: "private reasoning must never be delivered" } }));',
+				'  console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "private final text must never be delivered" } }));',
 				'  console.log(JSON.stringify({ type: "thread.started", thread_id: "official-thread-1" }));',
+				'  console.log(JSON.stringify({ type: "turn.completed", usage: {} }));',
 				"});",
 			].join("\n"),
 			"utf-8",
@@ -170,6 +225,7 @@ describe("native provider host", () => {
 		await expect(readFile(join(identity, "codex", "auth.json"), "utf-8")).resolves.toContain("private");
 		await expect(
 			driver.execute({
+				mouth,
 				harness: "codex-cli",
 				model: "gpt-test",
 				identityRoot: identity,
@@ -177,12 +233,12 @@ describe("native provider host", () => {
 				prompt: "canonical transcript and queued input",
 			}),
 		).resolves.toEqual({
-			text: "official Codex response",
 			providerSessionId: "official-thread-1",
 		});
 		expect((await readdir(identity)).some((name) => name.startsWith(".qorpera-last-message-"))).toBe(false);
 		await expect(
 			driver.execute({
+				mouth,
 				harness: "codex-cli",
 				model: "provider-default",
 				identityRoot: identity,
@@ -190,11 +246,11 @@ describe("native provider host", () => {
 				prompt: "canonical transcript using the provider default",
 			}),
 		).resolves.toEqual({
-			text: "official Codex response",
 			providerSessionId: "official-thread-1",
 		});
 		await expect(
 			driver.execute({
+				mouth,
 				harness: "codex-cli",
 				model: "provider-default",
 				identityRoot: identity,
@@ -204,6 +260,7 @@ describe("native provider host", () => {
 		).rejects.toThrow("Provider harness exited with 9 (authentication unavailable)");
 		await expect(
 			driver.execute({
+				mouth,
 				harness: "codex-cli",
 				model: "provider-default",
 				identityRoot: identity,
@@ -213,23 +270,63 @@ describe("native provider host", () => {
 		).rejects.toThrow(/^Provider harness exited with 8$/);
 		await expect(
 			driver.execute({
+				mouth,
 				harness: "codex-cli",
 				model: "provider-default",
 				identityRoot: identity,
 				companyRoot: company,
 				prompt: "diagnostic zero-exit model failure",
 			}),
-		).rejects.toThrow("Codex returned no assistant response (model unavailable)");
+		).rejects.toThrow("Codex did not complete its turn (model unavailable)");
 		await expect(
 			driver.execute({
+				mouth,
 				harness: "codex-cli",
 				model: "provider-default",
 				identityRoot: identity,
 				companyRoot: company,
 				prompt: "diagnostic zero-exit opaque failure",
 			}),
-		).rejects.toThrow(/^Codex returned no assistant response$/);
+		).rejects.toThrow(/^Codex did not complete its turn$/);
 		expect((await readdir(identity)).some((name) => name.startsWith(".qorpera-last-message-"))).toBe(false);
+	});
+
+	it("wires the existing Claude driver to the same mouth without exposing ordinary output", async () => {
+		const identity = await temporaryRoot("qorpera-claude-mouth-identity-");
+		const company = await temporaryRoot("qorpera-claude-mouth-company-");
+		const executable = join(identity, "claude-fixture.cjs");
+		await writeFile(
+			executable,
+			[
+				`#!${process.execPath}`,
+				'const assert = require("node:assert/strict");',
+				"const args = process.argv.slice(2);",
+				'assert(args.includes("--strict-mcp-config"));',
+				'assert(args.includes("--no-session-persistence"));',
+				'assert(!args.includes("--safe-mode"));',
+				'assert.equal(args[args.indexOf("--setting-sources") + 1], "");',
+				'assert.equal(JSON.parse(args[args.indexOf("--settings") + 1]).disableAllHooks, true);',
+				'assert.equal(args[args.indexOf("--allowedTools") + 1], "mcp__qorpera__send_message");',
+				'const config = JSON.parse(args[args.indexOf("--mcp-config") + 1]);',
+				'assert.equal(config.mcpServers.qorpera.url, "http://127.0.0.1:1/mcp");',
+				'assert(config.mcpServers.qorpera.headers.Authorization.includes("QORPERA_AGENT_SEND_TOKEN"));',
+				"assert(!config.mcpServers.qorpera.headers.Authorization.includes(process.env.QORPERA_AGENT_SEND_TOKEN));",
+				"process.stdin.resume();",
+				'process.stdin.on("end", () => console.log(JSON.stringify({type:"result", subtype:"success", is_error:false, session_id:"claude-private-session", result:"PRIVATE_CLAUDE_OUTPUT"})));',
+			].join("\n"),
+			{ mode: 0o700 },
+		);
+		const driver = new OfficialCliNativeHarnessDriver(process.execPath, executable);
+		await expect(
+			driver.execute({
+				harness: "claude-code",
+				model: "provider-default",
+				identityRoot: identity,
+				companyRoot: company,
+				prompt: "Use the public mouth",
+				mouth,
+			}),
+		).resolves.toEqual({ providerSessionId: "claude-private-session" });
 	});
 
 	it("keeps modern Supabase secret keys out of bearer authorization", async () => {
@@ -273,7 +370,12 @@ describe("native provider host", () => {
 	it("rejects native requests that did not arrive from the configured infrastructure source", async () => {
 		const describeLogin = vi.fn();
 		const host = new NativeProviderHost({
-			controlPlane: { describeLogin, completeLogin: vi.fn(), validateExecution: vi.fn() },
+			controlPlane: {
+				describeLogin,
+				completeLogin: vi.fn(),
+				validateExecution: vi.fn(),
+				sendMessage: vi.fn(sendReceipt),
+			},
 			capsules: new MemoryCapsules(),
 			harness: { beginLogin: vi.fn(), execute: vi.fn() },
 			masterKey,
@@ -359,7 +461,7 @@ describe("native provider host", () => {
 					cancel: async () => undefined,
 				};
 			}),
-			execute: vi.fn(async () => ({ text: "unused" })),
+			execute: vi.fn(async () => ({})),
 		};
 		const host = new NativeProviderHost({
 			controlPlane: {
@@ -368,6 +470,7 @@ describe("native provider host", () => {
 					completed.push(input);
 				}),
 				validateExecution: vi.fn(),
+				sendMessage: vi.fn(sendReceipt),
 			},
 			capsules,
 			harness,
@@ -421,20 +524,28 @@ describe("native provider host", () => {
 		await writeFile(join(identity, "codex", "auth.json"), '{"access_token":"private"}\n');
 		await capsules.put(reference, await sealNativeCredentialCapsule(identity, masterKey, capsuleId));
 		const parentId = "10000000-0000-4000-8000-000000000009";
-		await writeFile(join(input, "execution.json"), '{"schema":"qorpera.execution-context/v1"}\n');
+		await writeFile(join(input, "execution.json"), JSON.stringify(chatContext));
 		await writeFile(join(input, "inputs.jsonl"), '{"body":{"text":"hello"}}\n');
 		await writeFile(join(input, "transcript.jsonl"), `${JSON.stringify({ id: parentId, type: "message" })}\n`);
-		const execute = vi.fn(async ({ identityRoot, prompt }) => {
+		const execute = vi.fn<NativeHarnessDriver["execute"]>(async ({ identityRoot, prompt, mouth }) => {
 			expect(await readFile(join(identityRoot, "codex", "auth.json"), "utf-8")).toContain("private");
 			expect(prompt).toContain("canonical-transcript");
+			expect(prompt).toContain("digital company");
+			expect(prompt).toContain("send_message");
+			await sendFinal(mouth);
 			await writeFile(join(identityRoot, "codex", "auth.json"), '{"access_token":"refreshed-private"}\n');
 			await mkdir(join(identityRoot, "codex", "sessions"), { recursive: true });
 			await writeFile(join(identityRoot, "codex", "sessions", "transient.jsonl"), "runtime-only\n");
-			return { text: "native response", providerSessionId: "session-1" };
+			return { providerSessionId: "session-1" };
 		});
 		const validateExecution = vi.fn();
 		const host = new NativeProviderHost({
-			controlPlane: { describeLogin: vi.fn(), completeLogin: vi.fn(), validateExecution },
+			controlPlane: {
+				describeLogin: vi.fn(),
+				completeLogin: vi.fn(),
+				validateExecution,
+				sendMessage: vi.fn(sendReceipt),
+			},
 			capsules,
 			harness: { beginLogin: vi.fn(), execute },
 			masterKey,
@@ -479,11 +590,10 @@ describe("native provider host", () => {
 		).rejects.toThrow("another Compute Identity");
 		const result = await host.execute(executionRequest);
 		expect(result).toMatchObject({
-			schema: "qorpera.native-harness-result/v1",
-			assistant_entry: {
-				parentId,
-				message: { role: "assistant", content: [{ type: "text", text: "native response" }] },
-			},
+			schema: "qorpera.native-harness-result/v2",
+			run_id: executionRequest.authority.runId,
+			message_count: 1,
+			final_message_id: connectionId,
 			provider_session_id: "session-1",
 		});
 		expect(JSON.stringify(result)).not.toContain("private");
@@ -501,7 +611,12 @@ describe("native provider host", () => {
 		);
 
 		const uploadFailureHost = new NativeProviderHost({
-			controlPlane: { describeLogin: vi.fn(), completeLogin: vi.fn(), validateExecution: vi.fn() },
+			controlPlane: {
+				describeLogin: vi.fn(),
+				completeLogin: vi.fn(),
+				validateExecution: vi.fn(),
+				sendMessage: vi.fn(sendReceipt),
+			},
 			capsules: {
 				get: async (capsuleReference) => capsules.get(capsuleReference),
 				put: async () => {
@@ -516,6 +631,26 @@ describe("native provider host", () => {
 		await expect(uploadFailureHost.execute(executionRequest)).rejects.toThrow(
 			"Native provider execution credential-upload stage failed",
 		);
+		execute.mockResolvedValueOnce({ providerSessionId: "private-turn-without-send" });
+		await expect(host.execute(executionRequest)).rejects.toThrow(
+			"Native provider execution public-mouth-completion stage failed",
+		);
+		await writeFile(
+			join(input, "execution.json"),
+			JSON.stringify({
+				...chatContext,
+				run: { ...chatContext.run, sessionId: undefined },
+			}),
+		);
+		execute.mockImplementationOnce(async ({ prompt }) => {
+			expect(prompt).toContain("This job has no conversation recipient");
+			return { providerSessionId: "silent-job" };
+		});
+		await expect(host.execute(executionRequest)).resolves.toMatchObject({
+			message_count: 0,
+			final_message_id: null,
+			provider_session_id: "silent-job",
+		});
 	});
 
 	it("runs login and execution through the standalone cloud bridge and fences revoked authority", async () => {
@@ -526,7 +661,7 @@ describe("native provider host", () => {
 		const completed: CompleteNativeProviderLoginInput[] = [];
 		let finishLogin: (() => void) | undefined;
 		let authorized = true;
-		await writeFile(join(input, "execution.json"), '{"schema":"qorpera.execution-context/v1"}\n');
+		await writeFile(join(input, "execution.json"), JSON.stringify(chatContext));
 		await writeFile(join(input, "inputs.jsonl"), '{"body":{"text":"hello"}}\n');
 		await writeFile(join(input, "transcript.jsonl"), "");
 		const harness: NativeHarnessDriver = {
@@ -544,13 +679,14 @@ describe("native provider host", () => {
 					cancel: async () => undefined,
 				};
 			}),
-			execute: vi.fn(async ({ identityRoot, companyRoot }) => {
+			execute: vi.fn(async ({ identityRoot, companyRoot, mouth }) => {
 				expect(await readFile(join(identityRoot, "codex", "auth.json"), "utf-8")).toContain("private");
 				await mkdir(join(companyRoot, "step2-acceptance"), { recursive: true });
 				await writeFile(join(companyRoot, "step2-acceptance", "PROBE.md"), "probe\n");
 				await chmod(join(companyRoot, "step2-acceptance"), 0o700);
 				await chmod(join(companyRoot, "step2-acceptance", "PROBE.md"), 0o600);
-				return { text: "cloud-native response", providerSessionId: "native-session-1" };
+				await sendFinal(mouth);
+				return { providerSessionId: "native-session-1" };
 			}),
 		};
 		const host = new NativeProviderHost({
@@ -562,6 +698,7 @@ describe("native provider host", () => {
 				validateExecution: vi.fn(async () => {
 					if (!authorized) throw new Error("native authority revoked");
 				}),
+				sendMessage: vi.fn(sendReceipt),
 			},
 			capsules,
 			harness,
@@ -654,7 +791,7 @@ describe("native provider host", () => {
 			};
 			const process = await bridge.start(nativeAuthority, request);
 			await expect(process.result).resolves.toMatchObject({
-				schema: "qorpera.native-harness-result/v1",
+				schema: "qorpera.native-harness-result/v2",
 				provider_session_id: "native-session-1",
 			});
 			expect((await lstat(join(company, "step2-acceptance"))).mode & 0o050).toBe(0o050);

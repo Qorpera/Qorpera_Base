@@ -760,6 +760,23 @@ select public.qorpera_register_runner_orchestrator(
 	'Native subscription acceptance orchestrator', 'process', repeat('0', 64), 3600
 );
 
+create function pg_temp.send_native(p_key text, p_text text, p_phase text, p_override jsonb default '{}')
+returns jsonb language plpgsql as $$
+declare
+	v_original jsonb := current_setting('qorpera_test.native_execution_lease')::jsonb;
+	v_authority jsonb := v_original || p_override;
+	v_job_id uuid;
+begin
+	select job_id into strict v_job_id from public.qorpera_execution_runs where id = (v_original ->> 'run_id')::uuid;
+	return public.qorpera_send_native_agent_message(
+		(v_authority ->> 'lease_id')::uuid, (v_authority ->> 'run_id')::uuid, v_job_id,
+		(v_authority ->> 'runner_id')::uuid, (v_authority ->> 'assignment_id')::uuid,
+		(v_authority ->> 'credential_capsule_id')::uuid, (v_authority ->> 'compute_identity_id')::uuid,
+		'openai', 'codex-cli', p_key, p_text, p_phase
+	);
+end
+$$;
+
 do $$
 declare
 	v_run_id uuid := (current_setting('qorpera_test.own_turn')::jsonb ->> 'turn_request_id')::uuid;
@@ -769,6 +786,8 @@ declare
 	v_native_authority jsonb;
 	v_model_authority jsonb;
 	v_transcript jsonb;
+	v_progress jsonb;
+	v_private_part jsonb;
 	v_completion jsonb;
 	v_job_id uuid;
 	v_runner_id uuid;
@@ -851,7 +870,13 @@ begin
 		'openai', 'codex-cli'
 	);
 
-	v_transcript := public.qorpera_append_runner_transcript_event(
+	for v_private_part in select value from jsonb_array_elements('[
+		{"type":"text","text":"private final answer must not become a message"},
+		{"type":"thinking","thinking":"private reasoning must never appear"},
+		{"type":"toolCall","id":"private-call","name":"shell","arguments":{}}
+	]'::jsonb) loop
+	begin
+	perform public.qorpera_append_runner_transcript_event(
 		v_runner_id, repeat('2', 64), v_job_id, repeat('3', 64),
 		(v_assignment ->> 'assignment_id')::uuid,
 		'16000000-0000-4000-8000-000000000096', 'message',
@@ -864,10 +889,7 @@ begin
 				'timestamp', '2026-08-21T12:00:01.000Z',
 				'message', jsonb_build_object(
 					'role', 'assistant',
-					'content', jsonb_build_array(jsonb_build_object(
-						'type', 'text',
-						'text', 'native subscription acceptance response'
-					))
+					'content', jsonb_build_array(v_private_part)
 				),
 				'execution', jsonb_build_object(
 					'kind', 'run', 'id', v_run_id, 'claimantId', v_run_id,
@@ -876,8 +898,76 @@ begin
 			)
 		), null
 	);
-	if v_transcript ->> 'execution_id' <> v_run_id::text
-		or v_transcript ->> 'runner_assignment_id' <> (v_assignment ->> 'assignment_id') then
+	raise exception 'raw provider output was admitted to the public transcript';
+	exception when insufficient_privilege then null;
+	end;
+	end loop;
+
+	begin
+		insert into public.qorpera_agent_sends (event_id) values (extensions.gen_random_uuid());
+		raise exception 'service role could forge a send receipt outside the authorized function';
+	exception when insufficient_privilege then null;
+	end;
+	begin
+		perform pg_temp.send_native('blank', E' \n\t ', 'progress');
+		raise exception 'blank message passed the database send boundary';
+	exception when invalid_parameter_value then null;
+	end;
+	v_progress := pg_temp.send_native('progress-1', 'I am checking the Company File.', 'progress');
+	if v_progress is distinct from pg_temp.send_native('progress-1', 'I am checking the Company File.', 'progress') then
+		raise exception 'send retry did not return the original durable receipt';
+	end if;
+	if (select count(*) from public.qorpera_session_events where execution_id = v_run_id) <> 1
+		or (select status from public.qorpera_runner_jobs where id = v_job_id) <> 'leased' then
+		raise exception 'progress send was duplicated or waited for run completion';
+	end if;
+	begin
+		perform pg_temp.send_native('progress-1', 'Changed under the same key', 'progress');
+		raise exception 'send replay accepted changed content';
+	exception when unique_violation then null;
+	end;
+	begin
+		perform pg_temp.send_native('wrong-audience', 'Do not deliver', 'progress', '{"run_id":"16000000-0000-4000-8000-000000000010"}');
+		raise exception 'send accepted another run audience';
+	exception when insufficient_privilege then null;
+	end;
+	begin
+		perform pg_temp.send_native('wrong-assignment', 'Do not deliver', 'progress', '{"assignment_id":"16000000-0000-4000-8000-000000000010"}');
+		raise exception 'send accepted another assignment';
+	exception when insufficient_privilege then null;
+	end;
+	update public.qorpera_native_provider_connection_leases
+	set created_at = statement_timestamp() - interval '2 seconds', expires_at = statement_timestamp() - interval '1 second'
+	where id = (v_native_authority ->> 'lease_id')::uuid;
+	begin
+		perform pg_temp.send_native('progress-1', 'I am checking the Company File.', 'progress');
+		raise exception 'expired native authority could replay a send';
+	exception when insufficient_privilege then null;
+	end;
+	update public.qorpera_native_provider_connection_leases set expires_at = statement_timestamp() + interval '120 seconds'
+	where id = (v_native_authority ->> 'lease_id')::uuid;
+	begin
+		update public.qorpera_runner_jobs set status = 'completed' where id = v_job_id;
+		raise exception 'acknowledgement satisfied final delivery';
+	exception when object_not_in_prerequisite_state then null;
+	end;
+	v_transcript := pg_temp.send_native('final-1', 'native subscription acceptance response', 'final');
+	if v_transcript is distinct from pg_temp.send_native('final-1', 'native subscription acceptance response', 'final') then
+		raise exception 'final retry duplicated or changed delivery';
+	end if;
+	begin
+		perform pg_temp.send_native('after-final', 'Do not deliver', 'progress');
+		raise exception 'public output remained open after final delivery';
+	exception when object_not_in_prerequisite_state then null;
+	end;
+	if v_transcript ->> 'runId' <> v_run_id::text or not exists (
+		select 1 from public.qorpera_session_events as event
+		where event.event_id = (v_transcript ->> 'messageId')::uuid
+			and event.execution_id = v_run_id
+			and event.runner_assignment_id = (v_assignment ->> 'assignment_id')::uuid
+			and event.body #>> '{entry,parentId}' = v_progress ->> 'messageId'
+			and event.body #>> '{entry,delivery,phase}' = 'final'
+	) then
 		raise exception 'native response lost immutable runner provenance';
 	end if;
 

@@ -431,7 +431,7 @@ describe("file mode (fetch-to-file / upload-from-file)", () => {
 		const source = join(h.root, "exports", "report.bin");
 		writeFileSync(source, BINARY);
 		h.broker.handleFrame(h.request({ method: "PUT", body: undefined, sendFile: "exports/report.bin" }), h.send);
-		await h.settle();
+		await vi.waitFor(() => expect(h.sent).toHaveLength(1));
 		expect(received.length).toBe(1);
 		expect(Buffer.compare(received[0], BINARY)).toBe(0);
 		expect(h.sent[0].status).toBe(201);
