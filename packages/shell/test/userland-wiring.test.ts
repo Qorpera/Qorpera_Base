@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 const shell = join(import.meta.dirname, "..");
@@ -165,6 +166,60 @@ describe("userland wiring", () => {
 		expect(pinnedAgentsCssSource).not.toMatch(
 			/\.staff-pinned-grid \.staff-pinned-card\.active[^}]*\{[^}]*background: #e9e9e7;/s,
 		);
+	});
+
+	it("defers background roster replacement while a pointer interaction owns its rows", () => {
+		const guardStart = rendererSource.indexOf("function renderRosterRailWhenIdle()");
+		const guardEnd = rendererSource.indexOf("function renderRosterRail(", guardStart);
+		const guard = rendererSource.slice(guardStart, guardEnd);
+		expect(guardStart).toBeGreaterThan(-1);
+		expect(guard).toContain('container.matches(":hover")');
+		expect(guard).toContain('container.classList.contains("staff-reordering")');
+		expect(guard).toContain("rosterRailRenderPending = true");
+		const result = runInNewContext(`
+			let rosterRailRenderPending = false;
+			let rosterRailRenderFrame = null;
+			let renders = 0;
+			const frames = [];
+			const root = {
+				hovered: true,
+				reordering: false,
+				matches: () => root.hovered,
+				classList: { contains: () => root.reordering },
+			};
+			const $ = () => root;
+			const requestAnimationFrame = (callback) => {
+				frames.push(callback);
+				return frames.length;
+			};
+			function renderRosterRail() {
+				renders += 1;
+				rosterRailRenderPending = false;
+			}
+			${guard}
+			renderRosterRailWhenIdle();
+			flushPendingRosterRailRender();
+			flushPendingRosterRailRender();
+			root.hovered = false;
+			frames.shift()();
+			({ renders, pending: rosterRailRenderPending, queuedFrames: frames.length });
+		`) as { renders: number; pending: boolean; queuedFrames: number };
+		expect(result).toEqual({ renders: 1, pending: false, queuedFrames: 0 });
+		expect(rendererSource).toContain(
+			'$("staffNavigation").addEventListener("pointerleave", flushPendingRosterRailRender)',
+		);
+		expect(rendererSource).toContain('window.addEventListener("pointerup", flushPendingRosterRailRender)');
+		const dragWireStart = rendererSource.indexOf("window.qorperaStaffDrag?.wire({");
+		const dragWireEnd = rendererSource.indexOf("\n\t});", dragWireStart);
+		const dragWire = rendererSource.slice(dragWireStart, dragWireEnd);
+		expect(dragWireStart).toBeGreaterThan(-1);
+		expect(dragWire).toContain("renderRosterRailWhenIdle()");
+		expect(dragWire).not.toContain("renderRosterRail()");
+		const runnerStart = rendererSource.indexOf("window.qorpera.onRunnerActivity?.(");
+		const runnerEnd = rendererSource.indexOf("setInterval(() => {", runnerStart);
+		const runnerActivity = rendererSource.slice(runnerStart, runnerEnd);
+		expect(runnerActivity).toContain("renderRosterRailWhenIdle()");
+		expect(runnerActivity).not.toContain("renderRosterRail()");
 	});
 
 	it("matches the Messages rail scale, surface, and selected icon contrast", () => {
