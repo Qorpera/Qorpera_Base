@@ -50,20 +50,46 @@ if (
 ) {
   throw new Error("Staged guest package contract is invalid");
 }
-const runnerManifest = readFileSync(join(root, "runner/manifest.json"));
-if (createHash("sha256").update(runnerManifest).digest("hex") !== manifest.runnerPackage.manifestSha256) {
+const runnerRoot = realpathSync(join(root, "runner"));
+const runnerManifestEncoded = readFileSync(join(runnerRoot, "manifest.json"));
+const runnerManifest = JSON.parse(runnerManifestEncoded);
+if (
+  runnerManifest.schema !== "qorpera.lxd-runner-guest-package/v1" ||
+  !Array.isArray(runnerManifest.artifacts)
+) {
+  throw new Error("Staged nested runner package contract is invalid");
+}
+if (createHash("sha256").update(runnerManifestEncoded).digest("hex") !== manifest.runnerPackage.manifestSha256) {
   throw new Error("Staged nested runner package does not match the company manifest pin");
 }
-for (const artifact of manifest.artifacts) {
-  const path = resolve(root, artifact.file);
-  if (!path.startsWith(`${root}/`)) throw new Error("Guest package artifact escapes its root");
-  const metadata = lstatSync(path);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size !== artifact.bytes) {
-    throw new Error(`Guest package artifact metadata is invalid: ${artifact.file}`);
+const verifyArtifacts = (packageRoot, artifacts, label) => {
+  for (const artifact of artifacts) {
+    if (
+      !artifact ||
+      typeof artifact.file !== "string" ||
+      !Number.isSafeInteger(artifact.bytes) ||
+      artifact.bytes < 0 ||
+      !/^[0-9a-f]{64}$/.test(artifact.sha256)
+    ) {
+      throw new Error(`${label} artifact declaration is invalid`);
+    }
+    const path = resolve(packageRoot, artifact.file);
+    if (!path.startsWith(`${packageRoot}/`)) throw new Error(`${label} artifact escapes its root`);
+    let metadata;
+    try {
+      metadata = lstatSync(path);
+    } catch {
+      throw new Error(`${label} artifact is missing: ${artifact.file}`);
+    }
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size !== artifact.bytes) {
+      throw new Error(`${label} artifact metadata is invalid: ${artifact.file}`);
+    }
+    const digest = createHash("sha256").update(readFileSync(path)).digest("hex");
+    if (digest !== artifact.sha256) throw new Error(`${label} artifact checksum mismatch: ${artifact.file}`);
   }
-  const digest = createHash("sha256").update(readFileSync(path)).digest("hex");
-  if (digest !== artifact.sha256) throw new Error(`Guest package artifact checksum mismatch: ${artifact.file}`);
-}
+};
+verifyArtifacts(root, manifest.artifacts, "Guest package");
+verifyArtifacts(runnerRoot, runnerManifest.artifacts, "Nested runner package");
 NODE
 if lxc image info "${IMAGE_ALIAS}" --project "${LXD_BUILDER_PROJECT}" >/dev/null 2>&1; then
 	echo "Refusing to replace existing local image alias ${IMAGE_ALIAS}." >&2

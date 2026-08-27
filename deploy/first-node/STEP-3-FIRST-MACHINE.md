@@ -125,15 +125,38 @@ The provenance signature was verified off-node against the installed public
 key and binds the exact fingerprint, guest manifest, runner pins, evidence,
 and source commit above.
 
-The later desktop and viewer corrections in the current PR produce guest
-manifest
+The later desktop and viewer corrections produce guest manifest
 `12a62029aa35bc610965ad57944cca0fa85b8d3b045eb9e66b18cec356aa8721`.
-They were reviewed through the live hot-patched desktop and persistent
-per-screen NAS state, but they are not yet baked into another immutable
-image. The candidate builder therefore targets the fresh, intentionally
-unused alias `qorpera-company-computer-ubuntu-26.04-v3-unsigned`; that v3
-candidate still needs to be built, clean-boot verified, signed, and activated
-after this PR merges.
+They are now baked into the immutable v3 candidate:
+
+- alias: `qorpera-company-computer-ubuntu-26.04-v3-unsigned`;
+- fingerprint:
+  `ec5821bef522ef95e820be7692833ac359b6d18b990a4310a214ca1087417c11`;
+- clean-boot evidence:
+  `deploy/first-node/evidence-first-machine-clean-boot-v3.log`, SHA-256
+  `f7e46f4e97bd15550f603c7b0ad72b94bd9a2eac55874adefcdf144a00c92d51`,
+  tested at `2026-08-27T06:16:08+00:00`;
+- the image marker binds the guest manifest above, nested runner manifest
+  `a0990ae7ddce3312a0213782892c8f7aee554c9a8e7fca4d03b0444e716d6b42`,
+  Chrome `152.0.7977.64`, and desktop stack `xfce4-tigervnc-chrome`.
+
+The clean VM booted with no failed systemd units; bootstrap, runner, and
+screens remained disabled in the immutable image; Chrome, Thunar, Xfce
+Terminal, and all three Qorpera launchers were executable. The uniquely named
+verification VM was deleted after evidence capture. The live v2 VM remained
+stopped and untouched. The v3 candidate is still unsigned and is not yet the
+live machine root.
+
+The post-merge correction also adds a first-class `refresh-image` provider
+operation plus guarded `op-e-refresh-image.sh` procedure. It transitions an
+idle machine through recovery while retaining the exact `company41` NAS
+dataset and Compute Identity volume. Before lifecycle mutation it proves the
+current root matches its journal, rejects a live assignment or open screen,
+and confirms the signed target image exists in the LXD project. The old
+`op-d` dataset relocation must not be replayed for this image update.
+Migration `20260827010000_company_computer_image_refresh.sql` makes the idle
+admission atomic against the existing screen-open and runner-lease row-lock
+guards; it must be applied before the refresh operator is staged.
 
 ### Direct NAS correction (2026-08-27)
 
@@ -158,11 +181,15 @@ live assignment, preserves the Compute Identity volume, deletes only the
 disposable VM root, and recreates it from the newly signed image against the
 existing NAS tree.
 
-Rollback protection is an optional provider-side NAS snapshot command,
-scheduled every six hours by default when configured. It creates no
-per-turn latency and never substitutes a VM-root-only snapshot for a real
-dataset rollback point. The concrete Synology snapshot command still needs
-to be configured on the node before automatic rollback points become active.
+Rollback protection is active on the NAS itself. A read-only DSM audit on
+2026-08-27 verified Synology Snapshot Replication 7.5.1-1915 schedules a
+local snapshot of the complete `qorpera-companies` Btrfs shared folder every
+six hours. One restore point was present, the next run was scheduled, and the
+retention policy kept the first day plus hourly, daily, weekly, monthly, and
+latest restore-point tiers. The optional provider-side snapshot command stays
+unset intentionally: it would duplicate the authoritative NAS schedule. This
+creates no per-turn latency and never substitutes a VM-root-only snapshot for
+a real dataset rollback point.
 
 Migration `20260827000000_company_computer_live_nas.sql` and the guarded
 dataset relocation have already completed. The hosted registry and the live
@@ -177,11 +204,14 @@ identity volume manually.
   shell and workflow-YAML validation, 51 provider/viewer tests, 121
   shell/desktop tests, and all four deterministic packaging contracts. The
   expanded Step 2 LXD workflow must repeat those checks after the PR update.
-- Automatic rollback points are not active until the concrete Synology
-  snapshot command is configured and proved on the node.
-- Building and activating the v3 immutable image remains release work; the
-  already-live v2 image and direct NAS dataset must stay available until the
-  v3 clean-boot and provenance checks pass.
+- Automatic rollback points are active through the independent six-hour
+  Synology Snapshot Replication schedule on `qorpera-companies`; the optional
+  provider-side snapshot command remains intentionally unconfigured.
+- Signing and activating the clean-boot-accepted v3 immutable image remains
+  release work. The already-live v2 image and direct NAS dataset must stay
+  available until provenance verification and the guarded image refresh pass.
+- The new atomic image-refresh migration is local and reviewed but not yet
+  applied to hosted project `wovsmjvghnbcbfazdtvr`.
 - The proof used the current Step 3 development shell because the installed
   `/Applications/Qorpera Base.app` predates the screen IPC handlers. Package
   and install a fresh shell build before treating the installed app as the

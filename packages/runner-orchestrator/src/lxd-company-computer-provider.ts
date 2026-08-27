@@ -98,6 +98,12 @@ export interface LxdCompanyComputerControlPlane {
 		detail: Record<string, unknown>,
 		signal?: AbortSignal,
 	): Promise<void>;
+	prepareImageRefresh(
+		companyComputerId: string,
+		fromImageFingerprint: string,
+		toImageFingerprint: string,
+		signal?: AbortSignal,
+	): Promise<LxdCompanyComputerAuthority>;
 	relocateDataset(
 		companyComputerId: string,
 		nasDataset: string,
@@ -509,6 +515,25 @@ export class SupabaseLxdCompanyComputerControlPlane implements LxdCompanyCompute
 				p_detail: detail,
 			},
 			signal,
+		);
+	}
+
+	async prepareImageRefresh(
+		companyComputerId: string,
+		fromImageFingerprint: string,
+		toImageFingerprint: string,
+		signal?: AbortSignal,
+	): Promise<LxdCompanyComputerAuthority> {
+		return parseLxdCompanyComputerAuthority(
+			await this.#rpc(
+				"qorpera_prepare_company_computer_image_refresh",
+				{
+					p_company_computer_id: companyComputerId,
+					p_from_image_fingerprint: fromImageFingerprint,
+					p_to_image_fingerprint: toImageFingerprint,
+				},
+				signal,
+			),
 		);
 	}
 
@@ -1304,6 +1329,54 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 		});
 	}
 
+	/** Replaces only the disposable VM root with the currently configured,
+	 * provenance-verified image. The NAS dataset and Compute Identity volume
+	 * remain attached by durable journal authority. */
+	async refreshComputerImage(logicalComputerId: string, signal?: AbortSignal): Promise<void> {
+		await this.#exclusive(async () => {
+			const current = await this.#readJournal(logicalComputerId);
+			if (!current) throw new Error("Company computer has no durable journal on this node");
+			const authority = await this.#controlPlane.describeCompanyComputer(logicalComputerId, signal);
+			this.#assertActiveJournalAuthority(current, authority);
+			if (authority.lifecycleState !== "active") {
+				throw new Error(`Company computer is ${authority.lifecycleState} and cannot refresh its image`);
+			}
+			const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
+			if (!instance)
+				throw new Error("Company computer guest is missing; recovery is a control-plane lifecycle decision");
+			this.#assertInstanceAuthority(current, instance);
+			const targetAlreadyRecorded =
+				current.lxd.imageServer === this.#config.imageServer &&
+				current.lxd.imageFingerprint === this.#config.imageFingerprint &&
+				JSON.stringify(current.lxd.profiles) === JSON.stringify([this.#config.computerProfile]) &&
+				current.lxd.rootDiskSize === this.#config.rootDiskSize;
+			if (targetAlreadyRecorded) return;
+			if (
+				(current.activeAssignment && Date.parse(current.activeAssignment.expiresAt) > Date.now()) ||
+				(await this.#controlPlane.countOpenScreens(current.companyComputerId, signal)) > 0
+			) {
+				throw new Error("Company computer image refresh requires no live assignment or open screen");
+			}
+			await this.#verifyDatasetSource(current.lxd.datasetSource);
+			if (
+				this.#config.imageServer === "local" &&
+				!(await this.#lxd.hasImage(current.lxd.project, this.#config.imageFingerprint, signal))
+			) {
+				throw new Error("The signed Company Computer image is not available in the LXD project");
+			}
+			await this.#recoverComputer(
+				current,
+				await this.#controlPlane.prepareImageRefresh(
+					authority.companyComputerId,
+					current.lxd.imageFingerprint,
+					this.#config.imageFingerprint,
+					signal,
+				),
+				signal,
+			);
+		});
+	}
+
 	/** Rebinds a stopped Company Computer to another directory under the
 	 * configured NAS root. The disposable VM root is deleted and recreated
 	 * from the currently signed image; the Compute Identity volume is never
@@ -1317,7 +1390,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 			const current = await this.#readJournal(logicalComputerId);
 			if (!current) throw new Error("Company computer has no durable journal on this node");
 			const authority = await this.#controlPlane.describeCompanyComputer(logicalComputerId, signal);
-			this.#assertRelocationJournalAuthority(current, authority);
+			this.#assertActiveJournalAuthority(current, authority);
 			if (authority.lifecycleState !== "active") {
 				throw new Error(`Company computer is ${authority.lifecycleState} and cannot relocate its dataset`);
 			}
@@ -1385,6 +1458,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 			await this.#activateRecoveredComputer(authority, current.lxd.identityVolume, signal);
 			return;
 		}
+		if (instance) this.#assertInstanceAuthority(current, instance);
 		if (instance && instance.status !== "Stopped") {
 			await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "stop", signal);
 		}
@@ -1550,10 +1624,10 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 		}
 	}
 
-	#assertRelocationJournalAuthority(journal: LxdCompanyComputerJournal, authority: LxdCompanyComputerAuthority): void {
+	#assertActiveJournalAuthority(journal: LxdCompanyComputerJournal, authority: LxdCompanyComputerAuthority): void {
 		this.#assertRecoveryJournalAuthority(journal, authority);
 		if (journal.nasDataset !== authority.nasDataset || journal.lxd.policySha256 !== authority.computePolicySha256) {
-			throw new Error("Company computer relocation authority does not match its current dataset");
+			throw new Error("Company computer active authority does not match its durable journal");
 		}
 	}
 
@@ -1847,6 +1921,7 @@ export class LxdCompanyComputerProviderBackend implements CloudRunnerProviderSer
 			instance.config["user.qorpera.logical_computer_id"] !== journal.logicalComputerId ||
 			instance.config["user.qorpera.environment_id"] !== journal.environmentId ||
 			instance.config["user.qorpera.compute_policy_sha256"] !== journal.lxd.policySha256 ||
+			instance.config["volatile.base_image"] !== journal.lxd.imageFingerprint ||
 			root?.type !== "disk" ||
 			root.path !== "/" ||
 			root.pool !== journal.lxd.storagePool ||

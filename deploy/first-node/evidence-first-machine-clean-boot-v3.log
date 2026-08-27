@@ -1,0 +1,20 @@
+clean-boot acceptance for image ec5821bef522ef95e820be7692833ac359b6d18b990a4310a214ca1087417c11 at 2026-08-27T06:16:08+00:00
+verification_instance=qorpera-cc-verify-v3
+volatile.base_image=ec5821bef522ef95e820be7692833ac359b6d18b990a4310a214ca1087417c11
+guest_agent=ready
+image_marker.schema=qorpera.lxd-company-computer-image/v1
+image_marker.guest_package_manifest_sha256=12a62029aa35bc610965ad57944cca0fa85b8d3b045eb9e66b18cec356aa8721
+image_marker.runner_package_manifest_sha256=a0990ae7ddce3312a0213782892c8f7aee554c9a8e7fca4d03b0444e716d6b42
+image_marker.desktop_stack=xfce4-tigervnc-chrome
+image_marker.chrome_version=152.0.7977.64
+qorpera-company-computer-bootstrap.service=disabled,inactive
+qorpera-company-computer-runner.service=disabled,inactive
+qorpera-company-computer-screens.service=disabled,inactive
+/usr/bin/google-chrome-stable=executable
+/usr/bin/Thunar=executable
+/usr/bin/xfce4-terminal=executable
+/usr/local/bin/qorpera-screen-session=executable
+/usr/local/bin/qorpera-files=executable
+/usr/local/bin/qorpera-terminal=executable
+failed_systemd_units=none
+result=accepted

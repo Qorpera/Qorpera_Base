@@ -143,6 +143,7 @@ function config(root: string): LxdCompanyComputerProviderConfig {
 class FakeLxd implements LxdPersistentInstanceClient {
 	instance?: LxdInstanceRecord;
 	volume?: LxdStorageVolumeRecord;
+	availableImages = new Set(["a".repeat(64)]);
 	createCalls: LxdCreateInstanceRequest[] = [];
 	powerCalls: LxdInstancePowerAction[] = [];
 	snapshotCalls: string[] = [];
@@ -150,6 +151,10 @@ class FakeLxd implements LxdPersistentInstanceClient {
 
 	async getInstance(): Promise<LxdInstanceRecord | undefined> {
 		return this.instance ? structuredClone(this.instance) : undefined;
+	}
+
+	async hasImage(_project: string, fingerprint: string): Promise<boolean> {
+		return this.availableImages.has(fingerprint);
 	}
 
 	async getInstanceState(): Promise<LxdInstanceStateRecord> {
@@ -181,7 +186,10 @@ class FakeLxd implements LxdPersistentInstanceClient {
 			type: request.type,
 			status: "Stopped",
 			statusCode: 102,
-			config: structuredClone(request.config) as Record<string, string>,
+			config: {
+				...(structuredClone(request.config) as Record<string, string>),
+				"volatile.base_image": request.source.fingerprint,
+			},
 			profiles: [...request.profiles],
 			devices: structuredClone(request.devices) as Record<string, Record<string, string>>,
 		};
@@ -219,6 +227,8 @@ class FakeControlPlane implements LxdCompanyComputerControlPlane {
 	transitions: Array<{ state: LxdCompanyComputerLifecycleState; nodeKey?: string }> = [];
 	transitionDetails: Array<Record<string, unknown>> = [];
 	transitionErrorState?: LxdCompanyComputerLifecycleState;
+	prepareImageRefreshCalls: Array<{ from: string; to: string }> = [];
+	prepareImageRefreshError?: Error;
 	nasDataset = "company41";
 	relocateCalls: Array<{ dataset: string; detail: Record<string, unknown> }> = [];
 	relocateError?: Error;
@@ -274,6 +284,25 @@ class FakeControlPlane implements LxdCompanyComputerControlPlane {
 		this.transitionDetails.push(detail);
 		this.lifecycle = state;
 		if (state === "active" && nodeKey !== undefined) this.nodeKey = nodeKey;
+	}
+
+	async prepareImageRefresh(
+		_companyComputerId: string,
+		fromImageFingerprint: string,
+		toImageFingerprint: string,
+	): Promise<LxdCompanyComputerAuthority> {
+		if (this.prepareImageRefreshError) throw this.prepareImageRefreshError;
+		if (this.openScreens > 0) throw new Error("company computer image refresh requires an idle computer");
+		this.prepareImageRefreshCalls.push({ from: fromImageFingerprint, to: toImageFingerprint });
+		this.transitions.push({ state: "recovering" });
+		this.transitionDetails.push({
+			reason: "signed_image_refresh",
+			dataset: this.nasDataset,
+			from_image_fingerprint: fromImageFingerprint,
+			to_image_fingerprint: toImageFingerprint,
+		});
+		this.lifecycle = "recovering";
+		return this.describeCompanyComputer();
 	}
 
 	async relocateDataset(
@@ -644,6 +673,122 @@ describe("LxdCompanyComputerProviderBackend", () => {
 		);
 		expect(controlPlane.lifecycle).toBe("active");
 		expect(controlPlane.nasDataset).toBe(`companies/${environmentId}`);
+		expect(lxd.deleteCalls).toEqual([]);
+		expect(lxd.createCalls).toHaveLength(1);
+	});
+
+	it("refreshes only the disposable root to a new signed image without relocating the NAS dataset", async () => {
+		const { backend: provider, lxd, controlPlane, guest, root } = await backend();
+		await provider.provisionComputer(logicalComputerId);
+		const identityVolume = lxd.createCalls[0]?.devices["compute-identity"]?.source;
+		await provider.stopComputer(logicalComputerId);
+		controlPlane.openScreens = 0;
+		const nextFingerprint = "d".repeat(64);
+		lxd.availableImages.add(nextFingerprint);
+		const refreshedProvider = new LxdCompanyComputerProviderBackend(
+			{ ...config(root), imageFingerprint: nextFingerprint },
+			lxd,
+			controlPlane,
+			guest,
+			undefined,
+			availableDatasetSource,
+		);
+
+		await refreshedProvider.refreshComputerImage(logicalComputerId);
+
+		expect(controlPlane.relocateCalls).toEqual([]);
+		expect(lxd.deleteCalls).toEqual([`qorpera-cc-${logicalComputerId.replaceAll("-", "")}`]);
+		expect(lxd.createCalls).toHaveLength(2);
+		expect(lxd.createCalls[1]?.source.fingerprint).toBe(nextFingerprint);
+		expect(lxd.createCalls[1]?.devices["company-dataset"]?.source).toBe("/srv/qorpera-nas/company41");
+		expect(lxd.createCalls[1]?.devices["compute-identity"]?.source).toBe(identityVolume);
+		expect(controlPlane.transitions.slice(-2)).toEqual([
+			{ state: "recovering" },
+			{ state: "active", nodeKey: "company41-node-01" },
+		]);
+		expect(controlPlane.prepareImageRefreshCalls).toEqual([{ from: "a".repeat(64), to: nextFingerprint }]);
+		expect(controlPlane.transitionDetails.at(-2)).toEqual({
+			reason: "signed_image_refresh",
+			dataset: "company41",
+			from_image_fingerprint: "a".repeat(64),
+			to_image_fingerprint: nextFingerprint,
+		});
+		expect(controlPlane.lifecycle).toBe("active");
+
+		/* The accepted target is idempotent and does not replace the root twice. */
+		await refreshedProvider.refreshComputerImage(logicalComputerId);
+		expect(lxd.deleteCalls).toHaveLength(1);
+		expect(lxd.createCalls).toHaveLength(2);
+	});
+
+	it("rejects an unavailable refresh image before changing lifecycle or deleting the current root", async () => {
+		const { backend: provider, lxd, controlPlane, guest, root } = await backend();
+		await provider.provisionComputer(logicalComputerId);
+		await provider.stopComputer(logicalComputerId);
+		controlPlane.openScreens = 0;
+		const refreshedProvider = new LxdCompanyComputerProviderBackend(
+			{ ...config(root), imageFingerprint: "d".repeat(64) },
+			lxd,
+			controlPlane,
+			guest,
+			undefined,
+			availableDatasetSource,
+		);
+
+		await expect(refreshedProvider.refreshComputerImage(logicalComputerId)).rejects.toThrow(
+			"signed Company Computer image is not available",
+		);
+		expect(controlPlane.lifecycle).toBe("active");
+		expect(controlPlane.transitions).not.toContainEqual({ state: "recovering" });
+		expect(lxd.deleteCalls).toEqual([]);
+		expect(lxd.createCalls).toHaveLength(1);
+	});
+
+	it("leaves the current root untouched when atomic image-refresh admission rejects raced work", async () => {
+		const { backend: provider, lxd, controlPlane, guest, root } = await backend();
+		await provider.provisionComputer(logicalComputerId);
+		await provider.stopComputer(logicalComputerId);
+		controlPlane.openScreens = 0;
+		controlPlane.prepareImageRefreshError = new Error("runner lease raced image refresh");
+		const nextFingerprint = "d".repeat(64);
+		lxd.availableImages.add(nextFingerprint);
+		const refreshedProvider = new LxdCompanyComputerProviderBackend(
+			{ ...config(root), imageFingerprint: nextFingerprint },
+			lxd,
+			controlPlane,
+			guest,
+			undefined,
+			availableDatasetSource,
+		);
+
+		await expect(refreshedProvider.refreshComputerImage(logicalComputerId)).rejects.toThrow(
+			"runner lease raced image refresh",
+		);
+		expect(controlPlane.lifecycle).toBe("active");
+		expect(controlPlane.prepareImageRefreshCalls).toEqual([]);
+		expect(lxd.deleteCalls).toEqual([]);
+		expect(lxd.createCalls).toHaveLength(1);
+	});
+
+	it("rejects an image refresh while a screen is open", async () => {
+		const { backend: provider, lxd, controlPlane, guest, root } = await backend();
+		await provider.provisionComputer(logicalComputerId);
+		await provider.stopComputer(logicalComputerId);
+		const nextFingerprint = "d".repeat(64);
+		lxd.availableImages.add(nextFingerprint);
+		const refreshedProvider = new LxdCompanyComputerProviderBackend(
+			{ ...config(root), imageFingerprint: nextFingerprint },
+			lxd,
+			controlPlane,
+			guest,
+			undefined,
+			availableDatasetSource,
+		);
+
+		await expect(refreshedProvider.refreshComputerImage(logicalComputerId)).rejects.toThrow(
+			"requires no live assignment or open screen",
+		);
+		expect(controlPlane.lifecycle).toBe("active");
 		expect(lxd.deleteCalls).toEqual([]);
 		expect(lxd.createCalls).toHaveLength(1);
 	});

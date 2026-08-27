@@ -15,6 +15,7 @@
 - Added a signed-image-gated, static-address management VM provisioner with no LXD authority.
 - Added nested OCI runner-image provenance binding for the immutable image reference, private archive, and retained keyless Cosign bundle.
 - Added the Step 3 persistent company-computer provider lane: a per-environment long-lived LXD VM journaled by logical computer with a pinned NAS-dataset disk device, stable runner reuse across runs, non-destructive stops, control-plane lifecycle activation, a coordinated snapshot window, and a stateless instance-snapshot LXD client extension.
+- Added a guarded same-dataset Company Computer image refresh that verifies the current VM root, rejects live work or screens, proves the signed target exists, and preserves both the NAS dataset and Compute Identity volume.
 
 ### Changed
 

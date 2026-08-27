@@ -5,6 +5,11 @@ set -euo pipefail
 # the one temporary sudoers path already granted for the first-machine proof.
 # Each phase is explicit and idempotent; `prepare` cannot move the registry,
 # and `finalize` removes that temporary privilege only after verification.
+# That activation completed on 2026-08-27. Replaying its v2 pins would now be
+# a downgrade; image-only updates use op-e-refresh-image.sh.
+
+echo "Refusing to replay the completed v2 direct-NAS activation; use op-e-refresh-image.sh." >&2
+exit 1
 
 EXPECTED_HOSTNAME="company41-node-01"
 LOGICAL_COMPUTER_ID="6d9da3a0-f09b-4d63-b79b-8a3aad7919d9"

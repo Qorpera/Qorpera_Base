@@ -2,6 +2,7 @@ import { request as httpRequest } from "node:http";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_INSTANCE_FILE_BYTES = 256 * 1024;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 export type LxdInstancePowerAction = "start" | "stop";
 
@@ -74,6 +75,7 @@ export interface LxdInstanceSnapshotClient extends LxdClient {
 /** Persistent-machine recovery may replace a disposable VM root while
  * deliberately retaining its separately managed identity volume. */
 export interface LxdPersistentInstanceClient extends LxdClient {
+	hasImage(project: string, fingerprint: string, signal?: AbortSignal): Promise<boolean>;
 	deleteInstance(project: string, name: string, signal?: AbortSignal): Promise<void>;
 }
 
@@ -251,6 +253,20 @@ export class LxdUnixClient implements LxdClient {
 		);
 		if (result.status === 404) return undefined;
 		return instance(envelopeMetadata(result));
+	}
+
+	async hasImage(project: string, fingerprint: string, signal?: AbortSignal): Promise<boolean> {
+		if (!SHA256_PATTERN.test(fingerprint)) throw new Error("LXD image fingerprint is invalid");
+		const result = await this.#request(
+			"GET",
+			projectPath(`/1.0/images/${encodeURIComponent(fingerprint)}`, project),
+			undefined,
+			signal,
+		);
+		if (result.status === 404) return false;
+		const metadata = record(envelopeMetadata(result), "LXD image");
+		if (metadata.fingerprint !== fingerprint) throw new Error("LXD image fingerprint response is invalid");
+		return true;
 	}
 
 	async getInstanceState(project: string, name: string, signal?: AbortSignal): Promise<LxdInstanceStateRecord> {

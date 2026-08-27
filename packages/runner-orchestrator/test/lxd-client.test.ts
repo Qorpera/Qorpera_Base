@@ -88,6 +88,38 @@ function createVolumeRequest(): LxdCreateStorageVolumeRequest {
 }
 
 describe("LXD Unix client", () => {
+	it("checks for one exact project-scoped image fingerprint", async () => {
+		const fingerprint = "b".repeat(64);
+		const missingFingerprint = "c".repeat(64);
+		const requests: Array<{ method: string; url: string }> = [];
+		const socket = await unixServer((method, url) => {
+			requests.push({ method, url });
+			if (url.includes(`/images/${missingFingerprint}`)) {
+				return {
+					status: 404,
+					body: { type: "error", status: "Not Found", status_code: 404, error: "not found", error_code: 404 },
+				};
+			}
+			return {
+				body: {
+					type: "sync",
+					status: "Success",
+					status_code: 200,
+					metadata: { fingerprint },
+				},
+			};
+		});
+		const client = new LxdUnixClient(socket, 30);
+
+		await expect(client.hasImage("qorpera-runners", fingerprint)).resolves.toBe(true);
+		await expect(client.hasImage("qorpera-runners", missingFingerprint)).resolves.toBe(false);
+		await expect(client.hasImage("qorpera-runners", "missing")).rejects.toThrow("fingerprint is invalid");
+		expect(requests).toEqual([
+			{ method: "GET", url: `/1.0/images/${fingerprint}?project=qorpera-runners` },
+			{ method: "GET", url: `/1.0/images/${missingFingerprint}?project=qorpera-runners` },
+		]);
+	});
+
 	it("uses the local socket, waits for async operations, and preserves the VM type", async () => {
 		const requests: Array<{ method: string; url: string; body: unknown }> = [];
 		const socket = await unixServer((method, url, body) => {

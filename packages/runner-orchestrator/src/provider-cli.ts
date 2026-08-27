@@ -380,6 +380,18 @@ async function recoverMain(logicalComputerId: string): Promise<void> {
 	console.log(`recovered ${logicalComputerId}`);
 }
 
+async function refreshImageMain(logicalComputerId: string): Promise<void> {
+	if (!OPERATOR_UUID_PATTERN.test(logicalComputerId)) {
+		throw new Error("refresh-image requires a logical computer id");
+	}
+	const current = runtime();
+	if (!(current.backend instanceof LxdCompanyComputerProviderBackend)) {
+		throw new Error("refresh-image requires QORPERA_RUNNER_PROVIDER_BACKEND=lxd-company-computer");
+	}
+	await current.backend.refreshComputerImage(logicalComputerId);
+	console.log(`refreshed ${logicalComputerId} image`);
+}
+
 function reconcileSeconds(): number {
 	const value = integer("QORPERA_RUNNER_PROVIDER_RECONCILE_SECONDS", 0);
 	if (value !== 0 && (value < 15 || value > 3_600)) {
@@ -399,6 +411,10 @@ async function main(): Promise<void> {
 	}
 	if (process.argv[2] === "recover") {
 		await recoverMain(process.argv[3] ?? "");
+		return;
+	}
+	if (process.argv[2] === "refresh-image") {
+		await refreshImageMain(process.argv[3] ?? "");
 		return;
 	}
 	const current = runtime();

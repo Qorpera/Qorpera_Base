@@ -125,6 +125,10 @@ test("packages the complete pinned Company Computer guest contract", async () =>
 			/IMAGE_ALIAS="qorpera-company-computer-ubuntu-26\.04-v3-unsigned"/,
 			"the candidate builder must publish to the fresh v3 alias",
 		);
+		assert.ok(
+			builder.includes('verifyArtifacts(runnerRoot, runnerManifest.artifacts, "Nested runner package");'),
+			"the candidate builder must reject a contract-only package before starting its VM",
+		);
 		const signer = await readFile(
 			join(repositoryRoot, "deploy/first-node/sign-company-image-provenance.mjs"),
 			"utf-8",
