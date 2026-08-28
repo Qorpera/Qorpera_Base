@@ -27,6 +27,7 @@ const MAX_HARNESS_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_PROMPT_BYTES = 16 * 1024 * 1024;
 const EXECUTION_AUTHORITY_RECHECK_MS = 15_000;
 const PROVIDER_DEFAULT_MODEL = "provider-default";
+const CODEX_CREDENTIAL_PATHS: ReadonlySet<string> = new Set(["codex/auth.json"]);
 
 export type NativeHarnessKind = "codex-cli" | "claude-code";
 export type NativeComputeOwnershipKind = "member" | "company" | "department" | "security_boundary";
@@ -389,14 +390,22 @@ async function readCapsuleFile(path: string, expected: Stats): Promise<Buffer> {
 	}
 }
 
-async function restoreCapsuleFiles(root: string, archive: CapsuleArchive): Promise<void> {
+async function restoreCapsuleFiles(
+	root: string,
+	archive: CapsuleArchive,
+	credentialPaths?: ReadonlySet<string>,
+): Promise<void> {
 	if (archive.schema !== CAPSULE_SCHEMA || !Array.isArray(archive.files) || archive.files.length > MAX_CAPSULE_FILES) {
 		throw new Error("Credential capsule archive is invalid");
 	}
 	let totalBytes = 0;
+	const paths = new Set<string>();
+	const directories = new Set<string>();
 	for (const file of archive.files) {
 		if (
 			!safeRelativePath(file.path) ||
+			paths.has(file.path) ||
+			directories.has(file.path) ||
 			!Number.isSafeInteger(file.mode) ||
 			file.mode < 0 ||
 			file.mode > 0o777 ||
@@ -404,6 +413,13 @@ async function restoreCapsuleFiles(root: string, archive: CapsuleArchive): Promi
 		) {
 			throw new Error("Credential capsule entry is invalid");
 		}
+		const components = file.path.split("/");
+		for (let index = 1; index < components.length; index++) {
+			const parent = components.slice(0, index).join("/");
+			if (paths.has(parent)) throw new Error("Credential capsule entry is invalid");
+			directories.add(parent);
+		}
+		paths.add(file.path);
 		const bytes = Buffer.from(file.data, "base64");
 		totalBytes += bytes.byteLength;
 		if (totalBytes > MAX_CAPSULE_PLAINTEXT_BYTES) throw new Error("Credential capsule exceeds its storage budget");
@@ -412,10 +428,16 @@ async function restoreCapsuleFiles(root: string, archive: CapsuleArchive): Promi
 		if (!child || child === ".." || child.startsWith(`..${sep}`)) {
 			throw new Error("Credential capsule entry escapes its identity root");
 		}
+		// The login archive is not runtime configuration. Validate the complete
+		// archive, but materialize only credentials selected by trusted host
+		// policy. Extra CLI state must never enter the native auth-only mount.
+		if (credentialPaths && !credentialPaths.has(file.path)) continue;
 		await mkdir(dirname(target), { recursive: true, mode: 0o700 });
 		await writeFile(target, bytes, { flag: "wx", mode: file.mode & 0o700 });
 		await chmod(target, file.mode & 0o700);
 	}
+	if (credentialPaths && [...credentialPaths].some((path) => !paths.has(path)))
+		throw new Error("Credential capsule is missing a required credential path");
 }
 
 function capsuleKey(value: string): Buffer {
@@ -506,6 +528,7 @@ export async function openNativeCredentialCapsule(
 	root: string,
 	keyValue: string,
 	capsuleId: string,
+	credentialPaths?: ReadonlySet<string>,
 ): Promise<void> {
 	requiredUuid(capsuleId, "Credential capsule id");
 	if (bytes.byteLength < 32 || Buffer.from(bytes.subarray(0, 4)).toString("ascii") !== "QNC1") {
@@ -525,7 +548,7 @@ export async function openNativeCredentialCapsule(
 	} catch (error) {
 		throw new Error("Credential capsule failed authenticated decryption", { cause: error });
 	}
-	await restoreCapsuleFiles(requiredAbsolutePath(root, "Credential capsule root"), archive);
+	await restoreCapsuleFiles(requiredAbsolutePath(root, "Credential capsule root"), archive, credentialPaths);
 }
 
 function collectChildOutput(child: NativeHarnessChild): {
@@ -1175,7 +1198,13 @@ export class NativeProviderHost {
 			stage = "credential-download";
 			const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
 			stage = "credential-opening";
-			await openNativeCredentialCapsule(capsule, root, this.#masterKey, authority.credentialCapsuleId);
+			await openNativeCredentialCapsule(
+				capsule,
+				root,
+				this.#masterKey,
+				authority.credentialCapsuleId,
+				request.runtime === "company-path-v1" ? CODEX_CREDENTIAL_PATHS : undefined,
+			);
 			durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
 			let result: { providerSessionId?: string };
 			let delivery: { messageCount: number; finalMessageId: string | null };
@@ -1295,7 +1324,12 @@ export class NativeProviderHost {
 			const capsuleId = randomUUID();
 			const reference = `native-capsule/${capsuleId}`;
 			stage = "credential-sealing";
-			const capsule = await sealNativeCredentialCapsule(state.root, this.#masterKey, capsuleId);
+			const capsule = await sealNativeCredentialCapsule(
+				state.root,
+				this.#masterKey,
+				capsuleId,
+				state.request.nativeHarness === "codex-cli" ? CODEX_CREDENTIAL_PATHS : undefined,
+			);
 			stage = "credential-upload";
 			await this.#capsules.put(reference, capsule);
 			stage = "control-plane-commit";

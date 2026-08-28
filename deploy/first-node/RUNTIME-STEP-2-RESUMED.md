@@ -1,9 +1,9 @@
 # Runtime Step 2 resumed; Step 3 held
 
 Date: 2026-08-28. **Step 2 remains incomplete. Managed Storage and human file
-acceptance passed. The approved cloud-native login completed, but the signed
-candidate exposed a pre-model startup defect; its source fix is verified and
-awaits a replacement signed image before real-GPT acceptance.** See the
+acceptance passed. Signed v49 fixes the scratch-layout defect; its next real
+turn exposed an auth-capsule handoff defect before model admission. The second
+source fix passes component checks and is approved for commitment and signed restaging.** See the
 [signed staging record](RUNTIME-STEP-2-STAGING.md) for exact pins and evidence.
 
 The user's direction is to finish Step 2 before incorporating Step 3.
@@ -110,9 +110,38 @@ auth home and deliberately stopped before any model request; the installed
 native binary and namespace helper remained unchanged.
 
 The new regression failed before the fix and passed afterward. All 57 focused
-adapter/run/runtime tests and `npm run check` passed. The fix is not yet in the
-signed v48 image and is not represented as a real-GPT result. Its source,
-regression and changelog changes remain separate from the preserved candidate.
+adapter/run/runtime tests and `npm run check` passed. The approved fix was
+committed as `4504d8b081efa09cdfc97b69571db5bd55d7d3a5`, with candidate pins
+in `5de32dca3fceb032cf278ad85146808da5732582`. Signed v49 passed Linux packaging,
+clean boot, containment and the pre-model startup probe. Signed v48 and its
+historical evidence remain intact; neither result is a real-GPT pass.
+
+The next independently admitted human turn,
+`be07fb2f-0cb7-47c0-abef-2633e70829bd`, ran on the exact signed v49 image and
+failed before durable native model-start admission, with zero public sends.
+It was not retried. Its VM was stopped without force after verifying the
+terminal job, inactive worker and exact image; identity and recovery volumes
+remain preserved. A metadata-only diagnostic inside its cloud identity VM
+found one auth file and two incidental Codex files in the login capsule. No
+credential bytes left that VM and the capsule was not modified. Administrative
+read-only checks of the terminal run's four context sources passed without
+changing a lease or invoking admission.
+
+The login host had sealed every CLI file, while governed execution correctly
+requires an auth-only identity. The fix seals only `codex/auth.json` for Codex
+login and projects only that required path when restoring a governed capsule.
+The full archive is still validated, including ignored entries, duplicates,
+path collisions, traversal, modes and size bounds. Missing auth fails closed.
+Refresh preserves only the credential path and still requires current authority;
+the runtime's rejection of extra configuration is unchanged.
+
+Both new regressions failed before the fix. All 92 focused tests pass on macOS
+and cloud Linux. A before/after probe with the actual installed Codex binary
+and service containment reproduces the old auth-only rejection and reaches
+verified configuration with the fix; it deliberately stops before a model
+request and uses synthetic credentials only. Installed signed artifacts were
+not changed. The Linux package changes only the native host bundle. The v50
+recipe pins those new bytes; no v50 image has been built or signed yet.
 
 The actual human client transport additionally passed seven live read/list
 cases and six edit/authority cases: owner/friend/outsider separation, private
@@ -192,13 +221,14 @@ cumulative distinct-skill count is 6/10.
    suite also passed over certificate-verified PostgreSQL. These are managed
    component checks, not real-GPT or released-client acceptance. The isolated
    runner/provider and fresh cloud-native login are now operational. The first
-   human run exposed the scratch-layout defect described above. Commit and
-   repackage its verified source fix into a new signed acceptance image before
-   continuing the real-GPT injection, revocation and recovery cases. Approval
-   for that additional source commit/restaging was received. The replacement
-   must preserve the existing signed candidate and pass clean-boot and
-   containment checks before real-GPT acceptance resumes. No push, release or
-   production change is authorized by this restaging approval.
+   human run exposed the scratch-layout defect described above; its approved
+   commit and signed v49 restaging are complete. The next turn exposed the
+   auth-capsule handoff defect. Its verified source fix and v50 package pins
+   are approved for the additional commit and signed restaging. Preserve both
+   existing signed candidates, then repeat
+   clean-boot, containment and startup checks before real-GPT injection,
+   revocation and recovery acceptance. No failed run is automatically retried.
+   No push, release or production change is authorized by restaging approval.
 2. Before production enrollment, recheck/reconcile the two missing NAS files
    without losing either live state, and verify replacement-node fencing and
    authorized recovery. The completed same-node backup import does not confer

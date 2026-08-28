@@ -1,8 +1,8 @@
 # Runtime Step 2: signed cloud staging
 
-Date: 2026-08-28. **Signed v48 candidate preserved; managed Storage and human
-file acceptance passed. Cloud-native login completed, but v48 has a reproduced
-pre-model scratch-layout defect. Its verified source fix needs restaging.**
+Date: 2026-08-28. **Signed v48 and v49 are preserved. Managed Storage and human
+file acceptance passed. V49 fixes scratch startup but exposed an auth-capsule
+handoff defect before model admission. Its verified fix is not yet signed.**
 Step 3 is paused. Production enrollment is unchanged.
 
 ## Source and immutable artifacts
@@ -149,9 +149,9 @@ It used no provider credentials and did not replace the installed native
 binary or namespace helper. This is startup evidence, not GPT acceptance.
 
 The new regression failed before the fix; 57 focused adapter/run/runtime tests
-and the full code check then passed. The user authorized its Step 2-only source
-commit and replacement signed image. The fix is not in the signed v48 image;
-the existing signed artifacts and their historical verification remain intact.
+and the full code check then passed. The authorized Step 2-only source commit
+and signed v49 replacement were completed. The fix is not in the signed v48
+image; both candidates and their historical verification remain intact.
 Restaging does not authorize a push, release or production change.
 
 Thirteen additional live human-file cases passed using the actual client
@@ -161,9 +161,62 @@ command, unchanged replay, changed-content refusal, protected-edit dismissal
 without approval, and revocation between object retrieval and final return.
 The cloud owns each mutation; no desktop model or canonical checkout is used.
 
-Next repackage the scratch-layout fix into a new signed image, then exercise
+## Signed v49 and auth-capsule startup correction
+
+The scratch correction is commit `4504d8b081efa09cdfc97b69571db5bd55d7d3a5`;
+its installer/manifest pins are `5de32dca3fceb032cf278ad85146808da5732582`.
+It was rebuilt from clean source on Linux and passed all three packaging tests,
+57 focused tests and `npm run check` on both platforms. A fresh image passed
+KVM/Secure Boot, clean boot, containment and the pre-model startup probe.
+
+| V49 binding | SHA-256 |
+| --- | --- |
+| Clean runtime source archive | `1bed10039fa514489920bb2cadc8b9e1392e4f0636e5f9635dedd72d7e47b295` |
+| Guest package manifest | `64cd51e07365da3d47e3fa677ed20018addd98b88a69fd842fa9318997b70f41` |
+| Native host bundle | `8dca80327c75ddcaac9e1b819f116bc5f08e8bde430b0cb1ed4d93b63b4fc3e6` |
+| LXD image | `5021078377d965041cc9c742d14195b12ffb1650b61154ee05642b627673ba82` |
+| Clean-boot evidence | `9e84b6a480b99aa33bcb9da9414cf329b8e5487d07fce21058c7e88339420f4a` |
+| Combined signing evidence | `2e85669b8adca019c0c70a013390c386fa02508d82e18728dafa8b504560c963` |
+| Signed provenance envelope | `b2a1c6016424ca299077083e6322232e32eb360b03231f2b920dd37ff8de9490` |
+
+Signing used the existing off-node encrypted key. Both signature checks and
+the wrong-fingerprint rejection passed. Native Codex, helper, provider and
+nested OCI bytes are unchanged. Public signed material is staged at
+`/home/company41-admin/step2-lxd/acceptance-v49-signed`; prior provider state
+and v48 artifacts remain preserved.
+
+Canonical human run `be07fb2f-0cb7-47c0-abef-2633e70829bd` was admitted through
+the ordinary preview flow and assigned to that exact image. It failed before
+the native model-start event and emitted zero public sends. The orchestrator
+was paused, and no automatic retry or authority repair was performed.
+After diagnosis, the exact failed VM was stopped without force. Its worker
+was already inactive; encrypted identity and recovery volumes are retained.
+
+Inside the test identity VM, a read-only, metadata-only capsule check found
+`auth.json` plus two non-auth Codex files. No credential bytes were exported,
+no capsule was overwritten, and no provider was invoked. Source regressions
+then reproduced the strict runtime's `auth-only identity` rejection.
+The correction restricts new Codex login capsules to `codex/auth.json` and
+restores only that required path for governed execution, while validating the
+entire archive. Duplicates, missing auth, unsafe paths/modes and path collisions
+still fail; incidental configuration never enters the native mount. Refresh
+and current-authority requirements are unchanged.
+
+The source now passes 92 focused tests on macOS and cloud Linux. A synthetic
+before/after probe under the actual cloud service containment confirms the
+fixed host reaches verified configuration and stops before model admission.
+The Linux package changes only the host bundle, to
+`05ec1dac29ceee2400628e3636ce01fdc04c2302df579cdc5c1ff971630af8c4`
+(230,291 bytes). The proposed v50 manifest is
+`f5dc9747e6aac5db7f9f9e6f8a4f9c797c8dd0b84c54c887b4971fe79823f319`.
+The earlier manifest check correctly rejected the stale v49 host pin; the
+recipe and package pins now name the replacement bytes. No v50 image has
+been built or signed. The user approved the additional source commit and
+signed test-image rebuild, without push, release or production changes.
+
+After that replacement passes clean boot, containment and startup, exercise
 real GPT injection resistance, native revocation, lost acknowledgements and
-recovery with clients closed. The v48 startup probe does not close those gates.
+recovery with clients closed. Neither startup probe closes those gates.
 
 Before production enrollment, the NAS/workbench reconciliation, shared-computer
 path enforcement and authorized replacement-node identity recovery must also

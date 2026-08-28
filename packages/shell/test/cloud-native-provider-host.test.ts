@@ -493,6 +493,9 @@ describe("native provider host", () => {
 			beginLogin: vi.fn(async (_harness, identityRoot) => {
 				await mkdir(join(identityRoot, "codex"), { recursive: true });
 				await writeFile(join(identityRoot, "codex", "auth.json"), '{"refresh_token":"private"}\n');
+				await writeFile(join(identityRoot, "codex", "config.toml"), 'model = "not-credential-state"\n');
+				await mkdir(join(identityRoot, "codex", "log"));
+				await writeFile(join(identityRoot, "codex", "log", "login.log"), "private login diagnostic\n");
 				return {
 					prompt: Promise.resolve({
 						interactionUrl: "https://auth.openai.com/device",
@@ -552,6 +555,11 @@ describe("native provider host", () => {
 		const capsule = capsules.values.get(completed[0]?.encryptedCapsuleReference as string);
 		expect(capsule).toBeDefined();
 		expect(Buffer.from(capsule as Uint8Array).toString("utf-8")).not.toContain("refresh_token");
+		const restored = await temporaryRoot("qorpera-native-login-restored-");
+		await openNativeCredentialCapsule(capsule as Uint8Array, restored, masterKey, completed[0]!.capsuleId);
+		expect(await readdir(restored)).toEqual(["codex"]);
+		expect(await readdir(join(restored, "codex"))).toEqual(["auth.json"]);
+		expect(await readFile(join(restored, "codex", "auth.json"), "utf8")).toContain("private");
 		await expect(host.beginLogin(request)).resolves.toMatchObject({ status: "completed" });
 	});
 

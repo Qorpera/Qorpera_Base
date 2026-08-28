@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, randomBytes, randomUUID } from "node:crypto";
 import { link, mkdir, mkdtemp, open, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -49,6 +49,50 @@ it("retains exact original credential paths and ignores compatibility aliases an
 	await openNativeCredentialCapsule(refreshed, next, key, capsuleId);
 	expect(await readFile(join(next, "codex", "auth.json"), "utf8")).toContain("synthetic-refreshed");
 	await expect(readFile(join(next, "codex", "sessions", "private.jsonl"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it.each([
+	"missing-auth",
+	"duplicate-auth",
+	"invalid-path",
+	"duplicate-ignored",
+	"invalid-mode",
+	"parent-before-file",
+	"parent-after-file",
+] as const)("does not accept an invalid archive while projecting auth-only credentials: %s", async (kind) => {
+	const f = await fixture();
+	const auth = { path: "codex/auth.json", mode: 0o600, data: Buffer.from("synthetic-auth").toString("base64") };
+	const other = {
+		path: "codex/config.toml",
+		mode: 0o600,
+		data: Buffer.from("synthetic-config").toString("base64"),
+	};
+	let files =
+		kind === "missing-auth"
+			? [other]
+			: kind === "duplicate-auth"
+				? [auth, auth]
+				: kind === "duplicate-ignored"
+					? [auth, other, other]
+					: [auth, { ...other, ...(kind === "invalid-path" ? { path: "../escaped" } : { mode: -1 }) }];
+	if (kind === "parent-before-file") files = [{ ...other, path: "codex" }, auth];
+	if (kind === "parent-after-file") files = [auth, { ...other, path: "codex" }];
+	const nonce = randomBytes(12);
+	const cipher = createCipheriv("aes-256-gcm", Buffer.from(key, "base64url"), nonce);
+	cipher.setAAD(Buffer.from(`qorpera.native-credential-capsule/v1:${capsuleId}`));
+	const ciphertext = Buffer.concat([
+		cipher.update(JSON.stringify({ schema: "qorpera.native-credential-capsule/v1", files })),
+		cipher.final(),
+	]);
+	const archive = Buffer.concat([Buffer.from("QNC1"), nonce, cipher.getAuthTag(), ciphertext]);
+	await expect(
+		openNativeCredentialCapsule(archive, join(f.root, "projected"), key, capsuleId, credentialPaths),
+	).rejects.toThrow(
+		kind === "missing-auth"
+			? "Credential capsule is missing a required credential path"
+			: "Credential capsule entry is invalid",
+	);
+	await expect(readFile(join(f.root, "escaped"))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it.each([false, true])("rejects hard-linked credential files (refresh=%s)", async (refresh) => {

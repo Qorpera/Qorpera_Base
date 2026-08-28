@@ -12,6 +12,7 @@ import {
 	type NativeCompanyExecutionRequest,
 	type NativeProviderControlPlane,
 	NativeProviderHost,
+	openNativeCredentialCapsule,
 	sealNativeCredentialCapsule,
 } from "../src/cloud-native-provider-host.ts";
 import { HttpNativeProviderHostService } from "../src/cloud-native-provider-service.ts";
@@ -165,9 +166,12 @@ it("runs the native fence, live path tools and direct public mouth under one clo
 	expect((await lstat(join(f.companyRoot, "private-sentinel"))).mode & 0o777).toBe(0o600);
 });
 
-it("preserves native credential custody without materializing any local company context", async () => {
+it("projects only native auth from a login capsule without materializing local context or configuration", async () => {
 	const f = await fixture();
 	const masterKey = randomBytes(32).toString("base64url");
+	await writeFile(join(f.identityRoot, "codex", "config.toml"), 'model = "CAPSULE_CONFIG_MUST_NOT_LOAD"\n');
+	await mkdir(join(f.identityRoot, "codex", "log"));
+	await writeFile(join(f.identityRoot, "codex", "log", "login.log"), "CAPSULE_LOG_MUST_NOT_LOAD\n");
 	let capsule = await sealNativeCredentialCapsule(f.identityRoot, masterKey, f.binding.credentialCapsuleId);
 	const put = vi.fn(async (_reference: string, bytes: Uint8Array) => {
 		capsule = bytes;
@@ -206,8 +210,28 @@ it("preserves native credential custody without materializing any local company 
 	expect(oldExecute).not.toHaveBeenCalled();
 	expect(put).toHaveBeenCalledTimes(1);
 	expect(Buffer.from(capsule).toString("utf8")).not.toContain("SYNTHETIC_NATIVE_SECRET");
+	const restored = join(root, "restored-capsule");
+	await mkdir(restored, { mode: 0o700 });
+	await openNativeCredentialCapsule(capsule, restored, masterKey, f.binding.credentialCapsuleId);
+	// Native sessions/logs created during this turn must not become durable
+	// credentials, including the unrelated files captured by the login process.
+	expect(await readdir(restored)).toEqual(["codex"]);
+	expect(await readdir(join(restored, "codex"))).toEqual(["auth.json"]);
+	expect(await readFile(join(restored, "codex", "auth.json"), "utf8")).toContain("SYNTHETIC_NATIVE_SECRET");
+	expect(await readFile(f.evidence, "utf8")).not.toMatch(/CAPSULE_CONFIG_MUST_NOT_LOAD|CAPSULE_LOG_MUST_NOT_LOAD/);
 	expect((await readdir(root)).some((path) => path.startsWith("qorpera-native-run-"))).toBe(false);
 	expect((await lstat(f.companyRoot)).mode & 0o777).toBe(0o700);
+});
+
+it("still rejects extra configuration passed directly to the native runtime", async () => {
+	const f = await fixture();
+	await writeFile(join(f.identityRoot, "codex", "config.toml"), 'model = "not-runtime-policy"\n');
+	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
+		"Native boundary requires an auth-only identity",
+	);
+	expect(f.control.sendMessage).not.toHaveBeenCalled();
+	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_begin_native_company_execution")).toBe(false);
+	await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it("uses the governed HTTP route through the real host, native RPC fence, path tools and public mouth", async () => {
