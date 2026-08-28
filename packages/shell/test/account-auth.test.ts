@@ -152,6 +152,33 @@ describe("Qorpera account auth", () => {
 		expect(requestedUrls[0]).toContain(`/storage/v1/object/qorpera-profile-objects/${profileId}/${sha256}`);
 	});
 
+	it("connects session run controls to the authenticated RPC client with an abort signal", async () => {
+		const sessionId = "28000000-0000-4000-8000-000000000055";
+		const staffAgentId = "28000000-0000-4000-8000-000000000054";
+		let path = "";
+		let body: unknown;
+		let signal: AbortSignal | null | undefined;
+		const auth = new QorperaAccountAuth(temporaryRoot("session-run-control"), {
+			projectUrl: "https://project.test",
+			publishableKey: "sb_publishable_test",
+			openExternal: async () => {},
+			fetch: async (input, options) => {
+				path = String(input);
+				body = JSON.parse(String(options?.body));
+				signal = options?.signal;
+				return Response.json({ session_id: sessionId, staff_agent_id: staffAgentId, run: null });
+			},
+		});
+		await expect(auth.cloudSessionRunControl().read(sessionId, staffAgentId)).resolves.toEqual({
+			sessionId,
+			staffAgentId,
+			run: null,
+		});
+		expect(path).toBe("https://project.test/rest/v1/rpc/qorpera_get_session_run_control");
+		expect(body).toEqual({ p_session_id: sessionId });
+		expect(signal).toBeInstanceOf(AbortSignal);
+	});
+
 	it("can explicitly use Supabase Storage for production acceptance while the NAS is offline", async () => {
 		const profileId = "10000000-0000-4000-8000-000000000001";
 		const bytes = Buffer.from("acceptance object", "utf-8");

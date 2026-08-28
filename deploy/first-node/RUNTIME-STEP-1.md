@@ -1,13 +1,21 @@
 # Runtime step 1: loop plus mouth
 
-Date: 2026-08-27
+Date: 2026-08-28
 
-Status: implemented and deployed to the production database and signed v47
-runner image. Desktop 0.20.43 is installed; account and company access no longer
-depend on model readiness or allowance. Live company loading is currently
-stalled by separate Supabase timeouts. Real-provider acceptance remains blocked
-by the connected OpenAI provider's allowance/quota; the latest run delivered no
-public message. Step 1 is not yet accepted.
+Status: the signed v47 cloud loop and mouth now pass real connected-OpenAI
+acceptance: progress, final delivery, NAS writes, completion with the desktop
+closed, read-only client replay, and stale-send rejection. The allowance block
+is resolved. Desktop 0.20.43 remains installed. Testing exposed its unwired
+Stop control and a native-lease cleanup defect. Exact-run member controls and
+terminal lease cleanup are deployed to the database; the matching desktop
+changes pass focused tests and are approved for release as 0.20.44. Step 1 is not
+fully closed until the updated desktop Stop button is installed and tested.
+
+Account and company access no longer depend on model readiness or allowance.
+Supabase recovered after the approved restart. The NAS port-change outage is
+also recovered: an Active/Backup bond serves `192.168.0.90`, the existing NFS
+mount is verified, and the cloud services are running. Neither recovery is a
+claim of full cloud-control-plane outage continuity.
 
 This is step 1 of the cloud runtime implementation order,
 not the earlier infrastructure Step 1. The Company File is the live digital
@@ -18,7 +26,7 @@ clients submit intent and render canonical events; they do not run the mouth.
 
 | Component | Evidence and disposition |
 | --- | --- |
-| Live Company File | `/mnt/qorpera-companies` is a writable NFS mount on `company41-node-01`. The company tree reaches a runner as `/qorpera/company-live` through virtiofs. Reused, not rebuilt. |
+ Live Company File | `/mnt/qorpera-companies` is a writable NFS mount on `company41-node-01`. The company tree reaches a runner as `/qorpera/company-live` through virtiofs. Reused, not rebuilt. |
 | Native cloud execution | The signed v44 proof already ran an official provider turn and wrote the NAS-backed tree. See the dated checkpoint in [STEP-2-HANDOFF.md](STEP-2-HANDOFF.md). |
 | Cloud dispatcher | `qorpera-lxd-provider.service` on the node and `qorpera-runner-orchestrator.service` in `company41-orchestrator-01` were both active during this audit. |
 | Admission and recovery | Existing durable inputs, runs, sponsor/compute bindings, assignment leases, renewals, recovery and completion are retained. |
@@ -96,7 +104,7 @@ Run focused tests from `packages/shell`:
 node ../../node_modules/vitest/dist/cli.js --run test/cloud-agent-mouth.test.ts test/cloud-agent-mouth-delivery.test.ts test/cloud-native-provider-host.test.ts test/cloud-native-provider.test.ts test/cloud-trail-sync.test.ts test/cloud-runner-worker.test.ts test/cloud-runner-broker.test.ts test/cloud-runner-sandbox.test.ts test/official-codex-mouth.test.ts
 ```
 
-The current focused suite passes 89 tests across these nine files. They exercise
+The v47 activation focused suite passed 89 tests across these nine files. They exercise
 private-output canaries, immediate sends, lost-response
 replay, transport authentication, malformed arguments/receipts, cancellation,
 final-delivery obligations, silent no-audience jobs, provider process contracts,
@@ -111,7 +119,7 @@ The production runner packaging script also passes, including the bundled
 native provider host. The signed v47 image was built and activated from clean
 source, as recorded below.
 
-All 72 migrations apply to disposable PostgreSQL 17.6. The new send tests and
+The earlier 72-migration sweep applied to disposable PostgreSQL 17.6. The new send tests and
 the affected runner/native suites pass. The complete SQL sweep passes 29 of 30
 suites. `100_session_arbiter.test.sql` retains a pre-existing mismatch with the
 2026-08-26 account-trail policy: it submits an invalid event schema while
@@ -326,7 +334,94 @@ the public-key Supabase auth health check still timed out after 15 seconds with
 no response, and company listing remained pending. This release does not claim
 to repair that separate backend outage or complete real cloud-mouth acceptance.
 
-### Current v47 activation and acceptance blocker
+### Supabase recovery and independent NAS outage, 2026-08-27
+
+The user approved restarting the affected Supabase project and starting a
+separate cloud-resilience implementation task. One restart of
+`wovsmjvghnbcbfazdtvr` (Qorpera Cloud Step 1) was accepted at
+`2026-08-27T21:24:16.428Z`. No other project was restarted, and no reset,
+restore, credential change, or billing action was performed.
+
+At `2026-08-27T21:30:13.438Z`, detailed Database, Auth, REST, Storage, Pooler,
+and Realtime health checks were all healthy. A Management API read-only
+`select 1` returned HTTP 201. The installed desktop then displayed Company41's
+staff roster and opened the existing Software Developer conversation. This
+used the existing Qorpera login without reconnecting a model account, redeeming
+credit, or requesting inference. These checks establish recovered company
+access, not a successful fallback or real cloud-mouth acceptance.
+
+Follow-up infrastructure checks found an independent NAS reachability failure:
+the node's ping to `192.168.0.91` returned `Destination Host Unreachable`,
+TCP 2049 returned `No route to host`, its neighbor entry was `INCOMPLETE`, and
+the Mac also received no ping replies. A bounded stat of
+`/mnt/qorpera-companies/company41/live` timed out. At this checkpoint the
+configured NFS mount remained present, but that was not proof of available
+live storage. The node's `qorpera-lxd-provider.service` was active. The initial
+probe did not recheck the orchestrator guest. The later maintenance below used
+the existing `/usr/sbin/lxc` allowlist and a user-authenticated sudo terminal;
+no permissions were changed to bypass authentication.
+
+No NAS or node restart, remount, company-data mutation, replacement store, or
+model retry was attempted during those initial diagnostics. Only the diagnostic
+process blocked on NFS was terminated. The separate resilience task owns bounded
+storage/auth requests, immutable-object replication, and safe runner-outcome
+recovery; none of that work is deployed yet. NAS loss and Supabase control-plane
+loss remain distinct failure modes. A desktop cache or immutable replica cannot become a competing
+writable Company File.
+
+### NAS dual-port recovery, 2026-08-28 (Copenhagen)
+
+The cable had moved from NAS LAN2 (`192.168.0.91`) to LAN1 (`192.168.0.90`),
+while the node's hard NFS mount still targeted LAN2. Temporarily reconnecting
+LAN2 restored the original mount. The user approved a controlled storage
+maintenance window and then returned the single cable to LAN1.
+
+Read-only database checks before and after pausing dispatch found no queued or
+leased Company41 jobs. Nine running VMs with the live NAS device belonged to
+completed or failed jobs with no remaining lease. They shut down gracefully
+after LAN2 was reconnected, and the existing proof file's checksum matched.
+The provider, Company Computer provider, and orchestrator were paused before
+the normal unmount. No force-stop, forced/lazy unmount, soft NFS, or replacement
+Company File was used.
+
+DSM now has one DHCP `Bond 1` containing LAN1 and LAN2. Its saved mode was
+independently re-opened and verified as **Active/Backup Mode**. With only LAN1
+connected, the bond is connected at `192.168.0.90`; gateway and DNS remain
+`192.168.0.1`. The NAS firewall was already disabled and unchanged, and no DHCP
+Server package was installed. The NFS export remains
+`/volume1/qorpera-companies`, restricted to node `192.168.0.206`.
+
+Only the NAS address in the node's `/etc/fstab` changed from `.91` to `.90`.
+The update checked the full pre-image, preserved root ownership and mode 0644,
+and atomically installed the replacement. The prior file remains at
+`/etc/fstab.qorpera-before-nas-bond-20260828`. A normal remount succeeded at
+`/mnt/qorpera-companies`, using NFS 4.1, `rw,hard`, and the existing options.
+
+The actual `qorpera-provider` service identity (UID 995, GID 983, groups 983
+and 101) read the existing 39-byte `live-check-v44-20260826T204912Z.txt` from
+the remounted Company41 tree. Its SHA-256 remained
+`24c0e310ed3b1018eaa892031826aded7bafd0d3790c28573d83aea16c4e3fa2`.
+The same identity created a uniquely named temporary probe, wrote and fsynced
+it, read back identical bytes, and removed only that probe and its directory.
+No existing company file was edited or deleted.
+
+Both host providers resumed at `2026-08-27T22:50:05Z`; the orchestrator resumed
+at `22:50:25Z`. All three were verified active/running. From the orchestrator
+VM, the runner provider's HTTPS health check returned `{"ok":true}` using the
+existing CA with certificate verification enabled. The Company Computer
+provider's node-loopback health check also returned `{"ok":true}`. A final
+read-only audit at `22:52:20Z` still found no queued or leased Company41 jobs.
+The nine terminal-job VMs remain stopped with their disks retained; completed
+or failed work was not replayed. No model request or credential change occurred.
+Temporary maintenance scripts were removed, the sudo timestamp was invalidated,
+and the task's dedicated terminal session was closed. The fstab backup remains.
+
+This verifies live LAN1 storage and service recovery, not a physical LAN2
+failover test. DHCP does not establish a permanently reserved address; router
+reservation and a cable-swap acceptance test remain unverified. The separate
+cloud-outage resilience implementation has not been deployed by this change.
+
+### Current v47 activation and earlier allowance blocker
 
 Two follow-up fixes are committed and pushed to master:
 
@@ -428,12 +523,143 @@ jobs. The dispatcher remains active. The receipt-replay check was not run,
 because no real send exists to replay. This retry did not change billing,
 reset credits, account selection, model selection, or deployment.
 
-Restore the connected provider's allowance, then finish real acceptance:
-progress before exit, one final receipt, NAS file contents, second-client
-replay, and transport-retry/cancellation checks. The prepared replay check has
-not been run because there is no committed production send to replay. Do not
-substitute the scripted provider proof for this acceptance, manufacture human
-admission claims, or call this step complete yet.
+At that checkpoint, restored NAS access was insufficient: provider allowance
+still blocked real acceptance. The following authorized tests supersede that
+blocker without changing the provider account, billing, or signed v47 image.
+
+### Real GPT cloud acceptance, 2026-08-28 (Copenhagen)
+
+The user confirmed restored allowance and authorized full testing through the
+existing GPT connection. Three fresh prompts were submitted through the
+installed Company41 Software Developer conversation. No admission record was
+manufactured, no model account was changed, and no reset credit was used. The
+native provider remains `openai` / `codex-cli`, with `provider-default` model
+selection and explicitly low effort; the desktop model label alone is not
+evidence of the exact model used by the native subscription.
+
+All timestamps below are UTC on 2026-08-27. The runs share profile
+`88227549-9724-43c2-8966-9fafb3e855d6`, staff
+`b5052ad5-97cb-45e1-9da7-9c413da69530`, and session
+`14ea9baa-ecab-4f20-b905-f473d433d037`.
+
+| Run | Canonical sends | Durable outcome |
+| --- | --- | --- |
+| `eac6b2bd-185b-46da-96a0-b4458adebfe0` | Progress 23:03:14.626460, sequence 57; final 23:04:35.581579, sequence 58 | Completed 23:07:45.330115; attempt 1; native lease released |
+| `00a2409a-7068-422b-b9a5-0e9a2612a756` | Progress 23:14:40.937279, sequence 60; final 23:15:49.761106, sequence 61 | Completed 23:18:54.329593; attempt 1; native lease released |
+| `34cad3d0-3872-47e4-be00-47fd4af17866` | Progress 23:43:07.003449, sequence 63; no final | Cancelled 23:43:38.274579; attempt 1; native lease revoked after the cleanup correction below |
+
+The first run created only `runtime-step1-v47-live-20260828-01.txt` in the
+live Company File. Its 44 bytes hash to
+`ddc691f88582dd0f2a8ee7df4a28eb835063e5882163d5d59721c0df139a5176`.
+The second created only `runtime-step1-v47-offline-20260828-02.txt`; its 47
+bytes hash to
+`022a32cd42424bdc90f175d86d4cebab434ea98c779652363eedd5a45d394b3b`.
+Both hashes were read from `/mnt/qorpera-companies/company41/live` on the
+cloud node. These explicitly named acceptance files remain as evidence; no
+existing agent or business file was removed to make the tests pass.
+
+The second run continued with the desktop closed. The definitive quit was at
+23:15:20; process checks confirmed the app absent at 23:15:26, before the final
+send, and again after completion. The app was reopened at 23:20:27. Its
+conversation then showed each progress/final once. The cloud—not a local model
+process—performed the file write, public delivery, and completion. This proves
+an admitted turn survives all desktop clients being closed, not the later
+five-kind wake/scheduler architecture.
+
+While the first run was live, two identical progress-send retries returned its
+original event `862fea44-4635-46d3-893a-fab60c5a2117` at sequence 57. There
+were still exactly two sends after completion. An exact retry after each
+completed run was denied with SQLSTATE `42501`, without adding a message or
+incrementing the attempt count. The tool-output canary was absent from all
+assistant messages; its intentional occurrence in the human test prompt is
+not counted as an output leak. Public assistant entries contain only the
+explicitly sent text, not provider stdout or ordinary final output.
+
+At 23:54:43 a fresh, independent read-only client used the production
+`QorperaHostedPrimary` parser and `CloudTrailSynchronizer` with the existing
+member session. It downloaded and materialized all 63 canonical events with
+zero quarantine entries, uploads, or session creations. All five acceptance
+messages matched their exact event IDs, text hashes, and run provenance.
+Restarting that client from its saved cursor downloaded/materialized zero
+additional entries. Its transport allowed only read RPCs; it made four reads,
+zero mutation attempts, and started no model process. The temporary projection
+was removed afterwards. This is a second client projection, not a claim of a
+second separately installed desktop or another human's credentials.
+
+Two performance observations remain: native harness execution took 98,333 ms
+and 81,538 ms, respectively, while durable job completion followed the final
+send by approximately 190 and 185 seconds. That lag is after the native harness,
+not missing message delivery. Its exact publication/cleanup cause is not yet
+established and should not be described as model latency.
+
+### Exact-run Stop and native-lease correction
+
+The installed 0.20.43 cloud-session `abort` handler explicitly returned "not
+wired yet". Historical failure alerts could also mask active-run state. The
+new desktop source polls an independent exact-session control projection and
+shows Stop for the displayed run only. It sends the session/run identity to a
+member-authenticated RPC, disables duplicate pending clicks, reports uncertain
+responses without claiming success, and rejects stale polling results after
+cancellation or a conversation switch. It neither kills a local model nor
+manufactures assistant output.
+
+Migration `20260828002000_cloud_session_run_control.sql` was applied atomically
+and registered in production at approximately 23:40:35, with SHA-256
+`dbb75cff3cf29942c3f787880808aa0d797415ea47e226beaec8cbab31a7b248`.
+Read/control RPCs bind the company, staff, session, and run. Cancellation
+rechecks and locks current membership; the caller must retain write access and
+be the run creator or a company owner/admin. The existing job cancellation
+endpoint receives the same check. Retrying a terminal run returns its terminal
+state without touching a successor. No unrelated migration was pushed.
+
+The third GPT test sent progress, then waited for 90 seconds without changing
+files or external data. The new API cancelled that exact run using the existing
+desktop member session; its repeated receipt remained `cancelled`, the session
+control projection became idle, and there was one cancellation audit record.
+The provider and sleep processes stopped. No final appeared after the wait
+deadline. This tests the real cloud API, not the as-yet-unreleased Stop button.
+After verification, only this test's recovery card was dismissed through the
+installed app's Discard action. That records a recovery decision without
+deleting its prompt, progress message, job, or audit history; it does not retry
+the work. Other historical failure alerts were left unchanged.
+
+That test exposed a cleanup ordering defect: native lease release required a
+live job, but cancellation had already revoked the job. Its stale active row
+could occupy connected-account concurrency until expiry. Migration
+`20260828003000_terminal_native_lease_cleanup.sql` makes the job's terminal
+transaction close only its run-scoped native leases. Completed jobs release
+them; failed/cancelled jobs revoke them. It does not revoke saved credentials,
+the connection, or the Compute Identity, and it does not weaken send authority.
+
+The cleanup migration was applied atomically at 23:52:46.549, with SHA-256
+`12594bb33260ac1f09abd915786a3d1608ad6dfc9a47ac04e691da1522994516`.
+Its reconciliation affected the one stale lease belonging to the cancelled
+acceptance run; preflight found no active leases for running jobs. Afterwards
+there were no stale terminal-job leases. At 23:54:13 an exact send retry from
+that revoked run was denied with `42501`: still one public progress message,
+no final, and attempt count 1. Fresh cancellation/completion/failure transition
+coverage is in isolated PostgreSQL; a new installed-Stop live test remains a
+rollout gate.
+
+The added controls/renderer/auth suites pass 35 tests across three files. The
+six existing mouth, delivery, native host/adapter, official-CLI, and broker
+suites pass another 54 tests, for 89 focused tests in this continuation. These
+are distinct from the earlier v47 nine-file test selection. `npm run check`
+passes. All 74 migrations in the continuation worktree apply to disposable
+PostgreSQL 17.6; SQL suites 165 and 280 pass, including membership revocation,
+cross-session rejection, terminal retries, unchanged successor runs, and
+native-lease cleanup for cancellation, completion, and failure. The completion
+fixture must make a real database final send first; the final-send guard is
+not disabled. The earlier full SQL sweep's known suite-100 mismatch is not
+reclassified as passing.
+
+The user approved committing and publishing the desktop changes as 0.20.44.
+Build and publish the updated installer through the normal clean-master lane,
+then test Stop
+through the installed button against a fresh bounded cloud run. Do not call
+that UI acceptance done based on the API test or replace the signed installed
+app with a dirty development bundle. The separate outage-resilience worktree
+has not been merged or deployed here.
 
 ## Remaining steps, not absent plumbing
 

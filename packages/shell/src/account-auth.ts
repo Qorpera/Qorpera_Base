@@ -23,6 +23,7 @@ import {
 } from "./cloud-object-store.ts";
 import { SupabaseCloudPresenceTransport } from "./cloud-presence.ts";
 import { SupabaseCloudRealtimeTransport } from "./cloud-realtime-sync.ts";
+import { CloudSessionRunControl } from "./cloud-session-run-control.ts";
 import {
 	createSupabaseHostedPrimary,
 	type HostedPrimaryDatabase,
@@ -325,6 +326,7 @@ export class QorperaAccountAuth {
 	private readonly presence: SupabaseCloudPresenceTransport;
 	private readonly objects: CloudContentAddressedStore;
 	private readonly nativeSubscriptions: NativeSubscriptionControlPlane;
+	private readonly sessionRuns: CloudSessionRunControl;
 	private readonly nativeIdentityBridge?: NativeProviderIdentityBridge;
 	private readonly openExternal: (url: string) => Promise<void>;
 	private readonly storage: FileAccountAuthStorage;
@@ -392,6 +394,10 @@ export class QorperaAccountAuth {
 				return { data, error };
 			}),
 		);
+		this.sessionRuns = new CloudSessionRunControl(async (name, args, signal) => {
+			const { data, error } = await this.client.rpc(name as never, args as never).abortSignal(signal);
+			return { data, error };
+		});
 		this.nativeIdentityBridge = new HttpNativeProviderComputerBridge(
 			options.nativeProviderUrl ?? new URL("/functions/v1/native-provider-login/", projectUrl).href,
 			undefined,
@@ -417,6 +423,10 @@ export class QorperaAccountAuth {
 
 	nativeSubscriptionControl(): NativeSubscriptionControlPlane {
 		return this.nativeSubscriptions;
+	}
+
+	cloudSessionRunControl(): CloudSessionRunControl {
+		return this.sessionRuns;
 	}
 
 	nativeProviderIdentityBridge(): NativeProviderIdentityBridge {

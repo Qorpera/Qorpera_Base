@@ -43,6 +43,8 @@ const pendingSessionQueueByStaff = new Map();
 const remoteStaffActivity = new Map(); // staff id -> Map(client id -> { activity, name, until })
 const hostedStaffActivity = new Map(); // staff id -> authoritative hosted run state
 let hostedStaffActivityHealthy = true;
+let cloudSessionRunState = null;
+let pendingStopRunId = null;
 
 async function authorizedPost(path, body) {
 	const response = await window.qorpera.authorizedBackendPost(path, body);
@@ -1142,9 +1144,30 @@ function runtimeForTrail(trailFile) {
 
 let lastInterruptedRuntime = "";
 
+function currentCloudSessionRunState() {
+	return !currentRoomId && currentStaffId &&
+		cloudSessionRunState?.staffAgentId === currentStaffId && cloudSessionRunState.trailFile === currentSession
+		? cloudSessionRunState : null;
+}
+
+function applyCloudSessionRunState() {
+	const control = currentCloudSessionRunState();
+	if (!control) return false;
+	runtimeReconnecting = false;
+	agentExited = false;
+	agentWorking = Boolean(control.run);
+	const stopping = control.run?.runId === pendingStopRunId;
+	$("status").textContent = !control.healthy ? "cloud status unavailable" : stopping ? "stopping…" :
+		control.run?.status === "leased" ? "working…" : control.run ? "waiting…" : "idle";
+	$("stopBtn").hidden = !control.run?.canCancel || !canUseProfile("write");
+	$("stopBtn").disabled = !control.healthy || stopping;
+	return true;
+}
+
 /** Chat continuity belongs to the saved session. A provider process can be
  * replaced without changing which conversation the founder is in. */
 function applyCurrentSessionRuntime() {
+	$("stopBtn").disabled = false;
 	if (currentRoomId) {
 		// A room rides the autonomous lane, not an attached provider process —
 		// the attended-runtime states (exited, reconnecting) never apply here.
@@ -1155,6 +1178,7 @@ function applyCurrentSessionRuntime() {
 		$("stopBtn").hidden = true;
 		return;
 	}
+	if (applyCloudSessionRunState()) return;
 	const runtime = runtimeForTrail(currentSession);
 	if (!runtime) {
 		runtimeReconnecting = false;
@@ -9383,12 +9407,14 @@ function hideThreadActivity() {
  * queue decide whether the agent is visibly at work in the open thread. */
 function syncThreadActivityFromCloud() {
 	if (currentView !== "chat" || !currentStaffId || currentRoomId) return;
+	applyCloudSessionRunState();
 	/* No activeRunProgress guard: history replay leaves it truthy for any
 	 * thread whose legacy-local run never settled, which suppressed the row
 	 * for every cloud turn. Cloud conditions and the local stream agree on
 	 * "working" whenever both exist, and the hide path only removes rows this
 	 * function created. */
-	const hosted = hostedStaffActivity.get(currentStaffId)?.activity;
+	const sessionRun = currentCloudSessionRunState();
+	const hosted = sessionRun ? (sessionRun.run ? "working" : "idle") : hostedStaffActivity.get(currentStaffId)?.activity;
 	const queue = pendingSessionQueueByStaff.get(currentStaffId) ?? [];
 	const queuedPending = queue.some((input) => input && input.status !== "failed");
 	if (hosted === "working" || hosted === "waiting" || queuedPending) {
@@ -9524,9 +9550,32 @@ function appendMsgImages(div, dataUrls) {
 	scrollConversationToEnd();
 }
 
-/** The Stop square next to Send: aborts the streaming run in place. */
-function stopAgent() {
-	sendRpc({ type: "abort" });
+/** Stop addresses the displayed cloud run, never whatever happens to be next. */
+async function stopAgent() {
+	const control = currentCloudSessionRunState();
+	if (!control) {
+		const result = await sendRpc({ type: "abort" }).catch(() => null);
+		if (!result?.ok) showToast(result?.error ?? "Could not stop the run.");
+		return;
+	}
+	const run = control.run;
+	if (!control.healthy || !run?.canCancel || !canUseProfile("write") || pendingStopRunId === run.runId) return;
+	pendingStopRunId = run.runId;
+	applyCloudSessionRunState();
+	try {
+		const result = await sendRpc({ type: "abort", runId: run.runId });
+		if (!result?.ok) throw new Error(result?.error ?? "Cloud cancellation was not confirmed.");
+		if (cloudSessionRunState?.trailFile === control.trailFile && cloudSessionRunState.run?.runId === run.runId) {
+			cloudSessionRunState = { ...cloudSessionRunState, run: null };
+		}
+		showToast(result.status === "cancelled" ? "Agent stopped." : "This run has already finished.");
+	} catch (error) {
+		showToast(error?.message ?? "Could not confirm that the cloud run stopped.");
+	} finally {
+		if (pendingStopRunId === run.runId) pendingStopRunId = null;
+		applyCurrentSessionRuntime();
+		syncThreadActivityFromCloud();
+	}
 }
 
 /**
@@ -12284,6 +12333,7 @@ window.qorpera.onUpdateState?.((state) => applyFoundationUpdateState(state));
 // cold cache); adopt the fresh verdict so composer state matches reality.
 window.qorpera.onProfileAccessChanged?.((access) => {
 	if (access && typeof access === "object") currentProfileAccess = access;
+	applyCloudSessionRunState();
 });
 
 // ---- presence: which threads teammates have open, and who is typing --------
@@ -12392,6 +12442,17 @@ window.qorpera.onPresenceActivity?.((event) => {
 	}
 });
 window.qorpera.onRunnerActivity?.((payload) => {
+	const control = payload?.sessionRun;
+	if (control && typeof control.staffAgentId === "string" && typeof control.trailFile === "string") {
+		const previous = cloudSessionRunState;
+		cloudSessionRunState = {
+			staffAgentId: control.staffAgentId,
+			trailFile: control.trailFile,
+			healthy: control.healthy === true,
+			run: control.healthy === true ? control.run :
+				previous?.staffAgentId === control.staffAgentId && previous.trailFile === control.trailFile ? previous.run : null,
+		};
+	}
 	if (payload?.healthy === true) {
 		hostedStaffActivityHealthy = true;
 		hostedStaffActivity.clear();
@@ -12404,7 +12465,7 @@ window.qorpera.onRunnerActivity?.((payload) => {
 				hostedStaffActivity.set(activity.staffAgentId, activity);
 			}
 		}
-	} else hostedStaffActivityHealthy = false;
+	} else if (payload?.healthy === false) hostedStaffActivityHealthy = false;
 	syncVisibleStaffAvatars();
 	syncThreadActivityFromCloud();
 	try {

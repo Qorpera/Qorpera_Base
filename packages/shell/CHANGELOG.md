@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.20.44] - 2026-08-28
+
+### Fixed
+
+- Wired the conversation Stop control to the exact displayed cloud run, with live member authorization, idempotent cancellation, and active-run status independent of historical failure alerts.
+- Released native connection leases atomically when cloud jobs finish or are cancelled, so revoked jobs cannot block later work on the same connected account.
+
 ## [0.20.43] - 2026-08-27
 
 ### Fixed

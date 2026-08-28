@@ -1307,6 +1307,8 @@ interface CompanyRuntime {
 	cloudPresenceHeartbeat?: NodeJS.Timeout;
 	cloudRunnerActivityTimer?: NodeJS.Timeout;
 	cloudRunnerActivityPolling?: boolean;
+	cloudSessionRunPolling?: boolean;
+	cloudSessionRunRevision?: number;
 	/** Staff busy on the last runner-activity poll; a departure triggers an
 	 * immediate trail pull so the finished turn's reply paints right away. */
 	lastBusyStaff?: Set<string>;
@@ -2111,10 +2113,55 @@ async function refreshCloudRunnerActivity(slot: Slot, runtime: CompanyRuntime): 
 	}
 }
 
+async function refreshCloudSessionRun(slot: Slot, runtime: CompanyRuntime): Promise<void> {
+	const anchor = runtime.sessionAnchor;
+	const control = qorperaAccountAuth?.cloudSessionRunControl();
+	const ref = anchor && runtime.cloudSessionArbiter?.sessionForStaff(anchor.staffAgentId);
+	if (
+		runtime.closing ||
+		slot.runtime !== runtime ||
+		runtime.cloudSessionRunPolling ||
+		!anchor ||
+		!control ||
+		!ref ||
+		ref.clientSessionId !== anchor.binding.sessionId
+	)
+		return;
+	runtime.cloudSessionRunPolling = true;
+	const revision = runtime.cloudSessionRunRevision ?? 0;
+	const identity = { staffAgentId: anchor.staffAgentId, trailFile: anchor.binding.file };
+	try {
+		const result = await control.read(ref.hostedSessionId, anchor.staffAgentId);
+		if (
+			!runtime.closing &&
+			slot.runtime === runtime &&
+			runtime.sessionAnchor === anchor &&
+			(runtime.cloudSessionRunRevision ?? 0) === revision
+		) {
+			send(slot.window, "runner-activity", { sessionRun: { ...identity, healthy: true, run: result.run } });
+		}
+	} catch {
+		if (
+			!runtime.closing &&
+			slot.runtime === runtime &&
+			runtime.sessionAnchor === anchor &&
+			(runtime.cloudSessionRunRevision ?? 0) === revision
+		) {
+			send(slot.window, "runner-activity", { sessionRun: { ...identity, healthy: false } });
+		}
+	} finally {
+		runtime.cloudSessionRunPolling = false;
+	}
+}
+
 function startCloudRunnerActivity(slot: Slot, runtime: CompanyRuntime): void {
 	if (runtime.cloudRunnerActivityTimer || profileAttachment(runtime.root).profileType !== "cloud") return;
 	void refreshCloudRunnerActivity(slot, runtime);
-	const timer = setInterval(() => void refreshCloudRunnerActivity(slot, runtime), 5_000);
+	void refreshCloudSessionRun(slot, runtime);
+	const timer = setInterval(() => {
+		void refreshCloudRunnerActivity(slot, runtime);
+		void refreshCloudSessionRun(slot, runtime);
+	}, 5_000);
 	timer.unref();
 	runtime.cloudRunnerActivityTimer = timer;
 }
@@ -8711,8 +8758,28 @@ async function anchoredSessionRpc(
 		}
 		case "set_response_speed":
 			return { ok: true };
-		case "abort":
-			return { ok: false, error: "cloud turns finish in the cloud; stopping one from here is not wired yet" };
+		case "abort": {
+			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
+			const ref = runtime.cloudSessionArbiter?.sessionForStaff(anchor.staffAgentId);
+			const control = qorperaAccountAuth?.cloudSessionRunControl();
+			if (!ref || !control || binding.sessionId !== ref.clientSessionId || typeof frame.runId !== "string") {
+				return { ok: false, error: "Select the active cloud run in this conversation before stopping it." };
+			}
+			try {
+				const status = await control.cancel(ref.hostedSessionId, frame.runId);
+				triggerCloudTrailSync(runtime);
+				void emitActiveStaffQueue(slot, runtime).catch(() => {});
+				return { ok: true, status };
+			} catch (error) {
+				return {
+					ok: false,
+					error: error instanceof Error ? error.message : "Cloud cancellation was not confirmed.",
+				};
+			} finally {
+				runtime.cloudSessionRunRevision = (runtime.cloudSessionRunRevision ?? 0) + 1;
+				void refreshCloudSessionRun(slot, runtime);
+			}
+		}
 		case "prompt":
 			return enqueueRuntimeTransition(runtime, async () => {
 				if (slot.runtime !== runtime || runtime.closing || runtime.sessionAnchor !== anchor) {
