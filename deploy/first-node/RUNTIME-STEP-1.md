@@ -2,14 +2,15 @@
 
 Date: 2026-08-28
 
-Status: the signed v47 cloud loop and mouth now pass real connected-OpenAI
+Status: runtime step 1 is implemented and passes real connected-OpenAI cloud
 acceptance: progress, final delivery, NAS writes, completion with the desktop
 closed, read-only client replay, and stale-send rejection. The allowance block
-is resolved. Desktop 0.20.43 remains installed. Testing exposed its unwired
-Stop control and a native-lease cleanup defect. Exact-run member controls and
-terminal lease cleanup are deployed to the database; the matching desktop
-changes pass focused tests and are approved for release as 0.20.44. Step 1 is not
-fully closed until the updated desktop Stop button is installed and tested.
+is resolved. The macOS 0.20.44 client is published and installed through its
+updater. Its actual Stop button cancels the exact cloud run, revokes that run's
+native lease atomically, and returns the conversation to idle. The saved
+connected account remains usable. The observed post-final completion delay
+below remains a performance follow-up; this is not completion of later runtime
+steps, full outage continuity, or Claude acceptance.
 
 Account and company access no longer depend on model readiness or allowance.
 Supabase recovered after the approved restart. The NAS port-change outage is
@@ -638,8 +639,8 @@ acceptance run; preflight found no active leases for running jobs. Afterwards
 there were no stale terminal-job leases. At 23:54:13 an exact send retry from
 that revoked run was denied with `42501`: still one public progress message,
 no final, and attempt count 1. Fresh cancellation/completion/failure transition
-coverage is in isolated PostgreSQL; a new installed-Stop live test remains a
-rollout gate.
+coverage is in isolated PostgreSQL. The installed-Stop acceptance closing the
+rollout gate is recorded below.
 
 The added controls/renderer/auth suites pass 35 tests across three files. The
 six existing mouth, delivery, native host/adapter, official-CLI, and broker
@@ -653,13 +654,93 @@ fixture must make a real database final send first; the final-send guard is
 not disabled. The earlier full SQL sweep's known suite-100 mismatch is not
 reclassified as passing.
 
-The user approved committing and publishing the desktop changes as 0.20.44.
-Build and publish the updated installer through the normal clean-master lane,
-then test Stop
-through the installed button against a fresh bounded cloud run. Do not call
-that UI acceptance done based on the API test or replace the signed installed
-app with a dirty development bundle. The separate outage-resilience worktree
-has not been merged or deployed here.
+### Desktop 0.20.44 release and installed Stop acceptance
+
+The user approved committing, publishing, installing, and testing this update.
+Commit `426e996932d3d6b49e94e5552e116efae25d1450` was pushed to `master` and
+claimed by source tag `shell-v0.20.44`. The release was built from that exact
+clean revision. `npm run check` passed, as did 163 focused tests across 14
+shell suites. No dependency or lockfile changes were made.
+
+The normal publisher created
+[v0.20.44](https://github.com/Qorpera/Qorpera_Base_Releases/releases/tag/v0.20.44)
+at `2026-08-28T00:10:13Z`, without bypassing its clean-source, version, spacing,
+or claim checks. All five macOS assets were uploaded under the updater's exact
+filenames, with manifest size and SHA-512 verification. The ARM64 ZIP is
+278,207,344 bytes with SHA-512
+`FYU7DHse6eowHrMUI/e7t/I7RNOlllbxN1oxggTwYAO34lJoxIx6mmOECqzHRpHf0ROXZCrMXEDtvOduNySz7A==`.
+Windows remains on its prior release; this was the explicit macOS-only lane.
+
+The app was installed through its own Check again / Restart to update
+controls. The first checks still reported 0.20.43 as current; after a normal
+app restart, the updater discovered and downloaded 0.20.44. No installed files
+or updater settings were patched to force the installation. The installed
+launcher and bundle both report 0.20.44. Deep, strict code-signature verification
+passes for both the packed and installed app, with Team ID `U472A89YFG` and
+the existing Apple Development identity. This is not a notarization claim.
+
+Installed file hashes exactly match the built artifacts:
+
+| Installed module | SHA-256 |
+| --- | --- |
+| `dist/cloud-session-run-control.js` | `036c6e2b727bba292f6fdc09b9ab17db692744d4d7cdd2334e5decb59136d4dd` |
+| `dist/main.js` | `4b6ecb56214f6f3d650fdd721d0613d9069c467698ef262f0b28579c004088fc` |
+| `dist/userland/renderer.js` | `1fd33674fa929cb8c42f3cbd7de039a973dc9612260b96878173394ce3c3b02e` |
+
+A fourth bounded GPT prompt was submitted in the installed Software Developer
+conversation, with marker `RUNTIME_STEP1_V47_STOP_02044_20260828_04`. It requested
+one progress send and a 90-second wait, with no file, agent, routine, setting,
+or external-data changes. All following timestamps are UTC on 2026-08-28.
+
+- Run `4e6d80c2-a555-40ce-b017-fd426fd28b70`, job
+  `b11d143c-fc6c-49be-8820-85beeda45df2`, admitted at 00:13:39.473462;
+  the runner started at 00:13:56.827822, attempt 1.
+- Progress event `2917cd2e-5a18-401e-9031-ee432e1bfefe` committed at
+  00:14:13.734794, sequence 65. Its text SHA-256 is
+  `220bcef4b3877d1bd13c8f34f09422446784fbf29a505e694c80cee4205d4400`.
+  The installed conversation showed that progress and an enabled Stop button.
+- Clicking the actual conversation Stop button cancelled the run at
+  00:14:27.401714. Native lease `850c89eb-4e55-4056-bf76-7e8abe9ff738`
+  became `revoked` at exactly the same transaction timestamp. There was one
+  cancellation audit receipt and no additional execution attempt.
+- The control disabled while its request was pending, then the working state
+  and Stop button disappeared. The post-cancellation guest process check
+  found neither the provider nor its waiting process. An exact stale send was
+  rejected with SQLSTATE `42501`; there was still only one public progress event.
+- At 00:15:55, after the full 90-second wait window, the run remained cancelled
+  with no final send, no retry, and no reactivated lease. Only this test's
+  recovery card was dismissed using Discard; its prompt, progress, job, and
+  audit history remain. No external work was replayed.
+
+A fifth, final-only GPT turn then verified reuse of the same saved connection
+without reconnecting the account or waiting for the cancelled lease to expire.
+Its marker was `RUNTIME_STEP1_V47_REUSE_02044_20260828_05`; it requested no
+Company File or external-data changes.
+
+- Run `94dac94a-9e4f-4782-ac60-f1aae685f4f8`, job
+  `58af94ba-a43b-42f9-96c6-3cd61f39210e`, admitted at 00:15:34.938579
+  and started at 00:15:51.749311, attempt 1.
+- Final event `7cad0676-9248-46c6-9fb8-c412386d011c` committed at
+  00:16:04.764878, sequence 67. Its exact requested text appeared once in
+  the installed conversation, with SHA-256
+  `19d2031e97a4ad8cb06e2a73e0b381f046f50bea2b45e5f7a934f7e95a7aa8a5`.
+- The job completed at 00:19:25.278427 with a closed
+  `qorpera.native-harness-result/v2` result. Native lease
+  `5969c594-cede-4655-8e62-9570514dd0fe` was released, and the installed
+  conversation returned to idle. An exact post-completion send was denied
+  with `42501`, still with one final message and one execution attempt.
+
+The native harness took 15,044 ms, while durable completion followed the final
+send by about 200.5 seconds. This independently reproduces the post-final
+performance issue above. The completion status is not being made optimistic
+to conceal that delay; reducing it remains a separate follow-up.
+
+The Stop and subsequent connection-reuse guests both report the signed v47
+base-image fingerprint
+`094804d51aac3a35512009a059a43b9e220aaf47837e825594dd144b133ff242`.
+The live NAS-backed Company File was reused. Neither a local model process nor
+a synthetic database admission stood in for the product path. The separate
+outage-resilience worktree has not been merged or deployed here.
 
 ## Remaining steps, not absent plumbing
 
