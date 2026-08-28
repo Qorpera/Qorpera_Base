@@ -17,6 +17,15 @@ import type {
 	NativeProviderLoginDescription,
 	NativeProviderLoginRequest,
 } from "./cloud-native-provider-host.ts";
+import {
+	type CloudNativeToolAuthorityReader,
+	type CloudNativeToolBinding,
+	cloudToolRequest,
+	parseCloudNativeToolBinding,
+} from "./cloud-native-tool-authority.ts";
+import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
+import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
+import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
 
 const LOGIN_SCHEMA = "qorpera.native-provider-login/v1";
 const EXECUTION_SCHEMA = "qorpera.native-provider-execution/v1";
@@ -34,6 +43,20 @@ function supabaseServiceHeaders(serviceKey: string): Record<string, string> {
 		headers.authorization = `Bearer ${serviceKey}`;
 	}
 	return headers;
+}
+
+function nativeCloudBaseUrl(value: string): URL {
+	const url = new URL(value);
+	if (
+		(url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) ||
+		url.username ||
+		url.password ||
+		url.search ||
+		url.hash ||
+		url.pathname !== "/"
+	)
+		throw new Error("Native cloud URL must be an HTTPS origin or loopback transport");
+	return url;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -166,21 +189,23 @@ function parseLogin(value: unknown): NativeProviderLoginRequest {
 
 function parseExecution(value: unknown): NativeProviderExecutionRequest {
 	const input = record(value, "Native execution request");
-	if (input.schema !== EXECUTION_SCHEMA) throw new Error("Native execution schema is invalid");
+	const companyRuntime = input.schema === "qorpera.native-company-execution/v1";
+	if (input.schema !== EXECUTION_SCHEMA && !companyRuntime) throw new Error("Native execution schema is invalid");
 	const authority = record(input.authority, "Native execution authority");
 	const job = record(input.job, "Native execution job");
-	const paths = record(input.input, "Native execution paths");
 	if (
 		authority.authentication_mode !== "native_subscription" ||
-		job.job_type !== "agent_turn" ||
-		job.required_capability !== "agent_turn" ||
+		(!companyRuntime && (job.job_type !== "agent_turn" || job.required_capability !== "agent_turn")) ||
+		(companyRuntime &&
+			(Object.keys(input).some((key) => !["schema", "authority", "job"].includes(key)) ||
+				Object.keys(job).some((key) => !["job_id", "attempt_count"].includes(key)))) ||
 		!Number.isSafeInteger(job.attempt_count) ||
 		(job.attempt_count as number) < 1
 	) {
 		throw new Error("Native execution request is invalid");
 	}
 	const model = text(authority.model, "Native execution model", 160);
-	return {
+	const identity = {
 		authority: {
 			leaseId: uuid(authority.lease_id, "Native lease id"),
 			runId: uuid(authority.run_id, "Native run id"),
@@ -197,11 +222,16 @@ function parseExecution(value: unknown): NativeProviderExecutionRequest {
 		},
 		job: {
 			jobId: uuid(job.job_id, "Native job id"),
-			jobType: "agent_turn",
-			requiredCapability: "agent_turn",
+			jobType: "agent_turn" as const,
+			requiredCapability: "agent_turn" as const,
 			attemptCount: job.attempt_count as number,
-			payload: job.payload as JsonValue,
+			payload: companyRuntime ? null : (job.payload as JsonValue),
 		},
+	};
+	if (companyRuntime) return { ...identity, runtime: "company-path-v1" };
+	const paths = record(input.input, "Native execution paths");
+	return {
+		...identity,
 		input: {
 			companyRoot: text(paths.company_root, "Native Company File root", 4096),
 			executionContextPath: text(paths.execution_context_path, "Native execution context path", 4096),
@@ -225,19 +255,15 @@ function sourceMatches(expected: string | undefined, remoteAddress: string | und
 	return normalized === expected;
 }
 
-export class SupabaseNativeProviderControlPlane implements NativeProviderControlPlane {
+export class SupabaseNativeProviderControlPlane
+	implements NativeProviderControlPlane, CloudNativeToolAuthorityReader, CloudNativeToolOperationControlPlane
+{
 	readonly #rpcUrl: string;
 	readonly #serviceKey: string;
 	readonly #fetch: typeof fetch;
 
 	constructor(baseUrl: string, serviceKey: string, fetchImplementation: typeof fetch = fetch) {
-		const url = new URL("/rest/v1/rpc/", baseUrl);
-		if (
-			url.protocol !== "https:" &&
-			!(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost"))
-		) {
-			throw new Error("Native control-plane URL must use HTTPS");
-		}
+		const url = new URL("/rest/v1/rpc/", nativeCloudBaseUrl(baseUrl));
 		if (!serviceKey.trim() || /[\0\r\n]/.test(serviceKey)) throw new Error("Native service key is invalid");
 		this.#rpcUrl = url.href;
 		this.#serviceKey = serviceKey;
@@ -319,6 +345,53 @@ export class SupabaseNativeProviderControlPlane implements NativeProviderControl
 		);
 	}
 
+	async describeToolAuthority(binding: CloudNativeToolBinding, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"qorpera_describe_native_tool_authority",
+			{ p_binding: parseCloudNativeToolBinding(binding) },
+			signal,
+		);
+	}
+
+	async beginToolOperation(
+		binding: CloudNativeToolBinding,
+		input: BeginCloudRunnerOperationInput,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		if (input.operationKind !== "cloud_tool") throw new Error("Invalid native tool operation kind");
+		return this.#rpc(
+			"qorpera_begin_native_tool_operation",
+			{
+				p_binding: parseCloudNativeToolBinding(binding),
+				p_receipt_id: input.receiptId,
+				p_logical_operation_key: input.logicalOperationKey,
+				p_input_sha256: input.inputSha256,
+				p_downstream_idempotency_sha256: createHash("sha256").update(input.downstreamIdempotencyKey).digest("hex"),
+				p_requires_company_revision: input.requiresCompanyRevision,
+			},
+			signal,
+		);
+	}
+
+	async completeToolOperation(
+		binding: CloudNativeToolBinding,
+		input: CompleteCloudRunnerOperationInput,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"qorpera_complete_native_tool_operation",
+			{
+				p_binding: parseCloudNativeToolBinding(binding),
+				p_receipt_id: input.receiptId,
+				p_input_sha256: input.inputSha256,
+				p_result: input.result,
+				p_output_snapshot_id: input.outputSnapshotId ?? null,
+				p_proposal_id: input.proposalId ?? null,
+			},
+			signal,
+		);
+	}
+
 	async sendMessage(
 		request: NativeProviderExecutionRequest,
 		input: CloudAgentSendInput,
@@ -347,17 +420,50 @@ export class SupabaseNativeProviderControlPlane implements NativeProviderControl
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-		const response = await this.#fetch(new URL(name, this.#rpcUrl), {
-			method: "POST",
-			headers: {
-				...supabaseServiceHeaders(this.#serviceKey),
-				"content-type": "application/json",
+		return cloudToolRequest(
+			async (requestSignal) => {
+				const response = await this.#fetch(new URL(name, this.#rpcUrl), {
+					method: "POST",
+					headers: {
+						...supabaseServiceHeaders(this.#serviceKey),
+						"content-type": "application/json",
+					},
+					body: JSON.stringify(body),
+					redirect: "error",
+					signal: requestSignal,
+				});
+				if (!response.ok) {
+					void response.body?.cancel().catch(() => undefined);
+					throw new Error(`Native control-plane RPC failed (${response.status})`);
+				}
+				if (!response.body) throw new Error("Native control-plane RPC returned no body");
+				const reader = response.body.getReader();
+				const cancel = (): void => {
+					void reader.cancel().catch(() => undefined);
+				};
+				requestSignal.addEventListener("abort", cancel, { once: true });
+				const chunks: Uint8Array[] = [];
+				let bytes = 0;
+				try {
+					while (true) {
+						requestSignal.throwIfAborted();
+						const next = await reader.read();
+						requestSignal.throwIfAborted();
+						if (next.done) break;
+						bytes += next.value.byteLength;
+						if (bytes > MAX_REQUEST_BYTES)
+							throw new Error("Native control-plane response exceeds its byte limit");
+						chunks.push(next.value);
+					}
+					return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+				} finally {
+					requestSignal.removeEventListener("abort", cancel);
+					cancel();
+				}
 			},
-			body: JSON.stringify(body),
-			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-		});
-		if (!response.ok) throw new Error(`Native control-plane RPC failed (${response.status})`);
-		return response.json() as Promise<unknown>;
+			signal ?? new AbortController().signal,
+			30_000,
+		);
 	}
 }
 
@@ -367,13 +473,7 @@ export class SupabaseNativeCredentialCapsuleStore implements NativeCredentialCap
 	readonly #fetch: typeof fetch;
 
 	constructor(baseUrl: string, serviceKey: string, fetchImplementation: typeof fetch = fetch) {
-		const url = new URL(`/storage/v1/object/${CAPSULE_BUCKET}/`, baseUrl);
-		if (
-			url.protocol !== "https:" &&
-			!(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost"))
-		) {
-			throw new Error("Native capsule storage URL must use HTTPS");
-		}
+		const url = new URL(`/storage/v1/object/${CAPSULE_BUCKET}/`, nativeCloudBaseUrl(baseUrl));
 		if (!serviceKey.trim() || /[\0\r\n]/.test(serviceKey)) throw new Error("Native capsule service key is invalid");
 		this.#objectUrl = url.href;
 		this.#serviceKey = serviceKey;
@@ -382,32 +482,45 @@ export class SupabaseNativeCredentialCapsuleStore implements NativeCredentialCap
 
 	async put(reference: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
 		if (bytes.byteLength > MAX_CAPSULE_BYTES) throw new Error("Native capsule exceeds its encrypted byte limit");
-		const response = await this.#fetch(this.#url(reference), {
-			method: "POST",
-			headers: {
-				...supabaseServiceHeaders(this.#serviceKey),
-				"content-type": "application/octet-stream",
-				"x-upsert": "true",
+		await withCloudDeadline(
+			async (requestSignal) => {
+				const response = await this.#fetch(this.#url(reference), {
+					method: "POST",
+					headers: {
+						...supabaseServiceHeaders(this.#serviceKey),
+						"content-type": "application/octet-stream",
+						"x-upsert": "true",
+					},
+					body: Uint8Array.from(bytes).buffer,
+					redirect: "error",
+					signal: requestSignal,
+				});
+				void response.body?.cancel().catch(() => undefined);
+				requestSignal.throwIfAborted();
+				if (!response.ok) throw new Error(`Native capsule upload failed (${response.status})`);
 			},
-			body: Uint8Array.from(bytes).buffer,
-			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-		});
-		if (!response.ok) throw new Error(`Native capsule upload failed (${response.status})`);
+			30_000,
+			signal,
+		);
 	}
 
 	async get(reference: string, signal?: AbortSignal): Promise<Uint8Array> {
-		const response = await this.#fetch(this.#url(reference), {
-			headers: supabaseServiceHeaders(this.#serviceKey),
-			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-		});
-		if (!response.ok) throw new Error(`Native capsule download failed (${response.status})`);
-		const length = Number(response.headers.get("content-length") ?? "0");
-		if (Number.isFinite(length) && length > MAX_CAPSULE_BYTES) {
-			throw new Error("Native capsule exceeds its encrypted byte limit");
-		}
-		const bytes = new Uint8Array(await response.arrayBuffer());
-		if (bytes.byteLength > MAX_CAPSULE_BYTES) throw new Error("Native capsule exceeds its encrypted byte limit");
-		return bytes;
+		return withCloudDeadline(
+			async (requestSignal) => {
+				const response = await this.#fetch(this.#url(reference), {
+					headers: supabaseServiceHeaders(this.#serviceKey),
+					redirect: "error",
+					signal: requestSignal,
+				});
+				if (!response.ok) {
+					void response.body?.cancel().catch(() => undefined);
+					throw new Error(`Native capsule download failed (${response.status})`);
+				}
+				return readBoundedCloudResponse(response, MAX_CAPSULE_BYTES, requestSignal);
+			},
+			30_000,
+			signal,
+		);
 	}
 
 	#url(reference: string): string {
@@ -423,7 +536,7 @@ export class HttpNativeProviderHostService {
 	readonly #listenHost: string;
 	readonly #port: number;
 	readonly #trustedSource?: string;
-	readonly #executions = new Map<string, AbortController>();
+	readonly #executions = new Map<string, { controller: AbortController; runId: string; assignmentId: string }>();
 	#server?: Server;
 
 	constructor(host: NativeProviderHost, token: string, listenHost = "127.0.0.1", port = 0, trustedSource?: string) {
@@ -442,6 +555,9 @@ export class HttpNativeProviderHostService {
 	async start(): Promise<number> {
 		if (this.#server) throw new Error("Native provider host is already started");
 		const server = createServer((request, response) => void this.#handle(request, response));
+		server.headersTimeout = 10_000;
+		server.requestTimeout = 15_000;
+		server.maxHeadersCount = 32;
 		this.#server = server;
 		await new Promise<void>((resolve, reject) => {
 			server.once("error", reject);
@@ -456,12 +572,36 @@ export class HttpNativeProviderHostService {
 	}
 
 	async close(): Promise<void> {
-		for (const controller of this.#executions.values()) controller.abort(new Error("Native provider host stopped"));
+		for (const { controller } of this.#executions.values())
+			controller.abort(new Error("Native provider host stopped"));
 		this.#executions.clear();
 		const server = this.#server;
 		this.#server = undefined;
 		if (!server) return;
-		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+		const closed = new Promise<void>((resolve, reject) =>
+			server.close((error) => (error ? reject(error) : resolve())),
+		);
+		// Incomplete uploads and stalled clients cannot hold shutdown open or
+		// finish an execution request after the host has stopped accepting work.
+		server.closeAllConnections();
+		await closed;
+	}
+
+	async #readBody(request: IncomingMessage): Promise<unknown> {
+		const deadline = setTimeout(() => request.destroy(new Error("Native request body deadline exceeded")), 10_000);
+		const chunks: Buffer[] = [];
+		let length = 0;
+		try {
+			for await (const chunk of request) {
+				const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+				length += bytes.length;
+				if (length > MAX_REQUEST_BYTES) throw new Error("Native provider request is too large");
+				chunks.push(bytes);
+			}
+			return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
+		} finally {
+			clearTimeout(deadline);
+		}
 	}
 
 	async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -478,13 +618,13 @@ export class HttpNativeProviderHostService {
 			response.writeHead(403).end();
 			return;
 		}
+		if (request.url !== "/login" && !tokenMatches(this.#token, request.headers.authorization)) {
+			response.writeHead(401, { connection: "close" }).end();
+			return;
+		}
 		try {
-			let encoded = "";
-			for await (const chunk of request) {
-				encoded += Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : String(chunk);
-				if (Buffer.byteLength(encoded) > MAX_REQUEST_BYTES) throw new Error("Native provider request is too large");
-			}
-			const body = JSON.parse(encoded) as unknown;
+			const body = await this.#readBody(request);
+			if (!this.#server || response.destroyed) throw new Error("Native provider request stopped");
 			let value: JsonValue;
 			if (request.url === "/login") {
 				const parsed = parseLogin(body);
@@ -494,15 +634,19 @@ export class HttpNativeProviderHostService {
 				}
 				value = await this.#host.beginLogin(parsed);
 			} else if (request.url === "/execute") {
-				if (!tokenMatches(this.#token, request.headers.authorization)) {
-					response.writeHead(401).end();
-					return;
-				}
 				const parsed = parseExecution(body);
 				if (this.#executions.has(parsed.authority.leaseId))
 					throw new Error("Native execution lease is already active");
 				const controller = new AbortController();
-				this.#executions.set(parsed.authority.leaseId, controller);
+				this.#executions.set(parsed.authority.leaseId, {
+					controller,
+					runId: parsed.authority.runId,
+					assignmentId: parsed.authority.assignmentId,
+				});
+				const disconnected = (): void => {
+					if (!response.writableFinished) controller.abort(new Error("Native runner connection closed"));
+				};
+				response.once("close", disconnected);
 				try {
 					value = {
 						schema: RESULT_SCHEMA,
@@ -510,23 +654,35 @@ export class HttpNativeProviderHostService {
 						result: await this.#host.execute(parsed, controller.signal),
 					};
 				} finally {
+					response.off("close", disconnected);
 					this.#executions.delete(parsed.authority.leaseId);
 				}
 			} else {
-				if (!tokenMatches(this.#token, request.headers.authorization)) {
-					response.writeHead(401).end();
-					return;
-				}
 				const cancel = record(body, "Native provider cancellation");
-				if (cancel.schema !== CANCEL_SCHEMA) throw new Error("Native provider cancellation is invalid");
+				if (
+					cancel.schema !== CANCEL_SCHEMA ||
+					Object.keys(cancel).some(
+						(key) => !["schema", "lease_id", "run_id", "assignment_id", "reason"].includes(key),
+					) ||
+					(cancel.reason !== "cancelled" && cancel.reason !== "deadline_exceeded")
+				)
+					throw new Error("Native provider cancellation is invalid");
 				const leaseId = uuid(cancel.lease_id, "Native cancellation lease id");
-				this.#executions.get(leaseId)?.abort(new Error("Native execution cancelled"));
-				value = { cancelled: true };
+				const runId = uuid(cancel.run_id, "Native cancellation run id");
+				const assignmentId = uuid(cancel.assignment_id, "Native cancellation assignment id");
+				const active = this.#executions.get(leaseId);
+				if (active && (active.runId !== runId || active.assignmentId !== assignmentId))
+					throw new Error("Native cancellation scope differs");
+				active?.controller.abort(new Error("Native execution cancelled"));
+				value = { cancelled: active !== undefined };
 			}
 			response.writeHead(200, { "content-type": "application/json" }).end(`${JSON.stringify(value)}\n`);
 		} catch (error) {
 			console.error(`Native provider request rejected: ${safeRequestDiagnostic(error)}`);
-			response.writeHead(422, { "content-type": "application/json" }).end('{"error":"request rejected"}\n');
+			if (!response.destroyed)
+				response
+					.writeHead(422, { "content-type": "application/json", connection: "close" })
+					.end('{"error":"request rejected"}\n');
 		}
 	}
 }

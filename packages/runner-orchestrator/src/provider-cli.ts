@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LxdUnixClient } from "./lxd-client.ts";
+import { lxdNativeCompanyRuntimeFromEnvironment } from "./lxd-company-runtime.ts";
 import { verifyLxdImageProvenanceFiles } from "./lxd-image-provenance.ts";
 import {
 	HttpLxdNativeLoginGateway,
@@ -108,6 +109,7 @@ function processConfig(): ProcessCloudRunnerProviderConfig {
 }
 
 function lxdConfig(): LxdCloudRunnerProviderConfig {
+	const nativeCompanyRuntime = lxdNativeCompanyRuntimeFromEnvironment(process.env);
 	return {
 		adapterId: required("QORPERA_RUNNER_PROVIDER_ADAPTER"),
 		supabaseUrl: required("QORPERA_SUPABASE_URL"),
@@ -138,6 +140,7 @@ function lxdConfig(): LxdCloudRunnerProviderConfig {
 		claudePath: process.env.QORPERA_CLAUDE_PATH ?? "/usr/local/bin/claude",
 		guestBootstrapService: process.env.QORPERA_LXD_GUEST_BOOTSTRAP_SERVICE ?? "qorpera-lxd-runner-bootstrap.service",
 		...liveCompanyConfig(),
+		...(nativeCompanyRuntime ? { nativeCompanyRuntime } : {}),
 	};
 }
 

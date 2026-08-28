@@ -2,6 +2,7 @@ import { chmod, chown, lstat, readdir } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { JsonValue } from "@qorpera/contracts";
 import type { NativeProviderLoginAuthorization } from "./cloud-native-subscription-control.ts";
+import { readBoundedCloudResponse } from "./cloud-request.ts";
 import type { BindCloudRunnerProviderSessionInput, CloudRunnerNativeAuthority } from "./cloud-runner-broker.ts";
 import {
 	type CloudRunnerExecutionResult,
@@ -31,6 +32,11 @@ export interface NativeProviderComputerBridge {
 	 * infrastructure operator is cryptographically blind to an unattested VM.
 	 */
 	start(authority: CloudRunnerNativeAuthority, request: CloudRunnerSandboxRequest): Promise<CloudRunnerSandboxProcess>;
+	/** No Company File mount, local context, artifact directory or model-chosen route. */
+	startCompany?(
+		authority: CloudRunnerNativeAuthority,
+		job: { jobId: string; attemptCount: number },
+	): Promise<CloudRunnerSandboxProcess>;
 }
 
 export type NativeProviderExecutionBoundary = CloudRunnerSandboxGuarantees["boundary"];
@@ -182,32 +188,36 @@ function bridgeUrl(value: string): URL {
 	return url;
 }
 
+function bridgeAuthorityProjection(authority: CloudRunnerNativeAuthority): JsonValue {
+	return {
+		lease_id: authority.leaseId,
+		run_id: authority.runId,
+		provider_connection_id: authority.providerConnectionId,
+		provider_connection_version: authority.providerConnectionVersion,
+		credential_capsule_id: authority.credentialCapsuleId,
+		encrypted_capsule_reference: authority.encryptedCapsuleReference,
+		attestation_policy_sha256: authority.attestationPolicySha256,
+		compute_identity_id: authority.computeIdentityId,
+		compute_identity_ownership_kind: authority.computeIdentityOwnershipKind,
+		compute_identity_owner_user_id: authority.computeIdentityOwnerUserId ?? null,
+		compute_identity_owner_scope_key: authority.computeIdentityOwnerScopeKey ?? null,
+		credential_ownership_kind: authority.credentialOwnershipKind,
+		credential_owner_user_id: authority.credentialOwnerUserId ?? null,
+		credential_owner_scope_key: authority.credentialOwnerScopeKey ?? null,
+		provider: authority.provider,
+		authentication_mode: authority.authenticationMode,
+		native_harness: authority.nativeHarness,
+		model: authority.model,
+		runner_id: authority.runnerId,
+		assignment_id: authority.assignmentId,
+		expires_at: authority.expiresAt,
+	};
+}
+
 function bridgeProjection(authority: CloudRunnerNativeAuthority, request: CloudRunnerSandboxRequest): JsonValue {
 	return {
 		schema: BRIDGE_REQUEST_SCHEMA,
-		authority: {
-			lease_id: authority.leaseId,
-			run_id: authority.runId,
-			provider_connection_id: authority.providerConnectionId,
-			provider_connection_version: authority.providerConnectionVersion,
-			credential_capsule_id: authority.credentialCapsuleId,
-			encrypted_capsule_reference: authority.encryptedCapsuleReference,
-			attestation_policy_sha256: authority.attestationPolicySha256,
-			compute_identity_id: authority.computeIdentityId,
-			compute_identity_ownership_kind: authority.computeIdentityOwnershipKind,
-			compute_identity_owner_user_id: authority.computeIdentityOwnerUserId ?? null,
-			compute_identity_owner_scope_key: authority.computeIdentityOwnerScopeKey ?? null,
-			credential_ownership_kind: authority.credentialOwnershipKind,
-			credential_owner_user_id: authority.credentialOwnerUserId ?? null,
-			credential_owner_scope_key: authority.credentialOwnerScopeKey ?? null,
-			provider: authority.provider,
-			authentication_mode: authority.authenticationMode,
-			native_harness: authority.nativeHarness,
-			model: authority.model,
-			runner_id: authority.runnerId,
-			assignment_id: authority.assignmentId,
-			expires_at: authority.expiresAt,
-		},
+		authority: bridgeAuthorityProjection(authority),
 		job: {
 			job_id: request.job.jobId,
 			job_type: request.job.jobType,
@@ -371,10 +381,36 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 		) {
 			throw new Error("Native provider bridge received an unsupported execution");
 		}
+		return this.#startExecution(authority, bridgeProjection(authority, request));
+	}
+
+	async startCompany(
+		authority: CloudRunnerNativeAuthority,
+		job: { jobId: string; attemptCount: number },
+	): Promise<CloudRunnerSandboxProcess> {
+		if (
+			!this.#bridgeToken ||
+			authority.authenticationMode !== "native_subscription" ||
+			authority.provider !== "openai" ||
+			authority.nativeHarness !== "codex-cli" ||
+			!UUID_PATTERN.test(job.jobId) ||
+			!Number.isSafeInteger(job.attemptCount) ||
+			job.attemptCount < 1
+		) {
+			throw new Error("Native provider bridge received an unsupported company runtime");
+		}
+		return this.#startExecution(authority, {
+			schema: "qorpera.native-company-execution/v1",
+			authority: bridgeAuthorityProjection(authority),
+			job: { job_id: job.jobId, attempt_count: job.attemptCount },
+		});
+	}
+
+	async #startExecution(authority: CloudRunnerNativeAuthority, body: JsonValue): Promise<CloudRunnerSandboxProcess> {
 		const executionAbort = new AbortController();
 		const result = this.#request(
 			this.#executeUrl,
-			bridgeProjection(authority, request),
+			body,
 			AbortSignal.any([
 				executionAbort.signal,
 				AbortSignal.timeout(this.#requestTimeoutMs),
@@ -382,7 +418,11 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 			]),
 		).then((value) => {
 			const envelope = record(value, "Native provider bridge response");
-			if (envelope.schema !== BRIDGE_RESPONSE_SCHEMA || envelope.lease_id !== authority.leaseId) {
+			if (
+				envelope.schema !== BRIDGE_RESPONSE_SCHEMA ||
+				envelope.lease_id !== authority.leaseId ||
+				Object.keys(envelope).some((key) => !["schema", "lease_id", "result"].includes(key))
+			) {
 				throw new Error("Native provider bridge returned another execution");
 			}
 			assertNoCredentialMaterial(envelope.result, "Native provider result");
@@ -417,23 +457,43 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 		bearerToken = this.#bridgeToken,
 	): Promise<unknown> {
 		if (!bearerToken) throw new Error("Native provider bridge capability is not configured");
-		const response = await this.#fetch(url, {
-			method: "POST",
-			headers: {
-				accept: "application/json",
-				authorization: `Bearer ${bearerToken}`,
-				"content-type": "application/json",
-			},
-			body: JSON.stringify(body),
-			redirect: "error",
-			signal,
+		signal.throwIfAborted();
+		let abort = (): void => {};
+		const cancelled = new Promise<never>((_resolve, reject) => {
+			abort = () => reject(new Error("Native provider bridge request stopped"));
+			signal.addEventListener("abort", abort, { once: true });
 		});
-		if (!response.ok) throw new Error(`Native provider bridge request failed (${response.status})`);
-		const encoded = await response.text();
-		if (Buffer.byteLength(encoded) > MAX_BRIDGE_RESPONSE_BYTES) {
-			throw new Error("Native provider bridge response exceeds its byte limit");
+		try {
+			return await Promise.race([
+				cancelled,
+				Promise.resolve().then(async () => {
+					signal.throwIfAborted();
+					const response = await this.#fetch(url, {
+						method: "POST",
+						headers: {
+							accept: "application/json",
+							authorization: `Bearer ${bearerToken}`,
+							"content-type": "application/json",
+						},
+						body: JSON.stringify(body),
+						redirect: "error",
+						signal,
+					});
+					if (!response.ok) {
+						void response.body?.cancel().catch(() => undefined);
+						throw new Error(`Native provider bridge request failed (${response.status})`);
+					}
+					const bytes = await readBoundedCloudResponse(response, MAX_BRIDGE_RESPONSE_BYTES, signal);
+					try {
+						return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+					} catch {
+						throw new Error("Native provider bridge returned invalid JSON");
+					}
+				}),
+			]);
+		} finally {
+			signal.removeEventListener("abort", abort);
 		}
-		return JSON.parse(encoded) as unknown;
 	}
 }
 

@@ -9,6 +9,7 @@ import type {
 	LxdInstanceStateRecord,
 	LxdStorageVolumeRecord,
 } from "./lxd-client.ts";
+import { type LxdNativeCompanyRuntimeConfig, validateLxdNativeCompanyRuntime } from "./lxd-company-runtime.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
 import { validateCloudRunnerWork } from "./orchestrator.ts";
 import type { CloudRunnerProviderServiceBackend } from "./provider-service.ts";
@@ -20,8 +21,10 @@ const NAME_PATTERN = /^[a-z][a-z0-9-]{0,62}$/;
 const PROFILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const STORAGE_SIZE_PATTERN = /^[1-9][0-9]*(?:KiB|MiB|GiB|TiB)$/;
 const JOURNAL_SCHEMA = "qorpera.lxd-provider-journal/v2";
+const COMPANY_JOURNAL_SCHEMA = "qorpera.lxd-company-provider-journal/v1";
 const BOOTSTRAP_SCHEMA = "qorpera.lxd-runner-bootstrap/v1";
 const IDENTITY_VOLUME_SCHEMA = "qorpera.compute-identity-volume/v1";
+const RECOVERY_VOLUME_SCHEMA = "qorpera.native-company-recovery-volume/v1";
 
 export type LxdProviderPhysicalState =
 	| "creating"
@@ -69,6 +72,8 @@ export interface LxdCloudRunnerProviderConfig {
 	/** Profile the live tree belongs to; the guest refuses the mount for any
 	 * other profile's job. Required together with liveCompanyRoot. */
 	liveCompanyProfileId?: string;
+	/** Separate, explicitly enrolled path-authorized runtime. Never mounts the company tree. */
+	nativeCompanyRuntime?: LxdNativeCompanyRuntimeConfig;
 }
 
 /** Where the live company tree appears inside a runner VM. */
@@ -93,7 +98,7 @@ export interface LxdGuestTransport {
 }
 
 interface LxdProviderJournal {
-	schema: typeof JOURNAL_SCHEMA;
+	schema: typeof JOURNAL_SCHEMA | typeof COMPANY_JOURNAL_SCHEMA;
 	acquisitionId: string;
 	workSha256: string;
 	jobType: string;
@@ -115,6 +120,13 @@ interface LxdProviderJournal {
 		rootDiskSize: string;
 		bootstrapSha256: string;
 		policySha256: string;
+		companyRuntime?: {
+			mode: "company-path-v1";
+			profileId: string;
+			recoveryVolume: string;
+			recoveryVolumeSize: string;
+			configurationSha256: string;
+		};
 	};
 	credentials: {
 		activationSha256: string;
@@ -132,6 +144,8 @@ interface ProviderCredentials {
 }
 
 interface LxdGuestBootstrapAuthority {
+	acquisitionId: string;
+	profileId?: string;
 	runner: CloudRunnerInstance;
 	computeIdentityId: string;
 	computeTemplateKey: string;
@@ -153,6 +167,23 @@ interface LiveCompanyAuthority {
 function liveCompanyAuthority(config: LxdCloudRunnerProviderConfig, jobType: string): LiveCompanyAuthority | undefined {
 	if (jobType === "proposal_review" || !config.liveCompanyRoot || !config.liveCompanyProfileId) return undefined;
 	return { root: config.liveCompanyRoot, profileId: config.liveCompanyProfileId };
+}
+
+function companyRuntimeAuthority(
+	config: LxdCloudRunnerProviderConfig,
+	acquisitionId: string,
+	profileId?: string,
+): LxdProviderJournal["lxd"]["companyRuntime"] {
+	const runtime = config.nativeCompanyRuntime;
+	if (!runtime) return undefined;
+	if (!profileId || !UUID_PATTERN.test(profileId)) throw new Error("Governed runtime company authority is missing");
+	return {
+		mode: "company-path-v1",
+		profileId,
+		recoveryVolume: `${runtime.recoveryVolumePrefix}${acquisitionId}`,
+		recoveryVolumeSize: runtime.recoveryVolumeSize,
+		configurationSha256: sha256(JSON.stringify(canonical(runtime))),
+	};
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -294,7 +325,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 	const lxd = record(input.lxd, "LXD provider journal identity");
 	const credentials = record(input.credentials, "LXD provider journal credentials");
 	if (
-		input.schema !== JOURNAL_SCHEMA ||
+		(input.schema !== JOURNAL_SCHEMA && input.schema !== COMPANY_JOURNAL_SCHEMA) ||
 		typeof input.acquisitionId !== "string" ||
 		!UUID_PATTERN.test(input.acquisitionId) ||
 		typeof input.workSha256 !== "string" ||
@@ -339,8 +370,35 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 	) {
 		throw new Error("LXD provider journal is invalid");
 	}
+	let companyRuntime: LxdProviderJournal["lxd"]["companyRuntime"];
+	if (input.schema === COMPANY_JOURNAL_SCHEMA) {
+		const company = record(lxd.companyRuntime, "Governed runtime journal");
+		if (
+			Object.keys(company).length !== 5 ||
+			company.mode !== "company-path-v1" ||
+			typeof company.profileId !== "string" ||
+			!UUID_PATTERN.test(company.profileId) ||
+			typeof company.recoveryVolume !== "string" ||
+			!NAME_PATTERN.test(company.recoveryVolume) ||
+			typeof company.recoveryVolumeSize !== "string" ||
+			!STORAGE_SIZE_PATTERN.test(company.recoveryVolumeSize) ||
+			typeof company.configurationSha256 !== "string" ||
+			!SHA256_PATTERN.test(company.configurationSha256)
+		) {
+			throw new Error("Governed runtime journal is invalid");
+		}
+		companyRuntime = {
+			mode: "company-path-v1",
+			profileId: company.profileId,
+			recoveryVolume: company.recoveryVolume,
+			recoveryVolumeSize: company.recoveryVolumeSize,
+			configurationSha256: company.configurationSha256,
+		};
+	} else if (lxd.companyRuntime !== undefined) {
+		throw new Error("Legacy journal cannot carry governed runtime authority");
+	}
 	return {
-		schema: JOURNAL_SCHEMA,
+		schema: input.schema,
 		acquisitionId: input.acquisitionId,
 		workSha256: input.workSha256,
 		jobType: input.jobType,
@@ -364,6 +422,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 			rootDiskSize: lxd.rootDiskSize,
 			bootstrapSha256: lxd.bootstrapSha256,
 			policySha256: lxd.policySha256,
+			...(companyRuntime ? { companyRuntime } : {}),
 		},
 		credentials: {
 			activationSha256: credentials.activationSha256,
@@ -447,6 +506,45 @@ function validateConfig(config: LxdCloudRunnerProviderConfig): void {
 	}
 	const service = config.guestBootstrapService ?? "qorpera-lxd-runner-bootstrap.service";
 	if (!/^[A-Za-z0-9@_.-]+\.service$/.test(service)) throw new Error("LXD guest bootstrap service is invalid");
+	if (
+		(config.liveCompanyRoot === undefined) !== (config.liveCompanyProfileId === undefined) ||
+		(config.liveCompanyRoot !== undefined &&
+			(!isAbsolute(config.liveCompanyRoot) || /[\0\r\n]/.test(config.liveCompanyRoot))) ||
+		(config.liveCompanyProfileId !== undefined && !UUID_PATTERN.test(config.liveCompanyProfileId))
+	) {
+		throw new Error("Live Company File root and profile must be configured together");
+	}
+	if (config.nativeCompanyRuntime) {
+		validateLxdNativeCompanyRuntime(config.nativeCompanyRuntime);
+		let authority: URL;
+		try {
+			authority = new URL(config.supabaseUrl);
+		} catch {
+			throw new Error("Governed native runtime requires an exact HTTPS control-plane origin");
+		}
+		if (
+			authority.protocol !== "https:" ||
+			authority.username ||
+			authority.password ||
+			authority.search ||
+			authority.hash ||
+			authority.pathname !== "/" ||
+			![authority.origin, `${authority.origin}/`].includes(config.supabaseUrl)
+		)
+			throw new Error("Governed native runtime requires an exact HTTPS control-plane origin");
+		if (config.liveCompanyRoot !== undefined || config.liveCompanyProfileId !== undefined) {
+			throw new Error("Governed native runtime cannot mount a live Company File");
+		}
+		if (
+			service !== "qorpera-lxd-runner-bootstrap.service" ||
+			config.nativeCompanyRuntime.recoveryVolumePrefix === config.identityVolumePrefix ||
+			config.nativeCompanyRuntime.objectGatewayToken === config.supabaseServiceKey
+		) {
+			throw new Error(
+				"Governed native runtime requires the pinned bootstrap and separate recovery and credential authority",
+			);
+		}
+	}
 }
 
 function ensureStep2Work(work: CloudRunnerWork): asserts work is CloudRunnerWork & {
@@ -471,7 +569,11 @@ function ensureStep2Work(work: CloudRunnerWork): asserts work is CloudRunnerWork
 
 function ipv4(state: LxdInstanceStateRecord, networkInterface: string): string | undefined {
 	return state.network[networkInterface]?.addresses.find(
-		(address) => address.family === "inet" && address.scope === "global" && !address.address.startsWith("169.254."),
+		(address) =>
+			address.family === "inet" &&
+			address.scope === "global" &&
+			isIP(address.address) === 4 &&
+			!address.address.startsWith("169.254."),
 	)?.address;
 }
 
@@ -500,8 +602,10 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 				const address = ipv4(state, networkInterface);
 				if (state.status === "Running" && address) {
 					const response = await this.#fetch(`http://${address}:${port}/healthz`, {
+						redirect: "error",
 						signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(1_000)]) : AbortSignal.timeout(1_000),
 					});
+					void response.body?.cancel().catch(() => undefined);
 					if (response.ok) return address;
 				}
 			} catch (error) {
@@ -520,8 +624,18 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 		delivery: CloudRunnerAssignmentDelivery,
 		signal?: AbortSignal,
 	): Promise<void> {
+		if (
+			isIP(address) !== 4 ||
+			!Number.isSafeInteger(port) ||
+			port < 1 ||
+			port > 65_535 ||
+			!TOKEN_PATTERN.test(assignmentToken)
+		) {
+			throw new Error("LXD guest assignment destination or token is invalid");
+		}
 		const response = await this.#fetch(`http://${address}:${port}/v1/assignment`, {
 			method: "POST",
+			redirect: "error",
 			headers: {
 				authorization: `Bearer ${assignmentToken}`,
 				"content-type": "application/json",
@@ -534,6 +648,7 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 			}),
 			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
 		});
+		void response.body?.cancel().catch(() => undefined);
 		if (response.status !== 200 && response.status !== 202) {
 			throw new Error(`LXD guest rejected assignment delivery (${response.status})`);
 		}
@@ -556,7 +671,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	) {
 		validateConfig(config);
 		this.adapterId = config.adapterId;
-		this.#config = { ...config, stateRoot: resolve(config.stateRoot) };
+		this.#config = {
+			...config,
+			stateRoot: resolve(config.stateRoot),
+			...(config.nativeCompanyRuntime ? { nativeCompanyRuntime: { ...config.nativeCompanyRuntime } } : {}),
+		};
 		this.#lxd = lxd;
 		this.#guest = guest;
 		this.#fetch = fetchImplementation;
@@ -578,6 +697,14 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	async acquire(acquisitionId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
 		return this.#exclusive(async () => {
 			ensureStep2Work(work);
+			if (
+				this.#config.nativeCompanyRuntime &&
+				(work.sponsor.authenticationMode !== "native_subscription" ||
+					work.sponsor.provider !== "openai" ||
+					work.sponsor.nativeHarness !== "codex-cli")
+			) {
+				throw new Error("Governed native runtime requires the pinned Codex subscription harness");
+			}
 			if (acquisitionId !== work.runId) throw new Error("Provider acquisition must use the immutable run id");
 			const digest = workSha256(work);
 			const credentials = await this.#credentials(acquisitionId);
@@ -585,7 +712,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (current) {
 				if (current.workSha256 !== digest) {
 					console.error(
-						`acquire refusal: acquisition=${acquisitionId} journaled=${current.workSha256.slice(0, 12)} incoming=${digest.slice(0, 12)} state=${current.physicalState} createdAt=${current.createdAt} work=${JSON.stringify(canonical(work)).slice(0, 2000)}`,
+						`acquire refusal: acquisition=${acquisitionId} journaled=${current.workSha256.slice(0, 12)} incoming=${digest.slice(0, 12)} state=${current.physicalState}`,
 					);
 					throw new Error("LXD provider acquisition id is bound to another immutable work request");
 				}
@@ -613,6 +740,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			);
 			const bootstrapFiles = this.#bootstrapFiles(
 				{
+					acquisitionId,
+					profileId: work.profileId,
 					runner,
 					computeIdentityId: work.computeIdentityId,
 					computeTemplateKey: work.computeTemplateKey,
@@ -624,7 +753,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			);
 			const now = new Date().toISOString();
 			current = {
-				schema: JOURNAL_SCHEMA,
+				schema: this.#config.nativeCompanyRuntime ? COMPANY_JOURNAL_SCHEMA : JOURNAL_SCHEMA,
 				acquisitionId,
 				workSha256: digest,
 				jobType: work.jobType,
@@ -643,6 +772,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					rootDiskSize: this.#config.rootDiskSize,
 					bootstrapSha256: bootstrapSha256(bootstrapFiles),
 					policySha256: work.computePolicySha256,
+					...(this.#config.nativeCompanyRuntime
+						? { companyRuntime: companyRuntimeAuthority(this.#config, acquisitionId, work.profileId) }
+						: {}),
 				},
 				credentials: {
 					activationSha256: sha256(credentials.activationToken),
@@ -679,6 +811,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			}
 			const credentials = await this.#credentials(current.acquisitionId);
 			this.#validateCredentialHashes(current, credentials);
+			if (current.lxd.companyRuntime) {
+				const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
+				if (!instance || instance.status !== "Running") throw new Error("Governed native guest is unavailable");
+				this.#assertInstanceAuthority(current, instance);
+				await this.#ensureRecoveryVolume(current, signal);
+			}
 			const address = current.guestAddress ?? (await this.#readyAddress(current, signal));
 			await this.#guest.deliver(
 				address,
@@ -726,6 +864,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		if (!current.runner.computeIdentityId)
 			throw new Error("Journaled LXD guest is missing Compute Identity authority");
 		await this.#ensureIdentityVolume(current, current.runner.computeIdentityId, signal);
+		await this.#ensureRecoveryVolume(current, signal);
 		let instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		if (!instance) {
 			if (current.physicalState !== "creating" && current.physicalState !== "starting") {
@@ -771,6 +910,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	#createRequest(current: LxdProviderJournal): LxdCreateInstanceRequest {
 		const liveCompany = liveCompanyAuthority(this.#config, current.jobType);
+		const companyRuntime = current.lxd.companyRuntime;
 		return {
 			name: current.instanceName,
 			type: "virtual-machine",
@@ -797,6 +937,25 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					pool: current.lxd.storagePool,
 					source: current.lxd.identityVolume,
 				},
+				...(companyRuntime && this.#config.nativeCompanyRuntime
+					? {
+							"runner-recovery": {
+								type: "disk",
+								path: "/var/lib/qorpera-runner",
+								pool: current.lxd.storagePool,
+								source: companyRuntime.recoveryVolume,
+							},
+							[this.#config.networkInterface]: {
+								type: "nic",
+								name: this.#config.networkInterface,
+								network: this.#config.nativeCompanyRuntime.network,
+								"security.ipv4_filtering": "true",
+								"security.ipv6_filtering": "true",
+								"security.mac_filtering": "true",
+								"security.port_isolation": "true",
+							},
+						}
+					: {}),
 				/* No uid shifting: idmapped mounts are unreliable over NFS. The
 				 * NAS export squashes every writer to one owner and the tree
 				 * carries open modes, so guest uids need no translation. No
@@ -831,6 +990,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			throw new Error("Journaled LXD guest is missing Compute Identity authority");
 		}
 		return {
+			acquisitionId: journal.acquisitionId,
+			...(journal.lxd.companyRuntime ? { profileId: journal.lxd.companyRuntime.profileId } : {}),
 			runner: journal.runner,
 			computeIdentityId: journal.runner.computeIdentityId,
 			computeTemplateKey: journal.runner.templateKey,
@@ -842,6 +1003,15 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	#bootstrapFiles(authority: LxdGuestBootstrapAuthority, credentials: ProviderCredentials): LxdGuestBootstrapFile[] {
 		const liveCompany = liveCompanyAuthority(this.#config, authority.jobType);
+		const runtime = this.#config.nativeCompanyRuntime;
+		if (
+			runtime &&
+			(runtime.objectGatewayToken === credentials.nativeBridgeToken ||
+				runtime.objectGatewayToken === credentials.activationToken ||
+				runtime.objectGatewayToken === credentials.assignmentToken)
+		) {
+			throw new Error("Native company object credential must be independent");
+		}
 		const runnerConfig = JSON.stringify(
 			{
 				schema: "qorpera.ephemeral-runner-service/v1",
@@ -859,7 +1029,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				runner_version: this.#config.runnerVersion,
 				native_bridge_url: `http://127.0.0.1:${this.#config.nativeBridgePort}/`,
 				native_bridge_boundary: "virtual_machine",
-				native_bridge_shared_gid: this.#config.nativeExecutionGid,
+				...(!runtime ? { native_bridge_shared_gid: this.#config.nativeExecutionGid } : {}),
 				assignment_host: "0.0.0.0",
 				assignment_port: this.#config.guestAssignmentPort,
 				assignment_trusted_source: this.#config.guestAssignmentSource,
@@ -876,7 +1046,21 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		);
 		const bootstrap = JSON.stringify(
 			{
-				schema: BOOTSTRAP_SCHEMA,
+				schema: runtime ? "qorpera.lxd-company-runner-bootstrap/v1" : BOOTSTRAP_SCHEMA,
+				...(runtime
+					? {
+							company_runtime: {
+								mode: "company-path-v1",
+								run_id: authority.acquisitionId,
+								profile_id: authority.profileId,
+								runner_id: authority.runner.runnerId,
+								codex_path: runtime.codexPath,
+								binary_sha256: runtime.binarySha256,
+								object_gateway_url: runtime.objectGatewayUrl,
+								recovery_volume_path: "/var/lib/qorpera-runner",
+							},
+						}
+					: {}),
 				compute_identity_id: authority.computeIdentityId,
 				compute_template_key: authority.computeTemplateKey,
 				compute_template_version: authority.computeTemplateVersion,
@@ -898,6 +1082,14 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			"QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT=/var/lib/qorpera-native-provider/tmp",
 			`QORPERA_CODEX_PATH=${this.#config.codexPath}`,
 			`QORPERA_CLAUDE_PATH=${this.#config.claudePath}`,
+			...(runtime
+				? [
+						"QORPERA_NATIVE_RUNTIME=company-path-v1",
+						`QORPERA_NATIVE_CODEX_FENCE_PATH=${runtime.codexPath}`,
+						`QORPERA_NATIVE_CODEX_FENCE_SHA256=${runtime.binarySha256}`,
+						`QORPERA_NATIVE_OBJECT_GATEWAY_URL=${runtime.objectGatewayUrl}`,
+					]
+				: []),
 			"",
 		].join("\n");
 		return [
@@ -920,6 +1112,14 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
 				content: `${this.#config.supabaseServiceKey}\n`,
 			},
+			...(runtime
+				? [
+						{
+							path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-object-token",
+							content: `${runtime.objectGatewayToken}\n`,
+						},
+					]
+				: []),
 		];
 	}
 
@@ -1007,6 +1207,20 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		) {
 			throw new Error("LXD guest drifted from immutable provider authority");
 		}
+		if (journal.lxd.companyRuntime) {
+			const expected = this.#createRequest(journal);
+			if (
+				JSON.stringify(canonical(instance.devices)) !== JSON.stringify(canonical(expected.devices)) ||
+				JSON.stringify(canonical(instance.expandedDevices)) !== JSON.stringify(canonical(expected.devices)) ||
+				Object.entries(expected.config).some(([key, value]) => instance.expandedConfig[key] !== value) ||
+				Object.keys(instance.expandedConfig).some(
+					(key) =>
+						!Object.hasOwn(expected.config, key) && !key.startsWith("image.") && !key.startsWith("volatile."),
+				)
+			) {
+				throw new Error("Governed native guest has drifted mounts, network, or expanded configuration");
+			}
+		}
 	}
 
 	async #reconcileJournal(current: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
@@ -1014,6 +1228,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			throw new Error("Journaled LXD guest is missing Compute Identity authority");
 		}
 		await this.#ensureIdentityVolume(current, current.runner.computeIdentityId, signal);
+		await this.#ensureRecoveryVolume(current, signal);
 		const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		if (!instance) {
 			if (current.physicalState !== "stopped" && current.physicalState !== "lost") {
@@ -1070,6 +1285,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			signal,
 		);
 		if (!volume) {
+			if (journal.lxd.companyRuntime && journal.physicalState !== "creating") {
+				throw new Error("Governed native identity volume is missing; recovery requires operator reconciliation");
+			}
 			await this.#lxd.createStorageVolume(
 				journal.lxd.project,
 				journal.lxd.storagePool,
@@ -1096,6 +1314,62 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		}
 		if (!volume) throw new Error("LXD did not persist the Compute Identity volume");
 		this.#assertIdentityVolumeAuthority(journal, computeIdentityId, volume);
+	}
+
+	async #ensureRecoveryVolume(journal: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
+		const company = journal.lxd.companyRuntime;
+		if (!company) return;
+		const expected = {
+			size: company.recoveryVolumeSize,
+			"user.qorpera.schema": RECOVERY_VOLUME_SCHEMA,
+			"user.qorpera.run_id": journal.acquisitionId,
+			"user.qorpera.profile_id": company.profileId,
+			"user.qorpera.runner_id": journal.runner.runnerId,
+			"user.qorpera.compute_identity_id": journal.runner.computeIdentityId,
+			"user.qorpera.provider_adapter": this.adapterId,
+		};
+		let volume = await this.#lxd.getStorageVolume(
+			journal.lxd.project,
+			journal.lxd.storagePool,
+			company.recoveryVolume,
+			signal,
+		);
+		if (!volume) {
+			if (journal.physicalState !== "creating") {
+				throw new Error("Native recovery volume is missing; execution cannot restart with empty recovery state");
+			}
+			if (!expected["user.qorpera.compute_identity_id"]) throw new Error("Native recovery identity is missing");
+			await this.#lxd.createStorageVolume(
+				journal.lxd.project,
+				journal.lxd.storagePool,
+				{
+					name: company.recoveryVolume,
+					type: "custom",
+					content_type: "filesystem",
+					description: `Qorpera retained native recovery ${journal.acquisitionId}`,
+					config: {
+						...expected,
+						"user.qorpera.compute_identity_id": expected["user.qorpera.compute_identity_id"],
+					},
+				},
+				signal,
+			);
+			volume = await this.#lxd.getStorageVolume(
+				journal.lxd.project,
+				journal.lxd.storagePool,
+				company.recoveryVolume,
+				signal,
+			);
+		}
+		if (
+			!volume ||
+			volume.name !== company.recoveryVolume ||
+			volume.type !== "custom" ||
+			volume.contentType !== "filesystem" ||
+			Object.entries(expected).some(([key, value]) => volume?.config[key] !== value)
+		) {
+			throw new Error("Native recovery volume drifted from immutable company and run authority");
+		}
 	}
 
 	#assertIdentityVolumeAuthority(
@@ -1152,7 +1426,19 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	async #readJournal(acquisitionId: string): Promise<LxdProviderJournal | undefined> {
 		try {
-			return journalFromJson(JSON.parse(await readFile(this.#journalPath(acquisitionId), "utf-8")) as unknown);
+			const journal = journalFromJson(
+				JSON.parse(await readFile(this.#journalPath(acquisitionId), "utf-8")) as unknown,
+			);
+			const expected = companyRuntimeAuthority(this.#config, acquisitionId, journal.lxd.companyRuntime?.profileId);
+			if (
+				journal.acquisitionId !== acquisitionId ||
+				JSON.stringify(canonical(journal.lxd.companyRuntime)) !== JSON.stringify(canonical(expected))
+			) {
+				throw new Error(
+					"LXD journal cannot switch runtime mode or governed configuration; use a separate rollout lane",
+				);
+			}
+			return journal;
 		} catch (error) {
 			if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
 			throw error;
@@ -1196,6 +1482,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
 		const response = await this.#fetch(new URL(`/rest/v1/rpc/${name}`, this.#config.supabaseUrl), {
 			method: "POST",
+			redirect: "error",
 			headers: {
 				...supabaseServiceHeaders(this.#config.supabaseServiceKey),
 				"content-type": "application/json",
@@ -1203,7 +1490,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			body: JSON.stringify(body),
 			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
 		});
-		if (!response.ok) throw new Error(`Runner provisioning failed (${response.status})`);
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new Error(`Runner provisioning failed (${response.status})`);
+		}
 		return response.json() as Promise<unknown>;
 	}
 

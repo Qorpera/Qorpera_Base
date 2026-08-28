@@ -2,16 +2,16 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_BASE_FINGERPRINT="7ef31bed9834094a06517d63b93434588049efcbe2ab5d67419a6167988b7d4f"
-EXPECTED_PACKAGE_MANIFEST_SHA256="2c54b1e3010c880043086d8d932afa007c925ec69667ae572efe17b91d2a98c4"
+EXPECTED_BASE_FINGERPRINT="5e644adaf5d1c43149ea7310ac2a7cad927fa6603343e8fa9070a9200a24b7b8"
+EXPECTED_PACKAGE_MANIFEST_SHA256="1f75de50b0da5e0d4b8852df30d4a4f60bc74d04984c445afb605fe61791b9c4"
 EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1"
-STAGING_ROOT="/home/company41-admin/step2-lxd/lxd-runner-guest-v45"
+STAGING_ROOT="/home/company41-admin/step2-lxd/lxd-runner-guest-v48"
 LXD_POOL="qorpera-vm"
 LXD_NETWORK="qorpera0"
 LXD_BUILDER_PROJECT="default"
-BUILDER_INSTANCE="qorpera-runner-image-build-v45"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v45-unsigned"
-STATE_LOG="/var/log/qorpera-lxd-runner-image-candidate.txt"
+BUILDER_INSTANCE="qorpera-runner-image-build-v48"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v48-unsigned"
+STATE_LOG="/var/log/qorpera-lxd-runner-image-candidate-v48.txt"
 
 if [[ ${EUID} -ne 0 ]]; then
 	echo "Run this script through sudo." >&2
@@ -38,6 +38,8 @@ const root = realpathSync(process.env.PACKAGE_ROOT);
 const manifest = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8"));
 if (
   manifest.schema !== "qorpera.lxd-runner-guest-package/v1" ||
+  manifest.nativeCompany?.schema !== "qorpera.native-company-guest/v1" ||
+  manifest.nativeCompany?.binarySha256 !== "babeed68a7732f96fa6bcd69ac3a9e4124bcfab5340ce0fbab61363b8b1a148f" ||
   manifest.runnerImage?.image !== process.env.EXPECTED_RUNNER_IMAGE ||
   !Array.isArray(manifest.artifacts)
 ) {

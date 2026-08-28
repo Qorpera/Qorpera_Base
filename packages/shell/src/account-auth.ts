@@ -9,6 +9,11 @@ import {
 	type SupportedStorage,
 	type User,
 } from "@supabase/supabase-js";
+import {
+	CloudMemberCompanyFileClient,
+	type CloudMemberCompanyMode,
+	parseCloudMemberCompanyMode,
+} from "./cloud-member-company-editor.ts";
 import { HttpNativeProviderComputerBridge, type NativeProviderIdentityBridge } from "./cloud-native-provider.ts";
 import {
 	NativeSubscriptionControlPlane,
@@ -23,6 +28,8 @@ import {
 } from "./cloud-object-store.ts";
 import { SupabaseCloudPresenceTransport } from "./cloud-presence.ts";
 import { SupabaseCloudRealtimeTransport } from "./cloud-realtime-sync.ts";
+import { withCloudDeadline } from "./cloud-request.ts";
+import { CloudSessionAttachments } from "./cloud-session-attachments.ts";
 import { CloudSessionRunControl } from "./cloud-session-run-control.ts";
 import {
 	createSupabaseHostedPrimary,
@@ -328,6 +335,11 @@ export class QorperaAccountAuth {
 	private readonly nativeSubscriptions: NativeSubscriptionControlPlane;
 	private readonly sessionRuns: CloudSessionRunControl;
 	private readonly nativeIdentityBridge?: NativeProviderIdentityBridge;
+	private readonly memberClientOptions: (
+		companyId: string,
+		environmentId: string,
+		accountId: string,
+	) => ConstructorParameters<typeof CloudMemberCompanyFileClient>[0];
 	private readonly openExternal: (url: string) => Promise<void>;
 	private readonly storage: FileAccountAuthStorage;
 	private readonly timeoutMs: number;
@@ -365,6 +377,24 @@ export class QorperaAccountAuth {
 		const objectGatewayUrl =
 			configuredObjectGatewayUrl ||
 			(new URL(projectUrl).origin === new URL(QORPERA_AUTH_URL).origin ? QORPERA_OBJECT_GATEWAY_URL : undefined);
+		this.memberClientOptions = (companyId, environmentId, accountId) => {
+			if (!objectGatewayUrl) throw new Error("The governed Company File gateway is not configured");
+			return {
+				companyId,
+				environmentId,
+				supabaseUrl: projectUrl,
+				objectGatewayUrl,
+				publishableKey: options.publishableKey ?? QORPERA_AUTH_PUBLISHABLE_KEY,
+				fetch: options.fetch,
+				accessToken: async (signal) => {
+					const { data, error } = await this.client.auth.getSession();
+					signal.throwIfAborted();
+					if (error || !data.session || data.session.user.id !== accountId)
+						throw new Error("Company File member changed");
+					return data.session.access_token;
+				},
+			};
+		};
 		const storageTransport = new SupabaseCloudObjectTransport(this.client);
 		const gatewayTransport = objectGatewayUrl
 			? new HttpCloudObjectTransport({
@@ -419,6 +449,36 @@ export class QorperaAccountAuth {
 
 	hostedObjects(): CloudContentAddressedStore {
 		return this.objects;
+	}
+
+	memberCompanyFile(companyId: string, environmentId: string, accountId: string): CloudMemberCompanyFileClient {
+		return new CloudMemberCompanyFileClient(this.memberClientOptions(companyId, environmentId, accountId));
+	}
+
+	sessionAttachments(companyId: string, environmentId: string, accountId: string): CloudSessionAttachments {
+		return new CloudSessionAttachments(this.memberClientOptions(companyId, environmentId, accountId));
+	}
+
+	companyFileMode(companyId: string, accountId: string, signal: AbortSignal): Promise<CloudMemberCompanyMode> {
+		return withCloudDeadline(
+			async (deadline) => {
+				const session = await this.client.auth.getSession();
+				deadline.throwIfAborted();
+				if (session.error || session.data.session?.user.id !== accountId)
+					throw new Error("Company File member changed");
+				const { data, error } = await this.client
+					.rpc("qorpera_member_company_file_mode" as never, { p_profile_id: companyId } as never)
+					.abortSignal(deadline);
+				deadline.throwIfAborted();
+				if (error)
+					throw new Error(
+						"Company File access mode is unavailable. Try again when the cloud connection is restored.",
+					);
+				return parseCloudMemberCompanyMode(data, companyId);
+			},
+			15_000,
+			signal,
+		);
 	}
 
 	nativeSubscriptionControl(): NativeSubscriptionControlPlane {

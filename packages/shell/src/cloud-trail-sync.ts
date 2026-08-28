@@ -86,7 +86,10 @@ export interface CloudTrailSynchronizerOptions {
 	profileId: string;
 	environmentId: string;
 	primary: CloudTrailPrimary;
-	loadObject?: (reference: { sha256: string; bytes: number; mediaType: string }) => Promise<Uint8Array>;
+	loadObject?: (
+		reference: { sha256: string; bytes: number; mediaType: string },
+		source: { sessionId: string; inputId: string },
+	) => Promise<Uint8Array>;
 	canWrite: () => boolean;
 	liveBindings?: () => Iterable<TrailBinding>;
 	onMaterialized?: (binding: TrailBinding) => void;
@@ -638,7 +641,10 @@ export class CloudTrailSynchronizer {
 						}
 						const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
 						for (const attachment of attachments) {
-							const bytes = await this.#options.loadObject!(attachment);
+							const bytes = await this.#options.loadObject!(attachment, {
+								sessionId: hosted.sessionId,
+								inputId: event.sessionInputId,
+							});
 							images.push({
 								type: "image",
 								data: Buffer.from(bytes).toString("base64"),

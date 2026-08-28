@@ -1,6 +1,7 @@
 import { type ChildProcessByStdio, type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
@@ -12,6 +13,7 @@ import {
 	type CloudAgentSendInput,
 	type CloudAgentSendReceipt,
 } from "./cloud-agent-mouth.ts";
+import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 
 const CAPSULE_SCHEMA = "qorpera.native-credential-capsule/v1";
 const LOGIN_RESULT_SCHEMA = "qorpera.native-provider-login-result/v1";
@@ -101,6 +103,18 @@ export interface NativeHarnessDriver {
 	execute(input: NativeHarnessExecutionInput): Promise<{ providerSessionId?: string }>;
 }
 
+/** Cloud-selected execution, distinct from the official CLI's login driver. */
+export interface NativeCloudExecutionDriver {
+	execute(
+		request: NativeCompanyExecutionRequest,
+		identityRoot: string,
+		signal: AbortSignal,
+	): Promise<{
+		providerSessionId: string;
+		delivery: { messageCount: number; finalMessageId: string | null };
+	}>;
+}
+
 export interface NativeProviderExecutionAuthority {
 	leaseId: string;
 	runId: string;
@@ -116,7 +130,7 @@ export interface NativeProviderExecutionAuthority {
 	expiresAt: string;
 }
 
-export interface NativeProviderExecutionRequest {
+interface NativeProviderExecutionIdentity {
 	authority: NativeProviderExecutionAuthority;
 	job: {
 		jobId: string;
@@ -125,6 +139,16 @@ export interface NativeProviderExecutionRequest {
 		attemptCount: number;
 		payload: JsonValue;
 	};
+}
+
+export interface NativeCompanyExecutionRequest extends NativeProviderExecutionIdentity {
+	runtime: "company-path-v1";
+	input?: never;
+	outputRoot?: never;
+}
+
+export interface NativeLegacyExecutionRequest extends NativeProviderExecutionIdentity {
+	runtime?: never;
 	input: {
 		companyRoot: string;
 		executionContextPath: string;
@@ -133,6 +157,8 @@ export interface NativeProviderExecutionRequest {
 	};
 	outputRoot: string;
 }
+
+export type NativeProviderExecutionRequest = NativeCompanyExecutionRequest | NativeLegacyExecutionRequest;
 
 interface CapsuleFile {
 	path: string;
@@ -265,38 +291,102 @@ async function collectCapsuleFiles(root: string, durablePaths?: ReadonlySet<stri
 	const durablePathList = durablePaths === undefined ? undefined : [...durablePaths];
 	const containsDurableFile = (path: string): boolean =>
 		durablePathList === undefined || durablePathList.some((durablePath) => durablePath.startsWith(`${path}/`));
-	const visit = async (directory: string): Promise<void> => {
-		const entries = await readdir(directory, { withFileTypes: true });
-		entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
-		for (const entry of entries) {
-			const absolute = join(directory, entry.name);
-			const relativePath = relative(root, absolute).split(sep).join("/");
-			if (!safeRelativePath(relativePath)) throw new Error("Credential capsule contains an invalid path");
-			const metadata = await lstat(absolute);
-			// Official CLIs may create compatibility aliases such as ~/.codex ->
-			// $CODEX_HOME. Never follow or reproduce those links: the canonical
-			// credential directory is already captured as ordinary files.
-			if (metadata.isSymbolicLink()) continue;
-			if (metadata.isDirectory()) {
-				if (!containsDurableFile(relativePath)) continue;
-				await visit(absolute);
-				continue;
+	const visit = async (directory: string, prefix: string): Promise<void> => {
+		const metadata = await lstat(directory);
+		if (!metadata.isDirectory()) throw new Error("Credential capsule directory is unsafe");
+		const handle =
+			process.platform === "linux"
+				? await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+				: undefined;
+		try {
+			if (handle) {
+				const opened = await handle.stat();
+				if (!opened.isDirectory() || opened.dev !== metadata.dev || opened.ino !== metadata.ino)
+					throw new Error("Credential capsule directory changed");
 			}
-			if (!metadata.isFile()) throw new Error("Credential capsule contains an unsupported entry");
-			if (durablePaths !== undefined && !durablePaths.has(relativePath)) continue;
-			totalBytes += metadata.size;
-			if (files.length >= MAX_CAPSULE_FILES || totalBytes > MAX_CAPSULE_PLAINTEXT_BYTES) {
-				throw new Error("Credential capsule exceeds its storage budget");
+			// Linux deployment walks from open directory descriptors. Renaming a
+			// parent into a symlink cannot redirect a later child read outside it.
+			const anchored = handle ? `/proc/self/fd/${handle.fd}` : directory;
+			const entries = await readdir(anchored, { withFileTypes: true });
+			entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
+			for (const entry of entries) {
+				const absolute = join(anchored, entry.name);
+				const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+				if (!safeRelativePath(relativePath)) throw new Error("Credential capsule contains an invalid path");
+				const entryMetadata = await lstat(absolute);
+				// Compatibility aliases are still ignored at login. Losing a path
+				// from the original capsule during refresh is an error below, not
+				// permission to replace stored credentials with an incomplete archive.
+				if (entryMetadata.isSymbolicLink()) continue;
+				if (entryMetadata.isDirectory()) {
+					if (!containsDurableFile(relativePath)) continue;
+					await visit(absolute, relativePath);
+					continue;
+				}
+				if (!entryMetadata.isFile()) throw new Error("Credential capsule contains an unsupported entry");
+				if (durablePaths !== undefined && !durablePaths.has(relativePath)) continue;
+				totalBytes += entryMetadata.size;
+				if (files.length >= MAX_CAPSULE_FILES || totalBytes > MAX_CAPSULE_PLAINTEXT_BYTES)
+					throw new Error("Credential capsule exceeds its storage budget");
+				files.push({
+					path: relativePath,
+					mode: entryMetadata.mode & 0o777,
+					data: (await readCapsuleFile(absolute, entryMetadata)).toString("base64"),
+				});
 			}
-			files.push({
-				path: relativePath,
-				mode: metadata.mode & 0o777,
-				data: (await readFile(absolute)).toString("base64"),
-			});
+		} finally {
+			await handle?.close();
 		}
 	};
-	await visit(root);
+	await visit(root, "");
+	if (durablePaths && (files.length !== durablePaths.size || files.some((file) => !durablePaths.has(file.path))))
+		throw new Error("Credential capsule lost an original credential path");
 	return { schema: CAPSULE_SCHEMA, files };
+}
+
+async function readCapsuleFile(path: string, expected: Stats): Promise<Buffer> {
+	// O_NONBLOCK makes a raced FIFO fail its type check instead of hanging
+	// credential finalization. O_NOFOLLOW prevents a raced symlink dereference.
+	const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	try {
+		const opened = await handle.stat();
+		if (
+			!opened.isFile() ||
+			opened.nlink !== 1 ||
+			opened.dev !== expected.dev ||
+			opened.ino !== expected.ino ||
+			opened.size !== expected.size ||
+			opened.mtimeMs !== expected.mtimeMs ||
+			opened.ctimeMs !== expected.ctimeMs ||
+			(process.getuid && opened.uid !== process.getuid())
+		)
+			throw new Error("Credential capsule file is unsafe or changed");
+		// Read at most the validated size plus one byte. readFile() after lstat
+		// could otherwise allocate past the capsule budget if a file grew.
+		const data = Buffer.alloc(opened.size + 1);
+		let offset = 0;
+		while (offset < data.length) {
+			const { bytesRead } = await handle.read(data, offset, data.length - offset, offset);
+			if (bytesRead === 0) break;
+			offset += bytesRead;
+		}
+		const after = await handle.stat();
+		const linked = await lstat(path);
+		if (
+			offset !== opened.size ||
+			after.size !== opened.size ||
+			after.nlink !== 1 ||
+			after.mtimeMs !== opened.mtimeMs ||
+			after.ctimeMs !== opened.ctimeMs ||
+			!linked.isFile() ||
+			linked.dev !== opened.dev ||
+			linked.ino !== opened.ino
+		)
+			throw new Error("Credential capsule file is unsafe or changed");
+		return data.subarray(0, offset);
+	} finally {
+		await handle.close();
+	}
 }
 
 async function restoreCapsuleFiles(root: string, archive: CapsuleArchive): Promise<void> {
@@ -341,6 +431,10 @@ function credentialSealingFailure(error: unknown): string {
 		["Credential capsule cannot contain symbolic links", "symbolic-link"],
 		["Credential capsule contains an unsupported entry", "unsupported-entry"],
 		["Credential capsule exceeds its storage budget", "storage-budget"],
+		["Credential capsule directory is unsafe", "unsafe-directory"],
+		["Credential capsule directory changed", "changed-directory"],
+		["Credential capsule file is unsafe or changed", "unsafe-file"],
+		["Credential capsule lost an original credential path", "missing-credential"],
 	] as const) {
 		if (error.message === message) return reason;
 	}
@@ -597,10 +691,55 @@ async function terminateChild(child: NativeHarnessChild): Promise<void> {
 export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 	readonly #codexPath: string;
 	readonly #claudePath: string;
+	readonly #isolation: NativeIsolationConfiguration | undefined;
 
-	constructor(codexPath = "codex", claudePath = "claude") {
+	constructor(codexPath = "codex", claudePath = "claude", isolation?: NativeIsolationConfiguration) {
 		this.#codexPath = codexPath;
 		this.#claudePath = claudePath;
+		this.#isolation = isolation ? Object.freeze({ ...isolation }) : undefined;
+	}
+
+	async #loginProcess(
+		command: string,
+		args: string[],
+		root: string,
+		environment: NodeJS.ProcessEnv,
+		signal: AbortSignal,
+	): Promise<{ child: NativeHarnessChild; close(): Promise<void> }> {
+		signal.throwIfAborted();
+		if (!this.#isolation) {
+			const child = spawn(command, args, {
+				cwd: root,
+				env: environment,
+				stdio: ["ignore", "pipe", "pipe"],
+				windowsHide: true,
+			});
+			return { child, close: () => terminateChild(child) };
+		}
+		const scratchRoot = await mkdtemp(join(tmpdir(), "qorpera-native-auth-"));
+		try {
+			for (const name of ["workspace", "home", "config", "data", "cache"])
+				await mkdir(join(scratchRoot, name), { mode: 0o700 });
+			const isolated = await launchIsolatedNativeProcess({
+				configuration: this.#isolation,
+				command,
+				args,
+				scratchRoot,
+				codexHome: join(root, "codex"),
+				signal,
+			});
+			isolated.child.stdin.end();
+			return {
+				child: isolated.child,
+				async close() {
+					await isolated.close();
+					await rm(scratchRoot, { recursive: true, force: true });
+				},
+			};
+		} catch (error) {
+			await rm(scratchRoot, { recursive: true, force: true });
+			throw error;
+		}
 	}
 
 	async beginLogin(
@@ -608,21 +747,26 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 		identityRoot: string,
 		signal?: AbortSignal,
 	): Promise<NativeHarnessLoginHandle> {
+		if (this.#isolation && harness !== "codex-cli")
+			throw new Error("The governed native runtime currently accepts Codex only");
 		const root = requiredAbsolutePath(identityRoot, "Native identity root");
 		const environment = await prepareHarnessEnvironment(root);
 		const command = harness === "codex-cli" ? this.#codexPath : this.#claudePath;
 		const args = harness === "codex-cli" ? ["login", "--device-auth"] : ["auth", "login", "--claudeai"];
-		const child = spawn(command, args, {
-			cwd: root,
-			env: environment,
-			stdio: ["ignore", "pipe", "pipe"],
-			windowsHide: true,
-		});
+		const cancellation = new AbortController();
+		const loginSignal = AbortSignal.any([
+			cancellation.signal,
+			AbortSignal.timeout(600_000),
+			...(signal ? [signal] : []),
+		]);
+		const launched = await this.#loginProcess(command, args, root, environment, loginSignal);
+		const child = launched.child;
 		const capture = collectChildOutput(child);
 		const abort = (): void => {
-			void terminateChild(child);
+			void launched.close();
 		};
-		signal?.addEventListener("abort", abort, { once: true });
+		loginSignal.addEventListener("abort", abort, { once: true });
+		if (loginSignal.aborted) abort();
 		const prompt = new Promise<NativeHarnessLoginPrompt>((resolvePrompt, reject) => {
 			const started = Date.now();
 			const poll = (): void => {
@@ -639,30 +783,45 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			};
 			poll();
 		});
-		const completed = capture.completed.then(async () => {
-			signal?.removeEventListener("abort", abort);
-			const statusArgs = harness === "codex-cli" ? ["login", "status"] : ["auth", "status"];
-			const status = spawn(command, statusArgs, {
-				cwd: root,
-				env: environment,
-				stdio: ["ignore", "pipe", "pipe"],
-				windowsHide: true,
+		const completed = capture.completed
+			.then(async () => {
+				loginSignal.throwIfAborted();
+				const statusArgs = harness === "codex-cli" ? ["login", "status"] : ["auth", "status"];
+				const status = await this.#loginProcess(command, statusArgs, root, environment, loginSignal);
+				const stopStatus = (): void => {
+					void status.close();
+				};
+				loginSignal.addEventListener("abort", stopStatus, { once: true });
+				try {
+					const checked = collectChildOutput(status.child);
+					await checked.completed;
+					loginSignal.throwIfAborted();
+					const reference = checked.output().trim();
+					return reference
+						? { providerAccountReference: `${harness}:${createHash("sha256").update(reference).digest("hex")}` }
+						: {};
+				} finally {
+					loginSignal.removeEventListener("abort", stopStatus);
+					await status.close();
+				}
+			})
+			.finally(async () => {
+				loginSignal.removeEventListener("abort", abort);
+				await launched.close();
 			});
-			const checked = collectChildOutput(status);
-			await checked.completed;
-			const reference = checked.output().trim();
-			return reference
-				? { providerAccountReference: `${harness}:${createHash("sha256").update(reference).digest("hex")}` }
-				: {};
-		});
+		void completed.catch(() => undefined);
 		return {
 			prompt,
 			completed,
-			cancel: () => terminateChild(child),
+			cancel: async () => {
+				cancellation.abort();
+				await launched.close();
+			},
 		};
 	}
 
 	async execute(input: NativeHarnessExecutionInput): Promise<{ providerSessionId?: string }> {
+		if (this.#isolation) throw new Error("Governed execution requires the native cloud tool boundary");
 		const root = requiredAbsolutePath(input.identityRoot, "Native identity root");
 		const companyRoot = requiredAbsolutePath(input.companyRoot, "Native Company File root");
 		const environment = await prepareHarnessEnvironment(root);
@@ -812,7 +971,7 @@ async function boundedText(path: string, label: string): Promise<string> {
 }
 
 async function executionPrompt(
-	request: NativeProviderExecutionRequest,
+	request: NativeLegacyExecutionRequest,
 ): Promise<{ prompt: string; requireFinalSend: boolean }> {
 	const [context, inputs, transcript] = await Promise.all([
 		boundedText(request.input.executionContextPath, "Execution context"),
@@ -858,6 +1017,7 @@ export class NativeProviderHost {
 	readonly #controlPlane: NativeProviderControlPlane;
 	readonly #capsules: NativeCredentialCapsuleStore;
 	readonly #harness: NativeHarnessDriver;
+	readonly #cloudRuntime?: NativeCloudExecutionDriver;
 	readonly #masterKey: string;
 	readonly #computeIdentityId: string;
 	readonly #temporaryRoot: string;
@@ -867,6 +1027,7 @@ export class NativeProviderHost {
 		controlPlane: NativeProviderControlPlane;
 		capsules: NativeCredentialCapsuleStore;
 		harness: NativeHarnessDriver;
+		cloudRuntime?: NativeCloudExecutionDriver;
 		masterKey: string;
 		computeIdentityId: string;
 		temporaryRoot?: string;
@@ -876,6 +1037,7 @@ export class NativeProviderHost {
 		this.#controlPlane = options.controlPlane;
 		this.#capsules = options.capsules;
 		this.#harness = options.harness;
+		this.#cloudRuntime = options.cloudRuntime;
 		this.#masterKey = options.masterKey;
 		this.#computeIdentityId = options.computeIdentityId;
 		this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
@@ -944,6 +1106,9 @@ export class NativeProviderHost {
 
 	async execute(request: NativeProviderExecutionRequest, signal?: AbortSignal): Promise<JsonValue> {
 		const { authority } = request;
+		if ((request.runtime === "company-path-v1") !== Boolean(this.#cloudRuntime)) {
+			throw new Error("Native provider execution runtime is not configured for this request");
+		}
 		for (const [label, value] of [
 			["Native lease id", authority.leaseId],
 			["Native run id", authority.runId],
@@ -997,11 +1162,13 @@ export class NativeProviderHost {
 		let harnessStarted = false;
 		let output: JsonValue | undefined;
 		let failure: Error | undefined;
-		const mouth = new CloudAgentMouth(
-			authority.runId,
-			(input) => this.#controlPlane.sendMessage(request, input, executionAbort.signal),
-			executionAbort.signal,
-		);
+		const mouth = this.#cloudRuntime
+			? undefined
+			: new CloudAgentMouth(
+					authority.runId,
+					(input) => this.#controlPlane.sendMessage(request, input, executionAbort.signal),
+					executionAbort.signal,
+				);
 		try {
 			stage = "temporary-workspace";
 			root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
@@ -1010,31 +1177,40 @@ export class NativeProviderHost {
 			stage = "credential-opening";
 			await openNativeCredentialCapsule(capsule, root, this.#masterKey, authority.credentialCapsuleId);
 			durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
-			stage = "prompt-materialization";
-			const context = await executionPrompt(request);
-			stage = "public-mouth-start";
-			const mouthConnection = await mouth.start();
-			stage = "harness-execution";
-			harnessStarted = true;
-			const result = await this.#harness.execute({
-				harness: authority.nativeHarness,
-				model: authority.model,
-				identityRoot: root,
-				companyRoot: request.input.companyRoot,
-				prompt: context.prompt,
-				mouth: mouthConnection,
-				signal: executionAbort.signal,
-			});
-			stage = "public-mouth-completion";
-			const delivery = await mouth.finish(context.requireFinalSend);
-			await mouth.close();
-			/* The harness runs as this host's user; entries it creates carry
-			 * no group bits, and the runner reads the shared workspace only
-			 * through the shared execution group. Grant group traversal on
-			 * everything under the company root so output capture and review
-			 * can read every created entry. */
-			stage = "workspace-normalization";
-			await grantWorkspaceGroupAccess(request.input.companyRoot);
+			let result: { providerSessionId?: string };
+			let delivery: { messageCount: number; finalMessageId: string | null };
+			if (request.runtime === "company-path-v1") {
+				if (!this.#cloudRuntime) throw new Error("Native company runtime is unavailable");
+				// No local prompt/transcript, canonical mount, group walk or MCP
+				// endpoint participates in the governed cloud execution path.
+				stage = "harness-execution";
+				harnessStarted = true;
+				const executed = await this.#cloudRuntime.execute(request, root, executionAbort.signal);
+				result = executed;
+				delivery = executed.delivery;
+			} else {
+				if (!mouth) throw new Error("Native legacy mouth is unavailable");
+				stage = "prompt-materialization";
+				const context = await executionPrompt(request);
+				stage = "public-mouth-start";
+				const mouthConnection = await mouth.start();
+				stage = "harness-execution";
+				harnessStarted = true;
+				result = await this.#harness.execute({
+					harness: authority.nativeHarness,
+					model: authority.model,
+					identityRoot: root,
+					companyRoot: request.input.companyRoot,
+					prompt: context.prompt,
+					mouth: mouthConnection,
+					signal: executionAbort.signal,
+				});
+				stage = "public-mouth-completion";
+				delivery = await mouth.finish(context.requireFinalSend);
+				await mouth.close();
+				stage = "workspace-normalization";
+				await grantWorkspaceGroupAccess(request.input.companyRoot);
+			}
 			output = {
 				schema: HARNESS_RESULT_SCHEMA,
 				run_id: authority.runId,
@@ -1049,14 +1225,14 @@ export class NativeProviderHost {
 						cause: validationError,
 					});
 				} else {
-					failure = safeHarnessExecutionFailure(error, mouth.diagnosticState);
+					failure = safeHarnessExecutionFailure(error, mouth?.diagnosticState ?? "uninitialized");
 				}
 			} else {
 				const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
 				failure = new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
 			}
 		} finally {
-			await mouth.close();
+			await mouth?.close();
 			// A provider may rotate its login token before a later request fails.
 			// Preserve only the original credential paths, never transient sessions,
 			// and recheck live authority immediately before replacing the capsule.
@@ -1094,7 +1270,8 @@ export class NativeProviderHost {
 			/* A failed or fenced attempt still leaves partial output that the
 			 * durable review path must be able to read; normalize best-effort
 			 * without masking the original failure. */
-			if (failure) await grantWorkspaceGroupAccess(request.input.companyRoot).catch(() => undefined);
+			if (failure && request.runtime !== "company-path-v1")
+				await grantWorkspaceGroupAccess(request.input.companyRoot).catch(() => undefined);
 			if (root) {
 				try {
 					await rm(root, { recursive: true, force: true });

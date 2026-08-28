@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added an experimental cloud-owned tool result boundary and pinned native Codex adversarial proof, covering closed arguments, provenance, bounded results, authority rechecks, cancellation and the existing public mouth. The deployed driver is unchanged.
+- Bound the experimental native tool session to cloud-derived run, agent, requester, sponsor and audience identity with live lease checks and an independent deadline. Added durable operation-receipt adapters that prevent changed call IDs or uncertain retries from repeating work; target permissions remain a separate effect-time gate.
+- Added a pinned, authorized downstream Codex result-only callback and reproducible build recipe. The private Unix-socket boundary fences native rejection and parse errors before model requests, preserves native authentication, requires verified executable identity, and fails closed on missing, revoked or stalled authority. Verified on an isolated cloud Linux VM with synthetic data; full Step 2 rollout remains gated.
+- Added the opt-in cloud-native Company File runtime: cloud-composed identity and context, current path permissions, atomic versioned edits, protected-path proposals, exact-object staging, durable execution admission, and receipt-bound completion without a canonical company mount in the harness.
+- Added a separately packaged governed guest with pinned native artifacts, exact recovery-volume identity, mount validation and private execution recovery. Uncertain or expired work is retained for reconciliation rather than automatically rerun.
+- Added actual-native local and remote compaction regressions for fenced results, restored runtime laws, forged instructions and authority revocation.
+- Added a bounded human Company File reader using current member/path permissions, exact-version immutable bytes and a final access check, independent of model connections or quota.
+- Added a governed Company File window with text editing, exact proposal previews, explicit approval or skip, and recovery of uncertain saves by their original command identity. Governed companies use fresh display-only roots instead of locally materializing or republishing the Company File.
+- Added session/input-bound image attachment upload and retrieval with current human authority, immutable hash checks and bounded lifetimes; attachments cannot reopen the legacy raw-object path.
+- Isolated the governed native process in a private Linux filesystem, process and network namespace, with a bounded provider-only encrypted relay, exact private tool sockets and kernel resource limits. The mode remains opt-in pending coordinated cloud acceptance.
+
+### Fixed
+
+- Bounded native control-plane JSON response reads and cancellation, refused redirects, and stopped consuming raw RPC error bodies.
+- Preserved private completion/failure records across lease expiry, stalled renewal and credential repair; retained records never become public sends or renewed execution authority.
+- Hardened native credential resealing against hard links, changed file identities, unbounded file growth and missing original credential paths. Linux capture uses descriptor-anchored directories; unsafe refreshes retain the previous sealed capsule.
+- Blocked legacy local Company File mutation and publication routes for governed companies, including product creation and artifact/configuration writes. Cloud file access and sign-in do not depend on model allowance.
+- Bounded runner-control success bodies and preserved denial responses without reading backend error pages, including stalled bodies and redirects.
+
 ## [0.20.44] - 2026-08-28
 
 ### Fixed

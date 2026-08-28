@@ -1,9 +1,16 @@
-# Company41 Step 2 first-node architecture
+# Company41 infrastructure Step 2 architecture (historical)
 
-**Status:** authoritative architecture and completion gate. The deployed v20
-boundary has run one real Codex job but has not completed the functional or
-production-storage gates. See [`STEP-2-HANDOFF.md`](STEP-2-HANDOFF.md) for the
-current checkpoint.
+This document records the earlier first-node infrastructure phase, not Runtime
+Step 2 in the later ten-step implementation order. Its v20 inventory, private
+Company File checkouts, Claude launch requirement, and references to a future
+infrastructure Step 3 are historical. They must not override the pure-cloud,
+single-live-Company-File runtime contract. Repositories remain the exception;
+an agent does not receive its own canonical company checkout.
+
+Current trust-boundary implementation and open rollout gates are recorded in
+[`RUNTIME-STEP-2-GOVERNED-GUEST.md`](RUNTIME-STEP-2-GOVERNED-GUEST.md) and
+[`RUNTIME-STEP-2-NATIVE-BOUNDARY.md`](RUNTIME-STEP-2-NATIVE-BOUNDARY.md).
+[`STEP-2-HANDOFF.md`](STEP-2-HANDOFF.md) preserves the infrastructure checkpoint.
 
 ## Decision
 
@@ -81,6 +88,14 @@ For the NAS-disconnected acceptance run, the object route in that last sentence 
 LXD projects provide quotas and an additional administrative grouping, but Qorpera does not treat an LXD project as the durable ownership or authorization record. Compute Identity ownership, sponsor authority, execution leases, and security-boundary membership remain canonical in Supabase. Full VM boundaries are used for member subscription identities even where a system container would be cheaper.
 
 ## Native subscription boundary
+
+Runtime Step 2 (the later trust-boundary step, not this infrastructure phase)
+has an explicit 2026-08-28 exception for the
+[pinned Codex result-only patch](native-codex/README.md). It preserves official
+login, provider transport and credential custody. Source/binary pinning and
+its separate acceptance gates are mandatory. The historical unmodified-Codex
+requirement below is superseded only to that narrow extent; this is not a
+production deployment record or a Claude exception.
 
 Personal Codex and Claude subscriptions are a primary Step 2 path, not a compatibility option.
 

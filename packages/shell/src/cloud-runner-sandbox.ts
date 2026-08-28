@@ -339,7 +339,9 @@ function requiredSafeInteger(value: number, label: string, minimum: number, maxi
 	}
 }
 
-function resolvedLimits(overrides: Partial<CloudRunnerSandboxLimits> | undefined): CloudRunnerSandboxLimits {
+export function resolveCloudRunnerSandboxLimits(
+	overrides: Partial<CloudRunnerSandboxLimits> | undefined,
+): CloudRunnerSandboxLimits {
 	const limits = { ...DEFAULT_CLOUD_RUNNER_SANDBOX_LIMITS, ...overrides };
 	requiredSafeInteger(limits.wallTimeMs, "Sandbox wall time", 10, 24 * 60 * 60 * 1000);
 	requiredSafeInteger(limits.memoryBytes, "Sandbox memory", 64 * 1024 * 1024, 256 * 1024 * 1024 * 1024);
@@ -1067,7 +1069,7 @@ export async function executeCloudRunnerJob(
 	assertBackend(options);
 	const environment = options.environment ?? {};
 	assertEnvironment(environment);
-	const limits = resolvedLimits(options.limits);
+	const limits = resolveCloudRunnerSandboxLimits(options.limits);
 	if (options.signal?.aborted) throw new Error("Runner execution was cancelled");
 	const temporaryBase = resolve(options.temporaryRoot ?? tmpdir());
 	const baseStat = await stat(temporaryBase);

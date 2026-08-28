@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { nativeCompanyRuntimeConfiguration } from "../src/cloud-native-provider-service-main.ts";
 import { systemdCredentialMetadataIsSafe } from "../src/systemd-credential.ts";
 
 const serviceUid = 997;
@@ -38,5 +39,35 @@ describe("systemd credential metadata", () => {
 		]) {
 			expect(systemdCredentialMetadataIsSafe(metadata, serviceUid, 8192, "linux")).toBe(false);
 		}
+	});
+});
+
+describe("native Company File runtime selection", () => {
+	const configured = {
+		QORPERA_NATIVE_RUNTIME: "company-path-v1",
+		QORPERA_NATIVE_CODEX_FENCE_PATH: "/opt/qorpera/codex-fenced",
+		QORPERA_NATIVE_CODEX_FENCE_SHA256: "a".repeat(64),
+		QORPERA_NATIVE_OBJECT_GATEWAY_URL: "https://objects.example.test",
+	};
+	it("selects only a complete pinned cloud runtime configuration", () => {
+		expect(nativeCompanyRuntimeConfiguration({})).toBeUndefined();
+		expect(nativeCompanyRuntimeConfiguration(configured)).toEqual({
+			command: [configured.QORPERA_NATIVE_CODEX_FENCE_PATH],
+			binarySha256: configured.QORPERA_NATIVE_CODEX_FENCE_SHA256,
+			objectGatewayUrl: configured.QORPERA_NATIVE_OBJECT_GATEWAY_URL,
+			isolation: { entryPoint: "/opt/qorpera-runner/qorpera-native-isolation-child.mjs" },
+		});
+	});
+	it("does not downgrade a misspelled or incomplete selection to legacy execution", () => {
+		for (const patch of [
+			{ QORPERA_NATIVE_RUNTIME: "company-path-v2" },
+			{ QORPERA_NATIVE_RUNTIME: "" },
+			{ QORPERA_NATIVE_CODEX_FENCE_PATH: "codex" },
+			{ QORPERA_NATIVE_CODEX_FENCE_SHA256: "" },
+			{ QORPERA_NATIVE_OBJECT_GATEWAY_URL: "http://objects.example.test" },
+			{ QORPERA_NATIVE_OBJECT_GATEWAY_URL: "https://secret@objects.example.test" },
+			{ QORPERA_NATIVE_OBJECT_GATEWAY_URL: "https://objects.example.test/another-route" },
+		])
+			expect(() => nativeCompanyRuntimeConfiguration({ ...configured, ...patch })).toThrow();
 	});
 });

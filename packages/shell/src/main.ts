@@ -25,7 +25,7 @@ import {
 	watch,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
@@ -210,6 +210,7 @@ import {
 import { migrateCompanyToAgentsOnly } from "./agents-only-company-migration.ts";
 import { readBackgroundCompanyRoots, setBackgroundCompanyEnabled } from "./background-companies.ts";
 import { CloudProfileAccessRefresh } from "./cloud-access-refresh.ts";
+import { cloudCompanyDisplayRoot, prepareCloudCompanyDisplay } from "./cloud-company-display.ts";
 import {
 	acceptReviewedCloudCompanyExecution,
 	type CloudCompanyExecutionCheckout,
@@ -343,6 +344,7 @@ import {
 	GITHUB_CONNECTION_DESTINATIONS,
 } from "./github-company-connector.ts";
 import { connectGitHubCli, readGitHubCliStatus } from "./github-connection.ts";
+import { openGovernedCompanyWindow } from "./governed-company-window.ts";
 import {
 	type HostedAccountEntitlement,
 	type HostedCompanyFile,
@@ -1259,6 +1261,8 @@ function shellVersion(): string {
 
 interface CompanyRuntime {
 	root: string;
+	governedCompanyFile?: boolean;
+	companyFileWindow?: BrowserWindow;
 	/** Durable lifecycle source for every attended and autonomous session in
 	 * this company. Child processes attach to it; they do not define it. */
 	sessions: SessionControlPlane;
@@ -1378,23 +1382,29 @@ function createCloudTrailSynchronizer(
 	liveBindings: () => Iterable<TrailBinding>,
 	onMaterialized: (binding: TrailBinding) => void,
 	onCursorAdvanced: (advance: { hostedSessionId: string; cursor: number; requiresReload: boolean }) => void,
+	governedCompanyFile: boolean,
 ): CloudTrailSynchronizer | undefined {
 	const attachment = profileAttachment(root);
 	const primary = qorperaAccountAuth?.hostedPrimary();
 	const objects = qorperaAccountAuth?.hostedObjects();
 	if (attachment.profileType !== "cloud" || !primary || !objects || !currentQorperaAccountId) return undefined;
+	const attachments = governedCompanyFile
+		? qorperaAccountAuth!.sessionAttachments(attachment.profileId, attachment.environmentId, currentQorperaAccountId)
+		: undefined;
 	return new CloudTrailSynchronizer({
 		root,
 		userData: app.getPath("userData"),
 		profileId: attachment.profileId,
 		environmentId: attachment.environmentId,
 		primary,
-		loadObject: (reference) =>
-			objects.getObject(attachment.profileId, {
-				sha256: reference.sha256,
-				bytes: reference.bytes,
-				mediaType: reference.mediaType,
-			}),
+		loadObject: (reference, source) =>
+			attachments
+				? attachments.read(source.sessionId, source.inputId, reference, AbortSignal.timeout(30_000))
+				: objects.getObject(attachment.profileId, {
+						sha256: reference.sha256,
+						bytes: reference.bytes,
+						mediaType: reference.mediaType,
+					}),
 		canWrite: () => activeProfileAccess(root)?.capabilities.write === true,
 		liveBindings,
 		onMaterialized,
@@ -1727,17 +1737,27 @@ function cloudQueuedPromptBody(value: unknown): CloudQueuedPromptBody | undefine
 async function prepareCloudPromptBody(
 	runtime: CompanyRuntime,
 	prompt: ReviewedPromptFrame,
+	sessionId: string,
 ): Promise<CloudQueuedPromptBody> {
 	const attachment = profileAttachment(runtime.root);
 	const objects = qorperaAccountAuth?.hostedObjects();
 	if (attachment.profileType !== "cloud" || !objects) throw new Error("cloud prompt storage is unavailable");
+	const accountId = currentQorperaAccountId;
+	if (!accountId || !prompt.clientInputId || !qorperaAccountAuth)
+		throw new Error("Cloud prompt member identity is unavailable");
+	const attachments = runtime.governedCompanyFile
+		? qorperaAccountAuth.sessionAttachments(attachment.profileId, attachment.environmentId, accountId)
+		: undefined;
 	const images: CloudQueuedImageReference[] = [];
 	let totalImageBytes = 0;
 	for (const image of prompt.images ?? []) {
 		const bytes = Buffer.from(image.data, "base64");
 		totalImageBytes += bytes.byteLength;
 		if (totalImageBytes > MAX_PROMPT_IMAGE_BYTES) throw new Error("prompt images exceed the 8 MiB turn allowance");
-		const reference = await objects.putObject(attachment.profileId, bytes, image.mimeType);
+		const reference = attachments
+			? await attachments.upload(sessionId, prompt.clientInputId, bytes, image.mimeType, AbortSignal.timeout(30_000))
+			: await objects.putObject(attachment.profileId, bytes, image.mimeType);
+		if (currentQorperaAccountId !== accountId || runtime.closing) throw new Error("Cloud prompt member changed");
 		images.push({ objectSha256: reference.sha256, bytes: reference.bytes, mediaType: reference.mediaType });
 	}
 	return {
@@ -1941,6 +1961,7 @@ async function installCloudTrailSync(runtime: CompanyRuntime): Promise<void> {
 			() => liveTrailBindings(runtime),
 			(binding) => runtime.sessions.rememberAudit(binding),
 			(advance) => recordAttachedTrailAdvance(runtime, advance),
+			runtime.governedCompanyFile === true,
 		);
 	}
 	if (!runtime.cloudTrailSync) return;
@@ -1958,6 +1979,7 @@ function recordCloudCompanyHealth(runtime: CompanyRuntime, health: CloudSyncHeal
 }
 
 function installCloudCompanySync(runtime: CompanyRuntime): void {
+	if (runtime.governedCompanyFile) return;
 	if (runtime.closing) return;
 	const attachment = profileAttachment(runtime.root);
 	const primary = qorperaAccountAuth?.hostedPrimary();
@@ -2762,6 +2784,25 @@ function cloudCompanyCacheRoot(profile: HostedProfile): string {
 	return `${newCompanyRoot(profile.profileName)}-${profile.profileId.slice(0, 8)}`;
 }
 
+function materializeCloudCompanyDisplay(profile: HostedProfile, accountId: string): string {
+	const userData = app.getPath("userData");
+	const root = prepareCloudCompanyDisplay(userData, accountId, profile.profileId, profile.environmentId);
+	if (resolve(scaffoldCompany(root).root) !== resolve(root))
+		throw new Error("The company display root changed unexpectedly");
+	const attachment = readProfileAttachment(userData, root);
+	if (
+		attachment &&
+		(attachment.profileType !== "cloud" ||
+			attachment.profileId !== profile.profileId ||
+			attachment.environmentId !== profile.environmentId)
+	)
+		throw new Error("Company display attachment changed");
+	attachCloudProfile(userData, root, { profileId: profile.profileId, environmentId: profile.environmentId });
+	alignManagedCloudCompanyName(root, profile);
+	registerCompany(root);
+	return root;
+}
+
 interface CloudCacheMaterializationMarker {
 	schema: "qorpera.cloud-cache-materialization/v1";
 	profileId: string;
@@ -3384,6 +3425,8 @@ async function closeCompany(slot: Slot): Promise<void> {
 		return;
 	}
 	runtime.closing = true;
+	runtime.companyFileWindow?.destroy();
+	runtime.companyFileWindow = undefined;
 	runtime.closePromise = (async () => {
 		try {
 			if (runtime.cloudSessionPump) clearInterval(runtime.cloudSessionPump);
@@ -7682,6 +7725,7 @@ async function listenBackend(
 	root: string,
 	authToken: string,
 	sessions: SessionControlPlane,
+	governedCompanyFile: boolean,
 ): Promise<{ port: number; close: () => void }> {
 	const base = companyPort(root);
 	for (let port = base; port < base + 10; port++) {
@@ -7691,6 +7735,7 @@ async function listenBackend(
 			root,
 			port,
 			authToken,
+			governedCompanyFile,
 			fixedShell: { directory: FIXED_SHELL_DIR },
 			sessionRuntime: sessions,
 			staffReadModel: () => readStaffAgents(root),
@@ -7826,6 +7871,7 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 class CompanyOpenCancelledError extends Error {}
 
 async function openCompany(slot: Slot, root: string): Promise<void> {
+	let governedCompanyFile = false;
 	try {
 		root = canonicalCompanyRoot(root);
 	} catch {
@@ -7844,6 +7890,25 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		try {
 			if (!(await refreshProfileAccess(root))) {
 				throw new Error("This profile is not shared with the signed-in Qorpera account.");
+			}
+			const attachment = profileAttachment(root);
+			if (attachment.profileType === "cloud") {
+				const accountId = currentQorperaAccountId;
+				if (!accountId || !qorperaAccountAuth) throw new Error("Sign in to open this company.");
+				const mode = await qorperaAccountAuth.companyFileMode(
+					attachment.profileId,
+					accountId,
+					AbortSignal.timeout(15_000),
+				);
+				if (mode.environmentId !== attachment.environmentId || currentQorperaAccountId !== accountId)
+					throw new Error("Company identity changed while opening it.");
+				governedCompanyFile = mode.mode === "governed";
+				if (governedCompanyFile) {
+					const profile = hostedProfilesById.get(attachment.profileId);
+					if (!profile || profile.environmentId !== mode.environmentId)
+						throw new Error("Company metadata is unavailable.");
+					root = materializeCloudCompanyDisplay(profile, accountId);
+				}
 			}
 		} catch (error) {
 			console.error(
@@ -7877,7 +7942,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 	let installedRuntime: CompanyRuntime | undefined;
 	try {
 		const openingAttachment = profileAttachment(root);
-		if (openingAttachment.profileType === "cloud") {
+		if (openingAttachment.profileType === "cloud" && !governedCompanyFile) {
 			const openingProfile = hostedProfilesById.get(openingAttachment.profileId);
 			if (openingProfile) alignManagedCloudCompanyName(root, openingProfile);
 			const primary = qorperaAccountAuth?.hostedPrimary();
@@ -8009,6 +8074,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 			(advance) => {
 				if (installedRuntime) recordAttachedTrailAdvance(installedRuntime, advance);
 			},
+			governedCompanyFile,
 		);
 		if (cloudTrailSync) {
 			try {
@@ -8021,7 +8087,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		}
 		if (openingCancelled()) throw new CompanyOpenCancelledError();
 		const backendToken = randomUUID();
-		const backend = await listenBackend(root, backendToken, sessions);
+		const backend = await listenBackend(root, backendToken, sessions, governedCompanyFile);
 		pendingBackendClose = backend.close;
 		if (openingCancelled()) throw new CompanyOpenCancelledError();
 		// Opening a company starts the trusted host only. A model process is
@@ -8033,6 +8099,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		};
 		const runtime: CompanyRuntime = {
 			root,
+			governedCompanyFile,
 			sessions,
 			storageId,
 			childOptions,
@@ -8595,7 +8662,7 @@ async function requestSponsoredCloudTurn(
 		) {
 			throw new Error("The selected personal subscription is unavailable or was revoked.");
 		}
-		const body = await prepareCloudPromptBody(runtime, reviewed);
+		const body = await prepareCloudPromptBody(runtime, reviewed, sessionRef.hostedSessionId);
 		const request = await control.requestSessionTurn({
 			sessionId: sessionRef.hostedSessionId,
 			clientInputId: reviewed.clientInputId,
@@ -10286,8 +10353,36 @@ app.whenReady().then(async () => {
 				);
 				return [];
 			});
+		// Retain old caches on disk, but show only one entry per cloud company.
+		// A display root from another signed-in human is never selected.
+		const visibleCompanies = companies.filter((company) => {
+			const attachment = profileAttachment(company.root);
+			if (attachment.profileType !== "cloud") return true;
+			const displayRoot = cloudCompanyDisplayRoot(userData, userId, attachment.profileId, attachment.environmentId);
+			const exactDisplay = companies.find(
+				(candidate) => normalizedRoot(candidate.root) === normalizedRoot(displayRoot),
+			);
+			if (exactDisplay) return company === exactDisplay;
+			if (
+				normalizedRoot(company.root).startsWith(`${normalizedRoot(join(userData, "cloud-company-display"))}${sep}`)
+			)
+				return false;
+			return (
+				company ===
+				companies.find((candidate) => {
+					const current = profileAttachment(candidate.root);
+					return (
+						current.profileType === "cloud" &&
+						current.profileId === attachment.profileId &&
+						!normalizedRoot(candidate.root).startsWith(
+							`${normalizedRoot(join(userData, "cloud-company-display"))}${sep}`,
+						)
+					);
+				})
+			);
+		});
 		const entries = await Promise.all(
-			companies.map(async (company) => {
+			visibleCompanies.map(async (company) => {
 				const attachment = profileAttachment(company.root);
 				let access: ProfileAccess | undefined;
 				if (attachment.profileType === "cloud") {
@@ -10328,7 +10423,7 @@ app.whenReady().then(async () => {
 			}),
 		);
 		const attachedProfileIds = new Set(
-			companies
+			visibleCompanies
 				.map((company) => profileAttachment(company.root))
 				.filter((attachment) => attachment.profileType === "cloud")
 				.map((attachment) => attachment.profileId),
@@ -10515,6 +10610,15 @@ app.whenReady().then(async () => {
 			if (!profile) return { ok: false, error: "Cloud profile is not available to this account." };
 			const team = await refreshHostedTeam(profile.profileId);
 			const access = hostedProfileAccess(team);
+			const mode = await qorperaAccountAuth!.companyFileMode(
+				profile.profileId,
+				account.user.id,
+				AbortSignal.timeout(15_000),
+			);
+			if (mode.environmentId !== profile.environmentId || currentQorperaAccountId !== account.user.id)
+				throw new Error("Company identity changed while opening it.");
+			if (mode.mode === "governed")
+				return { ok: true, root: materializeCloudCompanyDisplay(profile, account.user.id) };
 			const companyFile = await primary.getCompanyFile(profile.environmentId);
 			const existing = listCompanies().find((company) => {
 				const attachment = readProfileAttachment(app.getPath("userData"), company.root);
@@ -10862,6 +10966,41 @@ app.whenReady().then(async () => {
 			if (attachment.profileType !== "cloud") {
 				return { ok: false, error: "This company does not have a cloud Company File." };
 			}
+			const accountId = currentQorperaAccountId;
+			if (!accountId || !qorperaAccountAuth || !isTrustedProfileSwitcherSender(event.sender))
+				throw new Error("Sign in to open the Company File.");
+			const mode = await qorperaAccountAuth.companyFileMode(
+				attachment.profileId,
+				accountId,
+				AbortSignal.timeout(15_000),
+			);
+			if (mode.environmentId !== attachment.environmentId || currentQorperaAccountId !== accountId)
+				throw new Error("Company identity changed while opening it.");
+			if (mode.mode === "governed") {
+				if (!runtime.governedCompanyFile) throw new Error("Reopen this company to use its live Company File.");
+				if (runtime.companyFileWindow && !runtime.companyFileWindow.isDestroyed()) {
+					focusWindow(runtime.companyFileWindow);
+				} else {
+					runtime.companyFileWindow = await openGovernedCompanyWindow({
+						owner: slot.window,
+						directory: FIXED_SHELL_DIR,
+						title: hostedProfilesById.get(attachment.profileId)?.profileName ?? "Company",
+						client: qorperaAccountAuth.memberCompanyFile(
+							attachment.profileId,
+							attachment.environmentId,
+							accountId,
+						),
+						canWrite: slotHasProfileCapability(slot, "write"),
+						current: () =>
+							currentQorperaAccountId === accountId &&
+							slot.runtime === runtime &&
+							!runtime.closing &&
+							slotHasProfileCapability(slot, "read"),
+					});
+				}
+				return { ok: true, governed: true, readOnly: !slotHasProfileCapability(slot, "write") };
+			}
+			if (runtime.governedCompanyFile) throw new Error("Company File mode changed. Reopen the company.");
 			const conflict = readCloudCompanyFileConflict(
 				app.getPath("userData"),
 				attachment.profileId,
@@ -10923,6 +11062,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 		try {
 			const attachment = profileAttachment(runtime.root);
 			if (attachment.profileType !== "cloud") throw new Error("This company has no cloud Company File.");
@@ -10957,6 +11097,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 		if (resolution !== "local" && resolution !== "cloud") {
 			return { ok: false, error: "invalid Company File conflict resolution" };
@@ -11018,6 +11159,7 @@ app.whenReady().then(async () => {
 			const slot = slotOf(event.sender);
 			const runtime = slot?.runtime;
 			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 			try {
 				const attachment = profileAttachment(runtime.root);
@@ -11051,6 +11193,7 @@ app.whenReady().then(async () => {
 			const slot = slotOf(event.sender);
 			const runtime = slot?.runtime;
 			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 			try {
 				const attachment = profileAttachment(runtime.root);
@@ -11099,6 +11242,7 @@ app.whenReady().then(async () => {
 			const slot = slotOf(event.sender);
 			const runtime = slot?.runtime;
 			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 			try {
 				const attachment = profileAttachment(runtime.root);
@@ -11134,6 +11278,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 		try {
 			const { proposal, attachment } = await exactCompanyProposal(runtime, proposalId, proposalSnapshotId);
 			if (proposal.status !== "open") throw new Error("This Company File proposal is no longer awaiting review.");
@@ -11156,6 +11301,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		try {
 			const { proposal, attachment } = await exactCompanyProposal(runtime, proposalId, proposalSnapshotId);
@@ -11279,6 +11425,7 @@ app.whenReady().then(async () => {
 			const slot = slotOf(event.sender);
 			const runtime = slot?.runtime;
 			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 			if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 			try {
 				if (
@@ -11312,6 +11459,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		try {
 			const { proposal, attachment } = await exactCompanyProposal(runtime, proposalId, proposalSnapshotId);
@@ -11350,6 +11498,7 @@ app.whenReady().then(async () => {
 			const slot = slotOf(event.sender);
 			const runtime = slot?.runtime;
 			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 			try {
 				if (typeof proposalId !== "string" || typeof body !== "string" || typeof clientCommentId !== "string") {
 					throw new Error("Company proposal comment is invalid.");
@@ -11372,6 +11521,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 		try {
 			if (typeof proposalId !== "string") throw new Error("Company proposal identity is invalid.");
 			const attachment = profileAttachment(runtime.root);
@@ -11398,6 +11548,9 @@ app.whenReady().then(async () => {
 		)
 			return { ok: false, error: "invalid product transaction" };
 		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
+		if (runtime.governedCompanyFile) {
+			return { ok: false, error: "Product registration must use the live Company File, not this display cache." };
+		}
 		return enqueueRuntimeTransition(runtime, async () => {
 			if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild || isChildBusy(runtime.child)) {
 				return { ok: false, error: "company runtime is not available" };
@@ -12316,6 +12469,7 @@ app.whenReady().then(async () => {
 		const account = await authenticatedAccount();
 		const root = slot?.runtime?.root;
 		const attachment = root ? profileAttachment(root) : undefined;
+		const governedCompanyFile = slot?.runtime?.governedCompanyFile === true;
 		let team: HostedProfileTeam | ReturnType<typeof profileTeamInfo> | undefined;
 		let access: ProfileAccess | undefined;
 		let hostedProfile: HostedProfile | undefined;
@@ -12336,8 +12490,9 @@ app.whenReady().then(async () => {
 					const primary = qorperaAccountAuth?.hostedPrimary();
 					accountEntitlement = await primary?.getAccountEntitlement();
 					companyFile = await primary?.getCompanyFile(attachment.environmentId);
-					companyProposals =
-						(await primary?.listCompanyProposals(attachment.environmentId, "open", 100))?.items ?? [];
+					companyProposals = governedCompanyFile
+						? []
+						: ((await primary?.listCompanyProposals(attachment.environmentId, "open", 100))?.items ?? []);
 					nativeExecution = await qorperaAccountAuth
 						?.nativeSubscriptionControl()
 						.listConnections(attachment.profileId);
@@ -12358,7 +12513,12 @@ app.whenReady().then(async () => {
 		const projectionHealth = slot?.runtime?.cloudCompanyProjectionHealth;
 		const fileCheckpoint = filePublication?.lastCheckpoint();
 		let projectionHasPendingChanges = slot?.runtime?.cloudCompanyProjection?.hasPendingChanges() ?? false;
-		if (!slot?.runtime?.cloudCompanyProjection && attachment?.profileType === "cloud" && root) {
+		if (
+			!governedCompanyFile &&
+			!slot?.runtime?.cloudCompanyProjection &&
+			attachment?.profileType === "cloud" &&
+			root
+		) {
 			try {
 				projectionHasPendingChanges = await cloudCompanyProjectionHasPersistedChanges({
 					companyRoot: root,
@@ -12371,7 +12531,7 @@ app.whenReady().then(async () => {
 			}
 		}
 		const recoverableReviews =
-			attachment?.profileType === "cloud"
+			attachment?.profileType === "cloud" && !governedCompanyFile
 				? listRecoverableCloudCompanyExecutions(app.getPath("userData"), attachment.profileId).filter(
 						(review) =>
 							!review.cloudProposalId && (!root || normalizedRoot(review.companyRoot) === normalizedRoot(root)),
@@ -12380,7 +12540,7 @@ app.whenReady().then(async () => {
 		const localRecoverableExecutions = recoverableReviews.length;
 		const recoverableExecutions = localRecoverableExecutions + companyProposals.length;
 		const fileConflictPaths =
-			attachment?.profileType === "cloud" && root
+			attachment?.profileType === "cloud" && root && !governedCompanyFile
 				? (readCloudCompanyFileConflict(
 						app.getPath("userData"),
 						attachment.profileId,
@@ -12465,21 +12625,28 @@ app.whenReady().then(async () => {
 												: slot?.runtime?.cloudSessionArbiterHealth?.phase === "healthy"
 													? "cloud"
 													: "pending",
-								execution: "local",
+								execution: attachment.profileType === "cloud" ? "cloud" : "local",
+								companyFileMode: governedCompanyFile ? "governed" : "legacy",
 								files:
 									attachment.profileType === "local"
 										? "local"
-										: settingsRefreshError ||
-												recoverableExecutions > 0 ||
-												fileConflictPaths > 0 ||
-												fileHealth?.phase === "attention" ||
-												projectionHealth?.phase === "attention"
-											? "attention"
-											: fileHealth?.phase === "retrying" || projectionHealth?.phase === "retrying"
-												? "offline"
-												: fileHealth?.phase === "healthy" && fileIsCurrent
+										: governedCompanyFile
+											? settingsRefreshError
+												? "attention"
+												: companyFile?.headSnapshotId
 													? "cloud"
-													: "pending",
+													: "pending"
+											: settingsRefreshError ||
+													recoverableExecutions > 0 ||
+													fileConflictPaths > 0 ||
+													fileHealth?.phase === "attention" ||
+													projectionHealth?.phase === "attention"
+												? "attention"
+												: fileHealth?.phase === "retrying" || projectionHealth?.phase === "retrying"
+													? "offline"
+													: fileHealth?.phase === "healthy" && fileIsCurrent
+														? "cloud"
+														: "pending",
 							},
 							access,
 							team,

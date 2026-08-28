@@ -2,16 +2,18 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_PACKAGE_MANIFEST_SHA256="2c54b1e3010c880043086d8d932afa007c925ec69667ae572efe17b91d2a98c4"
+EXPECTED_PACKAGE_MANIFEST_SHA256="1f75de50b0da5e0d4b8852df30d4a4f60bc74d04984c445afb605fe61791b9c4"
+EXPECTED_NATIVE_CODEX_SHA256="babeed68a7732f96fa6bcd69ac3a9e4124bcfab5340ce0fbab61363b8b1a148f"
+EXPECTED_NATIVE_HELPER_SHA256="84bc4ab892cfe18a905a9dfcae9cd5a8206c054ae114af58feb73d63a7931df9"
 EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1"
 LXD_PROJECT="qorpera-runners"
 LXD_IMAGE_PROJECT="default"
 LXD_POOL="qorpera-vm"
 LXD_PROFILE="qorpera-job-v1"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v45-unsigned"
-ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v45"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v48-unsigned"
+ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v48"
 ACCEPTANCE_MARKER="qorpera.lxd-runner-image-acceptance/v1"
-STATE_LOG="/var/log/qorpera-lxd-runner-image-acceptance.txt"
+STATE_LOG="/var/log/qorpera-lxd-runner-image-acceptance-v48.txt"
 
 if [[ ${EUID} -ne 0 ]]; then
 	echo "Run this script through sudo." >&2
@@ -133,12 +135,27 @@ if set(contract) != set(expected) | {"node_version", "podman_version"}:
 PY
 
 lxc exec "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" -- \
-	env EXPECTED_RUNNER_IMAGE="${EXPECTED_RUNNER_IMAGE}" bash -euo pipefail -c '
+	env EXPECTED_RUNNER_IMAGE="${EXPECTED_RUNNER_IMAGE}" \
+		EXPECTED_NATIVE_CODEX_SHA256="${EXPECTED_NATIVE_CODEX_SHA256}" \
+		EXPECTED_NATIVE_HELPER_SHA256="${EXPECTED_NATIVE_HELPER_SHA256}" bash -euo pipefail -c '
 	[[ $(id -g qorpera-native-provider) == 42041 ]]
 	id -G qorpera-runner | tr " " "\n" | grep -Fxq 42041
 	[[ -x /usr/bin/crun ]]
 	[[ $(DISABLE_AUTOUPDATER=1 /usr/local/bin/codex --version) == *0.147.0* ]]
 	[[ $(DISABLE_AUTOUPDATER=1 /usr/local/bin/claude --version) == 2.1.231* ]]
+	[[ $(/opt/qorpera-harnesses/native-company/codex --version) == *0.147.0* ]]
+	[[ $(sha256sum /opt/qorpera-harnesses/native-company/codex | cut -d " " -f 1) == "${EXPECTED_NATIVE_CODEX_SHA256}" ]]
+	[[ $(sha256sum /opt/qorpera-runner/qorpera-native-isolation-child.mjs | cut -d " " -f 1) == "${EXPECTED_NATIVE_HELPER_SHA256}" ]]
+	[[ $(stat -c "%u:%g:%a:%h" /opt/qorpera-harnesses/native-company/codex) == 0:0:555:1 ]]
+	[[ $(stat -c "%u:%g:%a:%h" /opt/qorpera-runner/qorpera-native-isolation-child.mjs) == 0:0:555:1 ]]
+	[[ -x /usr/bin/bwrap ]]
+	for account in qorpera-company-runner qorpera-native-company; do
+		[[ $(id -Gn "${account}") == "${account}" ]]
+	done
+	for unit in qorpera-company-runner.service qorpera-native-company-host.service; do
+		[[ $(systemctl is-enabled "${unit}") == disabled ]]
+		[[ $(systemctl is-active "${unit}") == inactive ]]
+	done
 	install -d -o qorpera-runner -g qorpera-runner -m 0700 /run/qorpera-runner
 	cd /var/lib/qorpera-runner
 	runuser -u qorpera-runner -- env HOME=/var/lib/qorpera-runner XDG_RUNTIME_DIR=/run/qorpera-runner \
@@ -156,6 +173,11 @@ lxc exec "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" -- \
 	[[ ! -e /var/lib/qorpera-bootstrap/login-bootstrap.json ]]
 	[[ ! -e /var/lib/qorpera-bootstrap/runner-config.json ]]
 	[[ ! -e /var/lib/qorpera-bootstrap/native-provider.env ]]
+	[[ ! -e /var/lib/qorpera-bootstrap/native-company.json ]]
+	! mountpoint -q /var/lib/qorpera/identity
+	! mountpoint -q /var/lib/qorpera-runner
+	! find /var/lib/qorpera/identity -mindepth 1 -print -quit | grep -q .
+	[[ ! -e /qorpera/company-live ]]
 	! find /var/lib/qorpera-bootstrap/credentials -mindepth 1 -print -quit | grep -q .
 	! ss -lnt | awk "NR > 1 { print \$4 }" | grep -Eq "(^|:)(7443|8083)$"
 '
@@ -168,6 +190,8 @@ state_tmp=$(mktemp)
 	echo "image_fingerprint=${image_fingerprint}"
 	echo "guest_package_manifest_sha256=${EXPECTED_PACKAGE_MANIFEST_SHA256}"
 	echo "runner_image=${EXPECTED_RUNNER_IMAGE}"
+	echo "native_codex_sha256=${EXPECTED_NATIVE_CODEX_SHA256}"
+	echo "native_helper_sha256=${EXPECTED_NATIVE_HELPER_SHA256}"
 	echo "instance_type=${instance_type}"
 	echo "virtualization=kvm"
 	echo "boot_mode=uefi-secureboot"

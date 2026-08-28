@@ -51,6 +51,7 @@ test("packages directly executable ephemeral runner bundles", async () => {
 				"company-lock-heartbeat.mjs",
 				"qorpera-ephemeral-runner.mjs",
 				"qorpera-native-provider-host.mjs",
+				"qorpera-native-isolation-child.mjs",
 				"qorpera-sandbox-probe.mjs",
 				"qorpera-lxd-runner-bootstrap.mjs",
 				"qorpera-lxd-native-login-bootstrap.mjs",

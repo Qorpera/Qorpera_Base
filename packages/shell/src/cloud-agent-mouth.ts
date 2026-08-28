@@ -151,6 +151,25 @@ export class CloudAgentMouth {
 		return { messageCount: this.#receipts.size, finalMessageId: final?.messageId ?? null };
 	}
 
+	/** Trusted in-process tool adapter. No extra listener, bearer or recipient selector. */
+	send(value: CloudAgentSendInput): Promise<CloudAgentSendReceipt> {
+		this.#sendAttempted = true;
+		const input = parseCloudAgentSendInput(value);
+		const delivery = this.#pending.then(async () => {
+			if (this.#closed) throw new Error("Mouth is closed");
+			this.#signal?.throwIfAborted();
+			const receipt = parseCloudAgentSendReceipt(await this.#send(input), this.#runId);
+			if (receipt.phase !== input.phase) throw new Error("Send receipt phase changed");
+			this.#receipts.set(receipt.messageId, receipt);
+			return receipt;
+		});
+		this.#pending = delivery.then(
+			() => undefined,
+			() => undefined,
+		);
+		return delivery;
+	}
+
 	async close(): Promise<void> {
 		this.#closed = true;
 		const server = this.#server;
@@ -277,20 +296,7 @@ export class CloudAgentMouth {
 				if (!params || params.name !== "send_message") throw new Error("Unknown tool");
 				this.#sendAttempted = true;
 				try {
-					const input = parseCloudAgentSendInput(params.arguments);
-					const delivery = this.#pending.then(async () => {
-						if (this.#closed) throw new Error("Mouth is closed");
-						this.#signal?.throwIfAborted();
-						const receipt = parseCloudAgentSendReceipt(await this.#send(input), this.#runId);
-						if (receipt.phase !== input.phase) throw new Error("Send receipt phase changed");
-						this.#receipts.set(receipt.messageId, receipt);
-						return receipt;
-					});
-					this.#pending = delivery.then(
-						() => undefined,
-						() => undefined,
-					);
-					const receipt = await delivery;
+					const receipt = await this.send(parseCloudAgentSendInput(params.arguments));
 					result = { content: [{ type: "text", text: JSON.stringify(receipt) }], structuredContent: receipt };
 				} catch {
 					result = {

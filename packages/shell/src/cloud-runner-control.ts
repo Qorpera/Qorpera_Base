@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { JsonValue } from "@qorpera/contracts";
+import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
 import { type CloudRunnerBrokerTransport, CloudRunnerJobBroker } from "./cloud-runner-broker.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -441,21 +442,37 @@ export class SupabaseCloudRunnerControlTransport implements CloudRunnerControlTr
 
 	async request(token: string, body: CloudRunnerControlRequest): Promise<unknown> {
 		requiredToken(token, "Runner token");
-		const timeout = AbortSignal.timeout(this.#requestTimeoutMs);
-		const response = await this.#fetch(this.#url, {
-			method: "POST",
-			headers: {
-				accept: "application/json",
-				"content-type": "application/json",
-				apikey: this.#publishableKey,
-				authorization: `Bearer ${token}`,
+		return withCloudDeadline(
+			async (signal) => {
+				const response = await this.#fetch(this.#url, {
+					method: "POST",
+					headers: {
+						accept: "application/json",
+						"content-type": "application/json",
+						apikey: this.#publishableKey,
+						authorization: `Bearer ${token}`,
+					},
+					body: JSON.stringify(body),
+					redirect: "error",
+					signal,
+				});
+				if (!response.ok) {
+					void response.body?.cancel().catch(() => undefined);
+					throw new CloudRunnerControlRequestError(response.status);
+				}
+				const encoded = await readBoundedCloudResponse(response, 256 * 1024, signal);
+				let value: unknown;
+				try {
+					value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(encoded));
+				} catch {
+					throw new Error("Runner control returned invalid JSON");
+				}
+				const envelope = record(value, "response");
+				return envelope.value;
 			},
-			body: JSON.stringify(body),
-			signal: this.#signal ? AbortSignal.any([this.#signal, timeout]) : timeout,
-		});
-		if (!response.ok) throw new CloudRunnerControlRequestError(response.status);
-		const envelope = record(await response.json(), "response");
-		return envelope.value;
+			this.#requestTimeoutMs,
+			this.#signal,
+		);
 	}
 }
 
@@ -474,6 +491,20 @@ interface ActiveRunnerLease {
 	job: CloudRunnerJob;
 	leaseToken: string;
 	pendingCompletion?: CloudRunnerCompletion;
+	pendingFailure?: CloudRunnerFailure;
+	executionStarted: boolean;
+}
+
+export interface CloudRunnerFailure {
+	error: string;
+	retryable: boolean;
+}
+
+export interface CloudRunnerRecovery {
+	job: CloudRunnerJob;
+	reason: "authority-unavailable" | "interrupted";
+	completion?: CloudRunnerCompletion;
+	failure?: CloudRunnerFailure;
 }
 
 export interface CloudRunnerCompletion {
@@ -489,6 +520,7 @@ interface RestoredRunnerAuthority {
 	pendingAssignment?: PendingAssignment;
 	runner?: CloudRunner;
 	leases: ActiveRunnerLease[];
+	recoveries: CloudRunnerRecovery[];
 	consumedRepairSha256?: string;
 }
 
@@ -531,6 +563,8 @@ function storedRunner(runner: CloudRunner): JsonValue {
 function storedJob(job: CloudRunnerJob): JsonValue {
 	return {
 		job_id: job.jobId,
+		run_id: job.runId ?? null,
+		assignment_id: job.assignmentId ?? null,
 		profile_id: job.profileId,
 		environment_id: job.environmentId,
 		session_id: job.sessionId ?? null,
@@ -608,6 +642,42 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 			job,
 			leaseToken: stateToken(lease.lease_token, "stored lease token"),
 			...(pendingCompletion ? { pendingCompletion } : {}),
+			...(lease.pending_failure !== null && lease.pending_failure !== undefined
+				? { pendingFailure: parseFailure(lease.pending_failure) }
+				: {}),
+			// Missing execution evidence from an older record is uncertain, never permission to rerun.
+			executionStarted: lease.execution_started !== false,
+		};
+	});
+	const recoveries = input.recoveries === undefined ? [] : input.recoveries;
+	if (!Array.isArray(recoveries)) throw new Error("Runner recovery state is invalid");
+	const parsedRecoveries = recoveries.map((value): CloudRunnerRecovery => {
+		const recovery = record(value, "recovery record");
+		const job = parseCloudRunnerJob(recovery.job);
+		if (
+			job.runnerId !== runnerId ||
+			job.status !== "leased" ||
+			(runner !== undefined && job.profileId !== runner.profileId) ||
+			(recovery.completion != null && recovery.failure != null) ||
+			(recovery.reason !== "authority-unavailable" && recovery.reason !== "interrupted")
+		)
+			throw new Error("Runner recovery identity is invalid");
+		let completion: CloudRunnerCompletion | undefined;
+		if (recovery.completion !== null && recovery.completion !== undefined) {
+			const pending = record(recovery.completion, "recovery completion");
+			const snapshot = optionalUuid(pending.outputSnapshotId, "recovery snapshot");
+			completion = {
+				result: objectJson(pending.result, "recovery result"),
+				...(snapshot ? { outputSnapshotId: snapshot } : {}),
+			};
+		}
+		return {
+			job,
+			reason: recovery.reason,
+			...(completion ? { completion } : {}),
+			...(recovery.failure !== null && recovery.failure !== undefined
+				? { failure: parseFailure(recovery.failure) }
+				: {}),
 		};
 	});
 	if (
@@ -617,11 +687,16 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 			Boolean(sessionToken) ||
 		(runner !== undefined && runner.runnerId !== runnerId) ||
 		new Set(leases.map((lease) => lease.job.jobId)).size !== leases.length ||
+		new Set(parsedRecoveries.map((recovery) => recovery.job.jobId)).size !== parsedRecoveries.length ||
+		new Set(parsedRecoveries.map((recovery) => recovery.job.profileId)).size > 1 ||
+		leases.some((lease) => parsedRecoveries.some((recovery) => recovery.job.jobId === lease.job.jobId)) ||
 		leases.some(
 			(lease) =>
 				lease.job.status !== "leased" ||
 				lease.job.runnerId !== runnerId ||
+				(runner !== undefined && lease.job.profileId !== runner.profileId) ||
 				!lease.job.leaseExpiresAt ||
+				Boolean(lease.pendingCompletion && lease.pendingFailure) ||
 				(lease.pendingCompletion !== undefined && !lease.job.leaseExpiresAt),
 		)
 	) {
@@ -635,6 +710,7 @@ function parseRunnerAuthorityState(value: unknown, runnerId: string): RestoredRu
 		...(pendingAssignment ? { pendingAssignment } : {}),
 		...(runner ? { runner } : {}),
 		leases,
+		recoveries: parsedRecoveries,
 		...(consumedRepairSha256 ? { consumedRepairSha256 } : {}),
 	};
 }
@@ -644,6 +720,19 @@ export interface DisposableCloudRunnerSnapshot {
 	active: boolean;
 	sessionExpiresAt?: string;
 	activeJobIds: string[];
+	recoveryJobIds: string[];
+}
+
+function parseFailure(value: unknown): CloudRunnerFailure {
+	const failure = record(value, "staged failure");
+	if (
+		typeof failure.error !== "string" ||
+		!failure.error.trim() ||
+		failure.error.length > 1000 ||
+		typeof failure.retryable !== "boolean"
+	)
+		throw new Error("Runner staged failure is invalid");
+	return { error: failure.error, retryable: failure.retryable };
 }
 
 export class DisposableCloudRunner {
@@ -658,6 +747,7 @@ export class DisposableCloudRunner {
 	#runner?: CloudRunner;
 	#consumedRepairSha256?: string;
 	readonly #leases = new Map<string, ActiveRunnerLease>();
+	readonly #recoveries = new Map<string, CloudRunnerRecovery>();
 	#persistTail: Promise<void> = Promise.resolve();
 
 	constructor(
@@ -704,6 +794,7 @@ export class DisposableCloudRunner {
 		instance.#runner = restored.runner;
 		instance.#consumedRepairSha256 = restored.consumedRepairSha256;
 		for (const lease of restored.leases) instance.#leases.set(lease.job.jobId, lease);
+		for (const recovery of restored.recoveries) instance.#recoveries.set(recovery.job.jobId, recovery);
 		return instance;
 	}
 
@@ -728,6 +819,16 @@ export class DisposableCloudRunner {
 		}
 		const repaired = new DisposableCloudRunner(transport, runnerId, activationToken, authorityStore);
 		repaired.#consumedRepairSha256 = runnerActivationTokenSha256(activationToken);
+		for (const recovery of restored.recoveries) repaired.#recoveries.set(recovery.job.jobId, recovery);
+		for (const lease of restored.leases) {
+			if (!lease.executionStarted && !lease.pendingCompletion && !lease.pendingFailure) continue;
+			repaired.#recoveries.set(lease.job.jobId, {
+				job: lease.job,
+				reason: "authority-unavailable",
+				...(lease.pendingCompletion ? { completion: lease.pendingCompletion } : {}),
+				...(lease.pendingFailure ? { failure: lease.pendingFailure } : {}),
+			});
+		}
 		await repaired.#persist();
 		return repaired;
 	}
@@ -825,6 +926,8 @@ export class DisposableCloudRunner {
 	}
 
 	async acceptAssignment(assignment: CloudRunnerAssignmentAcceptance): Promise<CloudRunnerJob> {
+		if (this.#recoveries.has(assignment.jobId))
+			throw new Error("Runner job requires outcome reconciliation before another execution");
 		const token = this.#sessionToken;
 		if (!token) throw new Error("Runner is not active");
 		if (!UUID_PATTERN.test(assignment.assignmentId) || !UUID_PATTERN.test(assignment.jobId)) {
@@ -852,14 +955,28 @@ export class DisposableCloudRunner {
 				assignmentCapability: received.capability,
 			}),
 		);
-		if (job.jobId !== received.jobId || job.runnerId !== this.#runnerId || job.status !== "leased") {
+		if (
+			job.jobId !== received.jobId ||
+			(job.assignmentId !== undefined && job.assignmentId !== received.assignmentId) ||
+			job.runnerId !== this.#runnerId ||
+			job.status !== "leased" ||
+			(this.#runner && job.profileId !== this.#runner.profileId)
+		) {
 			throw new Error("Runner assignment returned an inconsistent lease");
 		}
 		const prior = this.#leases.get(job.jobId);
-		if (prior && prior.leaseToken !== received.capability) {
+		if (
+			prior &&
+			(prior.leaseToken !== received.capability ||
+				prior.job.runId !== job.runId ||
+				prior.job.profileId !== job.profileId)
+		) {
 			throw new Error("Runner assignment conflicts with retained job authority");
 		}
-		this.#leases.set(job.jobId, { job, leaseToken: received.capability });
+		this.#leases.set(
+			job.jobId,
+			prior ? { ...prior, job } : { job, leaseToken: received.capability, executionStarted: false },
+		);
 		this.#pendingAssignment = undefined;
 		try {
 			await this.#persist();
@@ -905,12 +1022,14 @@ export class DisposableCloudRunner {
 		});
 	}
 
-	async complete(jobId: string, result: JsonValue, outputSnapshotId?: string): Promise<CloudRunnerJob> {
+	async stageCompletion(jobId: string, result: JsonValue, outputSnapshotId?: string): Promise<void> {
 		const encoded = JSON.stringify(result);
 		if (
 			!result ||
 			typeof result !== "object" ||
 			Array.isArray(result) ||
+			"output_substrate" in result ||
+			"company_file" in result ||
 			encoded === undefined ||
 			Buffer.byteLength(encoded) > MAX_JSON_BYTES
 		) {
@@ -921,6 +1040,7 @@ export class DisposableCloudRunner {
 		}
 		const active = this.#leases.get(jobId);
 		if (!active) throw new Error("Runner job lease is unavailable");
+		if (active.pendingFailure) throw new Error("Runner job already has a staged failure");
 		const completion: CloudRunnerCompletion = {
 			result: structuredClone(result),
 			...(outputSnapshotId ? { outputSnapshotId } : {}),
@@ -938,6 +1058,12 @@ export class DisposableCloudRunner {
 				throw error;
 			}
 		}
+	}
+
+	async complete(jobId: string, result: JsonValue, outputSnapshotId?: string): Promise<CloudRunnerJob> {
+		await this.stageCompletion(jobId, result, outputSnapshotId);
+		const active = this.#leases.get(jobId);
+		if (!active) throw new Error("Runner job lease is unavailable");
 		const stagedCompletion = active.pendingCompletion;
 		if (!stagedCompletion) throw new Error("Runner job completion could not be staged");
 		const job = await this.#jobRequest("complete", jobId, stagedCompletion);
@@ -956,7 +1082,20 @@ export class DisposableCloudRunner {
 		if (!message || message.length > 1000) throw new Error("Runner job failure is invalid");
 		const active = this.#leases.get(jobId);
 		if (!active) throw new Error("Runner job lease is unavailable");
-		const job = await this.#jobRequest("fail", jobId, { error: message, retryable });
+		if (active.pendingCompletion) throw new Error("Runner job already has a staged completion");
+		const failure = { error: message, retryable };
+		if (active.pendingFailure && !isDeepStrictEqual(active.pendingFailure, failure))
+			throw new Error("Runner job failure changed after it was staged");
+		if (!active.pendingFailure) {
+			active.pendingFailure = failure;
+			try {
+				await this.#persist();
+			} catch (error) {
+				active.pendingFailure = undefined;
+				throw error;
+			}
+		}
+		const job = await this.#jobRequest("fail", jobId, active.pendingFailure);
 		this.#leases.delete(jobId);
 		try {
 			await this.#persist();
@@ -983,14 +1122,54 @@ export class DisposableCloudRunner {
 		return completion === undefined ? undefined : structuredClone(completion);
 	}
 
-	async discardJobAuthority(jobId: string): Promise<void> {
+	stagedFailure(jobId: string): CloudRunnerFailure | undefined {
+		const failure = this.#leases.get(jobId)?.pendingFailure;
+		return failure ? structuredClone(failure) : undefined;
+	}
+
+	executionStarted(jobId: string): boolean {
+		return this.#leases.get(jobId)?.executionStarted ?? false;
+	}
+
+	async markExecutionStarted(jobId: string): Promise<void> {
+		const lease = this.#leases.get(jobId);
+		if (!lease || lease.executionStarted || lease.pendingCompletion || lease.pendingFailure)
+			throw new Error("Runner execution requires reconciliation");
+		lease.executionStarted = true;
+		try {
+			await this.#persist();
+		} catch (error) {
+			lease.executionStarted = false;
+			throw error;
+		}
+	}
+
+	recoveryRecords(): CloudRunnerRecovery[] {
+		return structuredClone([...this.#recoveries.values()]);
+	}
+
+	async discardJobAuthority(
+		jobId: string,
+		reason: CloudRunnerRecovery["reason"] = "authority-unavailable",
+	): Promise<void> {
 		const active = this.#leases.get(jobId);
 		if (!active) return;
+		const priorRecovery = this.#recoveries.get(jobId);
+		if (active.executionStarted || active.pendingCompletion || active.pendingFailure) {
+			this.#recoveries.set(jobId, {
+				job: structuredClone(active.job),
+				reason,
+				...(active.pendingCompletion ? { completion: structuredClone(active.pendingCompletion) } : {}),
+				...(active.pendingFailure ? { failure: structuredClone(active.pendingFailure) } : {}),
+			});
+		}
 		this.#leases.delete(jobId);
 		try {
 			await this.#persist();
 		} catch (error) {
 			this.#leases.set(jobId, active);
+			if (priorRecovery) this.#recoveries.set(jobId, priorRecovery);
+			else this.#recoveries.delete(jobId);
 			throw error;
 		}
 	}
@@ -1001,6 +1180,7 @@ export class DisposableCloudRunner {
 			active: Boolean(this.#sessionToken),
 			...(this.#runner?.sessionExpiresAt ? { sessionExpiresAt: this.#runner.sessionExpiresAt } : {}),
 			activeJobIds: [...this.#leases.keys()].sort(),
+			recoveryJobIds: [...this.#recoveries.keys()].sort(),
 		};
 	}
 
@@ -1033,7 +1213,25 @@ export class DisposableCloudRunner {
 			request = { action, runnerId: this.#runnerId, jobId, leaseToken };
 		}
 		const job = parseCloudRunnerJob(await this.#transport.request(token, request));
-		if (job.jobId !== jobId) throw new Error("Runner request returned another job");
+		if (this.#leases.get(jobId) !== lease) throw new Error("Runner job authority is no longer active");
+		if (
+			job.jobId !== jobId ||
+			job.profileId !== lease.job.profileId ||
+			job.runId !== lease.job.runId ||
+			job.assignmentId !== lease.job.assignmentId ||
+			(job.runnerId !== undefined && job.runnerId !== this.#runnerId)
+		)
+			throw new Error("Runner request returned another job or tenant");
+		if (action === "complete") {
+			// The server appends its own durable publication receipts. Compare
+			// the exact submitted result, allowing only those two reserved fields.
+			const echoed = { ...record(job.result, "completion result") };
+			delete echoed.output_substrate;
+			delete echoed.company_file;
+			if (!isDeepStrictEqual(echoed, (extra as CloudRunnerCompletion).result)) {
+				throw new Error("Runner request returned an inconsistent completion receipt");
+			}
+		}
 		if (
 			(action === "renew" && job.status !== "leased") ||
 			(action === "complete" && job.status !== "completed") ||
@@ -1067,11 +1265,21 @@ export class DisposableCloudRunner {
 				: null,
 			runner: this.#runner ? storedRunner(this.#runner) : null,
 			consumed_repair_sha256: this.#consumedRepairSha256 ?? null,
+			recoveries: [...this.#recoveries.values()].map((recovery) => ({
+				job: storedJob(recovery.job),
+				reason: recovery.reason,
+				completion: recovery.completion
+					? { result: recovery.completion.result, outputSnapshotId: recovery.completion.outputSnapshotId ?? null }
+					: null,
+				failure: recovery.failure ? { ...recovery.failure } : null,
+			})),
 			leases: [...this.#leases.values()]
 				.sort((left, right) => left.job.jobId.localeCompare(right.job.jobId, "en"))
 				.map((lease) => ({
 					job: storedJob(lease.job),
 					lease_token: lease.leaseToken,
+					execution_started: lease.executionStarted,
+					pending_failure: lease.pendingFailure ? { ...lease.pendingFailure } : null,
 					pending_completion:
 						lease.pendingCompletion !== undefined
 							? {

@@ -2,12 +2,17 @@ import { constants, realpathSync } from "node:fs";
 import { open, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HttpCloudCompanyPathControl } from "./cloud-company-path-control.ts";
+import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
+import { CloudNativeCompanyRuntime } from "./cloud-native-company-runtime.ts";
+import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import { NativeProviderHost, OfficialCliNativeHarnessDriver } from "./cloud-native-provider-host.ts";
 import {
 	HttpNativeProviderHostService,
 	SupabaseNativeCredentialCapsuleStore,
 	SupabaseNativeProviderControlPlane,
 } from "./cloud-native-provider-service.ts";
+import { CloudContentAddressedStore } from "./cloud-object-store.ts";
 import {
 	systemdCredentialMetadataIsSafe as credentialMetadataIsSafe,
 	type SystemdCredentialMetadata,
@@ -80,7 +85,43 @@ async function credentialOrEnvironment(
 	return (await systemdCredential(environment, credentialName)) ?? required(environment, environmentName);
 }
 
+/** Explicit deployment selection. Unknown or partially configured modes fail
+ * closed; they cannot silently fall back to the legacy native tool surface. */
+export function nativeCompanyRuntimeConfiguration(environment: NodeJS.ProcessEnv):
+	| {
+			command: readonly [string];
+			binarySha256: string;
+			objectGatewayUrl: string;
+			isolation: NativeIsolationConfiguration;
+	  }
+	| undefined {
+	if (environment.QORPERA_NATIVE_RUNTIME === undefined) return undefined;
+	if (environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1") throw new Error("Unsupported native cloud runtime");
+	const command = required(environment, "QORPERA_NATIVE_CODEX_FENCE_PATH");
+	const binarySha256 = required(environment, "QORPERA_NATIVE_CODEX_FENCE_SHA256");
+	const objectGatewayUrl = required(environment, "QORPERA_NATIVE_OBJECT_GATEWAY_URL");
+	const url = new URL(objectGatewayUrl);
+	if (
+		!isAbsolute(command) ||
+		!/^[0-9a-f]{64}$/.test(binarySha256) ||
+		url.protocol !== "https:" ||
+		url.username ||
+		url.password ||
+		url.search ||
+		url.hash ||
+		url.pathname !== "/"
+	)
+		throw new Error("Invalid native cloud runtime configuration");
+	return {
+		command: [command],
+		binarySha256,
+		objectGatewayUrl: url.origin,
+		isolation: { entryPoint: "/opt/qorpera-runner/qorpera-native-isolation-child.mjs" },
+	};
+}
+
 export async function runNativeProviderHostServiceMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
+	const runtimeConfiguration = nativeCompanyRuntimeConfiguration(environment);
 	const baseUrl = required(environment, "QORPERA_SUPABASE_URL");
 	const serviceKey = await credentialOrEnvironment(
 		environment,
@@ -104,15 +145,45 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	if (!TOKEN_PATTERN.test(masterKey) || !TOKEN_PATTERN.test(bridgeToken)) {
 		throw new Error("Native provider credentials must contain 32 base64url bytes");
 	}
+	const controlPlane = new SupabaseNativeProviderControlPlane(baseUrl, serviceKey);
+	let cloudRuntime: CloudNativeCompanyRuntime | undefined;
+	if (runtimeConfiguration) {
+		const objectToken = await credentialOrEnvironment(
+			environment,
+			"qorpera-native-object-token",
+			"QORPERA_NATIVE_OBJECT_TOKEN",
+		);
+		if (!TOKEN_PATTERN.test(objectToken) || objectToken === masterKey || objectToken === bridgeToken)
+			throw new Error("Native object staging requires a distinct private credential");
+		cloudRuntime = new CloudNativeCompanyRuntime({
+			controlPlane,
+			pathControl: new HttpCloudCompanyPathControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey }),
+			command: runtimeConfiguration.command,
+			binarySha256: runtimeConfiguration.binarySha256,
+			isolation: runtimeConfiguration.isolation,
+			objectStore: (companyId, binding, signal) =>
+				new CloudContentAddressedStore(
+					new HttpNativeCompanyObjectTransport({
+						baseUrl: runtimeConfiguration.objectGatewayUrl,
+						token: objectToken,
+						companyId,
+						binding,
+						signal,
+					}),
+				),
+		});
+	}
 	const host = new NativeProviderHost({
-		controlPlane: new SupabaseNativeProviderControlPlane(baseUrl, serviceKey),
+		controlPlane,
 		capsules: new SupabaseNativeCredentialCapsuleStore(baseUrl, serviceKey),
 		harness: new OfficialCliNativeHarnessDriver(
-			environment.QORPERA_CODEX_PATH ?? "codex",
+			runtimeConfiguration?.command[0] ?? environment.QORPERA_CODEX_PATH ?? "codex",
 			environment.QORPERA_CLAUDE_PATH ?? "claude",
+			runtimeConfiguration?.isolation,
 		),
 		masterKey,
 		computeIdentityId,
+		...(cloudRuntime ? { cloudRuntime } : {}),
 		...(environment.QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT
 			? { temporaryRoot: environment.QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT }
 			: {}),

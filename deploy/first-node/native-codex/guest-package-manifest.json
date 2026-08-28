@@ -1,0 +1,164 @@
+{
+  "schema": "qorpera.lxd-runner-guest-package/v1",
+  "platform": "linux-x64",
+  "runtime": {
+    "node": ">=22.19.0",
+    "podman": ">=5.0.0",
+    "cgroups": "v2"
+  },
+  "nativeHarnesses": {
+    "codex": "0.147.0",
+    "claudeCode": "2.1.231"
+  },
+  "nativeCompany": {
+    "schema": "qorpera.native-company-guest/v1",
+    "binaryPath": "/opt/qorpera-harnesses/native-company/codex",
+    "binarySha256": "babeed68a7732f96fa6bcd69ac3a9e4124bcfab5340ce0fbab61363b8b1a148f",
+    "sourceCommit": "be6e8eac029b183056b7e4402879f15d2c85f61b",
+    "patchSha256": "5465d454fa8dcf3773bd7861144fb6c2a885846047430a3c0963142146b2cc31",
+    "target": "x86_64-unknown-linux-gnu",
+    "profile": "release"
+  },
+  "runnerImage": {
+    "schema": "qorpera.ephemeral-runner-image-contract/v1",
+    "source_commit": "135b4fc7b40f70a0fd6859fb9400fbb42d820ebc",
+    "base_image": "docker.io/library/node@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
+    "image": "localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1",
+    "archive": {
+      "file": "runner-image/qorpera-sandbox-probe.oci.tar",
+      "bytes": 84122624,
+      "sha256": "c9370c825bdbd589bf0c1391e567b8f5ea8ba36161cc554b32fcfb235f046239"
+    },
+    "cosign_bundle": {
+      "file": "runner-image/qorpera-sandbox-probe.cosign-bundle.json",
+      "bytes": 10639,
+      "sha256": "98a00fefd625c9aceeadd746ee610682a8787e5ce85ec0a6ac513a354a7491ce",
+      "certificate_identity": "https://github.com/Qorpera/Qorpera_Base/.github/workflows/ephemeral-runner-linux.yml@refs/heads/codex/step2-first-node",
+      "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
+      "workflow_sha": "135b4fc7b40f70a0fd6859fb9400fbb42d820ebc",
+      "workflow_trigger": "workflow_dispatch"
+    }
+  },
+  "artifacts": [
+    {
+      "file": "company-lock-heartbeat.mjs",
+      "bytes": 712,
+      "sha256": "bf335b5abc24694ad1c9090b8b2f3e3556e0d0273b951b8cbc2193956d65bd80"
+    },
+    {
+      "file": "harness/package-lock.json",
+      "bytes": 8455,
+      "sha256": "60dc3982202781406f39aa1e9e4c2df4cc93898aac3be693dea2321dd346d002"
+    },
+    {
+      "file": "harness/package.json",
+      "bytes": 173,
+      "sha256": "0d421bba01ad3191ceaf78f59737c21b0ccc96afd81275bc92f30540356ff401"
+    },
+    {
+      "file": "install-image-contract.sh",
+      "bytes": 15443,
+      "sha256": "242aefd4f0fbc3871b2cfa300ab1c5eb52f0ebf06fc508e49b14f3c0ed5b2468"
+    },
+    {
+      "file": "native-company/artifact.json",
+      "bytes": 1528,
+      "sha256": "8c59696c6df3bb370c37b0021908a3a08bbe90d2d8a12165c985522324cf3653"
+    },
+    {
+      "file": "native-company/codex",
+      "bytes": 307148960,
+      "sha256": "babeed68a7732f96fa6bcd69ac3a9e4124bcfab5340ce0fbab61363b8b1a148f"
+    },
+    {
+      "file": "native-company/LICENSE",
+      "bytes": 10926,
+      "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+    },
+    {
+      "file": "native-company/NOTICE",
+      "bytes": 242,
+      "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+    },
+    {
+      "file": "qorpera-company-runner.service",
+      "bytes": 1927,
+      "sha256": "ad9f88e91918a827757304fc53ee37838c7daeb116a834d29dc7c821aa4b334b"
+    },
+    {
+      "file": "qorpera-ephemeral-runner.mjs",
+      "bytes": 295909,
+      "sha256": "ed6f8ba65103fa64c63b18930e95cdbb43921ba89276e18f8935e41f738a0ddf"
+    },
+    {
+      "file": "qorpera-ephemeral-runner.service",
+      "bytes": 2167,
+      "sha256": "b6ce18e94b9b39df14d2fa9d232ad5d28f4acc96bc3f6045114657e4c38dfe03"
+    },
+    {
+      "file": "qorpera-lxd-native-login-bootstrap.mjs",
+      "bytes": 21618,
+      "sha256": "2a67c3c14333611e3e4ff3fec9e8380a2b5b607e27b641aae60d17cf4a8c6857"
+    },
+    {
+      "file": "qorpera-lxd-native-login-bootstrap.service",
+      "bytes": 949,
+      "sha256": "a22b048b01deb10afc2fd1c236a3d0478368a1cef490e75f50d22f2ec47386aa"
+    },
+    {
+      "file": "qorpera-lxd-runner-bootstrap.mjs",
+      "bytes": 41127,
+      "sha256": "56c7de3162ca84f1bad6adb7bfd3c8205d14d8f139e01274caa75c7d0ece66f6"
+    },
+    {
+      "file": "qorpera-lxd-runner-bootstrap.service",
+      "bytes": 988,
+      "sha256": "572957568cc37c1ee29cfbaf3269f2af7d0c820f10e9c91d52a96df46c945659"
+    },
+    {
+      "file": "qorpera-native-company-host.service",
+      "bytes": 2813,
+      "sha256": "5bafdcbb35ee5f201daaf7a5b5ec0c61aa12009659211deaeb3dd43d964a2381"
+    },
+    {
+      "file": "qorpera-native-isolation-child.mjs",
+      "bytes": 2893,
+      "sha256": "84bc4ab892cfe18a905a9dfcae9cd5a8206c054ae114af58feb73d63a7931df9"
+    },
+    {
+      "file": "qorpera-native-provider-host.mjs",
+      "bytes": 229139,
+      "sha256": "13c54d95939e68b5523f0e0578f0799b6b659dde0494815dba8b902f8e994940"
+    },
+    {
+      "file": "qorpera-native-provider-host.service",
+      "bytes": 1879,
+      "sha256": "679a6fbdb575022eb7a6f7c8af093092dba69288187efbf22882fd8998bd46f8"
+    },
+    {
+      "file": "qorpera-sandbox-probe.mjs",
+      "bytes": 20676,
+      "sha256": "7d238382fde632f7540ab9aab89ce348fbfc7c5295283c341be7e81deee4cdaf"
+    },
+    {
+      "file": "run-job",
+      "bytes": 262,
+      "sha256": "e479e861b75ffe1d25090c7e7914c6f59b6d77819619e9b882c2c993e2dcfe4e"
+    },
+    {
+      "file": "runner-image/contract.json",
+      "bytes": 1112,
+      "sha256": "fb0bc315f357ba16220f729ca2810a2ae8ba9299bf9765daed02a52a9f3c8f38"
+    },
+    {
+      "file": "runner-image/qorpera-sandbox-probe.cosign-bundle.json",
+      "bytes": 10639,
+      "sha256": "98a00fefd625c9aceeadd746ee610682a8787e5ce85ec0a6ac513a354a7491ce"
+    },
+    {
+      "file": "runner-image/qorpera-sandbox-probe.oci.tar",
+      "bytes": 84122624,
+      "sha256": "c9370c825bdbd589bf0c1391e567b8f5ea8ba36161cc554b32fcfb235f046239"
+    }
+  ]
+}

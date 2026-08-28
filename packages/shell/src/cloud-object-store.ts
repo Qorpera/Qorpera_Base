@@ -7,7 +7,7 @@ import type { HostedPrimaryDatabase } from "./hosted-primary.ts";
  * non-browser user agents before the origin is reached; the main process's
  * fetch presents one. The UA satisfies the edge — authentication is still
  * the bearer token. */
-const GATEWAY_EDGE_USER_AGENT =
+export const GATEWAY_EDGE_USER_AGENT =
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
 export const QORPERA_PROFILE_OBJECT_BUCKET = "qorpera-profile-objects";

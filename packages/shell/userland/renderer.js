@@ -11582,7 +11582,9 @@ async function renderSettingsTab() {
 				: recoverableExecutions > 0
 				? `${recoverableExecutions} agent ${recoverableExecutions === 1 ? "change needs" : "changes need"} review`
 				: fileSyncState === "cloud"
-					? "Connected · synced across the company"
+					? info.profile?.status?.companyFileMode === "governed"
+						? "Live cloud Company File"
+						: "Connected · synced across the company"
 					: fileSyncState === "offline"
 						? "Offline · changes are waiting to sync"
 						: fileSyncState === "attention"
@@ -11634,9 +11636,13 @@ async function renderSettingsTab() {
 				if (!result?.ok) throw new Error(result?.error ?? "The Company File could not be opened.");
 				if (info.profile?.profileType === "cloud") {
 					showToast(
-						result.readOnly
-							? "Opened a read-only synced copy. Cloud revisions remain authoritative."
-							: "Opened a synced copy. Cloud revisions remain authoritative.",
+						result.governed
+							? result.readOnly
+								? "Opened the live Company File with read-only access."
+								: "Opened the live Company File."
+							: result.readOnly
+								? "Opened a read-only synced copy. Cloud revisions remain authoritative."
+								: "Opened a synced copy. Cloud revisions remain authoritative.",
 					);
 				}
 			} catch (error) {

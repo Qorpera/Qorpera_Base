@@ -13,6 +13,9 @@ export interface LxdInstanceRecord {
 	config: Readonly<Record<string, string>>;
 	profiles: readonly string[];
 	devices: Readonly<Record<string, Readonly<Record<string, string>>>>;
+	/** Includes profile inheritance; local devices alone are not a containment check. */
+	expandedDevices: Readonly<Record<string, Readonly<Record<string, string>>>>;
+	expandedConfig: Readonly<Record<string, string>>;
 }
 
 export interface LxdInstanceStateRecord {
@@ -144,6 +147,8 @@ function instance(value: unknown): LxdInstanceRecord {
 		config: stringRecord(input.config, "LXD instance config"),
 		profiles: strings(input.profiles, "LXD instance profiles"),
 		devices: devices(input.devices),
+		expandedDevices: devices(input.expanded_devices),
+		expandedConfig: stringRecord(input.expanded_config, "LXD expanded instance config"),
 	};
 }
 
