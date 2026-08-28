@@ -22,6 +22,7 @@
 - Hardened native credential resealing against hard links, changed file identities, unbounded file growth and missing original credential paths. Linux capture uses descriptor-anchored directories; unsafe refreshes retain the previous sealed capsule.
 - Blocked legacy local Company File mutation and publication routes for governed companies, including product creation and artifact/configuration writes. Cloud file access and sign-in do not depend on model allowance.
 - Bounded runner-control success bodies and preserved denial responses without reading backend error pages, including stalled bodies and redirects.
+- Nested native runtime scratch inside its private temporary allocation so Linux cloud turns pass the existing containment layout check; failed startup still removes the entire allocation.
 
 ## [0.20.44] - 2026-08-28
 

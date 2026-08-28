@@ -1,6 +1,8 @@
 # Runtime Step 2: signed cloud staging
 
-Date: 2026-08-28. **Signed candidate staged; real-GPT acceptance remains open.**
+Date: 2026-08-28. **Signed v48 candidate preserved; managed Storage and human
+file acceptance passed. Cloud-native login completed, but v48 has a reproduced
+pre-model scratch-layout defect. Its verified source fix needs restaging.**
 Step 3 is paused. Production enrollment is unchanged.
 
 ## Source and immutable artifacts
@@ -85,13 +87,83 @@ not identical to the disposable fixture. The next test must use the real
 managed Storage preflight/final-transaction path and the current cloud schema,
 not infer compatibility from a column check or overwrite production history.
 
-A separate temporary Supabase preview branch, without production data, was
-requested for this acceptance run. It can incur Supabase runtime charges;
-approval is pending. No preview branch was created. After approval, reconcile
-the branch's schema, deploy the Step 2 services there and exercise real GPT,
-multi-human authority, revocation, lost acknowledgements and closed clients.
-The production credential capsule must not be exported into the test tenant.
-Use an authorized cloud-native login for the acceptance identity.
+The user completed the authorized Pro upgrade. The temporary data-free branch
+`step2-fences-v48-20260828` has branch ID
+`6051d2d8-f1de-4d04-ac0e-f1f9e8c3314d` and project
+`hurfdoempkqpzxggemhc`. It is not the default or a persistent branch and will
+be deleted after acceptance. The automatic parent `main` metadata remains
+untouched. The preview is billable independently of the spend cap.
+
+Automatic schema replay stopped because the preview lacked `pg_cron`. After
+confirming it contained no company/user data or configured vault secrets,
+`pg_cron` was enabled there and the missing historical migrations plus Step 2
+040 through 130 were applied. The actual preview has 102 migrations, including
+all eighteen managed-only company-computer/mobile migrations. Its earlier
+branch-workflow failure is not represented as a successful automatic replay.
+No production migration or provider call was performed.
+
+The isolated cloud NAS gateway uses preview-only credentials and a private
+task-owned NAS directory and recovery journal. Read delegation remains off.
+Actual Auth users proved tenant denial, exact immutable upload/read, corrupt
+body rejection and a byte-identical managed Storage replica. The real Storage
+preflight/final-transaction race also passed: a temporary observer paused an
+upload at final metadata, cleanup acquired its fence, and the write was
+rejected. Authorized cleanup removed both copies and the catalog; a late
+retry could not resurrect them. The observer trigger/schema and advisory lock
+were removed. No Storage deletion-protection guard was disabled.
+
+Managed SQL suites 165, 280, 295 and 296 passed. The unchanged 160 suite passed
+through regular `psql` with `verify-full` TLS and the published Supabase CA.
+Sending that whole fixture as one management-API statement gives its queued
+requests identical statement timestamps and invalidates its ordering
+assumption; this was not a runtime-authority failure. Whole-suite managed 270
+and 290 runs remain unclaimed because their direct `storage.objects` deletion
+fixtures meet managed Storage's deletion guard. The live API race above
+independently covers the required installed-Storage fence.
+
+## Cloud-native login and first admitted turn
+
+The preview-only gateway, signed provider, project-scoped LXD transport and
+orchestrator were deployed in `qorpera-step2-v48`. Temporary authenticated test
+tunnels connect the preview Edge functions to the isolated node services; no
+production DNS or service was changed. The governed Company File was uploaded,
+read back, closure-verified, published and enrolled through the actual cloud
+interfaces. There is no canonical Company File mount in the native harness.
+
+The user approved a fresh official GPT device login. Login
+`4d1e9797-38b1-467a-b0ff-8933a74ea8e2` completed for test Compute Identity
+`5de7774d-6beb-4bd8-af4f-0019edbed3e5`; its login VM stopped afterward.
+The production credential capsule was not used or exported. The real human
+turn `32e912a2-68eb-459d-95e3-77f9896eee58` was admitted through
+`qorpera_request_session_turn_v2` and the ordinary orchestrator. Its VM accepted
+the assignment, but the turn failed before native model-start admission and
+produced no public sends.
+
+The failure exposed a real layout mismatch: the adapter's scratch was a direct
+child of `/tmp`, while the containment validator requires a deeper private
+directory. The source fix adds a `runtime/` child beneath the unique allocation;
+the validator and all isolation policies remain unchanged. An actual-cloud
+before/after probe reproduced the old rejection and reached verified native
+configuration with the fix, deliberately stopping before model admission.
+It used no provider credentials and did not replace the installed native
+binary or namespace helper. This is startup evidence, not GPT acceptance.
+
+The new regression failed before the fix; 57 focused adapter/run/runtime tests
+and the full code check then passed. The user authorized its Step 2-only source
+commit and replacement signed image. The fix is not in the signed v48 image;
+the existing signed artifacts and their historical verification remain intact.
+Restaging does not authorize a push, release or production change.
+
+Thirteen additional live human-file cases passed using the actual client
+transport: seven read/list cases and six mutation/authority cases. These cover
+shared/private/outsider access, lost-acknowledgement recovery to the original
+command, unchanged replay, changed-content refusal, protected-edit dismissal
+without approval, and revocation between object retrieval and final return.
+The cloud owns each mutation; no desktop model or canonical checkout is used.
+
+Next repackage the scratch-layout fix into a new signed image, then exercise
+real GPT injection resistance, native revocation, lost acknowledgements and
+recovery with clients closed. The v48 startup probe does not close those gates.
 
 Before production enrollment, the NAS/workbench reconciliation, shared-computer
 path enforcement and authorized replacement-node identity recovery must also

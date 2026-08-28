@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { CLOUD_CODEX_BOUNDARY_CONFIG, runCloudCodexToolSession } from "../src/cloud-codex-tool-session.ts";
+import * as nativeIsolation from "../src/cloud-native-isolation.ts";
 import { type CloudNativeTool, CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
@@ -16,12 +17,19 @@ beforeEach(async () => {
 	root = await mkdtemp(join(tmpdir(), "qorpera-boundary-rpc-test-"));
 });
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await rm(root, { recursive: true, force: true });
 });
 
 function run(
 	mode: string,
-	options: { timeoutMs?: number; identityRoot?: string; signal?: AbortSignal; binarySha256?: string } = {},
+	options: {
+		timeoutMs?: number;
+		identityRoot?: string;
+		signal?: AbortSignal;
+		binarySha256?: string;
+		isolation?: nativeIsolation.NativeIsolationConfiguration;
+	} = {},
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => new Promise(() => undefined));
 	const signal = options.signal ?? new AbortController().signal;
@@ -72,6 +80,22 @@ it("rejects an unpatched binary before creating a thread", async () => {
 
 it("rejects an artifact digest mismatch before spawning", async () => {
 	await expect(run("response-first", { binarySha256: "0".repeat(64) }).result).rejects.toThrow("artifact mismatch");
+});
+
+it("nests private runtime scratch below its temporary allocation and cleans it after failed containment", async () => {
+	let allocation: string | undefined;
+	vi.spyOn(nativeIsolation, "launchIsolatedNativeProcess").mockImplementation(async (options) => {
+		expect(basename(options.scratchRoot)).toBe("runtime");
+		allocation = dirname(options.scratchRoot);
+		expect(basename(allocation)).toMatch(/^qorpera-codex-boundary-/);
+		expect((await stat(options.scratchRoot)).mode & 0o777).toBe(0o700);
+		throw new Error("Synthetic containment startup failure");
+	});
+	await expect(
+		run("response-first", { isolation: { entryPoint: "/unused-synthetic-isolation.mjs" } }).result,
+	).rejects.toThrow("Synthetic containment startup failure");
+	expect(allocation).toBeDefined();
+	await expect(stat(allocation!)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it("cannot report success with only a capability marker and no result-fence requests", async () => {

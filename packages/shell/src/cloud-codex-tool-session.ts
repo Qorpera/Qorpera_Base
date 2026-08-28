@@ -420,7 +420,10 @@ export async function runCloudCodexToolSession(options: {
 	)
 		throw new Error("Invalid native boundary input");
 	options.signal.throwIfAborted();
-	const root = await mkdtemp(join(tmpdir(), "qorpera-codex-boundary-"));
+	const allocation = await mkdtemp(join(tmpdir(), "qorpera-codex-boundary-"));
+	// Linux commonly uses /tmp. Keep the runtime below the unique private
+	// allocation so the containment validator never receives a shallow root.
+	const root = join(allocation, "runtime");
 	const signal = AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]);
 	let child: ChildProcessWithoutNullStreams | undefined;
 	let isolated: Awaited<ReturnType<typeof launchIsolatedNativeProcess>> | undefined;
@@ -431,6 +434,7 @@ export async function runCloudCodexToolSession(options: {
 		rpc?.fail("Native boundary execution stopped");
 	};
 	try {
+		await mkdir(root, { mode: 0o700 });
 		const [executable, ...prefix] = options.command;
 		const command = await realpath(executable);
 		const artifact = await lstat(command);
@@ -585,6 +589,6 @@ export async function runCloudCodexToolSession(options: {
 		await fence?.close();
 		if (isolated) await isolated.close();
 		else if (child) await stopProcessGroup(child);
-		await rm(root, { recursive: true, force: true });
+		await rm(allocation, { recursive: true, force: true });
 	}
 }

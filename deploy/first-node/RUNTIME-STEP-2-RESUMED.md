@@ -1,7 +1,9 @@
 # Runtime Step 2 resumed; Step 3 held
 
-Date: 2026-08-28. **Step 2 remains incomplete; a signed cloud candidate is
-staged but not activated for real work.** See the
+Date: 2026-08-28. **Step 2 remains incomplete. Managed Storage and human file
+acceptance passed. The approved cloud-native login completed, but the signed
+candidate exposed a pre-model startup defect; its source fix is verified and
+awaits a replacement signed image before real-GPT acceptance.** See the
 [signed staging record](RUNTIME-STEP-2-STAGING.md) for exact pins and evidence.
 
 The user's direction is to finish Step 2 before incorporating Step 3.
@@ -90,6 +92,35 @@ or public message ran. LXD import restored the volume root as 0711; private
 0700 provisioning was required before the probe, matching bootstrap's ownership
 step. Import onto the same node is **not** replacement-node fencing acceptance.
 
+### Managed cloud startup defect found during acceptance
+
+The isolated preview's fresh native GPT login completed on its dedicated
+cloud identity. Its first canonical human request was admitted, materialized,
+assigned and accepted by a VM using the signed v48 image. It failed with zero
+public sends before durable native model-start admission. No production
+credential was exported, and the failed run was not automatically retried.
+
+The governed adapter created scratch directly under Linux `/tmp`, while its
+unchanged containment validator requires a deeper private working directory.
+The fix nests `runtime/` below the unique temporary allocation and removes
+that entire allocation on exit. A cloud probe reproduced the original exact
+layout rejection and verified the fixed adapter reached the pre-model gate
+under the actual service containment settings. Both probes used an empty
+auth home and deliberately stopped before any model request; the installed
+native binary and namespace helper remained unchanged.
+
+The new regression failed before the fix and passed afterward. All 57 focused
+adapter/run/runtime tests and `npm run check` passed. The fix is not yet in the
+signed v48 image and is not represented as a real-GPT result. Its source,
+regression and changelog changes remain separate from the preserved candidate.
+
+The actual human client transport additionally passed seven live read/list
+cases and six edit/authority cases: owner/friend/outsider separation, private
+path denial, lost-response receipt recovery, unchanged replay identity,
+changed-content replay refusal, protected-edit skip, and revocation after
+the file's bytes were fetched but before they could be returned to the viewer.
+No model or local canonical company checkout was required for these checks.
+
 ### Live storage inventory (read-only)
 
 The Company41 canonical head remained
@@ -147,8 +178,27 @@ cumulative distinct-skill count is 6/10.
    company. Prove real GPT human turns with clients closed, multiple human
    identities, revocation and lost acknowledgements, and verify the managed
    Storage cleanup fence and mediated shared-computer access. Approval for a
-   temporary, potentially billable managed preview branch is pending; neither
-   production project was altered to substitute for that test environment.
+   temporary, potentially billable managed preview branch was received. After
+   the user completed the Pro upgrade, the data-free preview
+   `hurfdoempkqpzxggemhc` was created. Its replay needed `pg_cron` enabled;
+   the preview now has all 102 migrations, preserving the managed-only history
+   and adding the ten Step 2 migrations. Production SQL is unchanged.
+   An isolated cloud gateway with preview-only credentials passed real NAS
+   writes/reads, unrelated-user denial, immutable-byte validation and managed
+   Storage replication. A real Storage upload was paused after preflight;
+   activating cleanup then rejected its final metadata transaction. Cleanup
+   removed the exact test object, and a late upload could not resurrect it.
+   Temporary observer hooks were removed. The unchanged native-authority SQL
+   suite also passed over certificate-verified PostgreSQL. These are managed
+   component checks, not real-GPT or released-client acceptance. The isolated
+   runner/provider and fresh cloud-native login are now operational. The first
+   human run exposed the scratch-layout defect described above. Commit and
+   repackage its verified source fix into a new signed acceptance image before
+   continuing the real-GPT injection, revocation and recovery cases. Approval
+   for that additional source commit/restaging was received. The replacement
+   must preserve the existing signed candidate and pass clean-boot and
+   containment checks before real-GPT acceptance resumes. No push, release or
+   production change is authorized by this restaging approval.
 2. Before production enrollment, recheck/reconcile the two missing NAS files
    without losing either live state, and verify replacement-node fencing and
    authorized recovery. The completed same-node backup import does not confer
