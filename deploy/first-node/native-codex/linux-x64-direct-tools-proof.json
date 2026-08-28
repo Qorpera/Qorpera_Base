@@ -1,0 +1,233 @@
+{
+  "schema": "qorpera.native-direct-tools-component-proof/v1",
+  "testedAt": "2026-08-28T18:37:31.456Z",
+  "sourceCommit": "a8c068859a2f6583b0c55fdcdd692462444a7d5d",
+  "native": {
+    "schema": "qorpera.native-codex-artifact/v1",
+    "source": {
+      "schema": "qorpera.native-codex-source/v1",
+      "repository": "https://github.com/openai/codex.git",
+      "tag": "rust-v0.147.0",
+      "tagObject": "3ed6f04f6bf8b7c46299d1cb1ff99c74ce21a51d",
+      "commit": "be6e8eac029b183056b7e4402879f15d2c85f61b",
+      "version": "0.147.0",
+      "rustToolchain": "1.95.0",
+      "protocol": "qorpera.native-result-fence/v1",
+      "capabilities": [
+        "qorpera.native-result-fence/v1",
+        "qorpera.native-direct-tools/v1"
+      ],
+      "patchSha256": "2ee0b5ef1485c7715dcf6d2d0be9ae24a2fb7e7e7f8c5a47f18becc4064b1bbc",
+      "cargoLock": {
+        "upstreamSha256": "eeab4e9d3466da54037032251e2f13ad1ed11eae18bb8ee7dd2c89dbb86f645d",
+        "normalizedSha256": "bc4fe450de929afe82928734f860ca83e5f9dc5f9f1211b0974ea47b57af77ca",
+        "pathPackages": 135
+      }
+    },
+    "artifact": {
+      "file": "codex",
+      "bytes": 307161584,
+      "sha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "compiler": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2",
+      "processing": {
+        "tool": "rust-llvm-objcopy",
+        "toolchain": "1.95.0",
+        "operation": "strip-debug",
+        "inputSha256": "2d44e34cd33c1097914d0898a5816439ef3076a310ea57a8506e679a094c41ff",
+        "toolSha256": "211b1e47ef0078d91f33d5076e958bf40a65b0f634d59c9802f0b049b9662728"
+      }
+    },
+    "cloudAcceptance": "not_performed"
+  },
+  "artifactArchiveSha256": "a3bcb7eb698573683e2bd02ff9dc32d78bb1d5acbbd6aaaf14f90d4891a5651b",
+  "buildLogSha256": "31bd59275d66929b9fc84ae6c0394c30d35dd7105996f0aff5f206350f84c03d",
+  "environment": {
+    "node": "company41-node-01",
+    "vm": "qorpera-step2-package-v52",
+    "project": "qorpera-runners",
+    "network": "isolated namespace, loopback only",
+    "executionUser": "ubuntu",
+    "companyMount": false,
+    "providerCredentials": false
+  },
+  "proof": {
+    "platform": "linux",
+    "codexVersion": "0.147.0",
+    "providerModel": "gpt-5.6-sol",
+    "toolInventory": [
+      "qorpera.read_document",
+      "qorpera.send_message"
+    ],
+    "forcedBypassesDenied": 22,
+    "canonicalBytesUnchanged": true,
+    "unbrokeredRequests": 0,
+    "syntheticSecretExcluded": true,
+    "controlledResultsFenced": 8,
+    "nativeResultsFenced": 23,
+    "unfencedNativeResults": 0,
+    "publicMessages": 2,
+    "immediateDelivery": true,
+    "retryDeduplicated": true,
+    "privateOutputExcluded": true,
+    "allNativeResultsFenced": true,
+    "failureChecks": [
+      {
+        "fault": "revoked",
+        "requests": 1,
+        "effects": 0,
+        "deniedChecks": 1,
+        "blocked": true
+      },
+      {
+        "fault": "stalled",
+        "requests": 1,
+        "effects": 0,
+        "deniedChecks": 1,
+        "blocked": true
+      }
+    ],
+    "compactionChecks": [
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      },
+      {
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      }
+    ],
+    "providerDefaultCompactionChecks": [
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      },
+      {
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      }
+    ]
+  },
+  "proofOutputSha256": "49c70eb94f8b0b9b5a3fccdff34daac860b0263f7c263e8f294917ddfb32b7da",
+  "packaging": {
+    "manifestSha256": "873ceaf8a51b4028f77a901d5e5a1320a536dec09c5b2f5b96cee98d50444193",
+    "hostBundleSha256": "5fc5a234113dd2243ae418414d4732cfb3e1013a688d327d07ce59de5585a896",
+    "helperUnchanged": true,
+    "runnerImageUnchanged": true,
+    "finalCleanRebuildRequired": true
+  },
+  "scope": {
+    "scriptedProvider": true,
+    "syntheticAuthority": true,
+    "syntheticCompanyAdapter": true,
+    "realGPT": false,
+    "signedImage": false,
+    "deployedAcceptance": false,
+    "step2Complete": false
+  }
+}

@@ -2,18 +2,18 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_PACKAGE_MANIFEST_SHA256="6143706cb0e80cc808694b7ba7f85bdc66c49eb08ceb1dfbd35ad7a63507ba24"
-EXPECTED_NATIVE_CODEX_SHA256="babeed68a7732f96fa6bcd69ac3a9e4124bcfab5340ce0fbab61363b8b1a148f"
+EXPECTED_PACKAGE_MANIFEST_SHA256="873ceaf8a51b4028f77a901d5e5a1320a536dec09c5b2f5b96cee98d50444193"
+EXPECTED_NATIVE_CODEX_SHA256="2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7"
 EXPECTED_NATIVE_HELPER_SHA256="84bc4ab892cfe18a905a9dfcae9cd5a8206c054ae114af58feb73d63a7931df9"
 EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1"
 LXD_PROJECT="qorpera-runners"
 LXD_IMAGE_PROJECT="default"
 LXD_POOL="qorpera-vm"
 LXD_PROFILE="qorpera-job-v1"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v51-unsigned"
-ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v51"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v52-unsigned"
+ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v52"
 ACCEPTANCE_MARKER="qorpera.lxd-runner-image-acceptance/v1"
-STATE_LOG="/var/log/qorpera-lxd-runner-image-acceptance-v51.txt"
+STATE_LOG="/var/log/qorpera-lxd-runner-image-acceptance-v52.txt"
 
 if [[ ${EUID} -ne 0 ]]; then
 	echo "Run this script through sudo." >&2
