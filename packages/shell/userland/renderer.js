@@ -1985,6 +1985,10 @@ function stampRenderedReply(message, elements) {
 
 function markVisibleConversationRead() {
 	if (currentView !== "chat" || document.hidden || !document.hasFocus() || !$("staffModal").hidden) return;
+	// Layout bounds remain visible beneath overlays. A modal owns attention
+	// until dismissed, even while replies continue rendering behind it.
+	if (agentSettingsOpen && agentSettingsFullscreen) return;
+	if ([...document.querySelectorAll('[aria-modal="true"]')].some((dialog) => dialog.getClientRects().length > 0)) return;
 	const room = currentRoom();
 	if (room) {
 		const reply = room.lastStaffMessage;
@@ -2063,7 +2067,7 @@ function renderSidebarStatus(element, status) {
 		element.removeAttribute("aria-label");
 		return;
 	}
-	if (!element.firstElementChild) element.append(document.createElement("span"), document.createElement("span"));
+	if (!element.firstElementChild) element.replaceChildren(document.createElement("span"), document.createElement("span"));
 	window.QORPERA_STATUS_TEXT.render(element, element.firstElementChild, element.lastElementChild, { lead: status.text, detail: "" });
 }
 
@@ -4029,6 +4033,7 @@ function renderAgentSettingsPopover() {
 	}
 	popover.hidden = false;
 	popover.classList.toggle("is-fullscreen", agentSettingsFullscreen);
+	syncAvatarReadState();
 	content.replaceChildren();
 	if (agentSettingsFullscreen) {
 		const identity = document.createElement("div");
@@ -4168,6 +4173,7 @@ function closeAgentSettingsPopover(restoreFocus = true) {
 	$("agentSettingsPopover").classList.remove("is-fullscreen");
 	$("staffIdentityButton").setAttribute("aria-expanded", "false");
 	if (restoreFocus) $("staffIdentityButton").focus();
+	syncAvatarReadState();
 }
 
 function openAgentSidepanel(mode) {
@@ -10612,6 +10618,7 @@ function closeSettings() {
 	window.qorpera.setSettingsOverlayActive?.(false);
 	settingsReturnFocus?.focus();
 	settingsReturnFocus = null;
+	syncAvatarReadState();
 }
 
 $("settingsView").addEventListener("pointerdown", (event) => {
@@ -12535,6 +12542,7 @@ function syncAvatarReadState() {
 	});
 }
 window.addEventListener("focus", syncAvatarReadState);
+document.addEventListener("focusin", syncAvatarReadState);
 document.addEventListener("visibilitychange", syncAvatarReadState);
 $("messages").addEventListener("scroll", syncAvatarReadState, { passive: true });
 

@@ -11,6 +11,9 @@ const names = [
 	"staffActiveState",
 	"staffActivity",
 	"staffMotionState",
+	"renderSidebarStatus",
+	"syncAvatarReadState",
+	"closeSettings",
 	"rememberRoom",
 	"wireAvatarRadios",
 ];
@@ -19,8 +22,49 @@ const handlers = source.statements.filter(
 );
 if (handlers.length !== names.length) throw new Error("Avatar renderer fixture is incomplete");
 
+// Preserve the distinction between text nodes and element children: the
+// sidebar reuses a plain-text preview node when it switches to animated text.
+class StatusElement {
+	childNodes: (StatusElement | { textContent: string })[] = [];
+	dataset: Record<string, string> = {};
+	attributes = new Map<string, string>();
+	classList = new Set<string>();
+	className = "";
+	style = { setProperty() {} };
+
+	get children(): StatusElement[] {
+		return this.childNodes.filter((node): node is StatusElement => node instanceof StatusElement);
+	}
+	get firstElementChild(): StatusElement | null {
+		return this.children[0] ?? null;
+	}
+	get lastElementChild(): StatusElement | null {
+		return this.children.at(-1) ?? null;
+	}
+	get textContent(): string {
+		return this.childNodes.map((node) => node.textContent).join("");
+	}
+	set textContent(value: string) {
+		this.childNodes = value ? [{ textContent: value }] : [];
+	}
+	append(...nodes: (StatusElement | { textContent: string })[]) {
+		this.childNodes.push(...nodes);
+	}
+	replaceChildren(...nodes: (StatusElement | { textContent: string })[]) {
+		this.childNodes = nodes;
+	}
+	setAttribute(name: string, value: string) {
+		this.attributes.set(name, value);
+	}
+	removeAttribute(name: string) {
+		this.attributes.delete(name);
+	}
+}
+
 function harness() {
-	const flags = { needsYou: false, focused: true, visible: true };
+	const flags = { needsYou: false, focused: true, visible: true, modalVisible: false };
+	const frames: Array<() => void> = [];
+	const listeners = new Map<string, () => void>();
 	const bubble = {
 		dataset: { replyTime: "123", replyPreview: "All done", roomMessageId: "reply-1" },
 		getBoundingClientRect: () => ({ top: flags.visible ? 20 : 110, bottom: flags.visible ? 50 : 140, height: 30 }),
@@ -28,13 +72,31 @@ function harness() {
 	const elements = {
 		staffModal: { hidden: true },
 		messages: { querySelectorAll: () => [bubble], getBoundingClientRect: () => ({ top: 0, bottom: 100 }) },
+		input: { offsetParent: {}, focus() {} },
+		settingsView: {
+			inert: false,
+			contains: () => false,
+			classList: {
+				remove() {
+					flags.modalVisible = false;
+				},
+			},
+			setAttribute() {},
+		},
 	};
 	const context = createContext({
-		window: {},
+		window: { qorpera: { setSettingsOverlayActive() {} } },
+		HTMLElement: StatusElement,
+		settingsRenderVersion: 0,
+		settingsReturnFocus: null,
 		currentView: "chat",
 		currentRoomId: null,
 		currentStaffId: "agent-a",
 		currentSession: "session-a",
+		agentSettingsOpen: false,
+		agentSettingsFullscreen: false,
+		avatarReadFrame: null,
+		requestAnimationFrame: (callback: () => void) => frames.push(callback),
 		avatarActionPhase: "",
 		pendingToolLines: [],
 		roomActivity: new Map(),
@@ -43,7 +105,18 @@ function harness() {
 		pendingSessionQueueByStaff: new Map(),
 		recentRoomWrites: new Map(),
 		state: { rooms: [] },
-		document: { hidden: false, hasFocus: () => flags.focused, activeElement: null },
+		document: {
+			hidden: false,
+			hasFocus: () => flags.focused,
+			activeElement: null,
+			addEventListener: (name: string, callback: () => void) => listeners.set(name, callback),
+			querySelectorAll: (selector: string) => {
+				expect(selector).toBe('[aria-modal="true"]');
+				return [{ getClientRects: () => (flags.modalVisible ? [{ width: 600, height: 400 }] : []) }];
+			},
+			createElement: () => new StatusElement(),
+			createTextNode: (textContent: string) => ({ textContent }),
+		},
 		$: (id: keyof typeof elements) => elements[id],
 		flags,
 		currentRoom: () => null,
@@ -59,6 +132,7 @@ function harness() {
 		staffLastMessage: () => ({ text: "All done" }),
 	});
 	runInContext(readFileSync(new URL("../userland/avatars/avatar-state.js", import.meta.url), "utf8"), context);
+	runInContext(readFileSync(new URL("../userland/avatars/status-text.js", import.meta.url), "utf8"), context);
 	runInContext(
 		`
 		const receipts = window.QORPERA_AVATAR_STATE.readReceipts({ getItem: () => null, setItem: () => {} }, 'test');
@@ -67,7 +141,20 @@ function harness() {
 	`,
 		context,
 	);
-	return { flags, bubble, elements, context, run: (code: string): unknown => runInContext(code, context) };
+	context.syncVisibleStaffAvatars = () => runInContext("markVisibleConversationRead()", context);
+	const focusBinding = source.statements.find(
+		(node) => node.getText(source) === 'document.addEventListener("focusin", syncAvatarReadState);',
+	);
+	if (focusBinding) runInContext(focusBinding.getText(source), context);
+	return {
+		flags,
+		frames,
+		listeners,
+		bubble,
+		elements,
+		context,
+		run: (code: string): unknown => runInContext(code, context),
+	};
 }
 
 describe("production avatar and sidebar integration", () => {
@@ -103,6 +190,77 @@ describe("production avatar and sidebar integration", () => {
 		expect(unread()).toBe("All done");
 		flags.needsYou = true;
 		expect(unread()).toBe("Needs you");
+	});
+
+	it.each(["direct chat", "room"])("keeps %s replies unread behind a modal until it closes", (kind) => {
+		const { run, flags, frames, listeners } = harness();
+		const receipt = kind === "room" ? ["room:room-a", "reply-1"] : ["agent-a", "session-a:reply-1"];
+		if (kind === "room") {
+			run("currentRoomId = 'room-a'; currentRoom = () => ({id:'room-a', lastStaffMessage:{id:'reply-1'}})");
+		}
+		const unread = () => run(`receipts.unread(${JSON.stringify(receipt[0])}, ${JSON.stringify(receipt[1])})`);
+		flags.modalVisible = true;
+		run("markVisibleConversationRead()");
+		expect(unread()).toBe(true);
+		// Closing the modal queues a visibility recheck; coalesced focus events
+		// must not wait for another backend update to acknowledge the reply.
+		flags.modalVisible = false;
+		expect(listeners.has("focusin")).toBe(true);
+		listeners.get("focusin")?.();
+		listeners.get("focusin")?.();
+		expect(frames).toHaveLength(1);
+		frames.shift()?.();
+		expect(unread()).toBe(false);
+	});
+
+	it("rechecks visible replies when Settings closes without another backend update", () => {
+		const { run, flags, frames, elements } = harness();
+		flags.modalVisible = true;
+		run("markVisibleConversationRead()");
+		expect(run("staffSidebarState(currentStaff()).text")).toBe("New");
+		run("closeSettings()");
+		expect(elements.settingsView.inert).toBe(true);
+		expect(frames).toHaveLength(1);
+		frames.shift()?.();
+		expect(run("staffSidebarState(currentStaff()).text")).toBe("All done");
+	});
+
+	it("does not acknowledge replies covered by fullscreen agent settings", () => {
+		const { run } = harness();
+		run("agentSettingsOpen = true; agentSettingsFullscreen = true; markVisibleConversationRead()");
+		expect(run("staffSidebarState(currentStaff()).text")).toBe("New");
+		run("agentSettingsFullscreen = false; markVisibleConversationRead()");
+		expect(run("staffSidebarState(currentStaff()).text")).toBe("All done");
+	});
+
+	it.each([
+		{ kind: "quiet", text: "The previous reply" },
+		{ kind: "new", text: "New" },
+		{ kind: "attention", text: "Needs you" },
+	])("replaces $kind sidebar text when work starts without rebuilding the row", (previous) => {
+		const { run, context } = harness();
+		const element = new StatusElement();
+		context.subtitle = element;
+		context.previous = previous;
+		run("renderSidebarStatus(subtitle, previous)");
+		expect(element.textContent).toBe(previous.text);
+		for (const text of ["Working", "Writing", "Using computer"]) {
+			run(`renderSidebarStatus(subtitle, {kind:'working', text:${JSON.stringify(text)}})`);
+			expect(element.textContent).toBe(text);
+			expect(element.childNodes).toHaveLength(2);
+			expect(element.dataset.live).toBe("true");
+			expect(element.attributes.get("aria-label")).toBe(text);
+		}
+		const lead = element.firstElementChild;
+		run("renderSidebarStatus(subtitle, {kind:'working', text:'Using computer'})");
+		expect(element.firstElementChild).toBe(lead);
+		run("renderSidebarStatus(subtitle, {kind:'quiet', text:'Done'})");
+		expect(element.textContent).toBe("Done");
+		expect(element.children).toHaveLength(0);
+		expect(element.dataset.live).toBe("false");
+		expect(element.attributes.has("aria-label")).toBe(false);
+		run("renderSidebarStatus(subtitle, {kind:'working', text:'Working'})");
+		expect(element.textContent).toBe("Working");
 	});
 
 	it("preserves room previews when settings return only metadata", () => {
