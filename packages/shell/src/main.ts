@@ -7683,6 +7683,11 @@ async function listenBackend(
 	authToken: string,
 	sessions: SessionControlPlane,
 ): Promise<{ port: number; close: () => void }> {
+	type RoomPreview = Pick<CompanyRoomMessage, "id" | "text" | "speaker" | "createdAt">;
+	const roomPreviews = new Map<
+		string,
+		{ updatedAt: string; lastMessage?: RoomPreview; lastStaffMessage?: RoomPreview }
+	>();
 	const base = companyPort(root);
 	for (let port = base; port < base + 10; port++) {
 		const serverOptions: Parameters<typeof createCompanyAppServer>[0] & {
@@ -7694,7 +7699,36 @@ async function listenBackend(
 			fixedShell: { directory: FIXED_SHELL_DIR },
 			sessionRuntime: sessions,
 			staffReadModel: () => readStaffAgents(root),
-			roomReadModel: () => readCompanyRooms(root),
+			roomReadModel: () => {
+				const rooms = readCompanyRooms(root);
+				for (const id of roomPreviews.keys()) if (!rooms.some((room) => room.id === id)) roomPreviews.delete(id);
+				return rooms.map((room) => {
+					let preview = roomPreviews.get(room.id);
+					if (preview?.updatedAt !== room.updatedAt) {
+						// Reuse verified transcript projections between state polls. Do
+						// not put attachments or private execution context in the rail.
+						preview = { updatedAt: room.updatedAt };
+						try {
+							for (const message of readCompanyRoomMessages(root, room.id)) {
+								const item = {
+									id: message.id,
+									text:
+										message.text.replace(/\s+/g, " ").trim().slice(0, 240) ||
+										(message.images?.length ? "Image" : ""),
+									speaker: message.speaker,
+									createdAt: message.createdAt,
+								};
+								preview.lastMessage = item;
+								if (message.speaker.kind === "staff") preview.lastStaffMessage = item;
+							}
+						} catch {
+							/* An invalid transcript is reported when opened, never guessed from its tail. */
+						}
+						roomPreviews.set(room.id, preview);
+					}
+					return { ...room, ...preview };
+				});
+			},
 			staffMessageReadModel: () => readStaffAgentMessages(root),
 			artifactReadModel: () => readCompanyArtifacts(root),
 			connectorReadModel: () => readCompanyConnectorManifests(root),
@@ -8833,19 +8867,21 @@ async function anchoredSessionRpc(
 }
 
 const STAFF_AVATAR_COLORS = new Set([
-	"#171716",
-	"#9c7151",
-	"#ff642e",
+	"#312f2d",
+	"#87674c",
+	"#f96e2d",
 	"#ff365e",
-	"#ffae00",
+	"#fcb51b",
 	"#00c878",
 	"#00bfb3",
-	"#0071e3",
-	"#1684ff",
-	"#8a4dff",
+	"#2047bd",
+	"#b83ff5",
 	"#ff2994",
 	"#7c7c7a",
-	"#5367e8",
+	// Native artwork shades are valid reset values, not extra palette choices.
+	"#5ec0b5",
+	"#fa752e",
+	"#fb672a",
 ]);
 const STAFF_AVATAR_SHAPES = new Set(["soft-square", "round", "wide", "gem", "tilted", "drop"]);
 
@@ -9120,9 +9156,9 @@ async function createStaffMember(
 					].join(" "),
 				...(template ? { templateId: template.id } : {}),
 				appearance: {
-					color: input.appearance?.color ?? template?.avatarColorToken ?? "#0071e3",
+					color: input.appearance?.color ?? template?.avatarColorToken ?? "#5ec0b5",
 					shape: input.appearance?.shape ?? template?.avatarShapeToken ?? "round",
-					creature: input.appearance?.creature ?? (template ? staffCharacterForTemplate(template.id) : "pebble"),
+					creature: input.appearance?.creature ?? (template ? staffCharacterForTemplate(template.id) : "planet"),
 				},
 			});
 			const artifactPath = template

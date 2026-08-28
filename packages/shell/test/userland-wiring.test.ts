@@ -10,7 +10,7 @@ const indexSource = readFileSync(join(userland, "index.html"), "utf-8");
 const tokensCssSource = readFileSync(join(userland, "tokens.css"), "utf-8");
 const baseCssSource = readFileSync(join(userland, "base.css"), "utf-8");
 const onboardingCssSource = readFileSync(join(userland, "onboarding.css"), "utf-8");
-const characterMotionSource = readFileSync(join(userland, "character-motion.css"), "utf-8");
+const avatarCssSource = readFileSync(join(userland, "avatars/avatar-system.css"), "utf-8");
 const railResizeCssSource = readFileSync(join(userland, "rail-resize.css"), "utf-8");
 const pinnedAgentsCssSource = readFileSync(join(userland, "pinned-agents.css"), "utf-8");
 const railResizeSource = readFileSync(join(userland, "rail-resize.js"), "utf-8");
@@ -262,9 +262,10 @@ describe("userland wiring", () => {
 	});
 
 	it("matches the Messages rail scale, surface, and selected icon contrast", () => {
-		expect(tokensCssSource).toContain("--sidebar-surface: #eeedeb;");
-		expect(tokensCssSource).toContain("--sidebar-vibrancy-tint: rgba(232, 235, 240, 0.32);");
-		expect(rendererSource).toContain('"qorpera-cobalt": "#0071e3"');
+		expect(tokensCssSource).toContain("--sidebar-surface: #e9e7e6;");
+		expect(tokensCssSource).toContain("--sidebar-vibrancy-tint: rgba(233, 231, 230, 0.72);");
+		expect(tokensCssSource).toContain("--sidebar-selection: #0e84ff;");
+		expect(rendererSource).toContain('"qorpera-blue": "#2047bd"');
 		expect(baseCssSource).toMatch(
 			/\.staff-nav-row,[^}]*\.company-runtime-row \{[^}]*grid-template-columns: 50px minmax\(0, 1fr\);/s,
 		);
@@ -274,12 +275,8 @@ describe("userland wiring", () => {
 		expect(pinnedAgentsCssSource).toMatch(
 			/\.staff-pinned-grid \.staff-pinned-card \.staff-avatar \{[^}]*width: 64px;[^}]*height: 64px;/s,
 		);
-		expect(baseCssSource).toMatch(
-			/#staffNavigation \.staff-nav-row\.active \.staff-creature-image,[^}]*filter: brightness\(0\) invert\(1\) !important;/s,
-		);
-		expect(baseCssSource).toMatch(
-			/#staffNavigation \.staff-nav-row\.active \.staff-face i,[^}]*background: var\(--sidebar-selection\);/s,
-		);
+		expect(avatarCssSource).toMatch(/\.avatar-artwork,[^}]*filter: none;[^}]*opacity: 1;/s);
+		expect(avatarCssSource).toContain(".staff-nav-row.active .staff-nav-copy > small { color: #fff;");
 		expect(railResizeCssSource).toMatch(
 			/body\.company-shell \.titlebar-rail \.rail-add-staff \{[^}]*justify-self: center;/s,
 		);
@@ -288,13 +285,10 @@ describe("userland wiring", () => {
 		);
 	});
 
-	it("preserves system avatar colors in forced-color mode", () => {
-		expect(baseCssSource).toMatch(
-			/@media \(forced-colors: active\) \{\s*\.staff-avatar \{ --staff-creature-filter: none !important; \}\s*\.staff-creature-image \{ filter: none !important; \}/s,
-		);
-		expect(baseCssSource).toMatch(
-			/@media \(forced-colors: none\) \{\s*#staffNavigation \.staff-nav-row\.active \.staff-avatar,[\s\S]*?--staff-creature-filter: brightness\(0\) invert\(1\) !important;[\s\S]*?#staffNavigation \.staff-nav-row\.active \.staff-creature-image,[\s\S]*?filter: brightness\(0\) invert\(1\) !important;[\s\S]*?#staffNavigation \.staff-nav-row\.active \.staff-face i,[\s\S]*?background: var\(--sidebar-selection\);/,
-		);
+	it("preserves artwork and visible badge outlines in forced-color mode", () => {
+		expect(avatarCssSource).toMatch(/@media \(forced-colors: active\)[\s\S]*forced-color-adjust: none/);
+		expect(avatarCssSource).toContain("outline: 1px solid CanvasText");
+		expect(avatarCssSource).not.toContain("brightness(0)");
 	});
 
 	it("keeps the translucent sidebar preference persistent and accessible", () => {
@@ -513,14 +507,14 @@ describe("userland wiring", () => {
 		);
 		expect(picker).not.toContain("Generate");
 		expect(picker).not.toContain("Upload");
-		expect(rendererSource).toContain("STAFF_CREATURE_FILTERS[staffColor(staffOrTemplate)]");
+		expect(rendererSource).toContain("window.QORPERA_AVATARS.image(");
 		expect(baseCssSource).toMatch(/\.agent-figure-grid \{[^}]*justify-content: center/s);
-		expect(characterMotionSource).toContain(".staff-avatar > .staff-face i:first-child");
-		expect(characterMotionSource).toContain(".staff-creature-choice:has(> .staff-avatar)::before");
+		expect(avatarCssSource).toContain("grid-template-columns: repeat(7, minmax(0, 1fr))");
+		expect(avatarCssSource).toContain(".staff-color-choice:nth-child(7) { grid-column: 2 / span 2; }");
 		expect(baseCssSource).not.toContain("--creature-eye-top");
 		expect(rendererSource).toContain("figurePicker.hidden = true");
 		expect(rendererSource).toContain('figureTrigger?.setAttribute("aria-expanded", "false")');
-		expect(baseCssSource).toContain('filter: url("./staff-creature-colors.svg#gray") !important;');
+		expect(avatarCssSource).not.toContain("staff-creature-colors.svg");
 		expect(baseCssSource).toContain(".agent-settings-popover.is-fullscreen");
 		expect(mainSource).toContain('key !== "appearance"');
 	});
