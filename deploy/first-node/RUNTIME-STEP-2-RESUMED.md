@@ -1,6 +1,8 @@
 # Runtime Step 2 resumed; Step 3 held
 
-Date: 2026-08-28. **Step 2 remains incomplete and is not deployed.**
+Date: 2026-08-28. **Step 2 remains incomplete; a signed cloud candidate is
+staged but not activated for real work.** See the
+[signed staging record](RUNTIME-STEP-2-STAGING.md) for exact pins and evidence.
 
 The user's direction is to finish Step 2 before incorporating Step 3.
 Parallel-track reports are preserved handoffs, not instructions to expand the
@@ -112,10 +114,11 @@ no enrollment, remount, migration or service replacement occurred.
   eight files, 47 orchestrator tests in five files and nine app-server tests.
   This includes the actual patched native binary with scripted loopback model
   responses, compaction, revocation, public-mouth and new human file regressions.
-- Both guest/ephemeral packaging tests passed on macOS and Linux x64. The v48
+- All three guest/ephemeral/provider packaging tests passed on macOS and Linux x64. The v48
   recipe pins the complete Linux-built manifest, including the exact native
   release artifact; its test compares every non-native artifact to a fresh
-  package. This is not signed-image acceptance.
+  package. The cloud image subsequently passed clean boot and containment;
+  its signed provenance verified off-node and on-node.
 - All 84 Step 2 migrations applied; SQL suites 160, 165, 270, 280, 290, 295 and
   296 passed together on disposable PostgreSQL. SQL 290 now asserts that input
   author tampering fails at the immutable-input guard rather than manufacturing
@@ -128,27 +131,25 @@ no enrollment, remount, migration or service replacement occurred.
 - Exact command logs, SQL results, storage/recovery evidence and source hashes
   are retained with the continuation checkpoint. No model catalog was changed.
 
-This is component evidence, including actual cloud VM and storage tests;
-it is not signed-guest or real-GPT end-to-end acceptance. No production
+The earlier results are component evidence, including actual cloud VM and
+storage tests. Signed-guest clean boot and containment have now also passed;
+real-GPT end-to-end acceptance has not. No production
 service, database, credential, NAS route or company state was changed. The
-cloud execution probes used only generated synthetic state. A Step 2-only
-source commit and signed acceptance staging are now explicitly authorized;
-no release or production enrollment is authorized by that staging approval.
+cloud execution probes used only generated synthetic state. The authorized
+Step 2-only source commit and signed acceptance staging are complete;
+no release or production enrollment occurred.
 Browser verification used the browser skill; the task's
 cumulative distinct-skill count is 6/10.
 
 ## Remaining Step 2 gates only
 
-1. The user explicitly authorized a Step 2-only commit and staging a signed
-   cloud candidate for GPT acceptance. Production enrollment and Step 3 remain
-   excluded. The v48 recipe pins the complete Linux package, including the
-   accepted native release and namespace helper; clean-boot acceptance and
-   off-node signing must still precede provider activation.
-2. Coordinate SQL, gateway, guest and client installation in a separate acceptance
+1. Coordinate SQL, gateway, guest and client installation in a separate acceptance
    company. Prove real GPT human turns with clients closed, multiple human
    identities, revocation and lost acknowledgements, and verify the managed
-   Storage cleanup fence and mediated shared-computer access.
-3. Before production enrollment, recheck/reconcile the two missing NAS files
+   Storage cleanup fence and mediated shared-computer access. Approval for a
+   temporary, potentially billable managed preview branch is pending; neither
+   production project was altered to substitute for that test environment.
+2. Before production enrollment, recheck/reconcile the two missing NAS files
    without losing either live state, and verify replacement-node fencing and
    authorized recovery. The completed same-node backup import does not confer
    fresh execution or public-send authority.
