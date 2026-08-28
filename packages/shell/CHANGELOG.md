@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the selectable agent figures with Planet, Acorn, Flame, Rocket, Crown, Heart, and Ghost, with compact single-row selectors and an eleven-color palette that preserves artwork depth and transparency.
+- Adopted the approved Rocket/Crown app icon, light-blue selection, and warmer sidebar surfaces.
+- Unified sidebar, header, and trailing conversation activity around per-agent motion clocks, geometric typing dots, expressive working eyes, and finite creation and attention effects. Sidebar hover stays static; reduced motion and hidden windows pause animation.
+- Replaced overlapping group-avatar frames with transparent silhouette separators and count-aware layouts. Pinned figures retain their full card size.
+
+### Fixed
+
+- Prioritized unresolved requests, current activity, and unseen replies over the last-message preview. Reading a visible reply clears New without clearing an unresolved Needs you state.
+- Preserved public message previews across session appends and room metadata updates without exposing reasoning, tool output, or attachment payloads in the sidebar.
+
 ## [0.20.44] - 2026-08-28
 
 ### Fixed

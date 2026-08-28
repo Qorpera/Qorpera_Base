@@ -1,0 +1,116 @@
+/* Approved figure system. Image alpha is the silhouette; no avatar frames,
+ * silhouette color filters, or hover-driven activity in the navigation rail. */
+.staff-avatar.avatar-figure {
+	position: relative; display: inline-block; flex: none; padding: 0;
+	background: transparent !important; border: 0; border-radius: 0;
+	box-shadow: none; overflow: visible; isolation: isolate;
+}
+.staff-avatar.avatar-figure::before, .staff-avatar.avatar-figure::after { content: none; }
+body.company-shell .rail-search { background: var(--sidebar-search); border-color: var(--sidebar-divider); }
+body.company-shell #primaryNavigation { border-color: var(--sidebar-divider); }
+.avatar-artwork, .motion-rig img {
+	display: block; width: 100%; height: 100%; max-width: none;
+	object-fit: contain; filter: none; opacity: 1; user-select: none; -webkit-user-drag: none;
+}
+.motion-rig { display: block; position: relative; width: 100%; height: 100%; isolation: isolate; }
+.motion-body, .motion-form, .motion-presence { position: relative; display: block; width: 100%; height: 100%; transform-origin: 50% 50%; }
+.motion-face, .motion-typing { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.motion-strokes { position: absolute; inset: -12%; width: 124%; height: 124%; overflow: visible; pointer-events: none; }
+.company-agent-avatar { display: block; width: 100%; height: 100%; background: none; filter: none; transform: none; }
+.company-icon.company-icon-figure { background: transparent; border: 0; border-radius: 0; overflow: visible; }
+.company-avatar-picker { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; width: min(100%, 324px); }
+.company-avatar-option { width: 40px; max-width: 100%; height: 40px; min-height: 40px; padding: 3px; border-width: 1px; }
+.company-avatar-option .company-icon { width: 32px; height: 32px; max-width: 100%; }
+.welcome-brand.app-mark { display: block; width: 78px; height: 78px; border-radius: 18px; object-fit: cover; background: #fff; }
+
+/* One compact row, including in the narrower agent-details popover. */
+.staff-appearance-picker .staff-creature-picker,
+.staff-appearance-picker .agent-figure-grid {
+	display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+	justify-items: center; align-items: center; gap: 4px;
+	width: min(100%, 324px); margin-inline: auto;
+}
+body.staff-creator-open .staff-creature-picker { gap: 4px; }
+.staff-appearance-picker .staff-creature-choice {
+	position: relative; display: grid; place-items: center;
+	width: min(100%, 40px); min-width: 0; height: auto; min-height: 0; aspect-ratio: 1;
+	padding: 3px; border: 1px solid transparent; border-radius: 50%; background: none;
+}
+.staff-appearance-picker .staff-creature-choice .staff-avatar {
+	width: 100%; max-width: 32px; height: auto; aspect-ratio: 1; margin: 0;
+}
+.staff-appearance-picker .staff-creature-choice[aria-checked="true"] {
+	border-color: #d1d1ce; background: #f5f5f3; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #e0e0dc;
+}
+.staff-appearance-picker .staff-creature-choice:hover:not(:disabled) { background: #f4f4f2; }
+.staff-appearance-picker .staff-creature-choice:focus-visible,
+.staff-appearance-picker .staff-color-choice:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; }
+html[data-staff-avatar-style="creatures"] .staff-appearance-picker .staff-color-picker,
+.staff-appearance-picker .agent-figure-color-grid {
+	display: grid; grid-template-columns: repeat(12, 15px); gap: 12px 5px;
+	width: max-content; max-width: 100%; justify-content: center; margin: 18px auto 4px;
+}
+.staff-appearance-picker .staff-color-choice {
+	grid-column: span 2; justify-self: center; width: 28px; height: 28px; min-height: 28px;
+	padding: 0; border: 0; border-radius: 50%; background: var(--choice-color);
+}
+.staff-appearance-picker .staff-color-choice:nth-child(7) { grid-column: 2 / span 2; }
+.staff-appearance-picker .staff-color-choice[aria-checked="true"]::after { inset: -5px; border: 1px solid #999994; }
+.staff-appearance-picker .agent-figure-picker-divider { display: none; }
+.agent-settings-figure > .avatar-artwork { width: 100%; height: 100%; }
+
+#staffNavigation .staff-nav-row:not(.staff-pinned-card) .staff-nav-copy { grid-template-rows: minmax(17px, auto) 15px; gap: 2px; align-self: center; }
+#staffNavigation .staff-nav-row:not(.staff-pinned-card) .staff-nav-copy > small { display: block; min-height: 15px; font-size: 11px; line-height: 15px; color: #6e6c6b; }
+#staffNavigation .staff-nav-row.active .staff-nav-copy > small { color: #fff; --status-crest: #fff; }
+#staffNavigation .staff-nav-row .avatar-figure[data-badge="active"]::after,
+#staffNavigation .staff-nav-row .avatar-figure[data-badge="unread"]::after {
+	content: ""; position: absolute; right: 1px; bottom: 0; z-index: 3;
+	box-sizing: content-box; width: 11px; height: 11px; border-radius: 50%;
+	background: #00c878; border: 2px solid var(--sidebar-surface);
+}
+#staffNavigation .staff-nav-row .avatar-figure[data-badge="unread"]::after { background: #0e84ff; }
+#staffNavigation .staff-nav-row.active .avatar-figure::after { border-color: var(--sidebar-selection); }
+#staffNavigation .staff-nav-row:hover:not(.active) .avatar-figure::after { border-color: color-mix(in srgb, var(--sidebar-surface) 88%, #767680 12%); }
+.avatar-computer-badge { display: none; }
+#staffNavigation .avatar-computer-badge {
+	display: block; position: absolute; right: -1px; top: 0; z-index: 4;
+	width: 14px; height: 14px; background: transparent; color: var(--text);
+}
+#staffNavigation .active .avatar-computer-badge { color: #fff; }
+.avatar-computer-badge svg { display: block; width: 100%; height: 100%; }
+#staffNavigation .staff-pinned-grid .staff-pinned-card .staff-avatar { width: 64px; height: 64px; }
+body.rail-compact #staffNavigation .staff-pinned-grid .staff-pinned-card .staff-avatar { width: 42px; height: 42px; }
+.staff-pinned-grid .staff-pinned-card .avatar-artwork { width: 100%; height: 100%; }
+.staff-drag-preview .avatar-figure { width: 64px; height: 64px; }
+
+.room-avatar { display: inline-block; position: relative; width: 50px; height: 50px; flex: none; }
+.room-avatar canvas { display: block; width: 100%; height: 100%; }
+#titlebar .thread-header .room-avatar { width: 32px; height: 32px; }
+.agent-thread-activity {
+	display: inline-flex; align-items: center; gap: 9px; min-height: 34px;
+	max-width: 100%; padding: 3px 0; margin: 8px 0 12px; background: none; border: 0; box-shadow: none;
+}
+.agent-thread-activity::after { content: none; }
+.agent-thread-activity .staff-avatar.avatar-figure { width: 26px; height: 26px; }
+.avatar-hover-message { display: inline; visibility: hidden; font-size: 12px; line-height: 1.45; color: var(--text-muted); pointer-events: none; }
+.avatar-status-name { color: var(--text); }
+.agent-thread-activity:hover .avatar-hover-message,
+.agent-thread-activity:focus-visible .avatar-hover-message { visibility: visible; }
+.status-wave-word { display: inline-block; max-width: 100%; }
+.status-wave-letter { display: inline-block; color: inherit; transform: none; animation: avatar-ink-wave 1400ms ease-in-out infinite; animation-delay: var(--wave-delay, 0ms); animation-play-state: paused; }
+.avatar-row-status[data-live="true"] .status-wave-letter,
+.agent-thread-activity:hover .status-wave-letter,
+.agent-thread-activity:focus-visible .status-wave-letter { animation-play-state: running; }
+.staff-pinned-card .status-wave-letter { animation: none; }
+html[data-avatar-paused="true"] .status-wave-letter { animation-play-state: paused; }
+@keyframes avatar-ink-wave {
+	0%, 10%, 50%, 100% { color: inherit; text-shadow: 0 0 0 transparent, 0 0 0 transparent; }
+	30% { color: var(--status-crest, var(--text)); text-shadow: -.18px 0 0 currentColor, .18px 0 0 currentColor; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.status-wave-letter { animation: none; text-shadow: none; color: inherit; }
+}
+@media (forced-colors: active) {
+	.staff-avatar.avatar-figure { forced-color-adjust: none; }
+	#staffNavigation .staff-nav-row .avatar-figure[data-badge]::after { outline: 1px solid CanvasText; }
+}
