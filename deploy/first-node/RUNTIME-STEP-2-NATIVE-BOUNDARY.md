@@ -177,7 +177,7 @@ and revocation during compaction. Full deployed context reconstruction with
 real GPT and the complete guest boundary remains an integration gate.
 
 Do not infer the active tool set from configuration flags alone. With the
-bundled provider-default model (`gpt-5.6-sol` in this package), Codex uses an
+historical result-only patch and bundled provider-default model (`gpt-5.6-sol`), Codex uses an
 `additional_tools` input item and model metadata still advertises Code Mode
 despite `features.code_mode.enabled=false` and `code_mode_only=false`.
 
@@ -196,6 +196,33 @@ The provider-default model and the synthetic direct-tool path are both tested.
 No model catalog or model selection was overridden to hide this difference.
 Disabled native plan, question and skill names are also force-called: they
 are rejected, not merely absent from the advertised list.
+
+### Functional gate exposed by signed v51
+
+The later real-GPT run `1c4f4e0b-8564-4a25-9e64-581e59ae4f48` reported
+using this advertised but disabled route and ended without a governed file
+read or write. Its private tool arguments were not retained, so the report
+alone is not a raw call trace. An independent synthetic recheck with the
+same Linux executable hash reproduced the exact advertised tools and fixed
+rejection; all 22 denial and six compaction checks remained green.
+
+At the pinned source commit, `codex-rs/core/src/tools/mod.rs` takes
+`model_info.tool_mode` before the feature flags. Its unavailable-host fallback
+applies to `CodeMode`, not the default model's `CodeModeOnly`. The documented
+feature configuration does not establish an override for that model setting.
+This makes the inventory mismatch a functional Step 2 blocker even though
+execution remains denied and every error result is fenced.
+
+The user subsequently authorized direct tool selection for governed, fenced
+runs, a scoped source commit and a signed replacement preview. The patch
+selects direct mode only when the host-owned fence socket is present; ordinary
+sessions keep upstream selection. The host requires the separate direct-tools
+capability before model admission. Authentication, model metadata and the
+result callback are unchanged. New source/patch/binary pins, signed-image and
+real-GPT acceptance are still required. Do not
+enable arbitrary native scripts, substitute a synthetic model/catalog or
+claim a prompt-only workaround fixes the tool inventory. See [the staging record](RUNTIME-STEP-2-STAGING.md) for the
+scoped real-GPT passes, the process-only receipt replay and remaining gates.
 
 The proof sends 22 forbidden calls plus a malformed Qorpera call, then checks
 the next provider request. All 23 native error results are now fenced. The
@@ -276,8 +303,9 @@ For the current native slice, set `QORPERA_CODEX_FENCE_BINARY` to the exact
 built artifact and also run `test/cloud-native-result-fence.test.ts` and
 `test/patched-codex-boundary.test.ts` with the focused command above. Run
 `node --test scripts/build-native-codex.test.mjs` from the repository root.
-The standalone command now includes both authority-failure checks and six
-compaction checks (each of three compaction paths with and without revocation), and fails
+The standalone command now includes both authority-failure checks and twelve
+compaction checks (three paths, with and without revocation, using both the
+synthetic and provider-default models), and fails
 for a missing or unpatched artifact; it does not silently skip acceptance.
 The [initial Linux evidence](native-codex/linux-x64-component-proof.json) pins the
 development artifact. The [release evidence](native-codex/linux-x64-release-proof.json)

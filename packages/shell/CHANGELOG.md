@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Forced direct tool selection for governed, fenced native runs so GPT model metadata cannot advertise an unavailable code-mode host. Older result-only binaries are rejected before model admission; ordinary Codex sessions retain their existing tool selection.
 - Bounded native control-plane JSON response reads and cancellation, refused redirects, and stopped consuming raw RPC error bodies.
 - Preserved private completion/failure records across lease expiry, stalled renewal and credential repair; retained records never become public sends or renewed execution authority.
 - Hardened native credential resealing against hard links, changed file identities, unbounded file growth and missing original credential paths. Linux capture uses descriptor-anchored directories; unsafe refreshes retain the previous sealed capsule.

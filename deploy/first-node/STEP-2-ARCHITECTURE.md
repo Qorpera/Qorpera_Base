@@ -91,7 +91,7 @@ LXD projects provide quotas and an additional administrative grouping, but Qorpe
 
 Runtime Step 2 (the later trust-boundary step, not this infrastructure phase)
 has an explicit 2026-08-28 exception for the
-[pinned Codex result-only patch](native-codex/README.md). It preserves official
+[pinned Codex fence/direct-tools patch](native-codex/README.md). It preserves official
 login, provider transport and credential custody. Source/binary pinning and
 its separate acceptance gates are mandatory. The historical unmodified-Codex
 requirement below is superseded only to that narrow extent; this is not a

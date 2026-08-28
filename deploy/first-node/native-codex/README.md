@@ -1,4 +1,4 @@
-# Pinned native result fence
+# Pinned native result fence and governed direct tools
 
 This is a narrow downstream change to the official Codex 0.147.0 source, not
 an official upstream release. The user explicitly authorized this exception
@@ -11,6 +11,16 @@ The patch adds a private result-only Unix-socket callback at the common
 Responses request builder (HTTP, WebSocket and compaction). A capability
 marker is returned to the local app-server client. Qorpera also requires an
 operator-pinned executable SHA-256; the marker alone is not artifact trust.
+
+The separately authorized direct-tools extension selects `ToolMode::Direct`
+only when `QORPERA_NATIVE_RESULT_FENCE_SOCKET` is present. This prevents model
+metadata from advertising `functions.exec` and `functions.wait` while their
+execution host is disabled. Ordinary sessions retain upstream tool selection.
+Invalid sockets still fail the unchanged pre-request handshake. Authentication,
+provider transport, model metadata and the result-fence wire schema are unchanged.
+The host requires both `qorpera.native-result-fence/v1` and
+`qorpera.native-direct-tools/v1` before model admission; the older result-only
+binary is no longer accepted by this governed adapter.
 
 ## Build
 
@@ -66,21 +76,25 @@ cannot exceed the upstream 10,000-token item ceiling under a byte-level bound.
 
 ## Verification and rollout boundary
 
-Five native tests cover exact-body replacement, closed identity/batch checks,
-the initial-request handshake, unsupported content and stalled-host expiry.
-They passed with Rust 1.95.0, followed by upstream's targeted Clippy fix and
-format commands. The complete upstream test suite was not run.
+Six native tests cover governed versus ordinary tool selection, exact-body
+replacement, closed identity/batch checks, the initial-request handshake,
+unsupported content and stalled-host expiry.
+They passed with Rust 1.95.0. The original result callback also passed upstream's
+targeted Clippy fix; upstream formatting was rerun for the direct-tools extension.
+The complete upstream test suite was not run.
 
 Qorpera's actual-binary fixture forces forbidden native calls, malformed JSON,
 hostile nested data, synthetic-secret reads and duplicate public sends. It
 requires all 31 result bodies to be fenced, with 22 execution bypasses denied.
 Separate actual-binary cases revoke or stall authority before the next request.
-The unpatched official binary must be rejected before a model request.
+The unpatched official binary and the older result-only patch must be rejected
+before a model request. The default GPT inventory must expose only registered
+Qorpera tools, with no code-mode execution or wait tools.
 Local, remote-v1 and remote-v2 compaction each have success and revocation
 cases: earlier tool results remain fenced, runtime laws survive reconstruction,
 forged compaction instructions do not acquire authority, and revocation denies
 the next provider request and effect. These checks are also mandatory in the
-standalone Linux fixture.
+standalone Linux fixture for both the synthetic model and the provider default.
 
 The [initial Linux proof](linux-x64-component-proof.json) records the artifact and
 fixture hashes from the isolated cloud-node VM, including both authority
@@ -89,7 +103,7 @@ failure cases. The development artifact archive is retained at
 installer or production image. The build manifest keeps its build-time
 `cloudAcceptance: not_performed`; the separate proof records what was tested.
 
-The [Linux release proof](linux-x64-release-proof.json) records the later
+The [Linux release proof](linux-x64-release-proof.json) records the historical result-only
 release-profile binary and all six compaction cases. The stripped binary is
 307,148,960 bytes, SHA-256
 `babeed68a7732f96fa6bcd69ac3a9e4124bcfab5340ce0fbab61363b8b1a148f`.

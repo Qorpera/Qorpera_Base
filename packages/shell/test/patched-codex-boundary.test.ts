@@ -18,11 +18,7 @@ describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CO
 				platform: process.platform,
 				codexVersion: "0.147.0",
 				providerModel: model === "provider-default" ? "gpt-5.6-sol" : model,
-				toolInventory: [
-					...(model === "provider-default" ? ["functions.exec", "functions.wait"] : []),
-					"qorpera.read_document",
-					"qorpera.send_message",
-				],
+				toolInventory: ["qorpera.read_document", "qorpera.send_message"],
 				forcedBypassesDenied: 22,
 				canonicalBytesUnchanged: true,
 				unbrokeredRequests: 0,
@@ -54,6 +50,7 @@ describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CO
 			allNativeResultsFenced: true,
 		});
 		expect(proof.compactionChecks).toHaveLength(6);
+		expect(proof.providerDefaultCompactionChecks).toEqual(proof.compactionChecks);
 		for (const mode of ["local", "remote", "remote-v2"]) {
 			expect(proof.compactionChecks).toContainEqual({
 				mode,

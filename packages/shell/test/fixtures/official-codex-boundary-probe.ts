@@ -134,13 +134,7 @@ export async function runOfficialCodexBoundaryProbe(
 						: [tool.name ?? tool.type],
 				)
 				.sort();
-			assert.deepEqual(inventory, [
-				...(model === "provider-default" ? ["functions.exec", "functions.wait"] : []),
-				"qorpera.read_document",
-				"qorpera.send_message",
-			]);
-			const codeMode = tools.find((tool) => tool.name === "functions")?.tools?.find((tool) => tool.name === "exec");
-			assert(!codeMode?.description.includes("### `"), "Native scripts must have no nested tool surface");
+			assert.deepEqual(inventory, ["qorpera.read_document", "qorpera.send_message"]);
 			for (const item of parsed.input) {
 				if (item.type !== "function_call_output" && item.type !== "custom_tool_call_output") continue;
 				assert.equal(typeof item.call_id, "string");
@@ -444,13 +438,7 @@ export async function runOfficialCodexBoundaryProbe(
 		assert.equal(largeEnvelope.content.sha256, createHash("sha256").update(largeData).digest("hex"));
 		const bypasses = [...nativeOutputs.entries()].filter(([id]) => id.startsWith("bypass_"));
 		assert.equal(bypasses.length, 22);
-		for (const [id, output] of bypasses)
-			assert(
-				model === "provider-default" && id.startsWith("bypass_script_")
-					? output === "code-mode host is disabled"
-					: output.startsWith("unsupported"),
-				`${id} was not denied`,
-			);
+		for (const [id, output] of bypasses) assert(output.startsWith("unsupported"), `${id} was not denied`);
 		const invalidJsonResult = nativeOutputs.get("native_gap_invalid_json");
 		assert(invalidJsonResult && invalidJsonResult.length > 0);
 		assert.equal(nativeOutputs.size, 23);

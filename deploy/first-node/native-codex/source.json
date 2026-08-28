@@ -7,7 +7,8 @@
   "version": "0.147.0",
   "rustToolchain": "1.95.0",
   "protocol": "qorpera.native-result-fence/v1",
-  "patchSha256": "5465d454fa8dcf3773bd7861144fb6c2a885846047430a3c0963142146b2cc31",
+  "capabilities": ["qorpera.native-result-fence/v1", "qorpera.native-direct-tools/v1"],
+  "patchSha256": "2ee0b5ef1485c7715dcf6d2d0be9ae24a2fb7e7e7f8c5a47f18becc4064b1bbc",
   "cargoLock": {
     "upstreamSha256": "eeab4e9d3466da54037032251e2f13ad1ed11eae18bb8ee7dd2c89dbb86f645d",
     "normalizedSha256": "bc4fe450de929afe82928734f860ca83e5f9dc5f9f1211b0974ea47b57af77ca",

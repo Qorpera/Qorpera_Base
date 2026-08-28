@@ -11,8 +11,11 @@ const failureChecks = [
 	await runNativeCodexFenceFailureProbe(command, "stalled"),
 ];
 const compactionChecks = [];
+const providerDefaultCompactionChecks = [];
 for (const mode of ["local", "remote", "remote-v2"] as const) {
 	compactionChecks.push(await runNativeCodexCompactionProbe(command, mode));
 	compactionChecks.push(await runNativeCodexCompactionProbe(command, mode, true));
+	providerDefaultCompactionChecks.push(await runNativeCodexCompactionProbe(command, mode, false, "provider-default"));
+	providerDefaultCompactionChecks.push(await runNativeCodexCompactionProbe(command, mode, true, "provider-default"));
 }
-console.log(JSON.stringify({ ...proof, failureChecks, compactionChecks }));
+console.log(JSON.stringify({ ...proof, failureChecks, compactionChecks, providerDefaultCompactionChecks }));

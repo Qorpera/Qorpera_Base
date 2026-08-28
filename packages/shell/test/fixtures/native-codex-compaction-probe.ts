@@ -57,6 +57,7 @@ export async function runNativeCodexCompactionProbe(
 	binary: string,
 	mode: "local" | "remote" | "remote-v2",
 	revoke = false,
+	model: "offline-probe" | "provider-default" = "offline-probe",
 ): Promise<{
 	mode: "local" | "remote" | "remote-v2";
 	compactions: number;
@@ -117,6 +118,14 @@ export async function runNativeCodexCompactionProbe(
 			}
 			const parsed = JSON.parse(body) as { input: Array<Record<string, unknown>>; tools?: unknown[] };
 			assert(Array.isArray(parsed.input));
+			const toolBlocks = [
+				...(parsed.tools ?? []),
+				...parsed.input.filter((item) => item.type === "additional_tools").flatMap((item) => item.tools ?? []),
+			];
+			for (const tool of toolBlocks) {
+				assert(tool && typeof tool === "object" && "name" in tool);
+				assert.equal(tool.name, "qorpera", "Compaction must not restore native execution tools");
+			}
 			const compact =
 				request.url === "/v1/responses/compact" ||
 				parsed.input.some((item) => item.type === "compaction_trigger") ||
@@ -204,7 +213,7 @@ export async function runNativeCodexCompactionProbe(
 			const result = await runCloudCodexToolSession({
 				...command,
 				boundary,
-				model: "offline-probe",
+				model,
 				prompt: "Perform the admitted synthetic test work.",
 				runtimeInstructions: LAW,
 				signal: abort.signal,

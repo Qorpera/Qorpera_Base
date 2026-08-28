@@ -16,6 +16,7 @@ import { CLOUD_TOOL_RESULT_INSTRUCTIONS, type CloudNativeToolBoundary } from "./
 
 export const CLOUD_CODEX_BOUNDARY_VERSION = "0.147.0";
 const CLIENT_NAME = "qorpera_cloud_boundary";
+const DIRECT_TOOLS_CAPABILITY = "qorpera.native-direct-tools/v1";
 const MAX_WIRE_BYTES = 16 * 1024 * 1024;
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_REQUESTS = 256;
@@ -70,7 +71,7 @@ export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = Object.freeze([
 	"analytics.enabled=false",
 	"feedback.enabled=false",
 	"tool_output_token_limit=65536",
-	// Model metadata can force Code Mode on despite enabled=false. Never expose cloud tools through its scripts.
+	// Defense in depth: the pinned native capability also prevents model metadata from enabling Code Mode.
 	'features.code_mode={enabled=false,direct_only_tool_namespaces=["qorpera"],excluded_tool_namespaces=["skills"]}',
 	...DISABLED_FEATURES.map((feature) => `features.${feature}=false`),
 ]);
@@ -386,7 +387,7 @@ async function stopProcessGroup(child: ChildProcessWithoutNullStreams): Promise<
 /**
  * Cloud-host adapter selected only by the explicit company-path-v1 runtime lane.
  * No Company File directory is passed to Codex. The caller supplies the cloud tools.
- * Requires the pinned downstream native result-fence patch; stock binaries fail before thread creation.
+ * Requires the pinned native result-fence and direct-tools capabilities; older binaries fail before thread creation.
  */
 export async function runCloudCodexToolSession(options: {
 	command: readonly [string, ...string[]];
@@ -521,9 +522,11 @@ export async function runCloudCodexToolSession(options: {
 		if (
 			typeof initialized.userAgent !== "string" ||
 			!initialized.userAgent.startsWith(`${CLIENT_NAME}/${CLOUD_CODEX_BOUNDARY_VERSION} `) ||
-			!initialized.userAgent.endsWith(` ${CLOUD_NATIVE_RESULT_FENCE_SCHEMA}`)
+			!initialized.userAgent.split(" ").includes(CLOUD_NATIVE_RESULT_FENCE_SCHEMA)
 		)
 			throw new Error("Unsupported Codex boundary version or missing native result fence");
+		if (!initialized.userAgent.endsWith(` ${CLOUD_NATIVE_RESULT_FENCE_SCHEMA} ${DIRECT_TOOLS_CAPABILITY}`))
+			throw new Error("Native boundary requires governed direct tools");
 		rpc.initialized();
 		verifyConfiguration(await rpc.request("config/read", { includeLayers: false, cwd: workspace }));
 		const skills = object(await rpc.request("skills/list", { cwds: [workspace], forceReload: true }));

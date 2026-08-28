@@ -16,8 +16,10 @@ mandatory assertion below has passed against a deployed environment.
 Authorized exception, 2026-08-28: runtime Step 2 may use the narrowly patched,
 source- and binary-pinned Codex artifact described in
 [`../deploy/first-node/native-codex/README.md`](../deploy/first-node/native-codex/README.md).
-Only the pre-model tool-result callback and local capability marker differ
-from upstream. Native login, credential custody, provider transport and sponsor
+The approved differences are the pre-model tool-result callback, local capability
+markers, and direct tool selection only for runs enabled by the cloud fence socket.
+The direct-tools extension prevents unavailable Code Mode tools from being advertised;
+ordinary native sessions retain upstream selection. Native login, credential custody, provider transport and sponsor
 selection are unchanged. This is not authorization for a credential-reading
 proxy, arbitrary provider patches, deployment, or a claim that real-subscription
 acceptance passed. References below to an unmodified/official Codex harness

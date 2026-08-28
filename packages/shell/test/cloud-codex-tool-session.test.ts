@@ -29,6 +29,7 @@ function run(
 		signal?: AbortSignal;
 		binarySha256?: string;
 		isolation?: nativeIsolation.NativeIsolationConfiguration;
+		beforeModelStart?: (signal: AbortSignal) => Promise<void>;
 	} = {},
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => new Promise(() => undefined));
@@ -76,6 +77,14 @@ it.each(["response-first", "notify-first", "fence-before-started", "prewarm-befo
 
 it("rejects an unpatched binary before creating a thread", async () => {
 	await expect(run("missing-fence").result).rejects.toThrow("missing native result fence");
+});
+
+it("rejects the older result-only patch before model admission", async () => {
+	const beforeModelStart = vi.fn(async () => undefined);
+	const { result, execute } = run("missing-direct-tools", { beforeModelStart });
+	await expect(result).rejects.toThrow("Native boundary requires governed direct tools");
+	expect(beforeModelStart).not.toHaveBeenCalled();
+	expect(execute).not.toHaveBeenCalled();
 });
 
 it("rejects an artifact digest mismatch before spawning", async () => {

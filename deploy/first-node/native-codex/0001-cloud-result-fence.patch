@@ -1,15 +1,18 @@
 diff --git a/codex-rs/app-server/src/request_processors/initialize_processor.rs b/codex-rs/app-server/src/request_processors/initialize_processor.rs
-index 442b71f..0e773bf 100644
+index 442b71f..8b3d735 100644
 --- a/codex-rs/app-server/src/request_processors/initialize_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/initialize_processor.rs
-@@ -138,7 +138,9 @@ impl InitializeRequestProcessor {
+@@ -138,7 +138,12 @@ impl InitializeRequestProcessor {
              *suffix = Some(user_agent_suffix);
          }
  
 -        let user_agent = get_codex_user_agent();
 +        // Private downstream capability marker, returned only to the local host.
 +        // Provider request headers and the official authentication flow are unchanged.
-+        let user_agent = format!("{} qorpera.native-result-fence/v1", get_codex_user_agent());
++        let user_agent = format!(
++            "{} qorpera.native-result-fence/v1 qorpera.native-direct-tools/v1",
++            get_codex_user_agent()
++        );
          let response = InitializeResponse {
              user_agent,
              codex_home,
@@ -131,18 +134,33 @@ index 4cecf46..eaaa228 100644
  mod realtime_prompt;
 diff --git a/codex-rs/core/src/qorpera_result_fence.rs b/codex-rs/core/src/qorpera_result_fence.rs
 new file mode 100644
-index 0000000..1fcc7a3
+index 0000000..ba962a0
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence.rs
-@@ -0,0 +1,244 @@
+@@ -0,0 +1,259 @@
 +//! Private cloud result boundary. This has no access to provider credentials or transports.
 +//! The Qorpera host enables it only in a pinned, isolated app-server process.
 +
 +use codex_protocol::error::CodexErr;
 +use codex_protocol::error::Result;
 +use codex_protocol::models::ResponseItem;
++use codex_protocol::openai_models::ToolMode;
 +
 +use crate::responses_metadata::CodexResponsesMetadata;
++
++/// Governed runs expose only their host-registered direct tools. Model metadata
++/// must not advertise code execution when that execution host is unavailable.
++/// Socket validity and current authority are still checked before every request.
++pub(crate) fn governed_tool_mode(
++    socket: Option<&std::ffi::OsStr>,
++    requested: ToolMode,
++) -> ToolMode {
++    if socket.is_some() {
++        ToolMode::Direct
++    } else {
++        requested
++    }
++}
 +
 +pub(crate) async fn fence_results(
 +    input: &mut [ResponseItem],
@@ -381,12 +399,13 @@ index 0000000..1fcc7a3
 +mod tests;
 diff --git a/codex-rs/core/src/qorpera_result_fence_tests.rs b/codex-rs/core/src/qorpera_result_fence_tests.rs
 new file mode 100644
-index 0000000..170c63b
+index 0000000..5e5b96b
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence_tests.rs
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,192 @@
 +use anyhow::Context;
 +use codex_protocol::models::ResponseItem;
++use codex_protocol::openai_models::ToolMode;
 +use pretty_assertions::assert_eq;
 +use serde_json::Value;
 +use serde_json::json;
@@ -394,8 +413,22 @@ index 0000000..170c63b
 +use tokio::io::AsyncWriteExt;
 +use tokio::net::UnixListener;
 +
++use super::governed_tool_mode;
 +use super::unix::fence;
 +use crate::responses_metadata::CodexResponsesMetadata;
++
++#[test]
++fn only_governed_runs_override_the_requested_tool_mode() {
++    for requested in [ToolMode::Direct, ToolMode::CodeMode, ToolMode::CodeModeOnly] {
++        assert_eq!(governed_tool_mode(/*socket*/ None, requested), requested);
++        for socket in ["/private/fence.sock", "relative", ""] {
++            assert_eq!(
++                governed_tool_mode(Some(std::ffi::OsStr::new(socket)), requested),
++                ToolMode::Direct
++            );
++        }
++    }
++}
 +
 +fn metadata() -> CodexResponsesMetadata {
 +    let mut value = CodexResponsesMetadata::new(
@@ -562,3 +595,29 @@ index 0000000..170c63b
 +    assert!(started.elapsed() < std::time::Duration::from_secs(7));
 +    host.abort();
 +}
+diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
+index 89d0cd1..4c58160 100644
+--- a/codex-rs/core/src/tools/mod.rs
++++ b/codex-rs/core/src/tools/mod.rs
+@@ -68,7 +68,7 @@ pub(crate) fn tool_user_shell_type(
+ }
+ 
+ pub(crate) fn requested_tool_mode(turn_context: &TurnContext) -> ToolMode {
+-    turn_context.model_info.tool_mode.unwrap_or_else(|| {
++    let requested = turn_context.model_info.tool_mode.unwrap_or_else(|| {
+         if turn_context.config.features.enabled(Feature::CodeModeOnly) {
+             ToolMode::CodeModeOnly
+         } else if turn_context.config.features.enabled(Feature::CodeMode) {
+@@ -76,7 +76,11 @@ pub(crate) fn requested_tool_mode(turn_context: &TurnContext) -> ToolMode {
+         } else {
+             ToolMode::Direct
+         }
+-    })
++    });
++    crate::qorpera_result_fence::governed_tool_mode(
++        std::env::var_os("QORPERA_NATIVE_RESULT_FENCE_SOCKET").as_deref(),
++        requested,
++    )
+ }
+ 
+ pub(crate) fn effective_tool_mode(turn_context: &TurnContext) -> ToolMode {

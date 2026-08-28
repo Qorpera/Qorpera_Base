@@ -1,9 +1,11 @@
 # Runtime Step 2: signed cloud staging
 
-Date: 2026-08-28. **Signed v48, v49 and v50 are preserved. Managed Storage and
-human file acceptance passed. V50 includes the verified startup fixes; its
-managed trace identified a successful HTTP 204 rejected by the client before
-model admission. That correction is verified but not yet committed or signed.**
+Date: 2026-08-28. **Signed v48 through v51 are preserved. V51 includes the
+committed HTTP-204 correction and passed scoped real-GPT Company File,
+revocation and process-restart receipt checks. Full Step 2 remains incomplete:
+a real turn hit advertised-but-disabled native Code Mode. Its narrow direct-tools
+fix is authorized and implemented; replacement-image verification, VM-restart
+and shared-computer acceptance are still open.**
 Step 3 is paused. Production enrollment is unchanged.
 
 ## Source and immutable artifacts
@@ -252,7 +254,7 @@ wrongly parsed this void success as JSON and raised an authority error. The
 trace does not prove earlier generic bridge failures reached either separately
 reproduced scratch/auth defect.
 
-The uncommitted fix accepts no-body 204 only for that RPC and the other void
+The fix accepts no-body 204 only for that RPC and the other void
 RPC, `qorpera_verify_company_path_file`. Missing values on admission/read/
 receipt/commit RPCs, other empty statuses, denials and aborted requests still
 fail closed. Three new cases failed before the change, including a full
@@ -263,15 +265,70 @@ passed actual managed 204 success and 400 rejection; only an existing
 synthetic object's verification metadata was refreshed, with the canonical
 head unchanged. No model or execution-admission call was made by that probe.
 
-The proposed v51 package changes only the host bundle to
+The approved v51 package changes only the host bundle to
 `449fd0341912a3034439d63611d1b633af95e53690a418cd60641515a89490ab`
 (230,492 bytes), manifest
 `6143706cb0e80cc808694b7ba7f85bdc66c49eb08ceb1dfbd35ad7a63507ba24`.
-No v51 image has been built or signed. Its additional source commit and
-signed test-image restaging require authorization; no further GPT run is
-claimed. After those gates, repeat clean boot/containment/startup and admit
-a new turn for GPT injection, revocation, lost-acknowledgement and recovery
-acceptance with clients closed. Do not retry a failed canonical job ID.
+The fix and pins were committed as `c86ad187009181a2b54066dc0bf78f163f2430da`.
+The clean-source Linux rebuild passed 210 focused tests, three packaging tests
+and the full check. The new image passed clean boot, KVM/Secure Boot, the
+28-setting containment comparison and both startup probes. Off-node signing,
+on-node verification and wrong-fingerprint rejection passed. It was activated
+only in the isolated preview; production and prior signed images are unchanged.
+
+## Signed v51 and real-GPT acceptance
+
+| V51 binding | SHA-256 |
+| --- | --- |
+| Clean source archive | `2a25bef5619e54843cfc5fb49249d94ef84a059da0490ada59ef5b43b2f78aa4` |
+| Guest package manifest | `6143706cb0e80cc808694b7ba7f85bdc66c49eb08ceb1dfbd35ad7a63507ba24` |
+| Native host bundle | `449fd0341912a3034439d63611d1b633af95e53690a418cd60641515a89490ab` |
+| LXD image | `428579e5b537d719ebcaa03ecea14f80175495845aa2d7bc3e9e3831ac8b9492` |
+| Clean-boot evidence | `fed1ef029ee69542fe41ee42d5d6141023a044ec95514e99146801086224a12b` |
+| Combined signing evidence | `54a77ac7277d8850ade3ecc04341f49d1cecbc930aa1a8cc84bcc80369f3f5dd` |
+| Signed provenance envelope | `e691b017098d80791a31c3652efbc72da04e9b35d6de3a42c0e543245072f748` |
+
+Public signed material is at
+`/home/company41-admin/step2-lxd/acceptance-v51-signed`; the complete package
+is at `/home/company41-admin/step2-lxd/lxd-runner-guest-v51`. Native Codex,
+namespace helper, provider and nested OCI hashes are unchanged. The signed
+envelope, not the descriptive `v51-unsigned` alias, binds the image.
+
+The following are distinct outcomes, not one blanket acceptance pass:
+
+| Canonical run | Observed result |
+| --- | --- |
+| `3ee0a72e-58bb-47f2-86b8-023390e32062` | Real GPT, one attempt, one progress/final pair, one receipted answer revision. Other paths unchanged; injected instructions and private canary absent. Owner/friend cloud reads matched. |
+| `4f974320-3d4f-4476-a102-dba71ee378af` | Stopped on `INVALID_ARGUMENTS` before a governed read. No revocation occurred; not a revocation pass. |
+| `ba694fc5-963d-4f48-b138-4be09f734bc8` | Owner revoked the root grant after the governed brief read. Run/native process stopped, no final/write, company unchanged. Restoring baseline permission after termination did not rerun work. |
+| `1c4f4e0b-8564-4a25-9e64-581e59ae4f48` | Distinct friend requester and owner sponsor used explicit approval; unauthorized self-approval failed. GPT then stopped at disabled Code Mode, so the combined write/VM-restart test did not reach power loss. Actual completed-receipt replay did pass across a worker process restart. |
+
+For the last case, the preview-only acknowledgement probe returned 503 after
+the unchanged completion RPC had committed. Private pending completion survived
+the process restart, replay returned the original receipt, and the pending
+record cleared without another model admission or duplicate final send. There
+were no file revisions in that run. No forced VM stop happened; this result
+must not be labeled VM-restart/write acceptance. The original Edge function
+was restored and downloaded for byte-for-byte comparison. Its temporary
+observer function, table and schema were removed without cascade;
+only metadata was retained.
+
+The signed binary's synthetic Linux recheck independently confirmed the
+advertised `functions.exec`/`functions.wait` mismatch while all 22 bypass-denial
+and six compaction checks still passed. The pinned Codex source chooses the
+model's `code_mode_only` before disabled feature flags. No supported
+configuration-only override was found. This is a functional Step 2 blocker,
+not evidence that scripts bypassed the fence or accessed credentials.
+
+The user subsequently authorized the narrow native tool-selection extension,
+scoped source commit, replacement-image signing and renewed preview acceptance.
+The implementation selects direct tools only for host-fenced native processes
+and requires a separate capability marker before model admission. Native and
+compaction tests, new immutable pins and signed preview acceptance remain
+mandatory. No catalog/model substitution or relaxed policy is used.
+The preview orchestrator is paused; all eight canonical
+and login VMs are stopped, with identity/recovery volumes retained. The
+temporary, billable preview branch remains for the next acceptance attempt.
 
 Before production enrollment, the NAS/workbench reconciliation, shared-computer
 path enforcement and authorized replacement-node identity recovery must also
