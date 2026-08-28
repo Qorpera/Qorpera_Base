@@ -1,9 +1,10 @@
 # Runtime Step 2 resumed; Step 3 held
 
 Date: 2026-08-28. **Step 2 remains incomplete. Managed Storage and human file
-acceptance passed. Signed v49 fixes the scratch-layout defect; its next real
-turn exposed an auth-capsule handoff defect before model admission. The second
-source fix passes component checks and is approved for commitment and signed restaging.** See the
+acceptance passed. Signed v50 includes the verified scratch and auth-only
+startup fixes. Its canonical turn identified a successful HTTP 204 being
+misread as an authority failure before model admission. That correction is
+verified but not yet committed or built into a signed replacement.** See the
 [signed staging record](RUNTIME-STEP-2-STAGING.md) for exact pins and evidence.
 
 The user's direction is to finish Step 2 before incorporating Step 3.
@@ -100,7 +101,8 @@ assigned and accepted by a VM using the signed v48 image. It failed with zero
 public sends before durable native model-start admission. No production
 credential was exported, and the failed run was not automatically retried.
 
-The governed adapter created scratch directly under Linux `/tmp`, while its
+Investigation independently reproduced a startup defect: the governed adapter
+created scratch directly under Linux `/tmp`, while its
 unchanged containment validator requires a deeper private working directory.
 The fix nests `runtime/` below the unique temporary allocation and removes
 that entire allocation on exit. A cloud probe reproduced the original exact
@@ -127,7 +129,8 @@ credential bytes left that VM and the capsule was not modified. Administrative
 read-only checks of the terminal run's four context sources passed without
 changing a lease or invoking admission.
 
-The login host had sealed every CLI file, while governed execution correctly
+This independently reproduced a second startup defect: the login host had
+sealed every CLI file, while governed execution correctly
 requires an auth-only identity. The fix seals only `codex/auth.json` for Codex
 login and projects only that required path when restoring a governed capsule.
 The full archive is still validated, including ignored entries, duplicates,
@@ -139,9 +142,41 @@ Both new regressions failed before the fix. All 92 focused tests pass on macOS
 and cloud Linux. A before/after probe with the actual installed Codex binary
 and service containment reproduces the old auth-only rejection and reaches
 verified configuration with the fix; it deliberately stops before a model
-request and uses synthetic credentials only. Installed signed artifacts were
-not changed. The Linux package changes only the native host bundle. The v50
-recipe pins those new bytes; no v50 image has been built or signed yet.
+request and uses synthetic credentials only. The approved fix and v50 pins
+were committed as `a20dd1ef0dbdcce31166789053b2d7bb5ab2a929`. Clean-source
+Linux packaging, clean boot, containment and both startup probes passed for
+v50, which received off-node signed provenance and was activated only in the
+isolated preview. Prior signed images and their evidence remain preserved.
+
+After the router returned, the expired preview tunnel endpoints were replaced;
+the actual cloud VM verified their HTTPS certificates and gateway readiness.
+Production endpoints, DNS and TLS policy were unchanged. Canonical human run
+`5e03dc98-87d0-483d-a8ff-9af2f5c6bd6e` used exact signed v50 but failed before
+native model admission, with zero public sends. Its terminal VM was stopped
+normally, without retry, while retaining identity and recovery volumes.
+
+Managed API logs identify the actual v50 failure: the context and native
+authority calls succeeded, then `qorpera_assert_company_path_reads` returned
+HTTP 204, as expected for a void RPC. The client incorrectly required JSON
+and rejected that successful response. This is stronger evidence than the
+generic bridge error; the earlier scratch/auth defects were independently
+reproduced and are not proof that either failed turn reached those stages.
+
+The corrected client accepts an empty 204 only for the two void RPCs,
+`qorpera_assert_company_path_reads` and `qorpera_verify_company_path_file`.
+Value-bearing RPCs, empty non-204 responses, denials, cancellation and timeouts
+still fail closed. Three regressions failed before the correction, including
+the runtime-to-mouth flow through the real HTTP control adapter. The fix
+passes 210 focused tests, all three packaging tests and the full check on
+both macOS and cloud Linux. An actual managed
+API probe verified 204 success and 400 rejection using the patched client;
+it reverified an existing synthetic object without changing the company head,
+uploading company bytes, admitting execution or invoking a model.
+
+The rebuilt Linux package changes only the host bundle. Proposed v51 pins
+name the verified bytes, but no v51 image has been built or signed and the
+correction remains uncommitted. The preview orchestrator is paused. This
+does not complete real-GPT injection, revocation or recovery acceptance.
 
 The actual human client transport additionally passed seven live read/list
 cases and six edit/authority cases: owner/friend/outsider separation, private
@@ -220,14 +255,14 @@ cumulative distinct-skill count is 6/10.
    Temporary observer hooks were removed. The unchanged native-authority SQL
    suite also passed over certificate-verified PostgreSQL. These are managed
    component checks, not real-GPT or released-client acceptance. The isolated
-   runner/provider and fresh cloud-native login are now operational. The first
-   human run exposed the scratch-layout defect described above; its approved
-   commit and signed v49 restaging are complete. The next turn exposed the
-   auth-capsule handoff defect. Its verified source fix and v50 package pins
-   are approved for the additional commit and signed restaging. Preserve both
-   existing signed candidates, then repeat
-   clean-boot, containment and startup checks before real-GPT injection,
-   revocation and recovery acceptance. No failed run is automatically retried.
+   runner/provider and fresh cloud-native login are operational, with the
+   orchestrator deliberately paused. The independently reproduced scratch and
+   auth-only defects are fixed in signed v50. Its managed trace then identified
+   the successful-204 parsing defect described above. That tested correction
+   and v51 package pins await an additional authorized commit and signed
+   restaging. Preserve existing signed candidates, repeat clean boot,
+   containment and startup checks, then admit a new human turn for real-GPT
+   injection, revocation and recovery acceptance. No failed run is retried.
    No push, release or production change is authorized by restaging approval.
 2. Before production enrollment, recheck/reconcile the two missing NAS files
    without losing either live state, and verify replacement-node fencing and

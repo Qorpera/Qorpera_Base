@@ -1,8 +1,9 @@
 # Runtime Step 2: signed cloud staging
 
-Date: 2026-08-28. **Signed v48 and v49 are preserved. Managed Storage and human
-file acceptance passed. V49 fixes scratch startup but exposed an auth-capsule
-handoff defect before model admission. Its verified fix is not yet signed.**
+Date: 2026-08-28. **Signed v48, v49 and v50 are preserved. Managed Storage and
+human file acceptance passed. V50 includes the verified startup fixes; its
+managed trace identified a successful HTTP 204 rejected by the client before
+model admission. That correction is verified but not yet committed or signed.**
 Step 3 is paused. Production enrollment is unchanged.
 
 ## Source and immutable artifacts
@@ -139,7 +140,7 @@ turn `32e912a2-68eb-459d-95e3-77f9896eee58` was admitted through
 the assignment, but the turn failed before native model-start admission and
 produced no public sends.
 
-The failure exposed a real layout mismatch: the adapter's scratch was a direct
+Investigation independently reproduced a layout mismatch: the adapter's scratch was a direct
 child of `/tmp`, while the containment validator requires a deeper private
 directory. The source fix adds a `runtime/` child beneath the unique allocation;
 the validator and all isolation policies remain unchanged. An actual-cloud
@@ -202,21 +203,75 @@ entire archive. Duplicates, missing auth, unsafe paths/modes and path collisions
 still fail; incidental configuration never enters the native mount. Refresh
 and current-authority requirements are unchanged.
 
-The source now passes 92 focused tests on macOS and cloud Linux. A synthetic
+The correction passed 92 focused tests on macOS and cloud Linux. A synthetic
 before/after probe under the actual cloud service containment confirms the
 fixed host reaches verified configuration and stops before model admission.
 The Linux package changes only the host bundle, to
 `05ec1dac29ceee2400628e3636ce01fdc04c2302df579cdc5c1ff971630af8c4`
-(230,291 bytes). The proposed v50 manifest is
+(230,291 bytes). The v50 manifest is
 `f5dc9747e6aac5db7f9f9e6f8a4f9c797c8dd0b84c54c887b4971fe79823f319`.
 The earlier manifest check correctly rejected the stale v49 host pin; the
-recipe and package pins now name the replacement bytes. No v50 image has
-been built or signed. The user approved the additional source commit and
-signed test-image rebuild, without push, release or production changes.
+recipe and package pins name those replacement bytes. The user-approved fix
+and pins were committed as `a20dd1ef0dbdcce31166789053b2d7bb5ab2a929` and
+restaged as signed v50, without push, release or production changes.
 
-After that replacement passes clean boot, containment and startup, exercise
-real GPT injection resistance, native revocation, lost acknowledgements and
-recovery with clients closed. Neither startup probe closes those gates.
+## Signed v50 and successful-void-response correction
+
+The clean v50 source was rebuilt on cloud Linux, passing 92 focused tests,
+all three packaging tests and the full check. The exact resulting image
+passed clean boot, KVM/Secure Boot, the 28-setting containment comparison and
+both pre-model startup probes. The auth-only probe used synthetic credentials.
+Off-node/on-node signature checks and wrong-fingerprint rejection passed.
+
+| V50 binding | SHA-256 |
+| --- | --- |
+| Clean source archive | `fa1adcf05ad817daf514edb38d0031687717fbcf9004e45a9ab2e686f53a3be1` |
+| Guest package manifest | `f5dc9747e6aac5db7f9f9e6f8a4f9c797c8dd0b84c54c887b4971fe79823f319` |
+| Native host bundle | `05ec1dac29ceee2400628e3636ce01fdc04c2302df579cdc5c1ff971630af8c4` |
+| LXD image | `a0cbbb527c7c8c2dc24cd9f3350caa6215ab1fb5b7cdc05ab5b93582336a5bac` |
+| Clean-boot evidence | `18bf7935e73e51b89c430c4649c8a9c56d803e0347996a0791852ef6cca9462b` |
+| Combined signing evidence | `96af6060bbef293bf8a0fdbc2e50741bc2fac67feb8d1b85989f40fc99e6aecc` |
+| Signed provenance envelope | `06d84b0e22d56589dfcbed3867f8d24f106e23091224c3686c9fdb92d8eb2a19` |
+
+Public signed material is staged at
+`/home/company41-admin/step2-lxd/acceptance-v50-signed`. Its signature binds
+the immutable fingerprint, not the descriptive `v50-unsigned` alias.
+Native Codex, helper, provider and nested OCI bytes remain unchanged.
+
+After network recovery, the expired preview-only tunnel endpoints were
+replaced and verified over certificate-checked HTTPS from the cloud VM.
+V50 was activated only in the preview. Fresh canonical human run
+`5e03dc98-87d0-483d-a8ff-9af2f5c6bd6e` was assigned to that exact image and
+failed before durable native model admission, with zero public sends. The
+orchestrator was paused; the terminal VM was stopped without force or retry.
+Its identity/recovery volumes and all earlier signed images remain preserved.
+
+The managed API trace shows successful context and authority responses,
+followed by HTTP 204 from `qorpera_assert_company_path_reads`. The client
+wrongly parsed this void success as JSON and raised an authority error. The
+trace does not prove earlier generic bridge failures reached either separately
+reproduced scratch/auth defect.
+
+The uncommitted fix accepts no-body 204 only for that RPC and the other void
+RPC, `qorpera_verify_company_path_file`. Missing values on admission/read/
+receipt/commit RPCs, other empty statuses, denials and aborted requests still
+fail closed. Three new cases failed before the change, including a full
+synthetic runtime/mouth path using the HTTP adapter. The fixed source passed
+210 focused tests, all three packaging tests and `npm run check` on both
+macOS and cloud Linux. The patched adapter also
+passed actual managed 204 success and 400 rejection; only an existing
+synthetic object's verification metadata was refreshed, with the canonical
+head unchanged. No model or execution-admission call was made by that probe.
+
+The proposed v51 package changes only the host bundle to
+`449fd0341912a3034439d63611d1b633af95e53690a418cd60641515a89490ab`
+(230,492 bytes), manifest
+`6143706cb0e80cc808694b7ba7f85bdc66c49eb08ceb1dfbd35ad7a63507ba24`.
+No v51 image has been built or signed. Its additional source commit and
+signed test-image restaging require authorization; no further GPT run is
+claimed. After those gates, repeat clean boot/containment/startup and admit
+a new turn for GPT injection, revocation, lost-acknowledgement and recovery
+acceptance with clients closed. Do not retry a failed canonical job ID.
 
 Before production enrollment, the NAS/workbench reconciliation, shared-computer
 path enforcement and authorized replacement-node identity recovery must also

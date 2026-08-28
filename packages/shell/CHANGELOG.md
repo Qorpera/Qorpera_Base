@@ -24,6 +24,7 @@
 - Bounded runner-control success bodies and preserved denial responses without reading backend error pages, including stalled bodies and redirects.
 - Nested native runtime scratch inside its private temporary allocation so Linux cloud turns pass the existing containment layout check; failed startup still removes the entire allocation.
 - Kept Codex login capsules and governed runtime identities auth-only: incidental CLI files cannot become runtime configuration or block startup, and credential refresh retains only the required auth file.
+- Accepted PostgREST's HTTP 204 success for the two void Company File checks, so a successful permission check cannot block cloud agent startup. Data-bearing RPCs, denials, cancellation and uncertain-write handling remain fail-closed.
 
 ## [0.20.44] - 2026-08-28
 

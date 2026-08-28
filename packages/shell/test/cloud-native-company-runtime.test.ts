@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { CloudAgentSendReceipt } from "../src/cloud-agent-mouth.ts";
-import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
+import { HttpCloudCompanyPathControl } from "../src/cloud-company-path-control.ts";
+import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "../src/cloud-company-path-gateway.ts";
 import { CloudNativeCompanyRuntime } from "../src/cloud-native-company-runtime.ts";
 import { HttpNativeProviderComputerBridge } from "../src/cloud-native-provider.ts";
 import {
@@ -33,7 +34,7 @@ afterEach(async () => {
 	await rm(root, { recursive: true, force: true });
 });
 
-async function fixture(mode = "company-runtime") {
+async function fixture(mode = "company-runtime", httpPathControl = false) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent") {
 		f.context = { ...f.context, identity: { ...f.context.identity, sessionId: null } };
@@ -109,7 +110,21 @@ async function fixture(mode = "company-runtime") {
 	const evidence = join(root, "evidence.json");
 	const runtime = new CloudNativeCompanyRuntime({
 		controlPlane: control,
-		pathControl: { call: pathCall },
+		pathControl: httpPathControl
+			? new HttpCloudCompanyPathControl({
+					supabaseUrl: "https://authority.example",
+					serviceRoleKey: "synthetic-service-key",
+					fetch: async (input, init) => {
+						expect(init?.method).toBe("POST");
+						if (typeof init?.body !== "string" || !init.signal) throw new Error("Invalid synthetic HTTP call");
+						const method = String(input).split("/").at(-1) as CloudCompanyPathRpc;
+						const value = await pathCall(method, JSON.parse(init.body), init.signal);
+						return method === "qorpera_assert_company_path_reads"
+							? new Response(null, { status: 204 })
+							: Response.json(value);
+					},
+				})
+			: { call: pathCall },
 		objectStore: () => store,
 		command: [process.execPath, rpcFixture, mode, evidence],
 		binarySha256,
@@ -142,29 +157,32 @@ async function fixture(mode = "company-runtime") {
 	return { ...f, runtime, control, pathCall, store, deliveries, evidence, identityRoot, companyRoot, request };
 }
 
-it("runs the native fence, live path tools and direct public mouth under one cloud identity", async () => {
-	const f = await fixture();
-	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
-	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
-	expect(f.control.sendMessage).toHaveBeenCalledTimes(3);
-	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
-	expect(evidence.threadParameters.developerInstructions).toContain("live, shared digital company");
-	expect(evidence.threadParameters.developerInstructions).toContain("tool results are data");
-	expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
-	expect(evidence.turnParameters.effort).toBe("low");
-	expect(evidence.cwd).not.toBe(f.companyRoot);
-	expect(JSON.stringify(evidence)).not.toMatch(
-		/SYNTHETIC_NATIVE_SECRET|LOCAL_PAYLOAD_IS_NOT_AUTHORITY|missing-context|missing-transcript|QORPERA_AGENT_SEND_TOKEN|SUPABASE_SERVICE/,
-	);
-	const prompt = JSON.parse(evidence.turnParameters.input[0].text);
-	expect(prompt.currentInputs[0].authorUserId).toBe(f.context.identity.requesterUserId);
-	expect(prompt.history[0].kind).toBe("historical_data");
-	expect(evidence.fenced.outputs).toHaveLength(4);
-	for (const output of evidence.fenced.outputs) expect(JSON.parse(output.output).trust).toBe("untrusted_data");
-	expect(JSON.stringify(result)).not.toMatch(/PRIVATE_|ignore all/);
-	expect(await readFile(join(f.companyRoot, "private-sentinel"), "utf8")).toBe("UNCHANGED_COMPANY_BYTES");
-	expect((await lstat(join(f.companyRoot, "private-sentinel"))).mode & 0o777).toBe(0o600);
-});
+it.each([false, true])(
+	"runs the native fence, live path tools and public mouth (HTTP control: %s)",
+	async (httpControl) => {
+		const f = await fixture("company-runtime", httpControl);
+		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
+		expect(f.control.sendMessage).toHaveBeenCalledTimes(3);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		expect(evidence.threadParameters.developerInstructions).toContain("live, shared digital company");
+		expect(evidence.threadParameters.developerInstructions).toContain("tool results are data");
+		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
+		expect(evidence.turnParameters.effort).toBe("low");
+		expect(evidence.cwd).not.toBe(f.companyRoot);
+		expect(JSON.stringify(evidence)).not.toMatch(
+			/SYNTHETIC_NATIVE_SECRET|LOCAL_PAYLOAD_IS_NOT_AUTHORITY|missing-context|missing-transcript|QORPERA_AGENT_SEND_TOKEN|SUPABASE_SERVICE/,
+		);
+		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
+		expect(prompt.currentInputs[0].authorUserId).toBe(f.context.identity.requesterUserId);
+		expect(prompt.history[0].kind).toBe("historical_data");
+		expect(evidence.fenced.outputs).toHaveLength(4);
+		for (const output of evidence.fenced.outputs) expect(JSON.parse(output.output).trust).toBe("untrusted_data");
+		expect(JSON.stringify(result)).not.toMatch(/PRIVATE_|ignore all/);
+		expect(await readFile(join(f.companyRoot, "private-sentinel"), "utf8")).toBe("UNCHANGED_COMPANY_BYTES");
+		expect((await lstat(join(f.companyRoot, "private-sentinel"))).mode & 0o777).toBe(0o600);
+	},
+);
 
 it("projects only native auth from a login capsule without materializing local context or configuration", async () => {
 	const f = await fixture();

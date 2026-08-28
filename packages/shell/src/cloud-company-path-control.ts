@@ -60,6 +60,14 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					headers,
 					body,
 				});
+				requestSignal.throwIfAborted();
+				// PostgREST returns no body for these void RPCs. A missing value
+				// must still fail closed for admission, reads, receipts and commits.
+				if (
+					response.status === 204 &&
+					(method === "qorpera_assert_company_path_reads" || method === "qorpera_verify_company_path_file")
+				)
+					return null;
 				const maximum =
 					response.ok &&
 					(method === "qorpera_prepare_company_path_mutation" ||
