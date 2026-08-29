@@ -27,6 +27,7 @@ const MAX_CREDENTIAL_BYTES = 256;
 const MAX_SERVICE_CREDENTIAL_BYTES = 8192;
 const RUNNER_SERVICE = "qorpera-ephemeral-runner.service";
 const NATIVE_PROVIDER_SERVICE = "qorpera-native-provider-host.service";
+const NATIVE_LOGIN_PROVIDER_SERVICE = "qorpera-native-login-provider-host.service";
 const execFileAsync = promisify(execFile);
 
 export interface LxdRunnerBootstrapConfig {
@@ -79,6 +80,7 @@ export interface LxdNativeLoginBootstrapConfig {
 	supabaseUrl: string;
 	nativeBridgeUrl: string;
 	trustedSource: string;
+	identityRecoveryCaSha256: string;
 	nativeProviderEnvironmentPath: string;
 	credentialSource: string;
 	identityVolumePath: string;
@@ -263,6 +265,7 @@ export function parseLxdNativeLoginBootstrapConfig(value: unknown): LxdNativeLog
 			"supabase_url",
 			"native_bridge_url",
 			"trusted_source",
+			"identity_recovery_ca_sha256",
 			"native_provider_environment_path",
 			"credential_source",
 			"identity_volume_path",
@@ -297,6 +300,7 @@ export function parseLxdNativeLoginBootstrapConfig(value: unknown): LxdNativeLog
 		supabaseUrl: new URL(supabaseUrl).origin,
 		nativeBridgeUrl,
 		trustedSource,
+		identityRecoveryCaSha256: text(input.identity_recovery_ca_sha256, "Identity recovery CA digest", SHA256_PATTERN),
 		nativeProviderEnvironmentPath: PRODUCTION_LOGIN_PATHS.nativeProviderEnvironment,
 		credentialSource: PRODUCTION_LOGIN_PATHS.credentialSource,
 		identityVolumePath: PRODUCTION_LOGIN_PATHS.identityVolume,
@@ -598,11 +602,31 @@ function nativeProviderEnvironment(
 	}
 }
 
+async function verifyPinnedCaCertificate(
+	path: string,
+	expectedUid: number,
+	expectedSha256: string,
+	label: string,
+): Promise<void> {
+	const certificateEncoded = await readOwnedFile(path, 16 * 1024, `${label} certificate`, expectedUid, true);
+	if (createHash("sha256").update(certificateEncoded).digest("hex") !== expectedSha256) {
+		throw new Error(`${label} certificate does not match immutable bootstrap authority`);
+	}
+	let certificate: X509Certificate;
+	try {
+		certificate = new X509Certificate(certificateEncoded);
+	} catch {
+		throw new Error(`${label} certificate is invalid`);
+	}
+	if (!certificate.ca) throw new Error(`${label} certificate is not a certificate authority`);
+}
+
 async function verifyCredentialSource(
 	path: string,
 	expectedUid: number,
 	boundary: "runner" | "native-login" | "company-runner",
 	companyRuntime?: LxdRunnerBootstrapConfig["companyRuntime"],
+	identityRecoveryCaSha256?: string,
 ): Promise<void> {
 	const metadata = await lstat(path);
 	if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== expectedUid) {
@@ -622,13 +646,16 @@ async function verifyCredentialSource(
 					"qorpera-runner-assignment",
 					"qorpera-supabase-service-key",
 				]
-			: ["qorpera-native-bridge", "qorpera-supabase-service-key"];
+			: ["qorpera-identity-recovery-ca", "qorpera-native-bridge", "qorpera-supabase-service-key"];
 	if (JSON.stringify(entries) !== JSON.stringify(expected)) {
 		throw new Error("LXD runner credential source contains unexpected entries");
 	}
 	const tokens = new Set<string>();
 	for (const name of expected.filter(
-		(entry) => entry !== "qorpera-supabase-service-key" && entry !== "qorpera-cloud-secret-ca",
+		(entry) =>
+			entry !== "qorpera-supabase-service-key" &&
+			entry !== "qorpera-cloud-secret-ca" &&
+			entry !== "qorpera-identity-recovery-ca",
 	)) {
 		const token = (
 			await readOwnedFile(
@@ -645,23 +672,21 @@ async function verifyCredentialSource(
 		tokens.add(token);
 	}
 	if (companyRuntime) {
-		const certificateEncoded = await readOwnedFile(
+		await verifyPinnedCaCertificate(
 			`${path}/qorpera-cloud-secret-ca`,
-			16 * 1024,
-			"Cloud secret broker CA certificate",
 			expectedUid,
-			true,
+			companyRuntime.secretBrokerCaSha256,
+			"Cloud secret broker CA",
 		);
-		if (createHash("sha256").update(certificateEncoded).digest("hex") !== companyRuntime.secretBrokerCaSha256) {
-			throw new Error("Cloud secret broker CA certificate does not match immutable bootstrap authority");
-		}
-		let certificate: X509Certificate;
-		try {
-			certificate = new X509Certificate(certificateEncoded);
-		} catch {
-			throw new Error("Cloud secret broker CA certificate is invalid");
-		}
-		if (!certificate.ca) throw new Error("Cloud secret broker CA certificate is not a certificate authority");
+	}
+	if (boundary === "native-login") {
+		if (!identityRecoveryCaSha256) throw new Error("Identity recovery CA authority is missing");
+		await verifyPinnedCaCertificate(
+			`${path}/qorpera-identity-recovery-ca`,
+			expectedUid,
+			identityRecoveryCaSha256,
+			"Identity recovery CA",
+		);
 	}
 	const serviceKey = (
 		await readOwnedFile(
@@ -1050,7 +1075,13 @@ export async function runLxdNativeLoginBootstrap(options: RunLxdNativeLoginBoots
 		bootstrap.computeIdentityId,
 		bootstrap.trustedSource,
 	);
-	await verifyCredentialSource(paths.credentialSource, expectedRootUid, "native-login");
+	await verifyCredentialSource(
+		paths.credentialSource,
+		expectedRootUid,
+		"native-login",
+		undefined,
+		bootstrap.identityRecoveryCaSha256,
+	);
 
 	const identityMetadata = await lstat(paths.identityVolume);
 	if (
@@ -1075,5 +1106,5 @@ export async function runLxdNativeLoginBootstrap(options: RunLxdNativeLoginBoots
 	const nativeIdentity = options.nativeServiceIdentity ?? (await serviceIdentity("qorpera-native-provider"));
 	const nativeHome = dirname(paths.nativeProviderTemporaryDirectory);
 	await ensureOwnedDirectoryTree(nativeHome, paths.nativeProviderTemporaryDirectory, nativeIdentity);
-	await (options.startService ?? startRunnerService)(NATIVE_PROVIDER_SERVICE);
+	await (options.startService ?? startRunnerService)(NATIVE_LOGIN_PROVIDER_SERVICE);
 }

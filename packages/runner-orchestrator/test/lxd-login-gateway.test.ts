@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +23,11 @@ const computeIdentityId = "30000000-0000-4000-8000-000000000004";
 const ownerUserId = "30000000-0000-4000-8000-000000000005";
 const capability = "f".repeat(43);
 const expiresAt = "2099-08-23T12:00:00.000Z";
+const identityRecoveryCa = readFileSync(
+	new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
+	"utf-8",
+);
+const identityRecoveryCaSha256 = createHash("sha256").update(identityRecoveryCa).digest("hex");
 
 afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -125,6 +132,8 @@ function config(root: string): LxdNativeLoginGatewayConfig {
 		memoryLimit: "8GiB",
 		nativeBridgePort: 8083,
 		guestTrustedSource: "10.41.0.1",
+		identityRecoveryCaCertificate: identityRecoveryCa,
+		identityRecoveryCaSha256,
 		guestReadyTimeoutMs: 10_000,
 		codexPath: "/usr/local/bin/codex",
 		claudePath: "/usr/local/bin/claude",
@@ -252,10 +261,17 @@ describe("LXD native login gateway", () => {
 		expect(lxd.filePushes.map((file) => file.path)).toEqual([
 			"/var/lib/qorpera-bootstrap/login-bootstrap.json",
 			"/var/lib/qorpera-bootstrap/native-provider.env",
+			"/var/lib/qorpera-bootstrap/credentials/qorpera-identity-recovery-ca",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
 		]);
 		expect(lxd.filePushes.every((file) => file.mode === 0o600)).toBe(true);
+		expect(lxd.filePushes.find((file) => file.path.endsWith("qorpera-identity-recovery-ca"))?.content).toBe(
+			identityRecoveryCa,
+		);
+		expect(
+			JSON.parse(lxd.filePushes.find((file) => file.path.endsWith("login-bootstrap.json"))?.content ?? "{}"),
+		).toMatchObject({ identity_recovery_ca_sha256: identityRecoveryCaSha256 });
 		expect(lxd.powerCalls).toEqual(["start"]);
 
 		await expect(gateway.handle(loginRequest()).then((response) => response.json())).resolves.toMatchObject({
@@ -283,6 +299,21 @@ describe("LXD native login gateway", () => {
 		const response = await gateway.handle(loginRequest(loginBody(), "g".repeat(43)));
 		expect(response.status).toBe(400);
 		expect(boundary.requests).toHaveLength(0);
+		expect(lxd.createCalls).toHaveLength(0);
+	});
+
+	it("rejects an unpinned recovery-authority CA before creating login state", async () => {
+		const root = await stateRoot();
+		const lxd = new FakeLxd();
+		const boundary = fetchBoundary([]);
+		expect(
+			() =>
+				new LxdNativeLoginGateway(
+					{ ...config(root), identityRecoveryCaSha256: "0".repeat(64) },
+					lxd,
+					boundary.fetchImplementation,
+				),
+		).toThrow("recovery-authority CA is invalid");
 		expect(lxd.createCalls).toHaveLength(0);
 	});
 

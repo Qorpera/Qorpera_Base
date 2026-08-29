@@ -87,6 +87,10 @@ try {
 			"qorpera-native-provider-host.service",
 			resolve(repositoryRoot, "deploy/lxd-runner-guest/qorpera-native-provider-host.service"),
 		],
+		[
+			"qorpera-native-login-provider-host.service",
+			resolve(repositoryRoot, "deploy/lxd-runner-guest/qorpera-native-login-provider-host.service"),
+		],
 		["qorpera-native-company-host.service", resolve(repositoryRoot, "deploy/lxd-runner-guest/qorpera-native-company-host.service")],
 		["qorpera-company-runner.service", resolve(repositoryRoot, "deploy/lxd-runner-guest/qorpera-company-runner.service")],
 		[

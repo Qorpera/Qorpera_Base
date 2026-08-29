@@ -1,4 +1,5 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +18,11 @@ import {
 const roots: string[] = [];
 const computeIdentityId = "90000000-0000-4000-8000-000000000001";
 const fixtureKey = Buffer.alloc(32, 7).toString("base64url");
+const identityRecoveryCa = readFileSync(
+	new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
+	"utf-8",
+);
+const identityRecoveryCaSha256 = createHash("sha256").update(identityRecoveryCa).digest("hex");
 const fixtureState: IdentityRecoveryRuntimeState = {
 	companyId: "90000000-0000-4000-8000-000000000004",
 	computeIdentityId,
@@ -165,6 +171,7 @@ async function loginFixture(): Promise<{ root: string; paths: LxdNativeLoginBoot
 			supabase_url: "https://project.test",
 			native_bridge_url: "http://127.0.0.1:8083/",
 			trusted_source: "10.41.0.1",
+			identity_recovery_ca_sha256: identityRecoveryCaSha256,
 			native_provider_environment_path: "/var/lib/qorpera-bootstrap/native-provider.env",
 			credential_source: "/var/lib/qorpera-bootstrap/credentials",
 			identity_volume_path: "/var/lib/qorpera/identity",
@@ -187,6 +194,7 @@ async function loginFixture(): Promise<{ root: string; paths: LxdNativeLoginBoot
 		].join("\n"),
 		{ mode: 0o600 },
 	);
+	await writeFile(join(paths.credentialSource, "qorpera-identity-recovery-ca"), identityRecoveryCa, { mode: 0o600 });
 	await writeFile(join(paths.credentialSource, "qorpera-native-bridge"), `${"c".repeat(43)}\n`, { mode: 0o600 });
 	await writeFile(join(paths.credentialSource, "qorpera-supabase-service-key"), "service-key-test\n", {
 		mode: 0o600,
@@ -382,7 +390,7 @@ describe("LXD native login guest bootstrap", () => {
 			},
 		});
 
-		expect(started).toEqual(["qorpera-native-provider-host.service"]);
+		expect(started).toEqual(["qorpera-native-login-provider-host.service"]);
 		expect(JSON.parse(await readFile(paths.identityMarker, "utf-8"))).toEqual({
 			schema: "qorpera.compute-identity-volume/v1",
 			compute_identity_id: computeIdentityId,
@@ -424,6 +432,7 @@ describe("LXD native login guest bootstrap", () => {
 			supabase_url: "https://project.test",
 			native_bridge_url: "http://127.0.0.1:8083/",
 			trusted_source: "10.41.0.1",
+			identity_recovery_ca_sha256: identityRecoveryCaSha256,
 			native_provider_environment_path: "/var/lib/qorpera-bootstrap/native-provider.env",
 			credential_source: "/var/lib/qorpera-bootstrap/credentials",
 			identity_volume_path: "/var/lib/qorpera/identity",
@@ -446,6 +455,27 @@ describe("LXD native login guest bootstrap", () => {
 				startService: async () => undefined,
 			}),
 		).rejects.toThrow("unexpected entries");
+	});
+
+	it("rejects a recovery-authority CA that differs from the pinned bootstrap", async () => {
+		const { paths } = await loginFixture();
+		await writeFile(join(paths.credentialSource, "qorpera-identity-recovery-ca"), "not the pinned CA\n", {
+			mode: 0o600,
+		});
+		const started: string[] = [];
+		await expect(
+			runLxdNativeLoginBootstrap({
+				paths,
+				identityRuntimeState: async () => ({ ...fixtureState, keySha256: null, canInitialize: true }),
+				expectedRootUid: process.getuid?.() ?? 0,
+				expectedRootGid: process.getgid?.() ?? 0,
+				nativeServiceIdentity: { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 },
+				startService: async (service) => {
+					started.push(service);
+				},
+			}),
+		).rejects.toThrow("does not match immutable bootstrap authority");
+		expect(started).toEqual([]);
 	});
 });
 

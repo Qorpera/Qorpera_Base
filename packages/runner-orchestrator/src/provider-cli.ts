@@ -157,6 +157,10 @@ function liveCompanyConfig(): { liveCompanyRoot?: string; liveCompanyProfileId?:
 }
 
 function lxdLoginConfig(config: LxdCloudRunnerProviderConfig): LxdNativeLoginGatewayConfig {
+	const recoveryTrust = config.nativeCompanyRuntime?.secretBroker;
+	if (!recoveryTrust) {
+		throw new Error("LXD native login requires the governed recovery-authority CA");
+	}
 	return {
 		adapterId: config.adapterId,
 		supabaseUrl: config.supabaseUrl,
@@ -175,6 +179,8 @@ function lxdLoginConfig(config: LxdCloudRunnerProviderConfig): LxdNativeLoginGat
 		memoryLimit: config.memoryLimit,
 		nativeBridgePort: config.nativeBridgePort,
 		guestTrustedSource: config.guestAssignmentSource,
+		identityRecoveryCaCertificate: recoveryTrust.caCertificate,
+		identityRecoveryCaSha256: recoveryTrust.caSha256,
 		guestReadyTimeoutMs: config.guestReadyTimeoutMs,
 		codexPath: config.codexPath,
 		claudePath: config.claudePath,

@@ -103,6 +103,7 @@ const expected = new Set([
   "qorpera-native-provider-host.mjs",
   "qorpera-identity-recovery-restore.mjs",
   "qorpera-native-isolation-child.mjs",
+  "qorpera-native-login-provider-host.service",
   "qorpera-native-provider-host.service",
   "qorpera-native-company-host.service",
   "runner-image/contract.json",
@@ -232,6 +233,7 @@ for unit in \
 	qorpera-company-runner.service \
 	qorpera-native-company-host.service \
 	qorpera-ephemeral-runner.service \
+	qorpera-native-login-provider-host.service \
 	qorpera-native-provider-host.service \
 	qorpera-lxd-runner-bootstrap.service \
 	qorpera-lxd-native-login-bootstrap.service; do
@@ -314,6 +316,7 @@ systemd-analyze verify \
 	/etc/systemd/system/qorpera-company-runner.service \
 	/etc/systemd/system/qorpera-native-company-host.service \
 	/etc/systemd/system/qorpera-ephemeral-runner.service \
+	/etc/systemd/system/qorpera-native-login-provider-host.service \
 	/etc/systemd/system/qorpera-native-provider-host.service \
 	/etc/systemd/system/qorpera-lxd-runner-bootstrap.service \
 	/etc/systemd/system/qorpera-lxd-native-login-bootstrap.service
@@ -322,6 +325,7 @@ systemctl disable \
 	qorpera-company-runner.service \
 	qorpera-native-company-host.service \
 	qorpera-ephemeral-runner.service \
+	qorpera-native-login-provider-host.service \
 	qorpera-native-provider-host.service \
 	qorpera-lxd-native-login-bootstrap.service \
 	>/dev/null 2>&1 || true

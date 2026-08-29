@@ -41,6 +41,7 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 				"qorpera-lxd-runner-bootstrap.service",
 				"qorpera-native-company-host.service",
 				"qorpera-native-isolation-child.mjs",
+				"qorpera-native-login-provider-host.service",
 				"qorpera-native-provider-host.mjs",
 				"qorpera-native-provider-host.service",
 				"qorpera-sandbox-probe.mjs",
@@ -65,6 +66,14 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		);
 		const nativeProviderService = await readFile(
 			join(outputRoot, "qorpera-native-provider-host.service"),
+			"utf-8",
+		);
+		const nativeLoginBootstrapService = await readFile(
+			join(outputRoot, "qorpera-lxd-native-login-bootstrap.service"),
+			"utf-8",
+		);
+		const nativeLoginProviderService = await readFile(
+			join(outputRoot, "qorpera-native-login-provider-host.service"),
 			"utf-8",
 		);
 		assert.match(
@@ -110,6 +119,15 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		);
 		assert.match(companyHost, /^LoadCredential=qorpera-native-identity-epoch:/m);
 		assert.match(nativeProviderService, /^LoadCredential=qorpera-native-identity-epoch:/m);
+		assert.match(nativeLoginProviderService, /^LoadCredential=qorpera-identity-recovery-ca:/m);
+		assert.match(
+			nativeLoginProviderService,
+			/^Environment=NODE_EXTRA_CA_CERTS=\/run\/credentials\/qorpera-native-login-provider-host\.service\/qorpera-identity-recovery-ca$/m,
+		);
+		assert.match(nativeLoginProviderService, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6$/m);
+		assert.doesNotMatch(nativeLoginProviderService, /\/qorpera\/company-live.*ReadWritePaths|ReadWritePaths=.*\/qorpera\/company-live/m);
+		assert.match(nativeLoginBootstrapService, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6$/m);
+		assert.doesNotMatch(nativeLoginBootstrapService, /\bAF_NETLINK\b/);
 		assert.ok(!manifest.artifacts.some((artifact) => artifact.file === "qorpera-identity-recovery-service.mjs"));
 		assert.match(companyHost, /^RestrictNamespaces=user mnt pid net ipc uts cgroup$/m);
 		assert.match(companyHost, /^ProcSubset=all$/m);
@@ -146,8 +164,22 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		const source = JSON.parse(await readFile(join(repositoryRoot, "deploy/first-node/native-codex/source.json"), "utf-8"));
 		const builderPin = builder.match(/EXPECTED_PACKAGE_MANIFEST_SHA256="([0-9a-f]{64})"/)?.[1];
 		const acceptancePin = acceptance.match(/EXPECTED_PACKAGE_MANIFEST_SHA256="([0-9a-f]{64})"/)?.[1];
+		const builderArchivePin = builder.match(/EXPECTED_PACKAGE_ARCHIVE_SHA256="([0-9a-f]{64})"/)?.[1];
+		const acceptanceArchivePin = acceptance.match(/EXPECTED_PACKAGE_ARCHIVE_SHA256="([0-9a-f]{64})"/)?.[1];
+		const builderSourceCommit = builder.match(/EXPECTED_SOURCE_COMMIT="([0-9a-f]{40})"/)?.[1];
+		const acceptanceSourceCommit = acceptance.match(/EXPECTED_SOURCE_COMMIT="([0-9a-f]{40})"/)?.[1];
+		const acceptanceImageFingerprint = acceptance.match(/EXPECTED_IMAGE_FINGERPRINT="([0-9a-f]{64})"/)?.[1];
 		assert.ok(builderPin, "image candidate builder must pin a package manifest");
 		assert.equal(acceptancePin, builderPin, "image candidate recipes must pin the same package manifest");
+		assert.match(builderArchivePin ?? "", /^[0-9a-f]{64}$/);
+		assert.equal(acceptanceArchivePin, builderArchivePin, "image candidate recipes must pin the same package archive");
+		assert.match(builderSourceCommit ?? "", /^[0-9a-f]{40}$/);
+		assert.equal(acceptanceSourceCommit, builderSourceCommit, "image candidate recipes must pin the same source commit");
+		assert.equal(
+			acceptanceImageFingerprint,
+			"e6f9e5046eb6909bbdb5ef861a030ce45e7a58ed53bb1bc157aa78792233e06d",
+			"image acceptance must pin the signed v55 input fingerprint",
+		);
 		assert.equal(builderPin, candidateSha256, "candidate recipes must pin the full governed guest manifest");
 		assert.equal(candidate.nativeCompany.schema, "qorpera.native-company-guest/v1");
 		assert.equal(candidate.nativeCompany.sourceCommit, source.commit);
@@ -160,6 +192,9 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		assert.equal(candidate.artifacts.find((item) => item.file === "native-company/codex").sha256, candidate.nativeCompany.binarySha256);
 		assert.ok(acceptance.includes(`EXPECTED_NATIVE_CODEX_SHA256="${candidate.nativeCompany.binarySha256}"`));
 		assert.ok(acceptance.includes(`EXPECTED_NATIVE_HELPER_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-isolation-child.mjs").sha256}"`));
+		assert.ok(acceptance.includes(`EXPECTED_NATIVE_PROVIDER_HOST_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-provider-host.mjs").sha256}"`));
+		assert.ok(acceptance.includes(`EXPECTED_NATIVE_COMPANY_SERVICE_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-company-host.service").sha256}"`));
+		assert.ok(acceptance.includes(`EXPECTED_RUNNER_BOOTSTRAP_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-lxd-runner-bootstrap.mjs").sha256}"`));
 		if (process.platform === "linux" && process.arch === "x64") {
 			const { nativeCompany: _nativeCompany, ...withoutNative } = candidate;
 			withoutNative.artifacts = candidate.artifacts.filter((item) => !item.file.startsWith("native-company/"));
@@ -170,6 +205,10 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			);
 		}
 		assert.ok(builder.includes('LXD_BUILDER_PROJECT="default"'));
+		assert.ok(builder.includes('PACKAGE_ARCHIVE="/home/company41-admin/step2-lxd/lxd-runner-guest-v55-secret-proof.tar.gz"'));
+		assert.ok(builder.includes("--no-same-owner"));
+		assert.ok(!builder.includes('STAGING_ROOT="/home/company41-admin/step2-lxd/lxd-runner-guest-v52"'));
+		assert.ok(acceptance.includes('IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v55-secret-proof-unsigned"'));
 		assert.match(installer, /apt-get install --yes[^\n]*\bcrun\b/);
 		assert.match(installer, /apt-get install --yes[^\n]*\bbubblewrap\b/);
 		assert.ok(installer.includes("/usr/bin/podman info >/dev/null"));

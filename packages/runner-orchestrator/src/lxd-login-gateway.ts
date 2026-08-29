@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
@@ -75,6 +75,8 @@ export interface LxdNativeLoginGatewayConfig {
 	memoryLimit: string;
 	nativeBridgePort: number;
 	guestTrustedSource: string;
+	identityRecoveryCaCertificate: string;
+	identityRecoveryCaSha256: string;
 	guestReadyTimeoutMs?: number;
 	codexPath: string;
 	claudePath: string;
@@ -359,6 +361,23 @@ function validateConfig(config: LxdNativeLoginGatewayConfig): void {
 	) {
 		throw new Error("LXD login guest network boundary is invalid");
 	}
+	if (
+		!SHA256_PATTERN.test(config.identityRecoveryCaSha256) ||
+		Buffer.byteLength(config.identityRecoveryCaCertificate) < 1 ||
+		Buffer.byteLength(config.identityRecoveryCaCertificate) > 16 * 1024 ||
+		sha256(config.identityRecoveryCaCertificate) !== config.identityRecoveryCaSha256
+	) {
+		throw new Error("LXD login recovery-authority CA is invalid");
+	}
+	let recoveryAuthorityCertificate: X509Certificate;
+	try {
+		recoveryAuthorityCertificate = new X509Certificate(config.identityRecoveryCaCertificate);
+	} catch {
+		throw new Error("LXD login recovery-authority CA certificate is invalid");
+	}
+	if (!recoveryAuthorityCertificate.ca) {
+		throw new Error("LXD login recovery-authority CA certificate is not a certificate authority");
+	}
 	const readyTimeout = config.guestReadyTimeoutMs ?? 300_000;
 	if (!Number.isSafeInteger(readyTimeout) || readyTimeout < 1_000 || readyTimeout > 900_000) {
 		throw new Error("LXD login guest readiness timeout is invalid");
@@ -637,6 +656,7 @@ export class LxdNativeLoginGateway {
 				supabase_url: new URL(this.#config.supabaseUrl).origin,
 				native_bridge_url: `http://127.0.0.1:${this.#config.nativeBridgePort}/`,
 				trusted_source: this.#config.guestTrustedSource,
+				identity_recovery_ca_sha256: this.#config.identityRecoveryCaSha256,
 				native_provider_environment_path: "/var/lib/qorpera-bootstrap/native-provider.env",
 				credential_source: "/var/lib/qorpera-bootstrap/credentials",
 				identity_volume_path: "/var/lib/qorpera/identity",
@@ -659,6 +679,10 @@ export class LxdNativeLoginGateway {
 		return [
 			{ path: "/var/lib/qorpera-bootstrap/login-bootstrap.json", content: `${bootstrap}\n` },
 			{ path: "/var/lib/qorpera-bootstrap/native-provider.env", content: environment },
+			{
+				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-identity-recovery-ca",
+				content: this.#config.identityRecoveryCaCertificate,
+			},
 			{
 				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge",
 				content: `${bridgeToken}\n`,
