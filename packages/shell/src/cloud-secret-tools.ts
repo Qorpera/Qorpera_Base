@@ -20,7 +20,14 @@ type ConnectorSchema = {
 };
 
 type ConnectorSchemaNode =
-	| { type: "string"; description?: string; minLength?: number; maxLength?: number; enum?: string[] }
+	| {
+			type: "string";
+			description?: string;
+			minLength?: number;
+			maxLength?: number;
+			enum?: string[];
+			pattern?: string;
+	  }
 	| { type: "number" | "integer"; description?: string; minimum?: number; maximum?: number; enum?: number[] }
 	| { type: "boolean"; description?: string }
 	| { type: "null"; description?: string }
@@ -94,12 +101,89 @@ function description(value: unknown): string | undefined {
 	return value;
 }
 
+/** Accept only an anchored, bounded, non-branching ASCII subset. This keeps
+ * connector validation deterministic without trusting an arbitrary regex from
+ * the catalog. A pattern may contain one variable-width atom, which covers
+ * bounded identifiers without permitting nested or ambiguous repetition. */
+function stringPattern(value: unknown): string | undefined {
+	if (value === undefined) return undefined;
+	if (
+		typeof value !== "string" ||
+		value.length < 3 ||
+		value.length > 256 ||
+		value[0] !== "^" ||
+		value.at(-1) !== "$" ||
+		/[\u0000-\u001f\u007f-\uffff]/.test(value)
+	)
+		throw new Error("Connector string pattern is invalid");
+	const body = value.slice(1, -1);
+	let index = 0;
+	let maximumLength = 0;
+	let variableAtoms = 0;
+	while (index < body.length) {
+		if (body[index] === "[") {
+			let end = index + 1;
+			let escaped = false;
+			for (; end < body.length; end++) {
+				const character = body[end];
+				if (!escaped && character === "]") break;
+				escaped = !escaped && character === "\\";
+				if (character !== "\\") escaped = false;
+			}
+			if (end === index + 1 || end >= body.length || body.slice(index + 1, end).includes("["))
+				throw new Error("Connector string pattern is invalid");
+			index = end + 1;
+		} else if (body[index] === "\\") {
+			if (index + 1 >= body.length || !/^[\\^$.*+?()[\]{}|/-]$/.test(body[index + 1] as string))
+				throw new Error("Connector string pattern is invalid");
+			index += 2;
+		} else {
+			if (/^[.^$*+?()[\]{}|]$/.test(body[index] as string)) throw new Error("Connector string pattern is invalid");
+			index++;
+		}
+		let minimum = 1;
+		let maximum = 1;
+		if (body[index] === "?") {
+			minimum = 0;
+			index++;
+		} else if (body[index] === "{") {
+			const matched = /^\{([0-9]{1,4})(?:,([0-9]{1,4}))?\}/.exec(body.slice(index));
+			if (!matched) throw new Error("Connector string pattern is invalid");
+			minimum = Number(matched[1]);
+			maximum = matched[2] === undefined ? minimum : Number(matched[2]);
+			if (minimum > maximum || maximum > 4096) throw new Error("Connector string pattern is invalid");
+			index += matched[0].length;
+		} else if (body[index] === "*" || body[index] === "+") {
+			throw new Error("Connector string pattern is invalid");
+		}
+		if (minimum !== maximum && ++variableAtoms > 1) throw new Error("Connector string pattern is invalid");
+		maximumLength += maximum;
+		if (maximumLength > 4096) throw new Error("Connector string pattern is invalid");
+	}
+	try {
+		new RegExp(value, "u");
+	} catch {
+		throw new Error("Connector string pattern is invalid");
+	}
+	return value;
+}
+
+function matchesStringPattern(value: string, pattern: string): boolean {
+	const matched = new RegExp(pattern, "u").exec(value);
+	return matched?.index === 0 && matched[0] === value;
+}
+
 function parseSchemaNode(value: unknown, depth: number, budget: { remaining: number }): ConnectorSchemaNode {
 	if (depth > 6 || --budget.remaining < 0) throw new Error("Connector schema is too complex");
 	const input = record(value, "Connector schema");
 	const common = { ...(description(input.description) ? { description: input.description as string } : {}) };
 	if (input.type === "string") {
-		exact(input, ["type", "description", "minLength", "maxLength", "enum"], ["type"], "Connector string schema");
+		exact(
+			input,
+			["type", "description", "minLength", "maxLength", "enum", "pattern"],
+			["type"],
+			"Connector string schema",
+		);
 		const minLength = boundedInteger(input.minLength, 0, 65_536, "Connector string minimum");
 		const maxLength = boundedInteger(input.maxLength, 0, 65_536, "Connector string maximum");
 		if (minLength !== undefined && maxLength !== undefined && minLength > maxLength)
@@ -122,6 +206,7 @@ function parseSchemaNode(value: unknown, depth: number, budget: { remaining: num
 			...(minLength === undefined ? {} : { minLength }),
 			...(maxLength === undefined ? {} : { maxLength }),
 			...(enumValue ? { enum: enumValue } : {}),
+			...(stringPattern(input.pattern) ? { pattern: input.pattern as string } : {}),
 		};
 	}
 	if (input.type === "number" || input.type === "integer") {
@@ -229,7 +314,8 @@ function validateValue(value: JsonValue, schema: ConnectorSchemaNode, depth = 0)
 			typeof value !== "string" ||
 			(schema.minLength !== undefined && value.length < schema.minLength) ||
 			(schema.maxLength !== undefined && value.length > schema.maxLength) ||
-			(schema.enum !== undefined && !schema.enum.includes(value))
+			(schema.enum !== undefined && !schema.enum.includes(value)) ||
+			(schema.pattern !== undefined && !matchesStringPattern(value, schema.pattern))
 		)
 			throw new Error("Connector string input is invalid");
 		return;

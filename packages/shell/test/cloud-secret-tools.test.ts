@@ -33,7 +33,12 @@ async function setup() {
 		inputSchema: {
 			type: "object",
 			properties: {
-				title: { type: "string", minLength: 1, maxLength: 256 },
+				title: {
+					type: "string",
+					minLength: 1,
+					maxLength: 256,
+					pattern: "^[A-Za-z][A-Za-z0-9 _-]{0,255}$",
+				},
 				priority: { type: "integer", minimum: 0, maximum: 4 },
 			},
 			required: ["title"],
@@ -148,6 +153,7 @@ it("exposes only a typed operation while keeping the credential and grant out of
 		const specification = JSON.stringify(boundary.specification);
 		expect(specification).toContain("linear_issue_create");
 		expect(specification).toContain("idempotencyKey");
+		expect(specification).toContain("^[A-Za-z][A-Za-z0-9 _-]{0,255}$");
 		expect(specification).not.toContain(fixture.grantId);
 		expect(specification).not.toMatch(/token|secretId|credentialName/);
 	} finally {
@@ -161,6 +167,9 @@ it("validates business arguments, reserves one receipt and calls the separate br
 	expect(() => tool.parseArguments({ idempotencyKey: "issue-login", input: { title: "", priority: 2 } })).toThrow(
 		"Connector string input is invalid",
 	);
+	expect(() =>
+		tool.parseArguments({ idempotencyKey: "issue-login", input: { title: "1 invalid title", priority: 2 } }),
+	).toThrow("Connector string input is invalid");
 	expect(() =>
 		tool.parseArguments({ idempotencyKey: "issue-login", input: { title: "Login is broken", extra: true } }),
 	).toThrow("extra fields");
@@ -225,4 +234,31 @@ it("rejects an open or malformed server-supplied connector schema", async () => 
 	await expect(
 		describeCloudSecretTools(control, fixture.binding as CloudNativeToolBinding, new AbortController().signal),
 	).rejects.toThrow("must be closed");
+});
+
+it("rejects unbounded or branching server-supplied string patterns", async () => {
+	const fixture = nativeToolAuthorityFixture();
+	const control: CloudCompanyPathControl = {
+		call: async () => [
+			{
+				schema: "qorpera.native-connector-tool/v1",
+				grantId: randomUUID(),
+				toolName: "linear_issue_create",
+				description: "Unsafe pattern",
+				inputSchema: {
+					type: "object",
+					properties: { title: { type: "string", pattern: "^(a+)+$" } },
+					additionalProperties: false,
+				},
+				connectorId: "linear",
+				operationId: "issue_create",
+				operationVersion: 1,
+				adapterSha256: "a".repeat(64),
+				destinationOrigin: "https://api.linear.app",
+			},
+		],
+	};
+	await expect(
+		describeCloudSecretTools(control, fixture.binding as CloudNativeToolBinding, new AbortController().signal),
+	).rejects.toThrow("Connector string pattern is invalid");
 });
