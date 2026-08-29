@@ -126,6 +126,7 @@ it("binds the exact plan and cloud principals to one durable attempt", async () 
 	expect(context).toMatchObject({
 		identity: f.authority.identity,
 		receiptId: input.receiptId,
+		inputSha256: input.inputSha256,
 		idempotencyKey: input.downstreamIdempotencyKey,
 	});
 	expect(JSON.stringify(context.identity)).not.toContain(f.binding.credentialCapsuleId);

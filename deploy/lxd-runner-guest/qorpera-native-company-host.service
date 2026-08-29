@@ -12,11 +12,15 @@ User=qorpera-native-company
 Group=qorpera-native-company
 WorkingDirectory=/var/lib/qorpera-native-provider
 Environment=HOME=/var/lib/qorpera-native-provider
+Environment=NODE_EXTRA_CA_CERTS=/run/credentials/qorpera-native-company-host.service/qorpera-cloud-secret-ca
 EnvironmentFile=/var/lib/qorpera-bootstrap/native-provider.env
 LoadCredential=qorpera-supabase-service-key:/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key
 LoadCredential=qorpera-native-bridge:/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge
 LoadCredential=qorpera-native-object-token:/var/lib/qorpera-bootstrap/credentials/qorpera-native-object-token
+LoadCredential=qorpera-cloud-secret-runtime:/var/lib/qorpera-bootstrap/credentials/qorpera-cloud-secret-runtime
+LoadCredential=qorpera-cloud-secret-ca:/var/lib/qorpera-bootstrap/credentials/qorpera-cloud-secret-ca
 LoadCredential=qorpera-native-provider-master-key:/var/lib/qorpera/identity/qorpera-native-provider-master-key
+LoadCredential=qorpera-native-identity-epoch:/var/lib/qorpera-bootstrap/native-identity-epoch.json
 ExecStart=/usr/bin/node /opt/qorpera-runner/qorpera-native-provider-host.mjs
 Restart=on-failure
 RestartSec=5s

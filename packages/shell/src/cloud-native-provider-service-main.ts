@@ -3,6 +3,12 @@ import { open, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HttpCloudCompanyPathControl } from "./cloud-company-path-control.ts";
+import { recoveryBase64, recoveryDigest, recoveryRecord } from "./cloud-identity-recovery-crypto.ts";
+import {
+	backupNativeIdentityKey,
+	fetchIdentityRecoveryRuntimeState,
+	HttpIdentityRecoveryGuestTransport,
+} from "./cloud-identity-recovery-guest.ts";
 import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { CloudNativeCompanyRuntime } from "./cloud-native-company-runtime.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
@@ -13,6 +19,7 @@ import {
 	SupabaseNativeProviderControlPlane,
 } from "./cloud-native-provider-service.ts";
 import { CloudContentAddressedStore } from "./cloud-object-store.ts";
+import { HttpCloudSecretBrokerClient } from "./cloud-secret-broker-http.ts";
 import {
 	systemdCredentialMetadataIsSafe as credentialMetadataIsSafe,
 	type SystemdCredentialMetadata,
@@ -145,7 +152,36 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	if (!TOKEN_PATTERN.test(masterKey) || !TOKEN_PATTERN.test(bridgeToken)) {
 		throw new Error("Native provider credentials must contain 32 base64url bytes");
 	}
-	const controlPlane = new SupabaseNativeProviderControlPlane(baseUrl, serviceKey);
+	const state = await fetchIdentityRecoveryRuntimeState(baseUrl, serviceKey, computeIdentityId);
+	const epochCredential =
+		(await systemdCredential(environment, "qorpera-native-identity-epoch")) ??
+		(await readFile(resolve(required(environment, "QORPERA_NATIVE_IDENTITY_EPOCH_FILE")), "utf8"));
+	const localEpoch = recoveryRecord(JSON.parse(epochCredential), [
+		"computeIdentityId",
+		"companyId",
+		"epoch",
+		"keySha256",
+	]);
+	const keyBytes = recoveryBase64(masterKey, 32);
+	let keySha256: string;
+	try {
+		keySha256 = recoveryDigest(keyBytes);
+	} finally {
+		keyBytes.fill(0);
+	}
+	if (
+		state.blocked ||
+		localEpoch.computeIdentityId !== computeIdentityId ||
+		localEpoch.companyId !== state.companyId ||
+		localEpoch.epoch !== state.epoch ||
+		localEpoch.keySha256 !== keySha256 ||
+		(state.keySha256 !== null && state.keySha256 !== keySha256)
+	)
+		throw new Error("Native identity volume does not match current cloud recovery authority");
+	const controlPlane = new SupabaseNativeProviderControlPlane(baseUrl, serviceKey, fetch, {
+		computeIdentityId,
+		epoch: state.epoch,
+	});
 	let cloudRuntime: CloudNativeCompanyRuntime | undefined;
 	if (runtimeConfiguration) {
 		const objectToken = await credentialOrEnvironment(
@@ -155,6 +191,23 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		);
 		if (!TOKEN_PATTERN.test(objectToken) || objectToken === masterKey || objectToken === bridgeToken)
 			throw new Error("Native object staging requires a distinct private credential");
+		if (environment.QORPERA_CLOUD_SECRET_BROKER_TOKEN !== undefined) {
+			throw new Error("Cloud secret broker runtime authority must use a systemd credential");
+		}
+		const secretBrokerOrigin =
+			environment.QORPERA_CLOUD_SECRET_BROKER_URL === undefined
+				? undefined
+				: required(environment, "QORPERA_CLOUD_SECRET_BROKER_URL");
+		const secretBrokerToken = secretBrokerOrigin
+			? await systemdCredential(environment, "qorpera-cloud-secret-runtime")
+			: undefined;
+		if (
+			secretBrokerOrigin &&
+			(!secretBrokerToken ||
+				!TOKEN_PATTERN.test(secretBrokerToken) ||
+				[masterKey, bridgeToken, objectToken].includes(secretBrokerToken))
+		)
+			throw new Error("Cloud secret broker requires a distinct private systemd credential");
 		cloudRuntime = new CloudNativeCompanyRuntime({
 			controlPlane,
 			pathControl: new HttpCloudCompanyPathControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey }),
@@ -171,7 +224,17 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						signal,
 					}),
 				),
+			...(secretBrokerOrigin && secretBrokerToken
+				? {
+						secretBroker: new HttpCloudSecretBrokerClient({
+							origin: secretBrokerOrigin,
+							runtimeToken: secretBrokerToken,
+						}),
+					}
+				: {}),
 		});
+	} else if (environment.QORPERA_CLOUD_SECRET_BROKER_URL || environment.QORPERA_CLOUD_SECRET_BROKER_TOKEN) {
+		throw new Error("Cloud secret broker requires the cloud-native Company File runtime");
 	}
 	const host = new NativeProviderHost({
 		controlPlane,
@@ -183,6 +246,19 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		),
 		masterKey,
 		computeIdentityId,
+		backupIdentityKey: async (request) => {
+			const current = await fetchIdentityRecoveryRuntimeState(baseUrl, serviceKey, computeIdentityId);
+			if (current.epoch !== state.epoch || !current.recoveryConfiguration)
+				throw new Error("Native login requires the current cloud recovery authority");
+			await backupNativeIdentityKey({
+				state: current,
+				masterKey,
+				loginId: request.loginId,
+				loginCapability: request.capability,
+				transport: new HttpIdentityRecoveryGuestTransport(current.recoveryConfiguration.serviceOrigin),
+				signal: AbortSignal.timeout(60_000),
+			});
+		},
 		...(cloudRuntime ? { cloudRuntime } : {}),
 		...(environment.QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT
 			? { temporaryRoot: environment.QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT }

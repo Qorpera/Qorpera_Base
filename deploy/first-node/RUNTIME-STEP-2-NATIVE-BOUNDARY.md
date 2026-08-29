@@ -1,7 +1,9 @@
 # Runtime Step 2: native boundary and cloud tool authority
 
-Date: 2026-08-28. Status: source integration and component adversarial proof;
-**native-result blocker resolved; not deployed and not complete Step 2**.
+Date: 2026-08-28. This is the historical source/component checkpoint;
+**native-result blocker resolved; production unchanged and Step 2 incomplete**.
+The current signed-image, direct-tool and real-GPT VM-recovery acceptance is in
+[RUNTIME-STEP-2-V52-ACCEPTANCE.md](RUNTIME-STEP-2-V52-ACCEPTANCE.md).
 The subsequent governed Company File, context, guest and recovery work is
 recorded in [RUNTIME-STEP-2-GOVERNED-GUEST.md](RUNTIME-STEP-2-GOVERNED-GUEST.md).
 Historical test counts below describe their checkpoint, not a combined total.
@@ -218,8 +220,8 @@ runs, a scoped source commit and a signed replacement preview. The patch
 selects direct mode only when the host-owned fence socket is present; ordinary
 sessions keep upstream selection. The host requires the separate direct-tools
 capability before model admission. Authentication, model metadata and the
-result callback are unchanged. New source/patch/binary pins, signed-image and
-real-GPT acceptance are still required. Do not
+result callback are unchanged. New source/patch/binary pins, signed v52 and
+real-GPT VM-restart acceptance have now passed. Do not
 enable arbitrary native scripts, substitute a synthetic model/catalog or
 claim a prompt-only workaround fixes the tool inventory. See [the staging record](RUNTIME-STEP-2-STAGING.md) for the
 scoped real-GPT passes, the process-only receipt replay and remaining gates.
@@ -275,11 +277,12 @@ Run the same provider-default native proof on Linux without a test runner:
 node packages/shell/test/fixtures/run-official-codex-boundary-probe.ts /absolute/path/to/pinned/codex
 ```
 
-The current Linux x86_64 artifact is a release-profile build with debug sections
+At the historical result-only checkpoint, the Linux x86_64 artifact was a release-profile build with debug sections
 removed by the pinned Rust toolchain's LLVM utility. The input/tool/output hashes
 are recorded, the exported binary passed the same native and compaction checks,
-and the real guest packager accepted it in contract-only mode. It is not a signed
-guest image. Node 24.19.0 and the Ubuntu image were pinned for the disposable
+and the real guest packager accepted it in contract-only mode. That checkpoint
+was not a signed guest image; the later v52 image is recorded separately above.
+Node 24.19.0 and the Ubuntu image were pinned for the disposable
 build guest. Only public build dependencies were downloaded; acceptance itself
 had no external network. The earlier
 Linux ARM64 stock-binary proof demonstrated the original gap and is historical

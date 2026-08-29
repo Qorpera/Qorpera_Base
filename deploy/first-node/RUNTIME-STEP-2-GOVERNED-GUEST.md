@@ -1,7 +1,10 @@
 # Runtime Step 2: governed Company File and native guest
 
 Date: 2026-08-28. Status: source implementation and component verification.
-**Not deployed; Step 2 is not complete.** This record supersedes the initial
+**Historical checkpoint; production unchanged and Step 2 incomplete.**
+The later signed v52 preview and real-GPT VM-recovery evidence are in
+[RUNTIME-STEP-2-V52-ACCEPTANCE.md](RUNTIME-STEP-2-V52-ACCEPTANCE.md).
+This record supersedes the initial
 native-boundary inventory where it describes later implementation. It does
 not supersede the runtime architecture or authorize a production cutover.
 The Step 2-only continuation and explicitly deferred Step 3 handoff are

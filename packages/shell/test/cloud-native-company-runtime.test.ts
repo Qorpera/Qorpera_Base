@@ -20,6 +20,7 @@ import { HttpNativeProviderHostService } from "../src/cloud-native-provider-serv
 import type { CloudNativeToolOperationControlPlane } from "../src/cloud-native-tool-operations.ts";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
 import type { CloudRunnerNativeAuthority } from "../src/cloud-runner-broker.ts";
+import type { CloudSecretOperationClient } from "../src/cloud-secret-tools.ts";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
@@ -60,6 +61,24 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 	);
 	const fileVersion = randomUUID();
 	let nativeStarted = false;
+	const connectorGrantId = randomUUID();
+	const connectorDescriptor = {
+		schema: "qorpera.native-connector-tool/v1",
+		grantId: connectorGrantId,
+		toolName: "linear_issue_create",
+		description: "Create one issue through the company-authorized Linear connection.",
+		inputSchema: {
+			type: "object",
+			properties: { title: { type: "string", minLength: 1, maxLength: 256 } },
+			required: ["title"],
+			additionalProperties: false,
+		},
+		connectorId: "linear",
+		operationId: "issue_create",
+		operationVersion: 1,
+		adapterSha256: "b".repeat(64),
+		destinationOrigin: "https://api.linear.app",
+	};
 	const pathCall = vi.fn<CloudCompanyPathControl["call"]>(async (method, args) => {
 		expect(args.p_binding).toEqual(f.binding);
 		if (method === "qorpera_begin_native_company_execution") {
@@ -74,6 +93,20 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 			};
 		}
 		if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
+		if (method === "qorpera_list_native_connector_tools") {
+			return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
+		}
+		if (method === "qorpera_assert_native_connector_operation") {
+			expect(args).toMatchObject({
+				p_grant_id: connectorGrantId,
+				p_connector_id: "linear",
+				p_operation_id: "issue_create",
+				p_operation_version: 1,
+				p_adapter_sha256: "b".repeat(64),
+				p_destination_origin: "https://api.linear.app",
+			});
+			return null;
+		}
 		if (method === "qorpera_assert_company_path_reads") return null;
 		if (method === "qorpera_read_company_path")
 			return {
@@ -88,12 +121,28 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 	const deliveries = new Map<string, CloudAgentSendReceipt>();
 	const control = {
 		describeToolAuthority: vi.fn(async () => structuredClone(f.authority)),
-		beginToolOperation: vi.fn<CloudNativeToolOperationControlPlane["beginToolOperation"]>(async () => {
-			throw new Error("No generic effects expected");
+		beginToolOperation: vi.fn<CloudNativeToolOperationControlPlane["beginToolOperation"]>(async (_binding, input) => {
+			if (mode !== "company-secret") throw new Error("No generic effects expected");
+			return {
+				run_id: f.binding.runId,
+				receipt_id: input.receiptId,
+				state: "executing",
+				result: null,
+				output_snapshot_id: null,
+				proposal_id: null,
+			};
 		}),
-		completeToolOperation: vi.fn<CloudNativeToolOperationControlPlane["completeToolOperation"]>(async () => {
-			throw new Error("No generic effects expected");
-		}),
+		completeToolOperation: vi.fn<CloudNativeToolOperationControlPlane["completeToolOperation"]>(
+			async (_binding, input) => {
+				if (mode !== "company-secret") throw new Error("No generic effects expected");
+				return {
+					run_id: f.binding.runId,
+					receipt_id: input.receiptId,
+					state: "completed",
+					result: input.result,
+				};
+			},
+		),
 		sendMessage: vi.fn<NativeProviderControlPlane["sendMessage"]>(async (request, input) => {
 			const receipt = deliveries.get(input.idempotencyKey) ?? {
 				schema: "qorpera.agent-send/v1",
@@ -107,6 +156,24 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 			return receipt;
 		}),
 	};
+	const secretBroker: CloudSecretOperationClient | undefined =
+		mode === "company-secret"
+			? {
+					execute: vi.fn<CloudSecretOperationClient["execute"]>(async (operation) => {
+						expect(operation).toMatchObject({
+							binding: f.binding,
+							grantId: connectorGrantId,
+							connectorId: "linear",
+							operationId: "issue_create",
+							operationVersion: 1,
+							adapterSha256: "b".repeat(64),
+							destinationOrigin: "https://api.linear.app",
+							arguments: { title: "Login is broken" },
+						});
+						return { kind: "json", value: { issueId: "LIN-1", title: "Login is broken" } };
+					}),
+				}
+			: undefined;
 	const evidence = join(root, "evidence.json");
 	const runtime = new CloudNativeCompanyRuntime({
 		controlPlane: control,
@@ -129,6 +196,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 		command: [process.execPath, rpcFixture, mode, evidence],
 		binarySha256,
 		timeoutMs: 10_000,
+		...(secretBroker ? { secretBroker } : {}),
 	});
 	const identityRoot = join(root, "identity");
 	await mkdir(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
@@ -154,7 +222,20 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 			payload: { instructions: "LOCAL_PAYLOAD_IS_NOT_AUTHORITY" },
 		},
 	};
-	return { ...f, runtime, control, pathCall, store, deliveries, evidence, identityRoot, companyRoot, request };
+	return {
+		...f,
+		runtime,
+		control,
+		pathCall,
+		store,
+		deliveries,
+		evidence,
+		identityRoot,
+		companyRoot,
+		request,
+		secretBroker,
+		connectorGrantId,
+	};
 }
 
 it.each([false, true])(
@@ -239,6 +320,35 @@ it("projects only native auth from a login capsule without materializing local c
 	expect(await readFile(f.evidence, "utf8")).not.toMatch(/CAPSULE_CONFIG_MUST_NOT_LOAD|CAPSULE_LOG_MUST_NOT_LOAD/);
 	expect((await readdir(root)).some((path) => path.startsWith("qorpera-native-run-"))).toBe(false);
 	expect((await lstat(f.companyRoot)).mode & 0o777).toBe(0o700);
+});
+
+it("exposes only a named typed connector operation and keeps its grant and destination outside model arguments", async () => {
+	const f = await fixture("company-secret");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
+	expect(f.secretBroker?.execute).toHaveBeenCalledTimes(1);
+	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
+	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
+	expect(
+		f.pathCall.mock.calls.filter(([method]) => method === "qorpera_assert_native_connector_operation"),
+	).toHaveLength(3);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const tool = evidence.threadParameters.dynamicTools[0].tools.find(
+		(candidate: { name: string }) => candidate.name === "linear_issue_create",
+	);
+	expect(tool).toMatchObject({
+		name: "linear_issue_create",
+		description: "Create one issue through the company-authorized Linear connection.",
+		inputSchema: {
+			properties: {
+				idempotencyKey: expect.any(Object),
+				input: { properties: { title: expect.any(Object) } },
+			},
+		},
+	});
+	expect(JSON.stringify(tool)).not.toContain(f.connectorGrantId);
+	expect(JSON.stringify(tool)).not.toContain("https://api.linear.app");
+	expect(JSON.stringify(evidence)).not.toMatch(/encryptedEnvelope|captureCapability|secret:\/\//i);
 });
 
 it("still rejects extra configuration passed directly to the native runtime", async () => {

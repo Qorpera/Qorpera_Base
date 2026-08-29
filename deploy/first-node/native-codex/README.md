@@ -112,8 +112,17 @@ Its exported archive was reverified and used by the actual guest packager in
 this is not a deployable-image or complete-guest isolation claim. The disposable
 builder was removed after export; retained artifact paths are in the proof.
 
-These are component proofs with a loopback scripted provider, not real GPT or
-production acceptance. Source now includes an explicit `company-path-v1`
+The [direct-tools Linux proof](linux-x64-direct-tools-proof.json) pins the
+current 307,161,584-byte release executable, SHA-256
+`2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7`.
+It verifies the provider-default direct-only inventory, all result fences,
+authority failure and twelve compaction cases. These native component proofs
+use a loopback scripted provider, not real GPT or production acceptance.
+The separate [signed v52 acceptance](../RUNTIME-STEP-2-V52-ACCEPTANCE.md)
+records the clean-image rebuild and real-GPT write/receipt replay after forced
+VM restart. Production is not enrolled; remaining Step 2 gates are explicit.
+
+Source now includes an explicit `company-path-v1`
 host/provider/guest lane with a cloud-authorized live Company File gateway;
 the deployed legacy lane has not been switched. Packaging accepts only a
 matching release-profile Linux x86_64 artifact, not the development archive.

@@ -1042,6 +1042,7 @@ export class NativeProviderHost {
 	readonly #harness: NativeHarnessDriver;
 	readonly #cloudRuntime?: NativeCloudExecutionDriver;
 	readonly #masterKey: string;
+	readonly #backupIdentityKey?: (request: NativeProviderLoginRequest) => Promise<void>;
 	readonly #computeIdentityId: string;
 	readonly #temporaryRoot: string;
 	readonly #logins = new Map<string, LoginState>();
@@ -1054,6 +1055,7 @@ export class NativeProviderHost {
 		masterKey: string;
 		computeIdentityId: string;
 		temporaryRoot?: string;
+		backupIdentityKey?: (request: NativeProviderLoginRequest) => Promise<void>;
 	}) {
 		capsuleKey(options.masterKey);
 		requiredUuid(options.computeIdentityId, "Native host Compute Identity id");
@@ -1062,6 +1064,7 @@ export class NativeProviderHost {
 		this.#harness = options.harness;
 		this.#cloudRuntime = options.cloudRuntime;
 		this.#masterKey = options.masterKey;
+		this.#backupIdentityKey = options.backupIdentityKey;
 		this.#computeIdentityId = options.computeIdentityId;
 		this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
 	}
@@ -1321,6 +1324,8 @@ export class NativeProviderHost {
 		let stage = "harness-completion";
 		try {
 			const completed = await state.handle.completed;
+			stage = "identity-key-backup";
+			await this.#backupIdentityKey?.(state.request);
 			const capsuleId = randomUUID();
 			const reference = `native-capsule/${capsuleId}`;
 			stage = "credential-sealing";

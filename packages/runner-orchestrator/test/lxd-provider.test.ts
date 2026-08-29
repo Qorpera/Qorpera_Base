@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +24,11 @@ import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orch
 const roots: string[] = [];
 const runId = "20000000-0000-4000-8000-000000000001";
 const runnerId = "20000000-0000-4000-8000-000000000002";
+const secretBrokerCa = readFileSync(
+	new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
+	"utf-8",
+);
+const secretBrokerCaSha256 = createHash("sha256").update(secretBrokerCa).digest("hex");
 
 afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -83,6 +90,14 @@ function work(): CloudRunnerWork {
 			maxCostMicrousd: 1,
 		},
 		attempt: 1,
+	};
+}
+
+function companyWork(): CloudRunnerWork {
+	return {
+		...work(),
+		workerClass: "company_computer",
+		logicalComputerId: "20000000-0000-4000-8000-000000000017",
 	};
 }
 
@@ -216,7 +231,10 @@ function config(stateRoot: string): LxdCloudRunnerProviderConfig {
 	};
 }
 
-function fetchProvisioner(requests: Array<{ url: string; body: Record<string, unknown> }>): typeof fetch {
+function fetchProvisioner(
+	requests: Array<{ url: string; body: Record<string, unknown> }>,
+	expectedWork: CloudRunnerWork = work(),
+): typeof fetch {
 	return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		expect(init?.redirect).toBe("error");
 		const url = String(input);
@@ -227,12 +245,12 @@ function fetchProvisioner(requests: Array<{ url: string; body: Record<string, un
 				runner_kind: "qorpera_computer",
 				status: "pending",
 				provider_adapter: "lxd",
-				compute_identity_id: work().computeIdentityId,
-				logical_computer_id: null,
-				worker_class: "managed_sandbox",
-				template_key: "qorpera-member-linux",
-				template_version: "v1",
-				compute_policy_sha256: "f".repeat(64),
+				compute_identity_id: expectedWork.computeIdentityId,
+				logical_computer_id: expectedWork.logicalComputerId ?? null,
+				worker_class: expectedWork.workerClass,
+				template_key: expectedWork.computeTemplateKey,
+				template_version: expectedWork.computeTemplateVersion,
+				compute_policy_sha256: expectedWork.computePolicySha256,
 				capabilities: ["agent_turn"],
 			}),
 			{ status: url.includes("qorpera_provision_execution_runner") ? 200 : 404 },
@@ -249,6 +267,12 @@ function governedConfig(stateRoot: string): LxdCloudRunnerProviderConfig {
 			binarySha256: "a".repeat(64),
 			objectGatewayUrl: "https://objects.example.test",
 			objectGatewayToken: "q".repeat(43),
+			secretBroker: {
+				origin: "https://secrets.example.test",
+				runtimeToken: "s".repeat(43),
+				caCertificate: secretBrokerCa,
+				caSha256: secretBrokerCaSha256,
+			},
 			network: "qorpera0",
 			recoveryVolumePrefix: "native-recovery-",
 			recoveryVolumeSize: "1GiB",
@@ -529,13 +553,9 @@ describe("LXD cloud runner provider", () => {
 		await expect(backend.reconcile()).rejects.toThrow("drifted from immutable provider authority");
 	});
 
-	it("rejects Step 3 long-lived computer work", async () => {
+	it("keeps ungoverned long-lived computer work closed", async () => {
 		const directory = await root();
-		const request = {
-			...work(),
-			workerClass: "company_computer" as const,
-			logicalComputerId: "20000000-0000-4000-8000-000000000017",
-		};
+		const request = companyWork();
 		const backend = new LxdCloudRunnerProviderBackend(
 			config(join(directory, "state")),
 			new FakeLxd(),
@@ -543,8 +563,42 @@ describe("LXD cloud runner provider", () => {
 			fetchProvisioner([]),
 		);
 		await expect(backend.acquire(runId, request, new AbortController().signal)).rejects.toThrow(
-			"does not admit long-lived company computers",
+			"admits company computers only through company-path-v1",
 		);
+	});
+
+	it("admits the shared logical Company Computer only as a governed one-run VM", async () => {
+		const directory = await root();
+		const request = companyWork();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([], request));
+
+		const runner = await backend.acquire(runId, request, new AbortController().signal);
+
+		expect(runner).toMatchObject({
+			runnerId,
+			workerClass: "company_computer",
+			logicalComputerId: request.logicalComputerId,
+		});
+		expect(lxd.createCalls[0]?.config).toMatchObject({
+			"user.qorpera.logical_computer_id": request.logicalComputerId,
+		});
+		expect(lxd.createCalls[0]?.devices["company-live"]).toBeUndefined();
+		expect(lxd.createVolumeCalls[1]?.config).toMatchObject({
+			"user.qorpera.logical_computer_id": request.logicalComputerId,
+			"user.qorpera.schema": "qorpera.native-company-recovery-volume/v1",
+		});
+		const bootstrapFile = lxd.filePushes.find((file) => file.path === "/var/lib/qorpera-bootstrap/bootstrap.json");
+		if (!bootstrapFile) throw new Error("expected governed bootstrap");
+		expect(JSON.parse(bootstrapFile.content)).toMatchObject({
+			schema: "qorpera.lxd-company-runner-bootstrap/v1",
+			logical_computer_id: request.logicalComputerId,
+			company_runtime: { mode: "company-path-v1" },
+		});
+		await backend.deliver(runner, delivery(request));
+		expect(guest.deliveries).toEqual([delivery(request)]);
 	});
 
 	it("pins a governed lane with independent retained recovery and no canonical mount or shared workspace", async () => {
@@ -586,6 +640,7 @@ describe("LXD cloud runner provider", () => {
 				profile_id: work().profileId,
 				runner_id: runnerId,
 				binary_sha256: "a".repeat(64),
+				secret_broker_ca_sha256: secretBrokerCaSha256,
 				recovery_volume_path: "/var/lib/qorpera-runner",
 			},
 		});
@@ -594,12 +649,19 @@ describe("LXD cloud runner provider", () => {
 		expect(runnerConfig.environment).toEqual({});
 		const environment = files.get("/var/lib/qorpera-bootstrap/native-provider.env");
 		expect(environment).toContain("QORPERA_NATIVE_RUNTIME=company-path-v1\n");
+		expect(environment).toContain("QORPERA_CLOUD_SECRET_BROKER_URL=https://secrets.example.test\n");
 		expect(environment).not.toContain("q".repeat(43));
+		expect(environment).not.toContain("s".repeat(43));
 		expect(files.get("/var/lib/qorpera-bootstrap/credentials/qorpera-native-object-token")).toBe(
 			`${"q".repeat(43)}\n`,
 		);
+		expect(files.get("/var/lib/qorpera-bootstrap/credentials/qorpera-cloud-secret-runtime")).toBe(
+			`${"s".repeat(43)}\n`,
+		);
+		expect(files.get("/var/lib/qorpera-bootstrap/credentials/qorpera-cloud-secret-ca")).toBe(secretBrokerCa);
 		const journal = await readFile(join(settings.stateRoot, runId, "journal.json"), "utf-8");
 		expect(journal).not.toContain("q".repeat(43));
+		expect(journal).not.toContain("s".repeat(43));
 		expect(JSON.parse(journal)).toMatchObject({ schema: "qorpera.lxd-company-provider-journal/v1" });
 		expect(JSON.stringify(lxd.createCalls)).not.toContain("q".repeat(43));
 		const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));

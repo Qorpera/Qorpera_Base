@@ -164,7 +164,13 @@ import {
 	type WebContents,
 } from "electron";
 import electronUpdater from "electron-updater";
-import { QorperaAccountAuth, type QorperaAccountInfo, type QorperaAccountProvider } from "./account-auth.ts";
+import {
+	QORPERA_AUTH_URL,
+	QORPERA_OBJECT_GATEWAY_URL,
+	QorperaAccountAuth,
+	type QorperaAccountInfo,
+	type QorperaAccountProvider,
+} from "./account-auth.ts";
 import {
 	appendBoundTrailEntry,
 	appendKernelComputerObservation,
@@ -249,6 +255,7 @@ import { CloudCompanySubstrate } from "./cloud-company-substrate.ts";
 import { publishCompanySnapshotRestoreProofIfDue } from "./cloud-object-reachability.ts";
 import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
 import type { CloudPresenceHandle } from "./cloud-presence.ts";
+import { prepareCloudPreview } from "./cloud-preview.ts";
 import {
 	acknowledgeCloudPromptOutbox,
 	pendingCloudPromptOutbox,
@@ -493,6 +500,26 @@ import {
 } from "./wake-scheduler.ts";
 import { startWebhookListener } from "./webhook-listener.ts";
 
+const CLOUD_PREVIEW = prepareCloudPreview(
+	process.argv,
+	{ home: app.getPath("home"), userData: app.getPath("userData") },
+	{ projectUrl: QORPERA_AUTH_URL, objectGatewayUrl: QORPERA_OBJECT_GATEWAY_URL },
+	process.env,
+);
+if (CLOUD_PREVIEW) {
+	// Before the instance lock, registry, Auth or model-account stores open.
+	// Electron's home path is isolated without rewriting the OS HOME variable.
+	app.setPath("home", CLOUD_PREVIEW.home);
+	app.setPath("userData", CLOUD_PREVIEW.userData);
+	app.setPath("sessionData", CLOUD_PREVIEW.sessionData);
+	app.setPath("logs", CLOUD_PREVIEW.logs);
+	app.setPath("crashDumps", CLOUD_PREVIEW.crashDumps);
+	process.env.QORPERA_CODING_AGENT_DIR = CLOUD_PREVIEW.agentDir;
+	process.env.GH_CONFIG_DIR = CLOUD_PREVIEW.githubConfigDir;
+	process.env.GIT_CONFIG_GLOBAL = CLOUD_PREVIEW.gitConfigPath;
+	process.env.GIT_CONFIG_NOSYSTEM = "1";
+}
+
 // Electron 43's Windows GPU compositor can produce a live but completely
 // white renderer (Chromium UnknownVizError) on the founder's current display
 // stack. Chromium reads --disable-gpu before app code runs, so packaged
@@ -638,6 +665,7 @@ function sourceModelCredentials(): Record<string, unknown> {
 }
 
 function ambientModelProviders(): string[] {
+	if (CLOUD_PREVIEW) return [];
 	return [...new Set([...MODEL_ENV_PROVIDERS].flatMap(([name, provider]) => (process.env[name] ? [provider] : [])))];
 }
 
@@ -2976,6 +3004,7 @@ function backgroundCompanyEnabled(root: string): boolean {
 }
 
 function syncBackgroundLoginItem(roots: readonly string[]): void {
+	if (CLOUD_PREVIEW) return;
 	if (process.platform !== "win32" && process.platform !== "darwin") return;
 	try {
 		app.setLoginItemSettings({ openAtLogin: roots.length > 0 });
@@ -9906,7 +9935,7 @@ function createRendererWindow(
 		width: 1360,
 		height: 860,
 		show: options.show ?? true,
-		title: "Qorpera Base",
+		title: CLOUD_PREVIEW ? "Qorpera Base — Cloud Preview" : "Qorpera Base",
 		backgroundColor: sidebarTranslucency ? "#00ffffff" : "#ffffff",
 		...(sidebarTranslucency ? { vibrancy: "sidebar" as const, visualEffectState: "active" as const } : {}),
 		// Frameless, Desktop-style chrome: the fixed shell draws the titlebar
@@ -10153,9 +10182,16 @@ app.whenReady().then(async () => {
 	);
 	qorperaAccountAuth = new QorperaAccountAuth(app.getPath("userData"), {
 		openExternal: (url) => electronShell.openExternal(url),
-		...(process.env.QORPERA_NATIVE_PROVIDER_URL?.trim()
-			? { nativeProviderUrl: process.env.QORPERA_NATIVE_PROVIDER_URL.trim() }
-			: {}),
+		...(CLOUD_PREVIEW
+			? {
+					projectUrl: CLOUD_PREVIEW.projectUrl,
+					publishableKey: CLOUD_PREVIEW.publishableKey,
+					objectGatewayUrl: CLOUD_PREVIEW.objectGatewayUrl,
+					nativeProviderUrl: CLOUD_PREVIEW.nativeProviderUrl,
+				}
+			: process.env.QORPERA_NATIVE_PROVIDER_URL?.trim()
+				? { nativeProviderUrl: process.env.QORPERA_NATIVE_PROVIDER_URL.trim() }
+				: {}),
 	});
 	try {
 		rememberAuthenticatedAccount(await qorperaAccountAuth.info());
@@ -13560,7 +13596,7 @@ app.whenReady().then(async () => {
 	// Foundation self-update: packaged builds check Qorpera_Base_Releases
 	// (public) via electron-updater; downloads apply on quit. The foundation
 	// is deliberately static, so this stays quiet almost always.
-	if (app.isPackaged) {
+	if (app.isPackaged && !CLOUD_PREVIEW) {
 		const { autoUpdater } = electronUpdater;
 		let updateCheckInFlight: Promise<void> | undefined;
 		autoUpdater.on("checking-for-update", () => {
@@ -13636,12 +13672,11 @@ app.whenReady().then(async () => {
 			return true;
 		});
 	} else {
-		foundationUpdateState = IS_SMOKE
-			? { phase: "idle", message: "Check for updates" }
-			: {
-					phase: "unavailable",
-					message: "Updates are checked by installed builds",
-				};
+		foundationUpdateState = CLOUD_PREVIEW
+			? { phase: "unavailable", message: "Cloud preview — updates disabled" }
+			: IS_SMOKE
+				? { phase: "idle", message: "Check for updates" }
+				: { phase: "unavailable", message: "Updates are checked by installed builds" };
 		ipcMain.handle("update:state", (event) => {
 			return slotOf(event.sender) ? foundationUpdateState : undefined;
 		});
@@ -13652,7 +13687,7 @@ app.whenReady().then(async () => {
 
 		// In development, reload the fixed renderer after the copied shell files
 		// settle. Main-process changes still require an app restart.
-		if (!IS_SMOKE) {
+		if (!IS_SMOKE && !app.isPackaged) {
 			let reloadTimer: NodeJS.Timeout | undefined;
 			try {
 				watch(DIRNAME, { recursive: true }, () => {

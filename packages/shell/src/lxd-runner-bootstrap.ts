@@ -1,10 +1,17 @@
 import { execFile } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, X509Certificate } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, chown, lstat, mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, chown, link, lstat, mkdir, open, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { recoveryBase64, recoveryDigest } from "./cloud-identity-recovery-crypto.ts";
+import {
+	assertIdentityRecoveryMarker,
+	fetchIdentityRecoveryRuntimeState,
+	type IdentityRecoveryRuntimeState,
+	identityRecoveryEpochFilename,
+} from "./cloud-identity-recovery-guest.ts";
 import { parseEphemeralCloudRunnerServiceConfig } from "./cloud-runner-service.ts";
 
 const BOOTSTRAP_SCHEMA = "qorpera.lxd-runner-bootstrap/v1";
@@ -40,6 +47,8 @@ export interface LxdRunnerBootstrapConfig {
 		codexPath: string;
 		binarySha256: string;
 		objectGatewayUrl: string;
+		secretBrokerUrl: string;
+		secretBrokerCaSha256: string;
 	};
 }
 
@@ -92,6 +101,7 @@ export interface RunLxdNativeLoginBootstrapOptions {
 	expectedRootGid?: number;
 	nativeServiceIdentity?: LxdRunnerBootstrapServiceIdentity;
 	startService?: (service: string) => Promise<void>;
+	identityRuntimeState?: (computeIdentityId: string) => Promise<IdentityRecoveryRuntimeState>;
 }
 
 export interface RunLxdRunnerBootstrapOptions {
@@ -102,6 +112,7 @@ export interface RunLxdRunnerBootstrapOptions {
 	nativeServiceIdentity?: LxdRunnerBootstrapServiceIdentity;
 	runnerSupplementaryGids?: readonly number[];
 	startService?: (service: string) => Promise<void>;
+	identityRuntimeState?: (computeIdentityId: string) => Promise<IdentityRecoveryRuntimeState>;
 }
 
 const PRODUCTION_PATHS: LxdRunnerBootstrapPaths = {
@@ -188,6 +199,8 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 				"codex_path",
 				"binary_sha256",
 				"object_gateway_url",
+				"secret_broker_url",
+				"secret_broker_ca_sha256",
 				"recovery_volume_path",
 			],
 			"Governed native bootstrap",
@@ -205,6 +218,15 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 		const gatewayUrl = new URL(gateway);
 		if (![gatewayUrl.origin, `${gatewayUrl.origin}/`].includes(gateway))
 			throw new Error("Native object gateway is invalid");
+		const encodedSecretBroker = text(
+			company.secret_broker_url,
+			"Cloud secret broker",
+			/^https:\/\/[A-Za-z0-9.-]+(?::[0-9]+)?\/?$/,
+		);
+		const secretBroker = new URL(encodedSecretBroker);
+		if (![secretBroker.origin, `${secretBroker.origin}/`].includes(encodedSecretBroker)) {
+			throw new Error("Cloud secret broker is invalid");
+		}
 		companyRuntime = {
 			mode: "company-path-v1",
 			runId: text(company.run_id, "Native run id", UUID_PATTERN),
@@ -213,6 +235,8 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 			codexPath,
 			binarySha256: text(company.binary_sha256, "Native binary digest", SHA256_PATTERN),
 			objectGatewayUrl: gateway,
+			secretBrokerUrl: secretBroker.origin,
+			secretBrokerCaSha256: text(company.secret_broker_ca_sha256, "Cloud secret broker CA digest", SHA256_PATTERN),
 		};
 	}
 	return {
@@ -344,6 +368,7 @@ async function ensureIdentityMarker(
 	computeIdentityId: string,
 	expectedUid: number,
 	expectedGid: number,
+	canInitialize: boolean,
 ): Promise<void> {
 	try {
 		const encoded = await readOwnedFile(
@@ -358,6 +383,7 @@ async function ensureIdentityMarker(
 	} catch (error) {
 		if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
 	}
+	if (!canInitialize) throw new Error("Established Compute Identity marker is missing; recovery is required");
 	const temporary = `${path}.${process.pid}-${randomUUID()}.tmp`;
 	await writeFile(
 		temporary,
@@ -369,7 +395,12 @@ async function ensureIdentityMarker(
 	await chmod(path, 0o600);
 }
 
-async function ensureIdentityMasterKey(path: string, expectedUid: number, expectedGid: number): Promise<void> {
+async function ensureIdentityMasterKey(
+	path: string,
+	expectedUid: number,
+	expectedGid: number,
+	canInitialize: boolean,
+): Promise<void> {
 	try {
 		const key = (
 			await readOwnedFile(path, MAX_CREDENTIAL_BYTES, "Native provider master key", expectedUid, true)
@@ -379,15 +410,116 @@ async function ensureIdentityMasterKey(path: string, expectedUid: number, expect
 	} catch (error) {
 		if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
 	}
+	if (!canInitialize) throw new Error("Established native identity master key is missing; recovery is required");
 	const temporary = `${path}.${process.pid}-${randomUUID()}.tmp`;
-	await writeFile(temporary, `${randomBytes(32).toString("base64url")}\n`, {
-		encoding: "utf-8",
-		flag: "wx",
-		mode: 0o600,
-	});
-	await chown(temporary, expectedUid, expectedGid);
-	await rename(temporary, path);
-	await chmod(path, 0o600);
+	const handle = await open(temporary, "wx", 0o600);
+	try {
+		await handle.writeFile(`${randomBytes(32).toString("base64url")}\n`);
+		await handle.chown(expectedUid, expectedGid);
+		await handle.sync();
+		await handle.close();
+		try {
+			await link(temporary, path);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
+		const directory = await open(dirname(path), constants.O_RDONLY);
+		try {
+			await directory.sync();
+		} finally {
+			await directory.close();
+		}
+	} finally {
+		await handle.close();
+		await unlink(temporary);
+	}
+}
+
+async function verifyIdentityRecovery(
+	paths: LxdNativeLoginBootstrapPaths | LxdRunnerBootstrapPaths,
+	computeIdentityId: string,
+	baseUrl: string,
+	expectedUid: number,
+	expectedGid: number,
+	login: boolean,
+	stateReader?: (computeIdentityId: string) => Promise<IdentityRecoveryRuntimeState>,
+): Promise<void> {
+	const state = stateReader
+		? await stateReader(computeIdentityId)
+		: await fetchIdentityRecoveryRuntimeState(
+				baseUrl,
+				(
+					await readOwnedFile(
+						join(paths.credentialSource, "qorpera-supabase-service-key"),
+						MAX_SERVICE_CREDENTIAL_BYTES,
+						"Native authority credential",
+						expectedUid,
+						true,
+					)
+				).trim(),
+				computeIdentityId,
+			);
+	if (state.computeIdentityId !== computeIdentityId || state.blocked)
+		throw new Error("Compute Identity is fenced by cloud recovery authority");
+	if (login && !state.recoveryConfiguration)
+		throw new Error("Native login requires a configured cloud recovery authority");
+	const canInitialize = login && state.canInitialize;
+	await ensureIdentityMasterKey(paths.identityMasterKey, expectedUid, expectedGid, canInitialize);
+	await ensureIdentityMarker(paths.identityMarker, computeIdentityId, expectedUid, expectedGid, canInitialize);
+	const key = recoveryBase64(
+		(
+			await readOwnedFile(
+				paths.identityMasterKey,
+				MAX_CREDENTIAL_BYTES,
+				"Native provider master key",
+				expectedUid,
+				true,
+			)
+		).trim(),
+		32,
+	);
+	let keySha256: string;
+	try {
+		keySha256 = recoveryDigest(key);
+	} finally {
+		key.fill(0);
+	}
+	if (state.keySha256 !== null && state.keySha256 !== keySha256)
+		throw new Error("Local identity key differs from cloud recovery history");
+	if (state.epoch > 0) {
+		assertIdentityRecoveryMarker(
+			parseJson(
+				await readOwnedFile(
+					join(paths.identityVolume, identityRecoveryEpochFilename(state.epoch)),
+					MAX_BOOTSTRAP_BYTES,
+					"Native identity recovery marker",
+					expectedUid,
+					true,
+				),
+				"Native identity recovery marker",
+			),
+			state,
+		);
+	}
+	const credential = join(dirname(paths.nativeProviderEnvironment), "native-identity-epoch.json");
+	const temporary = `${credential}.${randomUUID()}.tmp`;
+	const handle = await open(temporary, "wx", 0o600);
+	try {
+		await handle.writeFile(
+			JSON.stringify({ computeIdentityId, companyId: state.companyId, epoch: state.epoch, keySha256 }),
+		);
+		await handle.chown(expectedUid, expectedGid);
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+	await rename(temporary, credential);
+	const directory = await open(dirname(credential), constants.O_RDONLY);
+	try {
+		await directory.sync();
+	} finally {
+		await directory.close();
+	}
 }
 
 function nativeProviderEnvironment(
@@ -426,6 +558,7 @@ function nativeProviderEnvironment(
 					"QORPERA_NATIVE_CODEX_FENCE_PATH",
 					"QORPERA_NATIVE_CODEX_FENCE_SHA256",
 					"QORPERA_NATIVE_OBJECT_GATEWAY_URL",
+					"QORPERA_CLOUD_SECRET_BROKER_URL",
 				]
 			: []),
 	];
@@ -458,7 +591,8 @@ function nativeProviderEnvironment(
 		(environment.get("QORPERA_NATIVE_RUNTIME") !== "company-path-v1" ||
 			environment.get("QORPERA_NATIVE_CODEX_FENCE_PATH") !== companyRuntime.codexPath ||
 			environment.get("QORPERA_NATIVE_CODEX_FENCE_SHA256") !== companyRuntime.binarySha256 ||
-			environment.get("QORPERA_NATIVE_OBJECT_GATEWAY_URL") !== companyRuntime.objectGatewayUrl)
+			environment.get("QORPERA_NATIVE_OBJECT_GATEWAY_URL") !== companyRuntime.objectGatewayUrl ||
+			environment.get("QORPERA_CLOUD_SECRET_BROKER_URL") !== companyRuntime.secretBrokerUrl)
 	) {
 		throw new Error("Governed native environment does not match immutable bootstrap authority");
 	}
@@ -468,6 +602,7 @@ async function verifyCredentialSource(
 	path: string,
 	expectedUid: number,
 	boundary: "runner" | "native-login" | "company-runner",
+	companyRuntime?: LxdRunnerBootstrapConfig["companyRuntime"],
 ): Promise<void> {
 	const metadata = await lstat(path);
 	if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== expectedUid) {
@@ -478,6 +613,9 @@ async function verifyCredentialSource(
 	const expected =
 		boundary !== "native-login"
 			? [
+					...(boundary === "company-runner" && companyRuntime
+						? ["qorpera-cloud-secret-ca", "qorpera-cloud-secret-runtime"]
+						: []),
 					"qorpera-native-bridge",
 					...(boundary === "company-runner" ? ["qorpera-native-object-token"] : []),
 					"qorpera-runner-activation",
@@ -489,7 +627,9 @@ async function verifyCredentialSource(
 		throw new Error("LXD runner credential source contains unexpected entries");
 	}
 	const tokens = new Set<string>();
-	for (const name of expected.filter((entry) => entry !== "qorpera-supabase-service-key")) {
+	for (const name of expected.filter(
+		(entry) => entry !== "qorpera-supabase-service-key" && entry !== "qorpera-cloud-secret-ca",
+	)) {
 		const token = (
 			await readOwnedFile(
 				`${path}/${name}`,
@@ -503,6 +643,25 @@ async function verifyCredentialSource(
 		if (boundary === "company-runner" && tokens.has(token))
 			throw new Error("Governed credentials must be independent");
 		tokens.add(token);
+	}
+	if (companyRuntime) {
+		const certificateEncoded = await readOwnedFile(
+			`${path}/qorpera-cloud-secret-ca`,
+			16 * 1024,
+			"Cloud secret broker CA certificate",
+			expectedUid,
+			true,
+		);
+		if (createHash("sha256").update(certificateEncoded).digest("hex") !== companyRuntime.secretBrokerCaSha256) {
+			throw new Error("Cloud secret broker CA certificate does not match immutable bootstrap authority");
+		}
+		let certificate: X509Certificate;
+		try {
+			certificate = new X509Certificate(certificateEncoded);
+		} catch {
+			throw new Error("Cloud secret broker CA certificate is invalid");
+		}
+		if (!certificate.ca) throw new Error("Cloud secret broker CA certificate is not a certificate authority");
 	}
 	const serviceKey = (
 		await readOwnedFile(
@@ -800,6 +959,7 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 		paths.credentialSource,
 		expectedRootUid,
 		bootstrap.companyRuntime ? "company-runner" : "runner",
+		bootstrap.companyRuntime,
 	);
 	const identityMetadata = await lstat(paths.identityVolume);
 	if (
@@ -813,8 +973,15 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 	verifyMountedIdentityVolume(mountInfo, paths.identityVolume);
 	await verifyCompanyGuest(bootstrap, paths, mountInfo, expectedRootUid, expectedRootGid);
 	await chmod(paths.identityVolume, 0o700);
-	await ensureIdentityMarker(paths.identityMarker, bootstrap.computeIdentityId, expectedRootUid, expectedRootGid);
-	await ensureIdentityMasterKey(paths.identityMasterKey, expectedRootUid, expectedRootGid);
+	await verifyIdentityRecovery(
+		paths,
+		bootstrap.computeIdentityId,
+		runnerConfig.baseUrl,
+		expectedRootUid,
+		expectedRootGid,
+		false,
+		options.identityRuntimeState,
+	);
 
 	const runnerIdentity =
 		options.serviceIdentity ??
@@ -895,8 +1062,15 @@ export async function runLxdNativeLoginBootstrap(options: RunLxdNativeLoginBoots
 	}
 	verifyMountedIdentityVolume(await readFile(paths.mountInfo, "utf-8"), paths.identityVolume);
 	await chmod(paths.identityVolume, 0o700);
-	await ensureIdentityMarker(paths.identityMarker, bootstrap.computeIdentityId, expectedRootUid, expectedRootGid);
-	await ensureIdentityMasterKey(paths.identityMasterKey, expectedRootUid, expectedRootGid);
+	await verifyIdentityRecovery(
+		paths,
+		bootstrap.computeIdentityId,
+		bootstrap.supabaseUrl,
+		expectedRootUid,
+		expectedRootGid,
+		true,
+		options.identityRuntimeState,
+	);
 
 	const nativeIdentity = options.nativeServiceIdentity ?? (await serviceIdentity("qorpera-native-provider"));
 	const nativeHome = dirname(paths.nativeProviderTemporaryDirectory);

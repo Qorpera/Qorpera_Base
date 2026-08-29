@@ -82,7 +82,13 @@ export class CloudNativeToolOperations {
 		/** Must honor cancellation and pass the supplied idempotency key to the effect gateway. */
 		perform: (
 			operation: CloudNativeToolOperation,
-			context: { identity: CloudNativeToolIdentity; receiptId: string; idempotencyKey: string; signal: AbortSignal },
+			context: {
+				identity: CloudNativeToolIdentity;
+				receiptId: string;
+				inputSha256: string;
+				idempotencyKey: string;
+				signal: AbortSignal;
+			},
 		) => Promise<CloudNativeToolOperationOutput>;
 		signal: AbortSignal;
 	}): Promise<CloudToolContent> {
@@ -196,6 +202,7 @@ export class CloudNativeToolOperations {
 						perform(operation, {
 							identity: this.#run.identity,
 							receiptId,
+							inputSha256: digest,
 							idempotencyKey,
 							signal: requestSignal,
 						}),

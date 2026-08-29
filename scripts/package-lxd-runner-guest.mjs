@@ -70,6 +70,7 @@ try {
 		["company-lock-heartbeat.mjs", join(runnerRoot, "company-lock-heartbeat.mjs")],
 		["qorpera-ephemeral-runner.mjs", join(runnerRoot, "qorpera-ephemeral-runner.mjs")],
 		["qorpera-native-provider-host.mjs", join(runnerRoot, "qorpera-native-provider-host.mjs")],
+		["qorpera-identity-recovery-restore.mjs", join(runnerRoot, "qorpera-identity-recovery-restore.mjs")],
 		["qorpera-native-isolation-child.mjs", join(runnerRoot, "qorpera-native-isolation-child.mjs")],
 		["qorpera-sandbox-probe.mjs", join(runnerRoot, "qorpera-sandbox-probe.mjs")],
 		["qorpera-lxd-runner-bootstrap.mjs", join(runnerRoot, "qorpera-lxd-runner-bootstrap.mjs")],

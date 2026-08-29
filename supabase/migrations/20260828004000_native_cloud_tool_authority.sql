@@ -12,7 +12,9 @@ declare
 	v_session_token_sha256 text;
 	v_lease_token_sha256 text;
 begin
-	if auth.role() is distinct from 'service_role' then
+	-- The broker may reach this validator only through its three granted
+	-- SECURITY DEFINER custody functions; direct EXECUTE remains revoked.
+	if auth.role() is distinct from 'service_role' and session_user <> 'qorpera_secret_broker' then
 		raise exception 'native tool host authority is required' using errcode = '42501';
 	end if;
 	if jsonb_typeof(p_binding) is distinct from 'object'

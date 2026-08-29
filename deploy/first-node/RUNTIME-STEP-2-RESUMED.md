@@ -1,13 +1,16 @@
 # Runtime Step 2 resumed; Step 3 held
 
-Date: 2026-08-28. **Step 2 remains incomplete. The HTTP-204 correction is
-committed and signed v51 passed a real GPT Company File write, controlled
-injection checks, live grant revocation and process-restart receipt replay.
-A later GPT turn exposed an advertised-but-disabled native Code Mode route.
-The narrow direct-tools extension is now authorized and implemented, with
-replacement-image verification underway. Full VM-restart and shared-computer
-acceptance remain open.** See the
-[signed staging record](RUNTIME-STEP-2-STAGING.md) for exact pins and evidence.
+Date: 2026-08-28. **Step 2 remains incomplete. Signed v52 passed real-GPT
+Company File writes and lost-acknowledgement/VM-restart recovery. The packaged
+preview client now passed normal cloud file flows, and a verified interlock
+blocks legacy raw-computer enrollment. The independent identity-recovery
+component is implemented and verified, but not deployed. Shared-computer
+mediation, live off-node recovery and production cutover remain.** See the
+[recovery implementation and rollout contract](RUNTIME-STEP-2-IDENTITY-RECOVERY.md),
+[client/interlock acceptance record](RUNTIME-STEP-2-CLIENT-ACCEPTANCE.md) for the
+latest verification and approval boundaries, and the
+[v52 acceptance record](RUNTIME-STEP-2-V52-ACCEPTANCE.md) for exact pins,
+verification, preserved failed attempts and remaining authority boundaries.
 
 The user's direction is to finish Step 2 before incorporating Step 3.
 Parallel-track reports are preserved handoffs, not instructions to expand the
@@ -237,12 +240,13 @@ configuration-only override was found. A model/catalog substitution or
 enabling native scripts would not resolve the governed contract.
 
 The user subsequently authorized the governed direct-tools extension, scoped
-commit and signed replacement preview. The implementation overrides model tool
+commits and signed replacement preview. The implementation overrides model tool
 mode only in the host-fenced process and rejects the older result-only binary
-before model admission. New native pins and signed replacement-image acceptance
-are required; credential custody, provider traffic and result fences are unchanged.
-Step 3 remains untouched. The preview orchestrator is paused and all eight
-canonical/login VMs are stopped; identity and recovery volumes are preserved.
+before model admission. The final Linux pins, signed v52 image and real-GPT
+VM-restart acceptance now passed; credential custody, provider traffic and
+result fences are unchanged. The new [v52 record](RUNTIME-STEP-2-V52-ACCEPTANCE.md)
+separates the clean automated pass from earlier staging and test-witness defects.
+Step 3 remains untouched; preview execution is paused and recovery state retained.
 
 The actual human client transport additionally passed seven live read/list
 cases and six edit/authority cases: owner/friend/outsider separation, private
@@ -320,20 +324,27 @@ cumulative distinct-skill count is conservatively 7/10.
    removed the exact test object, and a late upload could not resurrect it.
    Temporary observer hooks were removed. The unchanged native-authority SQL
    suite also passed over certificate-verified PostgreSQL. These are managed
-   component checks, not released-client acceptance. Signed v51 and the scoped
-   real-GPT tests above are complete. The next blocker is the native tool
-   inventory: finish verification of the authorized direct-tool selection
-   extension, then rebuild, pin, sign and repeat acceptance without weakening the result
-   fence, credential custody or execution sandbox. Repeat the combined real
-   write/lost-acknowledgement/VM-restart case only as a newly admitted human
-   request, not a rerun of an existing job. Shared-computer path enforcement
-   and released-client UI verification still require evidence. Preserve all
+   component checks, not released-client acceptance. Signed v52 now passed
+   native tool-inventory verification and the combined real
+   write/lost-acknowledgement/VM-restart case as a new human request, without
+   weakening the result fence, credential custody or execution sandbox.
+   The later packaged preview now has actual UI/member/command evidence;
+   the legacy-computer interlock passed disposable concurrency and managed SQL
+   acceptance. Shared-computer mediation and public release remain unproven.
+   See the client/interlock record; preserve all
    failed and successful run records. No push, release or production change
    is authorized by test-image restaging approval.
 2. Before production enrollment, recheck/reconcile the two missing NAS files
    without losing either live state, and verify replacement-node fencing and
    authorized recovery. The completed same-node backup import does not confer
    fresh execution or public-send authority.
+   The subsequently approved recovery component now has two-copy encrypted key
+   backup, exact owner/member consent, immutable generation fences, a separate
+   cloud-service package and a replacement-guest client. Disposable SQL/HTTP/
+   cryptographic round trips and Linux filesystem probes pass. A separately
+   provisioned recovery service, private key custody, human approval surface,
+   compatible signed guest and actual replacement-node acceptance remain
+   required. No managed migration or production key movement occurred.
 
 Wake semantics, room ingress, hiring/first-run/recovery wake producers,
 autonomous-consent UX and cross-step bundle composition are held for Step 3.

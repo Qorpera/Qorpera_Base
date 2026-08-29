@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Native recovery-enabled guests require the recovery migration and per-company cloud authority provisioning before provider sign-in. Missing recovery configuration stops bootstrap before creating a key or requesting provider authentication.
+
 ### Added
 
 - Added an experimental cloud-owned tool result boundary and pinned native Codex adversarial proof, covering closed arguments, provenance, bounded results, authority rechecks, cancellation and the existing public mouth. The deployed driver is unchanged.
@@ -14,6 +18,10 @@
 - Added a governed Company File window with text editing, exact proposal previews, explicit approval or skip, and recovery of uncertain saves by their original command identity. Governed companies use fresh display-only roots instead of locally materializing or republishing the Company File.
 - Added session/input-bound image attachment upload and retrieval with current human authority, immutable hash checks and bounded lifetimes; attachments cannot reopen the legacy raw-object path.
 - Isolated the governed native process in a private Linux filesystem, process and network namespace, with a bounded provider-only encrypted relay, exact private tool sockets and kernel resource limits. The mode remains opt-in pending coordinated cloud acceptance.
+- Added an explicit cloud-preview launch mode with separate account, model, registry and browser state, pinned preview endpoints, and no auto-update or login-item changes. It uses the normal account and Company File paths without bypassing authorization.
+- Added a separately hosted Compute Identity recovery authority with sealed two-copy key backups, exact owner/member restore consent, private durable release receipts and replacement-guest installation. Deployment remains gated on independent key custody and live recovery acceptance.
+- Added an isolated human recovery-review window with bounded member discovery, exact target and backup fingerprints, explicit source selection and native confirmation. Stale reviews, dismissed confirmations and lost acknowledgements cannot silently approve or repeat a restore.
+- Added company-centered cloud secret custody with immutable envelope versions, company/member ownership, operation grants, one-time direct capture, effect-time receipt checks, a separately packaged broker, typed connector tools, and reflected-secret result fencing. Governed runtimes have no local or plaintext fallback.
 
 ### Fixed
 
@@ -26,6 +34,8 @@
 - Nested native runtime scratch inside its private temporary allocation so Linux cloud turns pass the existing containment layout check; failed startup still removes the entire allocation.
 - Kept Codex login capsules and governed runtime identities auth-only: incidental CLI files cannot become runtime configuration or block startup, and credential refresh retains only the required auth file.
 - Accepted PostgREST's HTTP 204 success for the two void Company File checks, so a successful permission check cannot block cloud agent startup. Data-bearing RPCs, denials, cancellation and uncertain-write handling remain fail-closed.
+- Refused silent replacement of missing native identity keys. Bootstrap and native execution now bind the local identity volume to its current cloud recovery generation; recovery fences old login, run and lease authority. Generic service credentials cannot directly change recovery generations or clear their pending fence.
+- Removed the recovery service's NAS startup dependency. The retained journal must be on a dedicated local filesystem; each NAS operation checks the opened directory against its pinned NFS export and cannot accept an unmounted local directory as a replica.
 
 ## [0.20.44] - 2026-08-28
 

@@ -1,11 +1,11 @@
 # Runtime Step 2: signed cloud staging
 
-Date: 2026-08-28. **Signed v48 through v51 are preserved. V51 includes the
-committed HTTP-204 correction and passed scoped real-GPT Company File,
-revocation and process-restart receipt checks. Full Step 2 remains incomplete:
-a real turn hit advertised-but-disabled native Code Mode. Its narrow direct-tools
-fix is authorized and implemented; replacement-image verification, VM-restart
-and shared-computer acceptance are still open.**
+Date: 2026-08-28. **Signed v48 through v52 are preserved. V52 resolves the
+native direct-tool inventory and passed the combined real-GPT write,
+lost-acknowledgement and forced-VM-restart test. Full Step 2 remains incomplete:
+shared-computer and packaged/released-client acceptance, then production
+NAS/replacement-node gates, remain.** Current pins and acceptance are in
+[RUNTIME-STEP-2-V52-ACCEPTANCE.md](RUNTIME-STEP-2-V52-ACCEPTANCE.md).
 Step 3 is paused. Production enrollment is unchanged.
 
 ## Source and immutable artifacts
@@ -324,11 +324,11 @@ The user subsequently authorized the narrow native tool-selection extension,
 scoped source commit, replacement-image signing and renewed preview acceptance.
 The implementation selects direct tools only for host-fenced native processes
 and requires a separate capability marker before model admission. Native and
-compaction tests, new immutable pins and signed preview acceptance remain
-mandatory. No catalog/model substitution or relaxed policy is used.
-The preview orchestrator is paused; all eight canonical
-and login VMs are stopped, with identity/recovery volumes retained. The
-temporary, billable preview branch remains for the next acceptance attempt.
+compaction tests, new immutable pins, signed v52 and real cloud VM-restart
+acceptance are now complete; see the [v52 record](RUNTIME-STEP-2-V52-ACCEPTANCE.md).
+No catalog/model substitution or relaxed policy is used. The preview
+orchestrator is paused and terminal test VMs are stopped with identity/recovery
+volumes retained. The temporary billable branch remains for the remaining gates.
 
 Before production enrollment, the NAS/workbench reconciliation, shared-computer
 path enforcement and authorized replacement-node identity recovery must also

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { type CloudCompanyPathPlan, parseCloudCompanyPath } from "./cloud-company-path-gateway.ts";
 import { CloudMemberCompanyFileReader } from "./cloud-member-company-file.ts";
+import { CloudMemberIdentityRecoveryClient } from "./cloud-member-identity-recovery.ts";
 import { GATEWAY_EDGE_USER_AGENT } from "./cloud-object-store.ts";
 import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
 
@@ -127,6 +128,7 @@ export function parseCloudMemberCompanyMode(value: unknown, companyId: string): 
 /** Desktop display/intent client only. The cloud stages bytes and publishes
  * against current ACLs. This client cannot obtain a tree or service key. */
 export class CloudMemberCompanyFileClient {
+	#identityRecovery: CloudMemberIdentityRecoveryClient | undefined;
 	readonly #options: ConstructorParameters<typeof CloudMemberCompanyFileReader>[0];
 	readonly #reader: CloudMemberCompanyFileReader;
 	readonly #control: string;
@@ -139,6 +141,11 @@ export class CloudMemberCompanyFileClient {
 		this.#control = new URL(options.supabaseUrl).origin;
 		this.#gateway = new URL(options.objectGatewayUrl).origin;
 		this.#fetch = options.fetch ?? fetch;
+	}
+
+	get identityRecovery(): CloudMemberIdentityRecoveryClient {
+		this.#identityRecovery ??= new CloudMemberIdentityRecoveryClient(this.#options);
+		return this.#identityRecovery;
 	}
 
 	async read(

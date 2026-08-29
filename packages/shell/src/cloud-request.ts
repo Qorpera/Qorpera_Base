@@ -1,3 +1,11 @@
+/** Modern Supabase secret keys authenticate through apikey, not a JWT bearer. */
+export function supabaseServiceHeaders(serviceKey: string): Record<string, string> {
+	const headers: Record<string, string> = { apikey: serviceKey };
+	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3)
+		headers.authorization = `Bearer ${serviceKey}`;
+	return headers;
+}
+
 export class CloudRequestTimeoutError extends Error {
 	constructor() {
 		super("Cloud service did not respond before the request deadline. Retry when the service recovers.");

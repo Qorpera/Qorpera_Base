@@ -24,7 +24,7 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
-import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
+import { readBoundedCloudResponse, supabaseServiceHeaders, withCloudDeadline } from "./cloud-request.ts";
 import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
 
 const LOGIN_SCHEMA = "qorpera.native-provider-login/v1";
@@ -36,14 +36,6 @@ const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_REQUEST_BYTES = 256 * 1024;
 const MAX_CAPSULE_BYTES = 64 * 1024 * 1024 + 1024 * 1024;
 const CAPSULE_BUCKET = "qorpera-native-compute-capsules";
-
-function supabaseServiceHeaders(serviceKey: string): Record<string, string> {
-	const headers: Record<string, string> = { apikey: serviceKey };
-	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3) {
-		headers.authorization = `Bearer ${serviceKey}`;
-	}
-	return headers;
-}
 
 function nativeCloudBaseUrl(value: string): URL {
 	const url = new URL(value);
@@ -261,13 +253,27 @@ export class SupabaseNativeProviderControlPlane
 	readonly #rpcUrl: string;
 	readonly #serviceKey: string;
 	readonly #fetch: typeof fetch;
+	readonly #identityEpoch?: { computeIdentityId: string; epoch: number };
 
-	constructor(baseUrl: string, serviceKey: string, fetchImplementation: typeof fetch = fetch) {
+	constructor(
+		baseUrl: string,
+		serviceKey: string,
+		fetchImplementation: typeof fetch = fetch,
+		identityEpoch?: { computeIdentityId: string; epoch: number },
+	) {
 		const url = new URL("/rest/v1/rpc/", nativeCloudBaseUrl(baseUrl));
 		if (!serviceKey.trim() || /[\0\r\n]/.test(serviceKey)) throw new Error("Native service key is invalid");
 		this.#rpcUrl = url.href;
 		this.#serviceKey = serviceKey;
 		this.#fetch = fetchImplementation;
+		if (identityEpoch && (!Number.isSafeInteger(identityEpoch.epoch) || identityEpoch.epoch < 0))
+			throw new Error("Native identity generation is invalid");
+		this.#identityEpoch = identityEpoch
+			? {
+					computeIdentityId: uuid(identityEpoch.computeIdentityId, "Native local identity id"),
+					epoch: identityEpoch.epoch,
+				}
+			: undefined;
 	}
 
 	async describeLogin(
@@ -328,21 +334,28 @@ export class SupabaseNativeProviderControlPlane
 	}
 
 	async validateExecution(request: NativeProviderExecutionRequest, signal?: AbortSignal): Promise<void> {
-		await this.#rpc(
-			"qorpera_validate_native_provider_execution_lease",
-			{
-				p_lease_id: request.authority.leaseId,
-				p_run_id: request.authority.runId,
-				p_job_id: request.job.jobId,
-				p_runner_id: request.authority.runnerId,
-				p_assignment_id: request.authority.assignmentId,
-				p_credential_capsule_id: request.authority.credentialCapsuleId,
-				p_compute_identity_id: request.authority.computeIdentityId,
-				p_provider: request.authority.provider,
-				p_native_harness: request.authority.nativeHarness,
-			},
-			signal,
+		if (!this.#identityEpoch || this.#identityEpoch.computeIdentityId !== request.authority.computeIdentityId)
+			throw new Error("Native host has no matching local identity generation");
+		const result = record(
+			await this.#rpc(
+				"qorpera_validate_native_provider_execution_lease",
+				{
+					p_lease_id: request.authority.leaseId,
+					p_run_id: request.authority.runId,
+					p_job_id: request.job.jobId,
+					p_runner_id: request.authority.runnerId,
+					p_assignment_id: request.authority.assignmentId,
+					p_credential_capsule_id: request.authority.credentialCapsuleId,
+					p_compute_identity_id: request.authority.computeIdentityId,
+					p_provider: request.authority.provider,
+					p_native_harness: request.authority.nativeHarness,
+				},
+				signal,
+			),
+			"Native execution generation",
 		);
+		if (result.compute_identity_epoch !== this.#identityEpoch.epoch)
+			throw new Error("Native execution generation differs from this identity volume");
 	}
 
 	async describeToolAuthority(binding: CloudNativeToolBinding, signal: AbortSignal): Promise<unknown> {

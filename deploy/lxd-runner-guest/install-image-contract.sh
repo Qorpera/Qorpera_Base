@@ -101,6 +101,7 @@ const expected = new Set([
   "qorpera-lxd-native-login-bootstrap.mjs",
   "qorpera-lxd-native-login-bootstrap.service",
   "qorpera-native-provider-host.mjs",
+  "qorpera-identity-recovery-restore.mjs",
   "qorpera-native-isolation-child.mjs",
   "qorpera-native-provider-host.service",
   "qorpera-native-company-host.service",
@@ -220,6 +221,7 @@ for artifact in \
 	company-lock-heartbeat.mjs \
 	qorpera-ephemeral-runner.mjs \
 	qorpera-native-provider-host.mjs \
+	qorpera-identity-recovery-restore.mjs \
 	qorpera-native-isolation-child.mjs \
 	qorpera-lxd-runner-bootstrap.mjs \
 	qorpera-lxd-native-login-bootstrap.mjs; do

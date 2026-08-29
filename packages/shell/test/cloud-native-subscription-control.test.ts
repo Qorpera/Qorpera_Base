@@ -15,6 +15,7 @@ const requestId = "10000000-0000-4000-8000-000000000007";
 const inputId = "10000000-0000-4000-8000-000000000008";
 const ownerUserId = "10000000-0000-4000-8000-000000000009";
 const scopedIdentityId = "10000000-0000-4000-8000-000000000010";
+const logicalComputerId = "10000000-0000-4000-8000-000000000011";
 
 function transport() {
 	const calls: Array<{ name: string; args: Readonly<Record<string, unknown>> }> = [];
@@ -72,7 +73,7 @@ function transport() {
 					turn_request_id: requestId,
 					input_id: inputId,
 					status: "queued",
-					sponsor_mode: "member_connection",
+					sponsor_mode: args.p_sponsor_mode,
 				};
 			case "qorpera_approve_session_turn_sponsorship":
 				return { turn_request_id: requestId, status: "queued" };
@@ -215,6 +216,37 @@ describe("native subscription product control", () => {
 			p_provider_connection_id: connectionId,
 			p_provider_connection_version: 3,
 			p_allow_autonomous: true,
+		});
+	});
+
+	it("submits the shared Company Computer as explicit company-owned governed work", async () => {
+		const { calls, client } = transport();
+		const sponsor = await client.createCompanySponsor({
+			profileId,
+			sponsorKind: "company_service_account",
+			providerConnectionId: connectionId,
+			providerConnectionVersion: 3,
+			allowAutonomous: true,
+		});
+
+		await expect(
+			client.requestSessionTurn({
+				sessionId,
+				body: { schema: "qorpera.session-prompt/v1", text: "Use the Company Computer.", images: [] },
+				sponsorMode: "company_connection",
+				sponsorBindingId: sponsor.bindingId,
+				sponsorVersion: sponsor.version,
+				computeIdentityId: scopedIdentityId,
+				logicalComputerId,
+				workerClass: "company_computer",
+			}),
+		).resolves.toMatchObject({ sponsorMode: "company_connection", status: "queued" });
+
+		expect(calls.find((call) => call.name === "qorpera_request_session_turn_v2")?.args).toMatchObject({
+			p_sponsor_mode: "company_connection",
+			p_compute_identity_id: scopedIdentityId,
+			p_logical_computer_id: logicalComputerId,
+			p_worker_class: "company_computer",
 		});
 	});
 

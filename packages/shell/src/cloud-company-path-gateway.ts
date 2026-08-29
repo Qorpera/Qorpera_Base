@@ -27,6 +27,8 @@ const MAX_READ_PATHS = 128;
 export type CloudCompanyPathRpc =
 	| "qorpera_begin_native_company_execution"
 	| "qorpera_describe_company_run_context"
+	| "qorpera_list_native_connector_tools"
+	| "qorpera_assert_native_connector_operation"
 	| "qorpera_read_company_run_context"
 	| "qorpera_read_company_path"
 	| "qorpera_list_company_paths"

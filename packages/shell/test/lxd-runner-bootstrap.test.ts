@@ -1,8 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { recoveryPublicKeyText } from "../src/cloud-identity-recovery-crypto.ts";
+import type { IdentityRecoveryRuntimeState } from "../src/cloud-identity-recovery-guest.ts";
 import {
 	type LxdNativeLoginBootstrapPaths,
 	type LxdRunnerBootstrapPaths,
@@ -14,6 +16,22 @@ import {
 
 const roots: string[] = [];
 const computeIdentityId = "90000000-0000-4000-8000-000000000001";
+const fixtureKey = Buffer.alloc(32, 7).toString("base64url");
+const fixtureState: IdentityRecoveryRuntimeState = {
+	companyId: "90000000-0000-4000-8000-000000000004",
+	computeIdentityId,
+	epoch: 0,
+	blocked: false,
+	policySha256: "a".repeat(64),
+	keySha256: createHash("sha256").update(Buffer.alloc(32, 7)).digest("hex"),
+	canInitialize: false,
+	recoveryConfiguration: {
+		authorityId: "90000000-0000-4000-8000-000000000005",
+		serviceOrigin: "https://recovery.example.test",
+		signingPublicKey: recoveryPublicKeyText(generateKeyPairSync("ed25519").publicKey),
+		wrappingPublicKey: recoveryPublicKeyText(generateKeyPairSync("rsa", { modulusLength: 3072 }).publicKey),
+	},
+};
 
 afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -45,6 +63,15 @@ async function fixture(): Promise<{
 	const sharedGid = currentGid > 0 ? currentGid : 1;
 	await mkdir(paths.credentialSource, { recursive: true, mode: 0o700 });
 	await mkdir(paths.identityVolume, { recursive: true, mode: 0o700 });
+	await writeFile(paths.identityMasterKey, `${fixtureKey}\n`, { mode: 0o600 });
+	await writeFile(
+		paths.identityMarker,
+		JSON.stringify({
+			schema: "qorpera.compute-identity-volume/v1",
+			compute_identity_id: computeIdentityId,
+		}),
+		{ mode: 0o600 },
+	);
 	await writeFile(
 		paths.bootstrapConfig,
 		`${JSON.stringify({
@@ -171,6 +198,10 @@ async function loginFixture(): Promise<{ root: string; paths: LxdNativeLoginBoot
 
 async function companyFixture(): Promise<LxdRunnerBootstrapPaths> {
 	const { root, paths } = await fixture();
+	const secretBrokerCa = await readFile(
+		new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
+		"utf-8",
+	);
 	const binary = join(root, "codex-pinned");
 	const content = "synthetic native executable, never executed by bootstrap tests\n";
 	await writeFile(binary, content, { mode: 0o500 });
@@ -185,6 +216,8 @@ async function companyFixture(): Promise<LxdRunnerBootstrapPaths> {
 		codex_path: binary,
 		binary_sha256: digest,
 		object_gateway_url: "https://objects.test",
+		secret_broker_url: "https://secrets.test",
+		secret_broker_ca_sha256: createHash("sha256").update(secretBrokerCa).digest("hex"),
 		recovery_volume_path: "/var/lib/qorpera-runner",
 	};
 	await writeFile(paths.bootstrapConfig, `${JSON.stringify(bootstrap)}\n`, { mode: 0o600 });
@@ -194,10 +227,14 @@ async function companyFixture(): Promise<LxdRunnerBootstrapPaths> {
 	await writeFile(paths.runnerConfig, `${JSON.stringify(config)}\n`, { mode: 0o600 });
 	await writeFile(
 		paths.nativeProviderEnvironment,
-		`${await readFile(paths.nativeProviderEnvironment, "utf-8")}QORPERA_NATIVE_RUNTIME=company-path-v1\nQORPERA_NATIVE_CODEX_FENCE_PATH=${binary}\nQORPERA_NATIVE_CODEX_FENCE_SHA256=${digest}\nQORPERA_NATIVE_OBJECT_GATEWAY_URL=https://objects.test\n`,
+		`${await readFile(paths.nativeProviderEnvironment, "utf-8")}QORPERA_NATIVE_RUNTIME=company-path-v1\nQORPERA_NATIVE_CODEX_FENCE_PATH=${binary}\nQORPERA_NATIVE_CODEX_FENCE_SHA256=${digest}\nQORPERA_NATIVE_OBJECT_GATEWAY_URL=https://objects.test\nQORPERA_CLOUD_SECRET_BROKER_URL=https://secrets.test\n`,
 		{ mode: 0o600 },
 	);
 	await writeFile(join(paths.credentialSource, "qorpera-native-object-token"), `${"q".repeat(43)}\n`, { mode: 0o600 });
+	await writeFile(join(paths.credentialSource, "qorpera-cloud-secret-runtime"), `${"s".repeat(43)}\n`, {
+		mode: 0o600,
+	});
+	await writeFile(join(paths.credentialSource, "qorpera-cloud-secret-ca"), secretBrokerCa, { mode: 0o600 });
 	await mkdir(paths.runnerHomeDirectory, { mode: 0o700 });
 	await writeFile(
 		paths.mountInfo,
@@ -211,6 +248,7 @@ async function startCompanyFixture(paths: LxdRunnerBootstrapPaths, started: stri
 	const gid = process.getgid?.() ?? 0;
 	await runLxdRunnerBootstrap({
 		paths,
+		identityRuntimeState: async () => fixtureState,
 		expectedRootUid: uid,
 		expectedRootGid: gid,
 		serviceIdentity: { uid, gid },
@@ -230,6 +268,7 @@ describe("LXD runner guest bootstrap", () => {
 
 		await runLxdRunnerBootstrap({
 			paths,
+			identityRuntimeState: async () => fixtureState,
 			expectedRootUid: uid,
 			expectedRootGid: gid,
 			serviceIdentity: { uid, gid },
@@ -268,6 +307,7 @@ describe("LXD runner guest bootstrap", () => {
 		await expect(
 			runLxdRunnerBootstrap({
 				paths,
+				identityRuntimeState: async () => fixtureState,
 				expectedRootUid: process.getuid?.() ?? 0,
 				expectedRootGid: process.getgid?.() ?? 0,
 				serviceIdentity: { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 },
@@ -294,6 +334,7 @@ describe("LXD runner guest bootstrap", () => {
 		await expect(
 			runLxdRunnerBootstrap({
 				paths,
+				identityRuntimeState: async () => fixtureState,
 				expectedRootUid: uid,
 				expectedRootGid: gid,
 				serviceIdentity: { uid, gid },
@@ -332,6 +373,7 @@ describe("LXD native login guest bootstrap", () => {
 
 		await runLxdNativeLoginBootstrap({
 			paths,
+			identityRuntimeState: async () => ({ ...fixtureState, keySha256: null, canInitialize: true }),
 			expectedRootUid: uid,
 			expectedRootGid: gid,
 			nativeServiceIdentity: { uid, gid },
@@ -347,6 +389,32 @@ describe("LXD native login guest bootstrap", () => {
 		});
 		expect((await readFile(paths.identityMasterKey, "utf-8")).trim()).toMatch(/^[A-Za-z0-9_-]{43}$/);
 		expect((await stat(join(root, "native"))).mode & 0o777).toBe(0o700);
+	});
+
+	it("stops before key initialization or provider sign-in when recovery is not configured", async () => {
+		const { paths } = await loginFixture();
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		const started: string[] = [];
+		await expect(
+			runLxdNativeLoginBootstrap({
+				paths,
+				expectedRootUid: uid,
+				expectedRootGid: gid,
+				nativeServiceIdentity: { uid, gid },
+				identityRuntimeState: async () => ({
+					...fixtureState,
+					keySha256: null,
+					canInitialize: true,
+					recoveryConfiguration: null,
+				}),
+				startService: async (service) => {
+					started.push(service);
+				},
+			}),
+		).rejects.toThrow("configured cloud recovery authority");
+		expect(started).toEqual([]);
+		await expect(readFile(paths.identityMasterKey)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
 	it("rejects unknown configuration fields and extra guest credentials", async () => {
@@ -371,6 +439,7 @@ describe("LXD native login guest bootstrap", () => {
 		await expect(
 			runLxdNativeLoginBootstrap({
 				paths,
+				identityRuntimeState: async () => fixtureState,
 				expectedRootUid: uid,
 				expectedRootGid: gid,
 				nativeServiceIdentity: { uid, gid },
@@ -381,6 +450,54 @@ describe("LXD native login guest bootstrap", () => {
 });
 
 describe("governed native company guest bootstrap", () => {
+	it("does not create a replacement key when established identity material is missing", async () => {
+		const paths = await companyFixture();
+		await rm(paths.identityMasterKey);
+		const started: string[] = [];
+		await expect(startCompanyFixture(paths, started)).rejects.toThrow("master key is missing");
+		expect(started).toEqual([]);
+		await expect(readFile(paths.identityMasterKey)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("rejects old volumes after the cloud recovery generation advances", async () => {
+		const paths = await companyFixture();
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		const started: string[] = [];
+		await expect(
+			runLxdRunnerBootstrap({
+				paths,
+				expectedRootUid: uid,
+				expectedRootGid: gid,
+				serviceIdentity: { uid, gid },
+				nativeServiceIdentity: { uid, gid },
+				identityRuntimeState: async () => ({ ...fixtureState, epoch: 1 }),
+				startService: async (service) => {
+					started.push(service);
+				},
+			}),
+		).rejects.toMatchObject({ code: "ENOENT" });
+		expect(started).toEqual([]);
+	});
+
+	it("rejects a missing login key when cloud credential history already exists", async () => {
+		const { paths } = await loginFixture();
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		await expect(
+			runLxdNativeLoginBootstrap({
+				paths,
+				expectedRootUid: uid,
+				expectedRootGid: gid,
+				nativeServiceIdentity: { uid, gid },
+				identityRuntimeState: async () => fixtureState,
+				startService: async () => {
+					throw new Error("Must not start");
+				},
+			}),
+		).rejects.toThrow("master key is missing");
+	});
+
 	it("selects private service identities and retains outcome state across restart", async () => {
 		const paths = await companyFixture();
 		const started: string[] = [];
@@ -458,6 +575,22 @@ describe("governed native company guest bootstrap", () => {
 			mode: 0o600,
 		});
 		await expect(startCompanyFixture(other, [])).rejects.toThrow("credentials must be independent");
+		const sharedSecretBroker = await companyFixture();
+		await writeFile(
+			join(sharedSecretBroker.credentialSource, "qorpera-cloud-secret-runtime"),
+			`${"c".repeat(43)}\n`,
+			{
+				mode: 0o600,
+			},
+		);
+		await expect(startCompanyFixture(sharedSecretBroker, [])).rejects.toThrow("credentials must be independent");
+		const tamperedBrokerCa = await companyFixture();
+		await writeFile(join(tamperedBrokerCa.credentialSource, "qorpera-cloud-secret-ca"), "not the pinned CA\n", {
+			mode: 0o600,
+		});
+		await expect(startCompanyFixture(tamperedBrokerCa, [])).rejects.toThrow(
+			"does not match immutable bootstrap authority",
+		);
 	});
 
 	it("rejects shared workspace or direct company environment settings in the governed lane", async () => {

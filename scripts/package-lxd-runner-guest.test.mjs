@@ -34,6 +34,7 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 				"qorpera-company-runner.service",
 				"qorpera-ephemeral-runner.mjs",
 				"qorpera-ephemeral-runner.service",
+				"qorpera-identity-recovery-restore.mjs",
 				"qorpera-lxd-native-login-bootstrap.mjs",
 				"qorpera-lxd-native-login-bootstrap.service",
 				"qorpera-lxd-runner-bootstrap.mjs",
@@ -101,6 +102,15 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		const companyRunner = await readFile(join(outputRoot, "qorpera-company-runner.service"), "utf-8");
 		assert.match(companyHost, /^User=qorpera-native-company$/m);
 		assert.match(companyHost, /^LoadCredential=qorpera-native-object-token:/m);
+		assert.match(companyHost, /^LoadCredential=qorpera-cloud-secret-runtime:/m);
+		assert.match(companyHost, /^LoadCredential=qorpera-cloud-secret-ca:/m);
+		assert.match(
+			companyHost,
+			/^Environment=NODE_EXTRA_CA_CERTS=\/run\/credentials\/qorpera-native-company-host\.service\/qorpera-cloud-secret-ca$/m,
+		);
+		assert.match(companyHost, /^LoadCredential=qorpera-native-identity-epoch:/m);
+		assert.match(nativeProviderService, /^LoadCredential=qorpera-native-identity-epoch:/m);
+		assert.ok(!manifest.artifacts.some((artifact) => artifact.file === "qorpera-identity-recovery-service.mjs"));
 		assert.match(companyHost, /^RestrictNamespaces=user mnt pid net ipc uts cgroup$/m);
 		assert.match(companyHost, /^ProcSubset=all$/m);
 		assert.match(companyHost, /^ProtectProc=invisible$/m);

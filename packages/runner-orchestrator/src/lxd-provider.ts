@@ -547,15 +547,18 @@ function validateConfig(config: LxdCloudRunnerProviderConfig): void {
 	}
 }
 
-function ensureStep2Work(work: CloudRunnerWork): asserts work is CloudRunnerWork & {
+function ensureStep2Work(
+	work: CloudRunnerWork,
+	governedCompanyRuntime: boolean,
+): asserts work is CloudRunnerWork & {
 	computeIdentityId: string;
 	computeTemplateKey: string;
 	computeTemplateVersion: string;
 	computePolicySha256: string;
 } {
 	validateCloudRunnerWork(work);
-	if (work.workerClass !== "managed_sandbox") {
-		throw new Error("The Step 2 LXD provider does not admit long-lived company computers");
+	if (work.workerClass === "company_computer" && !governedCompanyRuntime) {
+		throw new Error("The Step 2 LXD provider admits company computers only through company-path-v1");
 	}
 	if (
 		!work.computeIdentityId ||
@@ -696,7 +699,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	async acquire(acquisitionId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
 		return this.#exclusive(async () => {
-			ensureStep2Work(work);
+			ensureStep2Work(work, this.#config.nativeCompanyRuntime !== undefined);
 			if (
 				this.#config.nativeCompanyRuntime &&
 				(work.sponsor.authenticationMode !== "native_subscription" ||
@@ -923,6 +926,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				"user.qorpera.bootstrap_sha256": current.lxd.bootstrapSha256,
 				"user.qorpera.compute_policy_sha256": current.lxd.policySha256,
 				"user.qorpera.runner_id": current.runner.runnerId,
+				...(current.runner.logicalComputerId
+					? { "user.qorpera.logical_computer_id": current.runner.logicalComputerId }
+					: {}),
 			},
 			devices: {
 				root: {
@@ -1008,9 +1014,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			runtime &&
 			(runtime.objectGatewayToken === credentials.nativeBridgeToken ||
 				runtime.objectGatewayToken === credentials.activationToken ||
-				runtime.objectGatewayToken === credentials.assignmentToken)
+				runtime.objectGatewayToken === credentials.assignmentToken ||
+				runtime.secretBroker.runtimeToken === credentials.nativeBridgeToken ||
+				runtime.secretBroker.runtimeToken === credentials.activationToken ||
+				runtime.secretBroker.runtimeToken === credentials.assignmentToken)
 		) {
-			throw new Error("Native company object credential must be independent");
+			throw new Error("Governed native runtime credentials must be independent");
 		}
 		const runnerConfig = JSON.stringify(
 			{
@@ -1057,6 +1066,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 								codex_path: runtime.codexPath,
 								binary_sha256: runtime.binarySha256,
 								object_gateway_url: runtime.objectGatewayUrl,
+								secret_broker_url: runtime.secretBroker.origin,
+								secret_broker_ca_sha256: runtime.secretBroker.caSha256,
 								recovery_volume_path: "/var/lib/qorpera-runner",
 							},
 						}
@@ -1065,6 +1076,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				compute_template_key: authority.computeTemplateKey,
 				compute_template_version: authority.computeTemplateVersion,
 				compute_policy_sha256: authority.computePolicySha256,
+				...(authority.runner.logicalComputerId ? { logical_computer_id: authority.runner.logicalComputerId } : {}),
 				runner_config_path: "/var/lib/qorpera-bootstrap/runner-config.json",
 				native_provider_environment_path: "/var/lib/qorpera-bootstrap/native-provider.env",
 				credential_source: "/var/lib/qorpera-bootstrap/credentials",
@@ -1088,6 +1100,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 						`QORPERA_NATIVE_CODEX_FENCE_PATH=${runtime.codexPath}`,
 						`QORPERA_NATIVE_CODEX_FENCE_SHA256=${runtime.binarySha256}`,
 						`QORPERA_NATIVE_OBJECT_GATEWAY_URL=${runtime.objectGatewayUrl}`,
+						`QORPERA_CLOUD_SECRET_BROKER_URL=${runtime.secretBroker.origin}`,
 					]
 				: []),
 			"",
@@ -1117,6 +1130,14 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 						{
 							path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-object-token",
 							content: `${runtime.objectGatewayToken}\n`,
+						},
+						{
+							path: "/var/lib/qorpera-bootstrap/credentials/qorpera-cloud-secret-runtime",
+							content: `${runtime.secretBroker.runtimeToken}\n`,
+						},
+						{
+							path: "/var/lib/qorpera-bootstrap/credentials/qorpera-cloud-secret-ca",
+							content: runtime.secretBroker.caCertificate,
 						},
 					]
 				: []),
@@ -1195,6 +1216,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			instance.config["user.qorpera.bootstrap_sha256"] !== journal.lxd.bootstrapSha256 ||
 			instance.config["user.qorpera.compute_policy_sha256"] !== journal.lxd.policySha256 ||
 			instance.config["user.qorpera.runner_id"] !== journal.runner.runnerId ||
+			instance.config["user.qorpera.logical_computer_id"] !== journal.runner.logicalComputerId ||
 			root?.type !== "disk" ||
 			root.path !== "/" ||
 			root.pool !== journal.lxd.storagePool ||
@@ -1325,6 +1347,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			"user.qorpera.run_id": journal.acquisitionId,
 			"user.qorpera.profile_id": company.profileId,
 			"user.qorpera.runner_id": journal.runner.runnerId,
+			...(journal.runner.logicalComputerId
+				? { "user.qorpera.logical_computer_id": journal.runner.logicalComputerId }
+				: {}),
 			"user.qorpera.compute_identity_id": journal.runner.computeIdentityId,
 			"user.qorpera.provider_adapter": this.adapterId,
 		};

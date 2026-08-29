@@ -33,6 +33,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 		const permitted: readonly CloudCompanyPathRpc[] = [
 			"qorpera_begin_native_company_execution",
 			"qorpera_describe_company_run_context",
+			"qorpera_list_native_connector_tools",
+			"qorpera_assert_native_connector_operation",
 			"qorpera_read_company_run_context",
 			"qorpera_read_company_path",
 			"qorpera_list_company_paths",
@@ -65,7 +67,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				// must still fail closed for admission, reads, receipts and commits.
 				if (
 					response.status === 204 &&
-					(method === "qorpera_assert_company_path_reads" || method === "qorpera_verify_company_path_file")
+					(method === "qorpera_assert_company_path_reads" ||
+						method === "qorpera_assert_native_connector_operation" ||
+						method === "qorpera_verify_company_path_file")
 				)
 					return null;
 				const maximum =

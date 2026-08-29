@@ -22,6 +22,7 @@ import {
 import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
+import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 
 type NativeCompanyControl = CloudNativeToolAuthorityReader &
 	CloudNativeToolOperationControlPlane &
@@ -43,6 +44,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #sha256: string;
 	readonly #timeoutMs: number;
 	readonly #isolation: NativeIsolationConfiguration | undefined;
+	readonly #secretBroker: CloudSecretOperationClient | undefined;
 
 	constructor(options: {
 		controlPlane: NativeCompanyControl;
@@ -56,6 +58,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		binarySha256: string;
 		timeoutMs?: number;
 		isolation?: NativeIsolationConfiguration;
+		secretBroker?: CloudSecretOperationClient;
 	}) {
 		this.#control = options.controlPlane;
 		this.#paths = options.pathControl;
@@ -64,6 +67,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#sha256 = options.binarySha256;
 		this.#timeoutMs = options.timeoutMs ?? 300_000;
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
+		this.#secretBroker = options.secretBroker;
 	}
 
 	async execute(request: NativeCompanyExecutionRequest, identityRoot: string, signal: AbortSignal) {
@@ -89,6 +93,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			),
 			binding,
 		);
+		const connectorDescriptors = this.#secretBroker
+			? await describeCloudSecretTools(this.#paths, binding, signal)
+			: [];
 		const gateway = new CloudCompanyPathGateway({
 			binding,
 			identity: context.identity,
@@ -165,7 +172,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				runtimeInstructions: CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 				signal,
 				timeoutMs: this.#timeoutMs,
-				tools: (identity) => {
+				tools: (identity, operations) => {
 					if (
 						Object.entries(context.identity).some(
 							([key, value]) => identity[key as keyof typeof identity] !== value,
@@ -176,6 +183,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						tools: [
 							...gateway.tools(),
 							cloudCompanyContextTool(context, binding, this.#paths),
+							...(this.#secretBroker
+								? cloudSecretTools({
+										descriptors: connectorDescriptors,
+										binding,
+										control: this.#paths,
+										operations,
+										broker: this.#secretBroker,
+									})
+								: []),
 							...(identity.sessionId ? [send] : []),
 						],
 						assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),

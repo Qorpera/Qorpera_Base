@@ -15,12 +15,18 @@ let turnParameters;
 const companyOutputs = [];
 const companyCalls = mode === "company-silent" || mode === "company-no-send"
 	? [{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } }]
-	: [
-		{ tool: "send_message", arguments: { idempotencyKey: "progress", text: "Checking the company note.", phase: "progress" } },
-		{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } },
-		{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The company note has been checked.", phase: "final" } },
-		{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The company note has been checked.", phase: "final" } },
-	];
+	: mode === "company-secret"
+		? [
+			{ tool: "send_message", arguments: { idempotencyKey: "progress", text: "Filing the company issue.", phase: "progress" } },
+			{ tool: "linear_issue_create", arguments: { idempotencyKey: "login-broken", input: { title: "Login is broken" } } },
+			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The company issue was filed.", phase: "final" } },
+		]
+		: [
+			{ tool: "send_message", arguments: { idempotencyKey: "progress", text: "Checking the company note.", phase: "progress" } },
+			{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } },
+			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The company note has been checked.", phase: "final" } },
+			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The company note has been checked.", phase: "final" } },
+		];
 const companyCall = (index) => write({ id: `company_request_${index}`, method: "item/tool/call", params: {
 	threadId, turnId, callId: `company_call_${index}`, namespace: "qorpera", ...companyCalls[index],
 } });

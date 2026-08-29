@@ -33,7 +33,7 @@ function buttons() {
 	element("save").textContent = draftIntent ? "Retry this exact save" : "Save to company";
 	element("refresh").textContent = draftIntent ? "Check current file" : "Refresh";
 	element("content").disabled = busy || !selected || !canWrite || selected.executable || Boolean(draftIntent);
-	for (const id of ["refresh", "open", "up", "morePaths", "moreReviews", "back"]) element(id).disabled = busy;
+	for (const id of ["refresh", "open", "up", "morePaths", "moreReviews", "back", "recovery"]) element(id).disabled = busy;
 	for (const id of ["approve", "skip"]) element(id).disabled = busy || !canWrite || !review;
 }
 
@@ -150,6 +150,7 @@ async function save(operation) {
 }
 
 element("open").onclick = () => work(async () => { if (canLeave()) await open(element("path").value); });
+element("recovery").onclick = () => work(() => request({ method: "recovery" }));
 element("path").onkeydown = (event) => { if (event.key === "Enter") element("open").click(); };
 element("path").oninput = buttons;
 element("content").oninput = () => { dirty = true; buttons(); };

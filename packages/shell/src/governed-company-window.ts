@@ -8,6 +8,7 @@ import type {
 	CloudMemberCompanyFileClient,
 	CloudMemberCompanyProposal,
 } from "./cloud-member-company-editor.ts";
+import { openIdentityRecoveryWindow } from "./identity-recovery-window.ts";
 import { lockDownRendererSession, lockDownRendererWebContents } from "./renderer-boundary.ts";
 
 type Review = CloudMemberCompanyCommand | CloudMemberCompanyProposal;
@@ -64,6 +65,7 @@ export async function openGovernedCompanyWindow(options: {
 	const reviews = new Map<string, Review>();
 	const previewed = new Map<string, string>();
 	let active = 0;
+	let recoveryWindow: BrowserWindow | null = null;
 	const remember = (targets: Review[]): void => {
 		for (const target of targets) {
 			const key = "commandId" in target ? `edit:${target.commandId}` : `proposal:${target.proposalId}`;
@@ -95,7 +97,19 @@ export async function openGovernedCompanyWindow(options: {
 				const signal = lifetime.signal;
 				let result: unknown;
 				if (input.method === "info") result = { title: options.title, canWrite: options.canWrite };
-				else if (input.method === "list") {
+				else if (input.method === "recovery") {
+					if (Object.keys(input).length !== 1) throw new Error("Invalid recovery window request");
+					if (recoveryWindow && !recoveryWindow.isDestroyed()) recoveryWindow.show();
+					else
+						recoveryWindow = await openIdentityRecoveryWindow({
+							owner: window,
+							directory: options.directory,
+							title: options.title,
+							client: options.client.identityRecovery,
+							current: () => !window.isDestroyed() && options.current(),
+						});
+					result = { opened: true };
+				} else if (input.method === "list") {
 					if (
 						typeof input.path !== "string" ||
 						(input.after !== null && typeof input.after !== "string") ||
