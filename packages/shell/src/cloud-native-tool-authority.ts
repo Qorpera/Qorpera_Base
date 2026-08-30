@@ -1,10 +1,12 @@
 import { performance } from "node:perf_hooks";
+import { CLOUD_RUNTIME_MODEL_POLICY, type CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 
 export const CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA = "qorpera.native-tool-authority/v1";
 export const CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 5_000;
 const REFRESH_MS = 10_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256 = /^[0-9a-f]{64}$/;
 
 /** Host-only binding. No field in this object is a model-selectable tool argument. */
 export interface CloudNativeToolBinding {
@@ -39,6 +41,12 @@ export interface CloudNativeToolIdentity {
 	readonly sponsorVersion: number;
 	readonly providerConnectionId: string;
 	readonly providerConnectionVersion: number;
+	readonly audienceKind: "company" | "member_private";
+	readonly audienceUserId: string | null;
+	readonly runtimeBundleId: string;
+	readonly runtimeBundleSha256: string;
+	readonly reasoningEffort: CloudRuntimeReasoningEffort;
+	readonly reasoningPolicySha256: string;
 	readonly provider: "openai";
 	readonly nativeHarness: "codex-cli";
 	readonly model: string;
@@ -107,8 +115,9 @@ export function parseCloudNativeToolAuthority(
 		"requesterUserId",
 		"sponsorBindingId",
 		"providerConnectionId",
+		"runtimeBundleId",
 	] as const;
-	const nullableUuidKeys = ["sessionId", "sponsorUserId"] as const;
+	const nullableUuidKeys = ["sessionId", "sponsorUserId", "audienceUserId"] as const;
 	const versionKeys = ["staffVersion", "sponsorVersion", "providerConnectionVersion"] as const;
 	if (
 		input.schema !== CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA ||
@@ -121,9 +130,29 @@ export function parseCloudNativeToolAuthority(
 			(key) => identity[key] !== null && (typeof identity[key] !== "string" || !UUID.test(identity[key] as string)),
 		) ||
 		versionKeys.some((key) => !Number.isSafeInteger(identity[key]) || (identity[key] as number) < 1) ||
+		!(["company", "member_private"] as const).includes(identity.audienceKind as "company" | "member_private") ||
+		typeof identity.runtimeBundleSha256 !== "string" ||
+		!SHA256.test(identity.runtimeBundleSha256) ||
+		identity.reasoningEffort !== CLOUD_RUNTIME_MODEL_POLICY.effort ||
+		typeof identity.reasoningPolicySha256 !== "string" ||
+		!SHA256.test(identity.reasoningPolicySha256) ||
+		(identity.audienceKind === "company" && identity.audienceUserId !== null) ||
+		(identity.audienceKind === "member_private" &&
+			(identity.audienceUserId === null || identity.audienceUserId !== identity.requesterUserId)) ||
 		Object.keys(identity).some(
 			(key) =>
-				![...uuidKeys, ...nullableUuidKeys, ...versionKeys, "provider", "nativeHarness", "model"].includes(key),
+				![
+					...uuidKeys,
+					...nullableUuidKeys,
+					...versionKeys,
+					"audienceKind",
+					"runtimeBundleSha256",
+					"reasoningEffort",
+					"reasoningPolicySha256",
+					"provider",
+					"nativeHarness",
+					"model",
+				].includes(key),
 		) ||
 		[
 			"leaseId",
@@ -140,10 +169,18 @@ export function parseCloudNativeToolAuthority(
 		throw new Error("Cloud tool authority does not match its run");
 	// Build a closed copy so extra data and references cannot become provenance.
 	const projected = Object.fromEntries(
-		[...uuidKeys, ...nullableUuidKeys, ...versionKeys, "provider", "nativeHarness", "model"].map((key) => [
-			key,
-			identity[key],
-		]),
+		[
+			...uuidKeys,
+			...nullableUuidKeys,
+			...versionKeys,
+			"audienceKind",
+			"runtimeBundleSha256",
+			"reasoningEffort",
+			"reasoningPolicySha256",
+			"provider",
+			"nativeHarness",
+			"model",
+		].map((key) => [key, identity[key]]),
 	) as unknown as CloudNativeToolIdentity;
 	return Object.freeze({
 		schema: CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA,

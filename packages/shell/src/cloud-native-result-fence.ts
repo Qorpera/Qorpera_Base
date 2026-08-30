@@ -2,7 +2,11 @@ import { chmod, lstat } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { isAbsolute, join } from "node:path";
 import type { JsonValue } from "@qorpera/contracts";
-import type { CloudNativeResultInput, CloudNativeToolBoundary } from "./cloud-native-tool-boundary.ts";
+import type {
+	CloudNativeFencedResult,
+	CloudNativeResultInput,
+	CloudNativeToolBoundary,
+} from "./cloud-native-tool-boundary.ts";
 
 export const CLOUD_NATIVE_RESULT_FENCE_SCHEMA = "qorpera.native-result-fence/v1";
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
@@ -78,6 +82,12 @@ export async function startCloudNativeResultFence(options: {
 	root: string;
 	boundary: CloudNativeToolBoundary;
 	assertSession: (request: CloudNativeFenceRequest) => void;
+	/** Cloud runtime records exact released evidence before a provider request can leave. */
+	recordContextView?: (
+		request: CloudNativeFenceRequest,
+		outputs: readonly CloudNativeFencedResult[],
+		signal: AbortSignal,
+	) => Promise<void>;
 	onFailure: () => void;
 	signal: AbortSignal;
 }): Promise<{ path: string; close: () => Promise<void> }> {
@@ -141,7 +151,10 @@ export async function startCloudNativeResultFence(options: {
 				options.assertSession(request);
 				void options.boundary
 					.fenceNativeResults(request.outputs)
-					.then((outputs) => {
+					.then(async (outputs) => {
+						if (stopped || socket.destroyed || options.signal.aborted) return;
+						options.assertSession(request);
+						await options.recordContextView?.(request, outputs, options.signal);
 						if (stopped || socket.destroyed || options.signal.aborted) return;
 						options.assertSession(request);
 						const wire = Buffer.from(

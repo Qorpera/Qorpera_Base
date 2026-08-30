@@ -9,13 +9,29 @@
 	padding: 15px 2px 12px;
 }
 
-.staff-unpinned-list {
+.staff-unpinned-list,
+.company-organization-list {
 	display: grid;
 	gap: 1px;
 }
 
-.staff-unpinned-list:empty {
+.staff-unpinned-list:empty,
+.company-organization-list:empty {
 	display: none;
+}
+
+.company-organization-inactive {
+	margin-top: 8px;
+	opacity: .76;
+}
+
+.company-organization-section-label {
+	padding: 7px 14px 4px;
+	color: var(--text-soft);
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: .02em;
+	text-transform: uppercase;
 }
 
 .staff-pinned-grid[hidden],

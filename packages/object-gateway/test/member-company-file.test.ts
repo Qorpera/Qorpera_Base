@@ -140,12 +140,12 @@ async function fixture() {
 				snapshotId,
 				entries: state.entries,
 			};
-		if (method === "qorpera_apply_company_path_approval") {
+		if (method === "qorpera_apply_company_path_approval_v3") {
 			state.proposalState = "applied";
 			state.effects++;
 			return { state: "applied", proposalId, snapshotId };
 		}
-		if (method === "qorpera_apply_member_company_path_command") {
+		if (method === "qorpera_apply_member_company_path_command_v3") {
 			if (state.conflict) {
 				state.conflict = false;
 				throw new MemberCompanyHeadConflict();
@@ -251,6 +251,72 @@ describe("cloud-owned human Company File edits", () => {
 			).toString(),
 		).toBe(edit.text);
 		expect(await service.replication.status()).toMatchObject({ pending: 3, blocked: 0 });
+		expect(service.publisher).toHaveBeenCalledWith(
+			"qorpera_apply_member_company_path_command_v3",
+			expect.objectContaining({ p_document_text: null }),
+			expect.anything(),
+		);
+	});
+
+	it("passes exact verified organization bytes only to the organization-aware publisher", async () => {
+		const service = await fixture();
+		const formation = JSON.stringify({
+			schema: "qorpera.company-formation/v1",
+			formationId: commandId,
+			cofounderStaffAgentId: version,
+			state: "source_inventory",
+			status: "active",
+			revision: 1,
+		});
+		expect(
+			(
+				await service.request("edits", {
+					...edit,
+					path: "Organization/Formation.json",
+					text: formation,
+				})
+			).status,
+		).toBe(200);
+		expect(service.publisher).toHaveBeenCalledWith(
+			"qorpera_apply_member_company_path_command_v3",
+			expect.objectContaining({ p_document_text: formation }),
+			expect.anything(),
+		);
+	});
+
+	it("passes exact canonical agent bytes to the same atomic projection transaction", async () => {
+		const service = await fixture();
+		const agentId = "29500000-0000-4000-8000-000000000070";
+		const document = JSON.stringify({
+			schema: "qorpera.company-agent/v1",
+			agentId,
+			revision: 1,
+			displayName: "Operations",
+			role: "Own operations",
+			hireOverlay: { charter: "Keep the company operating.", templateId: null },
+			appearance: { color: "blue", shape: "round", creature: null },
+			modelPolicy: { provider: null, modelId: null },
+			reasoningPolicy: { effort: "low" },
+			grants: { department: null, projects: [], rooms: [], resources: [] },
+			startupInstructions: "Begin the assigned work once.",
+			employmentStatus: "active",
+			lifecycleState: "setup",
+			createdAt: "2026-08-29T08:00:00.000Z",
+		});
+		expect(
+			(
+				await service.request("edits", {
+					...edit,
+					path: `organization/agents/${agentId}.json`,
+					text: document,
+				})
+			).status,
+		).toBe(200);
+		expect(service.publisher).toHaveBeenCalledWith(
+			"qorpera_apply_member_company_path_command_v3",
+			expect.objectContaining({ p_document_text: document }),
+			expect.anything(),
+		);
 	});
 
 	it("recovers a lost acknowledgement without staging or applying a second effect", async () => {
@@ -283,7 +349,7 @@ describe("cloud-owned human Company File edits", () => {
 		expect(
 			vi
 				.mocked(service.publisher)
-				.mock.calls.filter(([name]) => name === "qorpera_apply_member_company_path_command"),
+				.mock.calls.filter(([name]) => name === "qorpera_apply_member_company_path_command_v3"),
 		).toHaveLength(2);
 	});
 
@@ -291,7 +357,7 @@ describe("cloud-owned human Company File edits", () => {
 		"qorpera_begin_member_company_path_command",
 		"qorpera_stage_member_company_path_object",
 		"qorpera_prepare_member_company_path_command",
-		"qorpera_apply_member_company_path_command",
+		"qorpera_apply_member_company_path_command_v3",
 	])("fails closed when authority is denied at %s", async (method) => {
 		const service = await fixture();
 		service.state.denyMethod = method;
@@ -344,7 +410,49 @@ describe("cloud-owned human Company File edits", () => {
 		).toBe(200);
 		expect(service.state.effects).toBe(1);
 		expect(vi.mocked(service.publisher).mock.calls.map(([method]) => method)).toContain(
-			"qorpera_apply_company_path_approval",
+			"qorpera_apply_company_path_approval_v3",
+		);
+	});
+
+	it("passes an approved organization proposal's exact stored bytes to the projection transaction", async () => {
+		const service = await fixture();
+		const document = Buffer.from(
+			JSON.stringify({
+				schema: "qorpera.company-formation/v1",
+				formationId: commandId,
+				cofounderStaffAgentId: version,
+				state: "source_inventory",
+				status: "active",
+				revision: 1,
+			}),
+		);
+		const digest = createHash("sha256").update(document).digest("hex");
+		service.state.proposalPlan = {
+			schema: "qorpera.company-path-mutation/v1",
+			operationKey: "native-formation-proposal",
+			path: "organization/formation.json",
+			expectedVersion: null,
+			entry: {
+				path: "organization/formation.json",
+				kind: "file",
+				executable: false,
+				file: {
+					manifestSha256: "c".repeat(64),
+					fileSha256: digest,
+					bytes: document.length,
+					mediaType: "application/octet-stream",
+				},
+			},
+		};
+		await service.store.put(companyId, digest, document);
+		expect(
+			(await service.request(`proposals/${proposalId}/review`, { planSha256: "b".repeat(64), decision: "approve" }))
+				.status,
+		).toBe(200);
+		expect(service.publisher).toHaveBeenCalledWith(
+			"qorpera_apply_company_path_approval_v3",
+			expect.objectContaining({ p_document_text: document.toString("utf8") }),
+			expect.anything(),
 		);
 	});
 
@@ -413,7 +521,7 @@ describe("human and publisher transport separation", () => {
 			fetch: async () => Response.json({ code }, { status }),
 		});
 		const error = await authority
-			.publisher("qorpera_apply_member_company_path_command", {}, new AbortController().signal)
+			.publisher("qorpera_apply_member_company_path_command_v3", {}, new AbortController().signal)
 			.catch((failure: unknown) => failure);
 		expect(error).toBeInstanceOf(ObjectDependencyError);
 		expect(error).toMatchObject({ status: 409 });

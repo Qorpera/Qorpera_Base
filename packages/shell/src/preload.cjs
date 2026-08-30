@@ -144,7 +144,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	staffBootstrap: bootstrapStaff,
 	staffUpdate: (staffAgentId, update) => ipcRenderer.invoke("staff:update", staffAgentId, update),
 	staffArchive: (staffAgentId) => ipcRenderer.invoke("staff:archive", staffAgentId),
-	staffDelete: (staffAgentId, options) => ipcRenderer.invoke("staff:delete", staffAgentId, options),
+	staffDelete: (staffAgentId) => ipcRenderer.invoke("staff:delete", staffAgentId),
 	staffRestore: (staffAgentId) => ipcRenderer.invoke("staff:restore", staffAgentId),
 	staffOpen: openStaff,
 	copyStaffConversationId: (staffAgentId) => ipcRenderer.invoke("staff:copy-conversation-id", staffAgentId),

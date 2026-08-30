@@ -1,6 +1,7 @@
 import type { StaffAgent } from "@qorpera/company/company-staff";
 import type { ExecutionIdentity, JsonValue } from "@qorpera/contracts";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./cloud-company-organization.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -116,6 +117,8 @@ export interface HostedProfileTeam {
 	invitations: HostedProfileInvitation[];
 }
 
+export type HostedSessionAudience = { kind: "company" } | { kind: "member_private"; userId: string };
+
 export interface HostedSession {
 	sessionId: string;
 	/** Stable trail identity chosen by the originating kernel. */
@@ -130,6 +133,8 @@ export interface HostedSession {
 	companySnapshotId?: string;
 	/** Immutable hosted staff configuration version used at session start. */
 	staffVersion?: number;
+	/** Server-owned visibility boundary. Private staff trails never become company-wide chat state. */
+	audience: HostedSessionAudience;
 	status: "open" | "closed";
 	createdByUserId: string;
 	createdAt: string;
@@ -301,6 +306,17 @@ export interface HostedCompanyProposalCommentPage {
 export interface CreatedHostedCompany {
 	profile: HostedProfile;
 	companyFile: HostedCompanyFile;
+	organization: HostedCompanyOrganizationBootstrap;
+}
+
+export interface HostedCompanyOrganizationBootstrap {
+	schema: "qorpera.company-organization-bootstrap/v1";
+	cofounder: {
+		staffAgentId: string;
+		formationId: string;
+		memberSessionId: string;
+	};
+	formationState: "source_inventory";
 }
 
 export interface HostedCompanySubstrateVersion {
@@ -607,6 +623,8 @@ export interface HostedPrimaryTransport {
 		p_company_name: string;
 		p_contract_version: number;
 	}): Promise<unknown>;
+	getCompanyOrganizationBootstrap(input: { p_profile_id: string }): Promise<unknown>;
+	getCompanyOrganization(input: { p_profile_id: string }): Promise<unknown>;
 	createProfile(input: {
 		p_profile_name: string;
 		p_environment_name: string;
@@ -963,6 +981,8 @@ export interface HostedPrimaryDatabase {
 				};
 				Returns: JsonValue;
 			};
+			qorpera_company_organization_bootstrap: { Args: { p_profile_id: string }; Returns: JsonValue };
+			qorpera_company_organization_json: { Args: { p_profile_id: string }; Returns: JsonValue };
 			qorpera_create_hosted_profile: {
 				Args: {
 					p_profile_name: string;
@@ -1479,6 +1499,22 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 
 	async createCompany(input: Parameters<HostedPrimaryTransport["createCompany"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_create_cloud_company", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async getCompanyOrganizationBootstrap(
+		input: Parameters<HostedPrimaryTransport["getCompanyOrganizationBootstrap"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_company_organization_bootstrap", input);
+		if (error) throw rpcError(error);
+		return data;
+	}
+
+	async getCompanyOrganization(
+		input: Parameters<HostedPrimaryTransport["getCompanyOrganization"]>[0],
+	): Promise<unknown> {
+		const { data, error } = await this.client.rpc("qorpera_company_organization_json", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -2133,6 +2169,15 @@ function record(value: unknown, label: string): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
+function exactRecord(value: unknown, label: string, keys: readonly string[]): Record<string, unknown> {
+	const input = record(value, label);
+	const expected = new Set(keys);
+	if (Object.keys(input).length !== expected.size || Object.keys(input).some((key) => !expected.has(key))) {
+		throw new Error(`Hosted primary returned invalid ${label}`);
+	}
+	return input;
+}
+
 function uuid(value: unknown, label: string): string {
 	if (typeof value !== "string" || !UUID_PATTERN.test(value))
 		throw new Error(`Hosted primary returned invalid ${label}`);
@@ -2325,14 +2370,54 @@ function parseAccountEntitlement(value: unknown): HostedAccountEntitlement {
 	};
 }
 
-function parseCreatedCompany(value: unknown): CreatedHostedCompany {
+function parseCreatedCompany(value: unknown): CreatedHostedCompany | undefined {
 	const input = record(value, "created company");
 	const profile = parseProfile(input);
 	const companyFile = parseCompanyFile(input.company_file);
 	if (profile.profileId !== companyFile.profileId || profile.environmentId !== companyFile.environmentId) {
 		throw new Error("Hosted primary returned a Company File outside the created company");
 	}
-	return { profile, companyFile };
+	if (
+		(input.bootstrap_state === "queued" || input.bootstrap_state === "leased") &&
+		(input.organization === null || input.organization === undefined)
+	) {
+		return undefined;
+	}
+	if (input.bootstrap_state === "blocked") {
+		throw new Error("Hosted primary could not provision the canonical Company File");
+	}
+	if (input.bootstrap_state !== "completed" || !companyFile.headSnapshotId || companyFile.state !== "ready") {
+		throw new Error("Hosted primary returned an invalid company bootstrap state");
+	}
+	return { profile, companyFile, organization: parseCompanyOrganizationBootstrap(input.organization) };
+}
+
+function parseCompanyOrganizationBootstrap(value: unknown): HostedCompanyOrganizationBootstrap {
+	const organization = exactRecord(value, "company organization bootstrap", [
+		"schema",
+		"cofounder",
+		"formation_state",
+	]);
+	if (
+		organization.schema !== "qorpera.company-organization-bootstrap/v1" ||
+		organization.formation_state !== "source_inventory"
+	) {
+		throw new Error("Hosted primary returned invalid company organization bootstrap");
+	}
+	const cofounder = exactRecord(organization.cofounder, "company Co-Founder bootstrap", [
+		"staff_agent_id",
+		"formation_id",
+		"member_session_id",
+	]);
+	return {
+		schema: "qorpera.company-organization-bootstrap/v1",
+		cofounder: {
+			staffAgentId: uuid(cofounder.staff_agent_id, "company Co-Founder staff id"),
+			formationId: uuid(cofounder.formation_id, "company formation id"),
+			memberSessionId: uuid(cofounder.member_session_id, "company Co-Founder member session id"),
+		},
+		formationState: "source_inventory",
+	};
 }
 
 function parseInvitationDelivery(value: unknown): HostedProfileInvitation["delivery"] {
@@ -2440,6 +2525,18 @@ function requireTrue(value: unknown, label: string): void {
 	if (value !== true) throw new Error(`Hosted primary returned invalid ${label}`);
 }
 
+function parseSessionAudience(input: Record<string, unknown>): HostedSessionAudience {
+	const audienceKind = input.audience_kind;
+	const audienceUserId = input.audience_user_id;
+	if (audienceKind === "company" && (audienceUserId === null || audienceUserId === undefined)) {
+		return { kind: "company" };
+	}
+	if (audienceKind === "member_private" && typeof audienceUserId === "string") {
+		return { kind: "member_private", userId: uuid(audienceUserId, "session audience user id") };
+	}
+	throw new Error("Hosted primary returned invalid session audience");
+}
+
 function parseSession(value: unknown): HostedSession {
 	const input = record(value, "session");
 	const status = input.status;
@@ -2476,6 +2573,7 @@ function parseSession(value: unknown): HostedSession {
 		...(staffVersion === null || staffVersion === undefined
 			? {}
 			: { staffVersion: boundedInteger(staffVersion, "session staff version", 1, Number.MAX_SAFE_INTEGER) }),
+		audience: parseSessionAudience(input),
 		status,
 		createdByUserId: uuid(input.created_by_user_id, "session creator id"),
 		createdAt: timestamp(input.created_at, "session creation time"),
@@ -3241,6 +3339,7 @@ export interface StaffSessionHandle {
 	title: string;
 	companySnapshotId?: string;
 	staffVersion?: number;
+	audience: HostedSessionAudience;
 	created: boolean;
 	createdByUserId: string;
 	createdAt: string;
@@ -3360,6 +3459,7 @@ function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
 		...(staffVersion === null || staffVersion === undefined
 			? {}
 			: { staffVersion: boundedInteger(staffVersion, "Session staff version", 1, Number.MAX_SAFE_INTEGER) }),
+		audience: parseSessionAudience(payload),
 		created: payload.created === true,
 		createdByUserId: uuid(payload.created_by_user_id, "Session creator"),
 		createdAt: timestamp(payload.created_at, "Session creation time"),
@@ -3641,13 +3741,30 @@ export class QorperaHostedPrimary {
 		if (!Number.isSafeInteger(input.contractVersion) || input.contractVersion < 1) {
 			throw new Error("Environment contract version must be a positive integer");
 		}
-		return parseCreatedCompany(
-			await this.transport.createCompany({
-				p_client_creation_id: input.clientCreationId,
-				p_company_name: requiredText(input.companyName, "Company name", MAX_PROFILE_NAME_LENGTH),
-				p_contract_version: input.contractVersion,
-			}),
+		const request = {
+			p_client_creation_id: input.clientCreationId,
+			p_company_name: requiredText(input.companyName, "Company name", MAX_PROFILE_NAME_LENGTH),
+			p_contract_version: input.contractVersion,
+		};
+		const deadline = Date.now() + 120_000;
+		while (true) {
+			const created = parseCreatedCompany(await this.transport.createCompany(request));
+			if (created) return created;
+			if (Date.now() >= deadline) throw new Error("Canonical Company File bootstrap did not finish in time");
+			await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 250));
+		}
+	}
+
+	async getCompanyOrganizationBootstrap(profileId: string): Promise<HostedCompanyOrganizationBootstrap> {
+		requiredUuid(profileId, "Profile id");
+		return parseCompanyOrganizationBootstrap(
+			await this.transport.getCompanyOrganizationBootstrap({ p_profile_id: profileId }),
 		);
+	}
+
+	async getCompanyOrganization(profileId: string): Promise<HostedCompanyOrganization> {
+		requiredUuid(profileId, "Profile id");
+		return parseHostedCompanyOrganization(await this.transport.getCompanyOrganization({ p_profile_id: profileId }));
 	}
 
 	async createProfile(input: CreateHostedProfileInput): Promise<HostedProfile> {

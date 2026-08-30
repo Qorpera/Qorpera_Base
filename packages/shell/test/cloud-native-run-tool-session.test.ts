@@ -39,8 +39,10 @@ function fixture() {
 	}));
 	const assertContext = vi.fn(async () => undefined);
 	const beginExecution = vi.fn(async () => undefined);
+	const recordContextView = vi.fn(async () => undefined);
 	const tools = vi.fn(() => ({
 		assertContext,
+		recordContextView,
 		tools: [
 			{
 				name: "read_document",
@@ -65,7 +67,7 @@ function fixture() {
 			signal: abort.signal,
 			...patch,
 		});
-	return { ...f, abort, control, execute, tools, assertContext, beginExecution, evidence, start };
+	return { ...f, abort, control, execute, tools, assertContext, beginExecution, recordContextView, evidence, start };
 }
 
 it("uses server-owned identity and model at the native RPC callback boundary", async () => {
@@ -81,6 +83,10 @@ it("uses server-owned identity and model at the native RPC callback boundary", a
 	expect(f.control.describeToolAuthority.mock.calls.length).toBeGreaterThanOrEqual(3);
 	expect(f.assertContext.mock.calls.length).toBeGreaterThanOrEqual(3);
 	expect(f.beginExecution).toHaveBeenCalledOnce();
+	expect(f.recordContextView).toHaveBeenCalledTimes(2);
+	expect(f.recordContextView.mock.invocationCallOrder[0]).toBeGreaterThan(
+		f.beginExecution.mock.invocationCallOrder[0],
+	);
 	expect(f.beginExecution.mock.invocationCallOrder[0]).toBeLessThan(f.execute.mock.invocationCallOrder[0]);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8")) as {
 		threadParameters: { model: string; dynamicTools: unknown };
@@ -99,6 +105,15 @@ it("uses server-owned identity and model at the native RPC callback boundary", a
 	expect(encoded).not.toContain("</tool_result>");
 	expect(JSON.stringify(result)).not.toMatch(/PRIVATE_|tool_result|ignore all/);
 	expect(encoded).not.toContain(f.binding.credentialCapsuleId);
+});
+
+it("does not release a provider request when durable context-view recording fails", async () => {
+	const f = fixture();
+	f.recordContextView.mockRejectedValue(new Error("Context receipt unavailable"));
+	await expect(f.start()).rejects.toThrow("Native result boundary unavailable");
+	expect(f.recordContextView).toHaveBeenCalledOnce();
+	expect(f.execute).not.toHaveBeenCalled();
+	await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it("does not start native execution or build tools without cloud admission", async () => {

@@ -24,6 +24,8 @@ function fixture() {
 	const entries = new Map<string, CloudCompanyTreeEntry>();
 	const versions = new Map<string, string>();
 	const receipts = new Map<string, JsonValue>();
+	const observations = new Map<string, { path: string; version: string | null }>();
+	const confirmations = new Map<string, string>();
 	let snapshotId = randomUUID();
 	const transport: CloudObjectTransport = {
 		put: vi.fn(async (path: string, bytes: Uint8Array) => {
@@ -50,11 +52,15 @@ function fixture() {
 		}
 		expect(args.p_binding).toEqual(binding);
 		expect(args.p_environment_id).toBe(identity.environmentId);
-		if (method === "qorpera_read_company_path") {
+		if (method === "qorpera_read_company_path_v2") {
 			const path = args.p_path as string;
 			const entry = entries.get(path) ?? null;
+			const readObservationId = randomUUID();
+			observations.set(readObservationId, { path, version: versions.get(path) ?? null });
 			return {
 				path,
+				snapshotId,
+				readObservationId,
 				version: versions.get(path) ?? null,
 				entry,
 				companyId: identity.companyId,
@@ -65,9 +71,37 @@ function fixture() {
 			};
 		}
 		if (method === "qorpera_assert_company_path_reads") return null;
-		if (method === "qorpera_list_company_paths")
+		if (method === "qorpera_confirm_company_path_read") {
+			const observation = observations.get(args.p_read_id as string);
+			if (observation && observation.version !== (versions.get(observation.path) ?? null))
+				throw new Error("Company File changed during read");
+			confirmations.set(args.p_read_id as string, args.p_result_sha256 as string);
+			return {
+				schema: "qorpera.company-read-confirmation/v1",
+				readId: args.p_read_id,
+				resultSha256: args.p_result_sha256,
+			};
+		}
+		if (method === "qorpera_record_native_context_view") {
+			const view = args.p_view as {
+				requestId: string;
+				outputs: Array<{ readId: string | null; readSha256: string | null }>;
+			};
+			for (const output of view.outputs)
+				if (output.readId && confirmations.get(output.readId) !== output.readSha256)
+					throw new Error("Read evidence differs");
+			return {
+				schema: "qorpera.native-context-view-receipt/v1",
+				viewId: randomUUID(),
+				requestId: view.requestId,
+				sha256: "c".repeat(64),
+				ordinal: 1,
+			};
+		}
+		if (method === "qorpera_list_company_paths_v2")
 			return {
 				snapshotId,
+				readObservationId: randomUUID(),
 				hasMore: false,
 				nextAfter: null,
 				items: [...entries.values()].map((entry) => ({
@@ -135,6 +169,8 @@ function fixture() {
 		entries,
 		versions,
 		receipts,
+		observations,
+		confirmations,
 		transport,
 		store,
 		call,
@@ -238,7 +274,10 @@ describe("cloud Company File path gateway", () => {
 			nextOffset: null,
 		});
 		expect(envelope.content.text).not.toContain("manifestSha256");
-		expect(f.call.mock.calls.filter(([method]) => method === "qorpera_read_company_path")).toHaveLength(2);
+		expect(f.call.mock.calls.filter(([method]) => method === "qorpera_read_company_path_v2")).toHaveLength(1);
+		expect(f.call.mock.calls.filter(([method]) => method === "qorpera_confirm_company_path_read")).toHaveLength(1);
+		expect(envelope.provenance.companyReadId).toBe(JSON.parse(envelope.content.text).readObservationId);
+		expect(f.confirmations.get(envelope.provenance.companyReadId)).toBe(envelope.content.sha256);
 		await f.gateway.assertReadableContext(f.signal);
 		expect(f.call).toHaveBeenLastCalledWith(
 			"qorpera_assert_company_path_reads",
@@ -263,15 +302,13 @@ describe("cloud Company File path gateway", () => {
 		for (const revoke of [false, true]) {
 			const f = fixture();
 			await f.seed("note.md", "private result");
-			let reads = 0;
-			f.overrides.set("qorpera_read_company_path", async (args) => {
-				if (++reads === 2) {
-					if (revoke) throw new Error("no longer authorized");
-					f.versions.set("note.md", randomUUID());
-				}
-				return f.defaultCall("qorpera_read_company_path", args);
+			f.overrides.set("qorpera_confirm_company_path_read", async (args) => {
+				if (revoke) throw new Error("no longer authorized");
+				f.versions.set("note.md", randomUUID());
+				return f.defaultCall("qorpera_confirm_company_path_read", args);
 			});
 			await expect(f.gateway.read("note.md", 0, 64, f.signal)).rejects.toThrow();
+			expect(f.confirmations.size).toBe(0);
 		}
 	});
 
@@ -280,8 +317,8 @@ describe("cloud Company File path gateway", () => {
 		const file = await f.seed("note.md", "valid bytes");
 		f.objects.set(`${f.identity.companyId}/${file.fileSha256}`, Buffer.from("other bytes"));
 		await expect(f.gateway.read("note.md", 0, 64, f.signal)).rejects.toThrow("integrity");
-		f.overrides.set("qorpera_read_company_path", async (args) => ({
-			...((await f.defaultCall("qorpera_read_company_path", args)) as Record<string, unknown>),
+		f.overrides.set("qorpera_read_company_path_v2", async (args) => ({
+			...((await f.defaultCall("qorpera_read_company_path_v2", args)) as Record<string, unknown>),
 			companyId: randomUUID(),
 		}));
 		vi.mocked(f.transport.get).mockClear();
@@ -296,13 +333,80 @@ describe("cloud Company File path gateway", () => {
 		expect(page).toMatchObject({ items: [{ path: "note.md", kind: "file", bytes: 4 }], hasMore: false });
 		expect(JSON.stringify(page)).not.toContain("Sha256");
 		expect(f.transport.get).not.toHaveBeenCalled();
-		f.overrides.set("qorpera_list_company_paths", async () => ({
+		f.overrides.set("qorpera_list_company_paths_v2", async () => ({
 			snapshotId: randomUUID(),
+			readObservationId: randomUUID(),
 			items: [{ path: "secret/child", kind: "file", bytes: 4, version: randomUUID() }],
 			hasMore: false,
 			nextAfter: null,
 		}));
 		await expect(f.gateway.list("", null, null, 10, f.signal)).rejects.toThrow("child");
+	});
+
+	it("records exact delivered read hashes before turn and compaction requests, without storing text", async () => {
+		const f = fixture();
+		await f.seed("note.md", "sensitive company text");
+		const response = await f.boundary.invoke("read-view", "qorpera", "company_read", {
+			path: "note.md",
+			offset: 0,
+			limit: 64,
+		});
+		const inputs = [
+			{ kind: "function_call_output" as const, callId: "read-view", output: response.contentItems[0].text },
+		];
+		const outputs = await f.boundary.fenceNativeResults(inputs);
+		for (const purpose of ["turn", "compaction"] as const)
+			await f.gateway.recordContextView(
+				{
+					schema: "qorpera.native-result-fence/v1",
+					requestId: `${purpose}-view`,
+					threadId: "thread",
+					turnId: "turn",
+					purpose,
+					outputs: inputs,
+				},
+				outputs,
+				f.signal,
+			);
+		const views = f.call.mock.calls.filter(([method]) => method === "qorpera_record_native_context_view");
+		expect(views).toHaveLength(2);
+		expect(JSON.stringify(views)).not.toContain("sensitive company text");
+		const output = (views[0][1].p_view as { outputs: Array<{ readId: string; readSha256: string; sha256: string }> })
+			.outputs[0];
+		expect(output.readSha256).toBe(f.confirmations.get(output.readId));
+		expect(output.sha256).toBe(createHash("sha256").update(outputs[0].output).digest("hex"));
+		f.confirmations.clear();
+		await expect(
+			f.gateway.recordContextView(
+				{
+					schema: "qorpera.native-result-fence/v1",
+					requestId: "unconfirmed",
+					threadId: "thread",
+					turnId: "turn",
+					purpose: "turn",
+					outputs: inputs,
+				},
+				outputs,
+				f.signal,
+			),
+		).rejects.toThrow("evidence differs");
+	});
+
+	it("does not confirm a corrupted or failed transfer, and rejects a mismatched confirmation receipt", async () => {
+		const f = fixture();
+		const file = await f.seed("note.md", "data");
+		const original = f.objects.get(`${f.identity.companyId}/${file.fileSha256}`)!;
+		f.objects.set(`${f.identity.companyId}/${file.fileSha256}`, Buffer.from("xxxx"));
+		await expect(f.gateway.read("note.md", 0, 64, f.signal)).rejects.toThrow();
+		expect(f.confirmations.size).toBe(0);
+		expect(f.call.mock.calls.some(([method]) => method === "qorpera_confirm_company_path_read")).toBe(false);
+		f.objects.set(`${f.identity.companyId}/${file.fileSha256}`, original);
+		f.overrides.set("qorpera_confirm_company_path_read", async () => ({
+			schema: "qorpera.company-read-confirmation/v1",
+			readId: randomUUID(),
+			resultSha256: "a".repeat(64),
+		}));
+		await expect(f.gateway.read("note.md", 0, 64, f.signal)).rejects.toThrow("provenance was not confirmed");
 	});
 
 	it("rechecks the context read set even when native result batches are empty", async () => {

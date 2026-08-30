@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
 import {
@@ -19,9 +20,10 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
+import { type CloudNativeTool, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
+import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 
 type NativeCompanyControl = CloudNativeToolAuthorityReader &
@@ -93,9 +95,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			),
 			binding,
 		);
+		assertCloudRuntimeBundle(context.identity, this.#sha256);
 		const connectorDescriptors = this.#secretBroker
 			? await describeCloudSecretTools(this.#paths, binding, signal)
 			: [];
+		const prompt = composeCloudNativeCompanyPrompt(context);
+		const contextSha256 = createHash("sha256").update(prompt).digest("hex");
 		const gateway = new CloudCompanyPathGateway({
 			binding,
 			identity: context.identity,
@@ -142,10 +147,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const result = await runCloudNativeRunToolSession({
 				binding,
 				controlPlane: this.#control,
-				beginExecution: async (requestSignal) => {
+				beginExecution: async (specification, requestSignal) => {
+					const toolCatalogText = cloudToolJsonText(specification, 256 * 1024);
 					const started = await this.#paths.call(
-						"qorpera_begin_native_company_execution",
-						{ p_binding: binding, p_binary_sha256: this.#sha256 },
+						"qorpera_begin_native_company_execution_v2",
+						{
+							p_binding: binding,
+							p_binary_sha256: this.#sha256,
+							p_runtime_bundle_sha256: context.identity.runtimeBundleSha256,
+							p_reasoning_policy_sha256: context.identity.reasoningPolicySha256,
+							p_tool_catalog_text: toolCatalogText,
+							p_context_sha256: contextSha256,
+							p_context_bytes: Buffer.byteLength(prompt),
+						},
 						requestSignal,
 					);
 					const expected = {
@@ -154,6 +168,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						jobId: binding.jobId,
 						leaseId: binding.leaseId,
 						binarySha256: this.#sha256,
+						runtimeBundleSha256: context.identity.runtimeBundleSha256,
+						reasoningEffort: context.identity.reasoningEffort,
+						reasoningPolicySha256: context.identity.reasoningPolicySha256,
+						toolCatalogSha256: createHash("sha256").update(toolCatalogText).digest("hex"),
+						contextSha256,
+						contextBytes: Buffer.byteLength(prompt),
 					};
 					if (
 						!started ||
@@ -168,7 +188,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				binarySha256: this.#sha256,
 				identityRoot,
 				isolation: this.#isolation,
-				prompt: composeCloudNativeCompanyPrompt(context),
+				prompt,
 				runtimeInstructions: CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 				signal,
 				timeoutMs: this.#timeoutMs,
@@ -195,6 +215,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							...(identity.sessionId ? [send] : []),
 						],
 						assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),
+						recordContextView: (frame, outputs, requestSignal) =>
+							gateway.recordContextView(frame, outputs, requestSignal),
 					};
 				},
 			});

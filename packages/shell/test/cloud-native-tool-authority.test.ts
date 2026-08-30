@@ -117,6 +117,8 @@ it.each([
 	"sponsorUserId",
 	"sessionId",
 	"providerConnectionId",
+	"audienceUserId",
+	"runtimeBundleId",
 ])("stops instead of changing the admitted %s mid-turn", async (key) => {
 	const { run, reader, authority } = await admit();
 	reader.describeToolAuthority.mockResolvedValueOnce({
@@ -125,6 +127,26 @@ it.each([
 	});
 	await expect(run.assertActive(run.signal)).rejects.toThrow("Cloud tool authority unavailable");
 	expect(run.signal.aborted).toBe(true);
+});
+
+it("binds private runs to the exact requesting member and runtime bundle", () => {
+	const { binding, authority } = nativeToolAuthorityFixture();
+	const privateIdentity = {
+		...authority.identity,
+		audienceKind: "member_private" as const,
+		audienceUserId: authority.identity.requesterUserId,
+	};
+	expect(parseCloudNativeToolAuthority({ ...authority, identity: privateIdentity }, binding).identity).toEqual(
+		privateIdentity,
+	);
+	for (const patch of [
+		{ audienceUserId: authority.identity.sponsorUserId },
+		{ audienceKind: "company", audienceUserId: authority.identity.requesterUserId },
+		{ runtimeBundleSha256: "z".repeat(64) },
+	])
+		expect(() =>
+			parseCloudNativeToolAuthority({ ...authority, identity: { ...privateIdentity, ...patch } }, binding),
+		).toThrow();
 });
 
 it("bounds an uncooperative authority transport before admission", async () => {

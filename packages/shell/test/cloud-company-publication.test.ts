@@ -6,7 +6,7 @@ import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CompanyFilePrimary } from "../src/cloud-company-file.ts";
 import { CloudCompanyPublication } from "../src/cloud-company-publication.ts";
-import type { CloudCompanyTreeReference } from "../src/cloud-company-snapshot.ts";
+import { type CloudCompanyTreeReference, captureCloudCompanyTree } from "../src/cloud-company-snapshot.ts";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
 import type {
 	BeginHostedObjectReachabilityGraphInput,
@@ -177,6 +177,26 @@ async function temporaryDirectory(): Promise<string> {
 	return directory;
 }
 
+async function seedCanonicalHead(
+	primary: MemoryCompanyFilePrimary,
+	root: string,
+	objects: CloudContentAddressedStore,
+): Promise<void> {
+	const snapshotId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+	const tree = await captureCloudCompanyTree(root, profileId, objects);
+	primary.snapshots.set(snapshotId, {
+		snapshotId,
+		profileId,
+		environmentId,
+		workspaceId,
+		clientSnapshotId: snapshotId,
+		tree,
+		createdByUserId: actorUserId,
+		createdAt,
+	});
+	primary.headSnapshotId = snapshotId;
+}
+
 afterEach(async () => {
 	for (const directory of temporaryDirectories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
@@ -188,6 +208,8 @@ describe("automatic cloud company publication", () => {
 		scaffoldCompany(root);
 		await mkdir(join(root, "app", "substrates"), { recursive: true });
 		const primary = new MemoryCompanyFilePrimary();
+		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
+		await seedCanonicalHead(primary, root, objects);
 		let debounceCallback: (() => void) | undefined;
 		const timer = setTimeout(() => undefined, 60_000);
 		clearTimeout(timer);
@@ -198,7 +220,7 @@ describe("automatic cloud company publication", () => {
 			profileId,
 			environmentId,
 			primary,
-			objects: new CloudContentAddressedStore(new MemoryObjectTransport()),
+			objects,
 			onCheckpoint: (checkpoint) => {
 				checkpoints.push(checkpoint.changed);
 			},
@@ -210,10 +232,10 @@ describe("automatic cloud company publication", () => {
 		});
 
 		await expect(publication.publishNow()).resolves.toMatchObject({ phase: "healthy" });
-		expect(primary.commitCount).toBe(1);
+		expect(primary.commitCount).toBe(0);
 		await publication.publishNow();
-		expect(primary.commitCount).toBe(1);
-		expect(checkpoints).toEqual([true, false]);
+		expect(primary.commitCount).toBe(0);
+		expect(checkpoints).toEqual([false, false]);
 
 		publication.notifyPathChanged("trail/local.jsonl");
 		expect(debounceCallback).toBeUndefined();
@@ -224,7 +246,7 @@ describe("automatic cloud company publication", () => {
 		await vi.waitFor(() => expect(publication.lastCheckpoint()).toMatchObject({ changed: true }), {
 			timeout: 15_000,
 		});
-		expect(primary.commitCount).toBe(2);
+		expect(primary.commitCount).toBe(1);
 
 		const localHead = primary.headSnapshotId!;
 		const remoteHead = "99999999-9999-4999-8999-999999999999";
@@ -237,7 +259,7 @@ describe("automatic cloud company publication", () => {
 		});
 		primary.headSnapshotId = remoteHead;
 		await expect(publication.publishNow()).resolves.toMatchObject({ phase: "healthy" });
-		expect(primary.commitCount).toBe(2);
+		expect(primary.commitCount).toBe(1);
 	});
 
 	it("does not clear a newer dirty generation after an older checkpoint finishes", async () => {
@@ -245,8 +267,10 @@ describe("automatic cloud company publication", () => {
 		const userData = await temporaryDirectory();
 		scaffoldCompany(root);
 		await mkdir(join(root, "app", "substrates"), { recursive: true });
-		await writeFile(join(root, "app", "substrates", "market.md"), "first\n", "utf-8");
 		const primary = new MemoryCompanyFilePrimary();
+		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
+		await writeFile(join(root, "app", "substrates", "market.md"), "first\n", "utf-8");
+		await seedCanonicalHead(primary, root, objects);
 		let checkpointRuns = 0;
 		let publication: CloudCompanyPublication;
 		publication = new CloudCompanyPublication({
@@ -255,7 +279,7 @@ describe("automatic cloud company publication", () => {
 			profileId,
 			environmentId,
 			primary,
-			objects: new CloudContentAddressedStore(new MemoryObjectTransport()),
+			objects,
 			runCheckpoint: async (run) => {
 				const result = await run();
 				checkpointRuns += 1;
@@ -268,7 +292,7 @@ describe("automatic cloud company publication", () => {
 		});
 
 		await expect(publication.publishNow()).resolves.toMatchObject({ phase: "healthy" });
-		expect(primary.commitCount).toBe(2);
+		expect(primary.commitCount).toBe(1);
 		expect(checkpointRuns).toBeGreaterThanOrEqual(2);
 		expect(publication.hasPendingWork()).toBe(false);
 	});

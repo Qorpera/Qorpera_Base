@@ -6,9 +6,11 @@
 
 **Ratified company-secret custody:** 2026-08-29
 
+**Organizational operating model ratified:** 2026-08-29
+
 **Scope:** Pure-cloud agent behavior, the live Company File, execution,
-authority, context, tools, computers, workers, memory, routines, rooms, safety,
-and provider integration
+authority, context, tools, computers, workers, memory, routines, rooms,
+Co-Founder formation, departments, projects, safety, and provider integration
 
 Qorpera is ready for launch only when the mandatory acceptance gates in this
 document pass against the deployed cloud runtime. A prompt that describes the
@@ -55,6 +57,12 @@ A company contains:
   subscriptions, credentials, and private scopes;
 - durable staff agents with names, job specifications, memories, conversations,
   skills, routines, and desktops;
+- one seeded company Co-Founder that is the primary human-to-company routing
+  surface without becoming a privileged authority bypass;
+- durable departments with charters, accountable measures, leads, staff,
+  routines, and project portfolios;
+- bounded projects with objectives, definitions of done, teams, source and
+  output objects, and optional coordination rooms;
 - rooms that contain explicit human and agent members;
 - one shared persistent Company Computer per company environment;
 - isolated workers for bounded or higher-risk work;
@@ -101,6 +109,12 @@ versioned, tested, and pinned with the runtime bundle.
 
 Changing only the constitution while leaving incompatible tool schemas or
 provider adapters active is a runtime-contract violation.
+
+A protocol label alone is not an executable bundle pin. Admission MUST bind
+the reviewed implementation, native artifact, and resolved model policy; the
+executing host MUST reject a different bundle before provider work. The exact
+offered tool schemas and descriptions are recorded at launch. A bundle update
+requires a new immutable activation, not relabeling historical runs or inputs.
 
 The runtime has six layers:
 
@@ -170,6 +184,7 @@ identities MAY be different and MUST NOT be collapsed into one “user” field.
 Resources MUST declare a scope such as:
 
 - company-shared;
+- department-scoped;
 - room-scoped;
 - agent-private;
 - member-private;
@@ -192,18 +207,36 @@ Private sends, private memories, member credentials, device approvals, and
 member-owned provider subscriptions MUST be enforced by server-side ACLs.
 Prompt instructions are not access control.
 
+A member-private conversation MAY read shared company state when both its
+requesting member and agent have current path authority. Its audience is not a
+grant to private files belonging to another member. Publishing output from
+that private context into shared state requires an exact proposal, the
+originating member's explicit consent, and the destination's normal write and
+protected-action authority. The draft, preview bytes, and proposal metadata
+remain private even when their proposed destination is shared; another
+company administrator cannot supply that member's privacy consent.
+
+Historical audience identities are not live membership grants. Removing a
+member MUST close their private execution bindings and fence future access
+without deleting the retained run, input, transcript, or attribution history.
+
 Authorization MUST be checked when work is admitted and again immediately
 before an effect. Revocation MUST fence queued and future use without silently
 substituting another member, sponsor, credential, target, or billing path.
+
+Departments and projects are organizational and resource scopes, not acting
+authority. A human, agent, or company service always remains the attributed
+actor. “The department requested it” is not sufficient authorization.
 
 ## 5. Live Company File kernel
 
 The Company File is the company's source of durable semantic truth. It stores
 the organization humans and agents reason about: staff and hire specifications,
-decisions, product and project state, playbooks and skills, routine intent,
-todos, working material, artifacts, and governed memory. Enforcement tables may
-materialize identities, schedules, indexes, and leases, but they MUST remain
-transactionally tied projections rather than an independent company model.
+company vision and goals, department charters and measures, project state,
+decisions, playbooks and skills, routine intent, todos, working material,
+artifacts, and governed memory. Enforcement tables may materialize identities,
+schedules, indexes, dashboards, and leases, but they MUST remain transactionally
+tied projections rather than an independent company model.
 
 Agents MUST read the relevant Company File objects before acting. Useful work
 finishes with one of:
@@ -363,7 +396,8 @@ A wake envelope MUST include:
 - company, agent, actor, and audience;
 - source identity and stable occurrence key;
 - payload or immutable payload reference;
-- room, routine, listener, or coworker reference where relevant;
+- department, project, room, routine, listener, or coworker reference where
+  relevant;
 - reply and silence policy;
 - local and UTC time context;
 - authorization context;
@@ -385,6 +419,11 @@ Provider-native session IDs are resumability hints, not wake identity.
 Scheduled and listener-triggered jobs both use the routine entrypoint with a
 different trigger subtype. A worker revival targets the parent run or creates a
 typed internal continuation; it MUST NOT masquerade as a human message.
+
+Co-Founder routing and departmental operation do not add wake kinds. Direct
+member input uses a human wake, delegation uses an agent wake, department and
+project-room participation uses a room wake, and measure or source changes use
+Company File event or routine wakes.
 
 The acceptance suite MUST prove that the same agent behaves differently at all
 five entrypoints and that a routine can complete successfully with no send.
@@ -408,7 +447,9 @@ The composer selects and labels:
 - compact, scoped retrieval indexes or working-memory summaries derived from
   those objects;
 - a skill catalog with names and “use when” descriptions;
-- teammate and room membership;
+- teammate, primary-department, project-team, and room membership;
+- relevant company goals, department charters, accountable measures, current
+  exceptions, and project definitions of done;
 - open runs, workers, todos, and continuity handles;
 - available tools and grants;
 - routine intent only on that routine's wake;
@@ -420,6 +461,14 @@ The composer selects and labels:
 Large skill bodies, old logs, connector recipes, and project material are read
 on demand. The composer MUST have deterministic budgets and record which
 versions and blocks were included.
+
+Company File read provenance MUST retain the exact path version, immutable
+content reference, byte range or directory page, and fenced-output digest.
+Provider-request views, including compaction, retain their read ancestry.
+An observation, a host-verified read, and an authorized provider view are
+distinct records; none alone proves network delivery. This is private audit
+metadata, not a frozen company checkout or a new source of authority. Current
+permissions and effect-time version checks still apply.
 
 ### 9.2 Trust labels
 
@@ -557,6 +606,10 @@ An agent receives a revocable grant to a connector operation, not possession
 of a credential. Archiving or deleting an agent revokes its grants without
 deleting a company credential still used by other staff. Removing a member or
 revoking a connection fences queued and future use at effect time.
+Losing issuing authority durably revokes that member's operation grants and
+pending capture tickets. Reinvitation or promotion MUST NOT revive either.
+Capture/grant admission and member revocation MUST serialize so an in-flight
+issuance cannot commit usable authority after revocation has completed.
 
 The Company File MAY contain a non-secret connection descriptor: connector,
 purpose, owner class, status, scopes, allowed operations, rotation state, and
@@ -700,10 +753,10 @@ Worker species have separate lifecycle contracts:
 One worker is used per coherent stream. The parent steers an existing worker
 instead of cloning it for every follow-up.
 
-## 14. Team, rooms, and agent lifecycle
+## 14. Organizational hierarchy, teams, rooms, and agent lifecycle
 
-Membership, roles, rooms, hiring, renaming, archiving, and deletion are cloud
-state and server-authorized operations.
+Membership, roles, departments, projects, rooms, hiring, renaming, archiving,
+and deletion are cloud state and server-authorized operations.
 
 ### 14.1 Company and agent creation
 
@@ -718,7 +771,7 @@ enforcement projections:
 - identity and initial staff revision;
 - thin hire overlay;
 - model and reasoning policy;
-- room and resource grants;
+- department, project, room, and resource grants;
 - startup instructions; and
 - exactly one first-run wake.
 
@@ -733,17 +786,165 @@ server-side cascade for its owned artifacts and explicitly dependent
 enforcement state. Archive and permanent delete are separate operations:
 archive retains restorable state; delete is human-authorized and permanent.
 
-### 14.2 Messages
+### 14.2 Co-Founder and company formation
+
+Each company has one company-level Co-Founder agent. Account or company
+onboarding MAY present it as the first agent a member meets, but adding another
+human member MUST NOT silently create another company Co-Founder. Each
+authorized member MAY have a separate one-to-one conversation with the same
+Co-Founder under that member's audience and private-scope rules. A separately
+created personal representative is a Chief of Staff or equivalent role, not a
+second company Co-Founder.
+
+The Co-Founder is the primary human-to-company routing and synthesis surface.
+It MUST NOT receive copies of every internal message or require a member to
+supervise every delegated thread. Its composed state SHOULD instead include
+structured company goals, open decisions, blockers, material risks, department
+measure exceptions, active project outcomes, and hiring or resource proposals.
+The wake bus coalesces and budgets those signals so the attention problem is
+not recreated inside one larger chat.
+
+The first-run kickoff begins a durable company-formation workflow rather than
+a scripted welcome conversation. Its minimum lifecycle is:
+
+    source_inventory -> discovery -> research -> vision_proposal
+      -> goals_ratified -> organization_formation -> operating
+
+The workflow is resumable, versioned Company File state. It MUST NOT depend on
+one continuously running model process or an open member client. The Co-Founder
+begins by determining whether the member is starting fresh or has prior work to
+connect, import, or reference. Connection, upload, and authorization use their
+typed interaction surfaces; dismissal is a skip, never consent.
+
+The Co-Founder MAY open a bounded company-formation project, dispatch
+higher-effort research workers or project-assigned research agents, and create
+a project room for their coordination while remaining responsive to the
+member. Those workers collaborate through an explicit shared research dossier
+or other Company File working object created because the work needs it. It is
+not a template-owned artifact seeded merely because an agent was created.
+Permanent hires SHOULD follow an identified continuing responsibility;
+temporary research does not by itself justify permanent staff.
+
+The formation workflow produces a protected, structured company-direction
+proposal containing at least the problem, intended customer, company promise,
+principles and constraints, evidence and confidence, major unknowns, near-term
+goals, and success or failure signals. An authorized founder ratifies or
+revises that direction. The Co-Founder cannot silently define the company,
+grant itself broader authority, approve its own gated changes, or give a new
+department or hire authority the requester did not possess.
+
+### 14.3 Departments
+
+A department is a durable organizational unit, not an agent, room, chat
+category, dashboard, or long-running model process. Its Company File object
+MUST define:
+
+- charter, responsibility boundary, and explicit non-responsibilities;
+- accountable human member and lead agent;
+- assigned staff, roles, and at most one primary department per staff agent;
+- versioned measures with definitions, sources, targets, guardrails, cadence,
+  provenance, and exactly one accountable agent per measure;
+- department-scoped Company File resources and external-operation grants;
+- intake, prioritization, budget, effort, and concurrency policy;
+- routines, listeners, project-creation rules, and escalation thresholds;
+- default coordination room and active project portfolio; and
+- lifecycle state such as proposed, forming, active, degraded, paused, or
+  retired.
+
+A department MAY be proposed or forming without a lead, but it MUST have one
+accountable lead agent before becoming active. The lead turns direction and
+measure exceptions into assignments, projects, or escalations so the
+Co-Founder does not become the dispatcher for every employee.
+
+The Co-Founder MAY propose a department from a versioned operating archetype
+after a continuing responsibility is identified. The archetype MUST be adapted
+to the company's ratified direction, actual sources, measures, authority, and
+staff before activation. Qorpera MUST NOT create ceremonial departments whose
+only durable state is a name and a group chat.
+
+An active department operates as a durable control loop:
+
+    observe -> interpret -> prioritize -> execute -> verify -> record -> escalate
+
+Committed source or measure changes wake only the eligible accountable agent or
+lead according to subscription policy. They do not automatically wake every
+department member or flood its room. “Always on” means that cloud state,
+listeners, routines, queues, and workers continue while humans and agents are
+not actively conversing. It MUST NOT mean an unbounded model process polling
+forever.
+
+The dashboard is a rebuildable projection of the department's measure
+definitions, exact source versions, targets, guardrails, work, and outcomes. It
+is not a second source of truth and does not become an artifact merely because
+the UI renders it. A department wall is likewise a projection of typed events
+such as direction changes, measure exceptions, project openings, decisions,
+and verified outcomes; it is not a transcript of every internal message.
+
+Core responsibility, measure, authority, project, hiring, escalation, and
+lifecycle semantics MUST be code objects. Routines provide repeated intent and
+cadence but cannot substitute for the department operating model.
+
+### 14.4 Projects and project teams
+
+A project is a bounded unit of work, not a room or an execution run. Its
+Company File object MUST identify an objective, definition of done, sponsoring
+department or company scope, accountable lead, team, authorized source and
+output objects, dependencies, status, and outcome. It MAY select a bounded
+reasoning and worker policy appropriate to the work without rewriting any
+agent's durable default.
+
+A project MAY create a temporary team room and one or more shared working
+objects. The room coordinates the work; the project owns its durable objective
+and state; the resulting Company File operations, proposals, or explicit
+no-change result are the outcome. Closing a room does not complete a project,
+and completing or cancelling a project does not retire its department or erase
+accepted company state.
+
+An agent MAY participate in several project teams while retaining at most one
+primary department. A temporary worker or project assignment is preferred over
+a permanent hire when the responsibility ends with the project.
+
+### 14.5 Attention and product projection
+
+The primary product hierarchy is a projection of canonical cloud state, not a
+local ordering of chat windows. It SHOULD present:
+
+1. the Co-Founder as the persistent company home and routing surface;
+2. departments in a dedicated high-level area;
+3. active project or team rooms and individual staff below them; and
+4. completed projects, archived rooms, and inactive staff outside the primary
+   attention surface.
+
+Exact visual treatment remains product design, but the client MUST preserve
+the semantic distinction between Co-Founder, department, project, room, and
+agent. Recency alone MUST NOT determine organizational importance. Reloading or
+replacing a client rebuilds this hierarchy from cloud state without changing
+the company.
+
+Onboarding copy, department archetypes, measure catalogs, default routines,
+escalation thresholds, and visual arrangement are versioned product policy and
+MAY evolve from observed use. Product testing can refine those defaults without
+collapsing the normative object, authority, privacy, durability, and wake
+boundaries defined here; changing those boundaries requires an explicit
+contract revision.
+
+### 14.6 Messages
 
 Agent-to-agent messages are durable addressed cloud messages. Delivery creates
 an agent wake once, using an idempotent message identity. Sending “thanks” back
 does not become an infinite acknowledgement loop.
 
-### 14.3 Rooms
+### 14.7 Rooms
 
 A room is an explicit member list with an audience and capability policy.
 Posting creates a cloud fan-out wake for each eligible agent. Fan-out is used
 only when the member or room workflow asked for it.
+
+A department MAY have an ongoing coordination room and a project MAY have a
+temporary team room, but neither organizational object is reducible to that
+room. Ordinary source changes, metric updates, tool logs, and worker narration
+do not enter the room unless a speaking agent deliberately sends an authorized,
+useful summary.
 
 Room output uses an allowlisted reduced surface. Text is always supported;
 attachments, cards, and widgets require explicit room support and audience
@@ -751,7 +952,7 @@ authorization. Private communication to a member uses a separate send and is
 rejected when that agent-member relationship or resource scope does not permit
 it.
 
-## 15. Memory, projects, and skills
+## 15. Memory and skills
 
 ### 15.1 Memory
 
@@ -857,6 +1058,10 @@ Routines, workers, or explicit assignments MAY select a different effort
 through versioned policy. Changing provider, model, sponsor, or effort MUST NOT
 silently rewrite the agent's durable defaults or an already admitted run.
 
+Company-formation and other research projects MAY dispatch higher-effort
+workers under a bounded, attributed project policy while the attended
+Co-Founder conversation remains on its resolved low-effort default.
+
 Provider-native continuity is an optimization. Canonical Qorpera transcript,
 memory, and run state remain the recovery source across provider or sponsor
 changes.
@@ -920,18 +1125,69 @@ key authorization UX, and the connector-to-browser escalation product flow.
 Production connector breadth MUST NOT hold Order 2 open, and an Order 2 canary
 MUST NOT be represented as a launch-ready connector.
 
+### Organizational hierarchy placement
+
+The Co-Founder and department model is not a new wake kind or one isolated
+implementation step. Its dependencies land in the existing order:
+
+- Order 0 owns department, project, measure, membership, responsibility, and
+  resource-scope schemas plus their Company File projections and ACLs.
+- Order 3 owns Co-Founder routing, department and project-room fan-out,
+  structured escalation, signal coalescing, and event-loop fencing.
+- Order 5 owns responsive company-formation research, project teams, workers,
+  durable plans, todos, and completion reporting.
+- Order 6 owns rebuildable department dashboards and measure retrieval
+  projections over Company File state.
+- Order 7 owns out-of-band connection and digestion of existing company work.
+- Order 8 owns scheduled measurement, listeners, recurring departmental
+  responsibilities, and exception wakes.
+- Order 10 owns thin Co-Founder, department-lead, and employee behavioral
+  overlays after the operating machinery is proven.
+
+Order 2 fences the inputs and effects used by this hierarchy; it does not own
+or delay the organizational model itself. Product UX MAY be developed against
+the ratified semantic projection before every later behavior is implemented,
+but it MUST NOT represent missing cloud machinery as working autonomy.
+
 ### Current implementation checkpoint
 
 The NAS-backed live Company File and native cloud runner path already exist.
 The signed v44 infrastructure proof includes a real attended cloud turn writing
-the shared NAS mount. The standalone orchestrator and LXD provider are running;
-these are reused infrastructure, not a new local runtime to be built.
+the shared NAS mount. The standalone orchestrator and LXD provider were running
+during that historical audit. Subsequent approved drains and mount retirement
+are recorded in the production acceptance record; this paragraph does not
+assert their present operating state or authorize the legacy raw-mount lane.
 
-The pending phase-zero migration adds company/member/agent principals, exact
-and subtree path scopes, private ownership, target-bound grants, action
-provenance, and effect revalidation. The complete governed path-mutation
-gateway, semantic projections, and file-change wake delivery still need wiring.
-Those remaining gates must not be confused with an absent live NAS mount.
+The phase-zero path kernel now has source implementation for company, member,
+and agent principals; exact and subtree scopes; private ownership;
+target-bound grants; action provenance; effect-time revalidation; protected
+proposals; and the governed immutable path-mutation gateway. The organization
+extension adds one enforced company Co-Founder, resumable formation state,
+departments, responsibilities, measures, projects, staff assignments,
+department-scoped resources, canonical agent documents, bounded grant
+delegation, governed agent lifecycle, per-member private Co-Founder sessions,
+and exact Company File version bindings. Initial Company File creation seeds
+the canonical organization directories, a reference-only formation document,
+and the canonical Co-Founder agent document, then binds one silent kickoff to
+that exact agent path version. Recovering an already governed company advances
+at most one missing path per durable snapshot and preserves evolved canonical
+bytes. Service cutover projects every supplied organization document from its
+exact UTF-8 bytes in the same transaction and rejects missing, extra, stale, or
+projection-blind state. Department, project, and room grant references do not
+create membership; the corresponding canonical organization object remains
+the membership authority.
+
+The Order 0 source, disposable-database proofs, and replacement-client
+hierarchy reconstruction are therefore implemented. The hierarchy is rebuilt
+from closed cloud projections and keeps Co-Founder, department, project, room,
+active staff, and inactive organization semantics distinct; local recency is
+not authority. Production migration/cutover and live offline multi-member
+acceptance remain deployment gates. File-change wake delivery, room fan-out,
+formation workers, dashboards, connectors, routines, and behavioral overlays
+remain in their ratified later orders; they must not be confused with an
+absent live NAS mount or moved into a desktop-owned runtime. See
+[Runtime Step 0 organization implementation](deploy/first-node/RUNTIME-STEP-0-ORGANIZATION.md)
+for the exact source boundary and proof status.
 
 Runtime step 1 now has an implemented cloud-native mouth: a run-bound MCP send
 tool, atomic canonical transcript writes, durable idempotency receipts, and
@@ -940,12 +1196,28 @@ reasoning, and diagnostics are private; the native result is a closed v2
 completion receipt, not an assistant message. Jobs without a conversation can
 finish silently; the five-kind wake policy is still step 3.
 
-Source tests and an isolated Linux runner/NAS probe pass. Production activation
-still requires the database migration and a compatible signed runner image;
-the old deployed adapter must not be represented as having this new mouth.
+The historical Step 1 mouth passed real connected-OpenAI cloud acceptance and
+the published client's cancellation/replay checks. That proof remains valid
+for its recorded bytes. It does not accept the later organization, governed
+path, secret-custody, or executable-provenance assembly: that assembly needs
+its coordinated migrations, compatible signed image, and live acceptance.
 See [Runtime step 1 audit and rollout](deploy/first-node/RUNTIME-STEP-1.md) for
 the exact evidence, limitations, and deployment sequence. Neither this
 checkpoint nor the earlier infrastructure proof closes the full launch gate.
+
+The Steps 0–2 review corrections add a generated executable bundle, immutable
+resolved low-effort policy, exact launch catalog/context digests, and durable
+Company File read/provider-view provenance in migrations `19700`–`19900`.
+Forward corrections `18200` and `19850` close missing-member authorization,
+capture/grant revival and admission races, recreated-wrapper privileges,
+membership/history coupling, and private-to-shared publication boundaries.
+The broker's exact three-function surface is checked after the combined chain,
+not just after its own migrations.
+These are source and disposable-test results, not a new signed or deployed
+acceptance claim. Historical symbolic bundles and unknown effort remain
+historical; no Step 3 behavior is incorporated. See
+[Steps 0–2 review corrections](deploy/first-node/RUNTIME-STEPS-0-2-REVIEW-CORRECTIONS.md)
+for the verification and current integration gates.
 
 Runtime step 2 now has an implemented company-centered secret-custody and
 non-exposure component: immutable encrypted versions, company/member ownership,
@@ -987,6 +1259,10 @@ for the exact completed component evidence and remaining deployment gates.
 | Private data stays private | Company File path ACL, vault, context composer | Do not repeat private context to other audiences. |
 | Agent messages wake once | Durable message ledger and occurrence key | Avoid acknowledgement ping-pong. |
 | Rooms fan out correctly | Membership state and wake orchestrator | Be brief and audience-aware. |
+| Co-Founder reduces member coordination load | Formation state machine, structured escalation queue, worker and project dispatch | Synthesize direction, delegate continuing work, and ask only for real decisions. |
+| Departments are operating state, not chats | Organization schema, responsibility and measure registry, lead assignment, ACL projections | Own the charter and measures; turn exceptions into verified work. |
+| Department dashboards remain derived | Company File sources, measure projections, provenance, and rebuild service | Reason from exact sources and report material changes. |
+| Projects remain bounded and distinct from rooms | Project registry, team membership, todos, outcome, and room lifecycle | Coordinate in the room; finish in durable company state. |
 | Routine policy is real | Scheduler and listener services | Author sensible schedules and intent. |
 | Dismissal is not consent | Interaction state machine | Treat dismissal as skip or decline. |
 | Coding follow-up keeps continuity | Worker identity, VM, branch contract | Steer the existing worker. |
@@ -1049,6 +1325,28 @@ the following without manual database repair or a hidden desktop executor:
     audience, run, causal, path, object-version, and runtime provenance.
 19. The existing native-subscription, cloud-control-plane, Company File, and
     production-storage acceptance gates also pass.
+20. A new company presents its one Co-Founder to each authorized member without
+    creating a separate company Co-Founder per member. Separate one-to-one
+    conversations do not leak member-private context across audiences.
+21. The Co-Founder first-run workflow handles both a fresh company and prior
+    work, remains responsive while bounded higher-effort research runs in the
+    background, records shared research in an explicit formation project, and
+    presents a protected company-direction proposal for founder ratification.
+22. One founder direction is delegated through departments and projects, and
+    the founder receives one coherent result, blocker, or genuine decision
+    request without needing to visit every underlying agent or room thread.
+23. An active department with a lead and accountable measures detects one
+    source exception, wakes only the eligible owner, creates or performs the
+    appropriate work exactly once, verifies the outcome, updates canonical
+    state, and escalates only when its declared threshold requires it. The loop
+    survives runner and client restart without polling chat.
+24. Department, project, room, dashboard, and agent remain distinct objects:
+    closing a project room does not complete the project, completing a project
+    does not retire the department, and neither chat history nor a dashboard
+    projection becomes the source of company truth.
+25. A replacement client reconstructs the Co-Founder, department, active
+    project or team-room, and individual-staff hierarchy from canonical cloud
+    state; local pinning, recency, or an open desktop process is not authority.
 
 Passing unit tests against a local provider, describing the behavior in an
 instruction file, or leaving a desktop open to execute work does not pass this

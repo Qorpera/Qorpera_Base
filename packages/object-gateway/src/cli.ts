@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
+import { CompanyBootstrapProvisioner } from "./company-bootstrap.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
 import { migrateLegacyObjects } from "./migration.ts";
@@ -35,6 +37,18 @@ const store = new FileSystemObjectStore(resolve(required(process.env, "QORPERA_O
 const journal = new ObjectGatewayJournal(required(process.env, "QORPERA_OBJECT_GATEWAY_STATE_ROOT"));
 const replication = new ObjectGatewayReplication(journal, store, authority);
 const readLeases = readLeaseSeconds > 0 ? new ObjectReadLeases(journal) : undefined;
+const memberAuthority = new SupabaseMemberCompanyAuthority({
+	projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+	publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+	secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+});
+const companyBootstrap = new CompanyBootstrapProvisioner({
+	workerId: process.env.QORPERA_COMPANY_BOOTSTRAP_WORKER_ID?.trim() || randomUUID(),
+	authority: memberAuthority,
+	store,
+	replication,
+	readLegacyObject: (profileId, sha256) => authority.readLegacyObject(profileId, sha256),
+});
 const handler = createObjectGatewayHandler({
 	store,
 	authority,
@@ -42,15 +56,7 @@ const handler = createObjectGatewayHandler({
 	verifierToken: required(process.env, "QORPERA_OBJECT_GATEWAY_VERIFIER_TOKEN"),
 	replication,
 	memberObjects: authority,
-	...(process.env.QORPERA_MEMBER_COMPANY_FILES === "1"
-		? {
-				memberFiles: new SupabaseMemberCompanyAuthority({
-					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
-					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
-					secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
-				}),
-			}
-		: {}),
+	...(process.env.QORPERA_MEMBER_COMPANY_FILES === "1" ? { memberFiles: memberAuthority } : {}),
 	...(process.env.QORPERA_OBJECT_GATEWAY_NATIVE_TOKEN
 		? { nativeObjects: { token: required(process.env, "QORPERA_OBJECT_GATEWAY_NATIVE_TOKEN"), authority } }
 		: {}),
@@ -69,7 +75,13 @@ if (process.argv[2] === "migrate") {
 		if (maintaining) return;
 		maintaining = true;
 		try {
-			await Promise.all([authority.probeHealth(), store.probe(), replication.reconcile(), readLeases?.prune()]);
+			await Promise.all([
+				authority.probeHealth(),
+				store.probe(),
+				replication.reconcile(),
+				readLeases?.prune(),
+				companyBootstrap.provisionOne(),
+			]);
 		} catch {
 			process.stderr.write("Object gateway maintenance requires operator attention\n");
 		} finally {

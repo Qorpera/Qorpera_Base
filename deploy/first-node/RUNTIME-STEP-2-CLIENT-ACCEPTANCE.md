@@ -1,19 +1,19 @@
 # Step 2: packaged client and legacy-computer interlock
 
-Date: 2026-08-28. **The packaged-client preview gate passed. The legacy-computer
-cutover bypass is now blocked. Step 2 is not yet complete.** This interlock is
-not shared-desktop path mediation, off-node identity recovery, or production
-cutover approval. Step 3 remains paused and separately preserved.
+Date: 2026-08-29. **The isolated packaged-client preview gate, legacy-computer
+interlock and current unpublished production-client package gate passed.
+Production cutover and release remain blocked.** The current package is not
+notarized or release-ready. Step 3 remains paused and separately preserved.
 
 ## Scope and source
 
-The active Step 2 checkout remains `/tmp/qorpera-step2-resume.rN3rbf/source`,
-on `codex/runtime-step2-fenced-cloud` at
-`b2b7215a660807dfbcde628cdfeca6b4d2423489`. This continuation adds uncommitted
-preview isolation, its tests, the interlock migration/test, and this record.
-It preserves the prior documentation changes. No commit, push, tag, public
-release, production SQL change, NAS remount, provider-credential export, or
-agent rerun occurred. No Step 3 source, SQL, wake policy or producer was imported.
+The active Step 2 checkout remains `/tmp/qorpera-step2-resume.rN3rbf/source` on
+`codex/runtime-step2-fenced-cloud`. The original packaged-preview checkpoint
+was recorded at `b2b7215a660807dfbcde628cdfeca6b4d2423489`. The current integrated
+client source is commit `3a4b8b5c229d725b8ce6d47b27f0349b521f3839`, tree
+`54b307f0c1a55203d2c61086855199d039f39a31`. No push, tag, public release,
+production SQL change, NAS remount or provider-credential export occurred. No
+Step 3 source, SQL, wake policy or producer was imported.
 
 ## Isolated packaged-client acceptance
 
@@ -99,13 +99,15 @@ do not stop, delete, detach, or claim to mediate any running desktop. Physical
 unmount/teardown evidence is required before the cloud may register the exact
 attestation; the retained legacy row then becomes immutable.
 
-The current disposable database proof passes all 89 migrations and SQL suite
-297. A production-schema compatibility proof also installed all 15 proposed
-delta migrations and demonstrated that an unresolved synthetic overlap makes
-`14000` roll back, while the exact pre-interlock `13500` attestation admits only
-the retired historical row. The final fixture explicitly scopes its empty-tree
-cache lookups to its own company, including when another company has identical
-immutable bytes.
+At the original checkpoint, the disposable database proof passed all 89 then
+current migrations and SQL suite 297, and a production-schema compatibility
+proof installed the then-current 15-file delta. The final refresh now covers
+all 91 source migrations and the exact 17-file production delta through broker
+role `18100`. It again proves unresolved overlap rejection before the exact
+`13500` attestation, acceptance afterward, the dedicated broker role's least
+privilege, and SQL test 305. The preserved compatibility proof's `SHA256SUMS`
+has SHA-256
+`c9089ca3bd7bf8a78d9af765f953a51d6dd8177a8a67c0a8d1518baccf7afe4b`.
 
 The exact `13500` and `14000` migration SHA-256 values are respectively
 `5e26ac0d8e80e5b6015f6bdffb92664923d108d412a9320ef7049cec88d0d865`
@@ -133,23 +135,50 @@ collection. The observed UI sequence above is retained with independent cloud
 records; later read-only screenshots are labelled separately, not presented as
 new approval, skip or non-member actions.
 
-## Remaining gates — not silently reclassified
+## Current unpublished client package
 
-1. **Shared-computer path mediation.** The interlock closes unsafe admission;
-   it does not make the old raw filesystem safe or supply governed shared
-   desktop/shell access. That capability must remain unavailable for governed
-   companies until its authority boundary and live tests exist.
-2. **Off-node Compute Identity recovery and fencing.** The existing master key
-   is on the per-identity LXD volume. The first-node recovery contract requires
-   a company-signed, identity/policy/revision-bound sealed recovery object,
-   rejection of replay/rollback/wrong identity, an authorized replacement
-   login VM, and a durable recovery receipt. VM restart and same-node import
-   do not prove this. Key custody/authority and replacement-node activation
-   must be approved before moving or releasing real recovery material.
-3. **Production cutover.** Recheck/reconcile the two missing NAS memory files
-   without overwriting live state, retain the legacy workbench, and coordinate
-   reviewed SQL/gateway/guest/client installation. Public release and production
-   enrollment remain separately approval-gated.
+The current production-shaped macOS arm64 shell was built locally from commit
+`3a4b8b5c229d725b8ce6d47b27f0349b521f3839`. Its tracked package inputs matched
+that commit; uncommitted deployment metadata was outside the packaged app. The
+normal packager found the agent and Codex runtimes, the packaged renderer
+painted a nonblank frame, six critical compiled modules matched the packaged
+bytes, and deep/strict code-signature verification passed.
+
+The sealed evidence is
+`/Users/jonas/.codex/worktrees/27d4/Qorpera_Base-step2/.artifacts/runtime-step-separation-20260828/step2/verification/production-client-package-v55-20260829T140034Z`;
+its `SHA256SUMS` has SHA-256
+`a6cd6ea3058e27eda24e53d4d1ee3a04d0e84002cd40d7614f2e260b0c823214`.
+The unpublished ZIP SHA-256 is
+`24a1869b677d6a456800f4eb07162abd97b2f55a1f9d0d825cbae53dfd2e57f5`;
+the unpublished DMG SHA-256 is
+`b1ac2b865214c46e525a4c0cef11d4fbe41732a4cd11e3cdb56402ddbdd7b1e2`.
+
+This package deliberately retains existing product version `0.20.44`, uses an
+Apple Development certificate, is not notarized, and is rejected by
+Gatekeeper. It was not installed, published or released. A production release
+requires an approved clean release commit/branch, new version, distribution
+signature, notarization, a fresh package, push and release action.
+
+## Gate resolution and remaining boundary
+
+1. **Shared-computer path mediation:** the governed implementation, legacy
+   fail-closed interlock and synthetic replacement/replay proofs now pass. The
+   retired production raw mount is absent and durably removed from `/etc/fstab`.
+   Production enrollment is still closed.
+2. **Off-node Compute Identity recovery and fencing:** the separately approved
+   Phase B replacement-node proof passed and was fully cleaned up. Production
+   recovery placement, public keys, private route and first backup remain
+   unprovisioned and approval-gated.
+3. **NAS reconciliation:** the exact two missing canonical memory files and six
+   parents were created exclusively with zero overwrite/delete; the full live
+   tree now matches the unchanged cloud head.
+4. **Production cutover:** infrastructure staging must first receive exact
+   approval and freeze the recovery public values. A second exact approval is
+   then required for production SQL, disabled runtime installation, recovery
+   backup, governed enrollment and read-only canary. A canonical write or paid
+   model call is excluded.
+5. **Client release:** version bump, release commit, distribution signing,
+   notarization, push and release each remain separately approval-gated.
 
 The [v52 native acceptance](RUNTIME-STEP-2-V52-ACCEPTANCE.md) remains valid
 historical evidence. Its jobs and credentials were not rerun or replaced by

@@ -18,6 +18,7 @@ it("materializes explicit cloud sends before completion and replays them on anot
 			environmentId: randomUUID(),
 			title: "Cloud agent",
 			staffAgentId: randomUUID(),
+			audience: { kind: "company" },
 			createdByUserId: randomUUID(),
 			status: "open",
 			createdAt: now,

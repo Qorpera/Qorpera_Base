@@ -5,13 +5,19 @@ import {
 	type CloudCompanyTreeEntry,
 	validateCloudCompanyTreeEntries,
 } from "./cloud-company-snapshot.ts";
+import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import type { CloudNativeTool, CloudToolContext } from "./cloud-native-tool-boundary.ts";
+import {
+	type CloudNativeFencedResult,
+	type CloudNativeTool,
+	type CloudToolContext,
+	cloudToolJsonText,
+} from "./cloud-native-tool-boundary.ts";
 import type { CloudContentAddressedStore, CloudFileReference } from "./cloud-object-store.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -25,13 +31,15 @@ const MAX_READ_BYTES = 4096;
 const MAX_READ_PATHS = 128;
 
 export type CloudCompanyPathRpc =
-	| "qorpera_begin_native_company_execution"
+	| "qorpera_begin_native_company_execution_v2"
 	| "qorpera_describe_company_run_context"
 	| "qorpera_list_native_connector_tools"
 	| "qorpera_assert_native_connector_operation"
 	| "qorpera_read_company_run_context"
-	| "qorpera_read_company_path"
-	| "qorpera_list_company_paths"
+	| "qorpera_read_company_path_v2"
+	| "qorpera_list_company_paths_v2"
+	| "qorpera_confirm_company_path_read"
+	| "qorpera_record_native_context_view"
 	| "qorpera_assert_company_path_reads"
 	| "qorpera_check_company_path_mutation"
 	| "qorpera_verify_company_path_file"
@@ -262,20 +270,25 @@ export class CloudCompanyPathGateway {
 
 	async #readVersion(
 		path: string,
+		offset: number,
+		limit: number,
 		signal: AbortSignal,
 	): Promise<{
 		path: string;
 		version: string | null;
 		entry: CloudCompanyTreeEntry | null;
 		manifestBytes: number | null;
+		snapshotId: string;
+		readObservationId: string;
 	}> {
-		const input = closed(await this.#call("qorpera_read_company_path", { ...this.#bound(), p_path: path }, signal), [
-			"path",
-			"version",
-			"entry",
-			"manifestBytes",
-			"companyId",
-		]);
+		const input = closed(
+			await this.#call(
+				"qorpera_read_company_path_v2",
+				{ ...this.#bound(), p_path: path, p_offset: offset, p_limit: limit },
+				signal,
+			),
+			["path", "version", "entry", "manifestBytes", "companyId", "snapshotId", "readObservationId"],
+		);
 		if (input.path !== path || input.companyId !== this.#identity.companyId)
 			throw new Error("Company File read scope changed");
 		const file = input.entry === null ? null : entry(input.entry);
@@ -287,16 +300,118 @@ export class CloudCompanyPathGateway {
 			version: version(input.version, true),
 			entry: file,
 			manifestBytes: file?.kind === "file" ? integer(input.manifestBytes, 1, 8 * 1024 * 1024) : null,
+			snapshotId: version(input.snapshotId)!,
+			readObservationId: version(input.readObservationId)!,
 		};
 	}
 
-	async read(pathValue: string, offset: number, limit: number, signal: AbortSignal): Promise<JsonValue> {
+	async #confirmRead(
+		value: { [key: string]: JsonValue; readObservationId: string },
+		includedBytes: number,
+		signal: AbortSignal,
+	): Promise<void> {
+		const digest = createHash("sha256")
+			.update(cloudToolJsonText(value, 1024 * 1024))
+			.digest("hex");
+		const receipt = closed(
+			await this.#call(
+				"qorpera_confirm_company_path_read",
+				{
+					...this.#bound(),
+					p_read_id: value.readObservationId,
+					p_included_bytes: includedBytes,
+					p_result_sha256: digest,
+				},
+				signal,
+			),
+			["schema", "readId", "resultSha256"],
+		);
+		if (
+			receipt.schema !== "qorpera.company-read-confirmation/v1" ||
+			receipt.readId !== value.readObservationId ||
+			receipt.resultSha256 !== digest
+		)
+			throw new Error("Company File read provenance was not confirmed");
+	}
+
+	/** Called by the native fence with host-fenced outputs only, before release. */
+	async recordContextView(
+		frame: CloudNativeFenceRequest,
+		outputs: readonly CloudNativeFencedResult[],
+		signal: AbortSignal,
+	): Promise<void> {
+		const view = {
+			schema: "qorpera.native-context-view/v1",
+			requestId: frame.requestId,
+			threadId: frame.threadId,
+			turnId: frame.turnId || null,
+			purpose: frame.purpose,
+			outputs: outputs.map((output) => {
+				const envelope = JSON.parse(output.output) as {
+					provenance?: { companyReadId?: string; companyId?: string; runId?: string };
+					content?: { sha256?: string; text?: string; includedBytes?: number };
+				};
+				const readId = envelope.provenance?.companyReadId;
+				if (
+					readId &&
+					(envelope.provenance?.companyId !== this.#identity.companyId ||
+						envelope.provenance?.runId !== this.#identity.runId ||
+						!UUID.test(readId) ||
+						typeof envelope.content?.sha256 !== "string" ||
+						!SHA.test(envelope.content.sha256) ||
+						typeof envelope.content.text !== "string" ||
+						envelope.content.includedBytes !== Buffer.byteLength(envelope.content.text))
+				)
+					throw new Error("Company File output provenance changed");
+				return {
+					callId: output.callId,
+					kind: output.kind,
+					sha256: createHash("sha256").update(output.output).digest("hex"),
+					bytes: Buffer.byteLength(output.output),
+					readId: readId ?? null,
+					readSha256: readId ? envelope.content!.sha256! : null,
+					includedBytes: readId ? envelope.content!.includedBytes! : null,
+					includedSha256: readId ? createHash("sha256").update(envelope.content!.text!).digest("hex") : null,
+				};
+			}),
+		};
+		const receipt = closed(
+			await this.#call("qorpera_record_native_context_view", { ...this.#bound(), p_view: view }, signal),
+			["schema", "viewId", "requestId", "sha256", "ordinal"],
+		);
+		if (
+			receipt.schema !== "qorpera.native-context-view-receipt/v1" ||
+			receipt.requestId !== frame.requestId ||
+			typeof receipt.sha256 !== "string" ||
+			!SHA.test(receipt.sha256)
+		)
+			throw new Error("Native context provenance was not confirmed");
+		version(receipt.viewId);
+		integer(receipt.ordinal, 1, 256);
+	}
+
+	async read(
+		pathValue: string,
+		offset: number,
+		limit: number,
+		signal: AbortSignal,
+	): Promise<{ [key: string]: JsonValue; readObservationId: string }> {
 		const path = parseCloudCompanyPath(pathValue);
 		integer(offset, 0, 256 * 1024 * 1024);
 		integer(limit, 4, MAX_READ_BYTES);
-		const first = await this.#readVersion(path, signal);
+		const first = await this.#readVersion(path, offset, limit, signal);
 		this.#remember(path);
-		if (first.entry?.kind !== "file") return { path, version: first.version, kind: first.entry?.kind ?? "absent" };
+		if (first.entry?.kind !== "file") {
+			const value = {
+				path,
+				version: first.version,
+				kind: first.entry?.kind ?? "absent",
+				snapshotId: first.snapshotId,
+				readObservationId: first.readObservationId,
+			};
+			await this.#confirmRead(value, 0, signal);
+			return value;
+		}
 		const file = first.entry.file;
 		if (offset > file.bytes) throw new Error("Company File offset exceeds the file");
 		const manifestBytes = await cloudToolRequest(
@@ -365,12 +480,12 @@ export class CloudCompanyPathGateway {
 		}
 		if (text === undefined || (included === 0 && output.length > 0))
 			throw new Error("Company File range is not UTF-8 text");
-		const current = await this.#readVersion(path, signal);
-		if (JSON.stringify(first) !== JSON.stringify(current)) throw new Error("Company File changed during read");
 		signal.throwIfAborted();
-		return {
+		const value = {
 			path,
 			version: first.version,
+			snapshotId: first.snapshotId,
+			readObservationId: first.readObservationId,
 			kind: "file",
 			offset,
 			bytesRead: included,
@@ -378,6 +493,9 @@ export class CloudCompanyPathGateway {
 			text,
 			nextOffset: offset + included < file.bytes ? offset + included : null,
 		};
+		// SQL rechecks the exact read version under the same lock as authority.
+		await this.#confirmRead(value, included, signal);
+		return value;
 	}
 
 	async list(
@@ -386,7 +504,7 @@ export class CloudCompanyPathGateway {
 		snapshotId: string | null,
 		limit: number,
 		signal: AbortSignal,
-	): Promise<JsonValue> {
+	): Promise<{ [key: string]: JsonValue; readObservationId: string }> {
 		const path = parseCloudCompanyPath(pathValue, true);
 		if (after !== null) parseCloudCompanyPath(after);
 		version(snapshotId, true);
@@ -394,11 +512,11 @@ export class CloudCompanyPathGateway {
 		if (after !== null && snapshotId === null) throw new Error("Company File page requires its snapshot");
 		const page = closed(
 			await this.#call(
-				"qorpera_list_company_paths",
+				"qorpera_list_company_paths_v2",
 				{ ...this.#bound(), p_path: path, p_after: after, p_snapshot_id: snapshotId, p_limit: limit },
 				signal,
 			),
-			["snapshotId", "items", "hasMore", "nextAfter"],
+			["snapshotId", "items", "hasMore", "nextAfter", "readObservationId"],
 		);
 		version(page.snapshotId);
 		if (
@@ -432,12 +550,15 @@ export class CloudCompanyPathGateway {
 		this.#remember(path);
 		for (const item of items) this.#remember(item.path);
 		await this.assertReadableContext(signal);
-		return {
+		const value = {
 			snapshotId: page.snapshotId as string,
+			readObservationId: version(page.readObservationId)!,
 			items,
 			hasMore: page.hasMore,
 			nextAfter: page.nextAfter as string | null,
 		};
+		await this.#confirmRead(value, 0, signal);
+		return value;
 	}
 
 	async mutate(
@@ -593,7 +714,8 @@ export class CloudCompanyPathGateway {
 				execute: async (value, context) => {
 					this.#assertContext(context);
 					const args = value as { path: string; offset: number; limit: number };
-					return { kind: "json", value: await this.read(args.path, args.offset, args.limit, context.signal) };
+					const result = await this.read(args.path, args.offset, args.limit, context.signal);
+					return { kind: "json", value: result, companyReadId: result.readObservationId };
 				},
 			},
 			{
@@ -624,10 +746,8 @@ export class CloudCompanyPathGateway {
 				execute: async (value, context) => {
 					this.#assertContext(context);
 					const args = value as { path: string; after: string | null; snapshotId: string | null; limit: number };
-					return {
-						kind: "json",
-						value: await this.list(args.path, args.after, args.snapshotId, args.limit, context.signal),
-					};
+					const result = await this.list(args.path, args.after, args.snapshotId, args.limit, context.signal);
+					return { kind: "json", value: result, companyReadId: result.readObservationId };
 				},
 			},
 		];

@@ -24,6 +24,14 @@ export function nativeCompanyContextFixture() {
 						: "job_specification",
 		sourceKind,
 		id,
+		actorKind:
+			sourceKind === "input"
+				? "human"
+				: sourceKind === "history"
+					? "company_service"
+					: sourceKind === "job"
+						? "control_plane"
+						: "company_service",
 		authorUserId: sourceKind === "input" ? identity.requesterUserId : null,
 		sequence: sourceKind === "history" ? 1 : null,
 		attachmentCount: 0,
@@ -47,6 +55,8 @@ export function nativeCompanyContextFixture() {
 			name: "Co-Founder",
 			role: "Help the company",
 		},
+		audience: { kind: identity.audienceKind, userId: identity.audienceUserId },
+		runtimeBundle: { id: identity.runtimeBundleId, sha256: identity.runtimeBundleSha256 },
 		sourceKind: "session_turn",
 		sourceId: identity.runId,
 		currentInputs: [source("input", randomUUID(), "Read the company note and report what changed.")],

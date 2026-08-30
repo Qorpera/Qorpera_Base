@@ -36,6 +36,7 @@ let state = {
 	scheduledJobs: [],
 	connectionRequests: [],
 	departments: [],
+	organizationHierarchy: null,
 	runtime: { revision: 0, generatedAt: "", sessions: [] },
 };
 const sessionCache = {}; // session file -> rendered messages HTML
@@ -107,6 +108,7 @@ let navContextPoint = { x: 0, y: 0 };
 let staffContextTarget = null;
 let staffContextTrigger = null;
 let staffDeleteTarget = null;
+let staffDeleteMode = null;
 let hiddenStaffTrigger = null;
 let archiveTarget = null;
 let toastTimeout = null;
@@ -4266,6 +4268,153 @@ function flushPendingRosterRailRender() {
 	});
 }
 
+function makeRoomNavigationRow(room) {
+	const row = document.createElement("button");
+	row.type = "button";
+	row.className = "staff-nav-row room-nav-row";
+	row.classList.toggle("active", $("staffModal").hidden && currentView === "chat" && currentRoomId === room.id);
+	row.dataset.searchText = `${roomTitle(room)} group chat`.toLowerCase();
+	const active = roomActiveParticipants(room.id).length > 0;
+	row.appendChild(makeRoomAvatar(room, active ? "working" : "idle"));
+	const copy = document.createElement("span");
+	copy.className = "staff-nav-copy";
+	const heading = document.createElement("span");
+	heading.className = "staff-nav-heading";
+	const name = document.createElement("strong");
+	name.textContent = roomTitle(room);
+	heading.appendChild(name);
+	const role = document.createElement("small");
+	role.textContent = roomActivityLabel(room.id) || `${roomParticipants(room).length} agents`;
+	copy.append(heading, role);
+	row.appendChild(copy);
+	row.onclick = () => void openRoom(room.id);
+	return row;
+}
+
+function makeStaffNavigationRow(staff, { pinned = false, draggable = false, roleLabel } = {}) {
+	const id = staffId(staff);
+	const row = document.createElement("button");
+	row.type = "button";
+	row.className = "staff-nav-row";
+	row.classList.toggle("staff-pinned-card", pinned);
+	if (draggable) row.dataset.staffId = id;
+	row.classList.toggle(
+		"active",
+		$("staffModal").hidden && currentView === "chat" && !currentRoomId && currentStaffId === id,
+	);
+	row.dataset.searchText = `${staffDisplayName(staff)} ${roleLabel ?? staffRoleLabel(staff)}`.toLowerCase();
+	row.appendChild(makeStaffAvatar(staff, staffStatus(staff)));
+	const copy = document.createElement("span");
+	copy.className = "staff-nav-copy";
+	const heading = document.createElement("span");
+	heading.className = "staff-nav-heading";
+	const name = document.createElement("strong");
+	name.textContent = staffDisplayName(staff);
+	heading.appendChild(name);
+	const lastMessageAt = Math.max(
+		0,
+		...(state.sessions ?? [])
+			.filter((session) => session.staffAgentId === id && !session.roomId && session.kind === "chat")
+			.map((session) => Number(session.mtimeMs) || 0),
+	);
+	if (lastMessageAt) {
+		const messageDate = new Date(lastMessageAt);
+		const today = new Date();
+		const dayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+		const messageDayStart = new Date(
+			messageDate.getFullYear(),
+			messageDate.getMonth(),
+			messageDate.getDate(),
+		).getTime();
+		const ageInDays = Math.round((dayStart - messageDayStart) / 86_400_000);
+		const time = document.createElement("time");
+		time.className = "staff-nav-time";
+		time.dateTime = messageDate.toISOString();
+		time.textContent =
+			ageInDays === 0
+				? messageDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+				: ageInDays === 1
+					? "Yesterday"
+					: ageInDays > 1 && ageInDays < 7
+						? messageDate.toLocaleDateString([], { weekday: "short" })
+						: messageDate.toLocaleDateString([], { month: "short", day: "numeric" });
+		heading.appendChild(time);
+	}
+	const role = document.createElement("small");
+	const runtime = staffRuntime(staff);
+	role.textContent = remoteStaffDoingLine(staff) || (runtime ? runtimeDoingLine(runtime) : "") || roleLabel || staffRoleLabel(staff);
+	copy.append(heading, role);
+	const viewingPeers = peersOnStaff(id);
+	if (viewingPeers.length) {
+		row.classList.add("peer-open");
+		const badge = document.createElement("span");
+		badge.className = "peer-open-badge";
+		badge.textContent = viewingPeers.map((peer) => (peer.name || "Teammate").split(" ")[0]).join(", ");
+		badge.title = `${viewingPeers.map((peer) => peer.name || "a teammate").join(", ")} viewing this thread`;
+		heading.appendChild(badge);
+	}
+	const arrow = document.createElement("span");
+	arrow.className = "staff-nav-arrow";
+	arrow.setAttribute("aria-hidden", "true");
+	arrow.textContent = "›";
+	row.append(copy, arrow);
+	row.onclick = () => void openStaff(id);
+	row.oncontextmenu = (event) => openStaffContext(event, staff);
+	row.onkeydown = (event) => {
+		if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+		const bounds = row.getBoundingClientRect();
+		openStaffContext(event, staff, { x: bounds.left + 32, y: bounds.top + 24 });
+	};
+	return row;
+}
+
+function appendOrganizationNode(container, node, context, depth = 0) {
+	if (!node || typeof node !== "object") return;
+	if (node.kind === "cofounder" || node.kind === "agent") {
+		context.staffIds.add(node.canonicalId);
+		const staff = context.staffById.get(node.canonicalId);
+		if (!staff || context.hidden.has(node.canonicalId) || context.pinned.has(node.canonicalId)) return;
+		const row = makeStaffNavigationRow(staff, {
+			roleLabel: node.role || (node.kind === "cofounder" ? "Co-Founder" : undefined),
+		});
+		row.style.paddingInlineStart = `${12 + depth * 12}px`;
+		container.appendChild(row);
+		context.renderedStaffIds.add(node.canonicalId);
+		return;
+	}
+	if (node.kind === "room") {
+		context.roomIds.add(node.canonicalId);
+		const room = context.roomById.get(node.canonicalId);
+		if (!room) return;
+		const row = makeRoomNavigationRow(room);
+		row.style.paddingInlineStart = `${12 + depth * 12}px`;
+		container.appendChild(row);
+		return;
+	}
+	if (node.kind !== "department" && node.kind !== "project") return;
+	const row = document.createElement("div");
+	row.className = "staff-nav-row organization-nav-row";
+	row.dataset.organizationKind = node.kind;
+	row.dataset.searchText = `${node.label} ${node.kind} ${node.status}`.toLowerCase();
+	row.style.paddingInlineStart = `${12 + depth * 12}px`;
+	const mark = document.createElement("span");
+	mark.className = "staff-create-mark";
+	mark.setAttribute("aria-hidden", "true");
+	mark.textContent = node.kind === "department" ? "D" : "P";
+	const copy = document.createElement("span");
+	copy.className = "staff-nav-copy";
+	const name = document.createElement("strong");
+	name.textContent = node.label;
+	const status = document.createElement("small");
+	status.textContent = `${node.kind} · ${node.status}`;
+	copy.append(name, status);
+	row.append(mark, copy);
+	container.appendChild(row);
+	for (const child of Array.isArray(node.children) ? node.children : []) {
+		appendOrganizationNode(container, child, context, depth + 1);
+	}
+}
+
 function renderRosterRail({ animateCreateRow = false } = {}) {
 	const container = $("staffNavigation");
 	if (!container) return;
@@ -4310,30 +4459,33 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 	pinnedGrid.setAttribute("role", "group");
 	pinnedGrid.setAttribute("aria-label", "Pinned agents");
 	container.appendChild(pinnedGrid);
+	for (const staff of staffMembers.filter((candidate) => pinned.has(staffId(candidate)))) {
+		pinnedGrid.appendChild(makeStaffNavigationRow(staff, { pinned: true, draggable: true }));
+	}
+	const hierarchy =
+		state.organizationHierarchy?.schema === "qorpera.company-organization-hierarchy/v1"
+			? state.organizationHierarchy
+			: null;
+	const organizationList = document.createElement("div");
+	organizationList.className = "company-organization-list";
+	organizationList.setAttribute("role", "group");
+	organizationList.setAttribute("aria-label", "Company organization");
+	const organizationContext = {
+		staffIds: new Set(),
+		renderedStaffIds: new Set(),
+		roomIds: new Set(),
+		staffById: new Map((state.staff ?? []).map((staff) => [staffId(staff), staff])),
+		roomById: new Map((state.rooms ?? []).filter((room) => room.status !== "archived").map((room) => [room.id, room])),
+		hidden,
+		pinned,
+	};
+	for (const node of hierarchy?.primary ?? []) appendOrganizationNode(organizationList, node, organizationContext);
+	if (organizationList.childElementCount) container.appendChild(organizationList);
 	const activeRooms = (state.rooms ?? [])
-		.filter((room) => room.status !== "archived")
+		.filter((room) => room.status !== "archived" && !organizationContext.roomIds.has(room.id))
 		.sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
 	for (const room of activeRooms) {
-		const row = document.createElement("button");
-		row.type = "button";
-		row.className = "staff-nav-row room-nav-row";
-		row.classList.toggle("active", $("staffModal").hidden && currentView === "chat" && currentRoomId === room.id);
-		row.dataset.searchText = `${roomTitle(room)} group chat`.toLowerCase();
-		const active = roomActiveParticipants(room.id).length > 0;
-		row.appendChild(makeRoomAvatar(room, active ? "working" : "idle"));
-		const copy = document.createElement("span");
-		copy.className = "staff-nav-copy";
-		const heading = document.createElement("span");
-		heading.className = "staff-nav-heading";
-		const name = document.createElement("strong");
-		name.textContent = roomTitle(room);
-		heading.appendChild(name);
-		const role = document.createElement("small");
-		role.textContent = roomActivityLabel(room.id) || `${roomParticipants(room).length} agents`;
-		copy.append(heading, role);
-		row.appendChild(copy);
-		row.onclick = () => void openRoom(room.id);
-		container.appendChild(row);
+		container.appendChild(makeRoomNavigationRow(room));
 	}
 	const staffList = document.createElement("div");
 	staffList.className = "staff-unpinned-list";
@@ -4342,82 +4494,27 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 	container.appendChild(staffList);
 	for (const staff of staffMembers) {
 		const id = staffId(staff);
-		const row = document.createElement("button");
-		row.type = "button";
-		row.className = "staff-nav-row";
-		row.classList.toggle("staff-pinned-card", pinned.has(id));
-		row.dataset.staffId = id;
-		row.classList.toggle(
-			"active",
-			$("staffModal").hidden && currentView === "chat" && !currentRoomId && currentStaffId === id,
-		);
-		row.dataset.searchText = `${staffDisplayName(staff)} ${staffRoleLabel(staff)}`.toLowerCase();
-		row.appendChild(makeStaffAvatar(staff, staffStatus(staff)));
-		const copy = document.createElement("span");
-		copy.className = "staff-nav-copy";
-		const heading = document.createElement("span");
-		heading.className = "staff-nav-heading";
-		const name = document.createElement("strong");
-		name.textContent = staffDisplayName(staff);
-		heading.appendChild(name);
-		const lastMessageAt = Math.max(
-			0,
-			...(state.sessions ?? [])
-				.filter((session) => session.staffAgentId === id && !session.roomId && session.kind === "chat")
-				.map((session) => Number(session.mtimeMs) || 0),
-		);
-		if (lastMessageAt) {
-			const messageDate = new Date(lastMessageAt);
-			const today = new Date();
-			const dayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-			const messageDayStart = new Date(
-				messageDate.getFullYear(),
-				messageDate.getMonth(),
-				messageDate.getDate(),
-			).getTime();
-			const ageInDays = Math.round((dayStart - messageDayStart) / 86_400_000);
-			const time = document.createElement("time");
-			time.className = "staff-nav-time";
-			time.dateTime = messageDate.toISOString();
-			time.textContent =
-				ageInDays === 0
-					? messageDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-					: ageInDays === 1
-						? "Yesterday"
-						: ageInDays > 1 && ageInDays < 7
-							? messageDate.toLocaleDateString([], { weekday: "short" })
-							: messageDate.toLocaleDateString([], { month: "short", day: "numeric" });
-			heading.appendChild(time);
-		}
-		const role = document.createElement("small");
-		const runtime = staffRuntime(staff);
-		role.textContent = remoteStaffDoingLine(staff) || (runtime ? runtimeDoingLine(runtime) : "") || staffRoleLabel(staff);
-		copy.append(heading, role);
-		const viewingPeers = peersOnStaff(id);
-		if (viewingPeers.length) {
-			row.classList.add("peer-open");
-			const badge = document.createElement("span");
-			badge.className = "peer-open-badge";
-			badge.textContent = viewingPeers.map((peer) => (peer.name || "Teammate").split(" ")[0]).join(", ");
-			badge.title = `${viewingPeers.map((peer) => peer.name || "a teammate").join(", ")} viewing this thread`;
-			heading.appendChild(badge);
-		}
-		const arrow = document.createElement("span");
-		arrow.className = "staff-nav-arrow";
-		arrow.setAttribute("aria-hidden", "true");
-		arrow.textContent = "›";
-		row.append(copy, arrow);
-		row.onclick = () => void openStaff(id);
-		row.oncontextmenu = (event) => openStaffContext(event, staff);
-		row.onkeydown = (event) => {
-			if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
-			const bounds = row.getBoundingClientRect();
-			openStaffContext(event, staff, { x: bounds.left + 32, y: bounds.top + 24 });
-		};
-		(pinned.has(id) ? pinnedGrid : staffList).appendChild(row);
+		if (pinned.has(id) || organizationContext.staffIds.has(id)) continue;
+		staffList.appendChild(makeStaffNavigationRow(staff, { draggable: true }));
+	}
+	const inactiveOrganizationList = document.createElement("div");
+	inactiveOrganizationList.className = "company-organization-list company-organization-inactive";
+	inactiveOrganizationList.setAttribute("role", "group");
+	inactiveOrganizationList.setAttribute("aria-label", "Past company organization");
+	for (const node of hierarchy?.inactive ?? []) {
+		appendOrganizationNode(inactiveOrganizationList, node, organizationContext);
+	}
+	if (inactiveOrganizationList.childElementCount) {
+		const label = document.createElement("div");
+		label.className = "company-organization-section-label";
+		label.textContent = "Past organization";
+		inactiveOrganizationList.prepend(label);
+		container.appendChild(inactiveOrganizationList);
 	}
 	const hiddenStaff = activeStaffMembers().filter((staff) => hidden.has(staffId(staff)));
-	const archivedStaff = (state.staff ?? []).filter((staff) => staff?.employmentStatus === "archived");
+	const archivedStaff = (state.staff ?? []).filter(
+		(staff) => staff?.employmentStatus === "archived" && !organizationContext.renderedStaffIds.has(staffId(staff)),
+	);
 	if (hiddenStaff.length || archivedStaff.length) {
 		const hiddenEntry = document.createElement("button");
 		hiddenEntry.type = "button";
@@ -4447,7 +4544,14 @@ function renderRosterRail({ animateCreateRow = false } = {}) {
 		archivedEntry.onclick = (event) => openArchivedRooms(event.currentTarget);
 		container.appendChild(archivedEntry);
 	}
-	if (!staffMembers.length && !hiddenStaff.length && !archivedStaff.length && !activeRooms.length) {
+	if (
+		!staffMembers.length &&
+		!hiddenStaff.length &&
+		!archivedStaff.length &&
+		!activeRooms.length &&
+		!organizationList.childElementCount &&
+		!inactiveOrganizationList.childElementCount
+	) {
 		const empty = document.createElement("div");
 		empty.className = "rail-empty";
 		empty.textContent = "Choose your starting team.";
@@ -4609,14 +4713,18 @@ function toggleStaffContextPreference(name) {
 	renderRosterRail();
 }
 
-function openStaffDeleteConfirmation() {
+function openStaffLifecycleConfirmation(mode) {
 	if (!staffContextTarget) return;
 	staffDeleteTarget = staffContextTarget;
+	staffDeleteMode = mode;
 	closeStaffContext();
-	$("staffDeleteTitle").textContent = `Archive ${staffDisplayName(staffDeleteTarget)}?`;
-	$("staffDeleteDescription").textContent =
-		"Archive keeps the agent and all of its data so it can be restored later. Permanent deletion removes the agent; choose below whether its artifacts stay in the current company state. Its trail and Git history remain reconstructable.";
-	$("staffDeleteKeepArtifacts").checked = true;
+	const deleting = mode === "delete";
+	$("staffDeleteTitle").textContent = `${deleting ? "Delete" : "Archive"} ${staffDisplayName(staffDeleteTarget)}?`;
+	$("staffDeleteDescription").textContent = deleting
+		? "Permanent deletion removes the agent and bins its owned artifacts. This cannot be restored. Immutable operation history remains available for audit."
+		: "Archive keeps the agent and its data so it can be restored later.";
+	$("staffDeleteConfirm").className = deleting ? "danger-button" : "primary-button";
+	$("staffDeleteConfirm").textContent = deleting ? "Delete permanently" : "Archive";
 	$("staffDeleteModal").hidden = false;
 	$("staffDeleteCancel").focus();
 }
@@ -4624,19 +4732,21 @@ function openStaffDeleteConfirmation() {
 function closeStaffDeleteConfirmation() {
 	$("staffDeleteModal").hidden = true;
 	staffDeleteTarget = null;
+	staffDeleteMode = null;
 }
 
-async function deleteStaffMember() {
+async function confirmStaffLifecycleChange() {
 	if (!staffDeleteTarget) return;
 	const id = staffId(staffDeleteTarget);
 	const button = $("staffDeleteConfirm");
-	const permanentButton = $("staffDeletePermanent");
 	button.disabled = true;
-	permanentButton.disabled = true;
-	button.textContent = "Archiving…";
+	button.textContent = staffDeleteMode === "delete" ? "Deleting…" : "Archiving…";
 	try {
-		const result = await window.qorpera.staffArchive(id);
-		if (result?.ok === false) throw new Error(result.error ?? "The agent could not be archived.");
+		const deleting = staffDeleteMode === "delete";
+		const result = deleting ? await window.qorpera.staffDelete(id) : await window.qorpera.staffArchive(id);
+		if (result?.ok === false) {
+			throw new Error(result.error ?? `The agent could not be ${deleting ? "permanently deleted" : "archived"}.`);
+		}
 		const hidden = storedStaffIds("staff-hidden");
 		const pinned = storedStaffIds("staff-pinned");
 		hidden.delete(id);
@@ -4646,42 +4756,12 @@ async function deleteStaffMember() {
 		closeStaffDeleteConfirmation();
 		await refreshState();
 	} catch (error) {
-		showToast(error instanceof Error ? error.message : "The agent could not be archived.");
+		showToast(error instanceof Error ? error.message : "The agent lifecycle change failed.");
 	} finally {
 		button.disabled = false;
-		permanentButton.disabled = false;
-		button.textContent = "Archive";
-	}
-}
-
-async function permanentlyDeleteStaffMember() {
-	if (!staffDeleteTarget) return;
-	const id = staffId(staffDeleteTarget);
-	const button = $("staffDeletePermanent");
-	const archiveButton = $("staffDeleteConfirm");
-	const keepArtifactsOption = $("staffDeleteKeepArtifacts");
-	button.disabled = true;
-	archiveButton.disabled = true;
-	keepArtifactsOption.disabled = true;
-	button.textContent = "Deleting…";
-	try {
-		const result = await window.qorpera.staffDelete(id, { keepArtifacts: keepArtifactsOption.checked });
-		if (result?.ok === false) throw new Error(result.error ?? "The agent could not be permanently deleted.");
-		const hidden = storedStaffIds("staff-hidden");
-		const pinned = storedStaffIds("staff-pinned");
-		hidden.delete(id);
-		pinned.delete(id);
-		storeStaffIds("staff-hidden", hidden);
-		storeStaffIds("staff-pinned", pinned);
-		closeStaffDeleteConfirmation();
-		await refreshState();
-	} catch (error) {
-		showToast(error instanceof Error ? error.message : "The agent could not be permanently deleted.");
-	} finally {
-		button.disabled = false;
-		archiveButton.disabled = false;
-		keepArtifactsOption.disabled = false;
-		button.textContent = "Delete permanently";
+		if (staffDeleteTarget) {
+			button.textContent = staffDeleteMode === "delete" ? "Delete permanently" : "Archive";
+		}
 	}
 }
 
@@ -7619,7 +7699,8 @@ function setupCompanyNavigation() {
 			showToast("The conversation ID could not be copied.");
 		}
 	};
-	$("staffContextDelete").onclick = openStaffDeleteConfirmation;
+	$("staffContextArchive").onclick = () => openStaffLifecycleConfirmation("archive");
+	$("staffContextDelete").onclick = () => openStaffLifecycleConfirmation("delete");
 	$("staffContextMenu").onkeydown = (event) => {
 		if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
 		event.preventDefault();
@@ -7634,8 +7715,7 @@ function setupCompanyNavigation() {
 		items[next]?.focus();
 	};
 	$("staffDeleteCancel").onclick = closeStaffDeleteConfirmation;
-	$("staffDeletePermanent").onclick = () => void permanentlyDeleteStaffMember();
-	$("staffDeleteConfirm").onclick = () => void deleteStaffMember();
+	$("staffDeleteConfirm").onclick = () => void confirmStaffLifecycleChange();
 	$("staffDeleteModal").onpointerdown = (event) => {
 		if (event.target === $("staffDeleteModal")) closeStaffDeleteConfirmation();
 	};

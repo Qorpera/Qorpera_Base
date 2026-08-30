@@ -844,6 +844,10 @@ begin
 		or v_identity ->> 'sessionId' <> '16000000-0000-4000-8000-000000000040'
 		or v_identity ->> 'requesterUserId' <> '16000000-0000-4000-8000-000000000001'
 		or v_identity ->> 'sponsorUserId' <> '16000000-0000-4000-8000-000000000001'
+		or v_identity ->> 'audienceKind' <> 'company'
+		or v_identity ->> 'audienceUserId' is not null
+		or v_identity ->> 'runtimeBundleId' is null
+		or v_identity ->> 'runtimeBundleSha256' !~ '^[0-9a-f]{64}$'
 		or v_identity ->> 'runId' is distinct from p_binding ->> 'runId'
 		or v_identity ->> 'jobId' is distinct from p_binding ->> 'jobId'
 		or v_identity ->> 'runnerId' is distinct from p_binding ->> 'runnerId'

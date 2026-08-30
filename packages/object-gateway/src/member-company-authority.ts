@@ -17,11 +17,14 @@ export type MemberCompanyRpc =
 	| "qorpera_authorize_member_session_attachment";
 
 export type MemberCompanyPublisherRpc =
+	| "qorpera_claim_company_bootstrap"
+	| "qorpera_stage_company_bootstrap_object"
+	| "qorpera_finalize_company_bootstrap"
 	| "qorpera_prepare_member_company_path_command"
-	| "qorpera_apply_member_company_path_command"
+	| "qorpera_apply_member_company_path_command_v3"
 	| "qorpera_stage_member_company_path_object"
 	| "qorpera_prepare_company_path_approval"
-	| "qorpera_apply_company_path_approval"
+	| "qorpera_apply_company_path_approval_v3"
 	| "qorpera_stage_company_path_approval_object"
 	| "qorpera_verify_company_path_file"
 	| "qorpera_verify_company_path_tree"

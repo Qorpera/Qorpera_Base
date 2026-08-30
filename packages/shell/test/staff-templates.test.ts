@@ -47,6 +47,9 @@ describe("shell starter staff templates", () => {
 			expect(template.charter).not.toContain("During setup");
 			expect(template.setupPrompt).toContain("private conception turn");
 			expect(template.setupPrompt).toContain("employment relationship");
+			expect(template.setupPrompt).toContain("No dedicated artifact is created");
+			expect(template.setupPrompt).toContain("live Company File");
+			expect(template.setupPrompt).toContain("artifact is not a setup requirement");
 			expect(template.setupPrompt).toContain("Existing company evidence takes priority");
 			expect(template.setupPrompt).toContain("test already-ready read connections");
 			expect(template.setupPrompt).toContain("Trace concrete service and account names");
@@ -62,7 +65,7 @@ describe("shell starter staff templates", () => {
 			expect(template.setupPrompt).toContain("Choose where I should look first below.");
 			expect(template.setupPrompt).toContain("Never say that access was requested");
 			expect(template.setupPrompt).toContain("propose one concrete recurring job and cadence");
-			expect(template.setupPrompt).toContain(template.starterArtifact.title);
+			expect(template.setupPrompt).not.toContain("starter artifact");
 			expect(template.starterArtifact.title.length).toBeGreaterThan(0);
 			expect(template.starterArtifact.purpose.length).toBeGreaterThan(0);
 			expect(template.starterArtifact.metrics).toHaveLength(3);
@@ -71,6 +74,12 @@ describe("shell starter staff templates", () => {
 			expect(template.avatarColorToken).toMatch(/^qorpera-[a-z]+$/);
 			expect(template.avatarShapeToken).toMatch(/^[a-z][a-z-]*$/);
 		}
+	});
+
+	it("does not instantiate template artifacts during agent creation", () => {
+		const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+		expect(main).not.toContain("createStarterCompanyArtifact");
+		expect(main).toContain("No dedicated artifact was seeded for this agent");
 	});
 
 	it("ships a static asset for every approved character", () => {

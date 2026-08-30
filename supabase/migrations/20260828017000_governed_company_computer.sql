@@ -24,6 +24,26 @@ $$;
 revoke all on function public.qorpera_governed_company_computer_policy()
 	from public, anon, authenticated, service_role;
 
+-- Production may retain this trigger from the earlier Company Computer
+-- registry, including its default PUBLIC/API grants. Preserve its owner,
+-- definition and existing trigger bindings, but do not let a new least-
+-- privilege service inherit permission to attach it to another table.
+do $$
+declare
+	v_guard regprocedure := to_regprocedure('public.qorpera_company_computer_binding_guard()');
+begin
+	if v_guard is not null then
+		if not exists (
+			select 1 from pg_proc where oid = v_guard and prorettype = 'trigger'::regtype
+		) then
+			raise exception 'Legacy Company Computer guard has an unexpected signature';
+		end if;
+		execute 'revoke all on function public.qorpera_company_computer_binding_guard()
+			from public, anon, authenticated, service_role';
+	end if;
+end
+$$;
+
 create table public.qorpera_governed_company_computers (
 	profile_id uuid primary key references public.qorpera_profiles(id) on delete restrict,
 	logical_computer_id uuid not null unique,

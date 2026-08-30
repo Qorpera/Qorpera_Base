@@ -18,9 +18,37 @@ it("derives the agent, requester and company from closed cloud context, not a su
 	expect(context.currentInputs[0].kind).toBe("current_human_request");
 	expect(context.history[0].kind).toBe("historical_data");
 	expect(context.history[0].content.text).toContain('"role":"system"');
+	expect(context.currentInputs[0].actorKind).toBe("human");
+	expect(context.audience).toEqual({ kind: "company", userId: null });
+	expect(context.runtimeBundle).toEqual({
+		id: f.authority.identity.runtimeBundleId,
+		sha256: f.authority.identity.runtimeBundleSha256,
+	});
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/entirely in the cloud/);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/live, shared digital company/);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/not a second platform prompt/);
+});
+
+it("labels a private first-run as control-plane data, not a human request", () => {
+	const f = nativeCompanyContextFixture();
+	f.context.identity = {
+		...f.context.identity,
+		audienceKind: "member_private",
+		audienceUserId: f.context.identity.requesterUserId,
+	};
+	f.context.audience = { kind: "member_private", userId: f.context.identity.requesterUserId };
+	f.context.currentInputs[0] = {
+		...f.context.currentInputs[0],
+		kind: "private_startup",
+		actorKind: "control_plane",
+	};
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const prompt = JSON.parse(composeCloudNativeCompanyPrompt(context));
+	expect(prompt.identity.audience).toEqual({
+		kind: "member_private",
+		userId: f.context.identity.requesterUserId,
+	});
+	expect(prompt.currentInputs[0]).toMatchObject({ kind: "private_startup", actorKind: "control_plane" });
 });
 
 it("keeps hostile names, job specifications and history in a single escaped data object", () => {

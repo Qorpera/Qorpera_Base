@@ -5,6 +5,7 @@
 ### Breaking Changes
 
 - Native recovery-enabled guests require the recovery migration and per-company cloud authority provisioning before provider sign-in. Missing recovery configuration stops bootstrap before creating a key or requesting provider authentication.
+- Governed native runs require the exact activated executable bundle and reasoning-policy pins. Symbolic-only historical bundles are not silently upgraded; migration activation and signed runtime installation must be coordinated.
 
 ### Added
 
@@ -22,9 +23,13 @@
 - Added a separately hosted Compute Identity recovery authority with sealed two-copy key backups, exact owner/member restore consent, private durable release receipts and replacement-guest installation. Deployment remains gated on independent key custody and live recovery acceptance.
 - Added an isolated human recovery-review window with bounded member discovery, exact target and backup fingerprints, explicit source selection and native confirmation. Stale reviews, dismissed confirmations and lost acknowledgements cannot silently approve or repeat a restore.
 - Added company-centered cloud secret custody with immutable envelope versions, company/member ownership, operation grants, one-time direct capture, effect-time receipt checks, a separately packaged broker, typed connector tools, and reflected-secret result fencing. Governed runtimes have no local or plaintext fallback.
+- Added generated implementation/native bundle hashes, immutable low-effort admission, and private launch records for the exact offered tool catalog and initial-context digest. Packaging rejects stale generated pins.
+- Added private Company File read observations and confirmations with exact versions, immutable content references and ranges, plus durable provider-view and compaction ancestry. Live permission and write-conflict checks remain authoritative; audit records contain no file contents or credentials.
 
 ### Fixed
 
+- Closed missing-member credential mutation and stale capture/grant revival, including concurrent capture admission versus membership revocation. The broker retains exactly its three custody functions after organization migrations.
+- Allowed private agent conversations to read explicitly authorized shared company state while keeping drafts private and requiring the originating member's consent for shared publication. Member removal closes execution access without deleting retained private history.
 - Forced direct tool selection for governed, fenced native runs so GPT model metadata cannot advertise an unavailable code-mode host. Older result-only binaries are rejected before model admission; ordinary Codex sessions retain their existing tool selection.
 - Bounded native control-plane JSON response reads and cancellation, refused redirects, and stopped consuming raw RPC error bodies.
 - Preserved private completion/failure records across lease expiry, stalled renewal and credential repair; retained records never become public sends or renewed execution authority.

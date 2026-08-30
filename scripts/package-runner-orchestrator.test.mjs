@@ -43,6 +43,8 @@ test("packages and pins the management VM Runner Orchestrator", async () => {
 		);
 		const provisionerPath = join(repositoryRoot, "deploy/first-node/provision-runner-orchestrator-vm.sh");
 		const provisioner = await readFile(provisionerPath, "utf-8");
+		const updaterPath = join(repositoryRoot, "deploy/first-node/update-runner-orchestrator-guest.sh");
+		const updater = await readFile(updaterPath, "utf-8");
 		for (const expected of [
 			`EXPECTED_ARTIFACT_SHA256="${sha256(artifact)}"`,
 			`EXPECTED_UNIT_SHA256="${sha256(unit)}"`,
@@ -50,6 +52,11 @@ test("packages and pins the management VM Runner Orchestrator", async () => {
 		]) {
 			assert.ok(installer.includes(expected), `installer is missing checksum pin ${expected}`);
 		}
+		assert.ok(installer.includes("configuration=present-preserved"));
+		assert.ok(installer.includes("Refusing an unsafe existing Runner Orchestrator configuration."));
+		assert.ok(installer.includes("Refusing an incorrectly owned or readable Runner Orchestrator configuration."));
+		assert.ok(installer.includes("root:root:600"));
+		assert.ok(!installer.includes("Refusing to replace an already configured Runner Orchestrator."));
 		for (const expected of [
 			`EXPECTED_ARTIFACT_SHA256="${sha256(artifact)}"`,
 			`EXPECTED_INSTALLER_SHA256="${sha256(Buffer.from(installer))}"`,
@@ -58,6 +65,18 @@ test("packages and pins the management VM Runner Orchestrator", async () => {
 		]) {
 			assert.ok(provisioner.includes(expected), `provisioner is missing checksum pin ${expected}`);
 		}
+		for (const expected of [
+			`EXPECTED_ARTIFACT_SHA256="${sha256(artifact)}"`,
+			`EXPECTED_INSTALLER_SHA256="${sha256(Buffer.from(installer))}"`,
+			`EXPECTED_UNIT_SHA256="${sha256(unit)}"`,
+			`EXPECTED_ENV_EXAMPLE_SHA256="${sha256(environmentExample)}"`,
+		]) {
+			assert.ok(updater.includes(expected), `updater is missing checksum pin ${expected}`);
+		}
+		assert.ok(updater.includes("configuration_before="));
+		assert.ok(updater.includes("configuration_after="));
+		assert.ok(updater.includes('echo "configuration=present-preserved"'));
+		assert.ok(updater.includes('echo "service=disabled-inactive"'));
 		assert.ok(provisioner.includes("cloud_init_ready_without_devlxd"));
 		assert.ok(provisioner.includes('status.get("extended_status") != "degraded done"'));
 		assert.ok(provisioner.includes('allowed_warnings = {"/dev/lxd/sock does not exist.", "Used fallback datasource"}'));
@@ -70,7 +89,7 @@ test("packages and pins the management VM Runner Orchestrator", async () => {
 		]) {
 			assert.ok(unit.includes(expected), `systemd unit is missing ${expected}`);
 		}
-		const syntax = spawnSync("/usr/bin/env", ["bash", "-n", installerPath, provisionerPath], {
+		const syntax = spawnSync("/usr/bin/env", ["bash", "-n", installerPath, provisionerPath, updaterPath], {
 			cwd: repositoryRoot,
 			encoding: "utf-8",
 		});

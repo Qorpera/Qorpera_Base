@@ -1,3 +1,4 @@
+export * from "./company-bootstrap.ts";
 export * from "./dependency.ts";
 export * from "./journal.ts";
 export * from "./member-company-authority.ts";

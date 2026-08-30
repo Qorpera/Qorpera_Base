@@ -31,7 +31,10 @@ function request() {
 	};
 }
 
-async function fixture(assertActive: (signal: AbortSignal) => Promise<void> = vi.fn(async () => undefined)) {
+async function fixture(
+	assertActive: (signal: AbortSignal) => Promise<void> = vi.fn(async () => undefined),
+	recordContextView?: Parameters<typeof startCloudNativeResultFence>[0]["recordContextView"],
+) {
 	const abort = new AbortController();
 	const companyId = randomUUID();
 	const runId = randomUUID();
@@ -42,6 +45,7 @@ async function fixture(assertActive: (signal: AbortSignal) => Promise<void> = vi
 		root,
 		boundary,
 		assertSession,
+		recordContextView,
 		onFailure,
 		signal: abort.signal,
 	});
@@ -89,8 +93,64 @@ it("requires private IPC and host authority before an empty initial request", as
 		outputs: [],
 	});
 	expect(f.assertActive).toHaveBeenCalledTimes(1);
-	expect(f.assertSession).toHaveBeenCalledTimes(2);
+	expect(f.assertSession).toHaveBeenCalledTimes(3);
 	expect(f.onFailure).not.toHaveBeenCalled();
+});
+
+it("records only the exact fenced outputs before releasing a provider view", async () => {
+	const record = vi.fn(async () => undefined);
+	const f = await fixture(undefined, record);
+	const input = request();
+	const output = await exchange(f.service.path, input);
+	expect(record).toHaveBeenCalledTimes(1);
+	expect(record).toHaveBeenCalledWith(input, output?.outputs, expect.any(AbortSignal));
+	expect(record.mock.invocationCallOrder[0]).toBeLessThan(f.assertSession.mock.invocationCallOrder[2]);
+});
+
+it("does not release a provider view when durable provenance fails", async () => {
+	const f = await fixture(undefined, async () => {
+		throw new Error("PRIVATE_PROVENANCE_FAILURE");
+	});
+	expect(await exchange(f.service.path, request())).toBeUndefined();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
+});
+
+it("bounds stalled provenance recording without requiring a cooperative callback", async () => {
+	let started: () => void = () => undefined;
+	const began = new Promise<void>((resolve) => {
+		started = resolve;
+	});
+	const f = await fixture(undefined, async () => {
+		started();
+		return new Promise(() => undefined);
+	});
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const pending = exchange(f.service.path, request());
+	await began;
+	await vi.advanceTimersByTimeAsync(4001);
+	expect(await pending).toBeUndefined();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
+});
+
+it("does not release a late context receipt after cancellation", async () => {
+	let started: () => void = () => undefined;
+	let release: () => void = () => undefined;
+	const began = new Promise<void>((resolve) => {
+		started = resolve;
+	});
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const f = await fixture(undefined, async () => {
+		started();
+		await held;
+	});
+	const pending = exchange(f.service.path, request());
+	await began;
+	f.abort.abort();
+	release();
+	expect(await pending).toBeUndefined();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
 });
 
 it("returns only the bound result bodies and host-issued provenance", async () => {

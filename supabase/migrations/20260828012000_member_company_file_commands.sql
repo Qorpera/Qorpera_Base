@@ -363,6 +363,23 @@ begin
 	]) loop execute format('revoke all on function %s from public,anon,authenticated,service_role',v_function); end loop;
 end
 $$;
+
+-- Production can retain an older owner on the stable retention entry point
+-- while this migration recreates its private callee as the migration role.
+-- Preserve that SECURITY DEFINER call chain without exposing the callee to
+-- API roles or assuming a fixed production owner name.
+do $$
+declare v_retained_owner name;
+begin
+	select pg_catalog.pg_get_userbyid(procedure.proowner) into strict v_retained_owner
+	from pg_catalog.pg_proc procedure
+	where procedure.oid = 'public.qorpera_company_retained_object_hashes(uuid)'::regprocedure;
+	execute format(
+		'grant execute on function public.qorpera_company_additional_retained_object_hashes(uuid) to %I',
+		v_retained_owner
+	);
+end
+$$;
 grant execute on function public.qorpera_begin_member_company_path_command(uuid,jsonb),
 	public.qorpera_member_company_file_mode(uuid),public.qorpera_authorize_member_company_command_object(uuid,text,text),
 	public.qorpera_list_member_company_path_commands(uuid,uuid,integer),

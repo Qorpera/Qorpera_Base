@@ -3,17 +3,17 @@ set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
 EXPECTED_BASE_FINGERPRINT="5e644adaf5d1c43149ea7310ac2a7cad927fa6603343e8fa9070a9200a24b7b8"
-EXPECTED_SOURCE_COMMIT="3a4b8b5c229d725b8ce6d47b27f0349b521f3839"
-EXPECTED_PACKAGE_ARCHIVE_SHA256="86079a21785f1a60fc176a77c0b6a8f67dc940e455787b63d9d83e5dee0dc0e3"
-EXPECTED_PACKAGE_MANIFEST_SHA256="5edcc95298dd82a6af203493c5610527498f03f907da6324bb69bb4fc6b18c5f"
+EXPECTED_SOURCE_COMMIT="509f514362a8000a8398faa86663a873c2828f97"
+EXPECTED_PACKAGE_ARCHIVE_SHA256="6a662a6b93c3737d417b08764591c784f69d65b732beb75934f7703ae2fa13d9"
+EXPECTED_PACKAGE_MANIFEST_SHA256="94b5dd1675f85955f8059eb25429b4d35800147206b1fa87ce7e5638bcea3d14"
 EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1"
-PACKAGE_ARCHIVE="/home/company41-admin/step2-lxd/lxd-runner-guest-v55-secret-proof.tar.gz"
+PACKAGE_ARCHIVE="/home/company41-admin/step2-lxd/lxd-runner-guest-v56-secret-proof.tar.gz"
 LXD_POOL="qorpera-vm"
 LXD_NETWORK="qorpera0"
 LXD_BUILDER_PROJECT="default"
-BUILDER_INSTANCE="qorpera-runner-image-build-v55"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v55-secret-proof-unsigned"
-STATE_LOG="/var/log/qorpera-lxd-runner-image-candidate-v55.txt"
+BUILDER_INSTANCE="qorpera-runner-image-build-v56-proven"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v56-secret-proof-unsigned"
+STATE_LOG="/var/log/qorpera-lxd-runner-image-candidate-v56.txt"
 
 if [[ ${EUID} -ne 0 ]]; then
 	echo "Run this script through sudo." >&2
@@ -78,9 +78,19 @@ if lxc image info "${IMAGE_ALIAS}" --project "${LXD_BUILDER_PROJECT}" >/dev/null
 	echo "Refusing to replace existing local image alias ${IMAGE_ALIAS}." >&2
 	exit 1
 fi
+builder_precreated=false
 if lxc info "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" >/dev/null 2>&1; then
-	echo "Refusing to reuse existing builder instance ${BUILDER_INSTANCE}." >&2
-	exit 1
+	if [[ $(lxc list "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" --format csv --columns s) != STOPPED ]] ||
+		[[ $(lxc config get "${BUILDER_INSTANCE}" volatile.base_image --project "${LXD_BUILDER_PROJECT}") != "${EXPECTED_BASE_FINGERPRINT}" ]] ||
+		[[ $(lxc config get "${BUILDER_INSTANCE}" user.qorpera.image_builder --project "${LXD_BUILDER_PROJECT}") != true ]] ||
+		[[ $(lxc config get "${BUILDER_INSTANCE}" user.qorpera.purpose --project "${LXD_BUILDER_PROJECT}") != step2-v56-secret-proof ]] ||
+		[[ $(lxc config get "${BUILDER_INSTANCE}" limits.cpu --project "${LXD_BUILDER_PROJECT}") != 4 ]] ||
+		[[ $(lxc config get "${BUILDER_INSTANCE}" limits.memory --project "${LXD_BUILDER_PROJECT}") != 8GiB ]] ||
+		[[ $(lxc config device get "${BUILDER_INSTANCE}" root size --project "${LXD_BUILDER_PROJECT}") != 80GiB ]]; then
+		echo "Refusing to resume an unrecognized precreated builder instance ${BUILDER_INSTANCE}." >&2
+		exit 1
+	fi
+	builder_precreated=true
 fi
 if [[ $(lxc config get core.https_address) != "" ]]; then
 	echo "The LXD daemon unexpectedly exposes a remote listener." >&2
@@ -92,17 +102,19 @@ if ! lxc image info "${EXPECTED_BASE_FINGERPRINT}" --project "${LXD_BUILDER_PROJ
 	exit 1
 fi
 
-lxc init "${EXPECTED_BASE_FINGERPRINT}" "${BUILDER_INSTANCE}" \
-	--project "${LXD_BUILDER_PROJECT}" \
-	--vm \
-	--storage "${LXD_POOL}" \
-	--network "${LXD_NETWORK}" \
-	--config boot.mode=uefi-secureboot \
-	--config limits.cpu=4 \
-	--config limits.memory=8GiB \
-	--config user.qorpera.image_builder=true \
-	--config user.qorpera.purpose=step2-v55-secret-proof
-lxc config device set "${BUILDER_INSTANCE}" root size=80GiB --project "${LXD_BUILDER_PROJECT}"
+if [[ ${builder_precreated} != true ]]; then
+	lxc init "${EXPECTED_BASE_FINGERPRINT}" "${BUILDER_INSTANCE}" \
+		--project "${LXD_BUILDER_PROJECT}" \
+		--vm \
+		--storage "${LXD_POOL}" \
+		--network "${LXD_NETWORK}" \
+		--device root,size=80GiB \
+		--config boot.mode=uefi-secureboot \
+		--config limits.cpu=4 \
+		--config limits.memory=8GiB \
+		--config user.qorpera.image_builder=true \
+		--config user.qorpera.purpose=step2-v56-secret-proof
+fi
 lxc start "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}"
 
 guest_ready=false

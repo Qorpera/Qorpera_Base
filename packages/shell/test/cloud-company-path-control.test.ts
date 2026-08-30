@@ -23,11 +23,13 @@ describe("Company File bounded control transport", () => {
 	);
 
 	it.each([
-		"qorpera_begin_native_company_execution",
+		"qorpera_begin_native_company_execution_v2",
 		"qorpera_describe_company_run_context",
 		"qorpera_read_company_run_context",
-		"qorpera_read_company_path",
-		"qorpera_list_company_paths",
+		"qorpera_read_company_path_v2",
+		"qorpera_list_company_paths_v2",
+		"qorpera_confirm_company_path_read",
+		"qorpera_record_native_context_view",
 		"qorpera_check_company_path_mutation",
 		"qorpera_verify_company_path_tree",
 		"qorpera_prepare_company_path_mutation",
@@ -135,7 +137,7 @@ describe("Company File bounded control transport", () => {
 			Response.json({ body: "x".repeat(300000) }),
 		]) {
 			const error = await fixture(async () => response)
-				.call("qorpera_read_company_path", {}, new AbortController().signal)
+				.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
 				.catch((error: unknown) => error);
 			expect(error).toBeInstanceOf(Error);
 			expect(error).not.toBeInstanceOf(CloudCompanyHeadConflict);
@@ -146,7 +148,7 @@ describe("Company File bounded control transport", () => {
 		const transport = vi.fn<typeof fetch>();
 		const abort = new AbortController();
 		abort.abort();
-		await expect(fixture(transport).call("qorpera_read_company_path", {}, abort.signal)).rejects.toThrow();
+		await expect(fixture(transport).call("qorpera_read_company_path_v2", {}, abort.signal)).rejects.toThrow();
 		expect(transport).not.toHaveBeenCalled();
 	});
 });

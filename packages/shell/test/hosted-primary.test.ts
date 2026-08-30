@@ -20,6 +20,12 @@ const eventHash = "a".repeat(64);
 const promotionId = "4a9d13d1-89fe-4896-a39e-67fc33db67d1";
 const companyCreationId = "4a9d13d1-89fe-4896-a39e-67fc33db67d2";
 const staffAgentId = "11111111-1111-4111-8111-111111111111";
+const formationId = "11111111-1111-4111-8111-111111111112";
+const cofounderSessionId = "11111111-1111-4111-8111-111111111113";
+const departmentId = "11111111-1111-4111-8111-111111111114";
+const projectId = "11111111-1111-4111-8111-111111111115";
+const roomId = "11111111-1111-4111-8111-111111111116";
+const pathVersionId = "11111111-1111-4111-8111-111111111117";
 const workspaceId = "22222222-2222-4222-8222-222222222222";
 const clientWorkspaceId = "33333333-3333-4333-8333-333333333333";
 const snapshotId = "44444444-4444-4444-8444-444444444444";
@@ -64,6 +70,8 @@ function sessionRecord() {
 		parent_session_id: null,
 		company_snapshot_id: snapshotId,
 		staff_version: 3,
+		audience_kind: "company",
+		audience_user_id: null,
 		status: "open",
 		created_by_user_id: actorUserId,
 		created_at: createdAt,
@@ -127,6 +135,69 @@ function staffRecord() {
 		created_at: createdAt,
 		updated_at: createdAt,
 		updated_by_user_id: actorUserId,
+	};
+}
+
+function companyOrganizationRecord() {
+	return {
+		schema: "qorpera.company-organization/v1",
+		profile_id: profileId,
+		cofounder: {
+			staff_agent_id: staffAgentId,
+			formation_id: formationId,
+			member_session_id: cofounderSessionId,
+		},
+		formation: {
+			formation_id: formationId,
+			state: "source_inventory",
+			status: "active",
+			revision: 1,
+			projection_status: "verified",
+			source_path: "organization/formation.json",
+			source_path_version: pathVersionId,
+			source_snapshot_id: snapshotId,
+			source_file_sha256: treeManifestSha256,
+		},
+		departments: [
+			{
+				department_id: departmentId,
+				slug: "engineering",
+				name: "Engineering",
+				status: "active",
+				lead_staff_agent_id: staffAgentId,
+				default_room_id: roomId,
+				staff: [
+					{
+						staff_agent_id: staffAgentId,
+						assignment_kind: "primary",
+						role: "Lead",
+						status: "active",
+					},
+				],
+				version: 1,
+				source_path: "organization/departments/engineering.json",
+				source_path_version: pathVersionId,
+				source_snapshot_id: snapshotId,
+				source_file_sha256: treeManifestSha256,
+			},
+		],
+		projects: [
+			{
+				project_id: projectId,
+				key: "launch",
+				name: "Launch",
+				status: "active",
+				sponsoring_department_id: departmentId,
+				lead_staff_agent_id: staffAgentId,
+				room_id: roomId,
+				staff: [{ staff_agent_id: staffAgentId, role: "Lead", status: "active" }],
+				version: 1,
+				source_path: "organization/projects/launch.json",
+				source_path_version: pathVersionId,
+				source_snapshot_id: snapshotId,
+				source_file_sha256: treeManifestSha256,
+			},
+		],
 	};
 }
 
@@ -397,7 +468,30 @@ function companyProposalCommentRecord() {
 
 function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrimaryTransport {
 	return {
-		createCompany: vi.fn(async () => ({ ...profileRecord(), company_file: companyFileRecord(null) })),
+		createCompany: vi.fn(async () => ({
+			...profileRecord(),
+			company_file: companyFileRecord(),
+			bootstrap_state: "completed",
+			organization: {
+				schema: "qorpera.company-organization-bootstrap/v1",
+				cofounder: {
+					staff_agent_id: staffAgentId,
+					formation_id: formationId,
+					member_session_id: cofounderSessionId,
+				},
+				formation_state: "source_inventory",
+			},
+		})),
+		getCompanyOrganizationBootstrap: vi.fn(async () => ({
+			schema: "qorpera.company-organization-bootstrap/v1",
+			cofounder: {
+				staff_agent_id: staffAgentId,
+				formation_id: formationId,
+				member_session_id: cofounderSessionId,
+			},
+			formation_state: "source_inventory",
+		})),
+		getCompanyOrganization: vi.fn(async () => companyOrganizationRecord()),
 		createProfile: vi.fn(async () => profileRecord()),
 		promoteProfile: vi.fn(async () => profileRecord()),
 		listProfiles: vi.fn(async () => [profileRecord()]),
@@ -613,9 +707,10 @@ describe("Qorpera hosted primary", () => {
 				profileId,
 				environmentId,
 				canonicalWorkspaceId: workspaceId,
-				state: "provisioning",
-				logicalBytes: 0,
-				retainedStorageBytes: 0,
+				headSnapshotId: snapshotId,
+				state: "ready",
+				logicalBytes: 4096,
+				retainedStorageBytes: 1024,
 				storageUsedBytes: 5120,
 				storageLimitBytes: 50 * 1024 * 1024 * 1024,
 				objectBackends: ["nas-object-gateway"],
@@ -630,7 +725,42 @@ describe("Qorpera hosted primary", () => {
 				createdAt,
 				updatedAt: createdAt,
 			},
+			organization: {
+				schema: "qorpera.company-organization-bootstrap/v1",
+				cofounder: { staffAgentId, formationId, memberSessionId: cofounderSessionId },
+				formationState: "source_inventory",
+			},
 		});
+		await expect(primary.getCompanyOrganizationBootstrap(profileId)).resolves.toEqual({
+			schema: "qorpera.company-organization-bootstrap/v1",
+			cofounder: { staffAgentId, formationId, memberSessionId: cofounderSessionId },
+			formationState: "source_inventory",
+		});
+		await expect(primary.getCompanyOrganization(profileId)).resolves.toMatchObject({
+			schema: "qorpera.company-organization/v1",
+			profileId,
+			cofounder: { staffAgentId, formationId, memberSessionId: cofounderSessionId },
+			formation: { formationId, state: "source_inventory", status: "active", revision: 1 },
+			departments: [{ departmentId, name: "Engineering", defaultRoomId: roomId }],
+			projects: [{ projectId, name: "Launch", sponsoringDepartmentId: departmentId, roomId }],
+		});
+		const malformed = new QorperaHostedPrimary(
+			transport({
+				getCompanyOrganizationBootstrap: vi.fn(async () => ({
+					schema: "qorpera.company-organization-bootstrap/v1",
+					cofounder: {
+						staff_agent_id: staffAgentId,
+						formation_id: formationId,
+						member_session_id: cofounderSessionId,
+					},
+					formation_state: "source_inventory",
+					unexpected: true,
+				})),
+			}),
+		);
+		await expect(malformed.getCompanyOrganizationBootstrap(profileId)).rejects.toThrow(
+			"invalid company organization bootstrap",
+		);
 		expect(fake.createCompany).toHaveBeenCalledWith({
 			p_client_creation_id: companyCreationId,
 			p_company_name: "Qorpera",
@@ -782,6 +912,7 @@ describe("Qorpera hosted primary", () => {
 			executionScope: { attended: false, autonomousLabel: "Daily finance close" },
 			companySnapshotId: snapshotId,
 			staffVersion: 3,
+			audience: { kind: "company" },
 			status: "open",
 			createdByUserId: actorUserId,
 			createdAt,
@@ -797,6 +928,21 @@ describe("Qorpera hosted primary", () => {
 			p_company_snapshot_id: null,
 			p_staff_version: null,
 		});
+
+		const privatePrimary = new QorperaHostedPrimary(
+			transport({
+				listSessions: vi.fn(async () => [
+					{ ...sessionRecord(), audience_kind: "member_private", audience_user_id: actorUserId },
+				]),
+			}),
+		);
+		await expect(privatePrimary.listSessions(environmentId)).resolves.toEqual([
+			expect.objectContaining({ audience: { kind: "member_private", userId: actorUserId } }),
+		]);
+		const malformedAudience = new QorperaHostedPrimary(
+			transport({ listSessions: vi.fn(async () => [{ ...sessionRecord(), audience_user_id: actorUserId }]) }),
+		);
+		await expect(malformedAudience.listSessions(environmentId)).rejects.toThrow("invalid session audience");
 	});
 
 	it("parses durable session queues, revision pins, and ownership loss", async () => {

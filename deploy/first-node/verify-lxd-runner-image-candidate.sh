@@ -2,24 +2,27 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_SOURCE_COMMIT="3a4b8b5c229d725b8ce6d47b27f0349b521f3839"
-EXPECTED_IMAGE_FINGERPRINT="e6f9e5046eb6909bbdb5ef861a030ce45e7a58ed53bb1bc157aa78792233e06d"
-EXPECTED_PACKAGE_ARCHIVE_SHA256="86079a21785f1a60fc176a77c0b6a8f67dc940e455787b63d9d83e5dee0dc0e3"
-EXPECTED_PACKAGE_MANIFEST_SHA256="5edcc95298dd82a6af203493c5610527498f03f907da6324bb69bb4fc6b18c5f"
+EXPECTED_SOURCE_COMMIT="509f514362a8000a8398faa86663a873c2828f97"
+EXPECTED_IMAGE_FINGERPRINT="507024b38d726a12fc74514e7e473f7766e8e339495e610c425d80b6787f61d9"
+EXPECTED_PACKAGE_ARCHIVE_SHA256="6a662a6b93c3737d417b08764591c784f69d65b732beb75934f7703ae2fa13d9"
+EXPECTED_PACKAGE_MANIFEST_SHA256="94b5dd1675f85955f8059eb25429b4d35800147206b1fa87ce7e5638bcea3d14"
 EXPECTED_NATIVE_CODEX_SHA256="2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7"
 EXPECTED_NATIVE_HELPER_SHA256="84bc4ab892cfe18a905a9dfcae9cd5a8206c054ae114af58feb73d63a7931df9"
 EXPECTED_NATIVE_PROVIDER_HOST_SHA256="90e3cff0f6e595fb1c8b802d57be07793818f46d54dd8818f9a1ccf24b01d3d9"
 EXPECTED_NATIVE_COMPANY_SERVICE_SHA256="23ec747b69de6eccf04c423a0d752a80585e7155318fbf7f6d0d199f453349d5"
-EXPECTED_RUNNER_BOOTSTRAP_SHA256="6d5615c2daa931e5f80cdf91262a5f4cd7cd4c3db69f30901e26740686b3a372"
+EXPECTED_RUNNER_BOOTSTRAP_SHA256="78aec00a277c9e9b40354ef223f219cb1151d8280fdfcda6e8e7509bc32ab173"
+EXPECTED_NATIVE_LOGIN_BOOTSTRAP_SHA256="8fd64e7c86719558ca692c4cafb1aae00b3e3929f24b2e6baafdb6e4f4f4c7a7"
+EXPECTED_NATIVE_LOGIN_BOOTSTRAP_SERVICE_SHA256="653ef229d8254824cbfa1ff2e91046396818d43e91edc33d221d9e97fecaa66d"
+EXPECTED_NATIVE_LOGIN_PROVIDER_SERVICE_SHA256="0f5e9ca1118ca9f678e6f26f061dd3c3d17710f8360a58b14c7055edc4ea9275"
 EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1"
 LXD_PROJECT="qorpera-runners"
 LXD_IMAGE_PROJECT="default"
 LXD_POOL="qorpera-vm"
 LXD_PROFILE="qorpera-job-v1"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v55-secret-proof-unsigned"
-ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v55"
-ACCEPTANCE_MARKER="qorpera.lxd-runner-image-acceptance/v1-v55"
-STATE_LOG="/var/log/qorpera-lxd-runner-image-acceptance-v55.txt"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v56-secret-proof-unsigned"
+ACCEPTANCE_INSTANCE="qorpera-runner-image-acceptance-v56-proven"
+ACCEPTANCE_MARKER="qorpera.lxd-runner-image-acceptance/v1-v56"
+STATE_LOG="/var/log/qorpera-lxd-runner-image-acceptance-v56.txt"
 
 if [[ ${EUID} -ne 0 ]]; then
 	echo "Run this script through sudo." >&2
@@ -37,7 +40,7 @@ fi
 image_info=$(lxc image info "${IMAGE_ALIAS}" --project "${LXD_IMAGE_PROJECT}")
 image_fingerprint=$(awk '/^Fingerprint:/ { print $2 }' <<<"${image_info}")
 if [[ ${image_fingerprint} != "${EXPECTED_IMAGE_FINGERPRINT}" ]]; then
-	echo "The unsigned candidate alias does not resolve to the exact signed v55 input fingerprint." >&2
+	echo "The unsigned candidate alias does not resolve to the exact signed v56 input fingerprint." >&2
 	exit 1
 fi
 if [[ $(awk '$1 == "user.qorpera.schema:" { print $2 }' <<<"${image_info}") != qorpera.lxd-runner-image/v1 ]] ||
@@ -60,25 +63,38 @@ cleanup_acceptance_vm() {
 	lxc delete "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" --force
 }
 
+acceptance_precreated=false
 if lxc info "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" >/dev/null 2>&1; then
 	if [[ $(lxc config get "${ACCEPTANCE_INSTANCE}" user.qorpera.acceptance_test --project "${LXD_PROJECT}" 2>/dev/null || true) != "${ACCEPTANCE_MARKER}" ]]; then
 		echo "An unrelated instance already uses the acceptance-test name." >&2
 		exit 1
 	fi
-	cleanup_acceptance_vm
+	if [[ $(lxc list "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" --format csv --columns s) != STOPPED ]] ||
+		[[ $(lxc config get "${ACCEPTANCE_INSTANCE}" volatile.base_image --project "${LXD_PROJECT}") != "${EXPECTED_IMAGE_FINGERPRINT}" ]] ||
+		[[ $(lxc config get "${ACCEPTANCE_INSTANCE}" boot.mode --project "${LXD_PROJECT}") != uefi-secureboot ]] ||
+		[[ $(lxc config get "${ACCEPTANCE_INSTANCE}" limits.cpu --project "${LXD_PROJECT}") != 2 ]] ||
+		[[ $(lxc config get "${ACCEPTANCE_INSTANCE}" limits.memory --project "${LXD_PROJECT}") != 4GiB ]] ||
+		[[ $(lxc config device get "${ACCEPTANCE_INSTANCE}" root size --project "${LXD_PROJECT}") != 80GiB ]] ||
+		[[ $(lxc query "/1.0/instances/${ACCEPTANCE_INSTANCE}?project=${LXD_PROJECT}" | python3 -c 'import json,sys; payload=json.load(sys.stdin); metadata=payload.get("metadata",payload); print(",".join(metadata.get("profiles",[])))') != "${LXD_PROFILE}" ]]; then
+		echo "Refusing to resume an unrecognized precreated acceptance instance." >&2
+		exit 1
+	fi
+	acceptance_precreated=true
 fi
 trap cleanup_acceptance_vm EXIT HUP INT TERM
 
 echo "Booting the unsigned runner candidate without credentials or an identity volume."
-lxc init "${image_fingerprint}" "${ACCEPTANCE_INSTANCE}" \
-	--project "${LXD_PROJECT}" \
-	--profile "${LXD_PROFILE}" \
-	--storage "${LXD_POOL}" \
-	--config boot.mode=uefi-secureboot \
-	--config limits.cpu=2 \
-	--config limits.memory=4GiB \
-	--config user.qorpera.acceptance_test="${ACCEPTANCE_MARKER}" \
-	--device root,size=80GiB
+if [[ ${acceptance_precreated} != true ]]; then
+	lxc init "${image_fingerprint}" "${ACCEPTANCE_INSTANCE}" \
+		--project "${LXD_PROJECT}" \
+		--profile "${LXD_PROFILE}" \
+		--storage "${LXD_POOL}" \
+		--config boot.mode=uefi-secureboot \
+		--config limits.cpu=2 \
+		--config limits.memory=4GiB \
+		--config user.qorpera.acceptance_test="${ACCEPTANCE_MARKER}" \
+		--device root,size=80GiB
+fi
 lxc start "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}"
 
 agent_ready=false
@@ -147,7 +163,10 @@ lxc exec "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" -- \
 		EXPECTED_NATIVE_HELPER_SHA256="${EXPECTED_NATIVE_HELPER_SHA256}" \
 		EXPECTED_NATIVE_PROVIDER_HOST_SHA256="${EXPECTED_NATIVE_PROVIDER_HOST_SHA256}" \
 		EXPECTED_NATIVE_COMPANY_SERVICE_SHA256="${EXPECTED_NATIVE_COMPANY_SERVICE_SHA256}" \
-		EXPECTED_RUNNER_BOOTSTRAP_SHA256="${EXPECTED_RUNNER_BOOTSTRAP_SHA256}" bash -euo pipefail -c '
+		EXPECTED_RUNNER_BOOTSTRAP_SHA256="${EXPECTED_RUNNER_BOOTSTRAP_SHA256}" \
+		EXPECTED_NATIVE_LOGIN_BOOTSTRAP_SHA256="${EXPECTED_NATIVE_LOGIN_BOOTSTRAP_SHA256}" \
+		EXPECTED_NATIVE_LOGIN_BOOTSTRAP_SERVICE_SHA256="${EXPECTED_NATIVE_LOGIN_BOOTSTRAP_SERVICE_SHA256}" \
+		EXPECTED_NATIVE_LOGIN_PROVIDER_SERVICE_SHA256="${EXPECTED_NATIVE_LOGIN_PROVIDER_SERVICE_SHA256}" bash -euo pipefail -c '
 	[[ $(id -g qorpera-native-provider) == 42041 ]]
 	id -G qorpera-runner | tr " " "\n" | grep -Fxq 42041
 	[[ -x /usr/bin/crun ]]
@@ -159,6 +178,9 @@ lxc exec "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" -- \
 	[[ $(sha256sum /opt/qorpera-runner/qorpera-native-provider-host.mjs | cut -d " " -f 1) == "${EXPECTED_NATIVE_PROVIDER_HOST_SHA256}" ]]
 	[[ $(sha256sum /etc/systemd/system/qorpera-native-company-host.service | cut -d " " -f 1) == "${EXPECTED_NATIVE_COMPANY_SERVICE_SHA256}" ]]
 	[[ $(sha256sum /opt/qorpera-runner/qorpera-lxd-runner-bootstrap.mjs | cut -d " " -f 1) == "${EXPECTED_RUNNER_BOOTSTRAP_SHA256}" ]]
+	[[ $(sha256sum /opt/qorpera-runner/qorpera-lxd-native-login-bootstrap.mjs | cut -d " " -f 1) == "${EXPECTED_NATIVE_LOGIN_BOOTSTRAP_SHA256}" ]]
+	[[ $(sha256sum /etc/systemd/system/qorpera-lxd-native-login-bootstrap.service | cut -d " " -f 1) == "${EXPECTED_NATIVE_LOGIN_BOOTSTRAP_SERVICE_SHA256}" ]]
+	[[ $(sha256sum /etc/systemd/system/qorpera-native-login-provider-host.service | cut -d " " -f 1) == "${EXPECTED_NATIVE_LOGIN_PROVIDER_SERVICE_SHA256}" ]]
 	[[ $(stat -c "%u:%g:%a:%h" /opt/qorpera-harnesses/native-company/codex) == 0:0:555:1 ]]
 	[[ $(stat -c "%u:%g:%a:%h" /opt/qorpera-runner/qorpera-native-isolation-child.mjs) == 0:0:555:1 ]]
 	[[ -x /usr/bin/bwrap ]]
@@ -218,6 +240,9 @@ state_tmp=$(mktemp)
 	echo "native_codex_sha256=${EXPECTED_NATIVE_CODEX_SHA256}"
 	echo "native_helper_sha256=${EXPECTED_NATIVE_HELPER_SHA256}"
 	echo "native_provider_host_sha256=${EXPECTED_NATIVE_PROVIDER_HOST_SHA256}"
+	echo "native_login_bootstrap_sha256=${EXPECTED_NATIVE_LOGIN_BOOTSTRAP_SHA256}"
+	echo "native_login_bootstrap_service_sha256=${EXPECTED_NATIVE_LOGIN_BOOTSTRAP_SERVICE_SHA256}"
+	echo "native_login_provider_service_sha256=${EXPECTED_NATIVE_LOGIN_PROVIDER_SERVICE_SHA256}"
 	echo "instance_type=${instance_type}"
 	echo "virtualization=kvm"
 	echo "boot_mode=uefi-secureboot"

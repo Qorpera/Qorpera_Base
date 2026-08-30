@@ -48,6 +48,7 @@ export interface CloudCompanyContextSource {
 		| "job_specification";
 	sourceKind: "input" | "history" | "job" | "job_spec";
 	id: string;
+	actorKind: "human" | "control_plane" | "staff_agent" | "company_service";
 	authorUserId: string | null;
 	sequence: number | null;
 	attachmentCount: number;
@@ -67,6 +68,8 @@ export interface CloudNativeCompanyContext {
 	observedAt: string;
 	company: { id: string; name: string };
 	agent: ContextAgent;
+	audience: { kind: "company" | "member_private"; userId: string | null };
+	runtimeBundle: { id: string; sha256: string };
 	sourceKind: "session_turn" | "wake" | "manual" | "room_delivery" | "system";
 	sourceId: string;
 	currentInputs: CloudCompanyContextSource[];
@@ -119,7 +122,16 @@ function contextAgent(value: unknown): ContextAgent {
 }
 
 function contextSource(value: unknown): CloudCompanyContextSource {
-	const source = closed(value, ["kind", "sourceKind", "id", "authorUserId", "sequence", "attachmentCount", "content"]);
+	const source = closed(value, [
+		"kind",
+		"sourceKind",
+		"id",
+		"actorKind",
+		"authorUserId",
+		"sequence",
+		"attachmentCount",
+		"content",
+	]);
 	const content = closed(source.content, ["text", "originalBytes", "sha256", "offset", "nextOffset", "truncated"]);
 	const kinds: Record<CloudCompanyContextSource["sourceKind"], readonly string[]> = {
 		input: ["current_human_request", "private_startup"],
@@ -160,17 +172,28 @@ function contextSource(value: unknown): CloudCompanyContextSource {
 	)
 		throw new Error("Invalid cloud context source");
 	const authorUserId = source.authorUserId === null ? null : uuid(source.authorUserId);
+	const actorKinds: Record<CloudCompanyContextSource["kind"], CloudCompanyContextSource["actorKind"]> = {
+		current_human_request: "human",
+		private_startup: "control_plane",
+		historical_human_message: "human",
+		historical_agent_send: "staff_agent",
+		historical_data: "company_service",
+		wake_data: "control_plane",
+		job_specification: "company_service",
+	};
 	if (
 		(source.kind === "current_human_request" ||
 			source.kind === "private_startup" ||
 			source.kind === "historical_human_message") !==
-		(authorUserId !== null)
+			(authorUserId !== null) ||
+		source.actorKind !== actorKinds[source.kind as CloudCompanyContextSource["kind"]]
 	)
 		throw new Error("Invalid cloud context attribution");
 	return {
 		kind: source.kind as CloudCompanyContextSource["kind"],
 		sourceKind: source.sourceKind as CloudCompanyContextSource["sourceKind"],
 		id: uuid(source.id),
+		actorKind: source.actorKind as CloudCompanyContextSource["actorKind"],
 		authorUserId,
 		sequence: source.sequence as number | null,
 		attachmentCount: source.attachmentCount as number,
@@ -195,6 +218,8 @@ export function parseCloudNativeCompanyContext(
 		"observedAt",
 		"company",
 		"agent",
+		"audience",
+		"runtimeBundle",
 		"sourceKind",
 		"sourceId",
 		"currentInputs",
@@ -227,6 +252,8 @@ export function parseCloudNativeCompanyContext(
 		binding,
 	).identity;
 	const company = closed(data.company, ["id", "name"]);
+	const audience = closed(data.audience, ["kind", "userId"]);
+	const runtimeBundle = closed(data.runtimeBundle, ["id", "sha256"]);
 	const agent = contextAgent(data.agent);
 	const inputs = data.currentInputs.map(contextSource);
 	const history = data.history.map(contextSource);
@@ -235,6 +262,12 @@ export function parseCloudNativeCompanyContext(
 	const jobSpecification = contextSource(data.jobSpecification);
 	if (
 		uuid(company.id) !== identity.companyId ||
+		audience.kind !== identity.audienceKind ||
+		(audience.userId === null ? null : uuid(audience.userId)) !== identity.audienceUserId ||
+		uuid(runtimeBundle.id) !== identity.runtimeBundleId ||
+		typeof runtimeBundle.sha256 !== "string" ||
+		!SHA256.test(runtimeBundle.sha256) ||
+		runtimeBundle.sha256 !== identity.runtimeBundleSha256 ||
 		agent.id !== identity.staffAgentId ||
 		agent.version !== identity.staffVersion ||
 		inputs.some(
@@ -266,6 +299,8 @@ export function parseCloudNativeCompanyContext(
 		observedAt: data.observedAt,
 		company: { id: identity.companyId, name: shortText(company.name) },
 		agent,
+		audience: { kind: identity.audienceKind, userId: identity.audienceUserId },
+		runtimeBundle: { id: identity.runtimeBundleId, sha256: identity.runtimeBundleSha256 },
 		sourceKind: data.sourceKind as CloudNativeCompanyContext["sourceKind"],
 		sourceId: uuid(data.sourceId),
 		currentInputs: inputs,
@@ -288,7 +323,8 @@ export function composeCloudNativeCompanyPrompt(context: CloudNativeCompanyConte
 			agent: context.agent,
 			execution: "pure_cloud",
 			companyFile: "live_path_gateway",
-			audience: "company",
+			audience: context.audience,
+			runtimeBundle: context.runtimeBundle,
 		},
 		observedAt: context.observedAt,
 		delivery: { requireFinalSend: context.identity.sessionId !== null },

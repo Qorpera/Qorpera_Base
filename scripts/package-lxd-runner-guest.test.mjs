@@ -177,8 +177,8 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		assert.equal(acceptanceSourceCommit, builderSourceCommit, "image candidate recipes must pin the same source commit");
 		assert.equal(
 			acceptanceImageFingerprint,
-			"e6f9e5046eb6909bbdb5ef861a030ce45e7a58ed53bb1bc157aa78792233e06d",
-			"image acceptance must pin the signed v55 input fingerprint",
+			"507024b38d726a12fc74514e7e473f7766e8e339495e610c425d80b6787f61d9",
+			"image acceptance must pin the signed v56 input fingerprint",
 		);
 		assert.equal(builderPin, candidateSha256, "candidate recipes must pin the full governed guest manifest");
 		assert.equal(candidate.nativeCompany.schema, "qorpera.native-company-guest/v1");
@@ -205,10 +205,10 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			);
 		}
 		assert.ok(builder.includes('LXD_BUILDER_PROJECT="default"'));
-		assert.ok(builder.includes('PACKAGE_ARCHIVE="/home/company41-admin/step2-lxd/lxd-runner-guest-v55-secret-proof.tar.gz"'));
+		assert.ok(builder.includes('PACKAGE_ARCHIVE="/home/company41-admin/step2-lxd/lxd-runner-guest-v56-secret-proof.tar.gz"'));
 		assert.ok(builder.includes("--no-same-owner"));
 		assert.ok(!builder.includes('STAGING_ROOT="/home/company41-admin/step2-lxd/lxd-runner-guest-v52"'));
-		assert.ok(acceptance.includes('IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v55-secret-proof-unsigned"'));
+		assert.ok(acceptance.includes('IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v56-secret-proof-unsigned"'));
 		assert.match(installer, /apt-get install --yes[^\n]*\bcrun\b/);
 		assert.match(installer, /apt-get install --yes[^\n]*\bbubblewrap\b/);
 		assert.ok(installer.includes("/usr/bin/podman info >/dev/null"));

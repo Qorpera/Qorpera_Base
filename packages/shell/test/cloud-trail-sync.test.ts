@@ -91,6 +91,7 @@ class FakeHostedPrimary {
 			executionScope: input.executionScope,
 			companySnapshotId: input.companySnapshotId,
 			staffVersion: input.staffVersion,
+			audience: { kind: "company" },
 			status: "open",
 			createdByUserId: actorUserId,
 			createdAt,

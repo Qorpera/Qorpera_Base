@@ -38,7 +38,10 @@ export interface CloudNativeTool {
 	execute(argumentsValue: JsonValue, context: CloudToolContext): Promise<CloudToolContent>;
 }
 
-export type CloudToolContent = { kind: "text"; value: string } | { kind: "json"; value: JsonValue };
+export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"; value: JsonValue }) & {
+	/** Host-only durable read reference, not a field accepted from native/provider output. */
+	companyReadId?: string;
+};
 
 export interface CloudToolResult {
 	schema: typeof CLOUD_TOOL_RESULT_SCHEMA;
@@ -51,6 +54,7 @@ export interface CloudToolResult {
 		source: CloudNativeTool["source"];
 		argumentSha256: string | null;
 		identity?: CloudNativeToolIdentity;
+		companyReadId?: string;
 	};
 	status: "ok" | "denied" | "unconfirmed";
 	content: {
@@ -370,6 +374,11 @@ export class CloudNativeToolBoundary {
 		content: CloudToolContent,
 	): CloudDynamicToolResponse {
 		if (content.kind !== "text" && content.kind !== "json") throw new Error("Invalid cloud tool content");
+		if (
+			content.companyReadId !== undefined &&
+			(tool?.source !== "company_file" || status !== "ok" || !UUID.test(content.companyReadId))
+		)
+			throw new Error("Invalid Company File read provenance");
 		const text = content.kind === "json" ? cloudToolJsonText(content.value, MAX_SOURCE_BYTES) : content.value;
 		if (typeof text !== "string" || Buffer.byteLength(text) > MAX_SOURCE_BYTES)
 			throw new Error("Invalid cloud tool content");
@@ -387,6 +396,7 @@ export class CloudNativeToolBoundary {
 				source: tool?.source ?? "runtime",
 				argumentSha256: digest,
 				...(this.#identity ? { identity: this.#identity } : {}),
+				...(content.companyReadId ? { companyReadId: content.companyReadId } : {}),
 			},
 			status,
 			content: {

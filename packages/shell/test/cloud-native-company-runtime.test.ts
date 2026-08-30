@@ -20,6 +20,8 @@ import { HttpNativeProviderHostService } from "../src/cloud-native-provider-serv
 import type { CloudNativeToolOperationControlPlane } from "../src/cloud-native-tool-operations.ts";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
 import type { CloudRunnerNativeAuthority } from "../src/cloud-runner-broker.ts";
+import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "../src/cloud-runtime-bundle.generated.ts";
+import * as runtimeBundle from "../src/cloud-runtime-bundle.ts";
 import type { CloudSecretOperationClient } from "../src/cloud-secret-tools.ts";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
@@ -28,10 +30,17 @@ const binarySha256 = createHash("sha256")
 	.update(await readFile(process.execPath))
 	.digest("hex");
 let root: string;
+const assertBundle = runtimeBundle.assertCloudRuntimeBundle;
 beforeEach(async () => {
 	root = await mkdtemp(join(tmpdir(), "qorpera-company-runtime-test-"));
+	// The synthetic native protocol fixture is Node, not the signed Linux binary.
+	// Keep the real bundle/effort checks; binary matching is separately tested without this substitution.
+	vi.spyOn(runtimeBundle, "assertCloudRuntimeBundle").mockImplementation((identity) =>
+		assertBundle(identity, CLOUD_RUNTIME_NATIVE_BINARY_SHA256),
+	);
 });
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await rm(root, { recursive: true, force: true });
 });
 
@@ -81,7 +90,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 	};
 	const pathCall = vi.fn<CloudCompanyPathControl["call"]>(async (method, args) => {
 		expect(args.p_binding).toEqual(f.binding);
-		if (method === "qorpera_begin_native_company_execution") {
+		if (method === "qorpera_begin_native_company_execution_v2") {
 			if (nativeStarted) throw new Error("Earlier native execution requires reconciliation");
 			nativeStarted = true;
 			return {
@@ -90,6 +99,14 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 				jobId: f.binding.jobId,
 				leaseId: f.binding.leaseId,
 				binarySha256: args.p_binary_sha256,
+				runtimeBundleSha256: args.p_runtime_bundle_sha256,
+				reasoningPolicySha256: args.p_reasoning_policy_sha256,
+				reasoningEffort: "low",
+				toolCatalogSha256: createHash("sha256")
+					.update(args.p_tool_catalog_text as string)
+					.digest("hex"),
+				contextSha256: args.p_context_sha256,
+				contextBytes: args.p_context_bytes,
 			};
 		}
 		if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
@@ -108,9 +125,25 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 			return null;
 		}
 		if (method === "qorpera_assert_company_path_reads") return null;
-		if (method === "qorpera_read_company_path")
+		if (method === "qorpera_confirm_company_path_read")
+			return {
+				schema: "qorpera.company-read-confirmation/v1",
+				readId: args.p_read_id,
+				resultSha256: args.p_result_sha256,
+			};
+		if (method === "qorpera_record_native_context_view")
+			return {
+				schema: "qorpera.native-context-view-receipt/v1",
+				viewId: randomUUID(),
+				requestId: (args.p_view as Record<string, unknown>).requestId,
+				sha256: "b".repeat(64),
+				ordinal: 1,
+			};
+		if (method === "qorpera_read_company_path_v2")
 			return {
 				path: "note.md",
+				snapshotId: randomUUID(),
+				readObservationId: randomUUID(),
 				version: fileVersion,
 				entry: { kind: "file", path: "note.md", executable: false, file },
 				companyId: f.context.identity.companyId,
@@ -358,7 +391,7 @@ it("still rejects extra configuration passed directly to the native runtime", as
 		"Native boundary requires an auth-only identity",
 	);
 	expect(f.control.sendMessage).not.toHaveBeenCalled();
-	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_begin_native_company_execution")).toBe(false);
+	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_begin_native_company_execution_v2")).toBe(false);
 	await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
@@ -475,9 +508,9 @@ it("binds durable start admission to the exact lease and refuses same-run restar
 		"requires reconciliation",
 	);
 	expect(f.control.sendMessage).toHaveBeenCalledTimes(sent);
-	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_begin_native_company_execution")).toHaveLength(
-		2,
-	);
+	expect(
+		f.pathCall.mock.calls.filter(([method]) => method === "qorpera_begin_native_company_execution_v2"),
+	).toHaveLength(2);
 });
 
 it("does not send or expose a tool when the start acknowledgement is for a different lease", async () => {
@@ -485,7 +518,7 @@ it("does not send or expose a tool when the start acknowledgement is for a diffe
 	const original = f.pathCall.getMockImplementation()!;
 	f.pathCall.mockImplementation(async (method, args, signal) => {
 		const value = await original(method, args, signal);
-		return method === "qorpera_begin_native_company_execution"
+		return method === "qorpera_begin_native_company_execution_v2"
 			? { ...(value as Record<string, unknown>), leaseId: randomUUID() }
 			: value;
 	});
@@ -515,7 +548,7 @@ it("stops before the final send when a read source loses audience permission", a
 	let read = false;
 	f.pathCall.mockImplementation(async (method, args, signal) => {
 		if (method === "qorpera_assert_company_path_reads" && read) throw new Error("Context is now private");
-		if (method === "qorpera_read_company_path") read = true;
+		if (method === "qorpera_read_company_path_v2") read = true;
 		return original(method, args, signal);
 	});
 	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(

@@ -346,6 +346,9 @@ export async function checkpointCloudCompanyFile(
 	for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
 		let companyFile = await input.primary.getCompanyFile(input.environmentId);
 		requireCompanyFileScope(companyFile, input);
+		if (!companyFile.headSnapshotId && !state.binding.applied) {
+			throw new Error("Canonical Company File cloud bootstrap is still provisioning");
+		}
 		const pending = state.binding.pending;
 		if (pending) {
 			try {

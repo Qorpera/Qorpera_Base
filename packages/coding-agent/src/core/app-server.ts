@@ -55,6 +55,24 @@ import { FIXED_SHELL_NAVIGATION, type ShellNavigationState } from "./shell-navig
 import { readUsageRateCatalog, type UsageRateCatalog } from "./usage-pricing.ts";
 import { companyUsageWindowError, readCompanyUsage } from "./usage-summary.ts";
 
+export interface CompanyOrganizationHierarchyNodeView {
+	id: string;
+	kind: "cofounder" | "department" | "project" | "room" | "agent";
+	label: string;
+	status: string;
+	role?: string;
+	canonicalId: string;
+	children: CompanyOrganizationHierarchyNodeView[];
+}
+
+export interface CompanyOrganizationHierarchyView {
+	schema: "qorpera.company-organization-hierarchy/v1";
+	profileId: string;
+	formationState: string;
+	primary: CompanyOrganizationHierarchyNodeView[];
+	inactive: CompanyOrganizationHierarchyNodeView[];
+}
+
 export interface CompanyAppOptions {
 	root: string;
 	port?: number;
@@ -97,6 +115,9 @@ export interface CompanyAppOptions {
 	scheduledJobReadModel?: () => readonly CompanyScheduledJobView[];
 	/** Durable agent-to-agent mail from the host-protected company ledger. */
 	staffMessageReadModel?: () => readonly StaffAgentMessage[];
+	/** Semantic company hierarchy projected from canonical Company File state.
+	 * The app server strips it to this closed renderer view. */
+	organizationReadModel?: () => CompanyOrganizationHierarchyView | undefined;
 }
 
 export type CompanyConnectionRequestStatus = "pending" | "connecting" | "connected" | "denied" | "failed" | "cancelled";
@@ -1387,6 +1408,31 @@ function scheduledJobView(job: CompanyScheduledJobView): CompanyScheduledJobView
 	};
 }
 
+function organizationNodeView(node: CompanyOrganizationHierarchyNodeView): CompanyOrganizationHierarchyNodeView {
+	return {
+		id: node.id,
+		kind: node.kind,
+		label: node.label,
+		status: node.status,
+		...(node.role !== undefined ? { role: node.role } : {}),
+		canonicalId: node.canonicalId,
+		children: node.children.map(organizationNodeView),
+	};
+}
+
+function organizationHierarchyView(
+	hierarchy: CompanyOrganizationHierarchyView | undefined,
+): CompanyOrganizationHierarchyView | undefined {
+	if (!hierarchy) return undefined;
+	return {
+		schema: "qorpera.company-organization-hierarchy/v1",
+		profileId: hierarchy.profileId,
+		formationState: hierarchy.formationState,
+		primary: hierarchy.primary.map(organizationNodeView),
+		inactive: hierarchy.inactive.map(organizationNodeView),
+	};
+}
+
 function stateFor(
 	root: string,
 	runtime?: SessionRuntimeSnapshot,
@@ -1399,6 +1445,7 @@ function stateFor(
 	scheduledJobs: readonly CompanyScheduledJobView[] = [],
 	agentMessages: readonly StaffAgentMessage[] = [],
 	governedCompanyFile = false,
+	organizationHierarchy?: CompanyOrganizationHierarchyView,
 ): unknown {
 	const projectedSessions = sessions ?? listTrailSessions(root);
 	const publicRuntime = runtime ? publicSessionRuntimeSnapshot(runtime) : undefined;
@@ -1449,6 +1496,7 @@ function stateFor(
 		connectionRequests,
 		scheduledJobs,
 		agentMessages,
+		organizationHierarchy: organizationHierarchyView(organizationHierarchy) ?? null,
 		trailSessions: projectedSessions.length,
 		departments,
 	};
@@ -1735,6 +1783,13 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			const connectionRequests = safeReadModel(options.connectionRequestReadModel, connectionRequestView);
 			const scheduledJobs = safeReadModel(options.scheduledJobReadModel, scheduledJobView);
 			const agentMessages = safeReadModel(options.staffMessageReadModel, staffMessageView);
+			let organizationHierarchy: CompanyOrganizationHierarchyView | undefined;
+			try {
+				organizationHierarchy = options.organizationReadModel?.();
+			} catch {
+				// A malformed or temporarily unavailable semantic projection must
+				// not take down the rest of the company read model.
+			}
 			response
 				.writeHead(200, {
 					"content-type": "application/json",
@@ -1754,6 +1809,7 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 							scheduledJobs,
 							agentMessages,
 							options.governedCompanyFile,
+							organizationHierarchy,
 						),
 					),
 				);

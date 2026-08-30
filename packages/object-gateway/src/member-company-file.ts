@@ -527,6 +527,47 @@ function candidate(value: unknown, intended: Plan): Buffer {
 	return bytes;
 }
 
+function organizationPath(pathName: string): boolean {
+	const key = pathName.normalize("NFKC").toUpperCase().toLowerCase();
+	return (
+		key === "organization/formation.json" ||
+		/^organization\/(?:agents|departments|projects)\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/.test(
+			key,
+		)
+	);
+}
+
+async function organizationDocument(
+	options: MemberCompanyFileOptions,
+	companyId: string,
+	mutation: Plan,
+): Promise<string | null> {
+	if (!organizationPath(mutation.path)) return null;
+	if (mutation.entry === null) return null;
+	if (mutation.entry?.kind !== "file" || mutation.entry.file.bytes > 32 * 1024) throw new ObjectDependencyError(400);
+	const file = mutation.entry.file;
+	let bytes: Uint8Array<ArrayBufferLike> = new Uint8Array();
+	if (file.bytes) {
+		try {
+			bytes = await options.store.get(companyId, file.fileSha256, file.bytes);
+		} catch (error) {
+			if (
+				!(error instanceof Error) ||
+				(error.message !== "Object not found" && !(error instanceof ObjectDependencyError && error.unavailable))
+			)
+				throw error;
+			bytes = await options.readLegacyObject(companyId, file.fileSha256);
+		}
+	}
+	if (bytes.length !== file.bytes || createHash("sha256").update(bytes).digest("hex") !== file.fileSha256)
+		throw new ObjectDependencyError(409);
+	try {
+		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	} catch {
+		throw new ObjectDependencyError(400);
+	}
+}
+
 async function applyCommand(
 	options: MemberCompanyFileOptions,
 	initial: Command,
@@ -558,10 +599,16 @@ async function applyCommand(
 		)
 			throw new ObjectDependencyError(503);
 		try {
+			const document = await organizationDocument(options, current.companyId, current.plan);
 			const applied = command(
 				await options.authority.publisher(
-					"qorpera_apply_member_company_path_command",
-					{ ...args, p_expected_head: id(prepared.snapshotId), p_tree_sha256: sha },
+					"qorpera_apply_member_company_path_command_v3",
+					{
+						...args,
+						p_expected_head: id(prepared.snapshotId),
+						p_tree_sha256: sha,
+						p_document_text: document,
+					},
 					signal,
 				),
 				initial.environmentId,
@@ -624,10 +671,16 @@ async function applyProposal(
 		)
 			throw new ObjectDependencyError(503);
 		try {
+			const document = await organizationDocument(options, companyId, plan(prepared.plan));
 			const result = object(
 				await options.authority.publisher(
-					"qorpera_apply_company_path_approval",
-					{ ...args, p_expected_head: id(prepared.snapshotId), p_tree_sha256: sha },
+					"qorpera_apply_company_path_approval_v3",
+					{
+						...args,
+						p_expected_head: id(prepared.snapshotId),
+						p_tree_sha256: sha,
+						p_document_text: document,
+					},
 					signal,
 				),
 			);

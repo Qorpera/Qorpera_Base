@@ -1,5 +1,7 @@
+import type { JsonValue } from "@qorpera/contracts";
 import { runCloudCodexToolSession } from "./cloud-codex-tool-session.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
 	type CloudNativeToolAuthorityReader,
 	type CloudNativeToolBinding,
@@ -7,7 +9,11 @@ import {
 	CloudNativeToolRun,
 	cloudToolRequest,
 } from "./cloud-native-tool-authority.ts";
-import { type CloudNativeTool, CloudNativeToolBoundary } from "./cloud-native-tool-boundary.ts";
+import {
+	type CloudNativeFencedResult,
+	type CloudNativeTool,
+	CloudNativeToolBoundary,
+} from "./cloud-native-tool-boundary.ts";
 import {
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
@@ -22,7 +28,7 @@ export async function runCloudNativeRunToolSession(options: {
 	binding: CloudNativeToolBinding;
 	controlPlane: CloudNativeToolAuthorityReader & CloudNativeToolOperationControlPlane;
 	/** Durable cloud admission, once per run. A lost response must not be retried. */
-	beginExecution: (signal: AbortSignal) => Promise<void>;
+	beginExecution: (specification: JsonValue, signal: AbortSignal) => Promise<void>;
 	/** Trusted cloud adapters only. No tool gets the control-plane client or runner credentials as arguments. */
 	tools: (
 		identity: CloudNativeToolIdentity,
@@ -31,6 +37,11 @@ export async function runCloudNativeRunToolSession(options: {
 		tools: readonly CloudNativeTool[];
 		/** Revalidate the context's path/audience read set, not only run admission. */
 		assertContext: (signal: AbortSignal) => Promise<void>;
+		recordContextView: (
+			frame: CloudNativeFenceRequest,
+			outputs: readonly CloudNativeFencedResult[],
+			signal: AbortSignal,
+		) => Promise<void>;
 	};
 	command: readonly [string, ...string[]];
 	binarySha256: string;
@@ -68,6 +79,7 @@ export async function runCloudNativeRunToolSession(options: {
 			binarySha256: options.binarySha256,
 			boundary,
 			model: run.identity.model,
+			reasoningEffort: run.identity.reasoningEffort,
 			prompt: options.prompt,
 			runtimeInstructions: options.runtimeInstructions,
 			identityRoot: options.identityRoot,
@@ -76,7 +88,18 @@ export async function runCloudNativeRunToolSession(options: {
 			timeoutMs: options.timeoutMs,
 			beforeModelStart: async (signal) => {
 				await assertActive(signal);
-				await cloudToolRequest(options.beginExecution, signal);
+				await cloudToolRequest(
+					(requestSignal) => options.beginExecution(boundary!.specification, requestSignal),
+					signal,
+				);
+				await assertActive(signal);
+			},
+			recordContextView: async (frame, outputs, signal) => {
+				await assertActive(signal);
+				await cloudToolRequest(
+					(requestSignal) => adapters.recordContextView(frame, outputs, requestSignal),
+					signal,
+				);
 				await assertActive(signal);
 			},
 		});

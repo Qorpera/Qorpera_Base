@@ -56,6 +56,20 @@ end
 $$;
 
 select pg_temp.path_claims('service_role');
+select set_config('qorpera_test.runtime_native_sha',(select bundle.manifest ->> 'nativeBinarySha256'
+	from public.qorpera_active_runtime_bundle active join public.qorpera_runtime_bundles bundle on bundle.id = active.runtime_bundle_id),true);
+
+create function pg_temp.path_begin(p_binding jsonb,p_binary_sha text default null)
+returns jsonb language plpgsql as $$
+declare v_identity jsonb := public.qorpera_describe_native_tool_authority(p_binding) -> 'identity';
+begin
+	return public.qorpera_begin_native_company_execution_v2(p_binding,
+		coalesce(p_binary_sha,current_setting('qorpera_test.runtime_native_sha')),
+		v_identity ->> 'runtimeBundleSha256',v_identity ->> 'reasoningPolicySha256',
+		'{"type":"namespace","name":"qorpera","description":"Synthetic native fixture","tools":[{"type":"function","name":"read_document","description":"Read synthetic data","inputSchema":{"type":"object","additionalProperties":false}}]}',
+		repeat('c',64),10);
+end
+$$;
 select set_config('qorpera_test.path_tree',pg_temp.path_stage_tree('[]'),true);
 select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
 insert into public.qorpera_company_snapshots(id,profile_id,environment_id,workspace_id,client_snapshot_id,
@@ -228,21 +242,23 @@ declare v_binding jsonb := current_setting('qorpera_test.path_binding')::jsonb;
 	v_started jsonb; v_terminal jsonb; v_status text;
 begin
 	if has_function_privilege('authenticated','public.qorpera_begin_native_company_execution(jsonb,text)','EXECUTE')
+		or has_function_privilege('service_role','public.qorpera_begin_native_company_execution(jsonb,text)','EXECUTE')
 		or has_function_privilege('service_role','public.qorpera_terminalize_runner_attempt_before_native_start(uuid,text,text,boolean)','EXECUTE') then
 		raise exception 'Native start or recovery bypass exposed'; end if;
 	set local role service_role;
-	v_started := public.qorpera_begin_native_company_execution(v_binding,repeat('a',64));
-	if v_started <> jsonb_build_object('schema','qorpera.native-company-execution-start/v1',
-		'runId',v_binding ->> 'runId','jobId',v_binding ->> 'jobId','leaseId',v_binding ->> 'leaseId','binarySha256',repeat('a',64)) then
+	v_started := pg_temp.path_begin(v_binding);
+	if v_started - array['runtimeBundleSha256','reasoningEffort','reasoningPolicySha256','toolCatalogSha256','contextSha256','contextBytes'] <> jsonb_build_object('schema','qorpera.native-company-execution-start/v1',
+		'runId',v_binding ->> 'runId','jobId',v_binding ->> 'jobId','leaseId',v_binding ->> 'leaseId','binarySha256',current_setting('qorpera_test.runtime_native_sha'))
+		or v_started ->> 'reasoningEffort' <> 'low' or v_started ->> 'runtimeBundleSha256' is null then
 		raise exception 'Native start receipt is not bound'; end if;
 	begin
-		perform public.qorpera_begin_native_company_execution(v_binding,repeat('a',64));
+		perform pg_temp.path_begin(v_binding);
 		raise exception 'Native turn restarted after a lost acknowledgement';
 	exception when object_not_in_prerequisite_state then null; end;
 	begin
-		perform public.qorpera_begin_native_company_execution(v_binding,repeat('b',64));
+		perform pg_temp.path_begin(v_binding,repeat('b',64));
 		raise exception 'Another native artifact restarted an uncertain turn';
-	exception when object_not_in_prerequisite_state then null; end;
+	exception when insufficient_privilege then null; end;
 	reset role;
 	foreach v_status in array array['failed','cancelled'] loop
 		begin
@@ -381,6 +397,10 @@ begin
 				where id = current_setting('qorpera_test.path_grant')::uuid;
 				perform pg_sleep(0.03);
 			else
+				-- Simulate a Storage-owned object loss in this rolled-back
+				-- fixture. Managed Storage requires its own delete context;
+				-- leave all Qorpera retention/authority triggers enabled.
+				perform set_config('storage.allow_delete_query','true',true);
 				delete from storage.objects where name = '29000000-0000-4000-8000-000000000010/' || (v_plan #>> '{entry,file,fileSha256}');
 			end if;
 			set local role service_role;
@@ -681,12 +701,17 @@ begin
 		or v_context #>> '{identity,runId}' <> v_binding ->> 'runId'
 		or v_context #>> '{company,id}' <> '29000000-0000-4000-8000-000000000010'
 		or v_context #>> '{agent,id}' <> '29000000-0000-4000-8000-000000000030'
+		or v_context #>> '{audience,kind}' <> 'company'
+		or v_context #>> '{audience,userId}' is not null
+		or v_context #>> '{runtimeBundle,id}' is distinct from v_context #>> '{identity,runtimeBundleId}'
+		or v_context #>> '{runtimeBundle,sha256}' is distinct from v_context #>> '{identity,runtimeBundleSha256}'
 		or jsonb_array_length(v_context -> 'currentInputs') <> 1
 		or jsonb_array_length(v_context -> 'history') <> 0
 		or v_context::text ~ 'credentialCapsule|encryptedCapsule|session_token|lease_token|attestation' then
 		raise exception 'Cloud context did not derive its closed identity and audience'; end if;
 	v_input := v_context #> '{currentInputs,0}';
-	if v_input ->> 'kind' <> 'current_human_request' or v_input ->> 'authorUserId' <> '29000000-0000-4000-8000-000000000001'
+	if v_input ->> 'kind' <> 'current_human_request' or v_input ->> 'actorKind' <> 'human'
+		or v_input ->> 'authorUserId' <> '29000000-0000-4000-8000-000000000001'
 		or v_input #>> '{content,text}' <> 'Update the company note.' then
 		raise exception 'Current request attribution was lost'; end if;
 	v_page := public.qorpera_read_company_run_context(v_binding,'input',(v_input ->> 'id')::uuid,v_input #>> '{content,sha256}',0,8);
@@ -858,7 +883,7 @@ begin
 	exception when object_not_in_prerequisite_state then
 		if sqlerrm <> 'Native execution has no matching durable admission' then raise; end if;
 	end;
-	perform public.qorpera_begin_native_company_execution(v_binding,repeat('a',64));
+	perform pg_temp.path_begin(v_binding);
 	begin
 		perform pg_temp.path_complete(v_result,v_head);
 		raise exception 'Governed completion accepted a whole-tree publication';
@@ -899,7 +924,7 @@ begin
 	exception when unique_violation then null; end;
 	reset role;
 	if v_completed ->> 'status' <> 'completed'
-		or v_completed #>> '{result,company_file,native_binary_sha256}' <> repeat('a',64)
+		or v_completed #>> '{result,company_file,native_binary_sha256}' <> current_setting('qorpera_test.runtime_native_sha')
 		or v_completed #>> '{result,company_file,output_snapshot_id}' <> v_last_agent_head::text
 		or jsonb_array_length(v_completed #> '{result,company_file,applied_receipt_ids}') < 2
 		or jsonb_array_length(v_completed #> '{result,company_file,proposal_receipt_ids}') < 1
@@ -956,7 +981,7 @@ begin
 		or v_context #>> '{currentInputs,0,kind}' <> 'current_human_request'
 		or v_context #>> '{currentInputs,0,content,text}' <> 'Read the updated company.' then
 		raise exception 'Second human turn did not compose its own admitted input'; end if;
-	perform public.qorpera_begin_native_company_execution(v_binding,repeat('a',64));
+	perform pg_temp.path_begin(v_binding);
 	v_send := public.qorpera_send_native_agent_message((v_binding ->> 'leaseId')::uuid,v_next_run,
 		(v_binding ->> 'jobId')::uuid,(v_binding ->> 'runnerId')::uuid,(v_binding ->> 'assignmentId')::uuid,
 		(v_binding ->> 'credentialCapsuleId')::uuid,(v_binding ->> 'computeIdentityId')::uuid,

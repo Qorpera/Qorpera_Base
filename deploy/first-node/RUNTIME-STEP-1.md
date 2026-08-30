@@ -2,7 +2,7 @@
 
 Date: 2026-08-28
 
-Status: runtime step 1 is implemented and passes real connected-OpenAI cloud
+Historical acceptance status (2026-08-28): runtime step 1 is implemented and passes real connected-OpenAI cloud
 acceptance: progress, final delivery, NAS writes, completion with the desktop
 closed, read-only client replay, and stale-send rejection. The allowance block
 is resolved. The macOS 0.20.44 client is published and installed through its
@@ -11,6 +11,13 @@ native lease atomically, and returns the conversation to idle. The saved
 connected account remains usable. The observed post-final completion delay
 below remains a performance follow-up; this is not completion of later runtime
 steps, full outage continuity, or Claude acceptance.
+
+This dated evidence certifies only its recorded source, image, schema and
+client bytes. The later Steps 0–2 integrated assembly, including organization,
+governed paths, custody and executable/read provenance, is not accepted by
+inheritance. Its source corrections and separate live gates are recorded in
+[Steps 0–2 review corrections](RUNTIME-STEPS-0-2-REVIEW-CORRECTIONS.md).
+Infrastructure state below is historical, not a current health assertion.
 
 Account and company access no longer depend on model readiness or allowance.
 Supabase recovered after the approved restart. The NAS port-change outage is
@@ -744,10 +751,15 @@ outage-resilience worktree has not been merged or deployed here.
 
 ## Remaining steps, not absent plumbing
 
-Inbound tool-result fences and outbound effect policy are runtime step 2.
-Five-kind wake policy, file-change wakes and complete offline dispatch are step
-3. The governed Company File mutation gateway and its path-authority projections
-still need integration. Shared persistent office desktops, workers/todos,
-memory indexes, connectors, scheduler/listeners and final constitution follow
-their specified order. The existing live NAS mount is not a reason to create a
-parallel file store or move execution back onto a member's machine.
+Inbound tool-result fences, outbound effect policy, governed Company File
+paths and cloud secret custody have later Step 2 source/component evidence;
+they are not absent plumbing. The current integrated assembly still requires
+coordinated production activation and exact signed acceptance, including the
+new executable/read-provenance pins. The organization-aware bootstrap worker,
+not a legacy direct gateway call, owns cutover.
+
+Five-kind wake policy, file-change wakes and complete offline dispatch remain
+Step 3 and are not incorporated here. Shared persistent office desktops,
+workers/todos, memory indexes, connectors, scheduler/listeners and the final
+constitution follow their specified order. No client or raw NAS mount may
+stand in for the governed cloud execution path.

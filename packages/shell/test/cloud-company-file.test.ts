@@ -208,11 +208,64 @@ async function captureRemoteTree(root: string, store: CloudContentAddressedStore
 	return captureCloudCompanyTree(root, profileId, store);
 }
 
+async function seedCanonicalHead(
+	primary: MemoryCompanyFilePrimary,
+	root: string,
+	objects: CloudContentAddressedStore,
+): Promise<void> {
+	const snapshotId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+	await mkdir(join(root, "organization", "departments"), { recursive: true });
+	await mkdir(join(root, "organization", "projects"), { recursive: true });
+	await writeFile(
+		join(root, "organization", "formation.json"),
+		`${JSON.stringify({
+			schema: "qorpera.company-formation/v1",
+			formationId: "11111111-1111-4111-8111-111111111112",
+			cofounderStaffAgentId: "11111111-1111-4111-8111-111111111111",
+			state: "source_inventory",
+			status: "active",
+			revision: 1,
+		})}\n`,
+	);
+	const tree = await captureRemoteTree(root, objects);
+	primary.snapshots.set(snapshotId, {
+		snapshotId,
+		profileId,
+		environmentId,
+		workspaceId,
+		clientSnapshotId: snapshotId,
+		tree,
+		createdByUserId: actorUserId,
+		createdAt,
+	});
+	primary.headSnapshotId = snapshotId;
+}
+
 afterEach(async () => {
 	for (const directory of temporaryDirectories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 describe("canonical Company File cache", () => {
+	it("refuses to publish any client-owned tree before cloud bootstrap", async () => {
+		const root = join(await temporaryDirectory(), "company");
+		const userData = await temporaryDirectory();
+		scaffoldCompany(root);
+		await mkdir(join(root, "organization"), { recursive: true });
+		await writeFile(join(root, "organization", "formation.json"), '{"formationId":"different"}\n');
+		const primary = new MemoryCompanyFilePrimary();
+		await expect(
+			checkpointCloudCompanyFile({
+				userData,
+				companyRoot: root,
+				profileId,
+				environmentId,
+				primary,
+				objects: new CloudContentAddressedStore(new MemoryObjectTransport()),
+			}),
+		).rejects.toThrow("cloud bootstrap is still provisioning");
+		expect(primary.commitCount).toBe(0);
+	});
+
 	it("clones the canonical file onto another device and publishes native deletion", async () => {
 		const root = join(await temporaryDirectory(), "company");
 		const clonedRoot = join(await temporaryDirectory(), "company");
@@ -222,6 +275,7 @@ describe("canonical Company File cache", () => {
 		await writeFile(join(root, "files", "clone-me.txt"), "portable\n");
 		const primary = new MemoryCompanyFilePrimary();
 		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
+		await seedCanonicalHead(primary, root, objects);
 		const published = await checkpointCloudCompanyFile({
 			userData,
 			companyRoot: root,
@@ -255,6 +309,14 @@ describe("canonical Company File cache", () => {
 			currentCloudCompanyTreeReference(deleted.snapshot.tree),
 			objects,
 		);
+		expect(manifest.entries.map((entry) => entry.path)).toEqual(
+			expect.arrayContaining([
+				"organization",
+				"organization/departments",
+				"organization/formation.json",
+				"organization/projects",
+			]),
+		);
 		expect(manifest.entries.some((entry) => entry.path === "files/clone-me.txt")).toBe(false);
 	});
 
@@ -266,17 +328,18 @@ describe("canonical Company File cache", () => {
 		await writeFile(join(root, "files", "report.txt"), "first\n");
 		const primary = new MemoryCompanyFilePrimary();
 		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
+		await seedCanonicalHead(primary, root, objects);
 		const input = { userData, companyRoot: root, profileId, environmentId, primary, objects };
 
-		await expect(checkpointCloudCompanyFile(input)).resolves.toMatchObject({ changed: true, merged: false });
-		expect(primary.commitCount).toBe(1);
+		await expect(checkpointCloudCompanyFile(input)).resolves.toMatchObject({ changed: false, merged: false });
+		expect(primary.commitCount).toBe(0);
 		await writeFile(join(root, "files", "report.txt"), "second\n");
 		primary.loseNextCommitResponse = true;
 		await expect(checkpointCloudCompanyFile(input)).rejects.toThrow("network response lost");
 		await writeFile(join(root, "files", "report.txt"), "third\n");
 		const recovered = await checkpointCloudCompanyFile(input);
 		expect(recovered).toMatchObject({ changed: true, merged: false });
-		expect(primary.commitCount).toBe(3);
+		expect(primary.commitCount).toBe(2);
 		const manifest = await readCloudCompanyTreeManifest(
 			profileId,
 			currentCloudCompanyTreeReference(recovered.snapshot.tree),
@@ -293,10 +356,12 @@ describe("canonical Company File cache", () => {
 		const userData = await temporaryDirectory();
 		scaffoldCompany(root);
 		await mkdir(join(root, "files"), { recursive: true });
-		await writeFile(join(root, "files", "report.txt"), "durable\n");
 		const primary = new MemoryCompanyFilePrimary();
 		const transport = new MemoryObjectTransport();
 		const objects = new CloudContentAddressedStore(transport);
+		await seedCanonicalHead(primary, root, objects);
+		await checkpointCloudCompanyFile({ userData, companyRoot: root, profileId, environmentId, primary, objects });
+		await writeFile(join(root, "files", "report.txt"), "durable\n");
 		const input = { userData, companyRoot: root, profileId, environmentId, primary, objects };
 
 		primary.loseNextCommitResponse = true;
@@ -318,6 +383,7 @@ describe("canonical Company File cache", () => {
 		const primary = new MemoryCompanyFilePrimary();
 		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
 		const input = { userData, companyRoot: root, profileId, environmentId, primary, objects };
+		await seedCanonicalHead(primary, root, objects);
 		await checkpointCloudCompanyFile(input);
 		const base = primary.headSnapshotId;
 
@@ -334,7 +400,7 @@ describe("canonical Company File cache", () => {
 		await expect(checkpointCloudCompanyFile(input)).resolves.toMatchObject({ changed: true, merged: true });
 		expect(await readFile(join(root, "files", "local.txt"), "utf-8")).toBe("local\n");
 		expect(await readFile(join(root, "files", "remote.txt"), "utf-8")).toBe("remote\n");
-		expect(primary.commitCount).toBe(3);
+		expect(primary.commitCount).toBe(2);
 	});
 
 	it("stops on conflicting changes until the local version is explicitly published", async () => {
@@ -347,6 +413,7 @@ describe("canonical Company File cache", () => {
 		const primary = new MemoryCompanyFilePrimary();
 		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
 		const input = { userData, companyRoot: root, profileId, environmentId, primary, objects };
+		await seedCanonicalHead(primary, root, objects);
 		await checkpointCloudCompanyFile(input);
 		const base = primary.headSnapshotId;
 
@@ -370,13 +437,13 @@ describe("canonical Company File cache", () => {
 			remoteSnapshotId: remote.snapshotId,
 			paths: [{ path: "files/direction.txt" }].map((entry) => entry.path),
 		});
-		expect(primary.commitCount).toBe(2);
+		expect(primary.commitCount).toBe(1);
 
 		state.resolveConflictAgainst(remote);
 		await expect(checkpointCloudCompanyFile(input)).resolves.toMatchObject({ changed: true, merged: false });
 		expect(await readFile(join(root, "files", "direction.txt"), "utf-8")).toBe("local recommendation\n");
 		expect(await readFile(join(root, "files", "remote-note.txt"), "utf-8")).toBe("remote context\n");
-		expect(primary.commitCount).toBe(3);
+		expect(primary.commitCount).toBe(2);
 	});
 
 	it("replaces the exact conflicting local tree only after the cloud version is chosen", async () => {
@@ -389,6 +456,7 @@ describe("canonical Company File cache", () => {
 		const primary = new MemoryCompanyFilePrimary();
 		const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
 		const input = { userData, companyRoot: root, profileId, environmentId, primary, objects };
+		await seedCanonicalHead(primary, root, objects);
 		await checkpointCloudCompanyFile(input);
 		const base = primary.headSnapshotId;
 
@@ -425,6 +493,6 @@ describe("canonical Company File cache", () => {
 		expect(await readFile(join(root, "files", "direction.txt"), "utf-8")).toBe("remote recommendation\n");
 		expect(await readFile(join(root, "files", "local-context.txt"), "utf-8")).toBe("keep this local context\n");
 		expect(await readFile(join(root, "files", "remote-note.txt"), "utf-8")).toBe("keep this cloud context\n");
-		expect(primary.commitCount).toBe(3);
+		expect(primary.commitCount).toBe(2);
 	});
 });

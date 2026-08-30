@@ -31,13 +31,15 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 
 	call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		const permitted: readonly CloudCompanyPathRpc[] = [
-			"qorpera_begin_native_company_execution",
+			"qorpera_begin_native_company_execution_v2",
 			"qorpera_describe_company_run_context",
 			"qorpera_list_native_connector_tools",
 			"qorpera_assert_native_connector_operation",
 			"qorpera_read_company_run_context",
-			"qorpera_read_company_path",
-			"qorpera_list_company_paths",
+			"qorpera_read_company_path_v2",
+			"qorpera_list_company_paths_v2",
+			"qorpera_confirm_company_path_read",
+			"qorpera_record_native_context_view",
 			"qorpera_assert_company_path_reads",
 			"qorpera_check_company_path_mutation",
 			"qorpera_verify_company_path_file",

@@ -188,6 +188,21 @@ revoke all on function public.qorpera_stage_member_session_attachment(uuid,boole
 revoke all on function public.qorpera_authorize_member_session_attachment(uuid,uuid,text) from public,anon,authenticated,service_role;
 revoke all on function public.qorpera_company_retained_objects_before_member_attachments(uuid) from public,anon,authenticated,service_role;
 revoke all on function public.qorpera_company_additional_retained_object_hashes(uuid) from public,anon,authenticated,service_role;
+-- The stable retention entry point may still be owned by the role that
+-- created it in production, while this final private callee is recreated by
+-- the migration role. Grant only that discovered SECURITY DEFINER owner.
+do $$
+declare v_retained_owner name;
+begin
+	select pg_catalog.pg_get_userbyid(procedure.proowner) into strict v_retained_owner
+	from pg_catalog.pg_proc procedure
+	where procedure.oid = 'public.qorpera_company_retained_object_hashes(uuid)'::regprocedure;
+	execute format(
+		'grant execute on function public.qorpera_company_additional_retained_object_hashes(uuid) to %I',
+		v_retained_owner
+	);
+end
+$$;
 grant execute on function public.qorpera_begin_member_session_attachment_upload(uuid,uuid,text,bigint,text) to authenticated;
 grant execute on function public.qorpera_authorize_member_session_attachment(uuid,uuid,text) to authenticated;
 grant execute on function public.qorpera_stage_member_session_attachment(uuid,boolean) to service_role;

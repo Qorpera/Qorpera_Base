@@ -12,7 +12,12 @@ import {
 	type CloudNativeFenceRequest,
 	startCloudNativeResultFence,
 } from "./cloud-native-result-fence.ts";
-import { CLOUD_TOOL_RESULT_INSTRUCTIONS, type CloudNativeToolBoundary } from "./cloud-native-tool-boundary.ts";
+import {
+	CLOUD_TOOL_RESULT_INSTRUCTIONS,
+	type CloudNativeFencedResult,
+	type CloudNativeToolBoundary,
+} from "./cloud-native-tool-boundary.ts";
+import { CLOUD_RUNTIME_MODEL_POLICY, type CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 
 export const CLOUD_CODEX_BOUNDARY_VERSION = "0.147.0";
 const CLIENT_NAME = "qorpera_cloud_boundary";
@@ -53,7 +58,7 @@ const DISABLED_FEATURES = [
 ] as const;
 
 export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = Object.freeze([
-	'model_reasoning_effort="low"',
+	`model_reasoning_effort="${CLOUD_RUNTIME_MODEL_POLICY.effort}"`,
 	'web_search="disabled"',
 	'approval_policy="never"',
 	'approvals_reviewer="user"',
@@ -87,7 +92,7 @@ function identifier(value: unknown): string {
 	return value;
 }
 
-function verifyConfiguration(value: unknown): void {
+function verifyConfiguration(value: unknown, effort: CloudRuntimeReasoningEffort): void {
 	const config = object(object(value).config);
 	const features = object(config.features);
 	const skills = object(config.skills);
@@ -100,7 +105,7 @@ function verifyConfiguration(value: unknown): void {
 		config.approvals_reviewer !== "user" ||
 		config.sandbox_mode !== "read-only" ||
 		config.web_search !== "disabled" ||
-		config.model_reasoning_effort !== "low" ||
+		config.model_reasoning_effort !== effort ||
 		config.project_doc_max_bytes !== 0 ||
 		config.tool_output_token_limit !== 65536 ||
 		object(skills.bundled).enabled !== false ||
@@ -395,6 +400,8 @@ export async function runCloudCodexToolSession(options: {
 	binarySha256: string;
 	boundary: CloudNativeToolBoundary;
 	model: string;
+	/** Always supplied from admitted cloud identity; standalone component probes use current policy. */
+	reasoningEffort?: CloudRuntimeReasoningEffort;
 	prompt: string;
 	/** Versioned host-owned laws only; never job text, file content or model input. */
 	runtimeInstructions?: string;
@@ -404,10 +411,16 @@ export async function runCloudCodexToolSession(options: {
 	isolation?: NativeIsolationConfiguration;
 	/** Called after artifact/configuration checks and before thread prewarm or any model request. */
 	beforeModelStart?: (signal: AbortSignal) => Promise<void>;
+	recordContextView?: (
+		frame: CloudNativeFenceRequest,
+		outputs: readonly CloudNativeFencedResult[],
+		signal: AbortSignal,
+	) => Promise<void>;
 	signal: AbortSignal;
 	timeoutMs?: number;
 }): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
 	const timeoutMs = options.timeoutMs ?? 30_000;
+	const effort = options.reasoningEffort ?? CLOUD_RUNTIME_MODEL_POLICY.effort;
 	if (process.platform === "win32" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000)
 		throw new Error("Unsupported native boundary execution");
 	if (
@@ -417,7 +430,8 @@ export async function runCloudCodexToolSession(options: {
 		!/^[0-9a-f]{64}$/.test(options.binarySha256) ||
 		!isAbsolute(options.command[0]) ||
 		Buffer.byteLength(options.prompt) > MAX_PROMPT_BYTES ||
-		Buffer.byteLength(options.runtimeInstructions ?? "") > 32 * 1024
+		Buffer.byteLength(options.runtimeInstructions ?? "") > 32 * 1024 ||
+		effort !== CLOUD_RUNTIME_MODEL_POLICY.effort
 	)
 		throw new Error("Invalid native boundary input");
 	options.signal.throwIfAborted();
@@ -468,6 +482,7 @@ export async function runCloudCodexToolSession(options: {
 				if (!rpc) throw new Error("Native result boundary not initialized");
 				rpc.assertModelRequest(request);
 			},
+			recordContextView: options.recordContextView,
 			onFailure: () => {
 				fenceFailed = true;
 				rpc?.fail("Native result boundary unavailable");
@@ -528,7 +543,7 @@ export async function runCloudCodexToolSession(options: {
 		if (!initialized.userAgent.endsWith(` ${CLOUD_NATIVE_RESULT_FENCE_SCHEMA} ${DIRECT_TOOLS_CAPABILITY}`))
 			throw new Error("Native boundary requires governed direct tools");
 		rpc.initialized();
-		verifyConfiguration(await rpc.request("config/read", { includeLayers: false, cwd: workspace }));
+		verifyConfiguration(await rpc.request("config/read", { includeLayers: false, cwd: workspace }), effort);
 		const skills = object(await rpc.request("skills/list", { cwds: [workspace], forceReload: true }));
 		if (!Array.isArray(skills.data) || skills.data.length !== 1)
 			throw new Error("Native skill catalog could not be verified");
@@ -566,7 +581,7 @@ export async function runCloudCodexToolSession(options: {
 			await rpc.request("turn/start", {
 				threadId,
 				input: [{ type: "text", text: options.prompt, text_elements: [] }],
-				effort: "low",
+				effort,
 				environments: [],
 				runtimeWorkspaceRoots: [],
 				sandboxPolicy: { type: "readOnly", networkAccess: false },
