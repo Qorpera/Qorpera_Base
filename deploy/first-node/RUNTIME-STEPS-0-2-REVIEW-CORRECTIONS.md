@@ -36,8 +36,10 @@ job flags cannot select them today.
   confirmations and context-view lineage, reuses current cloud/path authority,
   and extends existing retention through its owner-preserving private helper.
 - `19900_runtime_bundle_activation.sql` activates the generated v2 bundle.
-  It has not been applied live. Once shipped, another bundle requires a new
-  activation migration; do not regenerate an already applied migration.
+  Production has not applied it. The isolated preview retains an earlier
+  immutable v2 activation, not the subsequently regenerated source candidate.
+  A changed deployed bundle requires a fresh activation; do not reapply the
+  source candidate over that preview row or relabel historical runs.
 - `18200_cloud_secret_member_authority.sql` is a forward correction to the
   frozen custody baseline; `17000`, `18000`, and `18100` remain unchanged by
   this correction lane.
@@ -168,6 +170,14 @@ Its canary, non-exposure scans, and cleanup certify its frozen bytes only;
 they do not certify this newer runtime bundle. Its evidence remains unchanged.
 
 ## Live gates retained
+
+The [Steps 0/2 closeout record](RUNTIME-STEPS-0-2-CLOSEOUT.md) is the newer
+checkpoint: 42 live human-member cases, 406 focused tests, all 105 source
+migrations and a 31-migration production-schema rehearsal passed. It also
+records the permanent-precondition retry defect and forward `19950`/`19960`
+corrections. The prior signed GPT proof remains accepted for its exact older
+bundle only. Current-candidate joint native acceptance and production approval
+remain open; the following gates are not closed by the human-only proof.
 
 1. Use the refreshed combined schema/owner rehearsal and correction hashes in
    the production lane's exact target/rollback packet, including `18200` and

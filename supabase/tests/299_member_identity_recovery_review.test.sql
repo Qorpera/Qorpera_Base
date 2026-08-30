@@ -14,7 +14,7 @@ create function pg_temp.review_denied(p_statement text)
 returns void language plpgsql as $$
 begin
   begin execute p_statement;
-  exception when insufficient_privilege or serialization_failure or invalid_parameter_value then return;
+  exception when insufficient_privilege or sqlstate 'PT412' or invalid_parameter_value then return;
   end;
   raise exception 'Recovery review accepted unauthorized, stale or malformed intent';
 end

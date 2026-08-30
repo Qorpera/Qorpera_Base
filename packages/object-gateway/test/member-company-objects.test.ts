@@ -167,6 +167,29 @@ describe("human Company File object reads", () => {
 		expect(service.calls).toHaveLength(1);
 	});
 
+	it("returns a stale-version precondition without reading, retrying or falling back", async () => {
+		const service = await fixture();
+		service.state.status = 412;
+		const read = vi.spyOn(service.store, "get");
+		const response = await service.get();
+		expect(response.status).toBe(412);
+		expect(await response.text()).not.toContain(bytes.toString());
+		expect(read).not.toHaveBeenCalled();
+		expect(service.calls).toHaveLength(1);
+	});
+
+	it("does not release bytes when their path version changes during storage I/O", async () => {
+		const service = await fixture();
+		vi.spyOn(service.store, "get").mockImplementation(async () => {
+			service.state.status = 412;
+			return bytes;
+		});
+		const response = await service.get();
+		expect(response.status).toBe(412);
+		expect(await response.text()).not.toContain(bytes.toString());
+		expect(service.calls).toHaveLength(2);
+	});
+
 	it.each(["synthetic-control", "synthetic-verifier", "synthetic-native", "other-member"])(
 		"does not accept %s as human path authority",
 		async (token) => {

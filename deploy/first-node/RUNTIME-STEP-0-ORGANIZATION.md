@@ -1,8 +1,9 @@
 # Runtime Step 0 organization implementation
 
-**Status:** Source implementation, disposable-database acceptance, and a
-production-schema migration rehearsal are complete; live production migration,
-organization-aware cutover, and offline multi-member acceptance remain pending
+**Status:** Source implementation, disposable-database acceptance,
+production-schema rehearsal, and isolated live human-member checks are complete.
+Current-candidate native multi-member acceptance, live production migration,
+and organization-aware production cutover remain pending.
 
 **Contract:** [Qorpera Runtime Contract](../../QORPERA-RUNTIME-CONTRACT.md)
 
@@ -173,6 +174,13 @@ component evidence and cannot close this gate.
 
 ## Remaining gates
 
+The later [Steps 0/2 closeout record](RUNTIME-STEPS-0-2-CLOSEOUT.md) adds 42
+passing live managed-Auth/member checks and the forward `19950`/`19960`
+precondition corrections. Its 105-migration regressions and 31-migration
+production-schema rehearsal supersede the counts above for the current source.
+The human portion of gate 3 passed on a cloud VM, but no admitted native agent
+ran within that same two-member company. This is not full gate-3 acceptance.
+
 These are deployment acceptance or later-order behavior, not missing Step 0
 source machinery:
 
@@ -192,5 +200,5 @@ source machinery:
    dashboards in Order 6; connectors in Order 7; routines/listeners in Order 8;
    and thin role overlays and formation behavior in Order 10.
 
-Until gates 1–3 pass, this record proves source behavior only and MUST NOT be
+Until gates 1–3 pass, the source and isolated live evidence MUST NOT be
 represented as production Order 0 acceptance.

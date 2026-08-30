@@ -315,7 +315,7 @@ begin
 					case when v_probe = 'old-version' then extensions.gen_random_uuid() else v_version end,
 					case when v_probe = 'other-object' then current_setting('qorpera_test.path_tree') else v_file ->> 'fileSha256' end);
 				raise exception 'Member object route ignored %',v_probe;
-			 exception when insufficient_privilege or serialization_failure then null; end;
+		exception when insufficient_privilege or sqlstate 'PT412' then null; end;
 		end loop;
 		reset role;
 	end loop;
@@ -358,7 +358,7 @@ begin
 	begin
 		perform pg_temp.path_commit(current_setting('qorpera_test.path_note')::jsonb || '{"operationKey":"stale-absence"}');
 		raise exception 'Old absence precondition overwrote an existing file';
-	exception when serialization_failure then null; end;
+	exception when sqlstate 'PT412' then null; end;
 	reset role;
 	if (select count(*) from public.qorpera_company_path_revisions) <> 1 then raise exception 'Retry duplicated a revision'; end if;
 end
@@ -475,6 +475,11 @@ begin
 	perform public.qorpera_authorize_member_company_path_object('29000000-0000-4000-8000-000000000020','note.md',
 		(current_setting('qorpera_test.path_result')::jsonb ->> 'version')::uuid,
 		current_setting('qorpera_test.path_note')::jsonb #>> '{entry,file,fileSha256}');
+	begin
+		perform public.qorpera_set_company_path_resource('29000000-0000-4000-8000-000000000020',
+			'note.md','exact','member_private','normal',extensions.gen_random_uuid());
+		raise exception 'Stale resource version changed its access policy';
+	exception when sqlstate 'PT412' then null; end;
 end
 $$;
 reset role;
@@ -628,7 +633,7 @@ begin
 	begin
 		perform pg_temp.path_commit(current_setting('qorpera_test.path_note')::jsonb || '{"operationKey":"stale-null-after-delete"}');
 		raise exception 'Deletion revived an old absence version';
-	exception when serialization_failure then null; end;
+	exception when sqlstate 'PT412' then null; end;
 	perform pg_temp.path_commit(current_setting('qorpera_test.path_note')::jsonb || jsonb_build_object('operationKey','recreate-note','expectedVersion',v_version));
 	reset role;
 end
@@ -643,7 +648,7 @@ do $$ begin
 			(current_setting('qorpera_test.path_result')::jsonb ->> 'version')::uuid,
 			current_setting('qorpera_test.path_note')::jsonb #>> '{entry,file,fileSha256}');
 		raise exception 'Delete/recreate revived an old member content capability';
-	exception when serialization_failure then null; end;
+	exception when sqlstate 'PT412' then null; end;
 end $$;
 reset role;
 select pg_temp.path_claims('service_role');
@@ -724,7 +729,7 @@ begin
 	begin
 		perform public.qorpera_read_company_run_context(v_binding,'input',(v_input ->> 'id')::uuid,repeat('f',64),0,8);
 		raise exception 'Context paging accepted a different body';
-	exception when serialization_failure then null; end;
+	exception when sqlstate 'PT412' then null; end;
 	begin
 		perform public.qorpera_runner_broker_authorize_input_object((v_binding ->> 'runnerId')::uuid,repeat('2',64),
 			(v_binding ->> 'jobId')::uuid,repeat('3',64),current_setting('qorpera_test.path_tree'));

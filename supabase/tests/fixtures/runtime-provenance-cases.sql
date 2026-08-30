@@ -71,7 +71,7 @@ begin
 	v_other := public.qorpera_read_company_path_v2(v_environment,'note.md',0,16,v_binding);
 	perform pg_temp.path_commit(pg_temp.path_plan('read-replaced','note.md',pg_temp.path_stage_file('note.md','Changed file bytes'),v_version));
 	begin perform public.qorpera_confirm_company_path_read(v_environment,v_binding,(v_other ->> 'readObservationId')::uuid,10,repeat('e',64));
-		raise exception 'Changed read version was released'; exception when serialization_failure then null; end;
+		raise exception 'Changed read version was released'; exception when sqlstate 'PT412' then null; end;
 	v_page := public.qorpera_list_company_paths_v2(v_environment,'',null,null,1,v_binding);
 	perform public.qorpera_confirm_company_path_read(v_environment,v_binding,(v_page ->> 'readObservationId')::uuid,0,repeat('f',64));
 	v_output := jsonb_build_object('callId','range-1','kind','function_call_output','sha256',repeat('a',64),'bytes',700,

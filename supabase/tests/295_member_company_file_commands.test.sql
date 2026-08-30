@@ -204,7 +204,7 @@ begin
 		perform public.qorpera_begin_member_company_path_command('29500000-0000-4000-8000-000000000020',
 			(v_result -> 'plan') || '{"operationKey":"stale-version"}'::jsonb);
 		raise exception 'Stale human edit silently overwrote';
-	exception when serialization_failure then null; end;
+	exception when sqlstate 'PT412' then null; end;
 end
 $$;
 reset role;

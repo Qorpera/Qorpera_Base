@@ -54,6 +54,7 @@ async function fixture() {
 		conflict: false,
 		proposalState: "open",
 		denyMethod: "",
+		denialStatus: 403,
 		tamperPlan: false,
 		effects: 0,
 		entries: [] as Record<string, unknown>[],
@@ -66,7 +67,8 @@ async function fixture() {
 		} as Record<string, unknown>,
 	};
 	const member: MemberCompanyAuthority["member"] = vi.fn(async (method, memberToken, args) => {
-		if (memberToken !== token || state.revoked || state.denyMethod === method) throw new ObjectDependencyError(403);
+		if (memberToken !== token || state.revoked) throw new ObjectDependencyError(403);
+		if (state.denyMethod === method) throw new ObjectDependencyError(state.denialStatus);
 		if ("p_environment_id" in args && args.p_environment_id !== environmentId) throw new ObjectDependencyError(403);
 		if (method === "qorpera_begin_member_company_path_command") {
 			if (state.current) {
@@ -116,7 +118,8 @@ async function fixture() {
 		throw new Error(`Unexpected member RPC ${method}`);
 	});
 	const publisher: MemberCompanyAuthority["publisher"] = vi.fn(async (method, args) => {
-		if (state.revoked || state.denyMethod === method) throw new ObjectDependencyError(403);
+		if (state.revoked) throw new ObjectDependencyError(403);
+		if (state.denyMethod === method) throw new ObjectDependencyError(state.denialStatus);
 		if (
 			method === "qorpera_stage_member_company_path_object" ||
 			method === "qorpera_stage_company_path_approval_object"
@@ -353,6 +356,23 @@ describe("cloud-owned human Company File edits", () => {
 		).toHaveLength(2);
 	});
 
+	it.each(["qorpera_begin_member_company_path_command", "qorpera_apply_member_company_path_command_v3"])(
+		"returns a stale precondition from %s without retrying or applying work",
+		async (method) => {
+			const service = await fixture();
+			service.state.denyMethod = method;
+			service.state.denialStatus = 412;
+			expect((await service.request("edits", edit)).status).toBe(412);
+			expect(service.state.effects).toBe(0);
+			const calls = [...vi.mocked(service.member).mock.calls, ...vi.mocked(service.publisher).mock.calls];
+			expect(calls.filter(([name]) => name === method)).toHaveLength(1);
+			if (method === "qorpera_begin_member_company_path_command") {
+				expect(service.publisher).not.toHaveBeenCalled();
+				expect(await service.replication.status()).toMatchObject({ pending: 0 });
+			}
+		},
+	);
+
 	it.each([
 		"qorpera_begin_member_company_path_command",
 		"qorpera_stage_member_company_path_object",
@@ -510,10 +530,11 @@ describe("human and publisher transport separation", () => {
 	});
 
 	it.each([
-		[409, "PT409", true],
-		[409, "23505", false],
-		[500, "40001", false],
-	] as const)("classifies %s/%s without retrying uncertainty", async (status, code, rebuild) => {
+		[409, "PT409", true, 409],
+		[409, "23505", false, 409],
+		[500, "40001", false, 409],
+		[412, "PT412", false, 412],
+	] as const)("classifies %s/%s without retrying uncertainty", async (status, code, rebuild, expectedStatus) => {
 		const authority = new SupabaseMemberCompanyAuthority({
 			projectUrl: "https://cloud.test",
 			publishableKey: "public",
@@ -524,7 +545,7 @@ describe("human and publisher transport separation", () => {
 			.publisher("qorpera_apply_member_company_path_command_v3", {}, new AbortController().signal)
 			.catch((failure: unknown) => failure);
 		expect(error).toBeInstanceOf(ObjectDependencyError);
-		expect(error).toMatchObject({ status: 409 });
+		expect(error).toMatchObject({ status: expectedStatus });
 		expect(error instanceof MemberCompanyHeadConflict).toBe(rebuild);
 	});
 

@@ -97,7 +97,7 @@ try {
 	const second = candidate("race-second", "raced-directory");
 	const raced = await Promise.all([concurrentSql(native(first.statement)), concurrentSql(native(second.statement))]);
 	assert.equal(raced.filter((result) => result.status === 0).length, 1, "Exactly one concurrent writer commits");
-	assert.match(raced.find((result) => result.status !== 0).stderr, /40001/, "The loser must fail its expected version, not silently overwrite");
+	assert.match(raced.find((result) => result.status !== 0).stderr, /PT412/, "The loser must fail its expected version without automatic transaction retry");
 	assert.equal(countRevisions(), beforeRace + 1);
 	const winner = raced[0].status === 0 ? first : second;
 	const receipt = JSON.parse(raced.find((result) => result.status === 0).stdout.trim());
