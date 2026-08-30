@@ -160,14 +160,21 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 			workerId,
 			authority,
 			store: {
-				async get(storedProfileId, sha256) {
+				async get(storedProfileId, sha256, expectedBytes) {
 					if (storedProfileId !== profileId) throw new Error("Object not found");
 					const value = staged.get(sha256) ?? legacyObjects.get(sha256);
 					if (!value) throw new Error("Object not found");
+					if (value.length !== expectedBytes) throw new Error("Stored object failed integrity verification");
 					return value;
 				},
 			},
 			replication,
+			authorizeServiceDownload: async (storedProfileId, sha256) => {
+				if (storedProfileId !== profileId) throw new ObjectDependencyError(403);
+				const value = staged.get(sha256) ?? legacyObjects.get(sha256);
+				if (!value) throw new ObjectDependencyError(404);
+				return { bytes: value.length };
+			},
 			readLegacyObject: async (_storedProfileId, sha256) => {
 				const value = legacyObjects.get(sha256);
 				if (!value) throw new Error("Legacy object is unavailable");

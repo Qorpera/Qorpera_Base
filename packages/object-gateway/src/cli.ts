@@ -47,6 +47,7 @@ const companyBootstrap = new CompanyBootstrapProvisioner({
 	authority: memberAuthority,
 	store,
 	replication,
+	authorizeServiceDownload: (profileId, sha256) => authority.authorizeServiceDownload(profileId, sha256),
 	readLegacyObject: (profileId, sha256) => authority.readLegacyObject(profileId, sha256),
 });
 const handler = createObjectGatewayHandler({

@@ -50,7 +50,8 @@ interface BaseTree {
 export interface CompanyBootstrapOptions {
 	workerId: string;
 	authority: MemberCompanyAuthority;
-	store: { get(profileId: string, sha256: string, expectedBytes?: number): Promise<Uint8Array> };
+	store: { get(profileId: string, sha256: string, expectedBytes: number): Promise<Uint8Array> };
+	authorizeServiceDownload(profileId: string, sha256: string): Promise<{ bytes: number }>;
 	replication: {
 		uploadWithAuthority(
 			profileId: string,
@@ -213,7 +214,7 @@ async function storedObject(
 	options: CompanyBootstrapOptions,
 	profileId: string,
 	sha256: string,
-	expectedBytes?: number,
+	expectedBytes: number,
 ): Promise<Uint8Array> {
 	try {
 		return await options.store.get(profileId, sha256, expectedBytes);
@@ -264,8 +265,15 @@ async function baseTree(
 	const organizationManifests: Record<string, string> = {};
 	for (const entry of entries) {
 		if (entry.kind !== "file" || !entry.file) continue;
-		const manifestBytes = await storedObject(options, current.profileId, entry.file.manifestSha256);
-		if (createHash("sha256").update(manifestBytes).digest("hex") !== entry.file.manifestSha256) {
+		const manifestLength = boundedBytes(
+			(await options.authorizeServiceDownload(current.profileId, entry.file.manifestSha256)).bytes,
+		);
+		if (manifestLength === null) throw new ObjectDependencyError(503);
+		const manifestBytes = await storedObject(options, current.profileId, entry.file.manifestSha256, manifestLength);
+		if (
+			manifestBytes.byteLength !== manifestLength ||
+			createHash("sha256").update(manifestBytes).digest("hex") !== entry.file.manifestSha256
+		) {
 			throw new ObjectDependencyError(503);
 		}
 		const manifestText = new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes);
