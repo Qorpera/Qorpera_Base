@@ -4,6 +4,7 @@ import {
 	ObjectDependencyError,
 	readBoundedObjectResponse,
 } from "./dependency.ts";
+import { supabaseRequestHeaders } from "./supabase-headers.ts";
 
 export type MemberCompanyRpc =
 	| "qorpera_begin_member_company_path_command"
@@ -103,9 +104,8 @@ export class SupabaseMemberCompanyAuthority implements MemberCompanyAuthority {
 				method: "POST",
 				redirect: "error",
 				headers: {
-					apikey: apiKey,
+					...supabaseRequestHeaders(apiKey, token),
 					"content-type": "application/json",
-					...(token ? { authorization: `Bearer ${token}` } : {}),
 				},
 				body: JSON.stringify(args),
 				signal: combined,

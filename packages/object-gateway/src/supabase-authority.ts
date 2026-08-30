@@ -7,6 +7,7 @@ import type {
 import type { LegacyObjectMigrationItem } from "./migration.ts";
 import type { NativeCompanyObjectAuthority } from "./native-objects.ts";
 import { type ObjectReadLease, parseObjectReadLease } from "./read-lease.ts";
+import { supabaseRequestHeaders } from "./supabase-headers.ts";
 
 const OBJECT_BUCKET = "qorpera-profile-objects";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -140,7 +141,7 @@ export class SupabaseObjectAuthority
 			this.listLegacyObjects(undefined, 1),
 			this.#storage.run(async (signal) => {
 				const response = await this.#fetch(`${this.#projectUrl}/storage/v1/bucket/${OBJECT_BUCKET}`, {
-					headers: { apikey: this.#secretKey },
+					headers: supabaseRequestHeaders(this.#secretKey),
 					signal,
 				});
 				if (!response.ok) {
@@ -398,7 +399,7 @@ export class SupabaseObjectAuthority
 		return this.#storage.run(async (signal) => {
 			const response = await this.#fetch(
 				`${this.#projectUrl}/storage/v1/object/authenticated/${OBJECT_BUCKET}/${path}`,
-				{ headers: { apikey: this.#secretKey }, signal },
+				{ headers: supabaseRequestHeaders(this.#secretKey), signal },
 			);
 			if (!response.ok) {
 				void response.body?.cancel().catch(() => undefined);
@@ -435,7 +436,7 @@ export class SupabaseObjectAuthority
 				{
 					method: "POST",
 					headers: {
-						apikey: this.#secretKey,
+						...supabaseRequestHeaders(this.#secretKey),
 						"content-type": "application/octet-stream",
 						"content-length": String(bytes.byteLength),
 						"x-upsert": "false",
@@ -473,7 +474,7 @@ export class SupabaseObjectAuthority
 		await this.#storage.run(async (signal) => {
 			const response = await this.#fetch(`${this.#projectUrl}/storage/v1/object/${OBJECT_BUCKET}`, {
 				method: "DELETE",
-				headers: { apikey: this.#secretKey, "content-type": "application/json" },
+				headers: { ...supabaseRequestHeaders(this.#secretKey), "content-type": "application/json" },
 				body: JSON.stringify({ prefixes: [`${profileId}/${sha256}`] }),
 				signal,
 			});
@@ -523,10 +524,9 @@ export class SupabaseObjectAuthority
 		apiKey: string,
 	): Promise<unknown> {
 		const headers: Record<string, string> = {
-			apikey: apiKey,
+			...supabaseRequestHeaders(apiKey, bearer),
 			"content-type": "application/json",
 		};
-		if (bearer) headers.authorization = `Bearer ${bearer}`;
 		return this.#api.run(async (signal) => {
 			const response = await this.#fetch(`${this.#projectUrl}/rest/v1/rpc/${name}`, {
 				method: "POST",
