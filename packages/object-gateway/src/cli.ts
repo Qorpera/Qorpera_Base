@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { CompanyBootstrapProvisioner } from "./company-bootstrap.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
+import { MemberCompanyObservations } from "./member-observability.ts";
 import { migrateLegacyObjects } from "./migration.ts";
 import { FileSystemObjectStore } from "./object-store.ts";
 import { ObjectReadLeases } from "./read-lease.ts";
@@ -57,6 +58,7 @@ const handler = createObjectGatewayHandler({
 	verifierToken: required(process.env, "QORPERA_OBJECT_GATEWAY_VERIFIER_TOKEN"),
 	replication,
 	memberObjects: authority,
+	memberObservations: new MemberCompanyObservations(),
 	...(process.env.QORPERA_MEMBER_COMPANY_FILES === "1" ? { memberFiles: memberAuthority } : {}),
 	...(process.env.QORPERA_OBJECT_GATEWAY_NATIVE_TOKEN
 		? { nativeObjects: { token: required(process.env, "QORPERA_OBJECT_GATEWAY_NATIVE_TOKEN"), authority } }

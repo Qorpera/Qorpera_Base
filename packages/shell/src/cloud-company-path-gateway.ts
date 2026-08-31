@@ -19,6 +19,7 @@ import {
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudContentAddressedStore, CloudFileReference } from "./cloud-object-store.ts";
+import type { CloudRuntimeObservationSpan } from "./cloud-runtime-observability.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
@@ -31,6 +32,7 @@ const MAX_READ_BYTES = 4096;
 const MAX_READ_PATHS = 128;
 
 export type CloudCompanyPathRpc =
+	| "qorpera_record_runtime_observation"
 	| "qorpera_begin_native_company_execution_v2"
 	| "qorpera_describe_company_run_context"
 	| "qorpera_list_native_connector_tools"
@@ -570,6 +572,7 @@ export class CloudCompanyPathGateway {
 			text?: string;
 		},
 		signal: AbortSignal,
+		observation?: CloudRuntimeObservationSpan,
 	): Promise<CloudCompanyPathResult> {
 		const path = parseCloudCompanyPath(input.path);
 		if (!OPERATION_KEY.test(input.operationKey)) throw new Error("Invalid Company File operation key");
@@ -622,7 +625,13 @@ export class CloudCompanyPathGateway {
 			false,
 		);
 		this.#remember(path);
-		if (preflight.state === "completed") return preflight.result;
+		if (preflight.state === "completed") {
+			observation?.finish(preflight.result.state === "proposed" ? "proposed" : "replayed", {
+				receiptId: preflight.result.receiptId,
+				errorCategory: preflight.result.state === "proposed" ? "protected_path" : null,
+			});
+			return preflight.result;
+		}
 		if (next?.kind === "file" && bytes && manifest) {
 			if (bytes.length)
 				await cloudToolRequest(
@@ -643,7 +652,13 @@ export class CloudCompanyPathGateway {
 				plan,
 				true,
 			);
-			if (preparation.state === "completed") return preparation.result;
+			if (preparation.state === "completed") {
+				observation?.finish(preparation.result.state === "proposed" ? "proposed" : "replayed", {
+					receiptId: preparation.result.receiptId,
+					errorCategory: preparation.result.state === "proposed" ? "protected_path" : null,
+				});
+				return preparation.result;
+			}
 			const tree =
 				preparation.state === "ready"
 					? await stageCompanyPathCandidate(
@@ -656,7 +671,7 @@ export class CloudCompanyPathGateway {
 						)
 					: null;
 			try {
-				return result(
+				const outcome = result(
 					await this.#call(
 						"qorpera_commit_company_path_mutation",
 						{
@@ -669,6 +684,11 @@ export class CloudCompanyPathGateway {
 					),
 					plan,
 				);
+				observation?.finish(outcome.state === "proposed" ? "proposed" : "succeeded", {
+					receiptId: outcome.receiptId,
+					errorCategory: outcome.state === "proposed" ? "protected_path" : null,
+				});
+				return outcome;
 			} catch (error) {
 				// A timeout may mean SQL committed. It is never this retry path.
 				if (!(error instanceof CloudCompanyHeadConflict) || preparation.state !== "ready" || attempt === 3)
@@ -715,6 +735,10 @@ export class CloudCompanyPathGateway {
 					this.#assertContext(context);
 					const args = value as { path: string; offset: number; limit: number };
 					const result = await this.read(args.path, args.offset, args.limit, context.signal);
+					context.observation?.update({
+						readId: result.readObservationId,
+						outputBytes: typeof result.bytesRead === "number" ? result.bytesRead : 0,
+					});
 					return { kind: "json", value: result, companyReadId: result.readObservationId };
 				},
 			},
@@ -747,6 +771,7 @@ export class CloudCompanyPathGateway {
 					this.#assertContext(context);
 					const args = value as { path: string; after: string | null; snapshotId: string | null; limit: number };
 					const result = await this.list(args.path, args.after, args.snapshotId, args.limit, context.signal);
+					context.observation?.update({ readId: result.readObservationId, outputBytes: 0 });
 					return { kind: "json", value: result, companyReadId: result.readObservationId };
 				},
 			},
@@ -789,7 +814,12 @@ export class CloudCompanyPathGateway {
 						expectedVersion: string | null;
 						text?: string;
 					};
-					return { kind: "json", value: { ...(await this.mutate(operation, args, context.signal)) } };
+					context.observation?.update({
+						inputBytes:
+							operation === "write" && typeof args.text === "string" ? Buffer.byteLength(args.text) : null,
+					});
+					const outcome = await this.mutate(operation, args, context.signal, context.observation);
+					return { kind: "json", value: { ...outcome } };
 				},
 			});
 		}

@@ -4,6 +4,7 @@ import {
 	type CloudCompanyPathRpc,
 } from "./cloud-company-path-gateway.ts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
+import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */
 export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
@@ -31,6 +32,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 
 	call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		const permitted: readonly CloudCompanyPathRpc[] = [
+			"qorpera_record_runtime_observation",
 			"qorpera_begin_native_company_execution_v2",
 			"qorpera_describe_company_run_context",
 			"qorpera_list_native_connector_tools",
@@ -111,7 +113,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				try {
 					value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
 				} catch {
-					throw new Error("Company File authority unavailable");
+					throw new CloudRuntimeDiagnosticError("invalid_response", "Company File authority unavailable");
 				}
 				if (!response.ok) {
 					if (
@@ -123,7 +125,16 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						(value as Record<string, unknown>).code === "PT409"
 					)
 						throw new CloudCompanyHeadConflict();
-					throw new Error("Company File authority unavailable");
+					throw new CloudRuntimeDiagnosticError(
+						response.status === 401 || response.status === 403
+							? "authority_unavailable"
+							: response.status === 412
+								? "stale_version"
+								: response.status === 400 || response.status === 422
+									? "invalid_arguments"
+									: "transport_unavailable",
+						"Company File authority unavailable",
+					);
 				}
 				return value;
 			},

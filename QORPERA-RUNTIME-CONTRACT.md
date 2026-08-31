@@ -8,6 +8,8 @@
 
 **Organizational operating model ratified:** 2026-08-29
 
+**Minimum operational observability ratified:** 2026-08-31
+
 **Scope:** Pure-cloud agent behavior, the live Company File, execution,
 authority, context, tools, computers, workers, memory, routines, rooms,
 Co-Founder formation, departments, projects, safety, and provider integration
@@ -1125,6 +1127,125 @@ key authorization UX, and the connector-to-browser escalation product flow.
 Production connector breadth MUST NOT hold Order 2 open, and an Order 2 canary
 MUST NOT be represented as a launch-ready connector.
 
+### Minimum operational observability
+
+The initial scope MUST answer three questions: did the request finish, where
+did it fail or stall, and is there capacity to serve the next company computer?
+Instrument product functionality as it is built; defer sophisticated analysis
+until representative usage exists. This section defines the minimum, not a
+requirement to build a separate analytics platform before the product works.
+
+#### Required records and basic diagnostics
+
+- Reuse canonical company, actor, agent, conversation, run/job, operation and
+  resource identities. Records MUST link to the computer, node or rented
+  resource when applicable, and identify the software/runtime-bundle version.
+  Preserve the distinct authority identities required by section 4.2.
+- Jobs, model requests and major tool operations MUST record start/end times,
+  terminal status and a safe error category or reference. Jobs also retain
+  admission/queue time. Retries MUST remain distinguishable from new logical
+  work; incomplete, cancelled or failed work MUST NOT look like success.
+- Retain token and byte counts when already supplied by the operation boundary.
+  Company File reads/writes retain operation, timing, outcome and available byte
+  counts; unavailable counts are unknown, not zero. Logical file bytes are not
+  physical NAS traffic, and resource reservations are not measured utilization.
+- Computer and screen lifecycle transitions MUST retain identity, time and
+  reason: requested, ready, suspended/resumed where supported, closing, closed
+  or failed. Closing a client viewer is not closing its cloud computer. Retain
+  actual resource-release time separately from a shutdown request.
+- Basic node monitoring MUST expose CPU and memory usage, free disk space, and
+  storage/network failures, with observation freshness. Existing host monitoring
+  and structured runtime records MAY provide this without a new telemetry stack.
+
+These records MUST be available to authorized operators through a basic query
+or operational view. Existing transcripts and receipts remain the evidence for
+manual investigation; this scope does not require copying message bodies,
+screenshots or file contents into telemetry. Secrets MUST remain out of telemetry.
+Access and retention MUST be explicit. Missing records, stale observations and
+uncertain lifecycle intervals MUST be visible rather than silently reported as
+healthy or unused.
+Optional diagnostic export failure MUST NOT block product work; it does not
+relax mandatory transactional authority, mutation or allocation records.
+
+#### Live capacity, usage and Azure overflow
+
+The initial operational view MUST report:
+
+- Local node/computer inventory and allocations, distinguishing starting,
+  running, stopping, suspended where supported, and failed/unavailable resources.
+  Running computers with and without active jobs MUST be separately identifiable;
+  allocated computers with no active job MUST NOT be counted as free capacity.
+- Remaining admissible local capacity in whole standard company-computer slots,
+  using the configured CPU/RAM requirements and operating headroom per eligible
+  node. Aggregate spare RAM or idle CPU alone is not an admission guarantee.
+  Reservations for pending starts MUST consume capacity before provisioning;
+  capacity is released only after the allocation's resources are confirmed free.
+- Requests waiting for capacity, provisioning failures, and each placement's
+  location and reason, including Azure overflow caused by local capacity limits.
+  Concurrent admission MUST NOT allocate the same remaining capacity twice.
+- Azure computers starting/running or still allocated, their company/resource
+  identities, and rented allocation intervals/compute-hours. Running time and
+  retained allocation time MUST be distinguished; neither is an invoice or a
+  claim that stopping a VM removes every provider charge. Unavailable or
+  unconfigured overflow MUST be shown, not treated as unlimited capacity.
+- Distinct computers, companies and human users served on each compute source.
+  Users belonging to an Azure-hosted company and users actively using it are
+  separate counts. Active-user counts MUST declare their observation window
+  and activity source; membership alone is not activity, and missing activity
+  observations MUST NOT be guessed. Shared computers and agents are not users.
+
+Live capacity MUST derive from scheduler inventory, reservations, allocation
+state and provider/node observations, not a delayed analytics warehouse. Runtime
+records MUST preserve placement changes so historical usage remains attributable
+to local versus Azure compute. Azure visibility is required alongside any Azure
+overflow execution path before that path serves users.
+
+Basic usage accounting MUST count running computer-hours once per computer,
+regardless of the number of agents or members sharing it. Screen lifetimes are
+separate screen-hours; suspended time is separate from running time. Retain
+screen transitions so later time-weighted average/median/maximum concurrency
+reports can be derived for explicit observation windows. Those richer reports
+and precise screen-idle classification are not initial launch requirements.
+
+#### Placement in the implementation order
+
+| Order | Minimum required alongside the functionality |
+| --- | --- |
+| 0 | Shared identity/version linkage, queryable records, Company File operation results and existing authority/mutation receipts; baseline monitoring for deployed nodes. |
+| 1 | Job, model and major-tool timing/status/errors linked to canonical conversation delivery; retain counters already available at the boundary. |
+| 2-3 | Extend the same records to enforcement outcomes, queues, wake sources and retries; do not require a new analysis subsystem. |
+| 4 | Computer/screen lifecycle records, basic usage accounting, current local capacity and demand, node health, and placement/Azure overflow visibility. |
+| 5-10 | Extend the same small record contract as workers, memory, connectors, routines and coding computers are introduced. |
+
+For an already-implemented phase, close these record gaps alongside current
+work rather than rebuilding the phase or waiting for the whole runtime to finish.
+This is operational data collection and visibility, not a mandate for a new
+warehouse, elaborate dashboard, complete distributed-tracing framework or
+higher-bandwidth hardware. Existing capacity and networking are the starting
+point. Department measure projections required elsewhere remain mandatory;
+they are distinct from optional platform-wide optimization analytics.
+
+#### Explicitly deferred
+
+The initial scope does not require function/line execution tracing, profiling
+or production coverage; precise idle/wasted-capacity attribution; physical I/O,
+cache or write-amplification analysis; automatic negative-feedback classification;
+department productivity scoring or staffing optimization; comprehensive
+conversation analytics or historical dashboards; or autonomous diagnostic teams
+and automatic optimization experiments. These MAY be added when measured
+problems or sufficient usage justify them. This deferral does not weaken the
+runtime's existing testing, authority, provenance or outcome requirements.
+
+Azure overflow provisioning is deferred for development-partner testing as of
+2026-08-31. An unconfigured overflow path is unavailable, not spare capacity.
+This defers optional rented execution capacity; it does not waive independent
+secret custody, encrypted recovery, or authority checks for any enabled path.
+Those services are deployment dependencies even when their current provider
+is Azure. Their existing paused state must not be reported as production-ready.
+
+The Orders 0/2 source implementation, operator interfaces and measurement limits
+are recorded in [operational observability](deploy/first-node/RUNTIME-STEPS-0-2-OBSERVABILITY.md).
+
 ### Organizational hierarchy placement
 
 The Co-Founder and department model is not a new wake kind or one isolated
@@ -1234,12 +1355,24 @@ reconciliation. A disposable unsigned v53 guest also passed the clean-boot
 negative boundary: KVM Secure Boot, empty bootstrap and company mounts,
 inactive runner/model services, no Azure workload identity, and no broker
 operation without host-issued authority. That is not signed provenance and did
-not invoke a model. Step 2 remains open for the signed real-GPT guest proof of
-the same broker route, removal of its temporary proof ingress, and coordinated
-production migration/runtime acceptance. Production connector adapters and
-member-facing connector authorization flows remain Order 7. See
+not invoke a model. These are historical component checkpoints, not acceptance
+of subsequently changed runtime bytes. Later signed custody proofs and cleanup
+are recorded separately; the latest
+[Steps 0/2 closeout](deploy/first-node/RUNTIME-STEPS-0-2-CLOSEOUT.md) identifies
+the exact remaining candidate and deployment gates. Production connector
+adapters and member-facing connector authorization flows remain Order 7. See
 [Runtime step 2 company-centered cloud secret custody](deploy/first-node/RUNTIME-STEP-2-SECRET-CUSTODY.md)
 for the exact completed component evidence and remaining deployment gates.
+
+The minimum Orders 0/2 operational-observability source is implemented:
+canonical operator queries, native logical-turn and major-tool records,
+enforcement outcomes, human Company File request diagnostics and baseline node
+measurements. Optional collection cannot authorize or retry work. Retention,
+missing records, stale samples and unavailable measurements remain explicit;
+no content or secrets are copied into telemetry. The closeout records its
+verified bundle and coordinated deployment requirements. Computer/screen
+lifecycles, capacity, placement and usage extend this boundary in Order 4;
+optional Azure overflow remains deferred as ratified above.
 
 ## 20. Enforcement matrix
 
@@ -1269,6 +1402,9 @@ for the exact completed component evidence and remaining deployment gates.
 | Member machines are not agent tools | Capability compiler and cloud-only execution policy | Request an explicit upload when a member-held file is needed. |
 | Secrets stay out of context | Company-centered cloud secret broker, operation grants, credential bridge, and result fence | Refer to purpose and handle, never value. |
 | Low effort is the thread default | Run admission policy | Escalate effort only for a reason. |
+| Basic diagnostics stay attributable | Runtime boundaries, canonical records, node monitoring and operator queries | Investigate recorded outcomes; do not invent missing measurements. |
+| Capacity and overflow reflect allocations | Scheduler inventory, reservations, provider state and placement records | Do not treat idle allocated resources as free or equate computers with users. |
+| Usage preserves lifecycle meaning | Computer/screen lifecycle owners and basic usage accounting | Distinguish running, suspended, allocated and actively used resources. |
 
 ## 21. Launch acceptance
 
@@ -1347,6 +1483,21 @@ the following without manual database repair or a hidden desktop executor:
 25. A replacement client reconstructs the Co-Founder, department, active
     project or team-room, and individual-staff hierarchy from canonical cloud
     state; local pinning, recency, or an open desktop process is not authority.
+26. An authorized operator can follow a successful, failed or cancelled request
+    through linked job/model/major-tool records to its outcome, software version
+    and assigned compute, without collecting function-level execution traces.
+    Missing diagnostics and stale node observations are visible.
+27. Computer/screen lifecycle records distinguish viewer closure, computer
+    shutdown and resource release; basic computer-hours do not multiply when
+    several agents or users share the computer. Missing intervals remain unknown.
+28. The operational view shows local allocations, pending starts, unavailable
+    resources, waiting demand and remaining admissible whole-computer capacity.
+    Concurrent starts cannot consume the same slot, and a stopped or failed
+    computer does not release a reservation until its resources are confirmed free.
+29. Where Azure overflow is enabled, demand beyond local capacity is attributable
+    to Azure placements and rented allocation intervals. The view distinguishes
+    computers, companies, associated users and observed active users, retains
+    local/Azure placement history, and exposes failed or unavailable overflow.
 
 Passing unit tests against a local provider, describing the behavior in an
 instruction file, or leaving a desktop open to execute work does not pass this

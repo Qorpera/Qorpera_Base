@@ -43,6 +43,16 @@ for (let index = 0; index < args.length; index++) {
 		: JSON.parse(setting.slice(equal + 1));
 }
 const done = () => write({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", error: null } } });
+const usage = (total = {}, last = {}) => ({
+	total: { inputTokens: 23, outputTokens: 7, cachedInputTokens: 3, cacheWriteInputTokens: 5, reasoningOutputTokens: 2, totalTokens: 30, ...total },
+	last: { inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 3, ...last },
+	modelContextWindow: 8192,
+});
+const tokenUpdate = (tokenUsage = usage(), patch = {}) => write({ method: "thread/tokenUsage/updated", params: { threadId, turnId, tokenUsage, ...patch } });
+const nativeError = (codexErrorInfo, willRetry, patch = {}) => write({ method: "error", params: {
+	threadId, turnId, willRetry, error: { message: "PRIVATE_PROVIDER_ERROR", additionalDetails: "PRIVATE_PROVIDER_DETAILS", codexErrorInfo }, ...patch,
+} });
+const failed = (error = { message: "PRIVATE_PROVIDER_ERROR" }) => write({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "failed", error } } });
 const fence = (outputs = [], patch = {}) => new Promise((resolve, reject) => {
 	const request = Buffer.from(JSON.stringify({ schema: "qorpera.native-result-fence/v1", requestId: randomUUID(), threadId, turnId, purpose: "turn", outputs, ...patch }));
 	const size = Buffer.alloc(4);
@@ -90,6 +100,11 @@ async function handle(message) {
 		write({ id: message.id, result: { thread: { id: threadId } } });
 	} else if (message.method === "turn/start") {
 		turnParameters = message.params;
+		if (mode === "turn-request-rejected") {
+			write({ id: message.id, error: { code: -32000, message: "PRIVATE_TURN_REQUEST_ERROR" } });
+			return;
+		}
+		if (mode === "turn-start-stalled") return;
 		const notification = { method: "turn/started", params: { threadId, turn: { id: turnId } } };
 		if (mode === "fence-before-started") await fence();
 		if (mode === "notify-first") write(notification);
@@ -99,7 +114,59 @@ async function handle(message) {
 			...(mode === "wrong-fence-thread" ? { threadId: "other_thread" } : {}),
 			...(mode === "wrong-fence-turn" ? { turnId: "other_turn" } : {}),
 		});
-		if (mode.startsWith("company-")) {
+		if (mode === "turn-stalled") return;
+		if (mode === "observed-zero-usage") {
+			tokenUpdate(usage({ inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 }));
+			done();
+		} else if (mode === "observed-usage" || mode === "usage-after-completion") {
+			tokenUpdate(usage({ inputTokens: 100, totalTokens: 107 }));
+			tokenUpdate();
+			// Rate-limit changes can repeat totals; compaction can replace last with an estimate.
+			tokenUpdate(usage({}, { inputTokens: 0, outputTokens: 0, totalTokens: 9000 }));
+			done();
+			if (mode === "usage-after-completion") tokenUpdate(usage({ inputTokens: 999, totalTokens: 1006 }));
+		} else if (mode.startsWith("invalid-usage-")) {
+			const invalid = usage();
+			const fault = mode.slice("invalid-usage-".length);
+			if (fault === "negative") invalid.total.inputTokens = -1;
+			else if (fault === "unsafe") invalid.total.inputTokens = Number.MAX_SAFE_INTEGER + 1;
+			else if (fault === "fraction") invalid.total.outputTokens = 0.25;
+			else if (fault === "string") invalid.total.cachedInputTokens = "PRIVATE_TOKEN_VALUE";
+			else if (fault === "null") invalid.total.reasoningOutputTokens = null;
+			else if (fault === "missing") delete invalid.total.cacheWriteInputTokens;
+			else if (fault === "extra") invalid.total.secret = "PRIVATE_EXTRA_COUNTER";
+			else if (fault === "last") invalid.last.totalTokens = "PRIVATE_ESTIMATE";
+			else if (fault === "window") invalid.modelContextWindow = -1;
+			else if (fault === "primitive") invalid.total = "PRIVATE_USAGE_BODY";
+			else throw new Error("Unknown synthetic usage fault");
+			tokenUpdate(invalid);
+			done();
+		} else if (mode === "diagnostic-binding") {
+			tokenUpdate(usage(), { threadId: "unrelated_private_thread" });
+			tokenUpdate(usage(), { turnId: "unrelated_private_turn" });
+			nativeError("usageLimitExceeded", false, { threadId: "unrelated_private_thread" });
+			nativeError("usageLimitExceeded", false, { turnId: "unrelated_private_turn" });
+			write({ method: "thread/tokenUsage/updated", params: null });
+			write({ method: "error", params: { threadId, turnId, willRetry: "PRIVATE_RETRY_VALUE", error: {} } });
+			failed();
+		} else if (mode === "retry-notice") {
+			nativeError({ responseStreamDisconnected: { httpStatusCode: null } }, true);
+			nativeError("usageLimitExceeded", true);
+			tokenUpdate();
+			done();
+		} else if (mode === "terminal-error-notice") {
+			nativeError("usageLimitExceeded", false);
+			failed();
+		} else if (mode === "terminal-http-error") {
+			failed({ message: "PRIVATE_PROVIDER_ERROR", additionalDetails: "PRIVATE_PROVIDER_DETAILS", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } });
+		} else if (mode === "unknown-error-notice") {
+			nativeError("PRIVATE_UNRECOGNIZED_CODE", false);
+			nativeError({ httpConnectionFailed: { httpStatusCode: "PRIVATE_STATUS" } }, false);
+			nativeError({ responseStreamDisconnected: { httpStatusCode: 503, message: "PRIVATE_EXTRA_ERROR" } }, false);
+			failed();
+		} else if (mode === "interrupted-turn") {
+			write({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "interrupted", error: null } } });
+		} else if (mode.startsWith("company-")) {
 			companyCall(0);
 		} else if (mode === "wrong-thread" || mode === "wrong-turn" || mode === "wrong-namespace" || mode === "pending-tool" || mode === "cloud-tool") {
 			write({ id: "tool_request", method: "item/tool/call", params: { threadId: mode === "wrong-thread" ? "other_thread" : threadId, turnId: mode === "wrong-turn" ? "other_turn" : turnId, callId: "call_1", namespace: mode === "wrong-namespace" ? "other_namespace" : "qorpera", tool: "read_document", arguments: {} } });
@@ -107,7 +174,7 @@ async function handle(message) {
 		} else if (mode === "approval") {
 			write({ id: "approval", method: "item/commandExecution/requestApproval", params: { threadId, turnId, command: "PRIVATE_APPROVAL_COMMAND" } });
 		} else if (mode === "failed-turn") {
-			write({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "failed", error: { message: "PRIVATE_PROVIDER_ERROR" } } } });
+			failed();
 		} else if (mode === "duplicate-id" || mode === "callback-budget") {
 			for (let index = 0; index < (mode === "duplicate-id" ? 2 : 257); index++)
 				write({ id: mode === "duplicate-id" ? "duplicate" : `denied_${index}`, method: "item/commandExecution/requestApproval", params: {} });

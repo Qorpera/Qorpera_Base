@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HttpCloudCompanyPathControl } from "../src/cloud-company-path-control.ts";
 import { CloudCompanyHeadConflict } from "../src/cloud-company-path-gateway.ts";
+import { CloudRuntimeDiagnosticError } from "../src/cloud-runtime-observability.ts";
 
 afterEach(() => vi.useRealTimers());
 
@@ -23,6 +24,7 @@ describe("Company File bounded control transport", () => {
 	);
 
 	it.each([
+		"qorpera_record_runtime_observation",
 		"qorpera_begin_native_company_execution_v2",
 		"qorpera_describe_company_run_context",
 		"qorpera_read_company_run_context",
@@ -150,5 +152,26 @@ describe("Company File bounded control transport", () => {
 		abort.abort();
 		await expect(fixture(transport).call("qorpera_read_company_path_v2", {}, abort.signal)).rejects.toThrow();
 		expect(transport).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		[401, "authority_unavailable"],
+		[403, "authority_unavailable"],
+		[412, "stale_version"],
+		[400, "invalid_arguments"],
+		[422, "invalid_arguments"],
+		[503, "transport_unavailable"],
+	] as const)("classifies HTTP %i without retaining diagnostic text", async (status, category) => {
+		const transport = vi.fn<typeof fetch>(async () =>
+			Response.json({ message: "PRIVATE_PATH PRIVATE_CREDENTIAL" }, { status }),
+		);
+		const error = await fixture(transport)
+			.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(error).toBeInstanceOf(CloudRuntimeDiagnosticError);
+		expect(error).toMatchObject({ category });
+		expect(String(error)).toBe("Error: Company File authority unavailable");
+		expect(JSON.stringify(error)).not.toMatch(/PRIVATE_PATH|PRIVATE_CREDENTIAL/);
+		expect(transport).toHaveBeenCalledTimes(1);
 	});
 });

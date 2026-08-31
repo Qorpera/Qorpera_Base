@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ObjectDependencyError } from "./dependency.ts";
+import type { MemberRequestObservationSpan } from "./member-observability.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import type { ObjectBackend } from "./supabase-authority.ts";
 
@@ -12,8 +13,11 @@ export interface MemberCompanyObjectIdentity {
 }
 
 export interface AuthorizedMemberCompanyObject extends MemberCompanyObjectIdentity {
-	schema: "qorpera.member-company-object/v1";
+	schema: "qorpera.member-company-object/v2";
 	companyId: string;
+	actorUserId: string;
+	resourceId: string;
+	resourceVersion: string;
 	bytes: number;
 	backend: ObjectBackend;
 }
@@ -36,6 +40,7 @@ export async function serveMemberCompanyObject(
 	response: ServerResponse,
 	authority: MemberCompanyObjectAuthority,
 	store: FileSystemObjectStore,
+	observation?: MemberRequestObservationSpan,
 ): Promise<void> {
 	if (request.method !== "GET") throw new ObjectDependencyError(405);
 	const match = /^\/v1\/member-company-objects\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/([0-9a-f]{64})$/.exec(
@@ -64,6 +69,13 @@ export async function serveMemberCompanyObject(
 		sha256: match[3]!,
 	};
 	const admitted = await authority.authorizeMemberCompanyObject(token, identity);
+	observation?.update({
+		companyId: admitted.companyId,
+		environmentId: admitted.environmentId,
+		actorUserId: admitted.actorUserId,
+		resourceId: admitted.resourceId,
+		resourceVersion: admitted.resourceVersion,
+	});
 	let bytes: Uint8Array;
 	try {
 		bytes = await store.get(admitted.companyId, identity.sha256, admitted.bytes);
@@ -77,9 +89,11 @@ export async function serveMemberCompanyObject(
 	}
 	if (bytes.byteLength !== admitted.bytes || createHash("sha256").update(bytes).digest("hex") !== identity.sha256)
 		throw new ObjectDependencyError(503);
+	observation?.update({ logicalObjectReadBytes: bytes.byteLength });
 	const current = await authority.authorizeMemberCompanyObject(token, identity);
 	if (current.companyId !== admitted.companyId || current.bytes !== admitted.bytes)
 		throw new ObjectDependencyError(503);
+	observation?.update({ responseBodyBytes: bytes.byteLength });
 	response.writeHead(200, {
 		"cache-control": "private, no-store",
 		"content-type": "application/octet-stream",

@@ -17,6 +17,12 @@ import {
 	type CloudNativeFencedResult,
 	type CloudNativeToolBoundary,
 } from "./cloud-native-tool-boundary.ts";
+import {
+	type CloudRuntimeErrorCategory,
+	type CloudRuntimeObservability,
+	type CloudRuntimeObservationSpan,
+	cloudRuntimeErrorCategory,
+} from "./cloud-runtime-observability.ts";
 import { CLOUD_RUNTIME_MODEL_POLICY, type CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 
 export const CLOUD_CODEX_BOUNDARY_VERSION = "0.147.0";
@@ -26,6 +32,14 @@ const MAX_WIRE_BYTES = 16 * 1024 * 1024;
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_REQUESTS = 256;
 const MAX_PROMPT_BYTES = 1024 * 1024;
+const TOKEN_COUNTERS = [
+	"inputTokens",
+	"outputTokens",
+	"cachedInputTokens",
+	"cacheWriteInputTokens",
+	"reasoningOutputTokens",
+	"totalTokens",
+] as const;
 
 const DISABLED_FEATURES = [
 	"shell_tool",
@@ -92,6 +106,51 @@ function identifier(value: unknown): string {
 	return value;
 }
 
+/** Only pinned native error discriminants are inspected, never diagnostic text. */
+function nativeErrorCategory(value: unknown): CloudRuntimeErrorCategory | undefined {
+	if (value === null) return "provider_failed";
+	if (typeof value === "string") {
+		if (["contextWindowExceeded", "sessionBudgetExceeded", "usageLimitExceeded"].includes(value))
+			return "budget_exhausted";
+		if (
+			[
+				"serverOverloaded",
+				"cyberPolicy",
+				"internalServerError",
+				"unauthorized",
+				"badRequest",
+				"threadRollbackFailed",
+				"sandboxError",
+				"other",
+			].includes(value)
+		)
+			return "provider_failed";
+		return undefined;
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const info = value as Record<string, unknown>;
+	const keys = Object.keys(info);
+	if (
+		keys.length !== 1 ||
+		![
+			"httpConnectionFailed",
+			"responseStreamConnectionFailed",
+			"responseStreamDisconnected",
+			"responseTooManyFailedAttempts",
+		].includes(keys[0])
+	)
+		return undefined;
+	const details = info[keys[0]];
+	if (!details || typeof details !== "object" || Array.isArray(details)) return undefined;
+	const status = (details as Record<string, unknown>).httpStatusCode;
+	if (
+		Object.keys(details).join() !== "httpStatusCode" ||
+		(status !== null && (!Number.isSafeInteger(status) || (status as number) < 100 || (status as number) > 599))
+	)
+		return undefined;
+	return keys[0] === "responseTooManyFailedAttempts" ? "provider_failed" : "transport_unavailable";
+}
+
 function verifyConfiguration(value: unknown, effort: CloudRuntimeReasoningEffort): void {
 	const config = object(object(value).config);
 	const features = object(config.features);
@@ -123,6 +182,14 @@ function verifyConfiguration(value: unknown, effort: CloudRuntimeReasoningEffort
 class CodexBoundaryRpc {
 	readonly #child: ChildProcessWithoutNullStreams;
 	readonly #boundary: CloudNativeToolBoundary;
+	readonly #observability?: CloudRuntimeObservability;
+	readonly #fenceObservations = new Map<
+		string,
+		{ span?: CloudRuntimeObservationSpan; contextRecorded: boolean; finished: boolean }
+	>();
+	#turnObservation?: CloudRuntimeObservationSpan;
+	#failureCategory: CloudRuntimeErrorCategory = "unknown";
+	#providerErrorCategory?: CloudRuntimeErrorCategory;
 	readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	readonly #requestIds = new Set<string>();
 	readonly #decoder = new StringDecoder("utf8");
@@ -145,18 +212,23 @@ class CodexBoundaryRpc {
 	#finished = false;
 	#closed = false;
 
-	constructor(child: ChildProcessWithoutNullStreams, boundary: CloudNativeToolBoundary) {
+	constructor(
+		child: ChildProcessWithoutNullStreams,
+		boundary: CloudNativeToolBoundary,
+		observability?: CloudRuntimeObservability,
+	) {
 		this.#child = child;
 		this.#boundary = boundary;
+		this.#observability = observability;
 		this.completed = new Promise<void>((resolve, reject) => {
 			this.#resolveCompleted = resolve;
 			this.#rejectCompleted = reject;
 		});
 		void this.completed.catch(() => undefined);
-		child.on("error", () => this.fail("Native boundary process unavailable"));
-		child.stdin.on("error", () => this.fail("Native boundary transport unavailable"));
+		child.on("error", () => this.fail("Native boundary process unavailable", "transport_unavailable"));
+		child.stdin.on("error", () => this.fail("Native boundary transport unavailable", "transport_unavailable"));
 		child.on("close", () => {
-			if (!this.#closed) this.fail("Native boundary process ended unexpectedly");
+			if (!this.#closed) this.fail("Native boundary process ended unexpectedly", "transport_unavailable");
 		});
 		child.stderr.on("data", (chunk: Buffer) => this.#accountBytes(chunk.length));
 		child.stdout.on("data", (chunk: Buffer) => {
@@ -175,7 +247,7 @@ class CodexBoundaryRpc {
 				if (Buffer.byteLength(this.#buffer) > MAX_MESSAGE_BYTES)
 					throw new Error("Native boundary message too large");
 			} catch {
-				this.fail("Invalid native boundary protocol");
+				this.fail("Invalid native boundary protocol", "invalid_response");
 			}
 		});
 	}
@@ -188,8 +260,81 @@ class CodexBoundaryRpc {
 	}
 	assertCompleted(): void {
 		if (this.#failure) throw this.#failure;
-		if (!this.#finished || this.#activeCalls > 0 || this.#modelRequests.size === 0)
+		if (!this.#finished || this.#activeCalls > 0 || this.#modelRequests.size === 0) {
+			this.#failureCategory = "invalid_response";
 			throw new Error("Native boundary turn is incomplete");
+		}
+	}
+
+	/** One host invocation, including tools/retries/compaction; not a provider HTTP attempt. */
+	observeTurnStart(inputBytes: number): void {
+		try {
+			this.#turnObservation = this.#observability?.start("model_turn", {
+				logicalOperationSha256: createHash("sha256")
+					.update(JSON.stringify([this.#threadId, "model_turn"]))
+					.digest("hex"),
+				// Exact admitted prompt bytes, not the full provider request or network traffic.
+				inputBytes,
+			});
+		} catch {
+			// Optional diagnostics cannot change native execution or authority.
+		}
+	}
+
+	contextRecorded(requestId: string): void {
+		const observation = this.#fenceObservations.get(requestId);
+		if (observation) observation.contextRecorded = true;
+	}
+
+	finishObservations(succeeded: boolean, signal: AbortSignal): void {
+		const category = signal.aborted ? cloudRuntimeErrorCategory(undefined, signal) : this.#failureCategory;
+		const failureStatus = category === "cancelled" ? "cancelled" : "failed";
+		for (const observation of this.#fenceObservations.values()) {
+			if (observation.finished) continue;
+			observation.finished = true;
+			try {
+				observation.span?.finish(succeeded ? "unconfirmed" : failureStatus, {
+					errorCategory: succeeded ? null : category,
+				});
+			} catch {
+				// Diagnostic export is independent of the result-fence protocol.
+			}
+		}
+		try {
+			this.#turnObservation?.finish(succeeded ? "succeeded" : failureStatus, {
+				errorCategory: succeeded ? null : category,
+			});
+		} catch {
+			// In particular, an exporter failure cannot turn a verified result into a failure.
+		}
+	}
+
+	#observeFence(request: CloudNativeFenceRequest): void {
+		if (!this.#observability) return;
+		let observation = this.#fenceObservations.get(request.requestId);
+		if (!observation) {
+			observation = { contextRecorded: false, finished: false };
+			this.#fenceObservations.set(request.requestId, observation);
+			try {
+				observation.span = this.#observability.start("native_result_fence", {
+					logicalOperationSha256: createHash("sha256")
+						.update(JSON.stringify([request.threadId, request.turnId, request.purpose, request.requestId]))
+						.digest("hex"),
+					parentAttemptId: request.purpose === "prewarm" ? undefined : this.#turnObservation?.attemptId,
+				});
+			} catch {
+				// No retries or authority changes for unavailable diagnostics.
+			}
+		} else if (observation.contextRecorded && !observation.finished) {
+			observation.finished = true;
+			try {
+				// The mandatory context callback and subsequent binding check passed.
+				// Neither socket-reply delivery nor provider-request completion is observed here.
+				observation.span?.finish("unconfirmed");
+			} catch {
+				// Preserve the mandatory callback/binding/socket sequence on exporter failure.
+			}
+		}
 	}
 
 	assertModelRequest(request: CloudNativeFenceRequest): void {
@@ -203,6 +348,7 @@ class CodexBoundaryRpc {
 			)
 				throw new Error("Native prewarm binding failed");
 			this.#prewarmThreadId = request.threadId;
+			this.#observeFence(request);
 			return;
 		}
 		if (
@@ -214,11 +360,13 @@ class CodexBoundaryRpc {
 			throw new Error("Native result binding failed");
 		this.confirmTurn(request.turnId);
 		this.#modelRequests.add(request.requestId);
+		this.#observeFence(request);
 	}
 
-	fail(message: string): void {
+	fail(message: string, category: CloudRuntimeErrorCategory = "unknown"): void {
 		if (this.#failure || this.#closed) return;
 		this.#failure = new Error(message);
+		this.#failureCategory = category;
 		this.#boundary.close();
 		for (const pending of this.#pending.values()) pending.reject(this.#failure);
 		this.#pending.clear();
@@ -266,17 +414,60 @@ class CodexBoundaryRpc {
 
 	#accountBytes(count: number): void {
 		this.#bytes += count;
-		if (this.#bytes > MAX_WIRE_BYTES) this.fail("Native boundary output limit exceeded");
+		if (this.#bytes > MAX_WIRE_BYTES) this.fail("Native boundary output limit exceeded", "budget_exhausted");
 	}
 
 	#write(message: unknown): void {
 		if (this.#closed || this.#failure) return;
 		const text = JSON.stringify(message);
 		if (Buffer.byteLength(text) > MAX_MESSAGE_BYTES) {
-			this.fail("Native boundary input limit exceeded");
+			this.fail("Native boundary input limit exceeded", "budget_exhausted");
 			return;
 		}
 		this.#child.stdin.write(`${text}\n`);
+	}
+
+	#observeDiagnostic(method: string, value: unknown): void {
+		if (!this.#turnObservation || this.#finished || !this.#threadId || !this.#turnId) return;
+		try {
+			const params = object(value);
+			if (params.threadId !== this.#threadId || params.turnId !== this.#turnId) return;
+			if (method === "error") {
+				if (typeof params.willRetry !== "boolean") return;
+				const category = nativeErrorCategory(object(params.error).codexErrorInfo);
+				// A retry hint is not an HTTP attempt or a terminal turn outcome.
+				if (category && !params.willRetry) this.#providerErrorCategory = category;
+				return;
+			}
+			const usage = object(params.tokenUsage);
+			if (
+				Object.keys(usage).sort().join() !== "last,modelContextWindow,total" ||
+				(usage.modelContextWindow !== null &&
+					(!Number.isSafeInteger(usage.modelContextWindow) || (usage.modelContextWindow as number) < 0))
+			)
+				return;
+			const total = object(usage.total);
+			const last = object(usage.last);
+			for (const snapshot of [total, last]) {
+				if (
+					Object.keys(snapshot).sort().join() !== [...TOKEN_COUNTERS].sort().join() ||
+					TOKEN_COUNTERS.some((key) => !Number.isSafeInteger(snapshot[key]) || (snapshot[key] as number) < 0)
+				)
+					return;
+			}
+			// Native cumulative snapshots can be replayed/recomputed. Never sum updates,
+			// infer a request count, or label these counters billing-exact provider usage.
+			this.#turnObservation.update({
+				inputTokens: total.inputTokens as number,
+				outputTokens: total.outputTokens as number,
+				cachedInputTokens: total.cachedInputTokens as number,
+				cacheWriteInputTokens: total.cacheWriteInputTokens as number,
+				reasoningOutputTokens: total.reasoningOutputTokens as number,
+				totalTokens: total.totalTokens as number,
+			});
+		} catch {
+			// Malformed optional diagnostics remain unavailable; protocol enforcement is unchanged.
+		}
 	}
 
 	#message(message: Record<string, unknown>): void {
@@ -288,8 +479,10 @@ class CodexBoundaryRpc {
 			if (message.error === undefined && !Object.hasOwn(message, "result"))
 				throw new Error("Missing native response");
 			this.#pending.delete(message.id);
-			if (message.error !== undefined) pending.reject(new Error("Native boundary request rejected"));
-			else if (Object.hasOwn(message, "result")) pending.resolve(message.result);
+			if (message.error !== undefined) {
+				this.#failureCategory = "provider_failed";
+				pending.reject(new Error("Native boundary request rejected"));
+			} else if (Object.hasOwn(message, "result")) pending.resolve(message.result);
 			else throw new Error("Missing native response");
 			return;
 		}
@@ -329,14 +522,14 @@ class CodexBoundaryRpc {
 				(result) => {
 					this.#activeCalls--;
 					if (this.#finished) {
-						this.fail("Native turn ended with a pending tool call");
+						this.fail("Native turn ended with a pending tool call", "invalid_response");
 						return;
 					}
 					this.#write({ id: message.id, result });
 				},
 				() => {
 					this.#activeCalls--;
-					this.fail("Native tool boundary dispatch failed");
+					this.fail("Native tool boundary dispatch failed", "unknown");
 				},
 			);
 			return;
@@ -365,8 +558,20 @@ class CodexBoundaryRpc {
 			)
 				throw new Error("Native completion binding failed");
 			this.#finished = true;
-			if (turn.status !== "completed" || turn.error != null) this.fail("Native boundary turn did not complete");
-			else this.#resolveCompleted();
+			if (turn.status !== "completed" || turn.error != null) {
+				const error =
+					turn.error && typeof turn.error === "object" && !Array.isArray(turn.error)
+						? (turn.error as Record<string, unknown>)
+						: undefined;
+				this.fail(
+					"Native boundary turn did not complete",
+					turn.status === "interrupted"
+						? "cancelled"
+						: (nativeErrorCategory(error?.codexErrorInfo) ?? this.#providerErrorCategory ?? "provider_failed"),
+				);
+			} else this.#resolveCompleted();
+		} else if (message.method === "thread/tokenUsage/updated" || message.method === "error") {
+			this.#observeDiagnostic(message.method, message.params);
 		}
 		// Assistant text, reasoning, diffs, tool events and diagnostics are never delivered or returned.
 	}
@@ -411,6 +616,8 @@ export async function runCloudCodexToolSession(options: {
 	isolation?: NativeIsolationConfiguration;
 	/** Called after artifact/configuration checks and before thread prewarm or any model request. */
 	beforeModelStart?: (signal: AbortSignal) => Promise<void>;
+	/** Optional metadata-only logical-turn/gate observations; not provider HTTP timing. */
+	observability?: CloudRuntimeObservability;
 	recordContextView?: (
 		frame: CloudNativeFenceRequest,
 		outputs: readonly CloudNativeFencedResult[],
@@ -482,10 +689,13 @@ export async function runCloudCodexToolSession(options: {
 				if (!rpc) throw new Error("Native result boundary not initialized");
 				rpc.assertModelRequest(request);
 			},
-			recordContextView: options.recordContextView,
+			recordContextView: async (request, outputs, contextSignal) => {
+				await options.recordContextView?.(request, outputs, contextSignal);
+				rpc?.contextRecorded(request.requestId);
+			},
 			onFailure: () => {
 				fenceFailed = true;
-				rpc?.fail("Native result boundary unavailable");
+				rpc?.fail("Native result boundary unavailable", "authority_unavailable");
 			},
 			signal,
 		});
@@ -524,8 +734,8 @@ export async function runCloudCodexToolSession(options: {
 				stdio: ["pipe", "pipe", "pipe"],
 				detached: true,
 			});
-		rpc = new CodexBoundaryRpc(child, options.boundary);
-		if (fenceFailed) rpc.fail("Native result boundary unavailable");
+		rpc = new CodexBoundaryRpc(child, options.boundary, options.observability);
+		if (fenceFailed) rpc.fail("Native result boundary unavailable", "authority_unavailable");
 		signal.addEventListener("abort", abort, { once: true });
 		if (signal.aborted) abort();
 		const initialized = object(
@@ -577,20 +787,21 @@ export async function runCloudCodexToolSession(options: {
 		const threadId = identifier(object(started.thread).id);
 		rpc.bindThread(threadId);
 		rpc.startTurn();
-		const turnStarted = object(
-			await rpc.request("turn/start", {
-				threadId,
-				input: [{ type: "text", text: options.prompt, text_elements: [] }],
-				effort,
-				environments: [],
-				runtimeWorkspaceRoots: [],
-				sandboxPolicy: { type: "readOnly", networkAccess: false },
-			}),
-		);
+		rpc.observeTurnStart(Buffer.byteLength(options.prompt));
+		const turnRequest = rpc.request("turn/start", {
+			threadId,
+			input: [{ type: "text", text: options.prompt, text_elements: [] }],
+			effort,
+			environments: [],
+			runtimeWorkspaceRoots: [],
+			sandboxPolicy: { type: "readOnly", networkAccess: false },
+		});
+		const turnStarted = object(await turnRequest);
 		rpc.confirmTurn(object(turnStarted.turn).id);
 		await rpc.completed;
 		rpc.assertCompleted();
 		signal.throwIfAborted();
+		rpc.finishObservations(true, signal);
 		return {
 			providerSessionId: threadId,
 			toolCalls: rpc.toolCalls,
@@ -598,6 +809,7 @@ export async function runCloudCodexToolSession(options: {
 			fencedRequests: rpc.fencedRequests,
 		};
 	} catch (error) {
+		rpc?.finishObservations(false, signal);
 		if (signal.aborted) throw new Error("Native boundary execution stopped");
 		throw error;
 	} finally {

@@ -70,8 +70,11 @@ async function fixture(content = Buffer.from("A live company, without a model-ac
 			)
 				return Response.json({}, { status: 403 });
 			return Response.json({
-				schema: "qorpera.member-company-object/v1",
+				schema: "qorpera.member-company-object/v2",
 				companyId,
+				actorUserId: "31000000-0000-4000-8000-000000000001",
+				resourceId: "31000000-0000-4000-8000-000000000041",
+				resourceVersion: "31000000-0000-4000-8000-000000000042",
 				environmentId,
 				path,
 				version,

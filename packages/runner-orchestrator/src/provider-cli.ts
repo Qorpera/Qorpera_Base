@@ -17,6 +17,7 @@ import {
 	type LxdCloudRunnerProviderConfig,
 } from "./lxd-provider.ts";
 import { nodeHttpFetch } from "./node-http-fetch.ts";
+import { ProviderNodeObservability } from "./node-observability.ts";
 import { ProcessCloudRunnerProviderBackend, type ProcessCloudRunnerProviderConfig } from "./process-provider.ts";
 import {
 	type CloudRunnerProviderServiceBackend,
@@ -240,7 +241,14 @@ async function main(): Promise<void> {
 		required("QORPERA_RUNNER_PROVIDER_TOKEN"),
 		network.host,
 		port(),
-		network.options,
+		{
+			...network.options,
+			nodeObservations: new ProviderNodeObservability({
+				providerAdapter: current.backend.adapterId,
+				nodeId: process.env.QORPERA_RUNNER_NODE_ID,
+				softwareVersion: process.env.QORPERA_RUNNER_PROVIDER_SOFTWARE_VERSION,
+			}),
+		},
 	);
 	const shutdown = new AbortController();
 	const stop = (): void => shutdown.abort();

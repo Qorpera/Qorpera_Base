@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { CLOUD_CODEX_BOUNDARY_CONFIG, runCloudCodexToolSession } from "../src/cloud-codex-tool-session.ts";
 import * as nativeIsolation from "../src/cloud-native-isolation.ts";
 import { type CloudNativeTool, CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
 const binarySha256 = createHash("sha256")
@@ -30,6 +31,8 @@ function run(
 		binarySha256?: string;
 		isolation?: nativeIsolation.NativeIsolationConfiguration;
 		beforeModelStart?: (signal: AbortSignal) => Promise<void>;
+		observability?: CloudRuntimeObservability;
+		recordContextView?: Parameters<typeof runCloudCodexToolSession>[0]["recordContextView"];
 	} = {},
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => new Promise(() => undefined));
@@ -61,6 +64,17 @@ function run(
 		...options,
 	});
 	return { result, execute, evidence };
+}
+
+function observationCollector() {
+	const rows: CloudRuntimeObservation[] = [];
+	const observability = new CloudRuntimeObservability({
+		assignmentId: randomUUID(),
+		publish: async (row) => {
+			rows.push(row);
+		},
+	});
+	return { rows, observability };
 }
 
 it.each(["response-first", "notify-first", "fence-before-started", "prewarm-before-thread"])(
@@ -251,4 +265,282 @@ it("pins the no-execution configuration and enough result budget to retain the e
 			"tool_output_token_limit=65536",
 		]),
 	);
+});
+
+it.each(["response-first", "notify-first", "fence-before-started", "prewarm-before-thread"])(
+	"observes one logical turn and distinct unconfirmed gates without changing ordering: %s",
+	async (mode) => {
+		const { rows, observability } = observationCollector();
+		await expect(run(mode, { observability }).result).resolves.toMatchObject({ fencedRequests: 1 });
+		await observability.close();
+		const turns = rows.filter((row) => row.operation === "model_turn");
+		expect(turns).toHaveLength(2);
+		expect(turns[0]).toMatchObject({ phase: "start", status: "started", durationMs: null, inputBytes: 18 });
+		expect(turns[1]).toMatchObject({
+			phase: "finish",
+			status: "succeeded",
+			errorCategory: null,
+			outputBytes: null,
+			inputTokens: null,
+			outputTokens: null,
+			cachedInputTokens: null,
+			cacheWriteInputTokens: null,
+			reasoningOutputTokens: null,
+			totalTokens: null,
+		});
+		expect(turns[1].attemptId).toBe(turns[0].attemptId);
+		expect(turns[1].logicalOperationSha256).toBe(turns[0].logicalOperationSha256);
+		expect(turns[1].durationMs).toBeGreaterThanOrEqual(0);
+		const gates = rows.filter((row) => row.operation === "native_result_fence");
+		expect(gates).toHaveLength(mode === "prewarm-before-thread" ? 4 : 2);
+		for (const gate of gates.filter((row) => row.phase === "finish")) {
+			expect(gate.status).toBe("unconfirmed");
+			expect(gate.inputTokens).toBeNull();
+		}
+		expect(gates.filter((row) => row.parentAttemptId === turns[0].attemptId)).toHaveLength(2);
+		expect(gates.filter((row) => row.parentAttemptId === null)).toHaveLength(
+			mode === "prewarm-before-thread" ? 2 : 0,
+		);
+		expect(rows.some((row) => row.operation === "model_request")).toBe(false);
+		expect(JSON.stringify(rows)).not.toMatch(/PRIVATE_|thread_fixture|turn_fixture/);
+	},
+);
+
+it.each(["observed-usage", "usage-after-completion"])(
+	"keeps the latest native total snapshot without summing retries, estimates or post-completion updates: %s",
+	async (mode) => {
+		const { rows, observability } = observationCollector();
+		await run(mode, { observability }).result;
+		await observability.close();
+		expect(rows.find((row) => row.operation === "model_turn" && row.phase === "finish")).toMatchObject({
+			status: "succeeded",
+			inputTokens: 23,
+			outputTokens: 7,
+			cachedInputTokens: 3,
+			cacheWriteInputTokens: 5,
+			reasoningOutputTokens: 2,
+			totalTokens: 30,
+		});
+		expect(rows).toHaveLength(4);
+	},
+);
+
+it("preserves explicit native zero counters while absent usage remains unknown", async () => {
+	const { rows, observability } = observationCollector();
+	await run("observed-zero-usage", { observability }).result;
+	await observability.close();
+	expect(rows.find((row) => row.operation === "model_turn" && row.phase === "finish")).toMatchObject({
+		inputTokens: 0,
+		outputTokens: 0,
+		cachedInputTokens: 0,
+		cacheWriteInputTokens: 0,
+		reasoningOutputTokens: 0,
+		totalTokens: 0,
+	});
+});
+
+it.each(["negative", "unsafe", "fraction", "string", "null", "missing", "extra", "last", "window", "primitive"])(
+	"drops malformed optional usage without weakening native execution: %s",
+	async (fault) => {
+		const { rows, observability } = observationCollector();
+		await expect(run(`invalid-usage-${fault}`, { observability }).result).resolves.toMatchObject({
+			fencedRequests: 1,
+		});
+		await observability.close();
+		expect(rows.find((row) => row.operation === "model_turn" && row.phase === "finish")).toMatchObject({
+			status: "succeeded",
+			inputTokens: null,
+			outputTokens: null,
+			cachedInputTokens: null,
+			cacheWriteInputTokens: null,
+			reasoningOutputTokens: null,
+			totalTokens: null,
+		});
+		expect(JSON.stringify(rows)).not.toContain("PRIVATE_");
+	},
+);
+
+it.each([
+	["diagnostic-binding", "provider_failed"],
+	["terminal-error-notice", "budget_exhausted"],
+	["terminal-http-error", "transport_unavailable"],
+	["unknown-error-notice", "provider_failed"],
+	["failed-turn", "provider_failed"],
+])("classifies bound native failure metadata without exposing diagnostic text: %s", async (mode, category) => {
+	const { rows, observability } = observationCollector();
+	await expect(run(mode, { observability }).result).rejects.toThrow("Native boundary turn did not complete");
+	await observability.close();
+	expect(rows.find((row) => row.operation === "model_turn" && row.phase === "finish")).toMatchObject({
+		status: "failed",
+		errorCategory: category,
+		inputTokens: null,
+		outputTokens: null,
+	});
+	expect(JSON.stringify(rows)).not.toMatch(/PRIVATE_|unrelated_private|thread_fixture|turn_fixture/);
+});
+
+it("does not count retry hints as requests or turn a completed native turn into a failure", async () => {
+	const { rows, observability } = observationCollector();
+	await expect(run("retry-notice", { observability }).result).resolves.toMatchObject({ fencedRequests: 1 });
+	await observability.close();
+	expect(rows.find((row) => row.operation === "model_turn" && row.phase === "finish")).toMatchObject({
+		status: "succeeded",
+		errorCategory: null,
+		totalTokens: 30,
+	});
+	expect(rows).toHaveLength(4);
+	expect(rows.some((row) => row.operation === "model_request")).toBe(false);
+	expect(JSON.stringify(rows)).not.toContain("PRIVATE_");
+});
+
+it.each(["skip-fence", "pending-tool"])(
+	"never emits logical success before host completion checks: %s",
+	async (mode) => {
+		const { rows, observability } = observationCollector();
+		await expect(run(mode, { observability }).result).rejects.toThrow();
+		await observability.close();
+		const turns = rows.filter((row) => row.operation === "model_turn");
+		expect(turns).toHaveLength(2);
+		expect(turns[1]).toMatchObject({ phase: "finish", status: "failed", errorCategory: "invalid_response" });
+		expect(rows.some((row) => row.status === "succeeded")).toBe(false);
+	},
+);
+
+it("ends an interrupted native turn as cancelled while preserving the public failure", async () => {
+	const { rows, observability } = observationCollector();
+	await expect(run("interrupted-turn", { observability }).result).rejects.toThrow(
+		"Native boundary turn did not complete",
+	);
+	await observability.close();
+	expect(rows.find((row) => row.operation === "model_turn" && row.phase === "finish")).toMatchObject({
+		status: "cancelled",
+		errorCategory: "cancelled",
+	});
+});
+
+it.each(["turn-start-stalled", "turn-stalled"])(
+	"observes a bounded logical timeout even without a native completion: %s",
+	async (mode) => {
+		const { rows, observability } = observationCollector();
+		await expect(run(mode, { observability, timeoutMs: 1000 }).result).rejects.toThrow(
+			"Native boundary execution stopped",
+		);
+		await observability.close();
+		const turns = rows.filter((row) => row.operation === "model_turn");
+		expect(turns).toHaveLength(2);
+		expect(turns[1]).toMatchObject({ phase: "finish", status: "failed", errorCategory: "timeout" });
+		expect(turns[1].durationMs).toBeGreaterThanOrEqual(0);
+	},
+);
+
+it("records a rejected turn-start request without leaking its error", async () => {
+	const { rows, observability } = observationCollector();
+	await expect(run("turn-request-rejected", { observability }).result).rejects.toThrow(
+		"Native boundary request rejected",
+	);
+	await observability.close();
+	expect(rows).toHaveLength(2);
+	expect(rows[1]).toMatchObject({
+		operation: "model_turn",
+		phase: "finish",
+		status: "failed",
+		errorCategory: "provider_failed",
+	});
+	expect(JSON.stringify(rows)).not.toContain("PRIVATE_");
+});
+
+it("keeps pre-admission failures out of logical model-turn observations", async () => {
+	const { rows, observability } = observationCollector();
+	await expect(run("missing-direct-tools", { observability }).result).rejects.toThrow("governed direct tools");
+	await observability.close();
+	expect(rows).toEqual([]);
+});
+
+it("does not end a gate while mandatory context recording is pending", async () => {
+	const { rows, observability } = observationCollector();
+	let release: () => void = () => undefined;
+	const recorded = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const { result } = run("response-first", { observability, recordContextView: async () => recorded });
+	await vi.waitFor(() =>
+		expect(rows.some((row) => row.operation === "native_result_fence" && row.phase === "start")).toBe(true),
+	);
+	expect(rows.some((row) => row.phase === "finish")).toBe(false);
+	release();
+	await result;
+	await observability.close();
+	expect(rows.find((row) => row.operation === "native_result_fence" && row.phase === "finish")?.status).toBe(
+		"unconfirmed",
+	);
+});
+
+it.each(["response-first", "prewarm-before-thread"])(
+	"does not hide mandatory context-recording failure behind optional observations: %s",
+	async (mode) => {
+		const { rows, observability } = observationCollector();
+		await expect(
+			run(mode, {
+				observability,
+				recordContextView: async () => {
+					throw new Error("PRIVATE_CONTEXT_FAILURE");
+				},
+			}).result,
+		).rejects.toThrow("Native result boundary unavailable");
+		await observability.close();
+		for (const row of rows.filter((row) => row.phase === "finish")) {
+			expect(row).toMatchObject({ status: "failed", errorCategory: "authority_unavailable" });
+		}
+		expect(rows).toHaveLength(mode === "prewarm-before-thread" ? 2 : 4);
+		expect(JSON.stringify(rows)).not.toContain("PRIVATE_");
+	},
+);
+
+it("records cancellation during context recording without claiming reply delivery", async () => {
+	const { rows, observability } = observationCollector();
+	const abort = new AbortController();
+	await expect(
+		run("response-first", {
+			observability,
+			signal: abort.signal,
+			recordContextView: async () => {
+				abort.abort(new Error("PRIVATE_CANCEL_REASON"));
+			},
+		}).result,
+	).rejects.toThrow("Native boundary execution stopped");
+	await observability.close();
+	expect(rows).toHaveLength(4);
+	for (const row of rows.filter((row) => row.phase === "finish")) {
+		expect(row).toMatchObject({ status: "cancelled", errorCategory: "cancelled" });
+	}
+	expect(JSON.stringify(rows)).not.toContain("PRIVATE_");
+});
+
+it("does not let a failing exporter change native success", async () => {
+	const observability = new CloudRuntimeObservability({
+		assignmentId: randomUUID(),
+		publish: async () => {
+			throw new Error("PRIVATE_EXPORT_FAILURE");
+		},
+	});
+	await expect(run("observed-usage", { observability }).result).resolves.toMatchObject({ fencedRequests: 1 });
+	await observability.close();
+	expect(observability.state.status).toBe("unavailable");
+});
+
+it.each(["start", "update", "finish"])("isolates an unexpected optional observer exception at %s", async (method) => {
+	const { observability } = observationCollector();
+	const start = observability.start.bind(observability);
+	vi.spyOn(observability, "start").mockImplementation((operation, options) => {
+		if (method === "start") throw new Error("PRIVATE_OBSERVER_FAILURE");
+		const span = start(operation, options);
+		return {
+			...span,
+			[method]: () => {
+				throw new Error("PRIVATE_OBSERVER_FAILURE");
+			},
+		};
+	});
+	await expect(run("observed-usage", { observability }).result).resolves.toMatchObject({ fencedRequests: 1 });
+	await observability.close();
 });

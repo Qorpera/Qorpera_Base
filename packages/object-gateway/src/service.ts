@@ -4,6 +4,12 @@ import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHea
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { serveMemberCompanyFile } from "./member-company-file.ts";
 import { type MemberCompanyObjectAuthority, serveMemberCompanyObject } from "./member-company-objects.ts";
+import {
+	MEMBER_OBSERVATIONS_PATH,
+	type MemberCompanyObservations,
+	type MemberRequestObservationSpan,
+	parseMemberObservationQuery,
+} from "./member-observability.ts";
 import { serveMemberSessionAttachment } from "./member-session-attachments.ts";
 import { type NativeCompanyObjectOptions, serveNativeCompanyObject } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
@@ -27,6 +33,7 @@ export interface ObjectGatewayServiceOptions {
 	nativeObjects?: NativeCompanyObjectOptions;
 	memberObjects?: MemberCompanyObjectAuthority;
 	memberFiles?: MemberCompanyAuthority;
+	memberObservations?: MemberCompanyObservations;
 }
 
 class HttpError extends Error {
@@ -38,9 +45,16 @@ class HttpError extends Error {
 	}
 }
 
-function json(response: ServerResponse, status: number, value: unknown): void {
+function json(
+	response: ServerResponse,
+	status: number,
+	value: unknown,
+	observation?: MemberRequestObservationSpan,
+): void {
+	const encoded = JSON.stringify(value);
+	observation?.update({ responseBodyBytes: Buffer.byteLength(encoded) });
 	response.writeHead(status, { "cache-control": "no-store", "content-type": "application/json; charset=utf-8" });
-	response.end(JSON.stringify(value));
+	response.end(encoded);
 }
 
 function bearer(request: IncomingMessage): string {
@@ -120,8 +134,35 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 		throw new Error("Read delegation requires a distinct revocation credential");
 	}
 	return (request, response) => {
+		let observation: MemberRequestObservationSpan | undefined;
+		try {
+			if (request.url?.startsWith("/v1/member-company-objects/"))
+				observation = options.memberObservations?.start("object_read");
+			else if (request.url?.startsWith("/v1/member-company-file/"))
+				observation = options.memberObservations?.start("file_request");
+		} catch {
+			/* Optional diagnostics cannot prevent a human request. */
+		}
+		if (observation) {
+			response.once("finish", () => observation?.finish(response.statusCode));
+			response.once("close", () => {
+				if (!response.writableFinished)
+					observation?.finish(response.headersSent ? response.statusCode : null, true);
+			});
+		}
 		void (async () => {
 			try {
+				if (request.url?.startsWith(MEMBER_OBSERVATIONS_PATH)) {
+					if (!secureEqual(bearer(request), options.controlToken)) throw new HttpError(401, "Unauthorized");
+					if (request.method !== "GET") throw new HttpError(404, "Not found");
+					const query = parseMemberObservationQuery(request.url);
+					if (!options.memberObservations) {
+						json(response, 503, { status: "unknown", reason: "observations_unconfigured" });
+						return;
+					}
+					json(response, 200, options.memberObservations.snapshot(query));
+					return;
+				}
 				if (request.method === "GET" && request.url === "/livez") {
 					json(response, 200, { status: "alive" });
 					return;
@@ -200,6 +241,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						store: options.store,
 						replication: options.replication,
 						readLegacyObject: (companyId, sha256) => options.authority.readLegacyObject(companyId, sha256),
+						observation,
 					});
 					return;
 				}
@@ -215,7 +257,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 				}
 				if (request.url?.startsWith("/v1/member-company-objects/")) {
 					if (!options.memberObjects) throw new HttpError(404, "Not found");
-					await serveMemberCompanyObject(request, response, options.memberObjects, options.store);
+					await serveMemberCompanyObject(request, response, options.memberObjects, options.store, observation);
 					return;
 				}
 				if (request.url?.startsWith("/v1/native-company-objects/")) {
@@ -356,19 +398,22 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 				}
 				throw new HttpError(405, "Method not allowed");
 			} catch (error) {
+				observation?.fail(
+					error instanceof HttpError || error instanceof ObjectDependencyError ? error.status : undefined,
+				);
 				if (response.headersSent) {
 					response.destroy();
 					return;
 				}
 				if (error instanceof HttpError) {
-					json(response, error.status, { error: error.message });
+					json(response, error.status, { error: error.message }, observation);
 					return;
 				}
 				if (error instanceof ObjectDependencyError) {
-					json(response, error.unavailable ? 503 : error.status, { error: error.message });
+					json(response, error.unavailable ? 503 : error.status, { error: error.message }, observation);
 					return;
 				}
-				json(response, 503, { error: "Object gateway operation failed" });
+				json(response, 503, { error: "Object gateway operation failed" }, observation);
 			}
 		})();
 	};

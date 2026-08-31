@@ -11,6 +11,7 @@ import {
 	MemberCompanyHeadConflict,
 	SupabaseMemberCompanyAuthority,
 } from "../src/member-company-authority.ts";
+import { MemberCompanyObservations } from "../src/member-observability.ts";
 import { FileSystemObjectStore } from "../src/object-store.ts";
 import { ObjectGatewayReplication } from "../src/replication.ts";
 import { createObjectGatewayHandler } from "../src/service.ts";
@@ -46,6 +47,7 @@ async function fixture() {
 		},
 	});
 	const replication = new ObjectGatewayReplication(new ObjectGatewayJournal(join(root, "journal")), store, objects);
+	const observations = new MemberCompanyObservations();
 	const state = {
 		current: undefined as Record<string, unknown> | undefined,
 		protected: false,
@@ -99,6 +101,20 @@ async function fixture() {
 				throw new ObjectDependencyError(403);
 			state.current.state = args.p_decision === "approve" ? "approved" : "rejected";
 			return structuredClone(state.current);
+		}
+		if (method === "qorpera_authorize_member_company_command_object") {
+			if (!state.current || args.p_command_id !== commandId || args.p_plan_sha256 !== state.current.planSha256)
+				throw new ObjectDependencyError(403);
+			const file = record(record(record(state.current.plan).entry).file);
+			if (args.p_sha256 !== file.fileSha256) throw new ObjectDependencyError(403);
+			return { companyId, sha256: file.fileSha256, bytes: file.bytes, backend: "nas-object-gateway" };
+		}
+		if (method === "qorpera_authorize_member_company_proposal_object") {
+			if (args.p_proposal_id !== proposalId || args.p_plan_sha256 !== "b".repeat(64))
+				throw new ObjectDependencyError(403);
+			const file = record(record(state.proposalPlan.entry).file);
+			if (args.p_sha256 !== file.fileSha256) throw new ObjectDependencyError(403);
+			return { companyId, sha256: file.fileSha256, bytes: file.bytes, backend: "nas-object-gateway" };
 		}
 		if (method === "qorpera_describe_member_company_path_proposal") {
 			return {
@@ -180,6 +196,7 @@ async function fixture() {
 			controlToken: "synthetic-control",
 			verifierToken: "synthetic-verifier",
 			memberFiles: { member, publisher },
+			memberObservations: observations,
 		}),
 	);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -193,6 +210,7 @@ async function fixture() {
 	});
 	return {
 		state,
+		observations,
 		store,
 		member,
 		publisher,
@@ -500,6 +518,178 @@ describe("cloud-owned human Company File edits", () => {
 		const service = await fixture();
 		expect((await service.request("edits", { ...edit, text: "" })).status).toBe(200);
 		expect(await service.replication.status()).toMatchObject({ pending: 2, blocked: 0 });
+	});
+
+	it("links applied human requests to canonical commands without storing text, path or credential metadata", async () => {
+		const service = await fixture();
+		const response = await service.request("edits", edit);
+		const body = await response.text();
+		const result = service.observations.snapshot({ limit: 10, commandId });
+		expect(result.observations).toHaveLength(1);
+		expect(result.observations[0]).toMatchObject({
+			operation: "command_submit",
+			commandId,
+			companyId,
+			environmentId,
+			actorUserId: null,
+			resourceId: null,
+			responseOutcome: "succeeded",
+			effectOutcome: "applied",
+			requestBodyBytes: Buffer.byteLength(JSON.stringify(edit)),
+			responseBodyBytes: Buffer.byteLength(body),
+			logicalWriteInputBytes: Buffer.byteLength(edit.text),
+			logicalObjectReadBytes: null,
+		});
+		for (const forbidden of [token, edit.path, edit.text, edit.operationKey, "a".repeat(64), "fixture-secret"])
+			expect(JSON.stringify(result)).not.toContain(forbidden);
+		expect(service.state.effects).toBe(1);
+	});
+
+	it("does not attribute a caller's intended company or command before canonical authorization", async () => {
+		const service = await fixture();
+		await (await service.request(`edits/${commandId}`, undefined, "other-member")).text();
+		expect(service.observations.snapshot({ limit: 1 }).observations[0]).toMatchObject({
+			companyId: null,
+			environmentId: null,
+			commandId: null,
+			actorUserId: null,
+			responseOutcome: "denied",
+			errorCategory: "forbidden",
+			effectOutcome: "none",
+		});
+		expect(service.publisher).not.toHaveBeenCalled();
+	});
+
+	it("preserves a confirmed effect when the final member read is denied", async () => {
+		const service = await fixture();
+		service.state.denyMethod = "qorpera_get_member_company_path_command";
+		const response = await service.request("edits", edit);
+		expect(response.status).toBe(403);
+		await response.text();
+		expect(service.observations.snapshot({ limit: 1 }).observations[0]).toMatchObject({
+			commandId,
+			effectOutcome: "applied",
+			responseOutcome: "denied",
+			errorCategory: "forbidden",
+		});
+		expect(service.state.effects).toBe(1);
+		expect(
+			vi
+				.mocked(service.publisher)
+				.mock.calls.filter(([method]) => method === "qorpera_apply_member_company_path_command_v3"),
+		).toHaveLength(1);
+	});
+
+	it("keeps a lost acknowledgement unconfirmed and a subsequent exact replay separate", async () => {
+		const service = await fixture();
+		service.state.loseApply = true;
+		await (await service.request("edits", edit)).text();
+		expect(service.observations.snapshot({ limit: 1 }).observations[0]).toMatchObject({
+			commandId,
+			effectOutcome: "unconfirmed",
+			responseOutcome: "failed",
+		});
+		const previous = vi.mocked(service.publisher).mock.calls.length;
+		await (await service.request("edits", edit)).text();
+		expect(service.observations.snapshot({ limit: 10 }).observations.map((row) => row.effectOutcome)).toEqual([
+			"replayed",
+			"unconfirmed",
+		]);
+		expect(service.state.effects).toBe(1);
+		expect(service.publisher).toHaveBeenCalledTimes(previous);
+	});
+
+	it("records a proposed human edit separately from review and application", async () => {
+		const service = await fixture();
+		service.state.protected = true;
+		await (await service.request("edits", edit)).text();
+		expect(service.observations.snapshot({ limit: 1 }).observations[0]).toMatchObject({
+			commandId,
+			effectOutcome: "proposed",
+			responseOutcome: "succeeded",
+		});
+		await (
+			await service.request(`edits/${commandId}/review`, { planSha256: "a".repeat(64), decision: "approve" })
+		).text();
+		expect(
+			service.observations.snapshot({ limit: 2 }).observations.map((row) => [row.operation, row.effectOutcome]),
+		).toEqual([
+			["command_review", "applied"],
+			["command_submit", "proposed"],
+		]);
+	});
+
+	it("retains the canonical proposal result when its separate response-release check fails", async () => {
+		const service = await fixture();
+		const original = vi.mocked(service.member).getMockImplementation()!;
+		vi.mocked(service.member).mockImplementation(async (...args) => {
+			if (args[0] === "qorpera_describe_member_company_path_proposal" && service.state.proposalState === "applied")
+				throw new ObjectDependencyError(403);
+			return original(...args);
+		});
+		const response = await service.request(`proposals/${proposalId}/review`, {
+			planSha256: "b".repeat(64),
+			decision: "approve",
+		});
+		expect(response.status).toBe(403);
+		await response.text();
+		expect(service.observations.snapshot({ limit: 1 }).observations[0]).toMatchObject({
+			proposalId,
+			companyId,
+			environmentId,
+			operation: "proposal_review",
+			effectOutcome: "applied",
+			responseOutcome: "denied",
+			errorCategory: "forbidden",
+		});
+		expect(service.state.effects).toBe(1);
+	});
+
+	it("measures reviewed-command immutable content without calling it whole-file or NAS traffic", async () => {
+		const service = await fixture();
+		service.state.protected = true;
+		await (await service.request("edits", edit)).text();
+		const response = await service.request(`edits/${commandId}/content`);
+		expect(response.status).toBe(200);
+		await response.text();
+		expect(service.observations.snapshot({ limit: 1 }).observations[0]).toMatchObject({
+			operation: "command_content",
+			commandId,
+			companyId,
+			logicalObjectReadBytes: Buffer.byteLength(edit.text),
+			effectOutcome: "none",
+		});
+	});
+
+	it("measures a proposal's immutable content with canonical proposal linkage", async () => {
+		const service = await fixture();
+		const bytes = Buffer.from("PRIVATE_PROPOSAL_CONTENT");
+		const sha256 = createHash("sha256").update(bytes).digest("hex");
+		service.state.proposalPlan.entry = {
+			path: "note.md",
+			kind: "file",
+			executable: false,
+			file: {
+				fileSha256: sha256,
+				manifestSha256: "c".repeat(64),
+				bytes: bytes.length,
+				mediaType: "application/octet-stream",
+			},
+		};
+		await service.store.put(companyId, sha256, bytes);
+		const response = await service.request(`proposals/${proposalId}/content`);
+		expect(response.status).toBe(200);
+		await response.text();
+		const result = service.observations.snapshot({ limit: 1 });
+		expect(result.observations[0]).toMatchObject({
+			operation: "proposal_content",
+			proposalId,
+			companyId,
+			logicalObjectReadBytes: bytes.length,
+			effectOutcome: "none",
+		});
+		expect(JSON.stringify(result)).not.toContain(bytes.toString());
+		expect(JSON.stringify(result)).not.toContain(sha256);
 	});
 });
 

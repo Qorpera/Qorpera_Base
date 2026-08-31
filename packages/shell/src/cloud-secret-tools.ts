@@ -551,6 +551,7 @@ export function cloudSecretTools(options: {
 						),
 					}),
 					signal: context.signal,
+					observation: context.observation,
 				});
 			},
 		};

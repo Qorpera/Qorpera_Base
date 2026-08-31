@@ -9,6 +9,7 @@ import {
 	CloudNativeToolOperations,
 } from "../src/cloud-native-tool-operations.ts";
 import type { BeginCloudRunnerOperationInput } from "../src/cloud-runner-broker.ts";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 type ExecuteOptions = Parameters<CloudNativeToolOperations["execute"]>[0];
@@ -20,10 +21,22 @@ interface Receipt {
 	proposalId: string | null;
 }
 const runs: CloudNativeToolRun[] = [];
-afterEach(() => {
+const observations: CloudRuntimeObservability[] = [];
+afterEach(async () => {
 	for (const run of runs.splice(0)) run.close();
 	vi.useRealTimers();
+	await Promise.all(observations.splice(0).map((observation) => observation.close()));
 });
+
+function observe(assignmentId: string) {
+	const rows: CloudRuntimeObservation[] = [];
+	const publish = vi.fn(async (row: CloudRuntimeObservation) => {
+		rows.push(structuredClone(row));
+	});
+	const observability = new CloudRuntimeObservability({ assignmentId, publish });
+	observations.push(observability);
+	return { rows, publish, observability };
+}
 
 async function fixture() {
 	const authority = nativeToolAuthorityFixture();
@@ -413,4 +426,286 @@ it("rejects a completion response with different stored content", async () => {
 	}));
 	await expect(f.execute()).rejects.toThrow("outcome unconfirmed");
 	expect(f.perform).toHaveBeenCalledTimes(1);
+});
+
+it("links effect timing and a new-call replay to the same canonical receipt without exporting business data", async () => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	const first = observed.observability.start("connector");
+	await f.execute({ observation: first });
+	const receiptId = f.control.beginToolOperation.mock.calls[0][1].receiptId;
+	expect(first.result).toMatchObject({ status: "succeeded", receiptId, outputBytes: 16, errorCategory: null });
+	const replay = observed.observability.start("connector");
+	await f.execute({ observation: replay });
+	expect(replay.result).toMatchObject({ status: "replayed", receiptId, outputBytes: 16, errorCategory: null });
+	expect(replay.attemptId).not.toBe(first.attemptId);
+	expect(f.perform).toHaveBeenCalledTimes(1);
+	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
+	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
+	expect(f.authorize).toHaveBeenCalledTimes(4);
+	expect(Object.keys(f.perform.mock.calls[0][1]).sort()).toEqual([
+		"idempotencyKey",
+		"identity",
+		"inputSha256",
+		"receiptId",
+		"signal",
+	]);
+	await observed.observability.close();
+	for (const span of [first, replay]) {
+		const finish = observed.rows.findIndex((row) => row.attemptId === span.attemptId && row.phase === "finish");
+		const release = observed.rows.findIndex((row) => row.parentAttemptId === span.attemptId && row.phase === "start");
+		expect(release).toBeGreaterThan(finish);
+		expect(observed.rows[release]).toMatchObject({ operation: "context_authority" });
+	}
+	expect(JSON.stringify(observed.rows)).not.toMatch(/reviewed decision|decisions\/example|changed|job-document/);
+});
+
+it.each([false, true])(
+	"observes a canonical replay when the original call had no observer (restart=%s)",
+	async (restart) => {
+		const f = await fixture();
+		await f.execute();
+		const observed = observe(f.binding.assignmentId);
+		const replay = observed.observability.start("connector");
+		await f.execute(
+			{ observation: replay },
+			restart ? new CloudNativeToolOperations(f.run, f.control) : f.operations,
+		);
+		expect(replay.result).toMatchObject({
+			status: "replayed",
+			receiptId: f.control.beginToolOperation.mock.calls[0][1].receiptId,
+		});
+		expect(f.perform).toHaveBeenCalledTimes(1);
+		expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
+	},
+);
+
+it("counts a concurrently joined operation as replays, not additional effects", async () => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	const spans = Array.from({ length: 3 }, () => observed.observability.start("connector"));
+	await Promise.all(spans.map((observation) => f.execute({ observation })));
+	expect(spans.map((span) => span.result?.status)).toEqual(["succeeded", "replayed", "replayed"]);
+	expect(new Set(spans.map((span) => span.result?.receiptId))).toEqual(
+		new Set([f.control.beginToolOperation.mock.calls[0][1].receiptId]),
+	);
+	expect(f.perform).toHaveBeenCalledTimes(1);
+});
+
+it("keeps a canonical proposal proposed on cached and durable replay regardless of payload claims", async () => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	const operation = { ...f.operation, requiresCompanyRevision: true };
+	const proposalId = randomUUID();
+	f.perform.mockResolvedValueOnce({
+		content: { kind: "json", value: { state: "succeeded", receiptId: randomUUID() } },
+		proposalId,
+	});
+	for (const executor of [f.operations, f.operations, new CloudNativeToolOperations(f.run, f.control)]) {
+		const span = observed.observability.start("connector");
+		await f.execute({ operation, observation: span }, executor);
+		expect(span.result).toMatchObject({
+			status: "proposed",
+			receiptId: f.control.beginToolOperation.mock.calls[0][1].receiptId,
+		});
+	}
+	expect(f.control.completeToolOperation.mock.calls[0][1].proposalId).toBe(proposalId);
+	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
+	expect(f.perform).toHaveBeenCalledTimes(1);
+});
+
+it.each(["succeeded", "proposed"] as const)("preserves %s when subsequent grant release is denied", async (outcome) => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	if (outcome === "proposed")
+		f.perform.mockResolvedValueOnce({
+			content: { kind: "text", value: "PRIVATE_RESULT" },
+			proposalId: randomUUID(),
+		});
+	f.authorize
+		.mockResolvedValueOnce(undefined)
+		.mockResolvedValueOnce(undefined)
+		.mockRejectedValue(new Error("PRIVATE_GRANT_REVOKED"));
+	const first = observed.observability.start("connector");
+	await expect(f.execute({ observation: first })).rejects.toThrow("Cloud tool operation outcome unconfirmed");
+	expect(first.result).toMatchObject({ status: outcome, errorCategory: null });
+	const replay = observed.observability.start("connector");
+	await expect(f.execute({ observation: replay })).rejects.toThrow("Cloud tool operation outcome unconfirmed");
+	expect(replay.result).toMatchObject({
+		status: outcome === "succeeded" ? "replayed" : "proposed",
+		receiptId: first.result?.receiptId,
+		errorCategory: null,
+	});
+	await observed.observability.close();
+	for (const span of [first, replay])
+		expect(observed.rows).toContainEqual(
+			expect.objectContaining({
+				parentAttemptId: span.attemptId,
+				operation: "context_authority",
+				phase: "finish",
+				status: "denied",
+				errorCategory: "authority_unavailable",
+			}),
+		);
+	expect(f.perform).toHaveBeenCalledTimes(1);
+	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
+	expect(JSON.stringify(observed.rows)).not.toContain("PRIVATE");
+});
+
+it("retains canonical completion when the run is revoked only at result release", async () => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	const complete = f.control.completeToolOperation.getMockImplementation()!;
+	f.control.completeToolOperation.mockImplementationOnce(async (...args) => {
+		const result = await complete(...args);
+		f.reader.describeToolAuthority.mockRejectedValueOnce(new Error("PRIVATE_RUN_REVOKED"));
+		return result;
+	});
+	const span = observed.observability.start("connector");
+	await expect(f.execute({ observation: span })).rejects.toThrow("outcome unconfirmed");
+	expect(span.result).toMatchObject({
+		status: "succeeded",
+		receiptId: f.control.beginToolOperation.mock.calls[0][1].receiptId,
+	});
+	expect(f.run.signal.aborted).toBe(true);
+	await observed.observability.close();
+	expect(observed.rows).toContainEqual(
+		expect.objectContaining({
+			parentAttemptId: span.attemptId,
+			operation: "context_authority",
+			phase: "finish",
+			status: "denied",
+		}),
+	);
+});
+
+it("retains a receipt for lost completion and ambiguous cache hits until canonical durable replay", async () => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	const complete = f.control.completeToolOperation.getMockImplementation()!;
+	f.control.completeToolOperation.mockImplementationOnce(async (...args) => {
+		await complete(...args);
+		throw new Error("PRIVATE_LOST_COMPLETION");
+	});
+	for (let attempt = 0; attempt < 2; attempt++) {
+		const span = observed.observability.start("connector");
+		await expect(f.execute({ observation: span })).rejects.toThrow("outcome unconfirmed");
+		expect(span.result).toMatchObject({
+			status: "unconfirmed",
+			errorCategory: "ambiguous_effect",
+			outputBytes: null,
+			receiptId: f.control.beginToolOperation.mock.calls[0][1].receiptId,
+		});
+	}
+	const recovered = observed.observability.start("connector");
+	await f.execute({ observation: recovered }, new CloudNativeToolOperations(f.run, f.control));
+	expect(recovered.result).toMatchObject({
+		status: "replayed",
+		receiptId: f.control.beginToolOperation.mock.calls[0][1].receiptId,
+	});
+	expect(f.perform).toHaveBeenCalledTimes(1);
+	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(2);
+	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
+});
+
+it.each(["executing", "ambiguous", "cancelled"] as const)(
+	"links a retained %s receipt without performing or releasing it",
+	async (state) => {
+		const f = await fixture();
+		f.perform.mockRejectedValueOnce(new Error("PRIVATE_EFFECT_UNKNOWN"));
+		await expect(f.execute()).rejects.toThrow("outcome unconfirmed");
+		const receipt = [...f.ledger.values()][0];
+		receipt.state = state;
+		const observed = observe(f.binding.assignmentId);
+		const span = observed.observability.start("connector");
+		await expect(f.execute({ observation: span }, new CloudNativeToolOperations(f.run, f.control))).rejects.toThrow(
+			"outcome unconfirmed",
+		);
+		expect(span.result).toMatchObject({
+			status: "unconfirmed",
+			receiptId: receipt.input.receiptId,
+			errorCategory: "ambiguous_effect",
+		});
+		await observed.observability.close();
+		expect(observed.rows.some((row) => row.operation === "context_authority")).toBe(false);
+		expect(f.perform).toHaveBeenCalledTimes(1);
+		expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+	},
+);
+
+it("does not link a locally proposed receipt when the canonical begin response is lost", async () => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	const begin = f.control.beginToolOperation.getMockImplementation()!;
+	f.control.beginToolOperation.mockImplementationOnce(async (...args) => {
+		await begin(...args);
+		throw new Error("PRIVATE_LOST_BEGIN");
+	});
+	const span = observed.observability.start("connector");
+	await expect(f.execute({ observation: span })).rejects.toThrow("outcome unconfirmed");
+	expect(span.result).toMatchObject({ status: "unconfirmed", receiptId: null });
+	expect(f.perform).not.toHaveBeenCalled();
+	expect(f.ledger.size).toBe(1);
+});
+
+it.each([
+	{ run_id: randomUUID() },
+	{ receipt_id: "PRIVATE_NOT_A_UUID" },
+	{ state: "unknown" },
+	{ authority: "PRIVATE_EXTRA" },
+	{ state: "completed", result: {} },
+	{ result: { state: "completed" } },
+	{ output_snapshot_id: randomUUID() },
+])("never observes an invalid canonical begin as a known effect: %j", async (patch) => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	const begin = f.control.beginToolOperation.getMockImplementation()!;
+	f.control.beginToolOperation.mockImplementationOnce(async (...args) => ({
+		...((await begin(...args)) as object),
+		...patch,
+	}));
+	const span = observed.observability.start("connector");
+	await expect(f.execute({ observation: span })).rejects.toThrow("outcome unconfirmed");
+	expect(span.result).toMatchObject({ status: "unconfirmed", receiptId: null, outputBytes: null });
+	expect(f.perform).not.toHaveBeenCalled();
+});
+
+it.each([
+	{ run_id: randomUUID() },
+	{ receipt_id: randomUUID() },
+	{ state: "executing" },
+	{ result: { injected: "PRIVATE" } },
+	{ authority: "PRIVATE_EXTRA" },
+])("does not promote a tampered completion, retaining only the validated begin link: %j", async (patch) => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	const complete = f.control.completeToolOperation.getMockImplementation()!;
+	f.control.completeToolOperation.mockImplementationOnce(async (...args) => ({
+		...((await complete(...args)) as object),
+		...patch,
+	}));
+	const span = observed.observability.start("connector");
+	await expect(f.execute({ observation: span })).rejects.toThrow("outcome unconfirmed");
+	expect(span.result).toMatchObject({
+		status: "unconfirmed",
+		errorCategory: "ambiguous_effect",
+		outputBytes: null,
+		receiptId: f.control.beginToolOperation.mock.calls[0][1].receiptId,
+	});
+	expect(f.perform).toHaveBeenCalledTimes(1);
+});
+
+it("keeps effects and canonical replay independent of diagnostic exporter failure", async () => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	observed.publish.mockRejectedValue(new Error("PRIVATE_EXPORT_DOWN"));
+	const first = observed.observability.start("connector");
+	await f.execute({ observation: first });
+	const replay = observed.observability.start("connector");
+	await f.execute({ observation: replay });
+	expect(first.result?.status).toBe("succeeded");
+	expect(replay.result).toMatchObject({ status: "replayed", receiptId: first.result?.receiptId });
+	expect(observed.observability.state.status).toBe("unavailable");
+	expect(f.perform).toHaveBeenCalledTimes(1);
+	expect(f.authorize).toHaveBeenCalledTimes(4);
 });

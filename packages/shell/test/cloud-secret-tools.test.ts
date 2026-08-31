@@ -9,6 +9,7 @@ import {
 	CloudNativeToolOperations,
 } from "../src/cloud-native-tool-operations.ts";
 import type { BeginCloudRunnerOperationInput } from "../src/cloud-runner-broker.ts";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
 import {
 	type CloudSecretOperationClient,
 	cloudSecretTools,
@@ -17,8 +18,10 @@ import {
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];
-afterEach(() => {
+const observations: CloudRuntimeObservability[] = [];
+afterEach(async () => {
 	for (const run of runs.splice(0)) run.close();
+	await Promise.all(observations.splice(0).map((observation) => observation.close()));
 });
 
 async function setup() {
@@ -136,6 +139,32 @@ async function setup() {
 			revoked = true;
 		},
 	};
+}
+
+function observedBoundary(fixture: Awaited<ReturnType<typeof setup>>) {
+	const rows: CloudRuntimeObservation[] = [];
+	const observability = new CloudRuntimeObservability({
+		assignmentId: fixture.binding.assignmentId,
+		publish: async (row) => {
+			rows.push(structuredClone(row));
+		},
+	});
+	observations.push(observability);
+	const boundary = new CloudNativeToolBoundary({
+		companyId: fixture.authority.identity.companyId,
+		runId: fixture.binding.runId,
+		identity: fixture.authority.identity,
+		tools: fixture.tools,
+		assertActive: (signal) => fixture.run.assertActive(signal),
+		signal: fixture.run.signal,
+		observability,
+	});
+	const invoke = (callId: string) =>
+		boundary.invoke(callId, "qorpera", "linear_issue_create", {
+			idempotencyKey: "issue-login",
+			input: { title: "Login is broken", priority: 2 },
+		});
+	return { rows, observability, boundary, invoke };
 }
 
 it("exposes only a typed operation while keeping the credential and grant out of the model schema", async () => {
@@ -261,4 +290,118 @@ it("rejects unbounded or branching server-supplied string patterns", async () =>
 	await expect(
 		describeCloudSecretTools(control, fixture.binding as CloudNativeToolBinding, new AbortController().signal),
 	).rejects.toThrow("Connector string pattern is invalid");
+});
+
+it("privately links connector effects and changed-call-ID replays without changing model or broker contracts", async () => {
+	const fixture = await setup();
+	const observed = observedBoundary(fixture);
+	try {
+		const replies = [];
+		for (const callId of ["call_first", "call_retry", "call_first"]) replies.push(await observed.invoke(callId));
+		await observed.observability.close();
+		const effects = observed.rows.filter((row) => row.operation === "connector" && row.phase === "finish");
+		const receiptId = vi.mocked(fixture.operationControl.beginToolOperation).mock.calls[0][1].receiptId;
+		expect(effects.map((row) => row.status)).toEqual(["succeeded", "replayed", "replayed"]);
+		expect(effects.map((row) => row.receiptId)).toEqual([receiptId, receiptId, receiptId]);
+		expect(new Set(effects.map((row) => row.attemptId)).size).toBe(3);
+		for (const reply of replies) {
+			expect(reply.success).toBe(true);
+			expect(reply.contentItems[0].text).not.toMatch(/runtime-observation|attemptId|receiptId|durationMs/);
+			expect(reply.contentItems[0].text).not.toContain(receiptId);
+		}
+		expect(fixture.broker.execute).toHaveBeenCalledTimes(1);
+		expect(fixture.operationControl.beginToolOperation).toHaveBeenCalledTimes(1);
+		expect(fixture.operationControl.completeToolOperation).toHaveBeenCalledTimes(1);
+		expect(
+			fixture.pathControl.call.mock.calls.filter(
+				([method]) => method === "qorpera_assert_native_connector_operation",
+			),
+		).toHaveLength(4);
+		expect(Object.keys(fixture.broker.execute.mock.calls[0][0]).sort()).toEqual([
+			"adapterSha256",
+			"arguments",
+			"binding",
+			"connectorId",
+			"destinationOrigin",
+			"grantId",
+			"idempotencyKey",
+			"inputSha256",
+			"operationId",
+			"operationVersion",
+			"receiptId",
+		]);
+		expect(JSON.stringify(observed.rows)).not.toMatch(/Login is broken|ISS-41|api\.linear|issue-login/);
+		expect(JSON.stringify(observed.rows)).not.toContain(fixture.grantId);
+	} finally {
+		observed.boundary.close();
+	}
+});
+
+it.each([false, true])("ignores broker-claimed receipt/outcome metadata (completion lost=%s)", async (lost) => {
+	const fixture = await setup();
+	const forgedReceiptId = randomUUID();
+	fixture.broker.execute.mockResolvedValueOnce({
+		kind: "json",
+		value: { receiptId: forgedReceiptId, status: "proposed", proposalId: randomUUID() },
+	});
+	if (lost)
+		vi.mocked(fixture.operationControl.completeToolOperation).mockRejectedValueOnce(
+			new Error("PRIVATE_LOST_COMPLETION"),
+		);
+	const observed = observedBoundary(fixture);
+	try {
+		for (const callId of ["call_first", "call_retry"]) {
+			const reply = await observed.invoke(callId);
+			expect(reply.success).toBe(!lost);
+			if (lost) expect(reply.contentItems[0].text).not.toContain("PRIVATE");
+		}
+		await observed.observability.close();
+		const effects = observed.rows.filter((row) => row.operation === "connector" && row.phase === "finish");
+		const receiptId = vi.mocked(fixture.operationControl.beginToolOperation).mock.calls[0][1].receiptId;
+		expect(effects.map((row) => row.status)).toEqual(
+			lost ? ["unconfirmed", "unconfirmed"] : ["succeeded", "replayed"],
+		);
+		for (const row of effects) expect(row.receiptId).toBe(receiptId);
+		expect(JSON.stringify(observed.rows)).not.toContain(forgedReceiptId);
+		expect(fixture.broker.execute).toHaveBeenCalledTimes(1);
+		expect(fixture.operationControl.completeToolOperation).toHaveBeenCalledTimes(1);
+	} finally {
+		observed.boundary.close();
+	}
+});
+
+it("records completed and replayed effects separately from a late grant-release denial", async () => {
+	const fixture = await setup();
+	const complete = vi.mocked(fixture.operationControl.completeToolOperation).getMockImplementation()!;
+	vi.mocked(fixture.operationControl.completeToolOperation).mockImplementationOnce(async (...args) => {
+		const result = await complete(...args);
+		fixture.revoke();
+		return result;
+	});
+	const observed = observedBoundary(fixture);
+	try {
+		for (const callId of ["call_first", "call_retry"]) {
+			const reply = await observed.invoke(callId);
+			expect(reply.success).toBe(false);
+			expect(reply.contentItems[0].text).toContain("TOOL_OUTCOME_UNCONFIRMED");
+			expect(reply.contentItems[0].text).not.toMatch(/ISS-41|PRIVATE_GRANT_REVOKED/);
+		}
+		await observed.observability.close();
+		const effects = observed.rows.filter((row) => row.operation === "connector" && row.phase === "finish");
+		expect(effects.map((row) => row.status)).toEqual(["succeeded", "replayed"]);
+		for (const effect of effects)
+			expect(observed.rows).toContainEqual(
+				expect.objectContaining({
+					operation: "context_authority",
+					phase: "finish",
+					parentAttemptId: effect.attemptId,
+					status: "denied",
+					errorCategory: "authority_unavailable",
+				}),
+			);
+		expect(fixture.broker.execute).toHaveBeenCalledTimes(1);
+		expect(fixture.operationControl.completeToolOperation).toHaveBeenCalledTimes(1);
+	} finally {
+		observed.boundary.close();
+	}
 });

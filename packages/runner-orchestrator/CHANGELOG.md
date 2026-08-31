@@ -15,6 +15,7 @@
 - Added a signed-image-gated, static-address management VM provisioner with no LXD authority.
 - Added nested OCI runner-image provenance binding for the immutable image reference, private archive, and retained keyless Cosign bundle.
 - Added an opt-in governed Company File guest lane with a pinned native binary, independent object-gateway credential, exact expanded LXD device/configuration checks, and durable per-run recovery volumes. It rejects unexpected company mounts, altered identities and empty-volume replacement after execution starts.
+- Added an authenticated node-observation endpoint with CPU, memory and provider-filesystem capacity, per-sample freshness and explicit unavailable/stale states. Structured provider failure logs exclude request bodies and raw backend errors; measurements do not substitute for allocation authority.
 
 ### Changed
 

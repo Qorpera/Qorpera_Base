@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
+import {
+	type CloudRuntimeObservability,
+	type CloudRuntimeObservationSpan,
+	type CloudRuntimeOperation,
+	cloudRuntimeErrorCategory,
+	cloudRuntimeOperationHash,
+} from "./cloud-runtime-observability.ts";
 
 export const CLOUD_TOOL_RESULT_SCHEMA = "qorpera.cloud-tool-result/v1";
 export const MAX_CLOUD_TOOL_RESULT_BYTES = 8 * 1024;
@@ -25,6 +32,8 @@ export interface CloudToolContext {
 	readonly argumentSha256: string;
 	readonly signal: AbortSignal;
 	readonly identity?: CloudNativeToolIdentity;
+	/** Private host metadata channel; never serialized as tool input or result. */
+	readonly observation?: CloudRuntimeObservationSpan;
 }
 
 export interface CloudNativeTool {
@@ -155,11 +164,15 @@ export class CloudNativeToolBoundary {
 	readonly #companyId: string;
 	readonly #runId: string;
 	readonly #identity?: CloudNativeToolIdentity;
+	readonly #observability?: CloudRuntimeObservability;
 	readonly #tools = new Map<string, CloudNativeTool>();
 	readonly #assertActive: (signal: AbortSignal) => Promise<void>;
 	readonly #stop = new AbortController();
 	readonly #signal: AbortSignal;
-	readonly #calls = new Map<string, { digest: string; result: Promise<CloudDynamicToolResponse> }>();
+	readonly #calls = new Map<
+		string,
+		{ digest: string; result: Promise<CloudDynamicToolResponse>; observation?: CloudRuntimeObservationSpan }
+	>();
 	readonly #issuedResults = new Set<string>();
 	readonly #nativeResults = new Map<string, { digest: string; output: string }>();
 	#pending: Promise<void> = Promise.resolve();
@@ -171,6 +184,7 @@ export class CloudNativeToolBoundary {
 		assertActive: (signal: AbortSignal) => Promise<void>;
 		signal: AbortSignal;
 		identity?: CloudNativeToolIdentity;
+		observability?: CloudRuntimeObservability;
 	}) {
 		if (!UUID.test(options.companyId) || !UUID.test(options.runId) || options.tools.length > 32) {
 			throw new Error("Invalid cloud tool boundary");
@@ -183,6 +197,7 @@ export class CloudNativeToolBoundary {
 		)
 			throw new Error("Cloud tool identity does not match its boundary");
 		this.#identity = options.identity ? Object.freeze({ ...options.identity }) : undefined;
+		this.#observability = options.observability;
 		this.#assertActive = options.assertActive;
 		this.#signal = AbortSignal.any([options.signal, this.#stop.signal]);
 		for (const tool of options.tools) {
@@ -285,6 +300,64 @@ export class CloudNativeToolBoundary {
 		name: string,
 		argumentsValue: unknown,
 	): Promise<CloudDynamicToolResponse> {
+		const tool = namespace === "qorpera" ? this.#tools.get(name) : undefined;
+		const operation: CloudRuntimeOperation =
+			tool?.source === "connector"
+				? "connector"
+				: ((
+						[
+							"company_read",
+							"company_list",
+							"company_write",
+							"company_mkdir",
+							"company_delete",
+							"company_context",
+							"send_message",
+						] as const
+					).find((value) => tool?.name === value) ?? "unknown_tool");
+		const observation = this.#observability?.start(operation, {
+			logicalOperationSha256: cloudRuntimeOperationHash(
+				this.#runId,
+				operation,
+				CALL_ID.test(callId) ? callId : "invalid-call-id",
+			),
+		});
+		try {
+			const response = await this.#invoke(callId, namespace, name, argumentsValue, observation);
+			// Only this host can construct the envelope. Do not collect its content.
+			const envelope = JSON.parse(response.contentItems[0].text) as CloudToolResult;
+			if (envelope.status === "ok") {
+				// Execution normally finished its own span before the release guard.
+				observation?.finish("unconfirmed", { errorCategory: "unknown" });
+			} else {
+				const categories = {
+					INVALID_ARGUMENTS: "invalid_arguments",
+					TOOL_UNAVAILABLE: "unavailable_tool",
+					CALL_ID_REUSED: "call_id_reused",
+					TOOL_BUDGET_EXHAUSTED: "budget_exhausted",
+					AUTHORITY_UNAVAILABLE: "authority_unavailable",
+				} as const;
+				observation?.finish(envelope.status, {
+					errorCategory:
+						envelope.status === "denied"
+							? (categories[envelope.content.text as keyof typeof categories] ?? "unknown")
+							: "ambiguous_effect",
+				});
+			}
+			return response;
+		} catch (error) {
+			observation?.finish("unconfirmed", { errorCategory: cloudRuntimeErrorCategory(error, this.#signal) });
+			throw error;
+		}
+	}
+
+	async #invoke(
+		callId: string,
+		namespace: string | null,
+		name: string,
+		argumentsValue: unknown,
+		observation?: CloudRuntimeObservationSpan,
+	): Promise<CloudDynamicToolResponse> {
 		if (!CALL_ID.test(callId)) throw new Error("Invalid cloud tool call id");
 		const tool = namespace === "qorpera" ? this.#tools.get(name) : undefined;
 		let argumentsText: string;
@@ -305,22 +378,44 @@ export class CloudNativeToolBoundary {
 		if (!previous && this.#calls.size >= MAX_CALLS) {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "TOOL_BUDGET_EXHAUSTED" });
 		}
-		const result = previous?.result ?? this.#pending.then(() => this.#execute(callId, tool, digest, argumentsText));
+		const result =
+			previous?.result ?? this.#pending.then(() => this.#execute(callId, tool, digest, argumentsText, observation));
 		if (!previous) {
-			this.#calls.set(callId, { digest, result });
+			this.#calls.set(callId, { digest, result, observation });
 			this.#pending = result.then(
 				() => undefined,
 				() => undefined,
 			);
 		}
 		const reply = await result;
+		const prior = previous?.observation?.result;
+		if (prior && prior.status !== "started")
+			observation?.finish(prior.status === "succeeded" ? "replayed" : prior.status, {
+				errorCategory: prior.errorCategory,
+				receiptId: prior.receiptId,
+				readId: prior.readId,
+				inputBytes: prior.inputBytes,
+				outputBytes: prior.outputBytes,
+				inputTokens: prior.inputTokens,
+				outputTokens: prior.outputTokens,
+				cachedInputTokens: prior.cachedInputTokens,
+				cacheWriteInputTokens: prior.cacheWriteInputTokens,
+				reasoningOutputTokens: prior.reasoningOutputTokens,
+				totalTokens: prior.totalTokens,
+			});
+		const release = this.#observability?.start(
+			"context_authority",
+			observation ? { parentAttemptId: observation.attemptId } : {},
+		);
 		// A cached result is not authority to release data after revocation.
 		try {
 			this.#signal.throwIfAborted();
 			await untilStopped(() => this.#assertActive(this.#signal), this.#signal);
 			this.#signal.throwIfAborted();
+			release?.finish("succeeded");
 			return reply;
 		} catch {
+			release?.finish("denied", { errorCategory: "authority_unavailable" });
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
 	}
@@ -330,12 +425,14 @@ export class CloudNativeToolBoundary {
 		tool: CloudNativeTool,
 		digest: string,
 		argumentsText: string,
+		observation?: CloudRuntimeObservationSpan,
 	): Promise<CloudDynamicToolResponse> {
 		let parsed: JsonValue;
 		try {
 			parsed = tool.parseArguments(JSON.parse(argumentsText) as JsonValue);
 			if (Buffer.byteLength(cloudToolJsonText(parsed)) > MAX_ARGUMENT_BYTES)
 				throw new Error("Oversized parsed arguments");
+			if (tool.source !== "company_file") observation?.update({ inputBytes: Buffer.byteLength(argumentsText) });
 		} catch {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "INVALID_ARGUMENTS" });
 		}
@@ -356,11 +453,30 @@ export class CloudNativeToolBoundary {
 						argumentSha256: digest,
 						signal: this.#signal,
 						...(this.#identity ? { identity: this.#identity } : {}),
+						...(observation ? { observation } : {}),
 					}),
 				this.#signal,
 			);
-			return this.#result(callId, tool, digest, "ok", content);
-		} catch {
+			const response = this.#result(callId, tool, digest, "ok", content);
+			if (tool.source !== "company_file")
+				observation?.update({
+					outputBytes: (JSON.parse(response.contentItems[0].text) as CloudToolResult).content.originalBytes,
+				});
+			// Classify the host adapter's complete value, never a truncated rendered
+			// envelope, and finish execution before testing permission to release it.
+			const proposed =
+				tool.source === "company_file" &&
+				["company_write", "company_mkdir", "company_delete"].includes(tool.name) &&
+				content.kind === "json" &&
+				content.value !== null &&
+				typeof content.value === "object" &&
+				!Array.isArray(content.value) &&
+				content.value.schema === "qorpera.company-path-result/v1" &&
+				content.value.state === "proposed";
+			observation?.finish(proposed ? "proposed" : "succeeded", proposed ? { errorCategory: "protected_path" } : {});
+			return response;
+		} catch (error) {
+			observation?.finish("unconfirmed", { errorCategory: cloudRuntimeErrorCategory(error, this.#signal) });
 			// A thrown adapter error may follow a completed effect. Never echo it or automatically rerun the call.
 			return this.#result(callId, tool, digest, "unconfirmed", { kind: "text", value: "TOOL_OUTCOME_UNCONFIRMED" });
 		}

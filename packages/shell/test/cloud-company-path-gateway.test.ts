@@ -13,11 +13,12 @@ import {
 import type { CloudCompanyTreeEntry } from "../src/cloud-company-snapshot.ts";
 import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 /** Only wire/storage orchestration is simulated here. SQL 290 exercises the
  * actual membership, native lease, path policy and transaction boundaries. */
-function fixture() {
+function fixture(observability?: CloudRuntimeObservability) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const identity = authority.identity;
 	const objects = new Map<string, Uint8Array>();
@@ -161,6 +162,7 @@ function fixture() {
 		tools: gateway.tools(),
 		assertActive: (signal) => gateway.assertReadableContext(signal),
 		signal,
+		observability,
 	});
 	return {
 		binding,
@@ -506,6 +508,53 @@ describe("cloud Company File path gateway", () => {
 		expect(f.call.mock.calls.map(([method]) => method)).toEqual(["qorpera_check_company_path_mutation"]);
 		expect(f.transport.put).not.toHaveBeenCalled();
 	});
+
+	it.each(["preflight", "preparation", "proposal", "lost-response"])(
+		"retains canonical %s replay metadata across new native call IDs",
+		async (mode) => {
+			const rows: CloudRuntimeObservation[] = [];
+			const observability = new CloudRuntimeObservability({
+				assignmentId: null,
+				publish: async (row) => {
+					rows.push(row);
+				},
+			});
+			const f = fixture(observability);
+			if (mode === "lost-response")
+				f.overrides.set("qorpera_commit_company_path_mutation", async (args) => {
+					await f.defaultCall("qorpera_commit_company_path_mutation", args);
+					throw new Error("PRIVATE_LOST_RESPONSE");
+				});
+			const input = {
+				path: mode === "proposal" ? "AGENTS.md" : "PRIVATE_PATH",
+				operationKey: "PRIVATE_WORK_KEY",
+				expectedVersion: null,
+				text: "PRIVATE_WRITE_TEXT",
+			};
+			const first = await f.boundary.invoke("first-call", "qorpera", "company_write", input);
+			expect(first.success).toBe(mode !== "lost-response");
+			if (mode === "preparation")
+				f.overrides.set("qorpera_check_company_path_mutation", async () => ({ state: "ready" }));
+			const replay = await f.boundary.invoke("new-call-id", "qorpera", "company_write", input);
+			expect(replay.success).toBe(true);
+			await observability.close();
+			f.boundary.close();
+			const finishes = rows.filter((row) => row.operation === "company_write" && row.phase === "finish");
+			expect(finishes.map((row) => row.status)).toEqual([
+				mode === "lost-response" ? "unconfirmed" : mode === "proposal" ? "proposed" : "succeeded",
+				mode === "proposal" ? "proposed" : "replayed",
+			]);
+			expect(finishes[1].receiptId).toBe(
+				(f.receipts.get(input.operationKey) as Record<string, JsonValue>).receiptId,
+			);
+			if (mode !== "lost-response") expect(finishes[0].receiptId).toBe(finishes[1].receiptId);
+			expect(finishes[0].attemptId).not.toBe(finishes[1].attemptId);
+			expect(f.call.mock.calls.filter(([method]) => method === "qorpera_commit_company_path_mutation")).toHaveLength(
+				1,
+			);
+			expect(JSON.stringify(rows)).not.toMatch(/PRIVATE_|AGENTS\.md/);
+		},
+	);
 
 	it("rebuilds after an explicit head conflict without weakening the target version", async () => {
 		const f = fixture();

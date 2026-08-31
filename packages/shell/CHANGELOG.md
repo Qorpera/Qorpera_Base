@@ -25,6 +25,7 @@
 - Added company-centered cloud secret custody with immutable envelope versions, company/member ownership, operation grants, one-time direct capture, effect-time receipt checks, a separately packaged broker, typed connector tools, and reflected-secret result fencing. Governed runtimes have no local or plaintext fallback.
 - Added generated implementation/native bundle hashes, immutable low-effort admission, and private launch records for the exact offered tool catalog and initial-context digest. Packaging rejects stale generated pins.
 - Added private Company File read observations and confirmations with exact versions, immutable content references and ranges, plus durable provider-view and compaction ancestry. Live permission and write-conflict checks remain authoritative; audit records contain no file contents or credentials.
+- Added private, bounded operational observations for native turns, tools and authority checks, linked to canonical runs, assignments, Company File reads and effect receipts. Operator queries distinguish diagnostics from durable outcomes, preserve unknown counters and expose missing observations; optional export cannot retry or block product work.
 
 ### Fixed
 

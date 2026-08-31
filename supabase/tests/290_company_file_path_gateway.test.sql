@@ -302,7 +302,7 @@ begin
 		set local role authenticated;
 		foreach v_hash in array array[v_file ->> 'manifestSha256',v_file ->> 'fileSha256'] loop
 			v_result := public.qorpera_authorize_member_company_path_object(v_environment,'note.md',v_version,v_hash);
-			if v_result ->> 'schema' <> 'qorpera.member-company-object/v1'
+			if v_result ->> 'schema' <> 'qorpera.member-company-object/v2'
 				or v_result ->> 'companyId' <> '29000000-0000-4000-8000-000000000010'
 				or v_result ->> 'environmentId' <> v_environment::text or v_result ->> 'version' <> v_version::text
 				or v_result ->> 'path' <> 'note.md' or v_result ->> 'sha256' <> v_hash then

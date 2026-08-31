@@ -18,6 +18,7 @@ import {
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
 } from "./cloud-native-tool-operations.ts";
+import { type CloudRuntimeObservability, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 
 /**
  * Experimental native-host entrypoint. Uses the cloud's admitted identity and
@@ -51,22 +52,41 @@ export async function runCloudNativeRunToolSession(options: {
 	isolation?: NativeIsolationConfiguration;
 	signal: AbortSignal;
 	timeoutMs?: number;
+	observability?: CloudRuntimeObservability;
 }): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
-	const run = await CloudNativeToolRun.open(options.binding, options.controlPlane, options.signal);
+	const admission = options.observability?.start("run_authority");
+	let run: CloudNativeToolRun;
+	try {
+		run = await CloudNativeToolRun.open(options.binding, options.controlPlane, options.signal);
+		admission?.finish("succeeded");
+	} catch (error) {
+		admission?.finish("denied", {
+			errorCategory: options.signal.aborted
+				? cloudRuntimeErrorCategory(error, options.signal)
+				: "authority_unavailable",
+		});
+		throw error;
+	}
 	let boundary: CloudNativeToolBoundary | undefined;
 	try {
 		const adapters = options.tools(run.identity, new CloudNativeToolOperations(run, options.controlPlane));
 		const assertActive = async (signal: AbortSignal): Promise<void> => {
+			const observation = options.observability?.start("context_authority");
 			try {
 				await run.assertActive(signal);
 				await cloudToolRequest((requestSignal) => adapters.assertContext(requestSignal), signal);
-			} catch {
+				observation?.finish("succeeded");
+			} catch (error) {
+				observation?.finish("denied", {
+					errorCategory: signal.aborted ? cloudRuntimeErrorCategory(error, signal) : "authority_unavailable",
+				});
 				run.close();
 				throw new Error("Cloud context authority unavailable");
 			}
 		};
 		await assertActive(run.signal);
 		boundary = new CloudNativeToolBoundary({
+			observability: options.observability,
 			companyId: run.identity.companyId,
 			runId: run.identity.runId,
 			identity: run.identity,
@@ -75,6 +95,7 @@ export async function runCloudNativeRunToolSession(options: {
 			signal: run.signal,
 		});
 		return await runCloudCodexToolSession({
+			observability: options.observability,
 			command: options.command,
 			binarySha256: options.binarySha256,
 			boundary,

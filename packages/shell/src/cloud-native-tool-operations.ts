@@ -8,6 +8,7 @@ import {
 } from "./cloud-native-tool-authority.ts";
 import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
+import { type CloudRuntimeObservationSpan, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 
 const OPERATION_SCHEMA = "qorpera.cloud-tool-operation/v1";
 const RESULT_SCHEMA = "qorpera.cloud-tool-operation-result/v1";
@@ -43,6 +44,12 @@ export interface CloudNativeToolOperationOutput {
 	proposalId?: string;
 }
 
+interface ConfirmedOperationResult {
+	content: CloudToolContent;
+	receiptId: string;
+	outcome: "succeeded" | "proposed" | "replayed";
+}
+
 function record(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid tool operation receipt");
 	return value as Record<string, unknown>;
@@ -63,7 +70,10 @@ function freeze(value: JsonValue): void {
 export class CloudNativeToolOperations {
 	readonly #run: CloudNativeToolRun;
 	readonly #control: CloudNativeToolOperationControlPlane;
-	readonly #operations = new Map<string, { digest: string; result: Promise<CloudToolContent> }>();
+	readonly #operations = new Map<
+		string,
+		{ digest: string; result: Promise<ConfirmedOperationResult>; receipt: { id: string | null } }
+	>();
 	#pending: Promise<void> = Promise.resolve();
 
 	constructor(run: CloudNativeToolRun, control: CloudNativeToolOperationControlPlane) {
@@ -91,6 +101,7 @@ export class CloudNativeToolOperations {
 			},
 		) => Promise<CloudNativeToolOperationOutput>;
 		signal: AbortSignal;
+		observation?: CloudRuntimeObservationSpan;
 	}): Promise<CloudToolContent> {
 		const signal = AbortSignal.any([options.signal, this.#run.signal]);
 		const { authorize, perform } = options;
@@ -122,9 +133,11 @@ export class CloudNativeToolOperations {
 		const previous = this.#operations.get(key);
 		if (previous && previous.digest !== digest) throw new Error("Cloud tool operation key is bound to other work");
 		if (!previous && this.#operations.size >= 128) throw new Error("Cloud tool operation budget exhausted");
+		// Private canonical metadata survives an absent/failed exporter and does not admit work.
+		const receipt = previous?.receipt ?? { id: null };
 		const result =
 			previous?.result ??
-			this.#pending.then(async () => {
+			this.#pending.then(async (): Promise<ConfirmedOperationResult> => {
 				await this.#run.assertActive(signal);
 				await cloudToolRequest((requestSignal) => authorize(operation, this.#run.identity, requestSignal), signal);
 				const receiptId = randomUUID();
@@ -184,7 +197,22 @@ export class CloudNativeToolOperations {
 					)
 						throw new Error("Invalid cloud tool receipt content");
 					cloudToolJsonText(content, 48 * 1024);
-					return structuredClone(content) as unknown as CloudToolContent;
+					receipt.id = begun.receipt_id;
+					return {
+						content: structuredClone(content) as unknown as CloudToolContent,
+						receiptId: begun.receipt_id,
+						outcome: begun.proposal_id ? "proposed" : "replayed",
+					};
+				}
+				if (
+					["executing", "ambiguous", "cancelled"].includes(begun.state as string) &&
+					begun.result == null &&
+					begun.output_snapshot_id == null &&
+					begun.proposal_id == null
+				) {
+					// Retain a validated fence even when it forbids another effect. Never use a broker payload ID.
+					receipt.id = begun.receipt_id;
+					options.observation?.update({ receiptId: receipt.id });
 				}
 				if (
 					begun.state !== "executing" ||
@@ -254,21 +282,44 @@ export class CloudNativeToolOperations {
 					cloudToolJsonText(completed.result) !== cloudToolJsonText(storedResult)
 				)
 					throw new Error("Cloud tool completion was not confirmed");
-				return structuredClone(record(storedResult).content) as CloudToolContent;
+				return {
+					content: structuredClone(record(storedResult).content) as CloudToolContent,
+					receiptId: completed.receipt_id,
+					// The canonical completion confirms the submitted, run-owned revision/proposal link.
+					outcome: proposalId ? "proposed" : "succeeded",
+				};
 			});
 		if (!previous) {
-			this.#operations.set(key, { digest, result });
+			this.#operations.set(key, { digest, result, receipt });
 			this.#pending = result.then(
 				() => undefined,
 				() => undefined,
 			);
 		}
 		try {
-			const content = await result;
-			await this.#run.assertActive(signal);
-			await cloudToolRequest((requestSignal) => authorize(operation, this.#run.identity, requestSignal), signal);
-			return structuredClone(content);
-		} catch {
+			const confirmed = await result;
+			options.observation?.finish(previous && confirmed.outcome === "succeeded" ? "replayed" : confirmed.outcome, {
+				receiptId: confirmed.receiptId,
+				outputBytes: Buffer.byteLength(
+					confirmed.content.kind === "text" ? confirmed.content.value : cloudToolJsonText(confirmed.content.value),
+				),
+			});
+			// A denied release cannot undo a confirmed effect or turn a replay into another successful effect.
+			const release = options.observation?.child("context_authority");
+			try {
+				await this.#run.assertActive(signal);
+				await cloudToolRequest((requestSignal) => authorize(operation, this.#run.identity, requestSignal), signal);
+				release?.finish("succeeded");
+			} catch (error) {
+				release?.finish("denied", { errorCategory: "authority_unavailable" });
+				throw error;
+			}
+			return structuredClone(confirmed.content);
+		} catch (error) {
+			options.observation?.finish("unconfirmed", {
+				receiptId: receipt.id,
+				errorCategory: receipt.id ? "ambiguous_effect" : cloudRuntimeErrorCategory(error, signal),
+			});
 			throw new Error("Cloud tool operation outcome unconfirmed");
 		}
 	}

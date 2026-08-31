@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { runCloudNativeRunToolSession } from "../src/cloud-native-run-tool-session.ts";
 import type { CloudNativeTool, CloudToolResult } from "../src/cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "../src/cloud-native-tool-operations.ts";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
@@ -118,13 +119,29 @@ it("does not release a provider request when durable context-view recording fail
 
 it("does not start native execution or build tools without cloud admission", async () => {
 	const f = fixture();
+	const rows: CloudRuntimeObservation[] = [];
+	const observability = new CloudRuntimeObservability({
+		assignmentId: f.binding.assignmentId,
+		publish: async (row) => {
+			rows.push(row);
+		},
+	});
 	f.control.describeToolAuthority.mockRejectedValueOnce(new Error("PRIVATE_AUTHORITY_FAILURE"));
-	await expect(f.start({ command: ["/nonexistent/native-must-not-start"] })).rejects.toThrow(
+	await expect(f.start({ observability, command: ["/nonexistent/native-must-not-start"] })).rejects.toThrow(
 		"Cloud tool authority unavailable",
 	);
+	await observability.close();
 	expect(f.tools).not.toHaveBeenCalled();
 	expect(f.execute).not.toHaveBeenCalled();
 	expect(f.beginExecution).not.toHaveBeenCalled();
+	expect(rows).toHaveLength(2);
+	expect(rows[1]).toMatchObject({
+		operation: "run_authority",
+		phase: "finish",
+		status: "denied",
+		errorCategory: "authority_unavailable",
+	});
+	expect(JSON.stringify(rows)).not.toContain("PRIVATE_AUTHORITY_FAILURE");
 });
 
 it("does not admit generation before the native artifact has been verified", async () => {

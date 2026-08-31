@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { isDeepStrictEqual } from "node:util";
 import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
 import { type MemberCompanyAuthority, MemberCompanyHeadConflict } from "./member-company-authority.ts";
+import type { MemberRequestObservationSpan } from "./member-observability.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
@@ -48,6 +49,7 @@ export interface MemberCompanyFileOptions {
 	store: FileSystemObjectStore;
 	replication: ObjectGatewayReplication;
 	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
+	observation?: MemberRequestObservationSpan;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -155,7 +157,10 @@ function command(value: unknown, environmentId: string): Command {
 	};
 }
 
-async function body(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function body(
+	request: IncomingMessage,
+	observation?: MemberRequestObservationSpan,
+): Promise<Record<string, unknown>> {
 	const length = request.headers["content-length"];
 	if (
 		!length ||
@@ -170,6 +175,7 @@ async function body(request: IncomingMessage): Promise<Record<string, unknown>> 
 		for await (const part of request) {
 			const chunk = Buffer.from(part);
 			count += chunk.length;
+			observation?.update({ requestBodyBytes: count });
 			if (count > Number(length)) throw new ObjectDependencyError(413);
 			chunks.push(chunk);
 		}
@@ -182,9 +188,11 @@ async function body(request: IncomingMessage): Promise<Record<string, unknown>> 
 	});
 }
 
-function json(response: ServerResponse, value: unknown): void {
+function json(response: ServerResponse, value: unknown, observation?: MemberRequestObservationSpan): void {
+	const encoded = JSON.stringify(value);
+	observation?.update({ responseBodyBytes: Buffer.byteLength(encoded) });
 	response.writeHead(200, { "content-type": "application/json", "cache-control": "private, no-store" });
-	response.end(JSON.stringify(value));
+	response.end(encoded);
 }
 
 /** This route accepts human intent only. Whole tree metadata and service
@@ -224,7 +232,9 @@ export async function serveMemberCompanyFile(
 			if (proposal.proposalId !== target) throw new ObjectDependencyError(503);
 			const proposalPlan = plan(proposal.plan);
 			const digest = hash(proposal.planSha256);
+			options.observation?.update({ proposalId: target, environmentId });
 			if (request.method === "GET" && match[4] === "content") {
+				options.observation?.operation("proposal_content");
 				if (proposalPlan.entry?.kind !== "file" || proposalPlan.entry.file.bytes > 32 * 1024)
 					throw new ObjectDependencyError(400);
 				const file = proposalPlan.entry.file;
@@ -243,6 +253,7 @@ export async function serveMemberCompanyFile(
 					if (access.sha256 !== file.fileSha256 || access.bytes !== file.bytes)
 						throw new ObjectDependencyError(503);
 					const companyId = id(access.companyId);
+					options.observation?.update({ companyId });
 					try {
 						bytes = await options.store.get(companyId, file.fileSha256, file.bytes);
 					} catch (error) {
@@ -262,16 +273,22 @@ export async function serveMemberCompanyFile(
 					!isDeepStrictEqual(await describe(), proposal)
 				)
 					throw new ObjectDependencyError(409);
+				options.observation?.update({ logicalObjectReadBytes: bytes.length });
 				signal.throwIfAborted();
-				json(response, {
-					proposalId: target,
-					planSha256: digest,
-					text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-				});
+				json(
+					response,
+					{
+						proposalId: target,
+						planSha256: digest,
+						text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+					},
+					options.observation,
+				);
 				return;
 			}
 			if (request.method !== "POST" || match[4] !== "review") throw new ObjectDependencyError(405);
-			const input = await body(request);
+			options.observation?.operation("proposal_review");
+			const input = await body(request, options.observation);
 			exact(input, ["planSha256", "decision"]);
 			if (input.planSha256 !== digest || !["approve", "reject", "skip"].includes(String(input.decision)))
 				throw new ObjectDependencyError(400);
@@ -284,7 +301,8 @@ export async function serveMemberCompanyFile(
 				),
 			);
 			if (reviewed.state === "approved") await applyProposal(options, environmentId, target, digest, signal);
-			json(response, await describe());
+			else if (["rejected", "withdrawn"].includes(String(reviewed.state))) options.observation?.effect("rejected");
+			json(response, await describe(), options.observation);
 			return;
 		}
 		if (match[2] !== "edits") throw new ObjectDependencyError(404);
@@ -295,11 +313,18 @@ export async function serveMemberCompanyFile(
 				environmentId,
 			);
 			if (current.commandId !== target) throw new ObjectDependencyError(503);
+			options.observation?.update({
+				commandId: current.commandId,
+				companyId: current.companyId,
+				environmentId: current.environmentId,
+			});
 			if (request.method === "GET" && !match[4]) {
-				json(response, current);
+				options.observation?.operation("command_status");
+				json(response, current, options.observation);
 				return;
 			}
 			if (request.method === "GET" && match[4] === "content") {
+				options.observation?.operation("command_content");
 				if (
 					!["ready", "review_required", "approved"].includes(current.state) ||
 					Date.parse(current.expiresAt) <= Date.now() ||
@@ -355,16 +380,22 @@ export async function serveMemberCompanyFile(
 					Date.parse(latest.expiresAt) <= Date.now()
 				)
 					throw new ObjectDependencyError(409);
+				options.observation?.update({ logicalObjectReadBytes: bytes.length });
 				signal.throwIfAborted();
-				json(response, {
-					commandId: target,
-					planSha256: current.planSha256,
-					text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-				});
+				json(
+					response,
+					{
+						commandId: target,
+						planSha256: current.planSha256,
+						text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+					},
+					options.observation,
+				);
 				return;
 			}
 			if (request.method !== "POST" || match[4] !== "review") throw new ObjectDependencyError(405);
-			const input = await body(request);
+			options.observation?.operation("command_review");
+			const input = await body(request, options.observation);
 			exact(input, ["planSha256", "decision"]);
 			if (input.planSha256 !== current.planSha256 || !["approve", "reject", "skip"].includes(String(input.decision)))
 				throw new ObjectDependencyError(400);
@@ -384,7 +415,8 @@ export async function serveMemberCompanyFile(
 			}
 		} else {
 			if (request.method !== "POST" || match[4]) throw new ObjectDependencyError(405);
-			const input = await body(request);
+			options.observation?.operation("command_submit");
+			const input = await body(request, options.observation);
 			exact(input, [
 				"operation",
 				"operationKey",
@@ -404,6 +436,7 @@ export async function serveMemberCompanyFile(
 				)
 					throw new ObjectDependencyError(400);
 				bytes = Buffer.from(input.text);
+				options.observation?.update({ logicalWriteInputBytes: bytes.length });
 				const sha = createHash("sha256").update(bytes).digest("hex");
 				manifest = Buffer.from(
 					JSON.stringify({
@@ -445,6 +478,14 @@ export async function serveMemberCompanyFile(
 				environmentId,
 			);
 			if (!isDeepStrictEqual(current.plan, intended)) throw new ObjectDependencyError(503);
+			options.observation?.update({
+				commandId: current.commandId,
+				companyId: current.companyId,
+				environmentId: current.environmentId,
+			});
+			if (current.state === "review_required") options.observation?.effect("proposed");
+			else if (current.state === "applied") options.observation?.effect("replayed");
+			else if (current.state === "rejected") options.observation?.effect("rejected");
 			if (current.state !== "applied" && current.state !== "rejected" && bytes && manifest) {
 				if (bytes.length) await stage(options, current, bytes, false, signal);
 				await stage(options, current, manifest, false, signal);
@@ -455,6 +496,9 @@ export async function serveMemberCompanyFile(
 				);
 			}
 		}
+		if (current.state === "review_required") options.observation?.effect("proposed");
+		else if (current.state === "applied") options.observation?.effect("replayed");
+		else if (current.state === "rejected") options.observation?.effect("rejected");
 		if (current.state === "ready" || current.state === "approved")
 			current = await applyCommand(options, current, signal);
 		const visible = command(
@@ -473,7 +517,7 @@ export async function serveMemberCompanyFile(
 		)
 			throw new ObjectDependencyError(503);
 		signal.throwIfAborted();
-		json(response, visible);
+		json(response, visible, options.observation);
 	} finally {
 		clearTimeout(timer);
 	}
@@ -586,7 +630,10 @@ async function applyCommand(
 			!isDeepStrictEqual(current.plan, initial.plan)
 		)
 			throw new ObjectDependencyError(503);
-		if (current.state === "applied") return current;
+		if (current.state === "applied") {
+			options.observation?.effect("replayed");
+			return current;
+		}
 		if (current.state !== "ready" && current.state !== "approved") throw new ObjectDependencyError(403);
 		const bytes = candidate(prepared.entries, current.plan);
 		const sha = await stage(options, current, bytes, true, signal);
@@ -600,6 +647,7 @@ async function applyCommand(
 			throw new ObjectDependencyError(503);
 		try {
 			const document = await organizationDocument(options, current.companyId, current.plan);
+			options.observation?.effect("unconfirmed");
 			const applied = command(
 				await options.authority.publisher(
 					"qorpera_apply_member_company_path_command_v3",
@@ -621,9 +669,11 @@ async function applyCommand(
 				!isDeepStrictEqual(applied.plan, initial.plan)
 			)
 				throw new ObjectDependencyError(503);
+			options.observation?.effect("applied");
 			return applied;
 		} catch (error) {
 			if (!(error instanceof MemberCompanyHeadConflict) || attempt === 3) throw error;
+			options.observation?.effect("none");
 		}
 	}
 	throw new ObjectDependencyError(409);
@@ -640,9 +690,13 @@ async function applyProposal(
 	for (let attempt = 0; attempt < 4; attempt++) {
 		const prepared = object(await options.authority.publisher("qorpera_prepare_company_path_approval", args, signal));
 		if (prepared.environmentId !== environmentId) throw new ObjectDependencyError(403);
-		if (prepared.state === "applied") return;
+		if (prepared.state === "applied") {
+			options.observation?.effect("replayed");
+			return;
+		}
 		if (prepared.state !== "approved") throw new ObjectDependencyError(403);
 		const companyId = id(prepared.companyId);
+		options.observation?.update({ companyId });
 		const bytes = candidate(prepared.entries, plan(prepared.plan));
 		const sha = createHash("sha256").update(bytes).digest("hex");
 		const check = async (confirm: boolean): Promise<void> => {
@@ -672,6 +726,7 @@ async function applyProposal(
 			throw new ObjectDependencyError(503);
 		try {
 			const document = await organizationDocument(options, companyId, plan(prepared.plan));
+			options.observation?.effect("unconfirmed");
 			const result = object(
 				await options.authority.publisher(
 					"qorpera_apply_company_path_approval_v3",
@@ -686,9 +741,11 @@ async function applyProposal(
 			);
 			if (result.state !== "applied" || result.proposalId !== proposalId) throw new ObjectDependencyError(503);
 			id(result.snapshotId);
+			options.observation?.effect("applied");
 			return;
 		} catch (error) {
 			if (!(error instanceof MemberCompanyHeadConflict) || attempt === 3) throw error;
+			options.observation?.effect("none");
 		}
 	}
 	throw new ObjectDependencyError(409);
