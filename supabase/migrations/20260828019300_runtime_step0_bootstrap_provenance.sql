@@ -1032,6 +1032,7 @@ revoke all on function public.qorpera_reject_runtime_bundle_mutation(),public.qo
 	public.qorpera_assert_session_parent_audience(),public.qorpera_pin_execution_run_audience(),
 	public.qorpera_pin_company_path_revision_provenance(),public.qorpera_company_bootstrap_document(uuid),
 	public.qorpera_company_bootstrap_agent_document(uuid),
+	public.qorpera_company_bootstrap_responsibility_documents(uuid),
 	public.qorpera_enqueue_company_bootstrap(uuid,boolean),public.qorpera_claim_company_bootstrap(uuid,integer),
 	public.qorpera_stage_company_bootstrap_object(uuid,uuid,text,text,bigint,boolean,text),
 	public.qorpera_finalize_company_bootstrap(uuid,uuid,text,text,text,text,jsonb)

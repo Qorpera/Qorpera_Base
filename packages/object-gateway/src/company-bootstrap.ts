@@ -484,7 +484,13 @@ export class CompanyBootstrapProvisioner {
 			if (responsibility.document === responsibility.jobDocument) {
 				await this.#stage(current, "cofounder_responsibility_content", responsibility.content, signal);
 			}
-			await this.#stage(current, "cofounder_responsibility_manifest", responsibility.manifest, signal, responsibility.path);
+			await this.#stage(
+				current,
+				"cofounder_responsibility_manifest",
+				responsibility.manifest,
+				signal,
+				responsibility.path,
+			);
 			await this.#options.authority.publisher(
 				"qorpera_verify_company_path_file",
 				{ p_profile_id: current.profileId, p_manifest_text: responsibility.manifest.toString("utf8") },

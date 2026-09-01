@@ -342,7 +342,9 @@ export function parseHostedCompanyOrganization(value: unknown): HostedCompanyOrg
 	}
 	const responsibilityIds = new Set(responsibilities.map((item) => item.responsibilityId));
 	if (
-		projects.some((item) => item.sponsoringResponsibilityId && !responsibilityIds.has(item.sponsoringResponsibilityId))
+		projects.some(
+			(item) => item.sponsoringResponsibilityId && !responsibilityIds.has(item.sponsoringResponsibilityId),
+		)
 	) {
 		throw new Error("Hosted primary returned a project outside its responsibility");
 	}

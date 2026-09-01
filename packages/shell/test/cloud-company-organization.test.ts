@@ -164,7 +164,11 @@ describe("canonical company organization projection", () => {
 		expect(replacement).toEqual(hierarchy);
 		expect(hierarchy.primary.map((node) => node.kind)).toEqual(["cofounder", "responsibility"]);
 		expect(hierarchy.primary[1]?.children.map((node) => node.kind)).toEqual(["project", "agent"]);
-		expect(hierarchy.primary[1]?.children[1]).toMatchObject({ kind: "agent", canonicalId: LEAD, role: "Accountable" });
+		expect(hierarchy.primary[1]?.children[1]).toMatchObject({
+			kind: "agent",
+			canonicalId: LEAD,
+			role: "Accountable",
+		});
 		expect(hierarchy.primary[1]?.children[0]?.children.map((node) => node.kind)).toEqual(["room", "agent"]);
 		expect(hierarchy.primary[1]?.children[0]?.children[1]).toMatchObject({
 			kind: "agent",
