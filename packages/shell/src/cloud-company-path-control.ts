@@ -33,6 +33,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 	call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		const permitted: readonly CloudCompanyPathRpc[] = [
 			"qorpera_record_runtime_observation",
+			"qorpera_record_provider_usage_signal",
 			"qorpera_begin_native_company_execution_v2",
 			"qorpera_describe_company_run_context",
 			"qorpera_list_native_connector_tools",

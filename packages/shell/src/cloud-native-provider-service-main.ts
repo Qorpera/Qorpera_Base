@@ -127,6 +127,14 @@ export function nativeCompanyRuntimeConfiguration(environment: NodeJS.ProcessEnv
 	};
 }
 
+/** Per-connection concurrency policy consented at native login (contract section 17); the cloud caps it by the global provider policy. */
+function optionalConcurrency(value: string | undefined): number | undefined {
+	if (value === undefined || value === "") return undefined;
+	if (!/^[1-9][0-9]?$/.test(value) || Number(value) > 64)
+		throw new Error("QORPERA_NATIVE_CONNECTION_CONCURRENCY is invalid");
+	return Number(value);
+}
+
 export async function runNativeProviderHostServiceMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
 	const runtimeConfiguration = nativeCompanyRuntimeConfiguration(environment);
 	const baseUrl = required(environment, "QORPERA_SUPABASE_URL");
@@ -178,10 +186,13 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		(state.keySha256 !== null && state.keySha256 !== keySha256)
 	)
 		throw new Error("Native identity volume does not match current cloud recovery authority");
-	const controlPlane = new SupabaseNativeProviderControlPlane(baseUrl, serviceKey, fetch, {
-		computeIdentityId,
-		epoch: state.epoch,
-	});
+	const controlPlane = new SupabaseNativeProviderControlPlane(
+		baseUrl,
+		serviceKey,
+		fetch,
+		{ computeIdentityId, epoch: state.epoch },
+		{ connectionConcurrency: optionalConcurrency(environment.QORPERA_NATIVE_CONNECTION_CONCURRENCY) },
+	);
 	let cloudRuntime: CloudNativeCompanyRuntime | undefined;
 	if (runtimeConfiguration) {
 		const objectToken = await credentialOrEnvironment(

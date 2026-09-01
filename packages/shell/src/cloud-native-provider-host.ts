@@ -583,6 +583,29 @@ function collectChildOutput(child: NativeHarnessChild): {
 	};
 }
 
+export type NativeProviderUsageSignal = "usage_limit" | "rate_limited" | "provider_outage";
+
+/**
+ * Typed usage signal from a harness failure (contract section 17). The
+ * adapter distinguishes quota exhaustion (switch sponsor), transient rate
+ * limiting (retry) and provider outage (wait or fail over) from the safe
+ * failure category the host attached, never from provider text. Any other
+ * failure is not a usage signal.
+ */
+export function nativeProviderUsageSignal(error: unknown): NativeProviderUsageSignal | undefined {
+	let current: unknown = error;
+	for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
+		const match = /\((provider allowance|provider capacity|provider network) unavailable\)/.exec(current.message);
+		if (match) {
+			if (match[1] === "provider allowance") return "usage_limit";
+			if (match[1] === "provider capacity") return "rate_limited";
+			return "provider_outage";
+		}
+		current = current.cause;
+	}
+	return undefined;
+}
+
 function nativeHarnessFailureCategory(output: string): string | undefined {
 	const diagnostics: string[] = [];
 	for (const line of output.split(/\r?\n/)) {

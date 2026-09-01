@@ -175,6 +175,129 @@ end
 $$;
 reset role;
 
+-- Order 1 (contract section 17): the native adapter's typed usage signal is
+-- recorded against the run's exact sponsor and connection version, notifies
+-- the connection owner exactly once per open limit, and is replay-safe. Rate
+-- limiting and outage are recorded without notifying. Only native host
+-- authority with the run's current lease may record; only the addressed
+-- member may read or acknowledge.
+select pg_temp.path_claims('service_role');
+set local role service_role;
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.path_binding')::jsonb; v_receipt jsonb; v_replay jsonb;
+	v_connection uuid := (current_setting('qorpera_test.path_connection')::jsonb ->> 'connection_id')::uuid;
+begin
+	v_receipt := public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
+	v_replay := public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',null);
+	if v_receipt ->> 'signalId' <> v_replay ->> 'signalId' or (v_replay ->> 'replayed')::boolean is not true
+		or (v_receipt ->> 'replayed')::boolean is not false
+		or (v_receipt ->> 'providerConnectionId')::uuid <> v_connection
+		or (v_receipt ->> 'providerConnectionVersion')::bigint <> 1
+		or v_receipt ->> 'resetsAt' is null
+		or v_receipt -> 'notifiedUserIds' <> jsonb_build_array('29000000-0000-4000-8000-000000000001') then
+		raise exception 'Usage-limit signal receipt is inexact'; end if;
+	perform public.qorpera_record_provider_usage_signal(v_binding,'rate_limited',null);
+	perform public.qorpera_record_provider_usage_signal(v_binding,'provider_outage',null);
+	begin
+		perform public.qorpera_record_provider_usage_signal(v_binding,'quota',null);
+		raise exception 'Unknown usage signal kind accepted';
+	exception when invalid_parameter_value then null; end;
+	begin
+		perform public.qorpera_record_provider_usage_signal(
+			v_binding || '{"runId":"29000000-0000-4000-8000-0000000000ff"}'::jsonb,'usage_limit',null);
+		raise exception 'Foreign run binding recorded a usage signal';
+	exception when insufficient_privilege or no_data_found or invalid_parameter_value then null; end;
+end
+$$;
+reset role;
+-- Table assertions run as the test superuser: the API and service roles have
+-- no direct access to the signal or notification tables.
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.path_binding')::jsonb;
+	v_connection uuid := (current_setting('qorpera_test.path_connection')::jsonb ->> 'connection_id')::uuid;
+begin
+	if (select count(*) from public.qorpera_provider_connection_usage_signals
+			where run_id = (v_binding ->> 'runId')::uuid and provider_connection_id = v_connection
+				and sponsor_binding_id = (current_setting('qorpera_test.path_sponsor')::jsonb ->> 'binding_id')::uuid
+				and sponsor_version = 1 and source = 'native_adapter') <> 3
+		or (select count(*) from public.qorpera_member_notifications
+			where profile_id = '29000000-0000-4000-8000-000000000010') <> 1
+		or not exists (select 1 from public.qorpera_member_notifications notification
+			where notification.user_id = '29000000-0000-4000-8000-000000000001'
+				and notification.kind = 'provider_usage_limit' and notification.acknowledged_at is null
+				and (notification.subject ->> 'connectionId')::uuid = v_connection
+				and notification.subject ->> 'runId' = v_binding ->> 'runId'
+				and notification.subject::text !~ 'token|capsule|secret|prompt') then
+		raise exception 'Usage-limit signal did not notify the connection owner exactly once'; end if;
+	perform set_config('qorpera_test.usage_notification',(select id::text from public.qorpera_member_notifications
+		where profile_id = '29000000-0000-4000-8000-000000000010'),true);
+end
+$$;
+select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+set local role authenticated;
+do $$
+declare v_list jsonb; v_acknowledged jsonb;
+begin
+	v_list := public.qorpera_list_member_notifications('29000000-0000-4000-8000-000000000010');
+	if jsonb_array_length(v_list) <> 1 or v_list #>> '{0,kind}' <> 'provider_usage_limit'
+		or v_list #>> '{0,subject,schema}' <> 'qorpera.member-notification.provider-usage-limit/v1'
+		or v_list #>> '{0,notification_id}' <> current_setting('qorpera_test.usage_notification')
+		or v_list #>> '{0,acknowledged_at}' is not null then
+		raise exception 'Member did not receive the usage-limit notification'; end if;
+	v_acknowledged := public.qorpera_acknowledge_member_notification(current_setting('qorpera_test.usage_notification')::uuid);
+	if v_acknowledged ->> 'acknowledged_at' is null
+		or (public.qorpera_list_member_notifications('29000000-0000-4000-8000-000000000010') #>> '{0,acknowledged_at}') is null then
+		raise exception 'Acknowledgement was not durable'; end if;
+	begin
+		perform public.qorpera_record_provider_usage_signal(current_setting('qorpera_test.path_binding')::jsonb,'usage_limit',null);
+		raise exception 'Non-service caller recorded a usage signal';
+	exception when insufficient_privilege then null; end;
+	begin
+		perform public.qorpera_list_member_notifications('29000000-0000-4000-8000-000000000010',0);
+		raise exception 'Invalid notification limit accepted';
+	exception when invalid_parameter_value then null; end;
+end
+$$;
+reset role;
+select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000002');
+set local role authenticated;
+do $$
+begin
+	if jsonb_array_length(public.qorpera_list_member_notifications('29000000-0000-4000-8000-000000000010')) <> 0 then
+		raise exception 'Another member read the connection owner notification'; end if;
+	begin
+		perform public.qorpera_acknowledge_member_notification(current_setting('qorpera_test.usage_notification')::uuid);
+		raise exception 'Another member acknowledged the connection owner notification';
+	exception when insufficient_privilege then null; end;
+end
+$$;
+reset role;
+-- The per-connection concurrency policy replaces the exclusive lease: the
+-- global provider policy admits a connection policy above one, and a login
+-- still cannot consent to more than the global ceiling.
+do $$
+begin
+	if (select max_native_concurrency from public.qorpera_provider_execution_policies
+		where provider = 'openai' and authentication_mode = 'native_subscription' and native_harness = 'codex-cli') <> 8 then
+		raise exception 'Provider concurrency policy still enforces the exclusive lease'; end if;
+end
+$$;
+do $$
+declare v_role text;
+begin
+	foreach v_role in array array['anon','authenticated','service_role'] loop
+		if has_table_privilege(v_role,'public.qorpera_provider_connection_usage_signals','SELECT,INSERT,UPDATE,DELETE')
+			or has_table_privilege(v_role,'public.qorpera_member_notifications','SELECT,INSERT,UPDATE,DELETE') then
+			raise exception 'Usage signal or notification table exposed to %',v_role; end if;
+	end loop;
+	if has_function_privilege('authenticated','public.qorpera_record_provider_usage_signal(jsonb,text,timestamptz)','EXECUTE')
+		or not has_function_privilege('service_role','public.qorpera_record_provider_usage_signal(jsonb,text,timestamptz)','EXECUTE')
+		or has_function_privilege('service_role','public.qorpera_list_member_notifications(uuid,integer)','EXECUTE')
+		or not has_function_privilege('authenticated','public.qorpera_acknowledge_member_notification(uuid)','EXECUTE') then
+		raise exception 'Usage signal authority is exposed or unavailable'; end if;
+end
+$$;
+
 create function pg_temp.path_plan(p_key text,p_path text,p_entry jsonb,p_version uuid default null)
 returns jsonb language sql as $$
 	select jsonb_build_object('schema','qorpera.company-path-mutation/v1','operationKey',p_key,'path',p_path,

@@ -16,6 +16,7 @@ import {
 	type NativeProviderExecutionRequest,
 	NativeProviderHost,
 	type NativeProviderLoginDescription,
+	nativeProviderUsageSignal,
 	OfficialCliNativeHarnessDriver,
 	openNativeCredentialCapsule,
 	sealNativeCredentialCapsule,
@@ -129,6 +130,33 @@ async function waitFor(check: () => boolean): Promise<void> {
 	}
 	throw new Error("condition was not reached");
 }
+
+describe("native provider usage signal", () => {
+	it("maps only the safe allowance, capacity and network categories to typed signals", () => {
+		expect(
+			nativeProviderUsageSignal(new Error("Provider harness exited with 7 (provider allowance unavailable)")),
+		).toBe("usage_limit");
+		expect(
+			nativeProviderUsageSignal(
+				new Error("Native provider execution harness-execution stage failed (unknown) [mouth=ready]", {
+					cause: new Error("Codex did not complete its turn (provider capacity unavailable)"),
+				}),
+			),
+		).toBe("rate_limited");
+		expect(
+			nativeProviderUsageSignal(new Error("Provider harness exited with 1 (provider network unavailable)")),
+		).toBe("provider_outage");
+		for (const message of [
+			"Provider harness exited with 7 (authentication unavailable)",
+			"Provider harness exited with 7 (provider context unavailable)",
+			"You've hit your usage limit. Try again later.",
+			"Provider harness output exceeded its byte limit",
+		]) {
+			expect(nativeProviderUsageSignal(new Error(message))).toBeUndefined();
+		}
+		expect(nativeProviderUsageSignal("provider allowance unavailable")).toBeUndefined();
+	});
+});
 
 describe("native provider host", () => {
 	it("authenticates, seals and restores a provider-native credential directory", async () => {

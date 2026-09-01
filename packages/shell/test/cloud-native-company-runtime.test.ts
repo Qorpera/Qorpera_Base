@@ -529,6 +529,65 @@ it("does not fall back to local context or another harness when cloud context is
 	).rejects.toThrow("Invalid cloud tool binding");
 });
 
+it.each([
+	["Provider harness exited with 7 (provider allowance unavailable)", "usage_limit"],
+	["Codex did not complete its turn (provider capacity unavailable) [mouth=ready]", "rate_limited"],
+	["Provider harness exited with 1 (provider network unavailable)", "provider_outage"],
+] as const)(
+	"records the typed usage signal %s as %s against the exact binding before the run fails",
+	async (message, kind) => {
+		const f = await fixture();
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_describe_company_run_context") throw new Error(message);
+			if (method === "qorpera_record_provider_usage_signal") {
+				expect(args).toEqual({ p_binding: f.binding, p_signal_kind: kind });
+				return { schema: "qorpera.provider-usage-signal-receipt/v1", runId: f.binding.runId, signalKind: kind };
+			}
+			return original(method, args, signal);
+		});
+		await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(message);
+		expect(
+			f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_provider_usage_signal"),
+		).toHaveLength(1);
+		expect(f.control.sendMessage).not.toHaveBeenCalled();
+	},
+);
+
+it("neither masks the failure nor retries when the usage signal cannot be recorded, and stays silent for other failures", async () => {
+	const f = await fixture();
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_describe_company_run_context")
+			throw new Error("Provider harness exited with 7 (provider allowance unavailable)");
+		if (method === "qorpera_record_provider_usage_signal") throw new Error("PRIVATE_SIGNAL_DIAGNOSTIC");
+		return original(method, args, signal);
+	});
+	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
+		"provider allowance unavailable",
+	);
+	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_record_provider_usage_signal")).toHaveLength(
+		1,
+	);
+	expect(f.pathCall.mock.calls.filter(([method]) => method === "qorpera_describe_company_run_context")).toHaveLength(
+		1,
+	);
+});
+
+it("records no usage signal for failures that are not quota, rate-limit or outage", async () => {
+	const f = await fixture();
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_describe_company_run_context")
+			throw new Error("Provider harness exited with 7 (authentication unavailable)");
+		return original(method, args, signal);
+	});
+	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
+		"authentication unavailable",
+	);
+	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_record_provider_usage_signal")).toBe(false);
+});
+
 it("binds durable start admission to the exact lease and refuses same-run restarts", async () => {
 	const f = await fixture();
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);

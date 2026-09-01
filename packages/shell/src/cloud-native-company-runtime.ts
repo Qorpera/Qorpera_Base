@@ -8,10 +8,11 @@ import {
 	parseCloudNativeCompanyContext,
 } from "./cloud-native-company-context.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
-import type {
-	NativeCloudExecutionDriver,
-	NativeCompanyExecutionRequest,
-	NativeProviderControlPlane,
+import {
+	type NativeCloudExecutionDriver,
+	type NativeCompanyExecutionRequest,
+	type NativeProviderControlPlane,
+	nativeProviderUsageSignal,
 } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
 import {
@@ -259,9 +260,30 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			}
 		} catch (error) {
 			composition.finish("failed", { errorCategory: cloudRuntimeErrorCategory(error, signal) });
+			await this.#recordUsageSignal(binding, error);
 			throw error;
 		} finally {
 			await observability.close();
+		}
+	}
+
+	/**
+	 * Contract section 17: quota exhaustion, rate limiting and provider outage
+	 * are typed signals recorded against the run's exact sponsor and connection
+	 * version before the job fails. Recording never retries the provider, never
+	 * masks the failure, and carries no provider text.
+	 */
+	async #recordUsageSignal(binding: CloudNativeToolBinding, error: unknown): Promise<void> {
+		const kind = nativeProviderUsageSignal(error);
+		if (!kind) return;
+		try {
+			await this.#paths.call(
+				"qorpera_record_provider_usage_signal",
+				{ p_binding: binding, p_signal_kind: kind },
+				AbortSignal.timeout(10_000),
+			);
+		} catch {
+			console.error(`Provider usage signal was not recorded (${kind})`);
 		}
 	}
 }

@@ -241,6 +241,8 @@ function tokenMatches(expected: string, authorization: string | undefined): bool
 	return left.byteLength === right.byteLength && timingSafeEqual(left, right);
 }
 
+const DEFAULT_CONNECTION_CONCURRENCY = 4;
+
 function sourceMatches(expected: string | undefined, remoteAddress: string | undefined): boolean {
 	if (!expected) return true;
 	const normalized = remoteAddress?.startsWith("::ffff:") ? remoteAddress.slice("::ffff:".length) : remoteAddress;
@@ -254,18 +256,27 @@ export class SupabaseNativeProviderControlPlane
 	readonly #serviceKey: string;
 	readonly #fetch: typeof fetch;
 	readonly #identityEpoch?: { computeIdentityId: string; epoch: number };
+	readonly #connectionConcurrency: number;
 
 	constructor(
 		baseUrl: string,
 		serviceKey: string,
 		fetchImplementation: typeof fetch = fetch,
 		identityEpoch?: { computeIdentityId: string; epoch: number },
+		policy?: { connectionConcurrency?: number },
 	) {
 		const url = new URL("/rest/v1/rpc/", nativeCloudBaseUrl(baseUrl));
 		if (!serviceKey.trim() || /[\0\r\n]/.test(serviceKey)) throw new Error("Native service key is invalid");
 		this.#rpcUrl = url.href;
 		this.#serviceKey = serviceKey;
 		this.#fetch = fetchImplementation;
+		// Contract section 17 (amended 2026-09-01): a connection sponsors several
+		// concurrent runs under a configurable policy whose default is above one.
+		// The cloud still bounds the consented value by the global provider policy.
+		const concurrency = policy?.connectionConcurrency ?? DEFAULT_CONNECTION_CONCURRENCY;
+		if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 64)
+			throw new Error("Native connection concurrency policy is invalid");
+		this.#connectionConcurrency = concurrency;
 		if (identityEpoch && (!Number.isSafeInteger(identityEpoch.epoch) || identityEpoch.epoch < 0))
 			throw new Error("Native identity generation is invalid");
 		this.#identityEpoch = identityEpoch
@@ -326,7 +337,7 @@ export class SupabaseNativeProviderControlPlane
 					max_calls_per_run: 128,
 					max_input_tokens_per_run: 100_000_000,
 					max_output_tokens_per_run: 100_000_000,
-					max_concurrent_runs: 1,
+					max_concurrent_runs: this.#connectionConcurrency,
 				},
 			},
 			signal,
