@@ -1,4 +1,10 @@
 import { createHash } from "node:crypto";
+import {
+	type CompanyKnowledgeCollection,
+	type CompanySkillLoadRecord,
+	parseCompanyMemoryObject,
+	parseCompanySkill,
+} from "@qorpera/company";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	CLOUD_COMPANY_TREE_OMITTED_LAYERS,
@@ -23,6 +29,7 @@ const TREE_MEDIA = "application/vnd.qorpera.company-tree+json";
 const MAX_WRITE_BYTES = 32 * 1024;
 const MAX_READ_BYTES = 4096;
 const MAX_READ_PATHS = 128;
+const MAX_PREPARATION_PATHS = 64;
 
 export type CloudCompanyPathRpc =
 	| "qorpera_begin_native_company_execution"
@@ -31,6 +38,12 @@ export type CloudCompanyPathRpc =
 	| "qorpera_read_company_path"
 	| "qorpera_list_company_paths"
 	| "qorpera_assert_company_path_reads"
+	| "qorpera_read_company_path_candidates"
+	| "qorpera_list_company_path_candidates"
+	| "qorpera_retain_company_path_sources"
+	| "qorpera_verify_company_knowledge_file"
+	| "qorpera_record_company_skill_load"
+	| "qorpera_assert_company_skill_load"
 	| "qorpera_check_company_path_mutation"
 	| "qorpera_verify_company_path_file"
 	| "qorpera_verify_company_path_tree"
@@ -42,6 +55,43 @@ export type CloudCompanyPathRpc =
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {
 	call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
+}
+
+export interface CloudCompanyPathSource {
+	path: string;
+	version: string;
+}
+
+/** Trusted preparation only. Never register this reader as a native tool. */
+export interface CloudCompanyPathPreparation {
+	read(path: string, offset: number, limit: number, signal: AbortSignal): Promise<JsonValue>;
+	list(
+		path: string,
+		after: string | null,
+		snapshotId: string | null,
+		limit: number,
+		signal: AbortSignal,
+	): Promise<JsonValue>;
+	assertReadableContext(signal: AbortSignal): Promise<void>;
+	assertCurrent(
+		sources: readonly CloudCompanyPathSource[],
+		signal: AbortSignal,
+		collections?: readonly CompanyKnowledgeCollection[],
+	): Promise<void>;
+	retainSources(
+		sources: readonly CloudCompanyPathSource[],
+		signal: AbortSignal,
+		collections?: readonly CompanyKnowledgeCollection[],
+	): Promise<void>;
+	close(): void;
+}
+
+interface PathPreparation {
+	paths: Set<string>;
+	versions: Map<string, string | null>;
+	abort: AbortController;
+	active: number;
+	closed: boolean;
 }
 
 /** Only a positively identified SQL head conflict permits a rebuilt candidate. */
@@ -207,6 +257,8 @@ function prepared(
  * or object capabilities to a model. SQL owns the single effect commit point.
  */
 export class CloudCompanyPathGateway {
+	/** Private audiences and richer path scopes are not admitted by the shared SQL baseline. */
+	readonly supportedKnowledgeScopes = Object.freeze(["company_shared"] as const);
 	readonly #binding: CloudNativeToolBinding;
 	readonly #identity: CloudNativeToolIdentity;
 	readonly #control: CloudCompanyPathControl;
@@ -234,6 +286,11 @@ export class CloudCompanyPathGateway {
 		this.#store = options.store;
 	}
 
+	/** Same immutable admission used by native tool execution and every path RPC. */
+	get identity(): Readonly<CloudNativeToolIdentity> {
+		return this.#identity;
+	}
+
 	#call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		return cloudToolRequest((requestSignal) => this.#control.call(method, argumentsValue, requestSignal), signal);
 	}
@@ -242,7 +299,20 @@ export class CloudCompanyPathGateway {
 		return { p_environment_id: this.#identity.environmentId, p_binding: this.#binding };
 	}
 
-	#remember(path: string): void {
+	#remember(path: string, preparation?: PathPreparation, observedVersion?: string | null): void {
+		if (preparation) {
+			preparation.abort.signal.throwIfAborted();
+			if (preparation.closed) throw new Error("Company File preparation is closed");
+			if (!preparation.paths.has(path) && preparation.paths.size >= MAX_PREPARATION_PATHS)
+				throw new Error("Company File preparation path budget exceeded");
+			if (observedVersion !== undefined) {
+				if (preparation.versions.has(path) && preparation.versions.get(path) !== observedVersion)
+					throw new Error("Company File changed during preparation");
+				preparation.versions.set(path, observedVersion);
+			}
+			preparation.paths.add(path);
+			return;
+		}
 		if (!this.#reads.has(path) && this.#reads.size >= MAX_READ_PATHS)
 			throw new Error("Company File context path budget exceeded");
 		this.#reads.add(path);
@@ -258,16 +328,167 @@ export class CloudCompanyPathGateway {
 		if (checked !== null) throw new Error("Invalid Company File context authorization");
 	}
 
+	/** One SQL transaction checks current versions/access and retains only emitted sources. */
+	async #retain(
+		paths: readonly string[],
+		sources: readonly { path: string; version: string | null }[],
+		retained: readonly string[],
+		signal: AbortSignal,
+		collections?: readonly CompanyKnowledgeCollection[],
+	): Promise<void> {
+		const checked = await this.#call(
+			"qorpera_retain_company_path_sources",
+			{
+				...this.#bound(),
+				p_paths: paths,
+				p_sources: sources,
+				p_retained: retained,
+				...(collections ? { p_collections: collections } : {}),
+			},
+			signal,
+		);
+		if (checked !== null) throw new Error("Invalid Company File source authorization");
+		signal.throwIfAborted();
+		for (const path of retained) this.#remember(path);
+	}
+
+	/** Metadata-only batch fence; it does not download file chunks to probe versions. */
+	async assertCurrent(
+		sources: readonly CloudCompanyPathSource[],
+		signal: AbortSignal,
+		collections?: readonly CompanyKnowledgeCollection[],
+	): Promise<void> {
+		integer(sources.length, 0, MAX_PREPARATION_PATHS);
+		const checked = sources.map((source) => ({
+			path: parseCloudCompanyPath(source.path),
+			version: version(source.version)!,
+		}));
+		await this.#retain(
+			checked.map((source) => source.path),
+			checked,
+			checked.map((source) => source.path),
+			signal,
+			collections,
+		);
+	}
+
+	async #skillLoad(
+		method: "qorpera_record_company_skill_load" | "qorpera_assert_company_skill_load",
+		record: CompanySkillLoadRecord,
+		signal: AbortSignal,
+	): Promise<void> {
+		if (
+			record.run.companyId !== this.#identity.companyId ||
+			record.run.environmentId !== this.#identity.environmentId ||
+			record.run.runId !== this.#identity.runId
+		)
+			throw new Error("Skill load does not match the admitted gateway");
+		const result = await this.#call(method, { ...this.#bound(), p_record: record }, signal);
+		if (result !== null) throw new Error("Invalid durable skill-load acknowledgement");
+	}
+
+	recordSkillLoad(record: CompanySkillLoadRecord, signal: AbortSignal): Promise<void> {
+		return this.#skillLoad("qorpera_record_company_skill_load", record, signal);
+	}
+
+	assertRecordedSkillLoad(record: CompanySkillLoadRecord, signal: AbortSignal): Promise<void> {
+		return this.#skillLoad("qorpera_assert_company_skill_load", record, signal);
+	}
+
+	/**
+	 * Bounded host-side candidate window. Discarded candidates never enter model
+	 * context. The caller must retain its exact output before releasing it and
+	 * close the reader on every path. Existing native reads remain durable.
+	 */
+	beginPreparation(): CloudCompanyPathPreparation {
+		const preparation: PathPreparation = {
+			paths: new Set(),
+			versions: new Map(),
+			abort: new AbortController(),
+			active: 0,
+			closed: false,
+		};
+		const request = async <T>(signal: AbortSignal, action: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+			if (preparation.closed) throw new Error("Company File preparation is closed");
+			const combined = AbortSignal.any([signal, preparation.abort.signal]);
+			combined.throwIfAborted();
+			preparation.active++;
+			try {
+				return await action(combined);
+			} finally {
+				preparation.active--;
+			}
+		};
+		const check = (
+			retained: readonly CloudCompanyPathSource[],
+			signal: AbortSignal,
+			collections?: readonly CompanyKnowledgeCollection[],
+		): Promise<void> => {
+			integer(retained.length, 0, MAX_PREPARATION_PATHS);
+			for (const source of retained) {
+				parseCloudCompanyPath(source.path);
+				version(source.version);
+				if (preparation.versions.get(source.path) !== source.version)
+					throw new Error("Company File source was not prepared");
+			}
+			return this.#retain(
+				[...preparation.paths],
+				[...preparation.versions].map(([path, version]) => ({ path, version })),
+				retained.map((source) => source.path),
+				signal,
+				collections,
+			);
+		};
+		return Object.freeze({
+			read: (path: string, offset: number, limit: number, signal: AbortSignal) =>
+				request(signal, (current) => this.#read(path, offset, limit, current, preparation)),
+			list: (path: string, after: string | null, snapshotId: string | null, limit: number, signal: AbortSignal) =>
+				request(signal, (current) => this.#list(path, after, snapshotId, limit, current, preparation)),
+			assertReadableContext: (signal: AbortSignal) => request(signal, (current) => check([], current)),
+			assertCurrent: (
+				sources: readonly CloudCompanyPathSource[],
+				signal: AbortSignal,
+				collections?: readonly CompanyKnowledgeCollection[],
+			) =>
+				request(signal, (current) => {
+					integer(sources.length, 0, MAX_PREPARATION_PATHS);
+					for (const source of sources)
+						this.#remember(parseCloudCompanyPath(source.path), preparation, version(source.version)!);
+					return check([], current, collections);
+				}),
+			retainSources: async (
+				sources: readonly CloudCompanyPathSource[],
+				signal: AbortSignal,
+				collections?: readonly CompanyKnowledgeCollection[],
+			) => {
+				if (preparation.closed || preparation.active !== 0)
+					throw new Error("Company File preparation is not ready");
+				preparation.closed = true;
+				await check(sources, AbortSignal.any([signal, preparation.abort.signal]), collections);
+			},
+			close: () => {
+				preparation.closed = true;
+				preparation.abort.abort();
+			},
+		});
+	}
+
 	async #readVersion(
 		path: string,
 		signal: AbortSignal,
+		preparation?: PathPreparation,
 	): Promise<{
 		path: string;
 		version: string | null;
 		entry: CloudCompanyTreeEntry | null;
 		manifestBytes: number | null;
 	}> {
-		const input = closed(await this.#call("qorpera_read_company_path", { ...this.#bound(), p_path: path }, signal), [
+		const response = preparation
+			? await this.#call("qorpera_read_company_path_candidates", { ...this.#bound(), p_paths: [path] }, signal)
+			: await this.#call("qorpera_read_company_path", { ...this.#bound(), p_path: path }, signal);
+		if (preparation && (!Array.isArray(response) || response.length !== 1))
+			throw new Error("Invalid Company File candidates");
+		const input = closed(preparation ? (response as unknown[])[0] : response, [
 			"path",
 			"version",
 			"entry",
@@ -289,11 +510,22 @@ export class CloudCompanyPathGateway {
 	}
 
 	async read(pathValue: string, offset: number, limit: number, signal: AbortSignal): Promise<JsonValue> {
+		return this.#read(pathValue, offset, limit, signal);
+	}
+
+	async #read(
+		pathValue: string,
+		offset: number,
+		limit: number,
+		signal: AbortSignal,
+		preparation?: PathPreparation,
+	): Promise<JsonValue> {
 		const path = parseCloudCompanyPath(pathValue);
 		integer(offset, 0, 256 * 1024 * 1024);
 		integer(limit, 4, MAX_READ_BYTES);
-		const first = await this.#readVersion(path, signal);
-		this.#remember(path);
+		if (preparation) this.#remember(path, preparation);
+		const first = await this.#readVersion(path, signal, preparation);
+		this.#remember(path, preparation, first.version);
 		if (first.entry?.kind !== "file") return { path, version: first.version, kind: first.entry?.kind ?? "absent" };
 		const file = first.entry.file;
 		if (offset > file.bytes) throw new Error("Company File offset exceeds the file");
@@ -363,7 +595,7 @@ export class CloudCompanyPathGateway {
 		}
 		if (text === undefined || (included === 0 && output.length > 0))
 			throw new Error("Company File range is not UTF-8 text");
-		const current = await this.#readVersion(path, signal);
+		const current = await this.#readVersion(path, signal, preparation);
 		if (JSON.stringify(first) !== JSON.stringify(current)) throw new Error("Company File changed during read");
 		signal.throwIfAborted();
 		return {
@@ -385,14 +617,25 @@ export class CloudCompanyPathGateway {
 		limit: number,
 		signal: AbortSignal,
 	): Promise<JsonValue> {
+		return this.#list(pathValue, after, snapshotId, limit, signal);
+	}
+
+	async #list(
+		pathValue: string,
+		after: string | null,
+		snapshotId: string | null,
+		limit: number,
+		signal: AbortSignal,
+		preparation?: PathPreparation,
+	): Promise<JsonValue> {
 		const path = parseCloudCompanyPath(pathValue, true);
 		if (after !== null) parseCloudCompanyPath(after);
 		version(snapshotId, true);
-		integer(limit, 1, 50);
+		integer(limit, 1, preparation ? 32 : 50);
 		if (after !== null && snapshotId === null) throw new Error("Company File page requires its snapshot");
 		const page = closed(
 			await this.#call(
-				"qorpera_list_company_paths",
+				preparation ? "qorpera_list_company_path_candidates" : "qorpera_list_company_paths",
 				{ ...this.#bound(), p_path: path, p_after: after, p_snapshot_id: snapshotId, p_limit: limit },
 				signal,
 			),
@@ -427,9 +670,16 @@ export class CloudCompanyPathGateway {
 		});
 		if (page.nextAfter !== (page.hasMore ? items.at(-1)?.path : null))
 			throw new Error("Invalid Company File page cursor");
-		this.#remember(path);
-		for (const item of items) this.#remember(item.path);
-		await this.assertReadableContext(signal);
+		this.#remember(path, preparation);
+		for (const item of items) this.#remember(item.path, preparation, item.version);
+		if (preparation) {
+			await this.#retain(
+				[...preparation.paths],
+				[...preparation.versions].map(([path, version]) => ({ path, version })),
+				[],
+				signal,
+			);
+		} else await this.assertReadableContext(signal);
 		return {
 			snapshotId: page.snapshotId as string,
 			items,
@@ -513,6 +763,31 @@ export class CloudCompanyPathGateway {
 				{ p_profile_id: this.#identity.companyId, p_manifest_text: manifest.toString("utf8") },
 				signal,
 			);
+			// Semantic proof is derived from the same immutable bytes. The SQL commit
+			// guard requires it for registered collections, including generic writes.
+			let knowledgeKind: "memory" | "skills" | undefined;
+			try {
+				parseCompanyMemoryObject(JSON.parse(input.text!));
+				knowledgeKind = "memory";
+			} catch {
+				try {
+					parseCompanySkill(input.text!);
+					knowledgeKind = "skills";
+				} catch {
+					// Ordinary files need no knowledge proof. Registered paths reject them in SQL.
+				}
+			}
+			if (knowledgeKind)
+				await this.#call(
+					"qorpera_verify_company_knowledge_file",
+					{
+						p_profile_id: this.#identity.companyId,
+						p_manifest_sha256: next.file.manifestSha256,
+						p_kind: knowledgeKind,
+						p_text: input.text,
+					},
+					signal,
+				);
 		}
 		for (let attempt = 0; attempt < 4; attempt++) {
 			const preparation = prepared(

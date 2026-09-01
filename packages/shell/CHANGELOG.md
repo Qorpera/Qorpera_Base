@@ -11,11 +11,15 @@
 - Added a separately packaged governed guest with pinned native artifacts, exact recovery-volume identity, mount validation and private execution recovery. Uncertain or expired work is retained for reconciliation rather than automatically rerun.
 - Added actual-native local and remote compaction regressions for fenced results, restored runtime laws, forged instructions and authority revocation.
 - Added a bounded human Company File reader using current member/path permissions, exact-version immutable bytes and a final access check, independent of model connections or quota. Product UI integration remains gated.
+- Added bounded host-only Company File candidate preparation and batched version/access checks. Only selected sources are atomically retained in the existing run context; native tools retain their prior authorization and read-set behavior.
+- Added a cloud memory/skill factory bound to the admitted path gateway, explicit canonical collection/schema registration, immutable semantic proofs and durable skill-load/replay checks in the existing run ledger. Unsupported private audiences remain disabled; runtime adoption and deployment are not included.
 
 ### Fixed
 
 - Bounded native control-plane JSON response reads and cancellation, refused redirects, and stopped consuming raw RPC error bodies.
 - Preserved private completion/failure records across lease expiry, stalled renewal and credential repair; retained records never become public sends or renewed execution authority.
+- Bound durable skill loads to canonical catalog metadata and kept skill-load audit events from changing run lifecycle status.
+- Bound approved memory/skill preservation to immutable Company File revision history and shared GC roots. Later writes, schema or policy changes, and cache eviction cannot silently release preserved versions; unverified historical closure fails closed.
 
 ## [0.20.44] - 2026-08-28
 

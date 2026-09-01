@@ -13,6 +13,21 @@ function fixture(transport: typeof fetch) {
 }
 
 describe("Company File bounded control transport", () => {
+	it.each([
+		"qorpera_read_company_path_candidates",
+		"qorpera_list_company_path_candidates",
+		"qorpera_retain_company_path_sources",
+		"qorpera_verify_company_knowledge_file",
+		"qorpera_record_company_skill_load",
+		"qorpera_assert_company_skill_load",
+	] as const)("allows the explicit host preparation RPC %s", async (method) => {
+		const transport = vi.fn<typeof fetch>(async () => Response.json(null));
+		await fixture(transport).call(method, { p_paths: [] }, new AbortController().signal);
+		expect(transport).toHaveBeenCalledWith(
+			`https://authority.example/rest/v1/rpc/${method}`,
+			expect.objectContaining({ method: "POST", redirect: "error" }),
+		);
+	});
 	it("uses only the fixed HTTPS RPC route and rejects redirects", async () => {
 		const transport = vi.fn<typeof fetch>(async () => Response.json(null));
 		await fixture(transport).call("qorpera_assert_company_path_reads", { p_paths: [] }, new AbortController().signal);
