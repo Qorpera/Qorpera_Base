@@ -273,12 +273,12 @@ end
 $$;
 reset role;
 -- The per-connection concurrency policy replaces the exclusive lease: the
--- global provider policy admits a connection policy above one, and a login
--- still cannot consent to more than the global ceiling.
+-- global provider policy is uncapped by default (the schema maximum), and a
+-- login still cannot consent to more than the global ceiling.
 do $$
 begin
 	if (select max_native_concurrency from public.qorpera_provider_execution_policies
-		where provider = 'openai' and authentication_mode = 'native_subscription' and native_harness = 'codex-cli') <> 8 then
+		where provider = 'openai' and authentication_mode = 'native_subscription' and native_harness = 'codex-cli') <> 64 then
 		raise exception 'Provider concurrency policy still enforces the exclusive lease'; end if;
 end
 $$;

@@ -146,8 +146,9 @@ For each member, capture sanitized control-plane evidence proving:
   refresh token column, response field, log field, or desktop state;
 - the configured per-connection concurrency policy consented at login. The
   runtime contract (section 17, amended 2026-09-01) replaced the exclusive
-  per-connection lease with a configurable policy whose default is above
-  one, bounded by the global provider policy; quota, not exclusivity, is the
+  per-connection lease with a configurable policy that is uncapped by default
+  (founder decision 2026-09-02; the schema bound is 64 per connection) and
+  bounded by the global provider policy; quota, not exclusivity, is the
   ceiling.
 
 Restart the physical client after each login and verify the ready connection is

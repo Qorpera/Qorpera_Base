@@ -241,7 +241,9 @@ function tokenMatches(expected: string, authorization: string | undefined): bool
 	return left.byteLength === right.byteLength && timingSafeEqual(left, right);
 }
 
-const DEFAULT_CONNECTION_CONCURRENCY = 4;
+// Uncapped by default (founder decision 2026-09-02): the schema maximum per
+// connection. The provider's own quota is the real ceiling.
+const DEFAULT_CONNECTION_CONCURRENCY = 64;
 
 function sourceMatches(expected: string | undefined, remoteAddress: string | undefined): boolean {
 	if (!expected) return true;
@@ -271,8 +273,8 @@ export class SupabaseNativeProviderControlPlane
 		this.#serviceKey = serviceKey;
 		this.#fetch = fetchImplementation;
 		// Contract section 17 (amended 2026-09-01): a connection sponsors several
-		// concurrent runs under a configurable policy whose default is above one.
-		// The cloud still bounds the consented value by the global provider policy.
+		// concurrent runs under a configurable policy, uncapped by default. The
+		// cloud still bounds the consented value by the global provider policy.
 		const concurrency = policy?.connectionConcurrency ?? DEFAULT_CONNECTION_CONCURRENCY;
 		if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 64)
 			throw new Error("Native connection concurrency policy is invalid");

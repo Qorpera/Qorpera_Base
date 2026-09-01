@@ -155,10 +155,12 @@ and department-scoped resources; it is contract text and was not edited.
   job fails, never retries, never masks the failure. The RPC is added to the
   closed path-control allowlist.
 - `20260828019990_provider_connection_concurrency_policy.sql`: the global
-  provider policy ceiling rises from 1 to 8 so a per-connection policy above
-  one is admissible; the provider service consents a default of 4
-  (`QORPERA_NATIVE_CONNECTION_CONCURRENCY`, 1–64). Lease acquisition still
-  refuses beyond `least(version, policy)`; no credential fallback.
+  provider policy ceiling rises from 1 to the schema maximum of 64, and the
+  provider service consents that maximum by default
+  (`QORPERA_NATIVE_CONNECTION_CONCURRENCY`, 1–64, lowers it). Founder decision
+  2026-09-02: uncapped by default; the provider's quota is the real ceiling.
+  Lease acquisition still refuses beyond `least(version, policy)`; no
+  credential fallback.
   `NATIVE-SUBSCRIPTION-ACCEPTANCE.md` and `STEP-2-ARCHITECTURE.md` follow.
 - `20260828019995_company_execution_ceilings.sql` (contract 7.4, low
   priority): `qorpera_company_execution_ceilings` with kernel defaults
