@@ -1,0 +1,86 @@
+{
+  "schema": "qorpera.native-fence-component-proof/v1",
+  "date": "2026-08-28",
+  "sourceBase": "a0b692947d5c867353591b36172afcc997f0521e",
+  "sourceState": "uncommitted component implementation; exact fixture hashes below",
+  "nativeSource": "be6e8eac029b183056b7e4402879f15d2c85f61b",
+  "patchSha256": "5465d454fa8dcf3773bd7861144fb6c2a885846047430a3c0963142146b2cc31",
+  "build": {
+    "rust": "1.95.0",
+    "profile": "dev",
+    "target": "x86_64-unknown-linux-gnu",
+    "binaryBytes": 518952824,
+    "binarySha256": "1286a3c753f2c6e385304a616b236a566d0dd0d171360306e500dc9be26d781b",
+    "archiveSha256": "c610ab0c8a2924e00a9515df4adf95fc8f0257dc78a5fd3ab65806e45ced711e"
+  },
+  "environment": {
+    "node": "company41-node-01",
+    "guest": "qorpera-step2-fence-sx30in",
+    "project": "default",
+    "image": "5e644adaf5d1c43149ea7310ac2a7cad927fa6603343e8fa9070a9200a24b7b8",
+    "distribution": "Ubuntu 26.04",
+    "nodeVersion": "24.19.0",
+    "executionUser": "fencebuild",
+    "acceptanceNetwork": "new namespace, loopback only",
+    "companyMount": false,
+    "providerCredential": false,
+    "productionChange": false
+  },
+  "proof": {
+    "platform": "linux",
+    "codexVersion": "0.147.0",
+    "providerModel": "gpt-5.6-sol",
+    "toolInventory": [
+      "functions.exec",
+      "functions.wait",
+      "qorpera.read_document",
+      "qorpera.send_message"
+    ],
+    "forcedBypassesDenied": 22,
+    "canonicalBytesUnchanged": true,
+    "unbrokeredRequests": 0,
+    "syntheticSecretExcluded": true,
+    "controlledResultsFenced": 8,
+    "nativeResultsFenced": 23,
+    "unfencedNativeResults": 0,
+    "publicMessages": 2,
+    "immediateDelivery": true,
+    "retryDeduplicated": true,
+    "privateOutputExcluded": true,
+    "allNativeResultsFenced": true,
+    "failureChecks": [
+      {
+        "fault": "revoked",
+        "requests": 1,
+        "effects": 0,
+        "deniedChecks": 1,
+        "blocked": true
+      },
+      {
+        "fault": "stalled",
+        "requests": 1,
+        "effects": 0,
+        "deniedChecks": 1,
+        "blocked": true
+      }
+    ]
+  },
+  "scope": {
+    "scriptedProvider": true,
+    "syntheticAuthority": true,
+    "syntheticCompanyAdapter": true,
+    "realGPT": false,
+    "deployedRunPath": false,
+    "step2Accepted": false
+  },
+  "fixtureSha256": {
+    "packages/shell/src/cloud-agent-mouth.ts": "c1a79015ab66066978eb03717230ffdb8b192b6f87d31397820f02005379d077",
+    "packages/shell/src/cloud-codex-tool-session.ts": "c31cd1cf020f261e68cbf6a650be29b826d348030556507890ca527bb4de20f8",
+    "packages/shell/src/cloud-native-result-fence.ts": "ba167d1f69939a7ef5a0a26591c3c6bdccfb94eb180abda6ddffdb0cfab521dc",
+    "packages/shell/src/cloud-native-tool-boundary.ts": "d2286a2444ea56b2afb782a0ffc3064eeaaf9ea7ef8633510cc0d845da81f5cb",
+    "packages/shell/test/fixtures/native-codex-fixture-command.ts": "b6d7ccdcef275193e46533c220a503215b2dbf0db1627d8dc0f08806f1643ec9",
+    "packages/shell/test/fixtures/native-codex-fence-failure-probe.ts": "aef646be01a0ebb78695589a2960de35f364c959b07e955b23731bfe9bde4c04",
+    "packages/shell/test/fixtures/official-codex-boundary-probe.ts": "6e40f802f981116cbcfb5164ed732a8b52f16d761911db456ce13ab6c06757b2",
+    "packages/shell/test/fixtures/run-official-codex-boundary-probe.ts": "c4d43c838426ec55e28cbdda708a01c2ba1dc4077dc8992c51d303e89b303d51"
+  }
+}

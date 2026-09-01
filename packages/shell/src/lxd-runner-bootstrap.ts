@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, chown, lstat, mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { parseEphemeralCloudRunnerServiceConfig } from "./cloud-runner-service.ts";
 
 const BOOTSTRAP_SCHEMA = "qorpera.lxd-runner-bootstrap/v1";
+const COMPANY_BOOTSTRAP_SCHEMA = "qorpera.lxd-company-runner-bootstrap/v1";
 const LOGIN_BOOTSTRAP_SCHEMA = "qorpera.lxd-native-login-bootstrap/v1";
 const IDENTITY_SCHEMA = "qorpera.compute-identity-volume/v1";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -22,7 +23,7 @@ const NATIVE_PROVIDER_SERVICE = "qorpera-native-provider-host.service";
 const execFileAsync = promisify(execFile);
 
 export interface LxdRunnerBootstrapConfig {
-	schema: typeof BOOTSTRAP_SCHEMA;
+	schema: typeof BOOTSTRAP_SCHEMA | typeof COMPANY_BOOTSTRAP_SCHEMA;
 	computeIdentityId: string;
 	computeTemplateKey: string;
 	computeTemplateVersion: string;
@@ -31,6 +32,15 @@ export interface LxdRunnerBootstrapConfig {
 	nativeProviderEnvironmentPath: string;
 	credentialSource: string;
 	identityVolumePath: string;
+	companyRuntime?: {
+		mode: "company-path-v1";
+		runId: string;
+		profileId: string;
+		runnerId: string;
+		codexPath: string;
+		binarySha256: string;
+		objectGatewayUrl: string;
+	};
 }
 
 export interface LxdRunnerBootstrapPaths {
@@ -150,10 +160,13 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 			"native_provider_environment_path",
 			"credential_source",
 			"identity_volume_path",
+			...(input.schema === COMPANY_BOOTSTRAP_SCHEMA ? ["company_runtime"] : []),
 		],
 		"LXD runner bootstrap configuration",
 	);
-	if (input.schema !== BOOTSTRAP_SCHEMA) throw new Error("LXD runner bootstrap schema is unsupported");
+	if (input.schema !== BOOTSTRAP_SCHEMA && input.schema !== COMPANY_BOOTSTRAP_SCHEMA) {
+		throw new Error("LXD runner bootstrap schema is unsupported");
+	}
 	if (
 		input.runner_config_path !== PRODUCTION_PATHS.runnerConfig ||
 		input.native_provider_environment_path !== PRODUCTION_PATHS.nativeProviderEnvironment ||
@@ -162,8 +175,48 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 	) {
 		throw new Error("LXD runner bootstrap paths are outside the guest-image contract");
 	}
+	let companyRuntime: LxdRunnerBootstrapConfig["companyRuntime"];
+	if (input.schema === COMPANY_BOOTSTRAP_SCHEMA) {
+		const company = record(input.company_runtime, "Governed native bootstrap");
+		exactKeys(
+			company,
+			[
+				"mode",
+				"run_id",
+				"profile_id",
+				"runner_id",
+				"codex_path",
+				"binary_sha256",
+				"object_gateway_url",
+				"recovery_volume_path",
+			],
+			"Governed native bootstrap",
+		);
+		if (company.mode !== "company-path-v1" || company.recovery_volume_path !== PRODUCTION_PATHS.runnerHomeDirectory) {
+			throw new Error("Governed native bootstrap mode or recovery path is invalid");
+		}
+		const codexPath = text(company.codex_path, "Pinned native executable", /^\/[A-Za-z0-9._/-]+$/);
+		if (resolve(codexPath) !== codexPath) throw new Error("Pinned native executable path is not canonical");
+		const gateway = text(
+			company.object_gateway_url,
+			"Native object gateway",
+			/^https:\/\/[A-Za-z0-9.-]+(?::[0-9]+)?\/?$/,
+		);
+		const gatewayUrl = new URL(gateway);
+		if (![gatewayUrl.origin, `${gatewayUrl.origin}/`].includes(gateway))
+			throw new Error("Native object gateway is invalid");
+		companyRuntime = {
+			mode: "company-path-v1",
+			runId: text(company.run_id, "Native run id", UUID_PATTERN),
+			profileId: text(company.profile_id, "Native company id", UUID_PATTERN),
+			runnerId: text(company.runner_id, "Native runner id", UUID_PATTERN),
+			codexPath,
+			binarySha256: text(company.binary_sha256, "Native binary digest", SHA256_PATTERN),
+			objectGatewayUrl: gateway,
+		};
+	}
 	return {
-		schema: BOOTSTRAP_SCHEMA,
+		schema: input.schema,
 		computeIdentityId: text(input.compute_identity_id, "Compute Identity id", UUID_PATTERN),
 		computeTemplateKey: text(input.compute_template_key, "Compute template key", TEMPLATE_PATTERN),
 		computeTemplateVersion: text(input.compute_template_version, "Compute template version", TEMPLATE_PATTERN),
@@ -172,6 +225,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 		nativeProviderEnvironmentPath: PRODUCTION_PATHS.nativeProviderEnvironment,
 		credentialSource: PRODUCTION_PATHS.credentialSource,
 		identityVolumePath: PRODUCTION_PATHS.identityVolume,
+		...(companyRuntime ? { companyRuntime } : {}),
 	};
 }
 
@@ -342,6 +396,7 @@ function nativeProviderEnvironment(
 	nativeBridgeUrl: string,
 	computeIdentityId: string,
 	trustedSource?: string,
+	companyRuntime?: LxdRunnerBootstrapConfig["companyRuntime"],
 ): void {
 	const environment = new Map<string, string>();
 	for (const line of encoded.split(/\r?\n/)) {
@@ -365,6 +420,14 @@ function nativeProviderEnvironment(
 		"QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT",
 		"QORPERA_SUPABASE_URL",
 		...(trustedSource ? ["QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE"] : []),
+		...(companyRuntime
+			? [
+					"QORPERA_NATIVE_RUNTIME",
+					"QORPERA_NATIVE_CODEX_FENCE_PATH",
+					"QORPERA_NATIVE_CODEX_FENCE_SHA256",
+					"QORPERA_NATIVE_OBJECT_GATEWAY_URL",
+				]
+			: []),
 	];
 	if (JSON.stringify([...environment.keys()].sort()) !== JSON.stringify(expectedKeys.sort())) {
 		throw new Error("Native provider environment contains unexpected settings");
@@ -390,12 +453,21 @@ function nativeProviderEnvironment(
 			throw new Error("Native provider executable path is invalid");
 		}
 	}
+	if (
+		companyRuntime &&
+		(environment.get("QORPERA_NATIVE_RUNTIME") !== "company-path-v1" ||
+			environment.get("QORPERA_NATIVE_CODEX_FENCE_PATH") !== companyRuntime.codexPath ||
+			environment.get("QORPERA_NATIVE_CODEX_FENCE_SHA256") !== companyRuntime.binarySha256 ||
+			environment.get("QORPERA_NATIVE_OBJECT_GATEWAY_URL") !== companyRuntime.objectGatewayUrl)
+	) {
+		throw new Error("Governed native environment does not match immutable bootstrap authority");
+	}
 }
 
 async function verifyCredentialSource(
 	path: string,
 	expectedUid: number,
-	boundary: "runner" | "native-login",
+	boundary: "runner" | "native-login" | "company-runner",
 ): Promise<void> {
 	const metadata = await lstat(path);
 	if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== expectedUid) {
@@ -404,9 +476,10 @@ async function verifyCredentialSource(
 	await chmod(path, 0o700);
 	const entries = (await readdir(path)).sort();
 	const expected =
-		boundary === "runner"
+		boundary !== "native-login"
 			? [
 					"qorpera-native-bridge",
+					...(boundary === "company-runner" ? ["qorpera-native-object-token"] : []),
 					"qorpera-runner-activation",
 					"qorpera-runner-assignment",
 					"qorpera-supabase-service-key",
@@ -415,6 +488,7 @@ async function verifyCredentialSource(
 	if (JSON.stringify(entries) !== JSON.stringify(expected)) {
 		throw new Error("LXD runner credential source contains unexpected entries");
 	}
+	const tokens = new Set<string>();
 	for (const name of expected.filter((entry) => entry !== "qorpera-supabase-service-key")) {
 		const token = (
 			await readOwnedFile(
@@ -426,6 +500,9 @@ async function verifyCredentialSource(
 			)
 		).trim();
 		if (!TOKEN_PATTERN.test(token)) throw new Error(`LXD runner credential ${name} is invalid`);
+		if (boundary === "company-runner" && tokens.has(token))
+			throw new Error("Governed credentials must be independent");
+		tokens.add(token);
 	}
 	const serviceKey = (
 		await readOwnedFile(
@@ -438,6 +515,125 @@ async function verifyCredentialSource(
 	).trim();
 	if (!serviceKey || /[\0\r\n]/.test(serviceKey)) {
 		throw new Error("LXD native provider service credential is invalid");
+	}
+	if (boundary === "company-runner" && tokens.has(serviceKey))
+		throw new Error("Governed credentials must be independent");
+}
+
+async function verifyCompanyGuest(
+	bootstrap: LxdRunnerBootstrapConfig,
+	paths: LxdRunnerBootstrapPaths,
+	mountInfo: string,
+	expectedUid: number,
+	expectedGid: number,
+): Promise<void> {
+	const company = bootstrap.companyRuntime;
+	if (!company) return;
+	const mounts = mountInfo
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => {
+			const [before, after] = line.split(" - ");
+			const fields = before?.split(" ");
+			const filesystem = after?.split(" ")[0];
+			if (!fields || fields.length < 6 || !filesystem) throw new Error("Guest mount table is invalid");
+			return { path: mountPoint(fields[4] as string), device: fields[2], filesystem };
+		});
+	const roots = mounts.filter((mount) => mount.path === "/");
+	const identities = mounts.filter((mount) => mount.path === paths.identityVolume);
+	const recoveries = mounts.filter((mount) => mount.path === paths.runnerHomeDirectory);
+	if (
+		roots.length !== 1 ||
+		identities.length !== 1 ||
+		recoveries.length !== 1 ||
+		identities[0]?.filesystem !== "virtiofs" ||
+		recoveries[0]?.filesystem !== "virtiofs" ||
+		new Set([roots[0]?.device, identities[0]?.device, recoveries[0]?.device]).size !== 3
+	) {
+		throw new Error("Governed native recovery and identity require distinct persistent volume mounts");
+	}
+	for (const mount of mounts) {
+		const allowedVolume = mount.path === paths.identityVolume || mount.path === paths.runnerHomeDirectory;
+		if (
+			(!allowedVolume && /^(virtiofs|9p|nfs4?|cifs|smb3|fuse(?:\..*)?)$/.test(mount.filesystem)) ||
+			mount.path === "/qorpera/company-live" ||
+			mount.path.startsWith("/qorpera/company-live/") ||
+			mount.path.startsWith(`${paths.identityVolume}/`) ||
+			mount.path.startsWith(`${paths.runnerHomeDirectory}/`)
+		) {
+			throw new Error("Governed native guest contains an unexpected shared or nested mount");
+		}
+	}
+	const binary = await open(company.codexPath, secureOpenFlags());
+	try {
+		const metadata = await binary.stat();
+		if (
+			!metadata.isFile() ||
+			metadata.uid !== expectedUid ||
+			(metadata.mode & 0o022) !== 0 ||
+			(metadata.mode & 0o111) === 0 ||
+			metadata.size < 1 ||
+			metadata.size > 1024 ** 3
+		) {
+			throw new Error("Pinned governed native binary has unsafe ownership, permissions, or size");
+		}
+		const digest = createHash("sha256");
+		const buffer = Buffer.alloc(512 * 1024);
+		let length = 0;
+		for (;;) {
+			const { bytesRead } = await binary.read(buffer);
+			if (bytesRead === 0) break;
+			length += bytesRead;
+			if (length > metadata.size) throw new Error("Pinned governed native binary changed while verifying");
+			digest.update(buffer.subarray(0, bytesRead));
+		}
+		if (length !== metadata.size || digest.digest("hex") !== company.binarySha256) {
+			throw new Error("Pinned governed native binary checksum mismatch");
+		}
+	} finally {
+		await binary.close();
+	}
+	const marker = join(paths.runnerHomeDirectory, ".qorpera-native-company-recovery.json");
+	const expected = {
+		schema: "qorpera.native-company-recovery-volume/v1",
+		run_id: company.runId,
+		profile_id: company.profileId,
+		runner_id: company.runnerId,
+		compute_identity_id: bootstrap.computeIdentityId,
+	};
+	try {
+		const saved = record(
+			parseJson(
+				await readOwnedFile(marker, MAX_BOOTSTRAP_BYTES, "Native recovery marker", expectedUid, true),
+				"Native recovery marker",
+			),
+			"Native recovery marker",
+		);
+		exactKeys(saved, Object.keys(expected), "Native recovery marker");
+		if (Object.entries(expected).some(([key, value]) => saved[key] !== value)) {
+			throw new Error("Native recovery volume does not match immutable company and run authority");
+		}
+	} catch (error) {
+		if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+		if ((await readdir(paths.runnerHomeDirectory)).length !== 0) {
+			throw new Error("Unmarked native recovery volume is not empty; operator reconciliation is required");
+		}
+		const temporary = `${marker}.${randomUUID()}.tmp`;
+		const handle = await open(temporary, "wx", 0o600);
+		try {
+			await handle.writeFile(`${JSON.stringify(expected)}\n`);
+			await handle.chown(expectedUid, expectedGid);
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+		await rename(temporary, marker);
+		const directory = await open(paths.runnerHomeDirectory, constants.O_RDONLY);
+		try {
+			await directory.sync();
+		} finally {
+			await directory.close();
+		}
 	}
 }
 
@@ -571,9 +767,18 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 	if (
 		!runnerConfig.nativeBridgeUrl ||
 		runnerConfig.nativeBridgeBoundary !== "virtual_machine" ||
-		runnerConfig.nativeBridgeSharedGid === undefined
+		(!bootstrap.companyRuntime && runnerConfig.nativeBridgeSharedGid === undefined)
 	) {
 		throw new Error("LXD runner configuration does not enforce the native VM bridge boundary");
+	}
+	if (
+		bootstrap.companyRuntime &&
+		(runnerConfig.nativeBridgeSharedGid !== undefined ||
+			runnerConfig.runnerId !== bootstrap.companyRuntime.runnerId ||
+			runnerConfig.authorityStatePath !== join(paths.runnerStateDirectory, "authority.json") ||
+			Object.keys(runnerConfig.environment).length !== 0)
+	) {
+		throw new Error("Governed runner must use private retained state without a shared workspace or environment");
 	}
 	const nativeProviderEnvironmentEncoded = await readOwnedFile(
 		paths.nativeProviderEnvironment,
@@ -588,9 +793,14 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 		runnerConfig.nativeBridgeUrl,
 		bootstrap.computeIdentityId,
 		undefined,
+		bootstrap.companyRuntime,
 	);
 
-	await verifyCredentialSource(paths.credentialSource, expectedRootUid, "runner");
+	await verifyCredentialSource(
+		paths.credentialSource,
+		expectedRootUid,
+		bootstrap.companyRuntime ? "company-runner" : "runner",
+	);
 	const identityMetadata = await lstat(paths.identityVolume);
 	if (
 		!identityMetadata.isDirectory() ||
@@ -599,19 +809,28 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 	) {
 		throw new Error("Compute Identity volume mount is unsafe");
 	}
-	verifyMountedIdentityVolume(await readFile(paths.mountInfo, "utf-8"), paths.identityVolume);
+	const mountInfo = await readFile(paths.mountInfo, "utf-8");
+	verifyMountedIdentityVolume(mountInfo, paths.identityVolume);
+	await verifyCompanyGuest(bootstrap, paths, mountInfo, expectedRootUid, expectedRootGid);
 	await chmod(paths.identityVolume, 0o700);
 	await ensureIdentityMarker(paths.identityMarker, bootstrap.computeIdentityId, expectedRootUid, expectedRootGid);
 	await ensureIdentityMasterKey(paths.identityMasterKey, expectedRootUid, expectedRootGid);
 
-	const runnerIdentity = options.serviceIdentity ?? (await serviceIdentity("qorpera-runner"));
-	const nativeIdentity = options.nativeServiceIdentity ?? (await serviceIdentity("qorpera-native-provider"));
-	const runnerGroups = options.runnerSupplementaryGids ?? (await serviceGroups("qorpera-runner"));
-	if (
-		nativeIdentity.gid !== runnerConfig.nativeBridgeSharedGid ||
-		!runnerGroups.includes(runnerConfig.nativeBridgeSharedGid)
-	) {
-		throw new Error("Native execution group does not match the signed guest-image accounts");
+	const runnerIdentity =
+		options.serviceIdentity ??
+		(await serviceIdentity(bootstrap.companyRuntime ? "qorpera-company-runner" : "qorpera-runner"));
+	const nativeIdentity =
+		options.nativeServiceIdentity ??
+		(await serviceIdentity(bootstrap.companyRuntime ? "qorpera-native-company" : "qorpera-native-provider"));
+	if (!bootstrap.companyRuntime) {
+		const runnerGroups = options.runnerSupplementaryGids ?? (await serviceGroups("qorpera-runner"));
+		if (
+			runnerConfig.nativeBridgeSharedGid === undefined ||
+			nativeIdentity.gid !== runnerConfig.nativeBridgeSharedGid ||
+			!runnerGroups.includes(runnerConfig.nativeBridgeSharedGid)
+		) {
+			throw new Error("Native execution group does not match the signed guest-image accounts");
+		}
 	}
 	const runnerHome = paths.runnerHomeDirectory;
 	const nativeHome = dirname(paths.nativeProviderTemporaryDirectory);
@@ -620,8 +839,8 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 	await ensureOwnedDirectoryTree(nativeHome, paths.nativeProviderTemporaryDirectory, nativeIdentity);
 	await installRunnerConfig(runnerConfigEncoded, paths.runnerConfigDestination, runnerHome, runnerIdentity);
 	const start = options.startService ?? startRunnerService;
-	await start(NATIVE_PROVIDER_SERVICE);
-	await start(RUNNER_SERVICE);
+	await start(bootstrap.companyRuntime ? "qorpera-native-company-host.service" : NATIVE_PROVIDER_SERVICE);
+	await start(bootstrap.companyRuntime ? "qorpera-company-runner.service" : RUNNER_SERVICE);
 }
 
 export async function runLxdNativeLoginBootstrap(options: RunLxdNativeLoginBootstrapOptions = {}): Promise<void> {

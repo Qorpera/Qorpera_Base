@@ -105,6 +105,7 @@ function artifactRecord(input: {
 
 function descriptionRecord(): Record<string, unknown> {
 	return {
+		company_runtime: "whole-tree-v1",
 		job: jobRecord(),
 		run: {
 			run_id: runId,
@@ -503,6 +504,15 @@ afterEach(async () => {
 });
 
 describe("cloud runner object broker", () => {
+	it.each([undefined, null, "company-path-v2", ""])(
+		"rejects a missing or unknown cloud runtime selection (%s)",
+		async (mode) => {
+			const current = broker();
+			current.transport.description.company_runtime = mode;
+			await expect(current.broker.describe()).rejects.toThrow("runtime selection");
+		},
+	);
+
 	it("rejects non-HTTP loopback broker URLs", () => {
 		expect(() => new SupabaseCloudRunnerBrokerTransport("file://localhost/private", "publishable-key")).toThrow(
 			"must use HTTPS",

@@ -80,6 +80,8 @@ class FakeLxd implements LxdClient {
 			config: structuredClone(request.config),
 			profiles: [...request.profiles],
 			devices: structuredClone(request.devices),
+			expandedDevices: structuredClone(request.devices),
+			expandedConfig: structuredClone(request.config),
 		};
 	}
 

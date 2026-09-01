@@ -101,6 +101,18 @@ export interface NativeHarnessDriver {
 	execute(input: NativeHarnessExecutionInput): Promise<{ providerSessionId?: string }>;
 }
 
+/** Cloud-selected execution, distinct from the official CLI's login driver. */
+export interface NativeCloudExecutionDriver {
+	execute(
+		request: NativeCompanyExecutionRequest,
+		identityRoot: string,
+		signal: AbortSignal,
+	): Promise<{
+		providerSessionId: string;
+		delivery: { messageCount: number; finalMessageId: string | null };
+	}>;
+}
+
 export interface NativeProviderExecutionAuthority {
 	leaseId: string;
 	runId: string;
@@ -116,7 +128,7 @@ export interface NativeProviderExecutionAuthority {
 	expiresAt: string;
 }
 
-export interface NativeProviderExecutionRequest {
+interface NativeProviderExecutionIdentity {
 	authority: NativeProviderExecutionAuthority;
 	job: {
 		jobId: string;
@@ -125,6 +137,16 @@ export interface NativeProviderExecutionRequest {
 		attemptCount: number;
 		payload: JsonValue;
 	};
+}
+
+export interface NativeCompanyExecutionRequest extends NativeProviderExecutionIdentity {
+	runtime: "company-path-v1";
+	input?: never;
+	outputRoot?: never;
+}
+
+export interface NativeLegacyExecutionRequest extends NativeProviderExecutionIdentity {
+	runtime?: never;
 	input: {
 		companyRoot: string;
 		executionContextPath: string;
@@ -133,6 +155,8 @@ export interface NativeProviderExecutionRequest {
 	};
 	outputRoot: string;
 }
+
+export type NativeProviderExecutionRequest = NativeCompanyExecutionRequest | NativeLegacyExecutionRequest;
 
 interface CapsuleFile {
 	path: string;
@@ -812,7 +836,7 @@ async function boundedText(path: string, label: string): Promise<string> {
 }
 
 async function executionPrompt(
-	request: NativeProviderExecutionRequest,
+	request: NativeLegacyExecutionRequest,
 ): Promise<{ prompt: string; requireFinalSend: boolean }> {
 	const [context, inputs, transcript] = await Promise.all([
 		boundedText(request.input.executionContextPath, "Execution context"),
@@ -858,6 +882,7 @@ export class NativeProviderHost {
 	readonly #controlPlane: NativeProviderControlPlane;
 	readonly #capsules: NativeCredentialCapsuleStore;
 	readonly #harness: NativeHarnessDriver;
+	readonly #cloudRuntime?: NativeCloudExecutionDriver;
 	readonly #masterKey: string;
 	readonly #computeIdentityId: string;
 	readonly #temporaryRoot: string;
@@ -867,6 +892,7 @@ export class NativeProviderHost {
 		controlPlane: NativeProviderControlPlane;
 		capsules: NativeCredentialCapsuleStore;
 		harness: NativeHarnessDriver;
+		cloudRuntime?: NativeCloudExecutionDriver;
 		masterKey: string;
 		computeIdentityId: string;
 		temporaryRoot?: string;
@@ -876,6 +902,7 @@ export class NativeProviderHost {
 		this.#controlPlane = options.controlPlane;
 		this.#capsules = options.capsules;
 		this.#harness = options.harness;
+		this.#cloudRuntime = options.cloudRuntime;
 		this.#masterKey = options.masterKey;
 		this.#computeIdentityId = options.computeIdentityId;
 		this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
@@ -944,6 +971,9 @@ export class NativeProviderHost {
 
 	async execute(request: NativeProviderExecutionRequest, signal?: AbortSignal): Promise<JsonValue> {
 		const { authority } = request;
+		if ((request.runtime === "company-path-v1") !== Boolean(this.#cloudRuntime)) {
+			throw new Error("Native provider execution runtime is not configured for this request");
+		}
 		for (const [label, value] of [
 			["Native lease id", authority.leaseId],
 			["Native run id", authority.runId],
@@ -997,11 +1027,13 @@ export class NativeProviderHost {
 		let harnessStarted = false;
 		let output: JsonValue | undefined;
 		let failure: Error | undefined;
-		const mouth = new CloudAgentMouth(
-			authority.runId,
-			(input) => this.#controlPlane.sendMessage(request, input, executionAbort.signal),
-			executionAbort.signal,
-		);
+		const mouth = this.#cloudRuntime
+			? undefined
+			: new CloudAgentMouth(
+					authority.runId,
+					(input) => this.#controlPlane.sendMessage(request, input, executionAbort.signal),
+					executionAbort.signal,
+				);
 		try {
 			stage = "temporary-workspace";
 			root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
@@ -1010,31 +1042,40 @@ export class NativeProviderHost {
 			stage = "credential-opening";
 			await openNativeCredentialCapsule(capsule, root, this.#masterKey, authority.credentialCapsuleId);
 			durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
-			stage = "prompt-materialization";
-			const context = await executionPrompt(request);
-			stage = "public-mouth-start";
-			const mouthConnection = await mouth.start();
-			stage = "harness-execution";
-			harnessStarted = true;
-			const result = await this.#harness.execute({
-				harness: authority.nativeHarness,
-				model: authority.model,
-				identityRoot: root,
-				companyRoot: request.input.companyRoot,
-				prompt: context.prompt,
-				mouth: mouthConnection,
-				signal: executionAbort.signal,
-			});
-			stage = "public-mouth-completion";
-			const delivery = await mouth.finish(context.requireFinalSend);
-			await mouth.close();
-			/* The harness runs as this host's user; entries it creates carry
-			 * no group bits, and the runner reads the shared workspace only
-			 * through the shared execution group. Grant group traversal on
-			 * everything under the company root so output capture and review
-			 * can read every created entry. */
-			stage = "workspace-normalization";
-			await grantWorkspaceGroupAccess(request.input.companyRoot);
+			let result: { providerSessionId?: string };
+			let delivery: { messageCount: number; finalMessageId: string | null };
+			if (request.runtime === "company-path-v1") {
+				if (!this.#cloudRuntime) throw new Error("Native company runtime is unavailable");
+				// No local prompt/transcript, canonical mount, group walk or MCP
+				// endpoint participates in the governed cloud execution path.
+				stage = "harness-execution";
+				harnessStarted = true;
+				const executed = await this.#cloudRuntime.execute(request, root, executionAbort.signal);
+				result = executed;
+				delivery = executed.delivery;
+			} else {
+				if (!mouth) throw new Error("Native legacy mouth is unavailable");
+				stage = "prompt-materialization";
+				const context = await executionPrompt(request);
+				stage = "public-mouth-start";
+				const mouthConnection = await mouth.start();
+				stage = "harness-execution";
+				harnessStarted = true;
+				result = await this.#harness.execute({
+					harness: authority.nativeHarness,
+					model: authority.model,
+					identityRoot: root,
+					companyRoot: request.input.companyRoot,
+					prompt: context.prompt,
+					mouth: mouthConnection,
+					signal: executionAbort.signal,
+				});
+				stage = "public-mouth-completion";
+				delivery = await mouth.finish(context.requireFinalSend);
+				await mouth.close();
+				stage = "workspace-normalization";
+				await grantWorkspaceGroupAccess(request.input.companyRoot);
+			}
 			output = {
 				schema: HARNESS_RESULT_SCHEMA,
 				run_id: authority.runId,
@@ -1049,14 +1090,14 @@ export class NativeProviderHost {
 						cause: validationError,
 					});
 				} else {
-					failure = safeHarnessExecutionFailure(error, mouth.diagnosticState);
+					failure = safeHarnessExecutionFailure(error, mouth?.diagnosticState ?? "uninitialized");
 				}
 			} else {
 				const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
 				failure = new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
 			}
 		} finally {
-			await mouth.close();
+			await mouth?.close();
 			// A provider may rotate its login token before a later request fails.
 			// Preserve only the original credential paths, never transient sessions,
 			// and recheck live authority immediately before replacing the capsule.
@@ -1094,7 +1135,8 @@ export class NativeProviderHost {
 			/* A failed or fenced attempt still leaves partial output that the
 			 * durable review path must be able to read; normalize best-effort
 			 * without masking the original failure. */
-			if (failure) await grantWorkspaceGroupAccess(request.input.companyRoot).catch(() => undefined);
+			if (failure && request.runtime !== "company-path-v1")
+				await grantWorkspaceGroupAccess(request.input.companyRoot).catch(() => undefined);
 			if (root) {
 				try {
 					await rm(root, { recursive: true, force: true });

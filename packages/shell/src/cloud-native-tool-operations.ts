@@ -1,0 +1,268 @@
+import { createHash, randomUUID } from "node:crypto";
+import type { JsonValue } from "@qorpera/contracts";
+import {
+	type CloudNativeToolBinding,
+	type CloudNativeToolIdentity,
+	type CloudNativeToolRun,
+	cloudToolRequest,
+} from "./cloud-native-tool-authority.ts";
+import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
+
+const OPERATION_SCHEMA = "qorpera.cloud-tool-operation/v1";
+const RESULT_SCHEMA = "qorpera.cloud-tool-operation-result/v1";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export interface CloudNativeToolOperationControlPlane {
+	beginToolOperation(
+		binding: CloudNativeToolBinding,
+		input: BeginCloudRunnerOperationInput,
+		signal: AbortSignal,
+	): Promise<unknown>;
+	completeToolOperation(
+		binding: CloudNativeToolBinding,
+		input: CompleteCloudRunnerOperationInput,
+		signal: AbortSignal,
+	): Promise<unknown>;
+}
+
+export interface CloudNativeToolOperation {
+	readonly tool: string;
+	readonly toolVersion: string;
+	readonly logicalOperationKey: string;
+	/** All effective arguments, including exact bytes or immutable byte hashes. Never a call ordinal. */
+	readonly arguments: JsonValue;
+	/** Resolved target, audience, expected versions and policy; the target gateway checks these independently. */
+	readonly target: { [key: string]: JsonValue };
+	readonly requiresCompanyRevision: boolean;
+}
+
+export interface CloudNativeToolOperationOutput {
+	content: CloudToolContent;
+	outputSnapshotId?: string;
+	proposalId?: string;
+}
+
+function record(value: unknown): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid tool operation receipt");
+	return value as Record<string, unknown>;
+}
+
+function freeze(value: JsonValue): void {
+	if (value && typeof value === "object") {
+		for (const child of Object.values(value)) freeze(child);
+		Object.freeze(value);
+	}
+}
+
+/**
+ * Uses the deployed run-operation ledger, not an in-memory exactly-once claim.
+ * A fresh receipt admits one attempt; an existing executing/ambiguous/cancelled
+ * receipt never authorizes another effect. Target authorization remains mandatory.
+ */
+export class CloudNativeToolOperations {
+	readonly #run: CloudNativeToolRun;
+	readonly #control: CloudNativeToolOperationControlPlane;
+	readonly #operations = new Map<string, { digest: string; result: Promise<CloudToolContent> }>();
+	#pending: Promise<void> = Promise.resolve();
+
+	constructor(run: CloudNativeToolRun, control: CloudNativeToolOperationControlPlane) {
+		this.#run = run;
+		this.#control = control;
+	}
+
+	async execute(options: {
+		operation: CloudNativeToolOperation;
+		/** Check live path/destination authority. This does not replace the effect gateway's atomic check. */
+		authorize: (
+			operation: CloudNativeToolOperation,
+			identity: CloudNativeToolIdentity,
+			signal: AbortSignal,
+		) => Promise<void>;
+		/** Must honor cancellation and pass the supplied idempotency key to the effect gateway. */
+		perform: (
+			operation: CloudNativeToolOperation,
+			context: { identity: CloudNativeToolIdentity; receiptId: string; idempotencyKey: string; signal: AbortSignal },
+		) => Promise<CloudNativeToolOperationOutput>;
+		signal: AbortSignal;
+	}): Promise<CloudToolContent> {
+		const signal = AbortSignal.any([options.signal, this.#run.signal]);
+		const { authorize, perform } = options;
+		const serialized = cloudToolJsonText(options.operation);
+		const operation = record(JSON.parse(serialized)) as unknown as CloudNativeToolOperation;
+		if (
+			Object.keys(operation).sort().join() !==
+				"arguments,logicalOperationKey,requiresCompanyRevision,target,tool,toolVersion" ||
+			typeof operation.tool !== "string" ||
+			!/^[a-z][a-z0-9_]{0,63}$/.test(operation.tool) ||
+			typeof operation.toolVersion !== "string" ||
+			!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(operation.toolVersion) ||
+			typeof operation.logicalOperationKey !== "string" ||
+			!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(operation.logicalOperationKey) ||
+			typeof operation.requiresCompanyRevision !== "boolean" ||
+			Object.keys(record(operation.target)).length === 0
+		)
+			throw new Error("Invalid cloud tool operation");
+		freeze(operation as unknown as JsonValue);
+		// Assignment/runner/native lease change on recovery, not the logical work or its principals.
+		const principals = Object.fromEntries(
+			Object.entries(this.#run.identity).filter(([key]) => !["assignmentId", "runnerId", "leaseId"].includes(key)),
+		);
+		const digest = createHash("sha256")
+			.update(cloudToolJsonText({ schema: OPERATION_SCHEMA, principals, operation }))
+			.digest("hex");
+		const key = `${operation.tool}:${operation.logicalOperationKey}`;
+		if (key.length > 256) throw new Error("Invalid cloud tool operation key");
+		const previous = this.#operations.get(key);
+		if (previous && previous.digest !== digest) throw new Error("Cloud tool operation key is bound to other work");
+		if (!previous && this.#operations.size >= 128) throw new Error("Cloud tool operation budget exhausted");
+		const result =
+			previous?.result ??
+			this.#pending.then(async () => {
+				await this.#run.assertActive(signal);
+				await cloudToolRequest((requestSignal) => authorize(operation, this.#run.identity, requestSignal), signal);
+				const receiptId = randomUUID();
+				const idempotencyKey = createHash("sha256")
+					.update(JSON.stringify([OPERATION_SCHEMA, this.#run.identity.runId, key]))
+					.digest("hex");
+				const begun = record(
+					await cloudToolRequest(
+						(requestSignal) =>
+							this.#control.beginToolOperation(
+								this.#run.binding,
+								{
+									receiptId,
+									logicalOperationKey: key,
+									operationKind: "cloud_tool",
+									inputSha256: digest,
+									downstreamIdempotencyKey: idempotencyKey,
+									requiresCompanyRevision: operation.requiresCompanyRevision,
+								},
+								requestSignal,
+							),
+						signal,
+					),
+				);
+				if (
+					begun.run_id !== this.#run.identity.runId ||
+					typeof begun.receipt_id !== "string" ||
+					!UUID.test(begun.receipt_id) ||
+					Object.keys(begun).some(
+						(key) =>
+							!["run_id", "receipt_id", "state", "result", "output_snapshot_id", "proposal_id"].includes(key),
+					)
+				)
+					throw new Error("Cloud tool receipt names another run");
+				if (begun.state === "completed") {
+					if (
+						(begun.output_snapshot_id != null &&
+							(typeof begun.output_snapshot_id !== "string" || !UUID.test(begun.output_snapshot_id))) ||
+						(begun.proposal_id != null &&
+							(typeof begun.proposal_id !== "string" || !UUID.test(begun.proposal_id))) ||
+						(begun.output_snapshot_id != null && begun.proposal_id != null) ||
+						(operation.requiresCompanyRevision && !begun.output_snapshot_id && !begun.proposal_id)
+					)
+						throw new Error("Cloud tool receipt revision differs");
+					const stored = record(begun.result);
+					if (
+						stored.schema !== RESULT_SCHEMA ||
+						stored.inputSha256 !== digest ||
+						Object.keys(stored).sort().join() !== "content,inputSha256,schema"
+					)
+						throw new Error("Cloud tool receipt result differs");
+					const content = record(stored.content);
+					if (
+						Object.keys(content).sort().join() !== "kind,value" ||
+						(content.kind !== "text" && content.kind !== "json") ||
+						(content.kind === "text" && typeof content.value !== "string")
+					)
+						throw new Error("Invalid cloud tool receipt content");
+					cloudToolJsonText(content, 48 * 1024);
+					return structuredClone(content) as unknown as CloudToolContent;
+				}
+				if (
+					begun.state !== "executing" ||
+					begun.receipt_id !== receiptId ||
+					begun.result != null ||
+					begun.output_snapshot_id != null ||
+					begun.proposal_id != null
+				)
+					throw new Error("Cloud tool operation requires recovery review");
+				await this.#run.assertActive(signal);
+				await cloudToolRequest((requestSignal) => authorize(operation, this.#run.identity, requestSignal), signal);
+				signal.throwIfAborted();
+				const output = await cloudToolRequest(
+					(requestSignal) =>
+						perform(operation, {
+							identity: this.#run.identity,
+							receiptId,
+							idempotencyKey,
+							signal: requestSignal,
+						}),
+					signal,
+					30_000,
+				);
+				// An effect may have happened even if this or completion fails. Its executing receipt remains a fence.
+				signal.throwIfAborted();
+				const content = record(output.content);
+				if (
+					Object.keys(content).sort().join() !== "kind,value" ||
+					(content.kind !== "text" && content.kind !== "json") ||
+					(content.kind === "text" && typeof content.value !== "string") ||
+					(output.outputSnapshotId !== undefined &&
+						(typeof output.outputSnapshotId !== "string" || !UUID.test(output.outputSnapshotId))) ||
+					(output.proposalId !== undefined &&
+						(typeof output.proposalId !== "string" || !UUID.test(output.proposalId))) ||
+					(output.outputSnapshotId !== undefined && output.proposalId !== undefined) ||
+					(operation.requiresCompanyRevision && !output.outputSnapshotId && !output.proposalId)
+				)
+					throw new Error("Invalid cloud tool operation output");
+				const storedResult = JSON.parse(
+					cloudToolJsonText({ schema: RESULT_SCHEMA, inputSha256: digest, content }, 48 * 1024),
+				) as JsonValue;
+				const { outputSnapshotId, proposalId } = output;
+				await this.#run.assertActive(signal);
+				const completed = record(
+					await cloudToolRequest(
+						(requestSignal) =>
+							this.#control.completeToolOperation(
+								this.#run.binding,
+								{
+									receiptId,
+									inputSha256: digest,
+									result: storedResult,
+									...(outputSnapshotId ? { outputSnapshotId } : {}),
+									...(proposalId ? { proposalId } : {}),
+								},
+								requestSignal,
+							),
+						signal,
+					),
+				);
+				if (
+					completed.run_id !== this.#run.identity.runId ||
+					completed.receipt_id !== receiptId ||
+					completed.state !== "completed" ||
+					Object.keys(completed).sort().join() !== "receipt_id,result,run_id,state" ||
+					cloudToolJsonText(completed.result) !== cloudToolJsonText(storedResult)
+				)
+					throw new Error("Cloud tool completion was not confirmed");
+				return structuredClone(record(storedResult).content) as CloudToolContent;
+			});
+		if (!previous) {
+			this.#operations.set(key, { digest, result });
+			this.#pending = result.then(
+				() => undefined,
+				() => undefined,
+			);
+		}
+		try {
+			const content = await result;
+			await this.#run.assertActive(signal);
+			await cloudToolRequest((requestSignal) => authorize(operation, this.#run.identity, requestSignal), signal);
+			return structuredClone(content);
+		} catch {
+			throw new Error("Cloud tool operation outcome unconfirmed");
+		}
+	}
+}

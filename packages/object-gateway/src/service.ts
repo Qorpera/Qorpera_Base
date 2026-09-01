@@ -1,7 +1,11 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
+import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
+import { type NativeCompanyObjectOptions, serveNativeCompanyObject } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
-import type { ObjectGatewayAuthority } from "./supabase-authority.ts";
+import type { ObjectReadLeases } from "./read-lease.ts";
+import type { ObjectGatewayReplication } from "./replication.ts";
+import type { AuthorizedObject, ObjectGatewayAuthority } from "./supabase-authority.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -13,6 +17,10 @@ export interface ObjectGatewayServiceOptions {
 	authority: ObjectGatewayAuthority;
 	controlToken: string;
 	verifierToken: string;
+	readLeases?: ObjectReadLeases;
+	revocationToken?: string;
+	replication?: ObjectGatewayReplication;
+	nativeObjects?: NativeCompanyObjectOptions;
 }
 
 class HttpError extends Error {
@@ -85,11 +93,106 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 	if (secureEqual(options.controlToken, options.verifierToken)) {
 		throw new Error("Object gateway control and verifier tokens must be distinct");
 	}
+	if (
+		options.nativeObjects &&
+		(!options.replication ||
+			!/^[A-Za-z0-9_-]{43}$/.test(options.nativeObjects.token) ||
+			[options.controlToken, options.verifierToken, options.revocationToken].some(
+				(token) => token !== undefined && secureEqual(token, options.nativeObjects!.token),
+			))
+	) {
+		throw new Error("Native object staging requires replication and a distinct private credential");
+	}
+	if (
+		options.readLeases &&
+		(!options.revocationToken ||
+			[options.controlToken, options.verifierToken].some((token) => secureEqual(token, options.revocationToken!)))
+	) {
+		throw new Error("Read delegation requires a distinct revocation credential");
+	}
 	return (request, response) => {
 		void (async () => {
 			try {
-				if (request.method === "GET" && request.url === "/healthz") {
-					json(response, 200, { status: "ok" });
+				if (request.method === "GET" && request.url === "/livez") {
+					json(response, 200, { status: "alive" });
+					return;
+				}
+				if (request.method === "GET" && (request.url === "/healthz" || request.url === "/readyz")) {
+					const dependencies = {
+						nas: options.store.dependencyHealth(),
+						...(options.authority.health?.() ?? {
+							api: { status: "unknown" },
+							storage: { status: "unknown" },
+							auth: { status: "unknown" },
+						}),
+					};
+					const replication = options.replication
+						? await boundedObjectOperation(() => options.replication!.status()).catch(() => ({
+								pending: null,
+								blocked: null,
+								degraded: true,
+								journal: "unavailable",
+							}))
+						: { pending: 0, blocked: 0, degraded: true, journal: "unconfigured" };
+					const recentHealthy = (dependency: ObjectDependencyHealth): boolean => {
+						const age = Date.now() - Date.parse(dependency.checkedAt ?? "");
+						return dependency.status === "healthy" && age >= 0 && age < 60_000;
+					};
+					const healthy = Object.values(dependencies).every(recentHealthy) && !replication.degraded;
+					const ready =
+						replication.pending !== null &&
+						((recentHealthy(dependencies.api) &&
+							(recentHealthy(dependencies.nas) || recentHealthy(dependencies.storage))) ||
+							(Boolean(options.readLeases) && recentHealthy(dependencies.nas)));
+					// A dependency incident must not drain the fallback's own ingress.
+					// Readiness means a bounded serving lane, never full cloud health.
+					json(response, (request.url === "/readyz" ? ready : healthy) ? 200 : 503, {
+						status: healthy ? "healthy" : "degraded",
+						ready,
+						dependencies,
+						replication,
+						readContinuity: options.readLeases ? "bounded-exact-object-leases" : "disabled",
+						controlContinuity: "requires-live-authority",
+					});
+					return;
+				}
+				if (request.method === "POST" && request.url === "/v1/read-leases/revoke") {
+					if (
+						!options.readLeases ||
+						!options.revocationToken ||
+						!secureEqual(bearer(request), options.revocationToken)
+					)
+						throw new HttpError(401, "Unauthorized");
+					const length = boundedInteger(request.headers["content-length"], "Content-Length", 1024);
+					const bytes = await boundedObjectOperation(() => readBody(request, length));
+					const value: unknown = JSON.parse(Buffer.from(bytes).toString("utf-8"));
+					if (!value || typeof value !== "object" || Array.isArray(value))
+						throw new HttpError(400, "Invalid revocation");
+					const scope = value as Record<string, unknown>;
+					if (
+						Object.keys(scope).some((name) => !["profileId", "subjectId", "sessionId"].includes(name)) ||
+						typeof scope.profileId !== "string" ||
+						(scope.subjectId !== undefined && typeof scope.subjectId !== "string") ||
+						(scope.sessionId !== undefined && typeof scope.sessionId !== "string")
+					)
+						throw new HttpError(400, "Invalid revocation");
+					await options.readLeases.revoke(
+						scope.profileId,
+						scope.subjectId as string | undefined,
+						scope.sessionId as string | undefined,
+					);
+					json(response, 200, { status: "revoked" });
+					return;
+				}
+				if (request.url?.startsWith("/v1/native-company-objects/")) {
+					if (!options.nativeObjects || !options.replication) throw new HttpError(404, "Not found");
+					await serveNativeCompanyObject(
+						request,
+						response,
+						options.nativeObjects,
+						options.store,
+						options.replication,
+					);
 					return;
 				}
 				const { profileId, sha256 } = objectIdentity(request);
@@ -97,32 +200,65 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					const token = bearer(request);
 					const length = boundedInteger(request.headers["content-length"], "Content-Length", MAX_OBJECT_BYTES);
 					await options.authority.authorizeUpload(token, profileId, sha256, length);
-					const bytes = await readBody(request, length);
+					const bytes = await boundedObjectOperation(() => readBody(request, length));
 					if (createHash("sha256").update(bytes).digest("hex") !== sha256) {
 						throw new HttpError(400, "Object body does not match its SHA-256 address");
 					}
-					const result = await options.store.put(profileId, sha256, bytes);
-					await options.authority.confirmUpload(profileId, sha256, length);
-					json(response, result === "stored" ? 201 : 200, { status: result, sha256, bytes: length });
+					const result = options.replication
+						? await options.replication.upload(token, profileId, sha256, bytes)
+						: await options.store.put(profileId, sha256, bytes);
+					if (!options.replication) await options.authority.confirmUpload(profileId, sha256, length);
+					json(response, result === "stored" ? 201 : 200, {
+						status: result,
+						sha256,
+						bytes: length,
+						replication: options.replication ? "pending" : "unmanaged",
+					});
 					return;
 				}
 				if (request.method === "GET") {
 					const token = bearer(request);
-					const authority = secureEqual(token, options.verifierToken)
-						? await options.authority.authorizeServiceDownload(profileId, sha256)
-						: await options.authority.authorizeDownload(token, profileId, sha256);
-					const bytes = verified(
-						authority.backend === "nas-object-gateway"
-							? await options.store.get(profileId, sha256, authority.bytes)
-							: await options.authority.readLegacyObject(profileId, sha256),
-						sha256,
-						authority.bytes,
-					);
+					const verifier = secureEqual(token, options.verifierToken);
+					let delegated = false;
+					let authority: AuthorizedObject;
+					try {
+						authority = verifier
+							? await options.authority.authorizeServiceDownload(profileId, sha256)
+							: await options.authority.authorizeDownload(token, profileId, sha256);
+						if (!verifier && options.readLeases)
+							await options.readLeases.remember(token, profileId, sha256, authority);
+					} catch (error) {
+						if (!verifier && options.readLeases && error instanceof ObjectDependencyError) {
+							if (!error.unavailable) {
+								await options.readLeases.rejectToken(token);
+								throw error;
+							}
+							authority = await options.readLeases.authorize(token, profileId, sha256);
+							delegated = true;
+						} else throw error;
+					}
+					let bytes: Uint8Array;
+					try {
+						bytes = await options.store.get(profileId, sha256, authority.bytes);
+					} catch (error) {
+						if (
+							delegated ||
+							!(error instanceof Error) ||
+							(error.message !== "Object not found" &&
+								!(error instanceof ObjectDependencyError && error.unavailable))
+						)
+							throw error;
+						bytes = await options.authority.readLegacyObject(profileId, sha256);
+					}
+					verified(bytes, sha256, authority.bytes);
+					// Do not release bytes after a slow NAS read outlived its permission.
+					if (delegated) await options.readLeases!.authorize(token, profileId, sha256);
 					response.writeHead(200, {
 						"cache-control": "private, no-store",
 						"content-length": String(bytes.byteLength),
 						"content-type": "application/octet-stream",
 						etag: `"sha256-${sha256}"`,
+						"x-qorpera-access-mode": delegated ? "bounded-read-lease" : "live-authority",
 					});
 					response.end(bytes);
 					return;
@@ -152,8 +288,12 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						response.end();
 						return;
 					}
-					await options.store.remove(profileId, sha256);
-					await options.authority.finalizeDelete(authorization.authorizationId, profileId, sha256, bytes);
+					if (options.replication)
+						await options.replication.remove(profileId, sha256, bytes, authorization.authorizationId);
+					else {
+						await options.store.remove(profileId, sha256);
+						await options.authority.finalizeDelete(authorization.authorizationId, profileId, sha256, bytes);
+					}
 					response.writeHead(204, { "cache-control": "no-store" });
 					response.end();
 					return;
@@ -166,6 +306,10 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 				}
 				if (error instanceof HttpError) {
 					json(response, error.status, { error: error.message });
+					return;
+				}
+				if (error instanceof ObjectDependencyError) {
+					json(response, error.unavailable ? 503 : error.status, { error: error.message });
 					return;
 				}
 				json(response, 503, { error: "Object gateway operation failed" });

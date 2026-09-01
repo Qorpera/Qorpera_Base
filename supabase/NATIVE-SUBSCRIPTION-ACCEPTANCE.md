@@ -13,6 +13,17 @@ mandatory assertion below has passed against a deployed environment.
 
 ## Security and ownership boundary
 
+Authorized exception, 2026-08-28: runtime Step 2 may use the narrowly patched,
+source- and binary-pinned Codex artifact described in
+[`../deploy/first-node/native-codex/README.md`](../deploy/first-node/native-codex/README.md).
+Only the pre-model tool-result callback and local capability marker differ
+from upstream. Native login, credential custody, provider transport and sponsor
+selection are unchanged. This is not authorization for a credential-reading
+proxy, arbitrary provider patches, deployment, or a claim that real-subscription
+acceptance passed. References below to an unmodified/official Codex harness
+include only this explicitly approved downstream artifact after its own gates
+pass. Claude has no such exception.
+
 - Qorpera application and control-plane code must never receive, parse, log, or
   store a plaintext provider credential. The official Codex or Claude harness
   receives it only inside the authorized execution boundary.

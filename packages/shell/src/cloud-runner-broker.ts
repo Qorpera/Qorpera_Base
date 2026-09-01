@@ -70,6 +70,7 @@ export interface CloudRunnerBrokerAuthority {
 }
 
 export interface CloudRunnerBrokerDescription {
+	companyRuntime: "whole-tree-v1" | "company-path-v1";
 	job: CloudRunnerJob;
 	run: CloudRunnerExecutionRun;
 	sponsor: CloudRunnerExecutionSponsor;
@@ -1029,6 +1030,9 @@ function parseTranscriptContextEvent(value: unknown): CloudRunnerTranscriptConte
 
 export function parseCloudRunnerBrokerDescription(value: unknown): CloudRunnerBrokerDescription {
 	const input = record(value, "description");
+	if (input.company_runtime !== "whole-tree-v1" && input.company_runtime !== "company-path-v1") {
+		throw new Error("Runner broker returned an invalid Company File runtime selection");
+	}
 	const limits = record(input.output_limits, "output limits");
 	const companyFileLimits = record(input.company_file_output_limits, "Company File output limits");
 	integer(companyFileLimits.tree_contract_version, "Company File output tree contract", 3, 3);
@@ -1036,6 +1040,7 @@ export function parseCloudRunnerBrokerDescription(value: unknown): CloudRunnerBr
 		throw new Error("Runner broker returned unsupported output root contract");
 	}
 	return {
+		companyRuntime: input.company_runtime,
 		job: parseBrokerJob(input.job),
 		run: parseExecutionRun(input.run),
 		sponsor: parseExecutionSponsor(input.sponsor),

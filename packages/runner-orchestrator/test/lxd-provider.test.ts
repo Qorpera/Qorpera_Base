@@ -12,6 +12,7 @@ import type {
 	LxdStorageVolumeRecord,
 } from "../src/lxd-client.ts";
 import {
+	HttpLxdGuestTransport,
 	LxdCloudRunnerProviderBackend,
 	type LxdCloudRunnerProviderConfig,
 	type LxdGuestTransport,
@@ -88,6 +89,9 @@ function work(): CloudRunnerWork {
 class FakeLxd implements LxdClient {
 	instance?: LxdInstanceRecord;
 	volume?: LxdStorageVolumeRecord;
+	volumes = new Map<string, LxdStorageVolumeRecord>();
+	profileDevices: Record<string, Record<string, string>> = {};
+	profileConfig: Record<string, string> = {};
 	createCalls: LxdCreateInstanceRequest[] = [];
 	createVolumeCalls: LxdCreateStorageVolumeRequest[] = [];
 	powerCalls: LxdInstancePowerAction[] = [];
@@ -108,8 +112,9 @@ class FakeLxd implements LxdClient {
 		};
 	}
 
-	async getStorageVolume(): Promise<LxdStorageVolumeRecord | undefined> {
-		return this.volume ? structuredClone(this.volume) : undefined;
+	async getStorageVolume(_project: string, _pool: string, name: string): Promise<LxdStorageVolumeRecord | undefined> {
+		const volume = this.volumes.get(name) ?? (this.volume?.name === name ? this.volume : undefined);
+		return volume ? structuredClone(volume) : undefined;
 	}
 
 	async createStorageVolume(_project: string, _pool: string, request: LxdCreateStorageVolumeRequest): Promise<void> {
@@ -121,6 +126,7 @@ class FakeLxd implements LxdClient {
 			description: request.description,
 			config: structuredClone(request.config),
 		};
+		this.volumes.set(request.name, structuredClone(this.volume));
 	}
 
 	async createInstance(_project: string, request: LxdCreateInstanceRequest): Promise<void> {
@@ -133,6 +139,8 @@ class FakeLxd implements LxdClient {
 			config: structuredClone(request.config),
 			profiles: [...request.profiles],
 			devices: structuredClone(request.devices),
+			expandedDevices: structuredClone({ ...this.profileDevices, ...request.devices }),
+			expandedConfig: structuredClone({ ...this.profileConfig, ...request.config }),
 		};
 	}
 
@@ -210,6 +218,7 @@ function config(stateRoot: string): LxdCloudRunnerProviderConfig {
 
 function fetchProvisioner(requests: Array<{ url: string; body: Record<string, unknown> }>): typeof fetch {
 	return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+		expect(init?.redirect).toBe("error");
 		const url = String(input);
 		requests.push({ url, body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
 		return new Response(
@@ -229,6 +238,22 @@ function fetchProvisioner(requests: Array<{ url: string; body: Record<string, un
 			{ status: url.includes("qorpera_provision_execution_runner") ? 200 : 404 },
 		);
 	}) as typeof fetch;
+}
+
+function governedConfig(stateRoot: string): LxdCloudRunnerProviderConfig {
+	return {
+		...config(stateRoot),
+		nativeCompanyRuntime: {
+			mode: "company-path-v1",
+			codexPath: "/opt/qorpera-harnesses/native-company/codex",
+			binarySha256: "a".repeat(64),
+			objectGatewayUrl: "https://objects.example.test",
+			objectGatewayToken: "q".repeat(43),
+			network: "qorpera0",
+			recoveryVolumePrefix: "native-recovery-",
+			recoveryVolumeSize: "1GiB",
+		},
+	};
 }
 
 function delivery(request: CloudRunnerWork): CloudRunnerAssignmentDelivery {
@@ -520,5 +545,219 @@ describe("LXD cloud runner provider", () => {
 		await expect(backend.acquire(runId, request, new AbortController().signal)).rejects.toThrow(
 			"does not admit long-lived company computers",
 		);
+	});
+
+	it("pins a governed lane with independent retained recovery and no canonical mount or shared workspace", async () => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		expect(lxd.createVolumeCalls).toHaveLength(2);
+		expect(lxd.createVolumeCalls[1]).toMatchObject({
+			name: `native-recovery-${runId}`,
+			config: {
+				"user.qorpera.schema": "qorpera.native-company-recovery-volume/v1",
+				"user.qorpera.run_id": runId,
+				"user.qorpera.profile_id": work().profileId,
+				"user.qorpera.runner_id": runnerId,
+			},
+		});
+		expect(Object.keys(lxd.createCalls[0]?.devices ?? {}).sort()).toEqual([
+			"compute-identity",
+			"enp5s0",
+			"root",
+			"runner-recovery",
+		]);
+		expect(lxd.createCalls[0]?.devices["runner-recovery"]).toEqual({
+			type: "disk",
+			pool: "qorpera-vm",
+			path: "/var/lib/qorpera-runner",
+			source: `native-recovery-${runId}`,
+		});
+		const files = new Map(lxd.filePushes.map((file) => [file.path, file.content]));
+		const bootstrap = JSON.parse(files.get("/var/lib/qorpera-bootstrap/bootstrap.json") ?? "null");
+		expect(bootstrap).toMatchObject({
+			schema: "qorpera.lxd-company-runner-bootstrap/v1",
+			company_runtime: {
+				mode: "company-path-v1",
+				run_id: runId,
+				profile_id: work().profileId,
+				runner_id: runnerId,
+				binary_sha256: "a".repeat(64),
+				recovery_volume_path: "/var/lib/qorpera-runner",
+			},
+		});
+		const runnerConfig = JSON.parse(files.get("/var/lib/qorpera-bootstrap/runner-config.json") ?? "null");
+		expect(runnerConfig.native_bridge_shared_gid).toBeUndefined();
+		expect(runnerConfig.environment).toEqual({});
+		const environment = files.get("/var/lib/qorpera-bootstrap/native-provider.env");
+		expect(environment).toContain("QORPERA_NATIVE_RUNTIME=company-path-v1\n");
+		expect(environment).not.toContain("q".repeat(43));
+		expect(files.get("/var/lib/qorpera-bootstrap/credentials/qorpera-native-object-token")).toBe(
+			`${"q".repeat(43)}\n`,
+		);
+		const journal = await readFile(join(settings.stateRoot, runId, "journal.json"), "utf-8");
+		expect(journal).not.toContain("q".repeat(43));
+		expect(JSON.parse(journal)).toMatchObject({ schema: "qorpera.lxd-company-provider-journal/v1" });
+		expect(JSON.stringify(lxd.createCalls)).not.toContain("q".repeat(43));
+		const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		await expect(restarted.acquire(runId, work(), new AbortController().signal)).resolves.toEqual(runner);
+		expect(lxd.createVolumeCalls).toHaveLength(2);
+		await restarted.deliver(runner, delivery(work()));
+		await restarted.stop(runner, "idle");
+		expect(lxd.volumes.has(`native-recovery-${runId}`)).toBe(true);
+	});
+
+	it.each(["foreign-disk", "foreign-network", "cloud-init", "raw-qemu", "prototype-key"])(
+		"refuses inherited %s before startup or secret injection",
+		async (drift) => {
+			const directory = await root();
+			const lxd = new FakeLxd();
+			if (drift === "foreign-disk")
+				lxd.profileDevices.hidden = { type: "disk", source: "/srv/company", path: "/company" };
+			if (drift === "foreign-network")
+				lxd.profileDevices.hidden = { type: "nic", network: "host-network", name: "eth1" };
+			if (drift === "cloud-init") lxd.profileConfig["cloud-init.user-data"] = "untrusted init";
+			if (drift === "raw-qemu") lxd.profileConfig["raw.qemu"] = "unexpected mount";
+			if (drift === "prototype-key")
+				lxd.profileConfig = { ...lxd.profileConfig, constructor: "unexpected configuration" };
+			const backend = new LxdCloudRunnerProviderBackend(
+				governedConfig(join(directory, "state")),
+				lxd,
+				new FakeGuest(),
+				fetchProvisioner([]),
+			);
+			await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
+				"expanded configuration",
+			);
+			expect(lxd.powerCalls).toEqual([]);
+			expect(lxd.filePushes).toEqual([]);
+		},
+	);
+
+	it("rechecks inherited devices before each assignment delivery", async () => {
+		const directory = await root();
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(
+			governedConfig(join(directory, "state")),
+			lxd,
+			guest,
+			fetchProvisioner([]),
+		);
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		if (!lxd.instance) throw new Error("missing fake guest");
+		lxd.instance.expandedDevices = {
+			...lxd.instance.expandedDevices,
+			bypass: { type: "disk", path: "/company", source: "/srv/company" },
+		};
+		await expect(backend.deliver(runner, delivery(work()))).rejects.toThrow("expanded configuration");
+		expect(guest.deliveries).toEqual([]);
+	});
+
+	it.each(["missing", "foreign"])(
+		"quarantines %s recovery storage without creating an empty replacement",
+		async (kind) => {
+			const directory = await root();
+			const lxd = new FakeLxd();
+			const backend = new LxdCloudRunnerProviderBackend(
+				governedConfig(join(directory, "state")),
+				lxd,
+				new FakeGuest(),
+				fetchProvisioner([]),
+			);
+			await backend.acquire(runId, work(), new AbortController().signal);
+			const name = `native-recovery-${runId}`;
+			const volume = lxd.volumes.get(name);
+			if (!volume) throw new Error("missing recovery fixture");
+			if (kind === "missing") {
+				lxd.volumes.delete(name);
+				lxd.volume = undefined;
+			} else volume.config = { ...volume.config, "user.qorpera.profile_id": "foreign-company" };
+			await expect(backend.reconcile()).rejects.toThrow(/recovery volume/i);
+			expect(lxd.createVolumeCalls).toHaveLength(2);
+		},
+	);
+
+	it("refuses runtime downgrades and changed pins on journal replay", async () => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		await new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetchProvisioner([])).acquire(
+			runId,
+			work(),
+			new AbortController().signal,
+		);
+		const downgraded = new LxdCloudRunnerProviderBackend(
+			config(settings.stateRoot),
+			lxd,
+			new FakeGuest(),
+			fetchProvisioner([]),
+		);
+		await expect(downgraded.reconcile()).rejects.toThrow("cannot switch runtime");
+		if (!settings.nativeCompanyRuntime) throw new Error("missing governed settings");
+		settings.nativeCompanyRuntime.binarySha256 = "b".repeat(64);
+		const changed = new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetchProvisioner([]));
+		await expect(changed.reconcile()).rejects.toThrow("cannot switch runtime");
+		expect(lxd.createCalls).toHaveLength(1);
+	});
+
+	it("rejects mixed direct-mount and governed runtime configurations", async () => {
+		const settings = governedConfig(join(await root(), "state"));
+		expect(
+			() =>
+				new LxdCloudRunnerProviderBackend(
+					{ ...settings, liveCompanyRoot: "/srv/company", liveCompanyProfileId: work().profileId },
+					new FakeLxd(),
+					new FakeGuest(),
+					fetchProvisioner([]),
+				),
+		).toThrow("cannot mount a live Company File");
+	});
+
+	it.each([
+		"http://example.supabase.co",
+		"https://secret@example.supabase.co",
+		"https://example.supabase.co/api",
+		"https://example.supabase.co/?token=secret",
+		"https://example.supabase.co/#other",
+		"invalid",
+	])("refuses ambiguous or insecure governed control-plane origins (%#)", async (supabaseUrl) => {
+		const settings = governedConfig(join(await root(), "state"));
+		expect(() => new LxdCloudRunnerProviderBackend({ ...settings, supabaseUrl }, new FakeLxd())).toThrow(
+			"exact HTTPS control-plane origin",
+		);
+	});
+
+	it("pins guest transport destinations, refuses redirects, and cancels unused response bodies", async () => {
+		const lxd = new FakeLxd();
+		vi.spyOn(lxd, "getInstanceState").mockResolvedValue({
+			status: "Running",
+			statusCode: 103,
+			network: { enp5s0: { addresses: [{ family: "inet", address: "10.41.0.2", scope: "global" }] } },
+		});
+		const cancel = vi.fn();
+		const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+			expect(init?.redirect).toBe("error");
+			return new Response(new ReadableStream<Uint8Array>({ cancel }), { status: 200 });
+		});
+		const transport = new HttpLxdGuestTransport(lxd, fetcher);
+		const address = await transport.waitReady("qorpera-runners", "guest", "enp5s0", 8082, 1_000);
+		expect(address).toBe("10.41.0.2");
+		await transport.deliver(address, 8082, "q".repeat(43), delivery(work()));
+		expect(fetcher.mock.calls.map(([input]) => String(input))).toEqual([
+			"http://10.41.0.2:8082/healthz",
+			"http://10.41.0.2:8082/v1/assignment",
+		]);
+		expect(cancel).toHaveBeenCalledTimes(2);
+		await expect(
+			transport.deliver("127.0.0.1@untrusted.test", 8082, "q".repeat(43), delivery(work())),
+		).rejects.toThrow("destination or token is invalid");
+		await expect(transport.deliver(address, 8082, "invalid", delivery(work()))).rejects.toThrow(
+			"destination or token is invalid",
+		);
+		expect(fetcher).toHaveBeenCalledTimes(2);
 	});
 });

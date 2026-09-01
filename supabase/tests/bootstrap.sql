@@ -61,6 +61,8 @@ create table storage.objects (
 	bucket_id text not null references storage.buckets(id) on delete cascade,
 	name text not null,
 	metadata jsonb,
+	-- Supabase Storage preserves x-metadata through preflight and final upload.
+	user_metadata jsonb,
 	created_at timestamptz not null default statement_timestamp(),
 	updated_at timestamptz not null default statement_timestamp(),
 	unique (bucket_id, name)
