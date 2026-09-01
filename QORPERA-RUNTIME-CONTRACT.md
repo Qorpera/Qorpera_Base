@@ -10,6 +10,8 @@
 
 **Minimum operational observability ratified:** 2026-08-31
 
+**Azure backup/overflow deferred to post-build:** 2026-08-31
+
 **Scope:** Pure-cloud agent behavior, the live Company File, execution,
 authority, context, tools, computers, workers, memory, routines, rooms,
 Co-Founder formation, departments, projects, safety, and provider integration
@@ -44,6 +46,12 @@ and the legacy local Pi company and engine documentation. Their compatible UI,
 Company File, and local compatibility details remain valid.
 
 The words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are normative.
+
+Azure backup/overflow compute is a deferred post-build integration, as defined
+in section 19. It is not a prerequisite for Orders 0–10, development-partner
+testing, or initial runtime launch. This scope decision also applies to Azure
+overflow gates in referenced infrastructure documents; it does not waive the
+security, custody, recovery, or durability requirements of enabled services.
 
 ## 2. Product thesis
 
@@ -1113,6 +1121,7 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 8 | Scheduler and listeners | Company File intent plus one compiled trigger wakes the same agent; deterministic deduplication, timezone, expiry, quiet policy, auth suspension, and projection consistency pass. |
 | 9 | Isolated coding VMs and PRs | Worker, VM, repository, branch, follow-up identity, publication, and completion listener retain continuity. |
 | 10 | Constitution and hire overlays | Compile a short constitution over the proven loop; add a name and job spec last, without creating a second brain. |
+| Post-build (deferred) | Azure backup/overflow compute | After Orders 0–10 are built, separately approve and prove the optional capacity integration and its placement, failover, isolation, recovery, release, and usage records before enabling it for users. This is not a gate on the preceding orders or initial launch. |
 
 Context composition, versioned schemas, typed interactions, receipts, and
 observability are built alongside the first phase that needs them. They are not
@@ -1167,7 +1176,7 @@ healthy or unused.
 Optional diagnostic export failure MUST NOT block product work; it does not
 relax mandatory transactional authority, mutation or allocation records.
 
-#### Live capacity, usage and Azure overflow
+#### Live capacity and usage
 
 The initial operational view MUST report:
 
@@ -1181,24 +1190,22 @@ The initial operational view MUST report:
   Reservations for pending starts MUST consume capacity before provisioning;
   capacity is released only after the allocation's resources are confirmed free.
 - Requests waiting for capacity, provisioning failures, and each placement's
-  location and reason, including Azure overflow caused by local capacity limits.
+  location and reason on enabled compute sources.
   Concurrent admission MUST NOT allocate the same remaining capacity twice.
-- Azure computers starting/running or still allocated, their company/resource
-  identities, and rented allocation intervals/compute-hours. Running time and
-  retained allocation time MUST be distinguished; neither is an invoice or a
-  claim that stopping a VM removes every provider charge. Unavailable or
-  unconfigured overflow MUST be shown, not treated as unlimited capacity.
-- Distinct computers, companies and human users served on each compute source.
-  Users belonging to an Azure-hosted company and users actively using it are
+- Distinct computers, companies and human users served on each enabled compute
+  source. Users belonging to a company and users actively using its computer are
   separate counts. Active-user counts MUST declare their observation window
   and activity source; membership alone is not activity, and missing activity
   observations MUST NOT be guessed. Shared computers and agents are not users.
+- Deferred or unconfigured overflow MUST be shown as unavailable, not spare
+  capacity. When enabled capacity is exhausted, admission follows its bounded
+  queue or typed capacity-unavailable policy; it MUST NOT silently enable Azure.
 
 Live capacity MUST derive from scheduler inventory, reservations, allocation
 state and provider/node observations, not a delayed analytics warehouse. Runtime
 records MUST preserve placement changes so historical usage remains attributable
-to local versus Azure compute. Azure visibility is required alongside any Azure
-overflow execution path before that path serves users.
+to the actual compute source. Azure-specific integration and accounting are
+deferred together to the post-build enablement gate below.
 
 Basic usage accounting MUST count running computer-hours once per computer,
 regardless of the number of agents or members sharing it. Screen lifetimes are
@@ -1214,8 +1221,9 @@ and precise screen-idle classification are not initial launch requirements.
 | 0 | Shared identity/version linkage, queryable records, Company File operation results and existing authority/mutation receipts; baseline monitoring for deployed nodes. |
 | 1 | Job, model and major-tool timing/status/errors linked to canonical conversation delivery; retain counters already available at the boundary. |
 | 2-3 | Extend the same records to enforcement outcomes, queues, wake sources and retries; do not require a new analysis subsystem. |
-| 4 | Computer/screen lifecycle records, basic usage accounting, current local capacity and demand, node health, and placement/Azure overflow visibility. |
+| 4 | Computer/screen lifecycle records, basic usage accounting, current local capacity and demand, node health, and placement visibility for enabled compute. No Azure integration is required. |
 | 5-10 | Extend the same small record contract as workers, memory, connectors, routines and coding computers are introduced. |
+| Post-build (deferred) | Add Azure-specific placements, rented allocation intervals, failover outcomes and usage visibility with the optional Azure backup/overflow integration, before enabling it for users. |
 
 For an already-implemented phase, close these record gaps alongside current
 work rather than rebuilding the phase or waiting for the whole runtime to finish.
@@ -1236,15 +1244,41 @@ and automatic optimization experiments. These MAY be added when measured
 problems or sufficient usage justify them. This deferral does not weaken the
 runtime's existing testing, authority, provenance or outcome requirements.
 
-Azure overflow provisioning is deferred for development-partner testing as of
-2026-08-31. An unconfigured overflow path is unavailable, not spare capacity.
-This defers optional rented execution capacity; it does not waive independent
-secret custody, encrypted recovery, or authority checks for any enabled path.
-Those services are deployment dependencies even when their current provider
-is Azure. Their existing paused state must not be reported as production-ready.
-
 The Orders 0/2 source implementation, operator interfaces and measurement limits
 are recorded in [operational observability](deploy/first-node/RUNTIME-STEPS-0-2-OBSERVABILITY.md).
+
+### Deferred post-build integration: Azure backup/overflow
+
+Ratified on 2026-08-31: Azure backup/overflow compute is optional rented
+execution capacity for demand or compute failover beyond Qorpera's primary
+cloud nodes. Its remaining provider integration, provisioning, capacity routing,
+failover/recovery wiring, and Azure-specific operational views belong after
+the Orders 0–10 runtime build. They MUST NOT hold Order 0/2 closure, progression
+to Order 3, Order 4 completion, development-partner testing, or initial runtime
+launch open.
+
+Before this optional path is later enabled for users, its own acceptance MUST
+prove the existing tenant, authority, secret-custody, isolation, and Company
+File guarantees, plus:
+
+- placement reasons and local/Azure placement history, including failed or
+  unavailable overflow and failover without duplicate effects;
+- computer lifecycle and confirmed resource release, with running time separate
+  from retained allocation intervals and rented compute-hours; neither is an
+  invoice or proof that stopping a VM removes every provider charge; and
+- distinct computers, companies, associated members, and observed active users,
+  with explicit activity windows and sources rather than inferred user counts.
+
+Until that separately approved integration is accepted, Azure backup/overflow
+remains unavailable. Existing code, resources, and proof records are preserved
+without being treated as enabled capacity or current acceptance.
+
+This deferral covers optional compute capacity, not Company File durability,
+encrypted data backups, independent secret custody, or recovery and authority
+checks required by enabled services. Those requirements remain provider-neutral
+and mandatory even when an existing service happens to be hosted in Azure;
+this contract does not require Azure specifically to satisfy them. A paused
+required service MUST NOT be reported as production-ready.
 
 ### Organizational hierarchy placement
 
@@ -1403,13 +1437,15 @@ optional Azure overflow remains deferred as ratified above.
 | Secrets stay out of context | Company-centered cloud secret broker, operation grants, credential bridge, and result fence | Refer to purpose and handle, never value. |
 | Low effort is the thread default | Run admission policy | Escalate effort only for a reason. |
 | Basic diagnostics stay attributable | Runtime boundaries, canonical records, node monitoring and operator queries | Investigate recorded outcomes; do not invent missing measurements. |
-| Capacity and overflow reflect allocations | Scheduler inventory, reservations, provider state and placement records | Do not treat idle allocated resources as free or equate computers with users. |
+| Capacity and enabled overflow reflect allocations | Scheduler inventory, reservations, provider state and placement records; Azure extension is post-build | Do not treat idle allocated resources as free or equate computers with users. |
 | Usage preserves lifecycle meaning | Computer/screen lifecycle owners and basic usage accounting | Distinguish running, suspended, allocated and actively used resources. |
 
 ## 21. Launch acceptance
 
-The runtime launch gate passes only when a deployed environment proves all of
-the following without manual database repair or a hidden desktop executor:
+The runtime launch gate passes only when a deployed environment proves the
+mandatory items 1–28 without manual database repair or a hidden desktop
+executor. Item 29 is a separate post-build enablement gate and is not required
+while Azure backup/overflow remains disabled.
 
 1. One always-on cloud Company File remains readable and mutable through its
    service while every member application and Company Computer is stopped.
@@ -1494,7 +1530,8 @@ the following without manual database repair or a hidden desktop executor:
     resources, waiting demand and remaining admissible whole-computer capacity.
     Concurrent starts cannot consume the same slot, and a stopped or failed
     computer does not release a reservation until its resources are confirmed free.
-29. Where Azure overflow is enabled, demand beyond local capacity is attributable
+29. **Deferred post-build enablement gate, not a launch prerequisite:** before
+    Azure backup/overflow is enabled, demand beyond local capacity is attributable
     to Azure placements and rented allocation intervals. The view distinguishes
     computers, companies, associated users and observed active users, retains
     local/Azure placement history, and exposes failed or unavailable overflow.
@@ -1505,9 +1542,10 @@ gate.
 
 ## 22. Launch boundary
 
-Once this contract and its referenced infrastructure gates pass, Qorpera has
-the missing operating layer required for launch: one live digital company and
-durable cloud coworkers that work over it with a real mouth, real wakes, real
+Once this contract's mandatory launch gates and the applicable infrastructure
+gates for enabled services pass, excluding deferred Azure backup/overflow,
+Qorpera has the missing operating layer required for launch: one live digital
+company and durable cloud coworkers that work over it with a real mouth, real wakes, real
 path authority, real tools, a shared office, governed memory, routines, and
 workers.
 
