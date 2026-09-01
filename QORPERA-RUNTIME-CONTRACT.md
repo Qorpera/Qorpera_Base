@@ -6,15 +6,22 @@
 
 **Ratified company-secret custody:** 2026-08-29
 
-**Organizational operating model ratified:** 2026-08-29
+**Organizational operating model ratified:** 2026-08-29 (department form
+superseded by the responsibility model, 2026-09-01; see section 14)
 
 **Minimum operational observability ratified:** 2026-08-31
 
 **Azure backup/overflow deferred to post-build:** 2026-08-31
 
+**Founder amendments ratified:** 2026-09-01 — responsibilities replace
+departments; live-document concurrency; Company Computer scale-out; usage
+limits and sponsor routing; failure-model chapter (implementation deferred);
+Company File caps as defects; approvals sequencing; kernel ceilings and a
+founder stop; the Co-Founder holds the company-level responsibilities
+
 **Scope:** Pure-cloud agent behavior, the live Company File, execution,
 authority, context, tools, computers, workers, memory, routines, rooms,
-Co-Founder formation, departments, projects, safety, and provider integration
+Co-Founder formation, responsibilities, projects, safety, and provider integration
 
 Qorpera is ready for launch only when the mandatory acceptance gates in this
 document pass against the deployed cloud runtime. A prompt that describes the
@@ -53,6 +60,18 @@ testing, or initial runtime launch. This scope decision also applies to Azure
 overflow gates in referenced infrastructure documents; it does not waive the
 security, custody, recovery, or durability requirements of enabled services.
 
+On 2026-09-01 the founder ratified the amendments recorded in
+`QORPERA-RUNTIME-CONTRACT-ADDENDUM.md` and folded into this text: the
+department model is replaced by responsibilities (section 14); the Company
+File is worked on as one live document with presence and object versions,
+never copies (5.2); one shared working world per company may be served by
+more than one Company Computer (section 12); usage-limit notification and
+recorded same-principal sponsor handoff (section 17); a failure-model chapter
+whose implementation is deferred to partner testing (section 23); Company
+File implementation caps are defects (5.5); gated decisions queue until an
+authorized member is online (16.2); kernel ceilings and a founder stop (7.4);
+and the Co-Founder holds the company-level responsibilities (14.2).
+
 ## 2. Product thesis
 
 Qorpera is a pure-cloud company operating system for teams of humans and
@@ -69,12 +88,13 @@ A company contains:
   skills, routines, and desktops;
 - one seeded company Co-Founder that is the primary human-to-company routing
   surface without becoming a privileged authority bypass;
-- durable departments with charters, accountable measures, leads, staff,
-  routines, and project portfolios;
+- responsibilities: owned outcomes with measures, sources, standing
+  authority, and exactly one accountable agent;
 - bounded projects with objectives, definitions of done, teams, source and
   output objects, and optional coordination rooms;
 - rooms that contain explicit human and agent members;
-- one shared persistent Company Computer per company environment;
+- one shared persistent working world per company environment, served by one
+  or more Company Computers;
 - isolated workers for bounded or higher-risk work;
 - jobs and listeners that continue while every member device is offline; and
 - one cloud control plane that owns authority, ordering, provenance, and
@@ -194,7 +214,7 @@ identities MAY be different and MUST NOT be collapsed into one “user” field.
 Resources MUST declare a scope such as:
 
 - company-shared;
-- department-scoped;
+- responsibility-scoped;
 - room-scoped;
 - agent-private;
 - member-private;
@@ -234,9 +254,10 @@ Authorization MUST be checked when work is admitted and again immediately
 before an effect. Revocation MUST fence queued and future use without silently
 substituting another member, sponsor, credential, target, or billing path.
 
-Departments and projects are organizational and resource scopes, not acting
-authority. A human, agent, or company service always remains the attributed
-actor. “The department requested it” is not sufficient authorization.
+Responsibilities and projects are organizational and resource scopes, not
+acting authority. A human, agent, or company service always remains the
+attributed actor. “The responsibility requires it” is not sufficient
+authorization.
 
 ## 5. Live Company File kernel
 
@@ -284,6 +305,15 @@ serialized or return a typed stale-version result. The agent re-reads and
 retries, narrows the change, or creates a proposal. Silent last-writer-wins is
 forbidden; automatic semantic merging is optional future machinery.
 
+The Company File is worked on as one live document. Every agent and member
+edits the same live objects in place through the live mount or Company File
+tools; there are no per-agent worktrees, checkouts, or copies of the Company
+File on any machine. A presence service records who is currently working in
+which object or subtree; the composer includes presence for relevant paths so
+agents see overlap and resolve it among themselves through ordinary messages.
+Presence is never a lock. Code repositories remain the branch-and-PR
+exception in 5.1.
+
 Ordinary paths update live by default. Configured money, identity, membership,
 destructive, production, and other high-impact paths use a durable proposal or
 action-specific grant. Review policy belongs to those paths, not to every
@@ -305,6 +335,14 @@ memories are governed Company File objects with path ACLs. Memory services are
 retrieval indexes or working sets over those objects and the operation log,
 never a second brain. Canonical chats remain attributed collaboration and audit
 records; archiving a chat does not remove completed company state.
+
+### 5.5 Scale
+
+The Company File must hold the real company. Implementation caps on snapshot
+size, file count, per-object size, and eager materialization (see
+`supabase/COMPANY-FILE.md`, current implementation gap) are defects scheduled
+for removal through raised bounds and lazy, range-capable hydration. They are
+not design intent and MUST NOT be presented as product limits.
 
 ## 6. Mouth and visibility contract
 
@@ -394,6 +432,23 @@ The runtime MUST NOT hold an agent process or visible chat hostage to one long
 tool call. New input may steer, cancel, supersede, or coexist with existing
 work according to explicit run state.
 
+### 7.4 Ceilings and brake
+
+Intelligence is not deterministic, so the kernel bounds the damage a loop can
+do with numbers it enforces itself. Every company has kernel-owned ceilings
+on wake rate, running machines, and — for sponsors with no provider-side
+usage wall, such as company API-billing accounts — spend and tokens per
+period; responsibilities MAY carry narrower ceilings through their budget
+policy (14.3). Ceilings are enforced at wake admission, run admission, and
+machine start, never by model prose. The founder has one stop operation that
+pauses a company: no new wakes are admitted and running work is fenced,
+regardless of what any agent is doing. A tripped ceiling notifies the founder
+from the control plane, not from the agent that tripped it.
+Subscription-sponsored runs are additionally bounded by the provider's own
+usage limits and the usage-limit notification in section 17. Ratified
+2026-09-01 as a low-priority launch item: most members will run on
+subscriptions, which self-limit.
+
 ## 8. Wake bus
 
 Every activation enters through one durable, typed wake bus. A wake is admitted
@@ -406,8 +461,8 @@ A wake envelope MUST include:
 - company, agent, actor, and audience;
 - source identity and stable occurrence key;
 - payload or immutable payload reference;
-- department, project, room, routine, listener, or coworker reference where
-  relevant;
+- responsibility, project, room, routine, listener, or coworker reference
+  where relevant;
 - reply and silence policy;
 - local and UTC time context;
 - authorization context;
@@ -430,10 +485,10 @@ Scheduled and listener-triggered jobs both use the routine entrypoint with a
 different trigger subtype. A worker revival targets the parent run or creates a
 typed internal continuation; it MUST NOT masquerade as a human message.
 
-Co-Founder routing and departmental operation do not add wake kinds. Direct
-member input uses a human wake, delegation uses an agent wake, department and
-project-room participation uses a room wake, and measure or source changes use
-Company File event or routine wakes.
+Co-Founder routing and responsibility operation do not add wake kinds. Direct
+member input uses a human wake, delegation uses an agent wake, project-room
+participation uses a room wake, and measure or source changes use Company File
+event or routine wakes.
 
 The acceptance suite MUST prove that the same agent behaves differently at all
 five entrypoints and that a routine can complete successfully with no send.
@@ -457,10 +512,11 @@ The composer selects and labels:
 - compact, scoped retrieval indexes or working-memory summaries derived from
   those objects;
 - a skill catalog with names and “use when” descriptions;
-- teammate, primary-department, project-team, and room membership;
-- relevant company goals, department charters, accountable measures, current
+- teammate, held-responsibility, project-team, and room membership;
+- relevant company goals, held responsibilities and their measures, current
   exceptions, and project definitions of done;
 - open runs, workers, todos, and continuity handles;
+- presence: who is currently working in the relevant Company File objects;
 - available tools and grants;
 - routine intent only on that routine's wake;
 - connector availability without secret values;
@@ -670,7 +726,8 @@ cloud operations with explicit operator and company authority.
 
 The shared model is intentional and positive.
 
-Each company environment has one persistent cloud Linux Company Computer with:
+Each company environment has one shared persistent working world, served by
+one or more persistent cloud Linux Company Computers, with:
 
 - a shared NAS-backed workbench for tools, caches, browser profiles, and
   disposable in-progress bytes;
@@ -682,6 +739,14 @@ Each company environment has one persistent cloud Linux Company Computer with:
 Agents can see and continue one another's company work. Per-agent desktops are
 workflow, presence, and screen-concurrency boundaries; they are not security
 boundaries. Work that needs actual isolation runs in an isolated worker.
+
+A company starts with one Company Computer. When all screens on the company's
+Company Computers are occupied, the control plane MAY start an additional
+machine for the same company environment, attached to the same shared NAS
+workbench and the same live Company File. Scale-up and scale-down are
+control-plane lifecycle operations under the kernel-owned spend ceilings.
+Order 4's acceptance is provable on one machine; additional machines are
+capacity work after it.
 
 One computer-use task holds one lease per screen. Concurrent shell and service
 work uses explicit resource leases and provenance. Every screen action is
@@ -763,10 +828,10 @@ Worker species have separate lifecycle contracts:
 One worker is used per coherent stream. The parent steers an existing worker
 instead of cloning it for every follow-up.
 
-## 14. Organizational hierarchy, teams, rooms, and agent lifecycle
+## 14. Responsibilities, projects, teams, rooms, and agent lifecycle
 
-Membership, roles, departments, projects, rooms, hiring, renaming, archiving,
-and deletion are cloud state and server-authorized operations.
+Membership, roles, responsibilities, projects, rooms, hiring, renaming,
+archiving, and deletion are cloud state and server-authorized operations.
 
 ### 14.1 Company and agent creation
 
@@ -781,7 +846,7 @@ enforcement projections:
 - identity and initial staff revision;
 - thin hire overlay;
 - model and reasoning policy;
-- department, project, room, and resource grants;
+- responsibility, project, room, and resource grants;
 - startup instructions; and
 - exactly one first-run wake.
 
@@ -806,19 +871,47 @@ Co-Founder under that member's audience and private-scope rules. A separately
 created personal representative is a Chief of Staff or equivalent role, not a
 second company Co-Founder.
 
-The Co-Founder is the primary human-to-company routing and synthesis surface.
-It MUST NOT receive copies of every internal message or require a member to
+The Co-Founder is the founder's primary interface to the whole company, with
+authority to act on the company within policy rather than only to route: it
+can hire and retire agents, assign responsibilities, open and close projects,
+ask any agent, and report, all as ordinary authorized cloud operations. It
+MUST NOT receive copies of every internal message or require a member to
 supervise every delegated thread. Its composed state SHOULD instead include
-structured company goals, open decisions, blockers, material risks, department
-measure exceptions, active project outcomes, and hiring or resource proposals.
+structured company goals, open decisions, blockers, material risks,
+responsibility exceptions, active project outcomes, and hiring or resource
+proposals.
 The wake bus coalesces and budgets those signals so the attention problem is
 not recreated inside one larger chat.
+
+The Co-Founder is the agent that holds the company-level responsibilities
+(14.3), which is what makes it the most important agent in the company and
+keeps it active after formation:
+
+- **Direction** — keeping vision, goals, and direction current against
+  evidence on a review cadence, and bringing a material deviation between
+  direction and evidence to the founder with a recommended position, not a
+  menu of options;
+- **the responsibility map** — the standing guarantee that everything the
+  company cares about has an accountable owner with fresh measures, proposing
+  new responsibilities and retiring dead ones;
+- **resourcing** — hiring and retiring agents, budgets and effort policy,
+  starting and stopping projects; and
+- **the founder relationship** — the founder's decision queue and the
+  synthesis of results and blockers.
+
+These responsibilities never end, so the Co-Founder runs the same
+observe-to-escalate loop as every other agent, on the company itself. It is a
+decision partner: it forms and argues positions on strategy, direction,
+hiring, and spend. The safeguards are unchanged — gated effects require
+founder approval and it cannot approve its own — and the founder widens or
+narrows what can be built from the Co-Founder alone by adjusting the standing
+authority scope of its responsibilities and the protected-path policy.
 
 The first-run kickoff begins a durable company-formation workflow rather than
 a scripted welcome conversation. Its minimum lifecycle is:
 
     source_inventory -> discovery -> research -> vision_proposal
-      -> goals_ratified -> organization_formation -> operating
+      -> goals_ratified -> responsibility_map -> operating
 
 The workflow is resumable, versioned Company File state. It MUST NOT depend on
 one continuously running model process or an open member client. The Co-Founder
@@ -841,64 +934,67 @@ principles and constraints, evidence and confidence, major unknowns, near-term
 goals, and success or failure signals. An authorized founder ratifies or
 revises that direction. The Co-Founder cannot silently define the company,
 grant itself broader authority, approve its own gated changes, or give a new
-department or hire authority the requester did not possess.
+responsibility or hire authority the requester did not possess.
 
-### 14.3 Departments
+### 14.3 Responsibilities
 
-A department is a durable organizational unit, not an agent, room, chat
-category, dashboard, or long-running model process. Its Company File object
+A responsibility is a durable owned outcome, not an agent, room, chat
+category, dashboard, or long-running model process. It is the unit that makes
+the company proactive: without an owner and a standing obligation to watch
+and act, work happens only when someone sets a task. Its Company File object
 MUST define:
 
-- charter, responsibility boundary, and explicit non-responsibilities;
-- accountable human member and lead agent;
-- assigned staff, roles, and at most one primary department per staff agent;
-- versioned measures with definitions, sources, targets, guardrails, cadence,
-  provenance, and exactly one accountable agent per measure;
-- department-scoped Company File resources and external-operation grants;
-- intake, prioritization, budget, effort, and concurrency policy;
-- routines, listeners, project-creation rules, and escalation thresholds;
-- default coordination room and active project portfolio; and
-- lifecycle state such as proposed, forming, active, degraded, paused, or
-  retired.
+- the outcome or measure definition — what good looks like — with sources,
+  targets, guardrails, cadence, and provenance;
+- exactly one accountable agent, and optionally one accountable human member
+  for escalation;
+- attention cadence: how often the owner reviews the outcome absent events;
+- standing authority scope: what the owner may do without asking, expressed
+  as Company File paths and external-operation grants;
+- escalation threshold and target;
+- effort, budget, and concurrency policy for its work; and
+- lifecycle state such as proposed, active, degraded, paused, or retired.
 
-A department MAY be proposed or forming without a lead, but it MUST have one
-accountable lead agent before becoming active. The lead turns direction and
-measure exceptions into assignments, projects, or escalations so the
-Co-Founder does not become the dispatcher for every employee.
+An agent MAY hold several responsibilities. There is no department object, no
+department lead, and no officer category: an agent that coordinates several
+responsibilities is simply the agent accountable for them. Projects, teams,
+and rooms are created by responsible agents when the work needs them (14.4,
+14.7).
 
-The Co-Founder MAY propose a department from a versioned operating archetype
-after a continuing responsibility is identified. The archetype MUST be adapted
-to the company's ratified direction, actual sources, measures, authority, and
-staff before activation. Qorpera MUST NOT create ceremonial departments whose
-only durable state is a name and a group chat.
+The Co-Founder derives the responsibility map from the ratified company
+direction and current company state, proposes responsibilities and their
+owners, and revises the map as the company changes. It MAY draw on versioned
+responsibility archetypes, adapted to the company's actual sources, measures,
+authority, and staff before activation. A responsibility without a measurable
+outcome and sources is invalid; Qorpera MUST NOT create ceremonial
+responsibilities whose only durable state is a name.
 
-An active department operates as a durable control loop:
+An active responsibility operates as a durable control loop:
 
     observe -> interpret -> prioritize -> execute -> verify -> record -> escalate
 
-Committed source or measure changes wake only the eligible accountable agent or
-lead according to subscription policy. They do not automatically wake every
-department member or flood its room. “Always on” means that cloud state,
-listeners, routines, queues, and workers continue while humans and agents are
-not actively conversing. It MUST NOT mean an unbounded model process polling
-forever.
+Committed source or measure changes wake only the accountable agent according
+to subscription policy. They do not automatically wake every teammate or
+flood a room. “Always on” means that cloud state, listeners, routines, queues,
+and workers continue while humans and agents are not actively conversing. It
+MUST NOT mean an unbounded model process polling forever.
 
-The dashboard is a rebuildable projection of the department's measure
-definitions, exact source versions, targets, guardrails, work, and outcomes. It
-is not a second source of truth and does not become an artifact merely because
-the UI renders it. A department wall is likewise a projection of typed events
-such as direction changes, measure exceptions, project openings, decisions,
+A responsibility view is a rebuildable projection of the responsibility's
+measure definitions, exact source versions, targets, guardrails, work, and
+outcomes. It is not a second source of truth and does not become an artifact
+merely because the UI renders it. A wall is likewise a projection of typed
+events such as direction changes, exceptions, project openings, decisions,
 and verified outcomes; it is not a transcript of every internal message.
 
-Core responsibility, measure, authority, project, hiring, escalation, and
-lifecycle semantics MUST be code objects. Routines provide repeated intent and
-cadence but cannot substitute for the department operating model.
+Core outcome, measure, authority, project, hiring, escalation, and lifecycle
+semantics MUST be code objects. Routines provide the responsibility's cadence
+and repeated intent but cannot substitute for it.
 
 ### 14.4 Projects and project teams
 
 A project is a bounded unit of work, not a room or an execution run. Its
 Company File object MUST identify an objective, definition of done, sponsoring
-department or company scope, accountable lead, team, authorized source and
+responsibility or company scope, accountable lead, team, authorized source and
 output objects, dependencies, status, and outcome. It MAY select a bounded
 reasoning and worker policy appropriate to the work without rewriting any
 agent's durable default.
@@ -907,11 +1003,11 @@ A project MAY create a temporary team room and one or more shared working
 objects. The room coordinates the work; the project owns its durable objective
 and state; the resulting Company File operations, proposals, or explicit
 no-change result are the outcome. Closing a room does not complete a project,
-and completing or cancelling a project does not retire its department or erase
-accepted company state.
+and completing or cancelling a project does not retire its sponsoring
+responsibility or erase accepted company state.
 
-An agent MAY participate in several project teams while retaining at most one
-primary department. A temporary worker or project assignment is preferred over
+An agent MAY participate in several project teams and hold several
+responsibilities. A temporary worker or project assignment is preferred over
 a permanent hire when the responsibility ends with the project.
 
 ### 14.5 Attention and product projection
@@ -920,18 +1016,19 @@ The primary product hierarchy is a projection of canonical cloud state, not a
 local ordering of chat windows. It SHOULD present:
 
 1. the Co-Founder as the persistent company home and routing surface;
-2. departments in a dedicated high-level area;
+2. responsibilities and their accountable agents in a dedicated high-level
+   area;
 3. active project or team rooms and individual staff below them; and
 4. completed projects, archived rooms, and inactive staff outside the primary
    attention surface.
 
 Exact visual treatment remains product design, but the client MUST preserve
-the semantic distinction between Co-Founder, department, project, room, and
-agent. Recency alone MUST NOT determine organizational importance. Reloading or
+the semantic distinction between Co-Founder, responsibility, project, room,
+and agent. Recency alone MUST NOT determine organizational importance. Reloading or
 replacing a client rebuilds this hierarchy from cloud state without changing
 the company.
 
-Onboarding copy, department archetypes, measure catalogs, default routines,
+Onboarding copy, responsibility archetypes, measure catalogs, default routines,
 escalation thresholds, and visual arrangement are versioned product policy and
 MAY evolve from observed use. Product testing can refine those defaults without
 collapsing the normative object, authority, privacy, durability, and wake
@@ -950,8 +1047,8 @@ A room is an explicit member list with an audience and capability policy.
 Posting creates a cloud fan-out wake for each eligible agent. Fan-out is used
 only when the member or room workflow asked for it.
 
-A department MAY have an ongoing coordination room and a project MAY have a
-temporary team room, but neither organizational object is reducible to that
+A responsibility MAY have an ongoing coordination room and a project MAY have
+a temporary team room, but neither organizational object is reducible to that
 room. Ordinary source changes, metric updates, tool logs, and worker narration
 do not enter the room unless a speaking agent deliberately sends an authorized,
 useful summary.
@@ -1035,6 +1132,11 @@ Dismissal is recorded and delivered to the agent as a skip or decline,
 according to the surface contract. It is never consent. Absence of a response
 cannot be promoted to approval.
 
+A gated decision waits durably in the control plane until an authorized
+member is online to decide it; agents continue other work around the blocked
+effect. Until a phone or web approvals surface exists, the desktop client is
+the approvals window.
+
 ### 16.3 Routines and listeners
 
 A routine stores intent plus exactly one trigger type:
@@ -1070,11 +1172,28 @@ silently rewrite the agent's durable defaults or an already admitted run.
 
 Company-formation and other research projects MAY dispatch higher-effort
 workers under a bounded, attributed project policy while the attended
-Co-Founder conversation remains on its resolved low-effort default.
+Co-Founder conversation remains on its resolved low-effort default. The
+Co-Founder's direction and responsibility-map work MAY run at higher effort
+through the effort policy of the responsibilities it holds (14.2).
 
 Provider-native continuity is an optimization. Canonical Qorpera transcript,
 memory, and run state remain the recovery source across provider or sponsor
 changes.
+
+A member MAY connect several provider subscriptions at once, and a provider
+connection MAY sponsor several concurrent runs under its concurrency policy;
+quota, not exclusivity, is the ceiling. When a connection reaches its usage
+limit the member MUST be notified. The control plane MAY then switch an
+affected run to another eligible connection of the same principal, or to a
+company account the routing policy permits, and continue the task. The switch
+is a recorded sponsor handoff on the same run — a new binding version with
+the control plane as actor, the routing policy as reason, a timestamp, and a
+member notification — with context rebuilt from the canonical transcript. It
+is never another member's credential and never silent. Adapters MUST
+distinguish quota exhaustion (switch) from transient rate limiting (retry)
+and provider outage (wait or fail over). Agents MAY later configure model and
+sponsor routing for routines, workers, and teammate questions through
+versioned policy objects.
 
 ## 18. Short constitution
 
@@ -1114,7 +1233,7 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 1 | Loop plus mouth | Model input and cloud tools work over an exact Company File read view; only send is visible; provider thinking and final assistant text never render; completion links a live operation, proposal, or explicit no-change result. |
 | 2 | Inbound fences, outbound effect check, and cloud secret custody | A fake instruction inside a tool or Company File result is ignored; an unauthorized, stale, protected, or ambiguous write is blocked independently; and a canary credential survives capture, use, rotation, revocation, response reflection, restart, and encrypted recovery without entering any model-visible or company-visible surface. |
 | 3 | Wake bus | One agent enters through all five wake kinds; each applies its silence rule; a routine finishes with no send; an authorized Company File event wakes once without creating a causal loop. |
-| 4 | Shared office VM | Persistent cloud workbench, live Company File mount, shell, browser with sticky granted sessions, one company machine, and several agent desktops work with every member device offline; resetting the VM leaves company state intact. |
+| 4 | Shared office VM | Persistent cloud workbench, live Company File mount, shell, browser with sticky granted sessions, one company machine (additional machines are later capacity work), and several agent desktops work with every member device offline; resetting the VM leaves company state intact. |
 | 5 | Workers and todos | Parent remains interruptible; blank child receives a complete dispatch; durable completion reaches the parent; todos and accepted worker outputs become Company File state and survive restart. |
 | 6 | Memory indexes | Scoped profiles, logs, and project/member objects use Company File path ACLs; retrieval indexes rebuild from them; write/forget, concurrency, and retention work without scope leakage or a second source of truth. |
 | 7 | Connectors | Install, authenticate out of band, call through scoped RPC, and apply the connector-to-browser escalation path. |
@@ -1230,7 +1349,7 @@ work rather than rebuilding the phase or waiting for the whole runtime to finish
 This is operational data collection and visibility, not a mandate for a new
 warehouse, elaborate dashboard, complete distributed-tracing framework or
 higher-bandwidth hardware. Existing capacity and networking are the starting
-point. Department measure projections required elsewhere remain mandatory;
+point. Responsibility measure projections required elsewhere remain mandatory;
 they are distinct from optional platform-wide optimization analytics.
 
 #### Explicitly deferred
@@ -1238,7 +1357,7 @@ they are distinct from optional platform-wide optimization analytics.
 The initial scope does not require function/line execution tracing, profiling
 or production coverage; precise idle/wasted-capacity attribution; physical I/O,
 cache or write-amplification analysis; automatic negative-feedback classification;
-department productivity scoring or staffing optimization; comprehensive
+responsibility productivity scoring or staffing optimization; comprehensive
 conversation analytics or historical dashboards; or autonomous diagnostic teams
 and automatic optimization experiments. These MAY be added when measured
 problems or sufficient usage justify them. This deferral does not weaken the
@@ -1280,29 +1399,50 @@ and mandatory even when an existing service happens to be hosted in Azure;
 this contract does not require Azure specifically to satisfy them. A paused
 required service MUST NOT be reported as production-ready.
 
-### Organizational hierarchy placement
+### Responsibility model placement
 
-The Co-Founder and department model is not a new wake kind or one isolated
-implementation step. Its dependencies land in the existing order:
+The Co-Founder and responsibility model is not a new wake kind or one
+isolated implementation step. Its dependencies land in the existing order:
 
-- Order 0 owns department, project, measure, membership, responsibility, and
-  resource-scope schemas plus their Company File projections and ACLs.
-- Order 3 owns Co-Founder routing, department and project-room fan-out,
-  structured escalation, signal coalescing, and event-loop fencing.
+- Order 0 owns responsibility, project, measure, membership, and
+  resource-scope schemas plus their Company File projections and ACLs. These
+  schemas are versioned and expected to be revised after the first real
+  responsibility loops run.
+- Order 3 owns Co-Founder routing, project-room fan-out, responsibility
+  escalation, signal coalescing, and event-loop fencing.
 - Order 5 owns responsive company-formation research, project teams, workers,
   durable plans, todos, and completion reporting.
-- Order 6 owns rebuildable department dashboards and measure retrieval
+- Order 6 owns rebuildable responsibility views and measure retrieval
   projections over Company File state.
 - Order 7 owns out-of-band connection and digestion of existing company work.
-- Order 8 owns scheduled measurement, listeners, recurring departmental
-  responsibilities, and exception wakes.
-- Order 10 owns thin Co-Founder, department-lead, and employee behavioral
-  overlays after the operating machinery is proven.
+- Order 8 owns responsibility cadences, scheduled measurement, listeners, and
+  exception wakes.
+- Order 10 owns thin Co-Founder and employee behavioral overlays after the
+  operating machinery is proven.
 
-Order 2 fences the inputs and effects used by this hierarchy; it does not own
-or delay the organizational model itself. Product UX MAY be developed against
-the ratified semantic projection before every later behavior is implemented,
-but it MUST NOT represent missing cloud machinery as working autonomy.
+Order 2 fences the inputs and effects used by this model; it does not own or
+delay the model itself. Product UX MAY be developed against the ratified
+semantic projection before every later behavior is implemented, but it MUST
+NOT represent missing cloud machinery as working autonomy.
+
+### 2026-09-01 amendment placement
+
+- Order 1 owns the typed usage-limit signal from provider adapters and the
+  member notification (section 17).
+- Order 3 owns automatic sponsor handoff — the recorded continuation of an
+  affected run on the next eligible connection (section 17, acceptance 29).
+- Order 4 owns presence over the live Company File mount (5.2, 9.1),
+  extending the lossy, membership-authorized presence channel already defined
+  in `supabase/SESSIONS.md` to agents.
+- Order 1 owns spend and token ceilings at run admission for sponsors
+  without a provider-side usage wall; Order 3 owns the wake-rate ceiling and
+  the founder stop; Order 4 owns the running-machine ceiling (7.4).
+- Order 0 owns the company-level responsibility objects the Co-Founder holds
+  (14.2); their loops land with Orders 3 and 8 like any responsibility.
+- Additional Company Computers for one company (section 12) are capacity
+  work after Order 4's one-machine acceptance.
+- The failure-model chapter (section 23) is implemented during partner
+  testing, after Orders 0–10 run on the primary services.
 
 ### Current implementation checkpoint
 
@@ -1426,9 +1566,12 @@ optional Azure overflow remains deferred as ratified above.
 | Private data stays private | Company File path ACL, vault, context composer | Do not repeat private context to other audiences. |
 | Agent messages wake once | Durable message ledger and occurrence key | Avoid acknowledgement ping-pong. |
 | Rooms fan out correctly | Membership state and wake orchestrator | Be brief and audience-aware. |
-| Co-Founder reduces member coordination load | Formation state machine, structured escalation queue, worker and project dispatch | Synthesize direction, delegate continuing work, and ask only for real decisions. |
-| Departments are operating state, not chats | Organization schema, responsibility and measure registry, lead assignment, ACL projections | Own the charter and measures; turn exceptions into verified work. |
-| Department dashboards remain derived | Company File sources, measure projections, provenance, and rebuild service | Reason from exact sources and report material changes. |
+| Co-Founder holds the company-level responsibilities | Formation state machine, company-level responsibility objects, responsibility map, structured escalation queue, worker and project dispatch | Own direction, the map, resourcing, and the founder relationship; argue positions; ask only for real decisions. |
+| Ceilings hold without agent cooperation | Wake-admission, run-admission, and machine-start ceilings; founder stop; control-plane notification | Stay within budget; a tripped ceiling is a kernel fact, not a negotiation. |
+| Responsibilities are operating state, not chats | Responsibility schema, measure registry, accountable-agent assignment, ACL projections | Own the outcome and its measures; turn exceptions into verified work. |
+| Responsibility views remain derived | Company File sources, measure projections, provenance, and rebuild service | Reason from exact sources and report material changes. |
+| The Company File is one live document | Live mount, presence service, object versions | See who is working where; re-read on a stale version; never copy the company. |
+| Sponsor routing is recorded | Routing policy, usage-limit signal, sponsor handoff | Continue on the next eligible connection; never another member's credential. |
 | Projects remain bounded and distinct from rooms | Project registry, team membership, todos, outcome, and room lifecycle | Coordinate in the room; finish in durable company state. |
 | Routine policy is real | Scheduler and listener services | Author sensible schedules and intent. |
 | Dismissal is not consent | Interaction state machine | Treat dismissal as skip or decline. |
@@ -1443,8 +1586,8 @@ optional Azure overflow remains deferred as ratified above.
 ## 21. Launch acceptance
 
 The runtime launch gate passes only when a deployed environment proves the
-mandatory items 1–28 without manual database repair or a hidden desktop
-executor. Item 29 is a separate post-build enablement gate and is not required
+mandatory items 1–30 without manual database repair or a hidden desktop
+executor. Item 31 is a separate post-build enablement gate and is not required
 while Azure backup/overflow remains disabled.
 
 1. One always-on cloud Company File remains readable and mutable through its
@@ -1459,8 +1602,9 @@ while Azure backup/overflow remains disabled.
    coherent Company File operation and removes the agent's owned artifacts and
    dependent enforcement state.
 6. Ordinary path operations become live without a user commit. Stale same-path
-   writes fail, disjoint writes succeed, protected paths propose, revocation
-   fences queued work, and history reconstructs the resulting company.
+   writes fail, disjoint writes succeed, presence shows who is working where,
+   protected paths propose, revocation fences queued work, and history
+   reconstructs the resulting company.
 7. Archiving a chat does not remove completed company state, and a newly hired
    agent can understand that state from the Company File without replaying the
    chat.
@@ -1504,19 +1648,21 @@ while Azure backup/overflow remains disabled.
     work, remains responsive while bounded higher-effort research runs in the
     background, records shared research in an explicit formation project, and
     presents a protected company-direction proposal for founder ratification.
-22. One founder direction is delegated through departments and projects, and
-    the founder receives one coherent result, blocker, or genuine decision
+22. One founder direction is delegated through responsibilities and projects,
+    and the founder receives one coherent result, blocker, or genuine decision
     request without needing to visit every underlying agent or room thread.
-23. An active department with a lead and accountable measures detects one
-    source exception, wakes only the eligible owner, creates or performs the
-    appropriate work exactly once, verifies the outcome, updates canonical
-    state, and escalates only when its declared threshold requires it. The loop
-    survives runner and client restart without polling chat.
-24. Department, project, room, dashboard, and agent remain distinct objects:
+    The Co-Founder detects a material deviation between direction and
+    evidence and brings the founder a recommendation.
+23. An active responsibility with an accountable agent detects one source
+    exception, wakes only that agent, creates or performs the appropriate work
+    exactly once, verifies the outcome, updates canonical state, and escalates
+    only when its declared threshold requires it. The loop survives runner and
+    client restart without polling chat.
+24. Responsibility, project, room, view, and agent remain distinct objects:
     closing a project room does not complete the project, completing a project
-    does not retire the department, and neither chat history nor a dashboard
+    does not retire its responsibility, and neither chat history nor a view
     projection becomes the source of company truth.
-25. A replacement client reconstructs the Co-Founder, department, active
+25. A replacement client reconstructs the Co-Founder, responsibility, active
     project or team-room, and individual-staff hierarchy from canonical cloud
     state; local pinning, recency, or an open desktop process is not authority.
 26. An authorized operator can follow a successful, failed or cancelled request
@@ -1530,7 +1676,17 @@ while Azure backup/overflow remains disabled.
     resources, waiting demand and remaining admissible whole-computer capacity.
     Concurrent starts cannot consume the same slot, and a stopped or failed
     computer does not release a reservation until its resources are confirmed free.
-29. **Deferred post-build enablement gate, not a launch prerequisite:** before
+29. When a sponsoring connection reaches its usage limit, the member is
+    notified, and an affected run continues on the next eligible connection
+    of the same principal (or a policy-permitted company account) through a
+    recorded sponsor handoff with full provenance. No other member's
+    credential is ever used, and a transient rate limit or provider outage
+    does not trigger a handoff.
+30. A company's ceilings hold without agent cooperation: a deliberately
+    runaway loop is stopped at its wake-rate or spend ceiling, the founder
+    stop operation pauses the company, and the founder is notified from the
+    control plane.
+31. **Deferred post-build enablement gate, not a launch prerequisite:** before
     Azure backup/overflow is enabled, demand beyond local capacity is attributable
     to Azure placements and rented allocation intervals. The view distinguishes
     computers, companies, associated users and observed active users, retains
@@ -1552,3 +1708,34 @@ workers.
 Product quality, provider policy, operational reliability, billing, support,
 and security-response readiness remain separate launch responsibilities. This
 contract defines the agent-runtime bar; it does not waive those gates.
+
+## 23. Failure model
+
+Qorpera hosts real companies, so every layer needs a stated failure model:
+the control plane; the Company File mutation gateway and object store/NAS;
+Company Computers and their workbench; workers; provider connections; and
+network paths. For each layer the model MUST state detection, degraded
+behavior, recovery, and who is notified, and it MUST preserve the
+one-authority rule: two arbiters accepting work is the fork bug in permanent
+form.
+
+The seed is the primary/backup design in `supabase/SESSIONS.md`: failover is
+decided by a referee, never by a client; every flip increments an epoch;
+writes carry the epoch; a deposed primary demotes itself; members see the
+swap as a system event where they are already looking. The chapter extends
+that design so the Company File mutation gateway carries the epoch as well.
+Two elements of that document are superseded when the chapter is written: its
+single shared session per staff agent becomes one open conversation per agent
+and audience scope (14.2, 14.7), and its temporary desktop-adapter execution
+language is removed once the dispatcher is deployed.
+
+Azure is the pinned compute provider for demand overflow and failure standby,
+enabled through the post-build gate in section 19. Baseline durability of the
+Company File applies to every company; deeper retention, point-in-time
+restore windows, and dedicated disaster-recovery features are tiered for
+paying customers.
+
+Ratified 2026-09-01: the chapter is required, and its implementation is
+deferred until the platform runs on its primary services; it is built and
+proven during partner testing. Until then a paused or unimplemented
+resilience path MUST be reported as unavailable, never as healthy.
