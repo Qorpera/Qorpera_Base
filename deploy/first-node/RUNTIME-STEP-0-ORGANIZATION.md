@@ -1,7 +1,11 @@
 # Runtime Step 0 organization implementation
 
 **Status:** Source implementation, disposable-database acceptance,
-production-schema rehearsal, and isolated live human-member checks are complete.
+production-schema rehearsal, and isolated live human-member checks are complete
+for the department-era source. On 2026-09-02 the organization kernel was
+rewritten in place for the ratified responsibility model (contract section
+14.3; see the [amendment ratification record](RUNTIME-STEPS-0-2-AMENDMENT-RATIFICATION.md));
+the historical rehearsals and live checks below certify the earlier bytes only.
 Current-candidate native multi-member acceptance, live production migration,
 and organization-aware production cutover remain pending.
 
@@ -30,22 +34,36 @@ Implemented source behavior:
 - private proposal metadata and staged content restricted to that audience,
   and retained private history that does not block membership removal or
   preserve execution authority after it;
-- formation, department, responsibility, measure, project, department-staff,
-  and project-staff projections with bounded schemas and lifecycle checks;
-- at most one active primary department per staff agent;
-- department resource scopes requiring both active department membership and
-  an exact current grant for staff access;
-- closed department, project, room, and exact-version resource grant
+- formation, responsibility, measure, measure-source, project, and
+  project-staff projections with bounded schemas and lifecycle checks; there
+  is no department object, lead, or officer category;
+- exactly one accountable agent per responsibility (an employed staff agent),
+  an optional accountable human member, and at least one measure with at least
+  one live Company File source per responsibility — a document without a
+  measurable outcome and sources is rejected as ceremonial;
+- measure sources name a live path and an exact-or-subtree match; the
+  projection records the entry version, snapshot, and file hash observed when
+  the document was admitted, and rejects a source that is not a current path;
+- the four company-level responsibilities the Co-Founder holds (direction,
+  responsibility map, resourcing, founder relationship) minted with the
+  bootstrap job and projected at genesis, accountable to the Co-Founder with
+  the founding owner as accountable member;
+- responsibility resource scopes authorizing the accountable agent, an agent
+  holding an explicit responsibility grant, the accountable member, and
+  founders;
+- closed responsibility, project, room, and exact-version resource grant
   projections on canonical agent documents, including subset checks that stop
   an agent from delegating authority it does not possess;
-- grant references do not manufacture department, project, or room membership;
-  the corresponding canonical organization object remains authoritative;
+- grant references do not manufacture responsibility accountability, project,
+  or room membership; the corresponding canonical organization object remains
+  authoritative;
 - canonical organization paths treated as protected and non-deletable;
 - exact UTF-8 document/hash validation and same-transaction Company File head,
   path-version, and organization-projection advancement;
-- initial Company File directories for agents, departments, and projects, plus
-  reference-only `organization/formation.json` and the Co-Founder agent
-  document derived from server-issued bootstrap identities;
+- initial Company File directories for agents, responsibilities, and projects,
+  plus reference-only `organization/formation.json`, the Co-Founder agent
+  document, and the Co-Founder's four responsibility documents derived from
+  server-issued bootstrap identities;
 - recoverable upgrades of an already governed Company File, advancing no more
   than one missing path per durable snapshot while preserving every existing
   byte and evolved Co-Founder revision;
@@ -57,21 +75,25 @@ Implemented source behavior:
   template artifact, Co-Founder archive/delete protection, and dependent
   authority and owned-artifact tombstoning; and
 - a typed desktop hierarchy rebuilt from the closed cloud organization and
-  staff projections. The Co-Founder precedes departments, active projects and
-  rooms remain semantically distinct, inactive organization is outside the
-  primary surface, and local recency is not authority.
+  staff projections. The Co-Founder precedes responsibilities and their
+  accountable agents, active projects and rooms remain semantically distinct,
+  inactive organization is outside the primary surface, and local recency is
+  not authority.
 
-No department or project is created merely to populate a template. No artifact
-is created with the Co-Founder. Department and project rooms, wakes, routines,
-workers, dashboards, connectors, and behavioral overlays remain in their
-ratified later runtime orders.
+No project is created merely to populate a template, and no responsibility
+exists without a measure and sources. No artifact is created with the
+Co-Founder. Responsibility loops, project rooms, wakes, routines, workers,
+responsibility views, connectors, and behavioral overlays remain in their
+ratified later runtime orders (contract section 19, responsibility model
+placement).
 
 ## Source map
 
 - `supabase/migrations/20260828019000_member_private_staff_sessions.sql`
   owns audience-scoped session access.
 - `supabase/migrations/20260828019100_company_organization_kernel.sql`
-  owns organization identities, lifecycle projections, and atomic company
+  owns organization identities (Co-Founder, formation, responsibilities,
+  measures, sources, projects), lifecycle projections, and atomic company
   bootstrap.
 - `supabase/migrations/20260828019200_company_organization_projection.sql`
   owns exact Company File path bindings, protected mutation projection, and
@@ -108,12 +130,13 @@ ratified later runtime orders.
 
 The focused SQL driver applies the complete migration chain to disposable
 PostgreSQL and verifies idempotent creation, exactly-one kickoff, no seeded
-artifact, per-member privacy, viewer exclusion, initial organization-aware
+artifact, the Co-Founder's four genesis responsibilities with exact source
+provenance, per-member privacy, viewer exclusion, initial organization-aware
 cutover, exact projection binding, one-path recovery, evolved Co-Founder replay,
 agent creation and lifecycle, bounded grant delegation, owned-artifact
-tombstoning, department and project schemas, department ACL composition,
-protected review, deletion rejection, byte mismatch rejection, and legacy
-publisher rejection.
+tombstoning, responsibility and project schemas, ceremonial-responsibility and
+absent-source rejection, responsibility ACL composition, protected review,
+deletion rejection, byte mismatch rejection, and legacy publisher rejection.
 
 Focused TypeScript tests verify the closed bootstrap/session parser, initial
 Company File seeding, one-path governed upgrades, immutable publication,
@@ -180,6 +203,10 @@ precondition corrections. Its 105-migration regressions and 31-migration
 production-schema rehearsal supersede the counts above for the current source.
 The human portion of gate 3 passed on a cloud VM, but no admitted native agent
 ran within that same two-member company. This is not full gate-3 acceptance.
+
+The Steps 0–2 amendment ratification record supersedes the department-era
+counts and rehearsals above for the current source; its own verification and
+the still-open deployment gates are recorded there.
 
 These are deployment acceptance or later-order behavior, not missing Step 0
 source machinery:

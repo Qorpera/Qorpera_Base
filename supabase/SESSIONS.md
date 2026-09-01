@@ -13,9 +13,14 @@ it before writing.
 ## Principles
 
 **The cloud owns the conversation.** A session exists because a row says so,
-and there is at most one open session per staff agent per profile — enforced
-by a partial unique index, not by convention. Opening an agent means adopting
-the open session or atomically creating it; a client never mints locally.
+and there is at most one open conversation per staff agent *and audience
+scope* per profile — one company-audience session and one member-private
+session per writable member — enforced by partial unique indexes
+(`20260828019000_member_private_staff_sessions.sql`), not by convention.
+Opening an agent means adopting the open session for that audience or
+atomically creating it; a client never mints locally. (Amended 2026-09-01
+per runtime contract sections 14.2, 14.7 and 23; the earlier "one open
+session per staff agent" rule is superseded.)
 
 **Work is a queue, not a lease.** Every user message — and the kickoff itself —
 is a queue row. Executing is claiming: an atomic per-turn claim with a short
@@ -26,10 +31,14 @@ Kickoff-as-queue-item is what makes the duplicate-kickoff race impossible
 rather than unlikely: creation and the kickoff row land in one transaction,
 so there is exactly one kickoff to claim, ever.
 
-**One context window, attributed.** All members' inputs interleave into the
-one session, so everyone shares the agent's context by construction. Every
-input carries its author, and prompts label speakers — the agent is in a group
-conversation and must know who said what.
+**One context window per audience, attributed.** Within the company-audience
+session all members' inputs interleave, so everyone in that audience shares
+the agent's context by construction. Every input carries its author, and
+prompts label speakers — the agent is in a group conversation and must know
+who said what. A member-private session is a separate conversation under that
+member's audience and private-scope rules; its context never leaks into the
+company audience or another member's private session (contract section 14.2,
+acceptance item 20).
 
 **Two lanes with different guarantees.** Durable events (messages, outputs,
 approvals) go through the queue and events tables: written once, kept forever,

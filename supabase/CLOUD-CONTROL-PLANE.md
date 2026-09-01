@@ -68,7 +68,13 @@ ownership is one of member, company, department, or security boundary. Member
 subscription capsules are always owned by the member who completed the native
 login; they cannot be relabeled as company credentials. Company-owned compute
 identities may hold company-owned credentials, while department and security
-boundary identities give company policy a narrower durable scope.
+boundary identities give company policy a narrower durable scope. The
+`department` ownership label is a production-applied compute-identity scope
+key (`20260821001000`), not an organization object: the runtime contract's
+organization model has responsibilities and no department object (section
+14.3, amended 2026-09-01). No production compute identity uses the label; it
+is scheduled for rename to a responsibility scope in a later forward
+migration and MUST NOT be read as department membership or authority.
 
 A logical computer is a durable machine policy identity: template,
 capabilities, permissions, compute-identity reference, optional encrypted
