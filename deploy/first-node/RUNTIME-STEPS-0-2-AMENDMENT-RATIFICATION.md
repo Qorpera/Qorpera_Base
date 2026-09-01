@@ -198,11 +198,13 @@ Inventoried 2026-09-02 and left untouched; nothing was built on it.
   (`20260828005000_company_file_path_gateway.sql`, table at lines 125–146).
   Open proposals have no expiry and no purge or retention path deletes them
   (no migration deletes from that table). Only an approval carries a
-  ten-minute window: a member who approves must apply within it, and an
-  expired approval returns the proposal to `open` for any authorized member
-  (`qorpera_review_company_path_proposal`, lines 955–975). The run that
-  raised the proposal completes with a `proposed` outcome; nothing blocks the
-  agent's other work on it. Until a phone or web approvals surface exists
+  ten-minute window: the approving member must apply within it, an expired
+  or foreign approval cannot be reused, and a skip withdraws an unexecuted
+  approval and returns the proposal to `open` for any authorized member
+  (`qorpera_review_company_path_proposal`, lines 955–975;
+  `qorpera_company_path_approved_actor`, line 1008). The run that raised the
+  proposal completes with a `proposed` outcome; nothing blocks the agent's
+  other work on it. Until a phone or web approvals surface exists
   the desktop client is the approvals window. No change was needed.
 - **Sessions (contract 23, Phase A.4).** No session code was touched. One
   open conversation per agent and audience scope is already enforced by
