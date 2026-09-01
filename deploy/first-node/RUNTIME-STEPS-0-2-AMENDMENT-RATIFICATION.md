@@ -286,3 +286,66 @@ remote; (3) approve editing the contract's section 19 checkpoint paragraph
 that still describes departments; (4) decide whether the legacy local
 product-kit `departments/` folders and the desktop "Add department" wizard
 are renamed now or later (see follow-ups above).
+
+## Phase B, gate 1: candidate frozen, packages rebuilt, rollout packet v3 rehearsed (2026-09-02)
+
+Founder decisions 2026-09-02: the per-connection concurrency policy is
+uncapped by default (commit `ebbd1e734`), the branch is approved as the
+candidate, and it is pushed to `origin/codex/steps-0-2-fable-handoff`.
+
+**Candidate.** Commit `ebbd1e734655beece97ddda0828d11b95e6cb3dc`, runtime
+bundle `25cdf35e6daed70dbe7912709bf136e4873af2107be078bcb5386c7f7d75bf5e`.
+Later commits on the branch are records only and do not change the bundle
+closure; signing and packaging reference this exact commit.
+
+**Rebuilt packages (macOS, unsigned, from that tree).** Guest package
+manifest `9dbc6471d370025aa96eb1e6405732d0a3b4ec08f32212b272dd959747b52187`,
+guest archive `lxd-runner-guest-ebbd1e734.tar.gz`
+`8612464dbf7359e1c74900ffc39a0f890c7f5459c5b763d80d0b4115ac51ad0c`; LXD
+provider manifest `6977f3c1dea9d6f76f3cb68eb7180ead5bc37cf3cdb78943e2192354471ab465`;
+Runner Orchestrator manifest `fbf8952dbfed5f4b541163d7f7a0001b0455dec5154249a7c072c45b30edb022`
+(unchanged from the production pin); cloud secret broker manifest
+`327efc5565284c0af1676558f63babbaa6b1ec64f6d9d226652b3c80ccb807e0`;
+ephemeral runner manifest `d9fcfb85a7a52f47fab94b576d3de63beb37afa89d8958ab9feb719237425d50`.
+The native binary (`2f2c26cf…`, the bundle's pin), runner OCI archive
+(`c9370c82…`) and Cosign bundle (`98a00fef…`) were reused unchanged from the
+retained a535c773d guest package and re-verified by the packager.
+
+**Rollout packet v3.** Successor of the 2026-09-01 v2 packet for this
+candidate: 36 ordered source files (`20260828004000`–`20260828019995`, stage
+B now 25), 41 steps, packet `cc4ff5d908276ef5891ffc848fc5f7cd6dd74efdfb547bd99b074740fa73819a`,
+frozen manifest `bae11a1257ca913b8e86e2f8fd86856fa5a9be9e49e1febe544a6a045cd7009a`.
+Its 96 focused tests pass. The wrapper rehearsal against the captured
+production schema (`aa4c1baf…`, 2026-08-29) in a network-disabled PostgreSQL
+17 container passed all 41 steps: final ledger 128 with the 18
+production-only versions retained, global OpenAI policy disabled at version 3
+with the uncapped concurrency ceiling, the existing company's bootstrap job
+queued with its four minted Co-Founder responsibilities and not executed,
+admission not reopened. Dispatch stays disabled. Before any dispatch: a
+fresh read-only production preflight (the last live inventory is the
+2026-08-31 baseline) and a re-pinned Supabase CLI (the v2 pinned binary no
+longer exists locally).
+
+Evidence: `~/.codex/worktrees/27d4/Qorpera_Base-step2/.artifacts/runtime-step-separation-20260828/step2/verification/steps02-phase-b-gate1-20260902.fable/`
+(packet, rehearsal proof and cleanup, packages, input checksums, and
+`build-lxd-runner-image-candidate-ebbd1e734.sh`, the node build recipe with
+this candidate's pins).
+
+**Node findings (read-only, 2026-09-02 23:18 UTC).** `company41-node-01` is
+reachable over Tailscale as `company41-admin`; sudo requires an interactive
+password, so the LXD socket, the image build and the clean-boot verifier
+cannot be driven from this session. The root filesystem had 2.9 GiB free
+(97% used); an image build needs more. Provider and orchestrator services
+are disabled and inactive.
+
+**Proven:** the candidate's packages and the production SQL delta are
+reproducible from the pushed commit and rehearse cleanly against the captured
+production schema. **Blocked:** the signed image and clean-boot proof (node
+sudo and disk), the isolated cloud acceptance (an isolated environment and
+the retained acceptance VM, which cost money to start), and dispatch (fresh
+preflight, CLI pin, and the two approvals in the production record).
+**Needs Jonas:** (1) free disk on the node and either run the build recipe,
+verifier, signing and public-key install with me on the line, or grant the
+session passwordless sudo for those exact commands; (2) approve starting the
+retained acceptance environment for gate 2 with its cost; (3) when ready for
+gate 4, approve the read-only production preflight.
